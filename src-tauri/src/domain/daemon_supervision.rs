@@ -3,7 +3,7 @@ pub(crate) const QUIT_TIMEOUT_MS: u64 = 15_000;
 const RESTORATION_TIMEOUT_MS: u64 = 30_000;
 const STABLE_READY_MS: u64 = 60_000;
 const RETRY_DELAYS_MS: [u64; 3] = [1_000, 2_000, 4_000];
-pub(crate) const LIVENESS_FAILURE_THRESHOLD: u32 = 3;
+pub(crate) const LIVENESS_FAILURE_THRESHOLD: u32 = 2;
 
 #[derive(Debug, Default)]
 pub(crate) struct DaemonLiveness {
@@ -17,9 +17,6 @@ impl DaemonLiveness {
     pub fn failed(&mut self) -> bool {
         self.consecutive_failures = self.consecutive_failures.saturating_add(1);
         self.consecutive_failures >= LIVENESS_FAILURE_THRESHOLD
-    }
-    pub fn consecutive_failures(&self) -> u64 {
-        self.consecutive_failures.into()
     }
 }
 
@@ -64,6 +61,7 @@ pub(crate) enum Phase {
 pub(crate) enum FailureStage {
     Spawn,
     Initialization,
+    Connection(crate::domain::failure::TechnicalFailureNature),
     StartupTimeout,
     UnexpectedExit,
     Identity,
@@ -181,6 +179,13 @@ impl DaemonSupervision {
     pub fn connected(&mut self, now: u64) -> bool {
         if self.phase == Phase::Starting && !self.startup_expired(now) {
             self.phase = Phase::Restoring;
+            if self
+                .failure
+                .as_ref()
+                .is_some_and(|failure| matches!(failure.stage, FailureStage::Connection(_)))
+            {
+                self.failure = None;
+            }
             self.connection_generation += 1;
             self.restoration_deadline = None;
             self.attachment_id = None;
@@ -188,6 +193,11 @@ impl DaemonSupervision {
             return true;
         }
         false
+    }
+    pub fn connection_failed(&mut self, failure: Failure) {
+        if self.phase == Phase::Starting && matches!(failure.stage, FailureStage::Connection(_)) {
+            self.failure = Some(failure);
+        }
     }
     pub fn restoration_current(&self, generation: u64) -> bool {
         self.phase == Phase::Restoring && self.connection_generation == generation
@@ -317,16 +327,23 @@ impl DaemonSupervision {
     pub fn startup_terminated(&mut self, interruption: StartupInterruption, now: u64) {
         let (failure, retry) = match interruption {
             StartupInterruption::Identity(failure) => (failure, false),
-            StartupInterruption::Deadline(error) => (
-                Failure {
-                    stage: FailureStage::StartupTimeout,
-                    reason: format!(
-                        "Daemon did not become ready within 30 seconds. {}",
-                        error.map(|f| f.reason).unwrap_or_default()
-                    ),
-                },
-                true,
-            ),
+            StartupInterruption::Deadline(error) => {
+                let failure = if let Some(failure) = error
+                    .as_ref()
+                    .filter(|failure| matches!(failure.stage, FailureStage::Connection(_)))
+                {
+                    failure.clone()
+                } else {
+                    Failure {
+                        stage: FailureStage::StartupTimeout,
+                        reason: format!(
+                            "Daemon did not become ready within 30 seconds. {}",
+                            error.map(|f| f.reason).unwrap_or_default()
+                        ),
+                    }
+                };
+                (failure, true)
+            }
         };
         self.failed_after_exit(failure, retry, now);
     }

@@ -2,15 +2,85 @@ use crate::adaptor::presenter::{
     client as wire,
     connect_wire::{rpc, to_rpc, to_wire},
 };
-use crate::common::retry::{bounded, RetryBackoff, RetryLimiter};
+use crate::common::retry::{RetryBackoff, RetryLimiter};
 use crate::domain::daemon_supervision::DaemonLiveness;
-use crate::domain::failure::TechnicalFailureNature;
+use crate::domain::failure::{TechnicalFailure, TechnicalFailureNature};
 use crate::usecase::client_connection::ClientConnectionDto;
-use crate::usecase::failure::{
-    attempt_expired, Failure, FailureKey, FailureRecordingUsecase, WorkFailure, ATTEMPT_LIMIT,
-};
 use connectrpc::client::{ClientConfig, HttpClient};
-use std::sync::Arc;
+use futures_util::future::BoxFuture;
+use prost_reflect::DescriptorPool;
+use std::sync::{Arc, LazyLock};
+use std::time::Duration;
+
+struct ConnectionPolicy {
+    backoff: RetryBackoff,
+    jitter: f64,
+    reset_after: Duration,
+    reconnect_codes: Vec<i32>,
+    silence: Duration,
+    default_timeout: Duration,
+}
+
+static POLICY: LazyLock<ConnectionPolicy> = LazyLock::new(|| {
+    let pool = DescriptorPool::decode(
+        include_bytes!(concat!(env!("OUT_DIR"), "/client_descriptor.bin")).as_slice(),
+    )
+    .expect("client descriptors");
+    let options = pool
+        .get_service_by_name("releash.client.v1.ClientService")
+        .expect("ClientService descriptor")
+        .options();
+    let option = |name: &str| {
+        let extension = pool
+            .get_extension_by_name(&format!("releash.client.v1.{name}"))
+            .expect("client service option");
+        options.get_extension(&extension).into_owned()
+    };
+    let backoff = option("connection_backoff");
+    let backoff = backoff.as_message().expect("connection_backoff message");
+    let millis = |name: &str| {
+        Duration::from_millis(
+            backoff
+                .get_field_by_name(name)
+                .and_then(|value| value.as_u32())
+                .expect("connection_backoff field")
+                .into(),
+        )
+    };
+    let float = |name: &str| {
+        backoff
+            .get_field_by_name(name)
+            .and_then(|value| value.as_f32())
+            .expect("connection_backoff field") as f64
+    };
+    ConnectionPolicy {
+        backoff: RetryBackoff::new(
+            millis("initial_backoff_ms"),
+            float("multiplier"),
+            millis("max_backoff_ms"),
+        ),
+        jitter: float("jitter"),
+        reset_after: millis("reset_after_ms"),
+        reconnect_codes: option("reconnect_status_code")
+            .as_list()
+            .expect("reconnect_status_code list")
+            .iter()
+            .map(|code| code.as_enum_number().expect("reconnect status code"))
+            .collect(),
+        silence: Duration::from_millis(
+            option("state_stream_silence_ms")
+                .as_u32()
+                .expect("state_stream_silence_ms")
+                .into(),
+        ),
+        default_timeout: Duration::from_millis(
+            option("default_timeout_ms")
+                .as_u32()
+                .expect("default_timeout_ms")
+                .into(),
+        ),
+    }
+});
 
 fn config(endpoint: &ClientConnectionDto) -> Result<ClientConfig, String> {
     Ok(ClientConfig::new(
@@ -28,7 +98,7 @@ pub(crate) fn client(
 ) -> Result<rpc::ClientServiceClient<HttpClient>, String> {
     Ok(rpc::ClientServiceClient::new(
         HttpClient::plaintext(),
-        config(endpoint)?.with_default_timeout(std::time::Duration::from_secs(30)),
+        config(endpoint)?.with_default_timeout(POLICY.default_timeout),
     ))
 }
 
@@ -46,98 +116,53 @@ type DesktopSettingsDto = crate::usecase::app_config::query_service::DesktopSett
 pub(crate) struct DesktopClient {
     client: Arc<rpc::ClientServiceClient<HttpClient>>,
     task: tokio::task::JoinHandle<()>,
-    settings_task: tokio::task::JoinHandle<()>,
     settings: parking_lot::Mutex<tokio::sync::watch::Receiver<Option<DesktopSettingsDto>>>,
-    failure: Arc<parking_lot::Mutex<Option<WorkFailure>>>,
+    exit: Arc<parking_lot::Mutex<Option<WatchExit>>>,
+}
+
+enum WatchExit {
+    Absent(TechnicalFailure),
+    Unretryable(TechnicalFailure),
 }
 
 impl Drop for DesktopClient {
     fn drop(&mut self) {
         self.task.abort();
-        self.settings_task.abort();
     }
 }
 
 const DESKTOP_SETTINGS_TARGET: &str = "desktop-settings";
 
-async fn receive_desktop_settings(
-    client: &rpc::ClientServiceClient<HttpClient>,
-    sender: &tokio::sync::watch::Sender<Option<DesktopSettingsDto>>,
-) -> Result<(), String> {
-    let client_id = uuid::Uuid::new_v4().to_string();
-    let mut stream = client
-        .open_state_stream(rpc::OpenStateStreamRequest {
-            client_id: client_id.clone(),
-            ..Default::default()
-        })
-        .await
-        .map_err(error_message)?;
-    while let Some(message) = stream.message().await.map_err(error_message)? {
-        let event: wire::StateSubscriptionEvent =
-            to_wire(&message.to_owned_message()).map_err(|error| error.to_string())?;
-        use wire::state_subscription_event::Event;
-        let payload = match event.event {
-            Some(Event::Ready(_)) => {
-                client
-                    .start_state_subscription(rpc::StartStateSubscriptionRequest {
-                        client_id: client_id.clone(),
-                        target: DESKTOP_SETTINGS_TARGET.into(),
-                        ..Default::default()
-                    })
-                    .await
-                    .map_err(error_message)?;
-                continue;
-            }
-            Some(Event::Snapshot(payload)) => payload,
-            Some(Event::Change(change)) => match change.payload {
-                Some(payload) => payload,
-                None => continue,
-            },
-            _ => continue,
-        };
-        if let Some(wire::state_payload::Value::DesktopSettings(settings)) = payload.value {
-            sender.send_replace(Some(settings.try_into()?));
-        }
-    }
-    Err("Desktop settings stream ended".into())
-}
-
 impl DesktopClient {
     pub fn start(
         client: rpc::ClientServiceClient<HttpClient>,
         stream_client: rpc::ClientServiceClient<HttpClient>,
-        key: FailureKey,
-        failures: Arc<FailureRecordingUsecase>,
         limiter: Arc<RetryLimiter>,
     ) -> Self {
-        let failure = Arc::new(parking_lot::Mutex::new(None));
+        let exit = Arc::new(parking_lot::Mutex::new(None));
         let (settings_sender, settings) = tokio::sync::watch::channel(None);
-        let settings_client = stream_client.clone();
-        let settings_task = tokio::spawn(async move {
-            loop {
-                if let Err(error) =
-                    receive_desktop_settings(&settings_client, &settings_sender).await
-                {
-                    log::warn!("Desktop settings subscription interrupted: {error}");
-                }
-                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-            }
-        });
-        let failed = failure.clone();
+        let observed_exit = exit.clone();
+        let call_client = client.clone();
         let task = tokio::spawn(async move {
-            let lost = watch(&stream_client, &key, failures.as_ref(), &limiter).await;
-            *failed.lock() = Some(lost);
+            let result = watch(&call_client, &stream_client, &settings_sender, &limiter).await;
+            if let WatchExit::Unretryable(failure) = &result {
+                log::warn!("State stream cannot reconnect: {}", failure.message);
+            }
+            *observed_exit.lock() = Some(result);
         });
         Self {
             client: Arc::new(client),
             task,
-            settings_task,
             settings: parking_lot::Mutex::new(settings),
-            failure,
+            exit,
         }
     }
     pub fn connected(&self) -> bool {
-        !self.task.is_finished()
+        match self.exit.lock().as_ref() {
+            Some(WatchExit::Absent(_)) => false,
+            Some(WatchExit::Unretryable(_)) => true,
+            None => !self.task.is_finished(),
+        }
     }
     /// 購読で最初に届いた desktop 設定を待つ。
     pub async fn first_settings(&self) -> Result<DesktopSettingsDto, String> {
@@ -161,8 +186,11 @@ impl DesktopClient {
             None
         }
     }
-    pub fn failure(&self) -> Option<WorkFailure> {
-        self.failure.lock().clone()
+    pub fn failure(&self) -> Option<TechnicalFailure> {
+        match self.exit.lock().as_ref() {
+            Some(WatchExit::Absent(failure)) => Some(failure.clone()),
+            _ => None,
+        }
     }
     pub async fn request(
         &self,
@@ -174,77 +202,172 @@ impl DesktopClient {
 
 async fn watch(
     client: &rpc::ClientServiceClient<HttpClient>,
-    key: &FailureKey,
-    failures: &FailureRecordingUsecase,
+    stream_client: &rpc::ClientServiceClient<HttpClient>,
+    settings: &tokio::sync::watch::Sender<Option<DesktopSettingsDto>>,
     limiter: &RetryLimiter,
-) -> WorkFailure {
+) -> WatchExit {
     let mut liveness = DaemonLiveness::default();
+    let mut reconnects = 0u64;
     loop {
-        let failure = observe(client, &mut liveness, key, failures).await;
-        failures.observed(key, failure.clone());
-        if liveness.failed() {
-            return failure;
+        let attempt_started = tokio::time::Instant::now();
+        let observed = observe(client, stream_client, settings, &mut liveness).await;
+        if observed.liveness && liveness.failed() {
+            return WatchExit::Absent(observed.failure);
         }
+        if !observed.reconnect {
+            return WatchExit::Unretryable(observed.failure);
+        }
+        if attempt_started.elapsed() > POLICY.reset_after {
+            reconnects = 0;
+        }
+        reconnects = reconnects.saturating_add(1);
         limiter
-            .wait(RetryBackoff::RECOVERY, liveness.consecutive_failures())
+            .wait_with_spread(POLICY.backoff, reconnects, POLICY.jitter)
             .await;
+    }
+}
+
+struct Observation {
+    failure: TechnicalFailure,
+    liveness: bool,
+    reconnect: bool,
+}
+
+fn connection_error(error: connectrpc::ConnectError, liveness: bool) -> Observation {
+    let reconnect = POLICY
+        .reconnect_codes
+        .contains(&(error.code.grpc_code() as i32));
+    Observation {
+        failure: liveness_failure(error),
+        liveness,
+        reconnect,
     }
 }
 
 async fn observe(
     client: &rpc::ClientServiceClient<HttpClient>,
+    stream_client: &rpc::ClientServiceClient<HttpClient>,
+    settings: &tokio::sync::watch::Sender<Option<DesktopSettingsDto>>,
     liveness: &mut DaemonLiveness,
-    key: &FailureKey,
-    failures: &FailureRecordingUsecase,
-) -> WorkFailure {
-    let opened = bounded(ATTEMPT_LIMIT, attempt_expired, async {
-        client
-            .open_state_stream(rpc::OpenStateStreamRequest {
-                client_id: uuid::Uuid::new_v4().to_string(),
-                ..Default::default()
-            })
-            .await
-            .map_err(liveness_failure)
-    })
+) -> Observation {
+    let client_id = uuid::Uuid::new_v4().to_string();
+    let opened = tokio::time::timeout(
+        POLICY.silence,
+        stream_client.open_state_stream(rpc::OpenStateStreamRequest {
+            client_id: client_id.clone(),
+            ..Default::default()
+        }),
+    )
     .await;
     let mut stream = match opened {
-        Ok(stream) => stream,
-        Err(failure) => return failure,
+        Ok(Ok(stream)) => stream,
+        Ok(Err(error)) => return connection_error(error, true),
+        Err(_) => return silence_failure(),
     };
+    let mut bookmark_deadline = tokio::time::Instant::now() + POLICY.silence;
+    let mut subscription_start: Option<BoxFuture<'_, Result<(), connectrpc::ConnectError>>> = None;
+    let mut subscription_requested = false;
     loop {
-        match tokio::time::timeout(
-            ATTEMPT_LIMIT,
-            stream.message::<rpc::StateSubscriptionEvent>(),
-        )
-        .await
-        {
-            Ok(Ok(Some(_))) => {
-                if liveness.succeeded() {
-                    failures.resolved(key);
+        let message = tokio::select! {
+            result = async { subscription_start.as_mut().expect("pending subscription").await }, if subscription_start.is_some() => {
+                subscription_start = None;
+                if let Err(error) = result {
+                    let observed = connection_error(error, false);
+                    if observed.reconnect {
+                        return observed;
+                    }
+                    log::warn!("Desktop settings subscription failed: {}", observed.failure.message);
                 }
+                continue;
             }
+            message = tokio::time::timeout_at(bookmark_deadline, stream.message()) => message,
+        };
+        let message = match message {
+            Ok(Ok(Some(message))) => message,
             Ok(Ok(None)) => {
-                return WorkFailure {
-                    kind: Failure::Technical(TechnicalFailureNature::Transient),
-                    message: "State stream ended".into(),
-                }
+                return Observation {
+                    failure: TechnicalFailure {
+                        nature: TechnicalFailureNature::Transient,
+                        message: "State stream ended".into(),
+                    },
+                    liveness: true,
+                    reconnect: true,
+                };
             }
-            Ok(Err(error)) => return liveness_failure(error),
-            Err(_) => return attempt_expired(),
+            Ok(Err(error)) => return connection_error(error, true),
+            Err(_) => return silence_failure(),
+        };
+        let event: wire::StateSubscriptionEvent = match to_wire(&message.to_owned_message()) {
+            Ok(event) => event,
+            Err(error) => {
+                log::warn!("State event decode failed: {error}");
+                continue;
+            }
+        };
+        use wire::state_subscription_event::Event;
+        let payload = match event.event {
+            Some(Event::Bookmark(_)) => {
+                liveness.succeeded();
+                bookmark_deadline = tokio::time::Instant::now() + POLICY.silence;
+                continue;
+            }
+            Some(Event::Ready(_)) => {
+                if !subscription_requested {
+                    subscription_requested = true;
+                    subscription_start = Some(Box::pin(async {
+                        client
+                            .start_state_subscription(rpc::StartStateSubscriptionRequest {
+                                client_id: client_id.clone(),
+                                target: DESKTOP_SETTINGS_TARGET.into(),
+                                ..Default::default()
+                            })
+                            .await
+                            .map(|_| ())
+                    }));
+                }
+                continue;
+            }
+            Some(Event::Snapshot(payload)) => payload,
+            Some(Event::Change(change)) => match change.payload {
+                Some(payload) => payload,
+                None => continue,
+            },
+            _ => continue,
+        };
+        if let Some(wire::state_payload::Value::DesktopSettings(value)) = payload.value {
+            match value.try_into() {
+                Ok(value) => {
+                    settings.send_replace(Some(value));
+                }
+                Err(error) => log::warn!("Desktop settings decode failed: {error}"),
+            }
         }
     }
 }
 
-fn liveness_failure(error: connectrpc::ConnectError) -> WorkFailure {
+fn silence_failure() -> Observation {
+    Observation {
+        failure: TechnicalFailure {
+            nature: TechnicalFailureNature::TimedOut,
+            message: "State stream was silent".into(),
+        },
+        liveness: true,
+        reconnect: true,
+    }
+}
+
+fn liveness_failure(error: connectrpc::ConnectError) -> TechnicalFailure {
     use connectrpc::ErrorCode;
     let nature = match error.code {
         ErrorCode::DeadlineExceeded => TechnicalFailureNature::TimedOut,
-        ErrorCode::Unavailable | ErrorCode::ResourceExhausted => TechnicalFailureNature::Transient,
+        ErrorCode::Unavailable | ErrorCode::ResourceExhausted | ErrorCode::Aborted => {
+            TechnicalFailureNature::Transient
+        }
         ErrorCode::Canceled => TechnicalFailureNature::Cancelled,
         _ => TechnicalFailureNature::Other,
     };
-    WorkFailure {
-        kind: Failure::Technical(nature),
+    TechnicalFailure {
+        nature,
         message: error_message(error),
     }
 }

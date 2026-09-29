@@ -2704,7 +2704,7 @@ service ClientService {
   option (reconnect_status_code) = RECONNECT_STATUS_CODE_UNAVAILABLE;
   option (reconnect_status_code) = RECONNECT_STATUS_CODE_ABORTED;
   option (reconnect_status_code) = RECONNECT_STATUS_CODE_RESOURCE_EXHAUSTED;
-  option (state_stream_silence_ms) = 30000;
+  option (state_stream_silence_ms) = 20000;
   option (default_timeout_ms) = 120000;
   rpc OpenStateStream(OpenStateStreamRequest) returns (stream StateSubscriptionEvent);
   rpc StartStateSubscription(StartStateSubscriptionRequest) returns (Unit);

@@ -442,8 +442,8 @@ it("つなぎ直してから2分を超えてstreamが続くと次の待ちは1�
 		fixture.streams[0].fail();
 		await vi.advanceTimersByTimeAsync(1000);
 		await vi.waitFor(() => expect(fixture.starts).toHaveLength(2));
-		for (let i = 0; i < 6; i++) {
-			await vi.advanceTimersByTimeAsync(20000);
+		for (let i = 0; i < 7; i++) {
+			await vi.advanceTimersByTimeAsync(19_000);
 			fixture.streams[1].send({
 				target: "repository-paths",
 				version: { epoch: "boot", sequence: BigInt(i) },
@@ -606,14 +606,14 @@ it("状態のstreamが無通信のまま続いたらつなぎ直す", async () =
 		const fixture = stateFixture();
 		subscribeState("repository-paths", vi.fn());
 		await vi.waitFor(() => expect(fixture.starts).toHaveLength(1));
-		await vi.advanceTimersByTimeAsync(29_000);
+		await vi.advanceTimersByTimeAsync(19_000);
 		expect(fixture.streams[0].signal.aborted).toBe(false);
 		fixture.streams[0].send({
 			target: "repository-paths",
 			version: { epoch: "boot", sequence: 0n },
 			event: { case: "bookmark", value: {} },
 		});
-		await vi.advanceTimersByTimeAsync(29_000);
+		await vi.advanceTimersByTimeAsync(19_000);
 		expect(fixture.streams[0].signal.aborted).toBe(false);
 		await vi.advanceTimersByTimeAsync(1_000);
 		expect(fixture.streams[0].signal.aborted).toBe(true);

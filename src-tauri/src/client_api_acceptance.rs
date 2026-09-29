@@ -40,10 +40,6 @@ pub fn desktop_connection_app<R: tauri::Runtime>(
             executable.into(),
             data_dir.into(),
             Arc::new(crate::common::retry::RetryLimiter::new()),
-            Arc::new(crate::usecase::failure::FailureRecordingUsecase::new(
-                Arc::new(crate::adaptor::gateway::failure_records::FailureRecordStore::default()),
-                None,
-            )),
         ),
     ));
     builder
@@ -110,10 +106,11 @@ impl<R: tauri::Runtime> ClientApiAcceptanceHost<R> {
         let authority = Arc::new(ApplicationStartupAuthority::ready());
         let repository = Arc::new(repository);
         let state_presenter = Arc::new(
-            crate::adaptor::presenter::state_subscription::StateSubscriptionPresenter::new(),
+            crate::adaptor::presenter::state_subscription::StateSubscriptionPresenter::new(vec![]),
         );
         let state = crate::usecase::state_subscription::StateSubscriptionUsecase::new_with_output(
             state_presenter.clone(),
+            state_presenter.change_sender(),
             Arc::new(crate::adaptor::gateway::subscription_timer::TokioSubscriptionTimer),
         )
         .with_reads(
@@ -397,10 +394,6 @@ pub async fn terminate_daemon_for_acceptance(
         executable,
         data_dir.clone(),
         Arc::new(crate::common::retry::RetryLimiter::new()),
-        Arc::new(crate::usecase::failure::FailureRecordingUsecase::new(
-            Arc::new(crate::adaptor::gateway::failure_records::FailureRecordStore::default()),
-            None,
-        )),
     );
     gateway.spawn().await?;
     let ready = tokio::time::timeout(std::time::Duration::from_secs(3), async {

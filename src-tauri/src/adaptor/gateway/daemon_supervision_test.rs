@@ -2,15 +2,24 @@ use super::*;
 use std::{cell::Cell, time::Duration};
 
 fn gateway(data_dir: PathBuf) -> DaemonProcessGateway {
-    DaemonProcessGateway::new(
-        PathBuf::new(),
-        data_dir,
-        Arc::new(RetryLimiter::new()),
-        Arc::new(crate::usecase::failure::FailureRecordingUsecase::new(
-            Arc::new(crate::adaptor::gateway::failure_records::FailureRecordStore::default()),
-            None,
-        )),
-    )
+    DaemonProcessGateway::new(PathBuf::new(), data_dir, Arc::new(RetryLimiter::new()))
+}
+
+#[test]
+fn test_接続失敗_技術的分類を監督へ渡す() {
+    // Given
+    let failure = TechnicalFailure {
+        nature: crate::domain::failure::TechnicalFailureNature::TimedOut,
+        message: "State stream was silent".into(),
+    };
+    // When
+    let result = supervised_connection_failure(failure);
+    // Then
+    assert_eq!(
+        result.stage,
+        FailureStage::Connection(crate::domain::failure::TechnicalFailureNature::TimedOut)
+    );
+    assert_eq!(result.reason, "State stream was silent");
 }
 
 #[tokio::test]

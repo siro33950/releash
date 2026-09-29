@@ -170,6 +170,86 @@ async fn test_定期印_別対象の更新が続いても無通信の購読へ�
 }
 
 #[tokio::test(start_paused = true)]
+async fn test_定期印_snapshot待ちの購読だけでもstreamに送る() {
+    // Given
+    let runtime = StateSubscriptionRuntime::<u64>::new("boot".into());
+    runtime.state.lock().open("client".into()).unwrap();
+    runtime
+        .state
+        .lock()
+        .register_delta(
+            "waiting",
+            Version {
+                epoch: "boot".into(),
+                sequence: 0,
+            },
+            100,
+        )
+        .unwrap();
+    runtime
+        .state
+        .lock()
+        .start("client", "waiting", None)
+        .unwrap();
+    let mut stream = Box::pin(runtime.stream("client".into(), (), |_, _| {}));
+    assert!(matches!(
+        stream.next().await,
+        Some(StateSubscriptionEvent::Ready)
+    ));
+    let waiting = tokio::spawn(async move { stream.next().await });
+    tokio::task::yield_now().await;
+    // When
+    tokio::time::advance(std::time::Duration::from_secs(10)).await;
+    // Then
+    assert!(matches!(
+        waiting.await.unwrap(),
+        Some(StateSubscriptionEvent::Bookmark)
+    ));
+}
+
+#[tokio::test(start_paused = true)]
+async fn test_定期印_変更が送り待ちでもstreamへ間隔どおり送る() {
+    // Given
+    let runtime = StateSubscriptionRuntime::new("boot".into());
+    runtime
+        .state
+        .lock()
+        .register("target".into(), 0_u64, Delivery::Full)
+        .unwrap();
+    runtime.state.lock().open("client".into()).unwrap();
+    runtime
+        .state
+        .lock()
+        .start("client", "target", None)
+        .unwrap();
+    let mut stream = Box::pin(runtime.stream("client".into(), (), |_, _| {}));
+    assert!(matches!(
+        stream.next().await,
+        Some(StateSubscriptionEvent::Ready)
+    ));
+    assert!(matches!(
+        stream.next().await,
+        Some(StateSubscriptionEvent::Item(_, Event::Snapshot(_, _)))
+    ));
+    assert!(matches!(
+        stream.next().await,
+        Some(StateSubscriptionEvent::Item(_, Event::Bookmark(_)))
+    ));
+    runtime.state.lock().publish("target", 1, None).unwrap();
+    // When
+    tokio::time::advance(std::time::Duration::from_secs(10)).await;
+    // Then
+    assert!(matches!(
+        stream.next().await,
+        Some(StateSubscriptionEvent::Bookmark)
+    ));
+    assert!(matches!(
+        stream.next().await,
+        Some(StateSubscriptionEvent::Item(_, Event::Change(_, _, _)))
+    ));
+}
+
+#[tokio::test(start_paused = true)]
 async fn test_定期印_購読の無いstreamにも間隔ごとに送る() {
     // Given
     let runtime = StateSubscriptionRuntime::<u64>::new("boot".into());
@@ -194,13 +274,16 @@ async fn test_定期印_購読の無いstreamにも間隔ごとに送る() {
 }
 
 #[test]
-fn test_定期印_購読の有無を返す() {
+fn test_定期印_版付き合図を積めたか返す() {
     // Given
     let mut state = registry();
     // When / Then
     assert!(!state.bookmark("client"));
     assert!(!state.bookmark("unknown"));
     state.start("client", "workspaces", None).unwrap();
+    assert!(!state.bookmark("client"));
+    state.next("client");
+    state.next("client");
     assert!(state.bookmark("client"));
 }
 
@@ -783,6 +866,7 @@ async fn test_定期印_変更の配信で周期の起点をずらさない() {
         stream.next().await,
         Some(StateSubscriptionEvent::Item(_, Event::Bookmark(_)))
     ));
+    assert!(stream.next().now_or_never().is_none());
 }
 
 #[test]
