@@ -108,6 +108,7 @@ pub(crate) struct DesktopClient {
     client: Arc<rpc::ClientServiceClient<HttpClient>>,
     task: tokio::task::JoinHandle<()>,
     settings: parking_lot::Mutex<tokio::sync::watch::Receiver<Option<DesktopSettingsDto>>>,
+    rejected: tokio::sync::watch::Receiver<Option<TechnicalFailure>>,
     exit: Arc<parking_lot::Mutex<Option<TechnicalFailure>>>,
 }
 
@@ -127,31 +128,48 @@ impl DesktopClient {
     ) -> Self {
         let exit = Arc::new(parking_lot::Mutex::new(None));
         let (settings_sender, settings) = tokio::sync::watch::channel(None);
+        let (rejected_sender, rejected) = tokio::sync::watch::channel(None);
         let observed_exit = exit.clone();
         let call_client = client.clone();
         let task = tokio::spawn(async move {
-            let result = watch(&call_client, &stream_client, &settings_sender, &limiter).await;
+            let result = watch(
+                &call_client,
+                &stream_client,
+                &settings_sender,
+                &rejected_sender,
+                &limiter,
+            )
+            .await;
             *observed_exit.lock() = Some(result);
         });
         Self {
             client: Arc::new(client),
             task,
             settings: parking_lot::Mutex::new(settings),
+            rejected,
             exit,
         }
     }
     pub fn connected(&self) -> bool {
         self.exit.lock().is_none() && !self.task.is_finished()
     }
-    /// 購読で最初に届いた desktop 設定を待つ。
-    pub async fn first_settings(&self) -> Result<DesktopSettingsDto, String> {
-        let mut receiver = self.settings.lock().clone();
-        let settings = receiver
-            .wait_for(|settings| settings.is_some())
-            .await
-            .map_err(|_| "Desktop settings are unavailable.".to_string())?
-            .expect("waited for settings");
-        Ok(settings)
+    /// 購読で最初に届いた desktop 設定を待つ。届く前に購読の開始が再接続の対象でない失敗で終わったら、その失敗を返す。
+    pub async fn first_settings(&self) -> Result<DesktopSettingsDto, TechnicalFailure> {
+        let mut settings = self.settings.lock().clone();
+        let mut rejected = self.rejected.clone();
+        tokio::select! {
+            biased;
+            result = settings.wait_for(|settings| settings.is_some()) => match result {
+                Ok(settings) => Ok(settings.expect("waited for settings")),
+                Err(_) => Err(self.failure().unwrap_or_else(|| TechnicalFailure {
+                    nature: TechnicalFailureNature::Other,
+                    message: "Desktop settings are unavailable.".into(),
+                })),
+            },
+            Ok(failure) = rejected.wait_for(|failure| failure.is_some()) => {
+                Err(failure.clone().expect("waited for failure"))
+            }
+        }
     }
     pub fn current_settings(&self) -> Option<DesktopSettingsDto> {
         *self.settings.lock().borrow()
@@ -180,13 +198,14 @@ async fn watch(
     client: &rpc::ClientServiceClient<HttpClient>,
     stream_client: &rpc::ClientServiceClient<HttpClient>,
     settings: &tokio::sync::watch::Sender<Option<DesktopSettingsDto>>,
+    rejected: &tokio::sync::watch::Sender<Option<TechnicalFailure>>,
     limiter: &RetryLimiter,
 ) -> TechnicalFailure {
     let mut liveness = DaemonLiveness::default();
     let mut reconnects = 0u64;
     loop {
         let attempt_started = tokio::time::Instant::now();
-        let observed = observe(client, stream_client, settings, &mut liveness).await;
+        let observed = observe(client, stream_client, settings, rejected, &mut liveness).await;
         if observed.liveness && liveness.failed() {
             return observed.failure;
         }
@@ -212,7 +231,10 @@ fn connection_error(error: connectrpc::ConnectError, liveness: bool) -> Observat
     }
 }
 
-fn subscription_result(result: Result<(), connectrpc::ConnectError>) -> Option<Observation> {
+fn subscription_result(
+    result: Result<(), connectrpc::ConnectError>,
+    rejected: &tokio::sync::watch::Sender<Option<TechnicalFailure>>,
+) -> Option<Observation> {
     let Err(error) = result else { return None };
     let reconnect = POLICY
         .reconnect_codes
@@ -225,6 +247,7 @@ fn subscription_result(result: Result<(), connectrpc::ConnectError>) -> Option<O
             "Desktop settings subscription failed: {}",
             observed.failure.message
         );
+        rejected.send_replace(Some(observed.failure));
         None
     }
 }
@@ -267,10 +290,13 @@ impl<'a> SettingsSubscription<'a> {
         self.pending.is_some()
     }
 
-    async fn finish_pending(&mut self) -> Option<Observation> {
+    async fn finish_pending(
+        &mut self,
+        rejected: &tokio::sync::watch::Sender<Option<TechnicalFailure>>,
+    ) -> Option<Observation> {
         let result = self.pending.as_mut().expect("pending subscription").await;
         self.pending = None;
-        subscription_result(result)
+        subscription_result(result, rejected)
     }
 }
 
@@ -292,6 +318,7 @@ async fn observe(
     client: &rpc::ClientServiceClient<HttpClient>,
     stream_client: &rpc::ClientServiceClient<HttpClient>,
     settings: &tokio::sync::watch::Sender<Option<DesktopSettingsDto>>,
+    rejected: &tokio::sync::watch::Sender<Option<TechnicalFailure>>,
     liveness: &mut DaemonLiveness,
 ) -> Observation {
     let client_id = uuid::Uuid::new_v4().to_string();
@@ -312,7 +339,7 @@ async fn observe(
     let mut subscription = SettingsSubscription::default();
     loop {
         let message = tokio::select! {
-            result = subscription.finish_pending(), if subscription.has_pending() => {
+            result = subscription.finish_pending(rejected), if subscription.has_pending() => {
                 if let Some(observed) = result {
                     return observed;
                 }

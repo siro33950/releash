@@ -555,6 +555,27 @@ async fn test_購読開始_再接続対象外の失敗でも生存監視を続�
     server.abort();
 }
 
+#[tokio::test]
+async fn test_購読開始_再接続対象外の失敗を初回の設定の失敗として返す() {
+    // Given
+    let (endpoint, server, _, _) = subscription_error_server(
+        connectrpc::ErrorCode::InvalidArgument,
+        axum::http::StatusCode::BAD_REQUEST,
+    )
+    .await;
+    let client = start(&endpoint);
+    // When
+    let failure = tokio::time::timeout(Duration::from_secs(2), client.first_settings())
+        .await
+        .unwrap()
+        .unwrap_err();
+    // Then
+    assert_eq!(failure.nature, TechnicalFailureNature::Other);
+    assert!(failure.message.contains("subscription failed"));
+    assert!(client.connected());
+    server.abort();
+}
+
 #[tokio::test(start_paused = true)]
 async fn test_設定変換失敗_生存監視を続ける() {
     // Given

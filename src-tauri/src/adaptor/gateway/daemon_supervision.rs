@@ -127,15 +127,9 @@ impl DaemonProcessGateway {
         .await
         {
             Ok(Ok(settings)) => settings,
-            Ok(Err(reason)) => {
+            Ok(Err(failure)) => {
                 self.pending.lock().take();
-                if let Some(failure) = client.failure() {
-                    return Err(supervised_connection_failure(failure));
-                }
-                return Err(Failure {
-                    stage: FailureStage::Initialization,
-                    reason,
-                });
+                return Err(supervised_connection_failure(failure));
             }
             Err(_) => return Ok(None),
         };
