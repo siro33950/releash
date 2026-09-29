@@ -406,6 +406,9 @@ async fn test_設定受信_生存確認と同じstreamで受け取る() {
             envelope(event(wire::state_subscription_event::Event::Ready(
                 wire::Unit {},
             ))),
+            envelope(event(wire::state_subscription_event::Event::Ready(
+                wire::Unit {},
+            ))),
             envelope(event(wire::state_subscription_event::Event::Snapshot(
                 wire::StatePayload {
                     value: Some(wire::state_payload::Value::DesktopSettings(settings)),

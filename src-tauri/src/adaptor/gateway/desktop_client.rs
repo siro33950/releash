@@ -245,6 +245,35 @@ fn start_settings_subscription(
     })
 }
 
+#[derive(Default)]
+struct SettingsSubscription<'a> {
+    requested: bool,
+    pending: Option<BoxFuture<'a, Result<(), connectrpc::ConnectError>>>,
+}
+
+impl<'a> SettingsSubscription<'a> {
+    fn request_if_needed(
+        &mut self,
+        client: &'a rpc::ClientServiceClient<HttpClient>,
+        client_id: &str,
+    ) {
+        if !self.requested {
+            self.requested = true;
+            self.pending = Some(start_settings_subscription(client, client_id.to_owned()));
+        }
+    }
+
+    fn has_pending(&self) -> bool {
+        self.pending.is_some()
+    }
+
+    async fn finish_pending(&mut self) -> Option<Observation> {
+        let result = self.pending.as_mut().expect("pending subscription").await;
+        self.pending = None;
+        subscription_result(result)
+    }
+}
+
 fn apply_settings(
     payload: wire::StatePayload,
     settings: &tokio::sync::watch::Sender<Option<DesktopSettingsDto>>,
@@ -280,13 +309,11 @@ async fn observe(
         Err(_) => return silence_failure(),
     };
     let mut bookmark_deadline = tokio::time::Instant::now() + POLICY.silence;
-    let mut subscription_start: Option<BoxFuture<'_, Result<(), connectrpc::ConnectError>>> = None;
-    let mut subscription_requested = false;
+    let mut subscription = SettingsSubscription::default();
     loop {
         let message = tokio::select! {
-            result = async { subscription_start.as_mut().expect("pending subscription").await }, if subscription_start.is_some() => {
-                subscription_start = None;
-                if let Some(observed) = subscription_result(result) {
+            result = subscription.finish_pending(), if subscription.has_pending() => {
+                if let Some(observed) = result {
                     return observed;
                 }
                 continue;
@@ -322,11 +349,7 @@ async fn observe(
                 continue;
             }
             Some(Event::Ready(_)) => {
-                if !subscription_requested {
-                    subscription_requested = true;
-                    subscription_start =
-                        Some(start_settings_subscription(client, client_id.clone()));
-                }
+                subscription.request_if_needed(client, &client_id);
                 continue;
             }
             Some(Event::Snapshot(payload)) => payload,
