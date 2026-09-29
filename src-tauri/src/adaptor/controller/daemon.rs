@@ -33,9 +33,8 @@ pub(crate) fn client_priority_interceptor(
         &[("interactive", 30), ("workflow", 40), ("default", 120)],
         50,
     ));
-    let events = Arc::new(
-        adaptor::controller::api::client_priority::PriorityFailureReporter::new(failures),
-    );
+    let events =
+        Arc::new(adaptor::controller::api::client_priority::PriorityFailureReporter::new(failures));
     adaptor::controller::api::client_priority::PriorityInterceptor {
         gate: Arc::new(crate::common::priority::PriorityGate::new(
             limits,

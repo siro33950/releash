@@ -255,7 +255,7 @@ async fn test_サーバ情報取得_全段の枠が埋まっていても受理�
     // Given
     let deps = crate::test_support::client_api_deps(Arc::new(dispatch()), None);
     let _permits =
-        ["interactive", "workflow", "default"].map(|level| deps.priority.gate.limits().fill(level));
+        ["interactive", "workflow", "default"].map(|level| deps.priority_limits().fill(level));
     let router = router(Some(deps.clone()));
     let request = || {
         Request::post("/releash.client.v1.ClientService/GetServerInfo")
@@ -272,8 +272,64 @@ async fn test_サーバ情報取得_全段の枠が埋まっていても受理�
     let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(body["release"], env!("CARGO_PKG_VERSION"));
     for level in ["interactive", "workflow", "default"] {
-        assert_eq!(deps.priority.gate.limits().available(level), 0);
+        assert_eq!(deps.priority_limits().available(level), 0);
     }
+}
+
+#[tokio::test]
+async fn test_状態購読stream_全段の枠が埋まっていてもイベントを受け取り席を使わない() {
+    // Given
+    let subscriptions = crate::usecase::state_subscription::StateSubscriptionUsecase::new(
+        vec![],
+        Arc::new(crate::adaptor::gateway::subscription_timer::TokioSubscriptionTimer),
+    );
+    let deps = crate::test_support::client_api_deps(Arc::new(dispatch()), None)
+        .with_state_subscriptions(StateSubscriptionDeps::new(
+            subscriptions.clone(),
+            Arc::new(subscriptions.test_presenter().unwrap().clone()),
+        ));
+    let _permits =
+        ["interactive", "workflow", "default"].map(|level| deps.priority_limits().fill(level));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let config = ClientConfig::new(
+        format!("http://{}", listener.local_addr().unwrap())
+            .parse()
+            .unwrap(),
+    );
+    let server = tokio::spawn({
+        let deps = deps.clone();
+        async move { axum::serve(listener, router(Some(deps))).await.unwrap() }
+    });
+    let client = rpc::ClientServiceClient::new(HttpClient::plaintext(), config);
+
+    // When
+    let mut stream = client
+        .open_state_stream(rpc::OpenStateStreamRequest {
+            client_id: "priority-bypass".into(),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let event: wire::StateSubscriptionEvent = to_wire(
+        &stream
+            .message::<rpc::StateSubscriptionEvent>()
+            .await
+            .unwrap()
+            .unwrap()
+            .to_owned_message(),
+    )
+    .unwrap();
+
+    // Then
+    assert!(matches!(
+        event.event,
+        Some(wire::state_subscription_event::Event::Ready(_))
+    ));
+    for level in ["interactive", "workflow", "default"] {
+        assert_eq!(deps.priority_limits().available(level), 0);
+    }
+    drop(stream);
+    server.abort();
 }
 
 #[tokio::test]
@@ -509,7 +565,7 @@ async fn assert_request_deadline(timeout: Option<&str>, seconds: u64) {
     tokio::pin!(call);
     assert!(futures_util::poll!(&mut call).is_pending());
     tokio::task::yield_now().await;
-    assert_eq!(deps.priority.gate.limits().available("default"), 40);
+    assert_eq!(deps.priority_limits().available("default"), 40);
     // When
     tokio::time::advance(std::time::Duration::from_secs(seconds - 1)).await;
     assert!(futures_util::poll!(&mut call).is_pending());
@@ -520,7 +576,7 @@ async fn assert_request_deadline(timeout: Option<&str>, seconds: u64) {
     let error: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(error["code"], "deadline_exceeded");
     stopped.cancelled().await;
-    assert_eq!(deps.priority.gate.limits().available("default"), 41);
+    assert_eq!(deps.priority_limits().available("default"), 41);
 }
 
 #[tokio::test(start_paused = true)]
@@ -562,11 +618,11 @@ async fn test_単発rpc_呼び出し破棄でasync処理を止め枠を解放す
     )));
     assert!(futures_util::poll!(&mut call).is_pending());
     tokio::task::yield_now().await;
-    assert_eq!(deps.priority.gate.limits().available("default"), 40);
+    assert_eq!(deps.priority_limits().available("default"), 40);
     // When
     drop(call);
     // Then
-    assert_eq!(deps.priority.gate.limits().available("default"), 41);
+    assert_eq!(deps.priority_limits().available("default"), 41);
     tokio::time::timeout(std::time::Duration::from_secs(1), stopped.cancelled())
         .await
         .unwrap();
@@ -642,7 +698,7 @@ async fn test_単発rpc_client切断で処理が終了する() {
     let result = tokio::time::timeout(std::time::Duration::from_secs(2), stopped.cancelled()).await;
     server.abort();
     result.unwrap();
-    assert_eq!(deps.priority.gate.limits().available("default"), 41);
+    assert_eq!(deps.priority_limits().available("default"), 41);
 }
 
 #[tokio::test]
@@ -772,7 +828,7 @@ async fn test_状態購読操作_上限時は拒否し枠解放後は受理す�
         ));
     let router = router(Some(deps.clone()));
     for method in ["StartStateSubscription", "StopStateSubscription"] {
-        let permits = deps.priority.gate.limits().fill("interactive");
+        let permits = deps.priority_limits().fill("interactive");
         let request = || {
             Request::post(format!("/releash.client.v1.ClientService/{method}"))
                 .header("content-type", "application/json")
@@ -792,7 +848,7 @@ async fn test_状態購読操作_上限時は拒否し枠解放後は受理す�
             router.clone().oneshot(request()).await.unwrap().status(),
             StatusCode::OK
         );
-        assert_eq!(deps.priority.gate.limits().available("interactive"), 11);
+        assert_eq!(deps.priority_limits().available("interactive"), 11);
     }
 }
 
@@ -868,7 +924,7 @@ async fn assert_cancelled_blocking_mutation(deadline: bool, repository: bool) {
     }
     stopped.cancelled().await;
     // Then
-    assert_eq!(deps.priority.gate.limits().available("default"), 41);
+    assert_eq!(deps.priority_limits().available("default"), 41);
     assert!(futures_util::poll!(&mut deletion).is_pending());
     assert!(runtime.begin_worktree_mutation("/repo").is_err());
     finish.send(()).unwrap();
@@ -1369,7 +1425,7 @@ async fn test_流量制御_全段の枠が埋まっていてもReportTerminalPro
             StateSubscriptionDeps::new(subscriptions, Arc::new(presenter)),
         );
     let _permits =
-        ["interactive", "workflow", "default"].map(|level| deps.priority.gate.limits().fill(level));
+        ["interactive", "workflow", "default"].map(|level| deps.priority_limits().fill(level));
     // When
     let response = router(Some(deps))
         .oneshot(unary_request(
@@ -1397,7 +1453,7 @@ async fn test_優先度_defaultが埋まっていてもinteractiveの呼び出�
             subscriptions.clone(),
             Arc::new(subscriptions.test_presenter().unwrap().clone()),
         ));
-    let _permits = deps.priority.gate.limits().fill("default");
+    let _permits = deps.priority_limits().fill("default");
     let router = router(Some(deps.clone()));
     // When
     let rejected = router
@@ -1418,7 +1474,7 @@ async fn test_優先度_defaultが埋まっていてもinteractiveの呼び出�
     // Then
     assert_eq!(rejected.status(), StatusCode::TOO_MANY_REQUESTS);
     assert_eq!(accepted.status(), StatusCode::OK);
-    assert_eq!(deps.priority.gate.limits().available("interactive"), 11);
+    assert_eq!(deps.priority_limits().available("interactive"), 11);
 }
 
 #[tokio::test]
@@ -1433,7 +1489,7 @@ async fn test_拒否_待ち行列が溢れた拒否を記録し次の受理で�
             crate::usecase::failure::FailureRecordingUsecase::new(store.clone(), None),
         )),
     );
-    let permits = deps.priority.gate.limits().fill("default");
+    let permits = deps.priority_limits().fill("default");
     // When
     let router = router(Some(deps));
     let response = router
@@ -1475,6 +1531,46 @@ async fn test_拒否_待ち行列が溢れた拒否を記録し次の受理で�
 }
 
 #[tokio::test]
+async fn test_拒否_枠の対象外の呼び出しでは保留中の記録を解かない() {
+    use axum::http::StatusCode;
+    use tower::ServiceExt;
+    // Given
+    let store = Arc::new(crate::adaptor::gateway::failure_records::FailureRecordStore::default());
+    let deps = crate::test_support::client_api_deps(
+        Arc::new(dispatch()),
+        Some(Arc::new(
+            crate::usecase::failure::FailureRecordingUsecase::new(store.clone(), None),
+        )),
+    );
+    let _permits = deps.priority_limits().fill("default");
+    let router = router(Some(deps));
+    assert_eq!(
+        router
+            .clone()
+            .oneshot(unary_request(
+                "UpdateExternalEditor",
+                r#"{"editor":"code"}"#,
+            ))
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::TOO_MANY_REQUESTS
+    );
+    assert!(store.records("daemon")[0].record.active);
+
+    // When / Then
+    for method in ["GetServerInfo", "ReportTerminalProcessed"] {
+        let response = router
+            .clone()
+            .oneshot(unary_request(method, "{}"))
+            .await
+            .unwrap();
+        assert_ne!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert!(store.records("daemon")[0].record.active);
+    }
+}
+
+#[tokio::test]
 async fn test_待ち行列_席が空くまで待ってから受理する() {
     use axum::http::StatusCode;
     use tower::ServiceExt;
@@ -1482,9 +1578,7 @@ async fn test_待ち行列_席が空くまで待ってから受理する() {
     let (dispatch, release) = pending_editor_dispatch();
     let deps = crate::test_support::client_api_deps(Arc::new(dispatch), None);
     let seats = deps
-        .priority
-        .gate
-        .limits()
+        .priority_limits()
         .seats("default")
         .try_acquire_many_owned(41)
         .unwrap();
@@ -1494,13 +1588,13 @@ async fn test_待ち行列_席が空くまで待ってから受理する() {
     )));
     assert!(futures_util::poll!(&mut call).is_pending());
     tokio::task::yield_now().await;
-    assert_eq!(deps.priority.gate.limits().queue_length("default"), 49);
+    assert_eq!(deps.priority_limits().queue_length("default"), 49);
     // When
     drop(seats);
     release.notify_one();
     let response = call.await.unwrap();
     // Then
     assert_eq!(response.status(), StatusCode::OK);
-    assert_eq!(deps.priority.gate.limits().queue_length("default"), 50);
-    assert_eq!(deps.priority.gate.limits().available("default"), 41);
+    assert_eq!(deps.priority_limits().queue_length("default"), 50);
+    assert_eq!(deps.priority_limits().available("default"), 41);
 }

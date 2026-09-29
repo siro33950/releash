@@ -46,6 +46,11 @@ impl ClientApiDeps {
         self
     }
 
+    #[cfg(test)]
+    fn priority_limits(&self) -> &crate::common::concurrency::PriorityLimits {
+        self.priority.gate.limits()
+    }
+
     fn state_presenter(
         &self,
     ) -> Result<

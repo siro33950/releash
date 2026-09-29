@@ -58,3 +58,7 @@ impl PriorityGate {
         &self.limits
     }
 }
+
+#[cfg(test)]
+#[path = "priority_test.rs"]
+mod priority_tests;

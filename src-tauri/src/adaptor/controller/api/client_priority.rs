@@ -1,4 +1,5 @@
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use std::sync::Arc;
 
 use crate::common::concurrency::Rejection;
 use crate::common::priority::{PriorityEvents, PriorityGate};
@@ -17,11 +18,15 @@ impl connectrpc::Interceptor for PriorityInterceptor {
         req: connectrpc::interceptor::UnaryRequest,
         next: connectrpc::Next<'_>,
     ) -> Result<connectrpc::interceptor::UnaryResponse, connectrpc::ConnectError> {
-        let path = req.ctx.path().unwrap_or_default().to_owned();
+        let path = req
+            .ctx
+            .spec()
+            .expect("generated ClientService methods have a spec")
+            .procedure;
         let deadline = req.ctx.deadline();
         self.gate
             .run(
-                &path,
+                path,
                 deadline,
                 || next.run(req),
                 |rejection| crate::adaptor::presenter::connect::request_rejected(&rejection),
@@ -30,42 +35,106 @@ impl connectrpc::Interceptor for PriorityInterceptor {
     }
 }
 
+const IDLE: u8 = 0;
+const OBSERVING: u8 = 1;
+const OBSERVING_ADMITTED: u8 = 2;
+const PENDING: u8 = 3;
+const RESOLVING: u8 = 4;
+
 pub(crate) struct PriorityFailureReporter {
     failures: Option<Arc<FailureRecordingUsecase>>,
-    pending: Mutex<bool>,
+    pending: AtomicBool,
+    state: AtomicU8,
 }
 
 impl PriorityFailureReporter {
     pub(crate) fn new(failures: Option<Arc<FailureRecordingUsecase>>) -> Self {
         Self {
             failures,
-            pending: Mutex::new(false),
+            pending: AtomicBool::new(false),
+            state: AtomicU8::new(IDLE),
         }
     }
 }
 
+fn priority_failure_key() -> FailureKey {
+    FailureKey::new("client_request_limit", "daemon")
+}
+
 impl PriorityEvents for PriorityFailureReporter {
     fn rejected(&self, path: &str, rejection: &Rejection) {
-        let mut pending = self.pending.lock().unwrap();
-        if let Some(failures) = &self.failures {
-            failures.observed(
-                &FailureKey::new("client_request_limit", "daemon"),
-                WorkFailure {
-                    kind: Failure::Technical(TechnicalFailureNature::Transient),
-                    message: format!("{path}: {rejection}"),
-                },
-            );
-            *pending = true;
+        let Some(failures) = &self.failures else {
+            return;
+        };
+        loop {
+            let state = self.state.load(Ordering::SeqCst);
+            if (state == IDLE || state == PENDING)
+                && self
+                    .state
+                    .compare_exchange(state, OBSERVING, Ordering::SeqCst, Ordering::SeqCst)
+                    .is_ok()
+            {
+                break;
+            }
+            std::thread::yield_now();
+        }
+        failures.observed(
+            &priority_failure_key(),
+            WorkFailure {
+                kind: Failure::Technical(TechnicalFailureNature::Transient),
+                message: format!("{path}: {rejection}"),
+            },
+        );
+        self.pending.store(true, Ordering::SeqCst);
+        if self
+            .state
+            .compare_exchange(OBSERVING, PENDING, Ordering::SeqCst, Ordering::SeqCst)
+            .is_err()
+        {
+            self.state.store(RESOLVING, Ordering::SeqCst);
+            if self.pending.swap(false, Ordering::SeqCst) {
+                failures.resolved(&priority_failure_key());
+            }
+            self.state.store(IDLE, Ordering::SeqCst);
         }
     }
 
     fn admitted(&self) {
-        let mut pending = self.pending.lock().unwrap();
-        if *pending {
-            if let Some(failures) = &self.failures {
-                failures.resolved(&FailureKey::new("client_request_limit", "daemon"));
+        let Some(failures) = &self.failures else {
+            return;
+        };
+        loop {
+            match self.state.load(Ordering::SeqCst) {
+                IDLE | OBSERVING_ADMITTED | RESOLVING => return,
+                OBSERVING => {
+                    if self
+                        .state
+                        .compare_exchange(
+                            OBSERVING,
+                            OBSERVING_ADMITTED,
+                            Ordering::SeqCst,
+                            Ordering::SeqCst,
+                        )
+                        .is_ok()
+                    {
+                        return;
+                    }
+                }
+                PENDING => {
+                    if self
+                        .state
+                        .compare_exchange(PENDING, RESOLVING, Ordering::SeqCst, Ordering::SeqCst)
+                        .is_ok()
+                    {
+                        if self.pending.swap(false, Ordering::SeqCst) {
+                            failures.resolved(&priority_failure_key());
+                        }
+                        self.state.store(IDLE, Ordering::SeqCst);
+                        return;
+                    }
+                }
+                _ => unreachable!(),
             }
-            *pending = false;
         }
     }
 }
