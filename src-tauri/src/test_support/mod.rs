@@ -5,6 +5,16 @@ pub(crate) mod git;
 pub(crate) mod retry;
 pub(crate) mod state_subscription;
 
+pub(crate) fn client_api_deps(
+    dispatch: std::sync::Arc<crate::adaptor::controller::client::ClientCommandDispatch>,
+    failures: Option<std::sync::Arc<crate::usecase::failure::FailureRecordingUsecase>>,
+) -> crate::adaptor::controller::api::ClientApiDeps {
+    crate::adaptor::controller::api::ClientApiDeps::new(
+        dispatch,
+        crate::adaptor::controller::daemon::client_priority_interceptor(failures),
+    )
+}
+
 #[path = "../../tests/support/agent_tui_fixture.rs"]
 pub(crate) mod agent_tui_fixture;
 

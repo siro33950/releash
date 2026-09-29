@@ -370,7 +370,10 @@ async fn test_クライアントrpc_期限切れで処理を止め要求枠を�
         data.path(),
         "master",
         "client",
-        Some(api::ClientApiDeps::new(Arc::new(dispatch))),
+        Some(crate::test_support::client_api_deps(
+            Arc::new(dispatch),
+            None,
+        )),
         None,
     )
     .0;
@@ -517,7 +520,7 @@ async fn test_計算と操作command_connectの実行結果とエラーがtauri�
         data.path(),
         "master",
         "client",
-        Some(api::ClientApiDeps::new(dispatch)),
+        Some(crate::test_support::client_api_deps(dispatch, None)),
         None,
     )
     .0;
@@ -1001,7 +1004,10 @@ async fn test_workspace保存_connectがui追加fieldを受理し既存項目を
         data.path(),
         "master",
         "client",
-        Some(api::ClientApiDeps::new(Arc::new(dispatch))),
+        Some(crate::test_support::client_api_deps(
+            Arc::new(dispatch),
+            None,
+        )),
         None,
     )
     .0;

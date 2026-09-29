@@ -352,13 +352,16 @@ impl<R: tauri::Runtime> AgentSessionTuiAcceptanceHost<R> {
         );
         let client_router = crate::adaptor::controller::api::authenticated(
             crate::adaptor::controller::api::client::router(Some(
-                crate::adaptor::controller::api::ClientApiDeps::new(dispatch)
-                    .with_state_subscriptions(
-                        crate::adaptor::controller::api::StateSubscriptionDeps::new(
-                            subscriptions,
-                            terminal.presenter(),
-                        ),
+                crate::adaptor::controller::api::ClientApiDeps::new(
+                    dispatch,
+                    crate::adaptor::controller::daemon::client_priority_interceptor(None),
+                )
+                .with_state_subscriptions(
+                    crate::adaptor::controller::api::StateSubscriptionDeps::new(
+                        subscriptions,
+                        terminal.presenter(),
                     ),
+                ),
             )),
             client_binding.terminal_bearer_token(),
         );

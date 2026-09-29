@@ -4,6 +4,47 @@ use domain::app_config::{ConfigRepository, ConfigSecretRepository, NotionConfigR
 use std::path::PathBuf;
 use std::sync::Arc;
 
+fn client_priority_level(path: &str) -> Option<&'static str> {
+    match path.rsplit('/').next().unwrap_or_default() {
+        "GetServerInfo" | "ReportTerminalProcessed" => None,
+        "WriteTerminalSurface"
+        | "WritePathsToTerminalSurface"
+        | "ResizeTerminalSurface"
+        | "StartStateSubscription"
+        | "StopStateSubscription" => Some("interactive"),
+        "StartWorkflow"
+        | "AbortWorkflow"
+        | "ApproveWorkspaceNode"
+        | "ApproveWorkflowNode"
+        | "RetryWorkspaceNode"
+        | "ResumeWorkspaceSessionNode"
+        | "WorkflowSubmitOutput"
+        | "WorkflowValidateOutput"
+        | "WorkflowGetOutput" => Some("workflow"),
+        _ => Some("default"),
+    }
+}
+
+pub(crate) fn client_priority_interceptor(
+    failures: Option<Arc<usecase::failure::FailureRecordingUsecase>>,
+) -> adaptor::controller::api::client_priority::PriorityInterceptor {
+    let limits = Arc::new(crate::common::concurrency::PriorityLimits::new(
+        64,
+        &[("interactive", 30), ("workflow", 40), ("default", 120)],
+        50,
+    ));
+    let events = Arc::new(
+        adaptor::controller::api::client_priority::PriorityFailureReporter::new(failures),
+    );
+    adaptor::controller::api::client_priority::PriorityInterceptor {
+        gate: Arc::new(crate::common::priority::PriorityGate::new(
+            limits,
+            client_priority_level,
+            events,
+        )),
+    }
+}
+
 pub(crate) struct Daemon {
     shutdown: Arc<dyn domain::application_lifecycle::ApplicationShutdownGateway>,
     exit: tokio::sync::mpsc::Receiver<i32>,
@@ -510,12 +551,16 @@ pub(crate) async fn compose(
         local_api_binding.bearer_token(),
         local_api_binding.client_bearer_token(),
         Some(
-            adaptor::controller::api::ClientApiDeps::new(client_dispatch.clone())
-                .with_state_subscriptions(adaptor::controller::api::StateSubscriptionDeps::new(
+            adaptor::controller::api::ClientApiDeps::new(
+                client_dispatch.clone(),
+                client_priority_interceptor(Some(failure_output)),
+            )
+            .with_state_subscriptions(
+                adaptor::controller::api::StateSubscriptionDeps::new(
                     state_subscriptions,
                     state_presenter,
-                ))
-                .with_failure_output(failure_output),
+                ),
+            ),
         ),
         Some(provider_lifecycle_ingress.clone()),
     );
