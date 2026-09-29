@@ -3782,7 +3782,7 @@ nodes:
         }
 
         #[tokio::test]
-        async fn test_session実行木のreconciliationは完了済みnodeに喪失とstopを記録しない() {
+        async fn test_session実行木のreconciliationは完了済みnodeに喪失を記録せずstopを記録する() {
             // Given
             let fixture = runtime_effect_fixture(NodeCompletion::default(), false).await;
             let session_id = "agent-session-reserved-before-commit";
@@ -3836,7 +3836,7 @@ nodes:
                 .await
                 .unwrap();
             // Then
-            assert!(!records
+            assert!(records
                 .iter()
                 .any(|record| matches!(record.fact, NodeFact::StopReceived(_))));
             let backend = workflow_fact_log::FactLogReadBackend::Live(fixture.store.clone());

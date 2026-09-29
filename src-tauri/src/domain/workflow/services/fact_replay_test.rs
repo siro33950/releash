@@ -1,7 +1,7 @@
 use super::*;
 use crate::domain::provider_lifecycle::ProviderKind;
 use crate::domain::workflow::entities::workflow_execution::{
-    RuntimeNodeExecutionStatus, TransitionOutcome,
+    NodeSubmitRejection, RuntimeNodeExecutionStatus, TransitionOutcome,
 };
 use crate::domain::workflow::{
     AgentActivityObservedFact, AgentSessionActivity, ApprovalGrantedFact, ArtifactProducedFact,
@@ -133,17 +133,22 @@ fn session_root() -> TreeRootFact {
     *root
 }
 
+fn standalone_log(path: &str, complete_node: bool) -> (FactLog, NodeFactMeta) {
+    let seed =
+        SessionExecutionTreeRootFacts::new(TREE, path, path, ProviderKind::Codex, None).unwrap();
+    let root_meta = seed.meta.clone();
+    let mut log = FactLog::new();
+    let facts = seed.into_facts();
+    for (meta, fact) in facts.into_iter().take(if complete_node { 3 } else { 2 }) {
+        log.push(meta, fact);
+    }
+    (log, root_meta)
+}
+
 #[test]
 fn test_単独session新規起動_完了済みnodeはstopとsubmitを受け付けない() {
     // Given
-    let seed =
-        SessionExecutionTreeRootFacts::new(TREE, "/repo", "/repo", ProviderKind::Codex, None)
-            .unwrap();
-    let root_meta = seed.meta.clone();
-    let mut log = FactLog::new();
-    for (meta, fact) in seed.into_facts() {
-        log.push(meta, fact);
-    }
+    let (mut log, root_meta) = standalone_log("/repo", true);
     log.push(root_meta.clone(), stop());
     log.push(root_meta, submit());
     // When
@@ -163,13 +168,7 @@ fn test_単独session新規起動_完了済みnodeはstopとsubmitを受け付�
 #[test]
 fn test_単独session新規起動_nodeは完了済みである() {
     // Given
-    let seed =
-        SessionExecutionTreeRootFacts::new(TREE, "/repo", "/repo", ProviderKind::Codex, None)
-            .unwrap();
-    let mut log = FactLog::new();
-    for (meta, fact) in seed.into_facts() {
-        log.push(meta, fact);
-    }
+    let (log, _) = standalone_log("/repo", true);
     // When
     let folded = fold_execution_tree(TREE, &log.records).unwrap().unwrap();
     // Then
@@ -181,29 +180,65 @@ fn test_単独session新規起動_nodeは完了済みである() {
 }
 
 #[test]
-fn test_完了済みsession_nodeはworkflowと単独の両方で後続stopとsubmitを無視する() {
+fn test_完了済みsession_nodeはworkflowと単独の両方で後続stopをactivityだけに反映する() {
     // Given
     let mut workflow = FactLog::new();
-    let workflow_meta = meta("workflow-session", None, "main", NodeKindName::Session, 1);
+    let workflow_root_meta = meta("workflow-root", None, "root", NodeKindName::Fanout, 1);
+    let workflow_meta = meta(
+        "workflow-session",
+        Some("workflow-root"),
+        "main",
+        NodeKindName::Session,
+        1,
+    );
+    workflow.push(
+        workflow_root_meta,
+        started_root(workflow_root(workflow_definition(
+            vec![
+                fanout_node(
+                    "root",
+                    vec![
+                        ChildEntry::reference("main"),
+                        ChildEntry::reference("pending"),
+                    ],
+                ),
+                session_leaf("main"),
+                session_leaf("pending"),
+            ],
+            "root",
+        ))),
+    );
     workflow.push(
         workflow_meta.clone(),
-        started_root(workflow_root(workflow_definition(
-            vec![session_leaf("main")],
-            "main",
-        ))),
+        started_child(ExecutionParentRef::fanout_child("workflow-root", None, 0)),
+    );
+    workflow.push(
+        meta(
+            "pending-session",
+            Some("workflow-root"),
+            "pending",
+            NodeKindName::Session,
+            1,
+        ),
+        started_child(ExecutionParentRef::fanout_child("workflow-root", None, 1)),
     );
     workflow.push(workflow_meta.clone(), attached("workflow-agent"));
     workflow.push(workflow_meta.clone(), submit());
     workflow.push(workflow_meta.clone(), stop());
+    workflow.push(
+        workflow_meta.clone(),
+        NodeFact::AgentActivityObserved(AgentActivityObservedFact {
+            activity: AgentSessionActivity::Working,
+        }),
+    );
 
-    let seed =
-        SessionExecutionTreeRootFacts::new(TREE, "/repo", "/repo", ProviderKind::Codex, None)
-            .unwrap();
-    let standalone_meta = seed.meta.clone();
-    let mut standalone = FactLog::new();
-    for (meta, fact) in seed.into_facts() {
-        standalone.push(meta, fact);
-    }
+    let (mut standalone, standalone_meta) = standalone_log("/repo", true);
+    standalone.push(
+        standalone_meta.clone(),
+        NodeFact::AgentActivityObserved(AgentActivityObservedFact {
+            activity: AgentSessionActivity::Working,
+        }),
+    );
     let workflow_before = fold_execution_tree(TREE, &workflow.records)
         .unwrap()
         .unwrap();
@@ -212,36 +247,58 @@ fn test_完了済みsession_nodeはworkflowと単独の両方で後続stopとsub
         .unwrap();
     let mut workflow_action = workflow_before.aggregate.clone();
     let mut standalone_action = standalone_before.aggregate.clone();
-    let workflow_node = workflow_action.node_executions()[0].clone();
+    let workflow_node = workflow_action
+        .node_execution("workflow-session")
+        .unwrap()
+        .clone();
     let standalone_node = standalone_action.node_executions()[0].clone();
+    assert_eq!(workflow_action.state(), &RuntimeExecutionState::Running);
+    assert_eq!(standalone_action.state(), &RuntimeExecutionState::Running);
+    assert_eq!(
+        workflow_before.session_activities[&workflow_node.id],
+        AgentSessionActivity::Working
+    );
+    assert_eq!(
+        standalone_before.session_activities[&standalone_node.id],
+        AgentSessionActivity::Working
+    );
+    assert_eq!(
+        workflow_action.admit_node_submit(&workflow_node.id),
+        Err(NodeSubmitRejection::AttemptNotCurrent)
+    );
+    assert_eq!(
+        standalone_action.admit_node_submit(&standalone_node.id),
+        Err(NodeSubmitRejection::AttemptNotCurrent)
+    );
 
     // When
-    for signal in [NodeCompletionSignal::Stop, NodeCompletionSignal::Submit] {
-        let workflow_result =
-            workflow_action.record_node_completion_signal(&workflow_node.id, signal, 6.0);
-        let standalone_result =
-            standalone_action.record_node_completion_signal(&standalone_node.id, signal, 6.0);
+    let outcomes = [NodeCompletionSignal::Stop, NodeCompletionSignal::Submit].map(|signal| {
+        (
+            signal,
+            workflow_action.record_node_completion_signal(&workflow_node.id, signal, 6.0),
+            standalone_action.record_node_completion_signal(&standalone_node.id, signal, 6.0),
+        )
+    });
 
-        // Then
+    // Then
+    for (signal, workflow_result, standalone_result) in outcomes {
         assert_eq!(workflow_result, standalone_result, "{signal:?}");
         assert_eq!(
             workflow_result,
             TransitionOutcome::NotApplicable,
             "{signal:?}"
         );
-        assert_eq!(
-            workflow_action.node_execution(&workflow_node.id).unwrap(),
-            &workflow_node,
-            "workflow: {signal:?}"
-        );
-        assert_eq!(
-            standalone_action
-                .node_execution(&standalone_node.id)
-                .unwrap(),
-            &standalone_node,
-            "standalone: {signal:?}"
-        );
     }
+    assert_eq!(
+        workflow_action.node_execution(&workflow_node.id).unwrap(),
+        &workflow_node
+    );
+    assert_eq!(
+        standalone_action
+            .node_execution(&standalone_node.id)
+            .unwrap(),
+        &standalone_node
+    );
 
     // When
     for (log, meta) in [
@@ -263,8 +320,19 @@ fn test_完了済みsession_nodeはworkflowと単独の両方で後続stopとsub
         ("workflow", workflow_before, workflow_after),
         ("standalone", standalone_before, standalone_after),
     ] {
-        let previous = &before.aggregate.node_executions()[0];
-        let current = &after.aggregate.node_executions()[0];
+        let node_id = if name == "workflow" {
+            "workflow-session"
+        } else {
+            TREE
+        };
+        let previous = before.aggregate.node_execution(node_id).unwrap();
+        let current = after.aggregate.node_execution(node_id).unwrap();
+        assert_eq!(after.aggregate.state(), &RuntimeExecutionState::Running);
+        assert_eq!(
+            after.aggregate.admit_node_submit(node_id),
+            Err(NodeSubmitRejection::AttemptNotCurrent),
+            "{name}"
+        );
         assert_eq!(
             current.status,
             RuntimeNodeExecutionStatus::Succeeded,
@@ -287,14 +355,7 @@ fn test_完了済みsession_nodeはworkflowと単独の両方で後続stopとsub
 #[test]
 fn test_旧単独sessionはstopのみでは未完了を保つ() {
     // Given
-    let seed =
-        SessionExecutionTreeRootFacts::new(TREE, "/repo", "/repo", ProviderKind::Codex, None)
-            .unwrap();
-    let root_meta = seed.meta.clone();
-    let mut legacy = FactLog::new();
-    for (meta, fact) in seed.into_facts().into_iter().take(2) {
-        legacy.push(meta, fact);
-    }
+    let (mut legacy, root_meta) = standalone_log("/repo", false);
     legacy.push(root_meta, stop());
     // When
     let folded = fold_execution_tree(TREE, &legacy.records).unwrap().unwrap();
@@ -308,13 +369,7 @@ fn test_旧単独sessionはstopのみでは未完了を保つ() {
 #[test]
 fn test_単独session_node完了事実は対象外nodeで拒否される() {
     // Given
-    let seed =
-        SessionExecutionTreeRootFacts::new(TREE, "/repo", "/repo", ProviderKind::Codex, None)
-            .unwrap();
-    let mut wrong_node = FactLog::new();
-    for (meta, fact) in seed.into_facts().into_iter().take(2) {
-        wrong_node.push(meta, fact);
-    }
+    let (mut wrong_node, _) = standalone_log("/repo", false);
     wrong_node.push(
         meta("other", None, "session", NodeKindName::Session, 1),
         NodeFact::StandaloneSessionNodeCompleted,
@@ -2853,14 +2908,7 @@ fn test_実行木archive_rootの事実で子sessionもarchiveされrestoreでは
 #[test]
 fn test_repository所属の観測_旧実行木の不足だけを補い子の所属を混ぜない() {
     // Given
-    let seed =
-        SessionExecutionTreeRootFacts::new(TREE, "/gone", "/gone", ProviderKind::Codex, None)
-            .unwrap();
-    let root_meta = seed.meta.clone();
-    let mut log = FactLog::new();
-    for (meta, fact) in seed.into_facts() {
-        log.push(meta, fact);
-    }
+    let (mut log, root_meta) = standalone_log("/gone", true);
     let mut child_meta = root_meta.clone();
     child_meta.parent_id = Some(root_meta.node_execution_id.clone());
     child_meta.node_execution_id = "child".into();

@@ -1658,7 +1658,7 @@ async fn assert_legacy_linked_worktree_gc(remove_directory: bool, remove_before_
 }
 
 #[tokio::test]
-async fn test_記録からの操作_完了済み単独sessionは再開後もsubmitとstopを受け付けない() {
+async fn test_記録からの操作_完了済み単独sessionは再開後もsubmitを拒否しstopを記録する() {
     use crate::adaptor::gateway::agent_session::LocalAgentSessionRepository;
     use crate::domain::agent_session::aggregates::{
         AgentSession, AgentSessionRecoveryResult, AgentSessionTreeLocation,
@@ -1742,10 +1742,28 @@ async fn test_記録からの操作_完了済み単独sessionは再開後もsubm
         record.fact,
         crate::domain::workflow::NodeFact::SubmitReceived(_)
     )));
-    assert!(!records.iter().any(|record| matches!(
+    assert!(records.iter().any(|record| matches!(
         record.fact,
         crate::domain::workflow::NodeFact::StopReceived(_)
     )));
+    let folded = workflow_fact_log::fold_tree_from(
+        &workflow_fact_log::FactLogReadBackend::Live(fixture.store.clone()),
+        id,
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let node = folded
+        .aggregate
+        .node_executions
+        .iter()
+        .find(|node| node.id == id)
+        .unwrap();
+    assert_eq!(node.status, NodeExecutionStatus::Succeeded);
+    assert_eq!(
+        node.completion_signals,
+        crate::domain::workflow::NodeCompletionSignalState::Pending
+    );
 }
 
 #[tokio::test]

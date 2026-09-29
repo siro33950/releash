@@ -2701,7 +2701,7 @@ impl ExecutionTree {
             return Err(ProviderStopRejection::SessionDoesNotOwnAttempt);
         }
         if !execution.status.is_active() {
-            return Ok(TransitionOutcome::NotApplicable);
+            return Ok(TransitionOutcome::AlreadyApplied);
         }
         Ok(self.record_node_completion_signal(
             node_execution_id,

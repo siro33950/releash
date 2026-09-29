@@ -131,6 +131,21 @@ fn test_表示状態分類_完了済みsessionの記録上workingでもプロセ
 }
 
 #[test]
+fn test_表示状態分類_完了済みsessionの記録上awaiting_answerでもプロセス消失なら緑() {
+    // Given
+    let mut session = node(
+        WorkspaceNodeKind::WorkflowSession,
+        WorkspaceNodeStatus::Completed,
+    );
+    session.activity = Some(AgentSessionActivity::AwaitingAnswer);
+    session.process_presence = NodeProcessPresence::ConfirmedAbsent;
+    // When
+    let status = session.classify_status([]);
+    // Then
+    assert_eq!(status, WorkspaceNodeStatusClassification::Idle);
+}
+
+#[test]
 fn test_表示状態分類_実行中sessionの記録上workingでもプロセス消失なら黄() {
     // Given
     let mut session = node(
