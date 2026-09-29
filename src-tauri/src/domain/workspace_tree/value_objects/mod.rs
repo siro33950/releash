@@ -332,10 +332,6 @@ impl std::fmt::Display for WorkspaceTreeError {
 
 impl std::error::Error for WorkspaceTreeError {}
 
-#[cfg(test)]
-#[path = "mod_test.rs"]
-mod mod_tests;
-
 impl WorkspaceTreeNode {
     pub(super) fn observe_background_failure(&mut self, message: &str) {
         self.error_reason = Some(message.into());
@@ -343,3 +339,7 @@ impl WorkspaceTreeNode {
         self.status_classification = self.classify_status([]);
     }
 }
+
+#[cfg(test)]
+#[path = "mod_test.rs"]
+mod mod_tests;

@@ -63,28 +63,92 @@ fn test_単独session_node完了事実は子nodeと他の木で拒否される()
     )
     .unwrap();
 
-    // When / Then
+    let root_before = tree.node_execution("root").unwrap().clone();
+    let child_before = tree.node_execution("child").unwrap().clone();
+
+    // When
     assert_eq!(
         tree.complete_standalone_session_node("root", 2.0),
         TransitionOutcome::NotApplicable
     );
+    // Then
+    assert_eq!(
+        tree.node_execution("root").unwrap().status,
+        root_before.status
+    );
+    assert_eq!(
+        tree.node_execution("root").unwrap().completed_at,
+        root_before.completed_at
+    );
+
+    // Given
     tree.runtime.launched_as = ExecutionTreeLaunch::Session;
+    // When
     assert_eq!(
         tree.complete_standalone_session_node("child", 2.0),
         TransitionOutcome::NotApplicable
     );
+    // Then
+    assert_eq!(
+        tree.node_execution("child").unwrap().status,
+        child_before.status
+    );
+    assert_eq!(
+        tree.node_execution("child").unwrap().completed_at,
+        child_before.completed_at
+    );
+
+    // When
     assert_eq!(
         tree.complete_standalone_session_node("missing", 2.0),
         TransitionOutcome::NotApplicable
     );
+    // Then
     assert_eq!(
-        tree.complete_standalone_session_node("root", 2.0),
-        TransitionOutcome::Applied
+        tree.node_execution("root").unwrap().status,
+        root_before.status
     );
     assert_eq!(
-        tree.complete_standalone_session_node("root", 3.0),
-        TransitionOutcome::AlreadyApplied
+        tree.node_execution("root").unwrap().completed_at,
+        root_before.completed_at
     );
+}
+
+#[test]
+fn test_単独session_node完了事実はrootを一度だけ完了する() {
+    // Given
+    let mut tree = execution(
+        "name: session\ndescription: test\nnodes:\n  main: {session: {provider: codex}}\n",
+    );
+    tree.begin_node_attempt(
+        "main".into(),
+        NodeKindName::Session,
+        1,
+        None,
+        "root".into(),
+        1.0,
+    )
+    .unwrap();
+    tree.runtime.launched_as = ExecutionTreeLaunch::Session;
+    // When
+    let outcome = tree.complete_standalone_session_node("root", 2.0);
+    // Then
+    assert_eq!(outcome, TransitionOutcome::Applied);
+    assert_eq!(
+        tree.node_execution("root").unwrap().status,
+        RuntimeNodeExecutionStatus::Succeeded
+    );
+    assert_eq!(tree.node_execution("root").unwrap().completed_at, Some(2.0));
+
+    // When
+    let repeated = tree.complete_standalone_session_node("root", 3.0);
+    // Then
+    assert_eq!(repeated, TransitionOutcome::AlreadyApplied);
+    assert_eq!(
+        tree.node_execution("root").unwrap().status,
+        RuntimeNodeExecutionStatus::Succeeded
+    );
+    assert_eq!(tree.node_execution("root").unwrap().completed_at, Some(2.0));
 }
 
 fn finish_leaf(

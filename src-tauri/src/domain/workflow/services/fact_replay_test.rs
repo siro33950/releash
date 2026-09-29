@@ -1,11 +1,13 @@
 use super::*;
 use crate::domain::provider_lifecycle::ProviderKind;
-use crate::domain::workflow::entities::workflow_execution::RuntimeNodeExecutionStatus;
+use crate::domain::workflow::entities::workflow_execution::{
+    RuntimeNodeExecutionStatus, TransitionOutcome,
+};
 use crate::domain::workflow::{
     AgentActivityObservedFact, AgentSessionActivity, ApprovalGrantedFact, ArtifactProducedFact,
     ChildEntry, CommandSpec, ExecutionOrigin, ExecutionParentRef, ExecutionTreeLaunch, FanoutSpec,
-    NodeCompletion, NodeDefinition, NodeExecutionFailureKind, NodeFactMeta, NodeKind,
-    RuntimeExecutionState, RuntimeFailureObservedFact, SequenceSpec, SessionAttachedFact,
+    NodeCompletion, NodeCompletionSignal, NodeDefinition, NodeExecutionFailureKind, NodeFactMeta,
+    NodeKind, RuntimeExecutionState, RuntimeFailureObservedFact, SequenceSpec, SessionAttachedFact,
     SessionExecutionTreeRootFacts, StartedFact, StopReceivedFact, SubmitReceivedFact,
     WorkflowDefinition,
 };
@@ -138,21 +140,12 @@ fn test_単独session新規起動_完了済みnodeはstopとsubmitを受け付�
         SessionExecutionTreeRootFacts::new(TREE, "/repo", "/repo", ProviderKind::Codex, None)
             .unwrap();
     let root_meta = seed.meta.clone();
-    let facts = seed.into_facts();
     let mut log = FactLog::new();
-    for (meta, fact) in facts.iter().cloned() {
+    for (meta, fact) in seed.into_facts() {
         log.push(meta, fact);
     }
-    // When
-    let folded = fold_execution_tree(TREE, &log.records).unwrap().unwrap();
-    // Then
-    assert_eq!(folded.aggregate.state(), &RuntimeExecutionState::Running);
-    assert_eq!(
-        folded.aggregate.node_executions()[0].status,
-        RuntimeNodeExecutionStatus::Succeeded
-    );
     log.push(root_meta.clone(), stop());
-    log.push(root_meta.clone(), submit());
+    log.push(root_meta, submit());
     // When
     let folded = fold_execution_tree(TREE, &log.records).unwrap().unwrap();
     // Then
@@ -165,25 +158,155 @@ fn test_単独session新規起動_完了済みnodeはstopとsubmitを受け付�
         folded.session_activities[TREE],
         AgentSessionActivity::AwaitingInstruction
     );
+}
 
+#[test]
+fn test_単独session新規起動_nodeは完了済みである() {
+    // Given
+    let seed =
+        SessionExecutionTreeRootFacts::new(TREE, "/repo", "/repo", ProviderKind::Codex, None)
+            .unwrap();
+    let mut log = FactLog::new();
+    for (meta, fact) in seed.into_facts() {
+        log.push(meta, fact);
+    }
+    // When
+    let folded = fold_execution_tree(TREE, &log.records).unwrap().unwrap();
+    // Then
+    assert_eq!(folded.aggregate.state(), &RuntimeExecutionState::Running);
+    assert_eq!(
+        folded.aggregate.node_executions()[0].status,
+        RuntimeNodeExecutionStatus::Succeeded
+    );
+}
+
+#[test]
+fn test_完了済みsession_nodeはworkflowと単独の両方で後続stopとsubmitを無視する() {
+    // Given
+    let mut workflow = FactLog::new();
+    let workflow_meta = meta("workflow-session", None, "main", NodeKindName::Session, 1);
+    workflow.push(
+        workflow_meta.clone(),
+        started_root(workflow_root(workflow_definition(
+            vec![session_leaf("main")],
+            "main",
+        ))),
+    );
+    workflow.push(workflow_meta.clone(), attached("workflow-agent"));
+    workflow.push(workflow_meta.clone(), submit());
+    workflow.push(workflow_meta.clone(), stop());
+
+    let seed =
+        SessionExecutionTreeRootFacts::new(TREE, "/repo", "/repo", ProviderKind::Codex, None)
+            .unwrap();
+    let standalone_meta = seed.meta.clone();
+    let mut standalone = FactLog::new();
+    for (meta, fact) in seed.into_facts() {
+        standalone.push(meta, fact);
+    }
+    let workflow_before = fold_execution_tree(TREE, &workflow.records)
+        .unwrap()
+        .unwrap();
+    let standalone_before = fold_execution_tree(TREE, &standalone.records)
+        .unwrap()
+        .unwrap();
+    let mut workflow_action = workflow_before.aggregate.clone();
+    let mut standalone_action = standalone_before.aggregate.clone();
+    let workflow_node = workflow_action.node_executions()[0].clone();
+    let standalone_node = standalone_action.node_executions()[0].clone();
+
+    // When
+    for signal in [NodeCompletionSignal::Stop, NodeCompletionSignal::Submit] {
+        let workflow_result =
+            workflow_action.record_node_completion_signal(&workflow_node.id, signal, 6.0);
+        let standalone_result =
+            standalone_action.record_node_completion_signal(&standalone_node.id, signal, 6.0);
+
+        // Then
+        assert_eq!(workflow_result, standalone_result, "{signal:?}");
+        assert_eq!(
+            workflow_result,
+            TransitionOutcome::NotApplicable,
+            "{signal:?}"
+        );
+        assert_eq!(
+            workflow_action.node_execution(&workflow_node.id).unwrap(),
+            &workflow_node,
+            "workflow: {signal:?}"
+        );
+        assert_eq!(
+            standalone_action
+                .node_execution(&standalone_node.id)
+                .unwrap(),
+            &standalone_node,
+            "standalone: {signal:?}"
+        );
+    }
+
+    // When
+    for (log, meta) in [
+        (&mut workflow, workflow_meta),
+        (&mut standalone, standalone_meta),
+    ] {
+        log.push(meta.clone(), stop());
+        log.push(meta, submit());
+    }
+    let workflow_after = fold_execution_tree(TREE, &workflow.records)
+        .unwrap()
+        .unwrap();
+    let standalone_after = fold_execution_tree(TREE, &standalone.records)
+        .unwrap()
+        .unwrap();
+
+    // Then
+    for (name, before, after) in [
+        ("workflow", workflow_before, workflow_after),
+        ("standalone", standalone_before, standalone_after),
+    ] {
+        let previous = &before.aggregate.node_executions()[0];
+        let current = &after.aggregate.node_executions()[0];
+        assert_eq!(
+            current.status,
+            RuntimeNodeExecutionStatus::Succeeded,
+            "{name}"
+        );
+        assert_eq!(current.status, previous.status, "{name}");
+        assert_eq!(current.completed_at, previous.completed_at, "{name}");
+        assert_eq!(
+            current.completion_signals, previous.completion_signals,
+            "{name}"
+        );
+        assert_eq!(
+            after.session_activities[&current.id],
+            AgentSessionActivity::AwaitingInstruction,
+            "{name}"
+        );
+    }
+}
+
+#[test]
+fn test_旧単独sessionはstopのみでは未完了を保つ() {
+    // Given
+    let seed =
+        SessionExecutionTreeRootFacts::new(TREE, "/repo", "/repo", ProviderKind::Codex, None)
+            .unwrap();
+    let root_meta = seed.meta.clone();
     let mut legacy = FactLog::new();
-    for (meta, fact) in facts.into_iter().take(2) {
+    for (meta, fact) in seed.into_facts().into_iter().take(2) {
         legacy.push(meta, fact);
     }
     legacy.push(root_meta, stop());
+    // When
+    let folded = fold_execution_tree(TREE, &legacy.records).unwrap().unwrap();
+    // Then
     assert_eq!(
-        fold_execution_tree(TREE, &legacy.records)
-            .unwrap()
-            .unwrap()
-            .aggregate
-            .node_executions()[0]
-            .status,
+        folded.aggregate.node_executions()[0].status,
         RuntimeNodeExecutionStatus::Running
     );
 }
 
 #[test]
-fn test_単独session_node完了事実は対象外の木とnodeで拒否される() {
+fn test_単独session_node完了事実は対象外nodeで拒否される() {
     // Given
     let seed =
         SessionExecutionTreeRootFacts::new(TREE, "/repo", "/repo", ProviderKind::Codex, None)
@@ -197,6 +320,15 @@ fn test_単独session_node完了事実は対象外の木とnodeで拒否され�
         NodeFact::StandaloneSessionNodeCompleted,
     );
 
+    // When
+    let result = fold_execution_tree(TREE, &wrong_node.records);
+    // Then
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_単独session_node完了事実はworkflowの木で拒否される() {
+    // Given
     let mut wrong_tree = FactLog::new();
     let root_meta = meta("root-exec", None, "main", NodeKindName::Session, 1);
     wrong_tree.push(
@@ -208,9 +340,10 @@ fn test_単独session_node完了事実は対象外の木とnodeで拒否され�
     );
     wrong_tree.push(root_meta, NodeFact::StandaloneSessionNodeCompleted);
 
-    // When / Then
-    assert!(fold_execution_tree(TREE, &wrong_node.records).is_err());
-    assert!(fold_execution_tree(TREE, &wrong_tree.records).is_err());
+    // When
+    let result = fold_execution_tree(TREE, &wrong_tree.records);
+    // Then
+    assert!(result.is_err());
 }
 
 fn started_root(root: TreeRootFact) -> NodeFact {
