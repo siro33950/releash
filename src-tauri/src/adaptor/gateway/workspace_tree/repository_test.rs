@@ -1320,3 +1320,140 @@ async fn test_workspace_repository読取_実経路で失敗分類を保持する
         assert_eq!(classified_error(error).code, expected);
     }
 }
+
+#[test]
+fn test_workspace_tree読取_delegate親は子の表示状態を集約する() {
+    use crate::domain::local_event::WorkflowExecutionMetadataRecord;
+    use crate::domain::workflow::entities::workflow_execution::{
+        ExecutionTree, ExecutionTreeRestore, TransitionOutcome,
+    };
+    use crate::domain::workflow::services::fact_replay::FoldedTree;
+    use crate::domain::workflow::{
+        AgentSessionActivity, NodeCompletionSignal, Predicate, SessionDelegate, TokenUsage,
+        TreeRootFact,
+    };
+    use crate::domain::workspace_tree::WorkspaceNodeStatusClassification as C;
+
+    // Given
+    let definition = WorkflowDefinition {
+        name: "delegate".into(),
+        entry: "main".into(),
+        nodes: vec![
+            NodeDefinition {
+                name: "main".into(),
+                kind: NodeKind::Session(SessionSpec::default()),
+                artifact: Some("result".into()),
+                completion: NodeCompletion {
+                    delegate: Some(SessionDelegate {
+                        child: "verify".into(),
+                        inputs: Vec::new(),
+                        when: Predicate::Ref("child.done".into()),
+                        max_iterations: 2,
+                    }),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            NodeDefinition {
+                name: "verify".into(),
+                kind: NodeKind::Session(SessionSpec::default()),
+                ..Default::default()
+            },
+        ],
+        ..Default::default()
+    };
+    let mut aggregate = ExecutionTree::restore_runtime(ExecutionTreeRestore {
+        id: "00000000-0000-4000-8000-000000001958".into(),
+        workflow: definition.clone(),
+        ..Default::default()
+    });
+    let mut ids = (1..).map(|n| format!("00000000-0000-4000-8000-{n:012}"));
+    aggregate
+        .start_root(&mut || ids.next().unwrap(), 1.0)
+        .unwrap();
+    let parent_id = aggregate.node_executions()[0].id.clone();
+    aggregate.attach_node_session(&parent_id, "parent-session".into(), 1.0);
+    assert_eq!(
+        aggregate.record_node_completion_signal(&parent_id, NodeCompletionSignal::Submit, 2.0),
+        TransitionOutcome::Applied
+    );
+    assert_eq!(
+        aggregate.apply_submitted_output(
+            "main".into(),
+            &parent_id,
+            1,
+            Some("parent-session".into()),
+            "result".into(),
+            serde_json::json!({"done": false}),
+            None,
+            2.0,
+        ),
+        TransitionOutcome::Applied
+    );
+    aggregate
+        .apply_node_completion_handshake(&parent_id, &mut || ids.next().unwrap(), 2.0)
+        .unwrap();
+    let child_id = aggregate.node_executions().last().unwrap().id.clone();
+    aggregate.attach_node_session(&child_id, "child-session".into(), 2.0);
+    aggregate
+        .record_provider_stop(&parent_id, "parent-session", 3.0)
+        .unwrap();
+    assert!(aggregate.delegate_waits_for_child(&parent_id));
+    let directory = tempfile::tempdir().unwrap();
+    let store =
+        LocalEventStore::open(LocalEventStoreConfig::production(directory.path().into())).unwrap();
+    let repository = SqliteWorkspaceTreeRepository::new(store);
+    let root = TreeRootFact {
+        repository_root: None,
+        workspace_identity: WorkspaceIdentity::new("/repo").as_str().into(),
+        worktree_path: "/repo".into(),
+        created_from: ExecutionOrigin::DesktopUi,
+        request: "test".into(),
+        workflow_name: "delegate".into(),
+        definition: Some(definition),
+        launched_as: crate::domain::workflow::ExecutionTreeLaunch::Workflow,
+    };
+    let record = WorkflowExecutionMetadataRecord {
+        execution_id: "00000000-0000-4000-8000-000000001958".into(),
+        workflow_name: "delegate".into(),
+        status: crate::domain::workflow::ExecutionStatus::Running,
+        worktree_path: "/repo".into(),
+        current_node: Some("verify".into()),
+        created_from: ExecutionOrigin::DesktopUi,
+        started_at_bits: 1.0f64.to_bits(),
+        updated_at_bits: 3.0f64.to_bits(),
+        completed_at_bits: None,
+        error_reason: None,
+        total_token_usage: TokenUsage::default(),
+    };
+
+    for (activity, expected) in [
+        (AgentSessionActivity::Working, C::Active),
+        (AgentSessionActivity::AwaitingAnswer, C::Attention),
+    ] {
+        let folded = FoldedTree {
+            aggregate: aggregate.clone(),
+            root: root.clone(),
+            artifact_contracts: Default::default(),
+            session_activities: [
+                (parent_id.clone(), AgentSessionActivity::AwaitingInstruction),
+                (child_id.clone(), activity),
+            ]
+            .into_iter()
+            .collect(),
+            session_display_names: Default::default(),
+        };
+        // When
+        let tree = repository
+            .workspace_tree_from_folded("/repo", &[(folded, record.clone())])
+            .unwrap()
+            .unwrap();
+        // Then
+        let parent = tree
+            .nodes()
+            .iter()
+            .find(|node| node.node_execution_id.as_deref() == Some(&parent_id))
+            .unwrap();
+        assert_eq!(parent.status_classification, expected, "{activity:?}");
+    }
+}

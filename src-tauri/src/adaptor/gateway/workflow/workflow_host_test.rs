@@ -1658,13 +1658,14 @@ async fn assert_legacy_linked_worktree_gc(remove_directory: bool, remove_before_
 }
 
 #[tokio::test]
-async fn test_記録からの操作_agent_sessionが再開を保存した後にsubmitとstopを記録する() {
+async fn test_記録からの操作_完了済み単独sessionは再開後もsubmitとstopを受け付けない() {
     use crate::adaptor::gateway::agent_session::LocalAgentSessionRepository;
     use crate::domain::agent_session::aggregates::{
         AgentSession, AgentSessionRecoveryResult, AgentSessionTreeLocation,
     };
     use crate::domain::agent_session::repository::AgentSessionRepository;
     use crate::domain::provider_lifecycle::ProviderKind;
+    use crate::domain::workflow::WorkflowError;
     use crate::domain::workspace_tree::WorkspaceIdentity;
     // Given
     let fixture = test_helpers::Fixture::new(0);
@@ -1709,13 +1710,13 @@ async fn test_記録からの操作_agent_sessionが再開を保存した後にs
         )),
     );
     // When
-    control
+    let submit_error = control
         .submit_output(SubmitOutputCommand {
             node_execution_id: id.into(),
             artifact: None,
         })
         .await
-        .unwrap();
+        .unwrap_err();
     control
         .record_provider_stop(
             ProviderExecutionTreeStopCommand {
@@ -1729,6 +1730,7 @@ async fn test_記録からの操作_agent_sessionが再開を保存した後にs
         .await
         .unwrap();
     // Then
+    assert!(matches!(submit_error, WorkflowError::InvalidState(_)));
     let records = workflow_fact_log::read_tree_records(&fixture.store, id)
         .await
         .unwrap();
@@ -1736,11 +1738,11 @@ async fn test_記録からの操作_agent_sessionが再開を保存した後にs
         record.fact,
         crate::domain::workflow::NodeFact::ResumeRequested
     )));
-    assert!(records.iter().any(|record| matches!(
+    assert!(!records.iter().any(|record| matches!(
         record.fact,
         crate::domain::workflow::NodeFact::SubmitReceived(_)
     )));
-    assert!(records.iter().any(|record| matches!(
+    assert!(!records.iter().any(|record| matches!(
         record.fact,
         crate::domain::workflow::NodeFact::StopReceived(_)
     )));

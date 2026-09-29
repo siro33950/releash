@@ -38,6 +38,55 @@ fn id_source() -> impl FnMut() -> String {
     }
 }
 
+#[test]
+fn test_単独session_node完了事実は子nodeと他の木で拒否される() {
+    // Given
+    let mut tree = execution(
+        "name: session\ndescription: test\nnodes:\n  main: {session: {provider: codex}}\n  child: {session: {provider: codex}}\n",
+    );
+    tree.begin_node_attempt(
+        "main".into(),
+        NodeKindName::Session,
+        1,
+        None,
+        "root".into(),
+        1.0,
+    )
+    .unwrap();
+    tree.begin_node_attempt(
+        "child".into(),
+        NodeKindName::Session,
+        1,
+        Some(ExecutionParentRef::delegate_child("root")),
+        "child".into(),
+        1.0,
+    )
+    .unwrap();
+
+    // When / Then
+    assert_eq!(
+        tree.complete_standalone_session_node("root", 2.0),
+        TransitionOutcome::NotApplicable
+    );
+    tree.runtime.launched_as = ExecutionTreeLaunch::Session;
+    assert_eq!(
+        tree.complete_standalone_session_node("child", 2.0),
+        TransitionOutcome::NotApplicable
+    );
+    assert_eq!(
+        tree.complete_standalone_session_node("missing", 2.0),
+        TransitionOutcome::NotApplicable
+    );
+    assert_eq!(
+        tree.complete_standalone_session_node("root", 2.0),
+        TransitionOutcome::Applied
+    );
+    assert_eq!(
+        tree.complete_standalone_session_node("root", 3.0),
+        TransitionOutcome::AlreadyApplied
+    );
+}
+
 fn finish_leaf(
     execution: &mut ExecutionTree,
     leaf: &LeafStart,

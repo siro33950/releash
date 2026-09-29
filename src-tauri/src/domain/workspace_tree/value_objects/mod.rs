@@ -163,10 +163,7 @@ impl WorkspaceTreeNode {
         let session = if self.kind == WorkspaceNodeKind::WorkflowSession {
             Some(if self.session_id.is_none() {
                 C::Active
-            } else if self.is_standalone_session_root()
-                && self.status == WorkspaceNodeStatus::Completed
-                && self.process_presence == NodeProcessPresence::ConfirmedAbsent
-            {
+            } else if self.process_presence == NodeProcessPresence::ConfirmedAbsent {
                 C::Idle
             } else {
                 match self.activity.unwrap_or_default() {
@@ -187,18 +184,24 @@ impl WorkspaceTreeNode {
             Some(C::Idle)
         } else if self.delegate_waits_for_child {
             None
-        } else if self.process_presence == NodeProcessPresence::ConfirmedAbsent
-            && (self.kind == WorkspaceNodeKind::WorkflowCommand
-                || self.kind == WorkspaceNodeKind::WorkflowSession && self.session_id.is_some())
-            || self.kind == WorkspaceNodeKind::WorkflowSession
-                && self.session_id.is_some()
-                && self.activity == Some(AgentSessionActivity::AwaitingInstruction)
-                && matches!(
-                    self.completion_signals,
-                    NodeCompletionSignalState::Pending | NodeCompletionSignalState::StopReceived
-                )
+        } else if self.kind == WorkspaceNodeKind::WorkflowCommand
+            && self.process_presence == NodeProcessPresence::ConfirmedAbsent
         {
             Some(C::Attention)
+        } else if self.kind == WorkspaceNodeKind::WorkflowSession && self.session_id.is_some() {
+            match (
+                self.process_presence,
+                self.activity,
+                self.completion_signals,
+            ) {
+                (NodeProcessPresence::ConfirmedAbsent, _, _) => Some(C::Attention),
+                (
+                    _,
+                    Some(AgentSessionActivity::AwaitingInstruction),
+                    NodeCompletionSignalState::Pending | NodeCompletionSignalState::StopReceived,
+                ) => Some(C::Attention),
+                _ => Some(C::Active),
+            }
         } else {
             Some(C::Active)
         };
@@ -330,160 +333,8 @@ impl std::fmt::Display for WorkspaceTreeError {
 impl std::error::Error for WorkspaceTreeError {}
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn node(
-        kind: WorkspaceNodeKind,
-        status: WorkspaceNodeStatus,
-        activity: Option<AgentSessionActivity>,
-        completion_signals: NodeCompletionSignalState,
-    ) -> WorkspaceTreeNode {
-        WorkspaceTreeNode {
-            process_presence: Default::default(),
-            can_resume_session: false,
-            worktree: None,
-            id: "node".to_string(),
-            parent_id: Some("workflow".to_string()),
-            sibling_order: 0,
-            kind,
-            title: "node".to_string(),
-            status,
-            status_classification: WorkspaceNodeStatusClassification::Idle,
-            delegate_waits_for_child: false,
-            background_failure: false,
-            activity,
-            error_reason: None,
-            updated_at_bits: 1.0_f64.to_bits(),
-            execution_id: Some("workflow".to_string()),
-            node_execution_id: Some("node-execution".to_string()),
-            node_name: Some("node".to_string()),
-            attempt: Some(1),
-            retry_predecessor_id: None,
-            past_attempt_ids: Vec::new(),
-            is_retry_history: false,
-            completion_signals,
-            has_artifact: false,
-            session_id: (kind == WorkspaceNodeKind::WorkflowSession)
-                .then(|| "agent-session".to_string()),
-            can_rename: false,
-            can_approve: false,
-            can_retry: false,
-            can_abort: false,
-            can_archive: false,
-            display_command: None,
-            command_result: None,
-            dynamic_fanout: false,
-        }
-    }
-
-    #[test]
-    fn test_表示状態分類_sessionとnodeと子の最重値を返す() {
-        use WorkspaceNodeStatusClassification as C;
-        let mut session = node(
-            WorkspaceNodeKind::WorkflowSession,
-            WorkspaceNodeStatus::Running,
-            Some(AgentSessionActivity::Working),
-            NodeCompletionSignalState::Pending,
-        );
-        assert_eq!(session.classify_status([]), C::Active);
-        session.session_id = None;
-        session.activity = Some(AgentSessionActivity::AwaitingAnswer);
-        assert_eq!(session.classify_status([]), C::Active);
-        session.process_presence = NodeProcessPresence::ConfirmedAbsent;
-        assert_eq!(session.classify_status([]), C::Active);
-        session.process_presence = NodeProcessPresence::Unknown;
-        session.session_id = Some("agent-session".into());
-        assert_eq!(session.classify_status([]), C::Attention);
-        session.status = WorkspaceNodeStatus::Completed;
-        session.activity = Some(AgentSessionActivity::AwaitingInstruction);
-        assert_eq!(session.classify_status([]), C::Idle);
-        session.status = WorkspaceNodeStatus::Aborted;
-        assert_eq!(session.classify_status([]), C::Idle);
-        session.status = WorkspaceNodeStatus::Waiting;
-        assert_eq!(session.classify_status([]), C::Attention);
-        session.status = WorkspaceNodeStatus::Running;
-        session.completion_signals = NodeCompletionSignalState::StopReceived;
-        assert_eq!(session.classify_status([]), C::Attention);
-        session.activity = Some(AgentSessionActivity::Working);
-        assert_eq!(session.classify_status([]), C::Active);
-        session.activity = Some(AgentSessionActivity::AwaitingInstruction);
-        session.completion_signals = NodeCompletionSignalState::Pending;
-        session.process_presence = NodeProcessPresence::ConfirmedAbsent;
-        assert_eq!(session.classify_status([]), C::Attention);
-        session.status = WorkspaceNodeStatus::Completed;
-        assert_eq!(session.classify_status([]), C::Idle);
-
-        session.delegate_waits_for_child = true;
-        session.status = WorkspaceNodeStatus::Running;
-        assert_eq!(session.classify_status([C::Active]), C::Active);
-        assert_eq!(session.classify_status([C::Attention]), C::Attention);
-        session.background_failure = true;
-        assert_eq!(session.classify_status([C::Active]), C::Attention);
-    }
-
-    #[test]
-    fn test_表示状態分類_単独sessionの消失は残ったworkingより緑を優先する() {
-        use WorkspaceNodeStatusClassification as C;
-        let mut session = node(
-            WorkspaceNodeKind::WorkflowSession,
-            WorkspaceNodeStatus::Completed,
-            Some(AgentSessionActivity::Working),
-            NodeCompletionSignalState::Pending,
-        );
-        session.execution_id = Some("node-execution".into());
-        session.parent_id = Some("node-execution".into());
-        assert!(session.is_standalone_session_root());
-        assert_eq!(session.classify_status([]), C::Active);
-        session.process_presence = NodeProcessPresence::ConfirmedAbsent;
-        assert_eq!(session.classify_status([]), C::Idle);
-    }
-
-    #[test]
-    fn test_表示状態分類_commandと親は子の最重値を返す() {
-        use WorkspaceNodeStatusClassification as C;
-        let mut command = node(
-            WorkspaceNodeKind::WorkflowCommand,
-            WorkspaceNodeStatus::Running,
-            None,
-            NodeCompletionSignalState::Pending,
-        );
-        assert_eq!(command.classify_status([]), C::Active);
-        command.process_presence = NodeProcessPresence::ConfirmedAbsent;
-        assert_eq!(command.classify_status([]), C::Attention);
-        command.status = WorkspaceNodeStatus::Completed;
-        assert_eq!(command.classify_status([]), C::Idle);
-        let mut sequence = node(
-            WorkspaceNodeKind::Sequence,
-            WorkspaceNodeStatus::Completed,
-            None,
-            NodeCompletionSignalState::Pending,
-        );
-        assert_eq!(
-            sequence.classify_status([C::Active, C::Attention]),
-            C::Attention
-        );
-        sequence.kind = WorkspaceNodeKind::Fanout;
-        assert_eq!(sequence.classify_status([C::Active]), C::Active);
-        assert_eq!(sequence.classify_status([C::Idle]), C::Idle);
-    }
-
-    #[test]
-    fn test_表示状態分類_公開値は3種類だけ() {
-        assert_eq!(
-            WorkspaceNodeStatusClassification::Active.as_public_str(),
-            "active"
-        );
-        assert_eq!(
-            WorkspaceNodeStatusClassification::Attention.as_public_str(),
-            "attention"
-        );
-        assert_eq!(
-            WorkspaceNodeStatusClassification::Idle.as_public_str(),
-            "idle"
-        );
-    }
-}
+#[path = "mod_test.rs"]
+mod mod_tests;
 
 impl WorkspaceTreeNode {
     pub(super) fn observe_background_failure(&mut self, message: &str) {

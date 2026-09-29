@@ -2,8 +2,8 @@ import { describe, expect, it } from "vitest";
 import type { WorkspaceNodeStatusClassification } from "@/types/workspace-tree";
 import {
 	isWorkspaceNodePulseStatus,
-	workflowNodeIconClasses,
-} from "./WorkflowNodeStatusIcon";
+	workspaceNodeStatusClasses,
+} from "./WorkspaceNodeStatusPresentation";
 
 const classifications: WorkspaceNodeStatusClassification[] = [
 	"active",
@@ -13,10 +13,10 @@ const classifications: WorkspaceNodeStatusClassification[] = [
 
 describe("Workspace Node status presentation", () => {
 	it("maps exactly the backend-owned classifications to their colors", () => {
-		expect(Object.keys(workflowNodeIconClasses).sort()).toEqual(
+		expect(Object.keys(workspaceNodeStatusClasses).sort()).toEqual(
 			[...classifications].sort(),
 		);
-		expect(workflowNodeIconClasses).toEqual({
+		expect(workspaceNodeStatusClasses).toEqual({
 			active: "text-blue-600 dark:text-blue-300",
 			attention: "text-yellow-600 dark:text-yellow-300",
 			idle: "text-green-600 dark:text-green-300",

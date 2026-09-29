@@ -72,11 +72,11 @@ import type {
 import { CreateWorktreeModal } from "./CreateWorktreeModal";
 import { DeleteWorktreeDialog } from "./DeleteWorktreeDialog";
 import { FanoutRowStatusIcon } from "./FanoutRowStatusIcon";
+import { WorkspaceBranchStatusIcon } from "./WorkspaceBranchStatusIcon";
 import {
 	isWorkspaceNodePulseStatus,
-	workflowNodeIconClasses,
-} from "./WorkflowNodeStatusIcon";
-import { WorkspaceBranchStatusIcon } from "./WorkspaceBranchStatusIcon";
+	workspaceNodeStatusClasses,
+} from "./WorkspaceNodeStatusPresentation";
 
 interface WorkspaceListProps {
 	model: WorkspaceListModel;
@@ -212,7 +212,7 @@ function WorkspaceNodeRow({
 	};
 	const nodeIcon = (
 		<ContentIcon
-			className={`size-3.5 shrink-0 ${workflowNodeIconClasses[node.status]} ${pulseClassName}`}
+			className={`size-3.5 shrink-0 ${workspaceNodeStatusClasses[node.status]} ${pulseClassName}`}
 			aria-hidden="true"
 		/>
 	);

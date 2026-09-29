@@ -527,7 +527,7 @@ mod tests {
     }
 
     #[test]
-    fn test_選択整合契約_返却snapshotの全行が4分類だけを持つ() {
+    fn test_選択整合契約_返却snapshotの全行が3分類だけを持つ() {
         fn assert_classifications(items: &[WorkspaceTreeItemDto]) {
             for item in items {
                 let (status, children) = match item {
@@ -540,7 +540,6 @@ mod tests {
                     }
                 };
                 assert!(["active", "attention", "idle"].contains(&status));
-                assert_ne!(status, "interrupted");
                 if let Some(children) = children {
                     assert_classifications(children);
                 }

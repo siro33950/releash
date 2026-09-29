@@ -132,7 +132,8 @@ fn session_root() -> TreeRootFact {
 }
 
 #[test]
-fn test_単独session新規起動_nodeだけ完了しstopとsubmitを受け取る() {
+fn test_単独session新規起動_完了済みnodeはstopとsubmitを受け付けない() {
+    // Given
     let seed =
         SessionExecutionTreeRootFacts::new(TREE, "/repo", "/repo", ProviderKind::Codex, None)
             .unwrap();
@@ -142,7 +143,9 @@ fn test_単独session新規起動_nodeだけ完了しstopとsubmitを受け取�
     for (meta, fact) in facts.iter().cloned() {
         log.push(meta, fact);
     }
+    // When
     let folded = fold_execution_tree(TREE, &log.records).unwrap().unwrap();
+    // Then
     assert_eq!(folded.aggregate.state(), &RuntimeExecutionState::Running);
     assert_eq!(
         folded.aggregate.node_executions()[0].status,
@@ -150,11 +153,13 @@ fn test_単独session新規起動_nodeだけ完了しstopとsubmitを受け取�
     );
     log.push(root_meta.clone(), stop());
     log.push(root_meta.clone(), submit());
+    // When
     let folded = fold_execution_tree(TREE, &log.records).unwrap().unwrap();
-    assert_eq!(folded.aggregate.state(), &RuntimeExecutionState::Completed);
+    // Then
+    assert_eq!(folded.aggregate.state(), &RuntimeExecutionState::Running);
     assert_eq!(
         folded.aggregate.node_executions()[0].completion_signals,
-        crate::domain::workflow::NodeCompletionSignalState::Ready
+        crate::domain::workflow::NodeCompletionSignalState::Pending
     );
     assert_eq!(
         folded.session_activities[TREE],
@@ -175,6 +180,37 @@ fn test_単独session新規起動_nodeだけ完了しstopとsubmitを受け取�
             .status,
         RuntimeNodeExecutionStatus::Running
     );
+}
+
+#[test]
+fn test_単独session_node完了事実は対象外の木とnodeで拒否される() {
+    // Given
+    let seed =
+        SessionExecutionTreeRootFacts::new(TREE, "/repo", "/repo", ProviderKind::Codex, None)
+            .unwrap();
+    let mut wrong_node = FactLog::new();
+    for (meta, fact) in seed.into_facts().into_iter().take(2) {
+        wrong_node.push(meta, fact);
+    }
+    wrong_node.push(
+        meta("other", None, "session", NodeKindName::Session, 1),
+        NodeFact::StandaloneSessionNodeCompleted,
+    );
+
+    let mut wrong_tree = FactLog::new();
+    let root_meta = meta("root-exec", None, "main", NodeKindName::Session, 1);
+    wrong_tree.push(
+        root_meta.clone(),
+        started_root(workflow_root(workflow_definition(
+            vec![session_leaf("main")],
+            "main",
+        ))),
+    );
+    wrong_tree.push(root_meta, NodeFact::StandaloneSessionNodeCompleted);
+
+    // When / Then
+    assert!(fold_execution_tree(TREE, &wrong_node.records).is_err());
+    assert!(fold_execution_tree(TREE, &wrong_tree.records).is_err());
 }
 
 fn started_root(root: TreeRootFact) -> NodeFact {

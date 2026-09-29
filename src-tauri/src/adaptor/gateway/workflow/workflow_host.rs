@@ -3782,7 +3782,8 @@ nodes:
         }
 
         #[tokio::test]
-        async fn test_session実行木のreconciliationは喪失を記録せずstopを保持する() {
+        async fn test_session実行木のreconciliationは完了済みnodeに喪失とstopを記録しない() {
+            // Given
             let fixture = runtime_effect_fixture(NodeCompletion::default(), false).await;
             let session_id = "agent-session-reserved-before-commit";
             LocalAgentSessionRepository::new(fixture.store.clone())
@@ -3816,6 +3817,7 @@ nodes:
                 .await
                 .unwrap();
 
+            // When
             fixture
                 .control_plane
                 .record_provider_stop(
@@ -3833,7 +3835,8 @@ nodes:
             let records = workflow_fact_log::read_tree_records(&fixture.store, session_id)
                 .await
                 .unwrap();
-            assert!(records
+            // Then
+            assert!(!records
                 .iter()
                 .any(|record| matches!(record.fact, NodeFact::StopReceived(_))));
             let backend = workflow_fact_log::FactLogReadBackend::Live(fixture.store.clone());
@@ -3849,7 +3852,7 @@ nodes:
                 .unwrap();
             assert_eq!(
                 node.completion_signals,
-                crate::domain::workflow::NodeCompletionSignalState::StopReceived
+                crate::domain::workflow::NodeCompletionSignalState::Pending
             );
             assert_eq!(node.status, NodeExecutionStatus::Succeeded);
             let workspace_node = SqliteWorkspaceTreeRepository::new(fixture.store.clone())
@@ -3886,7 +3889,7 @@ nodes:
                 .unwrap();
             assert_eq!(
                 restarted_node.completion_signals,
-                crate::domain::workflow::NodeCompletionSignalState::StopReceived
+                crate::domain::workflow::NodeCompletionSignalState::Pending
             );
             assert_eq!(
                 SqliteWorkspaceTreeRepository::new(fixture.store.clone())
@@ -4059,7 +4062,8 @@ nodes:
         }
 
         #[tokio::test]
-        async fn test_provider_stopはlaunch区分の異なる実行木で同じsignal遷移になる() {
+        async fn test_provider_stop_完了済み単独sessionと実行中workflowでnode完了信号を区別する() {
+            // Given
             let fixture = runtime_effect_fixture(NodeCompletion::default(), false).await;
             let standalone_id = "agent-session-standalone-stop";
             LocalAgentSessionRepository::new(fixture.store.clone())
@@ -4082,6 +4086,7 @@ nodes:
                 .await
                 .unwrap();
 
+            // When
             fixture
                 .control_plane
                 .record_provider_stop(
@@ -4101,6 +4106,7 @@ nodes:
                 .await
                 .unwrap();
 
+            // Then
             let backend = workflow_fact_log::FactLogReadBackend::Live(fixture.store.clone());
             for (tree_id, node_execution_id) in [
                 (standalone_id, standalone_id),
@@ -4121,7 +4127,11 @@ nodes:
                     .unwrap();
                 assert_eq!(
                     node.completion_signals,
-                    crate::domain::workflow::NodeCompletionSignalState::StopReceived
+                    if tree_id == standalone_id {
+                        crate::domain::workflow::NodeCompletionSignalState::Pending
+                    } else {
+                        crate::domain::workflow::NodeCompletionSignalState::StopReceived
+                    }
                 );
                 assert_eq!(
                     node.status,
@@ -4668,8 +4678,9 @@ nodes:
         use super::*;
 
         #[tokio::test]
-        async fn test_startup_reconciliation_stop受信済みsession木をcacheへ載せてleafを再起動しない(
-        ) {
+        async fn test_startup_reconciliation_stop事実がある完了済みsession木でもleafを再起動しない()
+        {
+            // Given
             let directory = tempfile::tempdir().unwrap();
             let store = LocalEventStore::open(LocalEventStoreConfig::production(
                 directory.path().to_path_buf(),
@@ -4714,6 +4725,7 @@ nodes:
                 Arc::new(crate::adaptor::gateway::workflow::RepositoryIsolatedWorktreeGateway),
             );
 
+            // When
             test_helpers::reconcile_startup(&host, &app).await.unwrap();
 
             let snapshot = host
@@ -4725,9 +4737,10 @@ nodes:
                 .iter()
                 .find(|node| node.id == session_id)
                 .unwrap();
+            // Then
             assert_eq!(
                 node.completion_signals,
-                crate::domain::workflow::NodeCompletionSignalState::StopReceived
+                crate::domain::workflow::NodeCompletionSignalState::Pending
             );
             assert_eq!(
                 workflow_fact_log::read_tree_records(&store, session_id)

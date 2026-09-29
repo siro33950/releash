@@ -3,8 +3,8 @@ import { cn } from "@/lib/utils";
 import type { WorkspaceNodeStatusClassification } from "@/types/workspace-tree";
 import {
 	isWorkspaceNodePulseStatus,
-	workflowNodeIconClasses,
-} from "./WorkflowNodeStatusIcon";
+	workspaceNodeStatusClasses,
+} from "./WorkspaceNodeStatusPresentation";
 
 interface WorkspaceBranchStatusIconProps {
 	status: WorkspaceNodeStatusClassification;
@@ -20,7 +20,7 @@ export function WorkspaceBranchStatusIcon({
 	containerClassName,
 	iconClassName = "size-3.5 shrink-0",
 }: WorkspaceBranchStatusIconProps) {
-	const colorClassName = workflowNodeIconClasses[status];
+	const colorClassName = workspaceNodeStatusClasses[status];
 	const pulseClassName = isWorkspaceNodePulseStatus(status)
 		? "animate-pulse"
 		: undefined;

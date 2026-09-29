@@ -237,15 +237,8 @@ impl RuntimeNodeExecution {
         TransitionOutcome::Applied
     }
 
-    pub fn record_completion_signal(
-        &mut self,
-        signal: NodeCompletionSignal,
-        standalone_session: bool,
-    ) -> TransitionOutcome {
-        if self.kind != NodeKindName::Session
-            || !(self.status.is_active()
-                || standalone_session && self.status == RuntimeNodeExecutionStatus::Succeeded)
-        {
+    pub fn record_completion_signal(&mut self, signal: NodeCompletionSignal) -> TransitionOutcome {
+        if self.kind != NodeKindName::Session || !self.status.is_active() {
             return TransitionOutcome::NotApplicable;
         }
         let next = match (self.completion_signals, signal) {
@@ -794,15 +787,10 @@ impl ExecutionTree {
             .runtime
             .node_executions
             .iter()
-            .filter(|node| node.kind == NodeKindName::Session)
+            .filter(|node| node.kind == NodeKindName::Session && node.status.is_active())
             .filter_map(|previous| {
                 let current = self.node_execution(&previous.id)?;
-                let node_finished = previous.status.is_active() && !current.status.is_active();
-                let standalone_tree_finished = self.runtime.launched_as
-                    == ExecutionTreeLaunch::Session
-                    && before.is_active()
-                    && self.is_finished();
-                if !node_finished && !standalone_tree_finished {
+                if current.status.is_active() {
                     return None;
                 }
                 Some(NewlyTerminalSession {
@@ -1705,15 +1693,12 @@ impl ExecutionTree {
         {
             let _ = self.mark_node_running(node_execution_id, timestamp);
         }
-        let completion = self.complete_node_execution(
+        if self.complete_node_execution(
             node_execution_id,
             artifact.clone(),
             token_usage.clone(),
             timestamp,
-        );
-        if completion != TransitionOutcome::Applied
-            && !(self.runtime.launched_as == ExecutionTreeLaunch::Session
-                && completion == TransitionOutcome::AlreadyApplied)
+        ) != TransitionOutcome::Applied
         {
             return Err(crate::domain::workflow::WorkflowError::invalid_state(
                 format!("node execution '{node_execution_id}' cannot complete"),
@@ -2693,10 +2678,7 @@ impl ExecutionTree {
         else {
             return TransitionOutcome::NotApplicable;
         };
-        let outcome = execution.record_completion_signal(
-            signal,
-            self.runtime.launched_as == ExecutionTreeLaunch::Session,
-        );
+        let outcome = execution.record_completion_signal(signal);
         if outcome == TransitionOutcome::Applied {
             self.runtime.updated_at = timestamp;
         }
@@ -2718,10 +2700,7 @@ impl ExecutionTree {
         if execution.session_id.as_deref() != Some(agent_session_id) {
             return Err(ProviderStopRejection::SessionDoesNotOwnAttempt);
         }
-        if !(execution.status.is_active()
-            || self.runtime.launched_as == ExecutionTreeLaunch::Session
-                && execution.status == RuntimeNodeExecutionStatus::Succeeded)
-        {
+        if !execution.status.is_active() {
             return Ok(TransitionOutcome::NotApplicable);
         }
         Ok(self.record_node_completion_signal(
@@ -2744,10 +2723,7 @@ impl ExecutionTree {
             .iter()
             .find(|execution| execution.id == node_execution_id)
             .ok_or(NodeSubmitRejection::NodeExecutionNotFound)?;
-        if !(execution.status.is_active()
-            || self.runtime.launched_as == ExecutionTreeLaunch::Session
-                && execution.status == RuntimeNodeExecutionStatus::Succeeded)
-        {
+        if !execution.status.is_active() {
             return Err(NodeSubmitRejection::AttemptNotCurrent);
         }
         // 実行木上でこの attempt が現行であること: 同じ node のより新しい
@@ -2780,13 +2756,6 @@ impl ExecutionTree {
             return NodeCompletionHandshakeDecision::NotApplicable;
         };
         match execution.status {
-            RuntimeNodeExecutionStatus::Succeeded
-                if self.runtime.launched_as == ExecutionTreeLaunch::Session
-                    && self.is_active()
-                    && execution.completion_signals.is_ready() =>
-            {
-                return NodeCompletionHandshakeDecision::CompleteAuto;
-            }
             RuntimeNodeExecutionStatus::WaitingApproval | RuntimeNodeExecutionStatus::Succeeded => {
                 return NodeCompletionHandshakeDecision::AlreadySettled;
             }
@@ -3979,34 +3948,6 @@ mod tests {
         assert!(after.newly_terminal_sessions_since(&before).is_empty());
         after.id = "different-execution".to_string();
         assert!(after.newly_terminal_sessions_since(&before).is_empty());
-    }
-
-    #[test]
-    fn newly_terminal_sessions_単独sessionの完了済みnodeは木の終了時に停止対象になる() {
-        let mut before = restored_execution(RuntimeExecutionState::Running);
-        before.launched_as = ExecutionTreeLaunch::Session;
-        before
-            .begin_node_attempt(
-                "session".to_string(),
-                NodeKindName::Session,
-                1,
-                None,
-                "session-root".to_string(),
-                10.0,
-            )
-            .unwrap();
-        before.attach_node_session("session-root", "agent-session".to_string(), 11.0);
-        before.node_executions[0].status = RuntimeNodeExecutionStatus::Succeeded;
-        let mut after = before.clone();
-        after.complete();
-
-        assert_eq!(
-            after.newly_terminal_sessions_since(&before),
-            vec![NewlyTerminalSession {
-                node_execution_id: "session-root".to_string(),
-                agent_session_id: "agent-session".to_string(),
-            }]
-        );
     }
 
     #[test]

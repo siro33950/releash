@@ -1,6 +1,6 @@
 import type { WorkspaceNodeStatusClassification } from "@/types/workspace-tree";
 
-export const workflowNodeIconClasses: Record<
+export const workspaceNodeStatusClasses: Record<
 	WorkspaceNodeStatusClassification,
 	string
 > = {

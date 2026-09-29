@@ -2,7 +2,7 @@ import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import type { WorkspaceNodeStatusClassification } from "@/types/workspace-tree";
 import { FanoutRowStatusIcon } from "./FanoutRowStatusIcon";
-import { workflowNodeIconClasses } from "./WorkflowNodeStatusIcon";
+import { workspaceNodeStatusClasses } from "./WorkspaceNodeStatusPresentation";
 
 const classifications: WorkspaceNodeStatusClassification[] = [
 	"active",
@@ -19,7 +19,9 @@ describe("FanoutRowStatusIcon", () => {
 
 			expect(container.querySelectorAll("svg")).toHaveLength(1);
 			expect(icon).toBeInTheDocument();
-			expect(icon).toHaveClass(...workflowNodeIconClasses[status].split(" "));
+			expect(icon).toHaveClass(
+				...workspaceNodeStatusClasses[status].split(" "),
+			);
 		},
 	);
 

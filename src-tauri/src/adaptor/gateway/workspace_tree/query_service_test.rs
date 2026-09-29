@@ -622,7 +622,7 @@ async fn test_workspace_tree_query_stop事実と後続活動を一覧と詳細�
     // When: 活動観測を追加せず StopReceived だけを追記する
     append_stop(10).await;
 
-    // Then: 一覧と詳細は Stop 事実から attention を導出し、再起動後も再現する
+    // Then: 一覧は idle、詳細 Node は completed と導出され、再起動後も再現する
     assert_eq!(
         projected_classification(store.clone()).await,
         "idle".to_string()

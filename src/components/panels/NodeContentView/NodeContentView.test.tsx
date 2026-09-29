@@ -306,8 +306,11 @@ describe("NodeContentView", () => {
 	});
 
 	it("does not show a status icon in the Session header", () => {
+		mocks.detailState.detail = sessionDetail("running-session");
 		renderView("running-session");
-		expect(screen.queryByTitle("running")).not.toBeInTheDocument();
+		const header = screen.getByText("Session running-session").parentElement;
+		expect(header).toBeVisible();
+		expect(header?.querySelector("svg")).toBeNull();
 	});
 
 	it("shows and executes Approve only from backend capability", async () => {
