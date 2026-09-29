@@ -1,4 +1,4 @@
-import { renderHook, waitFor } from "@testing-library/react";
+import { act, renderHook, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
 vi.mock("@/lib/client", () => ({
@@ -7,7 +7,10 @@ vi.mock("@/lib/client", () => ({
 
 import { invokeClient as invoke } from "@/lib/client";
 import type { DiffTreeNode } from "@/types/review";
-import { useFileNavigation } from "./useFileNavigation";
+import {
+	type FileNavigationResult,
+	useFileNavigation,
+} from "./useFileNavigation";
 
 const mockedInvoke = vi.mocked(invoke);
 
@@ -105,10 +108,66 @@ describe("useFileNavigation", () => {
 
 		const { result } = renderHook(() => useFileNavigation(sampleTree, "b.ts"));
 
-		await waitFor(() => {
-			expect(mockedInvoke).toHaveBeenCalled();
-		});
+		await waitFor(() => expect(result.current.error).toBe("fail"));
 
 		expect(result.current.fileNavigation.total).toBe(0);
+	});
+
+	it("ignores an old file's failure after the current file succeeds", async () => {
+		let rejectOld!: (error: Error) => void;
+		mockedInvoke
+			.mockImplementationOnce(
+				() =>
+					new Promise((_, reject) => {
+						rejectOld = reject;
+					}),
+			)
+			.mockResolvedValueOnce({
+				current_index: 2,
+				total: 3,
+				prev_file: "b.ts",
+				next_file: null,
+			});
+		const { result, rerender } = renderHook(
+			({ file }) => useFileNavigation(sampleTree, file),
+			{ initialProps: { file: "a.ts" } },
+		);
+		rerender({ file: "c.ts" });
+		await waitFor(() =>
+			expect(result.current.fileNavigation.current_index).toBe(2),
+		);
+		await act(async () => rejectOld(new Error("old file failed")));
+		expect(result.current.fileNavigation.current_index).toBe(2);
+		expect(result.current.error).toBeNull();
+	});
+
+	it("ignores an old file's result after the current file fails", async () => {
+		let resolveOld!: (value: FileNavigationResult) => void;
+		mockedInvoke
+			.mockImplementationOnce(
+				() =>
+					new Promise((resolve) => {
+						resolveOld = resolve;
+					}),
+			)
+			.mockRejectedValueOnce(new Error("current file failed"));
+		const { result, rerender } = renderHook(
+			({ file }) => useFileNavigation(sampleTree, file),
+			{ initialProps: { file: "a.ts" } },
+		);
+		rerender({ file: "c.ts" });
+		await waitFor(() =>
+			expect(result.current.error).toBe("current file failed"),
+		);
+		await act(async () =>
+			resolveOld({
+				current_index: 0,
+				total: 3,
+				prev_file: null,
+				next_file: "b.ts",
+			}),
+		);
+		expect(result.current.fileNavigation.total).toBe(0);
+		expect(result.current.error).toBe("current file failed");
 	});
 });

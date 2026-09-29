@@ -1,3 +1,4 @@
+import { Code, ConnectError } from "@connectrpc/connect";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -54,7 +55,8 @@ let mockTerminalInstance: {
 	cols: number;
 };
 
-let mockConnectionListener: (connected: boolean) => void = () => {};
+let mockCurrentInputId: string | null = null;
+let mockConnectionPhase = "READY";
 function streamForAttachment(attachmentId: unknown) {
 	const stream = mockStreams.find(
 		(entry) => entry.attachmentId === attachmentId,
@@ -65,35 +67,45 @@ function streamForAttachment(attachmentId: unknown) {
 
 const mockFirstState = vi.fn();
 vi.mock("@/lib/client", () => ({
-	invokeClient: (...args: unknown[]) => mockInvoke(...args),
+	invokeClient: (...args: unknown[]) =>
+		mockConnectionPhase === "TRANSIENT_FAILURE" ||
+		mockConnectionPhase === "SHUTDOWN"
+			? Promise.reject(new Error(`Daemon connection is ${mockConnectionPhase}`))
+			: mockInvoke(...args),
 	firstState: (...args: unknown[]) => mockFirstState(...args),
-	onClientConnection: (listener: (connected: boolean) => void) => {
-		mockConnectionListener = listener;
-		return vi.fn();
-	},
+	currentTerminalInputId: () => mockCurrentInputId,
 	subscribeTerminalState: async (
-		args: { attachmentId: string },
+		args: { owner: unknown },
 		onmessage: (message: unknown) => void,
 		onClosed: () => void,
 	) => {
 		if (mockStreamSubscriptionError) throw mockStreamSubscriptionError;
-		mockStreams.push({ attachmentId: args.attachmentId, onmessage, onClosed });
-		await mockInvoke("start_state_subscription", args).catch(
-			(error: unknown) => {
-				throw error instanceof Error ? error.message : error;
-			},
-		);
+		const attachmentId = crypto.randomUUID();
+		mockStreams.push({ attachmentId, onmessage, onClosed });
+		await mockInvoke("start_state_subscription", {
+			owner: args.owner,
+			attachmentId,
+		}).catch((error: unknown) => {
+			throw error instanceof Error ? error.message : error;
+		});
+		if (mockStreams[mockStreams.length - 1]?.attachmentId === attachmentId)
+			mockCurrentInputId = attachmentId;
 		let released: Promise<void> | undefined;
 		return vi.fn(
 			() =>
 				(released ??= mockInvoke("stop_state_subscription", {
-					attachmentId: args.attachmentId,
+					attachmentId,
 				})),
 		);
 	},
 	reportTerminalProcessed: async (owner: unknown, units: number) =>
 		mockInvoke("report_terminal_processed", { owner, units }),
 }));
+
+const staleAttachmentError = {
+	code: "STALE_TERMINAL_ATTACHMENT",
+	message: "Terminal input could not be sent. Try again.",
+};
 
 vi.mock("@tauri-apps/api/event", () => ({
 	listen: (...args: unknown[]) => mockListen(...args),
@@ -287,7 +299,8 @@ describe("useTerminal", () => {
 		mockStreamSubscriptionError = null;
 		mockTerminalConstructorOptions = {};
 		mockWebglAddonInstances.length = 0;
-		mockConnectionListener = () => {};
+		mockCurrentInputId = null;
+		mockConnectionPhase = "READY";
 		mockFirstState.mockReset().mockRejectedValue(new Error("No state fixture"));
 		resetTerminalPerformanceSwitchesCache();
 		delete window.__RELEASH_TERMINAL_PERFORMANCE__;
@@ -768,6 +781,40 @@ describe("useTerminal", () => {
 		});
 	});
 
+	it("遅れて生成された pending PTY の kill 失敗を画面通知に送る", async () => {
+		let resolveSpawn!: (value: { session_key: string }) => void;
+		const pendingSpawn = new Promise<{ session_key: string }>((resolve) => {
+			resolveSpawn = resolve;
+		});
+		mockInvoke.mockImplementation((command: string) => {
+			if (command === "get_or_spawn_terminal_surface") return pendingSpawn;
+			if (command === "kill_terminal_surface")
+				return Promise.reject(new Error("pending kill failed"));
+			return Promise.resolve();
+		});
+		const notices: string[] = [];
+		const onNotice = (event: Event) =>
+			notices.push((event as CustomEvent<string>).detail);
+		window.addEventListener("releash-client-error", onNotice);
+		try {
+			const { result, unmount } = renderHook(() =>
+				useTerminal(containerRef, { cwd: "/repo" }),
+			);
+			await waitFor(() =>
+				expect(mockInvoke).toHaveBeenCalledWith(
+					"get_or_spawn_terminal_surface",
+					expect.anything(),
+				),
+			);
+			result.current.requestKill();
+			unmount();
+			resolveSpawn({ session_key: "late-session" });
+			await waitFor(() => expect(notices).toContain("pending kill failed"));
+		} finally {
+			window.removeEventListener("releash-client-error", onNotice);
+		}
+	});
+
 	it("PTY_ERRORのbackend messageをalert用callbackだけへ通知する", async () => {
 		const onTerminalError = vi.fn();
 		mockInvoke.mockImplementation((cmd: string) => {
@@ -870,14 +917,18 @@ describe("useTerminal", () => {
 		});
 	});
 
-	it("ws write失敗を無加工で通知し新attachmentへ自動resyncする", async () => {
+	it("接続由来の入力失敗を表示しattachmentを張り直さない", async () => {
 		const onTerminalError = vi.fn();
 		const onTerminalReady = vi.fn();
 		const baseImplementation = mockInvoke.getMockImplementation();
+		let failed = false;
 		mockInvoke.mockImplementation(
 			(cmd: string, args?: Record<string, unknown>) => {
-				if (cmd === "write_terminal_surface") {
-					return Promise.reject("Terminal input could not be sent. Try again.");
+				if (cmd === "write_terminal_surface" && !failed) {
+					failed = true;
+					return Promise.reject(
+						new ConnectError("unavailable", Code.Unavailable),
+					);
 				}
 				return baseImplementation?.(cmd, args);
 			},
@@ -894,15 +945,30 @@ describe("useTerminal", () => {
 		mockOnDataCallback("test input");
 
 		await waitFor(() => {
-			expect(onTerminalError.mock.calls).toEqual([
-				["Terminal input could not be sent. Try again."],
-				[null],
-			]);
+			expect(onTerminalError).toHaveBeenCalledWith(
+				"処理中にエラーが発生しました",
+			);
 			expect(
 				mockInvoke.mock.calls.filter(
 					([command]) => command === "start_state_subscription",
 				),
-			).toHaveLength(2);
+			).toHaveLength(1);
+		});
+		mockOnDataCallback("next input");
+		await waitFor(() =>
+			expect(
+				mockInvoke.mock.calls.filter(
+					([command]) => command === "write_terminal_surface",
+				),
+			).toHaveLength(2),
+		);
+		const writes = mockInvoke.mock.calls.filter(
+			([command]) => command === "write_terminal_surface",
+		);
+		expect(writes[1][1]).toMatchObject({
+			attachmentId: writes[0][1].attachmentId,
+			sequence: 1,
+			data: "next input",
 		});
 	});
 
@@ -929,9 +995,9 @@ describe("useTerminal", () => {
 		mockOnDataCallback("\r");
 		mockOnDataCallback("次");
 
-		await waitFor(() => {
-			expect(mockInvoke).toHaveBeenCalledTimes(3);
-		});
+		await waitFor(() => expect(mockInvoke).toHaveBeenCalledTimes(1));
+		completeFirstWrite();
+		await waitFor(() => expect(mockInvoke).toHaveBeenCalledTimes(3));
 		expect(mockInvoke.mock.calls.map(([, args]) => args.data)).toEqual([
 			"変換",
 			"\r",
@@ -943,7 +1009,6 @@ describe("useTerminal", () => {
 		expect(
 			new Set(mockInvoke.mock.calls.map(([, args]) => args.attachmentId)).size,
 		).toBe(1);
-		completeFirstWrite();
 	});
 
 	it("入力の失敗応答を表示する", async () => {
@@ -967,7 +1032,7 @@ describe("useTerminal", () => {
 		});
 	});
 
-	it("入力の失敗応答では新attachmentへ一度だけ自動resyncする", async () => {
+	it("attachment拒否の応答では新attachmentへ一度だけ再同期する", async () => {
 		const onTerminalError = vi.fn();
 		const onTerminalReady = vi.fn();
 		renderHook(() =>
@@ -986,9 +1051,7 @@ describe("useTerminal", () => {
 		const firstAttachmentId = (firstAttachCall[1] as { attachmentId: string })
 			.attachmentId;
 
-		mockInvoke.mockRejectedValueOnce(
-			new Error("Terminal input could not be sent. Try again."),
-		);
+		mockInvoke.mockRejectedValueOnce(staleAttachmentError);
 		mockOnDataCallback("x");
 
 		await waitFor(() => {
@@ -1011,13 +1074,23 @@ describe("useTerminal", () => {
 		expect(attachCalls[1][1]).toEqual(
 			expect.objectContaining({ attachmentId: mockStreams[1].attachmentId }),
 		);
-		expect(onTerminalError.mock.calls).toEqual([
-			["Terminal input could not be sent. Try again."],
-			[null],
+		expect(onTerminalError.mock.calls).toContainEqual([
+			"Terminal input could not be sent. Try again.",
 		]);
 		const secondAttachmentId = (attachCalls[1][1] as { attachmentId: string })
 			.attachmentId;
 		expect(secondAttachmentId).not.toBe(firstAttachmentId);
+		mockOnDataCallback("after recovery");
+		await waitFor(() =>
+			expect(mockInvoke).toHaveBeenCalledWith(
+				"write_terminal_surface",
+				expect.objectContaining({
+					attachmentId: secondAttachmentId,
+					sequence: 0,
+					data: "after recovery",
+				}),
+			),
+		);
 	});
 
 	it("resync commandのプレーン文字列rejectを接頭辞なしで通知する", async () => {
@@ -1040,7 +1113,7 @@ describe("useTerminal", () => {
 		await waitFor(() => {
 			expect(mockStreams).toHaveLength(1);
 		});
-		mockInvoke.mockRejectedValueOnce(new Error("stale attachment"));
+		mockInvoke.mockRejectedValueOnce(staleAttachmentError);
 		mockOnDataCallback("x");
 
 		await waitFor(() => {
@@ -1189,7 +1262,7 @@ describe("useTerminal", () => {
 		await waitFor(() => {
 			expect(mockStreams).toHaveLength(1);
 		});
-		mockInvoke.mockRejectedValueOnce(new Error("stale attachment"));
+		mockInvoke.mockRejectedValueOnce(staleAttachmentError);
 		mockOnDataCallback("x");
 		await waitFor(() => {
 			expect(attachCalls).toBe(2);
@@ -1220,7 +1293,7 @@ describe("useTerminal", () => {
 			expect(mockStreams).toHaveLength(1);
 		});
 		mockStreamSubscriptionError = new Error("renderer recovery setup failed");
-		mockInvoke.mockRejectedValueOnce(new Error("stale attachment"));
+		mockInvoke.mockRejectedValueOnce(staleAttachmentError);
 		mockOnDataCallback("x");
 
 		await waitFor(() => {
@@ -1249,7 +1322,7 @@ describe("useTerminal", () => {
 		await waitFor(() => {
 			expect(mockStreams).toHaveLength(1);
 		});
-		mockInvoke.mockRejectedValueOnce(new Error("stale attachment"));
+		mockInvoke.mockRejectedValueOnce(staleAttachmentError);
 		mockOnDataCallback("x");
 
 		await waitFor(() => {
@@ -1297,34 +1370,78 @@ describe("useTerminal", () => {
 		expect(mockTerminalInstance.dispose).toHaveBeenCalled();
 	});
 
-	it.each([false, true])(
-		"requestKill 後にwsが切断されてもsnapshot到着前のunmountでkillする（再接続: %s）",
-		async (reconnect) => {
-			const { result, unmount } = renderHook(() =>
-				useTerminal(containerRef, { cwd: "/repo" }),
-			);
-			await waitFor(() =>
-				expect(result.current.isRunningRef.current).toBe(true),
-			);
-			const original = mockInvoke.getMockImplementation();
-			mockInvoke.mockImplementation(
-				(command: string, args?: Record<string, unknown>) =>
-					command === "start_state_subscription"
-						? Promise.resolve()
-						: original?.(command, args),
-			);
-
+	it("resize と kill の失敗を画面通知に送る", async () => {
+		const notices: string[] = [];
+		const onNotice = (event: Event) =>
+			notices.push((event as CustomEvent<string>).detail);
+		window.addEventListener("releash-client-error", onNotice);
+		const original = mockInvoke.getMockImplementation();
+		mockInvoke.mockImplementation(
+			(command: string, args?: Record<string, unknown>) => {
+				if (command === "resize_terminal_surface")
+					return Promise.reject(new Error("resize failed"));
+				if (command === "kill_terminal_surface")
+					return Promise.reject(new Error("kill failed"));
+				return original?.(command, args);
+			},
+		);
+		try {
+			const { result, unmount } = renderHook(() => useTerminal(containerRef));
+			await waitFor(() => expect(notices).toContain("resize failed"));
 			result.current.requestKill();
-			mockConnectionListener(false);
-			if (reconnect) {
-				mockConnectionListener(true);
-				await waitFor(() => expect(mockStreams).toHaveLength(2));
-			}
 			unmount();
+			await waitFor(() => expect(notices).toContain("kill failed"));
+		} finally {
+			window.removeEventListener("releash-client-error", onNotice);
+		}
+	});
 
-			expect(mockInvoke).toHaveBeenCalledWith("kill_terminal_surface", {
-				owner: REPO_WORKSPACE_OWNER,
-			});
+	it.each([false, true])(
+		"requestKill 後の接続状態に従ってkillする（再接続: %s）",
+		async (reconnect) => {
+			const notices: string[] = [];
+			const onNotice = (event: Event) =>
+				notices.push((event as CustomEvent<string>).detail);
+			window.addEventListener("releash-client-error", onNotice);
+			try {
+				const { result, unmount } = renderHook(() =>
+					useTerminal(containerRef, { cwd: "/repo" }),
+				);
+				await waitFor(() =>
+					expect(result.current.isRunningRef.current).toBe(true),
+				);
+				const original = mockInvoke.getMockImplementation();
+				mockInvoke.mockImplementation(
+					(command: string, args?: Record<string, unknown>) =>
+						command === "start_state_subscription"
+							? Promise.resolve()
+							: original?.(command, args),
+				);
+
+				result.current.requestKill();
+				mockConnectionPhase = "TRANSIENT_FAILURE";
+				if (reconnect) {
+					mockConnectionPhase = "READY";
+					expect(mockStreams).toHaveLength(1);
+				}
+				unmount();
+
+				if (reconnect) {
+					expect(mockInvoke).toHaveBeenCalledWith("kill_terminal_surface", {
+						owner: REPO_WORKSPACE_OWNER,
+					});
+				} else {
+					expect(mockInvoke).not.toHaveBeenCalledWith(
+						"kill_terminal_surface",
+						expect.anything(),
+					);
+					await waitFor(() =>
+						expect(notices).toContain("Daemon connection is TRANSIENT_FAILURE"),
+					);
+				}
+			} finally {
+				window.removeEventListener("releash-client-error", onNotice);
+			}
 		},
 	);
 
@@ -1993,13 +2110,15 @@ describe("useTerminal", () => {
 			}),
 		);
 		mockOnDataCallback("recovered");
-		expect(mockInvoke).toHaveBeenCalledWith(
-			"write_terminal_surface",
-			expect.objectContaining({
-				attachmentId: mockStreams[1].attachmentId,
-				data: "recovered",
-				sequence: 0,
-			}),
+		await waitFor(() =>
+			expect(mockInvoke).toHaveBeenCalledWith(
+				"write_terminal_surface",
+				expect.objectContaining({
+					attachmentId: mockStreams[1].attachmentId,
+					data: "recovered",
+					sequence: 0,
+				}),
+			),
 		);
 		expect(onTerminalError.mock.calls.every(([error]) => error === null)).toBe(
 			true,
@@ -2487,13 +2606,15 @@ describe("useTerminal", () => {
 				expect(events[2].preventDefault).not.toHaveBeenCalled();
 				expect(mockTerminalInstance.input).toHaveBeenCalledTimes(1);
 				expect(mockTerminalInstance.input).toHaveBeenCalledWith("\x1b\r", true);
-				expect(terminalInputWrites()).toEqual([
-					expect.objectContaining({
-						owner: surface.owner,
-						sequence: 0,
-						data: "\x1b\r",
-					}),
-				]);
+				await waitFor(() =>
+					expect(terminalInputWrites()).toEqual([
+						expect.objectContaining({
+							owner: surface.owner,
+							sequence: 0,
+							data: "\x1b\r",
+						}),
+					]),
+				);
 			});
 
 			it("修飾キーなしのEnterをCRのまま送る", async () => {
@@ -2505,13 +2626,15 @@ describe("useTerminal", () => {
 				);
 
 				expect(delegated).toEqual([true, true, true]);
-				expect(terminalInputWrites()).toEqual([
-					expect.objectContaining({
-						owner: surface.owner,
-						sequence: 0,
-						data: "\r",
-					}),
-				]);
+				await waitFor(() =>
+					expect(terminalInputWrites()).toEqual([
+						expect.objectContaining({
+							owner: surface.owner,
+							sequence: 0,
+							data: "\r",
+						}),
+					]),
+				);
 			});
 
 			it.each([
@@ -2566,13 +2689,15 @@ describe("useTerminal", () => {
 				expect(delegated).toBe(true);
 				expect(keydown.preventDefault).not.toHaveBeenCalled();
 				expect(mockTerminalInstance.input).not.toHaveBeenCalled();
-				expect(terminalInputWrites()).toEqual([
-					expect.objectContaining({
-						owner: surface.owner,
-						sequence: 0,
-						data: "確定文字列",
-					}),
-				]);
+				await waitFor(() =>
+					expect(terminalInputWrites()).toEqual([
+						expect.objectContaining({
+							owner: surface.owner,
+							sequence: 0,
+							data: "確定文字列",
+						}),
+					]),
+				);
 			});
 
 			it.each([
@@ -2653,13 +2778,15 @@ describe("useTerminal", () => {
 
 				expect(delegated).toEqual([true, true, true]);
 				expect(events[0].preventDefault).not.toHaveBeenCalled();
-				expect(terminalInputWrites()).toEqual([
-					expect.objectContaining({
-						owner: surface.owner,
-						sequence: 0,
-						data: encoded,
-					}),
-				]);
+				await waitFor(() =>
+					expect(terminalInputWrites()).toEqual([
+						expect.objectContaining({
+							owner: surface.owner,
+							sequence: 0,
+							data: encoded,
+						}),
+					]),
+				);
 			});
 
 			it.each([
@@ -2927,9 +3054,12 @@ describe("useTerminal", () => {
 		});
 	});
 
-	describe("共有ws接続の再attach", () => {
-		it("切断中は入力を送らず再接続後に新attachmentで再開する", async () => {
-			renderHook(() => useTerminal(containerRef, { cwd: "/repo" }));
+	describe("client接続の変化", () => {
+		it("切断中の入力をエラーにし再接続後はclientの新attachmentで再開する", async () => {
+			const onTerminalError = vi.fn();
+			renderHook(() =>
+				useTerminal(containerRef, { cwd: "/repo", onTerminalError }),
+			);
 			await waitFor(() => expect(mockStreams).toHaveLength(1));
 			await waitFor(() =>
 				expect(mockInvoke).toHaveBeenCalledWith(
@@ -2940,32 +3070,36 @@ describe("useTerminal", () => {
 			const first = mockInvoke.mock.calls.find(
 				([cmd]) => cmd === "start_state_subscription",
 			)?.[1].attachmentId;
-			mockConnectionListener(false);
+			mockConnectionPhase = "TRANSIENT_FAILURE";
 			mockInvoke.mockClear();
 			mockOnDataCallback("offline");
+			await waitFor(() =>
+				expect(onTerminalError).toHaveBeenCalledWith(
+					"Daemon connection is TRANSIENT_FAILURE",
+				),
+			);
 			expect(mockInvoke).not.toHaveBeenCalledWith(
 				"write_terminal_surface",
 				expect.anything(),
 			);
-			mockConnectionListener(true);
-			await waitFor(() => expect(mockStreams).toHaveLength(2));
-			await waitFor(() =>
-				expect(mockInvoke).toHaveBeenCalledWith(
-					"start_state_subscription",
-					expect.objectContaining({
-						attachmentId: mockStreams[1].attachmentId,
-					}),
-				),
-			);
+			mockConnectionPhase = "READY";
+			mockCurrentInputId = crypto.randomUUID();
+			expect(mockStreams).toHaveLength(1);
 			await new Promise((resolve) => setTimeout(resolve, 0));
 			mockOnDataCallback("online");
+			await waitFor(() =>
+				expect(mockInvoke).toHaveBeenCalledWith(
+					"write_terminal_surface",
+					expect.objectContaining({ data: "online", sequence: 0 }),
+				),
+			);
 			const write = mockInvoke.mock.calls.find(
 				([cmd]) => cmd === "write_terminal_surface",
 			)?.[1];
 			expect(write).toMatchObject({ data: "online", sequence: 0 });
 			expect(write.attachmentId).not.toBe(first);
 		});
-		it("初回の接続失敗後は接続確立時に初期化とattachを再試行する", async () => {
+		it("初回コマンド失敗後は失敗を表示し接続状態の変化で再初期化しない", async () => {
 			const original = mockInvoke.getMockImplementation();
 			let failed = false;
 			mockInvoke.mockImplementation(
@@ -2990,11 +3124,16 @@ describe("useTerminal", () => {
 				expect(onTerminalError).toHaveBeenCalledWith("connection closed"),
 			);
 			expect(mockStreams).toHaveLength(0);
-			mockConnectionListener(true);
-			await waitFor(() =>
-				expect(onTerminalReady).toHaveBeenCalledWith("test-uuid-1234"),
+			onTerminalError.mockClear();
+			mockOnDataCallback("after failed startup");
+			expect(onTerminalError).toHaveBeenCalledWith("connection closed");
+			expect(mockInvoke).not.toHaveBeenCalledWith(
+				"write_terminal_surface",
+				expect.anything(),
 			);
-			expect(mockStreams).toHaveLength(1);
+			mockConnectionPhase = "READY";
+			expect(onTerminalReady).not.toHaveBeenCalled();
+			expect(mockStreams).toHaveLength(0);
 		});
 		it("初回snapshot前のstream終了通知から表示と入力を再開する", async () => {
 			const original = mockInvoke.getMockImplementation();
@@ -3045,7 +3184,7 @@ describe("useTerminal", () => {
 			);
 			unmount();
 		});
-		it("attach中の切断後も接続確立時に再同期する", async () => {
+		it("attach失敗後は失敗を表示し接続状態の変化で再同期しない", async () => {
 			const original = mockInvoke.getMockImplementation();
 			let failed = false;
 			mockInvoke.mockImplementation(
@@ -3069,11 +3208,13 @@ describe("useTerminal", () => {
 			await waitFor(() =>
 				expect(onTerminalError).toHaveBeenCalledWith("connection closed"),
 			);
-			mockConnectionListener(false);
-			mockConnectionListener(true);
-			await waitFor(() =>
-				expect(onTerminalReady).toHaveBeenCalledWith("test-uuid-1234"),
-			);
+			onTerminalError.mockClear();
+			mockOnDataCallback("after failed attach");
+			expect(onTerminalError).toHaveBeenCalledWith("connection closed");
+			mockConnectionPhase = "TRANSIENT_FAILURE";
+			mockConnectionPhase = "READY";
+			expect(onTerminalReady).not.toHaveBeenCalled();
+			expect(mockStreams).toHaveLength(1);
 		});
 		it.each([false, true])(
 			"Exitなしの終了は再attachし失敗時はエラーを表示する: %s",
@@ -3116,13 +3257,15 @@ describe("useTerminal", () => {
 						expect(onTerminalError).toHaveBeenLastCalledWith(null),
 					);
 					mockOnDataCallback("recovered");
-					expect(mockInvoke).toHaveBeenCalledWith(
-						"write_terminal_surface",
-						expect.objectContaining({
-							attachmentId: mockStreams[1].attachmentId,
-							data: "recovered",
-							sequence: 0,
-						}),
+					await waitFor(() =>
+						expect(mockInvoke).toHaveBeenCalledWith(
+							"write_terminal_surface",
+							expect.objectContaining({
+								attachmentId: mockStreams[1].attachmentId,
+								data: "recovered",
+								sequence: 0,
+							}),
+						),
 					);
 				}
 			},
@@ -3147,9 +3290,8 @@ describe("useTerminal", () => {
 			);
 			renderHook(() => useTerminal(containerRef));
 			await waitFor(() => expect(mockStreams).toHaveLength(1));
-			mockConnectionListener(false);
+			mockStreams[0].onClosed();
 			complete();
-			mockConnectionListener(true);
 			await waitFor(() => expect(mockStreams).toHaveLength(2));
 			mockStreams[1].onmessage({
 				type: "output",
@@ -3164,12 +3306,14 @@ describe("useTerminal", () => {
 				),
 			);
 			mockOnDataCallback("input");
-			expect(mockInvoke).toHaveBeenCalledWith(
-				"write_terminal_surface",
-				expect.objectContaining({
-					attachmentId: mockStreams[1].attachmentId,
-					data: "input",
-				}),
+			await waitFor(() =>
+				expect(mockInvoke).toHaveBeenCalledWith(
+					"write_terminal_surface",
+					expect.objectContaining({
+						attachmentId: mockStreams[1].attachmentId,
+						data: "input",
+					}),
+				),
 			);
 		});
 
@@ -3178,7 +3322,7 @@ describe("useTerminal", () => {
 			await waitFor(() => expect(mockStreams).toHaveLength(1));
 			unmount();
 			mockInvoke.mockClear();
-			mockConnectionListener(true);
+			mockConnectionPhase = "READY";
 			expect(mockInvoke).not.toHaveBeenCalledWith(
 				"start_state_subscription",
 				expect.anything(),

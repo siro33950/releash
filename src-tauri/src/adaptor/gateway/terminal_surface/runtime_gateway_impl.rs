@@ -1105,12 +1105,12 @@ impl TerminalSurfaceGateway for TerminalSurfaceRuntimeGatewayFor {
             Ok(ready) => ready,
             Err(TerminalSurfaceInputIngressError::StaleAttachment) => {
                 let cause = TerminalSurfaceInputUnavailableCause::StaleAttachment;
-                let error = TerminalSurfaceGatewayError::new(cause.internal_cause());
+                let error = TerminalSurfaceGatewayError::input_unavailable(cause);
                 return Err(error);
             }
             Err(TerminalSurfaceInputIngressError::PendingCapacityExceeded) => {
                 let cause = TerminalSurfaceInputUnavailableCause::PendingCapacityExceeded;
-                let error = TerminalSurfaceGatewayError::new(cause.internal_cause());
+                let error = TerminalSurfaceGatewayError::input_unavailable(cause);
                 return Err(error);
             }
         };

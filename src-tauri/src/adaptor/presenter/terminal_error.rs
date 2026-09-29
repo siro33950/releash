@@ -48,7 +48,14 @@ pub(crate) fn terminal_write_error(error: UsecaseError) -> AppError {
         "Terminal command failed: operation=write_terminal_surface code=PTY_ERROR cause={}",
         error
     );
-    AppError::new("Terminal input could not be sent. Try again.").with_status(error.connect_code())
+    let stale = matches!(error, UsecaseError::StaleAttachment);
+    let presented = AppError::new("Terminal input could not be sent. Try again.")
+        .with_status(error.connect_code());
+    if stale {
+        presented.with_code("STALE_TERMINAL_ATTACHMENT")
+    } else {
+        presented
+    }
 }
 
 pub(crate) fn invalid_terminal_resize_owner_error(internal_cause: String) -> AppError {
@@ -107,6 +114,7 @@ impl TerminalCommandError {
         let code = match error {
             UsecaseError::Gateway(_)
             | UsecaseError::OwnerConflict
+            | UsecaseError::StaleAttachment
             | UsecaseError::PtySpawn { .. }
             | UsecaseError::OtherSpawnFailure { .. } => TerminalCommandErrorCode::PtyError,
         };

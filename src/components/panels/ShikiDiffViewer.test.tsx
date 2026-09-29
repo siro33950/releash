@@ -446,6 +446,17 @@ describe("ShikiDiffViewer", () => {
 		});
 	});
 
+	it("折りたたみ範囲の計算に失敗したときに失敗を表示する", async () => {
+		const { invokeClient: invoke } = await import("@/lib/client");
+		vi.mocked(invoke).mockRejectedValueOnce(new Error("ranges unavailable"));
+		render(
+			<ShikiDiffViewer {...baseProps} diffMode="inline" diffOnlyMode={true} />,
+		);
+		expect(await screen.findByRole("alert")).toHaveTextContent(
+			"ranges unavailable",
+		);
+	});
+
 	it("shows all lines without hidden banner when diffOnlyMode is false", () => {
 		const { container } = render(
 			<ShikiDiffViewer {...baseProps} diffMode="inline" diffOnlyMode={false} />,

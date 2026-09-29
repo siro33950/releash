@@ -18,6 +18,7 @@ fn shell_operation(command: &str) -> crate::domain::daemon_supervision::ShellOpe
     use crate::domain::daemon_supervision::ShellOperation;
     match command {
         "get_daemon_status"
+        | "subscribe_daemon_status"
         | "retry_daemon"
         | "quit_desktop"
         | "validate_daemon_connection"
@@ -105,6 +106,16 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
     use tauri::Manager;
+
+    #[test]
+    fn test_起動状態の購読はsupervision操作として受理する() {
+        use crate::domain::daemon_supervision::ShellOperation;
+
+        assert_eq!(
+            shell_operation("subscribe_daemon_status"),
+            ShellOperation::Supervision
+        );
+    }
 
     fn dummy_handler() -> InvokeHandler {
         Box::new(|_invoke| true)

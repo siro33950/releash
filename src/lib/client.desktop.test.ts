@@ -1,9 +1,16 @@
-import { invoke } from "@tauri-apps/api/core";
-import { afterEach, expect, it, vi } from "vitest";
-import { connectFixture } from "@/test/connect";
-import { completeClientRestoration, invokeClient } from "./client";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 
 vi.unmock("@/lib/client");
+let invoke: typeof import("@tauri-apps/api/core").invoke;
+let connectFixture: typeof import("@/test/connect").connectFixture;
+let completeClientRestoration: typeof import("./client").completeClientRestoration;
+let invokeClient: typeof import("./client").invokeClient;
+beforeEach(async () => {
+	vi.resetModules();
+	({ invoke } = await import("@tauri-apps/api/core"));
+	({ connectFixture } = await import("@/test/connect"));
+	({ completeClientRestoration, invokeClient } = await import("./client"));
+});
 afterEach(async () => {
 	window.dispatchEvent(new Event("pagehide"));
 	await new Promise((resolve) => setTimeout(resolve, 0));
@@ -49,7 +56,12 @@ it("破棄済み画面の遅い接続情報が次の接続を上書きしない"
 	const old = invokeClient("add_repo_path", { path: "/repo" }).catch(
 		(error) => error,
 	);
-	window.dispatchEvent(new Event("pagehide"));
+	window.dispatchEvent(
+		new PageTransitionEvent("pagehide", { persisted: true }),
+	);
+	window.dispatchEvent(
+		new PageTransitionEvent("pageshow", { persisted: true }),
+	);
 	await expect(invokeClient("add_repo_path", { path: "/repo" })).resolves.toBe(
 		true,
 	);
@@ -79,7 +91,7 @@ it("Rustの同一性検証が失敗した接続では業務RPCも復元完了も
 		invokeClient("add_repo_path", { path: "/repo" }),
 	).rejects.toThrow("Daemon identity changed");
 	await expect(completeClientRestoration(7)).rejects.toThrow(
-		"Daemon identity changed",
+		"Daemon connection is TRANSIENT_FAILURE",
 	);
 	expect(invoke).toHaveBeenCalledWith("validate_daemon_connection", {
 		launchId: "different",

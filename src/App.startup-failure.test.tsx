@@ -19,9 +19,13 @@ const failed = {
 describe("B-071 safe startup surface", () => {
 	beforeEach(() => {
 		vi.mocked(invoke).mockReset();
-		vi.mocked(invoke).mockImplementation(async (command: string) => {
-			if (command === "get_daemon_status")
-				return { phase: "ready", connectionGeneration: 1 };
+		vi.mocked(invoke).mockImplementation(async (command: string, args) => {
+			if (command === "subscribe_daemon_status") {
+				(
+					args as { channel: { onmessage?: (value: unknown) => void } }
+				).channel.onmessage?.({ phase: "ready", connectionGeneration: 1 });
+				return;
+			}
 			throw new Error(`unexpected shell command: ${command}`);
 		});
 		vi.mocked(invokeClient).mockReset();
@@ -69,7 +73,7 @@ describe("B-071 safe startup surface", () => {
 		expect(
 			vi
 				.mocked(invoke)
-				.mock.calls.every(([command]) => command === "get_daemon_status"),
+				.mock.calls.every(([command]) => command === "subscribe_daemon_status"),
 		).toBe(true);
 	});
 

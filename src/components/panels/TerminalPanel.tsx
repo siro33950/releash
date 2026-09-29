@@ -22,6 +22,7 @@ import {
 	useTerminal,
 } from "@/hooks/useTerminal";
 import { invokeClient as invoke } from "@/lib/client";
+import { showClientError } from "@/lib/clientErrorNotice";
 import type { Theme } from "@/types/settings";
 import "@xterm/xterm/css/xterm.css";
 
@@ -98,6 +99,7 @@ export const TerminalPanel = forwardRef<
 				paths,
 			}).catch((error) => {
 				console.error("Failed to write paths to PTY:", error);
+				showClientError(error);
 			});
 		},
 		[isRunningRef, terminalOwner],

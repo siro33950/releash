@@ -1,9 +1,13 @@
-use crate::domain::terminal_surface::gateway::TerminalSurfaceGatewayError;
+use crate::domain::terminal_surface::gateway::{
+    TerminalSurfaceGatewayError, TerminalSurfaceInputUnavailableCause,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum UsecaseError {
     #[error("{0}")]
     Gateway(String),
+    #[error("Terminal input attachment is no longer active")]
+    StaleAttachment,
     #[error("Terminal Surface owner identity collision")]
     OwnerConflict,
     #[error("{error}")]
@@ -20,6 +24,13 @@ impl From<String> for UsecaseError {
 
 impl From<TerminalSurfaceGatewayError> for UsecaseError {
     fn from(value: TerminalSurfaceGatewayError) -> Self {
-        Self::Gateway(value.message().to_string())
+        match value.input_cause() {
+            Some(TerminalSurfaceInputUnavailableCause::StaleAttachment) => Self::StaleAttachment,
+            _ => Self::Gateway(value.message().to_string()),
+        }
     }
 }
+
+#[cfg(test)]
+#[path = "error_test.rs"]
+mod error_tests;

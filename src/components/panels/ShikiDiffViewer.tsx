@@ -17,6 +17,7 @@ import {
 import { useShikiHighlighter } from "@/hooks/useShikiHighlighter";
 import { invokeClient as invoke } from "@/lib/client";
 import type { ChangeGroup, Hunk } from "@/lib/computeHunks";
+import { getErrorMessage } from "@/lib/errorMessage";
 import {
 	getThreadEndLine,
 	getThreadLineNumber,
@@ -1690,14 +1691,19 @@ export function ShikiDiffViewer({
 	);
 
 	const [hiddenRanges, setHiddenRanges] = useState<HiddenRange[]>([]);
+	const [hiddenRangesError, setHiddenRangesError] = useState<string | null>(
+		null,
+	);
 
 	useEffect(() => {
 		if (!diffOnlyMode) {
 			setHiddenRanges([]);
+			setHiddenRangesError(null);
 			return;
 		}
 
 		let cancelled = false;
+		setHiddenRangesError(null);
 		invoke("compute_hidden_ranges_from_content", {
 			original: originalContent,
 			modified: modifiedContent,
@@ -1706,8 +1712,11 @@ export function ShikiDiffViewer({
 			.then((ranges) => {
 				if (!cancelled) setHiddenRanges(ranges);
 			})
-			.catch(() => {
-				if (!cancelled) setHiddenRanges([]);
+			.catch((error) => {
+				if (!cancelled) {
+					setHiddenRanges([]);
+					setHiddenRangesError(getErrorMessage(error));
+				}
 			});
 
 		return () => {
@@ -1841,6 +1850,9 @@ export function ShikiDiffViewer({
 			onClick={handleDelegatedClick}
 			tabIndex={-1}
 		>
+			{hiddenRangesError && (
+				<div role="alert">Diff ranges failed: {hiddenRangesError}</div>
+			)}
 			{search.isOpen && (
 				<DiffSearchBar
 					query={search.query}

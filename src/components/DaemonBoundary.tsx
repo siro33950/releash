@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { Channel, invoke } from "@tauri-apps/api/core";
 import {
 	createContext,
 	type ReactNode,
@@ -8,7 +8,11 @@ import {
 	useMemo,
 	useState,
 } from "react";
-import { completeClientRestoration } from "@/lib/client";
+import {
+	completeClientRestoration,
+	getConnectionState,
+	onConnectionStateChange,
+} from "@/lib/client";
 import { getErrorMessage } from "@/lib/errorMessage";
 
 interface DaemonStatus {
@@ -29,27 +33,31 @@ export const useDesktopRestoration = () => useContext(RestorationContext);
 
 export function DaemonBoundary({ children }: { children: ReactNode }) {
 	const [status, setStatus] = useState<DaemonStatus | null>(null);
+	const [connection, setConnection] = useState(getConnectionState);
 	const ready = status?.phase === "ready";
 	const restoring = status?.phase === "restoring";
 	const generation = status?.connectionGeneration;
 	const [error, setError] = useState<string | null>(null);
+	const [clientError, setClientError] = useState<string | null>(null);
 	useEffect(() => {
 		let active = true;
-		const refresh = async () => {
-			try {
-				const next = await invoke<DaemonStatus>("get_daemon_status");
-				if (!active) return;
-
-				setStatus(next);
-			} catch (error) {
-				if (active) setError(getErrorMessage(error));
-			}
+		const channel = new Channel<DaemonStatus>();
+		channel.onmessage = (next) => {
+			if (active) setStatus(next);
 		};
-		void refresh();
-		const timer = setInterval(() => void refresh(), 250);
+		void invoke("subscribe_daemon_status", { channel }).catch((error) => {
+			if (active) setError(getErrorMessage(error));
+		});
+		const release = onConnectionStateChange(() =>
+			setConnection(getConnectionState()),
+		);
+		const onClientError = (event: Event) =>
+			setClientError((event as CustomEvent<string>).detail);
+		window.addEventListener("releash-client-error", onClientError);
 		return () => {
 			active = false;
-			clearInterval(timer);
+			release();
+			window.removeEventListener("releash-client-error", onClientError);
 		};
 	}, []);
 	const action = async (command: "retry_daemon" | "quit_desktop") => {
@@ -84,6 +92,22 @@ export function DaemonBoundary({ children }: { children: ReactNode }) {
 	);
 	return (
 		<>
+			{clientError && (
+				<div
+					role="alert"
+					className="fixed bottom-4 right-4 z-[110] max-w-md rounded border bg-background p-3 text-sm text-destructive shadow-lg"
+				>
+					{clientError}
+					<button
+						type="button"
+						className="ml-3"
+						onClick={() => setClientError(null)}
+						aria-label="Dismiss error"
+					>
+						×
+					</button>
+				</div>
+			)}
 			{(ready || restoring) && (
 				<RestorationContext.Provider value={restoration}>
 					<div
@@ -111,7 +135,7 @@ export function DaemonBoundary({ children }: { children: ReactNode }) {
 										? "Stopping Releash…"
 										: "Starting Releash…"}
 						</h1>
-						<p role="status">
+						<p role="status" data-client-connection={connection}>
 							{status?.reason ?? "Waiting for the daemon connection."}
 						</p>
 						{status?.phase === "backoff" && (

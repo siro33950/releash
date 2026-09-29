@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 pub(crate) const COMMAND_NAMES: &[&str] = &[
     "get_daemon_status",
+    "subscribe_daemon_status",
     "retry_daemon",
     "quit_desktop",
     "restart_desktop",
@@ -22,6 +23,7 @@ pub(crate) fn register<R: tauri::Runtime>(
         COMMAND_NAMES,
         Box::new(tauri::generate_handler![
             get_daemon_status,
+            subscribe_daemon_status,
             retry_daemon,
             quit_desktop,
             restart_desktop,
@@ -38,6 +40,21 @@ pub(crate) fn register<R: tauri::Runtime>(
 #[tauri::command]
 fn get_daemon_status(supervisor: tauri::State<'_, Arc<DaemonSupervisionUsecase>>) -> DaemonStatus {
     supervisor.status()
+}
+#[tauri::command]
+fn subscribe_daemon_status(
+    supervisor: tauri::State<'_, Arc<DaemonSupervisionUsecase>>,
+    channel: tauri::ipc::Channel<DaemonStatus>,
+) {
+    let mut changes = supervisor.subscribe();
+    tauri::async_runtime::spawn(async move {
+        loop {
+            let status = changes.borrow_and_update().clone();
+            if channel.send(status).is_err() || changes.changed().await.is_err() {
+                break;
+            }
+        }
+    });
 }
 #[tauri::command]
 fn retry_daemon(supervisor: tauri::State<'_, Arc<DaemonSupervisionUsecase>>) -> Result<(), String> {

@@ -13,7 +13,7 @@ function invokeTelemetry<K extends ClientCommand>(
 ): Promise<void> {
 	return invoke(command, args)
 		.then(() => undefined)
-		.catch(() => {});
+		.catch((error) => console.error("Telemetry failed", error));
 }
 
 export function setPerformanceTelemetryEnabled(

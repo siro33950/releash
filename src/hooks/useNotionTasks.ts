@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invokeClient as invoke } from "@/lib/client";
+import { showClientError } from "@/lib/clientErrorNotice";
 import type { NotionTask } from "@/types/notion";
 
 const DEBOUNCE_MS = 300;
@@ -48,7 +49,8 @@ export function useNotionTasks(
 				}
 				setHasMore(result.has_more);
 				setCursor(result.next_cursor);
-			} catch {
+			} catch (error) {
+				showClientError(error);
 				if (!append) {
 					setTasks([]);
 				}

@@ -24,18 +24,18 @@ test("20terminalを保持しても入力・処理済み量通知・状態取得�
 			reportTerminalProcessed,
 			getClient,
 			invokeClient,
+			currentTerminalInputId,
 		} = await import("/src/lib/client.ts");
 		const events = new Map<string, string[]>();
+		const attachmentIds: string[] = [];
 		const releases: Array<() => Promise<void>> = [];
 		for (let index = 0; index < 20; index++) {
 			const id = `pane-${index}`;
+			const owner = { kind: "workspace" as const, workspacePath: `/repo-${index}` };
 			events.set(id, []);
 			releases.push(
 				await subscribeTerminalState(
-					{
-						owner: { kind: "workspace", workspacePath: `/repo-${index}` },
-						attachmentId: id,
-					},
+					{ owner },
 					(item) => {
 						if (item.type === "output") events.get(id)!.push(item.data);
 					},
@@ -44,10 +44,13 @@ test("20terminalを保持しても入力・処理済み量通知・状態取得�
 					},
 				),
 			);
+			const attachmentId = currentTerminalInputId(owner);
+			if (!attachmentId) throw new Error("Terminal attachment is unavailable");
+			attachmentIds.push(attachmentId);
 		}
 		const client = await getClient();
 		await Promise.all(
-			[...events.keys()].map(async (attachmentId, index) => {
+			attachmentIds.map(async (attachmentId, index) => {
 				await client.writeTerminalSurface({
 					owner: {
 						variant: {
@@ -83,6 +86,7 @@ test("20terminalを保持しても入力・処理済み量通知・状態取得�
 			await new Promise((resolve) => setTimeout(resolve, 10));
 		await Promise.all(releases.map((release) => release()));
 		return {
+			attachmentIds,
 			paths,
 			outputs: [...events.values()],
 			inputs: window
@@ -110,7 +114,7 @@ test("20terminalを保持しても入力・処理済み量通知・状態取得�
 	for (let index = 0; index < 20; index++) {
 		expect(result.inputs).toContainEqual(
 			expect.objectContaining({
-				attachmentId: `pane-${index}`,
+				attachmentId: result.attachmentIds[index],
 				data: `input-${index}`,
 			}),
 		);
@@ -151,24 +155,29 @@ test("同一terminalの再購読で新しいattachmentのsnapshotと差分を受
 	}));
 	await page.goto("/tests/helpers/client-streams.html");
 	const result = await page.evaluate(async () => {
-		const { subscribeTerminalState } = await import("/src/lib/client.ts");
+		const { subscribeTerminalState, currentTerminalInputId } = await import("/src/lib/client.ts");
 		const owner = { kind: "workspace" as const, workspacePath: "/repo" };
 		const first: string[] = [];
 		const second: string[] = [];
-		const stopFirst = await subscribeTerminalState({ owner, attachmentId: "first" }, item => first.push(item.type), () => {});
+		const stopFirst = await subscribeTerminalState({ owner }, item => first.push(item.type), () => {});
+		const firstId = currentTerminalInputId(owner);
 		let received: () => void = () => {};
 		const output = new Promise<void>(resolve => { received = resolve; });
-		const stopSecond = await subscribeTerminalState({ owner, attachmentId: "second" }, item => {
+		const stopSecond = await subscribeTerminalState({ owner }, item => {
 			second.push(item.type);
 			if (item.type === "output") received();
 		}, () => {});
-		await window.__releashTerminalEvent("first", { type: "output", session_key: "terminal", data: "stale", sequence: 1 });
-		await window.__releashTerminalEvent("second", { type: "output", session_key: "terminal", data: "new", sequence: 2 });
+		const secondId = currentTerminalInputId(owner);
+		if (!firstId || !secondId) throw new Error("Terminal attachment is unavailable");
+		await window.__releashTerminalEvent(firstId, { type: "output", session_key: "terminal", data: "stale", sequence: 1 });
+		await window.__releashTerminalEvent(secondId, { type: "output", session_key: "terminal", data: "new", sequence: 2 });
 		await output;
 		await stopFirst();
 		await stopSecond();
-		return { first, second };
+		return { first, second, firstId, secondId };
 	});
-	expect(result).toEqual({ first: ["snapshot", "snapshot", "output"], second: ["snapshot", "output"] });
-	expect(mock.clientRequests.filter(request => request.command === "start_state_subscription").map(request => request.args.attachmentId)).toEqual(["first", "second"]);
+	expect(result.first).toEqual(["snapshot", "snapshot", "output"]);
+	expect(result.second).toEqual(["snapshot", "output"]);
+	expect(result.firstId).not.toBe(result.secondId);
+	expect(mock.clientRequests.filter(request => request.command === "start_state_subscription").map(request => request.args.attachmentId)).toEqual([result.firstId, result.secondId]);
 });

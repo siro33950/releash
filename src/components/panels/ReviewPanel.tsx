@@ -27,6 +27,7 @@ import { useReviewFileView } from "@/hooks/useReviewFileView";
 import { useReviewPanel } from "@/hooks/useReviewPanel";
 import { useReviewSnapshot } from "@/hooks/useReviewSnapshot";
 import { invokeClient as invoke } from "@/lib/client";
+import { showClientError } from "@/lib/clientErrorNotice";
 import { isMarkdownFile } from "@/lib/markdownUtils";
 import { cn } from "@/lib/utils";
 import type { ThreadNavigationTarget } from "@/types/diffComment";
@@ -196,10 +197,12 @@ export function ReviewPanel({
 		return [...stagedTree, ...changesTree];
 	}, [diffBase, branchBaseTree, stagedTree, changesTree]);
 
-	const { fileNavigation, goToPrevFile, goToNextFile } = useFileNavigation(
-		navigationTree,
-		selectedFile,
-	);
+	const {
+		fileNavigation,
+		error: navigationError,
+		goToPrevFile,
+		goToNextFile,
+	} = useFileNavigation(navigationTree, selectedFile);
 
 	const determineSectionForFile = useCallback(
 		(path: string): DiffSection => {
@@ -456,10 +459,16 @@ export function ReviewPanel({
 			コメントを取得できません: {commentsError}
 		</div>
 	);
+	const navigationAlert = navigationError && (
+		<div role="alert" className="px-3 py-2 text-sm text-destructive">
+			File navigation failed: {navigationError}
+		</div>
+	);
 	if (totalFileCount === 0) {
 		return (
 			<div className="flex flex-col h-full">
 				{commentsAlert}
+				{navigationAlert}
 				<div className="flex items-center justify-between px-2 h-[32px] border-b border-border bg-card shrink-0">
 					<div className="w-5" />
 					<div className="flex items-center gap-1">
@@ -488,6 +497,7 @@ export function ReviewPanel({
 											folderPath: rootPath,
 										}).catch((e: unknown) => {
 											console.error("Failed to open folder in editor:", e);
+											showClientError(e);
 										});
 									}}
 									className="h-5 w-5 text-muted-foreground hover:text-foreground"
@@ -512,6 +522,7 @@ export function ReviewPanel({
 	return (
 		<div className="flex flex-col h-full">
 			{commentsAlert}
+			{navigationAlert}
 			{/* Header */}
 			<div className="flex items-center justify-between px-2 h-[32px] border-b border-border bg-card shrink-0">
 				<Tooltip>
@@ -562,6 +573,7 @@ export function ReviewPanel({
 										folderPath: rootPath,
 									}).catch((e: unknown) => {
 										console.error("Failed to open folder in editor:", e);
+										showClientError(e);
 									});
 								}}
 								className="h-5 w-5 text-muted-foreground hover:text-foreground"

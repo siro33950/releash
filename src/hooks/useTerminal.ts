@@ -1,18 +1,22 @@
+import { getOption } from "@bufbuild/protobuf";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { type ITheme, Terminal } from "@xterm/xterm";
 import { type RefObject, useCallback, useEffect, useMemo, useRef } from "react";
+import { default_timeout_ms } from "@/generated/client_options_pb";
+import { ClientService } from "@/generated/client_pb";
 import type {
 	ClientCommandArgs,
 	ClientCommandResults,
 } from "@/generated/client_types";
 import {
 	type ClientCommand,
+	currentTerminalInputId,
 	invokeClient as invoke,
-	onClientConnection,
 	reportTerminalProcessed,
 	subscribeTerminalState,
 } from "@/lib/client";
+import { showClientError } from "@/lib/clientErrorNotice";
 import { getErrorMessage } from "@/lib/errorMessage";
 import {
 	reportMountedXtermMounted,
@@ -260,6 +264,9 @@ export function useTerminal(
 
 		let attachmentId: string | null = null;
 		let inputSequence = 0;
+		let failedInputId: string | null = null;
+		let startupFailure: string | null = null;
+		let pendingInput = Promise.resolve();
 		let pendingPerformanceInputSequences: number[] = [];
 		const startupInput = new StartupInputBuffer((dropped) => {
 			console.warn(
@@ -295,6 +302,7 @@ export function useTerminal(
 				cols,
 			}).catch((error) => {
 				console.error("Failed to resize PTY:", error);
+				showClientError(error);
 			});
 		};
 		let recoverAttachment: ((failedEpoch?: number) => void) | null = null;
@@ -313,7 +321,9 @@ export function useTerminal(
 			void invoke("record_terminal_launch_renderer_phase", {
 				phase,
 				durationMs,
-			});
+			}).catch((error) =>
+				console.error("Terminal launch telemetry failed", error),
+			);
 		};
 		const reportFirstXtermParsed = () => {
 			if (
@@ -390,6 +400,7 @@ export function useTerminal(
 								"Failed to kill detached pending terminal PTY:",
 								error,
 							);
+							showClientError(error);
 						},
 					);
 				} else if (!shouldKillDetachedPty && result) {
@@ -430,7 +441,6 @@ export function useTerminal(
 			const attachStream = async (recovery: boolean) => {
 				const previousReleaseStream = releaseStream;
 				const epoch = ++attachmentEpoch;
-				const nextAttachmentId = crypto.randomUUID();
 				let markAttached!: () => void;
 				const attached = new Promise<void>((resolve) => {
 					markAttached = resolve;
@@ -484,6 +494,7 @@ export function useTerminal(
 						resolveInitialSnapshot();
 					},
 					flushStartupInput: () => {
+						startupFailure = null;
 						if (startupInput.isDone) return;
 						const buffered = startupInput.markDone();
 						if (isRunningRef.current) {
@@ -524,7 +535,7 @@ export function useTerminal(
 						);
 				};
 				const nextReleaseStream = await subscribeTerminalState(
-					{ owner: terminalOwner, attachmentId: nextAttachmentId },
+					{ owner: terminalOwner },
 					handleStreamItem,
 					() => {
 						if (!isMounted || epoch !== attachmentEpoch) return;
@@ -546,9 +557,12 @@ export function useTerminal(
 				// 先に切り替えると、attach完了前の打鍵が新attachment IDと
 				// sequence 0..Nで送られて棄却され、以後の入力sequenceが恒久的に
 				// 欠番となり全打鍵が無音でバッファされ続ける。
-				attachmentId = nextAttachmentId;
+				attachmentId = currentTerminalInputId(terminalOwner);
+				if (!attachmentId)
+					throw new Error("Terminal input attachment is unavailable");
 				markAttached();
 				inputSequence = 0;
+				failedInputId = null;
 				pendingPerformanceInputSequences = [];
 				await releaseAttachment(previousReleaseStream);
 			};
@@ -588,7 +602,11 @@ export function useTerminal(
 				);
 			};
 			await attachStream(false).catch((error) => {
-				if (isMounted) onTerminalErrorRef.current?.(getErrorMessage(error));
+				if (isMounted) {
+					startupFailure = getErrorMessage(error);
+					startupInput.markDone();
+					onTerminalErrorRef.current?.(startupFailure);
+				}
 			});
 			if (!isMounted) {
 				releaseCurrentAttachment();
@@ -601,6 +619,7 @@ export function useTerminal(
 			if (!initialized) return;
 			if (autoFocus) terminal.focus();
 			if (!isMounted) return;
+			startupFailure = null;
 			onTerminalErrorRef.current?.(null);
 			if (!isRunningRef.current) return;
 			onTerminalReadyRef.current?.(streamSessionKey);
@@ -622,64 +641,82 @@ export function useTerminal(
 			void initTerminal()
 				.catch((error) => {
 					console.error("Failed to initialize PTY:", error);
-					if (isMounted)
-						onTerminalErrorRef.current?.(
+					if (isMounted) {
+						startupFailure =
 							error instanceof TerminalBackendCommandError
 								? error.message
-								: `Failed to initialize terminal: ${getErrorMessage(error)}`,
-						);
+								: `Failed to initialize terminal: ${getErrorMessage(error)}`;
+						startupInput.markDone();
+						onTerminalErrorRef.current?.(startupFailure);
+					}
 				})
 				.finally(() => {
 					initializing = false;
 				});
 		};
-		const releaseConnection = onClientConnection((connected) => {
-			if (!isMounted) return;
-			if (!connected) {
-				attachmentEpoch += 1;
-				attachmentId = null;
-				void releaseAttachment(releaseStream);
-				releaseStream = null;
-			} else if (recoverAttachment) {
-				recoverAttachment(attachmentEpoch);
-			} else {
-				initialize();
-			}
-		});
 		initialize();
 
 		deliverInput = (data: string) => {
-			const activeAttachmentId = attachmentId;
-			if (!activeAttachmentId) return;
-			const writeEpoch = attachmentEpoch;
-			const sequence = inputSequence;
-			inputSequence += 1;
+			const deadline =
+				Date.now() + getOption(ClientService, default_timeout_ms);
 			const clientStartedAtUnixMs = performanceProbeActive
 				? Date.now()
 				: undefined;
-			if (performanceProbeActive) {
-				pendingPerformanceInputSequences.push(sequence);
-				reportTerminalInputPerformancePoint(sequence, "on_data");
-			}
-
-			void invoke("write_terminal_surface", {
-				owner: terminalOwner,
-				attachmentId: activeAttachmentId,
-				sequence,
-				data,
-				...(clientStartedAtUnixMs === undefined
-					? {}
-					: { clientStartedAtUnixMs: clientStartedAtUnixMs }),
-			}).catch((error) => {
-				if (!isMounted || writeEpoch !== attachmentEpoch) return;
-				const message = getErrorMessage(error);
-				console.error("Failed to dispatch terminal input:", error);
-				onTerminalErrorRef.current?.(message);
-				recoverAttachment?.();
-			});
+			pendingInput = pendingInput
+				.then(async () => {
+					if (Date.now() > deadline)
+						throw new Error("Terminal input timed out");
+					const activeAttachmentId = currentTerminalInputId(terminalOwner);
+					if (!activeAttachmentId)
+						throw new Error("Terminal input attachment is unavailable");
+					if (activeAttachmentId !== attachmentId) {
+						attachmentId = activeAttachmentId;
+						inputSequence = 0;
+						failedInputId = null;
+						pendingPerformanceInputSequences = [];
+					}
+					if (failedInputId === activeAttachmentId)
+						throw new Error("Terminal input attachment is unavailable");
+					const sequence = inputSequence++;
+					if (performanceProbeActive) {
+						pendingPerformanceInputSequences.push(sequence);
+						reportTerminalInputPerformancePoint(sequence, "on_data");
+					}
+					try {
+						await invoke("write_terminal_surface", {
+							owner: terminalOwner,
+							attachmentId: activeAttachmentId,
+							sequence,
+							data,
+							...(clientStartedAtUnixMs === undefined
+								? {}
+								: { clientStartedAtUnixMs }),
+						});
+					} catch (error) {
+						if (
+							typeof error === "object" &&
+							error !== null &&
+							"code" in error &&
+							error.code === "STALE_TERMINAL_ATTACHMENT"
+						) {
+							failedInputId = activeAttachmentId;
+							recoverAttachment?.();
+						}
+						throw error;
+					}
+				})
+				.catch((error) => {
+					if (!isMounted) return;
+					console.error("Failed to dispatch terminal input:", error);
+					onTerminalErrorRef.current?.(getErrorMessage(error));
+				});
 		};
 		const dispatchInput = (data: string) => {
 			if (!isMounted || data.length === 0) return;
+			if (startupFailure) {
+				onTerminalErrorRef.current?.(startupFailure);
+				return;
+			}
 			if (!startupInput.isDone) {
 				startupInput.push(data);
 				return;
@@ -745,7 +782,6 @@ export function useTerminal(
 		return () => {
 			isMounted = false;
 			resolveUnmount();
-			releaseConnection();
 			unregisterBufferReader();
 			inputDispatchRef.current = () => {};
 			liveOutputScheduler.dispose();
@@ -758,6 +794,7 @@ export function useTerminal(
 				invoke("kill_terminal_surface", { owner: terminalOwner }).catch(
 					(error) => {
 						console.error("Failed to kill terminal PTY on unmount:", error);
+						showClientError(error);
 					},
 				);
 			}

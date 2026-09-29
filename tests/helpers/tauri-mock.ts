@@ -599,6 +599,10 @@ export async function setupTauriMock(page: Page, config: MockConfig) {
 				return value;
 			}
 
+			if (cmd === "subscribe_daemon_status") {
+				(args.channel as { onmessage?: (status: unknown) => void }).onmessage?.({ phase: "ready" });
+				return null;
+			}
 			if (cmd === "get_daemon_status") return { phase: "ready" };
 			if (cmd === "validate_daemon_connection") return null;
 			if (cmd === "get_login_item_status") return { enabled: false, requiresApproval: false, reason: null };
@@ -629,7 +633,7 @@ export async function setupTauriMock(page: Page, config: MockConfig) {
 				if (
 					!cmd.startsWith("plugin:") &&
 					![
-						"get_daemon_status", "retry_daemon", "quit_desktop", "restart_desktop", "validate_daemon_connection", "get_login_item_status", "open_login_item_settings", "install_cli", "set_login_item_enabled", "check_desktop_update", "install_desktop_update",
+						"get_daemon_status", "subscribe_daemon_status", "retry_daemon", "quit_desktop", "restart_desktop", "validate_daemon_connection", "get_login_item_status", "open_login_item_settings", "install_cli", "set_login_item_enabled", "check_desktop_update", "install_desktop_update",
 						"complete_desktop_restoration", "fail_desktop_restoration", "get_client_endpoint",
 						"set_menu_items_enabled",
 					].includes(cmd)

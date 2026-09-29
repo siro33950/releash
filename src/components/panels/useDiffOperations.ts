@@ -1,5 +1,6 @@
 import { useCallback } from "react";
 import { invokeClient as invoke } from "@/lib/client";
+import { showClientError } from "@/lib/clientErrorNotice";
 import type { DiffBase, DiffSection } from "@/types/settings";
 
 export interface UseDiffOperationsParams {
@@ -53,9 +54,11 @@ export function useDiffOperations({
 						"Review group target is stale; waiting for the next snapshot:",
 						e,
 					);
+					showClientError(e);
 					return;
 				}
 				console.error("Group action failed:", e);
+				showClientError(e);
 			}
 		},
 		[rootPath, filePath, section, base],

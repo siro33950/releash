@@ -26,13 +26,25 @@ const bundle = await build({
     stdin: { contents: 'export * from "./src/lib/client.ts";', resolveDir: process.cwd() },
     bundle: true, platform: "node", format: "esm", write: false,
 });
-const { getClient, invokeClient, refreshClient } = await import(`data:text/javascript;base64,${Buffer.from(`${bundle.outputFiles[0].text}\n//# sourceURL=releash-client-fixture.mjs`).toString("base64")}`);
+const { getClient, getConnectionState, invokeClient, onConnectionStateChange, subscribeState } = await import(`data:text/javascript;base64,${Buffer.from(`${bundle.outputFiles[0].text}\n//# sourceURL=releash-client-fixture.mjs`).toString("base64")}`);
+const waitForPhase = (phase) => new Promise((resolve) => {
+    if (getConnectionState() === phase) return resolve();
+    const release = onConnectionStateChange(() => {
+        if (getConnectionState() !== phase) return;
+        release();
+        resolve();
+    });
+});
 try {
     await assert.rejects(invokeClient("update_crash_reporting", { enabled: true }));
     await invokeClient("report_mounted_xterm_count", { count: 3 });
     await invokeClient("update_crash_reporting", { enabled: false });
+    const failed = waitForPhase("TRANSIENT_FAILURE");
+    const release = subscribeState("repository-paths", () => {});
+    await failed;
+    release();
     url = process.argv[3];
-    refreshClient();
+    await waitForPhase("READY");
     await getClient();
     assert.equal(requests.filter(path => path.endsWith("/GetServerInfo")).length, 2);
     assert.equal(requests.filter(path => path.endsWith("/UpdateCrashReporting")).length, 2);

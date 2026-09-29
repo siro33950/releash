@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { invokeClient as invoke } from "@/lib/client";
+import { getErrorMessage } from "@/lib/errorMessage";
 import type { DiffTreeNode } from "@/types/review";
 
 export interface FileNavigationResult {
@@ -22,19 +23,32 @@ export function useFileNavigation(
 ) {
 	const [navigation, setNavigation] =
 		useState<FileNavigationResult>(EMPTY_NAVIGATION);
+	const [error, setError] = useState<string | null>(null);
 
 	useEffect(() => {
+		let active = true;
 		if (!currentFile || tree.length === 0) {
 			setNavigation(EMPTY_NAVIGATION);
+			setError(null);
 			return;
 		}
+		setError(null);
 
 		invoke("get_file_navigation", {
 			tree,
 			currentFile,
 		})
-			.then(setNavigation)
-			.catch(() => setNavigation(EMPTY_NAVIGATION));
+			.then((result) => {
+				if (active) setNavigation(result);
+			})
+			.catch((cause) => {
+				if (!active) return;
+				setNavigation(EMPTY_NAVIGATION);
+				setError(getErrorMessage(cause));
+			});
+		return () => {
+			active = false;
+		};
 	}, [tree, currentFile]);
 
 	const goToPrevFile = useCallback(() => {
@@ -47,6 +61,7 @@ export function useFileNavigation(
 
 	return {
 		fileNavigation: navigation,
+		error,
 		goToPrevFile,
 		goToNextFile,
 	};

@@ -2708,6 +2708,7 @@ service ClientService {
   option (reconnect_status_code) = RECONNECT_STATUS_CODE_RESOURCE_EXHAUSTED;
   option (state_stream_silence_ms) = 20000;
   option (default_timeout_ms) = 120000;
+  option (min_connect_timeout_ms) = 20000;
   rpc OpenStateStream(OpenStateStreamRequest) returns (stream StateSubscriptionEvent);
   rpc StartStateSubscription(StartStateSubscriptionRequest) returns (Unit);
   rpc StopStateSubscription(StopStateSubscriptionRequest) returns (Unit);

@@ -1,5 +1,6 @@
 import { useCallback } from "react";
 import { invokeClient as invoke } from "@/lib/client";
+import { showClientError } from "@/lib/clientErrorNotice";
 import { useStateSubscription } from "./useStateSubscription";
 
 export function useIssues(repoPath: string) {
@@ -8,6 +9,7 @@ export function useIssues(repoPath: string) {
 		() =>
 			invoke("fetch_issues", { repoPath }).catch((error) => {
 				console.error("Failed to fetch issues:", error);
+				showClientError(error);
 			}),
 		[repoPath],
 	);

@@ -45,26 +45,25 @@ describe("useWorkflowConfig", () => {
 		expect(result.current.workflows).toEqual([]);
 	});
 
-	it("should call delete_workflow without refetching", async () => {
+	it("一覧の更新は購読から反映される", () => {
 		states.publish("workflows", mockWorkflows);
 		const { result } = renderHook(() => useWorkflowConfig(true));
-		await act(async () => {
-			await result.current.deleteWorkflow("my-workflow");
-		});
-		expect(mocks.invoke).toHaveBeenCalledWith("delete_workflow", {
-			name: "my-workflow",
-		});
-		expect(mocks.invoke).toHaveBeenCalledTimes(1);
+		act(() => states.publish("workflows", []));
+		expect(result.current.workflows).toEqual([]);
+		expect(mocks.invoke).not.toHaveBeenCalled();
 	});
 
-	it("should call open_workflow_in_editor", async () => {
-		const { result } = renderHook(() => useWorkflowConfig(true));
-		await act(async () => {
-			await result.current.openInEditor("quick-fix");
-		});
-		expect(mocks.invoke).toHaveBeenCalledWith("open_workflow_in_editor", {
-			name: "quick-fix",
-		});
+	it("メニューを開いたとき購読を始める", () => {
+		const { result, rerender } = renderHook(
+			({ open }) => useWorkflowConfig(open),
+			{
+				initialProps: { open: false },
+			},
+		);
+		expect(result.current.loading).toBe(false);
+		rerender({ open: true });
+		expect(result.current.loading).toBe(true);
+		expect(states.subscribeState).toHaveBeenCalled();
 	});
 
 	it("購読の失敗をerrorに出す", () => {
@@ -75,21 +74,18 @@ describe("useWorkflowConfig", () => {
 		expect(result.current.workflows).toEqual([]);
 	});
 
-	it("should set error when deleteWorkflow fails", async () => {
-		mocks.invoke.mockRejectedValue("delete error");
+	it("購読の失敗後に値が届けばエラーを消す", () => {
 		const { result } = renderHook(() => useWorkflowConfig(true));
-		await act(async () => {
-			await result.current.deleteWorkflow("my-workflow");
-		});
-		expect(result.current.error).toBe("delete error");
+		act(() => states.fail("workflows", "fetch error"));
+		act(() => states.publish("workflows", mockWorkflows));
+		expect(result.current.error).toBeNull();
+		expect(result.current.workflows).toEqual(mockWorkflows);
 	});
 
-	it("should set error when openInEditor fails", async () => {
-		mocks.invoke.mockRejectedValue("editor error");
+	it("購読エラーでも未使用の単発呼び出しを行わない", () => {
 		const { result } = renderHook(() => useWorkflowConfig(true));
-		await act(async () => {
-			await result.current.openInEditor("quick-fix");
-		});
-		expect(result.current.error).toBe("editor error");
+		act(() => states.fail("workflows", "fetch error"));
+		expect(result.current.error).toBe("fetch error");
+		expect(mocks.invoke).not.toHaveBeenCalled();
 	});
 });

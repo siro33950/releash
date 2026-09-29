@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef } from "react";
 import { invokeClient as invoke, subscribeState } from "@/lib/client";
+import { showClientError } from "@/lib/clientErrorNotice";
 import {
 	type WorkspaceState,
 	worktreeNameFromPath,
@@ -38,6 +39,7 @@ export function useWorkspaceStateCache(): UseWorkspaceStateCacheReturn {
 			})
 			.catch((e) => {
 				console.error("Failed to save workspace state:", e);
+				showClientError(e);
 			});
 	}, []);
 

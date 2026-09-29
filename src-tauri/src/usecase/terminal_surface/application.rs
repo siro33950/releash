@@ -349,7 +349,7 @@ impl TerminalSurfaceApplication {
             .record_terminal_input_admission(attachment_id, sequence);
         self.gateway
             .write_attached(&owner.stable_key(), attachment_id, sequence, data)
-            .map_err(|error| UsecaseError::Gateway(error.to_string()))
+            .map_err(UsecaseError::from)
     }
 
     pub(crate) fn write_paths(
