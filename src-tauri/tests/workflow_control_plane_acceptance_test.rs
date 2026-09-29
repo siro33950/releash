@@ -1079,7 +1079,7 @@ async fn test_issue_1826_session木のarchiveはabortしrestoreでは手動resum
     assert_eq!(archived.status, AcceptanceWorkflowExecutionStatus::Aborted);
     assert_eq!(
         archived.node_executions[0].status,
-        AcceptanceNodeExecutionStatus::Aborted
+        AcceptanceNodeExecutionStatus::Succeeded
     );
 
     host.restore_agent_session(&session_id).await.unwrap();
@@ -1193,13 +1193,6 @@ async fn test_issue_1700_stopとworkingを何度往復してもrunning_nodeの�
             host.workspace_node_status(&node.id).await.unwrap(),
             Some(AcceptanceWorkspaceNodeStatus::Active)
         );
-        assert_eq!(
-            host.workspace_node_detail_status(&worktree, &node.id)
-                .await
-                .unwrap()
-                .as_deref(),
-            Some("active")
-        );
 
         emit_provider_stop(
             &host,
@@ -1220,13 +1213,6 @@ async fn test_issue_1700_stopとworkingを何度往復してもrunning_nodeの�
             Some(AcceptanceWorkspaceNodeStatus::Attention)
         );
         assert_eq!(
-            host.workspace_node_detail_status(&worktree, &node.id)
-                .await
-                .unwrap()
-                .as_deref(),
-            Some("attention")
-        );
-        assert_eq!(
             host.execution_fact_event_types(&execution_id)
                 .await
                 .unwrap()
@@ -1241,7 +1227,7 @@ async fn test_issue_1700_stopとworkingを何度往復してもrunning_nodeの�
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn test_issue_1700_waiting_approval_nodeのstopも活動分類をattentionへ戻す() {
+async fn test_issue_1700_waiting_approval_nodeはworkingとstopの両方でattentionを維持する() {
     let root = tempfile::TempDir::new().unwrap();
     let worktree = root.path().join("waiting-approval-repeated-stop");
     std::fs::create_dir_all(&worktree).unwrap();
@@ -1293,7 +1279,7 @@ async fn test_issue_1700_waiting_approval_nodeのstopも活動分類をattention
     .await;
     assert_eq!(
         host.workspace_node_status(&node.id).await.unwrap(),
-        Some(AcceptanceWorkspaceNodeStatus::Active)
+        Some(AcceptanceWorkspaceNodeStatus::Attention)
     );
     emit_provider_stop(
         &host,
@@ -1311,13 +1297,6 @@ async fn test_issue_1700_waiting_approval_nodeのstopも活動分類をattention
     assert_eq!(
         host.workspace_node_status(&node.id).await.unwrap(),
         Some(AcceptanceWorkspaceNodeStatus::Attention)
-    );
-    assert_eq!(
-        host.workspace_node_detail_status(&worktree, &node.id)
-            .await
-            .unwrap()
-            .as_deref(),
-        Some("attention")
     );
     assert_eq!(
         host.execution_fact_event_types(&execution_id)

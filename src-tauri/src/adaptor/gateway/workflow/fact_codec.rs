@@ -65,6 +65,7 @@ pub(crate) fn event_type(fact: &NodeFact) -> &'static str {
         NodeFact::ApprovalGranted(_) => "approval_granted",
         NodeFact::RetryRequested => "retry_requested",
         NodeFact::ResumeRequested => "resume_requested",
+        NodeFact::StandaloneSessionNodeCompleted => "standalone_session_node_completed",
         NodeFact::ExecutionCompleted => "execution_completed",
         NodeFact::AbortRequested(_) => "abort_requested",
         NodeFact::ArchiveRequested(_) => "archive_requested",
@@ -103,6 +104,7 @@ pub(crate) fn encode_detail(fact: &NodeFact) -> Result<String, serde_json::Error
             archived_at: fact.archived_at,
         }),
         NodeFact::ExecutionCompleted
+        | NodeFact::StandaloneSessionNodeCompleted
         | NodeFact::RetryRequested
         | NodeFact::ResumeRequested
         | NodeFact::RestoreRequested => Ok("{}".to_string()),
@@ -176,6 +178,9 @@ pub(crate) fn decode(event_type: &str, detail: &str) -> Result<NodeFact, NodeFac
         "approval_granted" => parse(event_type, detail).map(NodeFact::ApprovalGranted),
         "retry_requested" => empty(event_type, detail).map(|()| NodeFact::RetryRequested),
         "resume_requested" => empty(event_type, detail).map(|()| NodeFact::ResumeRequested),
+        "standalone_session_node_completed" => {
+            empty(event_type, detail).map(|()| NodeFact::StandaloneSessionNodeCompleted)
+        }
         "execution_completed" => empty(event_type, detail).map(|()| NodeFact::ExecutionCompleted),
         "abort_requested" => {
             empty(event_type, detail)?;

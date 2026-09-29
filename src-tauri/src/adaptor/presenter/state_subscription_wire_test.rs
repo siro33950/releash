@@ -259,7 +259,6 @@ fn test_購読payload_全種類を旧wire型とフィールドへ変換する() 
                 id: "node".into(),
                 title: "Main".into(),
                 status: "running".into(),
-                status_classification: "active".into(),
                 submit_received: false,
                 stop_received: false,
                 waiting_for: None,
@@ -286,9 +285,6 @@ fn test_購読payload_全種類を旧wire型とフィールドへ変換する() 
                     title: Some("Main".into()),
                     status: Some(wire::WorkspaceNodeStatus {
                         value: Some(wire::workspace_node_status::Value::Running as i32),
-                    }),
-                    status_classification: Some(wire::WorkspaceStatusClassification {
-                        value: Some(wire::workspace_status_classification::Value::Active as i32),
                     }),
                     submit_received: Some(false),
                     stop_received: Some(false),

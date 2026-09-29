@@ -512,6 +512,13 @@ pub(super) fn apply_record(
             Ok(())
         }
         NodeFact::ResumeRequested => Ok(()),
+        NodeFact::StandaloneSessionNodeCompleted => {
+            match aggregate.complete_standalone_session_node(id, timestamp) {
+                crate::domain::workflow::entities::workflow_execution::TransitionOutcome::Applied
+                | crate::domain::workflow::entities::workflow_execution::TransitionOutcome::AlreadyApplied => Ok(()),
+                outcome => Err(format!("standalone session node completion failed: {outcome:?}")),
+            }
+        }
         NodeFact::AbortRequested(_) | NodeFact::ExecutionCompleted => {
             aggregate.replay_terminal_fact(&record.fact, timestamp);
             Ok(())

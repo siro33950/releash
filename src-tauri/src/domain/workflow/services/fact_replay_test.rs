@@ -131,6 +131,52 @@ fn session_root() -> TreeRootFact {
     *root
 }
 
+#[test]
+fn test_単独session新規起動_nodeだけ完了しstopとsubmitを受け取る() {
+    let seed =
+        SessionExecutionTreeRootFacts::new(TREE, "/repo", "/repo", ProviderKind::Codex, None)
+            .unwrap();
+    let root_meta = seed.meta.clone();
+    let facts = seed.into_facts();
+    let mut log = FactLog::new();
+    for (meta, fact) in facts.iter().cloned() {
+        log.push(meta, fact);
+    }
+    let folded = fold_execution_tree(TREE, &log.records).unwrap().unwrap();
+    assert_eq!(folded.aggregate.state(), &RuntimeExecutionState::Running);
+    assert_eq!(
+        folded.aggregate.node_executions()[0].status,
+        RuntimeNodeExecutionStatus::Succeeded
+    );
+    log.push(root_meta.clone(), stop());
+    log.push(root_meta.clone(), submit());
+    let folded = fold_execution_tree(TREE, &log.records).unwrap().unwrap();
+    assert_eq!(folded.aggregate.state(), &RuntimeExecutionState::Completed);
+    assert_eq!(
+        folded.aggregate.node_executions()[0].completion_signals,
+        crate::domain::workflow::NodeCompletionSignalState::Ready
+    );
+    assert_eq!(
+        folded.session_activities[TREE],
+        AgentSessionActivity::AwaitingInstruction
+    );
+
+    let mut legacy = FactLog::new();
+    for (meta, fact) in facts.into_iter().take(2) {
+        legacy.push(meta, fact);
+    }
+    legacy.push(root_meta, stop());
+    assert_eq!(
+        fold_execution_tree(TREE, &legacy.records)
+            .unwrap()
+            .unwrap()
+            .aggregate
+            .node_executions()[0]
+            .status,
+        RuntimeNodeExecutionStatus::Running
+    );
+}
+
 fn started_root(root: TreeRootFact) -> NodeFact {
     NodeFact::Started(StartedFact {
         worktree: None,

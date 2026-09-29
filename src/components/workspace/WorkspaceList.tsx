@@ -210,18 +210,12 @@ function WorkspaceNodeRow({
 			setRenaming(false);
 		}
 	};
-	const nodeIcon =
-		node.status === "unbound" ? (
-			<Loader2
-				className={`size-3.5 shrink-0 animate-spin ${workflowNodeIconClasses[node.status]}`}
-				aria-hidden="true"
-			/>
-		) : (
-			<ContentIcon
-				className={`size-3.5 shrink-0 ${workflowNodeIconClasses[node.status]} ${pulseClassName}`}
-				aria-hidden="true"
-			/>
-		);
+	const nodeIcon = (
+		<ContentIcon
+			className={`size-3.5 shrink-0 ${workflowNodeIconClasses[node.status]} ${pulseClassName}`}
+			aria-hidden="true"
+		/>
+	);
 	return (
 		<div
 			className={`group flex h-8 w-full items-center gap-2 rounded-md pr-2 text-left text-sm transition-colors ${

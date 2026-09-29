@@ -9,7 +9,6 @@ const classifications: WorkspaceNodeStatusClassification[] = [
 	"active",
 	"attention",
 	"idle",
-	"unbound",
 ];
 
 describe("Workspace Node status presentation", () => {
@@ -21,7 +20,6 @@ describe("Workspace Node status presentation", () => {
 			active: "text-blue-600 dark:text-blue-300",
 			attention: "text-yellow-600 dark:text-yellow-300",
 			idle: "text-green-600 dark:text-green-300",
-			unbound: "text-muted-foreground",
 		});
 	});
 

@@ -270,6 +270,7 @@ fn standalone_session_title(tree_id: &str, records: &[NodeFactRecord]) -> String
         workflow_definition: folded.aggregate.workflow.as_ref(),
         node_executions: &folded.aggregate.node_executions,
         retry_predecessors: &folded.aggregate.retry_predecessors,
+        delegate_waiting_node_ids: &Default::default(),
         execution_active: folded.aggregate.is_active(),
         started_at: folded.aggregate.started_at,
         updated_at: folded.aggregate.updated_at,

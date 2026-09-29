@@ -21,7 +21,8 @@ fn fixture() -> (
     )
     .unwrap();
     let meta = facts.meta.clone();
-    fact_log::append_fact_batch_for_seed(&store, &facts.into_facts(), 1, "seed-archive").unwrap();
+    let facts = facts.into_facts();
+    fact_log::append_fact_batch_for_seed(&store, &facts[..2], 1, "seed-archive").unwrap();
     let repository = ExecutionTreeArchiveFactRepository::new(store.clone(), directory.path());
     (directory, store, repository, meta)
 }

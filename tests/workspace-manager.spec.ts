@@ -210,7 +210,6 @@ test.describe("Workspace Manager", () => {
 			"session-node": agentSessionId,
 			"node-detail": {
 				processPresence: "unknown",
-				statusClassification: "active",
 				id: agentSessionId,
 				title: "New Session",
 				status: "running",
@@ -354,7 +353,6 @@ test.describe("Workspace Manager", () => {
 				window.__RELEASH_BACKEND__?.setState("node-detail",
 					{
 						processPresence: "unknown",
-						statusClassification: "active",
 						id: workflowNode.id,
 						title: workflowNode.title,
 						status: "running",
@@ -453,7 +451,6 @@ test.describe("Workspace Manager", () => {
 			},
 			"node-detail": {
 				processPresence: "unknown",
-				statusClassification: "attention",
 				id: "node-workflow-session",
 				title: "Review changes",
 				status: "waiting",
@@ -635,7 +632,6 @@ test.describe("Workspace Manager", () => {
 			},
 			"node-detail": {
 				processPresence: "unknown",
-				statusClassification: "idle",
 				id: "node-command-opaque",
 				title: "Deploy",
 				status: "completed",
@@ -765,7 +761,6 @@ test.describe("Workspace Manager", () => {
 			archive_workspace_workflow_execution: null,
 			"node-detail": {
 				processPresence: "unknown",
-				statusClassification: "idle",
 				id: selectedNodeId,
 				title: "Archive selected",
 				status: "completed",
@@ -866,7 +861,6 @@ test.describe("Workspace Manager", () => {
 			},
 			"node-detail": {
 				processPresence: "unknown",
-				statusClassification: "active",
 				id: "occurrence-a-1",
 				title: "Loop step",
 				status: "running",
@@ -943,7 +937,6 @@ test.describe("Workspace Manager", () => {
 				});
 				internals.setState("node-detail", {
 					processPresence: "unknown",
-					statusClassification: "idle",
 					id: "occurrence-a-1",
 					title: "Loop step",
 					status: "completed",
@@ -993,7 +986,6 @@ test.describe("Workspace Manager", () => {
 				if (!internals) throw new Error("Tauri mock not initialized");
 				internals.setState("node-detail", {
 					processPresence: "unknown",
-					statusClassification: "active",
 					id: "occurrence-a-2",
 					title: "Loop step",
 					status: "running",

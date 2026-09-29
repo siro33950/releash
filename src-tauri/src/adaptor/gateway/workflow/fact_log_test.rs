@@ -1009,7 +1009,7 @@ mod reconciliation_tests {
     }
 
     #[tokio::test]
-    async fn test_session起動由来のstop受信済みnodeをreconcileしてもattentionを維持する() {
+    async fn test_session起動由来のstop受信済みnodeをreconcileしてもidleを維持する() {
         let (_root, store) = open_store();
         let session_id = "agent-session-restart";
         LocalAgentSessionRepository::new(store.clone())
@@ -1070,7 +1070,7 @@ mod reconciliation_tests {
             .unwrap();
         assert_eq!(
             node.status_classification,
-            WorkspaceNodeStatusClassification::Attention
+            WorkspaceNodeStatusClassification::Idle
         );
     }
 
@@ -1356,9 +1356,13 @@ mod round_trip_tests {
             .is_empty());
         append_fact_batch_for_seed(&store, &facts, 1, "session-seed-atomic").unwrap();
         let records = read_tree_records(&store, session_id).await.unwrap();
-        assert_eq!(records.len(), 2);
+        assert_eq!(records.len(), 3);
         assert_eq!(fact_codec::event_type(&records[0].fact), "started");
         assert_eq!(fact_codec::event_type(&records[1].fact), "session_attached");
+        assert_eq!(
+            fact_codec::event_type(&records[2].fact),
+            "standalone_session_node_completed"
+        );
     }
 
     /// エンジンが発するイベント列を写像して append した事実ログが、

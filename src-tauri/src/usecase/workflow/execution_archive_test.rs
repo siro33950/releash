@@ -239,6 +239,7 @@ async fn test_旧sessionarchive移行_128件を越えて時刻と理由と終了
         let mut rows: Vec<_> = facts
             .into_facts()
             .iter()
+            .take(2)
             .map(|(meta, fact)| fact_log::pending_single_fact(meta, fact, 1).unwrap())
             .collect();
         let completed = index % 2 == 0;

@@ -140,7 +140,6 @@ pub(crate) struct WorkspaceNodeDetailDto {
     pub id: String,
     pub title: String,
     pub status: String,
-    pub status_classification: String,
     pub submit_received: bool,
     pub stop_received: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -540,7 +539,7 @@ mod tests {
                         (fanout.status.as_str(), Some(fanout.children.as_slice()))
                     }
                 };
-                assert!(["active", "attention", "idle", "unbound"].contains(&status));
+                assert!(["active", "attention", "idle"].contains(&status));
                 assert_ne!(status, "interrupted");
                 if let Some(children) = children {
                     assert_classifications(children);

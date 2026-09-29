@@ -107,6 +107,13 @@ impl SqliteWorkspaceTreeRepository {
                 );
             }
         }
+        let delegate_waiting_node_ids = folded
+            .aggregate
+            .node_executions
+            .iter()
+            .filter(|node| folded.aggregate.delegate_waits_for_child(&node.id))
+            .map(|node| node.id.clone())
+            .collect();
         crate::domain::workspace_tree::runtime_snapshot_nodes(RuntimeSnapshotNodeProjection {
             process_presences: &process_presences,
             execution_id: &folded.aggregate.id,
@@ -115,6 +122,7 @@ impl SqliteWorkspaceTreeRepository {
             workflow_definition: folded.aggregate.workflow.as_ref(),
             node_executions: &folded.aggregate.node_executions,
             retry_predecessors: &folded.aggregate.retry_predecessors,
+            delegate_waiting_node_ids: &delegate_waiting_node_ids,
             execution_active: folded.aggregate.is_active(),
             started_at: folded.aggregate.started_at,
             updated_at: folded.aggregate.updated_at,

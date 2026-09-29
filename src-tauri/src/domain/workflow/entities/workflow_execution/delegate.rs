@@ -31,7 +31,6 @@ impl ExecutionTree {
             .is_some_and(|node| node.completion.delegate.is_some())
     }
 
-    #[cfg(test)]
     pub fn delegate_waits_for_child(&self, id: &str) -> bool {
         self.delegates.get(id).is_some_and(|state| {
             matches!(

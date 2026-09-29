@@ -342,6 +342,9 @@ fn test_状態分類_到達不能なfailureを公開せず番号と名前を予�
     assert!(status.reserved_names().any(|name| name == "failure"));
     assert!(status.get_value(2).is_none());
     assert!(status.get_value_by_name("failure").is_none());
+    assert!(status.reserved_ranges().any(|range| range.contains(&4)));
+    assert!(status.reserved_names().any(|name| name == "unbound"));
+    assert!(status.get_value(4).is_none());
 }
 
 #[test]

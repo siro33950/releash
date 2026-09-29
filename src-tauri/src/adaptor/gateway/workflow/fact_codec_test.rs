@@ -72,6 +72,7 @@ mod vocabulary_tests {
             }),
             NodeFact::RetryRequested,
             NodeFact::ResumeRequested,
+            NodeFact::StandaloneSessionNodeCompleted,
             NodeFact::ExecutionCompleted,
             NodeFact::AbortRequested(Default::default()),
             NodeFact::ArchiveRequested(ArchiveRequestedFact {
@@ -103,6 +104,7 @@ mod vocabulary_tests {
                 "session_continuation_admitted",
                 "retry_requested",
                 "resume_requested",
+                "standalone_session_node_completed",
                 "execution_completed",
                 "abort_requested",
                 "archive_requested",

@@ -138,7 +138,7 @@ async fn test_agent_session_repository_単独session作成をnode_eventsへ記�
     let records = fact_log::read_tree_records(&store, "agent-session-1")
         .await
         .unwrap();
-    assert_eq!(records.len(), 2);
+    assert_eq!(records.len(), 3);
     let record = &records[0];
     assert_eq!(record.meta.tree_id, "agent-session-1");
     assert_eq!(record.meta.node_execution_id, "agent-session-1");
@@ -172,6 +172,10 @@ async fn test_agent_session_repository_単独session作成をnode_eventsへ記�
                 && attached.provider_session_id.is_none()
                 && attached.transcript_ref.is_none()
     ));
+    assert!(matches!(
+        &records[2].fact,
+        NodeFact::StandaloneSessionNodeCompleted
+    ));
     drop(repository);
     drop(store);
 
@@ -182,7 +186,7 @@ async fn test_agent_session_repository_単独session作成をnode_eventsへ記�
         .unwrap()
         .unwrap();
 
-    assert_eq!(loaded.revision(), 2);
+    assert_eq!(loaded.revision(), 3);
     assert_eq!(loaded.session().id(), "agent-session-1");
     assert_eq!(
         loaded.session().workspace().as_str(),
@@ -695,7 +699,11 @@ async fn test_agent_session_repository_同一idの再createを拒否する() {
     );
     assert_eq!(
         tree_event_types(&store, "agent-session-1").await,
-        ["started", "session_attached"]
+        [
+            "started",
+            "session_attached",
+            "standalone_session_node_completed"
+        ]
     );
 }
 
@@ -821,6 +829,7 @@ async fn test_agent_session_repository_provider紐付けと状態遷移を事実
         [
             "started",
             "session_attached",
+            "standalone_session_node_completed",
             "session_attached",
             "process_exited"
         ]
@@ -835,7 +844,7 @@ async fn test_agent_session_repository_provider紐付けと状態遷移を事実
         .unwrap()
         .unwrap();
 
-    assert_eq!(loaded.revision(), 4);
+    assert_eq!(loaded.revision(), 5);
     assert_eq!(
         loaded.session().provider_session_id(),
         Some("provider-session-1")
@@ -952,7 +961,7 @@ async fn test_agent_session_repository_openかつprovider_session確定済みの
         sessions[0].session().provider_session_title(),
         Some("Current title")
     );
-    assert_eq!(sessions[0].revision(), 5);
+    assert_eq!(sessions[0].revision(), 6);
 }
 
 #[tokio::test]
@@ -1000,6 +1009,7 @@ async fn test_agent_session_repository_renameとproviderタイトルを対応す
         [
             "started",
             "session_attached",
+            "standalone_session_node_completed",
             "session_attached",
             "session_node_renamed",
             "provider_session_title_observed",
@@ -1120,7 +1130,7 @@ async fn test_agent_session_repository_異常終了したsession起動木をresu
             .node_execution("agent-session-abnormal-resume")
             .unwrap()
             .status,
-        crate::domain::workflow::entities::workflow_execution::RuntimeNodeExecutionStatus::Running
+        crate::domain::workflow::entities::workflow_execution::RuntimeNodeExecutionStatus::Succeeded
     );
 
     saved
@@ -1147,7 +1157,7 @@ async fn test_agent_session_repository_異常終了したsession起動木をresu
             .node_execution("agent-session-abnormal-resume")
             .unwrap()
             .status,
-        crate::domain::workflow::entities::workflow_execution::RuntimeNodeExecutionStatus::Running
+        crate::domain::workflow::entities::workflow_execution::RuntimeNodeExecutionStatus::Succeeded
     );
 }
 
@@ -1277,6 +1287,7 @@ async fn test_agent_session_repository_resumeとarchiveとrestoreを行として
         [
             "started",
             "session_attached",
+            "standalone_session_node_completed",
             "session_attached",
             "process_exited",
             "resume_requested",
@@ -1524,7 +1535,7 @@ async fn test_agent_session_repository永続化失敗時に所有権も導出状
         && matches!(failure.source, crate::domain::failure::StorageFailureSource::Commit(CommitBatchError::StorageUnavailable { .. })))
     );
     let unchanged = repository.find("agent-session-1").await.unwrap().unwrap();
-    assert_eq!(unchanged.revision(), 2);
+    assert_eq!(unchanged.revision(), 3);
     assert_eq!(unchanged.session().provider_session_id(), None);
 
     let second = standalone_session(
@@ -1775,7 +1786,12 @@ async fn test_agent_session_repository_session起動由来の同一要求を既�
     );
     assert_eq!(
         tree_event_types(&store, &session_id).await,
-        ["started", "session_attached", "session_attached"]
+        [
+            "started",
+            "session_attached",
+            "standalone_session_node_completed",
+            "session_attached"
+        ]
     );
     let stream = store
         .load_stream(crate::domain::local_event::LoadStreamRequest {

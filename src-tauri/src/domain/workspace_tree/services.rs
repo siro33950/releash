@@ -116,6 +116,8 @@ mod tests {
             title: id.to_string(),
             status: WorkspaceNodeStatus::Running,
             status_classification: WorkspaceNodeStatusClassification::Active,
+            delegate_waits_for_child: false,
+            background_failure: false,
             activity: (kind == WorkspaceNodeKind::WorkflowSession)
                 .then(AgentSessionActivity::default),
             error_reason: None,

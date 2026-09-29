@@ -3851,7 +3851,7 @@ nodes:
                 node.completion_signals,
                 crate::domain::workflow::NodeCompletionSignalState::StopReceived
             );
-            assert_eq!(node.status, NodeExecutionStatus::Running);
+            assert_eq!(node.status, NodeExecutionStatus::Succeeded);
             let workspace_node = SqliteWorkspaceTreeRepository::new(fixture.store.clone())
                 .load_node_by_node_execution_id(session_id)
                 .await
@@ -3859,7 +3859,7 @@ nodes:
                 .unwrap();
             assert_eq!(
                 workspace_node.status_classification,
-                WorkspaceNodeStatusClassification::Attention
+                WorkspaceNodeStatusClassification::Idle
             );
 
             let restarted = WorkflowRuntimeHost::with_runtime_ports(
@@ -3895,7 +3895,7 @@ nodes:
                     .unwrap()
                     .unwrap()
                     .status_classification,
-                WorkspaceNodeStatusClassification::Attention
+                WorkspaceNodeStatusClassification::Idle
             );
             assert!(
                 !workflow_fact_log::read_tree_records(&fixture.store, session_id)
@@ -4123,7 +4123,14 @@ nodes:
                     node.completion_signals,
                     crate::domain::workflow::NodeCompletionSignalState::StopReceived
                 );
-                assert_eq!(node.status, NodeExecutionStatus::Running);
+                assert_eq!(
+                    node.status,
+                    if tree_id == standalone_id {
+                        NodeExecutionStatus::Succeeded
+                    } else {
+                        NodeExecutionStatus::Running
+                    }
+                );
             }
         }
 
