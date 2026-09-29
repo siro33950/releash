@@ -16,10 +16,10 @@ impl PriorityEvents for RecordingEvents {
 }
 
 #[tokio::test]
-async fn test_優先度包み_対象外は通し拒否と受理を通知する() {
+async fn test_優先度包み_対象外は枠を取らず通知しない() {
     // Given
     let limits = Arc::new(PriorityLimits::new(1, &[("default", 1)], 0));
-    let held = limits.admit("default", None).await.unwrap();
+    let _held = limits.admit("default", None).await.unwrap();
     let events = Arc::new(RecordingEvents::default());
     let gate = PriorityGate::new(
         limits,
@@ -28,12 +28,13 @@ async fn test_優先度包み_対象外は通し拒否と受理を通知する()
     );
     let calls = Cell::new(0);
 
-    // When / Then
+    // When
     assert_eq!(
         gate.run(
-            "/bypass",
+            "/bypass".to_owned(),
+            String::as_str,
             None,
-            || async {
+            |_| async {
                 calls.set(calls.get() + 1);
                 Ok::<_, &'static str>(())
             },
@@ -42,14 +43,27 @@ async fn test_優先度包み_対象外は通し拒否と受理を通知する()
         .await,
         Ok(())
     );
+    // Then
     assert_eq!(calls.get(), 1);
     assert!(events.0.lock().unwrap().is_empty());
+}
 
+#[tokio::test]
+async fn test_優先度包み_満席で拒否を通知し次を呼ばない() {
+    // Given
+    let limits = Arc::new(PriorityLimits::new(1, &[("default", 1)], 0));
+    let _held = limits.admit("default", None).await.unwrap();
+    let events = Arc::new(RecordingEvents::default());
+    let gate = PriorityGate::new(limits, |_| Some("default"), events.clone());
+    let calls = Cell::new(0);
+
+    // When
     assert_eq!(
         gate.run(
-            "/limited",
+            "/limited".to_owned(),
+            String::as_str,
             None,
-            || async {
+            |_| async {
                 calls.set(calls.get() + 1);
                 Ok::<_, &'static str>(())
             },
@@ -58,19 +72,29 @@ async fn test_優先度包み_対象外は通し拒否と受理を通知する()
         .await,
         Err("rejected")
     );
-    assert_eq!(calls.get(), 1);
+    // Then
+    assert_eq!(calls.get(), 0);
     assert_eq!(
         *events.0.lock().unwrap(),
         ["/limited: default requests rejected: queue_full"]
     );
+}
 
-    drop(held);
+#[tokio::test]
+async fn test_優先度包み_受理を通知してから次を呼ぶ() {
+    // Given
+    let limits = Arc::new(PriorityLimits::new(1, &[("default", 1)], 0));
+    let events = Arc::new(RecordingEvents::default());
+    let gate = PriorityGate::new(limits, |_| Some("default"), events.clone());
+
+    // When
     assert_eq!(
         gate.run(
-            "/limited",
+            "/limited".to_owned(),
+            String::as_str,
             None,
-            || async {
-                calls.set(calls.get() + 1);
+            |_| async {
+                events.0.lock().unwrap().push("next".into());
                 Ok::<_, &'static str>(())
             },
             |_| "rejected",
@@ -78,12 +102,6 @@ async fn test_優先度包み_対象外は通し拒否と受理を通知する()
         .await,
         Ok(())
     );
-    assert_eq!(calls.get(), 2);
-    assert_eq!(
-        *events.0.lock().unwrap(),
-        [
-            "/limited: default requests rejected: queue_full",
-            "admitted"
-        ]
-    );
+    // Then
+    assert_eq!(*events.0.lock().unwrap(), ["admitted", "next"]);
 }

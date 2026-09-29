@@ -28,19 +28,21 @@ impl PriorityGate {
         }
     }
 
-    pub async fn run<T, E, F, Fut>(
+    pub async fn run<I, T, E, F, Fut>(
         &self,
-        path: &str,
+        request: I,
+        path: impl for<'a> FnOnce(&'a I) -> &'a str,
         deadline: Option<Instant>,
         next: F,
         reject: impl FnOnce(Rejection) -> E,
     ) -> Result<T, E>
     where
-        F: FnOnce() -> Fut,
+        F: FnOnce(I) -> Fut,
         Fut: Future<Output = Result<T, E>>,
     {
+        let path = path(&request);
         let Some(level) = (self.classify)(path) else {
-            return next().await;
+            return next(request).await;
         };
         let _seat = match self.limits.admit(level, deadline).await {
             Ok(seat) => seat,
@@ -50,7 +52,7 @@ impl PriorityGate {
             }
         };
         self.events.admitted();
-        next().await
+        next(request).await
     }
 
     #[cfg(test)]

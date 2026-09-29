@@ -1542,7 +1542,7 @@ async fn test_拒否_枠の対象外の呼び出しでは保留中の記録を�
             crate::usecase::failure::FailureRecordingUsecase::new(store.clone(), None),
         )),
     );
-    let _permits = deps.priority_limits().fill("default");
+    let permits = deps.priority_limits().fill("default");
     let router = router(Some(deps));
     assert_eq!(
         router
@@ -1568,6 +1568,16 @@ async fn test_拒否_枠の対象外の呼び出しでは保留中の記録を�
         assert_ne!(response.status(), StatusCode::TOO_MANY_REQUESTS);
         assert!(store.records("daemon")[0].record.active);
     }
+    drop(permits);
+    let response = router
+        .oneshot(unary_request(
+            "UpdateExternalEditor",
+            r#"{"editor":"code"}"#,
+        ))
+        .await
+        .unwrap();
+    assert_ne!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+    assert!(!store.records("daemon")[0].record.active);
 }
 
 #[tokio::test]

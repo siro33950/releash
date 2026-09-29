@@ -89,10 +89,17 @@ async fn test_枠の拒否_記録後の並行した受理で一度だけ解く()
     assert!(store.records("daemon")[0].record.active);
 
     // When
-    reporter.admitted();
-    reporter.admitted();
+    let admitting = (0..2)
+        .map(|_| {
+            let reporter = reporter.clone();
+            std::thread::spawn(move || reporter.admitted())
+        })
+        .collect::<Vec<_>>();
     resume.send(()).unwrap();
     rejecting.join().unwrap();
+    for admitted in admitting {
+        admitted.join().unwrap();
+    }
 
     // Then
     assert!(!store.records("daemon")[0].record.active);
