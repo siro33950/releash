@@ -233,7 +233,6 @@ struct Target<T> {
     history_units: VecDeque<usize>,
     discarded_through: Option<u64>,
     pending_limit: Option<usize>,
-    persistent: bool,
 }
 
 impl<T: Clone> Target<T> {
@@ -357,7 +356,6 @@ impl<T: Clone + PartialEq> Subscriptions<T> {
                 history_units: VecDeque::new(),
                 discarded_through: None,
                 pending_limit: None,
-                persistent: false,
             },
         );
         Ok(())
@@ -488,7 +486,6 @@ impl<T: Clone + PartialEq> Subscriptions<T> {
                 history_units: VecDeque::new(),
                 discarded_through: None,
                 pending_limit: Some(pending_limit),
-                persistent: false,
             },
         );
         for client in self.clients.values_mut() {
@@ -756,7 +753,7 @@ impl<T: Clone + PartialEq> Subscriptions<T> {
         if self
             .targets
             .get(target)
-            .is_some_and(|value| !value.persistent && value.delivery == Delivery::Full)
+            .is_some_and(|value| value.delivery == Delivery::Full)
         {
             self.target_generation = self
                 .target_generation
@@ -779,7 +776,7 @@ impl<T: Clone + PartialEq> Subscriptions<T> {
         let active = self.active_targets();
         let mut changed = false;
         for (id, target) in &mut self.targets {
-            if !target.persistent && !active.contains(id) && !protected.contains(id) {
+            if !active.contains(id) && !protected.contains(id) {
                 changed |= target.snapshot.is_some()
                     || (target.delivery == Delivery::Full && !target.history.is_empty());
                 target.snapshot = None;
@@ -801,12 +798,6 @@ impl<T: Clone + PartialEq> Subscriptions<T> {
 
     pub fn registered(&self, target: &str) -> bool {
         self.targets.contains_key(target)
-    }
-
-    pub fn protect(&mut self, target: &str) {
-        if let Some(value) = self.targets.get_mut(target) {
-            value.persistent = true;
-        }
     }
 
     pub fn bookmark(&mut self, client: &str) -> bool {

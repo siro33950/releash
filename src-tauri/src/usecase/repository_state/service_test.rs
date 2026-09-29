@@ -3,7 +3,7 @@ use crate::usecase::repository_dto::{FileDiffStatDto, FileStatusDto};
 use crate::usecase::repository_state::{
     runtime::tests_support::{IdentityWorktreePathNormalizer, TestRepositoryStateWorkerRuntime},
     snapshot::RepositorySnapshotParts,
-    worktree::{NoopRepositoryStateWatcher, SnapshotNotification},
+    worktree::NoopRepositoryStateWatcher,
 };
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
@@ -92,22 +92,44 @@ impl RepositoryStateRepository for Repository {
         Ok(path.into())
     }
 }
-#[derive(Default)]
 struct Notifier {
+    subscriptions: crate::usecase::state_subscription::StateSubscriptionUsecase,
+    changes: tokio::sync::Mutex<
+        tokio::sync::broadcast::Receiver<crate::usecase::state_subscription::StateChangeSource>,
+    >,
     notifications: AtomicUsize,
-    changed: tokio::sync::Notify,
 }
-impl RepositoryStateNotifier for Notifier {
-    fn snapshot_changed(&self, _: SnapshotNotification) {
+impl Default for Notifier {
+    fn default() -> Self {
+        let subscriptions = crate::test_support::state_subscription::test_subscriptions();
+        let changes = tokio::sync::Mutex::new(subscriptions.changes());
+        Self {
+            subscriptions,
+            changes,
+            notifications: AtomicUsize::new(0),
+        }
+    }
+}
+impl Notifier {
+    async fn wait(&self) {
+        self.changes.lock().await.recv().await.unwrap();
         self.notifications.fetch_add(1, Ordering::SeqCst);
-        self.changed.notify_one();
+    }
+    fn count(&self) -> usize {
+        if let Ok(mut changes) = self.changes.try_lock() {
+            self.notifications.fetch_add(
+                crate::test_support::state_subscription::take_changes(&mut changes).len(),
+                Ordering::SeqCst,
+            );
+        }
+        self.notifications.load(Ordering::SeqCst)
     }
 }
 fn service(scanner: Arc<Scanner>, notifier: Arc<Notifier>) -> RepositoryStateService {
     RepositoryStateService::new(
         Arc::new(Repository),
         scanner,
-        notifier,
+        notifier.subscriptions.clone(),
         Arc::new(NoopRepositoryStateWatcher),
         Arc::new(TestRepositoryStateWorkerRuntime),
         Arc::new(IdentityWorktreePathNormalizer),
@@ -122,7 +144,7 @@ async fn test_一覧の再走査_監視中も保存済みsnapshotを使わず毎
     let notifier = Arc::new(Notifier::default());
     let service = service(scanner.clone(), notifier.clone());
     service.start_git_dir_watching("/repo").unwrap();
-    notifier.changed.notified().await;
+    notifier.wait().await;
     let previous = service
         .list_branches_with_status_snapshot("/repo")
         .unwrap()
@@ -138,7 +160,7 @@ async fn test_一覧の再走査_監視中も保存済みsnapshotを使わず毎
     assert_ne!(previous[0].name, next[0].name);
     assert_ne!(next[0].name, latest[0].name);
     assert_eq!(scanner.calls.load(Ordering::SeqCst), 3);
-    assert_eq!(notifier.notifications.load(Ordering::SeqCst), 1);
+    assert_eq!(notifier.count(), 1);
     let snapshot = service.get_snapshot("/repo").unwrap();
     assert_eq!(snapshot.branch_cards[0].name, latest[0].name);
     assert_eq!(snapshot.status[0].path, latest[0].name);
@@ -178,11 +200,11 @@ async fn test_走査失敗_自動更新へ通知し再起動せず明示的な�
     let service = service(scanner.clone(), notifier.clone());
     service.start_git_dir_watching("/repo").unwrap();
     // When
-    tokio::time::timeout(Duration::from_secs(2), notifier.changed.notified())
+    tokio::time::timeout(Duration::from_secs(2), notifier.wait())
         .await
         .unwrap();
     // Then
-    assert_eq!(notifier.notifications.load(Ordering::SeqCst), 1);
+    assert_eq!(notifier.count(), 1);
     assert!(service.rescan_branches("/repo").await.is_err());
     // When
     scanner.fail.store(false, Ordering::SeqCst);
@@ -199,7 +221,7 @@ async fn test_監視走査との競合_共有snapshotへのcommitを直列化す
     let notifier = Arc::new(Notifier::default());
     let service = Arc::new(service(scanner.clone(), notifier.clone()));
     service.start_git_dir_watching("/repo").unwrap();
-    notifier.changed.notified().await;
+    notifier.wait().await;
     let started = Arc::new(tokio::sync::Notify::new());
     let (release, receive) = std::sync::mpsc::channel();
     let receive = parking_lot::Mutex::new(receive);
@@ -230,7 +252,7 @@ async fn test_監視走査との競合_共有snapshotへのcommitを直列化す
     assert_eq!(snapshot.branch_cards[0].name, result[0].name);
     assert_eq!(snapshot.status[0].path, "scan-2");
     assert_eq!(snapshot.version, 3);
-    assert_eq!(notifier.notifications.load(Ordering::SeqCst), 2);
+    assert_eq!(notifier.count(), 2);
 }
 
 #[tokio::test]
@@ -240,7 +262,7 @@ async fn test_明示再走査_途中で失効した結果を公開せず再走�
     let notifier = Arc::new(Notifier::default());
     let service = Arc::new(service(scanner.clone(), notifier.clone()));
     service.start_git_dir_watching("/repo").unwrap();
-    notifier.changed.notified().await;
+    notifier.wait().await;
     let previous = service.get_snapshot("/repo").unwrap();
     let state = service.ensure_watching("/repo").unwrap();
     let started = Arc::new(tokio::sync::Notify::new());
@@ -272,7 +294,7 @@ async fn test_明示再走査_途中で失効した結果を公開せず再走�
         &previous,
         &service.get_snapshot("/repo").unwrap()
     ));
-    assert_eq!(notifier.notifications.load(Ordering::SeqCst), 1);
+    assert_eq!(notifier.count(), 1);
     // When
     release.send(()).unwrap();
     let result = refresh.await.unwrap();
@@ -373,7 +395,7 @@ async fn test_背景走査_開始失敗を再試行中もbranches要求が走査
     assert!(matches!(result, Err(RepositoryStateError::ScanInvalidated)));
     assert!(scanner.calls.load(Ordering::SeqCst) > calls);
     scanner.retry_failures.store(0, Ordering::SeqCst);
-    tokio::time::timeout(Duration::from_secs(2), notifier.changed.notified())
+    tokio::time::timeout(Duration::from_secs(2), notifier.wait())
         .await
         .unwrap();
     assert!(!service

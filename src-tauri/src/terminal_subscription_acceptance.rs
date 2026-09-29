@@ -38,11 +38,10 @@ impl TerminalSubscriptionHarness {
     }
 
     fn compose(runtime: TerminalSurfaceRuntime) -> Self {
-        let presenter = Arc::new(StateSubscriptionPresenter::new(vec![]));
+        let presenter = Arc::new(StateSubscriptionPresenter::new());
         presenter.connect_terminal(&runtime.application()).unwrap();
         let subscriptions = StateSubscriptionUsecase::new_with_output(
             presenter.clone(),
-            presenter.change_sender(),
             Arc::new(crate::adaptor::gateway::subscription_timer::TokioSubscriptionTimer),
         )
         .with_terminal(runtime.application());

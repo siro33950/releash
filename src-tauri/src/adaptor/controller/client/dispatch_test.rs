@@ -6,7 +6,7 @@ use crate::usecase::state_subscription::StateChangeSource;
 async fn test_更新通知_成功時だけ購読対象を更新する() {
     // Given
     let fixture = StateReadsFixture::new();
-    let publisher = fixture.subscriptions.publisher();
+    let publisher = fixture.subscriptions.clone();
     let git_host = fixture.reads.git_host.clone();
     let mut changes = crate::test_support::state_subscription::changes(&publisher);
     let mut dispatch = ClientCommandDispatch::new(Arc::new(ApplicationStartupAuthority::ready()))

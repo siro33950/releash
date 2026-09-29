@@ -224,11 +224,7 @@ impl<R: tauri::Runtime> AgentSessionTuiAcceptanceHost<R> {
             codex_home: config.codex_home,
             cli_binary: "releash-dev".to_string(),
             terminal: terminal.application(),
-            change_notifier: Arc::new(
-                crate::adaptor::presenter::agent_session_change::ClientAgentSessionChangeNotifier::new(
-                    subscriptions.publisher(),
-                ),
-            ),
+            subscriptions: subscriptions.clone(),
         })
         .map_err(|error| format!("Provider availability初期化失敗: {error:?}"))?;
         let local_api_binding =

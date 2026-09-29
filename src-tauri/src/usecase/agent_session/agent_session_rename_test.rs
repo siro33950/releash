@@ -1,9 +1,6 @@
 use std::sync::{Arc, Mutex};
 
-use super::{
-    AgentSessionChangeNotifier, AgentSessionRenameError, AgentSessionRenameExecutor,
-    AgentSessionRenameUsecase,
-};
+use super::{AgentSessionRenameError, AgentSessionRenameExecutor, AgentSessionRenameUsecase};
 use crate::domain::agent_session::aggregates::{
     AgentSession, AgentSessionLifecycleEvent, AgentSessionMutationOutcome,
     AgentSessionRemovalAuthorization, AgentSessionTreeLocation,
@@ -80,17 +77,19 @@ impl AgentSessionRepository for RenameRepository {
     }
 }
 
-#[derive(Default)]
 struct RenameNotifier {
-    worktrees: Mutex<Vec<String>>,
+    subscriptions: crate::usecase::state_subscription::StateSubscriptionUsecase,
+    worktrees: crate::test_support::state_subscription::CapturingNotifier<String>,
 }
-
-impl AgentSessionChangeNotifier for RenameNotifier {
-    fn agent_session_changed(&self, worktree_path: &str) {
-        self.worktrees
-            .lock()
-            .unwrap()
-            .push(worktree_path.to_string());
+impl Default for RenameNotifier {
+    fn default() -> Self {
+        let subscriptions = crate::test_support::state_subscription::test_subscriptions();
+        let worktrees =
+            crate::test_support::state_subscription::CapturingNotifier::worktrees(&subscriptions);
+        Self {
+            subscriptions,
+            worktrees,
+        }
     }
 }
 
@@ -123,7 +122,8 @@ fn context_with_cwd(
         saves: Mutex::new(0),
     });
     let notifier = Arc::new(RenameNotifier::default());
-    let usecase = AgentSessionRenameUsecase::new(repository.clone(), notifier.clone());
+    let usecase =
+        AgentSessionRenameUsecase::new(repository.clone(), notifier.subscriptions.clone());
     (repository, notifier, usecase)
 }
 

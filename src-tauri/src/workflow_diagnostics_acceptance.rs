@@ -216,7 +216,7 @@ impl WorkflowDiagnosticsAcceptanceHost {
             Arc::new(crate::adaptor::gateway::failure_records::FailureRecordStore::default());
         let retrying = crate::usecase::retry::Retrying::new(
             Arc::new(crate::common::retry::RetryLimiter::new()),
-            Arc::new(crate::adaptor::presenter::failure::FailurePresenter::new(
+            Arc::new(crate::usecase::failure::FailureRecordingUsecase::new(
                 failures.clone(),
                 None,
             )),

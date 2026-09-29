@@ -21,7 +21,7 @@ mod tests;
 pub(crate) struct ClientCommandDispatch {
     handlers: HashMap<&'static str, Arc<CommandHandler>>,
     authority: Arc<ApplicationStartupAuthority>,
-    pub(super) publisher: Option<crate::usecase::state_subscription::StateSubscriptionOutputRef>,
+    pub(super) publisher: Option<crate::usecase::state_subscription::StateSubscriptionUsecase>,
     mutations: Option<Arc<crate::usecase::workflow::WorkflowRuntimeUsecase>>,
 }
 
@@ -37,7 +37,7 @@ impl ClientCommandDispatch {
 
     pub(crate) fn with_state_publisher(
         mut self,
-        publisher: crate::usecase::state_subscription::StateSubscriptionOutputRef,
+        publisher: crate::usecase::state_subscription::StateSubscriptionUsecase,
     ) -> Self {
         self.publisher = Some(publisher);
         self

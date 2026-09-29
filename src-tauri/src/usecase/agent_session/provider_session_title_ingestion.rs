@@ -9,12 +9,12 @@ use crate::domain::agent_session::{
 };
 use crate::usecase::failure::WorkFailure;
 
-use super::AgentSessionChangeNotifier;
+use crate::usecase::state_subscription::{StateChangeSource, StateSubscriptionUsecase};
 
 pub(crate) struct ProviderSessionTitleIngestionUsecase {
     repository: Arc<dyn AgentSessionRepository>,
     title_gateway: Arc<dyn ProviderSessionTitleGateway>,
-    change_notifier: Arc<dyn AgentSessionChangeNotifier>,
+    subscriptions: StateSubscriptionUsecase,
     tick: AtomicU64,
     attempts: tokio::sync::Mutex<std::collections::HashMap<String, TitleAttempt>>,
 }
@@ -30,12 +30,12 @@ impl ProviderSessionTitleIngestionUsecase {
     pub(crate) fn new(
         repository: Arc<dyn AgentSessionRepository>,
         title_gateway: Arc<dyn ProviderSessionTitleGateway>,
-        change_notifier: Arc<dyn AgentSessionChangeNotifier>,
+        subscriptions: StateSubscriptionUsecase,
     ) -> Self {
         Self {
             repository,
             title_gateway,
-            change_notifier,
+            subscriptions,
             tick: AtomicU64::new(0),
             attempts: tokio::sync::Mutex::new(std::collections::HashMap::new()),
         }
@@ -130,7 +130,8 @@ impl ProviderSessionTitleIngestionUsecase {
             .save_provider_session_title(session.clone(), request_id)
             .await
             .map_err(|error| WorkFailure::from_error(&error))?;
-        self.change_notifier.agent_session_changed(&worktree);
+        self.subscriptions
+            .notify(StateChangeSource::Worktree(worktree));
         Ok(())
     }
 

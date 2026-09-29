@@ -1,6 +1,18 @@
 use super::*;
 
 #[test]
+fn test_repository一覧購読_repository一覧の変更だけで読み直す() {
+    // Given
+    let target = SubscriptionTarget::RepositoryPaths;
+    // When
+    let repository_list = target.affected_by(&StateChangeSource::Repositories);
+    let repository_state = target.affected_by(&StateChangeSource::Repository(vec!["/repo".into()]));
+    // Then
+    assert!(repository_list);
+    assert!(!repository_state);
+}
+
+#[test]
 fn test_agent_session購読_worktree通知はpathによらず選びrepository通知では選ばない() {
     // Given
     let target = SubscriptionTarget::AgentSession("session".into());

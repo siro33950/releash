@@ -5,7 +5,7 @@ use crate::domain::app_config::ConfigRepository;
 
 pub(crate) async fn update_external_editor_shared(
     state: &Arc<dyn ConfigRepository>,
-    publisher: Option<crate::usecase::state_subscription::StateSubscriptionOutputRef>,
+    publisher: Option<crate::usecase::state_subscription::StateSubscriptionUsecase>,
     editor: String,
 ) -> Result<(), crate::adaptor::presenter::error::AppError> {
     let settings = EditorSettingsConfigGateway::new(state.clone());

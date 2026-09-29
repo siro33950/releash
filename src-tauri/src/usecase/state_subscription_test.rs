@@ -16,10 +16,6 @@ impl StateSubscriptionOutput for RecordingOutput {
         self
     }
 
-    fn invalidate(&self, _: StateChangeSource) {
-        unreachable!()
-    }
-
     fn start(
         &self,
         _: &str,
@@ -90,11 +86,15 @@ impl SubscriptionTimer for PendingTimer {
 async fn test_購読手順_開始と停止で購読状態と出力を更新する() {
     // Given
     let output = Arc::new(RecordingOutput::default());
-    let usecase = StateSubscriptionUsecase::new_with_output(
-        output.clone(),
-        tokio::sync::broadcast::channel(1).0,
-        Arc::new(PendingTimer),
-    );
+    let usecase = StateSubscriptionUsecase::new_with_output(output.clone(), Arc::new(PendingTimer))
+        .with_reads(
+            Arc::new(RecordingReads {
+                calls: Default::default(),
+            }),
+            None,
+            vec![],
+            String::new(),
+        );
     let target = SubscriptionTarget::RepositoryPaths;
     usecase.open_client("client".into()).unwrap();
     // When
@@ -118,11 +118,15 @@ async fn test_購読手順_配信側の開始失敗時にclientの対象を戻�
     output
         .fail_start
         .store(true, std::sync::atomic::Ordering::SeqCst);
-    let usecase = StateSubscriptionUsecase::new_with_output(
-        output,
-        tokio::sync::broadcast::channel(1).0,
-        Arc::new(PendingTimer),
-    );
+    let usecase = StateSubscriptionUsecase::new_with_output(output, Arc::new(PendingTimer))
+        .with_reads(
+            Arc::new(RecordingReads {
+                calls: Default::default(),
+            }),
+            None,
+            vec![],
+            String::new(),
+        );
     let target = SubscriptionTarget::RepositoryPaths;
     usecase.open_client("client".into()).unwrap();
     // When
@@ -141,8 +145,15 @@ async fn test_購読手順_streamが無いと開始できない() {
     // Given
     let usecase = StateSubscriptionUsecase::new_with_output(
         Arc::new(RecordingOutput::default()),
-        tokio::sync::broadcast::channel(1).0,
         Arc::new(PendingTimer),
+    )
+    .with_reads(
+        Arc::new(RecordingReads {
+            calls: Default::default(),
+        }),
+        None,
+        vec![],
+        String::new(),
     );
     let target = SubscriptionTarget::RepositoryPaths;
     // When
@@ -163,11 +174,7 @@ async fn test_購読手順_streamが無いと開始できない() {
 #[test]
 fn test_購読手順_対象を検証してclient状態を更新する() {
     let output = Arc::new(RecordingOutput::default());
-    let usecase = StateSubscriptionUsecase::new_with_output(
-        output.clone(),
-        tokio::sync::broadcast::channel(1).0,
-        Arc::new(PendingTimer),
-    );
+    let usecase = StateSubscriptionUsecase::new_with_output(output.clone(), Arc::new(PendingTimer));
 
     usecase.open_client("client".into()).unwrap();
 
@@ -194,9 +201,14 @@ struct RecordingReads {
 
 #[async_trait::async_trait]
 impl StateSubscriptionRead for RecordingReads {
-    async fn read(&self, _: &SubscriptionTarget) -> Result<StateValue, StateReadError> {
+    async fn read(&self, target: &SubscriptionTarget) -> Result<StateValue, StateReadError> {
         self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        Ok(StateValue::SessionNode(Some("node".into())))
+        Ok(match target {
+            SubscriptionTarget::RepositoryPaths => {
+                StateValue::RepositoryPaths(vec!["/repo".into()])
+            }
+            _ => StateValue::SessionNode(Some("node".into())),
+        })
     }
 
     async fn refresh_workspaces(&self, _: Option<StateChangeSource>) {}
@@ -210,16 +222,11 @@ impl StateSubscriptionRead for RecordingReads {
 async fn test_購読手順_初回読取を共有し変化で再読取して最後の停止でworkerを解放する() {
     // Given
     let output = Arc::new(RecordingOutput::default());
-    let changes = tokio::sync::broadcast::channel(8).0;
     let reads = Arc::new(RecordingReads {
         calls: std::sync::atomic::AtomicUsize::new(0),
     });
-    let usecase = StateSubscriptionUsecase::new_with_output(
-        output.clone(),
-        changes.clone(),
-        Arc::new(PendingTimer),
-    )
-    .with_reads(reads.clone(), None, vec![], String::new());
+    let usecase = StateSubscriptionUsecase::new_with_output(output.clone(), Arc::new(PendingTimer))
+        .with_reads(reads.clone(), None, vec![], String::new());
     let target = SubscriptionTarget::SessionNode("/repo".into(), "node".into());
     usecase.open_client("first".into()).unwrap();
     usecase.open_client("second".into()).unwrap();
@@ -232,9 +239,7 @@ async fn test_購読手順_初回読取を共有し変化で再読取して最�
     assert_eq!(*output.initial.lock(), vec![target.clone()]);
 
     // When
-    changes
-        .send(StateChangeSource::Worktree("/repo".into()))
-        .unwrap();
+    usecase.notify(StateChangeSource::Worktree("/repo".into()));
     tokio::time::timeout(std::time::Duration::from_secs(1), output.updated.notified())
         .await
         .unwrap();
@@ -250,4 +255,80 @@ async fn test_購読手順_初回読取を共有し変化で再読取して最�
     usecase.stop_read("second", &target).await.unwrap();
     // Then
     assert_eq!(usecase.test_worker_count(), 0);
+}
+
+#[tokio::test]
+async fn test_購読手順_任意の対象で配信完了を待ち一度だけ読み直す() {
+    // Given
+    let output = Arc::new(RecordingOutput::default());
+    let reads = Arc::new(RecordingReads {
+        calls: std::sync::atomic::AtomicUsize::new(0),
+    });
+    let usecase = StateSubscriptionUsecase::new_with_output(output.clone(), Arc::new(PendingTimer))
+        .with_reads(reads.clone(), None, vec![], String::new());
+    let target = SubscriptionTarget::SessionNode("/repo".into(), "node".into());
+    usecase.open_client("client".into()).unwrap();
+    usecase.start_read("client", &target).await.unwrap();
+    // When
+    let wait_target = target.clone();
+    tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        tokio::task::spawn_blocking(move || {
+            usecase.notify_and_wait(StateChangeSource::Worktree("/repo".into()), &wait_target);
+        }),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    // Then
+    assert_eq!(reads.calls.load(std::sync::atomic::Ordering::SeqCst), 2);
+    assert_eq!(*output.updates.lock(), vec![target]);
+}
+
+#[tokio::test]
+async fn test_配信完了待機_待機対象以外の対象にも同じ変化を配信する() {
+    // Given
+    let output = Arc::new(RecordingOutput::default());
+    let reads = Arc::new(RecordingReads {
+        calls: std::sync::atomic::AtomicUsize::new(0),
+    });
+    let usecase = StateSubscriptionUsecase::new_with_output(output.clone(), Arc::new(PendingTimer))
+        .with_reads(reads.clone(), None, vec![], String::new());
+    let waited = SubscriptionTarget::SessionNode("/repo".into(), "one".into());
+    let other = SubscriptionTarget::SessionNode("/repo".into(), "two".into());
+    usecase.open_client("client".into()).unwrap();
+    usecase.start_read("client", &waited).await.unwrap();
+    usecase.start_read("client", &other).await.unwrap();
+
+    // When
+    tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        tokio::task::spawn_blocking({
+            let usecase = usecase.clone();
+            let waited = waited.clone();
+            move || usecase.notify_and_wait(StateChangeSource::Worktree("/repo".into()), &waited)
+        }),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            if output.updates.lock().len() == 2 {
+                break;
+            }
+            output.updated.notified().await;
+        }
+    })
+    .await
+    .unwrap();
+
+    // Then
+    let updates = output.updates.lock();
+    assert_eq!(
+        updates.iter().filter(|target| **target == waited).count(),
+        1
+    );
+    assert_eq!(updates.iter().filter(|target| **target == other).count(), 1);
+    assert_eq!(reads.calls.load(std::sync::atomic::Ordering::SeqCst), 4);
 }

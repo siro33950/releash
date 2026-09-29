@@ -46,19 +46,17 @@ pub(crate) async fn compose(
     })?;
     let startup_authority =
         Arc::new(usecase::application_startup::ApplicationStartupAuthority::ready());
-    let state_presenter = Arc::new(
-        adaptor::presenter::state_subscription::StateSubscriptionPresenter::new(Vec::new()),
-    );
+    let state_presenter =
+        Arc::new(adaptor::presenter::state_subscription::StateSubscriptionPresenter::new());
     let state_subscriptions =
         usecase::state_subscription::StateSubscriptionUsecase::new_with_output(
             state_presenter.clone(),
-            state_presenter.change_sender(),
             Arc::new(adaptor::gateway::subscription_timer::TokioSubscriptionTimer),
         );
-    let failure_output: Arc<dyn usecase::failure::FailureOutput> =
-        Arc::new(adaptor::presenter::failure::FailurePresenter::new(
+    let failure_output: Arc<usecase::failure::FailureRecordingUsecase> =
+        Arc::new(usecase::failure::FailureRecordingUsecase::new(
             failure_store.clone(),
-            Some(state_subscriptions.publisher()),
+            Some(state_subscriptions.clone()),
         ));
     let retrying = usecase::retry::Retrying::new(retry_limiter, failure_output.clone());
 
@@ -76,8 +74,10 @@ pub(crate) async fn compose(
     let terminal_surface = terminal_surface_runtime.application();
     state_presenter.connect_terminal(&terminal_surface)?;
     let state_subscriptions = state_subscriptions.with_terminal(terminal_surface.clone());
-    let review_comment_usecase =
-        Arc::new(adaptor::controller::wiring::build_review_comment_usecase());
+    let review_comment_usecase = Arc::new(
+        adaptor::controller::wiring::build_review_comment_usecase()
+            .with_subscriptions(state_subscriptions.clone()),
+    );
     let file_watchers = Arc::new(infrastructure::file_watcher::FileWatcherManager::default());
     let shared_repo_paths: adaptor::gateway::repository::repo_paths::SharedRepoPaths =
         Arc::new(parking_lot::RwLock::new(Vec::new()));
@@ -138,7 +138,7 @@ pub(crate) async fn compose(
                 adaptor::controller::agent_session_wiring::compose_agent_sessions(
                     adaptor::controller::agent_session_wiring::AgentSessionCompositionInput {
                         retrying: retrying.clone(),
-                        state_publisher: Some(state_subscriptions.publisher()),
+                        state_publisher: Some(state_subscriptions.clone()),
                         store: local_event_store.clone(),
                         data_dir: data_dir.clone(),
                         provider_executable_config,
@@ -161,11 +161,7 @@ pub(crate) async fn compose(
                         )
                         .to_string(),
                         terminal: terminal_surface.clone(),
-                        change_notifier: Arc::new(
-                            adaptor::presenter::agent_session_change::ClientAgentSessionChangeNotifier::new(
-                                state_subscriptions.publisher(),
-                            ),
-                        ),
+                        subscriptions: state_subscriptions.clone(),
                     },
                 )
                 .map_err(|error| format!("Provider availability初期化失敗: {error:?}"))?;
@@ -216,7 +212,7 @@ pub(crate) async fn compose(
             Arc::new(usecase::worktree_operation::WorktreeOperations::new(Arc::new(
                 adaptor::gateway::repository::worktree_operation::FileWorktreeOperationLocks::new(&data_dir),
             ))),
-        ).with_state_publisher(state_subscriptions.publisher()),
+        ).with_state_publisher(state_subscriptions.clone()),
     );
 
     use adaptor::controller::state::AppState;
@@ -226,24 +222,15 @@ pub(crate) async fn compose(
     let repo_paths_gateway =
         RepoPathsGateway::new(shared_repo_paths.clone(), config_repository.clone());
 
-    let repo_paths_notifier =
-        Arc::new(adaptor::presenter::repo_paths::RepoPathsNotifyGateway::new(
-            state_subscriptions.publisher(),
-        ));
     let repo_paths_usecase = Arc::new(RepoPathsUsecase::new(
         Arc::new(repo_paths_gateway),
-        repo_paths_notifier,
+        state_subscriptions.clone(),
     ));
 
-    state_subscriptions.publisher().publish(
-        &usecase::state_subscription::SubscriptionTarget::RepositoryPaths,
-        usecase::state_subscription::StateValue::RepositoryPaths(shared_repo_paths.read().clone()),
-        None,
-    )?;
     let code_usecase = Arc::new(adaptor::controller::wiring::build_code_usecase());
     let git_host_usecase = Arc::new(
         adaptor::controller::wiring::build_git_host_usecase()
-            .with_state_publisher(state_subscriptions.publisher()),
+            .with_state_publisher(state_subscriptions.clone()),
     );
     let repository_scanner = Arc::new(
         adaptor::gateway::repository::scanner::DefaultRepositoryScanner::new(
@@ -259,11 +246,7 @@ pub(crate) async fn compose(
     let repository_state = Arc::new(usecase::repository_state::RepositoryStateService::new(
         repository_state_repository,
         repository_scanner,
-        Arc::new(
-            adaptor::presenter::repository_state::ClientRepositoryStateNotifier::new(
-                state_subscriptions.publisher(),
-            ),
-        ),
+        state_subscriptions.clone(),
         Arc::new(
             adaptor::gateway::repository::state::NotifyRepositoryStateWatcher::new(
                 repository_usecase.clone(),
@@ -308,7 +291,7 @@ pub(crate) async fn compose(
             notion_config_repository.clone(),
             notion_api_gateway.clone(),
         )
-        .with_state_publisher(state_subscriptions.publisher()),
+        .with_state_publisher(state_subscriptions.clone()),
     );
 
     let repository_state_for_watcher = repository_state.clone();
@@ -319,12 +302,7 @@ pub(crate) async fn compose(
             workflow_usecase.clone(),
             git_host_usecase.clone(),
         )
-        .with_notifier({
-            let publisher = state_subscriptions.publisher();
-            move || {
-                publisher.invalidate(usecase::state_subscription::StateChangeSource::WorkspaceList)
-            }
-        }),
+        .with_subscriptions(state_subscriptions.clone()),
     );
     let app_state = AppState {
         workspace_list,
@@ -345,7 +323,7 @@ pub(crate) async fn compose(
                 store: Some(local_event_store.clone()),
                 config: Some(config_repository.clone()),
                 secrets: Some(config_secret_repository.clone()),
-                state_changes: state_subscriptions.publisher(),
+                state_changes: state_subscriptions.clone(),
             },
             adaptor::gateway::workflow::WorkflowRuntimeCommandGatewayDeps {
                 node_processes,
@@ -404,13 +382,13 @@ pub(crate) async fn compose(
             .map_err(|error| format!("local API の起動に失敗しました: {error}"))?;
     let mut client_dispatch =
         adaptor::controller::client::ClientCommandDispatch::new(startup_authority.clone())
-            .with_state_publisher(state_subscriptions.publisher());
+            .with_state_publisher(state_subscriptions.clone());
     let reads_data_dir = data_dir.clone();
     let review_usecase_for_reads = app_state.review_usecase.clone();
     let review_comment_usecase_for_reads = review_comment_usecase.clone();
     let app_config_usecase = Arc::new(
         usecase::app_config::AppConfigUsecase::new(config_repository.clone())
-            .with_state_publisher(state_subscriptions.publisher()),
+            .with_state_publisher(state_subscriptions.clone()),
     );
     let performance_switches = {
         let telemetry = usecase::telemetry::TelemetryUsecase::new(
@@ -448,9 +426,6 @@ pub(crate) async fn compose(
             ),
         )),
         data_dir: Ok(data_dir),
-        comment_notify: Arc::new(adaptor::gateway::comment_change::CommentChangeGateway::new(
-            state_subscriptions.publisher(),
-        )),
         process_port: Arc::new(
             adaptor::gateway::application_lifecycle::DaemonProcessActionPort(exit_sender),
         ),

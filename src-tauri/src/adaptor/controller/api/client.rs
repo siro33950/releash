@@ -12,7 +12,7 @@ pub(crate) struct ClientApiDeps {
     dispatch: Arc<ClientCommandDispatch>,
     state_subscriptions: Option<StateSubscriptionDeps>,
     limits: Arc<crate::common::concurrency::PriorityLimits>,
-    failures: Option<Arc<dyn crate::usecase::failure::FailureOutput>>,
+    failures: Option<Arc<crate::usecase::failure::FailureRecordingUsecase>>,
 }
 
 #[derive(Clone)]
@@ -47,7 +47,7 @@ impl ClientApiDeps {
 
     pub(crate) fn with_failure_output(
         mut self,
-        failures: Arc<dyn crate::usecase::failure::FailureOutput>,
+        failures: Arc<crate::usecase::failure::FailureRecordingUsecase>,
     ) -> Self {
         self.failures = Some(failures);
         self

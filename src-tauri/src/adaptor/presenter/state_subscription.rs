@@ -15,8 +15,8 @@ use crate::infrastructure::terminal::output_flow_control::{
     OUTPUT_PENDING_LIMIT, OUTPUT_REPORT_UNITS,
 };
 use crate::usecase::state_subscription::{
-    StateChangeSource, StateReadError, StateSubscriptionOutput, StateSubscriptionUsecase,
-    StateValue, SubscriptionError, SubscriptionTarget,
+    StateReadError, StateSubscriptionOutput, StateSubscriptionUsecase, StateValue,
+    SubscriptionError, SubscriptionTarget,
 };
 use crate::usecase::terminal_surface::application::TerminalSurfaceStreamItem;
 use crate::usecase::terminal_surface::output::{
@@ -40,7 +40,6 @@ impl From<crate::infrastructure::state_subscription::SubscriptionError> for Subs
 #[derive(Clone)]
 pub(crate) struct StateSubscriptionPresenter {
     runtime: StateSubscriptionRuntime<crate::adaptor::presenter::client::StatePayload>,
-    invalidated: tokio::sync::broadcast::Sender<StateChangeSource>,
     terminal: Arc<
         Mutex<
             Option<Arc<crate::usecase::terminal_surface::application::TerminalSurfaceApplication>>,
@@ -58,10 +57,6 @@ impl StateSubscriptionPresenter {
         Ok(())
     }
 
-    pub(crate) fn change_sender(&self) -> tokio::sync::broadcast::Sender<StateChangeSource> {
-        self.invalidated.clone()
-    }
-
     #[cfg(test)]
     pub(crate) fn test_runtime(
         &self,
@@ -69,27 +64,10 @@ impl StateSubscriptionPresenter {
         &self.runtime
     }
 
-    pub(crate) fn new(paths: Vec<String>) -> Self {
+    pub(crate) fn new() -> Self {
         let runtime = StateSubscriptionRuntime::new(uuid::Uuid::new_v4().to_string());
-        let target = SubscriptionTarget::RepositoryPaths.to_string();
-        runtime
-            .update(|state| {
-                state
-                    .register(
-                        target.clone(),
-                        crate::adaptor::presenter::state_subscription_wire::payload(
-                            &StateValue::RepositoryPaths(paths),
-                        )
-                        .expect("repository paths encode"),
-                        Delivery::Full,
-                    )
-                    .map(|_| true)
-            })
-            .expect("unique target");
-        runtime.mutate(|state| (state.protect(&target), true));
         Self {
             runtime,
-            invalidated: tokio::sync::broadcast::channel(64).0,
             terminal: Default::default(),
         }
     }
@@ -265,7 +243,7 @@ fn terminal_read_error(error: impl std::fmt::Display) -> StateReadError {
 
 #[cfg(any(test, all(debug_assertions, feature = "desktop")))]
 pub(crate) fn test_output() -> crate::usecase::state_subscription::StateSubscriptionOutputRef {
-    Arc::new(StateSubscriptionPresenter::new(vec![]))
+    Arc::new(StateSubscriptionPresenter::new())
 }
 
 struct StreamPermit {
@@ -297,7 +275,13 @@ impl Drop for StreamPermit {
 fn protected_targets(
     active: &std::collections::HashSet<SubscriptionTarget>,
 ) -> std::collections::HashSet<String> {
-    active.iter().map(ToString::to_string).collect()
+    active
+        .iter()
+        .map(ToString::to_string)
+        .chain(std::iter::once(
+            SubscriptionTarget::RepositoryPaths.to_string(),
+        ))
+        .collect()
 }
 
 fn cursor_version(cursor: Option<(&str, u64)>) -> Option<Version> {
@@ -311,10 +295,6 @@ impl StateSubscriptionOutput for StateSubscriptionPresenter {
     #[cfg(test)]
     fn as_any(&self) -> &dyn std::any::Any {
         self
-    }
-
-    fn invalidate(&self, source: StateChangeSource) {
-        let _ = self.invalidated.send(source);
     }
 
     fn start(

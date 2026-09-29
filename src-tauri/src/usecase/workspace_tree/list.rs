@@ -104,7 +104,7 @@ pub(crate) struct WorkspaceListUsecase {
     query: Arc<dyn WorkspaceListQueryService>,
     lists: Arc<Mutex<WorkspaceLists>>,
     prs: Arc<Mutex<HashMap<String, PrStatus>>>,
-    notify: Arc<dyn Fn() + Send + Sync>,
+    subscriptions: Option<crate::usecase::state_subscription::StateSubscriptionUsecase>,
     completed: tokio::sync::watch::Sender<u64>,
 }
 
@@ -114,14 +114,24 @@ impl WorkspaceListUsecase {
             query,
             lists: Arc::new(Mutex::new(WorkspaceLists::default())),
             prs: Arc::new(Mutex::new(HashMap::new())),
-            notify: Arc::new(|| {}),
+            subscriptions: None,
             completed: tokio::sync::watch::channel(0).0,
         }
     }
 
-    pub fn with_notifier(mut self, notify: impl Fn() + Send + Sync + 'static) -> Self {
-        self.notify = Arc::new(notify);
+    pub fn with_subscriptions(
+        mut self,
+        subscriptions: crate::usecase::state_subscription::StateSubscriptionUsecase,
+    ) -> Self {
+        self.subscriptions = Some(subscriptions);
         self
+    }
+
+    fn notify_changed(&self) {
+        if let Some(subscriptions) = &self.subscriptions {
+            subscriptions
+                .notify(crate::usecase::state_subscription::StateChangeSource::WorkspaceList);
+        }
     }
 
     pub async fn refresh(&self) -> WorkspaceListSnapshotDto {
@@ -167,7 +177,7 @@ impl WorkspaceListUsecase {
                 .map(|path| self.refresh_branches(path, generation, true)),
         )
         .await;
-        (self.notify)();
+        self.notify_changed();
     }
 
     pub async fn refresh_repository(&self, path: &str) -> WorkspaceListSnapshotDto {
@@ -196,7 +206,7 @@ impl WorkspaceListUsecase {
             generation,
             branches.map_err(|error| WorkspaceListFailure::from(error.to_string())),
         );
-        (self.notify)();
+        self.notify_changed();
         let usecase = self.clone();
         let repository = path.to_owned();
         tokio::task::spawn_blocking(move || usecase.refresh_prs(&repository, generation, rescan));
@@ -223,7 +233,7 @@ impl WorkspaceListUsecase {
             }
             self.prs.lock().insert(path.to_owned(), status);
         }
-        (self.notify)();
+        self.notify_changed();
     }
 
     pub async fn refresh_worktree(&self, path: &str) -> WorkspaceListSnapshotDto {
@@ -248,7 +258,7 @@ impl WorkspaceListUsecase {
             generation,
             result.map_err(|error| WorkspaceListFailure::from(error.to_string())),
         );
-        (self.notify)();
+        self.notify_changed();
     }
 
     pub async fn refresh_current_repository(&self, path: &str) {

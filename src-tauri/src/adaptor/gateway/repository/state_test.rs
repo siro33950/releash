@@ -6,9 +6,7 @@ use crate::usecase::repository_state::runtime::{
 };
 use crate::usecase::repository_state::scanner::RepositoryScanner;
 use crate::usecase::repository_state::snapshot::RepositorySnapshotParts;
-use crate::usecase::repository_state::worktree::{RepositoryStateNotifier, SnapshotNotification};
 use notify_debouncer_mini::DebouncedEventKind;
-use std::sync::atomic::{AtomicUsize, Ordering};
 
 struct InertSender;
 
@@ -91,17 +89,6 @@ impl RepositoryScanner for EmptyScanner {
     }
 }
 
-#[derive(Default)]
-struct CountingNotifier {
-    snapshot_committed: AtomicUsize,
-}
-
-impl RepositoryStateNotifier for CountingNotifier {
-    fn snapshot_changed(&self, _notification: SnapshotNotification) {
-        self.snapshot_committed.fetch_add(1, Ordering::SeqCst);
-    }
-}
-
 fn event(path: &std::path::Path) -> DebouncedEvent {
     DebouncedEvent {
         path: path.to_path_buf(),
@@ -109,11 +96,13 @@ fn event(path: &std::path::Path) -> DebouncedEvent {
     }
 }
 
-fn state_with_notifier(notifier: Arc<CountingNotifier>) -> Arc<WorktreeState> {
+fn state_with_subscriptions(
+    subscriptions: crate::usecase::state_subscription::StateSubscriptionUsecase,
+) -> Arc<WorktreeState> {
     WorktreeState::new(
         "/repo".to_string(),
         Arc::new(EmptyScanner),
-        notifier,
+        subscriptions,
         Arc::new(InertRuntime),
         Duration::ZERO,
     )
@@ -121,8 +110,9 @@ fn state_with_notifier(notifier: Arc<CountingNotifier>) -> Arc<WorktreeState> {
 
 #[test]
 fn watcher_callbacks_only_invalidate_until_worker_commit() {
-    let notifier = Arc::new(CountingNotifier::default());
-    let state = state_with_notifier(notifier.clone());
+    let subscriptions = crate::test_support::state_subscription::test_subscriptions();
+    let mut changes = subscriptions.changes();
+    let state = state_with_subscriptions(subscriptions);
     let dir = tempfile::TempDir::new().unwrap();
     let file_path = dir.path().join("file.txt");
     std::fs::write(&file_path, "content").unwrap();
@@ -132,7 +122,7 @@ fn watcher_callbacks_only_invalidate_until_worker_commit() {
     handle_git_events(state.as_ref(), &[event(&PathBuf::from("/repo/.git/index"))]);
 
     assert_eq!(state.requested_generation(), 3);
-    assert_eq!(notifier.snapshot_committed.load(Ordering::SeqCst), 0);
+    assert!(changes.try_recv().is_err());
 
     state.commit_snapshot(
         RepositorySnapshotParts {
@@ -158,7 +148,10 @@ fn watcher_callbacks_only_invalidate_until_worker_commit() {
     );
     state.notify_snapshot_changed();
 
-    assert_eq!(notifier.snapshot_committed.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        changes.try_recv().unwrap(),
+        crate::usecase::state_subscription::StateChangeSource::Repository(vec!["/repo".into()])
+    );
 }
 
 #[cfg(unix)]

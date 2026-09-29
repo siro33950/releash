@@ -165,6 +165,7 @@ fn test_購読payload_全種類を旧wire型とフィールドへ変換する() 
                         kind: Failure::Business(BusinessFailure::Other),
                         message: "failed".into(),
                         active: true,
+                        requires_attention: true,
                         count: 2,
                         first_observed_ms: 3,
                         last_observed_ms: 4,

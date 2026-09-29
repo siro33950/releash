@@ -117,15 +117,87 @@ pub(crate) fn test_output() -> crate::usecase::state_subscription::StateSubscrip
     crate::adaptor::presenter::state_subscription::test_output()
 }
 
+pub(crate) fn test_subscriptions() -> crate::usecase::state_subscription::StateSubscriptionUsecase {
+    crate::usecase::state_subscription::StateSubscriptionUsecase::new_with_output(
+        test_output(),
+        std::sync::Arc::new(crate::adaptor::gateway::subscription_timer::TokioSubscriptionTimer),
+    )
+}
+
 pub(crate) fn changes(
-    output: &crate::usecase::state_subscription::StateSubscriptionOutputRef,
+    subscriptions: &crate::usecase::state_subscription::StateSubscriptionUsecase,
 ) -> tokio::sync::broadcast::Receiver<crate::usecase::state_subscription::StateChangeSource> {
-    output
-        .as_any()
-        .downcast_ref::<StateSubscriptionPresenter>()
-        .expect("test presenter")
-        .change_sender()
-        .subscribe()
+    subscriptions.changes()
+}
+
+pub(crate) fn take_changes(
+    receiver: &mut tokio::sync::broadcast::Receiver<
+        crate::usecase::state_subscription::StateChangeSource,
+    >,
+) -> Vec<crate::usecase::state_subscription::StateChangeSource> {
+    let mut changes = Vec::new();
+    while let Ok(change) = receiver.try_recv() {
+        changes.push(change);
+    }
+    changes
+}
+
+pub(crate) struct CapturingNotifier<T> {
+    changes: std::sync::Mutex<
+        tokio::sync::broadcast::Receiver<crate::usecase::state_subscription::StateChangeSource>,
+    >,
+    values: std::sync::Mutex<Vec<T>>,
+    extract: fn(crate::usecase::state_subscription::StateChangeSource) -> Option<T>,
+}
+
+impl<T> CapturingNotifier<T> {
+    fn new(
+        subscriptions: &crate::usecase::state_subscription::StateSubscriptionUsecase,
+        extract: fn(crate::usecase::state_subscription::StateChangeSource) -> Option<T>,
+    ) -> Self {
+        Self {
+            changes: std::sync::Mutex::new(subscriptions.changes()),
+            values: std::sync::Mutex::new(Vec::new()),
+            extract,
+        }
+    }
+
+    pub(crate) fn lock(&self) -> std::sync::LockResult<std::sync::MutexGuard<'_, Vec<T>>> {
+        let mut values = self.values.lock()?;
+        let mut changes = self.changes.lock().expect("captured state changes");
+        values.extend(
+            take_changes(&mut changes)
+                .into_iter()
+                .filter_map(self.extract),
+        );
+        Ok(values)
+    }
+
+    pub(crate) fn take(&self) -> Vec<T> {
+        std::mem::take(&mut self.lock().expect("captured state changes"))
+    }
+}
+
+impl CapturingNotifier<Vec<String>> {
+    pub(crate) fn repositories(
+        subscriptions: &crate::usecase::state_subscription::StateSubscriptionUsecase,
+    ) -> Self {
+        Self::new(subscriptions, |change| match change {
+            crate::usecase::state_subscription::StateChangeSource::Repository(paths) => Some(paths),
+            _ => None,
+        })
+    }
+}
+
+impl CapturingNotifier<String> {
+    pub(crate) fn worktrees(
+        subscriptions: &crate::usecase::state_subscription::StateSubscriptionUsecase,
+    ) -> Self {
+        Self::new(subscriptions, |change| match change {
+            crate::usecase::state_subscription::StateChangeSource::Worktree(path) => Some(path),
+            _ => None,
+        })
+    }
 }
 
 pub(crate) fn same(
@@ -163,8 +235,20 @@ impl StateSubscriptionUsecase {
         paths: Vec<String>,
         timer: Arc<dyn crate::usecase::state_subscription::SubscriptionTimer>,
     ) -> Self {
-        let presenter = Arc::new(StateSubscriptionPresenter::new(paths));
-        Self::new_with_output(presenter.clone(), presenter.change_sender(), timer)
+        let presenter = Arc::new(StateSubscriptionPresenter::new());
+        let paths = Arc::new(parking_lot::RwLock::new(paths));
+        let mut usecase = Self::new_with_output(presenter, timer);
+        usecase.reads = Some(Arc::new(TestRepositoryPathsReads(paths.clone())));
+        usecase.test_repository_paths = Some(paths);
+        usecase
+    }
+
+    pub(crate) fn test_set_repository_paths(&self, paths: Vec<String>) {
+        *self
+            .test_repository_paths
+            .as_ref()
+            .expect("test paths")
+            .write() = paths;
     }
 
     pub(crate) fn test_presenter(&self) -> Option<&StateSubscriptionPresenter> {
@@ -183,5 +267,41 @@ impl StateSubscriptionUsecase {
         self.test_presenter()
             .expect("test presenter")
             .stream(self.clone(), id)
+    }
+}
+
+struct TestRepositoryPathsReads(Arc<parking_lot::RwLock<Vec<String>>>);
+
+#[async_trait::async_trait]
+impl crate::usecase::state_subscription::StateSubscriptionRead for TestRepositoryPathsReads {
+    async fn read(
+        &self,
+        target: &crate::usecase::state_subscription::SubscriptionTarget,
+    ) -> Result<
+        crate::usecase::state_subscription::StateValue,
+        crate::usecase::state_subscription::StateReadError,
+    > {
+        match target {
+            crate::usecase::state_subscription::SubscriptionTarget::RepositoryPaths => Ok(
+                crate::usecase::state_subscription::StateValue::RepositoryPaths(
+                    self.0.read().clone(),
+                ),
+            ),
+            _ => Err(
+                crate::usecase::state_subscription::StateReadError::from_error(
+                    crate::usecase::state_subscription::SubscriptionError::UnknownTarget,
+                ),
+            ),
+        }
+    }
+
+    async fn refresh_workspaces(
+        &self,
+        _: Option<crate::usecase::state_subscription::StateChangeSource>,
+    ) {
+    }
+
+    fn repositories(&self) -> Vec<String> {
+        self.0.read().clone()
     }
 }

@@ -487,11 +487,7 @@ impl<R: tauri::Runtime> WorkflowControlPlaneAcceptanceHost<R> {
 			codex_home: config.codex_home,
 			cli_binary: "releash-dev".to_string(),
 			terminal: terminal.application(),
-			change_notifier: Arc::new(
-				crate::adaptor::presenter::agent_session_change::ClientAgentSessionChangeNotifier::new(
-					crate::adaptor::presenter::state_subscription::test_output(),
-				),
-			),
+			subscriptions: crate::desktop_test_support::state_subscriptions(),
 		})
 		.map_err(|error| format!("Provider availability初期化失敗: {error:?}"))?;
 

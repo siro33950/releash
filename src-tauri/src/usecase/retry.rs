@@ -1,16 +1,26 @@
 use crate::common::retry::{attempts, AttemptProgress, RetryBackoff, RetryLimiter};
-use crate::usecase::failure::{next_attempt, FailureKey, FailureOutput, RetryFailure};
+use crate::usecase::failure::{next_attempt, FailureKey, FailureRecordingUsecase, RetryFailure};
 use std::future::Future;
 use std::sync::Arc;
 
 pub struct Retrying {
     pub(crate) limiter: Arc<RetryLimiter>,
-    pub(crate) failures: Arc<dyn FailureOutput>,
+    pub(crate) failures: Arc<FailureRecordingUsecase>,
+    #[cfg(test)]
+    pub(crate) test_query: Option<Arc<dyn crate::usecase::failure::FailureQueryService>>,
 }
 
 impl Retrying {
-    pub(crate) fn new(limiter: Arc<RetryLimiter>, failures: Arc<dyn FailureOutput>) -> Arc<Self> {
-        Arc::new(Self { limiter, failures })
+    pub(crate) fn new(
+        limiter: Arc<RetryLimiter>,
+        failures: Arc<FailureRecordingUsecase>,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            limiter,
+            failures,
+            #[cfg(test)]
+            test_query: None,
+        })
     }
 
     pub(crate) async fn restart<T, E, F, Fut>(
@@ -75,11 +85,23 @@ impl Retrying {
 
     #[cfg(test)]
     pub(crate) fn records(&self, target: &str) -> Vec<crate::usecase::failure::FailureObservation> {
-        self.failures
-            .as_any()
-            .downcast_ref::<crate::adaptor::presenter::failure::FailurePresenter>()
-            .expect("test failure presenter")
+        self.test_query
+            .as_ref()
+            .expect("test failure store")
             .records(target)
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn page_targets(
+        &self,
+        targets: &[String],
+        offset: usize,
+    ) -> crate::usecase::failure::FailurePage {
+        self.test_query
+            .as_ref()
+            .expect("test failure store")
+            .page(targets, offset)
+            .await
     }
 
     #[cfg(test)]
@@ -88,33 +110,12 @@ impl Retrying {
         target: &str,
         offset: usize,
     ) -> crate::usecase::failure::FailurePage {
-        use crate::usecase::failure::FailureQueryService;
-        self.failures
-            .as_any()
-            .downcast_ref::<crate::adaptor::presenter::failure::FailurePresenter>()
-            .expect("test failure presenter")
-            .store()
-            .page(&[target.to_string()], offset)
-            .await
+        self.page_targets(&[target.to_string()], offset).await
     }
 }
 
 #[cfg(test)]
-pub(crate) fn test_retrying() -> Arc<Retrying> {
-    Retrying::new(
-        Arc::new(RetryLimiter::deterministic()),
-        Arc::new(crate::adaptor::presenter::failure::FailurePresenter::new(
-            Arc::new(crate::adaptor::gateway::failure_records::FailureRecordStore::default()),
-            None,
-        )),
-    )
-}
-
-#[cfg(test)]
-pub(crate) fn shared() -> &'static Arc<Retrying> {
-    static SHARED: std::sync::OnceLock<Arc<Retrying>> = std::sync::OnceLock::new();
-    SHARED.get_or_init(test_retrying)
-}
+pub(crate) use crate::test_support::retry::{shared, test_retrying};
 
 #[cfg(test)]
 #[path = "retry_test.rs"]

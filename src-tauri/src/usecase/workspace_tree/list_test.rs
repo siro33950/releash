@@ -921,7 +921,7 @@ async fn test_pr情報保持_取得中と取得失敗では既知のpr情報を�
     let fetching = usecase.refresh().await;
     release.send(()).unwrap();
     tokio::time::timeout(Duration::from_secs(2), async {
-        while Arc::strong_count(&usecase.notify) != 1 {
+        while Arc::strong_count(&usecase.lists) != 1 {
             tokio::task::yield_now().await;
         }
     })
@@ -960,16 +960,14 @@ async fn test_pr反映通知_現行世代だけ通知し古い世代と削除済
             pr_started.notify_one();
             receive.lock().recv_timeout(Duration::from_secs(5)).unwrap();
         }));
-        let notifications = Arc::new(AtomicUsize::new(0));
-        let notified = notifications.clone();
-        let usecase = WorkspaceListUsecase::new(query).with_notifier(move || {
-            notified.fetch_add(1, Ordering::SeqCst);
-        });
+        let subscriptions = crate::test_support::state_subscription::test_subscriptions();
+        let mut changes = subscriptions.changes();
+        let usecase = WorkspaceListUsecase::new(query).with_subscriptions(subscriptions);
         usecase.refresh().await;
         tokio::time::timeout(Duration::from_secs(2), started.notified())
             .await
             .unwrap();
-        let before_pr = notifications.load(Ordering::SeqCst);
+        let before_pr = crate::test_support::state_subscription::take_changes(&mut changes).len();
         assert_eq!(before_pr, 3);
 
         // When
@@ -986,7 +984,7 @@ async fn test_pr反映通知_現行世代だけ通知し古い世代と削除済
         }
         release.send(()).unwrap();
         tokio::time::timeout(Duration::from_secs(2), async {
-            while Arc::strong_count(&usecase.notify) != 1 {
+            while Arc::strong_count(&usecase.lists) != 1 {
                 tokio::task::yield_now().await;
             }
         })
@@ -995,7 +993,7 @@ async fn test_pr反映通知_現行世代だけ通知し古い世代と削除済
 
         // Then
         assert_eq!(
-            notifications.load(Ordering::SeqCst),
+            before_pr + crate::test_support::state_subscription::take_changes(&mut changes).len(),
             before_pr + usize::from(outcome == "current")
         );
         let snapshot = usecase.snapshot();
@@ -1145,7 +1143,7 @@ async fn test_pr定期取得_遅いrepositoryが他repositoryの取得を止め�
     let usecase = WorkspaceListUsecase::new(query.clone());
     usecase.refresh().await;
     tokio::time::timeout(Duration::from_secs(2), async {
-        while Arc::strong_count(&usecase.notify) != 1 {
+        while Arc::strong_count(&usecase.lists) != 1 {
             tokio::task::yield_now().await;
         }
     })

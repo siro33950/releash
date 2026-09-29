@@ -320,7 +320,7 @@ fn test_provider_availability_refresh中のreadへ部分更新snapshotを公開�
 fn test_provider設定_更新とresetとrefresh成功時だけ購読へ通知する() {
     // Given
     let config = Arc::new(FakeProviderExecutableConfigRepository::default());
-    let publisher = crate::test_support::state_subscription::test_output();
+    let publisher = crate::test_support::state_subscription::test_subscriptions();
     let mut changes = crate::test_support::state_subscription::changes(&publisher);
     let usecase = ProviderAvailabilityUsecase::initialize(
         config.clone(),

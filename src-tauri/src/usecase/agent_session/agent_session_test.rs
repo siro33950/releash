@@ -1406,10 +1406,6 @@ async fn test_agent_session_launch_pty起動中のsessionをgcしない() {
         hook_health.clone(),
         started_execution_trees(),
     ));
-    struct NoopChangeNotifier;
-    impl crate::usecase::agent_session::AgentSessionChangeNotifier for NoopChangeNotifier {
-        fn agent_session_changed(&self, _worktree_path: &str) {}
-    }
     let lifecycle = Arc::new(AgentSessionLifecycleUsecase::new(
         std::sync::Arc::new(crate::adaptor::gateway::identity::RandomIdentityIssuer),
         sessions.clone(),
@@ -1423,7 +1419,7 @@ async fn test_agent_session_launch_pty起動中のsessionをgcしない() {
             terminal.clone(),
         ),
         hook_health,
-        Arc::new(NoopChangeNotifier),
+        crate::test_support::state_subscription::test_subscriptions(),
         started_execution_trees(),
     ));
 

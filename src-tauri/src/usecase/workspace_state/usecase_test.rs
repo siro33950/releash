@@ -31,7 +31,7 @@ fn test_表示状態保存_保存成功後だけ対象名を通知する() {
             fail,
             calls: Default::default(),
         };
-        let publisher = crate::test_support::state_subscription::test_output();
+        let publisher = crate::test_support::state_subscription::test_subscriptions();
         let mut changes = crate::test_support::state_subscription::changes(&publisher);
         let state = WorkspaceState {
             version: 1,

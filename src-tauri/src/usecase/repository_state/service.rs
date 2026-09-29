@@ -12,7 +12,7 @@ use super::error::RepositoryStateError;
 use super::runtime::{RepositoryStateWorkerRuntime, WorktreePathNormalizer};
 use super::scanner::RepositoryScanner;
 use super::snapshot::{RepositoryBranchCardsSnapshotDto, RepositorySnapshot};
-use super::worktree::{RepositoryStateNotifier, RepositoryStateWatcher, WorktreeState};
+use super::worktree::{RepositoryStateWatcher, WorktreeState};
 
 const DEFAULT_DEBOUNCE: Duration = Duration::from_millis(300);
 
@@ -28,7 +28,7 @@ pub trait RepositoryStateRepository: Send + Sync {
 pub struct RepositoryStateService {
     repository: Arc<dyn RepositoryStateRepository>,
     scanner: Arc<dyn RepositoryScanner>,
-    notifier: Arc<dyn RepositoryStateNotifier>,
+    subscriptions: crate::usecase::state_subscription::StateSubscriptionUsecase,
     watcher: Arc<dyn RepositoryStateWatcher>,
     runtime: Arc<dyn RepositoryStateWorkerRuntime>,
     path_normalizer: Arc<dyn WorktreePathNormalizer>,
@@ -40,7 +40,7 @@ impl RepositoryStateService {
     pub fn new(
         repository: Arc<dyn RepositoryStateRepository>,
         scanner: Arc<dyn RepositoryScanner>,
-        notifier: Arc<dyn RepositoryStateNotifier>,
+        subscriptions: crate::usecase::state_subscription::StateSubscriptionUsecase,
         watcher: Arc<dyn RepositoryStateWatcher>,
         runtime: Arc<dyn RepositoryStateWorkerRuntime>,
         path_normalizer: Arc<dyn WorktreePathNormalizer>,
@@ -48,7 +48,7 @@ impl RepositoryStateService {
         Self {
             repository,
             scanner,
-            notifier,
+            subscriptions,
             watcher,
             runtime,
             path_normalizer,
@@ -209,7 +209,7 @@ impl RepositoryStateService {
         let state = WorktreeState::new(
             canonical_path,
             self.scanner.clone(),
-            self.notifier.clone(),
+            self.subscriptions.clone(),
             self.runtime.clone(),
             self.debounce,
         );
@@ -248,7 +248,7 @@ impl RepositoryStateService {
         let state = WorktreeState::new(
             worktree_path.to_string(),
             self.scanner.clone(),
-            self.notifier.clone(),
+            self.subscriptions.clone(),
             self.runtime.clone(),
             self.debounce,
         );
@@ -276,9 +276,7 @@ pub(crate) mod tests {
     };
     use crate::usecase::repository_state::snapshot::RepositorySnapshotParts;
     use crate::usecase::repository_state::worker::InvalidateReason;
-    use crate::usecase::repository_state::worktree::{
-        NoopRepositoryStateNotifier, NoopRepositoryStateWatcher, SnapshotNotification,
-    };
+    use crate::usecase::repository_state::worktree::NoopRepositoryStateWatcher;
     use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
     struct TestRepositoryStateRepository;
@@ -433,7 +431,7 @@ pub(crate) mod tests {
         RepositoryStateService::new(
             Arc::new(TestRepositoryStateRepository),
             scanner,
-            Arc::new(NoopRepositoryStateNotifier),
+            crate::test_support::state_subscription::test_subscriptions(),
             Arc::new(NoopRepositoryStateWatcher),
             Arc::new(TestRepositoryStateWorkerRuntime),
             Arc::new(CanonicalWorktreePathNormalizer),
@@ -443,12 +441,12 @@ pub(crate) mod tests {
 
     fn test_service_with_notifier(
         scanner: Arc<EmptyScanner>,
-        notifier: Arc<dyn RepositoryStateNotifier>,
+        subscriptions: crate::usecase::state_subscription::StateSubscriptionUsecase,
     ) -> RepositoryStateService {
         RepositoryStateService::new(
             Arc::new(TestRepositoryStateRepository),
             scanner,
-            notifier,
+            subscriptions,
             Arc::new(NoopRepositoryStateWatcher),
             Arc::new(TestRepositoryStateWorkerRuntime),
             Arc::new(CanonicalWorktreePathNormalizer),
@@ -463,7 +461,7 @@ pub(crate) mod tests {
         RepositoryStateService::new(
             Arc::new(TestRepositoryStateRepository),
             scanner,
-            Arc::new(NoopRepositoryStateNotifier),
+            crate::test_support::state_subscription::test_subscriptions(),
             watcher,
             Arc::new(TestRepositoryStateWorkerRuntime),
             Arc::new(IdentityWorktreePathNormalizer),
@@ -471,22 +469,7 @@ pub(crate) mod tests {
         .with_debounce(Duration::ZERO)
     }
 
-    #[derive(Default)]
-    struct CapturingNotifier {
-        notifications: parking_lot::Mutex<Vec<SnapshotNotification>>,
-    }
-
-    impl CapturingNotifier {
-        fn take(&self) -> Vec<SnapshotNotification> {
-            std::mem::take(&mut *self.notifications.lock())
-        }
-    }
-
-    impl RepositoryStateNotifier for CapturingNotifier {
-        fn snapshot_changed(&self, notification: SnapshotNotification) {
-            self.notifications.lock().push(notification);
-        }
-    }
+    use crate::test_support::state_subscription::CapturingNotifier;
 
     #[tokio::test]
     async fn same_worktree_reuses_one_state() {
@@ -805,7 +788,7 @@ pub(crate) mod tests {
         let service = RepositoryStateService::new(
             Arc::new(TestRepositoryStateRepository),
             scanner,
-            Arc::new(NoopRepositoryStateNotifier),
+            crate::test_support::state_subscription::test_subscriptions(),
             Arc::new(NoopRepositoryStateWatcher),
             Arc::new(TestRepositoryStateWorkerRuntime),
             Arc::new(IdentityWorktreePathNormalizer),
@@ -839,8 +822,9 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn canonical_state_notifies_each_subscriber_path_alias() {
         let scanner = Arc::new(EmptyScanner);
-        let notifier = Arc::new(CapturingNotifier::default());
-        let service = test_service_with_notifier(scanner, notifier.clone());
+        let subscriptions = crate::test_support::state_subscription::test_subscriptions();
+        let notifier = Arc::new(CapturingNotifier::repositories(&subscriptions));
+        let service = test_service_with_notifier(scanner, subscriptions);
         let dir = tempfile::TempDir::new().unwrap();
         let alias_parent = tempfile::TempDir::new().unwrap();
         let alias = alias_parent.path().join("alias");
@@ -858,14 +842,8 @@ pub(crate) mod tests {
         for _ in 0..100 {
             let notifications = notifier.take();
             if let Some(committed) = notifications.first() {
-                assert!(committed
-                    .worktree_paths
-                    .iter()
-                    .any(|path| path == original_path));
-                assert!(committed
-                    .worktree_paths
-                    .iter()
-                    .any(|path| path == alias_path));
+                assert!(committed.iter().any(|path| path == original_path));
+                assert!(committed.iter().any(|path| path == alias_path));
                 return;
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
@@ -951,7 +929,7 @@ pub(crate) mod tests {
             RepositoryStateService::new(
                 Arc::new(TestRepositoryStateRepository),
                 Arc::new(CountingScanner::default()),
-                Arc::new(NoopRepositoryStateNotifier),
+                crate::test_support::state_subscription::test_subscriptions(),
                 watcher,
                 Arc::new(NoSpawnRepositoryStateWorkerRuntime),
                 Arc::new(IdentityWorktreePathNormalizer),

@@ -182,7 +182,7 @@ mod tests {
         let state = crate::usecase::repository_state::worktree::WorktreeState::new(
             dir.path().to_str().unwrap().to_string(),
             scanner,
-            Arc::new(crate::usecase::repository_state::worktree::NoopRepositoryStateNotifier),
+            crate::test_support::state_subscription::test_subscriptions(),
             Arc::new(
                 crate::usecase::repository_state::runtime::tests_support::TestRepositoryStateWorkerRuntime,
             ),

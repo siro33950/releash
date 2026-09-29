@@ -6,7 +6,7 @@ use crate::usecase::workspace_state::dto::WorkspaceStateDto;
 
 pub(crate) fn save_workspace_state_shared(
     store: &Arc<WorkspaceStateStore>,
-    publisher: Option<&crate::usecase::state_subscription::StateSubscriptionOutputRef>,
+    publisher: Option<&crate::usecase::state_subscription::StateSubscriptionUsecase>,
     worktree_name: String,
     state: WorkspaceStateDto,
 ) -> Result<(), AppError> {

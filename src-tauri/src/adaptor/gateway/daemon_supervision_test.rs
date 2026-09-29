@@ -6,7 +6,7 @@ fn gateway(data_dir: PathBuf) -> DaemonProcessGateway {
         PathBuf::new(),
         data_dir,
         Arc::new(RetryLimiter::new()),
-        Arc::new(crate::adaptor::presenter::failure::FailurePresenter::new(
+        Arc::new(crate::usecase::failure::FailureRecordingUsecase::new(
             Arc::new(crate::adaptor::gateway::failure_records::FailureRecordStore::default()),
             None,
         )),

@@ -37,12 +37,13 @@ async fn test_購読_配信と定期印と終了時の解放() {
         Some(StateSubscriptionEvent::Ready)
     ));
     // When
-    start(
+    start_read(
         &usecase,
         "client",
         &SubscriptionTarget::RepositoryPaths.to_string(),
         None,
     )
+    .await
     .unwrap();
     // Then
     assert!(
@@ -52,14 +53,8 @@ async fn test_購読_配信と定期印と終了時の解放() {
         stream.next().await,
         Some(StateSubscriptionEvent::Item(_, Event::Bookmark(_)))
     ));
-    usecase
-        .publisher()
-        .publish(
-            &SubscriptionTarget::RepositoryPaths,
-            StateValue::RepositoryPaths(vec!["/next".into()]),
-            None,
-        )
-        .unwrap();
+    usecase.test_set_repository_paths(vec!["/next".into()]);
+    usecase.notify(StateChangeSource::Repositories);
     assert!(matches!(
         stream.next().await,
         Some(StateSubscriptionEvent::Item(
@@ -121,12 +116,13 @@ async fn test_購読_開始と配信と停止が待機中streamを起こす() {
     assert!(!flag.0.load(Ordering::SeqCst));
 
     // When
-    start(
+    start_read(
         &usecase,
         "waiting",
         &SubscriptionTarget::RepositoryPaths.to_string(),
         None,
     )
+    .await
     .unwrap();
 
     // Then
@@ -148,14 +144,9 @@ async fn test_購読_開始と配信と停止が待機中streamを起こす() {
     flag.0.store(false, Ordering::SeqCst);
 
     // When
-    usecase
-        .publisher()
-        .publish(
-            &SubscriptionTarget::RepositoryPaths,
-            StateValue::RepositoryPaths(vec!["/next".into()]),
-            None,
-        )
-        .unwrap();
+    usecase.test_set_repository_paths(vec!["/next".into()]);
+    usecase.notify(StateChangeSource::Repositories);
+    tokio::task::yield_now().await;
 
     // Then
     assert!(flag.0.load(Ordering::SeqCst));
@@ -186,14 +177,7 @@ async fn test_購読_開始と配信と停止が待機中streamを起こす() {
     // Then
     assert!(flag.0.swap(false, Ordering::SeqCst));
     assert!(stream.as_mut().poll_next(&mut cx).is_pending());
-    usecase
-        .publisher()
-        .publish(
-            &SubscriptionTarget::RepositoryPaths,
-            StateValue::RepositoryPaths(vec![]),
-            None,
-        )
-        .unwrap();
+    usecase.notify(StateChangeSource::Repositories);
     assert!(stream.as_mut().poll_next(&mut cx).is_pending());
     tokio::time::advance(BOOKMARK_INTERVAL).await;
     assert!(matches!(
@@ -270,9 +254,7 @@ async fn test_引数付き購読_対象の変更だけを読み直して配信�
     );
     stream.next().await;
     *reads.value.lock() = "node-2".into();
-    usecase
-        .publisher()
-        .invalidate(StateChangeSource::Worktree("/repo".into()));
+    usecase.notify(StateChangeSource::Worktree("/repo".into()));
     assert!(
         matches!(stream.next().await, Some(StateSubscriptionEvent::Item(_, Event::Change(_, _, value))) if same(&value, StateValue::SessionNode(Some("node-2".into()))))
     );
@@ -983,7 +965,7 @@ async fn test_初回読取中の切断_開始失敗後に対象の鍵もworker�
         .unwrap()
         .test_runtime()
         .inspect(|state| state.registered(&target.to_string())));
-    assert!(usecase
+    assert!(!usecase
         .test_presenter()
         .unwrap()
         .test_runtime()
@@ -1040,7 +1022,7 @@ async fn test_snapshot登録後の切断_開始失敗で対象の鍵を解放す
         .unwrap()
         .test_runtime()
         .inspect(|state| state.registered(&target.to_string())));
-    assert!(usecase
+    assert!(!usecase
         .test_presenter()
         .unwrap()
         .test_runtime()
@@ -1097,8 +1079,6 @@ async fn test_review_threads購読_comment操作で再配信し最後の停止�
             "subscription comment".into(),
         )
         .unwrap();
-    crate::adaptor::gateway::comment_change::CommentChangeGateway::new(usecase.publisher())
-        .notify("repository");
     assert!(
         matches!(stream.next().await, Some(StateSubscriptionEvent::Item(_, Event::Change(_, _, value))) if same(&value, StateValue::ReviewThreads(vec![thread.into()])))
     );

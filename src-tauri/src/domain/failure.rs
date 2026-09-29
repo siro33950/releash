@@ -73,3 +73,86 @@ impl std::fmt::Display for StorageFailure {
         }
     }
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BusinessFailure {
+    VersionConflict,
+    Other,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Failure {
+    Business(BusinessFailure),
+    Technical(TechnicalFailureNature),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct FailureKey {
+    pub operation: String,
+    pub target: String,
+}
+
+impl FailureKey {
+    pub fn new(operation: &str, target: &str) -> Self {
+        Self {
+            operation: operation.into(),
+            target: target.into(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkFailure {
+    pub kind: Failure,
+    pub message: String,
+}
+
+impl WorkFailure {
+    pub fn from_error<E: std::fmt::Debug>(error: &E) -> Self
+    where
+        for<'a> Failure: From<&'a E>,
+    {
+        Self {
+            kind: Failure::from(error),
+            message: format!("{error:?}"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FailureRecord {
+    pub operation: String,
+    pub target: String,
+    pub kind: Failure,
+    pub message: String,
+    pub active: bool,
+    pub requires_attention: bool,
+    pub count: u64,
+    pub first_observed_ms: u64,
+    pub last_observed_ms: u64,
+}
+
+pub trait FailureRecordRepository: Send + Sync {
+    fn record_observed(
+        &self,
+        key: &FailureKey,
+        failure: WorkFailure,
+        requires_attention: bool,
+    ) -> bool;
+    fn record_resolved(&self, key: &FailureKey) -> bool;
+}
+
+impl From<crate::domain::failure::TechnicalFailure> for WorkFailure {
+    fn from(failure: crate::domain::failure::TechnicalFailure) -> Self {
+        Self {
+            kind: Failure::Technical(failure.nature),
+            message: failure.message,
+        }
+    }
+}
+
+impl std::fmt::Display for WorkFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
