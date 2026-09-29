@@ -359,7 +359,7 @@ async fn test_終了済み実行木_archiveとrestore成功後だけ所属worktr
         })
         .await
         .unwrap();
-    let publisher = crate::test_support::state_subscription::test_output();
+    let publisher = crate::test_support::state_subscription::test_subscriptions();
     let mut changes = crate::test_support::state_subscription::changes(&publisher);
     fixture.runtime = fixture.runtime.with_state_publisher(publisher);
     // When / Then
@@ -418,7 +418,7 @@ async fn test_実行木archiveとrestore_workspace識別子と異なるworktree�
     .unwrap();
     let target = fixture.repository.target(id).await.unwrap();
     assert_ne!(target.workspace_identity, target.worktree_path);
-    let publisher = crate::test_support::state_subscription::test_output();
+    let publisher = crate::test_support::state_subscription::test_subscriptions();
     let mut changes = crate::test_support::state_subscription::changes(&publisher);
     fixture.runtime = fixture.runtime.with_state_publisher(publisher);
     // When / Then

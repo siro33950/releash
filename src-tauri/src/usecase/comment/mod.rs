@@ -41,6 +41,7 @@ pub(crate) struct ReviewCommentUsecase {
     store: Arc<dyn ReviewEventStore>,
     clock: Arc<dyn ReviewClock>,
     id_generator: Arc<dyn ReviewIdGenerator>,
+    subscriptions: Option<crate::usecase::state_subscription::StateSubscriptionUsecase>,
 }
 
 impl ReviewCommentUsecase {
@@ -53,6 +54,25 @@ impl ReviewCommentUsecase {
             store,
             clock,
             id_generator,
+            subscriptions: None,
+        }
+    }
+
+    pub(crate) fn with_subscriptions(
+        mut self,
+        subscriptions: crate::usecase::state_subscription::StateSubscriptionUsecase,
+    ) -> Self {
+        self.subscriptions = Some(subscriptions);
+        self
+    }
+
+    fn notify_changed(&self, worktree_name: &str) {
+        if let Some(subscriptions) = &self.subscriptions {
+            subscriptions.notify(
+                crate::usecase::state_subscription::StateChangeSource::ReviewComments(Some(
+                    worktree_name.into(),
+                )),
+            );
         }
     }
 
@@ -125,7 +145,9 @@ impl ReviewCommentUsecase {
                 }])
             }),
         )?;
-        find_thread(worktree_name, &thread_id, &events)
+        let thread = find_thread(worktree_name, &thread_id, &events)?;
+        self.notify_changed(worktree_name);
+        Ok(thread)
     }
 
     pub(crate) fn append_comment(
@@ -156,7 +178,9 @@ impl ReviewCommentUsecase {
                 }])
             }),
         )?;
-        find_thread(worktree_name, thread_id, &events)
+        let thread = find_thread(worktree_name, thread_id, &events)?;
+        self.notify_changed(worktree_name);
+        Ok(thread)
     }
 
     pub(crate) fn resolve_thread(
@@ -189,7 +213,9 @@ impl ReviewCommentUsecase {
                 }])
             }),
         )?;
-        find_thread(worktree_name, thread_id, &events)
+        let thread = find_thread(worktree_name, thread_id, &events)?;
+        self.notify_changed(worktree_name);
+        Ok(thread)
     }
 
     pub(crate) fn delete_thread(
@@ -216,6 +242,7 @@ impl ReviewCommentUsecase {
                 }])
             }),
         )?;
+        self.notify_changed(worktree_name);
         Ok(())
     }
 
@@ -339,6 +366,62 @@ mod tests {
             Arc::new(SequentialClock::default()),
             Arc::new(SequentialIds::default()),
         )
+    }
+
+    #[test]
+    fn test_comment変更_成功した操作だけ購読口へ通知する() {
+        use crate::usecase::state_subscription::StateChangeSource;
+        let subscriptions = crate::test_support::state_subscription::test_subscriptions();
+        let mut changes = subscriptions.changes();
+        let usecase = usecase().with_subscriptions(subscriptions);
+        let dir = TempDir::new().unwrap();
+        let thread = usecase
+            .create_thread(
+                dir.path(),
+                "repository",
+                ReviewActor::human(),
+                target(),
+                "first".into(),
+            )
+            .unwrap();
+        usecase
+            .append_comment(
+                dir.path(),
+                "repository",
+                ReviewActor::human(),
+                &thread.id,
+                "second".into(),
+            )
+            .unwrap();
+        usecase
+            .resolve_thread(
+                dir.path(),
+                "repository",
+                ReviewActor::human(),
+                &thread.id,
+                "done".into(),
+                "summary".into(),
+            )
+            .unwrap();
+        assert!(usecase
+            .append_comment(
+                dir.path(),
+                "repository",
+                ReviewActor::human(),
+                &thread.id,
+                "late".into()
+            )
+            .is_err());
+        usecase
+            .delete_thread(dir.path(), "repository", ReviewActor::human(), &thread.id)
+            .unwrap();
+        for _ in 0..4 {
+            assert_eq!(
+                changes.try_recv().unwrap(),
+                StateChangeSource::ReviewComments(Some("repository".into()))
+            );
+        }
+        assert!(changes.try_recv().is_err());
     }
 
     fn target() -> ReviewTarget {

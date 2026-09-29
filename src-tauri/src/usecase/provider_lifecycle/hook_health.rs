@@ -44,7 +44,7 @@ pub(crate) enum ProviderHookHealthUsecaseError {
 
 pub(crate) struct ProviderHookHealthUsecase {
     repository: Arc<dyn ProviderHookHealthRepository>,
-    state_publisher: Option<crate::usecase::state_subscription::StateSubscriptionOutputRef>,
+    state_publisher: Option<crate::usecase::state_subscription::StateSubscriptionUsecase>,
 }
 
 pub(crate) struct ProviderHookHealthReadUsecase {
@@ -97,7 +97,7 @@ impl ProviderHookHealthUsecase {
 
     pub(crate) fn with_state_publisher(
         mut self,
-        publisher: crate::usecase::state_subscription::StateSubscriptionOutputRef,
+        publisher: crate::usecase::state_subscription::StateSubscriptionUsecase,
     ) -> Self {
         self.state_publisher = Some(publisher);
         self
@@ -105,9 +105,8 @@ impl ProviderHookHealthUsecase {
 
     fn health_changed(&self) {
         if let Some(publisher) = &self.state_publisher {
-            publisher.invalidate(
-                crate::usecase::state_subscription::StateChangeSource::ProviderHookHealth,
-            );
+            publisher
+                .notify(crate::usecase::state_subscription::StateChangeSource::ProviderHookHealth);
         }
     }
 

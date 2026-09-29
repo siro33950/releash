@@ -11,12 +11,11 @@ use crate::test_support::state_subscription::StateSubscriptionEvent;
 use crate::usecase::agent_session::*;
 use crate::usecase::failure::{BusinessFailure, Failure};
 use crate::usecase::git_host::GitHostUsecase;
-use crate::usecase::repo_paths_usecase::{RepoPathsNotifier, RepoPathsUsecase};
-use crate::usecase::repository_state::worktree::{RepositoryStateNotifier, SnapshotNotification};
+use crate::usecase::repo_paths_usecase::RepoPathsUsecase;
 use crate::usecase::repository_state::RepositoryStateService;
 use crate::usecase::state_subscription::{
-    StateChangeSource, StateReadFailure, StateSubscriptionOutputRef, StateSubscriptionRead,
-    StateSubscriptionUsecase, StateValue, SubscriptionTarget, WorkspaceStateReads,
+    StateChangeSource, StateReadFailure, StateSubscriptionRead, StateSubscriptionUsecase,
+    StateValue, SubscriptionTarget, WorkspaceStateReads,
 };
 use crate::usecase::workflow::ports::WorkflowDiagnosticsTarget;
 use crate::usecase::workspace_tree::WorkspaceListUsecase;
@@ -24,30 +23,6 @@ use futures_util::StreamExt;
 use parking_lot::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
-
-struct RepoPathsOutput(StateSubscriptionOutputRef);
-
-impl RepoPathsNotifier for RepoPathsOutput {
-    fn notify_changed(&self, paths: Vec<String>) {
-        self.0.invalidate(StateChangeSource::Repositories);
-        self.0
-            .publish(
-                &SubscriptionTarget::RepositoryPaths,
-                StateValue::RepositoryPaths(paths),
-                None,
-            )
-            .unwrap();
-    }
-}
-
-struct RepositoryStateOutput(StateSubscriptionOutputRef);
-
-impl RepositoryStateNotifier for RepositoryStateOutput {
-    fn snapshot_changed(&self, notification: SnapshotNotification) {
-        self.0
-            .invalidate(StateChangeSource::Repository(notification.worktree_paths));
-    }
-}
 
 #[derive(Default)]
 struct Sessions {
@@ -210,7 +185,7 @@ impl Fixture {
             vec![path.clone()],
             Arc::new(crate::adaptor::gateway::subscription_timer::TokioSubscriptionTimer),
         );
-        let publisher = subscriptions.publisher();
+        let publisher = subscriptions.clone();
         let repository =
             Arc::new(wiring::build_repository_usecase().with_state_publisher(publisher.clone()));
         let config = Arc::new(AppConfig::new(
@@ -222,7 +197,7 @@ impl Fixture {
                 Arc::new(parking_lot::RwLock::new(vec![path.clone()])),
                 config.clone(),
             )),
-            Arc::new(RepoPathsOutput(publisher.clone())),
+            publisher.clone(),
         ));
         let repository_state = Arc::new(RepositoryStateService::new(
             Arc::new(RepositoryStateRepositoryGateway::new(repository.clone())),
@@ -230,7 +205,7 @@ impl Fixture {
                 repository.clone(),
                 Arc::new(wiring::build_code_usecase()),
             )),
-            Arc::new(RepositoryStateOutput(publisher.clone())),
+            publisher.clone(),
             Arc::new(NotifyRepositoryStateWatcher::new(repository.clone())),
             Arc::new(
                 crate::adaptor::controller::repository_scan::RepositoryScanWorkerRuntime::new(
@@ -320,7 +295,9 @@ impl Fixture {
                 repository_state_for_review,
                 Arc::new(wiring::build_code_usecase()),
             )),
-            comments: Arc::new(wiring::build_review_comment_usecase()),
+            comments: Arc::new(
+                wiring::build_review_comment_usecase().with_subscriptions(subscriptions.clone()),
+            ),
             data_dir: root.to_path_buf(),
             review_comments_dir: crate::adaptor::gateway::comment::state_dir(&root),
             workflows_dir: workflows_dir.clone(),
@@ -678,9 +655,7 @@ async fn test_終了済み実行木のarchiveとrestore_取り直しなしでツ
         fixture
             .subscriptions
             .with_reads(Arc::new(reads), None, vec![], String::new());
-    archive.runtime = archive
-        .runtime
-        .with_state_publisher(subscriptions.publisher());
+    archive.runtime = archive.runtime.with_state_publisher(subscriptions.clone());
     let mut stream = Box::pin(subscriptions.open("client".into()).unwrap());
     stream.next().await;
     let target = SubscriptionTarget::Selection(fixture.path.clone(), "selected".into()).to_string();
@@ -800,8 +775,7 @@ async fn test_agent_session購読_状態変更通知から再読取して同じ�
         *fixture.sessions.item.lock() = next.clone();
         fixture
             .subscriptions
-            .publisher()
-            .invalidate(StateChangeSource::Worktree(fixture.path.clone()));
+            .notify(StateChangeSource::Worktree(fixture.path.clone()));
         let event = tokio::time::timeout(std::time::Duration::from_secs(2), stream.next())
             .await
             .unwrap();
@@ -824,7 +798,7 @@ async fn test_失敗購読_node行から実行idの失敗と解消を受け取�
         seed_workflow_session_facts, WorkflowSessionFactSeed,
     };
     use crate::test_support::state_subscription::Event;
-    use crate::usecase::failure::{FailureKey, FailureOutput, WorkFailure};
+    use crate::usecase::failure::{FailureKey, WorkFailure};
     // Given
     let fixture = Fixture::new();
     let (workflow, store) =
@@ -864,9 +838,9 @@ async fn test_失敗購読_node行から実行idの失敗と解消を受け取�
         fixture
             .subscriptions
             .with_reads(Arc::new(reads), None, vec![], String::new());
-    let presenter = crate::adaptor::presenter::failure::FailurePresenter::new(
+    let presenter = crate::usecase::failure::FailureRecordingUsecase::new(
         failures.clone(),
-        Some(subscriptions.publisher()),
+        Some(subscriptions.clone()),
     );
     let mut stream = Box::pin(subscriptions.open("client".into()).unwrap());
     stream.next().await;

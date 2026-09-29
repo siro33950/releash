@@ -4,14 +4,14 @@ use crate::domain::workspace_state::{
 
 pub(crate) fn save_workspace_state(
     repository: &dyn WorkspaceStateRepository,
-    publisher: Option<&crate::usecase::state_subscription::StateSubscriptionOutputRef>,
+    publisher: Option<&crate::usecase::state_subscription::StateSubscriptionUsecase>,
     worktree_name: &str,
     state: WorkspaceState,
 ) -> Result<(), WorkspaceStateError> {
     repository.set(worktree_name, state);
     repository.save(worktree_name)?;
     if let Some(publisher) = publisher {
-        publisher.invalidate(
+        publisher.notify(
             crate::usecase::state_subscription::StateChangeSource::WorkspaceState(
                 worktree_name.into(),
             ),

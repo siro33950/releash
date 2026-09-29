@@ -1,4 +1,3 @@
-mod agent_session_change_notifier;
 mod agent_session_exit;
 mod agent_session_history;
 mod agent_session_initial_instruction;
@@ -11,7 +10,6 @@ mod provider_availability;
 mod provider_session_title_ingestion;
 mod usecase;
 
-pub(crate) use agent_session_change_notifier::AgentSessionChangeNotifier;
 #[cfg(test)]
 pub(crate) use agent_session_exit::AgentSessionExitPort;
 pub(crate) use agent_session_exit::AgentSessionExitUsecase;

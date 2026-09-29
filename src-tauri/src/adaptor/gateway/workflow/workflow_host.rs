@@ -86,7 +86,7 @@ pub(crate) struct WorkflowRuntimeDependencies {
     pub(crate) store: Option<Arc<crate::adaptor::gateway::local_event_store::LocalEventStore>>,
     pub(crate) config: Option<Arc<dyn crate::domain::app_config::ConfigRepository>>,
     pub(crate) secrets: Option<Arc<dyn crate::domain::app_config::ConfigSecretRepository>>,
-    pub(crate) state_changes: crate::usecase::state_subscription::StateSubscriptionOutputRef,
+    pub(crate) state_changes: crate::usecase::state_subscription::StateSubscriptionUsecase,
 }
 
 fn current_timestamp() -> f64 {

@@ -2291,12 +2291,5 @@ async fn failure_page(
     targets: &[String],
 ) -> crate::usecase::failure::FailurePage {
     use crate::usecase::failure::FailureQueryService;
-    retrying
-        .failures
-        .as_any()
-        .downcast_ref::<crate::adaptor::presenter::failure::FailurePresenter>()
-        .expect("test failure presenter")
-        .store()
-        .page(targets, 0)
-        .await
+    retrying.failures.test_store().page(targets, 0).await
 }

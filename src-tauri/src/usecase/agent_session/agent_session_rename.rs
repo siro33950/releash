@@ -5,7 +5,7 @@ use crate::domain::agent_session::repository::{
     AgentSessionRepository, AgentSessionRepositoryError,
 };
 
-use super::AgentSessionChangeNotifier;
+use crate::usecase::state_subscription::{StateChangeSource, StateSubscriptionUsecase};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum AgentSessionRenameError {
@@ -29,17 +29,17 @@ pub(crate) trait AgentSessionRenameExecutor: Send + Sync {
 
 pub(crate) struct AgentSessionRenameUsecase {
     repository: Arc<dyn AgentSessionRepository>,
-    change_notifier: Arc<dyn AgentSessionChangeNotifier>,
+    subscriptions: StateSubscriptionUsecase,
 }
 
 impl AgentSessionRenameUsecase {
     pub(crate) fn new(
         repository: Arc<dyn AgentSessionRepository>,
-        change_notifier: Arc<dyn AgentSessionChangeNotifier>,
+        subscriptions: StateSubscriptionUsecase,
     ) -> Self {
         Self {
             repository,
-            change_notifier,
+            subscriptions,
         }
     }
 }
@@ -76,7 +76,8 @@ impl AgentSessionRenameExecutor for AgentSessionRenameUsecase {
             )
             .await
             .map_err(map_repository_error)?;
-        self.change_notifier.agent_session_changed(&worktree_path);
+        self.subscriptions
+            .notify(StateChangeSource::Worktree(worktree_path));
         Ok(outcome)
     }
 }

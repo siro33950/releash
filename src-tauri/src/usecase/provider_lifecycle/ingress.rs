@@ -9,9 +9,8 @@ use crate::domain::provider_lifecycle::{
     ProviderLifecycleSlotId, ProviderLifecycleUnavailableObservation, ScopedProviderLifecycleEvent,
 };
 use crate::domain::workflow::AgentSessionActivity;
-use crate::usecase::agent_session::{
-    AgentSessionChangeNotifier, AgentSessionUsecase, AgentSessionUsecaseError,
-};
+use crate::usecase::agent_session::{AgentSessionUsecase, AgentSessionUsecaseError};
+use crate::usecase::state_subscription::{StateChangeSource, StateSubscriptionUsecase};
 
 use super::{
     ProviderHookHealthUsecase, ProviderHookHealthUsecaseError, ProviderLifecycleUsecase,
@@ -75,7 +74,7 @@ pub(crate) struct ProviderLifecycleIngressUsecase {
     hook_health: Arc<ProviderHookHealthUsecase>,
     session_start_transaction: Arc<dyn ProviderSessionStartTransaction>,
     execution_tree_stop_transaction: Arc<dyn ProviderExecutionTreeStopTransaction>,
-    change_notifier: Arc<dyn AgentSessionChangeNotifier>,
+    subscriptions: StateSubscriptionUsecase,
 }
 
 #[async_trait::async_trait]
@@ -103,7 +102,7 @@ impl ProviderLifecycleIngressUsecase {
         hook_health: Arc<ProviderHookHealthUsecase>,
         session_start_transaction: Arc<dyn ProviderSessionStartTransaction>,
         execution_tree_stop_transaction: Arc<dyn ProviderExecutionTreeStopTransaction>,
-        change_notifier: Arc<dyn AgentSessionChangeNotifier>,
+        subscriptions: StateSubscriptionUsecase,
     ) -> Self {
         Self {
             identities,
@@ -112,7 +111,7 @@ impl ProviderLifecycleIngressUsecase {
             hook_health,
             session_start_transaction,
             execution_tree_stop_transaction,
-            change_notifier,
+            subscriptions,
         }
     }
 
@@ -282,8 +281,9 @@ impl ProviderLifecycleIngressUsecase {
             .await
             .map_err(map_session_error)?;
         if observation.outcome == AgentSessionMutationOutcome::Applied {
-            self.change_notifier
-                .agent_session_changed(&observation.worktree_path);
+            self.subscriptions.notify(StateChangeSource::Worktree(
+                observation.worktree_path.clone(),
+            ));
         }
         Ok(merge_activity_outcome(result, observation.outcome))
     }

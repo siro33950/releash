@@ -18,14 +18,12 @@ where
 
 pub(crate) async fn create_review_thread_shared(
     data_dir: PathBuf,
-    notify: &crate::adaptor::gateway::comment_change::CommentChangeGateway,
     usecase: &Arc<ReviewCommentUsecase>,
     worktree_name: String,
     target: ReviewTarget,
     content: String,
 ) -> Result<ReviewThreadDto, AppError> {
     let usecase = Arc::clone(usecase);
-    let worktree_name_for_event = worktree_name.clone();
     let thread = blocking(move || {
         usecase
             .create_thread(
@@ -39,20 +37,17 @@ pub(crate) async fn create_review_thread_shared(
             .map_err(AppError::from_failure)
     })
     .await?;
-    notify.notify(&worktree_name_for_event);
     Ok(thread)
 }
 
 pub(crate) async fn append_review_comment_shared(
     data_dir: PathBuf,
-    notify: &crate::adaptor::gateway::comment_change::CommentChangeGateway,
     usecase: &Arc<ReviewCommentUsecase>,
     worktree_name: String,
     thread_id: String,
     content: String,
 ) -> Result<ReviewThreadDto, AppError> {
     let usecase = Arc::clone(usecase);
-    let worktree_name_for_event = worktree_name.clone();
     let thread = blocking(move || {
         usecase
             .append_comment(
@@ -66,13 +61,11 @@ pub(crate) async fn append_review_comment_shared(
             .map_err(AppError::from_failure)
     })
     .await?;
-    notify.notify(&worktree_name_for_event);
     Ok(thread)
 }
 
 pub(crate) async fn resolve_review_thread_shared(
     data_dir: PathBuf,
-    notify: &crate::adaptor::gateway::comment_change::CommentChangeGateway,
     usecase: &Arc<ReviewCommentUsecase>,
     worktree_name: String,
     thread_id: String,
@@ -80,7 +73,6 @@ pub(crate) async fn resolve_review_thread_shared(
     summary: String,
 ) -> Result<ReviewThreadDto, AppError> {
     let usecase = Arc::clone(usecase);
-    let worktree_name_for_event = worktree_name.clone();
     let thread = blocking(move || {
         usecase
             .resolve_thread(
@@ -95,26 +87,22 @@ pub(crate) async fn resolve_review_thread_shared(
             .map_err(AppError::from_failure)
     })
     .await?;
-    notify.notify(&worktree_name_for_event);
     Ok(thread)
 }
 
 pub(crate) async fn delete_review_thread_shared(
     data_dir: PathBuf,
-    notify: &crate::adaptor::gateway::comment_change::CommentChangeGateway,
     usecase: &Arc<ReviewCommentUsecase>,
     worktree_name: String,
     thread_id: String,
 ) -> Result<(), AppError> {
     let usecase = Arc::clone(usecase);
-    let worktree_name_for_event = worktree_name.clone();
     blocking(move || {
         usecase
             .delete_thread(&data_dir, &worktree_name, ReviewActor::human(), &thread_id)
             .map_err(AppError::from_failure)
     })
     .await?;
-    notify.notify(&worktree_name_for_event);
     Ok(())
 }
 

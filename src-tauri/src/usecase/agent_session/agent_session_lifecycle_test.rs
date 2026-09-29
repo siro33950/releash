@@ -49,9 +49,20 @@ fn workflow_location(tree_id: &str, node_execution_id: &str) -> AgentSessionTree
     AgentSessionTreeLocation::workflow_node(tree_id, node_execution_id).unwrap()
 }
 
-#[derive(Default)]
 struct RecordingChangeNotifier {
-    notified: Mutex<Vec<String>>,
+    subscriptions: crate::usecase::state_subscription::StateSubscriptionUsecase,
+    notified: crate::test_support::state_subscription::RecordedWorktrees,
+}
+impl Default for RecordingChangeNotifier {
+    fn default() -> Self {
+        let subscriptions = crate::test_support::state_subscription::test_subscriptions();
+        let notified =
+            crate::test_support::state_subscription::RecordedWorktrees::new(&subscriptions);
+        Self {
+            subscriptions,
+            notified,
+        }
+    }
 }
 
 #[derive(Default)]
@@ -197,15 +208,6 @@ impl crate::usecase::agent_session::AgentSessionExecutionTreeLifecycle for Recor
         .await
         .unwrap();
         Ok(())
-    }
-}
-
-impl crate::usecase::agent_session::AgentSessionChangeNotifier for RecordingChangeNotifier {
-    fn agent_session_changed(&self, worktree_path: &str) {
-        self.notified
-            .lock()
-            .unwrap()
-            .push(worktree_path.to_string());
     }
 }
 
@@ -697,7 +699,7 @@ fn setup_with_lifecycle_events(
             terminal.clone(),
         ),
         hook_health.clone(),
-        change_notifier.clone(),
+        change_notifier.subscriptions.clone(),
         execution_trees.clone(),
     ));
     *execution_trees.lifecycle.lock().unwrap() = Arc::downgrade(&usecase);
@@ -773,7 +775,7 @@ async fn setup_activity_stop_exclusion_with_events(
         context.hook_health.clone(),
         Arc::new(LocalAgentSessionRepository::new(context.store.clone())),
         Arc::new(NoopProviderExecutionTreeStops),
-        context.change_notifier.clone(),
+        context.change_notifier.subscriptions.clone(),
     );
     let slot_id = ProviderLifecycleSlotId::new(format!("slot-activity-stop-{case_name}")).unwrap();
     let scope = ProviderLifecycleScope::new(&agent_session_id).unwrap();
@@ -2132,7 +2134,7 @@ async fn test_agent_session_resume状態保存失敗時は起動済みprocessを
             terminal.clone(),
         ),
         hook_health,
-        Arc::new(RecordingChangeNotifier::default()),
+        crate::test_support::state_subscription::test_subscriptions(),
         Arc::new(RecordingExecutionTrees {
             store: Some(store.clone()),
             ..Default::default()
@@ -2273,7 +2275,7 @@ async fn test_agent_session_resume_同一sessionへの並行要求はptyを一�
         Arc::new(ProviderHookHealthUsecase::new(Arc::new(
             MemoryHookHealthRepository::default(),
         ))),
-        Arc::new(RecordingChangeNotifier::default()),
+        crate::test_support::state_subscription::test_subscriptions(),
         Arc::new(RecordingExecutionTrees {
             store: Some(store.clone()),
             ..Default::default()
@@ -2382,7 +2384,7 @@ async fn test_agent_session_resume中のarchiveは同一sessionの操作完了�
         Arc::new(ProviderHookHealthUsecase::new(Arc::new(
             MemoryHookHealthRepository::default(),
         ))),
-        Arc::new(RecordingChangeNotifier::default()),
+        crate::test_support::state_subscription::test_subscriptions(),
         execution_trees.clone(),
     ));
 
@@ -2482,7 +2484,7 @@ async fn test_agent_session_open_同一sessionへの並行要求は一度だけ�
         Arc::new(ProviderHookHealthUsecase::new(Arc::new(
             MemoryHookHealthRepository::default(),
         ))),
-        Arc::new(RecordingChangeNotifier::default()),
+        crate::test_support::state_subscription::test_subscriptions(),
         Arc::new(RecordingExecutionTrees {
             store: Some(store.clone()),
             ..Default::default()

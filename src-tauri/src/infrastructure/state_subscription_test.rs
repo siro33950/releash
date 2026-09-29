@@ -549,13 +549,12 @@ fn test_差分対象_最後のclient切断後もruntimeの登録を保持する(
 }
 
 #[test]
-fn test_購読開始確認_切断後は対象の鍵を解放し他の購読と起動時対象を保持する() {
+fn test_購読開始確認_切断後は対象の鍵を解放し他の購読を保持する() {
     // Given
     let mut state = registry();
     state
         .register("repository-paths".into(), 0, Delivery::Full)
         .unwrap();
-    state.protect("repository-paths");
     state.open("other".into()).unwrap();
     state.start("other", "providers", None).unwrap();
     state.start("client", "workspaces", None).unwrap();
@@ -573,7 +572,7 @@ fn test_購読開始確認_切断後は対象の鍵を解放し他の購読と�
         state.ensure_active("repository-paths"),
         Err(SubscriptionError::StreamEnded)
     );
-    assert!(state.registered("repository-paths"));
+    assert!(!state.registered("repository-paths"));
 }
 
 #[test]

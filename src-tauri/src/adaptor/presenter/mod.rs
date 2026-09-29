@@ -1,5 +1,4 @@
 pub(crate) mod agent_session;
-pub(crate) mod agent_session_change;
 pub(crate) mod api_error;
 pub(crate) mod api_response;
 pub(crate) mod application_lifecycle;
@@ -9,12 +8,9 @@ pub(crate) mod code;
 pub(crate) mod connect;
 pub(crate) mod connect_wire;
 pub(crate) mod error;
-pub(crate) mod failure;
 pub(crate) mod notion;
 pub(crate) mod provider_lifecycle_response;
 pub(crate) mod provider_tui;
-pub(crate) mod repo_paths;
-pub(crate) mod repository_state;
 pub(crate) mod state_subscription;
 mod state_subscription_target;
 pub(crate) mod state_subscription_wire;

@@ -124,12 +124,13 @@ async fn test_terminal購読_同じstreamでsnapshot差分と区切りを届け�
     )
     .await
     .unwrap();
-    crate::test_support::state_subscription::start(
+    crate::test_support::state_subscription::start_read(
         &subscriptions,
         "client",
         "repository-paths",
         None,
     )
+    .await
     .unwrap();
     // Then
     let mut terminal_snapshot = false;

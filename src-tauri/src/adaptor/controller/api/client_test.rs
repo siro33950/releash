@@ -411,12 +411,8 @@ async fn test_状態購読_connectで初期状態と変更と再開を配信す�
     )
     .unwrap();
     assert!(matches!(bookmark.event, Some(Event::Bookmark(_))));
-    crate::usecase::repo_paths_usecase::RepoPathsNotifier::notify_changed(
-        &crate::adaptor::presenter::repo_paths::RepoPathsNotifyGateway::new(
-            subscriptions.publisher(),
-        ),
-        vec!["/next".into()],
-    );
+    subscriptions.test_set_repository_paths(vec!["/next".into()]);
+    subscriptions.notify(crate::usecase::state_subscription::StateChangeSource::Repositories);
     let changed: wire::StateSubscriptionEvent = to_wire(
         &stream
             .message::<rpc::StateSubscriptionEvent>()
@@ -427,7 +423,8 @@ async fn test_状態購読_connectで初期状態と変更と再開を配信す�
     )
     .unwrap();
     assert!(matches!(changed.event, Some(Event::Change(_))));
-    assert_eq!(changed.version.unwrap().sequence, 1);
+    let changed_version = changed.version.unwrap();
+    assert_eq!(changed_version.sequence, 1);
     client
         .stop_state_subscription(rpc::StopStateSubscriptionRequest {
             client_id: "state-test".into(),
@@ -464,7 +461,18 @@ async fn test_状態購読_connectで初期状態と変更と再開を配信す�
             .to_owned_message(),
     )
     .unwrap();
-    assert!(matches!(resumed.event, Some(Event::Change(_))));
+    assert_eq!(resumed.version, Some(changed_version));
+    let Some(Event::Change(payload)) = resumed.event else {
+        panic!("repository paths change after resubscription");
+    };
+    assert_eq!(
+        payload.payload.and_then(|payload| payload.value),
+        Some(wire::state_payload::Value::RepositoryPaths(
+            wire::Liststring {
+                items: vec!["/next".into()],
+            }
+        ))
+    );
     drop(stream);
     server.abort();
 }
@@ -724,12 +732,13 @@ async fn test_状態購読_既定期限後もbookmarkが届く() {
     assert!(response.status().is_success());
     let mut body = response.into_body().into_data_stream();
     assert!(body.next().await.unwrap().is_ok());
-    crate::test_support::state_subscription::start(
+    crate::test_support::state_subscription::start_read(
         &subscriptions,
         "deadline-test",
         "repository-paths",
         None,
     )
+    .await
     .unwrap();
     assert!(body.next().await.unwrap().is_ok());
     // When / Then
@@ -1312,12 +1321,10 @@ async fn test_共通入口_期限切れを変換し成功と内部失敗を保�
 #[test]
 fn test_状態購読配線_usecaseとcontrollerが同じ出力実装を参照する() {
     // Given
-    let presenter = Arc::new(
-        crate::adaptor::presenter::state_subscription::StateSubscriptionPresenter::new(vec![]),
-    );
+    let presenter =
+        Arc::new(crate::adaptor::presenter::state_subscription::StateSubscriptionPresenter::new());
     let usecase = crate::usecase::state_subscription::StateSubscriptionUsecase::new_with_output(
         presenter.clone(),
-        presenter.change_sender(),
         Arc::new(crate::adaptor::gateway::subscription_timer::TokioSubscriptionTimer),
     );
     let deps = StateSubscriptionDeps::new(usecase, presenter);
@@ -1422,7 +1429,7 @@ async fn test_拒否_待ち行列が溢れた拒否を失敗の記録に残す()
     // Given
     let store = Arc::new(crate::adaptor::gateway::failure_records::FailureRecordStore::default());
     let deps = ClientApiDeps::new(Arc::new(dispatch())).with_failure_output(Arc::new(
-        crate::adaptor::presenter::failure::FailurePresenter::new(store.clone(), None),
+        crate::usecase::failure::FailureRecordingUsecase::new(store.clone(), None),
     ));
     let _permits = deps.limits.fill("default");
     // When

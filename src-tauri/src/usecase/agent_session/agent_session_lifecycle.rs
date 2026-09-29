@@ -13,10 +13,11 @@ use crate::domain::provider_lifecycle::{ProviderLifecycleScope, ProviderLifecycl
 use crate::domain::terminal_surface::TerminalSurfaceOwner;
 use crate::usecase::provider_lifecycle::ProviderHookHealthUsecase;
 use crate::usecase::provider_lifecycle::{ProviderLifecycleUsecase, ProviderLifecycleUsecaseError};
+use crate::usecase::state_subscription::{StateChangeSource, StateSubscriptionUsecase};
 
 use super::{
-    AgentSessionChangeNotifier, AgentSessionExecutionTreeLifecycle, AgentSessionUsecase,
-    AgentSessionUsecaseError, ProviderAgentRuntime,
+    AgentSessionExecutionTreeLifecycle, AgentSessionUsecase, AgentSessionUsecaseError,
+    ProviderAgentRuntime,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -56,7 +57,7 @@ pub(crate) struct AgentSessionLifecycleUsecase {
     availability: Arc<dyn ProviderAvailabilityReader>,
     terminal: Arc<dyn ProviderAgentTerminalGateway>,
     hook_health: Arc<ProviderHookHealthUsecase>,
-    change_notifier: Arc<dyn AgentSessionChangeNotifier>,
+    subscriptions: StateSubscriptionUsecase,
     execution_trees: Arc<dyn AgentSessionExecutionTreeLifecycle>,
 }
 
@@ -67,7 +68,7 @@ impl AgentSessionLifecycleUsecase {
         lifecycle: Arc<ProviderLifecycleUsecase>,
         provider_runtime: ProviderAgentRuntime,
         hook_health: Arc<ProviderHookHealthUsecase>,
-        change_notifier: Arc<dyn AgentSessionChangeNotifier>,
+        subscriptions: StateSubscriptionUsecase,
         execution_trees: Arc<dyn AgentSessionExecutionTreeLifecycle>,
     ) -> Self {
         let ProviderAgentRuntime {
@@ -83,7 +84,7 @@ impl AgentSessionLifecycleUsecase {
             availability,
             terminal,
             hook_health,
-            change_notifier,
+            subscriptions,
             execution_trees,
         }
     }
@@ -314,8 +315,9 @@ impl AgentSessionLifecycleUsecase {
             .restore_execution_tree(session.session().tree_location().tree_id())
             .await
             .map_err(map_workflow_error)?;
-        self.change_notifier
-            .agent_session_changed(session.session().workspace().as_str());
+        self.subscriptions.notify(StateChangeSource::Worktree(
+            session.session().workspace().as_str().into(),
+        ));
         Ok(AgentSessionOpenOutcome::Restored)
     }
 
@@ -333,8 +335,9 @@ impl AgentSessionLifecycleUsecase {
             .archive_execution_tree(session.session().tree_location().tree_id())
             .await
             .map_err(map_workflow_error)?;
-        self.change_notifier
-            .agent_session_changed(session.session().workspace().as_str());
+        self.subscriptions.notify(StateChangeSource::Worktree(
+            session.session().workspace().as_str().into(),
+        ));
         Ok(outcome)
     }
 
@@ -367,8 +370,9 @@ impl AgentSessionLifecycleUsecase {
             .await
             .map_err(map_session_error)?;
         if outcome == AgentSessionMutationOutcome::Applied {
-            self.change_notifier
-                .agent_session_changed(session.session().workspace().as_str());
+            self.subscriptions.notify(StateChangeSource::Worktree(
+                session.session().workspace().as_str().into(),
+            ));
         }
         self.release_launch_binding(agent_session_id).await?;
         self.launch_gateway
@@ -469,8 +473,9 @@ impl AgentSessionLifecycleUsecase {
             .await
             .map_err(map_session_error)?;
         if outcome == AgentSessionProcessExitOutcome::Paused {
-            self.change_notifier
-                .agent_session_changed(session.session().workspace().as_str());
+            self.subscriptions.notify(StateChangeSource::Worktree(
+                session.session().workspace().as_str().into(),
+            ));
         }
         if outcome != AgentSessionProcessExitOutcome::GcRequired {
             self.release_launch_binding(agent_session_id).await?;
@@ -634,8 +639,9 @@ impl AgentSessionLifecycleUsecase {
             .delete(agent_session_id, caller_request_id)
             .await
             .map_err(map_session_error)?;
-        self.change_notifier
-            .agent_session_changed(owner.workspace_identity().as_str());
+        self.subscriptions.notify(StateChangeSource::Worktree(
+            owner.workspace_identity().as_str().into(),
+        ));
         self.release_deleted_execution_tree(tree_id).await;
         Ok(())
     }
@@ -694,8 +700,9 @@ impl AgentSessionLifecycleUsecase {
             )
             .await
             .map_err(map_session_error)?;
-        self.change_notifier
-            .agent_session_changed(owner.workspace_identity().as_str());
+        self.subscriptions.notify(StateChangeSource::Worktree(
+            owner.workspace_identity().as_str().into(),
+        ));
         self.release_deleted_execution_tree(tree_id).await;
         Ok(())
     }

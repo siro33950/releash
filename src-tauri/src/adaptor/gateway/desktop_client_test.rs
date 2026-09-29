@@ -1,6 +1,5 @@
 use super::*;
 use crate::adaptor::gateway::failure_records::FailureRecordStore;
-use crate::adaptor::presenter::failure::FailurePresenter;
 use futures_util::StreamExt;
 use std::sync::atomic::Ordering;
 
@@ -12,7 +11,7 @@ fn start(endpoint: &ClientConnectionDto) -> (DesktopClient, Arc<FailureRecordSto
         super::client(endpoint).unwrap(),
         super::stream_client(endpoint).unwrap(),
         FailureKey::new("daemon_liveness", KEY_TARGET),
-        Arc::new(FailurePresenter::new(store.clone(), None)),
+        Arc::new(FailureRecordingUsecase::new(store.clone(), None)),
         Arc::new(RetryLimiter::deterministic()),
     );
     (client, store)
@@ -157,15 +156,22 @@ async fn test_生存確認_streamの終了が3回続くと一時的な失敗と�
 #[derive(Default)]
 struct RecordedCalls(parking_lot::Mutex<Vec<&'static str>>);
 
-impl FailureOutput for RecordedCalls {
+impl crate::domain::failure::FailureRecordRepository for RecordedCalls {
     fn as_any(&self) -> &dyn std::any::Any {
         self
     }
-    fn observed(&self, _key: &FailureKey, _failure: WorkFailure) {
+    fn record_observed(
+        &self,
+        _key: &FailureKey,
+        _failure: WorkFailure,
+        _requires_attention: bool,
+    ) -> bool {
         self.0.lock().push("observed");
+        false
     }
-    fn resolved(&self, _key: &FailureKey) {
+    fn record_resolved(&self, _key: &FailureKey) -> bool {
         self.0.lock().push("resolved");
+        false
     }
 }
 
@@ -178,7 +184,7 @@ async fn test_生存確認_失敗の後に届けば連続失敗が消え記録�
         super::client(&endpoint).unwrap(),
         super::stream_client(&endpoint).unwrap(),
         FailureKey::new("daemon_liveness", KEY_TARGET),
-        calls.clone(),
+        Arc::new(FailureRecordingUsecase::new(calls.clone(), None)),
         Arc::new(RetryLimiter::deterministic()),
     );
     // When

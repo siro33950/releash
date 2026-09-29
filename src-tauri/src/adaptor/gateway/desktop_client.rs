@@ -7,7 +7,7 @@ use crate::domain::daemon_supervision::DaemonLiveness;
 use crate::domain::failure::TechnicalFailureNature;
 use crate::usecase::client_connection::ClientConnectionDto;
 use crate::usecase::failure::{
-    attempt_expired, Failure, FailureKey, FailureOutput, WorkFailure, ATTEMPT_LIMIT,
+    attempt_expired, Failure, FailureKey, FailureRecordingUsecase, WorkFailure, ATTEMPT_LIMIT,
 };
 use connectrpc::client::{ClientConfig, HttpClient};
 use std::sync::Arc;
@@ -107,7 +107,7 @@ impl DesktopClient {
         client: rpc::ClientServiceClient<HttpClient>,
         stream_client: rpc::ClientServiceClient<HttpClient>,
         key: FailureKey,
-        failures: Arc<dyn FailureOutput>,
+        failures: Arc<FailureRecordingUsecase>,
         limiter: Arc<RetryLimiter>,
     ) -> Self {
         let failure = Arc::new(parking_lot::Mutex::new(None));
@@ -175,7 +175,7 @@ impl DesktopClient {
 async fn watch(
     client: &rpc::ClientServiceClient<HttpClient>,
     key: &FailureKey,
-    failures: &dyn FailureOutput,
+    failures: &FailureRecordingUsecase,
     limiter: &RetryLimiter,
 ) -> WorkFailure {
     let mut liveness = DaemonLiveness::default();
@@ -195,7 +195,7 @@ async fn observe(
     client: &rpc::ClientServiceClient<HttpClient>,
     liveness: &mut DaemonLiveness,
     key: &FailureKey,
-    failures: &dyn FailureOutput,
+    failures: &FailureRecordingUsecase,
 ) -> WorkFailure {
     let opened = bounded(ATTEMPT_LIMIT, attempt_expired, async {
         client

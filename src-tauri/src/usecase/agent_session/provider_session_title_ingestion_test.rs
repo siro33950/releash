@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use super::{AgentSessionChangeNotifier, ProviderSessionTitleIngestionUsecase};
+use super::ProviderSessionTitleIngestionUsecase;
 use crate::domain::agent_session::aggregates::{
     AgentSession, AgentSessionLifecycleEvent, AgentSessionRemovalAuthorization,
     AgentSessionTreeLocation,
@@ -205,17 +205,19 @@ impl ProviderSessionTitleGateway for FixedTitleGateway {
     }
 }
 
-#[derive(Default)]
 pub(crate) struct RecordingNotifier {
-    pub(crate) worktrees: Mutex<Vec<String>>,
+    pub(crate) subscriptions: crate::usecase::state_subscription::StateSubscriptionUsecase,
+    pub(crate) worktrees: crate::test_support::state_subscription::RecordedWorktrees,
 }
-
-impl AgentSessionChangeNotifier for RecordingNotifier {
-    fn agent_session_changed(&self, worktree_path: &str) {
-        self.worktrees
-            .lock()
-            .unwrap()
-            .push(worktree_path.to_string());
+impl Default for RecordingNotifier {
+    fn default() -> Self {
+        let subscriptions = crate::test_support::state_subscription::test_subscriptions();
+        let worktrees =
+            crate::test_support::state_subscription::RecordedWorktrees::new(&subscriptions);
+        Self {
+            subscriptions,
+            worktrees,
+        }
     }
 }
 
@@ -293,7 +295,11 @@ async fn test_provider_session_title_ingestion_未取得は毎tickで取得済�
         ("provider-known", Ok(Some("Known title"))),
     ]));
     let notifier = Arc::new(RecordingNotifier::default());
-    let usecase = ProviderSessionTitleIngestionUsecase::new(repository, gateway.clone(), notifier);
+    let usecase = ProviderSessionTitleIngestionUsecase::new(
+        repository,
+        gateway.clone(),
+        notifier.subscriptions.clone(),
+    );
 
     for _ in 0..16 {
         usecase.ingest_due().await;
@@ -315,8 +321,11 @@ async fn test_provider_session_title_ingestion_同値なら保存も通知もし
         Ok(Some("Same title")),
     )]));
     let notifier = Arc::new(RecordingNotifier::default());
-    let usecase =
-        ProviderSessionTitleIngestionUsecase::new(repository.clone(), gateway, notifier.clone());
+    let usecase = ProviderSessionTitleIngestionUsecase::new(
+        repository.clone(),
+        gateway,
+        notifier.subscriptions.clone(),
+    );
 
     usecase.ingest_due().await;
 
@@ -339,7 +348,7 @@ async fn test_provider_session_title_ingestion_変化時だけ保存してworktr
     let usecase = ProviderSessionTitleIngestionUsecase::new(
         repository.clone(),
         gateway.clone(),
-        notifier.clone(),
+        notifier.subscriptions.clone(),
     );
     usecase.ingest_due().await;
     gateway.set_title("provider-changed", Some("Updated title"));
@@ -378,8 +387,11 @@ async fn test_provider_session_title_ingestion_読み取り失敗で他session�
         ("provider-continued", Ok(Some("Available title"))),
     ]));
     let notifier = Arc::new(RecordingNotifier::default());
-    let usecase =
-        ProviderSessionTitleIngestionUsecase::new(repository.clone(), gateway, notifier.clone());
+    let usecase = ProviderSessionTitleIngestionUsecase::new(
+        repository.clone(),
+        gateway,
+        notifier.subscriptions.clone(),
+    );
 
     usecase.ingest_due().await;
 
@@ -408,8 +420,11 @@ async fn test_provider_session_title_ingestion_タイトル事実から単独ses
         Ok(Some("Generated title")),
     )]));
     let notifier = Arc::new(RecordingNotifier::default());
-    let usecase =
-        ProviderSessionTitleIngestionUsecase::new(repository.clone(), gateway.clone(), notifier);
+    let usecase = ProviderSessionTitleIngestionUsecase::new(
+        repository.clone(),
+        gateway.clone(),
+        notifier.subscriptions.clone(),
+    );
     let root = SessionExecutionTreeRootFacts::new(
         session_id,
         "workspace",
@@ -489,7 +504,11 @@ async fn test_隔離通知_providerタイトルの更新をrootのworkspaceへ�
         Ok(Some("updated")),
     )]));
     let notifier = Arc::new(RecordingNotifier::default());
-    let usecase = ProviderSessionTitleIngestionUsecase::new(repository, gateway, notifier.clone());
+    let usecase = ProviderSessionTitleIngestionUsecase::new(
+        repository,
+        gateway,
+        notifier.subscriptions.clone(),
+    );
     // When
     usecase.ingest_due().await;
     // Then
@@ -518,7 +537,7 @@ async fn test_provider_title入口_開始の一時失敗と対象の分類別再
         let usecase = Arc::new(ProviderSessionTitleIngestionUsecase::new(
             repository.clone(),
             gateway.clone(),
-            notifier.clone(),
+            notifier.subscriptions.clone(),
         ));
         let retrying = crate::usecase::retry::test_retrying();
         let _run = tokio::spawn(crate::adaptor::controller::provider_session_title::run(

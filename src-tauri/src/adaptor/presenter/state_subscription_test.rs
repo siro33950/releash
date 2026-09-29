@@ -34,7 +34,7 @@ fn test_配信失敗_usecaseの失敗分類へ意味を保って変換する() {
 #[test]
 fn test_terminal登録_nulを含む識別子を失敗として返す() {
     // Given
-    let presenter = StateSubscriptionPresenter::new(vec![]);
+    let presenter = StateSubscriptionPresenter::new();
 
     // When
     let path = presenter.initialize(&crate::test_support::state_subscription::registration(
@@ -60,7 +60,7 @@ async fn test_古いterminal寸法_初回の復元要求だけ待機者へ通知
     use std::task::{Context, Waker};
 
     // Given
-    let presenter = Arc::new(StateSubscriptionPresenter::new(vec![]));
+    let presenter = Arc::new(StateSubscriptionPresenter::new());
     presenter
         .initialize(&crate::test_support::state_subscription::registration(
             "session", "/repo", None, 1, 2,
@@ -68,7 +68,6 @@ async fn test_古いterminal寸法_初回の復元要求だけ待機者へ通知
         .unwrap();
     let usecase = StateSubscriptionUsecase::new_with_output(
         presenter.clone(),
-        presenter.change_sender(),
         Arc::new(crate::adaptor::gateway::subscription_timer::TokioSubscriptionTimer),
     );
     let mut stream = Box::pin(presenter.stream(usecase, "waiting".into()).unwrap());
@@ -117,7 +116,7 @@ async fn test_購読開始失敗_対象削除を待機中streamへ通知する()
     use std::task::{Context, Waker};
 
     // Given
-    let presenter = Arc::new(StateSubscriptionPresenter::new(vec![]));
+    let presenter = Arc::new(StateSubscriptionPresenter::new());
     let target = SubscriptionTarget::BranchBase("/repo".into(), "main".into()).to_string();
     let payload = crate::adaptor::presenter::state_subscription_wire::payload(
         &StateValue::RepositoryPaths(vec![]),
@@ -133,7 +132,6 @@ async fn test_購読開始失敗_対象削除を待機中streamへ通知する()
         .unwrap();
     let usecase = StateSubscriptionUsecase::new_with_output(
         presenter.clone(),
-        presenter.change_sender(),
         Arc::new(crate::adaptor::gateway::subscription_timer::TokioSubscriptionTimer),
     );
     let mut stream = Box::pin(presenter.stream(usecase, "waiting".into()).unwrap());
@@ -165,10 +163,9 @@ async fn test_購読再開始_状態不変なら通知せず初回開始だけ�
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::task::{Context, Waker};
 
-    let presenter = Arc::new(StateSubscriptionPresenter::new(vec![]));
+    let presenter = Arc::new(StateSubscriptionPresenter::new());
     let usecase = StateSubscriptionUsecase::new_with_output(
         presenter.clone(),
-        presenter.change_sender(),
         Arc::new(crate::adaptor::gateway::subscription_timer::TokioSubscriptionTimer),
     );
     let mut stream = Box::pin(presenter.stream(usecase, "client".into()).unwrap());
@@ -184,6 +181,12 @@ async fn test_購読再開始_状態不変なら通知せず初回開始だけ�
         .is_pending());
 
     let target = SubscriptionTarget::RepositoryPaths.to_string();
+    presenter
+        .publish_initial(
+            &SubscriptionTarget::RepositoryPaths,
+            StateValue::RepositoryPaths(vec![]),
+        )
+        .unwrap();
     presenter.start("client", &target, None).unwrap();
     assert!(flag.0.swap(false, Ordering::SeqCst));
     assert!(matches!(

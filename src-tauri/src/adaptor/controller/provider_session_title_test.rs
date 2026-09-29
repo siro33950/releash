@@ -11,7 +11,9 @@ fn usecase(
     notifier: Arc<RecordingNotifier>,
 ) -> Arc<ProviderSessionTitleIngestionUsecase> {
     Arc::new(ProviderSessionTitleIngestionUsecase::new(
-        repository, gateway, notifier,
+        repository,
+        gateway,
+        notifier.subscriptions.clone(),
     ))
 }
 

@@ -6,7 +6,7 @@ use crate::domain::git_host::{
 
 #[derive(Clone)]
 pub struct GitHostUsecase {
-    state_publisher: Option<crate::usecase::state_subscription::StateSubscriptionOutputRef>,
+    state_publisher: Option<crate::usecase::state_subscription::StateSubscriptionUsecase>,
     provider: Arc<dyn GitHostProvider>,
     pr_cache: Arc<dyn PrStatusCache>,
     issue_cache: Arc<dyn IssueCache>,
@@ -15,7 +15,7 @@ pub struct GitHostUsecase {
 impl GitHostUsecase {
     pub(crate) fn with_state_publisher(
         mut self,
-        publisher: crate::usecase::state_subscription::StateSubscriptionOutputRef,
+        publisher: crate::usecase::state_subscription::StateSubscriptionUsecase,
     ) -> Self {
         self.state_publisher = Some(publisher);
         self
@@ -54,7 +54,7 @@ impl GitHostUsecase {
         let value = self.provider.list_issues(repo_path)?;
         self.issue_cache.store(repo_path, value.clone());
         if let Some(publisher) = &self.state_publisher {
-            publisher.invalidate(
+            publisher.notify(
                 crate::usecase::state_subscription::StateChangeSource::Issues(repo_path.into()),
             );
         }

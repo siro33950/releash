@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use crate::common::concurrency::PriorityLimits;
-use crate::usecase::failure::{Failure, FailureKey, FailureOutput, WorkFailure};
+use crate::usecase::failure::{Failure, FailureKey, FailureRecordingUsecase, WorkFailure};
 
 pub(crate) const TOTAL_SEATS: usize = 64;
 pub(crate) const QUEUE_LENGTH: usize = 50;
@@ -35,7 +35,7 @@ pub(crate) fn priority_level(path: &str) -> Option<&'static str> {
 
 pub(crate) struct PriorityInterceptor {
     pub(crate) limits: Arc<PriorityLimits>,
-    pub(crate) failures: Option<Arc<dyn FailureOutput>>,
+    pub(crate) failures: Option<Arc<FailureRecordingUsecase>>,
 }
 
 #[connectrpc::async_trait]

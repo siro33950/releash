@@ -87,7 +87,7 @@ impl WorkflowDelegateAcceptanceHost {
             store: Some(store.clone()),
             config: None,
             secrets: None,
-            state_changes: crate::adaptor::presenter::state_subscription::test_output(),
+            state_changes: crate::desktop_test_support::state_subscriptions(),
         };
         let host = crate::adaptor::controller::wiring::wire_delegate_continuation(
             dependencies.clone(),
@@ -127,11 +127,7 @@ impl WorkflowDelegateAcceptanceHost {
             ))),
             repository,
             runtime,
-            Arc::new(
-                crate::adaptor::presenter::agent_session_change::ClientAgentSessionChangeNotifier::new(
-                    dependencies.state_changes.clone(),
-                ),
-            ),
+            dependencies.state_changes.clone(),
         );
         Self {
             store,

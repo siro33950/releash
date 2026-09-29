@@ -75,7 +75,7 @@ pub fn run() {
             executable,
             data_dir,
             Arc::new(crate::common::retry::RetryLimiter::new()),
-            Arc::new(crate::adaptor::presenter::failure::FailurePresenter::new(
+            Arc::new(crate::usecase::failure::FailureRecordingUsecase::new(
                 Arc::new(crate::adaptor::gateway::failure_records::FailureRecordStore::default()),
                 None,
             )),

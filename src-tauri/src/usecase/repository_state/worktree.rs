@@ -24,24 +24,6 @@ pub trait RepositoryStateWatcher: Send + Sync {
     ) -> Result<Box<dyn RepositoryStateWatchSession>, RepositoryStateError>;
 }
 
-#[derive(Clone)]
-pub struct SnapshotNotification {
-    pub worktree_paths: Vec<String>,
-}
-
-pub trait RepositoryStateNotifier: Send + Sync {
-    fn snapshot_changed(&self, notification: SnapshotNotification);
-}
-
-#[cfg(test)]
-#[derive(Default)]
-pub struct NoopRepositoryStateNotifier;
-
-#[cfg(test)]
-impl RepositoryStateNotifier for NoopRepositoryStateNotifier {
-    fn snapshot_changed(&self, _notification: SnapshotNotification) {}
-}
-
 #[cfg(test)]
 #[derive(Default)]
 pub struct NoopRepositoryStateWatcher;
@@ -73,14 +55,14 @@ pub struct WorktreeState {
     invalidate_tx: Box<dyn RepositoryStateInvalidationSender>,
     watchers: Mutex<Option<Box<dyn RepositoryStateWatchSession>>>,
     subscriptions: Mutex<HashMap<u64, String>>,
-    notifier: Arc<dyn RepositoryStateNotifier>,
+    state_subscriptions: crate::usecase::state_subscription::StateSubscriptionUsecase,
 }
 
 impl WorktreeState {
     pub fn new(
         worktree_path: String,
         scanner: Arc<dyn RepositoryScanner>,
-        notifier: Arc<dyn RepositoryStateNotifier>,
+        state_subscriptions: crate::usecase::state_subscription::StateSubscriptionUsecase,
         runtime: Arc<dyn RepositoryStateWorkerRuntime>,
         debounce: Duration,
     ) -> Arc<Self> {
@@ -97,7 +79,7 @@ impl WorktreeState {
             invalidate_tx,
             watchers: Mutex::new(None),
             subscriptions: Mutex::new(HashMap::new()),
-            notifier,
+            state_subscriptions,
         });
         runtime.spawn_worker(ScanWorker {
             state: state.clone(),
@@ -253,9 +235,11 @@ impl WorktreeState {
     }
 
     pub(crate) fn notify_snapshot_changed(&self) {
-        self.notifier.snapshot_changed(SnapshotNotification {
-            worktree_paths: self.notification_paths(),
-        });
+        self.state_subscriptions.notify(
+            crate::usecase::state_subscription::StateChangeSource::Repository(
+                self.notification_paths(),
+            ),
+        );
     }
 
     pub(crate) fn mark_scan_failed(&self) {
@@ -295,20 +279,34 @@ mod tests {
     use std::sync::atomic::{AtomicBool, AtomicUsize};
     use std::sync::mpsc as std_mpsc;
 
-    #[derive(Default)]
     struct CapturingNotifier {
-        notifications: parking_lot::Mutex<Vec<SnapshotNotification>>,
+        subscriptions: crate::usecase::state_subscription::StateSubscriptionUsecase,
+        changes: parking_lot::Mutex<
+            tokio::sync::broadcast::Receiver<crate::usecase::state_subscription::StateChangeSource>,
+        >,
     }
 
-    impl CapturingNotifier {
-        fn take(&self) -> Vec<SnapshotNotification> {
-            std::mem::take(&mut *self.notifications.lock())
+    impl Default for CapturingNotifier {
+        fn default() -> Self {
+            let subscriptions = crate::test_support::state_subscription::test_subscriptions();
+            let changes = parking_lot::Mutex::new(subscriptions.changes());
+            Self {
+                subscriptions,
+                changes,
+            }
         }
     }
 
-    impl RepositoryStateNotifier for CapturingNotifier {
-        fn snapshot_changed(&self, notification: SnapshotNotification) {
-            self.notifications.lock().push(notification);
+    impl CapturingNotifier {
+        fn take(&self) -> Vec<Vec<String>> {
+            let mut changes = self.changes.lock();
+            let mut paths = Vec::new();
+            while let Ok(crate::usecase::state_subscription::StateChangeSource::Repository(value)) =
+                changes.try_recv()
+            {
+                paths.push(value);
+            }
+            paths
         }
     }
 
@@ -428,7 +426,7 @@ mod tests {
         WorktreeState::new(
             "/repo".to_string(),
             scanner,
-            Arc::new(NoopRepositoryStateNotifier),
+            crate::test_support::state_subscription::test_subscriptions(),
             Arc::new(TestRepositoryStateWorkerRuntime),
             debounce,
         )
@@ -436,12 +434,12 @@ mod tests {
 
     fn test_state_with_notifier(
         scanner: Arc<dyn RepositoryScanner>,
-        notifier: Arc<dyn RepositoryStateNotifier>,
+        subscriptions: crate::usecase::state_subscription::StateSubscriptionUsecase,
     ) -> Arc<WorktreeState> {
         WorktreeState::new(
             "/repo".to_string(),
             scanner,
-            notifier,
+            subscriptions,
             Arc::new(TestRepositoryStateWorkerRuntime),
             Duration::ZERO,
         )
@@ -504,7 +502,7 @@ mod tests {
         // Given
         let scanner = Arc::new(FakeScanner::new("first.txt"));
         let notifier = Arc::new(CapturingNotifier::default());
-        let state = test_state_with_notifier(scanner.clone(), notifier.clone());
+        let state = test_state_with_notifier(scanner.clone(), notifier.subscriptions.clone());
         state.invalidate(InvalidateReason::change());
         wait_for_version(&state, 1).await;
         assert_eq!(notifier.take().len(), 1);

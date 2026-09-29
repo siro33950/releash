@@ -36,7 +36,7 @@ pub trait WorktreeExecutionArchiver: Send + Sync {
 
 #[derive(Clone)]
 pub struct RepositoryUsecase {
-    state_publisher: Option<crate::usecase::state_subscription::StateSubscriptionOutputRef>,
+    state_publisher: Option<crate::usecase::state_subscription::StateSubscriptionUsecase>,
     branch: Arc<dyn BranchRepository>,
     status: Arc<dyn StatusRepository>,
     worktree: Arc<dyn WorktreeRepository>,
@@ -49,7 +49,7 @@ pub struct RepositoryUsecase {
 impl RepositoryUsecase {
     pub(crate) fn with_state_publisher(
         mut self,
-        publisher: crate::usecase::state_subscription::StateSubscriptionOutputRef,
+        publisher: crate::usecase::state_subscription::StateSubscriptionUsecase,
     ) -> Self {
         self.state_publisher = Some(publisher);
         self
@@ -82,7 +82,7 @@ impl RepositoryUsecase {
 
     fn notify_repository_changed(&self, path: &str) {
         if let Some(publisher) = &self.state_publisher {
-            publisher.invalidate(
+            publisher.notify(
                 crate::usecase::state_subscription::StateChangeSource::Repository(
                     vec![path.into()],
                 ),
@@ -1522,7 +1522,7 @@ mod repository_usecase_tests {
                 Arc::new(crate::adaptor::gateway::repository::scanner::DefaultRepositoryScanner::new(
                     repository.clone(), Arc::new(crate::adaptor::controller::wiring::build_code_usecase())
                 )),
-                Arc::new(crate::usecase::repository_state::worktree::NoopRepositoryStateNotifier),
+                crate::test_support::state_subscription::test_subscriptions(),
                 Arc::new(crate::usecase::repository_state::worktree::NoopRepositoryStateWatcher),
                 Arc::new(crate::usecase::repository_state::runtime::tests_support::TestRepositoryStateWorkerRuntime),
                 Arc::new(crate::usecase::repository_state::runtime::tests_support::IdentityWorktreePathNormalizer),
@@ -1655,7 +1655,7 @@ mod repository_usecase_tests {
                     stop_current_branch: Some(stopped),
                     ..Default::default()
                 });
-                let publisher = crate::test_support::state_subscription::test_output();
+                let publisher = crate::test_support::state_subscription::test_subscriptions();
                 let mut changes = crate::test_support::state_subscription::changes(&publisher);
                 let repository = usecase(fake.clone()).with_state_publisher(publisher);
                 // When
@@ -1742,7 +1742,7 @@ mod repository_usecase_tests {
         use crate::usecase::state_subscription::StateChangeSource;
         // Given
         let fake = Arc::new(<FakeRepo as Default>::default());
-        let publisher = crate::test_support::state_subscription::test_output();
+        let publisher = crate::test_support::state_subscription::test_subscriptions();
         let mut changes = crate::test_support::state_subscription::changes(&publisher);
         let uc = usecase(fake.clone()).with_state_publisher(publisher.clone());
         // When / Then

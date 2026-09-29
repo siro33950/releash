@@ -20,7 +20,7 @@ use crate::domain::provider_lifecycle::{
 };
 use crate::domain::workflow::AgentSessionActivity;
 use crate::domain::workspace_tree::WorkspaceIdentity;
-use crate::usecase::agent_session::{AgentSessionChangeNotifier, AgentSessionUsecase};
+use crate::usecase::agent_session::AgentSessionUsecase;
 
 fn session_location(id: &str) -> AgentSessionTreeLocation {
     AgentSessionTreeLocation::session_tree_root(id).unwrap()
@@ -30,17 +30,19 @@ fn workflow_location(tree_id: &str, node_execution_id: &str) -> AgentSessionTree
     AgentSessionTreeLocation::workflow_node(tree_id, node_execution_id).unwrap()
 }
 
-#[derive(Default)]
 struct RecordingChangeNotifier {
-    worktree_paths: Mutex<Vec<String>>,
+    subscriptions: crate::usecase::state_subscription::StateSubscriptionUsecase,
+    worktree_paths: crate::test_support::state_subscription::RecordedWorktrees,
 }
-
-impl AgentSessionChangeNotifier for RecordingChangeNotifier {
-    fn agent_session_changed(&self, worktree_path: &str) {
-        self.worktree_paths
-            .lock()
-            .unwrap()
-            .push(worktree_path.to_string());
+impl Default for RecordingChangeNotifier {
+    fn default() -> Self {
+        let subscriptions = crate::test_support::state_subscription::test_subscriptions();
+        let worktree_paths =
+            crate::test_support::state_subscription::RecordedWorktrees::new(&subscriptions);
+        Self {
+            subscriptions,
+            worktree_paths,
+        }
     }
 }
 
@@ -259,7 +261,7 @@ async fn workflow_origin_stop_uses_the_atomic_provider_workflow_commit_boundary(
         ))),
         agent_repository.clone(),
         transaction.clone(),
-        notifier.clone(),
+        notifier.subscriptions.clone(),
     );
     let slot_id = ProviderLifecycleSlotId::new("slot-workflow-stop").unwrap();
     let scope = ProviderLifecycleScope::new("agent-workflow-stop").unwrap();
@@ -437,7 +439,7 @@ async fn test_worktree削除中_provider_hookの状態変更を保存前に拒�
         Arc::new(ProviderHookHealthUsecase::new(health.clone())),
         repository.clone(),
         transaction.clone(),
-        Arc::new(RecordingChangeNotifier::default()),
+        crate::test_support::state_subscription::test_subscriptions(),
     );
     let slot = ProviderLifecycleSlotId::new("slot-deleting-hook").unwrap();
     let scope = ProviderLifecycleScope::new(id).unwrap();
@@ -535,7 +537,7 @@ async fn assert_activity_ingress_for_location(
         ))),
         agent_repository.clone(),
         transaction.clone(),
-        notifier.clone(),
+        notifier.subscriptions.clone(),
     );
     let slot_id = ProviderLifecycleSlotId::new(format!("slot-{agent_session_id}")).unwrap();
     let scope = ProviderLifecycleScope::new(agent_session_id).unwrap();
@@ -646,7 +648,7 @@ async fn test_provider_lifecycle_ingress_活動保存失敗は状態とrevision�
         ))),
         agent_repository.clone(),
         Arc::new(MemoryWorkflowStops::default()),
-        notifier.clone(),
+        notifier.subscriptions.clone(),
     );
     let slot_id = ProviderLifecycleSlotId::new("slot-activity-save-failure").unwrap();
     let scope = ProviderLifecycleScope::new("agent-activity-save-failure").unwrap();
@@ -736,7 +738,7 @@ async fn test_provider_lifecycle_ingress_claudeのstop_failureは活動だけを
         ))),
         agent_repository.clone(),
         transaction.clone(),
-        notifier.clone(),
+        notifier.subscriptions.clone(),
     );
     let slot_id = ProviderLifecycleSlotId::new("slot-stop-failure").unwrap();
     let scope = ProviderLifecycleScope::new("agent-stop-failure").unwrap();
@@ -840,7 +842,7 @@ async fn standalone_stop_uses_the_same_execution_tree_transaction() {
         ))),
         agent_repository,
         transaction.clone(),
-        Arc::new(RecordingChangeNotifier::default()),
+        crate::test_support::state_subscription::test_subscriptions(),
     );
     let slot_id = ProviderLifecycleSlotId::new("slot-standalone-stop").unwrap();
     let scope = ProviderLifecycleScope::new("agent-standalone-stop").unwrap();
@@ -920,7 +922,7 @@ async fn test_provider_lifecycle_ingress_session_startでwarningを解除しsess
         health.clone(),
         agent_repository.clone(),
         Arc::new(MemoryWorkflowStops::default()),
-        Arc::new(RecordingChangeNotifier::default()),
+        crate::test_support::state_subscription::test_subscriptions(),
     );
     let slot_id = ProviderLifecycleSlotId::new("slot-1").unwrap();
     let scope = ProviderLifecycleScope::new("agent-1").unwrap();
@@ -1006,7 +1008,7 @@ async fn test_provider_lifecycle_ingress_session関連付け失敗時はwarning�
         health.clone(),
         agent_repository,
         Arc::new(MemoryWorkflowStops::default()),
-        Arc::new(RecordingChangeNotifier::default()),
+        crate::test_support::state_subscription::test_subscriptions(),
     );
     let slot_id = ProviderLifecycleSlotId::new("slot-failed-association").unwrap();
     let scope = ProviderLifecycleScope::new("agent-1").unwrap();
@@ -1090,7 +1092,7 @@ async fn test_provider_lifecycle_ingress_session関連付け拒否時にlifecycl
         ))),
         agent_repository,
         Arc::new(MemoryWorkflowStops::default()),
-        Arc::new(RecordingChangeNotifier::default()),
+        crate::test_support::state_subscription::test_subscriptions(),
     );
     let slot_id = ProviderLifecycleSlotId::new("slot-consistent").unwrap();
     let scope = ProviderLifecycleScope::new("agent-consistent").unwrap();
@@ -1170,7 +1172,7 @@ async fn test_provider_lifecycle_ingress_session操作lock解放後にsession_st
         health,
         agent_repository,
         Arc::new(MemoryWorkflowStops::default()),
-        Arc::new(RecordingChangeNotifier::default()),
+        crate::test_support::state_subscription::test_subscriptions(),
     ));
     let slot_id = ProviderLifecycleSlotId::new("slot-locked").unwrap();
     let scope = ProviderLifecycleScope::new("agent-locked").unwrap();
@@ -1248,7 +1250,7 @@ async fn test_provider_lifecycle_ingress_session操作lock解放後に活動観�
         ))),
         agent_repository.clone(),
         Arc::new(MemoryWorkflowStops::default()),
-        Arc::new(RecordingChangeNotifier::default()),
+        crate::test_support::state_subscription::test_subscriptions(),
     ));
     let slot_id = ProviderLifecycleSlotId::new("slot-activity-locked").unwrap();
     let scope = ProviderLifecycleScope::new("agent-activity-locked").unwrap();

@@ -10,7 +10,7 @@ use crate::usecase::notion::error::NotionUsecaseError;
 pub(crate) struct NotionUsecase {
     repository: Arc<dyn NotionConfigRepository>,
     api: Arc<dyn NotionApiGateway>,
-    state_publisher: Option<crate::usecase::state_subscription::StateSubscriptionOutputRef>,
+    state_publisher: Option<crate::usecase::state_subscription::StateSubscriptionUsecase>,
 }
 
 impl NotionUsecase {
@@ -27,7 +27,7 @@ impl NotionUsecase {
 
     pub(crate) fn with_state_publisher(
         mut self,
-        publisher: crate::usecase::state_subscription::StateSubscriptionOutputRef,
+        publisher: crate::usecase::state_subscription::StateSubscriptionUsecase,
     ) -> Self {
         self.state_publisher = Some(publisher);
         self
@@ -35,7 +35,7 @@ impl NotionUsecase {
 
     fn config_changed(&self) {
         if let Some(publisher) = &self.state_publisher {
-            publisher.invalidate(crate::usecase::state_subscription::StateChangeSource::AppConfig);
+            publisher.notify(crate::usecase::state_subscription::StateChangeSource::AppConfig);
         }
     }
 

@@ -5,7 +5,7 @@ use crate::domain::daemon_supervision::{DaemonExit, DaemonProcessPort};
 use crate::usecase::app_config::query_service::DesktopSettingsDto;
 use crate::usecase::client_connection::ClientConnectionQueryService;
 use crate::usecase::daemon_supervision::{DaemonConnection, DaemonGateway};
-use crate::usecase::failure::{FailureKey, FailureOutput};
+use crate::usecase::failure::{FailureKey, FailureRecordingUsecase};
 use std::io::{BufRead, Read};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
@@ -30,7 +30,7 @@ pub(crate) struct DaemonProcessGateway {
     connection: parking_lot::Mutex<Option<DaemonConnection>>,
     client: parking_lot::Mutex<Option<Arc<super::desktop_client::DesktopClient>>>,
     limiter: Arc<RetryLimiter>,
-    failures: Arc<dyn FailureOutput>,
+    failures: Arc<FailureRecordingUsecase>,
 }
 
 impl DaemonProcessGateway {
@@ -38,7 +38,7 @@ impl DaemonProcessGateway {
         executable: PathBuf,
         data_dir: PathBuf,
         limiter: Arc<RetryLimiter>,
-        failures: Arc<dyn FailureOutput>,
+        failures: Arc<FailureRecordingUsecase>,
     ) -> Self {
         Self {
             client: parking_lot::Mutex::new(None),

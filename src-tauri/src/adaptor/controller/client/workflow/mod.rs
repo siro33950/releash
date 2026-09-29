@@ -1214,7 +1214,7 @@ pub(crate) mod tests {
         let repo_paths_usecase =
             Arc::new(crate::usecase::repo_paths_usecase::RepoPathsUsecase::new(
                 Arc::new(repo_paths_gateway),
-                Arc::new(NoopRepoPathsNotifier),
+                crate::test_support::state_subscription::test_subscriptions(),
             ));
         let code_usecase = Arc::new(crate::adaptor::controller::wiring::build_code_usecase());
         let repository_scanner = Arc::new(
@@ -1232,7 +1232,7 @@ pub(crate) mod tests {
             crate::usecase::repository_state::RepositoryStateService::new(
                 repository_state_repository,
                 repository_scanner,
-                Arc::new(crate::usecase::repository_state::worktree::NoopRepositoryStateNotifier),
+                crate::test_support::state_subscription::test_subscriptions(),
                 Arc::new(crate::usecase::repository_state::worktree::NoopRepositoryStateWatcher),
                 Arc::new(
                     crate::usecase::repository_state::runtime::tests_support::TestRepositoryStateWorkerRuntime,
@@ -1289,12 +1289,6 @@ pub(crate) mod tests {
             git_host_usecase,
         });
         (app, data_dir, local_event_store)
-    }
-
-    struct NoopRepoPathsNotifier;
-
-    impl crate::usecase::repo_paths_usecase::RepoPathsNotifier for NoopRepoPathsNotifier {
-        fn notify_changed(&self, _paths: Vec<String>) {}
     }
 
     /// [05] worktree-scoped 認可境界のテスト用 fixture: 実 git repo + worktree を作り、

@@ -1,4 +1,5 @@
 use super::*;
+use crate::domain::failure::FailureRecordRepository;
 use crate::domain::failure::TechnicalFailureNature;
 use crate::usecase::failure::{BusinessFailure, Failure};
 
@@ -11,6 +12,19 @@ fn failure(kind: Failure, message: &str) -> WorkFailure {
         kind,
         message: message.into(),
     }
+}
+
+#[test]
+fn test_失敗記録_repositoryは渡された要対応値を保存する() {
+    let store = FailureRecordStore::default();
+    let key = key("workflow_start", "tree");
+    store.record_observed(
+        &key,
+        failure(Failure::Business(BusinessFailure::Other), "repair"),
+        false,
+    );
+    assert!(!store.records("tree")[0].requires_attention);
+    assert!(store.attention_messages("tree").is_empty());
 }
 
 #[test]

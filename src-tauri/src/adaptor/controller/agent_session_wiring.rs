@@ -13,24 +13,25 @@ use crate::domain::agent_session::{
     ProviderAvailabilityReader, ProviderExecutableConfigRepository, ProviderExecutableProbeGateway,
 };
 use crate::usecase::agent_session::{
-    AgentSessionChangeNotifier, AgentSessionExitUsecase, AgentSessionHistoryReadUsecase,
-    AgentSessionInitialInstructionUsecase, AgentSessionLaunchUsecase, AgentSessionLifecycleUsecase,
-    AgentSessionQueryService, AgentSessionReadUsecase, AgentSessionRenameUsecase,
-    AgentSessionUsecase, ExecutionTreeCacheReleaseError, ProviderAgentRuntime,
-    ProviderAvailabilityUsecase, ProviderAvailabilityUsecaseError,
-    ProviderSessionTitleIngestionUsecase, StartedExecutionTreeRegistrationError,
+    AgentSessionExitUsecase, AgentSessionHistoryReadUsecase, AgentSessionInitialInstructionUsecase,
+    AgentSessionLaunchUsecase, AgentSessionLifecycleUsecase, AgentSessionQueryService,
+    AgentSessionReadUsecase, AgentSessionRenameUsecase, AgentSessionUsecase,
+    ExecutionTreeCacheReleaseError, ProviderAgentRuntime, ProviderAvailabilityUsecase,
+    ProviderAvailabilityUsecaseError, ProviderSessionTitleIngestionUsecase,
+    StartedExecutionTreeRegistrationError,
 };
 use crate::usecase::provider_lifecycle::{
     ProviderExecutionTreeStopCommand, ProviderExecutionTreeStopTransaction,
     ProviderHookHealthReadUsecase, ProviderHookHealthUsecase, ProviderLifecycleIngressUsecase,
     ProviderLifecycleIngressUsecaseError, ProviderLifecycleUsecase,
 };
+use crate::usecase::state_subscription::StateSubscriptionUsecase;
 use crate::usecase::terminal_surface::application::TerminalSurfaceApplication;
 
 pub(crate) struct AgentSessionCompositionInput {
     pub(crate) retrying: Arc<crate::usecase::retry::Retrying>,
     pub(crate) state_publisher:
-        Option<crate::usecase::state_subscription::StateSubscriptionOutputRef>,
+        Option<crate::usecase::state_subscription::StateSubscriptionUsecase>,
     pub(crate) store: Arc<crate::adaptor::gateway::local_event_store::LocalEventStore>,
     pub(crate) data_dir: PathBuf,
     pub(crate) provider_executable_config: Arc<dyn ProviderExecutableConfigRepository>,
@@ -39,7 +40,7 @@ pub(crate) struct AgentSessionCompositionInput {
     pub(crate) codex_home: PathBuf,
     pub(crate) cli_binary: String,
     pub(crate) terminal: Arc<TerminalSurfaceApplication>,
-    pub(crate) change_notifier: Arc<dyn AgentSessionChangeNotifier>,
+    pub(crate) subscriptions: StateSubscriptionUsecase,
 }
 
 pub(crate) struct AgentSessionComposition {
@@ -310,7 +311,7 @@ pub(crate) fn compose_agent_sessions(
         hook_health.clone(),
         session_repository.clone(),
         execution_tree_stops.clone(),
-        input.change_notifier.clone(),
+        input.subscriptions.clone(),
     ));
     let launch_gateway = Arc::new(LocalProviderAgentLaunchGateway::new(
         input.data_dir,
@@ -338,11 +339,11 @@ pub(crate) fn compose_agent_sessions(
     let provider_session_title_ingestion = Arc::new(ProviderSessionTitleIngestionUsecase::new(
         session_repository.clone(),
         history_gateway.clone(),
-        input.change_notifier.clone(),
+        input.subscriptions.clone(),
     ));
     let rename = Arc::new(AgentSessionRenameUsecase::new(
         session_repository,
-        input.change_notifier.clone(),
+        input.subscriptions.clone(),
     ));
     let provider_runtime = ProviderAgentRuntime::new(
         availability_reader.clone(),
@@ -364,7 +365,7 @@ pub(crate) fn compose_agent_sessions(
         provider_lifecycle.clone(),
         provider_runtime,
         hook_health.clone(),
-        input.change_notifier.clone(),
+        input.subscriptions.clone(),
         execution_tree_registrations.clone(),
     ));
     let query: Arc<dyn AgentSessionQueryService> =

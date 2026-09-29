@@ -1,7 +1,5 @@
-use crate::usecase::failure::{
-    requires_attention, FailureKey, FailureObservation, FailurePage, FailureQueryService,
-    FailureRecord, WorkFailure,
-};
+use crate::domain::failure::{FailureKey, FailureRecord, FailureRecordRepository, WorkFailure};
+use crate::usecase::failure::{FailureObservation, FailurePage, FailureQueryService};
 use std::collections::VecDeque;
 use std::sync::Mutex;
 
@@ -21,20 +19,31 @@ impl Default for FailureRecordStore {
 }
 
 impl FailureRecordStore {
+    #[cfg(test)]
     pub(crate) fn observe(&self, key: &FailureKey, failure: WorkFailure) -> bool {
         self.observe_at(key, failure, now_ms())
     }
 
+    #[cfg(test)]
     pub(crate) fn observe_at(&self, key: &FailureKey, failure: WorkFailure, now_ms: u64) -> bool {
+        let attention = crate::usecase::failure::requires_attention(failure.kind);
+        self.observe_at_with_attention(key, failure, attention, now_ms)
+    }
+
+    fn observe_at_with_attention(
+        &self,
+        key: &FailureKey,
+        failure: WorkFailure,
+        requires_attention: bool,
+        now_ms: u64,
+    ) -> bool {
         let mut records = self.records.lock().expect("failure records");
         let attention = records
             .iter()
-            .find(|record| {
-                matches_key(record, key) && record.active && requires_attention(record.kind)
-            })
+            .find(|record| matches_key(record, key) && record.active && record.requires_attention)
             .map(|record| (record.kind, record.message.clone()));
-        let changed = attention
-            != requires_attention(failure.kind).then(|| (failure.kind, failure.message.clone()));
+        let changed =
+            attention != requires_attention.then(|| (failure.kind, failure.message.clone()));
         for record in records.iter_mut().filter(|record| matches_key(record, key)) {
             record.active = false;
         }
@@ -47,6 +56,7 @@ impl FailureRecordStore {
             record.last_observed_ms = now_ms.max(record.last_observed_ms);
             record.message = failure.message;
             record.active = true;
+            record.requires_attention = requires_attention;
             record
         } else {
             if records.len() == CAPACITY {
@@ -58,6 +68,7 @@ impl FailureRecordStore {
                 kind: failure.kind,
                 message: failure.message,
                 active: true,
+                requires_attention,
                 count: 1,
                 first_observed_ms: now_ms,
                 last_observed_ms: now_ms,
@@ -67,11 +78,16 @@ impl FailureRecordStore {
         changed
     }
 
+    #[cfg(test)]
     pub(crate) fn resolve(&self, key: &FailureKey) -> bool {
+        self.record_resolved(key)
+    }
+
+    fn resolve_record(&self, key: &FailureKey) -> bool {
         let mut records = self.records.lock().expect("failure records");
         let mut changed = false;
         for record in records.iter_mut().filter(|record| matches_key(record, key)) {
-            changed |= record.active && requires_attention(record.kind);
+            changed |= record.active && record.requires_attention;
             record.active = false;
         }
         changed
@@ -82,9 +98,7 @@ impl FailureRecordStore {
             .lock()
             .expect("failure records")
             .iter()
-            .filter(|record| {
-                record.target == target && record.active && requires_attention(record.kind)
-            })
+            .filter(|record| record.target == target && record.active && record.requires_attention)
             .map(|record| record.message.clone())
             .collect()
     }
@@ -102,12 +116,32 @@ impl FailureRecordStore {
     }
 }
 
+impl FailureRecordRepository for FailureRecordStore {
+    #[cfg(test)]
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn record_observed(
+        &self,
+        key: &FailureKey,
+        failure: WorkFailure,
+        requires_attention: bool,
+    ) -> bool {
+        self.observe_at_with_attention(key, failure, requires_attention, now_ms())
+    }
+
+    fn record_resolved(&self, key: &FailureKey) -> bool {
+        self.resolve_record(key)
+    }
+}
+
 fn matches_key(record: &FailureRecord, key: &FailureKey) -> bool {
     record.operation == key.operation && record.target == key.target
 }
 
 fn observation(record: FailureRecord) -> FailureObservation {
-    let requires_attention = record.active && requires_attention(record.kind);
+    let requires_attention = record.active && record.requires_attention;
     FailureObservation {
         record,
         requires_attention,
@@ -133,7 +167,7 @@ impl FailureQueryService for FailureRecordStore {
             })
         };
         let requires_attention =
-            matching().any(|record| record.active && requires_attention(record.kind));
+            matching().any(|record| record.active && record.requires_attention);
         let total = matching().count();
         let items = matching()
             .skip(offset)

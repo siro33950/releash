@@ -1,7 +1,7 @@
 use super::*;
 use crate::usecase::repository_state::runtime::tests_support::TestRepositoryStateWorkerRuntime;
 use crate::usecase::repository_state::snapshot::RepositorySnapshotParts;
-use crate::usecase::repository_state::worktree::{NoopRepositoryStateNotifier, WorktreeState};
+use crate::usecase::repository_state::worktree::WorktreeState;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 struct Scanner {
@@ -59,7 +59,7 @@ async fn test_repository走査_一時的な失敗をやり直して走査を終�
     let state = WorktreeState::new(
         "/repo".to_string(),
         scanner.clone(),
-        Arc::new(NoopRepositoryStateNotifier),
+        crate::test_support::state_subscription::test_subscriptions(),
         Arc::new(TestRepositoryStateWorkerRuntime),
         Duration::ZERO,
     );

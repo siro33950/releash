@@ -132,7 +132,7 @@ impl SubscriptionTarget {
             C::Failures(target) => {
                 matches!(self, Self::Failures(id, _) if id == target || id == "*")
             }
-            C::Repositories => matches!(self, Self::Workspaces),
+            C::Repositories => matches!(self, Self::RepositoryPaths | Self::Workspaces),
             C::Repository(paths) => match self {
                 Self::Workspaces => true,
                 Self::Branches(p, _)

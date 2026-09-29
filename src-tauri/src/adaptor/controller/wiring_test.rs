@@ -8,8 +8,6 @@ use crate::adaptor::gateway::workflow::{
     node_process::WorkflowNodeProcesses, workflow_host::WorkflowRuntimeDependencies,
     RepositoryIsolatedWorktreeGateway,
 };
-use crate::adaptor::presenter::agent_session_change::ClientAgentSessionChangeNotifier;
-use crate::adaptor::presenter::repository_state::ClientRepositoryStateNotifier;
 use crate::domain::repository::worktree_operation::WorktreeDeletionTarget;
 use crate::usecase::repository_state::RepositoryStateService;
 use crate::usecase::repository_usecase::WorktreeExecutionArchiver;
@@ -34,7 +32,7 @@ async fn test_worktree削除一覧_本番runtime配線で受理した削除状�
         ReleashConfig::default(),
         data_dir.join("releash.toml"),
     ));
-    let publisher = crate::adaptor::presenter::state_subscription::test_output();
+    let publisher = crate::test_support::state_subscription::test_subscriptions();
     let terminal = Arc::new(build_terminal_surface_application_for_tests());
     let sessions = compose_agent_sessions(AgentSessionCompositionInput {
         retrying: retrying.clone(),
@@ -49,7 +47,7 @@ async fn test_worktree削除一覧_本番runtime配線で受理した削除状�
         codex_home: root.join("codex"),
         cli_binary: "releash".into(),
         terminal: terminal.clone(),
-        change_notifier: Arc::new(ClientAgentSessionChangeNotifier::new(publisher.clone())),
+        subscriptions: publisher.clone(),
     })
     .unwrap();
     let processes = Arc::new(WorkflowNodeProcesses::new(terminal));
@@ -89,7 +87,7 @@ async fn test_worktree削除一覧_本番runtime配線で受理した削除状�
             repository.clone(),
             Arc::new(build_code_usecase()),
         )),
-        Arc::new(ClientRepositoryStateNotifier::new(publisher)),
+        publisher,
         Arc::new(NotifyRepositoryStateWatcher::new(repository)),
         Arc::new(
             crate::adaptor::controller::repository_scan::RepositoryScanWorkerRuntime::new(

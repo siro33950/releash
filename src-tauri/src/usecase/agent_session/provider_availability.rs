@@ -18,7 +18,7 @@ pub(crate) enum ProviderAvailabilityUsecaseError {
 }
 
 pub(crate) struct ProviderAvailabilityUsecase {
-    state_publisher: Option<crate::usecase::state_subscription::StateSubscriptionOutputRef>,
+    state_publisher: Option<crate::usecase::state_subscription::StateSubscriptionUsecase>,
     config: Arc<dyn ProviderExecutableConfigRepository>,
     probe: Arc<dyn ProviderExecutableProbeGateway>,
     registry: RwLock<ProviderRegistry>,
@@ -28,7 +28,7 @@ pub(crate) struct ProviderAvailabilityUsecase {
 impl ProviderAvailabilityUsecase {
     pub(crate) fn with_state_publisher(
         mut self,
-        publisher: crate::usecase::state_subscription::StateSubscriptionOutputRef,
+        publisher: crate::usecase::state_subscription::StateSubscriptionUsecase,
     ) -> Self {
         self.state_publisher = Some(publisher);
         self
@@ -117,7 +117,7 @@ impl ProviderAvailabilityUsecase {
             .write()
             .map_err(|_| ProviderAvailabilityUsecaseError::Corrupt)? = next.clone();
         if let Some(publisher) = &self.state_publisher {
-            publisher.invalidate(crate::usecase::state_subscription::StateChangeSource::Providers);
+            publisher.notify(crate::usecase::state_subscription::StateChangeSource::Providers);
         }
         Ok(next)
     }

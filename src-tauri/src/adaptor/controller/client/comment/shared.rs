@@ -10,13 +10,11 @@ pub(crate) fn register_shared(
     {
         let data_dir = deps.data_dir.clone();
         let usecase = deps.review_comment_usecase.clone();
-        let notify = deps.comment_notify.clone();
         router.register_domain(
             &["create_review_thread"],
             Box::new(move |command| {
                 let usecase = usecase.clone();
                 let data_dir = data_dir.clone();
-                let notify = notify.clone();
                 Box::pin(async move {
                     let wire::command_request::Command::CreateReviewThread(args) = command else {
                         return Err(invalid_request("Mismatched command"));
@@ -28,7 +26,6 @@ pub(crate) fn register_shared(
                         outcome(
                             commands::create_review_thread_shared(
                                 data_dir,
-                                notify.as_ref(),
                                 &usecase,
                                 convert(required(args.worktree_name, "worktreeName")?)?,
                                 crate::domain::comment::ReviewTarget {
@@ -50,13 +47,11 @@ pub(crate) fn register_shared(
     {
         let data_dir = deps.data_dir.clone();
         let usecase = deps.review_comment_usecase.clone();
-        let notify = deps.comment_notify.clone();
         router.register_domain(
             &["append_review_comment"],
             Box::new(move |command| {
                 let usecase = usecase.clone();
                 let data_dir = data_dir.clone();
-                let notify = notify.clone();
                 Box::pin(async move {
                     let wire::command_request::Command::AppendReviewComment(args) = command else {
                         return Err(invalid_request("Mismatched command"));
@@ -68,7 +63,6 @@ pub(crate) fn register_shared(
                         outcome(
                             commands::append_review_comment_shared(
                                 data_dir,
-                                notify.as_ref(),
                                 &usecase,
                                 convert(required(args.worktree_name, "worktreeName")?)?,
                                 convert(required(args.thread_id, "threadId")?)?,
@@ -86,13 +80,11 @@ pub(crate) fn register_shared(
     {
         let data_dir = deps.data_dir.clone();
         let usecase = deps.review_comment_usecase.clone();
-        let notify = deps.comment_notify.clone();
         router.register_domain(
             &["resolve_review_thread"],
             Box::new(move |command| {
                 let usecase = usecase.clone();
                 let data_dir = data_dir.clone();
-                let notify = notify.clone();
                 Box::pin(async move {
                     let wire::command_request::Command::ResolveReviewThread(args) = command else {
                         return Err(invalid_request("Mismatched command"));
@@ -104,7 +96,6 @@ pub(crate) fn register_shared(
                         outcome(
                             commands::resolve_review_thread_shared(
                                 data_dir,
-                                notify.as_ref(),
                                 &usecase,
                                 convert(required(args.worktree_name, "worktreeName")?)?,
                                 convert(required(args.thread_id, "threadId")?)?,
@@ -123,13 +114,11 @@ pub(crate) fn register_shared(
     {
         let data_dir = deps.data_dir.clone();
         let usecase = deps.review_comment_usecase.clone();
-        let notify = deps.comment_notify.clone();
         router.register_domain(
             &["delete_review_thread"],
             Box::new(move |command| {
                 let usecase = usecase.clone();
                 let data_dir = data_dir.clone();
-                let notify = notify.clone();
                 Box::pin(async move {
                     let wire::command_request::Command::DeleteReviewThread(args) = command else {
                         return Err(invalid_request("Mismatched command"));
@@ -141,7 +130,6 @@ pub(crate) fn register_shared(
                         outcome(
                             commands::delete_review_thread_shared(
                                 data_dir,
-                                notify.as_ref(),
                                 &usecase,
                                 convert(required(args.worktree_name, "worktreeName")?)?,
                                 convert(required(args.thread_id, "threadId")?)?,

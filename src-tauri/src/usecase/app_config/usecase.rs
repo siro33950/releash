@@ -9,7 +9,7 @@ use crate::usecase::app_config::query_service::AppConfigQueryService;
 pub struct AppConfigUsecase {
     repository: Arc<dyn ConfigRepository>,
     query: AppConfigQueryService,
-    state_publisher: Option<crate::usecase::state_subscription::StateSubscriptionOutputRef>,
+    state_publisher: Option<crate::usecase::state_subscription::StateSubscriptionUsecase>,
 }
 
 impl AppConfigUsecase {
@@ -24,7 +24,7 @@ impl AppConfigUsecase {
 
     pub(crate) fn with_state_publisher(
         mut self,
-        publisher: crate::usecase::state_subscription::StateSubscriptionOutputRef,
+        publisher: crate::usecase::state_subscription::StateSubscriptionUsecase,
     ) -> Self {
         self.state_publisher = Some(publisher);
         self
@@ -46,7 +46,7 @@ impl AppConfigUsecase {
     ) -> Result<(), UsecaseError> {
         self.repository.update(Box::new(mutate))?;
         if let Some(publisher) = &self.state_publisher {
-            publisher.invalidate(crate::usecase::state_subscription::StateChangeSource::AppConfig);
+            publisher.notify(crate::usecase::state_subscription::StateChangeSource::AppConfig);
         }
         Ok(())
     }

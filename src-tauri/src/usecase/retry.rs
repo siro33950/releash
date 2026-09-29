@@ -1,15 +1,18 @@
 use crate::common::retry::{attempts, AttemptProgress, RetryBackoff, RetryLimiter};
-use crate::usecase::failure::{next_attempt, FailureKey, FailureOutput, RetryFailure};
+use crate::usecase::failure::{next_attempt, FailureKey, FailureRecordingUsecase, RetryFailure};
 use std::future::Future;
 use std::sync::Arc;
 
 pub struct Retrying {
     pub(crate) limiter: Arc<RetryLimiter>,
-    pub(crate) failures: Arc<dyn FailureOutput>,
+    pub(crate) failures: Arc<FailureRecordingUsecase>,
 }
 
 impl Retrying {
-    pub(crate) fn new(limiter: Arc<RetryLimiter>, failures: Arc<dyn FailureOutput>) -> Arc<Self> {
+    pub(crate) fn new(
+        limiter: Arc<RetryLimiter>,
+        failures: Arc<FailureRecordingUsecase>,
+    ) -> Arc<Self> {
         Arc::new(Self { limiter, failures })
     }
 
@@ -75,11 +78,7 @@ impl Retrying {
 
     #[cfg(test)]
     pub(crate) fn records(&self, target: &str) -> Vec<crate::usecase::failure::FailureObservation> {
-        self.failures
-            .as_any()
-            .downcast_ref::<crate::adaptor::presenter::failure::FailurePresenter>()
-            .expect("test failure presenter")
-            .records(target)
+        self.failures.test_store().records(target)
     }
 
     #[cfg(test)]
@@ -90,10 +89,7 @@ impl Retrying {
     ) -> crate::usecase::failure::FailurePage {
         use crate::usecase::failure::FailureQueryService;
         self.failures
-            .as_any()
-            .downcast_ref::<crate::adaptor::presenter::failure::FailurePresenter>()
-            .expect("test failure presenter")
-            .store()
+            .test_store()
             .page(&[target.to_string()], offset)
             .await
     }
@@ -103,7 +99,7 @@ impl Retrying {
 pub(crate) fn test_retrying() -> Arc<Retrying> {
     Retrying::new(
         Arc::new(RetryLimiter::deterministic()),
-        Arc::new(crate::adaptor::presenter::failure::FailurePresenter::new(
+        Arc::new(crate::usecase::failure::FailureRecordingUsecase::new(
             Arc::new(crate::adaptor::gateway::failure_records::FailureRecordStore::default()),
             None,
         )),

@@ -24,8 +24,16 @@ pub(crate) fn workflow_dependencies<R: tauri::Runtime>(
         secrets: app
             .try_state::<Arc<dyn crate::domain::app_config::ConfigSecretRepository>>()
             .map(|state| state.inner().clone()),
-        state_changes: crate::adaptor::presenter::state_subscription::test_output(),
+        state_changes: state_subscriptions(),
     }
+}
+
+pub(crate) fn state_subscriptions() -> crate::usecase::state_subscription::StateSubscriptionUsecase
+{
+    crate::usecase::state_subscription::StateSubscriptionUsecase::new_with_output(
+        crate::adaptor::presenter::state_subscription::test_output(),
+        Arc::new(crate::adaptor::gateway::subscription_timer::TokioSubscriptionTimer),
+    )
 }
 
 pub(crate) fn build_watcher_usecase<R: tauri::Runtime>(
@@ -62,7 +70,6 @@ pub(crate) fn build_client_dependencies<R: tauri::Runtime>(
         editor_launcher: Arc::new(crate::adaptor::gateway::external_editor::NativeEditorLauncherGateway),
         watcher: build_watcher_usecase(app),
         data_dir: data_dir(app).map_err(crate::adaptor::presenter::error::AppError::new),
-        comment_notify: Arc::new(crate::adaptor::gateway::comment_change::CommentChangeGateway::new(crate::adaptor::presenter::state_subscription::test_output())),
         process_port: Arc::new(crate::adaptor::gateway::application_lifecycle::TauriApplicationQuitIntentPort::new(app.clone())),
     }
 }

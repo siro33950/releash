@@ -483,7 +483,7 @@ pub(super) fn dependencies(store: Option<Arc<LocalEventStore>>) -> WorkflowRunti
         store,
         config: None,
         secrets: None,
-        state_changes: crate::adaptor::presenter::state_subscription::test_output(),
+        state_changes: crate::test_support::state_subscription::test_subscriptions(),
     }
 }
 
