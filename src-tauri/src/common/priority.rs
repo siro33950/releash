@@ -31,7 +31,7 @@ impl PriorityGate {
     pub async fn run<I, T, E, F, Fut>(
         &self,
         request: I,
-        path: impl for<'a> FnOnce(&'a I) -> &'a str,
+        path_of: impl for<'a> FnOnce(&'a I) -> &'a str,
         deadline: Option<Instant>,
         next: F,
         reject: impl FnOnce(Rejection) -> E,
@@ -40,7 +40,7 @@ impl PriorityGate {
         F: FnOnce(I) -> Fut,
         Fut: Future<Output = Result<T, E>>,
     {
-        let path = path(&request);
+        let path = path_of(&request);
         let Some(level) = (self.classify)(path) else {
             return next(request).await;
         };
