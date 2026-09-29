@@ -330,6 +330,30 @@ async fn test_生存確認_変更が続いてもbookmarkが無ければ無音と
     server.abort();
 }
 
+#[tokio::test(start_paused = true)]
+async fn test_生存確認_bookmark期限後は即時受信可能な変更も無音と扱う() {
+    // Given
+    let deadline = tokio::time::Instant::now() + POLICY.silence;
+    let change = || {
+        wire::state_subscription_event::Event::Change(wire::StateChange {
+            delta: false,
+            payload: None,
+        })
+    };
+    assert!(matches!(
+        before_bookmark_deadline(deadline, std::future::ready(change())).await,
+        Some(wire::state_subscription_event::Event::Change(_))
+    ));
+    // When
+    tokio::time::advance(POLICY.silence + Duration::from_millis(1)).await;
+    // Then
+    assert!(
+        before_bookmark_deadline(deadline, std::future::ready(change()))
+            .await
+            .is_none()
+    );
+}
+
 #[tokio::test]
 async fn test_生存確認_bookmarkが届くと連続失敗を消す() {
     // Given
@@ -436,49 +460,22 @@ async fn test_設定受信_生存確認と同じstreamで受け取る() {
     server.abort();
 }
 
-#[tokio::test]
-async fn test_購読開始_重複したreadyで開始要求が増えない() {
+#[test]
+fn test_購読開始_重複したreadyで開始要求が増えない() {
     // Given
-    let settings = wire::DesktopSettings {
-        close_to_tray: Some(true),
-        start_minimized: Some(false),
-        crash_reporting: Some(false),
-        performance_telemetry: Some(false),
-        auto_launch: Some(true),
-    };
-    let (endpoint, server, _, starts) = stream_server(
-        vec![
-            envelope(event(wire::state_subscription_event::Event::Ready(
-                wire::Unit {},
-            ))),
-            envelope(event(wire::state_subscription_event::Event::Ready(
-                wire::Unit {},
-            ))),
-            envelope(event(wire::state_subscription_event::Event::Snapshot(
-                wire::StatePayload {
-                    value: Some(wire::state_payload::Value::DesktopSettings(settings)),
-                },
-            ))),
-        ],
-        true,
-    )
-    .await;
-    let client = start(&endpoint);
-    // When
-    tokio::time::timeout(Duration::from_secs(2), client.first_settings())
-        .await
-        .unwrap()
-        .unwrap();
-    tokio::time::timeout(Duration::from_secs(2), async {
-        while starts.load(Ordering::SeqCst) == 0 {
-            tokio::task::yield_now().await;
-        }
+    let client = super::client(&ClientConnectionDto {
+        url: "http://127.0.0.1:1".into(),
+        token: "client".into(),
     })
-    .await
     .unwrap();
+    let mut subscription = SettingsSubscription::default();
+    subscription.request_if_needed(&client, "client-id");
+    assert!(subscription.has_pending());
+    subscription.pending = None;
+    // When
+    subscription.request_if_needed(&client, "client-id");
     // Then
-    assert_eq!(starts.load(Ordering::SeqCst), 1);
-    server.abort();
+    assert!(!subscription.has_pending());
 }
 
 async fn subscription_error_server(
