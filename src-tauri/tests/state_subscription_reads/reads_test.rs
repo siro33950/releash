@@ -21,7 +21,7 @@ use crate::usecase::workflow::ports::WorkflowDiagnosticsTarget;
 use crate::usecase::workspace_tree::WorkspaceListUsecase;
 use futures_util::StreamExt;
 use parking_lot::Mutex;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 
 #[derive(Default)]
@@ -77,6 +77,7 @@ impl AgentSessionHistoryQueryService for Sessions {
 struct Issues {
     calls: AtomicUsize,
     values: Mutex<Vec<IssueInfo>>,
+    own_runtime: AtomicBool,
 }
 impl GitHostProvider for Issues {
     fn fetch_pr_status(&self, _: &str) -> Result<PrStatus, GitHostError> {
@@ -84,6 +85,12 @@ impl GitHostProvider for Issues {
     }
     fn list_issues(&self, _: &str) -> Result<Vec<IssueInfo>, GitHostError> {
         self.calls.fetch_add(1, Ordering::SeqCst);
+        if self.own_runtime.load(Ordering::SeqCst) {
+            tokio::runtime::Builder::new_current_thread()
+                .build()
+                .unwrap()
+                .block_on(async {});
+        }
         Ok(self.values.lock().clone())
     }
 }
@@ -349,6 +356,10 @@ impl Fixture {
             sessions,
             _directory: directory,
         }
+    }
+
+    pub(crate) fn list_issues_in_own_runtime(&self) {
+        self.issues.own_runtime.store(true, Ordering::SeqCst);
     }
 }
 

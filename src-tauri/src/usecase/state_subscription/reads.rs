@@ -246,7 +246,10 @@ impl WorkspaceStateReads {
         self.read_blocking(target)
     }
 
-    fn read_blocking(&self, target: &SubscriptionTarget) -> Result<StateValue, StateReadError> {
+    pub(crate) fn read_blocking(
+        &self,
+        target: &SubscriptionTarget,
+    ) -> Result<StateValue, StateReadError> {
         use SubscriptionTarget as T;
         Ok(match target {
             T::RepositoryPaths => StateValue::RepositoryPaths(self.repositories.get()),
@@ -396,6 +399,14 @@ impl WorkspaceStateReads {
     }
 }
 
+impl WorkspaceStateReads {
+    pub(crate) fn refresh_issues(&self, path: &str) -> Result<(), StateReadError> {
+        self.repository.get_main_repo_path(path).map_err(error)?;
+        self.git_host.fetch_issues(path).map_err(error)?;
+        Ok(())
+    }
+}
+
 #[async_trait::async_trait]
 pub(crate) trait StateSubscriptionRead: Send + Sync {
     async fn read(&self, target: &SubscriptionTarget) -> Result<StateValue, StateReadError>;
@@ -418,10 +429,7 @@ impl StateSubscriptionRead for WorkspaceStateReads {
     }
     async fn refresh_external(&self, target: &SubscriptionTarget) -> Result<(), StateReadError> {
         match target {
-            SubscriptionTarget::Issues(path) => {
-                self.repository.get_main_repo_path(path).map_err(error)?;
-                self.git_host.fetch_issues(path).map_err(error)?;
-            }
+            SubscriptionTarget::Issues(path) => self.refresh_issues(path)?,
             SubscriptionTarget::Workspaces => self.workspaces.refresh_pull_requests(),
             _ => {}
         }
