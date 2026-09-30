@@ -5,6 +5,23 @@ import { join, resolve } from "node:path";
 import { test } from "node:test";
 import { startPerformanceDaemon, connectPerformanceClient } from "./performance-daemon.mjs";
 
+async function readProviderAvailability(client) {
+    const clientId = crypto.randomUUID();
+    const abort = new AbortController();
+    try {
+        for await (const event of client.openStateStream({ clientId }, { signal: abort.signal, timeoutMs: 0 })) {
+            if (event.event.case === "ready") {
+                await client.startStateSubscription({ clientId, target: "provider-availability" });
+            } else if (event.event.case === "snapshot" && event.event.value.value.case === "providerAvailability") {
+                return event.event.value.value.value;
+            }
+        }
+        throw new Error("state stream ended before provider availability snapshot");
+    } finally {
+        abort.abort();
+    }
+}
+
 test("performance harness starts an isolated external daemon with fixture environment and stops it", { timeout: 45_000 }, async () => {
     const directory = await mkdtemp(join(tmpdir(), "releash-performance-test-"));
     let stop;
@@ -19,8 +36,8 @@ test("performance harness starts an isolated external daemon with fixture enviro
         });
         const discovery = JSON.parse(await readFile(join(directory, "client-api.json"), "utf8"));
         const client = await connectPerformanceClient(discovery);
-        const result = await client.refreshProviderAvailability({});
-        const providers = result.providers.items;
+        await client.refreshProviderAvailability({});
+        const providers = (await readProviderAvailability(client)).providers.items;
         assert.equal(providers.length, 2);
         for (const provider of providers) {
             assert.equal(provider.effectiveExecutable, fixture);
