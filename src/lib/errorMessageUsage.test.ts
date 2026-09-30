@@ -15,6 +15,8 @@ const TARGET_FILES = [
 	"src/hooks/useProviderAvailabilitySettings.ts",
 	"src/components/panels/AgentSessionPanel/AgentSessionPanel.tsx",
 	"src/components/panels/MarkdownDiffViewer.tsx",
+	"src/components/panels/CodeDiffViewer.tsx",
+	"src/components/panels/ShikiDiffViewer.tsx",
 	"src/lib/telemetry.ts",
 	"src/hooks/useTerminal.ts",
 	"src/components/panels/NodeContentView/NodeContentView.tsx",
@@ -26,13 +28,14 @@ const TARGET_FILES = [
 	"src/components/panels/SettingsModal.tsx",
 	"src/hooks/useAutomation.ts",
 	"src/screens/useWorktreeGitActions.ts",
-	"src/hooks/useWorkflowConfig.ts",
+	"src/hooks/useFileNavigation.ts",
 	"src/hooks/useAppSettings.ts",
 	"src/components/workspace/DeleteWorktreeDialog.tsx",
 	"src/components/panels/DiffToolbar.tsx",
 	"src/hooks/useWorkspaceList.ts",
 	"src/contexts/ReviewThreadHandoffContext.tsx",
 	"src/hooks/useNotionSettings.ts",
+	"src/lib/clientErrorNotice.ts",
 ] as const;
 
 const LOCAL_STRING_EXTRACTION =

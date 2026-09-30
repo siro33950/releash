@@ -79,6 +79,8 @@ describe("useNotionLabelOptions", () => {
 
 	it("should set empty options on error", async () => {
 		const { invokeClient: invoke } = await import("@/lib/client");
+		const notice = vi.fn();
+		window.addEventListener("releash-client-error", notice);
 		vi.mocked(invoke).mockRejectedValue(new Error("not configured"));
 
 		const { result } = renderHook(() => useNotionLabelOptions("/test/repo"));
@@ -88,5 +90,9 @@ describe("useNotionLabelOptions", () => {
 		});
 
 		expect(result.current.labelOptions).toEqual([]);
+		expect((notice.mock.calls[0][0] as CustomEvent<string>).detail).toBe(
+			"not configured",
+		);
+		window.removeEventListener("releash-client-error", notice);
 	});
 });

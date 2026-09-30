@@ -1,6 +1,7 @@
 import { useCallback } from "react";
 import { useStateSubscriptionResult } from "@/hooks/useStateSubscription";
 import { invokeClient as invoke } from "@/lib/client";
+import { rethrowClientError } from "@/lib/clientErrorNotice";
 import { getThreadFilePath } from "@/types/diffComment";
 
 interface UseDiffCommentsOptions {
@@ -26,7 +27,7 @@ export function useDiffComments({ worktreeName }: UseDiffCommentsOptions) {
 				lineNumber: params.lineNumber ?? null,
 				endLine: params.endLine ?? null,
 				content: params.content,
-			});
+			}).catch(rethrowClientError);
 		},
 		[worktreeName],
 	);
@@ -37,7 +38,7 @@ export function useDiffComments({ worktreeName }: UseDiffCommentsOptions) {
 				worktreeName,
 				threadId,
 				content,
-			});
+			}).catch(rethrowClientError);
 		},
 		[worktreeName],
 	);
@@ -49,7 +50,7 @@ export function useDiffComments({ worktreeName }: UseDiffCommentsOptions) {
 				threadId,
 				outcome,
 				summary,
-			});
+			}).catch(rethrowClientError);
 		},
 		[worktreeName],
 	);
@@ -59,7 +60,7 @@ export function useDiffComments({ worktreeName }: UseDiffCommentsOptions) {
 			await invoke("delete_review_thread", {
 				worktreeName,
 				threadId,
-			});
+			}).catch(rethrowClientError);
 		},
 		[worktreeName],
 	);

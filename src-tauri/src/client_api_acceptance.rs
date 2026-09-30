@@ -35,18 +35,24 @@ pub fn desktop_connection_app<R: tauri::Runtime>(
         CommandRouter::new(Box::new(|_| false));
     crate::adaptor::controller::command::client::register(&mut router);
     crate::adaptor::controller::command::desktop_lifecycle::register(&mut router);
-    let supervisor = crate::usecase::daemon_supervision::DaemonSupervisionUsecase::start(Arc::new(
-        crate::adaptor::gateway::daemon_supervision::DaemonProcessGateway::new(
-            executable.into(),
-            data_dir.into(),
-            Arc::new(crate::common::retry::RetryLimiter::new()),
+    let status_presenter =
+        Arc::new(crate::adaptor::presenter::daemon_status::DaemonStatusPresenter::new());
+    let supervisor = crate::usecase::daemon_supervision::DaemonSupervisionUsecase::start(
+        Arc::new(
+            crate::adaptor::gateway::daemon_supervision::DaemonProcessGateway::new(
+                executable.into(),
+                data_dir.into(),
+                Arc::new(crate::common::retry::RetryLimiter::new()),
+            ),
         ),
-    ));
+        status_presenter.clone(),
+    );
     builder
         .manage(Arc::new(ApplicationStartupAuthority::ready()))
         .manage(crate::usecase::client_connection::ClientConnectionUsecase(
             Box::new(supervisor.clone()),
         ))
+        .manage(status_presenter)
         .manage(supervisor)
         .invoke_handler(move |invoke| router.handle(invoke))
         .build(crate::application_context())
@@ -57,8 +63,10 @@ pub fn desktop_supervision_status<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
 ) -> serde_json::Value {
     serde_json::to_value(
-        app.state::<Arc<crate::usecase::daemon_supervision::DaemonSupervisionUsecase>>()
-            .status(),
+        crate::adaptor::presenter::daemon_status::DaemonStatusMessage::from(
+            app.state::<Arc<crate::usecase::daemon_supervision::DaemonSupervisionUsecase>>()
+                .status(),
+        ),
     )
     .unwrap()
 }

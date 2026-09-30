@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { invokeClient as invoke } from "@/lib/client";
 import type { ChangeGroup, Hunk } from "@/lib/computeHunks";
+import { getErrorMessage } from "@/lib/errorMessage";
 import type { ReviewDiscussionThread } from "@/types/diffComment";
 import type { DiffMode } from "@/types/settings";
 import { ShikiDiffViewer } from "./ShikiDiffViewer";
@@ -57,25 +58,29 @@ export function CodeDiffViewer({
 	onLineRangeSelected,
 }: CodeDiffViewerProps) {
 	const [detectedLanguage, setDetectedLanguage] = useState("plaintext");
+	const [languageError, setLanguageError] = useState<string | null>(null);
 
 	useEffect(() => {
 		if (language) {
 			setDetectedLanguage(language);
+			setLanguageError(null);
 			return;
 		}
 		if (!filePath) {
 			setDetectedLanguage("plaintext");
+			setLanguageError(null);
 			return;
 		}
 
 		let cancelled = false;
 		setDetectedLanguage("plaintext");
+		setLanguageError(null);
 		invoke("get_language_from_path", { filePath })
 			.then((detectedLang) => {
 				if (!cancelled) setDetectedLanguage(detectedLang);
 			})
-			.catch(() => {
-				if (!cancelled) setDetectedLanguage("plaintext");
+			.catch((error) => {
+				if (!cancelled) setLanguageError(getErrorMessage(error));
 			});
 		return () => {
 			cancelled = true;
@@ -85,26 +90,31 @@ export function CodeDiffViewer({
 	const resolvedLanguage = language ?? detectedLanguage;
 
 	return (
-		<ShikiDiffViewer
-			originalContent={originalContent}
-			modifiedContent={modifiedContent}
-			diffMode={diffMode}
-			diffOnlyMode={diffOnlyMode}
-			language={resolvedLanguage}
-			hunks={providedHunks}
-			filePath={filePath}
-			changeGroups={changeGroups}
-			onStageGroup={onStageGroup}
-			groupActionLabel={groupActionLabel}
-			comments={comments}
-			onAddComment={onAddComment}
-			onAddRangeComment={onAddRangeComment}
-			onAppendComment={onAppendComment}
-			onResolveThread={onResolveThread}
-			onDeleteThread={onDeleteThread}
-			scrollToLine={scrollToLine}
-			scrollToThread={scrollToThread}
-			onLineRangeSelected={onLineRangeSelected}
-		/>
+		<>
+			{languageError && (
+				<div role="alert">Language detection failed: {languageError}</div>
+			)}
+			<ShikiDiffViewer
+				originalContent={originalContent}
+				modifiedContent={modifiedContent}
+				diffMode={diffMode}
+				diffOnlyMode={diffOnlyMode}
+				language={resolvedLanguage}
+				hunks={providedHunks}
+				filePath={filePath}
+				changeGroups={changeGroups}
+				onStageGroup={onStageGroup}
+				groupActionLabel={groupActionLabel}
+				comments={comments}
+				onAddComment={onAddComment}
+				onAddRangeComment={onAddRangeComment}
+				onAppendComment={onAppendComment}
+				onResolveThread={onResolveThread}
+				onDeleteThread={onDeleteThread}
+				scrollToLine={scrollToLine}
+				scrollToThread={scrollToThread}
+				onLineRangeSelected={onLineRangeSelected}
+			/>
+		</>
 	);
 }

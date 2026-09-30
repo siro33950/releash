@@ -43,6 +43,8 @@ it("設定失敗を処理して直前値を保持し再取得しない", async (
 		return vi.fn();
 	});
 	const failure = new Error("save failed");
+	const notice = vi.fn();
+	window.addEventListener("releash-client-error", notice);
 	vi.mocked(invokeClient).mockRejectedValueOnce(failure);
 	const log = vi.spyOn(console, "error").mockImplementation(() => {});
 	const { result } = renderHook(() => useBaseBranch("/repo", "feature"));
@@ -55,5 +57,9 @@ it("設定失敗を処理して直前値を保持し再取得しない", async (
 	expect(invokeClient).toHaveBeenCalledTimes(1);
 	expect(subscribeState).toHaveBeenCalledTimes(2);
 	expect(log).toHaveBeenCalledWith("Failed to set base branch:", failure);
+	expect((notice.mock.calls[0][0] as CustomEvent<string>).detail).toBe(
+		"save failed",
+	);
+	window.removeEventListener("releash-client-error", notice);
 	log.mockRestore();
 });

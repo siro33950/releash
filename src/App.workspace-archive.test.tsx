@@ -238,9 +238,15 @@ beforeEach(() => {
 	mocks.postArchiveSnapshot = fallbackSnapshot;
 	mocks.reconciliationFailuresRemaining = 0;
 	mocks.workspaceSelectionInvalidated = null;
-	vi.mocked(invoke).mockImplementation(async (command) =>
-		command === "get_daemon_status" ? { phase: "ready" } : { type: "ready" },
-	);
+	vi.mocked(invoke).mockImplementation(async (command, args) => {
+		if (command === "subscribe_daemon_status") {
+			(
+				args as { channel: { onmessage?: (value: unknown) => void } }
+			).channel.onmessage?.({ phase: "ready" });
+			return;
+		}
+		return { type: "ready" };
+	});
 	mocks.invoke.mockImplementation((command: string) => {
 		if (command === "archive_workspace_workflow_execution") {
 			mocks.archiveCommitted = true;

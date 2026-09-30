@@ -44,7 +44,7 @@ async fn test_更新_停止完了と終了の確認後だけ適用し失敗時�
         // Given
         let daemon = Arc::new(FakeDaemon::default());
         daemon.ready.store(true, Ordering::SeqCst);
-        let supervisor = DaemonSupervisionUsecase::start(daemon.clone());
+        let supervisor = crate::usecase::test_helpers::start_supervision(daemon.clone());
         tick(200).await;
         let update = Arc::new(FakeUpdate {
             install_fails,
@@ -90,7 +90,7 @@ async fn test_更新中quit_適用の完了まで終了を待ち再起動を抑�
     // Given
     let daemon = Arc::new(FakeDaemon::default());
     daemon.ready.store(true, Ordering::SeqCst);
-    let supervisor = DaemonSupervisionUsecase::start(daemon.clone());
+    let supervisor = crate::usecase::test_helpers::start_supervision(daemon.clone());
     tick(200).await;
     let wait = Arc::new(tokio::sync::Notify::new());
     let update = Arc::new(FakeUpdate {
@@ -131,7 +131,7 @@ async fn test_更新排他_適用中の二つ目の要求は副作用なしで�
     // Given
     let daemon = Arc::new(FakeDaemon::default());
     daemon.ready.store(true, Ordering::SeqCst);
-    let supervisor = DaemonSupervisionUsecase::start(daemon.clone());
+    let supervisor = crate::usecase::test_helpers::start_supervision(daemon.clone());
     tick(200).await;
     let wait = Arc::new(tokio::sync::Notify::new());
     let update = Arc::new(FakeUpdate {
@@ -172,7 +172,7 @@ async fn test_更新停止_要求が失敗した場合はインストールし�
     let daemon = Arc::new(FakeDaemon::default());
     daemon.ready.store(true, Ordering::SeqCst);
     *daemon.shutdown_response.lock() = Some(Err("shutdown rejected".to_string()));
-    let supervisor = DaemonSupervisionUsecase::start(daemon.clone());
+    let supervisor = crate::usecase::test_helpers::start_supervision(daemon.clone());
     tick(200).await;
     let update = Arc::new(FakeUpdate::default());
     let service = DesktopUpdateUsecase::new(update.clone(), supervisor.clone());
@@ -193,7 +193,7 @@ async fn test_更新中終了_インストールが戻らなくても期限でqu
     // Given
     let daemon = Arc::new(FakeDaemon::default());
     daemon.ready.store(true, Ordering::SeqCst);
-    let supervisor = DaemonSupervisionUsecase::start(daemon.clone());
+    let supervisor = crate::usecase::test_helpers::start_supervision(daemon.clone());
     tick(200).await;
     let wait = Arc::new(tokio::sync::Notify::new());
     let update = Arc::new(FakeUpdate {

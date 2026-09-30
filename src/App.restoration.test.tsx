@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import type { ReactNode } from "react";
-import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { beforeEach, expect, it, vi } from "vitest";
 import type { WorkspaceListModel } from "@/hooks/useWorkspaceList";
 import { completeClientRestoration, invokeClient } from "@/lib/client";
 import { stateSubscriptions } from "@/test/stateSubscriptions";
@@ -97,8 +97,9 @@ let status: {
 	stage: string | null;
 	reason: string | null;
 };
+let channel: { onmessage?: (next: typeof status) => void } | null;
+const notifyStatus = () => channel?.onmessage?.({ ...status });
 beforeEach(() => {
-	vi.useFakeTimers();
 	vi.clearAllMocks();
 	localStorage.clear();
 	states.clear();
@@ -113,8 +114,13 @@ beforeEach(() => {
 		stage: null,
 		reason: null,
 	};
+	channel = null;
 	vi.mocked(invoke).mockImplementation(async (command, args) => {
-		if (command === "get_daemon_status") return { ...status };
+		if (command === "subscribe_daemon_status") {
+			channel = (args as { channel: typeof channel }).channel;
+			notifyStatus();
+			return;
+		}
 		if (command === "fail_desktop_restoration") {
 			status = {
 				...status,
@@ -123,6 +129,7 @@ beforeEach(() => {
 				reason: (args as { reason: string }).reason,
 				retryAvailable: true,
 			};
+			notifyStatus();
 		}
 		if (command === "retry_daemon") {
 			status = {
@@ -133,13 +140,14 @@ beforeEach(() => {
 				reason: null,
 				retryAvailable: false,
 			};
+			notifyStatus();
 		}
 	});
 	vi.mocked(completeClientRestoration).mockImplementation(async () => {
 		status = { ...status, phase: "ready" };
+		notifyStatus();
 	});
 });
-afterEach(() => vi.useRealTimers());
 
 it("設定の初回失敗後は次の接続の状態を反映してから操作を再開する", async () => {
 	states.clear();
@@ -148,11 +156,9 @@ it("設定の初回失敗後は次の接続の状態を反映してから操作�
 	await act(async () => {
 		render(<App />);
 	});
-	await act(() => vi.advanceTimersByTimeAsync(250));
 	await act(async () =>
 		states.fail("desktop-settings", new Error("temporary read failure")),
 	);
-	await act(() => vi.advanceTimersByTimeAsync(250));
 	expect(screen.getByRole("status")).toHaveTextContent(
 		"temporary read failure",
 	);
@@ -160,11 +166,9 @@ it("設定の初回失敗後は次の接続の状態を反映してから操作�
 	await act(async () => {
 		fireEvent.click(screen.getByRole("button", { name: "Retry" }));
 	});
-	await act(() => vi.advanceTimersByTimeAsync(250));
 	await act(async () => states.publish("desktop-settings", desktopSettings));
 	expect(completeClientRestoration).not.toHaveBeenCalled();
 	await act(async () => states.publish("workspaces", workspaceListSnapshot()));
-	await act(() => vi.advanceTimersByTimeAsync(250));
 	expect(completeClientRestoration).toHaveBeenCalledExactlyOnceWith(2);
 	expect(screen.getByRole("main")).toHaveTextContent("Telemetry: false");
 	expect(
@@ -183,7 +187,6 @@ it("初回の一覧失敗でも復元を完了し購読による復旧を表示�
 	await act(async () => {
 		render(<App />);
 	});
-	await act(() => vi.advanceTimersByTimeAsync(250));
 	expect(completeClientRestoration).toHaveBeenCalledExactlyOnceWith(1);
 	expect(screen.getByRole("main")).toBeVisible();
 	await act(async () => states.publish("workspaces", workspaceListSnapshot()));
@@ -197,15 +200,12 @@ it("復元完了通知が失敗した場合も理由を表示し再開できる"
 	await act(async () => {
 		render(<App />);
 	});
-	await act(() => vi.advanceTimersByTimeAsync(250));
 	expect(screen.getByRole("status")).toHaveTextContent(
 		"restoration acknowledgement failed",
 	);
 	await act(async () => {
 		fireEvent.click(screen.getByRole("button", { name: "Retry" }));
 	});
-	await act(() => vi.advanceTimersByTimeAsync(250));
-	await act(() => vi.advanceTimersByTimeAsync(250));
 	expect(screen.getByRole("main")).toBeVisible();
 	expect(completeClientRestoration).toHaveBeenLastCalledWith(2);
 });
@@ -215,7 +215,6 @@ it("登録一覧とWorkspacesの変更・削除はそれぞれの購読から届
 	await act(async () => {
 		render(<App />);
 	});
-	await act(() => vi.advanceTimersByTimeAsync(250));
 	fireEvent.click(screen.getByRole("button", { name: "Settings" }));
 	const settings = screen.getByRole("region", {
 		name: "Registered repositories",

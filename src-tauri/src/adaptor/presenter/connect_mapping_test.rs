@@ -2493,3 +2493,18 @@ mod review_stopped_transfer_tests {
         }
     }
 }
+
+mod terminal_input_tests {
+    use crate::adaptor::presenter::connect::ConnectFailure;
+    use crate::usecase::terminal_surface::error::UsecaseError;
+
+    #[test]
+    fn test_入力失敗_失効attachmentをfailed_preconditionにする() {
+        // Given
+        let error = UsecaseError::StaleAttachment;
+        // When
+        let code = error.connect_code();
+        // Then
+        assert_eq!(code, connectrpc::ErrorCode::FailedPrecondition);
+    }
+}

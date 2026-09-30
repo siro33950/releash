@@ -79,9 +79,11 @@ pub fn run() {
         let login = usecase::login_item::LoginItemUsecase::new(Arc::new(adaptor::gateway::login_item::MacLoginItem), Arc::new(adaptor::gateway::login_item::DaemonLoginPreference(gateway.clone())));
         if let Ok(Some(config)) = &startup_config { if let Err(error) = login.restore(config.app.auto_launch) { log::error!("{error}"); } }
         app.manage(login);
+        let status_presenter = Arc::new(adaptor::presenter::daemon_status::DaemonStatusPresenter::new());
         let supervisor = tauri::async_runtime::block_on(async {
-            usecase::daemon_supervision::DaemonSupervisionUsecase::start(gateway)
+            usecase::daemon_supervision::DaemonSupervisionUsecase::start(gateway, status_presenter.clone())
         });
+        app.manage(status_presenter);
         app.manage(supervisor.clone());
         app.manage(usecase::desktop_update::DesktopUpdateUsecase::new(
             Arc::new(adaptor::gateway::desktop_update::TauriUpdateGateway::new(

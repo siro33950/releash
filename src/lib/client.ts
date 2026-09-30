@@ -5,6 +5,7 @@ import { createConnectTransport } from "@connectrpc/connect-web";
 import { invoke } from "@tauri-apps/api/core";
 import {
 	default_timeout_ms,
+	min_connect_timeout_ms,
 	reconnect_status_code,
 	state_stream_silence_ms,
 } from "@/generated/client_options_pb";
@@ -31,72 +32,151 @@ type Session = {
 	endpoint: Endpoint;
 	attachmentId: string;
 };
-let session: Promise<Session> | null = null;
-let current: Session | null = null;
 let connectionAbort = new AbortController();
-let stopped = false;
-const connectionListeners = new Set<(connected: boolean) => void>();
+type ConnectionState =
+	| { phase: "IDLE" | "TRANSIENT_FAILURE" | "SHUTDOWN" }
+	| { phase: "CONNECTING"; pending: Promise<Session> }
+	| { phase: "READY"; session: Session };
+let connectionState: ConnectionState = { phase: "IDLE" };
+const stateListeners = new Set<() => void>();
+let connectionBackoff = createConnectionBackoff();
+let retryTimer: ReturnType<typeof setTimeout> | undefined;
+const restorationAttachmentId = crypto.randomUUID();
+
+export function getConnectionState(): ConnectionState["phase"] {
+	return connectionState.phase;
+}
+
+export function onConnectionStateChange(listener: () => void) {
+	stateListeners.add(listener);
+	return () => stateListeners.delete(listener);
+}
+
+function setConnectionState(next: ConnectionState) {
+	connectionState = next;
+	for (const listener of stateListeners) listener();
+}
+
+function waitForConnectionChange(phase: ConnectionState["phase"]) {
+	if (connectionState.phase !== phase) return Promise.resolve();
+	return new Promise<void>((resolve) => {
+		const release = onConnectionStateChange(() => {
+			if (connectionState.phase === phase) return;
+			release();
+			resolve();
+		});
+	});
+}
 
 async function open(abort: AbortController): Promise<Session> {
-	const attachmentId = crypto.randomUUID();
-	const endpoint = await invoke<Endpoint>("get_client_endpoint", {
-		attachmentId,
-	});
-	abort.signal.throwIfAborted();
-	const client = createClient(
-		ClientService,
-		createConnectTransport({
-			baseUrl: endpoint.url,
-			useBinaryFormat: true,
-			defaultTimeoutMs: getOption(ClientService, default_timeout_ms),
-			interceptors: [
-				(next) => async (request) => {
-					request.header.set("Authorization", `Bearer ${endpoint.token}`);
-					return next(request);
-				},
-			],
-			fetch: (input, init) => {
-				const request = new Request(input, init);
-				return fetch(request, {
-					signal: createLinkedAbortController(request.signal, abort.signal)
-						.signal,
-				});
-			},
-		}),
+	const attachmentId = restorationAttachmentId;
+	const timeout = setTimeout(
+		() => abort.abort(new Error("Daemon connection timed out")),
+		getOption(ClientService, min_connect_timeout_ms),
 	);
-	const info = await client.getServerInfo({});
-	await invoke("validate_daemon_connection", {
-		launchId: info.launchId,
-		release: info.release,
-	});
-	abort.signal.throwIfAborted();
-	const result = { client, endpoint, attachmentId };
-	current = result;
-	for (const listener of connectionListeners) listener(true);
-	return result;
+	try {
+		const expired = new Promise<never>((_, reject) =>
+			abort.signal.addEventListener(
+				"abort",
+				() => reject(abort.signal.reason),
+				{
+					once: true,
+				},
+			),
+		);
+		const endpoint = await Promise.race([
+			invoke<Endpoint>("get_client_endpoint", { attachmentId }),
+			expired,
+		]);
+		abort.signal.throwIfAborted();
+		const client = createClient(
+			ClientService,
+			createConnectTransport({
+				baseUrl: endpoint.url,
+				useBinaryFormat: true,
+				defaultTimeoutMs: getOption(ClientService, default_timeout_ms),
+				interceptors: [
+					(next) => async (request) => {
+						request.header.set("Authorization", `Bearer ${endpoint.token}`);
+						return next(request);
+					},
+				],
+				fetch: (input, init) => {
+					const request = new Request(input, init);
+					return fetch(request, {
+						signal: createLinkedAbortController(request.signal, abort.signal)
+							.signal,
+					});
+				},
+			}),
+		);
+		const info = await Promise.race([
+			client.getServerInfo({}, { signal: abort.signal }),
+			expired,
+		]);
+		await Promise.race([
+			invoke("validate_daemon_connection", {
+				launchId: info.launchId,
+				release: info.release,
+			}),
+			expired,
+		]);
+		abort.signal.throwIfAborted();
+		return { client, endpoint, attachmentId };
+	} finally {
+		clearTimeout(timeout);
+	}
+}
+
+function connect() {
+	if (connectionState.phase === "SHUTDOWN") return;
+	clearTimeout(retryTimer);
+	connectionAbort = new AbortController();
+	connectionBackoff.attemptStarted();
+	const pending = open(connectionAbort);
+	setConnectionState({ phase: "CONNECTING", pending });
+	void pending.then(
+		(ready) => {
+			if (
+				connectionState.phase !== "CONNECTING" ||
+				connectionState.pending !== pending
+			)
+				return;
+			setConnectionState({ phase: "READY", session: ready });
+		},
+		() => {
+			if (
+				connectionState.phase === "CONNECTING" &&
+				connectionState.pending === pending
+			)
+				failConnection();
+		},
+	);
+}
+
+function failConnection(failedClient?: Client<typeof ClientService>) {
+	if (
+		failedClient &&
+		(connectionState.phase !== "READY" ||
+			connectionState.session.client !== failedClient)
+	)
+		return;
+	if (
+		connectionState.phase === "TRANSIENT_FAILURE" ||
+		connectionState.phase === "SHUTDOWN"
+	)
+		return;
+	connectionAbort.abort();
+	setConnectionState({ phase: "TRANSIENT_FAILURE" });
+	retryTimer = setTimeout(connect, connectionBackoff.next());
 }
 
 export async function getClient(): Promise<Client<typeof ClientService>> {
-	stopped = false;
-	if (connectionAbort.signal.aborted) connectionAbort = new AbortController();
-	if (!session) {
-		const pending = open(connectionAbort);
-		session = pending;
-		void pending.catch(() => {
-			if (session === pending) session = null;
-		});
-	}
-	return (await session).client;
-}
-
-export function refreshClient(failedClient?: Client<typeof ClientService>) {
-	if (failedClient && current?.client !== failedClient) return;
-	const previous = current;
-	current = null;
-	session = null;
-	connectionAbort.abort();
-	connectionAbort = new AbortController();
-	if (previous) for (const listener of connectionListeners) listener(false);
+	if (connectionState.phase === "IDLE") connect();
+	if (connectionState.phase === "READY") return connectionState.session.client;
+	if (connectionState.phase !== "CONNECTING")
+		throw new Error(`Daemon connection is ${connectionState.phase}`);
+	return (await connectionState.pending).client;
 }
 
 export type StateValues = {
@@ -211,6 +291,8 @@ function queueStateOperation(
 function startState(stream: StateStream, target: string) {
 	const entry = states.get(target);
 	if (!entry) return;
+	const terminalInputId =
+		entry.kind === "terminal" ? crypto.randomUUID() : undefined;
 	queueStateOperation(target, () =>
 		stream.client
 			.startStateSubscription({
@@ -218,7 +300,15 @@ function startState(stream: StateStream, target: string) {
 				target: entry.kind,
 				args: entry.args,
 				version: entry.version,
-				terminalInputId: entry.terminalInputId,
+				terminalInputId,
+			})
+			.then(() => {
+				if (
+					terminalInputId &&
+					states.get(target) === entry &&
+					stateStream === stream
+				)
+					entry.terminalInputId = terminalInputId;
 			})
 			.catch((error) => {
 				if (states.get(target) !== entry || stateStream !== stream) return;
@@ -233,10 +323,9 @@ function startState(stream: StateStream, target: string) {
 }
 
 function ensureStateStream() {
-	if (stateTask || stopped || !states.size) return;
+	if (stateTask || connectionState.phase === "SHUTDOWN" || !states.size) return;
 	stateTask = (async () => {
-		const backoff = createConnectionBackoff();
-		while (!stopped && states.size) {
+		while (connectionState.phase !== "SHUTDOWN" && states.size) {
 			let client: Client<typeof ClientService> | undefined;
 			const abort = new AbortController();
 			stateAbort = abort;
@@ -247,6 +336,7 @@ function ensureStateStream() {
 			};
 			try {
 				client = await getClient();
+				connectionBackoff.attemptStarted();
 				const stream = { client, id: crypto.randomUUID() };
 				alive();
 				for await (const event of client.openStateStream(
@@ -277,7 +367,7 @@ function ensureStateStream() {
 						receiver(value.current as never);
 				}
 			} catch (error) {
-				if (stopped) break;
+				if (getConnectionState() === "SHUTDOWN") break;
 				if (abort.signal.reason !== IDLE && abort.signal.reason !== RETRY)
 					console.debug("State stream ended", error);
 			} finally {
@@ -286,23 +376,16 @@ function ensureStateStream() {
 				if (stateAbort === abort) stateAbort = null;
 			}
 			if (abort.signal.reason === IDLE) continue;
-			if (!stopped && states.size) {
-				if (abort.signal.reason !== RETRY) refreshClient(client);
-				const delay = new AbortController();
-				stateAbort = delay;
-				await new Promise<void>((resolve) => {
-					const timer = setTimeout(resolve, backoff.next());
-					delay.signal.addEventListener(
-						"abort",
-						() => {
-							clearTimeout(timer);
-							resolve();
-						},
-						{ once: true },
-					);
-				});
-				if (stateAbort === delay) stateAbort = null;
-				if (!stopped && states.size) backoff.attemptStarted();
+			if (abort.signal.reason === RETRY) {
+				await new Promise((resolve) =>
+					setTimeout(resolve, connectionBackoff.next()),
+				);
+				continue;
+			}
+			if (getConnectionState() !== "SHUTDOWN" && states.size) {
+				if (client) failConnection(client);
+				if (connectionState.phase === "TRANSIENT_FAILURE")
+					await waitForConnectionChange("TRANSIENT_FAILURE");
 			}
 		}
 	})().finally(() => {
@@ -315,7 +398,6 @@ export function subscribeState<K extends keyof StateValues>(
 	input: StateTarget<K>,
 	onValue: (value: StateValues[K]) => void,
 	onError?: (error: unknown) => void,
-	terminalInputId?: string,
 ) {
 	const kind = typeof input === "string" ? input : input.kind;
 	const args = typeof input === "string" ? [] : input.args;
@@ -326,21 +408,18 @@ export function subscribeState<K extends keyof StateValues>(
 		entry = {
 			kind,
 			args,
-			terminalInputId,
 			receivers: new Set(),
 			errors: new Set(),
 		};
 		states.set(target, entry);
 		if (stateStream) startState(stateStream, target);
 	} else if (kind === "terminal") {
-		if (terminalInputId) entry.terminalInputId = terminalInputId;
 		entry.version = undefined;
 		if (stateStream) startState(stateStream, target);
 	} else if (entry.value) onValue(entry.value.current as StateValues[K]);
 	entry.receivers.add(receiver);
 	if (onError) entry.errors.add(onError);
-	stopped = false;
-	ensureStateStream();
+	if (connectionState.phase !== "SHUTDOWN") ensureStateStream();
 	return () => {
 		const current = states.get(target);
 		if (current !== entry) return;
@@ -366,26 +445,14 @@ export function subscribeState<K extends keyof StateValues>(
 	};
 }
 
-export function onClientConnection(listener: (connected: boolean) => void) {
-	connectionListeners.add(listener);
-	return () => {
-		connectionListeners.delete(listener);
-	};
-}
-
 export async function subscribeTerminalState(
 	args: {
 		owner: import("./terminalSurfaceStream").TerminalSurfaceOwner;
-		attachmentId: string;
 	},
 	listener: (item: TerminalSurfaceStreamItem) => void,
 	onClosed: () => void,
 ): Promise<() => Promise<void>> {
-	const owner = args.owner;
-	const targetArgs =
-		owner.kind === "session"
-			? [owner.workspacePath, owner.sessionId]
-			: [owner.workspacePath];
+	const targetArgs = terminalTargetArgs(args.owner);
 	let release = () => {};
 	let initialized = false;
 	await new Promise<void>((resolve, reject) => {
@@ -400,13 +467,20 @@ export async function subscribeTerminalState(
 				reject(error);
 				if (initialized) onClosed();
 			},
-			args.attachmentId,
 		);
 	}).catch((error) => {
 		release();
 		throw error;
 	});
+	await stateOperations.get(stateTargetKey("terminal", targetArgs));
 	return async () => release();
+}
+
+export function currentTerminalInputId(
+	owner: import("./terminalSurfaceStream").TerminalSurfaceOwner,
+) {
+	const args = terminalTargetArgs(owner);
+	return states.get(stateTargetKey("terminal", args))?.terminalInputId ?? null;
 }
 
 export async function reportTerminalProcessed(
@@ -417,17 +491,15 @@ export async function reportTerminalProcessed(
 	if (!stream) return;
 	await stream.client.reportTerminalProcessed({
 		clientId: stream.id,
-		args:
-			owner.kind === "session"
-				? [owner.workspacePath, owner.sessionId]
-				: [owner.workspacePath],
+		args: terminalTargetArgs(owner),
 		units,
 	});
 }
 
 export async function completeClientRestoration(generation: number) {
 	await getClient();
-	const active = current;
+	const active =
+		connectionState.phase === "READY" ? connectionState.session : null;
 	if (!active) throw new Error("Daemon connection is unavailable");
 	await invoke("complete_desktop_restoration", {
 		launchId: active.endpoint.launchId,
@@ -436,14 +508,37 @@ export async function completeClientRestoration(generation: number) {
 	});
 }
 
-window.addEventListener("pagehide", () => {
-	stopped = true;
+function terminalTargetArgs(
+	owner: import("./terminalSurfaceStream").TerminalSurfaceOwner,
+) {
+	return owner.kind === "session"
+		? [owner.workspacePath, owner.sessionId]
+		: [owner.workspacePath];
+}
+
+window.addEventListener("pagehide", (event) => {
+	if (connectionState.phase === "SHUTDOWN") return;
+	clearTimeout(retryTimer);
 	connectionAbort.abort();
-	session = null;
-	current = null;
-	connectionListeners.clear();
-	states.clear();
 	stateAbort?.abort();
+	if (event.persisted) {
+		if (
+			connectionState.phase === "READY" ||
+			connectionState.phase === "CONNECTING"
+		)
+			setConnectionState({ phase: "TRANSIENT_FAILURE" });
+	} else {
+		setConnectionState({ phase: "SHUTDOWN" });
+		states.clear();
+	}
+});
+
+window.addEventListener("pageshow", (event) => {
+	if (!event.persisted || connectionState.phase === "SHUTDOWN") return;
+	connectionAbort = new AbortController();
+	connectionBackoff = createConnectionBackoff();
+	if (connectionState.phase === "TRANSIENT_FAILURE") connect();
+	ensureStateStream();
 });
 
 export function firstState<K extends keyof StateValues>(

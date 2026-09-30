@@ -68,6 +68,30 @@ describe("useDiffOperations", () => {
 		});
 	});
 
+	it("unstage groupの失敗を通知する", async () => {
+		mockInvoke.mockRejectedValue(new Error("unstage failed"));
+		const notice = vi.fn();
+		window.addEventListener("releash-client-error", notice);
+		try {
+			const { result } = renderHook(() =>
+				useDiffOperations({
+					rootPath: "/repo",
+					filePath: "file.ts",
+					section: "staged",
+					base: "head",
+				}),
+			);
+			await act(async () => {
+				await result.current.handleUnstageGroup("g:0");
+			});
+			expect((notice.mock.calls[0][0] as CustomEvent<string>).detail).toBe(
+				"unstage failed",
+			);
+		} finally {
+			window.removeEventListener("releash-client-error", notice);
+		}
+	});
+
 	it("does nothing when target identifiers are missing", async () => {
 		const { result } = renderHook(() =>
 			useDiffOperations({
@@ -102,9 +126,11 @@ describe("useDiffOperations", () => {
 		expect(mockInvoke).not.toHaveBeenCalled();
 	});
 
-	it("staleなreview groupの拒否は警告だけにし次の版の配信を待つ", async () => {
+	it("staleなreview groupの拒否を表示し次の版の配信を待つ", async () => {
 		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
 		const error = vi.spyOn(console, "error").mockImplementation(() => {});
+		const notice = vi.fn((_event: Event) => {});
+		window.addEventListener("releash-client-error", notice);
 		mockInvoke.mockRejectedValue({
 			code: "STALE_REVIEW_GROUP_TARGET",
 			message: "review group target stale: g:old:0",
@@ -125,6 +151,11 @@ describe("useDiffOperations", () => {
 
 		expect(warn).toHaveBeenCalledOnce();
 		expect(error).not.toHaveBeenCalled();
+		expect(notice).toHaveBeenCalledOnce();
+		expect((notice.mock.calls[0][0] as CustomEvent<string>).detail).toBe(
+			"review group target stale: g:old:0",
+		);
+		window.removeEventListener("releash-client-error", notice);
 		warn.mockRestore();
 		error.mockRestore();
 	});

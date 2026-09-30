@@ -57,6 +57,29 @@ describe("useSettings", () => {
 		expect(result.current.loaded).toBe(false);
 	});
 
+	it("crash reporting設定の保存失敗を画面へ通知する", async () => {
+		const notice = vi.fn();
+		window.addEventListener("releash-client-error", notice);
+		try {
+			vi.mocked(invoke).mockRejectedValueOnce(
+				new Error("settings write failed"),
+			);
+			const { result } = renderHook(() => useSettings());
+			act(() =>
+				result.current.updateSettings({
+					...result.current.settings,
+					enableCrashReporting: !result.current.settings.enableCrashReporting,
+				}),
+			);
+			await waitFor(() => expect(notice).toHaveBeenCalledOnce());
+			expect((notice.mock.calls[0][0] as CustomEvent<string>).detail).toBe(
+				"settings write failed",
+			);
+		} finally {
+			window.removeEventListener("releash-client-error", notice);
+		}
+	});
+
 	it("should load settings from localStorage", () => {
 		localStorage.setItem(
 			"releash-settings",

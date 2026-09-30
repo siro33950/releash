@@ -71,6 +71,34 @@ fn test_ターミナル入力_write失敗をtransport共通の固定文言へ変
 }
 
 #[test]
+fn test_失効した入力attachmentだけが機械可読codeを持つ() {
+    use crate::adaptor::presenter::connect::ConnectFailure;
+
+    // Given
+    let stale = terminal_write_error(UsecaseError::StaleAttachment);
+    let ordinary = terminal_write_error(UsecaseError::Gateway("write failed".into()));
+
+    // When
+    let stale_code = stale.connect_code();
+    let response: crate::adaptor::presenter::client::CommandFailure = stale.into();
+
+    // Then
+    assert_eq!(stale_code, connectrpc::ErrorCode::FailedPrecondition);
+    assert_eq!(response.kind, connectrpc::ErrorCode::FailedPrecondition);
+    assert_eq!(
+        crate::adaptor::presenter::client::from_value(response.detail).unwrap(),
+        serde_json::json!({
+            "code": "STALE_TERMINAL_ATTACHMENT",
+            "message": "Terminal input could not be sent. Try again."
+        })
+    );
+    assert_eq!(
+        serde_json::to_value(ordinary).unwrap(),
+        serde_json::json!("Terminal input could not be sent. Try again.")
+    );
+}
+
+#[test]
 fn test_ターミナル画面変形_resize失敗をtransport共通の固定文言へ変換する() {
     // Given / When
     let gateway_error = terminal_resize_error(UsecaseError::Gateway(

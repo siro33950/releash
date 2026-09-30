@@ -21,6 +21,17 @@ describe("telemetry", () => {
 		});
 	});
 
+	it("計測の送信失敗をログに残す", async () => {
+		const error = new Error("telemetry unavailable");
+		const log = vi.spyOn(console, "error").mockImplementation(() => {});
+		vi.mocked(invoke).mockRejectedValueOnce(error);
+		trackEvent("test_event");
+		await vi.waitFor(() =>
+			expect(log).toHaveBeenCalledWith("Telemetry failed", error),
+		);
+		log.mockRestore();
+	});
+
 	it("performance telemetry disabled でも usage event 転送は frontend でゲートしない", async () => {
 		await setPerformanceTelemetryEnabled(false);
 		vi.clearAllMocks();

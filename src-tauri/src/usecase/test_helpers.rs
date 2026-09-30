@@ -2,9 +2,24 @@ use crate::domain::daemon_supervision::{DaemonExit, DaemonProcessPort, Failure, 
 use crate::usecase::{
     app_config::query_service::DesktopSettingsDto,
     client_connection::ClientConnectionDto,
-    daemon_supervision::{DaemonConnection, DaemonGateway},
+    daemon_supervision::{
+        DaemonConnection, DaemonGateway, DaemonStatus, DaemonStatusOutput, DaemonSupervisionUsecase,
+    },
 };
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::Arc;
+
+struct NoopStatusOutput;
+
+impl DaemonStatusOutput for NoopStatusOutput {
+    fn start(&self, _: String, _: DaemonStatus) {}
+    fn stop(&self, _: &str) {}
+    fn publish(&self, _: DaemonStatus) {}
+}
+
+pub(crate) fn start_supervision(gateway: Arc<dyn DaemonGateway>) -> Arc<DaemonSupervisionUsecase> {
+    DaemonSupervisionUsecase::start(gateway, Arc::new(NoopStatusOutput))
+}
 
 #[derive(Default)]
 pub(crate) struct FakeDaemon {

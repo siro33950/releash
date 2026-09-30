@@ -19,9 +19,13 @@ const failed = {
 describe("B-071 safe startup surface", () => {
 	beforeEach(() => {
 		vi.mocked(invoke).mockReset();
-		vi.mocked(invoke).mockImplementation(async (command: string) => {
-			if (command === "get_daemon_status")
-				return { phase: "ready", connectionGeneration: 1 };
+		vi.mocked(invoke).mockImplementation(async (command: string, args) => {
+			if (command === "subscribe_daemon_status") {
+				(
+					args as { channel: { onmessage?: (value: unknown) => void } }
+				).channel.onmessage?.({ phase: "ready", connectionGeneration: 1 });
+				return;
+			}
 			throw new Error(`unexpected shell command: ${command}`);
 		});
 		vi.mocked(invokeClient).mockReset();
@@ -69,8 +73,23 @@ describe("B-071 safe startup surface", () => {
 		expect(
 			vi
 				.mocked(invoke)
-				.mock.calls.every(([command]) => command === "get_daemon_status"),
+				.mock.calls.every(([command]) => command === "subscribe_daemon_status"),
 		).toBe(true);
+	});
+
+	it("Quitの呼び出し失敗を画面に表示する", async () => {
+		vi.mocked(subscribeState).mockImplementation((target, receive) => {
+			if (
+				(typeof target === "string" ? target : target.kind) ===
+				"startup-outcome"
+			)
+				receive(failed as never);
+			return () => {};
+		});
+		vi.mocked(invokeClient).mockRejectedValue(new Error("Quit failed"));
+		render(<App />);
+		await userEvent.click(await screen.findByRole("button", { name: "Quit" }));
+		expect(await screen.findByRole("alert")).toHaveTextContent("Quit failed");
 	});
 
 	it("does not synthesize a failure kind, description, correlation, or Quit when the Rust outcome is unavailable", async () => {

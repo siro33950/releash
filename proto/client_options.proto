@@ -41,4 +41,5 @@ extend google.protobuf.ServiceOptions {
   repeated ReconnectStatusCode reconnect_status_code = 51031;
   optional uint32 state_stream_silence_ms = 51032;
   optional uint32 default_timeout_ms = 51033;
+  optional uint32 min_connect_timeout_ms = 51034;
 }

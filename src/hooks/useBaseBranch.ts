@@ -1,5 +1,6 @@
 import { useCallback } from "react";
 import { invokeClient as invoke } from "@/lib/client";
+import { logClientError } from "@/lib/clientErrorNotice";
 import { useStateSubscription } from "./useStateSubscription";
 
 export function useBaseBranch(
@@ -26,9 +27,7 @@ export function useBaseBranch(
 				repoPath: rootPath,
 				branchName,
 				base: base || null,
-			}).catch((error) => {
-				console.error("Failed to set base branch:", error);
-			});
+			}).catch((error) => logClientError("Failed to set base branch:", error));
 		},
 		[rootPath, branchName],
 	);

@@ -290,7 +290,9 @@ impl ConnectFailure for crate::usecase::state_subscription::SubscriptionError {
 impl ConnectFailure for crate::usecase::terminal_surface::error::UsecaseError {
     fn connect_code(&self) -> connectrpc::ErrorCode {
         match self {
-            Self::OwnerConflict => connectrpc::ErrorCode::FailedPrecondition,
+            Self::OwnerConflict | Self::StaleAttachment => {
+                connectrpc::ErrorCode::FailedPrecondition
+            }
             Self::Gateway(_) | Self::PtySpawn { .. } | Self::OtherSpawnFailure { .. } => {
                 connectrpc::ErrorCode::Internal
             }

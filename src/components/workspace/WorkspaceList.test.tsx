@@ -626,6 +626,51 @@ describe("WorkspaceList", () => {
 		window.removeEventListener("agent-session-refresh", changed);
 	});
 
+	it("WorkflowHistoryからの復元失敗を画面に通知する", async () => {
+		mocks.treeStateOverrides.set("/repo/wt", {
+			nodes: [],
+			workflowHistory: [
+				{
+					executionId: "wf-1",
+					worktreePath: "/repo/wt",
+					title: "Release workflow",
+					status: "completed",
+					updatedAt: 1,
+					archivedAt: 2,
+					archiveReason: "manual",
+				},
+			],
+		});
+		mockResponses((command) =>
+			command === "restore_workspace_workflow_execution"
+				? Promise.reject(new Error("restore failed"))
+				: Promise.resolve(null),
+		);
+		const notice = vi.fn();
+		window.addEventListener("releash-client-error", notice);
+		try {
+			renderWorkspaceList();
+			const user = userEvent.setup();
+			await user.click(
+				screen.getByRole("button", { name: "Open menu for feature" }),
+			);
+			await user.hover(
+				screen.getByRole("menuitem", { name: "WorkflowHistory" }),
+			);
+			const workflow = await screen.findByRole("menuitem", {
+				name: "Release workflow",
+			});
+			act(() => workflow.focus());
+			await user.keyboard("{Enter}");
+			await waitFor(() => expect(notice).toHaveBeenCalledOnce());
+			expect((notice.mock.calls[0][0] as CustomEvent<string>).detail).toBe(
+				"restore failed",
+			);
+		} finally {
+			window.removeEventListener("releash-client-error", notice);
+		}
+	});
+
 	it("Standalone Session Nodeの3分類は色とpulseで表現する", () => {
 		mocks.treeStateOverrides.set("/repo/wt", {
 			nodes: [

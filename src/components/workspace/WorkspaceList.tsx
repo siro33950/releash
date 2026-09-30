@@ -51,6 +51,7 @@ import {
 } from "@/hooks/useWorkspaceList";
 import { useWorkspaceTreeNodes } from "@/hooks/useWorkspaceTreeNodes";
 import { firstState, invokeClient as invoke } from "@/lib/client";
+import { showClientError } from "@/lib/clientErrorNotice";
 import { getErrorMessage } from "@/lib/errorMessage";
 import { trackEvent } from "@/lib/telemetry";
 import {
@@ -877,7 +878,7 @@ function WorktreeTreeItem({
 			await invoke("restore_workspace_workflow_execution", {
 				worktreePath: branch.worktree_path,
 				executionId: workflow.executionId,
-			});
+			}).catch(showClientError);
 		},
 		[branch.worktree_path],
 	);

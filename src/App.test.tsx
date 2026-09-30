@@ -27,16 +27,26 @@ vi.mock("@/components/panels/TerminalPanel", () => ({
 vi.mock("@/components/panels/ReviewPanel", () => ({ ReviewPanel: () => null }));
 
 const mockInvoke = vi.mocked(invokeClient);
+let statusChannel: {
+	onmessage?: (status: {
+		phase: string;
+		connectionGeneration?: number;
+	}) => void;
+} | null;
 
 beforeEach(() => {
+	statusChannel = null;
 	mockInvoke.mockClear();
 	vi.mocked(client.firstState).mockClear();
 	localStorage.clear();
-	vi.mocked(invoke).mockImplementation(async (command) => {
+	vi.mocked(invoke).mockImplementation(async (command, args) => {
 		if (command === "check_desktop_update") return null;
-		return command === "get_daemon_status"
-			? { phase: "ready" }
-			: { type: "ready" };
+		if (command === "subscribe_daemon_status") {
+			statusChannel = (args as { channel: typeof statusChannel }).channel;
+			statusChannel?.onmessage?.({ phase: "ready" });
+			return;
+		}
+		return { type: "ready" };
 	});
 	mockInvoke.mockImplementation(() =>
 		Promise.reject(new Error("not in a git repo")),
@@ -44,6 +54,40 @@ beforeEach(() => {
 });
 
 describe("App", () => {
+	it("起動失敗画面のQuit失敗を画面に通知する", async () => {
+		const subscribe = vi.mocked(client.subscribeState).getMockImplementation();
+		vi.mocked(client.subscribeState).mockImplementation(
+			(target, receive, error) => {
+				if (target === "startup-outcome") {
+					receive({
+						type: "failed",
+						kind: "storage_unavailable",
+						safeDescription: "Storage unavailable",
+						correlationId: "test",
+						retryOnNextLaunch: true,
+						actions: [],
+					} as never);
+					return () => {};
+				}
+				return subscribe?.(target, receive, error) ?? (() => {});
+			},
+		);
+		mockInvoke.mockRejectedValue(new Error("quit failed"));
+		try {
+			render(
+				<TooltipProvider>
+					<App />
+				</TooltipProvider>,
+			);
+			await userEvent
+				.setup()
+				.click(await screen.findByRole("button", { name: "Quit" }));
+			expect(await screen.findByRole("alert")).toHaveTextContent("quit failed");
+		} finally {
+			if (subscribe)
+				vi.mocked(client.subscribeState).mockImplementation(subscribe);
+		}
+	});
 	it.each(["not_sent", "unknown"] as const)(
 		"通信状態%sと再接続メッセージを画面に表示しない",
 		async (state) => {
@@ -84,12 +128,16 @@ describe("App", () => {
 	it("Repository一覧の初回取得失敗でも画面の復元を完了し更新を操作できる", async () => {
 		vi.mocked(invoke).mockClear();
 		let restored = false;
-		vi.mocked(invoke).mockImplementation(async (command) => {
-			if (command === "get_daemon_status")
-				return {
+		vi.mocked(invoke).mockImplementation(async (command, args) => {
+			if (command === "check_desktop_update") return null;
+			if (command === "subscribe_daemon_status") {
+				statusChannel = (args as { channel: typeof statusChannel }).channel;
+				statusChannel?.onmessage?.({
 					phase: restored ? "ready" : "restoring",
 					connectionGeneration: 1,
-				};
+				});
+				return;
+			}
 			return { type: "ready" };
 		});
 		const subscribe = vi.mocked(client.subscribeState).getMockImplementation();
@@ -106,6 +154,7 @@ describe("App", () => {
 			.spyOn(client, "completeClientRestoration")
 			.mockImplementation(async () => {
 				restored = true;
+				statusChannel?.onmessage?.({ phase: "ready", connectionGeneration: 1 });
 			});
 		render(
 			<TooltipProvider>

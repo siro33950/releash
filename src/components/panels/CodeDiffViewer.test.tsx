@@ -1,5 +1,5 @@
-import { render } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { render, screen } from "@testing-library/react";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { invokeClient as invoke } from "@/lib/client";
 import type { Hunk } from "@/lib/computeHunks";
 import { CodeDiffViewer } from "./CodeDiffViewer";
@@ -17,6 +17,23 @@ vi.mock("./ShikiDiffViewer", () => ({
 }));
 
 describe("CodeDiffViewer", () => {
+	beforeEach(() => mocks.shikiDiffViewer.mockClear());
+	it("言語判定に失敗したときに失敗を表示する", async () => {
+		vi.mocked(invoke).mockRejectedValueOnce(new Error("language unavailable"));
+		render(
+			<CodeDiffViewer
+				originalContent="before"
+				modifiedContent="after"
+				diffMode="inline"
+				filePath="src/app.ts"
+				hunks={[]}
+			/>,
+		);
+		expect(await screen.findByRole("alert")).toHaveTextContent(
+			"language unavailable",
+		);
+	});
+
 	it("passes provided hunks through to ShikiDiffViewer without computing them in frontend", () => {
 		const hunks: Hunk[] = [
 			{

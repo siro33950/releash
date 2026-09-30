@@ -85,6 +85,29 @@ describe("TerminalPanel", () => {
 		});
 	});
 
+	it("pathの書き込み失敗を通知する", async () => {
+		const notice = vi.fn();
+		window.addEventListener("releash-client-error", notice);
+		const log = vi.spyOn(console, "error").mockImplementation(() => {});
+		try {
+			mockInvoke.mockRejectedValueOnce(new Error("terminal write failed"));
+			const { container } = render(<TerminalPanel />);
+			fireEvent.drop(
+				container.querySelector('[role="application"]') as Element,
+				{
+					dataTransfer: { getData: () => "/tmp/file.txt" },
+				},
+			);
+			await vi.waitFor(() => expect(notice).toHaveBeenCalledOnce());
+			expect((notice.mock.calls[0][0] as CustomEvent<string>).detail).toBe(
+				"terminal write failed",
+			);
+		} finally {
+			window.removeEventListener("releash-client-error", notice);
+			log.mockRestore();
+		}
+	});
+
 	it("Terminal process が実行中でない場合は drop path を書き込まない", () => {
 		mockIsRunningRef.current = false;
 		const { container } = render(<TerminalPanel />);

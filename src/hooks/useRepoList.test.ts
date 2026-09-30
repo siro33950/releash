@@ -67,4 +67,23 @@ describe("useRepoList", () => {
 			path: "/workspace/project",
 		});
 	});
+
+	it.each(["addRepo", "removeRepo", "initFromCwd"] as const)(
+		"%sの失敗を画面に通知する",
+		async (operation) => {
+			const notice = vi.fn();
+			window.addEventListener("releash-client-error", notice);
+			try {
+				mockInvoke.mockRejectedValueOnce(new Error(`${operation} failed`));
+				const { result } = renderHook(() => useRepoList());
+				act(() => result.current[operation]("/repo"));
+				await vi.waitFor(() => expect(notice).toHaveBeenCalledOnce());
+				expect((notice.mock.calls[0][0] as CustomEvent<string>).detail).toBe(
+					`${operation} failed`,
+				);
+			} finally {
+				window.removeEventListener("releash-client-error", notice);
+			}
+		},
+	);
 });

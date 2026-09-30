@@ -17,6 +17,11 @@ fn map_spawn_error(error: UsecaseError) -> ProviderAgentTerminalSpawnError {
         UsecaseError::Gateway(error) | UsecaseError::OtherSpawnFailure { error } => {
             ProviderAgentTerminalSpawnError::OtherSpawnFailure { error }
         }
+        error @ UsecaseError::StaleAttachment => {
+            ProviderAgentTerminalSpawnError::OtherSpawnFailure {
+                error: error.to_string(),
+            }
+        }
     }
 }
 

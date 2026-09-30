@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef } from "react";
 import { invokeClient as invoke, subscribeState } from "@/lib/client";
+import { logClientError } from "@/lib/clientErrorNotice";
 import {
 	type WorkspaceState,
 	worktreeNameFromPath,
@@ -36,9 +37,7 @@ export function useWorkspaceStateCache(): UseWorkspaceStateCacheReturn {
 					dirtyRef.current.delete(rootPath);
 				}
 			})
-			.catch((e) => {
-				console.error("Failed to save workspace state:", e);
-			});
+			.catch((e) => logClientError("Failed to save workspace state:", e));
 	}, []);
 
 	const loadState = useCallback(

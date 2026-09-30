@@ -52,7 +52,7 @@ const bundle = await build({
     stdin: { contents: 'export * from "./src/lib/client.ts";', resolveDir: process.cwd() },
     bundle: true, platform: "node", format: "esm", write: false,
 });
-const {firstState, subscribeState, invokeClient, completeClientRestoration, refreshClient} = await import(`data:text/javascript;base64,${Buffer.from(`${bundle.outputFiles[0].text}\n//# sourceURL=releash-client-fixture.mjs`).toString("base64")}`);
+const {firstState, subscribeState, invokeClient, completeClientRestoration} = await import(`data:text/javascript;base64,${Buffer.from(`${bundle.outputFiles[0].text}\n//# sourceURL=releash-client-fixture.mjs`).toString("base64")}`);
 async function waitFor(predicate) {
     const deadline = Date.now() + 15_000;
     while (!(await predicate())) { assert.ok(Date.now() < deadline, "desktop recovery deadline"); await setTimeout(10); }
@@ -93,7 +93,6 @@ try {
         // When
         await invokeHost("restart");
         refreshedEditor = undefined;
-        refreshClient();
         await waitFor(() => generations.size === 2 && refreshedEditor);
         await restore();
         assert.equal(refreshedEditor.selected, "desktop-recovery");

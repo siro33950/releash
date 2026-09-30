@@ -6,6 +6,7 @@ import {
 	useState,
 } from "react";
 import { invokeClient as invoke } from "@/lib/client";
+import { showClientError } from "@/lib/clientErrorNotice";
 import {
 	type AppSettings,
 	DEFAULT_SETTINGS,
@@ -131,7 +132,7 @@ export function useSettings() {
 			prevCrashReporting.current = next.enableCrashReporting;
 			invoke("update_crash_reporting", {
 				enabled: next.enableCrashReporting,
-			}).catch(() => {});
+			}).catch(showClientError);
 		}
 		setSettings(next);
 	}, []);

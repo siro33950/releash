@@ -1,9 +1,11 @@
-import { describe, expect, it } from "vitest";
+import { renderHook } from "@testing-library/react";
+import { describe, expect, it, vi } from "vitest";
 import {
 	type GitState,
 	gitReducer,
 	initialUIState,
 	uiReducer,
+	useWorktreeGitActions,
 } from "./useWorktreeGitActions";
 
 describe("uiReducer", () => {
@@ -39,6 +41,42 @@ describe("uiReducer", () => {
 		expect(state.newBranchName).toBe("feat/new");
 	});
 });
+
+it.each(["stage", "unstage", "createBranch"] as const)(
+	"メニューの%s失敗はダイアログ用errorだけに渡す",
+	async (operation) => {
+		const failure = vi.fn().mockRejectedValue(new Error(`${operation} failed`));
+		const dispatchGit = vi.fn();
+		const notice = vi.fn();
+		window.addEventListener("releash-client-error", notice);
+		try {
+			const { result } = renderHook(() =>
+				useWorktreeGitActions({
+					rootPath: "/repo",
+					stage: operation === "stage" ? failure : vi.fn(),
+					unstage: operation === "unstage" ? failure : vi.fn(),
+					createBranch: operation === "createBranch" ? failure : vi.fn(),
+					refreshGit: vi.fn(),
+					newBranchName: "feature",
+					dispatchGit,
+					dispatchUI: vi.fn(),
+				}),
+			);
+			await (operation === "stage"
+				? result.current.handleGitStageAll()
+				: operation === "unstage"
+					? result.current.handleGitUnstageAll()
+					: result.current.executeCreateBranch());
+			expect(dispatchGit).toHaveBeenCalledExactlyOnceWith({
+				type: "SET_GIT_ERROR",
+				error: `${operation} failed`,
+			});
+			expect(notice).not.toHaveBeenCalled();
+		} finally {
+			window.removeEventListener("releash-client-error", notice);
+		}
+	},
+);
 
 describe("gitReducer", () => {
 	const initialGitState: GitState = {

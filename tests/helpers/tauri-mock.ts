@@ -70,6 +70,9 @@ declare global {
 export async function setupTauriMock(page: Page, config: MockConfig) {
     const clientRequests: Array<{ request_id: string; command: string; args: Record<string, unknown> }> = [];
     const attachments = new Map<string, { output: ReadableStreamDefaultController<Message>; args: string[]; clientId: string }>();
+    const terminalIngress = new Map<string, { next: number; pending: Map<number, Record<string, unknown>> }>();
+    const terminalDelivered: Array<{ attachmentId: string; sequence: number; data: string }> = [];
+    const terminalFailures: Array<{ attachmentId: string; sequence: number; data: string }> = [];
     const stateStreams = new Map<string, ReadableStreamDefaultController<Message>>();
     const subscriptions = new Map<string, Map<string, { sequence: bigint; json: string }>>();
     const stateRequests: string[] = [];
@@ -101,6 +104,10 @@ export async function setupTauriMock(page: Page, config: MockConfig) {
             stateStreams.get(clientId)?.enqueue(create(StateSubscriptionEventSchema, { target: parseTarget(target).kind, args: parseTarget(target).args, version: { epoch: "fixture", sequence: current.sequence }, event: { case: "change", value: { payload: statePayload(target, value) } } }));
         }
     }
+    function disconnectStateStreams() {
+        for (const stream of stateStreams.values()) stream.error(new Error("connection lost"));
+        stateStreams.clear();
+    }
     await page.exposeFunction("__releashTerminalEvent", (attachmentId: string, item: TerminalSurfaceStreamItem) => {
         const attachment = attachments.get(attachmentId);
         if (!attachment) return;
@@ -113,14 +120,31 @@ export async function setupTauriMock(page: Page, config: MockConfig) {
         stream.enqueue(create(StateSubscriptionEventSchema, {target: "terminal", args, version: {epoch: "fixture", sequence: BigInt(sequence)}, event: item.type === "snapshot" ? {case: "snapshot", value: payload} : {case: "change", value: {delta: true, payload}}}));
 
     });
-    const execute = async (command: string, args: Record<string, unknown>) => {
-        clientRequests.push({ request_id: crypto.randomUUID(), command, args });
+    const executeInBrowser = async (command: string, args: Record<string, unknown>) => {
         const outcome = await page.evaluate(async ({command, args}) => {
             try { return { result: await window.__RELEASH_BACKEND__!.execute(command, args) }; }
             catch (error) { return { error: error instanceof Error ? error.message : error }; }
         }, {command, args});
         if ("error" in outcome) throw new ConnectError("Command failed", Code.FailedPrecondition, undefined, [{ desc: CommandErrorSchema, value: fromJson(CommandErrorSchema, clientJson(CommandErrorSchema, outcome.error, true)) }]);
         return outcome.result;
+    };
+    const execute = async (command: string, args: Record<string, unknown>) => {
+        clientRequests.push({ request_id: crypto.randomUUID(), command, args });
+        if (command !== "write_terminal_surface") return executeInBrowser(command, args);
+        const attachmentId = String(args.attachmentId);
+        const ingress = terminalIngress.get(attachmentId);
+        const sequence = Number(args.sequence);
+        if (!ingress) {
+            terminalFailures.push({ attachmentId, sequence, data: String(args.data) });
+            throw new ConnectError("Stale terminal attachment", Code.FailedPrecondition);
+        }
+        if (sequence >= ingress.next) ingress.pending.set(sequence, args);
+        while (ingress.pending.has(ingress.next)) {
+            const input = ingress.pending.get(ingress.next)!;
+            ingress.pending.delete(ingress.next);
+            terminalDelivered.push({ attachmentId, sequence: ingress.next++, data: String(input.data) });
+            await executeInBrowser(command, input);
+        }
     };
     const router = createConnectRouter();
     for (const method of ClientService.methods) {
@@ -131,7 +155,7 @@ export async function setupTauriMock(page: Page, config: MockConfig) {
                 const stop = () => controller.close();
                 context.signal.addEventListener("abort", stop, { once: true });
                 try { yield create(StateSubscriptionEventSchema, { event: { case: "ready", value: {} } }); yield* stream; }
-                finally { for (const [id, value] of attachments) if (value.clientId === request.clientId) attachments.delete(id); subscriptions.delete(request.clientId); stateStreams.delete(request.clientId); context.signal.removeEventListener("abort", stop); }
+                finally { for (const [id, value] of attachments) if (value.clientId === request.clientId) { attachments.delete(id); terminalIngress.delete(id); } subscriptions.delete(request.clientId); stateStreams.delete(request.clientId); context.signal.removeEventListener("abort", stop); }
             });
             continue;
         }
@@ -146,8 +170,9 @@ export async function setupTauriMock(page: Page, config: MockConfig) {
                 stateRequests.push(target);
                 if (request.target === "terminal") {
                     const id = request.terminalInputId ?? request.clientId;
-                    for (const [previousId, value] of attachments) if (value.clientId === request.clientId && JSON.stringify(value.args) === JSON.stringify(request.args)) attachments.delete(previousId);
+                    for (const [previousId, value] of attachments) if (value.clientId === request.clientId && JSON.stringify(value.args) === JSON.stringify(request.args)) { attachments.delete(previousId); terminalIngress.delete(previousId); }
                     attachments.set(id, {output: stream, args: request.args, clientId: request.clientId});
+                    terminalIngress.set(id, { next: 0, pending: new Map() });
                     targets.set(target, {sequence: 0n, json: ""});
                     const owner = request.args.length === 2 ? {kind: "session", workspacePath: request.args[0], sessionId: request.args[1]} : {kind: "workspace", workspacePath: request.args[0]};
                     await execute("start_state_subscription", {owner, attachmentId: id});
@@ -164,7 +189,7 @@ export async function setupTauriMock(page: Page, config: MockConfig) {
         }
         if (method.name === "StopStateSubscription") { router.rpc(method, async (request) => {
             subscriptions.get(request.clientId)?.delete(stateKey(request.target, request.args));
-            for (const [id, value] of attachments) if (value.clientId === request.clientId && JSON.stringify(value.args) === JSON.stringify(request.args)) { attachments.delete(id); await execute("stop_state_subscription", {attachmentId: id}); }
+            if (request.target === "terminal") for (const [id, value] of attachments) if (value.clientId === request.clientId && JSON.stringify(value.args) === JSON.stringify(request.args)) { attachments.delete(id); terminalIngress.delete(id); await execute("stop_state_subscription", {attachmentId: id}); }
             return {};
         }); continue; }
         if (method.name === "ReportTerminalProcessed") { router.rpc(method, async request => { await execute("report_terminal_processed", {clientId: request.clientId, args: request.args, units: request.units}); return {}; }); continue; }
@@ -599,6 +624,11 @@ export async function setupTauriMock(page: Page, config: MockConfig) {
 				return value;
 			}
 
+			if (cmd === "subscribe_daemon_status") {
+				(args.channel as { onmessage?: (status: unknown) => void }).onmessage?.({ phase: "ready" });
+				return null;
+			}
+			if (cmd === "stop_daemon_status_subscription") return null;
 			if (cmd === "get_daemon_status") return { phase: "ready" };
 			if (cmd === "validate_daemon_connection") return null;
 			if (cmd === "get_login_item_status") return { enabled: false, requiresApproval: false, reason: null };
@@ -629,7 +659,7 @@ export async function setupTauriMock(page: Page, config: MockConfig) {
 				if (
 					!cmd.startsWith("plugin:") &&
 					![
-						"get_daemon_status", "retry_daemon", "quit_desktop", "restart_desktop", "validate_daemon_connection", "get_login_item_status", "open_login_item_settings", "install_cli", "set_login_item_enabled", "check_desktop_update", "install_desktop_update",
+						"get_daemon_status", "subscribe_daemon_status", "stop_daemon_status_subscription", "retry_daemon", "quit_desktop", "restart_desktop", "validate_daemon_connection", "get_login_item_status", "open_login_item_settings", "install_cli", "set_login_item_enabled", "check_desktop_update", "install_desktop_update",
 						"complete_desktop_restoration", "fail_desktop_restoration", "get_client_endpoint",
 						"set_menu_items_enabled",
 					].includes(cmd)
@@ -654,7 +684,7 @@ export async function setupTauriMock(page: Page, config: MockConfig) {
 				unregisterCallback(id),
 		};
 	}, config);
-	return { clientRequests, stateRequests, refreshStates };
+	return { clientRequests, stateRequests, refreshStates, disconnectStateStreams, terminalDelivered, terminalFailures };
 }
 
 /**

@@ -27,6 +27,7 @@ import { useReviewFileView } from "@/hooks/useReviewFileView";
 import { useReviewPanel } from "@/hooks/useReviewPanel";
 import { useReviewSnapshot } from "@/hooks/useReviewSnapshot";
 import { invokeClient as invoke } from "@/lib/client";
+import { logClientError, showClientError } from "@/lib/clientErrorNotice";
 import { isMarkdownFile } from "@/lib/markdownUtils";
 import { cn } from "@/lib/utils";
 import type { ThreadNavigationTarget } from "@/types/diffComment";
@@ -196,10 +197,12 @@ export function ReviewPanel({
 		return [...stagedTree, ...changesTree];
 	}, [diffBase, branchBaseTree, stagedTree, changesTree]);
 
-	const { fileNavigation, goToPrevFile, goToNextFile } = useFileNavigation(
-		navigationTree,
-		selectedFile,
-	);
+	const {
+		fileNavigation,
+		error: navigationError,
+		goToPrevFile,
+		goToNextFile,
+	} = useFileNavigation(navigationTree, selectedFile);
 
 	const determineSectionForFile = useCallback(
 		(path: string): DiffSection => {
@@ -395,7 +398,12 @@ export function ReviewPanel({
 	const handleStageFile = useCallback(
 		async (path: string) => {
 			if (!rootPath) return;
-			await stage(rootPath, [path]);
+			try {
+				await stage(rootPath, [path]);
+			} catch (error) {
+				showClientError(error);
+				return;
+			}
 			if (selectedFile === path) {
 				selectFile(path, "staged");
 			}
@@ -406,7 +414,12 @@ export function ReviewPanel({
 	const handleUnstageFile = useCallback(
 		async (path: string) => {
 			if (!rootPath) return;
-			await unstage(rootPath, [path]);
+			try {
+				await unstage(rootPath, [path]);
+			} catch (error) {
+				showClientError(error);
+				return;
+			}
 			if (selectedFile === path) {
 				selectFile(path, "changes");
 			}
@@ -418,7 +431,12 @@ export function ReviewPanel({
 		if (!rootPath) return;
 		const paths = changedFiles.map((f) => f.path);
 		if (paths.length === 0) return;
-		await stage(rootPath, paths);
+		try {
+			await stage(rootPath, paths);
+		} catch (error) {
+			showClientError(error);
+			return;
+		}
 		if (selectedFile && paths.includes(selectedFile)) {
 			selectFile(selectedFile, "staged");
 		}
@@ -428,7 +446,12 @@ export function ReviewPanel({
 		if (!rootPath) return;
 		const paths = stagedFiles.map((f) => f.path);
 		if (paths.length === 0) return;
-		await unstage(rootPath, paths);
+		try {
+			await unstage(rootPath, paths);
+		} catch (error) {
+			showClientError(error);
+			return;
+		}
 		if (selectedFile && paths.includes(selectedFile)) {
 			selectFile(selectedFile, "changes");
 		}
@@ -456,10 +479,16 @@ export function ReviewPanel({
 			コメントを取得できません: {commentsError}
 		</div>
 	);
+	const navigationAlert = navigationError && (
+		<div role="alert" className="px-3 py-2 text-sm text-destructive">
+			File navigation failed: {navigationError}
+		</div>
+	);
 	if (totalFileCount === 0) {
 		return (
 			<div className="flex flex-col h-full">
 				{commentsAlert}
+				{navigationAlert}
 				<div className="flex items-center justify-between px-2 h-[32px] border-b border-border bg-card shrink-0">
 					<div className="w-5" />
 					<div className="flex items-center gap-1">
@@ -486,9 +515,9 @@ export function ReviewPanel({
 									onClick={() => {
 										invoke("open_folder_in_editor", {
 											folderPath: rootPath,
-										}).catch((e: unknown) => {
-											console.error("Failed to open folder in editor:", e);
-										});
+										}).catch((e: unknown) =>
+											logClientError("Failed to open folder in editor:", e),
+										);
 									}}
 									className="h-5 w-5 text-muted-foreground hover:text-foreground"
 									aria-label="Open in editor"
@@ -512,6 +541,7 @@ export function ReviewPanel({
 	return (
 		<div className="flex flex-col h-full">
 			{commentsAlert}
+			{navigationAlert}
 			{/* Header */}
 			<div className="flex items-center justify-between px-2 h-[32px] border-b border-border bg-card shrink-0">
 				<Tooltip>
@@ -560,9 +590,9 @@ export function ReviewPanel({
 								onClick={() => {
 									invoke("open_folder_in_editor", {
 										folderPath: rootPath,
-									}).catch((e: unknown) => {
-										console.error("Failed to open folder in editor:", e);
-									});
+									}).catch((e: unknown) =>
+										logClientError("Failed to open folder in editor:", e),
+									);
 								}}
 								className="h-5 w-5 text-muted-foreground hover:text-foreground"
 								aria-label="Open in editor"

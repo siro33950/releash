@@ -22,13 +22,26 @@ pub struct TerminalRuntimeSpawnRequest {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TerminalSurfaceGatewayError {
     message: String,
+    input_cause: Option<TerminalSurfaceInputUnavailableCause>,
 }
 
 impl TerminalSurfaceGatewayError {
     pub fn new(message: impl Into<String>) -> Self {
         Self {
             message: message.into(),
+            input_cause: None,
         }
+    }
+
+    pub fn input_unavailable(cause: TerminalSurfaceInputUnavailableCause) -> Self {
+        Self {
+            message: cause.internal_cause().into(),
+            input_cause: Some(cause),
+        }
+    }
+
+    pub fn input_cause(&self) -> Option<&TerminalSurfaceInputUnavailableCause> {
+        self.input_cause.as_ref()
     }
 
     pub fn message(&self) -> &str {
@@ -58,6 +71,10 @@ impl TerminalSurfaceInputUnavailableCause {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "gateway_test.rs"]
+mod gateway_tests;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TerminalSurfaceEvent {

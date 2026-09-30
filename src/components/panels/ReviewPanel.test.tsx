@@ -498,6 +498,112 @@ describe("ReviewPanel", () => {
 		});
 	});
 
+	it.each(["stage", "unstage"] as const)(
+		"ReviewPanelの%s失敗を一度だけ通知する",
+		async (operation) => {
+			const failure = vi
+				.fn()
+				.mockRejectedValue(new Error(`${operation} failed`));
+			vi.mocked(useGitActions).mockReturnValue({
+				stage: operation === "stage" ? failure : vi.fn(),
+				unstage: operation === "unstage" ? failure : vi.fn(),
+				createBranch: vi.fn(),
+			});
+			mockNonEmptyHeadSnapshot();
+			const notice = vi.fn();
+			window.addEventListener("releash-client-error", notice);
+			try {
+				render(
+					<TooltipProvider>
+						<ReviewPanel
+							rootPath="/repo"
+							diffOnlyMode={false}
+							onDiffOnlyModeChange={vi.fn()}
+						/>
+					</TooltipProvider>,
+				);
+				fireEvent.click(
+					screen.getByRole("button", {
+						name: operation === "stage" ? "Stage All" : "Unstage All",
+					}),
+				);
+				await waitFor(() => expect(notice).toHaveBeenCalledOnce());
+				expect((notice.mock.calls[0][0] as CustomEvent<string>).detail).toBe(
+					`${operation} failed`,
+				);
+			} finally {
+				window.removeEventListener("releash-client-error", notice);
+			}
+		},
+	);
+
+	it.each(["stage", "unstage"] as const)(
+		"ファイル単位の%s失敗を通知する",
+		async (operation) => {
+			const failure = vi
+				.fn()
+				.mockRejectedValue(new Error(`${operation} file failed`));
+			vi.mocked(useGitActions).mockReturnValue({
+				stage: operation === "stage" ? failure : vi.fn(),
+				unstage: operation === "unstage" ? failure : vi.fn(),
+				createBranch: vi.fn(),
+			});
+			mockNonEmptyHeadSnapshot();
+			const notice = vi.fn();
+			window.addEventListener("releash-client-error", notice);
+			try {
+				render(
+					<TooltipProvider>
+						<ReviewPanel
+							rootPath="/repo"
+							diffOnlyMode={false}
+							onDiffOnlyModeChange={vi.fn()}
+						/>
+					</TooltipProvider>,
+				);
+				fireEvent.click(
+					screen.getAllByRole("button", {
+						name: operation === "stage" ? "Stage file" : "Unstage file",
+					})[0],
+				);
+				await waitFor(() => expect(notice).toHaveBeenCalledOnce());
+				expect((notice.mock.calls[0][0] as CustomEvent<string>).detail).toBe(
+					`${operation} file failed`,
+				);
+			} finally {
+				window.removeEventListener("releash-client-error", notice);
+			}
+		},
+	);
+
+	it.each([false, true])(
+		"editor起動の失敗を通知する: 変更あり=%s",
+		async (hasChanges) => {
+			if (hasChanges) mockNonEmptyHeadSnapshot();
+			vi.mocked(invokeClient).mockRejectedValueOnce(new Error("editor failed"));
+			const notice = vi.fn();
+			window.addEventListener("releash-client-error", notice);
+			try {
+				render(
+					<TooltipProvider>
+						<ReviewPanel
+							rootPath="/repo"
+							diffOnlyMode={false}
+							onDiffOnlyModeChange={vi.fn()}
+						/>
+					</TooltipProvider>,
+				);
+				fireEvent.click(screen.getByRole("button", { name: "Open in editor" }));
+				await waitFor(() => expect(notice).toHaveBeenCalledOnce());
+				expect((notice.mock.calls[0][0] as CustomEvent<string>).detail).toBe(
+					"editor failed",
+				);
+			} finally {
+				window.removeEventListener("releash-client-error", notice);
+			}
+		},
+	);
+
 	it("selects review thread sections from supplied staged and changed memberships", async () => {
 		const selectFile = vi.fn();
 		mockNonEmptyHeadSnapshot({

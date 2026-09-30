@@ -18,6 +18,8 @@ fn shell_operation(command: &str) -> crate::domain::daemon_supervision::ShellOpe
     use crate::domain::daemon_supervision::ShellOperation;
     match command {
         "get_daemon_status"
+        | "subscribe_daemon_status"
+        | "stop_daemon_status_subscription"
         | "retry_daemon"
         | "quit_desktop"
         | "validate_daemon_connection"
@@ -105,6 +107,19 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
     use tauri::Manager;
+
+    #[test]
+    fn test_起動状態の購読はsupervision操作として受理する() {
+        use crate::domain::daemon_supervision::ShellOperation;
+
+        // Given
+        for command in ["subscribe_daemon_status", "stop_daemon_status_subscription"] {
+            // When
+            let operation = shell_operation(command);
+            // Then
+            assert_eq!(operation, ShellOperation::Supervision);
+        }
+    }
 
     fn dummy_handler() -> InvokeHandler {
         Box::new(|_invoke| true)
@@ -278,8 +293,7 @@ mod tests {
     async fn test_起動中ipc_通常handlerの副作用をrust入口で拒否する() {
         // Given
         let gateway = Arc::new(crate::usecase::test_helpers::FakeDaemon::default());
-        let supervisor =
-            crate::usecase::daemon_supervision::DaemonSupervisionUsecase::start(gateway.clone());
+        let supervisor = crate::usecase::test_helpers::start_supervision(gateway.clone());
         let (app, effects) = command_gate_test_app();
         app.manage(supervisor.clone());
         let window = tauri::WebviewWindowBuilder::new(&app, "startup-failure", Default::default())

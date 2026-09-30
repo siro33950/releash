@@ -18,6 +18,7 @@ import { useUpdateChecker } from "@/hooks/useUpdateChecker";
 import { useWorkspaceList } from "@/hooks/useWorkspaceList";
 import { useWorkspaceNavigation } from "@/hooks/useWorkspaceNavigation";
 import { firstState, invokeClient } from "@/lib/client";
+import { showClientError } from "@/lib/clientErrorNotice";
 import { MainLayout } from "@/screens/MainLayout";
 import type { CenterSelection } from "@/types/workspace-tree";
 
@@ -39,7 +40,8 @@ function StartupFailureScreen({
 		setQuitting(true);
 		try {
 			await invokeClient("quit_after_startup_failure");
-		} catch {
+		} catch (error) {
+			showClientError(error);
 			setQuitting(false);
 		}
 	}, [quitting]);

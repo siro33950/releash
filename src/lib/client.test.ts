@@ -1,21 +1,54 @@
 import type { MessageInitShape } from "@bufbuild/protobuf";
-import { Code, ConnectError, type HandlerContext } from "@connectrpc/connect";
-import { afterEach, expect, it, vi } from "vitest";
+import { Code, type HandlerContext } from "@connectrpc/connect";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import {
 	CommandErrorSchema,
 	type StartStateSubscriptionRequest,
 	type StateSubscriptionEventSchema,
 } from "@/generated/client_pb";
-import { connectFixture } from "@/test/connect";
-import { firstState, invokeClient, subscribeState } from "./client";
-import { getErrorMessage } from "./errorMessage";
 
 vi.unmock("@/lib/client");
+let invoke: typeof import("@tauri-apps/api/core").invoke;
+let ConnectError: typeof import("@connectrpc/connect").ConnectError;
+let connectFixture: typeof import("@/test/connect").connectFixture;
+let getErrorMessage: typeof import("./errorMessage").getErrorMessage;
+let firstState: typeof import("./client").firstState;
+let invokeClient: typeof import("./client").invokeClient;
+let subscribeState: typeof import("./client").subscribeState;
+let checkTransitions: () => void;
 const requestUrl = (input: RequestInfo | URL) =>
 	input instanceof Request ? input.url : input.toString();
+beforeEach(async () => {
+	vi.resetModules();
+	({ invoke } = await import("@tauri-apps/api/core"));
+	({ ConnectError } = await import("@connectrpc/connect"));
+	({ connectFixture } = await import("@/test/connect"));
+	({ getErrorMessage } = await import("./errorMessage"));
+	({ firstState, invokeClient, subscribeState } = await import("./client"));
+	const { getConnectionState, onConnectionStateChange } = await import(
+		"./client"
+	);
+	const phases = [getConnectionState()];
+	const release = onConnectionStateChange(() =>
+		phases.push(getConnectionState()),
+	);
+	checkTransitions = () => {
+		release();
+		const allowed: Record<string, string[]> = {
+			IDLE: ["CONNECTING", "SHUTDOWN"],
+			CONNECTING: ["CONNECTING", "READY", "TRANSIENT_FAILURE", "SHUTDOWN"],
+			READY: ["READY", "TRANSIENT_FAILURE", "SHUTDOWN"],
+			TRANSIENT_FAILURE: ["CONNECTING", "SHUTDOWN"],
+			SHUTDOWN: [],
+		};
+		for (let index = 1; index < phases.length; index++)
+			expect(allowed[phases[index - 1]]).toContain(phases[index]);
+	};
+});
 afterEach(async () => {
 	window.dispatchEvent(new Event("pagehide"));
 	await new Promise((resolve) => setTimeout(resolve, 0));
+	checkTransitions();
 	vi.unstubAllGlobals();
 });
 
@@ -71,6 +104,204 @@ it("送信失敗のPromiseを終了し元要求を保持して再送しない", 
 	expect(writes).toBe(1);
 });
 
+it("CONNECTING中の単発呼び出しはREADYまで待ってから送る", async () => {
+	const { getConnectionState } = await import("./client");
+	const read = vi.fn(() => ({ value: true }));
+	connectFixture({ addRepoPath: read });
+	const original = vi.mocked(invoke).getMockImplementation();
+	if (!original) throw new Error("Missing endpoint fixture");
+	let release!: (endpoint: unknown) => void;
+	vi.mocked(invoke).mockImplementation((command, args) =>
+		command === "get_client_endpoint"
+			? new Promise((resolve) => {
+					release = resolve;
+				})
+			: original(command, args),
+	);
+	const first = invokeClient("add_repo_path", { path: "/one" });
+	const second = invokeClient("add_repo_path", { path: "/two" });
+	expect(getConnectionState()).toBe("CONNECTING");
+	expect(read).not.toHaveBeenCalled();
+	release({
+		url: "http://127.0.0.1:9829",
+		token: "client-token",
+		launchId: "launch",
+	});
+	await expect(Promise.all([first, second])).resolves.toEqual([true, true]);
+	expect(getConnectionState()).toBe("READY");
+	expect(read).toHaveBeenCalledTimes(2);
+});
+
+it("接続先の取得が20秒を超えると失敗し次の単発呼び出しも即座に失敗する", async () => {
+	const { getConnectionState } = await import("./client");
+	vi.useFakeTimers();
+	try {
+		vi.mocked(invoke).mockImplementation(() => new Promise(() => {}));
+		vi.mocked(invoke).mockClear();
+		const pending = invokeClient("add_repo_path", { path: "/repo" }).catch(
+			(error) => error,
+		);
+		expect(getConnectionState()).toBe("CONNECTING");
+		await vi.advanceTimersByTimeAsync(20_000);
+		expect(await pending).toMatchObject({
+			message: "Daemon connection timed out",
+		});
+		expect(getConnectionState()).toBe("TRANSIENT_FAILURE");
+		await expect(
+			invokeClient("add_repo_path", { path: "/repo" }),
+		).rejects.toThrow("Daemon connection is TRANSIENT_FAILURE");
+		expect(invoke).toHaveBeenCalledTimes(1);
+	} finally {
+		vi.useRealTimers();
+	}
+});
+
+it.each(["GetServerInfo", "validate_daemon_connection"])(
+	"%sの応答が20秒ない場合は接続の確立を失敗させる",
+	async (step) => {
+		const { getConnectionState } = await import("./client");
+		vi.useFakeTimers();
+		try {
+			const fixture = connectFixture();
+			if (step === "GetServerInfo") {
+				const original = fixture.fetch.getMockImplementation();
+				if (!original) throw new Error("Missing fetch fixture");
+				fixture.fetch.mockImplementation((input, init) =>
+					requestUrl(input).endsWith("/GetServerInfo")
+						? new Promise(() => {})
+						: original(input, init),
+				);
+			} else {
+				const original = vi.mocked(invoke).getMockImplementation();
+				if (!original) throw new Error("Missing IPC fixture");
+				vi.mocked(invoke).mockImplementation((command, args) =>
+					command === "validate_daemon_connection"
+						? new Promise(() => {})
+						: original(command, args),
+				);
+			}
+			const pending = invokeClient("add_repo_path", { path: "/repo" }).catch(
+				(error) => error,
+			);
+			expect(getConnectionState()).toBe("CONNECTING");
+			await vi.advanceTimersByTimeAsync(20_000);
+			expect(await pending).toMatchObject({
+				message: "Daemon connection timed out",
+			});
+			expect(getConnectionState()).toBe("TRANSIENT_FAILURE");
+		} finally {
+			vi.useRealTimers();
+		}
+	},
+);
+
+it("失効した接続先取得が後から完了しても復元attachmentを変えない", async () => {
+	const { completeClientRestoration } = await import("./client");
+	vi.useFakeTimers();
+	try {
+		connectFixture();
+		const original = vi.mocked(invoke).getMockImplementation();
+		if (!original) throw new Error("Missing IPC fixture");
+		let releaseFirst!: (value: unknown) => void;
+		const attachments: string[] = [];
+		let latestAttachment = "";
+		let attempts = 0;
+		vi.mocked(invoke).mockImplementation((command, args) => {
+			if (command === "get_client_endpoint") {
+				const attachment = (args as { attachmentId: string }).attachmentId;
+				attachments.push(attachment);
+				if (attempts++ === 0)
+					return new Promise((resolve) => {
+						releaseFirst = (value) => {
+							latestAttachment = attachment;
+							resolve(value);
+						};
+					});
+				latestAttachment = attachment;
+			}
+			if (
+				command === "complete_desktop_restoration" &&
+				(args as { attachmentId: string }).attachmentId !== latestAttachment
+			)
+				return Promise.reject(new Error("Stale attachment"));
+			return original(command, args);
+		});
+		const first = invokeClient("add_repo_path", { path: "/first" }).catch(
+			(error) => error,
+		);
+		await vi.advanceTimersByTimeAsync(20_000);
+		expect(await first).toMatchObject({
+			message: "Daemon connection timed out",
+		});
+		await vi.advanceTimersByTimeAsync(1_000);
+		const { getConnectionState } = await import("./client");
+		expect(getConnectionState()).toBe("READY");
+		releaseFirst({
+			url: "http://127.0.0.1:9829",
+			token: "client-token",
+			launchId: "launch",
+		});
+		await vi.advanceTimersByTimeAsync(0);
+		await expect(completeClientRestoration(1)).resolves.toBeUndefined();
+		expect(attachments).toHaveLength(2);
+		expect(attachments[0]).toBe(attachments[1]);
+		expect(invoke).toHaveBeenCalledWith(
+			"complete_desktop_restoration",
+			expect.objectContaining({ attachmentId: attachments[1] }),
+		);
+	} finally {
+		vi.useRealTimers();
+	}
+});
+
+it("SHUTDOWN中の単発呼び出しは接続を始めず失敗する", async () => {
+	const { getConnectionState } = await import("./client");
+	window.dispatchEvent(new Event("pagehide"));
+	vi.mocked(invoke).mockClear();
+	expect(getConnectionState()).toBe("SHUTDOWN");
+	await expect(
+		invokeClient("add_repo_path", { path: "/repo" }),
+	).rejects.toThrow("Daemon connection is SHUTDOWN");
+	expect(invoke).not.toHaveBeenCalled();
+	window.dispatchEvent(
+		new PageTransitionEvent("pageshow", { persisted: true }),
+	);
+	expect(getConnectionState()).toBe("SHUTDOWN");
+	await expect(
+		invokeClient("add_repo_path", { path: "/repo" }),
+	).rejects.toThrow("Daemon connection is SHUTDOWN");
+	expect(invoke).not.toHaveBeenCalled();
+});
+
+it("復帰可能なページはSHUTDOWNを経ずに再接続する", async () => {
+	const { getConnectionState, onConnectionStateChange } = await import(
+		"./client"
+	);
+	const fixture = connectFixture({ addRepoPath: () => ({ value: true }) });
+	await invokeClient("add_repo_path", { path: "/first" });
+	const phases: string[] = [];
+	const release = onConnectionStateChange(() =>
+		phases.push(getConnectionState()),
+	);
+	window.dispatchEvent(
+		new PageTransitionEvent("pagehide", { persisted: true }),
+	);
+	expect(getConnectionState()).toBe("TRANSIENT_FAILURE");
+	window.dispatchEvent(
+		new PageTransitionEvent("pageshow", { persisted: true }),
+	);
+	await expect(
+		invokeClient("add_repo_path", { path: "/second" }),
+	).resolves.toBe(true);
+	expect(phases).toEqual(["TRANSIENT_FAILURE", "CONNECTING", "READY"]);
+	expect(
+		fixture.requests.filter((request) =>
+			request.url.endsWith("/GetServerInfo"),
+		),
+	).toHaveLength(2);
+	release();
+});
+
 it("設定保存が期限超過してもPromiseを終了し同じ変更を再送しない", async () => {
 	vi.useFakeTimers();
 	try {
@@ -99,8 +330,8 @@ it("設定保存が期限超過してもPromiseを終了し同じ変更を再送
 	}
 });
 
-it("旧世代の要求失敗が新接続と進行中の要求を破棄しない", async () => {
-	const { refreshClient, getClient } = await import("./client");
+it("遅延した単発要求の失敗が接続と進行中の要求を破棄しない", async () => {
+	const { getClient } = await import("./client");
 	let release!: () => void;
 	const read = vi.fn(async () => {
 		await new Promise<void>((resolve) => {
@@ -123,7 +354,6 @@ it("旧世代の要求失敗が新接続と進行中の要求を破棄しない"
 		(error) => error,
 	);
 	await vi.waitFor(() => expect(fail).toBeDefined());
-	refreshClient();
 	const current = await getClient();
 	const pending = invokeClient("add_repo_path", { path: "/repo" });
 	await vi.waitFor(() => expect(read).toHaveBeenCalledOnce());
@@ -164,6 +394,28 @@ it("実adapterがCommandError detailのcodeとmessageを保持する", async () 
 	});
 	expect(error).not.toBeInstanceOf(Error);
 	expect(await getClient()).toBe(client);
+});
+
+it("失効したterminal attachmentのcodeを入力側へ届ける", async () => {
+	connectFixture({
+		writeTerminalSurface: () => {
+			throw commandError(
+				"STALE_TERMINAL_ATTACHMENT",
+				"Terminal input could not be sent. Try again.",
+			);
+		},
+	});
+	await expect(
+		invokeClient("write_terminal_surface", {
+			owner: { kind: "workspace", workspacePath: "/repo" },
+			attachmentId: "old-attachment",
+			sequence: 0,
+			data: "x",
+		}),
+	).rejects.toEqual({
+		code: "STALE_TERMINAL_ATTACHMENT",
+		message: "Terminal input could not be sent. Try again.",
+	});
 });
 
 it("進行中要求の上限超過は理由を表示し変更要求を再送しない", async () => {
@@ -246,7 +498,7 @@ it("AbortSignal.anyが無くても初回RPCとstreamが開始し個別と接続�
 				key === "any" ? undefined : Reflect.get(target, key),
 		}),
 	);
-	const { getClient, refreshClient } = await import("./client");
+	const { getClient } = await import("./client");
 	const started = vi.fn();
 	const fixture = connectFixture({
 		async *openStateStream(_, context) {
@@ -289,7 +541,7 @@ it("AbortSignal.anyが無くても初回RPCとstreamが開始し個別と接続�
 		request.url.endsWith("/OpenStateStream"),
 	);
 	expect(streaming?.signal.aborted).toBe(false);
-	refreshClient();
+	window.dispatchEvent(new Event("pagehide"));
 	expect(streaming?.signal.aborted).toBe(true);
 	release();
 });
@@ -301,6 +553,7 @@ function stateFixture(
 	options: {
 		failBeforeReady?: number;
 		stop?: () => Record<string, never>;
+		addRepoPath?: () => { value: boolean };
 	} = {},
 ) {
 	const streams: {
@@ -313,6 +566,7 @@ function stateFixture(
 	const reports = vi.fn(() => ({}));
 	const stops = vi.fn((_request: { target: string }) => options.stop?.() ?? {});
 	const fixture = connectFixture({
+		...(options.addRepoPath ? { addRepoPath: options.addRepoPath } : {}),
 		async *openStateStream(_, context) {
 			const queue: (StateEvent | Error)[] = [];
 			let wake = () => {};
@@ -466,7 +720,7 @@ it("つなぎ直してから2分を超えてstreamが続くと次の待ちは1�
 });
 
 it.each([Code.Unavailable, Code.Aborted, Code.ResourceExhausted])(
-	"購読の開始がcode %sで失敗したら接続を使い回してstreamを開き直す",
+	"購読の開始がcode %sで失敗したら接続を保ってstreamを開き直す",
 	async (code) => {
 		const start = vi
 			.fn<() => Promise<Record<string, never>>>()
@@ -488,6 +742,39 @@ it.each([Code.Unavailable, Code.Aborted, Code.ResourceExhausted])(
 		expect(fixture.serverInfoRequests()).toBe(1);
 	},
 );
+
+it("購読開始のRESOURCE_EXHAUSTED中もREADYで単発RPCを送る", async () => {
+	const { getConnectionState, onConnectionStateChange } = await import(
+		"./client"
+	);
+	const rpc = vi.fn(() => ({ value: true }));
+	const start = vi
+		.fn<() => Promise<Record<string, never>>>()
+		.mockRejectedValueOnce(new ConnectError("busy", Code.ResourceExhausted))
+		.mockResolvedValue({});
+	const fixture = stateFixture(start, { addRepoPath: rpc });
+	const phases: string[] = [];
+	const release = onConnectionStateChange(() =>
+		phases.push(getConnectionState()),
+	);
+	try {
+		subscribeState("repository-paths", vi.fn());
+		await vi.waitFor(() =>
+			expect(fixture.streams[0]?.signal.aborted).toBe(true),
+		);
+		expect(getConnectionState()).toBe("READY");
+		await expect(
+			invokeClient("add_repo_path", { path: "/repo" }),
+		).resolves.toBe(true);
+		expect(rpc).toHaveBeenCalledOnce();
+		await vi.waitFor(() => expect(fixture.starts).toHaveLength(2), {
+			timeout: 3000,
+		});
+		expect(phases).toEqual(["CONNECTING", "READY"]);
+	} finally {
+		release();
+	}
+});
 
 it.each([Code.Unavailable, Code.Aborted, Code.ResourceExhausted])(
 	"購読の停止がcode %sで失敗したらstreamを開き直し残った対象だけを開始する",
@@ -558,6 +845,55 @@ it("状態の購読は同じ対象を一度だけ開始し最初の状態と変�
 	expect(fixture.starts).toHaveLength(1);
 });
 
+it("復帰可能なページは状態の購読を再開する", async () => {
+	const fixture = stateFixture();
+	const receive = vi.fn();
+	subscribeState("repository-paths", receive);
+	await vi.waitFor(() => expect(fixture.starts).toHaveLength(1));
+	fixture.streams[0].send(repositoryPaths(0, ["/a"], "snapshot"));
+	await vi.waitFor(() => expect(receive).toHaveBeenLastCalledWith(["/a"]));
+	window.dispatchEvent(
+		new PageTransitionEvent("pagehide", { persisted: true }),
+	);
+	window.dispatchEvent(
+		new PageTransitionEvent("pageshow", { persisted: true }),
+	);
+	await vi.waitFor(() => expect(fixture.starts).toHaveLength(2), {
+		timeout: 3000,
+	});
+	fixture.streams[1].send(repositoryPaths(1, ["/b"]));
+	await vi.waitFor(() => expect(receive).toHaveBeenLastCalledWith(["/b"]));
+});
+
+it("一時的な接続失敗中にページが復帰したら接続をやり直す", async () => {
+	const { getConnectionState, onConnectionStateChange } = await import(
+		"./client"
+	);
+	const fixture = stateFixture();
+	subscribeState("repository-paths", vi.fn());
+	await vi.waitFor(() => expect(fixture.starts).toHaveLength(1));
+	const phases: string[] = [];
+	const release = onConnectionStateChange(() =>
+		phases.push(getConnectionState()),
+	);
+	fixture.streams[0].fail();
+	await vi.waitFor(() =>
+		expect(getConnectionState()).toBe("TRANSIENT_FAILURE"),
+	);
+	window.dispatchEvent(
+		new PageTransitionEvent("pagehide", { persisted: true }),
+	);
+	expect(getConnectionState()).toBe("TRANSIENT_FAILURE");
+	window.dispatchEvent(
+		new PageTransitionEvent("pageshow", { persisted: true }),
+	);
+	await vi.waitFor(() => expect(fixture.starts).toHaveLength(2), {
+		timeout: 3000,
+	});
+	expect(phases).toEqual(["TRANSIENT_FAILURE", "CONNECTING", "READY"]);
+	release();
+});
+
 it.each([Code.Unavailable, Code.Aborted, Code.ResourceExhausted])(
 	"状態のstreamがcode %sで切れたら最後に受け取った版から購読を再開する",
 	async (code) => {
@@ -581,23 +917,61 @@ it.each([Code.Unavailable, Code.Aborted, Code.ResourceExhausted])(
 	},
 );
 
-it("接続を作り直すと状態のstreamのつなぎ直しで接続の回復を通知する", async () => {
-	const { onClientConnection, refreshClient } = await import("./client");
+it("stream切断から接続を作り直し状態の変化を通知する", async () => {
+	const { getConnectionState, onConnectionStateChange } = await import(
+		"./client"
+	);
 	const fixture = stateFixture();
 	subscribeState("repository-paths", vi.fn());
 	await vi.waitFor(() => expect(fixture.starts).toHaveLength(1));
-	const connection = vi.fn();
-	const off = onClientConnection(connection);
-	refreshClient();
+	const phases: string[] = [];
+	const off = onConnectionStateChange(() => phases.push(getConnectionState()));
+	fixture.streams[0].fail();
 	await vi.waitFor(() => expect(fixture.starts).toHaveLength(2), {
 		timeout: 3000,
 	});
-	expect(connection.mock.calls.map(([connected]) => connected)).toEqual([
-		false,
-		true,
-	]);
+	expect(phases).toEqual(["TRANSIENT_FAILURE", "CONNECTING", "READY"]);
 	expect(fixture.serverInfoRequests()).toBe(2);
 	off();
+});
+
+it("terminal購読をつなぎ直すたびに入力IDを更新する", async () => {
+	const { currentTerminalInputId } = await import("./client");
+	const fixture = stateFixture();
+	const owner = { kind: "workspace" as const, workspacePath: "/repo" };
+	subscribeState({ kind: "terminal", args: [owner.workspacePath] }, vi.fn());
+	await vi.waitFor(() => expect(fixture.starts).toHaveLength(1));
+	const initial = fixture.starts[0].terminalInputId;
+	expect(initial).toBeTruthy();
+	expect(currentTerminalInputId(owner)).toBe(initial);
+	fixture.streams[0].fail();
+	await vi.waitFor(() => expect(fixture.starts).toHaveLength(2), {
+		timeout: 3000,
+	});
+	expect(fixture.starts[1].terminalInputId).toBeTruthy();
+	expect(fixture.starts[1].terminalInputId).not.toBe(initial);
+	expect(currentTerminalInputId(owner)).toBe(fixture.starts[1].terminalInputId);
+});
+
+it("terminal入力IDは購読開始の受理後に公開する", async () => {
+	let releaseStart: (() => void) | undefined;
+	const fixture = stateFixture(
+		() =>
+			new Promise((resolve) => {
+				releaseStart = () => resolve({});
+			}),
+	);
+	const { currentTerminalInputId } = await import("./client");
+	const owner = { kind: "workspace" as const, workspacePath: "/repo" };
+	subscribeState({ kind: "terminal", args: [owner.workspacePath] }, vi.fn());
+	await vi.waitFor(() => expect(fixture.starts).toHaveLength(1));
+	expect(currentTerminalInputId(owner)).toBeNull();
+	releaseStart?.();
+	await vi.waitFor(() =>
+		expect(currentTerminalInputId(owner)).toBe(
+			fixture.starts[0].terminalInputId,
+		),
+	);
 });
 
 it("状態のstreamが無通信のまま続いたらつなぎ直す", async () => {
@@ -752,7 +1126,6 @@ it("terminalのsnapshotと差分を他の対象と同じstreamで受け取り最
 	const pending = subscribeTerminalState(
 		{
 			owner: { kind: "workspace", workspacePath: "/repo" },
-			attachmentId: "input",
 		},
 		received,
 		vi.fn(),
@@ -836,7 +1209,7 @@ it("terminalのsnapshotと差分を他の対象と同じstreamで受け取り最
 		fixture.starts.filter((start) => start.target === "terminal")[1],
 	).toMatchObject({
 		version: { ...version, sequence: 18n },
-		terminalInputId: "input",
+		terminalInputId: expect.any(String),
 	});
 	await release();
 	stopOther();

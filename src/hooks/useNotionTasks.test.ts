@@ -115,6 +115,8 @@ describe("useNotionTasks", () => {
 
 	it("should set empty tasks on error", async () => {
 		const { invokeClient: invoke } = await import("@/lib/client");
+		const notice = vi.fn();
+		window.addEventListener("releash-client-error", notice);
 		vi.mocked(invoke).mockRejectedValue(new Error("not configured"));
 
 		const { result } = renderHook(() => useNotionTasks("/test/repo"));
@@ -124,6 +126,10 @@ describe("useNotionTasks", () => {
 		});
 
 		expect(result.current.tasks).toEqual([]);
+		expect((notice.mock.calls[0][0] as CustomEvent<string>).detail).toBe(
+			"not configured",
+		);
+		window.removeEventListener("releash-client-error", notice);
 	});
 
 	it("should reset and refetch on refresh", async () => {
