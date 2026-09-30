@@ -15,7 +15,6 @@ import {
 	ContextMenuShortcut,
 	ContextMenuTrigger,
 } from "@/components/ui/context-menu";
-import { BackgroundFailures } from "@/components/workflow/BackgroundFailures";
 import type { NativeFileDropPayload } from "@/hooks/useNativeFileDrop";
 import {
 	type TerminalInitializationMode,
@@ -75,14 +74,6 @@ export const TerminalPanel = forwardRef<
 	ref,
 ) {
 	const containerRef = useRef<HTMLDivElement>(null);
-	const [sessionKey, setSessionKey] = useState<string | null>(null);
-	const terminalReady = useCallback(
-		(key: string) => {
-			setSessionKey(key);
-			onTerminalReady?.(key);
-		},
-		[onTerminalReady],
-	);
 	const { terminalRef, terminalOwner, isRunningRef, sendInput, requestKill } =
 		useTerminal(containerRef, {
 			cwd,
@@ -90,7 +81,7 @@ export const TerminalPanel = forwardRef<
 			terminalStartupCommand,
 			owner,
 			label,
-			onTerminalReady: terminalReady,
+			onTerminalReady,
 			onTerminalError,
 			shouldKillPendingTerminal,
 			initialization,
@@ -207,9 +198,6 @@ export const TerminalPanel = forwardRef<
 					onDrop={handleDrop}
 				>
 					<div ref={containerRef} className="h-full w-full bg-terminal-bg" />
-					<div className="absolute right-2 top-2 max-w-sm">
-						<BackgroundFailures target={sessionKey} />
-					</div>
 					{isDragOver && (
 						<div className="absolute inset-0 flex items-center justify-center bg-primary/10 border-2 border-dashed border-primary rounded pointer-events-none">
 							<span className="text-sm font-medium text-primary bg-background/80 px-3 py-1.5 rounded">

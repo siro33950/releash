@@ -100,7 +100,6 @@ export function refreshClient(failedClient?: Client<typeof ClientService>) {
 }
 
 export type StateValues = {
-	failures: import("@/generated/client_types").FailureRecords;
 	terminal: TerminalSurfaceStreamItem;
 	"repository-paths": string[];
 	workspaces: import("@/generated/client_types").WorkspaceListSnapshotDto;

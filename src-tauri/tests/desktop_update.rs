@@ -232,27 +232,6 @@ async fn test_実workflow更新_一括停止と旧daemon終了から適用と新
     let next = host::desktop_connection_app(tauri::test::mock_builder(), root, &next_binary);
     wait_phase(&next, "restoring").await;
     let mut renderer = Renderer::attach(&next).await;
-    tokio::time::timeout(Duration::from_secs(10), async {
-        loop {
-            let failures = host::read_state(
-                &renderer.client,
-                &format!("failures:{}:{startup_probe}", startup_probe.len()),
-            )
-            .await
-            .unwrap();
-            if failures["items"].as_array().unwrap().iter().any(|record| {
-                record["target"] == startup_probe
-                    && record["operation"] == "workflow_recovery"
-                    && record["classification"] == "BusinessFailure"
-                    && record["requiresAttention"] == true
-            }) {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-    })
-    .await
-    .expect("startup must report the unreadable definition as requiring attention");
     assert!(!workflow_facts(root, startup_probe)
         .iter()
         .any(|(_, event, _)| event == "abort_requested"));

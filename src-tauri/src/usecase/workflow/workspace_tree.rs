@@ -198,10 +198,6 @@ pub(crate) struct WorkspaceWorkflowHistoryItemDto {
 }
 
 impl WorkflowUsecase {
-    pub(crate) async fn failure_targets(&self, target: &str) -> Result<Vec<String>, WorkflowError> {
-        self.workspace_query.failure_targets(target).await
-    }
-
     pub(crate) async fn list_workspace_tree_nodes(
         &self,
         worktree_path: &str,

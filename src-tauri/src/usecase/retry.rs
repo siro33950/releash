@@ -1,6 +1,4 @@
 use crate::common::retry::{attempts, AttemptProgress, RetryBackoff, RetryLimiter};
-#[cfg(test)]
-use crate::usecase::failure::FailureQueryService;
 use crate::usecase::failure::{next_attempt, FailureKey, FailureRecordingUsecase, RetryFailure};
 use std::future::Future;
 use std::sync::Arc;
@@ -8,8 +6,6 @@ use std::sync::Arc;
 pub struct Retrying {
     pub(crate) limiter: Arc<RetryLimiter>,
     pub(crate) failures: Arc<FailureRecordingUsecase>,
-    #[cfg(test)]
-    pub(crate) test_query: Option<Arc<dyn FailureQueryService>>,
 }
 
 impl Retrying {
@@ -17,12 +13,7 @@ impl Retrying {
         limiter: Arc<RetryLimiter>,
         failures: Arc<FailureRecordingUsecase>,
     ) -> Arc<Self> {
-        Arc::new(Self {
-            limiter,
-            failures,
-            #[cfg(test)]
-            test_query: None,
-        })
+        Arc::new(Self { limiter, failures })
     }
 
     pub(crate) async fn restart<T, E, F, Fut>(
@@ -83,28 +74,6 @@ impl Retrying {
             self.failures.resolved(&key);
         }
         result
-    }
-
-    #[cfg(test)]
-    pub(crate) async fn page_targets(
-        &self,
-        targets: &[String],
-        offset: usize,
-    ) -> crate::usecase::failure::FailurePage {
-        self.test_query
-            .as_ref()
-            .expect("test failure store")
-            .page(targets, offset)
-            .await
-    }
-
-    #[cfg(test)]
-    pub(crate) async fn page(
-        &self,
-        target: &str,
-        offset: usize,
-    ) -> crate::usecase::failure::FailurePage {
-        self.page_targets(&[target.to_string()], offset).await
     }
 }
 

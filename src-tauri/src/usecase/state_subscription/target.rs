@@ -3,7 +3,6 @@ use crate::domain::workflow::FacetKind;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) enum SubscriptionTarget {
-    Failures(String, usize),
     Terminal(crate::domain::terminal_surface::TerminalSurfaceOwner),
     RepositoryPaths,
     Workspaces,
@@ -109,7 +108,6 @@ mod subscription_target_tests;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) enum StateChangeSource {
-    Failures(String),
     Repositories,
     Repository(Vec<String>),
     Worktree(String),
@@ -129,9 +127,6 @@ impl SubscriptionTarget {
     pub fn affected_by(&self, change: &StateChangeSource) -> bool {
         use StateChangeSource as C;
         match change {
-            C::Failures(target) => {
-                matches!(self, Self::Failures(id, _) if id == target || id == "*")
-            }
             C::Repositories => matches!(self, Self::RepositoryPaths | Self::Workspaces),
             C::Repository(paths) => match self {
                 Self::Workspaces => true,

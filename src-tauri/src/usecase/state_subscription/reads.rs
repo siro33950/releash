@@ -151,7 +151,6 @@ where
 
 #[derive(Clone)]
 pub(crate) struct WorkspaceStateReads {
-    pub failures: Arc<dyn crate::usecase::failure::FailureQueryService>,
     pub repositories: Arc<RepoPathsUsecase>,
     pub repository: Arc<RepositoryUsecase>,
     pub repository_state: Arc<RepositoryStateService>,
@@ -180,16 +179,6 @@ impl WorkspaceStateReads {
     pub async fn read(&self, target: &SubscriptionTarget) -> Result<StateValue, StateReadError> {
         use SubscriptionTarget as T;
         match target {
-            T::Failures(target, offset) => {
-                return Ok(StateValue::Failures(
-                    self.failures
-                        .page(
-                            &self.workflow.failure_targets(target).await.map_err(error)?,
-                            *offset,
-                        )
-                        .await,
-                ))
-            }
             T::AgentSession(id) => {
                 return self
                     .sessions
@@ -394,8 +383,7 @@ impl WorkspaceStateReads {
             }
             T::PerformanceSwitches => StateValue::PerformanceSwitches(self.performance_switches),
             T::StartupOutcome => StateValue::StartupOutcome(self.startup.outcome()),
-            T::Failures(..)
-            | T::Terminal(_)
+            T::Terminal(_)
             | T::Workflows
             | T::AgentSession(_)
             | T::SessionHistory(_, _)

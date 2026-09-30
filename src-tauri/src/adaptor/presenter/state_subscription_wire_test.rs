@@ -133,9 +133,6 @@ fn test_購読payload_全種類を旧wire型とフィールドへ変換する() 
         AgentSessionHistoryCandidateDto, AgentSessionHistoryPageDto, AgentSessionItemDto,
         AgentSessionLifecycleDto, AgentSessionOperationsDto, AgentSessionTreeLocationDto,
     };
-    use crate::usecase::failure::{
-        FailureClassificationDto, FailureObservationDto, FailurePage, FailureRecordDto,
-    };
     use crate::usecase::git_host::dto::{IssueInfoDto, IssueLabelDto, MilestoneDto, PrAuthorDto};
     use crate::usecase::provider_dto::AgentSessionProviderDto;
     use crate::usecase::repository_dto::{BranchDto, WorktreeDisplayGroupsDto, WorktreeEntryDto};
@@ -157,38 +154,6 @@ fn test_購読payload_全種類を旧wire型とフィールドへ変換する() 
         value: Some(wire::agent_session_provider_dto::Value::Codex as i32),
     };
     let values = vec![
-        (
-            StateValue::Failures(FailurePage {
-                items: vec![FailureObservationDto {
-                    record: FailureRecordDto {
-                        operation: "run".into(),
-                        target: "node".into(),
-                        classification: FailureClassificationDto::BusinessFailure,
-                        message: "failed".into(),
-                        count: 2,
-                        first_observed_ms: 3,
-                        last_observed_ms: 4,
-                    },
-                    requires_attention: true,
-                }],
-                next_offset: Some(5),
-                requires_attention: true,
-            }),
-            W::Failures(wire::FailureRecords {
-                items: vec![wire::FailureRecord {
-                    operation: Some("run".into()),
-                    target: Some("node".into()),
-                    classification: Some("BusinessFailure".into()),
-                    message: Some("failed".into()),
-                    count: Some(2),
-                    first_observed_ms: Some(3),
-                    last_observed_ms: Some(4),
-                    requires_attention: Some(true),
-                }],
-                next_offset: Some(5),
-                requires_attention: Some(true),
-            }),
-        ),
         (
             StateValue::Terminal(
                 TerminalSurfaceStreamItem::Output {
