@@ -13,14 +13,14 @@ fn test_起動監督_ready直後の連続クラッシュでも再起動は3回�
     let mut supervision = DaemonSupervision::new(0);
     // When
     for (now, delay) in [(0, 1_000), (1_001, 2_000), (3_002, 4_000)] {
-        supervision.ready(now);
+        supervision.connected(now);
         // When
         supervision.failed_after_exit(failure(FailureStage::UnexpectedExit), true, now + 1);
         // Then
         assert!(!supervision.restart_due(now + delay));
         assert!(supervision.restart_due(now + delay + 1));
     }
-    supervision.ready(7_003);
+    supervision.connected(7_003);
     supervision.failed_after_exit(failure(FailureStage::UnexpectedExit), true, 7_004);
     // Then
     assert_eq!(supervision.phase(), Phase::Failed);
@@ -64,7 +64,7 @@ fn test_起動監督_安定稼働後だけ試行回数をリセットする() {
     // When
     supervision.failed_after_exit(failure(FailureStage::Initialization), true, 0);
     assert!(supervision.restart_due(1_000));
-    supervision.ready(1_000);
+    supervision.connected(1_000);
     supervision.failed_after_exit(failure(FailureStage::UnexpectedExit), true, 61_000);
     // Then
     assert_eq!(supervision.retries(), 1);
@@ -110,7 +110,7 @@ fn test_終了要求_quit中は一括停止未完了の終了観測でもuiを�
     for success in [false, true] {
         // Given
         let mut supervision = DaemonSupervision::new(0);
-        assert!(supervision.ready(1));
+        assert!(supervision.connected(1));
         assert!(supervision.begin_stop(StopIntent::Quit(3)));
         assert_eq!(supervision.phase(), Phase::Stopping);
         // When
@@ -138,7 +138,7 @@ fn test_起動期限_期限後のreadyを拒否する() {
     // Given
     let mut model = DaemonSupervision::new(0);
     // When
-    model.ready(STARTUP_TIMEOUT_MS);
+    model.connected(STARTUP_TIMEOUT_MS);
     // Then
     assert_eq!(model.phase(), Phase::Starting);
 }
@@ -147,7 +147,7 @@ fn test_起動期限_期限後のreadyを拒否する() {
 fn test_停止結果不明_切替は止めたまま終了操作を受け付ける() {
     // Given
     let mut model = DaemonSupervision::new(0);
-    model.ready(1);
+    model.connected(1);
     assert!(model.begin_stop(StopIntent::Update));
     // When
     model.stopped(false);
@@ -164,7 +164,7 @@ fn test_停止結果不明_切替は止めたまま終了操作を受け付け�
 fn test_接続拒否_終了確認までは通常画面と再試行を停止する() {
     // Given
     let mut model = DaemonSupervision::new(0);
-    model.ready(1);
+    model.connected(1);
     // When
     model.reject_connection(failure(FailureStage::Identity));
     // Then
@@ -224,7 +224,7 @@ fn test_shellの受理判断_起動切替中は復旧と終了だけを許す() 
     );
     assert_eq!(model.desktop_action(true, true, false), DesktopAction::Wait);
     // When
-    model.ready(1);
+    model.connected(1);
     // Then
     assert!(model.shell_command_admitted(ShellOperation::Normal, true));
     assert!(!model.shell_command_admitted(ShellOperation::Normal, false));
@@ -279,6 +279,39 @@ fn test_認証接続_接続時にreadyとなり再接続後も起動済みと分
     // Then
     assert_eq!(model.failure().unwrap().stage, FailureStage::UnexpectedExit);
     assert_eq!(model.phase(), Phase::Backoff);
+}
+
+#[test]
+fn test_認証接続_起動期限内だけreadyへ遷移し他のphaseでは受理しない() {
+    for now in [
+        STARTUP_TIMEOUT_MS - 1,
+        STARTUP_TIMEOUT_MS,
+        STARTUP_TIMEOUT_MS + 1,
+    ] {
+        // Given
+        let mut model = DaemonSupervision::new(0);
+        // When
+        let connected = model.connected(now);
+        // Then
+        assert_eq!(connected, now < STARTUP_TIMEOUT_MS);
+        assert_eq!(
+            model.phase(),
+            if connected {
+                Phase::Ready
+            } else {
+                Phase::Starting
+            }
+        );
+    }
+    // Given
+    let mut model = DaemonSupervision::new(0);
+    assert!(model.connected(1));
+    // When / Then
+    assert!(!model.connected(2));
+    assert_eq!(model.phase(), Phase::Ready);
+    model.begin_stop(StopIntent::Quit(0));
+    assert!(!model.connected(3));
+    assert_eq!(model.phase(), Phase::Stopping);
 }
 
 #[test]

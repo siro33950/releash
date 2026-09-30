@@ -34,7 +34,12 @@ export function useUpdateChecker(enabled: boolean): UpdateCheckResult {
 		(async () => {
 			setStatus("checking");
 			try {
-				check.current ??= invoke<UpdateInfo | null>("check_desktop_update");
+				check.current ??= invoke<UpdateInfo | null>(
+					"check_desktop_update",
+				).catch((error) => {
+					check.current = null;
+					throw error;
+				});
 				const update = await check.current;
 				if (cancelled) return;
 

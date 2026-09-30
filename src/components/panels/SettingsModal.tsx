@@ -756,6 +756,8 @@ function BackgroundSection({
 }
 
 function PrivacySection({
+	performanceTelemetry,
+	onPerformanceTelemetryChange,
 	draft,
 	updateDraft,
 	desktopSettingsLoaded,
@@ -763,6 +765,8 @@ function PrivacySection({
 }: {
 	desktopSettingsLoaded: boolean;
 	desktopSettingsError: string | null;
+	performanceTelemetry: boolean;
+	onPerformanceTelemetryChange: (enabled: boolean) => void;
 	draft: AppSettings;
 	updateDraft: (updater: (d: AppSettings) => AppSettings) => void;
 }) {
@@ -788,12 +792,9 @@ function PrivacySection({
 				<Checkbox
 					id="performance-telemetry"
 					disabled={!desktopSettingsLoaded}
-					checked={draft.performanceTelemetry}
+					checked={performanceTelemetry}
 					onCheckedChange={(checked) =>
-						updateDraft((d) => ({
-							...d,
-							performanceTelemetry: checked === true,
-						}))
+						onPerformanceTelemetryChange(checked === true)
 					}
 				/>
 				<label
@@ -835,7 +836,7 @@ interface SettingsState {
 	activeSection: SettingsSection;
 	draft: AppSettings;
 	appDirty: boolean;
-	performanceTelemetryEdited: boolean;
+	performanceTelemetryOverride: boolean | null;
 	saving: boolean;
 	prevOpen: boolean;
 }
@@ -843,7 +844,7 @@ interface SettingsState {
 type SettingsAction =
 	| { type: "SET_SECTION"; section: SettingsSection }
 	| { type: "UPDATE_DRAFT"; updater: (d: AppSettings) => AppSettings }
-	| { type: "SYNC_PERFORMANCE_TELEMETRY"; enabled: boolean }
+	| { type: "SET_PERFORMANCE_TELEMETRY"; enabled: boolean }
 	| { type: "SYNC_OPEN"; open: boolean; settings: AppSettings }
 	| { type: "SAVE_START" }
 	| { type: "SAVE_END" }
@@ -856,21 +857,13 @@ function settingsReducer(
 	switch (action.type) {
 		case "SET_SECTION":
 			return { ...state, activeSection: action.section };
-		case "UPDATE_DRAFT": {
-			const draft = action.updater(state.draft);
+		case "UPDATE_DRAFT":
+			return { ...state, draft: action.updater(state.draft), appDirty: true };
+		case "SET_PERFORMANCE_TELEMETRY":
 			return {
 				...state,
-				draft,
+				performanceTelemetryOverride: action.enabled,
 				appDirty: true,
-				performanceTelemetryEdited:
-					state.performanceTelemetryEdited ||
-					draft.performanceTelemetry !== state.draft.performanceTelemetry,
-			};
-		}
-		case "SYNC_PERFORMANCE_TELEMETRY":
-			return {
-				...state,
-				draft: { ...state.draft, performanceTelemetry: action.enabled },
 			};
 		case "SYNC_OPEN":
 			if (action.open && !state.prevOpen) {
@@ -879,7 +872,7 @@ function settingsReducer(
 					prevOpen: action.open,
 					draft: action.settings,
 					appDirty: false,
-					performanceTelemetryEdited: false,
+					performanceTelemetryOverride: null,
 				};
 			}
 			return { ...state, prevOpen: action.open };
@@ -896,6 +889,8 @@ export interface SettingsModalProps {
 	open: boolean;
 	onOpenChange: (open: boolean) => void;
 	settings: AppSettings;
+	desktopSettingsLoaded: boolean;
+	desktopSettingsError: string | null;
 	onSave: (settings: AppSettings) => void;
 	repoPaths?: string[];
 	onRemoveRepo?: (path: string) => void;
@@ -905,6 +900,8 @@ export function SettingsModal({
 	open,
 	onOpenChange,
 	settings,
+	desktopSettingsLoaded,
+	desktopSettingsError,
 	onSave,
 	repoPaths = [],
 	onRemoveRepo,
@@ -913,14 +910,13 @@ export function SettingsModal({
 		activeSection: "appearance" as SettingsSection,
 		draft: settings,
 		appDirty: false,
-		performanceTelemetryEdited: false,
+		performanceTelemetryOverride: null,
 		saving: false,
 		prevOpen: open,
 	});
 	const { activeSection, draft, appDirty, saving } = state;
-	const desktopSettings = useStateSubscriptionResult("desktop-settings");
-	const desktopSettingsLoaded = desktopSettings.value !== undefined;
-	const desktopSettingsError = desktopSettings.error;
+	const performanceTelemetry =
+		state.performanceTelemetryOverride ?? settings.performanceTelemetry;
 	const background = useBackgroundConfig();
 	const repos = useRepoChanges();
 	const notion = useNotionSettings(repoPaths);
@@ -929,26 +925,16 @@ export function SettingsModal({
 	const workflow = useWorkflowSettings(open);
 	const providerAvailability = useProviderAvailabilitySettings(open);
 
-	// Reset draft when dialog opens
-	if (open !== state.prevOpen) {
+	const { reset: resetRepos } = repos;
+	const { reset: resetNotion } = notion;
+	useEffect(() => {
+		if (open === state.prevOpen) return;
 		dispatchSettings({ type: "SYNC_OPEN", open, settings });
 		if (open) {
-			repos.reset();
-			notion.reset();
+			resetRepos();
+			resetNotion();
 		}
-	}
-
-	const performanceTelemetry = desktopSettings.value?.performanceTelemetry;
-	if (
-		performanceTelemetry !== undefined &&
-		!state.performanceTelemetryEdited &&
-		draft.performanceTelemetry !== performanceTelemetry
-	) {
-		dispatchSettings({
-			type: "SYNC_PERFORMANCE_TELEMETRY",
-			enabled: performanceTelemetry,
-		});
-	}
+	}, [open, state.prevOpen, settings, resetRepos, resetNotion]);
 
 	const updateDraft = useCallback(
 		(updater: (d: AppSettings) => AppSettings) => {
@@ -972,12 +958,9 @@ export function SettingsModal({
 		try {
 			const performanceTelemetryChanged =
 				desktopSettingsLoaded &&
-				draft.performanceTelemetry !== performanceTelemetry;
-			onSave(
-				desktopSettingsLoaded
-					? draft
-					: { ...draft, performanceTelemetry: settings.performanceTelemetry },
-			);
+				state.performanceTelemetryOverride !== null &&
+				performanceTelemetry !== settings.performanceTelemetry;
+			onSave({ ...draft, performanceTelemetry });
 			if (backgroundIsDirty) {
 				await backgroundSave();
 			}
@@ -997,7 +980,7 @@ export function SettingsModal({
 				await providerAvailabilitySave();
 			}
 			if (performanceTelemetryChanged) {
-				await setPerformanceTelemetryEnabled(draft.performanceTelemetry);
+				await setPerformanceTelemetryEnabled(performanceTelemetry);
 			}
 			trackEvent("settings_saved");
 		} catch {
@@ -1010,6 +993,7 @@ export function SettingsModal({
 		onSave,
 		settings.performanceTelemetry,
 		performanceTelemetry,
+		state.performanceTelemetryOverride,
 		desktopSettingsLoaded,
 		backgroundIsDirty,
 		backgroundSave,
@@ -1094,6 +1078,10 @@ export function SettingsModal({
 			case "privacy":
 				return (
 					<PrivacySection
+						performanceTelemetry={performanceTelemetry}
+						onPerformanceTelemetryChange={(enabled) =>
+							dispatchSettings({ type: "SET_PERFORMANCE_TELEMETRY", enabled })
+						}
 						draft={draft}
 						updateDraft={updateDraft}
 						desktopSettingsLoaded={desktopSettingsLoaded}

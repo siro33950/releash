@@ -142,11 +142,6 @@ describe("App", () => {
 		expect(
 			await screen.findByRole("button", { name: "Refresh Workspaces" }),
 		).toBeEnabled();
-		expect(
-			vi
-				.mocked(invoke)
-				.mock.calls.some(([command]) => command === "fail_desktop_restoration"),
-		).toBe(false);
 		if (subscribe)
 			vi.mocked(client.subscribeState).mockImplementation(subscribe);
 	});

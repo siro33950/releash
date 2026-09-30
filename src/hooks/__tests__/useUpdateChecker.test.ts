@@ -84,6 +84,46 @@ describe("useUpdateChecker", () => {
 		});
 	});
 
+	it.each([null, { version: "2.0.0", notes: "Update" }])(
+		"成功した確認結果はOFF→ONでも再取得しない: %s",
+		async (update) => {
+			mockCheck.mockResolvedValue(update);
+			const { result, rerender } = renderHook(
+				({ enabled }) => useUpdateChecker(enabled),
+				{ initialProps: { enabled: true } },
+			);
+			await waitFor(() =>
+				expect(result.current.status).toBe(update ? "available" : "idle"),
+			);
+			for (let i = 0; i < 2; i++) {
+				rerender({ enabled: false });
+				rerender({ enabled: true });
+				await waitFor(() =>
+					expect(result.current.status).toBe(update ? "available" : "idle"),
+				);
+			}
+			expect(mockCheck).toHaveBeenCalledTimes(1);
+		},
+	);
+
+	it("失敗した確認はOFF→ONで再試行し成功後は再取得しない", async () => {
+		mockCheck.mockRejectedValueOnce(new Error("Network error"));
+		const { result, rerender } = renderHook(
+			({ enabled }) => useUpdateChecker(enabled),
+			{ initialProps: { enabled: true }, wrapper: StrictMode },
+		);
+		await waitFor(() => expect(result.current.status).toBe("idle"));
+		expect(mockCheck).toHaveBeenCalledTimes(1);
+		rerender({ enabled: false });
+		rerender({ enabled: true });
+		await waitFor(() => expect(result.current.status).toBe("idle"));
+		expect(mockCheck).toHaveBeenCalledTimes(2);
+		rerender({ enabled: false });
+		rerender({ enabled: true });
+		await waitFor(() => expect(result.current.status).toBe("idle"));
+		expect(mockCheck).toHaveBeenCalledTimes(2);
+	});
+
 	it("should return to idle on dismiss", async () => {
 		const mockUpdate = {
 			version: "1.2.0",

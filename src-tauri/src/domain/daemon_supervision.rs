@@ -164,14 +164,6 @@ impl DaemonSupervision {
         }
     }
     pub fn connected(&mut self, now: u64) -> bool {
-        self.ready(now)
-    }
-    pub fn connection_failed(&mut self, failure: Failure) {
-        if self.phase == Phase::Starting && matches!(failure.stage, FailureStage::Connection(_)) {
-            self.failure = Some(failure);
-        }
-    }
-    pub fn ready(&mut self, now: u64) -> bool {
         if self.phase == Phase::Starting && !self.startup_expired(now) {
             self.phase = Phase::Ready;
             self.ready_since = Some(now);
@@ -179,6 +171,11 @@ impl DaemonSupervision {
             return true;
         }
         false
+    }
+    pub fn connection_failed(&mut self, failure: Failure) {
+        if self.phase == Phase::Starting && matches!(failure.stage, FailureStage::Connection(_)) {
+            self.failure = Some(failure);
+        }
     }
     pub fn spawn_failed(&mut self, reason: String, now: u64) {
         self.failed_after_exit(

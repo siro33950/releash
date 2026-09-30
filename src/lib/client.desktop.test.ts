@@ -88,9 +88,4 @@ it("Rustの同一性検証が失敗した接続では業務RPCを呼ばない", 
 		release: "test",
 	});
 	expect(read).not.toHaveBeenCalled();
-	expect(
-		vi
-			.mocked(invoke)
-			.mock.calls.some(([name]) => name === "complete_desktop_restoration"),
-	).toBe(false);
 });

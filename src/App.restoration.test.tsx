@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { type ReactNode, StrictMode } from "react";
 import { beforeEach, expect, it, vi } from "vitest";
+import type { SettingsModalProps } from "@/components/panels/SettingsModal";
 import type { WorkspaceListModel } from "@/hooks/useWorkspaceList";
 import { invokeClient } from "@/lib/client";
 import { stateSubscriptions } from "@/test/stateSubscriptions";
@@ -40,13 +41,26 @@ vi.mock("@/components/panels/SettingsModal", () => ({
 	SettingsModal: ({
 		open,
 		repoPaths,
-	}: {
-		open: boolean;
-		repoPaths: string[];
-	}) =>
+		settings,
+		onSave,
+		desktopSettingsLoaded,
+		desktopSettingsError,
+	}: SettingsModalProps) =>
 		open ? (
 			<section aria-label="Registered repositories">
-				{repoPaths.join(",")}
+				<span data-testid="registered-repositories">
+					{repoPaths?.join(",")}
+				</span>
+				<p>Settings loaded: {String(desktopSettingsLoaded)}</p>
+				{desktopSettingsError && <p role="alert">{desktopSettingsError}</p>}
+				<button
+					type="button"
+					onClick={() =>
+						onSave({ ...settings, autoUpdate: !settings.autoUpdate })
+					}
+				>
+					Toggle auto-update
+				</button>
 			</section>
 		) : null,
 }));
@@ -227,7 +241,7 @@ it("登録一覧とWorkspacesの変更・削除はそれぞれの購読から届
 			status: { loaded: true, state: "empty", error: null },
 		});
 	});
-	expect(settings).toBeEmptyDOMElement();
+	expect(screen.getByTestId("registered-repositories")).toBeEmptyDOMElement();
 	expect(screen.queryByRole("button", { name: "/new" })).toBeNull();
 	expect(
 		vi
@@ -254,4 +268,53 @@ it("StrictModeで初回表示と再接続を経ても自動更新確認は一度
 			.mocked(invoke)
 			.mock.calls.filter(([command]) => command === "check_desktop_update"),
 	).toHaveLength(1);
+});
+
+it("設定画面で自動更新をONにすると確認し成功後の切替と再接続では再確認しない", async () => {
+	localStorage.setItem(
+		"releash-settings",
+		JSON.stringify({ autoUpdate: false }),
+	);
+	await act(async () => {
+		render(<App />);
+	});
+	fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+	const checks = () =>
+		vi
+			.mocked(invoke)
+			.mock.calls.filter(([command]) => command === "check_desktop_update");
+	expect(checks()).toHaveLength(0);
+	await act(async () =>
+		fireEvent.click(screen.getByRole("button", { name: "Toggle auto-update" })),
+	);
+	expect(checks()).toHaveLength(1);
+	for (let i = 0; i < 2; i++) {
+		await act(async () =>
+			fireEvent.click(
+				screen.getByRole("button", { name: "Toggle auto-update" }),
+			),
+		);
+	}
+	for (const phase of ["starting", "ready"]) {
+		status = { ...status, phase };
+		await act(async () => notifyStatus());
+	}
+	expect(checks()).toHaveLength(1);
+});
+
+it("設定の読み込み状態と失敗を設定画面へ渡し回復を反映する", async () => {
+	states.clear();
+	states.publish("startup-outcome", { type: "ready" });
+	await act(async () => {
+		render(<App />);
+	});
+	fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+	expect(screen.getByText("Settings loaded: false")).toBeVisible();
+	await act(async () =>
+		states.fail("desktop-settings", new Error("settings unavailable")),
+	);
+	expect(screen.getByRole("alert")).toHaveTextContent("settings unavailable");
+	await act(async () => states.publish("desktop-settings", desktopSettings));
+	expect(screen.getByText("Settings loaded: true")).toBeVisible();
+	expect(screen.queryByRole("alert")).toBeNull();
 });

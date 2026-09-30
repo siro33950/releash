@@ -42,6 +42,8 @@ import type { CenterSelection } from "@/types/workspace-tree";
 interface MainLayoutProps {
 	selectedRootPath: string | null;
 	settings: AppSettings;
+	desktopSettingsLoaded: boolean;
+	desktopSettingsError: string | null;
 	onSettingsSave: (settings: AppSettings) => void;
 	leftNav: React.ReactNode;
 	topBanner?: React.ReactNode;
@@ -57,6 +59,8 @@ interface MainLayoutProps {
 function WorktreeContent({
 	rootPath,
 	settings,
+	desktopSettingsLoaded,
+	desktopSettingsError,
 	onSettingsSave,
 	rightPanelRef,
 	onRightResize,
@@ -72,6 +76,8 @@ function WorktreeContent({
 }: {
 	rootPath: string;
 	settings: AppSettings;
+	desktopSettingsLoaded: boolean;
+	desktopSettingsError: string | null;
 	onSettingsSave: (settings: AppSettings) => void;
 	rightPanelRef: React.RefObject<PanelImperativeHandle | null>;
 	onRightResize: (size: PanelSize) => void;
@@ -280,6 +286,8 @@ function WorktreeContent({
 					s.dispatchUI({ type: "SET_SETTINGS_OPEN", open })
 				}
 				settings={settings}
+				desktopSettingsLoaded={desktopSettingsLoaded}
+				desktopSettingsError={desktopSettingsError}
 				onSave={onSettingsSave}
 				repoPaths={[rootPath]}
 			/>
@@ -308,6 +316,8 @@ interface WorktreePaneProps {
 	rootPath: string;
 	active: boolean;
 	settings: AppSettings;
+	desktopSettingsLoaded: boolean;
+	desktopSettingsError: string | null;
 	onSettingsSave: (settings: AppSettings) => void;
 	activeRightPanelRef: React.MutableRefObject<PanelImperativeHandle | null>;
 	onRightVisibleChange: (rootPath: string, visible: boolean) => void;
@@ -332,6 +342,8 @@ function WorktreePane({
 	rootPath,
 	active,
 	settings,
+	desktopSettingsLoaded,
+	desktopSettingsError,
 	onSettingsSave,
 	activeRightPanelRef,
 	onRightVisibleChange,
@@ -398,6 +410,8 @@ function WorktreePane({
 				<WorktreeContent
 					rootPath={rootPath}
 					settings={settings}
+					desktopSettingsLoaded={desktopSettingsLoaded}
+					desktopSettingsError={desktopSettingsError}
 					onSettingsSave={onSettingsSave}
 					rightPanelRef={ownRightPanelRef}
 					onRightResize={handleRightResize}
@@ -419,6 +433,8 @@ function WorktreePane({
 export function MainLayout({
 	selectedRootPath,
 	settings,
+	desktopSettingsLoaded,
+	desktopSettingsError,
 	onSettingsSave,
 	leftNav,
 	topBanner,
@@ -597,6 +613,8 @@ export function MainLayout({
 										rootPath={rootPath}
 										active={rootPath === selectedRootPath}
 										settings={settings}
+										desktopSettingsLoaded={desktopSettingsLoaded}
+										desktopSettingsError={desktopSettingsError}
 										onSettingsSave={onSettingsSave}
 										activeRightPanelRef={rightPanelRef}
 										onRightVisibleChange={handlePaneRightVisibleChange}

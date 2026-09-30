@@ -80,10 +80,10 @@ function StartupFailureScreen({
 }
 
 function WorkbenchApp() {
-	const { settings, updateSettings, updateTheme } = useSettings();
+	const { settings, updateSettings, updateTheme, loaded, loadError } =
+		useSettings();
 	const daemonReady = useDaemonReady();
-	const [autoUpdate] = useState(settings.autoUpdate);
-	const updateChecker = useUpdateChecker(autoUpdate);
+	const updateChecker = useUpdateChecker(settings.autoUpdate);
 	const startupStarted = useRef(false);
 	const { worktrees, selectedWorktreeId, openWorktreeTab } =
 		useWorkspaceNavigation();
@@ -275,6 +275,8 @@ function WorkbenchApp() {
 			<MainLayout
 				selectedRootPath={selectedRootPath}
 				settings={settings}
+				desktopSettingsLoaded={loaded}
+				desktopSettingsError={loadError}
 				onSettingsSave={updateSettings}
 				leftNav={leftNav}
 				topBanner={<ProviderHookHealthBanner />}
@@ -290,6 +292,8 @@ function WorkbenchApp() {
 				open={showAppSettings}
 				onOpenChange={setShowAppSettings}
 				settings={settings}
+				desktopSettingsLoaded={loaded}
+				desktopSettingsError={loadError}
 				onSave={updateSettings}
 				repoPaths={repoPaths ?? []}
 				onRemoveRepo={removeRepo}

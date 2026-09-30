@@ -18,6 +18,7 @@ import {
 	it,
 	vi,
 } from "vitest";
+import { useSettings } from "@/hooks/useSettings";
 import {
 	type StateTarget,
 	type StateValues,
@@ -155,6 +156,8 @@ describe("SettingsModal", () => {
 		open: true,
 		onOpenChange: vi.fn(),
 		settings: defaultSettings,
+		desktopSettingsLoaded: true,
+		desktopSettingsError: null,
 		onSave: vi.fn(),
 		repoPaths: ["/repos/my-app"],
 	};
@@ -165,17 +168,14 @@ describe("SettingsModal", () => {
 			const user = userEvent.setup();
 			const onSave = vi.fn();
 			const { invokeClient } = await import("@/lib/client");
-			vi.mocked(subscribeState).mockImplementation(((
-				...args: Parameters<typeof states.subscribeState>
-			) => {
-				const [target, , error] = args;
-				if (target === "desktop-settings") {
-					if (loadError) error?.(new Error(loadError));
-					return () => {};
-				}
-				return states.subscribeState(...args);
-			}) as typeof subscribeState);
-			render(<SettingsModal {...defaultProps} onSave={onSave} />);
+			render(
+				<SettingsModal
+					{...defaultProps}
+					desktopSettingsLoaded={false}
+					desktopSettingsError={loadError}
+					onSave={onSave}
+				/>,
+			);
 			fireEvent.click(screen.getByText("Privacy & Updates"));
 			const metrics = screen.getByRole("checkbox", {
 				name: "Send anonymous performance metrics",
@@ -214,7 +214,13 @@ describe("SettingsModal", () => {
 		const user = userEvent.setup();
 		const onSave = vi.fn();
 		const { invokeClient } = await import("@/lib/client");
-		const view = render(<SettingsModal {...defaultProps} onSave={onSave} />);
+		const view = render(
+			<SettingsModal
+				{...defaultProps}
+				desktopSettingsLoaded={false}
+				onSave={onSave}
+			/>,
+		);
 		fireEvent.click(screen.getByText("Privacy & Updates"));
 		const metrics = screen.getByRole("checkbox", {
 			name: "Send anonymous performance metrics",
@@ -269,6 +275,88 @@ describe("SettingsModal", () => {
 			}),
 		);
 		vi.mocked(invokeClient).mockClear();
+	});
+
+	it("親の設定購読が後から届いても他欄の保存でmetricsの値を戻さない", async () => {
+		publishDefaults({ desktop: false });
+		const { invokeClient } = await import("@/lib/client");
+		const user = userEvent.setup();
+		function SettingsScreen() {
+			const { settings, loaded, loadError, updateSettings } = useSettings();
+			return (
+				<>
+					<p>Parent metrics: {String(settings.performanceTelemetry)}</p>
+					<SettingsModal
+						{...defaultProps}
+						settings={settings}
+						desktopSettingsLoaded={loaded}
+						desktopSettingsError={loadError}
+						onSave={updateSettings}
+					/>
+				</>
+			);
+		}
+		render(<SettingsScreen />);
+		fireEvent.click(screen.getByText("Privacy & Updates"));
+		const metrics = screen.getByRole("checkbox", {
+			name: "Send anonymous performance metrics",
+		});
+		expect(metrics).toBeDisabled();
+		await user.click(screen.getByRole("checkbox", { name: "Auto-update" }));
+		await act(async () =>
+			states.publish("desktop-settings", {
+				...desktopSettings,
+				performanceTelemetry: false,
+			}),
+		);
+		expect(metrics).toBeEnabled();
+		expect(metrics).not.toBeChecked();
+		vi.mocked(invokeClient).mockClear();
+		await user.click(screen.getByRole("button", { name: "Save" }));
+		expect(screen.getByText("Parent metrics: false")).toBeVisible();
+		expect(invokeClient).not.toHaveBeenCalledWith(
+			"update_performance_telemetry",
+			expect.anything(),
+		);
+		await user.click(metrics);
+		await user.click(screen.getByRole("button", { name: "Save" }));
+		expect(invokeClient).toHaveBeenCalledWith("update_performance_telemetry", {
+			enabled: true,
+		});
+		expect(screen.getByText("Parent metrics: true")).toBeVisible();
+		expect(
+			screen.getByRole("checkbox", { name: "Auto-update" }),
+		).not.toBeChecked();
+		vi.mocked(invokeClient).mockClear();
+	});
+
+	it("metricsの編集値は親の変更後も保ち開き直すと親の値に戻る", async () => {
+		const user = userEvent.setup();
+		const view = render(<SettingsModal {...defaultProps} />);
+		fireEvent.click(screen.getByText("Privacy & Updates"));
+		await user.click(
+			screen.getByRole("checkbox", {
+				name: "Send anonymous performance metrics",
+			}),
+		);
+		view.rerender(
+			<SettingsModal
+				{...defaultProps}
+				settings={{ ...defaultSettings, fontSize: 18 }}
+			/>,
+		);
+		expect(
+			screen.getByRole("checkbox", {
+				name: "Send anonymous performance metrics",
+			}),
+		).not.toBeChecked();
+		view.rerender(<SettingsModal {...defaultProps} open={false} />);
+		view.rerender(<SettingsModal {...defaultProps} open />);
+		expect(
+			screen.getByRole("checkbox", {
+				name: "Send anonymous performance metrics",
+			}),
+		).toBeChecked();
 	});
 
 	it("ログイン項目の初期取得失敗後の保存を成功として記録しない", async () => {
