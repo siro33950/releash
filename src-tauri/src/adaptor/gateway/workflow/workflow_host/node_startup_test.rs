@@ -97,7 +97,7 @@ async fn test_起動再試行登録_読込の一時失敗をやり直し停止�
                 )
             );
         }
-        let observations = fixture.host.queue.records(id);
+        let observations = crate::test_support::retry::shared_store().records(id);
         assert!(observations
             .iter()
             .any(|observation| observation.record.kind

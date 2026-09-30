@@ -22,7 +22,6 @@ fn test_workflow設定の読み取り_ロック破損を失敗として返す() 
         ReleashConfig::default(),
         std::path::PathBuf::new(),
     ));
-    // When
     let poisoned = gateway.clone();
     let _ = std::thread::spawn(move || {
         let _lock = poisoned.config.lock().unwrap();
@@ -30,11 +29,11 @@ fn test_workflow設定の読み取り_ロック破損を失敗として返す() 
     })
     .join();
 
+    // When
+    let result = gateway.get_workflow_config();
+
     // Then
-    assert!(matches!(
-        gateway.get_workflow_config(),
-        Err(AppConfigError::Repository(_))
-    ));
+    assert!(matches!(result, Err(AppConfigError::Repository(_))));
 }
 
 #[test]

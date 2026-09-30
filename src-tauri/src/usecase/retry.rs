@@ -9,8 +9,7 @@ pub struct Retrying {
     pub(crate) limiter: Arc<RetryLimiter>,
     pub(crate) failures: Arc<FailureRecordingUsecase>,
     #[cfg(test)]
-    pub(crate) test_query:
-        Option<Arc<crate::adaptor::gateway::failure_records::FailureRecordStore>>,
+    pub(crate) test_query: Option<Arc<dyn FailureQueryService>>,
 }
 
 impl Retrying {

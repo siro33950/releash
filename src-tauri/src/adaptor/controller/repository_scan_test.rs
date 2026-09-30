@@ -69,7 +69,7 @@ async fn test_repository走査_一時的な失敗をやり直して走査を終�
     // Then
     assert_eq!(scanner.scans.load(Ordering::SeqCst), 3);
     assert_eq!(state.snapshot_for_read().version, 1);
-    let records = crate::usecase::retry::shared().records("/repo");
+    let records = crate::test_support::retry::shared_store().records("/repo");
     assert!(records.iter().all(|record| !record.record.active));
     state.shutdown();
 }

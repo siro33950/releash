@@ -151,12 +151,11 @@ async fn test_やり直しの手順_成功で要対応を解消する() {
         })
         .await
         .unwrap();
-    let records = retrying.page("tree", 0).await.items;
     let page = retrying.page("tree", 0).await;
     // Then
     assert!(before.items[0].requires_attention);
-    assert_eq!(records.len(), 1);
-    assert_eq!(records[0].record.count, 1);
-    assert!(!records[0].requires_attention);
+    assert_eq!(page.items.len(), 1);
+    assert_eq!(page.items[0].record.count, 1);
+    assert!(!page.items[0].requires_attention);
     assert!(!page.requires_attention);
 }

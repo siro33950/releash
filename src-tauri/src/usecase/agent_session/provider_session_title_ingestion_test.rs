@@ -540,7 +540,7 @@ async fn test_provider_title入口_開始の一時失敗と対象の分類別再
             gateway.clone(),
             notifier.subscriptions.clone(),
         ));
-        let retrying = crate::usecase::retry::test_retrying();
+        let (retrying, store) = crate::test_support::retry::test_retrying_with_store();
         let _run = tokio::spawn(crate::adaptor::controller::provider_session_title::run(
             retrying.clone(),
             usecase,
@@ -562,7 +562,7 @@ async fn test_provider_title入口_開始の一時失敗と対象の分類別再
         assert_eq!(repository.find_calls.load(Ordering::SeqCst), expected_reads);
         assert_eq!(gateway.read_count("provider-queued"), expected_reads);
         assert_eq!(repository.saved_titles.lock().unwrap().len(), 1);
-        let records = retrying.records("queued");
+        let records = store.records("queued");
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].record.count, 2);
     }

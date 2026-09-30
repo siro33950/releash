@@ -413,7 +413,7 @@ async fn test_起動時復旧_定義不明でも保存を試みず要対応を�
             let usecase = WorkflowStartupUsecase::new(repository.clone(), runtime.clone());
 
             // When
-            let retrying = crate::usecase::retry::test_retrying();
+            let (retrying, store) = crate::test_support::retry::test_retrying_with_store();
             assert!(
                 crate::adaptor::controller::workflow_startup::recover(&retrying, &usecase)
                     .await
@@ -428,7 +428,7 @@ async fn test_起動時復旧_定義不明でも保存を試みず要対応を�
                 runtime.0.load(std::sync::atomic::Ordering::SeqCst),
                 usize::from(!unreadable)
             );
-            let observations = retrying.records("tree");
+            let observations = store.records("tree");
             assert_eq!(observations.len(), 1);
             assert!(observations[0].requires_attention);
         }

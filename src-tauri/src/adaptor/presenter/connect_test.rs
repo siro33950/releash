@@ -126,13 +126,12 @@ fn test_失敗記録の分類_六種類を固定文字列として表示する()
             "TechnicalFailure",
         ),
     ] {
-        // Then
-        assert_eq!(
+        let classification =
             crate::adaptor::presenter::state_subscription_wire::failure_classification(
-                failure.into()
-            ),
-            expected
-        );
+                failure.into(),
+            );
+        // Then
+        assert_eq!(classification, expected);
     }
 }
 
@@ -190,12 +189,11 @@ fn test_作業手順の失敗_storeに包んでも転送コードを保持する
     ] {
         // When
         let failure = StorageFailure::from(error);
+        let failure_code = failure.connect_code();
+        let usecase_code = ProviderLifecycleIngressUsecaseError::Store(failure).connect_code();
         // Then
-        assert_eq!(failure.connect_code(), expected);
-        assert_eq!(
-            ProviderLifecycleIngressUsecaseError::Store(failure).connect_code(),
-            expected
-        );
+        assert_eq!(failure_code, expected);
+        assert_eq!(usecase_code, expected);
     }
 }
 

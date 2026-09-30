@@ -4928,7 +4928,7 @@ nodes:
         }
 
         #[tokio::test]
-        async fn test_startup_reconciliation_未対応permissionはabortせず要対応を記録する() {
+        async fn test_起動時復旧_未対応permissionはabortせず要対応を記録する() {
             const TREE_ID: &str = "00000000-0000-4000-8000-000000000004";
             let directory = tempfile::tempdir().unwrap();
             let store = LocalEventStore::open(LocalEventStoreConfig::production(
@@ -5005,7 +5005,7 @@ nodes:
                 .database_path(),
             )
             .unwrap();
-            let queue = crate::usecase::retry::test_retrying();
+            let (queue, failure_store) = crate::test_support::retry::test_retrying_with_store();
             let runtime = Arc::new(HostWorkflowStartup {
                 host: Arc::new(host),
                 app,
@@ -5028,7 +5028,7 @@ nodes:
                     .unwrap();
                 assert_eq!(count, 1);
                 assert!(after.execution.is_active());
-                let observations = queue.records(TREE_ID);
+                let observations = failure_store.records(TREE_ID);
                 assert_eq!(observations.len(), 1);
                 assert_eq!(
                     observations[0].record.kind,

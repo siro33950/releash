@@ -2178,9 +2178,12 @@ async fn test_委任_保存の競合が続いてもabortを完了し注入も失
             let page = failure_page(&host.queue, &targets).await;
             if let Some(item) = page.items.iter().find(|item| item.record.count >= 2) {
                 assert_eq!(item.record.target, parent.id);
-                assert!(host.queue.records(&parent.id).iter().any(|observation| {
-                    observation.record.count >= 2 && observation.record.active
-                }));
+                assert!(crate::test_support::retry::shared_store()
+                    .records(&parent.id)
+                    .iter()
+                    .any(|observation| {
+                        observation.record.count >= 2 && observation.record.active
+                    }));
                 assert!(!item.requires_attention);
                 assert!(item.record.last_observed_ms > item.record.first_observed_ms);
                 break;
