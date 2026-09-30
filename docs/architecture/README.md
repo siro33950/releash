@@ -19,12 +19,12 @@
 | domain | 値オブジェクト | 業務の値と、状態を持たない業務の規則 |
 | domain | ドメインサービス | 複数の集約にまたがる業務の規則。外部世界が要るときは trait を domain に置き、adaptor/gateway が実装する |
 | domain | Repository の trait | 集約の保存。adaptor/gateway が実装する |
-| usecase | Usecase（Interactor） | アプリの業務手順 |
-| usecase | Input Data / Output Data | 操作の入力と出力。Entity を参照しない単純なデータ。失敗も出力として表す |
-| usecase | Output Boundary の trait | 結果を外へ出す口。画面への状態の配信もここを通る。adaptor/presenter が実装する |
-| usecase | QueryService の trait | 読み取り要求に Output Data で答える口。adaptor/gateway が実装する |
-| adaptor/controller | Controller | 外からのきっかけ（転送の要求、時刻・起動、OS の通知）を Input Data に変えて、Usecase を呼ぶ。きっかけを生む駆動部（Web サーバ、タイマー、OS の通知）は infrastructure に置く |
-| adaptor/presenter | Presenter、転送のメッセージ型 | Output Data を転送の形とステータスコードに変える |
+| usecase | Usecase（Interactor） | アプリの業務手順。Entity でも DTO でも返してよい |
+| usecase | QueryService の trait | 読み取り要求に DTO で答える口。adaptor/gateway が実装する |
+| usecase | DTO | QueryService が返す Response。Entity から導かれず、データソースから直接組み立てる |
+| usecase | 購読の配信の口の trait | 購読で状態の変化を外へ押し出す口。adaptor/presenter が実装する |
+| adaptor/controller | Controller | 外からのきっかけ（転送の要求、時刻・起動、OS の通知）を Usecase の引数に変えて、Usecase を呼ぶ。きっかけを生む駆動部（Web サーバ、タイマー、OS の通知）は infrastructure に置く |
+| adaptor/presenter | Presenter、転送のメッセージ型 | Usecase が返した値を転送の形とステータスコードに変える |
 | adaptor/gateway | domain と usecase の trait の実装 | 内側の型と外部世界の形の変換 |
 | infrastructure | 外部世界の駆動部 | 外部世界そのもの（SQLite、Web サーバ、process・PTY、HTTP、OS）。内側へつなぐ部分だけを書く |
 | common | 横断的関心事の包み | 処理を外から包んで振る舞いを足す |
@@ -46,7 +46,7 @@ Main → 全ての層
 - usecase の業務依存は domain に限る。Usecase自身が所有する非同期排他・通知等の実行制御primitiveは使用してよいが、外部世界との接続やその型を持ち込まない
 - adaptor（gateway / controller / presenter）は usecase と domain に依存してよい（依存は内向き）
 - adaptor/gateway は domain の trait（Repository、ドメインサービス）と usecase の trait（QueryService）を実装する
-- adaptor/presenter は usecase の Output Boundary を実装する
+- adaptor/presenter は usecase の購読の配信の口を実装する
 - adaptor/controller は usecase を呼ぶ
 - adaptor/gateway は infrastructure が提供する外部世界への接触能力を使う（[INFRASTRUCTURE.md](./INFRASTRUCTURE.md)）
 - infrastructure は内側のどの層にも依存しない。domain 型を import せず、domain の trait を実装しない

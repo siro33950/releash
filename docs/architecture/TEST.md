@@ -38,7 +38,7 @@ Given / When / Then をコメントで区切り、前提・操作・検証を分
 
 ## モック方針
 
-- **domain の trait（Repository、ドメインサービス）と usecase の trait（QueryService、Output Boundary）**: `mockall` でモック生成可、または手書きの fake 実装
+- **domain の trait（Repository、ドメインサービス）と usecase の trait（QueryService、購読の配信の口）**: `mockall` でモック生成可、または手書きの fake 実装
 - **Tauri API**: テストでは呼ばない設計を優先。やむを得ない場合は薄いラッパー化してテスト側で差し替え
 - **git2**: 実 git リポジトリを `tempdir` 上に作って統合テスト寄りに書く
 - **外部 HTTP API**: 偽サーバを立てる

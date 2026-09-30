@@ -17,7 +17,7 @@
 | SQLite | 接続、DDL、トランザクション機構、保存形式の表現 | SQL（DML）、保存表現 ↔ domain record の codec |
 | git | `git2` の呼び出しと `git2` の型 | `Branch` / `Commit` の構築、`git2::Error` → ドメインエラー |
 | Terminal / Provider CLI | PTY、process group、raw byte I/O、checkpoint journal | Terminal Surface ownership、AgentSession lifecycle、Provider lifecycleへの変換 |
-| 外向き通知 | 送信機構そのもの | Output Data → 送信形式への組み立て（presenter） |
+| 外向き通知 | 送信機構そのもの | Usecase が返した値 → 送信形式への組み立て（presenter） |
 
 DDL は「保存形式がどういう形をしているか」の宣言であって、何も変換しない。対して SQL（DML）は、ドメインの値を行へ、行をドメインの値へ写す行為そのものであり、変換である。
 
@@ -40,7 +40,7 @@ infrastructure は内側のどの層にも依存しない。`use crate::domain` 
 ## 何を置かないか
 
 - ドメインの語彙への変換（gateway）
-- フロントの語彙（Output Data）への変換（QueryService の実装）
+- フロントの語彙（DTO）への変換（QueryService の実装）
 - 業務判断・検証・分類（domain）
 - 複数集約をまたぐ手順の調停（usecase）
 

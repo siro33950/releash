@@ -2,13 +2,13 @@
 
 ## 原則
 
-- **Usecase の Output Boundary を実装する。** Usecase が出した Output Data を、転送の形（Connect のメッセージ、HTTP local API のレスポンス）に変える
-- **変換だけを持つ。** 業務の判断を書かない。受け取った Output Data を解釈して結果を変えない
-- 画面への状態の配信（購読）も、Output Boundary を通して届いたものを転送の形に変えて送る。送る仕組みそのもの（接続、送り待ち、送る量の制御）は infrastructure と common の包みを使う
+- **Usecase が返した値（Entity、DTO、失敗）を、転送の形（Connect のメッセージ、HTTP local API のレスポンス）に変える。**
+- **変換だけを持つ。** 業務の判断を書かない。受け取った値を解釈して結果を変えない
+- 画面への状態の配信（購読）は、usecase の購読の配信の口を実装し、届いた値を転送の形に変えて送る。送る仕組みそのもの（接続、送り待ち、送る量の制御）は infrastructure と common の包みを使う
 
 ## 転送のメッセージ型
 
-`proto/client.proto` のメッセージ型と、複数の入口で共有する転送の型は presenter に置く。これらは転送の形であって、ドメイン型でも Output Data でもない。読み取り結果を返す場合は、Output Data をこの型に載せる。
+`proto/client.proto` のメッセージ型と、複数の入口で共有する転送の型は presenter に置く。これらは転送の形であって、ドメイン型でも DTO でもない。読み取り結果を返す場合は、DTO をこの型に内包して載せる。
 
 ## 失敗
 
