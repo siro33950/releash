@@ -13,7 +13,6 @@ pub(crate) fn test_retrying_with_store() -> (Arc<Retrying>, Arc<FailureRecordSto
     let retrying = Arc::new(Retrying {
         limiter: Arc::new(RetryLimiter::deterministic()),
         failures: Arc::new(FailureRecordingUsecase::new(store.clone(), None)),
-        test_query: Some(store.clone()),
     });
     (retrying, store)
 }

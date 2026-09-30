@@ -7,29 +7,6 @@ use crate::usecase::state_subscription::StateValue;
 pub(crate) fn payload(value: &StateValue) -> Result<wire::StatePayload, connectrpc::ConnectError> {
     Ok(wire::StatePayload {
         value: Some(match value {
-            StateValue::Failures(records) => {
-                wire::state_payload::Value::Failures(wire::FailureRecords {
-                    next_offset: records.next_offset.map(|offset| offset as u32),
-                    requires_attention: Some(records.requires_attention),
-                    items: records
-                        .items
-                        .iter()
-                        .map(|observation| {
-                            let record = &observation.record;
-                            wire::FailureRecord {
-                                operation: Some(record.operation.clone()),
-                                target: Some(record.target.clone()),
-                                classification: Some(failure_classification(record.classification).into()),
-                                message: Some(record.message.clone()),
-                                count: Some(record.count),
-                                first_observed_ms: Some(record.first_observed_ms),
-                                last_observed_ms: Some(record.last_observed_ms),
-                                requires_attention: Some(observation.requires_attention),
-                            }
-                        })
-                        .collect(),
-                })
-            }
             StateValue::Terminal(value) => wire::state_payload::Value::Terminal(
                 crate::adaptor::presenter::terminal::TerminalSurfaceStreamItemV1::from(
                     value.clone(),
@@ -215,20 +192,6 @@ pub(crate) fn payload(value: &StateValue) -> Result<wire::StatePayload, connectr
             }
         }),
     })
-}
-
-pub(crate) fn failure_classification(
-    classification: crate::usecase::failure::FailureClassificationDto,
-) -> &'static str {
-    use crate::usecase::failure::FailureClassificationDto as C;
-    match classification {
-        C::VersionConflict => "VersionConflict",
-        C::BusinessFailure => "BusinessFailure",
-        C::Transient => "Transient",
-        C::TimedOut => "TimedOut",
-        C::Cancelled => "Cancelled",
-        C::TechnicalFailure => "TechnicalFailure",
-    }
 }
 
 pub(crate) fn event(

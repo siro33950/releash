@@ -60,17 +60,6 @@ fn test_購読対象_構造化入力を検証し対象名との変換を所有�
 }
 
 #[test]
-fn test_失敗購読_ページ指定を検証して往復する() {
-    // Given / When
-    let target = SubscriptionTarget::from_parts("failures", &["*", "100"]).unwrap();
-    // Then
-    assert_eq!(SubscriptionTarget::parse(&target.to_string()), Ok(target));
-    for offset in ["0", "-1", "+100", "0100", "4096", "invalid"] {
-        assert!(SubscriptionTarget::from_parts("failures", &["*", offset]).is_err());
-    }
-}
-
-#[test]
 fn test_review購読対象_baseとsectionを検証して往復する() {
     // Given
     let targets = [

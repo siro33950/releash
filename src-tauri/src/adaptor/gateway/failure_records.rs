@@ -1,13 +1,8 @@
 use crate::domain::failure::{FailureKey, FailureRecord, FailureRecordRepository, WorkFailure};
-use crate::usecase::failure::{
-    FailureClassificationDto, FailureObservationDto, FailurePage, FailureQueryService,
-    FailureRecordDto,
-};
 use std::collections::VecDeque;
 use std::sync::Mutex;
 
 const CAPACITY: usize = 4096;
-const PAGE_SIZE: usize = 100;
 
 pub struct FailureRecordStore {
     records: Mutex<VecDeque<FailureRecord>>,
@@ -157,44 +152,6 @@ fn now_ms() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as u64
-}
-
-#[async_trait::async_trait]
-impl FailureQueryService for FailureRecordStore {
-    async fn page(&self, targets: &[String], offset: usize) -> FailurePage {
-        let records = self.records.lock().expect("failure records");
-        let matching = || {
-            records.iter().filter(|record| {
-                targets
-                    .iter()
-                    .any(|target| target == "*" || record.target == *target)
-            })
-        };
-        let requires_attention = matching().any(is_attention);
-        let total = matching().count();
-        let items = matching()
-            .skip(offset)
-            .take(PAGE_SIZE)
-            .map(|record| FailureObservationDto {
-                record: FailureRecordDto {
-                    operation: record.operation.clone(),
-                    target: record.target.clone(),
-                    classification: FailureClassificationDto::from(record.kind),
-                    message: record.message.clone(),
-                    count: record.count,
-                    first_observed_ms: record.first_observed_ms,
-                    last_observed_ms: record.last_observed_ms,
-                },
-                requires_attention: is_attention(record),
-            })
-            .collect();
-        FailurePage {
-            items,
-            next_offset: (offset.saturating_add(PAGE_SIZE) < total)
-                .then_some(offset.saturating_add(PAGE_SIZE)),
-            requires_attention,
-        }
-    }
 }
 
 #[cfg(test)]

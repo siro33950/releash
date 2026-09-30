@@ -1,7 +1,8 @@
 use super::*;
 use crate::domain::failure::TechnicalFailureNature;
+use crate::test_support::retry::{shared_store, test_retrying_with_store};
 use crate::usecase::failure::WorkFailure;
-use crate::usecase::failure::{BusinessFailure, Failure, FailureClassificationDto};
+use crate::usecase::failure::{BusinessFailure, Failure};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 #[tokio::test(start_paused = true)]
@@ -14,7 +15,7 @@ async fn test_やり直しの手順_分類による再試行と失敗の記録�
         Failure::Business(BusinessFailure::Other),
     ] {
         // Given
-        let retrying = test_retrying();
+        let (retrying, store) = test_retrying_with_store();
         let calls = AtomicUsize::new(0);
         let retryable = next_attempt(kind).is_some();
         // When
@@ -47,7 +48,7 @@ async fn test_やり直しの手順_分類による再試行と失敗の記録�
                 },
             )
             .await;
-        let records = retrying.page("/repo", 0).await.items;
+        let records = store.records("/repo");
         let attempts = calls.load(Ordering::SeqCst);
         // Then
         assert_eq!(result.is_ok(), retryable);
@@ -64,7 +65,7 @@ async fn test_やり直しの手順_分類による再試行と失敗の記録�
 #[tokio::test(start_paused = true)]
 async fn test_段階のやり直し_版の競合は記録せず呼び出し元へ返す() {
     // Given
-    let retrying = test_retrying();
+    let (retrying, store) = test_retrying_with_store();
     let calls = AtomicUsize::new(0);
     // When
     let result = retrying
@@ -86,7 +87,7 @@ async fn test_段階のやり直し_版の競合は記録せず呼び出し元�
             },
         )
         .await;
-    let records = retrying.page("exec", 0).await.items;
+    let records = store.records("exec");
     // Then
     assert_eq!(
         result.unwrap_err().kind,
@@ -95,8 +96,8 @@ async fn test_段階のやり直し_版の競合は記録せず呼び出し元�
     assert_eq!(calls.load(Ordering::SeqCst), 2);
     assert_eq!(records.len(), 1);
     assert_eq!(
-        records[0].record.classification,
-        FailureClassificationDto::Transient
+        records[0].record.kind,
+        Failure::Technical(TechnicalFailureNature::Transient)
     );
 }
 
@@ -120,7 +121,7 @@ async fn test_試行の失敗記録_下位の再試行と上位への伝播を�
             })
         })
         .await;
-    let records = shared().page(&key.target, 0).await.items;
+    let records = shared_store().records(&key.target);
     // Then
     assert_eq!(
         result.unwrap_err().kind,
@@ -134,7 +135,7 @@ async fn test_試行の失敗記録_下位の再試行と上位への伝播を�
 #[tokio::test(start_paused = true)]
 async fn test_やり直しの手順_成功で要対応を解消する() {
     // Given
-    let retrying = test_retrying();
+    let (retrying, store) = test_retrying_with_store();
     let key = FailureKey::new("workflow_recovery", "tree");
     retrying.failures.observed(
         &key,
@@ -143,7 +144,7 @@ async fn test_やり直しの手順_成功で要対応を解消する() {
             message: "repair".into(),
         },
     );
-    let before = retrying.page("tree", 0).await;
+    let before = store.records("tree");
     // When
     retrying
         .restart(key, RetryBackoff::RECOVERY, |_| async {
@@ -151,11 +152,10 @@ async fn test_やり直しの手順_成功で要対応を解消する() {
         })
         .await
         .unwrap();
-    let page = retrying.page("tree", 0).await;
+    let after = store.records("tree");
     // Then
-    assert!(before.items[0].requires_attention);
-    assert_eq!(page.items.len(), 1);
-    assert_eq!(page.items[0].record.count, 1);
-    assert!(!page.items[0].requires_attention);
-    assert!(!page.requires_attention);
+    assert!(before[0].requires_attention);
+    assert_eq!(after.len(), 1);
+    assert_eq!(after[0].record.count, 1);
+    assert!(!after[0].requires_attention);
 }

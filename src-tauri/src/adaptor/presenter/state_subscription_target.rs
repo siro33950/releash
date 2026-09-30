@@ -30,14 +30,6 @@ impl SubscriptionTarget {
             return Err(SubscriptionError::InvalidId);
         }
         let target = match (name, args) {
-            ("failures", [target]) => Ok(Self::Failures((*target).into(), 0)),
-            ("failures", [target, offset]) => {
-                let parsed: usize = offset.parse().map_err(|_| SubscriptionError::InvalidId)?;
-                if parsed == 0 || parsed >= 4096 || parsed.to_string() != *offset {
-                    return Err(SubscriptionError::InvalidId);
-                }
-                Ok(Self::Failures((*target).into(), parsed))
-            }
             ("terminal", [path]) => {
                 crate::domain::terminal_surface::TerminalSurfaceOwner::workspace(
                     crate::domain::workspace_tree::WorkspaceIdentity::new(*path),
@@ -116,14 +108,6 @@ impl SubscriptionTarget {
 impl SubscriptionTarget {
     pub fn parts(&self) -> (&'static str, Vec<String>) {
         match self {
-            Self::Failures(target, offset) => (
-                "failures",
-                if *offset == 0 {
-                    vec![target.clone()]
-                } else {
-                    vec![target.clone(), offset.to_string()]
-                },
-            ),
             Self::Terminal(owner) => (
                 "terminal",
                 match owner {

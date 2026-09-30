@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { TerminalPanel } from "@/components/panels/TerminalPanel";
 import { Button } from "@/components/ui/button";
-import { BackgroundFailures } from "@/components/workflow/BackgroundFailures";
 import { useStateSubscriptionResult } from "@/hooks/useStateSubscription";
 import { invokeClient as invoke } from "@/lib/client";
 import { getErrorMessage } from "@/lib/errorMessage";
@@ -188,7 +187,6 @@ export function AgentSessionPanel({
 	if (state === "terminal") {
 		return (
 			<div className="flex h-full flex-col bg-background">
-				<BackgroundFailures target={agentSessionId} />
 				{terminalError && (
 					<div
 						role="alert"
@@ -218,7 +216,6 @@ export function AgentSessionPanel({
 
 	return (
 		<div className="flex h-full flex-col items-center justify-center gap-3 bg-background p-4 text-sm">
-			<BackgroundFailures target={agentSessionId} />
 			{error && (
 				<div role="alert" className="text-destructive">
 					{error}

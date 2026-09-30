@@ -475,7 +475,6 @@ pub(crate) async fn compose(
         Arc::new(
             adaptor::gateway::state_subscription_reads::StateSubscriptionReads(
                 usecase::state_subscription::WorkspaceStateReads {
-                    failures: failure_store.clone(),
                     repositories: dependencies
                         .app_state
                         .as_ref()

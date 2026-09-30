@@ -584,9 +584,6 @@ pub async fn read_state(
         wire::state_payload::Value::Workspaces(value) => {
             wire::from_message("releash.client.v1.WorkspaceListSnapshotDto", &value)
         }
-        wire::state_payload::Value::Failures(value) => {
-            wire::from_message("releash.client.v1.FailureRecords", &value)
-        }
         wire::state_payload::Value::ProviderAvailability(value) => wire::from_message(
             "releash.client.v1.ProviderAvailabilitySnapshotResponse",
             &value,

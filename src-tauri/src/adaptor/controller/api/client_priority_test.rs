@@ -1,16 +1,39 @@
 use super::*;
 use crate::adaptor::gateway::failure_records::FailureRecordStore;
-use crate::usecase::state_subscription::StateChangeSource;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
-#[tokio::test]
-async fn test_枠の拒否_次の受理で一度だけ解いて購読を通知する() {
+struct CountingFailureRecords {
+    store: Arc<FailureRecordStore>,
+    resolved: AtomicUsize,
+}
+
+impl crate::domain::failure::FailureRecordRepository for CountingFailureRecords {
+    fn record_observed(
+        &self,
+        key: &FailureKey,
+        failure: WorkFailure,
+        requires_attention: bool,
+    ) -> bool {
+        self.store.record_observed(key, failure, requires_attention)
+    }
+
+    fn record_resolved(&self, key: &FailureKey) -> bool {
+        self.resolved.fetch_add(1, Ordering::SeqCst);
+        self.store.record_resolved(key)
+    }
+}
+
+#[test]
+fn test_枠の拒否_次の受理で一度だけ解く() {
     // Given
-    let subscriptions = crate::test_support::state_subscription::test_subscriptions();
-    let mut changes = crate::test_support::state_subscription::changes(&subscriptions);
     let store = Arc::new(FailureRecordStore::default());
+    let records = Arc::new(CountingFailureRecords {
+        store: store.clone(),
+        resolved: AtomicUsize::new(0),
+    });
     let reporter = PriorityFailureReporter::new(Some(Arc::new(FailureRecordingUsecase::new(
-        store.clone(),
-        Some(subscriptions),
+        records.clone(),
+        None,
     ))));
     let rejection = Rejection {
         level: "default",
@@ -18,25 +41,19 @@ async fn test_枠の拒否_次の受理で一度だけ解いて購読を通知�
     };
     // When / Then
     reporter.admitted();
-    assert!(changes.try_recv().is_err());
+    assert_eq!(records.resolved.load(Ordering::SeqCst), 0);
     reporter.rejected("/method", &rejection);
-    assert_eq!(
-        changes.recv().await.unwrap(),
-        StateChangeSource::Failures("daemon".into())
-    );
     assert!(store.records("daemon")[0].record.active);
     reporter.admitted();
-    assert_eq!(
-        changes.recv().await.unwrap(),
-        StateChangeSource::Failures("daemon".into())
-    );
+    assert_eq!(records.resolved.load(Ordering::SeqCst), 1);
     reporter.admitted();
-    assert!(changes.try_recv().is_err());
+    assert_eq!(records.resolved.load(Ordering::SeqCst), 1);
     assert!(!store.records("daemon")[0].record.active);
 }
 
 struct PausingFailureRecords {
     store: Arc<FailureRecordStore>,
+    resolved: AtomicUsize,
     observed: std::sync::mpsc::Sender<()>,
     resume: std::sync::Mutex<std::sync::mpsc::Receiver<()>>,
 }
@@ -55,27 +72,25 @@ impl crate::domain::failure::FailureRecordRepository for PausingFailureRecords {
     }
 
     fn record_resolved(&self, key: &FailureKey) -> bool {
+        self.resolved.fetch_add(1, Ordering::SeqCst);
         self.store.record_resolved(key)
     }
 }
 
-#[tokio::test]
-async fn test_枠の拒否_記録後の並行した受理で一度だけ解く() {
+#[test]
+fn test_枠の拒否_記録後の並行した受理で一度だけ解く() {
     // Given
-    let subscriptions = crate::test_support::state_subscription::test_subscriptions();
-    let mut changes = crate::test_support::state_subscription::changes(&subscriptions);
     let store = Arc::new(FailureRecordStore::default());
     let (observed, was_observed) = std::sync::mpsc::channel();
     let (resume, resumed) = std::sync::mpsc::channel();
+    let records = Arc::new(PausingFailureRecords {
+        store: store.clone(),
+        resolved: AtomicUsize::new(0),
+        observed,
+        resume: std::sync::Mutex::new(resumed),
+    });
     let reporter = Arc::new(PriorityFailureReporter::new(Some(Arc::new(
-        FailureRecordingUsecase::new(
-            Arc::new(PausingFailureRecords {
-                store: store.clone(),
-                observed,
-                resume: std::sync::Mutex::new(resumed),
-            }),
-            Some(subscriptions),
-        ),
+        FailureRecordingUsecase::new(records.clone(), None),
     ))));
     let rejection = Rejection {
         level: "default",
@@ -103,14 +118,7 @@ async fn test_枠の拒否_記録後の並行した受理で一度だけ解く()
 
     // Then
     assert!(!store.records("daemon")[0].record.active);
-    assert_eq!(
-        changes.recv().await.unwrap(),
-        StateChangeSource::Failures("daemon".into())
-    );
-    assert_eq!(
-        changes.recv().await.unwrap(),
-        StateChangeSource::Failures("daemon".into())
-    );
+    assert_eq!(records.resolved.load(Ordering::SeqCst), 1);
     reporter.admitted();
-    assert!(changes.try_recv().is_err());
+    assert_eq!(records.resolved.load(Ordering::SeqCst), 1);
 }

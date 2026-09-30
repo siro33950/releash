@@ -14,8 +14,7 @@ impl StateSubscriptionRead for StateSubscriptionReads {
         use SubscriptionTarget as T;
         if matches!(
             target,
-            T::Failures(..)
-                | T::AgentSession(_)
+            T::AgentSession(_)
                 | T::SessionHistory(..)
                 | T::Selection(..)
                 | T::NodeDetail(..)

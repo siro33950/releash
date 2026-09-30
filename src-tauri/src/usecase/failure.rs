@@ -42,53 +42,6 @@ retry_failure_from_debug!(
     crate::usecase::repository_state::error::RepositoryStateError,
 );
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FailurePage {
-    pub items: Vec<FailureObservationDto>,
-    pub next_offset: Option<usize>,
-    pub requires_attention: bool,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FailureClassificationDto {
-    VersionConflict,
-    BusinessFailure,
-    Transient,
-    TimedOut,
-    Cancelled,
-    TechnicalFailure,
-}
-
-impl From<Failure> for FailureClassificationDto {
-    fn from(value: Failure) -> Self {
-        match value {
-            Failure::Business(BusinessFailure::VersionConflict) => Self::VersionConflict,
-            Failure::Business(BusinessFailure::Other) => Self::BusinessFailure,
-            Failure::Technical(TechnicalFailureNature::Transient) => Self::Transient,
-            Failure::Technical(TechnicalFailureNature::TimedOut) => Self::TimedOut,
-            Failure::Technical(TechnicalFailureNature::Cancelled) => Self::Cancelled,
-            Failure::Technical(TechnicalFailureNature::Other) => Self::TechnicalFailure,
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FailureObservationDto {
-    pub record: FailureRecordDto,
-    pub requires_attention: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FailureRecordDto {
-    pub operation: String,
-    pub target: String,
-    pub classification: FailureClassificationDto,
-    pub message: String,
-    pub count: u64,
-    pub first_observed_ms: u64,
-    pub last_observed_ms: u64,
-}
-
 pub struct FailureRecordingUsecase {
     repository: std::sync::Arc<dyn crate::domain::failure::FailureRecordRepository>,
     subscriptions: Option<crate::usecase::state_subscription::StateSubscriptionUsecase>,
@@ -124,15 +77,7 @@ impl FailureRecordingUsecase {
             subscriptions
                 .notify(crate::usecase::state_subscription::StateChangeSource::WorkspaceList);
         }
-        subscriptions.notify(
-            crate::usecase::state_subscription::StateChangeSource::Failures(key.target.clone()),
-        );
     }
-}
-
-#[async_trait::async_trait]
-pub trait FailureQueryService: Send + Sync {
-    async fn page(&self, targets: &[String], offset: usize) -> FailurePage;
 }
 
 pub(crate) fn requires_attention(kind: Failure) -> bool {

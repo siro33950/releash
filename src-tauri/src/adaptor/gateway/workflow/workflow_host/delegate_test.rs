@@ -1821,34 +1821,6 @@ async fn test_delegate_新attemptのresumeでも未注入結果を送り再生�
         assert_ne!(next.id, parent.id);
         assert_eq!(next.attempt, 2);
         assert_eq!(next.status, NodeExecutionStatus::Running);
-        let targets = fixture
-            .host
-            .workspace_query
-            .failure_targets(&tree)
-            .await
-            .unwrap();
-        assert!(targets.contains(&parent.id));
-        assert!(targets.contains(&next.id));
-        assert!(!targets.contains(&child.id));
-        for id in [&parent.id, &next.id, &child.id] {
-            fixture.host.queue.failures.observed(
-                &crate::usecase::failure::FailureKey::new("workflow_delegate_injection", id),
-                crate::usecase::failure::WorkFailure {
-                    kind: crate::usecase::failure::Failure::Business(
-                        crate::usecase::failure::BusinessFailure::Other,
-                    ),
-                    message: "injection failed".into(),
-                },
-            );
-        }
-        let page = failure_page(&fixture.host.queue, &targets).await;
-        assert!(page
-            .items
-            .iter()
-            .any(|item| item.record.target == parent.id));
-        assert!(page.items.iter().any(|item| item.record.target == next.id));
-        assert!(!page.items.iter().any(|item| item.record.target == child.id));
-        assert!(page.requires_attention);
         assert!(live.pending_delegate_injections().is_empty());
         let deliveries = fixture.sessions.continuations.lock().unwrap();
         assert_eq!(deliveries.len(), 1);
@@ -2174,16 +2146,12 @@ async fn test_委任_保存の競合が続いてもabortを完了し注入も失
     );
     let abort = async {
         loop {
-            let targets = host.workspace_query.failure_targets(&tree).await.unwrap();
-            let page = failure_page(&host.queue, &targets).await;
-            if let Some(item) = page.items.iter().find(|item| item.record.count >= 2) {
-                assert_eq!(item.record.target, parent.id);
-                assert!(crate::test_support::retry::shared_store()
-                    .records(&parent.id)
-                    .iter()
-                    .any(|observation| {
-                        observation.record.count >= 2 && observation.record.active
-                    }));
+            if let Some(item) = crate::test_support::retry::shared_store()
+                .records(&parent.id)
+                .into_iter()
+                .find(|item| item.record.count >= 2)
+            {
+                assert!(item.record.active);
                 assert!(!item.requires_attention);
                 assert!(item.record.last_observed_ms > item.record.first_observed_ms);
                 break;
@@ -2289,11 +2257,4 @@ async fn test_delegate_resumeの注入失敗を返し親を失敗として確定
         .iter()
         .any(|record| record.meta.node_execution_id == parent.id
             && matches!(record.fact, NodeFact::RuntimeFailureObserved(_))));
-}
-
-async fn failure_page(
-    retrying: &crate::usecase::retry::Retrying,
-    targets: &[String],
-) -> crate::usecase::failure::FailurePage {
-    retrying.page_targets(targets, 0).await
 }

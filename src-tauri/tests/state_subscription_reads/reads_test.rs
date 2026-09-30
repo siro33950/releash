@@ -9,7 +9,6 @@ use crate::domain::workflow::FacetKind;
 use crate::test_support::state_subscription::start_read;
 use crate::test_support::state_subscription::StateSubscriptionEvent;
 use crate::usecase::agent_session::*;
-use crate::usecase::failure::{BusinessFailure, Failure};
 use crate::usecase::git_host::GitHostUsecase;
 use crate::usecase::provider_dto::AgentSessionProviderDto;
 use crate::usecase::repo_paths_usecase::RepoPathsUsecase;
@@ -272,9 +271,6 @@ impl Fixture {
         );
         let repository_state_for_review = repository_state.clone();
         let reads = WorkspaceStateReads {
-            failures: Arc::new(
-                crate::adaptor::gateway::failure_records::FailureRecordStore::default(),
-            ),
             repositories,
             repository,
             repository_state,
@@ -793,104 +789,6 @@ async fn test_agent_session購読_状態変更通知から再読取して同じ�
             .lock()
             .iter()
             .all(|id| id == "session"));
-    }
-}
-
-#[tokio::test]
-async fn test_失敗購読_node行から実行idの失敗と解消を受け取る() {
-    use crate::adaptor::gateway::workflow::test_support::{
-        seed_workflow_session_facts, WorkflowSessionFactSeed,
-    };
-    use crate::test_support::state_subscription::Event;
-    use crate::usecase::failure::{FailureKey, WorkFailure};
-    // Given
-    let fixture = Fixture::new();
-    let (workflow, store) =
-        wiring::build_workflow_usecase_and_store(fixture._directory.path().join("failures"), None);
-    seed_workflow_session_facts(
-        &store,
-        WorkflowSessionFactSeed {
-            workflow_name: "failures",
-            request: "test",
-            worktree_path: &fixture.path,
-            provider: crate::domain::provider_lifecycle::ProviderKind::Codex,
-            workflow_execution_id: "00000000-0000-4000-8000-000000001932",
-            node_execution_id: "parent",
-            session_id: "session",
-            initial_instruction_admitted: true,
-        },
-    )
-    .await
-    .unwrap();
-    let snapshot = workflow
-        .list_workspace_tree_nodes(&fixture.path)
-        .await
-        .unwrap();
-    let crate::usecase::workflow::WorkspaceTreeItemDto::Sequence(root) = &snapshot.nodes[0] else {
-        panic!("root")
-    };
-    let crate::usecase::workflow::WorkspaceTreeItemDto::Node(node) = &root.children[0] else {
-        panic!("node")
-    };
-    let target = SubscriptionTarget::Failures(node.id.clone(), 0).to_string();
-    let failures =
-        Arc::new(crate::adaptor::gateway::failure_records::FailureRecordStore::default());
-    let mut reads = fixture.reads.clone();
-    reads.workflow = Arc::new(workflow);
-    reads.failures = failures.clone();
-    let subscriptions =
-        fixture
-            .subscriptions
-            .with_reads(Arc::new(reads), None, vec![], String::new());
-    let presenter = crate::usecase::failure::FailureRecordingUsecase::new(
-        failures.clone(),
-        Some(subscriptions.clone()),
-    );
-    let mut stream = Box::pin(subscriptions.open("client".into()).unwrap());
-    stream.next().await;
-    start_read(&subscriptions, "client", &target, None)
-        .await
-        .unwrap();
-    assert!(matches!(
-        stream.next().await,
-        Some(StateSubscriptionEvent::Item(_, Event::Snapshot(_, _)))
-    ));
-    stream.next().await;
-    // When / Then
-    let key = FailureKey::new("workflow_delegate_injection", "parent");
-    for active in [true, false] {
-        if active {
-            presenter.observed(
-                &key,
-                WorkFailure {
-                    kind: Failure::Business(BusinessFailure::Other),
-                    message: "failed".into(),
-                },
-            );
-        } else {
-            presenter.resolved(&key);
-        }
-        let value = tokio::time::timeout(std::time::Duration::from_secs(2), async {
-            loop {
-                if let Some(StateSubscriptionEvent::Item(id, Event::Change(_, _, value))) =
-                    stream.next().await
-                {
-                    assert_eq!(id, target);
-                    break value;
-                }
-            }
-        })
-        .await
-        .unwrap();
-        let Some(crate::adaptor::presenter::client::state_payload::Value::Failures(page)) =
-            &value.value
-        else {
-            panic!("failures")
-        };
-        assert_eq!(page.items.len(), 1);
-        assert_eq!(page.items[0].target.as_deref(), Some("parent"));
-        assert_eq!(failures.records("*")[0].record.active, active);
-        assert_eq!(page.requires_attention, Some(active));
     }
 }
 
