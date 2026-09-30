@@ -27,7 +27,7 @@ import { useReviewFileView } from "@/hooks/useReviewFileView";
 import { useReviewPanel } from "@/hooks/useReviewPanel";
 import { useReviewSnapshot } from "@/hooks/useReviewSnapshot";
 import { invokeClient as invoke } from "@/lib/client";
-import { showClientError } from "@/lib/clientErrorNotice";
+import { logClientError, showClientError } from "@/lib/clientErrorNotice";
 import { isMarkdownFile } from "@/lib/markdownUtils";
 import { cn } from "@/lib/utils";
 import type { ThreadNavigationTarget } from "@/types/diffComment";
@@ -398,7 +398,12 @@ export function ReviewPanel({
 	const handleStageFile = useCallback(
 		async (path: string) => {
 			if (!rootPath) return;
-			await stage(rootPath, [path]);
+			try {
+				await stage(rootPath, [path]);
+			} catch (error) {
+				showClientError(error);
+				return;
+			}
 			if (selectedFile === path) {
 				selectFile(path, "staged");
 			}
@@ -409,7 +414,12 @@ export function ReviewPanel({
 	const handleUnstageFile = useCallback(
 		async (path: string) => {
 			if (!rootPath) return;
-			await unstage(rootPath, [path]);
+			try {
+				await unstage(rootPath, [path]);
+			} catch (error) {
+				showClientError(error);
+				return;
+			}
 			if (selectedFile === path) {
 				selectFile(path, "changes");
 			}
@@ -421,7 +431,12 @@ export function ReviewPanel({
 		if (!rootPath) return;
 		const paths = changedFiles.map((f) => f.path);
 		if (paths.length === 0) return;
-		await stage(rootPath, paths);
+		try {
+			await stage(rootPath, paths);
+		} catch (error) {
+			showClientError(error);
+			return;
+		}
 		if (selectedFile && paths.includes(selectedFile)) {
 			selectFile(selectedFile, "staged");
 		}
@@ -431,7 +446,12 @@ export function ReviewPanel({
 		if (!rootPath) return;
 		const paths = stagedFiles.map((f) => f.path);
 		if (paths.length === 0) return;
-		await unstage(rootPath, paths);
+		try {
+			await unstage(rootPath, paths);
+		} catch (error) {
+			showClientError(error);
+			return;
+		}
 		if (selectedFile && paths.includes(selectedFile)) {
 			selectFile(selectedFile, "changes");
 		}
@@ -495,10 +515,9 @@ export function ReviewPanel({
 									onClick={() => {
 										invoke("open_folder_in_editor", {
 											folderPath: rootPath,
-										}).catch((e: unknown) => {
-											console.error("Failed to open folder in editor:", e);
-											showClientError(e);
-										});
+										}).catch((e: unknown) =>
+											logClientError("Failed to open folder in editor:", e),
+										);
 									}}
 									className="h-5 w-5 text-muted-foreground hover:text-foreground"
 									aria-label="Open in editor"
@@ -571,10 +590,9 @@ export function ReviewPanel({
 								onClick={() => {
 									invoke("open_folder_in_editor", {
 										folderPath: rootPath,
-									}).catch((e: unknown) => {
-										console.error("Failed to open folder in editor:", e);
-										showClientError(e);
-									});
+									}).catch((e: unknown) =>
+										logClientError("Failed to open folder in editor:", e),
+									);
 								}}
 								className="h-5 w-5 text-muted-foreground hover:text-foreground"
 								aria-label="Open in editor"

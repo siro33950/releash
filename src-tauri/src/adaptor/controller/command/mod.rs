@@ -19,6 +19,7 @@ fn shell_operation(command: &str) -> crate::domain::daemon_supervision::ShellOpe
     match command {
         "get_daemon_status"
         | "subscribe_daemon_status"
+        | "stop_daemon_status_subscription"
         | "retry_daemon"
         | "quit_desktop"
         | "validate_daemon_connection"
@@ -111,10 +112,13 @@ mod tests {
     fn test_起動状態の購読はsupervision操作として受理する() {
         use crate::domain::daemon_supervision::ShellOperation;
 
-        assert_eq!(
-            shell_operation("subscribe_daemon_status"),
-            ShellOperation::Supervision
-        );
+        // Given
+        for command in ["subscribe_daemon_status", "stop_daemon_status_subscription"] {
+            // When
+            let operation = shell_operation(command);
+            // Then
+            assert_eq!(operation, ShellOperation::Supervision);
+        }
     }
 
     fn dummy_handler() -> InvokeHandler {

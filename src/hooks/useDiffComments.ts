@@ -1,7 +1,7 @@
 import { useCallback } from "react";
 import { useStateSubscriptionResult } from "@/hooks/useStateSubscription";
 import { invokeClient as invoke } from "@/lib/client";
-import { showClientError } from "@/lib/clientErrorNotice";
+import { rethrowClientError } from "@/lib/clientErrorNotice";
 import { getThreadFilePath } from "@/types/diffComment";
 
 interface UseDiffCommentsOptions {
@@ -27,10 +27,7 @@ export function useDiffComments({ worktreeName }: UseDiffCommentsOptions) {
 				lineNumber: params.lineNumber ?? null,
 				endLine: params.endLine ?? null,
 				content: params.content,
-			}).catch((error) => {
-				showClientError(error);
-				throw error;
-			});
+			}).catch(rethrowClientError);
 		},
 		[worktreeName],
 	);
@@ -41,10 +38,7 @@ export function useDiffComments({ worktreeName }: UseDiffCommentsOptions) {
 				worktreeName,
 				threadId,
 				content,
-			}).catch((error) => {
-				showClientError(error);
-				throw error;
-			});
+			}).catch(rethrowClientError);
 		},
 		[worktreeName],
 	);
@@ -56,10 +50,7 @@ export function useDiffComments({ worktreeName }: UseDiffCommentsOptions) {
 				threadId,
 				outcome,
 				summary,
-			}).catch((error) => {
-				showClientError(error);
-				throw error;
-			});
+			}).catch(rethrowClientError);
 		},
 		[worktreeName],
 	);
@@ -69,10 +60,7 @@ export function useDiffComments({ worktreeName }: UseDiffCommentsOptions) {
 			await invoke("delete_review_thread", {
 				worktreeName,
 				threadId,
-			}).catch((error) => {
-				showClientError(error);
-				throw error;
-			});
+			}).catch(rethrowClientError);
 		},
 		[worktreeName],
 	);

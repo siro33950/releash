@@ -177,6 +177,37 @@ describe("useDiffComments", () => {
 		});
 	});
 
+	it.each([
+		"addComment",
+		"appendComment",
+		"resolveThread",
+		"deleteThread",
+	] as const)("%sの失敗を通知して呼び出し元へ返す", async (operation) => {
+		const notice = vi.fn();
+		window.addEventListener("releash-client-error", notice);
+		try {
+			const error = new Error(`${operation} failed`);
+			mockInvoke.mockRejectedValueOnce(error);
+			const { result } = renderHook(() =>
+				useDiffComments({ worktreeName: "wt" }),
+			);
+			const calls = {
+				addComment: () => result.current.addComment({ content: "note" }),
+				appendComment: () => result.current.appendComment("t1", "reply"),
+				resolveThread: () =>
+					result.current.resolveThread("t1", "resolved", "done"),
+				deleteThread: () => result.current.deleteThread("t1"),
+			};
+			await expect(calls[operation]()).rejects.toBe(error);
+			expect(notice).toHaveBeenCalledOnce();
+			expect((notice.mock.calls[0][0] as CustomEvent<string>).detail).toBe(
+				`${operation} failed`,
+			);
+		} finally {
+			window.removeEventListener("releash-client-error", notice);
+		}
+	});
+
 	it("getCommentsForFile filters by thread target filePath", () => {
 		const { result } = renderHook(() =>
 			useDiffComments({ worktreeName: "wt" }),

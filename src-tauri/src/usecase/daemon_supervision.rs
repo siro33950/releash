@@ -59,6 +59,19 @@ pub(crate) struct DaemonStatus {
     pub retry_available: bool,
 }
 
+pub(crate) trait DaemonStatusOutput: Send + Sync {
+    fn send(&self, status: DaemonStatus) -> bool;
+}
+
+pub(crate) trait DaemonStatusSubscriptionDriver {
+    fn start(
+        &self,
+        id: String,
+        task: std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>,
+    );
+    fn stop(&self, id: &str);
+}
+
 struct State {
     supervision: DaemonSupervision,
     connection: Option<DaemonConnection>,
@@ -100,6 +113,28 @@ impl DaemonSupervisionUsecase {
     }
     pub fn subscribe(&self) -> tokio::sync::watch::Receiver<DaemonStatus> {
         self.changes.subscribe()
+    }
+    pub fn subscribe_status(
+        &self,
+        id: String,
+        output: Arc<dyn DaemonStatusOutput>,
+        driver: &dyn DaemonStatusSubscriptionDriver,
+    ) {
+        let mut changes = self.subscribe();
+        driver.start(
+            id,
+            Box::pin(async move {
+                loop {
+                    let status = changes.borrow_and_update().clone();
+                    if !output.send(status) || changes.changed().await.is_err() {
+                        break;
+                    }
+                }
+            }),
+        );
+    }
+    pub fn stop_status_subscription(&self, id: &str, driver: &dyn DaemonStatusSubscriptionDriver) {
+        driver.stop(id);
     }
     pub fn retry(&self) -> Result<(), DaemonSupervisionError> {
         if !self.state.lock().supervision.retry_available() {

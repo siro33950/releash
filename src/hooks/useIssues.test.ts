@@ -53,6 +53,8 @@ it("手動更新の失敗を処理し直前の一覧を保持して再取得し�
 		return vi.fn();
 	});
 	const failure = new Error("offline");
+	const notice = vi.fn();
+	window.addEventListener("releash-client-error", notice);
 	vi.mocked(invokeClient).mockRejectedValueOnce(failure);
 	const log = vi.spyOn(console, "error").mockImplementation(() => {});
 	try {
@@ -63,11 +65,15 @@ it("手動更新の失敗を処理し直前の一覧を保持して再取得し�
 		expect(result.current.issues).toEqual(issues);
 		expect(result.current.loading).toBe(false);
 		expect(log).toHaveBeenCalledWith("Failed to fetch issues:", failure);
+		expect((notice.mock.calls[0][0] as CustomEvent<string>).detail).toBe(
+			"offline",
+		);
 		expect(invokeClient).toHaveBeenCalledExactlyOnceWith("fetch_issues", {
 			repoPath: "/repo",
 		});
 		expect(subscribeState).toHaveBeenCalledTimes(1);
 	} finally {
+		window.removeEventListener("releash-client-error", notice);
 		log.mockRestore();
 	}
 });

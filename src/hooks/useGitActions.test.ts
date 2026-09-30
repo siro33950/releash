@@ -57,11 +57,15 @@ describe("useGitActions", () => {
 	});
 
 	it("should propagate errors from invoke", async () => {
+		const notice = vi.fn();
+		window.addEventListener("releash-client-error", notice);
 		mockInvoke.mockRejectedValue(new Error("git error"));
 		const { result } = renderHook(() => useGitActions());
 
 		await expect(result.current.stage("/repo", [])).rejects.toThrow(
 			"git error",
 		);
+		expect(notice).not.toHaveBeenCalled();
+		window.removeEventListener("releash-client-error", notice);
 	});
 });

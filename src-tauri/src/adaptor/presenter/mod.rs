@@ -7,6 +7,8 @@ pub(crate) mod client;
 pub(crate) mod code;
 pub(crate) mod connect;
 pub(crate) mod connect_wire;
+#[cfg(feature = "desktop")]
+pub(crate) mod daemon_status;
 pub(crate) mod error;
 pub(crate) mod notion;
 pub(crate) mod provider_lifecycle_response;

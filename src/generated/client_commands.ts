@@ -6,7 +6,7 @@ import {
 	toJson,
 } from "@bufbuild/protobuf";
 import { type Client, ConnectError } from "@connectrpc/connect";
-import { getClient, getConnectionState } from "@/lib/client";
+import { getClient } from "@/lib/client";
 import { clientJson } from "@/lib/clientJson";
 import {
 	AbortWorkflowRequestSchema,
@@ -1793,9 +1793,6 @@ export async function invokeClient<K extends ClientCommand>(
 	command: K,
 	args?: ClientCommandArgs[K],
 ): Promise<ClientCommandResults[K]> {
-	const phase = getConnectionState();
-	if (phase === "TRANSIENT_FAILURE" || phase === "SHUTDOWN")
-		throw new Error(`Daemon connection is ${phase}`);
 	const client = await getClient();
 	try {
 		return (await (

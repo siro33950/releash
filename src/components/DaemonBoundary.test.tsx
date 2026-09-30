@@ -85,6 +85,29 @@ it("操作の通信失敗を画面に表示する", async () => {
 	expect(screen.queryByRole("alert")).toBeNull();
 });
 
+it("unmountごとにシェル状態の購読を停止する", async () => {
+	for (let index = 0; index < 3; index++) {
+		const view = render(<DaemonBoundary>workbench</DaemonBoundary>);
+		await act(async () => {});
+		const start = vi
+			.mocked(invoke)
+			.mock.calls.filter(([command]) => command === "subscribe_daemon_status")
+			.slice(-1)[0];
+		if (!start) throw new Error("Missing subscription");
+		const id = (start[1] as { id: string }).id;
+		view.unmount();
+		expect(
+			vi
+				.mocked(invoke)
+				.mock.calls.filter(
+					([command, args]) =>
+						command === "stop_daemon_status_subscription" &&
+						(args as { id?: string } | undefined)?.id === id,
+				),
+		).toHaveLength(1);
+	}
+});
+
 it("ウィンドウ未作成でQuitしても終了の判断操作は表示しない", async () => {
 	status = { phase: "stopping" };
 	render(

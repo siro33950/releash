@@ -33,7 +33,6 @@ type Session = {
 	attachmentId: string;
 };
 let connectionAbort = new AbortController();
-let stopped = false;
 type ConnectionState =
 	| { phase: "IDLE" | "TRANSIENT_FAILURE" | "SHUTDOWN" }
 	| { phase: "CONNECTING"; pending: Promise<Session> }
@@ -42,6 +41,7 @@ let connectionState: ConnectionState = { phase: "IDLE" };
 const stateListeners = new Set<() => void>();
 let connectionBackoff = createConnectionBackoff();
 let retryTimer: ReturnType<typeof setTimeout> | undefined;
+const restorationAttachmentId = crypto.randomUUID();
 
 export function getConnectionState(): ConnectionState["phase"] {
 	return connectionState.phase;
@@ -69,7 +69,7 @@ function waitForConnectionChange(phase: ConnectionState["phase"]) {
 }
 
 async function open(abort: AbortController): Promise<Session> {
-	const attachmentId = crypto.randomUUID();
+	const attachmentId = restorationAttachmentId;
 	const timeout = setTimeout(
 		() => abort.abort(new Error("Daemon connection timed out")),
 		getOption(ClientService, min_connect_timeout_ms),
@@ -110,7 +110,10 @@ async function open(abort: AbortController): Promise<Session> {
 				},
 			}),
 		);
-		const info = await client.getServerInfo({}, { signal: abort.signal });
+		const info = await Promise.race([
+			client.getServerInfo({}, { signal: abort.signal }),
+			expired,
+		]);
 		await Promise.race([
 			invoke("validate_daemon_connection", {
 				launchId: info.launchId,
@@ -126,7 +129,7 @@ async function open(abort: AbortController): Promise<Session> {
 }
 
 function connect() {
-	if (stopped || connectionState.phase === "SHUTDOWN") return;
+	if (connectionState.phase === "SHUTDOWN") return;
 	clearTimeout(retryTimer);
 	connectionAbort = new AbortController();
 	connectionBackoff.attemptStarted();
@@ -313,9 +316,9 @@ function startState(stream: StateStream, target: string) {
 }
 
 function ensureStateStream() {
-	if (stateTask || stopped || !states.size) return;
+	if (stateTask || connectionState.phase === "SHUTDOWN" || !states.size) return;
 	stateTask = (async () => {
-		while (!stopped && states.size) {
+		while (connectionState.phase !== "SHUTDOWN" && states.size) {
 			let client: Client<typeof ClientService> | undefined;
 			const abort = new AbortController();
 			stateAbort = abort;
@@ -326,6 +329,7 @@ function ensureStateStream() {
 			};
 			try {
 				client = await getClient();
+				connectionBackoff.attemptStarted();
 				const stream = { client, id: crypto.randomUUID() };
 				alive();
 				for await (const event of client.openStateStream(
@@ -356,7 +360,7 @@ function ensureStateStream() {
 						receiver(value.current as never);
 				}
 			} catch (error) {
-				if (stopped) break;
+				if (getConnectionState() === "SHUTDOWN") break;
 				if (abort.signal.reason !== IDLE && abort.signal.reason !== RETRY)
 					console.debug("State stream ended", error);
 			} finally {
@@ -365,7 +369,13 @@ function ensureStateStream() {
 				if (stateAbort === abort) stateAbort = null;
 			}
 			if (abort.signal.reason === IDLE) continue;
-			if (!stopped && states.size) {
+			if (abort.signal.reason === RETRY) {
+				await new Promise((resolve) =>
+					setTimeout(resolve, connectionBackoff.next()),
+				);
+				continue;
+			}
+			if (getConnectionState() !== "SHUTDOWN" && states.size) {
 				if (client) failConnection(client);
 				if (connectionState.phase === "TRANSIENT_FAILURE")
 					await waitForConnectionChange("TRANSIENT_FAILURE");
@@ -435,11 +445,7 @@ export async function subscribeTerminalState(
 	listener: (item: TerminalSurfaceStreamItem) => void,
 	onClosed: () => void,
 ): Promise<() => Promise<void>> {
-	const owner = args.owner;
-	const targetArgs =
-		owner.kind === "session"
-			? [owner.workspacePath, owner.sessionId]
-			: [owner.workspacePath];
+	const targetArgs = terminalTargetArgs(args.owner);
 	let release = () => {};
 	let initialized = false;
 	await new Promise<void>((resolve, reject) => {
@@ -465,10 +471,7 @@ export async function subscribeTerminalState(
 export function currentTerminalInputId(
 	owner: import("./terminalSurfaceStream").TerminalSurfaceOwner,
 ) {
-	const args =
-		owner.kind === "session"
-			? [owner.workspacePath, owner.sessionId]
-			: [owner.workspacePath];
+	const args = terminalTargetArgs(owner);
 	return states.get(stateTargetKey("terminal", args))?.terminalInputId ?? null;
 }
 
@@ -480,10 +483,7 @@ export async function reportTerminalProcessed(
 	if (!stream) return;
 	await stream.client.reportTerminalProcessed({
 		clientId: stream.id,
-		args:
-			owner.kind === "session"
-				? [owner.workspacePath, owner.sessionId]
-				: [owner.workspacePath],
+		args: terminalTargetArgs(owner),
 		units,
 	});
 }
@@ -500,9 +500,16 @@ export async function completeClientRestoration(generation: number) {
 	});
 }
 
+function terminalTargetArgs(
+	owner: import("./terminalSurfaceStream").TerminalSurfaceOwner,
+) {
+	return owner.kind === "session"
+		? [owner.workspacePath, owner.sessionId]
+		: [owner.workspacePath];
+}
+
 window.addEventListener("pagehide", (event) => {
 	if (connectionState.phase === "SHUTDOWN") return;
-	stopped = true;
 	clearTimeout(retryTimer);
 	connectionAbort.abort();
 	stateAbort?.abort();
@@ -511,7 +518,7 @@ window.addEventListener("pagehide", (event) => {
 			connectionState.phase === "READY" ||
 			connectionState.phase === "CONNECTING"
 		)
-			setConnectionState({ phase: "IDLE" });
+			setConnectionState({ phase: "TRANSIENT_FAILURE" });
 	} else {
 		setConnectionState({ phase: "SHUTDOWN" });
 		states.clear();
@@ -519,13 +526,11 @@ window.addEventListener("pagehide", (event) => {
 });
 
 window.addEventListener("pageshow", (event) => {
-	if (!event.persisted || !stopped || connectionState.phase === "SHUTDOWN")
-		return;
-	stopped = false;
+	if (!event.persisted || connectionState.phase === "SHUTDOWN") return;
 	connectionAbort = new AbortController();
 	connectionBackoff = createConnectionBackoff();
 	if (connectionState.phase === "TRANSIENT_FAILURE") connect();
-	else ensureStateStream();
+	ensureStateStream();
 });
 
 export function firstState<K extends keyof StateValues>(

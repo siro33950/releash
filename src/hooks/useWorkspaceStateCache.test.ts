@@ -153,6 +153,8 @@ describe("useWorkspaceStateCache", () => {
 			}),
 		);
 		const error = new Error("Client WebSocket connection closed");
+		const notice = vi.fn();
+		window.addEventListener("releash-client-error", notice);
 		mockInvoke.mockRejectedValueOnce(error);
 		const logError = vi.spyOn(console, "error").mockImplementation(() => {});
 		const { result, unmount } = renderHook(() => useWorkspaceStateCache());
@@ -170,6 +172,10 @@ describe("useWorkspaceStateCache", () => {
 			"Failed to save workspace state:",
 			error,
 		);
+		expect((notice.mock.calls[0][0] as CustomEvent<string>).detail).toBe(
+			error.message,
+		);
+		window.removeEventListener("releash-client-error", notice);
 		await act(async () => resolveSave());
 		await act(async () => result.current.flushState("/repo"));
 		expect(mockInvoke).toHaveBeenCalledTimes(3);

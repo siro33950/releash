@@ -74,14 +74,16 @@ fn test_ターミナル入力_write失敗をtransport共通の固定文言へ変
 fn test_失効した入力attachmentだけが機械可読codeを持つ() {
     use crate::adaptor::presenter::connect::ConnectFailure;
 
+    // Given
     let stale = terminal_write_error(UsecaseError::StaleAttachment);
     let ordinary = terminal_write_error(UsecaseError::Gateway("write failed".into()));
 
-    assert_eq!(
-        stale.connect_code(),
-        connectrpc::ErrorCode::FailedPrecondition
-    );
+    // When
+    let stale_code = stale.connect_code();
     let response: crate::adaptor::presenter::client::CommandFailure = stale.into();
+
+    // Then
+    assert_eq!(stale_code, connectrpc::ErrorCode::FailedPrecondition);
     assert_eq!(response.kind, connectrpc::ErrorCode::FailedPrecondition);
     assert_eq!(
         crate::adaptor::presenter::client::from_value(response.detail).unwrap(),

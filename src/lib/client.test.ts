@@ -15,6 +15,7 @@ let getErrorMessage: typeof import("./errorMessage").getErrorMessage;
 let firstState: typeof import("./client").firstState;
 let invokeClient: typeof import("./client").invokeClient;
 let subscribeState: typeof import("./client").subscribeState;
+let checkTransitions: () => void;
 const requestUrl = (input: RequestInfo | URL) =>
 	input instanceof Request ? input.url : input.toString();
 beforeEach(async () => {
@@ -24,10 +25,30 @@ beforeEach(async () => {
 	({ connectFixture } = await import("@/test/connect"));
 	({ getErrorMessage } = await import("./errorMessage"));
 	({ firstState, invokeClient, subscribeState } = await import("./client"));
+	const { getConnectionState, onConnectionStateChange } = await import(
+		"./client"
+	);
+	const phases = [getConnectionState()];
+	const release = onConnectionStateChange(() =>
+		phases.push(getConnectionState()),
+	);
+	checkTransitions = () => {
+		release();
+		const allowed: Record<string, string[]> = {
+			IDLE: ["CONNECTING", "SHUTDOWN"],
+			CONNECTING: ["CONNECTING", "READY", "TRANSIENT_FAILURE", "SHUTDOWN"],
+			READY: ["READY", "TRANSIENT_FAILURE", "SHUTDOWN"],
+			TRANSIENT_FAILURE: ["CONNECTING", "SHUTDOWN"],
+			SHUTDOWN: [],
+		};
+		for (let index = 1; index < phases.length; index++)
+			expect(allowed[phases[index - 1]]).toContain(phases[index]);
+	};
 });
 afterEach(async () => {
 	window.dispatchEvent(new Event("pagehide"));
 	await new Promise((resolve) => setTimeout(resolve, 0));
+	checkTransitions();
 	vi.unstubAllGlobals();
 });
 
@@ -135,6 +156,91 @@ it("接続先の取得が20秒を超えると失敗し次の単発呼び出し�
 	}
 });
 
+it.each(["GetServerInfo", "validate_daemon_connection"])(
+	"%sの応答が20秒ない場合は接続の確立を失敗させる",
+	async (step) => {
+		const { getConnectionState } = await import("./client");
+		vi.useFakeTimers();
+		try {
+			const fixture = connectFixture();
+			if (step === "GetServerInfo") {
+				const original = fixture.fetch.getMockImplementation();
+				if (!original) throw new Error("Missing fetch fixture");
+				fixture.fetch.mockImplementation((input, init) =>
+					requestUrl(input).endsWith("/GetServerInfo")
+						? new Promise(() => {})
+						: original(input, init),
+				);
+			} else {
+				const original = vi.mocked(invoke).getMockImplementation();
+				if (!original) throw new Error("Missing IPC fixture");
+				vi.mocked(invoke).mockImplementation((command, args) =>
+					command === "validate_daemon_connection"
+						? new Promise(() => {})
+						: original(command, args),
+				);
+			}
+			const pending = invokeClient("add_repo_path", { path: "/repo" }).catch(
+				(error) => error,
+			);
+			expect(getConnectionState()).toBe("CONNECTING");
+			await vi.advanceTimersByTimeAsync(20_000);
+			expect(await pending).toMatchObject({
+				message: "Daemon connection timed out",
+			});
+			expect(getConnectionState()).toBe("TRANSIENT_FAILURE");
+		} finally {
+			vi.useRealTimers();
+		}
+	},
+);
+
+it("失効した接続先取得が後から完了しても復元attachmentを変えない", async () => {
+	const { completeClientRestoration } = await import("./client");
+	vi.useFakeTimers();
+	try {
+		connectFixture();
+		const original = vi.mocked(invoke).getMockImplementation();
+		if (!original) throw new Error("Missing IPC fixture");
+		let releaseFirst!: (value: unknown) => void;
+		const attachments: string[] = [];
+		let attempts = 0;
+		vi.mocked(invoke).mockImplementation((command, args) => {
+			if (command === "get_client_endpoint") {
+				attachments.push((args as { attachmentId: string }).attachmentId);
+				if (attempts++ === 0)
+					return new Promise((resolve) => {
+						releaseFirst = resolve;
+					});
+			}
+			return original(command, args);
+		});
+		const first = invokeClient("add_repo_path", { path: "/first" }).catch(
+			(error) => error,
+		);
+		await vi.advanceTimersByTimeAsync(20_000);
+		expect(await first).toMatchObject({
+			message: "Daemon connection timed out",
+		});
+		await vi.advanceTimersByTimeAsync(1_000);
+		await completeClientRestoration(1);
+		releaseFirst({
+			url: "http://127.0.0.1:9829",
+			token: "client-token",
+			launchId: "launch",
+		});
+		await vi.advanceTimersByTimeAsync(0);
+		expect(attachments).toHaveLength(2);
+		expect(attachments[0]).toBe(attachments[1]);
+		expect(invoke).toHaveBeenCalledWith(
+			"complete_desktop_restoration",
+			expect.objectContaining({ attachmentId: attachments[1] }),
+		);
+	} finally {
+		vi.useRealTimers();
+	}
+});
+
 it("SHUTDOWN中の単発呼び出しは接続を始めず失敗する", async () => {
 	const { getConnectionState } = await import("./client");
 	window.dispatchEvent(new Event("pagehide"));
@@ -167,14 +273,14 @@ it("復帰可能なページはSHUTDOWNを経ずに再接続する", async () =>
 	window.dispatchEvent(
 		new PageTransitionEvent("pagehide", { persisted: true }),
 	);
-	expect(getConnectionState()).toBe("IDLE");
+	expect(getConnectionState()).toBe("TRANSIENT_FAILURE");
 	window.dispatchEvent(
 		new PageTransitionEvent("pageshow", { persisted: true }),
 	);
 	await expect(
 		invokeClient("add_repo_path", { path: "/second" }),
 	).resolves.toBe(true);
-	expect(phases).toEqual(["IDLE", "CONNECTING", "READY"]);
+	expect(phases).toEqual(["TRANSIENT_FAILURE", "CONNECTING", "READY"]);
 	expect(
 		fixture.requests.filter((request) =>
 			request.url.endsWith("/GetServerInfo"),
@@ -434,6 +540,7 @@ function stateFixture(
 	options: {
 		failBeforeReady?: number;
 		stop?: () => Record<string, never>;
+		addRepoPath?: () => { value: boolean };
 	} = {},
 ) {
 	const streams: {
@@ -446,6 +553,7 @@ function stateFixture(
 	const reports = vi.fn(() => ({}));
 	const stops = vi.fn((_request: { target: string }) => options.stop?.() ?? {});
 	const fixture = connectFixture({
+		...(options.addRepoPath ? { addRepoPath: options.addRepoPath } : {}),
 		async *openStateStream(_, context) {
 			const queue: (StateEvent | Error)[] = [];
 			let wake = () => {};
@@ -534,7 +642,7 @@ it("購読開始が失敗し続けても同じ待ちが伸びる", async () => {
 			opened[2] - opened[1],
 			opened[3] - opened[2],
 		]).toEqual([1000, 1600, 2560]);
-		expect(fixture.serverInfoRequests()).toBe(4);
+		expect(fixture.serverInfoRequests()).toBe(1);
 	} finally {
 		window.dispatchEvent(new Event("pagehide"));
 		await vi.advanceTimersByTimeAsync(1000);
@@ -599,7 +707,7 @@ it("つなぎ直してから2分を超えてstreamが続くと次の待ちは1�
 });
 
 it.each([Code.Unavailable, Code.Aborted, Code.ResourceExhausted])(
-	"購読の開始がcode %sで失敗したら接続先を受け取り直してstreamを開く",
+	"購読の開始がcode %sで失敗したら接続を保ってstreamを開き直す",
 	async (code) => {
 		const start = vi
 			.fn<() => Promise<Record<string, never>>>()
@@ -618,9 +726,42 @@ it.each([Code.Unavailable, Code.Aborted, Code.ResourceExhausted])(
 			"repository-paths",
 		]);
 		expect(error).not.toHaveBeenCalled();
-		expect(fixture.serverInfoRequests()).toBe(2);
+		expect(fixture.serverInfoRequests()).toBe(1);
 	},
 );
+
+it("購読開始のRESOURCE_EXHAUSTED中もREADYで単発RPCを送る", async () => {
+	const { getConnectionState, onConnectionStateChange } = await import(
+		"./client"
+	);
+	const rpc = vi.fn(() => ({ value: true }));
+	const start = vi
+		.fn<() => Promise<Record<string, never>>>()
+		.mockRejectedValueOnce(new ConnectError("busy", Code.ResourceExhausted))
+		.mockResolvedValue({});
+	const fixture = stateFixture(start, { addRepoPath: rpc });
+	const phases: string[] = [];
+	const release = onConnectionStateChange(() =>
+		phases.push(getConnectionState()),
+	);
+	try {
+		subscribeState("repository-paths", vi.fn());
+		await vi.waitFor(() =>
+			expect(fixture.streams[0]?.signal.aborted).toBe(true),
+		);
+		expect(getConnectionState()).toBe("READY");
+		await expect(
+			invokeClient("add_repo_path", { path: "/repo" }),
+		).resolves.toBe(true);
+		expect(rpc).toHaveBeenCalledOnce();
+		await vi.waitFor(() => expect(fixture.starts).toHaveLength(2), {
+			timeout: 3000,
+		});
+		expect(phases).toEqual(["CONNECTING", "READY"]);
+	} finally {
+		release();
+	}
+});
 
 it.each([Code.Unavailable, Code.Aborted, Code.ResourceExhausted])(
 	"購読の停止がcode %sで失敗したらstreamを開き直し残った対象だけを開始する",
@@ -640,7 +781,7 @@ it.each([Code.Unavailable, Code.Aborted, Code.ResourceExhausted])(
 		await vi.waitFor(() => expect(fixture.starts).toHaveLength(3));
 		expect(fixture.stops).toHaveBeenCalledOnce();
 		expect(fixture.starts[2].target).toBe("providers");
-		expect(fixture.serverInfoRequests()).toBe(2);
+		expect(fixture.serverInfoRequests()).toBe(1);
 	},
 );
 

@@ -3,6 +3,54 @@ use crate::domain::daemon_supervision::DaemonExit;
 use crate::usecase::test_helpers::{restore_desktop, tick, FakeDaemon};
 use std::sync::atomic::Ordering;
 
+#[tokio::test(start_paused = true)]
+async fn test_起動状態の購読_初期状態と変化を送り停止後は送らない() {
+    // Given
+    use crate::adaptor::presenter::daemon_status::{DaemonStatusDriver, DaemonStatusPresenter};
+    let gateway = Arc::new(FakeDaemon::default());
+    let supervisor = DaemonSupervisionUsecase::start(gateway.clone());
+    let (sender, mut received) = tokio::sync::mpsc::unbounded_channel::<String>();
+    let channel = tauri::ipc::Channel::new(move |body| {
+        if let tauri::ipc::InvokeResponseBody::Json(message) = body {
+            sender.send(message).unwrap();
+        }
+        Ok(())
+    });
+    // When
+    let command_supervisor = supervisor.clone();
+    std::thread::spawn(move || {
+        command_supervisor.subscribe_status(
+            "screen".into(),
+            Arc::new(DaemonStatusPresenter::new(channel)),
+            &DaemonStatusDriver,
+        );
+    })
+    .join()
+    .unwrap();
+    // Then
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&received.recv().await.unwrap()).unwrap()
+            ["phase"],
+        "starting"
+    );
+    // When
+    gateway.ready.store(true, Ordering::SeqCst);
+    tick(200).await;
+    // Then
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&received.recv().await.unwrap()).unwrap()
+            ["phase"],
+        "restoring"
+    );
+    // When
+    supervisor.stop_status_subscription("screen", &DaemonStatusDriver);
+    tokio::task::yield_now().await;
+    gateway.ready.store(false, Ordering::SeqCst);
+    tick(200).await;
+    // Then
+    assert!(received.try_recv().is_err());
+}
+
 #[test]
 fn test_監督状態_接続失敗の分類を画面用のstageへ写す() {
     // Given

@@ -54,6 +54,40 @@ beforeEach(() => {
 });
 
 describe("App", () => {
+	it("起動失敗画面のQuit失敗を画面に通知する", async () => {
+		const subscribe = vi.mocked(client.subscribeState).getMockImplementation();
+		vi.mocked(client.subscribeState).mockImplementation(
+			(target, receive, error) => {
+				if (target === "startup-outcome") {
+					receive({
+						type: "failed",
+						kind: "storage_unavailable",
+						safeDescription: "Storage unavailable",
+						correlationId: "test",
+						retryOnNextLaunch: true,
+						actions: [],
+					} as never);
+					return () => {};
+				}
+				return subscribe?.(target, receive, error) ?? (() => {});
+			},
+		);
+		mockInvoke.mockRejectedValue(new Error("quit failed"));
+		try {
+			render(
+				<TooltipProvider>
+					<App />
+				</TooltipProvider>,
+			);
+			await userEvent
+				.setup()
+				.click(await screen.findByRole("button", { name: "Quit" }));
+			expect(await screen.findByRole("alert")).toHaveTextContent("quit failed");
+		} finally {
+			if (subscribe)
+				vi.mocked(client.subscribeState).mockImplementation(subscribe);
+		}
+	});
 	it.each(["not_sent", "unknown"] as const)(
 		"通信状態%sと再接続メッセージを画面に表示しない",
 		async (state) => {

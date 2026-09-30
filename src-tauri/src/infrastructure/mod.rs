@@ -1,4 +1,6 @@
 pub(crate) mod app_data_path;
+#[cfg(feature = "desktop")]
+pub(crate) mod desktop_channel;
 pub(crate) mod file_watcher;
 pub mod git;
 pub(crate) mod local_api;

@@ -70,10 +70,10 @@ WHEN 購読の stream が切れてつなぎ直し、その前後にも入力を�
 THEN 各入力は、送った順番どおりに terminal に届くか、失敗として画面に表示される
 AND つなぎ直しの後の入力は、表示の無いまま保留され続けない
 
-## B-013: 接続の状態による入力の失敗では attachment を張り直さない
+## B-013: READY でない間の入力の失敗では attachment を張り直さない
 
-GIVEN terminal に入力している
-WHEN 入力の送信が、接続が READY でないこと、または UNAVAILABLE で失敗する
+GIVEN 接続の状態が READY でない
+WHEN terminal への入力が失敗する
 THEN 失敗が画面に表示される
 AND attachment は張り直されない
 
@@ -90,6 +90,13 @@ GIVEN 画面が daemon とつながっている
 WHEN 接続の確立、READY の間の通信、つなぎ直しを経る
 THEN `GetServerInfo` は接続の確立のときにだけ呼ばれる
 
+## B-016: 届いたか分からない入力の失敗の後も入力が失われない
+
+GIVEN 接続の状態が READY で、terminal に入力している
+WHEN ある入力の送信が、送った後に届いたか分からない失敗（UNAVAILABLE・DEADLINE_EXCEEDED など）になる
+THEN その入力が実行されたかもしれないことが分かる文言で、失敗が画面に表示される
+AND その後の入力は、送った順番どおりに terminal に届くか、失敗として画面に表示され、表示の無いまま保留され続けない
+
 ## 要件IDとBehavior IDの対応表
 | Requirement ID | Behavior ID |
 | --- | --- |
@@ -102,6 +109,7 @@ THEN `GetServerInfo` は接続の確立のときにだけ呼ばれる
 | R-008 | B-006, B-007, B-008 |
 | R-009 | B-009, B-010 |
 | R-010 | B-011 |
-| R-011 | B-012 |
+| R-011 | B-012, B-016 |
 | R-012 | B-013 |
 | R-013 | B-014 |
+| R-014 | B-016 |

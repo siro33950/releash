@@ -7,3 +7,13 @@ export function showClientError(error: unknown) {
 		}),
 	);
 }
+
+export function rethrowClientError(error: unknown): never {
+	showClientError(error);
+	throw error;
+}
+
+export function logClientError(context: string, error: unknown) {
+	console.error(context, error);
+	showClientError(error);
+}

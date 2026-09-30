@@ -29,6 +29,39 @@ fn test_ターミナル入力受付_順序乱れ入力を連番順で払い出�
 }
 
 #[test]
+fn test_同じattachmentで番号を戻すと新しい入力が重複扱いになる() {
+    // Given
+    let mut registry = TerminalSurfaceInputIngressRegistry::default();
+    registry.activate("surface-a", "attachment-a");
+    assert_eq!(
+        registry.admit("surface-a", "attachment-a", 0, "before".into()),
+        Ok(vec![input(0, "before")])
+    );
+    // When
+    let reset_input = registry.admit("surface-a", "attachment-a", 0, "after".into());
+    let delayed_input = registry.admit("surface-a", "attachment-a", 1, "delayed".into());
+    // Then
+    assert_eq!(reset_input, Ok(Vec::new()));
+    assert_eq!(delayed_input, Ok(vec![input(1, "delayed")]));
+}
+
+#[test]
+fn test_同じattachmentで失敗した番号を飛ばすと後続入力が保留される() {
+    // Given
+    let mut registry = TerminalSurfaceInputIngressRegistry::default();
+    registry.activate("surface-a", "attachment-a");
+    // When
+    let later = registry.admit("surface-a", "attachment-a", 1, "later".into());
+    // Then
+    assert_eq!(later, Ok(Vec::new()));
+    // When
+    registry.activate("surface-a", "attachment-b");
+    let recovered = registry.admit("surface-a", "attachment-b", 0, "recovered".into());
+    // Then
+    assert_eq!(recovered, Ok(vec![input(0, "recovered")]));
+}
+
+#[test]
 fn test_ターミナル入力受付_重複入力と旧attachment入力を書き込まない() {
     let mut registry = TerminalSurfaceInputIngressRegistry::with_pending_capacity(8);
     registry.activate("surface-a", "attachment-a");

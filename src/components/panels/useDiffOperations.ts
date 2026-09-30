@@ -1,6 +1,6 @@
 import { useCallback } from "react";
 import { invokeClient as invoke } from "@/lib/client";
-import { showClientError } from "@/lib/clientErrorNotice";
+import { logClientError, showClientError } from "@/lib/clientErrorNotice";
 import type { DiffBase, DiffSection } from "@/types/settings";
 
 export interface UseDiffOperationsParams {
@@ -57,8 +57,7 @@ export function useDiffOperations({
 					showClientError(e);
 					return;
 				}
-				console.error("Group action failed:", e);
-				showClientError(e);
+				logClientError("Group action failed:", e);
 			}
 		},
 		[rootPath, filePath, section, base],

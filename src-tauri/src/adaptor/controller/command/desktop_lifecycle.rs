@@ -5,6 +5,7 @@ use std::sync::Arc;
 pub(crate) const COMMAND_NAMES: &[&str] = &[
     "get_daemon_status",
     "subscribe_daemon_status",
+    "stop_daemon_status_subscription",
     "retry_daemon",
     "quit_desktop",
     "restart_desktop",
@@ -24,6 +25,7 @@ pub(crate) fn register<R: tauri::Runtime>(
         Box::new(tauri::generate_handler![
             get_daemon_status,
             subscribe_daemon_status,
+            stop_daemon_status_subscription,
             retry_daemon,
             quit_desktop,
             restart_desktop,
@@ -44,17 +46,24 @@ fn get_daemon_status(supervisor: tauri::State<'_, Arc<DaemonSupervisionUsecase>>
 #[tauri::command]
 fn subscribe_daemon_status(
     supervisor: tauri::State<'_, Arc<DaemonSupervisionUsecase>>,
-    channel: tauri::ipc::Channel<DaemonStatus>,
+    id: String,
+    channel: tauri::ipc::Channel<crate::adaptor::presenter::daemon_status::DaemonStatusMessage>,
 ) {
-    let mut changes = supervisor.subscribe();
-    tauri::async_runtime::spawn(async move {
-        loop {
-            let status = changes.borrow_and_update().clone();
-            if channel.send(status).is_err() || changes.changed().await.is_err() {
-                break;
-            }
-        }
-    });
+    supervisor.subscribe_status(
+        id,
+        Arc::new(crate::adaptor::presenter::daemon_status::DaemonStatusPresenter::new(channel)),
+        &crate::adaptor::presenter::daemon_status::DaemonStatusDriver,
+    );
+}
+#[tauri::command]
+fn stop_daemon_status_subscription(
+    supervisor: tauri::State<'_, Arc<DaemonSupervisionUsecase>>,
+    id: String,
+) {
+    supervisor.stop_status_subscription(
+        &id,
+        &crate::adaptor::presenter::daemon_status::DaemonStatusDriver,
+    );
 }
 #[tauri::command]
 fn retry_daemon(supervisor: tauri::State<'_, Arc<DaemonSupervisionUsecase>>) -> Result<(), String> {

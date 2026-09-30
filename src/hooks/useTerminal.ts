@@ -12,11 +12,12 @@ import type {
 import {
 	type ClientCommand,
 	currentTerminalInputId,
+	getConnectionState,
 	invokeClient as invoke,
 	reportTerminalProcessed,
 	subscribeTerminalState,
 } from "@/lib/client";
-import { showClientError } from "@/lib/clientErrorNotice";
+import { logClientError } from "@/lib/clientErrorNotice";
 import { getErrorMessage } from "@/lib/errorMessage";
 import {
 	reportMountedXtermMounted,
@@ -265,9 +266,18 @@ export function useTerminal(
 		let attachmentId: string | null = null;
 		let inputSequence = 0;
 		let failedInputId: string | null = null;
+		let uncertainInputError: string | null = null;
 		let startupFailure: string | null = null;
 		let pendingInput = Promise.resolve();
 		let pendingPerformanceInputSequences: number[] = [];
+		const unavailableAttachment = () =>
+			new Error("Terminal input attachment is unavailable");
+		const selectInputAttachment = (id: string) => {
+			attachmentId = id;
+			inputSequence = 0;
+			failedInputId = null;
+			pendingPerformanceInputSequences = [];
+		};
 		const startupInput = new StartupInputBuffer((dropped) => {
 			console.warn(
 				`Discarding ${dropped.length} chars of terminal input typed before startup: buffer limit reached`,
@@ -300,10 +310,7 @@ export function useTerminal(
 				owner: terminalOwner,
 				rows,
 				cols,
-			}).catch((error) => {
-				console.error("Failed to resize PTY:", error);
-				showClientError(error);
-			});
+			}).catch((error) => logClientError("Failed to resize PTY:", error));
 		};
 		let recoverAttachment: ((failedEpoch?: number) => void) | null = null;
 		let attachmentEpoch = 0;
@@ -395,13 +402,11 @@ export function useTerminal(
 					(shouldKillPendingTerminalRef.current?.() ?? false);
 				if (shouldKillDetachedPty) {
 					invoke("kill_terminal_surface", { owner: terminalOwner }).catch(
-						(error) => {
-							console.error(
+						(error) =>
+							logClientError(
 								"Failed to kill detached pending terminal PTY:",
 								error,
-							);
-							showClientError(error);
-						},
+							),
 					);
 				} else if (!shouldKillDetachedPty && result) {
 					onTerminalReadyRef.current?.(result.session_key);
@@ -557,13 +562,10 @@ export function useTerminal(
 				// 先に切り替えると、attach完了前の打鍵が新attachment IDと
 				// sequence 0..Nで送られて棄却され、以後の入力sequenceが恒久的に
 				// 欠番となり全打鍵が無音でバッファされ続ける。
-				attachmentId = currentTerminalInputId(terminalOwner);
-				if (!attachmentId)
-					throw new Error("Terminal input attachment is unavailable");
+				const nextInputId = currentTerminalInputId(terminalOwner);
+				if (!nextInputId) throw unavailableAttachment();
+				selectInputAttachment(nextInputId);
 				markAttached();
-				inputSequence = 0;
-				failedInputId = null;
-				pendingPerformanceInputSequences = [];
 				await releaseAttachment(previousReleaseStream);
 			};
 			recoverAttachment = (failedEpoch) => {
@@ -585,7 +587,7 @@ export function useTerminal(
 							return;
 						}
 						if (attemptEpoch !== attachmentEpoch) return;
-						onTerminalErrorRef.current?.(null);
+						onTerminalErrorRef.current?.(uncertainInputError);
 					},
 					(error) => {
 						if (recoveringSinceEpoch === attemptEpoch) {
@@ -657,6 +659,11 @@ export function useTerminal(
 		initialize();
 
 		deliverInput = (data: string) => {
+			const phase = getConnectionState();
+			if (phase === "TRANSIENT_FAILURE" || phase === "SHUTDOWN") {
+				onTerminalErrorRef.current?.(`Daemon connection is ${phase}`);
+				return;
+			}
 			const deadline =
 				Date.now() + getOption(ClientService, default_timeout_ms);
 			const clientStartedAtUnixMs = performanceProbeActive
@@ -667,16 +674,12 @@ export function useTerminal(
 					if (Date.now() > deadline)
 						throw new Error("Terminal input timed out");
 					const activeAttachmentId = currentTerminalInputId(terminalOwner);
-					if (!activeAttachmentId)
-						throw new Error("Terminal input attachment is unavailable");
+					if (!activeAttachmentId) throw unavailableAttachment();
 					if (activeAttachmentId !== attachmentId) {
-						attachmentId = activeAttachmentId;
-						inputSequence = 0;
-						failedInputId = null;
-						pendingPerformanceInputSequences = [];
+						selectInputAttachment(activeAttachmentId);
 					}
 					if (failedInputId === activeAttachmentId)
-						throw new Error("Terminal input attachment is unavailable");
+						throw unavailableAttachment();
 					const sequence = inputSequence++;
 					if (performanceProbeActive) {
 						pendingPerformanceInputSequences.push(sequence);
@@ -693,16 +696,17 @@ export function useTerminal(
 								: { clientStartedAtUnixMs }),
 						});
 					} catch (error) {
-						if (
+						failedInputId = activeAttachmentId;
+						const stale =
 							typeof error === "object" &&
 							error !== null &&
 							"code" in error &&
-							error.code === "STALE_TERMINAL_ATTACHMENT"
-						) {
-							failedInputId = activeAttachmentId;
-							recoverAttachment?.();
-						}
-						throw error;
+							error.code === "STALE_TERMINAL_ATTACHMENT";
+						const uncertain = `Terminal input may have been executed: ${getErrorMessage(error)}`;
+						if (!stale) uncertainInputError = uncertain;
+						if (getConnectionState() === "READY") recoverAttachment?.();
+						if (stale) throw error;
+						throw new Error(uncertain);
 					}
 				})
 				.catch((error) => {
@@ -792,10 +796,8 @@ export function useTerminal(
 			releaseCurrentAttachment();
 			if (killOnUnmountRef.current && isRunningRef.current) {
 				invoke("kill_terminal_surface", { owner: terminalOwner }).catch(
-					(error) => {
-						console.error("Failed to kill terminal PTY on unmount:", error);
-						showClientError(error);
-					},
+					(error) =>
+						logClientError("Failed to kill terminal PTY on unmount:", error),
 				);
 			}
 			isRunningRef.current = false;
