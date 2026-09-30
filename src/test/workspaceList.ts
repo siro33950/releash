@@ -1,6 +1,6 @@
 import type {
-	WorkspaceListSnapshotDto,
-	WorkspaceTreeSnapshotDto,
+	WorkspaceTreeSnapshot as WireWorkspaceTreeSnapshot,
+	WorkspaceListSnapshot,
 } from "@/generated/client_types";
 import type { WorkspaceTreeSnapshot } from "@/types/workspace-tree";
 
@@ -11,9 +11,8 @@ export function workspaceListSnapshot(
 		preferredNodeId: null,
 	},
 	worktreePath = "/repo",
-): WorkspaceListSnapshotDto {
+): WorkspaceListSnapshot {
 	return {
-		generation: 1,
 		status: { loaded: true, error: null, state: "ready" },
 		repositories: [
 			{
@@ -27,10 +26,6 @@ export function workspaceListSnapshot(
 						is_deleting: false,
 						dirty_count: 0,
 						is_merged: false,
-						ahead: 0,
-						behind: 0,
-						has_upstream: false,
-						base_ahead: 0,
 						has_pr: false,
 						pr_number: null,
 						pr_url: null,
@@ -44,7 +39,7 @@ export function workspaceListSnapshot(
 							error: null,
 							state: snapshot.nodes.length === 0 ? "empty" : "ready",
 						},
-						snapshot: snapshot as WorkspaceTreeSnapshotDto,
+						snapshot: snapshot as WireWorkspaceTreeSnapshot,
 						workflowHistory: [],
 					},
 				],

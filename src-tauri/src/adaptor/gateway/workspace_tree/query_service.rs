@@ -1,74 +1,32 @@
-use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use super::SqliteWorkspaceTreeRepository;
 use crate::adaptor::gateway::local_event_store::read_only::LocalEventReadStore;
 use crate::domain::workflow::{
-    ExecutionStatusFilter, ExecutionTreeArchiveRepository, ExecutionTreeLaunch, WorkflowError,
-    WorkflowExecutionSummary, WorkflowPageRequest,
+    ExecutionStatusFilter, ExecutionTreeLaunch, WorkflowError, WorkflowExecutionSummary,
+    WorkflowPageRequest,
 };
 use crate::domain::workspace_tree::{
-    WorkspaceIdentity, WorkspaceNodeKind, WorkspacePublicRoot, WorkspaceTree, WorkspaceTreeNode,
-    WorkspaceTreeRepository, WorkspaceTreeVisibilityPolicy,
+    WorkspaceIdentity, WorkspaceNodeKind, WorkspaceTreeNode, WorkspaceTreeRepository,
 };
-use crate::usecase::agent_session::{AgentSessionItemDto, AgentSessionLifecycleDto};
 use crate::usecase::workflow::{
-    WorkspaceCommandNodeContentDto, WorkspaceCommandResultDto, WorkspaceFanoutDto,
-    WorkspaceNodeCapabilitiesDto, WorkspaceNodeContentDto, WorkspaceNodeDetailDto,
-    WorkspaceNodeDto, WorkspaceSequenceDto, WorkspaceSessionCapabilitiesDto,
-    WorkspaceSessionNodeContentDto, WorkspaceTreeItemDto, WorkspaceTreeSnapshotDto,
-    WorkspaceWorkflowCapabilitiesDto, WorkspaceWorkflowHistoryItemDto,
+    WorkspaceCommandNodeContentDto, WorkspaceCommandResultDto, WorkspaceNodeCapabilitiesDto,
+    WorkspaceNodeContentDto, WorkspaceNodeDetailDto, WorkspaceSessionNodeContentDto,
 };
 use crate::usecase::workspace_tree::WorkspaceQueryService;
 
 pub(crate) struct SqliteWorkspaceQueryService {
-    failures: Arc<crate::adaptor::gateway::failure_records::FailureRecordStore>,
     repository: Arc<SqliteWorkspaceTreeRepository>,
-    archives: Arc<dyn ExecutionTreeArchiveRepository>,
 }
 
 impl SqliteWorkspaceQueryService {
-    fn apply_workflow_failures(&self, tree: &mut WorkspaceTree) {
-        let targets: std::collections::HashSet<_> = tree
-            .nodes()
-            .iter()
-            .flat_map(|node| {
-                [
-                    Some(node.id.clone()),
-                    node.node_execution_id.clone(),
-                    node.execution_id.clone(),
-                ]
-            })
-            .flatten()
-            .collect();
-        for target in targets {
-            for message in self.failures.attention_messages(&target) {
-                tree.observe_background_failure(&target, &message);
-            }
-        }
+    pub(crate) fn with_repository(repository: Arc<SqliteWorkspaceTreeRepository>) -> Arc<Self> {
+        Arc::new(Self { repository })
     }
 
-    pub(crate) fn with_repository(
-        failures: Arc<crate::adaptor::gateway::failure_records::FailureRecordStore>,
-        repository: Arc<SqliteWorkspaceTreeRepository>,
-        archives: Arc<dyn ExecutionTreeArchiveRepository>,
-    ) -> Arc<Self> {
+    pub(crate) fn new_read_only(store: Arc<LocalEventReadStore>) -> Arc<Self> {
         Arc::new(Self {
-            failures,
-            repository,
-            archives,
-        })
-    }
-
-    pub(crate) fn new_read_only(
-        failures: Arc<crate::adaptor::gateway::failure_records::FailureRecordStore>,
-        store: Arc<LocalEventReadStore>,
-        archives: Arc<dyn ExecutionTreeArchiveRepository>,
-    ) -> Arc<Self> {
-        Arc::new(Self {
-            failures,
             repository: SqliteWorkspaceTreeRepository::new_read_only(store),
-            archives,
         })
     }
 
@@ -79,19 +37,19 @@ impl SqliteWorkspaceQueryService {
         page: Option<WorkflowPageRequest>,
     ) -> Result<Vec<crate::domain::local_event::WorkflowExecutionMetadataRecord>, WorkflowError>
     {
-        let backend = self.repository.fact_backend();
-        let tree_roots = crate::adaptor::gateway::workflow::fact_log::list_tree_roots(
-            &backend,
-            workspace_identity.map(|identity| identity.as_str()),
-        )
-        .await
-        .map_err(WorkflowError::from)?;
+        let tree_roots = self.repository.tree_roots().await.map_err(|error| {
+            WorkflowError::from(
+                crate::adaptor::gateway::workflow::fact_log::FactReadError::Query(error),
+            )
+        })?;
         let mut records = Vec::new();
         for (tree_id, root) in tree_roots {
-            if root.launched_as != ExecutionTreeLaunch::Workflow {
+            if root.launched_as != ExecutionTreeLaunch::Workflow
+                || workspace_identity.is_some_and(|wanted| wanted.as_str() != root.worktree_path)
+            {
                 continue;
             }
-            let Some((folded, record)) = self
+            let Some(execution) = self
                 .repository
                 .folded_tree(&tree_id)
                 .await
@@ -99,6 +57,7 @@ impl SqliteWorkspaceQueryService {
             else {
                 continue;
             };
+            let (folded, record) = &*execution;
             debug_assert_eq!(folded.root.launched_as, ExecutionTreeLaunch::Workflow);
             let keep = match status {
                 Some(ExecutionStatusFilter::Active) => !record.status.is_finished(),
@@ -106,7 +65,7 @@ impl SqliteWorkspaceQueryService {
                 None => true,
             };
             if keep {
-                records.push(record);
+                records.push(record.clone());
             }
         }
         // 旧一覧と同じ並び: active が先、次に更新時刻の新しい順、最後に id。
@@ -131,69 +90,6 @@ impl SqliteWorkspaceQueryService {
 
 #[async_trait::async_trait]
 impl WorkspaceQueryService for SqliteWorkspaceQueryService {
-    async fn workspace_tree(
-        &self,
-        workspace_identity: &WorkspaceIdentity,
-    ) -> Result<WorkspaceTreeSnapshotDto, WorkflowError> {
-        let folded = self
-            .repository
-            .folded_workspace_trees(workspace_identity.as_str())
-            .await
-            .map_err(query_error)?;
-        let mut tree = self
-            .repository
-            .workspace_tree_from_folded(workspace_identity.as_str(), &folded)
-            .map_err(query_error)?
-            .unwrap_or_else(|| WorkspaceTree::empty(workspace_identity.as_str()));
-        self.apply_workflow_failures(&mut tree);
-        let session_tree_ids = folded
-            .iter()
-            .filter(|(tree, _)| {
-                tree.root.launched_as == ExecutionTreeLaunch::Session
-                    && tree.root.workspace_identity == workspace_identity.as_str()
-            })
-            .map(|(tree, _)| tree.aggregate.id.clone())
-            .collect::<Vec<_>>();
-        let session_items = crate::adaptor::gateway::agent_session::workspace_session_items(
-            &self.repository.fact_backend(),
-            &session_tree_ids,
-            workspace_identity.as_str(),
-        )
-        .await
-        .map_err(|error| WorkflowError::Store(error.into()))?;
-        let workflow_execution_ids = folded
-            .iter()
-            .filter(|(tree, _)| tree.root.launched_as == ExecutionTreeLaunch::Workflow)
-            .map(|(tree, _)| tree.aggregate.id.clone())
-            .collect::<HashSet<_>>();
-        let execution_ids = folded
-            .iter()
-            .map(|(tree, _)| tree.aggregate.id.clone())
-            .collect::<Vec<_>>();
-        let archive = self.archives.archive_snapshot_for(&execution_ids).await?;
-        let hidden = WorkspaceTreeVisibilityPolicy::hidden_branch_ids(
-            &tree,
-            archive
-                .records
-                .iter()
-                .map(|record| record.execution_id.as_str()),
-        );
-        let archived_sessions = session_items
-            .iter()
-            .filter(|session| session.lifecycle == AgentSessionLifecycleDto::Archived)
-            .cloned()
-            .collect::<Vec<_>>();
-        let preferred_node_id = tree
-            .preferred_node_id(&hidden)
-            .map(|node_id| public_node_id(&tree, &node_id));
-        let nodes = project_tree(&tree, &hidden, &workflow_execution_ids, &session_items);
-        Ok(WorkspaceTreeSnapshotDto {
-            nodes,
-            archived_sessions,
-            preferred_node_id,
-        })
-    }
-
     async fn node_detail(
         &self,
         workspace_identity: &WorkspaceIdentity,
@@ -238,241 +134,10 @@ impl WorkspaceQueryService for SqliteWorkspaceQueryService {
             .folded_tree(execution_id)
             .await
             .map_err(query_error)?
-            .filter(|(tree, _)| tree.root.launched_as == ExecutionTreeLaunch::Workflow)
-            .map(|(_, record)| execution_summary(record))
+            .filter(|execution| execution.0.root.launched_as == ExecutionTreeLaunch::Workflow)
+            .map(|execution| execution_summary(execution.1.clone()))
             .transpose()
     }
-
-    async fn workflow_history(
-        &self,
-        workspace_identity: &WorkspaceIdentity,
-    ) -> Result<Vec<WorkspaceWorkflowHistoryItemDto>, WorkflowError> {
-        let summaries = self
-            .execution_records(Some(workspace_identity), None, None)
-            .await?
-            .into_iter()
-            .map(|summary| (summary.execution_id.clone(), summary))
-            .collect::<HashMap<_, _>>();
-        let archive = self
-            .archives
-            .archive_snapshot_for(&summaries.keys().cloned().collect::<Vec<_>>())
-            .await?;
-        let mut history = archive
-            .records
-            .into_iter()
-            .filter_map(|record| {
-                summaries
-                    .get(&record.execution_id)
-                    .map(|summary| WorkspaceWorkflowHistoryItemDto {
-                        execution_id: record.execution_id,
-                        worktree_path: summary.worktree_path.clone(),
-                        title: summary.workflow_name.clone(),
-                        status: summary.status.as_str().to_string(),
-                        updated_at: f64::from_bits(summary.updated_at_bits),
-                        archived_at: record.archived_at,
-                        archive_reason: record.archive_reason,
-                    })
-            })
-            .collect::<Vec<_>>();
-        history.sort_by(|left, right| {
-            right
-                .archived_at
-                .total_cmp(&left.archived_at)
-                .then_with(|| left.execution_id.cmp(&right.execution_id))
-        });
-        Ok(history)
-    }
-}
-
-fn public_node_id(tree: &WorkspaceTree, node_id: &str) -> String {
-    WorkspacePublicRoot::for_node(tree.nodes(), node_id)
-        .map_or_else(|| node_id.to_string(), |root| root.public_id().to_string())
-}
-
-fn workflow_capabilities(node: &WorkspaceTreeNode) -> WorkspaceWorkflowCapabilitiesDto {
-    WorkspaceWorkflowCapabilitiesDto {
-        can_abort: node.can_abort,
-        can_archive: node.can_archive,
-    }
-}
-
-fn project_tree(
-    tree: &WorkspaceTree,
-    hidden: &HashSet<String>,
-    workflow_execution_ids: &HashSet<String>,
-    session_items: &[AgentSessionItemDto],
-) -> Vec<WorkspaceTreeItemDto> {
-    let mut children: HashMap<Option<&str>, Vec<&WorkspaceTreeNode>> = HashMap::new();
-    let by_id = tree
-        .nodes()
-        .iter()
-        .map(|node| (node.id.as_str(), node))
-        .collect::<HashMap<_, _>>();
-    let sessions = session_items
-        .iter()
-        .map(|session| (session.id.as_str(), session))
-        .collect::<HashMap<_, _>>();
-    for node in tree.nodes() {
-        if !node.is_internal_rule_record() && !node.is_retry_history {
-            children
-                .entry(node.parent_id.as_deref())
-                .or_default()
-                .push(node);
-        }
-    }
-    for siblings in children.values_mut() {
-        siblings.sort_by_key(|node| (node.sibling_order, node.id.as_str()));
-    }
-    fn node_dto(
-        node: &WorkspaceTreeNode,
-        public_id: String,
-        public_title: String,
-        workflow_capabilities: Option<WorkspaceWorkflowCapabilitiesDto>,
-        session_capabilities: Option<WorkspaceSessionCapabilitiesDto>,
-        by_id: &HashMap<&str, &WorkspaceTreeNode>,
-    ) -> WorkspaceNodeDto {
-        let past_attempts = node
-            .past_attempt_ids
-            .iter()
-            .filter_map(|id| by_id.get(id.as_str()).copied())
-            .map(|past| node_dto(past, past.id.clone(), past.title.clone(), None, None, by_id))
-            .collect::<Vec<_>>();
-        WorkspaceNodeDto {
-            process_presence: node.process_presence.as_str(),
-            id: public_id,
-            title: public_title,
-            status: node.status_classification.as_public_str().to_string(),
-            error_reason: node.error_reason.clone(),
-            content_kind: if node.kind == WorkspaceNodeKind::WorkflowCommand {
-                "command"
-            } else {
-                "session"
-            },
-            capabilities: WorkspaceNodeCapabilitiesDto {
-                can_rename: node.can_rename,
-                can_approve: node.can_approve,
-                can_retry: node.can_retry,
-                can_resume_session: node.can_resume_session,
-            },
-            workflow_capabilities,
-            session_capabilities,
-            children: Vec::new(),
-            past_attempts_collapsed: !past_attempts.is_empty(),
-            past_attempts,
-            updated_at: node.updated_at(),
-        }
-    }
-
-    #[derive(Clone)]
-    struct RootProjection {
-        public_id: String,
-        public_title: String,
-        workflow_capabilities: Option<WorkspaceWorkflowCapabilitiesDto>,
-        session_capabilities: Option<WorkspaceSessionCapabilitiesDto>,
-    }
-
-    let root_projections = WorkspacePublicRoot::all(tree.nodes())
-        .into_iter()
-        .map(|root| {
-            let is_workflow = workflow_execution_ids.contains(root.public_id());
-            let root_session = (!is_workflow)
-                .then(|| root.node().session_id.as_deref())
-                .flatten()
-                .and_then(|session_id| sessions.get(session_id).copied());
-            (
-                root.node().id.as_str(),
-                RootProjection {
-                    public_id: root.public_id().to_string(),
-                    public_title: root.public_title().to_string(),
-                    workflow_capabilities: Some(workflow_capabilities(root.owner())),
-                    session_capabilities: root_session.map(|session| {
-                        WorkspaceSessionCapabilitiesDto {
-                            session_ref: session.id.clone(),
-                            can_archive: session.operations.can_archive,
-                            can_delete: session.operations.can_delete,
-                        }
-                    }),
-                },
-            )
-        })
-        .collect::<HashMap<_, _>>();
-
-    fn branch(
-        parent: Option<&str>,
-        children: &HashMap<Option<&str>, Vec<&WorkspaceTreeNode>>,
-        hidden: &HashSet<String>,
-        by_id: &HashMap<&str, &WorkspaceTreeNode>,
-        root_projections: &HashMap<&str, RootProjection>,
-    ) -> Vec<WorkspaceTreeItemDto> {
-        children
-            .get(&parent)
-            .into_iter()
-            .flatten()
-            .filter(|node| !hidden.contains(&node.id))
-            .flat_map(|node| match node.kind {
-                WorkspaceNodeKind::Workflow => {
-                    branch(Some(&node.id), children, hidden, by_id, root_projections)
-                }
-                WorkspaceNodeKind::Fanout => {
-                    let root = root_projections.get(node.id.as_str());
-                    vec![WorkspaceTreeItemDto::Fanout(WorkspaceFanoutDto {
-                        worktree: node.worktree.as_ref().map(|worktree| {
-                            crate::usecase::workflow::NodeWorktreeDto {
-                                branch: worktree.branch.clone(),
-                                path: worktree.path.clone(),
-                            }
-                        }),
-                        id: root.map_or_else(|| node.id.clone(), |root| root.public_id.clone()),
-                        title: root
-                            .map_or_else(|| node.title.clone(), |root| root.public_title.clone()),
-                        status: node.status_classification.as_public_str().to_string(),
-                        workflow_capabilities: root
-                            .and_then(|root| root.workflow_capabilities.clone()),
-                        children: branch(Some(&node.id), children, hidden, by_id, root_projections),
-                        updated_at: node.updated_at(),
-                    })]
-                }
-                WorkspaceNodeKind::Sequence => {
-                    let root = root_projections.get(node.id.as_str());
-                    vec![WorkspaceTreeItemDto::Sequence(WorkspaceSequenceDto {
-                        worktree: node.worktree.as_ref().map(|worktree| {
-                            crate::usecase::workflow::NodeWorktreeDto {
-                                branch: worktree.branch.clone(),
-                                path: worktree.path.clone(),
-                            }
-                        }),
-                        id: root.map_or_else(|| node.id.clone(), |root| root.public_id.clone()),
-                        title: root
-                            .map_or_else(|| node.title.clone(), |root| root.public_title.clone()),
-                        status: node.status_classification.as_public_str().to_string(),
-                        workflow_capabilities: root
-                            .and_then(|root| root.workflow_capabilities.clone()),
-                        children: branch(Some(&node.id), children, hidden, by_id, root_projections),
-                        updated_at: node.updated_at(),
-                    })]
-                }
-                _ => {
-                    let root = root_projections.get(node.id.as_str());
-                    let mut projected = node_dto(
-                        node,
-                        root.map_or_else(|| node.id.clone(), |root| root.public_id.clone()),
-                        root.map_or_else(|| node.title.clone(), |root| root.public_title.clone()),
-                        root.and_then(|root| root.workflow_capabilities.clone()),
-                        root.and_then(|root| root.session_capabilities.clone()),
-                        by_id,
-                    );
-                    projected.children =
-                        branch(Some(&node.id), children, hidden, by_id, root_projections);
-                    for past in &mut projected.past_attempts {
-                        past.children =
-                            branch(Some(&past.id), children, hidden, by_id, root_projections);
-                    }
-                    vec![WorkspaceTreeItemDto::Node(projected)]
-                }
-            })
-            .collect()
-    }
-    branch(None, &children, hidden, &by_id, &root_projections)
 }
 
 fn node_detail(node: WorkspaceTreeNode) -> WorkspaceNodeDetailDto {
@@ -575,7 +240,9 @@ fn execution_summary(
     })
 }
 
-fn query_error(error: crate::domain::local_event::LocalEventQueryError) -> WorkflowError {
+pub(super) fn query_error(
+    error: crate::domain::local_event::LocalEventQueryError,
+) -> WorkflowError {
     use crate::domain::local_event::LocalEventQueryError;
 
     match error {

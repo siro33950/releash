@@ -491,15 +491,8 @@ impl<R: tauri::Runtime> WorkflowControlPlaneAcceptanceHost<R> {
 
         let workspace_query: Arc<dyn crate::usecase::workspace_tree::WorkspaceQueryService> =
             crate::adaptor::gateway::workspace_tree::SqliteWorkspaceQueryService::with_repository(
-                work.failures.clone(),
                 crate::adaptor::gateway::workspace_tree::SqliteWorkspaceTreeRepository::new(
                     store.clone(),
-                ),
-                Arc::new(
-                    crate::adaptor::gateway::workflow::ExecutionTreeArchiveFactRepository::new(
-                        store.clone(),
-                        config.data_dir.clone(),
-                    ),
                 ),
             );
 

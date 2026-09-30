@@ -64,7 +64,6 @@ struct StateChange {
 }
 
 struct PendingChange {
-    source: StateChangeSource,
     completed: std::sync::mpsc::Sender<()>,
 }
 
@@ -200,11 +199,6 @@ impl StateSubscriptionUsecase {
             return Ok(());
         }
         let mut changes = self.changes.subscribe();
-        if *target == SubscriptionTarget::Workspaces && !self.active_targets().contains(target) {
-            reads
-                .refresh_workspaces(Some(StateChangeSource::Repositories))
-                .await;
-        }
         reads.refresh_external(target).await?;
         let value = reads.read(target).await?;
         self.start(client, target).map_err(convert)?;
@@ -235,28 +229,52 @@ impl StateSubscriptionUsecase {
             let mut interval =
                 timer.interval(crate::domain::git_host::CacheTtl::EXTERNAL_INFORMATION.duration());
             loop {
-                let (source, completed) = tokio::select! {
+                // 定期の取り直しと Repository の増減のときだけ、外部の情報を取り直す。
+                // 取りこぼしは、読み直すだけにする。
+                let mut refresh_external = false;
+                let mut completed = Vec::new();
+                tokio::select! {
                     result = changes.recv() => match result {
                         Ok(change) if change.skip.as_ref() == Some(&worker_target) => continue,
-                        Ok(change) if worker_target.affected_by(&change.source) => (Some(change.source), None),
+                        Ok(change) if worker_target.affected_by(&change.source) => {
+                            refresh_external = adds_external_information(&worker_target, &change.source);
+                        }
                         Ok(_) => continue,
-                        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => (None, None),
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
                         Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                     },
                     result = waiting_changes.recv() => match result {
-                        Some(change) => (Some(change.source), Some(change.completed)),
+                        Some(change) => completed.push(change.completed),
                         None => break,
                     },
-                    _ = interval.next(), if worker_target.external_information() => (None, None),
-                };
-                if source.is_none() {
+                    _ = interval.next(), if worker_target.external_information() => {
+                        refresh_external = true;
+                    }
+                }
+                // 読むのは 1 回で足りるので、溜まった知らせは読む前にまとめる。
+                loop {
+                    use tokio::sync::broadcast::error::TryRecvError;
+                    match changes.try_recv() {
+                        Ok(change) => {
+                            refresh_external |=
+                                adds_external_information(&worker_target, &change.source);
+                        }
+                        Err(TryRecvError::Lagged(_)) => continue,
+                        Err(TryRecvError::Empty | TryRecvError::Closed) => break,
+                    }
+                }
+                while let Ok(change) = waiting_changes.try_recv() {
+                    completed.push(change.completed);
+                }
+                if refresh_external {
                     if let Err(error) = reads.refresh_external(&worker_target).await {
                         log::warn!("External state refresh failed: {error}");
-                        continue;
+                        if completed.is_empty() {
+                            continue;
+                        }
                     }
                 }
                 if worker_target == SubscriptionTarget::Workspaces {
-                    reads.refresh_workspaces(source).await;
                     if let Err(error) = usecase.reconcile_watches() {
                         log::error!("State watch update failed: {error}");
                     }
@@ -269,7 +287,7 @@ impl StateSubscriptionUsecase {
                     }
                     Err(error) => log::warn!("State read failed for {worker_target}: {error}"),
                 }
-                if let Some(completed) = completed {
+                for completed in completed {
                     let _ = completed.send(());
                 }
             }
@@ -358,8 +376,8 @@ impl StateSubscriptionUsecase {
         let worker = self.waiting_workers.lock().get(target).cloned();
         if let Some(worker) = worker {
             let (completed, receiver) = std::sync::mpsc::channel();
-            self.send_change(source.clone(), Some(target.clone()));
-            if worker.send(PendingChange { source, completed }).is_ok() {
+            self.send_change(source, Some(target.clone()));
+            if worker.send(PendingChange { completed }).is_ok() {
                 let _ = receiver.recv();
             }
         } else {
@@ -525,6 +543,11 @@ impl StateSubscriptionUsecase {
             .insert(target.clone());
         Ok(true)
     }
+}
+
+/// Repository が増減したときは、外部の情報（PR）を持たない Repository が現れうる。
+fn adds_external_information(target: &SubscriptionTarget, source: &StateChangeSource) -> bool {
+    *source == StateChangeSource::Repositories && target.external_information()
 }
 
 #[cfg(test)]

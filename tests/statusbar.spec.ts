@@ -132,10 +132,6 @@ test.describe("StatusBar", () => {
 					worktree_path: "/test/repo",
 					dirty_count: 0,
 					is_merged: false,
-					ahead: 0,
-					behind: 0,
-					has_upstream: true,
-					base_ahead: 0,
 				},
 			],
 		});

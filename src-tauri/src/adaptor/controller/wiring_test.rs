@@ -3,13 +3,11 @@ use crate::adaptor::controller::agent_session_wiring::{
     compose_agent_sessions, AgentSessionCompositionInput,
 };
 use crate::adaptor::gateway::agent_session::LocalProviderExecutableProbeGateway;
-use crate::adaptor::gateway::repository::{scanner::DefaultRepositoryScanner, state::*};
 use crate::adaptor::gateway::workflow::{
     node_process::WorkflowNodeProcesses, workflow_host::WorkflowRuntimeDependencies,
     RepositoryIsolatedWorktreeGateway,
 };
 use crate::domain::repository::worktree_operation::WorktreeDeletionTarget;
-use crate::usecase::repository_state::RepositoryStateService;
 use crate::usecase::repository_usecase::WorktreeExecutionArchiver;
 
 #[tokio::test]
@@ -81,27 +79,13 @@ async fn test_worktree削除一覧_本番runtime配線で受理した削除状�
         },
     )
     .unwrap();
-    let state = RepositoryStateService::new(
-        Arc::new(RepositoryStateRepositoryGateway::new(repository.clone())),
-        Arc::new(DefaultRepositoryScanner::new(
-            repository.clone(),
-            Arc::new(build_code_usecase()),
-        )),
-        publisher,
-        Arc::new(NotifyRepositoryStateWatcher::new(repository)),
-        Arc::new(
-            crate::adaptor::controller::repository_scan::RepositoryScanWorkerRuntime::new(
-                crate::usecase::retry::test_retrying(),
-            ),
-        ),
-        Arc::new(FsWorktreePathNormalizer),
-    );
-    assert!(state
-        .list_branches_with_status_snapshot(repo_path)
-        .unwrap()
-        .branches
-        .iter()
-        .all(|card| !card.is_deleting));
+    let rows = || {
+        repository.with_deleting_worktrees(
+            repo_path,
+            repository.list_working_worktrees(repo_path).unwrap(),
+        )
+    };
+    assert!(rows().iter().all(|(_, deleting)| !deleting));
 
     // When
     let mut deletion = runtime
@@ -127,19 +111,15 @@ async fn test_worktree削除一覧_本番runtime配線で受理した削除状�
             )
             .unwrap();
         }
-        let snapshot = state.list_branches_with_status_snapshot(repo_path).unwrap();
-        let areas = snapshot.worktree_display_groups.working_areas;
-        assert_eq!(areas.len(), 2);
-        let deleting: Vec<_> = areas.iter().filter(|card| card.is_deleting).collect();
+        let rows = rows();
+        assert_eq!(rows.len(), 2);
+        let deleting: Vec<_> = rows.iter().filter(|(_, deleting)| *deleting).collect();
         assert_eq!(deleting.len(), 1);
-        assert_eq!(deleting[0].name, worktree.branch);
-        assert_eq!(
-            deleting[0].worktree_path.as_deref(),
-            Some(worktree.path.as_str())
-        );
+        assert_eq!(deleting[0].0.branch, worktree.branch);
+        assert_eq!(deleting[0].0.path, worktree.path);
     }
     drop(deletion);
-    let snapshot = state.list_branches_with_status_snapshot(repo_path).unwrap();
-    assert!(snapshot.branches.iter().all(|card| !card.is_deleting));
-    assert_eq!(snapshot.worktree_display_groups.working_areas.len(), 1);
+    let rows = rows();
+    assert!(rows.iter().all(|(_, deleting)| !deleting));
+    assert_eq!(rows.len(), 1);
 }

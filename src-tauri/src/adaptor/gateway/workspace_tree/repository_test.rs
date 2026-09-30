@@ -1495,3 +1495,339 @@ async fn delegate_parent_status_from_store(
         .unwrap()
         .status_classification
 }
+
+async fn standalone_session_store(
+    session_id: &str,
+    workspace: &WorkspaceIdentity,
+) -> (tempfile::TempDir, Arc<LocalEventStore>) {
+    let directory = tempfile::TempDir::new().unwrap();
+    let store = LocalEventStore::open(LocalEventStoreConfig::production(
+        directory.path().to_path_buf(),
+    ))
+    .unwrap();
+    let session = AgentSession::create(
+        session_id,
+        workspace.clone(),
+        workspace.as_str(),
+        ProviderKind::Codex,
+        AgentSessionTreeLocation::session_tree_root(session_id).unwrap(),
+    )
+    .unwrap();
+    LocalAgentSessionRepository::new(Arc::clone(&store))
+        .create(session, "create-request-1")
+        .await
+        .unwrap();
+    (directory, store)
+}
+
+fn standalone_session_meta(session_id: &str) -> crate::domain::workflow::NodeFactMeta {
+    crate::domain::workflow::NodeFactMeta {
+        tree_id: session_id.into(),
+        node_execution_id: session_id.into(),
+        parent_id: None,
+        node_name: session_id.into(),
+        kind: NodeKindName::Session,
+        attempt: 1,
+    }
+}
+
+#[tokio::test]
+async fn test_workspace_tree読取_追記された事実だけを足し最初からfoldし直さない() {
+    use crate::adaptor::gateway::workflow::fact_log::append_single_fact;
+    use crate::domain::workflow::services::fact_replay::tree_fold_count;
+    use crate::domain::workflow::{AgentActivityObservedFact, AgentSessionActivity, NodeFact};
+    // Given: 一度読んだ実行木
+    let workspace = WorkspaceIdentity::new("/repo");
+    let (_directory, store) = standalone_session_store("agent-session-1", &workspace).await;
+    let repository = SqliteWorkspaceTreeRepository::new(Arc::clone(&store));
+    let before = repository
+        .load_node(&workspace, "agent-session-1")
+        .await
+        .unwrap()
+        .unwrap();
+    let mut meta = standalone_session_meta("agent-session-1");
+    meta.node_name = before.node_name.clone().unwrap();
+    let folds = tree_fold_count();
+
+    // When: 事実が 2 件追記され、その都度読む
+    for activity in [
+        AgentSessionActivity::Working,
+        AgentSessionActivity::AwaitingAnswer,
+    ] {
+        append_single_fact(
+            &store,
+            &meta,
+            &NodeFact::AgentActivityObserved(AgentActivityObservedFact { activity }),
+            10_000,
+        )
+        .await
+        .unwrap();
+        let node = repository
+            .load_node(&workspace, "agent-session-1")
+            .await
+            .unwrap()
+            .unwrap();
+
+        // Then: 追記が反映され、最初からの fold は起きていない
+        assert_eq!(node.activity, Some(activity));
+    }
+    assert_eq!(tree_fold_count(), folds);
+}
+
+#[tokio::test]
+async fn test_workspace_tree読取_終端の事実が追記された木は最初から読み直す() {
+    use crate::adaptor::gateway::workflow::fact_log::{
+        append_single_fact, fold_tree_from, FactLogReadBackend,
+    };
+    use crate::domain::workflow::services::fact_replay::tree_fold_count;
+    use crate::domain::workflow::{AbortRequestedFact, NodeFact, RuntimeExecutionState};
+    // Given: 一度読んだ実行木
+    let workspace = WorkspaceIdentity::new("/repo");
+    let (_directory, store) = standalone_session_store("agent-session-1", &workspace).await;
+    let repository = SqliteWorkspaceTreeRepository::new(Arc::clone(&store));
+    let node = repository
+        .load_node(&workspace, "agent-session-1")
+        .await
+        .unwrap()
+        .unwrap();
+    let mut meta = standalone_session_meta("agent-session-1");
+    meta.node_name = node.node_name.unwrap();
+
+    // When: 終端の事実が追記される
+    append_single_fact(
+        &store,
+        &meta,
+        &NodeFact::AbortRequested(AbortRequestedFact::default()),
+        10_000,
+    )
+    .await
+    .unwrap();
+    let folds = tree_fold_count();
+    let held = repository
+        .folded_tree("agent-session-1")
+        .await
+        .unwrap()
+        .unwrap();
+
+    // Then: 最初から読み直し、store から直接 fold した結果と一致する
+    assert_eq!(tree_fold_count(), folds + 1);
+    assert_eq!(*held.0.aggregate.state(), RuntimeExecutionState::Aborted);
+    let direct = fold_tree_from(&FactLogReadBackend::Live(store), "agent-session-1")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(held.0, direct);
+}
+
+#[tokio::test]
+async fn test_workspace_tree読取_複数workspaceをまとめて読み所属ごとに分ける() {
+    // Given: 別々の workspace に属する 2 つの実行木
+    let first = WorkspaceIdentity::new("/repo/first");
+    let second = WorkspaceIdentity::new("/repo/second");
+    let (_directory, store) = standalone_session_store("agent-session-1", &first).await;
+    let session = AgentSession::create(
+        "agent-session-2",
+        second.clone(),
+        second.as_str(),
+        ProviderKind::Codex,
+        AgentSessionTreeLocation::session_tree_root("agent-session-2").unwrap(),
+    )
+    .unwrap();
+    LocalAgentSessionRepository::new(Arc::clone(&store))
+        .create(session, "create-request-2")
+        .await
+        .unwrap();
+    let repository = SqliteWorkspaceTreeRepository::new(store);
+
+    // When
+    let trees = repository
+        .folded_workspaces(&[second.as_str(), "/repo/none", first.as_str()])
+        .await;
+
+    // Then: 指定した順に、その workspace の実行木だけを返す
+    let ids = trees
+        .into_iter()
+        .map(|trees| {
+            trees
+                .unwrap()
+                .iter()
+                .map(|execution| execution.0.aggregate.id.clone())
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        ids,
+        vec![
+            vec!["agent-session-2".to_string()],
+            vec![],
+            vec!["agent-session-1".to_string()]
+        ]
+    );
+}
+
+#[tokio::test]
+async fn test_workspace_tree読取_同じworkspaceのsessionだけを実行に載せる() {
+    // Given
+    let workspace = WorkspaceIdentity::new("/repo");
+    let (_directory, store) = standalone_session_store("agent-session-2", &workspace).await;
+    let sessions = LocalAgentSessionRepository::new(Arc::clone(&store));
+    for (id, worktree) in [("agent-session-1", "/repo"), ("agent-session-3", "/other")] {
+        let session = AgentSession::create(
+            id,
+            WorkspaceIdentity::new(worktree),
+            worktree,
+            ProviderKind::Codex,
+            AgentSessionTreeLocation::session_tree_root(id).unwrap(),
+        )
+        .unwrap();
+        sessions
+            .create(session, &format!("create-{id}"))
+            .await
+            .unwrap();
+    }
+    let repository = SqliteWorkspaceTreeRepository::new(store);
+
+    // When
+    let tree = repository
+        .load_trees(std::slice::from_ref(&workspace))
+        .await
+        .pop()
+        .unwrap()
+        .unwrap();
+
+    // Then
+    let mut session_ids = tree
+        .executions()
+        .iter()
+        .map(|execution| execution.session.as_ref().unwrap().id().to_string())
+        .collect::<Vec<_>>();
+    session_ids.sort();
+    assert_eq!(session_ids, vec!["agent-session-1", "agent-session-2"]);
+    assert!(tree
+        .executions()
+        .iter()
+        .all(|execution| execution.worktree_path == "/repo"));
+}
+
+#[tokio::test]
+async fn test_workspace_tree読取_sessionのlifecycleと操作の可否を復元する() {
+    use crate::domain::agent_session::aggregates::AgentSessionLifecycle;
+    // Given
+    let workspace = WorkspaceIdentity::new("/repo");
+    let directory = tempfile::TempDir::new().unwrap();
+    let store = LocalEventStore::open(LocalEventStoreConfig::production(
+        directory.path().to_path_buf(),
+    ))
+    .unwrap();
+    let sessions = LocalAgentSessionRepository::new(Arc::clone(&store));
+    for id in ["open-session", "paused-session", "archived-session"] {
+        let session = AgentSession::create(
+            id,
+            workspace.clone(),
+            workspace.as_str(),
+            ProviderKind::Claude,
+            AgentSessionTreeLocation::session_tree_root(id).unwrap(),
+        )
+        .unwrap();
+        let mut saved = sessions
+            .create(session, &format!("create-{id}"))
+            .await
+            .unwrap();
+        saved
+            .session_mut()
+            .associate_provider_session(format!("provider-{id}"), None)
+            .unwrap();
+        let mut saved = sessions
+            .save(saved, &format!("associate-{id}"))
+            .await
+            .unwrap();
+        match id {
+            "paused-session" => {
+                saved.session_mut().observe_provider_process_exit(Some(0));
+                sessions.save(saved, "pause-session").await.unwrap();
+            }
+            "archived-session" => {
+                saved.session_mut().archive().unwrap();
+                sessions.save(saved, "archive-session").await.unwrap();
+            }
+            _ => {}
+        }
+    }
+    let repository = SqliteWorkspaceTreeRepository::new(store);
+
+    // When
+    let tree = repository
+        .load_trees(std::slice::from_ref(&workspace))
+        .await
+        .pop()
+        .unwrap()
+        .unwrap();
+
+    // Then
+    let session = |id: &str| {
+        tree.executions()
+            .iter()
+            .filter_map(|execution| execution.session.as_ref())
+            .find(|session| session.id() == id)
+            .unwrap()
+    };
+    assert_eq!(tree.executions().len(), 3);
+    for (id, lifecycle, can_archive, can_restore) in [
+        ("open-session", AgentSessionLifecycle::Open, true, false),
+        ("paused-session", AgentSessionLifecycle::Paused, true, false),
+        (
+            "archived-session",
+            AgentSessionLifecycle::Archived,
+            false,
+            true,
+        ),
+    ] {
+        let session = session(id);
+        let operations = session.operations();
+        assert_eq!(session.lifecycle(), lifecycle);
+        assert_eq!(
+            session.provider_session_id(),
+            Some(format!("provider-{id}").as_str())
+        );
+        assert_eq!(operations.can_archive, can_archive);
+        assert_eq!(operations.can_restore, can_restore);
+        assert_eq!(operations.can_delete, can_restore);
+    }
+    assert_eq!(
+        tree.archived_sessions()
+            .iter()
+            .map(|execution| execution.execution_id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["archived-session"]
+    );
+}
+
+#[tokio::test]
+async fn test_workspace_tree読取_読まれなくなった木の保持を捨て次に読むとき読み直す() {
+    use crate::domain::workflow::services::fact_replay::tree_fold_count;
+    // Given: 読まれた直後に保持の期限が切れる repository
+    let workspace = WorkspaceIdentity::new("/repo");
+    let (_directory, store) = standalone_session_store("agent-session-1", &workspace).await;
+    let mut repository = SqliteWorkspaceTreeRepository::new(store);
+    Arc::get_mut(&mut repository).unwrap().fold_idle_limit = std::time::Duration::ZERO;
+    repository
+        .load_trees(std::slice::from_ref(&workspace))
+        .await
+        .pop()
+        .unwrap()
+        .unwrap();
+    let folds = tree_fold_count();
+    std::thread::sleep(std::time::Duration::from_millis(5));
+
+    // When
+    let tree = repository
+        .load_trees(std::slice::from_ref(&workspace))
+        .await
+        .pop()
+        .unwrap()
+        .unwrap();
+
+    // Then: 保持は捨てられていて、最初から読み直す
+    assert_eq!(tree_fold_count(), folds + 1);
+    assert_eq!(tree.executions().len(), 1);
+}

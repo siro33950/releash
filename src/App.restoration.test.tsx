@@ -179,7 +179,6 @@ it("設定の初回失敗後は次の接続の状態を反映してから操作�
 });
 it("初回の一覧失敗でも復元を完了し購読による復旧を表示する", async () => {
 	states.publish("workspaces", {
-		generation: 1,
 		repositories: [],
 		status: { loaded: false, state: "initialFailed", error: "offline" },
 	});

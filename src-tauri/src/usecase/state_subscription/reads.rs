@@ -10,7 +10,6 @@ use crate::usecase::{
     git_host::GitHostUsecase,
     provider_dto::AgentSessionProviderDto,
     repo_paths_usecase::RepoPathsUsecase,
-    repository_state::RepositoryStateService,
     repository_usecase::RepositoryUsecase,
     review_usecase::ReviewUsecase,
     workflow::WorkflowUsecase,
@@ -153,7 +152,6 @@ where
 pub(crate) struct WorkspaceStateReads {
     pub repositories: Arc<RepoPathsUsecase>,
     pub repository: Arc<RepositoryUsecase>,
-    pub repository_state: Arc<RepositoryStateService>,
     pub workflow: Arc<WorkflowUsecase>,
     pub workspaces: Arc<WorkspaceListUsecase>,
     pub sessions: Arc<AgentSessionReadUsecase>,
@@ -198,13 +196,14 @@ impl WorkspaceStateReads {
                     .map(StateValue::SessionHistory)
                     .map_err(error)
             }
+            T::Workspaces => return Ok(StateValue::Workspaces(self.workspaces.read().await)),
             T::Selection(p, id) => {
-                return Ok(StateValue::Selection(
-                    self.workflow
-                        .get_workspace_tree_selection_reconciliation(p, id)
-                        .await
-                        .map_err(error)?,
-                ))
+                let (tree, selected) = self
+                    .workflow
+                    .workspace_tree_selection(p, id)
+                    .await
+                    .map_err(error)?;
+                return Ok(StateValue::Selection(tree, selected));
             }
             T::NodeDetail(p, id) => {
                 return Ok(StateValue::NodeDetail(
@@ -251,7 +250,6 @@ impl WorkspaceStateReads {
         use SubscriptionTarget as T;
         Ok(match target {
             T::RepositoryPaths => StateValue::RepositoryPaths(self.repositories.get()),
-            T::Workspaces => StateValue::Workspaces(self.workspaces.snapshot()),
             T::Providers => StateValue::Providers(
                 self.providers
                     .available_providers()
@@ -273,8 +271,8 @@ impl WorkspaceStateReads {
                 StateValue::BranchBase(self.repository.get_branch_base(p, name).map_err(error)?)
             }
             T::BranchStatus(p) => StateValue::BranchStatus(
-                self.repository_state
-                    .list_branches_with_status_snapshot(p)
+                self.repository
+                    .list_branches_with_worktree(p)
                     .map_err(error)?,
             ),
             T::CurrentBranch(p) => {
@@ -384,6 +382,7 @@ impl WorkspaceStateReads {
             T::PerformanceSwitches => StateValue::PerformanceSwitches(self.performance_switches),
             T::StartupOutcome => StateValue::StartupOutcome(self.startup.outcome()),
             T::Terminal(_)
+            | T::Workspaces
             | T::Workflows
             | T::AgentSession(_)
             | T::SessionHistory(_, _)
@@ -403,10 +402,6 @@ pub(crate) trait StateSubscriptionRead: Send + Sync {
     async fn refresh_external(&self, _target: &SubscriptionTarget) -> Result<(), StateReadError> {
         Ok(())
     }
-    async fn refresh_workspaces(
-        &self,
-        source: Option<crate::usecase::state_subscription::StateChangeSource>,
-    );
     fn repositories(&self) -> Vec<String>;
     fn review_comments_dir(&self) -> String {
         String::new()
@@ -422,41 +417,15 @@ impl StateSubscriptionRead for WorkspaceStateReads {
         WorkspaceStateReads::read(self, target).await
     }
     async fn refresh_external(&self, target: &SubscriptionTarget) -> Result<(), StateReadError> {
-        if let SubscriptionTarget::Issues(path) = target {
-            self.repository.get_main_repo_path(path).map_err(error)?;
-            self.git_host.fetch_issues(path).map_err(error)?;
+        match target {
+            SubscriptionTarget::Issues(path) => {
+                self.repository.get_main_repo_path(path).map_err(error)?;
+                self.git_host.fetch_issues(path).map_err(error)?;
+            }
+            SubscriptionTarget::Workspaces => self.workspaces.refresh_pull_requests(),
+            _ => {}
         }
         Ok(())
-    }
-    async fn refresh_workspaces(
-        &self,
-        source: Option<crate::usecase::state_subscription::StateChangeSource>,
-    ) {
-        use crate::usecase::state_subscription::StateChangeSource;
-        match source {
-            Some(StateChangeSource::WorkspaceList) => {}
-            Some(StateChangeSource::Repository(paths)) => {
-                let mut repositories = std::collections::HashSet::new();
-                for path in paths {
-                    match self.repository.get_main_repo_path(&path) {
-                        Ok(path) => {
-                            repositories.insert(path);
-                        }
-                        Err(error) => log::warn!("Repository resolution failed: {error}"),
-                    }
-                }
-                for path in repositories {
-                    self.workspaces.refresh_current_repository(&path).await;
-                }
-            }
-            Some(StateChangeSource::Worktree(path)) => {
-                self.workspaces.refresh_worktree(&path).await;
-            }
-            None => self.workspaces.refresh_external_information().await,
-            _ => {
-                self.workspaces.refresh().await;
-            }
-        }
     }
     fn repositories(&self) -> Vec<String> {
         self.workspaces.watch_paths()

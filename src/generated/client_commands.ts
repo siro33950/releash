@@ -33,7 +33,6 @@ import {
 	CreateReviewThreadRequestSchema,
 	CreateWorktreeRequestSchema,
 	DeleteAgentSessionRequestSchema,
-	DeleteBranchRequestSchema,
 	DeleteFacetRequestSchema,
 	DeleteNotionConfigRequestSchema,
 	DeleteReviewThreadRequestSchema,
@@ -425,25 +424,6 @@ const commands = {
 					DeleteAgentSessionRequestSchema,
 					clientJson(
 						DeleteAgentSessionRequestSchema,
-						JSON.parse(JSON.stringify(args ?? {})),
-						true,
-					),
-				),
-			),
-		);
-		return result;
-	},
-	delete_branch: async (
-		client: Client<typeof ClientService>,
-		args: ClientCommandArgs["delete_branch"],
-	) => {
-		const result = decode(
-			UnitSchema,
-			await client.deleteBranch(
-				fromJson(
-					DeleteBranchRequestSchema,
-					clientJson(
-						DeleteBranchRequestSchema,
 						JSON.parse(JSON.stringify(args ?? {})),
 						true,
 					),

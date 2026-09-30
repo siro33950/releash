@@ -1,7 +1,6 @@
 //! branch 責務の gateway 実装。git2 によるブランチ操作を封じ込める。
 
 use crate::adaptor::gateway::shared::git_operation;
-use crate::adaptor::gateway::shared::git_operation::detect_default_branch;
 use crate::domain::repository::{Branch, BranchRepository, RepositoryError};
 use crate::infrastructure::git::client;
 #[cfg(test)]
@@ -77,23 +76,6 @@ pub(crate) fn git_create_branch(repo_path: &str, branch_name: &str) -> Result<()
     Ok(())
 }
 
-pub(crate) fn get_default_branch(repo_path: &str) -> Result<String, RepositoryError> {
-    let repo = git_operation::run(|| client::open(repo_path))?;
-    detect_default_branch(&repo)?.ok_or_else(|| RepositoryError::rule("no default branch found"))
-}
-
-/// 単一ローカルブランチを削除する純粋プリミティブ。
-///
-/// 既定/チェックアウト中ブランチの拒否、紐づく worktree の事前削除、
-/// releash-base config の後始末といった業務手順は usecase が担う
-/// （[`RepositoryUsecase::delete_branch`](crate::usecase::repository_usecase::RepositoryUsecase::delete_branch)）。
-pub(crate) fn delete_branch(repo_path: &str, branch_name: &str) -> Result<(), RepositoryError> {
-    let repo = git_operation::run(|| client::open(repo_path))?;
-    let mut branch = git_operation::run(|| repo.find_branch(branch_name, BranchType::Local))?;
-    git_operation::run(|| branch.delete())?;
-    Ok(())
-}
-
 /// `BranchRepository` の git2 実装。
 pub struct BranchGateway;
 
@@ -104,22 +86,16 @@ impl BranchRepository for BranchGateway {
     fn current(&self, repo_path: &str) -> Result<String, RepositoryError> {
         get_current_branch(repo_path)
     }
-    fn default(&self, repo_path: &str) -> Result<String, RepositoryError> {
-        get_default_branch(repo_path)
-    }
     fn create(&self, repo_path: &str, branch_name: &str) -> Result<(), RepositoryError> {
         git_create_branch(repo_path, branch_name)
-    }
-    fn delete(&self, repo_path: &str, branch_name: &str) -> Result<(), RepositoryError> {
-        delete_branch(repo_path, branch_name)
     }
 }
 
 #[cfg(test)]
 mod branch_gateway_tests {
     use super::*;
+    use crate::adaptor::gateway::shared::git_operation::detect_default_branch;
     use crate::test_support::git::*;
-    use git2::Repository;
     use std::path::Path;
 
     fn path_str(p: &Path) -> String {
@@ -179,10 +155,10 @@ mod branch_gateway_tests {
 
     #[test]
     fn test_既定ブランチ取得() {
-        let (dir, repo) = create_test_repo();
+        let (_dir, repo) = create_test_repo();
         create_initial_commit(&repo);
 
-        let branch = get_default_branch(&path_str(dir.path())).unwrap();
+        let branch = detect_default_branch(&repo).unwrap().unwrap();
         assert!(
             branch == "main" || branch == "master",
             "expected main or master, got {branch}"
@@ -197,24 +173,8 @@ mod branch_gateway_tests {
         let mut old_branch = repo.find_branch(&branch, BranchType::Local).unwrap();
         old_branch.delete().unwrap();
 
-        let new_default = get_default_branch(&path_str(dir.path())).unwrap();
+        let new_default = detect_default_branch(&repo).unwrap().unwrap();
         assert_eq!(new_default, other);
-    }
-
-    #[test]
-    fn test_ブランチ削除_基本() {
-        let (dir, repo) = create_test_repo();
-        create_initial_commit(&repo);
-        let head = repo.head().unwrap().peel_to_commit().unwrap();
-        repo.branch("feat-delete", &head, false).unwrap();
-
-        let repo_path = path_str(dir.path());
-        // gateway は単一ブランチ削除のプリミティブ（拒否ポリシー・worktree 連鎖は
-        // usecase の業務手順であり repository_usecase のテストで検証する）。
-        delete_branch(&repo_path, "feat-delete").unwrap();
-
-        let repo = Repository::open(&repo_path).unwrap();
-        assert!(repo.find_branch("feat-delete", BranchType::Local).is_err());
     }
 
     #[test]

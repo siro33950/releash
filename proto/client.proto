@@ -17,6 +17,8 @@ message CommandRequest {
   reserved "list_workspace_workflow_history";
   reserved 94;
   reserved "list_workspace_worktree_nodes";
+  reserved 30;
+  reserved "delete_branch";
   reserved 50;
   reserved "get_cached_pr_status";
   reserved 96;
@@ -81,7 +83,6 @@ message CommandRequest {
     CreateReviewThreadRequest create_review_thread = 27;
     CreateWorktreeRequest create_worktree = 28;
     DeleteAgentSessionRequest delete_agent_session = 29;
-    DeleteBranchRequest delete_branch = 30;
     DeleteFacetRequest delete_facet = 31;
     DeleteNotionConfigRequest delete_notion_config = 32;
     DeleteReviewThreadRequest delete_review_thread = 33;
@@ -183,6 +184,8 @@ message CommandResult {
   reserved "list_workspace_workflow_history";
   reserved 94;
   reserved "list_workspace_worktree_nodes";
+  reserved 30;
+  reserved "delete_branch";
   reserved 50;
   reserved "get_cached_pr_status";
   reserved 96;
@@ -247,7 +250,6 @@ message CommandResult {
     ReviewThreadDto create_review_thread = 27;
     WorktreeEntryDto create_worktree = 28;
     Unit delete_agent_session = 29;
-    Unit delete_branch = 30;
     Unit delete_facet = 31;
     Unit delete_notion_config = 32;
     Unit delete_review_thread = 33;
@@ -635,12 +637,6 @@ message WorktreeEntryDto {
 message DeleteAgentSessionRequest {
   optional string agent_session_id = 1 [json_name = "agentSessionId", (json_required) = true];
   optional string caller_request_id = 2 [json_name = "callerRequestId", (json_required) = true];
-}
-
-message DeleteBranchRequest {
-  optional string repo_path = 1 [json_name = "repoPath", (json_required) = true];
-  optional string branch_name = 2 [json_name = "branchName", (json_required) = true];
-  optional bool force = 3 [json_name = "force", (json_required) = true];
 }
 
 message DeleteFacetRequest {
@@ -1680,27 +1676,27 @@ message NullableWorkflowDto {
   optional WorkflowDto value = 1 [json_name = "value", (json_nullable) = true];
 }
 
-message WorkspaceTreeSelectionSnapshotDto {
-  optional WorkspaceTreeSnapshotDto snapshot = 1 [json_name = "snapshot", (json_required) = true];
-  optional WorkspaceSelectionReconciliationDto reconciliation = 2 [json_name = "reconciliation", (json_required) = true];
+message WorkspaceTreeSelectionSnapshot {
+  optional WorkspaceTreeSnapshot snapshot = 1 [json_name = "snapshot", (json_required) = true];
+  optional WorkspaceSelectionReconciliation reconciliation = 2 [json_name = "reconciliation", (json_required) = true];
 }
 
-message WorkspaceTreeSnapshotDto {
-  optional ListWorkspaceTreeItemDto nodes = 1 [json_name = "nodes", (json_required) = true];
+message WorkspaceTreeSnapshot {
+  optional ListWorkspaceTreeItem nodes = 1 [json_name = "nodes", (json_required) = true];
   optional ListAgentSessionItemDto archived_sessions = 2 [json_name = "archivedSessions", (json_required) = true];
   optional string preferred_node_id = 3 [json_name = "preferredNodeId", (json_default) = true, (json_nullable) = true, (json_omit_none) = true];
 }
 
-message WorkspaceTreeItemDto {
+message WorkspaceTreeItem {
   option (json_tag) = "kind";
   oneof variant {
-    WorkspaceNodeDto node = 1 [json_name = "node"];
-    WorkspaceSequenceDto sequence = 2 [json_name = "sequence"];
-    WorkspaceFanoutDto fanout = 3 [json_name = "fanout"];
+    WorkspaceNode node = 1 [json_name = "node"];
+    WorkspaceSequence sequence = 2 [json_name = "sequence"];
+    WorkspaceFanout fanout = 3 [json_name = "fanout"];
   }
 }
 
-message WorkspaceNodeDto {
+message WorkspaceNode {
   optional NodeProcessPresence process_presence = 13 [json_name = "processPresence", (json_required) = true];
   optional string id = 1 [json_name = "id", (json_required) = true];
   optional string title = 2 [json_name = "title", (json_required) = true];
@@ -1708,61 +1704,61 @@ message WorkspaceNodeDto {
   optional string error_reason = 4 [json_name = "errorReason", (json_default) = true, (json_nullable) = true, (json_omit_none) = true];
   optional WorkspaceContentKind content_kind = 5 [json_name = "contentKind", (json_required) = true];
   optional WorkspaceNodeCapabilitiesDto capabilities = 6 [json_name = "capabilities", (json_required) = true];
-  optional WorkspaceWorkflowCapabilitiesDto workflow_capabilities = 7 [json_name = "workflowCapabilities", (json_default) = true, (json_nullable) = true, (json_omit_none) = true];
-  optional WorkspaceSessionCapabilitiesDto session_capabilities = 8 [json_name = "sessionCapabilities", (json_default) = true, (json_nullable) = true, (json_omit_none) = true];
-  optional ListWorkspaceTreeItemDto children = 9 [json_name = "children", (json_default) = true, (json_omit_empty) = true];
-  optional ListWorkspaceNodeDto past_attempts = 10 [json_name = "pastAttempts", (json_required) = true];
+  optional WorkspaceWorkflowCapabilities workflow_capabilities = 7 [json_name = "workflowCapabilities", (json_default) = true, (json_nullable) = true, (json_omit_none) = true];
+  optional WorkspaceSessionCapabilities session_capabilities = 8 [json_name = "sessionCapabilities", (json_default) = true, (json_nullable) = true, (json_omit_none) = true];
+  optional ListWorkspaceTreeItem children = 9 [json_name = "children", (json_default) = true, (json_omit_empty) = true];
+  optional ListWorkspaceNode past_attempts = 10 [json_name = "pastAttempts", (json_required) = true];
   optional bool past_attempts_collapsed = 11 [json_name = "pastAttemptsCollapsed", (json_required) = true];
   optional double updated_at = 12 [json_name = "updatedAt", (json_required) = true];
 }
 
-message WorkspaceWorkflowCapabilitiesDto {
+message WorkspaceWorkflowCapabilities {
   reserved 1, 2;
   reserved "can_stop", "can_resume";
   optional bool can_abort = 3 [json_name = "canAbort", (json_required) = true];
   optional bool can_archive = 4 [json_name = "canArchive", (json_required) = true];
 }
 
-message WorkspaceSessionCapabilitiesDto {
+message WorkspaceSessionCapabilities {
   optional string session_ref = 1 [json_name = "sessionRef", (json_required) = true];
   optional bool can_archive = 2 [json_name = "canArchive", (json_required) = true];
   optional bool can_delete = 3 [json_name = "canDelete", (json_required) = true];
 }
 
-message ListWorkspaceTreeItemDto {
+message ListWorkspaceTreeItem {
   option (json_wrapper) = "items";
-  repeated WorkspaceTreeItemDto items = 1;
+  repeated WorkspaceTreeItem items = 1;
 }
 
-message ListWorkspaceNodeDto {
+message ListWorkspaceNode {
   option (json_wrapper) = "items";
-  repeated WorkspacePastAttemptDto items = 1;
+  repeated WorkspacePastAttempt items = 1;
 }
 
-message WorkspacePastAttemptDto {
+message WorkspacePastAttempt {
   option (json_tag) = "kind";
   oneof variant {
-    WorkspaceNodeDto node = 1 [json_name = "node"];
+    WorkspaceNode node = 1 [json_name = "node"];
   }
 }
 
-message WorkspaceSequenceDto {
+message WorkspaceSequence {
   optional NodeWorktreeDto worktree = 1 [json_name = "worktree", (json_default) = true, (json_nullable) = true, (json_omit_none) = true];
   optional string id = 2 [json_name = "id", (json_required) = true];
   optional string title = 3 [json_name = "title", (json_required) = true];
   optional WorkspaceStatusClassification status = 4 [json_name = "status", (json_required) = true];
-  optional WorkspaceWorkflowCapabilitiesDto workflow_capabilities = 5 [json_name = "workflowCapabilities", (json_default) = true, (json_nullable) = true, (json_omit_none) = true];
-  optional ListWorkspaceTreeItemDto children = 6 [json_name = "children", (json_required) = true];
+  optional WorkspaceWorkflowCapabilities workflow_capabilities = 5 [json_name = "workflowCapabilities", (json_default) = true, (json_nullable) = true, (json_omit_none) = true];
+  optional ListWorkspaceTreeItem children = 6 [json_name = "children", (json_required) = true];
   optional double updated_at = 7 [json_name = "updatedAt", (json_required) = true];
 }
 
-message WorkspaceFanoutDto {
+message WorkspaceFanout {
   optional NodeWorktreeDto worktree = 1 [json_name = "worktree", (json_default) = true, (json_nullable) = true, (json_omit_none) = true];
   optional string id = 2 [json_name = "id", (json_required) = true];
   optional string title = 3 [json_name = "title", (json_required) = true];
   optional WorkspaceStatusClassification status = 4 [json_name = "status", (json_required) = true];
-  optional WorkspaceWorkflowCapabilitiesDto workflow_capabilities = 5 [json_name = "workflowCapabilities", (json_default) = true, (json_nullable) = true, (json_omit_none) = true];
-  optional ListWorkspaceTreeItemDto children = 6 [json_name = "children", (json_required) = true];
+  optional WorkspaceWorkflowCapabilities workflow_capabilities = 5 [json_name = "workflowCapabilities", (json_default) = true, (json_nullable) = true, (json_omit_none) = true];
+  optional ListWorkspaceTreeItem children = 6 [json_name = "children", (json_required) = true];
   optional double updated_at = 7 [json_name = "updatedAt", (json_required) = true];
 }
 
@@ -1771,7 +1767,7 @@ message ListAgentSessionItemDto {
   repeated AgentSessionItemDto items = 1;
 }
 
-message WorkspaceSelectionReconciliationDto {
+message WorkspaceSelectionReconciliation {
   optional bool selection_in_snapshot = 1 [json_name = "selectionInSnapshot", (json_required) = true];
 }
 
@@ -1844,36 +1840,14 @@ message ListBranchDto {
   repeated BranchDto items = 1;
 }
 
-message BranchCardDto {
+message BranchStatus {
   optional string name = 1 [json_name = "name", (json_required) = true];
-  optional bool is_main_worktree = 2 [json_name = "is_main_worktree", (json_required) = true];
-  optional string worktree_path = 3 [json_name = "worktree_path", (json_nullable) = true];
-  optional uint64 dirty_count = 4 [json_name = "dirty_count", (json_required) = true];
-  optional bool is_merged = 5 [json_name = "is_merged", (json_required) = true];
-  optional uint64 ahead = 6 [json_name = "ahead", (json_required) = true];
-  optional uint64 behind = 7 [json_name = "behind", (json_required) = true];
-  optional bool has_upstream = 8 [json_name = "has_upstream", (json_required) = true];
-  optional uint64 base_ahead = 9 [json_name = "base_ahead", (json_required) = true];
-  optional bool is_deleting = 10 [json_name = "is_deleting", (json_required) = true];
+  optional bool has_worktree = 2 [json_name = "has_worktree", (json_required) = true];
 }
 
-message ListBranchCardDto {
+message ListBranchStatus {
   option (json_wrapper) = "items";
-  repeated BranchCardDto items = 1;
-}
-
-message RepositoryBranchCardsSnapshotDto {
-  reserved 4;
-  reserved "limited";
-  optional uint64 version = 1 [json_name = "version", (json_required) = true];
-  optional bool stale = 2 [json_name = "stale", (json_required) = true];
-  optional bool loading = 3 [json_name = "loading", (json_required) = true];
-  optional ListBranchCardDto branches = 5 [json_name = "branches", (json_required) = true];
-  optional WorktreeDisplayGroupsDto worktree_display_groups = 6 [json_name = "worktree_display_groups", (json_required) = true];
-}
-
-message WorktreeDisplayGroupsDto {
-  optional ListBranchCardDto working_areas = 1 [json_name = "working_areas", (json_required) = true];
+  repeated BranchStatus items = 1;
 }
 
 message FacetSummaryDto {
@@ -1926,7 +1900,7 @@ message ListWorkflowSummaryDto {
   repeated WorkflowSummaryDto items = 1;
 }
 
-message WorkspaceWorkflowHistoryItemDto {
+message WorkspaceWorkflowHistoryItem {
   optional string execution_id = 1 [json_name = "executionId", (json_required) = true];
   optional string worktree_path = 2 [json_name = "worktreePath", (json_required) = true];
   optional string title = 3 [json_name = "title", (json_required) = true];
@@ -1936,9 +1910,9 @@ message WorkspaceWorkflowHistoryItemDto {
   optional string archive_reason = 7 [json_name = "archiveReason", (json_required) = true];
 }
 
-message ListWorkspaceWorkflowHistoryItemDto {
+message ListWorkspaceWorkflowHistoryItem {
   option (json_wrapper) = "items";
-  repeated WorkspaceWorkflowHistoryItemDto items = 1;
+  repeated WorkspaceWorkflowHistoryItem items = 1;
 }
 
 message ListWorktreeEntryDto {
@@ -2730,7 +2704,6 @@ service ClientService {
   rpc CreateReviewThread(CreateReviewThreadRequest) returns (ReviewThreadDto);
   rpc CreateWorktree(CreateWorktreeRequest) returns (WorktreeEntryDto);
   rpc DeleteAgentSession(DeleteAgentSessionRequest) returns (Unit);
-  rpc DeleteBranch(DeleteBranchRequest) returns (Unit);
   rpc DeleteFacet(DeleteFacetRequest) returns (Unit);
   rpc DeleteNotionConfig(DeleteNotionConfigRequest) returns (Unit);
   rpc DeleteReviewThread(DeleteReviewThreadRequest) returns (Unit);
@@ -2813,51 +2786,59 @@ message ServerInfo {
 }
 
 message RefreshWorkspacesRequest {
-  optional string repo_path = 2 [json_name = "repoPath", (json_nullable) = true];
-  optional string worktree_path = 1 [json_name = "worktreePath", (json_nullable) = true];
+  reserved 1, 2;
+  reserved "worktree_path", "repo_path";
 }
-message WorkspaceListStatusDto {
+message WorkspaceListStatus {
   optional string state = 3 [json_name = "state", (json_required) = true];
   optional bool loaded = 1 [json_name = "loaded", (json_required) = true];
   optional string error = 2 [json_name = "error", (json_nullable) = true];
 }
-message WorkspaceBranchDto {
-  optional BranchCardDto branch = 1 [(json_flatten) = true, (json_required) = true];
+message WorkspaceBranch {
+  reserved 1;
+  reserved "branch";
+  optional string name = 5 [json_name = "name", (json_required) = true];
+  optional bool is_main_worktree = 6 [json_name = "is_main_worktree", (json_required) = true];
+  optional bool is_deleting = 7 [json_name = "is_deleting", (json_required) = true];
+  optional string worktree_path = 8 [json_name = "worktree_path", (json_required) = true];
+  optional uint64 dirty_count = 9 [json_name = "dirty_count", (json_required) = true];
+  optional bool is_merged = 10 [json_name = "is_merged", (json_required) = true];
   optional bool has_pr = 2 [json_name = "has_pr", (json_required) = true];
   optional uint64 pr_number = 3 [json_name = "pr_number", (json_nullable) = true];
   optional string pr_url = 4 [json_name = "pr_url", (json_nullable) = true];
 }
-message WorkspaceWorktreeListDto {
+message WorkspaceWorktreeList {
   optional string path = 1 [json_name = "path", (json_required) = true];
-  optional WorkspaceListStatusDto status = 2 [json_name = "status", (json_required) = true];
-  optional WorkspaceTreeSnapshotDto snapshot = 3 [json_name = "snapshot", (json_nullable) = true];
-  optional ListWorkspaceWorkflowHistoryItemDto workflow_history = 4 [json_name = "workflowHistory", (json_required) = true];
+  optional WorkspaceListStatus status = 2 [json_name = "status", (json_required) = true];
+  optional WorkspaceTreeSnapshot snapshot = 3 [json_name = "snapshot", (json_nullable) = true];
+  optional ListWorkspaceWorkflowHistoryItem workflow_history = 4 [json_name = "workflowHistory", (json_required) = true];
 }
-message WorkspaceRepositoryListDto {
+message WorkspaceRepositoryList {
   optional string path = 1 [json_name = "path", (json_required) = true];
-  optional WorkspaceListStatusDto status = 2 [json_name = "status", (json_required) = true];
-  optional ListWorkspaceBranchDto branches = 3 [json_name = "branches", (json_required) = true];
-  optional ListWorkspaceWorktreeListDto worktrees = 4 [json_name = "worktrees", (json_required) = true];
+  optional WorkspaceListStatus status = 2 [json_name = "status", (json_required) = true];
+  optional ListWorkspaceBranch branches = 3 [json_name = "branches", (json_required) = true];
+  optional ListWorkspaceWorktreeList worktrees = 4 [json_name = "worktrees", (json_required) = true];
 }
-message WorkspaceListSnapshotDto {
-  optional uint64 generation = 1 [json_name = "generation", (json_required) = true];
-  optional WorkspaceListStatusDto status = 2 [json_name = "status", (json_required) = true];
-  optional ListWorkspaceRepositoryListDto repositories = 3 [json_name = "repositories", (json_required) = true];
-}
-
-message ListWorkspaceBranchDto {
-  option (json_wrapper) = "items";
-  repeated WorkspaceBranchDto items = 1;
+message WorkspaceListSnapshot {
+  reserved 1;
+  reserved "generation";
+  optional WorkspaceListStatus status = 2 [json_name = "status", (json_required) = true];
+  optional ListWorkspaceRepositoryList repositories = 3 [json_name = "repositories", (json_required) = true];
 }
 
-message ListWorkspaceWorktreeListDto {
+message ListWorkspaceBranch {
   option (json_wrapper) = "items";
-  repeated WorkspaceWorktreeListDto items = 1;
+  repeated WorkspaceBranch items = 1;
 }
 
-message ListWorkspaceRepositoryListDto {
+message ListWorkspaceWorktreeList {
   option (json_wrapper) = "items";
-  repeated WorkspaceRepositoryListDto items = 1;
+  repeated WorkspaceWorktreeList items = 1;
+}
+
+message ListWorkspaceRepositoryList {
+  option (json_wrapper) = "items";
+  repeated WorkspaceRepositoryList items = 1;
 }
 
 message OpenStateStreamRequest { string client_id = 1; }
@@ -2876,8 +2857,8 @@ message StatePayload {
   oneof value {
     TerminalEvent terminal = 19;
     Liststring repository_paths = 1;
-    WorkspaceListSnapshotDto workspaces = 2;
-    WorkspaceTreeSelectionSnapshotDto selection = 3;
+    WorkspaceListSnapshot workspaces = 2;
+    WorkspaceTreeSelectionSnapshot selection = 3;
     NullableWorkspaceNodeDetailDto node_detail = 4;
     NullableAgentSessionItemDto agent_session = 5;
     Nullablestring session_node = 6;
@@ -2885,7 +2866,7 @@ message StatePayload {
     ListAgentSessionProviderDto providers = 8;
     ListBranchDto branches = 9;
     Nullablestring branch_base = 10;
-    RepositoryBranchCardsSnapshotDto branch_status = 11;
+    ListBranchStatus branch_status = 11;
     ResultString current_branch = 12;
     ListIssueInfoDto issues = 13;
     ListWorktreeEntryDto worktrees = 14;

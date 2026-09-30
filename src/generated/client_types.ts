@@ -39,71 +39,63 @@ export type TerminalExit = {
 
 export type Liststring = Array<string>;
 
-export type WorkspaceListSnapshotDto = {
-	generation: number;
-	status: WorkspaceListStatusDto;
-	repositories: ListWorkspaceRepositoryListDto;
+export type WorkspaceListSnapshot = {
+	status: WorkspaceListStatus;
+	repositories: ListWorkspaceRepositoryList;
 };
 
-export type WorkspaceListStatusDto = {
+export type WorkspaceListStatus = {
 	state: string;
 	loaded: boolean;
 	error: string | null;
 };
 
-export type ListWorkspaceRepositoryListDto = Array<WorkspaceRepositoryListDto>;
+export type ListWorkspaceRepositoryList = Array<WorkspaceRepositoryList>;
 
-export type WorkspaceRepositoryListDto = {
+export type WorkspaceRepositoryList = {
 	path: string;
-	status: WorkspaceListStatusDto;
-	branches: ListWorkspaceBranchDto;
-	worktrees: ListWorkspaceWorktreeListDto;
+	status: WorkspaceListStatus;
+	branches: ListWorkspaceBranch;
+	worktrees: ListWorkspaceWorktreeList;
 };
 
-export type ListWorkspaceBranchDto = Array<WorkspaceBranchDto>;
+export type ListWorkspaceBranch = Array<WorkspaceBranch>;
 
-export type WorkspaceBranchDto = {
+export type WorkspaceBranch = {
+	name: string;
+	is_main_worktree: boolean;
+	is_deleting: boolean;
+	worktree_path: string;
+	dirty_count: number;
+	is_merged: boolean;
 	has_pr: boolean;
 	pr_number: number | null;
 	pr_url: string | null;
-} & BranchCardDto;
-
-export type BranchCardDto = {
-	name: string;
-	is_main_worktree: boolean;
-	worktree_path: string | null;
-	dirty_count: number;
-	is_merged: boolean;
-	ahead: number;
-	behind: number;
-	has_upstream: boolean;
-	base_ahead: number;
-	is_deleting: boolean;
 };
 
-export type ListWorkspaceWorktreeListDto = Array<WorkspaceWorktreeListDto>;
+export type ListWorkspaceWorktreeList = Array<WorkspaceWorktreeList>;
 
-export type WorkspaceWorktreeListDto = {
+export type WorkspaceWorktreeList = {
 	path: string;
-	status: WorkspaceListStatusDto;
-	snapshot: WorkspaceTreeSnapshotDto | null;
-	workflowHistory: ListWorkspaceWorkflowHistoryItemDto;
+	status: WorkspaceListStatus;
+	snapshot: WorkspaceTreeSnapshot | null;
+	workflowHistory: ListWorkspaceWorkflowHistoryItem;
 };
 
-export type WorkspaceTreeSnapshotDto = {
-	nodes: ListWorkspaceTreeItemDto;
+export type WorkspaceTreeSnapshot = {
+	nodes: ListWorkspaceTreeItem;
 	archivedSessions: ListAgentSessionItemDto;
 	preferredNodeId?: string;
 };
 
-export type ListWorkspaceTreeItemDto = Array<WorkspaceTreeItemDto>;
+export type ListWorkspaceTreeItem = Array<WorkspaceTreeItem>;
 
-export type WorkspaceTreeItemDto =
-	| ({ kind: "node" } & WorkspaceNodeDto)
-	| ({ kind: "sequence" } & WorkspaceSequenceDto)
-	| ({ kind: "fanout" } & WorkspaceFanoutDto);
+export type WorkspaceTreeItem =
+	| ({ kind: "node" } & WorkspaceNode)
+	| ({ kind: "sequence" } & WorkspaceSequence)
+	| ({ kind: "fanout" } & WorkspaceFanout);
 
-export type WorkspaceNodeDto = {
+export type WorkspaceNode = {
 	processPresence: NodeProcessPresence;
 	id: string;
 	title: string;
@@ -111,10 +103,10 @@ export type WorkspaceNodeDto = {
 	errorReason?: string;
 	contentKind: WorkspaceContentKind;
 	capabilities: WorkspaceNodeCapabilitiesDto;
-	workflowCapabilities?: WorkspaceWorkflowCapabilitiesDto;
-	sessionCapabilities?: WorkspaceSessionCapabilitiesDto;
-	children?: ListWorkspaceTreeItemDto;
-	pastAttempts: ListWorkspaceNodeDto;
+	workflowCapabilities?: WorkspaceWorkflowCapabilities;
+	sessionCapabilities?: WorkspaceSessionCapabilities;
+	children?: ListWorkspaceTreeItem;
+	pastAttempts: ListWorkspaceNode;
 	pastAttemptsCollapsed: boolean;
 	updatedAt: number;
 };
@@ -132,28 +124,28 @@ export type WorkspaceNodeCapabilitiesDto = {
 	canRetry: boolean;
 };
 
-export type WorkspaceWorkflowCapabilitiesDto = {
+export type WorkspaceWorkflowCapabilities = {
 	canAbort: boolean;
 	canArchive: boolean;
 };
 
-export type WorkspaceSessionCapabilitiesDto = {
+export type WorkspaceSessionCapabilities = {
 	sessionRef: string;
 	canArchive: boolean;
 	canDelete: boolean;
 };
 
-export type ListWorkspaceNodeDto = Array<WorkspacePastAttemptDto>;
+export type ListWorkspaceNode = Array<WorkspacePastAttempt>;
 
-export type WorkspacePastAttemptDto = { kind: "node" } & WorkspaceNodeDto;
+export type WorkspacePastAttempt = { kind: "node" } & WorkspaceNode;
 
-export type WorkspaceSequenceDto = {
+export type WorkspaceSequence = {
 	worktree?: NodeWorktreeDto;
 	id: string;
 	title: string;
 	status: WorkspaceStatusClassification;
-	workflowCapabilities?: WorkspaceWorkflowCapabilitiesDto;
-	children: ListWorkspaceTreeItemDto;
+	workflowCapabilities?: WorkspaceWorkflowCapabilities;
+	children: ListWorkspaceTreeItem;
 	updatedAt: number;
 };
 
@@ -162,13 +154,13 @@ export type NodeWorktreeDto = {
 	path: string;
 };
 
-export type WorkspaceFanoutDto = {
+export type WorkspaceFanout = {
 	worktree?: NodeWorktreeDto;
 	id: string;
 	title: string;
 	status: WorkspaceStatusClassification;
-	workflowCapabilities?: WorkspaceWorkflowCapabilitiesDto;
-	children: ListWorkspaceTreeItemDto;
+	workflowCapabilities?: WorkspaceWorkflowCapabilities;
+	children: ListWorkspaceTreeItem;
 	updatedAt: number;
 };
 
@@ -203,10 +195,10 @@ export type AgentSessionOperationsDto = {
 	canDelete: boolean;
 };
 
-export type ListWorkspaceWorkflowHistoryItemDto =
-	Array<WorkspaceWorkflowHistoryItemDto>;
+export type ListWorkspaceWorkflowHistoryItem =
+	Array<WorkspaceWorkflowHistoryItem>;
 
-export type WorkspaceWorkflowHistoryItemDto = {
+export type WorkspaceWorkflowHistoryItem = {
 	executionId: string;
 	worktreePath: string;
 	title: string;
@@ -222,12 +214,12 @@ export type WorkspaceHistoryStatus =
 	| "aborted"
 	| "completed";
 
-export type WorkspaceTreeSelectionSnapshotDto = {
-	snapshot: WorkspaceTreeSnapshotDto;
-	reconciliation: WorkspaceSelectionReconciliationDto;
+export type WorkspaceTreeSelectionSnapshot = {
+	snapshot: WorkspaceTreeSnapshot;
+	reconciliation: WorkspaceSelectionReconciliation;
 };
 
-export type WorkspaceSelectionReconciliationDto = {
+export type WorkspaceSelectionReconciliation = {
 	selectionInSnapshot: boolean;
 };
 
@@ -305,18 +297,11 @@ export type BranchDto = {
 	is_remote: boolean;
 };
 
-export type RepositoryBranchCardsSnapshotDto = {
-	version: number;
-	stale: boolean;
-	loading: boolean;
-	branches: ListBranchCardDto;
-	worktree_display_groups: WorktreeDisplayGroupsDto;
-};
+export type ListBranchStatus = Array<BranchStatus>;
 
-export type ListBranchCardDto = Array<BranchCardDto>;
-
-export type WorktreeDisplayGroupsDto = {
-	working_areas: ListBranchCardDto;
+export type BranchStatus = {
+	name: string;
+	has_worktree: boolean;
 };
 
 export type ResultString = string;
@@ -1050,12 +1035,6 @@ export type InputDeleteAgentSessionRequest = {
 	callerRequestId: string;
 };
 
-export type InputDeleteBranchRequest = {
-	repoPath: string;
-	branchName: string;
-	force: boolean;
-};
-
 export type InputDeleteFacetRequest = {
 	kind: string;
 	key: string;
@@ -1587,10 +1566,7 @@ export type InputWorkflowGetOutputRequest = {
 	nodeName: string;
 };
 
-export type InputRefreshWorkspacesRequest = {
-	repoPath?: string | null;
-	worktreePath?: string | null;
-};
+export type InputRefreshWorkspacesRequest = Record<string, never>;
 
 export type AgentSessionArchiveResponse = "archived" | "already_archived";
 
@@ -1793,7 +1769,6 @@ export interface ClientCommandArgs {
 	create_review_thread: InputCreateReviewThreadRequest;
 	create_worktree: InputCreateWorktreeRequest;
 	delete_agent_session: InputDeleteAgentSessionRequest;
-	delete_branch: InputDeleteBranchRequest;
 	delete_facet: InputDeleteFacetRequest;
 	delete_notion_config: InputDeleteNotionConfigRequest;
 	delete_review_thread: InputDeleteReviewThreadRequest;
@@ -1911,7 +1886,6 @@ export interface ClientCommands {
 	delete_agent_session(
 		args: ClientCommandArgs["delete_agent_session"],
 	): Promise<void>;
-	delete_branch(args: ClientCommandArgs["delete_branch"]): Promise<void>;
 	delete_facet(args: ClientCommandArgs["delete_facet"]): Promise<void>;
 	delete_notion_config(
 		args: ClientCommandArgs["delete_notion_config"],

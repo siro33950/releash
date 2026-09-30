@@ -21,6 +21,10 @@ impl crate::domain::failure::FailureRecordRepository for CountingFailureRecords 
         self.resolved.fetch_add(1, Ordering::SeqCst);
         self.store.record_resolved(key)
     }
+
+    fn attention_messages(&self, target: &str) -> Vec<String> {
+        self.store.attention_messages(target)
+    }
 }
 
 #[test]
@@ -74,6 +78,10 @@ impl crate::domain::failure::FailureRecordRepository for PausingFailureRecords {
     fn record_resolved(&self, key: &FailureKey) -> bool {
         self.resolved.fetch_add(1, Ordering::SeqCst);
         self.store.record_resolved(key)
+    }
+
+    fn attention_messages(&self, target: &str) -> Vec<String> {
+        self.store.attention_messages(target)
     }
 }
 

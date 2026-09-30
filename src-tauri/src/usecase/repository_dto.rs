@@ -76,31 +76,3 @@ pub struct WorktreeEntryDto {
     pub dirty_count: u32,
     pub base_branch: Option<String>,
 }
-
-/// ブランチカード（旧 `WorktreeBranch`）の read model。
-///
-/// 単一の読み取りクエリ結果を denormalize しただけの表示・転送向けモデルであり
-/// domain Entity ではない。Query 経路（[`BranchCardQuery`](super::repository_query_service::BranchCardQuery)）の
-/// gateway 実装がデータソース（git2）から直接組み立てる。PR 情報（別ドメイン git_host 由来）は
-/// この repository read model には含めず、呼び出し側が別途取得・合成する。
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct BranchCardDto {
-    pub name: String,
-    pub is_main_worktree: bool,
-    pub is_deleting: bool,
-    pub worktree_path: Option<String>,
-    pub dirty_count: usize,
-    pub is_merged: bool,
-    pub ahead: usize,
-    pub behind: usize,
-    pub has_upstream: bool,
-    pub base_ahead: usize,
-}
-
-/// 管理 UI の worktree 表示先。分類は backend が確定し、client は
-/// 返された一覧をそのまま描画する。
-#[derive(Debug, Clone, Default, Serialize, PartialEq)]
-pub struct WorktreeDisplayGroupsDto {
-    /// 通常一覧に出す worktree card。
-    pub working_areas: Vec<BranchCardDto>,
-}

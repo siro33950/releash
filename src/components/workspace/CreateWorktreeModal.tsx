@@ -39,18 +39,14 @@ import {
 	SelectValue,
 } from "@/components/ui/select";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import type { BranchStatus } from "@/generated/client_types";
 import { useIssues } from "@/hooks/useIssues";
 import { useNotionLabelOptions } from "@/hooks/useNotionLabelOptions";
 import { useNotionTasks } from "@/hooks/useNotionTasks";
 import { invokeClient as invoke, subscribeState } from "@/lib/client";
 import { trackEvent } from "@/lib/telemetry";
 import { cn } from "@/lib/utils";
-import type {
-	BranchInfo,
-	IssueInfo,
-	WorktreeBranch,
-	WorktreeEntry,
-} from "@/types/git";
+import type { BranchInfo, IssueInfo, WorktreeEntry } from "@/types/git";
 import type { NotionTask } from "@/types/notion";
 
 type CreateMode = "plain" | "branch" | "issue" | "notion";
@@ -73,7 +69,7 @@ export function CreateWorktreeModal({
 	const [selectedBranches, setSelectedBranches] = useState<string[]>([]);
 	const [baseBranch, setBaseBranch] = useState("");
 	const [localBranches, setLocalBranches] = useState<BranchInfo[]>([]);
-	const [allBranches, setAllBranches] = useState<WorktreeBranch[]>([]);
+	const [allBranches, setAllBranches] = useState<BranchStatus[]>([]);
 	const [creating, setCreating] = useState(false);
 	const [error, setError] = useState<string | null>(null);
 	const [filter, setFilter] = useState("");
@@ -121,7 +117,7 @@ export function CreateWorktreeModal({
 		);
 		const status = subscribeState(
 			{ kind: "branch-status", args: [selectedRepoPath] },
-			(result) => setAllBranches(result.branches),
+			setAllBranches,
 		);
 		return () => {
 			branches();
@@ -130,15 +126,12 @@ export function CreateWorktreeModal({
 	}, [open, selectedRepoPath]);
 
 	const worktreeBranchNames = useMemo(
-		() =>
-			new Set(
-				allBranches.filter((b) => b.worktree_path != null).map((b) => b.name),
-			),
+		() => new Set(allBranches.filter((b) => b.has_worktree).map((b) => b.name)),
 		[allBranches],
 	);
 
 	const nonWorktreeBranches = useMemo(
-		() => allBranches.filter((b) => b.worktree_path == null),
+		() => allBranches.filter((b) => !b.has_worktree),
 		[allBranches],
 	);
 
@@ -403,7 +396,7 @@ function BranchMode({
 	onToggle,
 	selectedBranches,
 }: {
-	branches: WorktreeBranch[];
+	branches: BranchStatus[];
 	filter: string;
 	onFilterChange: (filter: string) => void;
 	onToggle: (name: string) => void;

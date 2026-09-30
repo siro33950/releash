@@ -732,7 +732,7 @@ pub(crate) async fn read_tree_records_from(
     records_from_tree_rows(&rows).map_err(FactReadError::Corrupt)
 }
 
-fn terminal_fact_in_rows(rows: &[NodeEventRow]) -> Result<bool, String> {
+pub(crate) fn terminal_fact_in_rows(rows: &[NodeEventRow]) -> Result<bool, String> {
     for row in rows {
         if fact_codec::terminal_event_types().contains(&row.event_type.as_str()) {
             return fact_codec::decode(&row.event_type, &row.detail)
@@ -741,6 +741,25 @@ fn terminal_fact_in_rows(rows: &[NodeEventRow]) -> Result<bool, String> {
         }
     }
     Ok(false)
+}
+
+/// 既に読んだ木へ追記された行だけを record へ復元する。
+///
+/// 終端の前後で started の復元が変わるため、追記に終端の事実が含まれる場合と、
+/// 終端済みの木へ started が追記された場合は None を返す。呼び出し側は木を最初から読み直す。
+pub(crate) fn records_from_appended_rows(
+    rows: &[NodeEventRow],
+    tree_is_terminal: bool,
+) -> Result<Option<Vec<NodeFactRecord>>, String> {
+    if terminal_fact_in_rows(rows)?
+        || (tree_is_terminal && rows.iter().any(|row| row.event_type == "started"))
+    {
+        return Ok(None);
+    }
+    rows.iter()
+        .filter_map(|row| record_from_row(row).transpose())
+        .collect::<Result<Vec<_>, _>>()
+        .map(Some)
 }
 
 pub(crate) fn records_from_tree_rows(rows: &[NodeEventRow]) -> Result<Vec<NodeFactRecord>, String> {

@@ -21,7 +21,7 @@ use crate::domain::workflow::{
 mod fact_replay_test;
 
 /// fold の結果: 導出された実行木の状態。
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct FoldedTree {
     pub aggregate: ExecutionTreeAggregate,
     /// root started に記録された木の実行構成。
@@ -31,6 +31,15 @@ pub struct FoldedTree {
     pub session_activities: HashMap<String, AgentSessionActivity>,
     /// Session Node ごとに、同じ事実走査から導出した表示名の入力。
     pub session_display_names: HashMap<String, SessionDisplayNameInputs>,
+    /// session が attach された Session Node ごとに、同じ事実走査から導出した session 状態。
+    pub sessions: HashMap<String, FoldedSession>,
+}
+
+/// Session Node に最初に attach された session と、その状態。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FoldedSession {
+    pub session_id: String,
+    pub facts: SessionFactsView,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -87,8 +96,221 @@ pub fn fold_execution_tree(
     tree_id: &str,
     records: &[NodeFactRecord],
 ) -> Result<Option<FoldedTree>, String> {
+    Ok(fold_all(tree_id, records)?.map(|(_, folded)| folded))
+}
+
+/// 1 tree の事実を 1 件ずつ受け取って進める fold。
+///
+/// 全件からの導出（[`fold_execution_tree`]）と、追記された事実だけを足す読み取りが
+/// 同じ規則を通る。
+#[derive(Debug, Clone)]
+pub struct TreeFold {
+    tree_id: String,
+    /// 確定した事実までを適用した状態。読み出しは [`TreeFold::view`] を通す。
+    folded: FoldedTree,
+    session_title_observation_states: HashMap<String, SessionTitleObservationState>,
+    session_facts: HashMap<String, SessionFactsFold>,
+    /// 後から現れた Session Node にも当てる、root の archive / restore の履歴。
+    root_archive_facts: Vec<NodeFact>,
+    terminal_seen: bool,
+    /// 次の事実が対の Artifact かどうかで決着の時点が変わるため、適用を保留している Submit。
+    pending_submit: Option<NodeFactRecord>,
+}
+
+impl TreeFold {
+    /// 全件を読んで、fold の状態とその時点の実行木を作る。木が存在しなければ None。
+    pub fn from_records(
+        tree_id: &str,
+        records: &[NodeFactRecord],
+    ) -> Result<Option<(Self, FoldedTree)>, String> {
+        fold_all(tree_id, records)
+    }
+
+    fn start(tree_id: &str, root: TreeRootFact, started_at: f64) -> Self {
+        Self {
+            tree_id: tree_id.to_string(),
+            folded: FoldedTree {
+                aggregate: restore_aggregate(tree_id, &root, started_at),
+                root,
+                artifact_contracts: HashMap::new(),
+                session_activities: HashMap::new(),
+                session_display_names: HashMap::new(),
+                sessions: HashMap::new(),
+            },
+            session_title_observation_states: HashMap::new(),
+            session_facts: HashMap::new(),
+            root_archive_facts: Vec::new(),
+            terminal_seen: false,
+            pending_submit: None,
+        }
+    }
+
+    /// この事実を足しても全件からの導出と同じ結果にならない場合に true。
+    /// 呼び出し側はその tree を最初から読み直す。
+    pub fn requires_restart(&self, record: &NodeFactRecord) -> bool {
+        record.meta.parent_id.is_none()
+            && matches!(
+                &record.fact,
+                NodeFact::RepositoryRootObserved(repository_root)
+                    if self.folded.root.repository_root.as_ref() != Some(repository_root)
+            )
+    }
+
+    pub fn push(&mut self, record: &NodeFactRecord) -> Result<(), String> {
+        let tree_id = self.tree_id.as_str();
+        if record.meta.tree_id != tree_id {
+            return Err(format!(
+                "node fact belongs to tree {} instead of {tree_id}",
+                record.meta.tree_id
+            ));
+        }
+        let before_terminal = !self.terminal_seen;
+        let follows_submit = match self.pending_submit.take() {
+            Some(submit) => {
+                let pair = is_submitted_artifact_pair(&submit, record);
+                apply_record(&mut self.folded.aggregate, &submit, pair)
+                    .map_err(|reason| format!("tree {tree_id} seq {}: {reason}", submit.seq))?;
+                pair
+            }
+            None => false,
+        };
+        // archive / restore は木の終端後にだけ起きる事実なので終端の打ち切りから外す。
+        let tree_archive = matches!(
+            record.fact,
+            NodeFact::ArchiveRequested(_) | NodeFact::RestoreRequested
+        );
+        if before_terminal || tree_archive {
+            if let NodeFact::ArtifactProduced(fact) = &record.fact {
+                if let Some(contract) = &fact.contract {
+                    self.folded
+                        .artifact_contracts
+                        .insert(record.meta.node_execution_id.clone(), contract.clone());
+                }
+            }
+            if matches!(record.fact, NodeFact::SubmitReceived(_)) {
+                self.pending_submit = Some(record.clone());
+            } else {
+                apply_record(&mut self.folded.aggregate, record, false)
+                    .map_err(|reason| format!("tree {tree_id} seq {}: {reason}", record.seq))?;
+            }
+        }
+        if follows_submit {
+            self.folded
+                .aggregate
+                .derive_session_settlement(&record.meta.node_execution_id, timestamp_of(record))
+                .map_err(|reason| format!("tree {tree_id} seq {}: {reason}", record.seq))?;
+        }
+        self.observe_session(record);
+        if record.fact.terminal_state().is_some() {
+            self.terminal_seen = true;
+        }
+        Ok(())
+    }
+
+    fn observe_session(&mut self, record: &NodeFactRecord) {
+        let node_execution_id = &record.meta.node_execution_id;
+        let root_archive = record.meta.parent_id.is_none()
+            && matches!(
+                record.fact,
+                NodeFact::ArchiveRequested(_) | NodeFact::RestoreRequested
+            );
+        if root_archive {
+            for (id, session) in &mut self.session_facts {
+                if id != node_execution_id {
+                    session.push(&record.fact);
+                }
+            }
+        }
+        if record.meta.kind == NodeKindName::Session {
+            let title_observation_state = self
+                .session_title_observation_states
+                .entry(node_execution_id.clone())
+                .or_default();
+            title_observation_state.apply(&record.fact);
+            let activity = self
+                .folded
+                .session_activities
+                .entry(node_execution_id.clone())
+                .or_default();
+            *activity = activity.after_fact(&record.fact);
+            let display_name = self
+                .folded
+                .session_display_names
+                .entry(node_execution_id.clone())
+                .or_default();
+            match &record.fact {
+                NodeFact::SessionNodeRenamed(fact) => {
+                    display_name.manual_name = Some(fact.name.clone());
+                }
+                NodeFact::ProviderSessionTitleObserved(fact)
+                    if title_observation_state.accepts_title() =>
+                {
+                    display_name.provider_session_title = Some(fact.title.clone());
+                }
+                _ => {}
+            }
+            let root_archive_facts = &self.root_archive_facts;
+            self.session_facts
+                .entry(node_execution_id.clone())
+                .or_insert_with(|| {
+                    let mut session = SessionFactsFold::new(None);
+                    for fact in root_archive_facts {
+                        session.push(fact);
+                    }
+                    session
+                })
+                .push(&record.fact);
+        }
+        if root_archive {
+            self.root_archive_facts.push(record.fact.clone());
+        }
+    }
+
+    /// 現時点の実行木の状態。未確定の末尾は読み出し用の複製にだけ適用する。
+    pub fn view(&self) -> Result<FoldedTree, String> {
+        let mut folded = self.folded.clone();
+        if let Some(submit) = &self.pending_submit {
+            apply_record(&mut folded.aggregate, submit, false)
+                .map_err(|reason| format!("tree {} seq {}: {reason}", self.tree_id, submit.seq))?;
+        }
+        if !self.terminal_seen {
+            folded.aggregate.derive_empty_isolated_fanouts(None)?;
+        }
+        folded.sessions = self
+            .session_facts
+            .iter()
+            .filter_map(|(node_execution_id, session)| {
+                Some((
+                    node_execution_id.clone(),
+                    FoldedSession {
+                        session_id: session.session_id.clone()?,
+                        facts: session.view(),
+                    },
+                ))
+            })
+            .collect();
+        Ok(folded)
+    }
+}
+
+fn fold_all(
+    tree_id: &str,
+    records: &[NodeFactRecord],
+) -> Result<Option<(TreeFold, FoldedTree)>, String> {
     #[cfg(test)]
     TREE_FOLDS.with(|count| count.set(count.get() + 1));
+    let result = fold_records_from_start(tree_id, records)?;
+    #[cfg(test)]
+    if let Some((_, folded)) = &result {
+        assert_appending_matches_full_fold(tree_id, records, folded);
+    }
+    Ok(result)
+}
+
+fn fold_records_from_start(
+    tree_id: &str,
+    records: &[NodeFactRecord],
+) -> Result<Option<(TreeFold, FoldedTree)>, String> {
     for record in records {
         if record.meta.tree_id != tree_id {
             return Err(format!(
@@ -125,103 +347,72 @@ pub fn fold_execution_tree(
 
     let terminal = records
         .iter()
-        .find(|record| record.fact.terminal_state().is_some());
+        .any(|record| record.fact.terminal_state().is_some());
     match fold_records(tree_id, records, root.clone(), terminal) {
-        Err(_) if terminal.is_some() && root.definition.is_some() => {
+        Err(_) if terminal && root.definition.is_some() => {
             fold_records(tree_id, records, root.without_definition(), terminal)
         }
         result => result,
     }
+    .map(Some)
 }
 
 fn fold_records(
     tree_id: &str,
     records: &[NodeFactRecord],
     root: TreeRootFact,
-    terminal: Option<&NodeFactRecord>,
-) -> Result<Option<FoldedTree>, String> {
-    let started_at = timestamp_of(&records[0]);
-    if terminal.is_none() && root.definition.is_none() {
+    terminal: bool,
+) -> Result<(TreeFold, FoldedTree), String> {
+    if !terminal && root.definition.is_none() {
         return Err("non-terminal execution requires a workflow definition".into());
     }
-    let mut aggregate = restore_aggregate(tree_id, &root, started_at);
-    let mut session_activities: HashMap<String, AgentSessionActivity> = HashMap::new();
-    let mut session_display_names: HashMap<String, SessionDisplayNameInputs> = HashMap::new();
-    let mut session_title_observation_states: HashMap<String, SessionTitleObservationState> =
-        HashMap::new();
+    let mut fold = TreeFold::start(tree_id, root, timestamp_of(&records[0]));
+    for record in records {
+        fold.push(record)?;
+    }
+    let folded = fold.view()?;
+    Ok((fold, folded))
+}
 
-    let mut artifact_contracts = HashMap::new();
-    for (index, record) in records.iter().enumerate() {
-        let defer_submit_settlement = records
-            .get(index + 1)
-            .is_some_and(|next| is_submitted_artifact_pair(record, next));
-        let before_terminal = terminal.is_none_or(|terminal| record.seq <= terminal.seq);
-        // archive / restore は木の終端後にだけ起きる事実なので終端の打ち切りから外す。
-        let tree_archive = matches!(
-            record.fact,
-            NodeFact::ArchiveRequested(_) | NodeFact::RestoreRequested
+/// どの位置で区切っても、途中まで fold してから残りを足した結果が全件 fold と一致する。
+#[cfg(test)]
+fn assert_appending_matches_full_fold(
+    tree_id: &str,
+    records: &[NodeFactRecord],
+    full: &FoldedTree,
+) {
+    for split in 1..records.len() {
+        let Ok(Some((mut fold, _))) = fold_records_from_start(tree_id, &records[..split]) else {
+            continue;
+        };
+        let appended = records[split..].iter().try_for_each(|record| {
+            if fold.requires_restart(record) {
+                return Err(());
+            }
+            fold.push(record).map_err(|_| ())
+        });
+        if appended.is_err() {
+            continue;
+        }
+        let Ok(view) = fold.view() else { continue };
+        assert_eq!(
+            &view,
+            full,
+            "appending facts after seq {} must match the full fold",
+            records[split - 1].seq
         );
-        if before_terminal || tree_archive {
-            if let NodeFact::ArtifactProduced(fact) = &record.fact {
-                if let Some(contract) = &fact.contract {
-                    artifact_contracts
-                        .insert(record.meta.node_execution_id.clone(), contract.clone());
-                }
-            }
-            apply_record(&mut aggregate, record, defer_submit_settlement)
-                .map_err(|reason| format!("tree {tree_id} seq {}: {reason}", record.seq))?;
-        }
-        if before_terminal
-            && index
-                .checked_sub(1)
-                .and_then(|previous| records.get(previous))
-                .is_some_and(|previous| is_submitted_artifact_pair(previous, record))
-        {
-            aggregate
-                .derive_session_settlement(&record.meta.node_execution_id, timestamp_of(record))
-                .map_err(|reason| format!("tree {tree_id} seq {}: {reason}", record.seq))?;
-        }
-        if record.meta.kind == NodeKindName::Session {
-            let title_observation_state = session_title_observation_states
-                .entry(record.meta.node_execution_id.clone())
-                .or_default();
-            title_observation_state.apply(&record.fact);
-            let activity = session_activities
-                .entry(record.meta.node_execution_id.clone())
-                .or_default();
-            *activity = activity.after_fact(&record.fact);
-            let display_name = session_display_names
-                .entry(record.meta.node_execution_id.clone())
-                .or_default();
-            match &record.fact {
-                NodeFact::SessionNodeRenamed(fact) => {
-                    display_name.manual_name = Some(fact.name.clone());
-                }
-                NodeFact::ProviderSessionTitleObserved(fact)
-                    if title_observation_state.accepts_title() =>
-                {
-                    display_name.provider_session_title = Some(fact.title.clone());
-                }
-                _ => {}
-            }
-        }
     }
-
-    if terminal.is_none() {
-        aggregate.derive_empty_isolated_fanouts(None)?;
-    }
-    Ok(Some(FoldedTree {
-        aggregate,
-        root,
-        artifact_contracts,
-        session_activities,
-        session_display_names,
-    }))
 }
 
 #[cfg(test)]
 thread_local! {
     static TREE_FOLDS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// この thread で、事実を最初から fold した回数。
+#[cfg(test)]
+pub(crate) fn tree_fold_count() -> usize {
+    TREE_FOLDS.with(std::cell::Cell::get)
 }
 
 #[cfg(test)]
@@ -680,9 +871,7 @@ pub fn derive_session_facts(
     node_execution_id: &str,
     session_id: &str,
 ) -> SessionFactsView {
-    let mut view = SessionFactsView::default();
-    let mut exited: Option<&crate::domain::workflow::ProcessExitedFact> = None;
-    let mut title_observation_state = SessionTitleObservationState::for_session(session_id);
+    let mut session = SessionFactsFold::new(Some(session_id));
     for record in records {
         let root_archive = record.meta.parent_id.is_none()
             && matches!(
@@ -692,44 +881,98 @@ pub fn derive_session_facts(
         if record.meta.node_execution_id != node_execution_id && !root_archive {
             continue;
         }
-        title_observation_state.apply(&record.fact);
-        view.activity = view.activity.after_fact(&record.fact);
-        match &record.fact {
-            NodeFact::SessionAttached(fact) if fact.session_id == session_id => {
+        session.push(&record.fact);
+    }
+    session.view()
+}
+
+/// 1 つの Session Node の事実を 1 件ずつ受け取って session 状態を進める。
+#[derive(Debug, Clone)]
+struct SessionFactsFold {
+    /// None の間は、最初に attach された session を対象にする。
+    session_id: Option<String>,
+    view: SessionFactsView,
+    exited: Option<crate::domain::workflow::ProcessExitedFact>,
+    title_observation_state: SessionTitleObservationState,
+    /// 対象の session が決まる前に届いた続行指示（session, 識別子）。
+    unassigned_continuations: Vec<(String, String)>,
+}
+
+impl SessionFactsFold {
+    fn new(session_id: Option<&str>) -> Self {
+        Self {
+            session_id: session_id.map(str::to_string),
+            view: SessionFactsView::default(),
+            exited: None,
+            title_observation_state: session_id
+                .map(SessionTitleObservationState::for_session)
+                .unwrap_or_default(),
+            unassigned_continuations: Vec::new(),
+        }
+    }
+
+    fn push(&mut self, fact: &NodeFact) {
+        if let (None, NodeFact::SessionAttached(attached)) = (&self.session_id, fact) {
+            self.session_id = Some(attached.session_id.clone());
+            let admitted = std::mem::take(&mut self.unassigned_continuations);
+            self.view.admitted_continuations.extend(
+                admitted
+                    .into_iter()
+                    .filter(|(session_id, _)| session_id == &attached.session_id)
+                    .map(|(_, request_id)| request_id),
+            );
+        }
+        self.title_observation_state.apply(fact);
+        self.view.activity = self.view.activity.after_fact(fact);
+        let session_id = self.session_id.as_deref();
+        match fact {
+            NodeFact::SessionAttached(fact) if Some(fact.session_id.as_str()) == session_id => {
                 if fact.provider_session_id.is_some() {
-                    view.provider_session_id = fact.provider_session_id.clone();
-                    view.transcript_ref = fact.transcript_ref.clone();
+                    self.view.provider_session_id = fact.provider_session_id.clone();
+                    self.view.transcript_ref = fact.transcript_ref.clone();
                 }
-                view.initial_instruction_admitted |= fact.initial_instruction_admitted;
-                exited = None;
-                view.exited = false;
+                self.view.initial_instruction_admitted |= fact.initial_instruction_admitted;
+                self.exited = None;
+                self.view.exited = false;
             }
-            NodeFact::SessionContinuationAdmitted(fact) if fact.session_id == session_id => {
-                view.admitted_continuations.push(fact.request_id.clone());
-            }
-            NodeFact::SessionNodeRenamed(fact) => view.manual_name = Some(fact.name.clone()),
+            NodeFact::SessionContinuationAdmitted(fact) => match session_id {
+                Some(session_id) if fact.session_id == session_id => {
+                    self.view
+                        .admitted_continuations
+                        .push(fact.request_id.clone());
+                }
+                Some(_) => {}
+                None => self
+                    .unassigned_continuations
+                    .push((fact.session_id.clone(), fact.request_id.clone())),
+            },
+            NodeFact::SessionNodeRenamed(fact) => self.view.manual_name = Some(fact.name.clone()),
             NodeFact::ProviderSessionTitleObserved(fact)
-                if title_observation_state.accepts_title() =>
+                if self.title_observation_state.accepts_title() =>
             {
-                view.provider_session_title = Some(fact.title.clone());
+                self.view.provider_session_title = Some(fact.title.clone());
             }
-            NodeFact::ProcessExited(fact) => exited = Some(fact),
+            NodeFact::ProcessExited(fact) => self.exited = Some(fact.clone()),
             NodeFact::ResumeRequested => {
-                exited = None;
-                view.exited = false;
+                self.exited = None;
+                self.view.exited = false;
             }
             NodeFact::RestoreRequested => {
-                view.exited = true;
-                view.archived = false;
+                self.view.exited = true;
+                self.view.archived = false;
             }
-            NodeFact::AbortRequested(_) => view.exited = true,
-            NodeFact::ArchiveRequested(_) => view.archived = true,
+            NodeFact::AbortRequested(_) => self.view.exited = true,
+            NodeFact::ArchiveRequested(_) => self.view.archived = true,
             _ => {}
         }
     }
-    view.exited |= exited.is_some();
-    view.last_exit_abnormal = exited.is_some_and(|fact| fact.is_abnormal());
-    view
+
+    fn view(&self) -> SessionFactsView {
+        let mut view = self.view.clone();
+        view.exited |= self.exited.is_some();
+        view.last_exit_abnormal = self.exited.as_ref().is_some_and(|fact| fact.is_abnormal());
+        view
+    }
 }
 
 pub fn derive_tree_archive(

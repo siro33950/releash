@@ -2982,3 +2982,162 @@ fn test_repository所属の観測_旧実行木の不足だけを補い子の所�
         .unwrap_err()
         .contains("conflicting repository roots"));
 }
+
+fn plan_sequence_log() -> FactLog {
+    let mut output = session_leaf("make_plan");
+    output.artifact = Some("plan".to_string());
+    let main = sequence_node(
+        "main",
+        vec![
+            ChildEntry::reference("make_plan"),
+            ChildEntry::reference("review"),
+        ],
+    );
+    let mut log = FactLog::new();
+    log.push(
+        meta("main-exec", None, "main", NodeKindName::Sequence, 1),
+        started_root(workflow_root(workflow_definition(
+            vec![output, session_leaf("review"), main],
+            "main",
+        ))),
+    );
+    let make_plan = meta(
+        "make-plan-exec",
+        Some("main-exec"),
+        "make_plan",
+        NodeKindName::Session,
+        1,
+    );
+    log.push(
+        make_plan.clone(),
+        started_child(ExecutionParentRef::sequence_child("main-exec")),
+    );
+    log.push(make_plan.clone(), attached("session-plan"));
+    log.push(make_plan.clone(), stop());
+    log.push(make_plan.clone(), submit());
+    log.push(
+        make_plan,
+        artifact("plan", serde_json::json!({"plan": "ready"})),
+    );
+    let review = meta(
+        "review-exec",
+        Some("main-exec"),
+        "review",
+        NodeKindName::Session,
+        1,
+    );
+    log.push(
+        review.clone(),
+        started_child(ExecutionParentRef::sequence_child("main-exec")),
+    );
+    log.push(review.clone(), attached("session-review"));
+    log.push(review.clone(), submit());
+    log.push(review, stop());
+    log.push(
+        meta("main-exec", None, "main", NodeKindName::Sequence, 1),
+        NodeFact::ArchiveRequested(crate::domain::workflow::ArchiveRequestedFact {
+            reason: "manual".into(),
+            archived_at: 20.0,
+        }),
+    );
+    log
+}
+
+#[test]
+fn test_事実の追記_どの位置で区切っても全件foldと同じ状態になる() {
+    // Given: Submit と Artifact の対、終端、archive を含む事実列
+    let log = plan_sequence_log();
+    let full = fold_execution_tree(TREE, &log.records).unwrap().unwrap();
+    assert_eq!(*full.aggregate.state(), RuntimeExecutionState::Completed);
+
+    for split in 1..log.records.len() {
+        // When: 途中まで fold し、残りを 1 件ずつ足す
+        let (mut fold, _) = TreeFold::from_records(TREE, &log.records[..split])
+            .unwrap()
+            .unwrap();
+        for record in &log.records[split..] {
+            assert!(!fold.requires_restart(record));
+            fold.push(record).unwrap();
+        }
+
+        // Then: 全件 fold と同じ状態になる
+        assert_eq!(fold.view().unwrap(), full, "split at {split}");
+    }
+}
+
+#[test]
+fn test_事実の追記_対のartifactを待つsubmitは読み出しにだけ反映する() {
+    // Given: Submit までを fold した状態
+    let log = plan_sequence_log();
+    let submit_index = log
+        .records
+        .iter()
+        .position(|record| matches!(record.fact, NodeFact::SubmitReceived(_)))
+        .unwrap();
+    let (mut fold, _) = TreeFold::from_records(TREE, &log.records[..=submit_index])
+        .unwrap()
+        .unwrap();
+
+    // When: 読み出した後に、対の Artifact を足す
+    let before = fold.view().unwrap();
+    fold.push(&log.records[submit_index + 1]).unwrap();
+    let after = fold.view().unwrap();
+
+    // Then: どちらの時点も、同じ位置までの全件 fold と一致する
+    assert_eq!(
+        before,
+        fold_execution_tree(TREE, &log.records[..=submit_index])
+            .unwrap()
+            .unwrap()
+    );
+    assert_eq!(
+        after,
+        fold_execution_tree(TREE, &log.records[..=submit_index + 1])
+            .unwrap()
+            .unwrap()
+    );
+}
+
+#[test]
+fn test_事実の追記_rootのrepository所属の観測は最初からの読み直しを求める() {
+    // Given: repository の所属が未観測の実行木
+    let (log, root_meta) = completed_standalone_log("/gone");
+    let (fold, _) = TreeFold::from_records(TREE, &log.records).unwrap().unwrap();
+    let observed = |meta: NodeFactMeta, path: &str| NodeFactRecord {
+        meta,
+        seq: 99,
+        timestamp_ms: 99_000,
+        fact: NodeFact::RepositoryRootObserved(path.into()),
+    };
+    let mut child_meta = root_meta.clone();
+    child_meta.parent_id = Some(root_meta.node_execution_id.clone());
+    child_meta.node_execution_id = "child".into();
+
+    // When / Then: root の観測だけが読み直しを求める
+    assert!(fold.requires_restart(&observed(root_meta, "/repo")));
+    assert!(!fold.requires_restart(&observed(child_meta, "/repo")));
+}
+
+#[test]
+fn test_事実の追記_session_nodeごとのsession状態を同じ走査から導出する() {
+    // Given
+    let log = plan_sequence_log();
+
+    // When
+    let folded = fold_execution_tree(TREE, &log.records).unwrap().unwrap();
+
+    // Then: 最初に attach された session を対象に、個別の導出と同じ状態になる
+    for (node_execution_id, session_id) in [
+        ("make-plan-exec", "session-plan"),
+        ("review-exec", "session-review"),
+    ] {
+        let session = &folded.sessions[node_execution_id];
+        assert_eq!(session.session_id, session_id);
+        assert_eq!(
+            session.facts,
+            derive_session_facts(&log.records, node_execution_id, session_id)
+        );
+        assert!(session.facts.archived);
+    }
+    assert!(!folded.sessions.contains_key("main-exec"));
+}

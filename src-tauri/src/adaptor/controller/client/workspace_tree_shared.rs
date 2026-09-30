@@ -15,18 +15,12 @@ pub(crate) fn register_shared(
             Box::new(move |command| {
                 let app_state = app_state.clone();
                 Box::pin(async move {
-                    let wire::command_request::Command::RefreshWorkspaces(args) = command else {
+                    let wire::command_request::Command::RefreshWorkspaces(_) = command else {
                         return Err(invalid_request("Mismatched command"));
                     };
                     let app_state = app_state
                         .ok_or_else(|| invalid_request("Command dependency unavailable"))?;
-                    match args.worktree_path.as_deref() {
-                        Some(path) => app_state.workspace_list.refresh_worktree(path).await,
-                        None => match args.repo_path.as_deref() {
-                            Some(path) => app_state.workspace_list.refresh_repository(path).await,
-                            None => app_state.workspace_list.refresh().await,
-                        },
-                    };
+                    app_state.workspace_list.refresh().await;
                     outcome(Ok::<_, crate::adaptor::presenter::error::AppError>(()))
                         .map(wire::command_result::Command::RefreshWorkspaces)
                 })

@@ -9,7 +9,6 @@ use crate::usecase::code_usecase::CodeUsecase;
 use crate::usecase::git_host::GitHostUsecase;
 use crate::usecase::notion::usecase::NotionUsecase;
 use crate::usecase::repo_paths_usecase::RepoPathsUsecase;
-use crate::usecase::repository_state::RepositoryStateService;
 use crate::usecase::repository_usecase::RepositoryUsecase;
 use crate::usecase::review_usecase::ReviewUsecase;
 use crate::usecase::terminal_surface::application::TerminalSurfaceApplication;
@@ -19,7 +18,6 @@ use crate::usecase::workflow::WorkflowUsecase;
 pub struct AppState {
     pub workspace_list: Arc<crate::usecase::workspace_tree::WorkspaceListUsecase>,
     pub repository_usecase: Arc<RepositoryUsecase>,
-    pub repository_state: Arc<RepositoryStateService>,
     pub repo_paths_usecase: Arc<RepoPathsUsecase>,
     pub code_usecase: Arc<CodeUsecase>,
     pub review_usecase: Arc<ReviewUsecase>,

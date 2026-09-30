@@ -295,12 +295,6 @@ impl crate::usecase::state_subscription::StateSubscriptionRead for TestRepositor
         }
     }
 
-    async fn refresh_workspaces(
-        &self,
-        _: Option<crate::usecase::state_subscription::StateChangeSource>,
-    ) {
-    }
-
     fn repositories(&self) -> Vec<String> {
         self.0.read().clone()
     }

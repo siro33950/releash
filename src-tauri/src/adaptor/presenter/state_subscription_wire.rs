@@ -14,11 +14,11 @@ pub(crate) fn payload(value: &StateValue) -> Result<wire::StatePayload, connectr
                 .into(),
             ),
             StateValue::Workspaces(value) => wire::state_payload::Value::Workspaces(
-                crate::adaptor::presenter::client::value(value.clone())
+                crate::adaptor::presenter::client::value(value)
                     .map_err(crate::adaptor::presenter::connect::command_error)?,
             ),
-            StateValue::Selection(value) => wire::state_payload::Value::Selection(
-                crate::adaptor::presenter::client::value(value.clone())
+            StateValue::Selection(tree, selected) => wire::state_payload::Value::Selection(
+                crate::adaptor::presenter::client::value((tree, *selected))
                     .map_err(crate::adaptor::presenter::connect::command_error)?,
             ),
             StateValue::NodeDetail(value) => wire::state_payload::Value::NodeDetail(
@@ -50,7 +50,7 @@ pub(crate) fn payload(value: &StateValue) -> Result<wire::StatePayload, connectr
                     .map_err(crate::adaptor::presenter::connect::command_error)?,
             ),
             StateValue::BranchStatus(value) => wire::state_payload::Value::BranchStatus(
-                crate::adaptor::presenter::client::value(value.clone())
+                crate::adaptor::presenter::client::value(value.as_slice())
                     .map_err(crate::adaptor::presenter::connect::command_error)?,
             ),
             StateValue::CurrentBranch(value) => wire::state_payload::Value::CurrentBranch(

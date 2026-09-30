@@ -135,18 +135,16 @@ fn test_購読payload_全種類を旧wire型とフィールドへ変換する() 
     };
     use crate::usecase::git_host::dto::{IssueInfoDto, IssueLabelDto, MilestoneDto, PrAuthorDto};
     use crate::usecase::provider_dto::AgentSessionProviderDto;
-    use crate::usecase::repository_dto::{BranchDto, WorktreeDisplayGroupsDto, WorktreeEntryDto};
-    use crate::usecase::repository_state::snapshot::RepositoryBranchCardsSnapshotDto;
+    use crate::usecase::repository_dto::{BranchDto, WorktreeEntryDto};
     use crate::usecase::terminal_surface::application::TerminalSurfaceStreamItem;
     use crate::usecase::workflow::{
         WorkspaceNodeCapabilitiesDto, WorkspaceNodeContentDto, WorkspaceNodeDetailDto,
-        WorkspaceSelectionReconciliationDto, WorkspaceSessionNodeContentDto,
-        WorkspaceTreeSelectionSnapshotDto, WorkspaceTreeSnapshotDto,
+        WorkspaceSessionNodeContentDto,
     };
     use crate::usecase::workspace_state::dto::{
         WorkspaceLayoutStateDto, WorkspaceStateDto, WorkspaceTabsStateDto,
     };
-    use crate::usecase::workspace_tree::{WorkspaceListSnapshotDto, WorkspaceListStatusDto};
+    use crate::usecase::workspace_tree::WorkspaceList;
     use wire::state_payload::Value as W;
 
     // Given
@@ -178,43 +176,30 @@ fn test_購読payload_全種類を旧wire型とフィールドへ変換する() 
             }),
         ),
         (
-            StateValue::Workspaces(WorkspaceListSnapshotDto {
-                generation: 7,
-                status: WorkspaceListStatusDto {
-                    loaded: true,
-                    state: "ready",
-                    error: None,
-                },
+            StateValue::Workspaces(WorkspaceList {
                 repositories: vec![],
             }),
-            W::Workspaces(wire::WorkspaceListSnapshotDto {
-                generation: Some(7),
-                status: Some(wire::WorkspaceListStatusDto {
+            W::Workspaces(wire::WorkspaceListSnapshot {
+                status: Some(wire::WorkspaceListStatus {
                     loaded: Some(true),
-                    state: Some("ready".into()),
+                    state: Some("empty".into()),
                     error: None,
                 }),
-                repositories: Some(wire::ListWorkspaceRepositoryListDto { items: vec![] }),
+                repositories: Some(wire::ListWorkspaceRepositoryList { items: vec![] }),
             }),
         ),
         (
-            StateValue::Selection(WorkspaceTreeSelectionSnapshotDto {
-                snapshot: WorkspaceTreeSnapshotDto {
-                    nodes: vec![],
-                    archived_sessions: vec![],
-                    preferred_node_id: Some("node".into()),
-                },
-                reconciliation: WorkspaceSelectionReconciliationDto {
-                    selection_in_snapshot: true,
-                },
-            }),
-            W::Selection(wire::WorkspaceTreeSelectionSnapshotDto {
-                snapshot: Some(wire::WorkspaceTreeSnapshotDto {
-                    nodes: Some(wire::ListWorkspaceTreeItemDto { items: vec![] }),
+            StateValue::Selection(
+                crate::domain::workspace_tree::WorkspaceTree::empty("/repo"),
+                true,
+            ),
+            W::Selection(wire::WorkspaceTreeSelectionSnapshot {
+                snapshot: Some(wire::WorkspaceTreeSnapshot {
+                    nodes: Some(wire::ListWorkspaceTreeItem { items: vec![] }),
                     archived_sessions: Some(wire::ListAgentSessionItemDto { items: vec![] }),
-                    preferred_node_id: Some("node".into()),
+                    preferred_node_id: None,
                 }),
-                reconciliation: Some(wire::WorkspaceSelectionReconciliationDto {
+                reconciliation: Some(wire::WorkspaceSelectionReconciliation {
                     selection_in_snapshot: Some(true),
                 }),
             }),
@@ -374,21 +359,15 @@ fn test_購読payload_全種類を旧wire型とフィールドへ変換する() 
             }),
         ),
         (
-            StateValue::BranchStatus(RepositoryBranchCardsSnapshotDto {
-                version: 12,
-                stale: true,
-                loading: false,
-                branches: vec![],
-                worktree_display_groups: WorktreeDisplayGroupsDto::default(),
-            }),
-            W::BranchStatus(wire::RepositoryBranchCardsSnapshotDto {
-                version: Some(12),
-                stale: Some(true),
-                loading: Some(false),
-                branches: Some(wire::ListBranchCardDto { items: vec![] }),
-                worktree_display_groups: Some(wire::WorktreeDisplayGroupsDto {
-                    working_areas: Some(wire::ListBranchCardDto { items: vec![] }),
-                }),
+            StateValue::BranchStatus(vec![(
+                crate::domain::repository::Branch::local("main"),
+                true,
+            )]),
+            W::BranchStatus(wire::ListBranchStatus {
+                items: vec![wire::BranchStatus {
+                    name: Some("main".into()),
+                    has_worktree: Some(true),
+                }],
             }),
         ),
         (

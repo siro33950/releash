@@ -15,7 +15,8 @@ use crate::usecase::repository_state::RepositoryStateError;
 use crate::usecase::repository_usecase::RepositoryUsecase;
 
 use super::watch::{
-    classify_git_dir_events, generate_watcher_id, resolve_file_watch_paths, resolve_git_watch_paths,
+    classify_git_dir_events, generate_watcher_id, resolve_file_watch_paths,
+    resolve_worktree_git_dir,
 };
 
 type RecommendedDebouncer =
@@ -38,24 +39,6 @@ impl RepositoryStateRepository for RepositoryStateRepositoryGateway {
             .map_err(crate::usecase::repository_error::UsecaseError::from)?
             .to_string_lossy()
             .into_owned())
-    }
-
-    fn include_deleting_worktrees(
-        &self,
-        repository_root: &str,
-        cards: &mut Vec<crate::usecase::repository_dto::BranchCardDto>,
-    ) -> Result<(), RepositoryStateError> {
-        for card in cards.iter_mut() {
-            if let Some(path) = &mut card.worktree_path {
-                *path = super::worktree_operation::worktree_identity(path)
-                    .map_err(crate::usecase::repository_error::UsecaseError::from)?
-                    .to_string_lossy()
-                    .into_owned();
-            }
-        }
-        self.repository
-            .include_deleting_worktrees(repository_root, cards);
-        Ok(())
     }
 }
 
@@ -95,7 +78,7 @@ impl RepositoryStateWatcher for NotifyRepositoryStateWatcher {
         state: Arc<WorktreeState>,
     ) -> Result<Box<dyn RepositoryStateWatchSession>, RepositoryStateError> {
         let file_debouncer = start_file_watcher(state.clone(), &self.repository)?;
-        let git_debouncer = start_git_watcher(state, &self.repository)?;
+        let git_debouncer = start_git_watcher(state)?;
         Ok(Box::new(RepositoryStateWatcherHandles {
             file_debouncer: Some(file_debouncer),
             git_debouncer: Some(git_debouncer),
@@ -137,13 +120,20 @@ fn start_file_watcher(
     Ok(debouncer)
 }
 
+/// worktree 自身の git ディレクトリを監視する。Repository の root の git ディレクトリには
+/// ref と全 worktree の登録・HEAD があるので、root は配下ごと監視する。
 fn start_git_watcher(
     state: Arc<WorktreeState>,
-    repository: &RepositoryUsecase,
 ) -> Result<RecommendedDebouncer, RepositoryStateError> {
-    let paths = resolve_git_watch_paths(repository, state.worktree_path())
-        .map_err(RepositoryStateError::Watcher)?;
-    log::debug!("starting git watcher for main repo {}", paths.main_repo);
+    let git_dir =
+        resolve_worktree_git_dir(state.worktree_path()).map_err(RepositoryStateError::Watcher)?;
+    log::debug!("starting git watcher for {}", state.worktree_path());
+    let mode = if state.is_repository_root() {
+        RecursiveMode::Recursive
+    } else {
+        RecursiveMode::NonRecursive
+    };
+    let own_git_dir = git_dir.canonicalize().unwrap_or_else(|_| git_dir.clone());
     let debouncer = new_debouncer(
         Duration::from_millis(100),
         move |res: Result<
@@ -160,55 +150,54 @@ fn start_git_watcher(
                     return;
                 }
             };
-            handle_git_events(state.as_ref(), &events);
+            handle_git_events(state.as_ref(), &own_git_dir, &events);
         },
     )
     .map_err(|err| RepositoryStateError::Watcher(format!("Failed to create debouncer: {err}")))?;
 
     let mut debouncer = debouncer;
-    if paths.refs_heads.exists() {
-        debouncer
-            .watcher()
-            .watch(&paths.refs_heads, RecursiveMode::Recursive)
-            .map_err(|err| {
-                RepositoryStateError::Watcher(format!("Failed to watch refs/heads: {err}"))
-            })?;
-    }
-    if paths.head_file.exists() {
-        debouncer
-            .watcher()
-            .watch(&paths.head_file, RecursiveMode::NonRecursive)
-            .map_err(|err| RepositoryStateError::Watcher(format!("Failed to watch HEAD: {err}")))?;
-    }
-    if let Some(git_dir) = paths.index_file.parent() {
-        debouncer
-            .watcher()
-            .watch(git_dir, RecursiveMode::Recursive)
-            .map_err(|err| {
-                RepositoryStateError::Watcher(format!("Failed to watch .git dir: {err}"))
-            })?;
-    }
-    if paths.worktrees_dir.exists() {
-        debouncer
-            .watcher()
-            .watch(&paths.worktrees_dir, RecursiveMode::Recursive)
-            .map_err(|err| {
-                RepositoryStateError::Watcher(format!("Failed to watch worktrees: {err}"))
-            })?;
-    }
+    debouncer
+        .watcher()
+        .watch(&git_dir, mode)
+        .map_err(|err| RepositoryStateError::Watcher(format!("Failed to watch git dir: {err}")))?;
     Ok(debouncer)
 }
 
+/// worktree のファイルの変化で、変更の状態を読み直す。
+/// git ディレクトリの中の変化は git の監視が扱うので、ここでは数えない。
 fn handle_file_events(state: &WorktreeState, events: Vec<DebouncedEvent>) {
-    if !events.is_empty() {
-        state.invalidate(InvalidateReason::change());
+    let git_dir = Path::new(state.worktree_path()).join(".git");
+    if events.iter().any(|event| !event.path.starts_with(&git_dir)) {
+        state.invalidate(InvalidateReason::files());
     }
 }
 
-fn handle_git_events(state: &WorktreeState, events: &[DebouncedEvent]) {
-    let (branch_change, index_change) = classify_git_dir_events(events);
-    if branch_change || index_change {
-        state.invalidate(InvalidateReason::change());
+/// ref・HEAD・worktree の登録の変化は Repository の root が worktree の並びを読み直す。
+/// index の変化は、その index を持つ worktree だけが変更の状態を読み直す。
+fn handle_git_events(state: &WorktreeState, own_git_dir: &Path, events: &[DebouncedEvent]) {
+    let (branch_change, _) = classify_git_dir_events(events);
+    let own_events = events
+        .iter()
+        .filter(|event| {
+            event.path.parent().is_some_and(|parent| {
+                parent == own_git_dir
+                    || parent
+                        .canonicalize()
+                        .is_ok_and(|parent| parent == own_git_dir)
+            })
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    let (_, index_change) = classify_git_dir_events(&own_events);
+    let mut reason = InvalidateReason::default();
+    if branch_change && state.is_repository_root() {
+        reason.merge(InvalidateReason::refs());
+    }
+    if index_change {
+        reason.merge(InvalidateReason::files());
+    }
+    if reason != InvalidateReason::default() {
+        state.invalidate(reason);
     }
 }
 

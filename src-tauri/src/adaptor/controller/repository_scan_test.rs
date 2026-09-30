@@ -37,14 +37,21 @@ impl RepositoryScanner for Scanner {
         Ok(RepositorySnapshotParts {
             status: Vec::new(),
             diff_stats: Vec::new(),
-            branch_cards: Vec::new(),
+            dirty_count: 0,
             diff_file_tree: Vec::new(),
             staged_diff_file_tree: Vec::new(),
             changes_diff_file_tree: Vec::new(),
         })
     }
 
-    fn prune_stale_branch_bases(&self, _: &str, _: &[String]) -> Result<(), RepositoryStateError> {
+    fn scan_worktrees(
+        &self,
+        _: &str,
+    ) -> Result<Vec<crate::domain::repository::Worktree>, RepositoryStateError> {
+        Ok(Vec::new())
+    }
+
+    fn prune_stale_branch_bases(&self, _: &str) -> Result<(), RepositoryStateError> {
         Ok(())
     }
 }
@@ -58,6 +65,7 @@ async fn test_repository走査_一時的な失敗をやり直して走査を終�
     });
     let state = WorktreeState::new(
         "/repo".to_string(),
+        true,
         scanner.clone(),
         crate::test_support::state_subscription::test_subscriptions(),
         Arc::new(TestRepositoryStateWorkerRuntime),

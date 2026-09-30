@@ -1,7 +1,7 @@
 import { act, renderHook } from "@testing-library/react";
 import { createElement, type ReactNode } from "react";
 import { beforeEach, expect, it, vi } from "vitest";
-import type { WorkspaceTreeSelectionSnapshotDto } from "@/generated/client_types";
+import type { WorkspaceTreeSelectionSnapshot } from "@/generated/client_types";
 import { subscribeState } from "@/lib/client";
 import { workspaceListSnapshot } from "@/test/workspaceList";
 import { WorkspaceListContext } from "./useWorkspaceList";
@@ -10,7 +10,7 @@ import { useWorkspaceTreeNodes } from "./useWorkspaceTreeNodes";
 vi.mock("@/lib/client", () => ({ subscribeState: vi.fn() }));
 let snapshot = workspaceListSnapshot();
 const stop = vi.fn();
-let receive: (value: WorkspaceTreeSelectionSnapshotDto) => void;
+let receive: (value: WorkspaceTreeSelectionSnapshot) => void;
 function wrapper({ children }: { children: ReactNode }) {
 	return createElement(
 		WorkspaceListContext.Provider,

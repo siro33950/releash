@@ -3,9 +3,7 @@ use super::test_helpers::{TestSessions, TestWorktrees};
 use super::workflow_host_tests::{AcceptingWorktreeResolver, UnusedWorkflowResolver};
 use super::*;
 use crate::adaptor::gateway::local_event_store::{LocalEventStore, LocalEventStoreConfig};
-use crate::adaptor::gateway::workflow::{
-    ExecutionTreeArchiveFactRepository, WorkflowRuntimeCommandGateway,
-};
+use crate::adaptor::gateway::workflow::WorkflowRuntimeCommandGateway;
 use crate::adaptor::gateway::workspace_tree::{
     SqliteWorkspaceQueryService, SqliteWorkspaceTreeRepository,
 };
@@ -379,12 +377,7 @@ async fn test_workflow永続化_本番構成で起動から完了とabortまで�
                 .unwrap();
         let app = test_helpers::dependencies(Some(store.clone()));
         let query = SqliteWorkspaceQueryService::with_repository(
-            Arc::new(crate::adaptor::gateway::failure_records::FailureRecordStore::default()),
             SqliteWorkspaceTreeRepository::new(store.clone()),
-            Arc::new(ExecutionTreeArchiveFactRepository::new(
-                store.clone(),
-                directory.path(),
-            )),
         );
         let host = Arc::new(WorkflowRuntimeHost::with_runtime_ports(
             crate::usecase::retry::shared().clone(),
@@ -585,7 +578,6 @@ async fn test_実行木archive_gcはrepository_rootのない旧実行木も所�
 #[tokio::test]
 async fn test_実行木archive_workflowをabortして停止完了後に隠し起動枠を解放する() {
     use crate::domain::workflow::ExecutionTreeArchiveRepository;
-    use crate::usecase::workspace_tree::WorkspaceQueryService;
     // Given
     let fixture = archive_fixture();
     let id = archive_workflow(&fixture).await;
@@ -612,15 +604,7 @@ async fn test_実行木archive_workflowをabortして停止完了後に隠し起
             .archive_reason,
         "manual"
     );
-    assert!(fixture
-        .query
-        .workspace_tree(&crate::domain::workspace_tree::WorkspaceIdentity::new(
-            "/missing/worktree"
-        ))
-        .await
-        .unwrap()
-        .nodes
-        .is_empty());
+    assert_eq!(fixture.visible_root_count("/missing/worktree").await, 0);
     let facts = crate::adaptor::gateway::workflow::fact_log::read_tree_records(&fixture.store, &id)
         .await
         .unwrap();
@@ -650,7 +634,6 @@ async fn test_実行木archive_workflowをabortして停止完了後に隠し起
 #[tokio::test]
 async fn test_実行木archive_provider_idのない単独sessionも同じ操作を使う() {
     use crate::domain::workflow::{ExecutionTreeArchiveRepository, SessionExecutionTreeRootFacts};
-    use crate::usecase::workspace_tree::WorkspaceQueryService;
     // Given
     let fixture = archive_fixture();
     let id = "agent-session-00000000000040008000000000000012";
@@ -675,17 +658,7 @@ async fn test_実行木archive_provider_idのない単独sessionも同じ操作�
         .lock()
         .unwrap()
         .insert(id.into());
-    let workspace = crate::domain::workspace_tree::WorkspaceIdentity::new("/missing/worktree");
-    assert_eq!(
-        fixture
-            .query
-            .workspace_tree(&workspace)
-            .await
-            .unwrap()
-            .nodes
-            .len(),
-        1
-    );
+    assert_eq!(fixture.visible_root_count("/missing/worktree").await, 1);
     // When
     fixture
         .runtime
@@ -693,13 +666,7 @@ async fn test_実行木archive_provider_idのない単独sessionも同じ操作�
         .await
         .unwrap();
     // Then
-    assert!(fixture
-        .query
-        .workspace_tree(&workspace)
-        .await
-        .unwrap()
-        .nodes
-        .is_empty());
+    assert_eq!(fixture.visible_root_count("/missing/worktree").await, 0);
     assert!(fixture.sessions.live_sessions.lock().unwrap().is_empty());
     assert_eq!(
         fixture.repository.target(id).await.unwrap().status,
@@ -1400,7 +1367,6 @@ async fn test_worktree削除中_外部変更を拒否して読み取りと内部
         AbortExecutionCommand, ApprovalCommand, ResumeSessionNodeCommand, RetryNodeCommand,
         StartExecutionCommand,
     };
-    use crate::usecase::workspace_tree::WorkspaceQueryService;
     // Given
     let fixture = archive_fixture();
     let id = archive_workflow(&fixture).await;
@@ -1499,15 +1465,7 @@ async fn test_worktree削除中_外部変更を拒否して読み取りと内部
             .unwrap(),
         before
     );
-    assert!(!fixture
-        .query
-        .workspace_tree(&crate::domain::workspace_tree::WorkspaceIdentity::new(
-            "/missing/worktree"
-        ))
-        .await
-        .unwrap()
-        .nodes
-        .is_empty());
+    assert_ne!(fixture.visible_root_count("/missing/worktree").await, 0);
     fixture
         .runtime
         .archive_worktree("/missing/worktree")

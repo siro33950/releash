@@ -291,16 +291,8 @@ impl BranchRepository for PausedBranch {
         BranchGateway.list(repo_path)
     }
 
-    fn default(&self, repo_path: &str) -> Result<String, RepositoryError> {
-        BranchGateway.default(repo_path)
-    }
-
     fn create(&self, repo_path: &str, branch_name: &str) -> Result<(), RepositoryError> {
         BranchGateway.create(repo_path, branch_name)
-    }
-
-    fn delete(&self, repo_path: &str, branch_name: &str) -> Result<(), RepositoryError> {
-        BranchGateway.delete(repo_path, branch_name)
     }
 }
 

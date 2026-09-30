@@ -111,6 +111,52 @@ pub(crate) fn read_tree(
     rows.collect()
 }
 
+/// Read the facts of one tree appended after `seq`, in append order.
+pub(crate) fn read_tree_after(
+    connection: &Connection,
+    tree_id: &str,
+    seq: i64,
+) -> Result<Vec<NodeEventRow>, rusqlite::Error> {
+    let mut statement = connection.prepare(&format!(
+        "SELECT {ROW_COLUMNS} FROM node_events WHERE tree_id = ?1 AND seq > ?2 ORDER BY seq"
+    ))?;
+    let rows = statement.query_map(rusqlite::params![tree_id, seq], row_from_sql)?;
+    rows.collect()
+}
+
+/// Every tree with its latest `seq`. Each tree is reached through the primary
+/// key, so the cost follows the number of trees, not the number of facts.
+pub(crate) fn tree_heads(connection: &Connection) -> Result<Vec<(String, i64)>, rusqlite::Error> {
+    let mut statement = connection.prepare(
+        "WITH RECURSIVE trees(tree_id) AS (
+             SELECT MIN(tree_id) FROM node_events
+             UNION ALL
+             SELECT (SELECT MIN(tree_id) FROM node_events WHERE tree_id > trees.tree_id)
+             FROM trees WHERE trees.tree_id IS NOT NULL
+         )
+         SELECT tree_id, (SELECT MAX(seq) FROM node_events WHERE tree_id = trees.tree_id)
+         FROM trees WHERE tree_id IS NOT NULL",
+    )?;
+    let rows = statement.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
+    rows.collect()
+}
+
+/// First root fact (`parent_id IS NULL`) of the given event type in one tree,
+/// in the same order [`list_tree_roots`] uses.
+pub(crate) fn first_root_row_of_tree(
+    connection: &Connection,
+    tree_id: &str,
+    root_event_type: &str,
+) -> Result<Option<NodeEventRow>, rusqlite::Error> {
+    let mut statement = connection.prepare(&format!(
+        "SELECT {ROW_COLUMNS} FROM node_events
+         WHERE tree_id = ?1 AND event_type = ?2 AND parent_id IS NULL
+         ORDER BY timestamp, seq LIMIT 1"
+    ))?;
+    let mut rows = statement.query_map([tree_id, root_event_type], row_from_sql)?;
+    rows.next().transpose()
+}
+
 pub(crate) fn read_tree_page(
     connection: &Connection,
     tree_id: &str,

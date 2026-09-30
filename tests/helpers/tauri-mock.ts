@@ -5,16 +5,25 @@ import { create, fromJson, toJson, type Message } from "@bufbuild/protobuf";
 import { Code, ConnectError, createConnectRouter } from "@connectrpc/connect";
 import { createFetchHandler } from "@connectrpc/connect/protocol";
 import { ClientService, CommandRequestSchema, CommandErrorSchema, StateSubscriptionEventSchema, StatePayloadSchema, TerminalEventSchema } from "../../src/generated/client_pb";
-import type { BranchCardDto, WorkspaceTreeSnapshotDto, WorkspaceWorkflowHistoryItemDto, WorkspaceListSnapshotDto } from "../../src/generated/client_types";
+import type { ListBranchStatus, WorkspaceTreeSnapshot, WorkspaceWorkflowHistoryItem, WorkspaceListSnapshot } from "../../src/generated/client_types";
 import type { TerminalSurfaceStreamItem } from "../../src/lib/terminalSurfaceStream";
 import type { Page } from "@playwright/test";
+/** ブランチと、その worktree。worktree_path が null のブランチは Workspaces の一覧に出ない。 */
+export interface MockBranch {
+	name: string;
+	is_main_worktree: boolean;
+	is_deleting: boolean;
+	worktree_path: string | null;
+	dirty_count: number;
+	is_merged: boolean;
+}
 export interface MockConfig {
 	/**
 	 * cmd → 返り値のマッピング。関数はシリアライズできないため使用不可。
 	 */
 	responses: Record<string, unknown>;
     states: Record<string, unknown>;
-    workspace: { branches: BranchCardDto[]; tree: WorkspaceTreeSnapshotDto; history: WorkspaceWorkflowHistoryItemDto[] };
+    workspace: { branches: MockBranch[]; tree: WorkspaceTreeSnapshot; history: WorkspaceWorkflowHistoryItem[] };
 }
 
 export function workspaceTreeReconciliation(snapshot: unknown): unknown {
@@ -54,8 +63,8 @@ declare global {
             setMockResponse: (cmd: string, value: unknown) => void;
             readState: (kind: string, args: string[]) => unknown;
             setState: (kind: string, value: unknown) => void;
-            setWorkspaceTree: (value: WorkspaceTreeSnapshotDto) => void;
-            setWorkspaceBranches: (value: BranchCardDto[]) => void;
+            setWorkspaceTree: (value: WorkspaceTreeSnapshot) => void;
+            setWorkspaceBranches: (value: MockBranch[]) => void;
 		};
 		__TAURI_INTERNALS__?: TauriMockInternals;
 		__TAURI_EVENT_PLUGIN_INTERNALS__?: TauriEventPluginInternals;
@@ -296,25 +305,23 @@ export async function setupTauriMock(page: Page, config: MockConfig) {
 
         function updateWorkspaceState() {
             const { branches: cards, tree: snapshot, history: workflowHistory } = cfg.workspace;
-            const worktreeCards = cards.filter(card => card.worktree_path != null);
-            const branches = worktreeCards.map(branch => ({
-                ...branch, has_pr: false, pr_number: null, pr_url: null,
-            }));
-            cfg.states["branch-status"] = {
-                version: 1, stale: false, loading: false, branches: cards,
-                worktree_display_groups: { working_areas: worktreeCards },
-            };
+            const branches = cards.flatMap(({ worktree_path, ...branch }) => worktree_path == null ? [] : [{
+                ...branch, worktree_path, has_pr: false, pr_number: null, pr_url: null,
+            }]);
+            cfg.states["branch-status"] = cards.map(card => ({
+                name: card.name, has_worktree: card.worktree_path != null,
+            })) satisfies ListBranchStatus;
             const repositories = (cfg.states["repository-paths"] as string[]).map(path => ({
                 path, status: { loaded: true, error: null, state: branches.length ? "ready" : "empty" }, branches,
                 worktrees: branches.map(branch => ({
-                    path: branch.worktree_path!,
+                    path: branch.worktree_path,
                     status: { loaded: true, error: null, state: snapshot.nodes.length ? "ready" : "empty" },
                     snapshot, workflowHistory,
                 })),
             }));
             cfg.states.workspaces = {
-                generation: 1, status: { loaded: true, error: null, state: repositories.length ? "ready" : "empty" }, repositories,
-            } satisfies WorkspaceListSnapshotDto;
+                status: { loaded: true, error: null, state: repositories.length ? "ready" : "empty" }, repositories,
+            } satisfies WorkspaceListSnapshot;
         }
         const initialStates = { ...cfg.states };
         updateWorkspaceState();

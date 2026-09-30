@@ -14,11 +14,8 @@ pub use repository::{
     BranchRepository, GitConfigRepository, RepoLocator, RepoPathsRepository, StatusRepository,
     WorktreeRepository,
 };
-pub use value_objects::{normalize_repo_path, worktree_dir, worktree_path};
+pub use value_objects::{normalize_repo_path, worktree_dir, worktree_path, BaseAncestry};
 
 pub(crate) mod file_watcher;
 
 pub(crate) mod worktree_operation;
-
-mod branch_inventory;
-pub use branch_inventory::classify_branch_cards;

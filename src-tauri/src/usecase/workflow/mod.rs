@@ -56,12 +56,9 @@ pub(crate) use workspace_node_command::{
     WorkspaceNodeCommandUsecase, WorkspaceNodeWorkflowCommandExecutor,
 };
 pub(crate) use workspace_tree::{
-    NodeWorktreeDto, WorkspaceCommandNodeContentDto, WorkspaceCommandResultDto, WorkspaceFanoutDto,
+    NodeWorktreeDto, WorkspaceCommandNodeContentDto, WorkspaceCommandResultDto,
     WorkspaceNodeCapabilitiesDto, WorkspaceNodeContentDto, WorkspaceNodeDetailDto,
-    WorkspaceNodeDto, WorkspaceSelectionReconciliationDto, WorkspaceSequenceDto,
-    WorkspaceSessionCapabilitiesDto, WorkspaceSessionNodeContentDto, WorkspaceTreeItemDto,
-    WorkspaceTreeSelectionSnapshotDto, WorkspaceTreeSnapshotDto, WorkspaceWorkflowCapabilitiesDto,
-    WorkspaceWorkflowHistoryItemDto,
+    WorkspaceSessionNodeContentDto,
 };
 
 #[derive(Clone)]
@@ -196,6 +193,16 @@ pub struct WorkflowUsecase {
     execution_archives: std::sync::Arc<dyn ExecutionTreeArchiveRepository>,
     workspace_nodes: std::sync::Arc<dyn crate::domain::workspace_tree::WorkspaceTreeRepository>,
     workspace_query: std::sync::Arc<dyn crate::usecase::workspace_tree::WorkspaceQueryService>,
+    failures: std::sync::Arc<dyn crate::domain::failure::FailureRecordRepository>,
+    /// 一覧に出す worktree ごとの、最後に読めた実行木と直近の失敗。
+    retained_trees: std::sync::Arc<
+        parking_lot::Mutex<
+            std::collections::HashMap<
+                String,
+                crate::usecase::fetched::Fetched<crate::domain::workspace_tree::WorkspaceTree>,
+            >,
+        >,
+    >,
     read: WorkflowReadUsecase,
 }
 
@@ -213,6 +220,7 @@ impl WorkflowUsecase {
         execution_archives: std::sync::Arc<dyn ExecutionTreeArchiveRepository>,
         workspace_nodes: std::sync::Arc<dyn crate::domain::workspace_tree::WorkspaceTreeRepository>,
         workspace_query: std::sync::Arc<dyn crate::usecase::workspace_tree::WorkspaceQueryService>,
+        failures: std::sync::Arc<dyn crate::domain::failure::FailureRecordRepository>,
     ) -> Self {
         let definition_commands = WorkflowDefinitionUsecase::new(definitions, definition_sources);
         let facet_commands = WorkflowFacetUsecase::new(facets.clone());
@@ -234,6 +242,8 @@ impl WorkflowUsecase {
             execution_archives,
             workspace_nodes,
             workspace_query,
+            failures,
+            retained_trees: Default::default(),
             read,
         }
     }
@@ -775,6 +785,20 @@ mod tests {
 
     #[async_trait::async_trait]
     impl crate::domain::workspace_tree::WorkspaceTreeRepository for FakeWorkspaceTreeRepository {
+        async fn load_trees(
+            &self,
+            workspace_identities: &[crate::domain::workspace_tree::WorkspaceIdentity],
+        ) -> Vec<Result<crate::domain::workspace_tree::WorkspaceTree, WorkflowError>> {
+            workspace_identities
+                .iter()
+                .map(|identity| {
+                    Ok(crate::domain::workspace_tree::WorkspaceTree::empty(
+                        identity.as_str(),
+                    ))
+                })
+                .collect()
+        }
+
         async fn load_node(
             &self,
             _workspace_identity: &crate::domain::workspace_tree::WorkspaceIdentity,
@@ -853,6 +877,7 @@ mod tests {
                 Arc::new(NoopArchiveRepository),
                 workspace_nodes.clone(),
                 workspace_query,
+                Arc::new(crate::adaptor::gateway::failure_records::FailureRecordStore::default()),
             );
             Self {
                 usecase,

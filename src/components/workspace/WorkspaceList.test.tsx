@@ -144,7 +144,6 @@ vi.mock("@/hooks/useWorkspaceList", async (importOriginal) => ({
 	...(await importOriginal<typeof import("@/hooks/useWorkspaceList")>()),
 	useWorkspaceList: () => ({
 		snapshot: {
-			generation: 1,
 			status: { loaded: true, error: null, state: "ready" },
 			repositories: ["/repo"].map((path) => ({
 				path,
@@ -296,10 +295,6 @@ function makeBranch(): WorktreeBranch {
 		worktree_path: "/repo/wt",
 		dirty_count: 0,
 		is_merged: false,
-		ahead: 0,
-		behind: 0,
-		has_upstream: false,
-		base_ahead: 0,
 	};
 }
 
@@ -1299,7 +1294,7 @@ describe("WorkspaceList", () => {
 		});
 		await waitFor(() => expect(onSelectWorktree).toHaveBeenCalledTimes(1));
 
-		mocks.worktreeBranches = [{ ...makeBranch(), worktree_path: null }];
+		mocks.worktreeBranches = [];
 		rerender(
 			<WorkspaceList
 				selectedRootPath={null}
@@ -2354,15 +2349,12 @@ it.each(["sequence", "fanout"] as const)(
 it.each([
 	["remove_worktree", "success"],
 	["remove_worktree", "failure"],
-	["delete_branch", "success"],
-	["delete_branch", "failure"],
 ] as const)(
 	"%sは通信状態を表示せず応答の%sを反映する",
 	async (command, outcome) => {
 		const branch = {
 			...makeBranch(),
 			is_merged: true,
-			worktree_path: command === "remove_worktree" ? "/repo/wt" : null,
 		};
 		mocks.worktreeBranches = [branch];
 		let options: unknown;
@@ -2412,9 +2404,7 @@ it.each([
 				([name, args]) =>
 					name === "report_usage_event" && args.name === "worktree_removed",
 			),
-		).toHaveLength(
-			command === "remove_worktree" && outcome === "success" ? 1 : 0,
-		);
+		).toHaveLength(outcome === "success" ? 1 : 0);
 	},
 );
 

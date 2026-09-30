@@ -9,8 +9,8 @@ use std::collections::{BTreeMap, HashSet};
 use sha2::{Digest, Sha256};
 
 use super::value_objects::{
-    WorkspaceIdentity, WorkspaceNodeKind, WorkspaceNodeStatus, WorkspaceStructureFact,
-    WorkspaceTreeError, WorkspaceTreeNode, INTERNAL_SIBLING_ORDER,
+    WorkspaceExecution, WorkspaceIdentity, WorkspaceNodeKind, WorkspaceNodeStatus,
+    WorkspaceStructureFact, WorkspaceTreeError, WorkspaceTreeNode, INTERNAL_SIBLING_ORDER,
 };
 use super::{WorkspaceNodeStatusClassification, WorkspacePublicRoot};
 use crate::domain::workflow::{
@@ -20,13 +20,27 @@ use crate::domain::workflow::{
 
 pub(super) const DEFAULT_WORKFLOW_TITLE: &str = "Workflow";
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct WorkspaceTree {
     workspace_identity: WorkspaceIdentity,
     nodes: Vec<WorkspaceTreeNode>,
+    executions: Vec<WorkspaceExecution>,
 }
 
 impl WorkspaceTree {
+    /// この Workspace に属する実行木ごとの状態を記録する。
+    pub(crate) fn record_executions(&mut self, executions: Vec<WorkspaceExecution>) {
+        self.executions = executions;
+    }
+
+    pub(crate) fn executions(&self) -> &[WorkspaceExecution] {
+        &self.executions
+    }
+
+    pub fn workspace_identity(&self) -> &WorkspaceIdentity {
+        &self.workspace_identity
+    }
+
     pub fn observe_background_failure(&mut self, target: &str, message: &str) {
         for node in &mut self.nodes {
             if node.id == target
@@ -43,6 +57,7 @@ impl WorkspaceTree {
         Self {
             workspace_identity: WorkspaceIdentity::new(workspace_identity.into()),
             nodes: Vec::new(),
+            executions: Vec::new(),
         }
     }
 
@@ -53,6 +68,7 @@ impl WorkspaceTree {
         let mut tree = Self {
             workspace_identity: WorkspaceIdentity::new(workspace_identity.into()),
             nodes,
+            executions: Vec::new(),
         };
         tree.recompute_root_order();
         tree.recompute_retry_histories();

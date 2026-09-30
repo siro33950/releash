@@ -1,11 +1,11 @@
 import { createContext, useCallback, useMemo, useState } from "react";
-import type { WorkspaceListSnapshotDto } from "@/generated/client_types";
+import type { WorkspaceListSnapshot } from "@/generated/client_types";
 import { invokeClient as invoke } from "@/lib/client";
 import { getErrorMessage } from "@/lib/errorMessage";
 import { useStateSubscriptionResult } from "./useStateSubscription";
 
 export interface WorkspaceListModel {
-	snapshot: WorkspaceListSnapshotDto | null;
+	snapshot: WorkspaceListSnapshot | null;
 	requestError: { message: string } | null;
 	refresh: () => Promise<void>;
 }

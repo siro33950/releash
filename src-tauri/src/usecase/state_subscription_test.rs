@@ -211,8 +211,6 @@ impl StateSubscriptionRead for RecordingReads {
         })
     }
 
-    async fn refresh_workspaces(&self, _: Option<StateChangeSource>) {}
-
     fn repositories(&self) -> Vec<String> {
         vec![]
     }
@@ -331,4 +329,127 @@ async fn test_配信完了待機_待機対象以外の対象にも同じ変化�
     );
     assert_eq!(updates.iter().filter(|target| **target == other).count(), 1);
     assert_eq!(reads.calls.load(std::sync::atomic::Ordering::SeqCst), 4);
+}
+
+/// 2 回目の読み取りを `release` まで止め、読み取りと外部の取り直しの回数を数える。
+#[derive(Default)]
+struct GatedReads {
+    reads: std::sync::atomic::AtomicUsize,
+    external: std::sync::atomic::AtomicUsize,
+    blocked: tokio::sync::Notify,
+    release: tokio::sync::Notify,
+}
+
+impl GatedReads {
+    fn reads(&self) -> usize {
+        self.reads.load(std::sync::atomic::Ordering::SeqCst)
+    }
+    fn external(&self) -> usize {
+        self.external.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+#[async_trait::async_trait]
+impl StateSubscriptionRead for GatedReads {
+    async fn read(&self, _: &SubscriptionTarget) -> Result<StateValue, StateReadError> {
+        if self.reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 1 {
+            self.blocked.notify_one();
+            self.release.notified().await;
+        }
+        Ok(StateValue::SessionNode(None))
+    }
+
+    async fn refresh_external(&self, _: &SubscriptionTarget) -> Result<(), StateReadError> {
+        self.external
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(())
+    }
+
+    fn repositories(&self) -> Vec<String> {
+        vec![]
+    }
+}
+
+/// 読み取りを止めている間に `changes` を知らせ、その後の配信が落ち着くまで待つ。
+async fn notify_while_reading(
+    target: SubscriptionTarget,
+    first: StateChangeSource,
+    changes: Vec<StateChangeSource>,
+) -> (Arc<GatedReads>, Arc<RecordingOutput>) {
+    let output = Arc::new(RecordingOutput::default());
+    let reads = Arc::new(GatedReads::default());
+    let usecase = StateSubscriptionUsecase::new_with_output(output.clone(), Arc::new(PendingTimer))
+        .with_reads(reads.clone(), None, vec![], String::new());
+    usecase.open_client("client".into()).unwrap();
+    usecase.start_read("client", &target).await.unwrap();
+    usecase.notify(first);
+    tokio::time::timeout(std::time::Duration::from_secs(2), reads.blocked.notified())
+        .await
+        .unwrap();
+    for change in changes {
+        usecase.notify(change);
+    }
+    reads.release.notify_one();
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        while output.updates.lock().len() < 2 {
+            output.updated.notified().await;
+        }
+    })
+    .await
+    .unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    (reads, output)
+}
+
+#[tokio::test]
+async fn test_購読手順_読み取り中に溜まった知らせを一回の読み取りにまとめる() {
+    // Given / When: 読み取りの間に同じ対象の変化が 5 回届く
+    let target = SubscriptionTarget::Workspaces;
+    let (reads, output) = notify_while_reading(
+        target.clone(),
+        StateChangeSource::Worktree("/repo".into()),
+        vec![StateChangeSource::Worktree("/repo".into()); 5],
+    )
+    .await;
+
+    // Then: 初回・止めていた読み取り・まとめた 1 回だけ読み、外部の情報は取り直さない
+    assert_eq!(reads.reads(), 3);
+    assert_eq!(*output.updates.lock(), vec![target.clone(), target]);
+    assert_eq!(reads.external(), 1);
+}
+
+#[tokio::test]
+async fn test_購読手順_知らせを取りこぼしても読み直すだけで外部の情報は取り直さない() {
+    // Given / When: 読み取りの間に、知らせの保持数を超える変化が届く
+    let target = SubscriptionTarget::Workspaces;
+    let (reads, output) = notify_while_reading(
+        target.clone(),
+        StateChangeSource::Worktree("/repo".into()),
+        vec![StateChangeSource::Worktree("/repo".into()); 200],
+    )
+    .await;
+
+    // Then
+    assert_eq!(reads.reads(), 3);
+    assert_eq!(output.updates.lock().len(), 2);
+    assert_eq!(reads.external(), 1);
+}
+
+#[tokio::test]
+async fn test_購読手順_repositoryの増減がまとめた知らせにあれば外部の情報を取り直す() {
+    // Given / When: 読み取りの間に、Repository の増減とほかの変化が届く
+    let (reads, output) = notify_while_reading(
+        SubscriptionTarget::Workspaces,
+        StateChangeSource::Worktree("/repo".into()),
+        vec![
+            StateChangeSource::Repositories,
+            StateChangeSource::Worktree("/repo".into()),
+        ],
+    )
+    .await;
+
+    // Then: 開始時の 1 回に加えて、もう 1 回だけ取り直す
+    assert_eq!(reads.reads(), 3);
+    assert_eq!(output.updates.lock().len(), 2);
+    assert_eq!(reads.external(), 2);
 }

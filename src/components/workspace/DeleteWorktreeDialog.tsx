@@ -34,7 +34,7 @@ export function DeleteWorktreeDialog({
 
 	const handleDelete = useCallback(
 		async (force: boolean) => {
-			if (!branch || (!branch.worktree_path && !branch.is_merged)) return;
+			if (!branch) return;
 			setDeleting(true);
 			deletingRef.current = true;
 			setError(null);
@@ -64,10 +64,8 @@ export function DeleteWorktreeDialog({
 
 	if (!branch) return null;
 
-	const isMergedWithWorktree = branch.is_merged && !!branch.worktree_path;
-
 	const title = branch.is_merged ? "Delete Branch" : "Delete Workspace";
-	const description = isMergedWithWorktree
+	const description = branch.is_merged
 		? `Delete workspace and branch "${branch.name}"?`
 		: `Delete workspace for branch "${branch.name}"?`;
 
@@ -83,11 +81,9 @@ export function DeleteWorktreeDialog({
 					<AlertDialogDescription>{description}</AlertDialogDescription>
 				</AlertDialogHeader>
 				<div className="grid gap-2 text-sm">
-					{branch.worktree_path && (
-						<div className="text-muted-foreground font-mono text-xs truncate">
-							{branch.worktree_path}
-						</div>
-					)}
+					<div className="text-muted-foreground font-mono text-xs truncate">
+						{branch.worktree_path}
+					</div>
 					{hasDirty && (
 						<p className="text-warning">
 							This workspace has {branch.dirty_count} uncommitted change(s).

@@ -212,6 +212,20 @@ impl WorkspaceTreeNode {
     }
 }
 
+/// Workspace に属する 1 本の実行木の状態。木の節ではなく、実行そのものの事実を持つ。
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct WorkspaceExecution {
+    pub(crate) execution_id: String,
+    pub(crate) launched_as: crate::domain::workflow::ExecutionTreeLaunch,
+    pub(crate) worktree_path: String,
+    pub(crate) workflow_name: String,
+    pub(crate) status: ExecutionStatus,
+    pub(crate) updated_at: f64,
+    pub(crate) archive: Option<crate::domain::workflow::ExecutionTreeArchiveRecord>,
+    /// Session として起動した実行木の session。
+    pub(crate) session: Option<crate::domain::agent_session::aggregates::AgentSession>,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum WorkspaceStructureFact {
     WorkflowStarted {

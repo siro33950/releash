@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use crate::domain::code::DiffFileEntry;
+use crate::domain::repository::Worktree;
 use crate::usecase::repository_dto::{FileDiffStatDto, FileStatusDto};
 
 use super::error::RepositoryStateError;
@@ -9,6 +10,7 @@ use super::status_membership::{changed_statuses, staged_statuses};
 
 #[async_trait::async_trait]
 pub trait RepositoryScanner: Send + Sync {
+    /// worktree の変更の状態を読む。
     fn scan(&self, repo_path: &str) -> Result<RepositorySnapshotParts, RepositoryStateError>;
 
     async fn scan_async(
@@ -16,11 +18,11 @@ pub trait RepositoryScanner: Send + Sync {
         repo_path: &str,
     ) -> Result<RepositorySnapshotParts, RepositoryStateError>;
 
-    fn prune_stale_branch_bases(
-        &self,
-        repo_path: &str,
-        existing_branches: &[String],
-    ) -> Result<(), RepositoryStateError>;
+    /// Repository の worktree の並びを読む。
+    fn scan_worktrees(&self, repo_path: &str) -> Result<Vec<Worktree>, RepositoryStateError>;
+
+    /// 現存しないブランチの base 設定を掃除する。
+    fn prune_stale_branch_bases(&self, repo_path: &str) -> Result<(), RepositoryStateError>;
 }
 
 fn stats_by_path(diff_stats: &[FileDiffStatDto]) -> HashMap<&str, &FileDiffStatDto> {

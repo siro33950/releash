@@ -11,10 +11,6 @@ interface WorktreeBranch {
 	worktree_path: string | null;
 	dirty_count: number;
 	is_merged: boolean;
-	ahead: number;
-	behind: number;
-	has_upstream: boolean;
-	base_ahead: number;
 }
 
 // -------------------------------------------------------
@@ -131,7 +127,6 @@ const baseIpcHandler: Record<string, unknown> = {
 	// Worktree作成
 	create_worktree: null,
 	remove_worktree: null,
-	delete_branch: null,
 
 	// AgentSession TUI
 	"providers": ["claude", "codex"],
@@ -223,10 +218,6 @@ export const kanbanBranches: WorktreeBranch[] = [
 		worktree_path: null,
 		dirty_count: 0,
 		is_merged: false,
-		ahead: 0,
-		behind: 0,
-		has_upstream: true,
-		base_ahead: 0,
 	},
 	{
 		name: "feat/wip",
@@ -235,10 +226,6 @@ export const kanbanBranches: WorktreeBranch[] = [
 		worktree_path: "/test/repo-worktrees/feat-wip",
 		dirty_count: 2,
 		is_merged: false,
-		ahead: 0,
-		behind: 0,
-		has_upstream: true,
-		base_ahead: 0,
 	},
 	{
 		name: "feat/review",
@@ -247,10 +234,6 @@ export const kanbanBranches: WorktreeBranch[] = [
 		worktree_path: "/test/repo-worktrees/feat-review",
 		dirty_count: 0,
 		is_merged: false,
-		ahead: 0,
-		behind: 0,
-		has_upstream: true,
-		base_ahead: 0,
 	},
 	{
 		name: "feat/done",
@@ -259,10 +242,6 @@ export const kanbanBranches: WorktreeBranch[] = [
 		worktree_path: null,
 		dirty_count: 0,
 		is_merged: true,
-		ahead: 0,
-		behind: 0,
-		has_upstream: true,
-		base_ahead: 0,
 	},
 ];
 

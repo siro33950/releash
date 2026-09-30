@@ -140,6 +140,8 @@ pub trait FailureRecordRepository: Send + Sync {
         requires_attention: bool,
     ) -> bool;
     fn record_resolved(&self, key: &FailureKey) -> bool;
+    /// 対象に残っている、要対応の失敗の内容。
+    fn attention_messages(&self, target: &str) -> Vec<String>;
 }
 
 impl From<crate::domain::failure::TechnicalFailure> for WorkFailure {

@@ -182,8 +182,8 @@ export async function getClient(): Promise<Client<typeof ClientService>> {
 export type StateValues = {
 	terminal: TerminalSurfaceStreamItem;
 	"repository-paths": string[];
-	workspaces: import("@/generated/client_types").WorkspaceListSnapshotDto;
-	selection: import("@/generated/client_types").WorkspaceTreeSelectionSnapshotDto;
+	workspaces: import("@/generated/client_types").WorkspaceListSnapshot;
+	selection: import("@/generated/client_types").WorkspaceTreeSelectionSnapshot;
 	"node-detail":
 		| import("@/generated/client_types").WorkspaceNodeDetailDto
 		| null;
@@ -195,7 +195,7 @@ export type StateValues = {
 	providers: import("@/generated/client_types").AgentSessionProviderDto[];
 	branches: import("@/generated/client_types").BranchDto[];
 	"branch-base": string | null;
-	"branch-status": import("@/generated/client_types").RepositoryBranchCardsSnapshotDto;
+	"branch-status": import("@/generated/client_types").ListBranchStatus;
 	"current-branch": string;
 	issues: import("@/generated/client_types").IssueInfoDto[];
 	worktrees: import("@/generated/client_types").WorktreeEntryDto[];

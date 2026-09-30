@@ -35,14 +35,6 @@ async fn test_worktree削除_待機中のキャンセルで変更受付を復旧
 
 #[tokio::test]
 async fn test_worktree削除_lease解放中も一覧を読め排他終了で対象を消す() {
-    use crate::usecase::repository_dto::BranchCardDto;
-    use crate::usecase::repository_query_service::{BranchCardQuery, RepositoryQueryService};
-    struct Cards;
-    impl BranchCardQuery for Cards {
-        fn list_branch_cards(&self, _: &str) -> Result<Vec<BranchCardDto>, RepositoryError> {
-            Ok(Vec::new())
-        }
-    }
     struct Locks {
         releasing: Arc<tokio::sync::Notify>,
         released: Arc<Mutex<std::sync::mpsc::Receiver<()>>>,
@@ -85,7 +77,11 @@ async fn test_worktree削除_lease解放中も一覧を読め排他終了で対�
         releasing.clone(),
         Arc::new(Mutex::new(released)),
     ))));
-    let query = RepositoryQueryService::new(Arc::new(Cards), operations.clone());
+    let deleting = |operations: &WorktreeOperations| {
+        let mut paths = Vec::new();
+        operations.for_each_deleting_worktree(|worktree| paths.push(worktree.path.clone()));
+        paths
+    };
     let mut guard = operations
         .delete_many(&["/worktree".into(), "workspace-state:worktree".into()])
         .await
@@ -104,18 +100,13 @@ async fn test_worktree削除_lease解放中も一覧を読め排他終了で対�
             .await
             .unwrap();
         // Then
-        let mut cards = Vec::new();
-        query.include_deleting_worktrees("/repo", &mut cards);
-        assert_eq!(cards.len(), 1);
-        assert!(cards[0].is_deleting);
+        assert_eq!(deleting(&operations), vec!["/worktree"]);
         assert!(operations.mutate("/worktree").is_err());
         assert!(operations.mutate("workspace-state:worktree").is_err());
         release.send(()).unwrap();
     }
     task.await.unwrap();
-    let mut cards = Vec::new();
-    query.include_deleting_worktrees("/repo", &mut cards);
-    assert!(cards.is_empty());
+    assert!(deleting(&operations).is_empty());
     assert!(operations.mutate("/worktree").is_ok());
     assert!(operations.mutate("workspace-state:worktree").is_ok());
 }

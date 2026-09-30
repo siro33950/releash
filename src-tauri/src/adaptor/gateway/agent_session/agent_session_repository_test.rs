@@ -7,7 +7,7 @@ use tempfile::TempDir;
 use super::agent_session_repository::{
     map_commit_batch_error, open_session_title_candidates, OPEN_SESSION_LIFECYCLE_EVENT_TYPES,
 };
-use super::{workspace_session_items, LocalAgentSessionQueryService, LocalAgentSessionRepository};
+use super::{LocalAgentSessionQueryService, LocalAgentSessionRepository};
 use crate::adaptor::gateway::local_event_store::{LocalEventStore, LocalEventStoreConfig};
 use crate::adaptor::gateway::workflow::fact_log;
 use crate::adaptor::gateway::workflow::test_support::{
@@ -1980,44 +1980,6 @@ async fn test_agent_session_repository_workflow起動由来sessionのtree所在�
 }
 
 #[tokio::test]
-async fn test_workspace共通read_modelは同じworkspaceのsessionをid昇順で返す() {
-    let directory = TempDir::new().unwrap();
-    let store = open_store(&directory);
-    let repository = new_repository(&store);
-    for (id, worktree) in [
-        ("agent-session-2", "/repo"),
-        ("agent-session-1", "/repo"),
-        ("agent-session-3", "/other"),
-    ] {
-        repository
-            .create(
-                standalone_session(id, worktree, ProviderKind::Codex),
-                &format!("create-{id}"),
-            )
-            .await
-            .unwrap();
-    }
-    let items = workspace_session_items(
-        &fact_log::FactLogReadBackend::Live(store),
-        &[
-            "agent-session-1".to_string(),
-            "agent-session-2".to_string(),
-            "agent-session-3".to_string(),
-        ],
-        "/repo",
-    )
-    .await
-    .unwrap();
-    assert_eq!(
-        items
-            .iter()
-            .map(|item| item.id.as_str())
-            .collect::<Vec<_>>(),
-        vec!["agent-session-1", "agent-session-2"]
-    );
-}
-
-#[tokio::test]
 async fn test_エージェントセッション読取_idで一件の表示モデルを返す() {
     // Given
     let directory = TempDir::new().unwrap();
@@ -2069,128 +2031,6 @@ async fn test_エージェントセッション読取_idで一件の表示モデ
     assert!(detail.operations.can_archive);
     assert!(!detail.operations.can_restore);
     assert!(!detail.operations.can_delete);
-}
-
-#[tokio::test]
-async fn test_workspace共通read_modelは全lifecycleを返す() {
-    let directory = TempDir::new().unwrap();
-    let store = open_store(&directory);
-    let repository = new_repository(&store);
-    for id in ["open-session", "paused-session", "archived-session"] {
-        let session = standalone_session(id, "/repo", ProviderKind::Claude);
-        let mut saved = repository
-            .create(session, &format!("create-{id}"))
-            .await
-            .unwrap();
-        saved
-            .session_mut()
-            .associate_provider_session(format!("provider-{id}"), None)
-            .unwrap();
-        let mut saved = repository
-            .save(saved, &format!("associate-{id}"))
-            .await
-            .unwrap();
-        match id {
-            "paused-session" => {
-                saved.session_mut().observe_provider_process_exit(Some(0));
-                repository.save(saved, "pause-session").await.unwrap();
-            }
-            "archived-session" => {
-                saved.session_mut().archive().unwrap();
-                repository.save(saved, "archive-session").await.unwrap();
-            }
-            _ => {}
-        }
-    }
-    let items = workspace_session_items(
-        &fact_log::FactLogReadBackend::Live(store),
-        &[
-            "open-session".to_string(),
-            "paused-session".to_string(),
-            "archived-session".to_string(),
-        ],
-        "/repo",
-    )
-    .await
-    .unwrap();
-    assert_eq!(items.len(), 3);
-    let open = items.iter().find(|item| item.id == "open-session").unwrap();
-    assert_eq!(open.lifecycle, AgentSessionLifecycleDto::Open);
-    assert!(open.operations.can_archive);
-    assert!(!open.operations.can_restore);
-    assert!(!open.operations.can_delete);
-    let paused = items
-        .iter()
-        .find(|item| item.id == "paused-session")
-        .unwrap();
-    assert_eq!(paused.lifecycle, AgentSessionLifecycleDto::Paused);
-    assert!(paused.operations.can_archive);
-    assert!(!paused.operations.can_restore);
-    assert!(!paused.operations.can_delete);
-    let archived = items
-        .iter()
-        .find(|item| item.id == "archived-session")
-        .unwrap();
-    assert_eq!(archived.lifecycle, AgentSessionLifecycleDto::Archived);
-    assert!(!archived.operations.can_archive);
-    assert!(archived.operations.can_restore);
-    assert!(archived.operations.can_delete);
-}
-
-#[tokio::test]
-async fn test_agent_session_query_service_workflow木のsessionを一覧に出さない() {
-    let directory = TempDir::new().unwrap();
-    let store = open_store(&directory);
-    let repository = new_repository(&store);
-    repository
-        .create(
-            standalone_session("standalone-session", "/repo", ProviderKind::Claude),
-            "create-standalone",
-        )
-        .await
-        .unwrap();
-    // workflow engine が所有する木（同じ worktree に root を植えた workflow tree）。
-    let workflow_meta = crate::domain::workflow::NodeFactMeta {
-        tree_id: "workflow-1".to_string(),
-        node_execution_id: "workflow-1".to_string(),
-        parent_id: None,
-        node_name: "main".to_string(),
-        kind: NodeKindName::Sequence,
-        attempt: 1,
-    };
-    let workflow_root = NodeFact::Started(crate::domain::workflow::StartedFact {
-        worktree: None,
-        parent: None,
-        root: Some(Box::new(TreeRootFact {
-            repository_root: None,
-            workspace_identity: "/repo".to_string(),
-            worktree_path: "/repo".to_string(),
-            created_from: ExecutionOrigin::DesktopUi,
-            request: "please work".to_string(),
-            workflow_name: "wf".to_string(),
-            definition: Some(crate::domain::workflow::WorkflowDefinition {
-                name: "wf".to_string(),
-                description: String::new(),
-                builtin: false,
-                schemas: Default::default(),
-                nodes: Vec::new(),
-                entry: "main".to_string(),
-            }),
-            launched_as: ExecutionTreeLaunch::Workflow,
-        })),
-    });
-    fact_log::append_single_fact(&store, &workflow_meta, &workflow_root, 1)
-        .await
-        .unwrap();
-    let items = workspace_session_items(
-        &fact_log::FactLogReadBackend::Live(store),
-        &["standalone-session".to_string(), "workflow-1".to_string()],
-        "/repo",
-    )
-    .await
-    .unwrap();
-    assert_eq!(items.len(), 1);
-    assert_eq!(items[0].id, "standalone-session");
 }
 
 #[tokio::test]

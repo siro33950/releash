@@ -2,8 +2,7 @@
 //!
 //! controller / watcher / workflow はこの Usecase だけを入口とする。
 //! 書き込み・複数集約のオーケストレーションに加え、Entity をそのまま返す読み取りも
-//! Repository へ委譲してここから提供する。表示・転送向けの read model（DTO）の生成だけは
-//! 読み取りクエリサービス（協力者）へ委譲する。
+//! Repository へ委譲してここから提供する。
 //! ドメイン抽象（trait）のみに依存し、具体的な外部リソース実装は知らない。
 
 use std::sync::Arc;
@@ -11,13 +10,13 @@ use std::sync::Arc;
 use crate::domain::path::to_canonical_forward_slash;
 use crate::domain::repository::{
     worktree_path as derive_worktree_path, Branch, BranchRepository, GitConfigRepository,
-    RepoLocator, RepositoryError, RepositoryStatusScan, StatusRepository, WorktreeRepository,
-    WorktreeTerminalGateway,
+    RepoLocator, RepositoryError, RepositoryStatusScan, StatusRepository, Worktree,
+    WorktreeRepository, WorktreeTerminalGateway,
 };
 
-use super::repository_dto::{BranchCardDto, WorktreeEntryDto};
+use super::repository_dto::WorktreeEntryDto;
 use super::repository_error::UsecaseError;
-use super::repository_query_service::RepositoryQueryService;
+use super::worktree_operation::WorktreeOperations;
 
 #[async_trait::async_trait]
 pub trait WorktreeExecutionArchiver: Send + Sync {
@@ -43,7 +42,7 @@ pub struct RepositoryUsecase {
     git_config: Arc<dyn GitConfigRepository>,
     locator: Arc<dyn RepoLocator>,
     worktree_terminals: Arc<dyn WorktreeTerminalGateway>,
-    query: RepositoryQueryService,
+    worktree_operations: Arc<WorktreeOperations>,
 }
 
 impl RepositoryUsecase {
@@ -55,8 +54,8 @@ impl RepositoryUsecase {
         self
     }
 
-    pub(crate) fn worktree_operations(&self) -> Arc<super::worktree_operation::WorktreeOperations> {
-        self.query.worktree_operations.clone()
+    pub(crate) fn worktree_operations(&self) -> Arc<WorktreeOperations> {
+        self.worktree_operations.clone()
     }
 
     pub fn new(
@@ -66,7 +65,7 @@ impl RepositoryUsecase {
         git_config: Arc<dyn GitConfigRepository>,
         locator: Arc<dyn RepoLocator>,
         worktree_terminals: Arc<dyn WorktreeTerminalGateway>,
-        query: RepositoryQueryService,
+        worktree_operations: Arc<WorktreeOperations>,
     ) -> Self {
         Self {
             state_publisher: None,
@@ -76,7 +75,7 @@ impl RepositoryUsecase {
             git_config,
             locator,
             worktree_terminals,
-            query,
+            worktree_operations,
         }
     }
 
@@ -104,110 +103,6 @@ impl RepositoryUsecase {
 
     pub fn create_branch(&self, repo_path: &str, branch_name: &str) -> Result<(), UsecaseError> {
         self.branch.create(repo_path, branch_name)?;
-        Ok(())
-    }
-
-    /// ブランチ削除の業務手順。
-    ///
-    /// (1) 既定ブランチ・(2) メインワークツリーでチェックアウト中のブランチは
-    /// 削除を拒否し、(3) 紐づく worktree を先に削除（git の機構的制約による順序）、
-    /// (4) ブランチ本体を削除、(5) releash-base config を後始末する。
-    /// 複数集約（branch / worktree / git_config）をまたぐオーケストレーションは
-    /// usecase の責務であり、gateway は単一集約のプリミティブに分解する。
-    pub async fn delete_branch(
-        &self,
-        archives: &dyn WorktreeExecutionArchiver,
-        repo_path: &str,
-        branch_name: &str,
-        force: bool,
-    ) -> Result<(), UsecaseError> {
-        self.validate_branch_deletion(repo_path, branch_name)?;
-
-        // (3) 紐づく worktree を先に削除（checkout 中ブランチは削除不可のため）。
-        //     先に壊れた linked worktree を prune してリカバリーする（旧実装の
-        //     削除前リカバリーと同順）。削除した worktree の releash-base 後始末は
-        //     ブランチ単位で (5) がまとめて行うため、ここでは戻り値を無視する。
-        let targets = self
-            .worktree
-            .list(repo_path)?
-            .into_iter()
-            .filter(|wt| !wt.is_main && wt.branch == branch_name)
-            .map(|wt| self.worktree.validate_removal(repo_path, &wt.path, force))
-            .collect::<Result<Vec<_>, _>>()?;
-        let mut deletions = Vec::new();
-        for path in &targets {
-            deletions.push(
-                archives
-                    .begin_worktree_deletion(path)
-                    .await
-                    .map_err(UsecaseError::from)?,
-            );
-        }
-        let invalid_paths = self.worktree.invalid_worktree_paths(repo_path)?;
-        for path in &invalid_paths {
-            deletions.push(
-                archives
-                    .begin_worktree_deletion(path)
-                    .await
-                    .map_err(UsecaseError::from)?,
-            );
-        }
-        self.validate_branch_deletion(repo_path, branch_name)?;
-        for path in &targets {
-            self.worktree.validate_removal(repo_path, path, force)?;
-        }
-        for path in &invalid_paths {
-            archives
-                .archive_worktree(path)
-                .await
-                .map_err(UsecaseError::from)?;
-        }
-        for path in &targets {
-            archives
-                .archive_worktree(path)
-                .await
-                .map_err(UsecaseError::from)?;
-        }
-        self.worktree.prune_invalid(repo_path)?;
-        for path in &targets {
-            self.worktree_terminals.kill_by_worktree(path);
-            self.worktree.remove(repo_path, path, force)?;
-        }
-
-        // (4) ブランチ本体を削除。
-        self.branch.delete(repo_path, branch_name)?;
-
-        // (5) releash-base config を後始末する（best-effort）。ブランチ本体削除
-        //     という主目的の成功後に config 掃除が失敗しても全体を失敗にしない
-        //     （旧実装と等価。リトライ時の branch not found 化を防ぐ）。
-        let _ = self
-            .git_config
-            .set_branch_base_override(repo_path, branch_name, None);
-
-        Ok(())
-    }
-
-    fn validate_branch_deletion(
-        &self,
-        repo_path: &str,
-        branch_name: &str,
-    ) -> Result<(), UsecaseError> {
-        // (1) 既定ブランチの削除を拒否（既定が検出できない場合は拒否しない）。
-        if let Ok(default) = self.branch.default(repo_path) {
-            if default == branch_name {
-                return Err(UsecaseError::Rule(
-                    "cannot delete the default branch".to_string(),
-                ));
-            }
-        }
-
-        // (2) メインワークツリーでチェックアウト中のブランチの削除を拒否。
-        if self.branch.current(repo_path)? == branch_name {
-            return Err(UsecaseError::Rule(
-                "cannot delete the branch currently checked out in the main worktree".to_string(),
-            ));
-        }
-
         Ok(())
     }
 
@@ -251,9 +146,95 @@ impl RepositoryUsecase {
                 base_branch,
             });
         }
-        self.query
-            .classify_worktree_entries(&repository_root, &mut entries);
+        entries.retain(|entry| !is_isolated(&repository_root, &entry.path, &entry.branch));
         Ok(entries)
+    }
+
+    /// Workspaces に並べる worktree。隔離 worktree は含めず、main を先頭にブランチ名順で返す。
+    pub fn list_working_worktrees(&self, repo_path: &str) -> Result<Vec<Worktree>, UsecaseError> {
+        let repository_root = self.worktree.main_repo_path(repo_path)?;
+        let mut worktrees = self.worktree.list(repo_path)?;
+        worktrees
+            .retain(|worktree| !is_isolated(&repository_root, &worktree.path, &worktree.branch));
+        worktrees.sort_by(|left, right| {
+            (!left.is_main, &left.branch).cmp(&(!right.is_main, &right.branch))
+        });
+        Ok(worktrees)
+    }
+
+    /// 走査で読めた worktree に、削除を受け付けた worktree を合わせる。
+    /// 削除中は true。git の登録が先に消えた worktree は、削除が終わるまで末尾に残す。
+    pub(crate) fn with_deleting_worktrees(
+        &self,
+        repository_root: &str,
+        worktrees: Vec<Worktree>,
+    ) -> Vec<(Worktree, bool)> {
+        let mut rows = worktrees
+            .into_iter()
+            .map(|worktree| (worktree, false))
+            .collect::<Vec<_>>();
+        self.worktree_operations
+            .for_each_deleting_worktree(|deleting| {
+                if deleting.repository_root != repository_root {
+                    return;
+                }
+                if let Some(row) = rows.iter_mut().find(|(worktree, _)| {
+                    worktree.path == deleting.path
+                        || deleting.branch.as_deref() == Some(worktree.branch.as_str())
+                }) {
+                    row.1 = true;
+                    return;
+                }
+                let branch = deleting
+                    .branch
+                    .clone()
+                    .unwrap_or_else(|| deleting.path.clone());
+                if !is_isolated(repository_root, &deleting.path, &branch) {
+                    rows.push((Worktree::being_deleted(&deleting.path, branch), true));
+                }
+            });
+        rows
+    }
+
+    /// ローカルブランチと、その worktree があるか。隔離 worktree が使うブランチは含めない。
+    /// ブランチに対応しない worktree（detached HEAD など）も worktree ありとして並べる。
+    pub fn list_branches_with_worktree(
+        &self,
+        repo_path: &str,
+    ) -> Result<Vec<(Branch, bool)>, UsecaseError> {
+        let repository_root = self.worktree.main_repo_path(repo_path)?;
+        let (isolated, working): (Vec<_>, Vec<_>) = self
+            .worktree
+            .list(repo_path)?
+            .into_iter()
+            .partition(|worktree| is_isolated(&repository_root, &worktree.path, &worktree.branch));
+        let working = self.with_deleting_worktrees(&repository_root, working);
+        let mut branches = self
+            .branch
+            .list(repo_path)?
+            .into_iter()
+            .filter(|branch| {
+                !branch.is_remote
+                    && !isolated
+                        .iter()
+                        .any(|worktree| worktree.branch == branch.name)
+            })
+            .map(|branch| {
+                let has_worktree = working
+                    .iter()
+                    .any(|(worktree, _)| worktree.branch == branch.name);
+                (branch, has_worktree)
+            })
+            .collect::<Vec<_>>();
+        for (worktree, _) in &working {
+            if !branches
+                .iter()
+                .any(|(branch, _)| branch.name == worktree.branch)
+            {
+                branches.push((Branch::local(&worktree.branch), true));
+            }
+        }
+        Ok(branches)
     }
 
     // ── worktree（書き込み） ──
@@ -350,15 +331,6 @@ impl RepositoryUsecase {
         Ok(())
     }
 
-    pub(crate) fn include_deleting_worktrees(
-        &self,
-        repository_root: &str,
-        cards: &mut Vec<BranchCardDto>,
-    ) {
-        self.query
-            .include_deleting_worktrees(repository_root, cards);
-    }
-
     // ── git_config（読み取り） ──
 
     pub fn get_releash_base(&self, repo_path: &str) -> Result<Option<String>, UsecaseError> {
@@ -414,52 +386,22 @@ impl RepositoryUsecase {
     pub fn get_cwd(&self) -> Result<String, UsecaseError> {
         Ok(self.locator.cwd()?)
     }
-
-    /// ブランチカード read model を副作用なしで取得する。
-    ///
-    /// snapshot scanner は watcher invalidate から実行される read model 更新経路なので、
-    /// config GC のような書き込みを伴う [`list_branches_with_status`] ではなくこちらを使う。
-    #[cfg(test)]
-    pub fn list_branches_with_status_read_only(
-        &self,
-        repo_path: &str,
-    ) -> Result<Vec<BranchCardDto>, UsecaseError> {
-        let repository_root = self.worktree.main_repo_path(repo_path)?;
-        self.query
-            .list_branches_with_status(repo_path, &repository_root)
-    }
-
-    pub fn list_branches_with_status_for_scan(
-        &self,
-        repo_path: &str,
-        current_dirty_count: usize,
-    ) -> Result<Vec<BranchCardDto>, UsecaseError> {
-        let repository_root = self.worktree.main_repo_path(repo_path)?;
-        self.query.list_branches_with_status_for_scan(
-            repo_path,
-            &repository_root,
-            current_dirty_count,
-        )
-    }
 }
 
 #[cfg(test)]
 mod repository_usecase_tests {
     use super::*;
     use crate::domain::repository::{RepositoryError, RepositoryStatusScan, Worktree};
-    use crate::usecase::repository_query_service::BranchCardQuery;
     use parking_lot::Mutex;
 
     /// 委譲・順序・変換を検証するための記録付き手書き fake。
     /// 1 つの構造体で repository ドメインの全 trait を実装する。
     #[derive(Default)]
     struct FakeRepo {
-        default_branch: Option<String>,
         current_branch: String,
         fail_current_branch: bool,
         stop_current_branch: Option<crate::common::operation_context::OperationStopped>,
         worktrees: Vec<Worktree>,
-        invalid_worktrees: Vec<String>,
         dirty: u32,
         stop_dirty: Option<crate::common::operation_context::OperationStopped>,
         stop_base: Option<crate::common::operation_context::OperationStopped>,
@@ -477,19 +419,17 @@ mod repository_usecase_tests {
         archive_continue: Option<tokio::sync::Notify>,
         archived_worktrees: Mutex<Vec<(String, usize)>>,
         created_branches: Mutex<Vec<String>>,
-        deleted_branches: Mutex<Vec<String>>,
         removed_worktrees: Mutex<Vec<(String, bool)>>,
         /// `kill_by_worktree` 呼び出し時の (対象 path, その時点の removed 件数)。
         killed_worktree_terminals: Mutex<Vec<(String, usize)>>,
         /// `remove` が返す「削除した worktree のブランチ名」。
         removed_branch: Option<String>,
-        prune_invalid_calls: Mutex<u32>,
         set_branch_base_override_calls: Mutex<Vec<(String, Option<String>)>>,
         set_releash_base_calls: Mutex<Vec<Option<String>>>,
         prune_calls: Mutex<Vec<Vec<String>>>,
         fail_main_repo_path: bool,
         listed_worktree_paths: Mutex<Vec<String>>,
-        branch_card_paths: Mutex<Vec<String>>,
+        branches: Vec<Branch>,
     }
 
     impl FakeRepo {
@@ -541,7 +481,7 @@ mod repository_usecase_tests {
 
     impl BranchRepository for FakeRepo {
         fn list(&self, _repo_path: &str) -> Result<Vec<Branch>, RepositoryError> {
-            Ok(Vec::new())
+            Ok(self.branches.clone())
         }
         fn current(&self, _repo_path: &str) -> Result<String, RepositoryError> {
             if let Some(stopped) = self.stop_current_branch {
@@ -552,17 +492,8 @@ mod repository_usecase_tests {
             }
             Ok(self.current_branch.clone())
         }
-        fn default(&self, _repo_path: &str) -> Result<String, RepositoryError> {
-            self.default_branch
-                .clone()
-                .ok_or_else(|| RepositoryError::rule("no default branch found"))
-        }
         fn create(&self, _repo_path: &str, branch_name: &str) -> Result<(), RepositoryError> {
             self.created_branches.lock().push(branch_name.to_string());
-            Ok(())
-        }
-        fn delete(&self, _repo_path: &str, branch_name: &str) -> Result<(), RepositoryError> {
-            self.deleted_branches.lock().push(branch_name.to_string());
             Ok(())
         }
     }
@@ -616,6 +547,7 @@ mod repository_usecase_tests {
                 branch: branch.to_string(),
                 is_main: false,
                 is_locked: false,
+                is_merged: false,
             })
         }
         fn validate_removal(
@@ -656,13 +588,6 @@ mod repository_usecase_tests {
                 .lock()
                 .push((worktree_path.to_string(), force));
             Ok(self.removed_branch.clone())
-        }
-        fn invalid_worktree_paths(&self, _repo_path: &str) -> Result<Vec<String>, RepositoryError> {
-            Ok(self.invalid_worktrees.clone())
-        }
-        fn prune_invalid(&self, _repo_path: &str) -> Result<(), RepositoryError> {
-            *self.prune_invalid_calls.lock() += 1;
-            Ok(())
         }
     }
 
@@ -747,25 +672,6 @@ mod repository_usecase_tests {
         }
     }
 
-    impl BranchCardQuery for FakeRepo {
-        fn list_branch_cards(
-            &self,
-            repo_path: &str,
-        ) -> Result<Vec<BranchCardDto>, RepositoryError> {
-            self.branch_card_paths.lock().push(repo_path.to_string());
-            Ok(Vec::new())
-        }
-
-        fn list_branch_cards_for_scan(
-            &self,
-            repo_path: &str,
-            _current_dirty_count: usize,
-        ) -> Result<Vec<BranchCardDto>, RepositoryError> {
-            self.branch_card_paths.lock().push(repo_path.to_string());
-            Ok(Vec::new())
-        }
-    }
-
     #[test]
     fn test_worktree一覧_詳細取得の停止を既定値に変えず後続を呼ばない() {
         use crate::common::operation_context::OperationStopped;
@@ -781,7 +687,8 @@ mod repository_usecase_tests {
                             path: "/main".into(),
                             branch: "main".into(),
                             is_main: true,
-                            is_locked: false
+                            is_locked: false,
+                            is_merged: false,
                         };
                         2
                     ],
@@ -806,7 +713,6 @@ mod repository_usecase_tests {
     }
 
     fn usecase(fake: Arc<FakeRepo>) -> RepositoryUsecase {
-        let query = RepositoryQueryService::new(fake.clone(), fake.operations.clone());
         RepositoryUsecase::new(
             fake.clone(),
             fake.clone(),
@@ -814,8 +720,13 @@ mod repository_usecase_tests {
             fake.clone(),
             fake.clone(),
             fake.clone(),
-            query,
+            fake.operations.clone(),
         )
+    }
+
+    /// 走査で 1 件も読めていないときに、削除中として残る worktree。
+    fn deleting_rows(repository: &RepositoryUsecase) -> Vec<(Worktree, bool)> {
+        repository.with_deleting_worktrees("/main", Vec::new())
     }
 
     fn wt(path: &str, branch: &str, is_main: bool) -> Worktree {
@@ -825,6 +736,7 @@ mod repository_usecase_tests {
             branch: branch.to_string(),
             is_main,
             is_locked: false,
+            is_merged: false,
         }
     }
 
@@ -909,12 +821,10 @@ mod repository_usecase_tests {
         let repository = usecase(fake.clone());
 
         repository.list_worktrees("/linked").unwrap();
-        repository
-            .list_branches_with_status_for_scan("/linked", 1)
-            .unwrap();
+        repository.list_working_worktrees("/linked").unwrap();
+        repository.list_branches_with_worktree("/linked").unwrap();
 
-        assert_eq!(*fake.listed_worktree_paths.lock(), vec!["/linked"]);
-        assert_eq!(*fake.branch_card_paths.lock(), vec!["/linked"]);
+        assert_eq!(*fake.listed_worktree_paths.lock(), vec!["/linked"; 3]);
     }
 
     #[test]
@@ -927,15 +837,166 @@ mod repository_usecase_tests {
         let repository = usecase(fake.clone());
 
         assert!(repository.list_worktrees("/linked").is_err());
-        assert!(repository
-            .list_branches_with_status_read_only("/linked")
-            .is_err());
-        assert!(repository
-            .list_branches_with_status_for_scan("/linked", 1)
-            .is_err());
+        assert!(repository.list_working_worktrees("/linked").is_err());
+        assert!(repository.list_branches_with_worktree("/linked").is_err());
 
         assert!(fake.listed_worktree_paths.lock().is_empty());
-        assert!(fake.branch_card_paths.lock().is_empty());
+    }
+
+    #[test]
+    fn test_作業worktree一覧_隔離worktreeを除きmainを先頭にブランチ名順で返す() {
+        // Given
+        let fake = Arc::new(FakeRepo {
+            worktrees: vec![
+                wt("/main-worktrees/feature-b", "feature-b", false),
+                wt(
+                    "/main-worktrees/.releash-isolated/node-a1",
+                    "releash/isolated/node-a1",
+                    false,
+                ),
+                wt("/main", "main", true),
+                wt(
+                    "/main-worktrees/other-a1",
+                    "releash/isolated/other-a1",
+                    false,
+                ),
+                wt("/main-worktrees/feature-a", "feature-a", false),
+            ],
+            ..<FakeRepo as Default>::default()
+        });
+        // When
+        let worktrees = usecase(fake).list_working_worktrees("/main").unwrap();
+        // Then
+        assert_eq!(
+            worktrees
+                .iter()
+                .map(|worktree| worktree.branch.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "main",
+                "feature-a",
+                "feature-b",
+                "releash/isolated/other-a1"
+            ]
+        );
+    }
+
+    #[test]
+    fn test_ブランチ状態_worktreeの有無を付け隔離worktreeのブランチを含めない() {
+        // Given
+        let fake = Arc::new(FakeRepo {
+            branches: vec![
+                Branch::local("feature"),
+                Branch::local("main"),
+                Branch::local("releash/isolated/retained-a1"),
+                Branch::local("releash/isolated/hidden-a1"),
+                Branch::remote("origin/main"),
+            ],
+            worktrees: vec![
+                wt("/main", "main", true),
+                wt(
+                    "/main-worktrees/.releash-isolated/hidden-a1",
+                    "releash/isolated/hidden-a1",
+                    false,
+                ),
+                wt("/main-worktrees/detached", "detached-head", false),
+            ],
+            ..<FakeRepo as Default>::default()
+        });
+        // When
+        let branches = usecase(fake).list_branches_with_worktree("/main").unwrap();
+        // Then
+        assert_eq!(
+            branches,
+            vec![
+                (Branch::local("feature"), false),
+                (Branch::local("main"), true),
+                (Branch::local("releash/isolated/retained-a1"), false),
+                (Branch::local("detached-head"), true),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_削除中worktree_管理情報が消えても対象だけ残しguard終了で消す() {
+        // Given
+        let fake = Arc::new(<FakeRepo as Default>::default());
+        let repository = usecase(fake.clone());
+        let mut deletion = fake
+            .operations
+            .delete("/main-worktrees/feature")
+            .await
+            .unwrap();
+        deletion
+            .accept(
+                crate::domain::repository::worktree_operation::WorktreeDeletionTarget {
+                    repository_root: "/main".into(),
+                    path: "/main-worktrees/feature".into(),
+                    branch: Some("feature".into()),
+                },
+            )
+            .unwrap();
+        for path in [
+            Some("/main-worktrees/feature"),
+            Some("/alias/feature"),
+            None,
+        ] {
+            let scanned = std::iter::once(wt("/main", "main", true))
+                .chain(path.map(|path| wt(path, "feature", false)))
+                .collect();
+            // When
+            let rows = repository.with_deleting_worktrees("/main", scanned);
+            // Then
+            assert_eq!(rows.len(), 2);
+            assert!(!rows[0].1);
+            assert!(rows[1].1);
+            assert_eq!(rows[1].0.branch, "feature");
+            assert_eq!(rows[1].0.path, path.unwrap_or("/main-worktrees/feature"));
+        }
+        drop(deletion);
+        let rows = repository.with_deleting_worktrees("/main", vec![wt("/main", "main", true)]);
+        assert_eq!(rows.len(), 1);
+        assert!(!rows[0].1);
+        assert!(fake.operations.mutate("/main-worktrees/feature").is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_削除中worktree_ブランチ名が不明でもパスごとに対象を残す() {
+        // Given
+        let fake = Arc::new(<FakeRepo as Default>::default());
+        let repository = usecase(fake.clone());
+        let mut deletions = Vec::new();
+        for path in ["/main-worktrees/one", "/main-worktrees/two"] {
+            let mut deletion = fake.operations.delete(path).await.unwrap();
+            deletion
+                .accept(
+                    crate::domain::repository::worktree_operation::WorktreeDeletionTarget {
+                        repository_root: "/main".into(),
+                        path: path.into(),
+                        branch: None,
+                    },
+                )
+                .unwrap();
+            deletions.push(deletion);
+        }
+        // When
+        let rows = repository.with_deleting_worktrees(
+            "/main",
+            vec![
+                wt("/main-worktrees/other", "unknown", false),
+                wt("/main-worktrees/one", "feature", false),
+            ],
+        );
+        // Then
+        assert_eq!(rows.len(), 3);
+        assert!(!rows[0].1);
+        assert_eq!(rows[1].0.branch, "feature");
+        assert!(rows[1].1);
+        assert_eq!(rows[2].0.branch, "/main-worktrees/two");
+        assert_eq!(rows[2].0.path, "/main-worktrees/two");
+        assert!(rows[2].1);
+        drop(deletions);
+        assert!(deleting_rows(&repository).is_empty());
     }
 
     #[test]
@@ -991,94 +1052,6 @@ mod repository_usecase_tests {
             .create_worktree("/r", "feat", true, None)
             .unwrap_err();
         assert_eq!(err.to_string(), "boom");
-    }
-
-    #[tokio::test]
-    async fn test_ブランチ削除_既定ブランチ拒否() {
-        let fake = Arc::new(FakeRepo {
-            default_branch: Some("main".to_string()),
-            ..<FakeRepo as Default>::default()
-        });
-        let err = usecase(fake.clone())
-            .delete_branch(fake.as_ref(), "/r", "main", false)
-            .await
-            .unwrap_err();
-        assert!(matches!(err, UsecaseError::Rule(_)));
-        assert!(err.to_string().contains("default branch"));
-        assert!(fake.deleted_branches.lock().is_empty());
-    }
-
-    #[tokio::test]
-    async fn test_ブランチ削除_チェックアウト中拒否() {
-        let fake = Arc::new(FakeRepo {
-            default_branch: Some("main".to_string()),
-            current_branch: "feat".to_string(),
-            ..<FakeRepo as Default>::default()
-        });
-        let err = usecase(fake.clone())
-            .delete_branch(fake.as_ref(), "/r", "feat", false)
-            .await
-            .unwrap_err();
-        assert!(err.to_string().contains("currently checked out"));
-        assert!(fake.deleted_branches.lock().is_empty());
-    }
-
-    #[tokio::test]
-    async fn test_ブランチ削除_既定未検出でも削除可() {
-        // default() が Err（既定未検出）でも拒否せず削除する
-        let fake = Arc::new(FakeRepo {
-            current_branch: "main".to_string(),
-            ..<FakeRepo as Default>::default()
-        });
-        usecase(fake.clone())
-            .delete_branch(fake.as_ref(), "/r", "feat", false)
-            .await
-            .unwrap();
-        assert_eq!(*fake.deleted_branches.lock(), vec!["feat".to_string()]);
-    }
-
-    #[tokio::test]
-    async fn test_ブランチ削除_紐づくworktreeを先に削除し後始末する() {
-        let fake = Arc::new(FakeRepo {
-            default_branch: Some("main".to_string()),
-            current_branch: "main".to_string(),
-            worktrees: vec![wt("/main", "main", true), wt("/wt-feat", "feat", false)],
-            ..<FakeRepo as Default>::default()
-        });
-        usecase(fake.clone())
-            .delete_branch(fake.as_ref(), "/r", "feat", true)
-            .await
-            .unwrap();
-        // 削除前に壊れた worktree の prune（リカバリー）を実行する
-        assert_eq!(*fake.prune_invalid_calls.lock(), 1);
-        // 紐づく非メイン worktree を force 伝播で削除
-        assert_eq!(
-            *fake.removed_worktrees.lock(),
-            vec![("/wt-feat".to_string(), true)]
-        );
-        // ブランチ本体を削除
-        assert_eq!(*fake.deleted_branches.lock(), vec!["feat".to_string()]);
-        // releash-base を後始末（None で削除）
-        assert_eq!(
-            *fake.set_branch_base_override_calls.lock(),
-            vec![("feat".to_string(), None)]
-        );
-    }
-
-    #[tokio::test]
-    async fn test_ブランチ削除_invalid_worktreeもarchive失敗ならpruneしない() {
-        let fake = Arc::new(FakeRepo {
-            current_branch: "main".into(),
-            invalid_worktrees: vec!["/gone".into()],
-            fail_archive: true,
-            ..Default::default()
-        });
-        assert!(usecase(fake.clone())
-            .delete_branch(fake.as_ref(), "/r", "feat", false)
-            .await
-            .is_err());
-        assert_eq!(*fake.prune_invalid_calls.lock(), 0);
-        assert!(fake.deleted_branches.lock().is_empty());
     }
 
     #[test]
@@ -1162,14 +1135,6 @@ mod repository_usecase_tests {
         assert!(fake.set_branch_base_override_calls.lock().is_empty());
     }
 
-    #[test]
-    fn test_read_onlyブランチカード一覧取得ではgcしない() {
-        let fake = Arc::new(<FakeRepo as Default>::default());
-        usecase(fake.clone())
-            .list_branches_with_status_read_only("/r")
-            .unwrap();
-        assert!(fake.prune_calls.lock().is_empty());
-    }
     #[tokio::test]
     async fn test_worktree削除_archive失敗ではterminalとフォルダを削除しない() {
         // Given
@@ -1230,61 +1195,6 @@ mod repository_usecase_tests {
     }
 
     #[tokio::test]
-    async fn test_linked_worktreeブランチ削除_archiveがremoveに先行し失敗時はどちらも削除しない() {
-        for fail_archive in [false, true] {
-            // Given
-            let fake = Arc::new(FakeRepo {
-                current_branch: "main".into(),
-                worktrees: vec![wt("/wt", "feature", false)],
-                fail_archive,
-                ..Default::default()
-            });
-            // When
-            let result = usecase(fake.clone())
-                .delete_branch(fake.as_ref(), "/repo", "feature", false)
-                .await;
-            // Then
-            assert_eq!(*fake.archived_worktrees.lock(), vec![("/wt".into(), 0)]);
-            assert_eq!(result.is_err(), fail_archive);
-            assert_eq!(
-                fake.removed_worktrees.lock().len(),
-                usize::from(!fail_archive)
-            );
-            assert_eq!(
-                fake.deleted_branches.lock().len(),
-                usize::from(!fail_archive)
-            );
-            assert_eq!(*fake.prune_invalid_calls.lock(), u32::from(!fail_archive));
-        }
-    }
-
-    #[tokio::test]
-    async fn test_linked_worktreeブランチ削除_dirtyとlockedでは付随pruneもarchiveもしない() {
-        for (locked, dirty) in [(true, 0), (false, 1)] {
-            // Given
-            let mut worktree = wt("/wt", "feature", false);
-            worktree.is_locked = locked;
-            let fake = Arc::new(FakeRepo {
-                current_branch: "main".into(),
-                worktrees: vec![worktree],
-                invalid_worktrees: vec!["/invalid".into()],
-                dirty,
-                ..Default::default()
-            });
-            // When
-            assert!(usecase(fake.clone())
-                .delete_branch(fake.as_ref(), "/repo", "feature", false)
-                .await
-                .is_err());
-            // Then
-            assert!(fake.archived_worktrees.lock().is_empty());
-            assert_eq!(*fake.prune_invalid_calls.lock(), 0);
-            assert!(fake.removed_worktrees.lock().is_empty());
-            assert!(fake.deleted_branches.lock().is_empty());
-        }
-    }
-
-    #[tokio::test]
     async fn test_worktree削除_実gitの拒否条件では実行木を変更しない() {
         use crate::adaptor::gateway::repository::worktree::WorktreeGateway;
         use crate::test_support::git::{create_initial_commit, create_test_repo};
@@ -1339,169 +1249,55 @@ mod repository_usecase_tests {
         use crate::adaptor::gateway::repository::worktree::WorktreeGateway;
         use crate::test_support::git::{create_initial_commit, create_test_repo};
 
-        for delete_branch in [false, true] {
-            for condition in ["dirty", "locked", "unregistered", "valid", "force-dirty"] {
-                // Given
-                let (repo_dir, repo) = create_test_repo();
-                create_initial_commit(&repo);
-                let worktrees = tempfile::tempdir().unwrap();
-                let path = worktrees.path().canonicalize().unwrap().join("feature");
-                let worktree = repo.worktree("feature", &path, None).unwrap();
-                let root = repo_dir.path().to_str().unwrap();
-                let path_str = path.to_str().unwrap();
-                let fake = Arc::new(FakeRepo {
-                    current_branch: "main".into(),
-                    ..Default::default()
-                });
-                let mut repository = usecase(fake.clone());
-                repository.worktree = Arc::new(WorktreeGateway);
-                let mutation = fake.operations.mutate(path_str).unwrap();
-                let force = condition == "force-dirty";
-                let deletion = async {
-                    if delete_branch {
-                        repository
-                            .delete_branch(fake.as_ref(), root, "feature", force)
-                            .await
-                    } else {
-                        repository
-                            .remove_worktree(fake.as_ref(), root, path_str, force)
-                            .await
-                    }
-                };
-                tokio::pin!(deletion);
+        for condition in ["dirty", "locked", "unregistered", "valid", "force-dirty"] {
+            // Given
+            let (repo_dir, repo) = create_test_repo();
+            create_initial_commit(&repo);
+            let worktrees = tempfile::tempdir().unwrap();
+            let path = worktrees.path().canonicalize().unwrap().join("feature");
+            let worktree = repo.worktree("feature", &path, None).unwrap();
+            let root = repo_dir.path().to_str().unwrap();
+            let path_str = path.to_str().unwrap();
+            let fake = Arc::new(FakeRepo {
+                current_branch: "main".into(),
+                ..Default::default()
+            });
+            let mut repository = usecase(fake.clone());
+            repository.worktree = Arc::new(WorktreeGateway);
+            let mutation = fake.operations.mutate(path_str).unwrap();
+            let force = condition == "force-dirty";
+            let deletion = repository.remove_worktree(fake.as_ref(), root, path_str, force);
+            tokio::pin!(deletion);
 
-                // When
-                assert!(futures_util::poll!(&mut deletion).is_pending());
-                assert!(fake.archived_worktrees.lock().is_empty());
-                assert!(fake.operations.mutate(path_str).is_err());
-                match condition {
-                    "dirty" | "force-dirty" => {
-                        std::fs::write(path.join("dirty"), "change").unwrap();
-                    }
-                    "locked" => worktree.lock(None).unwrap(),
-                    "unregistered" => {
-                        std::fs::remove_dir_all(repo.path().join("worktrees/feature")).unwrap();
-                    }
-                    _ => {}
+            // When
+            assert!(futures_util::poll!(&mut deletion).is_pending());
+            assert!(fake.archived_worktrees.lock().is_empty());
+            assert!(fake.operations.mutate(path_str).is_err());
+            match condition {
+                "dirty" | "force-dirty" => {
+                    std::fs::write(path.join("dirty"), "change").unwrap();
                 }
-                drop(mutation);
-                let result = deletion.await;
-                fake.wait_for_deletion(path_str).await;
-
-                // Then
-                let accepted = matches!(condition, "valid" | "force-dirty");
-                assert_eq!(result.is_ok(), accepted, "{delete_branch}: {condition}");
-                assert_eq!(fake.archived_worktrees.lock().len(), usize::from(accepted));
-                assert_eq!(
-                    fake.killed_worktree_terminals.lock().len(),
-                    usize::from(accepted)
-                );
-                assert_eq!(
-                    fake.deleted_branches.lock().len(),
-                    usize::from(delete_branch && accepted)
-                );
-                assert_eq!(path.exists(), !accepted);
-                assert!(fake.operations.mutate(path_str).is_ok());
+                "locked" => worktree.lock(None).unwrap(),
+                "unregistered" => {
+                    std::fs::remove_dir_all(repo.path().join("worktrees/feature")).unwrap();
+                }
+                _ => {}
             }
+            drop(mutation);
+            let result = deletion.await;
+            fake.wait_for_deletion(path_str).await;
+
+            // Then
+            let accepted = matches!(condition, "valid" | "force-dirty");
+            assert_eq!(result.is_ok(), accepted, "{condition}");
+            assert_eq!(fake.archived_worktrees.lock().len(), usize::from(accepted));
+            assert_eq!(
+                fake.killed_worktree_terminals.lock().len(),
+                usize::from(accepted)
+            );
+            assert_eq!(path.exists(), !accepted);
+            assert!(fake.operations.mutate(path_str).is_ok());
         }
-    }
-
-    #[tokio::test]
-    async fn test_ブランチ削除_prune対象の待機中にdirtyになった場合もarchiveしない() {
-        use crate::adaptor::gateway::repository::worktree::WorktreeGateway;
-        use crate::test_support::git::{create_initial_commit, create_test_repo};
-
-        // Given
-        let (repo_dir, repo) = create_test_repo();
-        create_initial_commit(&repo);
-        let worktrees = tempfile::tempdir().unwrap();
-        let path = worktrees.path().canonicalize().unwrap().join("feature");
-        repo.worktree("feature", &path, None).unwrap();
-        let invalid_path = worktrees.path().canonicalize().unwrap().join("invalid");
-        repo.worktree("invalid", &invalid_path, None).unwrap();
-        std::fs::remove_dir_all(&invalid_path).unwrap();
-        let fake = Arc::new(FakeRepo {
-            current_branch: "main".into(),
-            ..Default::default()
-        });
-        let mut repository = usecase(fake.clone());
-        repository.worktree = Arc::new(WorktreeGateway);
-        let mutation = fake
-            .operations
-            .mutate(invalid_path.to_str().unwrap())
-            .unwrap();
-        let deletion = repository.delete_branch(
-            fake.as_ref(),
-            repo_dir.path().to_str().unwrap(),
-            "feature",
-            false,
-        );
-        tokio::pin!(deletion);
-
-        // When
-        assert!(futures_util::poll!(&mut deletion).is_pending());
-        std::fs::write(path.join("dirty"), "change").unwrap();
-        drop(mutation);
-        let result = deletion.await;
-
-        // Then
-        assert!(result.is_err());
-        assert!(fake.archived_worktrees.lock().is_empty());
-        assert!(fake.killed_worktree_terminals.lock().is_empty());
-        assert!(fake.deleted_branches.lock().is_empty());
-        assert!(repo.find_worktree("invalid").is_ok());
-        assert!(path.exists());
-        assert!(fake.operations.mutate(path.to_str().unwrap()).is_ok());
-        assert!(fake
-            .operations
-            .mutate(invalid_path.to_str().unwrap())
-            .is_ok());
-    }
-
-    #[tokio::test]
-    async fn test_ブランチ削除_待機中にmainでcheckoutされたらarchiveしない() {
-        use crate::adaptor::gateway::repository::{
-            branch::BranchGateway, worktree::WorktreeGateway,
-        };
-        use crate::test_support::git::{create_initial_commit, create_test_repo};
-
-        // Given
-        let (repo_dir, repo) = create_test_repo();
-        create_initial_commit(&repo);
-        let worktrees = tempfile::tempdir().unwrap();
-        let path = worktrees.path().canonicalize().unwrap().join("feature");
-        repo.worktree("feature", &path, None).unwrap();
-        let fake = Arc::new(<FakeRepo as Default>::default());
-        let mut repository = usecase(fake.clone());
-        repository.worktree = Arc::new(WorktreeGateway);
-        repository.branch = Arc::new(BranchGateway);
-        let mutation = fake.operations.mutate(path.to_str().unwrap()).unwrap();
-        let deletion = repository.delete_branch(
-            fake.as_ref(),
-            repo_dir.path().to_str().unwrap(),
-            "feature",
-            false,
-        );
-        tokio::pin!(deletion);
-
-        // When
-        assert!(futures_util::poll!(&mut deletion).is_pending());
-        git2::Repository::open(&path)
-            .unwrap()
-            .set_head_detached(repo.head().unwrap().target().unwrap())
-            .unwrap();
-        repo.set_head("refs/heads/feature").unwrap();
-        drop(mutation);
-        let error = deletion.await.unwrap_err();
-
-        // Then
-        assert!(error.to_string().contains("currently checked out"));
-        assert!(fake.archived_worktrees.lock().is_empty());
-        assert!(fake.killed_worktree_terminals.lock().is_empty());
-        assert!(repo.find_worktree("feature").is_ok());
-        assert!(repo.find_branch("feature", git2::BranchType::Local).is_ok());
-        assert!(path.exists());
-        assert!(fake.operations.mutate(path.to_str().unwrap()).is_ok());
     }
 
     #[tokio::test]
@@ -1516,17 +1312,7 @@ mod repository_usecase_tests {
                 remove_continue: Some(Mutex::new(blocked)),
                 ..Default::default()
             });
-            let repository = Arc::new(usecase(fake.clone()));
-            let state = crate::usecase::repository_state::RepositoryStateService::new(
-                Arc::new(crate::adaptor::gateway::repository::state::RepositoryStateRepositoryGateway::new(repository.clone())),
-                Arc::new(crate::adaptor::gateway::repository::scanner::DefaultRepositoryScanner::new(
-                    repository.clone(), Arc::new(crate::adaptor::controller::wiring::build_code_usecase())
-                )),
-                crate::test_support::state_subscription::test_subscriptions(),
-                Arc::new(crate::usecase::repository_state::worktree::NoopRepositoryStateWatcher),
-                Arc::new(crate::usecase::repository_state::runtime::tests_support::TestRepositoryStateWorkerRuntime),
-                Arc::new(crate::usecase::repository_state::runtime::tests_support::IdentityWorktreePathNormalizer),
-            );
+            let repository = usecase(fake.clone());
             // When
             tokio::time::timeout(
                 std::time::Duration::from_secs(5),
@@ -1550,32 +1336,16 @@ mod repository_usecase_tests {
                 .remove_worktree(fake.as_ref(), "/repo", "/wt", false)
                 .await
                 .is_err());
-            let mut cards = Vec::new();
-            repository.include_deleting_worktrees("/main", &mut cards);
-            assert_eq!(cards.len(), 1);
-            assert_eq!(cards[0].name, "feature");
-            assert_eq!(cards[0].worktree_path.as_deref(), Some("/wt"));
-            assert!(cards[0].is_deleting);
-            let snapshot = state.list_branches_with_status_snapshot("/repo").unwrap();
-            assert!(snapshot.branches[0].is_deleting);
-            assert_eq!(snapshot.worktree_display_groups.working_areas.len(), 1);
-            assert!(snapshot.worktree_display_groups.working_areas[0].is_deleting);
-            let wire: crate::adaptor::presenter::client::BranchCardDto =
-                cards.remove(0).try_into().unwrap();
-            assert_eq!(wire.is_deleting, Some(true));
+            let rows = deleting_rows(&repository);
+            assert_eq!(rows.len(), 1);
+            assert_eq!(rows[0].0.branch, "feature");
+            assert_eq!(rows[0].0.path, "/wt");
+            assert!(rows[0].1);
             assert!(fake.removed_worktrees.lock().is_empty());
             assert!(fake.set_branch_base_override_calls.lock().is_empty());
             release.send(()).unwrap();
             fake.wait_for_deletion("/wt").await;
-            let mut cards = Vec::new();
-            repository.include_deleting_worktrees("/main", &mut cards);
-            assert!(cards.is_empty());
-            assert!(state
-                .list_branches_with_status_snapshot("/repo")
-                .unwrap()
-                .worktree_display_groups
-                .working_areas
-                .is_empty());
+            assert!(deleting_rows(&repository).is_empty());
             assert_eq!(fake.removed_worktrees.lock().len(), usize::from(!fail));
             assert_eq!(
                 fake.set_branch_base_override_calls.lock().len(),
@@ -1608,17 +1378,14 @@ mod repository_usecase_tests {
         .unwrap();
         // Then
         assert_eq!(fake.removed_worktrees.lock().len(), 1);
-        let mut cards = Vec::new();
-        repository.include_deleting_worktrees("/main", &mut cards);
-        assert_eq!(cards.len(), 1);
-        assert!(cards[0].is_deleting);
+        let rows = deleting_rows(&repository);
+        assert_eq!(rows.len(), 1);
+        assert!(rows[0].1);
         assert!(fake.operations.mutate("/wt").is_err());
         assert!(repository.get_repository_status_scan("/wt").is_ok());
         release.send(()).unwrap();
         fake.wait_for_deletion("/wt").await;
-        let mut cards = Vec::new();
-        repository.include_deleting_worktrees("/main", &mut cards);
-        assert!(cards.is_empty());
+        assert!(deleting_rows(&repository).is_empty());
     }
 
     #[tokio::test]
@@ -1636,9 +1403,7 @@ mod repository_usecase_tests {
         // Then
         assert!(fake.removed_worktrees.lock().is_empty());
         assert!(fake.killed_worktree_terminals.lock().is_empty());
-        let mut cards = Vec::new();
-        repository.include_deleting_worktrees("/main", &mut cards);
-        assert!(cards.is_empty());
+        assert!(deleting_rows(&repository).is_empty());
         fake.archive_continue.as_ref().unwrap().notify_one();
         removal.await.unwrap();
         fake.wait_for_deletion("/wt").await;
@@ -1672,9 +1437,7 @@ mod repository_usecase_tests {
                 assert!(fake.removed_worktrees.lock().is_empty());
                 assert!(fake.set_branch_base_override_calls.lock().is_empty());
                 assert!(changes.try_recv().is_err());
-                let mut cards = Vec::new();
-                repository.include_deleting_worktrees("/main", &mut cards);
-                assert!(cards.is_empty());
+                assert!(deleting_rows(&repository).is_empty());
                 assert!(fake.operations.mutate("/wt").is_ok());
             }
         }
@@ -1704,18 +1467,15 @@ mod repository_usecase_tests {
             );
             assert!(fake.removed_worktrees.lock().is_empty());
             assert!(fake.operations.mutate("/wt").is_err());
-            let mut cards = Vec::new();
-            repository.include_deleting_worktrees("/main", &mut cards);
-            assert_eq!(cards.len(), 1);
-            assert_eq!(cards[0].name, "/wt");
-            assert_eq!(cards[0].worktree_path.as_deref(), Some("/wt"));
-            assert!(cards[0].is_deleting);
+            let rows = deleting_rows(&repository);
+            assert_eq!(rows.len(), 1);
+            assert_eq!(rows[0].0.branch, "/wt");
+            assert_eq!(rows[0].0.path, "/wt");
+            assert!(rows[0].1);
             release.send(()).unwrap();
             fake.wait_for_deletion("/wt").await;
             assert_eq!(*fake.removed_worktrees.lock(), vec![("/wt".into(), force)]);
-            let mut cards = Vec::new();
-            repository.include_deleting_worktrees("/main", &mut cards);
-            assert!(cards.is_empty());
+            assert!(deleting_rows(&repository).is_empty());
         }
     }
 
@@ -1785,4 +1545,9 @@ mod repository_usecase_tests {
             .is_err());
         assert!(changes.try_recv().is_err());
     }
+}
+
+fn is_isolated(repository_root: &str, worktree_path: &str, branch: &str) -> bool {
+    crate::domain::workflow::WorktreeInventoryEntry::new(repository_root, worktree_path, branch)
+        .matches_isolated_identity_rule()
 }

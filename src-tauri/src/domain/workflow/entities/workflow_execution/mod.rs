@@ -753,6 +753,17 @@ impl ExecutionTree {
         self.archive = archive;
     }
 
+    /// 実行木が archive 済みなら、その記録。
+    pub fn archive_record(&self) -> Option<crate::domain::workflow::ExecutionTreeArchiveRecord> {
+        self.archive.as_ref().map(
+            |archive| crate::domain::workflow::ExecutionTreeArchiveRecord {
+                execution_id: self.id.clone(),
+                archived_at: archive.archived_at,
+                archive_reason: archive.reason.clone(),
+            },
+        )
+    }
+
     pub fn state(&self) -> &RuntimeExecutionState {
         &self.state
     }
