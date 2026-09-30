@@ -64,6 +64,10 @@ pub fn run_daemon(data_dir: Option<std::path::PathBuf>) -> i32 {
         ) {
             eprintln!("{error}");
         }
+        #[cfg(unix)]
+        if let Err(error) = infrastructure::process::fd_limit::raise_open_file_limit() {
+            log::warn!("failed to raise open file limit: {error}");
+        }
         let runtime = tokio::runtime::Runtime::new()?;
         runtime.block_on(async {
             let daemon = adaptor::controller::daemon::compose(
