@@ -35,13 +35,24 @@ pub(crate) async fn run_worker(
                 return;
             }
             let start_generation = state.requested_generation();
-            let scan_result = retrying
-                .restart(
-                    FailureKey::new("repository_scan", state.worktree_path()),
-                    RetryBackoff::ITEM,
-                    |_| state.scan_once(scanner.clone(), runtime.as_ref()),
+            let status = if reason.files {
+                Some(
+                    retrying
+                        .restart(
+                            FailureKey::new("repository_scan", state.worktree_path()),
+                            RetryBackoff::ITEM,
+                            |_| state.scan_once(scanner.clone(), runtime.as_ref()),
+                        )
+                        .await,
                 )
-                .await;
+            } else {
+                None
+            };
+            if reason.refs {
+                state
+                    .scan_worktrees_once(scanner.clone(), runtime.as_ref())
+                    .await;
+            }
             if state.is_shutdown() {
                 return;
             }
@@ -53,7 +64,7 @@ pub(crate) async fn run_worker(
                 }
                 continue;
             }
-            match state.finish_scan(scanner.as_ref(), scan_result, reason) {
+            match state.finish_scan(status, reason) {
                 Some(pending) => {
                     reason = pending;
                     reason.merge(collect_pending_reasons(rx));
@@ -148,6 +159,18 @@ impl RepositoryStateWorkerRuntime for RepositoryScanWorkerRuntime {
         repo_path: String,
     ) -> Result<RepositorySnapshotParts, RepositoryStateError> {
         scanner.scan_async(&repo_path).await
+    }
+
+    async fn scan_worktrees(
+        &self,
+        scanner: Arc<dyn RepositoryScanner>,
+        repo_path: String,
+    ) -> Result<Vec<crate::domain::repository::Worktree>, RepositoryStateError> {
+        crate::common::operation_context::spawn_blocking(move || scanner.scan_worktrees(&repo_path))
+            .await
+            .map_err(|error| {
+                RepositoryStateError::Watcher(format!("worktree scan failed: {error}"))
+            })?
     }
 }
 

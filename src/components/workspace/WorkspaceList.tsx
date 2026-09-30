@@ -42,7 +42,7 @@ import {
 	DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Textarea } from "@/components/ui/textarea";
-import type { WorkspaceRepositoryListDto } from "@/generated/client_types";
+import type { WorkspaceRepositoryList } from "@/generated/client_types";
 import { useStateSubscription } from "@/hooks/useStateSubscription";
 import { useWorkflowConfig } from "@/hooks/useWorkflowConfig";
 import {
@@ -605,7 +605,7 @@ function WorktreeTreeItem({
 	const [workflowStarting, setWorkflowStarting] = useState(false);
 	const notifiedReconciliationSeqRef = useRef<number | null>(null);
 	const preferredSelectionRequestRef = useRef<{
-		worktreePath: string | null;
+		worktreePath: string;
 		requested: boolean;
 	}>({
 		worktreePath: branch.worktree_path,
@@ -630,7 +630,6 @@ function WorktreeTreeItem({
 	const isSelected =
 		branch.worktree_path === selectedRootPath && scopedCenterSelection == null;
 	const actionControlsVisible = worktreeMenuOpen || createMenuOpen;
-	const hasWorktree = branch.worktree_path != null;
 	const canDelete = !branch.is_main_worktree;
 	const {
 		nodes,
@@ -655,7 +654,6 @@ function WorktreeTreeItem({
 	} = useWorkflowConfig(createMenuOpen);
 	const selectCenter = useCallback(
 		(centerSelection: CenterSelection) => {
-			if (!branch.worktree_path) return;
 			onSelectWorktree(
 				branch.worktree_path,
 				branch.name,
@@ -676,7 +674,6 @@ function WorktreeTreeItem({
 			return;
 		}
 		if (preferredSelectionRequestRef.current.requested) return;
-		if (!branch.worktree_path) return;
 		if (branch.worktree_path !== selectedRootPath) return;
 		if (scopedCenterSelection != null || treeLoading || treeError) return;
 		if (!preferredNodeId) return;
@@ -722,7 +719,6 @@ function WorktreeTreeItem({
 
 	const handleSelectNode = useCallback(
 		(node: WorkspaceNode) => {
-			if (!branch.worktree_path) return;
 			selectCenter({
 				kind: "node",
 				worktreePath: branch.worktree_path,
@@ -733,7 +729,6 @@ function WorktreeTreeItem({
 	);
 	const handleRenameNode = useCallback(
 		async (node: WorkspaceNode, name: string) => {
-			if (!branch.worktree_path) return false;
 			setProviderActionError(null);
 			try {
 				await invoke("rename_workspace_session_node", {
@@ -769,8 +764,7 @@ function WorktreeTreeItem({
 					(selectedNodeId ?? target.selectedNodeId) != null &&
 					scopedCenterSelection?.kind === "node" &&
 					scopedCenterSelection.nodeId ===
-						(selectedNodeId ?? target.selectedNodeId) &&
-					branch.worktree_path
+						(selectedNodeId ?? target.selectedNodeId)
 				) {
 					onSelectWorktree(branch.worktree_path, branch.name, repoName);
 				}
@@ -789,7 +783,6 @@ function WorktreeTreeItem({
 	);
 	const handleRestoreAgentSession = useCallback(
 		async (session: AgentSessionItem) => {
-			if (!branch.worktree_path) return;
 			setProviderActionError(null);
 			try {
 				await invoke("restore_agent_session", {
@@ -818,7 +811,7 @@ function WorktreeTreeItem({
 
 	const [historyCount, setHistoryCount] = useState(20);
 	const historyPage = useStateSubscription(
-		worktreeMenuOpen && branch.worktree_path
+		worktreeMenuOpen
 			? {
 					kind: "session-history",
 					args: [branch.worktree_path, String(historyCount)],
@@ -832,7 +825,6 @@ function WorktreeTreeItem({
 
 	const handleResumeProviderHistory = useCallback(
 		async (candidate: AgentSessionHistoryCandidate) => {
-			if (!branch.worktree_path) return;
 			setProviderActionError(null);
 			try {
 				const agentSessionId = await invoke(
@@ -874,7 +866,6 @@ function WorktreeTreeItem({
 
 	const handleRestoreWorkflow = useCallback(
 		async (workflow: WorkspaceWorkflowHistoryItem) => {
-			if (!branch.worktree_path) return;
 			await invoke("restore_workspace_workflow_execution", {
 				worktreePath: branch.worktree_path,
 				executionId: workflow.executionId,
@@ -885,7 +876,6 @@ function WorktreeTreeItem({
 
 	const handleArchiveWorkflow = useCallback(
 		async (workflow: WorkspaceTreeItem, confirmed = false) => {
-			if (!branch.worktree_path) return;
 			if (workflow.workflowCapabilities?.canAbort && !confirmed) {
 				setArchiveConfirmation(workflow);
 				return;
@@ -932,7 +922,7 @@ function WorktreeTreeItem({
 
 	const handleCreateAgentSession = useCallback(
 		async (provider: string) => {
-			if (!branch.worktree_path || providerCreating) return;
+			if (providerCreating) return;
 			const worktreePath = branch.worktree_path;
 			setCreateMenuOpen(false);
 			setProviderCreating(provider);
@@ -1019,7 +1009,7 @@ function WorktreeTreeItem({
 	}, []);
 
 	const handleStartWorkflow = useCallback(async () => {
-		if (!branch.worktree_path || !selectedWorkflowName || workflowStarting) {
+		if (!selectedWorkflowName || workflowStarting) {
 			return;
 		}
 		setWorkflowStarting(true);
@@ -1058,9 +1048,7 @@ function WorktreeTreeItem({
 				className={`group flex h-8 w-full items-center gap-1 rounded-md px-2 text-sm transition-colors ${
 					isSelected
 						? "bg-foreground/10 text-foreground"
-						: hasWorktree
-							? "text-foreground hover:bg-foreground/5"
-							: "text-muted-foreground hover:bg-foreground/5"
+						: "text-foreground hover:bg-foreground/5"
 				}`}
 			>
 				<button
@@ -1267,7 +1255,6 @@ function WorktreeTreeItem({
 									size="icon-xs"
 									variant="ghost"
 									className="absolute top-0 right-0 size-5 shrink-0 text-muted-foreground"
-									disabled={!hasWorktree}
 									onClick={(event) => event.stopPropagation()}
 									aria-label={`Create in ${branch.name}`}
 									title="Create"
@@ -1358,7 +1345,7 @@ function WorktreeTreeItem({
 				</div>
 			</div>
 			{treeError && <ListRefreshError loaded={treeLoaded} error={treeError} />}
-			{expanded && hasWorktree && (
+			{expanded && (
 				<div className="mt-0.5">
 					{treeListState === "loading" && !treeError ? (
 						<div
@@ -1385,8 +1372,7 @@ function WorktreeTreeItem({
 								centerSelection={scopedCenterSelection}
 								onSelectNode={handleSelectNode}
 								onDeleteSession={(node) => {
-									if (!branch.worktree_path || !node.sessionCapabilities)
-										return;
+									if (!node.sessionCapabilities) return;
 									return handleDeleteAgentSession(
 										{
 											id: node.sessionCapabilities.sessionRef,
@@ -1529,7 +1515,7 @@ function RepoTreeSection({
 	onSelectWorktree,
 	onWorkspaceSelectionInvalidated,
 }: {
-	repository: WorkspaceRepositoryListDto;
+	repository: WorkspaceRepositoryList;
 	selectedRootPath: string | null;
 	centerSelection: CenterSelection | null;
 	autoSelectPreferredNode: boolean;
@@ -1546,22 +1532,12 @@ function RepoTreeSection({
 
 	const handleDeleteConfirm = useCallback(
 		async (branch: WorktreeBranch, force: boolean) => {
-			if (branch.worktree_path) {
-				await invoke("remove_worktree", {
-					repoPath,
-					worktreePath: branch.worktree_path,
-					force,
-				});
-				trackEvent("worktree_removed");
-				setDeletingBranch((current) => (current === branch ? null : current));
-				return;
-			} else if (branch.is_merged) {
-				await invoke("delete_branch", {
-					repoPath,
-					branchName: branch.name,
-					force,
-				});
-			}
+			await invoke("remove_worktree", {
+				repoPath,
+				worktreePath: branch.worktree_path,
+				force,
+			});
+			trackEvent("worktree_removed");
 			setDeletingBranch((current) => (current === branch ? null : current));
 		},
 		[repoPath],
@@ -1605,7 +1581,7 @@ function RepoTreeSection({
 				)}
 				{branches.map((branch) => (
 					<WorktreeTreeItem
-						key={branch.worktree_path ?? branch.name}
+						key={branch.worktree_path}
 						branch={branch}
 						repoName={repoName}
 						selectedRootPath={selectedRootPath}

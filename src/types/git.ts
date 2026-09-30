@@ -23,16 +23,12 @@ export interface WorktreeBranch {
 	name: string;
 	is_main_worktree: boolean;
 	is_deleting: boolean;
-	worktree_path: string | null;
+	worktree_path: string;
 	dirty_count: number;
 	is_merged: boolean;
 	has_pr?: boolean;
 	pr_number?: number | null;
 	pr_url?: string | null;
-	ahead: number;
-	behind: number;
-	has_upstream: boolean;
-	base_ahead: number;
 }
 
 interface PrInfo {

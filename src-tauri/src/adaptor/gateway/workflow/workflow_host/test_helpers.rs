@@ -465,13 +465,7 @@ pub(super) fn take_workflow_execution_broadcasts(
 }
 
 pub(super) fn workspace_query(store: Arc<LocalEventStore>) -> Arc<SqliteWorkspaceQueryService> {
-    SqliteWorkspaceQueryService::with_repository(
-        Arc::new(crate::adaptor::gateway::failure_records::FailureRecordStore::default()),
-        SqliteWorkspaceTreeRepository::new(store.clone()),
-        Arc::new(ExecutionTreeArchiveFactRepository::from_backend(
-            workflow_fact_log::FactLogReadBackend::Live(store),
-        )),
-    )
+    SqliteWorkspaceQueryService::with_repository(SqliteWorkspaceTreeRepository::new(store))
 }
 
 pub(super) fn dependencies(store: Option<Arc<LocalEventStore>>) -> WorkflowRuntimeDependencies {
@@ -498,7 +492,23 @@ pub(crate) struct ArchiveFixture {
     pub(crate) runtime: crate::usecase::workflow::WorkflowRuntimeUsecase,
     pub(crate) app: WorkflowRuntimeDependencies,
     pub(crate) sessions: Arc<TestSessions>,
-    pub(crate) query: Arc<SqliteWorkspaceQueryService>,
+    pub(crate) trees: Arc<SqliteWorkspaceTreeRepository>,
+}
+
+impl ArchiveFixture {
+    /// worktree の画面に出る実行木の根の数。
+    pub(crate) async fn visible_root_count(&self, worktree_path: &str) -> usize {
+        use crate::domain::workspace_tree::{WorkspaceIdentity, WorkspaceTreeRepository};
+        self.trees
+            .load_trees(&[WorkspaceIdentity::new(worktree_path)])
+            .await
+            .pop()
+            .unwrap()
+            .unwrap()
+            .visible()
+            .roots()
+            .len()
+    }
 }
 
 pub(crate) fn archive_fixture() -> ArchiveFixture {
@@ -515,18 +525,15 @@ pub(crate) fn archive_fixture_with_resolver(
         store.clone(),
         directory.path(),
     ));
-    let query = SqliteWorkspaceQueryService::with_repository(
-        Arc::new(crate::adaptor::gateway::failure_records::FailureRecordStore::default()),
-        SqliteWorkspaceTreeRepository::new(store.clone()),
-        repository.clone(),
-    );
+    let trees = SqliteWorkspaceTreeRepository::new(store.clone());
+    let query = SqliteWorkspaceQueryService::with_repository(trees.clone());
     let app = test_helpers::dependencies(Some(store.clone()));
     let sessions = Arc::new(TestSessions::default());
     let host = Arc::new(WorkflowRuntimeHost::with_runtime_ports(
         crate::usecase::retry::shared().clone(),
         Arc::new(UnusedWorkflowResolver),
         resolver,
-        query.clone(),
+        query,
         sessions.clone(),
         Arc::new(TestWorktrees::default()),
     ));
@@ -545,7 +552,7 @@ pub(crate) fn archive_fixture_with_resolver(
         runtime,
         app,
         sessions,
-        query,
+        trees,
     }
 }
 

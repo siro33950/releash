@@ -11,15 +11,11 @@
 use super::entities::{Branch, RepositoryStatusScan, Worktree};
 use super::error::RepositoryError;
 
-/// ブランチの参照・作成・削除。
+/// ブランチの参照・作成。
 pub trait BranchRepository: Send + Sync {
     fn list(&self, repo_path: &str) -> Result<Vec<Branch>, RepositoryError>;
     fn current(&self, repo_path: &str) -> Result<String, RepositoryError>;
-    fn default(&self, repo_path: &str) -> Result<String, RepositoryError>;
     fn create(&self, repo_path: &str, branch_name: &str) -> Result<(), RepositoryError>;
-    /// 単一ブランチを削除する純粋プリミティブ。既定/チェックアウト中ブランチの
-    /// 拒否や紐づく worktree の事前削除といった業務手順は usecase が担う。
-    fn delete(&self, repo_path: &str, branch_name: &str) -> Result<(), RepositoryError>;
 }
 
 /// 作業ツリー状態の読み取り。
@@ -56,10 +52,6 @@ pub trait WorktreeRepository: Send + Sync {
         worktree_path: &str,
         force: bool,
     ) -> Result<Option<String>, RepositoryError>;
-    /// 壊れた（`validate()` 失敗）linked worktree を prune する。ブランチ削除
-    /// 前のリカバリー等で用いる。個別エントリの prune 失敗は無視する。
-    fn invalid_worktree_paths(&self, repo_path: &str) -> Result<Vec<String>, RepositoryError>;
-    fn prune_invalid(&self, repo_path: &str) -> Result<(), RepositoryError>;
 }
 
 /// git config 上の releash base（global / per-branch）の読み書き。

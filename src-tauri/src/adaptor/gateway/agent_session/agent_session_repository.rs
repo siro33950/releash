@@ -955,14 +955,7 @@ fn derive_session(
     context: &SessionExecutionContext,
     records: &[NodeFactRecord],
 ) -> Result<VersionedAgentSession, AgentSessionRepositoryError> {
-    let DerivedAgentSessionFields {
-        tree_location,
-        provider,
-        workspace_identity,
-        worktree_path,
-        lifecycle,
-        session_facts: view,
-    } = derive_session_fields(
+    let fields = derive_session_fields(
         records,
         context,
         &location.tree_id,
@@ -970,6 +963,25 @@ fn derive_session(
         session_id,
     )
     .map_err(|_| AgentSessionRepositoryError::Corrupt)?;
+    let session = agent_session_from_fields(session_id, fields)?;
+    let revision = records.last().map(|record| record.seq).unwrap_or(0);
+    let revision = u64::try_from(revision).map_err(|_| AgentSessionRepositoryError::Corrupt)?;
+    Ok(VersionedAgentSession::restored(session, revision))
+}
+
+/// 事実から導出した項目で AgentSession を復元する。
+pub(crate) fn agent_session_from_fields(
+    session_id: &str,
+    fields: DerivedAgentSessionFields,
+) -> Result<AgentSession, AgentSessionRepositoryError> {
+    let DerivedAgentSessionFields {
+        tree_location,
+        provider,
+        workspace_identity,
+        worktree_path,
+        lifecycle,
+        session_facts: view,
+    } = fields;
 
     let mut session = AgentSession::create(
         session_id,
@@ -1007,9 +1019,7 @@ fn derive_session(
             .transpose()
             .map_err(|_| AgentSessionRepositoryError::Corrupt)?,
     );
-    let revision = records.last().map(|record| record.seq).unwrap_or(0);
-    let revision = u64::try_from(revision).map_err(|_| AgentSessionRepositoryError::Corrupt)?;
-    Ok(VersionedAgentSession::restored(session, revision))
+    Ok(session)
 }
 
 fn ownership_storage_key(provider: ProviderKind, provider_session_id: &str) -> String {

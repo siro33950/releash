@@ -5,22 +5,22 @@ use crate::usecase::{
     git_host::IssueInfoDto,
     provider_dto::AgentSessionProviderDto,
     repository_dto::{BranchDto, WorktreeEntryDto},
-    repository_state::snapshot::RepositoryBranchCardsSnapshotDto,
     workflow::{
         diagnostic_dto::DiagnosticReport,
         dto::{FacetSummaryDto, WorkflowDto, WorkflowSummaryDto},
-        WorkspaceNodeDetailDto, WorkspaceTreeSelectionSnapshotDto,
+        WorkspaceNodeDetailDto,
     },
     workspace_state::dto::WorkspaceStateDto,
-    workspace_tree::WorkspaceListSnapshotDto,
+    workspace_tree::WorkspaceList,
 };
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum StateValue {
     Terminal(crate::usecase::terminal_surface::application::TerminalSurfaceStreamItem),
     RepositoryPaths(Vec<String>),
-    Workspaces(WorkspaceListSnapshotDto),
-    Selection(WorkspaceTreeSelectionSnapshotDto),
+    Workspaces(WorkspaceList),
+    /// 実行木と、選択している Node が画面に出す木にあるか。
+    Selection(crate::domain::workspace_tree::WorkspaceTree, bool),
     NodeDetail(Option<WorkspaceNodeDetailDto>),
     AgentSession(Option<AgentSessionItemDto>),
     SessionNode(Option<String>),
@@ -28,7 +28,8 @@ pub(crate) enum StateValue {
     Providers(Vec<AgentSessionProviderDto>),
     Branches(Vec<BranchDto>),
     BranchBase(Option<String>),
-    BranchStatus(RepositoryBranchCardsSnapshotDto),
+    /// ブランチと、その worktree があるか。
+    BranchStatus(Vec<(crate::domain::repository::Branch, bool)>),
     CurrentBranch(String),
     Issues(Vec<IssueInfoDto>),
     Worktrees(Vec<WorktreeEntryDto>),

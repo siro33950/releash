@@ -2,6 +2,7 @@ mod conversions;
 #[cfg(any(test, feature = "desktop"))]
 pub(crate) mod descriptor;
 mod errors;
+mod workspace;
 pub(crate) fn value<T, U: TryFrom<T>>(value: T) -> Result<U, CommandFailure>
 where
     U::Error: std::fmt::Display,

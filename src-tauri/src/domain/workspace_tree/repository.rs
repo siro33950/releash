@@ -1,9 +1,16 @@
-use super::{WorkspaceIdentity, WorkspaceTreeNode};
+use super::{WorkspaceIdentity, WorkspaceTree, WorkspaceTreeNode};
 
 /// Read-only port for restoring a Workspace aggregate from canonical indexed
 /// records. There is intentionally no save/CAS operation.
 #[async_trait::async_trait]
 pub trait WorkspaceTreeRepository: Send + Sync {
+    /// 複数の Workspace の実行木をまとめて読む。結果は指定した順に並ぶ。
+    /// 実行木を持たない Workspace は空の木になる。
+    async fn load_trees(
+        &self,
+        workspace_identities: &[WorkspaceIdentity],
+    ) -> Vec<Result<WorkspaceTree, crate::domain::workflow::WorkflowError>>;
+
     async fn load_node(
         &self,
         workspace_identity: &WorkspaceIdentity,

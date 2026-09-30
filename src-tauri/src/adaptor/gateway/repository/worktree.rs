@@ -1,12 +1,15 @@
 //! worktree 責務の gateway 実装。git2 によるワークツリー操作を封じ込める。
 
 use crate::adaptor::gateway::shared::git_operation;
-use crate::adaptor::gateway::shared::git_operation::get_branch_name_for_repo;
+use crate::adaptor::gateway::shared::git_operation::{
+    detect_default_branch, get_branch_name_for_repo,
+};
+use crate::common::operation_context::OperationStopped;
 use crate::domain::repository::{
-    normalize_repo_path, RepositoryError, Worktree, WorktreeRepository,
+    normalize_repo_path, BaseAncestry, RepositoryError, Worktree, WorktreeRepository,
 };
 use crate::infrastructure::git::client;
-use git2::{BranchType, Repository, StatusOptions, WorktreeAddOptions, WorktreePruneOptions};
+use git2::{BranchType, Oid, Repository, StatusOptions, WorktreeAddOptions, WorktreePruneOptions};
 use std::path::{Path, PathBuf};
 
 pub(crate) fn get_main_repo_path(any_path: &str) -> Result<String, RepositoryError> {
@@ -99,23 +102,9 @@ pub(crate) fn get_worktree_dirty_count(worktree_path: &str) -> Result<u32, Repos
     count_dirty_entries(&repo)
 }
 
-/// パスから worktree を開いて dirty 件数を返す。開けない・取得失敗時は 0。
-/// 一覧・カード集計で使う寛容版。Query 側（`branch_card`）からも参照する。
-pub(super) fn get_dirty_count_for_path(path: &Path) -> Result<u32, RepositoryError> {
-    let Some(repo) = git_operation::optional(git_operation::run(|| Repository::open(path)))? else {
-        return Ok(0);
-    };
-    match count_dirty_entries(&repo) {
-        Ok(count) => Ok(count),
-        Err(error @ RepositoryError::Technical(_)) => Err(error),
-        Err(_) => Ok(0),
-    }
-}
-
 /// repo のリンク済み worktree を `(name, Worktree)` で列挙する。
 /// `worktrees()` の index 走査と `find_worktree` の定型を集約する。
 /// `validate()` / `prune` / パス比較は用途ごとに呼び出し側で行う。
-/// Query 側（`branch_card`）からも参照する。
 pub(super) fn each_worktree<'a>(
     repo: &'a Repository,
     names: &'a git2::string_array::StringArray,
@@ -140,8 +129,7 @@ fn resolve_main_repo_path(repo: &Repository) -> Result<PathBuf, RepositoryError>
 }
 
 /// 壊れた（`validate()` 失敗）linked worktree を working tree ごと prune する。
-/// 個別エントリの prune 失敗は無視する（best-effort）。`create_worktree` の
-/// 事前掃除と `prune_invalid` プリミティブの両方から使う。
+/// 個別エントリの prune 失敗は無視する（best-effort）。`create_worktree` の事前掃除に使う。
 fn prune_invalid_worktrees(repo: &Repository) -> Result<(), RepositoryError> {
     if let Some(wt_names) = git_operation::optional(git_operation::run(|| repo.worktrees()))? {
         for entry in each_worktree(repo, &wt_names) {
@@ -153,12 +141,6 @@ fn prune_invalid_worktrees(repo: &Repository) -> Result<(), RepositoryError> {
             }
         }
     }
-    Ok(())
-}
-
-pub(crate) fn prune_invalid(repo_path: &str) -> Result<(), RepositoryError> {
-    let repo = git_operation::run(|| client::open(repo_path))?;
-    prune_invalid_worktrees(&repo)?;
     Ok(())
 }
 
@@ -187,9 +169,93 @@ pub(crate) fn registered_worktree_paths(
     Ok(entries)
 }
 
+fn is_on_first_parent_line(
+    repo: &Repository,
+    ancestor_oid: Oid,
+    descendant_oid: Oid,
+) -> Result<bool, OperationStopped> {
+    let mut current = descendant_oid;
+    const MAX_DEPTH: usize = 10_000;
+    for _ in 0..MAX_DEPTH {
+        if current == ancestor_oid {
+            return Ok(true);
+        }
+        let Some(commit) =
+            git_operation::optional(git_operation::run(|| repo.find_commit(current)))?
+        else {
+            return Ok(false);
+        };
+        if commit.parent_count() == 0 {
+            return Ok(false);
+        }
+        let Some(parent_id) = git_operation::optional(git_operation::run(|| commit.parent_id(0)))?
+        else {
+            return Ok(false);
+        };
+        current = parent_id;
+    }
+    Ok(false)
+}
+
+/// merge 先の base の先頭を解決する: `releash.base`（設定）→ 既定ブランチ（fallback）。
+fn resolve_base_target_oid(repo: &Repository) -> Result<Option<Oid>, OperationStopped> {
+    let local_tip = |name: &str| -> Result<Option<Oid>, OperationStopped> {
+        Ok(git_operation::optional(git_operation::run(|| {
+            repo.find_branch(name, BranchType::Local)
+        }))?
+        .and_then(|branch| branch.get().target()))
+    };
+    let config = git_operation::optional(git_operation::run(|| repo.config()))?;
+    let base_name = config
+        .map(|config| {
+            git_operation::optional(git_operation::run(|| config.get_string("releash.base")))
+        })
+        .transpose()?
+        .flatten();
+    if let Some(oid) = base_name
+        .map(|name| local_tip(&name))
+        .transpose()?
+        .flatten()
+    {
+        return Ok(Some(oid));
+    }
+    detect_default_branch(repo)?
+        .map(|name| local_tip(&name))
+        .transpose()
+        .map(Option::flatten)
+}
+
+/// ブランチの先頭と base の履歴の関係を読む。判定は domain（`BaseAncestry`）が行う。
+fn base_ancestry(
+    repo: &Repository,
+    branch_name: &str,
+    base_target_oid: Option<Oid>,
+) -> Result<Option<BaseAncestry>, OperationStopped> {
+    let Some(branch_oid) = git_operation::optional(git_operation::run(|| {
+        repo.find_branch(branch_name, BranchType::Local)
+    }))?
+    .and_then(|branch| branch.get().target()) else {
+        return Ok(None);
+    };
+    let Some(target) = base_target_oid else {
+        return Ok(None);
+    };
+    let in_base_history =
+        git_operation::optional(git_operation::run(|| repo.merge_base(branch_oid, target)))?
+            == Some(branch_oid);
+    Ok(Some(BaseAncestry {
+        in_base_history,
+        on_base_first_parent: in_base_history && is_on_first_parent_line(repo, branch_oid, target)?,
+    }))
+}
+
 pub(crate) fn list_worktrees(repo_path: &str) -> Result<Vec<Worktree>, RepositoryError> {
     let repo = git_operation::run(|| client::open(repo_path))?;
     let main_workdir = resolve_main_repo_path(&repo)?;
+    let base_target_oid = resolve_base_target_oid(&repo)?;
+    let is_merged = |branch: &str| -> Result<bool, OperationStopped> {
+        Ok(base_ancestry(&repo, branch, base_target_oid)?.is_some_and(BaseAncestry::is_merged))
+    };
     let mut entries = Vec::new();
 
     let main_branch = get_branch_name_for_repo(&repo)?;
@@ -202,6 +268,7 @@ pub(crate) fn list_worktrees(repo_path: &str) -> Result<Vec<Worktree>, Repositor
     entries.push(Worktree {
         name: main_name,
         path: path_to_worktree_identity(&main_workdir)?,
+        is_merged: is_merged(&main_branch)?,
         branch: main_branch,
         is_main: true,
         is_locked: false,
@@ -226,6 +293,7 @@ pub(crate) fn list_worktrees(repo_path: &str) -> Result<Vec<Worktree>, Repositor
         entries.push(Worktree {
             name: wt_name,
             path: path_to_worktree_identity(wt_path)?,
+            is_merged: is_merged(&branch)?,
             branch,
             is_main: false,
             is_locked,
@@ -290,6 +358,7 @@ pub(crate) fn create_worktree(
         branch: branch.to_string(),
         is_main: false,
         is_locked: false,
+        is_merged: false,
     })
 }
 
@@ -335,6 +404,7 @@ fn removal_target(
         branch: wt_branch.clone().unwrap_or_default(),
         is_main: false,
         is_locked,
+        is_merged: false,
     }
     .authorize_removal(
         force,
@@ -409,21 +479,6 @@ impl WorktreeRepository for WorktreeGateway {
         force: bool,
     ) -> Result<Option<String>, RepositoryError> {
         remove_worktree(repo_path, worktree_path, force)
-    }
-    fn invalid_worktree_paths(&self, repo_path: &str) -> Result<Vec<String>, RepositoryError> {
-        let repo = git_operation::run(|| client::open(repo_path))?;
-        let names = git_operation::run(|| repo.worktrees())?;
-        let mut paths = Vec::new();
-        for entry in each_worktree(&repo, &names) {
-            let (_, worktree) = entry?;
-            if git_operation::optional(git_operation::run(|| worktree.validate()))?.is_none() {
-                paths.push(path_to_normalized_repo_string(worktree.path())?);
-            }
-        }
-        Ok(paths)
-    }
-    fn prune_invalid(&self, repo_path: &str) -> Result<(), RepositoryError> {
-        prune_invalid(repo_path)
     }
 }
 
@@ -654,6 +709,154 @@ mod worktree_gateway_tests {
         let entries = list_worktrees(repo_dir.to_str().unwrap()).unwrap();
         let locked_entry = entries.iter().find(|e| e.name == "wt-lock").unwrap();
         assert!(locked_entry.is_locked);
+    }
+
+    fn checkout(repo: &Repository, reference: &str) {
+        repo.set_head(reference).unwrap();
+        repo.checkout_head(Some(git2::build::CheckoutBuilder::new().force()))
+            .unwrap();
+    }
+
+    fn add_worktree_for_branch(repo: &Repository, parent_dir: &Path, branch_name: &str) {
+        let branch = repo.find_branch(branch_name, BranchType::Local).unwrap();
+        let reference = branch.into_reference();
+        let mut opts = WorktreeAddOptions::new();
+        opts.reference(Some(&reference));
+        let name = format!("wt-{branch_name}");
+        repo.worktree(&name, &parent_dir.join(&name), Some(&opts))
+            .unwrap();
+    }
+
+    fn merge_into_head(repo: &Repository, merged: &git2::Commit<'_>, message: &str) {
+        let head = repo.head().unwrap().peel_to_commit().unwrap();
+        let sig = git2::Signature::now("Test User", "test@example.com").unwrap();
+        let tree_id = repo.index().unwrap().write_tree().unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        repo.commit(Some("HEAD"), &sig, &sig, message, &tree, &[&head, merged])
+            .unwrap();
+    }
+
+    fn merged_of(repo_dir: &Path, branch: &str) -> bool {
+        list_worktrees(repo_dir.to_str().unwrap())
+            .unwrap()
+            .into_iter()
+            .find(|entry| entry.branch == branch)
+            .unwrap()
+            .is_merged
+    }
+
+    #[test]
+    fn test_worktree一覧_baseが進んだだけのブランチは未マージ() {
+        // Given: 固有の commit を持たないブランチの後に base が進む
+        let (parent, repo_dir, repo) = create_test_repo_with_parent();
+        create_initial_commit(&repo);
+        create_worktree_helper(&repo, parent.path(), "wt-behind", "feature-behind");
+        add_and_commit(&repo, "after.txt", "after", "commit after branch");
+
+        // When / Then
+        assert!(!merged_of(&repo_dir, "feature-behind"));
+    }
+
+    #[test]
+    fn test_worktree一覧_baseと同じ先頭のブランチは未マージ() {
+        // Given
+        let (parent, repo_dir, repo) = create_test_repo_with_parent();
+        create_initial_commit(&repo);
+        create_worktree_helper(&repo, parent.path(), "wt-same", "feature-same");
+
+        // When / Then
+        assert!(!merged_of(&repo_dir, "feature-same"));
+        assert!(!list_worktrees(repo_dir.to_str().unwrap()).unwrap()[0].is_merged);
+    }
+
+    #[test]
+    fn test_worktree一覧_固有のcommitを持つブランチは未マージ() {
+        // Given
+        let (parent, repo_dir, repo) = create_test_repo_with_parent();
+        create_initial_commit(&repo);
+        let default_branch = detect_default_branch(&repo).unwrap().unwrap();
+        let head = repo.head().unwrap().peel_to_commit().unwrap();
+        repo.branch("feature-unmerged", &head, false).unwrap();
+        checkout(&repo, "refs/heads/feature-unmerged");
+        add_and_commit(&repo, "feat.txt", "feat", "feature commit");
+        checkout(&repo, &format!("refs/heads/{default_branch}"));
+        add_worktree_for_branch(&repo, parent.path(), "feature-unmerged");
+
+        // When / Then
+        assert!(!merged_of(&repo_dir, "feature-unmerged"));
+    }
+
+    #[test]
+    fn test_worktree一覧_merge_commit経由で取り込まれたブランチはマージ済み() {
+        // Given
+        let (parent, repo_dir, repo) = create_test_repo_with_parent();
+        create_initial_commit(&repo);
+        let default_branch = detect_default_branch(&repo).unwrap().unwrap();
+        let head = repo.head().unwrap().peel_to_commit().unwrap();
+        repo.branch("feature-merged", &head, false).unwrap();
+        checkout(&repo, "refs/heads/feature-merged");
+        add_and_commit(&repo, "feat.txt", "feat", "feature commit");
+        let feature_commit = repo.head().unwrap().peel_to_commit().unwrap();
+        checkout(&repo, &format!("refs/heads/{default_branch}"));
+        add_and_commit(&repo, "main.txt", "main", "main commit");
+        merge_into_head(&repo, &feature_commit, "Merge feature-merged");
+        add_worktree_for_branch(&repo, parent.path(), "feature-merged");
+
+        // When / Then
+        assert!(merged_of(&repo_dir, "feature-merged"));
+    }
+
+    #[test]
+    fn test_worktree一覧_releash_baseが指すブランチへの取り込みでマージ済みを判定する() {
+        // Given: develop へ merge 済みで、既定ブランチへは未 merge のブランチ
+        let (parent, repo_dir, repo) = create_test_repo_with_parent();
+        create_initial_commit(&repo);
+        let default_branch = detect_default_branch(&repo).unwrap().unwrap();
+        let head = repo.head().unwrap().peel_to_commit().unwrap();
+        repo.branch("develop", &head, false).unwrap();
+        checkout(&repo, "refs/heads/develop");
+        add_and_commit(&repo, "dev.txt", "dev", "develop commit");
+        let develop_head = repo.head().unwrap().peel_to_commit().unwrap();
+        repo.branch("feature-x", &develop_head, false).unwrap();
+        checkout(&repo, "refs/heads/feature-x");
+        add_and_commit(&repo, "feat.txt", "feat", "feature commit");
+        let feature_commit = repo.head().unwrap().peel_to_commit().unwrap();
+        checkout(&repo, "refs/heads/develop");
+        add_and_commit(&repo, "dev2.txt", "dev2", "develop commit 2");
+        merge_into_head(&repo, &feature_commit, "Merge feature-x into develop");
+        checkout(&repo, &format!("refs/heads/{default_branch}"));
+        add_worktree_for_branch(&repo, parent.path(), "feature-x");
+
+        // When / Then
+        assert!(!merged_of(&repo_dir, "feature-x"));
+        crate::adaptor::gateway::repository::git_config::set_releash_base(
+            repo_dir.to_str().unwrap(),
+            Some("develop"),
+        )
+        .unwrap();
+        assert!(merged_of(&repo_dir, "feature-x"));
+    }
+
+    #[test]
+    fn test_worktree一覧_detached_headのworktreeはブランチ名を括弧で表し未マージ() {
+        // Given
+        let (parent, repo_dir, repo) = create_test_repo_with_parent();
+        create_initial_commit(&repo);
+        let wt_path = create_worktree_helper(&repo, parent.path(), "wt-rebase", "feat-rebase");
+        let wt_repo = Repository::open(&wt_path).unwrap();
+        let head_commit = wt_repo.head().unwrap().peel_to_commit().unwrap();
+        wt_repo.set_head_detached(head_commit.id()).unwrap();
+
+        // When
+        let entries = list_worktrees(repo_dir.to_str().unwrap()).unwrap();
+
+        // Then
+        let detached = entries
+            .iter()
+            .find(|entry| entry.name == "wt-rebase")
+            .unwrap();
+        assert!(detached.branch.starts_with('('), "{}", detached.branch);
+        assert!(!detached.is_merged);
     }
 
     #[test]

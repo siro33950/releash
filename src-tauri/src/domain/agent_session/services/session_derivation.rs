@@ -41,6 +41,23 @@ pub(crate) fn derive_session_fields(
     node_execution_id: &str,
     session_id: &str,
 ) -> Result<DerivedAgentSessionFields, AgentSessionDerivationError> {
+    session_fields_from_facts(
+        derive_session_facts(records, node_execution_id, session_id),
+        context,
+        tree_id,
+        node_execution_id,
+        session_id,
+    )
+}
+
+/// 導出済みの session 状態から AgentSession の項目を決める。
+pub(crate) fn session_fields_from_facts(
+    session_facts: SessionFactsView,
+    context: &SessionExecutionContext,
+    tree_id: &str,
+    node_execution_id: &str,
+    session_id: &str,
+) -> Result<DerivedAgentSessionFields, AgentSessionDerivationError> {
     let tree_location = AgentSessionTreeLocation::for_agent_session(
         tree_id,
         node_execution_id,
@@ -56,7 +73,6 @@ pub(crate) fn derive_session_fields(
             AgentSessionDerivationError::InvalidTreeLocation
         }
     })?;
-    let session_facts = derive_session_facts(records, node_execution_id, session_id);
     let lifecycle = if session_facts.archived {
         AgentSessionLifecycle::Archived
     } else if session_facts.exited {

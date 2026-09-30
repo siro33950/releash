@@ -98,16 +98,6 @@ impl FailureRecordStore {
         changed
     }
 
-    pub(crate) fn attention_messages(&self, target: &str) -> Vec<String> {
-        self.records
-            .lock()
-            .expect("failure records")
-            .iter()
-            .filter(|record| record.target == target && is_attention(record))
-            .map(|record| record.message.clone())
-            .collect()
-    }
-
     #[cfg(test)]
     pub(crate) fn records(&self, target: &str) -> Vec<FailureRecordObservation> {
         self.records
@@ -136,6 +126,16 @@ impl FailureRecordRepository for FailureRecordStore {
 
     fn record_resolved(&self, key: &FailureKey) -> bool {
         self.resolve_record(key)
+    }
+
+    fn attention_messages(&self, target: &str) -> Vec<String> {
+        self.records
+            .lock()
+            .expect("failure records")
+            .iter()
+            .filter(|record| record.target == target && is_attention(record))
+            .map(|record| record.message.clone())
+            .collect()
     }
 }
 

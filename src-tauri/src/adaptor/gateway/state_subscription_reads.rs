@@ -1,4 +1,4 @@
-use crate::usecase::state_subscription::{StateChangeSource, SubscriptionTarget};
+use crate::usecase::state_subscription::SubscriptionTarget;
 use crate::usecase::state_subscription::{
     StateReadError, StateSubscriptionRead, WorkspaceStateReads,
 };
@@ -14,7 +14,8 @@ impl StateSubscriptionRead for StateSubscriptionReads {
         use SubscriptionTarget as T;
         if matches!(
             target,
-            T::AgentSession(_)
+            T::Workspaces
+                | T::AgentSession(_)
                 | T::SessionHistory(..)
                 | T::Selection(..)
                 | T::NodeDetail(..)
@@ -44,9 +45,6 @@ impl StateSubscriptionRead for StateSubscriptionReads {
         })
         .await
         .map_err(task_error)?
-    }
-    async fn refresh_workspaces(&self, source: Option<StateChangeSource>) {
-        self.0.refresh_workspaces(source).await;
     }
     fn repositories(&self) -> Vec<String> {
         self.0.repositories()

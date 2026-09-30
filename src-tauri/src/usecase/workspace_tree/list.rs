@@ -1,358 +1,221 @@
-use std::collections::HashMap;
 use std::sync::Arc;
 
-use parking_lot::Mutex;
-use serde::Serialize;
-
-use super::list_query_service::WorkspaceListQueryService;
-use crate::domain::git_host::PrStatus;
-use crate::domain::workspace_tree::{
-    WorkspaceListEntry, WorkspaceListFailure, WorkspaceListRefresh, WorkspaceListState,
-};
+use crate::domain::git_host::{PrInfo, PrStatus};
+use crate::domain::repository::Worktree;
+use crate::domain::workspace_tree::WorkspaceTree;
 use crate::usecase::{
-    repository_dto::BranchCardDto,
-    workflow::{WorkspaceTreeSnapshotDto, WorkspaceWorkflowHistoryItemDto},
+    fetched::Fetched, git_host::GitHostUsecase, repo_paths_usecase::RepoPathsUsecase,
+    repository_state::RepositoryStateService, repository_usecase::RepositoryUsecase,
+    workflow::WorkflowUsecase,
 };
 
-#[derive(Clone, Debug, Serialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct WorkspaceListStatusDto {
-    pub loaded: bool,
-    pub state: &'static str,
-    pub error: Option<String>,
+/// Workspaces の購読で配信する値。持ち主から集めた値を、そのまま並べる。
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct WorkspaceList {
+    pub repositories: Vec<WorkspaceListRepository>,
 }
 
-#[derive(Clone, Debug, Serialize, PartialEq)]
-pub(crate) struct WorkspaceBranchDto {
-    #[serde(flatten)]
-    pub branch: BranchCardDto,
-    pub has_pr: bool,
-    pub pr_number: Option<u64>,
-    pub pr_url: Option<String>,
-}
-
-#[derive(Clone, Debug, Serialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct WorkspaceWorktreeListDto {
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct WorkspaceListRepository {
     pub path: String,
-    pub status: WorkspaceListStatusDto,
-    pub snapshot: Option<WorkspaceTreeSnapshotDto>,
-    pub workflow_history: Vec<WorkspaceWorkflowHistoryItemDto>,
+    pub worktrees: Fetched<Vec<WorkspaceListWorktree>>,
 }
 
-#[derive(Clone, Debug, Serialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct WorkspaceRepositoryListDto {
-    pub path: String,
-    pub status: WorkspaceListStatusDto,
-    pub branches: Vec<WorkspaceBranchDto>,
-    pub worktrees: Vec<WorkspaceWorktreeListDto>,
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct WorkspaceListWorktree {
+    pub worktree: Worktree,
+    pub deleting: bool,
+    pub dirty_count: usize,
+    /// PR の状態を合わせた merge 済み。
+    pub merged: bool,
+    pub pull_request: Option<PrInfo>,
+    pub tree: Fetched<WorkspaceTree>,
 }
 
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct WorkspaceListSnapshotDto {
-    pub generation: u64,
-    pub status: WorkspaceListStatusDto,
-    pub repositories: Vec<WorkspaceRepositoryListDto>,
+/// 1 つの Repository について、持ち主から集めた値。
+struct RepositoryValues {
+    path: String,
+    worktrees: Fetched<Vec<WorktreeValues>>,
+    pull_requests: Option<PrStatus>,
 }
 
-impl PartialEq for WorkspaceListSnapshotDto {
-    fn eq(&self, other: &Self) -> bool {
-        self.status == other.status && self.repositories == other.repositories
-    }
+struct WorktreeValues {
+    worktree: Worktree,
+    deleting: bool,
+    dirty_count: usize,
 }
 
-type WorkspaceLists = WorkspaceListRefresh<
-    Vec<BranchCardDto>,
-    (
-        WorkspaceTreeSnapshotDto,
-        Vec<WorkspaceWorkflowHistoryItemDto>,
-    ),
->;
-
-fn status<T>(list: &WorkspaceListEntry<T>, empty: bool) -> WorkspaceListStatusDto {
-    WorkspaceListStatusDto {
-        loaded: list.loaded(),
-        state: match list.state(empty) {
-            WorkspaceListState::Loading => "loading",
-            WorkspaceListState::InitialFailed => "initialFailed",
-            WorkspaceListState::Empty => "empty",
-            WorkspaceListState::Ready => "ready",
-            WorkspaceListState::RefreshFailed => "refreshFailed",
-        },
-        error: list.error().map(str::to_owned),
-    }
-}
-
-fn workspace_branch(branch: &BranchCardDto, prs: Option<&PrStatus>) -> WorkspaceBranchDto {
-    let pr = prs.and_then(|prs| prs.open_prs.get(&branch.name));
-    let mut branch = branch.clone();
-    if let Some(prs) = prs {
-        branch.is_merged = prs.branch_is_merged(&branch.name, branch.is_merged);
-    }
-    WorkspaceBranchDto {
-        has_pr: pr.is_some(),
-        pr_number: pr.map(|pr| pr.number),
-        pr_url: pr.map(|pr| pr.url.clone()),
-        branch,
-    }
-}
-
+/// Workspaces の一覧。値は持たず、読むときに持ち主から集める。
 #[derive(Clone)]
 pub(crate) struct WorkspaceListUsecase {
-    query: Arc<dyn WorkspaceListQueryService>,
-    lists: Arc<Mutex<WorkspaceLists>>,
-    prs: Arc<Mutex<HashMap<String, PrStatus>>>,
-    subscriptions: Option<crate::usecase::state_subscription::StateSubscriptionUsecase>,
-    completed: tokio::sync::watch::Sender<u64>,
+    repositories: Arc<RepoPathsUsecase>,
+    repository: Arc<RepositoryUsecase>,
+    repository_state: Arc<RepositoryStateService>,
+    workflow: Arc<WorkflowUsecase>,
+    git_host: Arc<GitHostUsecase>,
 }
 
 impl WorkspaceListUsecase {
-    pub fn new(query: Arc<dyn WorkspaceListQueryService>) -> Self {
-        Self {
-            query,
-            lists: Arc::new(Mutex::new(WorkspaceLists::default())),
-            prs: Arc::new(Mutex::new(HashMap::new())),
-            subscriptions: None,
-            completed: tokio::sync::watch::channel(0).0,
-        }
-    }
-
-    pub fn with_subscriptions(
-        mut self,
-        subscriptions: crate::usecase::state_subscription::StateSubscriptionUsecase,
+    pub fn new(
+        repositories: Arc<RepoPathsUsecase>,
+        repository: Arc<RepositoryUsecase>,
+        repository_state: Arc<RepositoryStateService>,
+        workflow: Arc<WorkflowUsecase>,
+        git_host: Arc<GitHostUsecase>,
     ) -> Self {
-        self.subscriptions = Some(subscriptions);
-        self
-    }
-
-    fn notify_changed(&self) {
-        if let Some(subscriptions) = &self.subscriptions {
-            subscriptions
-                .notify(crate::usecase::state_subscription::StateChangeSource::WorkspaceList);
+        Self {
+            repositories,
+            repository,
+            repository_state,
+            workflow,
+            git_host,
         }
     }
 
-    pub async fn refresh(&self) -> WorkspaceListSnapshotDto {
-        let mut completed = self.completed.subscribe();
-        let (request, start) = {
-            let mut lists = self.lists.lock();
-            (lists.request_full(), lists.start_full())
-        };
-        if let Some(mut current) = start {
-            let usecase = self.clone();
-            tokio::spawn(async move {
-                loop {
-                    usecase.refresh_full(current.1).await;
-                    let mut lists = usecase.lists.lock();
-                    lists.complete_full(current.0);
-                    usecase.completed.send_replace(current.0);
-                    match lists.start_full() {
-                        Some(next) => current = next,
-                        None => break,
-                    }
-                }
-            });
-        }
-        completed
-            .wait_for(|done| *done >= request)
-            .await
-            .expect("refresh completion sender is owned by this usecase");
-        self.snapshot()
-    }
-
-    async fn refresh_full(&self, generation: u64) {
-        let repositories = self
-            .query
-            .repositories()
-            .map_err(|error| WorkspaceListFailure::from(error.to_string()));
-        let paths = self
-            .lists
-            .lock()
-            .complete_repositories(generation, repositories);
-        futures_util::future::join_all(
-            paths
-                .iter()
-                .map(|path| self.refresh_branches(path, generation, true)),
-        )
-        .await;
-        self.notify_changed();
-    }
-
-    pub async fn refresh_repository(&self, path: &str) -> WorkspaceListSnapshotDto {
-        let generation = self.lists.lock().begin_repository(path);
-        if let Some(generation) = generation {
-            self.refresh_branches(path, generation, true).await;
-        }
-        self.snapshot()
-    }
-
-    async fn refresh_branches(&self, path: &str, generation: u64, rescan: bool) {
-        let result = if rescan {
-            self.query.branches(path).await
-        } else {
-            self.query.current_branches(path).await
-        };
-        let branches = result.map(|branches| {
-            let paths = branches
-                .iter()
-                .filter_map(|branch| branch.worktree_path.clone())
-                .collect();
-            (branches, paths)
-        });
-        let worktrees = self.lists.lock().complete_branches(
-            path,
-            generation,
-            branches.map_err(|error| WorkspaceListFailure::from(error.to_string())),
-        );
-        self.notify_changed();
+    pub async fn read(&self) -> WorkspaceList {
         let usecase = self.clone();
-        let repository = path.to_owned();
-        tokio::task::spawn_blocking(move || usecase.refresh_prs(&repository, generation, rescan));
-        for path in worktrees {
-            if !self.lists.lock().is_worktree_current(&path, generation) {
-                continue;
-            }
-            self.refresh_nodes(&path, generation).await;
-        }
-    }
-
-    fn refresh_prs(&self, path: &str, generation: u64, force: bool) {
-        let status = match self.query.pr_status(path, force) {
-            Ok(status) => status,
-            Err(error) => {
-                log::warn!("workspace PR status refresh failed for {path}: {error}");
-                return;
-            }
-        };
-        {
-            let lists = self.lists.lock();
-            if !lists.is_repository_current(path, generation) {
-                return;
-            }
-            self.prs.lock().insert(path.to_owned(), status);
-        }
-        self.notify_changed();
-    }
-
-    pub async fn refresh_worktree(&self, path: &str) -> WorkspaceListSnapshotDto {
-        let generation = self.lists.lock().begin_worktree(path);
-        if let Some(generation) = generation {
-            self.refresh_nodes(path, generation).await;
-        }
-        self.snapshot()
-    }
-
-    async fn refresh_nodes(&self, path: &str, generation: u64) {
-        let result = match self.query.nodes(path).await {
-            Ok(nodes) => self
-                .query
-                .history(path)
+        let repositories =
+            crate::common::operation_context::spawn_blocking(move || usecase.repository_values())
                 .await
-                .map(|history| (nodes, history)),
-            Err(error) => Err(error),
-        };
-        self.lists.lock().complete_worktree(
-            path,
-            generation,
-            result.map_err(|error| WorkspaceListFailure::from(error.to_string())),
-        );
-        self.notify_changed();
+                .unwrap_or_else(|error| {
+                    log::error!("workspace list read failed: {error}");
+                    Vec::new()
+                });
+        let worktree_paths = repositories
+            .iter()
+            .flat_map(|repository| repository.worktrees.value.iter().flatten())
+            .map(|values| values.worktree.path.clone())
+            .collect::<Vec<_>>();
+        let trees = self
+            .workflow
+            .retained_workspace_trees(&worktree_paths)
+            .await;
+        compose(repositories, trees)
     }
 
-    pub async fn refresh_current_repository(&self, path: &str) {
-        let generation = self.lists.lock().begin_branch_update(path);
-        if let Some(generation) = generation {
-            self.refresh_branches(path, generation, false).await;
-        }
-    }
-
-    pub async fn refresh_external_information(&self) {
-        let repositories = self.lists.lock().repository_generations();
-        futures_util::future::join_all(repositories.into_iter().map(|(path, generation)| {
-            let usecase = self.clone();
-            async move {
-                if let Err(error) = tokio::task::spawn_blocking(move || {
-                    usecase.refresh_prs(&path, generation, true)
-                })
-                .await
-                {
-                    log::error!("PR refresh failed: {error}");
+    fn repository_values(&self) -> Vec<RepositoryValues> {
+        self.repositories
+            .get()
+            .into_iter()
+            .map(|path| {
+                let scanned = self.repository_state.worktrees(&path);
+                let root = self.repository_state.repository_root(&path).ok();
+                let worktrees = Fetched {
+                    value: scanned.value.zip(root).map(|(worktrees, root)| {
+                        self.repository
+                            .with_deleting_worktrees(&root, worktrees)
+                            .into_iter()
+                            .map(|(worktree, deleting)| WorktreeValues {
+                                dirty_count: self
+                                    .repository_state
+                                    .dirty_count(&worktree.path)
+                                    .unwrap_or(0),
+                                worktree,
+                                deleting,
+                            })
+                            .collect()
+                    }),
+                    error: scanned.error,
+                };
+                RepositoryValues {
+                    pull_requests: self.git_host.known_pr_status(&path),
+                    path,
+                    worktrees,
                 }
+            })
+            .collect()
+    }
+
+    /// 全 Repository の worktree の並びと変更の状態を読み直し、PR を取り直す。
+    /// 走査の終わりまで待つ。PR は待たず、取れた時点で購読へ届く。
+    pub async fn refresh(&self) {
+        let paths = self.repositories.get();
+        futures_util::future::join_all(paths.iter().map(|path| async move {
+            if let Err(error) = self.repository_state.rescan(path).await {
+                log::warn!("workspace repository rescan failed for {path}: {error}");
             }
         }))
         .await;
+        self.refresh_pull_requests();
     }
 
+    /// 全 Repository の PR を取り直す。取り終わるのを待たない。
+    pub fn refresh_pull_requests(&self) {
+        for path in self.repositories.get() {
+            let git_host = self.git_host.clone();
+            tokio::task::spawn_blocking(move || {
+                if let Err(error) = git_host.refresh_pr_status(&path) {
+                    log::warn!("workspace PR status refresh failed for {path}: {error}");
+                }
+            });
+        }
+    }
+
+    /// 監視する Repository と worktree。
     pub fn watch_paths(&self) -> Vec<String> {
-        let lists = self.lists.lock();
         let mut paths = std::collections::HashSet::new();
-        for path in lists.repositories().value().into_iter().flatten() {
-            if let Some((_, worktrees)) = lists.branches(path).and_then(|entry| entry.value()) {
-                paths.insert(path.clone());
-                paths.extend(worktrees.iter().cloned());
-            }
+        for path in self.repositories.get() {
+            paths.extend(
+                self.repository_state
+                    .worktrees(&path)
+                    .value
+                    .into_iter()
+                    .flatten()
+                    .map(|worktree| worktree.path),
+            );
+            // worktree の並びは root の監視が持つ。登録パスが root でないときも root を監視する。
+            paths.extend(self.repository_state.repository_root(&path).ok());
+            paths.insert(path);
         }
         paths.into_iter().collect()
     }
+}
 
-    pub fn snapshot(&self) -> WorkspaceListSnapshotDto {
-        let mut lists = self.lists.lock();
-        let prs = self.prs.lock();
-        let generation = lists.next_snapshot_generation();
-        let paths = lists.repositories().value().cloned().unwrap_or_default();
-        WorkspaceListSnapshotDto {
-            generation,
-            status: status(lists.repositories(), paths.is_empty()),
-            repositories: paths
-                .into_iter()
-                .map(|path| {
-                    let empty = WorkspaceListEntry::default();
-                    let branches = lists.branches(&path).unwrap_or(&empty);
-                    let pr = prs.get(&path);
-                    WorkspaceRepositoryListDto {
-                        path: path.clone(),
-                        status: status(
-                            branches,
-                            branches.value().is_none_or(|value| value.0.is_empty()),
-                        ),
-                        branches: branches
-                            .value()
-                            .map(|value| {
-                                value
-                                    .0
-                                    .iter()
-                                    .map(|branch| workspace_branch(branch, pr))
-                                    .collect()
-                            })
-                            .unwrap_or_default(),
-                        worktrees: branches
-                            .value()
-                            .map(|value| value.1.as_slice())
-                            .unwrap_or_default()
-                            .iter()
-                            .map(|path| {
-                                let empty = WorkspaceListEntry::default();
-                                let nodes = lists.nodes(path).unwrap_or(&empty);
-                                WorkspaceWorktreeListDto {
-                                    path: path.clone(),
-                                    status: status(
-                                        nodes,
-                                        nodes.value().is_none_or(|value| value.0.nodes.is_empty()),
-                                    ),
-                                    snapshot: nodes.value().map(|value| value.0.clone()),
-                                    workflow_history: nodes
-                                        .value()
-                                        .map(|value| value.1.clone())
-                                        .unwrap_or_default(),
-                                }
-                            })
-                            .collect(),
-                    }
-                })
-                .collect(),
-        }
+/// 集めた値を一覧に並べる。`trees` は、読めている worktree の並び順に対応する。
+fn compose(
+    repositories: Vec<RepositoryValues>,
+    trees: Vec<Fetched<WorkspaceTree>>,
+) -> WorkspaceList {
+    let mut trees = trees.into_iter();
+    WorkspaceList {
+        repositories: repositories
+            .into_iter()
+            .map(|repository| {
+                let pull_requests = repository.pull_requests;
+                WorkspaceListRepository {
+                    path: repository.path,
+                    worktrees: Fetched {
+                        error: repository.worktrees.error,
+                        value: repository.worktrees.value.map(|worktrees| {
+                            worktrees
+                                .into_iter()
+                                .map(|values| {
+                                    let branch = values.worktree.branch.as_str();
+                                    WorkspaceListWorktree {
+                                        merged: pull_requests.as_ref().map_or(
+                                            values.worktree.is_merged,
+                                            |prs| {
+                                                prs.branch_is_merged(
+                                                    branch,
+                                                    values.worktree.is_merged,
+                                                )
+                                            },
+                                        ),
+                                        pull_request: pull_requests
+                                            .as_ref()
+                                            .and_then(|prs| prs.open_prs.get(branch).cloned()),
+                                        tree: trees.next().unwrap_or_default(),
+                                        deleting: values.deleting,
+                                        dirty_count: values.dirty_count,
+                                        worktree: values.worktree,
+                                    }
+                                })
+                                .collect()
+                        }),
+                    },
+                }
+            })
+            .collect(),
     }
 }
 

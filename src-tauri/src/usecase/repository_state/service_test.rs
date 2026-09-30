@@ -10,6 +10,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 #[derive(Default)]
 struct Scanner {
     calls: AtomicUsize,
+    worktree_calls: AtomicUsize,
     fail: AtomicBool,
     retry_failures: AtomicUsize,
     on_scan: parking_lot::Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
@@ -53,41 +54,34 @@ impl RepositoryScanner for Scanner {
                 wt_additions: call as u32,
                 wt_deletions: 0,
             }],
+            dirty_count: call,
             diff_file_tree: vec![],
             staged_diff_file_tree: vec![],
             changes_diff_file_tree: vec![],
-            branch_cards: vec![BranchCardDto {
-                name: format!("scan-{call}"),
-                is_deleting: false,
-                is_main_worktree: true,
-                worktree_path: Some("/repo".into()),
-                dirty_count: 0,
-                is_merged: false,
-                ahead: 0,
-                behind: 0,
-                has_upstream: false,
-                base_ahead: 0,
-            }],
         })
     }
 
-    fn prune_stale_branch_bases(&self, _: &str, _: &[String]) -> Result<(), RepositoryStateError> {
+    fn scan_worktrees(&self, repo_path: &str) -> Result<Vec<Worktree>, RepositoryStateError> {
+        let call = self.worktree_calls.fetch_add(1, Ordering::SeqCst);
+        if self.fail.load(Ordering::SeqCst) {
+            return Err(RepositoryStateError::Watcher("scan failed".into()));
+        }
+        Ok(vec![Worktree {
+            name: format!("scan-{call}"),
+            path: repo_path.into(),
+            branch: format!("scan-{call}"),
+            is_main: true,
+            is_locked: false,
+            is_merged: false,
+        }])
+    }
+
+    fn prune_stale_branch_bases(&self, _: &str) -> Result<(), RepositoryStateError> {
         Ok(())
     }
 }
 struct Repository;
 impl RepositoryStateRepository for Repository {
-    fn include_deleting_worktrees(
-        &self,
-        _: &str,
-        cards: &mut Vec<BranchCardDto>,
-    ) -> Result<(), RepositoryStateError> {
-        for card in cards {
-            card.is_deleting = true;
-        }
-        Ok(())
-    }
-
     fn main_repo_path(&self, path: &str) -> Result<String, RepositoryStateError> {
         Ok(path.into())
     }
@@ -137,54 +131,42 @@ fn service(scanner: Arc<Scanner>, notifier: Arc<Notifier>) -> RepositoryStateSer
     .with_debounce(Duration::ZERO)
 }
 
+fn branch(service: &RepositoryStateService) -> String {
+    service.worktrees("/repo").value.unwrap()[0].branch.clone()
+}
+
 #[tokio::test]
-async fn test_一覧の再走査_監視中も保存済みsnapshotを使わず毎回走査する() {
+async fn test_一覧の再走査_監視中も保存済みの結果を使わず毎回走査する() {
     // Given
     let scanner = Arc::new(Scanner::default());
     let notifier = Arc::new(Notifier::default());
     let service = service(scanner.clone(), notifier.clone());
     service.start_git_dir_watching("/repo").unwrap();
     notifier.wait().await;
-    let previous = service
-        .list_branches_with_status_snapshot("/repo")
-        .unwrap()
-        .branches;
+    let previous = branch(&service);
     // When
-    let next = service.rescan_branches("/repo").await.unwrap();
+    service.rescan("/repo").await.unwrap();
+    let next = branch(&service);
     let next_snapshot = service.get_snapshot("/repo").unwrap();
-    assert_eq!(next_snapshot.branch_cards[0].name, next[0].name);
-    let latest = service.rescan_branches("/repo").await.unwrap();
+    service.rescan("/repo").await.unwrap();
+    let latest = branch(&service);
     // Then
-    assert!(next[0].is_deleting);
-    assert!(latest[0].is_deleting);
-    assert_ne!(previous[0].name, next[0].name);
-    assert_ne!(next[0].name, latest[0].name);
+    assert_ne!(previous, next);
+    assert_ne!(next, latest);
     assert_eq!(scanner.calls.load(Ordering::SeqCst), 3);
-    assert_eq!(notifier.count(), 1);
+    assert_eq!(scanner.worktree_calls.load(Ordering::SeqCst), 3);
+    assert_eq!(notifier.count(), 3);
     let snapshot = service.get_snapshot("/repo").unwrap();
-    assert_eq!(snapshot.branch_cards[0].name, latest[0].name);
-    assert_eq!(snapshot.status[0].path, latest[0].name);
-    assert_eq!(
-        service.get_snapshot("/repo").unwrap().status,
-        snapshot.status
-    );
-    assert_eq!(
-        service.get_snapshot("/repo").unwrap().diff_stats,
-        snapshot.diff_stats
-    );
-    assert_eq!(
-        service
-            .list_branches_with_status_snapshot("/repo")
-            .unwrap()
-            .branches[0]
-            .name,
-        latest[0].name
-    );
+    assert_eq!(snapshot.status[0].path, "scan-2");
+    assert_eq!(service.dirty_count("/repo"), Some(2));
     assert_eq!(snapshot.version, next_snapshot.version + 1);
     // When
     scanner.fail.store(true, Ordering::SeqCst);
-    assert!(service.rescan_branches("/repo").await.is_err());
+    service.rescan("/repo").await.unwrap();
     // Then
+    let worktrees = service.worktrees("/repo");
+    assert!(worktrees.error.is_some());
+    assert_eq!(worktrees.value.unwrap()[0].branch, latest);
     assert!(Arc::ptr_eq(
         &snapshot,
         &service.get_snapshot("/repo").unwrap()
@@ -205,12 +187,17 @@ async fn test_走査失敗_自動更新へ通知し再起動せず明示的な�
         .unwrap();
     // Then
     assert_eq!(notifier.count(), 1);
-    assert!(service.rescan_branches("/repo").await.is_err());
+    service.rescan("/repo").await.unwrap();
+    let failed = service.worktrees("/repo");
+    assert!(!failed.loaded());
+    assert!(failed.error.is_some());
     // When
     scanner.fail.store(false, Ordering::SeqCst);
-    let result = service.rescan_branches("/repo").await.unwrap();
+    service.rescan("/repo").await.unwrap();
     // Then
-    assert_eq!(result.len(), 1);
+    let recovered = service.worktrees("/repo");
+    assert_eq!(recovered.value.map(|worktrees| worktrees.len()), Some(1));
+    assert!(recovered.error.is_none());
     assert_eq!(scanner.calls.load(Ordering::SeqCst), 3);
 }
 
@@ -241,22 +228,26 @@ async fn test_監視走査との競合_共有snapshotへのcommitを直列化す
     // When
     let refresh = {
         let service = service.clone();
-        tokio::spawn(async move { service.rescan_branches("/repo").await.unwrap() })
+        tokio::spawn(async move { service.rescan("/repo").await.unwrap() })
     };
     tokio::task::yield_now().await;
     assert_eq!(scanner.calls.load(Ordering::SeqCst), 2);
     release.send(()).unwrap();
-    let result = refresh.await.unwrap();
+    refresh.await.unwrap();
     // Then
     let snapshot = service.get_snapshot("/repo").unwrap();
-    assert_eq!(snapshot.branch_cards[0].name, result[0].name);
     assert_eq!(snapshot.status[0].path, "scan-2");
     assert_eq!(snapshot.version, 3);
-    assert_eq!(notifier.count(), 2);
+    for _ in 0..2 {
+        tokio::time::timeout(Duration::from_secs(2), notifier.wait())
+            .await
+            .unwrap();
+    }
+    assert_eq!(notifier.count(), 3);
 }
 
 #[tokio::test]
-async fn test_明示再走査_途中で失効した結果を公開せず再走査して返す() {
+async fn test_明示再走査_途中で失効した結果を公開せず再走査する() {
     // Given
     let scanner = Arc::new(Scanner::default());
     let notifier = Arc::new(Notifier::default());
@@ -281,7 +272,7 @@ async fn test_明示再走査_途中で失効した結果を公開せず再走�
     // When
     let refresh = {
         let service = service.clone();
-        tokio::spawn(async move { service.rescan_branches("/repo").await.unwrap() })
+        tokio::spawn(async move { service.rescan("/repo").await.unwrap() })
     };
     started.notified().await;
     state.invalidate(super::super::worker::InvalidateReason::change());
@@ -297,13 +288,11 @@ async fn test_明示再走査_途中で失効した結果を公開せず再走�
     assert_eq!(notifier.count(), 1);
     // When
     release.send(()).unwrap();
-    let result = refresh.await.unwrap();
+    refresh.await.unwrap();
     // Then
-    assert_eq!(result[0].name, "scan-2");
-    assert_ne!(
-        service.get_snapshot("/repo").unwrap().branch_cards[0].name,
-        "scan-1"
-    );
+    let snapshot = service.get_snapshot("/repo").unwrap();
+    assert!(snapshot.version > previous.version);
+    assert_ne!(snapshot.status[0].path, "scan-1");
 }
 
 #[tokio::test]
@@ -329,21 +318,22 @@ async fn test_snapshot公開_失効世代はversionと前回情報を変更し�
         .commit_snapshot(scanner.scan("/repo").unwrap(), state.requested_generation())
         .unwrap();
     assert_eq!(current.version, previous.version + 1);
-    assert_eq!(current.branch_cards[0].name, "scan-2");
+    assert_eq!(current.status[0].path, "scan-2");
 }
 
 #[tokio::test]
-async fn test_明示再走査_未購読の監視stateを登録しない() {
+async fn test_明示再走査_監視していないrepositoryは走査せず登録しない() {
     // Given
     let scanner = Arc::new(Scanner::default());
     let service = service(scanner.clone(), Arc::new(Notifier::default()));
     // When
     for path in ["/a", "/b", "/c"] {
-        service.rescan_branches(path).await.unwrap();
+        service.rescan(path).await.unwrap();
     }
     // Then
     assert_eq!(service.worktree_count(), 0);
-    assert_eq!(scanner.calls.load(Ordering::SeqCst), 3);
+    assert_eq!(scanner.calls.load(Ordering::SeqCst), 0);
+    assert_eq!(scanner.worktree_calls.load(Ordering::SeqCst), 0);
 }
 
 #[tokio::test]
@@ -360,7 +350,7 @@ async fn test_明示再走査_失効が続くと終了してscanロックを解�
         move || state.invalidate(super::super::worker::InvalidateReason::change())
     }));
     // When
-    let result = tokio::time::timeout(Duration::from_secs(2), service.rescan_branches("/repo"))
+    let result = tokio::time::timeout(Duration::from_secs(2), service.rescan_status(&state))
         .await
         .unwrap();
     // Then
@@ -371,11 +361,11 @@ async fn test_明示再走査_失効が続くと終了してscanロックを解�
     assert_eq!(state.snapshot_for_read().version, previous.version);
     *scanner.on_scan.lock() = None;
     drop(scan);
-    assert!(service.rescan_branches("/repo").await.is_ok());
+    assert!(service.rescan_status(&state).await.is_ok());
 }
 
 #[tokio::test]
-async fn test_背景走査_開始失敗を再試行中もbranches要求が走査できる() {
+async fn test_背景走査_開始失敗を再試行中も明示再走査が走査できる() {
     let scanner = Arc::new(Scanner::default());
     scanner.retry_failures.store(usize::MAX, Ordering::SeqCst);
     let notifier = Arc::new(Notifier::default());
@@ -389,7 +379,8 @@ async fn test_背景走査_開始失敗を再試行中もbranches要求が走査
     .await
     .unwrap();
     let calls = scanner.calls.load(Ordering::SeqCst);
-    let result = tokio::time::timeout(Duration::from_millis(100), service.rescan_branches("/repo"))
+    let state = service.ensure_watching("/repo").unwrap();
+    let result = tokio::time::timeout(Duration::from_millis(100), service.rescan_status(&state))
         .await
         .expect("backoff must release scan_lock");
     assert!(matches!(result, Err(RepositoryStateError::ScanInvalidated)));
@@ -398,9 +389,5 @@ async fn test_背景走査_開始失敗を再試行中もbranches要求が走査
     tokio::time::timeout(Duration::from_secs(2), notifier.wait())
         .await
         .unwrap();
-    assert!(!service
-        .get_snapshot("/repo")
-        .unwrap()
-        .branch_cards
-        .is_empty());
+    assert_eq!(service.get_snapshot("/repo").unwrap().status.len(), 1);
 }

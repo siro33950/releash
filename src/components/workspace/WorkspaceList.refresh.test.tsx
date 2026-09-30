@@ -158,7 +158,6 @@ describe("Workspaces subscriptions", () => {
 		expect(screen.queryByText("No Repository")).not.toBeInTheDocument();
 		act(() =>
 			states.publish("workspaces", {
-				generation: 1,
 				repositories: [],
 				status: { loaded: false, state: "initialFailed", error: "offline" },
 			}),
@@ -174,7 +173,6 @@ describe("Workspaces subscriptions", () => {
 		);
 		act(() =>
 			states.publish("workspaces", {
-				generation: 2,
 				repositories: [],
 				status: { loaded: true, state: "empty", error: null },
 			}),
@@ -227,7 +225,6 @@ describe("Workspaces subscriptions", () => {
 		await screen.findByText("Running session");
 		act(() =>
 			states.publish("workspaces", {
-				generation: 2,
 				repositories: [],
 				status: { loaded: true, state: "empty", error: null },
 			}),

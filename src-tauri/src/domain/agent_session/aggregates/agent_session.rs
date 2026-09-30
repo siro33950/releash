@@ -465,7 +465,6 @@ impl AgentSession {
             .map(AgentSessionDisplayName::as_str)
     }
 
-    #[cfg(test)]
     pub(crate) fn operations(&self) -> AgentSessionOperations {
         derive_agent_session_operations(
             self.tree_location.launched_as,
@@ -538,7 +537,6 @@ impl AgentSession {
         self.initial_instruction_admitted
     }
 
-    #[cfg(test)]
     pub(crate) fn last_exit_abnormal(&self) -> bool {
         self.last_exit_abnormal
     }

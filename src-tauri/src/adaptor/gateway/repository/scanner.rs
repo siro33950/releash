@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use crate::domain::repository::Worktree;
 use crate::usecase::code_usecase::CodeUsecase;
 use crate::usecase::repository_dto::{FileDiffStatDto, FileStatusDto};
 use crate::usecase::repository_state::scanner::{
@@ -39,13 +40,10 @@ impl RepositoryScanner for DefaultRepositoryScanner {
 
     fn scan(&self, repo_path: &str) -> Result<RepositorySnapshotParts, RepositoryStateError> {
         let status_scan = self.repository.get_repository_status_scan(repo_path)?;
-        let current_dirty_count = status_scan.dirty_count;
+        let dirty_count = status_scan.dirty_count;
         let status: Vec<FileStatusDto> = status_scan.status.into_iter().map(Into::into).collect();
         let diff_stats: Vec<FileDiffStatDto> =
             status_scan.diff_stats.into_iter().map(Into::into).collect();
-        let branch_cards = self
-            .repository
-            .list_branches_with_status_for_scan(repo_path, current_dirty_count)?;
         let diff_file_tree = self
             .code
             .build_diff_file_tree(diff_tree_entries(&status, &diff_stats));
@@ -59,21 +57,28 @@ impl RepositoryScanner for DefaultRepositoryScanner {
         Ok(RepositorySnapshotParts {
             status,
             diff_stats,
-            branch_cards,
+            dirty_count,
             diff_file_tree,
             staged_diff_file_tree,
             changes_diff_file_tree,
         })
     }
 
-    fn prune_stale_branch_bases(
-        &self,
-        repo_path: &str,
-        existing_branches: &[String],
-    ) -> Result<(), RepositoryStateError> {
+    fn scan_worktrees(&self, repo_path: &str) -> Result<Vec<Worktree>, RepositoryStateError> {
+        Ok(self.repository.list_working_worktrees(repo_path)?)
+    }
+
+    fn prune_stale_branch_bases(&self, repo_path: &str) -> Result<(), RepositoryStateError> {
+        let existing_branches = self
+            .repository
+            .list_branches(repo_path)?
+            .into_iter()
+            .filter(|branch| !branch.is_remote)
+            .map(|branch| branch.name)
+            .collect::<Vec<_>>();
         Ok(self
             .repository
-            .prune_stale_branch_bases(repo_path, existing_branches)?)
+            .prune_stale_branch_bases(repo_path, &existing_branches)?)
     }
 }
 
@@ -123,15 +128,12 @@ mod tests {
                 .into_iter()
                 .map(Into::into)
                 .collect();
-        let expected_branch_cards = repository
-            .list_branches_with_status_read_only(repo_path)
-            .unwrap();
-
         assert_eq!(snapshot.status, expected_status);
         assert_eq!(snapshot.diff_stats, expected_diff_stats);
+        assert_eq!(snapshot.dirty_count, 3);
         assert_eq!(
-            serde_json::to_value(&snapshot.branch_cards).unwrap(),
-            serde_json::to_value(&expected_branch_cards).unwrap()
+            scanner.scan_worktrees(repo_path).unwrap(),
+            repository.list_working_worktrees(repo_path).unwrap()
         );
         assert_eq!(
             serde_json::to_value(&snapshot.diff_file_tree).unwrap(),
@@ -181,6 +183,7 @@ mod tests {
         let scanner = Arc::new(DefaultRepositoryScanner::new(repository, code));
         let state = crate::usecase::repository_state::worktree::WorktreeState::new(
             dir.path().to_str().unwrap().to_string(),
+            true,
             scanner,
             crate::test_support::state_subscription::test_subscriptions(),
             Arc::new(

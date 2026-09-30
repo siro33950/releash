@@ -216,11 +216,6 @@ impl StateSubscriptionRead for FakeReads {
             _ => StateValue::Issues(vec![]),
         })
     }
-    async fn refresh_workspaces(
-        &self,
-        _: Option<crate::usecase::state_subscription::StateChangeSource>,
-    ) {
-    }
     fn repositories(&self) -> Vec<String> {
         vec![]
     }
@@ -454,7 +449,7 @@ async fn test_workspaces購読_最後の停止と切断で実際のgit監視を�
     for disconnect in [false, true] {
         // Given
         let fixture = StateReadsFixture::new();
-        let repository = fixture.reads.repository_state.clone();
+        let repository = fixture.repository_state.clone();
         let files = Arc::new(crate::usecase::watcher::watcher_tests::SubscriptionFiles::default());
         let usecase = fixture.subscriptions.clone().with_reads(
             Arc::new(fixture.reads.clone()),
@@ -559,11 +554,6 @@ impl StateSubscriptionRead for BlockedReads {
             },
         ))
     }
-    async fn refresh_workspaces(
-        &self,
-        _: Option<crate::usecase::state_subscription::StateChangeSource>,
-    ) {
-    }
     fn repositories(&self) -> Vec<String> {
         vec![]
     }
@@ -627,11 +617,6 @@ impl StateSubscriptionRead for NullableReads {
             }
             _ => panic!("unexpected target"),
         })
-    }
-    async fn refresh_workspaces(
-        &self,
-        _: Option<crate::usecase::state_subscription::StateChangeSource>,
-    ) {
     }
     fn repositories(&self) -> Vec<String> {
         vec![]
@@ -780,9 +765,9 @@ struct ExternalReads {
 }
 impl ExternalReads {
     fn value(&self, target: &crate::usecase::state_subscription::SubscriptionTarget) -> StateValue {
+        use crate::usecase::fetched::Fetched;
         use crate::usecase::workspace_tree::{
-            WorkspaceBranchDto, WorkspaceListSnapshotDto, WorkspaceListStatusDto,
-            WorkspaceRepositoryListDto,
+            WorkspaceList, WorkspaceListRepository, WorkspaceListWorktree,
         };
         use std::sync::atomic::Ordering;
         if matches!(
@@ -806,35 +791,27 @@ impl ExternalReads {
                 milestone: None,
             }]);
         }
-        let status = WorkspaceListStatusDto {
-            loaded: true,
-            state: "ready",
-            error: None,
-        };
-        StateValue::Workspaces(WorkspaceListSnapshotDto {
-            generation: 0,
-            status: status.clone(),
-            repositories: vec![WorkspaceRepositoryListDto {
+        StateValue::Workspaces(WorkspaceList {
+            repositories: vec![WorkspaceListRepository {
                 path: "/repo".into(),
-                status,
-                worktrees: vec![],
-                branches: vec![WorkspaceBranchDto {
-                    branch: crate::usecase::repository_dto::BranchCardDto {
+                worktrees: Fetched::ready(vec![WorkspaceListWorktree {
+                    worktree: crate::domain::repository::Worktree {
                         name: "main".into(),
-                        is_deleting: false,
-                        is_main_worktree: true,
-                        worktree_path: Some("/repo".into()),
-                        dirty_count: 0,
+                        path: "/repo".into(),
+                        branch: "main".into(),
+                        is_main: true,
+                        is_locked: false,
                         is_merged: false,
-                        ahead: 0,
-                        behind: 0,
-                        has_upstream: false,
-                        base_ahead: 0,
                     },
-                    has_pr: true,
-                    pr_number: Some(self.prs.load(Ordering::SeqCst)),
-                    pr_url: None,
-                }],
+                    deleting: false,
+                    dirty_count: 0,
+                    merged: false,
+                    pull_request: Some(crate::domain::git_host::PrInfo {
+                        number: self.prs.load(Ordering::SeqCst),
+                        url: String::new(),
+                    }),
+                    tree: Fetched::default(),
+                }]),
             }],
         })
     }
@@ -851,20 +828,16 @@ impl StateSubscriptionRead for ExternalReads {
         &self,
         target: &crate::usecase::state_subscription::SubscriptionTarget,
     ) -> Result<(), StateReadError> {
-        if matches!(
+        let count = if matches!(
             target,
             crate::usecase::state_subscription::SubscriptionTarget::Issues(_)
         ) {
-            self.issues
-                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        }
+            &self.issues
+        } else {
+            &self.prs
+        };
+        count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         Ok(())
-    }
-    async fn refresh_workspaces(
-        &self,
-        _: Option<crate::usecase::state_subscription::StateChangeSource>,
-    ) {
-        self.prs.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     }
     fn repositories(&self) -> Vec<String> {
         vec!["/repo".into()]

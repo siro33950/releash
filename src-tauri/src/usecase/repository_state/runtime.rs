@@ -6,6 +6,7 @@ use super::error::RepositoryStateError;
 use super::scanner::RepositoryScanner;
 use super::snapshot::RepositorySnapshotParts;
 use super::worker::InvalidateReason;
+use crate::domain::repository::Worktree;
 
 pub struct ScanWorker {
     pub state: Arc<super::worktree::WorktreeState>,
@@ -42,6 +43,12 @@ pub trait RepositoryStateWorkerRuntime: Send + Sync {
         scanner: Arc<dyn RepositoryScanner>,
         repo_path: String,
     ) -> Result<RepositorySnapshotParts, RepositoryStateError>;
+
+    async fn scan_worktrees(
+        &self,
+        scanner: Arc<dyn RepositoryScanner>,
+        repo_path: String,
+    ) -> Result<Vec<Worktree>, RepositoryStateError>;
 }
 
 pub trait WorktreePathNormalizer: Send + Sync {
@@ -113,6 +120,16 @@ pub(crate) mod tests_support {
                 .await
                 .map_err(|err| RepositoryStateError::Watcher(format!("test scan failed: {err}")))?
         }
+
+        async fn scan_worktrees(
+            &self,
+            scanner: Arc<dyn RepositoryScanner>,
+            repo_path: String,
+        ) -> Result<Vec<Worktree>, RepositoryStateError> {
+            tokio::task::spawn_blocking(move || scanner.scan_worktrees(&repo_path))
+                .await
+                .map_err(|err| RepositoryStateError::Watcher(format!("test scan failed: {err}")))?
+        }
     }
 
     /// tokio ランタイム外（std スレッド）から `WorktreeState::new` を呼ぶテスト用。
@@ -143,6 +160,16 @@ pub(crate) mod tests_support {
             _scanner: Arc<dyn RepositoryScanner>,
             repo_path: String,
         ) -> Result<RepositorySnapshotParts, RepositoryStateError> {
+            Err(RepositoryStateError::Watcher(format!(
+                "no-spawn runtime does not scan {repo_path}"
+            )))
+        }
+
+        async fn scan_worktrees(
+            &self,
+            _scanner: Arc<dyn RepositoryScanner>,
+            repo_path: String,
+        ) -> Result<Vec<Worktree>, RepositoryStateError> {
             Err(RepositoryStateError::Watcher(format!(
                 "no-spawn runtime does not scan {repo_path}"
             )))

@@ -1,5 +1,4 @@
 use super::*;
-use crate::usecase::repository_dto::BranchCardDto;
 use crate::usecase::repository_state::runtime::{
     RepositoryStateInvalidationReceiver, RepositoryStateInvalidationSender,
     RepositoryStateWorkerRuntime, ScanWorker,
@@ -55,6 +54,16 @@ impl RepositoryStateWorkerRuntime for InertRuntime {
             "inert runtime does not scan".to_string(),
         ))
     }
+
+    async fn scan_worktrees(
+        &self,
+        _scanner: Arc<dyn RepositoryScanner>,
+        _repo_path: String,
+    ) -> Result<Vec<crate::domain::repository::Worktree>, RepositoryStateError> {
+        Err(RepositoryStateError::Watcher(
+            "inert runtime does not scan".to_string(),
+        ))
+    }
 }
 
 struct EmptyScanner;
@@ -73,18 +82,21 @@ impl RepositoryScanner for EmptyScanner {
         Ok(RepositorySnapshotParts {
             status: Vec::new(),
             diff_stats: Vec::new(),
-            branch_cards: Vec::new(),
+            dirty_count: 0,
             diff_file_tree: Vec::new(),
             staged_diff_file_tree: Vec::new(),
             changes_diff_file_tree: Vec::new(),
         })
     }
 
-    fn prune_stale_branch_bases(
+    fn scan_worktrees(
         &self,
         _repo_path: &str,
-        _existing_branches: &[String],
-    ) -> Result<(), RepositoryStateError> {
+    ) -> Result<Vec<crate::domain::repository::Worktree>, RepositoryStateError> {
+        Ok(Vec::new())
+    }
+
+    fn prune_stale_branch_bases(&self, _repo_path: &str) -> Result<(), RepositoryStateError> {
         Ok(())
     }
 }
@@ -99,8 +111,17 @@ fn event(path: &std::path::Path) -> DebouncedEvent {
 fn state_with_subscriptions(
     subscriptions: crate::usecase::state_subscription::StateSubscriptionUsecase,
 ) -> Arc<WorktreeState> {
+    state_at("/repo", true, subscriptions)
+}
+
+fn state_at(
+    path: &str,
+    is_repository_root: bool,
+    subscriptions: crate::usecase::state_subscription::StateSubscriptionUsecase,
+) -> Arc<WorktreeState> {
     WorktreeState::new(
-        "/repo".to_string(),
+        path.to_string(),
+        is_repository_root,
         Arc::new(EmptyScanner),
         subscriptions,
         Arc::new(InertRuntime),
@@ -118,8 +139,17 @@ fn watcher_callbacks_only_invalidate_until_worker_commit() {
     std::fs::write(&file_path, "content").unwrap();
 
     handle_file_events(state.as_ref(), vec![event(&file_path)]);
-    handle_git_events(state.as_ref(), &[event(&PathBuf::from("/repo/.git/HEAD"))]);
-    handle_git_events(state.as_ref(), &[event(&PathBuf::from("/repo/.git/index"))]);
+    let git_dir = Path::new("/repo/.git");
+    handle_git_events(
+        state.as_ref(),
+        git_dir,
+        &[event(&PathBuf::from("/repo/.git/HEAD"))],
+    );
+    handle_git_events(
+        state.as_ref(),
+        git_dir,
+        &[event(&PathBuf::from("/repo/.git/index"))],
+    );
 
     assert_eq!(state.requested_generation(), 3);
     assert!(changes.try_recv().is_err());
@@ -128,18 +158,7 @@ fn watcher_callbacks_only_invalidate_until_worker_commit() {
         RepositorySnapshotParts {
             status: Vec::new(),
             diff_stats: Vec::new(),
-            branch_cards: vec![BranchCardDto {
-                name: "main".to_string(),
-                is_main_worktree: true,
-                is_deleting: false,
-                worktree_path: Some("/repo".to_string()),
-                dirty_count: 0,
-                is_merged: false,
-                ahead: 0,
-                behind: 0,
-                has_upstream: false,
-                base_ahead: 0,
-            }],
+            dirty_count: 0,
             diff_file_tree: Vec::new(),
             staged_diff_file_tree: Vec::new(),
             changes_diff_file_tree: Vec::new(),
@@ -152,6 +171,75 @@ fn watcher_callbacks_only_invalidate_until_worker_commit() {
         changes.try_recv().unwrap(),
         crate::usecase::state_subscription::StateChangeSource::Repository(vec!["/repo".into()])
     );
+}
+
+#[test]
+fn test_ファイル監視_gitディレクトリの中の変化では変更の状態を読み直さない() {
+    // Given
+    let state =
+        state_with_subscriptions(crate::test_support::state_subscription::test_subscriptions());
+    // When
+    handle_file_events(
+        state.as_ref(),
+        vec![
+            event(&PathBuf::from("/repo/.git/objects/ab/cdef")),
+            event(&PathBuf::from("/repo/.git/worktrees/feature/index")),
+        ],
+    );
+    // Then
+    assert_eq!(state.requested_generation(), 0);
+    // When
+    handle_file_events(
+        state.as_ref(),
+        vec![
+            event(&PathBuf::from("/repo/.git/objects/ab/cdef")),
+            event(&PathBuf::from("/repo/src/main.rs")),
+        ],
+    );
+    // Then
+    assert_eq!(state.requested_generation(), 1);
+}
+
+#[test]
+fn test_git監視_他のworktreeのindexの変化ではrootの変更の状態を読み直さない() {
+    // Given
+    let state =
+        state_with_subscriptions(crate::test_support::state_subscription::test_subscriptions());
+    // When
+    handle_git_events(
+        state.as_ref(),
+        Path::new("/repo/.git"),
+        &[event(&PathBuf::from("/repo/.git/worktrees/feature/index"))],
+    );
+    // Then
+    assert_eq!(state.requested_generation(), 0);
+}
+
+#[test]
+fn test_git監視_linked_worktreeは自分のindexだけを読み直しrefの変化では読み直さない() {
+    // Given
+    let state = state_at(
+        "/repo-worktrees/feature",
+        false,
+        crate::test_support::state_subscription::test_subscriptions(),
+    );
+    let git_dir = Path::new("/repo/.git/worktrees/feature");
+    // When
+    handle_git_events(
+        state.as_ref(),
+        git_dir,
+        &[event(&PathBuf::from("/repo/.git/worktrees/feature/HEAD"))],
+    );
+    // Then
+    assert_eq!(state.requested_generation(), 0);
+    // When
+    handle_git_events(
+        state.as_ref(),
+        git_dir,
+        &[event(&PathBuf::from("/repo/.git/worktrees/feature/index"))],
+    );
+    // Then
+    assert_eq!(state.requested_generation(), 1);
 }
 
 #[cfg(unix)]
@@ -181,7 +269,6 @@ fn test_worktree削除一覧_repositoryの別表記も同じrootへ解決する(
 #[cfg(unix)]
 #[tokio::test]
 async fn test_workspace一覧_別表記の隔離worktreeを除外し削除中の通常worktreeを保持する() {
-    use crate::usecase::repository_query_service::classify_branch_cards;
     // Given
     let parent = tempfile::tempdir().unwrap();
     let real = parent.path().canonicalize().unwrap();
@@ -240,35 +327,32 @@ async fn test_workspace一覧_別表記の隔離worktreeを除外し削除中の
     for repo_path in [root, alias.join("repo")] {
         // When
         let root = gateway.main_repo_path(repo_path.to_str().unwrap()).unwrap();
-        let mut cards =
-            super::super::branch_card::list_branches_with_status(repo_path.to_str().unwrap())
-                .unwrap();
-        gateway
-            .include_deleting_worktrees(&root, &mut cards)
-            .unwrap();
-        let groups = classify_branch_cards(&root, &mut cards);
+        let rows = repository.with_deleting_worktrees(
+            &root,
+            repository
+                .list_working_worktrees(repo_path.to_str().unwrap())
+                .unwrap(),
+        );
         let entries = repository
             .list_worktrees(repo_path.to_str().unwrap())
             .unwrap();
         // Then
-        assert!(!cards.iter().any(|card| card.name == isolated.branch));
-        assert_eq!(groups.working_areas.len(), 2);
-        assert_eq!(entries.len(), groups.working_areas.len());
+        assert!(!rows
+            .iter()
+            .any(|(worktree, _)| worktree.branch == isolated.branch));
+        assert_eq!(rows.len(), 2);
+        assert_eq!(entries.len(), rows.len());
         for entry in entries {
-            let card = groups
-                .working_areas
+            let (worktree, _) = rows
                 .iter()
-                .find(|card| card.name == entry.branch)
+                .find(|(worktree, _)| worktree.branch == entry.branch)
                 .unwrap();
-            assert_eq!(card.worktree_path.as_deref(), Some(entry.path.as_str()));
+            assert_eq!(worktree.path, entry.path);
         }
-        let deleting: Vec<_> = cards.iter().filter(|card| card.is_deleting).collect();
+        let deleting: Vec<_> = rows.iter().filter(|(_, deleting)| *deleting).collect();
         assert_eq!(deleting.len(), 1);
-        assert_eq!(deleting[0].name, "feature");
-        assert_eq!(
-            deleting[0].worktree_path.as_deref(),
-            Some(canonical_worktree.as_str())
-        );
+        assert_eq!(deleting[0].0.branch, "feature");
+        assert_eq!(deleting[0].0.path, canonical_worktree);
         assert!(operations.mutate(&canonical_worktree).is_err());
     }
     // Git 管理情報と実体が失われた後も同じ削除対象を読み出す。
@@ -279,18 +363,13 @@ async fn test_workspace一覧_別表記の隔離worktreeを除外し削除中の
     )
     .unwrap();
     let root = real.join("repo").to_string_lossy().into_owned();
-    let mut cards = Vec::new();
-    gateway
-        .include_deleting_worktrees(&root, &mut cards)
-        .unwrap();
-    assert_eq!(cards.len(), 1);
-    assert!(cards[0].is_deleting);
+    let rows = repository.with_deleting_worktrees(&root, Vec::new());
+    assert_eq!(rows.len(), 1);
+    assert!(rows[0].1);
     drop(deletion);
-    let mut cards = Vec::new();
-    gateway
-        .include_deleting_worktrees(&root, &mut cards)
-        .unwrap();
-    assert!(cards.is_empty());
+    assert!(repository
+        .with_deleting_worktrees(&root, Vec::new())
+        .is_empty());
     assert!(operations.mutate(&canonical_worktree).is_ok());
 }
 
@@ -315,44 +394,20 @@ fn test_workspace一覧_別表記で作成したworktreeの選択パスが一覧
         .unwrap();
     let entries = repository.list_worktrees(repo_path).unwrap();
     let root = gateway.main_repo_path(repo_path).unwrap();
-    let mut cards = super::super::branch_card::list_branches_with_status(repo_path).unwrap();
-    gateway
-        .include_deleting_worktrees(&root, &mut cards)
-        .unwrap();
+    let worktrees = repository.list_working_worktrees(repo_path).unwrap();
 
     // Then
     let entry = entries
         .iter()
         .find(|entry| entry.branch == "feature")
         .unwrap();
-    let card = cards.iter().find(|card| card.name == "feature").unwrap();
+    let worktree = worktrees
+        .iter()
+        .find(|worktree| worktree.branch == "feature")
+        .unwrap();
     assert_eq!(created.path, entry.path);
-    assert_eq!(card.worktree_path.as_deref(), Some(created.path.as_str()));
+    assert_eq!(worktree.path, created.path);
     assert_eq!(repository.get_main_repo_path(&created.path).unwrap(), root);
-}
-
-#[cfg(unix)]
-#[test]
-fn test_workspace一覧_パス識別失敗を呼び出し元へ返す() {
-    // Given
-    let repository = Arc::new(crate::adaptor::controller::wiring::build_repository_usecase());
-    let gateway = RepositoryStateRepositoryGateway::new(repository);
-    let mut cards = vec![BranchCardDto {
-        name: "feature".into(),
-        worktree_path: Some("/invalid\0path".into()),
-        is_main_worktree: false,
-        is_deleting: false,
-        dirty_count: 0,
-        is_merged: false,
-        ahead: 0,
-        behind: 0,
-        has_upstream: false,
-        base_ahead: 0,
-    }];
-    // When / Then
-    assert!(gateway
-        .include_deleting_worktrees("/repo", &mut cards)
-        .is_err());
 }
 
 #[tokio::test]

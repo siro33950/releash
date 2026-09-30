@@ -12,11 +12,6 @@ mod worktree_path;
 pub(crate) use worktree_path::{WorkspaceWorktreePathQuery, WorkspaceWorktreePathUsecase};
 
 mod list;
-mod list_query_service;
 pub(crate) use list::{
-    WorkspaceBranchDto, WorkspaceListSnapshotDto, WorkspaceListStatusDto, WorkspaceListUsecase,
-    WorkspaceRepositoryListDto, WorkspaceWorktreeListDto,
+    WorkspaceList, WorkspaceListRepository, WorkspaceListUsecase, WorkspaceListWorktree,
 };
-pub(crate) use list_query_service::WorkspaceListServices;
-#[cfg(all(test, feature = "desktop"))]
-pub(crate) use list_query_service::{WorkspaceListQueryService, WorkspaceListUsecaseError};

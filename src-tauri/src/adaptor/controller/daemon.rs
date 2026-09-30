@@ -339,16 +339,15 @@ pub(crate) async fn compose(
     let workspace_list = Arc::new(
         crate::adaptor::controller::wiring::build_workspace_list_usecase(
             repo_paths_usecase.clone(),
+            repository_usecase.clone(),
             repository_state.clone(),
             workflow_usecase.clone(),
             git_host_usecase.clone(),
-        )
-        .with_subscriptions(state_subscriptions.clone()),
+        ),
     );
     let app_state = AppState {
         workspace_list,
         repository_usecase: repository_usecase.clone(),
-        repository_state,
         repo_paths_usecase,
         code_usecase,
         review_usecase,
@@ -482,12 +481,6 @@ pub(crate) async fn compose(
                         .repo_paths_usecase
                         .clone(),
                     repository: repository_usecase.clone(),
-                    repository_state: dependencies
-                        .app_state
-                        .as_ref()
-                        .unwrap()
-                        .repository_state
-                        .clone(),
                     workflow: workflow_usecase.clone(),
                     workspaces: dependencies
                         .app_state

@@ -41,7 +41,7 @@ pub(crate) fn build_watcher_usecase<R: tauri::Runtime>(
 ) -> std::sync::Arc<crate::usecase::watcher::WatcherUsecase> {
     use tauri::Manager;
     std::sync::Arc::new(crate::usecase::watcher::WatcherUsecase::new(
-        app.try_state::<crate::adaptor::controller::state::AppState>().map(|state| state.repository_state.clone()),
+        app.try_state::<Arc<crate::usecase::repository_state::RepositoryStateService>>().map(|state| state.inner().clone()),
         std::sync::Arc::new(crate::adaptor::gateway::repository::file_watcher::FileWatcherGateway::new(
             app.state::<std::sync::Arc<crate::infrastructure::file_watcher::FileWatcherManager>>().inner().clone(),
         )),

@@ -70,9 +70,7 @@ impl WorkflowDelegateAcceptanceHost {
             data_dir,
         ));
         let workspace_query = SqliteWorkspaceQueryService::with_repository(
-            work.failures.clone(),
             SqliteWorkspaceTreeRepository::new(store.clone()),
-            archives.clone(),
         );
         let sessions = Arc::new(AcceptanceSessions::default());
         let host = WorkflowRuntimeHost::with_runtime_ports(

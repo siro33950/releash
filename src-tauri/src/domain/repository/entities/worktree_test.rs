@@ -9,6 +9,7 @@ fn test_worktree削除可否_mainとlockedとdirtyを副作用前に拒否する
         branch: "feat".into(),
         is_main: false,
         is_locked: false,
+        is_merged: false,
     };
     // When / Then
     assert!(worktree.authorize_removal(false, 0).is_ok());

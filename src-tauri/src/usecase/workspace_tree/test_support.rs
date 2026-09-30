@@ -4,9 +4,7 @@ use crate::domain::workflow::{
     ExecutionStatusFilter, WorkflowError, WorkflowExecutionSummary, WorkflowPageRequest,
 };
 use crate::domain::workspace_tree::WorkspaceIdentity;
-use crate::usecase::workflow::{
-    WorkspaceNodeDetailDto, WorkspaceTreeSnapshotDto, WorkspaceWorkflowHistoryItemDto,
-};
+use crate::usecase::workflow::WorkspaceNodeDetailDto;
 
 use super::WorkspaceQueryService;
 
@@ -23,17 +21,6 @@ impl TestWorkspaceQueryService {
 
 #[async_trait::async_trait]
 impl WorkspaceQueryService for TestWorkspaceQueryService {
-    async fn workspace_tree(
-        &self,
-        _workspace_identity: &WorkspaceIdentity,
-    ) -> Result<WorkspaceTreeSnapshotDto, WorkflowError> {
-        Ok(WorkspaceTreeSnapshotDto {
-            nodes: Vec::new(),
-            archived_sessions: Vec::new(),
-            preferred_node_id: None,
-        })
-    }
-
     async fn node_detail(
         &self,
         _workspace_identity: &WorkspaceIdentity,
@@ -68,12 +55,5 @@ impl WorkspaceQueryService for TestWorkspaceQueryService {
             .iter()
             .find(|execution| execution.execution_id == execution_id)
             .cloned())
-    }
-
-    async fn workflow_history(
-        &self,
-        _workspace_identity: &WorkspaceIdentity,
-    ) -> Result<Vec<WorkspaceWorkflowHistoryItemDto>, WorkflowError> {
-        Ok(Vec::new())
     }
 }

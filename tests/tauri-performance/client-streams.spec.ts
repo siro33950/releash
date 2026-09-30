@@ -110,15 +110,13 @@ describe("macOS WKWebView / real Connect daemon", () => {
 				{ worktreePath: paths[index], name: `streams-pane-${index}` },
 			);
 			await browser.waitUntil(async () => {
-				const snapshot = await browser.execute(
-					(path) => window.__RELEASH_FIRST_STATE__!({ kind: "branch-status", args: [path] }),
-					paths[index],
+				const snapshot = await browser.execute(() =>
+					window.__RELEASH_FIRST_STATE__!("workspaces"),
 				);
-				return (
-					!snapshot.loading &&
-					snapshot.worktree_display_groups.working_areas.some(
+				return snapshot.repositories.some((repository) =>
+					repository.branches.some(
 						(branch) => branch.worktree_path === paths[index],
-					)
+					),
 				);
 			});
 			await $(`[data-testid="worktree-item-pane-${index}"]`).waitForDisplayed();

@@ -5,24 +5,19 @@ use std::time::Duration;
 
 use parking_lot::RwLock;
 
-use crate::usecase::repository_dto::{BranchCardDto, WorktreeDisplayGroupsDto};
-use crate::usecase::repository_query_service::classify_branch_cards;
+use crate::domain::repository::Worktree;
+use crate::usecase::fetched::Fetched;
 
 use super::error::RepositoryStateError;
 use super::runtime::{RepositoryStateWorkerRuntime, WorktreePathNormalizer};
 use super::scanner::RepositoryScanner;
-use super::snapshot::{RepositoryBranchCardsSnapshotDto, RepositorySnapshot};
+use super::snapshot::RepositorySnapshot;
 use super::worktree::{RepositoryStateWatcher, WorktreeState};
 
 const DEFAULT_DEBOUNCE: Duration = Duration::from_millis(300);
 
 pub trait RepositoryStateRepository: Send + Sync {
     fn main_repo_path(&self, path: &str) -> Result<String, RepositoryStateError>;
-    fn include_deleting_worktrees(
-        &self,
-        repository_root: &str,
-        cards: &mut Vec<BranchCardDto>,
-    ) -> Result<(), RepositoryStateError>;
 }
 
 pub struct RepositoryStateService {
@@ -34,6 +29,8 @@ pub struct RepositoryStateService {
     path_normalizer: Arc<dyn WorktreePathNormalizer>,
     debounce: Duration,
     worktrees: RwLock<HashMap<PathBuf, Arc<WorktreeState>>>,
+    /// path から解決した Repository の root。root は変わらないので、解決できたら持ち続ける。
+    roots: RwLock<HashMap<String, String>>,
 }
 
 impl RepositoryStateService {
@@ -54,6 +51,7 @@ impl RepositoryStateService {
             path_normalizer,
             debounce: DEFAULT_DEBOUNCE,
             worktrees: RwLock::new(HashMap::new()),
+            roots: RwLock::new(HashMap::new()),
         }
     }
 
@@ -81,23 +79,66 @@ impl RepositoryStateService {
         Ok(Arc::new(snapshot))
     }
 
-    pub async fn rescan_branches(
-        &self,
-        repo_path: &str,
-    ) -> Result<Vec<BranchCardDto>, RepositoryStateError> {
-        let repository_root = self.repository.main_repo_path(repo_path)?;
-        let key = self.canonical_worktree_key(repo_path)?;
-        let state = self.worktrees.read().get(&key).cloned();
-        let Some(state) = state else {
-            let parts = self
-                .runtime
-                .scan(self.scanner.clone(), key.to_string_lossy().into_owned())
-                .await?;
-            let mut cards = parts.branch_cards;
-            return Ok(self
-                .branch_display_groups(&repository_root, &mut cards)?
-                .working_areas);
+    /// path が属する Repository の root（main worktree の場所）。
+    pub fn repository_root(&self, path: &str) -> Result<String, RepositoryStateError> {
+        if let Some(root) = self.roots.read().get(path) {
+            return Ok(root.clone());
+        }
+        let root = self.repository.main_repo_path(path)?;
+        self.roots.write().insert(path.to_string(), root.clone());
+        Ok(root)
+    }
+
+    /// Repository の worktree の並び。監視していない Repository は、まだ読めていない扱いになる。
+    pub fn worktrees(&self, repo_path: &str) -> Fetched<Vec<Worktree>> {
+        match self.repository_root_state(repo_path) {
+            Ok(Some(state)) => state.worktrees(),
+            Ok(None) => Fetched::default(),
+            Err(error) => Fetched {
+                value: None,
+                error: Some(error.to_string()),
+            },
+        }
+    }
+
+    /// 監視中の worktree の未コミットの変更の数。まだ読めていなければ None。
+    pub fn dirty_count(&self, worktree_path: &str) -> Option<usize> {
+        let key = self.canonical_worktree_key(worktree_path).ok()?;
+        self.worktrees.read().get(&key)?.dirty_count()
+    }
+
+    /// Repository の worktree の並びと、各 worktree の変更の状態を読み直す。
+    pub async fn rescan(&self, repo_path: &str) -> Result<(), RepositoryStateError> {
+        let Some(root) = self.repository_root_state(repo_path)? else {
+            return Ok(());
         };
+        root.scan_worktrees_once(self.scanner.clone(), self.runtime.as_ref())
+            .await;
+        let mut states = vec![root.clone()];
+        for worktree in root.worktrees().value.unwrap_or_default() {
+            let Ok(key) = self.canonical_worktree_key(&worktree.path) else {
+                continue;
+            };
+            if let Some(state) = self.worktrees.read().get(&key) {
+                if !Arc::ptr_eq(state, &root) {
+                    states.push(state.clone());
+                }
+            }
+        }
+        futures_util::future::join_all(states.iter().map(|state| async move {
+            if let Err(error) = self.rescan_status(state).await {
+                log::warn!(
+                    "repository snapshot rescan failed for {}: {error}",
+                    state.worktree_path()
+                );
+            }
+            state.notify_snapshot_changed();
+        }))
+        .await;
+        Ok(())
+    }
+
+    async fn rescan_status(&self, state: &WorktreeState) -> Result<(), RepositoryStateError> {
         let _scan = state.scan_lock.lock().await;
         for _ in 0..2 {
             let generation = state.requested_generation();
@@ -108,36 +149,25 @@ impl RepositoryStateService {
             if state.requested_generation() != generation {
                 continue;
             }
-            if let Some(snapshot) = state.commit_snapshot(result?, generation) {
-                let mut cards = snapshot.branch_cards.clone();
-                return Ok(self
-                    .branch_display_groups(&repository_root, &mut cards)?
-                    .working_areas);
+            if state.commit_snapshot(result?, generation).is_some() {
+                return Ok(());
             }
         }
         Err(RepositoryStateError::ScanInvalidated)
     }
 
-    fn branch_display_groups(
-        &self,
-        repository_root: &str,
-        cards: &mut Vec<BranchCardDto>,
-    ) -> Result<WorktreeDisplayGroupsDto, RepositoryStateError> {
-        self.repository
-            .include_deleting_worktrees(repository_root, cards)?;
-        Ok(classify_branch_cards(repository_root, cards))
-    }
-
-    pub fn list_branches_with_status_snapshot(
+    fn repository_root_state(
         &self,
         repo_path: &str,
-    ) -> Result<RepositoryBranchCardsSnapshotDto, RepositoryStateError> {
-        let snapshot = self.get_snapshot(repo_path)?;
-        let repository_root = self.repository.main_repo_path(repo_path)?;
-        let mut dto = RepositoryBranchCardsSnapshotDto::from_snapshot(snapshot.as_ref());
-        dto.worktree_display_groups =
-            self.branch_display_groups(&repository_root, &mut dto.branches)?;
-        Ok(dto)
+    ) -> Result<Option<Arc<WorktreeState>>, RepositoryStateError> {
+        let root = self.repository_root(repo_path)?;
+        let key = self.canonical_worktree_key(&root)?;
+        Ok(self
+            .worktrees
+            .read()
+            .get(&key)
+            .filter(|state| state.is_repository_root())
+            .cloned())
     }
 
     pub fn stop_watching(&self, watcher_id: u64) -> Result<bool, RepositoryStateError> {
@@ -206,8 +236,14 @@ impl RepositoryStateService {
         // ブロックし得るため worktrees ロックの外で行う（#1641）。生成が競合した
         // 場合は先に登録された state を採用し、負けた側の watcher は破棄する。
         let canonical_path = key.to_string_lossy().to_string();
+        let is_repository_root = self
+            .repository_root(worktree_path)
+            .ok()
+            .and_then(|root| self.canonical_worktree_key(&root).ok())
+            .is_some_and(|root| root == key);
         let state = WorktreeState::new(
             canonical_path,
+            is_repository_root,
             self.scanner.clone(),
             self.subscriptions.clone(),
             self.runtime.clone(),
@@ -247,6 +283,7 @@ impl RepositoryStateService {
         }
         let state = WorktreeState::new(
             worktree_path.to_string(),
+            true,
             self.scanner.clone(),
             self.subscriptions.clone(),
             self.runtime.clone(),
@@ -269,7 +306,7 @@ impl RepositoryStateService {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use crate::usecase::repository_dto::{BranchCardDto, FileDiffStatDto, FileStatusDto};
+    use crate::usecase::repository_dto::{FileDiffStatDto, FileStatusDto};
     use crate::usecase::repository_state::runtime::tests_support::{
         CanonicalWorktreePathNormalizer, IdentityWorktreePathNormalizer,
         NoSpawnRepositoryStateWorkerRuntime, TestRepositoryStateWorkerRuntime,
@@ -282,15 +319,36 @@ pub(crate) mod tests {
     struct TestRepositoryStateRepository;
 
     impl RepositoryStateRepository for TestRepositoryStateRepository {
-        fn include_deleting_worktrees(
-            &self,
-            _: &str,
-            _: &mut Vec<BranchCardDto>,
-        ) -> Result<(), RepositoryStateError> {
-            Ok(())
-        }
         fn main_repo_path(&self, path: &str) -> Result<String, RepositoryStateError> {
             Ok(path.to_string())
+        }
+    }
+
+    /// `/repo-worktrees/` 以下を `/repo` の linked worktree として解決し、解決の回数を数える。
+    #[derive(Default)]
+    struct LinkedRepositoryStateRepository {
+        resolutions: AtomicUsize,
+    }
+
+    impl RepositoryStateRepository for LinkedRepositoryStateRepository {
+        fn main_repo_path(&self, path: &str) -> Result<String, RepositoryStateError> {
+            self.resolutions.fetch_add(1, Ordering::SeqCst);
+            Ok(if path.starts_with("/repo-worktrees/") {
+                "/repo".to_string()
+            } else {
+                path.to_string()
+            })
+        }
+    }
+
+    fn worktree(path: &str, branch: &str, is_main: bool) -> Worktree {
+        Worktree {
+            name: branch.to_string(),
+            path: path.to_string(),
+            branch: branch.to_string(),
+            is_main,
+            is_locked: false,
+            is_merged: false,
         }
     }
 
@@ -310,18 +368,18 @@ pub(crate) mod tests {
             Ok(RepositorySnapshotParts {
                 status: Vec::new(),
                 diff_stats: Vec::new(),
-                branch_cards: Vec::new(),
+                dirty_count: 0,
                 diff_file_tree: Vec::new(),
                 staged_diff_file_tree: Vec::new(),
                 changes_diff_file_tree: Vec::new(),
             })
         }
 
-        fn prune_stale_branch_bases(
-            &self,
-            _repo_path: &str,
-            _existing_branches: &[String],
-        ) -> Result<(), RepositoryStateError> {
+        fn scan_worktrees(&self, _repo_path: &str) -> Result<Vec<Worktree>, RepositoryStateError> {
+            Ok(Vec::new())
+        }
+
+        fn prune_stale_branch_bases(&self, _repo_path: &str) -> Result<(), RepositoryStateError> {
             Ok(())
         }
     }
@@ -329,10 +387,10 @@ pub(crate) mod tests {
     #[derive(Default)]
     struct CountingScanner {
         scans: AtomicUsize,
-        prunes: parking_lot::Mutex<Vec<Vec<String>>>,
+        prunes: parking_lot::Mutex<Vec<String>>,
         status: parking_lot::Mutex<Vec<FileStatusDto>>,
         diff_stats: parking_lot::Mutex<Vec<FileDiffStatDto>>,
-        branch_cards: parking_lot::Mutex<Vec<BranchCardDto>>,
+        worktrees: parking_lot::Mutex<Vec<Worktree>>,
     }
 
     impl CountingScanner {
@@ -347,12 +405,12 @@ pub(crate) mod tests {
             self.scans.load(Ordering::SeqCst)
         }
 
-        fn prune_calls(&self) -> Vec<Vec<String>> {
+        fn prune_calls(&self) -> Vec<String> {
             self.prunes.lock().clone()
         }
 
-        fn set_branch_cards(&self, branch_cards: Vec<BranchCardDto>) {
-            *self.branch_cards.lock() = branch_cards;
+        fn set_worktrees(&self, worktrees: Vec<Worktree>) {
+            *self.worktrees.lock() = worktrees;
         }
     }
 
@@ -368,22 +426,23 @@ pub(crate) mod tests {
 
         fn scan(&self, _repo_path: &str) -> Result<RepositorySnapshotParts, RepositoryStateError> {
             self.scans.fetch_add(1, Ordering::SeqCst);
+            let status = self.status.lock().clone();
             Ok(RepositorySnapshotParts {
-                status: self.status.lock().clone(),
+                dirty_count: status.len(),
+                status,
                 diff_stats: self.diff_stats.lock().clone(),
-                branch_cards: self.branch_cards.lock().clone(),
                 diff_file_tree: Vec::new(),
                 staged_diff_file_tree: Vec::new(),
                 changes_diff_file_tree: Vec::new(),
             })
         }
 
-        fn prune_stale_branch_bases(
-            &self,
-            _repo_path: &str,
-            existing_branches: &[String],
-        ) -> Result<(), RepositoryStateError> {
-            self.prunes.lock().push(existing_branches.to_vec());
+        fn scan_worktrees(&self, _repo_path: &str) -> Result<Vec<Worktree>, RepositoryStateError> {
+            Ok(self.worktrees.lock().clone())
+        }
+
+        fn prune_stale_branch_bases(&self, repo_path: &str) -> Result<(), RepositoryStateError> {
+            self.prunes.lock().push(repo_path.to_string());
             Ok(())
         }
     }
@@ -559,18 +618,6 @@ pub(crate) mod tests {
             index_status: "none".to_string(),
             worktree_status: "modified".to_string(),
         }]));
-        scanner.set_branch_cards(vec![BranchCardDto {
-            name: "main".to_string(),
-            is_main_worktree: true,
-            is_deleting: false,
-            worktree_path: Some("/repo".to_string()),
-            dirty_count: 1,
-            is_merged: false,
-            ahead: 0,
-            behind: 0,
-            has_upstream: false,
-            base_ahead: 0,
-        }]);
         let service =
             counting_service(scanner, Arc::new(CountingRepositoryStateWatcher::default()));
         let dir = tempfile::TempDir::new().unwrap();
@@ -586,15 +633,12 @@ pub(crate) mod tests {
 
         let status = service.get_snapshot(path).unwrap();
         let diff_stats = service.get_snapshot(path).unwrap();
-        let branch_cards = service.list_branches_with_status_snapshot(path).unwrap();
         let head_tree = service.get_snapshot(path).unwrap();
-        let dirty_count = service.get_snapshot(path).unwrap().status.len() as u32;
 
         assert!(status.version >= 1);
         assert_eq!(diff_stats.version, status.version);
-        assert_eq!(branch_cards.version, status.version);
         assert_eq!(head_tree.version, status.version);
-        assert_eq!(dirty_count as usize, status.status.len());
+        assert_eq!(service.dirty_count(path), Some(status.status.len()));
     }
 
     #[tokio::test]
@@ -635,7 +679,7 @@ pub(crate) mod tests {
             RepositorySnapshotParts {
                 status: Vec::new(),
                 diff_stats: Vec::new(),
-                branch_cards: Vec::new(),
+                dirty_count: 0,
                 diff_file_tree: Vec::new(),
                 staged_diff_file_tree: Vec::new(),
                 changes_diff_file_tree: Vec::new(),
@@ -646,7 +690,7 @@ pub(crate) mod tests {
             RepositorySnapshotParts {
                 status: Vec::new(),
                 diff_stats: Vec::new(),
-                branch_cards: Vec::new(),
+                dirty_count: 0,
                 diff_file_tree: Vec::new(),
                 staged_diff_file_tree: Vec::new(),
                 changes_diff_file_tree: Vec::new(),
@@ -702,57 +746,65 @@ pub(crate) mod tests {
         assert!(started_paths.contains(&second_path.to_string()));
     }
 
-    #[test]
-    fn list_branches_with_status_is_pure_read_and_does_not_prune() {
+    #[tokio::test]
+    async fn test_worktreeの並び_監視していないrepositoryは読まず掃除もしない() {
+        // Given
         let scanner = Arc::new(CountingScanner::default());
-        scanner.set_branch_cards(vec![BranchCardDto {
-            name: "main".to_string(),
-            is_main_worktree: true,
-            is_deleting: false,
-            worktree_path: Some("/repo".to_string()),
-            dirty_count: 0,
-            is_merged: false,
-            ahead: 0,
-            behind: 0,
-            has_upstream: false,
-            base_ahead: 0,
-        }]);
+        scanner.set_worktrees(vec![worktree("/repo", "main", true)]);
         let service = counting_service(scanner.clone(), Arc::new(NoopRepositoryStateWatcher));
 
-        let cards = service
-            .list_branches_with_status_snapshot("/repo")
-            .unwrap()
-            .branches;
+        // When
+        let worktrees = service.worktrees("/repo");
+        let dirty_count = service.dirty_count("/repo");
 
-        assert_eq!(cards.len(), 1);
+        // Then
+        assert_eq!(worktrees, Fetched::default());
+        assert_eq!(dirty_count, None);
+        assert_eq!(scanner.scan_count(), 0);
         assert!(scanner.prune_calls().is_empty());
     }
 
-    #[test]
-    fn branch_card_reads_reclassify_cached_cards_at_request_time() {
+    #[tokio::test]
+    async fn test_worktreeの並び_linked_worktreeのpathからもrootの並びを一度の解決で読む() {
+        // Given
         let scanner = Arc::new(CountingScanner::default());
-        scanner.set_branch_cards(vec![BranchCardDto {
-            name: "releash/isolated/orphan-a1".to_string(),
-            is_main_worktree: false,
-            is_deleting: false,
-            worktree_path: Some("/repo-worktrees/.releash-isolated/orphan-a1".to_string()),
-            dirty_count: 0,
-            is_merged: false,
-            ahead: 0,
-            behind: 0,
-            has_upstream: false,
-            base_ahead: 0,
-        }]);
-        let service = counting_service(scanner, Arc::new(NoopRepositoryStateWatcher));
+        scanner.set_worktrees(vec![
+            worktree("/repo", "main", true),
+            worktree("/repo-worktrees/feature", "feature", false),
+        ]);
+        let repository = Arc::new(LinkedRepositoryStateRepository::default());
+        let service = RepositoryStateService::new(
+            repository.clone(),
+            scanner.clone(),
+            crate::test_support::state_subscription::test_subscriptions(),
+            Arc::new(NoopRepositoryStateWatcher),
+            Arc::new(TestRepositoryStateWorkerRuntime),
+            Arc::new(IdentityWorktreePathNormalizer),
+        )
+        .with_debounce(Duration::ZERO);
+        service.subscribe("/repo-worktrees/feature").unwrap();
+        service.subscribe("/repo").unwrap();
+        for _ in 0..100 {
+            if service.worktrees("/repo").loaded() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let resolutions = repository.resolutions.load(Ordering::SeqCst);
 
-        let cards = service
-            .list_branches_with_status_snapshot("/repo")
-            .unwrap()
-            .branches;
-        let snapshot = service.list_branches_with_status_snapshot("/repo").unwrap();
+        // When
+        let from_linked = service.worktrees("/repo-worktrees/feature");
+        let from_root = service.worktrees("/repo");
 
-        assert!(cards.is_empty());
-        assert!(snapshot.branches.is_empty());
+        // Then
+        assert_eq!(from_linked.value.as_ref().map(Vec::len), Some(2));
+        assert_eq!(from_linked, from_root);
+        assert_eq!(
+            service.repository_root("/repo-worktrees/feature").unwrap(),
+            "/repo"
+        );
+        assert_eq!(repository.resolutions.load(Ordering::SeqCst), resolutions);
+        assert_eq!(scanner.prune_calls(), vec!["/repo".to_string()]);
     }
 
     #[test]

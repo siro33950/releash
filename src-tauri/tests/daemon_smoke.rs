@@ -47,7 +47,7 @@ async fn read_external_editor(socket: &Socket) -> String {
     editor.selected.unwrap()
 }
 type WorkspaceStream =
-    std::pin::Pin<Box<dyn futures_util::Stream<Item = wire::WorkspaceListSnapshotDto> + Send>>;
+    std::pin::Pin<Box<dyn futures_util::Stream<Item = wire::WorkspaceListSnapshot> + Send>>;
 async fn subscribe_state(socket: &Socket, target: &str, args: Vec<String>) -> StateStream {
     let client_id = uuid::Uuid::new_v4().to_string();
     let mut stream = socket
@@ -127,8 +127,8 @@ async fn expect_state(
 async fn expect_workspace(
     stream: &mut WorkspaceStream,
     phase: &str,
-    predicate: impl Fn(&wire::WorkspaceListSnapshotDto) -> bool,
-) -> wire::WorkspaceListSnapshotDto {
+    predicate: impl Fn(&wire::WorkspaceListSnapshot) -> bool,
+) -> wire::WorkspaceListSnapshot {
     let mut last = None;
     tokio::time::timeout(Duration::from_secs(10), async {
         loop {
@@ -142,10 +142,10 @@ async fn expect_workspace(
     .await
     .unwrap_or_else(|_| panic!("workspace subscription did not reflect {phase}: {last:?}"))
 }
-fn worktree_state<'a>(
-    value: &'a wire::WorkspaceListSnapshotDto,
+fn find_worktree<'a>(
+    value: &'a wire::WorkspaceListSnapshot,
     path: &str,
-) -> &'a wire::WorkspaceWorktreeListDto {
+) -> Option<&'a wire::WorkspaceWorktreeList> {
     value
         .repositories
         .as_ref()
@@ -154,7 +154,26 @@ fn worktree_state<'a>(
         .iter()
         .flat_map(|repo| &repo.worktrees.as_ref().unwrap().items)
         .find(|tree| tree.path.as_deref() == Some(path))
+}
+fn worktree_state<'a>(
+    value: &'a wire::WorkspaceListSnapshot,
+    path: &str,
+) -> &'a wire::WorkspaceWorktreeList {
+    find_worktree(value, path).unwrap()
+}
+/// 一覧の行のうち、条件を満たすものがあるか。
+fn any_branch(
+    value: &wire::WorkspaceListSnapshot,
+    predicate: impl Fn(&wire::WorkspaceBranch) -> bool,
+) -> bool {
+    value
+        .repositories
+        .as_ref()
         .unwrap()
+        .items
+        .iter()
+        .flat_map(|repo| &repo.branches.as_ref().unwrap().items)
+        .any(predicate)
 }
 struct Daemon(Child);
 impl Drop for Daemon {
@@ -543,14 +562,14 @@ async fn test_daemon本番配線_状態を購読へ配信する() {
     let repo_path = root.join("repository");
     let repository = git2::Repository::init(&repo_path).unwrap();
     let signature = git2::Signature::now("daemon smoke", "smoke@example.test").unwrap();
-    let tree = repository.index().unwrap().write_tree().unwrap();
+    let tree_id = repository.index().unwrap().write_tree().unwrap();
     let commit = repository
         .commit(
             Some("HEAD"),
             &signature,
             &signature,
             "initial",
-            &repository.find_tree(tree).unwrap(),
+            &repository.find_tree(tree_id).unwrap(),
             &[],
         )
         .unwrap();
@@ -591,8 +610,12 @@ async fn test_daemon本番配線_状態を購読へ配信する() {
         }),
     )
     .await;
+    // 購読の最初の値は取得中で届くことがある。走査と実行木の読み取りが終わった値を待つ。
     let mut states = subscribe_workspaces(&socket).await;
-    let snapshot = states.next().await.unwrap();
+    let snapshot = expect_workspace(&mut states, "initial execution tree", |value| {
+        find_worktree(value, worktree).is_some_and(|tree| tree.snapshot.is_some())
+    })
+    .await;
     let tree = worktree_state(&snapshot, worktree)
         .snapshot
         .as_ref()
@@ -604,7 +627,7 @@ async fn test_daemon本番配線_状態を購読へ配信する() {
         .items
         .iter()
         .find_map(|item| match &item.variant {
-            Some(wire::workspace_tree_item_dto::Variant::Node(node)) => node.id.clone(),
+            Some(wire::workspace_tree_item::Variant::Node(node)) => node.id.clone(),
             _ => None,
         })
         .expect("standalone session node");
@@ -618,7 +641,7 @@ async fn test_daemon本番配線_状態を購読へ配信する() {
         }),
     )
     .await;
-    expect_workspace(&mut states, "session rename", |value| worktree_state(value, worktree).snapshot.as_ref().unwrap().nodes.as_ref().unwrap().items.iter().any(|item| matches!(&item.variant, Some(wire::workspace_tree_item_dto::Variant::Node(node)) if node.id.as_deref() == Some(&node_id) && node.title.as_deref() == Some("subscription verification")))).await;
+    expect_workspace(&mut states, "session rename", |value| worktree_state(value, worktree).snapshot.as_ref().unwrap().nodes.as_ref().unwrap().items.iter().any(|item| matches!(&item.variant, Some(wire::workspace_tree_item::Variant::Node(node)) if node.id.as_deref() == Some(&node_id) && node.title.as_deref() == Some("subscription verification")))).await;
     // When / Then: workflow notifier
     let workflows = if cfg!(target_os = "macos") {
         root.join("Library/Application Support/releash/workflows")
@@ -644,7 +667,7 @@ async fn test_daemon本番配線_状態を購読へ配信する() {
         panic!("workflow start result");
     };
     let execution_id = workflow.value.unwrap();
-    expect_workspace(&mut states, "workflow start", |value| worktree_state(value, worktree).snapshot.as_ref().unwrap().nodes.as_ref().unwrap().items.iter().any(|item| matches!(&item.variant, Some(wire::workspace_tree_item_dto::Variant::Node(node)) if node.id.as_deref() == Some(&execution_id) && node.title.as_deref() == Some("push-smoke")))).await;
+    expect_workspace(&mut states, "workflow start", |value| worktree_state(value, worktree).snapshot.as_ref().unwrap().nodes.as_ref().unwrap().items.iter().any(|item| matches!(&item.variant, Some(wire::workspace_tree_item::Variant::Node(node)) if node.id.as_deref() == Some(&execution_id) && node.title.as_deref() == Some("push-smoke")))).await;
 
     // When / Then: review threads reach the subscription after a comment command
     let mut threads = subscribe_state(&socket, "review-threads", vec!["repository".into()]).await;
@@ -678,67 +701,38 @@ async fn test_daemon本番配線_状態を購読へ配信する() {
     review.next().await.unwrap();
     std::fs::write(repo_path.join("smoke.txt"), "smoke").unwrap();
     expect_state(&mut review, "review snapshot after file change", |value| matches!(value, wire::state_payload::Value::ReviewSnapshot(snapshot) if snapshot.changed_files.as_ref().unwrap().items.iter().any(|file| file.path.as_deref() == Some("smoke.txt")))).await;
-    // When / Then: the workspace subscription owns the repository watch.
+    // Given: a branch merged into the default branch through a merge commit.
+    let side = repository
+        .commit(
+            None,
+            &signature,
+            &signature,
+            "side",
+            &repository.find_tree(tree_id).unwrap(),
+            &[&repository.find_commit(commit).unwrap()],
+        )
+        .unwrap();
     repository
         .branch(
             "pushed-branch",
-            &repository.find_commit(commit).unwrap(),
+            &repository.find_commit(side).unwrap(),
             false,
         )
         .unwrap();
-    expect_workspace(&mut states, "branch creation", |value| {
-        value
-            .repositories
-            .as_ref()
-            .unwrap()
-            .items
-            .iter()
-            .any(|repo| {
-                repo.branches.as_ref().unwrap().items.iter().any(|branch| {
-                    branch.branch.as_ref().unwrap().name.as_deref() == Some("pushed-branch")
-                })
-            })
-    })
-    .await;
-    // When / Then: only Refresh rescans the upstream configuration, which Git watches ignore.
-    let head = repository.head().unwrap().name().unwrap().to_owned();
-    for has_upstream in [true, false] {
-        let mut config = repository.config().unwrap();
-        if has_upstream {
-            config.set_str("branch.pushed-branch.remote", ".").unwrap();
-            config.set_str("branch.pushed-branch.merge", &head).unwrap();
-        } else {
-            config.remove("branch.pushed-branch.remote").unwrap();
-            config.remove("branch.pushed-branch.merge").unwrap();
-        }
-        let result = request(
-            &mut socket,
-            "refresh-workspaces",
-            C::RefreshWorkspaces(wire::RefreshWorkspacesRequest::default()),
+    repository
+        .commit(
+            Some("HEAD"),
+            &signature,
+            &signature,
+            "merge",
+            &repository.find_tree(tree_id).unwrap(),
+            &[
+                &repository.find_commit(commit).unwrap(),
+                &repository.find_commit(side).unwrap(),
+            ],
         )
-        .await;
-        assert!(matches!(
-            result,
-            wire::command_result::Command::RefreshWorkspaces(_)
-        ));
-        expect_workspace(&mut states, "manual workspace rescan", |value| {
-            value
-                .repositories
-                .as_ref()
-                .unwrap()
-                .items
-                .iter()
-                .any(|repo| {
-                    repo.branches.as_ref().unwrap().items.iter().any(|branch| {
-                        branch.branch.as_ref().is_some_and(|branch| {
-                            branch.name.as_deref() == Some("pushed-branch")
-                                && branch.has_upstream == Some(has_upstream)
-                        })
-                    })
-                })
-        })
-        .await;
-    }
+        .unwrap();
+    // When / Then: the workspace subscription owns the repository watch.
     assert!(!repository.path().join("worktrees").exists());
     let created = request(
         &mut socket,
@@ -756,20 +750,38 @@ async fn test_daemon本番配線_状態を購読へ配信する() {
     };
     let linked = created.path.unwrap();
     expect_workspace(&mut states, "first linked worktree creation", |value| {
-        value
-            .repositories
-            .as_ref()
-            .unwrap()
-            .items
-            .iter()
-            .any(|repo| {
-                repo.branches.as_ref().unwrap().items.iter().any(|branch| {
-                    branch.branch.as_ref().unwrap().worktree_path.as_deref()
-                        == Some(linked.as_str())
-                })
-            })
+        any_branch(value, |branch| {
+            branch.name.as_deref() == Some("pushed-branch")
+                && branch.worktree_path.as_deref() == Some(linked.as_str())
+                && branch.is_merged == Some(true)
+        })
     })
     .await;
+    // When / Then: only Refresh rescans the base configuration, which Git watches ignore.
+    for base in [Some("pushed-branch"), None] {
+        let mut config = repository.config().unwrap();
+        match base {
+            Some(base) => config.set_str("releash.base", base).unwrap(),
+            None => config.remove("releash.base").unwrap(),
+        }
+        let result = request(
+            &mut socket,
+            "refresh-workspaces",
+            C::RefreshWorkspaces(wire::RefreshWorkspacesRequest::default()),
+        )
+        .await;
+        assert!(matches!(
+            result,
+            wire::command_result::Command::RefreshWorkspaces(_)
+        ));
+        expect_workspace(&mut states, "manual workspace rescan", |value| {
+            any_branch(value, |branch| {
+                branch.name.as_deref() == Some("pushed-branch")
+                    && branch.is_merged == Some(base.is_none())
+            })
+        })
+        .await;
+    }
     request(
         &mut socket,
         "remove-linked",
@@ -781,18 +793,9 @@ async fn test_daemon本番配線_状態を購読へ配信する() {
     )
     .await;
     expect_workspace(&mut states, "linked worktree removal", |value| {
-        value
-            .repositories
-            .as_ref()
-            .unwrap()
-            .items
-            .iter()
-            .all(|repo| {
-                repo.branches.as_ref().unwrap().items.iter().all(|branch| {
-                    branch.branch.as_ref().unwrap().worktree_path.as_deref()
-                        != Some(linked.as_str())
-                })
-            })
+        !any_branch(value, |branch| {
+            branch.worktree_path.as_deref() == Some(linked.as_str())
+        })
     })
     .await;
     let external = root.join("external-worktree");
@@ -810,18 +813,9 @@ async fn test_daemon本番配線_状態を購読へ配信する() {
         .to_string_lossy()
         .into_owned();
     expect_workspace(&mut states, "external linked worktree creation", |value| {
-        value
-            .repositories
-            .as_ref()
-            .unwrap()
-            .items
-            .iter()
-            .any(|repo| {
-                repo.branches.as_ref().unwrap().items.iter().any(|branch| {
-                    branch.branch.as_ref().unwrap().worktree_path.as_deref()
-                        == Some(external.as_str())
-                })
-            })
+        any_branch(value, |branch| {
+            branch.worktree_path.as_deref() == Some(external.as_str())
+        })
     })
     .await;
     let db = rusqlite::Connection::open_with_flags(
@@ -887,7 +881,10 @@ async fn test_daemon本番配線_状態を購読へ配信する() {
     assert_eq!(archive["archivedAt"], 12.345678);
     assert_eq!(archive["reason"], "manual");
     let mut restarted_states = subscribe_workspaces(&socket).await;
-    let snapshot = restarted_states.next().await.unwrap();
+    let snapshot = expect_workspace(&mut restarted_states, "restarted execution tree", |value| {
+        find_worktree(value, worktree).is_some_and(|tree| tree.snapshot.is_some())
+    })
+    .await;
     let history = &worktree_state(&snapshot, worktree)
         .workflow_history
         .as_ref()

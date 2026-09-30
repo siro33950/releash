@@ -1,9 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::usecase::code_dto::DiffTreeNodeDto;
-use crate::usecase::repository_dto::{
-    BranchCardDto, FileDiffStatDto, FileStatusDto, WorktreeDisplayGroupsDto,
-};
+use crate::usecase::repository_dto::{FileDiffStatDto, FileStatusDto};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SnapshotFlags {
@@ -33,7 +31,8 @@ pub struct RepositorySnapshot {
     pub flags: SnapshotFlags,
     pub status: Vec<FileStatusDto>,
     pub diff_stats: Vec<FileDiffStatDto>,
-    pub branch_cards: Vec<BranchCardDto>,
+    /// 未コミットの変更の数。
+    pub dirty_count: usize,
     pub diff_file_tree: Vec<DiffTreeNodeDto>,
     pub staged_diff_file_tree: Vec<DiffTreeNodeDto>,
     pub changes_diff_file_tree: Vec<DiffTreeNodeDto>,
@@ -46,7 +45,7 @@ impl RepositorySnapshot {
             flags: SnapshotFlags::loading(),
             status: Vec::new(),
             diff_stats: Vec::new(),
-            branch_cards: Vec::new(),
+            dirty_count: 0,
             diff_file_tree: Vec::new(),
             staged_diff_file_tree: Vec::new(),
             changes_diff_file_tree: Vec::new(),
@@ -65,7 +64,7 @@ impl RepositorySnapshot {
 pub struct RepositorySnapshotParts {
     pub status: Vec<FileStatusDto>,
     pub diff_stats: Vec<FileDiffStatDto>,
-    pub branch_cards: Vec<BranchCardDto>,
+    pub dirty_count: usize,
     pub diff_file_tree: Vec<DiffTreeNodeDto>,
     pub staged_diff_file_tree: Vec<DiffTreeNodeDto>,
     pub changes_diff_file_tree: Vec<DiffTreeNodeDto>,
@@ -78,32 +77,10 @@ impl RepositorySnapshotParts {
             flags: SnapshotFlags::ready(),
             status: self.status,
             diff_stats: self.diff_stats,
-            branch_cards: self.branch_cards,
+            dirty_count: self.dirty_count,
             diff_file_tree: self.diff_file_tree,
             staged_diff_file_tree: self.staged_diff_file_tree,
             changes_diff_file_tree: self.changes_diff_file_tree,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, PartialEq)]
-pub struct RepositoryBranchCardsSnapshotDto {
-    pub version: u64,
-    pub stale: bool,
-    pub loading: bool,
-    pub branches: Vec<BranchCardDto>,
-    /// 管理 UI の表示先ごとに振り分けた worktree card。
-    pub worktree_display_groups: WorktreeDisplayGroupsDto,
-}
-
-impl RepositoryBranchCardsSnapshotDto {
-    pub fn from_snapshot(snapshot: &RepositorySnapshot) -> Self {
-        Self {
-            version: snapshot.version,
-            stale: snapshot.flags.stale,
-            loading: snapshot.flags.loading,
-            branches: snapshot.branch_cards.clone(),
-            worktree_display_groups: WorktreeDisplayGroupsDto::default(),
         }
     }
 }

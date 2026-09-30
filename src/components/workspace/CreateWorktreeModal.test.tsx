@@ -8,8 +8,9 @@ import {
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { BranchStatus } from "@/generated/client_types";
 import { invokeClient as invoke, subscribeState } from "@/lib/client";
-import type { IssueInfo, WorktreeBranch, WorktreeEntry } from "@/types/git";
+import type { IssueInfo, WorktreeEntry } from "@/types/git";
 import type { NotionTask } from "@/types/notion";
 import { CreateWorktreeModal } from "./CreateWorktreeModal";
 
@@ -51,22 +52,6 @@ function makeIssue(overrides: Partial<IssueInfo> = {}): IssueInfo {
 	};
 }
 
-function makeBranch(overrides: Partial<WorktreeBranch> = {}): WorktreeBranch {
-	return {
-		name: "main",
-		is_main_worktree: true,
-		is_deleting: false,
-		worktree_path: "/repo",
-		dirty_count: 0,
-		is_merged: false,
-		ahead: 0,
-		behind: 0,
-		has_upstream: false,
-		base_ahead: 0,
-		...overrides,
-	};
-}
-
 function makeNotionTask(overrides: Partial<NotionTask> = {}): NotionTask {
 	return {
 		id: "notion-page-1",
@@ -81,11 +66,11 @@ function makeNotionTask(overrides: Partial<NotionTask> = {}): NotionTask {
 }
 
 describe("CreateWorktreeModal", () => {
-	let branchCards: WorktreeBranch[];
+	let branchStatuses: BranchStatus[];
 
 	beforeEach(() => {
 		vi.clearAllMocks();
-		branchCards = [];
+		branchStatuses = [];
 		hookMocks.useIssues.mockReturnValue({
 			issues: [],
 			loading: false,
@@ -106,14 +91,7 @@ describe("CreateWorktreeModal", () => {
 		vi.mocked(subscribeState).mockImplementation((target, receive) => {
 			const kind = typeof target === "string" ? target : target.kind;
 			if (kind === "branches") receive([{ name: "main", is_remote: false }]);
-			if (kind === "branch-status")
-				receive({
-					version: 1,
-					stale: false,
-					loading: false,
-					branches: branchCards,
-					worktree_display_groups: { working_areas: branchCards },
-				});
+			if (kind === "branch-status") receive(branchStatuses);
 			return vi.fn();
 		});
 		mockInvoke.mockImplementation((command: string, args?: unknown) => {
@@ -261,14 +239,7 @@ describe("CreateWorktreeModal", () => {
 
 	it("既存 worktree の branch と一致する issue を候補から除外する", async () => {
 		const user = userEvent.setup();
-		branchCards = [
-			makeBranch({
-				name: "backend/issue-1302",
-				is_main_worktree: false,
-				is_deleting: false,
-				worktree_path: "/repo-worktrees/backend-issue-1302",
-			}),
-		];
+		branchStatuses = [{ name: "backend/issue-1302", has_worktree: true }];
 		hookMocks.useIssues.mockReturnValue({
 			issues: [makeIssue()],
 			loading: false,

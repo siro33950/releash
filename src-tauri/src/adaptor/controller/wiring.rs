@@ -19,13 +19,12 @@ use crate::adaptor::gateway::code::staging::StagingGateway;
 use crate::adaptor::gateway::comment::{
     FileReviewEventStore, SystemReviewClock, UuidReviewIdGenerator,
 };
-use crate::adaptor::gateway::git_host::{GitHubGitHostGateway, InMemoryTtlCache};
+use crate::adaptor::gateway::git_host::{GitHubGitHostGateway, InMemoryTtlCache, LatestPrStatuses};
 use crate::adaptor::gateway::local_event_store::read_only::LocalEventReadStore;
 use crate::adaptor::gateway::local_event_store::LocalEventStore;
 #[cfg(test)]
 use crate::adaptor::gateway::local_event_store::LocalEventStoreConfig;
 use crate::adaptor::gateway::repository::branch::BranchGateway;
-use crate::adaptor::gateway::repository::branch_card::BranchCardGateway;
 use crate::adaptor::gateway::repository::git_config::GitConfigGateway;
 use crate::adaptor::gateway::repository::status::StatusGateway;
 use crate::adaptor::gateway::repository::util::RepoLocatorGateway;
@@ -46,7 +45,7 @@ use crate::adaptor::gateway::workflow::{
     WorkflowRuntimeCommandGatewayDeps, WorkflowSecretSourceConfigGateway,
 };
 use crate::domain::app_config::{ConfigRepository, ConfigSecretRepository};
-use crate::domain::git_host::{CacheTtl, IssueInfo, PrStatus};
+use crate::domain::git_host::{CacheTtl, IssueInfo};
 use crate::domain::repository::WorktreeTerminalGateway;
 use crate::domain::workflow::{ManagedWorktreeGateway, SecretSourceGateway};
 use crate::usecase::code_query_service::CodeQueryService;
@@ -55,7 +54,6 @@ use crate::usecase::comment::{
     ReviewClock, ReviewCommentUsecase, ReviewEventStore, ReviewIdGenerator,
 };
 use crate::usecase::git_host::GitHostUsecase;
-use crate::usecase::repository_query_service::RepositoryQueryService;
 use crate::usecase::repository_usecase::RepositoryUsecase;
 #[cfg(test)]
 use crate::usecase::terminal_surface::application::TerminalSurfaceApplication;
@@ -69,8 +67,6 @@ use crate::usecase::workflow::{
 use crate::usecase::workspace_tree::WorkspaceQueryService;
 
 /// git ベースの repository usecase を既定の gateway 実装で構築する。
-/// Entity の読み書きは Repository gateway へ、read model 生成は `WorktreeGateway` が実装する
-/// `BranchCardQuery` を内包する `RepositoryQueryService` へ委譲する。
 /// terminal runtime を持たない composition（standalone read-only・テスト）向けに、
 /// worktree terminal 停止は no-op とする。
 #[cfg(test)]
@@ -87,14 +83,6 @@ pub(crate) fn build_repository_usecase_with_worktree_terminals(
     worktree_terminals: Arc<dyn WorktreeTerminalGateway>,
     operations: Arc<crate::usecase::worktree_operation::WorktreeOperations>,
 ) -> RepositoryUsecase {
-    let query = RepositoryQueryService::new(Arc::new(BranchCardGateway), operations);
-    build_repository_usecase_inner(worktree_terminals, query)
-}
-
-fn build_repository_usecase_inner(
-    worktree_terminals: Arc<dyn WorktreeTerminalGateway>,
-    query: RepositoryQueryService,
-) -> RepositoryUsecase {
     RepositoryUsecase::new(
         Arc::new(BranchGateway),
         Arc::new(StatusGateway),
@@ -102,7 +90,7 @@ fn build_repository_usecase_inner(
         Arc::new(GitConfigGateway),
         Arc::new(RepoLocatorGateway),
         worktree_terminals,
-        query,
+        operations,
     )
 }
 
@@ -110,7 +98,7 @@ pub(crate) fn build_git_host_usecase() -> GitHostUsecase {
     let ttl = CacheTtl::EXTERNAL_INFORMATION;
     GitHostUsecase::new(
         Arc::new(GitHubGitHostGateway::default()),
-        Arc::new(InMemoryTtlCache::<PrStatus>::new(ttl)),
+        Arc::new(LatestPrStatuses::default()),
         Arc::new(InMemoryTtlCache::<Vec<IssueInfo>>::new(ttl)),
     )
 }
@@ -166,18 +154,18 @@ pub(crate) fn build_review_comment_usecase() -> ReviewCommentUsecase {
 
 pub(crate) fn build_workspace_list_usecase(
     repositories: Arc<crate::usecase::repo_paths_usecase::RepoPathsUsecase>,
+    repository: Arc<RepositoryUsecase>,
     repository_state: Arc<crate::usecase::repository_state::RepositoryStateService>,
     workflow: Arc<WorkflowUsecase>,
     git_host: Arc<GitHostUsecase>,
 ) -> crate::usecase::workspace_tree::WorkspaceListUsecase {
-    crate::usecase::workspace_tree::WorkspaceListUsecase::new(Arc::new(
-        crate::usecase::workspace_tree::WorkspaceListServices {
-            repositories,
-            repository_state,
-            workflow,
-            git_host,
-        },
-    ))
+    crate::usecase::workspace_tree::WorkspaceListUsecase::new(
+        repositories,
+        repository,
+        repository_state,
+        workflow,
+        git_host,
+    )
 }
 
 pub(crate) fn build_workspace_node_command_usecase(
@@ -316,13 +304,7 @@ pub(crate) fn build_canonical_workflow_read_usecase(
     );
     let workspace_query: Arc<dyn WorkspaceQueryService> =
         crate::adaptor::gateway::workspace_tree::SqliteWorkspaceQueryService::new_read_only(
-            Arc::new(crate::adaptor::gateway::failure_records::FailureRecordStore::default()),
-            local_event_store.clone(),
-            Arc::new(ExecutionTreeArchiveFactRepository::from_backend(
-                crate::adaptor::gateway::workflow::fact_log::FactLogReadBackend::ReadOnly(
-                    local_event_store,
-                ),
-            )),
+            local_event_store,
         );
     Ok(WorkflowReadUsecase::new(
         query,
@@ -361,9 +343,7 @@ pub(crate) fn build_workflow_services_with_gateways(
         .processes = processes.clone();
     let workspace_query: Arc<dyn WorkspaceQueryService> =
         crate::adaptor::gateway::workspace_tree::SqliteWorkspaceQueryService::with_repository(
-            failures,
             workspace_nodes.clone(),
-            execution_archives.clone(),
         );
     let definitions = Arc::new(WorkflowDefinitionFileRepository::new(
         workflows_dir.clone(),
@@ -401,6 +381,7 @@ pub(crate) fn build_workflow_services_with_gateways(
         execution_archives.clone(),
         workspace_nodes,
         workspace_query.clone(),
+        failures,
     );
     (workflow_usecase, workspace_query)
 }
@@ -630,17 +611,11 @@ mod tests {
             .list_executions_filtered(None, None, page)
             .await
             .unwrap();
-        let workspace_identity = crate::domain::workspace_tree::WorkspaceIdentity::new(&workspace);
-        let direct_tree = query.workspace_tree(&workspace_identity).await.unwrap();
-        let tauri_tree = workflow
-            .list_workspace_tree_nodes(&workspace)
-            .await
-            .unwrap();
+        let tree = workflow.workspace_tree(&workspace).await.unwrap();
         // Then
         assert_eq!(direct_executions.len(), 1);
-        assert!(!direct_tree.nodes.is_empty());
+        assert!(!tree.visible().roots().is_empty());
         assert_eq!(live_loopback_executions, direct_executions);
         assert_eq!(standalone_executions, direct_executions);
-        assert_eq!(tauri_tree, direct_tree);
     }
 }

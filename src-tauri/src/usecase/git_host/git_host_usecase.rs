@@ -34,20 +34,22 @@ impl GitHostUsecase {
         }
     }
 
-    pub fn fetch_pr_status(&self, repo_path: &str) -> Result<PrStatus, GitHostError> {
-        let value = self.provider.fetch_pr_status(repo_path)?;
-        self.pr_cache.store(repo_path, value.clone());
-        Ok(value)
+    /// 最後に取れた PR の状態。取りに行かない。
+    pub fn known_pr_status(&self, repo_path: &str) -> Option<PrStatus> {
+        self.pr_cache.lookup(repo_path)
     }
 
-    pub fn get_cached_pr_status(&self, repo_path: &str) -> Result<PrStatus, GitHostError> {
-        if let Some(status) = self.pr_cache.lookup(repo_path) {
-            return Ok(status);
+    /// PR の状態を取りに行って保持する。変わったときは Workspaces の購読へ知らせる。
+    pub fn refresh_pr_status(&self, repo_path: &str) -> Result<(), GitHostError> {
+        let value = self.provider.fetch_pr_status(repo_path)?;
+        if self.pr_cache.lookup(repo_path).as_ref() == Some(&value) {
+            return Ok(());
         }
-
-        let status = self.provider.fetch_pr_status(repo_path)?;
-        self.pr_cache.store(repo_path, status.clone());
-        Ok(status)
+        self.pr_cache.store(repo_path, value);
+        if let Some(publisher) = &self.state_publisher {
+            publisher.notify(crate::usecase::state_subscription::StateChangeSource::WorkspaceList);
+        }
+        Ok(())
     }
 
     pub fn fetch_issues(&self, repo_path: &str) -> Result<Vec<IssueInfo>, GitHostError> {
@@ -231,7 +233,7 @@ mod tests {
         let pr_cache = Arc::new(FakePrCache::with_lookup(Some(PrStatus::default())));
         let issue_cache = Arc::new(FakeIssueCache::with_lookup(Some(vec![sample_issue(1)])));
         let uc = usecase_with(provider.clone(), pr_cache.clone(), issue_cache.clone());
-        assert_eq!(uc.fetch_pr_status("/repo"), Ok(fetched_pr.clone()));
+        assert_eq!(uc.refresh_pr_status("/repo"), Ok(()));
         assert_eq!(uc.fetch_issues("/repo").unwrap(), fetched_issues);
         assert_eq!(pr_cache.stored_values(), vec![fetched_pr]);
         assert_eq!(issue_cache.stored_values(), vec![fetched_issues]);
@@ -252,88 +254,75 @@ mod tests {
             pr_cache.clone(),
             Arc::new(FakeIssueCache::default()),
         );
-        assert!(uc.fetch_pr_status("/repo").is_err());
+        assert_eq!(
+            uc.refresh_pr_status("/repo"),
+            Err(GitHostError::External("offline".into()))
+        );
         assert!(pr_cache.stored_values().is_empty());
-        assert_eq!(uc.get_cached_pr_status("/repo"), Ok(previous));
+        assert_eq!(uc.known_pr_status("/repo"), Some(previous));
     }
 
     #[test]
     fn provider_absent_fetches_empty_values() {
         let provider = Arc::new(FakeProvider::empty());
+        let pr_cache = Arc::new(FakePrCache::default());
         let uc = usecase_with(
             provider,
-            Arc::new(FakePrCache::default()),
+            pr_cache.clone(),
             Arc::new(FakeIssueCache::default()),
         );
 
-        assert_eq!(uc.fetch_pr_status("/repo"), Ok(PrStatus::default()));
+        assert_eq!(uc.refresh_pr_status("/repo"), Ok(()));
+        assert_eq!(pr_cache.stored_values(), vec![PrStatus::default()]);
         assert!(uc.fetch_issues("/repo").unwrap().is_empty());
     }
 
     #[test]
-    fn cached_pr_status_hit_does_not_fetch_provider() {
-        let cached = sample_pr_status();
+    fn test_pr状態の読み取り_最後に取れた値を返し取りに行かない() {
+        // Given
+        let known = sample_pr_status();
         let provider = Arc::new(FakeProvider::new(PrStatus::default(), Vec::new()));
-        let uc = usecase_with(
-            provider.clone(),
-            Arc::new(FakePrCache::with_lookup(Some(cached.clone()))),
-            Arc::new(FakeIssueCache::default()),
-        );
-
-        assert_eq!(uc.get_cached_pr_status("/repo"), Ok(cached));
+        for cached in [Some(known), None] {
+            let uc = usecase_with(
+                provider.clone(),
+                Arc::new(FakePrCache::with_lookup(cached.clone())),
+                Arc::new(FakeIssueCache::default()),
+            );
+            // When / Then
+            assert_eq!(uc.known_pr_status("/repo"), cached);
+        }
         assert_eq!(provider.pr_fetch_count(), 0);
     }
 
     #[test]
-    fn cached_pr_status_miss_fetches_and_stores() {
+    fn test_pr状態の取り直し_変わったときだけ保持してworkspacesの購読へ知らせる() {
+        use crate::usecase::state_subscription::StateChangeSource;
+        // Given
         let fetched = sample_pr_status();
         let provider = Arc::new(FakeProvider::new(fetched.clone(), Vec::new()));
-        let pr_cache = Arc::new(FakePrCache::with_lookup(None));
-        let uc = usecase_with(
-            provider.clone(),
-            pr_cache.clone(),
-            Arc::new(FakeIssueCache::default()),
-        );
-
-        assert_eq!(uc.get_cached_pr_status("/repo"), Ok(fetched.clone()));
-        assert_eq!(provider.pr_fetch_count(), 1);
-        assert_eq!(pr_cache.stored_values(), vec![fetched]);
-    }
-
-    #[test]
-    fn cached_pr_status_fetch_failure_returns_error_without_storing() {
-        let provider = Arc::new(FakeProvider {
-            pr_status: Err(GitHostError::External("gh timeout".to_string())),
-            ..FakeProvider::empty()
-        });
-        let pr_cache = Arc::new(FakePrCache::with_lookup(None));
-        let uc = usecase_with(
-            provider,
-            pr_cache.clone(),
-            Arc::new(FakeIssueCache::default()),
-        );
-
-        assert_eq!(
-            uc.get_cached_pr_status("/repo"),
-            Err(GitHostError::External("gh timeout".to_string()))
-        );
-        assert!(pr_cache.stored_values().is_empty());
-    }
-
-    #[test]
-    fn cached_pr_status_lookup_none_refetches_and_updates_cache() {
-        let fetched = sample_pr_status();
-        let provider = Arc::new(FakeProvider::new(fetched.clone(), Vec::new()));
-        let pr_cache = Arc::new(FakePrCache::with_lookup(None));
-        let uc = usecase_with(
-            provider.clone(),
-            pr_cache.clone(),
-            Arc::new(FakeIssueCache::default()),
-        );
-
-        assert_eq!(uc.get_cached_pr_status("/repo"), Ok(fetched.clone()));
-        assert_eq!(provider.pr_fetch_count(), 1);
-        assert_eq!(pr_cache.stored_values(), vec![fetched]);
+        for (known, changed) in [(None, true), (Some(fetched.clone()), false)] {
+            let pr_cache = Arc::new(FakePrCache::with_lookup(known));
+            let publisher = crate::test_support::state_subscription::test_subscriptions();
+            let mut changes = crate::test_support::state_subscription::changes(&publisher);
+            let uc = usecase_with(
+                provider.clone(),
+                pr_cache.clone(),
+                Arc::new(FakeIssueCache::default()),
+            )
+            .with_state_publisher(publisher);
+            // When
+            uc.refresh_pr_status("/repo").unwrap();
+            // Then
+            assert_eq!(pr_cache.stored_values().len(), usize::from(changed));
+            assert_eq!(
+                crate::test_support::state_subscription::take_changes(&mut changes),
+                if changed {
+                    vec![StateChangeSource::WorkspaceList]
+                } else {
+                    Vec::new()
+                }
+            );
+        }
     }
 
     #[test]
@@ -407,10 +396,7 @@ fn test_github検出_停止時に既定pr状態を保存しない() {
                 OperationStopped::Cancelled
             };
             assert!(
-                matches!(uc.fetch_pr_status("/missing"), Err(GitHostError::Technical(error)) if error == expected.into())
-            );
-            assert!(
-                matches!(uc.get_cached_pr_status("/missing"), Err(GitHostError::Technical(error)) if error == expected.into())
+                matches!(uc.refresh_pr_status("/missing"), Err(GitHostError::Technical(error)) if error == expected.into())
             );
             assert!(
                 matches!(uc.fetch_issues("/missing"), Err(GitHostError::Technical(error)) if error == expected.into())

@@ -2,8 +2,8 @@ import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type {
-	WorkspaceTreeSelectionSnapshotDto as WorkspaceTreeSelectionSnapshot,
-	WorkspaceTreeSnapshotDto as WorkspaceTreeSnapshot,
+	WorkspaceTreeSelectionSnapshot,
+	WorkspaceTreeSnapshot,
 } from "@/generated/client_types";
 import { stateSubscriptions } from "@/test/stateSubscriptions";
 import { workspaceListSnapshot } from "@/test/workspaceList";

@@ -67,40 +67,6 @@ pub(crate) fn register_shared(
     }
     {
         let state = deps.app_state.clone();
-        let runtime = deps.workflow_runtime_usecase.clone();
-        router.register_domain(
-            &["delete_branch"],
-            Box::new(move |command| {
-                let state = state.clone();
-                let runtime = runtime.clone();
-                Box::pin(async move {
-                    let wire::command_request::Command::DeleteBranch(args) = command else {
-                        return Err(invalid_request("Mismatched command"));
-                    };
-                    let result = async move {
-                        let state = state
-                            .ok_or_else(|| invalid_request("Command dependency unavailable"))?;
-                        let runtime = runtime
-                            .ok_or_else(|| invalid_request("Command dependency unavailable"))?;
-                        outcome(
-                            branch::delete_branch_shared(
-                                &state,
-                                runtime,
-                                convert(required(args.repo_path, "repoPath")?)?,
-                                convert(required(args.branch_name, "branchName")?)?,
-                                convert(required(args.force, "force")?)?,
-                            )
-                            .await,
-                        )
-                    }
-                    .await?;
-                    Ok(wire::command_result::Command::DeleteBranch(result))
-                })
-            }),
-        );
-    }
-    {
-        let state = deps.app_state.clone();
         router.register_domain(
             &["git_create_branch"],
             Box::new(move |command| {

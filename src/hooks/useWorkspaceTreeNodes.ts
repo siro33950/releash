@@ -14,7 +14,7 @@ export interface WorkspaceTreeReconciliationEvent {
 	selectionInSnapshot: boolean;
 }
 
-export function useWorkspaceTreeNodes(worktreePath: string | null | undefined) {
+export function useWorkspaceTreeNodes(worktreePath: string) {
 	const model = useContext(WorkspaceListContext);
 	if (!model) throw new Error("WorkspaceListContext is required");
 	const list = model.snapshot?.repositories
@@ -46,7 +46,6 @@ export function useWorkspaceTreeNodes(worktreePath: string | null | undefined) {
 	}, [request, worktreePath]);
 	const beginArchiveReconciliation = useCallback(
 		(selectedNodeId: string) => {
-			if (!worktreePath) return;
 			selected.current = selectedNodeId;
 			setEvent(null);
 			setRequest({
@@ -79,9 +78,7 @@ export function useWorkspaceTreeNodes(worktreePath: string | null | undefined) {
 		preferredNodeId: list?.snapshot?.preferredNodeId ?? null,
 		workflowHistory: list?.workflowHistory ?? [],
 		reconciliationEvent,
-		loading: Boolean(
-			worktreePath && (!list || list.status.state === "loading"),
-		),
+		loading: !list || list.status.state === "loading",
 		loaded: list?.status.loaded ?? false,
 		state: list?.status.state ?? "loading",
 		error: list?.status.error ?? null,

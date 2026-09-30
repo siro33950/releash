@@ -1,6 +1,6 @@
 import { act, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { WorkspaceListSnapshotDto } from "@/generated/client_types";
+import type { WorkspaceListSnapshot } from "@/generated/client_types";
 import { workspaceListSnapshot } from "@/test/workspaceList";
 import { useWorkspaceList } from "./useWorkspaceList";
 
@@ -13,7 +13,7 @@ vi.mock("@/lib/client", () => ({
 	invokeClient: mocks.invoke,
 	subscribeState: mocks.subscribe,
 }));
-let deliver: (value: WorkspaceListSnapshotDto) => void;
+let deliver: (value: WorkspaceListSnapshot) => void;
 beforeEach(() => {
 	vi.clearAllMocks();
 	mocks.invoke.mockResolvedValue(undefined);
@@ -66,7 +66,6 @@ describe("useWorkspaceList", () => {
 		const { result } = renderHook(() => useWorkspaceList());
 		act(() =>
 			deliver({
-				generation: 1,
 				status: { loaded: false, state: "initialFailed", error: "offline" },
 				repositories: [],
 			}),
@@ -74,7 +73,6 @@ describe("useWorkspaceList", () => {
 		expect(result.current.snapshot?.status.state).toBe("initialFailed");
 		act(() =>
 			deliver({
-				generation: 2,
 				status: { loaded: true, state: "empty", error: null },
 				repositories: [],
 			}),

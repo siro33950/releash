@@ -106,8 +106,6 @@ fn test_worktree一覧と掃除_各git操作の停止を成功に変えず後続
     assert_stops_at_each_checkpoint(|| {
         prune_invalid_worktrees(&repo).map_err(crate::domain::repository::RepositoryError::from)
     });
-    assert_stops_at_each_checkpoint(|| WorktreeGateway.invalid_worktree_paths(path));
-    assert_stops_at_each_checkpoint(|| get_dirty_count_for_path(directory.path()));
 }
 
 #[test]

@@ -218,9 +218,10 @@ async fn test_クライアントdispatch_proto全commandの登録と引数検証
     // Given
     let (_app, dispatch) = parity_app();
     // When / Then
-    assert_eq!(wire::COMMAND_NAMES.len(), 87);
+    assert_eq!(wire::COMMAND_NAMES.len(), 86);
     assert!(wire::COMMAND_NAMES.contains(&"refresh_workspaces"));
     for removed in [
+        "delete_branch",
         "get_terminal_surface",
         "ack_terminal_surface_output",
         "detach_terminal_surface",
@@ -634,8 +635,11 @@ async fn test_worktree変更_protoは実引数の成功とusecaseエラーを保
         .await
         .unwrap();
     wait_for_deletion(runtime.inner().as_ref(), &worktree_path).await;
-    uc.delete_branch(runtime.inner().as_ref(), &path, branch, true)
-        .await
+    git2::Repository::open(&path)
+        .unwrap()
+        .find_branch(branch, git2::BranchType::Local)
+        .unwrap()
+        .delete()
         .unwrap();
     // When / Then
     assert_parity(

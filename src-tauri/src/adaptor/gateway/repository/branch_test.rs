@@ -11,7 +11,6 @@ fn test_ブランチ参照_各操作で停止を保持する() {
     // When / Then
     assert_stops_at_each_checkpoint(|| list_branches(path));
     assert_stops_at_each_checkpoint(|| get_current_branch(path));
-    assert_stops_at_each_checkpoint(|| get_default_branch(path));
 }
 #[test]
 fn test_ブランチ変更_各操作の停止で後続へ進まない() {
@@ -20,16 +19,5 @@ fn test_ブランチ変更_各操作の停止で後続へ進まない() {
         let (dir, repo) = create_test_repo();
         create_initial_commit(&repo);
         git_create_branch(dir.path().to_str().unwrap(), "feature")
-    });
-    assert_stops_at_each_checkpoint(|| {
-        let (dir, repo) = create_test_repo();
-        create_initial_commit(&repo);
-        repo.branch(
-            "feature",
-            &repo.head().unwrap().peel_to_commit().unwrap(),
-            false,
-        )
-        .unwrap();
-        delete_branch(dir.path().to_str().unwrap(), "feature")
     });
 }

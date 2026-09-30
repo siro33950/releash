@@ -53,13 +53,21 @@ where
     }
 }
 
-impl PrStatusCache for InMemoryTtlCache<PrStatus> {
+/// Repository ごとに、最後に取れた PR の状態を持つ。期限では捨てない。
+#[derive(Default)]
+pub(crate) struct LatestPrStatuses {
+    entries: Mutex<HashMap<String, PrStatus>>,
+}
+
+impl PrStatusCache for LatestPrStatuses {
     fn lookup(&self, repo_path: &str) -> Option<PrStatus> {
-        self.lookup_value(repo_path)
+        self.entries.lock().ok()?.get(repo_path).cloned()
     }
 
     fn store(&self, repo_path: &str, value: PrStatus) {
-        self.store_value(repo_path, value);
+        if let Ok(mut entries) = self.entries.lock() {
+            entries.insert(repo_path.to_string(), value);
+        }
     }
 }
 
@@ -76,7 +84,7 @@ impl IssueCache for InMemoryTtlCache<Vec<IssueInfo>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::git_host::{IssueLabel, Milestone, PrAuthor, PrStatus};
+    use crate::domain::git_host::{IssueLabel, Milestone, PrAuthor};
 
     fn sample_issue(number: u64) -> IssueInfo {
         IssueInfo {
@@ -104,31 +112,28 @@ mod tests {
     }
 
     #[test]
-    fn pr_cache_returns_stored_value_for_same_key() {
-        let cache = InMemoryTtlCache::<PrStatus>::new(CacheTtl::from_secs(30));
+    fn test_pr状態の保持_最後に取れた値をrepositoryごとに返す() {
+        // Given
+        let statuses = LatestPrStatuses::default();
         let status = PrStatus::default();
-
-        PrStatusCache::store(&cache, "/repo", status.clone());
-
-        assert_eq!(PrStatusCache::lookup(&cache, "/repo"), Some(status));
+        // When
+        statuses.store("/repo", status.clone());
+        // Then
+        assert_eq!(statuses.lookup("/repo"), Some(status));
+        assert!(statuses.lookup("/other").is_none());
     }
 
     #[test]
-    fn pr_cache_misses_for_other_key() {
-        let cache = InMemoryTtlCache::<PrStatus>::new(CacheTtl::from_secs(30));
+    fn issue_cache_returns_stored_value_for_same_key() {
+        let cache = InMemoryTtlCache::<Vec<IssueInfo>>::new(CacheTtl::from_secs(30));
 
-        PrStatusCache::store(&cache, "/repo", PrStatus::default());
+        IssueCache::store(&cache, "/repo", vec![sample_issue(1)]);
 
-        assert!(PrStatusCache::lookup(&cache, "/other").is_none());
-    }
-
-    #[test]
-    fn pr_cache_returns_none_for_stale_entry() {
-        let cache = InMemoryTtlCache::<PrStatus>::new(CacheTtl::from_secs(0));
-
-        PrStatusCache::store(&cache, "/repo", PrStatus::default());
-
-        assert!(PrStatusCache::lookup(&cache, "/repo").is_none());
+        assert_eq!(
+            IssueCache::lookup(&cache, "/repo"),
+            Some(vec![sample_issue(1)])
+        );
+        assert!(IssueCache::lookup(&cache, "/other").is_none());
     }
 
     #[test]
@@ -142,10 +147,10 @@ mod tests {
 
     #[test]
     fn store_evicts_stale_entries_before_inserting_new_value() {
-        let cache = InMemoryTtlCache::<PrStatus>::new(CacheTtl::from_secs(0));
+        let cache = InMemoryTtlCache::<Vec<IssueInfo>>::new(CacheTtl::from_secs(0));
 
-        PrStatusCache::store(&cache, "/old", PrStatus::default());
-        PrStatusCache::store(&cache, "/new", PrStatus::default());
+        IssueCache::store(&cache, "/old", Vec::new());
+        IssueCache::store(&cache, "/new", Vec::new());
 
         let map = cache.entries.lock().unwrap();
         assert!(!map.contains_key("/old"));

@@ -34,7 +34,7 @@
 
 **Query 側は読み取り要求に応えて、データソースから DTO を直接組み立てて返す。** DTO は読み取り要求の出力仕様であり、その形は要求の都合で決まる。Entity を生成する Repository を再利用して `Entity → DTO` に詰め替えてはならない——向きが逆である（DTO は要求起点であって Entity 起点ではない）。1:1 写像に見える場合も例外ではない。
 
-集約・表示集計（例: ブランチ + worktree 配置 + ahead/behind + マージ状態をまとめた一覧）でも同じである。Entity を構築して詰め替えるのではなく、QueryService の実装がデータソースから DTO を直接組み立てて返す。DTO は domain の Entity ではない（[DOMAIN.md](./DOMAIN.md)「Entity か DTO か」）。
+集約・表示集計でも同じである。Entity を構築して詰め替えるのではなく、QueryService の実装がデータソースから DTO を直接組み立てて返す。DTO は domain の Entity ではない（[DOMAIN.md](./DOMAIN.md)「Entity か DTO か」）。
 
 ## DTO
 

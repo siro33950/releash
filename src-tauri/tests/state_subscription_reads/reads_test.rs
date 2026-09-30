@@ -166,6 +166,7 @@ impl crate::usecase::provider_lifecycle::ProviderHookHealthFailureQuery for NoHo
 
 pub(crate) struct Fixture {
     pub(crate) reads: WorkspaceStateReads,
+    pub(crate) repository_state: Arc<RepositoryStateService>,
     pub(crate) subscriptions: StateSubscriptionUsecase,
     pub(crate) config: Arc<AppConfig>,
     pub(crate) path: String,
@@ -239,23 +240,20 @@ impl Fixture {
         let git_host = Arc::new(
             GitHostUsecase::new(
                 issues.clone(),
-                Arc::new(InMemoryTtlCache::<PrStatus>::new(
-                    CacheTtl::EXTERNAL_INFORMATION,
-                )),
+                Arc::new(crate::adaptor::gateway::git_host::LatestPrStatuses::default()),
                 Arc::new(InMemoryTtlCache::<Vec<IssueInfo>>::new(
                     CacheTtl::EXTERNAL_INFORMATION,
                 )),
             )
             .with_state_publisher(publisher.clone()),
         );
-        let workspaces = Arc::new(WorkspaceListUsecase::new(Arc::new(
-            crate::usecase::workspace_tree::WorkspaceListServices {
-                repositories: repositories.clone(),
-                repository_state: repository_state.clone(),
-                workflow: workflow.clone(),
-                git_host: git_host.clone(),
-            },
-        )));
+        let workspaces = Arc::new(WorkspaceListUsecase::new(
+            repositories.clone(),
+            repository.clone(),
+            repository_state.clone(),
+            workflow.clone(),
+            git_host.clone(),
+        ));
         let sessions = Arc::new(Sessions::default());
         let providers = Arc::new(
             ProviderAvailabilityUsecase::initialize(
@@ -269,11 +267,9 @@ impl Fixture {
             .unwrap()
             .with_state_publisher(publisher.clone()),
         );
-        let repository_state_for_review = repository_state.clone();
         let reads = WorkspaceStateReads {
             repositories,
             repository,
-            repository_state,
             workflow,
             workspaces,
             git_host,
@@ -290,7 +286,7 @@ impl Fixture {
                 ),
             ),
             review: Arc::new(crate::usecase::review_usecase::ReviewUsecase::new(
-                repository_state_for_review,
+                repository_state.clone(),
                 Arc::new(wiring::build_code_usecase()),
             )),
             comments: Arc::new(
@@ -346,6 +342,7 @@ impl Fixture {
                 String::new(),
             ),
             reads,
+            repository_state,
             config,
             path,
             issues,
@@ -378,9 +375,9 @@ async fn test_状態読取_全対象を対応するサービスへ引数付き�
     )
     .unwrap();
     r.workspaces.refresh().await;
-    let selection = r
+    let (tree, selected) = r
         .workflow
-        .get_workspace_tree_selection_reconciliation(p, "missing")
+        .workspace_tree_selection(p, "missing")
         .await
         .unwrap();
     // When / Then
@@ -391,11 +388,11 @@ async fn test_状態読取_全対象を対応するサービスへ引数付き�
         ),
         (
             T::Workspaces,
-            StateValue::Workspaces(r.workspaces.snapshot()),
+            StateValue::Workspaces(r.workspaces.read().await),
         ),
         (
             T::Selection(p.clone(), "missing".into()),
-            StateValue::Selection(selection),
+            StateValue::Selection(tree, selected),
         ),
         (
             T::NodeDetail(p.clone(), "missing".into()),
@@ -441,11 +438,7 @@ async fn test_状態読取_全対象を対応するサービスへ引数付き�
         ),
         (
             T::BranchStatus(p.clone()),
-            StateValue::BranchStatus(
-                r.repository_state
-                    .list_branches_with_status_snapshot(p)
-                    .unwrap(),
-            ),
+            StateValue::BranchStatus(r.repository.list_branches_with_worktree(p).unwrap()),
         ),
         (
             T::CurrentBranch(p.clone()),

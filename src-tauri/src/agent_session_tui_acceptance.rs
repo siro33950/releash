@@ -251,15 +251,8 @@ impl<R: tauri::Runtime> AgentSessionTuiAcceptanceHost<R> {
         app.manage(store.clone());
         let workspace_query: Arc<dyn crate::usecase::workspace_tree::WorkspaceQueryService> =
             crate::adaptor::gateway::workspace_tree::SqliteWorkspaceQueryService::with_repository(
-                work.failures.clone(),
                 crate::adaptor::gateway::workspace_tree::SqliteWorkspaceTreeRepository::new(
                     store.clone(),
-                ),
-                Arc::new(
-                    crate::adaptor::gateway::workflow::ExecutionTreeArchiveFactRepository::new(
-                        store.clone(),
-                        data_dir.clone(),
-                    ),
                 ),
             );
         let mut driver = WorkflowRuntimeHost::new_canonical(
@@ -701,11 +694,6 @@ impl crate::usecase::state_subscription::StateSubscriptionRead for AcceptanceSes
                 message: "Unsupported acceptance state".into(),
             }),
         }
-    }
-    async fn refresh_workspaces(
-        &self,
-        _: Option<crate::usecase::state_subscription::StateChangeSource>,
-    ) {
     }
     fn repositories(&self) -> Vec<String> {
         vec![]

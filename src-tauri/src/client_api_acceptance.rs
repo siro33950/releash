@@ -106,10 +106,7 @@ impl<R: tauri::Runtime> ClientApiAcceptanceHost<R> {
             Arc::new(repository::git_config::GitConfigGateway),
             Arc::new(repository::util::RepoLocatorGateway),
             Arc::new(repository::worktree_terminal::NoopWorktreeTerminalGateway),
-            crate::usecase::repository_query_service::RepositoryQueryService::new(
-                Arc::new(repository::branch_card::BranchCardGateway),
-                operations.clone(),
-            ),
+            operations.clone(),
         );
         let authority = Arc::new(ApplicationStartupAuthority::ready());
         let repository = Arc::new(repository);
@@ -510,11 +507,6 @@ impl crate::usecase::state_subscription::StateSubscriptionRead for AcceptanceSta
         .await
         .unwrap()
     }
-    async fn refresh_workspaces(
-        &self,
-        _: Option<crate::usecase::state_subscription::StateChangeSource>,
-    ) {
-    }
     fn repositories(&self) -> Vec<String> {
         vec![]
     }
@@ -590,7 +582,7 @@ pub async fn read_state(
             wire::from_message("releash.client.v1.AgentSessionHistoryPageDto", &value)
         }
         wire::state_payload::Value::Workspaces(value) => {
-            wire::from_message("releash.client.v1.WorkspaceListSnapshotDto", &value)
+            wire::from_message("releash.client.v1.WorkspaceListSnapshot", &value)
         }
         wire::state_payload::Value::ProviderAvailability(value) => wire::from_message(
             "releash.client.v1.ProviderAvailabilitySnapshotResponse",

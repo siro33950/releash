@@ -45,7 +45,7 @@ pub(crate) fn canonicalize_managed_worktree_path_inner(
             .to_str()
             .ok_or_else(|| WorkflowError::external("configured repo path has invalid encoding"))?
             .to_string();
-        let worktrees = match usecase.list_worktrees(&repo_path_str) {
+        let worktrees = match usecase.list_working_worktrees(&repo_path_str) {
             Ok(worktrees) => worktrees,
             Err(crate::usecase::repository_error::UsecaseError::Repository(
                 RepositoryError::Technical(stopped),

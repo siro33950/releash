@@ -1,8 +1,8 @@
-/// ワークツリー（メイン / リンク済み）の識別情報。
+/// ワークツリー（メイン / リンク済み）と、そこに checkout されたブランチ。
 ///
-/// worktree 単一集約に属する不変条件・配置情報のみを持つ。`dirty_count`（status 由来）や
-/// `base_branch`（git_config 由来）といった別集約の表示・集計値はここに持たず、
-/// 一覧表示用 read model（`WorktreeEntryDto`）を usecase が複数集約から合成する。
+/// worktree 単一集約に属する不変条件・配置情報と、ブランチが base に取り込まれたかを持つ。
+/// `dirty_count`（status 由来）や `base_branch`（git_config 由来）、PR（git_host 由来）といった
+/// 別集約の値はここに持たない。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Worktree {
     pub name: String,
@@ -10,9 +10,22 @@ pub struct Worktree {
     pub branch: String,
     pub is_main: bool,
     pub is_locked: bool,
+    pub is_merged: bool,
 }
 
 impl Worktree {
+    /// git の登録が先に消えた、削除中の worktree。
+    pub fn being_deleted(path: &str, branch: String) -> Self {
+        Self {
+            name: branch.clone(),
+            path: path.to_string(),
+            branch,
+            is_main: false,
+            is_locked: false,
+            is_merged: false,
+        }
+    }
+
     pub fn authorize_removal(
         &self,
         force: bool,

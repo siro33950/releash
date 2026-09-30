@@ -513,3 +513,87 @@ fn test_archive一括読取_複数chunkでも各treeの最新root事実だけを
             .is_empty()
     );
 }
+
+#[test]
+fn test_tree先頭seq取得_全treeの最新seqを主キーだけで返す() {
+    // Given
+    let connection = connection();
+    for (tree, count) in [("tree-a", 3), ("tree-b", 1), ("tree-c", 2)] {
+        for _ in 0..count {
+            append_node_event(&connection, &row(tree, "root", None), 1).unwrap();
+        }
+    }
+    delete_tree(&connection, "tree-b").unwrap();
+
+    // When
+    let heads = super::tree_heads(&connection).unwrap();
+
+    // Then
+    assert_eq!(
+        heads,
+        vec![("tree-a".to_string(), 3), ("tree-c".to_string(), 2)]
+    );
+    let plan = connection
+        .prepare("EXPLAIN QUERY PLAN SELECT MIN(tree_id) FROM node_events WHERE tree_id > 'tree-a'")
+        .unwrap()
+        .query_map([], |row| row.get::<_, String>(3))
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap()
+        .join(" ");
+    assert!(plan.contains("SEARCH"), "{plan}");
+}
+
+#[test]
+fn test_tree先頭seq取得_事実が無ければ空を返す() {
+    assert!(super::tree_heads(&connection()).unwrap().is_empty());
+}
+
+#[test]
+fn test_tree追記分取得_指定seqより後の事実だけを追記順に返す() {
+    // Given
+    let connection = connection();
+    for _ in 0..4 {
+        append_node_event(&connection, &row("tree", "root", None), 1).unwrap();
+    }
+    append_node_event(&connection, &row("other", "root", None), 1).unwrap();
+
+    // When
+    let appended = super::read_tree_after(&connection, "tree", 2).unwrap();
+
+    // Then
+    assert_eq!(
+        appended.iter().map(|row| row.seq).collect::<Vec<_>>(),
+        vec![3, 4]
+    );
+    assert!(super::read_tree_after(&connection, "tree", 4)
+        .unwrap()
+        .is_empty());
+}
+
+#[test]
+fn test_tree_root事実取得_親を持たない最初の事実だけを返す() {
+    // Given
+    let connection = connection();
+    append_node_event(&connection, &row("tree", "child", Some("root")), 1).unwrap();
+    append_node_event(&connection, &row("tree", "root", None), 5).unwrap();
+    append_node_event(&connection, &row("tree", "root", None), 9).unwrap();
+
+    // When
+    let root = super::first_root_row_of_tree(&connection, "tree", "started")
+        .unwrap()
+        .unwrap();
+
+    // Then
+    assert_eq!((root.seq, root.node_execution_id.as_str()), (2, "root"));
+    assert!(
+        super::first_root_row_of_tree(&connection, "tree", "abort_requested")
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        super::first_root_row_of_tree(&connection, "missing", "started")
+            .unwrap()
+            .is_none()
+    );
+}

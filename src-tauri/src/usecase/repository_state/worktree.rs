@@ -10,6 +10,8 @@ use super::runtime::{RepositoryStateInvalidationSender, RepositoryStateWorkerRun
 use super::scanner::RepositoryScanner;
 use super::snapshot::{RepositorySnapshot, RepositorySnapshotParts};
 use super::worker::InvalidateReason;
+use crate::domain::repository::Worktree;
+use crate::usecase::fetched::Fetched;
 
 pub trait RepositoryStateWatchSession: Send + Sync {}
 
@@ -45,8 +47,11 @@ impl RepositoryStateWatcher for NoopRepositoryStateWatcher {
 
 pub struct WorktreeState {
     worktree_path: String,
+    /// この path が Repository の root（main worktree）か。root だけが worktree の並びを持つ。
+    is_repository_root: bool,
     pub(crate) scan_lock: tokio::sync::Mutex<()>,
     snapshot: RwLock<Arc<RepositorySnapshot>>,
+    worktrees: RwLock<Fetched<Vec<Worktree>>>,
     version: AtomicU64,
     requested_generation: AtomicU64,
     applied_generation: AtomicU64,
@@ -61,6 +66,7 @@ pub struct WorktreeState {
 impl WorktreeState {
     pub fn new(
         worktree_path: String,
+        is_repository_root: bool,
         scanner: Arc<dyn RepositoryScanner>,
         state_subscriptions: crate::usecase::state_subscription::StateSubscriptionUsecase,
         runtime: Arc<dyn RepositoryStateWorkerRuntime>,
@@ -69,8 +75,10 @@ impl WorktreeState {
         let (invalidate_tx, invalidate_rx) = runtime.invalidation_channel();
         let state = Arc::new(Self {
             worktree_path,
+            is_repository_root,
             scan_lock: tokio::sync::Mutex::new(()),
             snapshot: RwLock::new(Arc::new(RepositorySnapshot::loading())),
+            worktrees: RwLock::new(Fetched::default()),
             version: AtomicU64::new(0),
             requested_generation: AtomicU64::new(0),
             applied_generation: AtomicU64::new(0),
@@ -105,31 +113,45 @@ impl WorktreeState {
         Ok(self.commit_snapshot(parts, generation))
     }
 
+    /// Repository の root なら worktree の並びを読み直す。失敗しても最後に読めた並びを残す。
+    pub async fn scan_worktrees_once(
+        &self,
+        scanner: Arc<dyn RepositoryScanner>,
+        runtime: &dyn RepositoryStateWorkerRuntime,
+    ) {
+        if !self.is_repository_root || self.is_shutdown() {
+            return;
+        }
+        let result = runtime
+            .scan_worktrees(scanner.clone(), self.worktree_path.clone())
+            .await;
+        if result.is_ok() {
+            if let Err(err) = scanner.prune_stale_branch_bases(&self.worktree_path) {
+                log::warn!(
+                    "repository branch base GC failed for {}: {err}",
+                    self.worktree_path
+                );
+            }
+        }
+        self.worktrees
+            .write()
+            .record(result.map_err(|error| error.to_string()));
+    }
+
+    /// 走査の結果を確定して知らせる。変更の状態を走査していないときは `status` は None。
     pub fn finish_scan(
         &self,
-        scanner: &dyn RepositoryScanner,
-        result: Result<Option<Arc<RepositorySnapshot>>, RepositoryStateError>,
+        status: Option<Result<Option<Arc<RepositorySnapshot>>, RepositoryStateError>>,
         reason: InvalidateReason,
     ) -> Option<InvalidateReason> {
         self.set_refreshing(false);
-        match result {
-            Ok(Some(snapshot)) => {
-                let names: Vec<String> = snapshot
-                    .branch_cards
-                    .iter()
-                    .map(|card| card.name.clone())
-                    .collect();
-                if let Err(err) = scanner.prune_stale_branch_bases(&self.worktree_path, &names) {
-                    log::warn!(
-                        "repository snapshot branch base GC failed for {}: {err}",
-                        self.worktree_path
-                    );
-                }
+        match status {
+            Some(Ok(None)) => Some(reason),
+            Some(Ok(Some(_))) | None => {
                 self.notify_snapshot_changed();
                 None
             }
-            Ok(None) => Some(reason),
-            Err(err) => {
+            Some(Err(err)) => {
                 log::warn!(
                     "repository snapshot scan failed for {}: {err}",
                     self.worktree_path
@@ -139,6 +161,21 @@ impl WorktreeState {
                 None
             }
         }
+    }
+
+    pub fn is_repository_root(&self) -> bool {
+        self.is_repository_root
+    }
+
+    /// Repository の worktree の並び。root でなければ、まだ読めていないのと同じ。
+    pub fn worktrees(&self) -> Fetched<Vec<Worktree>> {
+        self.worktrees.read().clone()
+    }
+
+    /// 未コミットの変更の数。まだ読めていなければ None。
+    pub fn dirty_count(&self) -> Option<usize> {
+        let snapshot = self.snapshot.read();
+        (snapshot.version > 0).then_some(snapshot.dirty_count)
     }
 
     pub fn worktree_path(&self) -> &str {
@@ -274,7 +311,7 @@ impl Drop for WorktreeState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::usecase::repository_dto::{BranchCardDto, FileDiffStatDto, FileStatusDto};
+    use crate::usecase::repository_dto::{FileDiffStatDto, FileStatusDto};
     use crate::usecase::repository_state::runtime::tests_support::TestRepositoryStateWorkerRuntime;
     use std::sync::atomic::{AtomicBool, AtomicUsize};
     use std::sync::mpsc as std_mpsc;
@@ -287,7 +324,7 @@ mod tests {
         scans: AtomicUsize,
         value: parking_lot::Mutex<String>,
         fail: AtomicBool,
-        prunes: parking_lot::Mutex<Vec<Vec<String>>>,
+        prunes: parking_lot::Mutex<Vec<String>>,
         sleep: Duration,
         on_scan: parking_lot::Mutex<Option<OnScanHook>>,
     }
@@ -321,7 +358,7 @@ mod tests {
             self.fail.store(fail, Ordering::SeqCst);
         }
 
-        fn take_prune_calls(&self) -> Vec<Vec<String>> {
+        fn take_prune_calls(&self) -> Vec<String> {
             std::mem::take(&mut *self.prunes.lock())
         }
 
@@ -365,37 +402,41 @@ mod tests {
                     wt_additions: 1,
                     wt_deletions: 0,
                 }],
-                branch_cards: vec![BranchCardDto {
-                    name: "main".to_string(),
-                    is_main_worktree: true,
-                    is_deleting: false,
-                    worktree_path: Some("/repo".to_string()),
-                    dirty_count: 1,
-                    is_merged: false,
-                    ahead: 0,
-                    behind: 0,
-                    has_upstream: false,
-                    base_ahead: 0,
-                }],
+                dirty_count: 1,
                 diff_file_tree: Vec::new(),
                 staged_diff_file_tree: Vec::new(),
                 changes_diff_file_tree: Vec::new(),
             })
         }
 
-        fn prune_stale_branch_bases(
-            &self,
-            _repo_path: &str,
-            existing_branches: &[String],
-        ) -> Result<(), RepositoryStateError> {
-            self.prunes.lock().push(existing_branches.to_vec());
+        fn scan_worktrees(&self, repo_path: &str) -> Result<Vec<Worktree>, RepositoryStateError> {
+            if self.fail.load(Ordering::SeqCst) {
+                return Err(RepositoryStateError::Watcher("scan failed".to_string()));
+            }
+            Ok(vec![main_worktree(repo_path)])
+        }
+
+        fn prune_stale_branch_bases(&self, repo_path: &str) -> Result<(), RepositoryStateError> {
+            self.prunes.lock().push(repo_path.to_string());
             Ok(())
+        }
+    }
+
+    fn main_worktree(path: &str) -> Worktree {
+        Worktree {
+            name: "main".to_string(),
+            path: path.to_string(),
+            branch: "main".to_string(),
+            is_main: true,
+            is_locked: false,
+            is_merged: false,
         }
     }
 
     fn test_state(scanner: Arc<dyn RepositoryScanner>, debounce: Duration) -> Arc<WorktreeState> {
         WorktreeState::new(
             "/repo".to_string(),
+            true,
             scanner,
             crate::test_support::state_subscription::test_subscriptions(),
             Arc::new(TestRepositoryStateWorkerRuntime),
@@ -409,6 +450,7 @@ mod tests {
     ) -> Arc<WorktreeState> {
         WorktreeState::new(
             "/repo".to_string(),
+            true,
             scanner,
             subscriptions,
             Arc::new(TestRepositoryStateWorkerRuntime),
@@ -442,7 +484,7 @@ mod tests {
         assert_eq!(ready.version, 1);
         assert!(!ready.flags.loading);
         assert!(!ready.flags.stale);
-        assert_eq!(scanner.take_prune_calls(), vec![vec!["main".to_string()]]);
+        assert_eq!(scanner.take_prune_calls(), vec!["/repo".to_string()]);
     }
 
     #[tokio::test]
@@ -558,7 +600,6 @@ mod tests {
         let latest = wait_for_version(&state, 2).await;
         assert_eq!(latest.status[0].path, "new.txt");
         assert!(scanner.scan_count() >= 3);
-        assert_eq!(scanner.take_prune_calls().len(), 2);
     }
 
     #[tokio::test]
@@ -573,6 +614,57 @@ mod tests {
         let snapshot = state.snapshot_for_read();
         assert_eq!(snapshot.version, 0);
         assert!(!snapshot.flags.loading);
+        assert!(scanner.take_prune_calls().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_worktreeの並び_読み直しに失敗しても最後に読めた並びを残す() {
+        // Given
+        let scanner = Arc::new(FakeScanner::new("file.txt"));
+        let state = test_state(scanner.clone(), Duration::ZERO);
+        state.invalidate(InvalidateReason::change());
+        wait_for_version(&state, 1).await;
+        assert_eq!(
+            state.worktrees(),
+            Fetched::ready(vec![main_worktree("/repo")])
+        );
+
+        // When
+        scanner.set_fail(true);
+        state.invalidate(InvalidateReason::refs());
+        for _ in 0..100 {
+            if state.worktrees().error.is_some() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+
+        // Then
+        let worktrees = state.worktrees();
+        assert_eq!(worktrees.value, Some(vec![main_worktree("/repo")]));
+        assert!(worktrees.error.is_some());
+        assert_eq!(scanner.scan_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_worktreeの並び_repositoryのrootでなければ読まない() {
+        // Given
+        let scanner = Arc::new(FakeScanner::new("file.txt"));
+        let state = WorktreeState::new(
+            "/repo-worktrees/feature".to_string(),
+            false,
+            scanner.clone(),
+            crate::test_support::state_subscription::test_subscriptions(),
+            Arc::new(TestRepositoryStateWorkerRuntime),
+            Duration::ZERO,
+        );
+
+        // When
+        state.invalidate(InvalidateReason::change());
+        wait_for_version(&state, 1).await;
+
+        // Then
+        assert_eq!(state.worktrees(), Fetched::default());
         assert!(scanner.take_prune_calls().is_empty());
     }
 }

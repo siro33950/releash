@@ -14,10 +14,6 @@ const baseBranch: WorktreeBranch = {
 	has_pr: false,
 	pr_number: null,
 	pr_url: null,
-	ahead: 0,
-	behind: 0,
-	has_upstream: true,
-	base_ahead: 0,
 };
 
 const dirtyBranch: WorktreeBranch = {
