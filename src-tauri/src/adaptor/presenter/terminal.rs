@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::domain::terminal_surface::{TerminalProcessLaunch, TerminalSurfaceOwner};
 use crate::domain::workspace_tree::WorkspaceIdentity;
-use crate::usecase::state_subscription::TerminalSurfaceSnapshotDto;
+use crate::usecase::terminal_surface::application::TerminalSurfaceSnapshotDto;
 use crate::usecase::terminal_surface::spawn_usecase::GetOrSpawnTerminalOutcome;
 
 #[derive(Clone, Debug, PartialEq, Serialize)]

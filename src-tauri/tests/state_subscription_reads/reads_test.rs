@@ -168,6 +168,7 @@ impl crate::usecase::provider_lifecycle::ProviderHookHealthFailureQuery for NoHo
 pub(crate) struct Fixture {
     pub(crate) reads: WorkspaceStateReads,
     pub(crate) subscriptions: StateSubscriptionUsecase,
+    pub(crate) config: Arc<AppConfig>,
     pub(crate) path: String,
     issues: Arc<Issues>,
     sessions: Arc<Sessions>,
@@ -349,6 +350,7 @@ impl Fixture {
                 String::new(),
             ),
             reads,
+            config,
             path,
             issues,
             sessions,

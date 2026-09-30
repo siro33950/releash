@@ -806,20 +806,21 @@ async fn test_terminal復元_停止と切断の競合でも停止済みclientを
 
 #[tokio::test]
 async fn test_terminal差分_出力の重複を除き同じ出力番号で寸法と終了を配信する() {
+    // Given
     let (subscriptions, _, hub, surface) = fixture();
     let target = SubscriptionTarget::Terminal(surface.owner.clone()).to_string();
     let stream = subscriptions.open("client".into()).unwrap();
     tokio::pin!(stream);
     stream.next().await;
-    assert!(crate::test_support::state_subscription::start_terminal(
+    // When
+    let invalid_start = crate::test_support::state_subscription::start_terminal(
         &subscriptions,
         "client",
         &target,
         None,
-        ""
+        "",
     )
-    .await
-    .is_err());
+    .await;
     crate::test_support::state_subscription::start_terminal(
         &subscriptions,
         "client",
@@ -831,20 +832,18 @@ async fn test_terminal差分_出力の重複を除き同じ出力番号で寸法
     .unwrap();
     stream.next().await;
     stream.next().await;
-    assert!(crate::test_support::state_subscription::terminal_processed(
+    let invalid_processed = crate::test_support::state_subscription::terminal_processed(
         &subscriptions,
         "client",
         &target,
-        1
-    )
-    .is_err());
-    assert!(crate::test_support::state_subscription::terminal_processed(
+        1,
+    );
+    let valid_processed = crate::test_support::state_subscription::terminal_processed(
         &subscriptions,
         "client",
         &target,
-        5000
-    )
-    .is_ok());
+        5000,
+    );
     let output = TerminalSurfaceOutputEvent::Output {
         session_key: surface.session_key.clone(),
         data: "x".into(),
@@ -864,6 +863,10 @@ async fn test_terminal差分_出力の重複を除き同じ出力番号で寸法
         exit_code: Some(7),
         sequence: 1,
     });
+    // Then
+    assert!(invalid_start.is_err());
+    assert!(invalid_processed.is_err());
+    assert!(valid_processed.is_ok());
     for (sequence, expected) in [
         (
             1,
@@ -891,6 +894,7 @@ async fn test_terminal差分_出力の重複を除き同じ出力番号で寸法
             },
         ),
     ] {
+        // When
         let Some(StateSubscriptionEvent::Item(
             actual_target,
             Event::Change(version, Delivery::Delta, value),
@@ -898,24 +902,25 @@ async fn test_terminal差分_出力の重複を除き同じ出力番号で寸法
         else {
             panic!("terminal delta");
         };
+        let expected_payload = crate::adaptor::presenter::state_subscription_wire::payload(
+            &StateValue::Terminal(expected.into()),
+        )
+        .unwrap();
+        // Then
         assert_eq!(actual_target, target);
         assert_eq!(version.sequence, sequence);
-        assert_eq!(
-            *value,
-            crate::adaptor::presenter::state_subscription_wire::payload(&StateValue::Terminal(
-                expected.into()
-            ))
-            .unwrap()
-        );
+        assert_eq!(*value, expected_payload);
     }
+    // When
     crate::test_support::state_subscription::stop(&subscriptions, "client", &target).unwrap();
-    assert!(crate::test_support::state_subscription::terminal_processed(
+    let stopped_processed = crate::test_support::state_subscription::terminal_processed(
         &subscriptions,
         "client",
         &target,
-        5000
-    )
-    .is_err());
+        5000,
+    );
+    // Then
+    assert!(stopped_processed.is_err());
 }
 
 #[tokio::test]

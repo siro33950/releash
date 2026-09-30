@@ -2525,14 +2525,14 @@ fn test_fact読み出し_呼び出し境界で混雑と期限切れと破損の�
         );
     }
     for message in ["invalid fact", "missing session attachment"] {
-        assert!(matches!(
-            LocalEventQueryError::from(FactReadError::Corrupt(message.into())),
-            LocalEventQueryError::Corrupt { .. }
-        ));
-        assert!(
-            matches!(crate::domain::workflow::WorkflowError::from(FactReadError::Corrupt(message.into())),
-            crate::domain::workflow::WorkflowError::CorruptStoredState(value) if value == message)
-        );
+        // When
+        let workspace = LocalEventQueryError::from(FactReadError::Corrupt(message.into()));
+        let archive =
+            crate::domain::workflow::WorkflowError::from(FactReadError::Corrupt(message.into()));
+        // Then
+        assert!(matches!(workspace, LocalEventQueryError::Corrupt { .. }));
+        assert!(matches!(archive,
+            crate::domain::workflow::WorkflowError::CorruptStoredState(value) if value == message));
     }
 }
 

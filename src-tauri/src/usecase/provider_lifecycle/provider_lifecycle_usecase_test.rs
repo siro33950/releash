@@ -581,7 +581,8 @@ async fn test_provider_hook_health_read_local_api配送失敗を最新launchの�
 }
 
 #[tokio::test]
-async fn test_provider_hook_health_正常session_start後の同一launch欠落報告を無視する() {
+async fn test_provider警告_正常session_start後の同一launch欠落報告を無視する() {
+    // Given
     let repository = Arc::new(InMemoryHookHealthRepository::default());
     let health = ProviderHookHealthUsecase::new(repository);
     health
@@ -589,6 +590,7 @@ async fn test_provider_hook_health_正常session_start後の同一launch欠落�
         .await
         .unwrap();
 
+    // When
     health
         .record_unavailable(
             ProviderKind::Claude,
@@ -598,7 +600,7 @@ async fn test_provider_hook_health_正常session_start後の同一launch欠落�
         )
         .await
         .unwrap();
-    assert_eq!(health.warnings().await.unwrap().len(), 1);
+    let before = health.warnings().await.unwrap();
 
     health
         .record_session_started(ProviderKind::Claude, "launch-1", "session-started-request")
@@ -613,7 +615,10 @@ async fn test_provider_hook_health_正常session_start後の同一launch欠落�
         )
         .await
         .unwrap();
-    assert!(health.warnings().await.unwrap().is_empty());
+    let after = health.warnings().await.unwrap();
+    // Then
+    assert_eq!(before.len(), 1);
+    assert!(after.is_empty());
 }
 
 #[test]

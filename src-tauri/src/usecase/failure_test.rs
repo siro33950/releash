@@ -34,8 +34,9 @@ fn test_失敗分類_六種類のdomain値を出力へ写す() {
 
     // When
     for (domain, expected) in cases {
+        let actual = FailureClassificationDto::from(domain);
         // Then
-        assert_eq!(FailureClassificationDto::from(domain), expected);
+        assert_eq!(actual, expected);
     }
 }
 
@@ -152,15 +153,6 @@ async fn test_要対応の通知_設定と解除で同じ購読対象に通知�
             message: "repair".into(),
         },
     );
-    // Then
-    assert_eq!(
-        changes.recv().await.unwrap(),
-        crate::usecase::state_subscription::StateChangeSource::WorkspaceList
-    );
-    assert_eq!(
-        changes.recv().await.unwrap(),
-        crate::usecase::state_subscription::StateChangeSource::Failures("tree".into())
-    );
     presenter.observed(
         &key,
         WorkFailure {
@@ -168,24 +160,29 @@ async fn test_要対応の通知_設定と解除で同じ購読対象に通知�
             message: "new repair reason".into(),
         },
     );
-    assert_eq!(
-        changes.recv().await.unwrap(),
-        crate::usecase::state_subscription::StateChangeSource::WorkspaceList
-    );
-    assert_eq!(
-        changes.recv().await.unwrap(),
-        crate::usecase::state_subscription::StateChangeSource::Failures("tree".into())
-    );
-    assert_eq!(store.records("tree")[0].record.message, "new repair reason");
+    let records = store.records("tree");
     presenter.resolved(&key);
-    assert_eq!(
+    let received = [
         changes.recv().await.unwrap(),
-        crate::usecase::state_subscription::StateChangeSource::WorkspaceList
-    );
-    assert_eq!(
         changes.recv().await.unwrap(),
-        crate::usecase::state_subscription::StateChangeSource::Failures("tree".into())
+        changes.recv().await.unwrap(),
+        changes.recv().await.unwrap(),
+        changes.recv().await.unwrap(),
+        changes.recv().await.unwrap(),
+    ];
+    // Then
+    assert_eq!(
+        received,
+        [
+            crate::usecase::state_subscription::StateChangeSource::WorkspaceList,
+            crate::usecase::state_subscription::StateChangeSource::Failures("tree".into()),
+            crate::usecase::state_subscription::StateChangeSource::WorkspaceList,
+            crate::usecase::state_subscription::StateChangeSource::Failures("tree".into()),
+            crate::usecase::state_subscription::StateChangeSource::WorkspaceList,
+            crate::usecase::state_subscription::StateChangeSource::Failures("tree".into()),
+        ]
     );
+    assert_eq!(records[0].record.message, "new repair reason");
 }
 
 #[tokio::test]
@@ -208,18 +205,20 @@ async fn test_要対応の通知_workflow以外の操作と要対応でない失
         },
     );
     presenter.resolved(&FailureKey::new("workflow_recovery", "tree"));
+    let received = [
+        changes.recv().await.unwrap(),
+        changes.recv().await.unwrap(),
+        changes.recv().await.unwrap(),
+    ];
+    let no_more_changes = changes.try_recv().is_err();
     // Then
     assert_eq!(
-        changes.recv().await.unwrap(),
-        crate::usecase::state_subscription::StateChangeSource::Failures("/repo".into())
+        received,
+        [
+            crate::usecase::state_subscription::StateChangeSource::Failures("/repo".into()),
+            crate::usecase::state_subscription::StateChangeSource::Failures("tree".into()),
+            crate::usecase::state_subscription::StateChangeSource::Failures("tree".into()),
+        ]
     );
-    assert_eq!(
-        changes.recv().await.unwrap(),
-        crate::usecase::state_subscription::StateChangeSource::Failures("tree".into())
-    );
-    assert_eq!(
-        changes.recv().await.unwrap(),
-        crate::usecase::state_subscription::StateChangeSource::Failures("tree".into())
-    );
-    assert!(changes.try_recv().is_err());
+    assert!(no_more_changes);
 }

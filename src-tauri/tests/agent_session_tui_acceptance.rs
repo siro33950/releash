@@ -518,7 +518,8 @@ fn owner(workspace: &str, session_id: &str) -> TerminalSurfaceOwnerV1 {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn test_atui_025_初期化した全providerの利用可否と理由をproduction境界から取得する() {
+async fn test_provider利用可否_初期化と変更をproduction境界で確認する() {
+    // Given
     let root = tempfile::TempDir::new().unwrap();
     let login_shell_bin = root.path().join("login-shell-bin");
     std::fs::create_dir(&login_shell_bin).unwrap();
@@ -537,21 +538,21 @@ async fn test_atui_025_初期化した全providerの利用可否と理由をprod
     })
     .unwrap();
 
+    // When
     let snapshot = host.provider_availability().unwrap();
+    let unknown = host.invoke::<()>(
+        "update_provider_executable",
+        serde_json::json!({ "provider": "unknown", "executable": "agent" }),
+    );
+    let blank = host.invoke::<()>(
+        "update_provider_executable",
+        serde_json::json!({ "provider": "claude", "executable": "  " }),
+    );
+    let available = host.available_providers();
 
-    assert!(host
-        .invoke::<()>(
-            "update_provider_executable",
-            serde_json::json!({ "provider": "unknown", "executable": "agent" }),
-        )
-        .is_err());
-    assert!(host
-        .invoke::<()>(
-            "update_provider_executable",
-            serde_json::json!({ "provider": "claude", "executable": "  " }),
-        )
-        .is_err());
-
+    // Then
+    assert!(unknown.is_err());
+    assert!(blank.is_err());
     assert_eq!(snapshot.providers.len(), 2);
     let claude = snapshot
         .providers
@@ -572,16 +573,20 @@ async fn test_atui_025_初期化した全providerの利用可否と理由をprod
     assert!(!codex.available);
     assert_eq!(codex.resolved_executable, None);
     assert_eq!(codex.unavailable_reason.as_deref(), Some("not_found"));
-    assert_eq!(host.available_providers(), vec![AcceptanceProvider::Claude]);
+    assert_eq!(available, vec![AcceptanceProvider::Claude]);
 
+    // Given
     let refreshed_codex = install_fixture_executable(
         &refreshed_login_shell_bin,
         "codex",
         AcceptanceProvider::Codex,
         4,
     );
+    // When
     host.refresh_provider_availability().unwrap();
     let refreshed = host.provider_availability().unwrap();
+    let available = host.available_providers();
+    // Then
     let claude = refreshed
         .providers
         .iter()
@@ -597,17 +602,21 @@ async fn test_atui_025_初期化した全providerの利用可否と理由をprod
         codex.resolved_executable.as_deref(),
         Some(refreshed_codex.to_string_lossy().as_ref())
     );
-    assert_eq!(host.available_providers(), vec![AcceptanceProvider::Codex]);
+    assert_eq!(available, vec![AcceptanceProvider::Codex]);
 
+    // Given
     let replacement = install_fixture_executable(
         root.path(),
         "non-standard-codex",
         AcceptanceProvider::Codex,
         4,
     );
+    // When
     host.update_provider_executable(AcceptanceProvider::Codex, &replacement)
         .unwrap();
     let updated = host.provider_availability().unwrap();
+    let available = host.available_providers();
+    // Then
     let codex = updated
         .providers
         .iter()
@@ -622,13 +631,13 @@ async fn test_atui_025_初期化した全providerの利用可否と理由をprod
         codex.resolved_executable.as_deref(),
         Some(replacement.to_string_lossy().as_ref())
     );
-    assert!(host
-        .available_providers()
-        .contains(&AcceptanceProvider::Codex));
+    assert!(available.contains(&AcceptanceProvider::Codex));
 
+    // Given
     let workspace = root.path().join("worktree");
     std::fs::create_dir_all(&workspace).unwrap();
     let workspace = workspace.to_string_lossy().into_owned();
+    // When
     let standalone_id = host
         .launch_standalone(
             "workspace-atui-025",
@@ -647,7 +656,7 @@ async fn test_atui_025_初期化した全providerの利用可否と理由をprod
         .await
         .unwrap();
     receive_until(&mut standalone, "non-standard-codex").await;
-    assert!(host
+    let workflow_launch = host
         .launch_workflow(
             &workspace,
             AcceptanceProvider::Codex,
@@ -655,20 +664,16 @@ async fn test_atui_025_初期化した全providerの利用可否と理由をprod
             "atui-025-node",
             "verify shared registry",
         )
-        .await
-        .is_ok());
+        .await;
+    // Then
+    assert!(workflow_launch.is_ok());
 
+    // Given
     std::fs::remove_file(&replacement).unwrap();
+    // When
     host.refresh_provider_availability().unwrap();
     let refreshed = host.provider_availability().unwrap();
-    let codex = refreshed
-        .providers
-        .iter()
-        .find(|item| item.provider == AcceptanceProvider::Codex)
-        .unwrap();
-    assert!(!codex.available);
-    assert_eq!(codex.unavailable_reason.as_deref(), Some("not_found"));
-    assert!(host
+    let standalone_rejected = host
         .launch_standalone(
             "workspace-atui-025",
             &workspace,
@@ -677,9 +682,8 @@ async fn test_atui_025_初期化した全providerの利用可否と理由をprod
             80,
             "atui-025-unavailable",
         )
-        .await
-        .is_err());
-    assert!(host
+        .await;
+    let workflow_rejected = host
         .launch_workflow(
             &workspace,
             AcceptanceProvider::Codex,
@@ -687,10 +691,21 @@ async fn test_atui_025_初期化した全providerの利用可否と理由をprod
             "atui-025-node-unavailable",
             "must be rejected before creation",
         )
-        .await
-        .is_err());
-    assert!(host.get(&standalone_id).await.unwrap().is_some());
+        .await;
+    let retained = host.get(&standalone_id).await.unwrap();
+    // Then
+    let codex = refreshed
+        .providers
+        .iter()
+        .find(|item| item.provider == AcceptanceProvider::Codex)
+        .unwrap();
+    assert!(!codex.available);
+    assert_eq!(codex.unavailable_reason.as_deref(), Some("not_found"));
+    assert!(standalone_rejected.is_err());
+    assert!(workflow_rejected.is_err());
+    assert!(retained.is_some());
 
+    // When
     host.terminal()
         .write(standalone_owner, "still-running\r")
         .unwrap();
@@ -699,6 +714,7 @@ async fn test_atui_025_初期化した全providerの利用可否と理由をprod
     host.reset_provider_executable(AcceptanceProvider::Codex)
         .unwrap();
     let reset = host.provider_availability().unwrap();
+    // Then
     let codex = reset
         .providers
         .iter()
@@ -708,7 +724,10 @@ async fn test_atui_025_初期化した全providerの利用可否と理由をprod
     assert_eq!(codex.default_executable, "codex");
     assert_eq!(codex.effective_executable, "codex");
 
-    host.shutdown().await.unwrap();
+    // When
+    let shutdown = host.shutdown().await;
+    // Then
+    assert!(shutdown.is_ok());
 }
 
 fn fixture_label(provider: AcceptanceProvider) -> &'static str {

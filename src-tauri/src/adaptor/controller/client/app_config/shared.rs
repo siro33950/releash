@@ -121,31 +121,39 @@ pub(crate) fn register_shared(
             }),
         );
     }
-    {
-        let state = deps.app_config_usecase.clone();
-        router.register_domain(
-            &["update_workflow_config"],
-            Box::new(move |command| {
-                let state = state.clone();
-                Box::pin(async move {
-                    let wire::command_request::Command::UpdateWorkflowConfig(args) = command else {
-                        return Err(invalid_request("Mismatched command"));
-                    };
-                    let result = async move {
-                        let state = state
-                            .ok_or_else(|| invalid_request("Command dependency unavailable"))?;
-                        outcome(
-                            commands::update_workflow_config_shared(
-                                &state,
-                                convert(required(args.workflow, "workflow")?)?,
-                            )
-                            .await,
-                        )
-                    }
-                    .await?;
-                    Ok(wire::command_result::Command::UpdateWorkflowConfig(result))
-                })
-            }),
-        );
-    }
+    register_workflow_config(router, deps.app_config_usecase.clone());
 }
+
+fn register_workflow_config(
+    router: &mut ClientCommandDispatch,
+    state: Option<std::sync::Arc<crate::usecase::app_config::AppConfigUsecase>>,
+) {
+    router.register_domain(
+        &["update_workflow_config"],
+        Box::new(move |command| {
+            let state = state.clone();
+            Box::pin(async move {
+                let wire::command_request::Command::UpdateWorkflowConfig(args) = command else {
+                    return Err(invalid_request("Mismatched command"));
+                };
+                let result = async move {
+                    let state =
+                        state.ok_or_else(|| invalid_request("Command dependency unavailable"))?;
+                    outcome(
+                        commands::update_workflow_config_shared(
+                            &state,
+                            convert(required(args.workflow, "workflow")?)?,
+                        )
+                        .await,
+                    )
+                }
+                .await?;
+                Ok(wire::command_result::Command::UpdateWorkflowConfig(result))
+            })
+        }),
+    );
+}
+
+#[cfg(test)]
+#[path = "shared_test.rs"]
+mod shared_tests;

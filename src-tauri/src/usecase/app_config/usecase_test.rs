@@ -85,22 +85,14 @@ fn test_設定保存_一般設定と登録希望の保存失敗を呼び出し�
     let repository = repository(true);
     let original = repository.load().unwrap();
     let usecase = AppConfigUsecase::new(repository.clone(), repository.clone());
-    // When / Then
-    assert_eq!(
-        usecase
-            .update_app_settings(false, true)
-            .unwrap_err()
-            .to_string(),
-        "save failed"
-    );
-    assert_eq!(
-        usecase
-            .update_login_item_preference(true)
-            .unwrap_err()
-            .to_string(),
-        "save failed"
-    );
-    assert_eq!(repository.load().unwrap(), original);
+    // When
+    let app_error = usecase.update_app_settings(false, true).unwrap_err();
+    let login_error = usecase.update_login_item_preference(true).unwrap_err();
+    let stored = repository.load().unwrap();
+    // Then
+    assert_eq!(app_error.to_string(), "save failed");
+    assert_eq!(login_error.to_string(), "save failed");
+    assert_eq!(stored, original);
 }
 
 #[test]

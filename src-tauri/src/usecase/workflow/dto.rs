@@ -481,7 +481,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn workflow_dto_serializes_like_canonical_wire_shape() {
+    fn test_workflow出力_既存の転送形式で直列化する() {
         // Given
         let workflow = WorkflowDto {
             name: "wf".to_string(),

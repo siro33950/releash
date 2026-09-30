@@ -1,8 +1,6 @@
 use crate::common::retry::AttemptProgress;
 use crate::domain::failure::TechnicalFailureNature;
 
-#[cfg(test)]
-pub use crate::domain::failure::FailureRecord;
 pub use crate::domain::failure::{BusinessFailure, Failure, FailureKey, WorkFailure};
 
 pub const ATTEMPT_LIMIT: std::time::Duration = std::time::Duration::from_secs(20);
@@ -43,13 +41,6 @@ retry_failure_from_debug!(
     crate::domain::agent_session::repository::AgentSessionRepositoryError,
     crate::usecase::repository_state::error::RepositoryStateError,
 );
-
-#[cfg(test)]
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FailureObservation {
-    pub record: FailureRecord,
-    pub requires_attention: bool,
-}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FailurePage {
@@ -142,9 +133,6 @@ impl FailureRecordingUsecase {
 #[async_trait::async_trait]
 pub trait FailureQueryService: Send + Sync {
     async fn page(&self, targets: &[String], offset: usize) -> FailurePage;
-
-    #[cfg(test)]
-    fn records(&self, target: &str) -> Vec<FailureObservation>;
 }
 
 pub(crate) fn requires_attention(kind: Failure) -> bool {

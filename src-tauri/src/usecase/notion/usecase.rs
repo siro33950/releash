@@ -443,19 +443,21 @@ mod tests {
     }
 
     #[test]
-    fn test_config_save_deleteはrepositoryに反映される() {
+    fn test_notion設定の保存と削除_repositoryに反映される() {
         // Given
         let repo = Arc::new(FakeNotionConfigRepository::default());
 
         // When
         save_config(repo.as_ref(), "/repo".to_string(), config()).unwrap();
+        let saved = repo.get("/repo").unwrap().unwrap();
         // Then
-        assert_eq!(repo.get("/repo").unwrap().unwrap().database_id, "db-1");
+        assert_eq!(saved.database_id, "db-1");
 
         // When
         delete_config(repo.as_ref(), "/repo").unwrap();
+        let deleted = repo.get("/repo").unwrap();
         // Then
-        assert!(repo.get("/repo").unwrap().is_none());
+        assert!(deleted.is_none());
     }
 
     #[test]

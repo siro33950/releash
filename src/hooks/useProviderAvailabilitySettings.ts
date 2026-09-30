@@ -18,12 +18,14 @@ interface ProviderAvailabilitySnapshot {
 	providers: ProviderAvailabilityItem[];
 }
 
-interface PendingDraft {
+type PendingDraft = {
 	draft: string;
 	configured: string | null;
 	completed: boolean;
-	receivedConfigured?: string | null;
-}
+} & (
+	| { kind: "waiting" }
+	| { kind: "received"; configuredValue: string | null }
+);
 
 interface FormState {
 	snapshot: ProviderAvailabilitySnapshot | null;
@@ -49,36 +51,40 @@ function draftsFrom(
 	);
 }
 
-function mergeDrafts(
-	current: Record<string, string>,
-	previous: ProviderAvailabilitySnapshot,
-	next: ProviderAvailabilitySnapshot,
-	pending: Readonly<Record<string, PendingDraft>>,
-): Record<string, string> {
-	const merged = draftsFrom(next);
-	for (const entry of previous.providers) {
-		const draft = current[entry.provider] ?? "";
-		const operation = pending[entry.provider];
+function receiveSnapshot(
+	state: FormState,
+	snapshot: ProviderAvailabilitySnapshot,
+): FormState {
+	if (!state.snapshot)
+		return { ...state, snapshot, drafts: draftsFrom(snapshot) };
+	const drafts = draftsFrom(snapshot);
+	const pending: Record<string, PendingDraft> = {};
+	for (const entry of state.snapshot.providers) {
+		const next = snapshot.providers.find(
+			(item) => item.provider === entry.provider,
+		);
+		if (!next) continue;
+		const draft = state.drafts[entry.provider] ?? "";
+		const operation = state.pending[entry.provider];
 		if (operation) {
-			const nextEntry = next.providers.find(
-				(item) => item.provider === entry.provider,
-			);
-			if (!nextEntry) continue;
 			if (
-				nextEntry.configuredExecutable !== operation.configured ||
+				next.configuredExecutable !== operation.configured ||
 				operation.completed
 			) {
-				if (draft !== operation.draft) merged[entry.provider] = draft;
+				if (draft !== operation.draft) drafts[entry.provider] = draft;
 			} else {
-				merged[entry.provider] = draft;
+				drafts[entry.provider] = draft;
+				pending[entry.provider] = {
+					...operation,
+					kind: "received",
+					configuredValue: next.configuredExecutable,
+				};
 			}
-			continue;
-		}
-		if (draft !== (entry.configuredExecutable ?? "")) {
-			merged[entry.provider] = draft;
+		} else if (draft !== (entry.configuredExecutable ?? "")) {
+			drafts[entry.provider] = draft;
 		}
 	}
-	return merged;
+	return { snapshot, drafts, pending };
 }
 
 function formReducer(state: FormState, action: FormAction): FormState {
@@ -102,7 +108,7 @@ function formReducer(state: FormState, action: FormAction): FormState {
 		case "complete": {
 			const operation = state.pending[action.provider];
 			if (!operation) return state;
-			if (operation.receivedConfigured === undefined) {
+			if (operation.kind === "waiting") {
 				return {
 					...state,
 					pending: {
@@ -119,41 +125,13 @@ function formReducer(state: FormState, action: FormAction): FormState {
 					state.drafts[action.provider] === operation.draft
 						? {
 								...state.drafts,
-								[action.provider]: operation.receivedConfigured ?? "",
+								[action.provider]: operation.configuredValue ?? "",
 							}
 						: state.drafts,
 			};
 		}
-		case "receive": {
-			const drafts = state.snapshot
-				? mergeDrafts(
-						state.drafts,
-						state.snapshot,
-						action.snapshot,
-						state.pending,
-					)
-				: draftsFrom(action.snapshot);
-			const pending = Object.fromEntries(
-				Object.entries(state.pending).flatMap(([provider, operation]) => {
-					const entry = action.snapshot.providers.find(
-						(item) => item.provider === provider,
-					);
-					if (
-						!entry ||
-						entry.configuredExecutable !== operation.configured ||
-						operation.completed
-					)
-						return [];
-					return [
-						[
-							provider,
-							{ ...operation, receivedConfigured: entry.configuredExecutable },
-						],
-					];
-				}),
-			);
-			return { snapshot: action.snapshot, drafts, pending };
-		}
+		case "receive":
+			return receiveSnapshot(state, action.snapshot);
 	}
 }
 
@@ -211,6 +189,7 @@ export function useProviderAvailabilitySettings(open: boolean) {
 						draft: executable,
 						configured: provider.configuredExecutable,
 						completed: false,
+						kind: "waiting",
 					},
 				});
 				try {
@@ -246,6 +225,7 @@ export function useProviderAvailabilitySettings(open: boolean) {
 						snapshot.providers.find((item) => item.provider === provider)
 							?.configuredExecutable ?? null,
 					completed: false,
+					kind: "waiting",
 				},
 			});
 			try {

@@ -94,8 +94,8 @@ impl crate::usecase::app_config::query_service::WorkflowConfigQueryService for C
 
 #[test]
 fn test_telemetry設定_永続化成功時だけruntime設定を更新する() {
-    // Given / When / Then
     for fail in [false, true] {
+        // Given
         let repository = Arc::new(Config {
             document: Mutex::new(AppConfigDocument {
                 telemetry: crate::domain::app_config::value_objects::TelemetryConfig {
@@ -120,20 +120,23 @@ fn test_telemetry設定_永続化成功時だけruntime設定を更新する() {
             crate::usecase::app_config::AppConfigUsecase::new(repository.clone(), repository);
         let port = Port::default();
         let usecase = TelemetryUsecase::new(&port);
-        assert_eq!(
-            usecase.update_performance_telemetry(&config, true).is_err(),
-            fail
-        );
-        assert_eq!(usecase.update_crash_reporting(&config, true).is_err(), fail);
+        // When
+        let performance = usecase.update_performance_telemetry(&config, true);
+        let crash = usecase.update_crash_reporting(&config, true);
+        let calls = port.0.lock().unwrap().clone();
+        let settings = config.desktop_settings().unwrap();
+        let workflow = config.get_workflow_config().unwrap();
+        // Then
+        assert_eq!(performance.is_err(), fail);
+        assert_eq!(crash.is_err(), fail);
         if fail {
-            assert!(port.0.lock().unwrap().is_empty());
+            assert!(calls.is_empty());
         } else {
-            assert_eq!(*port.0.lock().unwrap(), ["performance:true", "crash:true"]);
-            let settings = config.desktop_settings().unwrap();
+            assert_eq!(calls, ["performance:true", "crash:true"]);
             assert!(settings.performance_telemetry);
             assert!(settings.crash_reporting);
-            config.get_workflow_config().unwrap();
         }
+        assert!(!workflow.approval_auto_approve);
     }
 }
 

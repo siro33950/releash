@@ -15,35 +15,6 @@ use crate::usecase::{
     workspace_tree::WorkspaceListSnapshotDto,
 };
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct TerminalSurfaceSnapshotDto {
-    pub session_key: String,
-    pub replay: String,
-    pub sequence: u64,
-    pub cols: u16,
-    pub rows: u16,
-    pub is_exited: bool,
-    pub exit_code: Option<i32>,
-    pub label: Option<String>,
-}
-
-impl From<crate::domain::terminal_surface::entities::TerminalSurface>
-    for TerminalSurfaceSnapshotDto
-{
-    fn from(surface: crate::domain::terminal_surface::entities::TerminalSurface) -> Self {
-        Self {
-            session_key: surface.session_key,
-            replay: surface.checkpoint.replay,
-            sequence: surface.checkpoint.sequence,
-            cols: surface.checkpoint.cols,
-            rows: surface.checkpoint.rows,
-            is_exited: surface.process_state.is_exited(),
-            exit_code: surface.process_state.exit_code(),
-            label: surface.label,
-        }
-    }
-}
-
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum StateValue {
     Failures(crate::usecase::failure::FailurePage),

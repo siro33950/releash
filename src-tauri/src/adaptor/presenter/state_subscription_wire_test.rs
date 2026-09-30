@@ -652,8 +652,9 @@ fn test_購読payload_全種類を旧wire型とフィールドへ変換する() 
 
     // When
     for (value, expected) in values {
+        let actual = payload(&value).unwrap().value;
         // Then
-        assert_eq!(payload(&value).unwrap().value, Some(expected), "{value:?}");
+        assert_eq!(actual, Some(expected), "{value:?}");
     }
 }
 
@@ -686,19 +687,24 @@ fn test_購読payload_review対象をreview欄へ変換する() {
         modified_size: Some(4),
     });
     // When
+    let snapshot_value = payload(&StateValue::ReviewSnapshot(snapshot))
+        .unwrap()
+        .value;
+    let view_value = payload(&StateValue::ReviewFileView(view)).unwrap().value;
+    let threads_value = payload(&StateValue::ReviewThreads(vec![])).unwrap().value;
     // Then
     assert!(matches!(
-        payload(&StateValue::ReviewSnapshot(snapshot)).unwrap().value,
+        snapshot_value,
         Some(W::ReviewSnapshot(value)) if value.version == Some(3) && value.loading == Some(true)
     ));
     assert!(matches!(
-        payload(&StateValue::ReviewFileView(view)).unwrap().value,
+        view_value,
         Some(W::ReviewFileView(wire::ReviewFileViewDto {
             variant: Some(wire::review_file_view_dto::Variant::Binary(binary)),
         })) if binary.modified_size == Some(4)
     ));
     assert!(matches!(
-        payload(&StateValue::ReviewThreads(vec![])).unwrap().value,
+        threads_value,
         Some(W::ReviewThreads(list)) if list.items.is_empty()
     ));
 }
@@ -792,7 +798,7 @@ fn test_terminal購読payload_四種類の転送値を保つ() {
     let values = [
         (
             Item::Snapshot(
-                crate::usecase::state_subscription::TerminalSurfaceSnapshotDto {
+                crate::usecase::terminal_surface::application::TerminalSurfaceSnapshotDto {
                     session_key: "terminal".into(),
                     replay: "history".into(),
                     sequence: 7,
@@ -857,9 +863,10 @@ fn test_terminal購読payload_四種類の転送値を保つ() {
 
     // When
     for (item, expected) in values {
+        let actual = payload(&StateValue::Terminal(item)).unwrap();
         // Then
         assert_eq!(
-            payload(&StateValue::Terminal(item)).unwrap(),
+            actual,
             wire::StatePayload {
                 value: Some(wire::state_payload::Value::Terminal(wire::TerminalEvent {
                     item: Some(expected)

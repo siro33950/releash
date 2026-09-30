@@ -1,4 +1,38 @@
+use crate::usecase::agent_session::ProviderUnavailableReasonDto;
+use crate::usecase::provider_dto::AgentSessionProviderDto;
+use crate::usecase::provider_lifecycle::ProviderHookHealthReasonDto;
 use serde::Serialize;
+
+fn provider_name(provider: AgentSessionProviderDto) -> &'static str {
+    match provider {
+        AgentSessionProviderDto::Claude => "claude",
+        AgentSessionProviderDto::Codex => "codex",
+    }
+}
+
+fn unavailable_reason(reason: ProviderUnavailableReasonDto) -> &'static str {
+    match reason {
+        ProviderUnavailableReasonDto::NotFound => "not_found",
+        ProviderUnavailableReasonDto::NotExecutable => "not_executable",
+        ProviderUnavailableReasonDto::SearchPathUnavailable => "search_path_unavailable",
+        ProviderUnavailableReasonDto::ProbeFailed => "probe_failed",
+    }
+}
+
+fn hook_health_reason(reason: ProviderHookHealthReasonDto) -> &'static str {
+    match reason {
+        ProviderHookHealthReasonDto::SessionStartDeadlineExceeded => {
+            "session_start_deadline_exceeded"
+        }
+        ProviderHookHealthReasonDto::CodexHookDeliveryUnconfirmed => {
+            "codex_hook_delivery_unconfirmed"
+        }
+        ProviderHookHealthReasonDto::ProviderHookConfigurationRejected => {
+            "provider_hook_configuration_rejected"
+        }
+        ProviderHookHealthReasonDto::LocalApiUnavailable => "local_api_unavailable",
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -61,23 +95,16 @@ impl From<crate::usecase::agent_session::ProviderAvailabilitySnapshotDto>
                 .providers
                 .into_iter()
                 .map(|entry| ProviderAvailabilityItemResponse {
-                    provider: match entry.provider {
-                        crate::usecase::provider_dto::AgentSessionProviderDto::Claude => "claude",
-                        crate::usecase::provider_dto::AgentSessionProviderDto::Codex => "codex",
-                    }
-                    .to_string(),
+                    provider: provider_name(entry.provider).to_string(),
                     display_name: entry.display_name,
                     default_executable: entry.default_executable,
                     configured_executable: entry.configured_executable,
                     effective_executable: entry.effective_executable,
                     available: entry.available,
                     resolved_executable: entry.resolved_executable,
-                    unavailable_reason: entry.unavailable_reason.map(|reason| match reason {
-                        crate::usecase::agent_session::ProviderUnavailableReasonDto::NotFound => "not_found",
-                        crate::usecase::agent_session::ProviderUnavailableReasonDto::NotExecutable => "not_executable",
-                        crate::usecase::agent_session::ProviderUnavailableReasonDto::SearchPathUnavailable => "search_path_unavailable",
-                        crate::usecase::agent_session::ProviderUnavailableReasonDto::ProbeFailed => "probe_failed",
-                    }.to_string()),
+                    unavailable_reason: entry
+                        .unavailable_reason
+                        .map(|reason| unavailable_reason(reason).to_string()),
                 })
                 .collect(),
         }
@@ -90,20 +117,11 @@ impl From<crate::usecase::provider_lifecycle::ProviderHookHealthWarningDto>
     fn from(value: crate::usecase::provider_lifecycle::ProviderHookHealthWarningDto) -> Self {
         Self {
             provider: match value.provider {
-                crate::usecase::provider_dto::AgentSessionProviderDto::Claude => {
-                    ProviderHookHealthProviderResponse::Claude
-                }
-                crate::usecase::provider_dto::AgentSessionProviderDto::Codex => {
-                    ProviderHookHealthProviderResponse::Codex
-                }
+                AgentSessionProviderDto::Claude => ProviderHookHealthProviderResponse::Claude,
+                AgentSessionProviderDto::Codex => ProviderHookHealthProviderResponse::Codex,
             },
             launch_id: value.launch_id,
-            reason: match value.reason {
-                crate::usecase::provider_lifecycle::ProviderHookHealthReasonDto::SessionStartDeadlineExceeded => "session_start_deadline_exceeded",
-                crate::usecase::provider_lifecycle::ProviderHookHealthReasonDto::CodexHookDeliveryUnconfirmed => "codex_hook_delivery_unconfirmed",
-                crate::usecase::provider_lifecycle::ProviderHookHealthReasonDto::ProviderHookConfigurationRejected => "provider_hook_configuration_rejected",
-                crate::usecase::provider_lifecycle::ProviderHookHealthReasonDto::LocalApiUnavailable => "local_api_unavailable",
-            }.to_string(),
+            reason: hook_health_reason(value.reason).to_string(),
         }
     }
 }

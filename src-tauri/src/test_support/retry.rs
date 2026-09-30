@@ -4,6 +4,18 @@ use crate::usecase::failure::FailureRecordingUsecase;
 use crate::usecase::retry::Retrying;
 use std::sync::{Arc, OnceLock};
 
+impl Retrying {
+    pub(crate) fn records(
+        &self,
+        target: &str,
+    ) -> Vec<crate::adaptor::gateway::failure_records::FailureRecordObservation> {
+        self.test_query
+            .as_ref()
+            .expect("test failure store")
+            .records(target)
+    }
+}
+
 pub(crate) fn test_retrying() -> Arc<Retrying> {
     let store = Arc::new(FailureRecordStore::default());
     Arc::new(Retrying {

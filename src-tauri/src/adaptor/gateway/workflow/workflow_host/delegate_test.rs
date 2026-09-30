@@ -2107,7 +2107,7 @@ impl DelegateContinuationGateway for ConflictingContinuation {
 }
 
 #[tokio::test]
-async fn test_delegate_保存の競合が続いてもabortを完了し注入も失敗精算も残さない() {
+async fn test_委任_保存の競合が続いてもabortを完了し注入も失敗精算も残さない() {
     // Given
     let fixture = Fixture::new(0);
     let tree = fixture.start(&definition("")).await;
@@ -2197,18 +2197,18 @@ async fn test_delegate_保存の競合が続いてもabortを完了し注入も�
     })
     .await
     .unwrap();
-    // Then
     let records = workflow_fact_log::read_tree_records(&fixture.store, &tree)
         .await
         .unwrap();
-    assert!(!records
-        .iter()
-        .any(|r| matches!(r.fact, NodeFact::DelegateResultInjected(_))));
     let after = host
         .load_control_plane_execution(&fixture.app, &tree)
         .await
         .unwrap()
         .unwrap();
+    // Then
+    assert!(!records
+        .iter()
+        .any(|r| matches!(r.fact, NodeFact::DelegateResultInjected(_))));
     assert_eq!(
         after.node_execution(&parent.id).unwrap().status,
         NodeExecutionStatus::Aborted

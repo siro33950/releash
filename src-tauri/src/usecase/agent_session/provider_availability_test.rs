@@ -98,11 +98,13 @@ impl ProviderExecutableProbeGateway for FakeProviderExecutableProbeGateway {
 }
 
 #[test]
-fn test_provider_availability_初期化時にconfigとprobeから全providerのsnapshotを構築する() {
+fn test_provider利用可否_初期化時にconfigとprobeから全providerのsnapshotを構築する() {
+    // Given
     let config = Arc::new(FakeProviderExecutableConfigRepository::with_override(
         ProviderKind::Claude,
         "/custom/claude",
     ));
+    // When
     let availability = ProviderAvailabilityUsecase::initialize(
         config,
         Arc::new(FakeProviderExecutableProbeGateway::default()),
@@ -110,6 +112,7 @@ fn test_provider_availability_初期化時にconfigとprobeから全providerのs
     .unwrap();
     let snapshot = availability.snapshot().unwrap();
 
+    // Then
     assert_eq!(snapshot.entries().len(), ProviderKind::supported().len());
     let claude = snapshot.entry(ProviderKind::Claude);
     assert_eq!(
@@ -282,6 +285,7 @@ fn test_provider利用可否_refreshは探索環境更新後に全providerを一
     // When
     availability.refresh().unwrap();
     let refreshed = availability.snapshot().unwrap();
+    let current = availability.snapshot().unwrap();
 
     // Then
     assert_eq!(*probe.refreshes.lock().unwrap(), 1);
@@ -289,12 +293,7 @@ fn test_provider利用可否_refreshは探索環境更新後に全providerを一
         .entries()
         .iter()
         .all(|entry| !entry.is_available()));
-    assert!(availability
-        .snapshot()
-        .unwrap()
-        .entries()
-        .iter()
-        .all(|entry| !entry.is_available()));
+    assert!(current.entries().iter().all(|entry| !entry.is_available()));
 }
 
 struct BlockingProviderExecutableProbeGateway {
@@ -337,7 +336,8 @@ impl ProviderExecutableProbeGateway for BlockingProviderExecutableProbeGateway {
 }
 
 #[test]
-fn test_provider_availability_refresh中のreadへ部分更新snapshotを公開しない() {
+fn test_provider利用可否_refresh中のreadへ部分更新snapshotを公開しない() {
+    // Given
     let probe = Arc::new(BlockingProviderExecutableProbeGateway::new());
     let availability = Arc::new(
         ProviderAvailabilityUsecase::initialize(
@@ -348,18 +348,22 @@ fn test_provider_availability_refresh中のreadへ部分更新snapshotを公開�
     );
     let before = availability.snapshot().unwrap();
     probe.block_next.store(true, Ordering::SeqCst);
+    // When
     let refreshing = {
         let availability = availability.clone();
         std::thread::spawn(move || availability.refresh().unwrap())
     };
 
     probe.entered.wait();
-    assert_eq!(availability.snapshot().unwrap(), before);
+    let during = availability.snapshot().unwrap();
     probe.release.wait();
     refreshing.join().unwrap();
     let after = availability.snapshot().unwrap();
+    let current = availability.snapshot().unwrap();
 
-    assert_eq!(availability.snapshot().unwrap(), after);
+    // Then
+    assert_eq!(during, before);
+    assert_eq!(current, after);
     assert!(after.entries().iter().all(|entry| !entry.is_available()));
 }
 
@@ -379,28 +383,40 @@ fn test_provider設定_更新とresetとrefresh成功時だけ購読へ通知す
     usecase
         .update_configured_executable(ProviderKind::Codex, "/custom/codex")
         .unwrap();
+    let updated = changes.try_recv().unwrap();
     // Then
     assert_eq!(
-        changes.try_recv().unwrap(),
+        updated,
         crate::usecase::state_subscription::StateChangeSource::Providers
     );
+    // When
     usecase
         .reset_configured_executable(ProviderKind::Codex)
         .unwrap();
+    let reset = changes.try_recv().unwrap();
+    // Then
     assert_eq!(
-        changes.try_recv().unwrap(),
+        reset,
         crate::usecase::state_subscription::StateChangeSource::Providers
     );
+    // When
     usecase.refresh().unwrap();
+    let refreshed = changes.try_recv().unwrap();
+    // Then
     assert_eq!(
-        changes.try_recv().unwrap(),
+        refreshed,
         crate::usecase::state_subscription::StateChangeSource::Providers
     );
+    // Given
     config.fail_save();
-    assert!(usecase
+    // When
+    let failed = usecase
         .update_configured_executable(ProviderKind::Codex, "/custom/codex")
-        .is_err());
-    assert!(changes.try_recv().is_err());
+        .is_err();
+    let no_change = changes.try_recv().is_err();
+    // Then
+    assert!(failed);
+    assert!(no_change);
 }
 
 #[test]
@@ -427,7 +443,8 @@ fn test_provider利用可否_四種類の利用不可理由を出力へ写す() 
 
     // When
     for (domain, expected) in cases {
+        let actual = super::ProviderUnavailableReasonDto::from(domain);
         // Then
-        assert_eq!(super::ProviderUnavailableReasonDto::from(domain), expected);
+        assert_eq!(actual, expected);
     }
 }

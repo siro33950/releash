@@ -1,4 +1,5 @@
 use super::*;
+use crate::usecase::terminal_surface::application::TerminalSurfaceSnapshotDto;
 
 struct PendingTimer;
 

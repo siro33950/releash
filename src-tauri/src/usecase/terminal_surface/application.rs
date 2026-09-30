@@ -53,7 +53,7 @@ pub(crate) enum OwnedTerminalSummaryLookup {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum TerminalSurfaceStreamItem {
-    Snapshot(crate::usecase::state_subscription::TerminalSurfaceSnapshotDto),
+    Snapshot(TerminalSurfaceSnapshotDto),
     Output {
         session_key: String,
         data: Arc<str>,
@@ -70,6 +70,33 @@ pub(crate) enum TerminalSurfaceStreamItem {
         exit_code: Option<i32>,
         sequence: u64,
     },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct TerminalSurfaceSnapshotDto {
+    pub session_key: String,
+    pub replay: String,
+    pub sequence: u64,
+    pub cols: u16,
+    pub rows: u16,
+    pub is_exited: bool,
+    pub exit_code: Option<i32>,
+    pub label: Option<String>,
+}
+
+impl From<TerminalSurface> for TerminalSurfaceSnapshotDto {
+    fn from(surface: TerminalSurface) -> Self {
+        Self {
+            session_key: surface.session_key,
+            replay: surface.checkpoint.replay,
+            sequence: surface.checkpoint.sequence,
+            cols: surface.checkpoint.cols,
+            rows: surface.checkpoint.rows,
+            is_exited: surface.process_state.is_exited(),
+            exit_code: surface.process_state.exit_code(),
+            label: surface.label,
+        }
+    }
 }
 
 impl TerminalSurfaceApplication {

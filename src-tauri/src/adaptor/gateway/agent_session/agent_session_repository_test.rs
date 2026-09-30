@@ -2018,7 +2018,7 @@ async fn test_workspace共通read_modelは同じworkspaceのsessionをid昇順�
 }
 
 #[tokio::test]
-async fn test_agent_session読取_idで一件の表示モデルを返す() {
+async fn test_エージェントセッション読取_idで一件の表示モデルを返す() {
     // Given
     let directory = TempDir::new().unwrap();
     let store = open_store(&directory);
