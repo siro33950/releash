@@ -1846,12 +1846,14 @@ export function ShikiDiffViewer({
 		// biome-ignore lint/a11y/useKeyWithClickEvents: interactive elements inside handle keyboard events
 		<div
 			ref={wrapperRef}
-			className="relative h-full w-full"
+			className="relative flex h-full w-full flex-col"
 			onClick={handleDelegatedClick}
 			tabIndex={-1}
 		>
 			{hiddenRangesError && (
-				<div role="alert">Diff ranges failed: {hiddenRangesError}</div>
+				<div role="alert" className="shrink-0">
+					Diff ranges failed: {hiddenRangesError}
+				</div>
 			)}
 			{search.isOpen && (
 				<DiffSearchBar
@@ -1866,7 +1868,7 @@ export function ShikiDiffViewer({
 			)}
 			<div
 				ref={containerRef}
-				className="h-full w-full overflow-auto font-mono text-sm"
+				className="min-h-0 w-full flex-1 overflow-auto font-mono text-sm"
 				style={{
 					backgroundColor: "var(--editor-background, #1a1a1a)",
 					color: "var(--editor-foreground, #e0e0e0)",

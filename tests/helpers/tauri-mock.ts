@@ -70,7 +70,7 @@ declare global {
 export async function setupTauriMock(page: Page, config: MockConfig) {
     const clientRequests: Array<{ request_id: string; command: string; args: Record<string, unknown> }> = [];
     const attachments = new Map<string, { output: ReadableStreamDefaultController<Message>; args: string[]; clientId: string }>();
-    const terminalIngress = new Map<string, { next: number; pending: Map<number, string> }>();
+    const terminalIngress = new Map<string, { next: number; pending: Map<number, Record<string, unknown>> }>();
     const terminalDelivered: Array<{ attachmentId: string; sequence: number; data: string }> = [];
     const terminalFailures: Array<{ attachmentId: string; sequence: number; data: string }> = [];
     const stateStreams = new Map<string, ReadableStreamDefaultController<Message>>();
@@ -120,28 +120,31 @@ export async function setupTauriMock(page: Page, config: MockConfig) {
         stream.enqueue(create(StateSubscriptionEventSchema, {target: "terminal", args, version: {epoch: "fixture", sequence: BigInt(sequence)}, event: item.type === "snapshot" ? {case: "snapshot", value: payload} : {case: "change", value: {delta: true, payload}}}));
 
     });
-    const execute = async (command: string, args: Record<string, unknown>) => {
-        clientRequests.push({ request_id: crypto.randomUUID(), command, args });
+    const executeInBrowser = async (command: string, args: Record<string, unknown>) => {
         const outcome = await page.evaluate(async ({command, args}) => {
             try { return { result: await window.__RELEASH_BACKEND__!.execute(command, args) }; }
             catch (error) { return { error: error instanceof Error ? error.message : error }; }
         }, {command, args});
         if ("error" in outcome) throw new ConnectError("Command failed", Code.FailedPrecondition, undefined, [{ desc: CommandErrorSchema, value: fromJson(CommandErrorSchema, clientJson(CommandErrorSchema, outcome.error, true)) }]);
-        if (command === "write_terminal_surface") {
-            const attachmentId = String(args.attachmentId);
-            const ingress = terminalIngress.get(attachmentId);
-            const sequence = Number(args.sequence);
-            if (!ingress) {
-                terminalFailures.push({ attachmentId, sequence, data: String(args.data) });
-                throw new ConnectError("Stale terminal attachment", Code.FailedPrecondition);
-            }
-            if (sequence >= ingress.next) ingress.pending.set(sequence, String(args.data));
-            while (ingress.pending.has(ingress.next)) {
-                terminalDelivered.push({ attachmentId, sequence: ingress.next, data: ingress.pending.get(ingress.next)! });
-                ingress.pending.delete(ingress.next++);
-            }
-        }
         return outcome.result;
+    };
+    const execute = async (command: string, args: Record<string, unknown>) => {
+        clientRequests.push({ request_id: crypto.randomUUID(), command, args });
+        if (command !== "write_terminal_surface") return executeInBrowser(command, args);
+        const attachmentId = String(args.attachmentId);
+        const ingress = terminalIngress.get(attachmentId);
+        const sequence = Number(args.sequence);
+        if (!ingress) {
+            terminalFailures.push({ attachmentId, sequence, data: String(args.data) });
+            throw new ConnectError("Stale terminal attachment", Code.FailedPrecondition);
+        }
+        if (sequence >= ingress.next) ingress.pending.set(sequence, args);
+        while (ingress.pending.has(ingress.next)) {
+            const input = ingress.pending.get(ingress.next)!;
+            ingress.pending.delete(ingress.next);
+            terminalDelivered.push({ attachmentId, sequence: ingress.next++, data: String(input.data) });
+            await executeInBrowser(command, input);
+        }
     };
     const router = createConnectRouter();
     for (const method of ClientService.methods) {

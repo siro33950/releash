@@ -57,6 +57,7 @@ let mockTerminalInstance: {
 };
 
 let mockCurrentInputId: string | null = null;
+let mockInputIdPublished = true;
 let mockStreamCompletion: Promise<void> | null = null;
 let mockConnectionPhase = "READY";
 function streamForAttachment(attachmentId: unknown) {
@@ -94,7 +95,7 @@ vi.mock("@/lib/client", () => ({
 			throw error instanceof Error ? error.message : error;
 		});
 		if (mockStreams[mockStreams.length - 1]?.attachmentId === attachmentId)
-			mockCurrentInputId = attachmentId;
+			mockCurrentInputId = mockInputIdPublished ? attachmentId : null;
 		if (completion) await completion;
 		let released: Promise<void> | undefined;
 		return vi.fn(
@@ -308,6 +309,7 @@ describe("useTerminal", () => {
 		mockTerminalConstructorOptions = {};
 		mockWebglAddonInstances.length = 0;
 		mockCurrentInputId = null;
+		mockInputIdPublished = true;
 		mockStreamCompletion = null;
 		mockConnectionPhase = "READY";
 		mockFirstState.mockReset().mockRejectedValue(new Error("No state fixture"));
@@ -1391,6 +1393,44 @@ describe("useTerminal", () => {
 		await waitFor(() => {
 			expect(onTerminalError).toHaveBeenCalledWith("backend resync failed");
 		});
+	});
+
+	it("初回attachで入力IDが公開されなくてもsnapshotを適用する", async () => {
+		mockInputIdPublished = false;
+		const onTerminalError = vi.fn();
+		const onTerminalReady = vi.fn();
+		renderHook(() =>
+			useTerminal(containerRef, { onTerminalError, onTerminalReady }),
+		);
+
+		await waitFor(() => {
+			expect(onTerminalError).toHaveBeenCalledWith(
+				"Terminal input attachment is unavailable",
+			);
+			expect(onTerminalReady).toHaveBeenCalledWith("test-uuid-1234");
+		});
+	});
+
+	it("resyncで入力IDが公開されないとき前のattachmentを解放する", async () => {
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+		const onTerminalError = vi.fn();
+		renderHook(() => useTerminal(containerRef, { onTerminalError }));
+		await waitFor(() => expect(mockCurrentInputId).toBeTruthy());
+		const previousId = mockStreams[0].attachmentId;
+
+		mockInputIdPublished = false;
+		mockStreams[0].onClosed();
+
+		await waitFor(() => {
+			expect(mockStreams).toHaveLength(2);
+			expect(mockInvoke).toHaveBeenCalledWith("stop_state_subscription", {
+				attachmentId: previousId,
+			});
+			expect(onTerminalError).toHaveBeenCalledWith(
+				"Failed to resynchronize terminal: Terminal input attachment is unavailable",
+			);
+		});
+		errorSpy.mockRestore();
 	});
 
 	it("stream itemのapply失敗を通知し新attachmentへのresync成功でクリアする", async () => {

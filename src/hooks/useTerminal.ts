@@ -572,7 +572,11 @@ export function useTerminal(
 				// sequence 0..Nで送られて棄却され、以後の入力sequenceが恒久的に
 				// 欠番となり全打鍵が無音でバッファされ続ける。
 				const nextInputId = currentTerminalInputId(terminalOwner);
-				if (!nextInputId) throw unavailableAttachment();
+				if (!nextInputId) {
+					markAttached();
+					await releaseAttachment(previousReleaseStream);
+					throw unavailableAttachment();
+				}
 				if (nextInputId !== attachmentId) selectInputAttachment(nextInputId);
 				markAttached();
 				await releaseAttachment(previousReleaseStream);
