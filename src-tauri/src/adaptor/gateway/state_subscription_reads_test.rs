@@ -39,3 +39,13 @@ async fn test_購読読取の境界_review対象とcomment置き場を内側へ�
     );
     assert!(!reads.review_comments_dir().is_empty());
 }
+
+#[tokio::test]
+async fn test_購読読取の境界_同期queryは自前のruntimeで外部commandを動かせる() {
+    let fixture = crate::test_support::state_subscription::StateReadsFixture::new();
+    fixture.list_issues_in_own_runtime();
+    let reads = StateSubscriptionReads(fixture.reads.clone());
+    let target = SubscriptionTarget::Issues(fixture.path.clone());
+    assert!(reads.refresh_external(&target).await.is_ok());
+    assert!(reads.read(&target).await.is_ok());
+}

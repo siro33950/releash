@@ -15,6 +15,7 @@ impl StateSubscriptionRead for StateSubscriptionReads {
         if matches!(
             target,
             T::Workspaces
+                | T::Workflows
                 | T::AgentSession(_)
                 | T::SessionHistory(..)
                 | T::Selection(..)
@@ -26,25 +27,19 @@ impl StateSubscriptionRead for StateSubscriptionReads {
         }
         let reads = self.0.clone();
         let target = target.clone();
-        let runtime = tokio::runtime::Handle::current();
-        crate::common::operation_context::spawn_blocking(move || {
-            runtime.block_on(reads.read(&target))
-        })
-        .await
-        .map_err(task_error)?
+        crate::common::operation_context::spawn_blocking(move || reads.read_blocking(&target))
+            .await
+            .map_err(task_error)?
     }
     async fn refresh_external(&self, target: &SubscriptionTarget) -> Result<(), StateReadError> {
-        if !matches!(target, SubscriptionTarget::Issues(_)) {
+        let SubscriptionTarget::Issues(path) = target else {
             return self.0.refresh_external(target).await;
-        }
+        };
         let reads = self.0.clone();
-        let target = target.clone();
-        let runtime = tokio::runtime::Handle::current();
-        crate::common::operation_context::spawn_blocking(move || {
-            runtime.block_on(reads.refresh_external(&target))
-        })
-        .await
-        .map_err(task_error)?
+        let path = path.clone();
+        crate::common::operation_context::spawn_blocking(move || reads.refresh_issues(&path))
+            .await
+            .map_err(task_error)?
     }
     fn repositories(&self) -> Vec<String> {
         self.0.repositories()
