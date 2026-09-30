@@ -16,14 +16,13 @@ fn test_開けるファイル数の上限_softをhardまで引き上げる() {
     }
     // Given
     let mut launchd_default = current_limit().unwrap();
-    launchd_default.rlim_cur = launchd_default.rlim_cur.min(256);
+    let target = target_soft_limit(launchd_default.rlim_max).unwrap();
+    launchd_default.rlim_cur = (target - 1).min(256);
     // SAFETY: launchd_default keeps the inherited hard limit and only lowers the soft limit.
     assert_eq!(
         unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &launchd_default) },
         0
     );
-    let target = target_soft_limit(launchd_default.rlim_max).unwrap();
-    assert!(target > launchd_default.rlim_cur);
     // When
     raise_open_file_limit().unwrap();
     // Then
