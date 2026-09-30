@@ -293,8 +293,7 @@ mod tests {
     async fn test_起動中ipc_通常handlerの副作用をrust入口で拒否する() {
         // Given
         let gateway = Arc::new(crate::usecase::test_helpers::FakeDaemon::default());
-        let supervisor =
-            crate::usecase::daemon_supervision::DaemonSupervisionUsecase::start(gateway.clone());
+        let supervisor = crate::usecase::test_helpers::start_supervision(gateway.clone());
         let (app, effects) = command_gate_test_app();
         app.manage(supervisor.clone());
         let window = tauri::WebviewWindowBuilder::new(&app, "startup-failure", Default::default())

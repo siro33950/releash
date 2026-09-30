@@ -51,7 +51,7 @@ async fn test_起動表示_ログイン引数と最小化設定の両方があ�
         // Given
         let daemon = Arc::new(FakeDaemon::default());
         daemon.start_minimized.store(minimized, Ordering::SeqCst);
-        let supervisor = DaemonSupervisionUsecase::start(daemon.clone());
+        let supervisor = crate::usecase::test_helpers::start_supervision(daemon.clone());
         let host = Host::default();
         let task = tokio::spawn(observe_with(host.clone(), supervisor, hidden && minimized));
         tick(200).await;
@@ -75,7 +75,7 @@ async fn test_最小化起動_初回の異常終了と期限超過からの自�
         // Given
         let daemon = Arc::new(FakeDaemon::default());
         daemon.start_minimized.store(true, Ordering::SeqCst);
-        let supervisor = DaemonSupervisionUsecase::start(daemon.clone());
+        let supervisor = crate::usecase::test_helpers::start_supervision(daemon.clone());
         let host = Host::default();
         let task = tokio::spawn(observe_with(host.clone(), supervisor.clone(), true));
         tick(200).await;
@@ -143,7 +143,7 @@ async fn test_最小化起動_自動再起動の対象外と上限到達では�
         // Given
         let daemon = Arc::new(FakeDaemon::default());
         daemon.spawn_failure.store(spawn_failure, Ordering::SeqCst);
-        let supervisor = DaemonSupervisionUsecase::start(daemon.clone());
+        let supervisor = crate::usecase::test_helpers::start_supervision(daemon.clone());
         let host = Host::default();
         let task = tokio::spawn(observe_with(host.clone(), supervisor.clone(), true));
         tick(200).await;
@@ -187,7 +187,7 @@ async fn test_再接続表示_通常再接続では再表示せず失敗画面�
     let daemon = Arc::new(FakeDaemon::default());
     daemon.ready.store(true, Ordering::SeqCst);
     daemon.start_minimized.store(true, Ordering::SeqCst);
-    let supervisor = DaemonSupervisionUsecase::start(daemon.clone());
+    let supervisor = crate::usecase::test_helpers::start_supervision(daemon.clone());
     let host = Host::default();
     let task = tokio::spawn(observe_with(host.clone(), supervisor, true));
     tick(200).await;
@@ -215,7 +215,7 @@ async fn test_tray終了_停止要求から一括停止と子の終了確認後�
     // Given
     let daemon = Arc::new(FakeDaemon::default());
     daemon.ready.store(true, Ordering::SeqCst);
-    let supervisor = DaemonSupervisionUsecase::start(daemon.clone());
+    let supervisor = crate::usecase::test_helpers::start_supervision(daemon.clone());
     let host = Host::default();
     let task = tokio::spawn(observe_with(host.clone(), supervisor.clone(), false));
     tick(200).await;
@@ -252,7 +252,7 @@ async fn test_native終了_終了を保留して一括停止と子の終了確�
     // Given: menu Quit, Cmd+Q, Dock Quit and AppleScript use applicationShouldTerminate:.
     let daemon = Arc::new(FakeDaemon::default());
     daemon.ready.store(true, Ordering::SeqCst);
-    let supervisor = DaemonSupervisionUsecase::start(daemon.clone());
+    let supervisor = crate::usecase::test_helpers::start_supervision(daemon.clone());
     let host = Host::default();
     let task = tokio::spawn(observe_with(host.clone(), supervisor.clone(), false));
     tick(200).await;
@@ -298,7 +298,7 @@ async fn test_再起動_一括停止未確認と後継spawn失敗ではui終了�
         // Given
         let daemon = Arc::new(FakeDaemon::default());
         daemon.ready.store(true, Ordering::SeqCst);
-        let supervisor = DaemonSupervisionUsecase::start(daemon.clone());
+        let supervisor = crate::usecase::test_helpers::start_supervision(daemon.clone());
         let host = Host {
             restart_fails: fails,
             ..Default::default()

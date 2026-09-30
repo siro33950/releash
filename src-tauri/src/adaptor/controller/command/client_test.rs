@@ -1170,8 +1170,7 @@ async fn test_接続情報command_起動中の要求を拒否せず検証済みe
     // Given
     let (app, _) = parity_app();
     let gateway = Arc::new(FakeDaemon::default());
-    let supervisor =
-        crate::usecase::daemon_supervision::DaemonSupervisionUsecase::start(gateway.clone());
+    let supervisor = crate::usecase::test_helpers::start_supervision(gateway.clone());
     app.manage(supervisor);
     for reconnect in [false, true] {
         if reconnect {

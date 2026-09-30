@@ -12,6 +12,7 @@ import type {
 import {
 	type ClientCommand,
 	currentTerminalInputId,
+	getClient,
 	getConnectionState,
 	invokeClient as invoke,
 	reportTerminalProcessed,
@@ -52,6 +53,13 @@ import type { Theme } from "@/types/settings";
 export type { TerminalSurfaceOwner } from "@/lib/terminalSurfaceStream";
 
 class TerminalBackendCommandError extends Error {}
+
+function failedConnectionMessage() {
+	const phase = getConnectionState();
+	return phase === "TRANSIENT_FAILURE" || phase === "SHUTDOWN"
+		? `Daemon connection is ${phase}`
+		: null;
+}
 
 async function invokeTerminalBackendCommand<K extends ClientCommand>(
 	command: K,
@@ -661,9 +669,9 @@ export function useTerminal(
 		initialize();
 
 		deliverInput = (data: string) => {
-			const phase = getConnectionState();
-			if (phase === "TRANSIENT_FAILURE" || phase === "SHUTDOWN") {
-				onTerminalErrorRef.current?.(`Daemon connection is ${phase}`);
+			const connectionFailure = failedConnectionMessage();
+			if (connectionFailure) {
+				onTerminalErrorRef.current?.(connectionFailure);
 				return;
 			}
 			const deadline =
@@ -675,12 +683,28 @@ export function useTerminal(
 				.then(async () => {
 					if (Date.now() > deadline)
 						throw new Error("Terminal input timed out");
-					const currentPhase = getConnectionState();
-					if (
-						currentPhase === "TRANSIENT_FAILURE" ||
-						currentPhase === "SHUTDOWN"
-					)
-						throw new Error(`Daemon connection is ${currentPhase}`);
+					const connectionFailure = failedConnectionMessage();
+					if (connectionFailure) throw new Error(connectionFailure);
+					let timer: ReturnType<typeof setTimeout> | undefined;
+					try {
+						await Promise.race([
+							getClient(),
+							new Promise<never>((_, reject) => {
+								timer = setTimeout(
+									() => reject(new Error("Terminal input timed out")),
+									Math.max(0, deadline - Date.now()),
+								);
+							}),
+						]);
+					} catch (error) {
+						throw new Error(
+							failedConnectionMessage() ?? getErrorMessage(error),
+						);
+					} finally {
+						clearTimeout(timer);
+					}
+					if (Date.now() > deadline)
+						throw new Error("Terminal input timed out");
 					const activeAttachmentId = currentTerminalInputId(terminalOwner);
 					if (!activeAttachmentId) throw unavailableAttachment();
 					if (activeAttachmentId !== attachmentId) {
@@ -725,9 +749,9 @@ export function useTerminal(
 		};
 		const dispatchInput = (data: string) => {
 			if (!isMounted || data.length === 0) return;
-			const phase = getConnectionState();
-			if (phase === "TRANSIENT_FAILURE" || phase === "SHUTDOWN") {
-				onTerminalErrorRef.current?.(`Daemon connection is ${phase}`);
+			const connectionFailure = failedConnectionMessage();
+			if (connectionFailure) {
+				onTerminalErrorRef.current?.(connectionFailure);
 				return;
 			}
 			if (startupFailure) {

@@ -15,7 +15,10 @@ impl PausingStatusOutput {
     fn deliver(&self, operation: &str, status: DaemonStatus) {
         if operation == self.pause_on && !self.paused.swap(true, Ordering::SeqCst) {
             self.entered.send(()).unwrap();
-            self.release.lock().recv().unwrap();
+            self.release
+                .lock()
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap();
         }
         self.sent.lock().push(status);
     }
@@ -56,14 +59,16 @@ fn pausing_output(
 #[tokio::test]
 async fn test_起動状態の購読_初期通知中の変化が最後に届く() {
     // Given
-    let supervisor = DaemonSupervisionUsecase::start(Arc::new(FakeDaemon::default()));
     let (output, entered, release) = pausing_output("start");
-    supervisor.set_status_output(output.clone());
+    let supervisor =
+        DaemonSupervisionUsecase::start(Arc::new(FakeDaemon::default()), output.clone());
     let starting = {
         let supervisor = supervisor.clone();
         std::thread::spawn(move || supervisor.subscribe_status("screen".into()))
     };
-    entered.recv().unwrap();
+    entered
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .unwrap();
     supervisor
         .state
         .lock()
@@ -91,9 +96,9 @@ async fn test_起動状態の購読_初期通知中の変化が最後に届く()
 #[tokio::test]
 async fn test_起動状態の購読_並行した変化は古い通知で終わらない() {
     // Given
-    let supervisor = DaemonSupervisionUsecase::start(Arc::new(FakeDaemon::default()));
     let (output, entered, release) = pausing_output("publish");
-    supervisor.set_status_output(output.clone());
+    let supervisor =
+        DaemonSupervisionUsecase::start(Arc::new(FakeDaemon::default()), output.clone());
     supervisor.subscribe_status("screen".into());
     supervisor
         .state
@@ -104,7 +109,9 @@ async fn test_起動状態の購読_並行した変化は古い通知で終わ�
         let supervisor = supervisor.clone();
         std::thread::spawn(move || supervisor.publish())
     };
-    entered.recv().unwrap();
+    entered
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .unwrap();
     supervisor.state.lock().supervision.uncoordinated_stop();
     // When
     let (finished, completion) = std::sync::mpsc::channel();
@@ -147,12 +154,11 @@ async fn test_起動状態の購読_初期状態と変化を送り停止後は�
     }
     // Given
     let gateway = Arc::new(FakeDaemon::default());
-    let supervisor = DaemonSupervisionUsecase::start(gateway.clone());
     let output = Arc::new(Output {
         active: parking_lot::Mutex::new(std::collections::HashSet::new()),
         sent: parking_lot::Mutex::new(Vec::new()),
     });
-    supervisor.set_status_output(output.clone());
+    let supervisor = DaemonSupervisionUsecase::start(gateway.clone(), output.clone());
     // When
     supervisor.subscribe_status("screen".into());
     // Then
@@ -191,7 +197,7 @@ fn test_監督状態_接続失敗の分類を画面用のstageへ写す() {
 async fn test_起動監督_期限直前の接続は次の巡回が期限後でも停止せず復元できる() {
     // Given
     let gateway = Arc::new(FakeDaemon::default());
-    let supervisor = DaemonSupervisionUsecase::start(gateway.clone());
+    let supervisor = crate::usecase::test_helpers::start_supervision(gateway.clone());
     tick(29_800).await;
     // When
     gateway.ready.store(true, Ordering::SeqCst);
@@ -217,7 +223,7 @@ async fn test_起動監督_期限内の接続完了が期限後に届いても�
     gateway
         .connection_delivery_delay_ms
         .store(150, Ordering::SeqCst);
-    let supervisor = DaemonSupervisionUsecase::start(gateway.clone());
+    let supervisor = crate::usecase::test_helpers::start_supervision(gateway.clone());
     tick(29_800).await;
     gateway.ready.store(true, Ordering::SeqCst);
     // When
@@ -241,7 +247,7 @@ async fn test_起動監督_期限前に接続を始めても期限以降の完�
         // Given
         let gateway = Arc::new(FakeDaemon::default());
         gateway.connection_delay_ms.store(delay, Ordering::SeqCst);
-        let supervisor = DaemonSupervisionUsecase::start(gateway.clone());
+        let supervisor = crate::usecase::test_helpers::start_supervision(gateway.clone());
         tick(29_800).await;
         gateway.ready.store(true, Ordering::SeqCst);
         // When
@@ -263,7 +269,7 @@ async fn test_起動監督_期限前に接続を始めても期限以降の完�
 async fn test_起動監督_期限超過は子の終了確認を挟んで再試行する() {
     // Given
     let gateway = Arc::new(FakeDaemon::default());
-    let supervisor = DaemonSupervisionUsecase::start(gateway.clone());
+    let supervisor = crate::usecase::test_helpers::start_supervision(gateway.clone());
     // When
     tick(30_100).await;
     // Then
@@ -281,7 +287,7 @@ async fn test_起動監督_spawn失敗を表示し明示的な再試行だけ受
     // Given
     let gateway = Arc::new(FakeDaemon::default());
     gateway.spawn_failure.store(true, Ordering::SeqCst);
-    let supervisor = DaemonSupervisionUsecase::start(gateway.clone());
+    let supervisor = crate::usecase::test_helpers::start_supervision(gateway.clone());
     // When
     tick(60_000).await;
     // Then
@@ -304,7 +310,7 @@ async fn test_起動監督_spawn失敗を表示し明示的な再試行だけ受
 async fn test_起動監督_初期化失敗の待機中にquitすると再spawnしない() {
     // Given
     let gateway = Arc::new(FakeDaemon::default());
-    let supervisor = DaemonSupervisionUsecase::start(gateway.clone());
+    let supervisor = crate::usecase::test_helpers::start_supervision(gateway.clone());
     tick(100).await;
     // When
     *gateway.exit.lock() = Some(DaemonExit {
@@ -329,7 +335,7 @@ async fn test_切替_プロセス終了だけでは停止完了とみなさな�
         // Given
         let gateway = Arc::new(FakeDaemon::default());
         gateway.ready.store(true, Ordering::SeqCst);
-        let supervisor = DaemonSupervisionUsecase::start(gateway.clone());
+        let supervisor = crate::usecase::test_helpers::start_supervision(gateway.clone());
         tick(200).await;
         // When
         supervisor.stop(StopIntent::Update).unwrap();
@@ -357,7 +363,7 @@ async fn test_接続先検証_異なるインスタンスを拒否して子の�
     let gateway = Arc::new(FakeDaemon::default());
     gateway.ready.store(true, Ordering::SeqCst);
     gateway.wrong_identity.store(true, Ordering::SeqCst);
-    let supervisor = DaemonSupervisionUsecase::start(gateway.clone());
+    let supervisor = crate::usecase::test_helpers::start_supervision(gateway.clone());
     tick(200).await;
     // When
     tick(200).await;
@@ -377,7 +383,7 @@ async fn test_接続先検証_異なるインスタンスを拒否して子の�
 async fn test_終了要求_起動予約よりquitを優先して子を作らない() {
     // Given
     let gateway = Arc::new(FakeDaemon::default());
-    let supervisor = DaemonSupervisionUsecase::start(gateway.clone());
+    let supervisor = crate::usecase::test_helpers::start_supervision(gateway.clone());
     // When
     supervisor.stop(StopIntent::Quit(0)).unwrap();
     tick(1_000).await;
@@ -392,7 +398,7 @@ async fn test_起動期限_子の終了未確認なら失敗を表示し次のsp
     let gateway = Arc::new(FakeDaemon::default());
     *gateway.termination_error.lock() =
         Some("Daemon exit could not be confirmed after termination.".into());
-    let supervisor = DaemonSupervisionUsecase::start(gateway.clone());
+    let supervisor = crate::usecase::test_helpers::start_supervision(gateway.clone());
     // When
     tick(60_000).await;
     // Then
@@ -416,7 +422,7 @@ async fn test_未接続の停止_終了確認の成否を表示して再spawnし
         // Given
         let gateway = Arc::new(FakeDaemon::default());
         *gateway.termination_error.lock() = failure.clone();
-        let supervisor = DaemonSupervisionUsecase::start(gateway.clone());
+        let supervisor = crate::usecase::test_helpers::start_supervision(gateway.clone());
         tick(200).await;
         // When
         supervisor.stop(StopIntent::Update).unwrap();
@@ -440,7 +446,7 @@ async fn test_通常終了_停止要求のないready後の終了でも再spawn�
     // Given
     let gateway = Arc::new(FakeDaemon::default());
     gateway.ready.store(true, Ordering::SeqCst);
-    let supervisor = DaemonSupervisionUsecase::start(gateway.clone());
+    let supervisor = crate::usecase::test_helpers::start_supervision(gateway.clone());
     tick(200).await;
     restore_desktop(&supervisor).await;
     // When
@@ -461,7 +467,7 @@ async fn test_起動失敗_停止未確認は一度だけ停止を試み終了�
     // Given
     let gateway = Arc::new(FakeDaemon::default());
     *gateway.termination_error.lock() = Some("exit unconfirmed".into());
-    let supervisor = DaemonSupervisionUsecase::start(gateway.clone());
+    let supervisor = crate::usecase::test_helpers::start_supervision(gateway.clone());
     // When
     tick(120_000).await;
     // Then
@@ -480,7 +486,7 @@ async fn test_通常quit_終了確認不能でも完了扱いにせず期限後�
     let gateway = Arc::new(FakeDaemon::default());
     gateway.ready.store(true, Ordering::SeqCst);
     *gateway.termination_error.lock() = Some("exit unconfirmed".into());
-    let supervisor = DaemonSupervisionUsecase::start(gateway.clone());
+    let supervisor = crate::usecase::test_helpers::start_supervision(gateway.clone());
     tick(200).await;
     // When
     supervisor.stop(StopIntent::Quit(0)).unwrap();
@@ -506,7 +512,7 @@ async fn test_旧renderer要求_古いlaunchを拒否して検証済みdaemonを
     // Given
     let gateway = Arc::new(FakeDaemon::default());
     gateway.ready.store(true, Ordering::SeqCst);
-    let supervisor = DaemonSupervisionUsecase::start(gateway.clone());
+    let supervisor = crate::usecase::test_helpers::start_supervision(gateway.clone());
     tick(200).await;
     restore_desktop(&supervisor).await;
     // When
@@ -524,7 +530,7 @@ async fn test_ws切断_生存中の子へ再接続し期限超過時だけ終了
     // Given
     let gateway = Arc::new(FakeDaemon::default());
     gateway.ready.store(true, Ordering::SeqCst);
-    let supervisor = DaemonSupervisionUsecase::start(gateway.clone());
+    let supervisor = crate::usecase::test_helpers::start_supervision(gateway.clone());
     tick(200).await;
     restore_desktop(&supervisor).await;
     // When
@@ -558,7 +564,7 @@ async fn test_状態復元_取得失敗後は同じdaemonで再取得の完了�
     // Given
     let gateway = Arc::new(FakeDaemon::default());
     gateway.ready.store(true, Ordering::SeqCst);
-    let supervisor = DaemonSupervisionUsecase::start(gateway.clone());
+    let supervisor = crate::usecase::test_helpers::start_supervision(gateway.clone());
     tick(200).await;
     let first = supervisor.status().connection_generation;
     // When
@@ -596,7 +602,7 @@ async fn test_状態復元_完了確認の失敗も表示しquitで一括停止�
     // Given
     let gateway = Arc::new(FakeDaemon::default());
     gateway.ready.store(true, Ordering::SeqCst);
-    let supervisor = DaemonSupervisionUsecase::start(gateway.clone());
+    let supervisor = crate::usecase::test_helpers::start_supervision(gateway.clone());
     tick(200).await;
     // When
     assert!(supervisor
@@ -631,7 +637,7 @@ async fn test_状態復元_期限超過後に戻った古い完了は再試行�
     let wait = Arc::new(tokio::sync::Notify::new());
     let gateway = Arc::new(FakeDaemon::default());
     gateway.ready.store(true, Ordering::SeqCst);
-    let supervisor = DaemonSupervisionUsecase::start(gateway.clone());
+    let supervisor = crate::usecase::test_helpers::start_supervision(gateway.clone());
     tick(200).await;
     let _ = supervisor.attach("desktop".into()).await;
     let completion = {
@@ -670,7 +676,7 @@ async fn test_状態復元_期限超過後に戻った古い完了は再試行�
 async fn test_接続情報要求_起動中と切替中は拒否せず接続確立を待つ() {
     // Given
     let gateway = Arc::new(FakeDaemon::default());
-    let supervisor = DaemonSupervisionUsecase::start(gateway.clone());
+    let supervisor = crate::usecase::test_helpers::start_supervision(gateway.clone());
     for reconnect in [false, true] {
         if reconnect {
             gateway.ready.store(false, Ordering::SeqCst);
@@ -695,7 +701,7 @@ async fn test_接続情報要求_同一性不一致のdaemonを返さず確定�
     // Given
     let gateway = Arc::new(FakeDaemon::default());
     gateway.wrong_identity.store(true, Ordering::SeqCst);
-    let supervisor = DaemonSupervisionUsecase::start(gateway.clone());
+    let supervisor = crate::usecase::test_helpers::start_supervision(gateway.clone());
     let requesting = supervisor.clone();
     let request = tokio::spawn(async move { requesting.attach("desktop".into()).await });
     // When

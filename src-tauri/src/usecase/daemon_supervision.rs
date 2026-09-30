@@ -74,7 +74,7 @@ pub(crate) struct DaemonSupervisionUsecase {
     gateway: Arc<dyn DaemonGateway>,
     commands: tokio::sync::mpsc::UnboundedSender<Control>,
     changes: tokio::sync::watch::Sender<DaemonStatus>,
-    status_output: std::sync::OnceLock<Arc<dyn DaemonStatusOutput>>,
+    status_output: Arc<dyn DaemonStatusOutput>,
     status_delivery: parking_lot::Mutex<()>,
 }
 
@@ -86,7 +86,10 @@ enum Control {
 }
 
 impl DaemonSupervisionUsecase {
-    pub fn start(gateway: Arc<dyn DaemonGateway>) -> Arc<Self> {
+    pub fn start(
+        gateway: Arc<dyn DaemonGateway>,
+        status_output: Arc<dyn DaemonStatusOutput>,
+    ) -> Arc<Self> {
         let (commands, receiver) = tokio::sync::mpsc::unbounded_channel();
         let state = State {
             supervision: DaemonSupervision::new(gateway.monotonic_ms()),
@@ -98,7 +101,7 @@ impl DaemonSupervisionUsecase {
             gateway: gateway.clone(),
             commands,
             changes,
-            status_output: std::sync::OnceLock::new(),
+            status_output,
             status_delivery: parking_lot::Mutex::new(()),
         });
         tokio::spawn(this.clone().run(gateway, receiver));
@@ -110,20 +113,13 @@ impl DaemonSupervisionUsecase {
     pub fn subscribe(&self) -> tokio::sync::watch::Receiver<DaemonStatus> {
         self.changes.subscribe()
     }
-    pub fn set_status_output(&self, output: Arc<dyn DaemonStatusOutput>) {
-        assert!(self.status_output.set(output).is_ok());
-    }
     pub fn subscribe_status(&self, id: String) {
         let _delivery = self.status_delivery.lock();
-        if let Some(output) = self.status_output.get() {
-            output.start(id, self.status());
-        }
+        self.status_output.start(id, self.status());
     }
     pub fn stop_status_subscription(&self, id: &str) {
         let _delivery = self.status_delivery.lock();
-        if let Some(output) = self.status_output.get() {
-            output.stop(id);
-        }
+        self.status_output.stop(id);
     }
     pub fn retry(&self) -> Result<(), DaemonSupervisionError> {
         if !self.state.lock().supervision.retry_available() {
@@ -295,9 +291,7 @@ impl DaemonSupervisionUsecase {
                 true
             }
         }) {
-            if let Some(output) = self.status_output.get() {
-                output.publish(next);
-            }
+            self.status_output.publish(next);
         }
     }
     async fn run(

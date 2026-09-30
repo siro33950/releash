@@ -26,6 +26,7 @@ const REPO_WORKSPACE_OWNER = {
 } as const;
 
 const mockInvoke = vi.fn();
+const mockGetClient = vi.fn<() => Promise<void>>();
 const mockListen = vi.fn();
 const mockOpenUrl = vi.fn();
 const mockStreams: Array<{
@@ -75,6 +76,7 @@ vi.mock("@/lib/client", () => ({
 	firstState: (...args: unknown[]) => mockFirstState(...args),
 	currentTerminalInputId: () => mockCurrentInputId,
 	getConnectionState: () => mockConnectionPhase,
+	getClient: () => mockGetClient(),
 	subscribeTerminalState: async (
 		args: { owner: unknown },
 		onmessage: (message: unknown) => void,
@@ -294,6 +296,7 @@ describe("useTerminal", () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
 		mockInvoke.mockReset();
+		mockGetClient.mockReset().mockResolvedValue();
 		mockListen.mockReset();
 		mockOpenUrl.mockReset().mockResolvedValue(undefined);
 		mockStreams.length = 0;
@@ -1114,6 +1117,126 @@ describe("useTerminal", () => {
 		expect(terminalInputWrites().map(({ sequence }) => sequence)).toEqual([
 			0, 1,
 		]);
+	});
+
+	it("CONNECTING中の確立失敗では送信前に失敗し番号とattachmentを維持する", async () => {
+		const onTerminalError = vi.fn();
+		renderHook(() => useTerminal(containerRef, { onTerminalError }));
+		await waitFor(() => expect(mockStreams).toHaveLength(1));
+		let failConnection!: (error: Error) => void;
+		mockGetClient.mockImplementationOnce(
+			() =>
+				new Promise<void>((_resolve, reject) => {
+					failConnection = reject;
+				}),
+		);
+		mockConnectionPhase = "CONNECTING";
+		mockOnDataCallback("pending");
+		await waitFor(() => expect(failConnection).toBeTypeOf("function"));
+		mockConnectionPhase = "TRANSIENT_FAILURE";
+		failConnection(new Error("endpoint unavailable"));
+		await waitFor(() =>
+			expect(onTerminalError).toHaveBeenCalledWith(
+				"Daemon connection is TRANSIENT_FAILURE",
+			),
+		);
+		expect(onTerminalError).not.toHaveBeenCalledWith(
+			expect.stringContaining("may have been executed"),
+		);
+		expect(terminalInputWrites()).toHaveLength(0);
+		mockConnectionPhase = "READY";
+		mockOnDataCallback("after");
+		await waitFor(() => expect(terminalInputWrites()).toHaveLength(1));
+		expect(terminalInputWrites()[0]).toMatchObject({
+			sequence: 0,
+			data: "after",
+		});
+		expect(onTerminalError).not.toHaveBeenCalledWith(
+			"Terminal input attachment is unavailable",
+		);
+	});
+
+	it("CONNECTING中に入力期限を過ぎた場合は送らず期限内の入力から番号0で送る", async () => {
+		const onTerminalError = vi.fn();
+		renderHook(() => useTerminal(containerRef, { onTerminalError }));
+		await waitFor(() => expect(mockStreams).toHaveLength(1));
+		let now = 1_000_000;
+		const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
+		try {
+			let ready!: () => void;
+			mockGetClient.mockImplementationOnce(
+				() =>
+					new Promise<void>((resolve) => {
+						ready = resolve;
+					}),
+			);
+			mockConnectionPhase = "CONNECTING";
+			mockOnDataCallback("late");
+			await waitFor(() => expect(ready).toBeTypeOf("function"));
+			now += 120_001;
+			mockConnectionPhase = "READY";
+			ready();
+			await waitFor(() =>
+				expect(onTerminalError).toHaveBeenCalledWith(
+					"Terminal input timed out",
+				),
+			);
+			expect(terminalInputWrites()).toHaveLength(0);
+
+			mockGetClient.mockImplementationOnce(
+				() =>
+					new Promise<void>((resolve) => {
+						ready = resolve;
+					}),
+			);
+			mockConnectionPhase = "CONNECTING";
+			mockOnDataCallback("on time");
+			await waitFor(() => expect(mockGetClient).toHaveBeenCalledTimes(2));
+			now += 100;
+			mockConnectionPhase = "READY";
+			ready();
+			await waitFor(() => expect(terminalInputWrites()).toHaveLength(1));
+			mockOnDataCallback("next");
+			await waitFor(() => expect(terminalInputWrites()).toHaveLength(2));
+			expect(
+				terminalInputWrites().map(({ data, sequence }) => [data, sequence]),
+			).toEqual([
+				["on time", 0],
+				["next", 1],
+			]);
+		} finally {
+			clock.mockRestore();
+		}
+	});
+
+	it("CONNECTING中の入力はREADYを待ち続けず期限で失敗する", async () => {
+		const onTerminalError = vi.fn();
+		renderHook(() => useTerminal(containerRef, { onTerminalError }));
+		await waitFor(() => expect(mockStreams).toHaveLength(1));
+		vi.useFakeTimers();
+		try {
+			let ready!: () => void;
+			mockGetClient.mockImplementationOnce(
+				() =>
+					new Promise<void>((resolve) => {
+						ready = resolve;
+					}),
+			);
+			mockConnectionPhase = "CONNECTING";
+			mockOnDataCallback("expired");
+			await act(async () => {});
+			expect(mockGetClient).toHaveBeenCalledTimes(1);
+			await act(async () => {
+				await vi.advanceTimersByTimeAsync(120_001);
+			});
+			expect(onTerminalError).toHaveBeenCalledWith("Terminal input timed out");
+			mockConnectionPhase = "READY";
+			ready();
+			await act(async () => {});
+			expect(terminalInputWrites()).toHaveLength(0);
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 
 	it("未解決の応答があってもIME確定、Enter、次keyを到着順にdispatchする", async () => {
