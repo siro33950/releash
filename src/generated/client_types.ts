@@ -2083,7 +2083,7 @@ export interface ClientCommands {
 	): Promise<void>;
 	update_provider_executable(
 		args: ClientCommandArgs["update_provider_executable"],
-	): Promise<void>;
+	): Promise<ResultString>;
 	update_workflow_config(
 		args: ClientCommandArgs["update_workflow_config"],
 	): Promise<void>;

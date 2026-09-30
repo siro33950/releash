@@ -138,10 +138,12 @@ impl ProviderAvailabilityUsecase {
         &self,
         provider: ProviderKind,
         executable: &str,
-    ) -> Result<(), ProviderAvailabilityUsecaseError> {
+    ) -> Result<String, ProviderAvailabilityUsecaseError> {
         let executable = ProviderExecutable::new(executable)
             .map_err(|_| ProviderAvailabilityUsecaseError::InvalidInput)?;
-        self.replace_configured_executable(provider, Some(executable))
+        let configured = executable.as_str().to_string();
+        self.replace_configured_executable(provider, Some(executable))?;
+        Ok(configured)
     }
 
     pub(crate) fn reset_configured_executable(

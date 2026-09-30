@@ -194,7 +194,7 @@ impl AgentSessionTuiAcceptanceHost {
         &self,
         provider: AcceptanceProvider,
         executable: &Path,
-    ) -> Result<(), String> {
+    ) -> Result<String, String> {
         self.invoke(
             "update_provider_executable",
             serde_json::json!({

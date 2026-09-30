@@ -4,6 +4,12 @@ import { stateSubscriptions } from "@/test/stateSubscriptions";
 import { useProviderAvailabilitySettings } from "./useProviderAvailabilitySettings";
 
 const states = stateSubscriptions();
+const savedExecutable = (_command: string, args?: unknown) =>
+	Promise.resolve(
+		(args && typeof args === "object" && "executable" in args
+			? String(args.executable).trim()
+			: null) as never,
+	);
 vi.mock("@/lib/client", async (importOriginal) => ({
 	...(await importOriginal<typeof import("@/lib/client")>()),
 	invokeClient: vi.fn(),
@@ -12,8 +18,10 @@ vi.mock("@/lib/client", async (importOriginal) => ({
 }));
 
 describe("useProviderAvailabilitySettings", () => {
-	beforeEach(() => {
+	beforeEach(async () => {
 		states.clear();
+		const { invokeClient } = await import("@/lib/client");
+		vi.mocked(invokeClient).mockReset();
 	});
 
 	it.each([
@@ -128,7 +136,7 @@ describe("useProviderAvailabilitySettings", () => {
 		states.publish("provider-availability", {
 			providers: [provider("claude", null), provider("codex", null)],
 		});
-		vi.mocked(invokeClient).mockResolvedValue(null as never);
+		vi.mocked(invokeClient).mockImplementation(savedExecutable);
 		const { result } = renderHook(() => useProviderAvailabilitySettings(true));
 		await waitFor(() => expect(result.current.providers).toHaveLength(2));
 		act(() => result.current.setExecutable("claude", " /x "));
@@ -201,9 +209,9 @@ describe("useProviderAvailabilitySettings", () => {
 			unavailableReason: null,
 		};
 		states.publish("provider-availability", { providers: [provider] });
-		let resolve!: (value: null) => void;
+		let resolve!: (value: string) => void;
 		vi.mocked(invokeClient).mockReturnValue(
-			new Promise<null>((done) => {
+			new Promise<string>((done) => {
 				resolve = done;
 			}) as never,
 		);
@@ -219,11 +227,37 @@ describe("useProviderAvailabilitySettings", () => {
 		);
 		expect(result.current.drafts.claude).toBe(" /x ");
 		await act(async () => {
-			resolve(null);
+			resolve("/x");
 			await save;
 		});
 		expect(result.current.drafts.claude).toBe("/x");
 		expect(result.current.isDirty).toBe(false);
+	});
+
+	it("保存前と同じ値へ正規化されて購読が届かなくても保存済み入力に揃える", async () => {
+		const { invokeClient } = await import("@/lib/client");
+		const provider = {
+			provider: "claude",
+			displayName: "Claude",
+			defaultExecutable: "claude",
+			configuredExecutable: "/x",
+			effectiveExecutable: "/x",
+			available: true,
+			resolvedExecutable: "/x",
+			unavailableReason: null,
+		};
+		states.publish("provider-availability", { providers: [provider] });
+		vi.mocked(invokeClient).mockImplementation(savedExecutable);
+		const { result } = renderHook(() => useProviderAvailabilitySettings(true));
+		await waitFor(() => expect(result.current.providers).toHaveLength(1));
+		act(() => result.current.setExecutable("claude", " /x "));
+		expect(result.current.isDirty).toBe(true);
+		await act(async () => result.current.save());
+		expect(result.current.drafts.claude).toBe("/x");
+		expect(result.current.isDirty).toBe(false);
+		vi.mocked(invokeClient).mockClear();
+		await act(async () => result.current.save());
+		expect(invokeClient).not.toHaveBeenCalled();
 	});
 
 	it("複数providerの保存中に先の購読が届いても次の未保存入力を保つ", async () => {
@@ -241,13 +275,13 @@ describe("useProviderAvailabilitySettings", () => {
 		states.publish("provider-availability", {
 			providers: [provider("claude", null), provider("codex", null)],
 		});
-		let resolveCodex!: (value: null) => void;
-		vi.mocked(invokeClient).mockImplementation((_command, args) =>
+		let resolveCodex!: (value: string) => void;
+		vi.mocked(invokeClient).mockImplementation((command, args) =>
 			args && "provider" in args && args.provider === "codex"
-				? (new Promise<null>((done) => {
+				? (new Promise<string>((done) => {
 						resolveCodex = done;
 					}) as never)
-				: Promise.resolve(null as never),
+				: savedExecutable(command, args),
 		);
 		const { result } = renderHook(() => useProviderAvailabilitySettings(true));
 		await waitFor(() => expect(result.current.providers).toHaveLength(2));
@@ -268,7 +302,7 @@ describe("useProviderAvailabilitySettings", () => {
 			codex: "/draft/codex",
 		});
 		await act(async () => {
-			resolveCodex(null);
+			resolveCodex("/draft/codex");
 			await save;
 		});
 		act(() =>

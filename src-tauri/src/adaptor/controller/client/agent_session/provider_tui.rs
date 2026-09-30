@@ -28,7 +28,7 @@ pub(crate) async fn update_provider_executable_shared(
     availability: &Arc<ProviderAvailabilityUsecase>,
     provider: String,
     executable: String,
-) -> Result<(), AppError> {
+) -> Result<String, AppError> {
     let provider = parse_provider(&provider, ProviderParseOperation::ConfigureProvider)?;
     let availability = Arc::clone(availability);
     run_provider_availability_blocking(move || {

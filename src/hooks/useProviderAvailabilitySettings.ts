@@ -36,7 +36,8 @@ interface FormState {
 type FormAction =
 	| { type: "receive"; snapshot: ProviderAvailabilitySnapshot }
 	| { type: "start"; provider: string; operation: PendingDraft }
-	| { type: "complete" | "fail"; provider: string }
+	| { type: "complete"; provider: string; configured: string | null }
+	| { type: "fail"; provider: string }
 	| { type: "input"; provider: string; executable: string }
 	| { type: "clear" };
 
@@ -108,7 +109,13 @@ function formReducer(state: FormState, action: FormAction): FormState {
 		case "complete": {
 			const operation = state.pending[action.provider];
 			if (!operation) return state;
-			if (operation.kind === "waiting") {
+			const current = state.snapshot?.providers.find(
+				(item) => item.provider === action.provider,
+			);
+			const unchanged =
+				current !== undefined &&
+				current.configuredExecutable === action.configured;
+			if (operation.kind === "waiting" && !unchanged) {
 				return {
 					...state,
 					pending: {
@@ -117,6 +124,10 @@ function formReducer(state: FormState, action: FormAction): FormState {
 					},
 				};
 			}
+			const configuredValue =
+				operation.kind === "received"
+					? operation.configuredValue
+					: action.configured;
 			const { [action.provider]: _, ...pending } = state.pending;
 			return {
 				...state,
@@ -125,7 +136,7 @@ function formReducer(state: FormState, action: FormAction): FormState {
 					state.drafts[action.provider] === operation.draft
 						? {
 								...state.drafts,
-								[action.provider]: operation.configuredValue ?? "",
+								[action.provider]: configuredValue ?? "",
 							}
 						: state.drafts,
 			};
@@ -193,11 +204,15 @@ export function useProviderAvailabilitySettings(open: boolean) {
 					},
 				});
 				try {
-					await invoke("update_provider_executable", {
+					const configured = await invoke("update_provider_executable", {
 						provider: provider.provider,
 						executable,
 					});
-					dispatch({ type: "complete", provider: provider.provider });
+					dispatch({
+						type: "complete",
+						provider: provider.provider,
+						configured,
+					});
 				} catch (cause) {
 					dispatch({ type: "fail", provider: provider.provider });
 					throw cause;
@@ -230,7 +245,7 @@ export function useProviderAvailabilitySettings(open: boolean) {
 			});
 			try {
 				await invoke("reset_provider_executable", { provider });
-				dispatch({ type: "complete", provider });
+				dispatch({ type: "complete", provider, configured: null });
 			} catch (cause) {
 				dispatch({ type: "fail", provider });
 				setError(getErrorMessage(cause));

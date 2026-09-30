@@ -314,7 +314,7 @@ message CommandResult {
     Unit update_crash_reporting = 141;
     Unit update_external_editor = 142;
     Unit update_performance_telemetry = 143;
-    Unit update_provider_executable = 144;
+    ResultString update_provider_executable = 144;
     Unit update_workflow_config = 145;
     NotionValidationResultView validate_notion_config = 146;
     Unit write_paths_to_terminal_surface = 147;
@@ -2788,7 +2788,7 @@ service ClientService {
   rpc UpdateCrashReporting(UpdateCrashReportingRequest) returns (Unit);
   rpc UpdateExternalEditor(UpdateExternalEditorRequest) returns (Unit);
   rpc UpdatePerformanceTelemetry(UpdatePerformanceTelemetryRequest) returns (Unit);
-  rpc UpdateProviderExecutable(UpdateProviderExecutableRequest) returns (Unit);
+  rpc UpdateProviderExecutable(UpdateProviderExecutableRequest) returns (ResultString);
   rpc UpdateWorkflowConfig(UpdateWorkflowConfigRequest) returns (Unit);
   rpc ValidateNotionConfig(ValidateNotionConfigRequest) returns (NotionValidationResultView);
   rpc WritePathsToTerminalSurface(WritePathsToTerminalSurfaceRequest) returns (Unit);

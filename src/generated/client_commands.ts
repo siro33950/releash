@@ -1559,7 +1559,7 @@ const commands = {
 		args: ClientCommandArgs["update_provider_executable"],
 	) => {
 		const result = decode(
-			UnitSchema,
+			ResultStringSchema,
 			await client.updateProviderExecutable(
 				fromJson(
 					UpdateProviderExecutableRequestSchema,
