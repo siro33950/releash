@@ -1,11 +1,6 @@
 use serde::Serialize;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "lowercase")]
-pub(crate) enum AgentSessionProviderDto {
-    Claude,
-    Codex,
-}
+use crate::usecase::provider_dto::AgentSessionProviderDto;
 
 /// AgentSession が属する実行木と NodeExecution の所在。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]

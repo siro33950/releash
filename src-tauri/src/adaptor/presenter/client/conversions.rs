@@ -188,19 +188,19 @@ impl TryFrom<crate::usecase::agent_session::AgentSessionOperationsDto>
     }
 }
 
-impl TryFrom<crate::usecase::agent_session::AgentSessionProviderDto>
+impl TryFrom<crate::usecase::provider_dto::AgentSessionProviderDto>
     for wire::AgentSessionProviderDto
 {
     type Error = String;
     fn try_from(
-        value: crate::usecase::agent_session::AgentSessionProviderDto,
+        value: crate::usecase::provider_dto::AgentSessionProviderDto,
     ) -> Result<Self, String> {
         Ok(Self {
             value: Some(match value {
-                crate::usecase::agent_session::AgentSessionProviderDto::Claude => {
+                crate::usecase::provider_dto::AgentSessionProviderDto::Claude => {
                     wire::agent_session_provider_dto::Value::Claude as i32
                 }
-                crate::usecase::agent_session::AgentSessionProviderDto::Codex => {
+                crate::usecase::provider_dto::AgentSessionProviderDto::Codex => {
                     wire::agent_session_provider_dto::Value::Codex as i32
                 }
             }),
@@ -3138,15 +3138,17 @@ impl TryFrom<crate::usecase::workflow::dto::SessionDelegateDto> for wire::Sessio
     }
 }
 
-impl TryFrom<crate::usecase::workflow::dto::SessionProviderDto> for wire::SessionProviderDto {
+impl TryFrom<crate::usecase::provider_dto::AgentSessionProviderDto> for wire::SessionProviderDto {
     type Error = String;
-    fn try_from(value: crate::usecase::workflow::dto::SessionProviderDto) -> Result<Self, String> {
+    fn try_from(
+        value: crate::usecase::provider_dto::AgentSessionProviderDto,
+    ) -> Result<Self, String> {
         Ok(Self {
             value: Some(match value {
-                crate::usecase::workflow::dto::SessionProviderDto::Claude => {
+                crate::usecase::provider_dto::AgentSessionProviderDto::Claude => {
                     wire::session_provider_dto::Value::Claude as i32
                 }
-                crate::usecase::workflow::dto::SessionProviderDto::Codex => {
+                crate::usecase::provider_dto::AgentSessionProviderDto::Codex => {
                     wire::session_provider_dto::Value::Codex as i32
                 }
             }),
@@ -3579,10 +3581,12 @@ impl TryFrom<wire::WorkflowNumber> for f64 {
     }
 }
 
-impl TryFrom<crate::adaptor::gateway::app_config::WorkflowSection> for wire::WorkflowSection {
+impl TryFrom<crate::usecase::app_config::query_service::WorkflowConfigDto>
+    for wire::WorkflowSection
+{
     type Error = String;
     fn try_from(
-        value: crate::adaptor::gateway::app_config::WorkflowSection,
+        value: crate::usecase::app_config::query_service::WorkflowConfigDto,
     ) -> Result<Self, String> {
         Ok(Self {
             approval_auto_approve: Some(cv(value.approval_auto_approve)?),
@@ -3590,7 +3594,7 @@ impl TryFrom<crate::adaptor::gateway::app_config::WorkflowSection> for wire::Wor
     }
 }
 
-impl TryFrom<wire::WorkflowSection> for crate::adaptor::gateway::app_config::WorkflowSection {
+impl TryFrom<wire::WorkflowSection> for crate::usecase::app_config::WorkflowConfigInput {
     type Error = String;
     fn try_from(value: wire::WorkflowSection) -> Result<Self, String> {
         Ok(Self {
@@ -3603,15 +3607,19 @@ impl TryFrom<wire::WorkflowSection> for crate::adaptor::gateway::app_config::Wor
     }
 }
 
-impl TryFrom<crate::domain::workflow::WorkflowSourceFormat> for wire::WorkflowSourceFormat {
+impl TryFrom<crate::usecase::workflow::dto::WorkflowSourceFormatDto>
+    for wire::WorkflowSourceFormat
+{
     type Error = String;
-    fn try_from(value: crate::domain::workflow::WorkflowSourceFormat) -> Result<Self, String> {
+    fn try_from(
+        value: crate::usecase::workflow::dto::WorkflowSourceFormatDto,
+    ) -> Result<Self, String> {
         Ok(Self {
             value: Some(match value {
-                crate::domain::workflow::WorkflowSourceFormat::Yaml => {
+                crate::usecase::workflow::dto::WorkflowSourceFormatDto::Yaml => {
                     wire::workflow_source_format::Value::Yaml as i32
                 }
-                crate::domain::workflow::WorkflowSourceFormat::Lua => {
+                crate::usecase::workflow::dto::WorkflowSourceFormatDto::Lua => {
                     wire::workflow_source_format::Value::Lua as i32
                 }
             }),
@@ -4513,3 +4521,7 @@ impl TryFrom<Vec<crate::usecase::workspace_tree::WorkspaceRepositoryListDto>>
         })
     }
 }
+
+#[cfg(test)]
+#[path = "conversions_test.rs"]
+mod conversions_tests;

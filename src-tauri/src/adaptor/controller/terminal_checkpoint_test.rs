@@ -14,11 +14,11 @@ struct Flushes {
 fn spawn(
     flushes: Arc<Flushes>,
 ) -> (
-    Arc<crate::usecase::retry::Retrying>,
+    Arc<crate::adaptor::gateway::failure_records::FailureRecordStore>,
     DirtyNotifier,
     tokio::task::JoinHandle<()>,
 ) {
-    let retrying = crate::usecase::retry::test_retrying();
+    let (retrying, store) = crate::test_support::retry::test_retrying_with_store();
     let (dirty, receiver) = dirty_channel();
     let task = tokio::spawn(run(
         retrying.clone(),
@@ -39,7 +39,7 @@ fn spawn(
         receiver,
         Duration::from_millis(250),
     ));
-    (retrying, dirty, task)
+    (store, dirty, task)
 }
 
 fn flushes(failures: Vec<WorkFailure>, block_first: bool) -> Arc<Flushes> {
@@ -62,7 +62,7 @@ async fn test_ターミナル保存_間隔の後に一度だけ保存し失敗�
         }],
         false,
     );
-    let (retrying, dirty, _task) = spawn(flushes.clone());
+    let (store, dirty, _task) = spawn(flushes.clone());
     // When
     for _ in 0..100 {
         dirty("terminal");
@@ -72,7 +72,7 @@ async fn test_ターミナル保存_間隔の後に一度だけ保存し失敗�
     tokio::time::sleep(Duration::from_secs(2)).await;
     // Then
     assert_eq!(flushes.calls.load(Ordering::SeqCst), 2);
-    let records = retrying.records("terminal");
+    let records = store.records("terminal");
     assert_eq!(records.len(), 1);
     assert!(!records[0].record.active);
 }
@@ -93,13 +93,13 @@ async fn test_ターミナル保存_停止分類の失敗後は新しい出力�
             }],
             false,
         );
-        let (retrying, dirty, _task) = spawn(flushes.clone());
+        let (store, dirty, _task) = spawn(flushes.clone());
         dirty("terminal");
         tokio::time::sleep(Duration::from_secs(1)).await;
         // When / Then
         assert_eq!(flushes.calls.load(Ordering::SeqCst), 1);
         assert_eq!(
-            retrying.records("terminal")[0].requires_attention,
+            store.records("terminal")[0].requires_attention,
             kind != Failure::Technical(TechnicalFailureNature::Cancelled)
         );
         tokio::time::sleep(Duration::from_secs(60)).await;
@@ -107,7 +107,7 @@ async fn test_ターミナル保存_停止分類の失敗後は新しい出力�
         dirty("terminal");
         tokio::time::sleep(Duration::from_secs(1)).await;
         assert_eq!(flushes.calls.load(Ordering::SeqCst), 2);
-        let records = retrying.records("terminal");
+        let records = store.records("terminal");
         assert_eq!(records[0].record.count, 1);
         assert!(!records[0].requires_attention);
     }

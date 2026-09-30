@@ -132,7 +132,7 @@ async fn test_隔離起動_生成失敗後は自動で新しいattemptだけを�
         .iter()
         .filter(|node| node.node_name == "work")
         .collect::<Vec<_>>();
-    let failures = crate::usecase::retry::shared().records(&attempts[0].id);
+    let failures = crate::test_support::retry::shared_store().records(&attempts[0].id);
     assert!(failures
         .iter()
         .any(|failure| failure.record.operation == "workflow_node_start"
@@ -183,7 +183,8 @@ async fn test_隔離起動_合成子の生成失敗では子を起動せず復�
         .get_state_by_execution_id(&fixture.app, &execution_id)
         .await
         .unwrap();
-    let failures = crate::usecase::retry::shared().records(&snapshot.node_executions[0].id);
+    let failures =
+        crate::test_support::retry::shared_store().records(&snapshot.node_executions[0].id);
     assert!(failures
         .iter()
         .any(|failure| failure.record.operation == "workflow_node_start"
@@ -1730,7 +1731,7 @@ async fn test_node起動失敗_版競合だけは失敗として記録しない(
             // Then
             assert_eq!(failed.len(), usize::from(retry), "{error:?}");
             if let Some(failure) = failed.first() { assert_eq!(failure.kind, kind); assert_eq!(&failure.id, node_id); }
-            let records = crate::usecase::retry::shared().records(node_id);
+            let records = crate::test_support::retry::shared_store().records(node_id);
             let observed = records.iter().find(|record| record.record.operation == "workflow_node_start").unwrap();
             assert_eq!(observed.record.kind, kind);
             assert_eq!(observed.record.count, 1);

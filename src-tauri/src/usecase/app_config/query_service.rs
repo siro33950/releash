@@ -1,7 +1,6 @@
 use std::sync::Arc;
 
 use crate::domain::app_config::repository::ConfigRepository;
-use crate::domain::app_config::value_objects::WorkflowConfig;
 use crate::usecase::app_config::error::UsecaseError;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
@@ -14,13 +13,31 @@ pub(crate) struct DesktopSettingsDto {
     pub auto_launch: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct WorkflowConfigDto {
+    pub approval_auto_approve: bool,
+}
+
+pub(crate) trait WorkflowConfigQueryService: Send + Sync {
+    fn get_workflow_config(
+        &self,
+    ) -> Result<WorkflowConfigDto, crate::domain::app_config::AppConfigError>;
+}
+
 pub struct AppConfigQueryService {
     repository: Arc<dyn ConfigRepository>,
+    workflow: Arc<dyn WorkflowConfigQueryService>,
 }
 
 impl AppConfigQueryService {
-    pub fn new(repository: Arc<dyn ConfigRepository>) -> Self {
-        Self { repository }
+    pub(crate) fn new(
+        repository: Arc<dyn ConfigRepository>,
+        workflow: Arc<dyn WorkflowConfigQueryService>,
+    ) -> Self {
+        Self {
+            repository,
+            workflow,
+        }
     }
 
     pub(crate) fn desktop_settings(&self) -> Result<DesktopSettingsDto, UsecaseError> {
@@ -34,7 +51,7 @@ impl AppConfigQueryService {
         })
     }
 
-    pub fn get_workflow_config(&self) -> Result<WorkflowConfig, UsecaseError> {
-        Ok(self.repository.load()?.workflow)
+    pub fn get_workflow_config(&self) -> Result<WorkflowConfigDto, UsecaseError> {
+        Ok(self.workflow.get_workflow_config()?)
     }
 }

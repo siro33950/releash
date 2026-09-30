@@ -16,10 +16,13 @@ use crate::domain::provider_lifecycle::{
 
 mod hook_health;
 mod ingress;
+#[cfg(test)]
+pub(crate) use hook_health::ProviderHookHealthWarning;
 pub(crate) use hook_health::{
     ProviderHookHealthFailureObservation, ProviderHookHealthFailureQuery,
-    ProviderHookHealthFailureQueryError, ProviderHookHealthReadUsecase, ProviderHookHealthUsecase,
-    ProviderHookHealthUsecaseError, ProviderHookHealthWarning,
+    ProviderHookHealthFailureQueryError, ProviderHookHealthReadUsecase,
+    ProviderHookHealthReasonDto, ProviderHookHealthUsecase, ProviderHookHealthUsecaseError,
+    ProviderHookHealthWarningDto,
 };
 pub(crate) use ingress::{
     ProviderExecutionTreeStopCommand, ProviderExecutionTreeStopTransaction,

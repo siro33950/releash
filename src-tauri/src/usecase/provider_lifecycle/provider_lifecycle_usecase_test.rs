@@ -9,6 +9,28 @@ use crate::domain::provider_lifecycle::{
     ProviderLifecycleUnavailableReason, VersionedProviderHookHealth,
 };
 
+#[test]
+fn test_provider警告_購読用出力にproviderと理由を写す() {
+    // Given
+    let warning = ProviderHookHealthWarning {
+        provider: ProviderKind::Codex,
+        launch_id: "launch".into(),
+        reason: ProviderLifecycleUnavailableReason::LocalApiUnavailable,
+    };
+    // When
+    let output = ProviderHookHealthWarningDto::from(warning);
+    // Then
+    assert_eq!(
+        output.provider,
+        crate::usecase::provider_dto::AgentSessionProviderDto::Codex
+    );
+    assert_eq!(output.launch_id, "launch");
+    assert_eq!(
+        output.reason,
+        ProviderHookHealthReasonDto::LocalApiUnavailable
+    );
+}
+
 #[derive(Default)]
 struct FakeCredentials {
     next: AtomicU8,
@@ -559,7 +581,8 @@ async fn test_provider_hook_health_read_local_api配送失敗を最新launchの�
 }
 
 #[tokio::test]
-async fn test_provider_hook_health_正常session_start後の同一launch欠落報告を無視する() {
+async fn test_provider警告_正常session_start後の同一launch欠落報告を無視する() {
+    // Given
     let repository = Arc::new(InMemoryHookHealthRepository::default());
     let health = ProviderHookHealthUsecase::new(repository);
     health
@@ -567,6 +590,7 @@ async fn test_provider_hook_health_正常session_start後の同一launch欠落�
         .await
         .unwrap();
 
+    // When
     health
         .record_unavailable(
             ProviderKind::Claude,
@@ -576,7 +600,7 @@ async fn test_provider_hook_health_正常session_start後の同一launch欠落�
         )
         .await
         .unwrap();
-    assert_eq!(health.warnings().await.unwrap().len(), 1);
+    let before = health.warnings().await.unwrap();
 
     health
         .record_session_started(ProviderKind::Claude, "launch-1", "session-started-request")
@@ -591,5 +615,42 @@ async fn test_provider_hook_health_正常session_start後の同一launch欠落�
         )
         .await
         .unwrap();
-    assert!(health.warnings().await.unwrap().is_empty());
+    let after = health.warnings().await.unwrap();
+    // Then
+    assert_eq!(before.len(), 1);
+    assert!(after.is_empty());
+}
+
+#[test]
+fn test_provider警告_四種類の理由を出力へ写す() {
+    // Given
+    let cases = [
+        (
+            ProviderLifecycleUnavailableReason::SessionStartDeadlineExceeded,
+            ProviderHookHealthReasonDto::SessionStartDeadlineExceeded,
+        ),
+        (
+            ProviderLifecycleUnavailableReason::CodexHookDeliveryUnconfirmed,
+            ProviderHookHealthReasonDto::CodexHookDeliveryUnconfirmed,
+        ),
+        (
+            ProviderLifecycleUnavailableReason::ProviderHookConfigurationRejected,
+            ProviderHookHealthReasonDto::ProviderHookConfigurationRejected,
+        ),
+        (
+            ProviderLifecycleUnavailableReason::LocalApiUnavailable,
+            ProviderHookHealthReasonDto::LocalApiUnavailable,
+        ),
+    ];
+
+    // When
+    for (domain, expected) in cases {
+        let output = ProviderHookHealthWarningDto::from(ProviderHookHealthWarning {
+            provider: ProviderKind::Claude,
+            launch_id: "launch".into(),
+            reason: domain,
+        });
+        // Then
+        assert_eq!(output.reason, expected);
+    }
 }

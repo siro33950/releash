@@ -99,8 +99,10 @@ fn test_技術的な失敗_自身の性質だけから転送コードを決め�
 
 #[test]
 fn test_失敗記録の分類_六種類を固定文字列として表示する() {
+    // Given
     use crate::domain::failure::TechnicalFailureNature;
     use crate::usecase::failure::{BusinessFailure, Failure};
+    // When
     for (failure, expected) in [
         (
             Failure::Business(BusinessFailure::VersionConflict),
@@ -124,7 +126,12 @@ fn test_失敗記録の分類_六種類を固定文字列として表示する()
             "TechnicalFailure",
         ),
     ] {
-        assert_eq!(super::failure_classification(failure), expected);
+        let classification =
+            crate::adaptor::presenter::state_subscription_wire::failure_classification(
+                failure.into(),
+            );
+        // Then
+        assert_eq!(classification, expected);
     }
 }
 
@@ -180,13 +187,13 @@ fn test_作業手順の失敗_storeに包んでも転送コードを保持する
             ErrorCode::FailedPrecondition,
         ),
     ] {
-        // When / Then
+        // When
         let failure = StorageFailure::from(error);
-        assert_eq!(failure.connect_code(), expected);
-        assert_eq!(
-            ProviderLifecycleIngressUsecaseError::Store(failure).connect_code(),
-            expected
-        );
+        let failure_code = failure.connect_code();
+        let usecase_code = ProviderLifecycleIngressUsecaseError::Store(failure).connect_code();
+        // Then
+        assert_eq!(failure_code, expected);
+        assert_eq!(usecase_code, expected);
     }
 }
 

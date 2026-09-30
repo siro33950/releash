@@ -28,19 +28,6 @@ pub(crate) fn command_error(
 #[path = "connect_test.rs"]
 mod tests;
 
-pub(crate) fn failure_classification(failure: crate::usecase::failure::Failure) -> &'static str {
-    use crate::domain::failure::TechnicalFailureNature;
-    use crate::usecase::failure::{BusinessFailure, Failure};
-    match failure {
-        Failure::Business(BusinessFailure::VersionConflict) => "VersionConflict",
-        Failure::Business(BusinessFailure::Other) => "BusinessFailure",
-        Failure::Technical(TechnicalFailureNature::Transient) => "Transient",
-        Failure::Technical(TechnicalFailureNature::TimedOut) => "TimedOut",
-        Failure::Technical(TechnicalFailureNature::Cancelled) => "Cancelled",
-        Failure::Technical(TechnicalFailureNature::Other) => "TechnicalFailure",
-    }
-}
-
 pub(crate) trait ConnectFailure {
     fn connect_code(&self) -> connectrpc::ErrorCode;
 }
@@ -584,15 +571,6 @@ impl ConnectFailure for crate::domain::failure::TechnicalFailureNature {
 impl ConnectFailure for crate::domain::failure::TechnicalFailure {
     fn connect_code(&self) -> connectrpc::ErrorCode {
         self.nature.connect_code()
-    }
-}
-
-impl ConnectFailure for crate::adaptor::gateway::workflow::fact_log::FactReadError {
-    fn connect_code(&self) -> connectrpc::ErrorCode {
-        match self {
-            Self::Query(error) => error.connect_code(),
-            Self::Corrupt(_) => connectrpc::ErrorCode::DataLoss,
-        }
     }
 }
 

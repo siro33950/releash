@@ -34,8 +34,7 @@ pub(crate) use agent_session_lifecycle::{
 };
 pub(crate) use agent_session_query::{
     AgentSessionItemDto, AgentSessionLifecycleDto, AgentSessionOperationsDto,
-    AgentSessionProviderDto, AgentSessionQueryError, AgentSessionQueryService,
-    AgentSessionTreeLocationDto,
+    AgentSessionQueryError, AgentSessionQueryService, AgentSessionTreeLocationDto,
 };
 #[cfg(test)]
 pub(crate) use agent_session_read::AgentSessionGarbageCollectionPort;
@@ -43,8 +42,11 @@ pub(crate) use agent_session_read::AgentSessionReadUsecase;
 pub(crate) use agent_session_rename::{
     AgentSessionRenameError, AgentSessionRenameExecutor, AgentSessionRenameUsecase,
 };
+#[cfg(test)]
+pub(crate) use provider_availability::ProviderAvailabilityItemDto;
 pub(crate) use provider_availability::{
-    ProviderAvailabilityUsecase, ProviderAvailabilityUsecaseError,
+    ProviderAvailabilitySnapshotDto, ProviderAvailabilityUsecase, ProviderAvailabilityUsecaseError,
+    ProviderUnavailableReasonDto,
 };
 pub(crate) use provider_session_title_ingestion::ProviderSessionTitleIngestionUsecase;
 pub(crate) use usecase::{

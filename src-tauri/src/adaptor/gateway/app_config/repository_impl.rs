@@ -15,6 +15,7 @@ use crate::domain::app_config::repository::{
 };
 use crate::domain::app_config::value_objects as domain_vo;
 use crate::domain::provider_lifecycle::ProviderKind;
+use crate::usecase::app_config::query_service::{WorkflowConfigDto, WorkflowConfigQueryService};
 
 use super::config_models::{
     apply_domain_to_config, config_to_domain, NotionLabelPropertyModel, NotionPropertyMappingModel,
@@ -102,6 +103,54 @@ impl ConfigRepository for AppConfig {
         f(&mut domain)?;
         apply_domain_to_config(&mut config, domain);
         write_config(&self.config_path, &config).map_err(AppConfigError::Repository)
+    }
+}
+
+impl WorkflowConfigQueryService for AppConfig {
+    fn get_workflow_config(&self) -> Result<WorkflowConfigDto, AppConfigError> {
+        let config = self
+            .config
+            .lock()
+            .map_err(|error| AppConfigError::Repository(format!("ロック取得失敗: {error}")))?;
+        Ok(WorkflowConfigDto {
+            approval_auto_approve: config.workflow.approval_auto_approve,
+        })
+    }
+}
+
+impl crate::usecase::notion::query_service::NotionConfigQueryService for AppConfig {
+    fn get_config(
+        &self,
+        repo_path: &str,
+    ) -> Result<Option<crate::usecase::notion::usecase::NotionRepoConfigDto>, AppConfigError> {
+        use crate::usecase::notion::usecase::{
+            NotionLabelPropertyDto, NotionPropertyMappingDto, NotionRepoConfigDto,
+        };
+        let config = self
+            .config
+            .lock()
+            .map_err(|error| AppConfigError::Repository(format!("ロック取得失敗: {error}")))?;
+        Ok(config
+            .notion
+            .get(repo_path)
+            .map(|stored| NotionRepoConfigDto {
+                api_token: stored.api_token.clone(),
+                database_id: stored.database_id.clone(),
+                property_mapping: NotionPropertyMappingDto {
+                    title: stored.property_mapping.title.clone(),
+                    labels: stored
+                        .property_mapping
+                        .labels
+                        .iter()
+                        .map(|label| NotionLabelPropertyDto {
+                            name: label.name.clone(),
+                            property_type: label.property_type.clone(),
+                        })
+                        .collect(),
+                    branch_name: stored.property_mapping.branch_name.clone(),
+                    branch_prefix: stored.property_mapping.branch_prefix.clone(),
+                },
+            }))
     }
 }
 

@@ -2,6 +2,7 @@ use super::*;
 use crate::domain::app_config::repository::ConfigUpdate;
 use crate::domain::app_config::value_objects::{AppConfigDocument, AppSettings, TelemetryConfig};
 use crate::domain::app_config::AppConfigError;
+use crate::usecase::app_config::query_service::WorkflowConfigDto;
 
 struct Config {
     document: parking_lot::Mutex<AppConfigDocument>,
@@ -19,6 +20,13 @@ impl ConfigRepository for Config {
             return Err(AppConfigError::Repository("save failed".into()));
         }
         update(&mut self.document.lock())
+    }
+}
+impl WorkflowConfigQueryService for Config {
+    fn get_workflow_config(&self) -> Result<WorkflowConfigDto, AppConfigError> {
+        Ok(WorkflowConfigDto {
+            approval_auto_approve: self.document.lock().workflow.approval_auto_approve,
+        })
     }
 }
 fn repository(fail: bool) -> Arc<Config> {
@@ -48,8 +56,8 @@ fn repository(fail: bool) -> Arc<Config> {
 fn test_設定保存_別のclientからの一般設定保存でも登録希望を保持する() {
     // Given
     let repository = repository(false);
-    let login = AppConfigUsecase::new(repository.clone());
-    let other_client = AppConfigUsecase::new(repository.clone());
+    let login = AppConfigUsecase::new(repository.clone(), repository.clone());
+    let other_client = AppConfigUsecase::new(repository.clone(), repository.clone());
     let original = repository.load().unwrap();
     for requested in [true, false] {
         // When
@@ -76,21 +84,31 @@ fn test_設定保存_一般設定と登録希望の保存失敗を呼び出し�
     // Given
     let repository = repository(true);
     let original = repository.load().unwrap();
-    let usecase = AppConfigUsecase::new(repository.clone());
-    // When / Then
-    assert_eq!(
-        usecase
-            .update_app_settings(false, true)
-            .unwrap_err()
-            .to_string(),
-        "save failed"
-    );
-    assert_eq!(
-        usecase
-            .update_login_item_preference(true)
-            .unwrap_err()
-            .to_string(),
-        "save failed"
-    );
-    assert_eq!(repository.load().unwrap(), original);
+    let usecase = AppConfigUsecase::new(repository.clone(), repository.clone());
+    // When
+    let app_error = usecase.update_app_settings(false, true).unwrap_err();
+    let login_error = usecase.update_login_item_preference(true).unwrap_err();
+    let stored = repository.load().unwrap();
+    // Then
+    assert_eq!(app_error.to_string(), "save failed");
+    assert_eq!(login_error.to_string(), "save failed");
+    assert_eq!(stored, original);
+}
+
+#[test]
+fn test_workflow設定_入力を保存し購読用出力で読み取る() {
+    // Given
+    let repository = repository(false);
+    let usecase = AppConfigUsecase::new(repository.clone(), repository.clone());
+
+    // When
+    usecase
+        .update_workflow_config(WorkflowConfigInput {
+            approval_auto_approve: true,
+        })
+        .unwrap();
+
+    // Then
+    assert!(repository.load().unwrap().workflow.approval_auto_approve);
+    assert!(usecase.get_workflow_config().unwrap().approval_auto_approve);
 }

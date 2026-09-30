@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useReducer, useState } from "react";
 import { invokeClient as invoke } from "@/lib/client";
 import { getErrorMessage } from "@/lib/errorMessage";
 import { useStateSubscriptionResult } from "./useStateSubscription";
@@ -18,6 +18,29 @@ interface ProviderAvailabilitySnapshot {
 	providers: ProviderAvailabilityItem[];
 }
 
+type PendingDraft = {
+	draft: string;
+	configured: string | null;
+	completed: boolean;
+} & (
+	| { kind: "waiting" }
+	| { kind: "received"; configuredValue: string | null }
+);
+
+interface FormState {
+	snapshot: ProviderAvailabilitySnapshot | null;
+	drafts: Record<string, string>;
+	pending: Record<string, PendingDraft>;
+}
+
+type FormAction =
+	| { type: "receive"; snapshot: ProviderAvailabilitySnapshot }
+	| { type: "start"; provider: string; operation: PendingDraft }
+	| { type: "complete"; provider: string; configured: string | null }
+	| { type: "fail"; provider: string }
+	| { type: "input"; provider: string; executable: string }
+	| { type: "clear" };
+
 function draftsFrom(
 	snapshot: ProviderAvailabilitySnapshot,
 ): Record<string, string> {
@@ -29,60 +52,124 @@ function draftsFrom(
 	);
 }
 
-function draftsAfterReset(
-	provider: string,
-	current: Record<string, string>,
-	previous: ProviderAvailabilitySnapshot,
-	next: ProviderAvailabilitySnapshot,
-): Record<string, string> {
-	const merged = draftsFrom(next);
-	for (const entry of previous.providers) {
-		if (entry.provider === provider) continue;
-		const draft = current[entry.provider] ?? "";
-		if (draft !== (entry.configuredExecutable ?? "")) {
-			merged[entry.provider] = draft;
+function receiveSnapshot(
+	state: FormState,
+	snapshot: ProviderAvailabilitySnapshot,
+): FormState {
+	if (!state.snapshot)
+		return { ...state, snapshot, drafts: draftsFrom(snapshot) };
+	const drafts = draftsFrom(snapshot);
+	const pending: Record<string, PendingDraft> = {};
+	for (const entry of state.snapshot.providers) {
+		const next = snapshot.providers.find(
+			(item) => item.provider === entry.provider,
+		);
+		if (!next) continue;
+		const draft = state.drafts[entry.provider] ?? "";
+		const operation = state.pending[entry.provider];
+		if (operation) {
+			if (
+				next.configuredExecutable !== operation.configured ||
+				operation.completed
+			) {
+				if (draft !== operation.draft) drafts[entry.provider] = draft;
+			} else {
+				drafts[entry.provider] = draft;
+				pending[entry.provider] = {
+					...operation,
+					kind: "received",
+					configuredValue: next.configuredExecutable,
+				};
+			}
+		} else if (draft !== (entry.configuredExecutable ?? "")) {
+			drafts[entry.provider] = draft;
 		}
 	}
-	return merged;
+	return { snapshot, drafts, pending };
+}
+
+function formReducer(state: FormState, action: FormAction): FormState {
+	switch (action.type) {
+		case "clear":
+			return { snapshot: null, drafts: {}, pending: {} };
+		case "input":
+			return {
+				...state,
+				drafts: { ...state.drafts, [action.provider]: action.executable },
+			};
+		case "start":
+			return {
+				...state,
+				pending: { ...state.pending, [action.provider]: action.operation },
+			};
+		case "fail": {
+			const { [action.provider]: _, ...pending } = state.pending;
+			return { ...state, pending };
+		}
+		case "complete": {
+			const operation = state.pending[action.provider];
+			if (!operation) return state;
+			const current = state.snapshot?.providers.find(
+				(item) => item.provider === action.provider,
+			);
+			const unchanged =
+				current !== undefined &&
+				current.configuredExecutable === action.configured;
+			if (operation.kind === "waiting" && !unchanged) {
+				return {
+					...state,
+					pending: {
+						...state.pending,
+						[action.provider]: { ...operation, completed: true },
+					},
+				};
+			}
+			const configuredValue =
+				operation.kind === "received"
+					? operation.configuredValue
+					: action.configured;
+			const { [action.provider]: _, ...pending } = state.pending;
+			return {
+				...state,
+				pending,
+				drafts:
+					state.drafts[action.provider] === operation.draft
+						? {
+								...state.drafts,
+								[action.provider]: configuredValue ?? "",
+							}
+						: state.drafts,
+			};
+		}
+		case "receive":
+			return receiveSnapshot(state, action.snapshot);
+	}
 }
 
 export function useProviderAvailabilitySettings(open: boolean) {
 	const subscription = useStateSubscriptionResult(
 		open ? "provider-availability" : null,
 	);
-	const [snapshot, setSnapshot] = useState<ProviderAvailabilitySnapshot | null>(
-		null,
-	);
-	const [drafts, setDrafts] = useState<Record<string, string>>({});
-	const form = useRef({ snapshot, drafts });
-	form.current = { snapshot, drafts };
+	const [form, dispatch] = useReducer(formReducer, {
+		snapshot: null,
+		drafts: {},
+		pending: {},
+	});
+	const { snapshot, drafts } = form;
 	const [saving, setSaving] = useState(false);
 	const [refreshing, setRefreshing] = useState(false);
 	const [resetting, setResetting] = useState<Record<string, boolean>>({});
 	const [error, setError] = useState<string | null>(null);
-
-	const acceptSnapshot = useCallback((next: ProviderAvailabilitySnapshot) => {
-		setSnapshot(next);
-		setDrafts(draftsFrom(next));
-	}, []);
-
 	useEffect(() => {
-		if (open) return;
-		setSnapshot(null);
-		setDrafts({});
-		setError(null);
+		if (!open) {
+			dispatch({ type: "clear" });
+			setError(null);
+		}
 	}, [open]);
 
 	const received = subscription.value;
 	useEffect(() => {
-		if (!received) return;
-		const current = form.current;
-		setSnapshot(received);
-		setDrafts(
-			current.snapshot
-				? draftsAfterReset("", current.drafts, current.snapshot, received)
-				: draftsFrom(received),
-		);
+		if (received) dispatch({ type: "receive", snapshot: received });
 	}, [received]);
 
 	const isDirty = useMemo(
@@ -95,7 +182,7 @@ export function useProviderAvailabilitySettings(open: boolean) {
 	);
 
 	const setExecutable = useCallback((provider: string, executable: string) => {
-		setDrafts((current) => ({ ...current, [provider]: executable }));
+		dispatch({ type: "input", provider, executable });
 	}, []);
 
 	const save = useCallback(async () => {
@@ -103,62 +190,83 @@ export function useProviderAvailabilitySettings(open: boolean) {
 		setSaving(true);
 		setError(null);
 		try {
-			let latest = snapshot;
 			for (const provider of snapshot.providers) {
 				const executable = drafts[provider.provider] ?? "";
 				if (executable === (provider.configuredExecutable ?? "")) continue;
-				latest = await invoke("update_provider_executable", {
+				dispatch({
+					type: "start",
 					provider: provider.provider,
-					executable,
+					operation: {
+						draft: executable,
+						configured: provider.configuredExecutable,
+						completed: false,
+						kind: "waiting",
+					},
 				});
-				setSnapshot(latest);
+				try {
+					const configured = await invoke("update_provider_executable", {
+						provider: provider.provider,
+						executable,
+					});
+					dispatch({
+						type: "complete",
+						provider: provider.provider,
+						configured,
+					});
+				} catch (cause) {
+					dispatch({ type: "fail", provider: provider.provider });
+					throw cause;
+				}
 			}
-			acceptSnapshot(latest);
 		} catch (cause) {
 			setError(getErrorMessage(cause));
 			throw cause;
 		} finally {
 			setSaving(false);
 		}
-	}, [snapshot, drafts, acceptSnapshot]);
+	}, [snapshot, drafts]);
 
 	const reset = useCallback(
 		async (provider: string) => {
 			if (!snapshot) return;
 			setResetting((current) => ({ ...current, [provider]: true }));
 			setError(null);
+			dispatch({
+				type: "start",
+				provider,
+				operation: {
+					draft: drafts[provider] ?? "",
+					configured:
+						snapshot.providers.find((item) => item.provider === provider)
+							?.configuredExecutable ?? null,
+					completed: false,
+					kind: "waiting",
+				},
+			});
 			try {
-				const next = await invoke("reset_provider_executable", { provider });
-				setSnapshot(next);
-				const current = form.current;
-				setDrafts(
-					draftsAfterReset(
-						provider,
-						current.drafts,
-						current.snapshot ?? snapshot,
-						next,
-					),
-				);
+				await invoke("reset_provider_executable", { provider });
+				dispatch({ type: "complete", provider, configured: null });
 			} catch (cause) {
+				dispatch({ type: "fail", provider });
 				setError(getErrorMessage(cause));
 			} finally {
 				setResetting((current) => ({ ...current, [provider]: false }));
 			}
 		},
-		[snapshot],
+		[snapshot, drafts],
 	);
 
 	const refresh = useCallback(async () => {
 		setRefreshing(true);
 		setError(null);
 		try {
-			acceptSnapshot(await invoke("refresh_provider_availability"));
+			await invoke("refresh_provider_availability");
 		} catch (cause) {
 			setError(getErrorMessage(cause));
 		} finally {
 			setRefreshing(false);
 		}
-	}, [acceptSnapshot]);
+	}, []);
 
 	return {
 		providers: snapshot?.providers ?? [],

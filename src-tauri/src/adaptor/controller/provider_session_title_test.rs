@@ -28,7 +28,7 @@ async fn test_providerタイトル入口_一覧のやり直さない失敗で周
     *repository.list_failures.lock().unwrap() = usize::MAX;
     let gateway = Arc::new(FixedTitleGateway::new([]));
     let notifier = Arc::new(RecordingNotifier::default());
-    let retrying = crate::usecase::retry::test_retrying();
+    let (retrying, store) = crate::test_support::retry::test_retrying_with_store();
     // When
     tokio::time::timeout(
         std::time::Duration::from_secs(1),
@@ -44,7 +44,7 @@ async fn test_providerタイトル入口_一覧のやり直さない失敗で周
     .unwrap_err();
     // Then
     assert!(repository.list_calls.load(Ordering::SeqCst) > 1);
-    let records = retrying.records("daemon");
+    let records = store.records("daemon");
     assert_eq!(records.len(), 1);
     assert!(!records[0].requires_attention);
 }
@@ -64,7 +64,7 @@ async fn test_providerタイトル入口_やり直さない失敗の対象は次
         ("provider-fine", Ok(None)),
     ]));
     let notifier = Arc::new(RecordingNotifier::default());
-    let retrying = crate::usecase::retry::test_retrying();
+    let (retrying, store) = crate::test_support::retry::test_retrying_with_store();
     // When
     run(
         retrying.clone(),
@@ -77,7 +77,7 @@ async fn test_providerタイトル入口_やり直さない失敗の対象は次
     assert_eq!(repository.list_calls.load(Ordering::SeqCst), 3);
     assert_eq!(gateway.read_count("provider-broken"), 1);
     assert_eq!(gateway.read_count("provider-fine"), 3);
-    let records = retrying.records("broken");
+    let records = store.records("broken");
     assert_eq!(records.len(), 1);
     assert!(records[0].requires_attention);
 }

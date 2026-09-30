@@ -131,13 +131,13 @@ fn test_購読事象_準備変更と定期印の旧転送形式を保つ() {
 fn test_購読payload_全種類を旧wire型とフィールドへ変換する() {
     use crate::usecase::agent_session::{
         AgentSessionHistoryCandidateDto, AgentSessionHistoryPageDto, AgentSessionItemDto,
-        AgentSessionLifecycleDto, AgentSessionOperationsDto, AgentSessionProviderDto,
-        AgentSessionTreeLocationDto,
+        AgentSessionLifecycleDto, AgentSessionOperationsDto, AgentSessionTreeLocationDto,
     };
-    use crate::usecase::failure::FailureRecord;
-    use crate::usecase::failure::{BusinessFailure, Failure};
-    use crate::usecase::failure::{FailureObservation, FailurePage};
+    use crate::usecase::failure::{
+        FailureClassificationDto, FailureObservationDto, FailurePage, FailureRecordDto,
+    };
     use crate::usecase::git_host::dto::{IssueInfoDto, IssueLabelDto, MilestoneDto, PrAuthorDto};
+    use crate::usecase::provider_dto::AgentSessionProviderDto;
     use crate::usecase::repository_dto::{BranchDto, WorktreeDisplayGroupsDto, WorktreeEntryDto};
     use crate::usecase::repository_state::snapshot::RepositoryBranchCardsSnapshotDto;
     use crate::usecase::terminal_surface::application::TerminalSurfaceStreamItem;
@@ -152,20 +152,19 @@ fn test_購読payload_全種類を旧wire型とフィールドへ変換する() 
     use crate::usecase::workspace_tree::{WorkspaceListSnapshotDto, WorkspaceListStatusDto};
     use wire::state_payload::Value as W;
 
+    // Given
     let provider = wire::AgentSessionProviderDto {
         value: Some(wire::agent_session_provider_dto::Value::Codex as i32),
     };
     let values = vec![
         (
             StateValue::Failures(FailurePage {
-                items: vec![FailureObservation {
-                    record: FailureRecord {
+                items: vec![FailureObservationDto {
+                    record: FailureRecordDto {
                         operation: "run".into(),
                         target: "node".into(),
-                        kind: Failure::Business(BusinessFailure::Other),
+                        classification: FailureClassificationDto::BusinessFailure,
                         message: "failed".into(),
-                        active: true,
-                        requires_attention: true,
                         count: 2,
                         first_observed_ms: 3,
                         last_observed_ms: 4,
@@ -191,11 +190,14 @@ fn test_購読payload_全種類を旧wire型とフィールドへ変換する() 
             }),
         ),
         (
-            StateValue::Terminal(TerminalSurfaceStreamItem::Output {
-                session_key: "terminal".into(),
-                data: Arc::from("output"),
-                sequence: 6,
-            }),
+            StateValue::Terminal(
+                TerminalSurfaceStreamItem::Output {
+                    session_key: "terminal".into(),
+                    data: Arc::from("output"),
+                    sequence: 6,
+                }
+                .into(),
+            ),
             W::Terminal(wire::TerminalEvent {
                 item: Some(wire::terminal_event::Item::Output(wire::TerminalOutput {
                     session_key: "terminal".into(),
@@ -564,7 +566,7 @@ fn test_購読payload_全種類を旧wire型とフィールドへ変換する() 
                 description: "develop".into(),
                 builtin: false,
                 is_running: true,
-                source_format: crate::domain::workflow::WorkflowSourceFormat::Lua,
+                source_format: crate::usecase::workflow::dto::WorkflowSourceFormatDto::Lua,
             }]),
             W::Workflows(wire::ListWorkflowSummaryDto {
                 items: vec![wire::WorkflowSummaryDto {
@@ -587,7 +589,7 @@ fn test_購読payload_全種類を旧wire型とフィールドへ変換する() 
                 name: "dev".into(),
                 description: "develop".into(),
                 builtin: true,
-                source_format: crate::domain::workflow::WorkflowSourceFormat::Yaml,
+                source_format: crate::usecase::workflow::dto::WorkflowSourceFormatDto::Yaml,
                 schemas: Default::default(),
                 nodes: vec![],
             })),
@@ -648,8 +650,11 @@ fn test_購読payload_全種類を旧wire型とフィールドへ変換する() 
         ),
     ];
 
+    // When
     for (value, expected) in values {
-        assert_eq!(payload(&value).unwrap().value, Some(expected), "{value:?}");
+        let actual = payload(&value).unwrap().value;
+        // Then
+        assert_eq!(actual, Some(expected), "{value:?}");
     }
 }
 
@@ -681,19 +686,192 @@ fn test_購読payload_review対象をreview欄へ変換する() {
         original_size: None,
         modified_size: Some(4),
     });
-    // When / Then
+    // When
+    let snapshot_value = payload(&StateValue::ReviewSnapshot(snapshot))
+        .unwrap()
+        .value;
+    let view_value = payload(&StateValue::ReviewFileView(view)).unwrap().value;
+    let threads_value = payload(&StateValue::ReviewThreads(vec![])).unwrap().value;
+    // Then
     assert!(matches!(
-        payload(&StateValue::ReviewSnapshot(snapshot)).unwrap().value,
+        snapshot_value,
         Some(W::ReviewSnapshot(value)) if value.version == Some(3) && value.loading == Some(true)
     ));
     assert!(matches!(
-        payload(&StateValue::ReviewFileView(view)).unwrap().value,
+        view_value,
         Some(W::ReviewFileView(wire::ReviewFileViewDto {
             variant: Some(wire::review_file_view_dto::Variant::Binary(binary)),
         })) if binary.modified_size == Some(4)
     ));
     assert!(matches!(
-        payload(&StateValue::ReviewThreads(vec![])).unwrap().value,
+        threads_value,
         Some(W::ReviewThreads(list)) if list.items.is_empty()
     ));
+}
+
+#[test]
+fn test_購読payload_設定とproviderの出力値を維持する() {
+    use crate::usecase::agent_session::{
+        ProviderAvailabilityItemDto, ProviderAvailabilitySnapshotDto,
+    };
+    use crate::usecase::notion::usecase::{
+        NotionLabelPropertyDto, NotionPropertyMappingDto, NotionRepoConfigDto,
+    };
+    use crate::usecase::provider_dto::AgentSessionProviderDto;
+    use crate::usecase::provider_lifecycle::ProviderHookHealthWarningDto;
+    use wire::state_payload::Value as W;
+
+    // Given
+    let values = [
+        (
+            StateValue::NotionConfig(Some(NotionRepoConfigDto {
+                api_token: "token".into(),
+                database_id: "db".into(),
+                property_mapping: NotionPropertyMappingDto {
+                    title: "Name".into(),
+                    labels: vec![NotionLabelPropertyDto {
+                        name: "Status".into(),
+                        property_type: "select".into(),
+                    }],
+                    branch_name: "Branch".into(),
+                    branch_prefix: "feat/".into(),
+                },
+            })),
+            "releash.client.v1.NullableNotionRepoConfigView",
+            serde_json::json!({"api_token":"token","database_id":"db","property_mapping":{"title":"Name","labels":[{"name":"Status","property_type":"select"}],"branch_name":"Branch","branch_prefix":"feat/"}}),
+        ),
+        (
+            StateValue::ProviderAvailability(ProviderAvailabilitySnapshotDto {
+                providers: vec![ProviderAvailabilityItemDto {
+                    provider: AgentSessionProviderDto::Codex,
+                    display_name: "Codex".into(),
+                    default_executable: "codex".into(),
+                    configured_executable: None,
+                    effective_executable: "codex".into(),
+                    available: false,
+                    resolved_executable: None,
+                    unavailable_reason: Some(crate::usecase::agent_session::ProviderUnavailableReasonDto::NotFound),
+                }],
+            }),
+            "releash.client.v1.ProviderAvailabilitySnapshotResponse",
+            serde_json::json!({"providers":[{"provider":"codex","displayName":"Codex","defaultExecutable":"codex","configuredExecutable":null,"effectiveExecutable":"codex","available":false,"resolvedExecutable":null,"unavailableReason":"not_found"}]}),
+        ),
+        (
+            StateValue::WorkflowConfig(
+                crate::usecase::app_config::query_service::WorkflowConfigDto {
+                    approval_auto_approve: true,
+                },
+            ),
+            "releash.client.v1.WorkflowSection",
+            serde_json::json!({"approval_auto_approve":true}),
+        ),
+        (
+            StateValue::ProviderHookHealth(vec![ProviderHookHealthWarningDto {
+                provider: AgentSessionProviderDto::Claude,
+                launch_id: "launch".into(),
+                reason: crate::usecase::provider_lifecycle::ProviderHookHealthReasonDto::LocalApiUnavailable,
+            }]),
+            "releash.client.v1.ListProviderHookHealthWarningResponse",
+            serde_json::json!([{"provider":"claude","launchId":"launch","reason":"local_api_unavailable"}]),
+        ),
+    ];
+    // When
+    for (value, name, expected) in values {
+        let actual = match payload(&value).unwrap().value.unwrap() {
+            W::NotionConfig(value) => wire::from_message(name, &value),
+            W::ProviderAvailability(value) => wire::from_message(name, &value),
+            W::WorkflowConfig(value) => wire::from_message(name, &value),
+            W::ProviderHookHealth(value) => wire::from_message(name, &value),
+            other => panic!("unexpected payload: {other:?}"),
+        }
+        .unwrap();
+        // Then
+        assert_eq!(actual, expected, "{name}");
+    }
+}
+
+#[test]
+fn test_terminal購読payload_四種類の転送値を保つ() {
+    use crate::usecase::terminal_surface::application::TerminalSurfaceStreamItem as Item;
+
+    // Given
+    let values = [
+        (
+            Item::Snapshot(
+                crate::usecase::terminal_surface::application::TerminalSurfaceSnapshotDto {
+                    session_key: "terminal".into(),
+                    replay: "history".into(),
+                    sequence: 7,
+                    cols: 100,
+                    rows: 30,
+                    is_exited: true,
+                    exit_code: Some(9),
+                    label: Some("Shell".into()),
+                },
+            ),
+            wire::terminal_event::Item::Snapshot(wire::TerminalSnapshot {
+                session_key: "terminal".into(),
+                processed_report_units:
+                    crate::infrastructure::terminal::output_flow_control::OUTPUT_REPORT_UNITS as u32,
+                replay: "history".into(),
+                sequence: 7,
+                cols: 100,
+                rows: 30,
+                is_exited: true,
+                exit_code: Some(9),
+            }),
+        ),
+        (
+            Item::Output {
+                session_key: "terminal".into(),
+                data: Arc::from("output"),
+                sequence: 8,
+            },
+            wire::terminal_event::Item::Output(wire::TerminalOutput {
+                session_key: "terminal".into(),
+                data: "output".into(),
+                sequence: 8,
+            }),
+        ),
+        (
+            Item::Resize {
+                session_key: "terminal".into(),
+                cols: 120,
+                rows: 40,
+                sequence: 9,
+            },
+            wire::terminal_event::Item::Resize(wire::TerminalResize {
+                session_key: "terminal".into(),
+                cols: 120,
+                rows: 40,
+                sequence: 9,
+            }),
+        ),
+        (
+            Item::Exit {
+                session_key: "terminal".into(),
+                exit_code: Some(42),
+                sequence: 10,
+            },
+            wire::terminal_event::Item::Exit(wire::TerminalExit {
+                session_key: "terminal".into(),
+                exit_code: Some(42),
+                sequence: 10,
+            }),
+        ),
+    ];
+
+    // When
+    for (item, expected) in values {
+        let actual = payload(&StateValue::Terminal(item)).unwrap();
+        // Then
+        assert_eq!(
+            actual,
+            wire::StatePayload {
+                value: Some(wire::state_payload::Value::Terminal(wire::TerminalEvent {
+                    item: Some(expected)
+                }))
+            },
+        );
+    }
 }

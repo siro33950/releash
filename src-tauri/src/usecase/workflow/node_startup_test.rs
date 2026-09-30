@@ -282,7 +282,7 @@ async fn test_node起動再試行_restartとstartに共通の20秒期限を適�
         let mut gateway = FakeStartup::new(0);
         gateway.pending_restart = pending_restart;
         gateway.pending_start = !pending_restart;
-        let queue = crate::usecase::retry::test_retrying();
+        let (queue, store) = crate::test_support::retry::test_retrying_with_store();
         let started = tokio::time::Instant::now();
         // When
         let failure = tokio::time::timeout(
@@ -306,7 +306,7 @@ async fn test_node起動再試行_restartとstartに共通の20秒期限を適�
         assert_eq!(started.elapsed(), std::time::Duration::from_millis(20_010));
         assert_eq!(*gateway.restarts.lock().unwrap(), ["blocked", "other"]);
         assert_eq!(*gateway.starts.lock().unwrap(), [vec!["other-next"]]);
-        let records = queue.records(target);
+        let records = store.records(target);
         assert_eq!(records.len(), 1);
         assert_eq!(
             records[0].record.kind,

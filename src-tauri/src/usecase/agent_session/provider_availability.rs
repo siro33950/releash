@@ -2,12 +2,50 @@ use std::sync::Arc;
 use std::sync::{Mutex, RwLock};
 
 use crate::domain::agent_session::aggregates::{
-    ProviderExecutable, ProviderRegistry, ProviderRegistryEntry, ResolvedProviderExecutable,
+    ProviderExecutable, ProviderRegistry, ProviderRegistryEntry, ProviderUnavailableReason,
+    ResolvedProviderExecutable,
 };
 use crate::domain::agent_session::{
     ProviderAvailabilityReader, ProviderExecutableConfigRepository, ProviderExecutableProbeGateway,
 };
 use crate::domain::provider_lifecycle::ProviderKind;
+use crate::usecase::provider_dto::AgentSessionProviderDto;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ProviderAvailabilitySnapshotDto {
+    pub providers: Vec<ProviderAvailabilityItemDto>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ProviderAvailabilityItemDto {
+    pub provider: AgentSessionProviderDto,
+    pub display_name: String,
+    pub default_executable: String,
+    pub configured_executable: Option<String>,
+    pub effective_executable: String,
+    pub available: bool,
+    pub resolved_executable: Option<String>,
+    pub unavailable_reason: Option<ProviderUnavailableReasonDto>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ProviderUnavailableReasonDto {
+    NotFound,
+    NotExecutable,
+    SearchPathUnavailable,
+    ProbeFailed,
+}
+
+impl From<ProviderUnavailableReason> for ProviderUnavailableReasonDto {
+    fn from(value: ProviderUnavailableReason) -> Self {
+        match value {
+            ProviderUnavailableReason::NotFound => Self::NotFound,
+            ProviderUnavailableReason::NotExecutable => Self::NotExecutable,
+            ProviderUnavailableReason::SearchPathUnavailable => Self::SearchPathUnavailable,
+            ProviderUnavailableReason::ProbeFailed => Self::ProbeFailed,
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ProviderAvailabilityUsecaseError {
@@ -55,6 +93,35 @@ impl ProviderAvailabilityUsecase {
             .map_err(|_| ProviderAvailabilityUsecaseError::Corrupt)
     }
 
+    pub(crate) fn snapshot_dto(
+        &self,
+    ) -> Result<ProviderAvailabilitySnapshotDto, ProviderAvailabilityUsecaseError> {
+        let registry = self
+            .registry
+            .read()
+            .map_err(|_| ProviderAvailabilityUsecaseError::Corrupt)?;
+        Ok(ProviderAvailabilitySnapshotDto {
+            providers: registry
+                .entries()
+                .iter()
+                .map(|entry| ProviderAvailabilityItemDto {
+                    provider: entry.provider().into(),
+                    display_name: entry.display_name().to_string(),
+                    default_executable: entry.default_executable().as_str().to_string(),
+                    configured_executable: entry
+                        .configured_executable()
+                        .map(|value| value.as_str().to_string()),
+                    effective_executable: entry.effective_executable().as_str().to_string(),
+                    available: entry.is_available(),
+                    resolved_executable: entry
+                        .resolved_executable()
+                        .map(|value| value.as_path().to_string_lossy().into_owned()),
+                    unavailable_reason: entry.unavailable_reason().map(Into::into),
+                })
+                .collect(),
+        })
+    }
+
     pub(crate) fn available_providers(
         &self,
     ) -> Result<Vec<ProviderKind>, ProviderAvailabilityUsecaseError> {
@@ -71,20 +138,22 @@ impl ProviderAvailabilityUsecase {
         &self,
         provider: ProviderKind,
         executable: &str,
-    ) -> Result<ProviderRegistry, ProviderAvailabilityUsecaseError> {
+    ) -> Result<String, ProviderAvailabilityUsecaseError> {
         let executable = ProviderExecutable::new(executable)
             .map_err(|_| ProviderAvailabilityUsecaseError::InvalidInput)?;
-        self.replace_configured_executable(provider, Some(executable))
+        let configured = executable.as_str().to_string();
+        self.replace_configured_executable(provider, Some(executable))?;
+        Ok(configured)
     }
 
     pub(crate) fn reset_configured_executable(
         &self,
         provider: ProviderKind,
-    ) -> Result<ProviderRegistry, ProviderAvailabilityUsecaseError> {
+    ) -> Result<(), ProviderAvailabilityUsecaseError> {
         self.replace_configured_executable(provider, None)
     }
 
-    pub(crate) fn refresh(&self) -> Result<ProviderRegistry, ProviderAvailabilityUsecaseError> {
+    pub(crate) fn refresh(&self) -> Result<(), ProviderAvailabilityUsecaseError> {
         let _operation = self
             .operation
             .lock()
@@ -99,7 +168,7 @@ impl ProviderAvailabilityUsecase {
         &self,
         provider: ProviderKind,
         executable: Option<ProviderExecutable>,
-    ) -> Result<ProviderRegistry, ProviderAvailabilityUsecaseError> {
+    ) -> Result<(), ProviderAvailabilityUsecaseError> {
         let _operation = self
             .operation
             .lock()
@@ -110,16 +179,16 @@ impl ProviderAvailabilityUsecase {
         self.rebuild_registry()
     }
 
-    fn rebuild_registry(&self) -> Result<ProviderRegistry, ProviderAvailabilityUsecaseError> {
+    fn rebuild_registry(&self) -> Result<(), ProviderAvailabilityUsecaseError> {
         let next = build_registry(self.config.as_ref(), self.probe.as_ref())?;
         *self
             .registry
             .write()
-            .map_err(|_| ProviderAvailabilityUsecaseError::Corrupt)? = next.clone();
+            .map_err(|_| ProviderAvailabilityUsecaseError::Corrupt)? = next;
         if let Some(publisher) = &self.state_publisher {
             publisher.notify(crate::usecase::state_subscription::StateChangeSource::Providers);
         }
-        Ok(next)
+        Ok(())
     }
 }
 

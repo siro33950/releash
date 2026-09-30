@@ -1992,7 +1992,7 @@ export interface ClientCommands {
 	): Promise<void>;
 	refresh_provider_availability(
 		args: ClientCommandArgs["refresh_provider_availability"],
-	): Promise<ProviderAvailabilitySnapshotResponse>;
+	): Promise<void>;
 	remove_repo_path(
 		args: ClientCommandArgs["remove_repo_path"],
 	): Promise<ResultBool>;
@@ -2017,7 +2017,7 @@ export interface ClientCommands {
 	): Promise<ApplicationQuitOutcomeDtoV1>;
 	reset_provider_executable(
 		args: ClientCommandArgs["reset_provider_executable"],
-	): Promise<ProviderAvailabilitySnapshotResponse>;
+	): Promise<void>;
 	resize_terminal_surface(
 		args: ClientCommandArgs["resize_terminal_surface"],
 	): Promise<void>;
@@ -2083,7 +2083,7 @@ export interface ClientCommands {
 	): Promise<void>;
 	update_provider_executable(
 		args: ClientCommandArgs["update_provider_executable"],
-	): Promise<ProviderAvailabilitySnapshotResponse>;
+	): Promise<ResultString>;
 	update_workflow_config(
 		args: ClientCommandArgs["update_workflow_config"],
 	): Promise<void>;

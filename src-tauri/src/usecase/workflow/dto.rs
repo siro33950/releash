@@ -3,6 +3,24 @@ use std::collections::BTreeMap;
 
 use crate::domain::workflow as domain;
 use crate::domain::workflow::services::contract_schema;
+use crate::usecase::provider_dto::AgentSessionProviderDto;
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum WorkflowSourceFormatDto {
+    #[default]
+    Yaml,
+    Lua,
+}
+
+impl From<domain::WorkflowSourceFormat> for WorkflowSourceFormatDto {
+    fn from(value: domain::WorkflowSourceFormat) -> Self {
+        match value {
+            domain::WorkflowSourceFormat::Yaml => Self::Yaml,
+            domain::WorkflowSourceFormat::Lua => Self::Lua,
+        }
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 #[serde(deny_unknown_fields)]
@@ -12,7 +30,7 @@ pub(crate) struct WorkflowDto {
     #[serde(default)]
     pub builtin: bool,
     #[serde(rename = "sourceFormat")]
-    pub source_format: domain::WorkflowSourceFormat,
+    pub source_format: WorkflowSourceFormatDto,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub schemas: BTreeMap<String, serde_json::Value>,
     pub nodes: Vec<NodeDefinitionDto>,
@@ -40,19 +58,12 @@ pub(crate) struct FacetRefsDto {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub(crate) struct SessionSpecDto {
-    pub provider: SessionProviderDto,
+    pub provider: AgentSessionProviderDto,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub permission: Option<String>,
     pub facets: FacetRefsDto,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
-pub(crate) enum SessionProviderDto {
-    Claude,
-    Codex,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -180,7 +191,7 @@ pub(crate) struct WorkflowSummaryDto {
     pub description: String,
     pub builtin: bool,
     pub is_running: bool,
-    pub source_format: domain::WorkflowSourceFormat,
+    pub source_format: WorkflowSourceFormatDto,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -239,7 +250,7 @@ pub(crate) fn workflow_to_dto_with_source_format(
         name: definition.name.clone(),
         description: definition.description.clone(),
         builtin: definition.builtin,
-        source_format,
+        source_format: source_format.into(),
         schemas: definition
             .schemas
             .iter()
@@ -260,7 +271,7 @@ pub(crate) fn workflow_summary_to_dto(summary: domain::WorkflowSummary) -> Workf
         description: summary.description,
         builtin: summary.builtin,
         is_running: summary.is_running,
-        source_format: summary.source_format,
+        source_format: summary.source_format.into(),
     }
 }
 
@@ -349,19 +360,10 @@ fn input_param_to_dto(param: &domain::InputParam) -> InputParamDto {
 
 fn session_to_dto(session: &domain::SessionSpec) -> SessionSpecDto {
     SessionSpecDto {
-        provider: provider_to_dto(session.provider),
+        provider: session.provider.into(),
         model: session.model.clone(),
         permission: session.permission.map(|permission| permission.to_string()),
         facets: facet_refs_to_dto(&session.facets),
-    }
-}
-
-fn provider_to_dto(
-    provider: crate::domain::provider_lifecycle::ProviderKind,
-) -> SessionProviderDto {
-    match provider {
-        crate::domain::provider_lifecycle::ProviderKind::Claude => SessionProviderDto::Claude,
-        crate::domain::provider_lifecycle::ProviderKind::Codex => SessionProviderDto::Codex,
     }
 }
 
@@ -479,12 +481,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn workflow_dto_serializes_like_canonical_wire_shape() {
+    fn test_workflow出力_既存の転送形式で直列化する() {
+        // Given
         let workflow = WorkflowDto {
             name: "wf".to_string(),
             description: "desc".to_string(),
             builtin: false,
-            source_format: domain::WorkflowSourceFormat::Yaml,
+            source_format: WorkflowSourceFormatDto::Yaml,
             schemas: [(
                 "plan".to_string(),
                 serde_json::json!({
@@ -499,7 +502,7 @@ mod tests {
                 name: "node".to_string(),
                 kind: NodeKindDto::Session,
                 session: Some(SessionSpecDto {
-                    provider: SessionProviderDto::Claude,
+                    provider: AgentSessionProviderDto::Claude,
                     model: None,
                     permission: None,
                     facets: FacetRefsDto {
@@ -516,8 +519,12 @@ mod tests {
             }],
         };
 
+        // When
+        let actual = serde_json::to_value(workflow).unwrap();
+
+        // Then
         assert_eq!(
-            serde_json::to_value(workflow).unwrap(),
+            actual,
             serde_json::json!({
                 "name": "wf",
                 "description": "desc",

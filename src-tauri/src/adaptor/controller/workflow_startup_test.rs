@@ -67,7 +67,7 @@ async fn test_起動時の再開_実行木ごとの試行に期限を掛け他�
     // Given
     let trees = trees(0, false, Some("first"));
     let usecase = WorkflowStartupUsecase::new(trees.clone(), trees.clone());
-    let retrying = crate::usecase::retry::test_retrying();
+    let (retrying, store) = crate::test_support::retry::test_retrying_with_store();
     let started = tokio::time::Instant::now();
     // When
     let error = recover(&retrying, &usecase).await.unwrap_err();
@@ -78,10 +78,10 @@ async fn test_起動時の再開_実行木ごとの試行に期限を掛け他�
     assert_eq!(failure.nature, TechnicalFailureNature::TimedOut);
     assert_eq!(started.elapsed(), ATTEMPT_LIMIT);
     assert_eq!(*trees.reconciled.lock().unwrap(), ["second"]);
-    let records = retrying.records("first");
+    let records = store.records("first");
     assert_eq!(records.len(), 1);
     assert!(records[0].requires_attention);
-    assert!(retrying.records("second").is_empty());
+    assert!(store.records("second").is_empty());
 }
 
 #[tokio::test(start_paused = true)]
@@ -89,7 +89,7 @@ async fn test_起動時の再開_一覧の一時的な失敗をやり直し期�
     // Given
     let trees = trees(1, true, None);
     let usecase = WorkflowStartupUsecase::new(trees.clone(), trees.clone());
-    let retrying = crate::usecase::retry::test_retrying();
+    let (retrying, store) = crate::test_support::retry::test_retrying_with_store();
     // When
     let error = recover(&retrying, &usecase).await.unwrap_err();
     // Then
@@ -101,7 +101,7 @@ async fn test_起動時の再開_一覧の一時的な失敗をやり直し期�
         failure.source,
         StorageFailureSource::Technical(error) if error.message == attempt_expired().message
     ));
-    let records = retrying.records("daemon");
+    let records = store.records("daemon");
     assert_eq!(records.len(), 2);
     assert_eq!(
         records[0].record.kind,

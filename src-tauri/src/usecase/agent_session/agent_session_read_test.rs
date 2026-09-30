@@ -3,9 +3,10 @@ use std::sync::{Arc, Mutex};
 use super::{
     AgentSessionGarbageCollectionOutcome, AgentSessionGarbageCollectionPort, AgentSessionItemDto,
     AgentSessionLifecycleDto, AgentSessionLifecycleUsecaseError, AgentSessionOperationsDto,
-    AgentSessionProviderDto, AgentSessionQueryError, AgentSessionQueryService,
-    AgentSessionReadUsecase, AgentSessionReadUsecaseError, AgentSessionTreeLocationDto,
+    AgentSessionQueryError, AgentSessionQueryService, AgentSessionReadUsecase,
+    AgentSessionReadUsecaseError, AgentSessionTreeLocationDto,
 };
+use crate::usecase::provider_dto::AgentSessionProviderDto;
 
 struct MutableSessionQuery {
     items: Arc<Mutex<Vec<AgentSessionItemDto>>>,

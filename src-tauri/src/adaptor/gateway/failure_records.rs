@@ -1,5 +1,8 @@
 use crate::domain::failure::{FailureKey, FailureRecord, FailureRecordRepository, WorkFailure};
-use crate::usecase::failure::{FailureObservation, FailurePage, FailureQueryService};
+use crate::usecase::failure::{
+    FailureClassificationDto, FailureObservationDto, FailurePage, FailureQueryService,
+    FailureRecordDto,
+};
 use std::collections::VecDeque;
 use std::sync::Mutex;
 
@@ -8,6 +11,13 @@ const PAGE_SIZE: usize = 100;
 
 pub struct FailureRecordStore {
     records: Mutex<VecDeque<FailureRecord>>,
+}
+
+#[cfg(test)]
+#[derive(Debug, Clone)]
+pub(crate) struct FailureRecordObservation {
+    pub record: FailureRecord,
+    pub requires_attention: bool,
 }
 
 impl Default for FailureRecordStore {
@@ -40,7 +50,7 @@ impl FailureRecordStore {
         let mut records = self.records.lock().expect("failure records");
         let attention = records
             .iter()
-            .find(|record| matches_key(record, key) && record.active && record.requires_attention)
+            .find(|record| matches_key(record, key) && is_attention(record))
             .map(|record| (record.kind, record.message.clone()));
         let changed =
             attention != requires_attention.then(|| (failure.kind, failure.message.clone()));
@@ -87,7 +97,7 @@ impl FailureRecordStore {
         let mut records = self.records.lock().expect("failure records");
         let mut changed = false;
         for record in records.iter_mut().filter(|record| matches_key(record, key)) {
-            changed |= record.active && record.requires_attention;
+            changed |= is_attention(record);
             record.active = false;
         }
         changed
@@ -98,20 +108,23 @@ impl FailureRecordStore {
             .lock()
             .expect("failure records")
             .iter()
-            .filter(|record| record.target == target && record.active && record.requires_attention)
+            .filter(|record| record.target == target && is_attention(record))
             .map(|record| record.message.clone())
             .collect()
     }
 
     #[cfg(test)]
-    pub(crate) fn records(&self, target: &str) -> Vec<FailureObservation> {
+    pub(crate) fn records(&self, target: &str) -> Vec<FailureRecordObservation> {
         self.records
             .lock()
             .expect("failure records")
             .iter()
             .filter(|record| target == "*" || record.target == target)
             .cloned()
-            .map(observation)
+            .map(|record| FailureRecordObservation {
+                requires_attention: is_attention(&record),
+                record,
+            })
             .collect()
     }
 }
@@ -135,12 +148,8 @@ fn matches_key(record: &FailureRecord, key: &FailureKey) -> bool {
     record.operation == key.operation && record.target == key.target
 }
 
-fn observation(record: FailureRecord) -> FailureObservation {
-    let requires_attention = record.active && record.requires_attention;
-    FailureObservation {
-        record,
-        requires_attention,
-    }
+fn is_attention(record: &FailureRecord) -> bool {
+    record.active && record.requires_attention
 }
 
 fn now_ms() -> u64 {
@@ -152,11 +161,6 @@ fn now_ms() -> u64 {
 
 #[async_trait::async_trait]
 impl FailureQueryService for FailureRecordStore {
-    #[cfg(test)]
-    fn records(&self, target: &str) -> Vec<FailureObservation> {
-        FailureRecordStore::records(self, target)
-    }
-
     async fn page(&self, targets: &[String], offset: usize) -> FailurePage {
         let records = self.records.lock().expect("failure records");
         let matching = || {
@@ -166,14 +170,23 @@ impl FailureQueryService for FailureRecordStore {
                     .any(|target| target == "*" || record.target == *target)
             })
         };
-        let requires_attention =
-            matching().any(|record| record.active && record.requires_attention);
+        let requires_attention = matching().any(is_attention);
         let total = matching().count();
         let items = matching()
             .skip(offset)
             .take(PAGE_SIZE)
-            .cloned()
-            .map(observation)
+            .map(|record| FailureObservationDto {
+                record: FailureRecordDto {
+                    operation: record.operation.clone(),
+                    target: record.target.clone(),
+                    classification: FailureClassificationDto::from(record.kind),
+                    message: record.message.clone(),
+                    count: record.count,
+                    first_observed_ms: record.first_observed_ms,
+                    last_observed_ms: record.last_observed_ms,
+                },
+                requires_attention: is_attention(record),
+            })
             .collect();
         FailurePage {
             items,

@@ -7,8 +7,40 @@ use crate::domain::notion::{
 };
 use crate::usecase::notion::error::NotionUsecaseError;
 
+#[derive(Clone, PartialEq, Eq)]
+pub(crate) struct NotionRepoConfigDto {
+    pub api_token: String,
+    pub database_id: String,
+    pub property_mapping: NotionPropertyMappingDto,
+}
+
+impl std::fmt::Debug for NotionRepoConfigDto {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NotionRepoConfigDto")
+            .field("api_token", &"[REDACTED]")
+            .field("database_id", &self.database_id)
+            .field("property_mapping", &self.property_mapping)
+            .finish()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct NotionPropertyMappingDto {
+    pub title: String,
+    pub labels: Vec<NotionLabelPropertyDto>,
+    pub branch_name: String,
+    pub branch_prefix: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct NotionLabelPropertyDto {
+    pub name: String,
+    pub property_type: String,
+}
+
 pub(crate) struct NotionUsecase {
     repository: Arc<dyn NotionConfigRepository>,
+    config_query: Arc<dyn super::query_service::NotionConfigQueryService>,
     api: Arc<dyn NotionApiGateway>,
     state_publisher: Option<crate::usecase::state_subscription::StateSubscriptionUsecase>,
 }
@@ -16,10 +48,12 @@ pub(crate) struct NotionUsecase {
 impl NotionUsecase {
     pub(crate) fn new(
         repository: Arc<dyn NotionConfigRepository>,
+        config_query: Arc<dyn super::query_service::NotionConfigQueryService>,
         api: Arc<dyn NotionApiGateway>,
     ) -> Self {
         Self {
             repository,
+            config_query,
             api,
             state_publisher: None,
         }
@@ -72,8 +106,8 @@ impl NotionUsecase {
     pub(crate) fn get_config(
         &self,
         repo_path: &str,
-    ) -> Result<Option<app_config_vo::NotionRepoConfig>, NotionUsecaseError> {
-        get_config(self.repository.as_ref(), repo_path)
+    ) -> Result<Option<NotionRepoConfigDto>, NotionUsecaseError> {
+        Ok(self.config_query.get_config(repo_path)?)
     }
 
     pub(crate) fn delete_config(&self, repo_path: &str) -> Result<(), NotionUsecaseError> {
@@ -116,13 +150,6 @@ fn save_config(
     config: app_config_vo::NotionRepoConfig,
 ) -> Result<(), NotionUsecaseError> {
     repository.upsert(repo_path, config).map_err(Into::into)
-}
-
-fn get_config(
-    repository: &dyn NotionConfigRepository,
-    repo_path: &str,
-) -> Result<Option<app_config_vo::NotionRepoConfig>, NotionUsecaseError> {
-    repository.get(repo_path).map_err(Into::into)
 }
 
 fn delete_config(
@@ -416,29 +443,21 @@ mod tests {
     }
 
     #[test]
-    fn test_config_save_get_deleteはrepositoryに反映される() {
+    fn test_notion設定の保存と削除_repositoryに反映される() {
+        // Given
         let repo = Arc::new(FakeNotionConfigRepository::default());
 
+        // When
         save_config(repo.as_ref(), "/repo".to_string(), config()).unwrap();
-        assert_eq!(
-            get_config(repo.as_ref(), "/repo")
-                .unwrap()
-                .unwrap()
-                .database_id,
-            "db-1"
-        );
+        let saved = repo.get("/repo").unwrap().unwrap();
+        // Then
+        assert_eq!(saved.database_id, "db-1");
 
+        // When
         delete_config(repo.as_ref(), "/repo").unwrap();
-        assert!(get_config(repo.as_ref(), "/repo").unwrap().is_none());
-    }
-
-    #[test]
-    fn test_config_get_unconfigured_repoはnoneを返す() {
-        let repo = FakeNotionConfigRepository::default();
-
-        let result = get_config(&repo, "/repo").unwrap();
-
-        assert!(result.is_none());
+        let deleted = repo.get("/repo").unwrap();
+        // Then
+        assert!(deleted.is_none());
     }
 
     #[test]

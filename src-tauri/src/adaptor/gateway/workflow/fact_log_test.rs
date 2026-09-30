@@ -2499,30 +2499,19 @@ async fn test_追記結果確認_全行一致と競合と未保存を共通の�
 
 #[test]
 fn test_fact読み出し_呼び出し境界で混雑と期限切れと破損の分類を保持する() {
-    use crate::adaptor::presenter::connect::ConnectFailure;
-    use connectrpc::ErrorCode as F;
     // Given
-    for (source, expected) in [
-        (LocalEventQueryError::QueryBusy, F::Unavailable),
-        (
-            LocalEventQueryError::Technical(crate::domain::failure::TechnicalFailure {
-                nature: crate::domain::failure::TechnicalFailureNature::TimedOut,
-                message: "deadline exceeded".into(),
-            }),
-            F::DeadlineExceeded,
-        ),
-        (
-            LocalEventQueryError::Corrupt {
-                correlation_id: "id".into(),
-            },
-            F::DataLoss,
-        ),
-        (
-            LocalEventQueryError::Internal {
-                correlation_id: "id".into(),
-            },
-            F::Internal,
-        ),
+    for source in [
+        LocalEventQueryError::QueryBusy,
+        LocalEventQueryError::Technical(crate::domain::failure::TechnicalFailure {
+            nature: crate::domain::failure::TechnicalFailureNature::TimedOut,
+            message: "deadline exceeded".into(),
+        }),
+        LocalEventQueryError::Corrupt {
+            correlation_id: "id".into(),
+        },
+        LocalEventQueryError::Internal {
+            correlation_id: "id".into(),
+        },
     ] {
         // When
         let workspace = LocalEventQueryError::from(FactReadError::Query(source.clone()));
@@ -2530,27 +2519,26 @@ fn test_fact読み出し_呼び出し境界で混雑と期限切れと破損の�
             crate::domain::workflow::WorkflowError::from(FactReadError::Query(source.clone()));
         // Then
         assert_eq!(workspace, source);
-        assert_eq!(workspace.connect_code(), expected);
-        assert_eq!(archive.connect_code(), expected);
+        assert!(
+            matches!(archive, crate::domain::workflow::WorkflowError::Store(failure)
+            if matches!(&failure.source, crate::domain::failure::StorageFailureSource::Query(value) if value == &source))
+        );
     }
     for message in ["invalid fact", "missing session attachment"] {
-        assert_eq!(
-            LocalEventQueryError::from(FactReadError::Corrupt(message.into())).connect_code(),
-            F::DataLoss
-        );
-        assert_eq!(
-            crate::domain::workflow::WorkflowError::from(FactReadError::Corrupt(message.into()))
-                .connect_code(),
-            F::DataLoss
-        );
+        // When
+        let workspace = LocalEventQueryError::from(FactReadError::Corrupt(message.into()));
+        let archive =
+            crate::domain::workflow::WorkflowError::from(FactReadError::Corrupt(message.into()));
+        // Then
+        assert!(matches!(workspace, LocalEventQueryError::Corrupt { .. }));
+        assert!(matches!(archive,
+            crate::domain::workflow::WorkflowError::CorruptStoredState(value) if value == message));
     }
 }
 
 #[tokio::test]
-async fn test_fact読み出し_liveとread_onlyでsql失敗の分類をconnectまで保持する() {
+async fn test_fact読み出し_liveとread_onlyでsql失敗をdomainへ分類する() {
     use crate::adaptor::gateway::local_event_store::reader::storage_unavailable;
-    use crate::adaptor::presenter::connect::classified_error;
-    use connectrpc::ErrorCode;
     // Given
     let directory = tempfile::tempdir().unwrap();
     let live =
@@ -2560,12 +2548,12 @@ async fn test_fact読み出し_liveとread_onlyでsql失敗の分類をconnect�
         FactLogReadBackend::Live(live),
         FactLogReadBackend::ReadOnly(read_only),
     ] {
-        for (code, expected) in [
-            (rusqlite::ffi::SQLITE_BUSY, ErrorCode::Unavailable),
-            (rusqlite::ffi::SQLITE_LOCKED, ErrorCode::Unavailable),
-            (rusqlite::ffi::SQLITE_IOERR, ErrorCode::FailedPrecondition),
-            (rusqlite::ffi::SQLITE_CORRUPT, ErrorCode::DataLoss),
-            (rusqlite::ffi::SQLITE_NOTADB, ErrorCode::DataLoss),
+        for code in [
+            rusqlite::ffi::SQLITE_BUSY,
+            rusqlite::ffi::SQLITE_LOCKED,
+            rusqlite::ffi::SQLITE_IOERR,
+            rusqlite::ffi::SQLITE_CORRUPT,
+            rusqlite::ffi::SQLITE_NOTADB,
         ] {
             // When
             let error = backend
@@ -2577,10 +2565,22 @@ async fn test_fact読み出し_liveとread_onlyでsql失敗の分類をconnect�
                 })
                 .await
                 .unwrap_err();
-            let fact = FactReadError::Query(error);
+            assert!(match code {
+                rusqlite::ffi::SQLITE_BUSY | rusqlite::ffi::SQLITE_LOCKED =>
+                    matches!(&error, LocalEventQueryError::QueryBusy),
+                rusqlite::ffi::SQLITE_IOERR =>
+                    matches!(&error, LocalEventQueryError::StorageAccessRequired { .. }),
+                rusqlite::ffi::SQLITE_CORRUPT | rusqlite::ffi::SQLITE_NOTADB =>
+                    matches!(&error, LocalEventQueryError::Corrupt { .. }),
+                _ => unreachable!(),
+            });
+            let fact = FactReadError::Query(error.clone());
             let workflow = crate::domain::workflow::WorkflowError::from(fact);
             // Then
-            assert_eq!(classified_error(workflow).code, expected);
+            assert!(
+                matches!(workflow, crate::domain::workflow::WorkflowError::Store(failure)
+                if matches!(&failure.source, crate::domain::failure::StorageFailureSource::Query(value) if value == &error))
+            );
         }
     }
 }
@@ -2610,9 +2610,5 @@ async fn test_reconciliation読取_復元不能な事実列はdata_lossになる
     // Then
     assert!(
         matches!(&error, crate::domain::workflow::WorkflowError::CorruptStoredState(message) if message.contains("does not begin with a started fact"))
-    );
-    assert_eq!(
-        crate::adaptor::presenter::connect::classified_error(error).code,
-        connectrpc::ErrorCode::DataLoss
     );
 }

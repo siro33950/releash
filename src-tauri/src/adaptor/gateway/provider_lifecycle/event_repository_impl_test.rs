@@ -252,7 +252,7 @@ async fn test_lifecycle追記_保存競合は状態を再読込して上位か�
             tree_conflict,
             ..Default::default()
         });
-        let repository = test_repository(source.clone());
+        let (repository, failure_store) = test_repository_with_store(source.clone());
         let event = ScopedProviderLifecycleEvent::new(
             ProviderLifecycleScope::new("session").unwrap(),
             crate::domain::provider_lifecycle::ProviderLifecycleEvent::stop_observed("binding")
@@ -263,7 +263,7 @@ async fn test_lifecycle追記_保存競合は状態を再読込して上位か�
         // Then
         assert_eq!(source.commits.load(Ordering::SeqCst), 6);
         assert_eq!(source.reads.load(Ordering::SeqCst), 6);
-        let records = repository.queue.records("*");
+        let records = failure_store.records("*");
         assert_eq!(records.len(), 1);
         assert_eq!(
             records[0].record.kind,
@@ -278,13 +278,23 @@ async fn test_lifecycle追記_保存競合は状態を再読込して上位か�
 fn test_repository(
     source: Arc<dyn LocalEventTransactionRepository>,
 ) -> LocalProviderLifecycleEventRepository {
+    test_repository_with_store(source).0
+}
+
+fn test_repository_with_store(
+    source: Arc<dyn LocalEventTransactionRepository>,
+) -> (
+    LocalProviderLifecycleEventRepository,
+    Arc<crate::adaptor::gateway::failure_records::FailureRecordStore>,
+) {
     let mut repository = LocalProviderLifecycleEventRepository::new(
         crate::usecase::retry::shared().clone(),
         source,
         "installation".into(),
     );
-    repository.queue = crate::usecase::retry::test_retrying();
-    repository
+    let (queue, store) = crate::test_support::retry::test_retrying_with_store();
+    repository.queue = queue;
+    (repository, store)
 }
 
 #[tokio::test]
@@ -294,7 +304,7 @@ async fn test_確定照会の一時失敗_確定状態を再確認して同じ�
             unknown: true,
             ..Default::default()
         });
-        let repository = test_repository(source.clone());
+        let (repository, failure_store) = test_repository_with_store(source.clone());
         let event = ScopedProviderLifecycleEvent::new(
             ProviderLifecycleScope::new("session").unwrap(),
             crate::domain::provider_lifecycle::ProviderLifecycleEvent::stop_observed("binding")
@@ -319,7 +329,7 @@ async fn test_確定照会の一時失敗_確定状態を再確認して同じ�
         );
         let identities = source.identities.lock().unwrap();
         assert!(identities.iter().all(|identity| identity == &identities[0]));
-        let records = repository.queue.records("*");
+        let records = failure_store.records("*");
         assert_eq!(records.len(), if pending { 1 } else { 2 });
         for record in records {
             assert_eq!(

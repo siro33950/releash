@@ -19,12 +19,7 @@ pub(crate) fn payload(value: &StateValue) -> Result<wire::StatePayload, connectr
                             wire::FailureRecord {
                                 operation: Some(record.operation.clone()),
                                 target: Some(record.target.clone()),
-                                classification: Some(
-                                    crate::adaptor::presenter::connect::failure_classification(
-                                        record.kind,
-                                    )
-                                    .into(),
-                                ),
+                                classification: Some(failure_classification(record.classification).into()),
                                 message: Some(record.message.clone()),
                                 count: Some(record.count),
                                 first_observed_ms: Some(record.first_observed_ms),
@@ -176,9 +171,7 @@ pub(crate) fn payload(value: &StateValue) -> Result<wire::StatePayload, connectr
                     .map_err(crate::adaptor::presenter::connect::command_error)?,
             ),
             StateValue::WorkflowConfig(value) => wire::state_payload::Value::WorkflowConfig(
-                crate::adaptor::presenter::client::value(
-                    crate::adaptor::gateway::app_config::workflow_to_model(value.clone()),
-                )
+                crate::adaptor::presenter::client::value(*value)
                 .map_err(crate::adaptor::presenter::connect::command_error)?,
             ),
             StateValue::PerformanceSwitches(value) => {
@@ -222,6 +215,20 @@ pub(crate) fn payload(value: &StateValue) -> Result<wire::StatePayload, connectr
             }
         }),
     })
+}
+
+pub(crate) fn failure_classification(
+    classification: crate::usecase::failure::FailureClassificationDto,
+) -> &'static str {
+    use crate::usecase::failure::FailureClassificationDto as C;
+    match classification {
+        C::VersionConflict => "VersionConflict",
+        C::BusinessFailure => "BusinessFailure",
+        C::Transient => "Transient",
+        C::TimedOut => "TimedOut",
+        C::Cancelled => "Cancelled",
+        C::TechnicalFailure => "TechnicalFailure",
+    }
 }
 
 pub(crate) fn event(

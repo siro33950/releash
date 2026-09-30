@@ -3,8 +3,8 @@ use std::sync::Arc;
 use super::{
     AgentSessionHistoryCandidateDto, AgentSessionHistoryPageDto, AgentSessionHistoryQueryError,
     AgentSessionHistoryQueryService, AgentSessionHistoryReadUsecase, AgentSessionHistoryRequest,
-    AgentSessionProviderDto,
 };
+use crate::usecase::provider_dto::AgentSessionProviderDto;
 
 struct FixedHistoryQueryService;
 

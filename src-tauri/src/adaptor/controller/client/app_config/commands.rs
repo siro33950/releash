@@ -1,8 +1,7 @@
 use crate::adaptor::presenter::error::AppError;
 use std::sync::Arc;
 
-use crate::adaptor::gateway::app_config::{workflow_to_domain, WorkflowSection};
-use crate::usecase::app_config::AppConfigUsecase;
+use crate::usecase::app_config::{AppConfigUsecase, WorkflowConfigInput};
 
 fn map_join_error(error: tokio::task::JoinError) -> AppError {
     AppError::new(format!("task join error: {error}"))
@@ -54,10 +53,9 @@ pub(crate) async fn update_login_item_preference_shared(
 
 pub(crate) async fn update_workflow_config_shared(
     usecase: &Arc<AppConfigUsecase>,
-    workflow: WorkflowSection,
+    workflow: WorkflowConfigInput,
 ) -> Result<(), AppError> {
     let usecase = usecase.clone();
-    let workflow = workflow_to_domain(&workflow);
     crate::common::operation_context::spawn_blocking(move || {
         usecase.update_workflow_config(workflow)
     })
@@ -82,3 +80,7 @@ pub(crate) async fn update_crash_reporting_shared(
     .map_err(AppError::from_failure)?;
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "commands_test.rs"]
+mod commands_tests;

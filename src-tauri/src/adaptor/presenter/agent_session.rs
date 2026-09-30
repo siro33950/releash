@@ -1,4 +1,38 @@
+use crate::usecase::agent_session::ProviderUnavailableReasonDto;
+use crate::usecase::provider_dto::AgentSessionProviderDto;
+use crate::usecase::provider_lifecycle::ProviderHookHealthReasonDto;
 use serde::Serialize;
+
+fn provider_name(provider: AgentSessionProviderDto) -> &'static str {
+    match provider {
+        AgentSessionProviderDto::Claude => "claude",
+        AgentSessionProviderDto::Codex => "codex",
+    }
+}
+
+fn unavailable_reason(reason: ProviderUnavailableReasonDto) -> &'static str {
+    match reason {
+        ProviderUnavailableReasonDto::NotFound => "not_found",
+        ProviderUnavailableReasonDto::NotExecutable => "not_executable",
+        ProviderUnavailableReasonDto::SearchPathUnavailable => "search_path_unavailable",
+        ProviderUnavailableReasonDto::ProbeFailed => "probe_failed",
+    }
+}
+
+fn hook_health_reason(reason: ProviderHookHealthReasonDto) -> &'static str {
+    match reason {
+        ProviderHookHealthReasonDto::SessionStartDeadlineExceeded => {
+            "session_start_deadline_exceeded"
+        }
+        ProviderHookHealthReasonDto::CodexHookDeliveryUnconfirmed => {
+            "codex_hook_delivery_unconfirmed"
+        }
+        ProviderHookHealthReasonDto::ProviderHookConfigurationRejected => {
+            "provider_hook_configuration_rejected"
+        }
+        ProviderHookHealthReasonDto::LocalApiUnavailable => "local_api_unavailable",
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -52,66 +86,46 @@ pub(crate) struct ProviderAvailabilityItemResponse {
     pub(crate) unavailable_reason: Option<String>,
 }
 
-impl From<crate::domain::agent_session::aggregates::ProviderRegistry>
+impl From<crate::usecase::agent_session::ProviderAvailabilitySnapshotDto>
     for ProviderAvailabilitySnapshotResponse
 {
-    fn from(registry: crate::domain::agent_session::aggregates::ProviderRegistry) -> Self {
+    fn from(value: crate::usecase::agent_session::ProviderAvailabilitySnapshotDto) -> Self {
         Self {
-            providers: registry
-                .entries()
-                .iter()
+            providers: value
+                .providers
+                .into_iter()
                 .map(|entry| ProviderAvailabilityItemResponse {
-                    provider: match entry.provider() {
-                        crate::domain::provider_lifecycle::ProviderKind::Claude => {
-                            "claude".to_string()
-                        }
-                        crate::domain::provider_lifecycle::ProviderKind::Codex => {
-                            "codex".to_string()
-                        }
-                    },
-                    display_name: entry.display_name().to_string(),
-                    default_executable: entry.default_executable().as_str().to_string(),
-                    configured_executable: entry
-                        .configured_executable()
-                        .map(|executable| executable.as_str().to_string()),
-                    effective_executable: entry.effective_executable().as_str().to_string(),
-                    available: entry.is_available(),
-                    resolved_executable: entry
-                        .resolved_executable()
-                        .map(|executable| executable.as_path().to_string_lossy().into_owned()),
-                    unavailable_reason: entry.unavailable_reason().map(|reason| match reason {
-                        crate::domain::agent_session::aggregates::ProviderUnavailableReason::NotFound => "not_found".to_string(),
-                        crate::domain::agent_session::aggregates::ProviderUnavailableReason::NotExecutable => "not_executable".to_string(),
-                        crate::domain::agent_session::aggregates::ProviderUnavailableReason::SearchPathUnavailable => "search_path_unavailable".to_string(),
-                        crate::domain::agent_session::aggregates::ProviderUnavailableReason::ProbeFailed => "probe_failed".to_string(),
-                    }),
+                    provider: provider_name(entry.provider).to_string(),
+                    display_name: entry.display_name,
+                    default_executable: entry.default_executable,
+                    configured_executable: entry.configured_executable,
+                    effective_executable: entry.effective_executable,
+                    available: entry.available,
+                    resolved_executable: entry.resolved_executable,
+                    unavailable_reason: entry
+                        .unavailable_reason
+                        .map(|reason| unavailable_reason(reason).to_string()),
                 })
                 .collect(),
         }
     }
 }
 
-impl From<crate::usecase::provider_lifecycle::ProviderHookHealthWarning>
+impl From<crate::usecase::provider_lifecycle::ProviderHookHealthWarningDto>
     for ProviderHookHealthWarningResponse
 {
-    fn from(value: crate::usecase::provider_lifecycle::ProviderHookHealthWarning) -> Self {
+    fn from(value: crate::usecase::provider_lifecycle::ProviderHookHealthWarningDto) -> Self {
         Self {
             provider: match value.provider {
-                crate::domain::provider_lifecycle::ProviderKind::Claude => {
-                    ProviderHookHealthProviderResponse::Claude
-                }
-                crate::domain::provider_lifecycle::ProviderKind::Codex => {
-                    ProviderHookHealthProviderResponse::Codex
-                }
+                AgentSessionProviderDto::Claude => ProviderHookHealthProviderResponse::Claude,
+                AgentSessionProviderDto::Codex => ProviderHookHealthProviderResponse::Codex,
             },
             launch_id: value.launch_id,
-            reason: match value.reason {
-                crate::domain::provider_lifecycle::ProviderLifecycleUnavailableReason::SessionStartDeadlineExceeded => "session_start_deadline_exceeded",
-                crate::domain::provider_lifecycle::ProviderLifecycleUnavailableReason::CodexHookDeliveryUnconfirmed => "codex_hook_delivery_unconfirmed",
-                crate::domain::provider_lifecycle::ProviderLifecycleUnavailableReason::ProviderHookConfigurationRejected => "provider_hook_configuration_rejected",
-                crate::domain::provider_lifecycle::ProviderLifecycleUnavailableReason::LocalApiUnavailable => "local_api_unavailable",
-            }
-            .to_string(),
+            reason: hook_health_reason(value.reason).to_string(),
         }
     }
 }
+
+#[cfg(test)]
+#[path = "agent_session_test.rs"]
+mod agent_session_tests;

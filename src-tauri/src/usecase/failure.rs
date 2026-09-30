@@ -1,9 +1,7 @@
 use crate::common::retry::AttemptProgress;
 use crate::domain::failure::TechnicalFailureNature;
 
-pub use crate::domain::failure::{
-    BusinessFailure, Failure, FailureKey, FailureRecord, WorkFailure,
-};
+pub use crate::domain::failure::{BusinessFailure, Failure, FailureKey, WorkFailure};
 
 pub const ATTEMPT_LIMIT: std::time::Duration = std::time::Duration::from_secs(20);
 
@@ -45,16 +43,50 @@ retry_failure_from_debug!(
 );
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FailureObservation {
-    pub record: FailureRecord,
+pub struct FailurePage {
+    pub items: Vec<FailureObservationDto>,
+    pub next_offset: Option<usize>,
+    pub requires_attention: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FailureClassificationDto {
+    VersionConflict,
+    BusinessFailure,
+    Transient,
+    TimedOut,
+    Cancelled,
+    TechnicalFailure,
+}
+
+impl From<Failure> for FailureClassificationDto {
+    fn from(value: Failure) -> Self {
+        match value {
+            Failure::Business(BusinessFailure::VersionConflict) => Self::VersionConflict,
+            Failure::Business(BusinessFailure::Other) => Self::BusinessFailure,
+            Failure::Technical(TechnicalFailureNature::Transient) => Self::Transient,
+            Failure::Technical(TechnicalFailureNature::TimedOut) => Self::TimedOut,
+            Failure::Technical(TechnicalFailureNature::Cancelled) => Self::Cancelled,
+            Failure::Technical(TechnicalFailureNature::Other) => Self::TechnicalFailure,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FailureObservationDto {
+    pub record: FailureRecordDto,
     pub requires_attention: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FailurePage {
-    pub items: Vec<FailureObservation>,
-    pub next_offset: Option<usize>,
-    pub requires_attention: bool,
+pub struct FailureRecordDto {
+    pub operation: String,
+    pub target: String,
+    pub classification: FailureClassificationDto,
+    pub message: String,
+    pub count: u64,
+    pub first_observed_ms: u64,
+    pub last_observed_ms: u64,
 }
 
 pub struct FailureRecordingUsecase {
@@ -101,9 +133,6 @@ impl FailureRecordingUsecase {
 #[async_trait::async_trait]
 pub trait FailureQueryService: Send + Sync {
     async fn page(&self, targets: &[String], offset: usize) -> FailurePage;
-
-    #[cfg(test)]
-    fn records(&self, target: &str) -> Vec<FailureObservation>;
 }
 
 pub(crate) fn requires_attention(kind: Failure) -> bool {

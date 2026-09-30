@@ -306,13 +306,17 @@ async fn test_delegate_送付後に注入済みまたは対象変更または中
 }
 
 #[tokio::test]
-async fn test_delegate_競合中の失敗をnodeから回数と時刻付きで観測できる() {
+async fn test_委任_競合中の失敗をnodeから回数と時刻付きで観測できる() {
     // Given
     let (gateway, injection) = fixture(None);
     gateway
         .conflicts
         .store(usize::MAX, std::sync::atomic::Ordering::SeqCst);
-    let usecase = continuation(gateway.clone());
+    let (retrying, store) = crate::test_support::retry::test_retrying_with_store();
+    let usecase = DelegateContinuationUsecase {
+        gateway: gateway.clone(),
+        retrying,
+    };
     // When
     let operation = usecase.execute("tree", &injection);
     tokio::pin!(operation);
@@ -322,7 +326,7 @@ async fn test_delegate_競合中の失敗をnodeから回数と時刻付きで�
                 result = &mut operation => panic!("unexpected completion: {result:?}"),
                 _ = tokio::task::yield_now() => {}
             }
-            let records = usecase.retrying.records("node-1");
+            let records = store.records("node-1");
             if let Some(observation) = records.first().filter(|item| item.record.count >= 2) {
                 // Then
                 assert!(observation.record.active);

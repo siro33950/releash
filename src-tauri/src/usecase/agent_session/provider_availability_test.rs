@@ -98,11 +98,13 @@ impl ProviderExecutableProbeGateway for FakeProviderExecutableProbeGateway {
 }
 
 #[test]
-fn test_provider_availability_初期化時にconfigとprobeから全providerのsnapshotを構築する() {
+fn test_provider利用可否_初期化時にconfigとprobeから全providerのsnapshotを構築する() {
+    // Given
     let config = Arc::new(FakeProviderExecutableConfigRepository::with_override(
         ProviderKind::Claude,
         "/custom/claude",
     ));
+    // When
     let availability = ProviderAvailabilityUsecase::initialize(
         config,
         Arc::new(FakeProviderExecutableProbeGateway::default()),
@@ -110,6 +112,7 @@ fn test_provider_availability_初期化時にconfigとprobeから全providerのs
     .unwrap();
     let snapshot = availability.snapshot().unwrap();
 
+    // Then
     assert_eq!(snapshot.entries().len(), ProviderKind::supported().len());
     let claude = snapshot.entry(ProviderKind::Claude);
     assert_eq!(
@@ -132,6 +135,41 @@ fn test_provider_availability_初期化時にconfigとprobeから全providerのs
             .map(ResolvedProviderExecutable::as_path),
         Some(std::path::Path::new("/resolved/codex"))
     );
+}
+
+#[test]
+fn test_provider利用可否_購読用出力にproviderと利用不可理由を写す() {
+    // Given
+    let availability = ProviderAvailabilityUsecase::initialize(
+        Arc::new(FakeProviderExecutableConfigRepository::with_override(
+            ProviderKind::Codex,
+            "missing-codex",
+        )),
+        Arc::new(FakeProviderExecutableProbeGateway::default()),
+    )
+    .unwrap();
+
+    // When
+    let snapshot = availability.snapshot_dto().unwrap();
+
+    // Then
+    assert_eq!(
+        snapshot.providers[0].provider,
+        crate::usecase::provider_dto::AgentSessionProviderDto::Claude
+    );
+    assert_eq!(
+        snapshot.providers[1].provider,
+        crate::usecase::provider_dto::AgentSessionProviderDto::Codex
+    );
+    assert_eq!(
+        snapshot.providers[1].configured_executable.as_deref(),
+        Some("missing-codex")
+    );
+    assert_eq!(
+        snapshot.providers[1].unavailable_reason,
+        Some(super::ProviderUnavailableReasonDto::NotFound)
+    );
+    assert!(!snapshot.providers[1].available);
 }
 
 #[test]
@@ -162,7 +200,8 @@ fn test_provider_availability_利用可能候補とlaunch実行fileを同じsnap
 }
 
 #[test]
-fn test_provider_availability_updateは保存後に対象を再判定しresetでdefaultへ戻す() {
+fn test_provider利用可否_updateは前後の空白を除いた保存値を返す() {
+    // Given
     let config = Arc::new(FakeProviderExecutableConfigRepository::default());
     let availability = ProviderAvailabilityUsecase::initialize(
         config.clone(),
@@ -170,9 +209,39 @@ fn test_provider_availability_updateは保存後に対象を再判定しresetで
     )
     .unwrap();
 
-    let updated = availability
+    // When
+    let configured = availability
+        .update_configured_executable(ProviderKind::Claude, " /custom/claude ")
+        .unwrap();
+
+    // Then
+    assert_eq!(configured, "/custom/claude");
+    assert_eq!(
+        config
+            .configured_executable(ProviderKind::Claude)
+            .unwrap()
+            .unwrap()
+            .as_str(),
+        "/custom/claude"
+    );
+}
+
+#[test]
+fn test_provider利用可否_updateは保存後に対象を再判定しresetでdefaultへ戻す() {
+    // Given
+    let config = Arc::new(FakeProviderExecutableConfigRepository::default());
+    let availability = ProviderAvailabilityUsecase::initialize(
+        config.clone(),
+        Arc::new(FakeProviderExecutableProbeGateway::default()),
+    )
+    .unwrap();
+
+    // When
+    availability
         .update_configured_executable(ProviderKind::Claude, "/custom/claude")
         .unwrap();
+    let updated = availability.snapshot().unwrap();
+    // Then
     assert_eq!(
         updated
             .entry(ProviderKind::Claude)
@@ -189,9 +258,12 @@ fn test_provider_availability_updateは保存後に対象を再判定しresetで
         "/custom/claude"
     );
 
-    let reset = availability
+    // When
+    availability
         .reset_configured_executable(ProviderKind::Claude)
         .unwrap();
+    let reset = availability.snapshot().unwrap();
+    // Then
     assert_eq!(
         reset.entry(ProviderKind::Claude).configured_executable(),
         None
@@ -226,7 +298,8 @@ fn test_provider_availability_保存失敗時はregistryを変更しない() {
 }
 
 #[test]
-fn test_provider_availability_refreshは探索環境更新後に全providerを一括再判定する() {
+fn test_provider利用可否_refreshは探索環境更新後に全providerを一括再判定する() {
+    // Given
     let probe = Arc::new(FakeProviderExecutableProbeGateway::default());
     let availability = ProviderAvailabilityUsecase::initialize(
         Arc::new(FakeProviderExecutableConfigRepository::default()),
@@ -236,19 +309,18 @@ fn test_provider_availability_refreshは探索環境更新後に全providerを�
     assert_eq!(availability.available_providers().unwrap().len(), 2);
     probe.set_force_missing(true);
 
-    let refreshed = availability.refresh().unwrap();
+    // When
+    availability.refresh().unwrap();
+    let refreshed = availability.snapshot().unwrap();
+    let current = availability.snapshot().unwrap();
 
+    // Then
     assert_eq!(*probe.refreshes.lock().unwrap(), 1);
     assert!(refreshed
         .entries()
         .iter()
         .all(|entry| !entry.is_available()));
-    assert!(availability
-        .snapshot()
-        .unwrap()
-        .entries()
-        .iter()
-        .all(|entry| !entry.is_available()));
+    assert!(current.entries().iter().all(|entry| !entry.is_available()));
 }
 
 struct BlockingProviderExecutableProbeGateway {
@@ -291,7 +363,8 @@ impl ProviderExecutableProbeGateway for BlockingProviderExecutableProbeGateway {
 }
 
 #[test]
-fn test_provider_availability_refresh中のreadへ部分更新snapshotを公開しない() {
+fn test_provider利用可否_refresh中のreadへ部分更新snapshotを公開しない() {
+    // Given
     let probe = Arc::new(BlockingProviderExecutableProbeGateway::new());
     let availability = Arc::new(
         ProviderAvailabilityUsecase::initialize(
@@ -302,17 +375,22 @@ fn test_provider_availability_refresh中のreadへ部分更新snapshotを公開�
     );
     let before = availability.snapshot().unwrap();
     probe.block_next.store(true, Ordering::SeqCst);
+    // When
     let refreshing = {
         let availability = availability.clone();
         std::thread::spawn(move || availability.refresh().unwrap())
     };
 
     probe.entered.wait();
-    assert_eq!(availability.snapshot().unwrap(), before);
+    let during = availability.snapshot().unwrap();
     probe.release.wait();
-    let after = refreshing.join().unwrap();
+    refreshing.join().unwrap();
+    let after = availability.snapshot().unwrap();
+    let current = availability.snapshot().unwrap();
 
-    assert_eq!(availability.snapshot().unwrap(), after);
+    // Then
+    assert_eq!(during, before);
+    assert_eq!(current, after);
     assert!(after.entries().iter().all(|entry| !entry.is_available()));
 }
 
@@ -328,29 +406,72 @@ fn test_provider設定_更新とresetとrefresh成功時だけ購読へ通知す
     )
     .unwrap()
     .with_state_publisher(publisher);
-    // When / Then
+    // When
     usecase
         .update_configured_executable(ProviderKind::Codex, "/custom/codex")
         .unwrap();
+    let updated = changes.try_recv().unwrap();
+    // Then
     assert_eq!(
-        changes.try_recv().unwrap(),
+        updated,
         crate::usecase::state_subscription::StateChangeSource::Providers
     );
+    // When
     usecase
         .reset_configured_executable(ProviderKind::Codex)
         .unwrap();
+    let reset = changes.try_recv().unwrap();
+    // Then
     assert_eq!(
-        changes.try_recv().unwrap(),
+        reset,
         crate::usecase::state_subscription::StateChangeSource::Providers
     );
+    // When
     usecase.refresh().unwrap();
+    let refreshed = changes.try_recv().unwrap();
+    // Then
     assert_eq!(
-        changes.try_recv().unwrap(),
+        refreshed,
         crate::usecase::state_subscription::StateChangeSource::Providers
     );
+    // Given
     config.fail_save();
-    assert!(usecase
+    // When
+    let failed = usecase
         .update_configured_executable(ProviderKind::Codex, "/custom/codex")
-        .is_err());
-    assert!(changes.try_recv().is_err());
+        .is_err();
+    let no_change = changes.try_recv().is_err();
+    // Then
+    assert!(failed);
+    assert!(no_change);
+}
+
+#[test]
+fn test_provider利用可否_四種類の利用不可理由を出力へ写す() {
+    // Given
+    let cases = [
+        (
+            ProviderUnavailableReason::NotFound,
+            super::ProviderUnavailableReasonDto::NotFound,
+        ),
+        (
+            ProviderUnavailableReason::NotExecutable,
+            super::ProviderUnavailableReasonDto::NotExecutable,
+        ),
+        (
+            ProviderUnavailableReason::SearchPathUnavailable,
+            super::ProviderUnavailableReasonDto::SearchPathUnavailable,
+        ),
+        (
+            ProviderUnavailableReason::ProbeFailed,
+            super::ProviderUnavailableReasonDto::ProbeFailed,
+        ),
+    ];
+
+    // When
+    for (domain, expected) in cases {
+        let actual = super::ProviderUnavailableReasonDto::from(domain);
+        // Then
+        assert_eq!(actual, expected);
+    }
 }

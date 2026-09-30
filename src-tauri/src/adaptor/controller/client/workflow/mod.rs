@@ -1204,6 +1204,9 @@ pub(crate) mod tests {
                 .clone();
         let notion_usecase = Arc::new(crate::usecase::notion::usecase::NotionUsecase::new(
             notion_config_repository,
+            app.state::<Arc<crate::adaptor::gateway::app_config::AppConfig>>()
+                .inner()
+                .clone(),
             Arc::new(crate::adaptor::gateway::notion::NotionApiGatewayImpl::new()),
         ));
         let repo_paths_gateway =

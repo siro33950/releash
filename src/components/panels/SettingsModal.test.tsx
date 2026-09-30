@@ -523,7 +523,7 @@ describe("SettingsModal", () => {
 		});
 		vi.mocked(invoke).mockImplementation((cmd: string) => {
 			if (cmd === "update_provider_executable") {
-				return Promise.resolve({ providers: [] });
+				return Promise.resolve(null as never);
 			}
 			return Promise.resolve(null as never);
 		});
@@ -543,12 +543,16 @@ describe("SettingsModal", () => {
 	it("Provider CLIのresetとrefreshをbackend操作へ転送する", async () => {
 		const user = userEvent.setup();
 		const { invokeClient: invoke } = await import("@/lib/client");
-		vi.mocked(invoke).mockResolvedValue(providerSnapshot as never);
+		vi.mocked(invoke).mockResolvedValue(null as never);
 		render(<SettingsModal {...defaultProps} />);
 		fireEvent.click(screen.getByText("Agent"));
 		await user.click(
 			await screen.findByRole("button", { name: "Reset Claude executable" }),
 		);
+		expect(screen.getByLabelText("Claude executable override")).toHaveValue(
+			"/opt/custom/claude",
+		);
+		expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
 		await user.click(
 			screen.getByRole("button", { name: "Refresh Provider CLI availability" }),
 		);
@@ -580,9 +584,7 @@ describe("SettingsModal", () => {
 		});
 		vi.mocked(invoke).mockImplementation((command: string) => {
 			if (command === "reset_provider_executable") {
-				return Promise.resolve({
-					providers: [provider("claude", null), provider("codex", null)],
-				});
+				return Promise.resolve(null as never);
 			}
 			return Promise.resolve(null as never);
 		});
@@ -593,6 +595,11 @@ describe("SettingsModal", () => {
 
 		await user.click(
 			screen.getByRole("button", { name: "Reset Claude executable" }),
+		);
+		act(() =>
+			states.publish("provider-availability", {
+				providers: [provider("claude", null), provider("codex", null)],
+			}),
 		);
 
 		expect(codex).toHaveValue("/draft/codex");
@@ -1418,7 +1425,7 @@ describe("SettingsModal", () => {
 			[false, true].map((failure) => [command, failure] as const),
 		),
 	)(
-		"%sは通信状態を表示せず応答結果を反映する: failure=%s",
+		"%sは通信状態を表示せず購読結果を反映する: failure=%s",
 		async (command, failure) => {
 			const client = await import("@/lib/client");
 			const invoke = vi.mocked(client.invokeClient);
@@ -1542,7 +1549,7 @@ describe("SettingsModal", () => {
 			await act(async () => {
 				if (failure) fail(new Error("変更が拒否されました"));
 				else {
-					complete((section === "Agent" ? nextProviders : null) as never);
+					complete(null as never);
 					states.publish("external-editor", { selected: "zed", editors });
 					states.publish(releashBase, "develop");
 					states.publish(
@@ -1596,7 +1603,7 @@ describe("SettingsModal", () => {
 			invoke.mockImplementation((name, args) => {
 				if (name !== command) return base(name, args);
 				return new Promise((resolve) => {
-					complete = () => resolve(providerSnapshot);
+					complete = () => resolve(null as never);
 				});
 			});
 			render(<SettingsModal {...defaultProps} />);

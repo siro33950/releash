@@ -11,6 +11,7 @@ use crate::test_support::state_subscription::StateSubscriptionEvent;
 use crate::usecase::agent_session::*;
 use crate::usecase::failure::{BusinessFailure, Failure};
 use crate::usecase::git_host::GitHostUsecase;
+use crate::usecase::provider_dto::AgentSessionProviderDto;
 use crate::usecase::repo_paths_usecase::RepoPathsUsecase;
 use crate::usecase::repository_state::RepositoryStateService;
 use crate::usecase::state_subscription::{
@@ -167,6 +168,7 @@ impl crate::usecase::provider_lifecycle::ProviderHookHealthFailureQuery for NoHo
 pub(crate) struct Fixture {
     pub(crate) reads: WorkspaceStateReads,
     pub(crate) subscriptions: StateSubscriptionUsecase,
+    pub(crate) config: Arc<AppConfig>,
     pub(crate) path: String,
     issues: Arc<Issues>,
     sessions: Arc<Sessions>,
@@ -302,11 +304,12 @@ impl Fixture {
             review_comments_dir: crate::adaptor::gateway::comment::state_dir(&root),
             workflows_dir: workflows_dir.clone(),
             app_config: Arc::new(
-                crate::usecase::app_config::AppConfigUsecase::new(config.clone())
+                crate::usecase::app_config::AppConfigUsecase::new(config.clone(), config.clone())
                     .with_state_publisher(publisher.clone()),
             ),
             notion: Arc::new(
                 crate::usecase::notion::usecase::NotionUsecase::new(
+                    config.clone(),
                     config.clone(),
                     Arc::new(crate::adaptor::gateway::notion::NotionApiGatewayImpl::new()),
                 )
@@ -347,6 +350,7 @@ impl Fixture {
                 String::new(),
             ),
             reads,
+            config,
             path,
             issues,
             sessions,

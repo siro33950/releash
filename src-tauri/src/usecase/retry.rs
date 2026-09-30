@@ -1,4 +1,6 @@
 use crate::common::retry::{attempts, AttemptProgress, RetryBackoff, RetryLimiter};
+#[cfg(test)]
+use crate::usecase::failure::FailureQueryService;
 use crate::usecase::failure::{next_attempt, FailureKey, FailureRecordingUsecase, RetryFailure};
 use std::future::Future;
 use std::sync::Arc;
@@ -7,7 +9,7 @@ pub struct Retrying {
     pub(crate) limiter: Arc<RetryLimiter>,
     pub(crate) failures: Arc<FailureRecordingUsecase>,
     #[cfg(test)]
-    pub(crate) test_query: Option<Arc<dyn crate::usecase::failure::FailureQueryService>>,
+    pub(crate) test_query: Option<Arc<dyn FailureQueryService>>,
 }
 
 impl Retrying {
@@ -81,14 +83,6 @@ impl Retrying {
             self.failures.resolved(&key);
         }
         result
-    }
-
-    #[cfg(test)]
-    pub(crate) fn records(&self, target: &str) -> Vec<crate::usecase::failure::FailureObservation> {
-        self.test_query
-            .as_ref()
-            .expect("test failure store")
-            .records(target)
     }
 
     #[cfg(test)]

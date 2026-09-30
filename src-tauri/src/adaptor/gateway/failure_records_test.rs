@@ -288,13 +288,15 @@ async fn test_失敗の記録_保持上限までページから欠落なく観�
 
 #[tokio::test]
 async fn test_要対応_取消後は対象表示と全体ページの両方から解除する() {
+    // Given
     let store = FailureRecordStore::default();
     let target = key("repository_scan", "target");
     store.observe(
         &target,
         failure(Failure::Business(BusinessFailure::Other), "repair"),
     );
-    assert!(store.page(&["target".into()], 0).await.requires_attention);
+    let before = store.page(&["target".into()], 0).await;
+    // When
     store.observe(
         &target,
         failure(
@@ -302,10 +304,61 @@ async fn test_要対応_取消後は対象表示と全体ページの両方か�
             "cancel",
         ),
     );
-    assert!(store
-        .records("target")
-        .iter()
-        .all(|record| !record.requires_attention));
-    assert!(!store.page(&["target".into()], 0).await.requires_attention);
-    assert!(!store.page(&["*".into()], 0).await.requires_attention);
+    let records = store.records("target");
+    let target_page = store.page(&["target".into()], 0).await;
+    let all_page = store.page(&["*".into()], 0).await;
+    // Then
+    assert!(before.requires_attention);
+    assert!(records.iter().all(|record| !record.requires_attention));
+    assert!(!target_page.requires_attention);
+    assert!(!all_page.requires_attention);
+}
+
+#[tokio::test]
+async fn test_失敗ページ_六種類の分類を保存記録から出力へ写す() {
+    use crate::usecase::failure::FailureClassificationDto as C;
+
+    // Given
+    let store = FailureRecordStore::default();
+    let cases = [
+        (
+            Failure::Business(BusinessFailure::VersionConflict),
+            C::VersionConflict,
+        ),
+        (
+            Failure::Business(BusinessFailure::Other),
+            C::BusinessFailure,
+        ),
+        (
+            Failure::Technical(TechnicalFailureNature::Transient),
+            C::Transient,
+        ),
+        (
+            Failure::Technical(TechnicalFailureNature::TimedOut),
+            C::TimedOut,
+        ),
+        (
+            Failure::Technical(TechnicalFailureNature::Cancelled),
+            C::Cancelled,
+        ),
+        (
+            Failure::Technical(TechnicalFailureNature::Other),
+            C::TechnicalFailure,
+        ),
+    ];
+    for (index, (kind, _)) in cases.iter().enumerate() {
+        store.observe_at(
+            &key("workflow", &format!("target-{index}")),
+            failure(*kind, "message"),
+            index as u64,
+        );
+    }
+
+    // When
+    for (index, (_, expected)) in cases.iter().enumerate() {
+        let page = store.page(&[format!("target-{index}")], 0).await;
+        // Then
+        assert_eq!(page.items[0].record.classification, *expected);
+        assert_eq!(page.items[0].record.message, "message");
+    }
 }

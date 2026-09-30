@@ -149,3 +149,7 @@ pub(crate) fn register_shared(
         );
     }
 }
+
+#[cfg(all(test, feature = "desktop"))]
+#[path = "shared_test.rs"]
+mod shared_tests;

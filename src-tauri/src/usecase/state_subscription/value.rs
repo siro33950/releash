@@ -1,8 +1,9 @@
 use crate::usecase::{
-    agent_session::{AgentSessionHistoryPageDto, AgentSessionItemDto, AgentSessionProviderDto},
+    agent_session::{AgentSessionHistoryPageDto, AgentSessionItemDto},
     code_dto::{ReviewFileViewDto, ReviewSnapshotDto},
     comment::ReviewThreadDto,
     git_host::IssueInfoDto,
+    provider_dto::AgentSessionProviderDto,
     repository_dto::{BranchDto, WorktreeEntryDto},
     repository_state::snapshot::RepositoryBranchCardsSnapshotDto,
     workflow::{
@@ -45,12 +46,12 @@ pub(crate) enum StateValue {
     Facet(String),
     Diagnostics(DiagnosticReport),
     DesktopSettings(crate::usecase::app_config::query_service::DesktopSettingsDto),
-    NotionConfig(Option<crate::domain::app_config::value_objects::NotionRepoConfig>),
-    ProviderAvailability(crate::domain::agent_session::aggregates::ProviderRegistry),
+    NotionConfig(Option<crate::usecase::notion::usecase::NotionRepoConfigDto>),
+    ProviderAvailability(crate::usecase::agent_session::ProviderAvailabilitySnapshotDto),
     ExternalEditor(crate::usecase::external_editor::dto::ExternalEditorState),
     ReleashBase(Option<String>),
-    WorkflowConfig(crate::domain::app_config::value_objects::WorkflowConfig),
+    WorkflowConfig(crate::usecase::app_config::query_service::WorkflowConfigDto),
     PerformanceSwitches(crate::usecase::telemetry::PerformanceSwitches),
-    ProviderHookHealth(Vec<crate::usecase::provider_lifecycle::ProviderHookHealthWarning>),
+    ProviderHookHealth(Vec<crate::usecase::provider_lifecycle::ProviderHookHealthWarningDto>),
     StartupOutcome(crate::usecase::application_startup::ApplicationStartupOutcome),
 }

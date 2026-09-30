@@ -5,7 +5,7 @@ use crate::adaptor::presenter::provider_tui::{
 use std::sync::Arc;
 
 use crate::adaptor::presenter::agent_session::{
-    AgentSessionArchiveResponse, AgentSessionOpenResponse, ProviderAvailabilitySnapshotResponse,
+    AgentSessionArchiveResponse, AgentSessionOpenResponse,
 };
 use crate::adaptor::presenter::error::AppError;
 use crate::domain::agent_session::aggregates::AgentSessionArchiveOutcome;
@@ -19,36 +19,32 @@ use crate::usecase::agent_session::{
 
 pub(crate) async fn refresh_provider_availability_shared(
     availability: &Arc<ProviderAvailabilityUsecase>,
-) -> Result<ProviderAvailabilitySnapshotResponse, AppError> {
+) -> Result<(), AppError> {
     let availability = Arc::clone(availability);
-    run_provider_availability_blocking(move || availability.refresh())
-        .await
-        .map(Into::into)
+    run_provider_availability_blocking(move || availability.refresh()).await
 }
 
 pub(crate) async fn update_provider_executable_shared(
     availability: &Arc<ProviderAvailabilityUsecase>,
     provider: String,
     executable: String,
-) -> Result<ProviderAvailabilitySnapshotResponse, AppError> {
+) -> Result<String, AppError> {
     let provider = parse_provider(&provider, ProviderParseOperation::ConfigureProvider)?;
     let availability = Arc::clone(availability);
     run_provider_availability_blocking(move || {
         availability.update_configured_executable(provider, &executable)
     })
     .await
-    .map(Into::into)
 }
 
 pub(crate) async fn reset_provider_executable_shared(
     availability: &Arc<ProviderAvailabilityUsecase>,
     provider: String,
-) -> Result<ProviderAvailabilitySnapshotResponse, AppError> {
+) -> Result<(), AppError> {
     let provider = parse_provider(&provider, ProviderParseOperation::ConfigureProvider)?;
     let availability = Arc::clone(availability);
     run_provider_availability_blocking(move || availability.reset_configured_executable(provider))
         .await
-        .map(Into::into)
 }
 
 async fn run_provider_availability_blocking<T, F>(operation: F) -> Result<T, AppError>

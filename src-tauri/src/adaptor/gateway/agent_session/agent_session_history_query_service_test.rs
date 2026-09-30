@@ -9,8 +9,8 @@ use crate::domain::agent_session::{
 use crate::domain::provider_lifecycle::ProviderKind;
 use crate::usecase::agent_session::{
     AgentSessionHistoryQueryError, AgentSessionHistoryQueryService, AgentSessionHistoryRequest,
-    AgentSessionProviderDto,
 };
+use crate::usecase::provider_dto::AgentSessionProviderDto;
 
 struct FixedHistoryGateway {
     entries: Vec<AgentSessionHistoryMetadata>,
