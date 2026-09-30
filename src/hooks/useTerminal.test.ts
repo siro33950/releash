@@ -57,6 +57,7 @@ let mockTerminalInstance: {
 };
 
 let mockCurrentInputId: string | null = null;
+let mockStreamCompletion: Promise<void> | null = null;
 let mockConnectionPhase = "READY";
 function streamForAttachment(attachmentId: unknown) {
 	const stream = mockStreams.find(
@@ -83,6 +84,7 @@ vi.mock("@/lib/client", () => ({
 		onClosed: () => void,
 	) => {
 		if (mockStreamSubscriptionError) throw mockStreamSubscriptionError;
+		const completion = mockStreamCompletion;
 		const attachmentId = crypto.randomUUID();
 		mockStreams.push({ attachmentId, onmessage, onClosed });
 		await mockInvoke("start_state_subscription", {
@@ -93,6 +95,7 @@ vi.mock("@/lib/client", () => ({
 		});
 		if (mockStreams[mockStreams.length - 1]?.attachmentId === attachmentId)
 			mockCurrentInputId = attachmentId;
+		if (completion) await completion;
 		let released: Promise<void> | undefined;
 		return vi.fn(
 			() =>
@@ -236,6 +239,7 @@ function terminalInputWrites() {
 			([, args]) =>
 				args as {
 					owner: unknown;
+					attachmentId: string;
 					sequence: number;
 					data: string;
 				},
@@ -304,6 +308,7 @@ describe("useTerminal", () => {
 		mockTerminalConstructorOptions = {};
 		mockWebglAddonInstances.length = 0;
 		mockCurrentInputId = null;
+		mockStreamCompletion = null;
 		mockConnectionPhase = "READY";
 		mockFirstState.mockReset().mockRejectedValue(new Error("No state fixture"));
 		resetTerminalPerformanceSwitchesCache();
@@ -3371,6 +3376,87 @@ describe("useTerminal", () => {
 	});
 
 	describe("client接続の変化", () => {
+		it("新attachmentでsnapshot前後に入力しても連番を維持し両方書く", async () => {
+			const baseImplementation = mockInvoke.getMockImplementation();
+			let activeAttachmentId: string | null = null;
+			let nextSequence = 0;
+			let starts = 0;
+			const written: string[] = [];
+			mockInvoke.mockImplementation(
+				(cmd: string, args?: Record<string, unknown>) => {
+					if (cmd === "start_state_subscription") {
+						starts++;
+						activeAttachmentId = String(args?.attachmentId);
+						nextSequence = 0;
+						if (starts > 1) return Promise.resolve();
+					}
+					if (cmd === "write_terminal_surface") {
+						if (args?.data === "lost")
+							return Promise.reject(new Error("UNAVAILABLE"));
+						if (
+							args?.attachmentId === activeAttachmentId &&
+							args?.sequence === nextSequence
+						) {
+							written.push(String(args?.data));
+							nextSequence++;
+						}
+						return Promise.resolve();
+					}
+					return baseImplementation?.(cmd, args);
+				},
+			);
+
+			renderHook(() => useTerminal(containerRef));
+			await waitFor(() => expect(mockCurrentInputId).toBeTruthy());
+			await waitFor(() => expect(mockStreams).toHaveLength(1));
+			let finishSubscribe!: () => void;
+			mockStreamCompletion = new Promise<void>((resolve) => {
+				finishSubscribe = resolve;
+			});
+			mockOnDataCallback("lost");
+			await waitFor(() => expect(mockStreams).toHaveLength(2));
+			const nextId = mockStreams[1].attachmentId;
+			await waitFor(() => expect(mockCurrentInputId).toBe(nextId));
+			expect(mockInvoke).not.toHaveBeenCalledWith("stop_state_subscription", {
+				attachmentId: mockStreams[0].attachmentId,
+			});
+			mockOnDataCallback("middle");
+			await waitFor(() => expect(written).toEqual(["middle"]));
+			mockStreams[1].onmessage({
+				type: "snapshot",
+				surface: {
+					processed_report_units: 5000,
+					session_key: "test-uuid-1234",
+					terminal_surface: { replay: "", sequence: 0, cols: 80, rows: 24 },
+					is_exited: false,
+					exit_code: null,
+				},
+			});
+			finishSubscribe();
+			await waitFor(() =>
+				expect(mockInvoke).toHaveBeenCalledWith("stop_state_subscription", {
+					attachmentId: mockStreams[0].attachmentId,
+				}),
+			);
+			mockOnDataCallback("after");
+			await waitFor(() => expect(written).toEqual(["middle", "after"]));
+			expect(
+				terminalInputWrites().filter(
+					({ attachmentId }) => attachmentId === nextId,
+				),
+			).toEqual([
+				expect.objectContaining({
+					attachmentId: nextId,
+					sequence: 0,
+					data: "middle",
+				}),
+				expect.objectContaining({
+					attachmentId: nextId,
+					sequence: 1,
+					data: "after",
+				}),
+			]);
+		});
 		it("切断中の入力をエラーにし再接続後はclientの新attachmentで再開する", async () => {
 			const onTerminalError = vi.fn();
 			renderHook(() =>

@@ -293,7 +293,6 @@ function startState(stream: StateStream, target: string) {
 	if (!entry) return;
 	const terminalInputId =
 		entry.kind === "terminal" ? crypto.randomUUID() : undefined;
-	if (terminalInputId) entry.terminalInputId = terminalInputId;
 	queueStateOperation(target, () =>
 		stream.client
 			.startStateSubscription({
@@ -302,6 +301,14 @@ function startState(stream: StateStream, target: string) {
 				args: entry.args,
 				version: entry.version,
 				terminalInputId,
+			})
+			.then(() => {
+				if (
+					terminalInputId &&
+					states.get(target) === entry &&
+					stateStream === stream
+				)
+					entry.terminalInputId = terminalInputId;
 			})
 			.catch((error) => {
 				if (states.get(target) !== entry || stateStream !== stream) return;
@@ -465,6 +472,7 @@ export async function subscribeTerminalState(
 		release();
 		throw error;
 	});
+	await stateOperations.get(stateTargetKey("terminal", targetArgs));
 	return async () => release();
 }
 

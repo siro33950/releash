@@ -186,7 +186,7 @@ export async function setupTauriMock(page: Page, config: MockConfig) {
         }
         if (method.name === "StopStateSubscription") { router.rpc(method, async (request) => {
             subscriptions.get(request.clientId)?.delete(stateKey(request.target, request.args));
-            for (const [id, value] of attachments) if (value.clientId === request.clientId && JSON.stringify(value.args) === JSON.stringify(request.args)) { attachments.delete(id); terminalIngress.delete(id); await execute("stop_state_subscription", {attachmentId: id}); }
+            if (request.target === "terminal") for (const [id, value] of attachments) if (value.clientId === request.clientId && JSON.stringify(value.args) === JSON.stringify(request.args)) { attachments.delete(id); terminalIngress.delete(id); await execute("stop_state_subscription", {attachmentId: id}); }
             return {};
         }); continue; }
         if (method.name === "ReportTerminalProcessed") { router.rpc(method, async request => { await execute("report_terminal_processed", {clientId: request.clientId, args: request.args, units: request.units}); return {}; }); continue; }

@@ -573,7 +573,7 @@ export function useTerminal(
 				// 欠番となり全打鍵が無音でバッファされ続ける。
 				const nextInputId = currentTerminalInputId(terminalOwner);
 				if (!nextInputId) throw unavailableAttachment();
-				selectInputAttachment(nextInputId);
+				if (nextInputId !== attachmentId) selectInputAttachment(nextInputId);
 				markAttached();
 				await releaseAttachment(previousReleaseStream);
 			};

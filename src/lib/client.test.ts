@@ -953,6 +953,27 @@ it("terminal購読をつなぎ直すたびに入力IDを更新する", async () 
 	expect(currentTerminalInputId(owner)).toBe(fixture.starts[1].terminalInputId);
 });
 
+it("terminal入力IDは購読開始の受理後に公開する", async () => {
+	let releaseStart: (() => void) | undefined;
+	const fixture = stateFixture(
+		() =>
+			new Promise((resolve) => {
+				releaseStart = () => resolve({});
+			}),
+	);
+	const { currentTerminalInputId } = await import("./client");
+	const owner = { kind: "workspace" as const, workspacePath: "/repo" };
+	subscribeState({ kind: "terminal", args: [owner.workspacePath] }, vi.fn());
+	await vi.waitFor(() => expect(fixture.starts).toHaveLength(1));
+	expect(currentTerminalInputId(owner)).toBeNull();
+	releaseStart?.();
+	await vi.waitFor(() =>
+		expect(currentTerminalInputId(owner)).toBe(
+			fixture.starts[0].terminalInputId,
+		),
+	);
+});
+
 it("状態のstreamが無通信のまま続いたらつなぎ直す", async () => {
 	vi.useFakeTimers();
 	try {
