@@ -43,6 +43,11 @@ export function DaemonBoundary({ children }: { children: ReactNode }) {
 		let active = true;
 		let subscribed = false;
 		const id = crypto.randomUUID();
+		const stop = () => {
+			void invoke("stop_daemon_status_subscription", { id }).catch((error) =>
+				console.error("Failed to stop daemon status subscription", error),
+			);
+		};
 		const channel = new Channel<DaemonStatus>();
 		channel.onmessage = (next) => {
 			if (active) setStatus(next);
@@ -50,7 +55,7 @@ export function DaemonBoundary({ children }: { children: ReactNode }) {
 		void invoke("subscribe_daemon_status", { id, channel })
 			.then(() => {
 				subscribed = true;
-				if (!active) void invoke("stop_daemon_status_subscription", { id });
+				if (!active) stop();
 			})
 			.catch((error) => {
 				if (active) setError(getErrorMessage(error));
@@ -63,7 +68,7 @@ export function DaemonBoundary({ children }: { children: ReactNode }) {
 		window.addEventListener("releash-client-error", onClientError);
 		return () => {
 			active = false;
-			if (subscribed) void invoke("stop_daemon_status_subscription", { id });
+			if (subscribed) stop();
 			release();
 			window.removeEventListener("releash-client-error", onClientError);
 		};

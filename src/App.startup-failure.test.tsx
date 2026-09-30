@@ -77,6 +77,21 @@ describe("B-071 safe startup surface", () => {
 		).toBe(true);
 	});
 
+	it("Quitの呼び出し失敗を画面に表示する", async () => {
+		vi.mocked(subscribeState).mockImplementation((target, receive) => {
+			if (
+				(typeof target === "string" ? target : target.kind) ===
+				"startup-outcome"
+			)
+				receive(failed as never);
+			return () => {};
+		});
+		vi.mocked(invokeClient).mockRejectedValue(new Error("Quit failed"));
+		render(<App />);
+		await userEvent.click(await screen.findByRole("button", { name: "Quit" }));
+		expect(await screen.findByRole("alert")).toHaveTextContent("Quit failed");
+	});
+
 	it("does not synthesize a failure kind, description, correlation, or Quit when the Rust outcome is unavailable", async () => {
 		vi.mocked(subscribeState).mockImplementation(
 			(target, _receive, onError) => {

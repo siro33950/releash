@@ -42,11 +42,15 @@ pub fn desktop_connection_app<R: tauri::Runtime>(
             Arc::new(crate::common::retry::RetryLimiter::new()),
         ),
     ));
+    let status_presenter =
+        Arc::new(crate::adaptor::presenter::daemon_status::DaemonStatusPresenter::new());
+    supervisor.set_status_output(status_presenter.clone());
     builder
         .manage(Arc::new(ApplicationStartupAuthority::ready()))
         .manage(crate::usecase::client_connection::ClientConnectionUsecase(
             Box::new(supervisor.clone()),
         ))
+        .manage(status_presenter)
         .manage(supervisor)
         .invoke_handler(move |invoke| router.handle(invoke))
         .build(crate::application_context())
@@ -57,8 +61,10 @@ pub fn desktop_supervision_status<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
 ) -> serde_json::Value {
     serde_json::to_value(
-        app.state::<Arc<crate::usecase::daemon_supervision::DaemonSupervisionUsecase>>()
-            .status(),
+        crate::adaptor::presenter::daemon_status::DaemonStatusMessage::from(
+            app.state::<Arc<crate::usecase::daemon_supervision::DaemonSupervisionUsecase>>()
+                .status(),
+        ),
     )
     .unwrap()
 }

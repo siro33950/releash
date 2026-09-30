@@ -47,8 +47,7 @@ pub(crate) trait DaemonGateway:
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct DaemonStatus {
     pub connection_generation: u64,
     pub phase: &'static str,
@@ -60,16 +59,9 @@ pub(crate) struct DaemonStatus {
 }
 
 pub(crate) trait DaemonStatusOutput: Send + Sync {
-    fn send(&self, status: DaemonStatus) -> bool;
-}
-
-pub(crate) trait DaemonStatusSubscriptionDriver {
-    fn start(
-        &self,
-        id: String,
-        task: std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>,
-    );
+    fn start(&self, id: String, status: DaemonStatus);
     fn stop(&self, id: &str);
+    fn publish(&self, status: DaemonStatus);
 }
 
 struct State {
@@ -82,6 +74,8 @@ pub(crate) struct DaemonSupervisionUsecase {
     gateway: Arc<dyn DaemonGateway>,
     commands: tokio::sync::mpsc::UnboundedSender<Control>,
     changes: tokio::sync::watch::Sender<DaemonStatus>,
+    status_output: std::sync::OnceLock<Arc<dyn DaemonStatusOutput>>,
+    status_delivery: parking_lot::Mutex<()>,
 }
 
 enum Control {
@@ -104,6 +98,8 @@ impl DaemonSupervisionUsecase {
             gateway: gateway.clone(),
             commands,
             changes,
+            status_output: std::sync::OnceLock::new(),
+            status_delivery: parking_lot::Mutex::new(()),
         });
         tokio::spawn(this.clone().run(gateway, receiver));
         this
@@ -114,27 +110,20 @@ impl DaemonSupervisionUsecase {
     pub fn subscribe(&self) -> tokio::sync::watch::Receiver<DaemonStatus> {
         self.changes.subscribe()
     }
-    pub fn subscribe_status(
-        &self,
-        id: String,
-        output: Arc<dyn DaemonStatusOutput>,
-        driver: &dyn DaemonStatusSubscriptionDriver,
-    ) {
-        let mut changes = self.subscribe();
-        driver.start(
-            id,
-            Box::pin(async move {
-                loop {
-                    let status = changes.borrow_and_update().clone();
-                    if !output.send(status) || changes.changed().await.is_err() {
-                        break;
-                    }
-                }
-            }),
-        );
+    pub fn set_status_output(&self, output: Arc<dyn DaemonStatusOutput>) {
+        assert!(self.status_output.set(output).is_ok());
     }
-    pub fn stop_status_subscription(&self, id: &str, driver: &dyn DaemonStatusSubscriptionDriver) {
-        driver.stop(id);
+    pub fn subscribe_status(&self, id: String) {
+        let _delivery = self.status_delivery.lock();
+        if let Some(output) = self.status_output.get() {
+            output.start(id, self.status());
+        }
+    }
+    pub fn stop_status_subscription(&self, id: &str) {
+        let _delivery = self.status_delivery.lock();
+        if let Some(output) = self.status_output.get() {
+            output.stop(id);
+        }
     }
     pub fn retry(&self) -> Result<(), DaemonSupervisionError> {
         if !self.state.lock().supervision.retry_available() {
@@ -296,15 +285,20 @@ impl DaemonSupervisionUsecase {
         restart
     }
     fn publish(&self) {
-        self.changes.send_if_modified(|current| {
-            let next = self.status();
+        let _delivery = self.status_delivery.lock();
+        let next = self.status();
+        if self.changes.send_if_modified(|current| {
             if *current == next {
                 false
             } else {
-                *current = next;
+                *current = next.clone();
                 true
             }
-        });
+        }) {
+            if let Some(output) = self.status_output.get() {
+                output.publish(next);
+            }
+        }
     }
     async fn run(
         self: Arc<Self>,

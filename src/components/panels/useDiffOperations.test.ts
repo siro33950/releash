@@ -68,6 +68,30 @@ describe("useDiffOperations", () => {
 		});
 	});
 
+	it("unstage groupの失敗を通知する", async () => {
+		mockInvoke.mockRejectedValue(new Error("unstage failed"));
+		const notice = vi.fn();
+		window.addEventListener("releash-client-error", notice);
+		try {
+			const { result } = renderHook(() =>
+				useDiffOperations({
+					rootPath: "/repo",
+					filePath: "file.ts",
+					section: "staged",
+					base: "head",
+				}),
+			);
+			await act(async () => {
+				await result.current.handleUnstageGroup("g:0");
+			});
+			expect((notice.mock.calls[0][0] as CustomEvent<string>).detail).toBe(
+				"unstage failed",
+			);
+		} finally {
+			window.removeEventListener("releash-client-error", notice);
+		}
+	});
+
 	it("does nothing when target identifiers are missing", async () => {
 		const { result } = renderHook(() =>
 			useDiffOperations({

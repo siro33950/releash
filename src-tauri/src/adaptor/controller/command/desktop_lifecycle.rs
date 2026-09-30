@@ -1,5 +1,6 @@
+use crate::adaptor::presenter::daemon_status::{DaemonStatusMessage, DaemonStatusPresenter};
 use crate::domain::daemon_supervision::StopIntent;
-use crate::usecase::daemon_supervision::{DaemonStatus, DaemonSupervisionUsecase};
+use crate::usecase::daemon_supervision::DaemonSupervisionUsecase;
 use std::sync::Arc;
 
 pub(crate) const COMMAND_NAMES: &[&str] = &[
@@ -40,30 +41,27 @@ pub(crate) fn register<R: tauri::Runtime>(
     );
 }
 #[tauri::command]
-fn get_daemon_status(supervisor: tauri::State<'_, Arc<DaemonSupervisionUsecase>>) -> DaemonStatus {
-    supervisor.status()
+fn get_daemon_status(
+    supervisor: tauri::State<'_, Arc<DaemonSupervisionUsecase>>,
+) -> DaemonStatusMessage {
+    supervisor.status().into()
 }
 #[tauri::command]
 fn subscribe_daemon_status(
     supervisor: tauri::State<'_, Arc<DaemonSupervisionUsecase>>,
+    presenter: tauri::State<'_, Arc<DaemonStatusPresenter>>,
     id: String,
-    channel: tauri::ipc::Channel<crate::adaptor::presenter::daemon_status::DaemonStatusMessage>,
+    channel: tauri::ipc::Channel<DaemonStatusMessage>,
 ) {
-    supervisor.subscribe_status(
-        id,
-        Arc::new(crate::adaptor::presenter::daemon_status::DaemonStatusPresenter::new(channel)),
-        &crate::adaptor::presenter::daemon_status::DaemonStatusDriver,
-    );
+    presenter.register(id.clone(), channel);
+    supervisor.subscribe_status(id);
 }
 #[tauri::command]
 fn stop_daemon_status_subscription(
     supervisor: tauri::State<'_, Arc<DaemonSupervisionUsecase>>,
     id: String,
 ) {
-    supervisor.stop_status_subscription(
-        &id,
-        &crate::adaptor::presenter::daemon_status::DaemonStatusDriver,
-    );
+    supervisor.stop_status_subscription(&id);
 }
 #[tauri::command]
 fn retry_daemon(supervisor: tauri::State<'_, Arc<DaemonSupervisionUsecase>>) -> Result<(), String> {

@@ -1,54 +1,175 @@
 use super::*;
 use crate::domain::daemon_supervision::DaemonExit;
 use crate::usecase::test_helpers::{restore_desktop, tick, FakeDaemon};
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+struct PausingStatusOutput {
+    pause_on: &'static str,
+    paused: AtomicBool,
+    entered: std::sync::mpsc::Sender<()>,
+    release: parking_lot::Mutex<std::sync::mpsc::Receiver<()>>,
+    sent: parking_lot::Mutex<Vec<DaemonStatus>>,
+}
+
+impl PausingStatusOutput {
+    fn deliver(&self, operation: &str, status: DaemonStatus) {
+        if operation == self.pause_on && !self.paused.swap(true, Ordering::SeqCst) {
+            self.entered.send(()).unwrap();
+            self.release.lock().recv().unwrap();
+        }
+        self.sent.lock().push(status);
+    }
+}
+
+impl DaemonStatusOutput for PausingStatusOutput {
+    fn start(&self, _: String, status: DaemonStatus) {
+        self.deliver("start", status);
+    }
+    fn stop(&self, _: &str) {}
+    fn publish(&self, status: DaemonStatus) {
+        self.deliver("publish", status);
+    }
+}
+
+fn pausing_output(
+    pause_on: &'static str,
+) -> (
+    Arc<PausingStatusOutput>,
+    std::sync::mpsc::Receiver<()>,
+    std::sync::mpsc::Sender<()>,
+) {
+    let (entered, waiting) = std::sync::mpsc::channel();
+    let (resume, release) = std::sync::mpsc::channel();
+    (
+        Arc::new(PausingStatusOutput {
+            pause_on,
+            paused: AtomicBool::new(false),
+            entered,
+            release: parking_lot::Mutex::new(release),
+            sent: parking_lot::Mutex::new(Vec::new()),
+        }),
+        waiting,
+        resume,
+    )
+}
+
+#[tokio::test]
+async fn test_起動状態の購読_初期通知中の変化が最後に届く() {
+    // Given
+    let supervisor = DaemonSupervisionUsecase::start(Arc::new(FakeDaemon::default()));
+    let (output, entered, release) = pausing_output("start");
+    supervisor.set_status_output(output.clone());
+    let starting = {
+        let supervisor = supervisor.clone();
+        std::thread::spawn(move || supervisor.subscribe_status("screen".into()))
+    };
+    entered.recv().unwrap();
+    supervisor
+        .state
+        .lock()
+        .supervision
+        .begin_stop(StopIntent::Quit(0));
+    // When
+    let (finished, completion) = std::sync::mpsc::channel();
+    let publishing = {
+        let supervisor = supervisor.clone();
+        std::thread::spawn(move || {
+            supervisor.publish();
+            finished.send(()).unwrap();
+        })
+    };
+    assert!(completion
+        .recv_timeout(std::time::Duration::from_millis(100))
+        .is_err());
+    release.send(()).unwrap();
+    starting.join().unwrap();
+    publishing.join().unwrap();
+    // Then
+    assert_eq!(output.sent.lock().last().unwrap().phase, "stopping");
+}
+
+#[tokio::test]
+async fn test_起動状態の購読_並行した変化は古い通知で終わらない() {
+    // Given
+    let supervisor = DaemonSupervisionUsecase::start(Arc::new(FakeDaemon::default()));
+    let (output, entered, release) = pausing_output("publish");
+    supervisor.set_status_output(output.clone());
+    supervisor.subscribe_status("screen".into());
+    supervisor
+        .state
+        .lock()
+        .supervision
+        .begin_stop(StopIntent::Quit(0));
+    let first = {
+        let supervisor = supervisor.clone();
+        std::thread::spawn(move || supervisor.publish())
+    };
+    entered.recv().unwrap();
+    supervisor.state.lock().supervision.uncoordinated_stop();
+    // When
+    let (finished, completion) = std::sync::mpsc::channel();
+    let second = {
+        let supervisor = supervisor.clone();
+        std::thread::spawn(move || {
+            supervisor.publish();
+            finished.send(()).unwrap();
+        })
+    };
+    assert!(completion
+        .recv_timeout(std::time::Duration::from_millis(100))
+        .is_err());
+    release.send(()).unwrap();
+    first.join().unwrap();
+    second.join().unwrap();
+    // Then
+    assert_eq!(output.sent.lock().last().unwrap().phase, "stopped");
+}
 
 #[tokio::test(start_paused = true)]
 async fn test_起動状態の購読_初期状態と変化を送り停止後は送らない() {
+    struct Output {
+        active: parking_lot::Mutex<std::collections::HashSet<String>>,
+        sent: parking_lot::Mutex<Vec<DaemonStatus>>,
+    }
+    impl DaemonStatusOutput for Output {
+        fn start(&self, id: String, status: DaemonStatus) {
+            self.active.lock().insert(id);
+            self.sent.lock().push(status);
+        }
+        fn stop(&self, id: &str) {
+            self.active.lock().remove(id);
+        }
+        fn publish(&self, status: DaemonStatus) {
+            if !self.active.lock().is_empty() {
+                self.sent.lock().push(status);
+            }
+        }
+    }
     // Given
-    use crate::adaptor::presenter::daemon_status::{DaemonStatusDriver, DaemonStatusPresenter};
     let gateway = Arc::new(FakeDaemon::default());
     let supervisor = DaemonSupervisionUsecase::start(gateway.clone());
-    let (sender, mut received) = tokio::sync::mpsc::unbounded_channel::<String>();
-    let channel = tauri::ipc::Channel::new(move |body| {
-        if let tauri::ipc::InvokeResponseBody::Json(message) = body {
-            sender.send(message).unwrap();
-        }
-        Ok(())
+    let output = Arc::new(Output {
+        active: parking_lot::Mutex::new(std::collections::HashSet::new()),
+        sent: parking_lot::Mutex::new(Vec::new()),
     });
+    supervisor.set_status_output(output.clone());
     // When
-    let command_supervisor = supervisor.clone();
-    std::thread::spawn(move || {
-        command_supervisor.subscribe_status(
-            "screen".into(),
-            Arc::new(DaemonStatusPresenter::new(channel)),
-            &DaemonStatusDriver,
-        );
-    })
-    .join()
-    .unwrap();
+    supervisor.subscribe_status("screen".into());
     // Then
-    assert_eq!(
-        serde_json::from_str::<serde_json::Value>(&received.recv().await.unwrap()).unwrap()
-            ["phase"],
-        "starting"
-    );
+    assert_eq!(output.sent.lock().len(), 1);
+    assert_eq!(output.sent.lock()[0].phase, "starting");
     // When
     gateway.ready.store(true, Ordering::SeqCst);
     tick(200).await;
     // Then
-    assert_eq!(
-        serde_json::from_str::<serde_json::Value>(&received.recv().await.unwrap()).unwrap()
-            ["phase"],
-        "restoring"
-    );
+    assert_eq!(output.sent.lock().last().unwrap().phase, "restoring");
     // When
-    supervisor.stop_status_subscription("screen", &DaemonStatusDriver);
-    tokio::task::yield_now().await;
+    supervisor.stop_status_subscription("screen");
+    let count = output.sent.lock().len();
     gateway.ready.store(false, Ordering::SeqCst);
     tick(200).await;
     // Then
-    assert!(received.try_recv().is_err());
+    assert_eq!(output.sent.lock().len(), count);
 }
 
 #[test]

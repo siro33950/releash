@@ -204,15 +204,26 @@ it("失効した接続先取得が後から完了しても復元attachmentを変
 		if (!original) throw new Error("Missing IPC fixture");
 		let releaseFirst!: (value: unknown) => void;
 		const attachments: string[] = [];
+		let latestAttachment = "";
 		let attempts = 0;
 		vi.mocked(invoke).mockImplementation((command, args) => {
 			if (command === "get_client_endpoint") {
-				attachments.push((args as { attachmentId: string }).attachmentId);
+				const attachment = (args as { attachmentId: string }).attachmentId;
+				attachments.push(attachment);
 				if (attempts++ === 0)
 					return new Promise((resolve) => {
-						releaseFirst = resolve;
+						releaseFirst = (value) => {
+							latestAttachment = attachment;
+							resolve(value);
+						};
 					});
+				latestAttachment = attachment;
 			}
+			if (
+				command === "complete_desktop_restoration" &&
+				(args as { attachmentId: string }).attachmentId !== latestAttachment
+			)
+				return Promise.reject(new Error("Stale attachment"));
 			return original(command, args);
 		});
 		const first = invokeClient("add_repo_path", { path: "/first" }).catch(
@@ -223,13 +234,15 @@ it("失効した接続先取得が後から完了しても復元attachmentを変
 			message: "Daemon connection timed out",
 		});
 		await vi.advanceTimersByTimeAsync(1_000);
-		await completeClientRestoration(1);
+		const { getConnectionState } = await import("./client");
+		expect(getConnectionState()).toBe("READY");
 		releaseFirst({
 			url: "http://127.0.0.1:9829",
 			token: "client-token",
 			launchId: "launch",
 		});
 		await vi.advanceTimersByTimeAsync(0);
+		await expect(completeClientRestoration(1)).resolves.toBeUndefined();
 		expect(attachments).toHaveLength(2);
 		expect(attachments[0]).toBe(attachments[1]);
 		expect(invoke).toHaveBeenCalledWith(

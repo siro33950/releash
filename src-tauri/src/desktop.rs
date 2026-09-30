@@ -82,6 +82,9 @@ pub fn run() {
         let supervisor = tauri::async_runtime::block_on(async {
             usecase::daemon_supervision::DaemonSupervisionUsecase::start(gateway)
         });
+        let status_presenter = Arc::new(adaptor::presenter::daemon_status::DaemonStatusPresenter::new());
+        supervisor.set_status_output(status_presenter.clone());
+        app.manage(status_presenter);
         app.manage(supervisor.clone());
         app.manage(usecase::desktop_update::DesktopUpdateUsecase::new(
             Arc::new(adaptor::gateway::desktop_update::TauriUpdateGateway::new(

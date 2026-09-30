@@ -975,6 +975,20 @@ describe("useTerminal", () => {
 		expect(onTerminalError).toHaveBeenLastCalledWith(
 			expect.stringContaining("Terminal input may have been executed"),
 		);
+		const current = mockInvoke.getMockImplementation();
+		let stale = false;
+		mockInvoke.mockImplementation(
+			(command: string, args?: Record<string, unknown>) => {
+				if (command === "write_terminal_surface" && !stale) {
+					stale = true;
+					return Promise.reject(staleAttachmentError);
+				}
+				return current?.(command, args);
+			},
+		);
+		mockOnDataCallback("stale input");
+		await waitFor(() => expect(mockStreams).toHaveLength(3));
+		await waitFor(() => expect(onTerminalError).toHaveBeenLastCalledWith(null));
 	});
 
 	it("先行入力が未応答でも切断中の入力を直ちに失敗表示し番号を使わない", async () => {
@@ -1000,6 +1014,100 @@ describe("useTerminal", () => {
 		);
 		expect(terminalInputWrites()).toHaveLength(1);
 		finishFirst();
+		mockConnectionPhase = "READY";
+		mockOnDataCallback("after");
+		await waitFor(() => expect(terminalInputWrites()).toHaveLength(2));
+		expect(terminalInputWrites().map(({ sequence }) => sequence)).toEqual([
+			0, 1,
+		]);
+	});
+
+	it("送信の応答待ち中に切断した失敗では再購読しない", async () => {
+		const onTerminalError = vi.fn();
+		const original = mockInvoke.getMockImplementation();
+		let fail!: (error: Error) => void;
+		mockInvoke.mockImplementation(
+			(command: string, args?: Record<string, unknown>) =>
+				command === "write_terminal_surface"
+					? new Promise<void>((_resolve, reject) => {
+							fail = reject;
+						})
+					: original?.(command, args),
+		);
+		renderHook(() => useTerminal(containerRef, { onTerminalError }));
+		await waitFor(() => expect(mockStreams).toHaveLength(1));
+		mockOnDataCallback("input");
+		await waitFor(() => expect(fail).toBeTypeOf("function"));
+		mockConnectionPhase = "TRANSIENT_FAILURE";
+		fail(new ConnectError("unavailable", Code.Unavailable));
+		await waitFor(() =>
+			expect(onTerminalError).toHaveBeenCalledWith(
+				expect.stringContaining("Terminal input may have been executed"),
+			),
+		);
+		expect(
+			mockInvoke.mock.calls.filter(
+				([command]) => command === "start_state_subscription",
+			),
+		).toHaveLength(1);
+	});
+
+	it("初回snapshot前の切断中入力を直ちに失敗表示し後で送らない", async () => {
+		const onTerminalError = vi.fn();
+		const original = mockInvoke.getMockImplementation();
+		mockInvoke.mockImplementation(
+			(command: string, args?: Record<string, unknown>) =>
+				command === "start_state_subscription"
+					? Promise.resolve()
+					: original?.(command, args),
+		);
+		renderHook(() => useTerminal(containerRef, { onTerminalError }));
+		await waitFor(() => expect(mockStreams).toHaveLength(1));
+		mockConnectionPhase = "TRANSIENT_FAILURE";
+		mockOnDataCallback("offline");
+		expect(onTerminalError).toHaveBeenCalledWith(
+			"Daemon connection is TRANSIENT_FAILURE",
+		);
+		mockConnectionPhase = "READY";
+		mockStreams[0].onmessage({
+			type: "snapshot",
+			surface: {
+				processed_report_units: 5000,
+				session_key: "test-uuid-1234",
+				terminal_surface: { replay: "", sequence: 0, cols: 80, rows: 24 },
+				is_exited: false,
+				exit_code: null,
+			},
+		});
+		await act(async () => {});
+		expect(terminalInputWrites()).toHaveLength(0);
+	});
+
+	it("キュー待ち中に切断した入力は送信前に失敗し番号を使わない", async () => {
+		const onTerminalError = vi.fn();
+		const original = mockInvoke.getMockImplementation();
+		let finish!: () => void;
+		mockInvoke.mockImplementation(
+			(command: string, args?: Record<string, unknown>) =>
+				command === "write_terminal_surface" && args?.data === "first"
+					? new Promise<void>((resolve) => {
+							finish = resolve;
+						})
+					: original?.(command, args),
+		);
+		renderHook(() => useTerminal(containerRef, { onTerminalError }));
+		await waitFor(() => expect(mockStreams).toHaveLength(1));
+		mockOnDataCallback("first");
+		await waitFor(() => expect(finish).toBeTypeOf("function"));
+		mockOnDataCallback("queued");
+		mockConnectionPhase = "TRANSIENT_FAILURE";
+		finish();
+		await waitFor(() =>
+			expect(onTerminalError).toHaveBeenCalledWith(
+				"Daemon connection is TRANSIENT_FAILURE",
+			),
+		);
+		expect(terminalInputWrites()).toHaveLength(1);
 		mockConnectionPhase = "READY";
 		mockOnDataCallback("after");
 		await waitFor(() => expect(terminalInputWrites()).toHaveLength(2));

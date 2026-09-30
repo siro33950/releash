@@ -276,6 +276,7 @@ export function useTerminal(
 			attachmentId = id;
 			inputSequence = 0;
 			failedInputId = null;
+			uncertainInputError = null;
 			pendingPerformanceInputSequences = [];
 		};
 		const startupInput = new StartupInputBuffer((dropped) => {
@@ -577,6 +578,7 @@ export function useTerminal(
 				) {
 					return;
 				}
+				const errorToPreserve = uncertainInputError;
 				const attempt = attachStream(true);
 				const attemptEpoch = attachmentEpoch;
 				recoveringSinceEpoch = attemptEpoch;
@@ -587,7 +589,7 @@ export function useTerminal(
 							return;
 						}
 						if (attemptEpoch !== attachmentEpoch) return;
-						onTerminalErrorRef.current?.(uncertainInputError);
+						onTerminalErrorRef.current?.(errorToPreserve);
 					},
 					(error) => {
 						if (recoveringSinceEpoch === attemptEpoch) {
@@ -673,6 +675,12 @@ export function useTerminal(
 				.then(async () => {
 					if (Date.now() > deadline)
 						throw new Error("Terminal input timed out");
+					const currentPhase = getConnectionState();
+					if (
+						currentPhase === "TRANSIENT_FAILURE" ||
+						currentPhase === "SHUTDOWN"
+					)
+						throw new Error(`Daemon connection is ${currentPhase}`);
 					const activeAttachmentId = currentTerminalInputId(terminalOwner);
 					if (!activeAttachmentId) throw unavailableAttachment();
 					if (activeAttachmentId !== attachmentId) {
@@ -717,6 +725,11 @@ export function useTerminal(
 		};
 		const dispatchInput = (data: string) => {
 			if (!isMounted || data.length === 0) return;
+			const phase = getConnectionState();
+			if (phase === "TRANSIENT_FAILURE" || phase === "SHUTDOWN") {
+				onTerminalErrorRef.current?.(`Daemon connection is ${phase}`);
+				return;
+			}
 			if (startupFailure) {
 				onTerminalErrorRef.current?.(startupFailure);
 				return;

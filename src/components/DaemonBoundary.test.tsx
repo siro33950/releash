@@ -108,6 +108,67 @@ it("unmountごとにシェル状態の購読を停止する", async () => {
 	}
 });
 
+it("購読開始の完了前にunmountしても同じ購読を一度停止する", async () => {
+	let finish!: () => void;
+	vi.mocked(invoke).mockImplementation((command) =>
+		command === "subscribe_daemon_status"
+			? new Promise<void>((resolve) => {
+					finish = resolve;
+				})
+			: Promise.resolve(),
+	);
+	const view = render(<DaemonBoundary>workbench</DaemonBoundary>);
+	const start = vi
+		.mocked(invoke)
+		.mock.calls.find(([command]) => command === "subscribe_daemon_status");
+	if (!start) throw new Error("Missing subscription");
+	const id = (start[1] as { id: string }).id;
+	view.unmount();
+	expect(invoke).not.toHaveBeenCalledWith("stop_daemon_status_subscription", {
+		id,
+	});
+	await act(async () => finish());
+	expect(
+		vi
+			.mocked(invoke)
+			.mock.calls.filter(
+				([command, args]) =>
+					command === "stop_daemon_status_subscription" &&
+					(args as { id?: string } | undefined)?.id === id,
+			),
+	).toHaveLength(1);
+});
+
+it.each([false, true])(
+	"購読停止の失敗を記録する: 開始中にunmount=%s",
+	async (pending) => {
+		const error = new Error("stop failed");
+		const log = vi.spyOn(console, "error").mockImplementation(() => {});
+		let finish!: () => void;
+		vi.mocked(invoke).mockImplementation((command) => {
+			if (command === "subscribe_daemon_status")
+				return pending
+					? new Promise<void>((resolve) => {
+							finish = resolve;
+						})
+					: Promise.resolve();
+			if (command === "stop_daemon_status_subscription")
+				return Promise.reject(error);
+			return Promise.resolve();
+		});
+		const view = render(<DaemonBoundary>workbench</DaemonBoundary>);
+		if (!pending) await act(async () => {});
+		view.unmount();
+		if (pending) await act(async () => finish());
+		await act(async () => {});
+		expect(log).toHaveBeenCalledWith(
+			"Failed to stop daemon status subscription",
+			error,
+		);
+		log.mockRestore();
+	},
+);
+
 it("ウィンドウ未作成でQuitしても終了の判断操作は表示しない", async () => {
 	status = { phase: "stopping" };
 	render(

@@ -1,9 +1,7 @@
-use crate::usecase::daemon_supervision::{
-    DaemonStatus, DaemonStatusOutput, DaemonStatusSubscriptionDriver,
-};
+use crate::usecase::daemon_supervision::{DaemonStatus, DaemonStatusOutput};
 
 pub(crate) struct DaemonStatusPresenter {
-    channel: tauri::ipc::Channel<DaemonStatusMessage>,
+    channels: crate::infrastructure::desktop_channel::DesktopChannel<DaemonStatusMessage>,
 }
 
 #[derive(Clone, serde::Serialize)]
@@ -33,29 +31,27 @@ impl From<DaemonStatus> for DaemonStatusMessage {
 }
 
 impl DaemonStatusPresenter {
-    pub fn new(channel: tauri::ipc::Channel<DaemonStatusMessage>) -> Self {
-        Self { channel }
+    pub fn new() -> Self {
+        Self {
+            channels: crate::infrastructure::desktop_channel::DesktopChannel::new(),
+        }
+    }
+
+    pub fn register(&self, id: String, channel: tauri::ipc::Channel<DaemonStatusMessage>) {
+        self.channels.register(id, channel);
     }
 }
 
 impl DaemonStatusOutput for DaemonStatusPresenter {
-    fn send(&self, status: DaemonStatus) -> bool {
-        crate::infrastructure::desktop_channel::send(&self.channel, status.into())
-    }
-}
-
-pub(crate) struct DaemonStatusDriver;
-
-impl DaemonStatusSubscriptionDriver for DaemonStatusDriver {
-    fn start(
-        &self,
-        id: String,
-        task: std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>,
-    ) {
-        crate::infrastructure::desktop_channel::start(id, task);
+    fn start(&self, id: String, status: DaemonStatus) {
+        self.channels.send(&id, status.into());
     }
 
     fn stop(&self, id: &str) {
-        crate::infrastructure::desktop_channel::stop(id);
+        self.channels.stop(id);
+    }
+
+    fn publish(&self, status: DaemonStatus) {
+        self.channels.publish(status.into());
     }
 }
