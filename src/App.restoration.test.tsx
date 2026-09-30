@@ -1,9 +1,9 @@
 import { invoke } from "@tauri-apps/api/core";
 import { act, fireEvent, render, screen } from "@testing-library/react";
-import type { ReactNode } from "react";
+import { type ReactNode, StrictMode } from "react";
 import { beforeEach, expect, it, vi } from "vitest";
 import type { WorkspaceListModel } from "@/hooks/useWorkspaceList";
-import { completeClientRestoration, invokeClient } from "@/lib/client";
+import { invokeClient } from "@/lib/client";
 import { stateSubscriptions } from "@/test/stateSubscriptions";
 import { workspaceListSnapshot } from "@/test/workspaceList";
 import type { AppSettings } from "@/types/settings";
@@ -20,19 +20,19 @@ const desktopSettings = {
 vi.mock("@/lib/client", async (importOriginal) => ({
 	...(await importOriginal<typeof import("@/lib/client")>()),
 	invokeClient: vi.fn(),
-	completeClientRestoration: vi.fn(),
 	subscribeState: (...args: Parameters<typeof states.subscribeState>) =>
 		states.subscribeState(...args),
 	firstState: (...args: Parameters<typeof states.firstState>) =>
 		states.firstState(...args),
 }));
 vi.mock("@/hooks/useMenuEvents", () => ({ useMenuEvents: vi.fn() }));
-vi.mock("@/hooks/useUpdateChecker", () => ({ useUpdateChecker: () => null }));
+const openWorktreeTab = vi.fn();
+let selectedWorktreeId: string | null = null;
 vi.mock("@/hooks/useWorkspaceNavigation", () => ({
 	useWorkspaceNavigation: () => ({
 		worktrees: [],
-		selectedWorktreeId: null,
-		openWorktreeTab: vi.fn(),
+		selectedWorktreeId,
+		openWorktreeTab,
 	}),
 }));
 vi.mock("@/components/UpdateDialog", () => ({ UpdateDialog: () => null }));
@@ -92,7 +92,6 @@ vi.mock("@/components/workspace/WorkspaceList", () => ({
 
 let status: {
 	phase: string;
-	connectionGeneration: number;
 	retryAvailable: boolean;
 	stage: string | null;
 	reason: string | null;
@@ -108,8 +107,7 @@ beforeEach(() => {
 	states.publish("startup-outcome", { type: "ready" });
 	states.publish("desktop-settings", desktopSettings);
 	status = {
-		phase: "restoring",
-		connectionGeneration: 1,
+		phase: "ready",
 		retryAvailable: false,
 		stage: null,
 		reason: null,
@@ -121,92 +119,84 @@ beforeEach(() => {
 			notifyStatus();
 			return;
 		}
-		if (command === "fail_desktop_restoration") {
-			status = {
-				...status,
-				phase: "failed",
-				stage: "state_restoration",
-				reason: (args as { reason: string }).reason,
-				retryAvailable: true,
-			};
-			notifyStatus();
-		}
-		if (command === "retry_daemon") {
-			status = {
-				...status,
-				phase: "restoring",
-				connectionGeneration: status.connectionGeneration + 1,
-				stage: null,
-				reason: null,
-				retryAvailable: false,
-			};
-			notifyStatus();
-		}
-	});
-	vi.mocked(completeClientRestoration).mockImplementation(async () => {
-		status = { ...status, phase: "ready" };
-		notifyStatus();
 	});
 });
 
-it("設定の初回失敗後は次の接続の状態を反映してから操作を再開する", async () => {
+it("設定と一覧の初回失敗でシェルをFailedにせず購読の復旧を表示する", async () => {
 	states.clear();
 	states.publish("startup-outcome", { type: "ready" });
-	vi.mocked(invokeClient).mockResolvedValue(undefined as never);
+	vi.mocked(invokeClient).mockResolvedValue(true);
 	await act(async () => {
 		render(<App />);
 	});
+	const main = screen.getByRole("main");
 	await act(async () =>
 		states.fail("desktop-settings", new Error("temporary read failure")),
 	);
-	expect(screen.getByRole("status")).toHaveTextContent(
-		"temporary read failure",
-	);
-	expect(completeClientRestoration).not.toHaveBeenCalled();
+	expect(screen.getByRole("main")).toBe(main);
+	expect(screen.queryByRole("region", { name: "Daemon status" })).toBeNull();
 	await act(async () => {
-		fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+		states.publish("desktop-settings", desktopSettings);
+		states.publish("workspaces", workspaceListSnapshot());
 	});
-	await act(async () => states.publish("desktop-settings", desktopSettings));
-	expect(completeClientRestoration).not.toHaveBeenCalled();
-	await act(async () => states.publish("workspaces", workspaceListSnapshot()));
-	expect(completeClientRestoration).toHaveBeenCalledExactlyOnceWith(2);
-	expect(screen.getByRole("main")).toHaveTextContent("Telemetry: false");
+	expect(main).toHaveTextContent("Telemetry: false");
+	expect(screen.getByRole("button", { name: "/repo" })).toBeVisible();
+	expect(
+		vi
+			.mocked(invoke)
+			.mock.calls.some(([command]) => command.includes("restoration")),
+	).toBe(false);
+});
+
+it("再接続後も起動処理と更新確認は一度だけでReady復帰時にメニューを同期する", async () => {
+	selectedWorktreeId = null;
+	vi.mocked(invokeClient).mockResolvedValue(true);
+	states.publish("startup-repository", "/repo");
+	states.publish({ kind: "worktrees", args: ["/repo"] }, [
+		{
+			path: "/repo",
+			branch: "main",
+			name: "repo",
+			is_main: true,
+			is_locked: false,
+			dirty_count: 0,
+			base_branch: null,
+		},
+	]);
+	await act(async () => {
+		render(<App />);
+	});
+	expect(openWorktreeTab).toHaveBeenCalledTimes(1);
+	expect(invokeClient).toHaveBeenCalledWith("add_repo_path", { path: "/repo" });
+	const main = screen.getByRole("main");
+	fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+	for (const phase of ["starting", "backoff", "ready", "starting", "ready"]) {
+		status = { ...status, phase };
+		if (phase === "starting") selectedWorktreeId = "selected";
+		await act(async () => notifyStatus());
+		expect(screen.getByRole("main")).toBe(main);
+		expect(
+			screen.getByRole("region", { name: "Registered repositories" }),
+		).toBeVisible();
+	}
+	expect(openWorktreeTab).toHaveBeenCalledTimes(1);
 	expect(
 		vi
 			.mocked(invokeClient)
-			.mock.calls.some(([name]) => name === "refresh_workspaces"),
-	).toBe(false);
-});
-it("初回の一覧失敗でも復元を完了し購読による復旧を表示する", async () => {
-	states.publish("workspaces", {
-		repositories: [],
-		status: { loaded: false, state: "initialFailed", error: "offline" },
-	});
-	vi.mocked(invokeClient).mockResolvedValue(true);
-	await act(async () => {
-		render(<App />);
-	});
-	expect(completeClientRestoration).toHaveBeenCalledExactlyOnceWith(1);
-	expect(screen.getByRole("main")).toBeVisible();
-	await act(async () => states.publish("workspaces", workspaceListSnapshot()));
-	expect(screen.getByRole("button", { name: "/repo" })).toBeVisible();
-});
-it("復元完了通知が失敗した場合も理由を表示し再開できる", async () => {
-	vi.mocked(invokeClient).mockResolvedValue(true);
-	vi.mocked(completeClientRestoration).mockRejectedValueOnce(
-		new Error("restoration acknowledgement failed"),
-	);
-	await act(async () => {
-		render(<App />);
-	});
-	expect(screen.getByRole("status")).toHaveTextContent(
-		"restoration acknowledgement failed",
-	);
-	await act(async () => {
-		fireEvent.click(screen.getByRole("button", { name: "Retry" }));
-	});
-	expect(screen.getByRole("main")).toBeVisible();
-	expect(completeClientRestoration).toHaveBeenLastCalledWith(2);
+			.mock.calls.filter(([command]) => command === "add_repo_path"),
+	).toHaveLength(1);
+	expect(
+		vi
+			.mocked(invoke)
+			.mock.calls.filter(([command]) => command === "check_desktop_update"),
+	).toHaveLength(1);
+	expect(
+		vi
+			.mocked(invoke)
+			.mock.calls.filter(([command]) => command === "set_menu_items_enabled")
+			.map(([, args]) => args),
+	).toEqual([{ enabled: false }, { enabled: true }, { enabled: true }]);
+	selectedWorktreeId = null;
 });
 it("登録一覧とWorkspacesの変更・削除はそれぞれの購読から届く", async () => {
 	vi.mocked(invokeClient).mockResolvedValue(true);
@@ -244,4 +234,24 @@ it("登録一覧とWorkspacesの変更・削除はそれぞれの購読から届
 			.mocked(invokeClient)
 			.mock.calls.some(([name]) => name === "refresh_workspaces"),
 	).toBe(false);
+});
+
+it("StrictModeで初回表示と再接続を経ても自動更新確認は一度だけ", async () => {
+	vi.mocked(invokeClient).mockResolvedValue(true);
+	await act(async () => {
+		render(
+			<StrictMode>
+				<App />
+			</StrictMode>,
+		);
+	});
+	for (const phase of ["starting", "ready", "backoff", "ready"]) {
+		status = { ...status, phase };
+		await act(async () => notifyStatus());
+	}
+	expect(
+		vi
+			.mocked(invoke)
+			.mock.calls.filter(([command]) => command === "check_desktop_update"),
+	).toHaveLength(1);
 });

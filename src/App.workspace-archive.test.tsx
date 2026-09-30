@@ -35,7 +35,6 @@ const mocks = vi.hoisted(() => ({
 vi.mock("@/lib/client", async (importOriginal) => ({
 	...(await importOriginal<typeof import("@/lib/client")>()),
 	invokeClient: mocks.invoke,
-	completeClientRestoration: vi.fn(),
 	subscribeState: (...args: Parameters<typeof states.subscribeState>) =>
 		states.subscribeState(...args),
 	firstState: (...args: Parameters<typeof states.firstState>) =>

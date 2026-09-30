@@ -195,35 +195,19 @@ it.each(["GetServerInfo", "validate_daemon_connection"])(
 	},
 );
 
-it("失効した接続先取得が後から完了しても復元attachmentを変えない", async () => {
-	const { completeClientRestoration } = await import("./client");
+it("失効した接続先取得が後から完了しても現在の接続を変えない", async () => {
 	vi.useFakeTimers();
 	try {
-		connectFixture();
+		connectFixture({ addRepoPath: () => ({ value: true }) });
 		const original = vi.mocked(invoke).getMockImplementation();
 		if (!original) throw new Error("Missing IPC fixture");
 		let releaseFirst!: (value: unknown) => void;
-		const attachments: string[] = [];
-		let latestAttachment = "";
 		let attempts = 0;
 		vi.mocked(invoke).mockImplementation((command, args) => {
-			if (command === "get_client_endpoint") {
-				const attachment = (args as { attachmentId: string }).attachmentId;
-				attachments.push(attachment);
-				if (attempts++ === 0)
-					return new Promise((resolve) => {
-						releaseFirst = (value) => {
-							latestAttachment = attachment;
-							resolve(value);
-						};
-					});
-				latestAttachment = attachment;
-			}
-			if (
-				command === "complete_desktop_restoration" &&
-				(args as { attachmentId: string }).attachmentId !== latestAttachment
-			)
-				return Promise.reject(new Error("Stale attachment"));
+			if (command === "get_client_endpoint" && attempts++ === 0)
+				return new Promise((resolve) => {
+					releaseFirst = resolve;
+				});
 			return original(command, args);
 		});
 		const first = invokeClient("add_repo_path", { path: "/first" }).catch(
@@ -238,17 +222,15 @@ it("失効した接続先取得が後から完了しても復元attachmentを変
 		expect(getConnectionState()).toBe("READY");
 		releaseFirst({
 			url: "http://127.0.0.1:9829",
-			token: "client-token",
-			launchId: "launch",
+			token: "old-token",
+			launchId: "old",
 		});
 		await vi.advanceTimersByTimeAsync(0);
-		await expect(completeClientRestoration(1)).resolves.toBeUndefined();
-		expect(attachments).toHaveLength(2);
-		expect(attachments[0]).toBe(attachments[1]);
-		expect(invoke).toHaveBeenCalledWith(
-			"complete_desktop_restoration",
-			expect.objectContaining({ attachmentId: attachments[1] }),
-		);
+		expect(getConnectionState()).toBe("READY");
+		await expect(
+			invokeClient("add_repo_path", { path: "/current" }),
+		).resolves.toBe(true);
+		expect(attempts).toBe(2);
 	} finally {
 		vi.useRealTimers();
 	}

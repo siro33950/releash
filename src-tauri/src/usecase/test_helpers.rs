@@ -109,19 +109,6 @@ impl DaemonGateway for FakeDaemon {
         Ok(Some(connection))
     }
 }
-pub(crate) async fn restore_desktop(
-    supervisor: &super::daemon_supervision::DaemonSupervisionUsecase,
-) {
-    supervisor.attach("desktop".into()).await.unwrap();
-    supervisor
-        .finish_restoration(
-            "launch",
-            "desktop",
-            supervisor.status().connection_generation,
-        )
-        .await
-        .unwrap();
-}
 pub(crate) async fn tick(milliseconds: u64) {
     for _ in 0..milliseconds.div_ceil(100) {
         tokio::task::yield_now().await;

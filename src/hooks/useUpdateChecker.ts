@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { getErrorMessage } from "@/lib/errorMessage";
 
 type UpdateStatus = "idle" | "checking" | "available" | "downloading" | "error";
@@ -24,6 +24,7 @@ export function useUpdateChecker(enabled: boolean): UpdateCheckResult {
 	const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null);
 	const [progress, setProgress] = useState(0);
 	const [error, setError] = useState<string | null>(null);
+	const check = useRef<Promise<UpdateInfo | null> | null>(null);
 
 	useEffect(() => {
 		if (!enabled) return;
@@ -33,7 +34,8 @@ export function useUpdateChecker(enabled: boolean): UpdateCheckResult {
 		(async () => {
 			setStatus("checking");
 			try {
-				const update = await invoke<UpdateInfo | null>("check_desktop_update");
+				check.current ??= invoke<UpdateInfo | null>("check_desktop_update");
+				const update = await check.current;
 				if (cancelled) return;
 
 				if (update) {

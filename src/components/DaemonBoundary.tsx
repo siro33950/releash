@@ -2,41 +2,43 @@ import { Channel, invoke } from "@tauri-apps/api/core";
 import {
 	createContext,
 	type ReactNode,
-	useCallback,
 	useContext,
 	useEffect,
-	useMemo,
 	useState,
 } from "react";
 import {
-	completeClientRestoration,
-	getConnectionState,
-	onConnectionStateChange,
-} from "@/lib/client";
+	Dialog,
+	DialogContent,
+	DialogDescription,
+	DialogTitle,
+} from "@/components/ui/dialog";
+import { getConnectionState, onConnectionStateChange } from "@/lib/client";
 import { getErrorMessage } from "@/lib/errorMessage";
 
 interface DaemonStatus {
 	phase: string;
-	connectionGeneration: number;
 	stage: string | null;
 	reason: string | null;
 	retries: number;
 	retryAvailable: boolean;
 }
 
-const RestorationContext = createContext({
-	ready: true,
-	complete: async () => {},
-	fail: async (_reason: string) => {},
-});
-export const useDesktopRestoration = () => useContext(RestorationContext);
+const DaemonReadyContext = createContext(true);
+export const useDaemonReady = () => useContext(DaemonReadyContext);
 
 export function DaemonBoundary({ children }: { children: ReactNode }) {
 	const [status, setStatus] = useState<DaemonStatus | null>(null);
 	const [connection, setConnection] = useState(getConnectionState);
 	const ready = status?.phase === "ready";
-	const restoring = status?.phase === "restoring";
-	const generation = status?.connectionGeneration;
+	const [shown, setShown] = useState(false);
+	const [connected, setConnected] = useState(
+		() => getConnectionState() === "READY",
+	);
+	const overlay =
+		(!shown && !ready) ||
+		["failed", "stopping", "installing", "stopped"].includes(
+			status?.phase ?? "",
+		);
 	const [error, setError] = useState<string | null>(null);
 	const [clientError, setClientError] = useState<string | null>(null);
 	useEffect(() => {
@@ -50,7 +52,10 @@ export function DaemonBoundary({ children }: { children: ReactNode }) {
 		};
 		const channel = new Channel<DaemonStatus>();
 		channel.onmessage = (next) => {
-			if (active) setStatus(next);
+			if (active) {
+				setStatus(next);
+				if (next.phase === "ready") setShown(true);
+			}
 		};
 		void invoke("subscribe_daemon_status", { id, channel })
 			.then(() => {
@@ -60,9 +65,11 @@ export function DaemonBoundary({ children }: { children: ReactNode }) {
 			.catch((error) => {
 				if (active) setError(getErrorMessage(error));
 			});
-		const release = onConnectionStateChange(() =>
-			setConnection(getConnectionState()),
-		);
+		const release = onConnectionStateChange(() => {
+			const next = getConnectionState();
+			setConnection(next);
+			if (next === "READY") setConnected(true);
+		});
 		const onClientError = (event: Event) =>
 			setClientError((event as CustomEvent<string>).detail);
 		window.addEventListener("releash-client-error", onClientError);
@@ -81,28 +88,6 @@ export function DaemonBoundary({ children }: { children: ReactNode }) {
 			setError(getErrorMessage(error));
 		}
 	};
-	const fail = useCallback(
-		async (reason: string) => {
-			try {
-				await invoke("fail_desktop_restoration", { generation, reason });
-			} catch (error) {
-				setError(getErrorMessage(error));
-			}
-		},
-		[generation],
-	);
-	const complete = useCallback(async () => {
-		if (generation === undefined) return;
-		try {
-			await completeClientRestoration(generation);
-		} catch (error) {
-			await fail(getErrorMessage(error));
-		}
-	}, [generation, fail]);
-	const restoration = useMemo(
-		() => ({ ready, complete, fail }),
-		[ready, complete, fail],
-	);
 	return (
 		<>
 			{clientError && (
@@ -121,60 +106,76 @@ export function DaemonBoundary({ children }: { children: ReactNode }) {
 					</button>
 				</div>
 			)}
-			{(ready || restoring) && (
-				<RestorationContext.Provider value={restoration}>
-					<div
-						key={status?.connectionGeneration}
-						className="contents"
-						inert={!ready}
-						aria-hidden={!ready}
-					>
+			{shown && (
+				<DaemonReadyContext.Provider value={ready}>
+					<div className="contents" inert={overlay} aria-hidden={overlay}>
 						{children}
 					</div>
-				</RestorationContext.Provider>
+				</DaemonReadyContext.Provider>
 			)}
-			{!ready && (
-				<div className="fixed inset-0 z-[100] flex items-center justify-center bg-background/95 p-6">
-					<section
-						aria-label="Daemon status"
-						className="w-full max-w-xl space-y-4 rounded-lg border bg-card p-6"
+			{connected && connection !== "READY" && (
+				<div
+					role="status"
+					data-client-connection={connection}
+					className="fixed top-2 right-4 z-[110] rounded border bg-background px-3 py-2 text-sm shadow"
+				>
+					再接続中
+				</div>
+			)}
+			{overlay && (
+				<Dialog open>
+					<DialogContent
+						showCloseButton={false}
+						className="inset-0 z-[100] flex w-full max-w-none translate-x-0 translate-y-0 items-center justify-center rounded-none border-0 bg-background/95 p-6 sm:max-w-none"
+						onEscapeKeyDown={(event) => event.preventDefault()}
+						onInteractOutside={(event) => event.preventDefault()}
 					>
-						<h1 className="text-lg font-semibold">
-							{status?.stage
-								? `Releash: ${status.stage}`
-								: status?.phase === "installing"
-									? "Installing update…"
-									: status?.phase === "stopping" || status?.phase === "stopped"
-										? "Stopping Releash…"
-										: "Starting Releash…"}
-						</h1>
-						<p role="status" data-client-connection={connection}>
-							{status?.reason ?? "Waiting for the daemon connection."}
-						</p>
-						{status?.phase === "backoff" && (
-							<p>Restart attempt {status.retries} / 3</p>
-						)}
-						{error && <p role="alert">{error}</p>}
-						<div className="flex gap-3">
-							{status?.retryAvailable && (
+						<section
+							aria-label="Daemon status"
+							className="w-full max-w-xl space-y-4 rounded-lg border bg-card p-6"
+						>
+							<DialogTitle asChild>
+								<h1 className="text-lg font-semibold">
+									{status?.stage
+										? `Releash: ${status.stage}`
+										: status?.phase === "installing"
+											? "Installing update…"
+											: status?.phase === "stopping" ||
+													status?.phase === "stopped"
+												? "Stopping Releash…"
+												: "Starting Releash…"}
+								</h1>
+							</DialogTitle>
+							<DialogDescription asChild>
+								<p role="status" data-client-connection={connection}>
+									{status?.reason ?? "Waiting for the daemon connection."}
+								</p>
+							</DialogDescription>
+							{status?.phase === "backoff" && (
+								<p>Restart attempt {status.retries} / 3</p>
+							)}
+							{error && <p role="alert">{error}</p>}
+							<div className="flex gap-3">
+								{status?.retryAvailable && (
+									<button
+										type="button"
+										onClick={() => void action("retry_daemon")}
+										className="rounded bg-primary px-4 py-2 text-primary-foreground"
+									>
+										Retry
+									</button>
+								)}
 								<button
 									type="button"
-									onClick={() => void action("retry_daemon")}
-									className="rounded bg-primary px-4 py-2 text-primary-foreground"
+									onClick={() => void action("quit_desktop")}
+									className="rounded border px-4 py-2"
 								>
-									Retry
+									Quit
 								</button>
-							)}
-							<button
-								type="button"
-								onClick={() => void action("quit_desktop")}
-								className="rounded border px-4 py-2"
-							>
-								Quit
-							</button>
-						</div>
-					</section>
-				</div>
+							</div>
+						</section>
+					</DialogContent>
+				</Dialog>
 			)}
 		</>
 	);

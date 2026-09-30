@@ -258,15 +258,16 @@ fn test_終了期限_終了未確認を完了とせずquitだけを許す() {
 }
 
 #[test]
-fn test_認証接続_表示の復元待ちも起動済みと分類し再接続を別世代にする() {
+fn test_認証接続_接続時にreadyとなり再接続後も起動済みと分類する() {
     // Given
     let mut model = DaemonSupervision::new(0);
     assert!(model.connected(1));
-    assert_eq!(model.connection_generation(), 1);
+    assert_eq!(model.phase(), Phase::Ready);
+    assert!(model.shell_command_admitted(ShellOperation::Normal, true));
     // When
     model.connection_lost(2);
     assert!(model.connected(3));
-    assert_eq!(model.connection_generation(), 2);
+    assert_eq!(model.phase(), Phase::Ready);
     model.observe_exit(
         DaemonExit {
             success: false,
@@ -304,12 +305,9 @@ fn test_起動表示_起動待ちと初回接続と復旧の表示を一貫し�
         );
         // When
         assert!(model.connected(1));
-        let restoring = model.desktop_action(hidden, first_ready, failure_window);
-        assert!(model.ready(2));
         let ready = model.desktop_action(hidden, first_ready, failure_window);
         // Then
-        assert_eq!(restoring, DesktopAction::Ready { show_window: show });
-        assert_eq!(ready, restoring);
+        assert_eq!(ready, DesktopAction::Ready { show_window: show });
     }
 }
 
@@ -356,89 +354,11 @@ fn test_最小化起動_初回の自動再試行待ちと復旧後も表示し�
                 DesktopAction::Ready { show_window: false }
             );
         }
-        assert!(model.ready(31_002));
         assert_eq!(
             model.desktop_action(true, true, false),
             DesktopAction::Ready { show_window: false }
         );
     }
-}
-
-#[test]
-fn test_状態復元_失敗を表示し再試行世代の完了後だけ受付を再開する() {
-    // Given
-    let mut model = DaemonSupervision::new(0);
-    model.connected(1);
-    let first = model.connection_generation();
-    // When
-    assert!(model.fail_restoration(first, "Repositories: read failed".into()));
-    // Then
-    assert_eq!(model.phase(), Phase::Failed);
-    assert_eq!(model.failure().unwrap().stage, FailureStage::Restoration);
-    assert!(model.retry_available());
-    assert!(!model.restart_due(u64::MAX));
-    // When
-    assert!(model.retry_restoration(2));
-    let current = model.connection_generation();
-    model.begin_restoration("desktop".into(), 2);
-    // Then
-    assert_eq!(current, first + 1);
-    assert!(!model.retry_restoration(3));
-    assert!(!model.fail_restoration(first, "stale error".into()));
-    assert!(!model.finish_restoration(first, "desktop", true, 3).is_ok());
-    assert!(model.failure().is_none());
-    assert!(model
-        .finish_restoration(current, "desktop", true, 3)
-        .is_ok());
-    assert!(!model.fail_restoration(current, "late error".into()));
-}
-
-#[test]
-fn test_状態復元_画面接続からの期限を超えたら失敗を示し遅い完了を拒否する() {
-    // Given
-    let mut model = DaemonSupervision::new(0);
-    model.connected(1);
-    // When
-    model.expire_restoration(60_000);
-    // Then
-    assert_eq!(model.phase(), Phase::Restoring);
-    assert_eq!(
-        model.desktop_action(true, true, false),
-        DesktopAction::Ready { show_window: false }
-    );
-    // When
-    model.begin_restoration("desktop".into(), 60_000);
-    model.begin_restoration("desktop".into(), 70_000);
-    model.expire_restoration(89_999);
-    // Then
-    assert_eq!(model.phase(), Phase::Restoring);
-    assert!(!model
-        .finish_restoration(model.connection_generation(), "desktop", true, 90_000)
-        .is_ok());
-    assert_eq!(model.phase(), Phase::Failed);
-    assert!(model.failure().unwrap().reason.contains("30 seconds"));
-    assert!(model.retry_restoration(90_001));
-    model.expire_restoration(120_001);
-    assert_eq!(model.phase(), Phase::Failed);
-}
-
-#[test]
-fn test_状態復元_終了開始後の失敗と再試行と完了を拒否する() {
-    // Given
-    let mut model = DaemonSupervision::new(0);
-    model.connected(1);
-    let generation = model.connection_generation();
-    model.fail_restoration(generation, "read failed".into());
-    // When
-    model.begin_stop(StopIntent::Quit(0));
-    // Then
-    assert!(!model.fail_restoration(generation, "late error".into()));
-    assert!(!model
-        .finish_restoration(generation, "desktop", true, 2)
-        .is_ok());
-    assert!(!model.retry_restoration(2));
-    assert!(!model.retry_available());
-    assert_eq!(model.phase(), Phase::Stopping);
 }
 
 #[test]
@@ -449,7 +369,7 @@ fn test_接続待ち_起動と切替の途中は待機し失敗確定後は終�
     assert!(supervision.connection_pending());
     supervision.connected(1);
     assert!(supervision.connection_pending());
-    supervision.fail_restoration(supervision.connection_generation(), "failed".into());
+    supervision.spawn_failed("failed".into(), 2);
     assert!(!supervision.connection_pending());
 }
 
@@ -484,40 +404,6 @@ fn test_接続待ち_stoppedは終了しbackoffとstoppingとinstallingは待機
     assert!(model.begin_update_install());
     assert_eq!(model.phase(), Phase::Installing);
     assert!(model.connection_pending());
-}
-
-#[test]
-fn test_復元完了_最新attachmentと接続と世代が揃ったときだけreadyになる() {
-    // Given
-    let mut model = DaemonSupervision::new(0);
-    model.connected(1);
-    let generation = model.connection_generation();
-    model.begin_restoration("first".into(), 2);
-    model.begin_restoration("second".into(), 3);
-    // When / Then
-    assert_eq!(
-        model.finish_restoration(generation, "first", true, 4),
-        Err("Desktop attachment changed during restoration".into())
-    );
-    assert_eq!(model.phase(), Phase::Failed);
-    assert!(model.retry_restoration(5));
-    let current = model.connection_generation();
-    assert!(model
-        .finish_restoration(generation, "second", true, 6)
-        .is_err());
-    assert_eq!(model.phase(), Phase::Restoring);
-    assert_eq!(
-        model.finish_restoration(current, "second", false, 6),
-        Err("Desktop disconnected during restoration".into())
-    );
-    assert!(model.retry_restoration(7));
-    model
-        .finish_restoration(model.connection_generation(), "second", true, 8)
-        .unwrap();
-    assert_eq!(model.phase(), Phase::Ready);
-    assert!(model
-        .finish_restoration(model.connection_generation(), "second", true, 9)
-        .is_err());
 }
 
 #[test]

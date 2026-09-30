@@ -1,6 +1,6 @@
 use super::*;
 use crate::domain::daemon_supervision::DaemonExit;
-use crate::usecase::test_helpers::{restore_desktop, tick, FakeDaemon};
+use crate::usecase::test_helpers::{tick, FakeDaemon};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 #[derive(Clone, Default)]
@@ -120,14 +120,9 @@ async fn test_最小化起動_初回の異常終了と期限超過からの自�
         // When
         daemon.ready.store(true, Ordering::SeqCst);
         tick(200).await;
-        restore_desktop(&supervisor).await;
-        tick(200).await;
         // Then
         assert_eq!(supervisor.status().phase, "ready");
-        assert_eq!(
-            *host.events.lock(),
-            ["ready:true:false", "ready:false:false"]
-        );
+        assert_eq!(*host.events.lock(), ["ready:true:false"]);
         assert!(!host.has_failure_window());
         task.abort();
     }

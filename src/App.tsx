@@ -1,10 +1,7 @@
 import { invoke as invokeTauri } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
-import { useCallback, useEffect, useMemo, useState } from "react";
-import {
-	DaemonBoundary,
-	useDesktopRestoration,
-} from "@/components/DaemonBoundary";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { DaemonBoundary, useDaemonReady } from "@/components/DaemonBoundary";
 import { ProviderHookHealthBanner } from "@/components/layout/ProviderHookHealthBanner";
 import { SettingsModal } from "@/components/panels/SettingsModal";
 import { UpdateDialog } from "@/components/UpdateDialog";
@@ -83,37 +80,15 @@ function StartupFailureScreen({
 }
 
 function WorkbenchApp() {
-	const {
-		settings,
-		updateSettings,
-		updateTheme,
-		loaded: settingsLoaded,
-		loadError: settingsError,
-	} = useSettings();
-	const restoration = useDesktopRestoration();
-	const updateChecker = useUpdateChecker(
-		settings.autoUpdate && restoration.ready,
-	);
+	const { settings, updateSettings, updateTheme } = useSettings();
+	const daemonReady = useDaemonReady();
+	const [autoUpdate] = useState(settings.autoUpdate);
+	const updateChecker = useUpdateChecker(autoUpdate);
+	const startupStarted = useRef(false);
 	const { worktrees, selectedWorktreeId, openWorktreeTab } =
 		useWorkspaceNavigation();
 	const { repoPaths, addRepo, removeRepo, initFromCwd } = useRepoList();
 	const workspaceList = useWorkspaceList();
-	const repositoriesLoaded = workspaceList.snapshot?.status.loaded;
-	const repositoriesError =
-		workspaceList.requestError ?? workspaceList.snapshot?.status.error;
-
-	useEffect(() => {
-		if (
-			!restoration.ready &&
-			settingsLoaded &&
-			(repositoriesLoaded || repositoriesError)
-		)
-			void restoration.complete();
-	}, [restoration, settingsLoaded, repositoriesLoaded, repositoriesError]);
-	useEffect(() => {
-		if (settingsError) void restoration.fail(`Settings: ${settingsError}`);
-	}, [restoration, settingsError]);
-
 	const [showAppSettings, setShowAppSettings] = useState(false);
 	const [centerStateByWorktree, setCenterStateByWorktree] = useState<
 		Record<string, WorktreeCenterState>
@@ -146,7 +121,8 @@ function WorkbenchApp() {
 	}, []);
 
 	useEffect(() => {
-		if (!restoration.ready) return;
+		if (startupStarted.current) return;
+		startupStarted.current = true;
 		(async () => {
 			try {
 				const mainPath = await firstState("startup-repository");
@@ -168,7 +144,7 @@ function WorkbenchApp() {
 				// git リポジトリ外
 			}
 		})();
-	}, [openWorktreeTab, initFromCwd, restoration.ready]);
+	}, [openWorktreeTab, initFromCwd]);
 
 	const handleAddRepo = useCallback(async () => {
 		const selected = await open({ directory: true, multiple: false });
@@ -250,10 +226,11 @@ function WorkbenchApp() {
 	);
 	const isWorktreeActive = selectedWorktreeId != null;
 	useEffect(() => {
+		if (!daemonReady) return;
 		invokeTauri("set_menu_items_enabled", { enabled: isWorktreeActive }).catch(
 			() => {},
 		);
-	}, [isWorktreeActive]);
+	}, [isWorktreeActive, daemonReady]);
 
 	const menuHandlers: MenuHandlers = useMemo(
 		() => ({

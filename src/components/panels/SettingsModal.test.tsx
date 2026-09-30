@@ -79,7 +79,7 @@ function subscribeStates(values: Record<string, unknown>) {
 		);
 	}
 }
-function publishDefaults({ provider = true } = {}) {
+function publishDefaults({ provider = true, desktop = true } = {}) {
 	states.clear();
 	subscribeStates({ workflows: [], diagnostics: EMPTY_REPORT });
 	states.publish({ kind: "branches", args: [REPO] }, [
@@ -89,7 +89,7 @@ function publishDefaults({ provider = true } = {}) {
 	states.publish("workflow-config", { approval_auto_approve: false });
 	if (provider) states.publish("provider-availability", providerSnapshot);
 	states.publish("external-editor", { selected: "", editors: [] });
-	states.publish("desktop-settings", desktopSettings);
+	if (desktop) states.publish("desktop-settings", desktopSettings);
 	states.publish({ kind: "releash-base", args: [REPO] }, null);
 	states.publish({ kind: "notion-config", args: [REPO] }, null);
 }
@@ -158,6 +158,118 @@ describe("SettingsModal", () => {
 		onSave: vi.fn(),
 		repoPaths: ["/repos/my-app"],
 	};
+
+	it.each([null, "desktop settings unavailable"])(
+		"設定未取得ならmetricsを保存せず失敗を表示する: %s",
+		async (loadError) => {
+			const user = userEvent.setup();
+			const onSave = vi.fn();
+			const { invokeClient } = await import("@/lib/client");
+			vi.mocked(subscribeState).mockImplementation(((
+				...args: Parameters<typeof states.subscribeState>
+			) => {
+				const [target, , error] = args;
+				if (target === "desktop-settings") {
+					if (loadError) error?.(new Error(loadError));
+					return () => {};
+				}
+				return states.subscribeState(...args);
+			}) as typeof subscribeState);
+			render(<SettingsModal {...defaultProps} onSave={onSave} />);
+			fireEvent.click(screen.getByText("Privacy & Updates"));
+			const metrics = screen.getByRole("checkbox", {
+				name: "Send anonymous performance metrics",
+			});
+			expect(metrics).toBeDisabled();
+			await user.click(metrics);
+			expect(metrics).toHaveAttribute(
+				"data-state",
+				defaultSettings.performanceTelemetry ? "checked" : "unchecked",
+			);
+			if (loadError)
+				expect(screen.getByRole("alert")).toHaveTextContent(loadError);
+			await user.click(screen.getByRole("checkbox", { name: "Auto-update" }));
+			vi.mocked(invokeClient).mockClear();
+			await user.click(screen.getByRole("button", { name: "Save" }));
+			await waitFor(() =>
+				expect(onSave).toHaveBeenCalledWith(
+					expect.objectContaining({
+						performanceTelemetry: defaultSettings.performanceTelemetry,
+					}),
+				),
+			);
+			expect(
+				vi
+					.mocked(invokeClient)
+					.mock.calls.some(
+						([command]) => command === "update_performance_telemetry",
+					),
+			).toBe(false);
+			vi.mocked(invokeClient).mockClear();
+		},
+	);
+
+	it("設定画面を開いたままmetricsを取得しても他欄の保存で初期値を上書きしない", async () => {
+		publishDefaults({ desktop: false });
+		const user = userEvent.setup();
+		const onSave = vi.fn();
+		const { invokeClient } = await import("@/lib/client");
+		const view = render(<SettingsModal {...defaultProps} onSave={onSave} />);
+		fireEvent.click(screen.getByText("Privacy & Updates"));
+		const metrics = screen.getByRole("checkbox", {
+			name: "Send anonymous performance metrics",
+		});
+		expect(metrics).toBeDisabled();
+		await user.click(screen.getByRole("checkbox", { name: "Auto-update" }));
+		await act(async () =>
+			states.publish("desktop-settings", {
+				...desktopSettings,
+				performanceTelemetry: false,
+			}),
+		);
+		view.rerender(
+			<SettingsModal
+				{...defaultProps}
+				settings={{ ...defaultSettings, performanceTelemetry: false }}
+				onSave={onSave}
+			/>,
+		);
+		expect(metrics).toBeEnabled();
+		expect(metrics).not.toBeChecked();
+		expect(
+			screen.getByRole("checkbox", { name: "Auto-update" }),
+		).not.toBeChecked();
+		vi.mocked(invokeClient).mockClear();
+		await user.click(screen.getByRole("button", { name: "Save" }));
+		expect(onSave).toHaveBeenLastCalledWith(
+			expect.objectContaining({
+				autoUpdate: false,
+				performanceTelemetry: false,
+			}),
+		);
+		expect(
+			vi
+				.mocked(invokeClient)
+				.mock.calls.some(
+					([command]) => command === "update_performance_telemetry",
+				),
+		).toBe(false);
+		await user.click(metrics);
+		await user.click(screen.getByRole("button", { name: "Save" }));
+		await waitFor(() =>
+			expect(invokeClient).toHaveBeenCalledWith(
+				"update_performance_telemetry",
+				{ enabled: true },
+			),
+		);
+		expect(onSave).toHaveBeenLastCalledWith(
+			expect.objectContaining({
+				autoUpdate: false,
+				performanceTelemetry: true,
+			}),
+		);
+		vi.mocked(invokeClient).mockClear();
+	});
 
 	it("ログイン項目の初期取得失敗後の保存を成功として記録しない", async () => {
 		vi.mocked(invokeTauri).mockRejectedValueOnce(
@@ -775,6 +887,10 @@ describe("SettingsModal", () => {
 	});
 
 	it("should re-enable performance telemetry and call onSave", async () => {
+		states.publish("desktop-settings", {
+			...desktopSettings,
+			performanceTelemetry: false,
+		});
 		const user = userEvent.setup();
 		const onSave = vi.fn();
 		const { invokeClient: invoke } = await import("@/lib/client");

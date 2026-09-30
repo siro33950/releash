@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { act, renderHook, waitFor } from "@testing-library/react";
+import { StrictMode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useUpdateChecker } from "../useUpdateChecker";
 
@@ -133,3 +134,31 @@ describe("useUpdateChecker", () => {
 		});
 	});
 });
+
+it.each([true, false])(
+	"StrictModeでも初回確認は有効=%sの一度だけで結果を反映する",
+	async (enabled) => {
+		vi.mocked(invoke).mockClear();
+		let complete!: (value: { version: string; notes: string }) => void;
+		vi.mocked(invoke).mockImplementation(
+			() =>
+				new Promise((resolve) => {
+					complete = resolve;
+				}),
+		);
+		const { result, rerender } = renderHook(() => useUpdateChecker(enabled), {
+			wrapper: StrictMode,
+		});
+		expect(invoke).toHaveBeenCalledTimes(enabled ? 1 : 0);
+		if (enabled) {
+			await act(async () => complete({ version: "2.0.0", notes: "Update" }));
+			expect(result.current.status).toBe("available");
+			expect(result.current.updateInfo).toEqual({
+				version: "2.0.0",
+				notes: "Update",
+			});
+		}
+		rerender();
+		expect(invoke).toHaveBeenCalledTimes(enabled ? 1 : 0);
+	},
+);

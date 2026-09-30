@@ -87,7 +87,7 @@ export async function connect() {
         assert.equal(result.ok, true, result.error);
         return result.value;
     };
-    await waitFor(async () => (await call("shell", "get_daemon_status")).phase === "ready", "renderer state restoration did not complete");
+    await waitFor(async () => (await call("shell", "get_daemon_status")).phase === "ready", "desktop shell did not become ready");
     await call("state", "desktop-settings");
     return { call, execute };
 }

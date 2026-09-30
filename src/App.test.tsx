@@ -28,10 +28,7 @@ vi.mock("@/components/panels/ReviewPanel", () => ({ ReviewPanel: () => null }));
 
 const mockInvoke = vi.mocked(invokeClient);
 let statusChannel: {
-	onmessage?: (status: {
-		phase: string;
-		connectionGeneration?: number;
-	}) => void;
+	onmessage?: (status: { phase: string }) => void;
 } | null;
 
 beforeEach(() => {
@@ -125,21 +122,8 @@ describe("App", () => {
 		});
 	});
 
-	it("Repository一覧の初回取得失敗でも画面の復元を完了し更新を操作できる", async () => {
+	it("Repository一覧の初回取得失敗でも画面を表示し更新を操作できる", async () => {
 		vi.mocked(invoke).mockClear();
-		let restored = false;
-		vi.mocked(invoke).mockImplementation(async (command, args) => {
-			if (command === "check_desktop_update") return null;
-			if (command === "subscribe_daemon_status") {
-				statusChannel = (args as { channel: typeof statusChannel }).channel;
-				statusChannel?.onmessage?.({
-					phase: restored ? "ready" : "restoring",
-					connectionGeneration: 1,
-				});
-				return;
-			}
-			return { type: "ready" };
-		});
 		const subscribe = vi.mocked(client.subscribeState).getMockImplementation();
 		vi.mocked(client.subscribeState).mockImplementation(
 			(target, receive, error) => {
@@ -150,18 +134,11 @@ describe("App", () => {
 				return subscribe?.(target, receive, error) ?? (() => {});
 			},
 		);
-		const complete = vi
-			.spyOn(client, "completeClientRestoration")
-			.mockImplementation(async () => {
-				restored = true;
-				statusChannel?.onmessage?.({ phase: "ready", connectionGeneration: 1 });
-			});
 		render(
 			<TooltipProvider>
 				<App />
 			</TooltipProvider>,
 		);
-		await waitFor(() => expect(complete).toHaveBeenCalledWith(1));
 		expect(
 			await screen.findByRole("button", { name: "Refresh Workspaces" }),
 		).toBeEnabled();
@@ -170,7 +147,6 @@ describe("App", () => {
 				.mocked(invoke)
 				.mock.calls.some(([command]) => command === "fail_desktop_restoration"),
 		).toBe(false);
-		complete.mockRestore();
 		if (subscribe)
 			vi.mocked(client.subscribeState).mockImplementation(subscribe);
 	});

@@ -49,7 +49,6 @@ pub(crate) trait DaemonGateway:
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct DaemonStatus {
-    pub connection_generation: u64,
     pub phase: &'static str,
     pub stop_intent: Option<&'static str>,
     pub stage: Option<&'static str>,
@@ -191,21 +190,17 @@ impl DaemonSupervisionUsecase {
             .supervision
             .desktop_action(hidden, first_ready, has_failure_window)
     }
-    pub async fn attach(&self, id: String) -> Result<DaemonConnection, DaemonSupervisionError> {
+    pub async fn attach(&self) -> Result<DaemonConnection, DaemonSupervisionError> {
         let mut changes = self.subscribe();
         loop {
             {
-                let mut state = self.state.lock();
+                let state = self.state.lock();
                 if let Some(connection) = state
                     .connection
                     .as_ref()
                     .filter(|_| self.gateway.connected())
                 {
-                    let connection = connection.clone();
-                    state
-                        .supervision
-                        .begin_restoration(id, self.gateway.monotonic_ms());
-                    return Ok(connection);
+                    return Ok(connection.clone());
                 }
                 if !state.supervision.connection_pending() {
                     return Err(state
@@ -221,29 +216,6 @@ impl DaemonSupervisionUsecase {
                 .await
                 .map_err(|error| DaemonSupervisionError(error.to_string()))?;
         }
-    }
-    pub async fn finish_restoration(
-        &self,
-        launch_id: &str,
-        attachment_id: &str,
-        generation: u64,
-    ) -> Result<(), DaemonSupervisionError> {
-        self.validate_connection(launch_id, env!("CARGO_PKG_VERSION"))?;
-        let result = self.state.lock().supervision.finish_restoration(
-            generation,
-            attachment_id,
-            self.gateway.connected(),
-            self.gateway.monotonic_ms(),
-        );
-        self.publish();
-        result.map_err(DaemonSupervisionError)
-    }
-    pub fn fail_restoration(&self, generation: u64, reason: String) {
-        self.state
-            .lock()
-            .supervision
-            .fail_restoration(generation, reason);
-        self.publish();
     }
     pub fn command_admitted(&self, operation: ShellOperation) -> bool {
         self.state
@@ -309,9 +281,7 @@ impl DaemonSupervisionUsecase {
                 biased;
                 command = commands.recv() => match command {
                     Some(Control::Retry) => {
-                        if child_running {
-                            self.state.lock().supervision.retry_restoration(now());
-                        } else if self.state.lock().supervision.retry(now()) {
+                        if !child_running && self.state.lock().supervision.retry(now()) {
                             spawn = true;
                         }
                     }
@@ -409,7 +379,6 @@ impl DaemonSupervisionUsecase {
                             }
                         }
                     }
-                    self.state.lock().supervision.expire_restoration(now());
                     if !child_running { spawn = self.state.lock().supervision.restart_due(now()); }
                 }
             }
@@ -420,7 +389,6 @@ impl DaemonSupervisionUsecase {
 
 fn snapshot(supervision: &DaemonSupervision) -> DaemonStatus {
     DaemonStatus {
-        connection_generation: supervision.connection_generation(),
         stop_intent: supervision.stop_intent().map(|intent| match intent {
             StopIntent::Quit(_) => "quit",
             StopIntent::Restart => "restart",
@@ -429,7 +397,6 @@ fn snapshot(supervision: &DaemonSupervision) -> DaemonStatus {
         phase: match supervision.phase() {
             Phase::Starting => "starting",
             Phase::Ready => "ready",
-            Phase::Restoring => "restoring",
             Phase::Backoff => "backoff",
             Phase::Failed => "failed",
             Phase::Stopping => "stopping",
@@ -457,7 +424,6 @@ fn snapshot(supervision: &DaemonSupervision) -> DaemonStatus {
             FailureStage::Shutdown => "shutdown",
             FailureStage::Update => "update",
             FailureStage::Restart => "restart",
-            FailureStage::Restoration => "state_restoration",
         }),
         reason: supervision.failure().map(|f| f.reason.clone()),
         retries: supervision.retries(),

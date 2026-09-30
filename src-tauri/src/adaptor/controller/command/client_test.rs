@@ -1182,7 +1182,7 @@ async fn test_接続情報command_起動中の要求を拒否せず検証済みe
             tick(200).await;
         }
         // When
-        let request = super::get_client_endpoint(app.state(), "desktop".into());
+        let request = super::get_client_endpoint(app.state());
         tokio::pin!(request);
         assert!(futures_util::poll!(&mut request).is_pending());
         tick(200).await;

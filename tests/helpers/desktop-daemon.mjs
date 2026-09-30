@@ -52,7 +52,7 @@ const bundle = await build({
     stdin: { contents: 'export * from "./src/lib/client.ts";', resolveDir: process.cwd() },
     bundle: true, platform: "node", format: "esm", write: false,
 });
-const {firstState, subscribeState, invokeClient, completeClientRestoration} = await import(`data:text/javascript;base64,${Buffer.from(`${bundle.outputFiles[0].text}\n//# sourceURL=releash-client-fixture.mjs`).toString("base64")}`);
+const {firstState, subscribeState, invokeClient} = await import(`data:text/javascript;base64,${Buffer.from(`${bundle.outputFiles[0].text}\n//# sourceURL=releash-client-fixture.mjs`).toString("base64")}`);
 async function waitFor(predicate) {
     const deadline = Date.now() + 15_000;
     while (!(await predicate())) { assert.ok(Date.now() < deadline, "desktop recovery deadline"); await setTimeout(10); }
@@ -60,7 +60,6 @@ async function waitFor(predicate) {
 let refreshedEditor;
 const restore = async () => {
     await Promise.all([firstState("workspaces"), firstState("desktop-settings")]);
-    await completeClientRestoration((await invokeHost("get_daemon_status")).connectionGeneration);
     await waitFor(async () => (await invokeHost("get_daemon_status")).phase === "ready");
 };
 const stopRefresh = subscribeState("external-editor", editor => { refreshedEditor = editor; }, error => { console.error(error instanceof Error ? error.message : error); });
