@@ -4,25 +4,34 @@ use crate::usecase::application_startup::ApplicationStartupAuthority;
 use crate::usecase::state_subscription::SubscriptionTarget;
 use tauri::Manager;
 
-#[tokio::test]
-async fn test_workflow設定_転送要求の保存を購読の読み取りに反映する() {
-    // Given
-    let fixture = StateReadsFixture::new();
+fn workflow_config_controller(
+    app_config_usecase: Option<std::sync::Arc<crate::usecase::app_config::AppConfigUsecase>>,
+) -> (tauri::App<tauri::test::MockRuntime>, ClientCommandDispatch) {
     let (app, _data, _store) =
         crate::adaptor::controller::client::workflow::tests::make_read_only_app();
     app.manage(std::sync::Arc::new(
         crate::infrastructure::file_watcher::FileWatcherManager::default(),
     ));
     let mut deps = crate::desktop_test_support::build_client_dependencies(app.handle());
-    deps.app_config_usecase = Some(std::sync::Arc::new(
+    if let Some(usecase) = app_config_usecase {
+        deps.app_config_usecase = Some(usecase);
+    }
+    let mut controller =
+        ClientCommandDispatch::new(std::sync::Arc::new(ApplicationStartupAuthority::ready()));
+    register_shared(&mut controller, &deps);
+    (app, controller)
+}
+
+#[tokio::test]
+async fn test_workflow設定_転送要求の保存を購読の読み取りに反映する() {
+    // Given
+    let fixture = StateReadsFixture::new();
+    let (_app, controller) = workflow_config_controller(Some(std::sync::Arc::new(
         crate::usecase::app_config::AppConfigUsecase::new(
             fixture.config.clone(),
             fixture.config.clone(),
         ),
-    ));
-    let mut controller =
-        ClientCommandDispatch::new(std::sync::Arc::new(ApplicationStartupAuthority::ready()));
-    register_shared(&mut controller, &deps);
+    )));
 
     // When
     let saved = controller
@@ -53,15 +62,7 @@ async fn test_workflow設定_転送要求の保存を購読の読み取りに反
 #[tokio::test]
 async fn test_workflow設定_workflowが欠けた転送要求を拒否する() {
     // Given
-    let (app, _data, _store) =
-        crate::adaptor::controller::client::workflow::tests::make_read_only_app();
-    app.manage(std::sync::Arc::new(
-        crate::infrastructure::file_watcher::FileWatcherManager::default(),
-    ));
-    let deps = crate::desktop_test_support::build_client_dependencies(app.handle());
-    let mut controller =
-        ClientCommandDispatch::new(std::sync::Arc::new(ApplicationStartupAuthority::ready()));
-    register_shared(&mut controller, &deps);
+    let (_app, controller) = workflow_config_controller(None);
 
     // When
     let result = controller
