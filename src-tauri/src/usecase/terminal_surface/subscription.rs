@@ -1,7 +1,9 @@
 use super::application::TerminalSurfaceApplication;
+use crate::domain::failure::{TechnicalFailure, TechnicalFailureNature};
 use crate::usecase::state_subscription::{
     StateReadError, StateReadFailure, StateValue, SubscriptionError, SubscriptionTarget,
 };
+use crate::usecase::terminal_surface::application::TerminalSurfaceStreamItem;
 use parking_lot::Mutex;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -36,8 +38,6 @@ pub(crate) struct TerminalSubscriptionUsecase {
     terminal_resets: Arc<Mutex<HashMap<SubscriptionTarget, HashSet<String>>>>,
     workers: Arc<Mutex<HashMap<SubscriptionTarget, tokio::task::JoinHandle<()>>>>,
 }
-use crate::domain::failure::{TechnicalFailure, TechnicalFailureNature};
-use crate::usecase::terminal_surface::application::TerminalSurfaceStreamItem;
 
 const TERMINAL_INPUT_ID_MAX_BYTES: usize = 128;
 
@@ -76,11 +76,20 @@ impl TerminalSubscriptionUsecase {
         for (target, input) in targets {
             self.unsubscribe(client, &target, &input);
         }
+        self.terminal_resets
+            .lock()
+            .values_mut()
+            .for_each(|clients| {
+                clients.remove(client);
+            });
         self.stop_inactive_workers();
     }
 
     fn stop_inactive_workers(&self) {
         let clients = self.clients.lock();
+        self.terminal_resets
+            .lock()
+            .retain(|target, _| clients.values().any(|targets| targets.contains_key(target)));
         self.workers.lock().retain(|target, task| {
             if clients.values().any(|targets| targets.contains_key(target)) {
                 true
@@ -119,9 +128,10 @@ impl TerminalSubscriptionUsecase {
         &self,
         client: &str,
         target: &SubscriptionTarget,
-        input_id: &str,
+        input_id: Option<&str>,
         cursor: Option<(&str, u64)>,
     ) -> Result<(), StateReadError> {
+        let input_id = input_id.unwrap_or(client);
         if input_id.trim().is_empty() || input_id.len() > TERMINAL_INPUT_ID_MAX_BYTES {
             return Err(StateReadError {
                 source: StateReadFailure::InvalidTerminalInput,
@@ -143,11 +153,8 @@ impl TerminalSubscriptionUsecase {
             let _ = self.stop_subscription(client, target);
             return Err(error);
         }
-        if let Err(error) = self.attach_terminal(client, target, input_id) {
-            if let (Some(terminal), SubscriptionTarget::Terminal(owner)) = (&self.terminal, target)
-            {
-                terminal.unsubscribe_output(owner, client, input_id);
-            }
+        if let Err(error) = self.ensure_subscribed(client, target) {
+            self.unsubscribe(client, target, input_id);
             let _ = self.publisher.stop(client, target);
             return Err(error);
         }
@@ -196,19 +203,30 @@ impl TerminalSubscriptionUsecase {
         }
     }
 
-    fn attach_terminal(
+    fn ensure_subscribed(
         &self,
         client: &str,
         target: &SubscriptionTarget,
-        input_id: &str,
     ) -> Result<(), StateReadError> {
-        let mut clients = self.clients.lock();
-        let targets = clients
-            .get_mut(client)
+        self.clients
+            .lock()
+            .get(client)
             .filter(|targets| targets.contains_key(target))
             .ok_or_else(|| StateReadError::from_error(SubscriptionError::StreamEnded))?;
-        targets.insert(target.clone(), input_id.into());
         Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_input_id(
+        &self,
+        client: &str,
+        target: &SubscriptionTarget,
+    ) -> Option<String> {
+        self.clients
+            .lock()
+            .get(client)
+            .and_then(|targets| targets.get(target))
+            .cloned()
     }
 
     pub(crate) async fn refresh_terminal(

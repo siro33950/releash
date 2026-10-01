@@ -1,6 +1,6 @@
 use crate::adaptor::presenter::state_subscription::{PublishedState, StateSubscriptionPresenter};
 use crate::infrastructure::state_subscription::{
-    DeltaPublication, DeltaPublicationError, StateSubscriptionRuntime, Version,
+    DeltaPublication, DeltaPublicationError, StateSubscriptionRuntime, Subscriptions, Version,
 };
 use crate::infrastructure::terminal::output_flow_control::{
     OUTPUT_PENDING_LIMIT, OUTPUT_REPORT_UNITS,
@@ -44,7 +44,7 @@ impl TerminalSubscriptionPresenter {
     fn update(
         &self,
         update: impl FnOnce(
-            &mut crate::infrastructure::state_subscription::Subscriptions<PublishedState>,
+            &mut Subscriptions<PublishedState>,
         ) -> Result<
             bool,
             crate::infrastructure::state_subscription::SubscriptionError,
@@ -86,12 +86,7 @@ impl TerminalSubscriptionOutput for TerminalSubscriptionPresenter {
         target: &SubscriptionTarget,
         error: StateReadError,
     ) -> Result<(), SubscriptionError> {
-        use crate::adaptor::presenter::connect::ConnectFailure;
-        let snapshot =
-            PublishedState::Failure(crate::adaptor::presenter::client::StateReadFailure {
-                code: error.connect_code().grpc_code() as i32,
-                message: error.message,
-            });
+        let snapshot = PublishedState::from(error);
         let target = target.to_string();
         self.update(|state| {
             let version = state.current_version(&target).ok_or(
@@ -149,19 +144,8 @@ impl TerminalSurfaceStateSink for TerminalSubscriptionPresenter {
         };
         let target = target.to_string();
         let epoch = self.version(registration.runtime_generation, 0).epoch;
-        self.runtime.mutate(|state| {
-            if state
-                .current_version(&target)
-                .is_none_or(|version| version.epoch != epoch)
-            {
-                return (false, false);
-            }
-            let subscribed = state.has_subscribers(&target);
-            match state.unregister(&target) {
-                Ok(()) => (subscribed, true),
-                Err(_) => (false, false),
-            }
-        })
+        self.runtime
+            .mutate(|state| state.unregister_epoch(&target, &epoch))
     }
 
     fn publish(&self, registration: &TerminalRegistration, event: TerminalSurfaceOutputEvent) {

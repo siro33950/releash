@@ -1361,3 +1361,61 @@ fn test_対象単位の停止_他の開始途中の状態と差分履歴を保�
         matches!(state.next("client"), Some((target, Event::Change(_, Delivery::Delta, _))) if target == "delta")
     );
 }
+
+async fn assert_unregister_epoch(registered: bool, matching: bool, subscribed: bool) {
+    // Given
+    let runtime = StateSubscriptionRuntime::<u64>::new("boot".into());
+    runtime
+        .update(|state| {
+            if registered {
+                state.register_delta(
+                    "target",
+                    Version {
+                        epoch: "current".into(),
+                        sequence: 0,
+                    },
+                    100,
+                )?;
+                if subscribed {
+                    state.open("client".into())?;
+                    state.start("client", "target", None)?;
+                }
+            }
+            Ok(true)
+        })
+        .unwrap();
+    let changed = runtime.changed.notified();
+    tokio::pin!(changed);
+    changed.as_mut().enable();
+    // When
+    let result = runtime
+        .mutate(|state| state.unregister_epoch("target", if matching { "current" } else { "old" }));
+    // Then
+    let removed = registered && matching;
+    assert_eq!(result, removed && subscribed);
+    assert_eq!(changed.as_mut().now_or_never().is_some(), removed);
+    assert_eq!(
+        runtime.inspect(|state| state.registered("target")),
+        registered && !removed
+    );
+}
+
+#[tokio::test]
+async fn test_版指定の登録解除_対象が無ければ通知しない() {
+    assert_unregister_epoch(false, true, false).await;
+}
+
+#[tokio::test]
+async fn test_版指定の登録解除_epochが違えば通知せず保持する() {
+    assert_unregister_epoch(true, false, true).await;
+}
+
+#[tokio::test]
+async fn test_版指定の登録解除_一致して購読者ありならtrueを返し通知する() {
+    assert_unregister_epoch(true, true, true).await;
+}
+
+#[tokio::test]
+async fn test_版指定の登録解除_一致して購読者なしならfalseを返し通知する() {
+    assert_unregister_epoch(true, true, false).await;
+}

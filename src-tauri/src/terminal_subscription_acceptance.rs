@@ -93,7 +93,7 @@ impl TerminalSubscriptionHarness {
             .map_err(|e| e.to_string())?,
         );
         self.terminal_subscriptions
-            .start_terminal(&client, &target, &input_id, None)
+            .start_terminal(&client, &target, Some(&input_id), None)
             .await
             .map_err(|e| e.to_string())?;
         Ok(TerminalSubscription {

@@ -10,11 +10,20 @@ impl From<crate::adaptor::presenter::client::StatePayload> for PublishedState {
     }
 }
 
+impl From<StateReadError> for PublishedState {
+    fn from(error: StateReadError) -> Self {
+        use crate::adaptor::presenter::connect::ConnectFailure;
+        Self::Failure(crate::adaptor::presenter::client::StateReadFailure {
+            code: error.connect_code().grpc_code() as i32,
+            message: error.message,
+        })
+    }
+}
+
 #[cfg(any(test, all(debug_assertions, feature = "desktop")))]
 use std::sync::Arc;
 
 use futures_util::Stream;
-use futures_util::StreamExt;
 
 use crate::infrastructure::state_subscription::{
     Delivery, StateSubscriptionRuntime, Subscriptions, Version,
@@ -135,25 +144,6 @@ impl StateSubscriptionPresenter {
     ) -> impl Stream<Item = StateSubscriptionEvent> + Send + use<P, F> {
         self.runtime.stream(id, permit, refresh)
     }
-
-    pub(crate) fn stream_wire<
-        P: Send + 'static,
-        F: Fn(String, Vec<String>) + Send + Sync + 'static,
-    >(
-        &self,
-        id: String,
-        permit: P,
-        refresh: F,
-    ) -> impl Stream<
-        Item = Result<
-            crate::adaptor::presenter::connect_wire::rpc::StateSubscriptionEvent,
-            connectrpc::ConnectError,
-        >,
-    > + Send
-           + use<P, F> {
-        self.stream(id, permit, refresh)
-            .map(crate::adaptor::presenter::state_subscription_wire::event)
-    }
 }
 
 #[cfg(any(test, all(debug_assertions, feature = "desktop")))]
@@ -210,12 +200,7 @@ impl StateSubscriptionOutput for StateSubscriptionPresenter {
         target: &SubscriptionTarget,
         error: StateReadError,
     ) -> Result<(), SubscriptionError> {
-        use crate::adaptor::presenter::connect::ConnectFailure;
-        let failure = crate::adaptor::presenter::client::StateReadFailure {
-            code: error.connect_code().grpc_code() as i32,
-            message: error.message,
-        };
-        let snapshot = PublishedState::Failure(failure);
+        let snapshot = PublishedState::from(error);
         let target = target.to_string();
         self.update(|state| {
             if state.registered(&target) {

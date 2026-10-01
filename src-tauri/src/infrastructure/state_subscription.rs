@@ -320,6 +320,20 @@ impl<T: Clone + PartialEq> Subscriptions<T> {
         Ok(())
     }
 
+    pub fn unregister_epoch(&mut self, target: &str, epoch: &str) -> (bool, bool) {
+        if self
+            .current_version(target)
+            .is_none_or(|version| version.epoch != epoch)
+        {
+            return (false, false);
+        }
+        let subscribed = self.has_subscribers(target);
+        match self.unregister(target) {
+            Ok(()) => (subscribed, true),
+            Err(_) => (false, false),
+        }
+    }
+
     pub fn open(&mut self, id: String) -> Result<(), SubscriptionError> {
         if id.is_empty() {
             return Err(SubscriptionError::InvalidId);

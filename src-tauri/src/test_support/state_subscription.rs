@@ -332,13 +332,6 @@ pub(crate) struct TerminalSubscriptions {
         Arc<crate::adaptor::presenter::terminal_subscription::TerminalSubscriptionPresenter>,
 }
 
-impl std::ops::Deref for TerminalSubscriptions {
-    type Target = StateSubscriptionUsecase;
-    fn deref(&self) -> &Self::Target {
-        &self.usecase
-    }
-}
-
 impl StateSubscriptionUsecase {
     pub(crate) fn deps(&self) -> crate::adaptor::controller::api::StateSubscriptionDeps {
         deps(
@@ -434,7 +427,7 @@ impl TerminalSubscriptions {
         cursor: Option<(&str, u64)>,
     ) -> Result<(), crate::usecase::state_subscription::StateReadError> {
         self.terminal
-            .start_terminal(client, target, input, cursor)
+            .start_terminal(client, target, Some(input), cursor)
             .await
     }
     pub(crate) fn close_client(&self, id: &str) {
@@ -452,4 +445,43 @@ pub(crate) fn stop_terminal(
         client,
         &crate::usecase::state_subscription::SubscriptionTarget::parse(target)?,
     )
+}
+
+pub(crate) fn terminal_application_fixture() -> (
+    Arc<crate::usecase::terminal_surface::application::TerminalSurfaceApplication>,
+    Arc<crate::adaptor::gateway::terminal_surface::runtime_gateway_impl::TerminalSurfaceRuntimeGatewayFor>,
+    Arc<crate::adaptor::presenter::terminal_event_hub::TerminalSurfaceEventHub>,
+    crate::domain::terminal_surface::entities::TerminalSurface,
+){
+    use crate::domain::terminal_surface::gateway::TerminalSurfaceGateway;
+    use crate::usecase::terminal_surface::output::TerminalSurfaceOutputControl;
+    let hub =
+        Arc::new(crate::adaptor::presenter::terminal_event_hub::TerminalSurfaceEventHub::new());
+    let gateway = Arc::new(crate::adaptor::gateway::terminal_surface::runtime_gateway_impl::TerminalSurfaceRuntimeGatewayFor::new_with_event_sink(
+        Arc::new(|_| {}), std::path::PathBuf::new(), hub.clone(), false,
+    ));
+    let owner = crate::domain::terminal_surface::TerminalSurfaceOwner::workspace(
+        crate::domain::workspace_tree::WorkspaceIdentity::new("/repo"),
+    )
+    .unwrap();
+    let surface = crate::domain::terminal_surface::entities::TerminalSurface::new(1, owner, None);
+    gateway.insert_surface(surface.clone());
+    hub.initialize(registration(&surface.session_key, "/repo", None, 1, 0))
+        .unwrap();
+    let terminal = terminal_application_with_gateway(gateway.clone(), hub.clone());
+    (terminal, gateway, hub, surface)
+}
+
+pub(crate) fn terminal_application_with_gateway(
+    gateway: Arc<
+        dyn crate::domain::terminal_surface::gateway::TerminalSurfaceGateway + Send + Sync,
+    >,
+    hub: Arc<crate::adaptor::presenter::terminal_event_hub::TerminalSurfaceEventHub>,
+) -> Arc<crate::usecase::terminal_surface::application::TerminalSurfaceApplication> {
+    Arc::new(crate::usecase::terminal_surface::application::TerminalSurfaceApplication::new(
+        Arc::new(crate::adaptor::gateway::telemetry::TelemetryGateway),
+        gateway,
+        Arc::new(crate::adaptor::gateway::terminal_surface::event_source::TerminalSurfaceEventSourceGateway::new(hub.event_sender())),
+        hub,
+    ))
 }

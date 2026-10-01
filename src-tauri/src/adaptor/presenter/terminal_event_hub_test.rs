@@ -358,7 +358,7 @@ fn test_terminal再接続_持ち主ごとの最新世代だけを登録する() 
 }
 
 #[test]
-fn test_terminal経路_古い世代の削除は新世代を保持し最新削除後は復活しない() {
+fn test_terminal経路_現在と同じ番号の旧世代終了を届け最新削除後は復活しない() {
     use crate::adaptor::presenter::state_subscription::StateSubscriptionPresenter;
     use crate::adaptor::presenter::terminal_subscription::TerminalSubscriptionPresenter;
     use crate::usecase::state_subscription::SubscriptionTarget;
@@ -381,26 +381,104 @@ fn test_terminal経路_古い世代の削除は新世代を保持し最新削除
         .test_runtime()
         .inspect(|state| state.current_version(&target))
         .unwrap();
+    assert!(version.epoch.ends_with(":3"));
+    assert_eq!(version.sequence, 0);
     // When / Then
     assert!(!hub.remove(2));
     assert_eq!(
         presenter
             .test_runtime()
             .inspect(|state| state.current_version(&target)),
-        Some(version)
+        Some(version.clone())
     );
+    presenter
+        .test_runtime()
+        .update(|state| {
+            state.open("client".into())?;
+            state.start("client", &target, Some(&version))?;
+            assert!(matches!(
+                state.next("client"),
+                Some((
+                    _,
+                    crate::infrastructure::state_subscription::Event::Bookmark(_)
+                ))
+            ));
+            Ok(true)
+        })
+        .unwrap();
     hub.publish(TerminalSurfaceOutputEvent::Exit {
         session_key: "session".into(),
         runtime_generation: 1,
         sequence: 0,
         exit_code: Some(9),
     });
-    assert!(presenter
+    let event = presenter
         .test_runtime()
-        .inspect(|state| state.current_version(&target).is_some()));
+        .mutate(|state| (state.next("client"), false))
+        .unwrap();
+    assert!(matches!(event,
+        (_, crate::infrastructure::state_subscription::Event::Change(delivered, crate::infrastructure::state_subscription::Delivery::Delta, value))
+        if delivered == version && delivered.sequence == 0
+        && matches!(crate::test_support::state_subscription::terminal_item(&value),
+            crate::adaptor::presenter::client::terminal_event::Item::Exit(exit) if exit.exit_code == Some(9))));
+    presenter
+        .test_runtime()
+        .mutate(|state| (state.close("client"), false));
     assert!(!hub.remove(3));
     hub.publish(output_event(1, "old"));
     assert!(presenter
         .test_runtime()
         .inspect(|state| state.current_version(&target).is_none()));
+}
+
+#[test]
+fn test_terminal配信_登録表と接続先のlockを放して最新世代へ届ける() {
+    struct Sink {
+        hub: std::sync::Weak<TerminalSurfaceEventHub>,
+        published: std::sync::Mutex<Vec<u64>>,
+    }
+    impl TerminalSurfaceStateSink for Sink {
+        fn initialize(
+            &self,
+            _: &crate::usecase::terminal_surface::output::TerminalRegistration,
+        ) -> Result<(), crate::usecase::terminal_surface::error::UsecaseError> {
+            Ok(())
+        }
+        fn remove(
+            &self,
+            _: &crate::usecase::terminal_surface::output::TerminalRegistration,
+        ) -> bool {
+            false
+        }
+        fn publish(
+            &self,
+            registration: &crate::usecase::terminal_surface::output::TerminalRegistration,
+            _: TerminalSurfaceOutputEvent,
+        ) {
+            let hub = self.hub.upgrade().unwrap();
+            assert!(hub.registrations.try_lock().is_some());
+            assert!(hub.state_sink.try_lock().is_some());
+            self.published
+                .lock()
+                .unwrap()
+                .push(registration.runtime_generation);
+        }
+    }
+    // Given
+    let hub = Arc::new(TerminalSurfaceEventHub::new());
+    let sink = Arc::new(Sink {
+        hub: Arc::downgrade(&hub),
+        published: Default::default(),
+    });
+    hub.set_state_sink(sink.clone()).unwrap();
+    for (session, generation) in [("session", 1), ("other", 2), ("session", 3)] {
+        hub.initialize(crate::test_support::state_subscription::registration(
+            session, "/repo", None, generation, 0,
+        ))
+        .unwrap();
+    }
+    // When
+    hub.publish(output_event(1, "output"));
+    // Then
+    assert_eq!(*sink.published.lock().unwrap(), vec![3]);
 }

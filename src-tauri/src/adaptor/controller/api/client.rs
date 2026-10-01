@@ -213,14 +213,10 @@ impl StateSubscriptionDeps {
             + use<>,
         crate::usecase::state_subscription::SubscriptionError,
     > {
-        let permit = self.open_stream(id.clone())?;
-        let terminal = self.terminal.clone();
-        Ok(self.presenter.stream_wire(id, permit, move |raw, clients| {
-            if let Ok(target) = crate::usecase::state_subscription::SubscriptionTarget::parse(&raw)
-            {
-                terminal.schedule_terminal_refresh(clients, target);
-            }
-        }))
+        use futures_util::StreamExt;
+        Ok(self
+            .stream(id)?
+            .map(crate::adaptor::presenter::state_subscription_wire::event))
     }
 
     pub(crate) async fn start_subscription(
@@ -231,9 +227,7 @@ impl StateSubscriptionDeps {
         cursor: Option<(&str, u64)>,
     ) -> Result<(), crate::usecase::state_subscription::StateReadError> {
         use crate::usecase::state_subscription::SubscriptionTarget;
-        if let Some(input) =
-            input.or_else(|| matches!(target, SubscriptionTarget::Terminal(_)).then_some(client))
-        {
+        if input.is_some() || matches!(target, SubscriptionTarget::Terminal(_)) {
             self.terminal
                 .start_terminal(client, target, input, cursor)
                 .await

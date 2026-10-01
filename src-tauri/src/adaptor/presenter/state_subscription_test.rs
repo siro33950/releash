@@ -1,6 +1,7 @@
 use super::*;
 use crate::test_support::state_subscription::WakeFlag;
 use crate::usecase::state_subscription::StateSubscriptionUsecase;
+use futures_util::StreamExt;
 
 #[test]
 fn test_配信失敗_usecaseの失敗分類へ意味を保って変換する() {

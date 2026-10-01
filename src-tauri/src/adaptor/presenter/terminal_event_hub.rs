@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
 use parking_lot::Mutex;
@@ -18,7 +18,7 @@ pub(crate) struct TerminalSurfaceEventHub {
     sender: tokio::sync::broadcast::Sender<TerminalSurfaceEvent>,
     state_sink:
         Mutex<Option<Arc<dyn crate::usecase::terminal_surface::output::TerminalSurfaceStateSink>>>,
-    registrations: Mutex<HashMap<u64, TerminalRegistration>>,
+    registrations: Mutex<HashMap<String, BTreeMap<u64, Arc<TerminalRegistration>>>>,
     output: TerminalOutputFlow,
 }
 
@@ -62,17 +62,10 @@ impl TerminalSurfaceOutputControl for TerminalSurfaceEventHub {
         sink: Arc<dyn crate::usecase::terminal_surface::output::TerminalSurfaceStateSink>,
     ) -> Result<(), UsecaseError> {
         let registrations = self.registrations.lock();
-        let mut latest: HashMap<&str, &TerminalRegistration> = HashMap::new();
-        for registration in registrations.values() {
-            let current = latest
-                .entry(&registration.session_key)
-                .or_insert(registration);
-            if current.runtime_generation < registration.runtime_generation {
-                *current = registration;
+        for generations in registrations.values() {
+            if let Some((_, registration)) = generations.last_key_value() {
+                sink.initialize(registration)?;
             }
-        }
-        for registration in latest.values() {
-            sink.initialize(registration)?;
         }
         *self.state_sink.lock() = Some(sink);
         Ok(())
@@ -84,7 +77,10 @@ impl TerminalSurfaceOutputControl for TerminalSurfaceEventHub {
         }
         self.output
             .reset(&registration.session_key, registration.latest_sequence);
-        registrations.insert(registration.runtime_generation, registration);
+        registrations
+            .entry(registration.session_key.clone())
+            .or_default()
+            .insert(registration.runtime_generation, Arc::new(registration));
         Ok(())
     }
     fn subscribe_output(&self, session_key: &str, client: &str, units: usize) {
@@ -105,15 +101,26 @@ mod terminal_event_hub_tests;
 impl TerminalSurfaceEventSink for TerminalSurfaceEventHub {
     fn remove(&self, runtime_generation: u64) -> bool {
         let mut registrations = self.registrations.lock();
-        let Some(registration) = registrations.remove(&runtime_generation) else {
+        let Some(session) = registrations.iter().find_map(|(session, generations)| {
+            generations
+                .contains_key(&runtime_generation)
+                .then(|| session.clone())
+        }) else {
             return false;
         };
-        let subscribed = self.state_sink.lock().as_ref().is_some_and(|sink| {
-            !registrations.values().any(|other| {
-                other.session_key == registration.session_key
-                    && other.runtime_generation > runtime_generation
-            }) && sink.remove(&registration)
-        });
+        let generations = registrations.get_mut(&session).unwrap();
+        let registration = generations.remove(&runtime_generation).unwrap();
+        let newer = generations
+            .last_key_value()
+            .is_some_and(|(generation, _)| *generation > runtime_generation);
+        if generations.is_empty() {
+            registrations.remove(&session);
+        }
+        let subscribed = self
+            .state_sink
+            .lock()
+            .as_ref()
+            .is_some_and(|sink| !newer && sink.remove(&registration));
         self.release_output(&registration.session_key);
         subscribed
     }
@@ -128,17 +135,15 @@ impl TerminalSurfaceEventSink for TerminalSurfaceEventHub {
             self.output
                 .output(event.session_key(), *sequence, data.encode_utf16().count());
         }
-        {
-            let registrations = self.registrations.lock();
-            if let Some(registration) = registrations
-                .values()
-                .filter(|registration| registration.session_key == event.session_key())
-                .max_by_key(|registration| registration.runtime_generation)
-            {
-                if let Some(sink) = self.state_sink.lock().as_ref() {
-                    sink.publish(registration, event.clone());
-                }
-            }
+        let registration = self
+            .registrations
+            .lock()
+            .get(event.session_key())
+            .and_then(|generations| generations.last_key_value())
+            .map(|(_, registration)| registration.clone());
+        let sink = self.state_sink.lock().clone();
+        if let (Some(registration), Some(sink)) = (registration, sink) {
+            sink.publish(&registration, event.clone());
         }
 
         if let TerminalSurfaceOutputEvent::Exit {
