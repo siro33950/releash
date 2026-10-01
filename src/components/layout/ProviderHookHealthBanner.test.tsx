@@ -53,4 +53,11 @@ describe("ProviderHookHealthBanner", () => {
 		act(() => states.publish("provider-hook-health", []));
 		expect(screen.queryByRole("alert")).toBeNull();
 	});
+	it("記録の読取失敗を警告なしと区別し回復後に解除する", () => {
+		render(<ProviderHookHealthBanner />);
+		act(() => states.fail("provider-hook-health", new Error("corrupt record")));
+		expect(screen.getByRole("alert")).toHaveTextContent("corrupt record");
+		act(() => states.publish("provider-hook-health", []));
+		expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+	});
 });

@@ -206,3 +206,54 @@ async fn test_購読再開始_状態不変なら通知せず初回開始だけ�
     presenter.start("client", &target, None).unwrap();
     assert!(!flag.0.load(Ordering::SeqCst));
 }
+
+#[test]
+fn test_terminal読取失敗_出力sequenceを進めず次の出力を配信する() {
+    // Given
+    let presenter = StateSubscriptionPresenter::new();
+    let target = SubscriptionTarget::from_parts("terminal", &["/repo"]).unwrap();
+    let version = Version {
+        epoch: "terminal".into(),
+        sequence: 4,
+    };
+    presenter
+        .runtime
+        .update(|state| state.register_delta(&target.to_string(), version.clone(), 1024))
+        .unwrap();
+    // When
+    presenter
+        .publish_failure(
+            &target,
+            StateReadError::from_error(SubscriptionError::SnapshotRequired),
+        )
+        .unwrap();
+    // Then
+    assert_eq!(
+        presenter
+            .runtime
+            .inspect(|state| state.current_version(&target.to_string())),
+        Some(version)
+    );
+    let next = Version {
+        epoch: "terminal".into(),
+        sequence: 5,
+    };
+    let value = crate::adaptor::presenter::state_subscription_wire::payload(
+        &StateValue::RepositoryPaths(vec![]),
+    )
+    .unwrap();
+    presenter
+        .runtime
+        .update(|state| {
+            state
+                .publish_delta(&target.to_string(), next.clone(), value, 1, true)
+                .map(|_| true)
+        })
+        .unwrap();
+    assert_eq!(
+        presenter
+            .runtime
+            .inspect(|state| state.current_version(&target.to_string())),
+        Some(next)
+    );
+}

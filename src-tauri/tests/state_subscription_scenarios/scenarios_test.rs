@@ -804,7 +804,8 @@ impl ExternalReads {
                         is_merged: false,
                     },
                     deleting: false,
-                    dirty_count: 0,
+                    dirty_count: Fetched::ready(0),
+                    pull_request_error: None,
                     merged: false,
                     pull_request: Some(crate::domain::git_host::PrInfo {
                         number: self.prs.load(Ordering::SeqCst),

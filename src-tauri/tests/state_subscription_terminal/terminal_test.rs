@@ -1302,3 +1302,51 @@ async fn test_terminal購読開始_途中でclientが切断したら出力登録
         .test_runtime()
         .inspect(|state| state.is_subscribed("client", &target.to_string())));
 }
+
+#[tokio::test]
+async fn test_terminal再取得失敗_開始済み購読へ失敗を届ける() {
+    use crate::usecase::terminal_surface::io_usecase::io_usecase_tests::FakePtyGateway;
+    let (subscriptions, _, hub, surface) = fixture();
+    let mut gateway = FakePtyGateway::new();
+    gateway.surface = Some(surface.clone());
+    let gateway = Arc::new(gateway);
+    let terminal = Arc::new(crate::usecase::terminal_surface::application::TerminalSurfaceApplication::new(
+        Arc::new(crate::adaptor::gateway::telemetry::TelemetryGateway),
+        gateway.clone(),
+        Arc::new(crate::adaptor::gateway::terminal_surface::event_source::TerminalSurfaceEventSourceGateway::new(hub.event_sender())),
+        hub,
+    ));
+    subscriptions
+        .test_presenter()
+        .unwrap()
+        .connect_terminal(&terminal)
+        .unwrap();
+    let subscriptions = subscriptions.with_terminal(terminal);
+    let target = SubscriptionTarget::Terminal(surface.owner.clone());
+    let stream = subscriptions.open("client".into()).unwrap();
+    tokio::pin!(stream);
+    assert!(matches!(
+        stream.next().await,
+        Some(StateSubscriptionEvent::Ready)
+    ));
+    crate::test_support::state_subscription::start_terminal(
+        &subscriptions,
+        "client",
+        &target.to_string(),
+        None,
+        "input",
+    )
+    .await
+    .unwrap();
+    stream.next().await.unwrap();
+    stream.next().await.unwrap();
+    *gateway.snapshot_unavailable.lock() = true;
+    subscriptions.schedule_terminal_refresh(vec!["client".into()], target.clone());
+    let event = tokio::time::timeout(std::time::Duration::from_secs(2), stream.next())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        matches!(event, StateSubscriptionEvent::Item(_, Event::Change(_, _, value)) if matches!(value.value, Some(crate::adaptor::presenter::client::state_payload::Value::ReadFailure(ref failure)) if failure.message.contains("snapshot unavailable")))
+    );
+}

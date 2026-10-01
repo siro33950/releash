@@ -68,11 +68,13 @@ fn test_worktree列挙_途中の停止を欠損や成功に変えず返す() {
             entries.try_for_each(|entry| {
                 entry?;
                 visited += 1;
-                Ok::<_, OperationStopped>(())
+                Ok::<_, git_operation::GitOperationError>(())
             })
         });
         // Then
-        assert_eq!(result, Err(expected));
+        assert!(
+            matches!(result, Err(git_operation::GitOperationError::Stopped(error)) if error == expected)
+        );
         assert_eq!(visited, 0);
         assert!(entries.next().unwrap().is_ok());
     }
@@ -203,4 +205,77 @@ fn test_worktree作成失敗_巻き戻しの停止を元のgitエラーへ変え
             other => panic!("unexpected error: {other:?}"),
         }
     });
+}
+
+#[test]
+fn test_worktree一覧_コミットのないrepositoryも正常に返す() {
+    for existing_base in [false, true] {
+        let (directory, repo) = crate::test_support::git::create_test_repo();
+        if existing_base {
+            crate::test_support::git::create_initial_commit(&repo);
+            let base = repo.head().unwrap().shorthand().unwrap().to_string();
+            super::super::git_config::set_releash_base(
+                directory.path().to_str().unwrap(),
+                Some(&base),
+            )
+            .unwrap();
+            repo.set_head("refs/heads/orphan").unwrap();
+        }
+        let entries = list_worktrees(directory.path().to_str().unwrap()).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].branch, "(no commits)");
+        assert!(entries[0].is_main);
+        assert!(!entries[0].is_merged);
+    }
+}
+
+#[test]
+fn test_worktree一覧_登録を残して実体を消した行だけを除外する() {
+    let (directory, repo) = crate::test_support::git::create_test_repo();
+    crate::test_support::git::create_initial_commit(&repo);
+    let worktree = directory.path().join("linked");
+    repo.worktree("linked", &worktree, None).unwrap();
+    std::fs::remove_dir_all(&worktree).unwrap();
+    assert!(repo.find_worktree("linked").is_ok());
+    let rows = list_worktrees(directory.path().to_str().unwrap()).unwrap();
+    assert_eq!(rows.len(), 1);
+    assert!(rows[0].is_main);
+}
+
+#[test]
+fn test_worktree一覧_名前読取失敗を行の欠落に変換しない() {
+    let (_directory, repo) = crate::test_support::git::create_test_repo();
+    let config = repo.path().join("config");
+    let mut bytes = std::fs::read(&config).unwrap();
+    bytes.extend_from_slice(b"\n[remote \"\xff\"]\nurl = https://example.com/repo\n");
+    std::fs::write(config, bytes).unwrap();
+    let names = repo.remotes().unwrap();
+    assert_eq!(names.len(), 1);
+    assert!(names.get(0).is_err());
+    let entries = each_worktree(&repo, &names).collect::<Vec<_>>();
+    assert_eq!(entries.len(), 1);
+    assert!(
+        matches!(&entries[0], Err(GitOperationError::Git(error)) if error.code() != git2::ErrorCode::NotFound)
+    );
+}
+
+#[test]
+fn test_worktree一覧_lockbranch読取失敗を正常な行に変換しない() {
+    for failure in ["lock", "branch"] {
+        let (directory, repo) = crate::test_support::git::create_test_repo();
+        crate::test_support::git::create_initial_commit(&repo);
+        let worktree = directory.path().join("linked");
+        let linked = repo.worktree("linked", &worktree, None).unwrap();
+        let administration = repo.path().join("worktrees/linked");
+        match failure {
+            "lock" => std::fs::create_dir(administration.join("locked")).unwrap(),
+            "branch" => std::fs::write(administration.join("HEAD"), "invalid head\n").unwrap(),
+            _ => unreachable!(),
+        }
+        linked.validate().unwrap();
+        assert!(
+            list_worktrees(directory.path().to_str().unwrap()).is_err(),
+            "{failure}"
+        );
+    }
 }

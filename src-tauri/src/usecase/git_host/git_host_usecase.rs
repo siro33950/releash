@@ -10,6 +10,8 @@ pub struct GitHostUsecase {
     provider: Arc<dyn GitHostProvider>,
     pr_cache: Arc<dyn PrStatusCache>,
     issue_cache: Arc<dyn IssueCache>,
+    issue_failures: Arc<parking_lot::RwLock<std::collections::HashMap<String, GitHostError>>>,
+    pr_failures: Arc<parking_lot::RwLock<std::collections::HashMap<String, GitHostError>>>,
 }
 
 impl GitHostUsecase {
@@ -28,6 +30,8 @@ impl GitHostUsecase {
     ) -> Self {
         Self {
             state_publisher: None,
+            pr_failures: Default::default(),
+            issue_failures: Default::default(),
             provider,
             pr_cache,
             issue_cache,
@@ -39,10 +43,39 @@ impl GitHostUsecase {
         self.pr_cache.lookup(repo_path)
     }
 
+    pub(crate) fn pr_status_result(
+        &self,
+        path: &str,
+    ) -> crate::usecase::fetched::Fetched<PrStatus> {
+        let error = self.pr_failures.read().get(path).map(ToString::to_string);
+        crate::usecase::fetched::Fetched {
+            value: if error.is_none() {
+                self.known_pr_status(path)
+            } else {
+                None
+            },
+            error,
+        }
+    }
+
     /// PR の状態を取りに行って保持する。変わったときは Workspaces の購読へ知らせる。
     pub fn refresh_pr_status(&self, repo_path: &str) -> Result<(), GitHostError> {
-        let value = self.provider.fetch_pr_status(repo_path)?;
-        if self.pr_cache.lookup(repo_path).as_ref() == Some(&value) {
+        let value = match self.provider.fetch_pr_status(repo_path) {
+            Ok(value) => value,
+            Err(error) => {
+                self.pr_failures
+                    .write()
+                    .insert(repo_path.into(), error.clone());
+                if let Some(publisher) = &self.state_publisher {
+                    publisher.notify(
+                        crate::usecase::state_subscription::StateChangeSource::WorkspaceList,
+                    );
+                }
+                return Err(error);
+            }
+        };
+        let recovered = self.pr_failures.write().remove(repo_path).is_some();
+        if !recovered && self.pr_cache.lookup(repo_path).as_ref() == Some(&value) {
             return Ok(());
         }
         self.pr_cache.store(repo_path, value);
@@ -53,17 +86,30 @@ impl GitHostUsecase {
     }
 
     pub fn fetch_issues(&self, repo_path: &str) -> Result<Vec<IssueInfo>, GitHostError> {
-        let value = self.provider.list_issues(repo_path)?;
-        self.issue_cache.store(repo_path, value.clone());
+        let result = self.provider.list_issues(repo_path);
+        match &result {
+            Ok(value) => {
+                self.issue_failures.write().remove(repo_path);
+                self.issue_cache.store(repo_path, value.clone());
+            }
+            Err(error) => {
+                self.issue_failures
+                    .write()
+                    .insert(repo_path.into(), error.clone());
+            }
+        }
         if let Some(publisher) = &self.state_publisher {
             publisher.notify(
                 crate::usecase::state_subscription::StateChangeSource::Issues(repo_path.into()),
             );
         }
-        Ok(value)
+        result
     }
 
     pub fn get_cached_issues(&self, repo_path: &str) -> Result<Vec<IssueInfo>, GitHostError> {
+        if let Some(error) = self.issue_failures.read().get(repo_path) {
+            return Err(error.clone());
+        }
         if let Some(issues) = self.issue_cache.lookup(repo_path) {
             return Ok(issues);
         }
@@ -220,6 +266,73 @@ mod tests {
         issue_cache: Arc<FakeIssueCache>,
     ) -> GitHostUsecase {
         GitHostUsecase::new(provider, pr_cache, issue_cache)
+    }
+
+    #[test]
+    fn test_pr読取_取得失敗を前の成功と区別し回復時に解除する() {
+        struct Provider(parking_lot::RwLock<bool>);
+        impl GitHostProvider for Provider {
+            fn fetch_pr_status(&self, _: &str) -> Result<PrStatus, GitHostError> {
+                if *self.0.read() {
+                    Err(GitHostError::External("denied".into()))
+                } else {
+                    Ok(PrStatus::default())
+                }
+            }
+            fn list_issues(&self, _: &str) -> Result<Vec<IssueInfo>, GitHostError> {
+                Ok(vec![])
+            }
+        }
+        // Given
+        let provider = Arc::new(Provider(parking_lot::RwLock::new(true)));
+        let usecase = GitHostUsecase::new(
+            provider.clone(),
+            Arc::new(FakePrCache::with_lookup(Some(PrStatus::default()))),
+            Arc::new(FakeIssueCache::default()),
+        );
+        // When / Then
+        assert!(usecase.refresh_pr_status("/repo").is_err());
+        assert!(usecase.pr_status_result("/repo").value.is_none());
+        assert_eq!(
+            usecase.pr_status_result("/repo").error.as_deref(),
+            Some("denied")
+        );
+        *provider.0.write() = false;
+        usecase.refresh_pr_status("/repo").unwrap();
+        assert!(usecase.pr_status_result("/repo").error.is_none());
+        assert!(usecase.pr_status_result("/repo").value.is_some());
+    }
+
+    #[test]
+    fn test_issue手動再取得_失敗を保持し成功時に解除する() {
+        struct Provider(parking_lot::RwLock<bool>);
+        impl GitHostProvider for Provider {
+            fn fetch_pr_status(&self, _: &str) -> Result<PrStatus, GitHostError> {
+                Ok(PrStatus::default())
+            }
+            fn list_issues(&self, _: &str) -> Result<Vec<IssueInfo>, GitHostError> {
+                if *self.0.read() {
+                    Err(GitHostError::External("offline".into()))
+                } else {
+                    Ok(vec![])
+                }
+            }
+        }
+        let provider = Arc::new(Provider(parking_lot::RwLock::new(false)));
+        let usecase = GitHostUsecase::new(
+            provider.clone(),
+            Arc::new(FakePrCache::default()),
+            Arc::new(FakeIssueCache::default()),
+        );
+        assert!(usecase.fetch_issues("/repo").unwrap().is_empty());
+        *provider.0.write() = true;
+        assert!(usecase.fetch_issues("/repo").is_err());
+        assert!(
+            matches!(usecase.get_cached_issues("/repo"), Err(GitHostError::External(message)) if message == "offline")
+        );
+        *provider.0.write() = false;
+        assert!(usecase.fetch_issues("/repo").unwrap().is_empty());
+        assert!(usecase.get_cached_issues("/repo").unwrap().is_empty());
     }
 
     #[test]

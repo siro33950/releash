@@ -78,6 +78,7 @@ struct Issues {
     calls: AtomicUsize,
     values: Mutex<Vec<IssueInfo>>,
     own_runtime: AtomicBool,
+    failure: Mutex<bool>,
 }
 impl GitHostProvider for Issues {
     fn fetch_pr_status(&self, _: &str) -> Result<PrStatus, GitHostError> {
@@ -90,6 +91,9 @@ impl GitHostProvider for Issues {
                 .build()
                 .unwrap()
                 .block_on(async {});
+        }
+        if *self.failure.lock() {
+            return Err(GitHostError::External("issues offline".into()));
         }
         Ok(self.values.lock().clone())
     }
@@ -399,7 +403,7 @@ async fn test_状態読取_全対象を対応するサービスへ引数付き�
         ),
         (
             T::Workspaces,
-            StateValue::Workspaces(r.workspaces.read().await),
+            StateValue::Workspaces(r.workspaces.read().await.unwrap()),
         ),
         (
             T::Selection(p.clone(), "missing".into()),
@@ -465,13 +469,13 @@ async fn test_状態読取_全対象を対応するサービスへ引数付き�
         ),
         (
             T::RepositoryRoot(format!("{p}/.git")),
-            StateValue::RepositoryRoot(p.clone()),
+            StateValue::RepositoryRoot(Some(p.clone())),
         ),
         (
             T::StartupRepository,
             StateValue::StartupRepository(
                 r.repository
-                    .get_main_repo_path(&r.repository.get_cwd().unwrap())
+                    .find_main_repo_path(&r.repository.get_cwd().unwrap())
                     .unwrap(),
             ),
         ),
@@ -491,9 +495,8 @@ async fn test_状態読取_全対象を対応するサービスへ引数付き�
         ),
         (
             T::Workflow("fixture".into()),
-            StateValue::Workflow(r.workflow.get_workflow_dto("fixture")),
+            StateValue::Workflow(r.workflow.get_workflow_dto("fixture").unwrap()),
         ),
-        (T::Workflow("broken".into()), StateValue::Workflow(None)),
         (T::Workflow("missing".into()), StateValue::Workflow(None)),
         (
             T::WorkflowSource("fixture".into()),
@@ -543,6 +546,13 @@ async fn test_状態読取_全対象を対応するサービスへ引数付き�
     let StateValue::Diagnostics(report) = r.read(&T::Diagnostics).await.unwrap() else {
         unreachable!()
     };
+    assert!(matches!(
+        r.read(&T::Workflow("broken".into())).await,
+        Err(crate::usecase::state_subscription::StateReadError {
+            source: StateReadFailure::Workflow(_),
+            ..
+        })
+    ));
     assert!(report.workflow_summaries.contains_key("broken"));
     assert!(matches!(
         r.read(&T::Facet(FacetKind::Instruction, "missing-facet".into()))
@@ -852,4 +862,37 @@ async fn test_状態読取_review対象をworktreeとcomment置き場から読�
         .await
         .unwrap_err();
     assert!(matches!(error.source, StateReadFailure::Code(_)));
+}
+
+#[tokio::test]
+async fn test_issue手動更新失敗_購読へ失敗を届け回復時に新しい一覧を届ける() {
+    use crate::test_support::state_subscription::Event;
+    let fixture = Fixture::new();
+    let mut stream = Box::pin(fixture.subscriptions.open("client".into()).unwrap());
+    stream.next().await;
+    let target = SubscriptionTarget::Issues(fixture.path.clone()).to_string();
+    start_read(&fixture.subscriptions, "client", &target, None)
+        .await
+        .unwrap();
+    stream.next().await.unwrap();
+    stream.next().await.unwrap();
+    *fixture.issues.failure.lock() = true;
+    assert!(fixture.reads.git_host.fetch_issues(&fixture.path).is_err());
+    let event = tokio::time::timeout(std::time::Duration::from_secs(2), stream.next())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        matches!(event, StateSubscriptionEvent::Item(id, Event::Change(_, _, value)) if id == target && matches!(value.value, Some(crate::adaptor::presenter::client::state_payload::Value::ReadFailure(_))))
+    );
+    *fixture.issues.failure.lock() = false;
+    *fixture.issues.values.lock() = vec![issue(2)];
+    fixture.reads.git_host.fetch_issues(&fixture.path).unwrap();
+    let event = tokio::time::timeout(std::time::Duration::from_secs(2), stream.next())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        matches!(event, StateSubscriptionEvent::Item(id, Event::Change(_, _, value)) if id == target && crate::test_support::state_subscription::same(&value, &StateValue::Issues(vec![issue(2).into()])))
+    );
 }

@@ -29,7 +29,9 @@ export function useAutomation(open: boolean) {
 	const [selectedWorkflowName, setSelectedWorkflowName] = useState<
 		string | null
 	>(null);
-	const workflows = workflowsSubscription.value ?? [];
+	const workflows = workflowsSubscription.error
+		? []
+		: (workflowsSubscription.value ?? []);
 	const selectedSourceFormat = selectedWorkflowName
 		? workflows.find((workflow) => workflow.name === selectedWorkflowName)
 				?.sourceFormat
@@ -279,8 +281,7 @@ export function useAutomation(open: boolean) {
 		[],
 	);
 
-	const error =
-		operationError ??
+	const readError =
 		workflowsSubscription.error ??
 		diagnosticsSubscription.error ??
 		facetsSubscription.error ??
@@ -288,9 +289,12 @@ export function useAutomation(open: boolean) {
 		sourceSubscription.error ??
 		facetSubscription.error;
 
+	const error = operationError ?? readError;
+
 	return {
+		readError,
 		workflows,
-		facets: facetsSubscription.value ?? [],
+		facets: facetsSubscription.error ? [] : (facetsSubscription.value ?? []),
 		report: diagnosticsSubscription.value ?? EMPTY_REPORT,
 		loading:
 			open &&
@@ -303,10 +307,12 @@ export function useAutomation(open: boolean) {
 		externalChangeDetected,
 		clearExternalChange,
 
-		selectedWorkflow,
+		selectedWorkflow: workflowSubscription.error ? null : selectedWorkflow,
 		selectedWorkflowName,
-		selectedWorkflowSource,
-		selectedFacetContent,
+		selectedWorkflowSource: sourceSubscription.error
+			? null
+			: selectedWorkflowSource,
+		selectedFacetContent: facetSubscription.error ? null : selectedFacetContent,
 		selectedFacetKey: selectedFacet?.key ?? null,
 		selectedFacetKind: selectedFacet?.kind ?? null,
 

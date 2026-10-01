@@ -166,7 +166,11 @@ pub(crate) fn resolve_effective_base_branch(
     else {
         return Ok(None);
     };
-    let Some(head) = git_operation::optional(git_operation::run(|| repo.head()))? else {
+    let Some(head) = git_operation::optional(match git_operation::run(|| repo.head()) {
+        Err(error) if error.code() == git2::ErrorCode::UnbornBranch => return Ok(None),
+        result => result,
+    })?
+    else {
         return Ok(None);
     };
     if !head.is_branch() {
@@ -176,10 +180,7 @@ pub(crate) fn resolve_effective_base_branch(
         Some(oid) => oid,
         None => return Ok(None),
     };
-    let branch_name = match head.shorthand() {
-        Ok(branch_name) => branch_name.to_string(),
-        Err(_) => return Ok(None),
-    };
+    let branch_name = head.shorthand()?.to_string();
     let config = git_operation::optional(git_operation::run(|| repo.config()))?;
     let base_name = match resolve_branch_base(&repo, config.as_ref(), &branch_name)? {
         Some(base_name) => base_name,

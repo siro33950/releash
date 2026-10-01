@@ -1,5 +1,10 @@
 // Generated from proto/client.proto. Run pnpm generate:protocol.
 
+export type StateReadFailure = {
+	code?: number;
+	message?: string;
+};
+
 export type TerminalEvent = {
 	snapshot?: TerminalSnapshot;
 	output?: TerminalOutput;
@@ -66,9 +71,11 @@ export type WorkspaceBranch = {
 	is_main_worktree: boolean;
 	is_deleting: boolean;
 	worktree_path: string;
-	dirty_count: number;
+	dirty_count: number | null;
 	is_merged: boolean;
 	has_pr: boolean;
+	dirty_count_error: string | null;
+	pull_request_error: string | null;
 	pr_number: number | null;
 	pr_url: string | null;
 };
@@ -348,8 +355,6 @@ export type WorktreeEntryDto = {
 	branch: string;
 	is_main: boolean;
 	is_locked: boolean;
-	dirty_count: number;
-	base_branch: string | null;
 };
 
 export type NullableWorkspaceStateDto = WorkspaceStateDto | null;

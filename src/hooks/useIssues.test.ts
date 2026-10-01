@@ -31,7 +31,7 @@ it("issueは購読から受け取り手動更新は結果を返さない操作�
 	expect(release).toHaveBeenCalledOnce();
 });
 
-it("手動更新の失敗を処理し直前の一覧を保持して再取得しない", async () => {
+it("手動更新の失敗通知で直前の一覧を無効にし回復を待つ", async () => {
 	const issues = [
 		{
 			number: 1,
@@ -61,8 +61,10 @@ it("手動更新の失敗を処理し直前の一覧を保持して再取得し�
 		const { result } = renderHook(() => useIssues("/repo"));
 		await act(async () => {
 			await expect(result.current.refresh()).resolves.toBeUndefined();
+			vi.mocked(subscribeState).mock.calls[0][2](failure);
 		});
-		expect(result.current.issues).toEqual(issues);
+		expect(result.current.issues).toEqual([]);
+		expect(result.current.error).toBe("offline");
 		expect(result.current.loading).toBe(false);
 		expect(log).toHaveBeenCalledWith("Failed to fetch issues:", failure);
 		expect((notice.mock.calls[0][0] as CustomEvent<string>).detail).toBe(
@@ -76,4 +78,17 @@ it("手動更新の失敗を処理し直前の一覧を保持して再取得し�
 		window.removeEventListener("releash-client-error", notice);
 		log.mockRestore();
 	}
+});
+
+it("購読の読取失敗を表示し回復を待つ", () => {
+	vi.mocked(subscribeState).mockImplementation(() => vi.fn());
+	const { result } = renderHook(() => useIssues("/repo"));
+	const [, receive, fail] = vi.mocked(subscribeState).mock.calls[0];
+	act(() => receive([]));
+	act(() => fail(new Error("issues denied")));
+	expect(result.current.error).toBe("issues denied");
+	expect(result.current.loading).toBe(false);
+	expect(result.current.issues).toEqual([]);
+	act(() => receive([]));
+	expect(result.current.error).toBeNull();
 });

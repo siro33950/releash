@@ -49,3 +49,24 @@ fn test_base解決_各停止点で欠損へ変換せず次の候補へ進まな�
     let deleted = dir.path().join("deleted");
     assert_stops_at_each_checkpoint(|| resolve_current_base_branch(deleted.to_str().unwrap()));
 }
+
+#[test]
+fn test_base読取_設定破損を未設定や既定branchに変換しない() {
+    let (dir, repo) = create_test_repo();
+    let path = dir.path().to_str().unwrap();
+    assert_eq!(get_branch_base(path, "unborn").unwrap(), None);
+    create_initial_commit(&repo);
+    let path = dir.path().to_str().unwrap();
+    let branch = repo.head().unwrap().shorthand().unwrap().to_string();
+    assert_eq!(
+        get_branch_base(path, &branch).unwrap(),
+        Some(branch.clone())
+    );
+    assert_eq!(get_releash_base(path).unwrap(), None);
+    assert!(resolve_effective_base_branch(path).is_ok());
+    std::fs::write(repo.path().join("config"), "[broken\n").unwrap();
+    assert!(get_branch_base(path, &branch).is_err());
+    assert!(get_releash_base(path).is_err());
+    assert!(resolve_current_base_branch(path).is_err());
+    assert!(resolve_effective_base_branch(path).is_err());
+}

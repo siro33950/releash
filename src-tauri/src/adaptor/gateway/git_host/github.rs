@@ -112,20 +112,7 @@ impl GitHostProvider for GitHubGitHostGateway {
             ],
             repo_path,
         );
-        match output {
-            Ok(stdout) => {
-                let issues = parse_gh_issue_list_output(&stdout);
-                if issues.is_empty() && stdout.trim() != "[]" && !stdout.trim().is_empty() {
-                    eprintln!("{}", list_issues_parse_empty_log_message(&stdout));
-                }
-                Ok(issues)
-            }
-            Err(error @ GitHostError::Technical(_)) => Err(error),
-            Err(error) => {
-                eprintln!("[list_issues] {error}");
-                Ok(Vec::new())
-            }
-        }
+        parse_gh_issue_list_output(&output?)
     }
 }
 
@@ -196,13 +183,6 @@ fn run_gh_with_timeout(
     Err(GitHostError::External(result))
 }
 
-fn list_issues_parse_empty_log_message(stdout: &str) -> String {
-    format!(
-        "[list_issues] parse returned 0 issues from non-empty output (stdout_bytes={})",
-        stdout.len()
-    )
-}
-
 fn parse_gh_pr_items(json_str: &str) -> Result<Vec<serde_json::Value>, GitHostError> {
     serde_json::from_str(json_str)
         .map_err(|error| GitHostError::External(format!("gh pr list output is invalid: {error}")))
@@ -235,10 +215,15 @@ fn parse_gh_merged_pr_output(json_str: &str) -> Result<Vec<String>, GitHostError
         .collect())
 }
 
-fn parse_gh_issue_list_output(json_str: &str) -> Vec<IssueInfo> {
+fn parse_gh_issue_list_output(json_str: &str) -> Result<Vec<IssueInfo>, GitHostError> {
     serde_json::from_str::<Vec<GhIssueInfo>>(json_str)
         .map(|issues| issues.into_iter().map(Into::into).collect())
-        .unwrap_or_default()
+        .map_err(|error| {
+            GitHostError::External(format!(
+                "gh issue list output is invalid (stdout_bytes={}): {error}",
+                json_str.len()
+            ))
+        })
 }
 
 #[derive(Debug, Deserialize)]
@@ -577,7 +562,7 @@ mod tests {
                     ))
                 ));
             } else {
-                assert!(issues.unwrap().is_empty());
+                assert!(issues.is_err());
             }
         }
     }
@@ -669,7 +654,7 @@ mod tests {
         ])
         .to_string();
 
-        let issues = parse_gh_issue_list_output(&json);
+        let issues = parse_gh_issue_list_output(&json).unwrap();
 
         assert_eq!(issues.len(), 2);
         assert_eq!(issues[0].number, 305);
@@ -683,16 +668,14 @@ mod tests {
 
     #[test]
     fn parse_issue_list_empty_array() {
-        let issues = parse_gh_issue_list_output("[]");
+        let issues = parse_gh_issue_list_output("[]").unwrap();
 
         assert!(issues.is_empty());
     }
 
     #[test]
     fn parse_issue_list_invalid_json() {
-        let issues = parse_gh_issue_list_output("not json");
-
-        assert!(issues.is_empty());
+        assert!(parse_gh_issue_list_output("not json").is_err());
     }
 
     #[test]
@@ -710,7 +693,7 @@ mod tests {
         ])
         .to_string();
 
-        let issues = parse_gh_issue_list_output(&json);
+        let issues = parse_gh_issue_list_output(&json).unwrap();
 
         assert_eq!(issues.len(), 1);
         assert!(issues[0].labels.is_empty());
@@ -750,7 +733,7 @@ mod tests {
         ])
         .to_string();
 
-        let issues = parse_gh_issue_list_output(&json);
+        let issues = parse_gh_issue_list_output(&json).unwrap();
 
         assert_eq!(issues.len(), 2, "deserialization failed: got empty vec");
         assert_eq!(issues[0].number, 313);
@@ -770,7 +753,7 @@ mod tests {
         })
         .to_string();
 
-        let message = list_issues_parse_empty_log_message(&stdout);
+        let message = parse_gh_issue_list_output(&stdout).unwrap_err().to_string();
 
         assert!(message.contains(&format!("stdout_bytes={}", stdout.len())));
         assert!(!message.contains("Sensitive title"));

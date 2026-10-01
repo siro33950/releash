@@ -19,6 +19,7 @@ export function useWorkspaceStateCache(): UseWorkspaceStateCacheReturn {
 	const timersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(
 		new Map(),
 	);
+	const failedRef = useRef(new Set<string>());
 	const dirtyRef = useRef<Set<string>>(new Set());
 
 	const getState = useCallback((rootPath: string) => {
@@ -26,6 +27,7 @@ export function useWorkspaceStateCache(): UseWorkspaceStateCacheReturn {
 	}, []);
 
 	const saveToBackend = useCallback((rootPath: string) => {
+		if (failedRef.current.has(rootPath)) return;
 		const state = cacheRef.current.get(rootPath);
 		if (!state) return;
 		invoke("save_workspace_state", {
@@ -50,11 +52,16 @@ export function useWorkspaceStateCache(): UseWorkspaceStateCacheReturn {
 						args: [worktreeNameFromPath(rootPath), rootPath],
 					},
 					(state) => {
+						failedRef.current.delete(rootPath);
 						if (state && !dirtyRef.current.has(rootPath))
 							cacheRef.current.set(rootPath, state);
 						resolve(state ?? undefined);
 					},
-					() => resolve(undefined),
+					(error) => {
+						failedRef.current.add(rootPath);
+						logClientError("Failed to load workspace state:", error);
+						resolve(undefined);
+					},
 				);
 				subscriptions.current.set(rootPath, release);
 			});
@@ -64,6 +71,7 @@ export function useWorkspaceStateCache(): UseWorkspaceStateCacheReturn {
 
 	const updateState = useCallback(
 		(rootPath: string, state: WorkspaceState) => {
+			if (failedRef.current.has(rootPath)) return;
 			cacheRef.current.set(rootPath, state);
 			dirtyRef.current.add(rootPath);
 

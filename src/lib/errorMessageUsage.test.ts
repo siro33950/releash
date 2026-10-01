@@ -10,6 +10,8 @@ const TYPESCRIPT_SOURCES = import.meta.glob(
 );
 
 const TARGET_FILES = [
+	"src/components/workspace/CreateWorktreeModal.tsx",
+	"src/hooks/useWorkspaceTreeNodes.ts",
 	"src/components/DaemonBoundary.tsx",
 	"src/components/workspace/WorkspaceList.tsx",
 	"src/hooks/useProviderAvailabilitySettings.ts",

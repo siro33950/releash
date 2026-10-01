@@ -309,8 +309,6 @@ test.describe("Workspace Manager", () => {
 					name: "feat-wip",
 					is_main: false,
 					is_locked: false,
-					dirty_count: 0,
-					base_branch: "main",
 					path: worktreePath,
 					branch: "feat/wip",
 				},
@@ -1126,7 +1124,7 @@ test("worktree作成後の購読配信で新しいworktreeを表示する", asyn
 	const created = { ...kanbanBranches[0], name: "feat/created", worktree_path: "/test/repo-worktrees/created" };
 	await setupTauriMock(page, buildMockConfig({
 		"workspaceBranches": kanbanBranches,
-		create_worktree: { name: "created", path: created.worktree_path, branch: created.name, is_main: false, is_locked: false, dirty_count: 0, base_branch: "main" },
+		create_worktree: { name: "created", path: created.worktree_path, branch: created.name, is_main: false, is_locked: false, },
 	}));
 	await waitForApp(page);
 	await page.evaluate(({ created, branches }) => {

@@ -75,7 +75,10 @@ pub(crate) fn read_local_api_failures(
         return Ok(Vec::new());
     }
     let root = data_dir.join("provider-launches");
-    if !root.exists() {
+    if !root
+        .try_exists()
+        .map_err(|_| ProviderHookHealthMarkerError::Unavailable)?
+    {
         return Ok(Vec::new());
     }
     let mut session_directories = directories(&root)?;
@@ -86,11 +89,13 @@ pub(crate) fn read_local_api_failures(
         launch_directories.sort();
         for launch_directory in launch_directories {
             let marker_path = launch_directory.join("hook-health.json");
-            let Ok(metadata) = std::fs::symlink_metadata(&marker_path) else {
-                continue;
+            let metadata = match std::fs::symlink_metadata(&marker_path) {
+                Ok(metadata) => metadata,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(_) => return Err(ProviderHookHealthMarkerError::Unavailable),
             };
             if !metadata.file_type().is_file() || metadata.len() > MAX_MARKER_BYTES {
-                continue;
+                return Err(ProviderHookHealthMarkerError::InvalidPath);
             }
             marker_paths.push(marker_path);
             if marker_paths.len() == limit {

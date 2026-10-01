@@ -30,6 +30,10 @@ async fn test_provider_hook_health_failure_query_launch_markerだけをbounded�
     std::fs::write(&invalid, br#"{"provider":"claude","secret":"ignored"}"#).unwrap();
     let query = LocalProviderHookHealthFailureQuery::new(directory.path().to_path_buf());
 
+    assert!(matches!(
+        query.list(3).await,
+        Err(crate::usecase::provider_lifecycle::ProviderHookHealthFailureQueryError::Corrupt)
+    ));
     let observations = query.list(2).await.unwrap();
 
     assert_eq!(observations.len(), 2);

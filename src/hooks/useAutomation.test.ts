@@ -362,3 +362,65 @@ describe("useAutomation", () => {
 		await waitFor(() => expect(result.current.selectedWorkflowName).toBeNull());
 	});
 });
+
+it("各購読の失敗時は古い値を現在値にせず回復時に新しい値を表示する", () => {
+	states.clear();
+	states.publish("workflows", [summary("test")]);
+	states.publish("diagnostics", EMPTY_REPORT);
+	const { result } = renderHook(() => useAutomation(true));
+	act(() => {
+		result.current.selectWorkflow("test");
+		result.current.selectFacet("policy", "guide");
+		result.current.setFacetKind("policy");
+	});
+	act(() => {
+		states.publish({ kind: "workflow", args: ["test"] }, workflow("test"));
+		states.publish({ kind: "workflow-source", args: ["test"] }, "old source");
+		states.publish({ kind: "facet", args: ["policy", "guide"] }, "old facet");
+	});
+	act(() =>
+		states.fail(
+			{ kind: "workflow", args: ["test"] },
+			new Error("definition unreadable"),
+		),
+	);
+	expect(result.current.selectedWorkflow).toBeNull();
+	expect(result.current.error).toBe("definition unreadable");
+	act(() =>
+		states.publish({ kind: "workflow", args: ["test"] }, workflow("fresh")),
+	);
+	expect(result.current.selectedWorkflow?.name).toBe("fresh");
+	act(() =>
+		states.fail(
+			{ kind: "workflow-source", args: ["test"] },
+			new Error("source unreadable"),
+		),
+	);
+	expect(result.current.selectedWorkflowSource).toBeNull();
+	act(() =>
+		states.publish({ kind: "workflow-source", args: ["test"] }, "fresh source"),
+	);
+	expect(result.current.selectedWorkflowSource).toBe("fresh source");
+	act(() =>
+		states.fail(
+			{ kind: "facet", args: ["policy", "guide"] },
+			new Error("facet unreadable"),
+		),
+	);
+	expect(result.current.selectedFacetContent).toBeNull();
+	act(() =>
+		states.publish({ kind: "facet", args: ["policy", "guide"] }, "fresh facet"),
+	);
+	expect(result.current.selectedFacetContent).toBe("fresh facet");
+	act(() => states.fail("workflows", new Error("list unreadable")));
+	expect(result.current.workflows).toEqual([]);
+	act(() => states.publish("workflows", [summary("fresh")]));
+	expect(result.current.workflows[0].name).toBe("fresh");
+	act(() =>
+		states.fail(
+			{ kind: "facets", args: ["policy"] },
+			new Error("facets unreadable"),
+		),
+	);
+	expect(result.current.facets).toEqual([]);
+});

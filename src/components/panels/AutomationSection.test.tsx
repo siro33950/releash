@@ -61,6 +61,7 @@ function createMockAutomation(
 		facets: [],
 		report: EMPTY_REPORT,
 		loading: false,
+		readError: null,
 		error: null,
 		setError: vi.fn(),
 		selectedWorkflow: null,
@@ -864,4 +865,29 @@ describe("AutomationSection", () => {
 			expect(screen.getByText("Used by 1")).toBeInTheDocument();
 		});
 	});
+});
+
+it("診断の読取失敗時は保持済み詳細や問題無しの結果を表示せず回復する", () => {
+	const automation = createMockAutomation({
+		error: "diagnostics unreadable",
+		readError: "diagnostics unreadable",
+		selectedWorkflow: {
+			name: "old-definition",
+			description: "old detail",
+			builtin: false,
+			nodes: [SESSION_NODE],
+			sourceFormat: "yaml",
+		},
+	});
+	const { rerender } = render(<AutomationSection automation={automation} />);
+	expect(screen.getByText("diagnostics unreadable")).toBeInTheDocument();
+	expect(screen.queryByText("old detail")).not.toBeInTheDocument();
+	expect(screen.queryByText("Workflows")).not.toBeInTheDocument();
+	rerender(
+		<AutomationSection
+			automation={{ ...automation, error: null, readError: null }}
+		/>,
+	);
+	expect(screen.queryByText("diagnostics unreadable")).not.toBeInTheDocument();
+	expect(screen.getByRole("tab", { name: "Workflows" })).toBeInTheDocument();
 });

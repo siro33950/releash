@@ -86,4 +86,22 @@ describe("useRepoList", () => {
 			}
 		},
 	);
+	it("購読の失敗を通知し前の一覧を消す", () => {
+		const notice = vi.fn();
+		window.addEventListener("releash-client-error", notice);
+		try {
+			const { result } = renderHook(() => useRepoList());
+			const [, receive, fail] = mockSubscribe.mock.calls[0];
+			act(() => receive(["/repo"]));
+			act(() => fail(new Error("list denied")));
+			expect(result.current.repoPaths).toBeNull();
+			expect((notice.mock.calls[0][0] as CustomEvent<string>).detail).toBe(
+				"list denied",
+			);
+			act(() => receive(["/recovered"]));
+			expect(result.current.repoPaths).toEqual(["/recovered"]);
+		} finally {
+			window.removeEventListener("releash-client-error", notice);
+		}
+	});
 });

@@ -261,6 +261,21 @@ fn storage_error_to_source_save_error(error: storage::StorageError) -> WorkflowS
 
 #[cfg(test)]
 mod tests {
+
+    #[cfg(unix)]
+    #[test]
+    fn test_workflow探索失敗_定義とsourceと形式をbuiltinへ変換しない() {
+        let dir = tempfile::tempdir().unwrap();
+        let repository = WorkflowDefinitionFileRepository::new(dir.path(), dir.path());
+        let gateway = WorkflowDefinitionFileSourceGateway::new(dir.path(), dir.path());
+        assert!(repository.get("missing").unwrap().is_none());
+        let name = builtin::list_builtin_workflows()[0].name.clone();
+        let path = dir.path().join(format!("{name}.yml"));
+        std::os::unix::fs::symlink(&path, &path).unwrap();
+        assert!(repository.get(&name).is_err());
+        assert!(gateway.get_source(&name).is_err());
+        assert!(gateway.source_format(&name).is_err());
+    }
     use super::*;
     use crate::domain::workflow::{FacetRefs, NodeDefinition, NodeKind, SessionSpec};
     use crate::usecase::workflow::ports::WorkflowDefinitionSourceGateway;

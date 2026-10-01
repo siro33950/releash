@@ -38,23 +38,27 @@ fn state_file(app_data_dir: &Path, worktree_name: &str) -> PathBuf {
 }
 
 impl WorkspaceStateRepository for WorkspaceStateStore {
-    fn load(&self, worktree_name: &str, worktree_root: &str) -> Option<WorkspaceState> {
+    fn load(
+        &self,
+        worktree_name: &str,
+        worktree_root: &str,
+    ) -> Result<Option<WorkspaceState>, crate::domain::workspace_state::WorkspaceStateError> {
         let file_path = state_file(&self.app_data_dir, worktree_name);
 
-        if !file_path.exists() {
-            return None;
-        }
-
-        let data = std::fs::read_to_string(&file_path).ok()?;
-        let state: WorkspaceState = serde_json::from_str::<WorkspaceStateDto>(&data)
-            .ok()
-            .map(WorkspaceState::from)?;
+        let data = match std::fs::read_to_string(&file_path) {
+            Ok(data) => data,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(WorkspaceStateError::Message(error.to_string())),
+        };
+        let state = serde_json::from_str::<WorkspaceStateDto>(&data)
+            .map(WorkspaceState::from)
+            .map_err(|error| WorkspaceStateError::Message(error.to_string()))?;
         let state = filter_missing_files(state, worktree_root);
 
         self.entries
             .write()
             .insert(worktree_name.to_string(), state.clone());
-        Some(state)
+        Ok(Some(state))
     }
 
     fn save(&self, worktree_name: &str) -> Result<(), WorkspaceStateError> {
@@ -130,6 +134,23 @@ mod tests {
     }
 
     #[test]
+    fn test_表示状態読取_壊れたファイルとio失敗を未保存と区別する() {
+        // Given
+        let directory = tempfile::tempdir().unwrap();
+        let store = WorkspaceStateStore::new(directory.path().into());
+        let path = state_file(directory.path(), "broken");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "broken json").unwrap();
+        // When / Then
+        assert!(store.load("broken", "/repo").is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "broken json");
+        std::fs::remove_file(&path).unwrap();
+        std::fs::create_dir(&path).unwrap();
+        assert!(store.load("broken", "/repo").is_err());
+        assert!(store.load("missing", "/repo").unwrap().is_none());
+    }
+
+    #[test]
     fn save_and_load_roundtrip() {
         let dir = TempDir::new().unwrap();
         let worktree_dir = dir.path().join("worktree");
@@ -141,7 +162,10 @@ mod tests {
         store.set("wt1", make_state());
         store.save("wt1").unwrap();
 
-        let loaded = store.load("wt1", worktree_dir.to_str().unwrap()).unwrap();
+        let loaded = store
+            .load("wt1", worktree_dir.to_str().unwrap())
+            .unwrap()
+            .unwrap();
         assert_eq!(loaded.version, 1);
         assert_eq!(loaded.tabs.editors.len(), 2);
         assert_eq!(loaded.layout.center_tab, "editor");
@@ -151,7 +175,7 @@ mod tests {
     fn load_nonexistent_returns_none() {
         let dir = TempDir::new().unwrap();
         let store = WorkspaceStateStore::new(dir.path().to_path_buf());
-        assert!(store.load("nonexistent", "/tmp").is_none());
+        assert!(store.load("nonexistent", "/tmp").unwrap().is_none());
     }
 
     #[test]

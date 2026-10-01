@@ -40,11 +40,14 @@ impl ProviderHookHealthFailureQuery for LocalProviderHookHealthFailureQuery {
         .await
         .map_err(|_| ProviderHookHealthFailureQueryError::Unavailable)?
         .map_err(map_marker_error)?;
-        Ok(failures
+        failures
             .into_iter()
-            .filter_map(|failure| parse_observation(&failure.contents))
+            .map(|failure| {
+                parse_observation(&failure.contents)
+                    .ok_or(ProviderHookHealthFailureQueryError::Corrupt)
+            })
             .take(limit)
-            .collect())
+            .collect()
     }
 }
 

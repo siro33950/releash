@@ -375,21 +375,28 @@ function WorktreePane({
 		[onRightVisibleChange, rootPath],
 	);
 
-	const { branch } = useCurrentBranch(rootPath);
-	const { baseBranch, setBaseBranch, localBranches } = useBaseBranch(
-		rootPath,
-		branch,
-	);
+	const { branch, error: branchError } = useCurrentBranch(rootPath);
+	const {
+		baseBranch,
+		setBaseBranch,
+		localBranches,
+		error: baseError,
+	} = useBaseBranch(rootPath, branch);
 	const branchSelector = useMemo(
-		() => (
-			<BranchSelector
-				branchName={branch}
-				baseBranch={baseBranch}
-				localBranches={localBranches}
-				onBaseChange={setBaseBranch}
-			/>
-		),
-		[branch, baseBranch, localBranches, setBaseBranch],
+		() =>
+			branchError || baseError ? (
+				<span role="alert" className="text-destructive">
+					{branchError ?? baseError}
+				</span>
+			) : (
+				<BranchSelector
+					branchName={branch}
+					baseBranch={baseBranch}
+					localBranches={localBranches}
+					onBaseChange={setBaseBranch}
+				/>
+			),
+		[branch, baseBranch, localBranches, setBaseBranch, branchError, baseError],
 	);
 	const togglePanels = useMemo<TogglePanel[]>(
 		() => [createRightTogglePanel(ownRightPanelRef, rightVisible)],

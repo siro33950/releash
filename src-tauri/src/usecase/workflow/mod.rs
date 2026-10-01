@@ -340,20 +340,17 @@ impl WorkflowUsecase {
         self.query.get_workflow_source(file_stem)
     }
 
-    /// 定義が無い・読み込めないときは `None`。理由は診断が運ぶ。
-    pub fn get_workflow_dto(&self, file_stem: &str) -> Option<dto::WorkflowDto> {
-        let workflow = match self.query.get_workflow(file_stem) {
-            Ok(workflow) => workflow?,
-            Err(error) => {
-                log::warn!("Workflow '{file_stem}' is not loadable: {error}");
-                return None;
-            }
+    pub fn get_workflow_dto(
+        &self,
+        file_stem: &str,
+    ) -> Result<Option<dto::WorkflowDto>, WorkflowError> {
+        let Some(workflow) = self.query.get_workflow(file_stem)? else {
+            return Ok(None);
         };
-        let format = self
-            .query
-            .get_workflow_source_format(file_stem)
-            .unwrap_or(crate::domain::workflow::WorkflowSourceFormat::Yaml);
-        Some(dto::workflow_to_dto_with_source_format(&workflow, format))
+        let format = self.query.get_workflow_source_format(file_stem)?;
+        Ok(Some(dto::workflow_to_dto_with_source_format(
+            &workflow, format,
+        )))
     }
 
     pub fn get_facet(&self, kind: FacetKind, key: &str) -> Result<String, WorkflowError> {
@@ -484,6 +481,7 @@ mod tests {
     #[derive(Default)]
     struct FakeDefinitionRepository {
         definitions: Mutex<HashMap<String, WorkflowDefinition>>,
+        read_error: Mutex<Option<String>>,
     }
 
     impl FakeDefinitionRepository {
@@ -515,6 +513,9 @@ mod tests {
         }
 
         fn get(&self, file_stem: &str) -> Result<Option<WorkflowDefinition>, WorkflowError> {
+            if let Some(message) = self.read_error.lock().unwrap().as_ref() {
+                return Err(WorkflowError::external(message));
+            }
             Ok(self.definitions.lock().unwrap().get(file_stem).cloned())
         }
 
@@ -541,6 +542,7 @@ mod tests {
         sources: Mutex<HashMap<String, String>>,
         save_definition: Mutex<Option<WorkflowDefinition>>,
         save_error: Mutex<Option<String>>,
+        format_error: Mutex<Option<String>>,
         saves: Mutex<Vec<(String, Option<String>)>>,
     }
 
@@ -566,6 +568,16 @@ mod tests {
     }
 
     impl WorkflowDefinitionSourceGateway for FakeDefinitionSourceGateway {
+        fn source_format(
+            &self,
+            _: &str,
+        ) -> Result<crate::domain::workflow::WorkflowSourceFormat, WorkflowError> {
+            if let Some(message) = self.format_error.lock().unwrap().as_ref() {
+                return Err(WorkflowError::external(message));
+            }
+            Ok(crate::domain::workflow::WorkflowSourceFormat::Yaml)
+        }
+
         fn get_source(&self, file_stem: &str) -> Result<Option<String>, WorkflowError> {
             Ok(self.sources.lock().unwrap().get(file_stem).cloned())
         }
@@ -1026,6 +1038,26 @@ mod tests {
         assert_eq!(
             fixture.usecase.get_workflow_source("missing").unwrap(),
             None
+        );
+    }
+
+    #[test]
+    fn test_workflowdto_不在と定義読取失敗と形式読取失敗を区別する() {
+        let fixture = Fixture::new();
+        assert!(fixture
+            .usecase
+            .get_workflow_dto("missing")
+            .unwrap()
+            .is_none());
+        *fixture.definitions.read_error.lock().unwrap() = Some("definition unreadable".into());
+        assert!(
+            matches!(fixture.usecase.get_workflow_dto("missing"), Err(WorkflowError::External(message)) if message == "definition unreadable")
+        );
+        *fixture.definitions.read_error.lock().unwrap() = None;
+        fixture.definitions.insert(workflow_definition("present"));
+        *fixture.definition_sources.format_error.lock().unwrap() = Some("format unreadable".into());
+        assert!(
+            matches!(fixture.usecase.get_workflow_dto("present"), Err(WorkflowError::External(message)) if message == "format unreadable")
         );
     }
 

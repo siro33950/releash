@@ -52,6 +52,7 @@ pub struct WorktreeState {
     pub(crate) scan_lock: tokio::sync::Mutex<()>,
     snapshot: RwLock<Arc<RepositorySnapshot>>,
     worktrees: RwLock<Fetched<Vec<Worktree>>>,
+    scan_failure: RwLock<Option<crate::usecase::failure::WorkFailure>>,
     version: AtomicU64,
     requested_generation: AtomicU64,
     applied_generation: AtomicU64,
@@ -79,6 +80,7 @@ impl WorktreeState {
             scan_lock: tokio::sync::Mutex::new(()),
             snapshot: RwLock::new(Arc::new(RepositorySnapshot::loading())),
             worktrees: RwLock::new(Fetched::default()),
+            scan_failure: RwLock::new(None),
             version: AtomicU64::new(0),
             requested_generation: AtomicU64::new(0),
             applied_generation: AtomicU64::new(0),
@@ -156,7 +158,7 @@ impl WorktreeState {
                     "repository snapshot scan failed for {}: {err}",
                     self.worktree_path
                 );
-                self.mark_scan_failed();
+                self.mark_scan_failed(&err);
                 self.notify_snapshot_changed();
                 None
             }
@@ -170,12 +172,6 @@ impl WorktreeState {
     /// Repository の worktree の並び。root でなければ、まだ読めていないのと同じ。
     pub fn worktrees(&self) -> Fetched<Vec<Worktree>> {
         self.worktrees.read().clone()
-    }
-
-    /// 未コミットの変更の数。まだ読めていなければ None。
-    pub fn dirty_count(&self) -> Option<usize> {
-        let snapshot = self.snapshot.read();
-        (snapshot.version > 0).then_some(snapshot.dirty_count)
     }
 
     pub fn worktree_path(&self) -> &str {
@@ -246,6 +242,26 @@ impl WorktreeState {
         }
     }
 
+    pub fn read_snapshot(&self) -> Result<Arc<RepositorySnapshot>, RepositoryStateError> {
+        let snapshot = self.snapshot_for_read();
+        if let Some(error) = self.scan_failure.read().as_ref() {
+            return Err(RepositoryStateError::Background {
+                kind: error.kind,
+                message: error.message.clone(),
+            });
+        }
+        Ok(snapshot)
+    }
+
+    pub fn dirty_count(&self) -> Fetched<usize> {
+        let snapshot = self.snapshot.read();
+        let error = self.scan_failure.read();
+        Fetched {
+            value: (snapshot.version > 0 && error.is_none()).then_some(snapshot.dirty_count),
+            error: error.as_ref().map(|e| e.message.clone()),
+        }
+    }
+
     pub fn snapshot_for_read(&self) -> Arc<RepositorySnapshot> {
         let snapshot = self.snapshot.read().clone();
         if self.refreshing.load(Ordering::SeqCst) {
@@ -267,6 +283,7 @@ impl WorktreeState {
         let version = self.version.fetch_add(1, Ordering::SeqCst) + 1;
         let snapshot = Arc::new(parts.into_snapshot(version));
         *current = snapshot.clone();
+        *self.scan_failure.write() = None;
         self.applied_generation.store(generation, Ordering::SeqCst);
         Some(snapshot)
     }
@@ -279,7 +296,8 @@ impl WorktreeState {
         );
     }
 
-    pub(crate) fn mark_scan_failed(&self) {
+    pub(crate) fn mark_scan_failed(&self, error: &RepositoryStateError) {
+        *self.scan_failure.write() = Some(crate::usecase::failure::WorkFailure::from_error(error));
         self.refreshing.store(false, Ordering::SeqCst);
         let current = self.snapshot.read().clone();
         if current.version == 0 && current.flags.loading {
@@ -467,6 +485,32 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
         panic!("timed out waiting for version {version}");
+    }
+
+    #[tokio::test]
+    async fn test_変更状態走査_失敗を差分と未コミット数へ返し回復で解除する() {
+        // Given
+        let scanner = Arc::new(FakeScanner::new("first.txt"));
+        let state = test_state(scanner.clone(), Duration::ZERO);
+        state.invalidate(InvalidateReason::change());
+        wait_for_version(&state, 1).await;
+        // When
+        scanner.set_fail(true);
+        let result = state
+            .scan_once(scanner.clone(), &TestRepositoryStateWorkerRuntime)
+            .await;
+        state.finish_scan(Some(result), InvalidateReason::change());
+        // Then
+        assert!(state.read_snapshot().is_err());
+        assert!(state.dirty_count().value.is_none());
+        assert!(state.dirty_count().error.is_some());
+        scanner.set_fail(false);
+        let result = state
+            .scan_once(scanner, &TestRepositoryStateWorkerRuntime)
+            .await;
+        state.finish_scan(Some(result), InvalidateReason::change());
+        assert!(state.read_snapshot().is_ok());
+        assert_eq!(state.dirty_count().value, Some(1));
     }
 
     #[tokio::test]

@@ -1,18 +1,18 @@
 import { useCallback } from "react";
 import { invokeClient as invoke } from "@/lib/client";
 import { logClientError } from "@/lib/clientErrorNotice";
-import { useStateSubscription } from "./useStateSubscription";
+import { useStateSubscriptionResult } from "./useStateSubscription";
 
 export function useBaseBranch(
 	rootPath: string | null,
 	branchName: string | null,
 ) {
-	const baseBranch = useStateSubscription(
+	const baseBranch = useStateSubscriptionResult(
 		rootPath && branchName
 			? { kind: "branch-base", args: [rootPath, branchName] }
 			: null,
 	);
-	const branches = useStateSubscription(
+	const branches = useStateSubscriptionResult(
 		rootPath
 			? {
 					kind: "branches",
@@ -32,8 +32,11 @@ export function useBaseBranch(
 		[rootPath, branchName],
 	);
 	return {
-		baseBranch: baseBranch ?? null,
+		baseBranch: baseBranch.error ? null : (baseBranch.value ?? null),
+		error: baseBranch.error ?? branches.error,
 		setBaseBranch,
-		localBranches: (branches ?? []).map((branch) => branch.name),
+		localBranches: (branches.error ? [] : (branches.value ?? [])).map(
+			(branch) => branch.name,
+		),
 	};
 }

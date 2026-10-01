@@ -187,7 +187,7 @@ describe("App", () => {
 });
 
 it.each([true, false])(
-	"Repository追加の購読成功=%sで解決済みルートまたは選択パスを開く",
+	"Repository追加のリポジトリ判定=%sで解決済みルートまたは選択パスを開く",
 	async (success) => {
 		const user = userEvent.setup();
 		const selected = "/chosen/worktree/subdir";
@@ -205,9 +205,9 @@ it.each([true, false])(
 		vi.mocked(client.firstState).mockImplementation(async (target) => {
 			if (typeof target !== "string" && target.kind === "repository-root") {
 				if (success) return "/resolved/repository" as never;
-				throw new Error("repository unavailable");
+				return null as never;
 			}
-			throw new Error("not in a git repo");
+			return null as never;
 		});
 		mockInvoke.mockImplementation(async (command) => {
 			if (command === "add_repo_path") return undefined as never;
@@ -249,3 +249,32 @@ it.each([true, false])(
 		}
 	},
 );
+
+it("リポジトリ追加の読取失敗を表示し普通のタブを開かない", async () => {
+	const user = userEvent.setup();
+	const selected = "/chosen/unreadable";
+	vi.mocked(open).mockResolvedValue(selected);
+	vi.mocked(client.firstState).mockImplementation(async (target) => {
+		if (typeof target !== "string" && target.kind === "repository-root")
+			throw new Error("repository denied");
+		return null as never;
+	});
+	render(
+		<TooltipProvider>
+			<App />
+		</TooltipProvider>,
+	);
+	await user.click(
+		await screen.findByRole("button", { name: "Add Repository" }),
+	);
+	expect(await screen.findByRole("alert")).toHaveTextContent(
+		"repository denied",
+	);
+	expect(
+		screen.queryByTestId(`worktree-pane-${selected}`),
+	).not.toBeInTheDocument();
+	expect(mockInvoke).not.toHaveBeenCalledWith(
+		"add_repo_path",
+		expect.anything(),
+	);
+});

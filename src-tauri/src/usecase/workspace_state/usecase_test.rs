@@ -7,7 +7,7 @@ struct Store {
     calls: Mutex<Vec<String>>,
 }
 impl WorkspaceStateRepository for Store {
-    fn load(&self, _: &str, _: &str) -> Option<WorkspaceState> {
+    fn load(&self, _: &str, _: &str) -> Result<Option<WorkspaceState>, WorkspaceStateError> {
         unreachable!()
     }
     fn set(&self, name: &str, _: WorkspaceState) {

@@ -1565,8 +1565,8 @@ async fn test_atui_030_provider履歴はmetadataだけを列挙し新しいsessi
     let connection = rusqlite::Connection::open(codex_home.join("state_5.sqlite")).unwrap();
     connection
         .execute_batch(&format!(
-            "CREATE TABLE threads (id TEXT PRIMARY KEY, cwd TEXT, updated_at INTEGER, name TEXT);\
-             INSERT INTO threads VALUES ('codex-history', '{}', 20, NULL);",
+            "CREATE TABLE threads (id TEXT PRIMARY KEY, cwd TEXT, updated_at INTEGER, name TEXT, first_user_message TEXT);\
+             INSERT INTO threads VALUES ('codex-history', '{}', 20, NULL, NULL);",
             workspace.replace('\'', "''")
         ))
         .unwrap();

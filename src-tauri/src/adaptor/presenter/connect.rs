@@ -545,6 +545,7 @@ impl ConnectFailure for crate::usecase::state_subscription::StateReadError {
             S::Editor(error) => error.connect_code(),
             S::HookHealth(error) => error.connect_code(),
             S::Technical(error) => error.connect_code(),
+            S::WorkspaceState(error) => error.connect_code(),
         }
     }
 }

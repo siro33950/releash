@@ -25,6 +25,8 @@ export function workspaceListSnapshot(
 						is_main_worktree: false,
 						is_deleting: false,
 						dirty_count: 0,
+						dirty_count_error: null,
+						pull_request_error: null,
 						is_merged: false,
 						has_pr: false,
 						pr_number: null,

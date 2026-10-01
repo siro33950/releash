@@ -95,6 +95,24 @@ describe("useWorkspaceList", () => {
 			["refresh_workspaces", {}],
 		]);
 	});
+	it("一覧の読み直し失敗は前の一覧を現在値として返さず回復を待つ", () => {
+		let fail!: (error: unknown) => void;
+		mocks.subscribe.mockImplementation((_target, receive, onError) => {
+			deliver = receive;
+			fail = onError;
+			return mocks.stop;
+		});
+		const { result } = renderHook(() => useWorkspaceList());
+		act(() => deliver(workspaceListSnapshot()));
+		act(() => fail(new Error("collection failed")));
+		expect(result.current.snapshot).toBeNull();
+		expect(result.current.requestError?.message).toBe("collection failed");
+		const recovered = workspaceListSnapshot();
+		act(() => deliver(recovered));
+		expect(result.current.snapshot).toBe(recovered);
+		expect(result.current.requestError).toBeNull();
+	});
+
 	it("削除中も定期実行とwindow通知から取り直さない", async () => {
 		vi.useFakeTimers();
 		renderHook(() => useWorkspaceList());

@@ -179,6 +179,7 @@ function mockReviewSnapshot(
 		branchBaseFileCount: 0,
 		version: 0,
 		loading: false,
+		error: null,
 		snapshot: {
 			version: 0,
 			stale: false,
@@ -353,6 +354,22 @@ describe("ReviewPanel", () => {
 				previous as typeof subscribeState,
 			);
 		}
+	});
+
+	it("差分読取の失敗をNo changesと区別する", () => {
+		mockReviewSnapshot({ error: "scan failed" });
+		render(
+			<TooltipProvider>
+				<ReviewPanel
+					rootPath="/repo"
+					diffOnlyMode={false}
+					onDiffOnlyModeChange={vi.fn()}
+				/>
+			</TooltipProvider>,
+		);
+		expect(screen.getByRole("alert")).toHaveTextContent("scan failed");
+		expect(screen.queryByText("No changes")).not.toBeInTheDocument();
+		mockReviewSnapshot({});
 	});
 
 	it("should show 'No changes' when totalFileCount is 0", () => {

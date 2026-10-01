@@ -35,6 +35,11 @@ pub(crate) trait StateSubscriptionOutput: Send + Sync {
         target: &SubscriptionTarget,
         active: &std::collections::HashSet<SubscriptionTarget>,
     ) -> Result<(), SubscriptionError>;
+    fn publish_failure(
+        &self,
+        target: &SubscriptionTarget,
+        error: StateReadError,
+    ) -> Result<(), SubscriptionError>;
     fn publish_initial(
         &self,
         target: &SubscriptionTarget,
@@ -199,8 +204,10 @@ impl StateSubscriptionUsecase {
             return Ok(());
         }
         let mut changes = self.changes.subscribe();
-        reads.refresh_external(target).await?;
-        let value = reads.read(target).await?;
+        let value = match reads.refresh_external(target).await {
+            Ok(()) => reads.read(target).await,
+            Err(error) => Err(error),
+        };
         self.start(client, target).map_err(convert)?;
         if let Err(error) = self.reconcile_watches() {
             let _ = self.stop(client, target);
@@ -209,7 +216,10 @@ impl StateSubscriptionUsecase {
         if !self.clients.lock().contains_key(client) {
             return Err(convert(SubscriptionError::StreamEnded));
         }
-        if let Err(error) = self.publisher.publish_initial(target, value) {
+        if let Err(error) = match value {
+            Ok(value) => self.publisher.publish_initial(target, value),
+            Err(error) => self.publisher.publish_failure(target, error),
+        } {
             let _ = self.stop(client, target);
             return Err(convert(error));
         }
@@ -266,26 +276,30 @@ impl StateSubscriptionUsecase {
                 while let Ok(change) = waiting_changes.try_recv() {
                     completed.push(change.completed);
                 }
-                if refresh_external {
-                    if let Err(error) = reads.refresh_external(&worker_target).await {
-                        log::warn!("External state refresh failed: {error}");
-                        if completed.is_empty() {
-                            continue;
-                        }
-                    }
-                }
+                let refresh = if refresh_external {
+                    reads.refresh_external(&worker_target).await
+                } else {
+                    Ok(())
+                };
                 if worker_target == SubscriptionTarget::Workspaces {
                     if let Err(error) = usecase.reconcile_watches() {
                         log::error!("State watch update failed: {error}");
                     }
                 }
-                match reads.read(&worker_target).await {
+                match match refresh {
+                    Ok(()) => reads.read(&worker_target).await,
+                    Err(error) => Err(error),
+                } {
                     Ok(value) => {
                         if let Err(error) = publisher.publish(&worker_target, value, None) {
                             log::error!("State publication failed: {error}");
                         }
                     }
-                    Err(error) => log::warn!("State read failed for {worker_target}: {error}"),
+                    Err(error) => {
+                        if let Err(error) = publisher.publish_failure(&worker_target, error) {
+                            log::error!("State failure publication failed: {error}");
+                        }
+                    }
                 }
                 for completed in completed {
                     let _ = completed.send(());
@@ -492,11 +506,14 @@ impl StateSubscriptionUsecase {
             tokio::spawn(async move {
                 loop {
                     let result = usecase.refresh_terminal(&target).await;
-                    if let Err(error) = &result {
-                        log::error!("Terminal snapshot failed: {error}");
+                    let failed = result.is_err();
+                    if let Err(error) = result {
+                        if let Err(error) = usecase.publisher.publish_failure(&target, error) {
+                            log::error!("Terminal failure publication failed: {error}");
+                        }
                     }
                     let resets = usecase.terminal_resets.lock();
-                    if result.is_err()
+                    if failed
                         || resets
                             .get(&target)
                             .is_none_or(std::collections::HashSet::is_empty)

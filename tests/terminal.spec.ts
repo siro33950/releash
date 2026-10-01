@@ -19,8 +19,6 @@ test("Terminal Surface接続はbackend resizeより先にsnapshotを投影する
 					branch: "feat/test",
 					is_main: true,
 					is_locked: false,
-					dirty_count: 0,
-					base_branch: null,
 				},
 			],
 		}),
@@ -42,7 +40,7 @@ test("stream再接続前後の複数入力は新attachmentの連番で届き切�
 	const mock = await setupTauriMock(page, buildMockConfig({
 		worktrees: [{
 			name: "repo", path: "/test/repo", branch: "feat/test", is_main: true,
-			is_locked: false, dirty_count: 0, base_branch: null,
+			is_locked: false,
 		}],
 	}));
 	await waitForApp(page);
@@ -116,8 +114,6 @@ test("Terminal Surfaceのproduction wireをreload後もsnapshotとlive outputと
 					branch: "feat/test",
 					is_main: true,
 					is_locked: false,
-					dirty_count: 0,
-					base_branch: null,
 				},
 			],
 			get_or_spawn_terminal_surface: {
@@ -176,8 +172,6 @@ test("backend AVT生成checkpointを実xtermへalternate screen・属性・wide�
 					branch: "feat/test",
 					is_main: true,
 					is_locked: false,
-					dirty_count: 0,
-					base_branch: null,
 				},
 			],
 			get_or_spawn_terminal_surface: {

@@ -4070,8 +4070,6 @@ impl TryFrom<crate::usecase::repository_dto::WorktreeEntryDto> for wire::Worktre
             branch: Some(cv(value.branch)?),
             is_main: Some(cv(value.is_main)?),
             is_locked: Some(cv(value.is_locked)?),
-            dirty_count: Some(cv(value.dirty_count)?),
-            base_branch: value.base_branch.map(cv).transpose()?,
         })
     }
 }

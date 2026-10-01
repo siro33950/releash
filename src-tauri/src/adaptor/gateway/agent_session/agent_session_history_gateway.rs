@@ -63,7 +63,6 @@ impl AgentSessionHistoryGateway for LocalAgentSessionHistoryGateway {
         let codex_home = self.codex_home.clone();
         let worktree_path = worktree_path.to_string();
         let provider_session_ids = provider_session_ids.to_vec();
-        let fallback_provider_session_ids = provider_session_ids.clone();
         let entries = tokio::task::spawn_blocking(move || match provider {
             ProviderKind::Claude => provider_session_ids
                 .into_iter()
@@ -73,56 +72,29 @@ impl AgentSessionHistoryGateway for LocalAgentSessionHistoryGateway {
                         &worktree_path,
                         &provider_session_id,
                         None,
-                    )
-                    .unwrap_or_else(|error| {
-                        log::warn!(
-                            "Claude provider history title read failed for {provider_session_id}: {error:?}"
-                        );
-                        None
-                    });
+                    )?;
                     let first_user_prompt = claude_first_user_prompt(
                         &claude_config_dir,
                         &worktree_path,
                         &provider_session_id,
-                    )
-                    .unwrap_or_else(|error| {
-                        log::warn!(
-                            "Claude provider history first prompt read failed for {provider_session_id}: {error:?}"
-                        );
-                        None
-                    });
-                    ProviderSessionTitleEntry {
+                    )?;
+                    Ok(ProviderSessionTitleEntry {
                         provider_session_id,
                         session_title,
                         first_user_prompt,
-                    }
+                    })
                 })
-                .collect(),
-            ProviderKind::Codex => codex_session_titles(&codex_home, &provider_session_ids)
-                .unwrap_or_else(|error| {
-                    log::warn!("Codex provider history title read failed: {error:?}");
-                    provider_session_ids
-                        .into_iter()
-                        .map(|provider_session_id| ProviderSessionTitleEntry {
-                            provider_session_id,
-                            session_title: None,
-                            first_user_prompt: None,
-                        })
-                        .collect()
-                }),
+                .collect::<Result<Vec<_>, ProviderSessionTitleGatewayError>>(),
+            ProviderKind::Codex => codex_session_titles(&codex_home, &provider_session_ids),
         })
         .await
-        .unwrap_or_else(|error| {
-            log::warn!("provider history title worker failed: {error}");
-            fallback_provider_session_ids
-                .into_iter()
-                .map(|provider_session_id| ProviderSessionTitleEntry {
-                    provider_session_id,
-                    session_title: None,
-                    first_user_prompt: None,
-                })
-                .collect()
-        });
+        .map_err(|_| AgentSessionHistoryGatewayError::Unavailable)?
+        .map_err(|error| match error {
+            ProviderSessionTitleGatewayError::Unavailable => {
+                AgentSessionHistoryGatewayError::Unavailable
+            }
+            ProviderSessionTitleGatewayError::Corrupt => AgentSessionHistoryGatewayError::Corrupt,
+        })?;
         Ok(entries)
     }
 }

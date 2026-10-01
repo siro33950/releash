@@ -484,7 +484,7 @@ async fn test_agent_session_history_gateway_claudeの先頭64kib外のプロン�
 }
 
 #[tokio::test]
-async fn test_agent_session_history_gateway_claudeの一部が読めなくても他のタイトルを返す() {
+async fn test_agent_session_history_gateway_claudeのタイトルが読めないとき失敗を返す() {
     let directory = tempfile::tempdir().unwrap();
     let claude_root = directory.path().join("claude");
     let codex_root = directory.path().join("codex");
@@ -498,7 +498,7 @@ async fn test_agent_session_history_gateway_claudeの一部が読めなくても
     fs::write(project.join("claude-corrupt.jsonl"), "not-json\n").unwrap();
     let gateway = LocalAgentSessionHistoryGateway::new(claude_root, codex_root);
 
-    let entries = gateway
+    let result = gateway
         .list_session_titles(
             ProviderKind::Claude,
             "/repo/worktree",
@@ -508,20 +508,12 @@ async fn test_agent_session_history_gateway_claudeの一部が読めなくても
                 "claude-readable".to_string(),
             ],
         )
-        .await
-        .unwrap();
-
-    assert_eq!(entries.len(), 3);
-    assert_eq!(entries[0].provider_session_id, "claude-missing");
-    assert_eq!(entries[0].session_title, None);
-    assert_eq!(entries[1].provider_session_id, "claude-corrupt");
-    assert_eq!(entries[1].session_title, None);
-    assert_eq!(entries[2].provider_session_id, "claude-readable");
-    assert_eq!(entries[2].session_title.as_deref(), Some("Readable title"));
+        .await;
+    assert!(result.is_err());
 }
 
 #[tokio::test]
-async fn test_agent_session_history_query_claudeの一部が読めなくても同じpageへ返す() {
+async fn test_agent_session_history_query_claudeのタイトルが読めないときpageを失敗として返す() {
     let directory = tempfile::tempdir().unwrap();
     let claude_root = directory.path().join("claude");
     let codex_root = directory.path().join("codex");
@@ -549,53 +541,35 @@ async fn test_agent_session_history_query_claudeの一部が読めなくても�
         Arc::new(UnownedProviderSessions),
     );
 
-    let page = query
+    let result = query
         .list(AgentSessionHistoryRequest {
             worktree_path: "/repo/worktree".to_string(),
             visible_count: 3,
         })
-        .await
-        .unwrap();
-
-    assert_eq!(
-        page.items
-            .iter()
-            .map(|item| (item.provider_session_id.as_str(), item.label.as_str()))
-            .collect::<Vec<_>>(),
-        vec![
-            ("claude-missing", "Claude claude-m…"),
-            ("claude-corrupt", "Claude claude-c…"),
-            ("claude-readable", "Readable title"),
-        ]
-    );
+        .await;
+    assert!(result.is_err());
 }
 
 #[tokio::test]
-async fn test_agent_session_history_gateway_codexのdbが無くても全idを未取得で返す() {
+async fn test_agent_session_history_gateway_codexのdbが無いときタイトル読取の失敗を返す() {
     let directory = tempfile::tempdir().unwrap();
     let gateway = LocalAgentSessionHistoryGateway::new(
         directory.path().join("claude"),
         directory.path().join("codex"),
     );
 
-    let entries = gateway
+    let result = gateway
         .list_session_titles(
             ProviderKind::Codex,
             "/repo/worktree",
             &["codex-1".to_string(), "codex-2".to_string()],
         )
-        .await
-        .unwrap();
-
-    assert_eq!(entries.len(), 2);
-    assert_eq!(entries[0].provider_session_id, "codex-1");
-    assert_eq!(entries[0].session_title, None);
-    assert_eq!(entries[1].provider_session_id, "codex-2");
-    assert_eq!(entries[1].session_title, None);
+        .await;
+    assert!(result.is_err());
 }
 
 #[tokio::test]
-async fn test_agent_session_history_query_codexのdbが無くてもfallbackラベルを返す() {
+async fn test_agent_session_history_query_codexのdbが無いときpageを失敗として返す() {
     let directory = tempfile::tempdir().unwrap();
     let local_gateway = Arc::new(LocalAgentSessionHistoryGateway::new(
         directory.path().join("claude"),
@@ -612,24 +586,13 @@ async fn test_agent_session_history_query_codexのdbが無くてもfallbackラ�
         Arc::new(UnownedProviderSessions),
     );
 
-    let page = query
+    let result = query
         .list(AgentSessionHistoryRequest {
             worktree_path: "/repo/worktree".to_string(),
             visible_count: 2,
         })
-        .await
-        .unwrap();
-
-    assert_eq!(
-        page.items
-            .iter()
-            .map(|item| (item.provider_session_id.as_str(), item.label.as_str()))
-            .collect::<Vec<_>>(),
-        vec![
-            ("codex-123456", "Codex codex-12…"),
-            ("codex-abcdef", "Codex codex-ab…"),
-        ]
-    );
+        .await;
+    assert!(result.is_err());
 }
 
 #[tokio::test]

@@ -1,12 +1,19 @@
 import { AlertTriangle } from "lucide-react";
-import { useStateSubscription } from "@/hooks/useStateSubscription";
+import { useStateSubscriptionResult } from "@/hooks/useStateSubscription";
 
 function providerLabel(provider: string): string {
 	return `${provider.charAt(0).toUpperCase()}${provider.slice(1)}`;
 }
 
 export function ProviderHookHealthBanner() {
-	const warnings = useStateSubscription("provider-hook-health") ?? [];
+	const subscription = useStateSubscriptionResult("provider-hook-health");
+	const warnings = subscription.value ?? [];
+	if (subscription.error)
+		return (
+			<div role="alert">
+				Provider Hook health read failed: {subscription.error}
+			</div>
+		);
 
 	if (warnings.length === 0) return null;
 	const providers = [

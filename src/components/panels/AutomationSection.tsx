@@ -213,6 +213,10 @@ export function AutomationSection({
 		setWorkflowSaveDiagnostics([]);
 	}, [clearExternalChange]);
 
+	if (automation.readError) {
+		return <p className="text-xs text-destructive">{automation.readError}</p>;
+	}
+
 	if (loading) {
 		return (
 			<div className="flex items-center gap-2 text-sm text-muted-foreground py-8 justify-center">

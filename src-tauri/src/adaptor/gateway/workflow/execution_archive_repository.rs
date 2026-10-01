@@ -172,8 +172,14 @@ impl ExecutionTreeArchiveRepository for ExecutionTreeArchiveFactRepository {
             if candidate.repository_root.is_none() {
                 for path in [&candidate.workspace_identity, &candidate.worktree_path] {
                     candidate.repository_root =
-                        super::super::repository::worktree::recorded_main_repo_path(path)
-                            .map_err(WorkflowError::from)?;
+                        super::super::repository::worktree::recorded_main_repo_path(path).map_err(
+                            |error| match error {
+                                crate::domain::repository::RepositoryError::Technical(error) => {
+                                    WorkflowError::Technical(error)
+                                }
+                                error => WorkflowError::external(error.to_string()),
+                            },
+                        )?;
                     if candidate.repository_root.is_some() {
                         break;
                     }

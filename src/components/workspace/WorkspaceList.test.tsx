@@ -81,11 +81,20 @@ const readState = vi.fn((target: StateTarget<keyof StateValues>) => {
 	);
 });
 const subscribeState = vi.fn(
-	(target: StateTarget<keyof StateValues>, receive: (value: never) => void) => {
+	(
+		target: StateTarget<keyof StateValues>,
+		receive: (value: never) => void,
+		onError: (error: unknown) => void,
+	) => {
 		let active = true;
-		void readState(target).then((value) => {
-			if (active) receive(value as never);
-		});
+		void readState(target).then(
+			(value) => {
+				if (active) receive(value as never);
+			},
+			(error) => {
+				if (active) onError(error);
+			},
+		);
 		return () => {
 			active = false;
 		};
@@ -2476,4 +2485,29 @@ it("backendが返す削除中のworktreeを一覧に表示する", async () => {
 	});
 	expect(screen.getByTestId("worktree-item-feature")).toBeVisible();
 	expect(screen.getByRole("status")).toHaveTextContent("Deleting...");
+});
+
+it("未コミット数とPRの取得失敗を値が無い表示と区別する", async () => {
+	mocks.worktreeBranches = [
+		{
+			...makeBranch(),
+			dirty_count: null,
+			dirty_count_error: "scan failed",
+			pull_request_error: "PR denied",
+		},
+	];
+	await act(async () => {
+		renderWorkspaceList();
+	});
+	expect(screen.getByText("Changes unavailable")).toHaveAttribute(
+		"title",
+		"scan failed",
+	);
+	expect(screen.getByText("PR unavailable")).toHaveAttribute(
+		"title",
+		"PR denied",
+	);
+	expect(
+		screen.queryByRole("img", { name: /Pull request/ }),
+	).not.toBeInTheDocument();
 });

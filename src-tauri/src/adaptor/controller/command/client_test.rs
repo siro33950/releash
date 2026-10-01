@@ -1052,6 +1052,7 @@ async fn test_workspace保存_connectがui追加fieldを受理し既存項目を
     use crate::domain::workspace_state::WorkspaceStateRepository;
     let restored = restarted
         .load("workspace", worktree.to_str().unwrap())
+        .unwrap()
         .unwrap();
     let restored = crate::usecase::workspace_state::dto::WorkspaceStateDto::from(restored);
     assert_eq!(serde_json::to_value(restored).unwrap(), expected);

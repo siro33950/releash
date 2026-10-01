@@ -129,8 +129,10 @@ pub fn validate_facet_key(key: &str) -> Result<(), FacetError> {
 pub fn load_facet(kind: FacetKind, key: &str, base_dir: &Path) -> Result<String, FacetError> {
     validate_facet_key(key)?;
     let path = base_dir.join(kind.dir_name()).join(format!("{key}.md"));
-    if path.exists() {
-        return Ok(fs::read_to_string(&path)?);
+    match fs::read_to_string(&path) {
+        Ok(content) => return Ok(content),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
     }
     if let Some(content) = builtin::get_builtin_facet(kind, key) {
         return Ok(content.to_string());
@@ -190,7 +192,7 @@ pub fn delete_facet(kind: FacetKind, key: &str, base_dir: &Path) -> Result<(), F
 pub fn list_facets(kind: FacetKind, base_dir: &Path) -> Result<Vec<String>, FacetError> {
     let mut keys = BTreeSet::new();
     let dir = base_dir.join(kind.dir_name());
-    if dir.exists() {
+    if dir.try_exists()? {
         for entry in fs::read_dir(&dir)? {
             let entry = entry?;
             let path = entry.path();
@@ -232,19 +234,13 @@ pub fn list_facet_summaries(
     let dir = base_dir.join(kind.dir_name());
 
     let mut seen_keys = BTreeSet::new();
-    if dir.exists() {
+    if dir.try_exists()? {
         for entry in fs::read_dir(&dir)? {
             let entry = entry?;
             let path = entry.path();
             if path.extension().and_then(|e| e.to_str()) == Some("md") {
                 if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
-                    let content = match fs::read_to_string(&path) {
-                        Ok(c) => c,
-                        Err(e) => {
-                            log::warn!("ファセットファイル読み込み失敗: {}: {e}", path.display());
-                            String::new()
-                        }
-                    };
+                    let content = fs::read_to_string(&path)?;
                     summaries.push(super::schema::FacetSummary {
                         key: stem.to_string(),
                         kind: kind_name.clone(),
@@ -347,6 +343,23 @@ mod tests {
 
     // --- validate_facet_key ---
 
+    #[test]
+    fn test_facet読取_読めない上書きをbuiltinへ切り替えず一覧と診断にも失敗を返す() {
+        // Given
+        let directory = tempfile::tempdir().unwrap();
+        let key = builtin::list_builtin_facet_keys(FacetKind::Instruction)[0];
+        let path = directory
+            .path()
+            .join(FacetKind::Instruction.dir_name())
+            .join(format!("{key}.md"));
+        fs::create_dir_all(&path).unwrap();
+        // When / Then
+        assert!(load_facet(FacetKind::Instruction, key, directory.path()).is_err());
+        assert!(list_facet_summaries(FacetKind::Instruction, directory.path()).is_err());
+        assert!(
+            super::super::diagnostics::diagnose_all(directory.path(), directory.path()).is_err()
+        );
+    }
     #[test]
     fn valid_keys() {
         assert!(validate_facet_key("coder").is_ok());

@@ -277,6 +277,7 @@ describe("App Workspace Archive selection reconciliation", () => {
 				expect(states.subscribeState).toHaveBeenCalledWith(
 					{ kind: "selection", args: ["/repo/wt", SELECTED_NODE_ID] },
 					expect.any(Function),
+					expect.any(Function),
 				),
 			);
 			expect(screen.getByTestId("center-node")).toHaveTextContent(
@@ -344,8 +345,6 @@ it("起動repositoryのworktreeが1件ならそのタブを自動表示する", 
 			branch: "feature",
 			is_main: true,
 			is_locked: false,
-			dirty_count: 0,
-			base_branch: null,
 		},
 	]);
 	render(<App />);
@@ -362,4 +361,33 @@ it("起動repositoryのworktreeが1件ならそのタブを自動表示する", 
 		kind: "worktrees",
 		args: ["/repo"],
 	});
+});
+
+it("起動repositoryの読取失敗を画面に表示する", async () => {
+	states.publish("workspaces", {
+		status: { loaded: true, error: null, state: "ready" },
+		repositories: [],
+	});
+	states.firstState.mockImplementationOnce(() =>
+		Promise.reject(new Error("startup repository unreadable")),
+	);
+	render(<App />);
+	await screen.findByText("startup repository unreadable");
+	expect(mocks.initFromCwd).not.toHaveBeenCalled();
+	expect(mocks.openWorktreeTab).not.toHaveBeenCalled();
+});
+
+it("repositoryの外の起動は自動表示も失敗表示も行わない", async () => {
+	states.publish("workspaces", {
+		status: { loaded: true, error: null, state: "ready" },
+		repositories: [],
+	});
+	states.publish("startup-repository", null);
+	render(<App />);
+	await waitFor(() =>
+		expect(states.firstState).toHaveBeenCalledWith("startup-repository"),
+	);
+	expect(mocks.initFromCwd).not.toHaveBeenCalled();
+	expect(mocks.openWorktreeTab).not.toHaveBeenCalled();
+	expect(screen.queryByRole("alert")).not.toBeInTheDocument();
 });

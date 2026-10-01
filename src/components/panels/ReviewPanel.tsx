@@ -164,6 +164,7 @@ export function ReviewPanel({
 
 	// Review file list read model
 	const {
+		error: snapshotError,
 		stagedFiles,
 		changedFiles,
 		stagedTree,
@@ -532,7 +533,11 @@ export function ReviewPanel({
 					</div>
 				</div>
 				<div className="flex-1 flex items-center justify-center text-muted-foreground text-xs">
-					No changes
+					{snapshotError ? (
+						<span role="alert">Failed to read changes: {snapshotError}</span>
+					) : (
+						"No changes"
+					)}
 				</div>
 			</div>
 		);

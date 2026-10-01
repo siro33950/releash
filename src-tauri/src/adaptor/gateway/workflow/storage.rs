@@ -308,40 +308,50 @@ pub fn load_workflow(
     Ok(workflow)
 }
 
+pub(crate) fn workflow_files(
+    dir: &Path,
+) -> Result<Vec<(String, std::path::PathBuf)>, StorageError> {
+    let entries = match fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(error.into()),
+    };
+    let mut files = Vec::new();
+    for entry in entries {
+        let path = entry?.path();
+        if workflow_source_format(&path).is_some() {
+            if let Some(name) = path.file_stem().and_then(|s| s.to_str()) {
+                files.push((name.to_string(), path));
+            }
+        }
+    }
+    files.sort_by(|a, b| a.1.cmp(&b.1));
+    Ok(files)
+}
+
 fn list_file_summaries<T, E: fmt::Display>(
     dir: &Path,
     loader: impl Fn(&Path) -> Result<T, E>,
     to_summary: impl Fn(T) -> Summary,
     label: &str,
 ) -> Result<Vec<Summary>, StorageError> {
-    if !dir.exists() {
-        return Ok(vec![]);
-    }
-
-    let entries = fs::read_dir(dir)?;
-
     let mut summaries = Vec::new();
-    for entry in entries {
-        let entry = entry?;
-        let path = entry.path();
-        if workflow_source_format(&path).is_some() {
-            let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
-                log::warn!(
-                    "{label}読み込みスキップ: {}: 無効なファイル名",
-                    path.display()
-                );
-                continue;
-            };
-            match loader(&path) {
-                Ok(item) => {
-                    let mut summary = to_summary(item);
-                    summary.name = stem.to_string();
-                    summary.source_format = workflow_source_format(&path).unwrap_or_default();
-                    summaries.push(summary);
-                }
-                Err(e) => {
-                    log::warn!("{label}読み込みスキップ: {}: {e}", path.display());
-                }
+    for (stem, path) in workflow_files(dir)? {
+        match loader(&path) {
+            Ok(item) => {
+                let mut summary = to_summary(item);
+                summary.name = stem.to_string();
+                summary.source_format = workflow_source_format(&path).unwrap_or_default();
+                summaries.push(summary);
+            }
+            Err(e) => {
+                summaries.push(Summary {
+                    name: stem.to_string(),
+                    description: format!("{label}読み込み失敗: {e}"),
+                    builtin: false,
+                    is_running: false,
+                    source_format: workflow_source_format(&path).unwrap(),
+                });
             }
         }
     }
@@ -488,10 +498,12 @@ pub fn resolve_workflow_path(dir: &Path, name: &str) -> Result<PathBuf, StorageE
         dir.join(format!("{name}.yml")),
         dir.join(format!("{name}.lua")),
     ];
-    let existing = paths
-        .into_iter()
-        .filter(|path| path.exists())
-        .collect::<Vec<_>>();
+    let mut existing = Vec::new();
+    for path in paths {
+        if path.try_exists()? {
+            existing.push(path);
+        }
+    }
     match existing.as_slice() {
         [] => Err(StorageError::NotFound {
             name: name.to_string(),
@@ -584,6 +596,21 @@ mod tests {
             .expect("test premise: at least one builtin workflow exists")
     }
 
+    #[test]
+    fn test_定義一覧_読めないファイルを残し列挙の失敗を返す() {
+        // Given
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("unreadable.yml");
+        fs::create_dir(&path).unwrap();
+        // When / Then
+        let summaries = list_workflows(directory.path()).unwrap();
+        let row = summaries.iter().find(|s| s.name == "unreadable").unwrap();
+        assert!(row.description.contains("読み込み失敗"));
+        let invalid = directory.path().join("not-directory");
+        fs::write(&invalid, "file").unwrap();
+        assert!(workflow_files(&invalid).is_err());
+        assert!(super::super::diagnostics::diagnose_all(&invalid, directory.path()).is_err());
+    }
     #[test]
     fn save_and_load_workflow() {
         let tmp = TempDir::new().unwrap();
@@ -1251,7 +1278,7 @@ nodes:
     }
 
     #[test]
-    fn load_workflow_resolves_builtin_facet_with_broken_inventory() {
+    fn load_workflow_rejects_broken_inventory() {
         let tmp = TempDir::new().unwrap();
         let dir = tmp.path();
         std::fs::write(dir.join("knowledge"), "not a directory").unwrap();
@@ -1268,9 +1295,10 @@ nodes:
         let file_path = dir.join("builtin-facet-with-broken-inventory.yml");
         std::fs::write(&file_path, yaml).unwrap();
 
-        let workflow = load_workflow(&file_path, dir).unwrap();
-
-        assert_eq!(workflow.name, "builtin-facet-with-broken-inventory");
+        assert!(matches!(
+            load_workflow(&file_path, dir),
+            Err(StorageError::FacetResolution(_))
+        ));
     }
 
     /// Artifact template references load without a workflow-level variables section.

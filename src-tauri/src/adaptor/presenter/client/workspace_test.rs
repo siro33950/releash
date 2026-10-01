@@ -658,9 +658,10 @@ fn worktree_row(path: &str, branch: &str, tree: Fetched<WorkspaceTree>) -> Works
             is_merged: false,
         },
         deleting: false,
-        dirty_count: 0,
+        dirty_count: Fetched::ready(0),
         merged: false,
         pull_request: None,
+        pull_request_error: None,
         tree,
     }
 }
@@ -694,7 +695,7 @@ fn test_workspaces一覧_持ち主の値と取得の状態を画面が読む名�
         Fetched::ready(WorkspaceTree::empty("/repo-worktrees/feature")),
     );
     feature.deleting = true;
-    feature.dirty_count = 3;
+    feature.dirty_count = Fetched::ready(3);
     feature.merged = true;
     let list = WorkspaceList {
         repositories: vec![
@@ -741,7 +742,7 @@ fn test_workspaces一覧_持ち主の値と取得の状態を画面が読む名�
                             "is_main_worktree": true,
                             "is_deleting": false,
                             "worktree_path": "/repo",
-                            "dirty_count": 0,
+                            "dirty_count": 0, "dirty_count_error": null, "pull_request_error": null,
                             "is_merged": false,
                             "has_pr": true,
                             "pr_number": 7,
@@ -752,7 +753,7 @@ fn test_workspaces一覧_持ち主の値と取得の状態を画面が読む名�
                             "is_main_worktree": false,
                             "is_deleting": true,
                             "worktree_path": "/repo-worktrees/feature",
-                            "dirty_count": 3,
+                            "dirty_count": 3, "dirty_count_error": null, "pull_request_error": null,
                             "is_merged": true,
                             "has_pr": false,
                             "pr_number": null,

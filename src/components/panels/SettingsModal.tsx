@@ -41,10 +41,7 @@ import { useBackgroundConfig } from "@/hooks/useAppSettings";
 import { useAutomation } from "@/hooks/useAutomation";
 import { useNotionSettings } from "@/hooks/useNotionSettings";
 import { useProviderAvailabilitySettings } from "@/hooks/useProviderAvailabilitySettings";
-import {
-	useStateSubscription,
-	useStateSubscriptionResult,
-} from "@/hooks/useStateSubscription";
+import { useStateSubscriptionResult } from "@/hooks/useStateSubscription";
 import { invokeClient as invoke } from "@/lib/client";
 import { getErrorMessage } from "@/lib/errorMessage";
 import { setPerformanceTelemetryEnabled, trackEvent } from "@/lib/telemetry";
@@ -364,11 +361,11 @@ function RepoBaseBranchItem({
 		selectedBase: string,
 	) => void;
 }) {
-	const branchValues = useStateSubscription({
+	const branchValues = useStateSubscriptionResult({
 		kind: "branches",
 		args: [repoPath],
 	});
-	const branches = branchValues ?? [];
+	const branches = branchValues.error ? [] : (branchValues.value ?? []);
 	const releashBase = useStateSubscriptionResult({
 		kind: "releash-base",
 		args: [repoPath],
@@ -378,7 +375,7 @@ function RepoBaseBranchItem({
 	const dirty = useRef(false);
 	dirty.current = selectedBase !== initialBase;
 	const loading = releashBase.value === undefined && !releashBase.error;
-	const error = releashBase.error;
+	const error = releashBase.error ?? branchValues.error;
 
 	const currentBase = releashBase.value;
 	useEffect(() => {

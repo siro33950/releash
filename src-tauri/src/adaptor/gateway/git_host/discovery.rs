@@ -1,7 +1,7 @@
 use crate::adaptor::gateway::shared::git_operation;
 pub(super) fn get_origin_url(
     repo_path: &str,
-) -> Result<Option<String>, crate::common::operation_context::OperationStopped> {
+) -> Result<Option<String>, crate::adaptor::gateway::shared::git_operation::GitOperationError> {
     let Some(repo) =
         git_operation::optional(git_operation::run(|| git2::Repository::open(repo_path)))?
     else {
@@ -11,7 +11,7 @@ pub(super) fn get_origin_url(
     else {
         return Ok(None);
     };
-    Ok(remote.url().ok().map(|s| s.to_string()))
+    Ok(Some(remote.url()?.to_string()))
 }
 
 pub(super) fn is_github(url: &str) -> bool {
@@ -20,7 +20,7 @@ pub(super) fn is_github(url: &str) -> bool {
 
 pub(super) fn is_github_repository(
     repo_path: &str,
-) -> Result<bool, crate::common::operation_context::OperationStopped> {
+) -> Result<bool, crate::adaptor::gateway::shared::git_operation::GitOperationError> {
     Ok(get_origin_url(repo_path)?.is_some_and(|url| is_github(&url)))
 }
 

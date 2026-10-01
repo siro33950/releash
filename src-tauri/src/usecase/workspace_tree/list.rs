@@ -25,24 +25,25 @@ pub(crate) struct WorkspaceListRepository {
 pub(crate) struct WorkspaceListWorktree {
     pub worktree: Worktree,
     pub deleting: bool,
-    pub dirty_count: usize,
+    pub dirty_count: Fetched<usize>,
     /// PR の状態を合わせた merge 済み。
     pub merged: bool,
     pub pull_request: Option<PrInfo>,
     pub tree: Fetched<WorkspaceTree>,
+    pub pull_request_error: Option<String>,
 }
 
 /// 1 つの Repository について、持ち主から集めた値。
 struct RepositoryValues {
     path: String,
     worktrees: Fetched<Vec<WorktreeValues>>,
-    pull_requests: Option<PrStatus>,
+    pull_requests: Fetched<PrStatus>,
 }
 
 struct WorktreeValues {
     worktree: Worktree,
     deleting: bool,
-    dirty_count: usize,
+    dirty_count: Fetched<usize>,
 }
 
 /// Workspaces の一覧。値は持たず、読むときに持ち主から集める。
@@ -72,15 +73,15 @@ impl WorkspaceListUsecase {
         }
     }
 
-    pub async fn read(&self) -> WorkspaceList {
+    pub async fn read(&self) -> Result<WorkspaceList, crate::domain::failure::TechnicalFailure> {
         let usecase = self.clone();
         let repositories =
             crate::common::operation_context::spawn_blocking(move || usecase.repository_values())
                 .await
-                .unwrap_or_else(|error| {
-                    log::error!("workspace list read failed: {error}");
-                    Vec::new()
-                });
+                .map_err(|error| crate::domain::failure::TechnicalFailure {
+                    nature: crate::domain::failure::TechnicalFailureNature::Other,
+                    message: error.to_string(),
+                })?;
         let worktree_paths = repositories
             .iter()
             .flat_map(|repository| repository.worktrees.value.iter().flatten())
@@ -90,7 +91,7 @@ impl WorkspaceListUsecase {
             .workflow
             .retained_workspace_trees(&worktree_paths)
             .await;
-        compose(repositories, trees)
+        Ok(compose(repositories, trees))
     }
 
     fn repository_values(&self) -> Vec<RepositoryValues> {
@@ -106,10 +107,7 @@ impl WorkspaceListUsecase {
                             .with_deleting_worktrees(&root, worktrees)
                             .into_iter()
                             .map(|(worktree, deleting)| WorktreeValues {
-                                dirty_count: self
-                                    .repository_state
-                                    .dirty_count(&worktree.path)
-                                    .unwrap_or(0),
+                                dirty_count: self.repository_state.dirty_count(&worktree.path),
                                 worktree,
                                 deleting,
                             })
@@ -118,7 +116,7 @@ impl WorkspaceListUsecase {
                     error: scanned.error,
                 };
                 RepositoryValues {
-                    pull_requests: self.git_host.known_pr_status(&path),
+                    pull_requests: self.git_host.pr_status_result(&path),
                     path,
                     worktrees,
                 }
@@ -192,7 +190,7 @@ fn compose(
                                 .map(|values| {
                                     let branch = values.worktree.branch.as_str();
                                     WorkspaceListWorktree {
-                                        merged: pull_requests.as_ref().map_or(
+                                        merged: pull_requests.value.as_ref().map_or(
                                             values.worktree.is_merged,
                                             |prs| {
                                                 prs.branch_is_merged(
@@ -202,8 +200,10 @@ fn compose(
                                             },
                                         ),
                                         pull_request: pull_requests
+                                            .value
                                             .as_ref()
                                             .and_then(|prs| prs.open_prs.get(branch).cloned()),
+                                        pull_request_error: pull_requests.error.clone(),
                                         tree: trees.next().unwrap_or_default(),
                                         deleting: values.deleting,
                                         dirty_count: values.dirty_count,

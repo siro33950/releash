@@ -103,12 +103,32 @@ describe("CreateWorktreeModal", () => {
 					branch,
 					is_main: false,
 					is_locked: false,
-					dirty_count: 0,
-					base_branch: "main",
 				} satisfies WorktreeEntry);
 			}
 			return Promise.resolve([]);
 		});
+	});
+
+	it("ブランチ読取の失敗を表示し成功後に解除する", () => {
+		let recover!: Parameters<typeof subscribeState>[1];
+		vi.mocked(subscribeState).mockImplementation((target, receive, fail) => {
+			if (typeof target !== "string" && target.kind === "branches") {
+				recover = receive;
+				fail(new Error("branches unavailable"));
+			} else receive([]);
+			return vi.fn();
+		});
+		render(
+			<CreateWorktreeModal
+				open
+				repoPaths={["/repo"]}
+				onCreated={vi.fn()}
+				onClose={vi.fn()}
+			/>,
+		);
+		expect(screen.getByRole("alert")).toHaveTextContent("branches unavailable");
+		act(() => recover([{ name: "main", is_remote: false }]));
+		expect(screen.queryByRole("alert")).not.toBeInTheDocument();
 	});
 
 	it("同じRepository一覧の新しい配列でも入力と取得済み候補を保持する", async () => {
@@ -120,6 +140,7 @@ describe("CreateWorktreeModal", () => {
 		await waitFor(() =>
 			expect(subscribeState).toHaveBeenCalledWith(
 				{ kind: "branch-status", args: ["/repo"] },
+				expect.any(Function),
 				expect.any(Function),
 			),
 		);
@@ -373,8 +394,6 @@ describe("CreateWorktreeModal", () => {
 				branch: "new",
 				is_main: false,
 				is_locked: false,
-				dirty_count: 0,
-				base_branch: "main",
 			}),
 		);
 		expect(onCreated).toHaveBeenCalledExactlyOnceWith(

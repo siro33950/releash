@@ -44,6 +44,33 @@ describe("useWorkspaceStateCache", () => {
 		vi.restoreAllMocks();
 	});
 
+	it("壊れた保存状態を読めない間は配置を保存せず回復後に保存できる", async () => {
+		const { result, unmount } = renderHook(() => useWorkspaceStateCache());
+		const target = {
+			kind: "workspace-state" as const,
+			args: ["repo", "/repo"],
+		};
+		const load = result.current.loadState("/repo");
+		act(() => states.fail(target, new Error("corrupt state")));
+		expect(await load).toBeUndefined();
+		act(() => {
+			result.current.updateState("/repo", makeState());
+			result.current.flushState("/repo");
+			vi.advanceTimersByTime(500);
+		});
+		expect(mockInvoke).not.toHaveBeenCalled();
+		act(() => states.publish(target, makeState()));
+		act(() => {
+			result.current.updateState("/repo", makeState());
+			result.current.flushState("/repo");
+		});
+		expect(mockInvoke).toHaveBeenCalledWith(
+			"save_workspace_state",
+			expect.anything(),
+		);
+		unmount();
+	});
+
 	it("getState returns undefined for unknown path", () => {
 		const { result } = renderHook(() => useWorkspaceStateCache());
 		expect(result.current.getState("/unknown")).toBeUndefined();

@@ -158,7 +158,7 @@ async fn test_一覧の再走査_監視中も保存済みの結果を使わず�
     assert_eq!(notifier.count(), 3);
     let snapshot = service.get_snapshot("/repo").unwrap();
     assert_eq!(snapshot.status[0].path, "scan-2");
-    assert_eq!(service.dirty_count("/repo"), Some(2));
+    assert_eq!(service.dirty_count("/repo").value, Some(2));
     assert_eq!(snapshot.version, next_snapshot.version + 1);
     // When
     scanner.fail.store(true, Ordering::SeqCst);
@@ -167,10 +167,8 @@ async fn test_一覧の再走査_監視中も保存済みの結果を使わず�
     let worktrees = service.worktrees("/repo");
     assert!(worktrees.error.is_some());
     assert_eq!(worktrees.value.unwrap()[0].branch, latest);
-    assert!(Arc::ptr_eq(
-        &snapshot,
-        &service.get_snapshot("/repo").unwrap()
-    ));
+    assert!(service.get_snapshot("/repo").is_err());
+    assert!(service.dirty_count("/repo").error.is_some());
 }
 
 #[tokio::test]

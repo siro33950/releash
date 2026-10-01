@@ -322,6 +322,40 @@ impl StateSubscriptionOutput for StateSubscriptionPresenter {
         self.stop(client, &target.to_string(), active)
     }
 
+    fn publish_failure(
+        &self,
+        target: &SubscriptionTarget,
+        error: StateReadError,
+    ) -> Result<(), SubscriptionError> {
+        use crate::adaptor::presenter::connect::ConnectFailure;
+        let failure = crate::adaptor::presenter::client::StateReadFailure {
+            code: error.connect_code().grpc_code() as i32,
+            message: error.message,
+        };
+        let snapshot = crate::adaptor::presenter::client::StatePayload {
+            value: Some(
+                crate::adaptor::presenter::client::state_payload::Value::ReadFailure(failure),
+            ),
+        };
+        let terminal = matches!(target, SubscriptionTarget::Terminal(_));
+        let target = target.to_string();
+        self.update(|state| {
+            if terminal {
+                let version = state.current_version(&target).ok_or(
+                    crate::infrastructure::state_subscription::SubscriptionError::UnknownTarget,
+                )?;
+                state.publish_delta(&target, version.clone(), snapshot.clone(), 0, false)?;
+                state.set_delta_snapshot(&target, version, snapshot)
+            } else if state.registered(&target) {
+                state.publish(&target, snapshot, None)
+            } else {
+                state
+                    .register(target, snapshot, Delivery::Full)
+                    .map(|_| true)
+            }
+        })
+    }
+
     fn publish_initial(
         &self,
         target: &SubscriptionTarget,

@@ -437,8 +437,6 @@ fn test_購読payload_全種類を旧wire型とフィールドへ変換する() 
                 branch: "main".into(),
                 is_main: true,
                 is_locked: false,
-                dirty_count: 2,
-                base_branch: Some("base".into()),
             }]),
             W::Worktrees(wire::ListWorktreeEntryDto {
                 items: vec![wire::WorktreeEntryDto {
@@ -447,20 +445,18 @@ fn test_購読payload_全種類を旧wire型とフィールドへ変換する() 
                     branch: Some("main".into()),
                     is_main: Some(true),
                     is_locked: Some(false),
-                    dirty_count: Some(2),
-                    base_branch: Some("base".into()),
                 }],
             }),
         ),
         (
-            StateValue::RepositoryRoot("/repo".into()),
-            W::RepositoryRoot(wire::ResultString {
+            StateValue::RepositoryRoot(Some("/repo".into())),
+            W::RepositoryRoot(wire::Nullablestring {
                 value: Some("/repo".into()),
             }),
         ),
         (
-            StateValue::StartupRepository("/startup".into()),
-            W::StartupRepository(wire::ResultString {
+            StateValue::StartupRepository(Some("/startup".into())),
+            W::StartupRepository(wire::Nullablestring {
                 value: Some("/startup".into()),
             }),
         ),

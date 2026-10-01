@@ -67,26 +67,53 @@ mod git_operation_tests;
 
 pub(crate) fn detect_default_branch(
     repo: &git2::Repository,
-) -> Result<Option<String>, OperationStopped> {
-    crate::infrastructure::git::helpers::detect_default_branch(
-        repo,
-        &crate::common::operation_context::check,
-    )
+) -> Result<Option<String>, GitOperationError> {
+    crate::infrastructure::git::helpers::detect_default_branch(repo, &|| {
+        crate::common::operation_context::check().map_err(GitOperationError::Stopped)
+    })
 }
 pub(crate) fn get_branch_name_for_repo(
     repo: &git2::Repository,
-) -> Result<String, OperationStopped> {
-    crate::infrastructure::git::helpers::get_branch_name_for_repo(
-        repo,
-        &crate::common::operation_context::check,
-    )
+) -> Result<String, GitOperationError> {
+    crate::infrastructure::git::helpers::get_branch_name_for_repo(repo, &|| {
+        crate::common::operation_context::check().map_err(GitOperationError::Stopped)
+    })
 }
 pub(crate) fn optional<T>(
     result: Result<T, GitOperationError>,
-) -> Result<Option<T>, OperationStopped> {
+) -> Result<Option<T>, GitOperationError> {
     match result {
         Ok(value) => Ok(Some(value)),
-        Err(GitOperationError::Git(_)) => Ok(None),
-        Err(GitOperationError::Stopped(error)) => Err(error),
+        Err(error) if error.code() == git2::ErrorCode::NotFound => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
+impl From<GitOperationError> for crate::domain::git_host::GitHostError {
+    fn from(error: GitOperationError) -> Self {
+        match error {
+            GitOperationError::Stopped(error) => error.into(),
+            GitOperationError::Git(error) => Self::External(error.to_string()),
+        }
+    }
+}
+impl From<GitOperationError> for crate::domain::workflow::WorkflowError {
+    fn from(error: GitOperationError) -> Self {
+        match error {
+            GitOperationError::Stopped(error) => error.into(),
+            GitOperationError::Git(error) => Self::external(error.to_string()),
+        }
+    }
+}
+
+impl From<GitOperationError> for crate::domain::failure::TechnicalFailure {
+    fn from(error: GitOperationError) -> Self {
+        match error {
+            GitOperationError::Stopped(error) => error.into(),
+            GitOperationError::Git(error) => Self {
+                nature: crate::domain::failure::TechnicalFailureNature::Other,
+                message: error.to_string(),
+            },
+        }
     }
 }

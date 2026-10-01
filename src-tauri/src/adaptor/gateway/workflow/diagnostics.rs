@@ -1443,7 +1443,10 @@ fn node_field_path(wf: &WorkflowDefinitionYaml, node_name: &str, field: &str) ->
 }
 
 /// 全ワークフロー・全ファセットを走査し診断結果を返す
-pub fn diagnose_all(workflows_dir: &Path, facets_base_dir: &Path) -> DiagnosticReport {
+pub fn diagnose_all(
+    workflows_dir: &Path,
+    facets_base_dir: &Path,
+) -> Result<DiagnosticReport, super::storage::StorageError> {
     diagnose_with_scope(
         workflows_dir,
         facets_base_dir,
@@ -1453,7 +1456,7 @@ pub fn diagnose_all(workflows_dir: &Path, facets_base_dir: &Path) -> DiagnosticR
 
 /// 指定 directory を workflow source directory として扱い、正本 layout から解決した
 /// Facet base に対して workflow から到達する範囲だけを診断する。
-pub fn diagnose_directory(dir: &Path) -> DiagnosticReport {
+pub fn diagnose_directory(dir: &Path) -> Result<DiagnosticReport, super::storage::StorageError> {
     let facets_base_dir = facet::resolve_facets_base_dir(dir);
     diagnose_with_scope(
         dir,
@@ -1466,17 +1469,17 @@ fn diagnose_with_scope(
     workflows_dir: &Path,
     facets_base_dir: &Path,
     scope: DiagnosticScope,
-) -> DiagnosticReport {
+) -> Result<DiagnosticReport, super::storage::StorageError> {
     let mut items = Vec::new();
     let mut workflow_summaries: HashMap<String, DiagnosticSummary> = HashMap::new();
     let mut facet_summaries: HashMap<String, DiagnosticSummary> = HashMap::new();
     let mut facet_usage: HashMap<String, Vec<FacetUsageEntry>> = HashMap::new();
 
-    let workflows = load_workflows_in_scope(workflows_dir, facets_base_dir, scope);
+    let workflows = load_workflows_in_scope(workflows_dir, facets_base_dir, scope)?;
 
     // --- 全ファセットキーのセットを構築（参照存在チェック用） ---
     let all_facet_keys = match scope {
-        DiagnosticScope::AllAvailable => collect_all_facet_keys(facets_base_dir),
+        DiagnosticScope::AllAvailable => collect_all_facet_keys(facets_base_dir)?,
         DiagnosticScope::ReachableFromDirectory => workflows
             .iter()
             .filter_map(|(_, result)| result.as_ref().ok())
@@ -1518,7 +1521,7 @@ fn diagnose_with_scope(
 
     // --- ファセット診断 ---
     for kind in &ALL_FACET_KINDS {
-        let summaries = facet::list_facet_summaries(*kind, facets_base_dir).unwrap_or_default();
+        let summaries = facet::list_facet_summaries(*kind, facets_base_dir)?;
         for summary in &summaries {
             let facet_id = format!("{}/{}", kind.canonical_name(), summary.key);
             if scope == DiagnosticScope::ReachableFromDirectory {
@@ -1544,6 +1547,7 @@ fn diagnose_with_scope(
                 .facet(summary.key.clone(), kind.canonical_name().to_string())
                 .field("key");
                 add_diagnostic(&mut items, &mut facet_summaries, &facet_id, item);
+                continue;
             }
 
             // ビルトイン info
@@ -1564,7 +1568,8 @@ fn diagnose_with_scope(
             }
 
             // テンプレート変数チェック
-            if let Ok(content) = facet::load_facet(*kind, &summary.key, facets_base_dir) {
+            {
+                let content = facet::load_facet(*kind, &summary.key, facets_base_dir)?;
                 check_template_variables(
                     &content,
                     &summary.key,
@@ -1588,25 +1593,25 @@ fn diagnose_with_scope(
         }
     }
 
-    DiagnosticReport {
+    Ok(DiagnosticReport {
         items,
         workflow_summaries,
         facet_summaries,
         facet_usage,
-    }
+    })
 }
 
 /// 全ファセットキーを収集（"kind/key" 形式）
-fn collect_all_facet_keys(base_dir: &Path) -> HashSet<String> {
+fn collect_all_facet_keys(
+    base_dir: &Path,
+) -> Result<HashSet<String>, super::storage::StorageError> {
     let mut keys = HashSet::new();
     for kind in &ALL_FACET_KINDS {
-        if let Ok(list) = facet::list_facets(*kind, base_dir) {
-            for key in list {
-                keys.insert(format!("{}/{}", kind.canonical_name(), key));
-            }
+        for key in facet::list_facets(*kind, base_dir)? {
+            keys.insert(format!("{}/{}", kind.canonical_name(), key));
         }
     }
-    keys
+    Ok(keys)
 }
 
 fn collect_referenced_facet_keys(
@@ -1715,47 +1720,33 @@ fn load_workflows_in_scope(
     dir: &Path,
     facets_base_dir: &Path,
     scope: DiagnosticScope,
-) -> Vec<NamedWorkflowDiagnostics> {
+) -> Result<Vec<NamedWorkflowDiagnostics>, super::storage::StorageError> {
     let mut results = Vec::new();
 
     // ディスク上のカスタムワークフロー（validate() をスキップし全件走査）
     let mut seen = HashSet::new();
-    if dir.exists() {
-        if let Ok(entries) = std::fs::read_dir(dir) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if super::storage::workflow_source_format(&path).is_some() {
-                    if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
-                        let name = stem.to_string();
-                        let result = match std::fs::read_to_string(&path) {
-                            Ok(content) => {
-                                let diagnosis = super::storage::diagnose_workflow_file(
-                                    &path,
-                                    &content,
-                                    dir,
-                                    facets_base_dir,
-                                );
-                                if let Some(workflow) = diagnosis.workflow {
-                                    Ok((workflow, diagnosis.diagnostics))
-                                } else {
-                                    Err(diagnosis.diagnostics)
-                                }
-                            }
-                            Err(error) => Err(vec![DiagnosticItem::new(
-                                "WFS001",
-                                Severity::Error,
-                                DiagnosticStage::ParseShape,
-                                None,
-                                format!("ワークフロー '{name}' の読み込みに失敗: {error}"),
-                            )
-                            .workflow(name.clone())]),
-                        };
-                        seen.insert(name.clone());
-                        results.push((name, result));
-                    }
+    for (name, path) in super::storage::workflow_files(dir)? {
+        let result = match std::fs::read_to_string(&path) {
+            Ok(content) => {
+                let diagnosis =
+                    super::storage::diagnose_workflow_file(&path, &content, dir, facets_base_dir);
+                if let Some(workflow) = diagnosis.workflow {
+                    Ok((workflow, diagnosis.diagnostics))
+                } else {
+                    Err(diagnosis.diagnostics)
                 }
             }
-        }
+            Err(error) => Err(vec![DiagnosticItem::new(
+                "WFS001",
+                Severity::Error,
+                DiagnosticStage::ParseShape,
+                None,
+                format!("ワークフロー '{name}' の読み込みに失敗: {error}"),
+            )
+            .workflow(name.clone())]),
+        };
+        seen.insert(name.clone());
+        results.push((name, result));
     }
 
     if scope == DiagnosticScope::AllAvailable {
@@ -1794,7 +1785,7 @@ fn load_workflows_in_scope(
         }
     }
 
-    results
+    Ok(results)
 }
 
 /// ValidationError から node 名とフィールド名を抽出
@@ -2286,7 +2277,7 @@ nodes:
         .unwrap();
 
         // When
-        let report = diagnose_all(tmp.path(), tmp.path());
+        let report = diagnose_all(tmp.path(), tmp.path()).unwrap();
         let value = serde_json::to_value(
             crate::adaptor::presenter::workflow_api::DiagnosticReportResponse::from(report),
         )
@@ -2591,8 +2582,8 @@ nodes:
             .collect();
 
         // When
-        let directory_report = diagnose_directory(tmp.path());
-        let all_report = diagnose_all(tmp.path(), tmp.path());
+        let directory_report = diagnose_directory(tmp.path()).unwrap();
+        let all_report = diagnose_all(tmp.path(), tmp.path()).unwrap();
 
         // Then
         assert!(directory_report
@@ -2631,7 +2622,7 @@ nodes:
         .unwrap();
 
         // When
-        let report = diagnose_directory(tmp.path());
+        let report = diagnose_directory(tmp.path()).unwrap();
 
         // Then
         assert!(!report.facet_summaries.contains_key("policy/unused"));
@@ -2662,7 +2653,7 @@ nodes:
         save_workflow_yaml(tmp.path(), &workflow);
 
         // When
-        let report = diagnose_directory(tmp.path());
+        let report = diagnose_directory(tmp.path()).unwrap();
 
         // Then
         assert!(!report.items.iter().any(|item| {
@@ -2699,7 +2690,7 @@ nodes:
         save_workflow_yaml(tmp.path(), &workflow);
 
         // When
-        let report = diagnose_directory(tmp.path());
+        let report = diagnose_directory(tmp.path()).unwrap();
 
         // Then
         assert!(report.items.iter().any(|item| {
@@ -2735,7 +2726,7 @@ nodes:
         save_workflow_yaml(tmp.path(), &workflow);
 
         // When
-        let report = diagnose_directory(tmp.path());
+        let report = diagnose_directory(tmp.path()).unwrap();
 
         // Then
         assert!(report
@@ -2762,7 +2753,7 @@ nodes:
     }
 
     #[test]
-    fn test_診断_指定directory経路は一部inventoryのio失敗時も健全なkindを保持する() {
+    fn test_診断_指定directory経路は一部inventoryのio失敗を返す() {
         // Given
         let tmp = TempDir::new().unwrap();
         let facets_dir = tmp.path().join("facets");
@@ -2784,20 +2775,11 @@ nodes:
         };
         save_workflow_yaml(tmp.path(), &workflow);
 
-        // When
-        let report = diagnose_directory(tmp.path());
-
-        // Then
-        assert!(!report
-            .items
-            .iter()
-            .any(|item| { item.code == "FAC002" && item.facet_key.as_deref() == Some("known") }));
-        assert!(report.facet_summaries.contains_key("knowledge/known"));
-        assert!(report.facet_usage.contains_key("knowledge/known"));
-        assert!(report
-            .items
-            .iter()
-            .any(|item| { item.code == "FAC003" && item.facet_key.as_deref() == Some("known") }));
+        // When / Then
+        assert!(matches!(
+            diagnose_directory(tmp.path()),
+            Err(super::super::storage::StorageError::FacetResolution(_))
+        ));
     }
 
     #[test]
@@ -2821,7 +2803,7 @@ nodes:
         save_workflow_yaml(tmp.path(), &workflow);
 
         // When
-        let report = diagnose_directory(tmp.path());
+        let report = diagnose_directory(tmp.path()).unwrap();
 
         // Then
         let missing_refs = report
@@ -2864,8 +2846,8 @@ nodes:
         save_workflow_yaml(tmp.path(), &workflow);
 
         // When
-        let directory_report = diagnose_directory(tmp.path());
-        let all_available_report = diagnose_all(tmp.path(), tmp.path());
+        let directory_report = diagnose_directory(tmp.path()).unwrap();
+        let all_available_report = diagnose_all(tmp.path(), tmp.path()).unwrap();
         let fac002_keys = |report: &DiagnosticReport| {
             report
                 .items
@@ -2896,7 +2878,7 @@ nodes:
     }
 
     #[test]
-    fn test_診断_指定directory経路は直下inventory破損時も他kindの本文診断を保持する() {
+    fn test_診断_指定directory経路は直下inventory破損時は失敗を返す() {
         // Given
         let tmp = TempDir::new().unwrap();
         fs::write(tmp.path().join("policies"), "not a directory").unwrap();
@@ -2916,20 +2898,11 @@ nodes:
         };
         save_workflow_yaml(tmp.path(), &workflow);
 
-        // When
-        let report = diagnose_directory(tmp.path());
-
-        // Then
-        assert!(!report
-            .items
-            .iter()
-            .any(|item| { item.code == "FAC002" && item.facet_key.as_deref() == Some("known") }));
-        assert!(report.facet_summaries.contains_key("knowledge/known"));
-        assert!(report.facet_usage.contains_key("knowledge/known"));
-        assert!(report
-            .items
-            .iter()
-            .any(|item| { item.code == "FAC003" && item.facet_key.as_deref() == Some("known") }));
+        // When / Then
+        assert!(matches!(
+            diagnose_directory(tmp.path()),
+            Err(super::super::storage::StorageError::FacetResolution(_))
+        ));
     }
 
     #[test]
@@ -2947,7 +2920,7 @@ nodes:
         save_workflow_yaml(tmp.path(), &workflow);
 
         // When
-        let report = diagnose_directory(tmp.path());
+        let report = diagnose_directory(tmp.path()).unwrap();
         let item = report
             .items
             .iter()
@@ -2993,7 +2966,7 @@ nodes:
         save_workflow_yaml(tmp.path(), &workflow);
 
         // When
-        let report = diagnose_directory(tmp.path());
+        let report = diagnose_directory(tmp.path()).unwrap();
 
         // Then
         assert!(report.items.iter().any(|item| {
@@ -3030,7 +3003,7 @@ nodes:
         save_workflow_yaml(tmp.path(), &workflow);
 
         // When
-        let report = diagnose_directory(tmp.path());
+        let report = diagnose_directory(tmp.path()).unwrap();
 
         // Then
         assert!(report.items.iter().any(|item| {
@@ -3070,7 +3043,7 @@ nodes:
         save_workflow_yaml(tmp.path(), &workflow);
 
         // When
-        let report = diagnose_directory(tmp.path());
+        let report = diagnose_directory(tmp.path()).unwrap();
 
         // Then
         assert!(!report.items.iter().any(|item| {
@@ -3101,7 +3074,7 @@ nodes:
         save_workflow_yaml(tmp.path(), &workflow);
 
         // When
-        let report = diagnose_directory(tmp.path());
+        let report = diagnose_directory(tmp.path()).unwrap();
 
         // Then
         assert!(!report.items.iter().any(|item| {
@@ -3125,7 +3098,7 @@ nodes:
         .unwrap();
 
         // When
-        let report = diagnose_directory(tmp.path());
+        let report = diagnose_directory(tmp.path()).unwrap();
         let item = report
             .items
             .iter()
@@ -3144,9 +3117,7 @@ nodes:
         fs::write(tmp.path().join("policies"), "not a directory").unwrap();
         setup_facet(tmp.path(), "knowledge", "known", "known content");
 
-        let keys = collect_all_facet_keys(tmp.path());
-
-        assert!(keys.contains("knowledge/known"));
+        assert!(collect_all_facet_keys(tmp.path()).is_err());
     }
 
     #[test]
@@ -3549,7 +3520,7 @@ nodes:
         )
         .unwrap();
 
-        let report = diagnose_all(wf_dir, wf_dir);
+        let report = diagnose_all(wf_dir, wf_dir).unwrap();
         let summary = report
             .workflow_summaries
             .get("file-stem")
@@ -3590,7 +3561,7 @@ nodes:
         };
         save_workflow_yaml(wf_dir, &wf);
 
-        let report = diagnose_all(wf_dir, wf_dir);
+        let report = diagnose_all(wf_dir, wf_dir).unwrap();
         for reference in ["missing_node", "item"] {
             assert!(
                 report.items.iter().any(|item| item.code == "WFR003"
@@ -3900,7 +3871,7 @@ nodes:
         fs::create_dir_all(&wf_dir).unwrap();
         fs::write(wf_dir.join("broken.yml"), "invalid: yaml: [[[").unwrap();
 
-        let report = diagnose_all(&wf_dir, &wf_dir);
+        let report = diagnose_all(&wf_dir, &wf_dir).unwrap();
         assert!(
             report
                 .items
@@ -3936,7 +3907,7 @@ nodes:
         };
         save_workflow_yaml(wf_dir, &wf);
 
-        let report = diagnose_all(wf_dir, wf_dir);
+        let report = diagnose_all(wf_dir, wf_dir).unwrap();
         let missing = report
             .items
             .iter()
@@ -3974,7 +3945,7 @@ nodes:
         };
         save_workflow_yaml(wf_dir, &wf);
 
-        let report = diagnose_all(wf_dir, wf_dir);
+        let report = diagnose_all(wf_dir, wf_dir).unwrap();
         assert!(
             report.items.iter().any(|i| i.severity == Severity::Error
                 && i.message.contains("存在しない schemas Contract")
@@ -4005,7 +3976,7 @@ nodes:
         };
         save_workflow_yaml(wf_dir, &wf);
 
-        let report = diagnose_all(wf_dir, wf_dir);
+        let report = diagnose_all(wf_dir, wf_dir).unwrap();
         assert!(
             report.items.iter().any(|i| i.severity == Severity::Error
                 && i.message.contains("存在しない schemas Contract")
@@ -4040,7 +4011,7 @@ nodes:
         };
         save_workflow_yaml(wf_dir, &wf);
 
-        let report = diagnose_all(wf_dir, wf_dir);
+        let report = diagnose_all(wf_dir, wf_dir).unwrap();
         assert!(
             report.items.iter().any(|i| i.severity == Severity::Error
                 && i.message.contains("schemas.review-list")
@@ -4092,7 +4063,7 @@ nodes:
         };
         save_workflow_yaml(wf_dir, &wf);
 
-        let report = diagnose_all(wf_dir, wf_dir);
+        let report = diagnose_all(wf_dir, wf_dir).unwrap();
         assert!(
             !report.facet_usage.contains_key("contracts/input-contract"),
             "schemas Contract must not be tracked as facet usage: {:?}",
@@ -4127,7 +4098,7 @@ nodes:
         };
         save_workflow_yaml(wf_dir, &wf);
 
-        let report = diagnose_all(wf_dir, wf_dir);
+        let report = diagnose_all(wf_dir, wf_dir).unwrap();
         assert!(
             report.items.iter().any(|i| i.severity == Severity::Error
                 && i.message.contains("存在しない schemas Contract")
@@ -4169,7 +4140,7 @@ nodes:
         };
         save_workflow_yaml(wf_dir, &wf);
 
-        let report = diagnose_all(wf_dir, wf_dir);
+        let report = diagnose_all(wf_dir, wf_dir).unwrap();
         let rule_target_errors = report
             .items
             .iter()
@@ -4220,7 +4191,7 @@ nodes:
         };
         save_workflow_yaml(wf_dir, &wf);
 
-        let report = diagnose_all(wf_dir, wf_dir);
+        let report = diagnose_all(wf_dir, wf_dir).unwrap();
         assert!(
             report.items.iter().any(|i| i.code == "WFC001"
                 && i.severity == Severity::Error
@@ -4252,7 +4223,7 @@ nodes:
         };
         save_workflow_yaml(wf_dir, &wf);
 
-        let report = diagnose_all(wf_dir, wf_dir);
+        let report = diagnose_all(wf_dir, wf_dir).unwrap();
         for node_name in ["node2", "node3"] {
             assert!(
                 report.items.iter().any(|i| i.code == "WFC001"
@@ -4270,7 +4241,7 @@ nodes:
         let tmp = TempDir::new().unwrap();
         let wf_dir = tmp.path();
 
-        let report = diagnose_all(wf_dir, wf_dir);
+        let report = diagnose_all(wf_dir, wf_dir).unwrap();
         assert!(report
             .items
             .iter()
@@ -4282,7 +4253,7 @@ nodes:
         let tmp = TempDir::new().unwrap();
         let wf_dir = tmp.path();
 
-        let report = diagnose_all(wf_dir, wf_dir);
+        let report = diagnose_all(wf_dir, wf_dir).unwrap();
         let errors: Vec<_> = report
             .items
             .iter()
@@ -4299,7 +4270,7 @@ nodes:
         let tmp = TempDir::new().unwrap();
         let wf_dir = tmp.path();
 
-        let report = diagnose_all(wf_dir, wf_dir);
+        let report = diagnose_all(wf_dir, wf_dir).unwrap();
         assert!(report
             .items
             .iter()
@@ -4321,7 +4292,7 @@ nodes:
         };
         save_workflow_yaml(wf_dir, &wf);
 
-        let report = diagnose_all(wf_dir, wf_dir);
+        let report = diagnose_all(wf_dir, wf_dir).unwrap();
         assert!(report.items.iter().any(|i| i.severity == Severity::Error
             && i.facet_key.as_deref() == Some("bad")
             && i.message.contains("未定義のテンプレート変数 '{{spec..b}}'")));
@@ -4333,7 +4304,7 @@ nodes:
         let wf_dir = tmp.path();
         setup_facet(wf_dir, "instructions", "good", "Request: {{ request }}");
 
-        let report = diagnose_all(wf_dir, wf_dir);
+        let report = diagnose_all(wf_dir, wf_dir).unwrap();
         assert!(!report.items.iter().any(|i| i.severity == Severity::Error
             && i.facet_key.as_deref() == Some("good")
             && i.message.contains("未定義のテンプレート変数")));
@@ -4357,7 +4328,7 @@ nodes:
         };
         save_workflow_yaml(wf_dir, &wf);
 
-        let report = diagnose_all(wf_dir, wf_dir);
+        let report = diagnose_all(wf_dir, wf_dir).unwrap();
         assert!(
             !report.items.iter().any(|i| i.severity == Severity::Error
                 && i.node_name.as_deref() == Some("main")
@@ -4383,7 +4354,7 @@ nodes:
         };
         save_workflow_yaml(wf_dir, &wf);
 
-        let report = diagnose_all(wf_dir, wf_dir);
+        let report = diagnose_all(wf_dir, wf_dir).unwrap();
         assert!(
             report
                 .items
@@ -4410,7 +4381,7 @@ nodes:
         };
         save_workflow_yaml(wf_dir, &wf);
 
-        let report = diagnose_all(wf_dir, wf_dir);
+        let report = diagnose_all(wf_dir, wf_dir).unwrap();
         let usage = report.facet_usage.get("instruction/impl");
         assert!(usage.is_some());
         assert_eq!(usage.unwrap().len(), 1);
@@ -4444,7 +4415,7 @@ nodes:
         };
         save_workflow_yaml(wf_dir, &wf);
 
-        let report = diagnose_all(wf_dir, wf_dir);
+        let report = diagnose_all(wf_dir, wf_dir).unwrap();
         for facet_id in ["knowledge/first", "knowledge/second"] {
             let usages = report
                 .facet_usage
@@ -4476,7 +4447,7 @@ nodes:
         let content = serde_saphyr::to_string(&wf).unwrap();
         fs::write(wf_dir.join("bad workflow.yml"), content).unwrap();
 
-        let report = diagnose_all(wf_dir, wf_dir);
+        let report = diagnose_all(wf_dir, wf_dir).unwrap();
         assert!(report.items.iter().any(|i| i.code == "WFS006"
             && i.severity == Severity::Error
             && i.stage == DiagnosticStage::ParseShape
@@ -4492,7 +4463,7 @@ nodes:
         fs::create_dir_all(&policies_dir).unwrap();
         fs::write(policies_dir.join("bad key!.md"), "content").unwrap();
 
-        let report = diagnose_all(wf_dir, wf_dir);
+        let report = diagnose_all(wf_dir, wf_dir).unwrap();
         assert!(report.items.iter().any(|i| i.severity == Severity::Error
             && i.message.contains("命名規則")
             && i.facet_key.as_deref() == Some("bad key!")));
@@ -4526,7 +4497,7 @@ nodes:
         )
         .unwrap();
 
-        let report = diagnose_all(wf_dir, wf_dir);
+        let report = diagnose_all(wf_dir, wf_dir).unwrap();
         assert!(report.items.iter().any(|i| i.severity == Severity::Error
             && i.workflow_name.as_deref() == Some("bad-schema-name")
             && i.field.as_deref() == Some("schemas")
@@ -4545,7 +4516,7 @@ nodes:
         )
         .unwrap();
 
-        let report = diagnose_all(wf_dir, wf_dir);
+        let report = diagnose_all(wf_dir, wf_dir).unwrap();
         assert!(
             report.items.iter().any(|i| i.severity == Severity::Error
                 && i.workflow_name.as_deref() == Some("bad-schema")),
@@ -4763,7 +4734,7 @@ nodes:
         };
         save_workflow_yaml(wf_dir, &wf);
 
-        let report = diagnose_all(wf_dir, wf_dir);
+        let report = diagnose_all(wf_dir, wf_dir).unwrap();
         assert!(
             !report
                 .items
@@ -4816,7 +4787,7 @@ nodes:
         };
         save_workflow_yaml(wf_dir, &wf);
 
-        let report = diagnose_all(wf_dir, wf_dir);
+        let report = diagnose_all(wf_dir, wf_dir).unwrap();
         assert!(
             !report.items.iter().any(|i| i.severity == Severity::Error
                 && i.node_name.as_deref() == Some("child1")
@@ -4864,7 +4835,7 @@ nodes:
         )
         .unwrap();
 
-        let report = diagnose_all(tmp.path(), tmp.path());
+        let report = diagnose_all(tmp.path(), tmp.path()).unwrap();
         let diagnostic = report
             .items
             .iter()
@@ -5283,8 +5254,9 @@ return r.workflow{
             tmp.path(),
             tmp.path(),
             DiagnosticScope::ReachableFromDirectory,
-        );
-        let report = diagnose_directory(tmp.path());
+        )
+        .unwrap();
+        let report = diagnose_directory(tmp.path()).unwrap();
 
         // Then
         for name in ["module-host", "healthy"] {
@@ -5355,8 +5327,9 @@ return r.workflow{
             tmp.path(),
             tmp.path(),
             DiagnosticScope::ReachableFromDirectory,
-        );
-        let report = diagnose_directory(tmp.path());
+        )
+        .unwrap();
+        let report = diagnose_directory(tmp.path()).unwrap();
 
         // Then
         let broken = report

@@ -222,6 +222,17 @@ pub(crate) fn event(
                 }),
                 Event::Bookmark(_) => WireEvent::Bookmark(wire::Unit {}),
             };
+            let payload = match &event {
+                WireEvent::Snapshot(payload) => Some(payload),
+                WireEvent::Change(change) => change.payload.as_ref(),
+                _ => None,
+            };
+            let event = match payload.and_then(|p| p.value.as_ref()) {
+                Some(wire::state_payload::Value::ReadFailure(failure)) => {
+                    WireEvent::Failure(failure.clone())
+                }
+                _ => event,
+            };
             let target = crate::usecase::state_subscription::SubscriptionTarget::parse(&target)
                 .map_err(crate::adaptor::presenter::connect::classified_error)?;
             let (name, args) = target.parts();

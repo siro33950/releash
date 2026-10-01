@@ -133,9 +133,11 @@ fn test_branch探索_停止を未検出や空名へ変換しない() {
         );
         let result =
             crate::common::operation_context::sync_scope(context, || detect_default_branch(&repo));
-        assert_eq!(
-            result,
-            Err(OperationStopped::Cancelled),
+        assert!(
+            matches!(
+                result,
+                Err(GitOperationError::Stopped(OperationStopped::Cancelled))
+            ),
             "checkpoint {after}"
         );
     }
@@ -146,20 +148,52 @@ fn test_branch探索_停止を未検出や空名へ変換しない() {
                 remaining: AtomicUsize::new(after),
             }),
         );
-        assert_eq!(
+        assert!(matches!(
             crate::common::operation_context::sync_scope(context, || get_branch_name_for_repo(
                 &repo
             )),
-            Err(OperationStopped::Cancelled)
-        );
+            Err(GitOperationError::Stopped(OperationStopped::Cancelled))
+        ));
     }
     let context =
         OperationContext::default().with_deadline(Deadline::new(std::time::Instant::now()));
     crate::common::operation_context::sync_scope(context, || {
-        assert_eq!(detect_default_branch(&repo), Err(OperationStopped::Expired));
-        assert_eq!(
+        assert!(matches!(
+            detect_default_branch(&repo),
+            Err(GitOperationError::Stopped(OperationStopped::Expired))
+        ));
+        assert!(matches!(
             get_branch_name_for_repo(&repo),
-            Err(OperationStopped::Expired)
-        );
+            Err(GitOperationError::Stopped(OperationStopped::Expired))
+        ));
     });
+}
+
+#[test]
+fn test_git任意読取_notfoundだけを未設定として扱う() {
+    // Given / When / Then
+    assert_eq!(
+        optional::<()>(Err(git2::Error::new(
+            git2::ErrorCode::NotFound,
+            git2::ErrorClass::Reference,
+            "missing"
+        )
+        .into()))
+        .unwrap(),
+        None
+    );
+    assert!(matches!(
+        optional::<()>(Err(git2::Error::from_str("read failed").into())),
+        Err(GitOperationError::Git(_))
+    ));
+}
+
+#[test]
+fn test_既定ブランチ読取_参照の破損を未設定と区別する() {
+    // Given
+    let directory = tempfile::tempdir().unwrap();
+    let repo = git2::Repository::init(directory.path()).unwrap();
+    std::fs::write(repo.path().join("packed-refs"), "invalid packed refs").unwrap();
+    // When / Then
+    assert!(detect_default_branch(&repo).is_err());
 }

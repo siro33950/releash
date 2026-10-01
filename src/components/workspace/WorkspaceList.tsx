@@ -43,7 +43,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Textarea } from "@/components/ui/textarea";
 import type { WorkspaceRepositoryList } from "@/generated/client_types";
-import { useStateSubscription } from "@/hooks/useStateSubscription";
+import { useStateSubscriptionResult } from "@/hooks/useStateSubscription";
 import { useWorkflowConfig } from "@/hooks/useWorkflowConfig";
 import {
 	WorkspaceListContext,
@@ -116,12 +116,28 @@ function isNodeSelected(
 }
 
 function WorktreeIndicators({ branch }: { branch: WorktreeBranch }) {
-	const hasChanges = branch.dirty_count > 0;
-	const hasPr = branch.has_pr === true;
-	if (!hasChanges && !hasPr) return null;
+	const hasChanges = branch.dirty_count !== null && branch.dirty_count > 0;
+	const hasPr = !branch.pull_request_error && branch.has_pr === true;
+	if (
+		!hasChanges &&
+		!hasPr &&
+		!branch.dirty_count_error &&
+		!branch.pull_request_error
+	)
+		return null;
 
 	return (
 		<div className="relative h-5 w-full text-muted-foreground">
+			{branch.dirty_count_error && (
+				<span role="alert" title={branch.dirty_count_error}>
+					Changes unavailable
+				</span>
+			)}
+			{branch.pull_request_error && (
+				<span role="alert" title={branch.pull_request_error}>
+					PR unavailable
+				</span>
+			)}
 			{hasChanges && (
 				<span
 					className={`absolute top-0 inline-flex h-5 w-5 items-center justify-center rounded text-[10px] leading-none tabular-nums ${
@@ -810,7 +826,7 @@ function WorktreeTreeItem({
 	);
 
 	const [historyCount, setHistoryCount] = useState(20);
-	const historyPage = useStateSubscription(
+	const historyPage = useStateSubscriptionResult(
 		worktreeMenuOpen
 			? {
 					kind: "session-history",
@@ -818,9 +834,13 @@ function WorktreeTreeItem({
 				}
 			: null,
 	);
-	const providerHistory = historyPage?.items ?? [];
-	const providerHistoryHasMore = historyPage?.hasMore;
-	const providerHistoryLoading = worktreeMenuOpen && historyPage === undefined;
+	const providerHistory = historyPage.error
+		? []
+		: (historyPage.value?.items ?? []);
+	const providerHistoryHasMore =
+		!historyPage.error && historyPage.value?.hasMore;
+	const providerHistoryLoading =
+		worktreeMenuOpen && historyPage.value === undefined && !historyPage.error;
 	const loadMoreProviderHistory = () => setHistoryCount((count) => count + 20);
 
 	const handleResumeProviderHistory = useCallback(
@@ -914,11 +934,16 @@ function WorktreeTreeItem({
 		[],
 	);
 
-	const providerValues = useStateSubscription(
+	const providerValues = useStateSubscriptionResult(
 		createMenuOpen ? "providers" : null,
 	);
-	const availableProviders = providerValues ?? [];
-	const providerMenuLoading = createMenuOpen && providerValues === undefined;
+	const availableProviders = providerValues.error
+		? []
+		: (providerValues.value ?? []);
+	const providerMenuLoading =
+		createMenuOpen &&
+		providerValues.value === undefined &&
+		!providerValues.error;
 
 	const handleCreateAgentSession = useCallback(
 		async (provider: string) => {
@@ -1387,13 +1412,15 @@ function WorktreeTreeItem({
 							/>
 						))
 					)}
-					{providerActionError && (
+					{(providerActionError ||
+						historyPage.error ||
+						providerValues.error) && (
 						<div
 							role="alert"
 							className="mt-1 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive"
 							style={{ marginLeft: WORKTREE_NAME_INDENT_PX }}
 						>
-							{providerActionError}
+							{providerActionError ?? historyPage.error ?? providerValues.error}
 						</div>
 					)}
 					{workflowActionError && (

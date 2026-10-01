@@ -16,8 +16,6 @@ function settingsConfig(overrides: Record<string, unknown> = {}) {
 				branch: "feat/test",
 				is_main: true,
 				is_locked: false,
-				dirty_count: 0,
-				base_branch: null,
 			},
 		],
 		"current-branch": "feat/test",
