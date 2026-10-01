@@ -74,9 +74,9 @@ dirs = "6"
 uuid = { version = "1", features = ["v4"] }
 url = "2"
 clap = { version = "4", features = ["derive"] }
-opentelemetry = "0.32"
-opentelemetry-otlp = { version = "0.32", default-features = false, features = ["trace", "metrics", "logs", "http-proto", "reqwest-blocking-client"] }
-opentelemetry_sdk = "0.32"
+opentelemetry = "0.33"
+opentelemetry-otlp = { version = "0.33", default-features = false, features = ["trace", "metrics", "logs", "http-proto", "reqwest-blocking-client"] }
+opentelemetry_sdk = "0.33"
 sysinfo = { version = "0.39", default-features = false, features = ["system"] }
 tempfile = "3"
 prost = "0.14.4"
@@ -102,7 +102,7 @@ performance-wdio = ["desktop", "performance", "dep:tauri-plugin-wdio", "dep:taur
 
 [dev-dependencies]
 filetime = "0.2"
-opentelemetry_sdk = { version = "0.32", features = ["testing"] }
+opentelemetry_sdk = { version = "0.33", features = ["testing"] }
 proptest = "1"
 tokio = { version = "1", features = ["test-util"] }
 tower = { version = "0.5", features = ["util"] }

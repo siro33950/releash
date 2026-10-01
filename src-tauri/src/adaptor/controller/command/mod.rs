@@ -32,7 +32,9 @@ pub(crate) fn gate_invoke_before_domain_routing<R: tauri::Runtime>(
     invoke: tauri::ipc::Invoke<R>,
 ) -> Result<tauri::ipc::Invoke<R>, bool> {
     let admitted = {
-        let supervisor = invoke.message.state_ref().try_get::<std::sync::Arc<crate::usecase::daemon_supervision::DaemonSupervisionUsecase>>();
+        let supervisor = tauri::Manager::try_state::<
+            std::sync::Arc<crate::usecase::daemon_supervision::DaemonSupervisionUsecase>,
+        >(invoke.message.webview_ref());
         supervisor.is_none_or(|supervisor| {
             supervisor.command_admitted(shell_operation(invoke.message.command()))
         })
