@@ -72,7 +72,7 @@
 		"@bufbuild/protoc-gen-es": "^2.15.0",
 		"@playwright/test": "^1.62.1",
 		"@tailwindcss/vite": "^4.3.3",
-		"@tauri-apps/cli": "^2.11.4",
+		"@tauri-apps/cli": "^2.12.0",
 		"@testing-library/dom": "^10.4.2",
 		"@testing-library/jest-dom": "^7.0.1",
 		"@testing-library/react": "^16.3.2",
