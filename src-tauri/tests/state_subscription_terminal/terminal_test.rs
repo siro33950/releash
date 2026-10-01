@@ -3,8 +3,9 @@ use crate::adaptor::gateway::terminal_surface::runtime_gateway_impl::TerminalSur
 use crate::adaptor::presenter::terminal_event_hub::TerminalSurfaceEventHub;
 use crate::domain::terminal_surface::entities::TerminalSurface;
 use crate::domain::terminal_surface::gateway::TerminalSurfaceGateway;
+use crate::infrastructure::state_subscription::Version;
 use crate::test_support::state_subscription::{
-    terminal_item, Delivery, Event, StateSubscriptionEvent, Version,
+    terminal_item, Delivery, Event, StateSubscriptionEvent,
 };
 use crate::usecase::state_subscription::SubscriptionTarget;
 use crate::usecase::terminal_surface::output::TerminalSurfaceEventSink;
@@ -58,46 +59,17 @@ impl TerminalSurfaceOutputControl for BlockingResetOutput {
 }
 
 fn fixture() -> (
-    StateSubscriptionUsecase,
+    crate::test_support::state_subscription::TerminalSubscriptions,
     Arc<TerminalSurfaceRuntimeGatewayFor>,
     Arc<TerminalSurfaceEventHub>,
     TerminalSurface,
 ) {
-    let hub = Arc::new(TerminalSurfaceEventHub::new());
-    let gateway = Arc::new(TerminalSurfaceRuntimeGatewayFor::new_with_event_sink(
-        Arc::new(|_| {}),
-        std::path::PathBuf::new(),
-        hub.clone(),
-        false,
-    ));
-    let owner = TerminalSurfaceOwner::workspace(WorkspaceIdentity::new("/repo")).unwrap();
-    let surface = TerminalSurface::new(1, owner, None);
-    gateway.insert_surface(surface.clone());
-    hub.initialize(crate::test_support::state_subscription::registration(
-        &surface.session_key,
-        "/repo",
-        None,
-        1,
-        0,
-    ))
-    .unwrap();
-    let terminal = Arc::new(
-        crate::usecase::terminal_surface::application::TerminalSurfaceApplication::new(
-            std::sync::Arc::new(crate::adaptor::gateway::telemetry::TelemetryGateway),
-            gateway.clone(),
-            Arc::new(crate::adaptor::gateway::terminal_surface::event_source::TerminalSurfaceEventSourceGateway::new(hub.event_sender())),
-            hub.clone(),
-        ),
-    );
+    let (terminal, gateway, hub, surface) =
+        crate::test_support::state_subscription::terminal_application_fixture();
     let subscriptions = StateSubscriptionUsecase::new(
         vec!["/repo".into()],
         Arc::new(crate::adaptor::gateway::subscription_timer::TokioSubscriptionTimer),
     );
-    subscriptions
-        .test_presenter()
-        .unwrap()
-        .connect_terminal(&terminal)
-        .unwrap();
     let subscriptions = subscriptions.with_terminal(terminal);
     (subscriptions, gateway, hub, surface)
 }
@@ -125,7 +97,7 @@ async fn test_terminal購読_同じstreamでsnapshot差分と区切りを届け�
     .await
     .unwrap();
     crate::test_support::state_subscription::start_read(
-        &subscriptions,
+        &subscriptions.usecase,
         "client",
         "repository-paths",
         None,
@@ -218,7 +190,8 @@ async fn test_terminal再開_履歴内ならsnapshotを作らず再起動後は�
     };
     stream.next().await;
     let before = gateway.snapshot_materialization_count();
-    crate::test_support::state_subscription::stop(&subscriptions, "client", &target).unwrap();
+    crate::test_support::state_subscription::stop_terminal(&subscriptions, "client", &target)
+        .unwrap();
     surface
         .record_output(surface.runtime_generation, std::time::Instant::now())
         .unwrap();
@@ -250,7 +223,8 @@ async fn test_terminal再開_履歴内ならsnapshotを作らず再起動後は�
         matches!(stream.next().await, Some(StateSubscriptionEvent::Item(_, Event::Change(v, Delivery::Delta, _))) if v.sequence == 1)
     );
     stream.next().await;
-    crate::test_support::state_subscription::stop(&subscriptions, "client", &target).unwrap();
+    crate::test_support::state_subscription::stop_terminal(&subscriptions, "client", &target)
+        .unwrap();
     let recreated = TerminalSurface::new(2, surface.owner.clone(), None);
     gateway.remove_surface(surface.runtime_generation.value());
     gateway.insert_surface(recreated.clone());
@@ -508,11 +482,6 @@ async fn test_snapshot作成中_別terminalのsnapshotと出力とexecutorを止
         vec![],
         Arc::new(crate::adaptor::gateway::subscription_timer::TokioSubscriptionTimer),
     );
-    subscriptions
-        .test_presenter()
-        .unwrap()
-        .connect_terminal(&terminal)
-        .unwrap();
     let subscriptions = subscriptions.with_terminal(terminal.clone());
     let mut first_stream = Box::pin(subscriptions.open("first-client".into()).unwrap());
     let mut second_stream = Box::pin(subscriptions.open("second-client".into()).unwrap());
@@ -631,11 +600,6 @@ async fn test_snapshot作成中_同じterminalへ追加されたclientにもsnap
         vec![],
         Arc::new(crate::adaptor::gateway::subscription_timer::TokioSubscriptionTimer),
     );
-    subscriptions
-        .test_presenter()
-        .unwrap()
-        .connect_terminal(&terminal)
-        .unwrap();
     let subscriptions = subscriptions.with_terminal(terminal);
     let target = SubscriptionTarget::Terminal(surface.owner);
     let mut first = Box::pin(subscriptions.open("first".into()).unwrap());
@@ -719,11 +683,6 @@ async fn test_terminal復元_停止と切断の競合でも停止済みclientを
             vec![],
             Arc::new(crate::adaptor::gateway::subscription_timer::TokioSubscriptionTimer),
         );
-        subscriptions
-            .test_presenter()
-            .unwrap()
-            .connect_terminal(&terminal)
-            .unwrap();
         let subscriptions = subscriptions.with_terminal(terminal);
         let target = SubscriptionTarget::Terminal(surface.owner.clone());
         let _stopping = subscriptions.open("stopping".into()).unwrap();
@@ -992,7 +951,8 @@ async fn test_terminal購読_停止後は処理報告を拒否する() {
     .unwrap();
     stream.next().await;
     stream.next().await;
-    crate::test_support::state_subscription::stop(&subscriptions, "client", &target).unwrap();
+    crate::test_support::state_subscription::stop_terminal(&subscriptions, "client", &target)
+        .unwrap();
     // When
     let result = crate::test_support::state_subscription::terminal_processed(
         &subscriptions,
@@ -1042,8 +1002,12 @@ async fn test_terminal購読_出力前の寸法変更と終了を版ゼロで届
     // Then
     for reconnect in [false, true] {
         if reconnect {
-            crate::test_support::state_subscription::stop(&subscriptions, "client", &target)
-                .unwrap();
+            crate::test_support::state_subscription::stop_terminal(
+                &subscriptions,
+                "client",
+                &target,
+            )
+            .unwrap();
             crate::test_support::state_subscription::start_terminal(
                 &subscriptions,
                 "client",
@@ -1200,7 +1164,7 @@ async fn test_terminal削除_経路と履歴を解放し購読と入力は明示
                 .test_presenter()
                 .unwrap()
                 .test_runtime()
-                .test_terminal_route_count()
+                .inspect(|state| usize::from(state.registered(&target)))
                 == 0
         );
         let runtime = &subscriptions.test_presenter().unwrap().test_runtime();
@@ -1228,7 +1192,8 @@ async fn test_terminal削除_経路と履歴を解放し購読と入力は明示
                 .inspect(|state| state.active_targets().len()),
             1
         );
-        crate::test_support::state_subscription::stop(&subscriptions, "client", &target).unwrap();
+        crate::test_support::state_subscription::stop_terminal(&subscriptions, "client", &target)
+            .unwrap();
         assert!(subscriptions
             .test_presenter()
             .unwrap()
@@ -1303,10 +1268,15 @@ async fn test_terminal購読開始_古いsummary取得後の再作成でepochを
     assert!(
         matches!(terminal_item(&value), crate::adaptor::presenter::client::terminal_event::Item::Snapshot(surface) if surface.session_key == recreated.session_key)
     );
-    subscriptions
-        .test_presenter()
-        .unwrap()
-        .remove(&surface.session_key, surface.runtime_generation.value());
+    subscriptions.test_presenter().unwrap().remove(
+        &crate::test_support::state_subscription::registration(
+            &surface.session_key,
+            "/repo",
+            None,
+            surface.runtime_generation.value(),
+            0,
+        ),
+    );
     assert_eq!(
         subscriptions
             .test_presenter()
@@ -1320,7 +1290,7 @@ async fn test_terminal購読開始_古いsummary取得後の再作成でepochを
             .test_presenter()
             .unwrap()
             .test_runtime()
-            .test_terminal_route_count(),
+            .inspect(|state| usize::from(state.registered(&target))),
         1
     );
 }
@@ -1346,7 +1316,18 @@ async fn test_terminal購読開始_出力順序区間内でsummary取得に失�
 
     // Then
     assert!(result.is_err());
-    assert!(subscriptions.active_targets().is_empty());
+    assert!(subscriptions
+        .terminal
+        .test_input_id("client", &target)
+        .is_none());
+    assert!(matches!(
+        subscriptions
+            .terminal
+            .terminal_processed("client", &target, 5000)
+            .unwrap_err()
+            .source,
+        crate::usecase::state_subscription::StateReadFailure::TerminalSubscriptionEnded
+    ));
     assert!(!hub.test_subscribed(&session_key, "client"));
     assert!(!subscriptions
         .test_presenter()
@@ -1375,7 +1356,18 @@ async fn test_terminal購読開始_途中でclientが切断したら出力登録
     }) if *error == crate::usecase::state_subscription::SubscriptionError::StreamEnded)
     );
     assert!(!hub.test_subscribed(&surface.session_key, "client"));
-    assert!(subscriptions.active_targets().is_empty());
+    assert!(subscriptions
+        .terminal
+        .test_input_id("client", &target)
+        .is_none());
+    assert!(matches!(
+        subscriptions
+            .terminal
+            .terminal_processed("client", &target, 5000)
+            .unwrap_err()
+            .source,
+        crate::usecase::state_subscription::StateReadFailure::TerminalSubscriptionEnded
+    ));
     assert!(!subscriptions
         .test_presenter()
         .unwrap()
@@ -1397,11 +1389,6 @@ async fn test_terminal再取得失敗_開始済み購読へ失敗を届ける() 
         Arc::new(crate::adaptor::gateway::terminal_surface::event_source::TerminalSurfaceEventSourceGateway::new(hub.event_sender())),
         hub,
     ));
-    subscriptions
-        .test_presenter()
-        .unwrap()
-        .connect_terminal(&terminal)
-        .unwrap();
     let subscriptions = subscriptions.with_terminal(terminal);
     let target = SubscriptionTarget::Terminal(surface.owner.clone());
     let stream = subscriptions.open("client".into()).unwrap();
@@ -1431,5 +1418,55 @@ async fn test_terminal再取得失敗_開始済み購読へ失敗を届ける() 
     // Then
     assert!(
         matches!(event, StateSubscriptionEvent::Item(_, Event::Change(_, _, value)) if matches!(value.as_ref(), crate::adaptor::presenter::state_subscription::PublishedState::Failure(failure) if failure.message.contains("snapshot unavailable")))
+    );
+}
+
+#[tokio::test]
+async fn test_terminal購読開始_捨てられた最初の状態を再要求から作り直して届ける() {
+    // Given
+    let (subscriptions, _, _, surface) = fixture();
+    let target = SubscriptionTarget::Terminal(surface.owner.clone());
+    let mut first = Box::pin(subscriptions.open("first".into()).unwrap());
+    first.next().await.unwrap();
+    subscriptions
+        .start_subscription("first", &target, Some("first-input"), None)
+        .await
+        .unwrap();
+    let snapshot = tokio::time::timeout(std::time::Duration::from_secs(2), first.next())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(matches!(
+        snapshot,
+        StateSubscriptionEvent::Item(_, Event::Snapshot(_, _))
+    ));
+    subscriptions
+        .terminal
+        .stop_subscription("first", &target)
+        .unwrap();
+    let runtime = subscriptions.test_presenter().unwrap().test_runtime();
+    let raw = target.to_string();
+    assert!(runtime.inspect(|state| state.current_version(&raw).is_some()));
+    assert!(runtime.inspect(|state| state.needs_snapshot(&raw, None).unwrap()));
+    let mut second = Box::pin(subscriptions.open("second".into()).unwrap());
+    second.next().await.unwrap();
+    // When
+    subscriptions
+        .start_subscription("second", &target, Some("second-input"), None)
+        .await
+        .unwrap();
+    assert_eq!(
+        runtime.inspect(|state| state.snapshot_requests("second")),
+        vec![raw.clone()]
+    );
+    let event = tokio::time::timeout(std::time::Duration::from_secs(2), second.next())
+        .await
+        .unwrap()
+        .unwrap();
+    // Then
+    assert!(
+        matches!(event, StateSubscriptionEvent::Item(delivered, Event::Snapshot(_, value))
+        if delivered == raw && matches!(terminal_item(&value),
+            crate::adaptor::presenter::client::terminal_event::Item::Snapshot(snapshot) if snapshot.session_key == surface.session_key))
     );
 }

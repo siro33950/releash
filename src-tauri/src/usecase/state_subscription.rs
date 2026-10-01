@@ -3,7 +3,6 @@ mod reads;
 pub(crate) use reads::StateSubscriptionRead;
 pub(crate) use reads::{StateReadError, StateReadFailure, WorkspaceStateReads};
 mod target;
-mod terminal;
 mod value;
 pub(crate) use error::SubscriptionError;
 use futures_util::{Stream, StreamExt};
@@ -27,7 +26,6 @@ pub(crate) trait StateSubscriptionOutput: Send + Sync {
         client: &str,
         target: &SubscriptionTarget,
         cursor: Option<(&str, u64)>,
-        terminal_input_id: Option<&str>,
     ) -> Result<(), StateReadError>;
     fn stop(
         &self,
@@ -50,13 +48,6 @@ pub(crate) trait StateSubscriptionOutput: Send + Sync {
         target: &SubscriptionTarget,
         snapshot: StateValue,
         delta: Option<StateValue>,
-    ) -> Result<(), SubscriptionError>;
-    fn set_terminal_snapshot(
-        &self,
-        target: &SubscriptionTarget,
-        runtime_generation: u64,
-        sequence: u64,
-        snapshot: StateValue,
     ) -> Result<(), SubscriptionError>;
 }
 
@@ -89,12 +80,6 @@ pub(crate) struct StateSubscriptionUsecase {
     clients: Arc<
         Mutex<std::collections::HashMap<String, std::collections::HashSet<SubscriptionTarget>>>,
     >,
-    terminal_inputs: Arc<Mutex<std::collections::HashMap<(String, SubscriptionTarget), String>>>,
-    terminal_resets: Arc<
-        Mutex<std::collections::HashMap<SubscriptionTarget, std::collections::HashSet<String>>>,
-    >,
-    terminal:
-        Option<Arc<crate::usecase::terminal_surface::application::TerminalSurfaceApplication>>,
     timer: Arc<dyn SubscriptionTimer>,
     history_paths: Vec<String>,
     hook_health_markers: String,
@@ -112,20 +97,12 @@ impl StateSubscriptionUsecase {
         &self,
         client: &str,
         target: &SubscriptionTarget,
-        terminal_input_id: Option<&str>,
         cursor: Option<(&str, u64)>,
     ) -> Result<(), StateReadError> {
-        if let Some(input_id) = terminal_input_id
-            .or_else(|| matches!(target, SubscriptionTarget::Terminal(_)).then_some(client))
-        {
-            self.start_terminal(client, target, input_id, cursor)
-                .await?;
-        } else {
-            self.start_read(client, target).await?;
-            if let Err(error) = self.publisher.start(client, target, cursor, None) {
-                let _ = self.stop(client, target);
-                return Err(error);
-            }
+        self.start_read(client, target).await?;
+        if let Err(error) = self.publisher.start(client, target, cursor) {
+            let _ = self.stop(client, target);
+            return Err(error);
         }
         Ok(())
     }
@@ -150,10 +127,7 @@ impl StateSubscriptionUsecase {
             #[cfg(test)]
             test_changes: tokio::sync::broadcast::channel(64).0,
             clients: Default::default(),
-            terminal_inputs: Default::default(),
-            terminal_resets: Default::default(),
             timer,
-            terminal: None,
             reads: None,
             #[cfg(test)]
             test_repository_paths: None,
@@ -164,14 +138,6 @@ impl StateSubscriptionUsecase {
             watches: Default::default(),
             starts: Default::default(),
         }
-    }
-
-    pub fn with_terminal(
-        mut self,
-        terminal: Arc<crate::usecase::terminal_surface::application::TerminalSurfaceApplication>,
-    ) -> Self {
-        self.terminal = Some(terminal);
-        self
     }
 
     pub fn with_reads(
@@ -439,7 +405,6 @@ impl StateSubscriptionUsecase {
             .ok_or(SubscriptionError::StreamEnded)?;
         subscriptions.remove(target);
         drop(clients);
-        self.stop_terminal(client, target);
         if let Err(error) = self.reconcile_watches() {
             log::error!("State watch cleanup failed: {error}");
         }
@@ -456,16 +421,7 @@ impl StateSubscriptionUsecase {
     }
 
     pub(crate) fn close_client(&self, id: &str) {
-        let targets = self
-            .clients
-            .lock()
-            .remove(id)
-            .unwrap_or_default()
-            .into_iter()
-            .collect::<Vec<_>>();
-        for target in targets {
-            self.stop_terminal(id, &target);
-        }
+        self.clients.lock().remove(id);
         if let Err(error) = self.reconcile_watches() {
             log::error!("State stream cleanup failed: {error}");
         }
@@ -484,46 +440,6 @@ impl StateSubscriptionUsecase {
     #[cfg(test)]
     pub(crate) fn test_watches(&self) -> std::collections::HashMap<WatchRequirement, u64> {
         self.watches.lock().clone()
-    }
-
-    pub(crate) fn schedule_terminal_refresh(
-        &self,
-        clients: Vec<String>,
-        target: SubscriptionTarget,
-    ) {
-        self.terminal_resets
-            .lock()
-            .entry(target.clone())
-            .or_default()
-            .extend(clients);
-        let mut workers = self.workers.lock();
-        if workers.get(&target).is_some_and(|task| !task.is_finished()) {
-            return;
-        }
-        let usecase = self.clone();
-        workers.insert(
-            target.clone(),
-            tokio::spawn(async move {
-                loop {
-                    let result = usecase.refresh_terminal(&target).await;
-                    let failed = result.is_err();
-                    if let Err(error) = result {
-                        if let Err(error) = usecase.publisher.publish_failure(&target, error) {
-                            log::error!("Terminal failure publication failed: {error}");
-                        }
-                    }
-                    let resets = usecase.terminal_resets.lock();
-                    if failed
-                        || resets
-                            .get(&target)
-                            .is_none_or(std::collections::HashSet::is_empty)
-                    {
-                        usecase.workers.lock().remove(&target);
-                        break;
-                    }
-                }
-            }),
-        );
     }
 
     pub(crate) fn active_targets(&self) -> std::collections::HashSet<SubscriptionTarget> {

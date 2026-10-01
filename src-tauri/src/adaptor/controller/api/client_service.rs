@@ -25,8 +25,8 @@ async fn open_state_stream(
         ));
     }
     let stream = self
-        .state_presenter()?
-        .stream_wire(self.state_subscriptions()?.clone(), request.client_id)
+        .subscriptions()?
+        .stream_wire(request.client_id)
         .map_err(crate::adaptor::presenter::connect::classified_error)?;
     connectrpc::Response::stream_ok(Box::pin(stream))
 }
@@ -46,7 +46,7 @@ async fn start_state_subscription<'a>(
     let cursor = version
         .as_ref()
         .map(|(epoch, sequence)| (epoch.as_str(), *sequence));
-    let subscriptions = self.state_subscriptions()?;
+    let subscriptions = self.subscriptions()?;
     subscriptions
         .start_subscription(&request.client_id, &target, request.terminal_input_id.as_deref(), cursor)
         .await
@@ -65,7 +65,7 @@ async fn stop_state_subscription<'a>(
         &request.args.iter().map(String::as_str).collect::<Vec<_>>(),
     )
     .map_err(crate::adaptor::presenter::connect::classified_error)?;
-    let subscriptions = self.state_subscriptions()?;
+    let subscriptions = self.subscriptions()?;
     subscriptions
         .stop_subscription(&request.client_id, &target)
         .await
@@ -84,14 +84,14 @@ async fn report_terminal_processed<'a>(
         &request.args.iter().map(String::as_str).collect::<Vec<_>>(),
     )
     .map_err(crate::adaptor::presenter::connect::classified_error)?;
-    if request.units as usize != self.state_presenter()?.terminal_report_units() {
+    if request.units as usize != crate::adaptor::presenter::terminal_subscription::TerminalSubscriptionPresenter::report_units() {
         return Err(crate::adaptor::presenter::connect::classified_error(
             crate::adaptor::presenter::error::AppError::invalid_request(
                 "Invalid terminal processed units",
             ),
         ));
     }
-    self.state_subscriptions()?
+    self.subscriptions()?.terminal
         .terminal_processed(
             &request.client_id,
             &target,

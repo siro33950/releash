@@ -7,12 +7,14 @@ use crate::adaptor::presenter::state_subscription::{
 use crate::adaptor::presenter::terminal::{TerminalSurfaceOwnerV1, TerminalSurfaceStreamItemV1};
 use crate::infrastructure::state_subscription::Event;
 use crate::usecase::state_subscription::{StateSubscriptionUsecase, SubscriptionTarget};
+use crate::usecase::terminal_surface::subscription::TerminalSubscriptionUsecase;
 use futures_util::{Stream, StreamExt};
 use std::{path::PathBuf, pin::Pin, sync::Arc};
 
 pub struct TerminalSubscriptionHarness {
     runtime: TerminalSurfaceRuntime,
     subscriptions: StateSubscriptionUsecase,
+    terminal_subscriptions: TerminalSubscriptionUsecase,
     presenter: Arc<StateSubscriptionPresenter>,
 }
 
@@ -39,15 +41,22 @@ impl TerminalSubscriptionHarness {
 
     fn compose(runtime: TerminalSurfaceRuntime) -> Self {
         let presenter = Arc::new(StateSubscriptionPresenter::new());
-        presenter.connect_terminal(&runtime.application()).unwrap();
+        let output = Arc::new(
+            crate::adaptor::presenter::terminal_subscription::TerminalSubscriptionPresenter::new(
+                &presenter,
+            ),
+        );
+        runtime.application().connect_state(output.clone()).unwrap();
+        let terminal_subscriptions =
+            TerminalSubscriptionUsecase::new(output, Some(runtime.application()));
         let subscriptions = StateSubscriptionUsecase::new_with_output(
             presenter.clone(),
             Arc::new(crate::adaptor::gateway::subscription_timer::TokioSubscriptionTimer),
-        )
-        .with_terminal(runtime.application());
+        );
         Self {
             runtime,
             subscriptions,
+            terminal_subscriptions,
             presenter,
         }
     }
@@ -62,6 +71,11 @@ impl TerminalSubscriptionHarness {
         self.presenter.clone()
     }
 
+    #[cfg(feature = "desktop")]
+    pub(crate) fn terminal_subscriptions(&self) -> TerminalSubscriptionUsecase {
+        self.terminal_subscriptions.clone()
+    }
+
     pub async fn subscribe(
         &self,
         input_id: String,
@@ -70,17 +84,21 @@ impl TerminalSubscriptionHarness {
         let target = SubscriptionTarget::Terminal(owner.try_into()?);
         let client = uuid::Uuid::new_v4().to_string();
         let stream = Box::pin(
-            self.presenter
-                .stream(self.subscriptions.clone(), client.clone())
-                .map_err(|e| e.to_string())?,
+            crate::adaptor::controller::api::StateSubscriptionDeps::new(
+                self.subscriptions.clone(),
+                self.presenter.clone(),
+                self.terminal_subscriptions.clone(),
+            )
+            .stream(client.clone())
+            .map_err(|e| e.to_string())?,
         );
-        self.subscriptions
-            .start_subscription(&client, &target, Some(&input_id), None)
+        self.terminal_subscriptions
+            .start_terminal(&client, &target, Some(&input_id), None)
             .await
             .map_err(|e| e.to_string())?;
         Ok(TerminalSubscription {
             stream,
-            subscriptions: self.subscriptions.clone(),
+            subscriptions: self.terminal_subscriptions.clone(),
             client,
             target,
             processed: 0,
@@ -91,7 +109,7 @@ impl TerminalSubscriptionHarness {
 
 pub struct TerminalSubscription {
     stream: Pin<Box<dyn Stream<Item = StateSubscriptionEvent> + Send>>,
-    subscriptions: StateSubscriptionUsecase,
+    subscriptions: TerminalSubscriptionUsecase,
     client: String,
     target: SubscriptionTarget,
     processed: usize,

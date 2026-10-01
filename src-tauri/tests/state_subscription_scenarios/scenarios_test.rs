@@ -1,4 +1,5 @@
 use super::*;
+use crate::infrastructure::state_subscription::Version;
 use crate::test_support::state_subscription::WakeFlag;
 
 struct TestTimer;
@@ -23,7 +24,7 @@ impl SubscriptionTimer for TestTimer {
 use crate::test_support::state_subscription::{
     same, start, start_read, stop, stop_read, StateReadsFixture,
 };
-use crate::test_support::state_subscription::{Delivery, Event, StateSubscriptionEvent, Version};
+use crate::test_support::state_subscription::{Delivery, Event, StateSubscriptionEvent};
 use crate::usecase::state_subscription::{StateReadError, StateReadFailure, StateSubscriptionRead};
 const BOOKMARK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(10);
 

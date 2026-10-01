@@ -189,10 +189,20 @@ impl<R: tauri::Runtime> ClientApiAcceptanceHost<R> {
             operations,
         );
         let terminal = TerminalSurfaceRuntime::new(work.clone(), data_dir.to_path_buf());
-        state_presenter
-            .connect_terminal(&terminal.application())
+        let output = Arc::new(
+            crate::adaptor::presenter::terminal_subscription::TerminalSubscriptionPresenter::new(
+                &state_presenter,
+            ),
+        );
+        terminal
+            .application()
+            .connect_state(output.clone())
             .unwrap();
-        let state = state.with_terminal(terminal.application());
+        let terminal_subscriptions =
+            crate::usecase::terminal_surface::subscription::TerminalSubscriptionUsecase::new(
+                output,
+                Some(terminal.application()),
+            );
         let router = crate::adaptor::controller::api::build_router(
             Arc::new(workflow),
             Arc::new(runtime),
@@ -207,6 +217,7 @@ impl<R: tauri::Runtime> ClientApiAcceptanceHost<R> {
                     crate::adaptor::controller::api::StateSubscriptionDeps::new(
                         state,
                         state_presenter,
+                        terminal_subscriptions,
                     ),
                 ),
             ),

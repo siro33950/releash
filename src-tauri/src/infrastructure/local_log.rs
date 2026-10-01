@@ -167,11 +167,11 @@ impl LocalFileLogger {
     }
 
     fn add_dropped(&self, count: u64) {
-        let _ =
-            self.dropped_records
-                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
-                    Some(current.saturating_add(count))
-                });
+        let _ = self
+            .dropped_records
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+                Some(current.saturating_add(count))
+            });
     }
 
     fn drain_dropped_notice(&self) -> bool {

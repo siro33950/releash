@@ -125,7 +125,7 @@ impl FaultInjector {
 
     fn take(counter: &AtomicUsize) -> bool {
         counter
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |current| {
+            .try_update(Ordering::SeqCst, Ordering::SeqCst, |current| {
                 current.checked_sub(1)
             })
             .is_ok()
@@ -137,7 +137,7 @@ impl FaultInjector {
 
     pub fn take_fail_after_participant_write(&self) -> bool {
         self.fail_after_participant_write
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |current| {
+            .try_update(Ordering::SeqCst, Ordering::SeqCst, |current| {
                 current.checked_sub(1)
             })
             .is_ok_and(|previous| previous == 1)

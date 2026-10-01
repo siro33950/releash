@@ -1261,11 +1261,6 @@ async fn assert_terminal_recreation(drain_exit: bool) {
         vec![],
         Arc::new(crate::adaptor::gateway::subscription_timer::TokioSubscriptionTimer),
     );
-    subscriptions
-        .test_presenter()
-        .unwrap()
-        .connect_terminal(&terminal)
-        .unwrap();
     let subscriptions = subscriptions.with_terminal(terminal.clone());
     let stream = subscriptions.open("client".into()).unwrap();
     tokio::pin!(stream);
@@ -1389,7 +1384,8 @@ async fn assert_terminal_recreation(drain_exit: bool) {
         .unwrap()
         .unwrap();
     waiter.await.unwrap();
-    crate::test_support::state_subscription::stop(&subscriptions, "client", &target).unwrap();
+    crate::test_support::state_subscription::stop_terminal(&subscriptions, "client", &target)
+        .unwrap();
     assert!(terminal
         .write_attached(&owner, "input", 2, None, "stale")
         .is_err());

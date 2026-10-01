@@ -22,7 +22,6 @@ impl StateSubscriptionOutput for RecordingOutput {
         _: &str,
         target: &SubscriptionTarget,
         cursor: Option<(&str, u64)>,
-        _: Option<&str>,
     ) -> Result<(), StateReadError> {
         if self.fail_start.load(std::sync::atomic::Ordering::SeqCst) {
             return Err(StateReadError::from_error(SubscriptionError::UnknownTarget));
@@ -75,16 +74,6 @@ impl StateSubscriptionOutput for RecordingOutput {
         self.updated.notify_one();
         Ok(())
     }
-
-    fn set_terminal_snapshot(
-        &self,
-        _: &SubscriptionTarget,
-        _: u64,
-        _: u64,
-        _: StateValue,
-    ) -> Result<(), SubscriptionError> {
-        unreachable!()
-    }
 }
 
 struct PendingTimer;
@@ -112,7 +101,7 @@ async fn test_購読手順_開始と停止で購読状態と出力を更新す�
     usecase.open_client("client".into()).unwrap();
     // When
     usecase
-        .start_subscription("client", &target, None, Some(("prior", 4)))
+        .start_subscription("client", &target, Some(("prior", 4)))
         .await
         .unwrap();
     assert!(usecase.active_targets().contains(&target));
@@ -143,9 +132,7 @@ async fn test_購読手順_配信側の開始失敗時にclientの対象を戻�
     let target = SubscriptionTarget::RepositoryPaths;
     usecase.open_client("client".into()).unwrap();
     // When
-    let result = usecase
-        .start_subscription("client", &target, None, None)
-        .await;
+    let result = usecase.start_subscription("client", &target, None).await;
     // Then
     assert!(matches!(result, Err(StateReadError {
         source: StateReadFailure::Subscription(error), ..
@@ -170,9 +157,7 @@ async fn test_購読手順_streamが無いと開始できない() {
     );
     let target = SubscriptionTarget::RepositoryPaths;
     // When
-    let result = usecase
-        .start_subscription("client", &target, None, None)
-        .await;
+    let result = usecase.start_subscription("client", &target, None).await;
     // Then
     assert!(matches!(
         result,
@@ -505,7 +490,7 @@ async fn test_購読読取_初回失敗後も登録を残す() {
     usecase.open_client("client".into()).unwrap();
     // When
     usecase
-        .start_subscription("client", &target, None, None)
+        .start_subscription("client", &target, None)
         .await
         .unwrap();
     // Then
@@ -525,7 +510,7 @@ async fn test_購読読取_初回失敗から回復した値を配信する() {
     let target = SubscriptionTarget::RepositoryPaths;
     usecase.open_client("client".into()).unwrap();
     usecase
-        .start_subscription("client", &target, None, None)
+        .start_subscription("client", &target, None)
         .await
         .unwrap();
     // When
@@ -554,7 +539,7 @@ async fn test_購読読取_回復後の再失敗を配信する() {
     let target = SubscriptionTarget::RepositoryPaths;
     usecase.open_client("client".into()).unwrap();
     usecase
-        .start_subscription("client", &target, None, None)
+        .start_subscription("client", &target, None)
         .await
         .unwrap();
     reads
@@ -606,7 +591,7 @@ async fn test_購読外部読取_再取得失敗で古いキャッシュを配�
     let target = SubscriptionTarget::Issues("/repo".into());
     usecase.open_client("client".into()).unwrap();
     usecase
-        .start_subscription("client", &target, None, None)
+        .start_subscription("client", &target, None)
         .await
         .unwrap();
     // When

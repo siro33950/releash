@@ -70,6 +70,8 @@ pub struct TerminalSurfaceRuntimeGatewayFor {
     #[cfg(test)]
     pub(crate) during_output_order: Mutex<Option<Box<dyn FnOnce() + Send>>>,
     #[cfg(test)]
+    pub(crate) after_output_order: Mutex<Option<Box<dyn FnOnce() + Send>>>,
+    #[cfg(test)]
     test_output_orders: Mutex<HashMap<u64, Arc<TerminalSurfaceEventOrder>>>,
 }
 
@@ -91,6 +93,8 @@ impl Default for TerminalSurfaceRuntimeGatewayFor {
             before_output_order: Mutex::new(None),
             #[cfg(test)]
             during_output_order: Mutex::new(None),
+            #[cfg(test)]
+            after_output_order: Mutex::new(None),
             #[cfg(test)]
             test_output_orders: Mutex::new(HashMap::new()),
         }
@@ -620,6 +624,8 @@ impl TerminalSurfaceRuntimeGatewayFor {
             #[cfg(test)]
             during_output_order: Mutex::new(None),
             #[cfg(test)]
+            after_output_order: Mutex::new(None),
+            #[cfg(test)]
             test_output_orders: Mutex::new(HashMap::new()),
         }
     }
@@ -646,6 +652,8 @@ impl TerminalSurfaceRuntimeGatewayFor {
             before_output_order: Mutex::new(None),
             #[cfg(test)]
             during_output_order: Mutex::new(None),
+            #[cfg(test)]
+            after_output_order: Mutex::new(None),
             #[cfg(test)]
             test_output_orders: Mutex::new(HashMap::new()),
         }
@@ -1031,6 +1039,14 @@ impl TerminalSurfaceGateway for TerminalSurfaceRuntimeGatewayFor {
             during();
         }
         visit();
+        drop(_order);
+        #[cfg(test)]
+        {
+            let after = self.after_output_order.lock().take();
+            if let Some(after) = after {
+                after();
+            }
+        }
         true
     }
 
