@@ -87,7 +87,7 @@
 		"@wdio/mocha-framework": "^9.31.2",
 		"@wdio/spec-reporter": "^9.31.2",
 		"@wdio/tauri-plugin": "^1.3.0",
-		"@wdio/tauri-service": "^1.3.0",
+		"@wdio/tauri-service": "^1.4.0",
 		"@wdio/types": "^9.31.2",
 		"esbuild": "^0.28.2",
 		"jsdom": "^30.0.1",
