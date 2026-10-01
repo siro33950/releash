@@ -353,6 +353,7 @@ impl<R: tauri::Runtime> AgentSessionTuiAcceptanceHost<R> {
                     crate::adaptor::controller::api::StateSubscriptionDeps::new(
                         subscriptions,
                         terminal.presenter(),
+                        terminal.terminal_subscriptions(),
                     ),
                 ),
             )),

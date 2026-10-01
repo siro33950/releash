@@ -1271,3 +1271,93 @@ fn test_差分対象再作成_旧世代の送り待ちを新世代snapshotより
     state.stop("client", target).unwrap();
     assert!(!state.is_subscribed("client", target));
 }
+
+#[test]
+fn test_差分の番号判定_重複を捨て同版を積み古い非更新で復元を要求する() {
+    // Given
+    let mut state = Subscriptions::new("boot".into());
+    let version = Version {
+        epoch: "epoch".into(),
+        sequence: 4,
+    };
+    state.register_delta("delta", version.clone(), 100).unwrap();
+    state
+        .set_delta_snapshot("delta", version.clone(), 0)
+        .unwrap();
+    state.open("client".into()).unwrap();
+    state.start("client", "delta", None).unwrap();
+    // When / Then
+    for sequence in [3, 4] {
+        assert_eq!(
+            state.apply_delta("delta", sequence, 1, 1, true),
+            Ok(DeltaPublication::Discarded)
+        );
+        assert_eq!(state.current_version("delta"), Some(version.clone()));
+    }
+    assert_eq!(
+        state.apply_delta("delta", 4, 2, 0, false),
+        Ok(DeltaPublication::Published)
+    );
+    assert_eq!(
+        state.apply_delta("delta", 3, 3, 0, false),
+        Ok(DeltaPublication::SnapshotRequired(true))
+    );
+    assert_eq!(
+        state.apply_delta("delta", 3, 3, 0, false),
+        Ok(DeltaPublication::SnapshotRequired(false))
+    );
+    assert_eq!(state.snapshot_requests("client"), vec!["delta"]);
+    assert_eq!(
+        state.apply_delta("delta", 5, 4, 1, true),
+        Ok(DeltaPublication::Published)
+    );
+    assert_eq!(state.current_version("delta").unwrap().sequence, 5);
+    assert_eq!(
+        state.apply_delta("absent", 5, 5, 1, true),
+        Ok(DeltaPublication::Discarded)
+    );
+}
+
+#[test]
+fn test_対象単位の停止_他の開始途中の状態と差分履歴を保持する() {
+    // Given
+    let mut state = Subscriptions::new("boot".into());
+    state
+        .register("starting".into(), 10, Delivery::Full)
+        .unwrap();
+    let version = Version {
+        epoch: "epoch".into(),
+        sequence: 0,
+    };
+    state.register_delta("delta", version.clone(), 100).unwrap();
+    state.set_delta_snapshot("delta", version, 0).unwrap();
+    state.open("client".into()).unwrap();
+    state.start("client", "delta", None).unwrap();
+    state.apply_delta("delta", 1, 1, 1, true).unwrap();
+    let version = state.current_version("delta").unwrap();
+    state
+        .set_delta_snapshot("delta", version.clone(), 1)
+        .unwrap();
+    // When
+    assert!(state.stop_and_release("client", "delta").unwrap());
+    // Then
+    assert!(state.start("client", "starting", None).is_ok());
+    assert!(!state.awaiting_snapshot("client", "delta"));
+    assert!(state
+        .start(
+            "client",
+            "delta",
+            Some(&Version {
+                epoch: version.epoch,
+                sequence: 0
+            })
+        )
+        .is_ok());
+    assert!(
+        matches!(state.next("client"), Some((target, Event::Snapshot(_, _))) if target == "starting")
+    );
+    assert!(!state.awaiting_snapshot("client", "delta"));
+    assert!(
+        matches!(state.next("client"), Some((target, Event::Change(_, Delivery::Delta, _))) if target == "delta")
+    );
+}

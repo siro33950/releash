@@ -2,7 +2,7 @@
 mod reads_tests;
 
 pub(crate) use crate::adaptor::presenter::state_subscription::StateSubscriptionEvent;
-pub(crate) use crate::infrastructure::state_subscription::{Delivery, Event, Version};
+pub(crate) use crate::infrastructure::state_subscription::{Delivery, Event};
 pub(crate) use reads_tests::Fixture as StateReadsFixture;
 
 pub(crate) struct WakeFlag(pub(crate) std::sync::atomic::AtomicBool);
@@ -51,9 +51,7 @@ pub(crate) async fn start_read(
 ) -> Result<(), crate::usecase::state_subscription::StateReadError> {
     let typed = crate::usecase::state_subscription::SubscriptionTarget::parse(target)
         .map_err(crate::usecase::state_subscription::StateReadError::from_error)?;
-    usecase
-        .start_subscription(client, &typed, None, cursor)
-        .await
+    usecase.start_subscription(client, &typed, cursor).await
 }
 
 pub(crate) fn stop(
@@ -76,7 +74,7 @@ pub(crate) async fn stop_read(
 }
 
 pub(crate) async fn start_terminal(
-    usecase: &StateSubscriptionUsecase,
+    usecase: &TerminalSubscriptions,
     client: &str,
     target: &str,
     cursor: Option<(&str, u64)>,
@@ -86,22 +84,20 @@ pub(crate) async fn start_terminal(
     let typed = crate::usecase::state_subscription::SubscriptionTarget::parse(target)
         .map_err(StateReadError::from_error)?;
     usecase
+        .deps()
         .start_subscription(client, &typed, Some(input_id), cursor)
         .await
 }
 
 pub(crate) fn terminal_processed(
-    usecase: &StateSubscriptionUsecase,
+    usecase: &TerminalSubscriptions,
     client: &str,
     target: &str,
     units: usize,
 ) -> Result<(), crate::usecase::state_subscription::StateReadError> {
     use crate::usecase::state_subscription::{StateReadError, StateReadFailure};
     if units
-        != usecase
-            .test_presenter()
-            .expect("test presenter")
-            .terminal_report_units()
+        != crate::adaptor::presenter::terminal_subscription::TerminalSubscriptionPresenter::report_units()
     {
         return Err(StateReadError {
             source: StateReadFailure::InvalidTerminalInput,
@@ -110,7 +106,7 @@ pub(crate) fn terminal_processed(
     }
     let typed = crate::usecase::state_subscription::SubscriptionTarget::parse(target)
         .map_err(StateReadError::from_error)?;
-    usecase.terminal_processed(client, &typed, units)
+    usecase.terminal.terminal_processed(client, &typed, units)
 }
 
 pub(crate) fn test_output() -> crate::usecase::state_subscription::StateSubscriptionOutputRef {
@@ -271,9 +267,11 @@ impl StateSubscriptionUsecase {
             + use<>,
         SubscriptionError,
     > {
-        self.test_presenter()
-            .expect("test presenter")
-            .stream(self.clone(), id)
+        deps(
+            self.clone(),
+            Arc::new(self.test_presenter().expect("test presenter").clone()),
+        )
+        .stream(id)
     }
 }
 
@@ -305,4 +303,153 @@ impl crate::usecase::state_subscription::StateSubscriptionRead for TestRepositor
     fn repositories(&self) -> Vec<String> {
         self.0.read().clone()
     }
+}
+
+pub(crate) fn deps(
+    usecase: StateSubscriptionUsecase,
+    presenter: Arc<StateSubscriptionPresenter>,
+) -> crate::adaptor::controller::api::StateSubscriptionDeps {
+    let output = Arc::new(
+        crate::adaptor::presenter::terminal_subscription::TerminalSubscriptionPresenter::new(
+            &presenter,
+        ),
+    );
+    crate::adaptor::controller::api::StateSubscriptionDeps::new(
+        usecase,
+        presenter,
+        crate::usecase::terminal_surface::subscription::TerminalSubscriptionUsecase::new(
+            output, None,
+        ),
+    )
+}
+
+#[derive(Clone)]
+pub(crate) struct TerminalSubscriptions {
+    pub(crate) usecase: StateSubscriptionUsecase,
+    pub(crate) terminal:
+        crate::usecase::terminal_surface::subscription::TerminalSubscriptionUsecase,
+    pub(crate) presenter:
+        Arc<crate::adaptor::presenter::terminal_subscription::TerminalSubscriptionPresenter>,
+}
+
+impl std::ops::Deref for TerminalSubscriptions {
+    type Target = StateSubscriptionUsecase;
+    fn deref(&self) -> &Self::Target {
+        &self.usecase
+    }
+}
+
+impl StateSubscriptionUsecase {
+    pub(crate) fn deps(&self) -> crate::adaptor::controller::api::StateSubscriptionDeps {
+        deps(
+            self.clone(),
+            Arc::new(self.test_presenter().unwrap().clone()),
+        )
+    }
+
+    pub(crate) fn with_terminal(
+        self,
+        terminal: Arc<crate::usecase::terminal_surface::application::TerminalSurfaceApplication>,
+    ) -> TerminalSubscriptions {
+        let presenter = Arc::new(
+            crate::adaptor::presenter::terminal_subscription::TerminalSubscriptionPresenter::new(
+                self.test_presenter().unwrap(),
+            ),
+        );
+        terminal.connect_state(presenter.clone()).unwrap();
+        let subscriptions =
+            crate::usecase::terminal_surface::subscription::TerminalSubscriptionUsecase::new(
+                presenter.clone(),
+                Some(terminal),
+            );
+        TerminalSubscriptions {
+            usecase: self,
+            terminal: subscriptions,
+            presenter,
+        }
+    }
+}
+
+impl TerminalSubscriptions {
+    pub(crate) fn with_terminal(
+        self,
+        terminal: Arc<crate::usecase::terminal_surface::application::TerminalSurfaceApplication>,
+    ) -> Self {
+        self.usecase.with_terminal(terminal)
+    }
+
+    pub(crate) fn schedule_terminal_refresh(
+        &self,
+        clients: Vec<String>,
+        target: crate::usecase::state_subscription::SubscriptionTarget,
+    ) {
+        self.terminal.schedule_terminal_refresh(clients, target);
+    }
+    pub(crate) fn test_worker_count(&self) -> usize {
+        self.terminal.test_worker_count() + self.usecase.test_worker_count()
+    }
+    pub(crate) fn stop(
+        &self,
+        client: &str,
+        target: &crate::usecase::state_subscription::SubscriptionTarget,
+    ) -> Result<(), SubscriptionError> {
+        self.terminal.stop_subscription(client, target)
+    }
+
+    pub(crate) fn deps(&self) -> crate::adaptor::controller::api::StateSubscriptionDeps {
+        crate::adaptor::controller::api::StateSubscriptionDeps::new(
+            self.usecase.clone(),
+            Arc::new(self.usecase.test_presenter().unwrap().clone()),
+            self.terminal.clone(),
+        )
+    }
+    pub(crate) fn test_presenter(
+        &self,
+    ) -> Option<&crate::adaptor::presenter::terminal_subscription::TerminalSubscriptionPresenter>
+    {
+        Some(&self.presenter)
+    }
+    pub(crate) fn open(
+        &self,
+        id: String,
+    ) -> Result<impl Stream<Item = StateSubscriptionEvent> + Send + use<>, SubscriptionError> {
+        self.deps().stream(id)
+    }
+    pub(crate) async fn start_subscription(
+        &self,
+        client: &str,
+        target: &crate::usecase::state_subscription::SubscriptionTarget,
+        input: Option<&str>,
+        cursor: Option<(&str, u64)>,
+    ) -> Result<(), crate::usecase::state_subscription::StateReadError> {
+        self.deps()
+            .start_subscription(client, target, input, cursor)
+            .await
+    }
+    pub(crate) async fn start_terminal(
+        &self,
+        client: &str,
+        target: &crate::usecase::state_subscription::SubscriptionTarget,
+        input: &str,
+        cursor: Option<(&str, u64)>,
+    ) -> Result<(), crate::usecase::state_subscription::StateReadError> {
+        self.terminal
+            .start_terminal(client, target, input, cursor)
+            .await
+    }
+    pub(crate) fn close_client(&self, id: &str) {
+        self.usecase.close_client(id);
+        self.terminal.close_client(id);
+    }
+}
+
+pub(crate) fn stop_terminal(
+    usecase: &TerminalSubscriptions,
+    client: &str,
+    target: &str,
+) -> Result<(), SubscriptionError> {
+    usecase.terminal.stop_subscription(
+        client,
+        &crate::usecase::state_subscription::SubscriptionTarget::parse(target)?,
+    )
 }

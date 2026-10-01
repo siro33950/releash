@@ -284,10 +284,7 @@ async fn test_状態購読stream_全段の枠が埋まっていてもイベン�
         Arc::new(crate::adaptor::gateway::subscription_timer::TokioSubscriptionTimer),
     );
     let deps = crate::test_support::client_api_deps(Arc::new(dispatch()), None)
-        .with_state_subscriptions(StateSubscriptionDeps::new(
-            subscriptions.clone(),
-            Arc::new(subscriptions.test_presenter().unwrap().clone()),
-        ));
+        .with_state_subscriptions(subscriptions.deps());
     let _permits =
         ["interactive", "workflow", "default"].map(|level| deps.priority_limits().fill(level));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -340,10 +337,7 @@ async fn test_状態購読_購読idを入口で128バイトまで受け付ける
         Arc::new(crate::adaptor::gateway::subscription_timer::TokioSubscriptionTimer),
     );
     let deps = crate::test_support::client_api_deps(Arc::new(dispatch()), None)
-        .with_state_subscriptions(StateSubscriptionDeps::new(
-            subscriptions.clone(),
-            Arc::new(subscriptions.test_presenter().unwrap().clone()),
-        ));
+        .with_state_subscriptions(subscriptions.deps());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let config = ClientConfig::new(
         format!("http://{}", listener.local_addr().unwrap())
@@ -400,10 +394,7 @@ async fn test_状態購読_connectで初期状態と変更と再開を配信す�
         Arc::new(crate::adaptor::gateway::subscription_timer::TokioSubscriptionTimer),
     );
     let deps = crate::test_support::client_api_deps(Arc::new(dispatch()), None)
-        .with_state_subscriptions(StateSubscriptionDeps::new(
-            subscriptions.clone(),
-            Arc::new(subscriptions.test_presenter().unwrap().clone()),
-        ));
+        .with_state_subscriptions(subscriptions.deps());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let config = ClientConfig::new(
         format!("http://{}", listener.local_addr().unwrap())
@@ -767,10 +758,7 @@ async fn test_状態購読_既定期限後もbookmarkが届く() {
         Arc::new(crate::adaptor::gateway::subscription_timer::TokioSubscriptionTimer),
     );
     let deps = crate::test_support::client_api_deps(Arc::new(dispatch()), None)
-        .with_state_subscriptions(StateSubscriptionDeps::new(
-            subscriptions.clone(),
-            Arc::new(subscriptions.test_presenter().unwrap().clone()),
-        ));
+        .with_state_subscriptions(subscriptions.deps());
     let payload = br#"{"clientId":"deadline-test"}"#;
     let mut bytes = vec![0];
     bytes.extend_from_slice(&(payload.len() as u32).to_be_bytes());
@@ -822,10 +810,7 @@ async fn test_状態購読操作_上限時は拒否し枠解放後は受理す�
     );
     let _stream = subscriptions.open("limited".into()).unwrap();
     let deps = crate::test_support::client_api_deps(Arc::new(dispatch()), None)
-        .with_state_subscriptions(StateSubscriptionDeps::new(
-            subscriptions.clone(),
-            Arc::new(subscriptions.test_presenter().unwrap().clone()),
-        ));
+        .with_state_subscriptions(subscriptions.deps());
     let router = router(Some(deps.clone()));
     for method in ["StartStateSubscription", "StopStateSubscription"] {
         let permits = deps.priority_limits().fill("interactive");
@@ -1085,17 +1070,9 @@ async fn test_terminal購読_connectの後段配線と差分再開と流量停�
         vec!["/repo".into()],
         Arc::new(crate::adaptor::gateway::subscription_timer::TokioSubscriptionTimer),
     );
-    subscriptions
-        .test_presenter()
-        .unwrap()
-        .connect_terminal(&terminal)
-        .unwrap();
     let subscriptions = subscriptions.with_terminal(terminal);
     let deps = crate::test_support::client_api_deps(Arc::new(dispatch), None)
-        .with_state_subscriptions(StateSubscriptionDeps::new(
-            subscriptions.clone(),
-            Arc::new(subscriptions.test_presenter().unwrap().clone()),
-        ));
+        .with_state_subscriptions(subscriptions.deps());
     assert_eq!(*gateway.list_summaries_calls.lock(), 0);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let config = ClientConfig::new(
@@ -1381,7 +1358,7 @@ fn test_状態購読配線_usecaseとcontrollerが同じ出力実装を参照す
         presenter.clone(),
         Arc::new(crate::adaptor::gateway::subscription_timer::TokioSubscriptionTimer),
     );
-    let deps = StateSubscriptionDeps::new(usecase, presenter);
+    let deps = crate::test_support::state_subscription::deps(usecase, presenter);
     // When
     let output: Arc<dyn crate::usecase::state_subscription::StateSubscriptionOutput> =
         deps.presenter.clone();
@@ -1419,10 +1396,10 @@ async fn test_流量制御_全段の枠が埋まっていてもReportTerminalPro
     );
     let _stream = subscriptions.open("limited".into()).unwrap();
     let presenter = subscriptions.test_presenter().unwrap().clone();
-    let units = presenter.terminal_report_units();
+    let units = crate::adaptor::presenter::terminal_subscription::TerminalSubscriptionPresenter::report_units();
     let deps =
         crate::test_support::client_api_deps(Arc::new(dispatch()), None).with_state_subscriptions(
-            StateSubscriptionDeps::new(subscriptions, Arc::new(presenter)),
+            crate::test_support::state_subscription::deps(subscriptions, Arc::new(presenter)),
         );
     let _permits =
         ["interactive", "workflow", "default"].map(|level| deps.priority_limits().fill(level));
@@ -1449,10 +1426,7 @@ async fn test_優先度_defaultが埋まっていてもinteractiveの呼び出�
     );
     let _stream = subscriptions.open("limited".into()).unwrap();
     let deps = crate::test_support::client_api_deps(Arc::new(dispatch()), None)
-        .with_state_subscriptions(StateSubscriptionDeps::new(
-            subscriptions.clone(),
-            Arc::new(subscriptions.test_presenter().unwrap().clone()),
-        ));
+        .with_state_subscriptions(subscriptions.deps());
     let _permits = deps.priority_limits().fill("default");
     let router = router(Some(deps.clone()));
     // When
@@ -1607,4 +1581,54 @@ async fn test_待ち行列_席が空くまで待ってから受理する() {
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(deps.priority_limits().queue_length("default"), 50);
     assert_eq!(deps.priority_limits().available("default"), 41);
+}
+
+#[tokio::test]
+async fn test_状態stream開始_各段の失敗で既存clientを保持し先に開いたclientだけ戻す() {
+    use crate::usecase::state_subscription::SubscriptionError;
+    // Given
+    for stage in 0..3 {
+        let subscriptions = crate::usecase::state_subscription::StateSubscriptionUsecase::new(
+            vec![],
+            Arc::new(crate::adaptor::gateway::subscription_timer::TokioSubscriptionTimer),
+        );
+        let deps = subscriptions.deps();
+        match stage {
+            0 => deps.usecase.open_client("client".into()).unwrap(),
+            1 => deps.terminal.open_client("client".into()).unwrap(),
+            _ => deps.presenter.open("client".into()).unwrap(),
+        }
+        // When
+        assert!(matches!(
+            deps.open_stream("client".into()),
+            Err(SubscriptionError::AlreadyExists)
+        ));
+        // Then
+        if stage == 0 {
+            assert_eq!(
+                deps.usecase.open_client("client".into()),
+                Err(SubscriptionError::AlreadyExists)
+            );
+        } else {
+            deps.usecase.open_client("client".into()).unwrap();
+            deps.usecase.close_client("client");
+        }
+        if stage == 1 {
+            assert_eq!(
+                deps.terminal.open_client("client".into()),
+                Err(SubscriptionError::AlreadyExists)
+            );
+        } else {
+            deps.terminal.open_client("client".into()).unwrap();
+            deps.terminal.close_client("client");
+        }
+        if stage == 2 {
+            assert_eq!(
+                deps.presenter.open("client".into()),
+                Err(SubscriptionError::AlreadyExists)
+            );
+        } else {
+            deps.presenter.open("client".into()).unwrap();
+        }
+    }
 }

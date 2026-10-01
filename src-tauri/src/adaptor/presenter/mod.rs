@@ -23,3 +23,5 @@ pub(crate) mod terminal_event_hub;
 pub(crate) mod workflow;
 pub(crate) mod workflow_api;
 pub(crate) mod workflow_wire;
+
+pub(crate) mod terminal_subscription;

@@ -1,8 +1,6 @@
 use super::*;
 use crate::usecase::terminal_surface::application::TerminalSurfaceSnapshotDto;
 
-struct PendingTimer;
-
 #[test]
 fn test_terminal復元点_終了済みの全項目を購読用出力へ写す() {
     // Given
@@ -66,19 +64,17 @@ fn test_terminal復元点_新規surfaceの画面の値を写す() {
     );
 }
 
-impl SubscriptionTimer for PendingTimer {
-    fn interval(
-        &self,
-        _: std::time::Duration,
-    ) -> std::pin::Pin<Box<dyn futures_util::Stream<Item = ()> + Send>> {
-        Box::pin(futures_util::stream::pending())
-    }
-}
-
 #[tokio::test]
 async fn test_terminal入力識別子_上限を受け付け超過を拒否する() {
     // Given
-    let usecase = StateSubscriptionUsecase::new(vec![], std::sync::Arc::new(PendingTimer));
+    let presenter =
+        crate::adaptor::presenter::state_subscription::StateSubscriptionPresenter::new();
+    let output = Arc::new(
+        crate::adaptor::presenter::terminal_subscription::TerminalSubscriptionPresenter::new(
+            &presenter,
+        ),
+    );
+    let usecase = TerminalSubscriptionUsecase::new(output, None);
     let target = SubscriptionTarget::Terminal(
         crate::domain::terminal_surface::TerminalSurfaceOwner::workspace(
             crate::domain::workspace_tree::WorkspaceIdentity::new("/repo"),
@@ -109,4 +105,67 @@ async fn test_terminal入力識別子_上限を受け付け超過を拒否する
             ..
         })
     ));
+}
+
+#[tokio::test]
+async fn test_terminal入力識別子_空白とバイト上限を変えず検査する() {
+    // Given
+    let presenter =
+        crate::adaptor::presenter::state_subscription::StateSubscriptionPresenter::new();
+    let output = Arc::new(
+        crate::adaptor::presenter::terminal_subscription::TerminalSubscriptionPresenter::new(
+            &presenter,
+        ),
+    );
+    let usecase = TerminalSubscriptionUsecase::new(output, None);
+    let target = SubscriptionTarget::RepositoryPaths;
+    // When / Then
+    for input in [String::new(), " \t\n".into(), "あ".repeat(43)] {
+        let error = usecase
+            .start_terminal("client", &target, &input, None)
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            error.source,
+            StateReadFailure::InvalidTerminalInput
+        ));
+        assert_eq!(error.message, "Invalid terminal input identity");
+    }
+    let error = usecase
+        .start_terminal("client", &target, &"あ".repeat(42), None)
+        .await
+        .unwrap_err();
+    assert_eq!(error.message, "Not a terminal target");
+}
+
+#[test]
+fn test_terminalのclient管理_二重openを拒否し閉じた購読の処理報告を拒否する() {
+    // Given
+    let presenter =
+        crate::adaptor::presenter::state_subscription::StateSubscriptionPresenter::new();
+    let output = Arc::new(
+        crate::adaptor::presenter::terminal_subscription::TerminalSubscriptionPresenter::new(
+            &presenter,
+        ),
+    );
+    let usecase = TerminalSubscriptionUsecase::new(output, None);
+    usecase.open_client("client".into()).unwrap();
+    // When / Then
+    assert_eq!(
+        usecase.open_client("client".into()),
+        Err(SubscriptionError::AlreadyExists)
+    );
+    usecase.close_client("client");
+    let error = usecase
+        .terminal_processed("client", &SubscriptionTarget::RepositoryPaths, 5000)
+        .unwrap_err();
+    assert!(matches!(
+        error.source,
+        StateReadFailure::TerminalSubscriptionEnded
+    ));
+    assert_eq!(error.message, "Terminal subscription ended");
+    usecase.open_client("client".into()).unwrap();
+    usecase.schedule_terminal_refresh(vec!["client".into()], SubscriptionTarget::RepositoryPaths);
+    assert!(usecase.terminal_resets.lock().is_empty());
+    assert_eq!(usecase.test_worker_count(), 0);
 }

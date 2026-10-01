@@ -4,3 +4,5 @@ pub(crate) mod io_usecase;
 pub(crate) mod lifecycle_usecase;
 pub(crate) mod output;
 pub(crate) mod spawn_usecase;
+
+pub(crate) mod subscription;

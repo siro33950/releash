@@ -18,14 +18,20 @@ pub(crate) struct ClientApiDeps {
 pub(crate) struct StateSubscriptionDeps {
     usecase: crate::usecase::state_subscription::StateSubscriptionUsecase,
     presenter: Arc<crate::adaptor::presenter::state_subscription::StateSubscriptionPresenter>,
+    terminal: crate::usecase::terminal_surface::subscription::TerminalSubscriptionUsecase,
 }
 
 impl StateSubscriptionDeps {
     pub(crate) fn new(
         usecase: crate::usecase::state_subscription::StateSubscriptionUsecase,
         presenter: Arc<crate::adaptor::presenter::state_subscription::StateSubscriptionPresenter>,
+        terminal: crate::usecase::terminal_surface::subscription::TerminalSubscriptionUsecase,
     ) -> Self {
-        Self { usecase, presenter }
+        Self {
+            usecase,
+            presenter,
+            terminal,
+        }
     }
 }
 
@@ -51,40 +57,14 @@ impl ClientApiDeps {
         self.priority.gate.limits()
     }
 
-    fn state_presenter(
-        &self,
-    ) -> Result<
-        &Arc<crate::adaptor::presenter::state_subscription::StateSubscriptionPresenter>,
-        connectrpc::ConnectError,
-    > {
-        self.state_subscriptions
-            .as_ref()
-            .map(|deps| &deps.presenter)
-            .ok_or_else(|| {
-                crate::adaptor::presenter::connect::classified_error(
-                    crate::adaptor::presenter::error::AppError::unavailable(
-                        "State subscriptions unavailable",
-                    ),
-                )
-            })
-    }
-
-    fn state_subscriptions(
-        &self,
-    ) -> Result<
-        &crate::usecase::state_subscription::StateSubscriptionUsecase,
-        connectrpc::ConnectError,
-    > {
-        self.state_subscriptions
-            .as_ref()
-            .map(|deps| &deps.usecase)
-            .ok_or_else(|| {
-                crate::adaptor::presenter::connect::classified_error(
-                    crate::adaptor::presenter::error::AppError::unavailable(
-                        "State subscriptions unavailable",
-                    ),
-                )
-            })
+    fn subscriptions(&self) -> Result<&StateSubscriptionDeps, connectrpc::ConnectError> {
+        self.state_subscriptions.as_ref().ok_or_else(|| {
+            crate::adaptor::presenter::connect::classified_error(
+                crate::adaptor::presenter::error::AppError::unavailable(
+                    "State subscriptions unavailable",
+                ),
+            )
+        })
     }
 
     async fn execute(
@@ -166,3 +146,114 @@ include!(concat!(env!("OUT_DIR"), "/client_service.rs"));
 #[cfg(all(test, feature = "desktop"))]
 #[path = "client_test.rs"]
 mod client_tests;
+
+struct StateStreamPermit {
+    subscriptions: StateSubscriptionDeps,
+    id: String,
+}
+
+impl Drop for StateStreamPermit {
+    fn drop(&mut self) {
+        self.subscriptions.usecase.close_client(&self.id);
+        self.subscriptions.terminal.close_client(&self.id);
+        self.subscriptions
+            .usecase
+            .with_active_targets(|active| self.subscriptions.presenter.close(&self.id, active));
+    }
+}
+
+impl StateSubscriptionDeps {
+    fn open_stream(
+        &self,
+        id: String,
+    ) -> Result<StateStreamPermit, crate::usecase::state_subscription::SubscriptionError> {
+        self.usecase.open_client(id.clone())?;
+        if let Err(error) = self.terminal.open_client(id.clone()) {
+            self.usecase.close_client(&id);
+            return Err(error);
+        }
+        if let Err(error) = self.presenter.open(id.clone()) {
+            self.usecase.close_client(&id);
+            self.terminal.close_client(&id);
+            return Err(error);
+        }
+        Ok(StateStreamPermit {
+            subscriptions: self.clone(),
+            id,
+        })
+    }
+
+    pub(crate) fn stream(
+        &self,
+        id: String,
+    ) -> Result<
+        impl futures_util::Stream<
+                Item = crate::adaptor::presenter::state_subscription::StateSubscriptionEvent,
+            > + Send
+            + use<>,
+        crate::usecase::state_subscription::SubscriptionError,
+    > {
+        let permit = self.open_stream(id.clone())?;
+        let terminal = self.terminal.clone();
+        Ok(self.presenter.stream(id, permit, move |raw, clients| {
+            if let Ok(target) = crate::usecase::state_subscription::SubscriptionTarget::parse(&raw)
+            {
+                terminal.schedule_terminal_refresh(clients, target);
+            }
+        }))
+    }
+
+    fn stream_wire(
+        &self,
+        id: String,
+    ) -> Result<
+        impl futures_util::Stream<
+                Item = Result<rpc::StateSubscriptionEvent, connectrpc::ConnectError>,
+            > + Send
+            + use<>,
+        crate::usecase::state_subscription::SubscriptionError,
+    > {
+        let permit = self.open_stream(id.clone())?;
+        let terminal = self.terminal.clone();
+        Ok(self.presenter.stream_wire(id, permit, move |raw, clients| {
+            if let Ok(target) = crate::usecase::state_subscription::SubscriptionTarget::parse(&raw)
+            {
+                terminal.schedule_terminal_refresh(clients, target);
+            }
+        }))
+    }
+
+    pub(crate) async fn start_subscription(
+        &self,
+        client: &str,
+        target: &crate::usecase::state_subscription::SubscriptionTarget,
+        input: Option<&str>,
+        cursor: Option<(&str, u64)>,
+    ) -> Result<(), crate::usecase::state_subscription::StateReadError> {
+        use crate::usecase::state_subscription::SubscriptionTarget;
+        if let Some(input) =
+            input.or_else(|| matches!(target, SubscriptionTarget::Terminal(_)).then_some(client))
+        {
+            self.terminal
+                .start_terminal(client, target, input, cursor)
+                .await
+        } else {
+            self.usecase
+                .start_subscription(client, target, cursor)
+                .await
+        }
+    }
+
+    pub(crate) async fn stop_subscription(
+        &self,
+        client: &str,
+        target: &crate::usecase::state_subscription::SubscriptionTarget,
+    ) -> Result<(), crate::usecase::state_subscription::SubscriptionError> {
+        match target {
+            crate::usecase::state_subscription::SubscriptionTarget::Terminal(_) => {
+                self.terminal.stop_subscription(client, target)
+            }
+            _ => self.usecase.stop_subscription(client, target).await,
+        }
+    }
+}

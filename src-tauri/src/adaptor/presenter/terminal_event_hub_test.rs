@@ -36,11 +36,22 @@ fn test_ターミナル状態接続_接続前の登録だけを再生し世代�
             ));
             Ok(())
         }
-        fn remove(&self, key: &str, generation: u64) -> bool {
-            self.removed.lock().unwrap().push((key.into(), generation));
+        fn remove(
+            &self,
+            registration: &crate::usecase::terminal_surface::output::TerminalRegistration,
+        ) -> bool {
+            self.removed.lock().unwrap().push((
+                registration.session_key.clone(),
+                registration.runtime_generation,
+            ));
             true
         }
-        fn publish(&self, _: TerminalSurfaceOutputEvent) {}
+        fn publish(
+            &self,
+            _: &crate::usecase::terminal_surface::output::TerminalRegistration,
+            _: TerminalSurfaceOutputEvent,
+        ) {
+        }
     }
 
     // Given
@@ -89,10 +100,18 @@ fn test_ターミナル登録_配信対象の登録失敗を返しhubに残さ�
                 ),
             )
         }
-        fn remove(&self, _: &str, _: u64) -> bool {
+        fn remove(
+            &self,
+            _: &crate::usecase::terminal_surface::output::TerminalRegistration,
+        ) -> bool {
             false
         }
-        fn publish(&self, _: TerminalSurfaceOutputEvent) {}
+        fn publish(
+            &self,
+            _: &crate::usecase::terminal_surface::output::TerminalRegistration,
+            _: TerminalSurfaceOutputEvent,
+        ) {
+        }
     }
 
     // Given
@@ -238,10 +257,18 @@ fn test_ターミナル削除_購読の有無によらず停止中の出力元�
         ) -> Result<(), crate::usecase::terminal_surface::error::UsecaseError> {
             Ok(())
         }
-        fn remove(&self, _: &str, _: u64) -> bool {
+        fn remove(
+            &self,
+            _: &crate::usecase::terminal_surface::output::TerminalRegistration,
+        ) -> bool {
             self.0
         }
-        fn publish(&self, _: TerminalSurfaceOutputEvent) {}
+        fn publish(
+            &self,
+            _: &crate::usecase::terminal_surface::output::TerminalRegistration,
+            _: TerminalSurfaceOutputEvent,
+        ) {
+        }
     }
 
     for subscribed in [false, true] {
@@ -283,4 +310,97 @@ fn test_ターミナル削除_購読の有無によらず停止中の出力元�
         completed.unwrap();
         assert!(hub.output.test_pause(&surface.session_key).is_none());
     }
+}
+
+#[test]
+fn test_terminal再接続_持ち主ごとの最新世代だけを登録する() {
+    struct Sink(std::sync::Mutex<Vec<u64>>);
+    impl TerminalSurfaceStateSink for Sink {
+        fn initialize(
+            &self,
+            registration: &crate::usecase::terminal_surface::output::TerminalRegistration,
+        ) -> Result<(), crate::usecase::terminal_surface::error::UsecaseError> {
+            self.0.lock().unwrap().push(registration.runtime_generation);
+            Ok(())
+        }
+        fn remove(
+            &self,
+            _: &crate::usecase::terminal_surface::output::TerminalRegistration,
+        ) -> bool {
+            false
+        }
+        fn publish(
+            &self,
+            _: &crate::usecase::terminal_surface::output::TerminalRegistration,
+            _: TerminalSurfaceOutputEvent,
+        ) {
+        }
+    }
+    // Given
+    let hub = TerminalSurfaceEventHub::new();
+    for generation in [3, 1, 2] {
+        hub.initialize(crate::test_support::state_subscription::registration(
+            "session", "/repo", None, generation, 0,
+        ))
+        .unwrap();
+    }
+    hub.initialize(crate::test_support::state_subscription::registration(
+        "other", "/other", None, 4, 0,
+    ))
+    .unwrap();
+    let sink = Arc::new(Sink(std::sync::Mutex::new(vec![])));
+    // When
+    hub.set_state_sink(sink.clone()).unwrap();
+    // Then
+    let mut initialized = sink.0.lock().unwrap().clone();
+    initialized.sort();
+    assert_eq!(initialized, vec![3, 4]);
+}
+
+#[test]
+fn test_terminal経路_古い世代の削除は新世代を保持し最新削除後は復活しない() {
+    use crate::adaptor::presenter::state_subscription::StateSubscriptionPresenter;
+    use crate::adaptor::presenter::terminal_subscription::TerminalSubscriptionPresenter;
+    use crate::usecase::state_subscription::SubscriptionTarget;
+    // Given
+    let hub = TerminalSurfaceEventHub::new();
+    let presenter = Arc::new(TerminalSubscriptionPresenter::new(
+        &StateSubscriptionPresenter::new(),
+    ));
+    hub.set_state_sink(presenter.clone()).unwrap();
+    for generation in [1, 2, 3] {
+        hub.initialize(crate::test_support::state_subscription::registration(
+            "session", "/repo", None, generation, 0,
+        ))
+        .unwrap();
+    }
+    let target = SubscriptionTarget::from_parts("terminal", &["/repo"])
+        .unwrap()
+        .to_string();
+    let version = presenter
+        .test_runtime()
+        .inspect(|state| state.current_version(&target))
+        .unwrap();
+    // When / Then
+    assert!(!hub.remove(2));
+    assert_eq!(
+        presenter
+            .test_runtime()
+            .inspect(|state| state.current_version(&target)),
+        Some(version)
+    );
+    hub.publish(TerminalSurfaceOutputEvent::Exit {
+        session_key: "session".into(),
+        runtime_generation: 1,
+        sequence: 0,
+        exit_code: Some(9),
+    });
+    assert!(presenter
+        .test_runtime()
+        .inspect(|state| state.current_version(&target).is_some()));
+    assert!(!hub.remove(3));
+    hub.publish(output_event(1, "old"));
+    assert!(presenter
+        .test_runtime()
+        .inspect(|state| state.current_version(&target).is_none()));
 }

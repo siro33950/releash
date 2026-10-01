@@ -44,8 +44,8 @@ impl TerminalSurfaceOutputEvent {
 pub trait TerminalSurfaceStateSink: Send + Sync {
     fn initialize(&self, registration: &TerminalRegistration) -> Result<(), UsecaseError>;
     /// Returns whether a subscription still owns the input attachment.
-    fn remove(&self, session_key: &str, runtime_generation: u64) -> bool;
-    fn publish(&self, event: TerminalSurfaceOutputEvent);
+    fn remove(&self, registration: &TerminalRegistration) -> bool;
+    fn publish(&self, registration: &TerminalRegistration, event: TerminalSurfaceOutputEvent);
 }
 
 pub trait TerminalSurfaceEventSink: Send + Sync {

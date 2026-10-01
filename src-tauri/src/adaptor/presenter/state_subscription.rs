@@ -10,29 +10,20 @@ impl From<crate::adaptor::presenter::client::StatePayload> for PublishedState {
     }
 }
 
+#[cfg(any(test, all(debug_assertions, feature = "desktop")))]
 use std::sync::Arc;
 
 use futures_util::Stream;
 use futures_util::StreamExt;
-use parking_lot::Mutex;
 
 use crate::infrastructure::state_subscription::{
     Delivery, StateSubscriptionRuntime, Subscriptions, Version,
 };
 pub(crate) type StateSubscriptionEvent =
     crate::infrastructure::state_subscription::StateSubscriptionEvent<PublishedState>;
-use crate::infrastructure::terminal::output_flow_control::{
-    OUTPUT_PENDING_LIMIT, OUTPUT_REPORT_UNITS,
-};
 use crate::usecase::state_subscription::{
-    StateReadError, StateSubscriptionOutput, StateSubscriptionUsecase, StateValue,
-    SubscriptionError, SubscriptionTarget,
+    StateReadError, StateSubscriptionOutput, StateValue, SubscriptionError, SubscriptionTarget,
 };
-use crate::usecase::terminal_surface::application::TerminalSurfaceStreamItem;
-use crate::usecase::terminal_surface::output::{
-    TerminalRegistration, TerminalSurfaceOutputEvent, TerminalSurfaceStateSink,
-};
-
 impl From<crate::infrastructure::state_subscription::SubscriptionError> for SubscriptionError {
     fn from(error: crate::infrastructure::state_subscription::SubscriptionError) -> Self {
         use crate::infrastructure::state_subscription::SubscriptionError as DeliveryError;
@@ -50,21 +41,11 @@ impl From<crate::infrastructure::state_subscription::SubscriptionError> for Subs
 #[derive(Clone)]
 pub(crate) struct StateSubscriptionPresenter {
     runtime: StateSubscriptionRuntime<PublishedState>,
-    terminal: Arc<
-        Mutex<
-            Option<Arc<crate::usecase::terminal_surface::application::TerminalSurfaceApplication>>,
-        >,
-    >,
 }
 
 impl StateSubscriptionPresenter {
-    pub(crate) fn connect_terminal(
-        &self,
-        terminal: &Arc<crate::usecase::terminal_surface::application::TerminalSurfaceApplication>,
-    ) -> Result<(), crate::usecase::terminal_surface::error::UsecaseError> {
-        terminal.connect_state(Arc::new(self.clone()))?;
-        *self.terminal.lock() = Some(terminal.clone());
-        Ok(())
+    pub(crate) fn runtime(&self) -> StateSubscriptionRuntime<PublishedState> {
+        self.runtime.clone()
     }
 
     #[cfg(test)]
@@ -74,10 +55,7 @@ impl StateSubscriptionPresenter {
 
     pub(crate) fn new() -> Self {
         let runtime = StateSubscriptionRuntime::new(uuid::Uuid::new_v4().to_string());
-        Self {
-            runtime,
-            terminal: Default::default(),
-        }
+        Self { runtime }
     }
 
     fn update(
@@ -128,156 +106,59 @@ impl StateSubscriptionPresenter {
         Ok(())
     }
 
-    pub(crate) fn terminal_pending_amount(&self, client: &str, target: &str) -> usize {
+    pub(crate) fn open(&self, id: String) -> Result<(), SubscriptionError> {
         self.runtime
-            .inspect(|state| state.pending_amount(client, target))
+            .update(|state| state.open(id).map(|_| true))
+            .map_err(Into::into)
     }
 
-    fn terminal_awaiting_snapshot(&self, client: &str, target: &str) -> bool {
-        self.runtime
-            .inspect(|state| state.awaiting_snapshot(client, target))
-    }
-
-    pub(crate) fn terminal_report_units(&self) -> usize {
-        OUTPUT_REPORT_UNITS
-    }
-
-    pub(crate) fn stream(
-        &self,
-        usecase: StateSubscriptionUsecase,
-        id: String,
-    ) -> Result<impl Stream<Item = StateSubscriptionEvent> + Send + use<>, SubscriptionError> {
-        usecase.open_client(id.clone())?;
-        if let Err(error) = self
-            .runtime
-            .update(|state| state.open(id.clone()).map(|_| true))
-        {
-            usecase.close_client(&id);
-            return Err(error.into());
-        }
-        let permit = StreamPermit {
-            usecase,
-            id,
-            runtime: self.runtime.clone(),
-        };
-        let refresh = permit.usecase.clone();
-        Ok(self
-            .runtime
-            .stream(permit.id.clone(), permit, move |raw, clients| {
-                if let Ok(target) = SubscriptionTarget::parse(&raw) {
-                    refresh.schedule_terminal_refresh(clients, target);
+    pub(crate) fn close(&self, id: &str, active: &std::collections::HashSet<SubscriptionTarget>) {
+        let protected = protected_targets(active);
+        self.runtime.mutate(|state| {
+            let targets = state.active_targets();
+            state.close(id);
+            for target in targets {
+                if !protected.contains(&target) {
+                    let _ = state.ensure_active(&target);
                 }
-            }))
-    }
-
-    pub(crate) fn stream_wire(
-        &self,
-        usecase: StateSubscriptionUsecase,
-        id: String,
-    ) -> Result<
-        impl Stream<
-                Item = Result<
-                    crate::adaptor::presenter::connect_wire::rpc::StateSubscriptionEvent,
-                    connectrpc::ConnectError,
-                >,
-            > + Send
-            + use<>,
-        SubscriptionError,
-    > {
-        Ok(self
-            .stream(usecase, id)?
-            .map(crate::adaptor::presenter::state_subscription_wire::event))
-    }
-}
-
-impl StateSubscriptionPresenter {
-    fn present_terminal_start(
-        &self,
-        client: &str,
-        target: &SubscriptionTarget,
-        raw: &str,
-        input_id: &str,
-        cursor: Option<(&str, u64)>,
-    ) -> Result<(), StateReadError> {
-        let SubscriptionTarget::Terminal(owner) = target else {
-            return Err(terminal_read_error("Not a terminal target"));
-        };
-        let terminal = self
-            .terminal
-            .lock()
-            .clone()
-            .ok_or_else(|| terminal_read_error("Terminal unavailable"))?;
-        loop {
-            let generation = terminal
-                .get_summary(owner)
-                .map_err(terminal_read_error)?
-                .runtime_generation;
-            let mut result = None;
-            let entered = terminal.with_output_order(generation.value(), &mut || {
-                match terminal.get_summary(owner) {
-                    Ok(current) if current.runtime_generation != generation => return,
-                    Err(error) => {
-                        result = Some(Err(terminal_read_error(error)));
-                        return;
-                    }
-                    _ => {}
-                }
-                let started = self
-                    .start(client, raw, cursor)
-                    .map_err(StateReadError::from_error);
-                if started.is_ok() {
-                    let pending = (!self.terminal_awaiting_snapshot(client, raw))
-                        .then(|| self.terminal_pending_amount(client, raw));
-                    terminal.subscribe_output(owner, client, input_id, pending);
-                }
-                result = Some(started);
-            });
-            if !entered {
-                continue;
             }
-            if let Some(result) = result {
-                return result;
-            }
-        }
+            state.release_inactive_snapshots_except(&protected);
+            ((), true)
+        });
     }
-}
 
-fn terminal_read_error(error: impl std::fmt::Display) -> StateReadError {
-    StateReadError::from_error(crate::domain::failure::TechnicalFailure {
-        nature: crate::domain::failure::TechnicalFailureNature::Other,
-        message: error.to_string(),
-    })
+    pub(crate) fn stream<P: Send + 'static, F: Fn(String, Vec<String>) + Send + Sync + 'static>(
+        &self,
+        id: String,
+        permit: P,
+        refresh: F,
+    ) -> impl Stream<Item = StateSubscriptionEvent> + Send + use<P, F> {
+        self.runtime.stream(id, permit, refresh)
+    }
+
+    pub(crate) fn stream_wire<
+        P: Send + 'static,
+        F: Fn(String, Vec<String>) + Send + Sync + 'static,
+    >(
+        &self,
+        id: String,
+        permit: P,
+        refresh: F,
+    ) -> impl Stream<
+        Item = Result<
+            crate::adaptor::presenter::connect_wire::rpc::StateSubscriptionEvent,
+            connectrpc::ConnectError,
+        >,
+    > + Send
+           + use<P, F> {
+        self.stream(id, permit, refresh)
+            .map(crate::adaptor::presenter::state_subscription_wire::event)
+    }
 }
 
 #[cfg(any(test, all(debug_assertions, feature = "desktop")))]
 pub(crate) fn test_output() -> crate::usecase::state_subscription::StateSubscriptionOutputRef {
     Arc::new(StateSubscriptionPresenter::new())
-}
-
-struct StreamPermit {
-    usecase: StateSubscriptionUsecase,
-    id: String,
-    runtime: StateSubscriptionRuntime<PublishedState>,
-}
-
-impl Drop for StreamPermit {
-    fn drop(&mut self) {
-        self.usecase.close_client(&self.id);
-        self.usecase.with_active_targets(|active| {
-            let protected = protected_targets(active);
-            self.runtime.mutate(|state| {
-                let targets = state.active_targets();
-                state.close(&self.id);
-                for target in targets {
-                    if !protected.contains(&target) {
-                        let _ = state.ensure_active(&target);
-                    }
-                }
-                state.release_inactive_snapshots_except(&protected);
-                ((), true)
-            })
-        });
-    }
 }
 
 fn protected_targets(
@@ -310,15 +191,9 @@ impl StateSubscriptionOutput for StateSubscriptionPresenter {
         client: &str,
         target: &SubscriptionTarget,
         cursor: Option<(&str, u64)>,
-        terminal_input_id: Option<&str>,
     ) -> Result<(), StateReadError> {
-        let raw = target.to_string();
-        match terminal_input_id {
-            Some(input_id) => self.present_terminal_start(client, target, &raw, input_id, cursor),
-            None => self
-                .start(client, &raw, cursor)
-                .map_err(StateReadError::from_error),
-        }
+        self.start(client, &target.to_string(), cursor)
+            .map_err(StateReadError::from_error)
     }
 
     fn stop(
@@ -341,16 +216,9 @@ impl StateSubscriptionOutput for StateSubscriptionPresenter {
             message: error.message,
         };
         let snapshot = PublishedState::Failure(failure);
-        let terminal = matches!(target, SubscriptionTarget::Terminal(_));
         let target = target.to_string();
         self.update(|state| {
-            if terminal {
-                let version = state.current_version(&target).ok_or(
-                    crate::infrastructure::state_subscription::SubscriptionError::UnknownTarget,
-                )?;
-                state.publish_delta(&target, version.clone(), snapshot.clone(), 0, false)?;
-                state.set_delta_snapshot(&target, version, snapshot)
-            } else if state.registered(&target) {
+            if state.registered(&target) {
                 state.publish(&target, snapshot, None)
             } else {
                 state
@@ -400,159 +268,6 @@ impl StateSubscriptionOutput for StateSubscriptionPresenter {
             .map_err(|_| SubscriptionError::EncodingFailed)?;
         self.update(|state| state.publish(&target, snapshot, delta))
     }
-
-    fn set_terminal_snapshot(
-        &self,
-        target: &SubscriptionTarget,
-        runtime_generation: u64,
-        sequence: u64,
-        snapshot: StateValue,
-    ) -> Result<(), SubscriptionError> {
-        let version = self.runtime.terminal_version(runtime_generation, sequence);
-        let snapshot = crate::adaptor::presenter::state_subscription_wire::payload(&snapshot)
-            .map(PublishedState::from)
-            .map_err(|_| SubscriptionError::EncodingFailed)?;
-        self.update(|state| state.set_delta_snapshot(&target.to_string(), version, snapshot))
-    }
-}
-
-impl TerminalSurfaceStateSink for StateSubscriptionPresenter {
-    fn initialize(
-        &self,
-        registration: &TerminalRegistration,
-    ) -> Result<(), crate::usecase::terminal_surface::error::UsecaseError> {
-        let target = terminal_target(
-            &registration.workspace_path,
-            registration.session_id.as_deref(),
-        )
-        .map_err(|error| {
-            crate::usecase::terminal_surface::error::UsecaseError::Gateway(error.to_string())
-        })?
-        .to_string();
-        let version = self.runtime.terminal_version(
-            registration.runtime_generation,
-            registration.latest_sequence,
-        );
-        self.runtime
-            .register_terminal(
-                &registration.session_key,
-                &target,
-                version,
-                OUTPUT_PENDING_LIMIT,
-            )
-            .map_err(|error| {
-                crate::usecase::terminal_surface::error::UsecaseError::Gateway(error.to_string())
-            })
-    }
-
-    fn remove(&self, session_key: &str, runtime_generation: u64) -> bool {
-        let epoch = self.runtime.terminal_version(runtime_generation, 0).epoch;
-        self.runtime
-            .unregister_terminal(session_key, &epoch)
-            .unwrap_or(false)
-    }
-
-    fn publish(&self, event: TerminalSurfaceOutputEvent) {
-        let Some(target) = self.runtime.terminal_route(event.session_key()) else {
-            return;
-        };
-        let sequence = match &event {
-            TerminalSurfaceOutputEvent::Output { sequence, .. }
-            | TerminalSurfaceOutputEvent::Resize { sequence, .. }
-            | TerminalSurfaceOutputEvent::Exit { sequence, .. } => *sequence,
-        };
-        let advances_version = matches!(&event, TerminalSurfaceOutputEvent::Output { .. });
-        let (item, units) = match event {
-            TerminalSurfaceOutputEvent::Output {
-                session_key,
-                data,
-                sequence,
-            } => {
-                let units = data.encode_utf16().count();
-                (
-                    TerminalSurfaceStreamItem::Output {
-                        session_key,
-                        data,
-                        sequence,
-                    },
-                    units,
-                )
-            }
-            TerminalSurfaceOutputEvent::Resize {
-                session_key,
-                cols,
-                rows,
-                sequence,
-            } => (
-                TerminalSurfaceStreamItem::Resize {
-                    session_key,
-                    cols,
-                    rows,
-                    sequence,
-                },
-                0,
-            ),
-            TerminalSurfaceOutputEvent::Exit {
-                session_key,
-                exit_code,
-                sequence,
-                ..
-            } => (
-                TerminalSurfaceStreamItem::Exit {
-                    session_key,
-                    exit_code,
-                    sequence,
-                },
-                0,
-            ),
-        };
-        let payload = match crate::adaptor::presenter::state_subscription_wire::payload(
-            &StateValue::Terminal(item),
-        ) {
-            Ok(payload) => PublishedState::from(payload),
-            Err(error) => {
-                log::error!("Terminal publication encoding failed: {error}");
-                return;
-            }
-        };
-        self.runtime.mutate(|state| {
-            let Some(mut version) = state.current_version(&target) else {
-                return ((), false);
-            };
-            if sequence < version.sequence && !advances_version {
-                let changed = match state.require_delta_snapshot(&target) {
-                    Ok(changed) => changed,
-                    Err(error) => {
-                        log::error!("Terminal resynchronization failed: {error}");
-                        false
-                    }
-                };
-                return ((), changed);
-            }
-            if advances_version && sequence <= version.sequence {
-                return ((), false);
-            }
-            version.sequence = sequence;
-            match state.publish_delta(&target, version, payload, units, advances_version) {
-                Ok(()) => ((), true),
-                Err(error) => {
-                    log::error!("Terminal publication failed: {error}");
-                    ((), false)
-                }
-            }
-        });
-    }
-}
-
-fn terminal_target(
-    workspace_path: &str,
-    session_id: Option<&str>,
-) -> Result<SubscriptionTarget, SubscriptionError> {
-    let mut args = vec![workspace_path];
-    if let Some(session_id) = session_id {
-        args.push(session_id);
-    }
-    SubscriptionTarget::from_parts("terminal", &args)
 }
 
 #[cfg(test)]

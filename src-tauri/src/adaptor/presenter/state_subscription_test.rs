@@ -1,5 +1,6 @@
 use super::*;
 use crate::test_support::state_subscription::WakeFlag;
+use crate::usecase::state_subscription::StateSubscriptionUsecase;
 
 #[test]
 fn test_配信失敗_usecaseの失敗分類へ意味を保って変換する() {
@@ -31,85 +32,6 @@ fn test_配信失敗_usecaseの失敗分類へ意味を保って変換する() {
     }
 }
 
-#[test]
-fn test_terminal登録_nulを含む識別子を失敗として返す() {
-    // Given
-    let presenter = StateSubscriptionPresenter::new();
-
-    // When
-    let path = presenter.initialize(&crate::test_support::state_subscription::registration(
-        "session", "/re\0po", None, 1, 0,
-    ));
-    let session = presenter.initialize(&crate::test_support::state_subscription::registration(
-        "session",
-        "/repo",
-        Some("ses\0sion"),
-        1,
-        0,
-    ));
-
-    // Then
-    assert!(path.is_err());
-    assert!(session.is_err());
-    assert_eq!(presenter.test_runtime().test_terminal_route_count(), 0);
-}
-
-#[tokio::test]
-async fn test_古いterminal寸法_初回の復元要求だけ待機者へ通知する() {
-    use std::sync::atomic::{AtomicBool, Ordering};
-    use std::task::{Context, Waker};
-
-    // Given
-    let presenter = Arc::new(StateSubscriptionPresenter::new());
-    presenter
-        .initialize(&crate::test_support::state_subscription::registration(
-            "session", "/repo", None, 1, 2,
-        ))
-        .unwrap();
-    let usecase = StateSubscriptionUsecase::new_with_output(
-        presenter.clone(),
-        Arc::new(crate::adaptor::gateway::subscription_timer::TokioSubscriptionTimer),
-    );
-    let mut stream = Box::pin(presenter.stream(usecase, "waiting".into()).unwrap());
-    assert!(matches!(
-        stream.next().await,
-        Some(StateSubscriptionEvent::Ready)
-    ));
-    let flag = Arc::new(WakeFlag(AtomicBool::new(false)));
-    let waker = Waker::from(flag.clone());
-    assert!(stream
-        .as_mut()
-        .poll_next(&mut Context::from_waker(&waker))
-        .is_pending());
-    let old_resize = TerminalSurfaceOutputEvent::Resize {
-        session_key: "session".into(),
-        cols: 80,
-        rows: 24,
-        sequence: 1,
-    };
-
-    // When
-    TerminalSurfaceStateSink::publish(presenter.as_ref(), old_resize.clone());
-    // Then
-    assert!(flag.0.swap(false, Ordering::SeqCst));
-    assert!(stream
-        .as_mut()
-        .poll_next(&mut Context::from_waker(&waker))
-        .is_pending());
-    TerminalSurfaceStateSink::publish(presenter.as_ref(), old_resize);
-    assert!(!flag.0.load(Ordering::SeqCst));
-    TerminalSurfaceStateSink::publish(
-        presenter.as_ref(),
-        TerminalSurfaceOutputEvent::Exit {
-            session_key: "session".into(),
-            runtime_generation: 1,
-            exit_code: Some(0),
-            sequence: 1,
-        },
-    );
-    assert!(!flag.0.load(Ordering::SeqCst));
-}
-
 #[tokio::test]
 async fn test_購読開始失敗_対象削除を待機中streamへ通知する() {
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -138,7 +60,11 @@ async fn test_購読開始失敗_対象削除を待機中streamへ通知する()
         presenter.clone(),
         Arc::new(crate::adaptor::gateway::subscription_timer::TokioSubscriptionTimer),
     );
-    let mut stream = Box::pin(presenter.stream(usecase, "waiting".into()).unwrap());
+    let mut stream = Box::pin(
+        crate::test_support::state_subscription::deps(usecase, presenter.clone())
+            .stream("waiting".into())
+            .unwrap(),
+    );
     assert!(matches!(
         stream.next().await,
         Some(StateSubscriptionEvent::Ready)
@@ -172,7 +98,11 @@ async fn test_購読再開始_状態不変なら通知せず初回開始だけ�
         presenter.clone(),
         Arc::new(crate::adaptor::gateway::subscription_timer::TokioSubscriptionTimer),
     );
-    let mut stream = Box::pin(presenter.stream(usecase, "client".into()).unwrap());
+    let mut stream = Box::pin(
+        crate::test_support::state_subscription::deps(usecase, presenter.clone())
+            .stream("client".into())
+            .unwrap(),
+    );
     assert!(matches!(
         stream.next().await,
         Some(StateSubscriptionEvent::Ready)
@@ -211,86 +141,6 @@ async fn test_購読再開始_状態不変なら通知せず初回開始だけ�
     assert!(!flag.0.load(Ordering::SeqCst));
 }
 
-#[test]
-fn test_terminal読取失敗_出力sequenceを進めない() {
-    // Given
-    let presenter = StateSubscriptionPresenter::new();
-    let target = SubscriptionTarget::from_parts("terminal", &["/repo"]).unwrap();
-    let version = Version {
-        epoch: "terminal".into(),
-        sequence: 4,
-    };
-    presenter
-        .runtime
-        .update(|state| state.register_delta(&target.to_string(), version.clone(), 1024))
-        .unwrap();
-    // When
-    presenter
-        .publish_failure(
-            &target,
-            StateReadError::from_error(SubscriptionError::SnapshotRequired),
-        )
-        .unwrap();
-    // Then
-    assert_eq!(
-        presenter
-            .runtime
-            .inspect(|state| state.current_version(&target.to_string())),
-        Some(version)
-    );
-}
-
-#[test]
-fn test_terminal読取失敗_失敗後の出力でsequenceを進める() {
-    // Given
-    let presenter = StateSubscriptionPresenter::new();
-    let target = SubscriptionTarget::from_parts("terminal", &["/repo"]).unwrap();
-    let version = Version {
-        epoch: "terminal".into(),
-        sequence: 4,
-    };
-    presenter
-        .runtime
-        .update(|state| state.register_delta(&target.to_string(), version.clone(), 1024))
-        .unwrap();
-    presenter
-        .publish_failure(
-            &target,
-            StateReadError::from_error(SubscriptionError::SnapshotRequired),
-        )
-        .unwrap();
-    // When
-    let next = Version {
-        epoch: "terminal".into(),
-        sequence: 5,
-    };
-    let value = crate::adaptor::presenter::state_subscription_wire::payload(
-        &StateValue::RepositoryPaths(vec![]),
-    )
-    .unwrap();
-    presenter
-        .runtime
-        .update(|state| {
-            state
-                .publish_delta(
-                    &target.to_string(),
-                    next.clone(),
-                    PublishedState::from(value),
-                    1,
-                    true,
-                )
-                .map(|_| true)
-        })
-        .unwrap();
-    // Then
-    assert_eq!(
-        presenter
-            .runtime
-            .inspect(|state| state.current_version(&target.to_string())),
-        Some(next)
-    );
-}
-
 #[tokio::test]
 async fn test_購読失敗_つなぎ直した購読へ保持済みのfailure事象を送り直す() {
     // Given
@@ -305,7 +155,11 @@ async fn test_購読失敗_つなぎ直した購読へ保持済みのfailure事�
             StateReadError::from_error(SubscriptionError::SnapshotRequired),
         )
         .unwrap();
-    let mut initial = Box::pin(presenter.stream(usecase.clone(), "initial".into()).unwrap());
+    let mut initial = Box::pin(
+        crate::test_support::state_subscription::deps(usecase.clone(), presenter.clone())
+            .stream("initial".into())
+            .unwrap(),
+    );
     initial.next().await;
     presenter
         .start(
@@ -317,7 +171,11 @@ async fn test_購読失敗_つなぎ直した購読へ保持済みのfailure事�
     initial.next().await;
     drop(initial);
     // When
-    let mut replay = Box::pin(presenter.stream(usecase, "replay".into()).unwrap());
+    let mut replay = Box::pin(
+        crate::test_support::state_subscription::deps(usecase, presenter.clone())
+            .stream("replay".into())
+            .unwrap(),
+    );
     replay.next().await;
     presenter
         .start(

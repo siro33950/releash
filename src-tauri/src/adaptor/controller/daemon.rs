@@ -112,8 +112,17 @@ pub(crate) async fn compose(
         data_dir.clone(),
     );
     let terminal_surface = terminal_surface_runtime.application();
-    state_presenter.connect_terminal(&terminal_surface)?;
-    let state_subscriptions = state_subscriptions.with_terminal(terminal_surface.clone());
+    let terminal_presenter = Arc::new(
+        adaptor::presenter::terminal_subscription::TerminalSubscriptionPresenter::new(
+            &state_presenter,
+        ),
+    );
+    terminal_surface.connect_state(terminal_presenter.clone())?;
+    let terminal_subscriptions =
+        usecase::terminal_surface::subscription::TerminalSubscriptionUsecase::new(
+            terminal_presenter,
+            Some(terminal_surface.clone()),
+        );
     let review_comment_usecase = Arc::new(
         adaptor::controller::wiring::build_review_comment_usecase()
             .with_subscriptions(state_subscriptions.clone()),
@@ -551,6 +560,7 @@ pub(crate) async fn compose(
                 adaptor::controller::api::StateSubscriptionDeps::new(
                     state_subscriptions,
                     state_presenter,
+                    terminal_subscriptions,
                 ),
             ),
         ),

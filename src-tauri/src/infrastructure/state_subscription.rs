@@ -17,8 +17,6 @@ const BOOKMARK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(10
 pub(crate) struct StateSubscriptionRuntime<T> {
     state: Arc<Mutex<Subscriptions<T>>>,
     changed: Arc<Notify>,
-    terminal_routes: Arc<Mutex<HashMap<String, String>>>,
-    terminal_boot: String,
 }
 
 impl<T: Clone + PartialEq + Send + Sync + 'static> StateSubscriptionRuntime<T> {
@@ -26,71 +24,7 @@ impl<T: Clone + PartialEq + Send + Sync + 'static> StateSubscriptionRuntime<T> {
         Self {
             state: Arc::new(Mutex::new(Subscriptions::new(epoch))),
             changed: Arc::new(Notify::new()),
-            terminal_routes: Default::default(),
-            terminal_boot: uuid::Uuid::new_v4().to_string(),
         }
-    }
-
-    pub(crate) fn terminal_version(&self, runtime_generation: u64, sequence: u64) -> Version {
-        Version {
-            epoch: format!("{}:{runtime_generation}", self.terminal_boot),
-            sequence,
-        }
-    }
-
-    pub(crate) fn register_terminal(
-        &self,
-        session: &str,
-        target: &str,
-        version: Version,
-        pending_limit: usize,
-    ) -> Result<(), SubscriptionError> {
-        let mut routes = self.terminal_routes.lock();
-        let previous = routes.insert(session.into(), target.into());
-        if let Err(error) =
-            self.update(|state| state.register_delta(target, version, pending_limit))
-        {
-            match previous {
-                Some(previous) => {
-                    routes.insert(session.into(), previous);
-                }
-                None => {
-                    routes.remove(session);
-                }
-            }
-            return Err(error);
-        }
-        Ok(())
-    }
-
-    pub(crate) fn unregister_terminal(&self, session: &str, epoch: &str) -> Option<bool> {
-        let mut routes = self.terminal_routes.lock();
-        let target = routes.get(session)?.clone();
-        let subscribed = self.mutate(|state| {
-            if state
-                .current_version(&target)
-                .is_none_or(|version| version.epoch != epoch)
-            {
-                return (None, false);
-            }
-            match state.unregister(&target) {
-                Ok(()) => (Some(state.has_subscribers(&target)), true),
-                Err(_) => (None, false),
-            }
-        });
-        if subscribed.is_some() {
-            routes.remove(session);
-        }
-        subscribed
-    }
-
-    pub(crate) fn terminal_route(&self, session: &str) -> Option<String> {
-        self.terminal_routes.lock().get(session).cloned()
-    }
-
-    #[cfg(test)]
-    pub(crate) fn test_terminal_route_count(&self) -> usize {
-        self.terminal_routes.lock().len()
     }
 
     pub(crate) fn update(
@@ -104,6 +38,7 @@ impl<T: Clone + PartialEq + Send + Sync + 'static> StateSubscriptionRuntime<T> {
         result.map(|_| ())
     }
 
+    #[cfg(test)]
     pub(crate) fn inspect<R>(&self, read: impl FnOnce(&Subscriptions<T>) -> R) -> R {
         read(&self.state.lock())
     }
@@ -180,6 +115,19 @@ impl<T: Clone + PartialEq + Send + Sync + 'static> StateSubscriptionRuntime<T> {
         );
         futures_util::stream::once(async { StateSubscriptionEvent::Ready }).chain(events)
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DeltaPublication {
+    Published,
+    Discarded,
+    SnapshotRequired(bool),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DeltaPublicationError {
+    Snapshot(SubscriptionError),
+    Publication(SubscriptionError),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -551,6 +499,53 @@ impl<T: Clone + PartialEq> Subscriptions<T> {
         value.version = version;
         value.snapshot = Some(Arc::new(snapshot));
         Ok(true)
+    }
+
+    pub fn apply_delta(
+        &mut self,
+        target: &str,
+        sequence: u64,
+        delta: T,
+        units: usize,
+        advances_version: bool,
+    ) -> Result<DeltaPublication, DeltaPublicationError> {
+        let Some(mut version) = self.current_version(target) else {
+            return Ok(DeltaPublication::Discarded);
+        };
+        if !advances_version && sequence < version.sequence {
+            return self
+                .require_delta_snapshot(target)
+                .map(DeltaPublication::SnapshotRequired)
+                .map_err(DeltaPublicationError::Snapshot);
+        }
+        if advances_version && sequence <= version.sequence {
+            return Ok(DeltaPublication::Discarded);
+        }
+        version.sequence = sequence;
+        self.publish_delta(target, version, delta, units, advances_version)
+            .map_err(DeltaPublicationError::Publication)?;
+        Ok(DeltaPublication::Published)
+    }
+
+    pub fn stop_and_release(
+        &mut self,
+        client: &str,
+        target: &str,
+    ) -> Result<bool, SubscriptionError> {
+        let stopped = self.stop(client, target)?;
+        let mut changed = false;
+        if !self.has_subscribers(target) {
+            if let Some(value) = self.targets.get_mut(target) {
+                changed = value.snapshot.is_some()
+                    || (value.delivery == Delivery::Full && !value.history.is_empty());
+                value.snapshot = None;
+                if value.delivery == Delivery::Full {
+                    value.history.clear();
+                    value.history_units.clear();
+                }
+            }
+        }
+        Ok(stopped || changed)
     }
 
     pub fn publish_delta(
