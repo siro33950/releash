@@ -189,12 +189,20 @@ mod usecase_provider_lifecycle_hook_health_error_test_2 {
         use connectrpc::ErrorCode as F;
         // Given
         let cases = [
-        (
-            crate::usecase::provider_lifecycle::ProviderHookHealthFailureQueryError::Unavailable,
-            F::Unavailable,
-        ),
-        (crate::usecase::provider_lifecycle::ProviderHookHealthFailureQueryError::Corrupt, F::DataLoss),
-    ];
+            (
+                crate::usecase::provider_lifecycle::ProviderHookHealthFailureQueryError::Technical(
+                    crate::domain::failure::TechnicalFailure {
+                        nature: crate::domain::failure::TechnicalFailureNature::Transient,
+                        message: "unavailable".into(),
+                    },
+                ),
+                F::Unavailable,
+            ),
+            (
+                crate::usecase::provider_lifecycle::ProviderHookHealthFailureQueryError::Corrupt,
+                F::DataLoss,
+            ),
+        ];
         for (error, expected) in cases {
             // When / Then
             assert_eq!(error.connect_code(), expected, "{error:?}");
@@ -902,12 +910,12 @@ mod usecase_agent_session_agent_session_lifecycle_error_test {
             F::Unavailable,
         ),
         (
-            crate::usecase::agent_session::AgentSessionLifecycleUsecaseError::LaunchUnavailable,
-            F::FailedPrecondition,
+            crate::usecase::agent_session::AgentSessionLifecycleUsecaseError::Launch(crate::domain::agent_session::ProviderAgentLaunchGatewayError::Technical(crate::domain::failure::TechnicalFailure { nature: crate::domain::failure::TechnicalFailureNature::Transient, message: "unavailable".into() })),
+            F::Unavailable,
         ),
         (
-            crate::usecase::agent_session::AgentSessionLifecycleUsecaseError::TerminalUnavailable,
-            F::FailedPrecondition,
+            crate::usecase::agent_session::AgentSessionLifecycleUsecaseError::Terminal(crate::domain::agent_session::ProviderAgentTerminalGatewayError::Technical(crate::domain::failure::TechnicalFailure { nature: crate::domain::failure::TechnicalFailureNature::Transient, message: "unavailable".into() })),
+            F::Unavailable,
         ),
         (crate::usecase::agent_session::AgentSessionLifecycleUsecaseError::Corrupt, F::DataLoss),
         (
@@ -1252,7 +1260,7 @@ mod usecase_agent_session_agent_session_read_test {
                 F::Unavailable,
             ),
             (
-                crate::usecase::agent_session::AgentSessionReadUsecaseError::TerminalUnavailable,
+                crate::usecase::agent_session::AgentSessionReadUsecaseError::Lifecycle(crate::usecase::agent_session::AgentSessionLifecycleUsecaseError::Terminal(crate::domain::agent_session::ProviderAgentTerminalGatewayError::InvalidOperation("exited".into()))),
                 F::FailedPrecondition,
             ),
             (
@@ -1358,140 +1366,163 @@ mod usecase_agent_session_agent_session_launch_test {
         use connectrpc::ErrorCode as F;
         // Given
         let cases = [
-        (
-            crate::usecase::agent_session::AgentSessionLaunchUsecaseError::ProviderUnavailable,
-            F::FailedPrecondition,
-        ),
-        (
-            crate::usecase::agent_session::AgentSessionLaunchUsecaseError::InvalidInput,
-            F::InvalidArgument,
-        ),
-        (
-            crate::usecase::agent_session::AgentSessionLaunchUsecaseError::Conflict(
-                (crate::domain::local_event::CommitBatchError::TreeHeadConflict).into(),
+            (
+                crate::usecase::agent_session::AgentSessionLaunchUsecaseError::ProviderUnavailable,
+                F::FailedPrecondition,
             ),
-            F::Aborted,
-        ),
-        (
-            crate::usecase::agent_session::AgentSessionLaunchUsecaseError::StorageUnavailable,
-            F::Unavailable,
-        ),
-        (
-            crate::usecase::agent_session::AgentSessionLaunchUsecaseError::LaunchUnavailable,
-            F::FailedPrecondition,
-        ),
-        (
-            crate::usecase::agent_session::AgentSessionLaunchUsecaseError::TerminalUnavailable,
-            F::FailedPrecondition,
-        ),
-        (crate::usecase::agent_session::AgentSessionLaunchUsecaseError::Corrupt, F::DataLoss),
-        (
-            crate::usecase::agent_session::AgentSessionLaunchUsecaseError::TerminalSpawn(
-                crate::domain::agent_session::ProviderAgentTerminalSpawnError::OwnerConflict,
+            (
+                crate::usecase::agent_session::AgentSessionLaunchUsecaseError::InvalidInput,
+                F::InvalidArgument,
             ),
-            F::FailedPrecondition,
-        ),
-        (
-            crate::usecase::agent_session::AgentSessionLaunchUsecaseError::TerminalSpawn(
-                crate::domain::agent_session::ProviderAgentTerminalSpawnError::PtySpawn {
-                    error: "pty".into(),
-                },
+            (
+                crate::usecase::agent_session::AgentSessionLaunchUsecaseError::Conflict(
+                    (crate::domain::local_event::CommitBatchError::TreeHeadConflict).into(),
+                ),
+                F::Aborted,
             ),
-            F::FailedPrecondition,
-        ),
-        (
-            crate::usecase::agent_session::AgentSessionLaunchUsecaseError::TerminalSpawn(
-                crate::domain::agent_session::ProviderAgentTerminalSpawnError::OtherSpawnFailure {
-                    error: "spawn".into(),
-                },
+            (
+                crate::usecase::agent_session::AgentSessionLaunchUsecaseError::StorageUnavailable,
+                F::Unavailable,
             ),
-            F::FailedPrecondition,
-        ),
-        (
-            crate::usecase::agent_session::AgentSessionLaunchUsecaseError::Store(
-                (crate::domain::local_event::CommitBatchError::QueueBusy).into(),
+            (
+                crate::usecase::agent_session::AgentSessionLaunchUsecaseError::Launch(
+                    crate::domain::agent_session::ProviderAgentLaunchGatewayError::Technical(
+                        crate::domain::failure::TechnicalFailure {
+                            nature: crate::domain::failure::TechnicalFailureNature::Transient,
+                            message: "unavailable".into(),
+                        },
+                    ),
+                ),
+                F::Unavailable,
             ),
-            F::Unavailable,
-        ),
-        (
-            crate::usecase::agent_session::AgentSessionLaunchUsecaseError::Store(
-                (crate::domain::local_event::CommitBatchError::TreeHeadConflict).into(),
+            (
+                crate::usecase::agent_session::AgentSessionLaunchUsecaseError::Terminal(
+                    crate::domain::agent_session::ProviderAgentTerminalGatewayError::Technical(
+                        crate::domain::failure::TechnicalFailure {
+                            nature: crate::domain::failure::TechnicalFailureNature::Transient,
+                            message: "unavailable".into(),
+                        },
+                    ),
+                ),
+                F::Unavailable,
             ),
-            F::Aborted,
-        ),
-        (
-            crate::usecase::agent_session::AgentSessionLaunchUsecaseError::Store(
-                (crate::domain::local_event::CommitBatchError::PayloadConflict).into(),
+            (
+                crate::usecase::agent_session::AgentSessionLaunchUsecaseError::Corrupt,
+                F::DataLoss,
             ),
-            F::FailedPrecondition,
-        ),
-        (
-            crate::usecase::agent_session::AgentSessionLaunchUsecaseError::Store(
-                (crate::domain::local_event::LocalEventQueryError::InvalidRequest).into(),
+            (
+                crate::usecase::agent_session::AgentSessionLaunchUsecaseError::Terminal(
+                    crate::domain::agent_session::ProviderAgentTerminalGatewayError::OwnerConflict,
+                ),
+                F::FailedPrecondition,
             ),
-            F::InvalidArgument,
-        ),
-        (
-            crate::usecase::agent_session::AgentSessionLaunchUsecaseError::Store(
-                (crate::domain::failure::TechnicalFailure {
-                    nature: crate::domain::failure::TechnicalFailureNature::TimedOut,
-                    message: "failure".into(),
-                })
-                .into(),
+            (
+                crate::usecase::agent_session::AgentSessionLaunchUsecaseError::Terminal(
+                    crate::domain::agent_session::ProviderAgentTerminalGatewayError::Technical(
+                        crate::domain::failure::TechnicalFailure {
+                            nature: crate::domain::failure::TechnicalFailureNature::Other,
+                            message: "pty".into(),
+                        },
+                    ),
+                ),
+                F::Internal,
             ),
-            F::DeadlineExceeded,
-        ),
-        (
-            crate::usecase::agent_session::AgentSessionLaunchUsecaseError::Store(
-                (crate::domain::workflow::WorkflowError::NotFound("missing".into())).into(),
+            (
+                crate::usecase::agent_session::AgentSessionLaunchUsecaseError::Terminal(
+                    crate::domain::agent_session::ProviderAgentTerminalGatewayError::Technical(
+                        crate::domain::failure::TechnicalFailure {
+                            nature: crate::domain::failure::TechnicalFailureNature::Other,
+                            message: "spawn".into(),
+                        },
+                    ),
+                ),
+                F::Internal,
             ),
-            F::NotFound,
-        ),
-        (
-            crate::usecase::agent_session::AgentSessionLaunchUsecaseError::Store(
-                (crate::domain::workflow::WorkflowError::UnauthorizedApprovalTarget(
-                    "denied".into(),
-                ))
-                .into(),
+            (
+                crate::usecase::agent_session::AgentSessionLaunchUsecaseError::Store(
+                    (crate::domain::local_event::CommitBatchError::QueueBusy).into(),
+                ),
+                F::Unavailable,
             ),
-            F::PermissionDenied,
-        ),
-        (
-            crate::usecase::agent_session::AgentSessionLaunchUsecaseError::Store(
-                (crate::domain::local_event::CommitBatchError::CapacityExceeded).into(),
+            (
+                crate::usecase::agent_session::AgentSessionLaunchUsecaseError::Store(
+                    (crate::domain::local_event::CommitBatchError::TreeHeadConflict).into(),
+                ),
+                F::Aborted,
             ),
-            F::ResourceExhausted,
-        ),
-        (
-            crate::usecase::agent_session::AgentSessionLaunchUsecaseError::Store(
-                (crate::domain::failure::TechnicalFailure {
-                    nature: crate::domain::failure::TechnicalFailureNature::Other,
-                    message: "failure".into(),
-                })
-                .into(),
+            (
+                crate::usecase::agent_session::AgentSessionLaunchUsecaseError::Store(
+                    (crate::domain::local_event::CommitBatchError::PayloadConflict).into(),
+                ),
+                F::FailedPrecondition,
             ),
-            F::Internal,
-        ),
-        (
-            crate::usecase::agent_session::AgentSessionLaunchUsecaseError::Store(
-                (crate::domain::local_event::CommitBatchError::Corrupt {
-                    correlation_id: "id".into(),
-                })
-                .into(),
+            (
+                crate::usecase::agent_session::AgentSessionLaunchUsecaseError::Store(
+                    (crate::domain::local_event::LocalEventQueryError::InvalidRequest).into(),
+                ),
+                F::InvalidArgument,
             ),
-            F::DataLoss,
-        ),
-        (
-            crate::usecase::agent_session::AgentSessionLaunchUsecaseError::Store(
-                (crate::domain::failure::TechnicalFailure {
-                    nature: crate::domain::failure::TechnicalFailureNature::Cancelled,
-                    message: "failure".into(),
-                })
-                .into(),
+            (
+                crate::usecase::agent_session::AgentSessionLaunchUsecaseError::Store(
+                    (crate::domain::failure::TechnicalFailure {
+                        nature: crate::domain::failure::TechnicalFailureNature::TimedOut,
+                        message: "failure".into(),
+                    })
+                    .into(),
+                ),
+                F::DeadlineExceeded,
             ),
-            F::Canceled,
-        ),
-    ];
+            (
+                crate::usecase::agent_session::AgentSessionLaunchUsecaseError::Store(
+                    (crate::domain::workflow::WorkflowError::NotFound("missing".into())).into(),
+                ),
+                F::NotFound,
+            ),
+            (
+                crate::usecase::agent_session::AgentSessionLaunchUsecaseError::Store(
+                    (crate::domain::workflow::WorkflowError::UnauthorizedApprovalTarget(
+                        "denied".into(),
+                    ))
+                    .into(),
+                ),
+                F::PermissionDenied,
+            ),
+            (
+                crate::usecase::agent_session::AgentSessionLaunchUsecaseError::Store(
+                    (crate::domain::local_event::CommitBatchError::CapacityExceeded).into(),
+                ),
+                F::ResourceExhausted,
+            ),
+            (
+                crate::usecase::agent_session::AgentSessionLaunchUsecaseError::Store(
+                    (crate::domain::failure::TechnicalFailure {
+                        nature: crate::domain::failure::TechnicalFailureNature::Other,
+                        message: "failure".into(),
+                    })
+                    .into(),
+                ),
+                F::Internal,
+            ),
+            (
+                crate::usecase::agent_session::AgentSessionLaunchUsecaseError::Store(
+                    (crate::domain::local_event::CommitBatchError::Corrupt {
+                        correlation_id: "id".into(),
+                    })
+                    .into(),
+                ),
+                F::DataLoss,
+            ),
+            (
+                crate::usecase::agent_session::AgentSessionLaunchUsecaseError::Store(
+                    (crate::domain::failure::TechnicalFailure {
+                        nature: crate::domain::failure::TechnicalFailureNature::Cancelled,
+                        message: "failure".into(),
+                    })
+                    .into(),
+                ),
+                F::Canceled,
+            ),
+        ];
         for (error, expected) in cases {
             // When / Then
             assert_eq!(error.connect_code(), expected, "{error:?}");
@@ -1511,7 +1542,12 @@ mod usecase_agent_session_agent_session_history_test {
                 F::InvalidArgument,
             ),
             (
-                crate::usecase::agent_session::AgentSessionHistoryQueryError::Unavailable,
+                crate::usecase::agent_session::AgentSessionHistoryQueryError::Technical(
+                    crate::domain::failure::TechnicalFailure {
+                        nature: crate::domain::failure::TechnicalFailureNature::Transient,
+                        message: "unavailable".into(),
+                    },
+                ),
                 F::Unavailable,
             ),
             (
@@ -1618,7 +1654,12 @@ mod usecase_terminal_surface_error_test {
         // Given
         let cases = [
             (
-                crate::usecase::terminal_surface::error::UsecaseError::Gateway("io".into()),
+                crate::usecase::terminal_surface::error::UsecaseError::Technical(
+                    crate::domain::failure::TechnicalFailure {
+                        nature: crate::domain::failure::TechnicalFailureNature::Other,
+                        message: "io".into(),
+                    },
+                ),
                 F::Internal,
             ),
             (
@@ -1626,15 +1667,21 @@ mod usecase_terminal_surface_error_test {
                 F::FailedPrecondition,
             ),
             (
-                crate::usecase::terminal_surface::error::UsecaseError::PtySpawn {
-                    error: "pty".into(),
-                },
+                crate::usecase::terminal_surface::error::UsecaseError::Technical(
+                    crate::domain::failure::TechnicalFailure {
+                        nature: crate::domain::failure::TechnicalFailureNature::Other,
+                        message: "pty".into(),
+                    },
+                ),
                 F::Internal,
             ),
             (
-                crate::usecase::terminal_surface::error::UsecaseError::OtherSpawnFailure {
-                    error: "spawn".into(),
-                },
+                crate::usecase::terminal_surface::error::UsecaseError::Technical(
+                    crate::domain::failure::TechnicalFailure {
+                        nature: crate::domain::failure::TechnicalFailureNature::Other,
+                        message: "spawn".into(),
+                    },
+                ),
                 F::Internal,
             ),
         ];
@@ -2367,7 +2414,12 @@ mod domain_agent_session_provider_history_gateway_test {
                 F::InvalidArgument,
             ),
             (
-                crate::domain::agent_session::AgentSessionHistoryGatewayError::Unavailable,
+                crate::domain::agent_session::AgentSessionHistoryGatewayError::Technical(
+                    crate::domain::failure::TechnicalFailure {
+                        nature: crate::domain::failure::TechnicalFailureNature::Transient,
+                        message: "unavailable".into(),
+                    },
+                ),
                 F::Unavailable,
             ),
             (
@@ -2507,4 +2559,90 @@ mod terminal_input_tests {
         // Then
         assert_eq!(code, connectrpc::ErrorCode::FailedPrecondition);
     }
+}
+
+#[test]
+fn test_技術的失敗_依存先の全ての性質でステータスを決める() {
+    use crate::adaptor::presenter::connect::ConnectFailure;
+    use crate::domain::agent_session::{
+        ProviderAgentLaunchGatewayError, ProviderAgentTerminalGatewayError,
+    };
+    use crate::domain::failure::{TechnicalFailure, TechnicalFailureNature};
+    use crate::usecase::agent_session::{
+        AgentSessionLaunchUsecaseError, AgentSessionLifecycleUsecaseError,
+    };
+    for (nature, code) in [
+        (
+            TechnicalFailureNature::Transient,
+            connectrpc::ErrorCode::Unavailable,
+        ),
+        (
+            TechnicalFailureNature::TimedOut,
+            connectrpc::ErrorCode::DeadlineExceeded,
+        ),
+        (
+            TechnicalFailureNature::Cancelled,
+            connectrpc::ErrorCode::Canceled,
+        ),
+        (
+            TechnicalFailureNature::Other,
+            connectrpc::ErrorCode::Internal,
+        ),
+    ] {
+        // Given
+        let failure = TechnicalFailure {
+            nature,
+            message: "original failure".into(),
+        };
+        // When / Then
+        assert_eq!(
+            AgentSessionLaunchUsecaseError::Launch(ProviderAgentLaunchGatewayError::Technical(
+                failure.clone()
+            ))
+            .connect_code(),
+            code
+        );
+        assert_eq!(
+            AgentSessionLifecycleUsecaseError::Launch(ProviderAgentLaunchGatewayError::Technical(
+                failure.clone()
+            ))
+            .connect_code(),
+            code
+        );
+        assert_eq!(
+            AgentSessionLaunchUsecaseError::Terminal(ProviderAgentTerminalGatewayError::Technical(
+                failure.clone()
+            ))
+            .connect_code(),
+            code
+        );
+        assert_eq!(
+            AgentSessionLifecycleUsecaseError::Terminal(
+                ProviderAgentTerminalGatewayError::Technical(failure.clone())
+            )
+            .connect_code(),
+            code
+        );
+        assert_eq!(
+            AgentSessionLaunchUsecaseError::Terminal(ProviderAgentTerminalGatewayError::Technical(
+                failure.clone()
+            ))
+            .connect_code(),
+            code
+        );
+        assert_eq!(
+            crate::usecase::terminal_surface::error::UsecaseError::Technical(failure)
+                .connect_code(),
+            code
+        );
+    }
+    assert_eq!(
+        ProviderAgentLaunchGatewayError::InvalidInput.connect_code(),
+        connectrpc::ErrorCode::InvalidArgument
+    );
+    assert_eq!(
+        crate::usecase::terminal_surface::error::UsecaseError::NotFound("missing".into())
+            .connect_code(),
+        connectrpc::ErrorCode::NotFound
+    );
 }

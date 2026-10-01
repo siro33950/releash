@@ -20,9 +20,8 @@ use crate::domain::agent_session::repository::{
 use crate::domain::agent_session::{
     AgentSessionHistoryGateway, AgentSessionHistoryGatewayError, AgentSessionHistoryMetadata,
     PreparedProviderLaunch, ProviderAgentLaunchGateway, ProviderAgentLaunchGatewayError,
-    ProviderAgentTerminalGateway, ProviderAgentTerminalGatewayError,
-    ProviderAgentTerminalSpawnError, ProviderAvailabilityReader, ProviderSessionLaunch,
-    ProviderSessionTitleEntry,
+    ProviderAgentTerminalGateway, ProviderAgentTerminalGatewayError, ProviderAvailabilityReader,
+    ProviderSessionLaunch, ProviderSessionTitleEntry,
 };
 use crate::domain::provider_lifecycle::{
     ArmedProviderLifecycle, ProviderHookHealth, ProviderHookHealthRepository,
@@ -159,20 +158,26 @@ fn captured_terminal_spawn_failure(agent_session_id: &str) -> Option<String> {
 fn test_agent_session_terminal_spawn_error_記録用kindとpayloadを表示する() {
     let cases = [
         (
-            ProviderAgentTerminalSpawnError::OwnerConflict,
+            ProviderAgentTerminalGatewayError::OwnerConflict,
             "kind=owner_conflict",
         ),
         (
-            ProviderAgentTerminalSpawnError::PtySpawn {
-                error: "openpty failed".to_string(),
-            },
-            "kind=pty_spawn error=openpty failed",
+            ProviderAgentTerminalGatewayError::Technical(
+                crate::domain::failure::TechnicalFailure {
+                    nature: crate::domain::failure::TechnicalFailureNature::Other,
+                    message: "openpty failed".to_string(),
+                },
+            ),
+            "openpty failed",
         ),
         (
-            ProviderAgentTerminalSpawnError::OtherSpawnFailure {
-                error: "checkpoint failed".to_string(),
-            },
-            "kind=other_spawn_failure error=checkpoint failed",
+            ProviderAgentTerminalGatewayError::Technical(
+                crate::domain::failure::TechnicalFailure {
+                    nature: crate::domain::failure::TechnicalFailureNature::Other,
+                    message: "checkpoint failed".to_string(),
+                },
+            ),
+            "checkpoint failed",
         ),
     ];
 
@@ -436,7 +441,12 @@ impl ProviderAgentLaunchGateway for RecordingLaunchGateway {
         _worktree_path: &str,
     ) -> Result<PreparedProviderLaunch, ProviderAgentLaunchGatewayError> {
         if *self.fail_prepare.lock().unwrap() {
-            return Err(ProviderAgentLaunchGatewayError::Unavailable);
+            return Err(ProviderAgentLaunchGatewayError::Technical(
+                crate::domain::failure::TechnicalFailure {
+                    nature: crate::domain::failure::TechnicalFailureNature::Transient,
+                    message: "unavailable".into(),
+                },
+            ));
         }
         self.launches.lock().unwrap().push(launch);
         self.executables.lock().unwrap().push(executable);
@@ -543,7 +553,7 @@ struct RecordedTerminalSpawn {
 #[derive(Default)]
 struct RecordingTerminal {
     spawns: Mutex<Vec<RecordedTerminalSpawn>>,
-    spawn_error: Mutex<Option<ProviderAgentTerminalSpawnError>>,
+    spawn_error: Mutex<Option<ProviderAgentTerminalGatewayError>>,
     fail_delete: Mutex<bool>,
     deletes: Mutex<usize>,
 }
@@ -564,7 +574,7 @@ impl ProviderAgentTerminalGateway for BlockingLaunchTerminal {
         _process: TerminalProcessLaunch,
         _rows: u16,
         _cols: u16,
-    ) -> Result<(), ProviderAgentTerminalSpawnError> {
+    ) -> Result<(), ProviderAgentTerminalGatewayError> {
         self.spawns.fetch_add(1, Ordering::SeqCst);
         let entered = self.spawn_entered.lock().unwrap().take();
         if let Some(entered) = entered {
@@ -622,7 +632,7 @@ impl ProviderAgentTerminalGateway for RecordingTerminal {
         process: TerminalProcessLaunch,
         rows: u16,
         cols: u16,
-    ) -> Result<(), ProviderAgentTerminalSpawnError> {
+    ) -> Result<(), ProviderAgentTerminalGatewayError> {
         if let Some(error) = self.spawn_error.lock().unwrap().clone() {
             return Err(error);
         }
@@ -656,7 +666,12 @@ impl ProviderAgentTerminalGateway for RecordingTerminal {
     ) -> Result<(), ProviderAgentTerminalGatewayError> {
         *self.deletes.lock().unwrap() += 1;
         if *self.fail_delete.lock().unwrap() {
-            return Err(ProviderAgentTerminalGatewayError::Unavailable);
+            return Err(ProviderAgentTerminalGatewayError::Technical(
+                crate::domain::failure::TechnicalFailure {
+                    nature: crate::domain::failure::TechnicalFailureNature::Transient,
+                    message: "unavailable".into(),
+                },
+            ));
         }
         Ok(())
     }
@@ -1634,10 +1649,12 @@ async fn test_agent_session_history_resumeは新しいsessionを作り失敗時�
     });
     let launch_gateway = Arc::new(RecordingLaunchGateway::default());
     let terminal = Arc::new(RecordingTerminal::default());
-    *terminal.spawn_error.lock().unwrap() =
-        Some(ProviderAgentTerminalSpawnError::OtherSpawnFailure {
-            error: "checkpoint restore failed".to_string(),
-        });
+    *terminal.spawn_error.lock().unwrap() = Some(ProviderAgentTerminalGatewayError::Technical(
+        crate::domain::failure::TechnicalFailure {
+            nature: crate::domain::failure::TechnicalFailureNature::Other,
+            message: "checkpoint restore failed".to_string(),
+        },
+    ));
     let hook_health = hook_health_usecase();
     let execution_trees = started_execution_trees();
     let usecase = AgentSessionLaunchUsecase::new(
@@ -1693,8 +1710,7 @@ async fn test_agent_session_history_resumeは新しいsessionを作り失敗時�
         std::slice::from_ref(&expected_id)
     );
     let record = captured_terminal_spawn_failure(&expected_id).unwrap();
-    assert!(record.contains("kind=other_spawn_failure"));
-    assert!(record.contains("error=checkpoint restore failed"));
+    assert!(record.ends_with("checkpoint restore failed"));
 }
 
 #[tokio::test]
@@ -2208,9 +2224,12 @@ async fn test_agent_session_launch_spawn失敗時はsessionとlaunch資源をrol
     )));
     let launch_gateway = Arc::new(RecordingLaunchGateway::default());
     let terminal = Arc::new(RecordingTerminal::default());
-    *terminal.spawn_error.lock().unwrap() = Some(ProviderAgentTerminalSpawnError::PtySpawn {
-        error: "openpty failed".to_string(),
-    });
+    *terminal.spawn_error.lock().unwrap() = Some(ProviderAgentTerminalGatewayError::Technical(
+        crate::domain::failure::TechnicalFailure {
+            nature: crate::domain::failure::TechnicalFailureNature::Other,
+            message: "openpty failed".to_string(),
+        },
+    ));
     let hook_health = hook_health_usecase();
     let execution_trees = started_execution_trees();
     let usecase = AgentSessionLaunchUsecase::new(std::sync::Arc::new(crate::adaptor::gateway::telemetry::TelemetryGateway),
@@ -2247,9 +2266,12 @@ async fn test_agent_session_launch_spawn失敗時はsessionとlaunch資源をrol
 
     assert_eq!(
         result.unwrap_err(),
-        AgentSessionLaunchUsecaseError::TerminalSpawn(ProviderAgentTerminalSpawnError::PtySpawn {
-            error: "openpty failed".to_string()
-        })
+        AgentSessionLaunchUsecaseError::Terminal(ProviderAgentTerminalGatewayError::Technical(
+            crate::domain::failure::TechnicalFailure {
+                nature: crate::domain::failure::TechnicalFailureNature::Other,
+                message: "openpty failed".to_string()
+            }
+        ))
     );
     let expected_id = launch_gateway.cleanups.lock().unwrap()[0].clone();
     assert!(sessions.find(&expected_id).await.unwrap().is_none());
@@ -2262,8 +2284,7 @@ async fn test_agent_session_launch_spawn失敗時はsessionとlaunch資源をrol
         std::slice::from_ref(&expected_id)
     );
     let record = captured_terminal_spawn_failure(&expected_id).unwrap();
-    assert!(record.contains("kind=pty_spawn"));
-    assert!(record.contains("error=openpty failed"));
+    assert!(record.ends_with("openpty failed"));
 }
 
 #[tokio::test]
@@ -2322,7 +2343,14 @@ async fn test_agent_session_launch_prepare失敗時のrollbackのterminal削除�
 
     assert_eq!(
         result.unwrap_err(),
-        AgentSessionLaunchUsecaseError::LaunchUnavailable
+        AgentSessionLaunchUsecaseError::Launch(
+            crate::domain::agent_session::ProviderAgentLaunchGatewayError::Technical(
+                crate::domain::failure::TechnicalFailure {
+                    nature: crate::domain::failure::TechnicalFailureNature::Transient,
+                    message: "unavailable".into()
+                }
+            )
+        )
     );
     assert_eq!(*terminal.deletes.lock().unwrap(), 1);
     let expected_id = launch_gateway.cleanups.lock().unwrap()[0].clone();
@@ -2352,9 +2380,12 @@ async fn test_agent_session_launch_spawn失敗時のrollbackのterminal削除失
     )));
     let launch_gateway = Arc::new(RecordingLaunchGateway::default());
     let terminal = Arc::new(RecordingTerminal::default());
-    *terminal.spawn_error.lock().unwrap() = Some(ProviderAgentTerminalSpawnError::PtySpawn {
-        error: "openpty failed".to_string(),
-    });
+    *terminal.spawn_error.lock().unwrap() = Some(ProviderAgentTerminalGatewayError::Technical(
+        crate::domain::failure::TechnicalFailure {
+            nature: crate::domain::failure::TechnicalFailureNature::Other,
+            message: "openpty failed".to_string(),
+        },
+    ));
     *terminal.fail_delete.lock().unwrap() = true;
     let execution_trees = started_execution_trees();
     *execution_trees.release_failure.lock().unwrap() =
@@ -2395,9 +2426,12 @@ async fn test_agent_session_launch_spawn失敗時のrollbackのterminal削除失
 
     assert_eq!(
         result.unwrap_err(),
-        AgentSessionLaunchUsecaseError::TerminalSpawn(ProviderAgentTerminalSpawnError::PtySpawn {
-            error: "openpty failed".to_string()
-        })
+        AgentSessionLaunchUsecaseError::Terminal(ProviderAgentTerminalGatewayError::Technical(
+            crate::domain::failure::TechnicalFailure {
+                nature: crate::domain::failure::TechnicalFailureNature::Other,
+                message: "openpty failed".to_string()
+            }
+        ))
     );
     assert_eq!(*terminal.deletes.lock().unwrap(), 1);
     let expected_id = launch_gateway.cleanups.lock().unwrap()[0].clone();
@@ -2452,7 +2486,17 @@ async fn test_agent_session_launch_prepare失敗時のrollbackでgc失敗なら�
         .await
         .unwrap_err();
 
-    assert_eq!(error, AgentSessionLaunchUsecaseError::LaunchUnavailable);
+    assert_eq!(
+        error,
+        AgentSessionLaunchUsecaseError::Launch(
+            crate::domain::agent_session::ProviderAgentLaunchGatewayError::Technical(
+                crate::domain::failure::TechnicalFailure {
+                    nature: crate::domain::failure::TechnicalFailureNature::Transient,
+                    message: "unavailable".into()
+                }
+            )
+        )
+    );
     assert!(repository.stored.lock().unwrap().is_some());
     assert!(execution_trees.releases.lock().unwrap().is_empty());
 }

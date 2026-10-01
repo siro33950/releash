@@ -180,7 +180,7 @@ pub(crate) fn payload(value: &StateValue) -> Result<wire::StatePayload, connectr
                         value.warnings.iter().cloned().map(crate::adaptor::presenter::agent_session::ProviderHookHealthWarningResponse::from).collect::<Vec<_>>()
                     ).map_err(crate::adaptor::presenter::connect::command_error)?),
                     read_errors: value.failures.iter().map(|failure| match failure {
-                        crate::usecase::provider_lifecycle::ProviderHookHealthFailureQueryError::Unavailable => "Provider Hook health record or session could not be read".into(),
+                        crate::usecase::provider_lifecycle::ProviderHookHealthFailureQueryError::Technical(failure) => failure.message.clone(),
                         crate::usecase::provider_lifecycle::ProviderHookHealthFailureQueryError::Corrupt => "Provider Hook health record is corrupt".into(),
                     }).collect(),
                 })

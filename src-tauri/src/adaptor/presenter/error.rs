@@ -13,6 +13,7 @@ pub enum AppError {
     #[error("{error}")]
     Presented {
         kind: connectrpc::ErrorCode,
+        cause: Option<String>,
         error: Box<AppError>,
     },
     #[error("{0}")]
@@ -55,7 +56,26 @@ impl AppError {
     pub fn with_status(self, kind: connectrpc::ErrorCode) -> Self {
         Self::Presented {
             kind,
+            cause: None,
             error: Box::new(self),
+        }
+    }
+
+    pub(crate) fn with_cause(self, cause: Option<String>) -> Self {
+        match self {
+            Self::Presented { kind, error, .. } => Self::Presented { kind, cause, error },
+            error @ (Self::Internal(_) | Self::Coded { .. }) => Self::Presented {
+                kind: error.connect_code(),
+                cause,
+                error: Box::new(error),
+            },
+        }
+    }
+
+    pub(crate) fn cause(&self) -> Option<&str> {
+        match self {
+            Self::Presented { cause, error, .. } => cause.as_deref().or_else(|| error.cause()),
+            _ => None,
         }
     }
 
@@ -235,3 +255,7 @@ pub(crate) fn workflow_storage_message(failure: &crate::domain::failure::Storage
     };
     format!("Store failure: {label}")
 }
+
+#[cfg(test)]
+#[path = "error_test.rs"]
+mod error_tests;

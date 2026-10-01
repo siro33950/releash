@@ -101,7 +101,7 @@ impl From<TerminalSurface> for TerminalSurfaceSnapshotDto {
 
 impl TerminalSurfaceApplication {
     fn mutation_rejected(_: TerminalSurfaceMutationRejected) -> UsecaseError {
-        UsecaseError::Gateway("Terminal Surface runtime is shutting down".to_string())
+        UsecaseError::InvalidOperation("Terminal Surface runtime is shutting down".to_string())
     }
 
     pub(crate) fn new(
@@ -162,7 +162,7 @@ impl TerminalSurfaceApplication {
         {
             Ok(())
         } else {
-            Err(UsecaseError::Gateway(
+            Err(UsecaseError::NotFound(
                 "Terminal snapshot unavailable".into(),
             ))
         }
@@ -243,7 +243,7 @@ impl TerminalSurfaceApplication {
         match self.find_owned_summary(owner) {
             OwnedTerminalSummaryLookup::Found(summary) => Ok(summary),
             OwnedTerminalSummaryLookup::Absent | OwnedTerminalSummaryLookup::OwnerMismatch => {
-                Err(UsecaseError::Gateway(format!(
+                Err(UsecaseError::NotFound(format!(
                     "Terminal Surface not found for owner {}",
                     owner.stable_key()
                 )))
@@ -267,7 +267,7 @@ impl TerminalSurfaceApplication {
         self.gateway
             .snapshot(registered_surface.runtime_generation.value())
             .ok_or_else(|| {
-                UsecaseError::Gateway(format!(
+                UsecaseError::NotFound(format!(
                     "Terminal Surface not found for owner {session_key}"
                 ))
             })
@@ -438,7 +438,7 @@ impl TerminalSurfaceApplication {
                     log::error!(
                         "application shutdown: terminal {runtime_generation} stop failed: {error}"
                     );
-                    first_error.get_or_insert_with(|| error.to_string());
+                    first_error.get_or_insert(error);
                 }
             }
         }
@@ -447,15 +447,15 @@ impl TerminalSurfaceApplication {
                 log::error!(
                     "application shutdown: terminal {runtime_generation} drain failed: {error}"
                 );
-                first_error.get_or_insert_with(|| error.to_string());
+                first_error.get_or_insert(error);
             }
         }
         if let Err(error) = self.gateway.flush_checkpoints() {
             log::error!("application shutdown: terminal checkpoint flush failed: {error}");
-            first_error.get_or_insert_with(|| error.to_string());
+            first_error.get_or_insert(error);
         }
         match first_error {
-            Some(error) => Err(UsecaseError::Gateway(error)),
+            Some(error) => Err(error.into()),
             None => Ok(()),
         }
     }
@@ -471,9 +471,7 @@ impl TerminalSurfaceApplication {
     }
 
     pub(crate) fn flush_checkpoints(&self) -> Result<(), UsecaseError> {
-        self.gateway
-            .flush_checkpoints()
-            .map_err(|error| UsecaseError::Gateway(error.to_string()))
+        self.gateway.flush_checkpoints().map_err(UsecaseError::from)
     }
 
     pub(crate) fn kill_by_worktree(&self, worktree_path: &str) -> Vec<u64> {

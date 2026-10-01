@@ -129,14 +129,36 @@ impl ProviderExecutableProbeGateway for LocalProviderExecutableProbeGateway {
         let refreshed = self
             .search_path_source
             .load()
-            .map_err(|_| ProviderExecutableProbeGatewayError::RefreshFailed)?;
+            .map_err(|error| {
+                ProviderExecutableProbeGatewayError::Technical(
+                    crate::domain::failure::TechnicalFailure {
+                        nature: match error {
+                            crate::infrastructure::process::search_path::LoginShellPathError::Timeout => {
+                                crate::domain::failure::TechnicalFailureNature::TimedOut
+                            }
+                            _ => crate::domain::failure::TechnicalFailureNature::Other,
+                        },
+                        message: format!("{error:?}"),
+                    },
+                )
+            })?;
         #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-        let refreshed =
-            std::env::var_os("PATH").ok_or(ProviderExecutableProbeGatewayError::RefreshFailed)?;
-        let mut search_path = self
-            .search_path
-            .write()
-            .map_err(|_| ProviderExecutableProbeGatewayError::RefreshFailed)?;
+        let refreshed = std::env::var_os("PATH").ok_or_else(|| {
+            ProviderExecutableProbeGatewayError::Technical(
+                crate::domain::failure::TechnicalFailure {
+                    nature: crate::domain::failure::TechnicalFailureNature::Other,
+                    message: "PATH is not set".into(),
+                },
+            )
+        })?;
+        let mut search_path = self.search_path.write().map_err(|error| {
+            ProviderExecutableProbeGatewayError::Technical(
+                crate::domain::failure::TechnicalFailure {
+                    nature: crate::domain::failure::TechnicalFailureNature::Other,
+                    message: error.to_string(),
+                },
+            )
+        })?;
         *search_path = SearchPathState {
             value: Some(refreshed),
             complete: true,

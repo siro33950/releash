@@ -387,10 +387,11 @@ async fn test_workflow_terminal_spawn失敗を実行収束経路からruntime_fa
     // Then
     assert_eq!(runtime_failure["kind"], "session");
     let failure_reason = runtime_failure["reason"].as_str().unwrap();
-    assert!(failure_reason.contains("workflow runtime activation failed"));
-    assert!(failure_reason.contains("activate Workflow AgentSession 'agent-session-"));
-    assert!(failure_reason.contains("kind=pty_spawn"));
-    assert!(failure_reason.contains("Failed to spawn shell:"));
+    let execution = host.execution(&execution_id).await.unwrap().unwrap();
+    let agent_session_id = leaf_nodes(&execution)[0].agent_session_id.clone().unwrap();
+    assert!(failure_reason.starts_with(&format!(
+        "workflow runtime activation failed: activate Workflow AgentSession '{agent_session_id}': Failed to spawn shell:"
+    )));
     assert!(failure_reason.contains("Permission denied"));
 
     host.shutdown().await.unwrap();

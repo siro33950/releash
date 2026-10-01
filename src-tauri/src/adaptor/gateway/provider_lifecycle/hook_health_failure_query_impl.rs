@@ -40,7 +40,7 @@ impl ProviderHookHealthFailureQuery for LocalProviderHookHealthFailureQuery {
             read_provider_hook_local_api_failures(&data_dir, MAX_SCANNED_MARKERS)
         })
         .await
-        .map_err(|_| ProviderHookHealthFailureQueryError::Unavailable)?
+        .map_err(|error| ProviderHookHealthFailureQueryError::Technical(error.into()))?
         .map_err(map_marker_error)?;
         Ok(failures
             .into_iter()
@@ -82,9 +82,17 @@ fn parse_observation(contents: &[u8]) -> Option<ProviderHookHealthFailureObserva
 
 fn map_marker_error(error: ProviderHookHealthMarkerError) -> ProviderHookHealthFailureQueryError {
     match error {
+        ProviderHookHealthMarkerError::Encode(error) => {
+            ProviderHookHealthFailureQueryError::Technical(
+                crate::domain::failure::TechnicalFailure {
+                    nature: crate::domain::failure::TechnicalFailureNature::Other,
+                    message: error.to_string(),
+                },
+            )
+        }
         ProviderHookHealthMarkerError::InvalidPath => ProviderHookHealthFailureQueryError::Corrupt,
-        ProviderHookHealthMarkerError::Unavailable => {
-            ProviderHookHealthFailureQueryError::Unavailable
+        ProviderHookHealthMarkerError::Io(error) => {
+            ProviderHookHealthFailureQueryError::Technical(error.into())
         }
     }
 }

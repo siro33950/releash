@@ -60,10 +60,13 @@ fn test_agent_session_controller_terminal_spawn詳細を既存の利用者向け
 
     // When
     let error = launch_error(
-        AgentSessionLaunchUsecaseError::TerminalSpawn(
-            crate::domain::agent_session::ProviderAgentTerminalSpawnError::PtySpawn {
-                error: internal_error.to_string(),
-            },
+        AgentSessionLaunchUsecaseError::Terminal(
+            crate::domain::agent_session::ProviderAgentTerminalGatewayError::Technical(
+                crate::domain::failure::TechnicalFailure {
+                    nature: crate::domain::failure::TechnicalFailureNature::Other,
+                    message: internal_error.to_string(),
+                },
+            ),
         ),
         AgentSessionLaunchOperation::Start,
     );
@@ -88,12 +91,12 @@ fn test_agent_session_controller_対象21codeを利用者向け英語文言へ�
             "Enter a Provider executable command name or path.",
         ),
         (
-            provider_availability_error(ProviderAvailabilityUsecaseError::ConfigUnavailable),
+            provider_availability_error(ProviderAvailabilityUsecaseError::Config(crate::domain::agent_session::ProviderExecutableConfigRepositoryError::Technical(crate::domain::failure::TechnicalFailure { nature: crate::domain::failure::TechnicalFailureNature::Transient, message: "unavailable".into() }))),
             "PROVIDER_AVAILABILITY_CONFIG_UNAVAILABLE",
             "Releash could not access the Provider executable setting. Try again.",
         ),
         (
-            provider_availability_error(ProviderAvailabilityUsecaseError::RefreshUnavailable),
+            provider_availability_error(ProviderAvailabilityUsecaseError::Refresh(crate::domain::agent_session::ProviderExecutableProbeGatewayError::Technical(crate::domain::failure::TechnicalFailure { nature: crate::domain::failure::TechnicalFailureNature::Transient, message: "unavailable".into() }))),
             "PROVIDER_AVAILABILITY_REFRESH_UNAVAILABLE",
             "Releash could not refresh Provider CLI availability. Try again.",
         ),
@@ -141,7 +144,7 @@ fn test_agent_session_controller_対象21codeを利用者向け英語文言へ�
         ),
         (
             launch_error(
-                AgentSessionLaunchUsecaseError::LaunchUnavailable,
+                AgentSessionLaunchUsecaseError::Launch(crate::domain::agent_session::ProviderAgentLaunchGatewayError::Technical(crate::domain::failure::TechnicalFailure { nature: crate::domain::failure::TechnicalFailureNature::Transient, message: "unavailable".into() })),
                 AgentSessionLaunchOperation::Start,
             ),
             "AGENT_SESSION_LAUNCH_UNAVAILABLE",
@@ -149,7 +152,7 @@ fn test_agent_session_controller_対象21codeを利用者向け英語文言へ�
         ),
         (
             launch_error(
-                AgentSessionLaunchUsecaseError::TerminalUnavailable,
+                AgentSessionLaunchUsecaseError::Terminal(crate::domain::agent_session::ProviderAgentTerminalGatewayError::Technical(crate::domain::failure::TechnicalFailure { nature: crate::domain::failure::TechnicalFailureNature::Transient, message: "unavailable".into() })),
                 AgentSessionLaunchOperation::Start,
             ),
             "AGENT_SESSION_TERMINAL_UNAVAILABLE",
@@ -263,10 +266,24 @@ fn test_agent_session_controller_共有codeは全usecase_error経路で同じ文
     assert_coded_errors(
         [
             launch_error(
-                AgentSessionLaunchUsecaseError::LaunchUnavailable,
+                AgentSessionLaunchUsecaseError::Launch(
+                    crate::domain::agent_session::ProviderAgentLaunchGatewayError::Technical(
+                        crate::domain::failure::TechnicalFailure {
+                            nature: crate::domain::failure::TechnicalFailureNature::Transient,
+                            message: "unavailable".into(),
+                        },
+                    ),
+                ),
                 AgentSessionLaunchOperation::Start,
             ),
-            lifecycle_error(AgentSessionLifecycleUsecaseError::LaunchUnavailable),
+            lifecycle_error(AgentSessionLifecycleUsecaseError::Launch(
+                crate::domain::agent_session::ProviderAgentLaunchGatewayError::Technical(
+                    crate::domain::failure::TechnicalFailure {
+                        nature: crate::domain::failure::TechnicalFailureNature::Transient,
+                        message: "unavailable".into(),
+                    },
+                ),
+            )),
         ],
         "AGENT_SESSION_LAUNCH_UNAVAILABLE",
         "Releash could not complete the Provider operation for this AgentSession. Try again.",
@@ -274,10 +291,24 @@ fn test_agent_session_controller_共有codeは全usecase_error経路で同じ文
     assert_coded_errors(
         [
             launch_error(
-                AgentSessionLaunchUsecaseError::TerminalUnavailable,
+                AgentSessionLaunchUsecaseError::Terminal(
+                    crate::domain::agent_session::ProviderAgentTerminalGatewayError::Technical(
+                        crate::domain::failure::TechnicalFailure {
+                            nature: crate::domain::failure::TechnicalFailureNature::Transient,
+                            message: "unavailable".into(),
+                        },
+                    ),
+                ),
                 AgentSessionLaunchOperation::Start,
             ),
-            lifecycle_error(AgentSessionLifecycleUsecaseError::TerminalUnavailable),
+            lifecycle_error(AgentSessionLifecycleUsecaseError::Terminal(
+                crate::domain::agent_session::ProviderAgentTerminalGatewayError::Technical(
+                    crate::domain::failure::TechnicalFailure {
+                        nature: crate::domain::failure::TechnicalFailureNature::Transient,
+                        message: "unavailable".into(),
+                    },
+                ),
+            )),
         ],
         "AGENT_SESSION_TERMINAL_UNAVAILABLE",
         "Releash could not complete the Terminal operation for this AgentSession. Try again.",
@@ -511,17 +542,45 @@ fn test_provider操作失敗_各経路の分類がconnectまで一致する() {
     use crate::adaptor::presenter::connect::ConnectFailure;
     use connectrpc::ErrorCode;
     // Given
-    for error in [
+    for (error, code) in [
         launch_error(
-            AgentSessionLaunchUsecaseError::LaunchUnavailable,
+            AgentSessionLaunchUsecaseError::Launch(
+                crate::domain::agent_session::ProviderAgentLaunchGatewayError::Technical(
+                    crate::domain::failure::TechnicalFailure {
+                        nature: crate::domain::failure::TechnicalFailureNature::Transient,
+                        message: "unavailable".into(),
+                    },
+                ),
+            ),
             AgentSessionLaunchOperation::Start,
         ),
-        lifecycle_error(AgentSessionLifecycleUsecaseError::LaunchUnavailable),
+        lifecycle_error(AgentSessionLifecycleUsecaseError::Launch(
+            crate::domain::agent_session::ProviderAgentLaunchGatewayError::Technical(
+                crate::domain::failure::TechnicalFailure {
+                    nature: crate::domain::failure::TechnicalFailureNature::Transient,
+                    message: "unavailable".into(),
+                },
+            ),
+        )),
         launch_error(
-            AgentSessionLaunchUsecaseError::TerminalUnavailable,
+            AgentSessionLaunchUsecaseError::Terminal(
+                crate::domain::agent_session::ProviderAgentTerminalGatewayError::Technical(
+                    crate::domain::failure::TechnicalFailure {
+                        nature: crate::domain::failure::TechnicalFailureNature::Transient,
+                        message: "unavailable".into(),
+                    },
+                ),
+            ),
             AgentSessionLaunchOperation::Start,
         ),
-        lifecycle_error(AgentSessionLifecycleUsecaseError::TerminalUnavailable),
+        lifecycle_error(AgentSessionLifecycleUsecaseError::Terminal(
+            crate::domain::agent_session::ProviderAgentTerminalGatewayError::Technical(
+                crate::domain::failure::TechnicalFailure {
+                    nature: crate::domain::failure::TechnicalFailureNature::Transient,
+                    message: "unavailable".into(),
+                },
+            ),
+        )),
         launch_error(
             AgentSessionLaunchUsecaseError::Conflict(
                 (crate::domain::local_event::CommitBatchError::PayloadConflict).into(),
@@ -531,13 +590,19 @@ fn test_provider操作失敗_各経路の分類がconnectまで一致する() {
         lifecycle_error(AgentSessionLifecycleUsecaseError::Conflict(
             (crate::domain::local_event::CommitBatchError::PayloadConflict).into(),
         )),
-    ] {
+    ]
+    .into_iter()
+    .zip([
+        ErrorCode::Unavailable,
+        ErrorCode::Unavailable,
+        ErrorCode::Unavailable,
+        ErrorCode::Unavailable,
+        ErrorCode::FailedPrecondition,
+        ErrorCode::FailedPrecondition,
+    ]) {
         // When / Then
-        assert_eq!(error.connect_code(), ErrorCode::FailedPrecondition);
-        assert_eq!(
-            classified_error(error).code,
-            connectrpc::ErrorCode::FailedPrecondition
-        );
+        assert_eq!(error.connect_code(), code);
+        assert_eq!(classified_error(error).code, code);
     }
 }
 

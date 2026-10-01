@@ -60,9 +60,7 @@ fn spawn_reserved<G: TerminalSurfaceGateway + ?Sized>(
         initial_terminal_surface,
     }) {
         manager.rollback_spawn_slot(&reservation);
-        return Err(UsecaseError::PtySpawn {
-            error: error.message().to_string(),
-        });
+        return Err(UsecaseError::from(error));
     }
 
     let registration = TerminalRegistration {
@@ -89,18 +87,14 @@ fn spawn_reserved<G: TerminalSurfaceGateway + ?Sized>(
     if let Err(error) = manager.start_output_reader(runtime_generation) {
         cleanup_failed_spawn(manager, runtime_generation, false);
         manager.rollback_spawn_slot(&reservation);
-        return Err(UsecaseError::OtherSpawnFailure {
-            error: error.message().to_string(),
-        });
+        return Err(UsecaseError::from(error));
     }
     output_reader_ready.finish();
     if let Some(startup_input) = startup_input {
         if let Err(error) = manager.write(&session_key, &startup_input) {
             cleanup_failed_spawn(manager, runtime_generation, true);
             manager.rollback_spawn_slot(&reservation);
-            return Err(UsecaseError::OtherSpawnFailure {
-                error: error.message().to_string(),
-            });
+            return Err(UsecaseError::from(error));
         }
     }
 
@@ -224,9 +218,7 @@ pub fn get_or_spawn_with_startup<G: TerminalSurfaceGateway + ?Sized>(
             Ok(checkpoint) => checkpoint,
             Err(error) => {
                 manager.rollback_spawn_slot(&reservation);
-                return Err(UsecaseError::OtherSpawnFailure {
-                    error: error.message().to_string(),
-                });
+                return Err(UsecaseError::from(error));
             }
         };
         checkpoint_lookup.finish();
@@ -271,9 +263,7 @@ pub fn get_or_spawn_with_process<G: TerminalSurfaceGateway + ?Sized>(
                 let runtime_generation = surface.runtime_generation.value();
                 manager
                     .wait_runtime_output_drain(runtime_generation)
-                    .map_err(|error| UsecaseError::OtherSpawnFailure {
-                        error: error.message().to_string(),
-                    })?;
+                    .map_err(UsecaseError::from)?;
                 manager.remove_surface(runtime_generation);
                 manager.remove_runtime(runtime_generation);
                 continue;
@@ -305,9 +295,7 @@ pub fn get_or_spawn_with_process<G: TerminalSurfaceGateway + ?Sized>(
             Ok(checkpoint) => checkpoint,
             Err(error) => {
                 manager.rollback_spawn_slot(&reservation);
-                return Err(UsecaseError::OtherSpawnFailure {
-                    error: error.message().to_string(),
-                });
+                return Err(UsecaseError::from(error));
             }
         };
         checkpoint_lookup.finish();

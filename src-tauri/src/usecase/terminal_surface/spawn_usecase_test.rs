@@ -47,7 +47,12 @@ impl crate::usecase::terminal_surface::output::TerminalSurfaceOutputControl
     }
     fn initialize(&self, registration: TerminalRegistration) -> Result<(), UsecaseError> {
         if self.fail_initialize {
-            return Err(UsecaseError::Gateway("registration failed".into()));
+            return Err(UsecaseError::Technical(
+                crate::domain::failure::TechnicalFailure {
+                    nature: crate::domain::failure::TechnicalFailureNature::Other,
+                    message: "registration failed".into(),
+                },
+            ));
         }
         if let Some(gateway) = self.gateway {
             self.registered.lock().unwrap().push(
@@ -167,7 +172,12 @@ impl TerminalSurfaceGateway for MockGateway {
         _session_key: &str,
     ) -> Result<Option<TerminalSurfaceCheckpoint>, TerminalSurfaceGatewayError> {
         if self.fail_load_checkpoint.load(Ordering::SeqCst) {
-            return Err(TerminalSurfaceGatewayError::new("checkpoint load failed"));
+            return Err(TerminalSurfaceGatewayError::Technical(
+                crate::domain::failure::TechnicalFailure {
+                    nature: crate::domain::failure::TechnicalFailureNature::Other,
+                    message: "checkpoint load failed".into(),
+                },
+            ));
         }
         Ok(self.checkpoint.lock().unwrap().clone())
     }
@@ -191,7 +201,12 @@ impl TerminalSurfaceGateway for MockGateway {
             .push((request.rows, request.cols));
         self.spawned_processes.lock().unwrap().push(request.process);
         if self.fail_spawn.load(Ordering::SeqCst) {
-            return Err(TerminalSurfaceGatewayError::new("spawn failed"));
+            return Err(TerminalSurfaceGatewayError::Technical(
+                crate::domain::failure::TechnicalFailure {
+                    nature: crate::domain::failure::TechnicalFailureNature::Other,
+                    message: "spawn failed".into(),
+                },
+            ));
         }
         if self.block_spawn.load(Ordering::SeqCst) {
             let (started, changed) = &self.spawn_started;
@@ -214,7 +229,12 @@ impl TerminalSurfaceGateway for MockGateway {
         _runtime_generation: u64,
     ) -> Result<(), TerminalSurfaceGatewayError> {
         if self.fail_start_reader.load(Ordering::SeqCst) {
-            return Err(TerminalSurfaceGatewayError::new("reader failed"));
+            return Err(TerminalSurfaceGatewayError::Technical(
+                crate::domain::failure::TechnicalFailure {
+                    nature: crate::domain::failure::TechnicalFailureNature::Other,
+                    message: "reader failed".into(),
+                },
+            ));
         }
         Ok(())
     }
@@ -314,7 +334,12 @@ impl TerminalSurfaceGateway for MockGateway {
     ) -> Result<(), TerminalSurfaceGatewayError> {
         self.killed.lock().unwrap().push(runtime_generation);
         if self.fail_kill_runtime.load(Ordering::SeqCst) {
-            return Err(TerminalSurfaceGatewayError::new("kill failed"));
+            return Err(TerminalSurfaceGatewayError::Technical(
+                crate::domain::failure::TechnicalFailure {
+                    nature: crate::domain::failure::TechnicalFailureNature::Other,
+                    message: "kill failed".into(),
+                },
+            ));
         }
         Ok(())
     }
@@ -411,7 +436,10 @@ fn test_ターミナル生成通知_登録失敗時に画面と予約を解放�
     // Then
     assert_eq!(
         unwrap_spawn_error(failed),
-        UsecaseError::Gateway("registration failed".into())
+        UsecaseError::Technical(crate::domain::failure::TechnicalFailure {
+            nature: crate::domain::failure::TechnicalFailureNature::Other,
+            message: "registration failed".into()
+        })
     );
     assert_eq!(*gateway.killed.lock().unwrap(), vec![1]);
     assert!(gateway.registry.lock().unwrap().list_summaries().is_empty());
@@ -728,9 +756,10 @@ fn test_ターミナル画面生成_実行環境生成失敗時に予約を解�
 
     assert_eq!(
         unwrap_spawn_error(result),
-        UsecaseError::PtySpawn {
-            error: "spawn failed".to_string()
-        }
+        UsecaseError::Technical(crate::domain::failure::TechnicalFailure {
+            nature: crate::domain::failure::TechnicalFailureNature::Other,
+            message: "spawn failed".to_string()
+        })
     );
     gateway.fail_spawn.store(false, Ordering::SeqCst);
 
@@ -767,7 +796,7 @@ fn test_ターミナル画面生成_復元点読込失敗時に予約を解除�
 
     assert!(matches!(
         result,
-        Err(UsecaseError::OtherSpawnFailure { error }) if error == "checkpoint load failed"
+        Err(UsecaseError::Technical(error)) if error.message == "checkpoint load failed"
     ));
     assert!(!gateway
         .registry
@@ -809,9 +838,10 @@ fn test_ターミナル画面生成_出力読取開始失敗時に新規画面�
 
     assert_eq!(
         unwrap_spawn_error(result),
-        UsecaseError::OtherSpawnFailure {
-            error: "reader failed".to_string()
-        }
+        UsecaseError::Technical(crate::domain::failure::TechnicalFailure {
+            nature: crate::domain::failure::TechnicalFailureNature::Other,
+            message: "reader failed".to_string()
+        })
     );
     assert_eq!(*gateway.spawn_count.lock().unwrap(), 1);
     assert_eq!(*gateway.killed.lock().unwrap(), vec![1]);
@@ -917,7 +947,7 @@ fn test_ターミナル画面生成_後始末終了失敗時は明示再試行�
 
     assert!(matches!(
         result,
-        Err(UsecaseError::OtherSpawnFailure { error }) if error == "reader failed"
+        Err(UsecaseError::Technical(error)) if error.message == "reader failed"
     ));
     assert_eq!(*gateway.spawn_count.lock().unwrap(), 1);
     assert_eq!(*gateway.killed.lock().unwrap(), vec![1]);

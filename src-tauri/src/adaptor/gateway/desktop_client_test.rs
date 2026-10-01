@@ -827,6 +827,7 @@ async fn test_ネイティブ要求_停止とログイン項目の具体的な�
         }
         .clone();
         let (endpoint, server, _) = error_server(command_error(wire::CommandFailure {
+            message: None,
             kind: connectrpc::ErrorCode::Internal,
             detail,
         }))

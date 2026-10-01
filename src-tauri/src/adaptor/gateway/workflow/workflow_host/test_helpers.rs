@@ -215,7 +215,7 @@ impl crate::domain::agent_session::ProviderAgentTerminalGateway for TestSessions
         _process: crate::domain::terminal_surface::TerminalProcessLaunch,
         _rows: u16,
         _cols: u16,
-    ) -> Result<(), crate::domain::agent_session::ProviderAgentTerminalSpawnError> {
+    ) -> Result<(), crate::domain::agent_session::ProviderAgentTerminalGatewayError> {
         panic!("test session launch uses WorkflowAgentSessionPort")
     }
     fn presence(
@@ -233,7 +233,12 @@ impl crate::domain::agent_session::ProviderAgentTerminalGateway for TestSessions
         };
         if self.presence_error_session.lock().unwrap().as_deref() == Some(session_id.as_str()) {
             return Err(
-                crate::domain::agent_session::ProviderAgentTerminalGatewayError::Unavailable,
+                crate::domain::agent_session::ProviderAgentTerminalGatewayError::Technical(
+                    crate::domain::failure::TechnicalFailure {
+                        nature: crate::domain::failure::TechnicalFailureNature::Transient,
+                        message: "unavailable".into(),
+                    },
+                ),
             );
         }
         if self.presence_unknown.load(Ordering::SeqCst) {

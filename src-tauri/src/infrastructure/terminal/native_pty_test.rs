@@ -51,7 +51,11 @@ impl portable_pty::ChildKiller for NoopKiller {
 struct NoopResizer;
 
 impl NativePtyResizer for NoopResizer {
-    fn resize(&mut self, _rows: u16, _cols: u16) -> Result<(), String> {
+    fn resize(
+        &mut self,
+        _rows: u16,
+        _cols: u16,
+    ) -> Result<(), crate::infrastructure::terminal::native_pty::NativePtyError> {
         Ok(())
     }
 }
@@ -138,4 +142,57 @@ fn test_実pty基盤_入力はwriter完了を待たず順序キューへ受け�
 
     assert!(second_completed_while_writer_blocked);
     assert_eq!(captured, b"firstsecond");
+}
+
+#[test]
+fn test_pty失敗_io種類と文脈を保持する() {
+    use std::io::{Error, ErrorKind};
+    for kind in [
+        ErrorKind::Interrupted,
+        ErrorKind::WouldBlock,
+        ErrorKind::ConnectionReset,
+        ErrorKind::TimedOut,
+        ErrorKind::PermissionDenied,
+    ] {
+        // Given
+        let error = Error::new(kind, "source failure");
+        // When
+        let failure = super::NativePtyError::io(error, "PTY operation");
+        // Then
+        assert_eq!(failure.kind, kind);
+        assert_eq!(failure.message, "PTY operation: source failure");
+    }
+}
+
+#[test]
+fn test_pty外部失敗_source内のio種類と元のメッセージを保持する() {
+    #[derive(Debug, thiserror::Error)]
+    #[error("PTY wrapper: {0}")]
+    struct Wrapped(#[source] std::io::Error);
+
+    // Given
+    let error: Box<dyn std::error::Error + Send + Sync> = Box::new(Wrapped(std::io::Error::new(
+        std::io::ErrorKind::TimedOut,
+        "source failure",
+    )));
+    // When
+    let failure = super::NativePtyError::external(error, "PTY operation");
+    // Then
+    assert_eq!(failure.kind, std::io::ErrorKind::TimedOut);
+    assert_eq!(
+        failure.message,
+        "PTY operation: PTY wrapper: source failure"
+    );
+}
+
+#[test]
+fn test_pty外部失敗_io以外はotherと元のメッセージを保持する() {
+    // Given
+    let error: Box<dyn std::error::Error + Send + Sync> = Box::new(std::fmt::Error);
+    let message = error.to_string();
+    // When
+    let failure = super::NativePtyError::external(error, "PTY operation");
+    // Then
+    assert_eq!(failure.kind, std::io::ErrorKind::Other);
+    assert_eq!(failure.message, format!("PTY operation: {message}"));
 }

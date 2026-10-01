@@ -790,9 +790,9 @@ fn test_購読payload_設定とproviderの出力値を維持する() {
                 provider: crate::domain::provider_lifecycle::ProviderKind::Claude,
                 launch_id: "launch".into(),
                 reason: crate::domain::provider_lifecycle::ProviderLifecycleUnavailableReason::LocalApiUnavailable,
-            }], failures: vec![crate::usecase::provider_lifecycle::ProviderHookHealthFailureQueryError::Unavailable, crate::usecase::provider_lifecycle::ProviderHookHealthFailureQueryError::Corrupt] }),
+            }], failures: vec![crate::usecase::provider_lifecycle::ProviderHookHealthFailureQueryError::Technical(crate::domain::failure::TechnicalFailure { nature: crate::domain::failure::TechnicalFailureNature::Transient, message: "unavailable".into() }), crate::usecase::provider_lifecycle::ProviderHookHealthFailureQueryError::Corrupt] }),
             "releash.client.v1.ProviderHookHealthSnapshot",
-            serde_json::json!({"warnings":[{"provider":"claude","launchId":"launch","reason":"local_api_unavailable"}],"readErrors":["Provider Hook health record or session could not be read","Provider Hook health record is corrupt"]}),
+            serde_json::json!({"warnings":[{"provider":"claude","launchId":"launch","reason":"local_api_unavailable"}],"readErrors":["unavailable","Provider Hook health record is corrupt"]}),
         ),
     ];
     // When

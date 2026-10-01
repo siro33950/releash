@@ -40,7 +40,7 @@ impl AgentSessionHistoryGateway for LocalAgentSessionHistoryGateway {
             ProviderKind::Codex => codex_metadata(&codex_home, &worktree_path, limit),
         })
         .await
-        .map_err(|_| AgentSessionHistoryGatewayError::Unavailable)?
+        .map_err(|error| AgentSessionHistoryGatewayError::Technical(error.into()))?
     }
 
     async fn list_session_titles(
@@ -88,10 +88,10 @@ impl AgentSessionHistoryGateway for LocalAgentSessionHistoryGateway {
             ProviderKind::Codex => codex_session_titles(&codex_home, &provider_session_ids),
         })
         .await
-        .map_err(|_| AgentSessionHistoryGatewayError::Unavailable)?
+        .map_err(|error| AgentSessionHistoryGatewayError::Technical(error.into()))?
         .map_err(|error| match error {
-            ProviderSessionTitleGatewayError::Unavailable => {
-                AgentSessionHistoryGatewayError::Unavailable
+            ProviderSessionTitleGatewayError::Technical(error) => {
+                AgentSessionHistoryGatewayError::Technical(error)
             }
             ProviderSessionTitleGatewayError::Corrupt => AgentSessionHistoryGatewayError::Corrupt,
         })?;
@@ -111,7 +111,7 @@ impl ProviderSessionTitleGateway for LocalAgentSessionHistoryGateway {
             provider_session_title(&claude_config_dir, &codex_home, request)
         })
         .await
-        .map_err(|_| ProviderSessionTitleGatewayError::Unavailable)?
+        .map_err(|error| ProviderSessionTitleGatewayError::Technical(error.into()))?
     }
 }
 
@@ -150,7 +150,7 @@ fn claude_session_title(
         &transcript,
         CLAUDE_TITLE_TAIL_BYTES,
     )
-    .map_err(|_| ProviderSessionTitleGatewayError::Unavailable)?;
+    .map_err(|error| ProviderSessionTitleGatewayError::Technical(error.into()))?;
     let mut lines = tail.bytes.split(|byte| *byte == b'\n');
     if tail.preceding_byte.is_some_and(|byte| byte != b'\n') {
         let _ = lines.next();
@@ -190,7 +190,7 @@ fn claude_first_user_prompt(
         &transcript,
         CLAUDE_PROMPT_HEAD_BYTES,
     )
-    .map_err(|_| ProviderSessionTitleGatewayError::Unavailable)?;
+    .map_err(|error| ProviderSessionTitleGatewayError::Technical(error.into()))?;
     let mut lines = head.bytes.split(|byte| *byte == b'\n').collect::<Vec<_>>();
     if head.bytes.last().is_some_and(|byte| *byte != b'\n') && head.following_byte != Some(b'\n') {
         let _ = lines.pop();
@@ -244,14 +244,22 @@ fn codex_session_titles(
 ) -> Result<Vec<ProviderSessionTitleEntry>, ProviderSessionTitleGatewayError> {
     let database = codex_home.join("state_5.sqlite");
     if !database.exists() {
-        return Err(ProviderSessionTitleGatewayError::Unavailable);
+        return Err(ProviderSessionTitleGatewayError::Technical(
+            std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!("{} not found", database.display()),
+            )
+            .into(),
+        ));
     }
     let threads = crate::infrastructure::provider_history::query_codex_thread_names(
         &database,
         provider_session_ids,
     )
     .map_err(|error| match error {
-        rusqlite::Error::SqliteFailure(_, _) => ProviderSessionTitleGatewayError::Unavailable,
+        rusqlite::Error::SqliteFailure(_, _) => {
+            ProviderSessionTitleGatewayError::Technical(error.into())
+        }
         _ => ProviderSessionTitleGatewayError::Corrupt,
     })?
     .into_iter()
@@ -292,7 +300,7 @@ fn claude_metadata(
         .join(claude_project_directory(worktree_path));
     let files =
         crate::infrastructure::provider_history::recent_jsonl_files(&project_directory, limit)
-            .map_err(|_| AgentSessionHistoryGatewayError::Unavailable)?;
+            .map_err(|error| AgentSessionHistoryGatewayError::Technical(error.into()))?;
     Ok(files
         .into_iter()
         .filter_map(|file| {
@@ -320,7 +328,7 @@ fn codex_metadata(
         worktree_path,
         limit,
     )
-    .map_err(|_| AgentSessionHistoryGatewayError::Unavailable)?;
+    .map_err(|error| AgentSessionHistoryGatewayError::Technical(error.into()))?;
     Ok(rows
         .into_iter()
         .map(|row| AgentSessionHistoryMetadata {

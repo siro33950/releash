@@ -19,10 +19,10 @@ impl ProcessLocalExitPort for NoopProcessLocalExitPort {
     fn exit(&self, _code: i32) {}
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum StartupFailureKind {
     StoreInUse,
-    StorageUnavailable,
+    StorageUnavailable(crate::domain::failure::TechnicalFailureNature),
     UnsupportedRuntime,
     UnsupportedStoreVersion,
     InitializationStateInvalid,
@@ -31,10 +31,10 @@ pub(crate) enum StartupFailureKind {
 }
 
 impl StartupFailureKind {
-    pub(crate) fn safe_description(self) -> &'static str {
+    pub(crate) fn safe_description(&self) -> &'static str {
         match self {
             Self::StoreInUse => "Local data is currently in use by another Releash process.",
-            Self::StorageUnavailable => "Local data storage is currently unavailable.",
+            Self::StorageUnavailable(_) => "Local data storage is currently unavailable.",
             Self::UnsupportedRuntime => {
                 "This Releash build cannot use the bundled local database runtime."
             }
@@ -51,10 +51,15 @@ impl StartupFailureKind {
         }
     }
 
-    pub(crate) fn retry_on_next_launch(self) -> bool {
+    pub(crate) fn retry_on_next_launch(&self) -> bool {
         matches!(
             self,
-            Self::StoreInUse | Self::StorageUnavailable | Self::SchemaEvolutionFailed
+            Self::StoreInUse
+                | Self::StorageUnavailable(
+                    crate::domain::failure::TechnicalFailureNature::Transient
+                        | crate::domain::failure::TechnicalFailureNature::TimedOut
+                )
+                | Self::SchemaEvolutionFailed
         )
     }
 }
@@ -70,7 +75,7 @@ pub(crate) struct StartupFailure {
 impl StartupFailure {
     pub(crate) fn new(kind: StartupFailureKind) -> Self {
         Self {
-            kind,
+            kind: kind.clone(),
             safe_description: kind.safe_description(),
             correlation_id: uuid::Uuid::new_v4().to_string(),
             retry_on_next_launch: kind.retry_on_next_launch(),
@@ -222,7 +227,30 @@ mod tests {
     fn b071_all_startup_failures_are_closed_safe_and_have_only_launch_retry_semantics() {
         let cases = [
             (StartupFailureKind::StoreInUse, true),
-            (StartupFailureKind::StorageUnavailable, true),
+            (
+                StartupFailureKind::StorageUnavailable(
+                    crate::domain::failure::TechnicalFailureNature::Transient,
+                ),
+                true,
+            ),
+            (
+                StartupFailureKind::StorageUnavailable(
+                    crate::domain::failure::TechnicalFailureNature::TimedOut,
+                ),
+                true,
+            ),
+            (
+                StartupFailureKind::StorageUnavailable(
+                    crate::domain::failure::TechnicalFailureNature::Cancelled,
+                ),
+                false,
+            ),
+            (
+                StartupFailureKind::StorageUnavailable(
+                    crate::domain::failure::TechnicalFailureNature::Other,
+                ),
+                false,
+            ),
             (StartupFailureKind::UnsupportedRuntime, false),
             (StartupFailureKind::UnsupportedStoreVersion, false),
             (StartupFailureKind::InitializationStateInvalid, false),
@@ -231,7 +259,7 @@ mod tests {
         ];
 
         for (kind, retry_on_next_launch) in cases {
-            let authority = ApplicationStartupAuthority::failed_kind(kind);
+            let authority = ApplicationStartupAuthority::failed_kind(kind.clone());
             assert!(!authority.normal_admission_ready());
             let ApplicationStartupOutcome::Failed(failure) = authority.outcome() else {
                 panic!("{kind:?} must fail closed");

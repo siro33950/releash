@@ -42,11 +42,44 @@ pub(crate) enum AgentSessionLifecycleUsecaseError {
     Store(crate::domain::failure::StorageFailure),
     NotFound,
     InvalidOperation,
+    ProviderUnavailable,
     Conflict(crate::domain::failure::StorageFailure),
     StorageUnavailable,
-    LaunchUnavailable,
-    TerminalUnavailable,
+    Launch(crate::domain::agent_session::ProviderAgentLaunchGatewayError),
+    Terminal(crate::domain::agent_session::ProviderAgentTerminalGatewayError),
     Corrupt,
+}
+
+impl AgentSessionLifecycleUsecaseError {
+    pub(crate) fn technical_failure(&self) -> Option<&crate::domain::failure::TechnicalFailure> {
+        match self {
+            Self::Launch(
+                crate::domain::agent_session::ProviderAgentLaunchGatewayError::Technical(failure),
+            )
+            | Self::Terminal(
+                crate::domain::agent_session::ProviderAgentTerminalGatewayError::Technical(failure),
+            ) => Some(failure),
+            Self::Workflow(_)
+            | Self::Store(_)
+            | Self::NotFound
+            | Self::InvalidOperation
+            | Self::ProviderUnavailable
+            | Self::Conflict(_)
+            | Self::StorageUnavailable
+            | Self::Corrupt
+            | Self::Launch(
+                crate::domain::agent_session::ProviderAgentLaunchGatewayError::InvalidInput,
+            )
+            | Self::Terminal(
+                crate::domain::agent_session::ProviderAgentTerminalGatewayError::NotFound(_)
+                | crate::domain::agent_session::ProviderAgentTerminalGatewayError::InvalidOperation(
+                    _,
+                )
+                | crate::domain::agent_session::ProviderAgentTerminalGatewayError::StaleAttachment
+                | crate::domain::agent_session::ProviderAgentTerminalGatewayError::OwnerConflict,
+            ) => None,
+        }
+    }
 }
 
 pub(crate) struct AgentSessionLifecycleUsecase {
@@ -132,7 +165,7 @@ impl AgentSessionLifecycleUsecase {
         let presence = self
             .terminal
             .presence(&owner)
-            .map_err(|_| AgentSessionLifecycleUsecaseError::TerminalUnavailable)?;
+            .map_err(AgentSessionLifecycleUsecaseError::Terminal)?;
         match session.session().open_action(presence) {
             AgentSessionOpenAction::Attach => Ok(AgentSessionOpenOutcome::Attached),
             AgentSessionOpenAction::Indeterminate => Ok(AgentSessionOpenOutcome::Indeterminate),
@@ -355,7 +388,7 @@ impl AgentSessionLifecycleUsecase {
             .map_err(|_| AgentSessionLifecycleUsecaseError::InvalidOperation)?;
         self.terminal
             .stop_preserving_checkpoint(&session.session().terminal_surface_owner())
-            .map_err(|_| AgentSessionLifecycleUsecaseError::TerminalUnavailable)?;
+            .map_err(AgentSessionLifecycleUsecaseError::Terminal)?;
         let outcome = self
             .sessions
             .stop_for_terminal_execution_tree_node(
@@ -371,7 +404,7 @@ impl AgentSessionLifecycleUsecase {
         self.release_launch_binding(agent_session_id).await?;
         self.launch_gateway
             .cleanup(agent_session_id)
-            .map_err(|_| AgentSessionLifecycleUsecaseError::LaunchUnavailable)
+            .map_err(AgentSessionLifecycleUsecaseError::Launch)
     }
 
     pub(crate) async fn delete(
@@ -429,7 +462,7 @@ impl AgentSessionLifecycleUsecase {
                 &session.session().terminal_surface_owner(),
                 runtime_generation,
             )
-            .map_err(|_| AgentSessionLifecycleUsecaseError::TerminalUnavailable)?
+            .map_err(AgentSessionLifecycleUsecaseError::Terminal)?
         {
             return Ok(());
         }
@@ -473,7 +506,7 @@ impl AgentSessionLifecycleUsecase {
             self.release_launch_binding(agent_session_id).await?;
             self.launch_gateway
                 .cleanup(agent_session_id)
-                .map_err(|_| AgentSessionLifecycleUsecaseError::LaunchUnavailable)?;
+                .map_err(AgentSessionLifecycleUsecaseError::Launch)?;
             return Ok(());
         }
         let session = self.required(agent_session_id).await?;
@@ -482,7 +515,7 @@ impl AgentSessionLifecycleUsecase {
         let presence = self
             .terminal
             .presence(&owner)
-            .map_err(|_| AgentSessionLifecycleUsecaseError::TerminalUnavailable)?;
+            .map_err(AgentSessionLifecycleUsecaseError::Terminal)?;
         if presence != ManagedPtyPresence::ConfirmedAbsent {
             return Err(AgentSessionLifecycleUsecaseError::InvalidOperation);
         }
@@ -512,7 +545,7 @@ impl AgentSessionLifecycleUsecase {
         let presence = self
             .terminal
             .presence(&owner)
-            .map_err(|_| AgentSessionLifecycleUsecaseError::TerminalUnavailable)?;
+            .map_err(AgentSessionLifecycleUsecaseError::Terminal)?;
         if session.session().authorize_gc(presence).is_err() {
             return Ok(AgentSessionGarbageCollectionOutcome::Retained);
         }
@@ -536,7 +569,7 @@ impl AgentSessionLifecycleUsecase {
         let executable = self
             .availability
             .resolved_executable(session.session().provider())
-            .ok_or(AgentSessionLifecycleUsecaseError::LaunchUnavailable)?;
+            .ok_or(AgentSessionLifecycleUsecaseError::ProviderUnavailable)?;
         let slot_id = ProviderLifecycleSlotId::new(self.identities.issue())
             .map_err(|_| AgentSessionLifecycleUsecaseError::Corrupt)?;
         let scope = ProviderLifecycleScope::new(agent_session_id)
@@ -558,9 +591,9 @@ impl AgentSessionLifecycleUsecase {
             session.session().worktree_path(),
         ) {
             Ok(prepared) => prepared,
-            Err(_) => {
+            Err(error) => {
                 self.cleanup_unspawned_resume(agent_session_id).await?;
-                return Err(AgentSessionLifecycleUsecaseError::LaunchUnavailable);
+                return Err(AgentSessionLifecycleUsecaseError::Launch(error));
             }
         };
         if let Err(error) = self
@@ -579,20 +612,16 @@ impl AgentSessionLifecycleUsecase {
         }
         let initial_hook_warning = prepared.initial_hook_warning();
         let owner = session.session().terminal_surface_owner();
-        if self
-            .terminal
-            .spawn(
-                owner.clone(),
-                session.session().worktree_path(),
-                prepared.into_process(),
-                rows,
-                cols,
-            )
-            .is_err()
-        {
+        if let Err(error) = self.terminal.spawn(
+            owner.clone(),
+            session.session().worktree_path(),
+            prepared.into_process(),
+            rows,
+            cols,
+        ) {
             self.rollback_spawned_resume(owner, agent_session_id)
                 .await?;
-            return Err(AgentSessionLifecycleUsecaseError::TerminalUnavailable);
+            return Err(AgentSessionLifecycleUsecaseError::Terminal(error));
         }
         if let Some(warning) = initial_hook_warning {
             if let Err(error) = self
@@ -622,11 +651,11 @@ impl AgentSessionLifecycleUsecase {
     ) -> Result<(), AgentSessionLifecycleUsecaseError> {
         self.terminal
             .delete(&owner)
-            .map_err(|_| AgentSessionLifecycleUsecaseError::TerminalUnavailable)?;
+            .map_err(AgentSessionLifecycleUsecaseError::Terminal)?;
         self.release_launch_binding(agent_session_id).await?;
         self.launch_gateway
             .cleanup(agent_session_id)
-            .map_err(|_| AgentSessionLifecycleUsecaseError::LaunchUnavailable)?;
+            .map_err(AgentSessionLifecycleUsecaseError::Launch)?;
         self.sessions
             .delete(agent_session_id, caller_request_id)
             .await
@@ -644,12 +673,12 @@ impl AgentSessionLifecycleUsecase {
         let terminal_result = self
             .terminal
             .stop_preserving_checkpoint(&owner)
-            .map_err(|_| AgentSessionLifecycleUsecaseError::TerminalUnavailable);
+            .map_err(AgentSessionLifecycleUsecaseError::Terminal);
         let lifecycle_result = self.release_launch_binding(agent_session_id).await;
         let launch_result = self
             .launch_gateway
             .cleanup(agent_session_id)
-            .map_err(|_| AgentSessionLifecycleUsecaseError::LaunchUnavailable);
+            .map_err(AgentSessionLifecycleUsecaseError::Launch);
         terminal_result?;
         lifecycle_result?;
         launch_result
@@ -663,7 +692,7 @@ impl AgentSessionLifecycleUsecase {
         let launch_result = self
             .launch_gateway
             .cleanup(agent_session_id)
-            .map_err(|_| AgentSessionLifecycleUsecaseError::LaunchUnavailable);
+            .map_err(AgentSessionLifecycleUsecaseError::Launch);
         lifecycle_result?;
         launch_result
     }
@@ -677,11 +706,11 @@ impl AgentSessionLifecycleUsecase {
     ) -> Result<(), AgentSessionLifecycleUsecaseError> {
         self.terminal
             .delete(&owner)
-            .map_err(|_| AgentSessionLifecycleUsecaseError::TerminalUnavailable)?;
+            .map_err(AgentSessionLifecycleUsecaseError::Terminal)?;
         self.release_launch_binding(agent_session_id).await?;
         self.launch_gateway
             .cleanup(agent_session_id)
-            .map_err(|_| AgentSessionLifecycleUsecaseError::LaunchUnavailable)?;
+            .map_err(AgentSessionLifecycleUsecaseError::Launch)?;
         self.sessions
             .garbage_collect(
                 agent_session_id,

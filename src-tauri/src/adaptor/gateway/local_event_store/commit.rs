@@ -31,7 +31,6 @@ pub(super) fn storage_unavailable(error: &rusqlite::Error) -> CommitBatchError {
     let correlation = correlation_id();
     log::warn!("local event store sqlite failure [{correlation}]: {error}");
     use crate::adaptor::gateway::shared::sqlite_failure::{condition, SqliteFailureCondition};
-    use crate::domain::failure::TechnicalFailureNature;
     let condition = condition(error);
     if condition == SqliteFailureCondition::Corrupt {
         return CommitBatchError::Corrupt {
@@ -40,11 +39,7 @@ pub(super) fn storage_unavailable(error: &rusqlite::Error) -> CommitBatchError {
     }
     let failure = SafeOperationFailure::new(
         SessionOperationFailureKind::StorageUnavailable,
-        if condition == SqliteFailureCondition::Busy {
-            TechnicalFailureNature::Transient
-        } else {
-            TechnicalFailureNature::Other
-        },
+        crate::adaptor::gateway::shared::sqlite_failure::nature(error),
         "local event store write failed",
         correlation,
     );

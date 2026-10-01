@@ -10,5 +10,6 @@ pub(crate) use health_marker::{
 };
 pub(crate) use launch_files::{
     cleanup as cleanup_launch_files, materialize as materialize_launch_files,
+    ProviderLaunchFilesError,
 };
 pub(crate) use stdin::{read_bounded, BoundedReadError};

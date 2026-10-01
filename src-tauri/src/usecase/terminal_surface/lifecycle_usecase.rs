@@ -10,12 +10,12 @@ pub fn kill<G: TerminalSurfaceGateway + ?Sized>(
     let surface = manager
         .find_summary_by_session_key(&session_key)
         .ok_or_else(|| {
-            UsecaseError::Gateway(format!(
+            UsecaseError::NotFound(format!(
                 "Terminal Surface not found for owner {session_key}"
             ))
         })?;
     if &surface.owner != owner {
-        return Err(UsecaseError::Gateway(format!(
+        return Err(UsecaseError::NotFound(format!(
             "Terminal Surface not found for owner {session_key}"
         )));
     }
@@ -31,7 +31,7 @@ pub fn stop_preserving_checkpoint<G: TerminalSurfaceGateway + ?Sized>(
         return Ok(());
     };
     if &surface.owner != owner {
-        return Err(UsecaseError::Gateway(format!(
+        return Err(UsecaseError::NotFound(format!(
             "Terminal Surface not found for owner {session_key}"
         )));
     }
@@ -49,7 +49,7 @@ pub fn delete<G: TerminalSurfaceGateway + ?Sized>(
             .map_err(UsecaseError::from);
     };
     if &surface.owner != owner {
-        return Err(UsecaseError::Gateway(format!(
+        return Err(UsecaseError::NotFound(format!(
             "Terminal Surface not found for owner {session_key}"
         )));
     }
@@ -71,7 +71,7 @@ fn remove_and_stop<G: TerminalSurfaceGateway + ?Sized>(
 ) -> Result<(), UsecaseError> {
     let snapshot = manager
         .snapshot(runtime_generation)
-        .ok_or_else(|| UsecaseError::Gateway(format!("PTY {runtime_generation} not found")))?;
+        .ok_or_else(|| UsecaseError::NotFound(format!("PTY {runtime_generation} not found")))?;
     if !snapshot.process_state.is_exited() {
         manager.request_runtime_stop(runtime_generation)?;
     }

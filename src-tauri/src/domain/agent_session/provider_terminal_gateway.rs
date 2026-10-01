@@ -1,31 +1,31 @@
 use crate::domain::agent_session::aggregates::ManagedPtyPresence;
 use crate::domain::terminal_surface::{TerminalProcessLaunch, TerminalSurfaceOwner};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ProviderAgentTerminalGatewayError {
-    Unavailable,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum ProviderAgentTerminalSpawnError {
+pub(crate) enum ProviderAgentTerminalGatewayError {
+    Technical(crate::domain::failure::TechnicalFailure),
+    NotFound(String),
+    InvalidOperation(String),
+    StaleAttachment,
     OwnerConflict,
-    PtySpawn { error: String },
-    OtherSpawnFailure { error: String },
 }
 
-impl std::fmt::Display for ProviderAgentTerminalSpawnError {
+impl std::fmt::Display for ProviderAgentTerminalGatewayError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::OwnerConflict => formatter.write_str("kind=owner_conflict"),
-            Self::PtySpawn { error } => write!(formatter, "kind=pty_spawn error={error}"),
-            Self::OtherSpawnFailure { error } => {
-                write!(formatter, "kind=other_spawn_failure error={error}")
+            Self::NotFound(message) | Self::InvalidOperation(message) => {
+                formatter.write_str(message)
             }
+            Self::StaleAttachment => {
+                formatter.write_str("Terminal input attachment is no longer active")
+            }
+            Self::Technical(failure) => failure.fmt(formatter),
         }
     }
 }
 
-impl std::error::Error for ProviderAgentTerminalSpawnError {}
+impl std::error::Error for ProviderAgentTerminalGatewayError {}
 
 pub(crate) trait ProviderAgentTerminalGateway: Send + Sync {
     fn spawn(
@@ -35,7 +35,7 @@ pub(crate) trait ProviderAgentTerminalGateway: Send + Sync {
         process: TerminalProcessLaunch,
         rows: u16,
         cols: u16,
-    ) -> Result<(), ProviderAgentTerminalSpawnError>;
+    ) -> Result<(), ProviderAgentTerminalGatewayError>;
 
     fn presence(
         &self,

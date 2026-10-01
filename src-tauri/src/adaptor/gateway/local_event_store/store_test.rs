@@ -599,3 +599,70 @@ async fn test_書込待ち_期限と取り消しで待ちを終えても受理�
         );
     }
 }
+
+#[test]
+fn test_store起動失敗_io種類とメッセージが実行中と一致する() {
+    use crate::domain::failure::Failure;
+    use crate::domain::failure::TechnicalFailureNature::{Other, TimedOut, Transient};
+    use std::io::ErrorKind as E;
+    for (kind, expected) in [
+        (E::Interrupted, Transient),
+        (E::WouldBlock, Transient),
+        (E::ConnectionReset, Transient),
+        (E::ConnectionAborted, Transient),
+        (E::NotConnected, Transient),
+        (E::TimedOut, TimedOut),
+        (E::PermissionDenied, Other),
+        (E::StorageFull, Other),
+    ] {
+        // Given
+        let error = std::io::Error::new(kind, "original io failure");
+        // When
+        let LocalEventStoreOpenError::StorageUnavailable(failure) = super::io_open_failure(error)
+        else {
+            panic!("expected technical failure")
+        };
+        let runtime = crate::adaptor::gateway::shared::background_io::failure(std::io::Error::new(
+            kind,
+            "original io failure",
+        ));
+        // Then
+        assert_eq!(failure.nature, expected);
+        assert_eq!(runtime.kind, Failure::Technical(expected));
+        assert_eq!(runtime.message, failure.message);
+    }
+}
+
+#[test]
+fn test_store起動失敗_sqliteの性質が書込と読取で一致する() {
+    use crate::domain::failure::{
+        StorageFailure,
+        TechnicalFailureNature::{Other, Transient},
+    };
+    use crate::domain::local_event::CommitBatchError;
+    // Given
+    for (code, expected) in [
+        (rusqlite::ffi::SQLITE_BUSY, Transient),
+        (rusqlite::ffi::SQLITE_PERM, Other),
+        (rusqlite::ffi::SQLITE_IOERR, Other),
+    ] {
+        let error = rusqlite::Error::SqliteFailure(rusqlite::ffi::Error::new(code), None);
+        // When
+        let LocalEventStoreOpenError::StorageUnavailable(startup) =
+            super::sqlite_open_failure(&error)
+        else {
+            panic!("expected storage unavailable")
+        };
+        let write = super::super::commit::storage_unavailable(&error);
+        let read = StorageFailure::from(super::super::reader::storage_unavailable(&error));
+        // Then
+        let (CommitBatchError::StorageUnavailable { failure }
+        | CommitBatchError::StorageAccessRequired { failure }) = write
+        else {
+            panic!("expected storage write failure")
+        };
+        assert_eq!(startup.nature, expected);
+        assert_eq!(failure.nature, expected);
+        assert_eq!(read.nature, expected);
+    }
+}

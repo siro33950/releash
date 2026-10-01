@@ -11,7 +11,9 @@ pub(crate) enum ProviderHookHealthMarkerError {
     #[error("Provider Hook health marker path is invalid")]
     InvalidPath,
     #[error("Provider Hook health marker is unavailable")]
-    Unavailable,
+    Io(#[from] std::io::Error),
+    #[error("{0}")]
+    Encode(serde_json::Error),
 }
 
 pub(crate) fn write_local_api_failure(
@@ -27,14 +29,14 @@ pub(crate) fn write_local_api_failure(
     let parent = marker_path
         .parent()
         .ok_or(ProviderHookHealthMarkerError::InvalidPath)?;
-    std::fs::create_dir_all(parent).map_err(|_| ProviderHookHealthMarkerError::Unavailable)?;
+    std::fs::create_dir_all(parent).map_err(ProviderHookHealthMarkerError::Io)?;
     let contents = serde_json::to_vec(&serde_json::json!({
         "provider": provider,
         "launchId": launch_id,
         "reason": "local_api_unavailable",
     }))
-    .map_err(|_| ProviderHookHealthMarkerError::Unavailable)?;
-    std::fs::write(marker_path, contents).map_err(|_| ProviderHookHealthMarkerError::Unavailable)
+    .map_err(ProviderHookHealthMarkerError::Encode)?;
+    std::fs::write(marker_path, contents).map_err(ProviderHookHealthMarkerError::Io)
 }
 
 pub(crate) fn clear_local_api_failure(
@@ -45,7 +47,7 @@ pub(crate) fn clear_local_api_failure(
     match std::fs::remove_file(marker_path) {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(_) => Err(ProviderHookHealthMarkerError::Unavailable),
+        Err(error) => Err(ProviderHookHealthMarkerError::Io(error)),
     }
 }
 
@@ -80,7 +82,7 @@ pub(crate) fn read_local_api_failures(
     let root = data_dir.join("provider-launches");
     if !root
         .try_exists()
-        .map_err(|_| ProviderHookHealthMarkerError::Unavailable)?
+        .map_err(ProviderHookHealthMarkerError::Io)?
     {
         return Ok(Vec::new());
     }
@@ -114,7 +116,7 @@ fn read_marker(
     let metadata = match std::fs::symlink_metadata(marker_path) {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return None,
-        Err(_) => return Some(Err(ProviderHookHealthMarkerError::Unavailable)),
+        Err(error) => return Some(Err(ProviderHookHealthMarkerError::Io(error))),
     };
     Some(
         if !metadata.file_type().is_file() || metadata.len() > MAX_MARKER_BYTES {
@@ -122,23 +124,23 @@ fn read_marker(
         } else {
             std::fs::read(marker_path)
                 .map(|contents| RawProviderHookHealthFailure { contents })
-                .map_err(|_| ProviderHookHealthMarkerError::Unavailable)
+                .map_err(ProviderHookHealthMarkerError::Io)
         },
     )
 }
 
 fn directories(root: &Path) -> Result<Vec<std::path::PathBuf>, ProviderHookHealthMarkerError> {
     std::fs::read_dir(root)
-        .map_err(|_| ProviderHookHealthMarkerError::Unavailable)?
+        .map_err(ProviderHookHealthMarkerError::Io)?
         .filter_map(|entry| match entry {
             Ok(entry) => match entry.file_type() {
                 Ok(file_type) if file_type.is_dir() && !file_type.is_symlink() => {
                     Some(Ok(entry.path()))
                 }
                 Ok(_) => None,
-                Err(_) => Some(Err(ProviderHookHealthMarkerError::Unavailable)),
+                Err(error) => Some(Err(ProviderHookHealthMarkerError::Io(error))),
             },
-            Err(_) => Some(Err(ProviderHookHealthMarkerError::Unavailable)),
+            Err(error) => Some(Err(ProviderHookHealthMarkerError::Io(error))),
         })
         .collect()
 }

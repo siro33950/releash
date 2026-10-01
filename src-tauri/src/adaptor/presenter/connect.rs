@@ -17,9 +17,14 @@ pub(crate) fn command_error(
     error: crate::adaptor::presenter::client::CommandFailure,
 ) -> connectrpc::ConnectError {
     match to_rpc::<rpc::CommandError>(&error.detail) {
-        Ok(detail) => connectrpc::ConnectError::new(error.kind, "Command failed").with_detail(
-            connectrpc::ErrorDetail::from_message("releash.client.v1.CommandError", &detail),
-        ),
+        Ok(detail) => connectrpc::ConnectError::new(
+            error.kind,
+            error.message.unwrap_or_else(|| "Command failed".into()),
+        )
+        .with_detail(connectrpc::ErrorDetail::from_message(
+            "releash.client.v1.CommandError",
+            &detail,
+        )),
         Err(error) => error,
     }
 }
@@ -103,7 +108,7 @@ impl ConnectFailure for crate::domain::agent_session::AgentSessionHistoryGateway
             Self::ProviderSessionAlreadyOwned { .. } => connectrpc::ErrorCode::FailedPrecondition,
             Self::Store(kind) => kind.connect_code(),
             Self::InvalidRequest => connectrpc::ErrorCode::InvalidArgument,
-            Self::Unavailable => connectrpc::ErrorCode::Unavailable,
+            Self::Technical(failure) => failure.connect_code(),
             Self::Corrupt => connectrpc::ErrorCode::DataLoss,
         }
     }
@@ -112,7 +117,7 @@ impl ConnectFailure for crate::domain::agent_session::AgentSessionHistoryGateway
 impl ConnectFailure for crate::domain::agent_session::ProviderSessionTitleGatewayError {
     fn connect_code(&self) -> connectrpc::ErrorCode {
         match self {
-            Self::Unavailable => connectrpc::ErrorCode::Unavailable,
+            Self::Technical(failure) => failure.connect_code(),
             Self::Corrupt => connectrpc::ErrorCode::DataLoss,
         }
     }
@@ -293,9 +298,9 @@ impl ConnectFailure for crate::usecase::terminal_surface::error::UsecaseError {
             Self::OwnerConflict | Self::StaleAttachment => {
                 connectrpc::ErrorCode::FailedPrecondition
             }
-            Self::Gateway(_) | Self::PtySpawn { .. } | Self::OtherSpawnFailure { .. } => {
-                connectrpc::ErrorCode::Internal
-            }
+            Self::NotFound(_) => connectrpc::ErrorCode::NotFound,
+            Self::InvalidOperation(_) => connectrpc::ErrorCode::FailedPrecondition,
+            Self::Technical(failure) => failure.connect_code(),
         }
     }
 }
@@ -303,11 +308,11 @@ impl ConnectFailure for crate::usecase::terminal_surface::error::UsecaseError {
 impl ConnectFailure for crate::usecase::agent_session::AgentSessionHistoryQueryError {
     fn connect_code(&self) -> connectrpc::ErrorCode {
         match self {
+            Self::Technical(failure) => failure.connect_code(),
             Self::Conflict => connectrpc::ErrorCode::Aborted,
             Self::ProviderSessionAlreadyOwned { .. } => connectrpc::ErrorCode::FailedPrecondition,
             Self::Store(kind) => kind.connect_code(),
             Self::InvalidRequest => connectrpc::ErrorCode::InvalidArgument,
-            Self::Unavailable => connectrpc::ErrorCode::Unavailable,
             Self::Corrupt => connectrpc::ErrorCode::DataLoss,
         }
     }
@@ -320,7 +325,6 @@ impl ConnectFailure for crate::usecase::agent_session::AgentSessionReadUsecaseEr
             Self::Store(kind) => kind.connect_code(),
             Self::InvalidRequest => connectrpc::ErrorCode::InvalidArgument,
             Self::StorageUnavailable => connectrpc::ErrorCode::Unavailable,
-            Self::TerminalUnavailable => connectrpc::ErrorCode::FailedPrecondition,
             Self::Corrupt => connectrpc::ErrorCode::DataLoss,
         }
     }
@@ -330,9 +334,8 @@ impl ConnectFailure for crate::usecase::agent_session::ProviderAvailabilityUseca
     fn connect_code(&self) -> connectrpc::ErrorCode {
         match self {
             Self::InvalidInput => connectrpc::ErrorCode::InvalidArgument,
-            Self::ConfigUnavailable | Self::RefreshUnavailable => {
-                connectrpc::ErrorCode::Unavailable
-            }
+            Self::Config(error) => error.connect_code(),
+            Self::Refresh(error) => error.connect_code(),
             Self::Corrupt => connectrpc::ErrorCode::DataLoss,
         }
     }
@@ -372,11 +375,13 @@ impl ConnectFailure for crate::usecase::agent_session::AgentSessionLifecycleUsec
             Self::Workflow(error) => error.connect_code(),
             Self::Store(kind) => kind.connect_code(),
             Self::NotFound => connectrpc::ErrorCode::NotFound,
-            Self::InvalidOperation => connectrpc::ErrorCode::FailedPrecondition,
+            Self::InvalidOperation | Self::ProviderUnavailable => {
+                connectrpc::ErrorCode::FailedPrecondition
+            }
             Self::Conflict(kind) => kind.connect_code(),
             Self::StorageUnavailable => connectrpc::ErrorCode::Unavailable,
-            Self::LaunchUnavailable => connectrpc::ErrorCode::FailedPrecondition,
-            Self::TerminalUnavailable => connectrpc::ErrorCode::FailedPrecondition,
+            Self::Launch(error) => error.connect_code(),
+            Self::Terminal(error) => error.connect_code(),
             Self::Corrupt => connectrpc::ErrorCode::DataLoss,
         }
     }
@@ -391,9 +396,8 @@ impl ConnectFailure for crate::usecase::agent_session::AgentSessionLaunchUsecase
             Self::InvalidInput => connectrpc::ErrorCode::InvalidArgument,
             Self::Conflict(kind) => kind.connect_code(),
             Self::StorageUnavailable => connectrpc::ErrorCode::Unavailable,
-            Self::LaunchUnavailable => connectrpc::ErrorCode::FailedPrecondition,
-            Self::TerminalUnavailable => connectrpc::ErrorCode::FailedPrecondition,
-            Self::TerminalSpawn(_) => connectrpc::ErrorCode::FailedPrecondition,
+            Self::Launch(error) => error.connect_code(),
+            Self::Terminal(error) => error.connect_code(),
             Self::Corrupt => connectrpc::ErrorCode::DataLoss,
         }
     }
@@ -469,7 +473,7 @@ impl ConnectFailure for crate::usecase::workflow::runtime_error::WorkflowRuntime
 impl ConnectFailure for crate::usecase::provider_lifecycle::ProviderHookHealthFailureQueryError {
     fn connect_code(&self) -> connectrpc::ErrorCode {
         match self {
-            Self::Unavailable => connectrpc::ErrorCode::Unavailable,
+            Self::Technical(failure) => failure.connect_code(),
             Self::Corrupt => connectrpc::ErrorCode::DataLoss,
         }
     }
@@ -478,6 +482,7 @@ impl ConnectFailure for crate::usecase::provider_lifecycle::ProviderHookHealthFa
 impl ConnectFailure for crate::usecase::provider_lifecycle::ProviderHookHealthUsecaseError {
     fn connect_code(&self) -> connectrpc::ErrorCode {
         match self {
+            Self::Technical(failure) => failure.connect_code(),
             Self::Conflict => connectrpc::ErrorCode::Aborted,
             Self::Store(kind) => kind.connect_code(),
             Self::InvalidInput => connectrpc::ErrorCode::InvalidArgument,
@@ -490,6 +495,7 @@ impl ConnectFailure for crate::usecase::provider_lifecycle::ProviderHookHealthUs
 impl ConnectFailure for crate::usecase::provider_lifecycle::ProviderLifecycleIngressUsecaseError {
     fn connect_code(&self) -> connectrpc::ErrorCode {
         match self {
+            Self::Technical(failure) => failure.connect_code(),
             Self::Store(kind) => kind.connect_code(),
             Self::InvalidInput => connectrpc::ErrorCode::InvalidArgument,
             Self::Conflict => connectrpc::ErrorCode::Aborted,
@@ -529,6 +535,7 @@ impl ConnectFailure for crate::usecase::state_subscription::StateReadError {
         match &self.source {
             S::InvalidTerminalInput => connectrpc::ErrorCode::InvalidArgument,
             S::TerminalSubscriptionEnded => connectrpc::ErrorCode::NotFound,
+            S::Terminal(error) => error.connect_code(),
             S::Workflow(error) => error.connect_code(),
             S::Session(error) => error.connect_code(),
             S::History(error) => error.connect_code(),
@@ -653,6 +660,42 @@ impl ConnectFailure for super::provider_tui::ProviderTuiCodedError {
             | ProviderTuiCodedError::AgentSessionInvalidOperation => F::FailedPrecondition,
             ProviderTuiCodedError::AgentSessionConflict(_) => F::Aborted,
             ProviderTuiCodedError::AgentSessionNotFound => F::NotFound,
+        }
+    }
+}
+
+impl ConnectFailure for crate::domain::agent_session::ProviderAgentTerminalGatewayError {
+    fn connect_code(&self) -> connectrpc::ErrorCode {
+        match self {
+            Self::NotFound(_) => connectrpc::ErrorCode::NotFound,
+            Self::InvalidOperation(_) | Self::StaleAttachment | Self::OwnerConflict => {
+                connectrpc::ErrorCode::FailedPrecondition
+            }
+            Self::Technical(failure) => failure.connect_code(),
+        }
+    }
+}
+
+impl ConnectFailure for crate::domain::agent_session::ProviderAgentLaunchGatewayError {
+    fn connect_code(&self) -> connectrpc::ErrorCode {
+        match self {
+            Self::InvalidInput => connectrpc::ErrorCode::InvalidArgument,
+            Self::Technical(failure) => failure.connect_code(),
+        }
+    }
+}
+impl ConnectFailure for crate::domain::agent_session::ProviderExecutableConfigRepositoryError {
+    fn connect_code(&self) -> connectrpc::ErrorCode {
+        match self {
+            Self::InvalidInput => connectrpc::ErrorCode::InvalidArgument,
+            Self::Technical(failure) => failure.connect_code(),
+        }
+    }
+}
+impl ConnectFailure for crate::domain::agent_session::ProviderExecutableProbeGatewayError {
+    fn connect_code(&self) -> connectrpc::ErrorCode {
+        match self {
+            Self::Technical(failure) => failure.connect_code(),
         }
     }
 }

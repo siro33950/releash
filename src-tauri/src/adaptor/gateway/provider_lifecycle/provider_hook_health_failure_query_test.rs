@@ -137,7 +137,14 @@ async fn test_hook警告読取_記録情報を読めない場合も他の警告�
     assert!(records[0].is_ok());
     assert_eq!(
         records[1],
-        Err(crate::usecase::provider_lifecycle::ProviderHookHealthFailureQueryError::Unavailable)
+        Err(
+            crate::usecase::provider_lifecycle::ProviderHookHealthFailureQueryError::Technical(
+                crate::domain::failure::TechnicalFailure {
+                    nature: crate::domain::failure::TechnicalFailureNature::Other,
+                    message: std::io::Error::from_raw_os_error(13).to_string()
+                }
+            )
+        )
     );
 }
 
@@ -244,7 +251,14 @@ async fn test_hook警告読取_中身を読めない場合も他の警告を返�
     assert!(records[0].is_ok());
     assert_eq!(
         records[1],
-        Err(crate::usecase::provider_lifecycle::ProviderHookHealthFailureQueryError::Unavailable)
+        Err(
+            crate::usecase::provider_lifecycle::ProviderHookHealthFailureQueryError::Technical(
+                crate::domain::failure::TechnicalFailure {
+                    nature: crate::domain::failure::TechnicalFailureNature::Other,
+                    message: std::io::Error::from_raw_os_error(13).to_string()
+                }
+            )
+        )
     );
 }
 
@@ -323,7 +337,14 @@ async fn test_hook警告読取_sessionを読めない場合も他の警告を返
     assert!(records[0].is_ok());
     assert_eq!(
         records[1],
-        Err(crate::usecase::provider_lifecycle::ProviderHookHealthFailureQueryError::Unavailable)
+        Err(
+            crate::usecase::provider_lifecycle::ProviderHookHealthFailureQueryError::Technical(
+                crate::domain::failure::TechnicalFailure {
+                    nature: crate::domain::failure::TechnicalFailureNature::Other,
+                    message: std::io::Error::from_raw_os_error(13).to_string()
+                }
+            )
+        )
     );
 }
 
@@ -343,6 +364,13 @@ async fn test_hook警告読取_置き場所を読めない場合は一覧全体�
     // Then
     assert_eq!(
         result,
-        Err(crate::usecase::provider_lifecycle::ProviderHookHealthFailureQueryError::Unavailable)
+        Err(
+            crate::usecase::provider_lifecycle::ProviderHookHealthFailureQueryError::Technical(
+                crate::domain::failure::TechnicalFailure {
+                    nature: crate::domain::failure::TechnicalFailureNature::Other,
+                    message: std::io::Error::from_raw_os_error(13).to_string()
+                }
+            )
+        )
     );
 }

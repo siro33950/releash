@@ -47,7 +47,7 @@ impl From<&crate::domain::agent_session::ProviderSessionTitleGatewayError> for F
     fn from(error: &crate::domain::agent_session::ProviderSessionTitleGatewayError) -> Self {
         use crate::domain::agent_session::ProviderSessionTitleGatewayError as E;
         match error {
-            E::Unavailable => Failure::Technical(TechnicalFailureNature::Transient),
+            E::Technical(error) => Failure::from(error),
             E::Corrupt => Failure::Technical(TechnicalFailureNature::Other),
         }
     }

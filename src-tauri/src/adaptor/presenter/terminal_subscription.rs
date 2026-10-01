@@ -121,7 +121,12 @@ impl TerminalSurfaceStateSink for TerminalSubscriptionPresenter {
             registration.session_id.as_deref(),
         )
         .map_err(|error| {
-            crate::usecase::terminal_surface::error::UsecaseError::Gateway(error.to_string())
+            crate::usecase::terminal_surface::error::UsecaseError::Technical(
+                crate::domain::failure::TechnicalFailure {
+                    nature: crate::domain::failure::TechnicalFailureNature::Other,
+                    message: error.to_string(),
+                },
+            )
         })?
         .to_string();
         let version = self.version(
@@ -131,7 +136,12 @@ impl TerminalSurfaceStateSink for TerminalSubscriptionPresenter {
         self.runtime
             .update(|state| state.register_delta(&target, version, OUTPUT_PENDING_LIMIT))
             .map_err(|error| {
-                crate::usecase::terminal_surface::error::UsecaseError::Gateway(error.to_string())
+                crate::usecase::terminal_surface::error::UsecaseError::Technical(
+                    crate::domain::failure::TechnicalFailure {
+                        nature: crate::domain::failure::TechnicalFailureNature::Other,
+                        message: error.to_string(),
+                    },
+                )
             })
     }
 

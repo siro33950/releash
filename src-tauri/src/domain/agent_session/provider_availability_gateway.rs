@@ -14,9 +14,9 @@ pub(crate) trait ProviderExecutableProbeGateway: Send + Sync {
     fn refresh_search_path(&self) -> Result<(), ProviderExecutableProbeGatewayError>;
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ProviderExecutableProbeGatewayError {
-    RefreshFailed,
+    Technical(crate::domain::failure::TechnicalFailure),
 }
 
 pub(crate) trait ProviderExecutableConfigRepository: Send + Sync {
@@ -32,8 +32,8 @@ pub(crate) trait ProviderExecutableConfigRepository: Send + Sync {
     ) -> Result<(), ProviderExecutableConfigRepositoryError>;
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ProviderExecutableConfigRepositoryError {
     InvalidInput,
-    Unavailable,
+    Technical(crate::domain::failure::TechnicalFailure),
 }

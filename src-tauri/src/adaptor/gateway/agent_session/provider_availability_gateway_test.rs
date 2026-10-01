@@ -14,7 +14,7 @@ use super::LocalProviderExecutableProbeGateway;
 use crate::infrastructure::process::search_path::{LoginShellPathError, SearchPathSource};
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
-struct FailingSearchPathSource;
+struct FailingSearchPathSource(LoginShellPathError);
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 struct FixedSearchPathSource(OsString);
@@ -22,7 +22,7 @@ struct FixedSearchPathSource(OsString);
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 impl SearchPathSource for FailingSearchPathSource {
     fn load(&self) -> Result<OsString, LoginShellPathError> {
-        Err(LoginShellPathError::Spawn)
+        Err(self.0)
     }
 }
 
@@ -128,16 +128,45 @@ fn test_provider_availability_refresh_shell取得失敗を返し既存pathを維
     fs::set_permissions(&executable, fs::Permissions::from_mode(0o755)).unwrap();
     let gateway = LocalProviderExecutableProbeGateway::with_search_path_source(
         Some(temporary.path().as_os_str().to_os_string()),
-        Arc::new(FailingSearchPathSource),
+        Arc::new(FailingSearchPathSource(LoginShellPathError::Spawn)),
     );
     assert_eq!(
         gateway.refresh_search_path(),
-        Err(crate::domain::agent_session::ProviderExecutableProbeGatewayError::RefreshFailed)
+        Err(
+            crate::domain::agent_session::ProviderExecutableProbeGatewayError::Technical(
+                crate::domain::failure::TechnicalFailure {
+                    nature: crate::domain::failure::TechnicalFailureNature::Other,
+                    message: "Spawn".into()
+                }
+            )
+        )
     );
     assert!(gateway
         .resolve(&ProviderExecutable::new("agent-cli").unwrap())
         .resolved_executable()
         .is_some());
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[test]
+fn test_provider_availability_refresh_shell時間切れの性質を保持する() {
+    // Given
+    let gateway = LocalProviderExecutableProbeGateway::with_search_path_source(
+        None,
+        Arc::new(FailingSearchPathSource(LoginShellPathError::Timeout)),
+    );
+    // When
+    let error = gateway.refresh_search_path().unwrap_err();
+    // Then
+    assert_eq!(
+        error,
+        crate::domain::agent_session::ProviderExecutableProbeGatewayError::Technical(
+            crate::domain::failure::TechnicalFailure {
+                nature: crate::domain::failure::TechnicalFailureNature::TimedOut,
+                message: "Timeout".into(),
+            }
+        )
+    );
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]

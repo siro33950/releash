@@ -22,8 +22,8 @@ use crate::domain::agent_session::repository::{
 };
 use crate::domain::agent_session::{
     PreparedProviderLaunch, ProviderAgentLaunchGateway, ProviderAgentLaunchGatewayError,
-    ProviderAgentTerminalGateway, ProviderAgentTerminalGatewayError,
-    ProviderAgentTerminalSpawnError, ProviderAvailabilityReader, ProviderSessionLaunch,
+    ProviderAgentTerminalGateway, ProviderAgentTerminalGatewayError, ProviderAvailabilityReader,
+    ProviderSessionLaunch,
 };
 use crate::domain::provider_lifecycle::{
     ArmedProviderLifecycle, ProviderHookHealth, ProviderHookHealthRepository,
@@ -505,7 +505,7 @@ impl ProviderAgentTerminalGateway for LifecycleTerminal {
         _process: TerminalProcessLaunch,
         _rows: u16,
         _cols: u16,
-    ) -> Result<(), ProviderAgentTerminalSpawnError> {
+    ) -> Result<(), ProviderAgentTerminalGatewayError> {
         let should_block = {
             let mut spawn_count = self.spawn_count.lock().unwrap();
             *spawn_count += 1;
@@ -520,9 +520,12 @@ impl ProviderAgentTerminalGateway for LifecycleTerminal {
             }
         }
         if *self.fail_spawn.lock().unwrap() {
-            return Err(ProviderAgentTerminalSpawnError::OtherSpawnFailure {
-                error: "test terminal spawn failure".to_string(),
-            });
+            return Err(ProviderAgentTerminalGatewayError::Technical(
+                crate::domain::failure::TechnicalFailure {
+                    nature: crate::domain::failure::TechnicalFailureNature::Other,
+                    message: "test terminal spawn failure".to_string(),
+                },
+            ));
         }
         *self.runtime_generation.lock().unwrap() += 1;
         *self.presence.lock().unwrap() = ManagedPtyPresence::Live;
@@ -548,7 +551,12 @@ impl ProviderAgentTerminalGateway for LifecycleTerminal {
         }
         self.stops.lock().unwrap().push(owner.clone());
         if *self.fail_stop.lock().unwrap() {
-            return Err(ProviderAgentTerminalGatewayError::Unavailable);
+            return Err(ProviderAgentTerminalGatewayError::Technical(
+                crate::domain::failure::TechnicalFailure {
+                    nature: crate::domain::failure::TechnicalFailureNature::Transient,
+                    message: "unavailable".into(),
+                },
+            ));
         }
         *self.presence.lock().unwrap() = ManagedPtyPresence::ConfirmedAbsent;
         Ok(())
@@ -1489,7 +1497,14 @@ async fn test_実行木node終端停止_node不一致と停止失敗ではsettle
             )
             .await
             .unwrap_err(),
-        super::AgentSessionLifecycleUsecaseError::TerminalUnavailable
+        super::AgentSessionLifecycleUsecaseError::Terminal(
+            crate::domain::agent_session::ProviderAgentTerminalGatewayError::Technical(
+                crate::domain::failure::TechnicalFailure {
+                    nature: crate::domain::failure::TechnicalFailureNature::Transient,
+                    message: "unavailable".into()
+                }
+            )
+        )
     );
     assert_eq!(
         sessions
@@ -2077,7 +2092,14 @@ async fn test_agent_session_resume_spawn失敗時は未起動launchのhook警告
             )
             .await
             .unwrap_err(),
-        super::AgentSessionLifecycleUsecaseError::TerminalUnavailable,
+        super::AgentSessionLifecycleUsecaseError::Terminal(
+            crate::domain::agent_session::ProviderAgentTerminalGatewayError::Technical(
+                crate::domain::failure::TechnicalFailure {
+                    nature: crate::domain::failure::TechnicalFailureNature::Other,
+                    message: "test terminal spawn failure".into()
+                }
+            )
+        ),
     );
     assert!(hook_health.warnings().await.unwrap().is_empty());
 }
@@ -3382,10 +3404,81 @@ async fn test_workflow_session準備_入口から期限と取消の分類を保�
             Err(error) => error,
             Ok(_) => panic!("prepare must stop"),
         };
-        assert!(
-            matches!(error, WorkflowRuntimeError::Technical(ref actual) if *actual == stopped.into())
+        let source = crate::domain::failure::TechnicalFailure::from(stopped);
+        let WorkflowRuntimeError::Technical(actual) = error else {
+            panic!("prepare must return a technical failure");
+        };
+        assert_eq!(
+            actual,
+            crate::domain::failure::TechnicalFailure {
+                nature: source.nature,
+                message: format!(
+                    "launch Workflow AgentSession for NodeExecution 'node-1': {}",
+                    source.message,
+                ),
+            },
         );
 
         assert_eq!(*context.terminal.spawn_count.lock().unwrap(), 0);
     }
+}
+
+#[tokio::test]
+async fn test_agent_session_resume_実行ファイル未解決はprovider利用不可を返す() {
+    struct Unavailable;
+    impl ProviderAvailabilityReader for Unavailable {
+        fn is_available(&self, _: ProviderKind) -> bool {
+            false
+        }
+        fn resolved_executable(&self, _: ProviderKind) -> Option<ResolvedProviderExecutable> {
+            None
+        }
+    }
+    // Given
+    let context = setup();
+    context
+        .sessions
+        .create(
+            "agent-unavailable",
+            WorkspaceIdentity::new("/repo"),
+            "/repo/worktree",
+            ProviderKind::Codex,
+            session_location("agent-unavailable"),
+            "create",
+        )
+        .await
+        .unwrap();
+    context
+        .sessions
+        .associate_provider_session("agent-unavailable", "provider-1", None, "associate")
+        .await
+        .unwrap();
+    let lifecycle = AgentSessionLifecycleUsecase::new(
+        Arc::new(crate::adaptor::gateway::identity::RandomIdentityIssuer),
+        context.sessions.clone(),
+        context.provider_lifecycle.clone(),
+        ProviderAgentRuntime::new(
+            Arc::new(Unavailable),
+            context.launches.clone(),
+            context.terminal.clone(),
+        ),
+        context.hook_health.clone(),
+        context.change_notifier.subscriptions.clone(),
+        context.execution_trees.clone(),
+    );
+    *context.terminal.presence.lock().unwrap() = ManagedPtyPresence::ConfirmedAbsent;
+    lifecycle
+        .observe_process_exit("agent-unavailable", 1, Some(0), "exit")
+        .await
+        .unwrap();
+    // When
+    let result = lifecycle
+        .ensure_provider_running("agent-unavailable", 24, 80, "resume")
+        .await;
+    // Then
+    assert_eq!(
+        result,
+        Err(AgentSessionLifecycleUsecaseError::ProviderUnavailable)
+    );
+    assert_eq!(*context.terminal.spawn_count.lock().unwrap(), 0);
 }

@@ -47,12 +47,34 @@ impl From<ProviderUnavailableReason> for ProviderUnavailableReasonDto {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ProviderAvailabilityUsecaseError {
     InvalidInput,
-    ConfigUnavailable,
-    RefreshUnavailable,
+    Config(crate::domain::agent_session::ProviderExecutableConfigRepositoryError),
+    Refresh(crate::domain::agent_session::ProviderExecutableProbeGatewayError),
     Corrupt,
+}
+
+impl ProviderAvailabilityUsecaseError {
+    pub(crate) fn technical_failure(&self) -> Option<&crate::domain::failure::TechnicalFailure> {
+        match self {
+            Self::Config(
+                crate::domain::agent_session::ProviderExecutableConfigRepositoryError::Technical(
+                    failure,
+                ),
+            )
+            | Self::Refresh(
+                crate::domain::agent_session::ProviderExecutableProbeGatewayError::Technical(
+                    failure,
+                ),
+            ) => Some(failure),
+            Self::InvalidInput
+            | Self::Corrupt
+            | Self::Config(
+                crate::domain::agent_session::ProviderExecutableConfigRepositoryError::InvalidInput,
+            ) => None,
+        }
+    }
 }
 
 pub(crate) struct ProviderAvailabilityUsecase {
@@ -160,7 +182,7 @@ impl ProviderAvailabilityUsecase {
             .map_err(|_| ProviderAvailabilityUsecaseError::Corrupt)?;
         self.probe
             .refresh_search_path()
-            .map_err(|_| ProviderAvailabilityUsecaseError::RefreshUnavailable)?;
+            .map_err(ProviderAvailabilityUsecaseError::Refresh)?;
         self.rebuild_registry()
     }
 
@@ -175,7 +197,7 @@ impl ProviderAvailabilityUsecase {
             .map_err(|_| ProviderAvailabilityUsecaseError::Corrupt)?;
         self.config
             .save_configured_executable(provider, executable.as_ref())
-            .map_err(|_| ProviderAvailabilityUsecaseError::ConfigUnavailable)?;
+            .map_err(ProviderAvailabilityUsecaseError::Config)?;
         self.rebuild_registry()
     }
 
@@ -218,7 +240,7 @@ fn build_registry(
         .map(|provider| {
             let configured_executable = config
                 .configured_executable(provider)
-                .map_err(|_| ProviderAvailabilityUsecaseError::ConfigUnavailable)?;
+                .map_err(ProviderAvailabilityUsecaseError::Config)?;
             Ok(ProviderRegistryEntry::detect(
                 provider,
                 configured_executable,

@@ -36,7 +36,6 @@ pub(crate) enum AgentSessionReadUsecaseError {
     Store(crate::domain::failure::StorageFailure),
     InvalidRequest,
     StorageUnavailable,
-    TerminalUnavailable,
     Corrupt,
 }
 
@@ -103,20 +102,19 @@ fn map_query_error(error: AgentSessionQueryError) -> AgentSessionReadUsecaseErro
 fn map_lifecycle_error(error: AgentSessionLifecycleUsecaseError) -> AgentSessionReadUsecaseError {
     match error {
         error @ (AgentSessionLifecycleUsecaseError::Workflow(_)
-        | AgentSessionLifecycleUsecaseError::Conflict(_)) => {
+        | AgentSessionLifecycleUsecaseError::Conflict(_)
+        | AgentSessionLifecycleUsecaseError::Launch(_)
+        | AgentSessionLifecycleUsecaseError::Terminal(_)) => {
             AgentSessionReadUsecaseError::Lifecycle(error)
-        }
-        AgentSessionLifecycleUsecaseError::TerminalUnavailable => {
-            AgentSessionReadUsecaseError::TerminalUnavailable
         }
         AgentSessionLifecycleUsecaseError::StorageUnavailable => {
             AgentSessionReadUsecaseError::StorageUnavailable
         }
         AgentSessionLifecycleUsecaseError::Store(kind) => AgentSessionReadUsecaseError::Store(kind),
-        AgentSessionLifecycleUsecaseError::Corrupt => AgentSessionReadUsecaseError::Corrupt,
-        AgentSessionLifecycleUsecaseError::NotFound
-        | AgentSessionLifecycleUsecaseError::InvalidOperation
-        | AgentSessionLifecycleUsecaseError::LaunchUnavailable => {
+        AgentSessionLifecycleUsecaseError::ProviderUnavailable
+        | AgentSessionLifecycleUsecaseError::Corrupt
+        | AgentSessionLifecycleUsecaseError::NotFound
+        | AgentSessionLifecycleUsecaseError::InvalidOperation => {
             AgentSessionReadUsecaseError::Corrupt
         }
     }

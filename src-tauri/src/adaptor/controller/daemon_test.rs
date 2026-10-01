@@ -25,7 +25,27 @@ fn test_performance_fixture_replaces_both_provider_executables_without_affecting
 fn b071_store_open_failures_map_to_the_closed_safe_startup_vocabulary() {
     for (error, expected) in [
         (E::WriterLockHeld, K::StoreInUse),
-        (E::StorageUnavailable, K::StorageUnavailable),
+        (
+            E::StorageUnavailable(domain::failure::TechnicalFailure {
+                nature: domain::failure::TechnicalFailureNature::Other,
+                message: "disk full".into(),
+            }),
+            K::StorageUnavailable(domain::failure::TechnicalFailureNature::Other),
+        ),
+        (
+            E::StorageUnavailable(domain::failure::TechnicalFailure {
+                nature: domain::failure::TechnicalFailureNature::Transient,
+                message: "source".into(),
+            }),
+            K::StorageUnavailable(domain::failure::TechnicalFailureNature::Transient),
+        ),
+        (
+            E::StorageUnavailable(domain::failure::TechnicalFailure {
+                nature: domain::failure::TechnicalFailureNature::TimedOut,
+                message: "source".into(),
+            }),
+            K::StorageUnavailable(domain::failure::TechnicalFailureNature::TimedOut),
+        ),
         (E::UnsupportedRuntime, K::UnsupportedRuntime),
         (E::UnsupportedStoreVersion, K::UnsupportedStoreVersion),
         (E::InitializationStateInvalid, K::InitializationStateInvalid),

@@ -50,7 +50,12 @@ impl ProviderExecutableConfigRepository for FakeProviderExecutableConfigReposito
         executable: Option<&ProviderExecutable>,
     ) -> Result<(), ProviderExecutableConfigRepositoryError> {
         if self.fail_save.load(Ordering::SeqCst) {
-            return Err(ProviderExecutableConfigRepositoryError::Unavailable);
+            return Err(ProviderExecutableConfigRepositoryError::Technical(
+                crate::domain::failure::TechnicalFailure {
+                    nature: crate::domain::failure::TechnicalFailureNature::Transient,
+                    message: "unavailable".into(),
+                },
+            ));
         }
         let mut overrides = self.overrides.lock().unwrap();
         match executable {
@@ -292,7 +297,14 @@ fn test_provider_availability_保存失敗時はregistryを変更しない() {
         availability
             .update_configured_executable(ProviderKind::Codex, "/custom/codex")
             .unwrap_err(),
-        ProviderAvailabilityUsecaseError::ConfigUnavailable
+        ProviderAvailabilityUsecaseError::Config(
+            crate::domain::agent_session::ProviderExecutableConfigRepositoryError::Technical(
+                crate::domain::failure::TechnicalFailure {
+                    nature: crate::domain::failure::TechnicalFailureNature::Transient,
+                    message: "unavailable".into()
+                }
+            )
+        )
     );
     assert_eq!(availability.snapshot().unwrap(), before);
 }
@@ -473,5 +485,35 @@ fn test_provider利用可否_四種類の利用不可理由を出力へ写す() 
         let actual = super::ProviderUnavailableReasonDto::from(domain);
         // Then
         assert_eq!(actual, expected);
+    }
+}
+
+#[test]
+fn test_provider設定失敗_全変種から技術的な失敗だけを参照する() {
+    use super::provider_availability::ProviderAvailabilityUsecaseError as E;
+    use crate::domain::agent_session::{
+        ProviderExecutableConfigRepositoryError as C, ProviderExecutableProbeGatewayError as P,
+    };
+    use crate::domain::failure::{TechnicalFailure, TechnicalFailureNature};
+    // Given / When / Then
+    for error in [E::InvalidInput, E::Corrupt, E::Config(C::InvalidInput)] {
+        assert_eq!(error.technical_failure(), None);
+    }
+    for nature in [
+        TechnicalFailureNature::Transient,
+        TechnicalFailureNature::TimedOut,
+        TechnicalFailureNature::Cancelled,
+        TechnicalFailureNature::Other,
+    ] {
+        let failure = TechnicalFailure {
+            nature,
+            message: "source failure".into(),
+        };
+        for error in [
+            E::Config(C::Technical(failure.clone())),
+            E::Refresh(P::Technical(failure.clone())),
+        ] {
+            assert_eq!(error.technical_failure(), Some(&failure));
+        }
     }
 }

@@ -3,7 +3,7 @@ use std::sync::Arc;
 use crate::adaptor::presenter::terminal_event_hub::TerminalSurfaceEventHub;
 use crate::domain::agent_session::aggregates::ManagedPtyPresence;
 use crate::domain::agent_session::ProviderAgentTerminalGateway;
-use crate::domain::agent_session::ProviderAgentTerminalSpawnError;
+use crate::domain::agent_session::ProviderAgentTerminalGatewayError;
 use crate::domain::terminal_surface::entities::TerminalSurface;
 use crate::domain::terminal_surface::gateway::TerminalSurfaceGateway;
 use crate::domain::terminal_surface::{
@@ -51,36 +51,46 @@ fn test_provider_agent_terminal_spawn_error_残る分類とpayloadを保持す�
     let cases = [
         (
             crate::usecase::terminal_surface::error::UsecaseError::OwnerConflict,
-            ProviderAgentTerminalSpawnError::OwnerConflict,
+            ProviderAgentTerminalGatewayError::OwnerConflict,
         ),
         (
-            crate::usecase::terminal_surface::error::UsecaseError::PtySpawn {
-                error: "openpty failed".to_string(),
-            },
-            ProviderAgentTerminalSpawnError::PtySpawn {
-                error: "openpty failed".to_string(),
-            },
+            crate::usecase::terminal_surface::error::UsecaseError::Technical(
+                crate::domain::failure::TechnicalFailure {
+                    nature: crate::domain::failure::TechnicalFailureNature::Other,
+                    message: "openpty failed".to_string(),
+                },
+            ),
+            ProviderAgentTerminalGatewayError::Technical(
+                crate::domain::failure::TechnicalFailure {
+                    nature: crate::domain::failure::TechnicalFailureNature::Other,
+                    message: "openpty failed".to_string(),
+                },
+            ),
         ),
         (
-            crate::usecase::terminal_surface::error::UsecaseError::OtherSpawnFailure {
-                error: "checkpoint failed".to_string(),
-            },
-            ProviderAgentTerminalSpawnError::OtherSpawnFailure {
-                error: "checkpoint failed".to_string(),
-            },
+            crate::usecase::terminal_surface::error::UsecaseError::Technical(
+                crate::domain::failure::TechnicalFailure {
+                    nature: crate::domain::failure::TechnicalFailureNature::Other,
+                    message: "checkpoint failed".to_string(),
+                },
+            ),
+            ProviderAgentTerminalGatewayError::Technical(
+                crate::domain::failure::TechnicalFailure {
+                    nature: crate::domain::failure::TechnicalFailureNature::Other,
+                    message: "checkpoint failed".to_string(),
+                },
+            ),
         ),
         (
-            crate::usecase::terminal_surface::error::UsecaseError::Gateway(
+            crate::usecase::terminal_surface::error::UsecaseError::InvalidOperation(
                 "runtime is shutting down".to_string(),
             ),
-            ProviderAgentTerminalSpawnError::OtherSpawnFailure {
-                error: "runtime is shutting down".to_string(),
-            },
+            ProviderAgentTerminalGatewayError::InvalidOperation("runtime is shutting down".into()),
         ),
     ];
 
     for (source, expected) in cases {
-        assert_eq!(super::map_spawn_error(source), expected);
+        assert_eq!(super::map_terminal_error(source), expected);
     }
 }
 
@@ -156,4 +166,33 @@ fn test_provider_agent_terminal_exit_code_終了済みsurfaceのexit_codeを返�
         application.exited_session_owners(),
         vec![(1, owner.clone(), Some(137))]
     );
+}
+
+#[test]
+fn test_terminal失敗_全ての性質とメッセージを操作と起動で保持する() {
+    use crate::domain::failure::{TechnicalFailure, TechnicalFailureNature};
+    use crate::usecase::terminal_surface::error::UsecaseError;
+    for nature in [
+        TechnicalFailureNature::Transient,
+        TechnicalFailureNature::TimedOut,
+        TechnicalFailureNature::Cancelled,
+        TechnicalFailureNature::Other,
+    ] {
+        // Given
+        let failure = TechnicalFailure {
+            nature,
+            message: "terminal failure".into(),
+        };
+        // When
+        let operation = super::map_terminal_error(UsecaseError::Technical(failure.clone()));
+        let spawn = super::map_terminal_error(UsecaseError::Technical(failure.clone()));
+        // Then
+        assert_eq!(
+            operation,
+            crate::domain::agent_session::ProviderAgentTerminalGatewayError::Technical(
+                failure.clone()
+            )
+        );
+        assert_eq!(spawn, ProviderAgentTerminalGatewayError::Technical(failure));
+    }
 }

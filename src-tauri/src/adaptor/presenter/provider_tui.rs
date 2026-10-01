@@ -129,26 +129,34 @@ pub(crate) fn provider_tui_coded_error(error: ProviderTuiCodedError) -> AppError
 }
 
 pub(crate) fn provider_availability_error(error: ProviderAvailabilityUsecaseError) -> AppError {
-    match error {
+    let cause = error
+        .technical_failure()
+        .map(|failure| failure.message.clone());
+    let kind = error.connect_code();
+    let result = match error {
         ProviderAvailabilityUsecaseError::InvalidInput => {
             provider_tui_coded_error(ProviderTuiCodedError::ProviderAvailabilityInvalidExecutable)
         }
-        ProviderAvailabilityUsecaseError::ConfigUnavailable => {
+        ProviderAvailabilityUsecaseError::Config(_) => {
             provider_tui_coded_error(ProviderTuiCodedError::ProviderAvailabilityConfigUnavailable)
         }
-        ProviderAvailabilityUsecaseError::RefreshUnavailable => {
+        ProviderAvailabilityUsecaseError::Refresh(_) => {
             provider_tui_coded_error(ProviderTuiCodedError::ProviderAvailabilityRefreshUnavailable)
         }
         ProviderAvailabilityUsecaseError::Corrupt => {
             provider_tui_coded_error(ProviderTuiCodedError::ProviderAvailabilityCorrupt)
         }
-    }
+    };
+    result.with_status(kind).with_cause(cause)
 }
 
 pub(crate) fn launch_error(
     error: AgentSessionLaunchUsecaseError,
     operation: AgentSessionLaunchOperation,
 ) -> AppError {
+    let cause = error
+        .technical_failure()
+        .map(|failure| failure.message.clone());
     let kind = error.connect_code();
     let result = match error {
         AgentSessionLaunchUsecaseError::Technical(stopped) => {
@@ -172,11 +180,10 @@ pub(crate) fn launch_error(
         AgentSessionLaunchUsecaseError::StorageUnavailable => {
             provider_tui_coded_error(ProviderTuiCodedError::AgentSessionStorageUnavailable)
         }
-        AgentSessionLaunchUsecaseError::LaunchUnavailable => {
+        AgentSessionLaunchUsecaseError::Launch(_) => {
             provider_tui_coded_error(ProviderTuiCodedError::AgentSessionLaunchUnavailable(kind))
         }
-        AgentSessionLaunchUsecaseError::TerminalUnavailable
-        | AgentSessionLaunchUsecaseError::TerminalSpawn(_) => {
+        AgentSessionLaunchUsecaseError::Terminal(_) => {
             provider_tui_coded_error(ProviderTuiCodedError::AgentSessionTerminalUnavailable(kind))
         }
         AgentSessionLaunchUsecaseError::Store(_) => {
@@ -186,10 +193,13 @@ pub(crate) fn launch_error(
             provider_tui_coded_error(ProviderTuiCodedError::AgentSessionCorrupt)
         }
     };
-    result.with_status(kind)
+    result.with_status(kind).with_cause(cause)
 }
 
 pub(crate) fn lifecycle_error(error: AgentSessionLifecycleUsecaseError) -> AppError {
+    let cause = error
+        .technical_failure()
+        .map(|failure| failure.message.clone());
     let kind = error.connect_code();
     let result = match error {
         AgentSessionLifecycleUsecaseError::Workflow(error) => AppError::from_failure(error),
@@ -205,10 +215,11 @@ pub(crate) fn lifecycle_error(error: AgentSessionLifecycleUsecaseError) -> AppEr
         AgentSessionLifecycleUsecaseError::StorageUnavailable => {
             provider_tui_coded_error(ProviderTuiCodedError::AgentSessionStorageUnavailable)
         }
-        AgentSessionLifecycleUsecaseError::LaunchUnavailable => {
+        AgentSessionLifecycleUsecaseError::ProviderUnavailable
+        | AgentSessionLifecycleUsecaseError::Launch(_) => {
             provider_tui_coded_error(ProviderTuiCodedError::AgentSessionLaunchUnavailable(kind))
         }
-        AgentSessionLifecycleUsecaseError::TerminalUnavailable => {
+        AgentSessionLifecycleUsecaseError::Terminal(_) => {
             provider_tui_coded_error(ProviderTuiCodedError::AgentSessionTerminalUnavailable(kind))
         }
         AgentSessionLifecycleUsecaseError::Store(_) => {
@@ -218,7 +229,7 @@ pub(crate) fn lifecycle_error(error: AgentSessionLifecycleUsecaseError) -> AppEr
             provider_tui_coded_error(ProviderTuiCodedError::AgentSessionCorrupt)
         }
     };
-    result.with_status(kind)
+    result.with_status(kind).with_cause(cause)
 }
 
 #[cfg(test)]

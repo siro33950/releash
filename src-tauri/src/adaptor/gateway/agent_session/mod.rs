@@ -25,9 +25,7 @@ mod agent_session_history_query_service_tests;
 #[cfg(test)]
 #[path = "agent_session_repository_test.rs"]
 mod agent_session_repository_tests;
-#[cfg(test)]
-#[path = "provider_agent_launch_gateway_test.rs"]
-mod provider_agent_launch_gateway_tests;
+
 #[cfg(test)]
 #[path = "provider_availability_gateway_test.rs"]
 mod provider_availability_gateway_tests;

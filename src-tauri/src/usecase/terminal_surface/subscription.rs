@@ -181,14 +181,14 @@ impl TerminalSubscriptionUsecase {
         loop {
             let generation = terminal
                 .get_summary(owner)
-                .map_err(read_error)?
+                .map_err(StateReadError::from_error)?
                 .runtime_generation;
             let mut result = None;
             let entered = terminal.with_output_order(generation.value(), &mut || {
                 match terminal.get_summary(owner) {
                     Ok(current) if current.runtime_generation != generation => return,
                     Err(error) => {
-                        result = Some(Err(read_error(error)));
+                        result = Some(Err(StateReadError::from_error(error)));
                         return;
                     }
                     _ => {}
@@ -271,7 +271,7 @@ impl TerminalSubscriptionUsecase {
                         StateValue::Terminal(TerminalSurfaceStreamItem::Snapshot(surface.into())),
                     );
                 })
-                .map_err(read_error)?;
+                .map_err(StateReadError::from_error)?;
             result.map_err(read_error)
         })
         .await

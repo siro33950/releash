@@ -202,7 +202,7 @@ fn test_サイズ更新_予約の破棄と受付失敗でも待機列を解放�
     application.shutdown().unwrap();
     assert_eq!(
         resize(),
-        Err(super::UsecaseError::Gateway(
+        Err(super::UsecaseError::InvalidOperation(
             "Terminal Surface runtime is shutting down".into()
         ))
     );

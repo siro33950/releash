@@ -159,9 +159,14 @@ impl ProviderExecutableConfigRepository for AppConfig {
         &self,
         provider: ProviderKind,
     ) -> Result<Option<ProviderExecutable>, ProviderExecutableConfigRepositoryError> {
-        let config = self
-            .get_config()
-            .map_err(|_| ProviderExecutableConfigRepositoryError::Unavailable)?;
+        let config = self.get_config().map_err(|error| {
+            ProviderExecutableConfigRepositoryError::Technical(
+                crate::domain::failure::TechnicalFailure {
+                    nature: crate::domain::failure::TechnicalFailureNature::Other,
+                    message: error.to_string(),
+                },
+            )
+        })?;
         let value = match provider {
             ProviderKind::Claude => config.agents.claude.cli_path,
             ProviderKind::Codex => config.agents.codex.cli_path,
@@ -177,18 +182,22 @@ impl ProviderExecutableConfigRepository for AppConfig {
         provider: ProviderKind,
         executable: Option<&ProviderExecutable>,
     ) -> Result<(), ProviderExecutableConfigRepositoryError> {
-        let mut config = self
-            .config
-            .lock()
-            .map_err(|_| ProviderExecutableConfigRepositoryError::Unavailable)?;
+        let mut config = self.config.lock().map_err(|error| {
+            ProviderExecutableConfigRepositoryError::Technical(
+                crate::domain::failure::TechnicalFailure {
+                    nature: crate::domain::failure::TechnicalFailureNature::Other,
+                    message: error.to_string(),
+                },
+            )
+        })?;
         let mut next = config.clone();
         let value = executable.map(|executable| executable.as_str().to_string());
         match provider {
             ProviderKind::Claude => next.agents.claude.cli_path = value,
             ProviderKind::Codex => next.agents.codex.cli_path = value,
         }
-        write_config(&self.config_path, &next)
-            .map_err(|_| ProviderExecutableConfigRepositoryError::Unavailable)?;
+        write_config_typed(&self.config_path, &next)
+            .map_err(ProviderExecutableConfigRepositoryError::Technical)?;
         *config = next;
         Ok(())
     }
@@ -355,12 +364,24 @@ pub fn load_or_create_config(path: &Path) -> Result<ReleashConfig, String> {
 }
 
 pub fn write_config(path: &Path, config: &ReleashConfig) -> Result<(), String> {
+    write_config_typed(path, config).map_err(|error| error.to_string())
+}
+
+fn write_config_typed(
+    path: &Path,
+    config: &ReleashConfig,
+) -> Result<(), crate::domain::failure::TechnicalFailure> {
     if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|e| format!("ディレクトリ作成失敗: {e}"))?;
+        fs::create_dir_all(parent)
+            .map_err(|error| config_io_failure(error, "ディレクトリ作成失敗"))?;
     }
 
-    let content =
-        toml::to_string_pretty(config).map_err(|e| format!("設定のシリアライズ失敗: {e}"))?;
+    let content = toml::to_string_pretty(config).map_err(|error| {
+        crate::domain::failure::TechnicalFailure {
+            nature: crate::domain::failure::TechnicalFailureNature::Other,
+            message: format!("設定のシリアライズ失敗: {error}"),
+        }
+    })?;
 
     let tmp_path = next_config_tmp_path(path);
     if let Err(e) = write_config_tmp_file(&tmp_path, &content) {
@@ -369,14 +390,14 @@ pub fn write_config(path: &Path, config: &ReleashConfig) -> Result<(), String> {
     }
     if let Err(e) = fs::rename(&tmp_path, path) {
         let _ = fs::remove_file(&tmp_path);
-        return Err(format!("ファイルのリネーム失敗: {e}"));
+        return Err(config_io_failure(e, "ファイルのリネーム失敗"));
     }
 
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         fs::set_permissions(path, fs::Permissions::from_mode(0o600))
-            .map_err(|e| format!("パーミッション設定失敗: {e}"))?;
+            .map_err(|error| config_io_failure(error, "パーミッション設定失敗"))?;
     }
 
     Ok(())
@@ -394,7 +415,10 @@ fn next_config_tmp_path(path: &Path) -> PathBuf {
         .unwrap_or_else(|| PathBuf::from(tmp_name))
 }
 
-fn write_config_tmp_file(tmp_path: &Path, content: &str) -> Result<(), String> {
+fn write_config_tmp_file(
+    tmp_path: &Path,
+    content: &str,
+) -> Result<(), crate::domain::failure::TechnicalFailure> {
     let mut options = OpenOptions::new();
     options.write(true).create_new(true);
     #[cfg(unix)]
@@ -405,9 +429,9 @@ fn write_config_tmp_file(tmp_path: &Path, content: &str) -> Result<(), String> {
 
     let mut file = options
         .open(tmp_path)
-        .map_err(|e| format!("一時ファイル作成失敗: {e}"))?;
+        .map_err(|error| config_io_failure(error, "一時ファイル作成失敗"))?;
     file.write_all(content.as_bytes())
-        .map_err(|e| format!("一時ファイル書き込み失敗: {e}"))?;
+        .map_err(|error| config_io_failure(error, "一時ファイル書き込み失敗"))?;
     Ok(())
 }
 
@@ -487,7 +511,15 @@ mod tests {
                 Some(&next),
             )
             .unwrap_err(),
-            ProviderExecutableConfigRepositoryError::Unavailable
+            ProviderExecutableConfigRepositoryError::Technical(
+                crate::domain::failure::TechnicalFailure {
+                    nature: crate::domain::failure::TechnicalFailureNature::Other,
+                    message: format!(
+                        "ディレクトリ作成失敗: {}",
+                        std::io::Error::from_raw_os_error(17)
+                    )
+                }
+            )
         );
         assert_eq!(
             ProviderExecutableConfigRepository::configured_executable(
@@ -1172,5 +1204,15 @@ models = ["legacy-codex"]
         assert!(!serialized.contains("models ="), "{serialized}");
         assert!(serialized.contains("cli_path = \"/opt/bin/claude\""));
         assert!(serialized.contains("cli_path = \"/opt/bin/codex\""));
+    }
+}
+
+fn config_io_failure(
+    error: std::io::Error,
+    context: &str,
+) -> crate::domain::failure::TechnicalFailure {
+    crate::domain::failure::TechnicalFailure {
+        nature: crate::adaptor::gateway::shared::background_io::nature(&error),
+        message: format!("{context}: {error}"),
     }
 }

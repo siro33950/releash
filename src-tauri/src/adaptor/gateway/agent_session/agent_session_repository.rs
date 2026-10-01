@@ -895,7 +895,12 @@ pub(super) fn map_ownership_error(
             AgentSessionHistoryGatewayError::InvalidRequest
         }
         AgentSessionRepositoryError::Corrupt => AgentSessionHistoryGatewayError::Corrupt,
-        AgentSessionRepositoryError::Unavailable => AgentSessionHistoryGatewayError::Unavailable,
+        AgentSessionRepositoryError::Unavailable => {
+            AgentSessionHistoryGatewayError::Technical(crate::domain::failure::TechnicalFailure {
+                nature: crate::domain::failure::TechnicalFailureNature::Transient,
+                message: "agent session storage is unavailable".into(),
+            })
+        }
         AgentSessionRepositoryError::Conflict => AgentSessionHistoryGatewayError::Conflict,
         AgentSessionRepositoryError::ProviderSessionAlreadyOwned { agent_session_id } => {
             AgentSessionHistoryGatewayError::ProviderSessionAlreadyOwned { agent_session_id }

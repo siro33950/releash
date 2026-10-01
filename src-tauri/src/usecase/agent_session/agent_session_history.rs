@@ -28,11 +28,11 @@ pub(crate) struct AgentSessionHistoryRequest {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum AgentSessionHistoryQueryError {
+    Technical(crate::domain::failure::TechnicalFailure),
     Conflict,
     ProviderSessionAlreadyOwned { agent_session_id: String },
     Store(crate::domain::failure::StorageFailure),
     InvalidRequest,
-    Unavailable,
     Corrupt,
 }
 

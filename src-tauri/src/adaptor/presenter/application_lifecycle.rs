@@ -13,7 +13,7 @@ pub(crate) fn application_startup_outcome(
         O::Failed(failure) => ApplicationStartupOutcomeDtoV1::Failed {
             kind: match failure.kind {
                 K::StoreInUse => StartupFailureKindDtoV1::StoreInUse,
-                K::StorageUnavailable => StartupFailureKindDtoV1::StorageUnavailable,
+                K::StorageUnavailable(_) => StartupFailureKindDtoV1::StorageUnavailable,
                 K::UnsupportedRuntime => StartupFailureKindDtoV1::UnsupportedRuntime,
                 K::UnsupportedStoreVersion => StartupFailureKindDtoV1::UnsupportedStoreVersion,
                 K::InitializationStateInvalid => {
