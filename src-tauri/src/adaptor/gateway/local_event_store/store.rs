@@ -52,7 +52,7 @@ fn correlation_id() -> String {
     uuid::Uuid::new_v4().to_string()
 }
 
-fn io_open_failure(error: &std::io::Error) -> LocalEventStoreOpenError {
+fn io_open_failure(error: std::io::Error) -> LocalEventStoreOpenError {
     LocalEventStoreOpenError::StorageUnavailable(crate::domain::failure::TechnicalFailure::from(
         error,
     ))
@@ -123,7 +123,7 @@ fn truncate_wal_checkpoint(
     })
 }
 
-fn classify_writer_lock_error(error: &std::io::Error) -> LocalEventStoreOpenError {
+fn classify_writer_lock_error(error: std::io::Error) -> LocalEventStoreOpenError {
     if error.kind() == std::io::ErrorKind::WouldBlock {
         LocalEventStoreOpenError::WriterLockHeld
     } else {
@@ -139,12 +139,12 @@ fn sqlite_header_is_valid(
 
     layout.observe(StorePathOperation::Open, path);
     layout.observe(StorePathOperation::Read, path);
-    let mut file = std::fs::File::open(path).map_err(|error| io_open_failure(&error))?;
+    let mut file = std::fs::File::open(path).map_err(io_open_failure)?;
     let mut header = [0u8; 16];
     match file.read_exact(&mut header) {
         Ok(()) => Ok(&header == b"SQLite format 3\0"),
         Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => Ok(false),
-        Err(error) => Err(io_open_failure(&error)),
+        Err(error) => Err(io_open_failure(error)),
     }
 }
 
@@ -182,16 +182,16 @@ fn open_schema_inspection(
                 }
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(io_open_failure(&error)),
+            Err(error) => return Err(io_open_failure(error)),
         }
     }
     layout.observe(StorePathOperation::Open, path);
     layout.observe(StorePathOperation::Read, path);
     let mut uri = url::Url::from_file_path(path).map_err(|()| {
-        io_open_failure(&std::io::Error::other(format!(
-            "invalid database file path: {}",
-            path.display()
-        )))
+        LocalEventStoreOpenError::StorageUnavailable(crate::domain::failure::TechnicalFailure {
+            nature: crate::domain::failure::TechnicalFailureNature::Other,
+            message: format!("invalid database file path: {}", path.display()),
+        })
     })?;
     uri.query_pairs_mut().append_pair("mode", "ro");
     if wal_has_bytes {
@@ -224,9 +224,7 @@ fn is_proven_initial_create_residue(
     path: &std::path::Path,
 ) -> Result<bool, LocalEventStoreOpenError> {
     layout.observe(StorePathOperation::Metadata, path);
-    let length = std::fs::metadata(path)
-        .map_err(|error| io_open_failure(&error))?
-        .len();
+    let length = std::fs::metadata(path).map_err(io_open_failure)?.len();
     if length == 0 {
         return Ok(true);
     }
@@ -257,12 +255,10 @@ fn remove_initial_create_database(layout: &StoreLayout) -> Result<(), LocalEvent
         match std::fs::remove_file(path) {
             Ok(()) => {}
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(io_open_failure(&error)),
+            Err(error) => return Err(io_open_failure(error)),
         }
     }
-    layout
-        .sync_app_data_root()
-        .map_err(|error| io_open_failure(&error))
+    layout.sync_app_data_root().map_err(io_open_failure)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -282,9 +278,7 @@ fn classify_existing_database(
     path: &std::path::Path,
 ) -> Result<ExistingDatabaseKind, LocalEventStoreOpenError> {
     layout.observe(StorePathOperation::Metadata, path);
-    let length = std::fs::metadata(path)
-        .map_err(|error| io_open_failure(&error))?
-        .len();
+    let length = std::fs::metadata(path).map_err(io_open_failure)?.len();
     if length == 0 || !sqlite_header_is_valid(layout, path)? {
         return Err(LocalEventStoreOpenError::InitializationStateInvalid);
     }
@@ -464,9 +458,7 @@ impl LocalEventStore {
         check_sqlite_version().map_err(|error| connection_open_failure(&error))?;
         let layout =
             StoreLayout::with_observer(&config.app_data_root, Arc::clone(&config.path_observer));
-        layout
-            .ensure_app_data_root()
-            .map_err(|error| io_open_failure(&error))?;
+        layout.ensure_app_data_root().map_err(io_open_failure)?;
 
         let lock_path = layout.writer_lock_path();
         layout.observe(StorePathOperation::Open, &lock_path);
@@ -476,19 +468,15 @@ impl LocalEventStore {
             .write(true)
             .truncate(false)
             .open(&lock_path)
-            .map_err(|error| io_open_failure(&error))?;
+            .map_err(io_open_failure)?;
         layout.observe(StorePathOperation::Metadata, &lock_path);
-        set_owner_only_permissions(&lock_path).map_err(|error| io_open_failure(&error))?;
-        fs2::FileExt::try_lock_exclusive(&writer_lock)
-            .map_err(|error| classify_writer_lock_error(&error))?;
+        set_owner_only_permissions(&lock_path).map_err(io_open_failure)?;
+        fs2::FileExt::try_lock_exclusive(&writer_lock).map_err(classify_writer_lock_error)?;
 
         let database_path = layout.database_path();
-        let evidence =
-            inspect_initial_create_evidence(&layout).map_err(|error| io_open_failure(&error))?;
+        let evidence = inspect_initial_create_evidence(&layout).map_err(io_open_failure)?;
         layout.observe(StorePathOperation::Metadata, &database_path);
-        let database_exists = database_path
-            .try_exists()
-            .map_err(|error| io_open_failure(&error))?;
+        let database_exists = database_path.try_exists().map_err(io_open_failure)?;
         let now_ms = config.clock.now_ms().max(0);
 
         let writer_connection = if !database_exists {
@@ -504,7 +492,7 @@ impl LocalEventStore {
                 }
                 InitialCreateEvidenceState::Valid => Ok(()),
             }
-            .map_err(|error| io_open_failure(&error))?;
+            .map_err(io_open_failure)?;
             layout.observe(StorePathOperation::Open, &database_path);
             layout.observe(StorePathOperation::Write, &database_path);
             let connection = open_writer(&database_path).map_err(|error| {
@@ -518,12 +506,12 @@ impl LocalEventStore {
                 config.fault.crash_initial_create_process_if_armed(
                     InitialCreateFaultPoint::AfterSqliteFileCreate,
                 );
-                return Err(io_open_failure(&std::io::Error::other(
+                return Err(io_open_failure(std::io::Error::other(
                     "injected initial creation failure",
                 )));
             }
             layout.observe(StorePathOperation::Metadata, &database_path);
-            set_owner_only_permissions(&database_path).map_err(|error| io_open_failure(&error))?;
+            set_owner_only_permissions(&database_path).map_err(io_open_failure)?;
             let installation_id = config
                 .fault
                 .initial_installation_id()
@@ -562,13 +550,12 @@ impl LocalEventStore {
                     config.fault.crash_initial_create_process_if_armed(
                         InitialCreateFaultPoint::AfterSqliteFileCreate,
                     );
-                    return Err(io_open_failure(&std::io::Error::other(
+                    return Err(io_open_failure(std::io::Error::other(
                         "injected initial creation failure",
                     )));
                 }
                 layout.observe(StorePathOperation::Metadata, &database_path);
-                set_owner_only_permissions(&database_path)
-                    .map_err(|error| io_open_failure(&error))?;
+                set_owner_only_permissions(&database_path).map_err(io_open_failure)?;
                 let installation_id = config
                     .fault
                     .initial_installation_id()
@@ -634,7 +621,7 @@ impl LocalEventStore {
         layout.observe(StorePathOperation::Sync, &database_path);
         std::fs::File::open(&database_path)
             .and_then(|file| file.sync_all())
-            .map_err(|error| io_open_failure(&error))?;
+            .map_err(io_open_failure)?;
         if config
             .fault
             .take_initial_create_fault(InitialCreateFaultPoint::AfterDatabaseSync)
@@ -643,7 +630,7 @@ impl LocalEventStore {
             config
                 .fault
                 .crash_initial_create_process_if_armed(InitialCreateFaultPoint::AfterDatabaseSync);
-            return Err(io_open_failure(&std::io::Error::other(
+            return Err(io_open_failure(std::io::Error::other(
                 "injected initial creation failure",
             )));
         }
@@ -655,11 +642,11 @@ impl LocalEventStore {
             config.fault.crash_initial_create_process_if_armed(
                 InitialCreateFaultPoint::BeforeEvidenceUnlink,
             );
-            return Err(io_open_failure(&std::io::Error::other(
+            return Err(io_open_failure(std::io::Error::other(
                 "injected initial creation failure",
             )));
         }
-        remove_initial_create_evidence(&layout).map_err(|error| io_open_failure(&error))?;
+        remove_initial_create_evidence(&layout).map_err(io_open_failure)?;
         if config
             .fault
             .take_initial_create_fault(InitialCreateFaultPoint::AfterEvidenceUnlink)
@@ -668,7 +655,7 @@ impl LocalEventStore {
             config.fault.crash_initial_create_process_if_armed(
                 InitialCreateFaultPoint::AfterEvidenceUnlink,
             );
-            return Err(io_open_failure(&std::io::Error::other(
+            return Err(io_open_failure(std::io::Error::other(
                 "injected initial creation failure",
             )));
         }
@@ -722,7 +709,7 @@ impl LocalEventStore {
                         QueuePop::Closed => break,
                     }
                 })
-                .map_err(|error| io_open_failure(&error))?
+                .map_err(io_open_failure)?
         };
 
         let mut writer_worker = Some(writer_worker);
@@ -744,7 +731,7 @@ impl LocalEventStore {
                     if let Some(worker) = writer_worker.take() {
                         let _ = worker.join();
                     }
-                    return Err(io_open_failure(&error));
+                    return Err(io_open_failure(error));
                 }
             };
             reader_workers.push(worker);
@@ -1115,7 +1102,7 @@ mod startup_error_classification_tests {
     #[test]
     fn only_lock_contention_is_store_in_use() {
         assert_eq!(
-            classify_writer_lock_error(&std::io::Error::from(std::io::ErrorKind::WouldBlock)),
+            classify_writer_lock_error(std::io::Error::from(std::io::ErrorKind::WouldBlock)),
             LocalEventStoreOpenError::WriterLockHeld
         );
         for kind in [
@@ -1124,8 +1111,8 @@ mod startup_error_classification_tests {
             std::io::ErrorKind::Other,
         ] {
             assert_eq!(
-                classify_writer_lock_error(&std::io::Error::from(kind)),
-                io_open_failure(&std::io::Error::from(kind))
+                classify_writer_lock_error(std::io::Error::from(kind)),
+                io_open_failure(std::io::Error::from(kind))
             );
         }
     }

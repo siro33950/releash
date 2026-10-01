@@ -618,11 +618,14 @@ fn test_store起動失敗_io種類とメッセージが実行中と一致する(
         // Given
         let error = std::io::Error::new(kind, "original io failure");
         // When
-        let LocalEventStoreOpenError::StorageUnavailable(failure) = super::io_open_failure(&error)
+        let LocalEventStoreOpenError::StorageUnavailable(failure) = super::io_open_failure(error)
         else {
             panic!("expected technical failure")
         };
-        let runtime = crate::adaptor::gateway::shared::background_io::failure(error);
+        let runtime = crate::adaptor::gateway::shared::background_io::failure(std::io::Error::new(
+            kind,
+            "original io failure",
+        ));
         // Then
         assert_eq!(failure.nature, expected);
         assert_eq!(runtime.kind, Failure::Technical(expected));
