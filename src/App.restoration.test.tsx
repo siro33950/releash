@@ -173,8 +173,6 @@ it("再接続後も起動処理と更新確認は一度だけでReady復帰時�
 			name: "repo",
 			is_main: true,
 			is_locked: false,
-			dirty_count: 0,
-			base_branch: null,
 		},
 	]);
 	await act(async () => {
