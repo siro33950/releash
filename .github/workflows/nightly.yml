@@ -83,7 +83,8 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
         working-directory: .
-      - uses: dtolnay/rust-toolchain@stable
+      - name: Install Rust toolchain
+        run: rustup toolchain install
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
@@ -134,9 +135,10 @@ jobs:
           files: coverage/coverage-final.json
           flags: typescript
           fail_ci_if_error: true
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: llvm-tools-preview
+      - name: Install Rust toolchain
+        run: |
+          rustup toolchain install
+          rustup component add llvm-tools-preview
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
@@ -202,9 +204,10 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: aarch64-apple-darwin,x86_64-apple-darwin
+      - name: Install Rust toolchain
+        run: |
+          rustup toolchain install
+          rustup target add aarch64-apple-darwin x86_64-apple-darwin
 
       - uses: Swatinem/rust-cache@v2
         with:

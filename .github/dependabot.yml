@@ -26,3 +26,11 @@ updates:
       - dependencies
       - ci
     open-pull-requests-limit: 5
+
+  - package-ecosystem: rust-toolchain
+    directory: /
+    schedule:
+      interval: weekly
+    labels:
+      - dependencies
+      - rust

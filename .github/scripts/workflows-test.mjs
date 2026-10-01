@@ -267,7 +267,7 @@ test("nightly measures both coverages with profile retention and uploads the che
   assert.equal(value(environment, "RUSTFLAGS"), "-C llvm-args=-runtime-counter-relocation");
   assert.equal(value(environment, "LLVM_PROFILE_FILE_NAME"), "releash-%m%c.profraw");
   assert.equal(value(environment, "RUST_TEST_THREADS"), '"2"');
-  assert.match(coverage, /components: llvm-tools-preview/);
+  assert.match(coverage, /rustup component add llvm-tools-preview/);
   assert.match(coverage, /uses: taiki-e\/install-action@cargo-llvm-cov/);
   const checkout = steps(coverage).find(step => value(step, "uses")?.startsWith("actions/checkout@"));
   assert.equal(value(checkout, "id"), "checkout");
