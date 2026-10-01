@@ -9,6 +9,7 @@ import { invokeClient as invoke } from "@/lib/client";
 import { showClientError } from "@/lib/clientErrorNotice";
 import {
 	type AppSettings,
+	type AppSettingsUpdate,
 	DEFAULT_SETTINGS,
 	type DiffBase,
 	type DiffMode,
@@ -118,23 +119,19 @@ export function useSettings() {
 		[],
 	);
 
-	const updatePerformanceTelemetry = useCallback(
-		(performanceTelemetry: boolean) => {
-			setSettings((prev) => ({ ...prev, performanceTelemetry }));
-		},
-		[],
-	);
-
 	const prevCrashReporting = useRef(settings.enableCrashReporting);
 
-	const updateSettings = useCallback((next: AppSettings) => {
+	const updateSettings = useCallback((next: AppSettingsUpdate) => {
 		if (next.enableCrashReporting !== prevCrashReporting.current) {
 			prevCrashReporting.current = next.enableCrashReporting;
 			invoke("update_crash_reporting", {
 				enabled: next.enableCrashReporting,
 			}).catch(showClientError);
 		}
-		setSettings(next);
+		setSettings((prev) => ({
+			...next,
+			performanceTelemetry: prev.performanceTelemetry,
+		}));
 	}, []);
 
 	return {
@@ -147,7 +144,6 @@ export function useSettings() {
 		updateDefaultDiffMode,
 		updateDefaultDiffOnlyMode,
 		updateTerminalStartupCommand,
-		updatePerformanceTelemetry,
 		updateSettings,
 	};
 }

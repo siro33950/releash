@@ -29,8 +29,6 @@ export {
 type Endpoint = { url: string; token: string; launchId: string };
 type Session = {
 	client: Client<typeof ClientService>;
-	endpoint: Endpoint;
-	attachmentId: string;
 };
 let connectionAbort = new AbortController();
 type ConnectionState =
@@ -41,7 +39,6 @@ let connectionState: ConnectionState = { phase: "IDLE" };
 const stateListeners = new Set<() => void>();
 let connectionBackoff = createConnectionBackoff();
 let retryTimer: ReturnType<typeof setTimeout> | undefined;
-const restorationAttachmentId = crypto.randomUUID();
 
 export function getConnectionState(): ConnectionState["phase"] {
 	return connectionState.phase;
@@ -69,7 +66,6 @@ function waitForConnectionChange(phase: ConnectionState["phase"]) {
 }
 
 async function open(abort: AbortController): Promise<Session> {
-	const attachmentId = restorationAttachmentId;
 	const timeout = setTimeout(
 		() => abort.abort(new Error("Daemon connection timed out")),
 		getOption(ClientService, min_connect_timeout_ms),
@@ -85,7 +81,7 @@ async function open(abort: AbortController): Promise<Session> {
 			),
 		);
 		const endpoint = await Promise.race([
-			invoke<Endpoint>("get_client_endpoint", { attachmentId }),
+			invoke<Endpoint>("get_client_endpoint"),
 			expired,
 		]);
 		abort.signal.throwIfAborted();
@@ -122,7 +118,7 @@ async function open(abort: AbortController): Promise<Session> {
 			expired,
 		]);
 		abort.signal.throwIfAborted();
-		return { client, endpoint, attachmentId };
+		return { client };
 	} finally {
 		clearTimeout(timeout);
 	}
@@ -493,18 +489,6 @@ export async function reportTerminalProcessed(
 		clientId: stream.id,
 		args: terminalTargetArgs(owner),
 		units,
-	});
-}
-
-export async function completeClientRestoration(generation: number) {
-	await getClient();
-	const active =
-		connectionState.phase === "READY" ? connectionState.session : null;
-	if (!active) throw new Error("Daemon connection is unavailable");
-	await invoke("complete_desktop_restoration", {
-		launchId: active.endpoint.launchId,
-		attachmentId: active.attachmentId,
-		generation,
 	});
 }
 

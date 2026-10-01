@@ -49,7 +49,13 @@ import { invokeClient as invoke } from "@/lib/client";
 import { getErrorMessage } from "@/lib/errorMessage";
 import { setPerformanceTelemetryEnabled, trackEvent } from "@/lib/telemetry";
 import { cn } from "@/lib/utils";
-import type { AppSettings, DiffBase, DiffMode, Theme } from "@/types/settings";
+import type {
+	AppSettings,
+	AppSettingsUpdate,
+	DiffBase,
+	DiffMode,
+	Theme,
+} from "@/types/settings";
 import { AutomationSection } from "./AutomationSection";
 import { DeleteConfirmDialog } from "./DeleteConfirmDialog";
 import { NotionSettingsSection } from "./NotionSettingsSection";
@@ -142,8 +148,8 @@ function AppearanceSection({
 	draft,
 	updateDraft,
 }: {
-	draft: AppSettings;
-	updateDraft: (updater: (d: AppSettings) => AppSettings) => void;
+	draft: AppSettingsUpdate;
+	updateDraft: (updater: (d: AppSettingsUpdate) => AppSettingsUpdate) => void;
 }) {
 	return (
 		<div className="flex flex-col gap-4">
@@ -237,8 +243,8 @@ function EditorSection({
 	updateDraft,
 	externalEditor,
 }: {
-	draft: AppSettings;
-	updateDraft: (updater: (d: AppSettings) => AppSettings) => void;
+	draft: AppSettingsUpdate;
+	updateDraft: (updater: (d: AppSettingsUpdate) => AppSettingsUpdate) => void;
 	externalEditor: ReturnType<typeof useExternalEditorConfig>;
 }) {
 	return (
@@ -575,8 +581,8 @@ function AgentSection({
 	workflow,
 	providerAvailability,
 }: {
-	draft: AppSettings;
-	updateDraft: (updater: (d: AppSettings) => AppSettings) => void;
+	draft: AppSettingsUpdate;
+	updateDraft: (updater: (d: AppSettingsUpdate) => AppSettingsUpdate) => void;
 	workflow: ReturnType<typeof useWorkflowSettings>;
 	providerAvailability: ReturnType<typeof useProviderAvailabilitySettings>;
 }) {
@@ -756,11 +762,21 @@ function BackgroundSection({
 }
 
 function PrivacySection({
+	performanceTelemetry,
+	onPerformanceTelemetryChange,
 	draft,
 	updateDraft,
+	desktopSettingsLoaded,
+	desktopSettingsError,
+	performanceTelemetryError,
 }: {
-	draft: AppSettings;
-	updateDraft: (updater: (d: AppSettings) => AppSettings) => void;
+	desktopSettingsLoaded: boolean;
+	desktopSettingsError: string | null;
+	performanceTelemetryError: string | null;
+	performanceTelemetry: boolean;
+	onPerformanceTelemetryChange: (enabled: boolean) => void;
+	draft: AppSettingsUpdate;
+	updateDraft: (updater: (d: AppSettingsUpdate) => AppSettingsUpdate) => void;
 }) {
 	return (
 		<div className="flex flex-col gap-4">
@@ -783,12 +799,10 @@ function PrivacySection({
 			<div className="flex items-center gap-2">
 				<Checkbox
 					id="performance-telemetry"
-					checked={draft.performanceTelemetry}
+					disabled={!desktopSettingsLoaded}
+					checked={performanceTelemetry}
 					onCheckedChange={(checked) =>
-						updateDraft((d) => ({
-							...d,
-							performanceTelemetry: checked === true,
-						}))
+						onPerformanceTelemetryChange(checked === true)
 					}
 				/>
 				<label
@@ -798,6 +812,10 @@ function PrivacySection({
 					Send anonymous performance metrics
 				</label>
 			</div>
+
+			{(performanceTelemetryError ?? desktopSettingsError) && (
+				<p role="alert">{performanceTelemetryError ?? desktopSettingsError}</p>
+			)}
 
 			<div className="flex items-center gap-2">
 				<Checkbox
@@ -824,21 +842,32 @@ function PrivacySection({
 	);
 }
 
+function settingsDraft(settings: AppSettings): AppSettingsUpdate {
+	const { performanceTelemetry: _performanceTelemetry, ...draft } = settings;
+	return draft;
+}
+
 interface SettingsState {
 	activeSection: SettingsSection;
-	draft: AppSettings;
+	draft: AppSettingsUpdate;
 	appDirty: boolean;
+	performanceTelemetryOverride: boolean | null;
+	performanceTelemetryError: string | null;
 	saving: boolean;
 	prevOpen: boolean;
 }
 
 type SettingsAction =
 	| { type: "SET_SECTION"; section: SettingsSection }
-	| { type: "UPDATE_DRAFT"; updater: (d: AppSettings) => AppSettings }
+	| {
+			type: "UPDATE_DRAFT";
+			updater: (d: AppSettingsUpdate) => AppSettingsUpdate;
+	  }
+	| { type: "SET_PERFORMANCE_TELEMETRY"; enabled: boolean }
 	| { type: "SYNC_OPEN"; open: boolean; settings: AppSettings }
 	| { type: "SAVE_START" }
 	| { type: "SAVE_END" }
-	| { type: "SAVE_ERROR" };
+	| { type: "SAVE_ERROR"; performanceTelemetryError?: string };
 
 function settingsReducer(
 	state: SettingsState,
@@ -849,22 +878,40 @@ function settingsReducer(
 			return { ...state, activeSection: action.section };
 		case "UPDATE_DRAFT":
 			return { ...state, draft: action.updater(state.draft), appDirty: true };
+		case "SET_PERFORMANCE_TELEMETRY":
+			return {
+				...state,
+				performanceTelemetryOverride: action.enabled,
+				appDirty: true,
+			};
 		case "SYNC_OPEN":
 			if (action.open && !state.prevOpen) {
 				return {
 					...state,
 					prevOpen: action.open,
-					draft: action.settings,
+					draft: settingsDraft(action.settings),
 					appDirty: false,
+					performanceTelemetryOverride: null,
+					performanceTelemetryError: null,
 				};
 			}
 			return { ...state, prevOpen: action.open };
 		case "SAVE_START":
-			return { ...state, saving: true, appDirty: false };
+			return {
+				...state,
+				saving: true,
+				appDirty: false,
+				performanceTelemetryError: null,
+			};
 		case "SAVE_END":
 			return { ...state, saving: false };
 		case "SAVE_ERROR":
-			return { ...state, saving: false, appDirty: true };
+			return {
+				...state,
+				saving: false,
+				appDirty: true,
+				performanceTelemetryError: action.performanceTelemetryError ?? null,
+			};
 	}
 }
 
@@ -872,7 +919,9 @@ export interface SettingsModalProps {
 	open: boolean;
 	onOpenChange: (open: boolean) => void;
 	settings: AppSettings;
-	onSave: (settings: AppSettings) => void;
+	desktopSettingsLoaded: boolean;
+	desktopSettingsError: string | null;
+	onSave: (settings: AppSettingsUpdate) => void;
 	repoPaths?: string[];
 	onRemoveRepo?: (path: string) => void;
 }
@@ -881,18 +930,24 @@ export function SettingsModal({
 	open,
 	onOpenChange,
 	settings,
+	desktopSettingsLoaded,
+	desktopSettingsError,
 	onSave,
 	repoPaths = [],
 	onRemoveRepo,
 }: SettingsModalProps) {
 	const [state, dispatchSettings] = useReducer(settingsReducer, {
 		activeSection: "appearance" as SettingsSection,
-		draft: settings,
+		draft: settingsDraft(settings),
 		appDirty: false,
+		performanceTelemetryOverride: null,
+		performanceTelemetryError: null,
 		saving: false,
 		prevOpen: open,
 	});
 	const { activeSection, draft, appDirty, saving } = state;
+	const performanceTelemetry =
+		state.performanceTelemetryOverride ?? settings.performanceTelemetry;
 	const background = useBackgroundConfig();
 	const repos = useRepoChanges();
 	const notion = useNotionSettings(repoPaths);
@@ -901,7 +956,6 @@ export function SettingsModal({
 	const workflow = useWorkflowSettings(open);
 	const providerAvailability = useProviderAvailabilitySettings(open);
 
-	// Reset draft when dialog opens
 	if (open !== state.prevOpen) {
 		dispatchSettings({ type: "SYNC_OPEN", open, settings });
 		if (open) {
@@ -911,7 +965,7 @@ export function SettingsModal({
 	}
 
 	const updateDraft = useCallback(
-		(updater: (d: AppSettings) => AppSettings) => {
+		(updater: (d: AppSettingsUpdate) => AppSettingsUpdate) => {
 			dispatchSettings({ type: "UPDATE_DRAFT", updater });
 		},
 		[],
@@ -931,7 +985,9 @@ export function SettingsModal({
 		dispatchSettings({ type: "SAVE_START" });
 		try {
 			const performanceTelemetryChanged =
-				draft.performanceTelemetry !== settings.performanceTelemetry;
+				desktopSettingsLoaded &&
+				state.performanceTelemetryOverride !== null &&
+				performanceTelemetry !== settings.performanceTelemetry;
 			onSave(draft);
 			if (backgroundIsDirty) {
 				await backgroundSave();
@@ -952,7 +1008,15 @@ export function SettingsModal({
 				await providerAvailabilitySave();
 			}
 			if (performanceTelemetryChanged) {
-				await setPerformanceTelemetryEnabled(draft.performanceTelemetry);
+				try {
+					await setPerformanceTelemetryEnabled(performanceTelemetry);
+				} catch (error) {
+					dispatchSettings({
+						type: "SAVE_ERROR",
+						performanceTelemetryError: getErrorMessage(error),
+					});
+					return;
+				}
 			}
 			trackEvent("settings_saved");
 		} catch {
@@ -964,6 +1028,9 @@ export function SettingsModal({
 		draft,
 		onSave,
 		settings.performanceTelemetry,
+		performanceTelemetry,
+		state.performanceTelemetryOverride,
+		desktopSettingsLoaded,
 		backgroundIsDirty,
 		backgroundSave,
 		reposIsDirty,
@@ -1045,7 +1112,19 @@ export function SettingsModal({
 			case "automation":
 				return <AutomationSection automation={automation} />;
 			case "privacy":
-				return <PrivacySection draft={draft} updateDraft={updateDraft} />;
+				return (
+					<PrivacySection
+						performanceTelemetry={performanceTelemetry}
+						onPerformanceTelemetryChange={(enabled) =>
+							dispatchSettings({ type: "SET_PERFORMANCE_TELEMETRY", enabled })
+						}
+						draft={draft}
+						updateDraft={updateDraft}
+						desktopSettingsLoaded={desktopSettingsLoaded}
+						desktopSettingsError={desktopSettingsError}
+						performanceTelemetryError={state.performanceTelemetryError}
+					/>
+				);
 		}
 	})();
 

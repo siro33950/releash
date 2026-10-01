@@ -7,7 +7,6 @@ pub(crate) struct DaemonStatusPresenter {
 #[derive(Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct DaemonStatusMessage {
-    connection_generation: u64,
     phase: &'static str,
     stop_intent: Option<&'static str>,
     stage: Option<&'static str>,
@@ -19,7 +18,6 @@ pub(crate) struct DaemonStatusMessage {
 impl From<DaemonStatus> for DaemonStatusMessage {
     fn from(status: DaemonStatus) -> Self {
         Self {
-            connection_generation: status.connection_generation,
             phase: status.phase,
             stop_intent: status.stop_intent,
             stage: status.stage,

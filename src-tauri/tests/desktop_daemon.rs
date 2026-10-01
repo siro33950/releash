@@ -52,7 +52,7 @@ async fn test_desktop接続_discoveryとtauri経由で外部daemonの初回接�
         directory.path(),
         Path::new(env!("CARGO_BIN_EXE_releash-backend")),
     );
-    wait_phase(app.handle(), "restoring").await;
+    wait_phase(app.handle(), "ready").await;
     let first = discovery(directory.path(), "client-api.json");
     let window = tauri::WebviewWindowBuilder::new(&app, "main", Default::default())
         .build()
@@ -85,11 +85,9 @@ async fn test_desktop接続_discoveryとtauri経由で外部daemonの初回接�
             let request: Value = serde_json::from_str(&line).expect("client bridge request");
             let result = match request["command"].as_str().unwrap() {
                 "get_client_endpoint" => {
-                    let endpoint = releash_lib::client_api_acceptance::desktop_client_endpoint(
-                        app.handle(),
-                        request["args"]["attachmentId"].as_str().unwrap().into(),
-                    )
-                    .await;
+                    let endpoint =
+                        releash_lib::client_api_acceptance::desktop_client_endpoint(app.handle())
+                            .await;
                     let current = discovery(directory.path(), "client-api.json");
                     assert_ne!(
                         current["token"],
@@ -121,23 +119,23 @@ async fn test_desktop接続_discoveryとtauri経由で外部daemonの初回接�
                     );
                     Value::Null
                 }
-                command @ ("get_daemon_status"
-                | "complete_desktop_restoration"
-                | "validate_daemon_connection") => tauri::test::get_ipc_response(
-                    &window,
-                    tauri::webview::InvokeRequest {
-                        cmd: command.into(),
-                        callback: tauri::ipc::CallbackFn(0),
-                        error: tauri::ipc::CallbackFn(1),
-                        url: "tauri://localhost".parse().unwrap(),
-                        body: tauri::ipc::InvokeBody::Json(request["args"].clone()),
-                        headers: Default::default(),
-                        invoke_key: tauri::test::INVOKE_KEY.to_string(),
-                    },
-                )
-                .unwrap()
-                .deserialize::<Value>()
-                .unwrap(),
+                command @ ("get_daemon_status" | "validate_daemon_connection") => {
+                    tauri::test::get_ipc_response(
+                        &window,
+                        tauri::webview::InvokeRequest {
+                            cmd: command.into(),
+                            callback: tauri::ipc::CallbackFn(0),
+                            error: tauri::ipc::CallbackFn(1),
+                            url: "tauri://localhost".parse().unwrap(),
+                            body: tauri::ipc::InvokeBody::Json(request["args"].clone()),
+                            headers: Default::default(),
+                            invoke_key: tauri::test::INVOKE_KEY.to_string(),
+                        },
+                    )
+                    .unwrap()
+                    .deserialize::<Value>()
+                    .unwrap()
+                }
                 "damage_settings" => {
                     for content in [
                         Some("[app]\nclose_to_tray = true\n"),
@@ -179,7 +177,7 @@ async fn test_desktop接続_discoveryとtauri経由で外部daemonの初回接�
                         0
                     );
                     tokio::time::sleep(Duration::from_millis(250)).await;
-                    wait_phase(app.handle(), "restoring").await;
+                    wait_phase(app.handle(), "ready").await;
                     let current = discovery(directory.path(), "client-api.json");
                     assert_ne!(first["instance_id"], current["instance_id"]);
                     assert_ne!(first["token"], current["token"]);
@@ -218,7 +216,7 @@ async fn test_desktop接続_discoveryとtauri経由で外部daemonの初回接�
         directory.path(),
         Path::new(env!("CARGO_BIN_EXE_releash-backend")),
     );
-    wait_phase(next.handle(), "restoring").await;
+    wait_phase(next.handle(), "ready").await;
     assert_ne!(
         discovery(directory.path(), "client-api.json")["pid"].as_i64(),
         Some(old_pid as i64)
@@ -245,11 +243,9 @@ async fn test_desktop接続_discoveryとtauri経由で外部daemonの初回接�
             };
             let request: Value = serde_json::from_str(&line).unwrap();
             let result = if request["command"] == "get_client_endpoint" {
-                let endpoint = releash_lib::client_api_acceptance::desktop_client_endpoint(
-                    next.handle(),
-                    request["args"]["attachmentId"].as_str().unwrap().into(),
-                )
-                .await;
+                let endpoint =
+                    releash_lib::client_api_acceptance::desktop_client_endpoint(next.handle())
+                        .await;
                 serde_json::to_value(endpoint).unwrap()
             } else {
                 tauri::test::get_ipc_response(

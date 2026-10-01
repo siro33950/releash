@@ -23,10 +23,7 @@ fn shell_operation(command: &str) -> crate::domain::daemon_supervision::ShellOpe
         | "retry_daemon"
         | "quit_desktop"
         | "validate_daemon_connection"
-        | "get_client_endpoint"
-        | "fail_desktop_restoration"
-        | "complete_desktop_restoration" => ShellOperation::Supervision,
-        "get_login_item_status" => ShellOperation::RestoreState,
+        | "get_client_endpoint" => ShellOperation::Supervision,
         _ => ShellOperation::Normal,
     }
 }
@@ -316,7 +313,7 @@ mod tests {
         // When
         gateway.ready.store(true, Ordering::SeqCst);
         crate::usecase::test_helpers::tick(200).await;
-        crate::usecase::test_helpers::restore_desktop(&supervisor).await;
+
         // Then
         assert!(tauri::test::get_ipc_response(
             &window,

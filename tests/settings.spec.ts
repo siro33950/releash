@@ -37,6 +37,49 @@ async function selectRadixOption(
 }
 
 test.describe("Settings", () => {
+	for (const method of ["pointer", "keyboard"] as const) {
+		test(`Failed の覆いを ${method} で操作しても設定の入力を保持する`, async ({ page }) => {
+			await setupTauriMock(page, settingsConfig());
+			await waitForApp(page);
+			await page.getByRole("button", { name: "Settings" }).click();
+			await page.getByRole("button", { name: "Agent", exact: true }).click();
+			const input = page.locator("#terminal-startup-cmd");
+			await input.fill("unsaved command");
+			const publish = async (phase: string) => {
+				await page.evaluate((phase) => {
+					const subscription = window.__TAURI_INTERNALS__.ipcInvocations
+						.filter(({ cmd }) => cmd === "subscribe_daemon_status").at(-1);
+					if (!subscription) throw new Error("Missing daemon subscription");
+					(subscription.args.channel as { onmessage: (status: unknown) => void }).onmessage({
+						phase, retryAvailable: true, reason: "Daemon failed",
+					});
+				}, phase);
+			};
+			await publish("failed");
+			const retry = page.getByRole("button", { name: "Retry", exact: true });
+			const quit = page.getByRole("button", { name: "Quit", exact: true });
+			if (method === "pointer") {
+				await retry.click();
+				await quit.click();
+			} else {
+				await expect(retry).toBeFocused();
+				await page.keyboard.press("Enter");
+				await page.keyboard.press("Tab");
+				await expect(quit).toBeFocused();
+				await page.keyboard.press("Enter");
+			}
+			await expect.poll(() => page.evaluate(() => window.__TAURI_INTERNALS__.ipcInvocations
+				.filter(({ cmd }) => cmd === "retry_daemon" || cmd === "quit_desktop")
+				.map(({ cmd }) => cmd))).toEqual(["retry_daemon", "quit_desktop"]);
+			await publish("ready");
+			await expect(retry).toHaveCount(0);
+			await expect(input).toBeVisible();
+			await expect(input).toHaveValue("unsaved command");
+			await input.fill("continued command");
+			await expect(input).toHaveValue("continued command");
+		});
+	}
+
 	test("ActivityBar の Settings クリックで設定モーダルが表示される", async ({
 		page,
 	}) => {

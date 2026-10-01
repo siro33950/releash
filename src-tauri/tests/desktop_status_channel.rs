@@ -63,7 +63,7 @@ async fn test_シェル状態購読_tauriコマンドからchannelに初期値�
         .unwrap();
     tokio::time::timeout(Duration::from_secs(35), async {
         while releash_lib::client_api_acceptance::desktop_supervision_status(app.handle())["phase"]
-            != "restoring"
+            != "ready"
         {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
@@ -87,8 +87,8 @@ async fn test_シェル状態購読_tauriコマンドからchannelに初期値�
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(initial["phase"], "restoring");
-    assert!(initial.get("connectionGeneration").is_some());
+    assert_eq!(initial["phase"], "ready");
+    assert!(initial.get("connectionGeneration").is_none());
     assert!(initial.get("retryAvailable").is_some());
 
     // When
@@ -102,7 +102,7 @@ async fn test_シェル状態購読_tauriコマンドからchannelに初期値�
             .await
             .unwrap()
             .unwrap()["phase"],
-        "restoring"
+        "ready"
     );
     ipc(
         &window,

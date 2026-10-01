@@ -23,7 +23,7 @@ describe("B-071 safe startup surface", () => {
 			if (command === "subscribe_daemon_status") {
 				(
 					args as { channel: { onmessage?: (value: unknown) => void } }
-				).channel.onmessage?.({ phase: "ready", connectionGeneration: 1 });
+				).channel.onmessage?.({ phase: "ready" });
 				return;
 			}
 			throw new Error(`unexpected shell command: ${command}`);

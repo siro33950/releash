@@ -19,7 +19,7 @@ function invokeTelemetry<K extends ClientCommand>(
 export function setPerformanceTelemetryEnabled(
 	enabled: boolean,
 ): Promise<void> {
-	return invokeTelemetry("update_performance_telemetry", { enabled });
+	return invoke("update_performance_telemetry", { enabled });
 }
 
 export function trackEvent(name: string): void {

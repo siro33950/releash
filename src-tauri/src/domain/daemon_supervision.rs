@@ -1,6 +1,5 @@
 pub(crate) const STARTUP_TIMEOUT_MS: u64 = 30_000;
 pub(crate) const QUIT_TIMEOUT_MS: u64 = 15_000;
-const RESTORATION_TIMEOUT_MS: u64 = 30_000;
 const STABLE_READY_MS: u64 = 60_000;
 const RETRY_DELAYS_MS: [u64; 3] = [1_000, 2_000, 4_000];
 pub(crate) const LIVENESS_FAILURE_THRESHOLD: u32 = 2;
@@ -48,7 +47,6 @@ pub(crate) trait DesktopUpdateInstaller: Send + Sync {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Phase {
     Starting,
-    Restoring,
     Ready,
     Backoff,
     Failed,
@@ -68,7 +66,6 @@ pub(crate) enum FailureStage {
     Shutdown,
     Update,
     Restart,
-    Restoration,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -95,7 +92,6 @@ pub(crate) enum DesktopAction {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ShellOperation {
-    RestoreState,
     Supervision,
     Normal,
 }
@@ -108,9 +104,6 @@ pub(crate) enum StartupInterruption {
 pub(crate) struct DaemonSupervision {
     phase: Phase,
     retries: usize,
-    connection_generation: u64,
-    restoration_deadline: Option<u64>,
-    attachment_id: Option<String>,
     deadline: u64,
     ready_since: Option<u64>,
     failure: Option<Failure>,
@@ -125,9 +118,6 @@ impl DaemonSupervision {
         Self {
             phase: Phase::Starting,
             retries: 0,
-            connection_generation: 0,
-            restoration_deadline: None,
-            attachment_id: None,
             deadline: now.saturating_add(STARTUP_TIMEOUT_MS),
             ready_since: None,
             failure: None,
@@ -143,9 +133,6 @@ impl DaemonSupervision {
     }
     pub fn failure(&self) -> Option<&Failure> {
         self.failure.as_ref()
-    }
-    pub fn connection_generation(&self) -> u64 {
-        self.connection_generation
     }
     pub fn retries(&self) -> usize {
         self.retries
@@ -171,25 +158,16 @@ impl DaemonSupervision {
         true
     }
     pub fn connection_lost(&mut self, now: u64) {
-        if matches!(self.phase, Phase::Ready | Phase::Restoring) || self.restoration_failed() {
+        if self.phase == Phase::Ready {
             self.phase = Phase::Starting;
             self.deadline = now.saturating_add(STARTUP_TIMEOUT_MS);
         }
     }
     pub fn connected(&mut self, now: u64) -> bool {
         if self.phase == Phase::Starting && !self.startup_expired(now) {
-            self.phase = Phase::Restoring;
-            if self
-                .failure
-                .as_ref()
-                .is_some_and(|failure| matches!(failure.stage, FailureStage::Connection(_)))
-            {
-                self.failure = None;
-            }
-            self.connection_generation += 1;
-            self.restoration_deadline = None;
-            self.attachment_id = None;
+            self.phase = Phase::Ready;
             self.ready_since = Some(now);
+            self.failure = None;
             return true;
         }
         false
@@ -198,89 +176,6 @@ impl DaemonSupervision {
         if self.phase == Phase::Starting && matches!(failure.stage, FailureStage::Connection(_)) {
             self.failure = Some(failure);
         }
-    }
-    pub fn restoration_current(&self, generation: u64) -> bool {
-        self.phase == Phase::Restoring && self.connection_generation == generation
-    }
-    pub fn begin_restoration(&mut self, attachment_id: String, now: u64) {
-        self.attachment_id = Some(attachment_id);
-        if self.phase == Phase::Restoring && self.restoration_deadline.is_none() {
-            self.restoration_deadline = Some(now.saturating_add(RESTORATION_TIMEOUT_MS));
-        }
-    }
-    pub fn fail_restoration(&mut self, generation: u64, reason: String) -> bool {
-        if !self.restoration_current(generation) {
-            return false;
-        }
-        self.phase = Phase::Failed;
-        self.failure = Some(Failure {
-            stage: FailureStage::Restoration,
-            reason,
-        });
-        true
-    }
-    pub fn expire_restoration(&mut self, now: u64) {
-        if self.phase == Phase::Restoring
-            && self
-                .restoration_deadline
-                .is_some_and(|deadline| now >= deadline)
-        {
-            self.fail_restoration(
-                self.connection_generation,
-                "Desktop state could not be restored within 30 seconds. Retry to reload the current state.".into(),
-            );
-        }
-    }
-    pub fn finish_restoration(
-        &mut self,
-        generation: u64,
-        attachment_id: &str,
-        connected: bool,
-        now: u64,
-    ) -> Result<(), String> {
-        self.expire_restoration(now);
-        if !self.restoration_current(generation) {
-            return Err("Desktop restoration attempt is no longer current.".into());
-        }
-        let failure = if self.attachment_id.as_deref() != Some(attachment_id) {
-            Some("Desktop attachment changed during restoration")
-        } else if !connected {
-            Some("Desktop disconnected during restoration")
-        } else {
-            None
-        };
-        if let Some(reason) = failure {
-            self.fail_restoration(generation, reason.into());
-            return Err(reason.into());
-        }
-        self.ready(now);
-        Ok(())
-    }
-    fn restoration_failed(&self) -> bool {
-        self.phase == Phase::Failed
-            && self
-                .failure
-                .as_ref()
-                .is_some_and(|failure| failure.stage == FailureStage::Restoration)
-    }
-    pub fn retry_restoration(&mut self, now: u64) -> bool {
-        if !self.retry_available() || !self.restoration_failed() {
-            return false;
-        }
-        self.phase = Phase::Restoring;
-        self.connection_generation += 1;
-        self.restoration_deadline = Some(now.saturating_add(RESTORATION_TIMEOUT_MS));
-        self.failure = None;
-        true
-    }
-    pub fn ready(&mut self, now: u64) -> bool {
-        if matches!(self.phase, Phase::Starting | Phase::Restoring) && !self.startup_expired(now) {
-            self.phase = Phase::Ready;
-            self.ready_since.get_or_insert(now);
-            self.failure = None;
-            return true;
-        }
-        false
     }
     pub fn spawn_failed(&mut self, reason: String, now: u64) {
         self.failed_after_exit(
@@ -374,9 +269,7 @@ impl DaemonSupervision {
         if !self.retry_available() {
             return false;
         }
-        let generation = self.connection_generation;
         *self = Self::new(now);
-        self.connection_generation = generation;
         true
     }
     pub fn begin_stop(&mut self, intent: StopIntent) -> bool {
@@ -482,7 +375,7 @@ impl DaemonSupervision {
             }
         }
         match self.phase {
-            Phase::Ready | Phase::Restoring => DesktopAction::Ready {
+            Phase::Ready => DesktopAction::Ready {
                 show_window: if first_ready {
                     !hidden
                 } else {
@@ -509,10 +402,7 @@ impl DaemonSupervision {
         }
     }
     pub fn shell_command_admitted(&self, operation: ShellOperation, connected: bool) -> bool {
-        connected
-            && (self.phase == Phase::Ready
-                || self.phase == Phase::Restoring && operation == ShellOperation::RestoreState)
-            || operation == ShellOperation::Supervision
+        connected && self.phase == Phase::Ready || operation == ShellOperation::Supervision
     }
 }
 

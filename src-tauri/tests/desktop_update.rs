@@ -63,7 +63,7 @@ impl Renderer {
         let window = tauri::WebviewWindowBuilder::new(app, "main", Default::default())
             .build()
             .unwrap();
-        let endpoint = host::desktop_client_endpoint(app.handle(), "view".into()).await;
+        let endpoint = host::desktop_client_endpoint(app.handle()).await;
         let client = host::connect_client(&endpoint);
         let hello = client
             .get_server_info(host::rpc::Unit::default())
@@ -105,16 +105,10 @@ impl Renderer {
         assert!(settings["performanceTelemetry"].is_boolean());
         assert_eq!(
             host::desktop_supervision_status(app.handle())["phase"],
-            "restoring"
+            "ready"
         );
         self.request("update_external_editor", json!({"editor":"vim"}))
             .await;
-        ipc(
-            &self.window,
-            "complete_desktop_restoration",
-            json!({"launchId":self.launch,"attachmentId":"view", "generation":host::desktop_supervision_status(app.handle())["connectionGeneration"]}),
-        )
-        .unwrap();
         wait_phase(app, "ready").await;
         self.request("update_external_editor", json!({"editor":"vim"}))
             .await;
@@ -139,7 +133,7 @@ async fn test_実workflow更新_一括停止と旧daemon終了から適用と新
     std::env::remove_var("RELEASH_DATA_DIR");
     let backend = Path::new(env!("CARGO_BIN_EXE_releash-backend"));
     let app = host::desktop_connection_app(tauri::test::mock_builder(), root, backend);
-    wait_phase(&app, "restoring").await;
+    wait_phase(&app, "ready").await;
     let old = discovery(root);
     let mut renderer = Renderer::attach(&app).await;
     renderer.restore(&app, json!([])).await;
@@ -230,7 +224,7 @@ async fn test_実workflow更新_一括停止と旧daemon終了から適用と新
         ).unwrap(), 1);
     }
     let next = host::desktop_connection_app(tauri::test::mock_builder(), root, &next_binary);
-    wait_phase(&next, "restoring").await;
+    wait_phase(&next, "ready").await;
     let mut renderer = Renderer::attach(&next).await;
     assert!(!workflow_facts(root, startup_probe)
         .iter()
@@ -259,37 +253,6 @@ async fn test_実workflow更新_一括停止と旧daemon終了から適用と新
         &renderer.window,
         "validate_daemon_connection",
         json!({"launchId":renderer.launch,"release":"wrong-release"})
-    )
-    .is_err());
-    let generation =
-        host::desktop_supervision_status(next.handle())["connectionGeneration"].clone();
-    ipc(
-        &renderer.window,
-        "fail_desktop_restoration",
-        json!({"generation":generation, "reason":"Repositories: temporary read failure"}),
-    )
-    .unwrap();
-    let failed = host::desktop_supervision_status(next.handle());
-    assert_eq!(failed["phase"], "failed");
-    assert_eq!(failed["stage"], "state_restoration");
-    assert_eq!(failed["reason"], "Repositories: temporary read failure");
-    renderer
-        .request("update_external_editor", json!({"editor":"vim"}))
-        .await;
-    ipc(&renderer.window, "retry_daemon", json!({})).unwrap();
-    tokio::time::timeout(Duration::from_secs(5), async {
-        while host::desktop_supervision_status(next.handle())["connectionGeneration"] == generation
-        {
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-    })
-    .await
-    .unwrap();
-    wait_phase(&next, "restoring").await;
-    assert!(ipc(
-        &renderer.window,
-        "complete_desktop_restoration",
-        json!({"launchId":renderer.launch,"attachmentId":"view", "generation":generation})
     )
     .is_err());
     renderer.restore(&next, json!([root])).await;

@@ -55,6 +55,12 @@ describe("telemetry", () => {
 		});
 	});
 
+	it("performance telemetry設定の保存失敗を呼び出し元に返す", async () => {
+		const error = new Error("metrics write failed");
+		vi.mocked(invoke).mockRejectedValueOnce(error);
+		await expect(setPerformanceTelemetryEnabled(false)).rejects.toBe(error);
+	});
+
 	it("xterm の mount 数をRustへ送る", () => {
 		reportMountedXtermMounted();
 		reportMountedXtermMounted();

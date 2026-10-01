@@ -45,11 +45,7 @@ export function connectFixture(
 				token: "client-token",
 				launchId: "launch",
 			};
-		if (
-			command === "validate_daemon_connection" ||
-			command === "complete_desktop_restoration"
-		)
-			return;
+		if (command === "validate_daemon_connection") return;
 		throw new Error(`Unexpected IPC: ${command}`);
 	});
 	return {

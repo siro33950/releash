@@ -418,11 +418,10 @@ pub async fn terminate_daemon_for_acceptance(
 
 pub async fn desktop_client_endpoint<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
-    id: String,
 ) -> ClientEndpoint {
     let supervisor =
         app.state::<Arc<crate::usecase::daemon_supervision::DaemonSupervisionUsecase>>();
-    let connection = supervisor.attach(id).await.unwrap();
+    let connection = supervisor.attach().await.unwrap();
     ClientEndpoint {
         url: connection.endpoint.url,
         token: connection.endpoint.token,

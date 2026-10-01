@@ -8,6 +8,7 @@ Element.prototype.scrollIntoView = vi.fn();
 
 const mocks = vi.hoisted(() => ({
 	nodeContentViewProps: vi.fn(),
+	settingsModalProps: vi.fn(),
 }));
 
 vi.mock("react-resizable-panels", () => ({
@@ -112,7 +113,10 @@ vi.mock("@/components/panels/RightSidebarBottom", () => ({
 	RightSidebarBottom: () => <div data-testid="right-bottom-mock" />,
 }));
 vi.mock("@/components/panels/SettingsModal", () => ({
-	SettingsModal: () => null,
+	SettingsModal: (props: unknown) => {
+		mocks.settingsModalProps(props);
+		return null;
+	},
 }));
 vi.mock("@/screens/WorktreeViewDialogs", () => ({
 	GitErrorDialog: () => null,
@@ -153,6 +157,8 @@ function mainLayoutElement(
 				<MainLayout
 					selectedRootPath="/managed/wt"
 					settings={DEFAULT_SETTINGS}
+					desktopSettingsLoaded={true}
+					desktopSettingsError={null}
 					onSettingsSave={vi.fn()}
 					leftNav={<div />}
 					{...props}
@@ -171,6 +177,31 @@ function renderMainLayout(
 describe("MainLayout node-centered workspace", () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
+	});
+
+	it("worktreeの設定画面にも親の読み込み状態と失敗を渡す", () => {
+		const view = renderMainLayout({
+			desktopSettingsLoaded: false,
+			desktopSettingsError: "settings unavailable",
+		});
+		expect(mocks.settingsModalProps).toHaveBeenLastCalledWith(
+			expect.objectContaining({
+				desktopSettingsLoaded: false,
+				desktopSettingsError: "settings unavailable",
+			}),
+		);
+		view.rerender(
+			mainLayoutElement({
+				desktopSettingsLoaded: true,
+				desktopSettingsError: null,
+			}),
+		);
+		expect(mocks.settingsModalProps).toHaveBeenLastCalledWith(
+			expect.objectContaining({
+				desktopSettingsLoaded: true,
+				desktopSettingsError: null,
+			}),
+		);
 	});
 
 	it("always renders the toolbar-backed NodeContentView in the center", () => {
