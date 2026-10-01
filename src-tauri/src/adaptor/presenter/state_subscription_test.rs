@@ -223,13 +223,22 @@ async fn test_購読入力の対応_解除は最後の入力まで共有しstrea
         r#"labels={"Tags":["a","a"]}"#.into(),
     ];
     // When / Then
-    assert!(!presenter.add_request("client", &target, a.clone()));
-    assert!(!presenter.add_request("client", &target, a.clone()));
-    assert!(presenter.add_request("client", &target, b.clone()));
+    assert_eq!(
+        presenter.add_request("client", &target, a.clone()),
+        (true, false)
+    );
+    assert_eq!(
+        presenter.add_request("client", &target, a.clone()),
+        (false, false)
+    );
+    assert_eq!(
+        presenter.add_request("client", &target, b.clone()),
+        (true, true)
+    );
     assert!(!presenter.remove_request("client", &target, &a));
     assert!(presenter.remove_request("client", &target, &b));
     assert!(presenter.requested_args.lock().is_empty());
-    assert!(!presenter.add_request("client", &target, a));
+    assert_eq!(presenter.add_request("client", &target, a), (true, false));
     drop(stream);
     assert!(presenter.requested_args.lock().is_empty());
 }

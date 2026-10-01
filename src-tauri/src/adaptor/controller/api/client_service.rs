@@ -57,16 +57,23 @@ async fn start_state_subscription<'a>(
     } else {
         None
     };
-    let replay = notion && presenter.add_request(&request.client_id, &target, request.args.clone());
-    if let Err(error) = subscriptions
+    let (inserted, replay) = if notion {
+        presenter.add_request(&request.client_id, &target, request.args.clone())
+    } else {
+        (false, false)
+    };
+    let mut permit = RequestStartPermit {
+        presenter,
+        client: &request.client_id,
+        target: &target,
+        args: &request.args,
+        inserted,
+    };
+    subscriptions
         .start_subscription(&request.client_id, &target, request.terminal_input_id.as_deref(), cursor)
         .await
-    {
-        if notion {
-            presenter.remove_request(&request.client_id, &target, &request.args);
-        }
-        return Err(crate::adaptor::presenter::connect::classified_error(error));
-    }
+        .map_err(crate::adaptor::presenter::connect::classified_error)?;
+    permit.inserted = false;
     if replay {
         presenter
             .replay_request(&request.client_id, &target)
@@ -97,11 +104,16 @@ async fn stop_state_subscription<'a>(
     } else {
         None
     };
-    if !notion || presenter.remove_request(&request.client_id, &target, &request.args) {
+    if notion && presenter.has_other_requests(&request.client_id, &target, &request.args) {
+        presenter.remove_request(&request.client_id, &target, &request.args);
+    } else {
         subscriptions
             .stop_subscription(&request.client_id, &target)
             .await
             .map_err(crate::adaptor::presenter::connect::classified_error)?;
+        if notion {
+            presenter.remove_request(&request.client_id, &target, &request.args);
+        }
     }
     connectrpc::Response::ok(rpc::Unit::default())
 }

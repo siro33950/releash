@@ -147,6 +147,23 @@ include!(concat!(env!("OUT_DIR"), "/client_service.rs"));
 #[path = "client_test.rs"]
 mod client_tests;
 
+struct RequestStartPermit<'a> {
+    presenter: &'a crate::adaptor::presenter::state_subscription::StateSubscriptionPresenter,
+    client: &'a str,
+    target: &'a crate::usecase::state_subscription::SubscriptionTarget,
+    args: &'a [String],
+    inserted: bool,
+}
+
+impl Drop for RequestStartPermit<'_> {
+    fn drop(&mut self) {
+        if self.inserted {
+            self.presenter
+                .remove_request(self.client, self.target, self.args);
+        }
+    }
+}
+
 struct StateStreamPermit {
     subscriptions: StateSubscriptionDeps,
     id: String,

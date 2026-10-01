@@ -88,7 +88,7 @@ impl StateSubscriptionPresenter {
         client: &str,
         target: &SubscriptionTarget,
         args: Vec<String>,
-    ) -> bool {
+    ) -> (bool, bool) {
         let mut requested = self.requested_args.lock();
         let aliases = requested
             .entry(client.into())
@@ -96,7 +96,21 @@ impl StateSubscriptionPresenter {
             .entry(target.to_string())
             .or_default();
         let replay = !aliases.is_empty();
-        aliases.insert(args) && replay
+        let inserted = aliases.insert(args);
+        (inserted, inserted && replay)
+    }
+
+    pub(crate) fn has_other_requests(
+        &self,
+        client: &str,
+        target: &SubscriptionTarget,
+        args: &[String],
+    ) -> bool {
+        self.requested_args
+            .lock()
+            .get(client)
+            .and_then(|targets| targets.get(&target.to_string()))
+            .is_some_and(|aliases| aliases.iter().any(|alias| alias != args))
     }
 
     pub(crate) fn remove_request(
