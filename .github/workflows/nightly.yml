@@ -70,10 +70,19 @@ jobs:
       - uses: actions/checkout@v7
         with:
           ref: ${{ needs.check.outputs.sha }}
+      - id: apt-key
+        run: echo "key=apt-$ImageOS-$ImageVersion" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@v6
+        with:
+          path: ~/apt-archives
+          key: ${{ steps.apt-key.outputs.key }}
+          restore-keys: apt-
       - name: Install Tauri dependencies
         run: |
+          mkdir -p ~/apt-archives/partial
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libgtk-3-dev libsoup-3.0-dev libjavascriptcoregtk-4.1-dev
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libgtk-3-dev libsoup-3.0-dev libjavascriptcoregtk-4.1-dev -o Dir::Cache::Archives="$HOME/apt-archives"
+          sudo chown -R "$USER" ~/apt-archives
       - uses: pnpm/action-setup@v6
         with:
           version: 10
@@ -114,10 +123,19 @@ jobs:
         id: checkout
         with:
           ref: main
+      - id: apt-key
+        run: echo "key=apt-$ImageOS-$ImageVersion" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@v6
+        with:
+          path: ~/apt-archives
+          key: ${{ steps.apt-key.outputs.key }}
+          restore-keys: apt-
       - name: Install Tauri dependencies
         run: |
+          mkdir -p ~/apt-archives/partial
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libgtk-3-dev libsoup-3.0-dev libjavascriptcoregtk-4.1-dev
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libgtk-3-dev libsoup-3.0-dev libjavascriptcoregtk-4.1-dev -o Dir::Cache::Archives="$HOME/apt-archives"
+          sudo chown -R "$USER" ~/apt-archives
       - uses: pnpm/action-setup@v6
         with:
           version: 10

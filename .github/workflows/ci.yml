@@ -162,11 +162,22 @@ jobs:
             if (!pr) args.push(head);
             const paths = execFileSync('git', args).toString('utf8').split('\0').filter(Boolean);
             core.setOutput('rust', paths.some(path => !path.startsWith('docs/') && !/^[^/]+\.md$/.test(path)));
+      - id: apt-key
+        if: steps.changes.outputs.rust == 'true'
+        run: echo "key=apt-$ImageOS-$ImageVersion" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@v6
+        if: steps.changes.outputs.rust == 'true'
+        with:
+          path: ~/apt-archives
+          key: ${{ steps.apt-key.outputs.key }}
+          restore-keys: apt-
       - name: Install Tauri dependencies
         if: steps.changes.outputs.rust == 'true'
         run: |
+          mkdir -p ~/apt-archives/partial
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libgtk-3-dev libsoup-3.0-dev libjavascriptcoregtk-4.1-dev
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libgtk-3-dev libsoup-3.0-dev libjavascriptcoregtk-4.1-dev -o Dir::Cache::Archives="$HOME/apt-archives"
+          sudo chown -R "$USER" ~/apt-archives
       - uses: pnpm/action-setup@v6
         if: steps.changes.outputs.rust == 'true'
         with:
@@ -214,11 +225,22 @@ jobs:
           ref: ${{ inputs.ref || github.sha }}
           fetch-depth: 0
       - *rust-changes
+      - id: apt-key
+        if: steps.changes.outputs.rust == 'true'
+        run: echo "key=apt-$ImageOS-$ImageVersion" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@v6
+        if: steps.changes.outputs.rust == 'true'
+        with:
+          path: ~/apt-archives
+          key: ${{ steps.apt-key.outputs.key }}
+          restore-keys: apt-
       - name: Install Tauri dependencies
         if: steps.changes.outputs.rust == 'true'
         run: |
+          mkdir -p ~/apt-archives/partial
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libgtk-3-dev libsoup-3.0-dev libjavascriptcoregtk-4.1-dev
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libgtk-3-dev libsoup-3.0-dev libjavascriptcoregtk-4.1-dev -o Dir::Cache::Archives="$HOME/apt-archives"
+          sudo chown -R "$USER" ~/apt-archives
       - uses: pnpm/action-setup@v6
         if: steps.changes.outputs.rust == 'true'
         with:
@@ -257,11 +279,22 @@ jobs:
           ref: ${{ inputs.ref || github.sha }}
           fetch-depth: 0
       - *rust-changes
+      - id: apt-key
+        if: steps.changes.outputs.rust == 'true'
+        run: echo "key=apt-$ImageOS-$ImageVersion" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@v6
+        if: steps.changes.outputs.rust == 'true'
+        with:
+          path: ~/apt-archives
+          key: ${{ steps.apt-key.outputs.key }}
+          restore-keys: apt-
       - name: Install Tauri dependencies
         if: steps.changes.outputs.rust == 'true'
         run: |
+          mkdir -p ~/apt-archives/partial
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libgtk-3-dev libsoup-3.0-dev libjavascriptcoregtk-4.1-dev
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libgtk-3-dev libsoup-3.0-dev libjavascriptcoregtk-4.1-dev -o Dir::Cache::Archives="$HOME/apt-archives"
+          sudo chown -R "$USER" ~/apt-archives
       - name: Install Rust toolchain
         if: steps.changes.outputs.rust == 'true'
         run: rustup toolchain install
