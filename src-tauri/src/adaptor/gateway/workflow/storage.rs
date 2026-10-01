@@ -49,6 +49,29 @@ impl fmt::Display for StorageError {
     }
 }
 
+impl From<StorageError> for crate::domain::workflow::WorkflowError {
+    fn from(error: StorageError) -> Self {
+        match error {
+            StorageError::Io(error) => Self::Technical(crate::domain::failure::TechnicalFailure {
+                nature: crate::domain::failure::TechnicalFailureNature::Other,
+                message: error.to_string(),
+            }),
+            StorageError::YamlSerialize(error) => {
+                Self::Technical(crate::domain::failure::TechnicalFailure {
+                    nature: crate::domain::failure::TechnicalFailureNature::Other,
+                    message: error.to_string(),
+                })
+            }
+            StorageError::NotFound { name } => Self::NotFound(name),
+            StorageError::BuiltinProtected { name } => Self::InvalidState(name),
+            error @ (StorageError::YamlDeserialize(_)
+            | StorageError::Diagnostics(_)
+            | StorageError::Validation(_)
+            | StorageError::FacetResolution(_)) => Self::Validation(error.to_string()),
+        }
+    }
+}
+
 impl std::error::Error for StorageError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
@@ -329,9 +352,9 @@ pub(crate) fn workflow_files(
     Ok(files)
 }
 
-fn list_file_summaries<T, E: fmt::Display>(
+fn list_file_summaries<T>(
     dir: &Path,
-    loader: impl Fn(&Path) -> Result<T, E>,
+    loader: impl Fn(&Path) -> Result<T, StorageError>,
     to_summary: impl Fn(T) -> Summary,
 ) -> Result<Vec<Summary>, StorageError> {
     let mut summaries = Vec::new();
@@ -346,9 +369,13 @@ fn list_file_summaries<T, E: fmt::Display>(
             Err(e) => {
                 summaries.push(Summary {
                     name: stem.to_string(),
-                    description: String::new(),
+                    description: if matches!(&e, StorageError::Diagnostics(_)) {
+                        "Invalid workflow definition".into()
+                    } else {
+                        String::new()
+                    },
                     failure: Some(crate::domain::failure::WorkFailure::from_error(
-                        &crate::domain::workflow::WorkflowError::external(e.to_string()),
+                        &crate::domain::workflow::WorkflowError::from(e),
                     )),
                     builtin: false,
                     is_running: false,
@@ -370,6 +397,9 @@ fn collapse_duplicate_names(summaries: Vec<Summary>) -> Vec<Summary> {
         match collapsed.last_mut() {
             Some(previous) if previous.name == summary.name => {
                 previous.description = DUPLICATE_NAME_DESCRIPTION.to_string();
+                if previous.failure.is_none() {
+                    previous.failure = summary.failure;
+                }
             }
             _ => collapsed.push(summary),
         }
@@ -390,17 +420,9 @@ pub(crate) fn list_workflows_with_facets(
     // facet 解決が必要な実行系経路は明示的に `load_workflow` を呼ぶ。
     let load_for_listing = |path: &Path| -> Result<WorkflowDefinitionYaml, StorageError> {
         let content = fs::read_to_string(path)?;
-        let stem = path.file_stem().and_then(|stem| stem.to_str());
         let diagnosis = diagnose_workflow_file(path, &content, dir, facets_base_dir);
         if diagnosis.has_errors() {
-            return Ok(WorkflowDefinitionYaml {
-                name: stem.unwrap_or("invalid").to_string(),
-                description: "Invalid workflow definition".to_string(),
-                builtin: false,
-                schemas: Default::default(),
-                nodes: Vec::new(),
-                ..Default::default()
-            });
+            return Err(StorageError::Diagnostics(diagnosis.diagnostics));
         }
         let mut workflow = diagnosis.workflow.ok_or_else(|| {
             StorageError::Diagnostics(vec![DiagnosticItem::new(

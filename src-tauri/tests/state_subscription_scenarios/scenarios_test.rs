@@ -213,7 +213,7 @@ impl StateSubscriptionRead for FakeReads {
                     },
                 )
             }
-            _ => StateValue::Issues(vec![]),
+            _ => StateValue::Issues(crate::usecase::fetched::Fetched::ready(vec![])),
         })
     }
     fn repositories(&self) -> Vec<String> {
@@ -774,13 +774,12 @@ impl ExternalReads {
             target,
             crate::usecase::state_subscription::SubscriptionTarget::Issues(_)
         ) {
-            return StateValue::Issues(vec![crate::usecase::git_host::IssueInfoDto {
+            return StateValue::Issues(Fetched::ready(vec![crate::domain::git_host::IssueInfo {
                 number: self.issues.load(Ordering::SeqCst),
-                default_branch_name: "main".into(),
                 title: "issue".into(),
                 state: "open".into(),
                 url: String::new(),
-                author: crate::usecase::git_host::dto::PrAuthorDto {
+                author: crate::domain::git_host::PrAuthor {
                     login: "author".into(),
                 },
                 created_at: String::new(),
@@ -789,7 +788,7 @@ impl ExternalReads {
                 assignees: vec![],
                 body: String::new(),
                 milestone: None,
-            }]);
+            }]));
         }
         StateValue::Workspaces(WorkspaceList {
             repositories: vec![WorkspaceListRepository {
@@ -806,6 +805,7 @@ impl ExternalReads {
                     deleting: false,
                     dirty_count: Fetched::ready(0),
                     pull_request_error: None,
+                    pull_request_loaded: true,
                     merged: false,
                     pull_request: Some(crate::domain::git_host::PrInfo {
                         number: self.prs.load(Ordering::SeqCst),

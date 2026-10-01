@@ -46,7 +46,10 @@ fn test_定義一覧_読めないファイルを失敗欄に残す() {
     let summaries = list_workflows(directory.path()).unwrap();
     // Then
     let row = summaries.iter().find(|s| s.name == "unreadable").unwrap();
-    assert!(row.failure.is_some());
+    assert!(matches!(
+        row.failure.as_ref().unwrap().kind,
+        crate::domain::failure::Failure::Technical(_)
+    ));
     assert!(row.description.is_empty());
 }
 #[test]
@@ -962,6 +965,16 @@ fn test_定義一覧と診断_名前の集合が一致し同名の両形式を�
         "local r = require('releash'); return r.workflow{name='valid-lua', description='Valid Lua workflow', main=r.command{command='true'}}",
     )
     .unwrap();
+    fs::write(dir.join("same.lua"), "local r = require('releash'); return r.workflow{name='same', description='Same workflow', main=r.command{command='true'}}").unwrap();
+    fs::create_dir(dir.join("same.yml")).unwrap();
+    let mismatch = sample_workflow("body-name", false);
+    fs::write(
+        dir.join("file-stem.yml"),
+        serde_saphyr::to_string(&mismatch)
+            .unwrap()
+            .replace("review-acceptance", "missing-instruction"),
+    )
+    .unwrap();
     fs::write(dir.join("broken.yml"), "[broken").unwrap();
     fs::create_dir(dir.join("unreadable.yml")).unwrap();
     fs::write(dir.join("duplicate.yml"), "[broken yaml").unwrap();
@@ -981,6 +994,25 @@ fn test_定義一覧と診断_名前の集合が一致し同名の両形式を�
     let diagnosed: std::collections::BTreeSet<_> =
         report.workflow_summaries.keys().cloned().collect();
     assert_eq!(listed, diagnosed);
+    assert!(!diagnosed.contains("body-name"));
+    assert!(report
+        .items
+        .iter()
+        .any(|item| item.code == "FAC002" && item.workflow_name.as_deref() == Some("file-stem")));
+    let same: Vec<_> = rows.iter().filter(|row| row.name == "same").collect();
+    assert_eq!(same.len(), 1);
+    assert_eq!(
+        same[0].failure,
+        Some(crate::domain::failure::WorkFailure::from_error(
+            &crate::domain::workflow::WorkflowError::from(StorageError::Io(
+                fs::read_to_string(dir.join("same.yml")).unwrap_err()
+            ))
+        ))
+    );
+    assert!(matches!(
+        same[0].failure.as_ref().unwrap().kind,
+        crate::domain::failure::Failure::Technical(_)
+    ));
     assert_eq!(report.workflow_summaries["valid-yaml"].error_count, 0);
     assert_eq!(
         report.workflow_summaries["valid-lua"].error_count, 0,
@@ -999,4 +1031,34 @@ fn test_定義一覧と診断_名前の集合が一致し同名の両形式を�
         .span
         .as_ref()
         .is_some_and(|span| span.source.as_deref() == Some("duplicate.lua"))));
+}
+
+#[test]
+fn test_定義一覧_壊れた定義の失敗をvalidationとして残す() {
+    // Given
+    let directory = tempfile::tempdir().unwrap();
+    fs::write(directory.path().join("broken.yml"), "[broken").unwrap();
+    let diagnosis = diagnose_workflow_file(
+        &directory.path().join("broken.yml"),
+        "[broken",
+        directory.path(),
+        directory.path(),
+    );
+    // When
+    let rows = list_workflows(directory.path()).unwrap();
+    // Then
+    let row = rows.iter().find(|row| row.name == "broken").unwrap();
+    assert!(matches!(
+        row.failure.as_ref().unwrap().kind,
+        crate::domain::failure::Failure::Business(_)
+    ));
+    assert_eq!(
+        row.failure,
+        Some(crate::domain::failure::WorkFailure::from_error(
+            &crate::domain::workflow::WorkflowError::Validation(
+                StorageError::Diagnostics(diagnosis.diagnostics).to_string()
+            )
+        ))
+    );
+    assert_eq!(row.description, "Invalid workflow definition");
 }

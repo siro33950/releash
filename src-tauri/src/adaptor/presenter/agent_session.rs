@@ -1,6 +1,6 @@
+use crate::domain::provider_lifecycle::{ProviderKind, ProviderLifecycleUnavailableReason};
 use crate::usecase::agent_session::ProviderUnavailableReasonDto;
 use crate::usecase::provider_dto::AgentSessionProviderDto;
-use crate::usecase::provider_lifecycle::ProviderHookHealthReasonDto;
 use serde::Serialize;
 
 fn provider_name(provider: AgentSessionProviderDto) -> &'static str {
@@ -19,18 +19,18 @@ fn unavailable_reason(reason: ProviderUnavailableReasonDto) -> &'static str {
     }
 }
 
-fn hook_health_reason(reason: ProviderHookHealthReasonDto) -> &'static str {
+fn hook_health_reason(reason: ProviderLifecycleUnavailableReason) -> &'static str {
     match reason {
-        ProviderHookHealthReasonDto::SessionStartDeadlineExceeded => {
+        ProviderLifecycleUnavailableReason::SessionStartDeadlineExceeded => {
             "session_start_deadline_exceeded"
         }
-        ProviderHookHealthReasonDto::CodexHookDeliveryUnconfirmed => {
+        ProviderLifecycleUnavailableReason::CodexHookDeliveryUnconfirmed => {
             "codex_hook_delivery_unconfirmed"
         }
-        ProviderHookHealthReasonDto::ProviderHookConfigurationRejected => {
+        ProviderLifecycleUnavailableReason::ProviderHookConfigurationRejected => {
             "provider_hook_configuration_rejected"
         }
-        ProviderHookHealthReasonDto::LocalApiUnavailable => "local_api_unavailable",
+        ProviderLifecycleUnavailableReason::LocalApiUnavailable => "local_api_unavailable",
     }
 }
 
@@ -111,14 +111,14 @@ impl From<crate::usecase::agent_session::ProviderAvailabilitySnapshotDto>
     }
 }
 
-impl From<crate::usecase::provider_lifecycle::ProviderHookHealthWarningDto>
+impl From<crate::usecase::provider_lifecycle::ProviderHookHealthWarning>
     for ProviderHookHealthWarningResponse
 {
-    fn from(value: crate::usecase::provider_lifecycle::ProviderHookHealthWarningDto) -> Self {
+    fn from(value: crate::usecase::provider_lifecycle::ProviderHookHealthWarning) -> Self {
         Self {
             provider: match value.provider {
-                AgentSessionProviderDto::Claude => ProviderHookHealthProviderResponse::Claude,
-                AgentSessionProviderDto::Codex => ProviderHookHealthProviderResponse::Codex,
+                ProviderKind::Claude => ProviderHookHealthProviderResponse::Claude,
+                ProviderKind::Codex => ProviderHookHealthProviderResponse::Codex,
             },
             launch_id: value.launch_id,
             reason: hook_health_reason(value.reason).to_string(),

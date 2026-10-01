@@ -208,7 +208,6 @@ fn test_購読payload_全種類を旧wire型とフィールドへ変換する() 
         AgentSessionHistoryCandidateDto, AgentSessionHistoryPageDto, AgentSessionItemDto,
         AgentSessionLifecycleDto, AgentSessionOperationsDto, AgentSessionTreeLocationDto,
     };
-    use crate::usecase::git_host::dto::{IssueInfoDto, IssueLabelDto, MilestoneDto, PrAuthorDto};
     use crate::usecase::provider_dto::AgentSessionProviderDto;
     use crate::usecase::repository_dto::{BranchDto, WorktreeEntryDto};
     use crate::usecase::terminal_surface::application::TerminalSurfaceStreamItem;
@@ -452,57 +451,61 @@ fn test_購読payload_全種類を旧wire型とフィールドへ変換する() 
             }),
         ),
         (
-            StateValue::Issues(vec![IssueInfoDto {
-                number: 13,
-                default_branch_name: "issue-13".into(),
-                title: "Fix".into(),
-                state: "OPEN".into(),
-                url: "https://example.test/13".into(),
-                author: PrAuthorDto {
-                    login: "author".into(),
+            StateValue::Issues(crate::usecase::fetched::Fetched::ready(vec![
+                crate::domain::git_host::IssueInfo {
+                    number: 13,
+                    title: "Fix".into(),
+                    state: "OPEN".into(),
+                    url: "https://example.test/13".into(),
+                    author: crate::domain::git_host::PrAuthor {
+                        login: "author".into(),
+                    },
+                    created_at: "created".into(),
+                    updated_at: "updated".into(),
+                    labels: vec![crate::domain::git_host::IssueLabel {
+                        name: "bug".into(),
+                        color: "red".into(),
+                    }],
+                    assignees: vec![crate::domain::git_host::PrAuthor {
+                        login: "assignee".into(),
+                    }],
+                    body: "body".into(),
+                    milestone: Some(crate::domain::git_host::Milestone {
+                        title: "next".into(),
+                    }),
                 },
-                created_at: "created".into(),
-                updated_at: "updated".into(),
-                labels: vec![IssueLabelDto {
-                    name: "bug".into(),
-                    color: "red".into(),
-                }],
-                assignees: vec![PrAuthorDto {
-                    login: "assignee".into(),
-                }],
-                body: "body".into(),
-                milestone: Some(MilestoneDto {
-                    title: "next".into(),
+            ])),
+            W::Issues(wire::IssuesSnapshot {
+                read_error: None,
+                issues: Some(wire::ListIssueInfoDto {
+                    items: vec![wire::IssueInfoDto {
+                        number: Some(13),
+                        default_branch_name: Some("feat/issues/13".into()),
+                        title: Some("Fix".into()),
+                        state: Some("OPEN".into()),
+                        url: Some("https://example.test/13".into()),
+                        author: Some(wire::PrAuthorDto {
+                            login: Some("author".into()),
+                        }),
+                        created_at: Some("created".into()),
+                        updated_at: Some("updated".into()),
+                        labels: Some(wire::ListIssueLabelDto {
+                            items: vec![wire::IssueLabelDto {
+                                name: Some("bug".into()),
+                                color: Some("red".into()),
+                            }],
+                        }),
+                        assignees: Some(wire::ListPrAuthorDto {
+                            items: vec![wire::PrAuthorDto {
+                                login: Some("assignee".into()),
+                            }],
+                        }),
+                        body: Some("body".into()),
+                        milestone: Some(wire::MilestoneDto {
+                            title: Some("next".into()),
+                        }),
+                    }],
                 }),
-            }]),
-            W::Issues(wire::ListIssueInfoDto {
-                items: vec![wire::IssueInfoDto {
-                    number: Some(13),
-                    default_branch_name: Some("issue-13".into()),
-                    title: Some("Fix".into()),
-                    state: Some("OPEN".into()),
-                    url: Some("https://example.test/13".into()),
-                    author: Some(wire::PrAuthorDto {
-                        login: Some("author".into()),
-                    }),
-                    created_at: Some("created".into()),
-                    updated_at: Some("updated".into()),
-                    labels: Some(wire::ListIssueLabelDto {
-                        items: vec![wire::IssueLabelDto {
-                            name: Some("bug".into()),
-                            color: Some("red".into()),
-                        }],
-                    }),
-                    assignees: Some(wire::ListPrAuthorDto {
-                        items: vec![wire::PrAuthorDto {
-                            login: Some("assignee".into()),
-                        }],
-                    }),
-                    body: Some("body".into()),
-                    milestone: Some(wire::MilestoneDto {
-                        title: Some("next".into()),
-                    }),
-                }],
             }),
         ),
         (
@@ -735,7 +738,7 @@ fn test_購読payload_設定とproviderの出力値を維持する() {
         NotionLabelPropertyDto, NotionPropertyMappingDto, NotionRepoConfigDto,
     };
     use crate::usecase::provider_dto::AgentSessionProviderDto;
-    use crate::usecase::provider_lifecycle::ProviderHookHealthWarningDto;
+    use crate::usecase::provider_lifecycle::ProviderHookHealthWarning;
     use wire::state_payload::Value as W;
 
     // Given
@@ -783,13 +786,13 @@ fn test_購読payload_設定とproviderの出力値を維持する() {
             serde_json::json!({"approval_auto_approve":true}),
         ),
         (
-            StateValue::ProviderHookHealth(crate::usecase::provider_lifecycle::ProviderHookHealthReadDto { warnings: vec![ProviderHookHealthWarningDto {
-                provider: AgentSessionProviderDto::Claude,
+            StateValue::ProviderHookHealth(crate::usecase::provider_lifecycle::ProviderHookHealthReadResult { warnings: vec![ProviderHookHealthWarning {
+                provider: crate::domain::provider_lifecycle::ProviderKind::Claude,
                 launch_id: "launch".into(),
-                reason: crate::usecase::provider_lifecycle::ProviderHookHealthReasonDto::LocalApiUnavailable,
-            }], failures: vec![] }),
+                reason: crate::domain::provider_lifecycle::ProviderLifecycleUnavailableReason::LocalApiUnavailable,
+            }], failures: vec![crate::usecase::provider_lifecycle::ProviderHookHealthFailureQueryError::Unavailable, crate::usecase::provider_lifecycle::ProviderHookHealthFailureQueryError::Corrupt] }),
             "releash.client.v1.ProviderHookHealthSnapshot",
-            serde_json::json!({"warnings":[{"provider":"claude","launchId":"launch","reason":"local_api_unavailable"}],"readErrors":[]}),
+            serde_json::json!({"warnings":[{"provider":"claude","launchId":"launch","reason":"local_api_unavailable"}],"readErrors":["Provider Hook health record or session could not be read","Provider Hook health record is corrupt"]}),
         ),
     ];
     // When

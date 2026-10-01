@@ -1493,15 +1493,26 @@ fn diagnose_with_scope(
         match wf_result {
             Err(diagnostics) => {
                 for item in diagnostics {
-                    add_diagnostic(&mut items, &mut workflow_summaries, name, item.clone());
+                    add_diagnostic(
+                        &mut items,
+                        &mut workflow_summaries,
+                        name,
+                        item.clone().workflow(name.clone()),
+                    );
                 }
             }
             Ok((wf, source_diagnostics)) => {
                 for item in source_diagnostics {
-                    add_diagnostic(&mut items, &mut workflow_summaries, name, item.clone());
+                    add_diagnostic(
+                        &mut items,
+                        &mut workflow_summaries,
+                        name,
+                        item.clone().workflow(name.clone()),
+                    );
                 }
                 diagnose_workflow(
                     wf,
+                    name,
                     &all_facet_keys,
                     &mut items,
                     &mut workflow_summaries,
@@ -1706,6 +1717,7 @@ pub(crate) fn diagnose_workflow_facet_references(
     let mut facet_usage = HashMap::new();
     check_workflow_facet_references(
         workflow,
+        &workflow.name,
         &all_facet_keys,
         &mut items,
         &mut workflow_summaries,
@@ -1884,13 +1896,12 @@ fn invalid_rule_field_name(kind: InvalidRuleKind) -> &'static str {
 
 fn diagnose_workflow(
     wf: &WorkflowDefinitionYaml,
+    name: &str,
     all_facet_keys: &HashSet<String>,
     items: &mut Vec<DiagnosticItem>,
     workflow_summaries: &mut HashMap<String, DiagnosticSummary>,
     facet_usage: &mut HashMap<String, Vec<FacetUsageEntry>>,
 ) {
-    let name = &wf.name;
-
     // ビルトイン info
     if wf.builtin {
         let item = DiagnosticItem::new(
@@ -1900,21 +1911,28 @@ fn diagnose_workflow(
             None,
             format!("ビルトインワークフロー '{name}'"),
         )
-        .workflow(name.clone());
+        .workflow(name.to_owned());
         add_diagnostic(items, workflow_summaries, name, item);
     }
 
-    check_workflow_facet_references(wf, all_facet_keys, items, workflow_summaries, facet_usage);
+    check_workflow_facet_references(
+        wf,
+        name,
+        all_facet_keys,
+        items,
+        workflow_summaries,
+        facet_usage,
+    );
 }
 
 fn check_workflow_facet_references(
     wf: &WorkflowDefinitionYaml,
+    name: &str,
     all_facet_keys: &HashSet<String>,
     items: &mut Vec<DiagnosticItem>,
     workflow_summaries: &mut HashMap<String, DiagnosticSummary>,
     facet_usage: &mut HashMap<String, Vec<FacetUsageEntry>>,
 ) {
-    let name = &wf.name;
     for node in &wf.nodes {
         // ファセット参照の存在チェック + usage 記録
         FacetRefCheckContext::new(name, all_facet_keys, items, workflow_summaries, facet_usage)

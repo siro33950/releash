@@ -158,7 +158,7 @@ async fn wait_for_version(state: &WorktreeState, version: u64) -> Arc<Repository
 }
 
 #[tokio::test]
-async fn test_変更状態走査_失敗を差分と未コミット数へ返し回復で解除する() {
+async fn test_変更状態走査_失敗を差分と未コミット数へ返す() {
     // Given
     let scanner = Arc::new(FakeScanner::new("first.txt"));
     let state = test_state(scanner.clone(), Duration::ZERO);
@@ -174,11 +174,27 @@ async fn test_変更状態走査_失敗を差分と未コミット数へ返し�
     assert!(state.read_snapshot().is_err());
     assert_eq!(state.dirty_count().value, Some(1));
     assert!(state.dirty_count().error.is_some());
+}
+
+#[tokio::test]
+async fn test_変更状態走査_回復で失敗を解除する() {
+    // Given
+    let scanner = Arc::new(FakeScanner::new("first.txt"));
+    let state = test_state(scanner.clone(), Duration::ZERO);
+    state.invalidate(InvalidateReason::change());
+    wait_for_version(&state, 1).await;
+    scanner.set_fail(true);
+    let result = state
+        .scan_once(scanner.clone(), &TestRepositoryStateWorkerRuntime)
+        .await;
+    state.finish_scan(Some(result), InvalidateReason::change());
+    // When
     scanner.set_fail(false);
     let result = state
         .scan_once(scanner, &TestRepositoryStateWorkerRuntime)
         .await;
     state.finish_scan(Some(result), InvalidateReason::change());
+    // Then
     assert!(state.read_snapshot().is_ok());
     assert_eq!(state.dirty_count().value, Some(1));
 }

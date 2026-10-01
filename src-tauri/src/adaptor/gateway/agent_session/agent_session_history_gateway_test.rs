@@ -432,6 +432,7 @@ async fn test_agent_session_history_gateway_claudeは完結した破損行から
         concat!(
             "{\"type\":\"user\",\"message\":{\"content\":\n",
             "{\"type\":\"user\",\"message\":{\"content\":\"Claude first prompt\"}}\n",
+            "{\"type\":\"ai-title\",\"aiTitle\":\"Title in tail\"}\n",
         ),
     )
     .unwrap();
@@ -738,4 +739,31 @@ async fn test_claude履歴読取_範囲境界で切れた入力を読み飛ば�
         .map(|entries| entries[0].first_user_prompt.clone());
     // Then
     assert_eq!(result, Ok(None));
+}
+
+#[tokio::test]
+async fn test_session履歴_先頭範囲の直後の改行で完結した入力を読む() {
+    // Given
+    let directory = tempfile::tempdir().unwrap();
+    let project = directory.path().join("projects/-repo-worktree");
+    fs::create_dir_all(&project).unwrap();
+    let empty = "{\"type\":\"user\",\"message\":{\"content\":\"\"}}";
+    let prompt = "x".repeat((64 * 1024) - empty.len());
+    let record = format!("{{\"type\":\"user\",\"message\":{{\"content\":\"{prompt}\"}}}}\n");
+    assert_eq!(record.len(), (64 * 1024) + 1);
+    fs::write(
+        project.join("boundary.jsonl"),
+        format!("{record}{{\"type\":\"ai-title\",\"aiTitle\":\"Title\"}}\n"),
+    )
+    .unwrap();
+    let gateway = LocalAgentSessionHistoryGateway::new(
+        directory.path().into(),
+        directory.path().join("codex"),
+    );
+    // When
+    let result = gateway
+        .list_session_titles(ProviderKind::Claude, "/repo/worktree", &["boundary".into()])
+        .await;
+    // Then
+    assert_eq!(result.unwrap()[0].first_user_prompt, Some(prompt));
 }

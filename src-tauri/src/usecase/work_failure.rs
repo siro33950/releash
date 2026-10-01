@@ -1,3 +1,6 @@
+use crate::domain::failure::TechnicalFailureNature;
+use crate::usecase::failure::{BusinessFailure, Failure};
+
 impl From<&crate::domain::git_host::GitHostError> for Failure {
     fn from(error: &crate::domain::git_host::GitHostError) -> Self {
         match error {
@@ -8,9 +11,6 @@ impl From<&crate::domain::git_host::GitHostError> for Failure {
         }
     }
 }
-
-use crate::domain::failure::TechnicalFailureNature;
-use crate::usecase::failure::{BusinessFailure, Failure};
 
 impl From<&crate::usecase::code_error::CodeUsecaseError> for Failure {
     fn from(error: &crate::usecase::code_error::CodeUsecaseError) -> Self {

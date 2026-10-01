@@ -1423,3 +1423,71 @@ it("つなぎ直しの購読開始が失敗しても最後の値と失敗を後�
 	laterRelease();
 	release();
 });
+
+it("PR未取得の行を含むWorkspacesを実際のpayloadから復号して受け手へ届ける", async () => {
+	const fixture = stateFixture();
+	const receive = vi.fn();
+	const fail = vi.fn();
+	const release = subscribeState("workspaces", receive, fail);
+	await vi.waitFor(() => expect(fixture.starts).toHaveLength(1));
+	const branch = {
+		name: "feature",
+		isMainWorktree: false,
+		isDeleting: false,
+		worktreePath: "/repo/feature",
+		isMerged: false,
+		pullRequestError: "PR denied",
+	};
+	fixture.streams[0].send({
+		target: "workspaces",
+		version: { epoch: "boot", sequence: 0n },
+		event: {
+			case: "snapshot",
+			value: {
+				value: {
+					case: "workspaces",
+					value: {
+						status: { state: "ready", loaded: true },
+						repositories: {
+							items: [
+								{
+									path: "/repo",
+									status: { state: "ready", loaded: true },
+									branches: {
+										items: [
+											branch,
+											{
+												...branch,
+												hasPr: true,
+												prNumber: 42n,
+												prUrl: "https://example.test/pr/42",
+											},
+										],
+									},
+									worktrees: { items: [] },
+								},
+							],
+						},
+					},
+				},
+			},
+		},
+	});
+	await vi.waitFor(() => expect(receive).toHaveBeenCalledOnce());
+	expect(receive.mock.calls[0][0].repositories[0].branches).toEqual([
+		expect.objectContaining({
+			has_pr: null,
+			pr_number: null,
+			pr_url: null,
+			pull_request_error: "PR denied",
+		}),
+		expect.objectContaining({
+			has_pr: true,
+			pr_number: 42,
+			pr_url: "https://example.test/pr/42",
+			pull_request_error: "PR denied",
+		}),
+	]);
+	expect(fail).not.toHaveBeenCalled();
+	release();
+});

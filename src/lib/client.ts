@@ -193,7 +193,7 @@ export type StateValues = {
 	"branch-base": string | null;
 	"branch-status": import("@/generated/client_types").ListBranchStatus;
 	"current-branch": string;
-	issues: import("@/generated/client_types").IssueInfoDto[];
+	issues: import("@/generated/client_types").IssuesSnapshot;
 	worktrees: import("@/generated/client_types").WorktreeEntryDto[];
 	"repository-root": string | null;
 	"startup-repository": string | null;

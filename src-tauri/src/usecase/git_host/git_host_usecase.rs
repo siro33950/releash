@@ -52,11 +52,12 @@ impl GitHostUsecase {
     pub fn refresh_pr_status(&self, repo_path: &str) -> Result<(), GitHostError> {
         let result = self.provider.fetch_pr_status(repo_path);
         let previous = self.pr_cache.result(repo_path);
-        if result
-            .as_ref()
-            .is_ok_and(|value| previous.error.is_none() && previous.value.as_ref() == Some(value))
-        {
-            return Ok(());
+        let unchanged = match &result {
+            Ok(value) => previous.error.is_none() && previous.value.as_ref() == Some(value),
+            Err(error) => previous.error.as_ref() == Some(error),
+        };
+        if unchanged {
+            return result.map(|_| ());
         }
         self.pr_cache.record(repo_path, result.clone());
         if let Some(publisher) = &self.state_publisher {
@@ -76,15 +77,22 @@ impl GitHostUsecase {
         result
     }
 
-    pub fn get_cached_issues(&self, repo_path: &str) -> Result<Vec<IssueInfo>, GitHostError> {
-        let result = self.issue_cache.result(repo_path);
-        if let Some(error) = result.error {
-            return Err(error);
+    pub(crate) fn get_cached_issues(
+        &self,
+        repo_path: &str,
+    ) -> crate::usecase::fetched::Fetched<Vec<IssueInfo>> {
+        let mut result = self.issue_cache.result(repo_path);
+        if result.value.is_none() && result.error.is_none() {
+            let _ = self.fetch_issues(repo_path);
+            result = self.issue_cache.result(repo_path);
         }
-        if let Some(value) = result.value {
-            return Ok(value);
+        crate::usecase::fetched::Fetched {
+            value: result.value,
+            error: result
+                .error
+                .as_ref()
+                .map(crate::domain::failure::WorkFailure::from_error),
         }
-        self.fetch_issues(repo_path)
     }
 }
 

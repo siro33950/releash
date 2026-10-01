@@ -2491,6 +2491,7 @@ it("未コミット数とPRの取得失敗を値が無い表示と区別する",
 	mocks.worktreeBranches = [
 		{
 			...makeBranch(),
+			has_pr: null,
 			dirty_count: null,
 			dirty_count_error: "scan failed",
 			pull_request_error: "PR denied",

@@ -192,7 +192,7 @@ fn claude_first_user_prompt(
     )
     .map_err(|_| ProviderSessionTitleGatewayError::Unavailable)?;
     let mut lines = head.bytes.split(|byte| *byte == b'\n').collect::<Vec<_>>();
-    if head.bytes.last().is_some_and(|byte| *byte != b'\n') {
+    if head.bytes.last().is_some_and(|byte| *byte != b'\n') && head.following_byte != Some(b'\n') {
         let _ = lines.pop();
     }
     for line in lines {

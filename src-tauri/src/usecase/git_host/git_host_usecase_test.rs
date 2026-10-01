@@ -51,6 +51,7 @@ impl GitHostProvider for FakeProvider {
 struct FakePrCache {
     lookup_value: Mutex<crate::domain::git_host::CachedResult<PrStatus>>,
     stored_values: Mutex<Vec<PrStatus>>,
+    records: AtomicUsize,
 }
 
 impl FakePrCache {
@@ -58,6 +59,7 @@ impl FakePrCache {
         Self {
             lookup_value: Mutex::new(crate::domain::git_host::CachedResult { value, error: None }),
             stored_values: Mutex::new(Vec::new()),
+            records: AtomicUsize::new(0),
         }
     }
 
@@ -71,6 +73,7 @@ impl PrStatusCache for FakePrCache {
         self.lookup_value.lock().unwrap().clone()
     }
     fn record(&self, _: &str, result: Result<PrStatus, GitHostError>) {
+        self.records.fetch_add(1, Ordering::SeqCst);
         if let Ok(value) = &result {
             self.stored_values.lock().unwrap().push(value.clone());
         }
@@ -206,7 +209,7 @@ fn test_issue手動再取得_失敗を保持し成功時に解除する() {
             if *self.0.read() {
                 Err(GitHostError::External("offline".into()))
             } else {
-                Ok(vec![])
+                Ok(vec![sample_issue(1)])
             }
         }
     }
@@ -218,21 +221,27 @@ fn test_issue手動再取得_失敗を保持し成功時に解除する() {
     );
     // When
     usecase.fetch_issues("/repo").unwrap();
-    let initial = usecase.issue_cache.result("/repo");
+    let initial = usecase.get_cached_issues("/repo");
     *provider.0.write() = true;
     let failure = usecase.fetch_issues("/repo");
-    let failed = usecase.issue_cache.result("/repo");
+    let failed = usecase.get_cached_issues("/repo");
     let read_failure = usecase.get_cached_issues("/repo");
     *provider.0.write() = false;
     usecase.fetch_issues("/repo").unwrap();
-    let recovered = usecase.issue_cache.result("/repo");
+    let recovered = usecase.get_cached_issues("/repo");
     // Then
-    assert_eq!(initial.value, Some(vec![]));
+    assert_eq!(initial.value, Some(vec![sample_issue(1)]));
     assert!(initial.error.is_none());
     assert!(failure.is_err());
     assert_eq!(failed.value, initial.value);
-    assert_eq!(failed.error, Some(GitHostError::External("offline".into())));
-    assert!(matches!(read_failure, Err(GitHostError::External(message)) if message == "offline"));
+    assert_eq!(
+        failed.error,
+        Some(crate::domain::failure::WorkFailure::from_error(
+            &GitHostError::External("offline".into())
+        ))
+    );
+    assert_eq!(read_failure.value, initial.value);
+    assert_eq!(read_failure.error, failed.error);
     assert_eq!(recovered.value, initial.value);
     assert!(recovered.error.is_none());
 }
@@ -366,7 +375,7 @@ fn cached_issues_hit_does_not_fetch_provider() {
         Arc::new(FakeIssueCache::with_lookup(Some(cached.clone()))),
     );
 
-    assert_eq!(uc.get_cached_issues("/repo").unwrap(), cached);
+    assert_eq!(uc.get_cached_issues("/repo").value, Some(cached));
     assert_eq!(provider.issue_fetch_count(), 0);
 }
 
@@ -381,7 +390,7 @@ fn cached_issues_miss_fetches_and_stores() {
         issue_cache.clone(),
     );
 
-    assert_eq!(uc.get_cached_issues("/repo").unwrap(), fetched);
+    assert_eq!(uc.get_cached_issues("/repo").value, Some(fetched.clone()));
     assert_eq!(provider.issue_fetch_count(), 1);
     assert_eq!(issue_cache.stored_values(), vec![fetched]);
 }
@@ -450,4 +459,52 @@ fn test_github検出_期限切れ時に既定pr状態を保存しない() {
     );
     assert!(pr_cache.stored_values().is_empty());
     assert!(issue_cache.stored_values().is_empty());
+}
+
+#[test]
+fn test_pr状態の取り直し_同じ失敗なら記録も通知もしない() {
+    // Given
+    let error = GitHostError::External("offline".into());
+    let provider = Arc::new(FakeProvider {
+        pr_status: Err(error.clone()),
+        ..FakeProvider::empty()
+    });
+    let cache = Arc::new(FakePrCache::default());
+    let publisher = crate::test_support::state_subscription::test_subscriptions();
+    let mut changes = crate::test_support::state_subscription::changes(&publisher);
+    let uc = usecase_with(provider, cache.clone(), Arc::new(FakeIssueCache::default()))
+        .with_state_publisher(publisher);
+    uc.refresh_pr_status("/repo").unwrap_err();
+    crate::test_support::state_subscription::take_changes(&mut changes);
+    // When
+    let result = uc.refresh_pr_status("/repo");
+    // Then
+    assert_eq!(result, Err(error));
+    assert_eq!(cache.records.load(Ordering::SeqCst), 1);
+    assert!(crate::test_support::state_subscription::take_changes(&mut changes).is_empty());
+}
+
+#[test]
+fn test_pr状態の取り直し_違う失敗なら記録して通知する() {
+    // Given
+    let error = GitHostError::External("offline".into());
+    let provider = Arc::new(FakeProvider {
+        pr_status: Err(error.clone()),
+        ..FakeProvider::empty()
+    });
+    let cache = Arc::new(FakePrCache::default());
+    cache.record("/repo", Err(GitHostError::External("denied".into())));
+    let publisher = crate::test_support::state_subscription::test_subscriptions();
+    let mut changes = crate::test_support::state_subscription::changes(&publisher);
+    let uc = usecase_with(provider, cache.clone(), Arc::new(FakeIssueCache::default()))
+        .with_state_publisher(publisher);
+    // When
+    let result = uc.refresh_pr_status("/repo");
+    // Then
+    assert_eq!(result, Err(error));
+    assert_eq!(cache.records.load(Ordering::SeqCst), 2);
+    assert_eq!(
+        crate::test_support::state_subscription::take_changes(&mut changes),
+        vec![crate::usecase::state_subscription::StateChangeSource::WorkspaceList]
+    );
 }

@@ -279,8 +279,6 @@ export function useAutomation(open: boolean) {
 		[],
 	);
 
-	const error = operationError;
-
 	return {
 		workflowsError: workflowsSubscription.error,
 		diagnosticsError: diagnosticsSubscription.error,
@@ -295,19 +293,19 @@ export function useAutomation(open: boolean) {
 			open &&
 			(workflowsSubscription.value === undefined ||
 				diagnosticsSubscription.value === undefined) &&
-			!error &&
+			!operationError &&
 			!workflowsSubscription.error &&
 			!diagnosticsSubscription.error,
-		error,
+		error: operationError,
 		setError: setOperationError,
 
 		externalChangeDetected,
 		clearExternalChange,
 
-		selectedWorkflow: selectedWorkflow,
+		selectedWorkflow,
 		selectedWorkflowName,
-		selectedWorkflowSource: selectedWorkflowSource,
-		selectedFacetContent: selectedFacetContent,
+		selectedWorkflowSource,
+		selectedFacetContent,
 		selectedFacetKey: selectedFacet?.key ?? null,
 		selectedFacetKind: selectedFacet?.kind ?? null,
 

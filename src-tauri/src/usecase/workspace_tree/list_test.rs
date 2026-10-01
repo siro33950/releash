@@ -322,7 +322,30 @@ fn rows(list: &WorkspaceList) -> &[WorkspaceListWorktree] {
 }
 
 #[tokio::test]
-async fn test_一覧の読み取り_監視前は取得中で走査後にworktreeと変更の数と実行木を並べる() {
+async fn test_一覧の読み取り_監視前は取得中を返す() {
+    // Given
+    let fixture = Fixture::new(PullRequests {
+        status: PrStatus::default(),
+        release: None,
+    });
+    std::fs::write(
+        std::path::Path::new(&fixture.path).join("untracked.txt"),
+        "new",
+    )
+    .unwrap();
+    fixture.add_worktree("feature");
+
+    // When
+    let before = fixture.usecase.read().await.unwrap();
+
+    // Then
+    assert_eq!(before.repositories.len(), 1);
+    assert_eq!(before.repositories[0].path, fixture.path);
+    assert_eq!(before.repositories[0].worktrees, Fetched::default());
+}
+
+#[tokio::test]
+async fn test_一覧の読み取り_走査後にworktreeと変更の数と実行木を並べる() {
     // Given
     let fixture = Fixture::new(PullRequests {
         status: PrStatus::default(),
@@ -336,13 +359,6 @@ async fn test_一覧の読み取り_監視前は取得中で走査後にworktree
     let feature = fixture.add_worktree("feature");
 
     // When
-    let before = fixture.usecase.read().await.unwrap();
-
-    // Then
-    assert_eq!(before.repositories.len(), 1);
-    assert_eq!(before.repositories[0].path, fixture.path);
-    assert_eq!(before.repositories[0].worktrees, Fetched::default());
-
     let list = fixture
         .watch_until(|rows| {
             rows.len() == 2
@@ -351,6 +367,7 @@ async fn test_一覧の読み取り_監視前は取得中で走査後にworktree
         })
         .await;
 
+    // Then
     let rows = rows(&list);
     assert!(list.repositories[0].worktrees.error.is_none());
     assert!(rows[0].worktree.is_main);
@@ -368,7 +385,40 @@ async fn test_一覧の読み取り_監視前は取得中で走査後にworktree
 }
 
 #[tokio::test]
-async fn test_手動更新_走査をやり直して終わりまで待ちprの取得は待たない() {
+async fn test_手動更新_走査を待ちpr取得前に一覧を返す() {
+    // Given
+    let (release, blocked) = std::sync::mpsc::channel();
+    let fixture = Fixture::new(PullRequests {
+        status: PrStatus {
+            open_prs: HashMap::from([(
+                "feature".into(),
+                PrInfo {
+                    number: 42,
+                    url: "https://example.test/pull/42".into(),
+                },
+            )]),
+            merged_branches: Vec::new(),
+        },
+        release: Some(parking_lot::Mutex::new(blocked)),
+    });
+    fixture.watch_until(|rows| rows.len() == 1).await;
+    fixture.add_worktree("feature");
+
+    // When
+    tokio::time::timeout(Duration::from_secs(5), fixture.usecase.refresh())
+        .await
+        .expect("refresh must not wait for pull requests");
+    let scanned = fixture.usecase.read().await.unwrap();
+
+    release.send(()).unwrap();
+    // Then
+    assert_eq!(rows(&scanned).len(), 2);
+    assert_eq!(rows(&scanned)[1].worktree.branch, "feature");
+    assert!(rows(&scanned)[1].pull_request.is_none());
+}
+
+#[tokio::test]
+async fn test_手動更新_pr取得後に前の一覧へprを反映する() {
     // Given
     let (release, blocked) = std::sync::mpsc::channel();
     let fixture = Fixture::new(PullRequests {
@@ -391,14 +441,8 @@ async fn test_手動更新_走査をやり直して終わりまで待ちprの取
     tokio::time::timeout(Duration::from_secs(5), fixture.usecase.refresh())
         .await
         .expect("refresh must not wait for pull requests");
+
     // When
-    let scanned = fixture.usecase.read().await.unwrap();
-
-    // Then
-    assert_eq!(rows(&scanned).len(), 2);
-    assert_eq!(rows(&scanned)[1].worktree.branch, "feature");
-    assert!(rows(&scanned)[1].pull_request.is_none());
-
     release.send(()).unwrap();
     tokio::time::timeout(Duration::from_secs(5), async {
         while changes.recv().await.unwrap() != StateChangeSource::WorkspaceList {}
@@ -407,6 +451,7 @@ async fn test_手動更新_走査をやり直して終わりまで待ちprの取
     .expect("pull request change must be notified");
 
     let list = fixture.usecase.read().await.unwrap();
+    // Then
     assert_eq!(
         rows(&list)[1].pull_request,
         Some(PrInfo {

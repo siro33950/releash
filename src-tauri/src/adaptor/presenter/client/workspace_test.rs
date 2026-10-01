@@ -662,6 +662,7 @@ fn worktree_row(path: &str, branch: &str, tree: Fetched<WorkspaceTree>) -> Works
         merged: false,
         pull_request: None,
         pull_request_error: None,
+        pull_request_loaded: true,
         tree,
     }
 }
@@ -1025,4 +1026,33 @@ fn failure(message: &str) -> crate::domain::failure::WorkFailure {
         ),
         message: message.into(),
     }
+}
+
+#[test]
+fn test_pr状態の転送_初回失敗と取得後の失敗を区別する() {
+    // Given
+    let mut initial = worktree_row("/repo", "main", Fetched::default());
+    initial.pull_request_loaded = false;
+    initial.pull_request_error = Some(failure("PR denied"));
+    let mut retained = worktree_row("/repo-worktrees/feature", "feature", Fetched::default());
+    retained.pull_request = Some(PrInfo {
+        number: 42,
+        url: "https://example.test/pull/42".into(),
+    });
+    retained.pull_request_error = Some(failure("PR denied"));
+    // When
+    let initial = branch(&initial);
+    let retained = branch(&retained);
+    // Then
+    assert_eq!(initial.has_pr, None);
+    assert_eq!(initial.pr_number, None);
+    assert_eq!(initial.pr_url, None);
+    assert_eq!(initial.pull_request_error.as_deref(), Some("PR denied"));
+    assert_eq!(retained.has_pr, Some(true));
+    assert_eq!(retained.pr_number, Some(42));
+    assert_eq!(
+        retained.pr_url.as_deref(),
+        Some("https://example.test/pull/42")
+    );
+    assert_eq!(retained.pull_request_error.as_deref(), Some("PR denied"));
 }

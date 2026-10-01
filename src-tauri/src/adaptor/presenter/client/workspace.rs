@@ -103,7 +103,9 @@ fn branch(row: &WorkspaceListWorktree) -> wire::WorkspaceBranch {
         dirty_count_error: row.dirty_count.error.as_ref().map(ToString::to_string),
         pull_request_error: row.pull_request_error.as_ref().map(ToString::to_string),
         is_merged: Some(row.merged),
-        has_pr: Some(row.pull_request.is_some()),
+        has_pr: row
+            .pull_request_loaded
+            .then_some(row.pull_request.is_some()),
         pr_number: row.pull_request.as_ref().map(|pr| pr.number),
         pr_url: row.pull_request.as_ref().map(|pr| pr.url.clone()),
     }

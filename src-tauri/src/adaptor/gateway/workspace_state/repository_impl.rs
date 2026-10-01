@@ -43,16 +43,10 @@ impl WorkspaceStateRepository for WorkspaceStateStore {
         worktree_name: &str,
         worktree_root: &str,
     ) -> Result<Option<WorkspaceState>, crate::domain::workspace_state::WorkspaceStateError> {
-        let file_path = state_file(&self.app_data_dir, worktree_name);
-
-        let data = match std::fs::read_to_string(&file_path) {
-            Ok(data) => data,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(error) => return Err(WorkspaceStateError::Message(error.to_string())),
+        let Some(state) = self.read_state(worktree_name)? else {
+            return Ok(None);
         };
-        let state = serde_json::from_str::<WorkspaceStateDto>(&data)
-            .map(WorkspaceState::from)
-            .map_err(|error| WorkspaceStateError::Message(error.to_string()))?;
+        let state = WorkspaceState::from(state);
         let state = filter_missing_files(state, worktree_root);
 
         self.entries
@@ -62,14 +56,7 @@ impl WorkspaceStateRepository for WorkspaceStateStore {
     }
 
     fn check_readable(&self, worktree_name: &str) -> Result<(), WorkspaceStateError> {
-        let data = match std::fs::read_to_string(state_file(&self.app_data_dir, worktree_name)) {
-            Ok(data) => data,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-            Err(error) => return Err(WorkspaceStateError::Message(error.to_string())),
-        };
-        serde_json::from_str::<WorkspaceStateDto>(&data)
-            .map(|_| ())
-            .map_err(|error| WorkspaceStateError::Message(error.to_string()))
+        self.read_state(worktree_name).map(|_| ())
     }
 
     fn save(&self, worktree_name: &str) -> Result<(), WorkspaceStateError> {
@@ -102,6 +89,20 @@ impl WorkspaceStateRepository for WorkspaceStateStore {
 }
 
 impl WorkspaceStateStore {
+    fn read_state(
+        &self,
+        worktree_name: &str,
+    ) -> Result<Option<WorkspaceStateDto>, WorkspaceStateError> {
+        let data = match std::fs::read_to_string(state_file(&self.app_data_dir, worktree_name)) {
+            Ok(data) => data,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(WorkspaceStateError::Message(error.to_string())),
+        };
+        serde_json::from_str::<WorkspaceStateDto>(&data)
+            .map(Some)
+            .map_err(|error| WorkspaceStateError::Message(error.to_string()))
+    }
+
     #[cfg(test)]
     pub fn get(&self, worktree_name: &str) -> Option<WorkspaceState> {
         self.entries.read().get(worktree_name).cloned()

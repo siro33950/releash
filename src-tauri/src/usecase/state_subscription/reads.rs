@@ -242,7 +242,7 @@ impl WorkspaceStateReads {
             }
             T::ProviderHookHealth => {
                 return Ok(StateValue::ProviderHookHealth(
-                    self.hook_health.warnings().await.map_err(error)?.into(),
+                    self.hook_health.warnings().await.map_err(error)?,
                 ))
             }
             _ => {}
@@ -286,12 +286,7 @@ impl WorkspaceStateReads {
                 StateValue::CurrentBranch(self.repository.get_current_branch(p).map_err(error)?)
             }
             T::Issues(p) => StateValue::Issues(
-                self.git_host
-                    .get_cached_issues(p)
-                    .map_err(error)?
-                    .into_iter()
-                    .map(Into::into)
-                    .collect(),
+                self.git_host.get_cached_issues(p),
             ),
             T::Worktrees(p) => {
                 StateValue::Worktrees(self.repository.list_worktrees(p).map_err(error)?)
@@ -409,7 +404,7 @@ impl WorkspaceStateReads {
 impl WorkspaceStateReads {
     pub(crate) fn refresh_issues(&self, path: &str) -> Result<(), StateReadError> {
         self.repository.get_main_repo_path(path).map_err(error)?;
-        self.git_host.fetch_issues(path).map_err(error)?;
+        let _ = self.git_host.fetch_issues(path);
         Ok(())
     }
 }

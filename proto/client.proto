@@ -2808,7 +2808,7 @@ message WorkspaceBranch {
   optional string worktree_path = 8 [json_name = "worktree_path", (json_required) = true];
   optional uint64 dirty_count = 9 [json_name = "dirty_count", (json_nullable) = true];
   optional bool is_merged = 10 [json_name = "is_merged", (json_required) = true];
-  optional bool has_pr = 2 [json_name = "has_pr", (json_required) = true];
+  optional bool has_pr = 2 [json_name = "has_pr", (json_nullable) = true];
   optional string dirty_count_error = 11 [json_name = "dirty_count_error", (json_nullable) = true];
   optional string pull_request_error = 12 [json_name = "pull_request_error", (json_nullable) = true];
   optional uint64 pr_number = 3 [json_name = "pr_number", (json_nullable) = true];
@@ -2848,6 +2848,11 @@ message ListWorkspaceRepositoryList {
   repeated WorkspaceRepositoryList items = 1;
 }
 
+message IssuesSnapshot {
+  optional ListIssueInfoDto issues = 1;
+  optional string read_error = 2;
+}
+
 message OpenStateStreamRequest { string client_id = 1; }
 message StateVersion { string epoch = 1; uint64 sequence = 2; }
 message StartStateSubscriptionRequest {
@@ -2879,7 +2884,7 @@ message StatePayload {
     Nullablestring branch_base = 10;
     ListBranchStatus branch_status = 11;
     ResultString current_branch = 12;
-    ListIssueInfoDto issues = 13;
+    IssuesSnapshot issues = 13;
     ListWorktreeEntryDto worktrees = 14;
     Nullablestring repository_root = 15;
     Nullablestring startup_repository = 16;

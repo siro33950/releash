@@ -26,7 +26,7 @@ export interface WorktreeBranch {
 	dirty_count_error?: string | null;
 	pull_request_error?: string | null;
 	is_merged: boolean;
-	has_pr?: boolean;
+	has_pr?: boolean | null;
 	pr_number?: number | null;
 	pr_url?: string | null;
 }

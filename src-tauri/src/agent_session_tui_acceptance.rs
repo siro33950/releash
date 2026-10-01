@@ -686,7 +686,7 @@ impl crate::usecase::state_subscription::StateSubscriptionRead for AcceptanceSes
                 .hook_health
                 .warnings()
                 .await
-                .map(|warnings| StateValue::ProviderHookHealth(warnings.into()))
+                .map(StateValue::ProviderHookHealth)
                 .map_err(|e| StateReadError {
                     message: format!("{e:?}"),
                     source: e.into(),

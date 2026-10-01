@@ -119,7 +119,7 @@ impl crate::domain::workspace_tree::WorkspaceTreeRepository for Trees {
 }
 
 #[tokio::test]
-async fn test_一覧の実行木_読めなかったworktreeは最後に読めた木と失敗を残し外れた保持を捨てる() {
+async fn test_一覧の実行木_初回読取失敗を未取得と区別する() {
     // Given
     let directory = tempfile::tempdir().unwrap();
     let (mut usecase, _store) =
@@ -147,11 +147,32 @@ async fn test_一覧の実行木_読めなかったworktreeは最後に読めた
         .map(|failure| failure.message.as_str())
         .unwrap()
         .contains("store busy"));
+}
 
+#[tokio::test]
+async fn test_一覧の実行木_取り直しの失敗で前の木を残し回復した木の失敗を解除する() {
+    // Given
+    let directory = tempfile::tempdir().unwrap();
+    let (mut usecase, _store) =
+        build_workflow_usecase_and_store(directory.path().join("data"), None);
+    let trees = Arc::new(Trees::default());
+    usecase.workspace_nodes = trees.clone();
+    // 一覧が渡す場所は走査で読めたものなので、フォルダが無くても（削除中でも）読む。
+    let paths = [
+        "/repo-worktrees/a".to_string(),
+        "/repo-worktrees/b".to_string(),
+    ];
+    let (a, b) = (paths[0].as_str(), paths[1].as_str());
+    trees.set(a, Ok(WorkspaceTree::empty(a)));
+    trees.set(b, Err(WorkflowError::external("store busy")));
+
+    usecase.retained_workspace_trees(&paths).await;
+    // When
     trees.set(a, Err(WorkflowError::external("store busy")));
     trees.set(b, Ok(WorkspaceTree::empty(b)));
     let second = usecase.retained_workspace_trees(&paths).await;
 
+    // Then
     assert_eq!(second[0].value, Some(WorkspaceTree::empty(a)));
     assert!(second[0]
         .error
@@ -160,10 +181,35 @@ async fn test_一覧の実行木_読めなかったworktreeは最後に読めた
         .unwrap()
         .contains("store busy"));
     assert_eq!(second[1], Fetched::ready(WorkspaceTree::empty(b)));
+}
 
+#[tokio::test]
+async fn test_一覧の実行木_一覧から外れた木の保持を捨てる() {
+    // Given
+    let directory = tempfile::tempdir().unwrap();
+    let (mut usecase, _store) =
+        build_workflow_usecase_and_store(directory.path().join("data"), None);
+    let trees = Arc::new(Trees::default());
+    usecase.workspace_nodes = trees.clone();
+    // 一覧が渡す場所は走査で読めたものなので、フォルダが無くても（削除中でも）読む。
+    let paths = [
+        "/repo-worktrees/a".to_string(),
+        "/repo-worktrees/b".to_string(),
+    ];
+    let (a, b) = (paths[0].as_str(), paths[1].as_str());
+    trees.set(a, Ok(WorkspaceTree::empty(a)));
+    trees.set(b, Err(WorkflowError::external("store busy")));
+
+    usecase.retained_workspace_trees(&paths).await;
+    trees.set(a, Err(WorkflowError::external("store busy")));
+    trees.set(b, Ok(WorkspaceTree::empty(b)));
+    usecase.retained_workspace_trees(&paths).await;
+
+    // When
     usecase.retained_workspace_trees(&paths[1..]).await;
     let returned = usecase.retained_workspace_trees(&paths).await;
 
+    // Then
     assert!(!returned[0].loaded());
     assert!(returned[0].error.is_some());
 }

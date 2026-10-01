@@ -29,6 +29,7 @@ pub(crate) struct WorkspaceListWorktree {
     /// PR の状態を合わせた merge 済み。
     pub merged: bool,
     pub pull_request: Option<PrInfo>,
+    pub pull_request_loaded: bool,
     pub tree: Fetched<WorkspaceTree>,
     pub pull_request_error: Option<crate::domain::failure::WorkFailure>,
 }
@@ -203,6 +204,7 @@ fn compose(
                                             .value
                                             .as_ref()
                                             .and_then(|prs| prs.open_prs.get(branch).cloned()),
+                                        pull_request_loaded: pull_requests.loaded(),
                                         pull_request_error: pull_requests.error.clone(),
                                         tree: trees.next().unwrap_or_default(),
                                         deleting: values.deleting,

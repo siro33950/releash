@@ -16,8 +16,8 @@ export function useIssues(repoPath: string) {
 		[repoPath],
 	);
 	return {
-		issues: issues.value ?? [],
-		error: issues.error,
+		issues: issues.value?.issues ?? [],
+		error: issues.error ?? issues.value?.readError ?? null,
 		loading: issues.value === undefined && !issues.error,
 		refresh,
 	};

@@ -137,10 +137,13 @@ fn test_表示状態保存_正常なファイルなら保存を許す() {
     let store = WorkspaceStateStore::new(directory.path().into());
     store.set("wt", make_state());
     store.save("wt").unwrap();
+    let path = state_file(directory.path(), "wt");
+    let before = std::fs::read(&path).unwrap();
     // When
     let result = store.check_readable("wt");
     // Then
-    assert_eq!(result.is_ok(), true);
+    assert!(result.is_ok());
+    assert_eq!(std::fs::read(path).unwrap(), before);
 }
 
 #[test]
@@ -171,4 +174,19 @@ fn test_表示状態保存_通常ファイルでない保存先を拒む() {
     let result = store.check_readable("wt");
     // Then
     assert_eq!(result.is_ok(), false);
+}
+
+#[test]
+fn test_表示状態保存_壊れた保存ファイルを変更せず拒む() {
+    // Given
+    let directory = tempfile::tempdir().unwrap();
+    let store = WorkspaceStateStore::new(directory.path().into());
+    let path = state_file(directory.path(), "wt");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, "broken").unwrap();
+    // When
+    let result = store.check_readable("wt");
+    // Then
+    assert!(result.is_err());
+    assert_eq!(std::fs::read_to_string(path).unwrap(), "broken");
 }

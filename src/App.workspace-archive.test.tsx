@@ -310,6 +310,35 @@ describe("App Workspace Archive selection reconciliation", () => {
 		},
 	);
 
+	it("archive後の選択の購読失敗をWorkspacesの行に表示する", async () => {
+		const user = userEvent.setup();
+		render(<App />);
+		await waitFor(() =>
+			expect(screen.getByTestId("center-node")).toHaveTextContent(
+				SELECTED_NODE_ID,
+			),
+		);
+		await user.click(
+			screen.getByRole("button", { name: "Archive Archivable workflow" }),
+		);
+		await waitFor(() =>
+			expect(states.subscribeState).toHaveBeenCalledWith(
+				{ kind: "selection", args: ["/repo/wt", SELECTED_NODE_ID] },
+				expect.any(Function),
+				expect.any(Function),
+			),
+		);
+		act(() =>
+			states.fail(
+				{ kind: "selection", args: ["/repo/wt", SELECTED_NODE_ID] },
+				new Error("selection unavailable"),
+			),
+		);
+		expect(
+			await screen.findByText(/selection unavailable/),
+		).toBeInTheDocument();
+	});
+
 	it("ignores a delayed invalidation callback for a Node that is no longer selected", async () => {
 		const user = userEvent.setup();
 		render(<App />);

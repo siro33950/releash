@@ -492,7 +492,28 @@ impl StateSubscriptionRead for FailingReads {
     }
 }
 #[tokio::test]
-async fn test_購読読取_初回失敗後も登録を残し回復と再失敗を配信する() {
+async fn test_購読読取_初回失敗後も登録を残す() {
+    // Given
+    let output = Arc::new(RecordingOutput::default());
+    let reads = Arc::new(FailingReads {
+        fail_read: true.into(),
+        fail_refresh: false.into(),
+    });
+    let usecase = StateSubscriptionUsecase::new_with_output(output.clone(), Arc::new(PendingTimer))
+        .with_reads(reads.clone(), None, vec![], String::new());
+    let target = SubscriptionTarget::RepositoryPaths;
+    usecase.open_client("client".into()).unwrap();
+    // When
+    usecase
+        .start_subscription("client", &target, None, None)
+        .await
+        .unwrap();
+    // Then
+    assert!(usecase.active_targets().contains(&target));
+    assert_eq!(output.failures.lock().len(), 1);
+}
+#[tokio::test]
+async fn test_購読読取_初回失敗から回復した値を配信する() {
     // Given
     let output = Arc::new(RecordingOutput::default());
     let reads = Arc::new(FailingReads {
@@ -505,12 +526,9 @@ async fn test_購読読取_初回失敗後も登録を残し回復と再失敗�
     usecase.open_client("client".into()).unwrap();
     usecase
         .start_subscription("client", &target, None, None)
-        // When
         .await
         .unwrap();
-    // Then
-    assert!(usecase.active_targets().contains(&target));
-    assert_eq!(output.failures.lock().len(), 1);
+    // When
     reads
         .fail_read
         .store(false, std::sync::atomic::Ordering::SeqCst);
@@ -519,7 +537,35 @@ async fn test_購読読取_初回失敗後も登録を残し回復と再失敗�
     tokio::time::timeout(std::time::Duration::from_secs(2), output.updated.notified())
         .await
         .unwrap();
+    usecase.close_client("client");
+    // Then
     assert_eq!(output.updates.lock().len(), 1);
+}
+#[tokio::test]
+async fn test_購読読取_回復後の再失敗を配信する() {
+    // Given
+    let output = Arc::new(RecordingOutput::default());
+    let reads = Arc::new(FailingReads {
+        fail_read: true.into(),
+        fail_refresh: false.into(),
+    });
+    let usecase = StateSubscriptionUsecase::new_with_output(output.clone(), Arc::new(PendingTimer))
+        .with_reads(reads.clone(), None, vec![], String::new());
+    let target = SubscriptionTarget::RepositoryPaths;
+    usecase.open_client("client".into()).unwrap();
+    usecase
+        .start_subscription("client", &target, None, None)
+        .await
+        .unwrap();
+    reads
+        .fail_read
+        .store(false, std::sync::atomic::Ordering::SeqCst);
+    output.updated.notified().await;
+    usecase.notify(StateChangeSource::Repositories);
+    tokio::time::timeout(std::time::Duration::from_secs(2), output.updated.notified())
+        .await
+        .unwrap();
+    // When
     reads
         .fail_read
         .store(true, std::sync::atomic::Ordering::SeqCst);
@@ -527,8 +573,9 @@ async fn test_購読読取_初回失敗後も登録を残し回復と再失敗�
     tokio::time::timeout(std::time::Duration::from_secs(2), output.updated.notified())
         .await
         .unwrap();
-    assert_eq!(output.failures.lock().len(), 2);
     usecase.close_client("client");
+    // Then
+    assert_eq!(output.failures.lock().len(), 2);
 }
 struct RefreshTimer(Arc<tokio::sync::Notify>);
 impl SubscriptionTimer for RefreshTimer {

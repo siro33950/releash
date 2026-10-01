@@ -212,7 +212,7 @@ async fn test_購読再開始_状態不変なら通知せず初回開始だけ�
 }
 
 #[test]
-fn test_terminal読取失敗_出力sequenceを進めず次の出力を配信する() {
+fn test_terminal読取失敗_出力sequenceを進めない() {
     // Given
     let presenter = StateSubscriptionPresenter::new();
     let target = SubscriptionTarget::from_parts("terminal", &["/repo"]).unwrap();
@@ -238,6 +238,28 @@ fn test_terminal読取失敗_出力sequenceを進めず次の出力を配信す�
             .inspect(|state| state.current_version(&target.to_string())),
         Some(version)
     );
+}
+
+#[test]
+fn test_terminal読取失敗_失敗後の出力でsequenceを進める() {
+    // Given
+    let presenter = StateSubscriptionPresenter::new();
+    let target = SubscriptionTarget::from_parts("terminal", &["/repo"]).unwrap();
+    let version = Version {
+        epoch: "terminal".into(),
+        sequence: 4,
+    };
+    presenter
+        .runtime
+        .update(|state| state.register_delta(&target.to_string(), version.clone(), 1024))
+        .unwrap();
+    presenter
+        .publish_failure(
+            &target,
+            StateReadError::from_error(SubscriptionError::SnapshotRequired),
+        )
+        .unwrap();
+    // When
     let next = Version {
         epoch: "terminal".into(),
         sequence: 5,
@@ -260,6 +282,7 @@ fn test_terminal読取失敗_出力sequenceを進めず次の出力を配信す�
                 .map(|_| true)
         })
         .unwrap();
+    // Then
     assert_eq!(
         presenter
             .runtime

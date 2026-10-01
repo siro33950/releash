@@ -68,7 +68,7 @@ export type WorkspaceBranch = {
 	worktree_path: string;
 	dirty_count: number | null;
 	is_merged: boolean;
-	has_pr: boolean;
+	has_pr: boolean | null;
 	dirty_count_error: string | null;
 	pull_request_error: string | null;
 	pr_number: number | null;
@@ -307,6 +307,11 @@ export type BranchStatus = {
 };
 
 export type ResultString = string;
+
+export type IssuesSnapshot = {
+	issues?: ListIssueInfoDto;
+	readError?: string;
+};
 
 export type ListIssueInfoDto = Array<IssueInfoDto>;
 

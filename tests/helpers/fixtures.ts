@@ -50,7 +50,7 @@ const baseIpcHandler: Record<string, unknown> = {
 
 	// RepoKanbanBoard
 	"workspaceBranches": [],
-	"issues": [],
+	"issues": { issues: [] },
 	fetch_issues: null,
     refresh_workspaces: null,
 	"releash-base": null,
