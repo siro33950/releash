@@ -74,7 +74,7 @@ dirs = "6"
 uuid = { version = "1", features = ["v4"] }
 url = "2"
 clap = { version = "4", features = ["derive"] }
-opentelemetry = "0.32"
+opentelemetry = "0.33"
 opentelemetry-otlp = { version = "0.32", default-features = false, features = ["trace", "metrics", "logs", "http-proto", "reqwest-blocking-client"] }
 opentelemetry_sdk = "0.32"
 sysinfo = { version = "0.39", default-features = false, features = ["system"] }
