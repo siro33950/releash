@@ -40,6 +40,9 @@ impl StateSubscriptionRead for StateSubscriptionReads {
         .await
         .map_err(task_error)?
     }
+    fn acquire_external(&self, target: &SubscriptionTarget) {
+        self.0.acquire_external(target);
+    }
     fn release_external(&self, target: &SubscriptionTarget) {
         self.0.release_external(target);
     }

@@ -56,8 +56,14 @@ async fn test_notion購読読取_タスクの外部更新の後に未設定の�
     let fixture = crate::test_support::state_subscription::StateReadsFixture::new();
     let reads = StateSubscriptionReads(fixture.reads.clone());
     let target =
-        SubscriptionTarget::NotionTasks(fixture.path.clone(), 20, None, Default::default());
+        SubscriptionTarget::NotionTasks(crate::usecase::notion::usecase::NotionTaskListRequest {
+            path: fixture.path.clone(),
+            count: 20,
+            title: None,
+            labels: Default::default(),
+        });
     // When
+    reads.acquire_external(&target);
     reads.refresh_external(&target).await.unwrap();
     let value = reads.read(&target).await.unwrap();
     reads.release_external(&target);
@@ -81,6 +87,7 @@ async fn test_notion購読読取_ラベルの外部更新の後に未設定の�
     let reads = StateSubscriptionReads(fixture.reads.clone());
     let target = SubscriptionTarget::NotionLabelOptions(fixture.path.clone());
     // When
+    reads.acquire_external(&target);
     reads.refresh_external(&target).await.unwrap();
     let value = reads.read(&target).await.unwrap();
     reads.release_external(&target);

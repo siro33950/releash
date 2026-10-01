@@ -10,13 +10,15 @@ use crate::usecase::notion::error::NotionUsecaseError;
 
 use crate::usecase::fetched::Fetched;
 
-type TaskListKey = (
-    String,
-    usize,
-    Option<String>,
-    BTreeMap<String, BTreeSet<String>>,
-);
-type Results<K, T> = parking_lot::Mutex<HashMap<K, Arc<Fetched<T, NotionUsecaseError>>>>;
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) struct NotionTaskListRequest {
+    pub path: String,
+    pub count: usize,
+    pub title: Option<String>,
+    pub labels: BTreeMap<String, BTreeSet<String>>,
+}
+
+type Results<K, T> = parking_lot::Mutex<HashMap<K, (u64, Fetched<T, NotionUsecaseError>)>>;
 
 #[derive(Clone, PartialEq, Eq)]
 pub(crate) struct NotionRepoConfigDto {
@@ -53,7 +55,8 @@ pub(crate) struct NotionUsecase {
     repository: Arc<dyn NotionConfigRepository>,
     config_query: Arc<dyn super::query_service::NotionConfigQueryService>,
     api: Arc<dyn NotionApiGateway>,
-    task_results: Results<TaskListKey, NotionTaskPage>,
+    result_generation: std::sync::atomic::AtomicU64,
+    task_results: Results<NotionTaskListRequest, NotionTaskPage>,
     label_results: Results<String, Vec<NotionLabelOption>>,
     state_publisher: Option<crate::usecase::state_subscription::StateSubscriptionUsecase>,
 }
@@ -69,6 +72,7 @@ impl NotionUsecase {
             config_query,
             api,
             state_publisher: None,
+            result_generation: Default::default(),
             task_results: Default::default(),
             label_results: Default::default(),
         }
@@ -93,56 +97,47 @@ impl NotionUsecase {
         }
     }
 
-    pub(crate) fn refresh_tasks(
-        &self,
-        path: &str,
-        count: usize,
-        title: Option<&str>,
-        labels: &BTreeMap<String, BTreeSet<String>>,
-    ) {
-        refresh_result(
-            &self.task_results,
-            task_list_key(path, count, title, labels),
-            || {
-                query_task_list(
-                    self.repository.as_ref(),
-                    self.api.as_ref(),
-                    path,
-                    count,
-                    title,
-                    labels,
-                )
-            },
-        );
+    pub(crate) fn acquire_tasks(&self, request: &NotionTaskListRequest) {
+        acquire_result(&self.task_results, &self.result_generation, request.clone());
+    }
+
+    pub(crate) fn refresh_tasks(&self, request: &NotionTaskListRequest) {
+        refresh_result(&self.task_results, request, || {
+            query_task_list(
+                self.repository.as_ref(),
+                self.api.as_ref(),
+                &request.path,
+                request.count,
+                request.title.as_deref(),
+                &request.labels,
+            )
+        });
     }
 
     pub(crate) fn cached_tasks(
         &self,
-        path: &str,
-        count: usize,
-        title: Option<&str>,
-        labels: &BTreeMap<String, BTreeSet<String>>,
+        request: &NotionTaskListRequest,
     ) -> Option<Fetched<NotionTaskPage, NotionUsecaseError>> {
         self.task_results
             .lock()
-            .get(&task_list_key(path, count, title, labels))
-            .map(|value| value.as_ref().clone())
+            .get(request)
+            .map(|(_, value)| value.clone())
     }
 
-    pub(crate) fn release_tasks(
-        &self,
-        path: &str,
-        count: usize,
-        title: Option<&str>,
-        labels: &BTreeMap<String, BTreeSet<String>>,
-    ) {
-        self.task_results
-            .lock()
-            .remove(&task_list_key(path, count, title, labels));
+    pub(crate) fn release_tasks(&self, request: &NotionTaskListRequest) {
+        self.task_results.lock().remove(request);
+    }
+
+    pub(crate) fn acquire_label_options(&self, path: &str) {
+        acquire_result(
+            &self.label_results,
+            &self.result_generation,
+            path.to_owned(),
+        );
     }
 
     pub(crate) fn refresh_label_options(&self, path: &str) {
-        refresh_result(&self.label_results, path.to_owned(), || {
+        refresh_result(&self.label_results, &path.to_owned(), || {
             fetch_label_options(self.repository.as_ref(), self.api.as_ref(), path)
         });
     }
@@ -154,7 +149,7 @@ impl NotionUsecase {
         self.label_results
             .lock()
             .get(path)
-            .map(|value| value.as_ref().clone())
+            .map(|(_, value)| value.clone())
     }
 
     pub(crate) fn release_label_options(&self, path: &str) {
@@ -193,29 +188,36 @@ impl NotionUsecase {
     }
 }
 
-fn task_list_key(
-    path: &str,
-    count: usize,
-    title: Option<&str>,
-    labels: &BTreeMap<String, BTreeSet<String>>,
-) -> TaskListKey {
-    (path.into(), count, title.map(Into::into), labels.clone())
+fn acquire_result<K: Eq + std::hash::Hash, T>(
+    results: &Results<K, T>,
+    generation: &std::sync::atomic::AtomicU64,
+    key: K,
+) {
+    let generation = generation
+        .fetch_update(
+            std::sync::atomic::Ordering::Relaxed,
+            std::sync::atomic::Ordering::Relaxed,
+            |value| value.checked_add(1),
+        )
+        .expect("Notion result generation exhausted");
+    results.lock().insert(key, (generation, Fetched::default()));
 }
 
-fn refresh_result<K: Clone + Eq + std::hash::Hash, T: Clone>(
+fn refresh_result<K: Eq + std::hash::Hash, T>(
     results: &Results<K, T>,
-    key: K,
+    key: &K,
     fetch: impl FnOnce() -> Result<T, NotionUsecaseError>,
 ) {
-    let previous = results.lock().entry(key.clone()).or_default().clone();
+    let Some(generation) = results.lock().get(key).map(|(generation, _)| *generation) else {
+        return;
+    };
     let result = fetch();
     let mut results = results.lock();
-    if let Some(current) = results
-        .get_mut(&key)
-        .filter(|current| Arc::ptr_eq(current, &previous))
+    if let Some((_, current)) = results
+        .get_mut(key)
+        .filter(|(current, _)| *current == generation)
     {
-        drop(previous);
-        Arc::make_mut(current).record(result);
+        current.record(result);
     }
 }
 

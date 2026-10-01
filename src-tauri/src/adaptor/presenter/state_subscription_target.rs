@@ -1,5 +1,6 @@
 use crate::domain::code::{ReviewBase, ReviewSection};
 use crate::domain::workflow::FacetKind;
+use crate::usecase::notion::usecase::NotionTaskListRequest;
 use crate::usecase::state_subscription::{SubscriptionError, SubscriptionTarget};
 
 impl SubscriptionTarget {
@@ -145,9 +146,7 @@ impl SubscriptionTarget {
             Self::CurrentBranch(p) => ("current-branch", vec![p.clone()]),
             Self::Issues(p) => ("issues", vec![p.clone()]),
             Self::NotionLabelOptions(p) => ("notion-label-options", vec![p.clone()]),
-            Self::NotionTasks(p, count, title, labels) => {
-                format_notion_tasks(p, *count, title.as_deref(), labels)
-            }
+            Self::NotionTasks(request) => format_notion_tasks(request),
             Self::Worktrees(p) => ("worktrees", vec![p.clone()]),
             Self::RepositoryRoot(p) => ("repository-root", vec![p.clone()]),
             Self::StartupRepository => ("startup-repository", vec![]),
@@ -222,20 +221,21 @@ fn parse_notion_tasks(
             return Err(SubscriptionError::InvalidId);
         }
     }
-    Ok(SubscriptionTarget::NotionTasks(
-        path.into(),
+    Ok(SubscriptionTarget::NotionTasks(NotionTaskListRequest {
+        path: path.into(),
         count,
         title,
         labels,
-    ))
+    }))
 }
 
-fn format_notion_tasks(
-    path: &str,
-    count: usize,
-    title: Option<&str>,
-    labels: &std::collections::BTreeMap<String, std::collections::BTreeSet<String>>,
-) -> (&'static str, Vec<String>) {
+fn format_notion_tasks(request: &NotionTaskListRequest) -> (&'static str, Vec<String>) {
+    let NotionTaskListRequest {
+        path,
+        count,
+        title,
+        labels,
+    } = request;
     let mut args = vec![path.into(), count.to_string()];
     if let Some(title) = title {
         args.push(format!("{NOTION_TITLE_PREFIX}{title}"));

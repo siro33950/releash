@@ -63,6 +63,18 @@ struct PendingChange {
     completed: std::sync::mpsc::Sender<()>,
 }
 
+struct ReadStartPermit<'a> {
+    usecase: &'a StateSubscriptionUsecase,
+    target: &'a SubscriptionTarget,
+}
+
+impl Drop for ReadStartPermit<'_> {
+    fn drop(&mut self) {
+        self.usecase.starting_target.lock().take();
+        self.usecase.release_inactive(self.target);
+    }
+}
+
 #[derive(Clone)]
 pub(crate) struct StateSubscriptionUsecase {
     publisher: StateSubscriptionOutputRef,
@@ -89,6 +101,7 @@ pub(crate) struct StateSubscriptionUsecase {
     watchers: Option<Arc<crate::usecase::watcher::WatcherUsecase>>,
     workers: Arc<Mutex<std::collections::HashMap<SubscriptionTarget, tokio::task::JoinHandle<()>>>>,
     starts: Arc<tokio::sync::Mutex<()>>,
+    starting_target: Arc<Mutex<Option<SubscriptionTarget>>>,
     watches: Arc<Mutex<std::collections::HashMap<WatchRequirement, u64>>>,
 }
 
@@ -137,6 +150,7 @@ impl StateSubscriptionUsecase {
             workers: Default::default(),
             watches: Default::default(),
             starts: Default::default(),
+            starting_target: Default::default(),
         }
     }
 
@@ -169,22 +183,25 @@ impl StateSubscriptionUsecase {
         if self.join_active(client, target).map_err(convert)? {
             return Ok(());
         }
+        *self.starting_target.lock() = Some(target.clone());
+        let _permit = ReadStartPermit {
+            usecase: self,
+            target,
+        };
+        reads.acquire_external(target);
         let mut changes = self.changes.subscribe();
         let value = match reads.refresh_external(target).await {
             Ok(()) => reads.read(target).await,
             Err(error) => Err(error),
         };
         if let Err(error) = self.start(client, target) {
-            self.release_inactive(target);
             return Err(convert(error));
         }
         if let Err(error) = self.reconcile_watches() {
             let _ = self.stop(client, target);
-            self.release_inactive(target);
             return Err(error);
         }
         if !self.clients.lock().contains_key(client) {
-            self.release_inactive(target);
             return Err(convert(SubscriptionError::StreamEnded));
         }
         if let Err(error) = match value {
@@ -192,7 +209,6 @@ impl StateSubscriptionUsecase {
             Err(error) => self.publisher.publish_failure(target, error),
         } {
             let _ = self.stop(client, target);
-            self.release_inactive(target);
             return Err(convert(error));
         }
         let mut workers = self.workers.lock();
@@ -283,6 +299,10 @@ impl StateSubscriptionUsecase {
     }
 
     fn release_inactive(&self, target: &SubscriptionTarget) {
+        let starting = self.starting_target.lock();
+        if starting.as_ref() == Some(target) {
+            return;
+        }
         let clients = self.clients.lock();
         if !clients.values().any(|targets| targets.contains(target)) {
             if let Some(reads) = &self.reads {
@@ -345,8 +365,9 @@ impl StateSubscriptionUsecase {
                 }
             }
         }
+        let mut workers = self.workers.lock();
         let active = self.active_targets();
-        self.workers.lock().retain(|target, task| {
+        workers.retain(|target, task| {
             if active.contains(target) {
                 true
             } else {
@@ -494,10 +515,11 @@ impl StateSubscriptionUsecase {
     }
 }
 
-/// Repository の増減と対象の Repository の Notion 設定の変化を契機に、外部の情報を取り直す。
+/// Repository の増減の影響を受ける対象と、その Repository の Notion 設定が変わった対象の外部情報を取り直す。
 fn adds_external_information(target: &SubscriptionTarget, source: &StateChangeSource) -> bool {
-    (*source == StateChangeSource::Repositories && target.external_information())
-        || (matches!(source, StateChangeSource::NotionConfig(_)) && target.affected_by(source))
+    target.affected_by(source)
+        && ((*source == StateChangeSource::Repositories && target.external_information())
+            || matches!(source, StateChangeSource::NotionConfig(_)))
 }
 
 #[cfg(test)]

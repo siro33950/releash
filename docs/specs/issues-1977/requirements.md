@@ -4,7 +4,7 @@
 - 補助資料: マイルストーン #99「02. UI と daemon の間の通信の仕組みを一本化する」、#1956（購読の読み取りの失敗を画面へ伝える）、#1897（通信の共通化の確認）、マイルストーン #97（アーキテクチャを見直す）
 - この要求は main `506f9a98` のコードで確かめた事実に基づく。
 - マイルストーン #99 の通信の規則: daemon が持っている状態は daemon が配信し、client は購読する。単発の呼び出しは、状態を変える操作と、client の入力に対する計算だけにする。確立した標準（Kubernetes の list + watch）に合わせる。
-- 同じ外部の状態である Issue の一覧は、購読 `issues:[repoPath]` で届く。daemon は購読の開始時、30 秒ごと（`src-tauri/src/domain/git_host/value_objects/cache.rs:7`）、Repository の増減のときに外部から取り直し、最後に取れた値と直近の失敗を一緒に届ける（`src-tauri/src/usecase/state_subscription.rs:207-282`、`proto/client.proto:2851-2854`）。
+- 同じ外部の状態である Issue の一覧は、購読 `issues:[repoPath]` で届く。daemon は購読の開始時と 30 秒ごと（`src-tauri/src/domain/git_host/value_objects/cache.rs:7`）に外部から取り直し、最後に取れた値と直近の失敗を一緒に届ける（`src-tauri/src/usecase/state_subscription.rs:207-282`、`proto/client.proto:2851-2854`）。
 - 件数を購読の引数に含め、もっと見るときは件数を増やして購読し直す前例が、Session の履歴にある（`src-tauri/src/adaptor/presenter/state_subscription_target.rs:54-60`、`src/components/workspace/WorkspaceList.tsx:830-843`）。
 - 購読の引数は空文字を受け付けない（`src-tauri/src/adaptor/presenter/state_subscription_target.rs:26-31`）。
 - 処理の重複の扱いは `docs/architecture/README.md:59`（同じ操作の実装は 1 つに集約する）に従う。

@@ -17,12 +17,7 @@ pub(crate) enum SubscriptionTarget {
     BranchStatus(String),
     CurrentBranch(String),
     Issues(String),
-    NotionTasks(
-        String,
-        usize,
-        Option<String>,
-        std::collections::BTreeMap<String, std::collections::BTreeSet<String>>,
-    ),
+    NotionTasks(crate::usecase::notion::usecase::NotionTaskListRequest),
     NotionLabelOptions(String),
     Worktrees(String),
     RepositoryRoot(String),
@@ -141,14 +136,7 @@ impl SubscriptionTarget {
     pub fn affected_by(&self, change: &StateChangeSource) -> bool {
         use StateChangeSource as C;
         match change {
-            C::Repositories => matches!(
-                self,
-                Self::RepositoryPaths
-                    | Self::Workspaces
-                    | Self::Issues(_)
-                    | Self::NotionTasks(..)
-                    | Self::NotionLabelOptions(_)
-            ),
+            C::Repositories => matches!(self, Self::RepositoryPaths | Self::Workspaces),
             C::Repository(paths) => match self {
                 Self::Workspaces => true,
                 Self::Branches(p, _)
@@ -187,9 +175,11 @@ impl SubscriptionTarget {
                     | Self::Facet(_, _)
                     | Self::Diagnostics
             ),
-            C::NotionConfig(path) => {
-                matches!(self, Self::NotionTasks(p, ..) | Self::NotionLabelOptions(p) if p == path)
-            }
+            C::NotionConfig(path) => match self {
+                Self::NotionTasks(request) => request.path == *path,
+                Self::NotionLabelOptions(p) => p == path,
+                _ => false,
+            },
             C::AppConfig => matches!(
                 self,
                 Self::DesktopSettings

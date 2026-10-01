@@ -493,24 +493,22 @@ fn notion_fixture() -> (NotionUsecase, Arc<FakeNotionApiGateway>) {
         None,
     ))));
     *api.label_result.lock().unwrap() = Some(Ok(label_options()));
-    (
-        NotionUsecase::new(repo, Arc::new(ConfigQuery), api.clone()),
-        api,
-    )
+    let notion = NotionUsecase::new(repo, Arc::new(ConfigQuery), api.clone());
+    notion.acquire_tasks(&task_request());
+    notion.acquire_label_options("/repo");
+    (notion, api)
 }
 
 #[test]
 fn test_notion購読_タスクの取得失敗で前の一覧と失敗を両方持つ() {
     // Given
     let (notion, api) = notion_fixture();
-    notion.refresh_tasks("/repo", 20, None, &Default::default());
+    notion.refresh_tasks(&task_request());
     *api.query_result.lock().unwrap() = Some(Err(NotionError::ApiError("offline".into())));
     // When
-    notion.refresh_tasks("/repo", 20, None, &Default::default());
+    notion.refresh_tasks(&task_request());
     // Then
-    let result = notion
-        .cached_tasks("/repo", 20, None, &Default::default())
-        .unwrap();
+    let result = notion.cached_tasks(&task_request()).unwrap();
     assert_eq!(result.value, Some(page(0..1, false, None)));
     assert!(matches!(result.error, Some(NotionUsecaseError::Notion(_))));
 }
@@ -533,7 +531,7 @@ fn test_notion購読_ラベルの取得失敗で前の選択肢と失敗を両�
 fn test_notion購読_設定が揃っていなければapiを呼ばず設定不足の失敗を持つ() {
     // Given
     let (notion, api) = notion_fixture();
-    notion.refresh_tasks("/repo", 20, None, &Default::default());
+    notion.refresh_tasks(&task_request());
     notion.refresh_label_options("/repo");
     let calls = (
         api.query_calls.load(Ordering::SeqCst),
@@ -541,12 +539,10 @@ fn test_notion購読_設定が揃っていなければapiを呼ばず設定不�
     );
     notion.delete_config("/repo").unwrap();
     // When
-    notion.refresh_tasks("/repo", 20, None, &Default::default());
+    notion.refresh_tasks(&task_request());
     notion.refresh_label_options("/repo");
     // Then
-    let tasks = notion
-        .cached_tasks("/repo", 20, None, &Default::default())
-        .unwrap();
+    let tasks = notion.cached_tasks(&task_request()).unwrap();
     let labels = notion.cached_label_options("/repo").unwrap();
     assert_eq!(tasks.value, Some(page(0..1, false, None)));
     assert_eq!(labels.value, Some(label_options()));
@@ -566,15 +562,15 @@ fn test_notion購読_設定が戻れば次の取り直しで失敗が消える()
     // Given
     let (notion, _) = notion_fixture();
     notion.delete_config("/repo").unwrap();
-    notion.refresh_tasks("/repo", 20, None, &Default::default());
+    notion.refresh_tasks(&task_request());
     notion.refresh_label_options("/repo");
     // When
     notion.save_config("/repo".into(), config()).unwrap();
-    notion.refresh_tasks("/repo", 20, None, &Default::default());
+    notion.refresh_tasks(&task_request());
     notion.refresh_label_options("/repo");
     // Then
     assert!(notion
-        .cached_tasks("/repo", 20, None, &Default::default())
+        .cached_tasks(&task_request())
         .unwrap()
         .error
         .is_none());
@@ -589,15 +585,13 @@ fn test_notion購読_設定が戻れば次の取り直しで失敗が消える()
 fn test_notion購読_解放した対象の結果は読めない() {
     // Given
     let (notion, _) = notion_fixture();
-    notion.refresh_tasks("/repo", 20, None, &Default::default());
+    notion.refresh_tasks(&task_request());
     notion.refresh_label_options("/repo");
     // When
-    notion.release_tasks("/repo", 20, None, &Default::default());
+    notion.release_tasks(&task_request());
     notion.release_label_options("/repo");
     // Then
-    assert!(notion
-        .cached_tasks("/repo", 20, None, &Default::default())
-        .is_none());
+    assert!(notion.cached_tasks(&task_request()).is_none());
     assert!(notion.cached_label_options("/repo").is_none());
 }
 
@@ -621,25 +615,20 @@ fn test_notion購読_別の設定を保存すると新しい設定で取り直�
         (b.database_id.clone(), new_labels.clone()),
     ]);
     notion.save_config("/repo".into(), a).unwrap();
-    notion.refresh_tasks("/repo", 20, None, &Default::default());
+    notion.refresh_tasks(&task_request());
     notion.refresh_label_options("/repo");
-    let previous_tasks = notion
-        .cached_tasks("/repo", 20, None, &Default::default())
-        .unwrap();
+    let previous_tasks = notion.cached_tasks(&task_request()).unwrap();
     let previous_labels = notion.cached_label_options("/repo").unwrap();
     // When
     notion.save_config("/repo".into(), b.clone()).unwrap();
-    notion.refresh_tasks("/repo", 20, None, &Default::default());
+    notion.refresh_tasks(&task_request());
     notion.refresh_label_options("/repo");
     // Then
     assert_eq!(&api.configs.lock().unwrap()[2..], &[b.clone(), b]);
     assert_eq!(previous_tasks.value, Some(page(0..1, false, None)));
     assert_eq!(previous_labels.value, Some(label_options()));
     assert_eq!(
-        notion
-            .cached_tasks("/repo", 20, None, &Default::default())
-            .unwrap()
-            .value,
+        notion.cached_tasks(&task_request()).unwrap().value,
         Some(page(10..12, false, None))
     );
     assert_eq!(
@@ -694,9 +683,9 @@ fn blocked_fetch(
 ) -> (std::thread::JoinHandle<()>, std::sync::mpsc::Sender<()>) {
     let (entered, wait) = std::sync::mpsc::channel();
     let (resume, paused) = std::sync::mpsc::channel();
+    notion.acquire_tasks(&task_request());
     *api.gate.lock().unwrap() = Some((entered, paused));
-    let worker =
-        std::thread::spawn(move || notion.refresh_tasks("/repo", 20, None, &Default::default()));
+    let worker = std::thread::spawn(move || notion.refresh_tasks(&task_request()));
     wait.recv_timeout(std::time::Duration::from_secs(2))
         .unwrap();
     (worker, resume)
@@ -737,7 +726,7 @@ fn test_notion購読_取得中に同じ対象を解放したら結果を書き�
     let releasing = notion.clone();
     // When
     let release = std::thread::spawn(move || {
-        releasing.release_tasks("/repo", 20, None, &Default::default());
+        releasing.release_tasks(&task_request());
         completed.send(()).unwrap();
     });
     let result = wait.recv_timeout(std::time::Duration::from_secs(1));
@@ -746,7 +735,50 @@ fn test_notion購読_取得中に同じ対象を解放したら結果を書き�
     release.join().unwrap();
     // Then
     result.unwrap();
+    assert!(notion.cached_tasks(&task_request()).is_none());
+}
+
+fn task_request() -> NotionTaskListRequest {
+    NotionTaskListRequest {
+        path: "/repo".into(),
+        count: 20,
+        title: None,
+        labels: Default::default(),
+    }
+}
+
+#[test]
+fn test_notion購読_解放後に遅れた取得は項目を作り直さない() {
+    // Given
+    let (notion, api) = notion_fixture();
+    notion.release_tasks(&task_request());
+    notion.release_label_options("/repo");
+    // When
+    notion.refresh_tasks(&task_request());
+    notion.refresh_label_options("/repo");
+    // Then
+    assert!(notion.cached_tasks(&task_request()).is_none());
+    assert!(notion.cached_label_options("/repo").is_none());
+    assert!(api.configs.lock().unwrap().is_empty());
+}
+
+#[test]
+fn test_notion購読_取得中に解放して作り直した項目に古い結果を書かない() {
+    // Given
+    let (notion, api) = notion_fixture();
+    let notion = Arc::new(notion);
+    let (worker, resume) = blocked_fetch(notion.clone(), &api);
+    // When
+    notion.release_tasks(&task_request());
+    notion.acquire_tasks(&task_request());
+    let recreated = notion.cached_tasks(&task_request()).unwrap();
+    resume.send(()).unwrap();
+    worker.join().unwrap();
+    // Then
+    assert_eq!(notion.cached_tasks(&task_request()), Some(recreated));
     assert!(notion
-        .cached_tasks("/repo", 20, None, &Default::default())
+        .cached_tasks(&task_request())
+        .unwrap()
+        .value
         .is_none());
 }
