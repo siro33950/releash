@@ -21,7 +21,7 @@ pub(crate) enum SubscriptionTarget {
         String,
         usize,
         Option<String>,
-        std::collections::BTreeMap<String, Vec<String>>,
+        std::collections::BTreeMap<String, std::collections::BTreeSet<String>>,
     ),
     NotionLabelOptions(String),
     Worktrees(String),

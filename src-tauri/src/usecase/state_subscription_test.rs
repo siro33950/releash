@@ -8,6 +8,7 @@ struct RecordingOutput {
     cursors: Mutex<Vec<Option<(String, u64)>>>,
     stops: Mutex<Vec<SubscriptionTarget>>,
     fail_start: std::sync::atomic::AtomicBool,
+    fail_initial: std::sync::atomic::AtomicBool,
     updates: Mutex<Vec<SubscriptionTarget>>,
     updated: tokio::sync::Notify,
 }
@@ -60,6 +61,9 @@ impl StateSubscriptionOutput for RecordingOutput {
         target: &SubscriptionTarget,
         _: StateValue,
     ) -> Result<(), SubscriptionError> {
+        if self.fail_initial.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err(SubscriptionError::EncodingFailed);
+        }
         self.initial.lock().push(target.clone());
         Ok(())
     }
@@ -608,70 +612,330 @@ async fn test_購読外部読取_再取得失敗で古いキャッシュを配�
     usecase.close_client("client");
 }
 
+fn notion_target() -> SubscriptionTarget {
+    SubscriptionTarget::NotionTasks("/repo".into(), 20, None, Default::default())
+}
+
 #[tokio::test]
-async fn test_notion購読_開始とrepository増減と設定変更で取り直し同じ対象を共有する() {
+async fn test_notion購読_同じ対象の2つ目の開始では取り直さない() {
     // Given
     let output = Arc::new(RecordingOutput::default());
     let reads = Arc::new(GatedReads::default());
     let subscriptions =
         StateSubscriptionUsecase::new_with_output(output.clone(), Arc::new(PendingTimer))
             .with_reads(reads.clone(), None, vec![], String::new());
-    let target = SubscriptionTarget::NotionTasks("/repo".into(), 20, None, Default::default());
+    let target = notion_target();
     subscriptions.open_client("a".into()).unwrap();
     subscriptions.open_client("b".into()).unwrap();
     subscriptions.start_read("a", &target).await.unwrap();
+    // When
     subscriptions.start_read("b", &target).await.unwrap();
+    subscriptions.close_client("a");
+    let worker_count = subscriptions.test_worker_count();
+    subscriptions.close_client("b");
+    // Then
     assert_eq!(reads.external(), 1);
+    assert_eq!(reads.reads(), 1);
+    assert_eq!(*output.initial.lock(), vec![target]);
+    assert_eq!(worker_count, 1);
+}
+
+#[tokio::test]
+async fn test_notion購読_対象repoの設定変更で取り直す() {
+    // Given
+    let output = Arc::new(RecordingOutput::default());
+    let reads = Arc::new(GatedReads::default());
+    let subscriptions =
+        StateSubscriptionUsecase::new_with_output(output.clone(), Arc::new(PendingTimer))
+            .with_reads(reads.clone(), None, vec![], String::new());
+    let target = notion_target();
+    subscriptions.open_client("a".into()).unwrap();
+    subscriptions.start_read("a", &target).await.unwrap();
     // When
     subscriptions.notify(StateChangeSource::NotionConfig("/repo".into()));
     tokio::time::timeout(std::time::Duration::from_secs(2), reads.blocked.notified())
         .await
         .unwrap();
-    assert_eq!(reads.external(), 2);
     reads.release.notify_one();
     tokio::time::timeout(std::time::Duration::from_secs(2), output.updated.notified())
         .await
         .unwrap();
+    subscriptions.close_client("a");
+    // Then
+    assert_eq!(reads.external(), 2);
+    assert_eq!(*output.updates.lock(), vec![target]);
+}
+
+#[tokio::test]
+async fn test_notion購読_repositoryの増減で取り直す() {
+    // Given
+    let output = Arc::new(RecordingOutput::default());
+    let reads = Arc::new(GatedReads::default());
+    let subscriptions =
+        StateSubscriptionUsecase::new_with_output(output.clone(), Arc::new(PendingTimer))
+            .with_reads(reads.clone(), None, vec![], String::new());
+    let target = notion_target();
+    subscriptions.open_client("a".into()).unwrap();
+    subscriptions.start_read("a", &target).await.unwrap();
+    // When
     subscriptions.notify(StateChangeSource::Repositories);
+    tokio::time::timeout(std::time::Duration::from_secs(2), reads.blocked.notified())
+        .await
+        .unwrap();
+    reads.release.notify_one();
     tokio::time::timeout(std::time::Duration::from_secs(2), output.updated.notified())
         .await
         .unwrap();
-    // Then
-    assert_eq!(reads.external(), 3);
     subscriptions.close_client("a");
-    assert_eq!(subscriptions.test_worker_count(), 1);
+    // Then
+    assert_eq!(reads.external(), 2);
+    assert_eq!(*output.updates.lock(), vec![target]);
+}
+
+#[tokio::test]
+async fn test_notion購読_最後のclientが閉じたらworkerを止める() {
+    // Given
+    let reads = Arc::new(GatedReads::default());
+    let subscriptions = StateSubscriptionUsecase::new_with_output(
+        Arc::new(RecordingOutput::default()),
+        Arc::new(PendingTimer),
+    )
+    .with_reads(reads, None, vec![], String::new());
+    let target = notion_target();
+    subscriptions.open_client("a".into()).unwrap();
+    subscriptions.open_client("b".into()).unwrap();
+    subscriptions.start_read("a", &target).await.unwrap();
+    subscriptions.start_read("b", &target).await.unwrap();
+    subscriptions.close_client("a");
+    let before = subscriptions.test_worker_count();
+    // When
     subscriptions.close_client("b");
+    // Then
+    assert_eq!(before, 1);
     assert_eq!(subscriptions.test_worker_count(), 0);
 }
 
 #[tokio::test]
-async fn test_notion購読_外部情報の共通timerで取り直す() {
+async fn test_notion購読_タスクの一覧を共通timerで取り直す() {
     // Given
-    for target in [
-        SubscriptionTarget::NotionTasks("/repo".into(), 20, None, Default::default()),
-        SubscriptionTarget::NotionLabelOptions("/repo".into()),
-    ] {
-        let output = Arc::new(RecordingOutput::default());
-        let reads = Arc::new(GatedReads::default());
-        let tick = Arc::new(tokio::sync::Notify::new());
-        let subscriptions = StateSubscriptionUsecase::new_with_output(
-            output.clone(),
-            Arc::new(RefreshTimer(tick.clone())),
-        )
-        .with_reads(reads.clone(), None, vec![], String::new());
-        subscriptions.open_client("client".into()).unwrap();
-        subscriptions.start_read("client", &target).await.unwrap();
-        // When
-        tick.notify_one();
-        tokio::time::timeout(std::time::Duration::from_secs(2), reads.blocked.notified())
-            .await
-            .unwrap();
-        reads.release.notify_one();
-        tokio::time::timeout(std::time::Duration::from_secs(2), output.updated.notified())
-            .await
-            .unwrap();
-        // Then
-        assert_eq!(reads.external(), 2);
-        subscriptions.close_client("client");
+    let output = Arc::new(RecordingOutput::default());
+    let reads = Arc::new(GatedReads::default());
+    let tick = Arc::new(tokio::sync::Notify::new());
+    let subscriptions = StateSubscriptionUsecase::new_with_output(
+        output.clone(),
+        Arc::new(RefreshTimer(tick.clone())),
+    )
+    .with_reads(reads.clone(), None, vec![], String::new());
+    let target = notion_target();
+    subscriptions.open_client("client".into()).unwrap();
+    subscriptions.start_read("client", &target).await.unwrap();
+    // When
+    tick.notify_one();
+    tokio::time::timeout(std::time::Duration::from_secs(2), reads.blocked.notified())
+        .await
+        .unwrap();
+    reads.release.notify_one();
+    tokio::time::timeout(std::time::Duration::from_secs(2), output.updated.notified())
+        .await
+        .unwrap();
+    subscriptions.close_client("client");
+    // Then
+    assert_eq!(reads.external(), 2);
+    assert_eq!(*output.updates.lock(), vec![target]);
+}
+
+#[tokio::test]
+async fn test_notion購読_ラベルの選択肢を共通timerで取り直す() {
+    // Given
+    let output = Arc::new(RecordingOutput::default());
+    let reads = Arc::new(GatedReads::default());
+    let tick = Arc::new(tokio::sync::Notify::new());
+    let subscriptions = StateSubscriptionUsecase::new_with_output(
+        output.clone(),
+        Arc::new(RefreshTimer(tick.clone())),
+    )
+    .with_reads(reads.clone(), None, vec![], String::new());
+    let target = SubscriptionTarget::NotionLabelOptions("/repo".into());
+    subscriptions.open_client("client".into()).unwrap();
+    subscriptions.start_read("client", &target).await.unwrap();
+    // When
+    tick.notify_one();
+    tokio::time::timeout(std::time::Duration::from_secs(2), reads.blocked.notified())
+        .await
+        .unwrap();
+    reads.release.notify_one();
+    tokio::time::timeout(std::time::Duration::from_secs(2), output.updated.notified())
+        .await
+        .unwrap();
+    subscriptions.close_client("client");
+    // Then
+    assert_eq!(reads.external(), 2);
+    assert_eq!(*output.updates.lock(), vec![target]);
+}
+
+#[derive(Default)]
+struct RetainingReads {
+    retained: Mutex<std::collections::HashSet<SubscriptionTarget>>,
+    releases: Mutex<Vec<SubscriptionTarget>>,
+    pause: std::sync::atomic::AtomicBool,
+    entered: tokio::sync::Notify,
+    resume: tokio::sync::Notify,
+}
+#[async_trait::async_trait]
+impl StateSubscriptionRead for RetainingReads {
+    async fn refresh_external(&self, target: &SubscriptionTarget) -> Result<(), StateReadError> {
+        if self.pause.load(std::sync::atomic::Ordering::SeqCst) {
+            self.entered.notify_one();
+            self.resume.notified().await;
+        }
+        self.retained.lock().insert(target.clone());
+        Ok(())
     }
+    async fn read(&self, _: &SubscriptionTarget) -> Result<StateValue, StateReadError> {
+        Ok(StateValue::SessionNode(None))
+    }
+    fn release_external(&self, target: &SubscriptionTarget) {
+        self.retained.lock().remove(target);
+        self.releases.lock().push(target.clone());
+    }
+    fn repositories(&self) -> Vec<String> {
+        vec![]
+    }
+    fn review_comments_dir(&self) -> String {
+        "/missing".into()
+    }
+}
+
+#[tokio::test]
+async fn test_notion購読_初回取得中にclientが閉じたら開始の対象だけ解放する() {
+    // Given
+    let reads = Arc::new(RetainingReads::default());
+    reads.pause.store(true, std::sync::atomic::Ordering::SeqCst);
+    let subscriptions = StateSubscriptionUsecase::new_with_output(
+        Arc::new(RecordingOutput::default()),
+        Arc::new(PendingTimer),
+    )
+    .with_reads(reads.clone(), None, vec![], String::new());
+    let target = notion_target();
+    let other = SubscriptionTarget::NotionLabelOptions("/other".into());
+    reads.retained.lock().insert(other.clone());
+    subscriptions.open_client("client".into()).unwrap();
+    let starting = subscriptions.clone();
+    let start_target = target.clone();
+    // When
+    let task = tokio::spawn(async move { starting.start_read("client", &start_target).await });
+    tokio::time::timeout(std::time::Duration::from_secs(2), reads.entered.notified())
+        .await
+        .unwrap();
+    subscriptions.close_client("client");
+    reads.resume.notify_one();
+    let result = task.await.unwrap();
+    // Then
+    assert!(
+        matches!(result, Err(StateReadError { source: StateReadFailure::Subscription(error), .. }) if *error == SubscriptionError::StreamEnded)
+    );
+    assert!(!reads.retained.lock().contains(&target));
+    assert!(reads.retained.lock().contains(&other));
+    assert_eq!(*reads.releases.lock(), vec![target]);
+    assert_eq!(subscriptions.test_worker_count(), 0);
+}
+
+#[tokio::test]
+async fn test_notion購読_監視の更新が失敗したら開始の対象だけ解放する() {
+    // Given
+    let reads = Arc::new(RetainingReads::default());
+    let watcher = Arc::new(crate::usecase::watcher::WatcherUsecase::new(
+        None,
+        Arc::new(crate::usecase::watcher::watcher_tests::SubscriptionFiles::default()),
+    ));
+    let subscriptions = StateSubscriptionUsecase::new_with_output(
+        Arc::new(RecordingOutput::default()),
+        Arc::new(PendingTimer),
+    )
+    .with_reads(reads.clone(), Some(watcher), vec![], String::new());
+    let target = notion_target();
+    let other = SubscriptionTarget::NotionLabelOptions("/other".into());
+    reads.retained.lock().insert(other.clone());
+    subscriptions.open_client("client".into()).unwrap();
+    subscriptions.open_client("watcher".into()).unwrap();
+    subscriptions
+        .start("watcher", &SubscriptionTarget::ReviewThreads("repo".into()))
+        .unwrap();
+    // When
+    let result = subscriptions.start_read("client", &target).await;
+    subscriptions.close_client("watcher");
+    subscriptions.close_client("client");
+    // Then
+    assert!(matches!(
+        result,
+        Err(StateReadError {
+            source: StateReadFailure::Watcher(_),
+            ..
+        })
+    ));
+    assert!(!reads.retained.lock().contains(&target));
+    assert!(reads.retained.lock().contains(&other));
+    assert_eq!(*reads.releases.lock(), vec![target]);
+    assert_eq!(subscriptions.test_worker_count(), 0);
+}
+
+#[tokio::test]
+async fn test_notion購読_最初の値の配信が失敗したら開始の対象だけ解放する() {
+    // Given
+    let output = Arc::new(RecordingOutput::default());
+    output
+        .fail_initial
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let reads = Arc::new(RetainingReads::default());
+    let subscriptions = StateSubscriptionUsecase::new_with_output(output, Arc::new(PendingTimer))
+        .with_reads(reads.clone(), None, vec![], String::new());
+    let target = notion_target();
+    let other = SubscriptionTarget::NotionLabelOptions("/other".into());
+    reads.retained.lock().insert(other.clone());
+    subscriptions.open_client("client".into()).unwrap();
+    // When
+    let result = subscriptions.start_read("client", &target).await;
+    subscriptions.close_client("client");
+    // Then
+    assert!(
+        matches!(result, Err(StateReadError { source: StateReadFailure::Subscription(error), .. }) if *error == SubscriptionError::EncodingFailed)
+    );
+    assert!(!reads.retained.lock().contains(&target));
+    assert!(reads.retained.lock().contains(&other));
+    assert_eq!(*reads.releases.lock(), vec![target]);
+    assert_eq!(subscriptions.test_worker_count(), 0);
+}
+
+#[tokio::test]
+async fn test_notion購読_別のclientの開始が失敗しても購読中の対象は解放しない() {
+    // Given
+    let output = Arc::new(RecordingOutput::default());
+    let reads = Arc::new(RetainingReads::default());
+    let subscriptions =
+        StateSubscriptionUsecase::new_with_output(output.clone(), Arc::new(PendingTimer))
+            .with_reads(reads.clone(), None, vec![], String::new());
+    let target = notion_target();
+    subscriptions.open_client("a".into()).unwrap();
+    subscriptions.open_client("b".into()).unwrap();
+    subscriptions
+        .start_subscription("a", &target, None, None)
+        .await
+        .unwrap();
+    output
+        .fail_start
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    // When
+    let result = subscriptions
+        .start_subscription("b", &target, None, None)
+        .await;
+    let retained = reads.retained.lock().contains(&target);
+    let released = reads.releases.lock().clone();
+    let workers = subscriptions.test_worker_count();
+    subscriptions.close_client("a");
+    subscriptions.close_client("b");
+    // Then
+    assert!(result.is_err());
+    assert!(retained);
+    assert!(released.is_empty());
+    assert_eq!(workers, 1);
 }

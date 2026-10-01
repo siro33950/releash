@@ -358,7 +358,8 @@ impl WorkspaceStateReads {
             T::DesktopSettings => {
                 StateValue::DesktopSettings(self.app_config.desktop_settings().map_err(error)?)
             }
-            T::NotionTasks(..) | T::NotionLabelOptions(_) => self.notion.subscription_value(target).ok_or_else(|| error(crate::usecase::state_subscription::SubscriptionError::UnknownTarget))?,
+            T::NotionTasks(path, count, title, labels) => StateValue::NotionTasks(self.notion.cached_tasks(path, *count, title.as_deref(), labels).ok_or_else(|| error(super::SubscriptionError::UnknownTarget))?),
+            T::NotionLabelOptions(path) => StateValue::NotionLabelOptions(self.notion.cached_label_options(path).ok_or_else(|| error(super::SubscriptionError::UnknownTarget))?),
             T::NotionConfig(p) => {
                 StateValue::NotionConfig(self.notion.get_config(p).map_err(error)?)
             }
@@ -403,6 +404,22 @@ impl WorkspaceStateReads {
 }
 
 impl WorkspaceStateReads {
+    pub(crate) fn refresh_external_blocking(
+        &self,
+        target: &SubscriptionTarget,
+    ) -> Result<(), StateReadError> {
+        match target {
+            SubscriptionTarget::Issues(path) => self.refresh_issues(path)?,
+            SubscriptionTarget::NotionTasks(path, count, title, labels) => self
+                .notion
+                .refresh_tasks(path, *count, title.as_deref(), labels),
+            SubscriptionTarget::NotionLabelOptions(path) => self.notion.refresh_label_options(path),
+            SubscriptionTarget::Workspaces => self.workspaces.refresh_pull_requests(),
+            _ => {}
+        }
+        Ok(())
+    }
+
     pub(crate) fn refresh_issues(&self, path: &str) -> Result<(), StateReadError> {
         self.repository.get_main_repo_path(path).map_err(error)?;
         let _ = self.git_host.fetch_issues(path);
@@ -432,18 +449,16 @@ impl StateSubscriptionRead for WorkspaceStateReads {
         WorkspaceStateReads::read(self, target).await
     }
     async fn refresh_external(&self, target: &SubscriptionTarget) -> Result<(), StateReadError> {
-        match target {
-            SubscriptionTarget::Issues(path) => self.refresh_issues(path)?,
-            SubscriptionTarget::NotionTasks(..) | SubscriptionTarget::NotionLabelOptions(_) => {
-                self.notion.refresh_subscription(target)
-            }
-            SubscriptionTarget::Workspaces => self.workspaces.refresh_pull_requests(),
-            _ => {}
-        }
-        Ok(())
+        self.refresh_external_blocking(target)
     }
     fn release_external(&self, target: &SubscriptionTarget) {
-        self.notion.release_subscription(target);
+        match target {
+            SubscriptionTarget::NotionTasks(path, count, title, labels) => self
+                .notion
+                .release_tasks(path, *count, title.as_deref(), labels),
+            SubscriptionTarget::NotionLabelOptions(path) => self.notion.release_label_options(path),
+            _ => {}
+        }
     }
     fn repositories(&self) -> Vec<String> {
         self.workspaces.watch_paths()

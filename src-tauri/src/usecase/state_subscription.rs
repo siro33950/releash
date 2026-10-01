@@ -174,12 +174,17 @@ impl StateSubscriptionUsecase {
             Ok(()) => reads.read(target).await,
             Err(error) => Err(error),
         };
-        self.start(client, target).map_err(convert)?;
+        if let Err(error) = self.start(client, target) {
+            self.release_inactive(target);
+            return Err(convert(error));
+        }
         if let Err(error) = self.reconcile_watches() {
             let _ = self.stop(client, target);
+            self.release_inactive(target);
             return Err(error);
         }
         if !self.clients.lock().contains_key(client) {
+            self.release_inactive(target);
             return Err(convert(SubscriptionError::StreamEnded));
         }
         if let Err(error) = match value {
@@ -187,6 +192,7 @@ impl StateSubscriptionUsecase {
             Err(error) => self.publisher.publish_failure(target, error),
         } {
             let _ = self.stop(client, target);
+            self.release_inactive(target);
             return Err(convert(error));
         }
         let mut workers = self.workers.lock();
@@ -276,6 +282,15 @@ impl StateSubscriptionUsecase {
         Ok(())
     }
 
+    fn release_inactive(&self, target: &SubscriptionTarget) {
+        let clients = self.clients.lock();
+        if !clients.values().any(|targets| targets.contains(target)) {
+            if let Some(reads) = &self.reads {
+                reads.release_external(target);
+            }
+        }
+    }
+
     fn reconcile_watches(&self) -> Result<(), StateReadError> {
         let mut failure = None;
         if let (Some(reads), Some(watcher)) = (&self.reads, &self.watchers) {
@@ -337,9 +352,7 @@ impl StateSubscriptionUsecase {
             } else {
                 self.waiting_workers.lock().remove(target);
                 task.abort();
-                if let Some(reads) = &self.reads {
-                    reads.release_external(target);
-                }
+                self.release_inactive(target);
                 false
             }
         });
@@ -481,10 +494,10 @@ impl StateSubscriptionUsecase {
     }
 }
 
-/// Repository が増減したときは、外部の情報（PR）を持たない Repository が現れうる。
+/// Repository の増減と対象の Repository の Notion 設定の変化を契機に、外部の情報を取り直す。
 fn adds_external_information(target: &SubscriptionTarget, source: &StateChangeSource) -> bool {
     (*source == StateChangeSource::Repositories && target.external_information())
-        || matches!(source, StateChangeSource::NotionConfig(_)) && target.affected_by(source)
+        || (matches!(source, StateChangeSource::NotionConfig(_)) && target.affected_by(source))
 }
 
 #[cfg(test)]

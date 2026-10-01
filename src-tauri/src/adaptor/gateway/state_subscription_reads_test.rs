@@ -51,23 +51,48 @@ async fn test_購読読取の境界_同期queryは自前のruntimeで外部comma
 }
 
 #[tokio::test]
-async fn test_notion購読読取_外部更新を同期境界で行い未設定の結果を返す() {
-    use crate::usecase::state_subscription::StateValue;
+async fn test_notion購読読取_タスクの外部更新の後に未設定の失敗を読む() {
     // Given
     let fixture = crate::test_support::state_subscription::StateReadsFixture::new();
     let reads = StateSubscriptionReads(fixture.reads.clone());
-    let tasks = SubscriptionTarget::NotionTasks(fixture.path.clone(), 20, None, Default::default());
-    let labels = SubscriptionTarget::NotionLabelOptions(fixture.path.clone());
-    // When / Then
-    for target in [&tasks, &labels] {
-        reads.refresh_external(target).await.unwrap();
-        let value = reads.read(target).await.unwrap();
-        match value {
-            StateValue::NotionTasks(result) => assert!(result.error.is_some()),
-            StateValue::NotionLabelOptions(result) => assert!(result.error.is_some()),
-            _ => panic!("Notion state expected"),
-        }
-    }
-    reads.release_external(&tasks);
-    reads.release_external(&labels);
+    let target =
+        SubscriptionTarget::NotionTasks(fixture.path.clone(), 20, None, Default::default());
+    // When
+    reads.refresh_external(&target).await.unwrap();
+    let value = reads.read(&target).await.unwrap();
+    reads.release_external(&target);
+    let released = reads.read(&target).await;
+    // Then
+    let crate::usecase::state_subscription::StateValue::NotionTasks(result) = value else {
+        panic!("Notion state expected")
+    };
+    assert_eq!(
+        result.error,
+        Some(crate::usecase::notion::error::NotionUsecaseError::ConfigNotFound)
+    );
+    assert!(result.value.is_none());
+    assert!(released.is_err());
+}
+
+#[tokio::test]
+async fn test_notion購読読取_ラベルの外部更新の後に未設定の失敗を読む() {
+    // Given
+    let fixture = crate::test_support::state_subscription::StateReadsFixture::new();
+    let reads = StateSubscriptionReads(fixture.reads.clone());
+    let target = SubscriptionTarget::NotionLabelOptions(fixture.path.clone());
+    // When
+    reads.refresh_external(&target).await.unwrap();
+    let value = reads.read(&target).await.unwrap();
+    reads.release_external(&target);
+    let released = reads.read(&target).await;
+    // Then
+    let crate::usecase::state_subscription::StateValue::NotionLabelOptions(result) = value else {
+        panic!("Notion state expected")
+    };
+    assert_eq!(
+        result.error,
+        Some(crate::usecase::notion::error::NotionUsecaseError::ConfigNotFound)
+    );
+    assert!(result.value.is_none());
+    assert!(released.is_err());
 }

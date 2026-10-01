@@ -75,37 +75,5 @@ pub struct NotionLabelProperty {
 }
 
 #[cfg(test)]
-mod value_objects_tests {
-    use super::*;
-
-    #[test]
-    fn test_notion_config_debugでapi_tokenをマスクする() {
-        let config = NotionRepoConfig {
-            api_token: "ntn_secret_token".to_string(),
-            database_id: "db-1".to_string(),
-            property_mapping: NotionPropertyMapping::default(),
-        };
-
-        let output = format!("{config:?}");
-
-        assert!(output.contains("[REDACTED]"));
-        assert!(!output.contains("ntn_secret_token"));
-    }
-    #[test]
-    fn test_notion設定_tokenとdatabaseの両方が空白以外を持つときだけ設定済み() {
-        for (token, database, expected) in [
-            ("", "db", false),
-            ("token", "", false),
-            (" \t", "db", false),
-            ("token", "\n ", false),
-            (" token ", " db ", true),
-        ] {
-            let config = NotionRepoConfig {
-                api_token: token.into(),
-                database_id: database.into(),
-                property_mapping: Default::default(),
-            };
-            assert_eq!(config.is_configured(), expected);
-        }
-    }
-}
+#[path = "value_objects_test.rs"]
+mod value_objects_tests;
