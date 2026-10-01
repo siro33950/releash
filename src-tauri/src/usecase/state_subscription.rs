@@ -227,7 +227,7 @@ impl StateSubscriptionUsecase {
             let mut interval =
                 timer.interval(crate::domain::git_host::CacheTtl::EXTERNAL_INFORMATION.duration());
             loop {
-                // 定期の取り直しと Repository の増減のときだけ、外部の情報を取り直す。
+                // 定期、Repository の増減（Workspaces）、対象 Repository の Notion 設定の変化で外部の情報を取り直す。
                 // 取りこぼしは、読み直すだけにする。
                 let mut refresh_external = false;
                 let mut completed = Vec::new();

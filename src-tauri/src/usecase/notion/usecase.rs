@@ -193,13 +193,7 @@ fn acquire_result<K: Eq + std::hash::Hash, T>(
     generation: &std::sync::atomic::AtomicU64,
     key: K,
 ) {
-    let generation = generation
-        .fetch_update(
-            std::sync::atomic::Ordering::Relaxed,
-            std::sync::atomic::Ordering::Relaxed,
-            |value| value.checked_add(1),
-        )
-        .expect("Notion result generation exhausted");
+    let generation = generation.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     results.lock().insert(key, (generation, Fetched::default()));
 }
 
