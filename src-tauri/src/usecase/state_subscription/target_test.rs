@@ -164,3 +164,20 @@ fn test_automation購読_定義の変化に反応し置き場の監視を要求�
         )]
     );
 }
+
+#[test]
+fn test_notion購読_issueと同じ外部更新と対象repoの設定変更を選ぶ() {
+    // Given
+    let targets = [
+        SubscriptionTarget::NotionTasks("/repo".into(), 20, None, Default::default()),
+        SubscriptionTarget::NotionLabelOptions("/repo".into()),
+    ];
+    // When / Then
+    for target in targets {
+        assert!(target.external_information());
+        assert!(target.affected_by(&StateChangeSource::Repositories));
+        assert!(target.affected_by(&StateChangeSource::NotionConfig("/repo".into())));
+        assert!(!target.affected_by(&StateChangeSource::NotionConfig("/other".into())));
+        assert!(!target.affected_by(&StateChangeSource::AppConfig));
+    }
+}

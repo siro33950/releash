@@ -178,10 +178,13 @@ fn test_app_config_読み取りrpcは購読への移設後に拒否する() {
 }
 #[test]
 fn test_notion_読み取りrpcは購読への移設後に拒否する() {
-    assert!(
-        wire::CommandRequest::from_value("get_notion_config", json!({"repoPath":"/missing"}))
-            .is_err()
-    );
+    for command in [
+        "get_notion_config",
+        "query_notion_tasks",
+        "fetch_notion_label_options",
+    ] {
+        assert!(wire::CommandRequest::from_value(command, json!({"repoPath":"/missing"})).is_err());
+    }
 }
 #[test]
 fn test_git_host_読み取りrpcは購読への移設後に拒否する() {
@@ -218,7 +221,7 @@ async fn test_クライアントdispatch_proto全commandの登録と引数検証
     // Given
     let (_app, dispatch) = parity_app();
     // When / Then
-    assert_eq!(wire::COMMAND_NAMES.len(), 86);
+    assert_eq!(wire::COMMAND_NAMES.len(), 84);
     assert!(wire::COMMAND_NAMES.contains(&"refresh_workspaces"));
     for removed in [
         "delete_branch",

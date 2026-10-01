@@ -961,3 +961,54 @@ fn test_購読失敗_terminal差分の保持値をfailure事象へ変換する()
         matches!(message.event, Some(wire::state_subscription_event::Event::Failure(failure)) if failure.code == 13 && failure.message == "read failed")
     );
 }
+
+#[test]
+fn test_notion購読配信_最後の一覧と取得失敗を共に送り設定不足を区別する() {
+    use crate::usecase::fetched::Fetched;
+    use crate::usecase::notion::error::NotionUsecaseError;
+    // Given / When / Then
+    for (error, code) in [
+        (NotionUsecaseError::ConfigNotFound, 9),
+        (
+            NotionUsecaseError::Notion(crate::domain::notion::NotionError::ApiError(
+                "offline".into(),
+            )),
+            9,
+        ),
+    ] {
+        let tasks = payload(&StateValue::NotionTasks(Fetched {
+            value: Some(crate::domain::notion::NotionTaskPage {
+                tasks: vec![],
+                has_more: true,
+                next_cursor: None,
+            }),
+            error: Some(error.clone()),
+        }))
+        .unwrap();
+        let Some(wire::state_payload::Value::NotionTasks(snapshot)) = tasks.value else {
+            panic!()
+        };
+        assert_eq!(snapshot.page.unwrap().has_more, Some(true));
+        let failure = snapshot.read_error.unwrap();
+        assert_eq!(failure.code, code);
+        assert_eq!(
+            failure.config_missing,
+            Some(matches!(error, NotionUsecaseError::ConfigNotFound))
+        );
+        let labels = payload(&StateValue::NotionLabelOptions(Fetched {
+            value: Some(vec![]),
+            error: Some(error.clone()),
+        }))
+        .unwrap();
+        let Some(wire::state_payload::Value::NotionLabelOptions(snapshot)) = labels.value else {
+            panic!()
+        };
+        assert!(snapshot.options.is_some());
+        let failure = snapshot.read_error.unwrap();
+        assert_eq!(failure.code, code);
+        assert_eq!(
+            failure.config_missing,
+            Some(matches!(error, NotionUsecaseError::ConfigNotFound))
+        );
+    }
+}

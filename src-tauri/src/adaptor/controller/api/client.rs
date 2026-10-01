@@ -214,9 +214,11 @@ impl StateSubscriptionDeps {
         crate::usecase::state_subscription::SubscriptionError,
     > {
         use futures_util::StreamExt;
-        Ok(self
-            .stream(id)?
-            .map(crate::adaptor::presenter::state_subscription_wire::event))
+        let presenter = self.presenter.clone();
+        let client = id.clone();
+        Ok(self.stream(id)?.flat_map(move |event| {
+            futures_util::stream::iter(presenter.wire_events(&client, event))
+        }))
     }
 
     pub(crate) async fn start_subscription(

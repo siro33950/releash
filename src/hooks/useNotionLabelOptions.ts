@@ -1,28 +1,16 @@
-import { useCallback, useEffect, useState } from "react";
-import { invokeClient as invoke } from "@/lib/client";
-import { showClientError } from "@/lib/clientErrorNotice";
-import type { NotionLabelOption } from "@/types/notion";
+import { useStateSubscriptionResult } from "./useStateSubscription";
 
 export function useNotionLabelOptions(repoPath: string) {
-	const [labelOptions, setLabelOptions] = useState<NotionLabelOption[]>([]);
-	const [loading, setLoading] = useState(true);
-
-	const fetchOptions = useCallback(async () => {
-		setLoading(true);
-		try {
-			const result = await invoke("fetch_notion_label_options", { repoPath });
-			setLabelOptions(result);
-		} catch (error) {
-			showClientError(error);
-			setLabelOptions([]);
-		} finally {
-			setLoading(false);
-		}
-	}, [repoPath]);
-
-	useEffect(() => {
-		fetchOptions();
-	}, [fetchOptions]);
-
-	return { labelOptions, loading };
+	const subscription = useStateSubscriptionResult({
+		kind: "notion-label-options",
+		args: [repoPath],
+	});
+	const error =
+		subscription.error ?? subscription.value?.readError?.message ?? null;
+	return {
+		labelOptions: subscription.value?.options ?? [],
+		loading: subscription.value === undefined && !error,
+		error,
+		readError: subscription.value?.readError,
+	};
 }

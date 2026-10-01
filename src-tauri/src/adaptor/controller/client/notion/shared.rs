@@ -38,64 +38,6 @@ pub(crate) fn register_shared(
     {
         let state = deps.app_state.clone();
         router.register_domain(
-            &["fetch_notion_label_options"],
-            Box::new(move |command| {
-                let state = state.clone();
-                Box::pin(async move {
-                    let wire::command_request::Command::FetchNotionLabelOptions(args) = command
-                    else {
-                        return Err(invalid_request("Mismatched command"));
-                    };
-                    let result = async move {
-                        let state = state
-                            .ok_or_else(|| invalid_request("Command dependency unavailable"))?;
-                        outcome(
-                            commands::fetch_notion_label_options_shared(
-                                &state,
-                                convert(required(args.repo_path, "repoPath")?)?,
-                            )
-                            .await,
-                        )
-                    }
-                    .await?;
-                    Ok(wire::command_result::Command::FetchNotionLabelOptions(
-                        result,
-                    ))
-                })
-            }),
-        );
-    }
-    {
-        let state = deps.app_state.clone();
-        router.register_domain(
-            &["query_notion_tasks"],
-            Box::new(move |command| {
-                let state = state.clone();
-                Box::pin(async move {
-                    let wire::command_request::Command::QueryNotionTasks(args) = command else {
-                        return Err(invalid_request("Mismatched command"));
-                    };
-                    let result = async move {
-                        let state = state
-                            .ok_or_else(|| invalid_request("Command dependency unavailable"))?;
-                        outcome(
-                            commands::query_notion_tasks_shared(
-                                &state,
-                                convert(required(args.repo_path, "repoPath")?)?,
-                                convert(required(args.query, "query")?)?,
-                            )
-                            .await,
-                        )
-                    }
-                    .await?;
-                    Ok(wire::command_result::Command::QueryNotionTasks(result))
-                })
-            }),
-        );
-    }
-    {
-        let state = deps.app_state.clone();
-        router.register_domain(
             &["save_notion_config"],
             Box::new(move |command| {
                 let state = state.clone();

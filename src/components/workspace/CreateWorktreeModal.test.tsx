@@ -79,6 +79,8 @@ describe("CreateWorktreeModal", () => {
 		hookMocks.useNotionLabelOptions.mockReturnValue({
 			labelOptions: [],
 			loading: false,
+			error: null,
+			readError: undefined,
 		});
 		hookMocks.useNotionTasks.mockReturnValue({
 			tasks: [],
@@ -86,7 +88,8 @@ describe("CreateWorktreeModal", () => {
 			loadMore: vi.fn(),
 			hasMore: false,
 			search: vi.fn(),
-			refresh: vi.fn(),
+			error: null,
+			readError: undefined,
 		});
 		vi.mocked(subscribeState).mockImplementation((target, receive) => {
 			const kind = typeof target === "string" ? target : target.kind;
@@ -283,6 +286,50 @@ describe("CreateWorktreeModal", () => {
 		});
 	});
 
+	it("Notionの取得失敗は一覧を残して表示し同じ失敗を重複表示しない", async () => {
+		const user = userEvent.setup();
+		const tasks = {
+			...hookMocks.useNotionTasks(),
+			tasks: [makeNotionTask()],
+			error: "tasks offline",
+		};
+		hookMocks.useNotionTasks.mockReturnValue(tasks);
+		hookMocks.useNotionLabelOptions.mockReturnValue({
+			labelOptions: [],
+			loading: false,
+			error: "labels offline",
+		});
+		const props = {
+			open: true,
+			repoPaths: ["/repo"],
+			onCreated: vi.fn(),
+			onClose: vi.fn(),
+		};
+		const { rerender } = render(<CreateWorktreeModal {...props} />);
+		await user.click(screen.getByRole("tab", { name: /Notion/ }));
+		expect(
+			screen.getAllByRole("alert").map((alert) => alert.textContent),
+		).toEqual(["tasks offline", "labels offline"]);
+		expect(
+			screen.getByRole("button", { name: /Move Notion branch rules/ }),
+		).toBeInTheDocument();
+		hookMocks.useNotionLabelOptions.mockReturnValue({
+			labelOptions: [],
+			loading: false,
+			error: "tasks offline",
+		});
+		rerender(<CreateWorktreeModal {...props} />);
+		expect(screen.getAllByRole("alert")).toHaveLength(1);
+		hookMocks.useNotionTasks.mockReturnValue({ ...tasks, error: null });
+		hookMocks.useNotionLabelOptions.mockReturnValue({
+			labelOptions: [],
+			loading: false,
+			error: null,
+		});
+		rerender(<CreateWorktreeModal {...props} />);
+		expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+	});
+
 	it("notion task の backend-provided branch_name を作成対象 branch として使う", async () => {
 		const user = userEvent.setup();
 		hookMocks.useNotionTasks.mockReturnValue({
@@ -291,7 +338,8 @@ describe("CreateWorktreeModal", () => {
 			loadMore: vi.fn(),
 			hasMore: false,
 			search: vi.fn(),
-			refresh: vi.fn(),
+			error: null,
+			readError: undefined,
 		});
 
 		render(
@@ -329,7 +377,8 @@ describe("CreateWorktreeModal", () => {
 			loadMore: vi.fn(),
 			hasMore: false,
 			search: vi.fn(),
-			refresh: vi.fn(),
+			error: null,
+			readError: undefined,
 		});
 
 		render(

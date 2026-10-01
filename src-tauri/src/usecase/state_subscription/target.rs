@@ -17,6 +17,13 @@ pub(crate) enum SubscriptionTarget {
     BranchStatus(String),
     CurrentBranch(String),
     Issues(String),
+    NotionTasks(
+        String,
+        usize,
+        Option<String>,
+        std::collections::BTreeMap<String, Vec<String>>,
+    ),
+    NotionLabelOptions(String),
     Worktrees(String),
     RepositoryRoot(String),
     StartupRepository,
@@ -98,7 +105,13 @@ impl SubscriptionTarget {
     }
 
     pub fn external_information(&self) -> bool {
-        matches!(self, Self::Workspaces | Self::Issues(_))
+        matches!(
+            self,
+            Self::Workspaces
+                | Self::Issues(_)
+                | Self::NotionTasks(..)
+                | Self::NotionLabelOptions(_)
+        )
     }
 }
 
@@ -120,6 +133,7 @@ pub(crate) enum StateChangeSource {
     ReviewComments(Option<String>),
     WorkflowDefinitions,
     AppConfig,
+    NotionConfig(String),
     ProviderHookHealth,
 }
 
@@ -127,7 +141,14 @@ impl SubscriptionTarget {
     pub fn affected_by(&self, change: &StateChangeSource) -> bool {
         use StateChangeSource as C;
         match change {
-            C::Repositories => matches!(self, Self::RepositoryPaths | Self::Workspaces),
+            C::Repositories => matches!(
+                self,
+                Self::RepositoryPaths
+                    | Self::Workspaces
+                    | Self::Issues(_)
+                    | Self::NotionTasks(..)
+                    | Self::NotionLabelOptions(_)
+            ),
             C::Repository(paths) => match self {
                 Self::Workspaces => true,
                 Self::Branches(p, _)
@@ -166,6 +187,9 @@ impl SubscriptionTarget {
                     | Self::Facet(_, _)
                     | Self::Diagnostics
             ),
+            C::NotionConfig(path) => {
+                matches!(self, Self::NotionTasks(p, ..) | Self::NotionLabelOptions(p) if p == path)
+            }
             C::AppConfig => matches!(
                 self,
                 Self::DesktopSettings

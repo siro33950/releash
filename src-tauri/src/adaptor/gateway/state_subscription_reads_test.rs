@@ -49,3 +49,25 @@ async fn test_購読読取の境界_同期queryは自前のruntimeで外部comma
     assert!(reads.refresh_external(&target).await.is_ok());
     assert!(reads.read(&target).await.is_ok());
 }
+
+#[tokio::test]
+async fn test_notion購読読取_外部更新を同期境界で行い未設定の結果を返す() {
+    use crate::usecase::state_subscription::StateValue;
+    // Given
+    let fixture = crate::test_support::state_subscription::StateReadsFixture::new();
+    let reads = StateSubscriptionReads(fixture.reads.clone());
+    let tasks = SubscriptionTarget::NotionTasks(fixture.path.clone(), 20, None, Default::default());
+    let labels = SubscriptionTarget::NotionLabelOptions(fixture.path.clone());
+    // When / Then
+    for target in [&tasks, &labels] {
+        reads.refresh_external(target).await.unwrap();
+        let value = reads.read(target).await.unwrap();
+        match value {
+            StateValue::NotionTasks(result) => assert!(result.error.is_some()),
+            StateValue::NotionLabelOptions(result) => assert!(result.error.is_some()),
+            _ => panic!("Notion state expected"),
+        }
+    }
+    reads.release_external(&tasks);
+    reads.release_external(&labels);
+}

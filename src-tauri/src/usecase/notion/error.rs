@@ -3,7 +3,7 @@ use crate::domain::notion::NotionError;
 
 pub(crate) const NOTION_CONFIG_NOT_FOUND: &str = "Notion設定が見つかりません";
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum NotionUsecaseError {
     ConfigNotFound,
     AppConfig(AppConfigError),

@@ -67,6 +67,46 @@ impl SubscriptionTarget {
             ("branch-status", [path]) => Ok(Self::BranchStatus((*path).into())),
             ("current-branch", [path]) => Ok(Self::CurrentBranch((*path).into())),
             ("issues", [path]) => Ok(Self::Issues((*path).into())),
+            ("notion-label-options", [path]) => Ok(Self::NotionLabelOptions((*path).into())),
+            ("notion-tasks", [path, count, filters @ ..]) => {
+                let raw_count = count;
+                let count: usize = count.parse().map_err(|_| SubscriptionError::InvalidId)?;
+                if count == 0 || count.to_string() != *raw_count {
+                    return Err(SubscriptionError::InvalidId);
+                }
+                let mut title = None;
+                let mut labels = std::collections::BTreeMap::<String, Vec<String>>::new();
+                for filter in filters {
+                    if let Some(value) = filter.strip_prefix("title=") {
+                        if title.is_some() || value.is_empty() {
+                            return Err(SubscriptionError::InvalidId);
+                        }
+                        title = Some(value.into());
+                    } else if let Some(value) = filter.strip_prefix("labels=") {
+                        if !labels.is_empty() {
+                            return Err(SubscriptionError::InvalidId);
+                        }
+                        labels = serde_json::from_str(value)
+                            .map_err(|_| SubscriptionError::InvalidId)?;
+                        if labels.is_empty()
+                            || labels.iter().any(|(key, values)| {
+                                key.is_empty()
+                                    || values.is_empty()
+                                    || values.iter().any(String::is_empty)
+                            })
+                        {
+                            return Err(SubscriptionError::InvalidId);
+                        }
+                        for values in labels.values_mut() {
+                            values.sort();
+                            values.dedup();
+                        }
+                    } else {
+                        return Err(SubscriptionError::InvalidId);
+                    }
+                }
+                Ok(Self::NotionTasks((*path).into(), count, title, labels))
+            }
             ("worktrees", [path]) => Ok(Self::Worktrees((*path).into())),
             ("repository-root", [path]) => Ok(Self::RepositoryRoot((*path).into())),
             ("startup-repository", []) => Ok(Self::StartupRepository),
@@ -140,6 +180,20 @@ impl SubscriptionTarget {
             Self::BranchStatus(p) => ("branch-status", vec![p.clone()]),
             Self::CurrentBranch(p) => ("current-branch", vec![p.clone()]),
             Self::Issues(p) => ("issues", vec![p.clone()]),
+            Self::NotionLabelOptions(p) => ("notion-label-options", vec![p.clone()]),
+            Self::NotionTasks(p, count, title, labels) => {
+                let mut args = vec![p.clone(), count.to_string()];
+                if let Some(title) = title {
+                    args.push(format!("title={title}"));
+                }
+                if !labels.is_empty() {
+                    args.push(format!(
+                        "labels={}",
+                        serde_json::to_string(labels).expect("string label filters")
+                    ));
+                }
+                ("notion-tasks", args)
+            }
             Self::Worktrees(p) => ("worktrees", vec![p.clone()]),
             Self::RepositoryRoot(p) => ("repository-root", vec![p.clone()]),
             Self::StartupRepository => ("startup-repository", vec![]),

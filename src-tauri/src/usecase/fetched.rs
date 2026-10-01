@@ -4,12 +4,12 @@
 
 /// 最後に取れた値と、直近の取得の失敗。
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct Fetched<T> {
+pub(crate) struct Fetched<T, E = crate::domain::failure::WorkFailure> {
     pub value: Option<T>,
-    pub error: Option<crate::domain::failure::WorkFailure>,
+    pub error: Option<E>,
 }
 
-impl<T> Default for Fetched<T> {
+impl<T, E> Default for Fetched<T, E> {
     fn default() -> Self {
         Self {
             value: None,
@@ -27,7 +27,7 @@ pub(crate) enum FetchState {
     RefreshFailed,
 }
 
-impl<T> Fetched<T> {
+impl<T, E> Fetched<T, E> {
     pub fn ready(value: T) -> Self {
         Self {
             value: Some(value),
@@ -36,7 +36,7 @@ impl<T> Fetched<T> {
     }
 
     /// 取得の結果を記録する。失敗のときは最後に取れた値を残す。
-    pub fn record(&mut self, result: Result<T, crate::domain::failure::WorkFailure>) {
+    pub fn record(&mut self, result: Result<T, E>) {
         match result {
             Ok(value) => {
                 self.value = Some(value);

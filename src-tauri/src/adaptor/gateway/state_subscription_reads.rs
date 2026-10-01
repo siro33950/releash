@@ -32,14 +32,28 @@ impl StateSubscriptionRead for StateSubscriptionReads {
             .map_err(task_error)?
     }
     async fn refresh_external(&self, target: &SubscriptionTarget) -> Result<(), StateReadError> {
-        let SubscriptionTarget::Issues(path) = target else {
+        if !matches!(
+            target,
+            SubscriptionTarget::Issues(_)
+                | SubscriptionTarget::NotionTasks(..)
+                | SubscriptionTarget::NotionLabelOptions(_)
+        ) {
             return self.0.refresh_external(target).await;
-        };
+        }
         let reads = self.0.clone();
-        let path = path.clone();
-        crate::common::operation_context::spawn_blocking(move || reads.refresh_issues(&path))
-            .await
-            .map_err(task_error)?
+        let target = target.clone();
+        crate::common::operation_context::spawn_blocking(move || match &target {
+            SubscriptionTarget::Issues(path) => reads.refresh_issues(path),
+            _ => {
+                reads.notion.refresh_subscription(&target);
+                Ok(())
+            }
+        })
+        .await
+        .map_err(task_error)?
+    }
+    fn release_external(&self, target: &SubscriptionTarget) {
+        self.0.release_external(target);
     }
     fn repositories(&self) -> Vec<String> {
         self.0.repositories()

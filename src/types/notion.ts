@@ -8,12 +8,6 @@ export interface NotionTask {
 	last_edited_at: string;
 }
 
-export interface NotionTaskPage {
-	tasks: NotionTask[];
-	has_more: boolean;
-	next_cursor: string | null;
-}
-
 export interface LabelProperty {
 	name: string;
 	property_type: string;

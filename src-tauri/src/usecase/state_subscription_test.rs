@@ -607,3 +607,71 @@ async fn test_購読外部読取_再取得失敗で古いキャッシュを配�
     assert!(output.updates.lock().is_empty());
     usecase.close_client("client");
 }
+
+#[tokio::test]
+async fn test_notion購読_開始とrepository増減と設定変更で取り直し同じ対象を共有する() {
+    // Given
+    let output = Arc::new(RecordingOutput::default());
+    let reads = Arc::new(GatedReads::default());
+    let subscriptions =
+        StateSubscriptionUsecase::new_with_output(output.clone(), Arc::new(PendingTimer))
+            .with_reads(reads.clone(), None, vec![], String::new());
+    let target = SubscriptionTarget::NotionTasks("/repo".into(), 20, None, Default::default());
+    subscriptions.open_client("a".into()).unwrap();
+    subscriptions.open_client("b".into()).unwrap();
+    subscriptions.start_read("a", &target).await.unwrap();
+    subscriptions.start_read("b", &target).await.unwrap();
+    assert_eq!(reads.external(), 1);
+    // When
+    subscriptions.notify(StateChangeSource::NotionConfig("/repo".into()));
+    tokio::time::timeout(std::time::Duration::from_secs(2), reads.blocked.notified())
+        .await
+        .unwrap();
+    assert_eq!(reads.external(), 2);
+    reads.release.notify_one();
+    tokio::time::timeout(std::time::Duration::from_secs(2), output.updated.notified())
+        .await
+        .unwrap();
+    subscriptions.notify(StateChangeSource::Repositories);
+    tokio::time::timeout(std::time::Duration::from_secs(2), output.updated.notified())
+        .await
+        .unwrap();
+    // Then
+    assert_eq!(reads.external(), 3);
+    subscriptions.close_client("a");
+    assert_eq!(subscriptions.test_worker_count(), 1);
+    subscriptions.close_client("b");
+    assert_eq!(subscriptions.test_worker_count(), 0);
+}
+
+#[tokio::test]
+async fn test_notion購読_外部情報の共通timerで取り直す() {
+    // Given
+    for target in [
+        SubscriptionTarget::NotionTasks("/repo".into(), 20, None, Default::default()),
+        SubscriptionTarget::NotionLabelOptions("/repo".into()),
+    ] {
+        let output = Arc::new(RecordingOutput::default());
+        let reads = Arc::new(GatedReads::default());
+        let tick = Arc::new(tokio::sync::Notify::new());
+        let subscriptions = StateSubscriptionUsecase::new_with_output(
+            output.clone(),
+            Arc::new(RefreshTimer(tick.clone())),
+        )
+        .with_reads(reads.clone(), None, vec![], String::new());
+        subscriptions.open_client("client".into()).unwrap();
+        subscriptions.start_read("client", &target).await.unwrap();
+        // When
+        tick.notify_one();
+        tokio::time::timeout(std::time::Duration::from_secs(2), reads.blocked.notified())
+            .await
+            .unwrap();
+        reads.release.notify_one();
+        tokio::time::timeout(std::time::Duration::from_secs(2), output.updated.notified())
+            .await
+            .unwrap();
+        // Then
+        assert_eq!(reads.external(), 2);
+        subscriptions.close_client("client");
+    }
+}

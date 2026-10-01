@@ -337,6 +337,9 @@ impl StateSubscriptionUsecase {
             } else {
                 self.waiting_workers.lock().remove(target);
                 task.abort();
+                if let Some(reads) = &self.reads {
+                    reads.release_external(target);
+                }
                 false
             }
         });
@@ -480,7 +483,8 @@ impl StateSubscriptionUsecase {
 
 /// Repository が増減したときは、外部の情報（PR）を持たない Repository が現れうる。
 fn adds_external_information(target: &SubscriptionTarget, source: &StateChangeSource) -> bool {
-    *source == StateChangeSource::Repositories && target.external_information()
+    (*source == StateChangeSource::Repositories && target.external_information())
+        || matches!(source, StateChangeSource::NotionConfig(_)) && target.affected_by(source)
 }
 
 #[cfg(test)]

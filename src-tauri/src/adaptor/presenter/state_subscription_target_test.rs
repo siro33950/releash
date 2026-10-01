@@ -159,3 +159,50 @@ fn test_automation購読対象_facet種別を検証して往復する() {
         );
     }
 }
+
+#[test]
+fn test_notion購読_絞り込みを省略して往復しラベル順序を正規化する() {
+    // Given
+    let plain = SubscriptionTarget::from_parts("notion-tasks", &["/repo", "20"]).unwrap();
+    // When / Then
+    assert_eq!(
+        plain.parts(),
+        ("notion-tasks", vec!["/repo".into(), "20".into()])
+    );
+    assert_eq!(
+        SubscriptionTarget::parse(&plain.to_string()).unwrap(),
+        plain
+    );
+    let a = SubscriptionTarget::from_parts(
+        "notion-tasks",
+        &[
+            "/repo",
+            "40",
+            "title=Task",
+            r#"labels={"Tags":["z","a"],"Status":["Todo"]}"#,
+        ],
+    )
+    .unwrap();
+    let b = SubscriptionTarget::from_parts(
+        "notion-tasks",
+        &[
+            "/repo",
+            "40",
+            r#"labels={"Status":["Todo"],"Tags":["a","z"]}"#,
+            "title=Task",
+        ],
+    )
+    .unwrap();
+    assert_eq!(a, b);
+    assert_eq!(SubscriptionTarget::parse(&a.to_string()).unwrap(), b);
+    for args in [
+        vec!["/repo", "0"],
+        vec!["/repo", "20", "title="],
+        vec!["/repo", "20", "labels={}"],
+        vec!["/repo", "20", "labels=invalid"],
+        vec!["/repo", "20", "labels={\"Status\":[]}"],
+        vec!["/repo", "20", "title=a", "title=b"],
+    ] {
+        assert!(SubscriptionTarget::from_parts("notion-tasks", &args).is_err());
+    }
+}

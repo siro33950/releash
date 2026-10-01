@@ -47,10 +47,31 @@ async fn start_state_subscription<'a>(
         .as_ref()
         .map(|(epoch, sequence)| (epoch.as_str(), *sequence));
     let subscriptions = self.subscriptions()?;
-    subscriptions
+    let presenter = &subscriptions.presenter;
+    let notion = matches!(
+        target,
+        crate::usecase::state_subscription::SubscriptionTarget::NotionTasks(..)
+    );
+    let _guard = if notion {
+        Some(presenter.request_lock.lock().await)
+    } else {
+        None
+    };
+    let replay = notion && presenter.add_request(&request.client_id, &target, request.args.clone());
+    if let Err(error) = subscriptions
         .start_subscription(&request.client_id, &target, request.terminal_input_id.as_deref(), cursor)
         .await
-        .map_err(crate::adaptor::presenter::connect::classified_error)?;
+    {
+        if notion {
+            presenter.remove_request(&request.client_id, &target, &request.args);
+        }
+        return Err(crate::adaptor::presenter::connect::classified_error(error));
+    }
+    if replay {
+        presenter
+            .replay_request(&request.client_id, &target)
+            .map_err(crate::adaptor::presenter::connect::classified_error)?;
+    }
     connectrpc::Response::ok(rpc::Unit::default())
 }
 
@@ -66,10 +87,22 @@ async fn stop_state_subscription<'a>(
     )
     .map_err(crate::adaptor::presenter::connect::classified_error)?;
     let subscriptions = self.subscriptions()?;
-    subscriptions
-        .stop_subscription(&request.client_id, &target)
-        .await
-        .map_err(crate::adaptor::presenter::connect::classified_error)?;
+    let presenter = &subscriptions.presenter;
+    let notion = matches!(
+        target,
+        crate::usecase::state_subscription::SubscriptionTarget::NotionTasks(..)
+    );
+    let _guard = if notion {
+        Some(presenter.request_lock.lock().await)
+    } else {
+        None
+    };
+    if !notion || presenter.remove_request(&request.client_id, &target, &request.args) {
+        subscriptions
+            .stop_subscription(&request.client_id, &target)
+            .await
+            .map_err(crate::adaptor::presenter::connect::classified_error)?;
+    }
     connectrpc::Response::ok(rpc::Unit::default())
 }
 

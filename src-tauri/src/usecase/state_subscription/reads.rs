@@ -358,6 +358,7 @@ impl WorkspaceStateReads {
             T::DesktopSettings => {
                 StateValue::DesktopSettings(self.app_config.desktop_settings().map_err(error)?)
             }
+            T::NotionTasks(..) | T::NotionLabelOptions(_) => self.notion.subscription_value(target).ok_or_else(|| error(crate::usecase::state_subscription::SubscriptionError::UnknownTarget))?,
             T::NotionConfig(p) => {
                 StateValue::NotionConfig(self.notion.get_config(p).map_err(error)?)
             }
@@ -415,6 +416,7 @@ pub(crate) trait StateSubscriptionRead: Send + Sync {
     async fn refresh_external(&self, _target: &SubscriptionTarget) -> Result<(), StateReadError> {
         Ok(())
     }
+    fn release_external(&self, _target: &SubscriptionTarget) {}
     fn repositories(&self) -> Vec<String>;
     fn review_comments_dir(&self) -> String {
         String::new()
@@ -432,10 +434,16 @@ impl StateSubscriptionRead for WorkspaceStateReads {
     async fn refresh_external(&self, target: &SubscriptionTarget) -> Result<(), StateReadError> {
         match target {
             SubscriptionTarget::Issues(path) => self.refresh_issues(path)?,
+            SubscriptionTarget::NotionTasks(..) | SubscriptionTarget::NotionLabelOptions(_) => {
+                self.notion.refresh_subscription(target)
+            }
             SubscriptionTarget::Workspaces => self.workspaces.refresh_pull_requests(),
             _ => {}
         }
         Ok(())
+    }
+    fn release_external(&self, target: &SubscriptionTarget) {
+        self.notion.release_subscription(target);
     }
     fn repositories(&self) -> Vec<String> {
         self.workspaces.watch_paths()

@@ -121,8 +121,8 @@ const baseIpcHandler: Record<string, unknown> = {
 		status: "configured",
 		properties: [],
 	},
-	query_notion_tasks: { tasks: [], has_more: false, next_cursor: null },
-	fetch_notion_label_options: [],
+	"notion-tasks": { page: { tasks: [], has_more: false } },
+	"notion-label-options": { options: [] },
 
 	// Worktree作成
 	create_worktree: null,
@@ -270,7 +270,7 @@ export function buildMockConfig(
 	overrides: Record<string, unknown> = {},
 ): MockConfig {
 	const values = { ...baseIpcHandler, ...overrides };
-    const stateNames = ["repository-paths", "workspaces", "selection", "node-detail", "agent-session", "session-node", "session-history", "providers", "branches", "branch-base", "branch-status", "current-branch", "issues", "worktrees", "repository-root", "startup-repository", "workspace-state", "review-snapshot", "review-file-view", "review-threads", "workflows", "workflow", "workflow-source", "facets", "facet", "diagnostics", "desktop-settings", "notion-config", "provider-availability", "external-editor", "releash-base", "workflow-config", "performance-switches", "provider-hook-health", "startup-outcome"];
+    const stateNames = ["repository-paths", "workspaces", "selection", "node-detail", "agent-session", "session-node", "session-history", "providers", "branches", "branch-base", "branch-status", "current-branch", "issues", "worktrees", "repository-root", "startup-repository", "workspace-state", "review-snapshot", "review-file-view", "review-threads", "workflows", "workflow", "workflow-source", "facets", "facet", "diagnostics", "desktop-settings", "notion-config", "notion-tasks", "notion-label-options", "provider-availability", "external-editor", "releash-base", "workflow-config", "performance-switches", "provider-hook-health", "startup-outcome"];
     const states: Record<string, unknown> = { "repository-root": "/test/repo", selection: null };
     for (const kind of stateNames) {
         if (kind in values) { states[kind] = values[kind]; delete values[kind]; }

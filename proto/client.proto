@@ -3,6 +3,8 @@ package releash.client.v1;
 import "client_options.proto";
 
 message CommandRequest {
+  reserved 41, 102;
+  reserved "fetch_notion_label_options", "query_notion_tasks";
   reserved 11, 35, 69;
   reserved "ack_terminal_surface_output", "detach_terminal_surface", "get_terminal_surface";
   reserved 36, 43, 46, 53, 58, 60, 61, 62, 63, 68, 71, 90;
@@ -90,7 +92,6 @@ message CommandRequest {
     DuplicateFacetRequest duplicate_facet = 38;
     DuplicateWorkflowRequest duplicate_workflow = 39;
     FetchIssuesRequest fetch_issues = 40;
-    FetchNotionLabelOptionsRequest fetch_notion_label_options = 41;
 
     GetFileNavigationRequest get_file_navigation = 55;
     GetLanguageFromPathRequest get_language_from_path = 56;
@@ -112,7 +113,6 @@ message CommandRequest {
     OpenFolderInEditorRequest open_folder_in_editor = 99;
     OpenInEditorRequest open_in_editor = 100;
     OpenWorkflowInEditorRequest open_workflow_in_editor = 101;
-    QueryNotionTasksRequest query_notion_tasks = 102;
     QuitAfterStartupFailureRequest quit_after_startup_failure = 103;
     RecordTerminalLaunchRendererPhaseRequest record_terminal_launch_renderer_phase = 104;
     RefreshProviderAvailabilityRequest refresh_provider_availability = 105;
@@ -170,6 +170,8 @@ message CommandRequest {
 }
 
 message CommandResult {
+  reserved 41, 102;
+  reserved "fetch_notion_label_options", "query_notion_tasks";
   reserved 11, 35, 69;
   reserved "ack_terminal_surface_output", "detach_terminal_surface", "get_terminal_surface";
   reserved 36, 43, 46, 53, 58, 60, 61, 62, 63, 68, 71, 90;
@@ -257,7 +259,6 @@ message CommandResult {
     Unit duplicate_facet = 38;
     Unit duplicate_workflow = 39;
     Unit fetch_issues = 40;
-    ListNotionLabelOptionView fetch_notion_label_options = 41;
 
     FileNavigationResultDto get_file_navigation = 55;
     ResultString get_language_from_path = 56;
@@ -279,7 +280,6 @@ message CommandResult {
     Unit open_folder_in_editor = 99;
     Unit open_in_editor = 100;
     Unit open_workflow_in_editor = 101;
-    NotionTaskPageView query_notion_tasks = 102;
     StartupFailureQuitOutcomeDtoV1 quit_after_startup_failure = 103;
     Unit record_terminal_launch_renderer_phase = 104;
     Unit refresh_provider_availability = 105;
@@ -804,10 +804,6 @@ message MilestoneDto {
 message ListIssueInfoDto {
   option (json_wrapper) = "items";
   repeated IssueInfoDto items = 1;
-}
-
-message FetchNotionLabelOptionsRequest {
-  optional string repo_path = 1 [json_name = "repoPath", (json_required) = true];
 }
 
 message NotionLabelOptionView {
@@ -2000,27 +1996,16 @@ message OpenWorkflowInEditorRequest {
   optional string name = 1 [json_name = "name", (json_required) = true];
 }
 
-message NotionTaskQueryInput {
-  optional string title_filter = 1 [json_name = "title_filter", (json_required) = true];
-  optional MapListstring label_filters = 2 [json_name = "label_filters", (json_required) = true];
-  optional string cursor = 3 [json_name = "cursor", (json_nullable) = true];
-  optional uint32 page_size = 4 [json_name = "page_size", (json_nullable) = true];
-}
-
 message MapListstring {
   option (json_wrapper) = "entries";
   map<string, Liststring> entries = 1;
 }
 
-message QueryNotionTasksRequest {
-  optional string repo_path = 1 [json_name = "repoPath", (json_required) = true];
-  optional NotionTaskQueryInput query = 2 [json_name = "query", (json_required) = true];
-}
-
 message NotionTaskPageView {
   optional ListNotionTaskView tasks = 1 [json_name = "tasks", (json_required) = true];
   optional bool has_more = 2 [json_name = "has_more", (json_required) = true];
-  optional string next_cursor = 3 [json_name = "next_cursor", (json_nullable) = true];
+  reserved 3;
+  reserved "next_cursor";
 }
 
 message NotionTaskView {
@@ -2716,7 +2701,6 @@ service ClientService {
   rpc DuplicateFacet(DuplicateFacetRequest) returns (Unit);
   rpc DuplicateWorkflow(DuplicateWorkflowRequest) returns (Unit);
   rpc FetchIssues(FetchIssuesRequest) returns (Unit);
-  rpc FetchNotionLabelOptions(FetchNotionLabelOptionsRequest) returns (ListNotionLabelOptionView);
   rpc GetFileNavigation(GetFileNavigationRequest) returns (FileNavigationResultDto);
   rpc GetLanguageFromPath(GetLanguageFromPathRequest) returns (ResultString);
   rpc GetOrSpawnTerminalSurface(GetOrSpawnTerminalSurfaceRequest) returns (GetOrSpawnTerminalV1);
@@ -2731,7 +2715,6 @@ service ClientService {
   rpc OpenFolderInEditor(OpenFolderInEditorRequest) returns (Unit);
   rpc OpenInEditor(OpenInEditorRequest) returns (Unit);
   rpc OpenWorkflowInEditor(OpenWorkflowInEditorRequest) returns (Unit);
-  rpc QueryNotionTasks(QueryNotionTasksRequest) returns (NotionTaskPageView);
   rpc QuitAfterStartupFailure(QuitAfterStartupFailureRequest) returns (StartupFailureQuitOutcomeDtoV1);
   rpc RecordTerminalLaunchRendererPhase(RecordTerminalLaunchRendererPhaseRequest) returns (Unit);
   rpc RefreshProviderAvailability(RefreshProviderAvailabilityRequest) returns (Unit);
@@ -2853,6 +2836,20 @@ message IssuesSnapshot {
   optional string read_error = 2;
 }
 
+message NotionReadFailure {
+  int32 code = 1;
+  string message = 2;
+  optional bool config_missing = 3;
+}
+message NotionTasksSnapshot {
+  optional NotionTaskPageView page = 1;
+  optional NotionReadFailure read_error = 2;
+}
+message NotionLabelOptionsSnapshot {
+  optional ListNotionLabelOptionView options = 1;
+  optional NotionReadFailure read_error = 2;
+}
+
 message OpenStateStreamRequest { string client_id = 1; }
 message StateVersion { string epoch = 1; uint64 sequence = 2; }
 message StartStateSubscriptionRequest {
@@ -2885,6 +2882,8 @@ message StatePayload {
     ListBranchStatus branch_status = 11;
     ResultString current_branch = 12;
     IssuesSnapshot issues = 13;
+    NotionTasksSnapshot notion_tasks = 60;
+    NotionLabelOptionsSnapshot notion_label_options = 61;
     ListWorktreeEntryDto worktrees = 14;
     Nullablestring repository_root = 15;
     Nullablestring startup_repository = 16;

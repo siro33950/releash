@@ -33,6 +33,12 @@ pub struct NotionRepoConfig {
     pub property_mapping: NotionPropertyMapping,
 }
 
+impl NotionRepoConfig {
+    pub fn is_configured(&self) -> bool {
+        !self.api_token.trim().is_empty() && !self.database_id.trim().is_empty()
+    }
+}
+
 impl std::fmt::Debug for NotionRepoConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("NotionRepoConfig")
@@ -84,5 +90,22 @@ mod value_objects_tests {
 
         assert!(output.contains("[REDACTED]"));
         assert!(!output.contains("ntn_secret_token"));
+    }
+    #[test]
+    fn test_notion設定_tokenとdatabaseの両方が空白以外を持つときだけ設定済み() {
+        for (token, database, expected) in [
+            ("", "db", false),
+            ("token", "", false),
+            (" \t", "db", false),
+            ("token", "\n ", false),
+            (" token ", " db ", true),
+        ] {
+            let config = NotionRepoConfig {
+                api_token: token.into(),
+                database_id: database.into(),
+                property_mapping: Default::default(),
+            };
+            assert_eq!(config.is_configured(), expected);
+        }
     }
 }

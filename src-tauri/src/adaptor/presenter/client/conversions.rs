@@ -2295,21 +2295,6 @@ impl TryFrom<crate::adaptor::presenter::notion::NotionTaskPageView> for wire::No
         Ok(Self {
             tasks: Some(cv(value.tasks)?),
             has_more: Some(cv(value.has_more)?),
-            next_cursor: value.next_cursor.map(cv).transpose()?,
-        })
-    }
-}
-
-impl TryFrom<wire::NotionTaskQueryInput>
-    for crate::adaptor::presenter::notion::NotionTaskQueryInput
-{
-    type Error = String;
-    fn try_from(value: wire::NotionTaskQueryInput) -> Result<Self, String> {
-        Ok(Self {
-            title_filter: cv(req(value.title_filter, "title_filter")?)?,
-            label_filters: cv(req(value.label_filters, "label_filters")?)?,
-            cursor: value.cursor.map(cv).transpose()?,
-            page_size: value.page_size.map(cv).transpose()?,
         })
     }
 }
