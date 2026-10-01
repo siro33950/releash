@@ -2,7 +2,6 @@ use crate::usecase::{
     agent_session::{AgentSessionHistoryPageDto, AgentSessionItemDto},
     code_dto::{ReviewFileViewDto, ReviewSnapshotDto},
     comment::ReviewThreadDto,
-    git_host::IssueInfoDto,
     provider_dto::AgentSessionProviderDto,
     repository_dto::{BranchDto, WorktreeEntryDto},
     workflow::{
@@ -31,10 +30,10 @@ pub(crate) enum StateValue {
     /// ブランチと、その worktree があるか。
     BranchStatus(Vec<(crate::domain::repository::Branch, bool)>),
     CurrentBranch(String),
-    Issues(Vec<IssueInfoDto>),
+    Issues(crate::usecase::fetched::Fetched<Vec<crate::domain::git_host::IssueInfo>>),
     Worktrees(Vec<WorktreeEntryDto>),
-    RepositoryRoot(String),
-    StartupRepository(String),
+    RepositoryRoot(Option<String>),
+    StartupRepository(Option<String>),
     WorkspaceState(Option<WorkspaceStateDto>),
     ReviewSnapshot(ReviewSnapshotDto),
     ReviewFileView(ReviewFileViewDto),
@@ -52,6 +51,6 @@ pub(crate) enum StateValue {
     ReleashBase(Option<String>),
     WorkflowConfig(crate::usecase::app_config::query_service::WorkflowConfigDto),
     PerformanceSwitches(crate::usecase::telemetry::PerformanceSwitches),
-    ProviderHookHealth(Vec<crate::usecase::provider_lifecycle::ProviderHookHealthWarningDto>),
+    ProviderHookHealth(crate::usecase::provider_lifecycle::ProviderHookHealthReadResult),
     StartupOutcome(crate::usecase::application_startup::ApplicationStartupOutcome),
 }

@@ -66,9 +66,11 @@ export type WorkspaceBranch = {
 	is_main_worktree: boolean;
 	is_deleting: boolean;
 	worktree_path: string;
-	dirty_count: number;
+	dirty_count: number | null;
 	is_merged: boolean;
-	has_pr: boolean;
+	has_pr: boolean | null;
+	dirty_count_error: string | null;
+	pull_request_error: string | null;
 	pr_number: number | null;
 	pr_url: string | null;
 };
@@ -306,6 +308,11 @@ export type BranchStatus = {
 
 export type ResultString = string;
 
+export type IssuesSnapshot = {
+	issues?: ListIssueInfoDto;
+	readError?: string;
+};
+
 export type ListIssueInfoDto = Array<IssueInfoDto>;
 
 export type IssueInfoDto = {
@@ -348,8 +355,6 @@ export type WorktreeEntryDto = {
 	branch: string;
 	is_main: boolean;
 	is_locked: boolean;
-	dirty_count: number;
-	base_branch: string | null;
 };
 
 export type NullableWorkspaceStateDto = WorkspaceStateDto | null;
@@ -599,6 +604,7 @@ export type ReviewResolveInfoDto = {
 export type ListWorkflowSummaryDto = Array<WorkflowSummaryDto>;
 
 export type WorkflowSummaryDto = {
+	readError?: string;
 	name: string;
 	description: string;
 	builtin: boolean;
@@ -904,6 +910,11 @@ export type TerminalPerformanceSwitchesV1 = {
 	disableTerminalJournal: boolean;
 	disableRendererWriteSerialization: boolean;
 	disableWebglRenderer: boolean;
+};
+
+export type ProviderHookHealthSnapshot = {
+	warnings: ListProviderHookHealthWarningResponse;
+	readErrors?: Array<string>;
 };
 
 export type ListProviderHookHealthWarningResponse =

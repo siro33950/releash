@@ -44,6 +44,7 @@ pub(crate) enum StateReadFailure {
     Editor(Box<crate::domain::external_editor::EditorError>),
     HookHealth(Box<crate::usecase::provider_lifecycle::ProviderHookHealthUsecaseError>),
     Technical(Box<TechnicalFailure>),
+    WorkspaceState(Box<crate::domain::workspace_state::WorkspaceStateError>),
 }
 impl From<crate::usecase::code_error::CodeUsecaseError> for StateReadFailure {
     fn from(error: crate::usecase::code_error::CodeUsecaseError) -> Self {
@@ -125,6 +126,11 @@ impl From<TechnicalFailure> for StateReadFailure {
         Self::Technical(Box::new(error))
     }
 }
+impl From<crate::domain::workspace_state::WorkspaceStateError> for StateReadFailure {
+    fn from(error: crate::domain::workspace_state::WorkspaceStateError) -> Self {
+        Self::WorkspaceState(Box::new(error))
+    }
+}
 impl StateReadError {
     pub(crate) fn from_error<E: std::fmt::Display>(error: E) -> Self
     where
@@ -196,7 +202,11 @@ impl WorkspaceStateReads {
                     .map(StateValue::SessionHistory)
                     .map_err(error)
             }
-            T::Workspaces => return Ok(StateValue::Workspaces(self.workspaces.read().await)),
+            T::Workspaces => {
+                return Ok(StateValue::Workspaces(
+                    self.workspaces.read().await.map_err(error)?,
+                ))
+            }
             T::Selection(p, id) => {
                 let (tree, selected) = self
                     .workflow
@@ -232,13 +242,7 @@ impl WorkspaceStateReads {
             }
             T::ProviderHookHealth => {
                 return Ok(StateValue::ProviderHookHealth(
-                    self.hook_health
-                        .warnings()
-                        .await
-                        .map_err(error)?
-                        .into_iter()
-                        .map(Into::into)
-                        .collect(),
+                    self.hook_health.warnings().await.map_err(error)?,
                 ))
             }
             _ => {}
@@ -282,22 +286,17 @@ impl WorkspaceStateReads {
                 StateValue::CurrentBranch(self.repository.get_current_branch(p).map_err(error)?)
             }
             T::Issues(p) => StateValue::Issues(
-                self.git_host
-                    .get_cached_issues(p)
-                    .map_err(error)?
-                    .into_iter()
-                    .map(Into::into)
-                    .collect(),
+                self.git_host.get_cached_issues(p),
             ),
             T::Worktrees(p) => {
                 StateValue::Worktrees(self.repository.list_worktrees(p).map_err(error)?)
             }
             T::RepositoryRoot(p) => {
-                StateValue::RepositoryRoot(self.repository.get_main_repo_path(p).map_err(error)?)
+                StateValue::RepositoryRoot(self.repository.find_main_repo_path(p).map_err(error)?)
             }
             T::StartupRepository => StateValue::StartupRepository(
                 self.repository
-                    .get_main_repo_path(&self.repository.get_cwd().map_err(error)?)
+                    .find_main_repo_path(&self.repository.get_cwd().map_err(error)?)
                     .map_err(error)?,
             ),
             T::WorkspaceState(name, path) => StateValue::WorkspaceState(
@@ -306,6 +305,7 @@ impl WorkspaceStateReads {
                     name,
                     path,
                 )
+                .map_err(error)?
                 .map(Into::into),
             ),
             T::ReviewSnapshot(path, base) => StateValue::ReviewSnapshot(
@@ -331,7 +331,9 @@ impl WorkspaceStateReads {
                     .map(ReviewThreadDto::from)
                     .collect(),
             ),
-            T::Workflow(name) => StateValue::Workflow(self.workflow.get_workflow_dto(name)),
+            T::Workflow(name) => {
+                StateValue::Workflow(self.workflow.get_workflow_dto(name).map_err(error)?)
+            }
             T::WorkflowSource(name) => {
                 StateValue::WorkflowSource(self.workflow.get_workflow_source(name).map_err(error)?)
             }
@@ -402,7 +404,7 @@ impl WorkspaceStateReads {
 impl WorkspaceStateReads {
     pub(crate) fn refresh_issues(&self, path: &str) -> Result<(), StateReadError> {
         self.repository.get_main_repo_path(path).map_err(error)?;
-        self.git_host.fetch_issues(path).map_err(error)?;
+        let _ = self.git_host.fetch_issues(path);
         Ok(())
     }
 }

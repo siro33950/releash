@@ -4,6 +4,7 @@ use super::*;
 fn test_workflow一覧応答_既存のjsonフィールドを維持する() {
     // Given
     let response = WorkflowSummaryResponse::from(dto::WorkflowSummaryDto {
+        failure: None,
         name: "demo".into(),
         description: "description".into(),
         builtin: true,
@@ -262,4 +263,28 @@ fn test_診断応答_変更前のjson形を維持する() {
             "facet_usage": {"instruction/policy": [{"workflow_name": "demo", "node_name": "main", "slot": "instruction"}]}
         })
     );
+}
+
+#[test]
+fn test_workflow一覧応答_内部の失敗型を読取失敗の表示へ変換する() {
+    // Given
+    let summary = dto::WorkflowSummaryDto {
+        failure: Some(crate::domain::failure::WorkFailure {
+            kind: crate::domain::failure::Failure::Technical(
+                crate::domain::failure::TechnicalFailureNature::Other,
+            ),
+            message: "denied".into(),
+        }),
+        name: "unreadable".into(),
+        description: String::new(),
+        builtin: false,
+        is_running: false,
+        source_format: dto::WorkflowSourceFormatDto::Yaml,
+    };
+    // When
+    let value = serde_json::to_value(WorkflowSummaryResponse::from(summary)).unwrap();
+    // Then
+    assert_eq!(value["readError"], "Workflow read failed: denied");
+    assert_eq!(value["description"], "");
+    assert!(value.get("failure").is_none());
 }

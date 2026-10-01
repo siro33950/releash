@@ -305,13 +305,18 @@ export function AgentSessionRoute({
 		(session?.id === agentSessionId || launchAttachment != null)
 	) {
 		return (
-			<AgentSessionPanel
-				resumeAction={resumeAction}
-				session={session?.id === agentSessionId ? session : null}
-				initialAttachment={launchAttachment}
-				theme={theme}
-				initiallyAttached={launchAttachment != null}
-			/>
+			<div className="flex h-full flex-col">
+				{subscription.error && <div role="alert">{subscription.error}</div>}
+				<div className="min-h-0 flex-1">
+					<AgentSessionPanel
+						resumeAction={resumeAction}
+						session={session?.id === agentSessionId ? session : null}
+						initialAttachment={launchAttachment}
+						theme={theme}
+						initiallyAttached={launchAttachment != null}
+					/>
+				</div>
+			</div>
 		);
 	}
 

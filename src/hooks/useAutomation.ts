@@ -279,16 +279,13 @@ export function useAutomation(open: boolean) {
 		[],
 	);
 
-	const error =
-		operationError ??
-		workflowsSubscription.error ??
-		diagnosticsSubscription.error ??
-		facetsSubscription.error ??
-		workflowSubscription.error ??
-		sourceSubscription.error ??
-		facetSubscription.error;
-
 	return {
+		workflowsError: workflowsSubscription.error,
+		diagnosticsError: diagnosticsSubscription.error,
+		facetsError: facetsSubscription.error,
+		workflowError: workflowSubscription.error,
+		sourceError: sourceSubscription.error,
+		facetError: facetSubscription.error,
 		workflows,
 		facets: facetsSubscription.value ?? [],
 		report: diagnosticsSubscription.value ?? EMPTY_REPORT,
@@ -296,8 +293,10 @@ export function useAutomation(open: boolean) {
 			open &&
 			(workflowsSubscription.value === undefined ||
 				diagnosticsSubscription.value === undefined) &&
-			!error,
-		error,
+			!operationError &&
+			!workflowsSubscription.error &&
+			!diagnosticsSubscription.error,
+		error: operationError,
 		setError: setOperationError,
 
 		externalChangeDetected,

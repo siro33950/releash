@@ -3573,6 +3573,10 @@ impl TryFrom<crate::usecase::workflow::dto::WorkflowSummaryDto> for wire::Workfl
     type Error = String;
     fn try_from(value: crate::usecase::workflow::dto::WorkflowSummaryDto) -> Result<Self, String> {
         Ok(Self {
+            read_error: value
+                .failure
+                .as_ref()
+                .map(|failure| format!("Workflow read failed: {failure}")),
             name: Some(cv(value.name)?),
             description: Some(cv(value.description)?),
             builtin: Some(cv(value.builtin)?),
@@ -4070,8 +4074,6 @@ impl TryFrom<crate::usecase::repository_dto::WorktreeEntryDto> for wire::Worktre
             branch: Some(cv(value.branch)?),
             is_main: Some(cv(value.is_main)?),
             is_locked: Some(cv(value.is_locked)?),
-            dirty_count: Some(cv(value.dirty_count)?),
-            base_branch: value.base_branch.map(cv).transpose()?,
         })
     }
 }

@@ -1,6 +1,17 @@
 use crate::domain::failure::TechnicalFailureNature;
 use crate::usecase::failure::{BusinessFailure, Failure};
 
+impl From<&crate::domain::git_host::GitHostError> for Failure {
+    fn from(error: &crate::domain::git_host::GitHostError) -> Self {
+        match error {
+            crate::domain::git_host::GitHostError::Technical(error) => Failure::from(error),
+            crate::domain::git_host::GitHostError::External(_) => {
+                Failure::Technical(TechnicalFailureNature::Other)
+            }
+        }
+    }
+}
+
 impl From<&crate::usecase::code_error::CodeUsecaseError> for Failure {
     fn from(error: &crate::usecase::code_error::CodeUsecaseError) -> Self {
         use crate::usecase::code_error::CodeUsecaseError as E;

@@ -343,14 +343,14 @@ describe("useAutomation", () => {
 		mocks.invoke.mockRejectedValue("delete error");
 		const { result } = renderHook(() => useAutomation(true));
 		act(() => states.fail("workflows", new Error("stream ended")));
-		expect(result.current.error).toBe("stream ended");
+		expect(result.current.workflowsError).toBe("stream ended");
 		expect(result.current.loading).toBe(false);
 		await act(async () => {
 			await result.current.deleteWorkflow("test");
 		});
 		expect(result.current.error).toBe("delete error");
 		act(() => result.current.setError(null));
-		expect(result.current.error).toBe("stream ended");
+		expect(result.current.workflowsError).toBe("stream ended");
 	});
 
 	it("閉じると選択を捨てる", async () => {
@@ -361,4 +361,69 @@ describe("useAutomation", () => {
 		rerender({ open: false });
 		await waitFor(() => expect(result.current.selectedWorkflowName).toBeNull());
 	});
+});
+
+it("各購読の失敗時は古い値を現在値にせず回復時に新しい値を表示する", () => {
+	states.clear();
+	states.publish("workflows", [summary("test")]);
+	states.publish("diagnostics", EMPTY_REPORT);
+	const { result } = renderHook(() => useAutomation(true));
+	act(() => {
+		result.current.selectWorkflow("test");
+		result.current.selectFacet("policy", "guide");
+		result.current.setFacetKind("policy");
+	});
+	act(() => {
+		states.publish({ kind: "workflow", args: ["test"] }, workflow("test"));
+		states.publish({ kind: "workflow-source", args: ["test"] }, "old source");
+		states.publish({ kind: "facet", args: ["policy", "guide"] }, "old facet");
+	});
+	act(() =>
+		states.fail(
+			{ kind: "workflow", args: ["test"] },
+			new Error("definition unreadable"),
+		),
+	);
+	expect(result.current.selectedWorkflow?.name).toBe("test");
+	expect(result.current.workflowError).toBe("definition unreadable");
+	act(() =>
+		states.publish({ kind: "workflow", args: ["test"] }, workflow("fresh")),
+	);
+	expect(result.current.selectedWorkflow?.name).toBe("fresh");
+	act(() =>
+		states.fail(
+			{ kind: "workflow-source", args: ["test"] },
+			new Error("source unreadable"),
+		),
+	);
+	expect(result.current.selectedWorkflowSource).toBe("old source");
+	expect(result.current.sourceError).toBe("source unreadable");
+	act(() =>
+		states.publish({ kind: "workflow-source", args: ["test"] }, "fresh source"),
+	);
+	expect(result.current.selectedWorkflowSource).toBe("fresh source");
+	act(() =>
+		states.fail(
+			{ kind: "facet", args: ["policy", "guide"] },
+			new Error("facet unreadable"),
+		),
+	);
+	expect(result.current.selectedFacetContent).toBe("old facet");
+	expect(result.current.facetError).toBe("facet unreadable");
+	act(() =>
+		states.publish({ kind: "facet", args: ["policy", "guide"] }, "fresh facet"),
+	);
+	expect(result.current.selectedFacetContent).toBe("fresh facet");
+	act(() => states.fail("workflows", new Error("list unreadable")));
+	expect(result.current.workflows).toEqual([summary("test")]);
+	expect(result.current.workflowsError).toBe("list unreadable");
+	act(() => states.publish("workflows", [summary("fresh")]));
+	expect(result.current.workflows[0].name).toBe("fresh");
+	act(() =>
+		states.fail(
+			{ kind: "facets", args: ["policy"] },
+			new Error("facets unreadable"),
+		),
+	);
+	expect(result.current.facets).toEqual([]);
 });

@@ -44,6 +44,35 @@ describe("useWorkspaceStateCache", () => {
 		vi.restoreAllMocks();
 	});
 
+	it("daemonが保存を拒否した失敗を画面へ通知する", async () => {
+		const failure = new Error("corrupt state");
+		mockInvoke.mockRejectedValueOnce(failure);
+		const notice = vi.fn();
+		window.addEventListener("releash-client-error", notice);
+		const log = vi.spyOn(console, "error").mockImplementation(() => {});
+		const { result, unmount } = renderHook(() => useWorkspaceStateCache());
+		try {
+			await act(async () => {
+				result.current.updateState("/repo", makeState());
+				result.current.flushState("/repo");
+			});
+			expect(mockInvoke).toHaveBeenCalledWith(
+				"save_workspace_state",
+				expect.anything(),
+			);
+			expect(log).toHaveBeenCalledWith(
+				"Failed to save workspace state:",
+				failure,
+			);
+			expect((notice.mock.calls[0][0] as CustomEvent<string>).detail).toBe(
+				"corrupt state",
+			);
+		} finally {
+			unmount();
+			window.removeEventListener("releash-client-error", notice);
+		}
+	});
+
 	it("getState returns undefined for unknown path", () => {
 		const { result } = renderHook(() => useWorkspaceStateCache());
 		expect(result.current.getState("/unknown")).toBeUndefined();

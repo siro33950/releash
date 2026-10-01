@@ -103,12 +103,32 @@ describe("CreateWorktreeModal", () => {
 					branch,
 					is_main: false,
 					is_locked: false,
-					dirty_count: 0,
-					base_branch: "main",
 				} satisfies WorktreeEntry);
 			}
 			return Promise.resolve([]);
 		});
+	});
+
+	it("ブランチ読取の失敗を表示し成功後に解除する", () => {
+		let recover!: Parameters<typeof subscribeState>[1];
+		vi.mocked(subscribeState).mockImplementation((target, receive, fail) => {
+			if (typeof target !== "string" && target.kind === "branches") {
+				recover = receive;
+				fail(new Error("branches unavailable"));
+			} else receive([]);
+			return vi.fn();
+		});
+		render(
+			<CreateWorktreeModal
+				open
+				repoPaths={["/repo"]}
+				onCreated={vi.fn()}
+				onClose={vi.fn()}
+			/>,
+		);
+		expect(screen.getByRole("alert")).toHaveTextContent("branches unavailable");
+		act(() => recover([{ name: "main", is_remote: false }]));
+		expect(screen.queryByRole("alert")).not.toBeInTheDocument();
 	});
 
 	it("同じRepository一覧の新しい配列でも入力と取得済み候補を保持する", async () => {
@@ -120,6 +140,7 @@ describe("CreateWorktreeModal", () => {
 		await waitFor(() =>
 			expect(subscribeState).toHaveBeenCalledWith(
 				{ kind: "branch-status", args: ["/repo"] },
+				expect.any(Function),
 				expect.any(Function),
 			),
 		);
@@ -373,8 +394,6 @@ describe("CreateWorktreeModal", () => {
 				branch: "new",
 				is_main: false,
 				is_locked: false,
-				dirty_count: 0,
-				base_branch: "main",
 			}),
 		);
 		expect(onCreated).toHaveBeenCalledExactlyOnceWith(
@@ -386,4 +405,115 @@ describe("CreateWorktreeModal", () => {
 			screen.queryByText(/操作結果を確認できません/),
 		).not.toBeInTheDocument();
 	});
+	for (const received of [false, true]) {
+		it(`branch-statusの失敗を${received ? "前の値と一緒に" : "空表示と区別して"}表示する`, async () => {
+			const user = userEvent.setup();
+			let fail!: (error: unknown) => void;
+			vi.mocked(subscribeState).mockImplementation(
+				(target, receive, onError) => {
+					const kind = typeof target === "string" ? target : target.kind;
+					if (kind === "branches")
+						receive([{ name: "main", is_remote: false }]);
+					if (kind === "branch-status") {
+						fail = onError;
+						if (received) receive([{ name: "previous", has_worktree: false }]);
+					}
+					return vi.fn();
+				},
+			);
+			render(
+				<CreateWorktreeModal
+					open
+					repoPaths={["/repo"]}
+					onCreated={vi.fn()}
+					onClose={vi.fn()}
+				/>,
+			);
+			await user.click(screen.getByRole("tab", { name: "Branch" }));
+			act(() => fail(new Error("branch status unavailable")));
+			expect(screen.getByRole("alert")).toHaveTextContent(
+				"branch status unavailable",
+			);
+			expect(
+				screen.queryByText("No branches without worktrees"),
+			).not.toBeInTheDocument();
+			if (received) expect(screen.getByText("previous")).toBeInTheDocument();
+		});
+		it(`Issueの失敗を${received ? "前の値と一緒に" : "空表示と区別して"}表示する`, async () => {
+			const user = userEvent.setup();
+			const initial = {
+				issues: received ? [makeIssue()] : [],
+				loading: !received,
+				error: null,
+				refresh: vi.fn(),
+			};
+			hookMocks.useIssues.mockReturnValue(initial);
+			const props = {
+				open: true,
+				repoPaths: ["/repo"],
+				onCreated: vi.fn(),
+				onClose: vi.fn(),
+			};
+			const view = render(<CreateWorktreeModal {...props} />);
+			await user.click(screen.getByRole("tab", { name: /Issue/ }));
+			hookMocks.useIssues.mockReturnValue({
+				...initial,
+				loading: false,
+				error: "issues unavailable",
+			});
+			view.rerender(<CreateWorktreeModal {...props} />);
+			expect(screen.getByRole("alert")).toHaveTextContent("issues unavailable");
+			expect(screen.queryByText("No issues found")).not.toBeInTheDocument();
+			if (received)
+				expect(
+					screen.getByText("Move branch rules to Rust"),
+				).toBeInTheDocument();
+		});
+	}
+	for (const received of [false, true]) {
+		it(`Issue購読の取得失敗値を実hookで${received ? "前の一覧と一緒に" : "初回失敗として"}表示する`, async () => {
+			const actual =
+				await vi.importActual<typeof import("@/hooks/useIssues")>(
+					"@/hooks/useIssues",
+				);
+			hookMocks.useIssues.mockImplementation(actual.useIssues);
+			const delegate = vi.mocked(subscribeState).getMockImplementation();
+			if (!delegate) throw new Error("subscription fixture is required");
+			let receiveIssues!: Parameters<typeof subscribeState>[1];
+			vi.mocked(subscribeState).mockImplementation((target, receive, fail) => {
+				if (typeof target !== "string" && target.kind === "issues") {
+					receiveIssues = receive;
+					if (received) receive({ issues: [makeIssue()] });
+					return vi.fn();
+				}
+				return delegate(target, receive, fail);
+			});
+			const user = userEvent.setup();
+			render(
+				<CreateWorktreeModal
+					open
+					repoPaths={["/repo"]}
+					onCreated={vi.fn()}
+					onClose={vi.fn()}
+				/>,
+			);
+			await user.click(screen.getByRole("tab", { name: /Issue/ }));
+			act(() =>
+				receiveIssues({
+					issues: received ? [makeIssue()] : undefined,
+					readError: "issues offline",
+				}),
+			);
+			expect(screen.getByRole("alert")).toHaveTextContent("issues offline");
+			expect(screen.queryByText("No issues found")).not.toBeInTheDocument();
+			if (received)
+				expect(
+					screen.getByText("Move branch rules to Rust"),
+				).toBeInTheDocument();
+			act(() => receiveIssues({ issues: [makeIssue()] }));
+			expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+			expect(screen.getByText("Move branch rules to Rust")).toBeInTheDocument();
+			hookMocks.useIssues.mockReset();
+		});
+	}
 });

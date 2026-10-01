@@ -16,6 +16,7 @@ pub(crate) struct FakePtyGateway {
     pub(crate) writes: Mutex<Vec<(String, String)>>,
     input_ingress: Mutex<TerminalSurfaceInputIngressRegistry>,
     pub(crate) surface: Option<TerminalSurface>,
+    pub(crate) snapshot_unavailable: Mutex<bool>,
     pub(crate) additional_surfaces: Vec<TerminalSurface>,
     pub(crate) snapshot_gate:
         Mutex<Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>>,
@@ -41,6 +42,7 @@ impl FakePtyGateway {
             writes: Mutex::new(Vec::new()),
             input_ingress: Mutex::new(TerminalSurfaceInputIngressRegistry::default()),
             surface: None,
+            snapshot_unavailable: Mutex::new(false),
             additional_surfaces: Vec::new(),
             snapshot_gate: Mutex::new(None),
             deactivated: Mutex::new(Vec::new()),
@@ -131,6 +133,9 @@ impl TerminalSurfaceGateway for FakePtyGateway {
     }
 
     fn snapshot(&self, runtime_generation: u64) -> Option<TerminalSurface> {
+        if *self.snapshot_unavailable.lock() {
+            return None;
+        }
         let gate = self.snapshot_gate.lock().take();
         if let Some((started, release)) = gate {
             started.send(()).unwrap();

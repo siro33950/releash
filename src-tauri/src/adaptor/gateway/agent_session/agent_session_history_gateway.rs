@@ -63,7 +63,6 @@ impl AgentSessionHistoryGateway for LocalAgentSessionHistoryGateway {
         let codex_home = self.codex_home.clone();
         let worktree_path = worktree_path.to_string();
         let provider_session_ids = provider_session_ids.to_vec();
-        let fallback_provider_session_ids = provider_session_ids.clone();
         let entries = tokio::task::spawn_blocking(move || match provider {
             ProviderKind::Claude => provider_session_ids
                 .into_iter()
@@ -73,56 +72,29 @@ impl AgentSessionHistoryGateway for LocalAgentSessionHistoryGateway {
                         &worktree_path,
                         &provider_session_id,
                         None,
-                    )
-                    .unwrap_or_else(|error| {
-                        log::warn!(
-                            "Claude provider history title read failed for {provider_session_id}: {error:?}"
-                        );
-                        None
-                    });
+                    )?;
                     let first_user_prompt = claude_first_user_prompt(
                         &claude_config_dir,
                         &worktree_path,
                         &provider_session_id,
-                    )
-                    .unwrap_or_else(|error| {
-                        log::warn!(
-                            "Claude provider history first prompt read failed for {provider_session_id}: {error:?}"
-                        );
-                        None
-                    });
-                    ProviderSessionTitleEntry {
+                    )?;
+                    Ok(ProviderSessionTitleEntry {
                         provider_session_id,
                         session_title,
                         first_user_prompt,
-                    }
+                    })
                 })
-                .collect(),
-            ProviderKind::Codex => codex_session_titles(&codex_home, &provider_session_ids)
-                .unwrap_or_else(|error| {
-                    log::warn!("Codex provider history title read failed: {error:?}");
-                    provider_session_ids
-                        .into_iter()
-                        .map(|provider_session_id| ProviderSessionTitleEntry {
-                            provider_session_id,
-                            session_title: None,
-                            first_user_prompt: None,
-                        })
-                        .collect()
-                }),
+                .collect::<Result<Vec<_>, ProviderSessionTitleGatewayError>>(),
+            ProviderKind::Codex => codex_session_titles(&codex_home, &provider_session_ids),
         })
         .await
-        .unwrap_or_else(|error| {
-            log::warn!("provider history title worker failed: {error}");
-            fallback_provider_session_ids
-                .into_iter()
-                .map(|provider_session_id| ProviderSessionTitleEntry {
-                    provider_session_id,
-                    session_title: None,
-                    first_user_prompt: None,
-                })
-                .collect()
-        });
+        .map_err(|_| AgentSessionHistoryGatewayError::Unavailable)?
+        .map_err(|error| match error {
+            ProviderSessionTitleGatewayError::Unavailable => {
+                AgentSessionHistoryGatewayError::Unavailable
+            }
+            ProviderSessionTitleGatewayError::Corrupt => AgentSessionHistoryGatewayError::Corrupt,
+        })?;
         Ok(entries)
     }
 }
@@ -183,14 +155,16 @@ fn claude_session_title(
     if tail.preceding_byte.is_some_and(|byte| byte != b'\n') {
         let _ = lines.next();
     }
+    if tail.bytes.last().is_some_and(|byte| *byte != b'\n') {
+        let _ = lines.next_back();
+    }
     for line in lines.rev() {
         let line = trim_ascii_whitespace(line);
         if line.is_empty() {
             continue;
         }
-        let Ok(value) = serde_json::from_slice::<serde_json::Value>(line) else {
-            continue;
-        };
+        let value = serde_json::from_slice::<serde_json::Value>(line)
+            .map_err(|_| ProviderSessionTitleGatewayError::Corrupt)?;
         if value.get("type").and_then(serde_json::Value::as_str) != Some("ai-title") {
             continue;
         }
@@ -218,9 +192,7 @@ fn claude_first_user_prompt(
     )
     .map_err(|_| ProviderSessionTitleGatewayError::Unavailable)?;
     let mut lines = head.bytes.split(|byte| *byte == b'\n').collect::<Vec<_>>();
-    if head.following_byte.is_some_and(|byte| byte != b'\n')
-        && head.bytes.last().is_some_and(|byte| *byte != b'\n')
-    {
+    if head.bytes.last().is_some_and(|byte| *byte != b'\n') && head.following_byte != Some(b'\n') {
         let _ = lines.pop();
     }
     for line in lines {
@@ -228,9 +200,8 @@ fn claude_first_user_prompt(
         if line.is_empty() {
             continue;
         }
-        let Ok(value) = serde_json::from_slice::<serde_json::Value>(line) else {
-            continue;
-        };
+        let value = serde_json::from_slice::<serde_json::Value>(line)
+            .map_err(|_| ProviderSessionTitleGatewayError::Corrupt)?;
         if value.get("type").and_then(serde_json::Value::as_str) != Some("user")
             || value.get("isMeta").and_then(serde_json::Value::as_bool) == Some(true)
         {

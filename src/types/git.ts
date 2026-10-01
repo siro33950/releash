@@ -10,8 +10,6 @@ export interface WorktreeEntry {
 	branch: string;
 	is_main: boolean;
 	is_locked: boolean;
-	dirty_count: number;
-	base_branch: string | null;
 }
 
 export interface BranchInfo {
@@ -24,9 +22,11 @@ export interface WorktreeBranch {
 	is_main_worktree: boolean;
 	is_deleting: boolean;
 	worktree_path: string;
-	dirty_count: number;
+	dirty_count: number | null;
+	dirty_count_error?: string | null;
+	pull_request_error?: string | null;
 	is_merged: boolean;
-	has_pr?: boolean;
+	has_pr?: boolean | null;
 	pr_number?: number | null;
 	pr_url?: string | null;
 }

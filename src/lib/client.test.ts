@@ -504,7 +504,7 @@ it("AbortSignal.anyが無くても初回RPCとstreamが開始し個別と接続�
 	});
 	expect(AbortSignal.any).toBeUndefined();
 	const client = await getClient();
-	const release = subscribeState("repository-paths", vi.fn());
+	const release = subscribeState("repository-paths", vi.fn(), vi.fn());
 	await vi.waitFor(() =>
 		expect(
 			fixture.requests.some((request) =>
@@ -599,7 +599,7 @@ it("状態のstreamがreadyの直後に切れ続けても待ちが伸びる", as
 	vi.spyOn(Math, "random").mockReturnValue(0.5);
 	try {
 		const fixture = stateFixture();
-		subscribeState("repository-paths", vi.fn());
+		subscribeState("repository-paths", vi.fn(), vi.fn());
 		await vi.waitFor(() => expect(fixture.starts).toHaveLength(1));
 		const firstFailedAt = Date.now();
 		fixture.streams[0].fail();
@@ -628,7 +628,7 @@ it("購読開始が失敗し続けても同じ待ちが伸びる", async () => {
 		const fixture = stateFixture(async () => {
 			throw new ConnectError("busy", Code.Aborted);
 		});
-		subscribeState("repository-paths", vi.fn());
+		subscribeState("repository-paths", vi.fn(), vi.fn());
 		await vi.advanceTimersByTimeAsync(6000);
 		expect(fixture.streams).toHaveLength(4);
 		const opened = fixture.streams.map((stream) => stream.openedAt);
@@ -651,7 +651,7 @@ it("ready前の失敗でも待ちが伸びる", async () => {
 	vi.spyOn(Math, "random").mockReturnValue(0.5);
 	try {
 		const fixture = stateFixture(undefined, { failBeforeReady: 3 });
-		subscribeState("repository-paths", vi.fn());
+		subscribeState("repository-paths", vi.fn(), vi.fn());
 		await vi.advanceTimersByTimeAsync(6000);
 		expect(fixture.streams).toHaveLength(4);
 		const opened = fixture.streams.map((stream) => stream.openedAt);
@@ -673,7 +673,7 @@ it("つなぎ直してから2分を超えてstreamが続くと次の待ちは1�
 	vi.spyOn(Math, "random").mockReturnValue(0.5);
 	try {
 		const fixture = stateFixture();
-		subscribeState("repository-paths", vi.fn());
+		subscribeState("repository-paths", vi.fn(), vi.fn());
 		await vi.waitFor(() => expect(fixture.starts).toHaveLength(1));
 		fixture.streams[0].fail();
 		await vi.advanceTimersByTimeAsync(1000);
@@ -740,7 +740,7 @@ it("購読開始のRESOURCE_EXHAUSTED中もREADYで単発RPCを送る", async ()
 		phases.push(getConnectionState()),
 	);
 	try {
-		subscribeState("repository-paths", vi.fn());
+		subscribeState("repository-paths", vi.fn(), vi.fn());
 		await vi.waitFor(() =>
 			expect(fixture.streams[0]?.signal.aborted).toBe(true),
 		);
@@ -766,8 +766,8 @@ it.each([Code.Unavailable, Code.Aborted, Code.ResourceExhausted])(
 				throw new ConnectError("state lost", code);
 			},
 		});
-		const release = subscribeState("repository-paths", vi.fn());
-		subscribeState("providers", vi.fn());
+		const release = subscribeState("repository-paths", vi.fn(), vi.fn());
+		subscribeState("providers", vi.fn(), vi.fn());
 		await vi.waitFor(() => expect(fixture.starts).toHaveLength(2));
 		release();
 		await vi.waitFor(() => expect(fixture.streams).toHaveLength(2), {
@@ -805,8 +805,8 @@ it("状態の購読は同じ対象を一度だけ開始し最初の状態と変�
 	const fixture = stateFixture();
 	const first = vi.fn();
 	const second = vi.fn();
-	subscribeState("repository-paths", first);
-	subscribeState("repository-paths", second);
+	subscribeState("repository-paths", first, vi.fn());
+	subscribeState("repository-paths", second, vi.fn());
 	await vi.waitFor(() => expect(fixture.starts).toHaveLength(1));
 	expect(fixture.starts[0].target).toBe("repository-paths");
 	expect(fixture.starts[0].version).toBeUndefined();
@@ -822,7 +822,7 @@ it("状態の購読は同じ対象を一度だけ開始し最初の状態と変�
 		expect(second.mock.calls).toEqual([[["/a"]], [["/a", "/b"]]]);
 	});
 	const late = vi.fn();
-	subscribeState("repository-paths", late);
+	subscribeState("repository-paths", late, vi.fn());
 	expect(late).toHaveBeenCalledWith(["/a", "/b"]);
 	expect(fixture.starts).toHaveLength(1);
 });
@@ -830,7 +830,7 @@ it("状態の購読は同じ対象を一度だけ開始し最初の状態と変�
 it("復帰可能なページは状態の購読を再開する", async () => {
 	const fixture = stateFixture();
 	const receive = vi.fn();
-	subscribeState("repository-paths", receive);
+	subscribeState("repository-paths", receive, vi.fn());
 	await vi.waitFor(() => expect(fixture.starts).toHaveLength(1));
 	fixture.streams[0].send(repositoryPaths(0, ["/a"], "snapshot"));
 	await vi.waitFor(() => expect(receive).toHaveBeenLastCalledWith(["/a"]));
@@ -852,7 +852,7 @@ it("一時的な接続失敗中にページが復帰したら接続をやり直�
 		"./client"
 	);
 	const fixture = stateFixture();
-	subscribeState("repository-paths", vi.fn());
+	subscribeState("repository-paths", vi.fn(), vi.fn());
 	await vi.waitFor(() => expect(fixture.starts).toHaveLength(1));
 	const phases: string[] = [];
 	const release = onConnectionStateChange(() =>
@@ -881,7 +881,7 @@ it.each([Code.Unavailable, Code.Aborted, Code.ResourceExhausted])(
 	async (code) => {
 		const fixture = stateFixture();
 		const receive = vi.fn();
-		subscribeState("repository-paths", receive);
+		subscribeState("repository-paths", receive, vi.fn());
 		await vi.waitFor(() => expect(fixture.starts).toHaveLength(1));
 		fixture.streams[0].send(repositoryPaths(0, ["/a"], "snapshot"));
 		fixture.streams[0].send(repositoryPaths(2, ["/b"]));
@@ -904,7 +904,7 @@ it("stream切断から接続を作り直し状態の変化を通知する", asyn
 		"./client"
 	);
 	const fixture = stateFixture();
-	subscribeState("repository-paths", vi.fn());
+	subscribeState("repository-paths", vi.fn(), vi.fn());
 	await vi.waitFor(() => expect(fixture.starts).toHaveLength(1));
 	const phases: string[] = [];
 	const off = onConnectionStateChange(() => phases.push(getConnectionState()));
@@ -921,7 +921,11 @@ it("terminal購読をつなぎ直すたびに入力IDを更新する", async () 
 	const { currentTerminalInputId } = await import("./client");
 	const fixture = stateFixture();
 	const owner = { kind: "workspace" as const, workspacePath: "/repo" };
-	subscribeState({ kind: "terminal", args: [owner.workspacePath] }, vi.fn());
+	subscribeState(
+		{ kind: "terminal", args: [owner.workspacePath] },
+		vi.fn(),
+		vi.fn(),
+	);
 	await vi.waitFor(() => expect(fixture.starts).toHaveLength(1));
 	const initial = fixture.starts[0].terminalInputId;
 	expect(initial).toBeTruthy();
@@ -945,7 +949,11 @@ it("terminal入力IDは購読開始の受理後に公開する", async () => {
 	);
 	const { currentTerminalInputId } = await import("./client");
 	const owner = { kind: "workspace" as const, workspacePath: "/repo" };
-	subscribeState({ kind: "terminal", args: [owner.workspacePath] }, vi.fn());
+	subscribeState(
+		{ kind: "terminal", args: [owner.workspacePath] },
+		vi.fn(),
+		vi.fn(),
+	);
 	await vi.waitFor(() => expect(fixture.starts).toHaveLength(1));
 	expect(currentTerminalInputId(owner)).toBeNull();
 	releaseStart?.();
@@ -960,7 +968,7 @@ it("状態のstreamが無通信のまま続いたらつなぎ直す", async () =
 	vi.useFakeTimers();
 	try {
 		const fixture = stateFixture();
-		subscribeState("repository-paths", vi.fn());
+		subscribeState("repository-paths", vi.fn(), vi.fn());
 		await vi.waitFor(() => expect(fixture.starts).toHaveLength(1));
 		await vi.advanceTimersByTimeAsync(19_000);
 		expect(fixture.streams[0].signal.aborted).toBe(false);
@@ -984,8 +992,8 @@ it("状態のstreamが無通信のまま続いたらつなぎ直す", async () =
 
 it("状態の受け手が全て停止したらstreamを閉じ再購読で開き直す", async () => {
 	const fixture = stateFixture();
-	const stopFirst = subscribeState("repository-paths", vi.fn());
-	const stopSecond = subscribeState("repository-paths", vi.fn());
+	const stopFirst = subscribeState("repository-paths", vi.fn(), vi.fn());
+	const stopSecond = subscribeState("repository-paths", vi.fn(), vi.fn());
 	await vi.waitFor(() => expect(fixture.starts).toHaveLength(1));
 	stopFirst();
 	expect(fixture.streams[0].signal.aborted).toBe(false);
@@ -993,7 +1001,7 @@ it("状態の受け手が全て停止したらstreamを閉じ再購読で開き�
 	await vi.waitFor(() => expect(fixture.streams[0].signal.aborted).toBe(true));
 	expect(fixture.stops).not.toHaveBeenCalled();
 	const receive = vi.fn();
-	subscribeState("repository-paths", receive);
+	subscribeState("repository-paths", receive, vi.fn());
 	await vi.waitFor(() => expect(fixture.starts).toHaveLength(2));
 	expect(fixture.starts[1].version).toBeUndefined();
 	expect(fixture.streams).toHaveLength(2);
@@ -1006,8 +1014,9 @@ it("対象名と引数を別々に送り同じstreamで型付きの状態を届�
 	const release = subscribeState(
 		{ kind: "current-branch", args: ["/作業:repo"] },
 		received,
+		vi.fn(),
 	);
-	subscribeState({ kind: "providers", args: [] }, other);
+	subscribeState({ kind: "providers", args: [] }, other, vi.fn());
 	await vi.waitFor(() => expect(fixture.starts).toHaveLength(2));
 	expect(fixture.streams).toHaveLength(1);
 	expect(fixture.starts[0].target).toBe("current-branch");
@@ -1047,8 +1056,8 @@ it("解除した購読の遅延失敗を同じ対象の新しい購読へ渡さ�
 		)
 		.mockResolvedValue({});
 	const fixture = stateFixture(start);
-	const release = subscribeState("repository-paths", vi.fn());
-	subscribeState("providers", vi.fn());
+	const release = subscribeState("repository-paths", vi.fn(), vi.fn());
+	subscribeState("providers", vi.fn(), vi.fn());
 	await vi.waitFor(() => expect(fixture.starts).toHaveLength(2));
 	release();
 	const error = vi.fn();
@@ -1061,7 +1070,7 @@ it("解除した購読の遅延失敗を同じ対象の新しい購読へ渡さ�
 
 it("firstStateは最初の値だけで解決して購読を解放する", async () => {
 	const fixture = stateFixture();
-	subscribeState("providers", vi.fn());
+	subscribeState("providers", vi.fn(), vi.fn());
 	const received = vi.fn();
 	const result = firstState("repository-paths").then(received);
 	await vi.waitFor(() => expect(fixture.starts).toHaveLength(2));
@@ -1086,7 +1095,7 @@ it("firstStateは開始失敗を伝播して購読を解放する", async () => 
 
 it("firstStateは共有済みsnapshotの同期通知でも他の購読を残す", async () => {
 	const fixture = stateFixture();
-	const release = subscribeState("repository-paths", vi.fn());
+	const release = subscribeState("repository-paths", vi.fn(), vi.fn());
 	await vi.waitFor(() => expect(fixture.starts).toHaveLength(1));
 	fixture.streams[0].send(repositoryPaths(0, ["/cached"], "snapshot"));
 	await vi.waitFor(async () =>
@@ -1103,7 +1112,7 @@ it("terminalのsnapshotと差分を他の対象と同じstreamで受け取り最
 	);
 	const fixture = stateFixture();
 	const other = vi.fn();
-	const stopOther = subscribeState("repository-paths", other);
+	const stopOther = subscribeState("repository-paths", other, vi.fn());
 	const received = vi.fn();
 	const pending = subscribeTerminalState(
 		{
@@ -1195,4 +1204,290 @@ it("terminalのsnapshotと差分を他の対象と同じstreamで受け取り最
 	});
 	await release();
 	stopOther();
+});
+
+it("読み取り失敗と最後の値を後続購読者へ渡し回復後に失敗を解除する", async () => {
+	const fixture = stateFixture();
+	const value = vi.fn();
+	const error = vi.fn();
+	const release = subscribeState("repository-paths", value, error);
+	await vi.waitFor(() => expect(fixture.starts).toHaveLength(1));
+	fixture.streams[0].send({
+		target: "repository-paths",
+		event: {
+			case: "snapshot",
+			value: {
+				value: { case: "repositoryPaths", value: { items: ["/repo"] } },
+			},
+		},
+	});
+	await vi.waitFor(() => expect(value).toHaveBeenCalledWith(["/repo"]));
+	fixture.streams[0].send({
+		target: "repository-paths",
+		event: {
+			case: "failure",
+			value: { code: Code.Internal, message: "read failed" },
+		},
+	});
+	await vi.waitFor(() => expect(error).toHaveBeenCalledOnce());
+	const laterValue = vi.fn();
+	const laterError = vi.fn();
+	const laterRelease = subscribeState(
+		"repository-paths",
+		laterValue,
+		laterError,
+	);
+	expect(laterError).toHaveBeenCalledWith(
+		expect.objectContaining({ code: Code.Internal }),
+	);
+	expect(laterValue).toHaveBeenCalledWith(["/repo"]);
+	fixture.streams[0].send({
+		target: "repository-paths",
+		event: {
+			case: "snapshot",
+			value: {
+				value: { case: "repositoryPaths", value: { items: ["/recovered"] } },
+			},
+		},
+	});
+	await vi.waitFor(() =>
+		expect(laterValue).toHaveBeenCalledWith(["/recovered"]),
+	);
+	const recoveredError = vi.fn();
+	const recoveredRelease = subscribeState(
+		"repository-paths",
+		vi.fn(),
+		recoveredError,
+	);
+	expect(recoveredError).not.toHaveBeenCalled();
+	recoveredRelease();
+	laterRelease();
+	release();
+});
+
+it("端末の後続購読は過去の読取失敗を受けず新しい読取を待つ", async () => {
+	const fixture = stateFixture();
+	const target = { kind: "terminal" as const, args: ["/repo"] };
+	const error = vi.fn();
+	const release = subscribeState(target, vi.fn(), error);
+	await vi.waitFor(() => expect(fixture.starts).toHaveLength(1));
+	fixture.streams[0].send({
+		target: "terminal",
+		args: ["/repo"],
+		event: {
+			case: "failure",
+			value: { code: Code.Internal, message: "terminal read failed" },
+		},
+	});
+	await vi.waitFor(() => expect(error).toHaveBeenCalledOnce());
+	const laterError = vi.fn();
+	const laterRelease = subscribeState(target, vi.fn(), laterError);
+	expect(laterError).not.toHaveBeenCalled();
+	laterRelease();
+	release();
+});
+
+it("terminal再購読は過去の失敗では終了せず新しい値で解決する", async () => {
+	const { subscribeTerminalState } = await import("./client");
+	const fixture = stateFixture();
+	const target = { kind: "terminal" as const, args: ["/repo"] };
+	const failed = vi.fn();
+	const stop = subscribeState(target, vi.fn(), failed);
+	await vi.waitFor(() => expect(fixture.starts).toHaveLength(1));
+	fixture.streams[0].send({
+		target: "terminal",
+		args: ["/repo"],
+		event: {
+			case: "failure",
+			value: { code: Code.Internal, message: "old failure" },
+		},
+	});
+	await vi.waitFor(() => expect(failed).toHaveBeenCalledOnce());
+	const pending = subscribeTerminalState(
+		{ owner: { kind: "workspace", workspacePath: "/repo" } },
+		vi.fn(),
+		vi.fn(),
+	);
+	let settled = false;
+	void pending.then(
+		() => {
+			settled = true;
+		},
+		() => {
+			settled = true;
+		},
+	);
+	await vi.waitFor(() => expect(fixture.starts).toHaveLength(2));
+	expect(settled).toBe(false);
+	fixture.streams[0].send({
+		target: "terminal",
+		args: ["/repo"],
+		event: {
+			case: "snapshot",
+			value: {
+				value: {
+					case: "terminal",
+					value: {
+						item: {
+							case: "snapshot",
+							value: {
+								sessionKey: "key",
+								sequence: 1n,
+								replay: "screen",
+								cols: 80,
+								rows: 24,
+								processedReportUnits: 5000,
+							},
+						},
+					},
+				},
+			},
+		},
+	});
+	const release = await pending;
+	await release();
+	stop();
+});
+
+it("terminal再購読は過去の失敗では終了せず新しい失敗で拒否する", async () => {
+	const { subscribeTerminalState } = await import("./client");
+	const fixture = stateFixture();
+	const target = { kind: "terminal" as const, args: ["/repo"] };
+	const failed = vi.fn();
+	const stop = subscribeState(target, vi.fn(), failed);
+	await vi.waitFor(() => expect(fixture.starts).toHaveLength(1));
+	fixture.streams[0].send({
+		target: "terminal",
+		args: ["/repo"],
+		event: {
+			case: "failure",
+			value: { code: Code.Internal, message: "old failure" },
+		},
+	});
+	await vi.waitFor(() => expect(failed).toHaveBeenCalledOnce());
+	const pending = subscribeTerminalState(
+		{ owner: { kind: "workspace", workspacePath: "/repo" } },
+		vi.fn(),
+		vi.fn(),
+	);
+	let settled = false;
+	void pending.then(
+		() => {
+			settled = true;
+		},
+		() => {
+			settled = true;
+		},
+	);
+	await vi.waitFor(() => expect(fixture.starts).toHaveLength(2));
+	expect(settled).toBe(false);
+	fixture.streams[0].send({
+		target: "terminal",
+		args: ["/repo"],
+		event: {
+			case: "failure",
+			value: { code: Code.Internal, message: "new failure" },
+		},
+	});
+	await expect(pending).rejects.toMatchObject({ rawMessage: "new failure" });
+	stop();
+});
+
+it("つなぎ直しの購読開始が失敗しても最後の値と失敗を後続購読者へ渡す", async () => {
+	const start = vi
+		.fn()
+		.mockResolvedValueOnce({})
+		.mockRejectedValueOnce(new ConnectError("start denied", Code.NotFound));
+	const fixture = stateFixture(start);
+	const value = vi.fn();
+	const error = vi.fn();
+	const release = subscribeState("repository-paths", value, error);
+	await vi.waitFor(() => expect(fixture.starts).toHaveLength(1));
+	fixture.streams[0].send(repositoryPaths(1, ["/repo"], "snapshot"));
+	await vi.waitFor(() => expect(value).toHaveBeenCalledWith(["/repo"]));
+	fixture.streams[0].fail();
+	await vi.waitFor(() => expect(error).toHaveBeenCalledOnce(), {
+		timeout: 3000,
+	});
+	const laterValue = vi.fn();
+	const laterError = vi.fn();
+	const laterRelease = subscribeState(
+		"repository-paths",
+		laterValue,
+		laterError,
+	);
+	expect(laterValue).toHaveBeenCalledWith(["/repo"]);
+	expect(laterError).toHaveBeenCalledWith(
+		expect.objectContaining({ code: Code.NotFound }),
+	);
+	laterRelease();
+	release();
+});
+
+it("PR未取得の行を含むWorkspacesを実際のpayloadから復号して受け手へ届ける", async () => {
+	const fixture = stateFixture();
+	const receive = vi.fn();
+	const fail = vi.fn();
+	const release = subscribeState("workspaces", receive, fail);
+	await vi.waitFor(() => expect(fixture.starts).toHaveLength(1));
+	const branch = {
+		name: "feature",
+		isMainWorktree: false,
+		isDeleting: false,
+		worktreePath: "/repo/feature",
+		isMerged: false,
+		pullRequestError: "PR denied",
+	};
+	fixture.streams[0].send({
+		target: "workspaces",
+		version: { epoch: "boot", sequence: 0n },
+		event: {
+			case: "snapshot",
+			value: {
+				value: {
+					case: "workspaces",
+					value: {
+						status: { state: "ready", loaded: true },
+						repositories: {
+							items: [
+								{
+									path: "/repo",
+									status: { state: "ready", loaded: true },
+									branches: {
+										items: [
+											branch,
+											{
+												...branch,
+												hasPr: true,
+												prNumber: 42n,
+												prUrl: "https://example.test/pr/42",
+											},
+										],
+									},
+									worktrees: { items: [] },
+								},
+							],
+						},
+					},
+				},
+			},
+		},
+	});
+	await vi.waitFor(() => expect(receive).toHaveBeenCalledOnce());
+	expect(receive.mock.calls[0][0].repositories[0].branches).toEqual([
+		expect.objectContaining({
+			has_pr: null,
+			pr_number: null,
+			pr_url: null,
+			pull_request_error: "PR denied",
+		}),
+		expect.objectContaining({
+			has_pr: true,
+			pr_number: 42,
+			pr_url: "https://example.test/pr/42",
+			pull_request_error: "PR denied",
+		}),
+	]);
+	expect(fail).not.toHaveBeenCalled();
+	release();
 });

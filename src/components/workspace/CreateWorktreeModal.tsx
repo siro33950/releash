@@ -44,6 +44,7 @@ import { useIssues } from "@/hooks/useIssues";
 import { useNotionLabelOptions } from "@/hooks/useNotionLabelOptions";
 import { useNotionTasks } from "@/hooks/useNotionTasks";
 import { invokeClient as invoke, subscribeState } from "@/lib/client";
+import { getErrorMessage } from "@/lib/errorMessage";
 import { trackEvent } from "@/lib/telemetry";
 import { cn } from "@/lib/utils";
 import type { BranchInfo, IssueInfo, WorktreeEntry } from "@/types/git";
@@ -72,6 +73,8 @@ export function CreateWorktreeModal({
 	const [allBranches, setAllBranches] = useState<BranchStatus[]>([]);
 	const [creating, setCreating] = useState(false);
 	const [error, setError] = useState<string | null>(null);
+	const [branchError, setBranchError] = useState<string | null>(null);
+	const [statusError, setStatusError] = useState<string | null>(null);
 	const [filter, setFilter] = useState("");
 
 	const repoName = useMemo(
@@ -103,10 +106,13 @@ export function CreateWorktreeModal({
 		setLocalBranches([]);
 		setAllBranches([]);
 		setBaseBranch("HEAD");
+		setBranchError(null);
+		setStatusError(null);
 		const branches = subscribeState(
 			{ kind: "branches", args: [selectedRepoPath] },
 			(result) => {
 				setLocalBranches(result);
+				setBranchError(null);
 				const fallback = result.find(
 					(branch) => branch.name === "main" || branch.name === "master",
 				);
@@ -114,10 +120,19 @@ export function CreateWorktreeModal({
 					current === "HEAD" ? (fallback?.name ?? "HEAD") : current,
 				);
 			},
+			(error) => {
+				setBranchError(getErrorMessage(error));
+			},
 		);
 		const status = subscribeState(
 			{ kind: "branch-status", args: [selectedRepoPath] },
-			setAllBranches,
+			(result) => {
+				setAllBranches(result);
+				setStatusError(null);
+			},
+			(error) => {
+				setStatusError(getErrorMessage(error));
+			},
 		);
 		return () => {
 			branches();
@@ -276,6 +291,7 @@ export function CreateWorktreeModal({
 						)}
 						{mode === "branch" && (
 							<BranchMode
+								readError={statusError}
 								branches={filteredNonWorktreeBranches}
 								filter={filter}
 								onFilterChange={setFilter}
@@ -307,7 +323,11 @@ export function CreateWorktreeModal({
 				{/* Footer — error + selected branches left, buttons right */}
 				<DialogFooter className="flex-row items-center justify-between gap-2">
 					<div className="flex flex-col gap-1 min-w-0">
-						{error && <p className="text-xs text-destructive">{error}</p>}
+						{(error ?? branchError ?? statusError) && (
+							<p role="alert" className="text-xs text-destructive">
+								{error ?? branchError ?? statusError}
+							</p>
+						)}
 						<div className="flex flex-wrap gap-1 text-xs text-muted-foreground">
 							{selectedBranches.map((b) => (
 								<code key={b} className="font-mono bg-muted px-1 rounded">
@@ -390,12 +410,14 @@ function PlainMode({
 }
 
 function BranchMode({
+	readError,
 	branches,
 	filter,
 	onFilterChange,
 	onToggle,
 	selectedBranches,
 }: {
+	readError: string | null;
 	branches: BranchStatus[];
 	filter: string;
 	onFilterChange: (filter: string) => void;
@@ -444,7 +466,7 @@ function BranchMode({
 							</div>
 						);
 					})}
-					{branches.length === 0 && (
+					{branches.length === 0 && !readError && (
 						<div className="text-xs text-muted-foreground text-center py-4">
 							No branches without worktrees
 						</div>
@@ -466,7 +488,7 @@ function IssueMode({
 	selectedBranches: string[];
 	worktreeBranchNames: Set<string>;
 }) {
-	const { issues, loading, refresh } = useIssues(repoPath);
+	const { issues, loading, refresh, error: issueError } = useIssues(repoPath);
 	const [filter, setFilter] = useState("");
 	const [labelFilters, setLabelFilters] = useState<string[]>([]);
 	const [milestoneFilters, setMilestoneFilters] = useState<string[]>([]);
@@ -666,7 +688,12 @@ function IssueMode({
 				</div>
 			)}
 			<div className="flex-1 min-h-[120px] overflow-auto">
-				{loading ? (
+				{issueError && (
+					<p role="alert" className="text-destructive">
+						{issueError}
+					</p>
+				)}
+				{loading && !issueError ? (
 					<div className="flex items-center justify-center py-8">
 						<Loader2 className="size-4 text-muted-foreground animate-spin" />
 					</div>
@@ -742,7 +769,7 @@ function IssueMode({
 								</div>
 							);
 						})}
-						{filtered.length === 0 && (
+						{filtered.length === 0 && !issueError && (
 							<div className="text-xs text-muted-foreground text-center py-4">
 								No issues found
 							</div>

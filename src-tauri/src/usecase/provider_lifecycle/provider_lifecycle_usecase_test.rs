@@ -9,28 +9,6 @@ use crate::domain::provider_lifecycle::{
     ProviderLifecycleUnavailableReason, VersionedProviderHookHealth,
 };
 
-#[test]
-fn test_provider警告_購読用出力にproviderと理由を写す() {
-    // Given
-    let warning = ProviderHookHealthWarning {
-        provider: ProviderKind::Codex,
-        launch_id: "launch".into(),
-        reason: ProviderLifecycleUnavailableReason::LocalApiUnavailable,
-    };
-    // When
-    let output = ProviderHookHealthWarningDto::from(warning);
-    // Then
-    assert_eq!(
-        output.provider,
-        crate::usecase::provider_dto::AgentSessionProviderDto::Codex
-    );
-    assert_eq!(output.launch_id, "launch");
-    assert_eq!(
-        output.reason,
-        ProviderHookHealthReasonDto::LocalApiUnavailable
-    );
-}
-
 #[derive(Default)]
 struct FakeCredentials {
     next: AtomicU8,
@@ -526,7 +504,8 @@ async fn test_provider_hook_health_usecase_異常を警告し後続session_start
 }
 
 struct FixedHookDeliveryFailures {
-    observations: Vec<ProviderHookHealthFailureObservation>,
+    observations:
+        Vec<Result<ProviderHookHealthFailureObservation, ProviderHookHealthFailureQueryError>>,
 }
 
 #[async_trait::async_trait]
@@ -534,14 +513,17 @@ impl ProviderHookHealthFailureQuery for FixedHookDeliveryFailures {
     async fn list(
         &self,
         _limit: usize,
-    ) -> Result<Vec<ProviderHookHealthFailureObservation>, ProviderHookHealthFailureQueryError>
-    {
+    ) -> Result<
+        Vec<Result<ProviderHookHealthFailureObservation, ProviderHookHealthFailureQueryError>>,
+        ProviderHookHealthFailureQueryError,
+    > {
         Ok(self.observations.clone())
     }
 }
 
 #[tokio::test]
 async fn test_provider_hook_health_read_local_api配送失敗を最新launchの警告へ反映する() {
+    // Given
     let repository = Arc::new(InMemoryHookHealthRepository::default());
     let health = Arc::new(ProviderHookHealthUsecase::new(repository));
     health
@@ -556,22 +538,25 @@ async fn test_provider_hook_health_read_local_api配送失敗を最新launchの�
         health,
         Arc::new(FixedHookDeliveryFailures {
             observations: vec![
-                ProviderHookHealthFailureObservation {
+                Ok(ProviderHookHealthFailureObservation {
                     provider: ProviderKind::Claude,
                     launch_id: "launch-old".to_string(),
                     reason: ProviderLifecycleUnavailableReason::LocalApiUnavailable,
-                },
-                ProviderHookHealthFailureObservation {
+                }),
+                Ok(ProviderHookHealthFailureObservation {
                     provider: ProviderKind::Claude,
                     launch_id: "launch-latest".to_string(),
                     reason: ProviderLifecycleUnavailableReason::LocalApiUnavailable,
-                },
+                }),
             ],
         }),
     );
 
+    // When
+    let result = read.warnings().await.unwrap();
+    // Then
     assert_eq!(
-        read.warnings().await.unwrap(),
+        result.warnings,
         vec![ProviderHookHealthWarning {
             provider: ProviderKind::Claude,
             launch_id: "launch-latest".to_string(),
@@ -621,36 +606,46 @@ async fn test_provider警告_正常session_start後の同一launch欠落報告�
     assert!(after.is_empty());
 }
 
-#[test]
-fn test_provider警告_四種類の理由を出力へ写す() {
+#[tokio::test]
+async fn test_provider警告読取_正常な警告と記録ごとの失敗を一緒に返す() {
     // Given
-    let cases = [
-        (
-            ProviderLifecycleUnavailableReason::SessionStartDeadlineExceeded,
-            ProviderHookHealthReasonDto::SessionStartDeadlineExceeded,
-        ),
-        (
-            ProviderLifecycleUnavailableReason::CodexHookDeliveryUnconfirmed,
-            ProviderHookHealthReasonDto::CodexHookDeliveryUnconfirmed,
-        ),
-        (
-            ProviderLifecycleUnavailableReason::ProviderHookConfigurationRejected,
-            ProviderHookHealthReasonDto::ProviderHookConfigurationRejected,
-        ),
-        (
-            ProviderLifecycleUnavailableReason::LocalApiUnavailable,
-            ProviderHookHealthReasonDto::LocalApiUnavailable,
-        ),
-    ];
-
+    let health = Arc::new(ProviderHookHealthUsecase::new(Arc::new(
+        InMemoryHookHealthRepository::default(),
+    )));
+    health
+        .record_launch(ProviderKind::Claude, "launch", "launch-request")
+        .await
+        .unwrap();
+    let read = ProviderHookHealthReadUsecase::new(
+        health,
+        Arc::new(FixedHookDeliveryFailures {
+            observations: vec![
+                Err(ProviderHookHealthFailureQueryError::Unavailable),
+                Ok(ProviderHookHealthFailureObservation {
+                    provider: ProviderKind::Claude,
+                    launch_id: "launch".into(),
+                    reason: ProviderLifecycleUnavailableReason::LocalApiUnavailable,
+                }),
+                Err(ProviderHookHealthFailureQueryError::Corrupt),
+            ],
+        }),
+    );
     // When
-    for (domain, expected) in cases {
-        let output = ProviderHookHealthWarningDto::from(ProviderHookHealthWarning {
+    let result = read.warnings().await.unwrap();
+    // Then
+    assert_eq!(
+        result.warnings,
+        vec![ProviderHookHealthWarning {
             provider: ProviderKind::Claude,
             launch_id: "launch".into(),
-            reason: domain,
-        });
-        // Then
-        assert_eq!(output.reason, expected);
-    }
+            reason: ProviderLifecycleUnavailableReason::LocalApiUnavailable
+        }]
+    );
+    assert_eq!(
+        result.failures,
+        vec![
+            ProviderHookHealthFailureQueryError::Unavailable,
+            ProviderHookHealthFailureQueryError::Corrupt
+        ]
+    );
 }

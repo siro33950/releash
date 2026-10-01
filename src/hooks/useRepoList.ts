@@ -11,7 +11,14 @@ export interface UseRepoListReturn {
 
 export function useRepoList(): UseRepoListReturn {
 	const [repoPaths, setRepoPaths] = useState<string[] | null>(null);
-	useEffect(() => subscribeState("repository-paths", setRepoPaths), []);
+	useEffect(
+		() =>
+			subscribeState("repository-paths", setRepoPaths, (error) => {
+				setRepoPaths(null);
+				showClientError(error);
+			}),
+		[],
+	);
 	const addRepo = useCallback((path: string) => {
 		invoke("add_repo_path", { path }).catch(showClientError);
 	}, []);

@@ -240,6 +240,7 @@ mod tests {
     impl crate::domain::workflow::WorkflowDefinitionRepository for FakeDefinitionRepository {
         fn list(&self, running_names: &[String]) -> Result<Vec<WorkflowSummary>, WorkflowError> {
             Ok(vec![WorkflowSummary {
+                failure: None,
                 name: self.workflow.name.clone(),
                 description: self.workflow.description.clone(),
                 builtin: self.workflow.builtin,

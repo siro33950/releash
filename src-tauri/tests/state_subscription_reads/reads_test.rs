@@ -78,6 +78,7 @@ struct Issues {
     calls: AtomicUsize,
     values: Mutex<Vec<IssueInfo>>,
     own_runtime: AtomicBool,
+    failure: Mutex<bool>,
 }
 impl GitHostProvider for Issues {
     fn fetch_pr_status(&self, _: &str) -> Result<PrStatus, GitHostError> {
@@ -90,6 +91,9 @@ impl GitHostProvider for Issues {
                 .build()
                 .unwrap()
                 .block_on(async {});
+        }
+        if *self.failure.lock() {
+            return Err(GitHostError::External("issues offline".into()));
         }
         Ok(self.values.lock().clone())
     }
@@ -164,7 +168,12 @@ impl crate::usecase::provider_lifecycle::ProviderHookHealthFailureQuery for NoHo
         &self,
         _: usize,
     ) -> Result<
-        Vec<crate::usecase::provider_lifecycle::ProviderHookHealthFailureObservation>,
+        Vec<
+            Result<
+                crate::usecase::provider_lifecycle::ProviderHookHealthFailureObservation,
+                crate::usecase::provider_lifecycle::ProviderHookHealthFailureQueryError,
+            >,
+        >,
         crate::usecase::provider_lifecycle::ProviderHookHealthFailureQueryError,
     > {
         Ok(vec![])
@@ -391,7 +400,6 @@ async fn test_状態読取_全対象を対応するサービスへ引数付き�
         .workspace_tree_selection(p, "missing")
         .await
         .unwrap();
-    // When / Then
     let cases = vec![
         (
             T::RepositoryPaths,
@@ -399,7 +407,7 @@ async fn test_状態読取_全対象を対応するサービスへ引数付き�
         ),
         (
             T::Workspaces,
-            StateValue::Workspaces(r.workspaces.read().await),
+            StateValue::Workspaces(r.workspaces.read().await.unwrap()),
         ),
         (
             T::Selection(p.clone(), "missing".into()),
@@ -457,7 +465,7 @@ async fn test_状態読取_全対象を対応するサービスへ引数付き�
         ),
         (
             T::Issues(p.clone()),
-            StateValue::Issues(vec![issue(1).into()]),
+            StateValue::Issues(crate::usecase::fetched::Fetched::ready(vec![issue(1)])),
         ),
         (
             T::Worktrees(p.clone()),
@@ -465,13 +473,13 @@ async fn test_状態読取_全対象を対応するサービスへ引数付き�
         ),
         (
             T::RepositoryRoot(format!("{p}/.git")),
-            StateValue::RepositoryRoot(p.clone()),
+            StateValue::RepositoryRoot(Some(p.clone())),
         ),
         (
             T::StartupRepository,
             StateValue::StartupRepository(
                 r.repository
-                    .get_main_repo_path(&r.repository.get_cwd().unwrap())
+                    .find_main_repo_path(&r.repository.get_cwd().unwrap())
                     .unwrap(),
             ),
         ),
@@ -491,9 +499,8 @@ async fn test_状態読取_全対象を対応するサービスへ引数付き�
         ),
         (
             T::Workflow("fixture".into()),
-            StateValue::Workflow(r.workflow.get_workflow_dto("fixture")),
+            StateValue::Workflow(r.workflow.get_workflow_dto("fixture").unwrap()),
         ),
-        (T::Workflow("broken".into()), StateValue::Workflow(None)),
         (T::Workflow("missing".into()), StateValue::Workflow(None)),
         (
             T::WorkflowSource("fixture".into()),
@@ -523,47 +530,126 @@ async fn test_状態読取_全対象を対応するサービスへ引数付き�
             ),
         ),
     ];
+    // When
+    let mut actual = Vec::new();
     for (target, expected) in cases {
         let value = r
             .read(&target)
             .await
             .unwrap_or_else(|error| panic!("{target}: {error}"));
+        actual.push((target, value, expected));
+    }
+    // Then
+    for (target, value, expected) in actual {
         assert_eq!(value, expected, "{target}");
     }
-    let StateValue::Workflows(workflows) = r.read(&T::Workflows).await.unwrap() else {
-        unreachable!()
-    };
-    assert!(workflows.iter().any(|workflow| workflow.name == "fixture"));
-    let StateValue::Workflow(Some(fixture_workflow)) =
-        r.read(&T::Workflow("fixture".into())).await.unwrap()
-    else {
-        panic!("fixture workflow is loadable")
-    };
-    assert_eq!(fixture_workflow.name, "fixture");
-    let StateValue::Diagnostics(report) = r.read(&T::Diagnostics).await.unwrap() else {
-        unreachable!()
-    };
-    assert!(report.workflow_summaries.contains_key("broken"));
-    assert!(matches!(
-        r.read(&T::Facet(FacetKind::Instruction, "missing-facet".into()))
-            .await
-            .unwrap_err()
-            .source,
-        StateReadFailure::Workflow(_)
-    ));
     assert_eq!(
         *fixture.sessions.calls.lock(),
         ["missing-session".to_string(), format!("{p}:120")]
     );
     assert_eq!(fixture.issues.calls.load(Ordering::SeqCst), 1);
-    let error = r
-        .read(&T::CurrentBranch("/missing/repository".into()))
+}
+
+#[tokio::test]
+async fn test_状態読取_workflow一覧に置き場所の定義を含む() {
+    // Given
+    let fixture = Fixture::new();
+    // When
+    let value = fixture
+        .reads
+        .read(&SubscriptionTarget::Workflows)
+        .await
+        .unwrap();
+    // Then
+    let StateValue::Workflows(workflows) = value else {
+        panic!("unexpected state")
+    };
+    assert!(workflows.iter().any(|workflow| workflow.name == "fixture"));
+}
+
+#[tokio::test]
+async fn test_状態読取_workflowの本文を読む() {
+    // Given
+    let fixture = Fixture::new();
+    // When
+    let value = fixture
+        .reads
+        .read(&SubscriptionTarget::Workflow("fixture".into()))
+        .await
+        .unwrap();
+    // Then
+    let StateValue::Workflow(Some(workflow)) = value else {
+        panic!("unexpected state")
+    };
+    assert_eq!(workflow.name, "fixture");
+}
+
+#[tokio::test]
+async fn test_状態読取_診断に壊れた定義を含む() {
+    // Given
+    let fixture = Fixture::new();
+    // When
+    let value = fixture
+        .reads
+        .read(&SubscriptionTarget::Diagnostics)
+        .await
+        .unwrap();
+    // Then
+    let StateValue::Diagnostics(report) = value else {
+        panic!("unexpected state")
+    };
+    assert!(report.workflow_summaries.contains_key("broken"));
+}
+
+#[tokio::test]
+async fn test_状態読取_壊れた定義を失敗として返す() {
+    // Given
+    let fixture = Fixture::new();
+    // When
+    let error = fixture
+        .reads
+        .read(&SubscriptionTarget::Workflow("broken".into()))
         .await
         .unwrap_err();
-    let expected = r
+    // Then
+    assert!(matches!(error.source, StateReadFailure::Workflow(_)));
+}
+
+#[tokio::test]
+async fn test_状態読取_facet不在を失敗として返す() {
+    // Given
+    let fixture = Fixture::new();
+    // When
+    let error = fixture
+        .reads
+        .read(&SubscriptionTarget::Facet(
+            FacetKind::Instruction,
+            "missing-facet".into(),
+        ))
+        .await
+        .unwrap_err();
+    // Then
+    assert!(matches!(error.source, StateReadFailure::Workflow(_)));
+}
+
+#[tokio::test]
+async fn test_状態読取_current_branchの失敗を返す() {
+    // Given
+    let fixture = Fixture::new();
+    let expected = fixture
+        .reads
         .repository
         .get_current_branch("/missing/repository")
         .unwrap_err();
+    // When
+    let error = fixture
+        .reads
+        .read(&SubscriptionTarget::CurrentBranch(
+            "/missing/repository".into(),
+        ))
+        .await
+        .unwrap_err();
+    // Then
     assert!(
         matches!(error.source, StateReadFailure::Repository(actual) if format!("{actual:?}") == format!("{expected:?}"))
     );
@@ -580,14 +666,13 @@ async fn test_issue手動更新_有効なcacheを無視し30秒前に同じ購�
         .await
         .unwrap();
     assert!(
-        matches!(stream.next().await, Some(StateSubscriptionEvent::Item(_, crate::test_support::state_subscription::Event::Snapshot(_, value))) if crate::test_support::state_subscription::same(&value, &StateValue::Issues(vec![issue(1).into()])))
+        matches!(stream.next().await, Some(StateSubscriptionEvent::Item(_, crate::test_support::state_subscription::Event::Snapshot(_, value))) if crate::test_support::state_subscription::same(&value, &StateValue::Issues(crate::usecase::fetched::Fetched::ready(vec![issue(1)]))))
     );
     stream.next().await;
     *fixture.issues.values.lock() = vec![issue(2)];
     // When
     let before = std::time::Instant::now();
     fixture.reads.git_host.fetch_issues(&fixture.path).unwrap();
-    // Then
     let value = tokio::time::timeout(std::time::Duration::from_secs(2), async {
         loop {
             if let Some(StateSubscriptionEvent::Item(
@@ -602,23 +687,106 @@ async fn test_issue手動更新_有効なcacheを無視し30秒前に同じ購�
     })
     .await
     .unwrap();
+    // Then
     assert!(crate::test_support::state_subscription::same(
         &value,
-        &StateValue::Issues(vec![issue(2).into()])
+        &StateValue::Issues(crate::usecase::fetched::Fetched::ready(vec![issue(2)]))
     ));
     assert!(before.elapsed() < CacheTtl::EXTERNAL_INFORMATION.duration());
     assert_eq!(fixture.issues.calls.load(Ordering::SeqCst), 2);
 }
 
 #[tokio::test]
-async fn test_終了済み実行木のarchiveとrestore_取り直しなしでツリーが配信される() {
+async fn test_終了済み実行木の選択_初期購読でツリーを配信する() {
+    // Given
     use crate::adaptor::gateway::workflow::workflow_host::test_helpers::archive_fixture;
     use crate::adaptor::gateway::workflow::{
         EmptySecretSourceGateway, NoopWorkflowExternalEditorGateway,
         PassthroughManagedWorktreeGateway,
     };
     use crate::test_support::state_subscription::Event;
+    let fixture = Fixture::new();
+    let mut archive = archive_fixture();
+    let workflow = serde_saphyr::from_str("name: archive\ndescription: test\nnodes:\n  main: {session: {provider: codex, facets: {instruction: policy-confirmation}}}").unwrap();
+    let id = archive
+        .host
+        .start_resolved_workflow(
+            &archive.app,
+            workflow,
+            fixture.path.clone(),
+            None,
+            crate::domain::workflow::ExecutionOrigin::Cli,
+        )
+        .await
+        .unwrap();
+    archive
+        .runtime
+        .abort_execution(crate::usecase::workflow::command::AbortExecutionCommand {
+            execution_id: id.clone(),
+            expected_node_name: None,
+        })
+        .await
+        .unwrap();
+    let mut reads = fixture.reads.clone();
+    reads.workflow = Arc::new(
+        wiring::build_workflow_services_with_gateways(
+            Arc::new(crate::adaptor::gateway::failure_records::FailureRecordStore::default()),
+            archive.directory.path(),
+            Arc::new(PassthroughManagedWorktreeGateway),
+            Arc::new(NoopWorkflowExternalEditorGateway),
+            Arc::new(EmptySecretSourceGateway),
+            archive.store.clone(),
+            None,
+            None,
+        )
+        .0,
+    );
+    let subscriptions =
+        fixture
+            .subscriptions
+            .with_reads(Arc::new(reads), None, vec![], String::new());
+    archive.runtime = archive.runtime.with_state_publisher(subscriptions.clone());
+    let mut stream = Box::pin(subscriptions.open("client".into()).unwrap());
+    stream.next().await;
+    let target = SubscriptionTarget::Selection(fixture.path.clone(), "selected".into()).to_string();
+    // When
+    start_read(&subscriptions, "client", &target, None)
+        .await
+        .unwrap();
+    let event = stream.next().await;
+    // Then
+    let Some(StateSubscriptionEvent::Item(_, Event::Snapshot(_, value))) = event else {
+        panic!("initial snapshot")
+    };
+    let Some(crate::adaptor::presenter::client::state_payload::Value::Selection(initial)) =
+        &match value.as_ref() {
+            crate::adaptor::presenter::state_subscription::PublishedState::Value(value) => value,
+            _ => panic!("selection"),
+        }
+        .value
+    else {
+        panic!("selection")
+    };
+    assert!(!initial
+        .snapshot
+        .as_ref()
+        .unwrap()
+        .nodes
+        .as_ref()
+        .unwrap()
+        .items
+        .is_empty());
+}
+
+#[tokio::test]
+async fn test_終了済み実行木のarchive_取り直しなしで空のツリーを配信する() {
     // Given
+    use crate::adaptor::gateway::workflow::workflow_host::test_helpers::archive_fixture;
+    use crate::adaptor::gateway::workflow::{
+        EmptySecretSourceGateway, NoopWorkflowExternalEditorGateway,
+        PassthroughManagedWorktreeGateway,
+    };
+    use crate::test_support::state_subscription::Event;
     let fixture = Fixture::new();
     let mut archive = archive_fixture();
     let workflow = serde_saphyr::from_str("name: archive\ndescription: test\nnodes:\n  main: {session: {provider: codex, facets: {instruction: policy-confirmation}}}").unwrap();
@@ -666,61 +834,140 @@ async fn test_終了済み実行木のarchiveとrestore_取り直しなしでツ
     start_read(&subscriptions, "client", &target, None)
         .await
         .unwrap();
-    let Some(StateSubscriptionEvent::Item(_, Event::Snapshot(_, value))) = stream.next().await
-    else {
-        panic!("initial snapshot")
+    stream.next().await.unwrap();
+    stream.next().await.unwrap();
+    // When
+    archive
+        .runtime
+        .archive_execution_tree(&id, "manual")
+        .await
+        .unwrap();
+    let event = tokio::time::timeout(std::time::Duration::from_secs(2), stream.next())
+        .await
+        .unwrap();
+    // Then
+    let Some(StateSubscriptionEvent::Item(received, Event::Change(_, _, value))) = event else {
+        panic!("changed tree")
     };
-    let Some(crate::adaptor::presenter::client::state_payload::Value::Selection(initial)) =
-        &value.value
+    assert_eq!(received, target);
+    let Some(crate::adaptor::presenter::client::state_payload::Value::Selection(selection)) =
+        &match value.as_ref() {
+            crate::adaptor::presenter::state_subscription::PublishedState::Value(value) => value,
+            _ => panic!("selection"),
+        }
+        .value
     else {
         panic!("selection")
     };
-    assert!(!initial
-        .snapshot
-        .as_ref()
-        .unwrap()
-        .nodes
-        .as_ref()
-        .unwrap()
-        .items
-        .is_empty());
+    assert_eq!(
+        selection
+            .snapshot
+            .as_ref()
+            .unwrap()
+            .nodes
+            .as_ref()
+            .unwrap()
+            .items
+            .is_empty(),
+        true
+    );
+}
+
+#[tokio::test]
+async fn test_終了済み実行木のrestore_取り直しなしでツリーを配信する() {
+    // Given
+    use crate::adaptor::gateway::workflow::workflow_host::test_helpers::archive_fixture;
+    use crate::adaptor::gateway::workflow::{
+        EmptySecretSourceGateway, NoopWorkflowExternalEditorGateway,
+        PassthroughManagedWorktreeGateway,
+    };
+    use crate::test_support::state_subscription::Event;
+    let fixture = Fixture::new();
+    let mut archive = archive_fixture();
+    let workflow = serde_saphyr::from_str("name: archive\ndescription: test\nnodes:\n  main: {session: {provider: codex, facets: {instruction: policy-confirmation}}}").unwrap();
+    let id = archive
+        .host
+        .start_resolved_workflow(
+            &archive.app,
+            workflow,
+            fixture.path.clone(),
+            None,
+            crate::domain::workflow::ExecutionOrigin::Cli,
+        )
+        .await
+        .unwrap();
+    archive
+        .runtime
+        .abort_execution(crate::usecase::workflow::command::AbortExecutionCommand {
+            execution_id: id.clone(),
+            expected_node_name: None,
+        })
+        .await
+        .unwrap();
+    let mut reads = fixture.reads.clone();
+    reads.workflow = Arc::new(
+        wiring::build_workflow_services_with_gateways(
+            Arc::new(crate::adaptor::gateway::failure_records::FailureRecordStore::default()),
+            archive.directory.path(),
+            Arc::new(PassthroughManagedWorktreeGateway),
+            Arc::new(NoopWorkflowExternalEditorGateway),
+            Arc::new(EmptySecretSourceGateway),
+            archive.store.clone(),
+            None,
+            None,
+        )
+        .0,
+    );
+    let subscriptions =
+        fixture
+            .subscriptions
+            .with_reads(Arc::new(reads), None, vec![], String::new());
+    archive.runtime = archive.runtime.with_state_publisher(subscriptions.clone());
+    let mut stream = Box::pin(subscriptions.open("client".into()).unwrap());
     stream.next().await;
-    // When / Then
-    for archived in [true, false] {
-        if archived {
-            archive
-                .runtime
-                .archive_execution_tree(&id, "manual")
-                .await
-                .unwrap();
-        } else {
-            archive.runtime.restore_execution_tree(&id).await.unwrap();
+    let target = SubscriptionTarget::Selection(fixture.path.clone(), "selected".into()).to_string();
+    start_read(&subscriptions, "client", &target, None)
+        .await
+        .unwrap();
+    stream.next().await.unwrap();
+    stream.next().await.unwrap();
+    archive
+        .runtime
+        .archive_execution_tree(&id, "manual")
+        .await
+        .unwrap();
+    stream.next().await.unwrap();
+    // When
+    archive.runtime.restore_execution_tree(&id).await.unwrap();
+    let event = tokio::time::timeout(std::time::Duration::from_secs(2), stream.next())
+        .await
+        .unwrap();
+    // Then
+    let Some(StateSubscriptionEvent::Item(received, Event::Change(_, _, value))) = event else {
+        panic!("changed tree")
+    };
+    assert_eq!(received, target);
+    let Some(crate::adaptor::presenter::client::state_payload::Value::Selection(selection)) =
+        &match value.as_ref() {
+            crate::adaptor::presenter::state_subscription::PublishedState::Value(value) => value,
+            _ => panic!("selection"),
         }
-        let event = tokio::time::timeout(std::time::Duration::from_secs(2), stream.next())
-            .await
-            .unwrap();
-        let Some(StateSubscriptionEvent::Item(received, Event::Change(_, _, value))) = event else {
-            panic!("changed tree")
-        };
-        assert_eq!(received, target);
-        let Some(crate::adaptor::presenter::client::state_payload::Value::Selection(selection)) =
-            &value.value
-        else {
-            panic!("selection")
-        };
-        assert_eq!(
-            selection
-                .snapshot
-                .as_ref()
-                .unwrap()
-                .nodes
-                .as_ref()
-                .unwrap()
-                .items
-                .is_empty(),
-            archived
-        );
-    }
+        .value
+    else {
+        panic!("selection")
+    };
+    assert_eq!(
+        selection
+            .snapshot
+            .as_ref()
+            .unwrap()
+            .nodes
+            .as_ref()
+            .unwrap()
+            .items
+            .is_empty(),
+        false
+    );
 }
 
 #[tokio::test]
@@ -852,4 +1099,67 @@ async fn test_状態読取_review対象をworktreeとcomment置き場から読�
         .await
         .unwrap_err();
     assert!(matches!(error.source, StateReadFailure::Code(_)));
+}
+
+#[tokio::test]
+async fn test_issue手動更新失敗_最後の一覧と失敗を購読へ届ける() {
+    // Given
+    use crate::test_support::state_subscription::Event;
+    let fixture = Fixture::new();
+    let mut stream = Box::pin(fixture.subscriptions.open("client".into()).unwrap());
+    stream.next().await;
+    let target = SubscriptionTarget::Issues(fixture.path.clone()).to_string();
+    start_read(&fixture.subscriptions, "client", &target, None)
+        .await
+        .unwrap();
+    stream.next().await.unwrap();
+    stream.next().await.unwrap();
+    // When
+    *fixture.issues.failure.lock() = true;
+    let result = fixture.reads.git_host.fetch_issues(&fixture.path);
+    let event = tokio::time::timeout(std::time::Duration::from_secs(2), stream.next())
+        .await
+        .unwrap()
+        .unwrap();
+    // Then
+    assert!(result.is_err());
+    assert!(
+        matches!(event, StateSubscriptionEvent::Item(id, Event::Change(_, _, value)) if id == target && crate::test_support::state_subscription::same(&value, &StateValue::Issues(crate::usecase::fetched::Fetched {
+            value: Some(vec![issue(1)]),
+            error: Some(crate::domain::failure::WorkFailure::from_error(&GitHostError::External("issues offline".into()))),
+        })))
+    );
+}
+
+#[tokio::test]
+async fn test_issue手動更新失敗_回復時に新しい一覧を届ける() {
+    // Given
+    use crate::test_support::state_subscription::Event;
+    let fixture = Fixture::new();
+    let mut stream = Box::pin(fixture.subscriptions.open("client".into()).unwrap());
+    stream.next().await;
+    let target = SubscriptionTarget::Issues(fixture.path.clone()).to_string();
+    start_read(&fixture.subscriptions, "client", &target, None)
+        .await
+        .unwrap();
+    stream.next().await.unwrap();
+    stream.next().await.unwrap();
+    *fixture.issues.failure.lock() = true;
+    let _ = fixture.reads.git_host.fetch_issues(&fixture.path);
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(2), stream.next())
+        .await
+        .unwrap()
+        .unwrap();
+    // When
+    *fixture.issues.failure.lock() = false;
+    *fixture.issues.values.lock() = vec![issue(2)];
+    fixture.reads.git_host.fetch_issues(&fixture.path).unwrap();
+    let event = tokio::time::timeout(std::time::Duration::from_secs(2), stream.next())
+        .await
+        .unwrap()
+        .unwrap();
+    // Then
+    assert!(
+        matches!(event, StateSubscriptionEvent::Item(id, Event::Change(_, _, value)) if id == target && crate::test_support::state_subscription::same(&value, &StateValue::Issues(crate::usecase::fetched::Fetched::ready(vec![issue(2)]))))
+    );
 }

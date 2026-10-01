@@ -8,6 +8,7 @@ pub(crate) fn save_workspace_state(
     worktree_name: &str,
     state: WorkspaceState,
 ) -> Result<(), WorkspaceStateError> {
+    repository.check_readable(worktree_name)?;
     repository.set(worktree_name, state);
     repository.save(worktree_name)?;
     if let Some(publisher) = publisher {
@@ -24,7 +25,7 @@ pub fn load_workspace_state(
     repository: &dyn WorkspaceStateRepository,
     worktree_name: &str,
     worktree_root: &str,
-) -> Option<WorkspaceState> {
+) -> Result<Option<WorkspaceState>, crate::domain::workspace_state::WorkspaceStateError> {
     super::query_service::load_workspace_state(repository, worktree_name, worktree_root)
 }
 

@@ -17,7 +17,7 @@ it("issueは購読から受け取り手動更新は結果を返さない操作�
 	});
 	const { result, unmount } = renderHook(() => useIssues("/repo"));
 	expect(result.current.loading).toBe(true);
-	act(() => receive([]));
+	act(() => receive({ issues: [], readError: undefined }));
 	expect(result.current.loading).toBe(false);
 	vi.mocked(invokeClient).mockResolvedValueOnce(undefined);
 	await act(async () => {
@@ -31,7 +31,7 @@ it("issueは購読から受け取り手動更新は結果を返さない操作�
 	expect(release).toHaveBeenCalledOnce();
 });
 
-it("手動更新の失敗を処理し直前の一覧を保持して再取得しない", async () => {
+it("手動更新の失敗通知で直前の一覧と失敗を保持し回復を待つ", async () => {
 	const issues = [
 		{
 			number: 1,
@@ -49,7 +49,7 @@ it("手動更新の失敗を処理し直前の一覧を保持して再取得し�
 		},
 	];
 	vi.mocked(subscribeState).mockImplementation((_target, receive) => {
-		receive(issues);
+		receive({ issues, readError: undefined });
 		return vi.fn();
 	});
 	const failure = new Error("offline");
@@ -61,8 +61,10 @@ it("手動更新の失敗を処理し直前の一覧を保持して再取得し�
 		const { result } = renderHook(() => useIssues("/repo"));
 		await act(async () => {
 			await expect(result.current.refresh()).resolves.toBeUndefined();
+			vi.mocked(subscribeState).mock.calls[0][2](failure);
 		});
 		expect(result.current.issues).toEqual(issues);
+		expect(result.current.error).toBe("offline");
 		expect(result.current.loading).toBe(false);
 		expect(log).toHaveBeenCalledWith("Failed to fetch issues:", failure);
 		expect((notice.mock.calls[0][0] as CustomEvent<string>).detail).toBe(
@@ -76,4 +78,45 @@ it("手動更新の失敗を処理し直前の一覧を保持して再取得し�
 		window.removeEventListener("releash-client-error", notice);
 		log.mockRestore();
 	}
+});
+
+it("購読の読取失敗を表示し回復を待つ", () => {
+	vi.mocked(subscribeState).mockImplementation(() => vi.fn());
+	const { result } = renderHook(() => useIssues("/repo"));
+	const [, receive, fail] = vi.mocked(subscribeState).mock.calls[0];
+	act(() => receive({ issues: [], readError: undefined }));
+	act(() => fail(new Error("issues denied")));
+	expect(result.current.error).toBe("issues denied");
+	expect(result.current.loading).toBe(false);
+	expect(result.current.issues).toEqual([]);
+	act(() => receive({ issues: [], readError: undefined }));
+	expect(result.current.error).toBeNull();
+});
+
+it("取得失敗を含む値から最後の一覧と失敗を表示し成功で解除する", () => {
+	vi.mocked(subscribeState).mockImplementation(() => vi.fn());
+	const { result } = renderHook(() => useIssues("/repo"));
+	const [, receive] = vi.mocked(subscribeState).mock.calls[0];
+	const issues = [
+		{
+			number: 1,
+			title: "Issue",
+			state: "OPEN",
+			url: "",
+			author: { login: "author" },
+			created_at: "",
+			updated_at: "",
+			labels: [],
+			assignees: [],
+			body: "",
+			milestone: null,
+			default_branch_name: "feat/issues/1",
+		},
+	];
+	act(() => receive({ issues, readError: "issues offline" }));
+	expect(result.current.issues).toEqual(issues);
+	expect(result.current.error).toBe("issues offline");
+	expect(result.current.loading).toBe(false);
+	act(() => receive({ issues, readError: undefined }));
+	expect(result.current.error).toBeNull();
 });

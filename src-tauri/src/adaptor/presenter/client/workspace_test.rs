@@ -658,9 +658,11 @@ fn worktree_row(path: &str, branch: &str, tree: Fetched<WorkspaceTree>) -> Works
             is_merged: false,
         },
         deleting: false,
-        dirty_count: 0,
+        dirty_count: Fetched::ready(0),
         merged: false,
         pull_request: None,
+        pull_request_error: None,
+        pull_request_loaded: true,
         tree,
     }
 }
@@ -681,7 +683,7 @@ fn test_workspaces一覧_持ち主の値と取得の状態を画面が読む名�
         "main",
         Fetched {
             value: None,
-            error: Some("nodes failed".into()),
+            error: Some(failure("nodes failed")),
         },
     );
     main.pull_request = Some(PrInfo {
@@ -694,7 +696,7 @@ fn test_workspaces一覧_持ち主の値と取得の状態を画面が読む名�
         Fetched::ready(WorkspaceTree::empty("/repo-worktrees/feature")),
     );
     feature.deleting = true;
-    feature.dirty_count = 3;
+    feature.dirty_count = Fetched::ready(3);
     feature.merged = true;
     let list = WorkspaceList {
         repositories: vec![
@@ -702,7 +704,7 @@ fn test_workspaces一覧_持ち主の値と取得の状態を画面が読む名�
                 path: "/repo".into(),
                 worktrees: Fetched {
                     value: Some(vec![main, feature]),
-                    error: Some("scan failed".into()),
+                    error: Some(failure("scan failed")),
                 },
             },
             WorkspaceListRepository {
@@ -713,7 +715,7 @@ fn test_workspaces一覧_持ち主の値と取得の状態を画面が読む名�
                 path: "/failed".into(),
                 worktrees: Fetched {
                     value: None,
-                    error: Some("not a repository".into()),
+                    error: Some(failure("not a repository")),
                 },
             },
             WorkspaceListRepository {
@@ -741,7 +743,7 @@ fn test_workspaces一覧_持ち主の値と取得の状態を画面が読む名�
                             "is_main_worktree": true,
                             "is_deleting": false,
                             "worktree_path": "/repo",
-                            "dirty_count": 0,
+                            "dirty_count": 0, "dirty_count_error": null, "pull_request_error": null,
                             "is_merged": false,
                             "has_pr": true,
                             "pr_number": 7,
@@ -752,7 +754,7 @@ fn test_workspaces一覧_持ち主の値と取得の状態を画面が読む名�
                             "is_main_worktree": false,
                             "is_deleting": true,
                             "worktree_path": "/repo-worktrees/feature",
-                            "dirty_count": 3,
+                            "dirty_count": 3, "dirty_count_error": null, "pull_request_error": null,
                             "is_merged": true,
                             "has_pr": false,
                             "pr_number": null,
@@ -837,7 +839,7 @@ fn test_workspaces一覧_読めなくなった実行木は前回の木と失敗�
                 "main",
                 Fetched {
                     value: Some(tree),
-                    error: Some("store busy".into()),
+                    error: Some(failure("store busy")),
                 },
             )]),
         }],
@@ -1015,4 +1017,42 @@ fn test_ブランチ状態_ブランチ名とworktreeの有無を並べる() {
             {"name": "feature", "has_worktree": false}
         ])
     );
+}
+
+fn failure(message: &str) -> crate::domain::failure::WorkFailure {
+    crate::domain::failure::WorkFailure {
+        kind: crate::domain::failure::Failure::Technical(
+            crate::domain::failure::TechnicalFailureNature::Other,
+        ),
+        message: message.into(),
+    }
+}
+
+#[test]
+fn test_pr状態の転送_初回失敗と取得後の失敗を区別する() {
+    // Given
+    let mut initial = worktree_row("/repo", "main", Fetched::default());
+    initial.pull_request_loaded = false;
+    initial.pull_request_error = Some(failure("PR denied"));
+    let mut retained = worktree_row("/repo-worktrees/feature", "feature", Fetched::default());
+    retained.pull_request = Some(PrInfo {
+        number: 42,
+        url: "https://example.test/pull/42".into(),
+    });
+    retained.pull_request_error = Some(failure("PR denied"));
+    // When
+    let initial = branch(&initial);
+    let retained = branch(&retained);
+    // Then
+    assert_eq!(initial.has_pr, None);
+    assert_eq!(initial.pr_number, None);
+    assert_eq!(initial.pr_url, None);
+    assert_eq!(initial.pull_request_error.as_deref(), Some("PR denied"));
+    assert_eq!(retained.has_pr, Some(true));
+    assert_eq!(retained.pr_number, Some(42));
+    assert_eq!(
+        retained.pr_url.as_deref(),
+        Some("https://example.test/pull/42")
+    );
+    assert_eq!(retained.pull_request_error.as_deref(), Some("PR denied"));
 }

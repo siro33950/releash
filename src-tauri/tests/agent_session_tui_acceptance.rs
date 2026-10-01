@@ -152,7 +152,17 @@ impl AgentSessionTuiAcceptanceHost {
     }
 
     fn hook_warnings(&self) -> Result<Vec<AcceptanceHookWarning>, String> {
-        self.read_state("provider-hook-health")
+        #[derive(serde::Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Snapshot {
+            warnings: Vec<AcceptanceHookWarning>,
+            read_errors: Vec<String>,
+        }
+        let snapshot: Snapshot = self.read_state("provider-hook-health")?;
+        if !snapshot.read_errors.is_empty() {
+            return Err(snapshot.read_errors.join("; "));
+        }
+        Ok(snapshot.warnings)
     }
 
     fn hook_health_marker_contents(&self) -> Result<Vec<String>, String> {
@@ -1538,6 +1548,7 @@ async fn test_atui_030_process終了はprovider_idの有無に応じてpausedま
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_atui_030_provider履歴はmetadataだけを列挙し新しいsessionとして復帰する() {
+    // Given
     let root = tempfile::TempDir::new().unwrap();
     let workspace = root.path().join("worktree");
     std::fs::create_dir_all(&workspace).unwrap();
@@ -1565,8 +1576,8 @@ async fn test_atui_030_provider履歴はmetadataだけを列挙し新しいsessi
     let connection = rusqlite::Connection::open(codex_home.join("state_5.sqlite")).unwrap();
     connection
         .execute_batch(&format!(
-            "CREATE TABLE threads (id TEXT PRIMARY KEY, cwd TEXT, updated_at INTEGER, name TEXT);\
-             INSERT INTO threads VALUES ('codex-history', '{}', 20, NULL);",
+            "CREATE TABLE threads (id TEXT PRIMARY KEY, cwd TEXT, updated_at INTEGER, name TEXT, first_user_message TEXT);\
+             INSERT INTO threads VALUES ('codex-history', '{}', 20, NULL, NULL);",
             workspace.replace('\'', "''")
         ))
         .unwrap();
@@ -1601,7 +1612,9 @@ async fn test_atui_030_provider履歴はmetadataだけを列挙し新しいsessi
         &deleted,
         "claude-history",
     )
+    // When
     .await;
+    // Then
     assert_eq!(
         host.archive(&deleted, "deleted-archive").await.unwrap(),
         AcceptanceArchiveOutcome::Archived

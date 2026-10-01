@@ -63,3 +63,26 @@ it("設定失敗を処理して直前値を保持し再取得しない", async (
 	window.removeEventListener("releash-client-error", notice);
 	log.mockRestore();
 });
+
+it("baseと選択肢の購読失敗を区別し回復後の値を表示する", () => {
+	vi.mocked(subscribeState).mockImplementation(() => vi.fn());
+	const { result } = renderHook(() => useBaseBranch("/repo", "feature"));
+	const [base, branches] = vi.mocked(subscribeState).mock.calls;
+	act(() => {
+		base[1]("main");
+		branches[1]([{ name: "main", is_remote: false }]);
+	});
+	act(() => base[2](new Error("base denied")));
+	expect(result.current.baseBranch).toBe("main");
+	expect(result.current.error).toBe("base denied");
+	act(() => {
+		base[1]("develop");
+		branches[2](new Error("branches denied"));
+	});
+	expect(result.current.localBranches).toEqual(["main"]);
+	expect(result.current.error).toBe("branches denied");
+	act(() => branches[1]([{ name: "develop", is_remote: false }]));
+	expect(result.current.error).toBeNull();
+	expect(result.current.baseBranch).toBe("develop");
+	expect(result.current.localBranches).toEqual(["develop"]);
+});

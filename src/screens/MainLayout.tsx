@@ -375,21 +375,33 @@ function WorktreePane({
 		[onRightVisibleChange, rootPath],
 	);
 
-	const { branch } = useCurrentBranch(rootPath);
-	const { baseBranch, setBaseBranch, localBranches } = useBaseBranch(
-		rootPath,
-		branch,
-	);
+	const { branch, error: branchError } = useCurrentBranch(rootPath);
+	const {
+		baseBranch,
+		setBaseBranch,
+		localBranches,
+		error: baseError,
+	} = useBaseBranch(rootPath, branch);
 	const branchSelector = useMemo(
 		() => (
-			<BranchSelector
-				branchName={branch}
-				baseBranch={baseBranch}
-				localBranches={localBranches}
-				onBaseChange={setBaseBranch}
-			/>
+			<div className="flex items-center gap-2">
+				<BranchSelector
+					branchName={branch}
+					baseBranch={baseBranch}
+					localBranches={localBranches}
+					onBaseChange={setBaseBranch}
+				/>
+				{(branchError || baseError) && (
+					<span role="alert" className="text-xs text-destructive">
+						{branch || baseBranch || localBranches.length > 0
+							? "Failed to read branch data; showing previous values: "
+							: "Failed to read branch data: "}
+						{[branchError, baseError].filter(Boolean).join("; ")}
+					</span>
+				)}
+			</div>
 		),
-		[branch, baseBranch, localBranches, setBaseBranch],
+		[branch, baseBranch, localBranches, setBaseBranch, branchError, baseError],
 	);
 	const togglePanels = useMemo<TogglePanel[]>(
 		() => [createRightTogglePanel(ownRightPanelRef, rightVisible)],

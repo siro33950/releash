@@ -13,32 +13,40 @@ use git2::{BranchType, ErrorCode, Repository};
 
 /// 既定ブランチ名を検出する。
 /// remote HEAD（`refs/remotes/origin/HEAD`）を最優先、次に `main` / `master`。
-pub(crate) fn detect_default_branch<E>(
+pub(crate) fn detect_default_branch<E: From<git2::Error>>(
     repo: &Repository,
     check: &dyn Fn() -> Result<(), E>,
 ) -> Result<Option<String>, E> {
     check()?;
-    // remote HEAD (refs/remotes/origin/HEAD) を最優先で確認
-    if let Ok(reference) = repo.find_reference("refs/remotes/origin/HEAD") {
-        check()?;
-        if let Ok(resolved) = reference.resolve() {
+    let optional = |result: Result<git2::Branch<'_>, git2::Error>| match result {
+        Ok(_) => Ok(true),
+        Err(error) if error.code() == ErrorCode::NotFound => Ok(false),
+        Err(error) => Err(E::from(error)),
+    };
+    match repo.find_reference("refs/remotes/origin/HEAD") {
+        Ok(reference) => {
             check()?;
-            if let Ok(name) = resolved.shorthand() {
-                // "origin/main" → "main"
+            let resolved = match reference.resolve() {
+                Ok(reference) => Some(reference),
+                Err(error) if error.code() == ErrorCode::NotFound => None,
+                Err(error) => return Err(E::from(error)),
+            };
+            check()?;
+            if let Some(resolved) = resolved {
+                let name = resolved.shorthand().map_err(E::from)?;
                 let short = name.strip_prefix("origin/").unwrap_or(name);
                 check()?;
-                let found = repo.find_branch(short, BranchType::Local).is_ok();
-                check()?;
-                if found {
+                if optional(repo.find_branch(short, BranchType::Local))? {
                     return Ok(Some(short.to_string()));
                 }
             }
         }
+        Err(error) if error.code() == ErrorCode::NotFound => {}
+        Err(error) => return Err(E::from(error)),
     }
-
-    for name in &["main", "master"] {
+    for name in ["main", "master"] {
         check()?;
-        let found = repo.find_branch(name, BranchType::Local).is_ok();
+        let found = optional(repo.find_branch(name, BranchType::Local))?;
         check()?;
         if found {
             return Ok(Some(name.to_string()));
@@ -49,7 +57,7 @@ pub(crate) fn detect_default_branch<E>(
 }
 
 /// リポジトリの HEAD が指すブランチ名（detached / unborn は表示用文字列）。
-pub(crate) fn get_branch_name_for_repo<E>(
+pub(crate) fn get_branch_name_for_repo<E: From<git2::Error>>(
     repo: &Repository,
     check: &dyn Fn() -> Result<(), E>,
 ) -> Result<String, E> {
@@ -59,7 +67,7 @@ pub(crate) fn get_branch_name_for_repo<E>(
     Ok(match head {
         Ok(head) => {
             if head.is_branch() {
-                head.shorthand().unwrap_or("HEAD").to_string()
+                head.shorthand().map_err(E::from)?.to_string()
             } else {
                 let oid = head.target().map(|o| o.to_string());
                 match oid {
@@ -69,6 +77,6 @@ pub(crate) fn get_branch_name_for_repo<E>(
             }
         }
         Err(e) if e.code() == ErrorCode::UnbornBranch => "(no commits)".to_string(),
-        Err(_) => "unknown".to_string(),
+        Err(error) => return Err(E::from(error)),
     })
 }

@@ -417,7 +417,13 @@ impl<R: tauri::Runtime> AgentSessionTuiAcceptanceHost<R> {
         )
         .map_err(|error| error.to_string())?
         .into_iter()
-        .map(|marker| String::from_utf8(marker.contents).map_err(|error| error.to_string()))
+        .map(|marker| {
+            marker
+                .map_err(|error| error.to_string())
+                .and_then(|marker| {
+                    String::from_utf8(marker.contents).map_err(|error| error.to_string())
+                })
+        })
         .collect()
     }
 
@@ -680,9 +686,7 @@ impl crate::usecase::state_subscription::StateSubscriptionRead for AcceptanceSes
                 .hook_health
                 .warnings()
                 .await
-                .map(|warnings| {
-                    StateValue::ProviderHookHealth(warnings.into_iter().map(Into::into).collect())
-                })
+                .map(StateValue::ProviderHookHealth)
                 .map_err(|e| StateReadError {
                     message: format!("{e:?}"),
                     source: e.into(),

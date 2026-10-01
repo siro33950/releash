@@ -126,7 +126,11 @@ async fn test_購読開始失敗_対象削除を待機中streamへ通知する()
         .runtime
         .update(|state| {
             state
-                .register(target.clone(), payload, Delivery::Full)
+                .register(
+                    target.clone(),
+                    PublishedState::from(payload),
+                    Delivery::Full,
+                )
                 .map(|_| true)
         })
         .unwrap();
@@ -205,4 +209,130 @@ async fn test_購読再開始_状態不変なら通知せず初回開始だけ�
 
     presenter.start("client", &target, None).unwrap();
     assert!(!flag.0.load(Ordering::SeqCst));
+}
+
+#[test]
+fn test_terminal読取失敗_出力sequenceを進めない() {
+    // Given
+    let presenter = StateSubscriptionPresenter::new();
+    let target = SubscriptionTarget::from_parts("terminal", &["/repo"]).unwrap();
+    let version = Version {
+        epoch: "terminal".into(),
+        sequence: 4,
+    };
+    presenter
+        .runtime
+        .update(|state| state.register_delta(&target.to_string(), version.clone(), 1024))
+        .unwrap();
+    // When
+    presenter
+        .publish_failure(
+            &target,
+            StateReadError::from_error(SubscriptionError::SnapshotRequired),
+        )
+        .unwrap();
+    // Then
+    assert_eq!(
+        presenter
+            .runtime
+            .inspect(|state| state.current_version(&target.to_string())),
+        Some(version)
+    );
+}
+
+#[test]
+fn test_terminal読取失敗_失敗後の出力でsequenceを進める() {
+    // Given
+    let presenter = StateSubscriptionPresenter::new();
+    let target = SubscriptionTarget::from_parts("terminal", &["/repo"]).unwrap();
+    let version = Version {
+        epoch: "terminal".into(),
+        sequence: 4,
+    };
+    presenter
+        .runtime
+        .update(|state| state.register_delta(&target.to_string(), version.clone(), 1024))
+        .unwrap();
+    presenter
+        .publish_failure(
+            &target,
+            StateReadError::from_error(SubscriptionError::SnapshotRequired),
+        )
+        .unwrap();
+    // When
+    let next = Version {
+        epoch: "terminal".into(),
+        sequence: 5,
+    };
+    let value = crate::adaptor::presenter::state_subscription_wire::payload(
+        &StateValue::RepositoryPaths(vec![]),
+    )
+    .unwrap();
+    presenter
+        .runtime
+        .update(|state| {
+            state
+                .publish_delta(
+                    &target.to_string(),
+                    next.clone(),
+                    PublishedState::from(value),
+                    1,
+                    true,
+                )
+                .map(|_| true)
+        })
+        .unwrap();
+    // Then
+    assert_eq!(
+        presenter
+            .runtime
+            .inspect(|state| state.current_version(&target.to_string())),
+        Some(next)
+    );
+}
+
+#[tokio::test]
+async fn test_購読失敗_つなぎ直した購読へ保持済みのfailure事象を送り直す() {
+    // Given
+    let presenter = Arc::new(StateSubscriptionPresenter::new());
+    let usecase = StateSubscriptionUsecase::new_with_output(
+        presenter.clone(),
+        Arc::new(crate::adaptor::gateway::subscription_timer::TokioSubscriptionTimer),
+    );
+    presenter
+        .publish_failure(
+            &SubscriptionTarget::RepositoryPaths,
+            StateReadError::from_error(SubscriptionError::SnapshotRequired),
+        )
+        .unwrap();
+    let mut initial = Box::pin(presenter.stream(usecase.clone(), "initial".into()).unwrap());
+    initial.next().await;
+    presenter
+        .start(
+            "initial",
+            &SubscriptionTarget::RepositoryPaths.to_string(),
+            None,
+        )
+        .unwrap();
+    initial.next().await;
+    drop(initial);
+    // When
+    let mut replay = Box::pin(presenter.stream(usecase, "replay".into()).unwrap());
+    replay.next().await;
+    presenter
+        .start(
+            "replay",
+            &SubscriptionTarget::RepositoryPaths.to_string(),
+            None,
+        )
+        .unwrap();
+    let event = replay.next().await.unwrap();
+    let event = crate::adaptor::presenter::state_subscription_wire::event(event).unwrap();
+    let wire: crate::adaptor::presenter::client::StateSubscriptionEvent =
+        crate::adaptor::presenter::connect_wire::to_wire(&event).unwrap();
+    // Then
+    assert!(matches!(
+        wire.event,
+        Some(crate::adaptor::presenter::client::state_subscription_event::Event::Failure(_))
+    ));
 }

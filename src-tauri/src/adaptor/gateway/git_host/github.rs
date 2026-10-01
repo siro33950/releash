@@ -112,20 +112,7 @@ impl GitHostProvider for GitHubGitHostGateway {
             ],
             repo_path,
         );
-        match output {
-            Ok(stdout) => {
-                let issues = parse_gh_issue_list_output(&stdout);
-                if issues.is_empty() && stdout.trim() != "[]" && !stdout.trim().is_empty() {
-                    eprintln!("{}", list_issues_parse_empty_log_message(&stdout));
-                }
-                Ok(issues)
-            }
-            Err(error @ GitHostError::Technical(_)) => Err(error),
-            Err(error) => {
-                eprintln!("[list_issues] {error}");
-                Ok(Vec::new())
-            }
-        }
+        parse_gh_issue_list_output(&output?)
     }
 }
 
@@ -196,13 +183,6 @@ fn run_gh_with_timeout(
     Err(GitHostError::External(result))
 }
 
-fn list_issues_parse_empty_log_message(stdout: &str) -> String {
-    format!(
-        "[list_issues] parse returned 0 issues from non-empty output (stdout_bytes={})",
-        stdout.len()
-    )
-}
-
 fn parse_gh_pr_items(json_str: &str) -> Result<Vec<serde_json::Value>, GitHostError> {
     serde_json::from_str(json_str)
         .map_err(|error| GitHostError::External(format!("gh pr list output is invalid: {error}")))
@@ -235,10 +215,15 @@ fn parse_gh_merged_pr_output(json_str: &str) -> Result<Vec<String>, GitHostError
         .collect())
 }
 
-fn parse_gh_issue_list_output(json_str: &str) -> Vec<IssueInfo> {
+fn parse_gh_issue_list_output(json_str: &str) -> Result<Vec<IssueInfo>, GitHostError> {
     serde_json::from_str::<Vec<GhIssueInfo>>(json_str)
         .map(|issues| issues.into_iter().map(Into::into).collect())
-        .unwrap_or_default()
+        .map_err(|error| {
+            GitHostError::External(format!(
+                "gh issue list output is invalid (stdout_bytes={}): {error}",
+                json_str.len()
+            ))
+        })
 }
 
 #[derive(Debug, Deserialize)]
@@ -541,47 +526,92 @@ mod tests {
     }
 
     #[test]
-    fn gh_output_failures_fail_pr_status_and_empty_issues() {
-        let failures = [
-            GhCommandOutput::SpawnFailed("gh is missing".to_string()),
-            GhCommandOutput::NonZero {
-                status: "exit status: 1".to_string(),
-                stderr: "x".repeat(70 * 1024),
-            },
-            GhCommandOutput::Timeout,
-            GhCommandOutput::Success("not json".to_string()),
-        ];
-
-        for failure in failures {
-            let dir = github_repo();
-            let runner = Arc::new(
-                FakeGhRunner::new()
-                    .with_output(&open_pr_list_args(), failure.clone())
-                    .with_output(&merged_pr_list_args(), failure.clone())
-                    .with_output(&issue_list_args(), failure.clone()),
-            );
-            let gateway = GitHubGitHostGateway::with_runner(runner);
-
-            assert!(gateway
-                .fetch_pr_status(dir.path().to_str().unwrap())
-                .is_err());
-            let issues = gateway.list_issues(dir.path().to_str().unwrap());
-            if failure == GhCommandOutput::Timeout {
-                assert!(matches!(
-                    issues,
-                    Err(GitHostError::Technical(
-                        crate::domain::failure::TechnicalFailure {
-                            nature: crate::domain::failure::TechnicalFailureNature::TimedOut,
-                            ..
-                        }
-                    ))
-                ));
-            } else {
-                assert!(issues.unwrap().is_empty());
-            }
-        }
+    fn test_gh出力_起動失敗をprとissueの空に変換しない() {
+        // Given
+        let failure = GhCommandOutput::SpawnFailed("gh is missing".to_string());
+        let dir = github_repo();
+        let runner = Arc::new(
+            FakeGhRunner::new()
+                .with_output(&open_pr_list_args(), failure.clone())
+                .with_output(&merged_pr_list_args(), failure.clone())
+                .with_output(&issue_list_args(), failure),
+        );
+        let gateway = GitHubGitHostGateway::with_runner(runner);
+        // When
+        let pr = gateway.fetch_pr_status(dir.path().to_str().unwrap());
+        let issues = gateway.list_issues(dir.path().to_str().unwrap());
+        // Then
+        assert!(pr.is_err());
+        assert!(issues.is_err());
     }
-
+    #[test]
+    fn test_gh出力_異常終了をprとissueの空に変換しない() {
+        // Given
+        let failure = GhCommandOutput::NonZero {
+            status: "exit status: 1".to_string(),
+            stderr: "x".repeat(70 * 1024),
+        };
+        let dir = github_repo();
+        let runner = Arc::new(
+            FakeGhRunner::new()
+                .with_output(&open_pr_list_args(), failure.clone())
+                .with_output(&merged_pr_list_args(), failure.clone())
+                .with_output(&issue_list_args(), failure),
+        );
+        let gateway = GitHubGitHostGateway::with_runner(runner);
+        // When
+        let pr = gateway.fetch_pr_status(dir.path().to_str().unwrap());
+        let issues = gateway.list_issues(dir.path().to_str().unwrap());
+        // Then
+        assert!(pr.is_err());
+        assert!(issues.is_err());
+    }
+    #[test]
+    fn test_gh出力_タイムアウトをprとissueの空に変換しない() {
+        // Given
+        let failure = GhCommandOutput::Timeout;
+        let dir = github_repo();
+        let runner = Arc::new(
+            FakeGhRunner::new()
+                .with_output(&open_pr_list_args(), failure.clone())
+                .with_output(&merged_pr_list_args(), failure.clone())
+                .with_output(&issue_list_args(), failure),
+        );
+        let gateway = GitHubGitHostGateway::with_runner(runner);
+        // When
+        let pr = gateway.fetch_pr_status(dir.path().to_str().unwrap());
+        let issues = gateway.list_issues(dir.path().to_str().unwrap());
+        // Then
+        assert!(pr.is_err());
+        assert!(matches!(
+            issues,
+            Err(GitHostError::Technical(
+                crate::domain::failure::TechnicalFailure {
+                    nature: crate::domain::failure::TechnicalFailureNature::TimedOut,
+                    ..
+                }
+            ))
+        ));
+    }
+    #[test]
+    fn test_gh出力_json破損をprとissueの空に変換しない() {
+        // Given
+        let failure = GhCommandOutput::Success("not json".to_string());
+        let dir = github_repo();
+        let runner = Arc::new(
+            FakeGhRunner::new()
+                .with_output(&open_pr_list_args(), failure.clone())
+                .with_output(&merged_pr_list_args(), failure.clone())
+                .with_output(&issue_list_args(), failure),
+        );
+        let gateway = GitHubGitHostGateway::with_runner(runner);
+        // When
+        let pr = gateway.fetch_pr_status(dir.path().to_str().unwrap());
+        let issues = gateway.list_issues(dir.path().to_str().unwrap());
+        // Then
+        assert!(pr.is_err());
+        assert!(issues.is_err());
+    }
     #[test]
     fn parse_open_prs_valid_json() {
         let json = r#"[
@@ -641,6 +671,7 @@ mod tests {
 
     #[test]
     fn parse_issue_list_valid_json() {
+        // Given
         let json = serde_json::json!([
             {
                 "number": 305,
@@ -669,8 +700,9 @@ mod tests {
         ])
         .to_string();
 
-        let issues = parse_gh_issue_list_output(&json);
-
+        // When
+        let issues = parse_gh_issue_list_output(&json).unwrap();
+        // Then
         assert_eq!(issues.len(), 2);
         assert_eq!(issues[0].number, 305);
         assert_eq!(issues[0].title, "Add issue panel");
@@ -683,20 +715,27 @@ mod tests {
 
     #[test]
     fn parse_issue_list_empty_array() {
-        let issues = parse_gh_issue_list_output("[]");
-
+        // Given
+        let json = "[]";
+        // When
+        let issues = parse_gh_issue_list_output(json).unwrap();
+        // Then
         assert!(issues.is_empty());
     }
 
     #[test]
     fn parse_issue_list_invalid_json() {
-        let issues = parse_gh_issue_list_output("not json");
-
-        assert!(issues.is_empty());
+        // Given
+        let json = "not json";
+        // When
+        let result = parse_gh_issue_list_output(json);
+        // Then
+        assert!(result.is_err());
     }
 
     #[test]
     fn parse_issue_list_missing_optional_fields() {
+        // Given
         let json = serde_json::json!([
             {
                 "number": 1,
@@ -710,8 +749,9 @@ mod tests {
         ])
         .to_string();
 
-        let issues = parse_gh_issue_list_output(&json);
-
+        // When
+        let issues = parse_gh_issue_list_output(&json).unwrap();
+        // Then
         assert_eq!(issues.len(), 1);
         assert!(issues[0].labels.is_empty());
         assert!(issues[0].assignees.is_empty());
@@ -720,6 +760,7 @@ mod tests {
 
     #[test]
     fn parse_issue_list_real_gh_output() {
+        // Given
         let json = serde_json::json!([
             {
                 "assignees": [],
@@ -750,8 +791,9 @@ mod tests {
         ])
         .to_string();
 
-        let issues = parse_gh_issue_list_output(&json);
-
+        // When
+        let issues = parse_gh_issue_list_output(&json).unwrap();
+        // Then
         assert_eq!(issues.len(), 2, "deserialization failed: got empty vec");
         assert_eq!(issues[0].number, 313);
         assert!(issues[0].milestone.is_some());
@@ -763,6 +805,7 @@ mod tests {
 
     #[test]
     fn list_issue_parse_empty_log_message_omits_raw_payload() {
+        // Given
         let stdout = serde_json::json!({
             "title": "Sensitive title",
             "url": "https://github.com/owner/repo/issues/1",
@@ -770,8 +813,9 @@ mod tests {
         })
         .to_string();
 
-        let message = list_issues_parse_empty_log_message(&stdout);
-
+        // When
+        let message = parse_gh_issue_list_output(&stdout).unwrap_err().to_string();
+        // Then
         assert!(message.contains(&format!("stdout_bytes={}", stdout.len())));
         assert!(!message.contains("Sensitive title"));
         assert!(!message.contains("https://github.com/owner/repo/issues/1"));

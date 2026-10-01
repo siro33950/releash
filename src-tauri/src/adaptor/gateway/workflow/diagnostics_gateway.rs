@@ -48,7 +48,7 @@ impl WorkflowDiagnosticsGateway for WorkflowDiagnosticsFileGateway {
                 diagnostics::diagnose_directory(&dir)
             }
         };
-        Ok(report)
+        report.map_err(|error| WorkflowError::external(error.to_string()))
     }
 }
 
@@ -120,7 +120,7 @@ mod tests {
         let facets = TempDir::new().unwrap();
         let expected = serde_json::to_value(
             crate::adaptor::presenter::workflow_api::DiagnosticReportResponse::from(
-                diagnostics::diagnose_all(workflows.path(), facets.path()),
+                diagnostics::diagnose_all(workflows.path(), facets.path()).unwrap(),
             ),
         )
         .unwrap();

@@ -119,31 +119,21 @@ impl RepositoryUsecase {
         Ok(self.worktree.main_repo_path(any_path)?)
     }
 
-    /// worktree 一覧の read model を組み立てる。worktree 識別情報（worktree 集約）に
-    /// `dirty_count`（status 集約）と `base_branch`（git_config 集約）を合成する複数集約の
-    /// オーケストレーション。各 worktree 自身のパスで解決し、停止以外の失敗時は 0 / None に倒す
-    /// （旧 gateway の一覧構築と等価）。
+    pub fn find_main_repo_path(&self, path: &str) -> Result<Option<String>, UsecaseError> {
+        Ok(self.worktree.find_main_repo_path(path)?)
+    }
+
     pub fn list_worktrees(&self, repo_path: &str) -> Result<Vec<WorktreeEntryDto>, UsecaseError> {
         let repository_root = self.worktree.main_repo_path(repo_path)?;
         let worktrees = self.worktree.list(repo_path)?;
         let mut entries = Vec::with_capacity(worktrees.len());
         for wt in worktrees {
-            let dirty_count = match self.worktree.dirty_count(&wt.path) {
-                Err(error @ RepositoryError::Technical(_)) => return Err(error.into()),
-                result => result.unwrap_or(0),
-            };
-            let base_branch = match self.git_config.get_branch_base(&wt.path, &wt.branch) {
-                Err(error @ RepositoryError::Technical(_)) => return Err(error.into()),
-                result => result.unwrap_or(None),
-            };
             entries.push(WorktreeEntryDto {
                 name: wt.name,
                 path: to_canonical_forward_slash(&wt.path),
                 branch: wt.branch,
                 is_main: wt.is_main,
                 is_locked: wt.is_locked,
-                dirty_count,
-                base_branch,
             });
         }
         entries.retain(|entry| !is_isolated(&repository_root, &entry.path, &entry.branch));
@@ -260,7 +250,6 @@ impl RepositoryUsecase {
             self.git_config
                 .set_branch_base_override(repo_path, branch, Some(base))?;
         }
-        // 新規作成直後は dirty_count = 0、base_branch は指定値（旧 gateway 戻り値と等価）。
         self.notify_repository_changed(repo_path);
         Ok(WorktreeEntryDto {
             name: wt.name,
@@ -268,8 +257,6 @@ impl RepositoryUsecase {
             branch: wt.branch,
             is_main: wt.is_main,
             is_locked: wt.is_locked,
-            dirty_count: 0,
-            base_branch: base_branch.map(|s| s.to_string()),
         })
     }
 
@@ -403,9 +390,6 @@ mod repository_usecase_tests {
         stop_current_branch: Option<crate::common::operation_context::OperationStopped>,
         worktrees: Vec<Worktree>,
         dirty: u32,
-        stop_dirty: Option<crate::common::operation_context::OperationStopped>,
-        stop_base: Option<crate::common::operation_context::OperationStopped>,
-        detail_calls: Mutex<Vec<&'static str>>,
         branch_base: Option<String>,
         fail_create_worktree: bool,
         fail_remove_worktree: bool,
@@ -509,6 +493,9 @@ mod repository_usecase_tests {
     }
 
     impl WorktreeRepository for FakeRepo {
+        fn find_main_repo_path(&self, path: &str) -> Result<Option<String>, RepositoryError> {
+            self.main_repo_path(path).map(Some)
+        }
         fn main_repo_path(&self, _any_path: &str) -> Result<String, RepositoryError> {
             if self.fail_main_repo_path {
                 return Err(RepositoryError::External(
@@ -516,13 +503,6 @@ mod repository_usecase_tests {
                 ));
             }
             Ok("/main".to_string())
-        }
-        fn dirty_count(&self, _worktree_path: &str) -> Result<u32, RepositoryError> {
-            self.detail_calls.lock().push("dirty");
-            if let Some(stopped) = self.stop_dirty {
-                return Err(stopped.into());
-            }
-            Ok(self.dirty)
         }
         fn list(&self, repo_path: &str) -> Result<Vec<Worktree>, RepositoryError> {
             self.listed_worktree_paths
@@ -610,10 +590,6 @@ mod repository_usecase_tests {
             _repo_path: &str,
             _branch_name: &str,
         ) -> Result<Option<String>, RepositoryError> {
-            self.detail_calls.lock().push("base");
-            if let Some(stopped) = self.stop_base {
-                return Err(stopped.into());
-            }
             Ok(self.branch_base.clone())
         }
         fn set_branch_base_override(
@@ -672,46 +648,6 @@ mod repository_usecase_tests {
         }
     }
 
-    #[test]
-    fn test_worktree一覧_詳細取得の停止を既定値に変えず後続を呼ばない() {
-        use crate::common::operation_context::OperationStopped;
-        // Given
-        for stopped in [OperationStopped::Expired, OperationStopped::Cancelled] {
-            for stop_dirty in [true, false] {
-                let fake = Arc::new(FakeRepo {
-                    stop_dirty: stop_dirty.then_some(stopped),
-                    stop_base: (!stop_dirty).then_some(stopped),
-                    worktrees: vec![
-                        Worktree {
-                            name: "main".into(),
-                            path: "/main".into(),
-                            branch: "main".into(),
-                            is_main: true,
-                            is_locked: false,
-                            is_merged: false,
-                        };
-                        2
-                    ],
-                    ..Default::default()
-                });
-                // When
-                let error = usecase(fake.clone()).list_worktrees("/main").unwrap_err();
-                // Then
-                assert!(
-                    matches!(error, UsecaseError::Repository(crate::domain::repository::RepositoryError::Technical(ref actual)) if *actual == stopped.into())
-                );
-                assert_eq!(
-                    *fake.detail_calls.lock(),
-                    if stop_dirty {
-                        vec!["dirty"]
-                    } else {
-                        vec!["dirty", "base"]
-                    }
-                );
-            }
-        }
-    }
-
     fn usecase(fake: Arc<FakeRepo>) -> RepositoryUsecase {
         RepositoryUsecase::new(
             fake.clone(),
@@ -749,15 +685,16 @@ mod repository_usecase_tests {
 
     #[test]
     fn test_worktree作成をdtoへ合成する() {
+        // Given
         let fake = Arc::new(<FakeRepo as Default>::default());
         let entry = usecase(fake.clone())
             .create_worktree("/r", "feat/issues/1302", true, Some("main"))
+            // When
             .unwrap();
+        // Then
         assert_eq!(entry.branch, "feat/issues/1302");
         assert_eq!(entry.path, "/r-worktrees/feat-issues-1302");
-        // 新規作成直後は dirty_count = 0、base_branch は指定値。
-        assert_eq!(entry.dirty_count, 0);
-        assert_eq!(entry.base_branch, Some("main".to_string()));
+
         // base 指定時は usecase が releash-base を設定する（旧 gateway 内蔵処理の引き上げ）。
         assert_eq!(
             *fake.set_branch_base_override_calls.lock(),
@@ -793,23 +730,20 @@ mod repository_usecase_tests {
     }
 
     #[test]
-    fn test_worktree一覧をdtoへ合成する() {
-        // slim worktree（識別情報）に dirty_count（status）・base_branch（git_config）を
-        // usecase が合成して read model を組み立てる。
+    fn test_worktree一覧_pathとbranchとis_mainを写す() {
+        // Given
         let fake = Arc::new(FakeRepo {
             worktrees: vec![wt("/wt-feat", "feat", false)],
-            dirty: 3,
-            branch_base: Some("develop".to_string()),
             ..<FakeRepo as Default>::default()
         });
+        // When
         let entries = usecase(fake).list_worktrees("/r").unwrap();
+        // Then
         assert_eq!(entries.len(), 1);
         let e = &entries[0];
         assert_eq!(e.path, "/wt-feat");
         assert_eq!(e.branch, "feat");
         assert!(!e.is_main);
-        assert_eq!(e.dirty_count, 3);
-        assert_eq!(e.base_branch, Some("develop".to_string()));
     }
 
     #[test]

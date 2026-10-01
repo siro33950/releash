@@ -173,8 +173,6 @@ it("再接続後も起動処理と更新確認は一度だけでReady復帰時�
 			name: "repo",
 			is_main: true,
 			is_locked: false,
-			dirty_count: 0,
-			base_branch: null,
 		},
 	]);
 	await act(async () => {
@@ -305,6 +303,7 @@ it("設定画面で自動更新をONにすると確認し成功後の切替と�
 it("設定の読み込み状態と失敗を設定画面へ渡し回復を反映する", async () => {
 	states.clear();
 	states.publish("startup-outcome", { type: "ready" });
+	states.publish("startup-repository", null);
 	await act(async () => {
 		render(<App />);
 	});

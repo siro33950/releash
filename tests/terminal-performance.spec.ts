@@ -88,8 +88,6 @@ test("10MiB agent-TUI負荷でTerminal Surfaceのstrict performance budgetを守
 					branch: "main",
 					is_main: true,
 					is_locked: false,
-					dirty_count: 0,
-					base_branch: null,
 				},
 			],
 			"workspaceBranches": [

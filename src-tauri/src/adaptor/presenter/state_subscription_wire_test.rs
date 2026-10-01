@@ -9,6 +9,7 @@ fn wire_event(event: StateSubscriptionEvent) -> wire::StateSubscriptionEvent {
 
 #[test]
 fn test_購読事象_対象名と日本語を含む引数を分離して配信する() {
+    // Given
     let target = SubscriptionTarget::BranchBase("/作業:repo".into(), "feature".into());
     let message = wire_event(StateSubscriptionEvent::Item(
         target.to_string(),
@@ -17,9 +18,13 @@ fn test_購読事象_対象名と日本語を含む引数を分離して配信�
                 epoch: "boot:1".into(),
                 sequence: 7,
             },
-            Arc::new(payload(&StateValue::BranchBase(Some("main".into()))).unwrap()),
+            Arc::new(PublishedState::from(
+                payload(&StateValue::BranchBase(Some("main".into()))).unwrap(),
+            )),
         ),
+        // When
     ));
+    // Then
     assert_eq!(
         message,
         wire::StateSubscriptionEvent {
@@ -50,11 +55,15 @@ fn test_購読事象_対象名と日本語を含む引数を分離して配信�
 }
 
 #[test]
-fn test_購読事象_準備変更と定期印の旧転送形式を保つ() {
+fn test_購読事象_準備の旧転送形式を保つ() {
+    // Given
     use wire::state_subscription_event::Event as WireEvent;
-
+    let event = StateSubscriptionEvent::Ready;
+    // When
+    let actual = wire_event(event);
+    // Then
     assert_eq!(
-        wire_event(StateSubscriptionEvent::Ready),
+        actual,
         wire::StateSubscriptionEvent {
             target: String::new(),
             args: vec![],
@@ -62,66 +71,132 @@ fn test_購読事象_準備変更と定期印の旧転送形式を保つ() {
             event: Some(WireEvent::Ready(wire::Unit {})),
         }
     );
-
-    for (delivery, delta, sequence) in [(Delivery::Full, false, 8), (Delivery::Delta, true, 9)] {
-        assert_eq!(
-            wire_event(StateSubscriptionEvent::Item(
-                SubscriptionTarget::RepositoryPaths.to_string(),
-                Event::Change(
-                    Version {
-                        epoch: "boot:1".into(),
-                        sequence,
-                    },
-                    delivery,
-                    Arc::new(payload(&StateValue::RepositoryPaths(vec!["/repo".into()])).unwrap()),
-                ),
-            )),
-            wire::StateSubscriptionEvent {
-                target: "repository-paths".into(),
-                args: vec![],
-                version: Some(wire::StateVersion {
-                    epoch: "boot:1".into(),
-                    sequence,
-                }),
-                event: Some(WireEvent::Change(wire::StateChange {
-                    delta,
-                    payload: Some(wire::StatePayload {
-                        value: Some(wire::state_payload::Value::RepositoryPaths(
-                            wire::Liststring {
-                                items: vec!["/repo".into()],
-                            },
-                        )),
-                    }),
-                })),
-            }
-        );
-    }
-
+}
+#[test]
+fn test_購読事象_全体の定期印の旧転送形式を保つ() {
+    // Given
+    use wire::state_subscription_event::Event as WireEvent;
+    let event = StateSubscriptionEvent::Bookmark;
+    // When
+    let actual = wire_event(event);
+    // Then
     assert_eq!(
-        wire_event(StateSubscriptionEvent::Item(
-            SubscriptionTarget::Issues("/repo".into()).to_string(),
-            Event::Bookmark(Version {
+        actual,
+        wire::StateSubscriptionEvent {
+            target: String::new(),
+            args: vec![],
+            version: None,
+            event: Some(WireEvent::Bookmark(wire::Unit {})),
+        }
+    );
+}
+#[test]
+fn test_購読事象_full変更の旧転送形式を保つ() {
+    // Given
+    use wire::state_subscription_event::Event as WireEvent;
+    let event = StateSubscriptionEvent::Item(
+        SubscriptionTarget::RepositoryPaths.to_string(),
+        Event::Change(
+            Version {
                 epoch: "boot:1".into(),
-                sequence: 10,
+                sequence: 8,
+            },
+            Delivery::Full,
+            Arc::new(PublishedState::from(
+                payload(&StateValue::RepositoryPaths(vec!["/repo".into()])).unwrap(),
+            )),
+        ),
+    );
+    // When
+    let actual = wire_event(event);
+    // Then
+    assert_eq!(
+        actual,
+        wire::StateSubscriptionEvent {
+            target: "repository-paths".into(),
+            args: vec![],
+            version: Some(wire::StateVersion {
+                epoch: "boot:1".into(),
+                sequence: 8
             }),
-        )),
+            event: Some(WireEvent::Change(wire::StateChange {
+                delta: false,
+                payload: Some(wire::StatePayload {
+                    value: Some(wire::state_payload::Value::RepositoryPaths(
+                        wire::Liststring {
+                            items: vec!["/repo".into()]
+                        }
+                    )),
+                })
+            })),
+        }
+    );
+}
+#[test]
+fn test_購読事象_delta変更の旧転送形式を保つ() {
+    // Given
+    use wire::state_subscription_event::Event as WireEvent;
+    let event = StateSubscriptionEvent::Item(
+        SubscriptionTarget::RepositoryPaths.to_string(),
+        Event::Change(
+            Version {
+                epoch: "boot:1".into(),
+                sequence: 9,
+            },
+            Delivery::Delta,
+            Arc::new(PublishedState::from(
+                payload(&StateValue::RepositoryPaths(vec!["/repo".into()])).unwrap(),
+            )),
+        ),
+    );
+    // When
+    let actual = wire_event(event);
+    // Then
+    assert_eq!(
+        actual,
+        wire::StateSubscriptionEvent {
+            target: "repository-paths".into(),
+            args: vec![],
+            version: Some(wire::StateVersion {
+                epoch: "boot:1".into(),
+                sequence: 9
+            }),
+            event: Some(WireEvent::Change(wire::StateChange {
+                delta: true,
+                payload: Some(wire::StatePayload {
+                    value: Some(wire::state_payload::Value::RepositoryPaths(
+                        wire::Liststring {
+                            items: vec!["/repo".into()]
+                        }
+                    )),
+                })
+            })),
+        }
+    );
+}
+#[test]
+fn test_購読事象_対象の定期印の旧転送形式を保つ() {
+    // Given
+    use wire::state_subscription_event::Event as WireEvent;
+    let event = StateSubscriptionEvent::Item(
+        SubscriptionTarget::Issues("/repo".into()).to_string(),
+        Event::Bookmark(Version {
+            epoch: "boot:1".into(),
+            sequence: 10,
+        }),
+    );
+    // When
+    let actual = wire_event(event);
+    // Then
+    assert_eq!(
+        actual,
         wire::StateSubscriptionEvent {
             target: "issues".into(),
             args: vec!["/repo".into()],
             version: Some(wire::StateVersion {
                 epoch: "boot:1".into(),
-                sequence: 10,
+                sequence: 10
             }),
-            event: Some(WireEvent::Bookmark(wire::Unit {})),
-        }
-    );
-
-    assert_eq!(
-        wire_event(StateSubscriptionEvent::Bookmark),
-        wire::StateSubscriptionEvent {
-            target: String::new(),
-            args: vec![],
-            version: None,
             event: Some(WireEvent::Bookmark(wire::Unit {})),
         }
     );
@@ -133,7 +208,6 @@ fn test_購読payload_全種類を旧wire型とフィールドへ変換する() 
         AgentSessionHistoryCandidateDto, AgentSessionHistoryPageDto, AgentSessionItemDto,
         AgentSessionLifecycleDto, AgentSessionOperationsDto, AgentSessionTreeLocationDto,
     };
-    use crate::usecase::git_host::dto::{IssueInfoDto, IssueLabelDto, MilestoneDto, PrAuthorDto};
     use crate::usecase::provider_dto::AgentSessionProviderDto;
     use crate::usecase::repository_dto::{BranchDto, WorktreeEntryDto};
     use crate::usecase::terminal_surface::application::TerminalSurfaceStreamItem;
@@ -377,57 +451,61 @@ fn test_購読payload_全種類を旧wire型とフィールドへ変換する() 
             }),
         ),
         (
-            StateValue::Issues(vec![IssueInfoDto {
-                number: 13,
-                default_branch_name: "issue-13".into(),
-                title: "Fix".into(),
-                state: "OPEN".into(),
-                url: "https://example.test/13".into(),
-                author: PrAuthorDto {
-                    login: "author".into(),
+            StateValue::Issues(crate::usecase::fetched::Fetched::ready(vec![
+                crate::domain::git_host::IssueInfo {
+                    number: 13,
+                    title: "Fix".into(),
+                    state: "OPEN".into(),
+                    url: "https://example.test/13".into(),
+                    author: crate::domain::git_host::PrAuthor {
+                        login: "author".into(),
+                    },
+                    created_at: "created".into(),
+                    updated_at: "updated".into(),
+                    labels: vec![crate::domain::git_host::IssueLabel {
+                        name: "bug".into(),
+                        color: "red".into(),
+                    }],
+                    assignees: vec![crate::domain::git_host::PrAuthor {
+                        login: "assignee".into(),
+                    }],
+                    body: "body".into(),
+                    milestone: Some(crate::domain::git_host::Milestone {
+                        title: "next".into(),
+                    }),
                 },
-                created_at: "created".into(),
-                updated_at: "updated".into(),
-                labels: vec![IssueLabelDto {
-                    name: "bug".into(),
-                    color: "red".into(),
-                }],
-                assignees: vec![PrAuthorDto {
-                    login: "assignee".into(),
-                }],
-                body: "body".into(),
-                milestone: Some(MilestoneDto {
-                    title: "next".into(),
+            ])),
+            W::Issues(wire::IssuesSnapshot {
+                read_error: None,
+                issues: Some(wire::ListIssueInfoDto {
+                    items: vec![wire::IssueInfoDto {
+                        number: Some(13),
+                        default_branch_name: Some("feat/issues/13".into()),
+                        title: Some("Fix".into()),
+                        state: Some("OPEN".into()),
+                        url: Some("https://example.test/13".into()),
+                        author: Some(wire::PrAuthorDto {
+                            login: Some("author".into()),
+                        }),
+                        created_at: Some("created".into()),
+                        updated_at: Some("updated".into()),
+                        labels: Some(wire::ListIssueLabelDto {
+                            items: vec![wire::IssueLabelDto {
+                                name: Some("bug".into()),
+                                color: Some("red".into()),
+                            }],
+                        }),
+                        assignees: Some(wire::ListPrAuthorDto {
+                            items: vec![wire::PrAuthorDto {
+                                login: Some("assignee".into()),
+                            }],
+                        }),
+                        body: Some("body".into()),
+                        milestone: Some(wire::MilestoneDto {
+                            title: Some("next".into()),
+                        }),
+                    }],
                 }),
-            }]),
-            W::Issues(wire::ListIssueInfoDto {
-                items: vec![wire::IssueInfoDto {
-                    number: Some(13),
-                    default_branch_name: Some("issue-13".into()),
-                    title: Some("Fix".into()),
-                    state: Some("OPEN".into()),
-                    url: Some("https://example.test/13".into()),
-                    author: Some(wire::PrAuthorDto {
-                        login: Some("author".into()),
-                    }),
-                    created_at: Some("created".into()),
-                    updated_at: Some("updated".into()),
-                    labels: Some(wire::ListIssueLabelDto {
-                        items: vec![wire::IssueLabelDto {
-                            name: Some("bug".into()),
-                            color: Some("red".into()),
-                        }],
-                    }),
-                    assignees: Some(wire::ListPrAuthorDto {
-                        items: vec![wire::PrAuthorDto {
-                            login: Some("assignee".into()),
-                        }],
-                    }),
-                    body: Some("body".into()),
-                    milestone: Some(wire::MilestoneDto {
-                        title: Some("next".into()),
-                    }),
-                }],
             }),
         ),
         (
@@ -437,8 +515,6 @@ fn test_購読payload_全種類を旧wire型とフィールドへ変換する() 
                 branch: "main".into(),
                 is_main: true,
                 is_locked: false,
-                dirty_count: 2,
-                base_branch: Some("base".into()),
             }]),
             W::Worktrees(wire::ListWorktreeEntryDto {
                 items: vec![wire::WorktreeEntryDto {
@@ -447,20 +523,18 @@ fn test_購読payload_全種類を旧wire型とフィールドへ変換する() 
                     branch: Some("main".into()),
                     is_main: Some(true),
                     is_locked: Some(false),
-                    dirty_count: Some(2),
-                    base_branch: Some("base".into()),
                 }],
             }),
         ),
         (
-            StateValue::RepositoryRoot("/repo".into()),
-            W::RepositoryRoot(wire::ResultString {
+            StateValue::RepositoryRoot(Some("/repo".into())),
+            W::RepositoryRoot(wire::Nullablestring {
                 value: Some("/repo".into()),
             }),
         ),
         (
-            StateValue::StartupRepository("/startup".into()),
-            W::StartupRepository(wire::ResultString {
+            StateValue::StartupRepository(Some("/startup".into())),
+            W::StartupRepository(wire::Nullablestring {
                 value: Some("/startup".into()),
             }),
         ),
@@ -506,6 +580,7 @@ fn test_購読payload_全種類を旧wire型とフィールドへ変換する() 
         ),
         (
             StateValue::Workflows(vec![crate::usecase::workflow::dto::WorkflowSummaryDto {
+                failure: None,
                 name: "dev".into(),
                 description: "develop".into(),
                 builtin: false,
@@ -514,6 +589,7 @@ fn test_購読payload_全種類を旧wire型とフィールドへ変換する() 
             }]),
             W::Workflows(wire::ListWorkflowSummaryDto {
                 items: vec![wire::WorkflowSummaryDto {
+                    read_error: None,
                     name: Some("dev".into()),
                     description: Some("develop".into()),
                     builtin: Some(false),
@@ -662,7 +738,7 @@ fn test_購読payload_設定とproviderの出力値を維持する() {
         NotionLabelPropertyDto, NotionPropertyMappingDto, NotionRepoConfigDto,
     };
     use crate::usecase::provider_dto::AgentSessionProviderDto;
-    use crate::usecase::provider_lifecycle::ProviderHookHealthWarningDto;
+    use crate::usecase::provider_lifecycle::ProviderHookHealthWarning;
     use wire::state_payload::Value as W;
 
     // Given
@@ -710,13 +786,13 @@ fn test_購読payload_設定とproviderの出力値を維持する() {
             serde_json::json!({"approval_auto_approve":true}),
         ),
         (
-            StateValue::ProviderHookHealth(vec![ProviderHookHealthWarningDto {
-                provider: AgentSessionProviderDto::Claude,
+            StateValue::ProviderHookHealth(crate::usecase::provider_lifecycle::ProviderHookHealthReadResult { warnings: vec![ProviderHookHealthWarning {
+                provider: crate::domain::provider_lifecycle::ProviderKind::Claude,
                 launch_id: "launch".into(),
-                reason: crate::usecase::provider_lifecycle::ProviderHookHealthReasonDto::LocalApiUnavailable,
-            }]),
-            "releash.client.v1.ListProviderHookHealthWarningResponse",
-            serde_json::json!([{"provider":"claude","launchId":"launch","reason":"local_api_unavailable"}]),
+                reason: crate::domain::provider_lifecycle::ProviderLifecycleUnavailableReason::LocalApiUnavailable,
+            }], failures: vec![crate::usecase::provider_lifecycle::ProviderHookHealthFailureQueryError::Unavailable, crate::usecase::provider_lifecycle::ProviderHookHealthFailureQueryError::Corrupt] }),
+            "releash.client.v1.ProviderHookHealthSnapshot",
+            serde_json::json!({"warnings":[{"provider":"claude","launchId":"launch","reason":"local_api_unavailable"}],"readErrors":["Provider Hook health record or session could not be read","Provider Hook health record is corrupt"]}),
         ),
     ];
     // When
@@ -818,4 +894,70 @@ fn test_terminal購読payload_四種類の転送値を保つ() {
             },
         );
     }
+}
+
+#[test]
+fn test_購読失敗_snapshotの保持値をfailure事象へ変換する() {
+    // Given
+    let version = Version {
+        epoch: "boot".into(),
+        sequence: 1,
+    };
+    let value = Arc::new(PublishedState::Failure(wire::StateReadFailure {
+        code: 13,
+        message: "read failed".into(),
+    }));
+    // When
+    let message = wire_event(StateSubscriptionEvent::Item(
+        SubscriptionTarget::RepositoryPaths.to_string(),
+        Event::Snapshot(version, value),
+    ));
+    // Then
+    assert!(
+        matches!(message.event, Some(wire::state_subscription_event::Event::Failure(failure)) if failure.code == 13 && failure.message == "read failed")
+    );
+}
+
+#[test]
+fn test_購読失敗_full変更の保持値をfailure事象へ変換する() {
+    // Given
+    let version = Version {
+        epoch: "boot".into(),
+        sequence: 1,
+    };
+    let value = Arc::new(PublishedState::Failure(wire::StateReadFailure {
+        code: 13,
+        message: "read failed".into(),
+    }));
+    // When
+    let message = wire_event(StateSubscriptionEvent::Item(
+        SubscriptionTarget::RepositoryPaths.to_string(),
+        Event::Change(version, Delivery::Full, value),
+    ));
+    // Then
+    assert!(
+        matches!(message.event, Some(wire::state_subscription_event::Event::Failure(failure)) if failure.code == 13 && failure.message == "read failed")
+    );
+}
+
+#[test]
+fn test_購読失敗_terminal差分の保持値をfailure事象へ変換する() {
+    // Given
+    let version = Version {
+        epoch: "boot".into(),
+        sequence: 1,
+    };
+    let value = Arc::new(PublishedState::Failure(wire::StateReadFailure {
+        code: 13,
+        message: "read failed".into(),
+    }));
+    // When
+    let message = wire_event(StateSubscriptionEvent::Item(
+        SubscriptionTarget::RepositoryPaths.to_string(),
+        Event::Change(version, Delivery::Delta, value),
+    ));
+    // Then
+    assert!(
+        matches!(message.event, Some(wire::state_subscription_event::Event::Failure(failure)) if failure.code == 13 && failure.message == "read failed")
+    );
 }

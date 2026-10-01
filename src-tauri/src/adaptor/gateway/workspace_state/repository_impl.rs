@@ -38,23 +38,25 @@ fn state_file(app_data_dir: &Path, worktree_name: &str) -> PathBuf {
 }
 
 impl WorkspaceStateRepository for WorkspaceStateStore {
-    fn load(&self, worktree_name: &str, worktree_root: &str) -> Option<WorkspaceState> {
-        let file_path = state_file(&self.app_data_dir, worktree_name);
-
-        if !file_path.exists() {
-            return None;
-        }
-
-        let data = std::fs::read_to_string(&file_path).ok()?;
-        let state: WorkspaceState = serde_json::from_str::<WorkspaceStateDto>(&data)
-            .ok()
-            .map(WorkspaceState::from)?;
+    fn load(
+        &self,
+        worktree_name: &str,
+        worktree_root: &str,
+    ) -> Result<Option<WorkspaceState>, crate::domain::workspace_state::WorkspaceStateError> {
+        let Some(state) = self.read_state(worktree_name)? else {
+            return Ok(None);
+        };
+        let state = WorkspaceState::from(state);
         let state = filter_missing_files(state, worktree_root);
 
         self.entries
             .write()
             .insert(worktree_name.to_string(), state.clone());
-        Some(state)
+        Ok(Some(state))
+    }
+
+    fn check_readable(&self, worktree_name: &str) -> Result<(), WorkspaceStateError> {
+        self.read_state(worktree_name).map(|_| ())
     }
 
     fn save(&self, worktree_name: &str) -> Result<(), WorkspaceStateError> {
@@ -87,6 +89,20 @@ impl WorkspaceStateRepository for WorkspaceStateStore {
 }
 
 impl WorkspaceStateStore {
+    fn read_state(
+        &self,
+        worktree_name: &str,
+    ) -> Result<Option<WorkspaceStateDto>, WorkspaceStateError> {
+        let data = match std::fs::read_to_string(state_file(&self.app_data_dir, worktree_name)) {
+            Ok(data) => data,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(WorkspaceStateError::Message(error.to_string())),
+        };
+        serde_json::from_str::<WorkspaceStateDto>(&data)
+            .map(Some)
+            .map_err(|error| WorkspaceStateError::Message(error.to_string()))
+    }
+
     #[cfg(test)]
     pub fn get(&self, worktree_name: &str) -> Option<WorkspaceState> {
         self.entries.read().get(worktree_name).cloned()
@@ -94,86 +110,5 @@ impl WorkspaceStateStore {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::domain::workspace_state::value_objects::{
-        workspace_tabs_state::WorkspaceTabEntry, WorkspaceLayoutState, WorkspaceTabsState,
-    };
-    use tempfile::TempDir;
-
-    fn make_state() -> WorkspaceState {
-        WorkspaceState {
-            version: 1,
-            tabs: WorkspaceTabsState {
-                editors: vec![
-                    WorkspaceTabEntry {
-                        path: "src/main.rs".to_string(),
-                        name: "main.rs".to_string(),
-                    },
-                    WorkspaceTabEntry {
-                        path: "src/lib.rs".to_string(),
-                        name: "lib.rs".to_string(),
-                    },
-                ],
-                active_editor_path: Some("src/main.rs".to_string()),
-            },
-            layout: WorkspaceLayoutState {
-                center_tab: "editor".to_string(),
-                active_view: "git".to_string(),
-                left_nav_collapsed: false,
-                right_collapsed: false,
-                right_bottom_collapsed: false,
-                right_bottom_active_tab: None,
-                selected_diff_file: None,
-            },
-        }
-    }
-
-    #[test]
-    fn save_and_load_roundtrip() {
-        let dir = TempDir::new().unwrap();
-        let worktree_dir = dir.path().join("worktree");
-        std::fs::create_dir_all(worktree_dir.join("src")).unwrap();
-        std::fs::write(worktree_dir.join("src/main.rs"), "fn main() {}").unwrap();
-        std::fs::write(worktree_dir.join("src/lib.rs"), "// lib").unwrap();
-
-        let store = WorkspaceStateStore::new(dir.path().to_path_buf());
-        store.set("wt1", make_state());
-        store.save("wt1").unwrap();
-
-        let loaded = store.load("wt1", worktree_dir.to_str().unwrap()).unwrap();
-        assert_eq!(loaded.version, 1);
-        assert_eq!(loaded.tabs.editors.len(), 2);
-        assert_eq!(loaded.layout.center_tab, "editor");
-    }
-
-    #[test]
-    fn load_nonexistent_returns_none() {
-        let dir = TempDir::new().unwrap();
-        let store = WorkspaceStateStore::new(dir.path().to_path_buf());
-        assert!(store.load("nonexistent", "/tmp").is_none());
-    }
-
-    #[test]
-    fn get_set_in_memory() {
-        let dir = TempDir::new().unwrap();
-        let store = WorkspaceStateStore::new(dir.path().to_path_buf());
-        assert!(store.get("wt1").is_none());
-        store.set("wt1", make_state());
-        assert_eq!(store.get("wt1").unwrap().tabs.editors.len(), 2);
-    }
-
-    #[test]
-    fn save_returns_workspace_state_error_when_state_dir_cannot_be_created() {
-        let dir = TempDir::new().unwrap();
-        let app_data_file = dir.path().join("app-data");
-        std::fs::write(&app_data_file, "not a directory").unwrap();
-
-        let store = WorkspaceStateStore::new(app_data_file);
-        store.set("wt1", make_state());
-
-        let err = store.save("wt1").unwrap_err();
-        assert!(matches!(err, WorkspaceStateError::Message(_)));
-        assert!(err.to_string().contains("Failed to create dir"));
-    }
-}
+#[path = "repository_impl_test.rs"]
+mod repository_impl_tests;

@@ -4,10 +4,18 @@ use parking_lot::Mutex;
 
 struct Store {
     fail: bool,
+    readable: bool,
     calls: Mutex<Vec<String>>,
 }
 impl WorkspaceStateRepository for Store {
-    fn load(&self, _: &str, _: &str) -> Option<WorkspaceState> {
+    fn check_readable(&self, _: &str) -> Result<(), WorkspaceStateError> {
+        if self.readable {
+            Ok(())
+        } else {
+            Err(WorkspaceStateError::Message("unreadable".into()))
+        }
+    }
+    fn load(&self, _: &str, _: &str) -> Result<Option<WorkspaceState>, WorkspaceStateError> {
         unreachable!()
     }
     fn set(&self, name: &str, _: WorkspaceState) {
@@ -29,6 +37,7 @@ fn test_表示状態保存_保存成功後だけ対象名を通知する() {
         // Given
         let store = Store {
             fail,
+            readable: true,
             calls: Default::default(),
         };
         let publisher = crate::test_support::state_subscription::test_subscriptions();
@@ -65,4 +74,35 @@ fn test_表示状態保存_保存成功後だけ対象名を通知する() {
             );
         }
     }
+}
+
+#[test]
+fn test_表示状態保存_読取失敗ならsetとsaveを呼ばない() {
+    // Given
+    let store = Store {
+        fail: false,
+        readable: false,
+        calls: Default::default(),
+    };
+    let state = WorkspaceState {
+        version: 1,
+        tabs: WorkspaceTabsState {
+            editors: vec![],
+            active_editor_path: None,
+        },
+        layout: WorkspaceLayoutState {
+            center_tab: "editor".into(),
+            active_view: "git".into(),
+            left_nav_collapsed: false,
+            right_collapsed: false,
+            right_bottom_collapsed: false,
+            right_bottom_active_tab: None,
+            selected_diff_file: None,
+        },
+    };
+    // When
+    let result = save_workspace_state(&store, None, "wt", state);
+    // Then
+    assert!(result.is_err());
+    assert!(store.calls.lock().is_empty());
 }

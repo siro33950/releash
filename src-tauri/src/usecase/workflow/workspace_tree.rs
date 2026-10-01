@@ -128,7 +128,9 @@ impl WorkflowUsecase {
             .zip(results)
             .map(|(path, result)| {
                 let entry = retained.entry(path.clone()).or_default();
-                entry.record(result.map_err(|error| error.to_string()));
+                entry.record(
+                    result.map_err(|error| crate::domain::failure::WorkFailure::from_error(&error)),
+                );
                 entry.clone()
             })
             .collect()

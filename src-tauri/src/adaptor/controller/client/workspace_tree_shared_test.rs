@@ -28,6 +28,7 @@ async fn test_一覧更新dispatch_登録済みrepositoryの走査をやり直�
             .workspace_list
             .read()
             .await
+            .unwrap()
             .repositories
             .iter()
             .find(|repository| repository.path == path)

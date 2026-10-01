@@ -991,9 +991,9 @@ pub(crate) async fn invoke_tauri(
 
 #[tokio::test]
 async fn test_workspace保存_connectがui追加fieldを受理し既存項目を再起動後に復元する() {
+    // Given
     use crate::adaptor::controller::api;
     use crate::adaptor::gateway::workspace_state::WorkspaceStateStore;
-    // Given
     let data = tempfile::tempdir().unwrap();
     let worktree = data.path().join("worktree");
     std::fs::create_dir_all(worktree.join("src")).unwrap();
@@ -1018,6 +1018,7 @@ async fn test_workspace保存_connectがui追加fieldを受理し既存項目を
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let server = tokio::spawn(async move {
+        // When
         axum::serve(listener, router).await.unwrap();
     });
     let client = crate::client_api_acceptance::connect_client(
@@ -1027,6 +1028,7 @@ async fn test_workspace保存_connectがui追加fieldを受理し既存項目を
             launch_id: String::new(),
         },
     );
+    // Then
     assert_eq!(
         crate::client_api_acceptance::request_client(
             &client,
@@ -1048,10 +1050,10 @@ async fn test_workspace保存_connectがui追加fieldを受理し既存項目を
         .as_object_mut()
         .unwrap()
         .remove("diffOnlyMode");
-    // Then
     use crate::domain::workspace_state::WorkspaceStateRepository;
     let restored = restarted
         .load("workspace", worktree.to_str().unwrap())
+        .unwrap()
         .unwrap();
     let restored = crate::usecase::workspace_state::dto::WorkspaceStateDto::from(restored);
     assert_eq!(serde_json::to_value(restored).unwrap(), expected);

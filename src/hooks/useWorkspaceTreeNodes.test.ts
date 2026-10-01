@@ -52,6 +52,7 @@ it("archive後の選択照合は購読し同じ対象の変更も受け取る", 
 	expect(subscribeState).toHaveBeenCalledWith(
 		{ kind: "selection", args: ["/repo", "node"] },
 		expect.any(Function),
+		expect.any(Function),
 	);
 	const tree = snapshot.repositories[0].worktrees[0].snapshot;
 	if (!tree) throw new Error("Missing fixture snapshot");
@@ -95,4 +96,28 @@ it("worktree変更とunmountで照合の購読を解除する", () => {
 	expect(stop).toHaveBeenCalledOnce();
 	expect(result.current.loaded).toBe(false);
 	unmount();
+});
+
+it("照合の失敗を表示し選択変更と回復で解除する", () => {
+	let fail!: (error: unknown) => void;
+	vi.mocked(subscribeState).mockImplementation((_target, next, onError) => {
+		receive = next;
+		fail = onError;
+		return stop;
+	});
+	const { result } = renderHook(() => useWorkspaceTreeNodes("/repo"), {
+		wrapper,
+	});
+	act(() => result.current.beginArchiveReconciliation("node"));
+	act(() => fail(new Error("selection unavailable")));
+	expect(result.current.error).toBe("selection unavailable");
+	const tree = snapshot.repositories[0].worktrees[0].snapshot;
+	if (!tree) throw new Error("Missing fixture snapshot");
+	act(() =>
+		receive({ snapshot: tree, reconciliation: { selectionInSnapshot: true } }),
+	);
+	expect(result.current.error).toBeNull();
+	act(() => fail(new Error("unavailable again")));
+	act(() => result.current.synchronizeSelectedNodeId("other"));
+	expect(result.current.error).toBeNull();
 });

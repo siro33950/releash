@@ -81,11 +81,20 @@ const readState = vi.fn((target: StateTarget<keyof StateValues>) => {
 	);
 });
 const subscribeState = vi.fn(
-	(target: StateTarget<keyof StateValues>, receive: (value: never) => void) => {
+	(
+		target: StateTarget<keyof StateValues>,
+		receive: (value: never) => void,
+		onError: (error: unknown) => void,
+	) => {
 		let active = true;
-		void readState(target).then((value) => {
-			if (active) receive(value as never);
-		});
+		void readState(target).then(
+			(value) => {
+				if (active) receive(value as never);
+			},
+			(error) => {
+				if (active) onError(error);
+			},
+		);
 		return () => {
 			active = false;
 		};
@@ -2476,4 +2485,133 @@ it("backendが返す削除中のworktreeを一覧に表示する", async () => {
 	});
 	expect(screen.getByTestId("worktree-item-feature")).toBeVisible();
 	expect(screen.getByRole("status")).toHaveTextContent("Deleting...");
+});
+
+it("未コミット数とPRの取得失敗を値が無い表示と区別する", async () => {
+	mocks.worktreeBranches = [
+		{
+			...makeBranch(),
+			has_pr: null,
+			dirty_count: null,
+			dirty_count_error: "scan failed",
+			pull_request_error: "PR denied",
+		},
+	];
+	await act(async () => {
+		renderWorkspaceList();
+	});
+	expect(screen.getByText("Changes unavailable")).toHaveAttribute(
+		"title",
+		"scan failed",
+	);
+	expect(screen.getByText("PR unavailable")).toHaveAttribute(
+		"title",
+		"PR denied",
+	);
+	expect(
+		screen.queryByRole("img", { name: /Pull request/ }),
+	).not.toBeInTheDocument();
+});
+
+for (const kind of ["session-history", "providers"] as const) {
+	for (const received of [false, true]) {
+		it(`${kind}の購読失敗を閉じた行のメニューで表示し${received ? "前の値を残す" : "空表示と区別する"}`, async () => {
+			const user = userEvent.setup();
+			const delegate = subscribeState.getMockImplementation();
+			if (!delegate) throw new Error("subscription mock is required");
+			let fail!: (error: unknown) => void;
+			subscribeState.mockImplementation((target, receive, onError) => {
+				const targetKind = typeof target === "string" ? target : target.kind;
+				if (targetKind !== kind) return delegate(target, receive, onError);
+				fail = onError;
+				if (received)
+					receive(
+						(kind === "providers"
+							? ["codex"]
+							: {
+									items: [
+										{
+											provider: "codex",
+											providerSessionId: "previous",
+											label: "Previous session",
+										},
+									],
+									hasMore: false,
+								}) as never,
+					);
+				return () => {};
+			});
+			renderWorkspaceList();
+			await user.click(screen.getByTestId("worktree-item-feature"));
+			expect(screen.getByTestId("worktree-item-feature")).toHaveAttribute(
+				"aria-expanded",
+				"false",
+			);
+			await user.click(
+				screen.getByRole("button", {
+					name:
+						kind === "providers"
+							? "Create in feature"
+							: "Open menu for feature",
+				}),
+			);
+			await user.hover(
+				screen.getByRole("menuitem", {
+					name: kind === "providers" ? "NewSession" : "SessionHistory",
+				}),
+			);
+			await waitFor(() => expect(fail).toBeTypeOf("function"));
+			act(() => fail(new Error(`${kind} unavailable`)));
+			expect(await screen.findByRole("alert")).toHaveTextContent(
+				`${kind} unavailable`,
+			);
+			expect(
+				screen.queryByText(
+					kind === "providers"
+						? "No available Providers"
+						: "No session history",
+				),
+			).not.toBeInTheDocument();
+			expect(
+				screen.queryByText(
+					kind === "providers"
+						? "Loading Providers"
+						: "Loading Session history",
+				),
+			).not.toBeInTheDocument();
+			if (received)
+				expect(
+					screen.getByRole("menuitem", {
+						name: kind === "providers" ? "codex" : "Previous session",
+					}),
+				).toBeInTheDocument();
+			subscribeState.mockImplementation(delegate);
+		});
+	}
+}
+
+it("PR更新失敗では最後に取得したPRと前回値の警告を併記する", async () => {
+	mocks.worktreeBranches = [
+		{
+			...makeBranch(),
+			has_pr: true,
+			pr_number: 42,
+			pr_url: "https://github.com/example/repo/pull/42",
+		},
+	];
+	const view = renderWorkspaceList();
+	expect(
+		await screen.findByRole("img", { name: "Pull request #42" }),
+	).toBeVisible();
+	mocks.worktreeBranches = [
+		{ ...mocks.worktreeBranches[0], pull_request_error: "PR denied" },
+	];
+	await act(async () => {
+		view.rerenderWorkspaceList();
+	});
+	expect(screen.getByRole("img", { name: "Pull request #42" })).toBeVisible();
+	expect(
+		screen.getByText("PR refresh failed (showing previous result)"),
+	).toHaveAttribute("title", "PR denied");
+	expect(screen.queryByText("PR unavailable")).not.toBeInTheDocument();
 });

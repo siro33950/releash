@@ -1,10 +1,10 @@
 //! worktree 責務の gateway 実装。git2 によるワークツリー操作を封じ込める。
 
 use crate::adaptor::gateway::shared::git_operation;
+use crate::adaptor::gateway::shared::git_operation::GitOperationError;
 use crate::adaptor::gateway::shared::git_operation::{
     detect_default_branch, get_branch_name_for_repo,
 };
-use crate::common::operation_context::OperationStopped;
 use crate::domain::repository::{
     normalize_repo_path, BaseAncestry, RepositoryError, Worktree, WorktreeRepository,
 };
@@ -25,13 +25,9 @@ pub(crate) fn find_main_repo_path(any_path: &str) -> Result<Option<String>, Repo
     }
 }
 
-pub(crate) fn recorded_main_repo_path(
-    path: &str,
-) -> Result<Option<String>, crate::common::operation_context::OperationStopped> {
+pub(crate) fn recorded_main_repo_path(path: &str) -> Result<Option<String>, RepositoryError> {
     if let Some(repository) = git_operation::optional(git_operation::run(|| client::open(path)))? {
-        if let Ok(path) = main_repo_path(&repository) {
-            return Ok(Some(path));
-        }
+        return main_repo_path(&repository).map(Some);
     }
     Ok((|| {
         let git_file = std::fs::read_to_string(Path::new(path).join(".git")).ok()?;
@@ -109,16 +105,28 @@ pub(super) fn each_worktree<'a>(
     repo: &'a Repository,
     names: &'a git2::string_array::StringArray,
 ) -> impl Iterator<
-    Item = Result<(String, git2::Worktree), crate::common::operation_context::OperationStopped>,
+    Item = Result<
+        (String, git2::Worktree),
+        crate::adaptor::gateway::shared::git_operation::GitOperationError,
+    >,
 > + 'a {
     (0..names.len()).filter_map(move |i| {
-        let name = match names.get(i) {
-            Ok(Some(n)) => n.to_string(),
-            _ => return None,
-        };
-        git_operation::optional(git_operation::run(|| repo.find_worktree(&name)))
-            .map(|worktree| worktree.map(|wt| (name, wt)))
-            .transpose()
+        let result = (|| {
+            let name = names
+                .get(i)?
+                .ok_or_else(|| git2::Error::from_str("Invalid worktree name"))?
+                .to_string();
+            let wt = git_operation::run(|| repo.find_worktree(&name))?;
+            Ok((name, wt))
+        })();
+        match result {
+            Err(crate::adaptor::gateway::shared::git_operation::GitOperationError::Git(error))
+                if error.code() == git2::ErrorCode::NotFound =>
+            {
+                None
+            }
+            result => Some(result),
+        }
     })
 }
 
@@ -134,7 +142,11 @@ fn prune_invalid_worktrees(repo: &Repository) -> Result<(), RepositoryError> {
     if let Some(wt_names) = git_operation::optional(git_operation::run(|| repo.worktrees()))? {
         for entry in each_worktree(repo, &wt_names) {
             let (_, wt) = entry?;
-            if git_operation::optional(git_operation::run(|| wt.validate()))?.is_none() {
+            if match git_operation::run(|| wt.validate()) {
+                Ok(()) => false,
+                Err(git_operation::GitOperationError::Git(_)) => true,
+                Err(error) => return Err(error.into()),
+            } {
                 let mut prune_opts = WorktreePruneOptions::new();
                 prune_opts.working_tree(true);
                 git_operation::optional(git_operation::run(|| wt.prune(Some(&mut prune_opts))))?;
@@ -173,7 +185,7 @@ fn is_on_first_parent_line(
     repo: &Repository,
     ancestor_oid: Oid,
     descendant_oid: Oid,
-) -> Result<bool, OperationStopped> {
+) -> Result<bool, GitOperationError> {
     let mut current = descendant_oid;
     const MAX_DEPTH: usize = 10_000;
     for _ in 0..MAX_DEPTH {
@@ -198,8 +210,8 @@ fn is_on_first_parent_line(
 }
 
 /// merge 先の base の先頭を解決する: `releash.base`（設定）→ 既定ブランチ（fallback）。
-fn resolve_base_target_oid(repo: &Repository) -> Result<Option<Oid>, OperationStopped> {
-    let local_tip = |name: &str| -> Result<Option<Oid>, OperationStopped> {
+fn resolve_base_target_oid(repo: &Repository) -> Result<Option<Oid>, GitOperationError> {
+    let local_tip = |name: &str| -> Result<Option<Oid>, GitOperationError> {
         Ok(git_operation::optional(git_operation::run(|| {
             repo.find_branch(name, BranchType::Local)
         }))?
@@ -230,14 +242,14 @@ fn base_ancestry(
     repo: &Repository,
     branch_name: &str,
     base_target_oid: Option<Oid>,
-) -> Result<Option<BaseAncestry>, OperationStopped> {
+) -> Result<Option<BaseAncestry>, GitOperationError> {
+    let Some(target) = base_target_oid else {
+        return Ok(None);
+    };
     let Some(branch_oid) = git_operation::optional(git_operation::run(|| {
         repo.find_branch(branch_name, BranchType::Local)
     }))?
     .and_then(|branch| branch.get().target()) else {
-        return Ok(None);
-    };
-    let Some(target) = base_target_oid else {
         return Ok(None);
     };
     let in_base_history =
@@ -253,8 +265,23 @@ pub(crate) fn list_worktrees(repo_path: &str) -> Result<Vec<Worktree>, Repositor
     let repo = git_operation::run(|| client::open(repo_path))?;
     let main_workdir = resolve_main_repo_path(&repo)?;
     let base_target_oid = resolve_base_target_oid(&repo)?;
-    let is_merged = |branch: &str| -> Result<bool, OperationStopped> {
-        Ok(base_ancestry(&repo, branch, base_target_oid)?.is_some_and(BaseAncestry::is_merged))
+    let is_merged = |source: &Repository| -> Result<bool, GitOperationError> {
+        if base_target_oid.is_none() {
+            return Ok(false);
+        }
+        let Some(head) =
+            git_operation::optional(git_operation::run(|| source.find_reference("HEAD")))?
+        else {
+            return Ok(false);
+        };
+        let Some(head) = git_operation::optional(git_operation::run(|| head.resolve()))? else {
+            return Ok(false);
+        };
+        if !head.is_branch() {
+            return Ok(false);
+        }
+        Ok(base_ancestry(&repo, head.shorthand()?, base_target_oid)?
+            .is_some_and(BaseAncestry::is_merged))
     };
     let mut entries = Vec::new();
 
@@ -268,7 +295,7 @@ pub(crate) fn list_worktrees(repo_path: &str) -> Result<Vec<Worktree>, Repositor
     entries.push(Worktree {
         name: main_name,
         path: path_to_worktree_identity(&main_workdir)?,
-        is_merged: is_merged(&main_branch)?,
+        is_merged: is_merged(&repo)?,
         branch: main_branch,
         is_main: true,
         is_locked: false,
@@ -277,23 +304,27 @@ pub(crate) fn list_worktrees(repo_path: &str) -> Result<Vec<Worktree>, Repositor
     let wt_names = git_operation::run(|| repo.worktrees())?;
     for entry in each_worktree(&repo, &wt_names) {
         let (wt_name, wt) = entry?;
-        if git_operation::optional(git_operation::run(|| wt.validate()))?.is_none() {
+        if match git_operation::run(|| wt.validate()) {
+            Ok(()) => false,
+            Err(git_operation::GitOperationError::Git(_)) => true,
+            Err(error) => return Err(error.into()),
+        } {
             continue;
         }
 
         let wt_path = wt.path();
-        let is_locked = matches!(git_operation::optional(git_operation::run(|| wt.is_locked()))?, Some(s) if !matches!(s, git2::WorktreeLockStatus::Unlocked));
+        let is_locked = !matches!(
+            git_operation::run(|| wt.is_locked())?,
+            git2::WorktreeLockStatus::Unlocked
+        );
 
-        let branch = match git_operation::run(|| Repository::open(wt_path)) {
-            Ok(wt_repo) => get_branch_name_for_repo(&wt_repo)?,
-            Err(git_operation::GitOperationError::Stopped(error)) => return Err(error.into()),
-            Err(_) => "unknown".to_string(),
-        };
+        let wt_repo = git_operation::run(|| Repository::open(wt_path))?;
+        let branch = get_branch_name_for_repo(&wt_repo)?;
 
         entries.push(Worktree {
             name: wt_name,
             path: path_to_worktree_identity(wt_path)?,
-            is_merged: is_merged(&branch)?,
+            is_merged: is_merged(&wt_repo)?,
             branch,
             is_main: false,
             is_locked,
@@ -444,11 +475,11 @@ pub(crate) fn remove_worktree(
 pub struct WorktreeGateway;
 
 impl WorktreeRepository for WorktreeGateway {
+    fn find_main_repo_path(&self, path: &str) -> Result<Option<String>, RepositoryError> {
+        find_main_repo_path(path)
+    }
     fn main_repo_path(&self, any_path: &str) -> Result<String, RepositoryError> {
         get_main_repo_path(any_path)
-    }
-    fn dirty_count(&self, worktree_path: &str) -> Result<u32, RepositoryError> {
-        get_worktree_dirty_count(worktree_path)
     }
     fn list(&self, repo_path: &str) -> Result<Vec<Worktree>, RepositoryError> {
         list_worktrees(repo_path)

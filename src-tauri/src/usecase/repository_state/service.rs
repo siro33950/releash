@@ -71,7 +71,7 @@ impl RepositoryStateService {
     ) -> Result<Arc<RepositorySnapshot>, RepositoryStateError> {
         let key = self.canonical_worktree_key(worktree_path)?;
         if let Some(existing) = self.worktrees.read().get(&key) {
-            return Ok(existing.snapshot_for_read());
+            return existing.read_snapshot();
         }
 
         let canonical_path = key.to_string_lossy().to_string();
@@ -96,15 +96,24 @@ impl RepositoryStateService {
             Ok(None) => Fetched::default(),
             Err(error) => Fetched {
                 value: None,
-                error: Some(error.to_string()),
+                error: Some(crate::domain::failure::WorkFailure::from_error(&error)),
             },
         }
     }
 
-    /// 監視中の worktree の未コミットの変更の数。まだ読めていなければ None。
-    pub fn dirty_count(&self, worktree_path: &str) -> Option<usize> {
-        let key = self.canonical_worktree_key(worktree_path).ok()?;
-        self.worktrees.read().get(&key)?.dirty_count()
+    pub(crate) fn dirty_count(&self, path: &str) -> Fetched<usize> {
+        match self.canonical_worktree_key(path) {
+            Ok(key) => self
+                .worktrees
+                .read()
+                .get(&key)
+                .map(|state| state.dirty_count())
+                .unwrap_or_default(),
+            Err(error) => Fetched {
+                value: None,
+                error: Some(crate::domain::failure::WorkFailure::from_error(&error)),
+            },
+        }
     }
 
     /// Repository の worktree の並びと、各 worktree の変更の状態を読み直す。
@@ -149,7 +158,14 @@ impl RepositoryStateService {
             if state.requested_generation() != generation {
                 continue;
             }
-            if state.commit_snapshot(result?, generation).is_some() {
+            let parts = match result {
+                Ok(parts) => parts,
+                Err(error) => {
+                    state.mark_scan_failed(&error);
+                    return Err(error);
+                }
+            };
+            if state.commit_snapshot(parts, generation).is_some() {
                 return Ok(());
             }
         }
@@ -613,6 +629,7 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn snapshot_dtos_are_derived_from_same_cached_version() {
+        // Given
         let scanner = Arc::new(CountingScanner::with_status(vec![FileStatusDto {
             path: "changed.txt".to_string(),
             index_status: "none".to_string(),
@@ -628,6 +645,7 @@ pub(crate) mod tests {
             if service.get_snapshot(path).unwrap().version >= 1 {
                 break;
             }
+            // When
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
 
@@ -635,10 +653,11 @@ pub(crate) mod tests {
         let diff_stats = service.get_snapshot(path).unwrap();
         let head_tree = service.get_snapshot(path).unwrap();
 
+        // Then
         assert!(status.version >= 1);
         assert_eq!(diff_stats.version, status.version);
         assert_eq!(head_tree.version, status.version);
-        assert_eq!(service.dirty_count(path), Some(status.status.len()));
+        assert_eq!(service.dirty_count(path).value, Some(status.status.len()));
     }
 
     #[tokio::test]
@@ -759,7 +778,7 @@ pub(crate) mod tests {
 
         // Then
         assert_eq!(worktrees, Fetched::default());
-        assert_eq!(dirty_count, None);
+        assert_eq!(dirty_count, Fetched::default());
         assert_eq!(scanner.scan_count(), 0);
         assert!(scanner.prune_calls().is_empty());
     }

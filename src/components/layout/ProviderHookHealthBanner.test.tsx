@@ -15,18 +15,21 @@ describe("ProviderHookHealthBanner", () => {
 	});
 
 	it("Provider別の未解消healthをアプリ全体の警告一つに集約する", () => {
-		states.publish("provider-hook-health", [
-			{
-				provider: "claude",
-				launchId: "launch-claude",
-				reason: "hook_unavailable",
-			},
-			{
-				provider: "codex",
-				launchId: "launch-codex",
-				reason: "hook_unavailable",
-			},
-		]);
+		states.publish("provider-hook-health", {
+			readErrors: [],
+			warnings: [
+				{
+					provider: "claude",
+					launchId: "launch-claude",
+					reason: "hook_unavailable",
+				},
+				{
+					provider: "codex",
+					launchId: "launch-codex",
+					reason: "hook_unavailable",
+				},
+			],
+		});
 
 		render(<ProviderHookHealthBanner />);
 
@@ -40,17 +43,55 @@ describe("ProviderHookHealthBanner", () => {
 		expect(screen.queryByRole("alert")).toBeNull();
 
 		act(() =>
-			states.publish("provider-hook-health", [
-				{
-					provider: "codex",
-					launchId: "launch-codex",
-					reason: "hook_unavailable",
-				},
-			]),
+			states.publish("provider-hook-health", {
+				readErrors: [],
+				warnings: [
+					{
+						provider: "codex",
+						launchId: "launch-codex",
+						reason: "hook_unavailable",
+					},
+				],
+			}),
 		);
 		expect(screen.getByRole("alert")).toBeVisible();
 
-		act(() => states.publish("provider-hook-health", []));
+		act(() =>
+			states.publish("provider-hook-health", { readErrors: [], warnings: [] }),
+		);
 		expect(screen.queryByRole("alert")).toBeNull();
 	});
+	it("記録の読取失敗を警告なしと区別し回復後に解除する", () => {
+		render(<ProviderHookHealthBanner />);
+		act(() => states.fail("provider-hook-health", new Error("corrupt record")));
+		expect(screen.getByRole("alert")).toHaveTextContent("corrupt record");
+		act(() =>
+			states.publish("provider-hook-health", { readErrors: [], warnings: [] }),
+		);
+		expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+	});
+});
+
+it("読めた警告と記録ごとの失敗を一緒に出し購読失敗後も警告を残す", () => {
+	states.clear();
+	states.publish("provider-hook-health", {
+		warnings: [
+			{
+				provider: "codex",
+				launchId: "launch",
+				reason: "local_api_unavailable",
+			},
+		],
+		readErrors: ["record unreadable"],
+	});
+	render(<ProviderHookHealthBanner />);
+	expect(screen.getByRole("alert")).toHaveTextContent("Codex");
+	expect(screen.getByRole("alert")).toHaveTextContent("record unreadable");
+	act(() =>
+		states.fail("provider-hook-health", new Error("subscription unavailable")),
+	);
+	expect(screen.getByRole("alert")).toHaveTextContent("Codex");
+	expect(screen.getByRole("alert")).toHaveTextContent(
+		"subscription unavailable",
+	);
 });

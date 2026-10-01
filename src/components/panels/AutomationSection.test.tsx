@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import type { useAutomation } from "@/hooks/useAutomation";
@@ -11,7 +11,9 @@ const monacoMock = vi.hoisted(() => {
 	};
 	const editor = {
 		dispose: vi.fn(),
-		onDidChangeModelContent: vi.fn(() => ({ dispose: vi.fn() })),
+		onDidChangeModelContent: vi.fn((_listener: () => void) => ({
+			dispose: vi.fn(),
+		})),
 	};
 	return {
 		model,
@@ -61,6 +63,12 @@ function createMockAutomation(
 		facets: [],
 		report: EMPTY_REPORT,
 		loading: false,
+		diagnosticsError: null,
+		workflowsError: null,
+		facetsError: null,
+		workflowError: null,
+		sourceError: null,
+		facetError: null,
 		error: null,
 		setError: vi.fn(),
 		selectedWorkflow: null,
@@ -864,4 +872,103 @@ describe("AutomationSection", () => {
 			expect(screen.getByText("Used by 1")).toBeInTheDocument();
 		});
 	});
+});
+
+it("診断の読取失敗時は保持済み詳細や問題無しの結果を表示せず回復する", () => {
+	const automation = createMockAutomation({
+		error: null,
+		diagnosticsError: "diagnostics unreadable",
+		selectedWorkflow: {
+			name: "old-definition",
+			description: "old detail",
+			builtin: false,
+			nodes: [SESSION_NODE],
+			sourceFormat: "yaml",
+		},
+	});
+	const { rerender } = render(<AutomationSection automation={automation} />);
+	expect(
+		screen.getByText("Diagnostics: diagnostics unreadable"),
+	).toBeInTheDocument();
+	expect(screen.queryByText("old detail")).toBeInTheDocument();
+	expect(screen.getByRole("tab", { name: "Workflows" })).toBeInTheDocument();
+	rerender(
+		<AutomationSection
+			automation={{ ...automation, error: null, diagnosticsError: null }}
+		/>,
+	);
+	expect(screen.queryByText("diagnostics unreadable")).not.toBeInTheDocument();
+	expect(screen.getByRole("tab", { name: "Workflows" })).toBeInTheDocument();
+});
+
+it("workflow編集中の診断失敗でmodelを破棄せず未保存の入力を保存できる", async () => {
+	const user = userEvent.setup();
+	vi.clearAllMocks();
+	const automation = createMockAutomation({
+		selectedWorkflow: {
+			name: "test-wf",
+			description: "Test",
+			builtin: false,
+			sourceFormat: "yaml",
+			nodes: [SESSION_NODE],
+		},
+		selectedWorkflowName: "test-wf",
+		selectedWorkflowSource: "name: test-wf\nnodes: []\n",
+	});
+	const view = render(<AutomationSection automation={automation} />);
+	await user.click(screen.getByText("Edit"));
+	await waitFor(() =>
+		expect(monacoMock.module.editor.create).toHaveBeenCalledTimes(2),
+	);
+	monacoMock.model.dispose.mockClear();
+	monacoMock.model.getValue.mockReturnValueOnce("unsaved draft");
+	const changed = monacoMock.editor.onDidChangeModelContent.mock.calls[
+		monacoMock.editor.onDidChangeModelContent.mock.calls.length - 1
+	]?.[0] as unknown as () => void;
+	act(() => changed());
+	view.rerender(
+		<AutomationSection
+			automation={{
+				...automation,
+				diagnosticsError: "diagnostics unavailable",
+			}}
+		/>,
+	);
+	expect(screen.getByRole("alert")).toHaveTextContent(
+		"Diagnostics: diagnostics unavailable",
+	);
+	expect(screen.getByText("Workflow YAML")).toBeInTheDocument();
+	expect(monacoMock.model.dispose).not.toHaveBeenCalled();
+	await user.click(screen.getByRole("button", { name: /Save/ }));
+	expect(automation.saveWorkflowSource).toHaveBeenCalledWith(
+		"unsaved draft",
+		"test-wf",
+	);
+});
+it("facet編集中の診断失敗でtextareaと未保存の入力を保持する", async () => {
+	const user = userEvent.setup();
+	const automation = createMockAutomation({
+		selectedFacetKey: "guide",
+		selectedFacetKind: "policy",
+		selectedFacetContent: "saved",
+	});
+	const view = render(<AutomationSection automation={automation} />);
+	await user.click(screen.getByRole("tab", { name: "Facets" }));
+	await user.click(screen.getByText("Edit"));
+	const input = screen.getByRole("textbox");
+	await user.clear(input);
+	await user.type(input, "unsaved draft");
+	view.rerender(
+		<AutomationSection
+			automation={{
+				...automation,
+				diagnosticsError: "diagnostics unavailable",
+			}}
+		/>,
+	);
+	expect(screen.getByRole("textbox")).toBe(input);
+	expect(input).toHaveValue("unsaved draft");
+	expect(screen.getByRole("alert")).toHaveTextContent(
+		"Diagnostics: diagnostics unavailable",
+	);
 });

@@ -144,10 +144,10 @@ async fn test_一覧の再走査_監視中も保存済みの結果を使わず�
     service.start_git_dir_watching("/repo").unwrap();
     notifier.wait().await;
     let previous = branch(&service);
-    // When
     service.rescan("/repo").await.unwrap();
     let next = branch(&service);
     let next_snapshot = service.get_snapshot("/repo").unwrap();
+    // When
     service.rescan("/repo").await.unwrap();
     let latest = branch(&service);
     // Then
@@ -158,8 +158,21 @@ async fn test_一覧の再走査_監視中も保存済みの結果を使わず�
     assert_eq!(notifier.count(), 3);
     let snapshot = service.get_snapshot("/repo").unwrap();
     assert_eq!(snapshot.status[0].path, "scan-2");
-    assert_eq!(service.dirty_count("/repo"), Some(2));
+    assert_eq!(service.dirty_count("/repo").value, Some(2));
     assert_eq!(snapshot.version, next_snapshot.version + 1);
+}
+
+#[tokio::test]
+async fn test_一覧の再走査_取得後の失敗で前の一覧と失敗を返す() {
+    // Given
+    let scanner = Arc::new(Scanner::default());
+    let notifier = Arc::new(Notifier::default());
+    let service = service(scanner.clone(), notifier.clone());
+    service.start_git_dir_watching("/repo").unwrap();
+    notifier.wait().await;
+    service.rescan("/repo").await.unwrap();
+    service.rescan("/repo").await.unwrap();
+    let latest = branch(&service);
     // When
     scanner.fail.store(true, Ordering::SeqCst);
     service.rescan("/repo").await.unwrap();
@@ -167,14 +180,12 @@ async fn test_一覧の再走査_監視中も保存済みの結果を使わず�
     let worktrees = service.worktrees("/repo");
     assert!(worktrees.error.is_some());
     assert_eq!(worktrees.value.unwrap()[0].branch, latest);
-    assert!(Arc::ptr_eq(
-        &snapshot,
-        &service.get_snapshot("/repo").unwrap()
-    ));
+    assert!(service.get_snapshot("/repo").is_err());
+    assert!(service.dirty_count("/repo").error.is_some());
 }
 
 #[tokio::test]
-async fn test_走査失敗_自動更新へ通知し再起動せず明示的な再走査で復旧する() {
+async fn test_走査失敗_自動更新へ通知し未取得と失敗を返す() {
     // Given
     let scanner = Arc::new(Scanner::default());
     scanner.fail.store(true, Ordering::SeqCst);
@@ -185,12 +196,28 @@ async fn test_走査失敗_自動更新へ通知し再起動せず明示的な�
     tokio::time::timeout(Duration::from_secs(2), notifier.wait())
         .await
         .unwrap();
-    // Then
-    assert_eq!(notifier.count(), 1);
+    let initial_count = notifier.count();
     service.rescan("/repo").await.unwrap();
+    // Then
+    assert_eq!(initial_count, 1);
+    assert_eq!(notifier.count(), 2);
     let failed = service.worktrees("/repo");
     assert!(!failed.loaded());
     assert!(failed.error.is_some());
+}
+
+#[tokio::test]
+async fn test_走査失敗_再起動せず明示的な再走査で復旧する() {
+    // Given
+    let scanner = Arc::new(Scanner::default());
+    scanner.fail.store(true, Ordering::SeqCst);
+    let notifier = Arc::new(Notifier::default());
+    let service = service(scanner.clone(), notifier.clone());
+    service.start_git_dir_watching("/repo").unwrap();
+    tokio::time::timeout(Duration::from_secs(2), notifier.wait())
+        .await
+        .unwrap();
+    service.rescan("/repo").await.unwrap();
     // When
     scanner.fail.store(false, Ordering::SeqCst);
     service.rescan("/repo").await.unwrap();

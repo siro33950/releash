@@ -1,5 +1,6 @@
 import { Code, ConnectError } from "@connectrpc/connect";
 import { fireEvent, render, screen, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { StrictMode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -9,6 +10,11 @@ Element.prototype.scrollIntoView = vi.fn();
 const mocks = vi.hoisted(() => ({
 	nodeContentViewProps: vi.fn(),
 	settingsModalProps: vi.fn(),
+	branch: "feature" as string | null,
+	branchError: null as string | null,
+	baseError: null as string | null,
+	baseBranch: "main" as string | null,
+	localBranches: ["main", "feature"],
 }));
 
 vi.mock("react-resizable-panels", () => ({
@@ -61,13 +67,14 @@ vi.mock("@/hooks/useWorkspacePersistence", () => ({
 	}),
 }));
 vi.mock("@/hooks/useCurrentBranch", () => ({
-	useCurrentBranch: () => ({ branch: "feature" }),
+	useCurrentBranch: () => ({ branch: mocks.branch, error: mocks.branchError }),
 }));
 vi.mock("@/hooks/useBaseBranch", () => ({
 	useBaseBranch: () => ({
-		baseBranch: "main",
+		baseBranch: mocks.baseBranch,
 		setBaseBranch: vi.fn(),
-		localBranches: ["main", "feature"],
+		localBranches: mocks.localBranches,
+		error: mocks.baseError,
 	}),
 }));
 vi.mock("@/contexts/ReviewThreadHandoffContext", () => ({
@@ -122,9 +129,17 @@ vi.mock("@/screens/WorktreeViewDialogs", () => ({
 	GitErrorDialog: () => null,
 	CreateBranchDialog: () => null,
 }));
-vi.mock("@/components/layout/BranchSelector", () => ({
-	BranchSelector: () => <div data-testid="branch-selector-mock" />,
-}));
+vi.mock("@/components/layout/BranchSelector", async (importOriginal) => {
+	const { BranchSelector } =
+		await importOriginal<typeof import("@/components/layout/BranchSelector")>();
+	return {
+		BranchSelector: (props: React.ComponentProps<typeof BranchSelector>) => (
+			<div data-testid="branch-selector-mock">
+				<BranchSelector {...props} />
+			</div>
+		),
+	};
+});
 vi.mock("@/components/layout/RightPanelHeader", () => ({
 	RightPanelHeader: ({
 		leftSlot,
@@ -457,5 +472,47 @@ describe("MainLayout keep-mounted panes", () => {
 			),
 		).toHaveAttribute("data-right-visible", "false");
 		expect(rightSlotHasToggleFor("/managed/a")).toBe(true);
+	});
+});
+
+describe("ブランチ購読の失敗表示", () => {
+	beforeEach(() => {
+		mocks.branch = "feature";
+		mocks.baseBranch = "main";
+		mocks.localBranches = ["main", "feature"];
+		mocks.branchError = null;
+		mocks.baseError = null;
+	});
+	for (const target of ["current", "base", "choices"] as const) {
+		it(`${target}の再読取失敗でも前回のブランチと選択肢を残す`, async () => {
+			const user = userEvent.setup();
+			const view = renderMainLayout();
+			expect(screen.getByText("feature")).toBeVisible();
+			expect(screen.getByRole("combobox")).toHaveTextContent("main");
+			if (target === "current") mocks.branchError = "current denied";
+			else mocks.baseError = `${target} denied`;
+			view.rerender(mainLayoutElement());
+			expect(screen.getByText("feature")).toBeVisible();
+			expect(screen.getByRole("combobox")).toHaveTextContent("main");
+			expect(screen.getByRole("alert")).toHaveTextContent(
+				`showing previous values: ${target} denied`,
+			);
+			screen.getByRole("combobox").focus();
+			await user.keyboard("{ArrowDown}");
+			expect(screen.getByRole("option", { name: "feature" })).toBeVisible();
+			expect(screen.getByRole("option", { name: "main" })).toBeVisible();
+		});
+	}
+	it("未取得の失敗を正常な未設定と区別する", () => {
+		mocks.branch = null;
+		mocks.baseBranch = null;
+		mocks.localBranches = [];
+		mocks.branchError = "current denied";
+		renderMainLayout();
+		expect(screen.getByRole("alert")).toHaveTextContent(
+			"Failed to read branch data: current denied",
+		);
+		expect(screen.getByRole("alert")).not.toHaveTextContent("showing previous");
+		expect(screen.queryByRole("combobox")).not.toBeInTheDocument();
 	});
 });

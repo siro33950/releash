@@ -1,5 +1,6 @@
 import { useCallback, useContext, useEffect, useRef, useState } from "react";
 import { subscribeState } from "@/lib/client";
+import { getErrorMessage } from "@/lib/errorMessage";
 import { WorkspaceListContext } from "./useWorkspaceList";
 
 export interface WorkspaceReconciliationRequestContext {
@@ -24,6 +25,9 @@ export function useWorkspaceTreeNodes(worktreePath: string) {
 		useState<WorkspaceReconciliationRequestContext | null>(null);
 	const [reconciliationEvent, setEvent] =
 		useState<WorkspaceTreeReconciliationEvent | null>(null);
+	const [reconciliationError, setReconciliationError] = useState<string | null>(
+		null,
+	);
 	const generation = useRef(0);
 	const sequence = useRef(0);
 	const selected = useRef<string | null>(null);
@@ -36,11 +40,16 @@ export function useWorkspaceTreeNodes(worktreePath: string) {
 			},
 			(value) => {
 				if (request.reconciliationGeneration !== generation.current) return;
+				setReconciliationError(null);
 				setEvent({
 					refreshSeq: ++sequence.current,
 					requestContext: request,
 					selectionInSnapshot: value.reconciliation.selectionInSnapshot,
 				});
+			},
+			(error) => {
+				if (request.reconciliationGeneration === generation.current)
+					setReconciliationError(getErrorMessage(error));
 			},
 		);
 	}, [request, worktreePath]);
@@ -48,6 +57,7 @@ export function useWorkspaceTreeNodes(worktreePath: string) {
 		(selectedNodeId: string) => {
 			selected.current = selectedNodeId;
 			setEvent(null);
+			setReconciliationError(null);
 			setRequest({
 				worktreePath,
 				selectedNodeId,
@@ -62,6 +72,7 @@ export function useWorkspaceTreeNodes(worktreePath: string) {
 		generation.current++;
 		setRequest(null);
 		setEvent(null);
+		setReconciliationError(null);
 	}, []);
 	const isReconciliationEventCurrent = useCallback(
 		(event: WorkspaceTreeReconciliationEvent, nodeId: string | null) =>
@@ -81,7 +92,10 @@ export function useWorkspaceTreeNodes(worktreePath: string) {
 		loading: !list || list.status.state === "loading",
 		loaded: list?.status.loaded ?? false,
 		state: list?.status.state ?? "loading",
-		error: list?.status.error ?? null,
+		error:
+			(request?.worktreePath === worktreePath ? reconciliationError : null) ??
+			list?.status.error ??
+			null,
 		beginArchiveReconciliation,
 		synchronizeSelectedNodeId,
 		isReconciliationEventCurrent,

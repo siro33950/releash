@@ -630,8 +630,8 @@ message WorktreeEntryDto {
   optional string branch = 3 [json_name = "branch", (json_required) = true];
   optional bool is_main = 4 [json_name = "is_main", (json_required) = true];
   optional bool is_locked = 5 [json_name = "is_locked", (json_required) = true];
-  optional uint32 dirty_count = 6 [json_name = "dirty_count", (json_required) = true];
-  optional string base_branch = 7 [json_name = "base_branch", (json_nullable) = true];
+  reserved 6, 7;
+  reserved "dirty_count", "base_branch";
 }
 
 message DeleteAgentSessionRequest {
@@ -1877,6 +1877,10 @@ message ProviderHookHealthProviderResponse {
   optional Value value = 1 [json_name = "value", (json_required) = true];
 }
 
+message ProviderHookHealthSnapshot {
+  optional ListProviderHookHealthWarningResponse warnings = 1 [json_name = "warnings", (json_required) = true];
+  repeated string read_errors = 2 [json_name = "readErrors"];
+}
 message ListProviderHookHealthWarningResponse {
   option (json_wrapper) = "items";
   repeated ProviderHookHealthWarningResponse items = 1;
@@ -1888,6 +1892,7 @@ message ListReviewThreadDto {
 }
 
 message WorkflowSummaryDto {
+  optional string read_error = 6 [json_name = "readError"];
   optional string name = 1 [json_name = "name", (json_required) = true];
   optional string description = 2 [json_name = "description", (json_required) = true];
   optional bool builtin = 3 [json_name = "builtin", (json_required) = true];
@@ -2801,9 +2806,11 @@ message WorkspaceBranch {
   optional bool is_main_worktree = 6 [json_name = "is_main_worktree", (json_required) = true];
   optional bool is_deleting = 7 [json_name = "is_deleting", (json_required) = true];
   optional string worktree_path = 8 [json_name = "worktree_path", (json_required) = true];
-  optional uint64 dirty_count = 9 [json_name = "dirty_count", (json_required) = true];
+  optional uint64 dirty_count = 9 [json_name = "dirty_count", (json_nullable) = true];
   optional bool is_merged = 10 [json_name = "is_merged", (json_required) = true];
-  optional bool has_pr = 2 [json_name = "has_pr", (json_required) = true];
+  optional bool has_pr = 2 [json_name = "has_pr", (json_nullable) = true];
+  optional string dirty_count_error = 11 [json_name = "dirty_count_error", (json_nullable) = true];
+  optional string pull_request_error = 12 [json_name = "pull_request_error", (json_nullable) = true];
   optional uint64 pr_number = 3 [json_name = "pr_number", (json_nullable) = true];
   optional string pr_url = 4 [json_name = "pr_url", (json_nullable) = true];
 }
@@ -2841,6 +2848,11 @@ message ListWorkspaceRepositoryList {
   repeated WorkspaceRepositoryList items = 1;
 }
 
+message IssuesSnapshot {
+  optional ListIssueInfoDto issues = 1;
+  optional string read_error = 2;
+}
+
 message OpenStateStreamRequest { string client_id = 1; }
 message StateVersion { string epoch = 1; uint64 sequence = 2; }
 message StartStateSubscriptionRequest {
@@ -2851,10 +2863,14 @@ message StartStateSubscriptionRequest {
   optional string terminal_input_id = 5;
 }
 message StopStateSubscriptionRequest { string client_id = 1; string target = 2; repeated string args = 3; }
+message StateReadFailure { int32 code = 1; string message = 2; }
 message StatePayload {
+  reserved 59;
+  reserved "read_failure";
   reserved 18;
   reserved "failures";
   oneof value {
+
     TerminalEvent terminal = 19;
     Liststring repository_paths = 1;
     WorkspaceListSnapshot workspaces = 2;
@@ -2868,10 +2884,10 @@ message StatePayload {
     Nullablestring branch_base = 10;
     ListBranchStatus branch_status = 11;
     ResultString current_branch = 12;
-    ListIssueInfoDto issues = 13;
+    IssuesSnapshot issues = 13;
     ListWorktreeEntryDto worktrees = 14;
-    ResultString repository_root = 15;
-    ResultString startup_repository = 16;
+    Nullablestring repository_root = 15;
+    Nullablestring startup_repository = 16;
     NullableWorkspaceStateDto workspace_state = 17;
     ReviewSnapshotDto review_snapshot = 30;
     ReviewFileViewDto review_file_view = 31;
@@ -2889,7 +2905,7 @@ message StatePayload {
     Nullablestring releash_base = 54;
     WorkflowSection workflow_config = 55;
     PerformanceSwitchesV1 performance_switches = 56;
-    ListProviderHookHealthWarningResponse provider_hook_health = 57;
+    ProviderHookHealthSnapshot provider_hook_health = 57;
     ApplicationStartupOutcomeDtoV1 startup_outcome = 58;
   }
 }
@@ -2903,6 +2919,7 @@ message StateSubscriptionEvent {
     StatePayload snapshot = 4;
     StateChange change = 5;
     Unit bookmark = 6;
+    StateReadFailure failure = 8;
   }
 }
 

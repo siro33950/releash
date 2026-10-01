@@ -109,6 +109,11 @@ impl TerminalSubscription {
                 Event::Snapshot(_, value) | Event::Change(_, _, value) => value,
                 _ => continue,
             };
+            let crate::adaptor::presenter::state_subscription::PublishedState::Value(value) =
+                value.as_ref()
+            else {
+                panic!("terminal state");
+            };
             let Some(crate::adaptor::presenter::client::state_payload::Value::Terminal(wire)) =
                 &value.value
             else {

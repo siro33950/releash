@@ -49,3 +49,84 @@ fn test_base解決_各停止点で欠損へ変換せず次の候補へ進まな�
     let deleted = dir.path().join("deleted");
     assert_stops_at_each_checkpoint(|| resolve_current_base_branch(deleted.to_str().unwrap()));
 }
+
+#[test]
+fn test_base読取_設定破損を未設定や既定branchに変換しない() {
+    // Given
+    let (dir, repo) = create_test_repo();
+    create_initial_commit(&repo);
+    let branch = repo.head().unwrap().shorthand().unwrap().to_string();
+    std::fs::write(repo.path().join("config"), "[broken\n").unwrap();
+    let path = dir.path().to_str().unwrap();
+    // When
+    let branch_base = get_branch_base(path, &branch);
+    let releash_base = get_releash_base(path);
+    let current_base = resolve_current_base_branch(path);
+    let effective_base = resolve_effective_base_branch(path);
+    // Then
+    assert!(branch_base.is_err());
+    assert!(releash_base.is_err());
+    assert!(current_base.is_err());
+    assert!(effective_base.is_err());
+}
+#[test]
+fn test_base読取_コミットがないbranchは未設定を返す() {
+    // Given
+    let (dir, _repo) = create_test_repo();
+    // When
+    let result = get_branch_base(dir.path().to_str().unwrap(), "unborn");
+    // Then
+    assert_eq!(result.unwrap(), None);
+}
+#[test]
+fn test_base読取_正常な設定から現在branchと既定baseを読む() {
+    // Given
+    let (dir, repo) = create_test_repo();
+    create_initial_commit(&repo);
+    let path = dir.path().to_str().unwrap();
+    let branch = repo.head().unwrap().shorthand().unwrap().to_string();
+    // When
+    let branch_base = get_branch_base(path, &branch);
+    let releash_base = get_releash_base(path);
+    let effective_base = resolve_effective_base_branch(path);
+    // Then
+    assert_eq!(branch_base.unwrap(), Some(branch));
+    assert_eq!(releash_base.unwrap(), None);
+    assert!(effective_base.is_ok());
+}
+
+#[test]
+fn test_git任意読取_resolve_effective_base_branch_リポジトリでないディレクトリは不在を返す() {
+    // Given
+    let directory = tempfile::tempdir().unwrap();
+    assert_eq!(
+        git2::Repository::discover(directory.path())
+            .err()
+            .unwrap()
+            .code(),
+        git2::ErrorCode::NotFound
+    );
+    let path = directory.path().to_path_buf();
+    // When
+    let result = resolve_effective_base_branch(path.to_str().unwrap());
+    // Then
+    assert_eq!(result.unwrap(), None);
+}
+
+#[test]
+fn test_git任意読取_resolve_effective_base_branch_存在しないパスは不在を返す() {
+    // Given
+    let directory = tempfile::tempdir().unwrap();
+    assert_eq!(
+        git2::Repository::discover(directory.path())
+            .err()
+            .unwrap()
+            .code(),
+        git2::ErrorCode::NotFound
+    );
+    let path = directory.path().join("missing");
+    // When
+    let result = resolve_effective_base_branch(path.to_str().unwrap());
+    // Then
+    assert_eq!(result.unwrap(), None);
+}

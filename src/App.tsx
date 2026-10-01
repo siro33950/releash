@@ -126,6 +126,7 @@ function WorkbenchApp() {
 		(async () => {
 			try {
 				const mainPath = await firstState("startup-repository");
+				if (!mainPath) return;
 				initFromCwd(mainPath);
 				const worktrees = await firstState({
 					kind: "worktrees",
@@ -140,8 +141,8 @@ function WorkbenchApp() {
 						repoName,
 					);
 				}
-			} catch {
-				// git リポジトリ外
+			} catch (error) {
+				showClientError(error);
 			}
 		})();
 	}, [openWorktreeTab, initFromCwd]);
@@ -154,9 +155,10 @@ function WorkbenchApp() {
 				kind: "repository-root",
 				args: [selected],
 			});
-			addRepo(mainPath);
-		} catch {
-			openWorktreeTab(selected as string);
+			if (mainPath) addRepo(mainPath);
+			else openWorktreeTab(selected as string);
+		} catch (error) {
+			showClientError(error);
 		}
 	}, [addRepo, openWorktreeTab]);
 

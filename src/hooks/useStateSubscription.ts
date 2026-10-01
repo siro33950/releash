@@ -31,9 +31,3 @@ export function useStateSubscriptionResult<K extends keyof StateValues>(
 	}, [key]);
 	return state?.key === key ? state : { value: undefined, error: null };
 }
-
-export function useStateSubscription<K extends keyof StateValues>(
-	target: StateTarget<K> | null,
-) {
-	return useStateSubscriptionResult(target).value;
-}

@@ -43,7 +43,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Textarea } from "@/components/ui/textarea";
 import type { WorkspaceRepositoryList } from "@/generated/client_types";
-import { useStateSubscription } from "@/hooks/useStateSubscription";
+import { useStateSubscriptionResult } from "@/hooks/useStateSubscription";
 import { useWorkflowConfig } from "@/hooks/useWorkflowConfig";
 import {
 	WorkspaceListContext,
@@ -116,12 +116,30 @@ function isNodeSelected(
 }
 
 function WorktreeIndicators({ branch }: { branch: WorktreeBranch }) {
-	const hasChanges = branch.dirty_count > 0;
+	const hasChanges = branch.dirty_count !== null && branch.dirty_count > 0;
 	const hasPr = branch.has_pr === true;
-	if (!hasChanges && !hasPr) return null;
+	if (
+		!hasChanges &&
+		!hasPr &&
+		!branch.dirty_count_error &&
+		!branch.pull_request_error
+	)
+		return null;
 
 	return (
 		<div className="relative h-5 w-full text-muted-foreground">
+			{branch.dirty_count_error && (
+				<span role="alert" title={branch.dirty_count_error}>
+					Changes unavailable
+				</span>
+			)}
+			{branch.pull_request_error && (
+				<span role="alert" title={branch.pull_request_error}>
+					{branch.has_pr == null
+						? "PR unavailable"
+						: "PR refresh failed (showing previous result)"}
+				</span>
+			)}
 			{hasChanges && (
 				<span
 					className={`absolute top-0 inline-flex h-5 w-5 items-center justify-center rounded text-[10px] leading-none tabular-nums ${
@@ -810,7 +828,7 @@ function WorktreeTreeItem({
 	);
 
 	const [historyCount, setHistoryCount] = useState(20);
-	const historyPage = useStateSubscription(
+	const historyPage = useStateSubscriptionResult(
 		worktreeMenuOpen
 			? {
 					kind: "session-history",
@@ -818,9 +836,10 @@ function WorktreeTreeItem({
 				}
 			: null,
 	);
-	const providerHistory = historyPage?.items ?? [];
-	const providerHistoryHasMore = historyPage?.hasMore;
-	const providerHistoryLoading = worktreeMenuOpen && historyPage === undefined;
+	const providerHistory = historyPage.value?.items ?? [];
+	const providerHistoryHasMore = historyPage.value?.hasMore;
+	const providerHistoryLoading =
+		worktreeMenuOpen && historyPage.value === undefined && !historyPage.error;
 	const loadMoreProviderHistory = () => setHistoryCount((count) => count + 20);
 
 	const handleResumeProviderHistory = useCallback(
@@ -914,11 +933,14 @@ function WorktreeTreeItem({
 		[],
 	);
 
-	const providerValues = useStateSubscription(
+	const providerValues = useStateSubscriptionResult(
 		createMenuOpen ? "providers" : null,
 	);
-	const availableProviders = providerValues ?? [];
-	const providerMenuLoading = createMenuOpen && providerValues === undefined;
+	const availableProviders = providerValues.value ?? [];
+	const providerMenuLoading =
+		createMenuOpen &&
+		providerValues.value === undefined &&
+		!providerValues.error;
 
 	const handleCreateAgentSession = useCallback(
 		async (provider: string) => {
@@ -1124,6 +1146,9 @@ function WorktreeTreeItem({
 										SessionHistory
 									</DropdownMenuSubTrigger>
 									<DropdownMenuSubContent>
+										{historyPage.error && (
+											<div role="alert">{historyPage.error}</div>
+										)}
 										{(providerHistoryLoading ||
 											archivedProviderSessionsLoading) && (
 											<DropdownMenuItem disabled>
@@ -1134,7 +1159,8 @@ function WorktreeTreeItem({
 										{archivedAgentSessions.length === 0 &&
 										providerHistory.length === 0 &&
 										!providerHistoryLoading &&
-										!archivedProviderSessionsLoading ? (
+										!archivedProviderSessionsLoading &&
+										!historyPage.error ? (
 											<DropdownMenuItem disabled>
 												No session history
 											</DropdownMenuItem>
@@ -1269,12 +1295,16 @@ function WorktreeTreeItem({
 										NewSession
 									</DropdownMenuSubTrigger>
 									<DropdownMenuSubContent className="w-56">
+										{providerValues.error && (
+											<div role="alert">{providerValues.error}</div>
+										)}
 										{providerMenuLoading ? (
 											<DropdownMenuItem disabled>
 												<Loader2 className="size-3.5 animate-spin" />
 												Loading Providers
 											</DropdownMenuItem>
-										) : availableProviders.length === 0 ? (
+										) : availableProviders.length === 0 &&
+											!providerValues.error ? (
 											<DropdownMenuItem disabled>
 												No available Providers
 											</DropdownMenuItem>

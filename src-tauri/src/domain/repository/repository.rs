@@ -26,7 +26,7 @@ pub trait StatusRepository: Send + Sync {
 /// ワークツリーの参照・作成・削除。
 pub trait WorktreeRepository: Send + Sync {
     fn main_repo_path(&self, any_path: &str) -> Result<String, RepositoryError>;
-    fn dirty_count(&self, worktree_path: &str) -> Result<u32, RepositoryError>;
+    fn find_main_repo_path(&self, any_path: &str) -> Result<Option<String>, RepositoryError>;
     fn list(&self, repo_path: &str) -> Result<Vec<Worktree>, RepositoryError>;
     fn create(
         &self,

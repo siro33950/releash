@@ -193,10 +193,10 @@ export type StateValues = {
 	"branch-base": string | null;
 	"branch-status": import("@/generated/client_types").ListBranchStatus;
 	"current-branch": string;
-	issues: import("@/generated/client_types").IssueInfoDto[];
+	issues: import("@/generated/client_types").IssuesSnapshot;
 	worktrees: import("@/generated/client_types").WorktreeEntryDto[];
-	"repository-root": string;
-	"startup-repository": string;
+	"repository-root": string | null;
+	"startup-repository": string | null;
 	"workspace-state":
 		| import("@/generated/client_types").WorkspaceStateDto
 		| null;
@@ -218,7 +218,7 @@ export type StateValues = {
 	"releash-base": string | null;
 	"workflow-config": import("@/generated/client_types").WorkflowSection;
 	"performance-switches": import("@/generated/client_types").PerformanceSwitchesV1;
-	"provider-hook-health": import("@/generated/client_types").ProviderHookHealthWarningResponse[];
+	"provider-hook-health": import("@/generated/client_types").ProviderHookHealthSnapshot;
 	"startup-outcome": import("@/generated/client_types").ApplicationStartupOutcomeDtoV1;
 };
 export type StateTarget<K extends keyof StateValues> =
@@ -233,6 +233,7 @@ type StateEntry = {
 	args: string[];
 	receivers: Set<(value: never) => void>;
 	errors: Set<(error: unknown) => void>;
+	error?: { current: unknown };
 	version?: StateVersion;
 	value?: { current: unknown };
 };
@@ -313,6 +314,7 @@ function startState(stream: StateStream, target: string) {
 					return;
 				}
 				console.error("State subscription failed", error);
+				entry.error = { current: error };
 				for (const receiver of entry.errors) receiver(error);
 			}),
 	);
@@ -348,6 +350,15 @@ function ensureStateStream() {
 					const entry = states.get(stateTargetKey(event.target, event.args));
 					if (!entry) continue;
 					entry.version = event.version;
+					if (event.event.case === "failure") {
+						const error = new ConnectError(
+							event.event.value.message,
+							event.event.value.code,
+						);
+						entry.error = { current: error };
+						for (const receiver of entry.errors) receiver(error);
+						continue;
+					}
 					const value = decodeState(
 						event.event.case === "snapshot"
 							? event.event.value
@@ -356,6 +367,7 @@ function ensureStateStream() {
 								: undefined,
 					);
 					if (!value) continue;
+					entry.error = undefined;
 					const delta =
 						event.event.case === "change" && event.event.value.delta;
 					if (!delta && entry.kind !== "terminal") entry.value = value;
@@ -393,7 +405,7 @@ function ensureStateStream() {
 export function subscribeState<K extends keyof StateValues>(
 	input: StateTarget<K>,
 	onValue: (value: StateValues[K]) => void,
-	onError?: (error: unknown) => void,
+	onError: (error: unknown) => void,
 ) {
 	const kind = typeof input === "string" ? input : input.kind;
 	const args = typeof input === "string" ? [] : input.args;
@@ -410,17 +422,21 @@ export function subscribeState<K extends keyof StateValues>(
 		states.set(target, entry);
 		if (stateStream) startState(stateStream, target);
 	} else if (kind === "terminal") {
+		entry.error = undefined;
 		entry.version = undefined;
 		if (stateStream) startState(stateStream, target);
-	} else if (entry.value) onValue(entry.value.current as StateValues[K]);
+	} else {
+		if (entry.value) onValue(entry.value.current as StateValues[K]);
+		if (entry.error) onError(entry.error.current);
+	}
 	entry.receivers.add(receiver);
-	if (onError) entry.errors.add(onError);
+	entry.errors.add(onError);
 	if (connectionState.phase !== "SHUTDOWN") ensureStateStream();
 	return () => {
 		const current = states.get(target);
 		if (current !== entry) return;
 		current.receivers.delete(receiver);
-		if (onError) current.errors.delete(onError);
+		current.errors.delete(onError);
 		if (current.receivers.size) return;
 		states.delete(target);
 		if (!states.size) {

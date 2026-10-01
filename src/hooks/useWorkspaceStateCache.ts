@@ -54,7 +54,10 @@ export function useWorkspaceStateCache(): UseWorkspaceStateCacheReturn {
 							cacheRef.current.set(rootPath, state);
 						resolve(state ?? undefined);
 					},
-					() => resolve(undefined),
+					(error) => {
+						logClientError("Failed to load workspace state:", error);
+						resolve(undefined);
+					},
 				);
 				subscriptions.current.set(rootPath, release);
 			});

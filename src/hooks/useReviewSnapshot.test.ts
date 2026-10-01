@@ -94,6 +94,27 @@ describe("useReviewSnapshot", () => {
 		expect(result.current.stagedFiles).toEqual([]);
 	});
 
+	it("読み直しの失敗では前の差分と失敗を保持し回復後の差分を表示する", () => {
+		const target = {
+			kind: "review-snapshot" as const,
+			args: ["/repo", "head"],
+		};
+		const { result } = renderHook(() => useReviewSnapshot("/repo", "head"));
+		act(() =>
+			states.publish(target, snapshot({ version: 7, changesFileCount: 3 })),
+		);
+		act(() => states.fail(target, new Error("scan failed")));
+		expect(result.current.error).toBe("scan failed");
+		expect(result.current.version).toBe(7);
+		expect(result.current.changesFileCount).toBe(3);
+		expect(result.current.loading).toBe(false);
+		act(() =>
+			states.publish(target, snapshot({ version: 8, changesFileCount: 2 })),
+		);
+		expect(result.current.error).toBeNull();
+		expect(result.current.changesFileCount).toBe(2);
+	});
+
 	it("worktreeやbaseが変わると前の一覧を表示せず新しい対象を購読する", () => {
 		const { result, rerender } = renderHook(
 			({ path, base }) => useReviewSnapshot(path, base),

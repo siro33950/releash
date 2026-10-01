@@ -30,3 +30,19 @@ it("Repository未選択では購読しない", () => {
 	renderHook(() => useCurrentBranch(null));
 	expect(subscribeState).not.toHaveBeenCalled();
 });
+
+it("読取失敗時は前のブランチを表示せず回復後の値を表示する", () => {
+	let receive!: (value: string) => void;
+	let fail!: (error: unknown) => void;
+	vi.mocked(subscribeState).mockImplementation((_target, next, onError) => {
+		receive = next;
+		fail = onError;
+		return vi.fn();
+	});
+	const { result } = renderHook(() => useCurrentBranch("/repo"));
+	act(() => receive("main"));
+	act(() => fail(new Error("denied")));
+	expect(result.current).toEqual({ branch: "main", error: "denied" });
+	act(() => receive("develop"));
+	expect(result.current).toEqual({ branch: "develop", error: null });
+});

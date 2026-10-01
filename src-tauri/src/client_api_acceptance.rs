@@ -562,8 +562,16 @@ pub async fn read_state(
             ..Default::default()
         })
         .await?;
-    let Some(rpc::state_subscription_event::Event::Snapshot(payload)) = item.event else {
-        panic!("snapshot")
+    let payload = match item.event {
+        Some(rpc::state_subscription_event::Event::Snapshot(payload)) => payload,
+        Some(rpc::state_subscription_event::Event::Failure(failure)) => {
+            return Err(connectrpc::ConnectError::new(
+                connectrpc::ErrorCode::from_grpc_code(failure.code as u32)
+                    .expect("failure event must have an error code"),
+                failure.message,
+            ));
+        }
+        _ => panic!("snapshot or failure"),
     };
     use crate::adaptor::presenter::{client as wire, connect_wire::to_wire};
     let payload: wire::StatePayload = to_wire(payload.as_ref())?;
@@ -587,10 +595,9 @@ pub async fn read_state(
             "releash.client.v1.ProviderAvailabilitySnapshotResponse",
             &value,
         ),
-        wire::state_payload::Value::ProviderHookHealth(value) => wire::from_message(
-            "releash.client.v1.ListProviderHookHealthWarningResponse",
-            &value,
-        ),
+        wire::state_payload::Value::ProviderHookHealth(value) => {
+            wire::from_message("releash.client.v1.ProviderHookHealthSnapshot", &value)
+        }
         wire::state_payload::Value::DesktopSettings(value) => {
             wire::from_message("releash.client.v1.DesktopSettings", &value)
         }

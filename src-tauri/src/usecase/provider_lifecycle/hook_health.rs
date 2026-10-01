@@ -13,48 +13,6 @@ pub(crate) struct ProviderHookHealthWarning {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ProviderHookHealthWarningDto {
-    pub(crate) provider: crate::usecase::provider_dto::AgentSessionProviderDto,
-    pub(crate) launch_id: String,
-    pub(crate) reason: ProviderHookHealthReasonDto,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ProviderHookHealthReasonDto {
-    SessionStartDeadlineExceeded,
-    CodexHookDeliveryUnconfirmed,
-    ProviderHookConfigurationRejected,
-    LocalApiUnavailable,
-}
-
-impl From<ProviderLifecycleUnavailableReason> for ProviderHookHealthReasonDto {
-    fn from(value: ProviderLifecycleUnavailableReason) -> Self {
-        match value {
-            ProviderLifecycleUnavailableReason::SessionStartDeadlineExceeded => {
-                Self::SessionStartDeadlineExceeded
-            }
-            ProviderLifecycleUnavailableReason::CodexHookDeliveryUnconfirmed => {
-                Self::CodexHookDeliveryUnconfirmed
-            }
-            ProviderLifecycleUnavailableReason::ProviderHookConfigurationRejected => {
-                Self::ProviderHookConfigurationRejected
-            }
-            ProviderLifecycleUnavailableReason::LocalApiUnavailable => Self::LocalApiUnavailable,
-        }
-    }
-}
-
-impl From<ProviderHookHealthWarning> for ProviderHookHealthWarningDto {
-    fn from(value: ProviderHookHealthWarning) -> Self {
-        Self {
-            provider: value.provider.into(),
-            launch_id: value.launch_id,
-            reason: value.reason.into(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ProviderHookHealthFailureObservation {
     pub(crate) provider: ProviderKind,
     pub(crate) launch_id: String,
@@ -72,7 +30,10 @@ pub(crate) trait ProviderHookHealthFailureQuery: Send + Sync {
     async fn list(
         &self,
         limit: usize,
-    ) -> Result<Vec<ProviderHookHealthFailureObservation>, ProviderHookHealthFailureQueryError>;
+    ) -> Result<
+        Vec<Result<ProviderHookHealthFailureObservation, ProviderHookHealthFailureQueryError>>,
+        ProviderHookHealthFailureQueryError,
+    >;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -94,6 +55,11 @@ pub(crate) struct ProviderHookHealthReadUsecase {
     failures: Arc<dyn ProviderHookHealthFailureQuery>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ProviderHookHealthReadResult {
+    pub warnings: Vec<ProviderHookHealthWarning>,
+    pub failures: Vec<ProviderHookHealthFailureQueryError>,
+}
 impl ProviderHookHealthReadUsecase {
     pub(crate) fn new(
         health: Arc<ProviderHookHealthUsecase>,
@@ -104,14 +70,22 @@ impl ProviderHookHealthReadUsecase {
 
     pub(crate) async fn warnings(
         &self,
-    ) -> Result<Vec<ProviderHookHealthWarning>, ProviderHookHealthUsecaseError> {
+    ) -> Result<ProviderHookHealthReadResult, ProviderHookHealthUsecaseError> {
         let observations = self.failures.list(256).await.map_err(|error| match error {
             ProviderHookHealthFailureQueryError::Unavailable => {
                 ProviderHookHealthUsecaseError::StorageUnavailable
             }
             ProviderHookHealthFailureQueryError::Corrupt => ProviderHookHealthUsecaseError::Corrupt,
         })?;
+        let mut failures = Vec::new();
         for observation in observations {
+            let observation = match observation {
+                Ok(observation) => observation,
+                Err(error) => {
+                    failures.push(error);
+                    continue;
+                }
+            };
             self.health
                 .record_unavailable(
                     observation.provider,
@@ -125,7 +99,10 @@ impl ProviderHookHealthReadUsecase {
                 )
                 .await?;
         }
-        self.health.warnings().await
+        Ok(ProviderHookHealthReadResult {
+            warnings: self.health.warnings().await?,
+            failures,
+        })
     }
 }
 

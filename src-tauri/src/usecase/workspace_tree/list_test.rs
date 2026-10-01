@@ -24,14 +24,14 @@ fn values(path: &str, branch: &str, is_merged: bool) -> WorktreeValues {
     WorktreeValues {
         worktree: worktree(path, branch, is_merged),
         deleting: false,
-        dirty_count: 0,
+        dirty_count: Fetched::ready(0),
     }
 }
 
 fn failed_tree(message: &str) -> Fetched<WorkspaceTree> {
     Fetched {
         value: None,
-        error: Some(message.to_string()),
+        error: Some(failure(message)),
     }
 }
 
@@ -45,7 +45,7 @@ fn test_一覧の合成_prの状態でpr情報とmerge済みを決める() {
             values("/a/merged", "merged", false),
             values("/a/git", "git-merged", true),
         ]),
-        pull_requests: Some(PrStatus {
+        pull_requests: Fetched::ready(PrStatus {
             open_prs: HashMap::from([(
                 "open".into(),
                 PrInfo {
@@ -84,7 +84,7 @@ fn test_一覧の合成_prが未取得ならworktreeのmerge済みをそのま�
             values("/a", "main", false),
             values("/a/git", "git-merged", true),
         ]),
-        pull_requests: None,
+        pull_requests: Fetched::default(),
     }];
 
     // When
@@ -102,28 +102,28 @@ fn test_一覧の合成_読めているworktreeの並び順に実行木を割り
     // Given
     let mut deleting = values("/a/two", "two", false);
     deleting.deleting = true;
-    deleting.dirty_count = 3;
+    deleting.dirty_count = Fetched::ready(3);
     let repositories = vec![
         RepositoryValues {
             path: "/a".into(),
             worktrees: Fetched {
                 value: Some(vec![values("/a", "one", false), deleting]),
-                error: Some("scan failed".into()),
+                error: Some(failure("scan failed")),
             },
-            pull_requests: None,
+            pull_requests: Fetched::default(),
         },
         RepositoryValues {
             path: "/b".into(),
             worktrees: Fetched {
                 value: None,
-                error: Some("not a repository".into()),
+                error: Some(failure("not a repository")),
             },
-            pull_requests: None,
+            pull_requests: Fetched::default(),
         },
         RepositoryValues {
             path: "/c".into(),
             worktrees: Fetched::ready(vec![values("/c", "three", false)]),
-            pull_requests: None,
+            pull_requests: Fetched::default(),
         },
     ];
 
@@ -135,17 +135,24 @@ fn test_一覧の合成_読めているworktreeの並び順に実行木を割り
 
     // Then
     let first = &list.repositories[0];
-    assert_eq!(first.worktrees.error.as_deref(), Some("scan failed"));
+    assert_eq!(
+        first
+            .worktrees
+            .error
+            .as_ref()
+            .map(|failure| failure.message.as_str()),
+        Some("scan failed")
+    );
     let rows = first.worktrees.value.as_ref().unwrap();
     assert_eq!(rows[0].tree, failed_tree("one"));
     assert_eq!(rows[1].tree, failed_tree("two"));
     assert!(rows[1].deleting);
-    assert_eq!(rows[1].dirty_count, 3);
+    assert_eq!(rows[1].dirty_count, Fetched::ready(3));
     assert_eq!(
         list.repositories[1].worktrees,
         Fetched {
             value: None,
-            error: Some("not a repository".into()),
+            error: Some(failure("not a repository")),
         }
     );
     let rows = list.repositories[2].worktrees.value.as_ref().unwrap();
@@ -293,7 +300,7 @@ impl Fixture {
                         self.repository_state.start_git_dir_watching(&path).unwrap();
                     }
                 }
-                let list = self.usecase.read().await;
+                let list = self.usecase.read().await.unwrap();
                 if list.repositories[0]
                     .worktrees
                     .value
@@ -315,8 +322,31 @@ fn rows(list: &WorkspaceList) -> &[WorkspaceListWorktree] {
 }
 
 #[tokio::test]
-async fn test_一覧の読み取り_監視前は取得中で走査後にworktreeと変更の数と実行木を並べる() {
-    // Given: main に未コミットの変更が 1 件あり、linked worktree が 1 つある Repository
+async fn test_一覧の読み取り_監視前は取得中を返す() {
+    // Given
+    let fixture = Fixture::new(PullRequests {
+        status: PrStatus::default(),
+        release: None,
+    });
+    std::fs::write(
+        std::path::Path::new(&fixture.path).join("untracked.txt"),
+        "new",
+    )
+    .unwrap();
+    fixture.add_worktree("feature");
+
+    // When
+    let before = fixture.usecase.read().await.unwrap();
+
+    // Then
+    assert_eq!(before.repositories.len(), 1);
+    assert_eq!(before.repositories[0].path, fixture.path);
+    assert_eq!(before.repositories[0].worktrees, Fetched::default());
+}
+
+#[tokio::test]
+async fn test_一覧の読み取り_走査後にworktreeと変更の数と実行木を並べる() {
+    // Given
     let fixture = Fixture::new(PullRequests {
         status: PrStatus::default(),
         release: None,
@@ -328,17 +358,13 @@ async fn test_一覧の読み取り_監視前は取得中で走査後にworktree
     .unwrap();
     let feature = fixture.add_worktree("feature");
 
-    // When: まだ何も監視していない
-    let before = fixture.usecase.read().await;
-
-    // Then: 取得中であり、項目なしではない
-    assert_eq!(before.repositories.len(), 1);
-    assert_eq!(before.repositories[0].path, fixture.path);
-    assert_eq!(before.repositories[0].worktrees, Fetched::default());
-
-    // When: 監視が始まり、走査が終わる
+    // When
     let list = fixture
-        .watch_until(|rows| rows.len() == 2 && rows[0].dirty_count == 1)
+        .watch_until(|rows| {
+            rows.len() == 2
+                && rows[0].dirty_count.value == Some(1)
+                && rows[1].dirty_count.value == Some(0)
+        })
         .await;
 
     // Then
@@ -349,7 +375,7 @@ async fn test_一覧の読み取り_監視前は取得中で走査後にworktree
     assert_eq!(rows[0].worktree.path, fixture.path);
     assert_eq!(rows[1].worktree.branch, "feature");
     assert_eq!(rows[1].worktree.path, feature);
-    assert_eq!(rows[1].dirty_count, 0);
+    assert_eq!(rows[1].dirty_count.value, Some(0));
     for row in rows {
         assert!(!row.deleting);
         assert!(row.pull_request.is_none());
@@ -359,8 +385,41 @@ async fn test_一覧の読み取り_監視前は取得中で走査後にworktree
 }
 
 #[tokio::test]
-async fn test_手動更新_走査をやり直して終わりまで待ちprの取得は待たない() {
-    // Given: PR の取得が終わらない Repository
+async fn test_手動更新_走査を待ちpr取得前に一覧を返す() {
+    // Given
+    let (release, blocked) = std::sync::mpsc::channel();
+    let fixture = Fixture::new(PullRequests {
+        status: PrStatus {
+            open_prs: HashMap::from([(
+                "feature".into(),
+                PrInfo {
+                    number: 42,
+                    url: "https://example.test/pull/42".into(),
+                },
+            )]),
+            merged_branches: Vec::new(),
+        },
+        release: Some(parking_lot::Mutex::new(blocked)),
+    });
+    fixture.watch_until(|rows| rows.len() == 1).await;
+    fixture.add_worktree("feature");
+
+    // When
+    tokio::time::timeout(Duration::from_secs(5), fixture.usecase.refresh())
+        .await
+        .expect("refresh must not wait for pull requests");
+    let scanned = fixture.usecase.read().await.unwrap();
+
+    release.send(()).unwrap();
+    // Then
+    assert_eq!(rows(&scanned).len(), 2);
+    assert_eq!(rows(&scanned)[1].worktree.branch, "feature");
+    assert!(rows(&scanned)[1].pull_request.is_none());
+}
+
+#[tokio::test]
+async fn test_手動更新_pr取得後に前の一覧へprを反映する() {
+    // Given
     let (release, blocked) = std::sync::mpsc::channel();
     let fixture = Fixture::new(PullRequests {
         status: PrStatus {
@@ -379,18 +438,11 @@ async fn test_手動更新_走査をやり直して終わりまで待ちprの取
     fixture.add_worktree("feature");
     let mut changes = crate::test_support::state_subscription::changes(&fixture.subscriptions);
 
-    // When
     tokio::time::timeout(Duration::from_secs(5), fixture.usecase.refresh())
         .await
         .expect("refresh must not wait for pull requests");
-    let scanned = fixture.usecase.read().await;
 
-    // Then: 走査の結果は読め、PR はまだ無い
-    assert_eq!(rows(&scanned).len(), 2);
-    assert_eq!(rows(&scanned)[1].worktree.branch, "feature");
-    assert!(rows(&scanned)[1].pull_request.is_none());
-
-    // When: PR が取れる
+    // When
     release.send(()).unwrap();
     tokio::time::timeout(Duration::from_secs(5), async {
         while changes.recv().await.unwrap() != StateChangeSource::WorkspaceList {}
@@ -398,8 +450,8 @@ async fn test_手動更新_走査をやり直して終わりまで待ちprの取
     .await
     .expect("pull request change must be notified");
 
+    let list = fixture.usecase.read().await.unwrap();
     // Then
-    let list = fixture.usecase.read().await;
     assert_eq!(
         rows(&list)[1].pull_request,
         Some(PrInfo {
@@ -422,6 +474,90 @@ async fn test_repositoryの削除_一覧と監視の対象から外れる() {
     fixture.repositories.remove(&fixture.path).unwrap();
 
     // Then
-    assert!(fixture.usecase.read().await.repositories.is_empty());
+    assert!(fixture
+        .usecase
+        .read()
+        .await
+        .unwrap()
+        .repositories
+        .is_empty());
     assert!(fixture.usecase.watch_paths().is_empty());
+}
+
+#[test]
+fn test_一覧の合成_未コミット数とprの読取失敗を未設定と区別する() {
+    // Given
+    let mut row = values("/repo", "main", false);
+    row.dirty_count = Fetched {
+        value: None,
+        error: Some(failure("scan failed")),
+    };
+    let repositories = vec![RepositoryValues {
+        path: "/repo".into(),
+        worktrees: Fetched::ready(vec![row]),
+        pull_requests: Fetched {
+            value: None,
+            error: Some(failure("PR failed")),
+        },
+    }];
+    // When
+    let list = compose(repositories, vec![Fetched::default()]);
+    // Then
+    let row = &list.repositories[0].worktrees.value.as_ref().unwrap()[0];
+    assert_eq!(row.dirty_count.value, None);
+    assert_eq!(
+        row.dirty_count
+            .error
+            .as_ref()
+            .map(|failure| failure.message.as_str()),
+        Some("scan failed")
+    );
+    assert_eq!(
+        row.pull_request_error
+            .as_ref()
+            .map(|failure| failure.message.as_str()),
+        Some("PR failed")
+    );
+}
+
+#[tokio::test]
+async fn test_一覧の読取_収集処理の失敗を空の一覧に変えない() {
+    // Given
+    struct PanickingPaths;
+    impl RepoPathsRepository for PanickingPaths {
+        fn get(&self) -> Vec<String> {
+            panic!("repository collection failed")
+        }
+        fn add(&self, _: &str) -> Result<bool, RepositoryError> {
+            unreachable!()
+        }
+        fn remove(&self, _: &str) -> Result<bool, RepositoryError> {
+            unreachable!()
+        }
+    }
+    let mut fixture = Fixture::new(PullRequests {
+        status: PrStatus::default(),
+        release: None,
+    });
+    fixture.usecase.repositories = Arc::new(RepoPathsUsecase::new(
+        Arc::new(PanickingPaths),
+        fixture.subscriptions.clone(),
+    ));
+    // When
+    let error = fixture.usecase.read().await.unwrap_err();
+    // Then
+    assert_eq!(
+        error.nature,
+        crate::domain::failure::TechnicalFailureNature::Other
+    );
+    assert!(error.message.contains("repository collection failed"));
+}
+
+fn failure(message: &str) -> crate::domain::failure::WorkFailure {
+    crate::domain::failure::WorkFailure {
+        kind: crate::domain::failure::Failure::Technical(
+            crate::domain::failure::TechnicalFailureNature::Other,
+        ),
+        message: message.into(),
+    }
 }
