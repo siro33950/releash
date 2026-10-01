@@ -88,6 +88,19 @@ GIVEN `desktop-settings` の読み込みが失敗している
 WHEN 設定画面を開く
 THEN performance metrics の設定の場所に、読み込みの失敗が表示される
 
+## B-015: performance metrics の書き込みの失敗をその欄に出し、変えた値を残す
+
+GIVEN `desktop-settings` を読めていて、設定画面で performance metrics の設定を変えた
+WHEN Save して、performance metrics の daemon への書き込みが失敗する
+THEN performance metrics の設定の場所に、書き込みの失敗が表示される
+AND 変えた値は、保存されていないものとして設定画面に残る
+
+## B-016: 他の欄の保存の失敗の後に Save し直すと performance metrics を書き込む
+
+GIVEN `desktop-settings` を読めていて、設定画面で performance metrics の設定と他の設定を変えた
+WHEN Save して他の設定の保存が失敗し、performance metrics の書き込みまで届かなかった後に、もう一度 Save する
+THEN performance metrics の設定は、変えた値で daemon に書き込まれる
+
 ## 要件IDとBehavior IDの対応表
 | Requirement ID | Behavior ID |
 | --- | --- |
@@ -100,4 +113,4 @@ THEN performance metrics の設定の場所に、読み込みの失敗が表示�
 | R-007 | B-008 |
 | R-008 | B-009, B-013, B-014 |
 | R-009 | B-010 |
-| R-010 | B-011, B-012 |
+| R-010 | B-011, B-012, B-015, B-016 |

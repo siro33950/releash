@@ -41,6 +41,29 @@ describe("useSettings", () => {
 		expect(result.current.settings.performanceTelemetry).toBe(true);
 	});
 
+	it("通常設定や文字サイズの保存ではmetricsを変えず購読だけを反映する", () => {
+		states.publish("desktop-settings", desktopSettings(true));
+		const { result } = renderHook(() => useSettings());
+		const staleSettings = {
+			...result.current.settings,
+			performanceTelemetry: false,
+			fontSize: 18,
+		};
+		act(() => result.current.updateSettings(staleSettings));
+		expect(result.current.settings.performanceTelemetry).toBe(true);
+		expect(result.current.settings.fontSize).toBe(18);
+		act(() => states.publish("desktop-settings", desktopSettings(false)));
+		expect(result.current.settings.performanceTelemetry).toBe(false);
+		const menuSettings = {
+			...staleSettings,
+			performanceTelemetry: true,
+			fontSize: 19,
+		};
+		act(() => result.current.updateSettings(menuSettings));
+		expect(result.current.settings.performanceTelemetry).toBe(false);
+		expect(result.current.settings.fontSize).toBe(19);
+	});
+
 	it("should return default settings when localStorage is empty", () => {
 		const { result } = renderHook(() => useSettings());
 		expect(result.current.settings).toEqual(DEFAULT_SETTINGS);

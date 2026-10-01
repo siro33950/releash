@@ -9,6 +9,7 @@ import {
 	within,
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { Profiler } from "react";
 import {
 	afterEach,
 	beforeAll,
@@ -151,6 +152,8 @@ describe("SettingsModal", () => {
 	});
 
 	const defaultSettings: AppSettings = { ...DEFAULT_SETTINGS };
+	const { performanceTelemetry: _performanceTelemetry, ...defaultDraft } =
+		defaultSettings;
 
 	const defaultProps = {
 		open: true,
@@ -192,11 +195,10 @@ describe("SettingsModal", () => {
 			vi.mocked(invokeClient).mockClear();
 			await user.click(screen.getByRole("button", { name: "Save" }));
 			await waitFor(() =>
-				expect(onSave).toHaveBeenCalledWith(
-					expect.objectContaining({
-						performanceTelemetry: defaultSettings.performanceTelemetry,
-					}),
-				),
+				expect(onSave).toHaveBeenCalledWith({
+					...defaultDraft,
+					autoUpdate: false,
+				}),
 			);
 			expect(
 				vi
@@ -247,12 +249,10 @@ describe("SettingsModal", () => {
 		).not.toBeChecked();
 		vi.mocked(invokeClient).mockClear();
 		await user.click(screen.getByRole("button", { name: "Save" }));
-		expect(onSave).toHaveBeenLastCalledWith(
-			expect.objectContaining({
-				autoUpdate: false,
-				performanceTelemetry: false,
-			}),
-		);
+		expect(onSave).toHaveBeenLastCalledWith({
+			...defaultDraft,
+			autoUpdate: false,
+		});
 		expect(
 			vi
 				.mocked(invokeClient)
@@ -268,12 +268,10 @@ describe("SettingsModal", () => {
 				{ enabled: true },
 			),
 		);
-		expect(onSave).toHaveBeenLastCalledWith(
-			expect.objectContaining({
-				autoUpdate: false,
-				performanceTelemetry: true,
-			}),
-		);
+		expect(onSave).toHaveBeenLastCalledWith({
+			...defaultDraft,
+			autoUpdate: false,
+		});
 		vi.mocked(invokeClient).mockClear();
 	});
 
@@ -323,6 +321,8 @@ describe("SettingsModal", () => {
 		expect(invokeClient).toHaveBeenCalledWith("update_performance_telemetry", {
 			enabled: true,
 		});
+		expect(screen.getByText("Parent metrics: false")).toBeVisible();
+		await act(async () => states.publish("desktop-settings", desktopSettings));
 		expect(screen.getByText("Parent metrics: true")).toBeVisible();
 		expect(
 			screen.getByRole("checkbox", { name: "Auto-update" }),
@@ -330,34 +330,129 @@ describe("SettingsModal", () => {
 		vi.mocked(invokeClient).mockClear();
 	});
 
-	it("metricsの編集値は親の変更後も保ち開き直すと親の値に戻る", async () => {
+	it("開き直した最初の描画からmetricsと他欄は親の値になる", async () => {
 		const user = userEvent.setup();
-		const view = render(<SettingsModal {...defaultProps} />);
+		const commits: Array<{
+			metrics: string | null;
+			autoUpdate: string | null;
+		}> = [];
+		const onRender = () => {
+			const metrics = document.getElementById("performance-telemetry");
+			if (metrics)
+				commits.push({
+					metrics: metrics.getAttribute("data-state"),
+					autoUpdate:
+						document
+							.getElementById("auto-update")
+							?.getAttribute("data-state") ?? null,
+				});
+		};
+		const modal = (open: boolean, settings = defaultSettings) => (
+			<Profiler id="settings" onRender={onRender}>
+				<SettingsModal {...defaultProps} open={open} settings={settings} />
+			</Profiler>
+		);
+		const view = render(modal(true));
 		fireEvent.click(screen.getByText("Privacy & Updates"));
 		await user.click(
 			screen.getByRole("checkbox", {
 				name: "Send anonymous performance metrics",
 			}),
 		);
-		view.rerender(
-			<SettingsModal
-				{...defaultProps}
-				settings={{ ...defaultSettings, fontSize: 18 }}
-			/>,
-		);
+		await user.click(screen.getByRole("checkbox", { name: "Auto-update" }));
+		view.rerender(modal(true, { ...defaultSettings, fontSize: 18 }));
 		expect(
 			screen.getByRole("checkbox", {
 				name: "Send anonymous performance metrics",
 			}),
 		).not.toBeChecked();
-		view.rerender(<SettingsModal {...defaultProps} open={false} />);
-		view.rerender(<SettingsModal {...defaultProps} open />);
-		expect(
-			screen.getByRole("checkbox", {
-				name: "Send anonymous performance metrics",
-			}),
-		).toBeChecked();
+		view.rerender(modal(false));
+		commits.length = 0;
+		view.rerender(modal(true));
+		expect(commits.length).toBeGreaterThan(0);
+		expect(commits[0]).toEqual({ metrics: "checked", autoUpdate: "checked" });
 	});
+
+	it.each(["background", "metrics"])(
+		"%sの保存失敗後もmetricsの未保存値を再試行する",
+		async (failure) => {
+			const { invokeClient } = await import("@/lib/client");
+			const user = userEvent.setup();
+			function SettingsScreen() {
+				const { settings, loaded, loadError, updateSettings } = useSettings();
+				return (
+					<>
+						<p>Parent metrics: {String(settings.performanceTelemetry)}</p>
+						<SettingsModal
+							{...defaultProps}
+							settings={settings}
+							desktopSettingsLoaded={loaded}
+							desktopSettingsError={loadError}
+							onSave={updateSettings}
+						/>
+					</>
+				);
+			}
+			render(<SettingsScreen />);
+			await user.click(screen.getByText("Privacy & Updates"));
+			await user.click(
+				screen.getByRole("checkbox", {
+					name: "Send anonymous performance metrics",
+				}),
+			);
+			if (failure === "background") {
+				await user.click(screen.getByText("Background"));
+				await user.click(
+					screen.getByRole("checkbox", { name: "Minimize to tray on close" }),
+				);
+			}
+			const command =
+				failure === "background"
+					? "update_app_settings"
+					: "update_performance_telemetry";
+			vi.mocked(invokeClient).mockClear();
+			vi.mocked(invokeClient).mockImplementationOnce(() =>
+				Promise.reject(new Error(`${failure} write failed`)),
+			);
+			await user.click(screen.getByRole("button", { name: "Save" }));
+			expect(await screen.findByRole("alert")).toHaveTextContent(
+				`${failure} write failed`,
+			);
+			expect(screen.getByText("Parent metrics: true")).toBeVisible();
+			expect(invokeClient).toHaveBeenCalledWith(command, expect.anything());
+			expect(invokeClient).not.toHaveBeenCalledWith("report_usage_event", {
+				name: "settings_saved",
+			});
+			if (failure === "background")
+				expect(invokeClient).not.toHaveBeenCalledWith(
+					"update_performance_telemetry",
+					expect.anything(),
+				);
+			await user.click(screen.getByText("Privacy & Updates"));
+			expect(
+				screen.getByRole("checkbox", {
+					name: "Send anonymous performance metrics",
+				}),
+			).not.toBeChecked();
+			expect(screen.getByRole("button", { name: "Save" })).toBeEnabled();
+			vi.mocked(invokeClient).mockClear();
+			await user.click(screen.getByRole("button", { name: "Save" }));
+			expect(invokeClient).toHaveBeenCalledWith(
+				"update_performance_telemetry",
+				{ enabled: false },
+			);
+			expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+			expect(screen.getByText("Parent metrics: true")).toBeVisible();
+			await act(async () =>
+				states.publish("desktop-settings", {
+					...desktopSettings,
+					performanceTelemetry: false,
+				}),
+			);
+			expect(screen.getByText("Parent metrics: false")).toBeVisible();
+			vi.mocked(invokeClient).mockClear();
+		},
+	);
 
 	it("ログイン項目の初期取得失敗後の保存を成功として記録しない", async () => {
 		vi.mocked(invokeTauri).mockRejectedValueOnce(
@@ -870,7 +965,7 @@ describe("SettingsModal", () => {
 		const saveBtn = screen.getByRole("button", { name: "Save" });
 		await user.click(saveBtn);
 		expect(onSave).toHaveBeenCalledWith({
-			...defaultSettings,
+			...defaultDraft,
 			autoUpdate: false,
 		});
 	});
@@ -910,7 +1005,7 @@ describe("SettingsModal", () => {
 		await user.click(option);
 		await user.click(screen.getByRole("button", { name: "Save" }));
 		expect(onSave).toHaveBeenCalledWith({
-			...defaultSettings,
+			...defaultDraft,
 			defaultDiffBase: "branch-base",
 		});
 	});
@@ -926,7 +1021,7 @@ describe("SettingsModal", () => {
 		await user.click(option);
 		await user.click(screen.getByRole("button", { name: "Save" }));
 		expect(onSave).toHaveBeenCalledWith({
-			...defaultSettings,
+			...defaultDraft,
 			defaultDiffMode: "split",
 		});
 	});
@@ -966,9 +1061,7 @@ describe("SettingsModal", () => {
 		});
 		await user.click(checkbox);
 		await user.click(screen.getByRole("button", { name: "Save" }));
-		expect(onSave).toHaveBeenCalledWith(
-			expect.objectContaining({ performanceTelemetry: false }),
-		);
+		expect(onSave).toHaveBeenCalledWith(defaultDraft);
 		expect(invoke).toHaveBeenCalledWith("update_performance_telemetry", {
 			enabled: false,
 		});
@@ -995,9 +1088,7 @@ describe("SettingsModal", () => {
 		});
 		await user.click(checkbox);
 		await user.click(screen.getByRole("button", { name: "Save" }));
-		expect(onSave).toHaveBeenCalledWith(
-			expect.objectContaining({ performanceTelemetry: true }),
-		);
+		expect(onSave).toHaveBeenCalledWith(defaultDraft);
 		expect(invoke).toHaveBeenCalledWith("update_performance_telemetry", {
 			enabled: true,
 		});

@@ -15,6 +15,8 @@ export interface AppSettings {
 	defaultDiffOnlyMode: boolean;
 }
 
+export type AppSettingsUpdate = Omit<AppSettings, "performanceTelemetry">;
+
 export const DEFAULT_SETTINGS: AppSettings = {
 	theme: "dark",
 	fontSize: 14,

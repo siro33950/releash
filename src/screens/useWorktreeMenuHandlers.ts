@@ -1,12 +1,12 @@
 import { type MutableRefObject, useMemo } from "react";
 import { type MenuHandlers, useMenuEvents } from "@/hooks/useMenuEvents";
-import type { AppSettings } from "@/types/settings";
+import type { AppSettings, AppSettingsUpdate } from "@/types/settings";
 import type { UIAction, WorktreeGitActions } from "./useWorktreeGitActions";
 
 interface UseWorktreeMenuHandlersParams {
 	dispatchUI: React.Dispatch<UIAction>;
 	settingsRef: MutableRefObject<AppSettings>;
-	onSettingsSaveRef: MutableRefObject<(settings: AppSettings) => void>;
+	onSettingsSaveRef: MutableRefObject<(settings: AppSettingsUpdate) => void>;
 	gitActions: WorktreeGitActions;
 	isActive: boolean;
 }

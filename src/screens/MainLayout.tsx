@@ -35,7 +35,7 @@ import {
 	GitErrorDialog,
 } from "@/screens/WorktreeViewDialogs";
 import type { ThreadNavigationTarget } from "@/types/diffComment";
-import type { AppSettings } from "@/types/settings";
+import type { AppSettings, AppSettingsUpdate } from "@/types/settings";
 import type { WorkspaceState } from "@/types/workspace-state";
 import type { CenterSelection } from "@/types/workspace-tree";
 
@@ -44,7 +44,7 @@ interface MainLayoutProps {
 	settings: AppSettings;
 	desktopSettingsLoaded: boolean;
 	desktopSettingsError: string | null;
-	onSettingsSave: (settings: AppSettings) => void;
+	onSettingsSave: (settings: AppSettingsUpdate) => void;
 	leftNav: React.ReactNode;
 	topBanner?: React.ReactNode;
 	centerSelectionByWorktree?: Record<string, CenterSelection | null>;
@@ -78,7 +78,7 @@ function WorktreeContent({
 	settings: AppSettings;
 	desktopSettingsLoaded: boolean;
 	desktopSettingsError: string | null;
-	onSettingsSave: (settings: AppSettings) => void;
+	onSettingsSave: (settings: AppSettingsUpdate) => void;
 	rightPanelRef: React.RefObject<PanelImperativeHandle | null>;
 	onRightResize: (size: PanelSize) => void;
 	leftPanels?: TogglePanel[];
@@ -318,7 +318,7 @@ interface WorktreePaneProps {
 	settings: AppSettings;
 	desktopSettingsLoaded: boolean;
 	desktopSettingsError: string | null;
-	onSettingsSave: (settings: AppSettings) => void;
+	onSettingsSave: (settings: AppSettingsUpdate) => void;
 	activeRightPanelRef: React.MutableRefObject<PanelImperativeHandle | null>;
 	onRightVisibleChange: (rootPath: string, visible: boolean) => void;
 	leftPanels?: TogglePanel[];

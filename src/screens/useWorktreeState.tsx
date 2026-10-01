@@ -9,7 +9,7 @@ import {
 	useWorktreeGitActions,
 } from "@/screens/useWorktreeGitActions";
 import { useWorktreeMenuHandlers } from "@/screens/useWorktreeMenuHandlers";
-import type { AppSettings } from "@/types/settings";
+import type { AppSettings, AppSettingsUpdate } from "@/types/settings";
 import type {
 	InternalWorktreeState,
 	WorkspaceState,
@@ -20,7 +20,7 @@ export type { InternalWorktreeState } from "@/types/workspace-state";
 interface UseWorktreeStateParams {
 	rootPath: string;
 	settings: AppSettings;
-	onSettingsSave: (settings: AppSettings) => void;
+	onSettingsSave: (settings: AppSettingsUpdate) => void;
 	isActive: boolean;
 	initialWorkspaceState?: WorkspaceState;
 	internalStateMapRef?: React.MutableRefObject<
