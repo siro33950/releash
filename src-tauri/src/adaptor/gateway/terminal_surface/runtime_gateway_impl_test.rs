@@ -1518,11 +1518,12 @@ async fn test_terminal対象なし_購読開始とsnapshot読取と配信でnot_
     use crate::adaptor::presenter::terminal_event_hub::TerminalSurfaceEventHub;
     use crate::infrastructure::state_subscription::Event;
     use crate::usecase::state_subscription::{
-        StateReadFailure, StateSubscriptionOutput, StateSubscriptionUsecase, SubscriptionTarget,
+        StateReadFailure, StateSubscriptionUsecase, SubscriptionTarget,
     };
     use crate::usecase::terminal_surface::application::TerminalSurfaceApplication;
     use crate::usecase::terminal_surface::error::UsecaseError;
     use crate::usecase::terminal_surface::output::TerminalSurfaceStateSink;
+    use crate::usecase::terminal_surface::subscription::TerminalSubscriptionOutput;
     use futures_util::StreamExt;
     // Given
     let hub = Arc::new(TerminalSurfaceEventHub::with_flags(256, true));
@@ -1537,7 +1538,6 @@ async fn test_terminal対象なし_購読開始とsnapshot読取と配信でnot_
     )
     .with_terminal(terminal.clone());
     let presenter = subscriptions.test_presenter().unwrap();
-    presenter.connect_terminal(&terminal).unwrap();
     let mut stream = Box::pin(subscriptions.open("client".into()).unwrap());
     stream.next().await;
     let target = SubscriptionTarget::Terminal(workspace_owner("/repo"));
@@ -1546,7 +1546,11 @@ async fn test_terminal対象なし_購読開始とsnapshot読取と配信でnot_
         .start_terminal("client", &target, "input", None)
         .await
         .unwrap_err();
-    let snapshot = subscriptions.refresh_terminal(&target).await.unwrap_err();
+    let snapshot = subscriptions
+        .terminal
+        .refresh_terminal(&target)
+        .await
+        .unwrap_err();
     // Then
     for error in [&start, &snapshot] {
         assert!(
@@ -1560,9 +1564,7 @@ async fn test_terminal対象なし_購読開始とsnapshot読取と配信でnot_
         ))
         .unwrap();
     presenter.publish_failure(&target, snapshot).unwrap();
-    presenter
-        .start("client", &target.to_string(), None)
-        .unwrap();
+    presenter.start("client", &target, None).unwrap();
     let event = stream.next().await.unwrap();
     assert!(
         matches!(event, StateSubscriptionEvent::Item(_, Event::Snapshot(_, value))
