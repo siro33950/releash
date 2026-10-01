@@ -31,7 +31,7 @@ fn test_取得の状態_空の成功を項目なしとして返す() {
 #[test]
 fn test_取得の状態_値がある成功を取得済みとして返す() {
     // Given
-    let mut fetched = Fetched::default();
+    let mut fetched: Fetched<Vec<i32>> = Fetched::default();
     // When
     fetched.record(Ok(vec![1]));
     // Then

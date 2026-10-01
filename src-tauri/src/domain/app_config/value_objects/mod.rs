@@ -33,6 +33,12 @@ pub struct NotionRepoConfig {
     pub property_mapping: NotionPropertyMapping,
 }
 
+impl NotionRepoConfig {
+    pub fn is_configured(&self) -> bool {
+        !self.api_token.trim().is_empty() && !self.database_id.trim().is_empty()
+    }
+}
+
 impl std::fmt::Debug for NotionRepoConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("NotionRepoConfig")
@@ -69,20 +75,5 @@ pub struct NotionLabelProperty {
 }
 
 #[cfg(test)]
-mod value_objects_tests {
-    use super::*;
-
-    #[test]
-    fn test_notion_config_debugでapi_tokenをマスクする() {
-        let config = NotionRepoConfig {
-            api_token: "ntn_secret_token".to_string(),
-            database_id: "db-1".to_string(),
-            property_mapping: NotionPropertyMapping::default(),
-        };
-
-        let output = format!("{config:?}");
-
-        assert!(output.contains("[REDACTED]"));
-        assert!(!output.contains("ntn_secret_token"));
-    }
-}
+#[path = "value_objects_test.rs"]
+mod value_objects_tests;

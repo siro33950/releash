@@ -1491,3 +1491,88 @@ it("PR未取得の行を含むWorkspacesを実際のpayloadから復号して受
 	expect(fail).not.toHaveBeenCalled();
 	release();
 });
+
+it("Notionの入力をそのまま送り要求元の引数で値と失敗を対応付ける", async () => {
+	const fixture = stateFixture();
+	const keepStream = subscribeState("repository-paths", vi.fn(), vi.fn());
+	const a = vi.fn();
+	const b = vi.fn();
+	const releaseA = subscribeState(
+		{
+			kind: "notion-tasks",
+			args: ["/repo", "20", 'labels={"Tags":["z","a"],"Status":["Todo"]}'],
+		},
+		a,
+		vi.fn(),
+	);
+	const releaseB = subscribeState(
+		{
+			kind: "notion-tasks",
+			args: ["/repo", "20", 'labels={"Status":["Todo"],"Tags":["a","z"]}'],
+		},
+		b,
+		vi.fn(),
+	);
+	await vi.waitFor(() => expect(fixture.starts).toHaveLength(3));
+	for (const request of fixture.starts.slice(1)) {
+		fixture.streams[0].send({
+			target: "notion-tasks",
+			args: request.args,
+			version: { epoch: "boot", sequence: 1n },
+			event: {
+				case: "snapshot",
+				value: {
+					value: {
+						case: "notionTasks",
+						value: {
+							page: { tasks: { items: [] }, hasMore: true },
+							readError: {
+								code: 9,
+								message: "not configured",
+								configMissing: true,
+							},
+						},
+					},
+				},
+			},
+		});
+	}
+	await vi.waitFor(() =>
+		expect(a).toHaveBeenCalledWith({
+			page: { tasks: [], has_more: true },
+			readError: { code: 9, message: "not configured", configMissing: true },
+		}),
+	);
+	expect(b).toHaveBeenCalledWith({
+		page: { tasks: [], has_more: true },
+		readError: { code: 9, message: "not configured", configMissing: true },
+	});
+	expect(fixture.starts.slice(1).map((request) => request.args)).toEqual([
+		["/repo", "20", 'labels={"Tags":["z","a"],"Status":["Todo"]}'],
+		["/repo", "20", 'labels={"Status":["Todo"],"Tags":["a","z"]}'],
+	]);
+	releaseA();
+	await vi.waitFor(() => expect(fixture.stops).toHaveBeenCalledOnce());
+	releaseB();
+	await vi.waitFor(() => expect(fixture.stops).toHaveBeenCalledTimes(2));
+	keepStream();
+});
+
+it("不正なラベル引数はキー生成で例外にならずdaemonの検証失敗を受け取る", async () => {
+	const fixture = stateFixture(async () => {
+		throw new ConnectError("Invalid labels", Code.InvalidArgument);
+	});
+	const fail = vi.fn();
+	const release = subscribeState(
+		{ kind: "notion-tasks", args: ["/repo", "20", "labels=invalid"] },
+		vi.fn(),
+		fail,
+	);
+	await vi.waitFor(() =>
+		expect(fail).toHaveBeenCalledWith(
+			expect.objectContaining({ code: Code.InvalidArgument }),
+		),
+	);
+	expect(fixture.starts[0].args).toEqual(["/repo", "20", "labels=invalid"]);
+	release();
+});

@@ -159,3 +159,88 @@ fn test_automation購読対象_facet種別を検証して往復する() {
         );
     }
 }
+
+#[test]
+fn test_notion購読対象_絞り込み無しの引数は往復で同じ対象になる() {
+    // Given
+    let args = ["/repo", "20"];
+    // When
+    let plain = SubscriptionTarget::from_parts("notion-tasks", &args).unwrap();
+    let parsed = SubscriptionTarget::parse(&plain.to_string()).unwrap();
+    // Then
+    assert_eq!(
+        plain.parts(),
+        ("notion-tasks", args.map(String::from).to_vec())
+    );
+    assert_eq!(parsed, plain);
+}
+
+#[test]
+fn test_notion購読対象_ラベルの並び順と重複だけが違う引数は同じ対象と同じ文字列になる() {
+    // Given
+    let first = [
+        "/repo",
+        "40",
+        "title=Task",
+        r#"labels={"Tags":["z","a","a"],"Status":["Todo"]}"#,
+    ];
+    let second = [
+        "/repo",
+        "40",
+        r#"labels={"Status":["Todo"],"Tags":["a","z"]}"#,
+        "title=Task",
+    ];
+    // When
+    let a = SubscriptionTarget::from_parts("notion-tasks", &first).unwrap();
+    let b = SubscriptionTarget::from_parts("notion-tasks", &second).unwrap();
+    let parsed = SubscriptionTarget::parse(&a.to_string()).unwrap();
+    // Then
+    assert_eq!(a, b);
+    assert_eq!(a.to_string(), b.to_string());
+    assert_eq!(
+        a.parts(),
+        (
+            "notion-tasks",
+            vec![
+                "/repo".into(),
+                "40".into(),
+                "title=Task".into(),
+                r#"labels={"Status":["Todo"],"Tags":["a","z"]}"#.into()
+            ]
+        )
+    );
+    assert_eq!(parsed, b);
+}
+
+#[test]
+fn test_notion購読対象_不正な引数はinvalid_idにする() {
+    // Given
+    let cases = [
+        vec!["/repo", "0"],
+        vec!["/repo", "020"],
+        vec!["/repo", "+20"],
+        vec!["/repo", "20", "title="],
+        vec!["/repo", "20", "labels={}"],
+        vec!["/repo", "20", "labels=invalid"],
+        vec!["/repo", "20", "labels={\"Status\":[]}"],
+        vec!["/repo", "20", "title=a", "title=b"],
+        vec![
+            "/repo",
+            "20",
+            r#"labels={"Status":["Todo"]}"#,
+            r#"labels={"Status":["Done"]}"#,
+        ],
+        vec!["/repo", "20", r#"labels={"":["Todo"]}"#],
+        vec!["/repo", "20", r#"labels={"Status":[""]}"#],
+        vec!["/repo", "20", "unknown=a"],
+    ];
+    // When
+    let results: Vec<_> = cases
+        .iter()
+        .map(|args| SubscriptionTarget::from_parts("notion-tasks", args))
+        .collect();
+    // Then
+    for (args, result) in cases.iter().zip(results) {
+        assert_eq!(result, Err(SubscriptionError::InvalidId), "{args:?}");
+    }
+}

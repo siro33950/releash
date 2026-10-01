@@ -961,3 +961,133 @@ fn test_購読失敗_terminal差分の保持値をfailure事象へ変換する()
         matches!(message.event, Some(wire::state_subscription_event::Event::Failure(failure)) if failure.code == 13 && failure.message == "read failed")
     );
 }
+
+#[test]
+fn test_notion購読配信_タスクの前の一覧と取得の失敗を共に送る() {
+    // Given
+    let page = crate::domain::notion::NotionTaskPage {
+        tasks: vec![crate::domain::notion::NotionTask {
+            id: "task-id".into(),
+            title: "Task".into(),
+            url: "https://notion.so/task-id".into(),
+            labels: std::collections::HashMap::from([("Status".into(), vec!["Todo".into()])]),
+            branch_name: "feat/task".into(),
+            created_at: "created".into(),
+            last_edited_at: "edited".into(),
+        }],
+        has_more: true,
+        next_cursor: None,
+    };
+    let value = StateValue::NotionTasks(crate::usecase::fetched::Fetched {
+        value: Some(page.clone()),
+        error: Some(crate::usecase::notion::error::NotionUsecaseError::Notion(
+            crate::domain::notion::NotionError::ApiError("offline".into()),
+        )),
+    });
+    let expected = crate::adaptor::presenter::client::value(
+        crate::adaptor::presenter::notion::NotionTaskPageView::from(page),
+    )
+    .unwrap();
+    // When
+    let result = payload(&value).unwrap();
+    // Then
+    let Some(wire::state_payload::Value::NotionTasks(snapshot)) = result.value else {
+        panic!()
+    };
+    assert_eq!(snapshot.page, Some(expected));
+    assert_eq!(snapshot.read_error.unwrap().code, 9);
+}
+
+#[test]
+fn test_notion購読配信_ラベルの前の選択肢と取得の失敗を共に送る() {
+    // Given
+    let options = vec![crate::domain::notion::NotionLabelOption {
+        property_name: "Status".into(),
+        property_type: "status".into(),
+        options: vec!["Todo".into(), "Done".into()],
+        option_ids: vec!["todo-id".into(), "done-id".into()],
+    }];
+    let value = StateValue::NotionLabelOptions(crate::usecase::fetched::Fetched {
+        value: Some(options.clone()),
+        error: Some(crate::usecase::notion::error::NotionUsecaseError::Notion(
+            crate::domain::notion::NotionError::ApiError("offline".into()),
+        )),
+    });
+    let expected = crate::adaptor::presenter::client::value(
+        options
+            .into_iter()
+            .map(crate::adaptor::presenter::notion::NotionLabelOptionView::from)
+            .collect::<Vec<_>>(),
+    )
+    .unwrap();
+    // When
+    let result = payload(&value).unwrap();
+    // Then
+    let Some(wire::state_payload::Value::NotionLabelOptions(snapshot)) = result.value else {
+        panic!()
+    };
+    assert_eq!(snapshot.options, Some(expected));
+    assert_eq!(snapshot.read_error.unwrap().code, 9);
+}
+
+#[test]
+fn test_notion購読配信_設定不足の失敗に設定不足の印を付ける() {
+    // Given
+    let error = crate::usecase::notion::error::NotionUsecaseError::ConfigNotFound;
+    let values = [
+        StateValue::NotionTasks(crate::usecase::fetched::Fetched {
+            value: None,
+            error: Some(error.clone()),
+        }),
+        StateValue::NotionLabelOptions(crate::usecase::fetched::Fetched {
+            value: None,
+            error: Some(error),
+        }),
+    ];
+    // When
+    let results: Vec<_> = values.iter().map(|value| payload(value).unwrap()).collect();
+    // Then
+    for result in results {
+        let failure = match result.value.unwrap() {
+            wire::state_payload::Value::NotionTasks(snapshot) => snapshot.read_error.unwrap(),
+            wire::state_payload::Value::NotionLabelOptions(snapshot) => {
+                snapshot.read_error.unwrap()
+            }
+            _ => panic!(),
+        };
+        assert_eq!(failure.code, 9);
+        assert_eq!(failure.config_missing, Some(true));
+    }
+}
+
+#[test]
+fn test_notion購読配信_notionの取得の失敗に設定不足の印を付けない() {
+    // Given
+    let error = crate::usecase::notion::error::NotionUsecaseError::Notion(
+        crate::domain::notion::NotionError::ApiError("offline".into()),
+    );
+    let values = [
+        StateValue::NotionTasks(crate::usecase::fetched::Fetched {
+            value: None,
+            error: Some(error.clone()),
+        }),
+        StateValue::NotionLabelOptions(crate::usecase::fetched::Fetched {
+            value: None,
+            error: Some(error),
+        }),
+    ];
+    // When
+    let results: Vec<_> = values.iter().map(|value| payload(value).unwrap()).collect();
+    // Then
+    for result in results {
+        let failure = match result.value.unwrap() {
+            wire::state_payload::Value::NotionTasks(snapshot) => snapshot.read_error.unwrap(),
+            wire::state_payload::Value::NotionLabelOptions(snapshot) => {
+                snapshot.read_error.unwrap()
+            }
+            _ => panic!(),
+        };
+        assert_eq!(failure.code, 9);
+        assert_eq!(failure.config_missing, Some(false));
+    }
+}

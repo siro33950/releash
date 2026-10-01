@@ -164,3 +164,77 @@ fn test_automation購読_定義の変化に反応し置き場の監視を要求�
         )]
     );
 }
+
+#[test]
+fn test_notion購読対象_外部の情報としてissueと同じ契機で取り直す() {
+    // Given
+    let targets = [
+        SubscriptionTarget::NotionTasks(crate::usecase::notion::usecase::NotionTaskListRequest {
+            path: "/repo".into(),
+            count: 20,
+            title: None,
+            labels: Default::default(),
+        }),
+        SubscriptionTarget::NotionLabelOptions("/repo".into()),
+        SubscriptionTarget::Issues("/repo".into()),
+    ];
+    // When
+    let results: Vec<_> = targets
+        .iter()
+        .map(|target| {
+            (
+                target.external_information(),
+                target.affected_by(&StateChangeSource::Repositories),
+            )
+        })
+        .collect();
+    // Then
+    assert_eq!(results, vec![(true, false); targets.len()]);
+}
+
+#[test]
+fn test_notion購読対象_同じrepoの設定変更で取り直す() {
+    // Given
+    let targets = [
+        SubscriptionTarget::NotionTasks(crate::usecase::notion::usecase::NotionTaskListRequest {
+            path: "/repo".into(),
+            count: 20,
+            title: None,
+            labels: Default::default(),
+        }),
+        SubscriptionTarget::NotionLabelOptions("/repo".into()),
+    ];
+    // When
+    let results: Vec<_> = targets
+        .iter()
+        .map(|target| target.affected_by(&StateChangeSource::NotionConfig("/repo".into())))
+        .collect();
+    // Then
+    assert_eq!(results, vec![true; targets.len()]);
+}
+
+#[test]
+fn test_notion購読対象_別のrepoの設定変更と他の設定変更では取り直さない() {
+    // Given
+    let targets = [
+        SubscriptionTarget::NotionTasks(crate::usecase::notion::usecase::NotionTaskListRequest {
+            path: "/repo".into(),
+            count: 20,
+            title: None,
+            labels: Default::default(),
+        }),
+        SubscriptionTarget::NotionLabelOptions("/repo".into()),
+    ];
+    // When
+    let results: Vec<_> = targets
+        .iter()
+        .map(|target| {
+            (
+                target.affected_by(&StateChangeSource::NotionConfig("/other".into())),
+                target.affected_by(&StateChangeSource::AppConfig),
+            )
+        })
+        .collect();
+    // Then
+    assert_eq!(results, vec![(false, false); targets.len()]);
+}

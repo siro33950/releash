@@ -63,6 +63,18 @@ struct PendingChange {
     completed: std::sync::mpsc::Sender<()>,
 }
 
+struct ReadStartPermit<'a> {
+    usecase: &'a StateSubscriptionUsecase,
+    target: &'a SubscriptionTarget,
+}
+
+impl Drop for ReadStartPermit<'_> {
+    fn drop(&mut self) {
+        self.usecase.starting_target.lock().take();
+        self.usecase.release_inactive(self.target);
+    }
+}
+
 #[derive(Clone)]
 pub(crate) struct StateSubscriptionUsecase {
     publisher: StateSubscriptionOutputRef,
@@ -89,6 +101,7 @@ pub(crate) struct StateSubscriptionUsecase {
     watchers: Option<Arc<crate::usecase::watcher::WatcherUsecase>>,
     workers: Arc<Mutex<std::collections::HashMap<SubscriptionTarget, tokio::task::JoinHandle<()>>>>,
     starts: Arc<tokio::sync::Mutex<()>>,
+    starting_target: Arc<Mutex<Option<SubscriptionTarget>>>,
     watches: Arc<Mutex<std::collections::HashMap<WatchRequirement, u64>>>,
 }
 
@@ -137,6 +150,7 @@ impl StateSubscriptionUsecase {
             workers: Default::default(),
             watches: Default::default(),
             starts: Default::default(),
+            starting_target: Default::default(),
         }
     }
 
@@ -169,12 +183,20 @@ impl StateSubscriptionUsecase {
         if self.join_active(client, target).map_err(convert)? {
             return Ok(());
         }
+        *self.starting_target.lock() = Some(target.clone());
+        let _permit = ReadStartPermit {
+            usecase: self,
+            target,
+        };
+        reads.acquire_external(target);
         let mut changes = self.changes.subscribe();
         let value = match reads.refresh_external(target).await {
             Ok(()) => reads.read(target).await,
             Err(error) => Err(error),
         };
-        self.start(client, target).map_err(convert)?;
+        if let Err(error) = self.start(client, target) {
+            return Err(convert(error));
+        }
         if let Err(error) = self.reconcile_watches() {
             let _ = self.stop(client, target);
             return Err(error);
@@ -205,7 +227,7 @@ impl StateSubscriptionUsecase {
             let mut interval =
                 timer.interval(crate::domain::git_host::CacheTtl::EXTERNAL_INFORMATION.duration());
             loop {
-                // 定期の取り直しと Repository の増減のときだけ、外部の情報を取り直す。
+                // 定期、Repository の増減（Workspaces）、対象 Repository の Notion 設定の変化で外部の情報を取り直す。
                 // 取りこぼしは、読み直すだけにする。
                 let mut refresh_external = false;
                 let mut completed = Vec::new();
@@ -276,6 +298,19 @@ impl StateSubscriptionUsecase {
         Ok(())
     }
 
+    fn release_inactive(&self, target: &SubscriptionTarget) {
+        let starting = self.starting_target.lock();
+        if starting.as_ref() == Some(target) {
+            return;
+        }
+        let clients = self.clients.lock();
+        if !clients.values().any(|targets| targets.contains(target)) {
+            if let Some(reads) = &self.reads {
+                reads.release_external(target);
+            }
+        }
+    }
+
     fn reconcile_watches(&self) -> Result<(), StateReadError> {
         let mut failure = None;
         if let (Some(reads), Some(watcher)) = (&self.reads, &self.watchers) {
@@ -330,13 +365,15 @@ impl StateSubscriptionUsecase {
                 }
             }
         }
+        let mut workers = self.workers.lock();
         let active = self.active_targets();
-        self.workers.lock().retain(|target, task| {
+        workers.retain(|target, task| {
             if active.contains(target) {
                 true
             } else {
                 self.waiting_workers.lock().remove(target);
                 task.abort();
+                self.release_inactive(target);
                 false
             }
         });
@@ -478,9 +515,11 @@ impl StateSubscriptionUsecase {
     }
 }
 
-/// Repository が増減したときは、外部の情報（PR）を持たない Repository が現れうる。
+/// Repository の増減の影響を受ける対象と、その Repository の Notion 設定が変わった対象の外部情報を取り直す。
 fn adds_external_information(target: &SubscriptionTarget, source: &StateChangeSource) -> bool {
-    *source == StateChangeSource::Repositories && target.external_information()
+    target.affected_by(source)
+        && ((*source == StateChangeSource::Repositories && target.external_information())
+            || matches!(source, StateChangeSource::NotionConfig(_)))
 }
 
 #[cfg(test)]

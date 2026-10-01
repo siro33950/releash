@@ -195,3 +195,50 @@ async fn test_購読失敗_つなぎ直した購読へ保持済みのfailure事�
         Some(crate::adaptor::presenter::client::state_subscription_event::Event::Failure(_))
     ));
 }
+
+#[tokio::test]
+async fn test_購読入力の対応_解除は最後の入力まで共有しstream終了で破棄する() {
+    // Given
+    let presenter = Arc::new(StateSubscriptionPresenter::new());
+    let usecase = StateSubscriptionUsecase::new_with_output(
+        presenter.clone(),
+        Arc::new(crate::adaptor::gateway::subscription_timer::TokioSubscriptionTimer),
+    );
+    let target = SubscriptionTarget::from_parts(
+        "notion-tasks",
+        &["/repo", "20", r#"labels={"Tags":["a"]}"#],
+    )
+    .unwrap();
+    let stream = crate::test_support::state_subscription::deps(usecase, presenter.clone())
+        .stream("client".into())
+        .unwrap();
+    let a = vec![
+        "/repo".into(),
+        "20".into(),
+        r#"labels={"Tags":["a"]}"#.into(),
+    ];
+    let b = vec![
+        "/repo".into(),
+        "20".into(),
+        r#"labels={"Tags":["a","a"]}"#.into(),
+    ];
+    // When / Then
+    assert_eq!(
+        presenter.add_request("client", &target, a.clone()),
+        (true, false)
+    );
+    assert_eq!(
+        presenter.add_request("client", &target, a.clone()),
+        (false, false)
+    );
+    assert_eq!(
+        presenter.add_request("client", &target, b.clone()),
+        (true, true)
+    );
+    assert!(!presenter.remove_request("client", &target, &a));
+    assert!(presenter.remove_request("client", &target, &b));
+    assert!(presenter.requested_args.lock().is_empty());
+    assert_eq!(presenter.add_request("client", &target, a), (true, false));
+    drop(stream);
+    assert!(presenter.requested_args.lock().is_empty());
+}

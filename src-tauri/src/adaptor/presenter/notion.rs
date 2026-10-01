@@ -57,14 +57,6 @@ impl Default for PropertyMappingView {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub(crate) struct NotionTaskQueryInput {
-    pub title_filter: String,
-    pub label_filters: HashMap<String, Vec<String>>,
-    pub cursor: Option<String>,
-    pub page_size: Option<u32>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub(crate) struct NotionLabelOptionView {
     pub property_name: String,
     pub property_type: String,
@@ -77,7 +69,6 @@ pub(crate) struct NotionLabelOptionView {
 pub(crate) struct NotionTaskPageView {
     pub tasks: Vec<NotionTaskView>,
     pub has_more: bool,
-    pub next_cursor: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -115,23 +106,11 @@ pub(crate) enum NotionConfigStatusView {
     NetworkError,
 }
 
-impl From<NotionTaskQueryInput> for notion_domain::NotionTaskQuery {
-    fn from(query: NotionTaskQueryInput) -> Self {
-        Self {
-            title_filter: query.title_filter,
-            label_filters: query.label_filters,
-            cursor: query.cursor,
-            page_size: query.page_size,
-        }
-    }
-}
-
 impl From<notion_domain::NotionTaskPage> for NotionTaskPageView {
     fn from(page: notion_domain::NotionTaskPage) -> Self {
         Self {
             tasks: page.tasks.into_iter().map(Into::into).collect(),
             has_more: page.has_more,
-            next_cursor: page.next_cursor,
         }
     }
 }
@@ -317,29 +296,6 @@ mod tests {
         let json = r#"{ "labels": ["Status", "Tags"] }"#;
 
         assert!(serde_json::from_str::<PropertyMappingView>(json).is_err());
-    }
-
-    #[test]
-    fn test_notion_task_query_input_json_roundtripする() {
-        let mut label_filters = HashMap::new();
-        label_filters.insert("Status".to_string(), vec!["Todo".to_string()]);
-        let query = NotionTaskQueryInput {
-            title_filter: "test".to_string(),
-            label_filters,
-            cursor: Some("cursor-abc".to_string()),
-            page_size: Some(20),
-        };
-
-        let json = serde_json::to_string(&query).unwrap();
-        let deserialized: NotionTaskQueryInput = serde_json::from_str(&json).unwrap();
-
-        assert_eq!(deserialized.title_filter, "test");
-        assert_eq!(
-            deserialized.label_filters.get("Status").unwrap(),
-            &vec!["Todo".to_string()]
-        );
-        assert_eq!(deserialized.cursor.as_deref(), Some("cursor-abc"));
-        assert_eq!(deserialized.page_size, Some(20));
     }
 
     #[test]

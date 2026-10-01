@@ -1632,3 +1632,366 @@ async fn test_状態stream開始_各段の失敗で既存clientを保持し先�
         }
     }
 }
+
+#[tokio::test]
+async fn test_notion購読_入力順をdaemonで共有し要求元へ値と失敗を届ける() {
+    use crate::usecase::state_subscription::{
+        StateReadError, StateSubscriptionOutput, StateSubscriptionRead, StateValue,
+        SubscriptionTarget,
+    };
+    use wire::{state_payload::Value, state_subscription_event::Event};
+    struct Reads(AtomicUsize);
+    #[async_trait::async_trait]
+    impl StateSubscriptionRead for Reads {
+        async fn read(&self, _: &SubscriptionTarget) -> Result<StateValue, StateReadError> {
+            Ok(StateValue::NotionTasks(crate::usecase::fetched::Fetched {
+                value: Some(crate::domain::notion::NotionTaskPage {
+                    tasks: vec![],
+                    has_more: true,
+                    next_cursor: None,
+                }),
+                error: None,
+            }))
+        }
+        async fn refresh_external(&self, _: &SubscriptionTarget) -> Result<(), StateReadError> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+        fn repositories(&self) -> Vec<String> {
+            vec![]
+        }
+    }
+    // Given
+    let reads = Arc::new(Reads(AtomicUsize::new(0)));
+    let subscriptions = crate::usecase::state_subscription::StateSubscriptionUsecase::new(
+        vec![],
+        Arc::new(crate::adaptor::gateway::subscription_timer::TokioSubscriptionTimer),
+    )
+    .with_reads(reads.clone(), None, vec![], String::new());
+    let presenter = Arc::new(subscriptions.test_presenter().unwrap().clone());
+    let deps =
+        crate::test_support::client_api_deps(Arc::new(dispatch()), None).with_state_subscriptions(
+            crate::test_support::state_subscription::deps(subscriptions.clone(), presenter.clone()),
+        );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let config = ClientConfig::new(
+        format!("http://{}", listener.local_addr().unwrap())
+            .parse()
+            .unwrap(),
+    );
+    let server = tokio::spawn(async move {
+        axum::serve(listener, router(Some(deps))).await.unwrap();
+    });
+    let client = rpc::ClientServiceClient::new(HttpClient::plaintext(), config);
+    let mut stream = client
+        .open_state_stream(rpc::OpenStateStreamRequest {
+            client_id: "notion-client".into(),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    macro_rules! next_event {
+        () => {{
+            let message = tokio::time::timeout(
+                std::time::Duration::from_secs(2),
+                stream.message::<rpc::StateSubscriptionEvent>(),
+            )
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap()
+            .to_owned_message();
+            let event: wire::StateSubscriptionEvent = to_wire(&message).unwrap();
+            event
+        }};
+    }
+    assert!(matches!(next_event!().event, Some(Event::Ready(_))));
+    let a = vec![
+        "/repo".to_string(),
+        "20".into(),
+        r#"labels={"Tags":["z","a","a"],"Status":["Todo"]}"#.into(),
+    ];
+    let b = vec![
+        "/repo".to_string(),
+        "20".into(),
+        r#"labels={"Status":["Todo"],"Tags":["a","z"]}"#.into(),
+    ];
+    let target = SubscriptionTarget::from_parts(
+        "notion-tasks",
+        &a.iter().map(String::as_str).collect::<Vec<_>>(),
+    )
+    .unwrap();
+    // When / Then
+    let invalid = client
+        .start_state_subscription(rpc::StartStateSubscriptionRequest {
+            client_id: "notion-client".into(),
+            target: "notion-tasks".into(),
+            args: vec!["/repo".into(), "20".into(), "labels=invalid".into()],
+            ..Default::default()
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(invalid.code, connectrpc::ErrorCode::InvalidArgument);
+    assert_eq!(reads.0.load(Ordering::SeqCst), 0);
+    for (index, args) in [&a, &b].into_iter().enumerate() {
+        client
+            .start_state_subscription(rpc::StartStateSubscriptionRequest {
+                client_id: "notion-client".into(),
+                target: "notion-tasks".into(),
+                args: args.clone(),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        let mut received = std::collections::HashSet::new();
+        while received.len() <= index {
+            let event = next_event!();
+            if let Some(Event::Snapshot(payload)) = event.event {
+                assert_eq!(event.target, "notion-tasks");
+                let Some(Value::NotionTasks(snapshot)) = payload.value else {
+                    panic!("Notion tasks expected")
+                };
+                assert_eq!(snapshot.page.unwrap().has_more, Some(true));
+                received.insert(event.args);
+            }
+        }
+        assert!(received.contains(args));
+    }
+    assert_eq!(reads.0.load(Ordering::SeqCst), 1);
+    assert_eq!(subscriptions.test_worker_count(), 1);
+    presenter
+        .publish(
+            &target,
+            StateValue::NotionTasks(crate::usecase::fetched::Fetched {
+                value: Some(crate::domain::notion::NotionTaskPage {
+                    tasks: vec![],
+                    has_more: true,
+                    next_cursor: None,
+                }),
+                error: Some(crate::usecase::notion::error::NotionUsecaseError::ConfigNotFound),
+            }),
+            None,
+        )
+        .unwrap();
+    let mut failures = std::collections::HashSet::new();
+    while failures.len() < 2 {
+        let event = next_event!();
+        if let Some(Event::Change(change)) = event.event {
+            let Some(Value::NotionTasks(snapshot)) = change.payload.unwrap().value else {
+                panic!("Notion failure expected")
+            };
+            assert!(snapshot.page.is_some());
+            assert_eq!(snapshot.read_error.unwrap().config_missing, Some(true));
+            failures.insert(event.args);
+        }
+    }
+    assert_eq!(
+        failures,
+        std::collections::HashSet::from([a.clone(), b.clone()])
+    );
+    for (index, args) in [a, b].into_iter().enumerate() {
+        client
+            .stop_state_subscription(rpc::StopStateSubscriptionRequest {
+                client_id: "notion-client".into(),
+                target: "notion-tasks".into(),
+                args,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(subscriptions.test_worker_count(), 1 - index);
+    }
+    drop(stream);
+    server.abort();
+}
+
+const NOTION_REQUEST_A: &str = r#"{"clientId":"client","target":"notion-tasks","args":["/repo","20","labels={\"Tags\":[\"a\"]}"]}"#;
+const NOTION_REQUEST_B: &str = r#"{"clientId":"client","target":"notion-tasks","args":["/repo","20","labels={\"Tags\":[\"a\",\"a\"]}"]}"#;
+
+fn notion_cancellation_fixture() -> (Router, StateSubscriptionDeps) {
+    use crate::usecase::state_subscription::{
+        StateReadError, StateSubscriptionRead, StateValue, SubscriptionTarget,
+    };
+    struct Reads;
+    #[async_trait::async_trait]
+    impl StateSubscriptionRead for Reads {
+        async fn read(&self, target: &SubscriptionTarget) -> Result<StateValue, StateReadError> {
+            match target {
+                SubscriptionTarget::NotionTasks(_) => {
+                    Ok(StateValue::NotionTasks(crate::usecase::fetched::Fetched {
+                        value: Some(crate::domain::notion::NotionTaskPage {
+                            tasks: vec![],
+                            has_more: false,
+                            next_cursor: None,
+                        }),
+                        error: None,
+                    }))
+                }
+                _ => std::future::pending().await,
+            }
+        }
+        fn repositories(&self) -> Vec<String> {
+            vec![]
+        }
+    }
+    let subscriptions = crate::usecase::state_subscription::StateSubscriptionUsecase::new(
+        vec![],
+        Arc::new(crate::adaptor::gateway::subscription_timer::TokioSubscriptionTimer),
+    )
+    .with_reads(Arc::new(Reads), None, vec![], String::new())
+    .deps();
+    let app = router(Some(
+        crate::test_support::client_api_deps(Arc::new(dispatch()), None)
+            .with_state_subscriptions(subscriptions.clone()),
+    ));
+    (app, subscriptions)
+}
+
+#[tokio::test]
+async fn test_notion購読_初回開始の中断で新規要求を残さない() {
+    use crate::usecase::state_subscription::SubscriptionTarget;
+    use tower::ServiceExt;
+    // Given
+    let (app, subscriptions) = notion_cancellation_fixture();
+    let _stream = subscriptions.open_stream("client".into()).unwrap();
+    let blocked = SubscriptionTarget::BranchBase("/blocked".into(), "main".into());
+    let mut blocker = Box::pin(subscriptions.usecase.start_read("client", &blocked));
+    assert!(futures_util::poll!(&mut blocker).is_pending());
+    let target = SubscriptionTarget::from_parts(
+        "notion-tasks",
+        &["/repo", "20", r#"labels={"Tags":["a"]}"#],
+    )
+    .unwrap();
+    let args = vec![
+        "/repo".into(),
+        "20".into(),
+        r#"labels={"Tags":["a"]}"#.into(),
+    ];
+    let mut call = Box::pin(app.oneshot(unary_request("StartStateSubscription", NOTION_REQUEST_A)));
+    // When
+    assert!(futures_util::poll!(&mut call).is_pending());
+    drop(call);
+    drop(blocker);
+    let registration = subscriptions.presenter.add_request("client", &target, args);
+    // Then
+    assert_eq!(registration, (true, false));
+    assert_eq!(subscriptions.usecase.test_worker_count(), 0);
+}
+
+#[tokio::test(start_paused = true)]
+async fn test_notion購読_別名開始の期限切れ後に既存要求を停止するとworkerを解放する() {
+    use crate::usecase::state_subscription::SubscriptionTarget;
+    use tower::ServiceExt;
+    // Given
+    let (app, subscriptions) = notion_cancellation_fixture();
+    let _stream = subscriptions.open_stream("client".into()).unwrap();
+    app.clone()
+        .oneshot(unary_request("StartStateSubscription", NOTION_REQUEST_A))
+        .await
+        .unwrap();
+    let blocked = SubscriptionTarget::BranchBase("/blocked".into(), "main".into());
+    let mut blocker = Box::pin(subscriptions.usecase.start_read("client", &blocked));
+    assert!(futures_util::poll!(&mut blocker).is_pending());
+    let mut request = unary_request("StartStateSubscription", NOTION_REQUEST_B);
+    request
+        .headers_mut()
+        .insert("connect-timeout-ms", "1000".parse().unwrap());
+    let mut call = Box::pin(app.clone().oneshot(request));
+    // When
+    assert!(futures_util::poll!(&mut call).is_pending());
+    tokio::time::advance(std::time::Duration::from_secs(1)).await;
+    let expired = call.await.unwrap();
+    let body = axum::body::to_bytes(expired.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let error: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    drop(blocker);
+    let stopped = app
+        .oneshot(unary_request("StopStateSubscription", NOTION_REQUEST_A))
+        .await
+        .unwrap();
+    // Then
+    assert_eq!(error["code"], "deadline_exceeded");
+    assert!(stopped.status().is_success());
+    assert_eq!(subscriptions.usecase.test_worker_count(), 0);
+}
+
+#[tokio::test]
+async fn test_notion購読_重複開始の中断で既存要求を消さない() {
+    use crate::usecase::state_subscription::SubscriptionTarget;
+    use tower::ServiceExt;
+    // Given
+    let (app, subscriptions) = notion_cancellation_fixture();
+    let _stream = subscriptions.open_stream("client".into()).unwrap();
+    app.clone()
+        .oneshot(unary_request("StartStateSubscription", NOTION_REQUEST_A))
+        .await
+        .unwrap();
+    app.clone()
+        .oneshot(unary_request("StartStateSubscription", NOTION_REQUEST_B))
+        .await
+        .unwrap();
+    let blocked = SubscriptionTarget::BranchBase("/blocked".into(), "main".into());
+    let mut blocker = Box::pin(subscriptions.usecase.start_read("client", &blocked));
+    assert!(futures_util::poll!(&mut blocker).is_pending());
+    let mut call = Box::pin(
+        app.clone()
+            .oneshot(unary_request("StartStateSubscription", NOTION_REQUEST_A)),
+    );
+    // When
+    assert!(futures_util::poll!(&mut call).is_pending());
+    drop(call);
+    drop(blocker);
+    let stopped = app
+        .oneshot(unary_request("StopStateSubscription", NOTION_REQUEST_B))
+        .await
+        .unwrap();
+    // Then
+    assert!(stopped.status().is_success());
+    assert_eq!(subscriptions.usecase.test_worker_count(), 1);
+}
+
+#[tokio::test]
+async fn test_notion購読_最後の停止の中断で要求と購読を保持する() {
+    use crate::usecase::state_subscription::SubscriptionTarget;
+    use tower::ServiceExt;
+    // Given
+    let (app, subscriptions) = notion_cancellation_fixture();
+    let _stream = subscriptions.open_stream("client".into()).unwrap();
+    app.clone()
+        .oneshot(unary_request("StartStateSubscription", NOTION_REQUEST_A))
+        .await
+        .unwrap();
+    let blocked = SubscriptionTarget::BranchBase("/blocked".into(), "main".into());
+    let mut blocker = Box::pin(subscriptions.usecase.start_read("client", &blocked));
+    assert!(futures_util::poll!(&mut blocker).is_pending());
+    let target = SubscriptionTarget::from_parts(
+        "notion-tasks",
+        &["/repo", "20", r#"labels={"Tags":["a"]}"#],
+    )
+    .unwrap();
+    let args = vec![
+        "/repo".into(),
+        "20".into(),
+        r#"labels={"Tags":["a"]}"#.into(),
+    ];
+    let mut call = Box::pin(
+        app.clone()
+            .oneshot(unary_request("StopStateSubscription", NOTION_REQUEST_A)),
+    );
+    // When
+    assert!(futures_util::poll!(&mut call).is_pending());
+    drop(call);
+    let registration = subscriptions.presenter.add_request("client", &target, args);
+    let workers = subscriptions.usecase.test_worker_count();
+    drop(blocker);
+    let stopped = app
+        .oneshot(unary_request("StopStateSubscription", NOTION_REQUEST_A))
+        .await
+        .unwrap();
+    // Then
+    assert_eq!(registration, (false, false));
+    assert_eq!(workers, 1);
+    assert!(stopped.status().is_success());
+    assert_eq!(subscriptions.usecase.test_worker_count(), 0);
+}

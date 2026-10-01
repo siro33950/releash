@@ -1,5 +1,6 @@
 use crate::domain::code::{ReviewBase, ReviewSection};
 use crate::domain::workflow::FacetKind;
+use crate::usecase::notion::usecase::NotionTaskListRequest;
 use crate::usecase::state_subscription::{SubscriptionError, SubscriptionTarget};
 
 impl SubscriptionTarget {
@@ -67,6 +68,10 @@ impl SubscriptionTarget {
             ("branch-status", [path]) => Ok(Self::BranchStatus((*path).into())),
             ("current-branch", [path]) => Ok(Self::CurrentBranch((*path).into())),
             ("issues", [path]) => Ok(Self::Issues((*path).into())),
+            ("notion-label-options", [path]) => Ok(Self::NotionLabelOptions((*path).into())),
+            ("notion-tasks", [path, count, filters @ ..]) => {
+                parse_notion_tasks(path, count, filters)
+            }
             ("worktrees", [path]) => Ok(Self::Worktrees((*path).into())),
             ("repository-root", [path]) => Ok(Self::RepositoryRoot((*path).into())),
             ("startup-repository", []) => Ok(Self::StartupRepository),
@@ -140,6 +145,8 @@ impl SubscriptionTarget {
             Self::BranchStatus(p) => ("branch-status", vec![p.clone()]),
             Self::CurrentBranch(p) => ("current-branch", vec![p.clone()]),
             Self::Issues(p) => ("issues", vec![p.clone()]),
+            Self::NotionLabelOptions(p) => ("notion-label-options", vec![p.clone()]),
+            Self::NotionTasks(request) => format_notion_tasks(request),
             Self::Worktrees(p) => ("worktrees", vec![p.clone()]),
             Self::RepositoryRoot(p) => ("repository-root", vec![p.clone()]),
             Self::StartupRepository => ("startup-repository", vec![]),
@@ -174,6 +181,72 @@ impl SubscriptionTarget {
             Self::StartupOutcome => ("startup-outcome", vec![]),
         }
     }
+}
+
+const NOTION_TITLE_PREFIX: &str = "title=";
+const NOTION_LABELS_PREFIX: &str = "labels=";
+
+fn parse_notion_tasks(
+    path: &str,
+    count: &str,
+    filters: &[&str],
+) -> Result<SubscriptionTarget, SubscriptionError> {
+    let raw_count = count;
+    let count: usize = count.parse().map_err(|_| SubscriptionError::InvalidId)?;
+    if count == 0 || count.to_string() != raw_count {
+        return Err(SubscriptionError::InvalidId);
+    }
+    let mut title = None;
+    let mut labels =
+        std::collections::BTreeMap::<String, std::collections::BTreeSet<String>>::new();
+    for filter in filters {
+        if let Some(value) = filter.strip_prefix(NOTION_TITLE_PREFIX) {
+            if title.is_some() || value.is_empty() {
+                return Err(SubscriptionError::InvalidId);
+            }
+            title = Some(value.into());
+        } else if let Some(value) = filter.strip_prefix(NOTION_LABELS_PREFIX) {
+            if !labels.is_empty() {
+                return Err(SubscriptionError::InvalidId);
+            }
+            labels = serde_json::from_str(value).map_err(|_| SubscriptionError::InvalidId)?;
+            if labels.is_empty()
+                || labels.iter().any(|(key, values)| {
+                    key.is_empty() || values.is_empty() || values.iter().any(String::is_empty)
+                })
+            {
+                return Err(SubscriptionError::InvalidId);
+            }
+        } else {
+            return Err(SubscriptionError::InvalidId);
+        }
+    }
+    Ok(SubscriptionTarget::NotionTasks(NotionTaskListRequest {
+        path: path.into(),
+        count,
+        title,
+        labels,
+    }))
+}
+
+fn format_notion_tasks(request: &NotionTaskListRequest) -> (&'static str, Vec<String>) {
+    let NotionTaskListRequest {
+        path,
+        count,
+        title,
+        labels,
+    } = request;
+    let mut args = vec![path.into(), count.to_string()];
+    if let Some(title) = title {
+        args.push(format!("{NOTION_TITLE_PREFIX}{title}"));
+    }
+    if !labels.is_empty() {
+        args.push(format!(
+            "{NOTION_LABELS_PREFIX}{}",
+            serde_json::to_string(labels).expect("string label filters")
+        ));
+    }
+    ("notion-tasks", args)
 }
 
 fn facet_kind(kind: &str) -> Result<FacetKind, SubscriptionError> {

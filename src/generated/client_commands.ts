@@ -40,7 +40,6 @@ import {
 	DuplicateFacetRequestSchema,
 	DuplicateWorkflowRequestSchema,
 	FetchIssuesRequestSchema,
-	FetchNotionLabelOptionsRequestSchema,
 	FileNavigationResultDtoSchema,
 	GetFileNavigationRequestSchema,
 	GetLanguageFromPathRequestSchema,
@@ -56,19 +55,16 @@ import {
 	ListDiffTreeNodeDtoSchema,
 	ListHiddenRangeDtoSchema,
 	ListInlineChunkDtoSchema,
-	ListNotionLabelOptionViewSchema,
 	ListSplitRowDtoSchema,
 	ListTerminalInputPerformanceSampleV1Schema,
 	ListTerminalLaunchPerformanceSampleV1Schema,
 	ListVisibleBlockDtoSchema,
-	NotionTaskPageViewSchema,
 	NotionValidationResultViewSchema,
 	OpenAgentSessionRequestSchema,
 	OpenFacetInEditorRequestSchema,
 	OpenFolderInEditorRequestSchema,
 	OpenInEditorRequestSchema,
 	OpenWorkflowInEditorRequestSchema,
-	QueryNotionTasksRequestSchema,
 	QuitAfterStartupFailureRequestSchema,
 	RecordTerminalLaunchRendererPhaseRequestSchema,
 	RefreshProviderAvailabilityRequestSchema,
@@ -565,25 +561,6 @@ const commands = {
 		);
 		return result;
 	},
-	fetch_notion_label_options: async (
-		client: Client<typeof ClientService>,
-		args: ClientCommandArgs["fetch_notion_label_options"],
-	) => {
-		const result = decode(
-			ListNotionLabelOptionViewSchema,
-			await client.fetchNotionLabelOptions(
-				fromJson(
-					FetchNotionLabelOptionsRequestSchema,
-					clientJson(
-						FetchNotionLabelOptionsRequestSchema,
-						JSON.parse(JSON.stringify(args ?? {})),
-						true,
-					),
-				),
-			),
-		);
-		return result;
-	},
 	get_file_navigation: async (
 		client: Client<typeof ClientService>,
 		args: ClientCommandArgs["get_file_navigation"],
@@ -842,25 +819,6 @@ const commands = {
 					OpenWorkflowInEditorRequestSchema,
 					clientJson(
 						OpenWorkflowInEditorRequestSchema,
-						JSON.parse(JSON.stringify(args ?? {})),
-						true,
-					),
-				),
-			),
-		);
-		return result;
-	},
-	query_notion_tasks: async (
-		client: Client<typeof ClientService>,
-		args: ClientCommandArgs["query_notion_tasks"],
-	) => {
-		const result = decode(
-			NotionTaskPageViewSchema,
-			await client.queryNotionTasks(
-				fromJson(
-					QueryNotionTasksRequestSchema,
-					clientJson(
-						QueryNotionTasksRequestSchema,
 						JSON.parse(JSON.stringify(args ?? {})),
 						true,
 					),

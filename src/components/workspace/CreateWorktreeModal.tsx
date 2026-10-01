@@ -792,8 +792,14 @@ function NotionMode({
 	selectedBranches: string[];
 	worktreeBranchNames: Set<string>;
 }) {
-	const { tasks, loading, loadMore, hasMore, search } =
-		useNotionTasks(repoPath);
+	const {
+		tasks,
+		loading,
+		loadMore,
+		hasMore,
+		search,
+		error: taskError,
+	} = useNotionTasks(repoPath);
 
 	const filteredTasks = useMemo(
 		() =>
@@ -802,7 +808,7 @@ function NotionMode({
 			),
 		[tasks, worktreeBranchNames],
 	);
-	const { labelOptions } = useNotionLabelOptions(repoPath);
+	const { labelOptions, error: labelError } = useNotionLabelOptions(repoPath);
 	const [titleFilter, setTitleFilter] = useState("");
 	const [labelFilters, setLabelFilters] = useState<Record<string, string[]>>(
 		{},
@@ -833,6 +839,16 @@ function NotionMode({
 
 	return (
 		<div className="flex-1 min-h-0 flex flex-col gap-1.5">
+			{taskError && (
+				<p role="alert" className="text-sm text-destructive">
+					{taskError}
+				</p>
+			)}
+			{labelError && labelError !== taskError && (
+				<p role="alert" className="text-sm text-destructive">
+					{labelError}
+				</p>
+			)}
 			<Input
 				value={titleFilter}
 				onChange={(e) => handleTitleChange(e.target.value)}
@@ -904,7 +920,7 @@ function NotionMode({
 				</div>
 			)}
 			<div className="flex-1 min-h-[120px] overflow-auto">
-				{loading ? (
+				{loading && tasks.length === 0 ? (
 					<div className="flex items-center justify-center py-8">
 						<Loader2 className="size-4 text-muted-foreground animate-spin" />
 					</div>
@@ -971,6 +987,7 @@ function NotionMode({
 								variant="ghost"
 								className="w-full text-xs"
 								onClick={loadMore}
+								disabled={loading}
 							>
 								Load more
 							</Button>

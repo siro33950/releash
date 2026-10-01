@@ -1,98 +1,64 @@
-import { renderHook, waitFor } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { act, renderHook } from "@testing-library/react";
+import { beforeEach, expect, it, vi } from "vitest";
+import { invokeClient, subscribeState } from "@/lib/client";
 import { useNotionLabelOptions } from "./useNotionLabelOptions";
 
-describe("useNotionLabelOptions", () => {
-	it("should invoke fetch_notion_label_options on mount", async () => {
-		const { invokeClient: invoke } = await import("@/lib/client");
-		vi.mocked(invoke).mockResolvedValue([]);
-
-		const { result } = renderHook(() => useNotionLabelOptions("/test/repo"));
-
-		await waitFor(() => {
-			expect(result.current.loading).toBe(false);
-		});
-
-		expect(invoke).toHaveBeenCalledWith("fetch_notion_label_options", {
-			repoPath: "/test/repo",
-		});
-	});
-
-	it("should set labelOptions from result", async () => {
-		const { invokeClient: invoke } = await import("@/lib/client");
-		const mockOptions = [
-			{
-				property_name: "Status",
-				property_type: "status",
-				options: ["Todo", "In Progress", "Done"],
-				option_ids: [],
-			},
-			{
-				property_name: "Tags",
-				property_type: "multi_select",
-				options: ["frontend", "backend"],
-				option_ids: [],
-			},
-		];
-		vi.mocked(invoke).mockResolvedValue(mockOptions);
-
-		const { result } = renderHook(() => useNotionLabelOptions("/test/repo"));
-
-		await waitFor(() => {
-			expect(result.current.labelOptions).toHaveLength(2);
-		});
-
-		expect(result.current.labelOptions[0].property_name).toBe("Status");
-		expect(result.current.labelOptions[0].options).toEqual([
-			"Todo",
-			"In Progress",
-			"Done",
-		]);
-	});
-
-	it("should set labelOptions with option_ids for people type", async () => {
-		const { invokeClient: invoke } = await import("@/lib/client");
-		const mockOptions = [
-			{
-				property_name: "Assignee",
-				property_type: "people",
-				options: ["Alice", "Bob"],
-				option_ids: ["uuid-1", "uuid-2"],
-			},
-		];
-		vi.mocked(invoke).mockResolvedValue(mockOptions);
-
-		const { result } = renderHook(() => useNotionLabelOptions("/test/repo"));
-
-		await waitFor(() => {
-			expect(result.current.labelOptions).toHaveLength(1);
-		});
-
-		expect(result.current.labelOptions[0].property_name).toBe("Assignee");
-		expect(result.current.labelOptions[0].property_type).toBe("people");
-		expect(result.current.labelOptions[0].options).toEqual(["Alice", "Bob"]);
-		expect(result.current.labelOptions[0].option_ids).toEqual([
-			"uuid-1",
-			"uuid-2",
-		]);
-	});
-
-	it("should set empty options on error", async () => {
-		const { invokeClient: invoke } = await import("@/lib/client");
-		const notice = vi.fn();
-		window.addEventListener("releash-client-error", notice);
-		vi.mocked(invoke).mockRejectedValue(new Error("not configured"));
-
-		const { result } = renderHook(() => useNotionLabelOptions("/test/repo"));
-
-		await waitFor(() => {
-			expect(result.current.loading).toBe(false);
-		});
-
-		expect(result.current.labelOptions).toEqual([]);
-		expect((notice.mock.calls[0][0] as CustomEvent<string>).detail).toBe(
-			"not configured",
-		);
-		window.removeEventListener("releash-client-error", notice);
-	});
+beforeEach(() => {
+	vi.clearAllMocks();
+	vi.mocked(subscribeState).mockImplementation(() => vi.fn());
+});
+it("repoを購読しpeopleの識別子を含む選択肢と更新を表示する", () => {
+	const { result, unmount } = renderHook(() => useNotionLabelOptions("/repo"));
+	expect(subscribeState).toHaveBeenCalledWith(
+		{ kind: "notion-label-options", args: ["/repo"] },
+		expect.any(Function),
+		expect.any(Function),
+	);
+	expect(result.current.loading).toBe(true);
+	const [, receive] = vi.mocked(subscribeState).mock.calls[0];
+	const options = [
+		{
+			property_name: "Assignee",
+			property_type: "people",
+			options: ["Alice"],
+			option_ids: ["uuid"],
+		},
+	];
+	act(() => receive({ options }));
+	expect(result.current.labelOptions).toEqual(options);
+	expect(result.current.loading).toBe(false);
+	act(() => receive({ options: [] }));
+	expect(result.current.labelOptions).toEqual([]);
+	expect(invokeClient).not.toHaveBeenCalled();
+	const release = vi.mocked(subscribeState).mock.results[0].value;
+	unmount();
+	expect(release).toHaveBeenCalledOnce();
+});
+it("前の選択肢と取得失敗を表示し初回失敗と回復も扱う", () => {
+	const { result } = renderHook(() => useNotionLabelOptions("/repo"));
+	const [, receive, fail] = vi.mocked(subscribeState).mock.calls[0];
+	act(() =>
+		receive({
+			readError: { code: 9, message: "not configured", configMissing: true },
+		}),
+	);
+	expect(result.current.labelOptions).toEqual([]);
+	expect(result.current.loading).toBe(false);
+	expect(result.current.readError?.code).toBe(9);
+	expect(result.current.readError?.configMissing).toBe(true);
+	const options = [
+		{
+			property_name: "Status",
+			property_type: "status",
+			options: ["Todo"],
+			option_ids: [],
+		},
+	];
+	act(() => receive({ options, readError: { code: 13, message: "offline" } }));
+	expect(result.current.labelOptions).toEqual(options);
+	expect(result.current.error).toBe("offline");
+	act(() => fail(new Error("stream failed")));
+	expect(result.current.labelOptions).toEqual(options);
+	act(() => receive({ options }));
+	expect(result.current.error).toBeNull();
 });

@@ -1,111 +1,69 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { invokeClient as invoke } from "@/lib/client";
-import { showClientError } from "@/lib/clientErrorNotice";
-import type { NotionTask } from "@/types/notion";
+import type { StateValues } from "@/lib/client";
+import { useStateSubscriptionResult } from "./useStateSubscription";
 
 const DEBOUNCE_MS = 300;
 
-export interface NotionTaskFilters {
-	title: string;
-	labels: Record<string, string[]>;
-}
-
-export function useNotionTasks(
-	repoPath: string,
-	initialFilters?: NotionTaskFilters,
-) {
-	const [tasks, setTasks] = useState<NotionTask[]>([]);
-	const [loading, setLoading] = useState(true);
-	const [hasMore, setHasMore] = useState(false);
-	const [cursor, setCursor] = useState<string | null>(null);
-	const filtersRef = useRef<NotionTaskFilters>(
-		initialFilters ?? { title: "", labels: {} },
-	);
+export function useNotionTasks(repoPath: string) {
+	const [request, setRequest] = useState({
+		repoPath,
+		count: 20,
+		filters: [] as string[],
+	});
 	const debounceRef = useRef<ReturnType<typeof setTimeout> | undefined>(
 		undefined,
 	);
-
-	const fetchTasks = useCallback(
-		async (
-			title: string,
-			labels: Record<string, string[]>,
-			startCursor: string | null,
-			append: boolean,
-		) => {
-			setLoading(true);
-			try {
-				const result = await invoke("query_notion_tasks", {
-					repoPath,
-					query: {
-						title_filter: title,
-						label_filters: labels,
-						cursor: startCursor,
-					},
-				});
-				if (append) {
-					setTasks((prev) => [...prev, ...result.tasks]);
-				} else {
-					setTasks(result.tasks);
-				}
-				setHasMore(result.has_more);
-				setCursor(result.next_cursor);
-			} catch (error) {
-				showClientError(error);
-				if (!append) {
-					setTasks([]);
-				}
-				setHasMore(false);
-				setCursor(null);
-			} finally {
-				setLoading(false);
-			}
+	if (request.repoPath !== repoPath) {
+		clearTimeout(debounceRef.current);
+		setRequest({ repoPath, count: 20, filters: [] });
+	}
+	const args = [repoPath, String(request.count), ...request.filters];
+	const subscription = useStateSubscriptionResult({
+		kind: "notion-tasks",
+		args,
+	});
+	const filterKey = JSON.stringify([repoPath, request.filters]);
+	const previous = useRef<
+		{ key: string; page: StateValues["notion-tasks"]["page"] } | undefined
+	>(undefined);
+	const page = subscription.value?.page;
+	useEffect(() => {
+		if (page) previous.current = { key: filterKey, page };
+	}, [page, filterKey]);
+	const displayed =
+		page ??
+		(previous.current?.key === filterKey ? previous.current.page : undefined);
+	const error =
+		subscription.error ?? subscription.value?.readError?.message ?? null;
+	const loading = subscription.value === undefined && !error;
+	useEffect(() => () => clearTimeout(debounceRef.current), []);
+	const search = useCallback(
+		(title: string, labels: Record<string, string[]>) => {
+			clearTimeout(debounceRef.current);
+			debounceRef.current = setTimeout(() => {
+				const filters: string[] = [];
+				if (title) filters.push(`title=${title}`);
+				const entries = Object.entries(labels).filter(
+					([, values]) => values.length > 0,
+				);
+				if (entries.length)
+					filters.push(`labels=${JSON.stringify(Object.fromEntries(entries))}`);
+				setRequest({ repoPath, count: 20, filters });
+			}, DEBOUNCE_MS);
 		},
 		[repoPath],
 	);
-
-	useEffect(() => {
-		const { title, labels } = filtersRef.current;
-		fetchTasks(title, labels, null, false);
-	}, [fetchTasks]);
-
-	useEffect(() => {
-		return () => {
-			if (debounceRef.current) {
-				clearTimeout(debounceRef.current);
-			}
-		};
-	}, []);
-
-	const search = useCallback(
-		(title: string, labels: Record<string, string[]>) => {
-			filtersRef.current = { title, labels };
-			if (debounceRef.current) {
-				clearTimeout(debounceRef.current);
-			}
-			debounceRef.current = setTimeout(() => {
-				fetchTasks(title, labels, null, false);
-			}, DEBOUNCE_MS);
-		},
-		[fetchTasks],
-	);
-
 	const loadMore = useCallback(() => {
-		if (!hasMore || !cursor || loading) return;
-		const { title, labels } = filtersRef.current;
-		fetchTasks(title, labels, cursor, true);
-	}, [hasMore, cursor, loading, fetchTasks]);
-
-	const refresh = useCallback(() => {
-		const { title, labels } = filtersRef.current;
-		fetchTasks(title, labels, null, false);
-	}, [fetchTasks]);
-
+		if (displayed?.has_more && !loading)
+			setRequest((current) => ({ ...current, count: current.count + 20 }));
+	}, [displayed?.has_more, loading]);
 	return {
-		tasks,
+		tasks: displayed?.tasks ?? [],
+		hasMore: displayed?.has_more ?? false,
 		loading,
-		hasMore,
+		error,
+		readError: subscription.value?.readError,
 		search,
 		loadMore,
-		refresh,
 	};
 }

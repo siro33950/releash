@@ -32,14 +32,19 @@ impl StateSubscriptionRead for StateSubscriptionReads {
             .map_err(task_error)?
     }
     async fn refresh_external(&self, target: &SubscriptionTarget) -> Result<(), StateReadError> {
-        let SubscriptionTarget::Issues(path) = target else {
-            return self.0.refresh_external(target).await;
-        };
         let reads = self.0.clone();
-        let path = path.clone();
-        crate::common::operation_context::spawn_blocking(move || reads.refresh_issues(&path))
-            .await
-            .map_err(task_error)?
+        let target = target.clone();
+        crate::common::operation_context::spawn_blocking(move || {
+            reads.refresh_external_blocking(&target)
+        })
+        .await
+        .map_err(task_error)?
+    }
+    fn acquire_external(&self, target: &SubscriptionTarget) {
+        self.0.acquire_external(target);
+    }
+    fn release_external(&self, target: &SubscriptionTarget) {
+        self.0.release_external(target);
     }
     fn repositories(&self) -> Vec<String> {
         self.0.repositories()

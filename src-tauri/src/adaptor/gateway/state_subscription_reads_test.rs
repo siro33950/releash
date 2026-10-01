@@ -49,3 +49,57 @@ async fn test_購読読取の境界_同期queryは自前のruntimeで外部comma
     assert!(reads.refresh_external(&target).await.is_ok());
     assert!(reads.read(&target).await.is_ok());
 }
+
+#[tokio::test]
+async fn test_notion購読読取_タスクの外部更新の後に未設定の失敗を読む() {
+    // Given
+    let fixture = crate::test_support::state_subscription::StateReadsFixture::new();
+    let reads = StateSubscriptionReads(fixture.reads.clone());
+    let target =
+        SubscriptionTarget::NotionTasks(crate::usecase::notion::usecase::NotionTaskListRequest {
+            path: fixture.path.clone(),
+            count: 20,
+            title: None,
+            labels: Default::default(),
+        });
+    // When
+    reads.acquire_external(&target);
+    reads.refresh_external(&target).await.unwrap();
+    let value = reads.read(&target).await.unwrap();
+    reads.release_external(&target);
+    let released = reads.read(&target).await;
+    // Then
+    let crate::usecase::state_subscription::StateValue::NotionTasks(result) = value else {
+        panic!("Notion state expected")
+    };
+    assert_eq!(
+        result.error,
+        Some(crate::usecase::notion::error::NotionUsecaseError::ConfigNotFound)
+    );
+    assert!(result.value.is_none());
+    assert!(released.is_err());
+}
+
+#[tokio::test]
+async fn test_notion購読読取_ラベルの外部更新の後に未設定の失敗を読む() {
+    // Given
+    let fixture = crate::test_support::state_subscription::StateReadsFixture::new();
+    let reads = StateSubscriptionReads(fixture.reads.clone());
+    let target = SubscriptionTarget::NotionLabelOptions(fixture.path.clone());
+    // When
+    reads.acquire_external(&target);
+    reads.refresh_external(&target).await.unwrap();
+    let value = reads.read(&target).await.unwrap();
+    reads.release_external(&target);
+    let released = reads.read(&target).await;
+    // Then
+    let crate::usecase::state_subscription::StateValue::NotionLabelOptions(result) = value else {
+        panic!("Notion state expected")
+    };
+    assert_eq!(
+        result.error,
+        Some(crate::usecase::notion::error::NotionUsecaseError::ConfigNotFound)
+    );
+    assert!(result.value.is_none());
+    assert!(released.is_err());
+}

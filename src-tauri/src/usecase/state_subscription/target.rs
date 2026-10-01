@@ -17,6 +17,8 @@ pub(crate) enum SubscriptionTarget {
     BranchStatus(String),
     CurrentBranch(String),
     Issues(String),
+    NotionTasks(crate::usecase::notion::usecase::NotionTaskListRequest),
+    NotionLabelOptions(String),
     Worktrees(String),
     RepositoryRoot(String),
     StartupRepository,
@@ -98,7 +100,13 @@ impl SubscriptionTarget {
     }
 
     pub fn external_information(&self) -> bool {
-        matches!(self, Self::Workspaces | Self::Issues(_))
+        matches!(
+            self,
+            Self::Workspaces
+                | Self::Issues(_)
+                | Self::NotionTasks(..)
+                | Self::NotionLabelOptions(_)
+        )
     }
 }
 
@@ -120,6 +128,7 @@ pub(crate) enum StateChangeSource {
     ReviewComments(Option<String>),
     WorkflowDefinitions,
     AppConfig,
+    NotionConfig(String),
     ProviderHookHealth,
 }
 
@@ -166,6 +175,11 @@ impl SubscriptionTarget {
                     | Self::Facet(_, _)
                     | Self::Diagnostics
             ),
+            C::NotionConfig(path) => match self {
+                Self::NotionTasks(request) => request.path == *path,
+                Self::NotionLabelOptions(p) => p == path,
+                _ => false,
+            },
             C::AppConfig => matches!(
                 self,
                 Self::DesktopSettings

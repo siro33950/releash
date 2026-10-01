@@ -20,7 +20,7 @@ impl From<StateReadError> for PublishedState {
     }
 }
 
-#[cfg(any(test, all(debug_assertions, feature = "desktop")))]
+use parking_lot::Mutex;
 use std::sync::Arc;
 
 use futures_util::Stream;
@@ -47,9 +47,21 @@ impl From<crate::infrastructure::state_subscription::SubscriptionError> for Subs
     }
 }
 
+type RequestedArgs = Arc<
+    Mutex<
+        std::collections::HashMap<
+            String,
+            std::collections::HashMap<String, std::collections::HashSet<Vec<String>>>,
+        >,
+    >,
+>;
+
 #[derive(Clone)]
 pub(crate) struct StateSubscriptionPresenter {
     runtime: StateSubscriptionRuntime<PublishedState>,
+    // ponytail: Notion request registration is serialized; split by client if starts contend.
+    pub(crate) request_lock: Arc<tokio::sync::Mutex<()>>,
+    requested_args: RequestedArgs,
 }
 
 impl StateSubscriptionPresenter {
@@ -64,7 +76,113 @@ impl StateSubscriptionPresenter {
 
     pub(crate) fn new() -> Self {
         let runtime = StateSubscriptionRuntime::new(uuid::Uuid::new_v4().to_string());
-        Self { runtime }
+        Self {
+            runtime,
+            request_lock: Default::default(),
+            requested_args: Default::default(),
+        }
+    }
+
+    pub(crate) fn add_request(
+        &self,
+        client: &str,
+        target: &SubscriptionTarget,
+        args: Vec<String>,
+    ) -> (bool, bool) {
+        let mut requested = self.requested_args.lock();
+        let aliases = requested
+            .entry(client.into())
+            .or_default()
+            .entry(target.to_string())
+            .or_default();
+        let replay = !aliases.is_empty();
+        let inserted = aliases.insert(args);
+        (inserted, inserted && replay)
+    }
+
+    pub(crate) fn has_other_requests(
+        &self,
+        client: &str,
+        target: &SubscriptionTarget,
+        args: &[String],
+    ) -> bool {
+        self.requested_args
+            .lock()
+            .get(client)
+            .and_then(|targets| targets.get(&target.to_string()))
+            .is_some_and(|aliases| aliases.iter().any(|alias| alias != args))
+    }
+
+    pub(crate) fn remove_request(
+        &self,
+        client: &str,
+        target: &SubscriptionTarget,
+        args: &[String],
+    ) -> bool {
+        let mut requested = self.requested_args.lock();
+        let Some(targets) = requested.get_mut(client) else {
+            return true;
+        };
+        let key = target.to_string();
+        if let Some(aliases) = targets.get_mut(&key) {
+            aliases.remove(args);
+            if !aliases.is_empty() {
+                return false;
+            }
+        }
+        targets.remove(&key);
+        if targets.is_empty() {
+            requested.remove(client);
+        }
+        true
+    }
+
+    pub(crate) fn replay_request(
+        &self,
+        client: &str,
+        target: &SubscriptionTarget,
+    ) -> Result<(), SubscriptionError> {
+        let raw = target.to_string();
+        self.update(|state| {
+            state.stop(client, &raw)?;
+            state.start(client, &raw, None)?;
+            Ok(true)
+        })
+    }
+
+    pub(crate) fn wire_events(
+        &self,
+        client: &str,
+        event: StateSubscriptionEvent,
+    ) -> Vec<
+        Result<
+            crate::adaptor::presenter::connect_wire::rpc::StateSubscriptionEvent,
+            connectrpc::ConnectError,
+        >,
+    > {
+        let aliases = match &event {
+            StateSubscriptionEvent::Item(target, _) => self
+                .requested_args
+                .lock()
+                .get(client)
+                .and_then(|targets| targets.get(target))
+                .cloned(),
+            _ => None,
+        };
+        match aliases {
+            Some(aliases) => aliases
+                .into_iter()
+                .map(|args| {
+                    crate::adaptor::presenter::state_subscription_wire::event_with_args(
+                        &event,
+                        Some(args),
+                    )
+                })
+                .collect::<Vec<_>>(),
+            None => vec![crate::adaptor::presenter::state_subscription_wire::event(
+                event,
+            )],
+        }
     }
 
     fn update(
@@ -122,6 +240,7 @@ impl StateSubscriptionPresenter {
     }
 
     pub(crate) fn close(&self, id: &str, active: &std::collections::HashSet<SubscriptionTarget>) {
+        self.requested_args.lock().remove(id);
         let protected = protected_targets(active);
         self.runtime.mutate(|state| {
             let targets = state.active_targets();

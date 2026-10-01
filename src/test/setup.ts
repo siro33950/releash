@@ -96,6 +96,9 @@ vi.mock("@/lib/client", async (importOriginal) => {
 					].includes(name)
 				)
 					onValue([]);
+				else if (name === "notion-tasks")
+					onValue({ page: { tasks: [], has_more: false } });
+				else if (name === "notion-label-options") onValue({ options: [] });
 				else if (name === "session-history")
 					onValue({ items: [], hasMore: false });
 				else if (name === "diagnostics")

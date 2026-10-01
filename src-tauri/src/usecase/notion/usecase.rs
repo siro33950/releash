@@ -1,3 +1,4 @@
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 
 use crate::domain::app_config::value_objects as app_config_vo;
@@ -6,6 +7,18 @@ use crate::domain::notion::{
     NotionApiGateway, NotionLabelOption, NotionTaskPage, NotionTaskQuery, NotionValidationResult,
 };
 use crate::usecase::notion::error::NotionUsecaseError;
+
+use crate::usecase::fetched::Fetched;
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) struct NotionTaskListRequest {
+    pub path: String,
+    pub count: usize,
+    pub title: Option<String>,
+    pub labels: BTreeMap<String, BTreeSet<String>>,
+}
+
+type Results<K, T> = parking_lot::Mutex<HashMap<K, (u64, Fetched<T, NotionUsecaseError>)>>;
 
 #[derive(Clone, PartialEq, Eq)]
 pub(crate) struct NotionRepoConfigDto {
@@ -42,6 +55,9 @@ pub(crate) struct NotionUsecase {
     repository: Arc<dyn NotionConfigRepository>,
     config_query: Arc<dyn super::query_service::NotionConfigQueryService>,
     api: Arc<dyn NotionApiGateway>,
+    result_generation: std::sync::atomic::AtomicU64,
+    task_results: Results<NotionTaskListRequest, NotionTaskPage>,
+    label_results: Results<String, Vec<NotionLabelOption>>,
     state_publisher: Option<crate::usecase::state_subscription::StateSubscriptionUsecase>,
 }
 
@@ -56,6 +72,9 @@ impl NotionUsecase {
             config_query,
             api,
             state_publisher: None,
+            result_generation: Default::default(),
+            task_results: Default::default(),
+            label_results: Default::default(),
         }
     }
 
@@ -67,30 +86,74 @@ impl NotionUsecase {
         self
     }
 
-    fn config_changed(&self) {
+    fn config_changed(&self, repo_path: &str) {
         if let Some(publisher) = &self.state_publisher {
             publisher.notify(crate::usecase::state_subscription::StateChangeSource::AppConfig);
+            publisher.notify(
+                crate::usecase::state_subscription::StateChangeSource::NotionConfig(
+                    repo_path.into(),
+                ),
+            );
         }
     }
 
-    pub(crate) fn query_tasks(
-        &self,
-        repo_path: &str,
-        query: &NotionTaskQuery,
-    ) -> Result<NotionTaskPage, NotionUsecaseError> {
-        query_tasks(
-            self.repository.as_ref(),
-            self.api.as_ref(),
-            repo_path,
-            query,
-        )
+    pub(crate) fn acquire_tasks(&self, request: &NotionTaskListRequest) {
+        acquire_result(&self.task_results, &self.result_generation, request.clone());
     }
 
-    pub(crate) fn fetch_label_options(
+    pub(crate) fn refresh_tasks(&self, request: &NotionTaskListRequest) {
+        refresh_result(&self.task_results, request, || {
+            query_task_list(
+                self.repository.as_ref(),
+                self.api.as_ref(),
+                &request.path,
+                request.count,
+                request.title.as_deref(),
+                &request.labels,
+            )
+        });
+    }
+
+    pub(crate) fn cached_tasks(
         &self,
-        repo_path: &str,
-    ) -> Result<Vec<NotionLabelOption>, NotionUsecaseError> {
-        fetch_label_options(self.repository.as_ref(), self.api.as_ref(), repo_path)
+        request: &NotionTaskListRequest,
+    ) -> Option<Fetched<NotionTaskPage, NotionUsecaseError>> {
+        self.task_results
+            .lock()
+            .get(request)
+            .map(|(_, value)| value.clone())
+    }
+
+    pub(crate) fn release_tasks(&self, request: &NotionTaskListRequest) {
+        self.task_results.lock().remove(request);
+    }
+
+    pub(crate) fn acquire_label_options(&self, path: &str) {
+        acquire_result(
+            &self.label_results,
+            &self.result_generation,
+            path.to_owned(),
+        );
+    }
+
+    pub(crate) fn refresh_label_options(&self, path: &str) {
+        refresh_result(&self.label_results, &path.to_owned(), || {
+            fetch_label_options(self.repository.as_ref(), self.api.as_ref(), path)
+        });
+    }
+
+    pub(crate) fn cached_label_options(
+        &self,
+        path: &str,
+    ) -> Option<Fetched<Vec<NotionLabelOption>, NotionUsecaseError>> {
+        self.label_results
+            .lock()
+            .get(path)
+            .map(|(_, value)| value.clone())
+    }
+
+    pub(crate) fn release_label_options(&self, path: &str) {
+        self.label_results.lock().remove(path);
     }
 
     pub(crate) fn save_config(
@@ -98,8 +161,8 @@ impl NotionUsecase {
         repo_path: String,
         config: app_config_vo::NotionRepoConfig,
     ) -> Result<(), NotionUsecaseError> {
-        save_config(self.repository.as_ref(), repo_path, config)?;
-        self.config_changed();
+        save_config(self.repository.as_ref(), repo_path.clone(), config)?;
+        self.config_changed(&repo_path);
         Ok(())
     }
 
@@ -112,7 +175,7 @@ impl NotionUsecase {
 
     pub(crate) fn delete_config(&self, repo_path: &str) -> Result<(), NotionUsecaseError> {
         delete_config(self.repository.as_ref(), repo_path)?;
-        self.config_changed();
+        self.config_changed(repo_path);
         Ok(())
     }
 
@@ -125,14 +188,74 @@ impl NotionUsecase {
     }
 }
 
-fn query_tasks(
+fn acquire_result<K: Eq + std::hash::Hash, T>(
+    results: &Results<K, T>,
+    generation: &std::sync::atomic::AtomicU64,
+    key: K,
+) {
+    let generation = generation.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    results.lock().insert(key, (generation, Fetched::default()));
+}
+
+fn refresh_result<K: Eq + std::hash::Hash, T>(
+    results: &Results<K, T>,
+    key: &K,
+    fetch: impl FnOnce() -> Result<T, NotionUsecaseError>,
+) {
+    let Some(generation) = results.lock().get(key).map(|(generation, _)| *generation) else {
+        return;
+    };
+    let result = fetch();
+    let mut results = results.lock();
+    if let Some((_, current)) = results
+        .get_mut(key)
+        .filter(|(current, _)| *current == generation)
+    {
+        current.record(result);
+    }
+}
+
+fn query_task_list(
     repository: &dyn NotionConfigRepository,
     api: &dyn NotionApiGateway,
     repo_path: &str,
-    query: &NotionTaskQuery,
+    count: usize,
+    title: Option<&str>,
+    labels: &BTreeMap<String, BTreeSet<String>>,
 ) -> Result<NotionTaskPage, NotionUsecaseError> {
     let config = resolve_config(repository, repo_path)?;
-    api.query_tasks(&config, query).map_err(Into::into)
+    let mut query = NotionTaskQuery {
+        title_filter: title.unwrap_or_default().into(),
+        label_filters: labels
+            .iter()
+            .map(|(key, values)| (key.clone(), values.iter().cloned().collect()))
+            .collect(),
+        cursor: None,
+        page_size: Some(20),
+    };
+    let mut tasks = Vec::new();
+    loop {
+        let page = api.query_tasks(&config, &query)?;
+        tasks.extend(page.tasks);
+        if tasks.len() >= count || !page.has_more {
+            let has_more = tasks.len() > count || page.has_more;
+            tasks.truncate(count);
+            return Ok(NotionTaskPage {
+                tasks,
+                has_more,
+                next_cursor: None,
+            });
+        }
+        let cursor = page
+            .next_cursor
+            .filter(|cursor| Some(cursor) != query.cursor.as_ref())
+            .ok_or_else(|| {
+                crate::domain::notion::NotionError::ParseError(
+                    "Notion pagination cursor is missing or repeated".into(),
+                )
+            })?;
+        query.cursor = Some(cursor);
+    }
 }
 
 fn fetch_label_options(
@@ -164,15 +287,14 @@ fn validate_config(
     api_token: String,
     database_id: String,
 ) -> Result<NotionValidationResult, NotionUsecaseError> {
-    if api_token.is_empty() || database_id.is_empty() {
-        return Ok(NotionValidationResult::not_configured());
-    }
-
     let config = app_config_vo::NotionRepoConfig {
         api_token,
         database_id,
         property_mapping: app_config_vo::NotionPropertyMapping::default(),
     };
+    if !config.is_configured() {
+        return Ok(NotionValidationResult::not_configured());
+    }
     api.validate(&config).map_err(Into::into)
 }
 
@@ -182,327 +304,10 @@ fn resolve_config(
 ) -> Result<app_config_vo::NotionRepoConfig, NotionUsecaseError> {
     repository
         .get(repo_path)?
-        .filter(|config| {
-            !config.api_token.trim().is_empty() && !config.database_id.trim().is_empty()
-        })
+        .filter(app_config_vo::NotionRepoConfig::is_configured)
         .ok_or(NotionUsecaseError::ConfigNotFound)
 }
 
 #[cfg(test)]
-mod tests {
-    use std::collections::HashMap;
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::sync::{Arc, Mutex};
-
-    use crate::domain::app_config::error::AppConfigError;
-    use crate::domain::notion::{
-        NotionConfigStatus, NotionError, NotionLabelOption, NotionPropertyInfo, NotionTask,
-    };
-    use crate::usecase::notion::error::NOTION_CONFIG_NOT_FOUND;
-
-    use super::*;
-
-    #[derive(Default)]
-    struct FakeNotionConfigRepository {
-        configs: Mutex<HashMap<String, app_config_vo::NotionRepoConfig>>,
-    }
-
-    impl FakeNotionConfigRepository {
-        fn with_config(repo_path: &str, config: app_config_vo::NotionRepoConfig) -> Self {
-            Self {
-                configs: Mutex::new(HashMap::from([(repo_path.to_string(), config)])),
-            }
-        }
-    }
-
-    impl NotionConfigRepository for FakeNotionConfigRepository {
-        fn get(
-            &self,
-            repo_path: &str,
-        ) -> Result<Option<app_config_vo::NotionRepoConfig>, AppConfigError> {
-            Ok(self.configs.lock().unwrap().get(repo_path).cloned())
-        }
-
-        fn upsert(
-            &self,
-            repo_path: String,
-            config: app_config_vo::NotionRepoConfig,
-        ) -> Result<(), AppConfigError> {
-            self.configs.lock().unwrap().insert(repo_path, config);
-            Ok(())
-        }
-
-        fn remove(&self, repo_path: &str) -> Result<(), AppConfigError> {
-            self.configs.lock().unwrap().remove(repo_path);
-            Ok(())
-        }
-    }
-
-    #[derive(Default)]
-    struct FakeNotionApiGateway {
-        query_calls: AtomicUsize,
-        label_calls: AtomicUsize,
-        validate_calls: AtomicUsize,
-        query_result: Mutex<Option<Result<NotionTaskPage, NotionError>>>,
-        label_result: Mutex<Option<Result<Vec<NotionLabelOption>, NotionError>>>,
-        validate_result: Mutex<Option<NotionValidationResult>>,
-    }
-
-    impl FakeNotionApiGateway {
-        fn with_query_result(result: Result<NotionTaskPage, NotionError>) -> Self {
-            Self {
-                query_result: Mutex::new(Some(result)),
-                ..Self::default()
-            }
-        }
-
-        fn with_label_result(result: Result<Vec<NotionLabelOption>, NotionError>) -> Self {
-            Self {
-                label_result: Mutex::new(Some(result)),
-                ..Self::default()
-            }
-        }
-
-        fn with_validate_result(result: NotionValidationResult) -> Self {
-            Self {
-                validate_result: Mutex::new(Some(result)),
-                ..Self::default()
-            }
-        }
-    }
-
-    impl NotionApiGateway for FakeNotionApiGateway {
-        fn query_tasks(
-            &self,
-            _config: &app_config_vo::NotionRepoConfig,
-            _query: &NotionTaskQuery,
-        ) -> Result<NotionTaskPage, NotionError> {
-            self.query_calls.fetch_add(1, Ordering::SeqCst);
-            self.query_result.lock().unwrap().take().unwrap_or_else(|| {
-                Ok(NotionTaskPage {
-                    tasks: Vec::new(),
-                    has_more: false,
-                    next_cursor: None,
-                })
-            })
-        }
-
-        fn fetch_label_options(
-            &self,
-            _config: &app_config_vo::NotionRepoConfig,
-        ) -> Result<Vec<NotionLabelOption>, NotionError> {
-            self.label_calls.fetch_add(1, Ordering::SeqCst);
-            self.label_result
-                .lock()
-                .unwrap()
-                .take()
-                .unwrap_or_else(|| Ok(Vec::new()))
-        }
-
-        fn validate(
-            &self,
-            _config: &app_config_vo::NotionRepoConfig,
-        ) -> Result<NotionValidationResult, NotionError> {
-            self.validate_calls.fetch_add(1, Ordering::SeqCst);
-            Ok(self
-                .validate_result
-                .lock()
-                .unwrap()
-                .take()
-                .unwrap_or_else(NotionValidationResult::not_configured))
-        }
-    }
-
-    fn config() -> app_config_vo::NotionRepoConfig {
-        app_config_vo::NotionRepoConfig {
-            api_token: "ntn_token".to_string(),
-            database_id: "db-1".to_string(),
-            property_mapping: app_config_vo::NotionPropertyMapping::default(),
-        }
-    }
-
-    fn query() -> NotionTaskQuery {
-        NotionTaskQuery {
-            title_filter: String::new(),
-            label_filters: HashMap::new(),
-            cursor: None,
-            page_size: None,
-        }
-    }
-
-    #[test]
-    fn test_task_query_configured_repoはtask_pageを返す() {
-        let repo = FakeNotionConfigRepository::with_config("/repo", config());
-        let expected = NotionTaskPage {
-            tasks: vec![NotionTask {
-                id: "page-1".to_string(),
-                title: "Task".to_string(),
-                url: "https://notion.so/page-1".to_string(),
-                labels: HashMap::new(),
-                branch_name: String::new(),
-                created_at: "2026-01-01T00:00:00.000Z".to_string(),
-                last_edited_at: "2026-01-02T00:00:00.000Z".to_string(),
-            }],
-            has_more: true,
-            next_cursor: Some("cursor-1".to_string()),
-        };
-        let api = FakeNotionApiGateway::with_query_result(Ok(expected.clone()));
-
-        let result = query_tasks(&repo, &api, "/repo", &query()).unwrap();
-
-        assert_eq!(result, expected);
-        assert_eq!(api.query_calls.load(Ordering::SeqCst), 1);
-    }
-
-    #[test]
-    fn test_task_query_unconfigured_repoはapiを呼ばずエラーにする() {
-        let repo = FakeNotionConfigRepository::default();
-        let api = FakeNotionApiGateway::default();
-
-        let result = query_tasks(&repo, &api, "/repo", &query());
-
-        assert_eq!(result.unwrap_err().to_string(), NOTION_CONFIG_NOT_FOUND);
-        assert_eq!(api.query_calls.load(Ordering::SeqCst), 0);
-    }
-
-    #[test]
-    fn test_label_fetch_unconfigured_repoはapiを呼ばずエラーにする() {
-        let repo = FakeNotionConfigRepository::default();
-        let api = FakeNotionApiGateway::default();
-
-        let result = fetch_label_options(&repo, &api, "/repo");
-
-        assert_eq!(result.unwrap_err().to_string(), NOTION_CONFIG_NOT_FOUND);
-        assert_eq!(api.label_calls.load(Ordering::SeqCst), 0);
-    }
-
-    #[test]
-    fn test_label_fetch_configured_repoはoptionsを返す() {
-        let repo = FakeNotionConfigRepository::with_config("/repo", config());
-        let expected = vec![NotionLabelOption {
-            property_name: "Status".to_string(),
-            property_type: "status".to_string(),
-            options: vec!["Todo".to_string()],
-            option_ids: Vec::new(),
-        }];
-        let api = FakeNotionApiGateway::with_label_result(Ok(expected.clone()));
-
-        let result = fetch_label_options(&repo, &api, "/repo").unwrap();
-
-        assert_eq!(result, expected);
-        assert_eq!(api.label_calls.load(Ordering::SeqCst), 1);
-    }
-
-    #[test]
-    fn test_task_query_api_errorは文字列化して伝播する() {
-        let repo = FakeNotionConfigRepository::with_config("/repo", config());
-        let api = FakeNotionApiGateway::with_query_result(Err(NotionError::ApiError(
-            "HTTP 500".to_string(),
-        )));
-
-        let result = query_tasks(&repo, &api, "/repo", &query());
-
-        assert_eq!(result.unwrap_err().to_string(), "API エラー: HTTP 500");
-        assert_eq!(api.query_calls.load(Ordering::SeqCst), 1);
-    }
-
-    #[test]
-    fn test_task_query_configが空文字ならapiを呼ばず未設定エラーにする() {
-        let repo = FakeNotionConfigRepository::with_config(
-            "/repo",
-            app_config_vo::NotionRepoConfig {
-                api_token: " \t".to_string(),
-                database_id: "db-1".to_string(),
-                property_mapping: app_config_vo::NotionPropertyMapping::default(),
-            },
-        );
-        let api = FakeNotionApiGateway::default();
-
-        let result = query_tasks(&repo, &api, "/repo", &query());
-
-        assert_eq!(result.unwrap_err().to_string(), NOTION_CONFIG_NOT_FOUND);
-        assert_eq!(api.query_calls.load(Ordering::SeqCst), 0);
-    }
-
-    #[test]
-    fn test_label_fetch_configが空文字ならapiを呼ばず未設定エラーにする() {
-        let repo = FakeNotionConfigRepository::with_config(
-            "/repo",
-            app_config_vo::NotionRepoConfig {
-                api_token: "ntn_token".to_string(),
-                database_id: "\n ".to_string(),
-                property_mapping: app_config_vo::NotionPropertyMapping::default(),
-            },
-        );
-        let api = FakeNotionApiGateway::default();
-
-        let result = fetch_label_options(&repo, &api, "/repo");
-
-        assert_eq!(result.unwrap_err().to_string(), NOTION_CONFIG_NOT_FOUND);
-        assert_eq!(api.label_calls.load(Ordering::SeqCst), 0);
-    }
-
-    #[test]
-    fn test_notion設定の保存と削除_repositoryに反映される() {
-        // Given
-        let repo = Arc::new(FakeNotionConfigRepository::default());
-
-        // When
-        save_config(repo.as_ref(), "/repo".to_string(), config()).unwrap();
-        let saved = repo.get("/repo").unwrap().unwrap();
-        // Then
-        assert_eq!(saved.database_id, "db-1");
-
-        // When
-        delete_config(repo.as_ref(), "/repo").unwrap();
-        let deleted = repo.get("/repo").unwrap();
-        // Then
-        assert!(deleted.is_none());
-    }
-
-    #[test]
-    fn test_validate_空入力はnot_configuredでapiを呼ばない() {
-        for (api_token, database_id) in [("", "db-1"), ("ntn_token", ""), ("", "")] {
-            let api = FakeNotionApiGateway::default();
-
-            let result =
-                validate_config(&api, api_token.to_string(), database_id.to_string()).unwrap();
-
-            assert_eq!(result.status, NotionConfigStatus::NotConfigured);
-            assert!(result.properties.is_empty());
-            assert_eq!(api.validate_calls.load(Ordering::SeqCst), 0);
-        }
-    }
-
-    #[test]
-    fn test_validate_空でない入力はapiへ委譲する() {
-        let expected = NotionValidationResult {
-            status: NotionConfigStatus::Configured,
-            properties: vec![NotionPropertyInfo {
-                name: "Name".to_string(),
-                property_type: "title".to_string(),
-                options: Vec::new(),
-            }],
-        };
-        let api = FakeNotionApiGateway::with_validate_result(expected.clone());
-
-        let result = validate_config(&api, "ntn_token".to_string(), "db-1".to_string()).unwrap();
-
-        assert_eq!(result, expected);
-        assert_eq!(api.validate_calls.load(Ordering::SeqCst), 1);
-    }
-
-    #[test]
-    fn test_validate_invalid_tokenはgateway結果をそのまま返す() {
-        let expected = NotionValidationResult {
-            status: NotionConfigStatus::InvalidToken,
-            properties: Vec::new(),
-        };
-        let api = FakeNotionApiGateway::with_validate_result(expected.clone());
-
-        let result = validate_config(&api, "ntn_invalid".to_string(), "db-1".to_string()).unwrap();
-
-        assert_eq!(result, expected);
-        assert_eq!(api.validate_calls.load(Ordering::SeqCst), 1);
-    }
-}
+#[path = "usecase_test.rs"]
+mod usecase_tests;

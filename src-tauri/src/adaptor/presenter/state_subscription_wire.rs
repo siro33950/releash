@@ -63,6 +63,14 @@ pub(crate) fn payload(value: &StateValue) -> Result<wire::StatePayload, connectr
                 )).transpose().map_err(crate::adaptor::presenter::connect::command_error)?,
                 read_error: value.error.as_ref().map(ToString::to_string),
             }),
+            StateValue::NotionTasks(value) => wire::state_payload::Value::NotionTasks(wire::NotionTasksSnapshot {
+                page: value.value.clone().map(crate::adaptor::presenter::notion::NotionTaskPageView::from).map(crate::adaptor::presenter::client::value).transpose().map_err(crate::adaptor::presenter::connect::command_error)?,
+                read_error: value.error.as_ref().map(notion_read_failure),
+            }),
+            StateValue::NotionLabelOptions(value) => wire::state_payload::Value::NotionLabelOptions(wire::NotionLabelOptionsSnapshot {
+                options: value.value.as_ref().map(|options| crate::adaptor::presenter::client::value(options.iter().cloned().map(crate::adaptor::presenter::notion::NotionLabelOptionView::from).collect::<Vec<_>>())).transpose().map_err(crate::adaptor::presenter::connect::command_error)?,
+                read_error: value.error.as_ref().map(notion_read_failure),
+            }),
             StateValue::Worktrees(value) => wire::state_payload::Value::Worktrees(
                 crate::adaptor::presenter::client::value(value.clone())
                     .map_err(crate::adaptor::presenter::connect::command_error)?,
@@ -196,8 +204,29 @@ pub(crate) fn payload(value: &StateValue) -> Result<wire::StatePayload, connectr
     })
 }
 
+fn notion_read_failure(
+    error: &crate::usecase::notion::error::NotionUsecaseError,
+) -> wire::NotionReadFailure {
+    use crate::adaptor::presenter::connect::ConnectFailure;
+    wire::NotionReadFailure {
+        code: error.connect_code().grpc_code() as i32,
+        message: error.to_string(),
+        config_missing: Some(matches!(
+            error,
+            crate::usecase::notion::error::NotionUsecaseError::ConfigNotFound
+        )),
+    }
+}
+
 pub(crate) fn event(
     event: StateSubscriptionEvent,
+) -> Result<rpc::StateSubscriptionEvent, connectrpc::ConnectError> {
+    event_with_args(&event, None)
+}
+
+pub(crate) fn event_with_args(
+    event: &StateSubscriptionEvent,
+    requested_args: Option<Vec<String>>,
 ) -> Result<rpc::StateSubscriptionEvent, connectrpc::ConnectError> {
     use wire::state_subscription_event::Event as WireEvent;
     let (target, args, version, event) = match event {
@@ -224,13 +253,13 @@ pub(crate) fn event(
                 Event::Change(_, delivery, value) => match value.as_ref() {
                     PublishedState::Failure(failure) => WireEvent::Failure(failure.clone()),
                     PublishedState::Value(value) => WireEvent::Change(wire::StateChange {
-                        delta: delivery == Delivery::Delta,
+                        delta: *delivery == Delivery::Delta,
                         payload: Some(value.as_ref().clone()),
                     }),
                 },
                 Event::Bookmark(_) => WireEvent::Bookmark(wire::Unit {}),
             };
-            let target = crate::usecase::state_subscription::SubscriptionTarget::parse(&target)
+            let target = crate::usecase::state_subscription::SubscriptionTarget::parse(target)
                 .map_err(crate::adaptor::presenter::connect::classified_error)?;
             let (name, args) = target.parts();
             (name.into(), args, version, event)
@@ -238,7 +267,7 @@ pub(crate) fn event(
     };
     to_rpc(&wire::StateSubscriptionEvent {
         target,
-        args,
+        args: requested_args.unwrap_or(args),
         version,
         event: Some(event),
     })

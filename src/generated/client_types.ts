@@ -347,6 +347,50 @@ export type MilestoneDto = {
 	title: string;
 };
 
+export type NotionTasksSnapshot = {
+	page?: NotionTaskPageView;
+	readError?: NotionReadFailure;
+};
+
+export type NotionTaskPageView = {
+	tasks: ListNotionTaskView;
+	has_more: boolean;
+};
+
+export type ListNotionTaskView = Array<NotionTaskView>;
+
+export type NotionTaskView = {
+	id: string;
+	title: string;
+	url: string;
+	labels: MapListstring;
+	branch_name: string;
+	created_at: string;
+	last_edited_at: string;
+};
+
+export type MapListstring = { [key: string]: Liststring };
+
+export type NotionReadFailure = {
+	code?: number;
+	message?: string;
+	configMissing?: boolean;
+};
+
+export type NotionLabelOptionsSnapshot = {
+	options?: ListNotionLabelOptionView;
+	readError?: NotionReadFailure;
+};
+
+export type ListNotionLabelOptionView = Array<NotionLabelOptionView>;
+
+export type NotionLabelOptionView = {
+	property_name: string;
+	property_type: string;
+	options: Liststring;
+	option_ids: Liststring;
+};
+
 export type ListWorktreeEntryDto = Array<WorktreeEntryDto>;
 
 export type WorktreeEntryDto = {
@@ -1079,10 +1123,6 @@ export type InputFetchIssuesRequest = {
 	repoPath: string;
 };
 
-export type InputFetchNotionLabelOptionsRequest = {
-	repoPath: string;
-};
-
 export type InputGetFileNavigationRequest = {
 	tree: InputListDiffTreeNodeInput;
 	currentFile: string;
@@ -1189,20 +1229,6 @@ export type InputOpenInEditorRequest = {
 export type InputOpenWorkflowInEditorRequest = {
 	name: string;
 };
-
-export type InputQueryNotionTasksRequest = {
-	repoPath: string;
-	query: InputNotionTaskQueryInput;
-};
-
-export type InputNotionTaskQueryInput = {
-	title_filter: string;
-	label_filters: InputMapListstring;
-	cursor?: string | null;
-	page_size?: number | null;
-};
-
-export type InputMapListstring = { [key: string]: InputListstring };
 
 export type InputQuitAfterStartupFailureRequest = Record<string, never>;
 
@@ -1627,15 +1653,6 @@ export type VisibleBlockDto = {
 	deletedContent?: string;
 };
 
-export type ListNotionLabelOptionView = Array<NotionLabelOptionView>;
-
-export type NotionLabelOptionView = {
-	property_name: string;
-	property_type: string;
-	options: Liststring;
-	option_ids: Liststring;
-};
-
 export type FileNavigationResultDto = {
 	current_index: number;
 	total: number;
@@ -1654,26 +1671,6 @@ export type AgentSessionOpenResponse =
 	| "paused"
 	| "indeterminate"
 	| "garbage_collected";
-
-export type NotionTaskPageView = {
-	tasks: ListNotionTaskView;
-	has_more: boolean;
-	next_cursor: string | null;
-};
-
-export type ListNotionTaskView = Array<NotionTaskView>;
-
-export type NotionTaskView = {
-	id: string;
-	title: string;
-	url: string;
-	labels: MapListstring;
-	branch_name: string;
-	created_at: string;
-	last_edited_at: string;
-};
-
-export type MapListstring = { [key: string]: Liststring };
 
 export type StartupFailureQuitOutcomeDtoV1 = {
 	type: "accepted";
@@ -1787,7 +1784,6 @@ export interface ClientCommandArgs {
 	duplicate_facet: InputDuplicateFacetRequest;
 	duplicate_workflow: InputDuplicateWorkflowRequest;
 	fetch_issues: InputFetchIssuesRequest;
-	fetch_notion_label_options: InputFetchNotionLabelOptionsRequest;
 	get_file_navigation: InputGetFileNavigationRequest;
 	get_language_from_path: InputGetLanguageFromPathRequest;
 	get_or_spawn_terminal_surface: InputGetOrSpawnTerminalSurfaceRequest;
@@ -1802,7 +1798,6 @@ export interface ClientCommandArgs {
 	open_folder_in_editor: InputOpenFolderInEditorRequest;
 	open_in_editor: InputOpenInEditorRequest;
 	open_workflow_in_editor: InputOpenWorkflowInEditorRequest;
-	query_notion_tasks: InputQueryNotionTasksRequest;
 	quit_after_startup_failure: InputQuitAfterStartupFailureRequest;
 	record_terminal_launch_renderer_phase: InputRecordTerminalLaunchRendererPhaseRequest;
 	refresh_provider_availability: InputRefreshProviderAvailabilityRequest;
@@ -1910,9 +1905,6 @@ export interface ClientCommands {
 		args: ClientCommandArgs["duplicate_workflow"],
 	): Promise<void>;
 	fetch_issues(args: ClientCommandArgs["fetch_issues"]): Promise<void>;
-	fetch_notion_label_options(
-		args: ClientCommandArgs["fetch_notion_label_options"],
-	): Promise<ListNotionLabelOptionView>;
 	get_file_navigation(
 		args: ClientCommandArgs["get_file_navigation"],
 	): Promise<FileNavigationResultDto>;
@@ -1949,9 +1941,6 @@ export interface ClientCommands {
 	open_workflow_in_editor(
 		args: ClientCommandArgs["open_workflow_in_editor"],
 	): Promise<void>;
-	query_notion_tasks(
-		args: ClientCommandArgs["query_notion_tasks"],
-	): Promise<NotionTaskPageView>;
 	quit_after_startup_failure(
 		args: ClientCommandArgs["quit_after_startup_failure"],
 	): Promise<StartupFailureQuitOutcomeDtoV1>;

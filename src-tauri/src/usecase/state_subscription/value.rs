@@ -31,6 +31,18 @@ pub(crate) enum StateValue {
     BranchStatus(Vec<(crate::domain::repository::Branch, bool)>),
     CurrentBranch(String),
     Issues(crate::usecase::fetched::Fetched<Vec<crate::domain::git_host::IssueInfo>>),
+    NotionTasks(
+        crate::usecase::fetched::Fetched<
+            crate::domain::notion::NotionTaskPage,
+            crate::usecase::notion::error::NotionUsecaseError,
+        >,
+    ),
+    NotionLabelOptions(
+        crate::usecase::fetched::Fetched<
+            Vec<crate::domain::notion::NotionLabelOption>,
+            crate::usecase::notion::error::NotionUsecaseError,
+        >,
+    ),
     Worktrees(Vec<WorktreeEntryDto>),
     RepositoryRoot(Option<String>),
     StartupRepository(Option<String>),

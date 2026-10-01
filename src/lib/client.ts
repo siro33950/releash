@@ -194,6 +194,8 @@ export type StateValues = {
 	"branch-status": import("@/generated/client_types").ListBranchStatus;
 	"current-branch": string;
 	issues: import("@/generated/client_types").IssuesSnapshot;
+	"notion-tasks": import("@/generated/client_types").NotionTasksSnapshot;
+	"notion-label-options": import("@/generated/client_types").NotionLabelOptionsSnapshot;
 	worktrees: import("@/generated/client_types").WorktreeEntryDto[];
 	"repository-root": string | null;
 	"startup-repository": string | null;
