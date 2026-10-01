@@ -87,11 +87,14 @@ impl TerminalSubscriptionUsecase {
 
     fn stop_inactive_workers(&self) {
         let clients = self.clients.lock();
+        let is_subscribed = |target: &SubscriptionTarget| {
+            clients.values().any(|targets| targets.contains_key(target))
+        };
         self.terminal_resets
             .lock()
-            .retain(|target, _| clients.values().any(|targets| targets.contains_key(target)));
+            .retain(|target, _| is_subscribed(target));
         self.workers.lock().retain(|target, task| {
-            if clients.values().any(|targets| targets.contains_key(target)) {
+            if is_subscribed(target) {
                 true
             } else {
                 task.abort();
