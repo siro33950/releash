@@ -75,6 +75,11 @@ export function WorkflowList({
 								</span>
 								<DiagnosticBadge summary={report.workflow_summaries[wf.name]} />
 							</div>
+							{wf.readError && (
+								<span role="alert" className="text-xs text-destructive">
+									{wf.readError}
+								</span>
+							)}
 							<span className="text-xs text-muted-foreground truncate">
 								{wf.description}
 							</span>

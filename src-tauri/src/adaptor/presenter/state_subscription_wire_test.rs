@@ -9,6 +9,7 @@ fn wire_event(event: StateSubscriptionEvent) -> wire::StateSubscriptionEvent {
 
 #[test]
 fn test_購読事象_対象名と日本語を含む引数を分離して配信する() {
+    // Given
     let target = SubscriptionTarget::BranchBase("/作業:repo".into(), "feature".into());
     let message = wire_event(StateSubscriptionEvent::Item(
         target.to_string(),
@@ -17,9 +18,13 @@ fn test_購読事象_対象名と日本語を含む引数を分離して配信�
                 epoch: "boot:1".into(),
                 sequence: 7,
             },
-            Arc::new(payload(&StateValue::BranchBase(Some("main".into()))).unwrap()),
+            Arc::new(PublishedState::from(
+                payload(&StateValue::BranchBase(Some("main".into()))).unwrap(),
+            )),
         ),
+        // When
     ));
+    // Then
     assert_eq!(
         message,
         wire::StateSubscriptionEvent {
@@ -50,11 +55,15 @@ fn test_購読事象_対象名と日本語を含む引数を分離して配信�
 }
 
 #[test]
-fn test_購読事象_準備変更と定期印の旧転送形式を保つ() {
+fn test_購読事象_準備の旧転送形式を保つ() {
+    // Given
     use wire::state_subscription_event::Event as WireEvent;
-
+    let event = StateSubscriptionEvent::Ready;
+    // When
+    let actual = wire_event(event);
+    // Then
     assert_eq!(
-        wire_event(StateSubscriptionEvent::Ready),
+        actual,
         wire::StateSubscriptionEvent {
             target: String::new(),
             args: vec![],
@@ -62,66 +71,132 @@ fn test_購読事象_準備変更と定期印の旧転送形式を保つ() {
             event: Some(WireEvent::Ready(wire::Unit {})),
         }
     );
-
-    for (delivery, delta, sequence) in [(Delivery::Full, false, 8), (Delivery::Delta, true, 9)] {
-        assert_eq!(
-            wire_event(StateSubscriptionEvent::Item(
-                SubscriptionTarget::RepositoryPaths.to_string(),
-                Event::Change(
-                    Version {
-                        epoch: "boot:1".into(),
-                        sequence,
-                    },
-                    delivery,
-                    Arc::new(payload(&StateValue::RepositoryPaths(vec!["/repo".into()])).unwrap()),
-                ),
-            )),
-            wire::StateSubscriptionEvent {
-                target: "repository-paths".into(),
-                args: vec![],
-                version: Some(wire::StateVersion {
-                    epoch: "boot:1".into(),
-                    sequence,
-                }),
-                event: Some(WireEvent::Change(wire::StateChange {
-                    delta,
-                    payload: Some(wire::StatePayload {
-                        value: Some(wire::state_payload::Value::RepositoryPaths(
-                            wire::Liststring {
-                                items: vec!["/repo".into()],
-                            },
-                        )),
-                    }),
-                })),
-            }
-        );
-    }
-
+}
+#[test]
+fn test_購読事象_全体の定期印の旧転送形式を保つ() {
+    // Given
+    use wire::state_subscription_event::Event as WireEvent;
+    let event = StateSubscriptionEvent::Bookmark;
+    // When
+    let actual = wire_event(event);
+    // Then
     assert_eq!(
-        wire_event(StateSubscriptionEvent::Item(
-            SubscriptionTarget::Issues("/repo".into()).to_string(),
-            Event::Bookmark(Version {
+        actual,
+        wire::StateSubscriptionEvent {
+            target: String::new(),
+            args: vec![],
+            version: None,
+            event: Some(WireEvent::Bookmark(wire::Unit {})),
+        }
+    );
+}
+#[test]
+fn test_購読事象_full変更の旧転送形式を保つ() {
+    // Given
+    use wire::state_subscription_event::Event as WireEvent;
+    let event = StateSubscriptionEvent::Item(
+        SubscriptionTarget::RepositoryPaths.to_string(),
+        Event::Change(
+            Version {
                 epoch: "boot:1".into(),
-                sequence: 10,
+                sequence: 8,
+            },
+            Delivery::Full,
+            Arc::new(PublishedState::from(
+                payload(&StateValue::RepositoryPaths(vec!["/repo".into()])).unwrap(),
+            )),
+        ),
+    );
+    // When
+    let actual = wire_event(event);
+    // Then
+    assert_eq!(
+        actual,
+        wire::StateSubscriptionEvent {
+            target: "repository-paths".into(),
+            args: vec![],
+            version: Some(wire::StateVersion {
+                epoch: "boot:1".into(),
+                sequence: 8
             }),
-        )),
+            event: Some(WireEvent::Change(wire::StateChange {
+                delta: false,
+                payload: Some(wire::StatePayload {
+                    value: Some(wire::state_payload::Value::RepositoryPaths(
+                        wire::Liststring {
+                            items: vec!["/repo".into()]
+                        }
+                    )),
+                })
+            })),
+        }
+    );
+}
+#[test]
+fn test_購読事象_delta変更の旧転送形式を保つ() {
+    // Given
+    use wire::state_subscription_event::Event as WireEvent;
+    let event = StateSubscriptionEvent::Item(
+        SubscriptionTarget::RepositoryPaths.to_string(),
+        Event::Change(
+            Version {
+                epoch: "boot:1".into(),
+                sequence: 9,
+            },
+            Delivery::Delta,
+            Arc::new(PublishedState::from(
+                payload(&StateValue::RepositoryPaths(vec!["/repo".into()])).unwrap(),
+            )),
+        ),
+    );
+    // When
+    let actual = wire_event(event);
+    // Then
+    assert_eq!(
+        actual,
+        wire::StateSubscriptionEvent {
+            target: "repository-paths".into(),
+            args: vec![],
+            version: Some(wire::StateVersion {
+                epoch: "boot:1".into(),
+                sequence: 9
+            }),
+            event: Some(WireEvent::Change(wire::StateChange {
+                delta: true,
+                payload: Some(wire::StatePayload {
+                    value: Some(wire::state_payload::Value::RepositoryPaths(
+                        wire::Liststring {
+                            items: vec!["/repo".into()]
+                        }
+                    )),
+                })
+            })),
+        }
+    );
+}
+#[test]
+fn test_購読事象_対象の定期印の旧転送形式を保つ() {
+    // Given
+    use wire::state_subscription_event::Event as WireEvent;
+    let event = StateSubscriptionEvent::Item(
+        SubscriptionTarget::Issues("/repo".into()).to_string(),
+        Event::Bookmark(Version {
+            epoch: "boot:1".into(),
+            sequence: 10,
+        }),
+    );
+    // When
+    let actual = wire_event(event);
+    // Then
+    assert_eq!(
+        actual,
         wire::StateSubscriptionEvent {
             target: "issues".into(),
             args: vec!["/repo".into()],
             version: Some(wire::StateVersion {
                 epoch: "boot:1".into(),
-                sequence: 10,
+                sequence: 10
             }),
-            event: Some(WireEvent::Bookmark(wire::Unit {})),
-        }
-    );
-
-    assert_eq!(
-        wire_event(StateSubscriptionEvent::Bookmark),
-        wire::StateSubscriptionEvent {
-            target: String::new(),
-            args: vec![],
-            version: None,
             event: Some(WireEvent::Bookmark(wire::Unit {})),
         }
     );
@@ -502,6 +577,7 @@ fn test_購読payload_全種類を旧wire型とフィールドへ変換する() 
         ),
         (
             StateValue::Workflows(vec![crate::usecase::workflow::dto::WorkflowSummaryDto {
+                failure: None,
                 name: "dev".into(),
                 description: "develop".into(),
                 builtin: false,
@@ -510,6 +586,7 @@ fn test_購読payload_全種類を旧wire型とフィールドへ変換する() 
             }]),
             W::Workflows(wire::ListWorkflowSummaryDto {
                 items: vec![wire::WorkflowSummaryDto {
+                    read_error: None,
                     name: Some("dev".into()),
                     description: Some("develop".into()),
                     builtin: Some(false),
@@ -706,13 +783,13 @@ fn test_購読payload_設定とproviderの出力値を維持する() {
             serde_json::json!({"approval_auto_approve":true}),
         ),
         (
-            StateValue::ProviderHookHealth(vec![ProviderHookHealthWarningDto {
+            StateValue::ProviderHookHealth(crate::usecase::provider_lifecycle::ProviderHookHealthReadDto { warnings: vec![ProviderHookHealthWarningDto {
                 provider: AgentSessionProviderDto::Claude,
                 launch_id: "launch".into(),
                 reason: crate::usecase::provider_lifecycle::ProviderHookHealthReasonDto::LocalApiUnavailable,
-            }]),
-            "releash.client.v1.ListProviderHookHealthWarningResponse",
-            serde_json::json!([{"provider":"claude","launchId":"launch","reason":"local_api_unavailable"}]),
+            }], failures: vec![] }),
+            "releash.client.v1.ProviderHookHealthSnapshot",
+            serde_json::json!({"warnings":[{"provider":"claude","launchId":"launch","reason":"local_api_unavailable"}],"readErrors":[]}),
         ),
     ];
     // When
@@ -814,4 +891,70 @@ fn test_terminal購読payload_四種類の転送値を保つ() {
             },
         );
     }
+}
+
+#[test]
+fn test_購読失敗_snapshotの保持値をfailure事象へ変換する() {
+    // Given
+    let version = Version {
+        epoch: "boot".into(),
+        sequence: 1,
+    };
+    let value = Arc::new(PublishedState::Failure(wire::StateReadFailure {
+        code: 13,
+        message: "read failed".into(),
+    }));
+    // When
+    let message = wire_event(StateSubscriptionEvent::Item(
+        SubscriptionTarget::RepositoryPaths.to_string(),
+        Event::Snapshot(version, value),
+    ));
+    // Then
+    assert!(
+        matches!(message.event, Some(wire::state_subscription_event::Event::Failure(failure)) if failure.code == 13 && failure.message == "read failed")
+    );
+}
+
+#[test]
+fn test_購読失敗_full変更の保持値をfailure事象へ変換する() {
+    // Given
+    let version = Version {
+        epoch: "boot".into(),
+        sequence: 1,
+    };
+    let value = Arc::new(PublishedState::Failure(wire::StateReadFailure {
+        code: 13,
+        message: "read failed".into(),
+    }));
+    // When
+    let message = wire_event(StateSubscriptionEvent::Item(
+        SubscriptionTarget::RepositoryPaths.to_string(),
+        Event::Change(version, Delivery::Full, value),
+    ));
+    // Then
+    assert!(
+        matches!(message.event, Some(wire::state_subscription_event::Event::Failure(failure)) if failure.code == 13 && failure.message == "read failed")
+    );
+}
+
+#[test]
+fn test_購読失敗_terminal差分の保持値をfailure事象へ変換する() {
+    // Given
+    let version = Version {
+        epoch: "boot".into(),
+        sequence: 1,
+    };
+    let value = Arc::new(PublishedState::Failure(wire::StateReadFailure {
+        code: 13,
+        message: "read failed".into(),
+    }));
+    // When
+    let message = wire_event(StateSubscriptionEvent::Item(
+        SubscriptionTarget::RepositoryPaths.to_string(),
+        Event::Change(version, Delivery::Delta, value),
+    ));
+    // Then
+    assert!(
+        matches!(message.event, Some(wire::state_subscription_event::Event::Failure(failure)) if failure.code == 13 && failure.message == "read failed")
+    );
 }

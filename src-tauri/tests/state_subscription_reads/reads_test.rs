@@ -168,7 +168,12 @@ impl crate::usecase::provider_lifecycle::ProviderHookHealthFailureQuery for NoHo
         &self,
         _: usize,
     ) -> Result<
-        Vec<crate::usecase::provider_lifecycle::ProviderHookHealthFailureObservation>,
+        Vec<
+            Result<
+                crate::usecase::provider_lifecycle::ProviderHookHealthFailureObservation,
+                crate::usecase::provider_lifecycle::ProviderHookHealthFailureQueryError,
+            >,
+        >,
         crate::usecase::provider_lifecycle::ProviderHookHealthFailureQueryError,
     > {
         Ok(vec![])
@@ -395,7 +400,6 @@ async fn test_状態読取_全対象を対応するサービスへ引数付き�
         .workspace_tree_selection(p, "missing")
         .await
         .unwrap();
-    // When / Then
     let cases = vec![
         (
             T::RepositoryPaths,
@@ -533,9 +537,11 @@ async fn test_状態読取_全対象を対応するサービスへ引数付き�
             .unwrap_or_else(|error| panic!("{target}: {error}"));
         assert_eq!(value, expected, "{target}");
     }
+    // When
     let StateValue::Workflows(workflows) = r.read(&T::Workflows).await.unwrap() else {
         unreachable!()
     };
+    // Then
     assert!(workflows.iter().any(|workflow| workflow.name == "fixture"));
     let StateValue::Workflow(Some(fixture_workflow)) =
         r.read(&T::Workflow("fixture".into())).await.unwrap()
@@ -622,13 +628,13 @@ async fn test_issue手動更新_有効なcacheを無視し30秒前に同じ購�
 
 #[tokio::test]
 async fn test_終了済み実行木のarchiveとrestore_取り直しなしでツリーが配信される() {
+    // Given
     use crate::adaptor::gateway::workflow::workflow_host::test_helpers::archive_fixture;
     use crate::adaptor::gateway::workflow::{
         EmptySecretSourceGateway, NoopWorkflowExternalEditorGateway,
         PassthroughManagedWorktreeGateway,
     };
     use crate::test_support::state_subscription::Event;
-    // Given
     let fixture = Fixture::new();
     let mut archive = archive_fixture();
     let workflow = serde_saphyr::from_str("name: archive\ndescription: test\nnodes:\n  main: {session: {provider: codex, facets: {instruction: policy-confirmation}}}").unwrap();
@@ -674,14 +680,20 @@ async fn test_終了済み実行木のarchiveとrestore_取り直しなしでツ
     stream.next().await;
     let target = SubscriptionTarget::Selection(fixture.path.clone(), "selected".into()).to_string();
     start_read(&subscriptions, "client", &target, None)
+        // When
         .await
         .unwrap();
+    // Then
     let Some(StateSubscriptionEvent::Item(_, Event::Snapshot(_, value))) = stream.next().await
     else {
         panic!("initial snapshot")
     };
     let Some(crate::adaptor::presenter::client::state_payload::Value::Selection(initial)) =
-        &value.value
+        &match value.as_ref() {
+            crate::adaptor::presenter::state_subscription::PublishedState::Value(value) => value,
+            _ => panic!("selection"),
+        }
+        .value
     else {
         panic!("selection")
     };
@@ -695,7 +707,6 @@ async fn test_終了済み実行木のarchiveとrestore_取り直しなしでツ
         .items
         .is_empty());
     stream.next().await;
-    // When / Then
     for archived in [true, false] {
         if archived {
             archive
@@ -714,7 +725,13 @@ async fn test_終了済み実行木のarchiveとrestore_取り直しなしでツ
         };
         assert_eq!(received, target);
         let Some(crate::adaptor::presenter::client::state_payload::Value::Selection(selection)) =
-            &value.value
+            &match value.as_ref() {
+                crate::adaptor::presenter::state_subscription::PublishedState::Value(value) => {
+                    value
+                }
+                _ => panic!("selection"),
+            }
+            .value
         else {
             panic!("selection")
         };
@@ -866,6 +883,7 @@ async fn test_状態読取_review対象をworktreeとcomment置き場から読�
 
 #[tokio::test]
 async fn test_issue手動更新失敗_購読へ失敗を届け回復時に新しい一覧を届ける() {
+    // Given
     use crate::test_support::state_subscription::Event;
     let fixture = Fixture::new();
     let mut stream = Box::pin(fixture.subscriptions.open("client".into()).unwrap());
@@ -875,15 +893,17 @@ async fn test_issue手動更新失敗_購読へ失敗を届け回復時に新し
         .await
         .unwrap();
     stream.next().await.unwrap();
+    // When
     stream.next().await.unwrap();
     *fixture.issues.failure.lock() = true;
+    // Then
     assert!(fixture.reads.git_host.fetch_issues(&fixture.path).is_err());
     let event = tokio::time::timeout(std::time::Duration::from_secs(2), stream.next())
         .await
         .unwrap()
         .unwrap();
     assert!(
-        matches!(event, StateSubscriptionEvent::Item(id, Event::Change(_, _, value)) if id == target && matches!(value.value, Some(crate::adaptor::presenter::client::state_payload::Value::ReadFailure(_))))
+        matches!(event, StateSubscriptionEvent::Item(id, Event::Change(_, _, value)) if id == target && matches!(value.as_ref(), crate::adaptor::presenter::state_subscription::PublishedState::Failure(_)))
     );
     *fixture.issues.failure.lock() = false;
     *fixture.issues.values.lock() = vec![issue(2)];

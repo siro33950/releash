@@ -29,9 +29,7 @@ export function useAutomation(open: boolean) {
 	const [selectedWorkflowName, setSelectedWorkflowName] = useState<
 		string | null
 	>(null);
-	const workflows = workflowsSubscription.error
-		? []
-		: (workflowsSubscription.value ?? []);
+	const workflows = workflowsSubscription.value ?? [];
 	const selectedSourceFormat = selectedWorkflowName
 		? workflows.find((workflow) => workflow.name === selectedWorkflowName)
 				?.sourceFormat
@@ -281,38 +279,35 @@ export function useAutomation(open: boolean) {
 		[],
 	);
 
-	const readError =
-		workflowsSubscription.error ??
-		diagnosticsSubscription.error ??
-		facetsSubscription.error ??
-		workflowSubscription.error ??
-		sourceSubscription.error ??
-		facetSubscription.error;
-
-	const error = operationError ?? readError;
+	const error = operationError;
 
 	return {
-		readError,
+		workflowsError: workflowsSubscription.error,
+		diagnosticsError: diagnosticsSubscription.error,
+		facetsError: facetsSubscription.error,
+		workflowError: workflowSubscription.error,
+		sourceError: sourceSubscription.error,
+		facetError: facetSubscription.error,
 		workflows,
-		facets: facetsSubscription.error ? [] : (facetsSubscription.value ?? []),
+		facets: facetsSubscription.value ?? [],
 		report: diagnosticsSubscription.value ?? EMPTY_REPORT,
 		loading:
 			open &&
 			(workflowsSubscription.value === undefined ||
 				diagnosticsSubscription.value === undefined) &&
-			!error,
+			!error &&
+			!workflowsSubscription.error &&
+			!diagnosticsSubscription.error,
 		error,
 		setError: setOperationError,
 
 		externalChangeDetected,
 		clearExternalChange,
 
-		selectedWorkflow: workflowSubscription.error ? null : selectedWorkflow,
+		selectedWorkflow: selectedWorkflow,
 		selectedWorkflowName,
-		selectedWorkflowSource: sourceSubscription.error
-			? null
-			: selectedWorkflowSource,
-		selectedFacetContent: facetSubscription.error ? null : selectedFacetContent,
+		selectedWorkflowSource: selectedWorkflowSource,
+		selectedFacetContent: selectedFacetContent,
 		selectedFacetKey: selectedFacet?.key ?? null,
 		selectedFacetKind: selectedFacet?.kind ?? null,
 

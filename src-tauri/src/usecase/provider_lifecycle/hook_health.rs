@@ -72,7 +72,10 @@ pub(crate) trait ProviderHookHealthFailureQuery: Send + Sync {
     async fn list(
         &self,
         limit: usize,
-    ) -> Result<Vec<ProviderHookHealthFailureObservation>, ProviderHookHealthFailureQueryError>;
+    ) -> Result<
+        Vec<Result<ProviderHookHealthFailureObservation, ProviderHookHealthFailureQueryError>>,
+        ProviderHookHealthFailureQueryError,
+    >;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -94,6 +97,25 @@ pub(crate) struct ProviderHookHealthReadUsecase {
     failures: Arc<dyn ProviderHookHealthFailureQuery>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ProviderHookHealthReadResult {
+    pub warnings: Vec<ProviderHookHealthWarning>,
+    pub failures: Vec<ProviderHookHealthFailureQueryError>,
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ProviderHookHealthReadDto {
+    pub warnings: Vec<ProviderHookHealthWarningDto>,
+    pub failures: Vec<ProviderHookHealthFailureQueryError>,
+}
+impl From<ProviderHookHealthReadResult> for ProviderHookHealthReadDto {
+    fn from(result: ProviderHookHealthReadResult) -> Self {
+        Self {
+            warnings: result.warnings.into_iter().map(Into::into).collect(),
+            failures: result.failures,
+        }
+    }
+}
+
 impl ProviderHookHealthReadUsecase {
     pub(crate) fn new(
         health: Arc<ProviderHookHealthUsecase>,
@@ -104,14 +126,22 @@ impl ProviderHookHealthReadUsecase {
 
     pub(crate) async fn warnings(
         &self,
-    ) -> Result<Vec<ProviderHookHealthWarning>, ProviderHookHealthUsecaseError> {
+    ) -> Result<ProviderHookHealthReadResult, ProviderHookHealthUsecaseError> {
         let observations = self.failures.list(256).await.map_err(|error| match error {
             ProviderHookHealthFailureQueryError::Unavailable => {
                 ProviderHookHealthUsecaseError::StorageUnavailable
             }
             ProviderHookHealthFailureQueryError::Corrupt => ProviderHookHealthUsecaseError::Corrupt,
         })?;
+        let mut failures = Vec::new();
         for observation in observations {
+            let observation = match observation {
+                Ok(observation) => observation,
+                Err(error) => {
+                    failures.push(error);
+                    continue;
+                }
+            };
             self.health
                 .record_unavailable(
                     observation.provider,
@@ -125,7 +155,10 @@ impl ProviderHookHealthReadUsecase {
                 )
                 .await?;
         }
-        self.health.warnings().await
+        Ok(ProviderHookHealthReadResult {
+            warnings: self.health.warnings().await?,
+            failures,
+        })
     }
 }
 

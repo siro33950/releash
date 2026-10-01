@@ -31,7 +31,7 @@ it("issueは購読から受け取り手動更新は結果を返さない操作�
 	expect(release).toHaveBeenCalledOnce();
 });
 
-it("手動更新の失敗通知で直前の一覧を無効にし回復を待つ", async () => {
+it("手動更新の失敗通知で直前の一覧と失敗を保持し回復を待つ", async () => {
 	const issues = [
 		{
 			number: 1,
@@ -63,7 +63,7 @@ it("手動更新の失敗通知で直前の一覧を無効にし回復を待つ"
 			await expect(result.current.refresh()).resolves.toBeUndefined();
 			vi.mocked(subscribeState).mock.calls[0][2](failure);
 		});
-		expect(result.current.issues).toEqual([]);
+		expect(result.current.issues).toEqual(issues);
 		expect(result.current.error).toBe("offline");
 		expect(result.current.loading).toBe(false);
 		expect(log).toHaveBeenCalledWith("Failed to fetch issues:", failure);

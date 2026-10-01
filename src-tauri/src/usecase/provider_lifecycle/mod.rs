@@ -20,7 +20,7 @@ mod ingress;
 pub(crate) use hook_health::ProviderHookHealthWarning;
 pub(crate) use hook_health::{
     ProviderHookHealthFailureObservation, ProviderHookHealthFailureQuery,
-    ProviderHookHealthFailureQueryError, ProviderHookHealthReadUsecase,
+    ProviderHookHealthFailureQueryError, ProviderHookHealthReadDto, ProviderHookHealthReadUsecase,
     ProviderHookHealthReasonDto, ProviderHookHealthUsecase, ProviderHookHealthUsecaseError,
     ProviderHookHealthWarningDto,
 };

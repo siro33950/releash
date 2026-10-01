@@ -187,6 +187,7 @@ pub(crate) enum RuleDto {
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct WorkflowSummaryDto {
+    pub failure: Option<crate::domain::failure::WorkFailure>,
     pub name: String,
     pub description: String,
     pub builtin: bool,
@@ -267,6 +268,7 @@ pub(crate) fn workflow_to_dto_with_source_format(
 
 pub(crate) fn workflow_summary_to_dto(summary: domain::WorkflowSummary) -> WorkflowSummaryDto {
     WorkflowSummaryDto {
+        failure: summary.failure,
         name: summary.name,
         description: summary.description,
         builtin: summary.builtin,

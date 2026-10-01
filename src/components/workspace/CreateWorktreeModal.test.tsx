@@ -405,4 +405,69 @@ describe("CreateWorktreeModal", () => {
 			screen.queryByText(/操作結果を確認できません/),
 		).not.toBeInTheDocument();
 	});
+	for (const received of [false, true]) {
+		it(`branch-statusの失敗を${received ? "前の値と一緒に" : "空表示と区別して"}表示する`, async () => {
+			const user = userEvent.setup();
+			let fail!: (error: unknown) => void;
+			vi.mocked(subscribeState).mockImplementation(
+				(target, receive, onError) => {
+					const kind = typeof target === "string" ? target : target.kind;
+					if (kind === "branches")
+						receive([{ name: "main", is_remote: false }]);
+					if (kind === "branch-status") {
+						fail = onError;
+						if (received) receive([{ name: "previous", has_worktree: false }]);
+					}
+					return vi.fn();
+				},
+			);
+			render(
+				<CreateWorktreeModal
+					open
+					repoPaths={["/repo"]}
+					onCreated={vi.fn()}
+					onClose={vi.fn()}
+				/>,
+			);
+			await user.click(screen.getByRole("tab", { name: "Branch" }));
+			act(() => fail(new Error("branch status unavailable")));
+			expect(screen.getByRole("alert")).toHaveTextContent(
+				"branch status unavailable",
+			);
+			expect(
+				screen.queryByText("No branches without worktrees"),
+			).not.toBeInTheDocument();
+			if (received) expect(screen.getByText("previous")).toBeInTheDocument();
+		});
+		it(`Issueの失敗を${received ? "前の値と一緒に" : "空表示と区別して"}表示する`, async () => {
+			const user = userEvent.setup();
+			const initial = {
+				issues: received ? [makeIssue()] : [],
+				loading: !received,
+				error: null,
+				refresh: vi.fn(),
+			};
+			hookMocks.useIssues.mockReturnValue(initial);
+			const props = {
+				open: true,
+				repoPaths: ["/repo"],
+				onCreated: vi.fn(),
+				onClose: vi.fn(),
+			};
+			const view = render(<CreateWorktreeModal {...props} />);
+			await user.click(screen.getByRole("tab", { name: /Issue/ }));
+			hookMocks.useIssues.mockReturnValue({
+				...initial,
+				loading: false,
+				error: "issues unavailable",
+			});
+			view.rerender(<CreateWorktreeModal {...props} />);
+			expect(screen.getByRole("alert")).toHaveTextContent("issues unavailable");
+			expect(screen.queryByText("No issues found")).not.toBeInTheDocument();
+			if (received)
+				expect(
+					screen.getByText("Move branch rules to Rust"),
+				).toBeInTheDocument();
+		});
+	}
 });

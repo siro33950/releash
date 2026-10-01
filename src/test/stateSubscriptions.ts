@@ -17,15 +17,15 @@ export function stateSubscriptions() {
 			const id = key(target);
 			const handlers = errors.get(id) ?? new Set();
 			errors.set(id, handlers);
-			if (onError) handlers.add(onError);
+			handlers.add(onError);
 			const receivers = listeners.get(id) ?? new Set();
 			listeners.set(id, receivers);
 			receivers.add(receive as (value: never) => void);
+			if (values.has(id)) receive(values.get(id) as StateValues[K]);
 			if (failures.has(id)) onError(failures.get(id));
-			else if (values.has(id)) receive(values.get(id) as StateValues[K]);
 			return () => {
 				receivers.delete(receive as (value: never) => void);
-				if (onError) handlers.delete(onError);
+				handlers.delete(onError);
 				if (!receivers.size) failures.delete(id);
 			};
 		},
@@ -51,7 +51,6 @@ export function stateSubscriptions() {
 		},
 		fail(target: StateTarget<keyof StateValues>, error: unknown) {
 			const id = key(target);
-			values.delete(id);
 			failures.set(id, error);
 			for (const handler of errors.get(id) ?? []) handler(error);
 		},

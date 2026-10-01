@@ -1,6 +1,6 @@
 use crate::adaptor::presenter::client as wire;
 use crate::adaptor::presenter::connect_wire::{rpc, to_rpc};
-use crate::adaptor::presenter::state_subscription::StateSubscriptionEvent;
+use crate::adaptor::presenter::state_subscription::{PublishedState, StateSubscriptionEvent};
 use crate::infrastructure::state_subscription::{Delivery, Event};
 use crate::usecase::state_subscription::StateValue;
 
@@ -165,17 +165,17 @@ pub(crate) fn payload(value: &StateValue) -> Result<wire::StatePayload, connectr
                 })
             }
             StateValue::ProviderHookHealth(value) => {
-                wire::state_payload::Value::ProviderHookHealth(
-                    crate::adaptor::presenter::client::value(
-                        value
-                            .iter()
-                            .cloned()
-                            .map(crate::adaptor::presenter::agent_session::ProviderHookHealthWarningResponse::from)
-                            .collect::<Vec<_>>(),
-                    )
-                    .map_err(crate::adaptor::presenter::connect::command_error)?,
-                )
+                wire::state_payload::Value::ProviderHookHealth(wire::ProviderHookHealthSnapshot {
+                    warnings: Some(crate::adaptor::presenter::client::value(
+                        value.warnings.iter().cloned().map(crate::adaptor::presenter::agent_session::ProviderHookHealthWarningResponse::from).collect::<Vec<_>>()
+                    ).map_err(crate::adaptor::presenter::connect::command_error)?),
+                    read_errors: value.failures.iter().map(|failure| match failure {
+                        crate::usecase::provider_lifecycle::ProviderHookHealthFailureQueryError::Unavailable => "Provider Hook health record or session could not be read".into(),
+                        crate::usecase::provider_lifecycle::ProviderHookHealthFailureQueryError::Corrupt => "Provider Hook health record is corrupt".into(),
+                    }).collect(),
+                })
             }
+
             StateValue::StartupOutcome(value) => wire::state_payload::Value::StartupOutcome(
                 crate::adaptor::presenter::client::value(
                     crate::adaptor::presenter::application_lifecycle::application_startup_outcome(
@@ -215,23 +215,30 @@ pub(crate) fn event(
                 sequence: version.sequence,
             });
             let event = match event {
-                Event::Snapshot(_, value) => WireEvent::Snapshot((*value).clone()),
-                Event::Change(_, delivery, value) => WireEvent::Change(wire::StateChange {
-                    delta: delivery == Delivery::Delta,
-                    payload: Some((*value).clone()),
-                }),
-                Event::Bookmark(_) => WireEvent::Bookmark(wire::Unit {}),
-            };
-            let payload = match &event {
-                WireEvent::Snapshot(payload) => Some(payload),
-                WireEvent::Change(change) => change.payload.as_ref(),
-                _ => None,
-            };
-            let event = match payload.and_then(|p| p.value.as_ref()) {
-                Some(wire::state_payload::Value::ReadFailure(failure)) => {
+                Event::Snapshot(_, value) | Event::Change(_, _, value)
+                    if matches!(value.as_ref(), PublishedState::Failure(_)) =>
+                {
+                    let PublishedState::Failure(failure) = value.as_ref() else {
+                        unreachable!()
+                    };
                     WireEvent::Failure(failure.clone())
                 }
-                _ => event,
+                Event::Snapshot(_, value) => {
+                    let PublishedState::Value(value) = value.as_ref() else {
+                        unreachable!()
+                    };
+                    WireEvent::Snapshot(value.as_ref().clone())
+                }
+                Event::Change(_, delivery, value) => {
+                    let PublishedState::Value(value) = value.as_ref() else {
+                        unreachable!()
+                    };
+                    WireEvent::Change(wire::StateChange {
+                        delta: delivery == Delivery::Delta,
+                        payload: Some(value.as_ref().clone()),
+                    })
+                }
+                Event::Bookmark(_) => WireEvent::Bookmark(wire::Unit {}),
             };
             let target = crate::usecase::state_subscription::SubscriptionTarget::parse(&target)
                 .map_err(crate::adaptor::presenter::connect::classified_error)?;

@@ -109,6 +109,7 @@ export interface WorkflowDefinition {
 }
 
 export type WorkflowDefinitionSummary = {
+	readError?: string;
 	name: string;
 	description: string;
 	builtin: boolean;

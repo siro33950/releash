@@ -135,29 +135,35 @@ async fn test_一覧の実行木_読めなかったworktreeは最後に読めた
     trees.set(a, Ok(WorkspaceTree::empty(a)));
     trees.set(b, Err(WorkflowError::external("store busy")));
 
-    // When: b だけ読めない
+    // When
     let first = usecase.retained_workspace_trees(&paths).await;
 
-    // Then: 初回の失敗は値を持たない
+    // Then
     assert_eq!(first[0], Fetched::ready(WorkspaceTree::empty(a)));
     assert!(!first[1].loaded());
-    assert!(first[1].error.as_deref().unwrap().contains("store busy"));
+    assert!(first[1]
+        .error
+        .as_ref()
+        .map(|failure| failure.message.as_str())
+        .unwrap()
+        .contains("store busy"));
 
-    // When: a が読めなくなり、b が読める
     trees.set(a, Err(WorkflowError::external("store busy")));
     trees.set(b, Ok(WorkspaceTree::empty(b)));
     let second = usecase.retained_workspace_trees(&paths).await;
 
-    // Then: a は最後に読めた木を残し、b の失敗は消える
     assert_eq!(second[0].value, Some(WorkspaceTree::empty(a)));
-    assert!(second[0].error.as_deref().unwrap().contains("store busy"));
+    assert!(second[0]
+        .error
+        .as_ref()
+        .map(|failure| failure.message.as_str())
+        .unwrap()
+        .contains("store busy"));
     assert_eq!(second[1], Fetched::ready(WorkspaceTree::empty(b)));
 
-    // When: a が一覧から外れ、その後に戻る
     usecase.retained_workspace_trees(&paths[1..]).await;
     let returned = usecase.retained_workspace_trees(&paths).await;
 
-    // Then: 外れている間に保持は捨てられ、初回の失敗に戻る
     assert!(!returned[0].loaded());
     assert!(returned[0].error.is_some());
 }

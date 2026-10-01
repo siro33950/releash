@@ -372,6 +372,37 @@ describe("ReviewPanel", () => {
 		mockReviewSnapshot({});
 	});
 
+	it("非空の差分の再読取失敗を前回の差分に添えて表示する", () => {
+		mockNonEmptyHeadSnapshot();
+		const element = (
+			<TooltipProvider>
+				<ReviewPanel
+					rootPath="/repo"
+					diffOnlyMode={false}
+					onDiffOnlyModeChange={vi.fn()}
+				/>
+			</TooltipProvider>
+		);
+		const view = render(element);
+		expect(screen.getByText("changed-only.ts")).toBeVisible();
+		mockNonEmptyHeadSnapshot({ error: "scan failed" });
+		view.rerender(
+			<TooltipProvider>
+				<ReviewPanel
+					rootPath="/repo"
+					diffOnlyMode={false}
+					onDiffOnlyModeChange={vi.fn()}
+				/>
+			</TooltipProvider>,
+		);
+		expect(screen.getByText("changed-only.ts")).toBeVisible();
+		expect(screen.getByRole("alert")).toHaveTextContent(
+			"Failed to read changes; showing previous results: scan failed",
+		);
+		expect(screen.queryByText("No changes")).not.toBeInTheDocument();
+		mockReviewSnapshot({});
+	});
+
 	it("should show 'No changes' when totalFileCount is 0", () => {
 		render(
 			<TooltipProvider>

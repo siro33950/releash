@@ -1,3 +1,15 @@
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum PublishedState {
+    Value(Box<crate::adaptor::presenter::client::StatePayload>),
+    Failure(crate::adaptor::presenter::client::StateReadFailure),
+}
+
+impl From<crate::adaptor::presenter::client::StatePayload> for PublishedState {
+    fn from(value: crate::adaptor::presenter::client::StatePayload) -> Self {
+        Self::Value(Box::new(value))
+    }
+}
+
 use std::sync::Arc;
 
 use futures_util::Stream;
@@ -8,9 +20,7 @@ use crate::infrastructure::state_subscription::{
     Delivery, StateSubscriptionRuntime, Subscriptions, Version,
 };
 pub(crate) type StateSubscriptionEvent =
-    crate::infrastructure::state_subscription::StateSubscriptionEvent<
-        crate::adaptor::presenter::client::StatePayload,
-    >;
+    crate::infrastructure::state_subscription::StateSubscriptionEvent<PublishedState>;
 use crate::infrastructure::terminal::output_flow_control::{
     OUTPUT_PENDING_LIMIT, OUTPUT_REPORT_UNITS,
 };
@@ -39,7 +49,7 @@ impl From<crate::infrastructure::state_subscription::SubscriptionError> for Subs
 
 #[derive(Clone)]
 pub(crate) struct StateSubscriptionPresenter {
-    runtime: StateSubscriptionRuntime<crate::adaptor::presenter::client::StatePayload>,
+    runtime: StateSubscriptionRuntime<PublishedState>,
     terminal: Arc<
         Mutex<
             Option<Arc<crate::usecase::terminal_surface::application::TerminalSurfaceApplication>>,
@@ -58,9 +68,7 @@ impl StateSubscriptionPresenter {
     }
 
     #[cfg(test)]
-    pub(crate) fn test_runtime(
-        &self,
-    ) -> &StateSubscriptionRuntime<crate::adaptor::presenter::client::StatePayload> {
+    pub(crate) fn test_runtime(&self) -> &StateSubscriptionRuntime<PublishedState> {
         &self.runtime
     }
 
@@ -75,7 +83,7 @@ impl StateSubscriptionPresenter {
     fn update(
         &self,
         update: impl FnOnce(
-            &mut Subscriptions<crate::adaptor::presenter::client::StatePayload>,
+            &mut Subscriptions<PublishedState>,
         ) -> Result<
             bool,
             crate::infrastructure::state_subscription::SubscriptionError,
@@ -249,7 +257,7 @@ pub(crate) fn test_output() -> crate::usecase::state_subscription::StateSubscrip
 struct StreamPermit {
     usecase: StateSubscriptionUsecase,
     id: String,
-    runtime: StateSubscriptionRuntime<crate::adaptor::presenter::client::StatePayload>,
+    runtime: StateSubscriptionRuntime<PublishedState>,
 }
 
 impl Drop for StreamPermit {
@@ -332,11 +340,7 @@ impl StateSubscriptionOutput for StateSubscriptionPresenter {
             code: error.connect_code().grpc_code() as i32,
             message: error.message,
         };
-        let snapshot = crate::adaptor::presenter::client::StatePayload {
-            value: Some(
-                crate::adaptor::presenter::client::state_payload::Value::ReadFailure(failure),
-            ),
-        };
+        let snapshot = PublishedState::Failure(failure);
         let terminal = matches!(target, SubscriptionTarget::Terminal(_));
         let target = target.to_string();
         self.update(|state| {
@@ -363,6 +367,7 @@ impl StateSubscriptionOutput for StateSubscriptionPresenter {
     ) -> Result<(), SubscriptionError> {
         let target = target.to_string();
         let snapshot = crate::adaptor::presenter::state_subscription_wire::payload(&snapshot)
+            .map(PublishedState::from)
             .map_err(|_| SubscriptionError::EncodingFailed)?;
         self.update(|state| {
             if state.registered(&target) {
@@ -383,10 +388,14 @@ impl StateSubscriptionOutput for StateSubscriptionPresenter {
     ) -> Result<(), SubscriptionError> {
         let target = target.to_string();
         let snapshot = crate::adaptor::presenter::state_subscription_wire::payload(&snapshot)
+            .map(PublishedState::from)
             .map_err(|_| SubscriptionError::EncodingFailed)?;
         let delta = delta
             .as_ref()
-            .map(crate::adaptor::presenter::state_subscription_wire::payload)
+            .map(|value| {
+                crate::adaptor::presenter::state_subscription_wire::payload(value)
+                    .map(PublishedState::from)
+            })
             .transpose()
             .map_err(|_| SubscriptionError::EncodingFailed)?;
         self.update(|state| state.publish(&target, snapshot, delta))
@@ -401,6 +410,7 @@ impl StateSubscriptionOutput for StateSubscriptionPresenter {
     ) -> Result<(), SubscriptionError> {
         let version = self.runtime.terminal_version(runtime_generation, sequence);
         let snapshot = crate::adaptor::presenter::state_subscription_wire::payload(&snapshot)
+            .map(PublishedState::from)
             .map_err(|_| SubscriptionError::EncodingFailed)?;
         self.update(|state| state.set_delta_snapshot(&target.to_string(), version, snapshot))
     }
@@ -499,7 +509,7 @@ impl TerminalSurfaceStateSink for StateSubscriptionPresenter {
         let payload = match crate::adaptor::presenter::state_subscription_wire::payload(
             &StateValue::Terminal(item),
         ) {
-            Ok(payload) => payload,
+            Ok(payload) => PublishedState::from(payload),
             Err(error) => {
                 log::error!("Terminal publication encoding failed: {error}");
                 return;

@@ -682,7 +682,7 @@ fn test_workspaces一覧_持ち主の値と取得の状態を画面が読む名�
         "main",
         Fetched {
             value: None,
-            error: Some("nodes failed".into()),
+            error: Some(failure("nodes failed")),
         },
     );
     main.pull_request = Some(PrInfo {
@@ -703,7 +703,7 @@ fn test_workspaces一覧_持ち主の値と取得の状態を画面が読む名�
                 path: "/repo".into(),
                 worktrees: Fetched {
                     value: Some(vec![main, feature]),
-                    error: Some("scan failed".into()),
+                    error: Some(failure("scan failed")),
                 },
             },
             WorkspaceListRepository {
@@ -714,7 +714,7 @@ fn test_workspaces一覧_持ち主の値と取得の状態を画面が読む名�
                 path: "/failed".into(),
                 worktrees: Fetched {
                     value: None,
-                    error: Some("not a repository".into()),
+                    error: Some(failure("not a repository")),
                 },
             },
             WorkspaceListRepository {
@@ -838,7 +838,7 @@ fn test_workspaces一覧_読めなくなった実行木は前回の木と失敗�
                 "main",
                 Fetched {
                     value: Some(tree),
-                    error: Some("store busy".into()),
+                    error: Some(failure("store busy")),
                 },
             )]),
         }],
@@ -1016,4 +1016,13 @@ fn test_ブランチ状態_ブランチ名とworktreeの有無を並べる() {
             {"name": "feature", "has_worktree": false}
         ])
     );
+}
+
+fn failure(message: &str) -> crate::domain::failure::WorkFailure {
+    crate::domain::failure::WorkFailure {
+        kind: crate::domain::failure::Failure::Technical(
+            crate::domain::failure::TechnicalFailureNature::Other,
+        ),
+        message: message.into(),
+    }
 }

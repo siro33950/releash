@@ -502,4 +502,18 @@ describe("AgentSessionRoute", () => {
 			screen.getByText("AgentSession is no longer available."),
 		).toBeVisible();
 	});
+	it("session読取失敗でも端末画面を残し失敗を添える", async () => {
+		render(<AgentSessionRoute agentSessionId="agent-session-1" />);
+		act(() => publish(session));
+		const terminal = await screen.findByTestId("provider-terminal");
+		act(() =>
+			states.fail(
+				{ kind: "agent-session", args: ["agent-session-1"] },
+				new Error("session unreadable"),
+			),
+		);
+		expect(screen.getByRole("alert")).toHaveTextContent("session unreadable");
+		expect(screen.getByTestId("provider-terminal")).toBe(terminal);
+		expect(mockInvoke).toHaveBeenCalledTimes(1);
+	});
 });

@@ -96,7 +96,7 @@ impl RepositoryStateService {
             Ok(None) => Fetched::default(),
             Err(error) => Fetched {
                 value: None,
-                error: Some(error.to_string()),
+                error: Some(crate::domain::failure::WorkFailure::from_error(&error)),
             },
         }
     }
@@ -111,7 +111,7 @@ impl RepositoryStateService {
                 .unwrap_or_default(),
             Err(error) => Fetched {
                 value: None,
-                error: Some(error.to_string()),
+                error: Some(crate::domain::failure::WorkFailure::from_error(&error)),
             },
         }
     }
@@ -629,6 +629,7 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn snapshot_dtos_are_derived_from_same_cached_version() {
+        // Given
         let scanner = Arc::new(CountingScanner::with_status(vec![FileStatusDto {
             path: "changed.txt".to_string(),
             index_status: "none".to_string(),
@@ -644,6 +645,7 @@ pub(crate) mod tests {
             if service.get_snapshot(path).unwrap().version >= 1 {
                 break;
             }
+            // When
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
 
@@ -651,6 +653,7 @@ pub(crate) mod tests {
         let diff_stats = service.get_snapshot(path).unwrap();
         let head_tree = service.get_snapshot(path).unwrap();
 
+        // Then
         assert!(status.version >= 1);
         assert_eq!(diff_stats.version, status.version);
         assert_eq!(head_tree.version, status.version);

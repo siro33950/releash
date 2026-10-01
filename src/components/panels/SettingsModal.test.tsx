@@ -1962,4 +1962,40 @@ describe("SettingsModal", () => {
 				),
 		).toBe(false);
 	});
+	for (const kind of ["branches", "releash-base"] as const) {
+		for (const received of [false, true]) {
+			it(`${kind}の失敗を${received ? "前の値と一緒に" : "未設定と区別して"}表示する`, async () => {
+				const user = userEvent.setup();
+				const target = { kind, args: [REPO] };
+				states.clear();
+				// Other read succeeds so this target's failure is observable.
+				states.publish({ kind: "branches", args: [REPO] }, [
+					{ name: "develop", is_remote: false },
+				]);
+				if (kind === "branches" || received)
+					states.publish({ kind: "releash-base", args: [REPO] }, "develop");
+				if (kind === "branches" && !received) {
+					states.clear();
+					states.publish({ kind: "releash-base", args: [REPO] }, "develop");
+				}
+				render(<SettingsModal {...defaultProps} />);
+				await user.click(screen.getByText("Repositories"));
+				act(() => states.fail(target, new Error(`${kind} unavailable`)));
+				expect(await screen.findByRole("alert")).toHaveTextContent(
+					`${kind} unavailable`,
+				);
+				expect(screen.queryByText("Loading...")).not.toBeInTheDocument();
+				if (received) {
+					const trigger = screen.getByRole("combobox", { name: "Base branch" });
+					expect(trigger).toHaveTextContent("develop");
+					if (kind === "branches") {
+						await user.click(trigger);
+						expect(
+							screen.getByRole("option", { name: "develop" }),
+						).toBeInTheDocument();
+					}
+				}
+			});
+		}
+	}
 });

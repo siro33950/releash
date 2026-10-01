@@ -32,11 +32,9 @@ export function useBaseBranch(
 		[rootPath, branchName],
 	);
 	return {
-		baseBranch: baseBranch.error ? null : (baseBranch.value ?? null),
+		baseBranch: baseBranch.value ?? null,
 		error: baseBranch.error ?? branches.error,
 		setBaseBranch,
-		localBranches: (branches.error ? [] : (branches.value ?? [])).map(
-			(branch) => branch.name,
-		),
+		localBranches: (branches.value ?? []).map((branch) => branch.name),
 	};
 }

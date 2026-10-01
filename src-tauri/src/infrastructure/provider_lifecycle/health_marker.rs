@@ -70,7 +70,10 @@ fn validate_marker_path(
 pub(crate) fn read_local_api_failures(
     data_dir: &Path,
     limit: usize,
-) -> Result<Vec<RawProviderHookHealthFailure>, ProviderHookHealthMarkerError> {
+) -> Result<
+    Vec<Result<RawProviderHookHealthFailure, ProviderHookHealthMarkerError>>,
+    ProviderHookHealthMarkerError,
+> {
     if limit == 0 {
         return Ok(Vec::new());
     }
@@ -83,37 +86,49 @@ pub(crate) fn read_local_api_failures(
     }
     let mut session_directories = directories(&root)?;
     session_directories.sort();
-    let mut marker_paths = Vec::new();
+    let mut records = Vec::new();
     for session_directory in session_directories {
-        let mut launch_directories = directories(&session_directory)?;
+        let mut launch_directories = match directories(&session_directory) {
+            Ok(directories) => directories,
+            Err(error) => {
+                records.push(Err(error));
+                if records.len() >= limit {
+                    break;
+                }
+                continue;
+            }
+        };
         launch_directories.sort();
         for launch_directory in launch_directories {
             let marker_path = launch_directory.join("hook-health.json");
             let metadata = match std::fs::symlink_metadata(&marker_path) {
                 Ok(metadata) => metadata,
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
-                Err(_) => return Err(ProviderHookHealthMarkerError::Unavailable),
+                Err(_) => {
+                    records.push(Err(ProviderHookHealthMarkerError::Unavailable));
+                    if records.len() >= limit {
+                        break;
+                    }
+                    continue;
+                }
             };
-            if !metadata.file_type().is_file() || metadata.len() > MAX_MARKER_BYTES {
-                return Err(ProviderHookHealthMarkerError::InvalidPath);
-            }
-            marker_paths.push(marker_path);
-            if marker_paths.len() == limit {
+            let record = if !metadata.file_type().is_file() || metadata.len() > MAX_MARKER_BYTES {
+                Err(ProviderHookHealthMarkerError::InvalidPath)
+            } else {
+                std::fs::read(marker_path)
+                    .map(|contents| RawProviderHookHealthFailure { contents })
+                    .map_err(|_| ProviderHookHealthMarkerError::Unavailable)
+            };
+            records.push(record);
+            if records.len() >= limit {
                 break;
             }
         }
-        if marker_paths.len() == limit {
+        if records.len() >= limit {
             break;
         }
     }
-    marker_paths
-        .into_iter()
-        .map(|path| {
-            std::fs::read(path)
-                .map(|contents| RawProviderHookHealthFailure { contents })
-                .map_err(|_| ProviderHookHealthMarkerError::Unavailable)
-        })
-        .collect()
+    Ok(records)
 }
 
 fn directories(root: &Path) -> Result<Vec<std::path::PathBuf>, ProviderHookHealthMarkerError> {

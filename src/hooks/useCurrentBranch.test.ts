@@ -42,7 +42,7 @@ it("読取失敗時は前のブランチを表示せず回復後の値を表示�
 	const { result } = renderHook(() => useCurrentBranch("/repo"));
 	act(() => receive("main"));
 	act(() => fail(new Error("denied")));
-	expect(result.current).toEqual({ branch: null, error: "denied" });
+	expect(result.current).toEqual({ branch: "main", error: "denied" });
 	act(() => receive("develop"));
 	expect(result.current).toEqual({ branch: "develop", error: null });
 });

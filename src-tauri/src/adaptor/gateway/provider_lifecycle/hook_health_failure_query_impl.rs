@@ -28,8 +28,10 @@ impl ProviderHookHealthFailureQuery for LocalProviderHookHealthFailureQuery {
     async fn list(
         &self,
         limit: usize,
-    ) -> Result<Vec<ProviderHookHealthFailureObservation>, ProviderHookHealthFailureQueryError>
-    {
+    ) -> Result<
+        Vec<Result<ProviderHookHealthFailureObservation, ProviderHookHealthFailureQueryError>>,
+        ProviderHookHealthFailureQueryError,
+    > {
         if limit == 0 {
             return Ok(Vec::new());
         }
@@ -40,14 +42,16 @@ impl ProviderHookHealthFailureQuery for LocalProviderHookHealthFailureQuery {
         .await
         .map_err(|_| ProviderHookHealthFailureQueryError::Unavailable)?
         .map_err(map_marker_error)?;
-        failures
+        Ok(failures
             .into_iter()
             .map(|failure| {
-                parse_observation(&failure.contents)
-                    .ok_or(ProviderHookHealthFailureQueryError::Corrupt)
+                failure.map_err(map_marker_error).and_then(|failure| {
+                    parse_observation(&failure.contents)
+                        .ok_or(ProviderHookHealthFailureQueryError::Corrupt)
+                })
             })
             .take(limit)
-            .collect()
+            .collect())
     }
 }
 

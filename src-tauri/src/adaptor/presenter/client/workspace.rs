@@ -73,7 +73,7 @@ fn status<T>(fetched: &Fetched<T>, empty: bool) -> wire::WorkspaceListStatus {
             }
             .to_owned(),
         ),
-        error: fetched.error.clone(),
+        error: fetched.error.as_ref().map(ToString::to_string),
     }
 }
 
@@ -100,8 +100,8 @@ fn branch(row: &WorkspaceListWorktree) -> wire::WorkspaceBranch {
         is_deleting: Some(row.deleting),
         worktree_path: Some(row.worktree.path.clone()),
         dirty_count: row.dirty_count.value.map(|v| v as u64),
-        dirty_count_error: row.dirty_count.error.clone(),
-        pull_request_error: row.pull_request_error.clone(),
+        dirty_count_error: row.dirty_count.error.as_ref().map(ToString::to_string),
+        pull_request_error: row.pull_request_error.as_ref().map(ToString::to_string),
         is_merged: Some(row.merged),
         has_pr: Some(row.pull_request.is_some()),
         pr_number: row.pull_request.as_ref().map(|pr| pr.number),

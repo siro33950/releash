@@ -365,7 +365,7 @@ function RepoBaseBranchItem({
 		kind: "branches",
 		args: [repoPath],
 	});
-	const branches = branchValues.error ? [] : (branchValues.value ?? []);
+	const branches = branchValues.value ?? [];
 	const releashBase = useStateSubscriptionResult({
 		kind: "releash-base",
 		args: [repoPath],
@@ -374,7 +374,10 @@ function RepoBaseBranchItem({
 	const [initialBase, setInitialBase] = useState("");
 	const dirty = useRef(false);
 	dirty.current = selectedBase !== initialBase;
-	const loading = releashBase.value === undefined && !releashBase.error;
+	const loading =
+		releashBase.value === undefined &&
+		!releashBase.error &&
+		!branchValues.error;
 	const error = releashBase.error ?? branchValues.error;
 
 	const currentBase = releashBase.value;
@@ -430,7 +433,11 @@ function RepoBaseBranchItem({
 							</SelectContent>
 						</Select>
 
-						{error && <p className="text-xs text-destructive">{error}</p>}
+						{error && (
+							<p role="alert" className="text-xs text-destructive">
+								{error}
+							</p>
+						)}
 					</div>
 				)}
 			</div>
@@ -530,7 +537,11 @@ function RepositoriesSection({
 
 	return (
 		<div className="flex flex-col">
-			{error && <p className="text-xs text-destructive">{error}</p>}
+			{error && (
+				<p role="alert" className="text-xs text-destructive">
+					{error}
+				</p>
+			)}
 			{repoPaths.map((repoPath, i) => (
 				<Fragment key={`${repoPath}-${revision}`}>
 					{i > 0 && <Separator className="my-3" />}

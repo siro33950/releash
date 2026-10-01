@@ -6,6 +6,7 @@ pub trait WorkspaceStateRepository: Send + Sync {
         worktree_name: &str,
         worktree_root: &str,
     ) -> Result<Option<WorkspaceState>, crate::domain::workspace_state::WorkspaceStateError>;
+    fn check_readable(&self, worktree_name: &str) -> Result<(), WorkspaceStateError>;
     fn save(&self, worktree_name: &str) -> Result<(), WorkspaceStateError>;
     fn set(&self, worktree_name: &str, state: WorkspaceState);
 }

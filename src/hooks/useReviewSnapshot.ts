@@ -22,7 +22,7 @@ export function useReviewSnapshot(rootPath: string | null, diffBase: DiffBase) {
 	const subscription = useStateSubscriptionResult(
 		rootPath ? { kind: "review-snapshot", args: [rootPath, diffBase] } : null,
 	);
-	const snapshot = (!subscription.error ? subscription.value : undefined) ?? {
+	const snapshot = subscription.value ?? {
 		...EMPTY_SNAPSHOT,
 		base: diffBase,
 	};

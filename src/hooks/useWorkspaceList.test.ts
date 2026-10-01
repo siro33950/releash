@@ -95,7 +95,7 @@ describe("useWorkspaceList", () => {
 			["refresh_workspaces", {}],
 		]);
 	});
-	it("一覧の読み直し失敗は前の一覧を現在値として返さず回復を待つ", () => {
+	it("一覧の読み直し失敗は前の一覧と失敗を保持し回復を待つ", () => {
 		let fail!: (error: unknown) => void;
 		mocks.subscribe.mockImplementation((_target, receive, onError) => {
 			deliver = receive;
@@ -103,9 +103,10 @@ describe("useWorkspaceList", () => {
 			return mocks.stop;
 		});
 		const { result } = renderHook(() => useWorkspaceList());
-		act(() => deliver(workspaceListSnapshot()));
+		const previous = workspaceListSnapshot();
+		act(() => deliver(previous));
 		act(() => fail(new Error("collection failed")));
-		expect(result.current.snapshot).toBeNull();
+		expect(result.current.snapshot).toBe(previous);
 		expect(result.current.requestError?.message).toBe("collection failed");
 		const recovered = workspaceListSnapshot();
 		act(() => deliver(recovered));

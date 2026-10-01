@@ -31,7 +31,7 @@ fn values(path: &str, branch: &str, is_merged: bool) -> WorktreeValues {
 fn failed_tree(message: &str) -> Fetched<WorkspaceTree> {
     Fetched {
         value: None,
-        error: Some(message.to_string()),
+        error: Some(failure(message)),
     }
 }
 
@@ -108,7 +108,7 @@ fn test_一覧の合成_読めているworktreeの並び順に実行木を割り
             path: "/a".into(),
             worktrees: Fetched {
                 value: Some(vec![values("/a", "one", false), deleting]),
-                error: Some("scan failed".into()),
+                error: Some(failure("scan failed")),
             },
             pull_requests: Fetched::default(),
         },
@@ -116,7 +116,7 @@ fn test_一覧の合成_読めているworktreeの並び順に実行木を割り
             path: "/b".into(),
             worktrees: Fetched {
                 value: None,
-                error: Some("not a repository".into()),
+                error: Some(failure("not a repository")),
             },
             pull_requests: Fetched::default(),
         },
@@ -135,7 +135,14 @@ fn test_一覧の合成_読めているworktreeの並び順に実行木を割り
 
     // Then
     let first = &list.repositories[0];
-    assert_eq!(first.worktrees.error.as_deref(), Some("scan failed"));
+    assert_eq!(
+        first
+            .worktrees
+            .error
+            .as_ref()
+            .map(|failure| failure.message.as_str()),
+        Some("scan failed")
+    );
     let rows = first.worktrees.value.as_ref().unwrap();
     assert_eq!(rows[0].tree, failed_tree("one"));
     assert_eq!(rows[1].tree, failed_tree("two"));
@@ -145,7 +152,7 @@ fn test_一覧の合成_読めているworktreeの並び順に実行木を割り
         list.repositories[1].worktrees,
         Fetched {
             value: None,
-            error: Some("not a repository".into()),
+            error: Some(failure("not a repository")),
         }
     );
     let rows = list.repositories[2].worktrees.value.as_ref().unwrap();
@@ -316,7 +323,7 @@ fn rows(list: &WorkspaceList) -> &[WorkspaceListWorktree] {
 
 #[tokio::test]
 async fn test_一覧の読み取り_監視前は取得中で走査後にworktreeと変更の数と実行木を並べる() {
-    // Given: main に未コミットの変更が 1 件あり、linked worktree が 1 つある Repository
+    // Given
     let fixture = Fixture::new(PullRequests {
         status: PrStatus::default(),
         release: None,
@@ -328,15 +335,14 @@ async fn test_一覧の読み取り_監視前は取得中で走査後にworktree
     .unwrap();
     let feature = fixture.add_worktree("feature");
 
-    // When: まだ何も監視していない
+    // When
     let before = fixture.usecase.read().await.unwrap();
 
-    // Then: 取得中であり、項目なしではない
+    // Then
     assert_eq!(before.repositories.len(), 1);
     assert_eq!(before.repositories[0].path, fixture.path);
     assert_eq!(before.repositories[0].worktrees, Fetched::default());
 
-    // When: 監視が始まり、走査が終わる
     let list = fixture
         .watch_until(|rows| {
             rows.len() == 2
@@ -345,7 +351,6 @@ async fn test_一覧の読み取り_監視前は取得中で走査後にworktree
         })
         .await;
 
-    // Then
     let rows = rows(&list);
     assert!(list.repositories[0].worktrees.error.is_none());
     assert!(rows[0].worktree.is_main);
@@ -364,7 +369,7 @@ async fn test_一覧の読み取り_監視前は取得中で走査後にworktree
 
 #[tokio::test]
 async fn test_手動更新_走査をやり直して終わりまで待ちprの取得は待たない() {
-    // Given: PR の取得が終わらない Repository
+    // Given
     let (release, blocked) = std::sync::mpsc::channel();
     let fixture = Fixture::new(PullRequests {
         status: PrStatus {
@@ -383,18 +388,17 @@ async fn test_手動更新_走査をやり直して終わりまで待ちprの取
     fixture.add_worktree("feature");
     let mut changes = crate::test_support::state_subscription::changes(&fixture.subscriptions);
 
-    // When
     tokio::time::timeout(Duration::from_secs(5), fixture.usecase.refresh())
         .await
         .expect("refresh must not wait for pull requests");
+    // When
     let scanned = fixture.usecase.read().await.unwrap();
 
-    // Then: 走査の結果は読め、PR はまだ無い
+    // Then
     assert_eq!(rows(&scanned).len(), 2);
     assert_eq!(rows(&scanned)[1].worktree.branch, "feature");
     assert!(rows(&scanned)[1].pull_request.is_none());
 
-    // When: PR が取れる
     release.send(()).unwrap();
     tokio::time::timeout(Duration::from_secs(5), async {
         while changes.recv().await.unwrap() != StateChangeSource::WorkspaceList {}
@@ -402,7 +406,6 @@ async fn test_手動更新_走査をやり直して終わりまで待ちprの取
     .await
     .expect("pull request change must be notified");
 
-    // Then
     let list = fixture.usecase.read().await.unwrap();
     assert_eq!(
         rows(&list)[1].pull_request,
@@ -442,14 +445,14 @@ fn test_一覧の合成_未コミット数とprの読取失敗を未設定と区
     let mut row = values("/repo", "main", false);
     row.dirty_count = Fetched {
         value: None,
-        error: Some("scan failed".into()),
+        error: Some(failure("scan failed")),
     };
     let repositories = vec![RepositoryValues {
         path: "/repo".into(),
         worktrees: Fetched::ready(vec![row]),
         pull_requests: Fetched {
             value: None,
-            error: Some("PR failed".into()),
+            error: Some(failure("PR failed")),
         },
     }];
     // When
@@ -457,12 +460,24 @@ fn test_一覧の合成_未コミット数とprの読取失敗を未設定と区
     // Then
     let row = &list.repositories[0].worktrees.value.as_ref().unwrap()[0];
     assert_eq!(row.dirty_count.value, None);
-    assert_eq!(row.dirty_count.error.as_deref(), Some("scan failed"));
-    assert_eq!(row.pull_request_error.as_deref(), Some("PR failed"));
+    assert_eq!(
+        row.dirty_count
+            .error
+            .as_ref()
+            .map(|failure| failure.message.as_str()),
+        Some("scan failed")
+    );
+    assert_eq!(
+        row.pull_request_error
+            .as_ref()
+            .map(|failure| failure.message.as_str()),
+        Some("PR failed")
+    );
 }
 
 #[tokio::test]
 async fn test_一覧の読取_収集処理の失敗を空の一覧に変えない() {
+    // Given
     struct PanickingPaths;
     impl RepoPathsRepository for PanickingPaths {
         fn get(&self) -> Vec<String> {
@@ -483,10 +498,21 @@ async fn test_一覧の読取_収集処理の失敗を空の一覧に変えな�
         Arc::new(PanickingPaths),
         fixture.subscriptions.clone(),
     ));
+    // When
     let error = fixture.usecase.read().await.unwrap_err();
+    // Then
     assert_eq!(
         error.nature,
         crate::domain::failure::TechnicalFailureNature::Other
     );
     assert!(error.message.contains("repository collection failed"));
+}
+
+fn failure(message: &str) -> crate::domain::failure::WorkFailure {
+    crate::domain::failure::WorkFailure {
+        kind: crate::domain::failure::Failure::Technical(
+            crate::domain::failure::TechnicalFailureNature::Other,
+        ),
+        message: message.into(),
+    }
 }

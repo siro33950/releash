@@ -201,22 +201,29 @@ impl CapturingNotifier<String> {
 }
 
 pub(crate) fn same(
-    value: &crate::adaptor::presenter::client::StatePayload,
+    value: &crate::adaptor::presenter::state_subscription::PublishedState,
     expected: impl std::borrow::Borrow<crate::usecase::state_subscription::StateValue>,
 ) -> bool {
     *value
-        == crate::adaptor::presenter::state_subscription_wire::payload(expected.borrow()).unwrap()
+        == crate::adaptor::presenter::state_subscription::PublishedState::from(
+            crate::adaptor::presenter::state_subscription_wire::payload(expected.borrow()).unwrap(),
+        )
 }
 
 pub(crate) fn payload(
     value: &crate::usecase::state_subscription::StateValue,
-) -> Result<crate::adaptor::presenter::client::StatePayload, connectrpc::ConnectError> {
+) -> Result<crate::adaptor::presenter::state_subscription::PublishedState, connectrpc::ConnectError>
+{
     crate::adaptor::presenter::state_subscription_wire::payload(value)
+        .map(crate::adaptor::presenter::state_subscription::PublishedState::from)
 }
 
 pub(crate) fn terminal_item(
-    value: &crate::adaptor::presenter::client::StatePayload,
+    value: &crate::adaptor::presenter::state_subscription::PublishedState,
 ) -> &crate::adaptor::presenter::client::terminal_event::Item {
+    let crate::adaptor::presenter::state_subscription::PublishedState::Value(value) = value else {
+        panic!("terminal state");
+    };
     use crate::adaptor::presenter::client::state_payload::Value;
     let Some(Value::Terminal(event)) = &value.value else {
         panic!("terminal payload");

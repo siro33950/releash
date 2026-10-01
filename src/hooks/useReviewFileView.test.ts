@@ -82,13 +82,14 @@ describe("useReviewFileView", () => {
 		expect(result.current.hunks).toBeNull();
 	});
 
-	it("購読の失敗は表示を空にしてerrorへ渡す", () => {
+	it("購読の失敗は前の表示を残してerrorへ渡す", () => {
 		const { result } = renderHook(() =>
 			useReviewFileView("/repo", "src/main.ts", "head", "changes"),
 		);
-		act(() => states.publish(target, textDiff()));
+		const previous = textDiff();
+		act(() => states.publish(target, previous));
 		act(() => states.fail(target, { message: "read denied" }));
-		expect(result.current.view).toBeNull();
+		expect(result.current.view).toBe(previous);
 		expect(result.current.error).toBe("read denied");
 		expect(result.current.loading).toBe(false);
 	});

@@ -6,7 +6,7 @@
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Fetched<T> {
     pub value: Option<T>,
-    pub error: Option<String>,
+    pub error: Option<crate::domain::failure::WorkFailure>,
 }
 
 impl<T> Default for Fetched<T> {
@@ -36,7 +36,7 @@ impl<T> Fetched<T> {
     }
 
     /// 取得の結果を記録する。失敗のときは最後に取れた値を残す。
-    pub fn record(&mut self, result: Result<T, String>) {
+    pub fn record(&mut self, result: Result<T, crate::domain::failure::WorkFailure>) {
         match result {
             Ok(value) => {
                 self.value = Some(value);

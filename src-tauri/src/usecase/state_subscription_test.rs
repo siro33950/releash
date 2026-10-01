@@ -503,11 +503,12 @@ async fn test_購読読取_初回失敗後も登録を残し回復と再失敗�
         .with_reads(reads.clone(), None, vec![], String::new());
     let target = SubscriptionTarget::RepositoryPaths;
     usecase.open_client("client".into()).unwrap();
-    // When / Then
     usecase
         .start_subscription("client", &target, None, None)
+        // When
         .await
         .unwrap();
+    // Then
     assert!(usecase.active_targets().contains(&target));
     assert_eq!(output.failures.lock().len(), 1);
     reads

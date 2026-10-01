@@ -112,80 +112,207 @@ fn test_checkout_notifyで操作途中の取消を検出する() {
     assert!(!directory.path().join("file").exists());
 }
 
+struct CancelAfter {
+    remaining: AtomicUsize,
+}
+impl crate::common::operation_context::Cancellation for CancelAfter {
+    fn is_cancelled(&self) -> bool {
+        self.remaining.fetch_sub(1, Ordering::SeqCst) == 0
+    }
+}
 #[test]
-fn test_branch探索_停止を未検出や空名へ変換しない() {
-    struct CancelAfter {
-        remaining: AtomicUsize,
-    }
-    impl crate::common::operation_context::Cancellation for CancelAfter {
-        fn is_cancelled(&self) -> bool {
-            self.remaining.fetch_sub(1, Ordering::SeqCst) == 0
-        }
-    }
+fn test_既定ブランチ探索_停止地点0を未検出や空名へ変換しない() {
+    // Given
     let directory = tempfile::tempdir().unwrap();
     let repo = git2::Repository::init(directory.path()).unwrap();
-    for after in 0..=4 {
-        let context = OperationContext::new(
-            None,
-            Arc::new(CancelAfter {
-                remaining: AtomicUsize::new(after),
-            }),
-        );
-        let result =
-            crate::common::operation_context::sync_scope(context, || detect_default_branch(&repo));
-        assert!(
-            matches!(
-                result,
-                Err(GitOperationError::Stopped(OperationStopped::Cancelled))
-            ),
-            "checkpoint {after}"
-        );
-    }
-    for after in 0..=1 {
-        let context = OperationContext::new(
-            None,
-            Arc::new(CancelAfter {
-                remaining: AtomicUsize::new(after),
-            }),
-        );
-        assert!(matches!(
-            crate::common::operation_context::sync_scope(context, || get_branch_name_for_repo(
-                &repo
-            )),
-            Err(GitOperationError::Stopped(OperationStopped::Cancelled))
-        ));
-    }
+    let context = OperationContext::new(
+        None,
+        Arc::new(CancelAfter {
+            remaining: AtomicUsize::new(0),
+        }),
+    );
+    // When
+    let result =
+        crate::common::operation_context::sync_scope(context, || detect_default_branch(&repo));
+    // Then
+    assert!(matches!(
+        result,
+        Err(GitOperationError::Stopped(OperationStopped::Cancelled))
+    ));
+}
+#[test]
+fn test_既定ブランチ探索_停止地点1を未検出や空名へ変換しない() {
+    // Given
+    let directory = tempfile::tempdir().unwrap();
+    let repo = git2::Repository::init(directory.path()).unwrap();
+    let context = OperationContext::new(
+        None,
+        Arc::new(CancelAfter {
+            remaining: AtomicUsize::new(1),
+        }),
+    );
+    // When
+    let result =
+        crate::common::operation_context::sync_scope(context, || detect_default_branch(&repo));
+    // Then
+    assert!(matches!(
+        result,
+        Err(GitOperationError::Stopped(OperationStopped::Cancelled))
+    ));
+}
+#[test]
+fn test_既定ブランチ探索_停止地点2を未検出や空名へ変換しない() {
+    // Given
+    let directory = tempfile::tempdir().unwrap();
+    let repo = git2::Repository::init(directory.path()).unwrap();
+    let context = OperationContext::new(
+        None,
+        Arc::new(CancelAfter {
+            remaining: AtomicUsize::new(2),
+        }),
+    );
+    // When
+    let result =
+        crate::common::operation_context::sync_scope(context, || detect_default_branch(&repo));
+    // Then
+    assert!(matches!(
+        result,
+        Err(GitOperationError::Stopped(OperationStopped::Cancelled))
+    ));
+}
+#[test]
+fn test_既定ブランチ探索_停止地点3を未検出や空名へ変換しない() {
+    // Given
+    let directory = tempfile::tempdir().unwrap();
+    let repo = git2::Repository::init(directory.path()).unwrap();
+    let context = OperationContext::new(
+        None,
+        Arc::new(CancelAfter {
+            remaining: AtomicUsize::new(3),
+        }),
+    );
+    // When
+    let result =
+        crate::common::operation_context::sync_scope(context, || detect_default_branch(&repo));
+    // Then
+    assert!(matches!(
+        result,
+        Err(GitOperationError::Stopped(OperationStopped::Cancelled))
+    ));
+}
+#[test]
+fn test_既定ブランチ探索_停止地点4を未検出や空名へ変換しない() {
+    // Given
+    let directory = tempfile::tempdir().unwrap();
+    let repo = git2::Repository::init(directory.path()).unwrap();
+    let context = OperationContext::new(
+        None,
+        Arc::new(CancelAfter {
+            remaining: AtomicUsize::new(4),
+        }),
+    );
+    // When
+    let result =
+        crate::common::operation_context::sync_scope(context, || detect_default_branch(&repo));
+    // Then
+    assert!(matches!(
+        result,
+        Err(GitOperationError::Stopped(OperationStopped::Cancelled))
+    ));
+}
+#[test]
+fn test_既定ブランチ探索_期限切れを未検出や空名へ変換しない() {
+    // Given
+    let directory = tempfile::tempdir().unwrap();
+    let repo = git2::Repository::init(directory.path()).unwrap();
     let context =
         OperationContext::default().with_deadline(Deadline::new(std::time::Instant::now()));
-    crate::common::operation_context::sync_scope(context, || {
-        assert!(matches!(
-            detect_default_branch(&repo),
-            Err(GitOperationError::Stopped(OperationStopped::Expired))
-        ));
-        assert!(matches!(
-            get_branch_name_for_repo(&repo),
-            Err(GitOperationError::Stopped(OperationStopped::Expired))
-        ));
-    });
+    // When
+    let result =
+        crate::common::operation_context::sync_scope(context, || detect_default_branch(&repo));
+    // Then
+    assert!(matches!(
+        result,
+        Err(GitOperationError::Stopped(OperationStopped::Expired))
+    ));
 }
-
+#[test]
+fn test_ブランチ名探索_停止地点0を未検出や空名へ変換しない() {
+    // Given
+    let directory = tempfile::tempdir().unwrap();
+    let repo = git2::Repository::init(directory.path()).unwrap();
+    let context = OperationContext::new(
+        None,
+        Arc::new(CancelAfter {
+            remaining: AtomicUsize::new(0),
+        }),
+    );
+    // When
+    let result =
+        crate::common::operation_context::sync_scope(context, || get_branch_name_for_repo(&repo));
+    // Then
+    assert!(matches!(
+        result,
+        Err(GitOperationError::Stopped(OperationStopped::Cancelled))
+    ));
+}
+#[test]
+fn test_ブランチ名探索_停止地点1を未検出や空名へ変換しない() {
+    // Given
+    let directory = tempfile::tempdir().unwrap();
+    let repo = git2::Repository::init(directory.path()).unwrap();
+    let context = OperationContext::new(
+        None,
+        Arc::new(CancelAfter {
+            remaining: AtomicUsize::new(1),
+        }),
+    );
+    // When
+    let result =
+        crate::common::operation_context::sync_scope(context, || get_branch_name_for_repo(&repo));
+    // Then
+    assert!(matches!(
+        result,
+        Err(GitOperationError::Stopped(OperationStopped::Cancelled))
+    ));
+}
+#[test]
+fn test_ブランチ名探索_期限切れを未検出や空名へ変換しない() {
+    // Given
+    let directory = tempfile::tempdir().unwrap();
+    let repo = git2::Repository::init(directory.path()).unwrap();
+    let context =
+        OperationContext::default().with_deadline(Deadline::new(std::time::Instant::now()));
+    // When
+    let result =
+        crate::common::operation_context::sync_scope(context, || get_branch_name_for_repo(&repo));
+    // Then
+    assert!(matches!(
+        result,
+        Err(GitOperationError::Stopped(OperationStopped::Expired))
+    ));
+}
 #[test]
 fn test_git任意読取_notfoundだけを未設定として扱う() {
-    // Given / When / Then
-    assert_eq!(
-        optional::<()>(Err(git2::Error::new(
-            git2::ErrorCode::NotFound,
-            git2::ErrorClass::Reference,
-            "missing"
-        )
-        .into()))
-        .unwrap(),
-        None
+    // Given
+    let error = git2::Error::new(
+        git2::ErrorCode::NotFound,
+        git2::ErrorClass::Reference,
+        "missing",
     );
-    assert!(matches!(
-        optional::<()>(Err(git2::Error::from_str("read failed").into())),
-        Err(GitOperationError::Git(_))
-    ));
+    // When
+    let result = optional::<()>(Err(error.into()));
+    // Then
+    assert_eq!(result.unwrap(), None);
+}
+#[test]
+fn test_git任意読取_notfound以外の失敗を未設定に変えない() {
+    // Given
+    let error = git2::Error::from_str("read failed");
+    // When
+    let result = optional::<()>(Err(error.into()));
+    // Then
+    assert!(matches!(result, Err(GitOperationError::Git(_))));
 }
 
 #[test]
@@ -194,6 +321,8 @@ fn test_既定ブランチ読取_参照の破損を未設定と区別する() {
     let directory = tempfile::tempdir().unwrap();
     let repo = git2::Repository::init(directory.path()).unwrap();
     std::fs::write(repo.path().join("packed-refs"), "invalid packed refs").unwrap();
-    // When / Then
-    assert!(detect_default_branch(&repo).is_err());
+    // When
+    let result = detect_default_branch(&repo);
+    // Then
+    assert!(result.is_err());
 }

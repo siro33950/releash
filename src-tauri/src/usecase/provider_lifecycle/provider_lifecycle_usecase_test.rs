@@ -534,14 +534,17 @@ impl ProviderHookHealthFailureQuery for FixedHookDeliveryFailures {
     async fn list(
         &self,
         _limit: usize,
-    ) -> Result<Vec<ProviderHookHealthFailureObservation>, ProviderHookHealthFailureQueryError>
-    {
-        Ok(self.observations.clone())
+    ) -> Result<
+        Vec<Result<ProviderHookHealthFailureObservation, ProviderHookHealthFailureQueryError>>,
+        ProviderHookHealthFailureQueryError,
+    > {
+        Ok(self.observations.iter().cloned().map(Ok).collect())
     }
 }
 
 #[tokio::test]
 async fn test_provider_hook_health_read_local_api配送失敗を最新launchの警告へ反映する() {
+    // Given
     let repository = Arc::new(InMemoryHookHealthRepository::default());
     let health = Arc::new(ProviderHookHealthUsecase::new(repository));
     health
@@ -550,6 +553,7 @@ async fn test_provider_hook_health_read_local_api配送失敗を最新launchの�
             "launch-latest",
             "launch-latest-request",
         )
+        // When
         .await
         .unwrap();
     let read = ProviderHookHealthReadUsecase::new(
@@ -570,8 +574,9 @@ async fn test_provider_hook_health_read_local_api配送失敗を最新launchの�
         }),
     );
 
+    // Then
     assert_eq!(
-        read.warnings().await.unwrap(),
+        read.warnings().await.unwrap().warnings,
         vec![ProviderHookHealthWarning {
             provider: ProviderKind::Claude,
             launch_id: "launch-latest".to_string(),

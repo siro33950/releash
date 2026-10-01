@@ -73,13 +73,13 @@ it("baseと選択肢の購読失敗を区別し回復後の値を表示する", 
 		branches[1]([{ name: "main", is_remote: false }]);
 	});
 	act(() => base[2](new Error("base denied")));
-	expect(result.current.baseBranch).toBeNull();
+	expect(result.current.baseBranch).toBe("main");
 	expect(result.current.error).toBe("base denied");
 	act(() => {
 		base[1]("develop");
 		branches[2](new Error("branches denied"));
 	});
-	expect(result.current.localBranches).toEqual([]);
+	expect(result.current.localBranches).toEqual(["main"]);
 	expect(result.current.error).toBe("branches denied");
 	act(() => branches[1]([{ name: "develop", is_remote: false }]));
 	expect(result.current.error).toBeNull();

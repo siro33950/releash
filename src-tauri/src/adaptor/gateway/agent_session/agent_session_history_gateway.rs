@@ -155,14 +155,16 @@ fn claude_session_title(
     if tail.preceding_byte.is_some_and(|byte| byte != b'\n') {
         let _ = lines.next();
     }
+    if tail.bytes.last().is_some_and(|byte| *byte != b'\n') {
+        let _ = lines.next_back();
+    }
     for line in lines.rev() {
         let line = trim_ascii_whitespace(line);
         if line.is_empty() {
             continue;
         }
-        let Ok(value) = serde_json::from_slice::<serde_json::Value>(line) else {
-            continue;
-        };
+        let value = serde_json::from_slice::<serde_json::Value>(line)
+            .map_err(|_| ProviderSessionTitleGatewayError::Corrupt)?;
         if value.get("type").and_then(serde_json::Value::as_str) != Some("ai-title") {
             continue;
         }
@@ -190,9 +192,7 @@ fn claude_first_user_prompt(
     )
     .map_err(|_| ProviderSessionTitleGatewayError::Unavailable)?;
     let mut lines = head.bytes.split(|byte| *byte == b'\n').collect::<Vec<_>>();
-    if head.following_byte.is_some_and(|byte| byte != b'\n')
-        && head.bytes.last().is_some_and(|byte| *byte != b'\n')
-    {
+    if head.bytes.last().is_some_and(|byte| *byte != b'\n') {
         let _ = lines.pop();
     }
     for line in lines {
@@ -200,9 +200,8 @@ fn claude_first_user_prompt(
         if line.is_empty() {
             continue;
         }
-        let Ok(value) = serde_json::from_slice::<serde_json::Value>(line) else {
-            continue;
-        };
+        let value = serde_json::from_slice::<serde_json::Value>(line)
+            .map_err(|_| ProviderSessionTitleGatewayError::Corrupt)?;
         if value.get("type").and_then(serde_json::Value::as_str) != Some("user")
             || value.get("isMeta").and_then(serde_json::Value::as_bool) == Some(true)
         {

@@ -1763,6 +1763,7 @@ impl Serialize for Rule {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct WorkflowSummary {
+    pub failure: Option<crate::domain::failure::WorkFailure>,
     pub name: String,
     pub description: String,
     pub builtin: bool,

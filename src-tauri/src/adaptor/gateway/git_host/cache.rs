@@ -2,10 +2,12 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::Instant;
 
-use crate::domain::git_host::{CacheTtl, IssueCache, IssueInfo, PrStatus, PrStatusCache};
+use crate::domain::git_host::{
+    CacheTtl, CachedResult, GitHostError, IssueCache, IssueInfo, PrStatus, PrStatusCache,
+};
 
 struct Entry<T> {
-    value: T,
+    value: CachedResult<T>,
     fetched_at: Instant,
 }
 
@@ -27,57 +29,61 @@ impl<T> InMemoryTtlCache<T>
 where
     T: Clone,
 {
-    fn lookup_value(&self, repo_path: &str) -> Option<T> {
+    fn lookup_result(&self, repo_path: &str) -> CachedResult<T> {
         let now = Instant::now();
-        let map = self.entries.lock().ok()?;
-        let entry = map.get(repo_path)?;
-        if self.ttl.is_fresh(entry.fetched_at, now) {
-            Some(entry.value.clone())
-        } else {
-            None
+        let map = self.entries.lock().unwrap();
+        match map.get(repo_path) {
+            Some(entry)
+                if self.ttl.is_fresh(entry.fetched_at, now) || entry.value.error.is_some() =>
+            {
+                entry.value.clone()
+            }
+            _ => CachedResult::default(),
         }
     }
-
-    fn store_value(&self, repo_path: &str, value: T) {
+    fn record_result(&self, repo_path: &str, result: Result<T, GitHostError>) {
         let now = Instant::now();
-        if let Ok(mut map) = self.entries.lock() {
-            map.retain(|_, entry| self.ttl.is_fresh(entry.fetched_at, now));
-            map.insert(
-                repo_path.to_string(),
-                Entry {
-                    value,
-                    fetched_at: now,
-                },
-            );
-        }
+        let mut map = self.entries.lock().unwrap();
+        map.retain(|key, entry| key == repo_path || self.ttl.is_fresh(entry.fetched_at, now));
+        let entry = map.entry(repo_path.into()).or_insert_with(|| Entry {
+            value: CachedResult::default(),
+            fetched_at: now,
+        });
+        entry.value.record(result);
+        entry.fetched_at = now;
     }
 }
 
 /// Repository ごとに、最後に取れた PR の状態を持つ。期限では捨てない。
 #[derive(Default)]
 pub(crate) struct LatestPrStatuses {
-    entries: Mutex<HashMap<String, PrStatus>>,
+    entries: Mutex<HashMap<String, CachedResult<PrStatus>>>,
 }
 
 impl PrStatusCache for LatestPrStatuses {
-    fn lookup(&self, repo_path: &str) -> Option<PrStatus> {
-        self.entries.lock().ok()?.get(repo_path).cloned()
+    fn result(&self, repo_path: &str) -> CachedResult<PrStatus> {
+        self.entries
+            .lock()
+            .unwrap()
+            .get(repo_path)
+            .cloned()
+            .unwrap_or_default()
     }
-
-    fn store(&self, repo_path: &str, value: PrStatus) {
-        if let Ok(mut entries) = self.entries.lock() {
-            entries.insert(repo_path.to_string(), value);
-        }
+    fn record(&self, repo_path: &str, result: Result<PrStatus, GitHostError>) {
+        self.entries
+            .lock()
+            .unwrap()
+            .entry(repo_path.into())
+            .or_default()
+            .record(result);
     }
 }
-
 impl IssueCache for InMemoryTtlCache<Vec<IssueInfo>> {
-    fn lookup(&self, repo_path: &str) -> Option<Vec<IssueInfo>> {
-        self.lookup_value(repo_path)
+    fn result(&self, repo_path: &str) -> CachedResult<Vec<IssueInfo>> {
+        self.lookup_result(repo_path)
     }
-
-    fn store(&self, repo_path: &str, value: Vec<IssueInfo>) {
-        self.store_value(repo_path, value);
+    fn record(&self, repo_path: &str, result: Result<Vec<IssueInfo>, GitHostError>) {
+        self.record_result(repo_path, result);
     }
 }
 
@@ -117,40 +123,49 @@ mod tests {
         let statuses = LatestPrStatuses::default();
         let status = PrStatus::default();
         // When
-        statuses.store("/repo", status.clone());
+        statuses.record("/repo", Ok(status.clone()));
         // Then
-        assert_eq!(statuses.lookup("/repo"), Some(status));
-        assert!(statuses.lookup("/other").is_none());
+        assert_eq!(statuses.result("/repo").value, Some(status));
+        assert!(statuses.result("/other").value.is_none());
     }
 
     #[test]
     fn issue_cache_returns_stored_value_for_same_key() {
+        // Given
         let cache = InMemoryTtlCache::<Vec<IssueInfo>>::new(CacheTtl::from_secs(30));
 
-        IssueCache::store(&cache, "/repo", vec![sample_issue(1)]);
+        // When
+        IssueCache::record(&cache, "/repo", Ok(vec![sample_issue(1)]));
+        // Then
 
         assert_eq!(
-            IssueCache::lookup(&cache, "/repo"),
+            IssueCache::result(&cache, "/repo").value,
             Some(vec![sample_issue(1)])
         );
-        assert!(IssueCache::lookup(&cache, "/other").is_none());
+        assert!(IssueCache::result(&cache, "/other").value.is_none());
     }
 
     #[test]
     fn issue_cache_returns_none_for_stale_entry() {
+        // Given
         let cache = InMemoryTtlCache::<Vec<IssueInfo>>::new(CacheTtl::from_secs(0));
 
-        IssueCache::store(&cache, "/repo", vec![sample_issue(1)]);
+        // When
+        IssueCache::record(&cache, "/repo", Ok(vec![sample_issue(1)]));
+        // Then
 
-        assert!(IssueCache::lookup(&cache, "/repo").is_none());
+        assert!(IssueCache::result(&cache, "/repo").value.is_none());
     }
 
     #[test]
     fn store_evicts_stale_entries_before_inserting_new_value() {
+        // Given
         let cache = InMemoryTtlCache::<Vec<IssueInfo>>::new(CacheTtl::from_secs(0));
 
-        IssueCache::store(&cache, "/old", Vec::new());
-        IssueCache::store(&cache, "/new", Vec::new());
+        IssueCache::record(&cache, "/old", Ok(Vec::new()));
+        // When
+        IssueCache::record(&cache, "/new", Ok(Vec::new()));
+        // Then
 
         let map = cache.entries.lock().unwrap();
         assert!(!map.contains_key("/old"));

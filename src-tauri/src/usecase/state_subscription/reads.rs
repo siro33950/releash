@@ -242,13 +242,7 @@ impl WorkspaceStateReads {
             }
             T::ProviderHookHealth => {
                 return Ok(StateValue::ProviderHookHealth(
-                    self.hook_health
-                        .warnings()
-                        .await
-                        .map_err(error)?
-                        .into_iter()
-                        .map(Into::into)
-                        .collect(),
+                    self.hook_health.warnings().await.map_err(error)?.into(),
                 ))
             }
             _ => {}

@@ -15,7 +15,7 @@ export const WorkspaceListContext = createContext<WorkspaceListModel | null>(
 
 export function useWorkspaceList(): WorkspaceListModel {
 	const subscription = useStateSubscriptionResult("workspaces");
-	const snapshot = subscription.error ? null : (subscription.value ?? null);
+	const snapshot = subscription.value ?? null;
 	const [requestError, setRequestError] =
 		useState<WorkspaceListModel["requestError"]>(null);
 	const refresh = useCallback(async () => {

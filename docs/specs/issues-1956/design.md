@@ -9,7 +9,7 @@
 - git の変更の状態の走査の失敗を記録する: 走査の失敗を、最後の走査の結果として記録し、読む側に返す（`usecase/repository_state/worktree.rs:153-160,281-287`）。Review の差分・Review のファイルの表示・Workspaces の未コミット数は、それを失敗として受け取る。根拠: R-006、R-007。ルート: 下の「固定するルート」の 2
 - Review の差分の購読の hook: `src/hooks/useReviewSnapshot.ts` は失敗を呼び出し元に返し、Review の画面（`src/components/panels/ReviewPanel.tsx`）は「No changes」と区別して表示する。根拠: R-006「Review の画面は差分を読めないことを表示し、『変更が無い』と区別する」。ルート: 委任
 - Workspaces の一覧: 一覧を集める処理の失敗（`usecase/workspace_tree/list.rs:76-83`）を空の一覧にせず、未コミット数（`:109-111`）と PR の状態（`:121,147-151`）を読めないときは、それぞれ読めないことを値に残す。根拠: R-007、R-008。ルート: 委任
-- ワークスペースの保存された状態: ファイルが無いとき（`adaptor/gateway/workspace_state/repository_impl.rs:44-46`）だけを「無い」とし、読めない・壊れているとき（`:48-51`）は失敗を返す。画面側（`src/hooks/useWorkspaceStateCache.ts:47-58`）は、失敗を「無い」と区別し、読めなかったときは保存しない。根拠: R-009。ルート: 下の「固定するルート」の 3
+- ワークスペースの保存された状態: ファイルが無いとき（`adaptor/gateway/workspace_state/repository_impl.rs:44-46`）だけを「無い」とし、読めない・壊れているとき（`:48-51`）は失敗を返す。保存してよいかは daemon の保存（`usecase/workspace_state/usecase.rs` の `save_workspace_state`）が決め、今ある保存ファイルを読めなければ上書きせず失敗を返す。画面側（`src/hooks/useWorkspaceStateCache.ts`）は、読み取りの失敗を「無い」と区別し、保存の失敗を受け取って表示するだけにする。根拠: R-009。ルート: 下の「固定するルート」の 3
 - Issue の一覧: `gh` の技術的でない失敗（`adaptor/gateway/git_host/github.rs:122-125`）と、出力の解析の失敗（`:238-242`）を失敗として返す。origin の URL を読めないとき（`adaptor/gateway/git_host/discovery.rs:14`）も失敗として返す。根拠: R-010。ルート: 委任
 - git の読み取りの「無い」を限る: `git_operation::optional`（`adaptor/gateway/shared/git_operation.rs:84-92`）が None にするのを git2 の NotFound だけにし、呼び出し元 39 か所（`repository/git_config.rs` 12、`repository/worktree.rs` 16、`code/diff_compute.rs` 4、`repository/status.rs` 3、`repository/util.rs` 2、`git_host/discovery.rs` 2）を全て見直す。根拠: R-011、R-012。ルート: 下の「固定するルート」の 4
 - 既定ブランチの探索: `infrastructure/git/helpers.rs:22-44` は、参照が無いことと、読み取りの失敗を区別する。根拠: R-011「既定ブランチを探すときの失敗も、『既定ブランチが無い』と区別する」。ルート: 委任
@@ -24,7 +24,7 @@
 ## 固定するルート
 1. `subscribeState` の失敗のコールバック（`src/lib/client.ts:397-401`）を必須にし、失敗を黙って捨てる呼び出しを書けなくする。
 2. git の変更の状態の走査は、worktree の並びの走査（`usecase/repository_state/worktree.rs:117-138` の `scan_worktrees_once`）と同じく、最後の走査の結果を成功か失敗のまま記録し、読む側に返す。
-3. ワークスペースの保存された状態は、ファイルが無いときだけを「無い」とする。読めない・壊れているときは失敗として返す。画面は、読めなかったときは保存しない。
+3. ワークスペースの保存された状態は、ファイルが無いときだけを「無い」とする。読めない・壊れているときは失敗として返す。保存してよいかは daemon が決める。保存するときに今ある保存ファイルを読めなければ、上書きせず失敗を返す。この判断は `save_workspace_state`（`usecase/workspace_state/usecase.rs`）が持ち、今ある保存ファイルを読めるかを確かめる口は `WorkspaceStateRepository`（domain の trait）に持たせて gateway が実装する。確かめには今の `load` を使わない（`load` は `filter_missing_files` とメモリへの書き込みを含むため）。
 4. `git_operation::optional` 自体を変え、git2 の NotFound だけを None にする。NotFound 以外で「無い」として扱うものは、その呼び出し元で git2 のエラーコードを明示して扱う。明示して扱うのは次の箇所だけで、それ以外は失敗として返す。
    - `repository/git_config.rs:169` の `repo.head()` の UnbornBranch（まだコミットの無いブランチ）: None
    - `repository/worktree.rs:137,280` の `wt.validate()` の失敗（実体の無くなった worktree）: 一覧から外し、一覧全体を失敗にしない

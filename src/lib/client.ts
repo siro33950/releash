@@ -218,7 +218,7 @@ export type StateValues = {
 	"releash-base": string | null;
 	"workflow-config": import("@/generated/client_types").WorkflowSection;
 	"performance-switches": import("@/generated/client_types").PerformanceSwitchesV1;
-	"provider-hook-health": import("@/generated/client_types").ProviderHookHealthWarningResponse[];
+	"provider-hook-health": import("@/generated/client_types").ProviderHookHealthSnapshot;
 	"startup-outcome": import("@/generated/client_types").ApplicationStartupOutcomeDtoV1;
 };
 export type StateTarget<K extends keyof StateValues> =
@@ -315,7 +315,6 @@ function startState(stream: StateStream, target: string) {
 				}
 				console.error("State subscription failed", error);
 				entry.error = { current: error };
-				entry.value = undefined;
 				for (const receiver of entry.errors) receiver(error);
 			}),
 	);
@@ -357,7 +356,6 @@ function ensureStateStream() {
 							event.event.value.code,
 						);
 						entry.error = { current: error };
-						entry.value = undefined;
 						for (const receiver of entry.errors) receiver(error);
 						continue;
 					}
@@ -424,19 +422,21 @@ export function subscribeState<K extends keyof StateValues>(
 		states.set(target, entry);
 		if (stateStream) startState(stateStream, target);
 	} else if (kind === "terminal") {
-		if (entry.error) onError(entry.error.current);
+		entry.error = undefined;
 		entry.version = undefined;
 		if (stateStream) startState(stateStream, target);
-	} else if (entry.error) onError(entry.error.current);
-	else if (entry.value) onValue(entry.value.current as StateValues[K]);
+	} else {
+		if (entry.value) onValue(entry.value.current as StateValues[K]);
+		if (entry.error) onError(entry.error.current);
+	}
 	entry.receivers.add(receiver);
-	if (onError) entry.errors.add(onError);
+	entry.errors.add(onError);
 	if (connectionState.phase !== "SHUTDOWN") ensureStateStream();
 	return () => {
 		const current = states.get(target);
 		if (current !== entry) return;
 		current.receivers.delete(receiver);
-		if (onError) current.errors.delete(onError);
+		current.errors.delete(onError);
 		if (current.receivers.size) return;
 		states.delete(target);
 		if (!states.size) {

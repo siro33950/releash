@@ -117,7 +117,7 @@ function isNodeSelected(
 
 function WorktreeIndicators({ branch }: { branch: WorktreeBranch }) {
 	const hasChanges = branch.dirty_count !== null && branch.dirty_count > 0;
-	const hasPr = !branch.pull_request_error && branch.has_pr === true;
+	const hasPr = branch.has_pr === true;
 	if (
 		!hasChanges &&
 		!hasPr &&
@@ -135,7 +135,9 @@ function WorktreeIndicators({ branch }: { branch: WorktreeBranch }) {
 			)}
 			{branch.pull_request_error && (
 				<span role="alert" title={branch.pull_request_error}>
-					PR unavailable
+					{branch.has_pr == null
+						? "PR unavailable"
+						: "PR refresh failed (showing previous result)"}
 				</span>
 			)}
 			{hasChanges && (
@@ -834,11 +836,8 @@ function WorktreeTreeItem({
 				}
 			: null,
 	);
-	const providerHistory = historyPage.error
-		? []
-		: (historyPage.value?.items ?? []);
-	const providerHistoryHasMore =
-		!historyPage.error && historyPage.value?.hasMore;
+	const providerHistory = historyPage.value?.items ?? [];
+	const providerHistoryHasMore = historyPage.value?.hasMore;
 	const providerHistoryLoading =
 		worktreeMenuOpen && historyPage.value === undefined && !historyPage.error;
 	const loadMoreProviderHistory = () => setHistoryCount((count) => count + 20);
@@ -937,9 +936,7 @@ function WorktreeTreeItem({
 	const providerValues = useStateSubscriptionResult(
 		createMenuOpen ? "providers" : null,
 	);
-	const availableProviders = providerValues.error
-		? []
-		: (providerValues.value ?? []);
+	const availableProviders = providerValues.value ?? [];
 	const providerMenuLoading =
 		createMenuOpen &&
 		providerValues.value === undefined &&
@@ -1149,6 +1146,9 @@ function WorktreeTreeItem({
 										SessionHistory
 									</DropdownMenuSubTrigger>
 									<DropdownMenuSubContent>
+										{historyPage.error && (
+											<div role="alert">{historyPage.error}</div>
+										)}
 										{(providerHistoryLoading ||
 											archivedProviderSessionsLoading) && (
 											<DropdownMenuItem disabled>
@@ -1159,7 +1159,8 @@ function WorktreeTreeItem({
 										{archivedAgentSessions.length === 0 &&
 										providerHistory.length === 0 &&
 										!providerHistoryLoading &&
-										!archivedProviderSessionsLoading ? (
+										!archivedProviderSessionsLoading &&
+										!historyPage.error ? (
 											<DropdownMenuItem disabled>
 												No session history
 											</DropdownMenuItem>
@@ -1294,12 +1295,16 @@ function WorktreeTreeItem({
 										NewSession
 									</DropdownMenuSubTrigger>
 									<DropdownMenuSubContent className="w-56">
+										{providerValues.error && (
+											<div role="alert">{providerValues.error}</div>
+										)}
 										{providerMenuLoading ? (
 											<DropdownMenuItem disabled>
 												<Loader2 className="size-3.5 animate-spin" />
 												Loading Providers
 											</DropdownMenuItem>
-										) : availableProviders.length === 0 ? (
+										) : availableProviders.length === 0 &&
+											!providerValues.error ? (
 											<DropdownMenuItem disabled>
 												No available Providers
 											</DropdownMenuItem>
@@ -1412,15 +1417,13 @@ function WorktreeTreeItem({
 							/>
 						))
 					)}
-					{(providerActionError ||
-						historyPage.error ||
-						providerValues.error) && (
+					{providerActionError && (
 						<div
 							role="alert"
 							className="mt-1 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive"
 							style={{ marginLeft: WORKTREE_NAME_INDENT_PX }}
 						>
-							{providerActionError ?? historyPage.error ?? providerValues.error}
+							{providerActionError}
 						</div>
 					)}
 					{workflowActionError && (

@@ -30,7 +30,7 @@ pub(crate) struct WorkspaceListWorktree {
     pub merged: bool,
     pub pull_request: Option<PrInfo>,
     pub tree: Fetched<WorkspaceTree>,
-    pub pull_request_error: Option<String>,
+    pub pull_request_error: Option<crate::domain::failure::WorkFailure>,
 }
 
 /// 1 つの Repository について、持ち主から集めた値。

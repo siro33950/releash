@@ -1,10 +1,5 @@
 // Generated from proto/client.proto. Run pnpm generate:protocol.
 
-export type StateReadFailure = {
-	code?: number;
-	message?: string;
-};
-
 export type TerminalEvent = {
 	snapshot?: TerminalSnapshot;
 	output?: TerminalOutput;
@@ -604,6 +599,7 @@ export type ReviewResolveInfoDto = {
 export type ListWorkflowSummaryDto = Array<WorkflowSummaryDto>;
 
 export type WorkflowSummaryDto = {
+	readError?: string;
 	name: string;
 	description: string;
 	builtin: boolean;
@@ -909,6 +905,11 @@ export type TerminalPerformanceSwitchesV1 = {
 	disableTerminalJournal: boolean;
 	disableRendererWriteSerialization: boolean;
 	disableWebglRenderer: boolean;
+};
+
+export type ProviderHookHealthSnapshot = {
+	warnings: ListProviderHookHealthWarningResponse;
+	readErrors?: Array<string>;
 };
 
 export type ListProviderHookHealthWarningResponse =

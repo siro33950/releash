@@ -215,6 +215,7 @@ pub fn list_builtin_workflows() -> Vec<Summary> {
     BUILTINS
         .iter()
         .map(|e| Summary {
+            failure: None,
             name: e
                 .filename
                 .strip_suffix(".yml")

@@ -8,6 +8,7 @@ pub(crate) fn save_workspace_state(
     worktree_name: &str,
     state: WorkspaceState,
 ) -> Result<(), WorkspaceStateError> {
+    repository.check_readable(worktree_name)?;
     repository.set(worktree_name, state);
     repository.save(worktree_name)?;
     if let Some(publisher) = publisher {

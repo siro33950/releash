@@ -5,7 +5,7 @@ export function useCurrentBranch(rootPath: string | null) {
 		rootPath ? { kind: "current-branch", args: [rootPath] } : null,
 	);
 	return {
-		branch: branch.error ? null : (branch.value ?? null),
+		branch: branch.value ?? null,
 		error: branch.error,
 	};
 }

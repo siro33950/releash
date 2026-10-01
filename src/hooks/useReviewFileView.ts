@@ -15,7 +15,7 @@ export function useReviewFileView(
 				}
 			: null,
 	);
-	const view = subscription.error ? null : (subscription.value ?? null);
+	const view = subscription.value ?? null;
 	const loading = Boolean(
 		rootPath &&
 			filePath &&

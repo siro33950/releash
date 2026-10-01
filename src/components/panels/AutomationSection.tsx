@@ -213,10 +213,6 @@ export function AutomationSection({
 		setWorkflowSaveDiagnostics([]);
 	}, [clearExternalChange]);
 
-	if (automation.readError) {
-		return <p className="text-xs text-destructive">{automation.readError}</p>;
-	}
-
 	if (loading) {
 		return (
 			<div className="flex items-center gap-2 text-sm text-muted-foreground py-8 justify-center">
@@ -228,6 +224,9 @@ export function AutomationSection({
 
 	return (
 		<div className="flex flex-col gap-4">
+			{automation.diagnosticsError && (
+				<p role="alert">Diagnostics: {automation.diagnosticsError}</p>
+			)}
 			{error && <p className="text-xs text-destructive">{error}</p>}
 
 			{isEditing && externalChangeDetected && (
@@ -265,6 +264,9 @@ export function AutomationSection({
 					<div className="flex gap-4 mt-4">
 						{/* Left: list */}
 						<div className="w-64 shrink-0">
+							{automation.workflowsError && (
+								<p role="alert">Workflows: {automation.workflowsError}</p>
+							)}
 							<WorkflowList
 								workflows={workflows}
 								report={report}
@@ -317,6 +319,12 @@ export function AutomationSection({
 
 						{/* Right: detail / editor */}
 						<div className="flex-1 min-w-0">
+							{automation.workflowError && (
+								<p role="alert">Workflow: {automation.workflowError}</p>
+							)}
+							{automation.sourceError && (
+								<p role="alert">Source: {automation.sourceError}</p>
+							)}
 							{editingWorkflow &&
 							activeWorkflowSourceFormat === "yaml" &&
 							activeWorkflowName &&
@@ -398,6 +406,9 @@ export function AutomationSection({
 						<div className="flex gap-4 mt-4">
 							{/* Left: list */}
 							<div className="w-64 shrink-0">
+								{automation.facetsError && (
+									<p role="alert">Facets: {automation.facetsError}</p>
+								)}
 								<FacetList
 									facets={facets}
 									report={report}
@@ -422,6 +433,9 @@ export function AutomationSection({
 
 							{/* Right: detail / editor */}
 							<div className="flex-1 min-w-0">
+								{automation.facetError && (
+									<p role="alert">Facet: {automation.facetError}</p>
+								)}
 								{selectedFacetContent !== null &&
 								selectedFacetKey &&
 								selectedFacetKind ? (

@@ -121,7 +121,6 @@ export function CreateWorktreeModal({
 				);
 			},
 			(error) => {
-				setLocalBranches([]);
 				setBranchError(getErrorMessage(error));
 			},
 		);
@@ -132,7 +131,6 @@ export function CreateWorktreeModal({
 				setStatusError(null);
 			},
 			(error) => {
-				setAllBranches([]);
 				setStatusError(getErrorMessage(error));
 			},
 		);
@@ -293,6 +291,7 @@ export function CreateWorktreeModal({
 						)}
 						{mode === "branch" && (
 							<BranchMode
+								readError={statusError}
 								branches={filteredNonWorktreeBranches}
 								filter={filter}
 								onFilterChange={setFilter}
@@ -411,12 +410,14 @@ function PlainMode({
 }
 
 function BranchMode({
+	readError,
 	branches,
 	filter,
 	onFilterChange,
 	onToggle,
 	selectedBranches,
 }: {
+	readError: string | null;
 	branches: BranchStatus[];
 	filter: string;
 	onFilterChange: (filter: string) => void;
@@ -465,7 +466,7 @@ function BranchMode({
 							</div>
 						);
 					})}
-					{branches.length === 0 && (
+					{branches.length === 0 && !readError && (
 						<div className="text-xs text-muted-foreground text-center py-4">
 							No branches without worktrees
 						</div>
@@ -687,11 +688,12 @@ function IssueMode({
 				</div>
 			)}
 			<div className="flex-1 min-h-[120px] overflow-auto">
-				{issueError ? (
+				{issueError && (
 					<p role="alert" className="text-destructive">
 						{issueError}
 					</p>
-				) : loading ? (
+				)}
+				{loading && !issueError ? (
 					<div className="flex items-center justify-center py-8">
 						<Loader2 className="size-4 text-muted-foreground animate-spin" />
 					</div>
@@ -767,7 +769,7 @@ function IssueMode({
 								</div>
 							);
 						})}
-						{filtered.length === 0 && (
+						{filtered.length === 0 && !issueError && (
 							<div className="text-xs text-muted-foreground text-center py-4">
 								No issues found
 							</div>

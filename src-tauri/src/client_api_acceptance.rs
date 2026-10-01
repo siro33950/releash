@@ -595,10 +595,9 @@ pub async fn read_state(
             "releash.client.v1.ProviderAvailabilitySnapshotResponse",
             &value,
         ),
-        wire::state_payload::Value::ProviderHookHealth(value) => wire::from_message(
-            "releash.client.v1.ListProviderHookHealthWarningResponse",
-            &value,
-        ),
+        wire::state_payload::Value::ProviderHookHealth(value) => {
+            wire::from_message("releash.client.v1.ProviderHookHealthSnapshot", &value)
+        }
         wire::state_payload::Value::DesktopSettings(value) => {
             wire::from_message("releash.client.v1.DesktopSettings", &value)
         }

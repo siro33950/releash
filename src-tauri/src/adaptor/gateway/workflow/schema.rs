@@ -14,10 +14,11 @@ pub use crate::domain::workflow::{NodeCompletion, NodeKindName};
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct Summary {
+    #[serde(skip)]
+    pub failure: Option<crate::domain::failure::WorkFailure>,
     pub name: String,
     pub description: String,
     pub builtin: bool,
-    #[serde(default)]
     pub is_running: bool,
     pub source_format: crate::domain::workflow::WorkflowSourceFormat,
 }

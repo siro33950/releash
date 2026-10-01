@@ -1877,6 +1877,10 @@ message ProviderHookHealthProviderResponse {
   optional Value value = 1 [json_name = "value", (json_required) = true];
 }
 
+message ProviderHookHealthSnapshot {
+  optional ListProviderHookHealthWarningResponse warnings = 1 [json_name = "warnings", (json_required) = true];
+  repeated string read_errors = 2 [json_name = "readErrors"];
+}
 message ListProviderHookHealthWarningResponse {
   option (json_wrapper) = "items";
   repeated ProviderHookHealthWarningResponse items = 1;
@@ -1888,6 +1892,7 @@ message ListReviewThreadDto {
 }
 
 message WorkflowSummaryDto {
+  optional string read_error = 6 [json_name = "readError"];
   optional string name = 1 [json_name = "name", (json_required) = true];
   optional string description = 2 [json_name = "description", (json_required) = true];
   optional bool builtin = 3 [json_name = "builtin", (json_required) = true];
@@ -2855,10 +2860,12 @@ message StartStateSubscriptionRequest {
 message StopStateSubscriptionRequest { string client_id = 1; string target = 2; repeated string args = 3; }
 message StateReadFailure { int32 code = 1; string message = 2; }
 message StatePayload {
+  reserved 59;
+  reserved "read_failure";
   reserved 18;
   reserved "failures";
   oneof value {
-    StateReadFailure read_failure = 59;
+
     TerminalEvent terminal = 19;
     Liststring repository_paths = 1;
     WorkspaceListSnapshot workspaces = 2;
@@ -2893,7 +2900,7 @@ message StatePayload {
     Nullablestring releash_base = 54;
     WorkflowSection workflow_config = 55;
     PerformanceSwitchesV1 performance_switches = 56;
-    ListProviderHookHealthWarningResponse provider_hook_health = 57;
+    ProviderHookHealthSnapshot provider_hook_health = 57;
     ApplicationStartupOutcomeDtoV1 startup_outcome = 58;
   }
 }

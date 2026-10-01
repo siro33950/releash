@@ -144,10 +144,10 @@ async fn test_一覧の再走査_監視中も保存済みの結果を使わず�
     service.start_git_dir_watching("/repo").unwrap();
     notifier.wait().await;
     let previous = branch(&service);
-    // When
     service.rescan("/repo").await.unwrap();
     let next = branch(&service);
     let next_snapshot = service.get_snapshot("/repo").unwrap();
+    // When
     service.rescan("/repo").await.unwrap();
     let latest = branch(&service);
     // Then
@@ -160,10 +160,8 @@ async fn test_一覧の再走査_監視中も保存済みの結果を使わず�
     assert_eq!(snapshot.status[0].path, "scan-2");
     assert_eq!(service.dirty_count("/repo").value, Some(2));
     assert_eq!(snapshot.version, next_snapshot.version + 1);
-    // When
     scanner.fail.store(true, Ordering::SeqCst);
     service.rescan("/repo").await.unwrap();
-    // Then
     let worktrees = service.worktrees("/repo");
     assert!(worktrees.error.is_some());
     assert_eq!(worktrees.value.unwrap()[0].branch, latest);

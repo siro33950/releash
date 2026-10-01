@@ -5,7 +5,7 @@ use super::{LocalAgentSessionHistoryGateway, LocalAgentSessionHistoryQueryServic
 use crate::domain::agent_session::{
     AgentSessionHistoryGateway, AgentSessionHistoryGatewayError, AgentSessionHistoryMetadata,
     AgentSessionOwnershipQuery, ProviderSessionTitleEntry, ProviderSessionTitleGateway,
-    ProviderSessionTitleRequest,
+    ProviderSessionTitleGatewayError, ProviderSessionTitleRequest,
 };
 use crate::domain::provider_lifecycle::ProviderKind;
 use crate::usecase::agent_session::{AgentSessionHistoryQueryService, AgentSessionHistoryRequest};
@@ -420,7 +420,8 @@ async fn test_agent_session_history_gateway_指定した可視idだけのタイ�
 }
 
 #[tokio::test]
-async fn test_agent_session_history_gateway_claudeは壊れた行を読み飛ばして次を読む() {
+async fn test_agent_session_history_gateway_claudeは完結した破損行から次の入力へ進まない() {
+    // Given
     let directory = tempfile::tempdir().unwrap();
     let claude_root = directory.path().join("claude");
     let codex_root = directory.path().join("codex");
@@ -436,20 +437,19 @@ async fn test_agent_session_history_gateway_claudeは壊れた行を読み飛ば
     .unwrap();
     let gateway = LocalAgentSessionHistoryGateway::new(claude_root, codex_root);
 
-    let entries = gateway
+    // When
+    let result = gateway
         .list_session_titles(
             ProviderKind::Claude,
             "/repo/worktree",
-            &["claude-broken".to_string()],
+            &["claude-broken".into()],
         )
-        .await
-        .unwrap();
-
-    assert_eq!(entries.len(), 1);
-    assert_eq!(
-        entries[0].first_user_prompt.as_deref(),
-        Some("Claude first prompt")
-    );
+        .await;
+    // Then
+    assert!(matches!(
+        result,
+        Err(AgentSessionHistoryGatewayError::Corrupt)
+    ));
 }
 
 #[tokio::test]
@@ -485,6 +485,7 @@ async fn test_agent_session_history_gateway_claudeの先頭64kib外のプロン�
 
 #[tokio::test]
 async fn test_agent_session_history_gateway_claudeのタイトルが読めないとき失敗を返す() {
+    // Given
     let directory = tempfile::tempdir().unwrap();
     let claude_root = directory.path().join("claude");
     let codex_root = directory.path().join("codex");
@@ -508,12 +509,15 @@ async fn test_agent_session_history_gateway_claudeのタイトルが読めない
                 "claude-readable".to_string(),
             ],
         )
+        // When
         .await;
+    // Then
     assert!(result.is_err());
 }
 
 #[tokio::test]
 async fn test_agent_session_history_query_claudeのタイトルが読めないときpageを失敗として返す() {
+    // Given
     let directory = tempfile::tempdir().unwrap();
     let claude_root = directory.path().join("claude");
     let codex_root = directory.path().join("codex");
@@ -546,12 +550,15 @@ async fn test_agent_session_history_query_claudeのタイトルが読めない�
             worktree_path: "/repo/worktree".to_string(),
             visible_count: 3,
         })
+        // When
         .await;
+    // Then
     assert!(result.is_err());
 }
 
 #[tokio::test]
 async fn test_agent_session_history_gateway_codexのdbが無いときタイトル読取の失敗を返す() {
+    // Given
     let directory = tempfile::tempdir().unwrap();
     let gateway = LocalAgentSessionHistoryGateway::new(
         directory.path().join("claude"),
@@ -564,12 +571,15 @@ async fn test_agent_session_history_gateway_codexのdbが無いときタイト�
             "/repo/worktree",
             &["codex-1".to_string(), "codex-2".to_string()],
         )
+        // When
         .await;
+    // Then
     assert!(result.is_err());
 }
 
 #[tokio::test]
 async fn test_agent_session_history_query_codexのdbが無いときpageを失敗として返す() {
+    // Given
     let directory = tempfile::tempdir().unwrap();
     let local_gateway = Arc::new(LocalAgentSessionHistoryGateway::new(
         directory.path().join("claude"),
@@ -591,7 +601,9 @@ async fn test_agent_session_history_query_codexのdbが無いときpageを失敗
             worktree_path: "/repo/worktree".to_string(),
             visible_count: 2,
         })
+        // When
         .await;
+    // Then
     assert!(result.is_err());
 }
 
@@ -631,4 +643,99 @@ fn metadata(
         worktree_path: "/repo/worktree".to_string(),
         updated_at_ms,
     }
+}
+
+#[tokio::test]
+async fn test_claude履歴読取_完結した破損行から古いタイトルへ進まない() {
+    // Given
+    let directory = tempfile::tempdir().unwrap();
+    let project = directory.path().join("projects/-repo-worktree");
+    fs::create_dir_all(&project).unwrap();
+    let content = "{ \"type\":\"ai-title\", \"aiTitle\":\"old\" }\nnot-json\n";
+    fs::write(project.join("session.jsonl"), content).unwrap();
+    // When
+    let gateway = LocalAgentSessionHistoryGateway::new(
+        directory.path().into(),
+        directory.path().join("codex"),
+    );
+    let result = gateway
+        .read_title(ProviderSessionTitleRequest {
+            provider: ProviderKind::Claude,
+            provider_session_id: "session".into(),
+            worktree_path: "/repo/worktree".into(),
+            transcript_ref: None,
+        })
+        .await;
+    // Then
+    assert_eq!(result, Err(ProviderSessionTitleGatewayError::Corrupt));
+}
+
+#[tokio::test]
+async fn test_claude履歴読取_完結した破損行だけならタイトルの失敗を返す() {
+    // Given
+    let directory = tempfile::tempdir().unwrap();
+    let project = directory.path().join("projects/-repo-worktree");
+    fs::create_dir_all(&project).unwrap();
+    let content = "not-json\n";
+    fs::write(project.join("session.jsonl"), content).unwrap();
+    // When
+    let gateway = LocalAgentSessionHistoryGateway::new(
+        directory.path().into(),
+        directory.path().join("codex"),
+    );
+    let result = gateway
+        .read_title(ProviderSessionTitleRequest {
+            provider: ProviderKind::Claude,
+            provider_session_id: "session".into(),
+            worktree_path: "/repo/worktree".into(),
+            transcript_ref: None,
+        })
+        .await;
+    // Then
+    assert_eq!(result, Err(ProviderSessionTitleGatewayError::Corrupt));
+}
+
+#[tokio::test]
+async fn test_claude履歴読取_追記途中の末尾だけなら入力不在を返す() {
+    // Given
+    let directory = tempfile::tempdir().unwrap();
+    let project = directory.path().join("projects/-repo-worktree");
+    fs::create_dir_all(&project).unwrap();
+    let content = "not-json";
+    fs::write(project.join("session.jsonl"), content).unwrap();
+    // When
+    let gateway = LocalAgentSessionHistoryGateway::new(
+        directory.path().into(),
+        directory.path().join("codex"),
+    );
+    let result = gateway
+        .list_session_titles(ProviderKind::Claude, "/repo/worktree", &["session".into()])
+        .await
+        .map(|entries| entries[0].first_user_prompt.clone());
+    // Then
+    assert_eq!(result, Ok(None));
+}
+
+#[tokio::test]
+async fn test_claude履歴読取_範囲境界で切れた入力を読み飛ばす() {
+    // Given
+    let directory = tempfile::tempdir().unwrap();
+    let project = directory.path().join("projects/-repo-worktree");
+    fs::create_dir_all(&project).unwrap();
+    let content = format!(
+        "{{\"type\":\"other\",\"payload\":\"{}\"}}\n",
+        "x".repeat(64 * 1024 + 1024)
+    );
+    fs::write(project.join("session.jsonl"), content).unwrap();
+    // When
+    let gateway = LocalAgentSessionHistoryGateway::new(
+        directory.path().into(),
+        directory.path().join("codex"),
+    );
+    let result = gateway
+        .list_session_titles(ProviderKind::Claude, "/repo/worktree", &["session".into()])
+        .await
+        .map(|entries| entries[0].first_user_prompt.clone());
+    // Then
+    assert_eq!(result, Ok(None));
 }

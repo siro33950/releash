@@ -115,6 +115,7 @@ pub(crate) fn schema_workflow_summary_to_domain(
     summary: crate::adaptor::gateway::workflow::schema::Summary,
 ) -> domain::WorkflowSummary {
     domain::WorkflowSummary {
+        failure: summary.failure,
         name: summary.name,
         description: summary.description,
         builtin: summary.builtin,
@@ -128,6 +129,7 @@ pub(crate) fn domain_workflow_summary_to_schema(
     summary: domain::WorkflowSummary,
 ) -> crate::adaptor::gateway::workflow::schema::Summary {
     crate::adaptor::gateway::workflow::schema::Summary {
+        failure: summary.failure,
         name: summary.name,
         description: summary.description,
         builtin: summary.builtin,
@@ -233,15 +235,18 @@ mod tests {
 
     #[test]
     fn workflow_summary_serializes_like_existing_wire_shape() {
+        // Given
         let domain = domain::WorkflowSummary {
+            failure: None,
             name: "wf".to_string(),
             description: "desc".to_string(),
             builtin: false,
             is_running: true,
             source_format: domain::WorkflowSourceFormat::Yaml,
         };
+        // When
         let mapped = domain_workflow_summary_to_schema(domain.clone());
-
+        // Then
         assert_eq!(
             serde_json::to_value(mapped).unwrap(),
             serde_json::json!({

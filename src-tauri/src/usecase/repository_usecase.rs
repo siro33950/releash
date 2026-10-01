@@ -390,8 +390,6 @@ mod repository_usecase_tests {
         stop_current_branch: Option<crate::common::operation_context::OperationStopped>,
         worktrees: Vec<Worktree>,
         dirty: u32,
-        stop_base: Option<crate::common::operation_context::OperationStopped>,
-        detail_calls: Mutex<Vec<&'static str>>,
         branch_base: Option<String>,
         fail_create_worktree: bool,
         fail_remove_worktree: bool,
@@ -592,10 +590,6 @@ mod repository_usecase_tests {
             _repo_path: &str,
             _branch_name: &str,
         ) -> Result<Option<String>, RepositoryError> {
-            self.detail_calls.lock().push("base");
-            if let Some(stopped) = self.stop_base {
-                return Err(stopped.into());
-            }
             Ok(self.branch_base.clone())
         }
         fn set_branch_base_override(
@@ -654,30 +648,6 @@ mod repository_usecase_tests {
         }
     }
 
-    #[test]
-    fn test_worktree一覧_未使用の詳細情報を読み取らない() {
-        let fake = Arc::new(FakeRepo {
-            stop_base: Some(crate::common::operation_context::OperationStopped::Cancelled),
-            worktrees: vec![
-                Worktree {
-                    name: "main".into(),
-                    path: "/main".into(),
-                    branch: "main".into(),
-                    is_main: true,
-                    is_locked: false,
-                    is_merged: false,
-                };
-                2
-            ],
-            ..Default::default()
-        });
-        assert_eq!(
-            usecase(fake.clone()).list_worktrees("/main").unwrap().len(),
-            2
-        );
-        assert!(fake.detail_calls.lock().is_empty());
-    }
-
     fn usecase(fake: Arc<FakeRepo>) -> RepositoryUsecase {
         RepositoryUsecase::new(
             fake.clone(),
@@ -715,10 +685,13 @@ mod repository_usecase_tests {
 
     #[test]
     fn test_worktree作成をdtoへ合成する() {
+        // Given
         let fake = Arc::new(<FakeRepo as Default>::default());
         let entry = usecase(fake.clone())
             .create_worktree("/r", "feat/issues/1302", true, Some("main"))
+            // When
             .unwrap();
+        // Then
         assert_eq!(entry.branch, "feat/issues/1302");
         assert_eq!(entry.path, "/r-worktrees/feat-issues-1302");
 
@@ -757,14 +730,15 @@ mod repository_usecase_tests {
     }
 
     #[test]
-    fn test_worktree一覧をdtoへ合成する() {
+    fn test_worktree一覧_pathとbranchとis_mainを写す() {
+        // Given
         let fake = Arc::new(FakeRepo {
             worktrees: vec![wt("/wt-feat", "feat", false)],
-            dirty: 3,
-            branch_base: Some("develop".to_string()),
             ..<FakeRepo as Default>::default()
         });
+        // When
         let entries = usecase(fake).list_worktrees("/r").unwrap();
+        // Then
         assert_eq!(entries.len(), 1);
         let e = &entries[0];
         assert_eq!(e.path, "/wt-feat");

@@ -7,6 +7,8 @@ use crate::usecase::workflow::{diagnostic_dto as diagnostic, dto, WorkflowEventV
 
 #[derive(Serialize)]
 pub(crate) struct WorkflowSummaryResponse {
+    #[serde(rename = "readError", skip_serializing_if = "Option::is_none")]
+    read_error: Option<String>,
     name: String,
     description: String,
     builtin: bool,
@@ -18,6 +20,10 @@ pub(crate) struct WorkflowSummaryResponse {
 impl From<dto::WorkflowSummaryDto> for WorkflowSummaryResponse {
     fn from(value: dto::WorkflowSummaryDto) -> Self {
         Self {
+            read_error: value
+                .failure
+                .as_ref()
+                .map(|failure| format!("Workflow read failed: {failure}")),
             name: value.name,
             description: value.description,
             builtin: value.builtin,
