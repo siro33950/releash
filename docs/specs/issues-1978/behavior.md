@@ -17,6 +17,7 @@ THEN 購読の stream に、その対象の今の状態が届く
 AND 以後、その対象が変わるたびに変わった状態が届く
 
 ## 要件IDとBehavior IDの対応表
+
 | Requirement ID | Behavior ID |
 | --- | --- |
 | R-001 | B-001 |
