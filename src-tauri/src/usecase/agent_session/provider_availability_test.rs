@@ -487,3 +487,33 @@ fn test_provider利用可否_四種類の利用不可理由を出力へ写す() 
         assert_eq!(actual, expected);
     }
 }
+
+#[test]
+fn test_provider設定失敗_全変種から技術的な失敗だけを参照する() {
+    use super::provider_availability::ProviderAvailabilityUsecaseError as E;
+    use crate::domain::agent_session::{
+        ProviderExecutableConfigRepositoryError as C, ProviderExecutableProbeGatewayError as P,
+    };
+    use crate::domain::failure::{TechnicalFailure, TechnicalFailureNature};
+    // Given / When / Then
+    for error in [E::InvalidInput, E::Corrupt, E::Config(C::InvalidInput)] {
+        assert_eq!(error.technical_failure(), None);
+    }
+    for nature in [
+        TechnicalFailureNature::Transient,
+        TechnicalFailureNature::TimedOut,
+        TechnicalFailureNature::Cancelled,
+        TechnicalFailureNature::Other,
+    ] {
+        let failure = TechnicalFailure {
+            nature,
+            message: "source failure".into(),
+        };
+        for error in [
+            E::Config(C::Technical(failure.clone())),
+            E::Refresh(P::Technical(failure.clone())),
+        ] {
+            assert_eq!(error.technical_failure(), Some(&failure));
+        }
+    }
+}

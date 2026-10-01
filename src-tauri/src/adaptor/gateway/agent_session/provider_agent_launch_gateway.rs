@@ -138,3 +138,7 @@ fn map_files_error(
         }
     }
 }
+
+#[cfg(test)]
+#[path = "provider_agent_launch_gateway_test.rs"]
+mod provider_agent_launch_gateway_tests;

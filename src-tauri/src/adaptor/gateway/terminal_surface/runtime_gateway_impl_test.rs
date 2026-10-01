@@ -1569,3 +1569,190 @@ async fn test_terminal対象なし_購読開始とsnapshot読取と配信でnot_
         if matches!(&*value, PublishedState::Failure(failure) if failure.code == connectrpc::ErrorCode::NotFound.grpc_code() as i32))
     );
 }
+
+fn attach_missing_checkpoint_target(
+    directory: &std::path::Path,
+    background_flush: bool,
+) -> TerminalSurfaceRuntimeGatewayFor {
+    let gateway = TerminalSurfaceRuntimeGatewayFor::default();
+    insert_test_session(&gateway, 1, "missing-checkpoint", Some("/repo"), None);
+    let journal = Arc::new(Mutex::new(IncrementalCheckpointJournal::new(
+        NativeTerminalCheckpoint {
+            replay: String::new(),
+            sequence: 0,
+            cols: 80,
+            rows: 24,
+        },
+        false,
+    )));
+    if background_flush {
+        journal
+            .lock()
+            .record(NativeTerminalCheckpointRecord::Output {
+                sequence: 1,
+                data: "x"
+                    .repeat(CHECKPOINT_JOURNAL_COMPACTION_BYTES as usize)
+                    .into(),
+            })
+            .unwrap();
+    }
+    let store = TerminalCheckpointFileStore::new(directory, TERMINAL_SURFACE_SCROLLBACK_ROWS);
+    let io = Arc::new(tokio::sync::Mutex::new(()));
+    {
+        let mut runtimes = gateway.runtimes.lock();
+        let runtime = runtimes.get_mut(&1).unwrap();
+        let background = Arc::new(BackgroundCheckpoint {
+            store: store.clone(),
+            session_key: runtime.session_key.clone(),
+            registry: gateway.registry.clone(),
+            runtime_generation: 1,
+            terminal_surface: runtime.terminal_surface.clone(),
+            journal: journal.clone(),
+            io: io.clone(),
+        });
+        let flush = background.clone();
+        runtime.checkpoint_scheduler = Some(CheckpointScheduler {
+            dirty: Arc::new(|_| {}),
+            session_key: runtime.session_key.clone(),
+            flush: Arc::new(move || {
+                if background_flush {
+                    futures_executor::block_on(flush.flush())
+                } else {
+                    Ok(())
+                }
+            }),
+            background,
+        });
+        runtime.checkpoint_store = Some(store);
+        runtime.checkpoint_journal = Some(journal);
+        runtime.checkpoint_io = Some(io);
+    }
+    gateway.registry.lock().remove(1);
+    gateway
+}
+
+#[test]
+fn test_checkpoint一括保存_対象不存在を業務の失敗として返す() {
+    // Given
+    let directory = tempfile::tempdir().unwrap();
+    let gateway = attach_missing_checkpoint_target(directory.path(), false);
+    // When / Then
+    assert_eq!(
+        gateway.flush_checkpoints(),
+        Err(TerminalSurfaceGatewayError::NotFound(
+            "Terminal Surface not found for owner missing-checkpoint".into()
+        ))
+    );
+    let runtimes = gateway.runtimes.lock();
+    let runtime = runtimes.get(&1).unwrap();
+    let result = compact_checkpoint(
+        runtime.checkpoint_store.as_ref().unwrap(),
+        &runtime.session_key,
+        &gateway.registry,
+        1,
+        &runtime.terminal_surface,
+        runtime.checkpoint_journal.as_ref().unwrap(),
+    );
+    assert_eq!(
+        result.map_err(checkpoint_work_failure),
+        Err(TerminalSurfaceGatewayError::NotFound(
+            "Terminal Surface for PTY 1 not found".into()
+        ))
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_checkpoint背景保存_scheduler経由でも対象不存在を業務の失敗として返す() {
+    // Given
+    let directory = tempfile::tempdir().unwrap();
+    let gateway = attach_missing_checkpoint_target(directory.path(), true);
+    // When / Then
+    assert_eq!(
+        gateway.flush_checkpoints(),
+        Err(TerminalSurfaceGatewayError::NotFound(
+            "Terminal Surface for PTY 1 not found".into()
+        ))
+    );
+}
+
+#[test]
+fn test_checkpoint保存_技術的な失敗の性質とメッセージを保持する() {
+    use crate::domain::failure::{TechnicalFailure, TechnicalFailureNature};
+    // Given / When / Then
+    for nature in [
+        TechnicalFailureNature::Transient,
+        TechnicalFailureNature::TimedOut,
+        TechnicalFailureNature::Cancelled,
+        TechnicalFailureNature::Other,
+    ] {
+        let failure = TechnicalFailure {
+            nature,
+            message: "source failure".into(),
+        };
+        assert_eq!(
+            checkpoint_work_failure(failure.clone().into()),
+            TerminalSurfaceGatewayError::Technical(failure)
+        );
+    }
+}
+
+#[test]
+fn test_checkpoint一括保存_schedulerの技術的失敗を保持する() {
+    use crate::domain::failure::{TechnicalFailure, TechnicalFailureNature};
+    // Given
+    let directory = tempfile::tempdir().unwrap();
+    for nature in [
+        TechnicalFailureNature::Transient,
+        TechnicalFailureNature::TimedOut,
+        TechnicalFailureNature::Cancelled,
+        TechnicalFailureNature::Other,
+    ] {
+        let gateway = attach_missing_checkpoint_target(directory.path(), false);
+        let failure = TechnicalFailure {
+            nature,
+            message: "scheduler failure".into(),
+        };
+        let source = failure.clone();
+        gateway
+            .runtimes
+            .lock()
+            .get_mut(&1)
+            .unwrap()
+            .checkpoint_scheduler
+            .as_mut()
+            .unwrap()
+            .flush = Arc::new(move || Err(source.clone().into()));
+        // When / Then
+        assert_eq!(
+            gateway.flush_checkpoints(),
+            Err(TerminalSurfaceGatewayError::Technical(failure))
+        );
+    }
+}
+
+#[test]
+fn test_checkpoint一括保存_compactのio失敗を保持する() {
+    use crate::domain::failure::{TechnicalFailure, TechnicalFailureNature};
+    // Given
+    let directory = tempfile::tempdir().unwrap();
+    let gateway = attach_missing_checkpoint_target(directory.path(), false);
+    gateway.insert_surface(TerminalSurface::new_with_session_key(
+        1,
+        "missing-checkpoint".into(),
+        TerminalSurfaceOwner::session(WorkspaceIdentity::new("/repo"), "missing-checkpoint")
+            .unwrap(),
+        None,
+    ));
+    let path = directory.path().join("terminal-surfaces");
+    std::fs::write(&path, b"file").unwrap();
+    let source = std::fs::create_dir_all(&path).unwrap_err();
+    assert_eq!(source.kind(), std::io::ErrorKind::AlreadyExists);
+    // When / Then
+    assert_eq!(
+        gateway.flush_checkpoints(),
+        Err(TerminalSurfaceGatewayError::Technical(TechnicalFailure {
+            nature: TechnicalFailureNature::Other,
+            message: source.to_string(),
+        }))
+    );
+}

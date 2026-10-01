@@ -10,16 +10,7 @@ pub(crate) enum ProviderAgentTerminalGatewayError {
     OwnerConflict,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum ProviderAgentTerminalSpawnError {
-    OwnerConflict,
-    NotFound(String),
-    InvalidOperation(String),
-    StaleAttachment,
-    Technical(crate::domain::failure::TechnicalFailure),
-}
-
-impl std::fmt::Display for ProviderAgentTerminalSpawnError {
+impl std::fmt::Display for ProviderAgentTerminalGatewayError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::OwnerConflict => formatter.write_str("kind=owner_conflict"),
@@ -34,7 +25,7 @@ impl std::fmt::Display for ProviderAgentTerminalSpawnError {
     }
 }
 
-impl std::error::Error for ProviderAgentTerminalSpawnError {}
+impl std::error::Error for ProviderAgentTerminalGatewayError {}
 
 pub(crate) trait ProviderAgentTerminalGateway: Send + Sync {
     fn spawn(
@@ -44,7 +35,7 @@ pub(crate) trait ProviderAgentTerminalGateway: Send + Sync {
         process: TerminalProcessLaunch,
         rows: u16,
         cols: u16,
-    ) -> Result<(), ProviderAgentTerminalSpawnError>;
+    ) -> Result<(), ProviderAgentTerminalGatewayError>;
 
     fn presence(
         &self,

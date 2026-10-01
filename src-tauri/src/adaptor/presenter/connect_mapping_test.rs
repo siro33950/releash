@@ -1411,14 +1411,14 @@ mod usecase_agent_session_agent_session_launch_test {
                 F::DataLoss,
             ),
             (
-                crate::usecase::agent_session::AgentSessionLaunchUsecaseError::TerminalSpawn(
-                    crate::domain::agent_session::ProviderAgentTerminalSpawnError::OwnerConflict,
+                crate::usecase::agent_session::AgentSessionLaunchUsecaseError::Terminal(
+                    crate::domain::agent_session::ProviderAgentTerminalGatewayError::OwnerConflict,
                 ),
                 F::FailedPrecondition,
             ),
             (
-                crate::usecase::agent_session::AgentSessionLaunchUsecaseError::TerminalSpawn(
-                    crate::domain::agent_session::ProviderAgentTerminalSpawnError::Technical(
+                crate::usecase::agent_session::AgentSessionLaunchUsecaseError::Terminal(
+                    crate::domain::agent_session::ProviderAgentTerminalGatewayError::Technical(
                         crate::domain::failure::TechnicalFailure {
                             nature: crate::domain::failure::TechnicalFailureNature::Other,
                             message: "pty".into(),
@@ -1428,8 +1428,8 @@ mod usecase_agent_session_agent_session_launch_test {
                 F::Internal,
             ),
             (
-                crate::usecase::agent_session::AgentSessionLaunchUsecaseError::TerminalSpawn(
-                    crate::domain::agent_session::ProviderAgentTerminalSpawnError::Technical(
+                crate::usecase::agent_session::AgentSessionLaunchUsecaseError::Terminal(
+                    crate::domain::agent_session::ProviderAgentTerminalGatewayError::Technical(
                         crate::domain::failure::TechnicalFailure {
                             nature: crate::domain::failure::TechnicalFailureNature::Other,
                             message: "spawn".into(),
@@ -2566,7 +2566,6 @@ fn test_技術的失敗_依存先の全ての性質でステータスを決め�
     use crate::adaptor::presenter::connect::ConnectFailure;
     use crate::domain::agent_session::{
         ProviderAgentLaunchGatewayError, ProviderAgentTerminalGatewayError,
-        ProviderAgentTerminalSpawnError,
     };
     use crate::domain::failure::{TechnicalFailure, TechnicalFailureNature};
     use crate::usecase::agent_session::{
@@ -2625,9 +2624,9 @@ fn test_技術的失敗_依存先の全ての性質でステータスを決め�
             code
         );
         assert_eq!(
-            AgentSessionLaunchUsecaseError::TerminalSpawn(
-                ProviderAgentTerminalSpawnError::Technical(failure.clone())
-            )
+            AgentSessionLaunchUsecaseError::Terminal(ProviderAgentTerminalGatewayError::Technical(
+                failure.clone()
+            ))
             .connect_code(),
             code
         );

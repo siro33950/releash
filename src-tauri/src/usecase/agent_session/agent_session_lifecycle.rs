@@ -42,12 +42,44 @@ pub(crate) enum AgentSessionLifecycleUsecaseError {
     Store(crate::domain::failure::StorageFailure),
     NotFound,
     InvalidOperation,
+    ProviderUnavailable,
     Conflict(crate::domain::failure::StorageFailure),
     StorageUnavailable,
     Launch(crate::domain::agent_session::ProviderAgentLaunchGatewayError),
     Terminal(crate::domain::agent_session::ProviderAgentTerminalGatewayError),
-    TerminalSpawn(crate::domain::agent_session::ProviderAgentTerminalSpawnError),
     Corrupt,
+}
+
+impl AgentSessionLifecycleUsecaseError {
+    pub(crate) fn technical_failure(&self) -> Option<&crate::domain::failure::TechnicalFailure> {
+        match self {
+            Self::Launch(
+                crate::domain::agent_session::ProviderAgentLaunchGatewayError::Technical(failure),
+            )
+            | Self::Terminal(
+                crate::domain::agent_session::ProviderAgentTerminalGatewayError::Technical(failure),
+            ) => Some(failure),
+            Self::Workflow(_)
+            | Self::Store(_)
+            | Self::NotFound
+            | Self::InvalidOperation
+            | Self::ProviderUnavailable
+            | Self::Conflict(_)
+            | Self::StorageUnavailable
+            | Self::Corrupt
+            | Self::Launch(
+                crate::domain::agent_session::ProviderAgentLaunchGatewayError::InvalidInput,
+            )
+            | Self::Terminal(
+                crate::domain::agent_session::ProviderAgentTerminalGatewayError::NotFound(_)
+                | crate::domain::agent_session::ProviderAgentTerminalGatewayError::InvalidOperation(
+                    _,
+                )
+                | crate::domain::agent_session::ProviderAgentTerminalGatewayError::StaleAttachment
+                | crate::domain::agent_session::ProviderAgentTerminalGatewayError::OwnerConflict,
+            ) => None,
+        }
+    }
 }
 
 pub(crate) struct AgentSessionLifecycleUsecase {
@@ -537,7 +569,7 @@ impl AgentSessionLifecycleUsecase {
         let executable = self
             .availability
             .resolved_executable(session.session().provider())
-            .ok_or(AgentSessionLifecycleUsecaseError::InvalidOperation)?;
+            .ok_or(AgentSessionLifecycleUsecaseError::ProviderUnavailable)?;
         let slot_id = ProviderLifecycleSlotId::new(self.identities.issue())
             .map_err(|_| AgentSessionLifecycleUsecaseError::Corrupt)?;
         let scope = ProviderLifecycleScope::new(agent_session_id)
@@ -589,7 +621,7 @@ impl AgentSessionLifecycleUsecase {
         ) {
             self.rollback_spawned_resume(owner, agent_session_id)
                 .await?;
-            return Err(AgentSessionLifecycleUsecaseError::TerminalSpawn(error));
+            return Err(AgentSessionLifecycleUsecaseError::Terminal(error));
         }
         if let Some(warning) = initial_hook_warning {
             if let Err(error) = self

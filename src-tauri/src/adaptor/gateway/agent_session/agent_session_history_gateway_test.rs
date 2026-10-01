@@ -513,7 +513,17 @@ async fn test_agent_session_history_gateway_claudeのタイトルが読めない
         // When
         .await;
     // Then
-    assert!(result.is_err());
+    assert_eq!(
+        result,
+        Err(AgentSessionHistoryGatewayError::Technical(
+            crate::domain::failure::TechnicalFailure {
+                nature: crate::domain::failure::TechnicalFailureNature::Other,
+                message: fs::File::open(project.join("claude-missing.jsonl"))
+                    .unwrap_err()
+                    .to_string()
+            }
+        ))
+    );
 }
 
 #[tokio::test]
@@ -554,7 +564,19 @@ async fn test_agent_session_history_query_claudeのタイトルが読めない�
         // When
         .await;
     // Then
-    assert!(result.is_err());
+    assert_eq!(
+        result,
+        Err(
+            crate::usecase::agent_session::AgentSessionHistoryQueryError::Technical(
+                crate::domain::failure::TechnicalFailure {
+                    nature: crate::domain::failure::TechnicalFailureNature::Other,
+                    message: fs::File::open(project.join("claude-missing.jsonl"))
+                        .unwrap_err()
+                        .to_string()
+                }
+            )
+        )
+    );
 }
 
 #[tokio::test]
@@ -575,7 +597,18 @@ async fn test_agent_session_history_gateway_codexのdbが無いときタイト�
         // When
         .await;
     // Then
-    assert!(result.is_err());
+    assert_eq!(
+        result,
+        Err(AgentSessionHistoryGatewayError::Technical(
+            crate::domain::failure::TechnicalFailure {
+                nature: crate::domain::failure::TechnicalFailureNature::Other,
+                message: format!(
+                    "{} not found",
+                    directory.path().join("codex/state_5.sqlite").display()
+                )
+            }
+        ))
+    );
 }
 
 #[tokio::test]
@@ -605,7 +638,20 @@ async fn test_agent_session_history_query_codexのdbが無いときpageを失敗
         // When
         .await;
     // Then
-    assert!(result.is_err());
+    assert_eq!(
+        result,
+        Err(
+            crate::usecase::agent_session::AgentSessionHistoryQueryError::Technical(
+                crate::domain::failure::TechnicalFailure {
+                    nature: crate::domain::failure::TechnicalFailureNature::Other,
+                    message: format!(
+                        "{} not found",
+                        directory.path().join("codex/state_5.sqlite").display()
+                    )
+                }
+            )
+        )
+    );
 }
 
 #[tokio::test]
@@ -766,4 +812,37 @@ async fn test_session履歴_先頭範囲の直後の改行で完結した入力�
         .await;
     // Then
     assert_eq!(result.unwrap()[0].first_user_prompt, Some(prompt));
+}
+
+#[tokio::test]
+async fn test_agent_session_history_query_sqliteのbusyを一時的な失敗として保持する() {
+    // Given
+    let directory = tempfile::tempdir().unwrap();
+    let codex_root = directory.path().join("codex");
+    fs::create_dir_all(&codex_root).unwrap();
+    let connection = rusqlite::Connection::open(codex_root.join("state_5.sqlite")).unwrap();
+    connection
+        .execute_batch("CREATE TABLE threads (id TEXT, title TEXT); BEGIN EXCLUSIVE;")
+        .unwrap();
+    let query = LocalAgentSessionHistoryQueryService::new(
+        Arc::new(FixedMetadataHistoryGateway {
+            inner: Arc::new(LocalAgentSessionHistoryGateway::new(
+                directory.path().join("claude"),
+                codex_root,
+            )),
+            metadata: vec![metadata(ProviderKind::Codex, "codex-1", 10)],
+        }),
+        Arc::new(UnownedProviderSessions),
+    );
+    // When
+    let result = query
+        .list(AgentSessionHistoryRequest {
+            worktree_path: "/repo/worktree".into(),
+            visible_count: 1,
+        })
+        .await;
+    // Then
+    assert!(
+        matches!(result, Err(crate::usecase::agent_session::AgentSessionHistoryQueryError::Technical(failure)) if failure.nature == crate::domain::failure::TechnicalFailureNature::Transient)
+    );
 }

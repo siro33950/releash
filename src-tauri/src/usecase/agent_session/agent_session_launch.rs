@@ -10,8 +10,8 @@ use crate::domain::agent_session::aggregates::{
 use crate::domain::agent_session::repository::VersionedAgentSession;
 use crate::domain::agent_session::{
     AgentSessionHistoryGateway, AgentSessionHistoryGatewayError, ProviderAgentLaunchGateway,
-    ProviderAgentLaunchGatewayError, ProviderAgentTerminalGateway, ProviderAgentTerminalSpawnError,
-    ProviderAvailabilityReader, ProviderSessionLaunch,
+    ProviderAgentTerminalGateway, ProviderAgentTerminalGatewayError, ProviderAvailabilityReader,
+    ProviderSessionLaunch,
 };
 use crate::domain::provider_lifecycle::{
     ArmedProviderLifecycle, ProviderKind, ProviderLifecycleScope, ProviderLifecycleSlotId,
@@ -77,8 +77,38 @@ pub(crate) enum AgentSessionLaunchUsecaseError {
     StorageUnavailable,
     Launch(crate::domain::agent_session::ProviderAgentLaunchGatewayError),
     Terminal(crate::domain::agent_session::ProviderAgentTerminalGatewayError),
-    TerminalSpawn(ProviderAgentTerminalSpawnError),
     Corrupt,
+}
+
+impl AgentSessionLaunchUsecaseError {
+    pub(crate) fn technical_failure(&self) -> Option<&crate::domain::failure::TechnicalFailure> {
+        match self {
+            Self::Technical(failure)
+            | Self::Launch(
+                crate::domain::agent_session::ProviderAgentLaunchGatewayError::Technical(failure),
+            )
+            | Self::Terminal(
+                crate::domain::agent_session::ProviderAgentTerminalGatewayError::Technical(failure),
+            ) => Some(failure),
+            Self::Store(_)
+            | Self::ProviderUnavailable
+            | Self::InvalidInput
+            | Self::Conflict(_)
+            | Self::StorageUnavailable
+            | Self::Corrupt
+            | Self::Launch(
+                crate::domain::agent_session::ProviderAgentLaunchGatewayError::InvalidInput,
+            )
+            | Self::Terminal(
+                crate::domain::agent_session::ProviderAgentTerminalGatewayError::NotFound(_)
+                | crate::domain::agent_session::ProviderAgentTerminalGatewayError::InvalidOperation(
+                    _,
+                )
+                | crate::domain::agent_session::ProviderAgentTerminalGatewayError::StaleAttachment
+                | crate::domain::agent_session::ProviderAgentTerminalGatewayError::OwnerConflict,
+            ) => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -173,7 +203,7 @@ impl ProviderAgentRuntime {
 impl std::fmt::Display for AgentSessionLaunchUsecaseError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::TerminalSpawn(error) => error.fmt(formatter),
+            Self::Terminal(error) => error.fmt(formatter),
             _ => write!(formatter, "{self:?}"),
         }
     }
@@ -677,7 +707,7 @@ impl AgentSessionLaunchUsecase {
         let launch_result = self
             .launch_gateway
             .cleanup(agent_session_id)
-            .map_err(map_launch_error);
+            .map_err(AgentSessionLaunchUsecaseError::Launch);
         terminal_result?;
         lifecycle_result?;
         launch_result?;
@@ -703,7 +733,7 @@ impl AgentSessionLaunchUsecase {
                 launch,
                 durable.created.session().worktree_path(),
             )
-            .map_err(map_launch_error)
+            .map_err(AgentSessionLaunchUsecaseError::Launch)
         {
             Ok(prepared) => prepared,
             Err(error) => {
@@ -754,7 +784,7 @@ impl AgentSessionLaunchUsecase {
             record_terminal_spawn_failure(created.session().id(), &error);
             self.rollback_failed_new_launch_preserving_cause(&created, &armed, &caller_request_id)
                 .await;
-            return Err(AgentSessionLaunchUsecaseError::TerminalSpawn(error));
+            return Err(AgentSessionLaunchUsecaseError::Terminal(error));
         }
         self.record_hook_launch(
             created.session().provider(),
@@ -924,7 +954,7 @@ impl AgentSessionLaunchUsecase {
         let launch_result = self
             .launch_gateway
             .cleanup(agent_session_id)
-            .map_err(map_launch_error);
+            .map_err(AgentSessionLaunchUsecaseError::Launch);
 
         terminal_result?;
         lifecycle_result?;
@@ -1020,7 +1050,7 @@ impl AgentSessionLaunchUsecase {
         let launch_result = self
             .launch_gateway
             .cleanup(created.session().id())
-            .map_err(map_launch_error);
+            .map_err(AgentSessionLaunchUsecaseError::Launch);
         let session_result = self
             .sessions
             .garbage_collect(
@@ -1097,7 +1127,10 @@ impl AgentSessionLaunchUsecase {
     }
 }
 
-fn record_terminal_spawn_failure(agent_session_id: &str, error: &ProviderAgentTerminalSpawnError) {
+fn record_terminal_spawn_failure(
+    agent_session_id: &str,
+    error: &ProviderAgentTerminalGatewayError,
+) {
     log::error!("AgentSession terminal spawn failed agent_session_id={agent_session_id} {error}");
 }
 
@@ -1142,10 +1175,6 @@ fn map_lifecycle_error(error: ProviderLifecycleUsecaseError) -> AgentSessionLaun
         ProviderLifecycleUsecaseError::Store(kind) => AgentSessionLaunchUsecaseError::Store(kind),
         ProviderLifecycleUsecaseError::Corrupt => AgentSessionLaunchUsecaseError::Corrupt,
     }
-}
-
-fn map_launch_error(error: ProviderAgentLaunchGatewayError) -> AgentSessionLaunchUsecaseError {
-    AgentSessionLaunchUsecaseError::Launch(error)
 }
 
 fn map_execution_tree_registration_error(

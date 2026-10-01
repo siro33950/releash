@@ -55,6 +55,28 @@ pub(crate) enum ProviderAvailabilityUsecaseError {
     Corrupt,
 }
 
+impl ProviderAvailabilityUsecaseError {
+    pub(crate) fn technical_failure(&self) -> Option<&crate::domain::failure::TechnicalFailure> {
+        match self {
+            Self::Config(
+                crate::domain::agent_session::ProviderExecutableConfigRepositoryError::Technical(
+                    failure,
+                ),
+            )
+            | Self::Refresh(
+                crate::domain::agent_session::ProviderExecutableProbeGatewayError::Technical(
+                    failure,
+                ),
+            ) => Some(failure),
+            Self::InvalidInput
+            | Self::Corrupt
+            | Self::Config(
+                crate::domain::agent_session::ProviderExecutableConfigRepositoryError::InvalidInput,
+            ) => None,
+        }
+    }
+}
+
 pub(crate) struct ProviderAvailabilityUsecase {
     state_publisher: Option<crate::usecase::state_subscription::StateSubscriptionUsecase>,
     config: Arc<dyn ProviderExecutableConfigRepository>,

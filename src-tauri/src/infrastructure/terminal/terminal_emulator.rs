@@ -470,10 +470,6 @@ fn repair_journal_tail(file: &mut std::fs::File) -> std::io::Result<()> {
     Ok(())
 }
 
-#[cfg(test)]
-#[path = "terminal_emulator_test.rs"]
-mod terminal_emulator_tests;
-
 fn checkpoint_io_error(
     error: std::io::Error,
     operation: &str,
@@ -484,3 +480,7 @@ fn checkpoint_io_error(
         format!("{operation} {}: {error}", path.display()),
     )
 }
+
+#[cfg(test)]
+#[path = "terminal_emulator_test.rs"]
+mod terminal_emulator_tests;

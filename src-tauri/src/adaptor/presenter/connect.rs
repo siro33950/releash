@@ -375,12 +375,13 @@ impl ConnectFailure for crate::usecase::agent_session::AgentSessionLifecycleUsec
             Self::Workflow(error) => error.connect_code(),
             Self::Store(kind) => kind.connect_code(),
             Self::NotFound => connectrpc::ErrorCode::NotFound,
-            Self::InvalidOperation => connectrpc::ErrorCode::FailedPrecondition,
+            Self::InvalidOperation | Self::ProviderUnavailable => {
+                connectrpc::ErrorCode::FailedPrecondition
+            }
             Self::Conflict(kind) => kind.connect_code(),
             Self::StorageUnavailable => connectrpc::ErrorCode::Unavailable,
             Self::Launch(error) => error.connect_code(),
             Self::Terminal(error) => error.connect_code(),
-            Self::TerminalSpawn(error) => error.connect_code(),
             Self::Corrupt => connectrpc::ErrorCode::DataLoss,
         }
     }
@@ -397,7 +398,6 @@ impl ConnectFailure for crate::usecase::agent_session::AgentSessionLaunchUsecase
             Self::StorageUnavailable => connectrpc::ErrorCode::Unavailable,
             Self::Launch(error) => error.connect_code(),
             Self::Terminal(error) => error.connect_code(),
-            Self::TerminalSpawn(error) => error.connect_code(),
             Self::Corrupt => connectrpc::ErrorCode::DataLoss,
         }
     }
@@ -664,23 +664,7 @@ impl ConnectFailure for super::provider_tui::ProviderTuiCodedError {
     }
 }
 
-#[cfg(test)]
-#[path = "connect_mapping_test.rs"]
-mod connect_mapping_tests;
-
 impl ConnectFailure for crate::domain::agent_session::ProviderAgentTerminalGatewayError {
-    fn connect_code(&self) -> connectrpc::ErrorCode {
-        match self {
-            Self::NotFound(_) => connectrpc::ErrorCode::NotFound,
-            Self::InvalidOperation(_) | Self::StaleAttachment | Self::OwnerConflict => {
-                connectrpc::ErrorCode::FailedPrecondition
-            }
-            Self::Technical(failure) => failure.connect_code(),
-        }
-    }
-}
-
-impl ConnectFailure for crate::domain::agent_session::ProviderAgentTerminalSpawnError {
     fn connect_code(&self) -> connectrpc::ErrorCode {
         match self {
             Self::NotFound(_) => connectrpc::ErrorCode::NotFound,
@@ -715,3 +699,7 @@ impl ConnectFailure for crate::domain::agent_session::ProviderExecutableProbeGat
         }
     }
 }
+
+#[cfg(test)]
+#[path = "connect_mapping_test.rs"]
+mod connect_mapping_tests;

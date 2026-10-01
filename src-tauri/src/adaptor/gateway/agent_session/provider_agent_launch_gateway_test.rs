@@ -346,3 +346,70 @@ fn test_provider起動準備_base解決の停止を欠損へ変換しない() {
         );
     }
 }
+
+#[test]
+fn test_provider起動準備_ファイル生成失敗の性質とメッセージを保持する() {
+    use crate::domain::agent_session::ProviderAgentLaunchGatewayError;
+    use crate::domain::failure::{TechnicalFailure, TechnicalFailureNature};
+    // Given
+    let data_dir = tempdir().unwrap();
+    let gateway = LocalProviderAgentLaunchGateway::new(data_dir.path().into(), "releash".into());
+    let armed = armed(ProviderKind::Claude);
+    let path = gateway
+        .session_directory("agent-1")
+        .join(super::digest(armed.binding_id()));
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(&path, b"file").unwrap();
+    let source = fs::create_dir_all(&path).unwrap_err();
+    assert_eq!(source.kind(), std::io::ErrorKind::AlreadyExists);
+    let expected = TechnicalFailure {
+        nature: TechnicalFailureNature::Other,
+        message: source.to_string(),
+    };
+    // When
+    let result = gateway.prepare(
+        &armed,
+        ResolvedProviderExecutable::new("/opt/bin/claude".into()).unwrap(),
+        ProviderSessionLaunch::New,
+        data_dir.path().to_str().unwrap(),
+    );
+    // Then
+    assert_eq!(
+        result,
+        Err(ProviderAgentLaunchGatewayError::Technical(expected))
+    );
+}
+
+#[test]
+fn test_provider起動資源削除_失敗の性質とメッセージを保持する() {
+    use crate::domain::agent_session::ProviderAgentLaunchGatewayError;
+    use crate::domain::failure::{TechnicalFailure, TechnicalFailureNature};
+    // Given
+    let data_dir = tempdir().unwrap();
+    let gateway = LocalProviderAgentLaunchGateway::new(data_dir.path().into(), "releash".into());
+    let path = gateway.session_directory("agent-1");
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(&path, b"file").unwrap();
+    let source = fs::remove_dir_all(&path).unwrap_err();
+    assert_eq!(source.kind(), std::io::ErrorKind::NotADirectory);
+    let expected = TechnicalFailure {
+        nature: TechnicalFailureNature::Other,
+        message: source.to_string(),
+    };
+    // When / Then
+    assert_eq!(
+        gateway.cleanup("agent-1"),
+        Err(ProviderAgentLaunchGatewayError::Technical(expected))
+    );
+}
+
+#[test]
+fn test_provider起動ファイル_不正pathを入力失敗として返す() {
+    // Given / When / Then
+    assert_eq!(
+        super::map_files_error(
+            crate::infrastructure::provider_lifecycle::ProviderLaunchFilesError::InvalidPath
+        ),
+        crate::domain::agent_session::ProviderAgentLaunchGatewayError::InvalidInput
+    );
+}

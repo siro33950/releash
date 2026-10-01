@@ -265,10 +265,6 @@ impl NativePtySystem {
     }
 }
 
-#[cfg(test)]
-#[path = "native_pty_test.rs"]
-mod native_pty_tests;
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct NativePtyError {
     pub(crate) kind: std::io::ErrorKind,
@@ -303,3 +299,7 @@ impl std::fmt::Display for NativePtyError {
         formatter.write_str(&self.message)
     }
 }
+
+#[cfg(test)]
+#[path = "native_pty_test.rs"]
+mod native_pty_tests;

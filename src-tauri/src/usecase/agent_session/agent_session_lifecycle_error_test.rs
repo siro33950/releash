@@ -88,3 +88,53 @@ fn test_workflowの結果不明を一時的なstore失敗に変えない() {
         )
     );
 }
+
+#[test]
+fn test_session失敗_全変種から技術的な失敗だけを参照する() {
+    use super::AgentSessionLifecycleUsecaseError as E;
+    use crate::domain::agent_session::{
+        ProviderAgentLaunchGatewayError as L, ProviderAgentTerminalGatewayError as T,
+    };
+    use crate::domain::failure::{TechnicalFailure, TechnicalFailureNature};
+    // Given
+    let storage = crate::domain::failure::StorageFailure::from(
+        crate::domain::local_event::CommitBatchError::QueueBusy,
+    );
+    // When / Then
+    for error in [
+        E::NotFound,
+        E::InvalidOperation,
+        E::ProviderUnavailable,
+        E::StorageUnavailable,
+        E::Corrupt,
+        E::Store(storage.clone()),
+        E::Conflict(storage.clone()),
+        E::Launch(L::InvalidInput),
+        E::Terminal(T::NotFound("missing".into())),
+        E::Terminal(T::InvalidOperation("invalid".into())),
+        E::Terminal(T::StaleAttachment),
+        E::Terminal(T::OwnerConflict),
+        E::Workflow(crate::domain::workflow::WorkflowError::External(
+            "workflow".into(),
+        )),
+    ] {
+        assert_eq!(error.technical_failure(), None);
+    }
+    for nature in [
+        TechnicalFailureNature::Transient,
+        TechnicalFailureNature::TimedOut,
+        TechnicalFailureNature::Cancelled,
+        TechnicalFailureNature::Other,
+    ] {
+        let failure = TechnicalFailure {
+            nature,
+            message: "source failure".into(),
+        };
+        for error in [
+            E::Launch(L::Technical(failure.clone())),
+            E::Terminal(T::Technical(failure.clone())),
+        ] {
+            assert_eq!(error.technical_failure(), Some(&failure));
+        }
+    }
+}

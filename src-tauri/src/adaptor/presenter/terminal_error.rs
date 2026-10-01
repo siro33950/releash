@@ -49,7 +49,9 @@ pub(crate) fn terminal_write_error(error: UsecaseError) -> AppError {
         "Terminal command failed: operation=write_terminal_surface code=PTY_ERROR cause={}",
         error
     );
-    let cause = matches!(error, UsecaseError::Technical(_)).then(|| error.to_string());
+    let cause = error
+        .technical_failure()
+        .map(|failure| failure.message.clone());
     let stale = matches!(error, UsecaseError::StaleAttachment);
     let presented = AppError::new("Terminal input could not be sent. Try again.")
         .with_status(error.connect_code())
@@ -77,7 +79,11 @@ pub(crate) fn terminal_resize_error(error: UsecaseError) -> AppError {
     );
     AppError::new("Terminal resize failed. Try again.")
         .with_status(error.connect_code())
-        .with_cause(matches!(error, UsecaseError::Technical(_)).then(|| error.to_string()))
+        .with_cause(
+            error
+                .technical_failure()
+                .map(|failure| failure.message.clone()),
+        )
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -116,7 +122,9 @@ impl TerminalCommandOperation {
 
 impl TerminalCommandError {
     pub(crate) fn from_usecase(error: UsecaseError, operation: TerminalCommandOperation) -> Self {
-        let cause = matches!(error, UsecaseError::Technical(_)).then(|| error.to_string());
+        let cause = error
+            .technical_failure()
+            .map(|failure| failure.message.clone());
         let kind = error.connect_code();
         let internal_cause = error.to_string();
         let code = match error {

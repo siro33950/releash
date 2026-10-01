@@ -129,17 +129,9 @@ pub(crate) fn provider_tui_coded_error(error: ProviderTuiCodedError) -> AppError
 }
 
 pub(crate) fn provider_availability_error(error: ProviderAvailabilityUsecaseError) -> AppError {
-    let cause = match &error {
-        ProviderAvailabilityUsecaseError::Config(
-            crate::domain::agent_session::ProviderExecutableConfigRepositoryError::Technical(
-                failure,
-            ),
-        )
-        | ProviderAvailabilityUsecaseError::Refresh(
-            crate::domain::agent_session::ProviderExecutableProbeGatewayError::Technical(failure),
-        ) => Some(failure.message.clone()),
-        _ => None,
-    };
+    let cause = error
+        .technical_failure()
+        .map(|failure| failure.message.clone());
     let kind = error.connect_code();
     let result = match error {
         ProviderAvailabilityUsecaseError::InvalidInput => {
@@ -162,18 +154,9 @@ pub(crate) fn launch_error(
     error: AgentSessionLaunchUsecaseError,
     operation: AgentSessionLaunchOperation,
 ) -> AppError {
-    let cause = match &error {
-        AgentSessionLaunchUsecaseError::Launch(
-            crate::domain::agent_session::ProviderAgentLaunchGatewayError::Technical(failure),
-        )
-        | AgentSessionLaunchUsecaseError::Terminal(
-            crate::domain::agent_session::ProviderAgentTerminalGatewayError::Technical(failure),
-        )
-        | AgentSessionLaunchUsecaseError::TerminalSpawn(
-            crate::domain::agent_session::ProviderAgentTerminalSpawnError::Technical(failure),
-        ) => Some(failure.message.clone()),
-        _ => None,
-    };
+    let cause = error
+        .technical_failure()
+        .map(|failure| failure.message.clone());
     let kind = error.connect_code();
     let result = match error {
         AgentSessionLaunchUsecaseError::Technical(stopped) => {
@@ -200,8 +183,7 @@ pub(crate) fn launch_error(
         AgentSessionLaunchUsecaseError::Launch(_) => {
             provider_tui_coded_error(ProviderTuiCodedError::AgentSessionLaunchUnavailable(kind))
         }
-        AgentSessionLaunchUsecaseError::Terminal(_)
-        | AgentSessionLaunchUsecaseError::TerminalSpawn(_) => {
+        AgentSessionLaunchUsecaseError::Terminal(_) => {
             provider_tui_coded_error(ProviderTuiCodedError::AgentSessionTerminalUnavailable(kind))
         }
         AgentSessionLaunchUsecaseError::Store(_) => {
@@ -215,18 +197,9 @@ pub(crate) fn launch_error(
 }
 
 pub(crate) fn lifecycle_error(error: AgentSessionLifecycleUsecaseError) -> AppError {
-    let cause = match &error {
-        AgentSessionLifecycleUsecaseError::Launch(
-            crate::domain::agent_session::ProviderAgentLaunchGatewayError::Technical(failure),
-        )
-        | AgentSessionLifecycleUsecaseError::Terminal(
-            crate::domain::agent_session::ProviderAgentTerminalGatewayError::Technical(failure),
-        )
-        | AgentSessionLifecycleUsecaseError::TerminalSpawn(
-            crate::domain::agent_session::ProviderAgentTerminalSpawnError::Technical(failure),
-        ) => Some(failure.message.clone()),
-        _ => None,
-    };
+    let cause = error
+        .technical_failure()
+        .map(|failure| failure.message.clone());
     let kind = error.connect_code();
     let result = match error {
         AgentSessionLifecycleUsecaseError::Workflow(error) => AppError::from_failure(error),
@@ -242,11 +215,11 @@ pub(crate) fn lifecycle_error(error: AgentSessionLifecycleUsecaseError) -> AppEr
         AgentSessionLifecycleUsecaseError::StorageUnavailable => {
             provider_tui_coded_error(ProviderTuiCodedError::AgentSessionStorageUnavailable)
         }
-        AgentSessionLifecycleUsecaseError::Launch(_) => {
+        AgentSessionLifecycleUsecaseError::ProviderUnavailable
+        | AgentSessionLifecycleUsecaseError::Launch(_) => {
             provider_tui_coded_error(ProviderTuiCodedError::AgentSessionLaunchUnavailable(kind))
         }
-        AgentSessionLifecycleUsecaseError::Terminal(_)
-        | AgentSessionLifecycleUsecaseError::TerminalSpawn(_) => {
+        AgentSessionLifecycleUsecaseError::Terminal(_) => {
             provider_tui_coded_error(ProviderTuiCodedError::AgentSessionTerminalUnavailable(kind))
         }
         AgentSessionLifecycleUsecaseError::Store(_) => {

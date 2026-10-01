@@ -204,7 +204,7 @@ impl TerminalSurfaceGateway for FakePtyGateway {
                         TerminalSurfaceInputUnavailableCause::PendingCapacityExceeded
                     }
                 };
-                TerminalSurfaceGatewayError::input_unavailable(cause)
+                TerminalSurfaceGatewayError::InputUnavailable(cause)
             })?;
         for input in ready {
             self.write(session_key, &input.data)?;

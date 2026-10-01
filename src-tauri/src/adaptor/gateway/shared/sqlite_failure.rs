@@ -39,11 +39,17 @@ pub(crate) fn nature(error: &rusqlite::Error) -> crate::domain::failure::Technic
     }
 }
 
-impl From<rusqlite::Error> for crate::domain::failure::TechnicalFailure {
-    fn from(error: rusqlite::Error) -> Self {
+impl From<&rusqlite::Error> for crate::domain::failure::TechnicalFailure {
+    fn from(error: &rusqlite::Error) -> Self {
         Self {
-            nature: nature(&error),
+            nature: nature(error),
             message: error.to_string(),
         }
+    }
+}
+
+impl From<rusqlite::Error> for crate::domain::failure::TechnicalFailure {
+    fn from(error: rusqlite::Error) -> Self {
+        (&error).into()
     }
 }

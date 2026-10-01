@@ -62,10 +62,13 @@ impl AppError {
     }
 
     pub(crate) fn with_cause(self, cause: Option<String>) -> Self {
-        Self::Presented {
-            kind: self.connect_code(),
-            cause,
-            error: Box::new(self),
+        match self {
+            Self::Presented { kind, error, .. } => Self::Presented { kind, cause, error },
+            error @ (Self::Internal(_) | Self::Coded { .. }) => Self::Presented {
+                kind: error.connect_code(),
+                cause,
+                error: Box::new(error),
+            },
         }
     }
 
@@ -252,3 +255,7 @@ pub(crate) fn workflow_storage_message(failure: &crate::domain::failure::Storage
     };
     format!("Store failure: {label}")
 }
+
+#[cfg(test)]
+#[path = "error_test.rs"]
+mod error_tests;

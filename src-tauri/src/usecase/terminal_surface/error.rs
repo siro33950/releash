@@ -16,6 +16,18 @@ pub enum UsecaseError {
     OwnerConflict,
 }
 
+impl UsecaseError {
+    pub(crate) fn technical_failure(&self) -> Option<&crate::domain::failure::TechnicalFailure> {
+        match self {
+            Self::Technical(failure) => Some(failure),
+            Self::NotFound(_)
+            | Self::InvalidOperation(_)
+            | Self::StaleAttachment
+            | Self::OwnerConflict => None,
+        }
+    }
+}
+
 impl From<TerminalSurfaceGatewayError> for UsecaseError {
     fn from(value: TerminalSurfaceGatewayError) -> Self {
         match value {

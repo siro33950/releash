@@ -2,7 +2,6 @@ use crate::domain::agent_session::aggregates::ManagedPtyPresence;
 use crate::domain::agent_session::{
     ProviderAgentTerminalGateway, ProviderAgentTerminalGatewayError,
     ProviderAgentTerminalInputGateway, ProviderAgentTerminalObservationGateway,
-    ProviderAgentTerminalSpawnError,
 };
 use crate::domain::terminal_surface::{TerminalProcessLaunch, TerminalSurfaceOwner};
 use crate::usecase::terminal_surface::application::{
@@ -10,17 +9,6 @@ use crate::usecase::terminal_surface::application::{
 };
 use crate::usecase::terminal_surface::error::UsecaseError;
 
-fn map_spawn_error(error: UsecaseError) -> ProviderAgentTerminalSpawnError {
-    match error {
-        UsecaseError::OwnerConflict => ProviderAgentTerminalSpawnError::OwnerConflict,
-        UsecaseError::NotFound(message) => ProviderAgentTerminalSpawnError::NotFound(message),
-        UsecaseError::InvalidOperation(message) => {
-            ProviderAgentTerminalSpawnError::InvalidOperation(message)
-        }
-        UsecaseError::StaleAttachment => ProviderAgentTerminalSpawnError::StaleAttachment,
-        UsecaseError::Technical(failure) => ProviderAgentTerminalSpawnError::Technical(failure),
-    }
-}
 fn map_terminal_error(error: UsecaseError) -> ProviderAgentTerminalGatewayError {
     match error {
         UsecaseError::OwnerConflict => ProviderAgentTerminalGatewayError::OwnerConflict,
@@ -41,7 +29,7 @@ impl ProviderAgentTerminalGateway for TerminalSurfaceApplication {
         process: TerminalProcessLaunch,
         rows: u16,
         cols: u16,
-    ) -> Result<(), ProviderAgentTerminalSpawnError> {
+    ) -> Result<(), ProviderAgentTerminalGatewayError> {
         self.get_or_spawn_process(
             rows,
             cols,
@@ -51,7 +39,7 @@ impl ProviderAgentTerminalGateway for TerminalSurfaceApplication {
             process,
         )
         .map(|_| ())
-        .map_err(map_spawn_error)
+        .map_err(map_terminal_error)
     }
 
     fn presence(

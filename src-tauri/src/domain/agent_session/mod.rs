@@ -44,5 +44,4 @@ pub(crate) use provider_session_title_gateway::{
 pub(crate) use provider_terminal_gateway::{
     ProviderAgentTerminalGateway, ProviderAgentTerminalGatewayError,
     ProviderAgentTerminalInputGateway, ProviderAgentTerminalObservationGateway,
-    ProviderAgentTerminalSpawnError,
 };

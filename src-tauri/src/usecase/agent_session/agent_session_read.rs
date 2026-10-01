@@ -104,15 +104,15 @@ fn map_lifecycle_error(error: AgentSessionLifecycleUsecaseError) -> AgentSession
         error @ (AgentSessionLifecycleUsecaseError::Workflow(_)
         | AgentSessionLifecycleUsecaseError::Conflict(_)
         | AgentSessionLifecycleUsecaseError::Launch(_)
-        | AgentSessionLifecycleUsecaseError::Terminal(_)
-        | AgentSessionLifecycleUsecaseError::TerminalSpawn(_)) => {
+        | AgentSessionLifecycleUsecaseError::Terminal(_)) => {
             AgentSessionReadUsecaseError::Lifecycle(error)
         }
         AgentSessionLifecycleUsecaseError::StorageUnavailable => {
             AgentSessionReadUsecaseError::StorageUnavailable
         }
         AgentSessionLifecycleUsecaseError::Store(kind) => AgentSessionReadUsecaseError::Store(kind),
-        AgentSessionLifecycleUsecaseError::Corrupt
+        AgentSessionLifecycleUsecaseError::ProviderUnavailable
+        | AgentSessionLifecycleUsecaseError::Corrupt
         | AgentSessionLifecycleUsecaseError::NotFound
         | AgentSessionLifecycleUsecaseError::InvalidOperation => {
             AgentSessionReadUsecaseError::Corrupt

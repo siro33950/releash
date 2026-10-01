@@ -215,7 +215,7 @@ impl crate::domain::agent_session::ProviderAgentTerminalGateway for TestSessions
         _process: crate::domain::terminal_surface::TerminalProcessLaunch,
         _rows: u16,
         _cols: u16,
-    ) -> Result<(), crate::domain::agent_session::ProviderAgentTerminalSpawnError> {
+    ) -> Result<(), crate::domain::agent_session::ProviderAgentTerminalGatewayError> {
         panic!("test session launch uses WorkflowAgentSessionPort")
     }
     fn presence(

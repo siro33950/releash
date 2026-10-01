@@ -20,9 +20,8 @@ use crate::domain::agent_session::repository::{
 use crate::domain::agent_session::{
     AgentSessionHistoryGateway, AgentSessionHistoryGatewayError, AgentSessionHistoryMetadata,
     PreparedProviderLaunch, ProviderAgentLaunchGateway, ProviderAgentLaunchGatewayError,
-    ProviderAgentTerminalGateway, ProviderAgentTerminalGatewayError,
-    ProviderAgentTerminalSpawnError, ProviderAvailabilityReader, ProviderSessionLaunch,
-    ProviderSessionTitleEntry,
+    ProviderAgentTerminalGateway, ProviderAgentTerminalGatewayError, ProviderAvailabilityReader,
+    ProviderSessionLaunch, ProviderSessionTitleEntry,
 };
 use crate::domain::provider_lifecycle::{
     ArmedProviderLifecycle, ProviderHookHealth, ProviderHookHealthRepository,
@@ -159,21 +158,25 @@ fn captured_terminal_spawn_failure(agent_session_id: &str) -> Option<String> {
 fn test_agent_session_terminal_spawn_error_記録用kindとpayloadを表示する() {
     let cases = [
         (
-            ProviderAgentTerminalSpawnError::OwnerConflict,
+            ProviderAgentTerminalGatewayError::OwnerConflict,
             "kind=owner_conflict",
         ),
         (
-            ProviderAgentTerminalSpawnError::Technical(crate::domain::failure::TechnicalFailure {
-                nature: crate::domain::failure::TechnicalFailureNature::Other,
-                message: "openpty failed".to_string(),
-            }),
+            ProviderAgentTerminalGatewayError::Technical(
+                crate::domain::failure::TechnicalFailure {
+                    nature: crate::domain::failure::TechnicalFailureNature::Other,
+                    message: "openpty failed".to_string(),
+                },
+            ),
             "openpty failed",
         ),
         (
-            ProviderAgentTerminalSpawnError::Technical(crate::domain::failure::TechnicalFailure {
-                nature: crate::domain::failure::TechnicalFailureNature::Other,
-                message: "checkpoint failed".to_string(),
-            }),
+            ProviderAgentTerminalGatewayError::Technical(
+                crate::domain::failure::TechnicalFailure {
+                    nature: crate::domain::failure::TechnicalFailureNature::Other,
+                    message: "checkpoint failed".to_string(),
+                },
+            ),
             "checkpoint failed",
         ),
     ];
@@ -550,7 +553,7 @@ struct RecordedTerminalSpawn {
 #[derive(Default)]
 struct RecordingTerminal {
     spawns: Mutex<Vec<RecordedTerminalSpawn>>,
-    spawn_error: Mutex<Option<ProviderAgentTerminalSpawnError>>,
+    spawn_error: Mutex<Option<ProviderAgentTerminalGatewayError>>,
     fail_delete: Mutex<bool>,
     deletes: Mutex<usize>,
 }
@@ -571,7 +574,7 @@ impl ProviderAgentTerminalGateway for BlockingLaunchTerminal {
         _process: TerminalProcessLaunch,
         _rows: u16,
         _cols: u16,
-    ) -> Result<(), ProviderAgentTerminalSpawnError> {
+    ) -> Result<(), ProviderAgentTerminalGatewayError> {
         self.spawns.fetch_add(1, Ordering::SeqCst);
         let entered = self.spawn_entered.lock().unwrap().take();
         if let Some(entered) = entered {
@@ -629,7 +632,7 @@ impl ProviderAgentTerminalGateway for RecordingTerminal {
         process: TerminalProcessLaunch,
         rows: u16,
         cols: u16,
-    ) -> Result<(), ProviderAgentTerminalSpawnError> {
+    ) -> Result<(), ProviderAgentTerminalGatewayError> {
         if let Some(error) = self.spawn_error.lock().unwrap().clone() {
             return Err(error);
         }
@@ -1646,7 +1649,7 @@ async fn test_agent_session_history_resumeは新しいsessionを作り失敗時�
     });
     let launch_gateway = Arc::new(RecordingLaunchGateway::default());
     let terminal = Arc::new(RecordingTerminal::default());
-    *terminal.spawn_error.lock().unwrap() = Some(ProviderAgentTerminalSpawnError::Technical(
+    *terminal.spawn_error.lock().unwrap() = Some(ProviderAgentTerminalGatewayError::Technical(
         crate::domain::failure::TechnicalFailure {
             nature: crate::domain::failure::TechnicalFailureNature::Other,
             message: "checkpoint restore failed".to_string(),
@@ -2221,7 +2224,7 @@ async fn test_agent_session_launch_spawn失敗時はsessionとlaunch資源をrol
     )));
     let launch_gateway = Arc::new(RecordingLaunchGateway::default());
     let terminal = Arc::new(RecordingTerminal::default());
-    *terminal.spawn_error.lock().unwrap() = Some(ProviderAgentTerminalSpawnError::Technical(
+    *terminal.spawn_error.lock().unwrap() = Some(ProviderAgentTerminalGatewayError::Technical(
         crate::domain::failure::TechnicalFailure {
             nature: crate::domain::failure::TechnicalFailureNature::Other,
             message: "openpty failed".to_string(),
@@ -2263,7 +2266,7 @@ async fn test_agent_session_launch_spawn失敗時はsessionとlaunch資源をrol
 
     assert_eq!(
         result.unwrap_err(),
-        AgentSessionLaunchUsecaseError::TerminalSpawn(ProviderAgentTerminalSpawnError::Technical(
+        AgentSessionLaunchUsecaseError::Terminal(ProviderAgentTerminalGatewayError::Technical(
             crate::domain::failure::TechnicalFailure {
                 nature: crate::domain::failure::TechnicalFailureNature::Other,
                 message: "openpty failed".to_string()
@@ -2377,7 +2380,7 @@ async fn test_agent_session_launch_spawn失敗時のrollbackのterminal削除失
     )));
     let launch_gateway = Arc::new(RecordingLaunchGateway::default());
     let terminal = Arc::new(RecordingTerminal::default());
-    *terminal.spawn_error.lock().unwrap() = Some(ProviderAgentTerminalSpawnError::Technical(
+    *terminal.spawn_error.lock().unwrap() = Some(ProviderAgentTerminalGatewayError::Technical(
         crate::domain::failure::TechnicalFailure {
             nature: crate::domain::failure::TechnicalFailureNature::Other,
             message: "openpty failed".to_string(),
@@ -2423,7 +2426,7 @@ async fn test_agent_session_launch_spawn失敗時のrollbackのterminal削除失
 
     assert_eq!(
         result.unwrap_err(),
-        AgentSessionLaunchUsecaseError::TerminalSpawn(ProviderAgentTerminalSpawnError::Technical(
+        AgentSessionLaunchUsecaseError::Terminal(ProviderAgentTerminalGatewayError::Technical(
             crate::domain::failure::TechnicalFailure {
                 nature: crate::domain::failure::TechnicalFailureNature::Other,
                 message: "openpty failed".to_string()

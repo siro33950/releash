@@ -118,19 +118,48 @@ fn test_実行木登録の失敗_起動エラーへ変換しても元の分類�
 }
 
 #[test]
-fn test_provider起動準備_停止分類をusecaseまで保持する() {
-    use crate::common::operation_context::OperationStopped;
+fn test_session失敗_全変種から技術的な失敗だけを参照する() {
+    use super::AgentSessionLaunchUsecaseError as E;
+    use crate::domain::agent_session::{
+        ProviderAgentLaunchGatewayError as L, ProviderAgentTerminalGatewayError as T,
+    };
+    use crate::domain::failure::{TechnicalFailure, TechnicalFailureNature};
     // Given
-    for stopped in [OperationStopped::Expired, OperationStopped::Cancelled] {
-        // When
-        let error = super::map_launch_error(
-            crate::domain::agent_session::ProviderAgentLaunchGatewayError::Technical(
-                stopped.into(),
-            ),
-        );
-        // Then
-        assert!(
-            matches!(error, super::AgentSessionLaunchUsecaseError::Launch(crate::domain::agent_session::ProviderAgentLaunchGatewayError::Technical(ref actual)) if *actual == stopped.into())
-        );
+    let storage = crate::domain::failure::StorageFailure::from(
+        crate::domain::local_event::CommitBatchError::QueueBusy,
+    );
+    // When / Then
+    for error in [
+        E::ProviderUnavailable,
+        E::InvalidInput,
+        E::StorageUnavailable,
+        E::Corrupt,
+        E::Store(storage.clone()),
+        E::Conflict(storage.clone()),
+        E::Launch(L::InvalidInput),
+        E::Terminal(T::NotFound("missing".into())),
+        E::Terminal(T::InvalidOperation("invalid".into())),
+        E::Terminal(T::StaleAttachment),
+        E::Terminal(T::OwnerConflict),
+    ] {
+        assert_eq!(error.technical_failure(), None);
+    }
+    for nature in [
+        TechnicalFailureNature::Transient,
+        TechnicalFailureNature::TimedOut,
+        TechnicalFailureNature::Cancelled,
+        TechnicalFailureNature::Other,
+    ] {
+        let failure = TechnicalFailure {
+            nature,
+            message: "source failure".into(),
+        };
+        for error in [
+            E::Launch(L::Technical(failure.clone())),
+            E::Terminal(T::Technical(failure.clone())),
+            E::Technical(failure.clone()),
+        ] {
+            assert_eq!(error.technical_failure(), Some(&failure));
+        }
     }
 }

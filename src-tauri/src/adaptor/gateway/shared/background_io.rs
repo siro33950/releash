@@ -1,12 +1,9 @@
+use crate::domain::failure::TechnicalFailure;
 use crate::domain::failure::TechnicalFailureNature;
-use crate::usecase::failure::Failure;
 use crate::usecase::failure::WorkFailure;
 
 pub(crate) fn failure(error: std::io::Error) -> WorkFailure {
-    WorkFailure {
-        kind: Failure::Technical(nature(&error)),
-        message: error.to_string(),
-    }
+    WorkFailure::from(TechnicalFailure::from(&error))
 }
 
 pub(crate) fn nature(error: &std::io::Error) -> TechnicalFailureNature {
@@ -22,15 +19,21 @@ pub(crate) fn nature(error: &std::io::Error) -> TechnicalFailureNature {
     }
 }
 
-#[cfg(test)]
-#[path = "background_io_test.rs"]
-mod background_io_tests;
-
-impl From<std::io::Error> for crate::domain::failure::TechnicalFailure {
-    fn from(error: std::io::Error) -> Self {
+impl From<&std::io::Error> for crate::domain::failure::TechnicalFailure {
+    fn from(error: &std::io::Error) -> Self {
         Self {
-            nature: nature(&error),
+            nature: nature(error),
             message: error.to_string(),
         }
     }
 }
+
+impl From<std::io::Error> for crate::domain::failure::TechnicalFailure {
+    fn from(error: std::io::Error) -> Self {
+        (&error).into()
+    }
+}
+
+#[cfg(test)]
+#[path = "background_io_test.rs"]
+mod background_io_tests;

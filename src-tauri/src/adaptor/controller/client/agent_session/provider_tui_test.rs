@@ -60,8 +60,8 @@ fn test_agent_session_controller_terminal_spawn詳細を既存の利用者向け
 
     // When
     let error = launch_error(
-        AgentSessionLaunchUsecaseError::TerminalSpawn(
-            crate::domain::agent_session::ProviderAgentTerminalSpawnError::Technical(
+        AgentSessionLaunchUsecaseError::Terminal(
+            crate::domain::agent_session::ProviderAgentTerminalGatewayError::Technical(
                 crate::domain::failure::TechnicalFailure {
                     nature: crate::domain::failure::TechnicalFailureNature::Other,
                     message: internal_error.to_string(),

@@ -28,9 +28,6 @@ pub enum TerminalSurfaceGatewayError {
 }
 
 impl TerminalSurfaceGatewayError {
-    pub fn input_unavailable(cause: TerminalSurfaceInputUnavailableCause) -> Self {
-        Self::InputUnavailable(cause)
-    }
     pub fn message(&self) -> &str {
         match self {
             Self::NotFound(message) | Self::InvalidOperation(message) => message,

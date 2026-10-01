@@ -179,12 +179,7 @@ fn compact_checkpoint(
     journal: &Arc<Mutex<IncrementalCheckpointJournal>>,
 ) -> Result<(), WorkFailure> {
     let checkpoint = materialize_checkpoint(registry, runtime_generation, terminal_surface)
-        .map_err(|message| WorkFailure {
-            kind: crate::usecase::failure::Failure::Business(
-                crate::usecase::failure::BusinessFailure::Other,
-            ),
-            message,
-        })?;
+        .map_err(checkpoint_target_missing)?;
     store
         .replace_base(session_key, &checkpoint)
         .map_err(checkpoint_write_failure)?;
@@ -315,12 +310,7 @@ impl BackgroundCheckpoint {
                 self.runtime_generation,
                 &self.terminal_surface,
             )
-            .map_err(|message| WorkFailure {
-                kind: crate::usecase::failure::Failure::Business(
-                    crate::usecase::failure::BusinessFailure::Other,
-                ),
-                message,
-            })?;
+            .map_err(checkpoint_target_missing)?;
             execute::<()>(&Request::CheckpointCompact {
                 store: self.store.clone(),
                 key: self.session_key.clone(),
@@ -805,7 +795,10 @@ impl TerminalSurfaceGateway for TerminalSurfaceRuntimeGatewayFor {
         )) {
             Ok(env) => extra_env.extend(env),
             Err(e) => {
-                return Err(io_failure(e));
+                return Err(io_failure(std::io::Error::new(
+                    e.kind(),
+                    format!("failed to prepare alias child env for PTY spawn: {e}"),
+                )));
             }
         }
         crate::infrastructure::telemetry::metrics::record_terminal_launch(
@@ -1124,12 +1117,12 @@ impl TerminalSurfaceGateway for TerminalSurfaceRuntimeGatewayFor {
             Ok(ready) => ready,
             Err(TerminalSurfaceInputIngressError::StaleAttachment) => {
                 let cause = TerminalSurfaceInputUnavailableCause::StaleAttachment;
-                let error = TerminalSurfaceGatewayError::input_unavailable(cause);
+                let error = TerminalSurfaceGatewayError::InputUnavailable(cause);
                 return Err(error);
             }
             Err(TerminalSurfaceInputIngressError::PendingCapacityExceeded) => {
                 let cause = TerminalSurfaceInputUnavailableCause::PendingCapacityExceeded;
-                let error = TerminalSurfaceGatewayError::input_unavailable(cause);
+                let error = TerminalSurfaceGatewayError::InputUnavailable(cause);
                 return Err(error);
             }
         };
@@ -1339,7 +1332,7 @@ impl TerminalSurfaceGateway for TerminalSurfaceRuntimeGatewayFor {
             })
             .collect::<Vec<_>>();
         for (scheduler, _, _, _, _, _) in &targets {
-            scheduler.flush().map_err(work_failure)?;
+            scheduler.flush().map_err(checkpoint_work_failure)?;
         }
         for (_, store, journal, checkpoint_io, terminal_surface, session_key) in targets {
             let runtime_generation = self
@@ -1358,15 +1351,11 @@ impl TerminalSurfaceGateway for TerminalSurfaceRuntimeGatewayFor {
                 &terminal_surface,
                 &journal,
             )
-            .map_err(work_failure)?;
+            .map_err(checkpoint_work_failure)?;
         }
         Ok(())
     }
 }
-
-#[cfg(test)]
-#[path = "runtime_gateway_impl_test.rs"]
-mod runtime_gateway_impl_tests;
 
 fn io_failure(error: std::io::Error) -> TerminalSurfaceGatewayError {
     TerminalSurfaceGatewayError::Technical(error.into())
@@ -1382,6 +1371,29 @@ fn journal_failure(message: String) -> TerminalSurfaceGatewayError {
         message,
     })
 }
-fn work_failure(error: WorkFailure) -> TerminalSurfaceGatewayError {
-    TerminalSurfaceGatewayError::Technical(technical_failure(error))
+fn checkpoint_target_missing(message: String) -> WorkFailure {
+    WorkFailure {
+        kind: crate::usecase::failure::Failure::Business(
+            crate::usecase::failure::BusinessFailure::Other,
+        ),
+        message,
+    }
 }
+
+fn checkpoint_work_failure(error: WorkFailure) -> TerminalSurfaceGatewayError {
+    match error.kind {
+        crate::usecase::failure::Failure::Business(_) => {
+            TerminalSurfaceGatewayError::NotFound(error.message)
+        }
+        crate::usecase::failure::Failure::Technical(nature) => {
+            TerminalSurfaceGatewayError::Technical(crate::domain::failure::TechnicalFailure {
+                nature,
+                message: error.message,
+            })
+        }
+    }
+}
+
+#[cfg(test)]
+#[path = "runtime_gateway_impl_test.rs"]
+mod runtime_gateway_impl_tests;
