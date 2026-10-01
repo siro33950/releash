@@ -41,7 +41,14 @@ impl ProviderExecutableConfigRepository for InMemoryProviderExecutableConfigRepo
         self.overrides
             .lock()
             .map(|overrides| overrides.get(&provider).cloned())
-            .map_err(|_| ProviderExecutableConfigRepositoryError::Unavailable)
+            .map_err(|error| {
+                ProviderExecutableConfigRepositoryError::Technical(
+                    crate::domain::failure::TechnicalFailure {
+                        nature: crate::domain::failure::TechnicalFailureNature::Other,
+                        message: error.to_string(),
+                    },
+                )
+            })
     }
 
     fn save_configured_executable(
@@ -49,10 +56,14 @@ impl ProviderExecutableConfigRepository for InMemoryProviderExecutableConfigRepo
         provider: ProviderKind,
         executable: Option<&ProviderExecutable>,
     ) -> Result<(), ProviderExecutableConfigRepositoryError> {
-        let mut overrides = self
-            .overrides
-            .lock()
-            .map_err(|_| ProviderExecutableConfigRepositoryError::Unavailable)?;
+        let mut overrides = self.overrides.lock().map_err(|error| {
+            ProviderExecutableConfigRepositoryError::Technical(
+                crate::domain::failure::TechnicalFailure {
+                    nature: crate::domain::failure::TechnicalFailureNature::Other,
+                    message: error.to_string(),
+                },
+            )
+        })?;
         match executable {
             Some(executable) => {
                 overrides.insert(provider, executable.clone());

@@ -172,7 +172,9 @@ fn map_gateway_error(error: AgentSessionHistoryGatewayError) -> AgentSessionHist
         AgentSessionHistoryGatewayError::InvalidRequest => {
             AgentSessionHistoryQueryError::InvalidRequest
         }
-        AgentSessionHistoryGatewayError::Unavailable => AgentSessionHistoryQueryError::Unavailable,
+        AgentSessionHistoryGatewayError::Technical(error) => {
+            AgentSessionHistoryQueryError::Technical(error)
+        }
         AgentSessionHistoryGatewayError::Store(kind) => AgentSessionHistoryQueryError::Store(kind),
         AgentSessionHistoryGatewayError::Corrupt => AgentSessionHistoryQueryError::Corrupt,
     }

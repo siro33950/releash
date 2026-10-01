@@ -75,8 +75,8 @@ pub(crate) enum AgentSessionLaunchUsecaseError {
     InvalidInput,
     Conflict(crate::domain::failure::StorageFailure),
     StorageUnavailable,
-    LaunchUnavailable,
-    TerminalUnavailable,
+    Launch(crate::domain::agent_session::ProviderAgentLaunchGatewayError),
+    Terminal(crate::domain::agent_session::ProviderAgentTerminalGatewayError),
     TerminalSpawn(ProviderAgentTerminalSpawnError),
     Corrupt,
 }
@@ -662,7 +662,7 @@ impl AgentSessionLaunchUsecase {
         let terminal_result = self
             .terminal
             .delete(&session.session().terminal_surface_owner())
-            .map_err(|_| AgentSessionLaunchUsecaseError::TerminalUnavailable);
+            .map_err(AgentSessionLaunchUsecaseError::Terminal);
         let lifecycle_result = ProviderLifecycleScope::new(agent_session_id)
             .map_err(|_| AgentSessionLaunchUsecaseError::Corrupt);
         let lifecycle_result = match lifecycle_result {
@@ -797,8 +797,8 @@ impl AgentSessionLaunchUsecase {
                 AgentSessionHistoryGatewayError::InvalidRequest => {
                     AgentSessionLaunchUsecaseError::InvalidInput
                 }
-                AgentSessionHistoryGatewayError::Unavailable => {
-                    AgentSessionLaunchUsecaseError::StorageUnavailable
+                AgentSessionHistoryGatewayError::Technical(error) => {
+                    AgentSessionLaunchUsecaseError::Technical(error)
                 }
                 AgentSessionHistoryGatewayError::Store(kind) => {
                     AgentSessionLaunchUsecaseError::Store(kind)
@@ -909,11 +909,11 @@ impl AgentSessionLaunchUsecase {
     ) -> Result<(), AgentSessionLaunchUsecaseError> {
         let terminal_result =
             TerminalSurfaceOwner::session(request.workspace.clone(), agent_session_id)
-                .map_err(|_| AgentSessionLaunchUsecaseError::TerminalUnavailable)
+                .map_err(|_| AgentSessionLaunchUsecaseError::InvalidInput)
                 .and_then(|terminal_owner| {
                     self.terminal
                         .stop_preserving_checkpoint(&terminal_owner)
-                        .map_err(|_| AgentSessionLaunchUsecaseError::TerminalUnavailable)
+                        .map_err(AgentSessionLaunchUsecaseError::Terminal)
                 });
         let lifecycle_result = self
             .lifecycle
@@ -1010,7 +1010,7 @@ impl AgentSessionLaunchUsecase {
         let terminal_result = self
             .terminal
             .delete(&created.session().terminal_surface_owner())
-            .map_err(|_| AgentSessionLaunchUsecaseError::TerminalUnavailable);
+            .map_err(AgentSessionLaunchUsecaseError::Terminal);
         let lifecycle_result = self
             .lifecycle
             .release(armed.slot_id(), armed.binding_id())
@@ -1145,17 +1145,7 @@ fn map_lifecycle_error(error: ProviderLifecycleUsecaseError) -> AgentSessionLaun
 }
 
 fn map_launch_error(error: ProviderAgentLaunchGatewayError) -> AgentSessionLaunchUsecaseError {
-    match error {
-        ProviderAgentLaunchGatewayError::Technical(stopped) => {
-            AgentSessionLaunchUsecaseError::Technical(stopped)
-        }
-        ProviderAgentLaunchGatewayError::InvalidInput => {
-            AgentSessionLaunchUsecaseError::InvalidInput
-        }
-        ProviderAgentLaunchGatewayError::Unavailable => {
-            AgentSessionLaunchUsecaseError::LaunchUnavailable
-        }
-    }
+    AgentSessionLaunchUsecaseError::Launch(error)
 }
 
 fn map_execution_tree_registration_error(

@@ -30,37 +30,43 @@ pub(crate) struct SpawnedNativePty {
 #[derive(Clone)]
 pub(crate) struct NativePtyRuntime {
     input: mpsc::SyncSender<Vec<u8>>,
-    input_error: Arc<Mutex<Option<String>>>,
+    input_error: Arc<Mutex<Option<NativePtyError>>>,
     killer: Arc<Mutex<Box<dyn portable_pty::ChildKiller + Send + Sync>>>,
     resizer: Arc<Mutex<Box<dyn NativePtyResizer + Send>>>,
 }
 
 impl NativePtyRuntime {
-    pub(crate) fn write(&self, data: &[u8]) -> Result<(), String> {
+    pub(crate) fn write(&self, data: &[u8]) -> Result<(), NativePtyError> {
         if let Some(error) = self.input_error.lock().as_ref() {
             return Err(error.clone());
         }
         self.input
             .try_send(data.to_vec())
             .map_err(|error| match error {
-                mpsc::TrySendError::Full(_) => "PTY input queue is full".to_string(),
+                mpsc::TrySendError::Full(_) => NativePtyError {
+                    kind: std::io::ErrorKind::WouldBlock,
+                    message: "PTY input queue is full".into(),
+                },
                 mpsc::TrySendError::Disconnected(_) => self
                     .input_error
                     .lock()
                     .clone()
-                    .unwrap_or_else(|| "PTY input writer is unavailable".to_string()),
+                    .unwrap_or_else(|| NativePtyError {
+                        kind: std::io::ErrorKind::BrokenPipe,
+                        message: "PTY input writer is unavailable".into(),
+                    }),
             })
     }
 
-    pub(crate) fn resize(&self, rows: u16, cols: u16) -> Result<(), String> {
+    pub(crate) fn resize(&self, rows: u16, cols: u16) -> Result<(), NativePtyError> {
         self.resizer.lock().resize(rows, cols)
     }
 
-    pub(crate) fn kill(&self) -> Result<(), String> {
+    pub(crate) fn kill(&self) -> Result<(), NativePtyError> {
         self.killer
             .lock()
             .kill()
-            .map_err(|error| format!("Failed to kill PTY: {error}"))
+            .map_err(|error| NativePtyError::io(error, "Failed to kill PTY"))
     }
 
     fn new(
@@ -79,11 +85,11 @@ impl NativePtyRuntime {
                 }
                 let result = writer
                     .write_all(&data)
-                    .map_err(|error| format!("Failed to write to PTY: {error}"))
+                    .map_err(|error| NativePtyError::io(error, "Failed to write to PTY"))
                     .and_then(|()| {
                         writer
                             .flush()
-                            .map_err(|error| format!("Failed to flush PTY: {error}"))
+                            .map_err(|error| NativePtyError::io(error, "Failed to flush PTY"))
                     });
                 if let Err(error) = result {
                     *worker_error.lock() = Some(error);
@@ -136,7 +142,7 @@ impl NativePtyOutput {
 }
 
 pub(crate) trait NativePtyResizer {
-    fn resize(&mut self, rows: u16, cols: u16) -> Result<(), String>;
+    fn resize(&mut self, rows: u16, cols: u16) -> Result<(), NativePtyError>;
 }
 
 struct PortablePtyResizer {
@@ -144,7 +150,7 @@ struct PortablePtyResizer {
 }
 
 impl NativePtyResizer for PortablePtyResizer {
-    fn resize(&mut self, rows: u16, cols: u16) -> Result<(), String> {
+    fn resize(&mut self, rows: u16, cols: u16) -> Result<(), NativePtyError> {
         self.master
             .resize(PtySize {
                 rows,
@@ -152,7 +158,7 @@ impl NativePtyResizer for PortablePtyResizer {
                 pixel_width: 0,
                 pixel_height: 0,
             })
-            .map_err(|error| format!("Failed to resize PTY: {error}"))
+            .map_err(|error| NativePtyError::external(error, "Failed to resize PTY"))
     }
 }
 
@@ -174,7 +180,10 @@ fn configure_terminal_environment(command: &mut CommandBuilder, managed_process:
 }
 
 impl NativePtySystem {
-    pub(crate) fn spawn(&self, config: NativePtySpawnConfig) -> Result<SpawnedNativePty, String> {
+    pub(crate) fn spawn(
+        &self,
+        config: NativePtySpawnConfig,
+    ) -> Result<SpawnedNativePty, NativePtyError> {
         let pair = native_pty_system()
             .openpty(PtySize {
                 rows: config.rows,
@@ -182,7 +191,7 @@ impl NativePtySystem {
                 pixel_width: 0,
                 pixel_height: 0,
             })
-            .map_err(|error| format!("Failed to open PTY: {error}"))?;
+            .map_err(|error| NativePtyError::external(error, "Failed to open PTY"))?;
 
         let managed_process = config.process.is_some();
         let mut command = if let Some(process) = config.process {
@@ -236,17 +245,17 @@ impl NativePtySystem {
             let _spawn = crate::infrastructure::process::parent_lifetime::spawn_guard();
             pair.slave
                 .spawn_command(command)
-                .map_err(|error| format!("Failed to spawn shell: {error}"))?
+                .map_err(|error| NativePtyError::external(error, "Failed to spawn shell"))?
         };
         drop(pair.slave);
 
         let master = pair.master;
         let reader = master
             .try_clone_reader()
-            .map_err(|error| format!("Failed to clone reader: {error}"))?;
+            .map_err(|error| NativePtyError::external(error, "Failed to clone reader"))?;
         let writer = master
             .take_writer()
-            .map_err(|error| format!("Failed to take writer: {error}"))?;
+            .map_err(|error| NativePtyError::external(error, "Failed to take writer"))?;
 
         let killer = child.clone_killer();
         Ok(SpawnedNativePty {
@@ -259,3 +268,38 @@ impl NativePtySystem {
 #[cfg(test)]
 #[path = "native_pty_test.rs"]
 mod native_pty_tests;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct NativePtyError {
+    pub(crate) kind: std::io::ErrorKind,
+    pub(crate) message: String,
+}
+impl NativePtyError {
+    fn io(error: std::io::Error, context: &str) -> Self {
+        Self {
+            kind: error.kind(),
+            message: format!("{context}: {error}"),
+        }
+    }
+    fn external(error: impl AsRef<dyn std::error::Error + Send + Sync>, context: &str) -> Self {
+        let error = error.as_ref();
+        let mut source: Option<&(dyn std::error::Error + 'static)> = Some(error);
+        let mut kind = std::io::ErrorKind::Other;
+        while let Some(current) = source {
+            if let Some(error) = current.downcast_ref::<std::io::Error>() {
+                kind = error.kind();
+                break;
+            }
+            source = current.source();
+        }
+        Self {
+            kind,
+            message: format!("{context}: {error}"),
+        }
+    }
+}
+impl std::fmt::Display for NativePtyError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.message)
+    }
+}

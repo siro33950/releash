@@ -52,7 +52,7 @@ pub(crate) fn storage_unavailable(error: &rusqlite::Error) -> LocalEventQueryErr
         SqliteFailureCondition::Inaccessible => LocalEventQueryError::StorageAccessRequired {
             failure: SafeOperationFailure::new(
                 SessionOperationFailureKind::StorageUnavailable,
-                crate::domain::failure::TechnicalFailureNature::Other,
+                crate::adaptor::gateway::shared::sqlite_failure::nature(error),
                 "local event store read failed",
                 correlation,
             ),

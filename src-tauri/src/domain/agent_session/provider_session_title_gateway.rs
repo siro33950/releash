@@ -8,9 +8,9 @@ pub(crate) struct ProviderSessionTitleRequest {
     pub(crate) transcript_ref: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ProviderSessionTitleGatewayError {
-    Unavailable,
+    Technical(crate::domain::failure::TechnicalFailure),
     Corrupt,
 }
 

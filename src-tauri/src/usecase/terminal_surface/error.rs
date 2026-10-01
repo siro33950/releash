@@ -5,28 +5,31 @@ use crate::domain::terminal_surface::gateway::{
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum UsecaseError {
     #[error("{0}")]
-    Gateway(String),
+    NotFound(String),
+    #[error("{0}")]
+    InvalidOperation(String),
+    #[error("{0}")]
+    Technical(crate::domain::failure::TechnicalFailure),
     #[error("Terminal input attachment is no longer active")]
     StaleAttachment,
     #[error("Terminal Surface owner identity collision")]
     OwnerConflict,
-    #[error("{error}")]
-    PtySpawn { error: String },
-    #[error("{error}")]
-    OtherSpawnFailure { error: String },
-}
-
-impl From<String> for UsecaseError {
-    fn from(value: String) -> Self {
-        Self::Gateway(value)
-    }
 }
 
 impl From<TerminalSurfaceGatewayError> for UsecaseError {
     fn from(value: TerminalSurfaceGatewayError) -> Self {
-        match value.input_cause() {
-            Some(TerminalSurfaceInputUnavailableCause::StaleAttachment) => Self::StaleAttachment,
-            _ => Self::Gateway(value.message().to_string()),
+        match value {
+            TerminalSurfaceGatewayError::NotFound(message) => Self::NotFound(message),
+            TerminalSurfaceGatewayError::InvalidOperation(message) => {
+                Self::InvalidOperation(message)
+            }
+            TerminalSurfaceGatewayError::Technical(failure) => Self::Technical(failure),
+            TerminalSurfaceGatewayError::InputUnavailable(
+                TerminalSurfaceInputUnavailableCause::StaleAttachment,
+            ) => Self::StaleAttachment,
+            TerminalSurfaceGatewayError::InputUnavailable(cause) => {
+                Self::InvalidOperation(cause.internal_cause().into())
+            }
         }
     }
 }

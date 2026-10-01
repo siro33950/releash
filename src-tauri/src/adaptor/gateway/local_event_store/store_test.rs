@@ -599,3 +599,30 @@ async fn test_書込待ち_期限と取り消しで待ちを終えても受理�
         );
     }
 }
+
+#[test]
+fn test_store起動失敗_io種類とメッセージが実行中と一致する() {
+    use crate::domain::failure::Failure;
+    for kind in [
+        std::io::ErrorKind::Interrupted,
+        std::io::ErrorKind::WouldBlock,
+        std::io::ErrorKind::ConnectionReset,
+        std::io::ErrorKind::ConnectionAborted,
+        std::io::ErrorKind::NotConnected,
+        std::io::ErrorKind::TimedOut,
+        std::io::ErrorKind::PermissionDenied,
+        std::io::ErrorKind::StorageFull,
+    ] {
+        // Given
+        let error = std::io::Error::new(kind, "original io failure");
+        // When
+        let LocalEventStoreOpenError::StorageUnavailable(failure) = super::io_open_failure(&error)
+        else {
+            panic!("expected technical failure")
+        };
+        let runtime = crate::adaptor::gateway::shared::background_io::failure(error);
+        // Then
+        assert_eq!(runtime.kind, Failure::Technical(failure.nature));
+        assert_eq!(runtime.message, failure.message);
+    }
+}

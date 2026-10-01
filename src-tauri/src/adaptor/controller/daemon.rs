@@ -624,7 +624,7 @@ fn classify_startup_failure(
 
     match error {
         E::WriterLockHeld => K::StoreInUse,
-        E::StorageUnavailable => K::StorageUnavailable,
+        E::StorageUnavailable(failure) => K::StorageUnavailable(failure.nature),
         E::UnsupportedRuntime => K::UnsupportedRuntime,
         E::UnsupportedStoreVersion => K::UnsupportedStoreVersion,
         E::InitializationStateInvalid => K::InitializationStateInvalid,

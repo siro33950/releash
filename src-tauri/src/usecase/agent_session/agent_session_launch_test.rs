@@ -130,7 +130,7 @@ fn test_provider起動準備_停止分類をusecaseまで保持する() {
         );
         // Then
         assert!(
-            matches!(error, super::AgentSessionLaunchUsecaseError::Technical(ref actual) if *actual == stopped.into())
+            matches!(error, super::AgentSessionLaunchUsecaseError::Launch(crate::domain::agent_session::ProviderAgentLaunchGatewayError::Technical(ref actual)) if *actual == stopped.into())
         );
     }
 }

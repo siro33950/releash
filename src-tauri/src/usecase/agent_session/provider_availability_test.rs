@@ -50,7 +50,12 @@ impl ProviderExecutableConfigRepository for FakeProviderExecutableConfigReposito
         executable: Option<&ProviderExecutable>,
     ) -> Result<(), ProviderExecutableConfigRepositoryError> {
         if self.fail_save.load(Ordering::SeqCst) {
-            return Err(ProviderExecutableConfigRepositoryError::Unavailable);
+            return Err(ProviderExecutableConfigRepositoryError::Technical(
+                crate::domain::failure::TechnicalFailure {
+                    nature: crate::domain::failure::TechnicalFailureNature::Transient,
+                    message: "unavailable".into(),
+                },
+            ));
         }
         let mut overrides = self.overrides.lock().unwrap();
         match executable {
@@ -292,7 +297,14 @@ fn test_provider_availability_保存失敗時はregistryを変更しない() {
         availability
             .update_configured_executable(ProviderKind::Codex, "/custom/codex")
             .unwrap_err(),
-        ProviderAvailabilityUsecaseError::ConfigUnavailable
+        ProviderAvailabilityUsecaseError::Config(
+            crate::domain::agent_session::ProviderExecutableConfigRepositoryError::Technical(
+                crate::domain::failure::TechnicalFailure {
+                    nature: crate::domain::failure::TechnicalFailureNature::Transient,
+                    message: "unavailable".into()
+                }
+            )
+        )
     );
     assert_eq!(availability.snapshot().unwrap(), before);
 }

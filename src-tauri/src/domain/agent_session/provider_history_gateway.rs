@@ -21,7 +21,7 @@ pub(crate) enum AgentSessionHistoryGatewayError {
     ProviderSessionAlreadyOwned { agent_session_id: String },
     Store(crate::domain::failure::StorageFailure),
     InvalidRequest,
-    Unavailable,
+    Technical(crate::domain::failure::TechnicalFailure),
     Corrupt,
 }
 

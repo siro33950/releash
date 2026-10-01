@@ -43,12 +43,14 @@ mod errors_tests;
 #[derive(Debug)]
 pub(crate) struct CommandFailure {
     pub(crate) kind: connectrpc::ErrorCode,
+    pub(crate) message: Option<String>,
     pub(crate) detail: wire::CommandError,
 }
 impl From<crate::adaptor::presenter::error::AppError> for CommandFailure {
     fn from(error: crate::adaptor::presenter::error::AppError) -> Self {
         Self {
             kind: error.connect_code(),
+            message: error.cause().map(str::to_string),
             detail: error.into(),
         }
     }
@@ -57,6 +59,7 @@ impl From<crate::adaptor::controller::terminal_surface::TerminalCommandError> fo
     fn from(error: crate::adaptor::controller::terminal_surface::TerminalCommandError) -> Self {
         Self {
             kind: error.kind,
+            message: error.cause.clone(),
             detail: error.into(),
         }
     }
@@ -72,6 +75,7 @@ impl From<crate::usecase::application_startup::ApplicationUnavailable> for Comma
     fn from(error: crate::usecase::application_startup::ApplicationUnavailable) -> Self {
         Self {
             kind: error.connect_code(),
+            message: None,
             detail: error.into(),
         }
     }

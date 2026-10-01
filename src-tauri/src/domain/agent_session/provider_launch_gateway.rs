@@ -52,7 +52,6 @@ impl PreparedProviderLaunch {
 pub(crate) enum ProviderAgentLaunchGatewayError {
     Technical(crate::domain::failure::TechnicalFailure),
     InvalidInput,
-    Unavailable,
 }
 
 pub(crate) trait ProviderAgentLaunchGateway: Send + Sync {

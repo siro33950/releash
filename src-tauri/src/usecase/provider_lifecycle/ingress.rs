@@ -19,6 +19,7 @@ use super::{
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ProviderLifecycleIngressUsecaseError {
+    Technical(crate::domain::failure::TechnicalFailure),
     Store(crate::domain::failure::StorageFailure),
     InvalidInput,
     Conflict,
@@ -420,6 +421,9 @@ fn map_hook_health_error(
     error: ProviderHookHealthUsecaseError,
 ) -> ProviderLifecycleIngressUsecaseError {
     match error {
+        ProviderHookHealthUsecaseError::Technical(failure) => {
+            ProviderLifecycleIngressUsecaseError::Technical(failure)
+        }
         ProviderHookHealthUsecaseError::InvalidInput => {
             ProviderLifecycleIngressUsecaseError::InvalidInput
         }

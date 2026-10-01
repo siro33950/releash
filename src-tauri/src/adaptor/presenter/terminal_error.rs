@@ -29,6 +29,7 @@ pub(crate) fn invalid_owner_error(
     );
     TerminalCommandError {
         kind: connectrpc::ErrorCode::InvalidArgument,
+        cause: None,
         code: code.code().to_string(),
         message: operation.message(code).to_string(),
     }
@@ -48,9 +49,11 @@ pub(crate) fn terminal_write_error(error: UsecaseError) -> AppError {
         "Terminal command failed: operation=write_terminal_surface code=PTY_ERROR cause={}",
         error
     );
+    let cause = matches!(error, UsecaseError::Technical(_)).then(|| error.to_string());
     let stale = matches!(error, UsecaseError::StaleAttachment);
     let presented = AppError::new("Terminal input could not be sent. Try again.")
-        .with_status(error.connect_code());
+        .with_status(error.connect_code())
+        .with_cause(cause);
     if stale {
         presented.with_code("STALE_TERMINAL_ATTACHMENT")
     } else {
@@ -72,13 +75,17 @@ pub(crate) fn terminal_resize_error(error: UsecaseError) -> AppError {
         "Terminal command failed: operation=resize_terminal_surface code=PTY_ERROR cause={}",
         error
     );
-    AppError::new("Terminal resize failed. Try again.").with_status(error.connect_code())
+    AppError::new("Terminal resize failed. Try again.")
+        .with_status(error.connect_code())
+        .with_cause(matches!(error, UsecaseError::Technical(_)).then(|| error.to_string()))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct TerminalCommandError {
     #[serde(skip)]
     pub kind: connectrpc::ErrorCode,
+    #[serde(skip)]
+    pub(crate) cause: Option<String>,
     pub code: String,
     pub message: String,
 }
@@ -109,14 +116,15 @@ impl TerminalCommandOperation {
 
 impl TerminalCommandError {
     pub(crate) fn from_usecase(error: UsecaseError, operation: TerminalCommandOperation) -> Self {
+        let cause = matches!(error, UsecaseError::Technical(_)).then(|| error.to_string());
         let kind = error.connect_code();
         let internal_cause = error.to_string();
         let code = match error {
-            UsecaseError::Gateway(_)
+            UsecaseError::NotFound(_)
+            | UsecaseError::InvalidOperation(_)
+            | UsecaseError::Technical(_)
             | UsecaseError::OwnerConflict
-            | UsecaseError::StaleAttachment
-            | UsecaseError::PtySpawn { .. }
-            | UsecaseError::OtherSpawnFailure { .. } => TerminalCommandErrorCode::PtyError,
+            | UsecaseError::StaleAttachment => TerminalCommandErrorCode::PtyError,
         };
         log::error!(
             "Terminal command failed: operation={} code={} cause={}",
@@ -126,6 +134,7 @@ impl TerminalCommandError {
         );
         Self {
             kind,
+            cause,
             code: code.code().to_string(),
             message: operation.message(code).to_string(),
         }

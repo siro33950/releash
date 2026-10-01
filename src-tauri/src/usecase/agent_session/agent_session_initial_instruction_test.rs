@@ -63,7 +63,12 @@ impl ProviderAgentTerminalInputGateway for FailingTerminalInput {
             .unwrap()
             .push((owner.clone(), input.to_string()));
         self.write_observed.notify_one();
-        Err(ProviderAgentTerminalGatewayError::Unavailable)
+        Err(ProviderAgentTerminalGatewayError::Technical(
+            crate::domain::failure::TechnicalFailure {
+                nature: crate::domain::failure::TechnicalFailureNature::Transient,
+                message: "unavailable".into(),
+            },
+        ))
     }
 }
 
@@ -148,7 +153,12 @@ impl ProviderAgentTerminalInputGateway for ContinuationTerminalInput {
         input: &str,
     ) -> Result<(), ProviderAgentTerminalGatewayError> {
         if self.fail {
-            return Err(ProviderAgentTerminalGatewayError::Unavailable);
+            return Err(ProviderAgentTerminalGatewayError::Technical(
+                crate::domain::failure::TechnicalFailure {
+                    nature: crate::domain::failure::TechnicalFailureNature::Transient,
+                    message: "unavailable".into(),
+                },
+            ));
         }
         self.writes
             .lock()

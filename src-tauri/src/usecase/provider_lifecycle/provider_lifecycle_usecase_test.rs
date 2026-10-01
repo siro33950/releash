@@ -620,7 +620,12 @@ async fn test_provider警告読取_正常な警告と記録ごとの失敗を一
         health,
         Arc::new(FixedHookDeliveryFailures {
             observations: vec![
-                Err(ProviderHookHealthFailureQueryError::Unavailable),
+                Err(ProviderHookHealthFailureQueryError::Technical(
+                    crate::domain::failure::TechnicalFailure {
+                        nature: crate::domain::failure::TechnicalFailureNature::Transient,
+                        message: "unavailable".into(),
+                    },
+                )),
                 Ok(ProviderHookHealthFailureObservation {
                     provider: ProviderKind::Claude,
                     launch_id: "launch".into(),
@@ -644,7 +649,12 @@ async fn test_provider警告読取_正常な警告と記録ごとの失敗を一
     assert_eq!(
         result.failures,
         vec![
-            ProviderHookHealthFailureQueryError::Unavailable,
+            ProviderHookHealthFailureQueryError::Technical(
+                crate::domain::failure::TechnicalFailure {
+                    nature: crate::domain::failure::TechnicalFailureNature::Transient,
+                    message: "unavailable".into()
+                }
+            ),
             ProviderHookHealthFailureQueryError::Corrupt
         ]
     );

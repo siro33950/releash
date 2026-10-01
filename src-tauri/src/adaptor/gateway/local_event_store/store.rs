@@ -52,6 +52,28 @@ fn correlation_id() -> String {
     uuid::Uuid::new_v4().to_string()
 }
 
+fn io_open_failure(error: impl std::borrow::Borrow<std::io::Error>) -> LocalEventStoreOpenError {
+    let error = error.borrow();
+    LocalEventStoreOpenError::StorageUnavailable(crate::domain::failure::TechnicalFailure {
+        nature: crate::adaptor::gateway::shared::background_io::nature(error),
+        message: error.to_string(),
+    })
+}
+
+fn sqlite_open_failure(error: &rusqlite::Error) -> LocalEventStoreOpenError {
+    LocalEventStoreOpenError::StorageUnavailable(crate::domain::failure::TechnicalFailure {
+        nature: crate::adaptor::gateway::shared::sqlite_failure::nature(error),
+        message: error.to_string(),
+    })
+}
+
+fn connection_open_failure(error: &ConnectionError) -> LocalEventStoreOpenError {
+    match error {
+        ConnectionError::Sqlite(error) => sqlite_open_failure(error),
+        ConnectionError::SqliteTooOld { .. } => LocalEventStoreOpenError::UnsupportedRuntime,
+    }
+}
+
 fn classify_sqlite_error(
     error: &rusqlite::Error,
     otherwise: LocalEventStoreOpenError,
@@ -61,7 +83,7 @@ fn classify_sqlite_error(
         crate::adaptor::gateway::shared::sqlite_failure::SqliteFailureCondition::Inaccessible
             | crate::adaptor::gateway::shared::sqlite_failure::SqliteFailureCondition::Busy
     ) {
-        LocalEventStoreOpenError::StorageUnavailable
+        sqlite_open_failure(error)
     } else {
         otherwise
     }
@@ -108,7 +130,7 @@ fn classify_writer_lock_error(error: &std::io::Error) -> LocalEventStoreOpenErro
     if error.kind() == std::io::ErrorKind::WouldBlock {
         LocalEventStoreOpenError::WriterLockHeld
     } else {
-        LocalEventStoreOpenError::StorageUnavailable
+        io_open_failure(error)
     }
 }
 
@@ -120,13 +142,12 @@ fn sqlite_header_is_valid(
 
     layout.observe(StorePathOperation::Open, path);
     layout.observe(StorePathOperation::Read, path);
-    let mut file =
-        std::fs::File::open(path).map_err(|_| LocalEventStoreOpenError::StorageUnavailable)?;
+    let mut file = std::fs::File::open(path).map_err(io_open_failure)?;
     let mut header = [0u8; 16];
     match file.read_exact(&mut header) {
         Ok(()) => Ok(&header == b"SQLite format 3\0"),
         Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => Ok(false),
-        Err(_) => Err(LocalEventStoreOpenError::StorageUnavailable),
+        Err(error) => Err(io_open_failure(error)),
     }
 }
 
@@ -164,13 +185,17 @@ fn open_schema_inspection(
                 }
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(_) => return Err(LocalEventStoreOpenError::StorageUnavailable),
+            Err(error) => return Err(io_open_failure(error)),
         }
     }
     layout.observe(StorePathOperation::Open, path);
     layout.observe(StorePathOperation::Read, path);
-    let mut uri = url::Url::from_file_path(path)
-        .map_err(|()| LocalEventStoreOpenError::StorageUnavailable)?;
+    let mut uri = url::Url::from_file_path(path).map_err(|()| {
+        LocalEventStoreOpenError::StorageUnavailable(crate::domain::failure::TechnicalFailure {
+            nature: crate::domain::failure::TechnicalFailureNature::Other,
+            message: format!("invalid database file path: {}", path.display()),
+        })
+    })?;
     uri.query_pairs_mut().append_pair("mode", "ro");
     if wal_has_bytes {
         uri.query_pairs_mut().append_pair("readonly_shm", "1");
@@ -202,9 +227,7 @@ fn is_proven_initial_create_residue(
     path: &std::path::Path,
 ) -> Result<bool, LocalEventStoreOpenError> {
     layout.observe(StorePathOperation::Metadata, path);
-    let length = std::fs::metadata(path)
-        .map_err(|_| LocalEventStoreOpenError::StorageUnavailable)?
-        .len();
+    let length = std::fs::metadata(path).map_err(io_open_failure)?.len();
     if length == 0 {
         return Ok(true);
     }
@@ -235,12 +258,10 @@ fn remove_initial_create_database(layout: &StoreLayout) -> Result<(), LocalEvent
         match std::fs::remove_file(path) {
             Ok(()) => {}
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(_) => return Err(LocalEventStoreOpenError::StorageUnavailable),
+            Err(error) => return Err(io_open_failure(error)),
         }
     }
-    layout
-        .sync_app_data_root()
-        .map_err(|_| LocalEventStoreOpenError::StorageUnavailable)
+    layout.sync_app_data_root().map_err(io_open_failure)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -260,9 +281,7 @@ fn classify_existing_database(
     path: &std::path::Path,
 ) -> Result<ExistingDatabaseKind, LocalEventStoreOpenError> {
     layout.observe(StorePathOperation::Metadata, path);
-    let length = std::fs::metadata(path)
-        .map_err(|_| LocalEventStoreOpenError::StorageUnavailable)?
-        .len();
+    let length = std::fs::metadata(path).map_err(io_open_failure)?.len();
     if length == 0 || !sqlite_header_is_valid(layout, path)? {
         return Err(LocalEventStoreOpenError::InitializationStateInvalid);
     }
@@ -347,10 +366,10 @@ fn classify_existing_database(
     Err(LocalEventStoreOpenError::InitializationStateInvalid)
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LocalEventStoreOpenError {
     WriterLockHeld,
-    StorageUnavailable,
+    StorageUnavailable(crate::domain::failure::TechnicalFailure),
     UnsupportedRuntime,
     UnsupportedStoreVersion,
     InitializationStateInvalid,
@@ -362,7 +381,9 @@ impl std::fmt::Display for LocalEventStoreOpenError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::WriterLockHeld => write!(f, "another process holds the writer lock"),
-            Self::StorageUnavailable => write!(f, "local event storage is unavailable"),
+            Self::StorageUnavailable(failure) => {
+                write!(f, "local event storage is unavailable: {failure}")
+            }
             Self::UnsupportedRuntime => write!(f, "the bundled SQLite runtime is unsupported"),
             Self::UnsupportedStoreVersion => {
                 write!(f, "the local event store version is unsupported")
@@ -437,14 +458,11 @@ impl LocalEventStore {
     ///
     /// Create or open the single fixed-path SQLite authority.
     pub fn open(config: LocalEventStoreConfig) -> Result<Arc<Self>, LocalEventStoreOpenError> {
-        check_sqlite_version().map_err(|error| {
-            classify_connection_error(&error, LocalEventStoreOpenError::StorageUnavailable)
-        })?;
+        check_sqlite_version()
+            .map_err(|error| classify_connection_error(&error, connection_open_failure(&error)))?;
         let layout =
             StoreLayout::with_observer(&config.app_data_root, Arc::clone(&config.path_observer));
-        layout
-            .ensure_app_data_root()
-            .map_err(|_| LocalEventStoreOpenError::StorageUnavailable)?;
+        layout.ensure_app_data_root().map_err(io_open_failure)?;
 
         let lock_path = layout.writer_lock_path();
         layout.observe(StorePathOperation::Open, &lock_path);
@@ -454,20 +472,16 @@ impl LocalEventStore {
             .write(true)
             .truncate(false)
             .open(&lock_path)
-            .map_err(|_| LocalEventStoreOpenError::StorageUnavailable)?;
+            .map_err(io_open_failure)?;
         layout.observe(StorePathOperation::Metadata, &lock_path);
-        set_owner_only_permissions(&lock_path)
-            .map_err(|_| LocalEventStoreOpenError::StorageUnavailable)?;
+        set_owner_only_permissions(&lock_path).map_err(io_open_failure)?;
         fs2::FileExt::try_lock_exclusive(&writer_lock)
             .map_err(|error| classify_writer_lock_error(&error))?;
 
         let database_path = layout.database_path();
-        let evidence = inspect_initial_create_evidence(&layout)
-            .map_err(|_| LocalEventStoreOpenError::StorageUnavailable)?;
+        let evidence = inspect_initial_create_evidence(&layout).map_err(io_open_failure)?;
         layout.observe(StorePathOperation::Metadata, &database_path);
-        let database_exists = database_path
-            .try_exists()
-            .map_err(|_| LocalEventStoreOpenError::StorageUnavailable)?;
+        let database_exists = database_path.try_exists().map_err(io_open_failure)?;
         let now_ms = config.clock.now_ms().max(0);
 
         let writer_connection = if !database_exists {
@@ -483,7 +497,7 @@ impl LocalEventStore {
                 }
                 InitialCreateEvidenceState::Valid => Ok(()),
             }
-            .map_err(|_| LocalEventStoreOpenError::StorageUnavailable)?;
+            .map_err(io_open_failure)?;
             layout.observe(StorePathOperation::Open, &database_path);
             layout.observe(StorePathOperation::Write, &database_path);
             let connection = open_writer(&database_path).map_err(|error| {
@@ -497,11 +511,12 @@ impl LocalEventStore {
                 config.fault.crash_initial_create_process_if_armed(
                     InitialCreateFaultPoint::AfterSqliteFileCreate,
                 );
-                return Err(LocalEventStoreOpenError::StorageUnavailable);
+                return Err(io_open_failure(std::io::Error::other(
+                    "injected initial creation failure",
+                )));
             }
             layout.observe(StorePathOperation::Metadata, &database_path);
-            set_owner_only_permissions(&database_path)
-                .map_err(|_| LocalEventStoreOpenError::StorageUnavailable)?;
+            set_owner_only_permissions(&database_path).map_err(io_open_failure)?;
             let installation_id = config
                 .fault
                 .initial_installation_id()
@@ -540,11 +555,12 @@ impl LocalEventStore {
                     config.fault.crash_initial_create_process_if_armed(
                         InitialCreateFaultPoint::AfterSqliteFileCreate,
                     );
-                    return Err(LocalEventStoreOpenError::StorageUnavailable);
+                    return Err(io_open_failure(std::io::Error::other(
+                        "injected initial creation failure",
+                    )));
                 }
                 layout.observe(StorePathOperation::Metadata, &database_path);
-                set_owner_only_permissions(&database_path)
-                    .map_err(|_| LocalEventStoreOpenError::StorageUnavailable)?;
+                set_owner_only_permissions(&database_path).map_err(io_open_failure)?;
                 let installation_id = config
                     .fault
                     .initial_installation_id()
@@ -610,7 +626,7 @@ impl LocalEventStore {
         layout.observe(StorePathOperation::Sync, &database_path);
         std::fs::File::open(&database_path)
             .and_then(|file| file.sync_all())
-            .map_err(|_| LocalEventStoreOpenError::StorageUnavailable)?;
+            .map_err(io_open_failure)?;
         if config
             .fault
             .take_initial_create_fault(InitialCreateFaultPoint::AfterDatabaseSync)
@@ -619,7 +635,9 @@ impl LocalEventStore {
             config
                 .fault
                 .crash_initial_create_process_if_armed(InitialCreateFaultPoint::AfterDatabaseSync);
-            return Err(LocalEventStoreOpenError::StorageUnavailable);
+            return Err(io_open_failure(std::io::Error::other(
+                "injected initial creation failure",
+            )));
         }
         if config
             .fault
@@ -629,10 +647,11 @@ impl LocalEventStore {
             config.fault.crash_initial_create_process_if_armed(
                 InitialCreateFaultPoint::BeforeEvidenceUnlink,
             );
-            return Err(LocalEventStoreOpenError::StorageUnavailable);
+            return Err(io_open_failure(std::io::Error::other(
+                "injected initial creation failure",
+            )));
         }
-        remove_initial_create_evidence(&layout)
-            .map_err(|_| LocalEventStoreOpenError::StorageUnavailable)?;
+        remove_initial_create_evidence(&layout).map_err(io_open_failure)?;
         if config
             .fault
             .take_initial_create_fault(InitialCreateFaultPoint::AfterEvidenceUnlink)
@@ -641,7 +660,9 @@ impl LocalEventStore {
             config.fault.crash_initial_create_process_if_armed(
                 InitialCreateFaultPoint::AfterEvidenceUnlink,
             );
-            return Err(LocalEventStoreOpenError::StorageUnavailable);
+            return Err(io_open_failure(std::io::Error::other(
+                "injected initial creation failure",
+            )));
         }
 
         let mut writer_connection = if checkpoint.busy {
@@ -677,8 +698,9 @@ impl LocalEventStore {
         for index in 0..READER_POOL_SIZE {
             layout.observe(StorePathOperation::Open, &database_path);
             layout.observe(StorePathOperation::Read, &database_path);
-            let connection = open_reader(&database_path)
-                .map_err(|_| LocalEventStoreOpenError::StorageUnavailable)?;
+            let connection = open_reader(&database_path).map_err(|error| {
+                classify_connection_error(&error, connection_open_failure(&error))
+            })?;
             reader_connections.push((index, connection));
         }
 
@@ -693,7 +715,7 @@ impl LocalEventStore {
                         QueuePop::Closed => break,
                     }
                 })
-                .map_err(|_| LocalEventStoreOpenError::StorageUnavailable)?
+                .map_err(io_open_failure)?
         };
 
         let mut writer_worker = Some(writer_worker);
@@ -706,7 +728,7 @@ impl LocalEventStore {
                 .spawn(move || worker_readers.run_worker(connection))
             {
                 Ok(worker) => worker,
-                Err(_) => {
+                Err(error) => {
                     queue.close();
                     readers.close();
                     for worker in reader_workers {
@@ -715,7 +737,7 @@ impl LocalEventStore {
                     if let Some(worker) = writer_worker.take() {
                         let _ = worker.join();
                     }
-                    return Err(LocalEventStoreOpenError::StorageUnavailable);
+                    return Err(io_open_failure(error));
                 }
             };
             reader_workers.push(worker);
@@ -1096,7 +1118,7 @@ mod startup_error_classification_tests {
         ] {
             assert_eq!(
                 classify_writer_lock_error(&std::io::Error::from(kind)),
-                LocalEventStoreOpenError::StorageUnavailable
+                io_open_failure(std::io::Error::from(kind))
             );
         }
     }
@@ -1120,7 +1142,7 @@ mod startup_error_classification_tests {
                     &sqlite_failure(code),
                     LocalEventStoreOpenError::SchemaEvolutionFailed,
                 ),
-                LocalEventStoreOpenError::StorageUnavailable
+                sqlite_open_failure(&sqlite_failure(code))
             );
         }
         assert_eq!(
@@ -1133,7 +1155,7 @@ mod startup_error_classification_tests {
         assert_eq!(
             classify_connection_error(
                 &ConnectionError::SqliteTooOld { version_number: 0 },
-                LocalEventStoreOpenError::StorageUnavailable,
+                LocalEventStoreOpenError::StoreValidationFailed,
             ),
             LocalEventStoreOpenError::UnsupportedRuntime
         );
@@ -1145,7 +1167,7 @@ mod startup_error_classification_tests {
             classify_startup_maintenance_error(&StartupMaintenanceError::Connection(
                 ConnectionError::Sqlite(sqlite_failure(rusqlite::ffi::SQLITE_IOERR)),
             )),
-            LocalEventStoreOpenError::StorageUnavailable
+            sqlite_open_failure(&sqlite_failure(rusqlite::ffi::SQLITE_IOERR))
         );
         assert_eq!(
             classify_startup_maintenance_error(&StartupMaintenanceError::Connection(

@@ -65,7 +65,7 @@ impl ProviderAgentLaunchGateway for LocalProviderAgentLaunchGateway {
             &resource_directory,
             &files,
         )
-        .map_err(|_| ProviderAgentLaunchGatewayError::Unavailable)?;
+        .map_err(map_files_error)?;
         let process = spec
             .terminal_process(executable.as_path().as_os_str(), launch)
             .map_err(|_| ProviderAgentLaunchGatewayError::InvalidInput)?;
@@ -118,10 +118,23 @@ impl ProviderAgentLaunchGateway for LocalProviderAgentLaunchGateway {
         crate::infrastructure::provider_lifecycle::cleanup_launch_files(
             &self.session_directory(agent_session_id),
         )
-        .map_err(|_| ProviderAgentLaunchGatewayError::Unavailable)
+        .map_err(map_files_error)
     }
 }
 
 fn digest(value: &str) -> String {
     hex::encode(Sha256::digest(value.as_bytes()))
+}
+
+fn map_files_error(
+    error: crate::infrastructure::provider_lifecycle::ProviderLaunchFilesError,
+) -> ProviderAgentLaunchGatewayError {
+    match error {
+        crate::infrastructure::provider_lifecycle::ProviderLaunchFilesError::InvalidPath => {
+            ProviderAgentLaunchGatewayError::InvalidInput
+        }
+        crate::infrastructure::provider_lifecycle::ProviderLaunchFilesError::Io(error) => {
+            ProviderAgentLaunchGatewayError::Technical(error.into())
+        }
+    }
 }

@@ -19,9 +19,9 @@ pub(crate) struct ProviderHookHealthFailureObservation {
     pub(crate) reason: ProviderLifecycleUnavailableReason,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ProviderHookHealthFailureQueryError {
-    Unavailable,
+    Technical(crate::domain::failure::TechnicalFailure),
     Corrupt,
 }
 
@@ -38,6 +38,7 @@ pub(crate) trait ProviderHookHealthFailureQuery: Send + Sync {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ProviderHookHealthUsecaseError {
+    Technical(crate::domain::failure::TechnicalFailure),
     Conflict,
     Store(crate::domain::failure::StorageFailure),
     InvalidInput,
@@ -72,8 +73,8 @@ impl ProviderHookHealthReadUsecase {
         &self,
     ) -> Result<ProviderHookHealthReadResult, ProviderHookHealthUsecaseError> {
         let observations = self.failures.list(256).await.map_err(|error| match error {
-            ProviderHookHealthFailureQueryError::Unavailable => {
-                ProviderHookHealthUsecaseError::StorageUnavailable
+            ProviderHookHealthFailureQueryError::Technical(failure) => {
+                ProviderHookHealthUsecaseError::Technical(failure)
             }
             ProviderHookHealthFailureQueryError::Corrupt => ProviderHookHealthUsecaseError::Corrupt,
         })?;

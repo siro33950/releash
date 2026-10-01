@@ -13,15 +13,23 @@ use crate::usecase::terminal_surface::error::UsecaseError;
 fn map_spawn_error(error: UsecaseError) -> ProviderAgentTerminalSpawnError {
     match error {
         UsecaseError::OwnerConflict => ProviderAgentTerminalSpawnError::OwnerConflict,
-        UsecaseError::PtySpawn { error } => ProviderAgentTerminalSpawnError::PtySpawn { error },
-        UsecaseError::Gateway(error) | UsecaseError::OtherSpawnFailure { error } => {
-            ProviderAgentTerminalSpawnError::OtherSpawnFailure { error }
+        UsecaseError::NotFound(message) => ProviderAgentTerminalSpawnError::NotFound(message),
+        UsecaseError::InvalidOperation(message) => {
+            ProviderAgentTerminalSpawnError::InvalidOperation(message)
         }
-        error @ UsecaseError::StaleAttachment => {
-            ProviderAgentTerminalSpawnError::OtherSpawnFailure {
-                error: error.to_string(),
-            }
+        UsecaseError::StaleAttachment => ProviderAgentTerminalSpawnError::StaleAttachment,
+        UsecaseError::Technical(failure) => ProviderAgentTerminalSpawnError::Technical(failure),
+    }
+}
+fn map_terminal_error(error: UsecaseError) -> ProviderAgentTerminalGatewayError {
+    match error {
+        UsecaseError::OwnerConflict => ProviderAgentTerminalGatewayError::OwnerConflict,
+        UsecaseError::NotFound(message) => ProviderAgentTerminalGatewayError::NotFound(message),
+        UsecaseError::InvalidOperation(message) => {
+            ProviderAgentTerminalGatewayError::InvalidOperation(message)
         }
+        UsecaseError::StaleAttachment => ProviderAgentTerminalGatewayError::StaleAttachment,
+        UsecaseError::Technical(failure) => ProviderAgentTerminalGatewayError::Technical(failure),
     }
 }
 
@@ -68,15 +76,14 @@ impl ProviderAgentTerminalGateway for TerminalSurfaceApplication {
         owner: &TerminalSurfaceOwner,
     ) -> Result<(), ProviderAgentTerminalGatewayError> {
         self.stop_preserving_checkpoint(owner)
-            .map_err(|_| ProviderAgentTerminalGatewayError::Unavailable)
+            .map_err(map_terminal_error)
     }
 
     fn delete(
         &self,
         owner: &TerminalSurfaceOwner,
     ) -> Result<(), ProviderAgentTerminalGatewayError> {
-        self.delete_surface(owner)
-            .map_err(|_| ProviderAgentTerminalGatewayError::Unavailable)
+        self.delete_surface(owner).map_err(map_terminal_error)
     }
 
     fn is_current_runtime_generation(
@@ -98,8 +105,7 @@ impl ProviderAgentTerminalInputGateway for TerminalSurfaceApplication {
         owner: &TerminalSurfaceOwner,
         input: &str,
     ) -> Result<(), ProviderAgentTerminalGatewayError> {
-        self.write(owner, input)
-            .map_err(|_| ProviderAgentTerminalGatewayError::Unavailable)
+        self.write(owner, input).map_err(map_terminal_error)
     }
 }
 

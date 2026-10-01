@@ -74,9 +74,7 @@ impl AgentSessionInitialInstructionUsecase {
         }
         match self.write_instruction(&session.session().terminal_surface_owner(), instruction) {
             Ok(()) => Ok(AgentSessionInitialInstructionDeliveryOutcome::Delivered),
-            Err(ProviderAgentTerminalGatewayError::Unavailable) => {
-                Ok(AgentSessionInitialInstructionDeliveryOutcome::DeliveryUnknown)
-            }
+            Err(_) => Ok(AgentSessionInitialInstructionDeliveryOutcome::DeliveryUnknown),
         }
     }
 

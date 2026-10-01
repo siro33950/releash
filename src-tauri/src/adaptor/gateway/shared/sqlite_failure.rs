@@ -30,3 +30,20 @@ pub(crate) fn condition(error: &rusqlite::Error) -> SqliteFailureCondition {
         _ => SqliteFailureCondition::Other,
     }
 }
+
+pub(crate) fn nature(error: &rusqlite::Error) -> crate::domain::failure::TechnicalFailureNature {
+    use crate::domain::failure::TechnicalFailureNature;
+    match condition(error) {
+        SqliteFailureCondition::Busy => TechnicalFailureNature::Transient,
+        _ => TechnicalFailureNature::Other,
+    }
+}
+
+impl From<rusqlite::Error> for crate::domain::failure::TechnicalFailure {
+    fn from(error: rusqlite::Error) -> Self {
+        Self {
+            nature: nature(&error),
+            message: error.to_string(),
+        }
+    }
+}

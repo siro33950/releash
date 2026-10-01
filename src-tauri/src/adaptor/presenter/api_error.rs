@@ -103,6 +103,11 @@ impl From<crate::usecase::provider_lifecycle::ProviderLifecycleIngressUsecaseErr
     ) -> Self {
         use crate::usecase::provider_lifecycle::ProviderLifecycleIngressUsecaseError;
         match error {
+            ProviderLifecycleIngressUsecaseError::Technical(failure) => ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "INTERNAL",
+                failure.message,
+            ),
             ProviderLifecycleIngressUsecaseError::InvalidInput => {
                 ApiError::invalid_request("Provider lifecycle input is invalid")
             }

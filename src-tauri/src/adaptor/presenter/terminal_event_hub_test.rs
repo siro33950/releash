@@ -95,7 +95,7 @@ fn test_ターミナル登録_配信対象の登録失敗を返しhubに残さ�
             _: &crate::usecase::terminal_surface::output::TerminalRegistration,
         ) -> Result<(), crate::usecase::terminal_surface::error::UsecaseError> {
             Err(
-                crate::usecase::terminal_surface::error::UsecaseError::Gateway(
+                crate::usecase::terminal_surface::error::UsecaseError::InvalidOperation(
                     "invalid target".into(),
                 ),
             )

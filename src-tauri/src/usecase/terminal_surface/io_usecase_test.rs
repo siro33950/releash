@@ -74,7 +74,7 @@ impl FakePtyGateway {
         }
         drop(gate);
         if self.shutdown_failures.contains(&(stage, generation)) {
-            Err(TerminalSurfaceGatewayError::new(format!(
+            Err(TerminalSurfaceGatewayError::NotFound(format!(
                 "{stage} failed {}",
                 self.shutdown_failure_id
             )))
@@ -204,7 +204,7 @@ impl TerminalSurfaceGateway for FakePtyGateway {
                         TerminalSurfaceInputUnavailableCause::PendingCapacityExceeded
                     }
                 };
-                TerminalSurfaceGatewayError::new(cause.internal_cause())
+                TerminalSurfaceGatewayError::input_unavailable(cause)
             })?;
         for input in ready {
             self.write(session_key, &input.data)?;

@@ -28,6 +28,7 @@ fn test_型付き応答_protoが成功と失敗を排他的に保持する() {
                     to_message("releash.client.v1.CommandError", error).unwrap();
                 let error =
                     crate::adaptor::presenter::connect::command_error(super::CommandFailure {
+                        message: None,
                         kind: connectrpc::ErrorCode::Internal,
                         detail: message,
                     });

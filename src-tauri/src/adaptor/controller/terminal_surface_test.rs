@@ -12,7 +12,10 @@ fn test_ターミナル操作_gateway失敗を操作ごとの固定文言へ変�
     // When / Then
     for (operation, expected_message) in cases {
         let command_error = TerminalCommandError::from_usecase(
-            UsecaseError::Gateway("internal PTY failure".to_string()),
+            UsecaseError::Technical(crate::domain::failure::TechnicalFailure {
+                nature: crate::domain::failure::TechnicalFailureNature::Other,
+                message: "internal PTY failure".to_string(),
+            }),
             operation,
         );
         assert_eq!(
@@ -52,7 +55,7 @@ fn test_ターミナル操作_不正なownerを操作ごとの固定文言へ変
 #[test]
 fn test_ターミナル入力_write失敗をtransport共通の固定文言へ変換する() {
     // Given / When
-    let gateway_error = terminal_write_error(UsecaseError::Gateway(
+    let gateway_error = terminal_write_error(UsecaseError::InvalidOperation(
         "Terminal input reorder buffer is full".to_string(),
     ));
     let invalid_owner_error = invalid_terminal_write_owner_error(
@@ -76,7 +79,12 @@ fn test_失効した入力attachmentだけが機械可読codeを持つ() {
 
     // Given
     let stale = terminal_write_error(UsecaseError::StaleAttachment);
-    let ordinary = terminal_write_error(UsecaseError::Gateway("write failed".into()));
+    let ordinary = terminal_write_error(UsecaseError::Technical(
+        crate::domain::failure::TechnicalFailure {
+            nature: crate::domain::failure::TechnicalFailureNature::Other,
+            message: "write failed".into(),
+        },
+    ));
 
     // When
     let stale_code = stale.connect_code();
@@ -101,7 +109,7 @@ fn test_失効した入力attachmentだけが機械可読codeを持つ() {
 #[test]
 fn test_ターミナル画面変形_resize失敗をtransport共通の固定文言へ変換する() {
     // Given / When
-    let gateway_error = terminal_resize_error(UsecaseError::Gateway(
+    let gateway_error = terminal_resize_error(UsecaseError::InvalidOperation(
         "Terminal runtime host is not bound".to_string(),
     ));
     let invalid_owner_error = invalid_terminal_resize_owner_error(
@@ -124,12 +132,14 @@ fn test_ターミナル画面生成_spawn失敗を汎用codeと固定文言へ�
     // Given
     let errors = [
         UsecaseError::OwnerConflict,
-        UsecaseError::PtySpawn {
-            error: "openpty failed".to_string(),
-        },
-        UsecaseError::OtherSpawnFailure {
-            error: "checkpoint failed".to_string(),
-        },
+        UsecaseError::Technical(crate::domain::failure::TechnicalFailure {
+            nature: crate::domain::failure::TechnicalFailureNature::Other,
+            message: "openpty failed".to_string(),
+        }),
+        UsecaseError::Technical(crate::domain::failure::TechnicalFailure {
+            nature: crate::domain::failure::TechnicalFailureNature::Other,
+            message: "checkpoint failed".to_string(),
+        }),
     ];
 
     // When / Then

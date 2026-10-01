@@ -422,7 +422,11 @@ struct MockResizer {
 }
 
 impl NativePtyResizer for MockResizer {
-    fn resize(&mut self, rows: u16, cols: u16) -> Result<(), String> {
+    fn resize(
+        &mut self,
+        rows: u16,
+        cols: u16,
+    ) -> Result<(), crate::infrastructure::terminal::native_pty::NativePtyError> {
         self.rows = rows;
         self.cols = cols;
         Ok(())
@@ -435,7 +439,11 @@ struct BlockingResizer {
 }
 
 impl NativePtyResizer for BlockingResizer {
-    fn resize(&mut self, _rows: u16, _cols: u16) -> Result<(), String> {
+    fn resize(
+        &mut self,
+        _rows: u16,
+        _cols: u16,
+    ) -> Result<(), crate::infrastructure::terminal::native_pty::NativePtyError> {
         let (started, changed) = &*self.started;
         *started.lock().unwrap() = true;
         changed.notify_all();
@@ -1396,4 +1404,168 @@ async fn assert_terminal_recreation(drain_exit: bool) {
         5000
     )
     .is_err());
+}
+
+struct FailingResizer(std::io::ErrorKind);
+impl NativePtyResizer for FailingResizer {
+    fn resize(
+        &mut self,
+        _: u16,
+        _: u16,
+    ) -> Result<(), crate::infrastructure::terminal::native_pty::NativePtyError> {
+        Err(
+            crate::infrastructure::terminal::native_pty::NativePtyError {
+                kind: self.0,
+                message: "resize source failure".into(),
+            },
+        )
+    }
+}
+
+#[derive(Debug)]
+struct FailingKiller(std::io::ErrorKind);
+impl portable_pty::ChildKiller for FailingKiller {
+    fn kill(&mut self) -> std::io::Result<()> {
+        Err(std::io::Error::new(self.0, "kill source failure"))
+    }
+    fn clone_killer(&self) -> Box<dyn portable_pty::ChildKiller + Send + Sync> {
+        Box::new(Self(self.0))
+    }
+}
+
+#[test]
+fn test_pty外部失敗_resizeで性質と元のメッセージを保持する() {
+    use crate::domain::failure::{TechnicalFailure, TechnicalFailureNature};
+    // Given
+    for (kind, nature) in [
+        (
+            std::io::ErrorKind::WouldBlock,
+            TechnicalFailureNature::Transient,
+        ),
+        (
+            std::io::ErrorKind::TimedOut,
+            TechnicalFailureNature::TimedOut,
+        ),
+        (
+            std::io::ErrorKind::PermissionDenied,
+            TechnicalFailureNature::Other,
+        ),
+    ] {
+        let gateway = TerminalSurfaceRuntimeGatewayFor::default();
+        insert_test_session_with_resizer(
+            &gateway,
+            1,
+            "key",
+            Some("/repo"),
+            None,
+            Box::new(FailingResizer(kind)),
+        );
+        // When
+        let error = gateway.resize("key", 30, 100).unwrap_err();
+        // Then
+        assert_eq!(
+            error,
+            TerminalSurfaceGatewayError::Technical(TechnicalFailure {
+                nature,
+                message: "resize source failure".into(),
+            })
+        );
+    }
+}
+
+#[test]
+fn test_pty外部失敗_killで性質と元のメッセージを保持する() {
+    use crate::domain::failure::{TechnicalFailure, TechnicalFailureNature};
+    // Given
+    for (kind, nature) in [
+        (
+            std::io::ErrorKind::WouldBlock,
+            TechnicalFailureNature::Transient,
+        ),
+        (
+            std::io::ErrorKind::TimedOut,
+            TechnicalFailureNature::TimedOut,
+        ),
+        (
+            std::io::ErrorKind::PermissionDenied,
+            TechnicalFailureNature::Other,
+        ),
+    ] {
+        let gateway = TerminalSurfaceRuntimeGatewayFor::default();
+        insert_test_session(&gateway, 1, "key", Some("/repo"), None);
+        gateway.runtimes.lock().get_mut(&1).unwrap().native_pty = NativePtyRuntime::from_parts(
+            Box::new(MockWriter(Arc::new(Mutex::new(Vec::new())))),
+            Box::new(FailingKiller(kind)),
+            Box::new(MockResizer { rows: 24, cols: 80 }),
+        );
+        // When
+        let error = gateway.request_runtime_stop(1).unwrap_err();
+        // Then
+        assert_eq!(
+            error,
+            TerminalSurfaceGatewayError::Technical(TechnicalFailure {
+                nature,
+                message: "Failed to kill PTY: kill source failure".into(),
+            })
+        );
+    }
+}
+
+#[tokio::test]
+async fn test_terminal対象なし_購読開始とsnapshot読取と配信でnot_foundを保持する() {
+    use crate::adaptor::presenter::connect::ConnectFailure;
+    use crate::adaptor::presenter::state_subscription::{PublishedState, StateSubscriptionEvent};
+    use crate::adaptor::presenter::terminal_event_hub::TerminalSurfaceEventHub;
+    use crate::infrastructure::state_subscription::Event;
+    use crate::usecase::state_subscription::{
+        StateReadFailure, StateSubscriptionOutput, StateSubscriptionUsecase, SubscriptionTarget,
+    };
+    use crate::usecase::terminal_surface::application::TerminalSurfaceApplication;
+    use crate::usecase::terminal_surface::error::UsecaseError;
+    use crate::usecase::terminal_surface::output::TerminalSurfaceStateSink;
+    use futures_util::StreamExt;
+    // Given
+    let hub = Arc::new(TerminalSurfaceEventHub::with_flags(256, true));
+    let gateway = Arc::new(TerminalSurfaceRuntimeGatewayFor::default());
+    let terminal = Arc::new(TerminalSurfaceApplication::new(
+        Arc::new(crate::adaptor::gateway::telemetry::TelemetryGateway), gateway,
+        Arc::new(crate::adaptor::gateway::terminal_surface::event_source::TerminalSurfaceEventSourceGateway::new(hub.event_sender())), hub,
+    ));
+    let subscriptions = StateSubscriptionUsecase::new(
+        vec![],
+        Arc::new(crate::adaptor::gateway::subscription_timer::TokioSubscriptionTimer),
+    )
+    .with_terminal(terminal.clone());
+    let presenter = subscriptions.test_presenter().unwrap();
+    presenter.connect_terminal(&terminal).unwrap();
+    let mut stream = Box::pin(subscriptions.open("client".into()).unwrap());
+    stream.next().await;
+    let target = SubscriptionTarget::Terminal(workspace_owner("/repo"));
+    // When
+    let start = subscriptions
+        .start_terminal("client", &target, "input", None)
+        .await
+        .unwrap_err();
+    let snapshot = subscriptions.refresh_terminal(&target).await.unwrap_err();
+    // Then
+    for error in [&start, &snapshot] {
+        assert!(
+            matches!(&error.source, StateReadFailure::Terminal(inner) if matches!(**inner, UsecaseError::NotFound(_)))
+        );
+        assert_eq!(error.connect_code(), connectrpc::ErrorCode::NotFound);
+    }
+    presenter
+        .initialize(&crate::test_support::state_subscription::registration(
+            "key", "/repo", None, 1, 0,
+        ))
+        .unwrap();
+    presenter.publish_failure(&target, snapshot).unwrap();
+    presenter
+        .start("client", &target.to_string(), None)
+        .unwrap();
+    let event = stream.next().await.unwrap();
+    assert!(
+        matches!(event, StateSubscriptionEvent::Item(_, Event::Snapshot(_, value))
+        if matches!(&*value, PublishedState::Failure(failure) if failure.code == connectrpc::ErrorCode::NotFound.grpc_code() as i32))
+    );
 }

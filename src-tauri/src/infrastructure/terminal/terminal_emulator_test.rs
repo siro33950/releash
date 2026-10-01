@@ -534,3 +534,118 @@ fn test_ターミナル増分復元点_出力番号を進めず寸法変更と�
             .contains("onetwo")
     );
 }
+
+#[test]
+fn test_checkpoint失敗_baseとjournalの操作とpathと元のメッセージを保持する() {
+    // Given
+    for journal in [false, true] {
+        for operation in ["read", "decode", "delete"] {
+            let directory = tempfile::tempdir().unwrap();
+            let store = TerminalCheckpointFileStore::new(directory.path(), TEST_SCROLLBACK_ROWS);
+            store
+                .replace_base(
+                    "session",
+                    &NativeTerminalCheckpoint {
+                        replay: String::new(),
+                        sequence: 0,
+                        cols: 80,
+                        rows: 24,
+                    },
+                )
+                .unwrap();
+            let path = if journal {
+                store.journal_path_for("session")
+            } else {
+                store.path_for("session")
+            };
+            if operation == "decode" {
+                std::fs::write(
+                    &path,
+                    if journal {
+                        b"{\n".as_slice()
+                    } else {
+                        b"{".as_slice()
+                    },
+                )
+                .unwrap();
+            } else {
+                let _ = std::fs::remove_file(&path);
+                std::fs::create_dir(&path).unwrap();
+            }
+            // When
+            let error = if operation == "delete" {
+                store.delete("session").unwrap_err()
+            } else {
+                store.load("session").err().unwrap()
+            };
+            // Then
+            assert!(error
+                .to_string()
+                .starts_with(&format!("{operation} {}: ", path.display())));
+            if operation == "decode" {
+                assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+                assert!(error.to_string().contains("EOF while parsing an object"));
+            } else {
+                let original = if operation == "read" {
+                    std::fs::read(&path).unwrap_err()
+                } else {
+                    std::fs::remove_file(&path).unwrap_err()
+                };
+                assert_eq!(error.kind(), original.kind());
+                assert!(error.to_string().ends_with(&original.to_string()));
+            }
+        }
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn test_checkpoint失敗_journal修復で操作とpathとio種類を保持する() {
+    use std::os::unix::fs::PermissionsExt;
+    // Given
+    let directory = tempfile::tempdir().unwrap();
+    let store = TerminalCheckpointFileStore::new(directory.path(), TEST_SCROLLBACK_ROWS);
+    store
+        .replace_base(
+            "session",
+            &NativeTerminalCheckpoint {
+                replay: String::new(),
+                sequence: 0,
+                cols: 80,
+                rows: 24,
+            },
+        )
+        .unwrap();
+    let path = store.journal_path_for("session");
+    std::fs::write(&path, b"{").unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o400)).unwrap();
+    let original = std::fs::OpenOptions::new()
+        .write(true)
+        .open(&path)
+        .unwrap_err();
+    // When
+    let error = store.load("session").err().unwrap();
+    // Then
+    assert_eq!(error.kind(), original.kind());
+    assert_eq!(
+        error.to_string(),
+        format!("repair {}: {original}", path.display())
+    );
+}
+
+#[test]
+fn test_checkpoint失敗_文脈を加えてもio種類を保持する() {
+    // Given
+    for kind in [
+        std::io::ErrorKind::WouldBlock,
+        std::io::ErrorKind::TimedOut,
+        std::io::ErrorKind::PermissionDenied,
+    ] {
+        let original = std::io::Error::new(kind, "source failure");
+        // When
+        let error = checkpoint_io_error(original, "repair", std::path::Path::new("/checkpoint"));
+        // Then
+        assert_eq!(error.kind(), kind);
+        assert_eq!(error.to_string(), "repair /checkpoint: source failure");
+    }
+}

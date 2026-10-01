@@ -383,7 +383,12 @@ async fn test_provider_session_title_ingestion_読み取り失敗で他session�
     let gateway = Arc::new(FixedTitleGateway::new([
         (
             "provider-failed",
-            Err(ProviderSessionTitleGatewayError::Unavailable),
+            Err(ProviderSessionTitleGatewayError::Technical(
+                crate::domain::failure::TechnicalFailure {
+                    nature: crate::domain::failure::TechnicalFailureNature::Transient,
+                    message: "unavailable".into(),
+                },
+            )),
         ),
         ("provider-continued", Ok(Some("Available title"))),
     ]));
@@ -565,5 +570,30 @@ async fn test_provider_title入口_開始の一時失敗と対象の分類別再
         let records = store.records("queued");
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].record.count, 2);
+    }
+}
+
+#[test]
+fn test_provider_title失敗_元の性質だけで再試行を決める() {
+    use crate::domain::failure::{Failure, TechnicalFailure, TechnicalFailureNature};
+    for nature in [
+        TechnicalFailureNature::Transient,
+        TechnicalFailureNature::TimedOut,
+        TechnicalFailureNature::Cancelled,
+        TechnicalFailureNature::Other,
+    ] {
+        // Given
+        let error = ProviderSessionTitleGatewayError::Technical(TechnicalFailure {
+            nature,
+            message: "read failure".into(),
+        });
+        // When
+        let failure = Failure::from(&error);
+        // Then
+        assert_eq!(failure, Failure::Technical(nature));
+        assert_eq!(
+            crate::usecase::failure::next_attempt(failure).is_some(),
+            nature == TechnicalFailureNature::Transient
+        );
     }
 }

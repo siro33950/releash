@@ -275,8 +275,8 @@ impl CheckpointScheduler {
         (self.dirty)(&self.session_key);
     }
 
-    fn flush(&self) -> Result<(), String> {
-        (self.flush)().map_err(|error| error.to_string())
+    fn flush(&self) -> Result<(), WorkFailure> {
+        (self.flush)()
     }
 }
 
@@ -666,9 +666,11 @@ impl TerminalSurfaceRuntimeGatewayFor {
     }
 
     fn data_dir(&self) -> Result<&std::path::PathBuf, TerminalSurfaceGatewayError> {
-        self.data_dir
-            .as_ref()
-            .ok_or_else(|| TerminalSurfaceGatewayError::new("Terminal runtime host is not bound"))
+        self.data_dir.as_ref().ok_or_else(|| {
+            TerminalSurfaceGatewayError::InvalidOperation(
+                "Terminal runtime host is not bound".into(),
+            )
+        })
     }
 
     fn runtime_generation_for_session_key(&self, session_key: &str) -> Option<u64> {
@@ -687,12 +689,12 @@ impl TerminalSurfaceRuntimeGatewayFor {
         let runtime_generation = {
             let registry = self.registry.lock();
             let surface = registry.find_by_session_key(session_key).ok_or_else(|| {
-                TerminalSurfaceGatewayError::new(format!(
+                TerminalSurfaceGatewayError::NotFound(format!(
                     "Terminal Surface not found for owner {session_key}"
                 ))
             })?;
             if surface.ensure_writable().is_err() {
-                return Err(TerminalSurfaceGatewayError::new(format!(
+                return Err(TerminalSurfaceGatewayError::InvalidOperation(format!(
                     "Terminal Surface is not writable for owner {session_key}"
                 )));
             }
@@ -700,7 +702,7 @@ impl TerminalSurfaceRuntimeGatewayFor {
         };
         let runtimes = self.runtimes.lock();
         let runtime = runtimes.get(&runtime_generation).ok_or_else(|| {
-            TerminalSurfaceGatewayError::new(format!("PTY {} not found", runtime_generation))
+            TerminalSurfaceGatewayError::NotFound(format!("PTY {} not found", runtime_generation))
         })?;
         if let Some(trace) = &input_trace {
             crate::infrastructure::telemetry::metrics::record_terminal_input_writer_enqueue(
@@ -716,7 +718,7 @@ impl TerminalSurfaceRuntimeGatewayFor {
                     .lock()
                     .retain(|pending| pending != trace);
             }
-            return Err(TerminalSurfaceGatewayError::new(error));
+            return Err(pty_failure(error));
         }
         Ok(())
     }
@@ -763,7 +765,7 @@ impl TerminalSurfaceGateway for TerminalSurfaceRuntimeGatewayFor {
         TerminalCheckpointFileStore::new(data_dir, TERMINAL_SURFACE_SCROLLBACK_ROWS)
             .load(session_key)
             .map(|checkpoint| checkpoint.map(into_domain_checkpoint))
-            .map_err(TerminalSurfaceGatewayError::new)
+            .map_err(io_failure)
     }
 
     fn delete_terminal_checkpoint(
@@ -776,7 +778,7 @@ impl TerminalSurfaceGateway for TerminalSurfaceRuntimeGatewayFor {
 
         TerminalCheckpointFileStore::new(data_dir, TERMINAL_SURFACE_SCROLLBACK_ROWS)
             .delete(session_key)
-            .map_err(TerminalSurfaceGatewayError::new)
+            .map_err(io_failure)
     }
 
     fn spawn_runtime(
@@ -803,9 +805,7 @@ impl TerminalSurfaceGateway for TerminalSurfaceRuntimeGatewayFor {
         )) {
             Ok(env) => extra_env.extend(env),
             Err(e) => {
-                return Err(TerminalSurfaceGatewayError::new(format!(
-                    "failed to prepare alias child env for PTY spawn: {e}"
-                )));
+                return Err(io_failure(e));
             }
         }
         crate::infrastructure::telemetry::metrics::record_terminal_launch(
@@ -829,7 +829,7 @@ impl TerminalSurfaceGateway for TerminalSurfaceRuntimeGatewayFor {
                     environment: process.environment().to_vec(),
                 }),
             })
-            .map_err(TerminalSurfaceGatewayError::new)?;
+            .map_err(pty_failure)?;
         crate::infrastructure::telemetry::metrics::record_terminal_launch(
             crate::infrastructure::telemetry::metrics::TerminalLaunch::PtyOpenAndSpawn,
             pty_open_and_spawn.elapsed(),
@@ -920,7 +920,7 @@ impl TerminalSurfaceGateway for TerminalSurfaceRuntimeGatewayFor {
         };
         let mut runtimes = self.runtimes.lock();
         if runtimes.contains_key(&runtime_generation) {
-            return Err(TerminalSurfaceGatewayError::new(format!(
+            return Err(TerminalSurfaceGatewayError::InvalidOperation(format!(
                 "PTY {runtime_generation} already exists"
             )));
         }
@@ -964,10 +964,13 @@ impl TerminalSurfaceGateway for TerminalSurfaceRuntimeGatewayFor {
         ) = {
             let mut runtimes = self.runtimes.lock();
             let runtime = runtimes.get_mut(&runtime_generation).ok_or_else(|| {
-                TerminalSurfaceGatewayError::new(format!("PTY {} not found", runtime_generation))
+                TerminalSurfaceGatewayError::NotFound(format!(
+                    "PTY {} not found",
+                    runtime_generation
+                ))
             })?;
             let output = runtime.output.take().ok_or_else(|| {
-                TerminalSurfaceGatewayError::new(format!(
+                TerminalSurfaceGatewayError::InvalidOperation(format!(
                     "PTY {} output reader already started",
                     runtime_generation
                 ))
@@ -1177,7 +1180,7 @@ impl TerminalSurfaceGateway for TerminalSurfaceRuntimeGatewayFor {
         let runtime_generation = self
             .runtime_generation_for_session_key(session_key)
             .ok_or_else(|| {
-                TerminalSurfaceGatewayError::new(format!(
+                TerminalSurfaceGatewayError::NotFound(format!(
                     "Terminal Surface not found for owner {session_key}"
                 ))
             })?;
@@ -1191,7 +1194,10 @@ impl TerminalSurfaceGateway for TerminalSurfaceRuntimeGatewayFor {
         ) = {
             let runtimes = self.runtimes.lock();
             let runtime = runtimes.get(&runtime_generation).ok_or_else(|| {
-                TerminalSurfaceGatewayError::new(format!("PTY {} not found", runtime_generation))
+                TerminalSurfaceGatewayError::NotFound(format!(
+                    "PTY {} not found",
+                    runtime_generation
+                ))
             })?;
             (
                 runtime.native_pty.clone(),
@@ -1203,9 +1209,7 @@ impl TerminalSurfaceGateway for TerminalSurfaceRuntimeGatewayFor {
             )
         };
         let _serialization = event_order.serialization.lock();
-        native_pty
-            .resize(rows, cols)
-            .map_err(TerminalSurfaceGatewayError::new)?;
+        native_pty.resize(rows, cols).map_err(pty_failure)?;
         let sequence = {
             let mut terminal_surface = terminal_surface.lock();
             terminal_surface.resize(cols, rows);
@@ -1213,7 +1217,7 @@ impl TerminalSurfaceGateway for TerminalSurfaceRuntimeGatewayFor {
                 .lock()
                 .record_resize(runtime_generation)
                 .ok_or_else(|| {
-                    TerminalSurfaceGatewayError::new(format!(
+                    TerminalSurfaceGatewayError::NotFound(format!(
                         "Terminal Surface for PTY {runtime_generation} not found"
                     ))
                 })?
@@ -1227,7 +1231,7 @@ impl TerminalSurfaceGateway for TerminalSurfaceRuntimeGatewayFor {
                         cols,
                         rows,
                     })
-                    .map_err(TerminalSurfaceGatewayError::new)?;
+                    .map_err(journal_failure)?;
             }
             checkpoint_scheduler.mark_dirty();
         }
@@ -1260,13 +1264,14 @@ impl TerminalSurfaceGateway for TerminalSurfaceRuntimeGatewayFor {
         let native_pty = {
             let runtimes = self.runtimes.lock();
             let runtime = runtimes.get(&runtime_generation).ok_or_else(|| {
-                TerminalSurfaceGatewayError::new(format!("PTY {} not found", runtime_generation))
+                TerminalSurfaceGatewayError::NotFound(format!(
+                    "PTY {} not found",
+                    runtime_generation
+                ))
             })?;
             runtime.native_pty.clone()
         };
-        native_pty.kill().map_err(|error| {
-            TerminalSurfaceGatewayError::new(format!("PTY {runtime_generation}: {error}"))
-        })
+        native_pty.kill().map_err(pty_failure)
     }
 
     fn wait_runtime_output_drain(
@@ -1279,7 +1284,10 @@ impl TerminalSurfaceGateway for TerminalSurfaceRuntimeGatewayFor {
             .get(&runtime_generation)
             .map(|runtime| Arc::clone(&runtime.output_drained))
             .ok_or_else(|| {
-                TerminalSurfaceGatewayError::new(format!("PTY {} not found", runtime_generation))
+                TerminalSurfaceGatewayError::NotFound(format!(
+                    "PTY {} not found",
+                    runtime_generation
+                ))
             })?;
         wait_for_output_drain(&output_drained);
         Ok(())
@@ -1331,15 +1339,13 @@ impl TerminalSurfaceGateway for TerminalSurfaceRuntimeGatewayFor {
             })
             .collect::<Vec<_>>();
         for (scheduler, _, _, _, _, _) in &targets {
-            scheduler
-                .flush()
-                .map_err(TerminalSurfaceGatewayError::new)?;
+            scheduler.flush().map_err(work_failure)?;
         }
         for (_, store, journal, checkpoint_io, terminal_surface, session_key) in targets {
             let runtime_generation = self
                 .runtime_generation_for_session_key(&session_key)
                 .ok_or_else(|| {
-                    TerminalSurfaceGatewayError::new(format!(
+                    TerminalSurfaceGatewayError::NotFound(format!(
                         "Terminal Surface not found for owner {session_key}"
                     ))
                 })?;
@@ -1352,7 +1358,7 @@ impl TerminalSurfaceGateway for TerminalSurfaceRuntimeGatewayFor {
                 &terminal_surface,
                 &journal,
             )
-            .map_err(|error| TerminalSurfaceGatewayError::new(error.to_string()))?;
+            .map_err(work_failure)?;
         }
         Ok(())
     }
@@ -1361,3 +1367,21 @@ impl TerminalSurfaceGateway for TerminalSurfaceRuntimeGatewayFor {
 #[cfg(test)]
 #[path = "runtime_gateway_impl_test.rs"]
 mod runtime_gateway_impl_tests;
+
+fn io_failure(error: std::io::Error) -> TerminalSurfaceGatewayError {
+    TerminalSurfaceGatewayError::Technical(error.into())
+}
+fn pty_failure(
+    error: crate::infrastructure::terminal::native_pty::NativePtyError,
+) -> TerminalSurfaceGatewayError {
+    io_failure(std::io::Error::new(error.kind, error.message))
+}
+fn journal_failure(message: String) -> TerminalSurfaceGatewayError {
+    TerminalSurfaceGatewayError::Technical(crate::domain::failure::TechnicalFailure {
+        nature: crate::domain::failure::TechnicalFailureNature::Other,
+        message,
+    })
+}
+fn work_failure(error: WorkFailure) -> TerminalSurfaceGatewayError {
+    TerminalSurfaceGatewayError::Technical(technical_failure(error))
+}

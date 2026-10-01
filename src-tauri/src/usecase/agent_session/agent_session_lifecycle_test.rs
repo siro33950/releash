@@ -520,9 +520,12 @@ impl ProviderAgentTerminalGateway for LifecycleTerminal {
             }
         }
         if *self.fail_spawn.lock().unwrap() {
-            return Err(ProviderAgentTerminalSpawnError::OtherSpawnFailure {
-                error: "test terminal spawn failure".to_string(),
-            });
+            return Err(ProviderAgentTerminalSpawnError::Technical(
+                crate::domain::failure::TechnicalFailure {
+                    nature: crate::domain::failure::TechnicalFailureNature::Other,
+                    message: "test terminal spawn failure".to_string(),
+                },
+            ));
         }
         *self.runtime_generation.lock().unwrap() += 1;
         *self.presence.lock().unwrap() = ManagedPtyPresence::Live;
@@ -548,7 +551,12 @@ impl ProviderAgentTerminalGateway for LifecycleTerminal {
         }
         self.stops.lock().unwrap().push(owner.clone());
         if *self.fail_stop.lock().unwrap() {
-            return Err(ProviderAgentTerminalGatewayError::Unavailable);
+            return Err(ProviderAgentTerminalGatewayError::Technical(
+                crate::domain::failure::TechnicalFailure {
+                    nature: crate::domain::failure::TechnicalFailureNature::Transient,
+                    message: "unavailable".into(),
+                },
+            ));
         }
         *self.presence.lock().unwrap() = ManagedPtyPresence::ConfirmedAbsent;
         Ok(())
@@ -1489,7 +1497,14 @@ async fn test_実行木node終端停止_node不一致と停止失敗ではsettle
             )
             .await
             .unwrap_err(),
-        super::AgentSessionLifecycleUsecaseError::TerminalUnavailable
+        super::AgentSessionLifecycleUsecaseError::Terminal(
+            crate::domain::agent_session::ProviderAgentTerminalGatewayError::Technical(
+                crate::domain::failure::TechnicalFailure {
+                    nature: crate::domain::failure::TechnicalFailureNature::Transient,
+                    message: "unavailable".into()
+                }
+            )
+        )
     );
     assert_eq!(
         sessions
@@ -2077,7 +2092,14 @@ async fn test_agent_session_resume_spawn失敗時は未起動launchのhook警告
             )
             .await
             .unwrap_err(),
-        super::AgentSessionLifecycleUsecaseError::TerminalUnavailable,
+        super::AgentSessionLifecycleUsecaseError::TerminalSpawn(
+            crate::domain::agent_session::ProviderAgentTerminalSpawnError::Technical(
+                crate::domain::failure::TechnicalFailure {
+                    nature: crate::domain::failure::TechnicalFailureNature::Other,
+                    message: "test terminal spawn failure".into()
+                }
+            )
+        ),
     );
     assert!(hook_health.warnings().await.unwrap().is_empty());
 }

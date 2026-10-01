@@ -1,26 +1,35 @@
 use crate::domain::agent_session::aggregates::ManagedPtyPresence;
 use crate::domain::terminal_surface::{TerminalProcessLaunch, TerminalSurfaceOwner};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ProviderAgentTerminalGatewayError {
-    Unavailable,
+    Technical(crate::domain::failure::TechnicalFailure),
+    NotFound(String),
+    InvalidOperation(String),
+    StaleAttachment,
+    OwnerConflict,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ProviderAgentTerminalSpawnError {
     OwnerConflict,
-    PtySpawn { error: String },
-    OtherSpawnFailure { error: String },
+    NotFound(String),
+    InvalidOperation(String),
+    StaleAttachment,
+    Technical(crate::domain::failure::TechnicalFailure),
 }
 
 impl std::fmt::Display for ProviderAgentTerminalSpawnError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::OwnerConflict => formatter.write_str("kind=owner_conflict"),
-            Self::PtySpawn { error } => write!(formatter, "kind=pty_spawn error={error}"),
-            Self::OtherSpawnFailure { error } => {
-                write!(formatter, "kind=other_spawn_failure error={error}")
+            Self::NotFound(message) | Self::InvalidOperation(message) => {
+                formatter.write_str(message)
             }
+            Self::StaleAttachment => {
+                formatter.write_str("Terminal input attachment is no longer active")
+            }
+            Self::Technical(failure) => failure.fmt(formatter),
         }
     }
 }

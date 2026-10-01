@@ -28,6 +28,7 @@ pub(crate) struct StateReadError {
 pub(crate) enum StateReadFailure {
     InvalidTerminalInput,
     TerminalSubscriptionEnded,
+    Terminal(Box<crate::usecase::terminal_surface::error::UsecaseError>),
     Workflow(Box<crate::domain::workflow::WorkflowError>),
     Session(Box<crate::usecase::agent_session::AgentSessionReadUsecaseError>),
     History(Box<crate::usecase::agent_session::AgentSessionHistoryQueryError>),
@@ -45,6 +46,11 @@ pub(crate) enum StateReadFailure {
     HookHealth(Box<crate::usecase::provider_lifecycle::ProviderHookHealthUsecaseError>),
     Technical(Box<TechnicalFailure>),
     WorkspaceState(Box<crate::domain::workspace_state::WorkspaceStateError>),
+}
+impl From<crate::usecase::terminal_surface::error::UsecaseError> for StateReadFailure {
+    fn from(error: crate::usecase::terminal_surface::error::UsecaseError) -> Self {
+        Self::Terminal(Box::new(error))
+    }
 }
 impl From<crate::usecase::code_error::CodeUsecaseError> for StateReadFailure {
     fn from(error: crate::usecase::code_error::CodeUsecaseError) -> Self {

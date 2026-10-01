@@ -223,19 +223,25 @@ impl TerminalCheckpointFileStore {
     pub(crate) fn load(
         &self,
         session_key: &str,
-    ) -> Result<Option<NativeTerminalCheckpoint>, String> {
+    ) -> Result<Option<NativeTerminalCheckpoint>, std::io::Error> {
         let path = self.path_for(session_key);
         let bytes = match std::fs::read(&path) {
             Ok(bytes) => bytes,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(error) => return Err(format!("read {}: {error}", path.display())),
+            Err(error) => return Err(checkpoint_io_error(error, "read", &path)),
         };
-        let stored: StoredTerminalCheckpointBase = serde_json::from_slice(&bytes)
-            .map_err(|error| format!("decode {}: {error}", path.display()))?;
+        let stored: StoredTerminalCheckpointBase =
+            serde_json::from_slice(&bytes).map_err(|error| {
+                checkpoint_io_error(
+                    std::io::Error::new(std::io::ErrorKind::InvalidData, error),
+                    "decode",
+                    &path,
+                )
+            })?;
         if stored.version != 2 || stored.session_key != session_key {
-            return Err(format!(
-                "invalid Terminal Surface checkpoint: {}",
-                path.display()
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("invalid Terminal Surface checkpoint: {}", path.display()),
             ));
         }
         let mut sequence = stored.checkpoint.sequence;
@@ -247,7 +253,7 @@ impl TerminalCheckpointFileStore {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                 return Ok(Some(stored.checkpoint));
             }
-            Err(error) => return Err(format!("read {}: {error}", journal_path.display())),
+            Err(error) => return Err(checkpoint_io_error(error, "read", &journal_path)),
         };
         let durable_len = journal
             .iter()
@@ -257,17 +263,23 @@ impl TerminalCheckpointFileStore {
             let file = std::fs::OpenOptions::new()
                 .write(true)
                 .open(&journal_path)
-                .map_err(|error| format!("repair {}: {error}", journal_path.display()))?;
+                .map_err(|error| checkpoint_io_error(error, "repair", &journal_path))?;
             file.set_len(durable_len as u64)
                 .and_then(|()| file.sync_all())
-                .map_err(|error| format!("repair {}: {error}", journal_path.display()))?;
+                .map_err(|error| checkpoint_io_error(error, "repair", &journal_path))?;
         }
         for line in journal[..durable_len].split(|byte| *byte == b'\n') {
             if line.is_empty() {
                 continue;
             }
-            let record: NativeTerminalCheckpointRecord = serde_json::from_slice(line)
-                .map_err(|error| format!("decode {}: {error}", journal_path.display()))?;
+            let record: NativeTerminalCheckpointRecord =
+                serde_json::from_slice(line).map_err(|error| {
+                    checkpoint_io_error(
+                        std::io::Error::new(std::io::ErrorKind::InvalidData, error),
+                        "decode",
+                        &journal_path,
+                    )
+                })?;
             if record.sequence() < sequence
                 || (record.sequence() == sequence
                     && matches!(&record, NativeTerminalCheckpointRecord::Output { .. }))
@@ -275,9 +287,12 @@ impl TerminalCheckpointFileStore {
                 continue;
             }
             if record.sequence() > sequence.saturating_add(1) {
-                return Err(format!(
-                    "non-contiguous Terminal Surface journal: {}",
-                    journal_path.display()
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!(
+                        "non-contiguous Terminal Surface journal: {}",
+                        journal_path.display()
+                    ),
                 ));
             }
             match &record {
@@ -382,18 +397,18 @@ impl TerminalCheckpointFileStore {
         }
     }
 
-    pub(crate) fn delete(&self, session_key: &str) -> Result<(), String> {
+    pub(crate) fn delete(&self, session_key: &str) -> std::io::Result<()> {
         let path = self.path_for(session_key);
         match std::fs::remove_file(&path) {
             Ok(()) => {}
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(format!("delete {}: {error}", path.display())),
+            Err(error) => return Err(checkpoint_io_error(error, "delete", &path)),
         }
         let journal = self.journal_path_for(session_key);
         match std::fs::remove_file(&journal) {
             Ok(()) => Ok(()),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(error) => Err(format!("delete {}: {error}", journal.display())),
+            Err(error) => Err(checkpoint_io_error(error, "delete", &journal)),
         }
     }
 
@@ -458,3 +473,14 @@ fn repair_journal_tail(file: &mut std::fs::File) -> std::io::Result<()> {
 #[cfg(test)]
 #[path = "terminal_emulator_test.rs"]
 mod terminal_emulator_tests;
+
+fn checkpoint_io_error(
+    error: std::io::Error,
+    operation: &str,
+    path: &std::path::Path,
+) -> std::io::Error {
+    std::io::Error::new(
+        error.kind(),
+        format!("{operation} {}: {error}", path.display()),
+    )
+}

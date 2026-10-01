@@ -83,10 +83,14 @@ impl PathAliases {
     /// 起動環境から `PathAliases` を構築する。
     ///
     /// daemon が解決した data_dir を使い、子プロセスの接続先を一致させる。
-    pub fn from_runtime(data_dir: PathBuf) -> Result<Self, String> {
+    pub fn from_runtime(data_dir: PathBuf) -> Result<Self, std::io::Error> {
         let profile = BuildProfile::current();
-        let exe_path = std::env::current_exe()
-            .map_err(|e| format!("failed to resolve current executable path: {e}"))?;
+        let exe_path = std::env::current_exe().map_err(|e| {
+            std::io::Error::new(
+                e.kind(),
+                format!("failed to resolve current executable path: {e}"),
+            )
+        })?;
         let name = alias_name_for_profile(profile);
         Ok(Self {
             releash: PathAlias {
@@ -225,7 +229,7 @@ pub fn ensure_release_data_dir_env_for_resolved_path(self_data_dir: &Path) {
 ///   しない（戻り値に `RELEASH_DATA_DIR` を含めない）。子プロセスは inherit で
 ///   親の明示値を受け取る。
 /// - 明示指定が無い場合（`None`）は alias 内包値を戻り値に積む。
-pub fn child_env_overrides(aliases: &PathAliases) -> Result<Vec<(String, String)>, String> {
+pub fn child_env_overrides(aliases: &PathAliases) -> Result<Vec<(String, String)>, std::io::Error> {
     child_env_overrides_from(
         aliases,
         std::env::var("PATH").ok().as_deref(),
@@ -241,7 +245,7 @@ pub fn child_env_overrides_from(
     aliases: &PathAliases,
     parent_path: Option<&str>,
     parent_releash_data_dir: Option<&str>,
-) -> Result<Vec<(String, String)>, String> {
+) -> Result<Vec<(String, String)>, std::io::Error> {
     let releash = aliases.releash();
     let bin_dir = ensure_alias_wrapper(releash)?;
     let path_value = compose_path_with_alias_bin(parent_path, &bin_dir);
@@ -280,7 +284,9 @@ fn compose_path_with_alias_bin(existing_path: Option<&str>, bin_dir: &Path) -> S
 ///   返し、呼び出し側が alias なしで spawn する既存挙動を温存する。
 /// - `data_dir` が `Some` の場合に wrapper 作成等で失敗したら `Err` を返し、呼び出し側で
 ///   spawn を中止する。
-pub fn prepare_child_env(data_dir: Option<PathBuf>) -> Result<Vec<(String, String)>, String> {
+pub fn prepare_child_env(
+    data_dir: Option<PathBuf>,
+) -> Result<Vec<(String, String)>, std::io::Error> {
     let Some(data_dir) = data_dir else {
         return Ok(Vec::new());
     };
@@ -292,19 +298,27 @@ pub fn prepare_child_env(data_dir: Option<PathBuf>) -> Result<Vec<(String, Strin
 ///
 /// wrapper はシェルスクリプトで、呼び出し側が `RELEASH_DATA_DIR` を明示指定していない
 /// 場合のみ alias 内包の data_dir を設定する（spec 解決順序: 明示指定 > alias 内包値）。
-fn ensure_alias_wrapper(releash: &PathAlias) -> Result<PathBuf, String> {
+fn ensure_alias_wrapper(releash: &PathAlias) -> Result<PathBuf, std::io::Error> {
     let bin_dir = releash.data_dir.join("bin");
-    std::fs::create_dir_all(&bin_dir)
-        .map_err(|e| format!("failed to create alias bin dir {}: {e}", bin_dir.display()))?;
+    std::fs::create_dir_all(&bin_dir).map_err(|e| {
+        std::io::Error::new(
+            e.kind(),
+            format!("failed to create alias bin dir {}: {e}", bin_dir.display()),
+        )
+    })?;
     let wrapper_path = bin_dir.join(&releash.name);
-    let exe_str = releash
-        .exe_path
-        .to_str()
-        .ok_or_else(|| "exe_path is not valid UTF-8".to_string())?;
-    let data_dir_str = releash
-        .data_dir
-        .to_str()
-        .ok_or_else(|| "data_dir is not valid UTF-8".to_string())?;
+    let exe_str = releash.exe_path.to_str().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "exe_path is not valid UTF-8",
+        )
+    })?;
+    let data_dir_str = releash.data_dir.to_str().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "data_dir is not valid UTF-8",
+        )
+    })?;
     let script = build_wrapper_script(exe_str, data_dir_str);
     // 既存の wrapper と内容が同じ場合は書き換えを省く（mtime ノイズを避ける）。
     if wrapper_path.exists() {
@@ -332,23 +346,40 @@ fn shell_quote(value: &str) -> String {
 }
 
 #[cfg(unix)]
-fn write_wrapper_script(path: &Path, script: &str) -> Result<(), String> {
+fn write_wrapper_script(path: &Path, script: &str) -> Result<(), std::io::Error> {
     use std::os::unix::fs::PermissionsExt;
-    std::fs::write(path, script)
-        .map_err(|e| format!("failed to write wrapper {}: {e}", path.display()))?;
+    std::fs::write(path, script).map_err(|e| {
+        std::io::Error::new(
+            e.kind(),
+            format!("failed to write wrapper {}: {e}", path.display()),
+        )
+    })?;
     let mut perms = std::fs::metadata(path)
-        .map_err(|e| format!("failed to stat wrapper {}: {e}", path.display()))?
+        .map_err(|e| {
+            std::io::Error::new(
+                e.kind(),
+                format!("failed to stat wrapper {}: {e}", path.display()),
+            )
+        })?
         .permissions();
     perms.set_mode(0o755);
-    std::fs::set_permissions(path, perms)
-        .map_err(|e| format!("failed to chmod wrapper {}: {e}", path.display()))?;
+    std::fs::set_permissions(path, perms).map_err(|e| {
+        std::io::Error::new(
+            e.kind(),
+            format!("failed to chmod wrapper {}: {e}", path.display()),
+        )
+    })?;
     Ok(())
 }
 
 #[cfg(not(unix))]
-fn write_wrapper_script(path: &Path, script: &str) -> Result<(), String> {
-    std::fs::write(path, script)
-        .map_err(|e| format!("failed to write wrapper {}: {e}", path.display()))
+fn write_wrapper_script(path: &Path, script: &str) -> Result<(), std::io::Error> {
+    std::fs::write(path, script).map_err(|e| {
+        std::io::Error::new(
+            e.kind(),
+            format!("failed to write wrapper {}: {e}", path.display()),
+        )
+    })
 }
 
 #[cfg(test)]
@@ -537,7 +568,7 @@ mod tests {
         std::fs::write(data_dir.join("bin"), "").unwrap();
         let err = prepare_child_env(Some(data_dir)).unwrap_err();
         assert!(
-            err.contains("alias bin dir"),
+            err.to_string().contains("alias bin dir"),
             "expected wrapper bin dir error, got: {err}"
         );
     }

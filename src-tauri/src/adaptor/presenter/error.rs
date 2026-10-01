@@ -13,6 +13,7 @@ pub enum AppError {
     #[error("{error}")]
     Presented {
         kind: connectrpc::ErrorCode,
+        cause: Option<String>,
         error: Box<AppError>,
     },
     #[error("{0}")]
@@ -55,7 +56,23 @@ impl AppError {
     pub fn with_status(self, kind: connectrpc::ErrorCode) -> Self {
         Self::Presented {
             kind,
+            cause: None,
             error: Box::new(self),
+        }
+    }
+
+    pub(crate) fn with_cause(self, cause: Option<String>) -> Self {
+        Self::Presented {
+            kind: self.connect_code(),
+            cause,
+            error: Box::new(self),
+        }
+    }
+
+    pub(crate) fn cause(&self) -> Option<&str> {
+        match self {
+            Self::Presented { cause, error, .. } => cause.as_deref().or_else(|| error.cause()),
+            _ => None,
         }
     }
 

@@ -100,12 +100,10 @@ fn activation_error(
     node_session_id: &str,
     error: AgentSessionLaunchUsecaseError,
 ) -> WorkflowRuntimeError {
-    if let AgentSessionLaunchUsecaseError::Technical(stopped) = error {
-        return WorkflowRuntimeError::Technical(stopped);
-    }
-    WorkflowRuntimeError::AgentSession(format!(
-        "activate Workflow AgentSession '{node_session_id}': {error}"
-    ))
+    launch_failure(
+        format!("activate Workflow AgentSession '{node_session_id}': {error}"),
+        error,
+    )
 }
 
 impl ProviderWorkflowAgentSessionPort {
@@ -174,10 +172,7 @@ impl WorkflowAgentSessionPort for ProviderWorkflowAgentSessionPort {
             ))
             .await
             .map_err(|error| {
-                if let AgentSessionLaunchUsecaseError::Technical(stopped) = error { return WorkflowRuntimeError::Technical(stopped); }
-                WorkflowRuntimeError::AgentSession(format!(
-                    "launch Workflow AgentSession for NodeExecution '{node_execution_id}': {error:?}"
-                ))
+                launch_failure(format!("launch Workflow AgentSession for NodeExecution '{node_execution_id}': {error:?}"), error)
             })?;
         Ok(NodeSessionInfo {
             id: launched.session().id().to_string(),
@@ -204,9 +199,12 @@ impl WorkflowAgentSessionPort for ProviderWorkflowAgentSessionPort {
             .confirm_workflow_node_attachment(node_session_id)
             .await
             .map_err(|error| {
-                WorkflowRuntimeError::AgentSession(format!(
-                    "confirm Workflow AgentSession attachment '{node_session_id}': {error:?}"
-                ))
+                launch_failure(
+                    format!(
+                        "confirm Workflow AgentSession attachment '{node_session_id}': {error:?}"
+                    ),
+                    error,
+                )
             })
     }
 
@@ -239,9 +237,10 @@ impl WorkflowAgentSessionPort for ProviderWorkflowAgentSessionPort {
             .has_recoverable_conversation(node_session_id)
             .await
             .map_err(|error| {
-                WorkflowRuntimeError::AgentSession(format!(
-                    "read provider conversation for '{node_session_id}': {error:?}"
-                ))
+                lifecycle_error(
+                    format!("read provider conversation for '{node_session_id}': {error:?}"),
+                    error,
+                )
             })
     }
 
@@ -263,9 +262,12 @@ impl WorkflowAgentSessionPort for ProviderWorkflowAgentSessionPort {
             )
             .await
             .map_err(|error| {
-                WorkflowRuntimeError::AgentSession(format!(
-                    "recover provider for Workflow AgentSession '{node_session_id}': {error:?}"
-                ))
+                lifecycle_error(
+                    format!(
+                        "recover provider for Workflow AgentSession '{node_session_id}': {error:?}"
+                    ),
+                    error,
+                )
             })?;
         match outcome {
             crate::usecase::agent_session::AgentSessionOpenOutcome::Attached
@@ -289,9 +291,7 @@ impl WorkflowAgentSessionPort for ProviderWorkflowAgentSessionPort {
             )
             .await
             .map_err(|error| {
-                WorkflowRuntimeError::AgentSession(format!(
-                    "stop Workflow AgentSession '{node_session_id}' for NodeExecution '{node_execution_id}': {error:?}"
-                ))
+                lifecycle_error(format!("stop Workflow AgentSession '{node_session_id}' for NodeExecution '{node_execution_id}': {error:?}"), error)
             })
     }
 
@@ -307,9 +307,12 @@ impl WorkflowAgentSessionPort for ProviderWorkflowAgentSessionPort {
             )
             .await
             .map_err(|error| {
-                WorkflowRuntimeError::AgentSession(format!(
-                    "rollback unattached Workflow AgentSession '{node_session_id}': {error:?}"
-                ))
+                launch_failure(
+                    format!(
+                        "rollback unattached Workflow AgentSession '{node_session_id}': {error:?}"
+                    ),
+                    error,
+                )
             })
     }
 }
@@ -335,6 +338,63 @@ mod tests {
                 error.connect_code(),
                 crate::domain::failure::TechnicalFailure::from(stopped).connect_code()
             );
+        }
+    }
+
+    #[test]
+    fn test_session依存先の技術的失敗_性質とメッセージをruntimeまで保持する() {
+        use crate::domain::agent_session::{
+            ProviderAgentLaunchGatewayError, ProviderAgentTerminalGatewayError,
+        };
+        use crate::domain::failure::{TechnicalFailure, TechnicalFailureNature};
+        use crate::usecase::agent_session::AgentSessionLifecycleUsecaseError;
+        // Given
+        for nature in [
+            TechnicalFailureNature::Transient,
+            TechnicalFailureNature::TimedOut,
+            TechnicalFailureNature::Cancelled,
+            TechnicalFailureNature::Other,
+        ] {
+            let failure = TechnicalFailure {
+                nature,
+                message: "source failure".into(),
+            };
+            let launch = ProviderAgentLaunchGatewayError::Technical(failure.clone());
+            let terminal = ProviderAgentTerminalGatewayError::Technical(failure.clone());
+            let spawn = ProviderAgentTerminalSpawnError::Technical(failure.clone());
+            // When
+            let errors = [
+                launch_failure(
+                    "context".into(),
+                    AgentSessionLaunchUsecaseError::Launch(launch.clone()),
+                ),
+                launch_failure(
+                    "context".into(),
+                    AgentSessionLaunchUsecaseError::Terminal(terminal.clone()),
+                ),
+                launch_failure(
+                    "context".into(),
+                    AgentSessionLaunchUsecaseError::TerminalSpawn(spawn.clone()),
+                ),
+                lifecycle_error(
+                    "context".into(),
+                    AgentSessionLifecycleUsecaseError::Launch(launch),
+                ),
+                lifecycle_error(
+                    "context".into(),
+                    AgentSessionLifecycleUsecaseError::Terminal(terminal),
+                ),
+                lifecycle_error(
+                    "context".into(),
+                    AgentSessionLifecycleUsecaseError::TerminalSpawn(spawn),
+                ),
+            ];
+            // Then
+            for error in errors {
+                assert!(
+                    matches!(error, WorkflowRuntimeError::Technical(actual) if actual == failure)
+                );
+            }
         }
     }
 
@@ -374,28 +434,67 @@ mod tests {
         let error = activation_error(
             "agent-session-1",
             AgentSessionLaunchUsecaseError::TerminalSpawn(
-                ProviderAgentTerminalSpawnError::PtySpawn {
-                    error: "openpty failed".to_string(),
-                },
+                ProviderAgentTerminalSpawnError::Technical(
+                    crate::domain::failure::TechnicalFailure {
+                        nature: crate::domain::failure::TechnicalFailureNature::Other,
+                        message: "openpty failed".to_string(),
+                    },
+                ),
             ),
         );
 
-        assert_eq!(
-            error.to_string(),
-            "activate Workflow AgentSession 'agent-session-1': kind=pty_spawn error=openpty failed"
-        );
+        assert_eq!(error.to_string(), "openpty failed");
     }
 
     #[test]
     fn test_workflow_agent_session_activation_terminal以外の既存表現を維持する() {
         let error = activation_error(
             "agent-session-1",
-            AgentSessionLaunchUsecaseError::LaunchUnavailable,
+            AgentSessionLaunchUsecaseError::Launch(
+                crate::domain::agent_session::ProviderAgentLaunchGatewayError::Technical(
+                    crate::domain::failure::TechnicalFailure {
+                        nature: crate::domain::failure::TechnicalFailureNature::Transient,
+                        message: "unavailable".into(),
+                    },
+                ),
+            ),
         );
 
-        assert_eq!(
-            error.to_string(),
-            "activate Workflow AgentSession 'agent-session-1': LaunchUnavailable"
-        );
+        assert_eq!(error.to_string(), "unavailable");
+    }
+}
+
+fn lifecycle_error(
+    message: String,
+    error: crate::usecase::agent_session::AgentSessionLifecycleUsecaseError,
+) -> WorkflowRuntimeError {
+    use crate::usecase::agent_session::AgentSessionLifecycleUsecaseError as E;
+    match error {
+        E::Launch(crate::domain::agent_session::ProviderAgentLaunchGatewayError::Technical(
+            failure,
+        ))
+        | E::Terminal(
+            crate::domain::agent_session::ProviderAgentTerminalGatewayError::Technical(failure),
+        )
+        | E::TerminalSpawn(
+            crate::domain::agent_session::ProviderAgentTerminalSpawnError::Technical(failure),
+        ) => WorkflowRuntimeError::Technical(failure),
+        _ => WorkflowRuntimeError::AgentSession(message),
+    }
+}
+
+fn launch_failure(message: String, error: AgentSessionLaunchUsecaseError) -> WorkflowRuntimeError {
+    match error {
+        AgentSessionLaunchUsecaseError::Technical(failure)
+        | AgentSessionLaunchUsecaseError::Launch(
+            crate::domain::agent_session::ProviderAgentLaunchGatewayError::Technical(failure),
+        )
+        | AgentSessionLaunchUsecaseError::Terminal(
+            crate::domain::agent_session::ProviderAgentTerminalGatewayError::Technical(failure),
+        )
+        | AgentSessionLaunchUsecaseError::TerminalSpawn(
+            crate::domain::agent_session::ProviderAgentTerminalSpawnError::Technical(failure),
+        ) => WorkflowRuntimeError::Technical(failure),
+        _ => WorkflowRuntimeError::AgentSession(message),
     }
 }
