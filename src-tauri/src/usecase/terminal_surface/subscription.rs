@@ -24,7 +24,7 @@ pub(crate) trait TerminalSubscriptionOutput: Send + Sync {
     ) -> Result<(), SubscriptionError>;
 }
 
-type TerminalClientSubscriptions = HashMap<SubscriptionTarget, HashSet<String>>;
+type TerminalClientSubscriptions = HashMap<SubscriptionTarget, Vec<String>>;
 
 #[derive(Clone)]
 pub(crate) struct TerminalSubscriptionUsecase {
@@ -135,7 +135,7 @@ impl TerminalSubscriptionUsecase {
                 .get_mut(client)
                 .ok_or(SubscriptionError::StreamEnded)?;
             if let Some(inputs) = targets.get_mut(target) {
-                inputs.remove(input);
+                inputs.retain(|current| current != input);
                 if inputs.is_empty() {
                     targets.remove(target);
                     true
@@ -171,7 +171,7 @@ impl TerminalSubscriptionUsecase {
             .ok_or_else(|| StateReadError::from_error(SubscriptionError::StreamEnded))?
             .entry(target.clone())
             .or_default()
-            .insert(input_id.into());
+            .push(input_id.into());
         if let Err(error) = self.present_start(client, target, input_id, delivery) {
             let _ = self.stop_delivery(client, target, input_id, delivery);
             return Err(error);
@@ -237,7 +237,7 @@ impl TerminalSubscriptionUsecase {
             .filter(|targets| {
                 targets
                     .get(target)
-                    .is_some_and(|inputs| inputs.contains(input_id))
+                    .is_some_and(|inputs| inputs.iter().any(|input| input == input_id))
             })
             .ok_or_else(|| StateReadError::from_error(SubscriptionError::StreamEnded))?;
         Ok(())
@@ -374,15 +374,23 @@ impl TerminalSubscriptionUsecase {
         let clients = self.clients.lock();
         let subscription = clients.iter().find_map(|(client, targets)| {
             targets.iter().find_map(|(target, inputs)| {
-                inputs.contains(subscription_id).then_some((client, target))
+                inputs
+                    .iter()
+                    .any(|input| input == subscription_id)
+                    .then_some((client, target, inputs))
             })
         });
-        let Some((client, SubscriptionTarget::Terminal(owner))) = subscription else {
+        let Some((client, SubscriptionTarget::Terminal(owner), inputs)) = subscription else {
             return Err(StateReadError {
                 source: StateReadFailure::TerminalSubscriptionEnded,
                 message: "Terminal subscription ended".into(),
             });
         };
+        // 流量制御は (terminal, client) で 1 つなので、同じ client の購読が複数あっても
+        // 量を引くのは最後に開始した購読の報告だけにする。
+        if inputs.last().map(String::as_str) != Some(subscription_id) {
+            return Ok(());
+        }
         self.terminal
             .as_ref()
             .ok_or_else(|| read_error("Terminal unavailable"))?

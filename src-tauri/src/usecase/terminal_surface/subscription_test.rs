@@ -471,6 +471,46 @@ async fn test_terminal処理報告_購読中の流量制御へ渡し停止後は
     assert!(output.subscribed.lock().is_empty());
 }
 
+#[tokio::test]
+async fn test_terminal処理報告_同じclientの購読が複数でも量は最後の購読の報告だけで引く() {
+    // Given
+    let (terminal, _, hub, surface) =
+        crate::test_support::state_subscription::terminal_application_fixture();
+    let output = Arc::new(FakeOutput::default());
+    *output.pending.lock() = Some(6000);
+    let usecase = TerminalSubscriptionUsecase::new(
+        output.clone(),
+        Some(terminal),
+        crate::test_support::state_subscription::terminal_driver(),
+    );
+    let target = SubscriptionTarget::Terminal(surface.owner);
+    usecase.open_client("client".into()).unwrap();
+    for input in ["first", "second"] {
+        usecase
+            .start_subscription(
+                "client",
+                &target,
+                input,
+                &FakeDelivery {
+                    output: &output,
+                    client: "client",
+                    target: &target,
+                    input,
+                },
+            )
+            .await
+            .unwrap();
+    }
+    // When
+    usecase.terminal_processed("first", 5000).unwrap();
+    usecase.terminal_processed("second", 5000).unwrap();
+    // Then
+    assert_eq!(
+        hub.test_pending_amount(&surface.session_key, "client"),
+        Some(1000)
+    );
+}
+
 async fn wait_workers(usecase: &TerminalSubscriptionUsecase) {
     tokio::time::timeout(std::time::Duration::from_secs(2), async {
         while usecase.test_worker_count() != 0 {
@@ -600,7 +640,7 @@ async fn test_terminal停止_購読者が全員止まれば対象のreset記録�
         .lock()
         .get_mut("client")
         .unwrap()
-        .insert(target.clone(), HashSet::from(["input".into()]));
+        .insert(target.clone(), vec!["input".into()]);
     usecase
         .terminal_resets
         .lock()

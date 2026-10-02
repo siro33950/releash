@@ -93,9 +93,13 @@ AND daemon にその購読は残らない
 ## B-015: terminal の入力の宛先は購読の識別子
 
 GIVEN 画面が識別子 X で terminal の購読を開始し、受け付けられている
-WHEN 画面がその terminal へ入力を送る
-THEN 入力の宛先は識別子 X である
-AND 入力は受理される
+AND その terminal で X より後に開始された購読は無い
+WHEN 画面がその terminal へ宛先 X で入力を送る
+THEN 入力は受理される
+
+GIVEN 識別子 X で terminal の購読を開始した後、同じ terminal を識別子 Y で購読を開始した
+WHEN 宛先 X で入力を送る
+THEN X の購読が続いていても、入力は受理されない（入力の宛先は最後に開始した Y に置き換わっている）
 
 ## B-016: 処理済みの量の報告は識別子で購読を指す
 
