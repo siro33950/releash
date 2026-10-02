@@ -158,7 +158,7 @@ mod repo_paths_usecase_tests {
         // Given
         let subscriptions = StateSubscriptionUsecase::new(
             vec![],
-            Arc::new(crate::adaptor::gateway::subscription_timer::TokioSubscriptionTimer),
+            crate::test_support::state_subscription::read_driver(),
         );
         let repo = Arc::new(FakeRepoPaths {
             paths: subscriptions
@@ -215,7 +215,7 @@ mod repo_paths_usecase_tests {
         // Given
         let subscriptions = StateSubscriptionUsecase::new(
             vec!["/repo/a".into()],
-            Arc::new(crate::adaptor::gateway::subscription_timer::TokioSubscriptionTimer),
+            crate::test_support::state_subscription::read_driver(),
         );
         let repo = Arc::new(FakeRepoPaths {
             paths: subscriptions

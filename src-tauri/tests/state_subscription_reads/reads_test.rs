@@ -201,7 +201,7 @@ impl Fixture {
         git.branch("feature", &commit, false).unwrap();
         let subscriptions = StateSubscriptionUsecase::new(
             vec![path.clone()],
-            Arc::new(crate::adaptor::gateway::subscription_timer::TokioSubscriptionTimer),
+            crate::test_support::state_subscription::read_driver(),
         );
         let publisher = subscriptions.clone();
         let repository =
@@ -226,12 +226,20 @@ impl Fixture {
             publisher.clone(),
             Arc::new(NotifyRepositoryStateWatcher::new(repository.clone())),
             Arc::new(
-                crate::adaptor::controller::repository_scan::RepositoryScanWorkerRuntime::new(
-                    crate::usecase::retry::test_retrying(),
-                ),
+                crate::adaptor::controller::repository_scan::RepositoryScanWorkerRuntime::new(),
             ),
             Arc::new(FsWorktreePathNormalizer),
         ));
+        crate::adaptor::controller::repository_scan::start(
+            crate::usecase::retry::test_retrying(),
+            repository_state.take_worker_events(),
+            Arc::new(
+                crate::adaptor::controller::repository_scan::RepositoryScanWorkerRuntime::new(),
+            ),
+            crate::infrastructure::timer::delays(
+                crate::adaptor::controller::repository_scan::DEBOUNCE,
+            ),
+        );
         let workflows_dir = root.join("workflows");
         std::fs::create_dir_all(workflows_dir.join("instructions")).unwrap();
         std::fs::write(

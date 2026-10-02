@@ -2,25 +2,6 @@ use super::*;
 use crate::infrastructure::state_subscription::Version;
 use crate::test_support::state_subscription::WakeFlag;
 
-struct TestTimer;
-
-impl SubscriptionTimer for TestTimer {
-    fn interval(
-        &self,
-        duration: std::time::Duration,
-    ) -> std::pin::Pin<Box<dyn Stream<Item = ()> + Send>> {
-        let mut timer = tokio::time::interval_at(tokio::time::Instant::now() + duration, duration);
-        timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-        Box::pin(futures_util::stream::unfold(
-            timer,
-            |mut timer| async move {
-                timer.tick().await;
-                Some(((), timer))
-            },
-        ))
-    }
-}
-
 use crate::test_support::state_subscription::{
     same, start, start_read, stop, stop_read, StateReadsFixture,
 };
@@ -31,7 +12,10 @@ const BOOKMARK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(10
 #[tokio::test(start_paused = true)]
 async fn test_購読_配信と定期印と終了時の解放() {
     // Given
-    let usecase = StateSubscriptionUsecase::new(vec!["/repo".into()], Arc::new(TestTimer));
+    let usecase = StateSubscriptionUsecase::new(
+        vec!["/repo".into()],
+        crate::test_support::state_subscription::read_driver(),
+    );
     let mut stream = Box::pin(usecase.open("client".into()).unwrap());
     assert!(matches!(
         stream.next().await,
@@ -90,7 +74,10 @@ async fn test_購読_開始と配信と停止が待機中streamを起こす() {
     use std::task::{Context, Poll, Waker};
 
     // Given
-    let usecase = StateSubscriptionUsecase::new(vec![], Arc::new(TestTimer));
+    let usecase = StateSubscriptionUsecase::new(
+        vec![],
+        crate::test_support::state_subscription::read_driver(),
+    );
     let mut stream = Box::pin(usecase.open("waiting".into()).unwrap());
     assert!(matches!(
         stream.next().await,
@@ -233,12 +220,11 @@ async fn test_引数付き購読_対象の変更だけを読み直して配信�
         value: Mutex::new("node-1".into()),
         calls: Default::default(),
     });
-    let usecase = StateSubscriptionUsecase::new(vec![], Arc::new(TestTimer)).with_reads(
-        reads.clone(),
-        None,
+    let usecase = StateSubscriptionUsecase::new(
         vec![],
-        String::new(),
-    );
+        crate::test_support::state_subscription::read_driver(),
+    )
+    .with_reads(reads.clone(), None, vec![], String::new());
     let mut stream = Box::pin(usecase.open("client".into()).unwrap());
     stream.next().await;
     let target = SubscriptionTarget::SessionNode("/repo".into(), "session".into()).to_string();
@@ -272,12 +258,11 @@ async fn test_外部情報_購読者がいる間だけcache_ttlで取得する()
         value: Mutex::new(String::new()),
         calls: Default::default(),
     });
-    let usecase = StateSubscriptionUsecase::new(vec![], Arc::new(TestTimer)).with_reads(
-        reads.clone(),
-        None,
+    let usecase = StateSubscriptionUsecase::new(
         vec![],
-        String::new(),
-    );
+        crate::test_support::state_subscription::read_driver(),
+    )
+    .with_reads(reads.clone(), None, vec![], String::new());
     let stream = usecase.open("client".into()).unwrap();
     let target = SubscriptionTarget::Issues("/repo".into()).to_string();
     start_read(&usecase, "client", &target, None).await.unwrap();
@@ -299,7 +284,11 @@ async fn test_外部情報_購読者がいる間だけcache_ttlで取得する()
 async fn test_履歴購読_件数違いと別clientが監視を共有し最後の終了で解放する() {
     use crate::usecase::state_subscription::SubscriptionTarget;
     let files = Arc::new(crate::usecase::watcher::watcher_tests::SubscriptionFiles::default());
-    let usecase = StateSubscriptionUsecase::new(vec![], Arc::new(TestTimer)).with_reads(
+    let usecase = StateSubscriptionUsecase::new(
+        vec![],
+        crate::test_support::state_subscription::read_driver(),
+    )
+    .with_reads(
         Arc::new(FakeReads {
             value: Mutex::new(String::new()),
             calls: Default::default(),
@@ -336,7 +325,11 @@ async fn test_automation購読_置き場の監視を共有し最後の終了で�
     use crate::usecase::state_subscription::{StateChangeSource, WatchRequirement};
     // Given
     let files = Arc::new(crate::usecase::watcher::watcher_tests::SubscriptionFiles::default());
-    let usecase = StateSubscriptionUsecase::new(vec![], Arc::new(TestTimer)).with_reads(
+    let usecase = StateSubscriptionUsecase::new(
+        vec![],
+        crate::test_support::state_subscription::read_driver(),
+    )
+    .with_reads(
         Arc::new(FakeReads {
             value: Mutex::new(String::new()),
             calls: Default::default(),
@@ -402,7 +395,11 @@ async fn test_automation購読_置き場のファイル変化で読み直して�
         value: Mutex::new("first".into()),
         calls: Default::default(),
     });
-    let usecase = StateSubscriptionUsecase::new(vec![], Arc::new(TestTimer)).with_reads(
+    let usecase = StateSubscriptionUsecase::new(
+        vec![],
+        crate::test_support::state_subscription::read_driver(),
+    )
+    .with_reads(
         reads.clone(),
         Some(Arc::new(crate::usecase::watcher::WatcherUsecase::new(
             None,
@@ -500,7 +497,11 @@ async fn test_workspaces購読_最後の停止と切断で実際のgit監視を�
 async fn test_監視開始失敗_購読を残さず次の開始で再度監視を試みる() {
     use crate::usecase::state_subscription::SubscriptionTarget;
     let files = Arc::new(crate::usecase::watcher::watcher_tests::SubscriptionFiles::default());
-    let usecase = StateSubscriptionUsecase::new(vec![], Arc::new(TestTimer)).with_reads(
+    let usecase = StateSubscriptionUsecase::new(
+        vec![],
+        crate::test_support::state_subscription::read_driver(),
+    )
+    .with_reads(
         Arc::new(FakeReads {
             value: Mutex::new(String::new()),
             calls: Default::default(),
@@ -567,7 +568,11 @@ async fn test_購読停止_初回読取中の停止要求でも監視とworker�
         release: Default::default(),
     });
     let files = Arc::new(crate::usecase::watcher::watcher_tests::SubscriptionFiles::default());
-    let usecase = StateSubscriptionUsecase::new(vec![], Arc::new(TestTimer)).with_reads(
+    let usecase = StateSubscriptionUsecase::new(
+        vec![],
+        crate::test_support::state_subscription::read_driver(),
+    )
+    .with_reads(
         reads.clone(),
         Some(Arc::new(crate::usecase::watcher::WatcherUsecase::new(
             None,
@@ -627,12 +632,11 @@ impl StateSubscriptionRead for NullableReads {
 #[tokio::test]
 async fn test_不在対象_初回からnullable_snapshotとして配信する() {
     use crate::usecase::state_subscription::SubscriptionTarget;
-    let usecase = StateSubscriptionUsecase::new(vec![], Arc::new(TestTimer)).with_reads(
-        Arc::new(NullableReads),
-        None,
+    let usecase = StateSubscriptionUsecase::new(
         vec![],
-        String::new(),
-    );
+        crate::test_support::state_subscription::read_driver(),
+    )
+    .with_reads(Arc::new(NullableReads), None, vec![], String::new());
     let mut stream = Box::pin(usecase.open("client".into()).unwrap());
     stream.next().await;
     for (target, expected) in [
@@ -661,12 +665,11 @@ async fn test_不在対象_初回からnullable_snapshotとして配信する() 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_購読開始と切断_同じ対象の最終購読者が切断しても再開できる() {
     use crate::usecase::state_subscription::SubscriptionTarget;
-    let usecase = StateSubscriptionUsecase::new(vec![], Arc::new(TestTimer)).with_reads(
-        Arc::new(NullableReads),
-        None,
+    let usecase = StateSubscriptionUsecase::new(
         vec![],
-        String::new(),
-    );
+        crate::test_support::state_subscription::read_driver(),
+    )
+    .with_reads(Arc::new(NullableReads), None, vec![], String::new());
     let target = SubscriptionTarget::AgentSession("missing".into()).to_string();
     for index in 0..100 {
         let old_id = format!("old-{index}");
@@ -696,7 +699,11 @@ async fn test_購読開始と切断_同じ対象の最終購読者が切断し�
 
 #[tokio::test(start_paused = true)]
 async fn test_初回読取_保持中の版から再開して変更だけ届ける() {
-    let usecase = StateSubscriptionUsecase::new(vec![], Arc::new(TestTimer)).with_reads(
+    let usecase = StateSubscriptionUsecase::new(
+        vec![],
+        crate::test_support::state_subscription::read_driver(),
+    )
+    .with_reads(
         Arc::new(FakeReads {
             value: Mutex::new("after".into()),
             calls: Default::default(),
@@ -855,12 +862,11 @@ async fn test_外部情報ttl_issueとprを取得し更新値を配信して停�
         SubscriptionTarget::Workspaces,
     ] {
         let reads = Arc::new(ExternalReads::default());
-        let usecase = StateSubscriptionUsecase::new(vec![], Arc::new(TestTimer)).with_reads(
-            reads.clone(),
-            None,
+        let usecase = StateSubscriptionUsecase::new(
             vec![],
-            String::new(),
-        );
+            crate::test_support::state_subscription::read_driver(),
+        )
+        .with_reads(reads.clone(), None, vec![], String::new());
         let mut stream = Box::pin(usecase.open("client".into()).unwrap());
         stream.next().await;
         start_read(&usecase, "client", &target.to_string(), None)
@@ -912,12 +918,11 @@ async fn test_初回読取中の切断_開始失敗後に対象の鍵もworker�
         entered: Default::default(),
         release: Default::default(),
     });
-    let usecase = StateSubscriptionUsecase::new(vec![], Arc::new(TestTimer)).with_reads(
-        reads.clone(),
-        None,
+    let usecase = StateSubscriptionUsecase::new(
         vec![],
-        String::new(),
-    );
+        crate::test_support::state_subscription::read_driver(),
+    )
+    .with_reads(reads.clone(), None, vec![], String::new());
     let stream = usecase.open("client".into()).unwrap();
     let target = SubscriptionTarget::SessionHistory("/repo".into(), 20);
     let started = tokio::spawn({
@@ -969,7 +974,10 @@ impl crate::domain::repository::file_watcher::FileWatchGateway for Disconnecting
 async fn test_snapshot登録後の切断_開始失敗で対象の鍵を解放する() {
     use crate::usecase::state_subscription::SubscriptionTarget;
     // Given
-    let mut usecase = StateSubscriptionUsecase::new(vec![], Arc::new(TestTimer));
+    let mut usecase = StateSubscriptionUsecase::new(
+        vec![],
+        crate::test_support::state_subscription::read_driver(),
+    );
     let files = Arc::new(DisconnectingFiles {
         usecase: usecase.clone(),
     });

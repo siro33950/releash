@@ -37,7 +37,7 @@ fn spawn(
             }
         },
         receiver,
-        Duration::from_millis(250),
+        crate::infrastructure::timer::delays(Duration::from_millis(250)),
     ));
     (store, dirty, task)
 }
@@ -146,4 +146,80 @@ async fn test_ターミナル保存_対象ごとに保存し終わった対象�
     tokio::time::sleep(Duration::from_secs(1)).await;
     // Then
     assert_eq!(flushes.calls.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
+async fn test_ターミナル保存_偽の遅延で待機中のdirtyを次の保存へ引き継ぐ() {
+    // Given
+    let (dirty, receiver) = dirty_channel();
+    let elapsed = Arc::new(tokio::sync::Notify::new());
+    let armed = Arc::new(tokio::sync::Notify::new());
+    let (flushed, mut flushes) = tokio::sync::mpsc::unbounded_channel();
+    let task = tokio::spawn(run(
+        crate::usecase::retry::test_retrying(),
+        move |session| {
+            let flushed = flushed.clone();
+            async move {
+                flushed.send(session).unwrap();
+                Ok(())
+            }
+        },
+        receiver,
+        Arc::new({
+            let elapsed = elapsed.clone();
+            let armed = armed.clone();
+            move || {
+                armed.notify_one();
+                let elapsed = elapsed.clone();
+                Box::pin(futures_util::stream::once(async move {
+                    elapsed.notified().await;
+                }))
+            }
+        }),
+    ));
+    dirty("terminal");
+    armed.notified().await;
+    assert!(flushes.try_recv().is_err());
+    // When
+    dirty("terminal");
+    tokio::task::yield_now().await;
+    elapsed.notify_one();
+    assert_eq!(flushes.recv().await.as_deref(), Some("terminal"));
+    armed.notified().await;
+    assert!(flushes.try_recv().is_err());
+    elapsed.notify_one();
+    // Then
+    assert_eq!(flushes.recv().await.as_deref(), Some("terminal"));
+    task.abort();
+}
+
+#[tokio::test]
+async fn test_ターミナル保存_時刻streamが終わったら保存せず次のdirtyを受け付ける() {
+    // Given
+    let (dirty, receiver) = dirty_channel();
+    let (armed, mut requests) = tokio::sync::mpsc::unbounded_channel();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let task = tokio::spawn(run(
+        crate::usecase::retry::test_retrying(),
+        {
+            let calls = calls.clone();
+            move |_| {
+                calls.fetch_add(1, Ordering::SeqCst);
+                async { Ok(()) }
+            }
+        },
+        receiver,
+        Arc::new(move || {
+            armed.send(()).unwrap();
+            Box::pin(futures_util::stream::empty())
+        }),
+    ));
+    // When
+    dirty("terminal");
+    requests.recv().await.unwrap();
+    dirty("terminal");
+    requests.recv().await.unwrap();
+    // Then
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    task.abort();
 }

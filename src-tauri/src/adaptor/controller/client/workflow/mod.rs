@@ -1245,6 +1245,7 @@ pub(crate) mod tests {
                 ),
             ),
         );
+        crate::test_support::state_subscription::start_repository_scan(&repository_state);
         let review_usecase = Arc::new(crate::usecase::review_usecase::ReviewUsecase::new(
             repository_state.clone(),
             code_usecase.clone(),

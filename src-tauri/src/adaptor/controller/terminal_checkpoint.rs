@@ -32,11 +32,12 @@ pub(crate) async fn run<F, Fut>(
     retrying: Arc<Retrying>,
     flush: F,
     mut dirty: DirtyReceiver,
-    interval: Duration,
+    delay: crate::infrastructure::timer::Delay,
 ) where
     F: Fn(String) -> Fut + Send + Sync + 'static,
     Fut: std::future::Future<Output = Result<(), WorkFailure>> + Send,
 {
+    use futures_util::StreamExt;
     let flush = Arc::new(flush);
     let sessions: Arc<Mutex<HashMap<String, Arc<Pending>>>> = Default::default();
     while let Some(session_key) = dirty.recv().await {
@@ -53,10 +54,16 @@ pub(crate) async fn run<F, Fut>(
         let retrying = retrying.clone();
         let flush = flush.clone();
         let sessions = sessions.clone();
+        let delay = delay.clone();
         tokio::spawn(async move {
             loop {
-                tokio::time::sleep(interval).await;
                 pending.dirty.store(false, Ordering::SeqCst);
+                if delay().next().await.is_none() {
+                    let mut sessions = sessions.lock().expect("pending checkpoints");
+                    pending.scheduled.store(false, Ordering::SeqCst);
+                    sessions.remove(&session_key);
+                    return;
+                }
                 let _ = retrying
                     .restart(
                         FailureKey::new("terminal_checkpoint", &session_key),

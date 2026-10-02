@@ -13,3 +13,18 @@ pub(crate) fn ticks_after(delay: Duration, period: Duration) -> impl Stream<Item
         Some(((), timer))
     })
 }
+
+pub(crate) type TimeStream = std::pin::Pin<Box<dyn Stream<Item = ()> + Send>>;
+pub(crate) type Delay = std::sync::Arc<dyn Fn() -> TimeStream + Send + Sync>;
+
+pub(crate) fn delays(duration: Duration) -> Delay {
+    std::sync::Arc::new(move || {
+        Box::pin(futures_util::stream::once(async move {
+            tokio::time::sleep(duration).await;
+        }))
+    })
+}
+
+#[cfg(test)]
+#[path = "timer_test.rs"]
+mod timer_tests;

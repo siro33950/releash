@@ -1,4 +1,5 @@
 pub(crate) mod agent_session_exit_observer;
+pub(crate) mod agent_session_launch_retention;
 pub(crate) mod agent_session_wiring;
 pub(crate) mod api;
 pub(crate) mod app_data_composition;
@@ -13,7 +14,9 @@ pub(crate) mod desktop_lifecycle;
 pub(crate) mod provider_session_title;
 pub(crate) mod repository_scan;
 pub(crate) mod state;
+pub(crate) mod state_subscription;
 pub(crate) mod terminal_checkpoint;
+pub(crate) mod terminal_subscription;
 pub(crate) mod terminal_surface_runtime;
 pub(crate) mod wiring;
 pub(crate) mod workflow_startup;

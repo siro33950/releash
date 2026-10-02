@@ -95,7 +95,9 @@ impl TerminalSurfaceRuntime {
                 async move { terminal.flush_checkpoint(&session_key).await }
             },
             dirty_receiver,
-            super::terminal_checkpoint::CHECKPOINT_PERSIST_INTERVAL,
+            crate::infrastructure::timer::delays(
+                super::terminal_checkpoint::CHECKPOINT_PERSIST_INTERVAL,
+            ),
         ));
         Self { application }
     }

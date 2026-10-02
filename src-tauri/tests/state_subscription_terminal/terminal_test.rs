@@ -68,7 +68,7 @@ fn fixture() -> (
         crate::test_support::state_subscription::terminal_application_fixture();
     let subscriptions = StateSubscriptionUsecase::new(
         vec!["/repo".into()],
-        Arc::new(crate::adaptor::gateway::subscription_timer::TokioSubscriptionTimer),
+        crate::test_support::state_subscription::read_driver(),
     );
     let subscriptions = subscriptions.with_terminal(terminal);
     (subscriptions, gateway, hub, surface)
@@ -480,7 +480,7 @@ async fn test_snapshot作成中_別terminalのsnapshotと出力とexecutorを止
     );
     let subscriptions = StateSubscriptionUsecase::new(
         vec![],
-        Arc::new(crate::adaptor::gateway::subscription_timer::TokioSubscriptionTimer),
+        crate::test_support::state_subscription::read_driver(),
     );
     let subscriptions = subscriptions.with_terminal(terminal.clone());
     let mut first_stream = Box::pin(subscriptions.open("first-client".into()).unwrap());
@@ -598,7 +598,7 @@ async fn test_snapshot作成中_同じterminalへ追加されたclientにもsnap
     );
     let subscriptions = StateSubscriptionUsecase::new(
         vec![],
-        Arc::new(crate::adaptor::gateway::subscription_timer::TokioSubscriptionTimer),
+        crate::test_support::state_subscription::read_driver(),
     );
     let subscriptions = subscriptions.with_terminal(terminal);
     let target = SubscriptionTarget::Terminal(surface.owner);
@@ -681,7 +681,7 @@ async fn test_terminal復元_停止と切断の競合でも停止済みclientを
         ));
         let subscriptions = StateSubscriptionUsecase::new(
             vec![],
-            Arc::new(crate::adaptor::gateway::subscription_timer::TokioSubscriptionTimer),
+            crate::test_support::state_subscription::read_driver(),
         );
         let subscriptions = subscriptions.with_terminal(terminal);
         let target = SubscriptionTarget::Terminal(surface.owner.clone());

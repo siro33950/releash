@@ -6,6 +6,7 @@ use crate::usecase::repository_state::{
     worktree::NoopRepositoryStateWatcher,
 };
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::time::Duration;
 
 #[derive(Default)]
 struct Scanner {
@@ -128,7 +129,7 @@ fn service(scanner: Arc<Scanner>, notifier: Arc<Notifier>) -> RepositoryStateSer
         Arc::new(TestRepositoryStateWorkerRuntime),
         Arc::new(IdentityWorktreePathNormalizer),
     )
-    .with_debounce(Duration::ZERO)
+    .with_scan_driver()
 }
 
 fn branch(service: &RepositoryStateService) -> String {

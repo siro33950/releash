@@ -281,7 +281,7 @@ async fn test_状態購読stream_全段の枠が埋まっていてもイベン�
     // Given
     let subscriptions = crate::usecase::state_subscription::StateSubscriptionUsecase::new(
         vec![],
-        Arc::new(crate::adaptor::gateway::subscription_timer::TokioSubscriptionTimer),
+        crate::test_support::state_subscription::read_driver(),
     );
     let deps = crate::test_support::client_api_deps(Arc::new(dispatch()), None)
         .with_state_subscriptions(subscriptions.deps());
@@ -334,7 +334,7 @@ async fn test_状態購読_購読idを入口で128バイトまで受け付ける
     // Given
     let subscriptions = crate::usecase::state_subscription::StateSubscriptionUsecase::new(
         vec![],
-        Arc::new(crate::adaptor::gateway::subscription_timer::TokioSubscriptionTimer),
+        crate::test_support::state_subscription::read_driver(),
     );
     let deps = crate::test_support::client_api_deps(Arc::new(dispatch()), None)
         .with_state_subscriptions(subscriptions.deps());
@@ -391,7 +391,7 @@ async fn test_状態購読_connectで初期状態と変更と再開を配信す�
     // Given
     let subscriptions = StateSubscriptionUsecase::new(
         vec!["/repo".into()],
-        Arc::new(crate::adaptor::gateway::subscription_timer::TokioSubscriptionTimer),
+        crate::test_support::state_subscription::read_driver(),
     );
     let deps = crate::test_support::client_api_deps(Arc::new(dispatch()), None)
         .with_state_subscriptions(subscriptions.deps());
@@ -755,7 +755,7 @@ async fn test_状態購読_既定期限後もbookmarkが届く() {
     // Given
     let subscriptions = crate::usecase::state_subscription::StateSubscriptionUsecase::new(
         Vec::new(),
-        Arc::new(crate::adaptor::gateway::subscription_timer::TokioSubscriptionTimer),
+        crate::test_support::state_subscription::read_driver(),
     );
     let deps = crate::test_support::client_api_deps(Arc::new(dispatch()), None)
         .with_state_subscriptions(subscriptions.deps());
@@ -806,7 +806,7 @@ async fn test_状態購読操作_上限時は拒否し枠解放後は受理す�
     // Given
     let subscriptions = crate::usecase::state_subscription::StateSubscriptionUsecase::new(
         Vec::new(),
-        Arc::new(crate::adaptor::gateway::subscription_timer::TokioSubscriptionTimer),
+        crate::test_support::state_subscription::read_driver(),
     );
     let _stream = subscriptions.open("limited".into()).unwrap();
     let deps = crate::test_support::client_api_deps(Arc::new(dispatch()), None)
@@ -1068,7 +1068,7 @@ async fn test_terminal購読_connectの後段配線と差分再開と流量停�
     dispatch.register_dependencies(&dependencies);
     let subscriptions = StateSubscriptionUsecase::new(
         vec!["/repo".into()],
-        Arc::new(crate::adaptor::gateway::subscription_timer::TokioSubscriptionTimer),
+        crate::test_support::state_subscription::read_driver(),
     );
     let subscriptions = subscriptions.with_terminal(terminal);
     let deps = crate::test_support::client_api_deps(Arc::new(dispatch), None)
@@ -1356,7 +1356,7 @@ fn test_状態購読配線_usecaseとcontrollerが同じ出力実装を参照す
         Arc::new(crate::adaptor::presenter::state_subscription::StateSubscriptionPresenter::new());
     let usecase = crate::usecase::state_subscription::StateSubscriptionUsecase::new_with_output(
         presenter.clone(),
-        Arc::new(crate::adaptor::gateway::subscription_timer::TokioSubscriptionTimer),
+        crate::test_support::state_subscription::read_driver(),
     );
     let deps = crate::test_support::state_subscription::deps(usecase, presenter);
     // When
@@ -1392,7 +1392,7 @@ async fn test_流量制御_全段の枠が埋まっていてもReportTerminalPro
     // Given
     let subscriptions = crate::usecase::state_subscription::StateSubscriptionUsecase::new(
         Vec::new(),
-        Arc::new(crate::adaptor::gateway::subscription_timer::TokioSubscriptionTimer),
+        crate::test_support::state_subscription::read_driver(),
     );
     let _stream = subscriptions.open("limited".into()).unwrap();
     let presenter = subscriptions.test_presenter().unwrap().clone();
@@ -1422,7 +1422,7 @@ async fn test_優先度_defaultが埋まっていてもinteractiveの呼び出�
     // Given
     let subscriptions = crate::usecase::state_subscription::StateSubscriptionUsecase::new(
         Vec::new(),
-        Arc::new(crate::adaptor::gateway::subscription_timer::TokioSubscriptionTimer),
+        crate::test_support::state_subscription::read_driver(),
     );
     let _stream = subscriptions.open("limited".into()).unwrap();
     let deps = crate::test_support::client_api_deps(Arc::new(dispatch()), None)
@@ -1590,7 +1590,7 @@ async fn test_状態stream開始_各段の失敗で既存clientを保持し先�
     for stage in 0..3 {
         let subscriptions = crate::usecase::state_subscription::StateSubscriptionUsecase::new(
             vec![],
-            Arc::new(crate::adaptor::gateway::subscription_timer::TokioSubscriptionTimer),
+            crate::test_support::state_subscription::read_driver(),
         );
         let deps = subscriptions.deps();
         match stage {
@@ -1665,7 +1665,7 @@ async fn test_notion購読_入力順をdaemonで共有し要求元へ値と失�
     let reads = Arc::new(Reads(AtomicUsize::new(0)));
     let subscriptions = crate::usecase::state_subscription::StateSubscriptionUsecase::new(
         vec![],
-        Arc::new(crate::adaptor::gateway::subscription_timer::TokioSubscriptionTimer),
+        crate::test_support::state_subscription::read_driver(),
     )
     .with_reads(reads.clone(), None, vec![], String::new());
     let presenter = Arc::new(subscriptions.test_presenter().unwrap().clone());
@@ -1836,7 +1836,7 @@ fn notion_cancellation_fixture() -> (Router, StateSubscriptionDeps) {
     }
     let subscriptions = crate::usecase::state_subscription::StateSubscriptionUsecase::new(
         vec![],
-        Arc::new(crate::adaptor::gateway::subscription_timer::TokioSubscriptionTimer),
+        crate::test_support::state_subscription::read_driver(),
     )
     .with_reads(Arc::new(Reads), None, vec![], String::new())
     .deps();

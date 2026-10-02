@@ -1,7 +1,6 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
 
 use parking_lot::{Mutex, RwLock};
 
@@ -45,6 +44,13 @@ impl RepositoryStateWatcher for NoopRepositoryStateWatcher {
     }
 }
 
+pub(crate) enum ScanContinuation {
+    Stop,
+    Finished,
+    Pending(InvalidateReason),
+    Debounce(InvalidateReason),
+}
+
 pub struct WorktreeState {
     worktree_path: String,
     /// この path が Repository の root（main worktree）か。root だけが worktree の並びを持つ。
@@ -71,7 +77,7 @@ impl WorktreeState {
         scanner: Arc<dyn RepositoryScanner>,
         state_subscriptions: crate::usecase::state_subscription::StateSubscriptionUsecase,
         runtime: Arc<dyn RepositoryStateWorkerRuntime>,
-        debounce: Duration,
+        workers: tokio::sync::mpsc::UnboundedSender<ScanWorker>,
     ) -> Arc<Self> {
         let (invalidate_tx, invalidate_rx) = runtime.invalidation_channel();
         let state = Arc::new(Self {
@@ -91,13 +97,43 @@ impl WorktreeState {
             subscriptions: Mutex::new(HashMap::new()),
             state_subscriptions,
         });
-        runtime.spawn_worker(ScanWorker {
+        let _ = workers.send(ScanWorker {
             state: state.clone(),
             scanner,
             receiver: invalidate_rx,
-            debounce,
         });
         state
+    }
+
+    pub(crate) fn should_scan(&self, reason: &InvalidateReason) -> bool {
+        !self.is_shutdown() && !reason.shutdown
+    }
+
+    pub(crate) fn needs_file_scan(&self, reason: &InvalidateReason) -> bool {
+        reason.files
+    }
+
+    pub(crate) async fn finish_worker_scan(
+        &self,
+        generation: u64,
+        reason: InvalidateReason,
+        status: Option<Result<Option<Arc<RepositorySnapshot>>, RepositoryStateError>>,
+        scanner: Arc<dyn RepositoryScanner>,
+        runtime: &dyn RepositoryStateWorkerRuntime,
+    ) -> ScanContinuation {
+        if reason.refs {
+            self.scan_worktrees_once(scanner, runtime).await;
+        }
+        if self.is_shutdown() {
+            return ScanContinuation::Stop;
+        }
+        if self.requested_generation() != generation {
+            return ScanContinuation::Debounce(reason);
+        }
+        match self.finish_scan(status, reason) {
+            Some(pending) => ScanContinuation::Pending(pending),
+            None => ScanContinuation::Finished,
+        }
     }
 
     pub async fn scan_once(

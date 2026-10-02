@@ -221,8 +221,6 @@ type StandaloneLaunchOutcome = Result<String, AgentSessionLaunchUsecaseError>;
 type SharedStandaloneLaunch = Shared<BoxFuture<'static, StandaloneLaunchOutcome>>;
 
 const COMPLETED_STANDALONE_LAUNCH_CAPACITY: usize = 128;
-const ACTIVATED_WORKFLOW_LAUNCH_RETENTION: std::time::Duration =
-    std::time::Duration::from_secs(300);
 
 fn issue_agent_session_id(
     caller_request_id: &str,
@@ -295,6 +293,8 @@ pub(crate) struct AgentSessionLaunchUsecase {
     standalone_requests: Mutex<StandaloneLaunchRequestRegistry>,
     pending_workflow_launches: Mutex<HashMap<String, PreparedAgentSessionLaunch>>,
     activated_workflow_launches: Arc<Mutex<HashMap<String, WorkflowLaunchActivation>>>,
+    activated: tokio::sync::mpsc::UnboundedSender<String>,
+    activation_events: std::sync::Mutex<Option<tokio::sync::mpsc::UnboundedReceiver<String>>>,
     hook_health_tasks: std::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>,
 }
 
@@ -334,7 +334,10 @@ impl AgentSessionLaunchUsecase {
             launch_gateway,
             terminal,
         } = provider_runtime;
+        let (activated, activation_events) = tokio::sync::mpsc::unbounded_channel();
         Self {
+            activated,
+            activation_events: std::sync::Mutex::new(Some(activation_events)),
             performance,
             sessions,
             lifecycle,
@@ -547,13 +550,34 @@ impl AgentSessionLaunchUsecase {
             WorkflowLaunchActivation::Activated(Box::new(activated.clone())),
         );
         let _ = completion_tx.send(true);
-        let launches = Arc::clone(&self.activated_workflow_launches);
-        let agent_session_id = agent_session_id.to_string();
-        tokio::spawn(async move {
-            tokio::time::sleep(ACTIVATED_WORKFLOW_LAUNCH_RETENTION).await;
-            launches.lock().await.remove(&agent_session_id);
-        });
+        let _ = self.activated.send(agent_session_id.to_string());
         Ok(activated)
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn test_has_activated_launch(&self, session: &str) -> bool {
+        matches!(
+            self.activated_workflow_launches.lock().await.get(session),
+            Some(WorkflowLaunchActivation::Activated(_))
+        )
+    }
+
+    pub(crate) fn take_activation_events(&self) -> tokio::sync::mpsc::UnboundedReceiver<String> {
+        self.activation_events
+            .lock()
+            .expect("activation events")
+            .take()
+            .expect("activation driver")
+    }
+
+    pub(crate) async fn expire_workflow_launch(&self, agent_session_id: &str) {
+        let mut launches = self.activated_workflow_launches.lock().await;
+        if matches!(
+            launches.get(agent_session_id),
+            Some(WorkflowLaunchActivation::Activated(_))
+        ) {
+            launches.remove(agent_session_id);
+        }
     }
 
     async fn prepare_new_session(

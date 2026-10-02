@@ -116,7 +116,7 @@ pub(crate) fn test_output() -> crate::usecase::state_subscription::StateSubscrip
 pub(crate) fn test_subscriptions() -> crate::usecase::state_subscription::StateSubscriptionUsecase {
     crate::usecase::state_subscription::StateSubscriptionUsecase::new_with_output(
         test_output(),
-        std::sync::Arc::new(crate::adaptor::gateway::subscription_timer::TokioSubscriptionTimer),
+        read_driver(),
     )
 }
 
@@ -236,7 +236,7 @@ use std::sync::Arc;
 impl StateSubscriptionUsecase {
     pub(crate) fn new(
         paths: Vec<String>,
-        timer: Arc<dyn crate::usecase::state_subscription::SubscriptionTimer>,
+        timer: tokio::sync::mpsc::UnboundedSender<crate::usecase::state_subscription::ReadWorker>,
     ) -> Self {
         let presenter = Arc::new(StateSubscriptionPresenter::new());
         let paths = Arc::new(parking_lot::RwLock::new(paths));
@@ -314,13 +314,11 @@ pub(crate) fn deps(
             &presenter,
         ),
     );
-    crate::adaptor::controller::api::StateSubscriptionDeps::new(
-        usecase,
-        presenter,
-        crate::usecase::terminal_surface::subscription::TerminalSubscriptionUsecase::new(
-            output, None,
-        ),
-    )
+    let terminal = crate::usecase::terminal_surface::subscription::TerminalSubscriptionUsecase::new(
+        output, None,
+    );
+    crate::test_support::state_subscription::start_terminal_driver(&terminal);
+    crate::adaptor::controller::api::StateSubscriptionDeps::new(usecase, presenter, terminal)
 }
 
 #[derive(Clone)]
@@ -355,6 +353,7 @@ impl StateSubscriptionUsecase {
                 presenter.clone(),
                 Some(terminal),
             );
+        crate::test_support::state_subscription::start_terminal_driver(&subscriptions);
         TerminalSubscriptions {
             usecase: self,
             terminal: subscriptions,
@@ -484,4 +483,59 @@ pub(crate) fn terminal_application_with_gateway(
         Arc::new(crate::adaptor::gateway::terminal_surface::event_source::TerminalSurfaceEventSourceGateway::new(hub.event_sender())),
         hub,
     ))
+}
+
+pub(crate) fn read_driver(
+) -> tokio::sync::mpsc::UnboundedSender<crate::usecase::state_subscription::ReadWorker> {
+    if tokio::runtime::Handle::try_current().is_err() {
+        return tokio::sync::mpsc::unbounded_channel().0;
+    }
+    crate::adaptor::controller::state_subscription::drive(Arc::new(|| {
+        let period = crate::domain::git_host::CacheTtl::EXTERNAL_INFORMATION.duration();
+        Box::pin(crate::infrastructure::timer::ticks_after(period, period))
+    }))
+}
+
+pub(crate) fn pending_read_driver(
+) -> tokio::sync::mpsc::UnboundedSender<crate::usecase::state_subscription::ReadWorker> {
+    if tokio::runtime::Handle::try_current().is_err() {
+        return tokio::sync::mpsc::unbounded_channel().0;
+    }
+    crate::adaptor::controller::state_subscription::drive(Arc::new(|| {
+        Box::pin(futures_util::stream::pending())
+    }))
+}
+
+pub(crate) fn scan_driver(
+    duration: std::time::Duration,
+) -> tokio::sync::mpsc::UnboundedSender<crate::usecase::repository_state::runtime::ScanWorker> {
+    let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
+    crate::adaptor::controller::repository_scan::start(
+        crate::usecase::retry::shared().clone(),
+        receiver,
+        Arc::new(crate::usecase::repository_state::runtime::tests_support::TestRepositoryStateWorkerRuntime),
+        crate::infrastructure::timer::delays(duration),
+    );
+    sender
+}
+
+pub(crate) fn start_terminal_driver(
+    usecase: &crate::usecase::terminal_surface::subscription::TerminalSubscriptionUsecase,
+) {
+    if tokio::runtime::Handle::try_current().is_ok() {
+        crate::adaptor::controller::terminal_subscription::start(usecase);
+    }
+}
+
+pub(crate) fn start_repository_scan(
+    service: &crate::usecase::repository_state::RepositoryStateService,
+) {
+    if tokio::runtime::Handle::try_current().is_ok() {
+        crate::adaptor::controller::repository_scan::start(
+            crate::usecase::retry::shared().clone(),
+            service.take_worker_events(),
+            Arc::new(crate::usecase::repository_state::runtime::tests_support::TestRepositoryStateWorkerRuntime),
+            Arc::new(|| Box::pin(futures_util::stream::iter([()]))),
+        );
+    }
 }

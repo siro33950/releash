@@ -246,6 +246,7 @@ impl Fixture {
             Arc::new(TestRepositoryStateWorkerRuntime),
             Arc::new(CanonicalWorktreePathNormalizer),
         ));
+        crate::test_support::state_subscription::start_repository_scan(&repository_state);
         let workflows_dir = data_dir.path().join("workflows");
         std::fs::create_dir_all(&workflows_dir).unwrap();
         let workflow = Arc::new(wiring::build_workflow_usecase(

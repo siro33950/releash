@@ -5,18 +5,10 @@ pub(crate) use reads::{StateReadError, StateReadFailure, WorkspaceStateReads};
 mod target;
 mod value;
 pub(crate) use error::SubscriptionError;
-use futures_util::{Stream, StreamExt};
 use parking_lot::Mutex;
 use std::sync::Arc;
 pub(crate) use target::{StateChangeSource, SubscriptionTarget, WatchRequirement};
 pub(crate) use value::StateValue;
-
-pub(crate) trait SubscriptionTimer: Send + Sync {
-    fn interval(
-        &self,
-        duration: std::time::Duration,
-    ) -> std::pin::Pin<Box<dyn Stream<Item = ()> + Send>>;
-}
 
 pub(crate) trait StateSubscriptionOutput: Send + Sync {
     #[cfg(test)]
@@ -54,13 +46,28 @@ pub(crate) trait StateSubscriptionOutput: Send + Sync {
 pub(crate) type StateSubscriptionOutputRef = Arc<dyn StateSubscriptionOutput>;
 
 #[derive(Clone)]
-struct StateChange {
+pub(crate) struct StateChange {
     source: StateChangeSource,
     skip: Option<SubscriptionTarget>,
 }
 
-struct PendingChange {
+pub(crate) struct PendingChange {
     completed: std::sync::mpsc::Sender<()>,
+}
+
+pub(crate) struct ReadWorker {
+    pub usecase: StateSubscriptionUsecase,
+    pub target: SubscriptionTarget,
+    pub changes: tokio::sync::broadcast::Receiver<StateChange>,
+    pub waiting_changes: tokio::sync::mpsc::UnboundedReceiver<PendingChange>,
+    pub cancelled: tokio::sync::oneshot::Receiver<()>,
+}
+
+pub(crate) enum ReadSignal {
+    Change(StateChange),
+    Waiting(PendingChange),
+    Periodic,
+    Lagged,
 }
 
 struct ReadStartPermit<'a> {
@@ -92,14 +99,15 @@ pub(crate) struct StateSubscriptionUsecase {
     clients: Arc<
         Mutex<std::collections::HashMap<String, std::collections::HashSet<SubscriptionTarget>>>,
     >,
-    timer: Arc<dyn SubscriptionTimer>,
+    driver: tokio::sync::mpsc::UnboundedSender<ReadWorker>,
     history_paths: Vec<String>,
     hook_health_markers: String,
     pub(crate) reads: Option<Arc<dyn StateSubscriptionRead>>,
     #[cfg(test)]
     pub(crate) test_repository_paths: Option<Arc<parking_lot::RwLock<Vec<String>>>>,
     watchers: Option<Arc<crate::usecase::watcher::WatcherUsecase>>,
-    workers: Arc<Mutex<std::collections::HashMap<SubscriptionTarget, tokio::task::JoinHandle<()>>>>,
+    workers:
+        Arc<Mutex<std::collections::HashMap<SubscriptionTarget, tokio::sync::oneshot::Sender<()>>>>,
     starts: Arc<tokio::sync::Mutex<()>>,
     starting_target: Arc<Mutex<Option<SubscriptionTarget>>>,
     watches: Arc<Mutex<std::collections::HashMap<WatchRequirement, u64>>>,
@@ -131,7 +139,7 @@ impl StateSubscriptionUsecase {
 
     pub fn new_with_output(
         publisher: StateSubscriptionOutputRef,
-        timer: Arc<dyn SubscriptionTimer>,
+        driver: tokio::sync::mpsc::UnboundedSender<ReadWorker>,
     ) -> Self {
         Self {
             publisher,
@@ -140,7 +148,7 @@ impl StateSubscriptionUsecase {
             #[cfg(test)]
             test_changes: tokio::sync::broadcast::channel(64).0,
             clients: Default::default(),
-            timer,
+            driver,
             reads: None,
             #[cfg(test)]
             test_repository_paths: None,
@@ -189,7 +197,7 @@ impl StateSubscriptionUsecase {
             target,
         };
         reads.acquire_external(target);
-        let mut changes = self.changes.subscribe();
+        let changes = self.changes.subscribe();
         let value = match reads.refresh_external(target).await {
             Ok(()) => reads.read(target).await,
             Err(error) => Err(error),
@@ -215,87 +223,96 @@ impl StateSubscriptionUsecase {
         if workers.contains_key(target) {
             return Ok(());
         }
-        let (waiting_sender, mut waiting_changes) = tokio::sync::mpsc::unbounded_channel();
+        let (waiting_sender, waiting_changes) = tokio::sync::mpsc::unbounded_channel();
         self.waiting_workers
             .lock()
             .insert(target.clone(), waiting_sender);
-        let publisher = self.publisher.clone();
-        let timer = self.timer.clone();
-        let worker_target = target.clone();
-        let usecase = self.clone();
-        let task = tokio::spawn(async move {
-            let mut interval =
-                timer.interval(crate::domain::git_host::CacheTtl::EXTERNAL_INFORMATION.duration());
-            loop {
-                // 定期、Repository の増減（Workspaces）、対象 Repository の Notion 設定の変化で外部の情報を取り直す。
-                // 取りこぼしは、読み直すだけにする。
-                let mut refresh_external = false;
-                let mut completed = Vec::new();
-                tokio::select! {
-                    result = changes.recv() => match result {
-                        Ok(change) if change.skip.as_ref() == Some(&worker_target) => continue,
-                        Ok(change) if worker_target.affected_by(&change.source) => {
-                            refresh_external = adds_external_information(&worker_target, &change.source);
-                        }
-                        Ok(_) => continue,
-                        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
-                        Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
-                    },
-                    result = waiting_changes.recv() => match result {
-                        Some(change) => completed.push(change.completed),
-                        None => break,
-                    },
-                    _ = interval.next(), if worker_target.external_information() => {
-                        refresh_external = true;
-                    }
-                }
-                // 読むのは 1 回で足りるので、溜まった知らせは読む前にまとめる。
-                loop {
-                    use tokio::sync::broadcast::error::TryRecvError;
-                    match changes.try_recv() {
-                        Ok(change) => {
-                            refresh_external |=
-                                adds_external_information(&worker_target, &change.source);
-                        }
-                        Err(TryRecvError::Lagged(_)) => continue,
-                        Err(TryRecvError::Empty | TryRecvError::Closed) => break,
-                    }
-                }
-                while let Ok(change) = waiting_changes.try_recv() {
-                    completed.push(change.completed);
-                }
-                let refresh = if refresh_external {
-                    reads.refresh_external(&worker_target).await
-                } else {
-                    Ok(())
-                };
-                if worker_target == SubscriptionTarget::Workspaces {
-                    if let Err(error) = usecase.reconcile_watches() {
-                        log::error!("State watch update failed: {error}");
-                    }
-                }
-                match match refresh {
-                    Ok(()) => reads.read(&worker_target).await,
-                    Err(error) => Err(error),
-                } {
-                    Ok(value) => {
-                        if let Err(error) = publisher.publish(&worker_target, value, None) {
-                            log::error!("State publication failed: {error}");
-                        }
-                    }
-                    Err(error) => {
-                        if let Err(error) = publisher.publish_failure(&worker_target, error) {
-                            log::error!("State failure publication failed: {error}");
-                        }
-                    }
-                }
-                for completed in completed {
-                    let _ = completed.send(());
-                }
-            }
-        });
-        workers.insert(target.clone(), task);
+        let (cancel, cancelled) = tokio::sync::oneshot::channel();
+        workers.insert(target.clone(), cancel);
+        if self
+            .driver
+            .send(ReadWorker {
+                usecase: self.clone(),
+                target: target.clone(),
+                changes,
+                waiting_changes,
+                cancelled,
+            })
+            .is_err()
+        {
+            workers.remove(target);
+            self.waiting_workers.lock().remove(target);
+            drop(workers);
+            let _ = self.stop(client, target);
+            return Err(convert(SubscriptionError::StreamEnded));
+        }
         Ok(())
+    }
+
+    pub(crate) async fn refresh_read(
+        &self,
+        target: &SubscriptionTarget,
+        signal: ReadSignal,
+        changes: &mut tokio::sync::broadcast::Receiver<StateChange>,
+        waiting: &mut tokio::sync::mpsc::UnboundedReceiver<PendingChange>,
+    ) {
+        if !self.is_active(target) {
+            return;
+        }
+        let mut refresh_external = false;
+        let mut completed = Vec::new();
+        match signal {
+            ReadSignal::Change(change) => {
+                if change.skip.as_ref() == Some(target) || !target.affected_by(&change.source) {
+                    return;
+                }
+                refresh_external = adds_external_information(target, &change.source);
+            }
+            ReadSignal::Waiting(change) => completed.push(change.completed),
+            ReadSignal::Periodic => {
+                if !target.external_information() {
+                    return;
+                }
+                refresh_external = true;
+            }
+            ReadSignal::Lagged => {}
+        }
+        loop {
+            use tokio::sync::broadcast::error::TryRecvError;
+            match changes.try_recv() {
+                Ok(change) => refresh_external |= adds_external_information(target, &change.source),
+                Err(TryRecvError::Lagged(_)) => continue,
+                Err(TryRecvError::Empty | TryRecvError::Closed) => break,
+            }
+        }
+        while let Ok(change) = waiting.try_recv() {
+            completed.push(change.completed);
+        }
+        let reads = self.reads.as_ref().expect("subscription reads");
+        let refresh = if refresh_external {
+            reads.refresh_external(target).await
+        } else {
+            Ok(())
+        };
+        if *target == SubscriptionTarget::Workspaces {
+            if let Err(error) = self.reconcile_watches() {
+                log::error!("State watch update failed: {error}");
+            }
+        }
+        let result = match refresh {
+            Ok(()) => reads.read(target).await,
+            Err(error) => Err(error),
+        };
+        let publication = match result {
+            Ok(value) => self.publisher.publish(target, value, None),
+            Err(error) => self.publisher.publish_failure(target, error),
+        };
+        if let Err(error) = publication {
+            log::error!("State publication failed: {error}");
+        }
+        for completed in completed {
+            let _ = completed.send(());
+        }
     }
 
     fn release_inactive(&self, target: &SubscriptionTarget) {
@@ -367,12 +384,12 @@ impl StateSubscriptionUsecase {
         }
         let mut workers = self.workers.lock();
         let active = self.active_targets();
-        workers.retain(|target, task| {
+        workers.retain(|target, _cancel| {
             if active.contains(target) {
                 true
             } else {
                 self.waiting_workers.lock().remove(target);
-                task.abort();
+
                 self.release_inactive(target);
                 false
             }
@@ -477,6 +494,13 @@ impl StateSubscriptionUsecase {
     #[cfg(test)]
     pub(crate) fn test_watches(&self) -> std::collections::HashMap<WatchRequirement, u64> {
         self.watches.lock().clone()
+    }
+
+    fn is_active(&self, target: &SubscriptionTarget) -> bool {
+        self.clients
+            .lock()
+            .values()
+            .any(|targets| targets.contains(target))
     }
 
     pub(crate) fn active_targets(&self) -> std::collections::HashSet<SubscriptionTarget> {

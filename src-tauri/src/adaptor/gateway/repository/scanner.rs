@@ -189,7 +189,7 @@ mod tests {
             Arc::new(
                 crate::usecase::repository_state::runtime::tests_support::TestRepositoryStateWorkerRuntime,
             ),
-            std::time::Duration::ZERO,
+            crate::test_support::state_subscription::scan_driver(std::time::Duration::ZERO),
         );
 
         state.invalidate(crate::usecase::repository_state::worker::InvalidateReason::change());

@@ -3,6 +3,7 @@ use crate::usecase::repository_dto::{FileDiffStatDto, FileStatusDto};
 use crate::usecase::repository_state::runtime::tests_support::TestRepositoryStateWorkerRuntime;
 use std::sync::atomic::{AtomicBool, AtomicUsize};
 use std::sync::mpsc as std_mpsc;
+use std::time::Duration;
 
 use crate::test_support::state_subscription::CapturingNotifier;
 
@@ -128,7 +129,7 @@ fn test_state(scanner: Arc<dyn RepositoryScanner>, debounce: Duration) -> Arc<Wo
         scanner,
         crate::test_support::state_subscription::test_subscriptions(),
         Arc::new(TestRepositoryStateWorkerRuntime),
-        debounce,
+        crate::test_support::state_subscription::scan_driver(debounce),
     )
 }
 
@@ -142,7 +143,7 @@ fn test_state_with_notifier(
         scanner,
         subscriptions,
         Arc::new(TestRepositoryStateWorkerRuntime),
-        Duration::ZERO,
+        crate::test_support::state_subscription::scan_driver(Duration::ZERO),
     )
 }
 
@@ -386,7 +387,7 @@ async fn test_worktreeの並び_repositoryのrootでなければ読まない() {
         scanner.clone(),
         crate::test_support::state_subscription::test_subscriptions(),
         Arc::new(TestRepositoryStateWorkerRuntime),
-        Duration::ZERO,
+        crate::test_support::state_subscription::scan_driver(Duration::ZERO),
     );
 
     // When
