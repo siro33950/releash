@@ -428,7 +428,7 @@ async fn test_automation購読_置き場のファイル変化で読み直して�
             if let Some(StateSubscriptionEvent::Item(id, Event::Change(_, _, value))) =
                 stream.next().await
             {
-                assert_eq!(id, target);
+                assert_eq!(id, format!("client:{target}"));
                 break value;
             }
         }

@@ -428,16 +428,22 @@ async fn test_状態購読_connectで初期状態と変更と再開を配信す�
         target: SubscriptionTarget::RepositoryPaths.to_string(),
         args: vec![],
         version: None,
-        terminal_input_id: None,
+        subscription_id: "state-subscription".into(),
     };
     client
         .start_state_subscription(to_rpc::<rpc::StartStateSubscriptionRequest>(&request).unwrap())
         .await
         .unwrap();
-    client
-        .start_state_subscription(to_rpc::<rpc::StartStateSubscriptionRequest>(&request).unwrap())
-        .await
-        .unwrap();
+    assert_eq!(
+        client
+            .start_state_subscription(
+                to_rpc::<rpc::StartStateSubscriptionRequest>(&request).unwrap()
+            )
+            .await
+            .unwrap_err()
+            .code,
+        connectrpc::ErrorCode::AlreadyExists
+    );
     // Then
     let initial: wire::StateSubscriptionEvent = to_wire(
         &stream
@@ -475,8 +481,7 @@ async fn test_状態購読_connectで初期状態と変更と再開を配信す�
     assert_eq!(changed_version.sequence, 1);
     client
         .stop_state_subscription(rpc::StopStateSubscriptionRequest {
-            client_id: "state-test".into(),
-            target: SubscriptionTarget::RepositoryPaths.to_string(),
+            subscription_id: "state-subscription".into(),
             ..Default::default()
         })
         .await
@@ -485,6 +490,7 @@ async fn test_状態購読_connectで初期状態と変更と再開を配信す�
         .start_state_subscription(rpc::StartStateSubscriptionRequest {
             client_id: "state-test".into(),
             target: "missing".into(),
+            subscription_id: "missing".into(),
             ..Default::default()
         })
         .await
@@ -819,7 +825,7 @@ async fn test_状態購読操作_上限時は拒否し枠解放後は受理す�
                 .header("content-type", "application/json")
                 .header("connect-protocol-version", "1")
                 .body(Body::from(
-                    r#"{"clientId":"limited","target":"repository-paths"}"#,
+                    r#"{"clientId":"limited","target":"repository-paths","subscriptionId":"limited-subscription"}"#,
                 ))
                 .unwrap()
         };
@@ -1116,14 +1122,13 @@ async fn test_terminal購読_connectの後段配線と差分再開と流量停�
                 client_id: "terminal-client".into(),
                 target: "terminal".into(),
                 args: vec![path.into()],
-                terminal_input_id: (path == "/first").then(|| format!("input-{path}")).into(),
+                subscription_id: format!("input-{path}"),
                 ..Default::default()
             })
             .await
             .unwrap();
         let initial = next_event!();
-        assert_eq!(initial.target, "terminal");
-        assert_eq!(initial.args, vec![path]);
+        assert_eq!(initial.subscription_id, format!("input-{path}"));
         assert_eq!(initial.version.as_ref().unwrap().sequence, 0);
         let Some(Event::Snapshot(payload)) = initial.event else {
             panic!("terminal snapshot");
@@ -1145,12 +1150,13 @@ async fn test_terminal購読_connectの後段配線と差分再開と流量停�
         .start_state_subscription(rpc::StartStateSubscriptionRequest {
             client_id: "terminal-client".into(),
             target: "repository-paths".into(),
+            subscription_id: "repositories".into(),
             ..Default::default()
         })
         .await
         .unwrap();
     let repository = next_event!();
-    assert_eq!(repository.target, "repository-paths");
+    assert_eq!(repository.subscription_id, "repositories");
     assert!(matches!(repository.event, Some(Event::Snapshot(_))));
     assert!(matches!(next_event!().event, Some(Event::Bookmark(_))));
 
@@ -1196,7 +1202,7 @@ async fn test_terminal購読_connectの後段配線と差分再開と流量停�
         sequence: 1,
     });
     let other = next_event!();
-    assert_eq!(other.args, vec!["/second"]);
+    assert_eq!(other.subscription_id, "input-/second");
     let Some(Event::Change(change)) = other.event else {
         panic!("other terminal delta");
     };
@@ -1233,8 +1239,7 @@ async fn test_terminal購読_connectの後段配線と差分再開と流量停�
 
     // When / Then: only valid processed units release the source below the low watermark.
     let request = |units| rpc::ReportTerminalProcessedRequest {
-        client_id: "terminal-client".into(),
-        args: vec!["/first".into()],
+        subscription_id: "input-/first".into(),
         units,
         ..Default::default()
     };
@@ -1265,9 +1270,7 @@ async fn test_terminal購読_connectの後段配線と差分再開と流量停�
     // When / Then: resume the terminal's output number through the same wire contract.
     client
         .stop_state_subscription(rpc::StopStateSubscriptionRequest {
-            client_id: "terminal-client".into(),
-            target: "terminal".into(),
-            args: vec!["/first".into()],
+            subscription_id: "input-/first".into(),
             ..Default::default()
         })
         .await
@@ -1277,7 +1280,7 @@ async fn test_terminal購読_connectの後段配線と差分再開と流量停�
         target: "terminal".into(),
         args: vec!["/first".into()],
         version: initial_version,
-        terminal_input_id: Some("resumed-input".into()),
+        subscription_id: "resumed-input".into(),
     };
     client
         .start_state_subscription(to_rpc::<rpc::StartStateSubscriptionRequest>(&resume).unwrap())
@@ -1289,7 +1292,7 @@ async fn test_terminal購読_connectの後段配線と差分再開と流量停�
     let mut bookmark = None;
     for _ in 0..3 {
         let event = next_event!();
-        if event.target == "terminal" && event.args.len() == 1 && event.args[0] == "/first" {
+        if event.subscription_id == "resumed-input" {
             bookmark = Some(event);
             break;
         }
@@ -1407,7 +1410,7 @@ async fn test_流量制御_全段の枠が埋まっていてもReportTerminalPro
     let response = router(Some(deps))
         .oneshot(unary_request(
             "ReportTerminalProcessed",
-            &format!(r#"{{"clientId":"limited","args":["session"],"units":{units}}}"#),
+            &format!(r#"{{"subscriptionId":"session","units":{units}}}"#),
         ))
         .await
         .unwrap();
@@ -1441,7 +1444,7 @@ async fn test_優先度_defaultが埋まっていてもinteractiveの呼び出�
     let accepted = router
         .oneshot(unary_request(
             "StartStateSubscription",
-            r#"{"clientId":"limited","target":"repository-paths"}"#,
+            r#"{"clientId":"limited","target":"repository-paths","subscriptionId":"limited-subscription"}"#,
         ))
         .await
         .unwrap();
@@ -1634,7 +1637,7 @@ async fn test_状態stream開始_各段の失敗で既存clientを保持し先�
 }
 
 #[tokio::test]
-async fn test_notion購読_入力順をdaemonで共有し要求元へ値と失敗を届ける() {
+async fn test_notion購読_正規化した対象を共有し識別子ごとに値と失敗を届ける() {
     use crate::usecase::state_subscription::{
         StateReadError, StateSubscriptionOutput, StateSubscriptionRead, StateValue,
         SubscriptionTarget,
@@ -1727,6 +1730,7 @@ async fn test_notion購読_入力順をdaemonで共有し要求元へ値と失�
             client_id: "notion-client".into(),
             target: "notion-tasks".into(),
             args: vec!["/repo".into(), "20".into(), "labels=invalid".into()],
+            subscription_id: "invalid".into(),
             ..Default::default()
         })
         .await
@@ -1739,23 +1743,24 @@ async fn test_notion購読_入力順をdaemonで共有し要求元へ値と失�
                 client_id: "notion-client".into(),
                 target: "notion-tasks".into(),
                 args: args.clone(),
+                subscription_id: format!("notion-{index}"),
                 ..Default::default()
             })
             .await
             .unwrap();
         let mut received = std::collections::HashSet::new();
-        while received.len() <= index {
+        while received.is_empty() {
             let event = next_event!();
             if let Some(Event::Snapshot(payload)) = event.event {
-                assert_eq!(event.target, "notion-tasks");
+                assert_eq!(event.subscription_id, format!("notion-{index}"));
                 let Some(Value::NotionTasks(snapshot)) = payload.value else {
                     panic!("Notion tasks expected")
                 };
                 assert_eq!(snapshot.page.unwrap().has_more, Some(true));
-                received.insert(event.args);
+                received.insert(event.subscription_id);
             }
         }
-        assert!(received.contains(args));
+        assert!(received.contains(&format!("notion-{index}")));
     }
     assert_eq!(reads.0.load(Ordering::SeqCst), 1);
     assert_eq!(subscriptions.test_worker_count(), 1);
@@ -1782,19 +1787,17 @@ async fn test_notion購読_入力順をdaemonで共有し要求元へ値と失�
             };
             assert!(snapshot.page.is_some());
             assert_eq!(snapshot.read_error.unwrap().config_missing, Some(true));
-            failures.insert(event.args);
+            failures.insert(event.subscription_id);
         }
     }
     assert_eq!(
         failures,
-        std::collections::HashSet::from([a.clone(), b.clone()])
+        std::collections::HashSet::from(["notion-0".into(), "notion-1".into()])
     );
-    for (index, args) in [a, b].into_iter().enumerate() {
+    for index in 0..2 {
         client
             .stop_state_subscription(rpc::StopStateSubscriptionRequest {
-                client_id: "notion-client".into(),
-                target: "notion-tasks".into(),
-                args,
+                subscription_id: format!("notion-{index}"),
                 ..Default::default()
             })
             .await
@@ -1805,8 +1808,8 @@ async fn test_notion購読_入力順をdaemonで共有し要求元へ値と失�
     server.abort();
 }
 
-const NOTION_REQUEST_A: &str = r#"{"clientId":"client","target":"notion-tasks","args":["/repo","20","labels={\"Tags\":[\"a\"]}"]}"#;
-const NOTION_REQUEST_B: &str = r#"{"clientId":"client","target":"notion-tasks","args":["/repo","20","labels={\"Tags\":[\"a\",\"a\"]}"]}"#;
+const NOTION_REQUEST_A: &str = r#"{"subscriptionId":"notion-a","clientId":"client","target":"notion-tasks","args":["/repo","20","labels={\"Tags\":[\"a\"]}"]}"#;
+const NOTION_REQUEST_B: &str = r#"{"subscriptionId":"notion-b","clientId":"client","target":"notion-tasks","args":["/repo","20","labels={\"Tags\":[\"a\",\"a\"]}"]}"#;
 
 fn notion_cancellation_fixture() -> (Router, StateSubscriptionDeps) {
     use crate::usecase::state_subscription::{
@@ -1857,24 +1860,14 @@ async fn test_notion購読_初回開始の中断で新規要求を残さない()
     let blocked = SubscriptionTarget::BranchBase("/blocked".into(), "main".into());
     let mut blocker = Box::pin(subscriptions.usecase.start_read("client", &blocked));
     assert!(futures_util::poll!(&mut blocker).is_pending());
-    let target = SubscriptionTarget::from_parts(
-        "notion-tasks",
-        &["/repo", "20", r#"labels={"Tags":["a"]}"#],
-    )
-    .unwrap();
-    let args = vec![
-        "/repo".into(),
-        "20".into(),
-        r#"labels={"Tags":["a"]}"#.into(),
-    ];
     let mut call = Box::pin(app.oneshot(unary_request("StartStateSubscription", NOTION_REQUEST_A)));
     // When
     assert!(futures_util::poll!(&mut call).is_pending());
     drop(call);
     drop(blocker);
-    let registration = subscriptions.presenter.add_request("client", &target, args);
+    let registration = subscriptions.presenter.lookup("notion-a");
     // Then
-    assert_eq!(registration, (true, false));
+    assert!(registration.is_none());
     assert_eq!(subscriptions.usecase.test_worker_count(), 0);
 }
 
@@ -1907,7 +1900,10 @@ async fn test_notion購読_別名開始の期限切れ後に既存要求を停�
     let error: serde_json::Value = serde_json::from_slice(&body).unwrap();
     drop(blocker);
     let stopped = app
-        .oneshot(unary_request("StopStateSubscription", NOTION_REQUEST_A))
+        .oneshot(unary_request(
+            "StopStateSubscription",
+            r#"{"subscriptionId":"notion-a"}"#,
+        ))
         .await
         .unwrap();
     // Then
@@ -1934,16 +1930,23 @@ async fn test_notion購読_重複開始の中断で既存要求を消さない()
     let blocked = SubscriptionTarget::BranchBase("/blocked".into(), "main".into());
     let mut blocker = Box::pin(subscriptions.usecase.start_read("client", &blocked));
     assert!(futures_util::poll!(&mut blocker).is_pending());
-    let mut call = Box::pin(
+    let call = Box::pin(
         app.clone()
             .oneshot(unary_request("StartStateSubscription", NOTION_REQUEST_A)),
     );
     // When
-    assert!(futures_util::poll!(&mut call).is_pending());
-    drop(call);
+    let response = call.await.unwrap();
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let error: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(error["code"], "already_exists");
     drop(blocker);
     let stopped = app
-        .oneshot(unary_request("StopStateSubscription", NOTION_REQUEST_B))
+        .oneshot(unary_request(
+            "StopStateSubscription",
+            r#"{"subscriptionId":"notion-b"}"#,
+        ))
         .await
         .unwrap();
     // Then
@@ -1970,28 +1973,208 @@ async fn test_notion購読_最後の停止の中断で要求と購読を保持�
         &["/repo", "20", r#"labels={"Tags":["a"]}"#],
     )
     .unwrap();
-    let args = vec![
-        "/repo".into(),
-        "20".into(),
-        r#"labels={"Tags":["a"]}"#.into(),
-    ];
-    let mut call = Box::pin(
-        app.clone()
-            .oneshot(unary_request("StopStateSubscription", NOTION_REQUEST_A)),
-    );
+    let mut call = Box::pin(app.clone().oneshot(unary_request(
+        "StopStateSubscription",
+        r#"{"subscriptionId":"notion-a"}"#,
+    )));
     // When
     assert!(futures_util::poll!(&mut call).is_pending());
     drop(call);
-    let registration = subscriptions.presenter.add_request("client", &target, args);
+    let registration = subscriptions.presenter.lookup("notion-a");
     let workers = subscriptions.usecase.test_worker_count();
     drop(blocker);
     let stopped = app
-        .oneshot(unary_request("StopStateSubscription", NOTION_REQUEST_A))
+        .oneshot(unary_request(
+            "StopStateSubscription",
+            r#"{"subscriptionId":"notion-a"}"#,
+        ))
         .await
         .unwrap();
     // Then
-    assert_eq!(registration, (false, false));
+    assert_eq!(registration, Some(("client".into(), target.to_string())));
     assert_eq!(workers, 1);
     assert!(stopped.status().is_success());
     assert_eq!(subscriptions.usecase.test_worker_count(), 0);
+}
+
+#[tokio::test]
+async fn test_購読識別子_入口で形と全clientの重複を検査し未知の停止は成功する() {
+    use crate::usecase::state_subscription::SubscriptionTarget;
+    use tower::ServiceExt;
+    // Given
+    let (app, subscriptions) = notion_cancellation_fixture();
+    let first = subscriptions.open_stream("client".into()).unwrap();
+    let _second = subscriptions.open_stream("other".into()).unwrap();
+    let request = |client: &str, id: &str| {
+        serde_json::json!({ "clientId": client, "subscriptionId": id, "target": "notion-tasks", "args": ["/repo", "20"] }).to_string()
+    };
+    // When / Then
+    for id in [String::new(), "x".repeat(129), "あ".repeat(43)] {
+        let response = app
+            .clone()
+            .oneshot(unary_request(
+                "StartStateSubscription",
+                &request("client", &id),
+            ))
+            .await
+            .unwrap();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let error: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(error["code"], "invalid_argument");
+    }
+    for id in ["x".repeat(128), "あ".repeat(42)] {
+        assert!(app
+            .clone()
+            .oneshot(unary_request(
+                "StartStateSubscription",
+                &request("client", &id)
+            ))
+            .await
+            .unwrap()
+            .status()
+            .is_success());
+        for client in ["client", "other"] {
+            let response = app
+                .clone()
+                .oneshot(unary_request(
+                    "StartStateSubscription",
+                    &request(client, &id),
+                ))
+                .await
+                .unwrap();
+            let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            let error: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(error["code"], "already_exists");
+        }
+        let stop = serde_json::json!({"subscriptionId": id}).to_string();
+        for _ in 0..2 {
+            assert!(app
+                .clone()
+                .oneshot(unary_request("StopStateSubscription", &stop))
+                .await
+                .unwrap()
+                .status()
+                .is_success());
+        }
+        assert!(app
+            .clone()
+            .oneshot(unary_request(
+                "StartStateSubscription",
+                &request("other", &id)
+            ))
+            .await
+            .unwrap()
+            .status()
+            .is_success());
+        subscriptions.stop_subscription(&id).await.unwrap();
+    }
+    let target = SubscriptionTarget::from_parts("notion-tasks", &["/repo", "20"]).unwrap();
+    subscriptions
+        .start_subscription("client", &target, "x", None)
+        .await
+        .unwrap();
+    assert!(matches!(
+        subscriptions
+            .terminal_processed("x", 5000)
+            .unwrap_err()
+            .source,
+        crate::usecase::state_subscription::StateReadFailure::TerminalSubscriptionEnded
+    ));
+    drop(first);
+    subscriptions.stop_subscription("x").await.unwrap();
+    subscriptions
+        .stop_subscription("never-started")
+        .await
+        .unwrap();
+    subscriptions
+        .start_subscription("other", &target, "x", None)
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn test_購読停止_待機中に再利用された識別子の新しい登録を解除しない() {
+    use crate::usecase::state_subscription::SubscriptionTarget;
+    use futures_util::{poll, StreamExt};
+    let (_app, subscriptions) = notion_cancellation_fixture();
+    let mut first = Box::pin(subscriptions.stream("first".into()).unwrap());
+    let mut second = Box::pin(subscriptions.stream("second".into()).unwrap());
+    first.next().await.unwrap();
+    second.next().await.unwrap();
+    let target = SubscriptionTarget::from_parts("notion-tasks", &["/repo", "20"]).unwrap();
+    subscriptions
+        .start_subscription("first", &target, "x", None)
+        .await
+        .unwrap();
+    let guard = subscriptions.usecase.lock_starts().await;
+    let stop = subscriptions.stop_subscription("x");
+    tokio::pin!(stop);
+    assert!(poll!(&mut stop).is_pending());
+    drop(first);
+    assert!(subscriptions.presenter.lookup("x").is_none());
+    subscriptions
+        .presenter
+        .reserve("second", "x", &target.to_string())
+        .unwrap();
+    subscriptions.usecase.start("second", &target).unwrap();
+    subscriptions
+        .usecase
+        .publisher()
+        .publish_initial(
+            &target,
+            crate::usecase::state_subscription::StateValue::NotionTasks(
+                crate::usecase::fetched::Fetched {
+                    value: Some(crate::domain::notion::NotionTaskPage {
+                        tasks: vec![],
+                        has_more: false,
+                        next_cursor: None,
+                    }),
+                    error: None,
+                },
+            ),
+        )
+        .unwrap();
+    subscriptions.presenter.start("x", None).unwrap();
+    drop(guard);
+    stop.await.unwrap();
+    assert_eq!(
+        subscriptions.presenter.lookup("x"),
+        Some(("second".into(), target.to_string()))
+    );
+    assert!(subscriptions.usecase.active_targets().contains(&target));
+}
+
+#[tokio::test]
+async fn test_購読停止_解放後の同じclientの再登録へ古い後始末が作用しない() {
+    use crate::usecase::state_subscription::{StateSubscriptionDelivery, SubscriptionTarget};
+    let (_app, subscriptions) = notion_cancellation_fixture();
+    let _stream = subscriptions.open_stream("client".into()).unwrap();
+    let target = SubscriptionTarget::from_parts("notion-tasks", &["/repo", "20"]).unwrap();
+    subscriptions
+        .start_subscription("client", &target, "x", None)
+        .await
+        .unwrap();
+    let (_, _, old) = subscriptions.presenter.delivery("x").unwrap();
+    subscriptions.stop_subscription("x").await.unwrap();
+    subscriptions
+        .start_subscription("client", &target, "x", None)
+        .await
+        .unwrap();
+    old.finish(&subscriptions.usecase.active_targets()).unwrap();
+    subscriptions
+        .usecase
+        .stop_subscription("client", &target, &old)
+        .await
+        .unwrap();
+    assert_eq!(
+        subscriptions.presenter.lookup("x"),
+        Some(("client".into(), target.to_string()))
+    );
+    assert!(subscriptions.usecase.active_targets().contains(&target));
+    subscriptions.stop_subscription("x").await.unwrap();
+    assert!(subscriptions.usecase.active_targets().is_empty());
 }

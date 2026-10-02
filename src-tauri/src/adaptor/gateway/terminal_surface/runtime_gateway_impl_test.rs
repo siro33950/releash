@@ -1564,7 +1564,13 @@ async fn test_terminal対象なし_購読開始とsnapshot読取と配信でnot_
         ))
         .unwrap();
     presenter.publish_failure(&target, snapshot).unwrap();
-    presenter.start("client", &target, None).unwrap();
+    subscriptions
+        .usecase
+        .test_presenter()
+        .unwrap()
+        .reserve("client", "input", &target.to_string())
+        .unwrap();
+    presenter.start("client", &target, "input", None).unwrap();
     let event = stream.next().await.unwrap();
     assert!(
         matches!(event, StateSubscriptionEvent::Item(_, Event::Snapshot(_, value))

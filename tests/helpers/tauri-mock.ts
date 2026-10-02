@@ -83,7 +83,7 @@ export async function setupTauriMock(page: Page, config: MockConfig) {
     const terminalDelivered: Array<{ attachmentId: string; sequence: number; data: string }> = [];
     const terminalFailures: Array<{ attachmentId: string; sequence: number; data: string }> = [];
     const stateStreams = new Map<string, ReadableStreamDefaultController<Message>>();
-    const subscriptions = new Map<string, Map<string, { sequence: bigint; json: string }>>();
+    const subscriptions = new Map<string, Map<string, { target: string; sequence: bigint; json: string }>>();
     const stateRequests: string[] = [];
     function stateKey(target: string, args: string[]) {
         return args.length ? JSON.stringify([target, args]) : target;
@@ -103,14 +103,15 @@ export async function setupTauriMock(page: Page, config: MockConfig) {
         return fromJson(StatePayloadSchema, { [field.jsonName]: clientJson(field.message!, value, true) });
     }
     async function refreshStates() {
-        for (const [clientId, targets] of subscriptions) for (const [target, current] of targets) {
+        for (const [clientId, targets] of subscriptions) for (const [subscriptionId, current] of targets) {
+            const target = current.target;
             if (parseTarget(target).kind === "terminal") continue;
             const value = await readState(target);
             const json = JSON.stringify(value);
             if (json === current.json) continue;
             current.json = json;
             current.sequence++;
-            stateStreams.get(clientId)?.enqueue(create(StateSubscriptionEventSchema, { target: parseTarget(target).kind, args: parseTarget(target).args, version: { epoch: "fixture", sequence: current.sequence }, event: { case: "change", value: { payload: statePayload(target, value) } } }));
+            stateStreams.get(clientId)?.enqueue(create(StateSubscriptionEventSchema, { subscriptionId, version: { epoch: "fixture", sequence: current.sequence }, event: { case: "change", value: { payload: statePayload(target, value) } } }));
         }
     }
     function disconnectStateStreams() {
@@ -120,13 +121,13 @@ export async function setupTauriMock(page: Page, config: MockConfig) {
     await page.exposeFunction("__releashTerminalEvent", (attachmentId: string, item: TerminalSurfaceStreamItem) => {
         const attachment = attachments.get(attachmentId);
         if (!attachment) return;
-        const { output: stream, args } = attachment;
+        const { output: stream } = attachment;
         const event = item.type === "snapshot"
             ? { snapshot: { sessionKey: item.surface.session_key, processedReportUnits: 5000, ...item.surface.terminal_surface, sequence: String(item.surface.terminal_surface.sequence), isExited: item.surface.is_exited, exitCode: item.surface.exit_code } }
             : { [item.type]: { ...item, sessionKey: item.session_key, type: undefined, session_key: undefined, exitCode: "exit_code" in item ? item.exit_code : undefined, exit_code: undefined, sequence: "sequence" in item ? String(item.sequence) : undefined } };
         const sequence = item.type === "snapshot" ? item.surface.terminal_surface.sequence : "sequence" in item ? item.sequence : 0;
         const payload = create(StatePayloadSchema, {value: {case: "terminal", value: fromJson(TerminalEventSchema, JSON.parse(JSON.stringify(event)))}});
-        stream.enqueue(create(StateSubscriptionEventSchema, {target: "terminal", args, version: {epoch: "fixture", sequence: BigInt(sequence)}, event: item.type === "snapshot" ? {case: "snapshot", value: payload} : {case: "change", value: {delta: true, payload}}}));
+        stream.enqueue(create(StateSubscriptionEventSchema, {subscriptionId: attachmentId, version: {epoch: "fixture", sequence: BigInt(sequence)}, event: item.type === "snapshot" ? {case: "snapshot", value: payload} : {case: "change", value: {delta: true, payload}}}));
 
     });
     const executeInBrowser = async (command: string, args: Record<string, unknown>) => {
@@ -175,33 +176,40 @@ export async function setupTauriMock(page: Page, config: MockConfig) {
                 const targets = subscriptions.get(request.clientId) ?? new Map();
                 subscriptions.set(request.clientId, targets);
                 const target = stateKey(request.target, request.args);
-                if (request.target !== "terminal" && targets.has(target)) return {};
+                if (!request.subscriptionId || Buffer.byteLength(request.subscriptionId) > 128) throw new ConnectError("Invalid subscription ID", Code.InvalidArgument);
+                if ([...subscriptions.values()].some(targets => targets.has(request.subscriptionId))) throw new ConnectError("Duplicate subscription ID", Code.AlreadyExists);
                 stateRequests.push(target);
                 if (request.target === "terminal") {
-                    const id = request.terminalInputId ?? request.clientId;
-                    for (const [previousId, value] of attachments) if (value.clientId === request.clientId && JSON.stringify(value.args) === JSON.stringify(request.args)) { attachments.delete(previousId); terminalIngress.delete(previousId); }
+                    const id = request.subscriptionId;
+                    for (const [previousId, value] of attachments) if (value.clientId === request.clientId && JSON.stringify(value.args) === JSON.stringify(request.args)) { terminalIngress.delete(previousId); }
                     attachments.set(id, {output: stream, args: request.args, clientId: request.clientId});
                     terminalIngress.set(id, { next: 0, pending: new Map() });
-                    targets.set(target, {sequence: 0n, json: ""});
+                    targets.set(id, {target, sequence: 0n, json: ""});
                     const owner = request.args.length === 2 ? {kind: "session", workspacePath: request.args[0], sessionId: request.args[1]} : {kind: "workspace", workspacePath: request.args[0]};
                     await execute("start_state_subscription", {owner, attachmentId: id});
                     return {};
                 }
                 const value = await readState(target);
-                targets.set(target, { sequence: 0n, json: JSON.stringify(value) });
+                targets.set(request.subscriptionId, { target, sequence: 0n, json: JSON.stringify(value) });
                 const version = { epoch: "fixture", sequence: 0n };
-                stream.enqueue(create(StateSubscriptionEventSchema, { target: request.target, args: request.args, version, event: { case: "snapshot", value: statePayload(target, value) } }));
-                stream.enqueue(create(StateSubscriptionEventSchema, { target: request.target, args: request.args, version, event: { case: "bookmark", value: {} } }));
+                stream.enqueue(create(StateSubscriptionEventSchema, { subscriptionId: request.subscriptionId, version, event: { case: "snapshot", value: statePayload(target, value) } }));
+                stream.enqueue(create(StateSubscriptionEventSchema, { subscriptionId: request.subscriptionId, version, event: { case: "bookmark", value: {} } }));
                 return {};
             });
             continue;
         }
         if (method.name === "StopStateSubscription") { router.rpc(method, async (request) => {
-            subscriptions.get(request.clientId)?.delete(stateKey(request.target, request.args));
-            if (request.target === "terminal") for (const [id, value] of attachments) if (value.clientId === request.clientId && JSON.stringify(value.args) === JSON.stringify(request.args)) { attachments.delete(id); terminalIngress.delete(id); await execute("stop_state_subscription", {attachmentId: id}); }
+            for (const targets of subscriptions.values()) targets.delete(request.subscriptionId);
+            if (attachments.delete(request.subscriptionId)) {
+                terminalIngress.delete(request.subscriptionId);
+                await execute("stop_state_subscription", {attachmentId: request.subscriptionId});
+            }
             return {};
         }); continue; }
-        if (method.name === "ReportTerminalProcessed") { router.rpc(method, async request => { await execute("report_terminal_processed", {clientId: request.clientId, args: request.args, units: request.units}); return {}; }); continue; }
+        if (method.name === "ReportTerminalProcessed") { router.rpc(method, async request => {
+            if (!attachments.has(request.subscriptionId)) throw new ConnectError("Terminal subscription ended", Code.NotFound);
+            await execute("report_terminal_processed", {subscriptionId: request.subscriptionId, units: request.units}); return {};
+        }); continue; }
         if (method.name === "GetServerInfo") { router.rpc(method, () => ({ launchId: "fixture" })); continue; }
         const command = CommandRequestSchema.fields.find(field => field.message?.typeName === method.input.typeName)!.name;
         const argsFor = (request: Message) => clientJson(method.input, toJson(method.input, request), false) as Record<string, unknown>;

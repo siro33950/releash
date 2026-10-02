@@ -395,7 +395,7 @@ fn test_terminal経路_現在と同じ番号の旧世代終了を届け最新削
         .test_runtime()
         .update(|state| {
             state.open("client".into())?;
-            state.start("client", &target, Some(&version))?;
+            state.start("client", &target, &target, Some(&version))?;
             assert!(matches!(
                 state.next("client"),
                 Some((

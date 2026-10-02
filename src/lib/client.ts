@@ -230,7 +230,8 @@ function stateTargetKey(kind: string, args: string[]) {
 	return JSON.stringify([kind, args]);
 }
 type StateEntry = {
-	terminalInputId?: string;
+	subscriptionId?: string;
+	started?: boolean;
 	kind: string;
 	args: string[];
 	receivers: Set<(value: never) => void>;
@@ -250,6 +251,7 @@ function reconnects(error: unknown) {
 	return error instanceof ConnectError && RECONNECT_CODES.has(error.code);
 }
 const states = new Map<string, StateEntry>();
+const subscriptions = new Map<string, StateEntry>();
 let stateStream: StateStream | null = null;
 let stateAbort: AbortController | null = null;
 let stateTask: Promise<void> | null = null;
@@ -269,9 +271,8 @@ function decodeState(payload: StatePayload | undefined) {
 	return { current: clientJson(field.message, json[field.jsonName], false) };
 }
 
-// 同じ対象の開始と停止は送った順に daemon へ届ける。並行に送ると順序が入れ替わり、
-// 開始済みの対象への開始は無視されるため、後から届いた停止で購読が消える。
 const stateOperations = new Map<string, Promise<void>>();
+const terminalStarts = new Map<string, Promise<void>>();
 function queueStateOperation(
 	target: string,
 	operation: () => Promise<unknown>,
@@ -285,32 +286,47 @@ function queueStateOperation(
 	void next.then(() => {
 		if (stateOperations.get(target) === next) stateOperations.delete(target);
 	});
+	return next;
 }
 
 function startState(stream: StateStream, target: string) {
 	const entry = states.get(target);
 	if (!entry) return;
-	const terminalInputId =
-		entry.kind === "terminal" ? crypto.randomUUID() : undefined;
-	queueStateOperation(target, () =>
-		stream.client
+	if (entry.subscriptionId) {
+		subscriptions.delete(entry.subscriptionId);
+		stopState(stream, entry.subscriptionId);
+	}
+	const subscriptionId = crypto.randomUUID();
+	entry.subscriptionId = subscriptionId;
+	entry.started = false;
+	subscriptions.set(subscriptionId, entry);
+	const previousStart =
+		entry.kind === "terminal" ? terminalStarts.get(target) : undefined;
+	const started = queueStateOperation(subscriptionId, async () => {
+		await previousStart;
+		return stream.client
 			.startStateSubscription({
 				clientId: stream.id,
 				target: entry.kind,
 				args: entry.args,
 				version: entry.version,
-				terminalInputId,
+				subscriptionId,
 			})
 			.then(() => {
 				if (
-					terminalInputId &&
+					entry.subscriptionId === subscriptionId &&
 					states.get(target) === entry &&
 					stateStream === stream
 				)
-					entry.terminalInputId = terminalInputId;
+					entry.started = true;
 			})
 			.catch((error) => {
-				if (states.get(target) !== entry || stateStream !== stream) return;
+				if (
+					states.get(target) !== entry ||
+					stateStream !== stream ||
+					entry.subscriptionId !== subscriptionId
+				)
+					return;
 				if (reconnects(error)) {
 					stateAbort?.abort(RETRY);
 					return;
@@ -318,7 +334,22 @@ function startState(stream: StateStream, target: string) {
 				console.error("State subscription failed", error);
 				entry.error = { current: error };
 				for (const receiver of entry.errors) receiver(error);
-			}),
+			});
+	});
+	if (entry.kind === "terminal") {
+		terminalStarts.set(target, started);
+		void started.then(() => {
+			if (terminalStarts.get(target) === started) terminalStarts.delete(target);
+		});
+	}
+}
+
+function stopState(stream: StateStream, subscriptionId: string) {
+	queueStateOperation(subscriptionId, () =>
+		stream.client.stopStateSubscription({ subscriptionId }).catch((error) => {
+			if (reconnects(error) && stateStream === stream) stateAbort?.abort(RETRY);
+			else console.debug("State unsubscribe failed", error);
+		}),
 	);
 }
 
@@ -349,7 +380,7 @@ function ensureStateStream() {
 						for (const target of states.keys()) startState(stream, target);
 						continue;
 					}
-					const entry = states.get(stateTargetKey(event.target, event.args));
+					const entry = subscriptions.get(event.subscriptionId);
 					if (!entry) continue;
 					entry.version = event.version;
 					if (event.event.case === "failure") {
@@ -382,6 +413,11 @@ function ensureStateStream() {
 					console.debug("State stream ended", error);
 			} finally {
 				clearTimeout(silence);
+				subscriptions.clear();
+				for (const entry of states.values()) {
+					entry.subscriptionId = undefined;
+					entry.started = false;
+				}
 				stateStream = null;
 				if (stateAbort === abort) stateAbort = null;
 			}
@@ -441,20 +477,13 @@ export function subscribeState<K extends keyof StateValues>(
 		current.errors.delete(onError);
 		if (current.receivers.size) return;
 		states.delete(target);
+		if (current.subscriptionId) {
+			subscriptions.delete(current.subscriptionId);
+			if (stateStream) stopState(stateStream, current.subscriptionId);
+		}
 		if (!states.size) {
 			stateStream = null;
 			stateAbort?.abort(IDLE);
-		} else if (stateStream) {
-			const stream = stateStream;
-			queueStateOperation(target, () =>
-				stream.client
-					.stopStateSubscription({ clientId: stream.id, target: kind, args })
-					.catch((error) => {
-						if (reconnects(error) && stateStream === stream)
-							stateAbort?.abort(RETRY);
-						else console.debug("State unsubscribe failed", error);
-					}),
-			);
 		}
 	};
 }
@@ -486,7 +515,8 @@ export async function subscribeTerminalState(
 		release();
 		throw error;
 	});
-	await stateOperations.get(stateTargetKey("terminal", targetArgs));
+	const id = states.get(stateTargetKey("terminal", targetArgs))?.subscriptionId;
+	if (id) await stateOperations.get(id);
 	return async () => release();
 }
 
@@ -494,7 +524,8 @@ export function currentTerminalInputId(
 	owner: import("./terminalSurfaceStream").TerminalSurfaceOwner,
 ) {
 	const args = terminalTargetArgs(owner);
-	return states.get(stateTargetKey("terminal", args))?.terminalInputId ?? null;
+	const entry = states.get(stateTargetKey("terminal", args));
+	return entry?.started ? (entry.subscriptionId ?? null) : null;
 }
 
 export async function reportTerminalProcessed(
@@ -502,10 +533,12 @@ export async function reportTerminalProcessed(
 	units: number,
 ) {
 	const stream = stateStream;
-	if (!stream) return;
+	const subscriptionId = states.get(
+		stateTargetKey("terminal", terminalTargetArgs(owner)),
+	)?.subscriptionId;
+	if (!stream || !subscriptionId) return;
 	await stream.client.reportTerminalProcessed({
-		clientId: stream.id,
-		args: terminalTargetArgs(owner),
+		subscriptionId,
 		units,
 	});
 }

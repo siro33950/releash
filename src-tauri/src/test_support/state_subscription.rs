@@ -36,11 +36,11 @@ pub(crate) fn start(
     cursor: Option<(&str, u64)>,
 ) -> Result<(), crate::usecase::state_subscription::SubscriptionError> {
     let typed = crate::usecase::state_subscription::SubscriptionTarget::parse(target)?;
+    let presenter = usecase.test_presenter().expect("test presenter");
+    let id = format!("{client}:{target}");
+    presenter.reserve(client, &id, target)?;
     usecase.start(client, &typed)?;
-    usecase
-        .test_presenter()
-        .expect("test presenter")
-        .start(client, target, cursor)
+    presenter.start(&id, cursor)
 }
 
 pub(crate) async fn start_read(
@@ -51,7 +51,10 @@ pub(crate) async fn start_read(
 ) -> Result<(), crate::usecase::state_subscription::StateReadError> {
     let typed = crate::usecase::state_subscription::SubscriptionTarget::parse(target)
         .map_err(crate::usecase::state_subscription::StateReadError::from_error)?;
-    usecase.start_subscription(client, &typed, cursor).await
+    usecase
+        .deps()
+        .start_subscription(client, &typed, &format!("{client}:{target}"), cursor)
+        .await
 }
 
 pub(crate) fn stop(
@@ -61,7 +64,12 @@ pub(crate) fn stop(
 ) -> Result<(), crate::usecase::state_subscription::SubscriptionError> {
     let typed = crate::usecase::state_subscription::SubscriptionTarget::parse(target)?;
     usecase.stop(client, &typed)?;
-    usecase.with_active_targets(|active| usecase.publisher().stop(client, &typed, active))
+    usecase.with_active_targets(|active| {
+        usecase
+            .test_presenter()
+            .unwrap()
+            .stop(client, &format!("{client}:{target}"), active)
+    })
 }
 
 pub(crate) async fn stop_read(
@@ -69,8 +77,10 @@ pub(crate) async fn stop_read(
     client: &str,
     target: &str,
 ) -> Result<(), crate::usecase::state_subscription::SubscriptionError> {
-    let typed = crate::usecase::state_subscription::SubscriptionTarget::parse(target)?;
-    usecase.stop_subscription(client, &typed).await
+    usecase
+        .deps()
+        .stop_subscription(&format!("{client}:{target}"))
+        .await
 }
 
 pub(crate) async fn start_terminal(
@@ -85,7 +95,7 @@ pub(crate) async fn start_terminal(
         .map_err(StateReadError::from_error)?;
     usecase
         .deps()
-        .start_subscription(client, &typed, Some(input_id), cursor)
+        .start_subscription(client, &typed, input_id, cursor)
         .await
 }
 
@@ -388,7 +398,11 @@ impl TerminalSubscriptions {
         client: &str,
         target: &crate::usecase::state_subscription::SubscriptionTarget,
     ) -> Result<(), SubscriptionError> {
-        self.terminal.stop_subscription(client, target)
+        let id = self
+            .terminal
+            .test_input_id(client, target)
+            .unwrap_or_else(|| target.to_string());
+        self.terminal.stop_subscription(client, target, &id)
     }
 
     pub(crate) fn deps(&self) -> crate::adaptor::controller::api::StateSubscriptionDeps {
@@ -418,7 +432,7 @@ impl TerminalSubscriptions {
         cursor: Option<(&str, u64)>,
     ) -> Result<(), crate::usecase::state_subscription::StateReadError> {
         self.deps()
-            .start_subscription(client, target, input, cursor)
+            .start_subscription(client, target, input.unwrap_or(&target.to_string()), cursor)
             .await
     }
     pub(crate) async fn start_terminal(
@@ -428,8 +442,8 @@ impl TerminalSubscriptions {
         input: &str,
         cursor: Option<(&str, u64)>,
     ) -> Result<(), crate::usecase::state_subscription::StateReadError> {
-        self.terminal
-            .start_terminal(client, target, Some(input), cursor)
+        self.deps()
+            .start_subscription(client, target, input, cursor)
             .await
     }
     pub(crate) fn close_client(&self, id: &str) {
@@ -443,10 +457,12 @@ pub(crate) fn stop_terminal(
     client: &str,
     target: &str,
 ) -> Result<(), SubscriptionError> {
-    usecase.terminal.stop_subscription(
-        client,
-        &crate::usecase::state_subscription::SubscriptionTarget::parse(target)?,
-    )
+    let typed = crate::usecase::state_subscription::SubscriptionTarget::parse(target)?;
+    let id = usecase
+        .terminal
+        .test_input_id(client, &typed)
+        .unwrap_or_else(|| target.to_string());
+    usecase.terminal.stop_subscription(client, &typed, &id)
 }
 
 pub(crate) fn terminal_application_fixture() -> (

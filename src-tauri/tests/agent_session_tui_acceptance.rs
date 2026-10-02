@@ -1059,7 +1059,7 @@ async fn test_atui_030_provider選択からarchive_restore_deleteまで旧messag
                 client_id: client_id.clone(),
                 target: "terminal".into(),
                 args: vec!["workspace-1".into(), session_id.clone()],
-                terminal_input_id: Some(client_id).into(),
+                subscription_id: client_id,
                 ..Default::default()
             })
             .await

@@ -30,10 +30,7 @@ async fn test_購読外部読取_再取得失敗で古いキャッシュを配�
     .with_reads(reads.clone(), None, vec![], String::new());
     let target = SubscriptionTarget::Issues("/repo".into());
     usecase.open_client("client".into()).unwrap();
-    usecase
-        .start_subscription("client", &target, None)
-        .await
-        .unwrap();
+    usecase.start_read("client", &target).await.unwrap();
     // When
     reads
         .fail_refresh
@@ -183,10 +180,7 @@ async fn assert_stopped(close: bool) {
     .with_reads(reads.clone(), None, vec![], String::new());
     let target = SubscriptionTarget::Issues("/repo".into());
     subscriptions.open_client("client".into()).unwrap();
-    subscriptions
-        .start_subscription("client", &target, None)
-        .await
-        .unwrap();
+    subscriptions.start_read("client", &target).await.unwrap();
     let calls = reads.calls.load(std::sync::atomic::Ordering::SeqCst);
     let snapshots = output.initial_values.lock().len() + output.update_values.lock().len();
     let failures = output.failures.lock().len();
@@ -194,10 +188,7 @@ async fn assert_stopped(close: bool) {
     if close {
         subscriptions.close_client("client");
     } else {
-        subscriptions
-            .stop_subscription("client", &target)
-            .await
-            .unwrap();
+        subscriptions.stop_read("client", &target).await.unwrap();
     }
     subscriptions.notify(StateChangeSource::Issues("/repo".into()));
     tick.notify_one();

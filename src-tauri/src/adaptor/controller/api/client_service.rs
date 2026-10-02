@@ -37,6 +37,11 @@ async fn start_state_subscription<'a>(
     request: connectrpc::ServiceRequest<'_, rpc::StartStateSubscriptionRequest>,
 ) -> connectrpc::ServiceResult<impl connectrpc::Encodable<rpc::Unit> + Send + use<'a>> {
     let request: wire::StartStateSubscriptionRequest = to_wire(&request.to_owned_message())?;
+    if !crate::adaptor::controller::api::client_stream::valid_subscription_id(&request.subscription_id) {
+        return Err(crate::adaptor::presenter::connect::classified_error(
+            crate::usecase::state_subscription::SubscriptionError::InvalidId,
+        ));
+    }
     let target = crate::usecase::state_subscription::SubscriptionTarget::from_parts(
         &request.target,
         &request.args.iter().map(String::as_str).collect::<Vec<_>>(),
@@ -46,39 +51,10 @@ async fn start_state_subscription<'a>(
     let cursor = version
         .as_ref()
         .map(|(epoch, sequence)| (epoch.as_str(), *sequence));
-    let subscriptions = self.subscriptions()?;
-    let presenter = &subscriptions.presenter;
-    let notion = matches!(
-        target,
-        crate::usecase::state_subscription::SubscriptionTarget::NotionTasks(..)
-    );
-    let _guard = if notion {
-        Some(presenter.request_lock.lock().await)
-    } else {
-        None
-    };
-    let (inserted, replay) = if notion {
-        presenter.add_request(&request.client_id, &target, request.args.clone())
-    } else {
-        (false, false)
-    };
-    let mut permit = RequestStartPermit {
-        presenter,
-        client: &request.client_id,
-        target: &target,
-        args: &request.args,
-        inserted,
-    };
-    subscriptions
-        .start_subscription(&request.client_id, &target, request.terminal_input_id.as_deref(), cursor)
+    self.subscriptions()?
+        .start_subscription(&request.client_id, &target, &request.subscription_id, cursor)
         .await
         .map_err(crate::adaptor::presenter::connect::classified_error)?;
-    permit.inserted = false;
-    if replay {
-        presenter
-            .replay_request(&request.client_id, &target)
-            .map_err(crate::adaptor::presenter::connect::classified_error)?;
-    }
     connectrpc::Response::ok(rpc::Unit::default())
 }
 
@@ -88,33 +64,10 @@ async fn stop_state_subscription<'a>(
     request: connectrpc::ServiceRequest<'_, rpc::StopStateSubscriptionRequest>,
 ) -> connectrpc::ServiceResult<impl connectrpc::Encodable<rpc::Unit> + Send + use<'a>> {
     let request: wire::StopStateSubscriptionRequest = to_wire(&request.to_owned_message())?;
-    let target = crate::usecase::state_subscription::SubscriptionTarget::from_parts(
-        &request.target,
-        &request.args.iter().map(String::as_str).collect::<Vec<_>>(),
-    )
-    .map_err(crate::adaptor::presenter::connect::classified_error)?;
-    let subscriptions = self.subscriptions()?;
-    let presenter = &subscriptions.presenter;
-    let notion = matches!(
-        target,
-        crate::usecase::state_subscription::SubscriptionTarget::NotionTasks(..)
-    );
-    let _guard = if notion {
-        Some(presenter.request_lock.lock().await)
-    } else {
-        None
-    };
-    if notion && presenter.has_other_requests(&request.client_id, &target, &request.args) {
-        presenter.remove_request(&request.client_id, &target, &request.args);
-    } else {
-        subscriptions
-            .stop_subscription(&request.client_id, &target)
-            .await
-            .map_err(crate::adaptor::presenter::connect::classified_error)?;
-        if notion {
-            presenter.remove_request(&request.client_id, &target, &request.args);
-        }
-    }
+    self.subscriptions()?
+        .stop_subscription(&request.subscription_id)
+        .await
+        .map_err(crate::adaptor::presenter::connect::classified_error)?;
     connectrpc::Response::ok(rpc::Unit::default())
 }
 
@@ -124,11 +77,6 @@ async fn report_terminal_processed<'a>(
     request: connectrpc::ServiceRequest<'_, rpc::ReportTerminalProcessedRequest>,
 ) -> connectrpc::ServiceResult<impl connectrpc::Encodable<rpc::Unit> + Send + use<'a>> {
     let request: wire::ReportTerminalProcessedRequest = to_wire(&request.to_owned_message())?;
-    let target = crate::usecase::state_subscription::SubscriptionTarget::from_parts(
-        "terminal",
-        &request.args.iter().map(String::as_str).collect::<Vec<_>>(),
-    )
-    .map_err(crate::adaptor::presenter::connect::classified_error)?;
     if request.units as usize != crate::adaptor::presenter::terminal_subscription::TerminalSubscriptionPresenter::report_units() {
         return Err(crate::adaptor::presenter::connect::classified_error(
             crate::adaptor::presenter::error::AppError::invalid_request(
@@ -136,12 +84,8 @@ async fn report_terminal_processed<'a>(
             ),
         ));
     }
-    self.subscriptions()?.terminal
-        .terminal_processed(
-            &request.client_id,
-            &target,
-            request.units as usize,
-        )
+    self.subscriptions()?
+        .terminal_processed(&request.subscription_id, request.units as usize)
         .map_err(crate::adaptor::presenter::connect::classified_error)?;
     connectrpc::Response::ok(rpc::Unit::default())
 }

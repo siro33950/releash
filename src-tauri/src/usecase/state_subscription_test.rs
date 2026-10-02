@@ -6,10 +6,6 @@ pub(crate) struct RecordingOutput {
     pub(crate) initial_values: Mutex<Vec<StateValue>>,
     pub(crate) update_values: Mutex<Vec<StateValue>>,
     pub(crate) failures: Mutex<Vec<(SubscriptionTarget, String)>>,
-    starts: Mutex<Vec<SubscriptionTarget>>,
-    cursors: Mutex<Vec<Option<(String, u64)>>>,
-    stops: Mutex<Vec<SubscriptionTarget>>,
-    fail_start: std::sync::atomic::AtomicBool,
     fail_initial: std::sync::atomic::AtomicBool,
     pub(crate) updates: Mutex<Vec<SubscriptionTarget>>,
     pub(crate) updated: tokio::sync::Notify,
@@ -18,32 +14,6 @@ pub(crate) struct RecordingOutput {
 impl StateSubscriptionOutput for RecordingOutput {
     fn as_any(&self) -> &dyn std::any::Any {
         self
-    }
-
-    fn start(
-        &self,
-        _: &str,
-        target: &SubscriptionTarget,
-        cursor: Option<(&str, u64)>,
-    ) -> Result<(), StateReadError> {
-        if self.fail_start.load(std::sync::atomic::Ordering::SeqCst) {
-            return Err(StateReadError::from_error(SubscriptionError::UnknownTarget));
-        }
-        self.starts.lock().push(target.clone());
-        self.cursors
-            .lock()
-            .push(cursor.map(|(epoch, sequence)| (epoch.into(), sequence)));
-        Ok(())
-    }
-
-    fn stop(
-        &self,
-        _: &str,
-        target: &SubscriptionTarget,
-        _: &std::collections::HashSet<SubscriptionTarget>,
-    ) -> Result<(), SubscriptionError> {
-        self.stops.lock().push(target.clone());
-        Ok(())
     }
 
     fn publish_failure(
@@ -103,25 +73,20 @@ async fn test_購読手順_開始と停止で購読状態と出力を更新す�
     let target = SubscriptionTarget::RepositoryPaths;
     usecase.open_client("client".into()).unwrap();
     // When
-    usecase
-        .start_subscription("client", &target, Some(("prior", 4)))
-        .await
-        .unwrap();
+    usecase.start_read("client", &target).await.unwrap();
     assert!(usecase.active_targets().contains(&target));
-    usecase.stop_subscription("client", &target).await.unwrap();
+    usecase.stop_read("client", &target).await.unwrap();
     // Then
     assert!(usecase.active_targets().is_empty());
-    assert_eq!(*output.starts.lock(), vec![target.clone()]);
-    assert_eq!(*output.cursors.lock(), vec![Some(("prior".into(), 4))]);
-    assert_eq!(*output.stops.lock(), vec![target]);
+    assert_eq!(*output.initial.lock(), vec![target]);
 }
 
 #[tokio::test]
-async fn test_購読手順_配信側の開始失敗時にclientの対象を戻す() {
+async fn test_購読手順_初期配信の失敗時にclientの対象を戻す() {
     // Given
     let output = Arc::new(RecordingOutput::default());
     output
-        .fail_start
+        .fail_initial
         .store(true, std::sync::atomic::Ordering::SeqCst);
     let usecase = StateSubscriptionUsecase::new_with_output(
         output,
@@ -138,11 +103,11 @@ async fn test_購読手順_配信側の開始失敗時にclientの対象を戻�
     let target = SubscriptionTarget::RepositoryPaths;
     usecase.open_client("client".into()).unwrap();
     // When
-    let result = usecase.start_subscription("client", &target, None).await;
+    let result = usecase.start_read("client", &target).await;
     // Then
     assert!(matches!(result, Err(StateReadError {
         source: StateReadFailure::Subscription(error), ..
-    }) if *error == SubscriptionError::UnknownTarget));
+    }) if *error == SubscriptionError::EncodingFailed));
     assert!(usecase.active_targets().is_empty());
 }
 
@@ -163,7 +128,7 @@ async fn test_購読手順_streamが無いと開始できない() {
     );
     let target = SubscriptionTarget::RepositoryPaths;
     // When
-    let result = usecase.start_subscription("client", &target, None).await;
+    let result = usecase.start_read("client", &target).await;
     // Then
     assert!(matches!(
         result,
@@ -513,10 +478,7 @@ async fn test_購読読取_初回失敗後も登録を残す() {
     let target = SubscriptionTarget::RepositoryPaths;
     usecase.open_client("client".into()).unwrap();
     // When
-    usecase
-        .start_subscription("client", &target, None)
-        .await
-        .unwrap();
+    usecase.start_read("client", &target).await.unwrap();
     // Then
     assert!(usecase.active_targets().contains(&target));
     assert_eq!(output.failures.lock().len(), 1);
@@ -536,10 +498,7 @@ async fn test_購読読取_初回失敗から回復した値を配信する() {
     .with_reads(reads.clone(), None, vec![], String::new());
     let target = SubscriptionTarget::RepositoryPaths;
     usecase.open_client("client".into()).unwrap();
-    usecase
-        .start_subscription("client", &target, None)
-        .await
-        .unwrap();
+    usecase.start_read("client", &target).await.unwrap();
     // When
     reads
         .fail_read
@@ -568,10 +527,7 @@ async fn test_購読読取_回復後の再失敗を配信する() {
     .with_reads(reads.clone(), None, vec![], String::new());
     let target = SubscriptionTarget::RepositoryPaths;
     usecase.open_client("client".into()).unwrap();
-    usecase
-        .start_subscription("client", &target, None)
-        .await
-        .unwrap();
+    usecase.start_read("client", &target).await.unwrap();
     reads
         .fail_read
         .store(false, std::sync::atomic::Ordering::SeqCst);
@@ -831,15 +787,10 @@ async fn test_notion購読_別のclientの開始が失敗しても購読中の�
     let target = notion_target();
     subscriptions.open_client("a".into()).unwrap();
     subscriptions.open_client("b".into()).unwrap();
-    subscriptions
-        .start_subscription("a", &target, None)
-        .await
-        .unwrap();
-    output
-        .fail_start
-        .store(true, std::sync::atomic::Ordering::SeqCst);
+    subscriptions.start_read("a", &target).await.unwrap();
+    subscriptions.close_client("b");
     // When
-    let result = subscriptions.start_subscription("b", &target, None).await;
+    let result = subscriptions.start_read("b", &target).await;
     let retained = reads.retained.lock().contains(&target);
     let released = reads.releases.lock().clone();
     let workers = subscriptions.test_worker_count();
@@ -1225,4 +1176,107 @@ async fn test_購読開始_駆動部が終了したら登録を戻して失敗�
         if *error == SubscriptionError::StreamEnded));
     assert!(usecase.active_targets().is_empty());
     assert_eq!(usecase.test_worker_count(), 0);
+}
+
+#[tokio::test]
+async fn test_購読共有_同じclientの片方を停止しても取得とworkerを保持する() {
+    // Given
+    let output = Arc::new(RecordingOutput::default());
+    let reads = Arc::new(RetainingReads::default());
+    let usecase = StateSubscriptionUsecase::new_with_output(
+        output.clone(),
+        crate::test_support::state_subscription::pending_read_driver(),
+    )
+    .with_reads(reads.clone(), None, vec![], String::new());
+    let target = notion_target();
+    usecase.open_client("client".into()).unwrap();
+    usecase.start_read("client", &target).await.unwrap();
+    usecase.start_read("client", &target).await.unwrap();
+    assert_eq!(output.initial.lock().len(), 1);
+    // When
+    usecase.stop_read("client", &target).await.unwrap();
+    // Then
+    assert!(usecase.active_targets().contains(&target));
+    assert!(reads.retained.lock().contains(&target));
+    assert!(reads.releases.lock().is_empty());
+    assert_eq!(usecase.test_worker_count(), 1);
+    usecase.stop_read("client", &target).await.unwrap();
+    assert!(!usecase.active_targets().contains(&target));
+    assert!(!reads.retained.lock().contains(&target));
+    assert_eq!(usecase.test_worker_count(), 0);
+}
+
+#[tokio::test]
+async fn test_購読連携_usecaseが配信開始と失敗時の読取停止を行う() {
+    struct Delivery {
+        usecase: StateSubscriptionUsecase,
+        output: Arc<RecordingOutput>,
+        fail: bool,
+        calls: Mutex<Vec<&'static str>>,
+    }
+    impl StateSubscriptionDelivery for Delivery {
+        fn start(&self) -> Result<Option<usize>, StateReadError> {
+            assert!(!self.usecase.active_targets().is_empty());
+            assert_eq!(self.output.initial.lock().len(), 1);
+            self.calls.lock().push("start");
+            if self.fail {
+                Err(StateReadError::from_error(SubscriptionError::UnknownTarget))
+            } else {
+                Ok(None)
+            }
+        }
+        fn claim(&self) -> bool {
+            self.calls.lock().push("claim");
+            true
+        }
+        fn finish(
+            &self,
+            active: &std::collections::HashSet<SubscriptionTarget>,
+        ) -> Result<(), SubscriptionError> {
+            assert!(active.is_empty());
+            self.calls.lock().push("finish");
+            Ok(())
+        }
+    }
+    for fail in [false, true] {
+        let output = Arc::new(RecordingOutput::default());
+        let usecase = StateSubscriptionUsecase::new_with_output(
+            output.clone(),
+            crate::test_support::state_subscription::read_driver(),
+        )
+        .with_reads(
+            Arc::new(RecordingReads {
+                calls: Default::default(),
+            }),
+            None,
+            vec![],
+            String::new(),
+        );
+        usecase.open_client("client".into()).unwrap();
+        let delivery = Delivery {
+            usecase: usecase.clone(),
+            output,
+            fail,
+            calls: Default::default(),
+        };
+        let target = SubscriptionTarget::RepositoryPaths;
+        let result = usecase
+            .start_subscription("client", &target, &delivery)
+            .await;
+        if fail {
+            assert!(
+                matches!(result, Err(StateReadError { source: StateReadFailure::Subscription(error), .. }) if *error == SubscriptionError::UnknownTarget)
+            );
+            assert_eq!(*delivery.calls.lock(), vec!["start"]);
+        } else {
+            result.unwrap();
+            usecase
+                .stop_subscription("client", &target, &delivery)
+                .await
+                .unwrap();
+            assert_eq!(*delivery.calls.lock(), vec!["start", "claim", "finish"]);
+        }
+        assert!(usecase.active_targets().is_empty());
+        assert_eq!(usecase.test_worker_count(), 0);
+    }
 }

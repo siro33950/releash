@@ -558,6 +558,7 @@ pub async fn read_state(
     client
         .start_state_subscription(rpc::StartStateSubscriptionRequest {
             client_id: client_id.clone(),
+            subscription_id: client_id.clone(),
             target: name.into(),
             args: args.clone(),
             version: None.into(),
@@ -572,9 +573,7 @@ pub async fn read_state(
     // 毎回の読み取りを最新にするため、snapshot を受け取ったら購読を止めて worker を解放する。
     client
         .stop_state_subscription(rpc::StopStateSubscriptionRequest {
-            client_id,
-            target: name.into(),
-            args,
+            subscription_id: client_id,
             ..Default::default()
         })
         .await?;

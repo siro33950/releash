@@ -79,7 +79,7 @@ async fn test_購読開始失敗_対象削除を待機中streamへ通知する()
 
     // When
     assert_eq!(
-        presenter.start("absent", &target, None),
+        presenter.reserve("absent", "subscription", &target),
         Err(SubscriptionError::StreamEnded)
     );
 
@@ -122,7 +122,10 @@ async fn test_購読再開始_状態不変なら通知せず初回開始だけ�
             StateValue::RepositoryPaths(vec![]),
         )
         .unwrap();
-    presenter.start("client", &target, None).unwrap();
+    presenter
+        .reserve("client", "subscription", &target)
+        .unwrap();
+    presenter.start("subscription", None).unwrap();
     assert!(flag.0.swap(false, Ordering::SeqCst));
     assert!(matches!(
         stream.next().await,
@@ -138,7 +141,10 @@ async fn test_購読再開始_状態不変なら通知せず初回開始だけ�
         .is_pending());
     flag.0.store(false, Ordering::SeqCst);
 
-    presenter.start("client", &target, None).unwrap();
+    assert_eq!(
+        presenter.reserve("client", "subscription", &target),
+        Err(SubscriptionError::AlreadyExists)
+    );
     assert!(!flag.0.load(Ordering::SeqCst));
 }
 
@@ -163,12 +169,13 @@ async fn test_購読失敗_つなぎ直した購読へ保持済みのfailure事�
     );
     initial.next().await;
     presenter
-        .start(
+        .reserve(
+            "initial",
             "initial",
             &SubscriptionTarget::RepositoryPaths.to_string(),
-            None,
         )
         .unwrap();
+    presenter.start("initial", None).unwrap();
     initial.next().await;
     drop(initial);
     // When
@@ -179,12 +186,13 @@ async fn test_購読失敗_つなぎ直した購読へ保持済みのfailure事�
     );
     replay.next().await;
     presenter
-        .start(
+        .reserve(
+            "replay",
             "replay",
             &SubscriptionTarget::RepositoryPaths.to_string(),
-            None,
         )
         .unwrap();
+    presenter.start("replay", None).unwrap();
     let event = replay.next().await.unwrap();
     let event = crate::adaptor::presenter::state_subscription_wire::event(event).unwrap();
     let wire: crate::adaptor::presenter::client::StateSubscriptionEvent =
@@ -194,51 +202,4 @@ async fn test_購読失敗_つなぎ直した購読へ保持済みのfailure事�
         wire.event,
         Some(crate::adaptor::presenter::client::state_subscription_event::Event::Failure(_))
     ));
-}
-
-#[tokio::test]
-async fn test_購読入力の対応_解除は最後の入力まで共有しstream終了で破棄する() {
-    // Given
-    let presenter = Arc::new(StateSubscriptionPresenter::new());
-    let usecase = StateSubscriptionUsecase::new_with_output(
-        presenter.clone(),
-        crate::test_support::state_subscription::read_driver(),
-    );
-    let target = SubscriptionTarget::from_parts(
-        "notion-tasks",
-        &["/repo", "20", r#"labels={"Tags":["a"]}"#],
-    )
-    .unwrap();
-    let stream = crate::test_support::state_subscription::deps(usecase, presenter.clone())
-        .stream("client".into())
-        .unwrap();
-    let a = vec![
-        "/repo".into(),
-        "20".into(),
-        r#"labels={"Tags":["a"]}"#.into(),
-    ];
-    let b = vec![
-        "/repo".into(),
-        "20".into(),
-        r#"labels={"Tags":["a","a"]}"#.into(),
-    ];
-    // When / Then
-    assert_eq!(
-        presenter.add_request("client", &target, a.clone()),
-        (true, false)
-    );
-    assert_eq!(
-        presenter.add_request("client", &target, a.clone()),
-        (false, false)
-    );
-    assert_eq!(
-        presenter.add_request("client", &target, b.clone()),
-        (true, true)
-    );
-    assert!(!presenter.remove_request("client", &target, &a));
-    assert!(presenter.remove_request("client", &target, &b));
-    assert!(presenter.requested_args.lock().is_empty());
-    assert_eq!(presenter.add_request("client", &target, a), (true, false));
-    drop(stream);
-    assert!(presenter.requested_args.lock().is_empty());
 }

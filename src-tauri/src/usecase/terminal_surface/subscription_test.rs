@@ -19,10 +19,10 @@ async fn test_terminal入力識別子_上限を受け付け超過を拒否する
     let over_limit = "a".repeat(TERMINAL_INPUT_ID_MAX_BYTES + 1);
     // When
     let accepted = usecase
-        .start_terminal("client", &target, Some(&at_limit), None)
+        .start_terminal("client", &target, &at_limit, None)
         .await;
     let rejected = usecase
-        .start_terminal("client", &target, Some(&over_limit), None)
+        .start_terminal("client", &target, &over_limit, None)
         .await;
     // Then
     assert!(matches!(
@@ -54,7 +54,7 @@ async fn test_terminal入力識別子_空白とバイト上限を変えず検査
     // When / Then
     for input in [String::new(), " \t\n".into(), "あ".repeat(43)] {
         let error = usecase
-            .start_terminal("client", &target, Some(&input), None)
+            .start_terminal("client", &target, &input, None)
             .await
             .unwrap_err();
         assert!(matches!(
@@ -64,7 +64,7 @@ async fn test_terminal入力識別子_空白とバイト上限を変えず検査
         assert_eq!(error.message, "Invalid terminal input identity");
     }
     let error = usecase
-        .start_terminal("client", &target, Some(&"あ".repeat(42)), None)
+        .start_terminal("client", &target, &"あ".repeat(42), None)
         .await
         .unwrap_err();
     assert_eq!(error.message, "Not a terminal target");
@@ -102,7 +102,7 @@ fn test_terminalのclient管理_二重openを拒否し閉じた購読の処理�
 
 #[derive(Default)]
 struct FakeOutput {
-    subscribed: Mutex<HashSet<(String, SubscriptionTarget)>>,
+    subscribed: Mutex<HashSet<(String, SubscriptionTarget, String)>>,
     pending: Mutex<Option<usize>>,
     start_error: Mutex<Option<SubscriptionError>>,
     starts: Mutex<usize>,
@@ -116,6 +116,7 @@ impl TerminalSubscriptionOutput for FakeOutput {
         &self,
         client: &str,
         target: &SubscriptionTarget,
+        input_id: &str,
         _: Option<(&str, u64)>,
     ) -> Result<Option<usize>, StateReadError> {
         *self.starts.lock() += 1;
@@ -124,14 +125,19 @@ impl TerminalSubscriptionOutput for FakeOutput {
         }
         self.subscribed
             .lock()
-            .insert((client.into(), target.clone()));
+            .insert((client.into(), target.clone(), input_id.into()));
         Ok(*self.pending.lock())
     }
-    fn stop(&self, client: &str, target: &SubscriptionTarget) -> Result<(), SubscriptionError> {
+    fn stop(
+        &self,
+        client: &str,
+        target: &SubscriptionTarget,
+        input_id: &str,
+    ) -> Result<(), SubscriptionError> {
         *self.stops.lock() += 1;
         self.subscribed
             .lock()
-            .remove(&(client.into(), target.clone()));
+            .remove(&(client.into(), target.clone(), input_id.into()));
         Ok(())
     }
     fn set_snapshot(
@@ -166,7 +172,7 @@ fn assert_ended(usecase: &TerminalSubscriptionUsecase, client: &str, target: &Su
 }
 
 #[tokio::test]
-async fn test_terminal入力識別子_省略時はclientの識別子で開始する() {
+async fn test_terminal入力識別子_明示した購読識別子で開始する() {
     // Given
     use crate::domain::terminal_surface::gateway::TerminalSurfaceGateway;
     let (terminal, gateway, _, surface) =
@@ -182,21 +188,21 @@ async fn test_terminal入力識別子_省略時はclientの識別子で開始す
     usecase.open_client("client".into()).unwrap();
     // When
     usecase
-        .start_terminal("client", &target, None, None)
+        .start_terminal("client", &target, "input", None)
         .await
         .unwrap();
     // Then
     assert_eq!(
         usecase.test_input_id("client", &target).as_deref(),
-        Some("client")
+        Some("input")
     );
     gateway
-        .write_attached(&surface.session_key, "client", 1, "input")
+        .write_attached(&surface.session_key, "input", 1, "input")
         .unwrap();
 }
 
 #[tokio::test]
-async fn test_terminal入力識別子_補ったclientが上限超過なら入力不正を返す() {
+async fn test_terminal入力識別子_clientと異なる購読識別子も検査する() {
     // Given
     let usecase = TerminalSubscriptionUsecase::new(
         Arc::new(FakeOutput::default()),
@@ -207,7 +213,12 @@ async fn test_terminal入力識別子_補ったclientが上限超過なら入力
     let client = "a".repeat(129);
     // When
     let error = usecase
-        .start_terminal(&client, &SubscriptionTarget::RepositoryPaths, None, None)
+        .start_terminal(
+            "client",
+            &SubscriptionTarget::RepositoryPaths,
+            &client,
+            None,
+        )
         .await
         .unwrap_err();
     // Then
@@ -236,12 +247,12 @@ async fn test_terminal開始_配信登録前の停止を検出し全登録を戻
     let stopping_target = target.clone();
     *gateway.before_output_order.lock() = Some(Box::new(move || {
         stopped
-            .stop_subscription("client", &stopping_target)
+            .stop_subscription("client", &stopping_target, "input")
             .unwrap()
     }));
     // When
     let result = usecase
-        .start_terminal("client", &target, Some("input"), None)
+        .start_terminal("client", &target, "input", None)
         .await;
     // Then
     assert!(
@@ -282,12 +293,12 @@ async fn test_terminal開始_出力順序区間後の停止を検出し二重解
         assert!(stopping_hub.test_subscribed(&session, "client"));
         assert_eq!(stopping_output.subscribed.lock().len(), 1);
         stopped
-            .stop_subscription("client", &stopping_target)
+            .stop_subscription("client", &stopping_target, "input")
             .unwrap();
     }));
     // When
     let result = usecase
-        .start_terminal("client", &target, Some("input"), None)
+        .start_terminal("client", &target, "input", None)
         .await;
     // Then
     assert!(
@@ -327,7 +338,7 @@ async fn test_terminal開始_世代の再作成時は新しい出力順序で開
     }));
     // When
     usecase
-        .start_terminal("client", &target, Some("input"), None)
+        .start_terminal("client", &target, "input", None)
         .await
         .unwrap();
     // Then
@@ -365,7 +376,7 @@ async fn test_terminal開始_順序区間内の世代変化でも新しい世代
     }));
     // When
     usecase
-        .start_terminal("client", &target, Some("input"), None)
+        .start_terminal("client", &target, "input", None)
         .await
         .unwrap();
     // Then
@@ -397,7 +408,7 @@ async fn test_terminal開始失敗_summary取得失敗で記録と配信を戻�
     }));
     // When
     assert!(usecase
-        .start_terminal("client", &target, Some("input"), None)
+        .start_terminal("client", &target, "input", None)
         .await
         .is_err());
     // Then
@@ -429,7 +440,7 @@ async fn test_terminal開始失敗_配信の失敗で記録と出力購読を戻
     usecase.open_client("client".into()).unwrap();
     // When
     let error = usecase
-        .start_terminal("client", &target, Some("input"), None)
+        .start_terminal("client", &target, "input", None)
         .await
         .unwrap_err();
     // Then
@@ -461,7 +472,7 @@ async fn test_terminal処理報告_購読中の流量制御へ渡し停止後は
     let target = SubscriptionTarget::Terminal(surface.owner);
     usecase.open_client("client".into()).unwrap();
     usecase
-        .start_terminal("client", &target, Some("input"), None)
+        .start_terminal("client", &target, "input", None)
         .await
         .unwrap();
     // When
@@ -471,7 +482,9 @@ async fn test_terminal処理報告_購読中の流量制御へ渡し停止後は
         hub.test_pending_amount(&surface.session_key, "client"),
         Some(1000)
     );
-    usecase.stop_subscription("client", &target).unwrap();
+    usecase
+        .stop_subscription("client", &target, "input")
+        .unwrap();
     assert_ended(&usecase, "client", &target);
     assert!(!hub.test_subscribed(&surface.session_key, "client"));
     assert!(output.subscribed.lock().is_empty());
@@ -512,7 +525,7 @@ async fn test_terminal作り直し予約_一つのworkerで追加clientのreset�
     for client in ["first", "second"] {
         usecase.open_client(client.into()).unwrap();
         usecase
-            .start_terminal(client, &target, Some(client), None)
+            .start_terminal(client, &target, client, None)
             .await
             .unwrap();
     }
@@ -596,7 +609,7 @@ async fn test_terminal停止_購読者が全員止まれば対象のreset記録�
         .lock()
         .get_mut("client")
         .unwrap()
-        .insert(target.clone(), "input".into());
+        .insert(target.clone(), HashSet::from(["input".into()]));
     usecase
         .terminal_resets
         .lock()
@@ -604,7 +617,9 @@ async fn test_terminal停止_購読者が全員止まれば対象のreset記録�
     usecase.schedule_terminal_refresh(vec![], target.clone());
     let mut request = receiver.recv().await.unwrap();
     // When
-    usecase.stop_subscription("client", &target).unwrap();
+    usecase
+        .stop_subscription("client", &target, "input")
+        .unwrap();
     // Then
     assert_ended(&usecase, "client", &target);
     assert!(!usecase.terminal_resets.lock().contains_key(&target));
@@ -618,7 +633,9 @@ async fn test_terminal停止_購読者が全員止まれば対象のreset記録�
         .terminal_resets
         .lock()
         .insert(target.clone(), HashSet::from(["client".into()]));
-    usecase.stop_subscription("client", &target).unwrap();
+    usecase
+        .stop_subscription("client", &target, "input")
+        .unwrap();
     // Then
     assert!(!usecase.terminal_resets.lock().contains_key(&target));
 }
@@ -637,7 +654,7 @@ async fn test_terminal切断_閉じたclientをreset記録から消し残る購�
     for client in ["closed", "active"] {
         usecase.open_client(client.into()).unwrap();
         usecase
-            .start_terminal(client, &target, Some(client), None)
+            .start_terminal(client, &target, client, None)
             .await
             .unwrap();
     }
@@ -728,4 +745,127 @@ async fn test_terminal作り直し予約_異常終了したworkerを再登録す
     assert_eq!(request.target, target);
     assert_eq!(usecase.test_worker_count(), 1);
     assert!(!usecase.workers.lock()[&target].is_closed());
+}
+
+#[tokio::test]
+async fn test_terminal購読共有_片方の停止で出力と新しい入力の宛先を外さない() {
+    // Given
+    use crate::domain::terminal_surface::gateway::TerminalSurfaceGateway;
+    let (terminal, gateway, hub, surface) =
+        crate::test_support::state_subscription::terminal_application_fixture();
+    let output = Arc::new(FakeOutput::default());
+    *output.pending.lock() = Some(12);
+    let usecase = TerminalSubscriptionUsecase::new(
+        output.clone(),
+        Some(terminal),
+        crate::test_support::state_subscription::terminal_driver(),
+    );
+    let target = SubscriptionTarget::Terminal(surface.owner);
+    usecase.open_client("client".into()).unwrap();
+    usecase
+        .start_terminal("client", &target, "x", None)
+        .await
+        .unwrap();
+    usecase
+        .start_terminal("client", &target, "y", None)
+        .await
+        .unwrap();
+    assert!(gateway
+        .write_attached(&surface.session_key, "x", 0, "old")
+        .is_err());
+    // When
+    usecase.stop_subscription("client", &target, "x").unwrap();
+    // Then
+    assert!(hub.test_subscribed(&surface.session_key, "client"));
+    assert_eq!(output.subscribed.lock().len(), 1);
+    gateway
+        .write_attached(&surface.session_key, "y", 1, "new")
+        .unwrap();
+    usecase.terminal_processed("client", &target, 5000).unwrap();
+    usecase.stop_subscription("client", &target, "y").unwrap();
+    assert!(!hub.test_subscribed(&surface.session_key, "client"));
+    assert!(output.subscribed.lock().is_empty());
+    assert!(gateway
+        .write_attached(&surface.session_key, "y", 2, "stopped")
+        .is_err());
+}
+
+pub(super) struct TestTerminalDelivery<'a> {
+    pub(super) publisher: &'a dyn TerminalSubscriptionOutput,
+    pub(super) client: &'a str,
+    pub(super) target: &'a SubscriptionTarget,
+    pub(super) input: &'a str,
+    pub(super) cursor: Option<(&'a str, u64)>,
+}
+
+impl StateSubscriptionDelivery for TestTerminalDelivery<'_> {
+    fn start(&self) -> Result<Option<usize>, StateReadError> {
+        self.publisher
+            .start(self.client, self.target, self.input, self.cursor)
+    }
+    fn claim(&self) -> bool {
+        true
+    }
+    fn finish(&self, _: &HashSet<SubscriptionTarget>) -> Result<(), SubscriptionError> {
+        self.publisher.stop(self.client, self.target, self.input)
+    }
+}
+
+#[tokio::test]
+async fn test_terminal購読再利用_同じclientとidの新しい入力先へ古い停止が作用しない() {
+    use crate::domain::terminal_surface::gateway::TerminalSurfaceGateway;
+    use crate::usecase::state_subscription::StateSubscriptionDelivery;
+    let (terminal, gateway, hub, surface) =
+        crate::test_support::state_subscription::terminal_application_fixture();
+    let subscriptions =
+        crate::test_support::state_subscription::test_subscriptions().with_terminal(terminal);
+    let deps = subscriptions.deps();
+    let _stream = deps.stream("client".into()).unwrap();
+    let target = SubscriptionTarget::Terminal(surface.owner.clone());
+    subscriptions
+        .presenter
+        .set_snapshot(
+            &target,
+            1,
+            0,
+            StateValue::Terminal(TerminalSurfaceStreamItem::Snapshot(surface.clone().into())),
+        )
+        .unwrap();
+    deps.start_subscription("client", &target, "x", None)
+        .await
+        .unwrap();
+    let (_, _, old) = subscriptions
+        .usecase
+        .test_presenter()
+        .unwrap()
+        .delivery("x")
+        .unwrap();
+    deps.stop_subscription("x").await.unwrap();
+    subscriptions
+        .presenter
+        .set_snapshot(
+            &target,
+            1,
+            0,
+            StateValue::Terminal(TerminalSurfaceStreamItem::Snapshot(surface.clone().into())),
+        )
+        .unwrap();
+    deps.start_subscription("client", &target, "x", None)
+        .await
+        .unwrap();
+    subscriptions
+        .terminal
+        .stop_delivery("client", &target, "x", &old)
+        .unwrap();
+    old.finish(&Default::default()).unwrap();
+    assert!(subscriptions
+        .usecase
+        .test_presenter()
+        .unwrap()
+        .lookup("x")
+        .is_some());
+    assert!(hub.test_subscribed(&surface.session_key, "client"));
+    gateway
+        .write_attached(&surface.session_key, "x", 1, "new")
+        .unwrap();
 }

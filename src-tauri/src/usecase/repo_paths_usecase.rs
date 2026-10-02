@@ -174,7 +174,13 @@ mod repo_paths_usecase_tests {
             Some(StateSubscriptionEvent::Ready)
         ));
         subscriptions
-            .start_subscription("client", &SubscriptionTarget::RepositoryPaths, None)
+            .deps()
+            .start_subscription(
+                "client",
+                &SubscriptionTarget::RepositoryPaths,
+                "paths",
+                None,
+            )
             .await
             .unwrap();
         assert!(matches!(
@@ -231,7 +237,13 @@ mod repo_paths_usecase_tests {
             Some(StateSubscriptionEvent::Ready)
         ));
         subscriptions
-            .start_subscription("client", &SubscriptionTarget::RepositoryPaths, None)
+            .deps()
+            .start_subscription(
+                "client",
+                &SubscriptionTarget::RepositoryPaths,
+                "paths",
+                None,
+            )
             .await
             .unwrap();
         assert!(matches!(

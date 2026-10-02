@@ -55,32 +55,39 @@ impl TerminalSubscriptionPresenter {
 }
 
 impl TerminalSubscriptionOutput for TerminalSubscriptionPresenter {
+    #[cfg(test)]
     fn start(
         &self,
         client: &str,
-        target: &SubscriptionTarget,
+        _target: &SubscriptionTarget,
+        input_id: &str,
         cursor: Option<(&str, u64)>,
     ) -> Result<Option<usize>, StateReadError> {
-        let target = target.to_string();
         let version = cursor.map(|(epoch, sequence)| Version {
             epoch: epoch.into(),
             sequence,
         });
         self.runtime
             .mutate(|state| {
-                let subscribed = state.is_subscribed(client, &target);
-                let result = state.start(client, &target, version.as_ref()).map(|()| {
-                    (!state.awaiting_snapshot(client, &target))
-                        .then(|| state.pending_amount(client, &target))
+                let result = state.activate(input_id, version.as_ref()).map(|()| {
+                    (!state.awaiting_snapshot(client, input_id))
+                        .then(|| state.pending_amount(client, input_id))
                 });
-                let changed = result.is_ok() && !subscribed;
+                let changed = result.is_ok();
                 (result, changed)
             })
             .map_err(|error| StateReadError::from_error(SubscriptionError::from(error)))
     }
-    fn stop(&self, client: &str, target: &SubscriptionTarget) -> Result<(), SubscriptionError> {
-        self.update(|state| state.stop_and_release(client, &target.to_string()))
+    #[cfg(test)]
+    fn stop(
+        &self,
+        client: &str,
+        _target: &SubscriptionTarget,
+        input_id: &str,
+    ) -> Result<(), SubscriptionError> {
+        self.update(|state| state.stop_and_release(client, input_id))
     }
+
     fn publish_failure(
         &self,
         target: &SubscriptionTarget,

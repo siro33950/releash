@@ -66,6 +66,7 @@ async fn subscribe_state(socket: &Socket, target: &str, args: Vec<String>) -> St
         .client
         .start_state_subscription(rpc::StartStateSubscriptionRequest {
             client_id,
+            subscription_id: uuid::Uuid::new_v4().to_string(),
             target: target.into(),
             args,
             ..Default::default()
@@ -477,6 +478,7 @@ async fn test_daemon本番配線_repository一覧が購読へ配信される() {
         .client
         .start_state_subscription(rpc::StartStateSubscriptionRequest {
             client_id: "repositories".into(),
+            subscription_id: "repositories".into(),
             target: "repository-paths".into(),
             ..Default::default()
         })

@@ -82,7 +82,7 @@ async fn test_daemon接続_認証と検証が完了した呼び出しで接続�
                         ..Default::default()
                     },
                     wire::StateSubscriptionEvent {
-                        target: "desktop-settings".into(),
+                        subscription_id: "settings".into(),
                         event: Some(Event::Snapshot(wire::StatePayload {
                             value: Some(wire::state_payload::Value::DesktopSettings(settings)),
                         })),

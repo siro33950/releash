@@ -117,22 +117,22 @@ async fn test_terminal購読_同じstreamでsnapshot差分と区切りを届け�
             Some(StateSubscriptionEvent::Item(
                 target,
                 Event::Snapshot(Version { sequence: 0, .. }, value),
-            )) if target == raw => {
+            )) if target == "input" => {
                 terminal_snapshot = matches!(
                     terminal_item(&value),
                     crate::adaptor::presenter::client::terminal_event::Item::Snapshot(_)
                 );
             }
             Some(StateSubscriptionEvent::Item(target, Event::Snapshot(_, _)))
-                if target == "repository-paths" =>
+                if target == "client:repository-paths" =>
             {
                 paths_snapshot = true
             }
-            Some(StateSubscriptionEvent::Item(target, Event::Bookmark(_))) if target == raw => {
+            Some(StateSubscriptionEvent::Item(target, Event::Bookmark(_))) if target == "input" => {
                 terminal_bookmark = true
             }
             Some(StateSubscriptionEvent::Item(target, Event::Bookmark(_)))
-                if target == "repository-paths" =>
+                if target == "client:repository-paths" =>
             {
                 paths_bookmark = true
             }
@@ -349,7 +349,7 @@ async fn test_terminal購読_件数上限がなく停止と切断で流量を解
             "client",
             &SubscriptionTarget::Terminal(owner).to_string(),
             None,
-            "input",
+            &format!("input-{index}"),
         )
         .await
         .unwrap();
@@ -848,7 +848,7 @@ async fn test_terminal差分_出力の重複を除き同じ出力番号で寸法
             &StateValue::Terminal(expected.into()),
         )
         .unwrap();
-        assert_eq!(actual_target, target);
+        assert_eq!(actual_target, "input");
         assert_eq!(version.sequence, sequence);
         assert_eq!(*value, expected_payload.into());
     }
@@ -1442,7 +1442,7 @@ async fn test_terminal購読開始_捨てられた最初の状態を再要求か
     ));
     subscriptions
         .terminal
-        .stop_subscription("first", &target)
+        .stop_subscription("first", &target, "first-input")
         .unwrap();
     let runtime = subscriptions.test_presenter().unwrap().test_runtime();
     let raw = target.to_string();
@@ -1466,7 +1466,7 @@ async fn test_terminal購読開始_捨てられた最初の状態を再要求か
     // Then
     assert!(
         matches!(event, StateSubscriptionEvent::Item(delivered, Event::Snapshot(_, value))
-        if delivered == raw && matches!(terminal_item(&value),
+        if delivered == "second-input" && matches!(terminal_item(&value),
             crate::adaptor::presenter::client::terminal_event::Item::Snapshot(snapshot) if snapshot.session_key == surface.session_key))
     );
 }

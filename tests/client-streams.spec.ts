@@ -119,7 +119,7 @@ test("20terminalを保持しても入力・処理済み量通知・状態取得�
 			}),
 		);
 		expect(result.acks).toContainEqual({
-			clientId: expect.any(String), args: [`/repo-${index}`], units: 5000,
+			subscriptionId: result.attachmentIds[index], units: 5000,
 		});
 	}
 });

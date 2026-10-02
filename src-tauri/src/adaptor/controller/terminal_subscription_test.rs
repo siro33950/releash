@@ -19,11 +19,12 @@ impl TerminalSubscriptionOutput for Output {
         &self,
         _: &str,
         _: &SubscriptionTarget,
+        _: &str,
         _: Option<(&str, u64)>,
     ) -> Result<Option<usize>, StateReadError> {
         Ok(Some(6000))
     }
-    fn stop(&self, _: &str, _: &SubscriptionTarget) -> Result<(), SubscriptionError> {
+    fn stop(&self, _: &str, _: &SubscriptionTarget, _: &str) -> Result<(), SubscriptionError> {
         Ok(())
     }
     fn set_snapshot(
@@ -69,7 +70,7 @@ async fn assert_stopped(close: bool) {
     let target = SubscriptionTarget::Terminal(surface.owner);
     usecase.open_client("client".into()).unwrap();
     usecase
-        .start_terminal("client", &target, Some("input"), None)
+        .start_terminal("client", &target, "input", None)
         .await
         .unwrap();
     *output.reset.lock() = Some(Box::new({
@@ -90,7 +91,9 @@ async fn assert_stopped(close: bool) {
     if close {
         usecase.close_client("client");
     } else {
-        usecase.stop_subscription("client", &target).unwrap();
+        usecase
+            .stop_subscription("client", &target, "input")
+            .unwrap();
     }
     crate::usecase::terminal_surface::subscription::subscription_tests::add_reset(
         &usecase, &target, "client",

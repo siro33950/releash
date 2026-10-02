@@ -254,6 +254,10 @@ impl<T: Clone> Target<T> {
 }
 
 struct Subscription<T> {
+    identity: Arc<()>,
+    stopping: bool,
+    target: String,
+    initialized: bool,
     pending: VecDeque<Event<T>>,
     sent: Option<Version>,
     overflowed: bool,
@@ -355,13 +359,99 @@ impl<T: Clone + PartialEq> Subscriptions<T> {
         self.clients.remove(id);
     }
 
+    pub fn reserve(
+        &mut self,
+        client: &str,
+        id: &str,
+        target: &str,
+    ) -> Result<(), SubscriptionError> {
+        if self
+            .clients
+            .values()
+            .any(|client| client.subscriptions.contains_key(id))
+        {
+            return Err(SubscriptionError::AlreadyExists);
+        }
+        let client = self
+            .clients
+            .get_mut(client)
+            .ok_or(SubscriptionError::StreamEnded)?;
+        client.order.push_back(id.into());
+        client.subscriptions.insert(
+            id.into(),
+            Subscription {
+                identity: Arc::new(()),
+                stopping: false,
+                target: target.into(),
+                initialized: false,
+                pending: VecDeque::new(),
+                sent: None,
+                overflowed: false,
+                pending_units: 0,
+                sizes: VecDeque::new(),
+            },
+        );
+        Ok(())
+    }
+
+    pub fn lookup(&self, id: &str) -> Option<(String, String)> {
+        self.clients.iter().find_map(|(client, value)| {
+            value
+                .subscriptions
+                .get(id)
+                .map(|subscription| (client.clone(), subscription.target.clone()))
+        })
+    }
+
+    pub fn identity(&self, id: &str) -> Option<Arc<()>> {
+        self.clients.values().find_map(|client| {
+            client
+                .subscriptions
+                .get(id)
+                .map(|subscription| subscription.identity.clone())
+        })
+    }
+
+    pub fn matches_identity(&self, id: &str, identity: &Arc<()>) -> bool {
+        self.identity(id)
+            .is_some_and(|current| Arc::ptr_eq(&current, identity))
+    }
+
+    pub fn claim(&mut self, id: &str, identity: &Arc<()>) -> bool {
+        for client in self.clients.values_mut() {
+            if let Some(subscription) = client.subscriptions.get_mut(id) {
+                if !Arc::ptr_eq(&subscription.identity, identity) || subscription.stopping {
+                    return false;
+                }
+                subscription.stopping = true;
+                return true;
+            }
+        }
+        false
+    }
+
+    #[cfg(test)]
     pub fn start(
         &mut self,
         client: &str,
+        id: &str,
         target: &str,
         version: Option<&Version>,
     ) -> Result<(), SubscriptionError> {
-        let target = target.to_string();
+        self.reserve(client, id, target)?;
+        if let Err(error) = self.activate(id, version) {
+            let _ = self.stop(client, id);
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    pub fn activate(
+        &mut self,
+        id: &str,
+        version: Option<&Version>,
+    ) -> Result<(), SubscriptionError> {
+        let (client, target) = self.lookup(id).ok_or(SubscriptionError::StreamEnded)?;
         let value = self
             .targets
             .get(&target)
@@ -370,36 +460,27 @@ impl<T: Clone + PartialEq> Subscriptions<T> {
         if awaiting_snapshot && value.delivery != Delivery::Delta {
             return Err(SubscriptionError::UnknownTarget);
         }
-        let client = self
+        let subscription = self
             .clients
-            .get_mut(client)
-            .ok_or(SubscriptionError::StreamEnded)?;
-        if client.subscriptions.contains_key(&target) {
-            return Ok(());
-        }
-        client.order.push_back(target.clone());
-        client.subscriptions.insert(
-            target,
-            Subscription {
-                pending: if awaiting_snapshot {
-                    VecDeque::new()
-                } else {
-                    value.resume(version)
-                },
-                sent: version.filter(|v| v.epoch == value.version.epoch).cloned(),
-                overflowed: awaiting_snapshot,
-                pending_units: if awaiting_snapshot {
-                    0
-                } else {
-                    value.pending_sizes(version).iter().sum()
-                },
-                sizes: if awaiting_snapshot {
-                    VecDeque::new()
-                } else {
-                    value.pending_sizes(version)
-                },
-            },
-        );
+            .get_mut(&client)
+            .unwrap()
+            .subscriptions
+            .get_mut(id)
+            .unwrap();
+        subscription.initialized = true;
+        subscription.pending = if awaiting_snapshot {
+            VecDeque::new()
+        } else {
+            value.resume(version)
+        };
+        subscription.sent = version.filter(|v| v.epoch == value.version.epoch).cloned();
+        subscription.overflowed = awaiting_snapshot;
+        subscription.sizes = if awaiting_snapshot {
+            VecDeque::new()
+        } else {
+            value.pending_sizes(version)
+        };
+        subscription.pending_units = subscription.sizes.iter().sum();
         Ok(())
     }
 
@@ -418,8 +499,8 @@ impl<T: Clone + PartialEq> Subscriptions<T> {
             .and_then(|client| client.subscriptions.get(target))
             .is_some_and(|subscription| subscription.overflowed)
             && self
-                .targets
-                .get(target)
+                .lookup(target)
+                .and_then(|(_, raw)| self.targets.get(&raw))
                 .is_some_and(|target| target.snapshot.is_none())
     }
 
@@ -456,23 +537,34 @@ impl<T: Clone + PartialEq> Subscriptions<T> {
             },
         );
         for client in self.clients.values_mut() {
-            if let Some(subscription) = client.subscriptions.get_mut(&id) {
+            for subscription in client
+                .subscriptions
+                .values_mut()
+                .filter(|subscription| subscription.target == id && subscription.initialized)
+            {
                 subscription.overflowed = true;
             }
         }
         Ok(true)
     }
 
+    #[cfg(test)]
     pub fn is_subscribed(&self, client: &str, target: &str) -> bool {
-        self.clients
-            .get(client)
-            .is_some_and(|client| client.subscriptions.contains_key(target))
+        self.clients.get(client).is_some_and(|client| {
+            client
+                .subscriptions
+                .values()
+                .any(|subscription| subscription.target == target)
+        })
     }
 
     pub fn has_subscribers(&self, target: &str) -> bool {
-        self.clients
-            .values()
-            .any(|client| client.subscriptions.contains_key(target))
+        self.clients.values().any(|client| {
+            client
+                .subscriptions
+                .values()
+                .any(|subscription| subscription.target == target)
+        })
     }
 
     #[cfg(test)]
@@ -541,15 +633,13 @@ impl<T: Clone + PartialEq> Subscriptions<T> {
         Ok(DeltaPublication::Published)
     }
 
-    pub fn stop_and_release(
-        &mut self,
-        client: &str,
-        target: &str,
-    ) -> Result<bool, SubscriptionError> {
-        let stopped = self.stop(client, target)?;
+    #[cfg(test)]
+    pub fn stop_and_release(&mut self, client: &str, id: &str) -> Result<bool, SubscriptionError> {
+        let target = self.lookup(id).map(|(_, target)| target);
+        let stopped = self.stop(client, id)?;
         let mut changed = false;
-        if !self.has_subscribers(target) {
-            if let Some(value) = self.targets.get_mut(target) {
+        if let Some(target) = target.filter(|target| !self.has_subscribers(target)) {
+            if let Some(value) = self.targets.get_mut(&target) {
                 changed = value.snapshot.is_some()
                     || (value.delivery == Delivery::Full && !value.history.is_empty());
                 value.snapshot = None;
@@ -589,7 +679,11 @@ impl<T: Clone + PartialEq> Subscriptions<T> {
             value.history.clear();
             value.history_units.clear();
             for client in self.clients.values_mut() {
-                if let Some(subscription) = client.subscriptions.get_mut(&id) {
+                for subscription in client
+                    .subscriptions
+                    .values_mut()
+                    .filter(|subscription| subscription.target == id && subscription.initialized)
+                {
                     subscription.pending.clear();
                     subscription.sizes.clear();
                     subscription.pending_units = 0;
@@ -611,7 +705,11 @@ impl<T: Clone + PartialEq> Subscriptions<T> {
             value.history_units.pop_front();
         }
         for client in self.clients.values_mut() {
-            if let Some(subscription) = client.subscriptions.get_mut(&id) {
+            for subscription in client
+                .subscriptions
+                .values_mut()
+                .filter(|subscription| subscription.target == id && subscription.initialized)
+            {
                 if subscription.overflowed {
                     continue;
                 }
@@ -651,7 +749,11 @@ impl<T: Clone + PartialEq> Subscriptions<T> {
         value.history_units.clear();
         value.discarded_through = Some(value.version.sequence);
         for client in self.clients.values_mut() {
-            if let Some(subscription) = client.subscriptions.get_mut(&id) {
+            for subscription in client
+                .subscriptions
+                .values_mut()
+                .filter(|subscription| subscription.target == id && subscription.initialized)
+            {
                 changed |= !subscription.pending.is_empty()
                     || !subscription.sizes.is_empty()
                     || subscription.pending_units != 0
@@ -670,8 +772,10 @@ impl<T: Clone + PartialEq> Subscriptions<T> {
             .get(client)
             .into_iter()
             .flat_map(|client| client.subscriptions.iter())
-            .filter(|(id, subscription)| self.snapshot_required(id, subscription))
-            .map(|(id, _)| id.to_string())
+            .filter(|(_, subscription)| self.snapshot_required(&subscription.target, subscription))
+            .map(|(_, subscription)| subscription.target.clone())
+            .collect::<std::collections::HashSet<_>>()
+            .into_iter()
             .collect()
     }
 
@@ -679,10 +783,9 @@ impl<T: Clone + PartialEq> Subscriptions<T> {
         self.clients
             .iter()
             .filter(|(_, client)| {
-                client
-                    .subscriptions
-                    .get(target)
-                    .is_some_and(|subscription| self.snapshot_required(target, subscription))
+                client.subscriptions.values().any(|subscription| {
+                    subscription.target == target && self.snapshot_required(target, subscription)
+                })
             })
             .map(|(id, _)| id.clone())
             .collect()
@@ -697,10 +800,9 @@ impl<T: Clone + PartialEq> Subscriptions<T> {
     }
 
     pub fn stop(&mut self, client: &str, target: &str) -> Result<bool, SubscriptionError> {
-        let client = self
-            .clients
-            .get_mut(client)
-            .ok_or(SubscriptionError::StreamEnded)?;
+        let Some(client) = self.clients.get_mut(client) else {
+            return Ok(false);
+        };
         let target = target.to_string();
         let changed = client.subscriptions.remove(&target).is_some();
         client.order.retain(|id| id != &target);
@@ -747,7 +849,11 @@ impl<T: Clone + PartialEq> Subscriptions<T> {
             value.history_units.pop_front();
         }
         for client in self.clients.values_mut() {
-            if let Some(subscription) = client.subscriptions.get_mut(&target) {
+            for subscription in client
+                .subscriptions
+                .values_mut()
+                .filter(|subscription| subscription.target == target && subscription.initialized)
+            {
                 if subscription.pending.len() >= RETAINED_CHANGES {
                     subscription.pending.clear();
                     subscription.overflowed = true;
@@ -806,7 +912,12 @@ impl<T: Clone + PartialEq> Subscriptions<T> {
     pub fn active_targets(&self) -> std::collections::HashSet<String> {
         self.clients
             .values()
-            .flat_map(|client| client.subscriptions.keys().cloned())
+            .flat_map(|client| {
+                client
+                    .subscriptions
+                    .values()
+                    .map(|subscription| subscription.target.clone())
+            })
             .collect()
     }
 
@@ -819,9 +930,12 @@ impl<T: Clone + PartialEq> Subscriptions<T> {
             return false;
         };
         let mut queued = false;
-        for (id, subscription) in &mut client.subscriptions {
-            if subscription.pending.is_empty() && !subscription.overflowed {
-                if let Some(target) = self.targets.get(id) {
+        for subscription in client.subscriptions.values_mut() {
+            if subscription.initialized
+                && subscription.pending.is_empty()
+                && !subscription.overflowed
+            {
+                if let Some(target) = self.targets.get(&subscription.target) {
                     subscription
                         .pending
                         .push_back(Event::Bookmark(target.version.clone()));
@@ -838,8 +952,11 @@ impl<T: Clone + PartialEq> Subscriptions<T> {
             let id = client.order.pop_front()?;
             client.order.push_back(id.clone());
             let subscription = client.subscriptions.get_mut(&id)?;
+            if !subscription.initialized {
+                continue;
+            }
             if subscription.overflowed && subscription.pending.is_empty() {
-                let Some(value) = self.targets.get(&id) else {
+                let Some(value) = self.targets.get(&subscription.target) else {
                     continue;
                 };
                 if value.snapshot.is_none() && !value.resumable(subscription.sent.as_ref()) {
@@ -847,7 +964,8 @@ impl<T: Clone + PartialEq> Subscriptions<T> {
                 }
                 subscription.sizes = value.pending_sizes(subscription.sent.as_ref());
                 subscription.pending_units = subscription.sizes.iter().sum();
-                subscription.pending = self.targets[&id].resume(subscription.sent.as_ref());
+                subscription.pending =
+                    self.targets[&subscription.target].resume(subscription.sent.as_ref());
                 subscription.overflowed = false;
             }
             if let Some(event) = subscription.pending.pop_front() {

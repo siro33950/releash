@@ -259,6 +259,7 @@ fn start_settings_subscription(
     Box::pin(async move {
         client
             .start_state_subscription(rpc::StartStateSubscriptionRequest {
+                subscription_id: uuid::Uuid::new_v4().to_string(),
                 client_id,
                 target: DESKTOP_SETTINGS_TARGET.into(),
                 ..Default::default()

@@ -100,7 +100,9 @@ fn test_再開_変更直後のbookmarkと送り待ち量が対応する() {
         )
         .unwrap();
     // When
-    state.start("client", target, Some(&before)).unwrap();
+    state
+        .start("client", target, target, Some(&before))
+        .unwrap();
     // Then
     assert_eq!(state.pending_amount("client", target), 8);
     assert_eq!(state.clients["client"].subscriptions[target].sizes.len(), 2);
@@ -134,7 +136,11 @@ async fn test_定期印_別対象の更新が続いても無通信の購読へ�
         .register("busy".into(), 0_u64, Delivery::Full)
         .unwrap();
     runtime.state.lock().open("client".into()).unwrap();
-    runtime.state.lock().start("client", "idle", None).unwrap();
+    runtime
+        .state
+        .lock()
+        .start("client", "idle", "idle", None)
+        .unwrap();
     let mut stream = Box::pin(runtime.stream("client".into(), (), |_, _| {}));
     assert!(matches!(
         stream.next().await,
@@ -189,7 +195,7 @@ async fn test_定期印_snapshot待ちの購読だけでもstreamに送る() {
     runtime
         .state
         .lock()
-        .start("client", "waiting", None)
+        .start("client", "waiting", "waiting", None)
         .unwrap();
     let mut stream = Box::pin(runtime.stream("client".into(), (), |_, _| {}));
     assert!(matches!(
@@ -220,7 +226,7 @@ async fn test_定期印_変更が送り待ちでもstreamへ間隔どおり送�
     runtime
         .state
         .lock()
-        .start("client", "target", None)
+        .start("client", "target", "target", None)
         .unwrap();
     let mut stream = Box::pin(runtime.stream("client".into(), (), |_, _| {}));
     assert!(matches!(
@@ -280,7 +286,9 @@ fn test_定期印_版付き合図を積めたか返す() {
     // When / Then
     assert!(!state.bookmark("client"));
     assert!(!state.bookmark("unknown"));
-    state.start("client", "workspaces", None).unwrap();
+    state
+        .start("client", "workspaces", "workspaces", None)
+        .unwrap();
     assert!(!state.bookmark("client"));
     state.next("client");
     state.next("client");
@@ -292,7 +300,9 @@ fn test_購読_初期状態と区切りの後に変更が届く() {
     // Given
     let mut state = registry();
     // When
-    state.start("client", "workspaces", None).unwrap();
+    state
+        .start("client", "workspaces", "workspaces", None)
+        .unwrap();
     state.publish("workspaces", 1, None).unwrap();
     // Then
     assert!(
@@ -313,22 +323,29 @@ fn test_購読_重複と停止と存在しない対象() {
     // Given
     let mut state = registry();
     // When
-    state.start("client", "workspaces", None).unwrap();
-    state.start("client", "workspaces", None).unwrap();
+    state
+        .start("client", "workspaces", "workspaces", None)
+        .unwrap();
+    assert_eq!(
+        state.start("client", "workspaces", "workspaces", None),
+        Err(SubscriptionError::AlreadyExists)
+    );
     // Then
     assert_eq!(state.clients["client"].subscriptions.len(), 1);
     assert_eq!(
-        state.start("client", "missing", None),
+        state.start("client", "missing", "missing", None),
         Err(SubscriptionError::UnknownTarget)
     );
     state.stop("client", "workspaces").unwrap();
     assert!(state.next("client").is_none());
     state.publish("workspaces", 1, None).unwrap();
     assert!(state.next("client").is_none());
-    state.start("client", "providers", None).unwrap();
+    state
+        .start("client", "providers", "providers", None)
+        .unwrap();
     state.close("client");
     assert_eq!(
-        state.start("client", "workspaces", None),
+        state.start("client", "workspaces", "workspaces", None),
         Err(SubscriptionError::StreamEnded)
     );
 }
@@ -343,7 +360,9 @@ fn test_再開_履歴内と古い版と別起動と未来の版() {
         sequence: 0,
     };
     // When
-    state.start("client", "workspaces", Some(&version)).unwrap();
+    state
+        .start("client", "workspaces", "workspaces", Some(&version))
+        .unwrap();
     // Then
     assert!(matches!(state.next("client"), Some((_, Event::Change(_, _, value))) if *value == 1));
     for version in [
@@ -357,7 +376,9 @@ fn test_再開_履歴内と古い版と別起動と未来の版() {
         },
     ] {
         state.stop("client", "workspaces").unwrap();
-        state.start("client", "workspaces", Some(&version)).unwrap();
+        state
+            .start("client", "workspaces", "workspaces", Some(&version))
+            .unwrap();
         assert!(
             matches!(state.next("client"), Some((_, Event::Snapshot(_, value))) if *value == 1)
         );
@@ -373,6 +394,7 @@ fn test_再開_履歴内と古い版と別起動と未来の版() {
     state
         .start(
             "client",
+            "workspaces",
             "workspaces",
             Some(&Version {
                 epoch: "boot".into(),
@@ -390,8 +412,12 @@ fn test_再開_履歴内と古い版と別起動と未来の版() {
 fn test_送り待ち_溢れた購読のみ再開し他の対象は続く() {
     // Given
     let mut state = registry();
-    state.start("client", "workspaces", None).unwrap();
-    state.start("client", "providers", None).unwrap();
+    state
+        .start("client", "workspaces", "workspaces", None)
+        .unwrap();
+    state
+        .start("client", "providers", "providers", None)
+        .unwrap();
     for _ in 0..4 {
         state.next("client").unwrap();
     }
@@ -426,12 +452,14 @@ fn test_購読数_上限がなく版は購読し直しても戻らない() {
     for n in 0..100 {
         let id = format!("branches-{n}");
         state.register(id.clone(), n, Delivery::Full).unwrap();
-        state.start("client", &id, None).unwrap();
+        state.start("client", &id, &id, None).unwrap();
     }
     state.publish("workspaces", 5, None).unwrap();
     state.close("client");
     state.open("client".into()).unwrap();
-    state.start("client", "workspaces", None).unwrap();
+    state
+        .start("client", "workspaces", "workspaces", None)
+        .unwrap();
     // Then
     assert!(matches!(
         state.next("client"),
@@ -448,7 +476,9 @@ fn test_購読数_上限がなく版は購読し直しても戻らない() {
 fn test_再開_送り待ちが溢れても保持した版以降だけを再生する() {
     // Given
     let mut state = registry();
-    state.start("client", "workspaces", None).unwrap();
+    state
+        .start("client", "workspaces", "workspaces", None)
+        .unwrap();
     state.next("client").unwrap();
     assert!(matches!(
         state.next("client"),
@@ -474,6 +504,7 @@ fn test_再開_送り待ちが溢れても保持した版以降だけを再生�
     state
         .start(
             "client",
+            "workspaces",
             "workspaces",
             Some(&Version {
                 epoch: "boot".into(),
@@ -501,8 +532,12 @@ fn test_共有購読_最後のclient終了時に対象がinactiveになる() {
     let mut state = registry();
     state.open("other".into()).unwrap();
     // When
-    state.start("client", "workspaces", None).unwrap();
-    state.start("other", "workspaces", None).unwrap();
+    state
+        .start("client", "workspaces", "workspaces", None)
+        .unwrap();
+    state
+        .start("other", "other-workspaces", "workspaces", None)
+        .unwrap();
     state.stop("client", "workspaces").unwrap();
     // Then
     assert!(state.active_targets().contains("workspaces"));
@@ -513,16 +548,20 @@ fn test_共有購読_最後のclient終了時に対象がinactiveになる() {
 #[test]
 fn test_購読開始_切断で解放したsnapshotは再取得前に再開しない() {
     let mut state = registry();
-    state.start("client", "workspaces", None).unwrap();
+    state
+        .start("client", "workspaces", "workspaces", None)
+        .unwrap();
     state.close("client");
     state.release_inactive_snapshots();
     state.open("next".into()).unwrap();
     assert_eq!(
-        state.start("next", "workspaces", None),
+        state.start("next", "workspaces", "workspaces", None),
         Err(SubscriptionError::UnknownTarget)
     );
     state.publish("workspaces", 1, None).unwrap();
-    state.start("next", "workspaces", None).unwrap();
+    state
+        .start("next", "workspaces", "workspaces", None)
+        .unwrap();
     assert!(matches!(state.next("next"), Some((_, Event::Snapshot(_, value))) if *value == 1));
 }
 
@@ -537,7 +576,7 @@ fn test_購読開始失敗_切断済みclientの対象を登録せず既存対�
     // When
     state.register(target.into(), 1, Delivery::Full).unwrap();
     assert_eq!(
-        state.start("closed", target, None),
+        state.start("closed", target, target, None),
         Err(SubscriptionError::StreamEnded)
     );
     assert_eq!(
@@ -548,7 +587,7 @@ fn test_購読開始失敗_切断済みclientの対象を登録せず既存対�
     assert!(!state.registered(target));
     assert!(state.registered("repository-paths"));
     state.register(target.into(), 1, Delivery::Full).unwrap();
-    state.start("client", target, None).unwrap();
+    state.start("client", target, target, None).unwrap();
     assert!(state.registered(target));
 }
 
@@ -561,7 +600,7 @@ fn test_対象ごとの配信_変更値を購読clientへ届ける() {
     state
         .register(raw.into(), vec!["main".to_string()], Delivery::Full)
         .unwrap();
-    state.start("client", raw, None).unwrap();
+    state.start("client", raw, raw, None).unwrap();
     assert!(
         matches!(state.next("client"), Some((_, Event::Snapshot(_, value))) if *value == ["main"])
     );
@@ -593,7 +632,7 @@ fn test_複数対象の配信_指定した対象だけに変更値を届ける()
         state
             .register(raw.into(), "before", Delivery::Full)
             .unwrap();
-        state.start("client", raw, None).unwrap();
+        state.start("client", raw, raw, None).unwrap();
         assert!(
             matches!(state.next("client"), Some((id, Event::Snapshot(_, value))) if id == raw && *value == "before")
         );
@@ -620,7 +659,7 @@ fn test_差分対象_最後のclient切断後もruntimeの登録を保持する(
     };
     state.register_delta(target, version.clone(), 100).unwrap();
     state.set_delta_snapshot(target, version, 0).unwrap();
-    state.start("client", target, None).unwrap();
+    state.start("client", target, target, None).unwrap();
 
     state.close("client");
 
@@ -639,8 +678,12 @@ fn test_購読開始確認_切断後は対象の鍵を解放し他の購読を�
         .register("repository-paths".into(), 0, Delivery::Full)
         .unwrap();
     state.open("other".into()).unwrap();
-    state.start("other", "providers", None).unwrap();
-    state.start("client", "workspaces", None).unwrap();
+    state
+        .start("other", "providers", "providers", None)
+        .unwrap();
+    state
+        .start("client", "workspaces", "workspaces", None)
+        .unwrap();
     // When
     state.close("client");
     state.release_inactive_snapshots();
@@ -666,11 +709,15 @@ fn test_provider一覧購読_指定対象に更新一覧を配信する() {
     state
         .register("providers".into(), vec!["codex"], Delivery::Full)
         .unwrap();
-    state.start("client", "providers", None).unwrap();
+    state
+        .start("client", "providers", "providers", None)
+        .unwrap();
     state
         .register("workspaces".into(), vec![], Delivery::Full)
         .unwrap();
-    state.start("client", "workspaces", None).unwrap();
+    state
+        .start("client", "workspaces", "workspaces", None)
+        .unwrap();
     for _ in 0..4 {
         state.next("client");
     }
@@ -689,7 +736,9 @@ fn test_provider一覧購読_指定対象に更新一覧を配信する() {
 fn test_開始失敗で解放した対象_再登録時は以前の版を再利用せずsnapshotを届ける() {
     // Given
     let mut state = registry();
-    state.start("client", "workspaces", None).unwrap();
+    state
+        .start("client", "workspaces", "workspaces", None)
+        .unwrap();
     let (_, initial) = state.next("client").unwrap();
     let version = initial.version().clone();
     state.close("client");
@@ -697,7 +746,7 @@ fn test_開始失敗で解放した対象_再登録時は以前の版を再利�
     // When
     state.publish("workspaces", 1, None).unwrap();
     assert_eq!(
-        state.start("closed", "workspaces", None),
+        state.start("closed", "workspaces", "workspaces", None),
         Err(SubscriptionError::StreamEnded)
     );
     assert_eq!(
@@ -709,7 +758,9 @@ fn test_開始失敗で解放した対象_再登録時は以前の版を再利�
     state
         .register("workspaces".into(), 2, Delivery::Full)
         .unwrap();
-    state.start("next", "workspaces", Some(&version)).unwrap();
+    state
+        .start("next", "workspaces", "workspaces", Some(&version))
+        .unwrap();
     // Then
     assert!(
         matches!(state.next("next"), Some((_, Event::Snapshot(next, value))) if next.epoch != version.epoch && *value == 2)
@@ -741,7 +792,7 @@ fn test_差分購読_対象の版で再開し件数では溢れない() {
     state.register_delta(target, version(20), 100_000).unwrap();
     assert!(state.needs_snapshot(target, None).unwrap());
     state.set_delta_snapshot(target, version(20), 0).unwrap();
-    state.start("client", target, None).unwrap();
+    state.start("client", target, target, None).unwrap();
     // When
     for sequence in 21..=120 {
         state
@@ -761,7 +812,9 @@ fn test_差分購読_対象の版で再開し件数では溢れない() {
     }
     state.stop("client", target).unwrap();
     assert!(!state.needs_snapshot(target, Some(&version(119))).unwrap());
-    state.start("client", target, Some(&version(119))).unwrap();
+    state
+        .start("client", target, target, Some(&version(119)))
+        .unwrap();
     assert!(matches!(state.next("client"), Some((_, Event::Change(v, _, _))) if v.sequence == 120));
 }
 
@@ -789,6 +842,7 @@ fn test_terminal開始_登録後の出力でsnapshotが消えても現在状態�
     state
         .start(
             "client",
+            target,
             target,
             Some(&Version {
                 epoch: "old".into(),
@@ -820,7 +874,7 @@ fn test_terminal開始_snapshot未確定の差分対象を登録してから作�
     };
     state.register_delta(target, version.clone(), 100).unwrap();
     // When
-    state.start("client", target, None).unwrap();
+    state.start("client", target, target, None).unwrap();
     // Then
     assert_eq!(state.snapshot_requests("client"), vec![target]);
     assert!(state.next("client").is_none());
@@ -845,7 +899,7 @@ async fn test_定期印_変更の配信で周期の起点をずらさない() {
     runtime
         .state
         .lock()
-        .start("client", "target", None)
+        .start("client", "target", "target", None)
         .unwrap();
     let mut stream = Box::pin(runtime.stream("client".into(), (), |_, _| {}));
     stream.next().await;
@@ -882,7 +936,7 @@ fn test_差分購読_零単位の要素も一単位として数える() {
     state
         .set_delta_snapshot(target, version.clone(), 0)
         .unwrap();
-    state.start("client", target, None).unwrap();
+    state.start("client", target, target, None).unwrap();
     state.next("client");
     state.next("client");
 
@@ -924,7 +978,7 @@ fn test_差分購読_量の超過と作り直しは現在状態を要求する()
     state
         .set_delta_snapshot(target, version.clone(), 0)
         .unwrap();
-    state.start("client", target, None).unwrap();
+    state.start("client", target, target, None).unwrap();
     state.next("client");
     state.next("client");
     // When
@@ -981,7 +1035,9 @@ fn test_差分再開_同じ出力番号の変更を再送し出力は重複さ�
         .publish_delta(target, version(2), 40, 10, true)
         .unwrap();
     // When
-    state.start("client", target, Some(&version(1))).unwrap();
+    state
+        .start("client", target, target, Some(&version(1)))
+        .unwrap();
     // Then
     for (sequence, expected) in [(1, 20), (1, 30), (2, 40)] {
         assert!(
@@ -1028,7 +1084,7 @@ fn test_差分購読_出力欠落後の同番号変更だけで再開せずsnaps
     };
     state.register_delta(target, version(0), 100_000).unwrap();
     state.set_delta_snapshot(target, version(0), 0).unwrap();
-    state.start("client", target, None).unwrap();
+    state.start("client", target, target, None).unwrap();
     state.next("client");
     state.next("client");
     // When
@@ -1058,7 +1114,7 @@ fn test_差分復元要求_同じ対象の全購読を現在状態から再開�
         .unwrap();
     state.open("second".into()).unwrap();
     for client in ["client", "second"] {
-        state.start(client, target, None).unwrap();
+        state.start(client, client, target, None).unwrap();
         state.next(client);
         state.next(client);
     }
@@ -1100,7 +1156,7 @@ fn test_購読対象削除_差分履歴を解放し購読は明示停止まで�
         .set_delta_snapshot(target, version.clone(), "snapshot")
         .unwrap();
     state.open("client".into()).unwrap();
-    state.start("client", target, None).unwrap();
+    state.start("client", target, target, None).unwrap();
     state
         .publish_delta(
             target,
@@ -1159,7 +1215,7 @@ fn test_購読対象再作成_送り待ちが無い購読と溢れた購読も�
         state
             .set_delta_snapshot(target, version.clone(), 0)
             .unwrap();
-        state.start("client", target, None).unwrap();
+        state.start("client", target, target, None).unwrap();
         state.next("client");
         state.next("client");
         if overflow {
@@ -1229,7 +1285,7 @@ fn test_差分対象再作成_旧世代の送り待ちを新世代snapshotより
     };
     state.register_delta(target, old.clone(), 100).unwrap();
     state.set_delta_snapshot(target, old.clone(), 0).unwrap();
-    state.start("client", target, None).unwrap();
+    state.start("client", target, target, None).unwrap();
     state.next("client");
     state.next("client");
     state
@@ -1285,7 +1341,7 @@ fn test_差分の番号判定_重複を捨て同版を積み古い非更新で�
         .set_delta_snapshot("delta", version.clone(), 0)
         .unwrap();
     state.open("client".into()).unwrap();
-    state.start("client", "delta", None).unwrap();
+    state.start("client", "delta", "delta", None).unwrap();
     // When / Then
     for sequence in [3, 4] {
         assert_eq!(
@@ -1332,7 +1388,7 @@ fn test_対象単位の停止_他の開始途中の状態と差分履歴を保�
     state.register_delta("delta", version.clone(), 100).unwrap();
     state.set_delta_snapshot("delta", version, 0).unwrap();
     state.open("client".into()).unwrap();
-    state.start("client", "delta", None).unwrap();
+    state.start("client", "delta", "delta", None).unwrap();
     state.apply_delta("delta", 1, 1, 1, true).unwrap();
     let version = state.current_version("delta").unwrap();
     state
@@ -1341,11 +1397,12 @@ fn test_対象単位の停止_他の開始途中の状態と差分履歴を保�
     // When
     assert!(state.stop_and_release("client", "delta").unwrap());
     // Then
-    assert!(state.start("client", "starting", None).is_ok());
+    assert!(state.start("client", "starting", "starting", None).is_ok());
     assert!(!state.awaiting_snapshot("client", "delta"));
     assert!(state
         .start(
             "client",
+            "delta",
             "delta",
             Some(&Version {
                 epoch: version.epoch,
@@ -1378,7 +1435,7 @@ async fn assert_unregister_epoch(registered: bool, matching: bool, subscribed: b
                 )?;
                 if subscribed {
                     state.open("client".into())?;
-                    state.start("client", "target", None)?;
+                    state.start("client", "target", "target", None)?;
                 }
             }
             Ok(true)
@@ -1418,4 +1475,136 @@ async fn test_版指定の登録解除_一致して購読者ありならtrueを�
 #[tokio::test]
 async fn test_版指定の登録解除_一致して購読者なしならfalseを返し通知する() {
     assert_unregister_epoch(true, true, false).await;
+}
+
+#[test]
+fn test_購読識別子_全clientで重複を拒み停止と切断後は再利用できる() {
+    // Given
+    let mut state = registry();
+    state.open("other".into()).unwrap();
+    state.start("client", "x", "workspaces", None).unwrap();
+    state.start("client", "y", "workspaces", None).unwrap();
+    // When / Then
+    for client in ["client", "other"] {
+        assert_eq!(
+            state.reserve(client, "x", "providers"),
+            Err(SubscriptionError::AlreadyExists)
+        );
+    }
+    assert_eq!(
+        state.lookup("x"),
+        Some(("client".into(), "workspaces".into()))
+    );
+    assert!(matches!(state.next("client"), Some((id, Event::Snapshot(_, _))) if id == "x"));
+    assert!(matches!(state.next("client"), Some((id, Event::Snapshot(_, _))) if id == "y"));
+    state.stop("client", "x").unwrap();
+    state.next("client");
+    state.publish("workspaces", 1, None).unwrap();
+    assert!(
+        matches!(state.next("client"), Some((id, Event::Change(_, _, value))) if id == "y" && *value == 1)
+    );
+    assert!(!state.stop("missing", "never-started").unwrap());
+    state.start("other", "x", "providers", None).unwrap();
+    state.close("other");
+    state.start("client", "x", "providers", None).unwrap();
+}
+
+#[test]
+fn test_購読識別子_同時の予約は一つだけ受理する() {
+    // Given
+    let runtime = StateSubscriptionRuntime::<u64>::new("boot".into());
+    runtime
+        .update(|state| {
+            state.open("a".into())?;
+            state.open("b".into())?;
+            Ok(false)
+        })
+        .unwrap();
+    let barrier = Arc::new(std::sync::Barrier::new(2));
+    // When
+    let results = std::thread::scope(|scope| {
+        let threads: Vec<_> = ["a", "b"]
+            .into_iter()
+            .map(|client| {
+                let runtime = runtime.clone();
+                let barrier = barrier.clone();
+                scope.spawn(move || {
+                    barrier.wait();
+                    runtime.update(|state| state.reserve(client, "x", "target").map(|_| false))
+                })
+            })
+            .collect();
+        threads
+            .into_iter()
+            .map(|thread| thread.join().unwrap())
+            .collect::<Vec<_>>()
+    });
+    // Then
+    assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
+    assert_eq!(
+        results
+            .iter()
+            .filter(|result| **result == Err(SubscriptionError::AlreadyExists))
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn test_差分配信_同じclientの二つの識別子へ送り片方の停止後も続ける() {
+    // Given
+    let mut state = registry();
+    let version = Version {
+        epoch: "terminal".into(),
+        sequence: 0,
+    };
+    state
+        .register_delta("terminal", version.clone(), 100)
+        .unwrap();
+    state
+        .set_delta_snapshot("terminal", version.clone(), 0)
+        .unwrap();
+    for id in ["x", "y"] {
+        state.start("client", id, "terminal", None).unwrap();
+    }
+    for _ in 0..4 {
+        state.next("client").unwrap();
+    }
+    // When
+    state
+        .publish_delta(
+            "terminal",
+            Version {
+                sequence: 1,
+                ..version.clone()
+            },
+            1,
+            5,
+            true,
+        )
+        .unwrap();
+    // Then
+    for id in ["x", "y"] {
+        assert!(
+            matches!(state.next("client"), Some((delivered, Event::Change(_, Delivery::Delta, value))) if delivered == id && *value == 1)
+        );
+    }
+    state.stop_and_release("client", "x").unwrap();
+    state
+        .publish_delta(
+            "terminal",
+            Version {
+                sequence: 2,
+                ..version
+            },
+            2,
+            5,
+            true,
+        )
+        .unwrap();
+    assert!(
+        matches!(state.next("client"), Some((id, Event::Change(_, Delivery::Delta, value))) if id == "y" && *value == 2)
+    );
+    assert_eq!(state.pending_amount("client", "y"), 0);
+    assert!(state.has_subscribers("terminal"));
 }
