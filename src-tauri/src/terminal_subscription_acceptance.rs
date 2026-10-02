@@ -110,8 +110,6 @@ impl TerminalSubscriptionHarness {
         Ok(TerminalSubscription {
             stream,
             subscriptions: self.terminal_subscriptions.clone(),
-            client,
-            target,
             input_id,
             processed: 0,
             report_units: 0,
@@ -122,8 +120,6 @@ impl TerminalSubscriptionHarness {
 pub struct TerminalSubscription {
     stream: Pin<Box<dyn Stream<Item = StateSubscriptionEvent> + Send>>,
     subscriptions: TerminalSubscriptionUsecase,
-    client: String,
-    target: SubscriptionTarget,
     input_id: String,
     processed: usize,
     report_units: usize,
@@ -168,7 +164,7 @@ impl TerminalSubscription {
                     while self.processed >= self.report_units {
                         self.processed -= self.report_units;
                         self.subscriptions
-                            .terminal_processed(&self.client, &self.target, self.report_units)
+                            .terminal_processed(&self.input_id, self.report_units)
                             .expect("report processed output");
                     }
                 }

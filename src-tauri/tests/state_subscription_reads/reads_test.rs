@@ -6,7 +6,19 @@ use crate::adaptor::gateway::{
 };
 use crate::domain::git_host::{CacheTtl, GitHostError, GitHostProvider, IssueInfo, PrStatus};
 use crate::domain::workflow::FacetKind;
-use crate::test_support::state_subscription::start_read;
+async fn start_read(
+    usecase: &crate::usecase::state_subscription::StateSubscriptionUsecase,
+    client: &str,
+    target: &str,
+    cursor: Option<(&str, u64)>,
+) -> Result<(), crate::usecase::state_subscription::StateReadError> {
+    let target = crate::usecase::state_subscription::SubscriptionTarget::parse(target)
+        .map_err(crate::usecase::state_subscription::StateReadError::from_error)?;
+    usecase
+        .deps()
+        .start_subscription(client, &target, &format!("{client}:{target}"), cursor)
+        .await
+}
 use crate::test_support::state_subscription::StateSubscriptionEvent;
 use crate::usecase::agent_session::*;
 use crate::usecase::git_host::GitHostUsecase;

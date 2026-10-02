@@ -2,9 +2,7 @@ use super::*;
 use crate::infrastructure::state_subscription::Version;
 use crate::test_support::state_subscription::WakeFlag;
 
-use crate::test_support::state_subscription::{
-    same, start, start_read, stop, stop_read, StateReadsFixture,
-};
+use crate::test_support::state_subscription::{same, StateReadsFixture};
 use crate::test_support::state_subscription::{Delivery, Event, StateSubscriptionEvent};
 use crate::usecase::state_subscription::{StateReadError, StateReadFailure, StateSubscriptionRead};
 const BOOKMARK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(10);
@@ -56,14 +54,9 @@ async fn test_購読_配信と定期印と終了時の解放() {
         ))
     ));
     drop(stream);
-    assert_eq!(
-        start(
-            &usecase,
-            "client",
-            &SubscriptionTarget::RepositoryPaths.to_string(),
-            None
-        ),
-        Err(SubscriptionError::StreamEnded)
+    assert!(
+        matches!(start_read(&usecase, "client", &SubscriptionTarget::RepositoryPaths.to_string(), None).await,
+        Err(StateReadError { source: StateReadFailure::Subscription(error), .. }) if *error == SubscriptionError::StreamEnded)
     );
     assert!(usecase.open("client".into()).is_ok());
 }
@@ -89,9 +82,9 @@ async fn test_購読_開始と配信と停止が待機中streamを起こす() {
     assert!(stream.as_mut().poll_next(&mut cx).is_pending());
     flag.0.store(false, Ordering::SeqCst);
 
-    assert_eq!(
-        start(&usecase, "waiting", "missing", None),
-        Err(SubscriptionError::UnknownTarget)
+    assert!(
+        matches!(start_read(&usecase, "waiting", "missing", None).await,
+        Err(StateReadError { source: StateReadFailure::Subscription(error), .. }) if *error == SubscriptionError::UnknownTarget)
     );
     assert_eq!(
         usecase.publisher().publish(
@@ -145,21 +138,23 @@ async fn test_購読_開始と配信と停止が待機中streamを起こす() {
     assert!(stream.as_mut().poll_next(&mut cx).is_pending());
     flag.0.store(false, Ordering::SeqCst);
     assert_eq!(
-        stop(
+        stop_read(
             &usecase,
             "missing",
             &SubscriptionTarget::RepositoryPaths.to_string()
-        ),
-        Err(SubscriptionError::StreamEnded)
+        )
+        .await,
+        Ok(())
     );
     assert!(!flag.0.load(Ordering::SeqCst));
 
     // When
-    stop(
+    stop_read(
         &usecase,
         "waiting",
         &SubscriptionTarget::RepositoryPaths.to_string(),
     )
+    .await
     .unwrap();
 
     // Then
@@ -307,7 +302,7 @@ async fn test_履歴購読_件数違いと別clientが監視を共有し最後�
     start_read(&usecase, "second", &target, None).await.unwrap();
     assert_eq!(files.active.lock().unwrap().len(), 2);
     assert_eq!(usecase.test_worker_count(), 1);
-    stop(&usecase, "first", &target).unwrap();
+    stop_read(&usecase, "first", &target).await.unwrap();
     let expanded = SubscriptionTarget::SessionHistory("/repo".into(), 40).to_string();
     start_read(&usecase, "first", &expanded, None)
         .await
@@ -1069,4 +1064,27 @@ async fn test_review_threads購読_comment操作で再配信し最後の停止�
     assert!(usecase.test_watches().is_empty());
     assert_eq!(usecase.test_worker_count(), 0);
     assert!(files.active.lock().unwrap().is_empty());
+}
+
+async fn start_read(
+    usecase: &StateSubscriptionUsecase,
+    client: &str,
+    raw: &str,
+    cursor: Option<(&str, u64)>,
+) -> Result<(), StateReadError> {
+    let target = SubscriptionTarget::parse(raw).map_err(StateReadError::from_error)?;
+    usecase
+        .deps()
+        .start_subscription(client, &target, &format!("{client}:{raw}"), cursor)
+        .await
+}
+async fn stop_read(
+    usecase: &StateSubscriptionUsecase,
+    client: &str,
+    raw: &str,
+) -> Result<(), SubscriptionError> {
+    usecase
+        .deps()
+        .stop_subscription(&format!("{client}:{raw}"))
+        .await
 }

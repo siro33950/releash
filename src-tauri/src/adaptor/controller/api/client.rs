@@ -270,18 +270,6 @@ impl StateSubscriptionDeps {
         id: &str,
         units: usize,
     ) -> Result<(), crate::usecase::state_subscription::StateReadError> {
-        use crate::usecase::state_subscription::{
-            StateReadError, StateReadFailure, SubscriptionTarget,
-        };
-        if let Some((client, raw)) = self.presenter.lookup(id) {
-            let target = SubscriptionTarget::parse(&raw).map_err(StateReadError::from_error)?;
-            if matches!(target, SubscriptionTarget::Terminal(_)) {
-                return self.terminal.terminal_processed(&client, &target, units);
-            }
-        }
-        Err(StateReadError {
-            source: StateReadFailure::TerminalSubscriptionEnded,
-            message: "Terminal subscription ended".into(),
-        })
+        self.terminal.terminal_processed(id, units)
     }
 }

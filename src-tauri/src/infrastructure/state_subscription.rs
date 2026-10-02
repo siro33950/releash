@@ -430,22 +430,6 @@ impl<T: Clone + PartialEq> Subscriptions<T> {
         false
     }
 
-    #[cfg(test)]
-    pub fn start(
-        &mut self,
-        client: &str,
-        id: &str,
-        target: &str,
-        version: Option<&Version>,
-    ) -> Result<(), SubscriptionError> {
-        self.reserve(client, id, target)?;
-        if let Err(error) = self.activate(id, version) {
-            let _ = self.stop(client, id);
-            return Err(error);
-        }
-        Ok(())
-    }
-
     pub fn activate(
         &mut self,
         id: &str,
@@ -548,16 +532,6 @@ impl<T: Clone + PartialEq> Subscriptions<T> {
         Ok(true)
     }
 
-    #[cfg(test)]
-    pub fn is_subscribed(&self, client: &str, target: &str) -> bool {
-        self.clients.get(client).is_some_and(|client| {
-            client
-                .subscriptions
-                .values()
-                .any(|subscription| subscription.target == target)
-        })
-    }
-
     pub fn has_subscribers(&self, target: &str) -> bool {
         self.clients.values().any(|client| {
             client
@@ -631,25 +605,6 @@ impl<T: Clone + PartialEq> Subscriptions<T> {
         self.publish_delta(target, version, delta, units, advances_version)
             .map_err(DeltaPublicationError::Publication)?;
         Ok(DeltaPublication::Published)
-    }
-
-    #[cfg(test)]
-    pub fn stop_and_release(&mut self, client: &str, id: &str) -> Result<bool, SubscriptionError> {
-        let target = self.lookup(id).map(|(_, target)| target);
-        let stopped = self.stop(client, id)?;
-        let mut changed = false;
-        if let Some(target) = target.filter(|target| !self.has_subscribers(target)) {
-            if let Some(value) = self.targets.get_mut(&target) {
-                changed = value.snapshot.is_some()
-                    || (value.delivery == Delivery::Full && !value.history.is_empty());
-                value.snapshot = None;
-                if value.delivery == Delivery::Full {
-                    value.history.clear();
-                    value.history_units.clear();
-                }
-            }
-        }
-        Ok(stopped || changed)
     }
 
     pub fn publish_delta(

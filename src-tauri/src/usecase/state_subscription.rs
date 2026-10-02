@@ -40,6 +40,24 @@ pub(crate) trait StateSubscriptionDelivery: Send + Sync {
     ) -> Result<(), SubscriptionError>;
 }
 
+pub(crate) fn stop_delivery(
+    delivery: &dyn StateSubscriptionDelivery,
+    stop: impl FnOnce() -> Result<(), SubscriptionError>,
+    finish: impl FnOnce(
+        &dyn Fn(&std::collections::HashSet<SubscriptionTarget>) -> Result<(), SubscriptionError>,
+    ) -> Result<(), SubscriptionError>,
+) -> Result<(), SubscriptionError> {
+    if !delivery.claim() {
+        return Ok(());
+    }
+    let result = stop();
+    finish(&|active| delivery.finish(active))?;
+    match result {
+        Err(SubscriptionError::StreamEnded) => Ok(()),
+        other => other,
+    }
+}
+
 pub(crate) type StateSubscriptionOutputRef = Arc<dyn StateSubscriptionOutput>;
 
 #[derive(Clone)]
@@ -174,25 +192,11 @@ impl StateSubscriptionUsecase {
         delivery: &dyn StateSubscriptionDelivery,
     ) -> Result<(), SubscriptionError> {
         let _start = self.starts.lock().await;
-        if !delivery.claim() {
-            return Ok(());
-        }
-        let result = self.stop(client, target);
-        self.with_active_targets(|active| delivery.finish(active))?;
-        match result {
-            Err(SubscriptionError::StreamEnded) => Ok(()),
-            other => other,
-        }
-    }
-
-    #[cfg(test)]
-    pub async fn start_read(
-        &self,
-        client: &str,
-        target: &SubscriptionTarget,
-    ) -> Result<(), StateReadError> {
-        let _start = self.starts.lock().await;
-        self.start_read_locked(client, target).await
+        stop_delivery(
+            delivery,
+            || self.stop(client, target),
+            |finish| self.with_active_targets(finish),
+        )
     }
 
     async fn start_read_locked(
@@ -458,21 +462,6 @@ impl StateSubscriptionUsecase {
             .ok_or(SubscriptionError::StreamEnded)?;
         *subscriptions.entry(target.clone()).or_default() += 1;
         Ok(())
-    }
-
-    #[cfg(test)]
-    pub(crate) async fn lock_starts(&self) -> tokio::sync::MutexGuard<'_, ()> {
-        self.starts.lock().await
-    }
-
-    #[cfg(test)]
-    pub async fn stop_read(
-        &self,
-        client: &str,
-        target: &SubscriptionTarget,
-    ) -> Result<(), SubscriptionError> {
-        let _start = self.starts.lock().await;
-        self.stop(client, target)
     }
 
     pub fn stop(&self, client: &str, target: &SubscriptionTarget) -> Result<(), SubscriptionError> {

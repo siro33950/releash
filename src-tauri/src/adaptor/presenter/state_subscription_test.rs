@@ -1,5 +1,6 @@
 use super::*;
 use crate::test_support::state_subscription::WakeFlag;
+use crate::usecase::state_subscription::StateSubscriptionDelivery;
 use crate::usecase::state_subscription::StateSubscriptionUsecase;
 use futures_util::StreamExt;
 
@@ -79,8 +80,10 @@ async fn test_購読開始失敗_対象削除を待機中streamへ通知する()
 
     // When
     assert_eq!(
-        presenter.reserve("absent", "subscription", &target),
-        Err(SubscriptionError::StreamEnded)
+        presenter
+            .reserve_delivery("absent", "subscription", &target, None)
+            .err(),
+        Some(SubscriptionError::StreamEnded)
     );
 
     // Then
@@ -122,10 +125,10 @@ async fn test_購読再開始_状態不変なら通知せず初回開始だけ�
             StateValue::RepositoryPaths(vec![]),
         )
         .unwrap();
-    presenter
-        .reserve("client", "subscription", &target)
+    let delivery = presenter
+        .reserve_delivery("client", "subscription", &target, None)
         .unwrap();
-    presenter.start("subscription", None).unwrap();
+    delivery.start().unwrap();
     assert!(flag.0.swap(false, Ordering::SeqCst));
     assert!(matches!(
         stream.next().await,
@@ -142,8 +145,10 @@ async fn test_購読再開始_状態不変なら通知せず初回開始だけ�
     flag.0.store(false, Ordering::SeqCst);
 
     assert_eq!(
-        presenter.reserve("client", "subscription", &target),
-        Err(SubscriptionError::AlreadyExists)
+        presenter
+            .reserve_delivery("client", "subscription", &target, None)
+            .err(),
+        Some(SubscriptionError::AlreadyExists)
     );
     assert!(!flag.0.load(Ordering::SeqCst));
 }
@@ -168,14 +173,15 @@ async fn test_購読失敗_つなぎ直した購読へ保持済みのfailure事�
             .unwrap(),
     );
     initial.next().await;
-    presenter
-        .reserve(
+    let delivery = presenter
+        .reserve_delivery(
             "initial",
             "initial",
             &SubscriptionTarget::RepositoryPaths.to_string(),
+            None,
         )
         .unwrap();
-    presenter.start("initial", None).unwrap();
+    delivery.start().unwrap();
     initial.next().await;
     drop(initial);
     // When
@@ -185,14 +191,15 @@ async fn test_購読失敗_つなぎ直した購読へ保持済みのfailure事�
             .unwrap(),
     );
     replay.next().await;
-    presenter
-        .reserve(
+    let delivery = presenter
+        .reserve_delivery(
             "replay",
             "replay",
             &SubscriptionTarget::RepositoryPaths.to_string(),
+            None,
         )
         .unwrap();
-    presenter.start("replay", None).unwrap();
+    delivery.start().unwrap();
     let event = replay.next().await.unwrap();
     let event = crate::adaptor::presenter::state_subscription_wire::event(event).unwrap();
     let wire: crate::adaptor::presenter::client::StateSubscriptionEvent =

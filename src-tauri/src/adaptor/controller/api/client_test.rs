@@ -782,14 +782,17 @@ async fn test_状態購読_既定期限後もbookmarkが届く() {
     assert!(response.status().is_success());
     let mut body = response.into_body().into_data_stream();
     assert!(body.next().await.unwrap().is_ok());
-    crate::test_support::state_subscription::start_read(
-        &subscriptions,
-        "deadline-test",
-        "repository-paths",
-        None,
-    )
-    .await
-    .unwrap();
+    subscriptions
+        .deps()
+        .start_subscription(
+            "deadline-test",
+            &crate::usecase::state_subscription::SubscriptionTarget::parse("repository-paths")
+                .unwrap(),
+            &format!("{}:{}", "deadline-test", "repository-paths"),
+            None,
+        )
+        .await
+        .unwrap();
     assert!(body.next().await.unwrap().is_ok());
     // When / Then
     for _ in 0..13 {
@@ -1858,14 +1861,18 @@ async fn test_notion購読_初回開始の中断で新規要求を残さない()
     let (app, subscriptions) = notion_cancellation_fixture();
     let _stream = subscriptions.open_stream("client".into()).unwrap();
     let blocked = SubscriptionTarget::BranchBase("/blocked".into(), "main".into());
-    let mut blocker = Box::pin(subscriptions.usecase.start_read("client", &blocked));
+    let mut blocker =
+        Box::pin(subscriptions.start_subscription("client", &blocked, "blocked", None));
     assert!(futures_util::poll!(&mut blocker).is_pending());
     let mut call = Box::pin(app.oneshot(unary_request("StartStateSubscription", NOTION_REQUEST_A)));
     // When
     assert!(futures_util::poll!(&mut call).is_pending());
     drop(call);
     drop(blocker);
-    let registration = subscriptions.presenter.lookup("notion-a");
+    let registration = subscriptions
+        .presenter
+        .delivery("notion-a")
+        .map(|(client, target, _)| (client, target));
     // Then
     assert!(registration.is_none());
     assert_eq!(subscriptions.usecase.test_worker_count(), 0);
@@ -1883,7 +1890,8 @@ async fn test_notion購読_別名開始の期限切れ後に既存要求を停�
         .await
         .unwrap();
     let blocked = SubscriptionTarget::BranchBase("/blocked".into(), "main".into());
-    let mut blocker = Box::pin(subscriptions.usecase.start_read("client", &blocked));
+    let mut blocker =
+        Box::pin(subscriptions.start_subscription("client", &blocked, "blocked", None));
     assert!(futures_util::poll!(&mut blocker).is_pending());
     let mut request = unary_request("StartStateSubscription", NOTION_REQUEST_B);
     request
@@ -1928,7 +1936,8 @@ async fn test_notion購読_重複開始の中断で既存要求を消さない()
         .await
         .unwrap();
     let blocked = SubscriptionTarget::BranchBase("/blocked".into(), "main".into());
-    let mut blocker = Box::pin(subscriptions.usecase.start_read("client", &blocked));
+    let mut blocker =
+        Box::pin(subscriptions.start_subscription("client", &blocked, "blocked", None));
     assert!(futures_util::poll!(&mut blocker).is_pending());
     let call = Box::pin(
         app.clone()
@@ -1966,7 +1975,8 @@ async fn test_notion購読_最後の停止の中断で要求と購読を保持�
         .await
         .unwrap();
     let blocked = SubscriptionTarget::BranchBase("/blocked".into(), "main".into());
-    let mut blocker = Box::pin(subscriptions.usecase.start_read("client", &blocked));
+    let mut blocker =
+        Box::pin(subscriptions.start_subscription("client", &blocked, "blocked", None));
     assert!(futures_util::poll!(&mut blocker).is_pending());
     let target = SubscriptionTarget::from_parts(
         "notion-tasks",
@@ -1980,7 +1990,10 @@ async fn test_notion購読_最後の停止の中断で要求と購読を保持�
     // When
     assert!(futures_util::poll!(&mut call).is_pending());
     drop(call);
-    let registration = subscriptions.presenter.lookup("notion-a");
+    let registration = subscriptions
+        .presenter
+        .delivery("notion-a")
+        .map(|(client, target, _)| (client, target));
     let workers = subscriptions.usecase.test_worker_count();
     drop(blocker);
     let stopped = app
@@ -2098,6 +2111,7 @@ async fn test_購読識別子_入口で形と全clientの重複を検査し未�
 
 #[tokio::test]
 async fn test_購読停止_待機中に再利用された識別子の新しい登録を解除しない() {
+    // Given
     use crate::usecase::state_subscription::SubscriptionTarget;
     use futures_util::{poll, StreamExt};
     let (_app, subscriptions) = notion_cancellation_fixture();
@@ -2110,39 +2124,39 @@ async fn test_購読停止_待機中に再利用された識別子の新しい�
         .start_subscription("first", &target, "x", None)
         .await
         .unwrap();
-    let guard = subscriptions.usecase.lock_starts().await;
+    let blocked = SubscriptionTarget::BranchBase("/blocked".into(), "main".into());
+    let mut blocker =
+        Box::pin(subscriptions.start_subscription("second", &blocked, "blocked", None));
+    assert!(poll!(&mut blocker).is_pending());
+    // When
     let stop = subscriptions.stop_subscription("x");
     tokio::pin!(stop);
     assert!(poll!(&mut stop).is_pending());
     drop(first);
-    assert!(subscriptions.presenter.lookup("x").is_none());
-    subscriptions
+    assert!(subscriptions
         .presenter
-        .reserve("second", "x", &target.to_string())
+        .delivery("x")
+        .map(|(client, target, _)| (client, target))
+        .is_none());
+    let delivery = subscriptions
+        .presenter
+        .reserve_delivery("second", "x", &target.to_string(), None)
         .unwrap();
-    subscriptions.usecase.start("second", &target).unwrap();
-    subscriptions
-        .usecase
-        .publisher()
-        .publish_initial(
-            &target,
-            crate::usecase::state_subscription::StateValue::NotionTasks(
-                crate::usecase::fetched::Fetched {
-                    value: Some(crate::domain::notion::NotionTaskPage {
-                        tasks: vec![],
-                        has_more: false,
-                        next_cursor: None,
-                    }),
-                    error: None,
-                },
-            ),
-        )
-        .unwrap();
-    subscriptions.presenter.start("x", None).unwrap();
-    drop(guard);
-    stop.await.unwrap();
+    drop(blocker);
+    let (stopped, started) = tokio::join!(
+        stop,
+        subscriptions
+            .usecase
+            .start_subscription("second", &target, &delivery),
+    );
+    stopped.unwrap();
+    started.unwrap();
+    // Then
     assert_eq!(
-        subscriptions.presenter.lookup("x"),
+        subscriptions
+            .presenter
+            .delivery("x")
+            .map(|(client, target, _)| (client, target)),
         Some(("second".into(), target.to_string()))
     );
     assert!(subscriptions.usecase.active_targets().contains(&target));
@@ -2150,6 +2164,7 @@ async fn test_購読停止_待機中に再利用された識別子の新しい�
 
 #[tokio::test]
 async fn test_購読停止_解放後の同じclientの再登録へ古い後始末が作用しない() {
+    // Given
     use crate::usecase::state_subscription::{StateSubscriptionDelivery, SubscriptionTarget};
     let (_app, subscriptions) = notion_cancellation_fixture();
     let _stream = subscriptions.open_stream("client".into()).unwrap();
@@ -2164,17 +2179,61 @@ async fn test_購読停止_解放後の同じclientの再登録へ古い後始�
         .start_subscription("client", &target, "x", None)
         .await
         .unwrap();
+    // When
     old.finish(&subscriptions.usecase.active_targets()).unwrap();
     subscriptions
         .usecase
         .stop_subscription("client", &target, &old)
         .await
         .unwrap();
+    // Then
     assert_eq!(
-        subscriptions.presenter.lookup("x"),
+        subscriptions
+            .presenter
+            .delivery("x")
+            .map(|(client, target, _)| (client, target)),
         Some(("client".into(), target.to_string()))
     );
     assert!(subscriptions.usecase.active_targets().contains(&target));
     subscriptions.stop_subscription("x").await.unwrap();
     assert!(subscriptions.usecase.active_targets().is_empty());
+}
+
+#[tokio::test]
+async fn test_terminal購読識別子_入口で空と超過を拒み上限と空白を受け付ける() {
+    use tower::ServiceExt;
+    // Given
+    let (terminal, _, _, _) =
+        crate::test_support::state_subscription::terminal_application_fixture();
+    let subscriptions =
+        crate::test_support::state_subscription::test_subscriptions().with_terminal(terminal);
+    let deps = subscriptions.deps();
+    let _stream = deps.stream("client".into()).unwrap();
+    let app = router(Some(
+        crate::test_support::client_api_deps(Arc::new(dispatch()), None)
+            .with_state_subscriptions(deps),
+    ));
+    // When / Then
+    for id in [String::new(), "x".repeat(129), "あ".repeat(43)] {
+        let body = serde_json::json!({"clientId":"client", "subscriptionId":id,"target":"terminal","args":["/repo"]}).to_string();
+        let response = app
+            .clone()
+            .oneshot(unary_request("StartStateSubscription", &body))
+            .await
+            .unwrap();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let error: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(error["code"], "invalid_argument");
+    }
+    for id in ["x".repeat(128), "あ".repeat(42), " ".into()] {
+        let body = serde_json::json!({"clientId":"client", "subscriptionId":id,"target":"terminal","args":["/repo"]}).to_string();
+        let response = app
+            .clone()
+            .oneshot(unary_request("StartStateSubscription", &body))
+            .await
+            .unwrap();
+        assert!(response.status().is_success());
+    }
 }

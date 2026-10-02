@@ -176,31 +176,6 @@ impl StateSubscriptionPresenter {
         })
     }
 
-    #[cfg(test)]
-    pub(crate) fn reserve(
-        &self,
-        client: &str,
-        id: &str,
-        target: &str,
-    ) -> Result<(), SubscriptionError> {
-        self.runtime
-            .mutate(|state| {
-                let result = state.reserve(client, id, target);
-                let mut changed = false;
-                if result.is_err() {
-                    let existed = state.registered(target);
-                    let _ = state.ensure_active(target);
-                    changed = existed && !state.registered(target);
-                }
-                (result, changed)
-            })
-            .map_err(Into::into)
-    }
-
-    pub(crate) fn lookup(&self, id: &str) -> Option<(String, String)> {
-        self.runtime.mutate(|state| (state.lookup(id), false))
-    }
-
     fn update(
         &self,
         update: impl FnOnce(
@@ -211,31 +186,6 @@ impl StateSubscriptionPresenter {
         >,
     ) -> Result<(), SubscriptionError> {
         self.runtime.update(update).map_err(Into::into)
-    }
-
-    #[cfg(test)]
-    pub(crate) fn start(
-        &self,
-        id: &str,
-        cursor: Option<(&str, u64)>,
-    ) -> Result<(), SubscriptionError> {
-        let version = cursor_version(cursor);
-        self.update(|state| state.activate(id, version.as_ref()).map(|_| true))
-    }
-
-    #[cfg(test)]
-    pub(crate) fn stop(
-        &self,
-        client: &str,
-        target: &str,
-        active: &std::collections::HashSet<SubscriptionTarget>,
-    ) -> Result<(), SubscriptionError> {
-        let protected = protected_targets(active);
-        self.update(|state| {
-            let stopped = state.stop(client, target)?;
-            Ok(state.release_inactive_snapshots_except(&protected) || stopped)
-        })?;
-        Ok(())
     }
 
     pub(crate) fn open(&self, id: String) -> Result<(), SubscriptionError> {
