@@ -163,3 +163,26 @@ fn test_session失敗_全変種から技術的な失敗だけを参照する() {
         }
     }
 }
+
+#[tokio::test]
+async fn test_workflow起動保持_期限が来てもactivating記録を消さない() {
+    // Given
+    let (_sender, receiver) = tokio::sync::watch::channel(false);
+    let launches = std::sync::Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::from([
+        (
+            "session".to_string(),
+            super::WorkflowLaunchActivation::Activating(receiver),
+        ),
+    ])));
+    let request = super::LaunchRetention {
+        launches: launches.clone(),
+        session: "session".to_string(),
+    };
+    // When
+    request.expire().await;
+    // Then
+    assert!(matches!(
+        launches.lock().await.get("session"),
+        Some(super::WorkflowLaunchActivation::Activating(_))
+    ));
+}

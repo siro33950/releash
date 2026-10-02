@@ -1,7 +1,7 @@
 use super::*;
 use crate::usecase::repository_state::runtime::{
     RepositoryStateInvalidationReceiver, RepositoryStateInvalidationSender,
-    RepositoryStateWorkerRuntime, ScanWorker,
+    RepositoryStateWorkerRuntime,
 };
 use crate::usecase::repository_state::scanner::RepositoryScanner;
 use crate::usecase::repository_state::snapshot::RepositorySnapshotParts;
@@ -40,10 +40,6 @@ impl RepositoryStateWorkerRuntime for InertRuntime {
     ) {
         (Box::new(InertSender), Box::new(InertReceiver))
     }
-
-    fn spawn_worker(&self, _worker: ScanWorker) {}
-
-    async fn sleep(&self, _duration: Duration) {}
 
     async fn scan(
         &self,
@@ -125,7 +121,7 @@ fn state_at(
         Arc::new(EmptyScanner),
         subscriptions,
         Arc::new(InertRuntime),
-        Duration::ZERO,
+        tokio::sync::mpsc::unbounded_channel().0,
     )
 }
 
@@ -427,23 +423,19 @@ async fn test_repository走査の期限切れ_旧走査を回収して同じ対�
     // When
     super::super::super::shared::background_worker::background_worker_tests::assert_expired_releases(Box::pin(async move {
         let _scan = attempt_lock.lock().await;
-        crate::adaptor::controller::repository_scan::RepositoryScanWorkerRuntime::new(crate::usecase::retry::test_retrying()).scan(attempt_scanner, attempt_path).await.map_err(|error| crate::usecase::failure::WorkFailure::from_error(&error))?;
+        crate::adaptor::controller::repository_scan::RepositoryScanWorkerRuntime::new().scan(attempt_scanner, attempt_path).await.map_err(|error| crate::usecase::failure::WorkFailure::from_error(&error))?;
         Ok(())
     })).await;
     // Then
     assert!(scan_lock.try_lock().is_ok());
-    crate::adaptor::controller::repository_scan::RepositoryScanWorkerRuntime::new(
-        crate::usecase::retry::test_retrying(),
-    )
-    .scan(scanner.clone(), path)
-    .await
-    .unwrap();
+    crate::adaptor::controller::repository_scan::RepositoryScanWorkerRuntime::new()
+        .scan(scanner.clone(), path)
+        .await
+        .unwrap();
     let (other, repo) = crate::test_support::git::create_test_repo();
     crate::test_support::git::create_initial_commit(&repo);
-    crate::adaptor::controller::repository_scan::RepositoryScanWorkerRuntime::new(
-        crate::usecase::retry::test_retrying(),
-    )
-    .scan(scanner, other.path().to_str().unwrap().into())
-    .await
-    .unwrap();
+    crate::adaptor::controller::repository_scan::RepositoryScanWorkerRuntime::new()
+        .scan(scanner, other.path().to_str().unwrap().into())
+        .await
+        .unwrap();
 }

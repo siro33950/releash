@@ -16,25 +16,25 @@ pub(crate) async fn run_worker(
     retrying: Arc<Retrying>,
     worker: ScanWorker,
     runtime: Arc<dyn RepositoryStateWorkerRuntime>,
+    delay: crate::infrastructure::timer::Delay,
 ) {
     let ScanWorker {
         state,
         scanner,
         mut receiver,
-        debounce,
     } = worker;
     let rx = receiver.as_mut();
     while let Some(first_reason) = rx.recv().await {
-        if state.is_shutdown() || first_reason.shutdown {
+        if !state.should_scan(&first_reason) {
             break;
         }
-        let mut reason =
-            collect_debounced_reasons(first_reason, rx, runtime.as_ref(), debounce).await;
+        let mut reason = collect_debounced_reasons(first_reason, rx, &delay).await;
         loop {
-            if state.is_shutdown() || reason.shutdown {
+            use crate::usecase::repository_state::worktree::ScanContinuation;
+            if !state.should_scan(&reason) {
                 return;
             }
-            let start_generation = state.requested_generation();
+            let generation = state.requested_generation();
             let status = if reason.files {
                 Some(
                     retrying
@@ -48,28 +48,26 @@ pub(crate) async fn run_worker(
             } else {
                 None
             };
-            if reason.refs {
-                state
-                    .scan_worktrees_once(scanner.clone(), runtime.as_ref())
-                    .await;
-            }
-            if state.is_shutdown() {
-                return;
-            }
-            if state.requested_generation() != start_generation {
-                reason.merge(collect_pending_reasons(rx));
-                if debounce > Duration::ZERO {
-                    reason =
-                        collect_debounced_reasons(reason, rx, runtime.as_ref(), debounce).await;
-                }
-                continue;
-            }
-            match state.finish_scan(status, reason) {
-                Some(pending) => {
+            match state
+                .finish_worker_scan(
+                    generation,
+                    reason,
+                    status,
+                    scanner.clone(),
+                    runtime.as_ref(),
+                )
+                .await
+            {
+                ScanContinuation::Stop => return,
+                ScanContinuation::Finished => break,
+                ScanContinuation::Pending(mut pending) => {
+                    pending.merge(collect_pending_reasons(rx));
                     reason = pending;
-                    reason.merge(collect_pending_reasons(rx));
                 }
-                None => break,
+                ScanContinuation::Debounce(mut pending) => {
+                    pending.merge(collect_pending_reasons(rx));
+                    reason = collect_debounced_reasons(pending, rx, &delay).await;
+                }
             }
         }
     }
@@ -78,12 +76,9 @@ pub(crate) async fn run_worker(
 async fn collect_debounced_reasons(
     mut reason: InvalidateReason,
     rx: &mut dyn RepositoryStateInvalidationReceiver,
-    runtime: &dyn RepositoryStateWorkerRuntime,
-    debounce: Duration,
+    delay: &crate::infrastructure::timer::Delay,
 ) -> InvalidateReason {
-    if debounce > Duration::ZERO {
-        runtime.sleep(debounce).await;
-    }
+    delay().await;
     reason.merge(collect_pending_reasons(rx));
     reason
 }
@@ -96,13 +91,32 @@ fn collect_pending_reasons(rx: &mut dyn RepositoryStateInvalidationReceiver) -> 
     reason
 }
 
-pub struct RepositoryScanWorkerRuntime {
+pub(crate) const DEBOUNCE: Duration = Duration::from_millis(300);
+
+pub(crate) fn start(
     retrying: Arc<Retrying>,
+    runtime: Arc<dyn RepositoryStateWorkerRuntime>,
+    delay: crate::infrastructure::timer::Delay,
+) -> tokio::sync::mpsc::UnboundedSender<ScanWorker> {
+    let (sender, mut requests) = tokio::sync::mpsc::unbounded_channel();
+    tokio::spawn(async move {
+        while let Some(worker) = requests.recv().await {
+            tokio::spawn(run_worker(
+                retrying.clone(),
+                worker,
+                runtime.clone(),
+                delay.clone(),
+            ));
+        }
+    });
+    sender
 }
 
+pub struct RepositoryScanWorkerRuntime;
+
 impl RepositoryScanWorkerRuntime {
-    pub fn new(retrying: Arc<Retrying>) -> Self {
-        Self { retrying }
+    pub fn new() -> Self {
+        Self
     }
 }
 
@@ -140,17 +154,6 @@ impl RepositoryStateWorkerRuntime for RepositoryScanWorkerRuntime {
             Box::new(TokioInvalidationSender(tx)),
             Box::new(TokioInvalidationReceiver(rx)),
         )
-    }
-
-    fn spawn_worker(&self, worker: ScanWorker) {
-        let runtime: Arc<dyn RepositoryStateWorkerRuntime> = Arc::new(Self {
-            retrying: self.retrying.clone(),
-        });
-        tokio::spawn(run_worker(self.retrying.clone(), worker, runtime));
-    }
-
-    async fn sleep(&self, duration: Duration) {
-        tokio::time::sleep(duration).await;
     }
 
     async fn scan(

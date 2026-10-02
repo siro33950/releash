@@ -221,8 +221,6 @@ type StandaloneLaunchOutcome = Result<String, AgentSessionLaunchUsecaseError>;
 type SharedStandaloneLaunch = Shared<BoxFuture<'static, StandaloneLaunchOutcome>>;
 
 const COMPLETED_STANDALONE_LAUNCH_CAPACITY: usize = 128;
-const ACTIVATED_WORKFLOW_LAUNCH_RETENTION: std::time::Duration =
-    std::time::Duration::from_secs(300);
 
 fn issue_agent_session_id(
     caller_request_id: &str,
@@ -295,6 +293,7 @@ pub(crate) struct AgentSessionLaunchUsecase {
     standalone_requests: Mutex<StandaloneLaunchRequestRegistry>,
     pending_workflow_launches: Mutex<HashMap<String, PreparedAgentSessionLaunch>>,
     activated_workflow_launches: Arc<Mutex<HashMap<String, WorkflowLaunchActivation>>>,
+    activated: tokio::sync::mpsc::UnboundedSender<LaunchRetention>,
     hook_health_tasks: std::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>,
 }
 
@@ -319,7 +318,25 @@ struct DurableAgentSessionLaunch {
     executable: ResolvedProviderExecutable,
 }
 
+pub(crate) struct LaunchRetention {
+    launches: Arc<Mutex<HashMap<String, WorkflowLaunchActivation>>>,
+    session: String,
+}
+
+impl LaunchRetention {
+    pub(crate) async fn expire(self) {
+        let mut launches = self.launches.lock().await;
+        if matches!(
+            launches.get(&self.session),
+            Some(WorkflowLaunchActivation::Activated(_))
+        ) {
+            launches.remove(&self.session);
+        }
+    }
+}
+
 impl AgentSessionLaunchUsecase {
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         performance: Arc<dyn crate::usecase::telemetry::PerformanceOutput>,
         sessions: Arc<AgentSessionUsecase>,
@@ -328,6 +345,7 @@ impl AgentSessionLaunchUsecase {
         history: Arc<dyn AgentSessionHistoryGateway>,
         hook_health: Arc<ProviderHookHealthUsecase>,
         execution_trees: Arc<dyn AgentSessionLaunchExecutionTrees>,
+        retention: tokio::sync::mpsc::UnboundedSender<LaunchRetention>,
     ) -> Self {
         let ProviderAgentRuntime {
             availability,
@@ -335,6 +353,7 @@ impl AgentSessionLaunchUsecase {
             terminal,
         } = provider_runtime;
         Self {
+            activated: retention,
             performance,
             sessions,
             lifecycle,
@@ -547,13 +566,19 @@ impl AgentSessionLaunchUsecase {
             WorkflowLaunchActivation::Activated(Box::new(activated.clone())),
         );
         let _ = completion_tx.send(true);
-        let launches = Arc::clone(&self.activated_workflow_launches);
-        let agent_session_id = agent_session_id.to_string();
-        tokio::spawn(async move {
-            tokio::time::sleep(ACTIVATED_WORKFLOW_LAUNCH_RETENTION).await;
-            launches.lock().await.remove(&agent_session_id);
+        let _ = self.activated.send(LaunchRetention {
+            launches: self.activated_workflow_launches.clone(),
+            session: agent_session_id.to_string(),
         });
         Ok(activated)
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn test_has_activated_launch(&self, session: &str) -> bool {
+        matches!(
+            self.activated_workflow_launches.lock().await.get(session),
+            Some(WorkflowLaunchActivation::Activated(_))
+        )
     }
 
     async fn prepare_new_session(

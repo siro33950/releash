@@ -36,7 +36,14 @@ pub(crate) struct TerminalSubscriptionUsecase {
     terminal: Option<Arc<TerminalSurfaceApplication>>,
     clients: Arc<Mutex<HashMap<String, HashMap<SubscriptionTarget, String>>>>,
     terminal_resets: Arc<Mutex<HashMap<SubscriptionTarget, HashSet<String>>>>,
-    workers: Arc<Mutex<HashMap<SubscriptionTarget, tokio::task::JoinHandle<()>>>>,
+    workers: Arc<Mutex<HashMap<SubscriptionTarget, tokio::sync::oneshot::Sender<()>>>>,
+    refresh_requests: tokio::sync::mpsc::UnboundedSender<TerminalRefresh>,
+}
+
+pub(crate) struct TerminalRefresh {
+    pub usecase: TerminalSubscriptionUsecase,
+    pub target: SubscriptionTarget,
+    pub cancelled: tokio::sync::oneshot::Receiver<()>,
 }
 
 const TERMINAL_INPUT_ID_MAX_BYTES: usize = 128;
@@ -52,8 +59,10 @@ impl TerminalSubscriptionUsecase {
     pub(crate) fn new(
         publisher: Arc<dyn TerminalSubscriptionOutput>,
         terminal: Option<Arc<TerminalSurfaceApplication>>,
+        refresh_requests: tokio::sync::mpsc::UnboundedSender<TerminalRefresh>,
     ) -> Self {
         Self {
+            refresh_requests,
             publisher,
             terminal,
             clients: Default::default(),
@@ -93,14 +102,9 @@ impl TerminalSubscriptionUsecase {
         self.terminal_resets
             .lock()
             .retain(|target, _| is_subscribed(target));
-        self.workers.lock().retain(|target, task| {
-            if is_subscribed(target) {
-                true
-            } else {
-                task.abort();
-                false
-            }
-        });
+        self.workers
+            .lock()
+            .retain(|target, _cancel| is_subscribed(target));
     }
 
     fn unsubscribe(&self, client: &str, target: &SubscriptionTarget, input: &str) {
@@ -292,33 +296,49 @@ impl TerminalSubscriptionUsecase {
             .or_default()
             .extend(clients);
         let mut workers = self.workers.lock();
-        if workers.get(&target).is_some_and(|task| !task.is_finished()) {
+        if workers
+            .get(&target)
+            .is_some_and(|cancel| !cancel.is_closed())
+        {
             return;
         }
-        let usecase = self.clone();
-        workers.insert(
-            target.clone(),
-            tokio::spawn(async move {
-                loop {
-                    let result = usecase.refresh_terminal(&target).await;
-                    let failed = result.is_err();
-                    if let Err(error) = result {
-                        if let Err(error) = usecase.publisher.publish_failure(&target, error) {
-                            log::error!("Terminal failure publication failed: {error}");
-                        }
-                    }
-                    let resets = usecase.terminal_resets.lock();
-                    if failed
-                        || resets
-                            .get(&target)
-                            .is_none_or(std::collections::HashSet::is_empty)
-                    {
-                        usecase.workers.lock().remove(&target);
-                        break;
-                    }
-                }
-            }),
-        );
+        let (cancel, cancelled) = tokio::sync::oneshot::channel();
+        workers.insert(target.clone(), cancel);
+        if self
+            .refresh_requests
+            .send(TerminalRefresh {
+                usecase: self.clone(),
+                target: target.clone(),
+                cancelled,
+            })
+            .is_err()
+        {
+            workers.remove(&target);
+            drop(workers);
+            if let Err(error) = self.publisher.publish_failure(
+                &target,
+                StateReadError::from_error(SubscriptionError::StreamEnded),
+            ) {
+                log::error!("Terminal failure publication failed: {error}");
+            }
+        }
+    }
+
+    pub(crate) async fn refresh_terminal_once(&self, target: &SubscriptionTarget) -> bool {
+        let result = self.refresh_terminal(target).await;
+        let failed = result.is_err();
+        if let Err(error) = result {
+            if let Err(error) = self.publisher.publish_failure(target, error) {
+                log::error!("Terminal failure publication failed: {error}");
+            }
+        }
+        let resets = self.terminal_resets.lock();
+        if failed || resets.get(target).is_none_or(HashSet::is_empty) {
+            self.workers.lock().remove(target);
+            false
+        } else {
+            true
+        }
     }
 
     #[cfg(test)]
@@ -356,4 +376,4 @@ impl TerminalSubscriptionUsecase {
 
 #[cfg(test)]
 #[path = "subscription_test.rs"]
-mod subscription_tests;
+pub(crate) mod subscription_tests;

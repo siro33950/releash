@@ -1243,7 +1243,9 @@ pub(crate) mod tests {
                 Arc::new(
                     crate::usecase::repository_state::runtime::tests_support::IdentityWorktreePathNormalizer,
                 ),
-            ),
+
+crate::test_support::state_subscription::repository_driver(),
+),
         );
         let review_usecase = Arc::new(crate::usecase::review_usecase::ReviewUsecase::new(
             repository_state.clone(),

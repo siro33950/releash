@@ -59,7 +59,7 @@ async fn test_購読開始失敗_対象削除を待機中streamへ通知する()
         .unwrap();
     let usecase = StateSubscriptionUsecase::new_with_output(
         presenter.clone(),
-        Arc::new(crate::adaptor::gateway::subscription_timer::TokioSubscriptionTimer),
+        crate::test_support::state_subscription::read_driver(),
     );
     let mut stream = Box::pin(
         crate::test_support::state_subscription::deps(usecase, presenter.clone())
@@ -97,7 +97,7 @@ async fn test_購読再開始_状態不変なら通知せず初回開始だけ�
     let presenter = Arc::new(StateSubscriptionPresenter::new());
     let usecase = StateSubscriptionUsecase::new_with_output(
         presenter.clone(),
-        Arc::new(crate::adaptor::gateway::subscription_timer::TokioSubscriptionTimer),
+        crate::test_support::state_subscription::read_driver(),
     );
     let mut stream = Box::pin(
         crate::test_support::state_subscription::deps(usecase, presenter.clone())
@@ -148,7 +148,7 @@ async fn test_購読失敗_つなぎ直した購読へ保持済みのfailure事�
     let presenter = Arc::new(StateSubscriptionPresenter::new());
     let usecase = StateSubscriptionUsecase::new_with_output(
         presenter.clone(),
-        Arc::new(crate::adaptor::gateway::subscription_timer::TokioSubscriptionTimer),
+        crate::test_support::state_subscription::read_driver(),
     );
     presenter
         .publish_failure(
@@ -202,7 +202,7 @@ async fn test_購読入力の対応_解除は最後の入力まで共有しstrea
     let presenter = Arc::new(StateSubscriptionPresenter::new());
     let usecase = StateSubscriptionUsecase::new_with_output(
         presenter.clone(),
-        Arc::new(crate::adaptor::gateway::subscription_timer::TokioSubscriptionTimer),
+        crate::test_support::state_subscription::read_driver(),
     );
     let target = SubscriptionTarget::from_parts(
         "notion-tasks",

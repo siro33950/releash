@@ -37,7 +37,7 @@ fn spawn(
             }
         },
         receiver,
-        Duration::from_millis(250),
+        crate::infrastructure::timer::delays(Duration::from_millis(250)),
     ));
     (store, dirty, task)
 }
@@ -146,4 +146,51 @@ async fn test_ターミナル保存_対象ごとに保存し終わった対象�
     tokio::time::sleep(Duration::from_secs(1)).await;
     // Then
     assert_eq!(flushes.calls.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
+async fn test_ターミナル保存_偽の遅延で待機中のdirtyを一度の保存に含める() {
+    // Given
+    let (dirty, receiver) = dirty_channel();
+    let elapsed = Arc::new(tokio::sync::Notify::new());
+    let armed = Arc::new(tokio::sync::Notify::new());
+    let (flushed, mut flushes) = tokio::sync::mpsc::unbounded_channel();
+    let task = tokio::spawn(run(
+        crate::usecase::retry::test_retrying(),
+        move |session| {
+            let flushed = flushed.clone();
+            async move {
+                flushed.send(session).unwrap();
+                Ok(())
+            }
+        },
+        receiver,
+        Arc::new({
+            let elapsed = elapsed.clone();
+            let armed = armed.clone();
+            move || {
+                armed.notify_one();
+                let elapsed = elapsed.clone();
+                Box::pin(async move {
+                    elapsed.notified().await;
+                })
+            }
+        }),
+    ));
+    dirty("terminal");
+    armed.notified().await;
+    assert!(flushes.try_recv().is_err());
+    // When
+    dirty("terminal");
+    tokio::task::yield_now().await;
+    elapsed.notify_one();
+    assert_eq!(flushes.recv().await.as_deref(), Some("terminal"));
+    // Then
+    for _ in 0..10 {
+        tokio::task::yield_now().await;
+    }
+    assert!(flushes.try_recv().is_err());
+    use futures_util::FutureExt;
+    assert!(armed.notified().now_or_never().is_none());
+    task.abort();
 }

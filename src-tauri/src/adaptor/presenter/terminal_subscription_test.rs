@@ -45,7 +45,7 @@ async fn test_古いterminal寸法_初回の復元要求だけ待機者へ通知
         .unwrap();
     let usecase = crate::usecase::state_subscription::StateSubscriptionUsecase::new_with_output(
         generic.clone(),
-        Arc::new(crate::adaptor::gateway::subscription_timer::TokioSubscriptionTimer),
+        crate::test_support::state_subscription::read_driver(),
     );
     let mut stream = Box::pin(
         crate::test_support::state_subscription::deps(usecase, generic)

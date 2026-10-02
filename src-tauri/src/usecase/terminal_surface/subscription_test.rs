@@ -3,7 +3,12 @@ use super::*;
 #[tokio::test]
 async fn test_terminal入力識別子_上限を受け付け超過を拒否する() {
     // Given
-    let usecase = TerminalSubscriptionUsecase::new(Arc::new(FakeOutput::default()), None);
+    let usecase = TerminalSubscriptionUsecase::new(
+        Arc::new(FakeOutput::default()),
+        None,
+        crate::test_support::state_subscription::terminal_driver(),
+    );
+
     let target = SubscriptionTarget::Terminal(
         crate::domain::terminal_surface::TerminalSurfaceOwner::workspace(
             crate::domain::workspace_tree::WorkspaceIdentity::new("/repo"),
@@ -39,7 +44,12 @@ async fn test_terminal入力識別子_上限を受け付け超過を拒否する
 #[tokio::test]
 async fn test_terminal入力識別子_空白とバイト上限を変えず検査する() {
     // Given
-    let usecase = TerminalSubscriptionUsecase::new(Arc::new(FakeOutput::default()), None);
+    let usecase = TerminalSubscriptionUsecase::new(
+        Arc::new(FakeOutput::default()),
+        None,
+        crate::test_support::state_subscription::terminal_driver(),
+    );
+
     let target = SubscriptionTarget::RepositoryPaths;
     // When / Then
     for input in [String::new(), " \t\n".into(), "あ".repeat(43)] {
@@ -63,7 +73,12 @@ async fn test_terminal入力識別子_空白とバイト上限を変えず検査
 #[test]
 fn test_terminalのclient管理_二重openを拒否し閉じた購読の処理報告を拒否する() {
     // Given
-    let usecase = TerminalSubscriptionUsecase::new(Arc::new(FakeOutput::default()), None);
+    let usecase = TerminalSubscriptionUsecase::new(
+        Arc::new(FakeOutput::default()),
+        None,
+        crate::test_support::state_subscription::terminal_driver(),
+    );
+
     usecase.open_client("client".into()).unwrap();
     // When / Then
     assert_eq!(
@@ -157,7 +172,12 @@ async fn test_terminal入力識別子_省略時はclientの識別子で開始す
     let (terminal, gateway, _, surface) =
         crate::test_support::state_subscription::terminal_application_fixture();
     let output = Arc::new(FakeOutput::default());
-    let usecase = TerminalSubscriptionUsecase::new(output, Some(terminal));
+    let usecase = TerminalSubscriptionUsecase::new(
+        output,
+        Some(terminal),
+        crate::test_support::state_subscription::terminal_driver(),
+    );
+
     let target = SubscriptionTarget::Terminal(surface.owner);
     usecase.open_client("client".into()).unwrap();
     // When
@@ -178,7 +198,12 @@ async fn test_terminal入力識別子_省略時はclientの識別子で開始す
 #[tokio::test]
 async fn test_terminal入力識別子_補ったclientが上限超過なら入力不正を返す() {
     // Given
-    let usecase = TerminalSubscriptionUsecase::new(Arc::new(FakeOutput::default()), None);
+    let usecase = TerminalSubscriptionUsecase::new(
+        Arc::new(FakeOutput::default()),
+        None,
+        crate::test_support::state_subscription::terminal_driver(),
+    );
+
     let client = "a".repeat(129);
     // When
     let error = usecase
@@ -199,7 +224,12 @@ async fn test_terminal開始_配信登録前の停止を検出し全登録を戻
         crate::test_support::state_subscription::terminal_application_fixture();
     let output = Arc::new(FakeOutput::default());
     *output.pending.lock() = Some(12);
-    let usecase = TerminalSubscriptionUsecase::new(output.clone(), Some(terminal));
+    let usecase = TerminalSubscriptionUsecase::new(
+        output.clone(),
+        Some(terminal),
+        crate::test_support::state_subscription::terminal_driver(),
+    );
+
     let target = SubscriptionTarget::Terminal(surface.owner);
     usecase.open_client("client".into()).unwrap();
     let stopped = usecase.clone();
@@ -235,7 +265,12 @@ async fn test_terminal開始_出力順序区間後の停止を検出し二重解
         crate::test_support::state_subscription::terminal_application_fixture();
     let output = Arc::new(FakeOutput::default());
     *output.pending.lock() = Some(12);
-    let usecase = TerminalSubscriptionUsecase::new(output.clone(), Some(terminal));
+    let usecase = TerminalSubscriptionUsecase::new(
+        output.clone(),
+        Some(terminal),
+        crate::test_support::state_subscription::terminal_driver(),
+    );
+
     let target = SubscriptionTarget::Terminal(surface.owner);
     usecase.open_client("client".into()).unwrap();
     let stopped = usecase.clone();
@@ -275,7 +310,12 @@ async fn test_terminal開始_世代の再作成時は新しい出力順序で開
     let (terminal, gateway, _, surface) =
         crate::test_support::state_subscription::terminal_application_fixture();
     let output = Arc::new(FakeOutput::default());
-    let usecase = TerminalSubscriptionUsecase::new(output.clone(), Some(terminal));
+    let usecase = TerminalSubscriptionUsecase::new(
+        output.clone(),
+        Some(terminal),
+        crate::test_support::state_subscription::terminal_driver(),
+    );
+
     let target = SubscriptionTarget::Terminal(surface.owner.clone());
     usecase.open_client("client".into()).unwrap();
     let recreated =
@@ -308,7 +348,12 @@ async fn test_terminal開始_順序区間内の世代変化でも新しい世代
     let (terminal, gateway, _, surface) =
         crate::test_support::state_subscription::terminal_application_fixture();
     let output = Arc::new(FakeOutput::default());
-    let usecase = TerminalSubscriptionUsecase::new(output.clone(), Some(terminal));
+    let usecase = TerminalSubscriptionUsecase::new(
+        output.clone(),
+        Some(terminal),
+        crate::test_support::state_subscription::terminal_driver(),
+    );
+
     let target = SubscriptionTarget::Terminal(surface.owner.clone());
     usecase.open_client("client".into()).unwrap();
     let recreated =
@@ -338,7 +383,12 @@ async fn test_terminal開始失敗_summary取得失敗で記録と配信を戻�
     let (terminal, gateway, hub, surface) =
         crate::test_support::state_subscription::terminal_application_fixture();
     let output = Arc::new(FakeOutput::default());
-    let usecase = TerminalSubscriptionUsecase::new(output.clone(), Some(terminal));
+    let usecase = TerminalSubscriptionUsecase::new(
+        output.clone(),
+        Some(terminal),
+        crate::test_support::state_subscription::terminal_driver(),
+    );
+
     let target = SubscriptionTarget::Terminal(surface.owner);
     usecase.open_client("client".into()).unwrap();
     let removed = gateway.clone();
@@ -369,7 +419,12 @@ async fn test_terminal開始失敗_配信の失敗で記録と出力購読を戻
         crate::test_support::state_subscription::terminal_application_fixture();
     let output = Arc::new(FakeOutput::default());
     *output.start_error.lock() = Some(SubscriptionError::UnknownTarget);
-    let usecase = TerminalSubscriptionUsecase::new(output.clone(), Some(terminal));
+    let usecase = TerminalSubscriptionUsecase::new(
+        output.clone(),
+        Some(terminal),
+        crate::test_support::state_subscription::terminal_driver(),
+    );
+
     let target = SubscriptionTarget::Terminal(surface.owner);
     usecase.open_client("client".into()).unwrap();
     // When
@@ -397,7 +452,12 @@ async fn test_terminal処理報告_購読中の流量制御へ渡し停止後は
         crate::test_support::state_subscription::terminal_application_fixture();
     let output = Arc::new(FakeOutput::default());
     *output.pending.lock() = Some(6000);
-    let usecase = TerminalSubscriptionUsecase::new(output.clone(), Some(terminal));
+    let usecase = TerminalSubscriptionUsecase::new(
+        output.clone(),
+        Some(terminal),
+        crate::test_support::state_subscription::terminal_driver(),
+    );
+
     let target = SubscriptionTarget::Terminal(surface.owner);
     usecase.open_client("client".into()).unwrap();
     usecase
@@ -442,7 +502,12 @@ async fn test_terminal作り直し予約_一つのworkerで追加clientのreset�
     );
     let output = Arc::new(FakeOutput::default());
     *output.pending.lock() = Some(6000);
-    let usecase = TerminalSubscriptionUsecase::new(output.clone(), Some(terminal));
+    let usecase = TerminalSubscriptionUsecase::new(
+        output.clone(),
+        Some(terminal),
+        crate::test_support::state_subscription::terminal_driver(),
+    );
+
     let target = SubscriptionTarget::Terminal(surface.owner);
     for client in ["first", "second"] {
         usecase.open_client(client.into()).unwrap();
@@ -498,7 +563,12 @@ async fn test_terminal作り直し失敗_失敗を配信してworkerを消す() 
         hub,
     );
     let output = Arc::new(FakeOutput::default());
-    let usecase = TerminalSubscriptionUsecase::new(output.clone(), Some(terminal));
+    let usecase = TerminalSubscriptionUsecase::new(
+        output.clone(),
+        Some(terminal),
+        crate::test_support::state_subscription::terminal_driver(),
+    );
+
     // When
     usecase.schedule_terminal_refresh(
         vec!["client".into()],
@@ -515,8 +585,10 @@ async fn test_terminal作り直し失敗_失敗を配信してworkerを消す() 
 #[tokio::test]
 async fn test_terminal停止_購読者が全員止まれば対象のreset記録とworkerを消す() {
     // Given
+    let (requests, mut receiver) = tokio::sync::mpsc::unbounded_channel();
     let output = Arc::new(FakeOutput::default());
-    let usecase = TerminalSubscriptionUsecase::new(output, None);
+    let usecase = TerminalSubscriptionUsecase::new(output, None, requests);
+
     let target = SubscriptionTarget::from_parts("terminal", &["/repo"]).unwrap();
     usecase.open_client("client".into()).unwrap();
     usecase
@@ -529,17 +601,18 @@ async fn test_terminal停止_購読者が全員止まれば対象のreset記録�
         .terminal_resets
         .lock()
         .insert(target.clone(), HashSet::from(["client".into()]));
-    let task = tokio::spawn(std::future::pending::<()>());
-    let abort = task.abort_handle();
-    usecase.workers.lock().insert(target.clone(), task);
+    usecase.schedule_terminal_refresh(vec![], target.clone());
+    let mut request = receiver.recv().await.unwrap();
     // When
     usecase.stop_subscription("client", &target).unwrap();
     // Then
     assert_ended(&usecase, "client", &target);
     assert!(!usecase.terminal_resets.lock().contains_key(&target));
     assert_eq!(usecase.test_worker_count(), 0);
-    tokio::task::yield_now().await;
-    assert!(abort.is_finished());
+    assert!(matches!(
+        request.cancelled.try_recv(),
+        Err(tokio::sync::oneshot::error::TryRecvError::Closed)
+    ));
     // Given / When: a failed worker has already removed itself.
     usecase
         .terminal_resets
@@ -555,9 +628,11 @@ async fn test_terminal切断_閉じたclientをreset記録から消し残る購�
     // Given
     let (terminal, gateway, hub, surface) =
         crate::test_support::state_subscription::terminal_application_fixture();
+    let (requests, mut receiver) = tokio::sync::mpsc::unbounded_channel();
     let output = Arc::new(FakeOutput::default());
     *output.pending.lock() = Some(6000);
-    let usecase = TerminalSubscriptionUsecase::new(output, Some(terminal));
+    let usecase = TerminalSubscriptionUsecase::new(output, Some(terminal), requests);
+
     let target = SubscriptionTarget::Terminal(surface.owner);
     for client in ["closed", "active"] {
         usecase.open_client(client.into()).unwrap();
@@ -570,9 +645,8 @@ async fn test_terminal切断_閉じたclientをreset記録から消し残る購�
         target.clone(),
         HashSet::from(["closed".into(), "active".into()]),
     );
-    let task = tokio::spawn(std::future::pending::<()>());
-    let abort = task.abort_handle();
-    usecase.workers.lock().insert(target.clone(), task);
+    usecase.schedule_terminal_refresh(vec![], target.clone());
+    let mut request = receiver.recv().await.unwrap();
     // When
     usecase.close_client("closed");
     // Then
@@ -587,7 +661,10 @@ async fn test_terminal切断_閉じたclientをreset記録から消し残る購�
         HashSet::from(["active".into()])
     );
     assert_eq!(usecase.test_worker_count(), 1);
-    assert!(!abort.is_finished());
+    assert!(matches!(
+        request.cancelled.try_recv(),
+        Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+    ));
     // When
     usecase.close_client("active");
     // Then
@@ -595,6 +672,60 @@ async fn test_terminal切断_閉じたclientをreset記録から消し残る購�
     assert!(!hub.test_subscribed(&surface.session_key, "active"));
     assert!(usecase.terminal_resets.lock().is_empty());
     assert_eq!(usecase.test_worker_count(), 0);
-    tokio::task::yield_now().await;
-    assert!(abort.is_finished());
+    assert!(matches!(
+        request.cancelled.try_recv(),
+        Err(tokio::sync::oneshot::error::TryRecvError::Closed)
+    ));
+}
+
+#[test]
+fn test_terminal作り直し予約_駆動部が終了したら失敗を配信する() {
+    // Given
+    let output = Arc::new(FakeOutput::default());
+    let usecase = TerminalSubscriptionUsecase::new(
+        output.clone(),
+        None,
+        tokio::sync::mpsc::unbounded_channel().0,
+    );
+    let target = SubscriptionTarget::from_parts("terminal", &["/repo"]).unwrap();
+    // When
+    usecase.schedule_terminal_refresh(vec!["client".into()], target);
+    // Then
+    assert_eq!(usecase.test_worker_count(), 0);
+    let failures = output.failures.lock();
+    assert_eq!(failures.len(), 1);
+    assert!(
+        matches!(&failures[0].source, StateReadFailure::Subscription(error)
+        if **error == SubscriptionError::StreamEnded)
+    );
+}
+
+pub(crate) fn add_reset(
+    usecase: &TerminalSubscriptionUsecase,
+    target: &SubscriptionTarget,
+    client: &str,
+) {
+    usecase
+        .terminal_resets
+        .lock()
+        .entry(target.clone())
+        .or_default()
+        .insert(client.into());
+}
+
+#[tokio::test]
+async fn test_terminal作り直し予約_異常終了したworkerを再登録する() {
+    // Given
+    let (requests, mut receiver) = tokio::sync::mpsc::unbounded_channel();
+    let usecase = TerminalSubscriptionUsecase::new(Arc::new(FakeOutput::default()), None, requests);
+    let target = SubscriptionTarget::from_parts("terminal", &["/repo"]).unwrap();
+    usecase.schedule_terminal_refresh(vec!["client".into()], target.clone());
+    drop(receiver.recv().await.unwrap());
+    // When
+    usecase.schedule_terminal_refresh(vec!["client".into()], target.clone());
+    // Then
+    let request = receiver.try_recv().unwrap();
+    assert_eq!(request.target, target);
+    assert_eq!(usecase.test_worker_count(), 1);
+    assert!(!usecase.workers.lock()[&target].is_closed());
 }

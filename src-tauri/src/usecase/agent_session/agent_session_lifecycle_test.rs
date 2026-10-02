@@ -3023,6 +3023,7 @@ async fn test_workflowのprovider回復_同じnodeを繰り返し再開し永続
             ),
             context.hook_health.clone(),
             context.execution_trees.clone(),
+            tokio::sync::mpsc::unbounded_channel().0,
         )),
         Arc::new(super::AgentSessionInitialInstructionUsecase::new(
             context.sessions.clone(),
@@ -3376,6 +3377,7 @@ async fn test_workflow_session準備_入口から期限と取消の分類を保�
                 ),
                 context.hook_health.clone(),
                 context.execution_trees.clone(),
+                tokio::sync::mpsc::unbounded_channel().0,
             )),
             Arc::new(super::AgentSessionInitialInstructionUsecase::new(
                 context.sessions.clone(),

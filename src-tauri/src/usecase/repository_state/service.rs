@@ -1,7 +1,6 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
 
 use parking_lot::RwLock;
 
@@ -14,8 +13,6 @@ use super::scanner::RepositoryScanner;
 use super::snapshot::RepositorySnapshot;
 use super::worktree::{RepositoryStateWatcher, WorktreeState};
 
-const DEFAULT_DEBOUNCE: Duration = Duration::from_millis(300);
-
 pub trait RepositoryStateRepository: Send + Sync {
     fn main_repo_path(&self, path: &str) -> Result<String, RepositoryStateError>;
 }
@@ -27,7 +24,7 @@ pub struct RepositoryStateService {
     watcher: Arc<dyn RepositoryStateWatcher>,
     runtime: Arc<dyn RepositoryStateWorkerRuntime>,
     path_normalizer: Arc<dyn WorktreePathNormalizer>,
-    debounce: Duration,
+    workers: tokio::sync::mpsc::UnboundedSender<super::runtime::ScanWorker>,
     worktrees: RwLock<HashMap<PathBuf, Arc<WorktreeState>>>,
     /// path から解決した Repository の root。root は変わらないので、解決できたら持ち続ける。
     roots: RwLock<HashMap<String, String>>,
@@ -41,24 +38,19 @@ impl RepositoryStateService {
         watcher: Arc<dyn RepositoryStateWatcher>,
         runtime: Arc<dyn RepositoryStateWorkerRuntime>,
         path_normalizer: Arc<dyn WorktreePathNormalizer>,
+        workers: tokio::sync::mpsc::UnboundedSender<super::runtime::ScanWorker>,
     ) -> Self {
         Self {
+            workers,
             repository,
             scanner,
             subscriptions,
             watcher,
             runtime,
             path_normalizer,
-            debounce: DEFAULT_DEBOUNCE,
             worktrees: RwLock::new(HashMap::new()),
             roots: RwLock::new(HashMap::new()),
         }
-    }
-
-    #[cfg(test)]
-    fn with_debounce(mut self, debounce: Duration) -> Self {
-        self.debounce = debounce;
-        self
     }
 
     pub fn start_git_dir_watching(&self, repo_path: &str) -> Result<u64, RepositoryStateError> {
@@ -263,7 +255,7 @@ impl RepositoryStateService {
             self.scanner.clone(),
             self.subscriptions.clone(),
             self.runtime.clone(),
-            self.debounce,
+            self.workers.clone(),
         );
         if let Err(err) = state.start_watchers(self.watcher.as_ref()) {
             state.shutdown();
@@ -303,7 +295,7 @@ impl RepositoryStateService {
             self.scanner.clone(),
             self.subscriptions.clone(),
             self.runtime.clone(),
-            self.debounce,
+            self.workers.clone(),
         );
         worktrees.insert(key, state.clone());
         state
@@ -331,6 +323,7 @@ pub(crate) mod tests {
     use crate::usecase::repository_state::worker::InvalidateReason;
     use crate::usecase::repository_state::worktree::NoopRepositoryStateWatcher;
     use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+    use std::time::Duration;
 
     struct TestRepositoryStateRepository;
 
@@ -510,8 +503,8 @@ pub(crate) mod tests {
             Arc::new(NoopRepositoryStateWatcher),
             Arc::new(TestRepositoryStateWorkerRuntime),
             Arc::new(CanonicalWorktreePathNormalizer),
+            crate::test_support::state_subscription::repository_driver(),
         )
-        .with_debounce(Duration::ZERO)
     }
 
     fn test_service_with_notifier(
@@ -525,8 +518,8 @@ pub(crate) mod tests {
             Arc::new(NoopRepositoryStateWatcher),
             Arc::new(TestRepositoryStateWorkerRuntime),
             Arc::new(CanonicalWorktreePathNormalizer),
+            crate::test_support::state_subscription::repository_driver(),
         )
-        .with_debounce(Duration::ZERO)
     }
 
     fn counting_service(
@@ -540,8 +533,8 @@ pub(crate) mod tests {
             watcher,
             Arc::new(TestRepositoryStateWorkerRuntime),
             Arc::new(IdentityWorktreePathNormalizer),
+            crate::test_support::state_subscription::repository_driver(),
         )
-        .with_debounce(Duration::ZERO)
     }
 
     use crate::test_support::state_subscription::CapturingNotifier;
@@ -799,8 +792,8 @@ pub(crate) mod tests {
             Arc::new(NoopRepositoryStateWatcher),
             Arc::new(TestRepositoryStateWorkerRuntime),
             Arc::new(IdentityWorktreePathNormalizer),
-        )
-        .with_debounce(Duration::ZERO);
+            crate::test_support::state_subscription::repository_driver(),
+        );
         service.subscribe("/repo-worktrees/feature").unwrap();
         service.subscribe("/repo").unwrap();
         for _ in 0..100 {
@@ -863,6 +856,7 @@ pub(crate) mod tests {
             Arc::new(NoopRepositoryStateWatcher),
             Arc::new(TestRepositoryStateWorkerRuntime),
             Arc::new(IdentityWorktreePathNormalizer),
+            crate::test_support::state_subscription::repository_driver(),
         );
 
         let legacy =
@@ -996,17 +990,15 @@ pub(crate) mod tests {
     }
 
     fn no_spawn_service(watcher: Arc<dyn RepositoryStateWatcher>) -> Arc<RepositoryStateService> {
-        Arc::new(
-            RepositoryStateService::new(
-                Arc::new(TestRepositoryStateRepository),
-                Arc::new(CountingScanner::default()),
-                crate::test_support::state_subscription::test_subscriptions(),
-                watcher,
-                Arc::new(NoSpawnRepositoryStateWorkerRuntime),
-                Arc::new(IdentityWorktreePathNormalizer),
-            )
-            .with_debounce(Duration::ZERO),
-        )
+        Arc::new(RepositoryStateService::new(
+            Arc::new(TestRepositoryStateRepository),
+            Arc::new(CountingScanner::default()),
+            crate::test_support::state_subscription::test_subscriptions(),
+            watcher,
+            Arc::new(NoSpawnRepositoryStateWorkerRuntime),
+            Arc::new(IdentityWorktreePathNormalizer),
+            crate::test_support::state_subscription::repository_driver(),
+        ))
     }
 
     #[test]

@@ -32,7 +32,7 @@ pub(crate) async fn run<F, Fut>(
     retrying: Arc<Retrying>,
     flush: F,
     mut dirty: DirtyReceiver,
-    interval: Duration,
+    delay: crate::infrastructure::timer::Delay,
 ) where
     F: Fn(String) -> Fut + Send + Sync + 'static,
     Fut: std::future::Future<Output = Result<(), WorkFailure>> + Send,
@@ -53,9 +53,10 @@ pub(crate) async fn run<F, Fut>(
         let retrying = retrying.clone();
         let flush = flush.clone();
         let sessions = sessions.clone();
+        let delay = delay.clone();
         tokio::spawn(async move {
             loop {
-                tokio::time::sleep(interval).await;
+                delay().await;
                 pending.dirty.store(false, Ordering::SeqCst);
                 let _ = retrying
                     .restart(

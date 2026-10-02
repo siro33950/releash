@@ -47,11 +47,18 @@ impl TerminalSubscriptionHarness {
             ),
         );
         runtime.application().connect_state(output.clone()).unwrap();
-        let terminal_subscriptions =
-            TerminalSubscriptionUsecase::new(output, Some(runtime.application()));
+        let terminal_subscriptions = TerminalSubscriptionUsecase::new(
+            output,
+            Some(runtime.application()),
+            crate::adaptor::controller::terminal_subscription::start(),
+        );
+
         let subscriptions = StateSubscriptionUsecase::new_with_output(
             presenter.clone(),
-            Arc::new(crate::adaptor::gateway::subscription_timer::TokioSubscriptionTimer),
+            crate::adaptor::controller::state_subscription::drive(Arc::new(|| {
+                let period = crate::domain::git_host::CacheTtl::EXTERNAL_INFORMATION.duration();
+                Box::pin(crate::infrastructure::timer::ticks_after(period, period))
+            })),
         );
         Self {
             runtime,

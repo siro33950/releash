@@ -115,7 +115,10 @@ impl<R: tauri::Runtime> ClientApiAcceptanceHost<R> {
         );
         let state = crate::usecase::state_subscription::StateSubscriptionUsecase::new_with_output(
             state_presenter.clone(),
-            Arc::new(crate::adaptor::gateway::subscription_timer::TokioSubscriptionTimer),
+            crate::adaptor::controller::state_subscription::drive(Arc::new(|| {
+                let period = crate::domain::git_host::CacheTtl::EXTERNAL_INFORMATION.duration();
+                Box::pin(crate::infrastructure::timer::ticks_after(period, period))
+            })),
         )
         .with_reads(
             Arc::new(AcceptanceStateReads(repository.clone())),
@@ -202,7 +205,9 @@ impl<R: tauri::Runtime> ClientApiAcceptanceHost<R> {
             crate::usecase::terminal_surface::subscription::TerminalSubscriptionUsecase::new(
                 output,
                 Some(terminal.application()),
+                crate::adaptor::controller::terminal_subscription::start(),
             );
+
         let router = crate::adaptor::controller::api::build_router(
             Arc::new(workflow),
             Arc::new(runtime),

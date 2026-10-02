@@ -1267,7 +1267,7 @@ async fn assert_terminal_recreation(drain_exit: bool) {
     ));
     let subscriptions = StateSubscriptionUsecase::new(
         vec![],
-        Arc::new(crate::adaptor::gateway::subscription_timer::TokioSubscriptionTimer),
+        crate::test_support::state_subscription::read_driver(),
     );
     let subscriptions = subscriptions.with_terminal(terminal.clone());
     let stream = subscriptions.open("client".into()).unwrap();
@@ -1534,7 +1534,7 @@ async fn test_terminal対象なし_購読開始とsnapshot読取と配信でnot_
     ));
     let subscriptions = StateSubscriptionUsecase::new(
         vec![],
-        Arc::new(crate::adaptor::gateway::subscription_timer::TokioSubscriptionTimer),
+        crate::test_support::state_subscription::read_driver(),
     )
     .with_terminal(terminal.clone());
     let presenter = subscriptions.test_presenter().unwrap();

@@ -32,7 +32,10 @@ pub(crate) fn state_subscriptions() -> crate::usecase::state_subscription::State
 {
     crate::usecase::state_subscription::StateSubscriptionUsecase::new_with_output(
         crate::adaptor::presenter::state_subscription::test_output(),
-        Arc::new(crate::adaptor::gateway::subscription_timer::TokioSubscriptionTimer),
+        crate::adaptor::controller::state_subscription::drive(Arc::new(|| {
+            let period = crate::domain::git_host::CacheTtl::EXTERNAL_INFORMATION.duration();
+            Box::pin(crate::infrastructure::timer::ticks_after(period, period))
+        })),
     )
 }
 

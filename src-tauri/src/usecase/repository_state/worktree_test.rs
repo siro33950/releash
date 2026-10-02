@@ -3,6 +3,7 @@ use crate::usecase::repository_dto::{FileDiffStatDto, FileStatusDto};
 use crate::usecase::repository_state::runtime::tests_support::TestRepositoryStateWorkerRuntime;
 use std::sync::atomic::{AtomicBool, AtomicUsize};
 use std::sync::mpsc as std_mpsc;
+use std::time::Duration;
 
 use crate::test_support::state_subscription::CapturingNotifier;
 
@@ -128,7 +129,7 @@ fn test_state(scanner: Arc<dyn RepositoryScanner>, debounce: Duration) -> Arc<Wo
         scanner,
         crate::test_support::state_subscription::test_subscriptions(),
         Arc::new(TestRepositoryStateWorkerRuntime),
-        debounce,
+        crate::test_support::state_subscription::scan_driver(debounce),
     )
 }
 
@@ -142,7 +143,7 @@ fn test_state_with_notifier(
         scanner,
         subscriptions,
         Arc::new(TestRepositoryStateWorkerRuntime),
-        Duration::ZERO,
+        crate::test_support::state_subscription::scan_driver(Duration::ZERO),
     )
 }
 
@@ -386,7 +387,7 @@ async fn test_worktreeの並び_repositoryのrootでなければ読まない() {
         scanner.clone(),
         crate::test_support::state_subscription::test_subscriptions(),
         Arc::new(TestRepositoryStateWorkerRuntime),
-        Duration::ZERO,
+        crate::test_support::state_subscription::scan_driver(Duration::ZERO),
     );
 
     // When
@@ -396,4 +397,31 @@ async fn test_worktreeの並び_repositoryのrootでなければ読まない() {
     // Then
     assert_eq!(state.worktrees(), Fetched::default());
     assert!(scanner.take_prune_calls().is_empty());
+}
+
+#[tokio::test]
+async fn test_repository走査_駆動への送信失敗は読み込みを終えて性質と対象を公開する() {
+    // Given
+    let (workers, requests) = tokio::sync::mpsc::unbounded_channel();
+    drop(requests);
+    // When
+    let state = WorktreeState::new(
+        "/repo-unavailable".into(),
+        true,
+        Arc::new(FakeScanner::new("file")),
+        crate::test_support::state_subscription::test_subscriptions(),
+        Arc::new(TestRepositoryStateWorkerRuntime),
+        workers,
+    );
+    // Then
+    assert!(!state.snapshot_for_read().flags.loading);
+    let failure = state.scan_failure.read().clone().unwrap();
+    assert_eq!(
+        failure.kind,
+        crate::usecase::failure::Failure::Technical(
+            crate::domain::failure::TechnicalFailureNature::Other
+        )
+    );
+    assert!(failure.message.contains("/repo-unavailable"));
+    assert!(state.read_snapshot().is_err());
 }

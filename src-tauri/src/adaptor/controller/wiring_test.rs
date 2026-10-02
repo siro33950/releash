@@ -33,6 +33,11 @@ async fn test_worktree削除一覧_本番runtime配線で受理した削除状�
     let publisher = crate::test_support::state_subscription::test_subscriptions();
     let terminal = Arc::new(build_terminal_surface_application_for_tests());
     let sessions = compose_agent_sessions(AgentSessionCompositionInput {
+        launch_retention: crate::adaptor::controller::agent_session_launch_retention::run(
+            crate::infrastructure::timer::delays(
+                crate::adaptor::controller::agent_session_launch_retention::RETENTION,
+            ),
+        ),
         retrying: retrying.clone(),
         state_publisher: None,
         store: store.clone(),
