@@ -205,8 +205,9 @@ impl<R: tauri::Runtime> ClientApiAcceptanceHost<R> {
             crate::usecase::terminal_surface::subscription::TerminalSubscriptionUsecase::new(
                 output,
                 Some(terminal.application()),
+                crate::adaptor::controller::terminal_subscription::start(),
             );
-        crate::adaptor::controller::terminal_subscription::start(&terminal_subscriptions);
+
         let router = crate::adaptor::controller::api::build_router(
             Arc::new(workflow),
             Arc::new(runtime),

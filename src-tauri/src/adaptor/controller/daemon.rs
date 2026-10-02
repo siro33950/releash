@@ -125,8 +125,9 @@ pub(crate) async fn compose(
         usecase::terminal_surface::subscription::TerminalSubscriptionUsecase::new(
             terminal_presenter,
             Some(terminal_surface.clone()),
+            crate::adaptor::controller::terminal_subscription::start(),
         );
-    crate::adaptor::controller::terminal_subscription::start(&terminal_subscriptions);
+
     let review_comment_usecase = Arc::new(
         adaptor::controller::wiring::build_review_comment_usecase()
             .with_subscriptions(state_subscriptions.clone()),
@@ -215,17 +216,12 @@ pub(crate) async fn compose(
                         .to_string(),
                         terminal: terminal_surface.clone(),
                         subscriptions: state_subscriptions.clone(),
+                        launch_retention: adaptor::controller::agent_session_launch_retention::run(infrastructure::timer::delays(adaptor::controller::agent_session_launch_retention::RETENTION)),
                     },
                 )
                 .map_err(|error| format!("Provider availability初期化失敗: {error:?}"))?;
     let agent_session_launch = agent_sessions.launch.clone();
-    tokio::spawn(adaptor::controller::agent_session_launch_retention::run(
-        agent_session_launch.clone(),
-        agent_session_launch.take_activation_events(),
-        infrastructure::timer::delays(
-            adaptor::controller::agent_session_launch_retention::RETENTION,
-        ),
-    ));
+
     let agent_session_initial_instruction = agent_sessions.initial_instruction.clone();
     let agent_session_lifecycle = agent_sessions.lifecycle.clone();
     let agent_session_exit = agent_sessions.exit.clone();
@@ -316,14 +312,12 @@ pub(crate) async fn compose(
         ),
         repository_scan_runtime.clone(),
         Arc::new(adaptor::gateway::repository::state::FsWorktreePathNormalizer),
+        adaptor::controller::repository_scan::start(
+            retrying.clone(),
+            repository_scan_runtime.clone(),
+            infrastructure::timer::delays(adaptor::controller::repository_scan::DEBOUNCE),
+        ),
     ));
-
-    adaptor::controller::repository_scan::start(
-        retrying.clone(),
-        repository_state.take_worker_events(),
-        repository_scan_runtime,
-        infrastructure::timer::delays(adaptor::controller::repository_scan::DEBOUNCE),
-    );
 
     let review_usecase = Arc::new(usecase::review_usecase::ReviewUsecase::new(
         repository_state.clone(),

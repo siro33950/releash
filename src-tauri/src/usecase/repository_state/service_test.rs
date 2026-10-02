@@ -128,8 +128,8 @@ fn service(scanner: Arc<Scanner>, notifier: Arc<Notifier>) -> RepositoryStateSer
         Arc::new(NoopRepositoryStateWatcher),
         Arc::new(TestRepositoryStateWorkerRuntime),
         Arc::new(IdentityWorktreePathNormalizer),
+        crate::test_support::state_subscription::repository_driver(),
     )
-    .with_scan_driver()
 }
 
 fn branch(service: &RepositoryStateService) -> String {

@@ -20,13 +20,15 @@ pub(crate) use agent_session_history::{
 pub(crate) use agent_session_initial_instruction::AgentSessionInitialInstructionUsecase;
 #[cfg(test)]
 pub(crate) use agent_session_launch::AgentSessionLaunchExecutionTrees;
-pub(crate) use agent_session_launch::AgentSessionLaunchUsecaseError;
 pub(crate) use agent_session_launch::{
     AgentSessionExecutionTreeLifecycle, AgentSessionHistoryResumeOutcome,
     AgentSessionHistoryResumeRequest, AgentSessionLaunchRequest, AgentSessionLaunchUsecase,
     ExecutionTreeCache, ExecutionTreeCacheReleaseError, ProviderAgentRuntime,
     StartedExecutionTreeRegistrar, StartedExecutionTreeRegistrationError,
     WorkflowAgentSessionLaunchRequest, WorktreeMutationAdmission,
+};
+pub(crate) use agent_session_launch::{
+    AgentSessionLaunchOutput, AgentSessionLaunchUsecaseError, LaunchRetention,
 };
 pub(crate) use agent_session_lifecycle::{
     AgentSessionGarbageCollectionOutcome, AgentSessionLifecycleUsecase,
@@ -73,7 +75,7 @@ mod agent_session_read_tests;
 mod agent_session_rename_tests;
 #[cfg(test)]
 #[path = "agent_session_test.rs"]
-mod agent_session_tests;
+pub(crate) mod agent_session_tests;
 #[cfg(test)]
 #[path = "provider_availability_test.rs"]
 pub(crate) mod provider_availability_tests;

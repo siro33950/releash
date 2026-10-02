@@ -1,21 +1,23 @@
-use crate::usecase::agent_session::AgentSessionLaunchUsecase;
-use futures_util::StreamExt;
-use std::sync::Arc;
+use crate::usecase::agent_session::{AgentSessionLaunchUsecase, LaunchRetention};
 
 pub(crate) const RETENTION: std::time::Duration = std::time::Duration::from_secs(300);
 
-pub(crate) async fn run(
-    usecase: Arc<AgentSessionLaunchUsecase>,
-    mut activated: tokio::sync::mpsc::UnboundedReceiver<String>,
+pub(crate) fn run(
     delay: crate::infrastructure::timer::Delay,
-) {
-    while let Some(session) = activated.recv().await {
-        let usecase = usecase.clone();
-        let mut elapsed = delay();
-        tokio::spawn(async move {
-            if elapsed.next().await.is_some() {
-                usecase.expire_workflow_launch(&session).await;
-            }
-        });
-    }
+) -> tokio::sync::mpsc::UnboundedSender<LaunchRetention> {
+    let (sender, mut activated) = tokio::sync::mpsc::unbounded_channel::<LaunchRetention>();
+    tokio::spawn(async move {
+        while let Some(request) = activated.recv().await {
+            let elapsed = delay();
+            tokio::spawn(async move {
+                elapsed.await;
+                AgentSessionLaunchUsecase::expire_workflow_launch(request).await;
+            });
+        }
+    });
+    sender
 }
+
+#[cfg(test)]
+#[path = "agent_session_launch_retention_test.rs"]
+mod agent_session_launch_retention_tests;

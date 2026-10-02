@@ -548,4 +548,4 @@ fn adds_external_information(target: &SubscriptionTarget, source: &StateChangeSo
 
 #[cfg(test)]
 #[path = "state_subscription_test.rs"]
-mod state_subscription_tests;
+pub(crate) mod state_subscription_tests;

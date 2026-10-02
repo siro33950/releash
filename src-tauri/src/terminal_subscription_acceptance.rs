@@ -47,9 +47,12 @@ impl TerminalSubscriptionHarness {
             ),
         );
         runtime.application().connect_state(output.clone()).unwrap();
-        let terminal_subscriptions =
-            TerminalSubscriptionUsecase::new(output, Some(runtime.application()));
-        crate::adaptor::controller::terminal_subscription::start(&terminal_subscriptions);
+        let terminal_subscriptions = TerminalSubscriptionUsecase::new(
+            output,
+            Some(runtime.application()),
+            crate::adaptor::controller::terminal_subscription::start(),
+        );
+
         let subscriptions = StateSubscriptionUsecase::new_with_output(
             presenter.clone(),
             crate::adaptor::controller::state_subscription::drive(Arc::new(|| {

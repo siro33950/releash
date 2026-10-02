@@ -149,7 +149,7 @@ async fn test_ターミナル保存_対象ごとに保存し終わった対象�
 }
 
 #[tokio::test]
-async fn test_ターミナル保存_偽の遅延で待機中のdirtyを次の保存へ引き継ぐ() {
+async fn test_ターミナル保存_偽の遅延で待機中のdirtyを一度の保存に含める() {
     // Given
     let (dirty, receiver) = dirty_channel();
     let elapsed = Arc::new(tokio::sync::Notify::new());
@@ -171,9 +171,9 @@ async fn test_ターミナル保存_偽の遅延で待機中のdirtyを次の保
             move || {
                 armed.notify_one();
                 let elapsed = elapsed.clone();
-                Box::pin(futures_util::stream::once(async move {
+                Box::pin(async move {
                     elapsed.notified().await;
-                }))
+                })
             }
         }),
     ));
@@ -185,41 +185,12 @@ async fn test_ターミナル保存_偽の遅延で待機中のdirtyを次の保
     tokio::task::yield_now().await;
     elapsed.notify_one();
     assert_eq!(flushes.recv().await.as_deref(), Some("terminal"));
-    armed.notified().await;
+    // Then
+    for _ in 0..10 {
+        tokio::task::yield_now().await;
+    }
     assert!(flushes.try_recv().is_err());
-    elapsed.notify_one();
-    // Then
-    assert_eq!(flushes.recv().await.as_deref(), Some("terminal"));
-    task.abort();
-}
-
-#[tokio::test]
-async fn test_ターミナル保存_時刻streamが終わったら保存せず次のdirtyを受け付ける() {
-    // Given
-    let (dirty, receiver) = dirty_channel();
-    let (armed, mut requests) = tokio::sync::mpsc::unbounded_channel();
-    let calls = Arc::new(AtomicUsize::new(0));
-    let task = tokio::spawn(run(
-        crate::usecase::retry::test_retrying(),
-        {
-            let calls = calls.clone();
-            move |_| {
-                calls.fetch_add(1, Ordering::SeqCst);
-                async { Ok(()) }
-            }
-        },
-        receiver,
-        Arc::new(move || {
-            armed.send(()).unwrap();
-            Box::pin(futures_util::stream::empty())
-        }),
-    ));
-    // When
-    dirty("terminal");
-    requests.recv().await.unwrap();
-    dirty("terminal");
-    requests.recv().await.unwrap();
-    // Then
-    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    use futures_util::FutureExt;
+    assert!(armed.notified().now_or_never().is_none());
     task.abort();
 }

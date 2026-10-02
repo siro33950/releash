@@ -28,16 +28,14 @@ pub(crate) async fn run_worker(
         if !state.should_scan(&first_reason) {
             break;
         }
-        let Some(mut reason) = collect_debounced_reasons(first_reason, rx, &delay).await else {
-            return;
-        };
+        let mut reason = collect_debounced_reasons(first_reason, rx, &delay).await;
         loop {
             use crate::usecase::repository_state::worktree::ScanContinuation;
             if !state.should_scan(&reason) {
                 return;
             }
             let generation = state.requested_generation();
-            let status = if state.needs_file_scan(&reason) {
+            let status = if reason.files {
                 Some(
                     retrying
                         .restart(
@@ -68,11 +66,7 @@ pub(crate) async fn run_worker(
                 }
                 ScanContinuation::Debounce(mut pending) => {
                     pending.merge(collect_pending_reasons(rx));
-                    let Some(debounced) = collect_debounced_reasons(pending, rx, &delay).await
-                    else {
-                        return;
-                    };
-                    reason = debounced;
+                    reason = collect_debounced_reasons(pending, rx, &delay).await;
                 }
             }
         }
@@ -83,11 +77,10 @@ async fn collect_debounced_reasons(
     mut reason: InvalidateReason,
     rx: &mut dyn RepositoryStateInvalidationReceiver,
     delay: &crate::infrastructure::timer::Delay,
-) -> Option<InvalidateReason> {
-    use futures_util::StreamExt;
-    delay().next().await?;
+) -> InvalidateReason {
+    delay().await;
     reason.merge(collect_pending_reasons(rx));
-    Some(reason)
+    reason
 }
 
 fn collect_pending_reasons(rx: &mut dyn RepositoryStateInvalidationReceiver) -> InvalidateReason {
@@ -102,10 +95,10 @@ pub(crate) const DEBOUNCE: Duration = Duration::from_millis(300);
 
 pub(crate) fn start(
     retrying: Arc<Retrying>,
-    mut requests: tokio::sync::mpsc::UnboundedReceiver<ScanWorker>,
     runtime: Arc<dyn RepositoryStateWorkerRuntime>,
     delay: crate::infrastructure::timer::Delay,
-) {
+) -> tokio::sync::mpsc::UnboundedSender<ScanWorker> {
+    let (sender, mut requests) = tokio::sync::mpsc::unbounded_channel();
     tokio::spawn(async move {
         while let Some(worker) = requests.recv().await {
             tokio::spawn(run_worker(
@@ -116,6 +109,7 @@ pub(crate) fn start(
             ));
         }
     });
+    sender
 }
 
 pub struct RepositoryScanWorkerRuntime;

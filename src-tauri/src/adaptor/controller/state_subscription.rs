@@ -1,8 +1,8 @@
-use crate::infrastructure::timer::Delay;
+use crate::infrastructure::timer::Ticks;
 use crate::usecase::state_subscription::{ReadSignal, ReadWorker};
 use futures_util::StreamExt;
 
-pub(crate) fn drive(ticks: Delay) -> tokio::sync::mpsc::UnboundedSender<ReadWorker> {
+pub(crate) fn drive(ticks: Ticks) -> tokio::sync::mpsc::UnboundedSender<ReadWorker> {
     let (sender, mut requests) = tokio::sync::mpsc::unbounded_channel::<ReadWorker>();
     tokio::spawn(async move {
         while let Some(mut worker) = requests.recv().await {
@@ -48,3 +48,7 @@ pub(crate) fn drive(ticks: Delay) -> tokio::sync::mpsc::UnboundedSender<ReadWork
     });
     sender
 }
+
+#[cfg(test)]
+#[path = "state_subscription_test.rs"]
+mod state_subscription_tests;

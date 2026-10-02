@@ -293,8 +293,7 @@ pub(crate) struct AgentSessionLaunchUsecase {
     standalone_requests: Mutex<StandaloneLaunchRequestRegistry>,
     pending_workflow_launches: Mutex<HashMap<String, PreparedAgentSessionLaunch>>,
     activated_workflow_launches: Arc<Mutex<HashMap<String, WorkflowLaunchActivation>>>,
-    activated: tokio::sync::mpsc::UnboundedSender<String>,
-    activation_events: std::sync::Mutex<Option<tokio::sync::mpsc::UnboundedReceiver<String>>>,
+    activated: tokio::sync::mpsc::UnboundedSender<LaunchRetention>,
     hook_health_tasks: std::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>,
 }
 
@@ -319,9 +318,19 @@ struct DurableAgentSessionLaunch {
     executable: ResolvedProviderExecutable,
 }
 
+pub(crate) struct AgentSessionLaunchOutput {
+    pub performance: Arc<dyn crate::usecase::telemetry::PerformanceOutput>,
+    pub activated: tokio::sync::mpsc::UnboundedSender<LaunchRetention>,
+}
+
+pub(crate) struct LaunchRetention {
+    launches: Arc<Mutex<HashMap<String, WorkflowLaunchActivation>>>,
+    session: String,
+}
+
 impl AgentSessionLaunchUsecase {
     pub(crate) fn new(
-        performance: Arc<dyn crate::usecase::telemetry::PerformanceOutput>,
+        output: AgentSessionLaunchOutput,
         sessions: Arc<AgentSessionUsecase>,
         lifecycle: Arc<ProviderLifecycleUsecase>,
         provider_runtime: ProviderAgentRuntime,
@@ -334,11 +343,9 @@ impl AgentSessionLaunchUsecase {
             launch_gateway,
             terminal,
         } = provider_runtime;
-        let (activated, activation_events) = tokio::sync::mpsc::unbounded_channel();
         Self {
-            activated,
-            activation_events: std::sync::Mutex::new(Some(activation_events)),
-            performance,
+            activated: output.activated,
+            performance: output.performance,
             sessions,
             lifecycle,
             availability,
@@ -550,7 +557,10 @@ impl AgentSessionLaunchUsecase {
             WorkflowLaunchActivation::Activated(Box::new(activated.clone())),
         );
         let _ = completion_tx.send(true);
-        let _ = self.activated.send(agent_session_id.to_string());
+        let _ = self.activated.send(LaunchRetention {
+            launches: self.activated_workflow_launches.clone(),
+            session: agent_session_id.to_string(),
+        });
         Ok(activated)
     }
 
@@ -562,21 +572,13 @@ impl AgentSessionLaunchUsecase {
         )
     }
 
-    pub(crate) fn take_activation_events(&self) -> tokio::sync::mpsc::UnboundedReceiver<String> {
-        self.activation_events
-            .lock()
-            .expect("activation events")
-            .take()
-            .expect("activation driver")
-    }
-
-    pub(crate) async fn expire_workflow_launch(&self, agent_session_id: &str) {
-        let mut launches = self.activated_workflow_launches.lock().await;
+    pub(crate) async fn expire_workflow_launch(request: LaunchRetention) {
+        let mut launches = request.launches.lock().await;
         if matches!(
-            launches.get(agent_session_id),
+            launches.get(&request.session),
             Some(WorkflowLaunchActivation::Activated(_))
         ) {
-            launches.remove(agent_session_id);
+            launches.remove(&request.session);
         }
     }
 

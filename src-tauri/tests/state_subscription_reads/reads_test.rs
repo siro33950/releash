@@ -229,17 +229,17 @@ impl Fixture {
                 crate::adaptor::controller::repository_scan::RepositoryScanWorkerRuntime::new(),
             ),
             Arc::new(FsWorktreePathNormalizer),
+            crate::adaptor::controller::repository_scan::start(
+                crate::usecase::retry::test_retrying(),
+                Arc::new(
+                    crate::adaptor::controller::repository_scan::RepositoryScanWorkerRuntime::new(),
+                ),
+                crate::infrastructure::timer::delays(
+                    crate::adaptor::controller::repository_scan::DEBOUNCE,
+                ),
+            ),
         ));
-        crate::adaptor::controller::repository_scan::start(
-            crate::usecase::retry::test_retrying(),
-            repository_state.take_worker_events(),
-            Arc::new(
-                crate::adaptor::controller::repository_scan::RepositoryScanWorkerRuntime::new(),
-            ),
-            crate::infrastructure::timer::delays(
-                crate::adaptor::controller::repository_scan::DEBOUNCE,
-            ),
-        );
+
         let workflows_dir = root.join("workflows");
         std::fs::create_dir_all(workflows_dir.join("instructions")).unwrap();
         std::fs::write(

@@ -38,10 +38,10 @@ pub(crate) struct TerminalSubscriptionUsecase {
     terminal_resets: Arc<Mutex<HashMap<SubscriptionTarget, HashSet<String>>>>,
     workers: Arc<Mutex<HashMap<SubscriptionTarget, tokio::sync::oneshot::Sender<()>>>>,
     refresh_requests: tokio::sync::mpsc::UnboundedSender<TerminalRefresh>,
-    refresh_events: Arc<Mutex<Option<tokio::sync::mpsc::UnboundedReceiver<TerminalRefresh>>>>,
 }
 
 pub(crate) struct TerminalRefresh {
+    pub usecase: TerminalSubscriptionUsecase,
     pub target: SubscriptionTarget,
     pub cancelled: tokio::sync::oneshot::Receiver<()>,
 }
@@ -59,11 +59,10 @@ impl TerminalSubscriptionUsecase {
     pub(crate) fn new(
         publisher: Arc<dyn TerminalSubscriptionOutput>,
         terminal: Option<Arc<TerminalSurfaceApplication>>,
+        refresh_requests: tokio::sync::mpsc::UnboundedSender<TerminalRefresh>,
     ) -> Self {
-        let (refresh_requests, refresh_events) = tokio::sync::mpsc::unbounded_channel();
         Self {
             refresh_requests,
-            refresh_events: Arc::new(Mutex::new(Some(refresh_events))),
             publisher,
             terminal,
             clients: Default::default(),
@@ -297,7 +296,10 @@ impl TerminalSubscriptionUsecase {
             .or_default()
             .extend(clients);
         let mut workers = self.workers.lock();
-        if workers.contains_key(&target) {
+        if workers
+            .get(&target)
+            .is_some_and(|cancel| !cancel.is_closed())
+        {
             return;
         }
         let (cancel, cancelled) = tokio::sync::oneshot::channel();
@@ -305,6 +307,7 @@ impl TerminalSubscriptionUsecase {
         if self
             .refresh_requests
             .send(TerminalRefresh {
+                usecase: self.clone(),
                 target: target.clone(),
                 cancelled,
             })
@@ -319,15 +322,6 @@ impl TerminalSubscriptionUsecase {
                 log::error!("Terminal failure publication failed: {error}");
             }
         }
-    }
-
-    pub(crate) fn take_refresh_events(
-        &self,
-    ) -> tokio::sync::mpsc::UnboundedReceiver<TerminalRefresh> {
-        self.refresh_events
-            .lock()
-            .take()
-            .expect("terminal refresh driver")
     }
 
     pub(crate) async fn refresh_terminal_once(&self, target: &SubscriptionTarget) -> bool {
@@ -382,4 +376,4 @@ impl TerminalSubscriptionUsecase {
 
 #[cfg(test)]
 #[path = "subscription_test.rs"]
-mod subscription_tests;
+pub(crate) mod subscription_tests;

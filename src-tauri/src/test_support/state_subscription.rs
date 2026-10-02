@@ -315,9 +315,11 @@ pub(crate) fn deps(
         ),
     );
     let terminal = crate::usecase::terminal_surface::subscription::TerminalSubscriptionUsecase::new(
-        output, None,
+        output,
+        None,
+        crate::test_support::state_subscription::terminal_driver(),
     );
-    crate::test_support::state_subscription::start_terminal_driver(&terminal);
+
     crate::adaptor::controller::api::StateSubscriptionDeps::new(usecase, presenter, terminal)
 }
 
@@ -352,8 +354,9 @@ impl StateSubscriptionUsecase {
             crate::usecase::terminal_surface::subscription::TerminalSubscriptionUsecase::new(
                 presenter.clone(),
                 Some(terminal),
+                crate::test_support::state_subscription::terminal_driver(),
             );
-        crate::test_support::state_subscription::start_terminal_driver(&subscriptions);
+
         TerminalSubscriptions {
             usecase: self,
             terminal: subscriptions,
@@ -509,33 +512,30 @@ pub(crate) fn pending_read_driver(
 pub(crate) fn scan_driver(
     duration: std::time::Duration,
 ) -> tokio::sync::mpsc::UnboundedSender<crate::usecase::repository_state::runtime::ScanWorker> {
-    let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
     crate::adaptor::controller::repository_scan::start(
         crate::usecase::retry::shared().clone(),
-        receiver,
         Arc::new(crate::usecase::repository_state::runtime::tests_support::TestRepositoryStateWorkerRuntime),
         crate::infrastructure::timer::delays(duration),
-    );
-    sender
+    )
 }
 
-pub(crate) fn start_terminal_driver(
-    usecase: &crate::usecase::terminal_surface::subscription::TerminalSubscriptionUsecase,
-) {
-    if tokio::runtime::Handle::try_current().is_ok() {
-        crate::adaptor::controller::terminal_subscription::start(usecase);
+pub(crate) fn terminal_driver() -> tokio::sync::mpsc::UnboundedSender<
+    crate::usecase::terminal_surface::subscription::TerminalRefresh,
+> {
+    if tokio::runtime::Handle::try_current().is_err() {
+        return tokio::sync::mpsc::unbounded_channel().0;
     }
+    crate::adaptor::controller::terminal_subscription::start()
 }
 
-pub(crate) fn start_repository_scan(
-    service: &crate::usecase::repository_state::RepositoryStateService,
-) {
-    if tokio::runtime::Handle::try_current().is_ok() {
-        crate::adaptor::controller::repository_scan::start(
-            crate::usecase::retry::shared().clone(),
-            service.take_worker_events(),
-            Arc::new(crate::usecase::repository_state::runtime::tests_support::TestRepositoryStateWorkerRuntime),
-            Arc::new(|| Box::pin(futures_util::stream::iter([()]))),
-        );
+pub(crate) fn repository_driver(
+) -> tokio::sync::mpsc::UnboundedSender<crate::usecase::repository_state::runtime::ScanWorker> {
+    if tokio::runtime::Handle::try_current().is_err() {
+        return tokio::sync::mpsc::unbounded_channel().0;
     }
+    crate::adaptor::controller::repository_scan::start(
+        crate::usecase::retry::shared().clone(),
+        Arc::new(crate::usecase::repository_state::runtime::tests_support::TestRepositoryStateWorkerRuntime),
+        Arc::new(|| Box::pin(async {})),
+    )
 }

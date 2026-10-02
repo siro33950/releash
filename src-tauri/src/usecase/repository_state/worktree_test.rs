@@ -398,3 +398,30 @@ async fn test_worktreeの並び_repositoryのrootでなければ読まない() {
     assert_eq!(state.worktrees(), Fetched::default());
     assert!(scanner.take_prune_calls().is_empty());
 }
+
+#[tokio::test]
+async fn test_repository走査_駆動への送信失敗は読み込みを終えて性質と対象を公開する() {
+    // Given
+    let (workers, requests) = tokio::sync::mpsc::unbounded_channel();
+    drop(requests);
+    // When
+    let state = WorktreeState::new(
+        "/repo-unavailable".into(),
+        true,
+        Arc::new(FakeScanner::new("file")),
+        crate::test_support::state_subscription::test_subscriptions(),
+        Arc::new(TestRepositoryStateWorkerRuntime),
+        workers,
+    );
+    // Then
+    assert!(!state.snapshot_for_read().flags.loading);
+    let failure = state.scan_failure.read().clone().unwrap();
+    assert_eq!(
+        failure.kind,
+        crate::usecase::failure::Failure::Technical(
+            crate::domain::failure::TechnicalFailureNature::Other
+        )
+    );
+    assert!(failure.message.contains("/repo-unavailable"));
+    assert!(state.read_snapshot().is_err());
+}

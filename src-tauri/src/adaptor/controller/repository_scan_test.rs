@@ -6,6 +6,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 struct Scanner {
     scans: AtomicUsize,
+    worktree_scans: AtomicUsize,
     transient_failures: AtomicUsize,
 }
 
@@ -48,6 +49,7 @@ impl RepositoryScanner for Scanner {
         &self,
         _: &str,
     ) -> Result<Vec<crate::domain::repository::Worktree>, RepositoryStateError> {
+        self.worktree_scans.fetch_add(1, Ordering::SeqCst);
         Ok(Vec::new())
     }
 
@@ -61,6 +63,7 @@ async fn test_repository走査_一時的な失敗をやり直して走査を終�
     // Given
     let scanner = Arc::new(Scanner {
         scans: AtomicUsize::new(0),
+        worktree_scans: AtomicUsize::new(0),
         transient_failures: AtomicUsize::new(2),
     });
     let state = WorktreeState::new(
@@ -87,6 +90,7 @@ async fn test_repository走査_偽の遅延で理由を併合しshutdown後は�
     // Given
     let scanner = Arc::new(Scanner {
         scans: AtomicUsize::new(0),
+        worktree_scans: AtomicUsize::new(0),
         transient_failures: AtomicUsize::new(0),
     });
     let runtime = Arc::new(TestRepositoryStateWorkerRuntime);
@@ -111,9 +115,9 @@ async fn test_repository走査_偽の遅延で理由を併合しshutdown後は�
             move || {
                 armed.notify_one();
                 let elapsed = elapsed.clone();
-                Box::pin(futures_util::stream::once(async move {
+                Box::pin(async move {
                     elapsed.notified().await;
-                }))
+                })
             }
         }),
     ));
@@ -125,7 +129,9 @@ async fn test_repository走査_偽の遅延で理由を併合しshutdown後は�
     state.invalidate(InvalidateReason::files());
     elapsed.notify_one();
     tokio::time::timeout(Duration::from_secs(2), async {
-        while state.snapshot_for_read().version == 0 {
+        while state.snapshot_for_read().version == 0
+            || scanner.worktree_scans.load(Ordering::SeqCst) == 0
+        {
             tokio::task::yield_now().await;
         }
     })
@@ -133,6 +139,7 @@ async fn test_repository走査_偽の遅延で理由を併合しshutdown後は�
     .unwrap();
     // Then
     assert_eq!(scanner.scans.load(Ordering::SeqCst), 1);
+    assert_eq!(scanner.worktree_scans.load(Ordering::SeqCst), 1);
     // When
     state.invalidate(InvalidateReason::files());
     armed.notified().await;
@@ -143,42 +150,12 @@ async fn test_repository走査_偽の遅延で理由を併合しshutdown後は�
     assert_eq!(scanner.scans.load(Ordering::SeqCst), 1);
 }
 
-#[tokio::test]
-async fn test_repository走査_時刻streamが終わったら走査せず終了する() {
-    // Given
-    let scanner = Arc::new(Scanner {
-        scans: AtomicUsize::new(0),
-        transient_failures: AtomicUsize::new(0),
-    });
-    let runtime = Arc::new(TestRepositoryStateWorkerRuntime);
-    let (workers, mut requests) = tokio::sync::mpsc::unbounded_channel();
-    let state = WorktreeState::new(
-        "/repo-ended".into(),
-        true,
-        scanner.clone(),
-        crate::test_support::state_subscription::test_subscriptions(),
-        runtime.clone(),
-        workers,
-    );
-    // When
-    state.invalidate(InvalidateReason::change());
-    run_worker(
-        crate::usecase::retry::test_retrying(),
-        requests.recv().await.unwrap(),
-        runtime,
-        Arc::new(|| Box::pin(futures_util::stream::empty())),
-    )
-    .await;
-    // Then
-    assert_eq!(scanner.scans.load(Ordering::SeqCst), 0);
-    state.shutdown();
-}
-
 #[tokio::test(start_paused = true)]
 async fn test_repository走査_単回操作は一時エラーを再試行せず結果を確定する() {
     // Given
     let scanner = Arc::new(Scanner {
         scans: AtomicUsize::new(0),
+        worktree_scans: AtomicUsize::new(0),
         transient_failures: AtomicUsize::new(2),
     });
     let runtime = RepositoryScanWorkerRuntime::new();

@@ -2,7 +2,8 @@
 
 GIVEN daemon の 5 つの繰り返し処理（購読の worker、terminal の読み直し、launch の記録の保持期限、terminal の checkpoint の書き出し、repository の scan の worker）がある
 WHEN それぞれの task の起動、きっかけを待つ `loop`、時刻の出どころを読む
-THEN usecase の中に task の起動、きっかけを待つ `loop`、`sleep`・interval・遅延が無い
+THEN usecase の中に、繰り返しを回すために起こして持ち続ける task、きっかけを待つ `loop`、`sleep`・interval・遅延が無い
+AND 1 回の操作の中で起こしてその場で待ち終える処理（`spawn_blocking` 等）は、これに含まれない
 AND 時刻は infrastructure の駆動部だけが作っている
 AND task の起動ときっかけを待つ `loop` は controller にあり、controller はきっかけごとに Usecase を呼んでいる
 
@@ -57,7 +58,8 @@ THEN その記録は消える
 GIVEN ある session が dirty になった
 WHEN 250ms が経つ
 THEN その session の checkpoint が flush される
-AND 待っている間に再び dirty になっていれば、さらに 250ms 後に再び flush される
+AND flush している間に再び dirty になっていれば、さらに 250ms 後に再び flush される
+AND 250ms 待っている間に届いた dirty は、その後の 1 回の flush に含まれ、それだけで再び flush されることはない
 
 ## B-010: repository の scan の worker
 

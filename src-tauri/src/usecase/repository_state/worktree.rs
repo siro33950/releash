@@ -97,20 +97,29 @@ impl WorktreeState {
             subscriptions: Mutex::new(HashMap::new()),
             state_subscriptions,
         });
-        let _ = workers.send(ScanWorker {
-            state: state.clone(),
-            scanner,
-            receiver: invalidate_rx,
-        });
+        if workers
+            .send(ScanWorker {
+                state: state.clone(),
+                scanner,
+                receiver: invalidate_rx,
+            })
+            .is_err()
+        {
+            state.mark_scan_failed(&RepositoryStateError::Background {
+                kind: crate::usecase::failure::Failure::Technical(
+                    crate::domain::failure::TechnicalFailureNature::Other,
+                ),
+                message: format!(
+                    "Repository scan driver unavailable: {}",
+                    state.worktree_path()
+                ),
+            });
+        }
         state
     }
 
     pub(crate) fn should_scan(&self, reason: &InvalidateReason) -> bool {
         !self.is_shutdown() && !reason.shutdown
-    }
-
-    pub(crate) fn needs_file_scan(&self, reason: &InvalidateReason) -> bool {
-        reason.files
     }
 
     pub(crate) async fn finish_worker_scan(

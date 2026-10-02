@@ -465,6 +465,7 @@ impl<R: tauri::Runtime> WorkflowControlPlaneAcceptanceHost<R> {
 
         let terminal = TerminalSurfaceRuntime::new(work.clone(), config.data_dir.clone());
         let composition = compose_agent_sessions(AgentSessionCompositionInput {
+launch_retention: crate::adaptor::controller::agent_session_launch_retention::run(crate::infrastructure::timer::delays(crate::adaptor::controller::agent_session_launch_retention::RETENTION)),
             retrying: work.retrying.clone(),
             state_publisher: None,
 			store: store.clone(),

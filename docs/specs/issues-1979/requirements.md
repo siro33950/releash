@@ -63,7 +63,7 @@
 
 # Requirements
 
-- R-001: 1〜5 の繰り返し処理で、Usecase は task を起こさず、きっかけを待つ `loop` を持たず、時刻（`sleep`・interval・遅延）を扱わない。
+- R-001: 1〜5 の繰り返し処理で、Usecase は繰り返しを回す task を起こして持ち続けず、きっかけを待つ `loop` を持たず、時刻（`sleep`・interval・遅延）を扱わない。1 回の操作の中で起こしてその場で待ち終える処理（`spawn_blocking` 等）は含まない。
 - R-002: 1〜5 の繰り返し処理で、時刻を作るのは infrastructure の駆動部だけである。task の起動と、きっかけを待つ `loop` は controller が持ち、controller はきっかけごとに Usecase を呼ぶ。
 - R-003: 1〜5 の繰り返し処理で、業務の判断は今どおり usecase と domain が答える。判断は次のとおり。
   - どの対象がどの知らせで影響を受けるか
@@ -85,7 +85,7 @@
   - 作り直しの記録が空になったら終わる。
   - 購読が無くなった対象の作り直しは止まる。
 - R-006: launch の記録の保持期限の振る舞いを保つ。`Activated` になった記録は 300 秒後に消える。
-- R-007: terminal の checkpoint の書き出しの振る舞いを保つ。dirty になった session は 250ms 後に flush される。待っている間に dirty が来ていれば、もう一度 250ms 待って flush する。
+- R-007: terminal の checkpoint の書き出しの振る舞いを保つ。dirty になった session は 250ms 後に flush される。flush している間に再び dirty になっていれば、もう一度 250ms 待って flush する。250ms 待っている間に届いた dirty は、その後の flush に含まれる。
 - R-008: repository の scan の worker の振る舞いを保つ。
   - 知らせを受けたら debounce（300ms）を待ち、溜まった理由をまとめて scan する。
   - shutdown になったら止まる。

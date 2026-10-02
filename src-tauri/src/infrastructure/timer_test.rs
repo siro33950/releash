@@ -22,12 +22,11 @@ async fn test_遅延通知_指定期限までは通知せず期限に一度だ�
     // Given
     let delay = delays(Duration::from_secs(300));
     let mut elapsed = delay();
-    assert!(elapsed.next().now_or_never().is_none());
+    assert!(elapsed.as_mut().now_or_never().is_none());
     // When
     tokio::time::advance(Duration::from_secs(299)).await;
-    assert!(elapsed.next().now_or_never().is_none());
+    assert!(elapsed.as_mut().now_or_never().is_none());
     tokio::time::advance(Duration::from_secs(1)).await;
     // Then
-    assert_eq!(elapsed.next().now_or_never(), Some(Some(())));
-    assert_eq!(elapsed.next().now_or_never(), Some(None));
+    assert_eq!(elapsed.as_mut().now_or_never(), Some(()));
 }
