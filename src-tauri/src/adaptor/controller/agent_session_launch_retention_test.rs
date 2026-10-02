@@ -36,7 +36,7 @@ async fn test_workflow起動保持_偽の期限通知だけでactivated記録を
         }
     }));
     let usecase = AgentSessionLaunchUsecase::new(
-crate::usecase::agent_session::AgentSessionLaunchOutput { performance: std::sync::Arc::new(crate::adaptor::gateway::telemetry::TelemetryGateway), activated: activated },
+std::sync::Arc::new(crate::adaptor::gateway::telemetry::TelemetryGateway),
 sessions,
 Arc::new(ProviderLifecycleUsecase::new(
             Arc::new(
@@ -55,6 +55,7 @@ provider_runtime(
 Arc::new(FixedHistory { entries: Vec::new() }),
 hook_health_usecase(),
 started_execution_trees(),
+activated,
 );
 
     let launched = usecase

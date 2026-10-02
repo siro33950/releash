@@ -1,4 +1,4 @@
-use crate::usecase::agent_session::{AgentSessionLaunchUsecase, LaunchRetention};
+use crate::usecase::agent_session::LaunchRetention;
 
 pub(crate) const RETENTION: std::time::Duration = std::time::Duration::from_secs(300);
 
@@ -11,7 +11,7 @@ pub(crate) fn run(
             let elapsed = delay();
             tokio::spawn(async move {
                 elapsed.await;
-                AgentSessionLaunchUsecase::expire_workflow_launch(request).await;
+                request.expire().await;
             });
         }
     });

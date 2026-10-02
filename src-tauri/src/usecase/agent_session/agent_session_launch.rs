@@ -318,25 +318,34 @@ struct DurableAgentSessionLaunch {
     executable: ResolvedProviderExecutable,
 }
 
-pub(crate) struct AgentSessionLaunchOutput {
-    pub performance: Arc<dyn crate::usecase::telemetry::PerformanceOutput>,
-    pub activated: tokio::sync::mpsc::UnboundedSender<LaunchRetention>,
-}
-
 pub(crate) struct LaunchRetention {
     launches: Arc<Mutex<HashMap<String, WorkflowLaunchActivation>>>,
     session: String,
 }
 
+impl LaunchRetention {
+    pub(crate) async fn expire(self) {
+        let mut launches = self.launches.lock().await;
+        if matches!(
+            launches.get(&self.session),
+            Some(WorkflowLaunchActivation::Activated(_))
+        ) {
+            launches.remove(&self.session);
+        }
+    }
+}
+
 impl AgentSessionLaunchUsecase {
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
-        output: AgentSessionLaunchOutput,
+        performance: Arc<dyn crate::usecase::telemetry::PerformanceOutput>,
         sessions: Arc<AgentSessionUsecase>,
         lifecycle: Arc<ProviderLifecycleUsecase>,
         provider_runtime: ProviderAgentRuntime,
         history: Arc<dyn AgentSessionHistoryGateway>,
         hook_health: Arc<ProviderHookHealthUsecase>,
         execution_trees: Arc<dyn AgentSessionLaunchExecutionTrees>,
+        retention: tokio::sync::mpsc::UnboundedSender<LaunchRetention>,
     ) -> Self {
         let ProviderAgentRuntime {
             availability,
@@ -344,8 +353,8 @@ impl AgentSessionLaunchUsecase {
             terminal,
         } = provider_runtime;
         Self {
-            activated: output.activated,
-            performance: output.performance,
+            activated: retention,
+            performance,
             sessions,
             lifecycle,
             availability,
@@ -570,16 +579,6 @@ impl AgentSessionLaunchUsecase {
             self.activated_workflow_launches.lock().await.get(session),
             Some(WorkflowLaunchActivation::Activated(_))
         )
-    }
-
-    pub(crate) async fn expire_workflow_launch(request: LaunchRetention) {
-        let mut launches = request.launches.lock().await;
-        if matches!(
-            launches.get(&request.session),
-            Some(WorkflowLaunchActivation::Activated(_))
-        ) {
-            launches.remove(&request.session);
-        }
     }
 
     async fn prepare_new_session(

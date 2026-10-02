@@ -27,9 +27,7 @@ pub(crate) use agent_session_launch::{
     StartedExecutionTreeRegistrar, StartedExecutionTreeRegistrationError,
     WorkflowAgentSessionLaunchRequest, WorktreeMutationAdmission,
 };
-pub(crate) use agent_session_launch::{
-    AgentSessionLaunchOutput, AgentSessionLaunchUsecaseError, LaunchRetention,
-};
+pub(crate) use agent_session_launch::{AgentSessionLaunchUsecaseError, LaunchRetention};
 pub(crate) use agent_session_lifecycle::{
     AgentSessionGarbageCollectionOutcome, AgentSessionLifecycleUsecase,
     AgentSessionLifecycleUsecaseError, AgentSessionOpenOutcome,

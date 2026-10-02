@@ -3007,12 +3007,7 @@ async fn test_workflowのprovider回復_同じnodeを繰り返し再開し永続
     let input = Arc::new(RecordingContinuationInput::default());
     let port = ProviderWorkflowAgentSessionPort::new(
         Arc::new(super::AgentSessionLaunchUsecase::new(
-            crate::usecase::agent_session::AgentSessionLaunchOutput {
-                performance: std::sync::Arc::new(
-                    crate::adaptor::gateway::telemetry::TelemetryGateway,
-                ),
-                activated: tokio::sync::mpsc::unbounded_channel().0,
-            },
+            std::sync::Arc::new(crate::adaptor::gateway::telemetry::TelemetryGateway),
             context.sessions.clone(),
             context.provider_lifecycle.clone(),
             ProviderAgentRuntime::new(
@@ -3028,6 +3023,7 @@ async fn test_workflowのprovider回復_同じnodeを繰り返し再開し永続
             ),
             context.hook_health.clone(),
             context.execution_trees.clone(),
+            tokio::sync::mpsc::unbounded_channel().0,
         )),
         Arc::new(super::AgentSessionInitialInstructionUsecase::new(
             context.sessions.clone(),
@@ -3365,12 +3361,7 @@ async fn test_workflow_session準備_入口から期限と取消の分類を保�
         *context.launches.prepare_stopped.lock().unwrap() = Some(stopped);
         let port = ProviderWorkflowAgentSessionPort::new(
             Arc::new(super::AgentSessionLaunchUsecase::new(
-                crate::usecase::agent_session::AgentSessionLaunchOutput {
-                    performance: std::sync::Arc::new(
-                        crate::adaptor::gateway::telemetry::TelemetryGateway,
-                    ),
-                    activated: tokio::sync::mpsc::unbounded_channel().0,
-                },
+                std::sync::Arc::new(crate::adaptor::gateway::telemetry::TelemetryGateway),
                 context.sessions.clone(),
                 context.provider_lifecycle.clone(),
                 ProviderAgentRuntime::new(
@@ -3386,6 +3377,7 @@ async fn test_workflow_session準備_入口から期限と取消の分類を保�
                 ),
                 context.hook_health.clone(),
                 context.execution_trees.clone(),
+                tokio::sync::mpsc::unbounded_channel().0,
             )),
             Arc::new(super::AgentSessionInitialInstructionUsecase::new(
                 context.sessions.clone(),

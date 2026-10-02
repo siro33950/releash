@@ -353,16 +353,14 @@ pub(crate) fn compose_agent_sessions(
         input.terminal.clone(),
     );
     let launch = Arc::new(AgentSessionLaunchUsecase::new(
-        crate::usecase::agent_session::AgentSessionLaunchOutput {
-            performance: std::sync::Arc::new(crate::adaptor::gateway::telemetry::TelemetryGateway),
-            activated: input.launch_retention,
-        },
+        std::sync::Arc::new(crate::adaptor::gateway::telemetry::TelemetryGateway),
         sessions.clone(),
         provider_lifecycle.clone(),
         provider_runtime.clone(),
         history_gateway,
         hook_health.clone(),
         execution_tree_registrations.clone(),
+        input.launch_retention,
     ));
     let lifecycle = Arc::new(AgentSessionLifecycleUsecase::new(
         std::sync::Arc::new(crate::adaptor::gateway::identity::RandomIdentityIssuer),

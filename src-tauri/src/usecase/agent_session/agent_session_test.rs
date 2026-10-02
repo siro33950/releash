@@ -732,10 +732,7 @@ fn launch_usecase_with_tree_registrar(
         Arc::new(RecordingLifecycleEvents::default()),
     ));
     AgentSessionLaunchUsecase::new(
-        crate::usecase::agent_session::AgentSessionLaunchOutput {
-            performance: std::sync::Arc::new(crate::adaptor::gateway::telemetry::TelemetryGateway),
-            activated: tokio::sync::mpsc::unbounded_channel().0,
-        },
+        std::sync::Arc::new(crate::adaptor::gateway::telemetry::TelemetryGateway),
         Arc::new(AgentSessionUsecase::new(repository)),
         lifecycle,
         provider_runtime(availability, launch_gateway, terminal),
@@ -744,6 +741,7 @@ fn launch_usecase_with_tree_registrar(
         }),
         hook_health,
         execution_trees,
+        tokio::sync::mpsc::unbounded_channel().0,
     )
 }
 
@@ -912,7 +910,7 @@ async fn test_agent_session_launch_実行木登録失敗ではcreateと起動資
         ..RecordingStartedExecutionTrees::default()
     });
     let usecase = AgentSessionLaunchUsecase::new(
-crate::usecase::agent_session::AgentSessionLaunchOutput { performance: std::sync::Arc::new(crate::adaptor::gateway::telemetry::TelemetryGateway), activated: tokio::sync::mpsc::unbounded_channel().0 },
+std::sync::Arc::new(crate::adaptor::gateway::telemetry::TelemetryGateway),
 Arc::new(AgentSessionUsecase::new(repository.clone())),
 Arc::new(ProviderLifecycleUsecase::new(
             Arc::new(
@@ -931,6 +929,7 @@ provider_runtime(
 Arc::new(FixedHistory { entries: Vec::new() }),
 hook_health_usecase(),
 execution_trees.clone(),
+tokio::sync::mpsc::unbounded_channel().0,
 );
 
     let error = usecase
@@ -982,7 +981,7 @@ async fn test_agent_session_launch_session作成とlifecycle_armを一回のrepo
     *repository.stored.lock().unwrap() = None;
     let lifecycle_events = Arc::new(RecordingLifecycleEvents::default());
     let usecase = AgentSessionLaunchUsecase::new(
-crate::usecase::agent_session::AgentSessionLaunchOutput { performance: std::sync::Arc::new(crate::adaptor::gateway::telemetry::TelemetryGateway), activated: tokio::sync::mpsc::unbounded_channel().0 },
+std::sync::Arc::new(crate::adaptor::gateway::telemetry::TelemetryGateway),
 Arc::new(AgentSessionUsecase::new(repository.clone())),
 Arc::new(ProviderLifecycleUsecase::new(
             Arc::new(
@@ -1003,6 +1002,7 @@ Arc::new(FixedHistory {
         }),
 hook_health_usecase(),
 started_execution_trees(),
+tokio::sync::mpsc::unbounded_channel().0,
 );
 
     usecase
@@ -1162,7 +1162,7 @@ async fn test_agent_session_launch_同一request_idの並行呼び出しはsessi
         deletes: Mutex::new(0),
     });
     let usecase = Arc::new(AgentSessionLaunchUsecase::new(
-crate::usecase::agent_session::AgentSessionLaunchOutput { performance: std::sync::Arc::new(crate::adaptor::gateway::telemetry::TelemetryGateway), activated: tokio::sync::mpsc::unbounded_channel().0 },
+std::sync::Arc::new(crate::adaptor::gateway::telemetry::TelemetryGateway),
 Arc::new(AgentSessionUsecase::new(repository.clone())),
 Arc::new(ProviderLifecycleUsecase::new(
             Arc::new(
@@ -1183,6 +1183,7 @@ Arc::new(FixedHistory {
         }),
 hook_health_usecase(),
 started_execution_trees(),
+tokio::sync::mpsc::unbounded_channel().0,
 ));
 
     let first = tokio::spawn(
@@ -1347,7 +1348,7 @@ async fn test_agent_session_launch_起動panic後はin_flightに残さず同一r
         checks: AtomicUsize::new(0),
     });
     let usecase = Arc::new(AgentSessionLaunchUsecase::new(
-crate::usecase::agent_session::AgentSessionLaunchOutput { performance: std::sync::Arc::new(crate::adaptor::gateway::telemetry::TelemetryGateway), activated: tokio::sync::mpsc::unbounded_channel().0 },
+std::sync::Arc::new(crate::adaptor::gateway::telemetry::TelemetryGateway),
 Arc::new(AgentSessionUsecase::new(repository.clone())),
 Arc::new(ProviderLifecycleUsecase::new(
             Arc::new(
@@ -1365,6 +1366,7 @@ Arc::new(FixedHistory {
         }),
 hook_health_usecase(),
 started_execution_trees(),
+tokio::sync::mpsc::unbounded_channel().0,
 ));
 
     let first = Arc::clone(&usecase)
@@ -1411,10 +1413,7 @@ async fn test_agent_session_launch_pty起動中のsessionをgcしない() {
     let launches = Arc::new(RecordingLaunchGateway::default());
     let hook_health = hook_health_usecase();
     let launch = Arc::new(AgentSessionLaunchUsecase::new(
-        crate::usecase::agent_session::AgentSessionLaunchOutput {
-            performance: std::sync::Arc::new(crate::adaptor::gateway::telemetry::TelemetryGateway),
-            activated: tokio::sync::mpsc::unbounded_channel().0,
-        },
+        std::sync::Arc::new(crate::adaptor::gateway::telemetry::TelemetryGateway),
         sessions.clone(),
         provider_lifecycle.clone(),
         provider_runtime(
@@ -1430,6 +1429,7 @@ async fn test_agent_session_launch_pty起動中のsessionをgcしない() {
         }),
         hook_health.clone(),
         started_execution_trees(),
+        tokio::sync::mpsc::unbounded_channel().0,
     ));
     let lifecycle = Arc::new(AgentSessionLifecycleUsecase::new(
         std::sync::Arc::new(crate::adaptor::gateway::identity::RandomIdentityIssuer),
@@ -1504,7 +1504,7 @@ async fn test_agent_session_history_resume_実行木登録失敗ではcreateをr
         ..RecordingStartedExecutionTrees::default()
     });
     let usecase = AgentSessionLaunchUsecase::new(
-crate::usecase::agent_session::AgentSessionLaunchOutput { performance: std::sync::Arc::new(crate::adaptor::gateway::telemetry::TelemetryGateway), activated: tokio::sync::mpsc::unbounded_channel().0 },
+std::sync::Arc::new(crate::adaptor::gateway::telemetry::TelemetryGateway),
 sessions.clone(),
 Arc::new(ProviderLifecycleUsecase::new(
             Arc::new(
@@ -1530,6 +1530,7 @@ Arc::new(FixedHistory {
         }),
 hook_health_usecase(),
 execution_trees.clone(),
+tokio::sync::mpsc::unbounded_channel().0,
 );
 
     let error = usecase
@@ -1574,7 +1575,7 @@ async fn test_agent_session_history_resume_同一要求の再送は既存session
     let lifecycle_events = Arc::new(RecordingLifecycleEvents::default());
     let terminal = Arc::new(RecordingTerminal::default());
     let usecase = AgentSessionLaunchUsecase::new(
-crate::usecase::agent_session::AgentSessionLaunchOutput { performance: std::sync::Arc::new(crate::adaptor::gateway::telemetry::TelemetryGateway), activated: tokio::sync::mpsc::unbounded_channel().0 },
+std::sync::Arc::new(crate::adaptor::gateway::telemetry::TelemetryGateway),
 sessions,
 Arc::new(ProviderLifecycleUsecase::new(
             Arc::new(
@@ -1600,6 +1601,7 @@ Arc::new(FixedHistory {
         }),
 hook_health_usecase(),
 started_execution_trees(),
+tokio::sync::mpsc::unbounded_channel().0,
 );
     let request = AgentSessionHistoryResumeRequest {
         workspace: WorkspaceIdentity::new("/repo"),
@@ -1670,10 +1672,7 @@ async fn test_agent_session_history_resumeは新しいsessionを作り失敗時�
     let hook_health = hook_health_usecase();
     let execution_trees = started_execution_trees();
     let usecase = AgentSessionLaunchUsecase::new(
-        crate::usecase::agent_session::AgentSessionLaunchOutput {
-            performance: std::sync::Arc::new(crate::adaptor::gateway::telemetry::TelemetryGateway),
-            activated: tokio::sync::mpsc::unbounded_channel().0,
-        },
+        std::sync::Arc::new(crate::adaptor::gateway::telemetry::TelemetryGateway),
         sessions.clone(),
         lifecycle,
         provider_runtime(availability, launch_gateway.clone(), terminal),
@@ -1687,6 +1686,7 @@ async fn test_agent_session_history_resumeは新しいsessionを作り失敗時�
         }),
         hook_health,
         execution_trees.clone(),
+        tokio::sync::mpsc::unbounded_channel().0,
     );
 
     let outcome = usecase
@@ -1747,10 +1747,7 @@ async fn test_agent_session_history_resume_lifecycle準備失敗でもpausedへ�
         Arc::new(FailingFirstLifecycleEvents::default()),
     ));
     let usecase = AgentSessionLaunchUsecase::new(
-        crate::usecase::agent_session::AgentSessionLaunchOutput {
-            performance: std::sync::Arc::new(crate::adaptor::gateway::telemetry::TelemetryGateway),
-            activated: tokio::sync::mpsc::unbounded_channel().0,
-        },
+        std::sync::Arc::new(crate::adaptor::gateway::telemetry::TelemetryGateway),
         sessions.clone(),
         lifecycle,
         provider_runtime(
@@ -1771,6 +1768,7 @@ async fn test_agent_session_history_resume_lifecycle準備失敗でもpausedへ�
         }),
         hook_health_usecase(),
         started_execution_trees(),
+        tokio::sync::mpsc::unbounded_channel().0,
     );
 
     let outcome = usecase
@@ -1974,7 +1972,7 @@ async fn test_provider_agent_workflow_session_launch_workflow関連付け後に�
     let launch_gateway = Arc::new(RecordingLaunchGateway::default());
     let terminal = Arc::new(RecordingTerminal::default());
     let usecase = AgentSessionLaunchUsecase::new(
-crate::usecase::agent_session::AgentSessionLaunchOutput { performance: std::sync::Arc::new(crate::adaptor::gateway::telemetry::TelemetryGateway), activated: tokio::sync::mpsc::unbounded_channel().0 },
+std::sync::Arc::new(crate::adaptor::gateway::telemetry::TelemetryGateway),
 sessions,
 Arc::new(ProviderLifecycleUsecase::new(
             Arc::new(
@@ -1993,6 +1991,7 @@ provider_runtime(
 Arc::new(FixedHistory { entries: Vec::new() }),
 hook_health_usecase(),
 started_execution_trees(),
+tokio::sync::mpsc::unbounded_channel().0,
 );
 
     let launched = usecase
@@ -2069,7 +2068,7 @@ async fn test_provider_agent_workflow_session_launch_別sessionのactivateを起
         deletes: Mutex::new(0),
     });
     let usecase = Arc::new(AgentSessionLaunchUsecase::new(
-crate::usecase::agent_session::AgentSessionLaunchOutput { performance: std::sync::Arc::new(crate::adaptor::gateway::telemetry::TelemetryGateway), activated: tokio::sync::mpsc::unbounded_channel().0 },
+std::sync::Arc::new(crate::adaptor::gateway::telemetry::TelemetryGateway),
 sessions,
 Arc::new(ProviderLifecycleUsecase::new(
             Arc::new(
@@ -2088,6 +2087,7 @@ provider_runtime(
 Arc::new(FixedHistory { entries: Vec::new() }),
 hook_health_usecase(),
 started_execution_trees(),
+tokio::sync::mpsc::unbounded_channel().0,
 ));
     let first = usecase
         .prepare_workflow_node(WorkflowAgentSessionLaunchRequest {
@@ -2171,7 +2171,7 @@ async fn test_provider_agent_workflow_session_launch_activate後のrollbackで�
     let launch_gateway = Arc::new(RecordingLaunchGateway::default());
     let terminal = Arc::new(RecordingTerminal::default());
     let usecase = AgentSessionLaunchUsecase::new(
-crate::usecase::agent_session::AgentSessionLaunchOutput { performance: std::sync::Arc::new(crate::adaptor::gateway::telemetry::TelemetryGateway), activated: tokio::sync::mpsc::unbounded_channel().0 },
+std::sync::Arc::new(crate::adaptor::gateway::telemetry::TelemetryGateway),
 sessions,
 Arc::new(ProviderLifecycleUsecase::new(
             Arc::new(
@@ -2190,6 +2190,7 @@ provider_runtime(
 Arc::new(FixedHistory { entries: Vec::new() }),
 hook_health_usecase(),
 started_execution_trees(),
+tokio::sync::mpsc::unbounded_channel().0,
 );
     let launched = usecase
         .prepare_workflow_node(WorkflowAgentSessionLaunchRequest {
@@ -2254,7 +2255,7 @@ async fn test_agent_session_launch_spawn失敗時はsessionとlaunch資源をrol
     let hook_health = hook_health_usecase();
     let execution_trees = started_execution_trees();
     let usecase = AgentSessionLaunchUsecase::new(
-crate::usecase::agent_session::AgentSessionLaunchOutput { performance: std::sync::Arc::new(crate::adaptor::gateway::telemetry::TelemetryGateway), activated: tokio::sync::mpsc::unbounded_channel().0 },
+std::sync::Arc::new(crate::adaptor::gateway::telemetry::TelemetryGateway),
 sessions.clone(),
 Arc::new(ProviderLifecycleUsecase::new(
             Arc::new(
@@ -2273,6 +2274,7 @@ provider_runtime(
 Arc::new(FixedHistory { entries: Vec::new() }),
 hook_health,
 execution_trees.clone(),
+tokio::sync::mpsc::unbounded_channel().0,
 );
 
     let result = usecase
@@ -2330,7 +2332,7 @@ async fn test_agent_session_launch_prepare失敗時のrollbackのterminal削除�
     *execution_trees.release_failure.lock().unwrap() =
         Some(ExecutionTreeCacheReleaseError::Unavailable);
     let usecase = AgentSessionLaunchUsecase::new(
-crate::usecase::agent_session::AgentSessionLaunchOutput { performance: std::sync::Arc::new(crate::adaptor::gateway::telemetry::TelemetryGateway), activated: tokio::sync::mpsc::unbounded_channel().0 },
+std::sync::Arc::new(crate::adaptor::gateway::telemetry::TelemetryGateway),
 sessions.clone(),
 Arc::new(ProviderLifecycleUsecase::new(
             Arc::new(
@@ -2351,6 +2353,7 @@ Arc::new(FixedHistory {
         }),
 hook_health_usecase(),
 execution_trees.clone(),
+tokio::sync::mpsc::unbounded_channel().0,
 );
 
     let result = usecase
@@ -2414,7 +2417,7 @@ async fn test_agent_session_launch_spawn失敗時のrollbackのterminal削除失
     *execution_trees.release_failure.lock().unwrap() =
         Some(ExecutionTreeCacheReleaseError::Corrupt);
     let usecase = AgentSessionLaunchUsecase::new(
-crate::usecase::agent_session::AgentSessionLaunchOutput { performance: std::sync::Arc::new(crate::adaptor::gateway::telemetry::TelemetryGateway), activated: tokio::sync::mpsc::unbounded_channel().0 },
+std::sync::Arc::new(crate::adaptor::gateway::telemetry::TelemetryGateway),
 sessions.clone(),
 Arc::new(ProviderLifecycleUsecase::new(
             Arc::new(
@@ -2435,6 +2438,7 @@ Arc::new(FixedHistory {
         }),
 hook_health_usecase(),
 execution_trees.clone(),
+tokio::sync::mpsc::unbounded_channel().0,
 );
 
     let result = usecase
@@ -2545,7 +2549,7 @@ async fn test_agent_session_launch_codexのhook_delivery未確認を警告しpro
     let terminal = Arc::new(RecordingTerminal::default());
     let hook_health = hook_health_usecase();
     let usecase = AgentSessionLaunchUsecase::new(
-crate::usecase::agent_session::AgentSessionLaunchOutput { performance: std::sync::Arc::new(crate::adaptor::gateway::telemetry::TelemetryGateway), activated: tokio::sync::mpsc::unbounded_channel().0 },
+std::sync::Arc::new(crate::adaptor::gateway::telemetry::TelemetryGateway),
 Arc::new(AgentSessionUsecase::new(repository)),
 Arc::new(ProviderLifecycleUsecase::new(
             Arc::new(
@@ -2557,6 +2561,7 @@ provider_runtime(availability, launch_gateway.clone(), terminal.clone()),
 Arc::new(FixedHistory { entries: Vec::new() }),
 hook_health.clone(),
 started_execution_trees(),
+tokio::sync::mpsc::unbounded_channel().0,
 );
 
     let launched = usecase

@@ -488,25 +488,40 @@ pub(crate) fn terminal_application_with_gateway(
     ))
 }
 
+thread_local! {
+    static IDLE_DRIVER_RECEIVERS: std::cell::RefCell<Vec<Box<dyn std::any::Any>>> = const {
+        std::cell::RefCell::new(Vec::new())
+    };
+}
+
+fn driver<T: 'static>(
+    start: impl FnOnce() -> tokio::sync::mpsc::UnboundedSender<T>,
+) -> tokio::sync::mpsc::UnboundedSender<T> {
+    if tokio::runtime::Handle::try_current().is_ok() {
+        return start();
+    }
+    let (sender, receiver) = tokio::sync::mpsc::unbounded_channel::<T>();
+    IDLE_DRIVER_RECEIVERS.with(|receivers| receivers.borrow_mut().push(Box::new(receiver)));
+    sender
+}
+
 pub(crate) fn read_driver(
 ) -> tokio::sync::mpsc::UnboundedSender<crate::usecase::state_subscription::ReadWorker> {
-    if tokio::runtime::Handle::try_current().is_err() {
-        return tokio::sync::mpsc::unbounded_channel().0;
-    }
-    crate::adaptor::controller::state_subscription::drive(Arc::new(|| {
-        let period = crate::domain::git_host::CacheTtl::EXTERNAL_INFORMATION.duration();
-        Box::pin(crate::infrastructure::timer::ticks_after(period, period))
-    }))
+    driver(|| {
+        crate::adaptor::controller::state_subscription::drive(Arc::new(|| {
+            let period = crate::domain::git_host::CacheTtl::EXTERNAL_INFORMATION.duration();
+            Box::pin(crate::infrastructure::timer::ticks_after(period, period))
+        }))
+    })
 }
 
 pub(crate) fn pending_read_driver(
 ) -> tokio::sync::mpsc::UnboundedSender<crate::usecase::state_subscription::ReadWorker> {
-    if tokio::runtime::Handle::try_current().is_err() {
-        return tokio::sync::mpsc::unbounded_channel().0;
-    }
-    crate::adaptor::controller::state_subscription::drive(Arc::new(|| {
-        Box::pin(futures_util::stream::pending())
-    }))
+    driver(|| {
+        crate::adaptor::controller::state_subscription::drive(Arc::new(|| {
+            Box::pin(futures_util::stream::pending())
+        }))
+    })
 }
 
 pub(crate) fn scan_driver(
@@ -522,20 +537,20 @@ pub(crate) fn scan_driver(
 pub(crate) fn terminal_driver() -> tokio::sync::mpsc::UnboundedSender<
     crate::usecase::terminal_surface::subscription::TerminalRefresh,
 > {
-    if tokio::runtime::Handle::try_current().is_err() {
-        return tokio::sync::mpsc::unbounded_channel().0;
-    }
-    crate::adaptor::controller::terminal_subscription::start()
+    driver(crate::adaptor::controller::terminal_subscription::start)
 }
 
 pub(crate) fn repository_driver(
 ) -> tokio::sync::mpsc::UnboundedSender<crate::usecase::repository_state::runtime::ScanWorker> {
-    if tokio::runtime::Handle::try_current().is_err() {
-        return tokio::sync::mpsc::unbounded_channel().0;
-    }
-    crate::adaptor::controller::repository_scan::start(
+    driver(|| {
+        crate::adaptor::controller::repository_scan::start(
         crate::usecase::retry::shared().clone(),
         Arc::new(crate::usecase::repository_state::runtime::tests_support::TestRepositoryStateWorkerRuntime),
         Arc::new(|| Box::pin(async {})),
     )
+    })
 }
+
+#[cfg(test)]
+#[path = "state_subscription_test.rs"]
+mod state_subscription_tests;
