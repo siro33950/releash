@@ -25,7 +25,11 @@ async fn test_worktree削除一覧_本番runtime配線で受理した削除状�
         .create_worktree(repo_path, "feature", true, None)
         .unwrap();
     let data_dir = root.join("data");
-    let store = LocalEventStore::open(LocalEventStoreConfig::production(data_dir.clone())).unwrap();
+    let store = LocalEventStore::open(LocalEventStoreConfig::production(
+        data_dir.clone(),
+        std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
+    ))
+    .unwrap();
     let config = Arc::new(AppConfig::new(
         ReleashConfig::default(),
         data_dir.join("releash.toml"),

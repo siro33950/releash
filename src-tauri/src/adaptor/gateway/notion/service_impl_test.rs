@@ -201,16 +201,8 @@ async fn test_notion再試行_retry_after待ちが引き継いだ期限で終わ
     })
     .await;
     // Then
-    assert!(matches!(
-        result,
-        Err(NotionError::Technical(
-            crate::domain::failure::TechnicalFailure {
-                nature: crate::domain::failure::TechnicalFailureNature::TimedOut,
-                ..
-            }
-        ))
-    ));
-    assert!(start.elapsed() < Duration::from_secs(3));
+    assert!(matches!(result, Err(NotionError::ApiError(message)) if message.contains("HTTP 429")));
+    assert!(start.elapsed() < Duration::from_millis(500));
     let listener = server.join().unwrap();
     listener.set_nonblocking(true).unwrap();
     assert_eq!(
@@ -338,4 +330,73 @@ async fn test_notion通信_429以外のhttp失敗はstatusと本文を保持す�
         );
         server.join().unwrap();
     }
+}
+
+#[tokio::test(start_paused = true)]
+async fn test_notion再試行_予算が尽きた429は待たずに返す() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}/", listener.local_addr().unwrap());
+    let limiter = Arc::new(crate::common::retry::RetryLimiter::deterministic());
+    let budget = limiter.clone();
+    let server = std::thread::spawn(move || {
+        let (mut socket, _) = listener.accept().unwrap();
+        let mut request = [0; 4096];
+        assert!(socket.read(&mut request).unwrap() > 0);
+        while budget.try_acquire() {}
+        socket.write_all(b"HTTP/1.1 429 Too Many Requests\r\nContent-Length: 0\r\nRetry-After: 60\r\nConnection: close\r\n\r\n").unwrap();
+        listener
+    });
+    let start = Instant::now();
+    let client = build_client("token").unwrap();
+    let body = serde_json::json!({});
+    let request = send_with_retry(&client, &url, &body, &limiter);
+    tokio::pin!(request);
+    let result = loop {
+        tokio::select! {
+            result = &mut request => break result,
+            _ = tokio::task::yield_now() => assert!(start.elapsed() < Duration::from_secs(2)),
+        }
+    };
+    assert!(matches!(result, Err(NotionError::ApiError(message)) if message.contains("HTTP 429")));
+    assert!(start.elapsed() < Duration::from_secs(1));
+    let listener = server.join().unwrap();
+    listener.set_nonblocking(true).unwrap();
+    assert_eq!(
+        listener.accept().unwrap_err().kind(),
+        std::io::ErrorKind::WouldBlock
+    );
+}
+
+#[tokio::test]
+async fn test_notion再試行_retry_afterが無ければ一秒待つ() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}/", listener.local_addr().unwrap());
+    let server = std::thread::spawn(move || {
+        let mut last = None;
+        for attempt in 0..2 {
+            let (mut socket, _) = listener.accept().unwrap();
+            let mut request = [0; 4096];
+            assert!(socket.read(&mut request).unwrap() > 0);
+            if attempt == 0 {
+                last = Some(Instant::now());
+                socket.write_all(b"HTTP/1.1 429 Too Many Requests\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
+            } else {
+                assert!(last.unwrap().elapsed() >= Duration::from_secs(1));
+                socket
+                    .write_all(
+                        b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}",
+                    )
+                    .unwrap();
+            }
+        }
+    });
+    send_with_retry(
+        &build_client("token").unwrap(),
+        &url,
+        &serde_json::json!({}),
+        &crate::common::retry::RetryLimiter::deterministic(),
+    )
+    .await
+    .unwrap();
+    server.join().unwrap();
 }

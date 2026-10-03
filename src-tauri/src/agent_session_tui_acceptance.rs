@@ -176,9 +176,11 @@ impl<R: tauri::Runtime> AgentSessionTuiAcceptanceHost<R> {
     ) -> Result<Self, String> {
         let work = crate::terminal_surface::initialize_background_work_for_acceptance();
         std::fs::create_dir_all(&config.data_dir).map_err(|error| error.to_string())?;
-        let store =
-            LocalEventStore::open(LocalEventStoreConfig::production(config.data_dir.clone()))
-                .map_err(|error| error.to_string())?;
+        let store = LocalEventStore::open(LocalEventStoreConfig::production(
+            config.data_dir.clone(),
+            std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
+        ))
+        .map_err(|error| error.to_string())?;
         let terminal = TerminalSurfaceRuntime::new(work.clone(), config.data_dir.clone());
         let data_dir = config.data_dir.clone();
         let subscriptions = terminal.subscriptions();
@@ -348,7 +350,7 @@ launch_retention: crate::adaptor::controller::agent_session_launch_retention::ru
             crate::adaptor::controller::api::client::router(Some(
                 crate::adaptor::controller::api::ClientApiDeps::new(
                     dispatch,
-                    crate::adaptor::controller::daemon::client_priority_interceptor(None),
+                    crate::adaptor::controller::daemon::client_priority_interceptor(),
                 )
                 .with_state_subscriptions(
                     crate::adaptor::controller::api::StateSubscriptionDeps::new(

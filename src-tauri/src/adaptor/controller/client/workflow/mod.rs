@@ -1256,6 +1256,7 @@ crate::test_support::state_subscription::repository_driver(),
         let local_event_store = crate::adaptor::gateway::local_event_store::LocalEventStore::open(
             crate::adaptor::gateway::local_event_store::LocalEventStoreConfig::production(
                 data_dir.clone(),
+                std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
             ),
         )
         .unwrap();

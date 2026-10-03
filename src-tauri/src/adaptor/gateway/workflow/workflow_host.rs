@@ -2324,6 +2324,7 @@ mod workflow_host_tests {
                 let directory = tempfile::tempdir().unwrap();
                 let store = LocalEventStore::open(LocalEventStoreConfig::production(
                     directory.path().to_path_buf(),
+                    std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
                 ))
                 .unwrap();
                 let app = test_helpers::dependencies(Some(store.clone()));
@@ -2743,6 +2744,7 @@ mod workflow_host_tests {
         let directory = tempfile::tempdir().unwrap();
         let store = LocalEventStore::open(LocalEventStoreConfig::production(
             directory.path().to_path_buf(),
+            std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
         ))
         .unwrap();
         let app = test_helpers::dependencies(Some(store.clone()));
@@ -2824,6 +2826,7 @@ nodes:
         let directory = tempfile::tempdir().unwrap();
         let store = LocalEventStore::open(LocalEventStoreConfig::production(
             directory.path().to_path_buf(),
+            std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
         ))
         .unwrap();
         let app = test_helpers::dependencies(Some(store.clone()));
@@ -3455,7 +3458,10 @@ nodes:
         ) -> RuntimeEffectFixture {
             let directory = tempfile::tempdir().unwrap();
             let fault = Arc::new(FaultInjector::new());
-            let mut config = LocalEventStoreConfig::production(directory.path().to_path_buf());
+            let mut config = LocalEventStoreConfig::production(
+                directory.path().to_path_buf(),
+                std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
+            );
             config.fault = fault.clone();
             let store = LocalEventStore::open(config).unwrap();
             let app = test_helpers::dependencies(Some(store.clone()));
@@ -3546,6 +3552,7 @@ nodes:
             let directory = tempfile::tempdir().unwrap();
             let store = LocalEventStore::open(LocalEventStoreConfig::production(
                 directory.path().to_path_buf(),
+                std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
             ))
             .unwrap();
             let app = test_helpers::dependencies(Some(store.clone()));
@@ -3956,6 +3963,7 @@ nodes:
             let directory = tempfile::tempdir().unwrap();
             let store = LocalEventStore::open(LocalEventStoreConfig::production(
                 directory.path().to_path_buf(),
+                std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
             ))
             .unwrap();
             let app = test_helpers::dependencies(Some(store.clone()));
@@ -4154,6 +4162,7 @@ nodes:
             let directory = tempfile::tempdir().unwrap();
             let store = LocalEventStore::open(LocalEventStoreConfig::production(
                 directory.path().to_path_buf(),
+                std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
             ))
             .unwrap();
             let app = test_helpers::dependencies(Some(store.clone()));
@@ -4688,6 +4697,7 @@ nodes:
             let directory = tempfile::tempdir().unwrap();
             let store = LocalEventStore::open(LocalEventStoreConfig::production(
                 directory.path().to_path_buf(),
+                std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
             ))
             .unwrap();
             let session_id = "agent-session-startup";
@@ -4853,6 +4863,7 @@ nodes:
             let directory = tempfile::tempdir().unwrap();
             let store = LocalEventStore::open(LocalEventStoreConfig::production(
                 directory.path().to_path_buf(),
+                std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
             ))
             .unwrap();
             append_started_session_tree(&store, CORRUPT_TREE_ID, "/repo/corrupt", 1).await;
@@ -4927,6 +4938,7 @@ nodes:
             let directory = tempfile::tempdir().unwrap();
             let store = LocalEventStore::open(LocalEventStoreConfig::production(
                 directory.path().to_path_buf(),
+                std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
             ))
             .unwrap();
             let mut fact = SessionExecutionTreeRootFacts::new(

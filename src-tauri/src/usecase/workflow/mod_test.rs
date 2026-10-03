@@ -364,14 +364,6 @@ impl crate::domain::workspace_tree::WorkspaceTreeRepository for FakeWorkspaceTre
     > {
         Ok(self.nodes.lock().unwrap().get(node_execution_id).cloned())
     }
-
-    async fn node_id_for_session(
-        &self,
-        _workspace_identity: &crate::domain::workspace_tree::WorkspaceIdentity,
-        _session_id: &str,
-    ) -> Result<Option<String>, crate::domain::local_event::LocalEventQueryError> {
-        Ok(None)
-    }
 }
 
 impl Fixture {

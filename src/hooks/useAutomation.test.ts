@@ -52,6 +52,28 @@ describe("useAutomation", () => {
 		states.publish("diagnostics", EMPTY_REPORT);
 	});
 
+	it("閉じている間に消えた同名workflowの再作成は一覧配信前も選択を保つ", async () => {
+		const { result, rerender } = renderHook(({ open }) => useAutomation(open), {
+			initialProps: { open: true },
+		});
+		act(() => result.current.selectWorkflow("test"));
+		rerender({ open: false });
+		act(() => states.publish("workflows", []));
+		rerender({ open: true });
+		mocks.invoke.mockResolvedValueOnce({ ok: true, name: "test" });
+		await act(async () => {
+			await result.current.saveWorkflowSource("name: test");
+		});
+		expect(result.current.selectedWorkflowName).toBe("test");
+		act(() => {
+			states.publish("workflows", [summary("test")]);
+			states.publish({ kind: "workflow", args: ["test"] }, workflow("test"));
+		});
+		expect(result.current.selectedWorkflow).toEqual(workflow("test"));
+		act(() => states.publish("workflows", []));
+		expect(result.current.selectedWorkflowName).toBeNull();
+	});
+
 	it("一覧と診断は購読から届き単発取得も監視要求も行わない", () => {
 		const { result } = renderHook(() => useAutomation(true));
 		expect(result.current.loading).toBe(false);

@@ -1099,7 +1099,7 @@ const commands = {
 		args: ClientCommandArgs["restore_agent_session"],
 	) => {
 		const result = decode(
-			ResultStringSchema,
+			SessionSelectionSchema,
 			await client.restoreAgentSession(
 				fromJson(
 					RestoreAgentSessionRequestSchema,

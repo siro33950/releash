@@ -52,12 +52,6 @@ impl ClientApiDeps {
         self
     }
 
-    pub(super) fn local_priority_gate(&self) -> crate::common::priority::PriorityGate {
-        self.priority
-            .gate
-            .with_classifier(super::local_priority_level)
-    }
-
     #[cfg(test)]
     fn priority_limits(&self) -> &crate::common::concurrency::PriorityLimits {
         self.priority.gate.limits()
@@ -137,7 +131,7 @@ pub(crate) fn router(deps: Option<ClientApiDeps>) -> Router {
         .with_interceptor(priority)
         .with_deadline_policy(
             connectrpc::DeadlinePolicy::new()
-                .with_default_timeout(std::time::Duration::from_secs(120)),
+                .with_default_timeout(super::super::daemon::default_timeout()),
         )
         .with_limits(
             connectrpc::Limits::default()

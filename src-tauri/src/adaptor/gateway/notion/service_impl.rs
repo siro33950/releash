@@ -99,45 +99,51 @@ async fn send_with_retry(
     limiter: &crate::common::retry::RetryLimiter,
 ) -> Result<NotionResponse, NotionError> {
     use crate::common::retry::{attempts_with_pushback, AttemptProgress, RetryBackoff};
-    crate::common::operation_context::timeout(REQUEST_TIMEOUT, async {
-        attempts_with_pushback(
-            RetryBackoff::ITEM,
-            limiter,
-            |error| match error {
-                NotionAttemptError::RateLimited(delay) => Some((AttemptProgress::Continue, *delay)),
-                NotionAttemptError::Failed(_) => None,
-            },
-            |_| async {
-                let response = send(client.post(url).json(body))
-                    .await
-                    .map_err(NotionAttemptError::Failed)?;
-                if response.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
-                    let delay = response
-                        .headers()
-                        .get("Retry-After")
-                        .and_then(|value| value.to_str().ok())
-                        .and_then(|value| retry_after(value, std::time::SystemTime::now()));
-                    Err(NotionAttemptError::RateLimited(delay))
-                } else if !response.status().is_success() {
-                    let status = response.status();
-                    let body = String::from_utf8_lossy(&response.body);
-                    Err(NotionAttemptError::Failed(NotionError::ApiError(format!(
-                        "HTTP {status}: {body}"
-                    ))))
-                } else {
-                    Ok(response)
-                }
-            },
-        )
-        .await
-        .map_err(|error| match error {
-            NotionAttemptError::Failed(error) => error,
-            NotionAttemptError::RateLimited(_) => {
-                unreachable!("rate limiting is retried until deadline")
+    attempts_with_pushback(
+        RetryBackoff::ITEM,
+        limiter,
+        |error| match error {
+            NotionAttemptError::RateLimited(delay) => Some((
+                AttemptProgress::Continue,
+                Some(delay.unwrap_or(Duration::from_secs(1))),
+            )),
+            NotionAttemptError::Failed(_) => None,
+        },
+        |_| async {
+            let response = send(client.post(url).json(body))
+                .await
+                .map_err(NotionAttemptError::Failed)?;
+            if response.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
+                let delay = response
+                    .headers()
+                    .get("Retry-After")
+                    .and_then(|value| value.to_str().ok())
+                    .and_then(|value| retry_after(value, std::time::SystemTime::now()));
+                Err(NotionAttemptError::RateLimited(delay))
+            } else if !response.status().is_success() {
+                let status = response.status();
+                let body = String::from_utf8_lossy(&response.body);
+                Err(NotionAttemptError::Failed(NotionError::ApiError(format!(
+                    "HTTP {status}: {body}"
+                ))))
+            } else {
+                Ok(response)
             }
-        })
+        },
+    )
+    .await
+    .map_err(|error| match error {
+        NotionAttemptError::Failed(error) => error,
+        NotionAttemptError::RateLimited(_) => {
+            if crate::common::operation_context::check()
+                == Err(crate::common::operation_context::OperationStopped::Cancelled)
+            {
+                NotionError::from(crate::common::operation_context::OperationStopped::Cancelled)
+            } else {
+                NotionError::ApiError("HTTP 429 Too Many Requests".into())
+            }
+        }
     })
-    .await?
 }
 
 async fn query_tasks(
@@ -219,11 +225,12 @@ async fn validate_config(config: &NotionRepoConfig) -> Result<NotionValidationRe
             )))
         }
     };
-    let properties = match if let Some(id) = extract_first_data_source_id(&json) {
-        fetch_data_source_properties(&client, &id).await
-    } else {
-        Ok(extract_properties_from_json(&json))
-    } {
+    let properties = match validation_properties(&json, |id| {
+        let client = &client;
+        async move { fetch_data_source_properties(client, &id).await }
+    })
+    .await
+    {
         Ok(properties) => properties,
         Err(error @ NotionError::Technical(_)) => return Err(error),
         Err(_) => return Ok(empty_validation_result(NotionConfigStatus::NetworkError)),
@@ -273,16 +280,16 @@ fn empty_validation_result(status: NotionConfigStatus) -> NotionValidationResult
     }
 }
 
-#[cfg(test)]
-fn validation_properties<F>(
+async fn validation_properties<F, Fut>(
     json: &serde_json::Value,
     fetch_data_source_properties: F,
 ) -> Result<Vec<NotionPropertyInfo>, NotionError>
 where
-    F: FnOnce(&str) -> Result<Vec<NotionPropertyInfo>, NotionError>,
+    F: FnOnce(String) -> Fut,
+    Fut: std::future::Future<Output = Result<Vec<NotionPropertyInfo>, NotionError>>,
 {
     match extract_first_data_source_id(json) {
-        Some(data_source_id) => fetch_data_source_properties(&data_source_id),
+        Some(data_source_id) => fetch_data_source_properties(data_source_id).await,
         None => Ok(extract_properties_from_json(json)),
     }
 }
@@ -306,11 +313,9 @@ async fn fetch_label_options(
         .iter()
         .any(|label| label.property_type == "people");
 
-    let workspace_users = if has_people {
-        fetch_workspace_users(&client).await?
-    } else {
-        Vec::new()
-    };
+    let workspace_users =
+        fetch_workspace_users_for_label_options(has_people, || fetch_workspace_users(&client))
+            .await?;
 
     Ok(props
         .into_iter()
@@ -346,16 +351,16 @@ async fn fetch_label_options(
         .collect())
 }
 
-#[cfg(test)]
-fn fetch_workspace_users_for_label_options<F>(
+async fn fetch_workspace_users_for_label_options<F, Fut>(
     has_people: bool,
     fetch_workspace_users: F,
 ) -> Result<Vec<(String, String)>, NotionError>
 where
-    F: FnOnce() -> Result<Vec<(String, String)>, NotionError>,
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = Result<Vec<(String, String)>, NotionError>>,
 {
     if has_people {
-        fetch_workspace_users()
+        fetch_workspace_users().await
     } else {
         Ok(Vec::new())
     }
@@ -581,15 +586,16 @@ mod tests {
         assert!(parse_failure.properties.is_empty());
     }
 
-    #[test]
-    fn validation_properties_data_source取得失敗を呼出元へ返す() {
+    #[tokio::test]
+    async fn validation_properties_data_source取得失敗を呼出元へ返す() {
         let json = serde_json::json!({
             "data_sources": [{ "id": "ds-1" }]
         });
 
-        let result = validation_properties(&json, |_| {
+        let result = validation_properties(&json, |_| async {
             Err(NotionError::RequestFailed("timeout".to_string()))
-        });
+        })
+        .await;
 
         assert_eq!(
             result.unwrap_err(),
@@ -597,8 +603,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn validation_properties_data_sourceがない場合はdatabase_jsonから抽出する() {
+    #[tokio::test]
+    async fn validation_properties_data_sourceがない場合はdatabase_jsonから抽出する() {
         let json = serde_json::json!({
             "properties": {
                 "Name": {
@@ -608,9 +614,11 @@ mod tests {
             }
         });
 
-        let result =
-            validation_properties(&json, |_| panic!("data source fetch should not be called"))
-                .unwrap();
+        let result = validation_properties(&json, |_| async {
+            panic!("data source fetch should not be called")
+        })
+        .await
+        .unwrap();
 
         assert_eq!(
             result,
@@ -622,20 +630,22 @@ mod tests {
         );
     }
 
-    #[test]
-    fn fetch_workspace_users_for_label_options_people取得失敗を伝播する() {
-        let result = fetch_workspace_users_for_label_options(true, || {
+    #[tokio::test]
+    async fn fetch_workspace_users_for_label_options_people取得失敗を伝播する() {
+        let result = fetch_workspace_users_for_label_options(true, || async {
             Err(NotionError::ApiError("HTTP 500".to_string()))
-        });
+        })
+        .await;
 
         assert_eq!(result.unwrap_err().to_string(), "API エラー: HTTP 500");
     }
 
-    #[test]
-    fn fetch_workspace_users_for_label_options_people以外ではusersを取得しない() {
-        let result = fetch_workspace_users_for_label_options(false, || {
+    #[tokio::test]
+    async fn fetch_workspace_users_for_label_options_people以外ではusersを取得しない() {
+        let result = fetch_workspace_users_for_label_options(false, || async {
             panic!("workspace users fetch should not be called")
         })
+        .await
         .unwrap();
 
         assert!(result.is_empty());
@@ -662,8 +672,8 @@ impl NotionResponse {
     }
 }
 async fn send(request: reqwest::RequestBuilder) -> Result<NotionResponse, NotionError> {
-    crate::common::operation_context::timeout(REQUEST_TIMEOUT, async {
-        let response = request.send().await?;
+    crate::common::operation_context::wait(&crate::common::operation_context::current(), async {
+        let response = request.timeout(REQUEST_TIMEOUT).send().await?;
         let status = response.status();
         let headers = response.headers().clone();
         let body = response.bytes().await?.to_vec();

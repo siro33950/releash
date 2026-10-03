@@ -1,5 +1,8 @@
+use crate::common::operation_context::{self, OperationStopped};
 use std::future::Future;
 use std::time::Duration;
+
+const JITTER_SPREAD: f64 = 0.2;
 
 #[derive(Debug, Clone, Copy)]
 pub struct RetryBackoff {
@@ -79,36 +82,39 @@ pub struct RetryLimiter {
 }
 
 impl RetryLimiter {
-    pub fn shared() -> std::sync::Arc<Self> {
-        static SHARED: std::sync::OnceLock<std::sync::Arc<RetryLimiter>> =
-            std::sync::OnceLock::new();
-        SHARED
-            .get_or_init(|| std::sync::Arc::new(Self::new()))
-            .clone()
+    fn backoff_delay(&self, policy: RetryBackoff, failures: u64, spread: f64) -> Duration {
+        policy.delay(failures, 1.0 + (self.jitter)() * spread)
+    }
+
+    fn token_wait(&self) -> Duration {
+        self.bucket
+            .lock()
+            .expect("retry bucket")
+            .acquire(self.origin.elapsed())
+    }
+
+    fn token_waits(&self) -> impl Iterator<Item = Duration> + '_ {
+        std::iter::from_fn(|| {
+            let delay = self.token_wait();
+            (!delay.is_zero()).then_some(delay)
+        })
+    }
+
+    pub fn try_acquire(&self) -> bool {
+        self.token_wait().is_zero()
     }
 
     pub fn wait_sync(
         &self,
-        context: &crate::common::operation_context::OperationContext,
+        context: &operation_context::OperationContext,
         policy: RetryBackoff,
         failures: u64,
-    ) -> Result<(), crate::common::operation_context::OperationStopped> {
-        crate::common::operation_context::sleep(
-            context,
-            policy.delay(failures, 1.0 + (self.jitter)() * 0.2),
-        )?;
-        loop {
-            context.check(std::time::Instant::now())?;
-            let wait = self
-                .bucket
-                .lock()
-                .expect("retry bucket")
-                .acquire(self.origin.elapsed());
-            if wait.is_zero() {
-                return Ok(());
-            }
-            crate::common::operation_context::sleep(context, wait)?;
+    ) -> Result<(), OperationStopped> {
+        operation_context::sleep(context, self.backoff_delay(policy, failures, JITTER_SPREAD))?;
+        for delay in self.token_waits() {
+            operation_context::sleep(context, delay)?;
         }
+        context.check(std::time::Instant::now())
     }
 
     pub fn new() -> Self {
@@ -128,27 +134,31 @@ impl RetryLimiter {
         }
     }
 
-    pub async fn wait(&self, policy: RetryBackoff, failures: u64) {
-        self.wait_with_spread(policy, failures, 0.2).await;
+    pub async fn wait(&self, policy: RetryBackoff, failures: u64) -> Result<(), OperationStopped> {
+        self.wait_with_spread(policy, failures, JITTER_SPREAD).await
     }
 
-    pub async fn wait_with_spread(&self, policy: RetryBackoff, failures: u64, spread: f64) {
-        tokio::time::sleep(policy.delay(failures, 1.0 + (self.jitter)() * spread)).await;
-        self.acquire().await;
+    pub async fn wait_with_spread(
+        &self,
+        policy: RetryBackoff,
+        failures: u64,
+        spread: f64,
+    ) -> Result<(), OperationStopped> {
+        self.pause(self.backoff_delay(policy, failures, spread))
+            .await?;
+        self.acquire().await
     }
 
-    pub async fn acquire(&self) {
-        loop {
-            let wait = self
-                .bucket
-                .lock()
-                .expect("retry bucket")
-                .acquire(self.origin.elapsed());
-            if wait.is_zero() {
-                return;
-            }
-            tokio::time::sleep(wait).await;
+    async fn pause(&self, delay: Duration) -> Result<(), OperationStopped> {
+        operation_context::wait(&operation_context::current(), tokio::time::sleep(delay)).await
+    }
+
+    pub async fn acquire(&self) -> Result<(), OperationStopped> {
+        operation_context::check()?;
+        for delay in self.token_waits() {
+            self.pause(delay).await?;
         }
+        operation_context::check()
     }
 }
 
@@ -160,7 +170,7 @@ impl Default for RetryLimiter {
 
 #[cfg(test)]
 fn jitter() -> f64 {
-    1.0 + jitter_fraction() * 0.2
+    1.0 + jitter_fraction() * JITTER_SPREAD
 }
 
 fn jitter_fraction() -> f64 {
@@ -214,10 +224,18 @@ where
             policy
         };
         if let Some(delay) = pushback {
-            tokio::time::sleep(delay).await;
-            limiter.acquire().await;
+            if operation_context::current()
+                .remaining(std::time::Instant::now())
+                .is_some_and(|remaining| delay >= remaining)
+                || !limiter.try_acquire()
+                || limiter.pause(delay).await.is_err()
+            {
+                return Err(error);
+            }
         } else {
-            limiter.wait(policy, failures).await;
+            if limiter.wait(policy, failures).await.is_err() {
+                return Err(error);
+            }
         }
         progress = next;
     }

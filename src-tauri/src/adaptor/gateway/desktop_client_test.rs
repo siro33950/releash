@@ -127,13 +127,15 @@ async fn test_接続規則_protoの待ちを共通の計算で適用する() {
     // When
     limiter
         .wait_with_spread(POLICY.backoff, 1, POLICY.jitter)
-        .await;
+        .await
+        .unwrap();
     // Then
     assert_eq!(start.elapsed(), Duration::from_secs(1));
     // When
     limiter
         .wait_with_spread(POLICY.backoff, 2, POLICY.jitter)
-        .await;
+        .await
+        .unwrap();
     // Then
     assert!(
         (start.elapsed().as_secs_f64() - 2.6).abs() < 0.002,

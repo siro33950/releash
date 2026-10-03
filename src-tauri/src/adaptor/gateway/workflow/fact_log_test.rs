@@ -190,9 +190,11 @@ mod fd_invariance_tests {
 
         // Given: INSERT 直前で writer を停止する store と追記前の open fd 数
         let root = tempfile::TempDir::new().unwrap();
-        let store =
-            LocalEventStore::open(LocalEventStoreConfig::production(root.path().to_path_buf()))
-                .unwrap();
+        let store = LocalEventStore::open(LocalEventStoreConfig::production(
+            root.path().to_path_buf(),
+            std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
+        ))
+        .unwrap();
         let stall = store.fault_injector().arm_node_event_append_stall();
         let meta = test_fact_meta("fd-single-tree", "fd-single-node");
         let before = open_fd_count();
@@ -230,9 +232,11 @@ mod fd_invariance_tests {
 
         // Given: 1本目を INSERT 直前で停止し、同時開始を待つ追記 worker
         let root = tempfile::TempDir::new().unwrap();
-        let store =
-            LocalEventStore::open(LocalEventStoreConfig::production(root.path().to_path_buf()))
-                .unwrap();
+        let store = LocalEventStore::open(LocalEventStoreConfig::production(
+            root.path().to_path_buf(),
+            std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
+        ))
+        .unwrap();
         let stall = store.fault_injector().arm_node_event_append_stall();
         let mut workers = (0..APPEND_COUNT)
             .map(|index| {
@@ -288,9 +292,11 @@ mod fd_invariance_tests {
 
         // Given: store の fd を確保済みで、soft limit に2個だけ余裕がある子プロセス
         let root = tempfile::TempDir::new().unwrap();
-        let store =
-            LocalEventStore::open(LocalEventStoreConfig::production(root.path().to_path_buf()))
-                .unwrap();
+        let store = LocalEventStore::open(LocalEventStoreConfig::production(
+            root.path().to_path_buf(),
+            std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
+        ))
+        .unwrap();
         let warm_up_meta = test_fact_meta("fd-warm-up-tree", "fd-warm-up-node");
         append_single_fact(&store, &warm_up_meta, &NodeFact::RetryRequested, 1_000)
             .await
@@ -342,9 +348,11 @@ mod append_contract_tests {
     async fn test_事実行追記_asyncで記録され結果が返る() {
         // Given: async で利用する file-backed store と単独の事実
         let root = tempfile::TempDir::new().unwrap();
-        let store =
-            LocalEventStore::open(LocalEventStoreConfig::production(root.path().to_path_buf()))
-                .unwrap();
+        let store = LocalEventStore::open(LocalEventStoreConfig::production(
+            root.path().to_path_buf(),
+            std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
+        ))
+        .unwrap();
         let meta = test_fact_meta("sync-context-tree", "sync-context-node");
 
         // When: 事実行を追記する
@@ -363,9 +371,11 @@ mod append_contract_tests {
     async fn test_事実行追記_async_runtime上でpanicせず記録され結果が返る() {
         // Given: current-thread tokio runtime 上で利用する file-backed store と単独の事実
         let root = tempfile::TempDir::new().unwrap();
-        let store =
-            LocalEventStore::open(LocalEventStoreConfig::production(root.path().to_path_buf()))
-                .unwrap();
+        let store = LocalEventStore::open(LocalEventStoreConfig::production(
+            root.path().to_path_buf(),
+            std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
+        ))
+        .unwrap();
         let meta = test_fact_meta("async-context-tree", "async-context-node");
 
         // When: runtime worker 上から async append を呼ぶ
@@ -384,9 +394,11 @@ mod append_contract_tests {
     async fn test_事実行追記_同一nodeの内容とseqが入力順に記録される() {
         // Given: 同一 node に順に発生した、全 field を同定できる3つの事実行
         let root = tempfile::TempDir::new().unwrap();
-        let store =
-            LocalEventStore::open(LocalEventStoreConfig::production(root.path().to_path_buf()))
-                .unwrap();
+        let store = LocalEventStore::open(LocalEventStoreConfig::production(
+            root.path().to_path_buf(),
+            std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
+        ))
+        .unwrap();
         let meta = NodeFactMeta {
             tree_id: "ordering-tree".to_string(),
             node_execution_id: "ordering-node".to_string(),
@@ -438,9 +450,11 @@ mod append_contract_tests {
     async fn test_事実行追記_利用不能な追記先の失敗が呼び出し元へ返る() {
         // Given: write queue が閉じた store
         let root = tempfile::TempDir::new().unwrap();
-        let store =
-            LocalEventStore::open(LocalEventStoreConfig::production(root.path().to_path_buf()))
-                .unwrap();
+        let store = LocalEventStore::open(LocalEventStoreConfig::production(
+            root.path().to_path_buf(),
+            std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
+        ))
+        .unwrap();
         store.close_write_queue_for_tests();
         let meta = test_fact_meta("unavailable-tree", "unavailable-node");
 
@@ -471,9 +485,11 @@ mod append_contract_tests {
     async fn test_事実行追記_複数行の途中失敗で前の行だけが記録される() {
         // Given: 正常行、batch 容量を超える行、未投入で終わる正常行の順の入力
         let root = tempfile::TempDir::new().unwrap();
-        let store =
-            LocalEventStore::open(LocalEventStoreConfig::production(root.path().to_path_buf()))
-                .unwrap();
+        let store = LocalEventStore::open(LocalEventStoreConfig::production(
+            root.path().to_path_buf(),
+            std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
+        ))
+        .unwrap();
         let before_meta = test_fact_meta("partial-tree", "before-failure");
         let after_meta = test_fact_meta("partial-tree", "after-failure");
         let before = pending_single_fact(&before_meta, &NodeFact::RetryRequested, 1_000).unwrap();
@@ -817,9 +833,11 @@ mod reconciliation_tests {
 
     fn open_store() -> (tempfile::TempDir, std::sync::Arc<LocalEventStore>) {
         let root = tempfile::TempDir::new().unwrap();
-        let store =
-            LocalEventStore::open(LocalEventStoreConfig::production(root.path().to_path_buf()))
-                .unwrap();
+        let store = LocalEventStore::open(LocalEventStoreConfig::production(
+            root.path().to_path_buf(),
+            std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
+        ))
+        .unwrap();
         (root, store)
     }
 
@@ -1333,9 +1351,11 @@ mod round_trip_tests {
     async fn test_session起動由来seedはrootとattachmentを同じdurable_batchで記録する() {
         // Given: Session 起動由来の木を構成する root と attachment
         let root = tempfile::TempDir::new().unwrap();
-        let store =
-            LocalEventStore::open(LocalEventStoreConfig::production(root.path().to_path_buf()))
-                .unwrap();
+        let store = LocalEventStore::open(LocalEventStoreConfig::production(
+            root.path().to_path_buf(),
+            std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
+        ))
+        .unwrap();
         let session_id = "agent-session-seed-atomic";
         let facts = SessionExecutionTreeRootFacts::new(
             session_id,
@@ -1373,9 +1393,11 @@ mod round_trip_tests {
     #[tokio::test]
     async fn test_store経由_写像した事実ログをfoldすると実行木が導出される() {
         let root = tempfile::TempDir::new().unwrap();
-        let store =
-            LocalEventStore::open(LocalEventStoreConfig::production(root.path().to_path_buf()))
-                .unwrap();
+        let store = LocalEventStore::open(LocalEventStoreConfig::production(
+            root.path().to_path_buf(),
+            std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
+        ))
+        .unwrap();
 
         // Given: 起動 → a(session) 完了 → run(command) 完了 の live イベント列
         let batches: Vec<Vec<WorkflowEvent>> = vec![
@@ -1533,9 +1555,13 @@ async fn test_旧隔離事実の読取_状態導出と再起動復元からだ�
     use crate::usecase::workflow::ports::WorkflowExecutionProjectionRepository;
     // Given
     let directory = tempfile::TempDir::new().unwrap();
-    let config = LocalEventStoreConfig::production(directory.path().to_path_buf());
+    let config = LocalEventStoreConfig::production(
+        directory.path().to_path_buf(),
+        std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
+    );
     let store = LocalEventStore::open(LocalEventStoreConfig::production(
         directory.path().to_path_buf(),
+        std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
     ))
     .unwrap();
     append_facts_for_events(
@@ -1609,6 +1635,7 @@ async fn test_旧隔離事実の読取_状態導出と再起動復元からだ�
     let readonly =
         crate::adaptor::gateway::local_event_store::read_only::LocalEventReadStore::open(
             directory.path(),
+            std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
         )
         .unwrap();
     for backend in [
@@ -1824,8 +1851,11 @@ mod terminal_fact_tests {
 
         // Given
         let dir = tempfile::tempdir().unwrap();
-        let store =
-            LocalEventStore::open(LocalEventStoreConfig::production(dir.path().into())).unwrap();
+        let store = LocalEventStore::open(LocalEventStoreConfig::production(
+            dir.path().into(),
+            std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
+        ))
+        .unwrap();
         let mut started = started_event();
         if let WorkflowEvent::ExecutionStarted { definition, .. } = &mut started {
             *definition = serde_saphyr::from_str(
@@ -1867,8 +1897,11 @@ mod terminal_fact_tests {
             .is_err());
         assert_eq!(read_raw_rows(&store, TREE).await, before);
         drop(store);
-        let store =
-            LocalEventStore::open(LocalEventStoreConfig::production(dir.path().into())).unwrap();
+        let store = LocalEventStore::open(LocalEventStoreConfig::production(
+            dir.path().into(),
+            std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
+        ))
+        .unwrap();
 
         // Then
         let folded = fold_tree_from(&FactLogReadBackend::Live(store.clone()), TREE)
@@ -1883,8 +1916,11 @@ mod terminal_fact_tests {
             .await
             .unwrap();
         drop(store);
-        let store =
-            LocalEventStore::open(LocalEventStoreConfig::production(dir.path().into())).unwrap();
+        let store = LocalEventStore::open(LocalEventStoreConfig::production(
+            dir.path().into(),
+            std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
+        ))
+        .unwrap();
         let rows = read_raw_rows(&store, TREE).await;
         assert_eq!(rows.len(), before.len() + 2);
         assert_eq!(rows[before.len()].event_type, "process_exited");
@@ -1909,8 +1945,11 @@ mod terminal_fact_tests {
 
         // Given
         let dir = tempfile::tempdir().unwrap();
-        let store =
-            LocalEventStore::open(LocalEventStoreConfig::production(dir.path().into())).unwrap();
+        let store = LocalEventStore::open(LocalEventStoreConfig::production(
+            dir.path().into(),
+            std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
+        ))
+        .unwrap();
         let execution = WorkflowExecutionMetadata {
             execution_id: TREE.into(),
             workflow_name: "completed-seed".into(),
@@ -1954,8 +1993,11 @@ mod terminal_fact_tests {
     async fn test_終端復元_保存定義の承認待ちnodeをwriterとreadonlyで同じに復元する() {
         // Given
         let dir = tempfile::tempdir().unwrap();
-        let store =
-            LocalEventStore::open(LocalEventStoreConfig::production(dir.path().into())).unwrap();
+        let store = LocalEventStore::open(LocalEventStoreConfig::production(
+            dir.path().into(),
+            std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
+        ))
+        .unwrap();
         let mut started = started_event();
         if let WorkflowEvent::ExecutionStarted { definition, .. } = &mut started {
             *definition = serde_saphyr::from_str(
@@ -2013,6 +2055,7 @@ mod terminal_fact_tests {
         let readonly =
             crate::adaptor::gateway::local_event_store::read_only::LocalEventReadStore::open(
                 dir.path(),
+                std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
             )
             .unwrap();
 
@@ -2085,8 +2128,11 @@ mod terminal_fact_tests {
     #[tokio::test]
     async fn test_起動時定義確認_書込が失敗する状態でもabortを保存しない() {
         let dir = tempfile::tempdir().unwrap();
-        let store =
-            LocalEventStore::open(LocalEventStoreConfig::production(dir.path().into())).unwrap();
+        let store = LocalEventStore::open(LocalEventStoreConfig::production(
+            dir.path().into(),
+            std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
+        ))
+        .unwrap();
         legacy_tree(&store, true).await;
         let connection =
             rusqlite::Connection::open(StoreLayout::new(dir.path()).database_path()).unwrap();
@@ -2109,8 +2155,11 @@ mod terminal_fact_tests {
     async fn test_起動時定義確認_旧定義の未完了と完了事実のない過去完了をabortしない() {
         for completed_signals in [false, true] {
             let dir = tempfile::tempdir().unwrap();
-            let store = LocalEventStore::open(LocalEventStoreConfig::production(dir.path().into()))
-                .unwrap();
+            let store = LocalEventStore::open(LocalEventStoreConfig::production(
+                dir.path().into(),
+                std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
+            ))
+            .unwrap();
             legacy_tree(&store, completed_signals).await;
             let backend = FactLogReadBackend::Live(store.clone());
             let before = read_raw_rows(&store, TREE).await;
@@ -2131,8 +2180,11 @@ mod terminal_fact_tests {
     async fn test_終端復元_旧隔離worktreeをabort済みnodeと提出artifactに保持する() {
         // Given
         let dir = tempfile::tempdir().unwrap();
-        let store =
-            LocalEventStore::open(LocalEventStoreConfig::production(dir.path().into())).unwrap();
+        let store = LocalEventStore::open(LocalEventStoreConfig::production(
+            dir.path().into(),
+            std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
+        ))
+        .unwrap();
         let meta = legacy_tree(&store, false).await;
         for (event_type, detail) in [
             (
@@ -2186,11 +2238,15 @@ mod terminal_fact_tests {
         drop(store);
 
         // When
-        let store =
-            LocalEventStore::open(LocalEventStoreConfig::production(dir.path().into())).unwrap();
+        let store = LocalEventStore::open(LocalEventStoreConfig::production(
+            dir.path().into(),
+            std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
+        ))
+        .unwrap();
         let readonly =
             crate::adaptor::gateway::local_event_store::read_only::LocalEventReadStore::open(
                 dir.path(),
+                std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
             )
             .unwrap();
         for backend in [
@@ -2232,8 +2288,11 @@ mod terminal_fact_tests {
             NodeFact::AbortRequested(Default::default()),
         ] {
             let dir = tempfile::tempdir().unwrap();
-            let store = LocalEventStore::open(LocalEventStoreConfig::production(dir.path().into()))
-                .unwrap();
+            let store = LocalEventStore::open(LocalEventStoreConfig::production(
+                dir.path().into(),
+                std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
+            ))
+            .unwrap();
             let meta = legacy_tree(&store, true).await;
             append_single_fact(&store, &meta, &terminal, 3_000)
                 .await
@@ -2242,6 +2301,7 @@ mod terminal_fact_tests {
             let readonly =
                 crate::adaptor::gateway::local_event_store::read_only::LocalEventReadStore::open(
                     dir.path(),
+                    std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
                 )
                 .unwrap();
             // When / Then
@@ -2273,8 +2333,11 @@ mod terminal_fact_tests {
     async fn test_終端復元_現行形式の定義でも再生規則が一致しなければ完了事実を優先する() {
         // Given
         let dir = tempfile::tempdir().unwrap();
-        let store =
-            LocalEventStore::open(LocalEventStoreConfig::production(dir.path().into())).unwrap();
+        let store = LocalEventStore::open(LocalEventStoreConfig::production(
+            dir.path().into(),
+            std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
+        ))
+        .unwrap();
         let mut events = vec![
             started_event(),
             node_started("root", "renamed", NodeKindName::Command, None, 1.0),
@@ -2308,9 +2371,11 @@ async fn test_起動時前進_head競合を失敗と区別し最新記録から�
     for (abort, drop_reply) in [(false, false), (true, false), (false, true), (true, true)] {
         // Given
         let directory = tempfile::tempdir().unwrap();
-        let store =
-            LocalEventStore::open(LocalEventStoreConfig::production(directory.path().into()))
-                .unwrap();
+        let store = LocalEventStore::open(LocalEventStoreConfig::production(
+            directory.path().into(),
+            std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
+        ))
+        .unwrap();
         append_facts_for_events(
             &store,
             &[
@@ -2385,9 +2450,11 @@ async fn test_起動時前進_旧形式の末尾行を含むheadで追記と応�
         for drop_reply in [false, true] {
             // Given
             let directory = tempfile::tempdir().unwrap();
-            let store =
-                LocalEventStore::open(LocalEventStoreConfig::production(directory.path().into()))
-                    .unwrap();
+            let store = LocalEventStore::open(LocalEventStoreConfig::production(
+                directory.path().into(),
+                std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
+            ))
+            .unwrap();
             append_facts_for_events(
                 &store,
                 &[
@@ -2436,8 +2503,11 @@ async fn test_追記結果確認_全行一致と競合と未保存を共通の�
     use crate::domain::local_event::CommitBatchError;
     // Given
     let dir = tempfile::tempdir().unwrap();
-    let store =
-        LocalEventStore::open(LocalEventStoreConfig::production(dir.path().into())).unwrap();
+    let store = LocalEventStore::open(LocalEventStoreConfig::production(
+        dir.path().into(),
+        std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
+    ))
+    .unwrap();
     let root = SessionExecutionTreeRootFacts::new(
         "tree",
         "/repo",
@@ -2541,9 +2611,16 @@ async fn test_fact読み出し_liveとread_onlyでsql失敗をdomainへ分類す
     use crate::adaptor::gateway::local_event_store::reader::storage_unavailable;
     // Given
     let directory = tempfile::tempdir().unwrap();
-    let live =
-        LocalEventStore::open(LocalEventStoreConfig::production(directory.path().into())).unwrap();
-    let read_only = LocalEventReadStore::open(directory.path()).unwrap();
+    let live = LocalEventStore::open(LocalEventStoreConfig::production(
+        directory.path().into(),
+        std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
+    ))
+    .unwrap();
+    let read_only = LocalEventReadStore::open(
+        directory.path(),
+        std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
+    )
+    .unwrap();
     for backend in [
         FactLogReadBackend::Live(live),
         FactLogReadBackend::ReadOnly(read_only),
@@ -2589,8 +2666,11 @@ async fn test_fact読み出し_liveとread_onlyでsql失敗をdomainへ分類す
 async fn test_reconciliation読取_復元不能な事実列はdata_lossになる() {
     // Given
     let directory = tempfile::tempdir().unwrap();
-    let store =
-        LocalEventStore::open(LocalEventStoreConfig::production(directory.path().into())).unwrap();
+    let store = LocalEventStore::open(LocalEventStoreConfig::production(
+        directory.path().into(),
+        std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
+    ))
+    .unwrap();
     append_single_fact(
         &store,
         &test_fact_meta(TREE, "root"),

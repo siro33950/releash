@@ -258,3 +258,239 @@ impl From<&crate::domain::agent_session::AgentSessionDisplayNameError> for Failu
 #[cfg(test)]
 #[path = "work_failure_test.rs"]
 mod work_failure_tests;
+
+impl From<&crate::usecase::watcher::UsecaseError> for Failure {
+    fn from(error: &crate::usecase::watcher::UsecaseError) -> Self {
+        use crate::usecase::watcher::UsecaseError as E;
+        match error {
+            E::Repository(error) => Self::from(error),
+            E::RepositoryUnavailable => Self::Business(BusinessFailure::Other),
+            E::File(_) => Self::Technical(TechnicalFailureNature::Other),
+        }
+    }
+}
+
+impl From<&crate::usecase::state_subscription::StateReadError> for Failure {
+    fn from(error: &crate::usecase::state_subscription::StateReadError) -> Self {
+        use crate::usecase::state_subscription::StateReadFailure as E;
+        match &error.source {
+            E::TerminalSubscriptionEnded => Self::Business(BusinessFailure::Other),
+            E::Terminal(error) => Self::from(error.as_ref()),
+            E::Workflow(error) => Self::from(error.as_ref()),
+            E::Session(error) => Self::from(error.as_ref()),
+            E::History(error) => Self::from(error.as_ref()),
+            E::Providers(error) => Self::from(error.as_ref()),
+            E::Repository(error) => Self::from(error.as_ref()),
+            E::RepositoryState(error) => Self::from(error.as_ref()),
+            E::GitHost(error) => Self::from(error.as_ref()),
+            E::Watcher(error) => Self::from(error.as_ref()),
+            E::Subscription(error) => Self::from(error.as_ref()),
+            E::Code(error) => Self::from(error.as_ref()),
+            E::Review(error) => Self::from(error.as_ref()),
+            E::AppConfig(error) => Self::from(error.as_ref()),
+            E::Notion(error) => Self::from(error.as_ref()),
+            E::Editor(error) => Self::from(error.as_ref()),
+            E::HookHealth(error) => Self::from(error.as_ref()),
+            E::Technical(error) => Self::from(error.as_ref()),
+            E::WorkspaceState(error) => Self::from(error.as_ref()),
+        }
+    }
+}
+
+impl From<&crate::usecase::terminal_surface::error::UsecaseError> for Failure {
+    fn from(error: &crate::usecase::terminal_surface::error::UsecaseError) -> Self {
+        use crate::usecase::terminal_surface::error::UsecaseError as E;
+        match error {
+            E::Technical(error) => Self::from(error),
+            E::NotFound(_) | E::InvalidOperation(_) | E::StaleAttachment | E::OwnerConflict => {
+                Self::Business(BusinessFailure::Other)
+            }
+        }
+    }
+}
+
+impl From<&crate::usecase::agent_session::AgentSessionReadUsecaseError> for Failure {
+    fn from(error: &crate::usecase::agent_session::AgentSessionReadUsecaseError) -> Self {
+        use crate::usecase::agent_session::AgentSessionReadUsecaseError as E;
+        match error {
+            E::Lifecycle(error) => Self::from(error),
+            E::Store(error) => Self::from(error),
+            E::InvalidRequest => Self::Business(BusinessFailure::Other),
+            E::StorageUnavailable => Self::Technical(TechnicalFailureNature::Transient),
+            E::Corrupt => Self::Technical(TechnicalFailureNature::Other),
+        }
+    }
+}
+
+impl From<&crate::usecase::agent_session::AgentSessionLifecycleUsecaseError> for Failure {
+    fn from(error: &crate::usecase::agent_session::AgentSessionLifecycleUsecaseError) -> Self {
+        use crate::usecase::agent_session::AgentSessionLifecycleUsecaseError as E;
+        match error {
+            E::Workflow(error) => Self::from(error),
+            E::Store(error) | E::Conflict(error) => Self::from(error),
+            E::Launch(error) => Self::from(error),
+            E::Terminal(error) => Self::from(error),
+            E::NotFound | E::InvalidOperation | E::ProviderUnavailable => {
+                Self::Business(BusinessFailure::Other)
+            }
+            E::StorageUnavailable => Self::Technical(TechnicalFailureNature::Transient),
+            E::Corrupt => Self::Technical(TechnicalFailureNature::Other),
+        }
+    }
+}
+
+impl From<&crate::domain::agent_session::ProviderAgentLaunchGatewayError> for Failure {
+    fn from(error: &crate::domain::agent_session::ProviderAgentLaunchGatewayError) -> Self {
+        use crate::domain::agent_session::ProviderAgentLaunchGatewayError as E;
+        match error {
+            E::Technical(error) => Self::from(error),
+            E::InvalidInput => Self::Business(BusinessFailure::Other),
+        }
+    }
+}
+
+impl From<&crate::domain::agent_session::ProviderAgentTerminalGatewayError> for Failure {
+    fn from(error: &crate::domain::agent_session::ProviderAgentTerminalGatewayError) -> Self {
+        use crate::domain::agent_session::ProviderAgentTerminalGatewayError as E;
+        match error {
+            E::Technical(error) => Self::from(error),
+            E::NotFound(_) | E::InvalidOperation(_) | E::StaleAttachment | E::OwnerConflict => {
+                Self::Business(BusinessFailure::Other)
+            }
+        }
+    }
+}
+
+impl From<&crate::usecase::agent_session::AgentSessionHistoryQueryError> for Failure {
+    fn from(error: &crate::usecase::agent_session::AgentSessionHistoryQueryError) -> Self {
+        use crate::usecase::agent_session::AgentSessionHistoryQueryError as E;
+        match error {
+            E::Technical(error) => Self::from(error),
+            E::Store(error) => Self::from(error),
+            E::Conflict => Self::Business(BusinessFailure::VersionConflict),
+            E::InvalidRequest | E::ProviderSessionAlreadyOwned { .. } => {
+                Self::Business(BusinessFailure::Other)
+            }
+            E::Corrupt => Self::Technical(TechnicalFailureNature::Other),
+        }
+    }
+}
+
+impl From<&crate::usecase::agent_session::ProviderAvailabilityUsecaseError> for Failure {
+    fn from(error: &crate::usecase::agent_session::ProviderAvailabilityUsecaseError) -> Self {
+        use crate::usecase::agent_session::ProviderAvailabilityUsecaseError as E;
+        match error {
+            E::Config(error) => Self::from(error),
+            E::Refresh(error) => Self::from(error),
+            E::InvalidInput => Self::Business(BusinessFailure::Other),
+            E::Corrupt => Self::Technical(TechnicalFailureNature::Other),
+        }
+    }
+}
+
+impl From<&crate::usecase::app_config::error::UsecaseError> for Failure {
+    fn from(error: &crate::usecase::app_config::error::UsecaseError) -> Self {
+        use crate::usecase::app_config::error::UsecaseError as E;
+        match error {
+            E::AppConfig(error) => Self::from(error),
+            E::InvalidInput(_) => Self::Business(BusinessFailure::Other),
+        }
+    }
+}
+
+impl From<&crate::usecase::notion::error::NotionUsecaseError> for Failure {
+    fn from(error: &crate::usecase::notion::error::NotionUsecaseError) -> Self {
+        use crate::usecase::notion::error::NotionUsecaseError as E;
+        match error {
+            E::AppConfig(error) => Self::from(error),
+            E::Notion(error) => Self::from(error),
+            E::ConfigNotFound => Self::Business(BusinessFailure::Other),
+        }
+    }
+}
+
+impl From<&crate::domain::notion::NotionError> for Failure {
+    fn from(error: &crate::domain::notion::NotionError) -> Self {
+        use crate::domain::notion::NotionError as E;
+        match error {
+            E::Technical(error) => Self::from(error),
+            E::ApiError(_) => Self::Business(BusinessFailure::Other),
+            E::RequestFailed(_) => Self::Technical(TechnicalFailureNature::Transient),
+            E::ParseError(_) => Self::Technical(TechnicalFailureNature::Other),
+        }
+    }
+}
+
+impl From<&crate::usecase::provider_lifecycle::ProviderHookHealthUsecaseError> for Failure {
+    fn from(error: &crate::usecase::provider_lifecycle::ProviderHookHealthUsecaseError) -> Self {
+        use crate::usecase::provider_lifecycle::ProviderHookHealthUsecaseError as E;
+        match error {
+            E::Technical(error) => Self::from(error),
+            E::Store(error) => Self::from(error),
+            E::Conflict => Self::Business(BusinessFailure::VersionConflict),
+            E::InvalidInput => Self::Business(BusinessFailure::Other),
+            E::StorageUnavailable => Self::Technical(TechnicalFailureNature::Transient),
+            E::Corrupt => Self::Technical(TechnicalFailureNature::Other),
+        }
+    }
+}
+
+impl From<&crate::usecase::state_subscription::SubscriptionError> for Failure {
+    fn from(error: &crate::usecase::state_subscription::SubscriptionError) -> Self {
+        use crate::usecase::state_subscription::SubscriptionError as E;
+        match error {
+            E::EncodingFailed | E::VersionExhausted => {
+                Self::Technical(TechnicalFailureNature::Other)
+            }
+            E::InvalidId
+            | E::AlreadyExists
+            | E::StreamEnded
+            | E::UnknownTarget
+            | E::SnapshotRequired => Self::Business(BusinessFailure::Other),
+        }
+    }
+}
+
+impl From<&crate::domain::comment::ReviewError> for Failure {
+    fn from(error: &crate::domain::comment::ReviewError) -> Self {
+        use crate::domain::comment::ReviewError as E;
+        match error {
+            E::Technical(error) => Self::from(error),
+            E::Io(_) | E::Serialize(_) => Self::Technical(TechnicalFailureNature::Other),
+            E::InvalidInput(_)
+            | E::NotFound(_)
+            | E::AlreadyResolved(_)
+            | E::PermissionDenied(_) => Self::Business(BusinessFailure::Other),
+        }
+    }
+}
+
+impl From<&crate::domain::workspace_state::WorkspaceStateError> for Failure {
+    fn from(error: &crate::domain::workspace_state::WorkspaceStateError) -> Self {
+        match error {
+            crate::domain::workspace_state::WorkspaceStateError::Message(_) => {
+                Self::Technical(TechnicalFailureNature::Other)
+            }
+        }
+    }
+}
+
+impl From<&crate::domain::agent_session::ProviderExecutableConfigRepositoryError> for Failure {
+    fn from(error: &crate::domain::agent_session::ProviderExecutableConfigRepositoryError) -> Self {
+        use crate::domain::agent_session::ProviderExecutableConfigRepositoryError as E;
+        match error {
+            E::Technical(error) => Self::from(error),
+            E::InvalidInput => Self::Business(BusinessFailure::Other),
+        }
+    }
+}
+
+impl From<&crate::domain::agent_session::ProviderExecutableProbeGatewayError> for Failure {
+    fn from(error: &crate::domain::agent_session::ProviderExecutableProbeGatewayError) -> Self {
+        match error {
+            crate::domain::agent_session::ProviderExecutableProbeGatewayError::Technical(error) => {
+                Self::from(error)
+            }
+        }
+    }
+}

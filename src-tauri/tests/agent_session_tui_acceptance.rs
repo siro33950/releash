@@ -354,9 +354,11 @@ impl AgentSessionTuiAcceptanceHost {
         cols: u16,
         caller_request_id: &str,
     ) -> Result<String, String> {
-        self.invoke("restore_agent_session", serde_json::json!({
+        let selection: SessionSelection = self.invoke("restore_agent_session", serde_json::json!({
             "agentSessionId": agent_session_id, "rows": rows, "cols": cols, "callerRequestId": caller_request_id,
-        }))
+        }))?;
+        assert_eq!(selection.node_id, selection.agent_session_id);
+        Ok(selection.agent_session_id)
     }
 
     async fn resume_session_node(&self, node_execution_id: &str) -> Result<(), String> {

@@ -4104,8 +4104,8 @@ impl TryFrom<&str> for wire::NodeProcessPresence {
 #[path = "conversions_test.rs"]
 mod conversions_tests;
 
-impl From<crate::usecase::agent_session::SessionSelection> for wire::SessionSelection {
-    fn from(value: crate::usecase::agent_session::SessionSelection) -> Self {
+impl From<crate::usecase::workspace_tree::SessionNodeSelectionDto> for wire::SessionSelection {
+    fn from(value: crate::usecase::workspace_tree::SessionNodeSelectionDto) -> Self {
         Self {
             agent_session_id: Some(value.agent_session_id),
             node_id: Some(value.node_id),

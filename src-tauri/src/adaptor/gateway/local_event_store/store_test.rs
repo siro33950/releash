@@ -4,7 +4,12 @@ use super::{LocalEventStore, LocalEventStoreConfig, LocalEventStoreOpenError};
 fn test_local_event_store_複製descriptorが残っても終了後にwriter_lockを解放する() {
     // Given: 子プロセスへの継承と同様に writer lock の descriptor が複製されている
     let directory = tempfile::tempdir().unwrap();
-    let config = || LocalEventStoreConfig::production(directory.path().to_path_buf());
+    let config = || {
+        LocalEventStoreConfig::production(
+            directory.path().to_path_buf(),
+            std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
+        )
+    };
     let store = LocalEventStore::open(config()).unwrap();
     let inherited_lock = store.writer_lock.try_clone().unwrap();
     assert!(matches!(
@@ -31,8 +36,11 @@ async fn test_node事実追記_読取後の外部追記と競合したbatchは�
     use crate::domain::local_event::CommitBatchError;
     // Given
     let directory = tempfile::tempdir().unwrap();
-    let store =
-        LocalEventStore::open(LocalEventStoreConfig::production(directory.path().into())).unwrap();
+    let store = LocalEventStore::open(LocalEventStoreConfig::production(
+        directory.path().into(),
+        std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
+    ))
+    .unwrap();
     let row = NewNodeEventRow {
         tree_id: "tree".into(),
         node_execution_id: "node".into(),
@@ -191,8 +199,11 @@ fn fact_row() -> super::NewNodeEventRow {
 async fn test_書込待ち_writer停滞中も同じruntimeの読取が完了する() {
     // Given
     let directory = tempfile::tempdir().unwrap();
-    let store =
-        LocalEventStore::open(LocalEventStoreConfig::production(directory.path().into())).unwrap();
+    let store = LocalEventStore::open(LocalEventStoreConfig::production(
+        directory.path().into(),
+        std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
+    ))
+    .unwrap();
     let stall = store.fault_injector().arm_node_event_append_stall();
     let append = store.append_node_event(fact_row(), None);
     tokio::pin!(append);
@@ -221,9 +232,11 @@ async fn test_書込混雑_全入口と両車線でunavailableを返す() {
     // Given: writer を停止し、車線を件数または byte 上限まで満たす
     for by_bytes in [false, true] {
         let directory = tempfile::tempdir().unwrap();
-        let store =
-            LocalEventStore::open(LocalEventStoreConfig::production(directory.path().into()))
-                .unwrap();
+        let store = LocalEventStore::open(LocalEventStoreConfig::production(
+            directory.path().into(),
+            std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
+        ))
+        .unwrap();
         let stall = store.fault_injector().arm_node_event_append_stall();
         let append = store.append_node_event(fact_row(), None);
         tokio::pin!(append);
@@ -303,8 +316,11 @@ async fn test_batch上限_件数と合計byte超過は保存せずresource_exhau
     use crate::domain::local_event::*;
     // Given
     let directory = tempfile::tempdir().unwrap();
-    let store =
-        LocalEventStore::open(LocalEventStoreConfig::production(directory.path().into())).unwrap();
+    let store = LocalEventStore::open(LocalEventStoreConfig::production(
+        directory.path().into(),
+        std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
+    ))
+    .unwrap();
     let stream_id = StreamId::provider_lifecycle("test").unwrap();
     let mut batch = empty_batch(&store);
     batch.expected_heads.push(ExpectedStreamHead {
@@ -440,7 +456,10 @@ async fn test_batch件数超過_shape検査とcodec実行より前に拒否す�
     }
     // Given
     let directory = tempfile::tempdir().unwrap();
-    let mut config = LocalEventStoreConfig::production(directory.path().into());
+    let mut config = LocalEventStoreConfig::production(
+        directory.path().into(),
+        std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
+    );
     let mut registry = EventCodecRegistry::new();
     registry.register(Arc::new(RejectEncoding));
     config.registry = Arc::new(registry);
@@ -515,9 +534,11 @@ async fn test_node事実追記_件数とbyteの上限まで保存し超過は保
 
     for (count, detail_bytes) in [(MAX_BATCH_EVENTS, 2), (1, MAX_BATCH_DECODED_BYTES - 256)] {
         let directory = tempfile::tempdir().unwrap();
-        let store =
-            LocalEventStore::open(LocalEventStoreConfig::production(directory.path().into()))
-                .unwrap();
+        let store = LocalEventStore::open(LocalEventStoreConfig::production(
+            directory.path().into(),
+            std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
+        ))
+        .unwrap();
         let mut row = fact_row();
         row.detail = "x".repeat(detail_bytes);
         let mut oversized = vec![(row.clone(), None); count];
@@ -552,9 +573,11 @@ async fn test_書込待ち_期限と取り消しで待ちを終えても受理�
     for expire in [false, true] {
         // Given
         let directory = tempfile::tempdir().unwrap();
-        let store =
-            LocalEventStore::open(LocalEventStoreConfig::production(directory.path().into()))
-                .unwrap();
+        let store = LocalEventStore::open(LocalEventStoreConfig::production(
+            directory.path().into(),
+            std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
+        ))
+        .unwrap();
         let stall = store.fault_injector().arm_node_event_append_stall();
         let token = tokio_util::sync::CancellationToken::new();
         let context = OperationContext::new(
@@ -665,4 +688,47 @@ fn test_store起動失敗_sqliteの性質が書込と読取で一致する() {
         assert_eq!(failure.nature, expected);
         assert_eq!(read.nature, expected);
     }
+}
+
+#[test]
+fn test_起動時分類_db競合を呼出期限で打ち切り既存の資源失敗へ写す() {
+    use crate::common::operation_context::{self, Deadline, OperationContext};
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
+    // Given
+    let directory = tempfile::tempdir().unwrap();
+    let layout = super::StoreLayout::new(directory.path());
+    let path = layout.database_path();
+    let blocker = rusqlite::Connection::open(&path).unwrap();
+    blocker
+        .execute_batch(
+            "PRAGMA journal_mode=WAL; PRAGMA locking_mode=EXCLUSIVE; CREATE TABLE locked(value);",
+        )
+        .unwrap();
+    let started = Instant::now();
+    let context = OperationContext::default()
+        .with_deadline(Deadline::new(started + Duration::from_millis(100)));
+    // When
+    let result = operation_context::sync_scope(context, || {
+        super::classify_existing_database(
+            &layout,
+            &path,
+            Arc::new(crate::common::retry::RetryLimiter::new()),
+        )
+    });
+    // Then
+    assert!(
+        matches!(
+            result,
+            Err(LocalEventStoreOpenError::StorageUnavailable(
+                crate::domain::failure::TechnicalFailure {
+                    nature: crate::domain::failure::TechnicalFailureNature::Transient,
+                    ..
+                }
+            ))
+        ),
+        "{result:?}"
+    );
+    assert!(started.elapsed() >= Duration::from_millis(100));
+    assert!(started.elapsed() < Duration::from_secs(1));
 }

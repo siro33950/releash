@@ -79,11 +79,15 @@ pub(crate) async fn execution_worktree_path(
 
 pub(crate) struct StoredWorkspaceWorktreePathQuery {
     data_dir: std::path::PathBuf,
+    limiter: std::sync::Arc<crate::common::retry::RetryLimiter>,
 }
 
 impl StoredWorkspaceWorktreePathQuery {
-    pub(crate) fn new(data_dir: std::path::PathBuf) -> Self {
-        Self { data_dir }
+    pub(crate) fn new(
+        data_dir: std::path::PathBuf,
+        limiter: std::sync::Arc<crate::common::retry::RetryLimiter>,
+    ) -> Self {
+        Self { data_dir, limiter }
     }
 }
 
@@ -98,6 +102,7 @@ impl crate::usecase::workspace_tree::WorkspaceWorktreePathQuery
         workspace_worktree_path_with(path, || {
             crate::adaptor::gateway::local_event_store::read_only::LocalEventReadStore::open(
                 &self.data_dir,
+                self.limiter.clone(),
             )
             .map(FactLogReadBackend::ReadOnly)
             .map_err(crate::domain::workflow::WorkflowError::external)

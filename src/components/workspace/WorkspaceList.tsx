@@ -803,7 +803,7 @@ function WorktreeTreeItem({
 		async (session: AgentSessionItem) => {
 			setProviderActionError(null);
 			try {
-				const nodeId = await invoke("restore_agent_session", {
+				const { nodeId } = await invoke("restore_agent_session", {
 					agentSessionId: session.id,
 					rows: 24,
 					cols: 80,

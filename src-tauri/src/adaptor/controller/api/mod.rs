@@ -32,15 +32,16 @@ pub(crate) fn build_router(
     provider_lifecycle: Option<
         Arc<dyn crate::usecase::provider_lifecycle::ProviderLifecycleIngressPort>,
     >,
+    (priority, default_timeout): (
+        Arc<crate::common::priority::PriorityGate>,
+        std::time::Duration,
+    ),
 ) -> Router {
-    let priority = Arc::new(client.as_ref().map_or_else(
-        || {
-            super::daemon::client_priority_interceptor(None)
-                .gate
-                .with_classifier(local_priority_level)
-        },
-        ClientApiDeps::local_priority_gate,
-    ));
+    let priority = Arc::new(priority.with_classifier(local_priority_level));
+    let ingress = LocalIngress {
+        priority,
+        default_timeout,
+    };
     let state = LocalApiState { workflow, runtime };
     let application_router = workflow::router()
         .fallback(|| async {
@@ -54,7 +55,7 @@ pub(crate) fn build_router(
     authenticated(
         application_router
             .merge(provider_lifecycle::router(provider_lifecycle))
-            .layer(middleware::from_fn_with_state(priority, local_ingress)),
+            .layer(middleware::from_fn_with_state(ingress, local_ingress)),
         token,
     )
     .merge(terminal_router)
@@ -74,15 +75,19 @@ fn local_priority_level(path: &str) -> Option<&'static str> {
     )
 }
 
+#[derive(Clone)]
+struct LocalIngress {
+    priority: Arc<crate::common::priority::PriorityGate>,
+    default_timeout: std::time::Duration,
+}
+
 async fn local_ingress(
-    axum::extract::State(priority): axum::extract::State<
-        Arc<crate::common::priority::PriorityGate>,
-    >,
+    axum::extract::State(ingress): axum::extract::State<LocalIngress>,
     request: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> axum::response::Response {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
-    let operation = priority.run(
+    let deadline = std::time::Instant::now() + ingress.default_timeout;
+    let operation = ingress.priority.run(
         request,
         |request| request.uri().path(),
         Some(deadline),
@@ -669,8 +674,11 @@ pub(crate) mod test_support {
                 return Err(read_error);
             }
             drop(
-                LocalEventStore::open(LocalEventStoreConfig::production(data_dir.to_path_buf()))
-                    .map_err(|error| error.to_string())?,
+                LocalEventStore::open(LocalEventStoreConfig::production(
+                    data_dir.to_path_buf(),
+                    std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
+                ))
+                .map_err(|error| error.to_string())?,
             );
             crate::adaptor::controller::wiring::build_canonical_workflow_read_usecase(
                 data_dir, None,
@@ -684,6 +692,10 @@ pub(crate) mod test_support {
             Arc::<str>::from(terminal_token),
             client,
             provider_lifecycle,
+            (
+                crate::adaptor::controller::daemon::client_priority_interceptor().gate,
+                crate::adaptor::controller::daemon::default_timeout(),
+            ),
         );
         (router, runtime, gateway)
     }
@@ -732,7 +744,11 @@ pub(crate) mod test_support {
     }
 
     fn canonical_local_event_store(data_dir: &Path) -> Arc<LocalEventStore> {
-        LocalEventStore::open(LocalEventStoreConfig::production(data_dir.to_path_buf())).unwrap()
+        LocalEventStore::open(LocalEventStoreConfig::production(
+            data_dir.to_path_buf(),
+            std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
+        ))
+        .unwrap()
     }
 
     async fn append_canonical_workflow_drafts(
@@ -1647,7 +1663,9 @@ pub(crate) mod test_support {
         }
     }
 
-    async fn local_ingress_pending_server() -> (
+    async fn local_ingress_pending_server(
+        default_timeout: std::time::Duration,
+    ) -> (
         std::net::SocketAddr,
         tokio::task::JoinHandle<()>,
         Arc<crate::common::priority::PriorityGate>,
@@ -1655,7 +1673,7 @@ pub(crate) mod test_support {
         tokio_util::sync::CancellationToken,
     ) {
         let gate = Arc::new(
-            super::super::daemon::client_priority_interceptor(None)
+            super::super::daemon::client_priority_interceptor()
                 .gate
                 .with_classifier(local_priority_level),
         );
@@ -1684,7 +1702,13 @@ pub(crate) mod test_support {
                     }
                 }),
             )
-            .layer(middleware::from_fn_with_state(gate.clone(), local_ingress));
+            .layer(middleware::from_fn_with_state(
+                LocalIngress {
+                    priority: gate.clone(),
+                    default_timeout,
+                },
+                local_ingress,
+            ));
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let server = tokio::spawn(async move {
@@ -1696,7 +1720,8 @@ pub(crate) mod test_support {
     #[tokio::test]
     async fn test_local_apiの実接続切断で処理と文脈と席を解放する() {
         use tokio::io::AsyncWriteExt;
-        let (address, server, gate, started, stopped) = local_ingress_pending_server().await;
+        let (address, server, gate, started, stopped) =
+            local_ingress_pending_server(std::time::Duration::from_millis(300)).await;
         let available = gate.limits().available("default");
         let mut connection = tokio::net::TcpStream::connect(address).await.unwrap();
         connection
@@ -1720,7 +1745,8 @@ pub(crate) mod test_support {
     #[tokio::test]
     async fn test_local_apiの既定期限到達で処理と席を解放し504を返す() {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
-        let (address, server, gate, started, stopped) = local_ingress_pending_server().await;
+        let (address, server, gate, started, stopped) =
+            local_ingress_pending_server(std::time::Duration::from_millis(300)).await;
         let available = gate.limits().available("default");
         let mut connection = tokio::net::TcpStream::connect(address).await.unwrap();
         connection
@@ -1729,12 +1755,12 @@ pub(crate) mod test_support {
             .unwrap();
         let context = started.await.unwrap();
         let remaining = context.remaining(std::time::Instant::now()).unwrap();
-        assert!(remaining > std::time::Duration::from_secs(119));
-        assert!(remaining <= std::time::Duration::from_secs(120));
+        assert!(remaining > std::time::Duration::from_millis(100));
+        assert!(remaining <= std::time::Duration::from_millis(300));
         assert_eq!(gate.limits().available("default"), available - 1);
         let mut response = Vec::new();
         let result = tokio::time::timeout(
-            std::time::Duration::from_secs(125),
+            std::time::Duration::from_secs(2),
             connection.read_to_end(&mut response),
         )
         .await;

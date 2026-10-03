@@ -172,9 +172,11 @@ pub(in crate::cli) mod test_support {
         backend_id: Option<&str>,
         lifecycle: crate::domain::agent_session::aggregates::AgentSessionLifecycle,
     ) {
-        let store =
-            LocalEventStore::open(LocalEventStoreConfig::production(data_dir.to_path_buf()))
-                .unwrap();
+        let store = LocalEventStore::open(LocalEventStoreConfig::production(
+            data_dir.to_path_buf(),
+            std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
+        ))
+        .unwrap();
         let provider = match backend_id.unwrap_or("codex") {
             "claude" => crate::domain::provider_lifecycle::ProviderKind::Claude,
             _ => crate::domain::provider_lifecycle::ProviderKind::Codex,
@@ -248,8 +250,11 @@ pub(in crate::cli) mod test_support {
 
     pub(in crate::cli) fn initialize_canonical_store(data_dir: &Path) {
         drop(
-            LocalEventStore::open(LocalEventStoreConfig::production(data_dir.to_path_buf()))
-                .expect("initialize canonical local event store"),
+            LocalEventStore::open(LocalEventStoreConfig::production(
+                data_dir.to_path_buf(),
+                std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
+            ))
+            .expect("initialize canonical local event store"),
         );
     }
 
@@ -258,9 +263,11 @@ pub(in crate::cli) mod test_support {
     }
 
     pub(in crate::cli) async fn append_workflow_events(data_dir: &Path, events: &[WorkflowEvent]) {
-        let store =
-            LocalEventStore::open(LocalEventStoreConfig::production(data_dir.to_path_buf()))
-                .expect("open canonical local event store");
+        let store = LocalEventStore::open(LocalEventStoreConfig::production(
+            data_dir.to_path_buf(),
+            std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
+        ))
+        .expect("open canonical local event store");
         crate::adaptor::gateway::workflow::fact_log::append_facts_for_events(&store, events)
             .await
             .expect("append canonical node fact fixture");
@@ -270,9 +277,11 @@ pub(in crate::cli) mod test_support {
         data_dir: &Path,
         execution: &WorkflowExecutionMetadata,
     ) {
-        let store =
-            LocalEventStore::open(LocalEventStoreConfig::production(data_dir.to_path_buf()))
-                .expect("open canonical local event store");
+        let store = LocalEventStore::open(LocalEventStoreConfig::production(
+            data_dir.to_path_buf(),
+            std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
+        ))
+        .expect("open canonical local event store");
         crate::adaptor::gateway::workflow::test_support::seed_canonical_execution(
             &store,
             execution,

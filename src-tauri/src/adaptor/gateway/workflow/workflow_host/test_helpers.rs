@@ -283,9 +283,11 @@ pub(crate) struct Fixture {
 impl Fixture {
     pub(crate) fn new(failures: usize) -> Self {
         let directory = tempfile::tempdir().unwrap();
-        let store =
-            LocalEventStore::open(LocalEventStoreConfig::production(directory.path().into()))
-                .unwrap();
+        let store = LocalEventStore::open(LocalEventStoreConfig::production(
+            directory.path().into(),
+            std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
+        ))
+        .unwrap();
         let app = test_helpers::dependencies(Some(store.clone()));
         let worktrees = Arc::new(TestWorktrees {
             failures: AtomicUsize::new(failures),
@@ -524,8 +526,11 @@ pub(crate) fn archive_fixture_with_resolver(
     resolver: Arc<dyn ManagedWorktreeResolver>,
 ) -> ArchiveFixture {
     let directory = tempfile::tempdir().unwrap();
-    let store =
-        LocalEventStore::open(LocalEventStoreConfig::production(directory.path().into())).unwrap();
+    let store = LocalEventStore::open(LocalEventStoreConfig::production(
+        directory.path().into(),
+        std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
+    ))
+    .unwrap();
     let repository = Arc::new(ExecutionTreeArchiveFactRepository::new(
         store.clone(),
         directory.path(),

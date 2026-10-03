@@ -114,13 +114,16 @@ fn read_stable_file_id(_path: &Path) -> Result<Option<StableFileId>, LocalEventQ
 }
 
 impl LocalEventReadStore {
-    pub(crate) fn open(app_data_root: &Path) -> Result<Arc<Self>, String> {
+    pub(crate) fn open(
+        app_data_root: &Path,
+        limiter: Arc<crate::common::retry::RetryLimiter>,
+    ) -> Result<Arc<Self>, String> {
         let layout = StoreLayout::new(app_data_root);
         let database_path = layout.database_path();
         if !database_path.try_exists().map_err(|_| STORE_NOT_READY)? {
             return Err(STORE_NOT_READY.to_string());
         }
-        let connection = open_reader(&database_path)
+        let connection = open_reader(&database_path, limiter.clone())
             .map_err(|error| format!("failed to open canonical local event reader: {error}"))?;
         let database_identity =
             DatabaseFileIdentity::read(&database_path).map_err(|_| STORE_NOT_READY)?;
@@ -140,7 +143,8 @@ impl LocalEventReadStore {
         let mut connections = Vec::with_capacity(READER_POOL_SIZE);
         connections.push(connection);
         for _ in 1..READER_POOL_SIZE {
-            connections.push(open_reader(&database_path).map_err(|_| STORE_NOT_READY)?);
+            connections
+                .push(open_reader(&database_path, limiter.clone()).map_err(|_| STORE_NOT_READY)?);
         }
         let mut reader_workers: Vec<std::thread::JoinHandle<()>> =
             Vec::with_capacity(READER_POOL_SIZE);
@@ -335,7 +339,10 @@ mod tests {
         std::fs::create_dir_all(root.path().join("sessions/session-legacy"))
             .expect("legacy session fixture");
 
-        let error = match LocalEventReadStore::open(root.path()) {
+        let error = match LocalEventReadStore::open(
+            root.path(),
+            std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
+        ) {
             Ok(_) => panic!("unrelated files must not become a cross-process read authority"),
             Err(error) => error,
         };
@@ -346,19 +353,28 @@ mod tests {
     #[test]
     fn sqlite_authority_requires_current_schema() {
         let root = tempfile::TempDir::new().expect("read-only app data");
-        let writer =
-            LocalEventStore::open(LocalEventStoreConfig::production(root.path().to_path_buf()))
-                .expect("canonical writer");
+        let writer = LocalEventStore::open(LocalEventStoreConfig::production(
+            root.path().to_path_buf(),
+            std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
+        ))
+        .expect("canonical writer");
         drop(writer);
 
         let database_path = StoreLayout::new(root.path()).database_path();
-        let connection = open_writer(&database_path).expect("maintenance connection");
+        let connection = open_writer(
+            &database_path,
+            std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
+        )
+        .expect("maintenance connection");
         connection
             .pragma_update(None, "user_version", 1)
             .expect("stale schema fixture");
         drop(connection);
 
-        let error = match LocalEventReadStore::open(root.path()) {
+        let error = match LocalEventReadStore::open(
+            root.path(),
+            std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
+        ) {
             Ok(_) => panic!("stale schema must not publish canonical session state"),
             Err(error) => error,
         };
@@ -433,10 +449,16 @@ mod tests {
     #[tokio::test]
     async fn writer_commit_and_wal_checkpoint_preserve_database_file_identity() {
         let root = tempfile::TempDir::new().expect("read-only app data");
-        let writer =
-            LocalEventStore::open(LocalEventStoreConfig::production(root.path().to_path_buf()))
-                .expect("canonical writer");
-        let reader = LocalEventReadStore::open(root.path()).expect("concurrent canonical reader");
+        let writer = LocalEventStore::open(LocalEventStoreConfig::production(
+            root.path().to_path_buf(),
+            std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
+        ))
+        .expect("canonical writer");
+        let reader = LocalEventReadStore::open(
+            root.path(),
+            std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
+        )
+        .expect("concurrent canonical reader");
         let database_path = StoreLayout::new(root.path()).database_path();
         let before = DatabaseFileIdentity::read(&database_path).unwrap();
         writer
@@ -454,7 +476,11 @@ mod tests {
             })
             .await
             .expect("normal writer commit");
-        let maintenance = open_writer(&database_path).expect("checkpoint connection");
+        let maintenance = open_writer(
+            &database_path,
+            std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
+        )
+        .expect("checkpoint connection");
         maintenance
             .execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
             .expect("truncate WAL checkpoint");
@@ -476,10 +502,16 @@ mod tests {
     #[tokio::test]
     async fn reader_allows_bounded_queries_but_fails_mutation_and_resolution_closed() {
         let root = tempfile::TempDir::new().expect("read-only app data");
-        let writer =
-            LocalEventStore::open(LocalEventStoreConfig::production(root.path().to_path_buf()))
-                .expect("canonical writer");
-        let reader = LocalEventReadStore::open(root.path()).expect("concurrent canonical reader");
+        let writer = LocalEventStore::open(LocalEventStoreConfig::production(
+            root.path().to_path_buf(),
+            std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
+        ))
+        .expect("canonical writer");
+        let reader = LocalEventReadStore::open(
+            root.path(),
+            std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
+        )
+        .expect("concurrent canonical reader");
 
         let query = reader
             .query(LocalEventQuery::SessionProjectionByIdentity {
@@ -537,13 +569,23 @@ mod tests {
     async fn reader_fails_closed_when_schema_changes_after_open() {
         // Given
         let root = tempfile::TempDir::new().expect("read-only app data");
-        let writer =
-            LocalEventStore::open(LocalEventStoreConfig::production(root.path().to_path_buf()))
-                .expect("canonical writer");
+        let writer = LocalEventStore::open(LocalEventStoreConfig::production(
+            root.path().to_path_buf(),
+            std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
+        ))
+        .expect("canonical writer");
         drop(writer);
-        let reader = LocalEventReadStore::open(root.path()).expect("canonical reader");
+        let reader = LocalEventReadStore::open(
+            root.path(),
+            std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
+        )
+        .expect("canonical reader");
         let database_path = StoreLayout::new(root.path()).database_path();
-        let maintenance = open_writer(&database_path).expect("maintenance connection");
+        let maintenance = open_writer(
+            &database_path,
+            std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
+        )
+        .expect("maintenance connection");
         maintenance
             .pragma_update(None, "user_version", 2)
             .expect("replace schema marker");
@@ -564,13 +606,23 @@ mod tests {
     #[tokio::test]
     async fn reader_fails_closed_when_installation_changes_after_open() {
         let root = tempfile::TempDir::new().expect("read-only app data");
-        let writer =
-            LocalEventStore::open(LocalEventStoreConfig::production(root.path().to_path_buf()))
-                .expect("canonical writer");
+        let writer = LocalEventStore::open(LocalEventStoreConfig::production(
+            root.path().to_path_buf(),
+            std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
+        ))
+        .expect("canonical writer");
         drop(writer);
-        let reader = LocalEventReadStore::open(root.path()).expect("canonical reader");
+        let reader = LocalEventReadStore::open(
+            root.path(),
+            std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
+        )
+        .expect("canonical reader");
         let database_path = StoreLayout::new(root.path()).database_path();
-        let maintenance = open_writer(&database_path).expect("maintenance connection");
+        let maintenance = open_writer(
+            &database_path,
+            std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
+        )
+        .expect("maintenance connection");
         maintenance
             .execute(
                 "UPDATE store_metadata SET installation_id = ?1 WHERE id = 1",
@@ -593,17 +645,25 @@ mod tests {
     async fn reader_fails_closed_when_database_file_is_replaced_after_open() {
         // Given
         let root = tempfile::TempDir::new().expect("read-only app data");
-        let writer =
-            LocalEventStore::open(LocalEventStoreConfig::production(root.path().to_path_buf()))
-                .expect("canonical writer");
+        let writer = LocalEventStore::open(LocalEventStoreConfig::production(
+            root.path().to_path_buf(),
+            std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
+        ))
+        .expect("canonical writer");
         drop(writer);
-        let reader = LocalEventReadStore::open(root.path()).expect("canonical reader");
+        let reader = LocalEventReadStore::open(
+            root.path(),
+            std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
+        )
+        .expect("canonical reader");
         let database_path = StoreLayout::new(root.path()).database_path();
         let replaced_path = root.path().join("replaced-local-event-store.sqlite3");
         std::fs::rename(&database_path, &replaced_path).expect("retain replaced fixture");
-        let replacement =
-            LocalEventStore::open(LocalEventStoreConfig::production(root.path().to_path_buf()))
-                .expect("replacement authority");
+        let replacement = LocalEventStore::open(LocalEventStoreConfig::production(
+            root.path().to_path_buf(),
+            std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
+        ))
+        .expect("replacement authority");
 
         // When
         let error = reader

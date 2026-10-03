@@ -14,6 +14,7 @@ async fn test_workflow起動保持_偽の期限通知だけでactivated記録を
     let store = crate::adaptor::gateway::local_event_store::LocalEventStore::open(
         crate::adaptor::gateway::local_event_store::LocalEventStoreConfig::production(
             directory.path().to_path_buf(),
+            std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
         ),
     )
     .unwrap();
@@ -55,8 +56,7 @@ provider_runtime(
 Arc::new(FixedHistory { entries: Vec::new() }),
 hook_health_usecase(),
 started_execution_trees(),
-activated,
-);
+activated, crate::usecase::workspace_tree::TestWorkspaceQueryService::new(vec![]),);
 
     let launched = usecase
         .prepare_workflow_node(WorkflowAgentSessionLaunchRequest {

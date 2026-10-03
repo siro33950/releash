@@ -1,4 +1,4 @@
-pub(crate) type WatchChangeHandler = std::sync::Arc<dyn Fn() + Send + Sync>;
+pub(crate) type WatchChangeHandler = std::sync::Arc<dyn Fn(Result<(), String>) + Send + Sync>;
 
 pub(crate) trait FileWatchGateway: Send + Sync {
     /// `path` 以下の木を監視し、変化のたびに `on_change` を呼ぶ。存在しない path は最も近い

@@ -29,11 +29,12 @@ impl WorkspaceQueryService for TestWorkspaceQueryService {
         Ok(None)
     }
 
-    async fn session_node_id(
+    async fn session_selection(
         &self,
         _workspace_identity: &WorkspaceIdentity,
         _session_id: &str,
-    ) -> Result<Option<String>, WorkflowError> {
+    ) -> Result<Option<crate::usecase::workspace_tree::SessionNodeSelectionDto>, WorkflowError>
+    {
         Ok(None)
     }
 

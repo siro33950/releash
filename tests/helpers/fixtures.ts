@@ -133,7 +133,7 @@ const baseIpcHandler: Record<string, unknown> = {
 	"providers": ["claude", "codex"],
 	"agent-session": null,
 	open_agent_session: null,
-	restore_agent_session: "restored",
+	restore_agent_session: { agentSessionId: "mock-agent-session-1", nodeId: "mock-session-node-1" },
 	archive_agent_session: "archived",
 	delete_agent_session: null,
 	"session-history": { items: [], hasMore: false },

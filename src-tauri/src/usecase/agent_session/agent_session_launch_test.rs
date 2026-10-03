@@ -186,3 +186,32 @@ async fn test_workflow起動保持_期限が来てもactivating記録を消さ�
         Some(super::WorkflowLaunchActivation::Activating(_))
     ));
 }
+
+#[test]
+fn test_session選択_欠落はcorruptとしqueryの技術的性質を保持する() {
+    use super::{map_selection_error, AgentSessionLaunchUsecaseError};
+    use crate::domain::failure::{TechnicalFailure, TechnicalFailureNature};
+    use crate::domain::workflow::WorkflowError;
+    use crate::usecase::agent_session::selection::SelectionError;
+    assert_eq!(
+        map_selection_error(SelectionError::Missing),
+        AgentSessionLaunchUsecaseError::Corrupt
+    );
+    for nature in [
+        TechnicalFailureNature::Transient,
+        TechnicalFailureNature::TimedOut,
+        TechnicalFailureNature::Cancelled,
+        TechnicalFailureNature::Other,
+    ] {
+        let failure = TechnicalFailure {
+            nature,
+            message: "query failed".into(),
+        };
+        assert_eq!(
+            map_selection_error(SelectionError::Query(WorkflowError::Technical(
+                failure.clone()
+            ))),
+            AgentSessionLaunchUsecaseError::Technical(failure)
+        );
+    }
+}

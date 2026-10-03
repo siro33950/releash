@@ -70,11 +70,13 @@ export function useAutomation(open: boolean) {
 	}, []);
 	const sourceSeenFor = useRef<string | null>(null);
 	const lastSavedSource = useRef<string | null>(null);
+	const workflowListed = useRef<string | null>(null);
 	const facetSeenFor = useRef<string | null>(null);
 	const lastSavedFacet = useRef<string | null>(null);
 
 	useEffect(() => {
 		if (open) return;
+		workflowListed.current = null;
 		setSelectedWorkflow(null);
 		setSelectedWorkflowName(null);
 		setSelectedWorkflowSource(null);
@@ -115,7 +117,6 @@ export function useAutomation(open: boolean) {
 		setSelectedFacetContent(content);
 	}, [selectedFacet, facetSubscription.value]);
 
-	const workflowListed = useRef<string | null>(null);
 	useEffect(() => {
 		if (!selectedWorkflowName) return;
 		if (
@@ -159,6 +160,7 @@ export function useAutomation(open: boolean) {
 		setOperationError(null);
 		setExternalChangeDetected(false);
 		sourceSeenFor.current = null;
+		workflowListed.current = null;
 		setSelectedWorkflowName(name);
 	}, []);
 
@@ -179,6 +181,7 @@ export function useAutomation(open: boolean) {
 				const { name } = response;
 				lastSavedSource.current = source;
 				sourceSeenFor.current = name;
+				workflowListed.current = null;
 				setSelectedWorkflowName(name);
 				return { ok: true as const, name };
 			} catch (e) {

@@ -84,6 +84,7 @@ impl AgentSessionLifecycleUsecaseError {
 
 pub(crate) struct AgentSessionLifecycleUsecase {
     identities: Arc<dyn crate::domain::identity::IdentityIssuer>,
+    workspace_query: Arc<dyn crate::usecase::workspace_tree::WorkspaceQueryService>,
     sessions: Arc<AgentSessionUsecase>,
     lifecycle: Arc<ProviderLifecycleUsecase>,
     launch_gateway: Arc<dyn ProviderAgentLaunchGateway>,
@@ -102,7 +103,10 @@ impl AgentSessionLifecycleUsecase {
         provider_runtime: ProviderAgentRuntime,
         hook_health: Arc<ProviderHookHealthUsecase>,
         subscriptions: StateSubscriptionUsecase,
-        execution_trees: Arc<dyn AgentSessionExecutionTreeLifecycle>,
+        (execution_trees, workspace_query): (
+            Arc<dyn AgentSessionExecutionTreeLifecycle>,
+            Arc<dyn crate::usecase::workspace_tree::WorkspaceQueryService>,
+        ),
     ) -> Self {
         let ProviderAgentRuntime {
             availability,
@@ -110,6 +114,7 @@ impl AgentSessionLifecycleUsecase {
             terminal,
         } = provider_runtime;
         Self {
+            workspace_query,
             identities,
             sessions,
             lifecycle,
@@ -368,15 +373,20 @@ impl AgentSessionLifecycleUsecase {
         rows: u16,
         cols: u16,
         request: &str,
-        workspace_query: &dyn crate::usecase::workspace_tree::WorkspaceQueryService,
-    ) -> Result<String, AgentSessionLifecycleUsecaseError> {
+    ) -> Result<
+        crate::usecase::workspace_tree::SessionNodeSelectionDto,
+        AgentSessionLifecycleUsecaseError,
+    > {
         self.restore(id, rows, cols, request).await?;
-        let session = self.required(id).await?;
-        workspace_query
-            .session_node_id(session.session().workspace(), id)
+        super::selection::required_selection(&self.sessions, self.workspace_query.as_ref(), id)
             .await
-            .map_err(map_workflow_error)?
-            .ok_or(AgentSessionLifecycleUsecaseError::Corrupt)
+            .map_err(|error| match error {
+                super::selection::SelectionError::Session(error) => map_session_error(error),
+                super::selection::SelectionError::Query(error) => map_workflow_error(error),
+                super::selection::SelectionError::Missing => {
+                    AgentSessionLifecycleUsecaseError::Corrupt
+                }
+            })
     }
 
     pub(crate) async fn archive(

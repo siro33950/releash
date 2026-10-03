@@ -297,9 +297,11 @@ mod store_round_trip_tests {
     async fn test_store事実追記_asyncで記録され結果が返る() {
         // Given: file-backed store
         let root = tempfile::TempDir::new().unwrap();
-        let store =
-            LocalEventStore::open(LocalEventStoreConfig::production(root.path().to_path_buf()))
-                .unwrap();
+        let store = LocalEventStore::open(LocalEventStoreConfig::production(
+            root.path().to_path_buf(),
+            std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
+        ))
+        .unwrap();
 
         // When: store API で2行 append する（1行目は明示時刻・2行目は clock）
         let first = store
@@ -327,9 +329,11 @@ mod store_round_trip_tests {
     async fn test_store事実追記_async_runtime上でpanicせず記録され結果が返る() {
         // Given: current-thread tokio runtime 上で利用する file-backed store
         let root = tempfile::TempDir::new().unwrap();
-        let store =
-            LocalEventStore::open(LocalEventStoreConfig::production(root.path().to_path_buf()))
-                .unwrap();
+        let store = LocalEventStore::open(LocalEventStoreConfig::production(
+            root.path().to_path_buf(),
+            std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
+        ))
+        .unwrap();
 
         // When: runtime worker 上から async append を呼ぶ
         let seq = store
@@ -354,9 +358,11 @@ mod store_round_trip_tests {
     async fn test_store事実追記_閉じたwrite_queueはoutcome_unknownを返す() {
         // Given: write queue が閉じた file-backed store
         let root = tempfile::TempDir::new().unwrap();
-        let store =
-            LocalEventStore::open(LocalEventStoreConfig::production(root.path().to_path_buf()))
-                .unwrap();
+        let store = LocalEventStore::open(LocalEventStoreConfig::production(
+            root.path().to_path_buf(),
+            std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
+        ))
+        .unwrap();
         store.close_write_queue_for_tests();
 
         // When: 事実行を追記する
@@ -373,9 +379,11 @@ mod store_round_trip_tests {
     async fn test_store事実追記_reply喪失はoutcome_unknownを返す() {
         // Given: 次の writer reply を失う file-backed store
         let root = tempfile::TempDir::new().unwrap();
-        let store =
-            LocalEventStore::open(LocalEventStoreConfig::production(root.path().to_path_buf()))
-                .unwrap();
+        let store = LocalEventStore::open(LocalEventStoreConfig::production(
+            root.path().to_path_buf(),
+            std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
+        ))
+        .unwrap();
         store.fault_injector().arm_drop_reply();
 
         // When: 事実行を追記する
@@ -400,9 +408,11 @@ mod store_round_trip_tests {
     async fn test_store事実追記_writer内のsqlite失敗を返して後続追記を継続する() {
         // Given: node_events.kind の CHECK 制約に違反する行
         let root = tempfile::TempDir::new().unwrap();
-        let store =
-            LocalEventStore::open(LocalEventStoreConfig::production(root.path().to_path_buf()))
-                .unwrap();
+        let store = LocalEventStore::open(LocalEventStoreConfig::production(
+            root.path().to_path_buf(),
+            std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
+        ))
+        .unwrap();
         let invalid = NewNodeEventRow {
             tree_id: "tree-sqlite-failure".to_string(),
             node_execution_id: "invalid".to_string(),

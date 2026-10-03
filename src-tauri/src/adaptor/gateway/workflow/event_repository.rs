@@ -194,9 +194,11 @@ mod tests {
         use crate::adaptor::presenter::connect::classified_error;
         // Given
         let directory = TempDir::new().unwrap();
-        let store =
-            LocalEventStore::open(LocalEventStoreConfig::production(directory.path().into()))
-                .unwrap();
+        let store = LocalEventStore::open(LocalEventStoreConfig::production(
+            directory.path().into(),
+            std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
+        ))
+        .unwrap();
         let id = ExecutionTreeId::new("00000000-0000-4000-8000-000000000001").unwrap();
         let repository = WorkflowEventLogRepository::with_store(store.clone());
         for (failure, expected) in ReadFailure::cases() {
@@ -229,9 +231,11 @@ mod tests {
     #[tokio::test]
     async fn read_returns_fact_rows_with_unified_vocabulary() {
         let tmp = TempDir::new().unwrap();
-        let store =
-            LocalEventStore::open(LocalEventStoreConfig::production(tmp.path().to_path_buf()))
-                .unwrap();
+        let store = LocalEventStore::open(LocalEventStoreConfig::production(
+            tmp.path().to_path_buf(),
+            std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
+        ))
+        .unwrap();
         let execution_id = ExecutionTreeId::new("00000000-0000-4000-8000-000000000001").unwrap();
         crate::adaptor::gateway::workflow::test_support::append_canonical_events(
             &store,
@@ -252,9 +256,11 @@ mod tests {
     #[tokio::test]
     async fn read_after_cached_read_observes_incremental_append() {
         let tmp = TempDir::new().unwrap();
-        let store =
-            LocalEventStore::open(LocalEventStoreConfig::production(tmp.path().to_path_buf()))
-                .unwrap();
+        let store = LocalEventStore::open(LocalEventStoreConfig::production(
+            tmp.path().to_path_buf(),
+            std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
+        ))
+        .unwrap();
         let execution_id = ExecutionTreeId::new("00000000-0000-4000-8000-000000000002").unwrap();
         crate::adaptor::gateway::workflow::test_support::append_canonical_events(
             &store,
@@ -290,9 +296,11 @@ mod tests {
     async fn test_実行履歴_未対応定義を落とさず保存されたpayloadをページでも返す() {
         // Given
         let directory = TempDir::new().unwrap();
-        let store =
-            LocalEventStore::open(LocalEventStoreConfig::production(directory.path().into()))
-                .unwrap();
+        let store = LocalEventStore::open(LocalEventStoreConfig::production(
+            directory.path().into(),
+            std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
+        ))
+        .unwrap();
         let id = ExecutionTreeId::new("00000000-0000-4000-8000-000000001744").unwrap();
         crate::adaptor::gateway::workflow::test_support::seed_unavailable_definition(
             &store,

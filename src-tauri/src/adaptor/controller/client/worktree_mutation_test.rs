@@ -10,8 +10,11 @@ async fn test_worktree削除中_変更対象を共通境界で拒否して読み
     use wire::command_request::Command as C;
     // Given
     let directory = tempfile::tempdir().unwrap();
-    let store =
-        LocalEventStore::open(LocalEventStoreConfig::production(directory.path().into())).unwrap();
+    let store = LocalEventStore::open(LocalEventStoreConfig::production(
+        directory.path().into(),
+        std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
+    ))
+    .unwrap();
     let runtime = WorkflowRuntimeUsecase::new(
         Arc::new(RecordingRuntimeGateway::default()),
         Arc::new(ExecutionTreeArchiveFactRepository::new(

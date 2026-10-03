@@ -296,7 +296,7 @@ message CommandResult {
     Unit resize_terminal_surface = 115;
 
     ReviewThreadDto resolve_review_thread = 117;
-    ResultString restore_agent_session = 119;
+    SessionSelection restore_agent_session = 119;
     Unit restore_workspace_workflow_execution = 120;
     SessionSelection resume_agent_session_history_candidate = 122;
     Unit retry_workspace_node = 124;
@@ -2722,7 +2722,7 @@ service ClientService {
   rpc ResetProviderExecutable(ResetProviderExecutableRequest) returns (Unit);
   rpc ResizeTerminalSurface(ResizeTerminalSurfaceRequest) returns (Unit);
   rpc ResolveReviewThread(ResolveReviewThreadRequest) returns (ReviewThreadDto);
-  rpc RestoreAgentSession(RestoreAgentSessionRequest) returns (ResultString);
+  rpc RestoreAgentSession(RestoreAgentSessionRequest) returns (SessionSelection);
   rpc RestoreWorkspaceWorkflowExecution(RestoreWorkspaceWorkflowExecutionRequest) returns (Unit);
   rpc ResumeAgentSessionHistoryCandidate(ResumeAgentSessionHistoryCandidateRequest) returns (SessionSelection);
   rpc RetryWorkspaceNode(RetryWorkspaceNodeRequest) returns (Unit);

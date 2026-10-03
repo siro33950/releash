@@ -108,14 +108,6 @@ impl crate::domain::workspace_tree::WorkspaceTreeRepository for Trees {
     > {
         Ok(None)
     }
-
-    async fn node_id_for_session(
-        &self,
-        _: &WorkspaceIdentity,
-        _: &str,
-    ) -> Result<Option<String>, crate::domain::local_event::LocalEventQueryError> {
-        Ok(None)
-    }
 }
 
 #[tokio::test]

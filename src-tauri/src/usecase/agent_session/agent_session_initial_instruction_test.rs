@@ -77,6 +77,7 @@ async fn test_agent_session_continuation_session操作lock解放後に送る() {
     let directory = tempfile::tempdir().unwrap();
     let store = LocalEventStore::open(LocalEventStoreConfig::production(
         directory.path().to_path_buf(),
+        std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
     ))
     .unwrap();
     let sessions = Arc::new(AgentSessionUsecase::new(Arc::new(
@@ -175,9 +176,11 @@ async fn test_delegate_続行指示は識別子ごとに一度だけ送り再送
     for fail in [false, true] {
         // Given
         let directory = tempfile::tempdir().unwrap();
-        let store =
-            LocalEventStore::open(LocalEventStoreConfig::production(directory.path().into()))
-                .unwrap();
+        let store = LocalEventStore::open(LocalEventStoreConfig::production(
+            directory.path().into(),
+            std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
+        ))
+        .unwrap();
         let sessions = Arc::new(AgentSessionUsecase::new(Arc::new(
             LocalAgentSessionRepository::new(store.clone()),
         )));
@@ -280,8 +283,11 @@ async fn test_delegate_続行指示は識別子ごとに一度だけ送り再送
 async fn test_terminal投入_継続指示は同じ末尾改行処理とpaste形式を使う() {
     // Given
     let directory = tempfile::tempdir().unwrap();
-    let store =
-        LocalEventStore::open(LocalEventStoreConfig::production(directory.path().into())).unwrap();
+    let store = LocalEventStore::open(LocalEventStoreConfig::production(
+        directory.path().into(),
+        std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
+    ))
+    .unwrap();
     let sessions = Arc::new(AgentSessionUsecase::new(Arc::new(
         LocalAgentSessionRepository::new(store.clone()),
     )));

@@ -180,7 +180,11 @@ describe("AgentSessionPanel", () => {
 			if (command === "restore_agent_session") {
 				mockInvoke.mockRejectedValueOnce(new Error("archived"));
 			}
-			mockInvoke.mockResolvedValueOnce("garbage_collected");
+			mockInvoke.mockResolvedValueOnce(
+				command === "restore_agent_session"
+					? { agentSessionId: session.id, nodeId: session.id }
+					: "garbage_collected",
+			);
 			render(
 				<AgentSessionPanel
 					session={
@@ -391,6 +395,29 @@ describe("AgentSessionRoute", () => {
 		mockInvoke.mockReset();
 		mockInvoke.mockResolvedValue(null);
 	});
+	it("openのままterminalPresenceの購読更新に従い表示を切り替える", async () => {
+		publish({ ...session, terminalPresence: "live" });
+		render(
+			<AgentSessionRoute
+				agentSessionId="agent-session-1"
+				resumeAction={resumeAction()}
+			/>,
+		);
+		expect(await screen.findByTestId("provider-terminal")).toBeVisible();
+		act(() => publish({ ...session, terminalPresence: "unknown" }));
+		expect(screen.getByRole("alert")).toHaveTextContent(
+			"Provider process state is not confirmed.",
+		);
+		expect(screen.queryByTestId("provider-terminal")).toBeNull();
+		act(() => publish({ ...session, terminalPresence: "absent" }));
+		expect(screen.getByRole("alert")).toHaveTextContent(
+			"Provider session is not running.",
+		);
+		expect(screen.getByRole("button", { name: "Resume" })).toBeVisible();
+		act(() => publish({ ...session, terminalPresence: "live" }));
+		expect(screen.getByTestId("provider-terminal")).toBeVisible();
+	});
+
 	it("作成済み識別子は再Openせず購読の初期値を待ってTerminalへattachする", () => {
 		const consumed = vi.fn();
 		render(

@@ -324,3 +324,24 @@ it("設定の読み込み状態と失敗を設定画面へ渡し回復を反映�
 	expect(screen.getByText("Settings loaded: true")).toBeVisible();
 	expect(screen.queryByRole("alert")).toBeNull();
 });
+
+it("メニューの有効切替の拒否を原因とともに画面へ通知する", async () => {
+	const base = vi.mocked(invoke).getMockImplementation();
+	const notice = vi.fn();
+	window.addEventListener("releash-client-error", notice);
+	try {
+		vi.mocked(invoke).mockImplementation((command, args) =>
+			command === "set_menu_items_enabled"
+				? Promise.reject(new Error("menu unavailable"))
+				: (base?.(command, args) ?? Promise.resolve()),
+		);
+		await act(async () => {
+			render(<App />);
+		});
+		expect(notice).toHaveBeenCalledWith(
+			expect.objectContaining({ detail: "menu unavailable" }),
+		);
+	} finally {
+		window.removeEventListener("releash-client-error", notice);
+	}
+});

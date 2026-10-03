@@ -18,6 +18,10 @@ fn test_session操作を経由してもworkflowの失敗分類を保持する() 
             )
             .with_message("repair"),
         ),
+        WorkflowError::Technical(crate::domain::failure::TechnicalFailure {
+            nature: crate::domain::failure::TechnicalFailureNature::Cancelled,
+            message: "query cancelled".into(),
+        }),
         WorkflowError::External("internal".into()),
         WorkflowError::IncompatibleStoredEvent("version".into()),
         WorkflowError::CorruptStoredState("corrupt".into()),

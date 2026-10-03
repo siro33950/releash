@@ -217,12 +217,6 @@ impl From<ProviderLifecycleUsecaseError> for AgentSessionLaunchUsecaseError {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct SessionSelection {
-    pub agent_session_id: String,
-    pub node_id: String,
-}
-
 type StandaloneLaunchOutcome = Result<String, AgentSessionLaunchUsecaseError>;
 type SharedStandaloneLaunch = Shared<BoxFuture<'static, StandaloneLaunchOutcome>>;
 
@@ -288,6 +282,7 @@ impl StandaloneLaunchRequestRegistry {
 
 pub(crate) struct AgentSessionLaunchUsecase {
     performance: Arc<dyn crate::usecase::telemetry::PerformanceOutput>,
+    workspace_query: Arc<dyn crate::usecase::workspace_tree::WorkspaceQueryService>,
     sessions: Arc<AgentSessionUsecase>,
     lifecycle: Arc<ProviderLifecycleUsecase>,
     availability: Arc<dyn ProviderAvailabilityReader>,
@@ -352,6 +347,7 @@ impl AgentSessionLaunchUsecase {
         hook_health: Arc<ProviderHookHealthUsecase>,
         execution_trees: Arc<dyn AgentSessionLaunchExecutionTrees>,
         retention: tokio::sync::mpsc::UnboundedSender<LaunchRetention>,
+        workspace_query: Arc<dyn crate::usecase::workspace_tree::WorkspaceQueryService>,
     ) -> Self {
         let ProviderAgentRuntime {
             availability,
@@ -359,6 +355,7 @@ impl AgentSessionLaunchUsecase {
             terminal,
         } = provider_runtime;
         Self {
+            workspace_query,
             activated: retention,
             performance,
             sessions,
@@ -379,45 +376,34 @@ impl AgentSessionLaunchUsecase {
     pub(crate) async fn launch_standalone_selection(
         self: Arc<Self>,
         request: AgentSessionLaunchRequest,
-        workspace_query: &dyn crate::usecase::workspace_tree::WorkspaceQueryService,
-    ) -> Result<SessionSelection, AgentSessionLaunchUsecaseError> {
+    ) -> Result<
+        crate::usecase::workspace_tree::SessionNodeSelectionDto,
+        AgentSessionLaunchUsecaseError,
+    > {
         let id = self.clone().launch_standalone_idempotent(request).await?;
-        let session = self
-            .sessions
-            .find(&id)
+        super::selection::required_selection(&self.sessions, self.workspace_query.as_ref(), &id)
             .await
-            .map_err(map_session_error)?
-            .ok_or(AgentSessionLaunchUsecaseError::Corrupt)?;
-        let node_id = workspace_query
-            .session_node_id(session.session().workspace(), &id)
-            .await
-            .map_err(|error| AgentSessionLaunchUsecaseError::Store(error.into()))?
-            .ok_or(AgentSessionLaunchUsecaseError::Corrupt)?;
-        Ok(SessionSelection {
-            agent_session_id: id,
-            node_id,
-        })
+            .map_err(map_selection_error)
     }
 
     pub(crate) async fn resume_history_selection(
         self: &Arc<Self>,
         request: AgentSessionHistoryResumeRequest,
-        workspace_query: &dyn crate::usecase::workspace_tree::WorkspaceQueryService,
-    ) -> Result<SessionSelection, AgentSessionLaunchUsecaseError> {
+    ) -> Result<
+        crate::usecase::workspace_tree::SessionNodeSelectionDto,
+        AgentSessionLaunchUsecaseError,
+    > {
         let session = match self.resume_history(request).await? {
             AgentSessionHistoryResumeOutcome::Open(session)
             | AgentSessionHistoryResumeOutcome::Paused(session) => session,
         };
-        let id = session.session().id();
-        let node_id = workspace_query
-            .session_node_id(session.session().workspace(), id)
-            .await
-            .map_err(|error| AgentSessionLaunchUsecaseError::Store(error.into()))?
-            .ok_or(AgentSessionLaunchUsecaseError::Corrupt)?;
-        Ok(SessionSelection {
-            agent_session_id: id.into(),
-            node_id,
-        })
+        super::selection::required_selection(
+            &self.sessions,
+            self.workspace_query.as_ref(),
+            session.session().id(),
+        )
+        .await
+        .map_err(map_selection_error)
     }
 
     pub(crate) async fn launch_standalone_idempotent(
@@ -1269,3 +1255,16 @@ fn map_execution_tree_registration_error(
 #[cfg(test)]
 #[path = "agent_session_launch_test.rs"]
 mod agent_session_launch_tests;
+
+fn map_selection_error(error: super::selection::SelectionError) -> AgentSessionLaunchUsecaseError {
+    match error {
+        super::selection::SelectionError::Session(error) => map_session_error(error),
+        super::selection::SelectionError::Query(
+            crate::domain::workflow::WorkflowError::Technical(error),
+        ) => AgentSessionLaunchUsecaseError::Technical(error),
+        super::selection::SelectionError::Query(error) => {
+            AgentSessionLaunchUsecaseError::Store(error.into())
+        }
+        super::selection::SelectionError::Missing => AgentSessionLaunchUsecaseError::Corrupt,
+    }
+}

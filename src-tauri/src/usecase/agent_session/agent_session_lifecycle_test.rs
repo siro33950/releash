@@ -678,6 +678,7 @@ fn setup_with_lifecycle_events(
     let directory = tempfile::tempdir().unwrap();
     let store = LocalEventStore::open(LocalEventStoreConfig::production(
         directory.path().to_path_buf(),
+        std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
     ))
     .unwrap();
     let sessions = Arc::new(AgentSessionUsecase::new(Arc::new(
@@ -708,7 +709,10 @@ fn setup_with_lifecycle_events(
         ),
         hook_health.clone(),
         change_notifier.subscriptions.clone(),
-        execution_trees.clone(),
+        (
+            execution_trees.clone(),
+            crate::usecase::workspace_tree::TestWorkspaceQueryService::new(vec![]),
+        ),
     ));
     *execution_trees.lifecycle.lock().unwrap() = Arc::downgrade(&usecase);
     LifecycleTestContext {
@@ -2109,6 +2113,7 @@ async fn test_agent_session_resume状態保存失敗時は起動済みprocessを
     let directory = tempfile::tempdir().unwrap();
     let store = LocalEventStore::open(LocalEventStoreConfig::production(
         directory.path().to_path_buf(),
+        std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
     ))
     .unwrap();
     let repository = Arc::new(LocalAgentSessionRepository::new(store.clone()));
@@ -2157,10 +2162,13 @@ async fn test_agent_session_resume状態保存失敗時は起動済みprocessを
         ),
         hook_health,
         crate::test_support::state_subscription::test_subscriptions(),
-        Arc::new(RecordingExecutionTrees {
-            store: Some(store.clone()),
-            ..Default::default()
-        }),
+        (
+            Arc::new(RecordingExecutionTrees {
+                store: Some(store.clone()),
+                ..Default::default()
+            }),
+            crate::usecase::workspace_tree::TestWorkspaceQueryService::new(vec![]),
+        ),
     );
 
     assert_eq!(
@@ -2241,6 +2249,7 @@ async fn test_agent_session_resume_同一sessionへの並行要求はptyを一�
     let directory = tempfile::tempdir().unwrap();
     let store = LocalEventStore::open(LocalEventStoreConfig::production(
         directory.path().to_path_buf(),
+        std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
     ))
     .unwrap();
     let sessions = Arc::new(AgentSessionUsecase::new(Arc::new(
@@ -2298,10 +2307,13 @@ async fn test_agent_session_resume_同一sessionへの並行要求はptyを一�
             MemoryHookHealthRepository::default(),
         ))),
         crate::test_support::state_subscription::test_subscriptions(),
-        Arc::new(RecordingExecutionTrees {
-            store: Some(store.clone()),
-            ..Default::default()
-        }),
+        (
+            Arc::new(RecordingExecutionTrees {
+                store: Some(store.clone()),
+                ..Default::default()
+            }),
+            crate::usecase::workspace_tree::TestWorkspaceQueryService::new(vec![]),
+        ),
     ));
 
     let first = tokio::spawn({
@@ -2350,6 +2362,7 @@ async fn test_agent_session_resume中のarchiveは同一sessionの操作完了�
     let directory = tempfile::tempdir().unwrap();
     let store = LocalEventStore::open(LocalEventStoreConfig::production(
         directory.path().to_path_buf(),
+        std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
     ))
     .unwrap();
     let sessions = Arc::new(AgentSessionUsecase::new(Arc::new(
@@ -2407,7 +2420,10 @@ async fn test_agent_session_resume中のarchiveは同一sessionの操作完了�
             MemoryHookHealthRepository::default(),
         ))),
         crate::test_support::state_subscription::test_subscriptions(),
-        execution_trees.clone(),
+        (
+            execution_trees.clone(),
+            crate::usecase::workspace_tree::TestWorkspaceQueryService::new(vec![]),
+        ),
     ));
 
     *execution_trees.lifecycle.lock().unwrap() = Arc::downgrade(&lifecycle);
@@ -2460,6 +2476,7 @@ async fn test_agent_session_open_同一sessionへの並行要求は一度だけ�
     let directory = tempfile::tempdir().unwrap();
     let store = LocalEventStore::open(LocalEventStoreConfig::production(
         directory.path().to_path_buf(),
+        std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
     ))
     .unwrap();
     let sessions = Arc::new(AgentSessionUsecase::new(Arc::new(
@@ -2507,10 +2524,13 @@ async fn test_agent_session_open_同一sessionへの並行要求は一度だけ�
             MemoryHookHealthRepository::default(),
         ))),
         crate::test_support::state_subscription::test_subscriptions(),
-        Arc::new(RecordingExecutionTrees {
-            store: Some(store.clone()),
-            ..Default::default()
-        }),
+        (
+            Arc::new(RecordingExecutionTrees {
+                store: Some(store.clone()),
+                ..Default::default()
+            }),
+            crate::usecase::workspace_tree::TestWorkspaceQueryService::new(vec![]),
+        ),
     ));
 
     let first = tokio::spawn({
@@ -3024,6 +3044,7 @@ async fn test_workflowのprovider回復_同じnodeを繰り返し再開し永続
             context.hook_health.clone(),
             context.execution_trees.clone(),
             tokio::sync::mpsc::unbounded_channel().0,
+            crate::usecase::workspace_tree::TestWorkspaceQueryService::new(vec![]),
         )),
         Arc::new(super::AgentSessionInitialInstructionUsecase::new(
             context.sessions.clone(),
@@ -3378,6 +3399,7 @@ async fn test_workflow_session準備_入口から期限と取消の分類を保�
                 context.hook_health.clone(),
                 context.execution_trees.clone(),
                 tokio::sync::mpsc::unbounded_channel().0,
+                crate::usecase::workspace_tree::TestWorkspaceQueryService::new(vec![]),
             )),
             Arc::new(super::AgentSessionInitialInstructionUsecase::new(
                 context.sessions.clone(),
@@ -3466,7 +3488,10 @@ async fn test_agent_session_resume_実行ファイル未解決はprovider利用�
         ),
         context.hook_health.clone(),
         context.change_notifier.subscriptions.clone(),
-        context.execution_trees.clone(),
+        (
+            context.execution_trees.clone(),
+            crate::usecase::workspace_tree::TestWorkspaceQueryService::new(vec![]),
+        ),
     );
     *context.terminal.presence.lock().unwrap() = ManagedPtyPresence::ConfirmedAbsent;
     lifecycle

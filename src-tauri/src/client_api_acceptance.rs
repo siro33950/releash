@@ -172,9 +172,11 @@ impl<R: tauri::Runtime> ClientApiAcceptanceHost<R> {
             .invoke_handler(move |invoke| router.handle(invoke))
             .build(crate::application_context())
             .unwrap();
-        let store =
-            LocalEventStore::open(LocalEventStoreConfig::production(data_dir.to_path_buf()))
-                .unwrap();
+        let store = LocalEventStore::open(LocalEventStoreConfig::production(
+            data_dir.to_path_buf(),
+            std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
+        ))
+        .unwrap();
         let workflow = crate::adaptor::controller::wiring::build_canonical_workflow_read_usecase(
             data_dir, None,
         )
@@ -208,17 +210,15 @@ impl<R: tauri::Runtime> ClientApiAcceptanceHost<R> {
                 crate::adaptor::controller::terminal_subscription::start(),
             );
 
+        let priority = crate::adaptor::controller::daemon::client_priority_interceptor();
+        let local_gate = priority.gate.clone();
         let router = crate::adaptor::controller::api::build_router(
             Arc::new(workflow),
             Arc::new(runtime),
             binding.bearer_token(),
             binding.client_bearer_token(),
             Some(
-                ClientApiDeps::new(
-                    dispatch,
-                    crate::adaptor::controller::daemon::client_priority_interceptor(None),
-                )
-                .with_state_subscriptions(
+                ClientApiDeps::new(dispatch, priority).with_state_subscriptions(
                     crate::adaptor::controller::api::StateSubscriptionDeps::new(
                         state,
                         state_presenter,
@@ -227,6 +227,10 @@ impl<R: tauri::Runtime> ClientApiAcceptanceHost<R> {
                 ),
             ),
             None,
+            (
+                local_gate,
+                crate::adaptor::controller::daemon::default_timeout(),
+            ),
         );
         Self {
             app,
@@ -350,7 +354,7 @@ impl ClientRecoveryAcceptanceHost {
         for _ in 0..2 {
             let deps = ClientApiDeps::new(
                 dispatch.clone(),
-                crate::adaptor::controller::daemon::client_priority_interceptor(None),
+                crate::adaptor::controller::daemon::client_priority_interceptor(),
             );
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
             urls.push(format!("http://{}", listener.local_addr().unwrap()));

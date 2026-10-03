@@ -25,9 +25,9 @@ pub(crate) use agent_session_launch::AgentSessionLaunchExecutionTrees;
 pub(crate) use agent_session_launch::{
     AgentSessionExecutionTreeLifecycle, AgentSessionHistoryResumeRequest,
     AgentSessionLaunchRequest, AgentSessionLaunchUsecase, ExecutionTreeCache,
-    ExecutionTreeCacheReleaseError, ProviderAgentRuntime, SessionSelection,
-    StartedExecutionTreeRegistrar, StartedExecutionTreeRegistrationError,
-    WorkflowAgentSessionLaunchRequest, WorktreeMutationAdmission,
+    ExecutionTreeCacheReleaseError, ProviderAgentRuntime, StartedExecutionTreeRegistrar,
+    StartedExecutionTreeRegistrationError, WorkflowAgentSessionLaunchRequest,
+    WorktreeMutationAdmission,
 };
 pub(crate) use agent_session_launch::{AgentSessionLaunchUsecaseError, LaunchRetention};
 pub(crate) use agent_session_lifecycle::{
@@ -86,3 +86,5 @@ pub(crate) mod provider_session_title_ingestion_tests;
 pub(crate) use agent_session_read::AgentSessionReadUsecaseError;
 
 pub(crate) use agent_session_initial_instruction::AgentSessionInitialInstructionError;
+
+mod selection;

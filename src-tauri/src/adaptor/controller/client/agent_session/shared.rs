@@ -38,12 +38,10 @@ pub(crate) fn register_shared(
     }
     {
         let launch = deps.agent_session_launch_usecase.clone();
-        let workspace_query = deps.workspace_query_service.clone();
         router.register_domain(
             &["create_agent_session"],
             Box::new(move |command| {
                 let launch = launch.clone();
-                let workspace_query = workspace_query.clone();
                 Box::pin(async move {
                     let wire::command_request::Command::CreateAgentSession(args) = command else {
                         return Err(invalid_request("Mismatched command"));
@@ -51,16 +49,7 @@ pub(crate) fn register_shared(
                     let result = async move {
                         let launch = launch
                             .ok_or_else(|| invalid_request("Command dependency unavailable"))?;
-                        outcome(
-                            provider_tui::create_agent_session_shared(
-                                workspace_query.as_deref().ok_or_else(|| {
-                                    invalid_request("Workspace query dependency unavailable")
-                                })?,
-                                &launch,
-                                args,
-                            )
-                            .await,
-                        )
+                        outcome(provider_tui::create_agent_session_shared(&launch, args).await)
                     }
                     .await?;
                     Ok(wire::command_result::Command::CreateAgentSession(result))
@@ -185,12 +174,10 @@ pub(crate) fn register_shared(
     }
     {
         let lifecycle = deps.agent_session_lifecycle_usecase.clone();
-        let workspace_query = deps.workspace_query_service.clone();
         router.register_domain(
             &["restore_agent_session"],
             Box::new(move |command| {
                 let lifecycle = lifecycle.clone();
-                let workspace_query = workspace_query.clone();
                 Box::pin(async move {
                     let wire::command_request::Command::RestoreAgentSession(args) = command else {
                         return Err(invalid_request("Mismatched command"));
@@ -200,9 +187,6 @@ pub(crate) fn register_shared(
                             .ok_or_else(|| invalid_request("Command dependency unavailable"))?;
                         outcome(
                             provider_tui::restore_agent_session_shared(
-                                workspace_query.as_deref().ok_or_else(|| {
-                                    invalid_request("Workspace query dependency unavailable")
-                                })?,
                                 &lifecycle,
                                 convert(required(args.agent_session_id, "agentSessionId")?)?,
                                 convert(required(args.rows, "rows")?)?,
@@ -220,12 +204,10 @@ pub(crate) fn register_shared(
     }
     {
         let launch = deps.agent_session_launch_usecase.clone();
-        let workspace_query = deps.workspace_query_service.clone();
         router.register_domain(
             &["resume_agent_session_history_candidate"],
             Box::new(move |command| {
                 let launch = launch.clone();
-                let workspace_query = workspace_query.clone();
                 Box::pin(async move {
                     let wire::command_request::Command::ResumeAgentSessionHistoryCandidate(args) =
                         command
@@ -237,11 +219,7 @@ pub(crate) fn register_shared(
                             .ok_or_else(|| invalid_request("Command dependency unavailable"))?;
                         outcome(
                             provider_tui::resume_agent_session_history_candidate_shared(
-                                workspace_query.as_deref().ok_or_else(|| {
-                                    invalid_request("Workspace query dependency unavailable")
-                                })?,
-                                &launch,
-                                args,
+                                &launch, args,
                             )
                             .await,
                         )

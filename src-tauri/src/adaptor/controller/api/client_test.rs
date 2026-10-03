@@ -23,10 +23,9 @@ async fn serve(
     rpc::ClientServiceClient<HttpClient>,
     tokio::task::JoinHandle<()>,
 ) {
-    let router = router(Some(crate::test_support::client_api_deps(
-        Arc::new(dispatch),
-        None,
-    )))
+    let router = router(Some(crate::test_support::client_api_deps(Arc::new(
+        dispatch,
+    ))))
     .layer(axum::middleware::from_fn_with_state(
         crate::infrastructure::local_api::ClientBearerToken::from(Arc::<str>::from("client")),
         super::super::auth::require_client,
@@ -253,7 +252,7 @@ async fn test_サーバ情報取得_全段の枠が埋まっていても受理�
     };
     use tower::ServiceExt;
     // Given
-    let deps = crate::test_support::client_api_deps(Arc::new(dispatch()), None);
+    let deps = crate::test_support::client_api_deps(Arc::new(dispatch()));
     let _permits =
         ["interactive", "workflow", "default"].map(|level| deps.priority_limits().fill(level));
     let router = router(Some(deps.clone()));
@@ -283,7 +282,7 @@ async fn test_状態購読stream_全段の枠が埋まっていてもイベン�
         vec![],
         crate::test_support::state_subscription::read_driver(),
     );
-    let deps = crate::test_support::client_api_deps(Arc::new(dispatch()), None)
+    let deps = crate::test_support::client_api_deps(Arc::new(dispatch()))
         .with_state_subscriptions(subscriptions.deps());
     let _permits =
         ["interactive", "workflow", "default"].map(|level| deps.priority_limits().fill(level));
@@ -336,7 +335,7 @@ async fn test_状態購読_購読idを入口で128バイトまで受け付ける
         vec![],
         crate::test_support::state_subscription::read_driver(),
     );
-    let deps = crate::test_support::client_api_deps(Arc::new(dispatch()), None)
+    let deps = crate::test_support::client_api_deps(Arc::new(dispatch()))
         .with_state_subscriptions(subscriptions.deps());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let config = ClientConfig::new(
@@ -393,7 +392,7 @@ async fn test_状態購読_connectで初期状態と変更と再開を配信す�
         vec!["/repo".into()],
         crate::test_support::state_subscription::read_driver(),
     );
-    let deps = crate::test_support::client_api_deps(Arc::new(dispatch()), None)
+    let deps = crate::test_support::client_api_deps(Arc::new(dispatch()))
         .with_state_subscriptions(subscriptions.deps());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let config = ClientConfig::new(
@@ -551,7 +550,7 @@ async fn assert_request_deadline(timeout: Option<&str>, seconds: u64) {
             })
         }),
     );
-    let deps = crate::test_support::client_api_deps(Arc::new(dispatch), None);
+    let deps = crate::test_support::client_api_deps(Arc::new(dispatch));
     let mut request = Request::post("/releash.client.v1.ClientService/UpdateExternalEditor")
         .header("content-type", "application/json")
         .header("connect-protocol-version", "1");
@@ -608,7 +607,7 @@ async fn test_単発rpc_呼び出し破棄でasync処理を止め枠を解放す
             })
         }),
     );
-    let deps = crate::test_support::client_api_deps(Arc::new(dispatch), None);
+    let deps = crate::test_support::client_api_deps(Arc::new(dispatch));
     let mut call = Box::pin(router(Some(deps.clone())).oneshot(unary_request(
         "UpdateExternalEditor",
         r#"{"editor":"code"}"#,
@@ -677,7 +676,7 @@ async fn test_単発rpc_client切断で処理が終了する() {
             })
         }),
     );
-    let deps = crate::test_support::client_api_deps(Arc::new(dispatch), None);
+    let deps = crate::test_support::client_api_deps(Arc::new(dispatch));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let router = router(Some(deps.clone()));
@@ -763,7 +762,7 @@ async fn test_状態購読_既定期限後もbookmarkが届く() {
         Vec::new(),
         crate::test_support::state_subscription::read_driver(),
     );
-    let deps = crate::test_support::client_api_deps(Arc::new(dispatch()), None)
+    let deps = crate::test_support::client_api_deps(Arc::new(dispatch()))
         .with_state_subscriptions(subscriptions.deps());
     let payload = br#"{"clientId":"deadline-test"}"#;
     let mut bytes = vec![0];
@@ -818,7 +817,7 @@ async fn test_状態購読操作_上限時は拒否し枠解放後は受理す�
         crate::test_support::state_subscription::read_driver(),
     );
     let _stream = subscriptions.open("limited".into()).unwrap();
-    let deps = crate::test_support::client_api_deps(Arc::new(dispatch()), None)
+    let deps = crate::test_support::client_api_deps(Arc::new(dispatch()))
         .with_state_subscriptions(subscriptions.deps());
     let router = router(Some(deps.clone()));
     for method in ["StartStateSubscription", "StopStateSubscription"] {
@@ -895,7 +894,7 @@ async fn assert_cancelled_blocking_mutation(deadline: bool, repository: bool) {
             })
         }),
     );
-    let deps = crate::test_support::client_api_deps(Arc::new(dispatch), None);
+    let deps = crate::test_support::client_api_deps(Arc::new(dispatch));
     let request = Request::post("/releash.client.v1.ClientService/GitStage")
         .header("content-type", "application/json")
         .header("connect-protocol-version", "1")
@@ -975,7 +974,7 @@ async fn test_単発rpc_期限と呼出破棄が同期処理の内側まで届�
                 })
             }),
         );
-        let deps = crate::test_support::client_api_deps(Arc::new(dispatch), None);
+        let deps = crate::test_support::client_api_deps(Arc::new(dispatch));
         let mut call = Box::pin(deps.execute(
             expire.then(|| Instant::now() + Duration::from_millis(100)),
             wire::command_request::Command::UpdateExternalEditor(Default::default()),
@@ -1080,7 +1079,7 @@ async fn test_terminal購読_connectの後段配線と差分再開と流量停�
         crate::test_support::state_subscription::read_driver(),
     );
     let subscriptions = subscriptions.with_terminal(terminal);
-    let deps = crate::test_support::client_api_deps(Arc::new(dispatch), None)
+    let deps = crate::test_support::client_api_deps(Arc::new(dispatch))
         .with_state_subscriptions(subscriptions.deps());
     assert_eq!(*gateway.list_summaries_calls.lock(), 0);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -1403,10 +1402,9 @@ async fn test_流量制御_全段の枠が埋まっていてもReportTerminalPro
     let _stream = subscriptions.open("limited".into()).unwrap();
     let presenter = subscriptions.test_presenter().unwrap().clone();
     let units = crate::adaptor::presenter::terminal_subscription::TerminalSubscriptionPresenter::report_units();
-    let deps =
-        crate::test_support::client_api_deps(Arc::new(dispatch()), None).with_state_subscriptions(
-            crate::test_support::state_subscription::deps(subscriptions, Arc::new(presenter)),
-        );
+    let deps = crate::test_support::client_api_deps(Arc::new(dispatch())).with_state_subscriptions(
+        crate::test_support::state_subscription::deps(subscriptions, Arc::new(presenter)),
+    );
     let _permits =
         ["interactive", "workflow", "default"].map(|level| deps.priority_limits().fill(level));
     // When
@@ -1431,7 +1429,7 @@ async fn test_優先度_defaultが埋まっていてもinteractiveの呼び出�
         crate::test_support::state_subscription::read_driver(),
     );
     let _stream = subscriptions.open("limited".into()).unwrap();
-    let deps = crate::test_support::client_api_deps(Arc::new(dispatch()), None)
+    let deps = crate::test_support::client_api_deps(Arc::new(dispatch()))
         .with_state_subscriptions(subscriptions.deps());
     let _permits = deps.priority_limits().fill("default");
     let router = router(Some(deps.clone()));
@@ -1462,13 +1460,7 @@ async fn test_拒否_待ち行列が溢れても読まれない失敗は記録�
     use axum::http::StatusCode;
     use tower::ServiceExt;
     // Given
-    let store = Arc::new(crate::adaptor::gateway::failure_records::FailureRecordStore::default());
-    let deps = crate::test_support::client_api_deps(
-        Arc::new(dispatch()),
-        Some(Arc::new(
-            crate::usecase::failure::FailureRecordingUsecase::new(store.clone(), None),
-        )),
-    );
+    let deps = crate::test_support::client_api_deps(Arc::new(dispatch()));
     let permits = deps.priority_limits().fill("default");
     // When
     let router = router(Some(deps));
@@ -1482,8 +1474,6 @@ async fn test_拒否_待ち行列が溢れても読まれない失敗は記録�
         .unwrap();
     // Then
     assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
-    let records = store.records("daemon");
-    assert!(records.is_empty());
     drop(permits);
     let accepted = router
         .oneshot(unary_request(
@@ -1493,7 +1483,6 @@ async fn test_拒否_待ち行列が溢れても読まれない失敗は記録�
         .await
         .unwrap();
     assert_ne!(accepted.status(), StatusCode::TOO_MANY_REQUESTS);
-    assert!(store.records("daemon").is_empty());
 }
 
 #[tokio::test]
@@ -1501,13 +1490,7 @@ async fn test_拒否_枠の対象外の呼び出しでも読まれない失敗�
     use axum::http::StatusCode;
     use tower::ServiceExt;
     // Given
-    let store = Arc::new(crate::adaptor::gateway::failure_records::FailureRecordStore::default());
-    let deps = crate::test_support::client_api_deps(
-        Arc::new(dispatch()),
-        Some(Arc::new(
-            crate::usecase::failure::FailureRecordingUsecase::new(store.clone(), None),
-        )),
-    );
+    let deps = crate::test_support::client_api_deps(Arc::new(dispatch()));
     let permits = deps.priority_limits().fill("default");
     let router = router(Some(deps));
     assert_eq!(
@@ -1522,7 +1505,6 @@ async fn test_拒否_枠の対象外の呼び出しでも読まれない失敗�
             .status(),
         StatusCode::TOO_MANY_REQUESTS
     );
-    assert!(store.records("daemon").is_empty());
 
     // When / Then
     for method in ["GetServerInfo", "ReportTerminalProcessed"] {
@@ -1532,7 +1514,6 @@ async fn test_拒否_枠の対象外の呼び出しでも読まれない失敗�
             .await
             .unwrap();
         assert_ne!(response.status(), StatusCode::TOO_MANY_REQUESTS);
-        assert!(store.records("daemon").is_empty());
     }
     drop(permits);
     let response = router
@@ -1543,7 +1524,6 @@ async fn test_拒否_枠の対象外の呼び出しでも読まれない失敗�
         .await
         .unwrap();
     assert_ne!(response.status(), StatusCode::TOO_MANY_REQUESTS);
-    assert!(store.records("daemon").is_empty());
 }
 
 #[tokio::test]
@@ -1552,7 +1532,7 @@ async fn test_待ち行列_席が空くまで待ってから受理する() {
     use tower::ServiceExt;
     // Given
     let (dispatch, release) = pending_editor_dispatch();
-    let deps = crate::test_support::client_api_deps(Arc::new(dispatch), None);
+    let deps = crate::test_support::client_api_deps(Arc::new(dispatch));
     let seats = deps
         .priority_limits()
         .seats("default")
@@ -1661,10 +1641,9 @@ async fn test_notion購読_正規化した対象を共有し識別子ごとに�
     )
     .with_reads(reads.clone(), None, vec![], String::new());
     let presenter = Arc::new(subscriptions.test_presenter().unwrap().clone());
-    let deps =
-        crate::test_support::client_api_deps(Arc::new(dispatch()), None).with_state_subscriptions(
-            crate::test_support::state_subscription::deps(subscriptions.clone(), presenter.clone()),
-        );
+    let deps = crate::test_support::client_api_deps(Arc::new(dispatch())).with_state_subscriptions(
+        crate::test_support::state_subscription::deps(subscriptions.clone(), presenter.clone()),
+    );
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let config = ClientConfig::new(
         format!("http://{}", listener.local_addr().unwrap())
@@ -1833,7 +1812,7 @@ fn notion_cancellation_fixture() -> (Router, StateSubscriptionDeps) {
     .with_reads(Arc::new(Reads), None, vec![], String::new())
     .deps();
     let app = router(Some(
-        crate::test_support::client_api_deps(Arc::new(dispatch()), None)
+        crate::test_support::client_api_deps(Arc::new(dispatch()))
             .with_state_subscriptions(subscriptions.clone()),
     ));
     (app, subscriptions)
@@ -2196,8 +2175,7 @@ async fn test_terminal購読識別子_入口で空と超過を拒み上限と空
     let deps = subscriptions.deps();
     let _stream = deps.stream("client".into()).unwrap();
     let app = router(Some(
-        crate::test_support::client_api_deps(Arc::new(dispatch()), None)
-            .with_state_subscriptions(deps),
+        crate::test_support::client_api_deps(Arc::new(dispatch())).with_state_subscriptions(deps),
     ));
     // When / Then
     for id in [String::new(), "x".repeat(129), "あ".repeat(43)] {

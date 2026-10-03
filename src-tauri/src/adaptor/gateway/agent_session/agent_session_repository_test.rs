@@ -39,6 +39,7 @@ use crate::usecase::provider_lifecycle::ProviderSessionStartTransaction;
 fn open_store(directory: &TempDir) -> Arc<LocalEventStore> {
     LocalEventStore::open(LocalEventStoreConfig::production(
         directory.path().to_path_buf(),
+        std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
     ))
     .unwrap()
 }
@@ -2129,6 +2130,7 @@ async fn test_agent_session読取_未対応node定義があってもqueryと操�
         let read_store =
             crate::adaptor::gateway::local_event_store::read_only::LocalEventReadStore::open(
                 directory.path(),
+                std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
             )
             .unwrap();
         let read_query = LocalAgentSessionQueryService::new_read_only(read_store);

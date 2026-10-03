@@ -4,6 +4,12 @@ use crate::domain::workflow::{
 use crate::domain::workspace_tree::WorkspaceIdentity;
 use crate::usecase::workflow::WorkspaceNodeDetailDto;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SessionNodeSelectionDto {
+    pub agent_session_id: String,
+    pub node_id: String,
+}
+
 /// The one backend-owned read contract shared by every client surface.
 #[async_trait::async_trait]
 pub(crate) trait WorkspaceQueryService: Send + Sync {
@@ -13,11 +19,11 @@ pub(crate) trait WorkspaceQueryService: Send + Sync {
         node_id: &str,
     ) -> Result<Option<WorkspaceNodeDetailDto>, WorkflowError>;
 
-    async fn session_node_id(
+    async fn session_selection(
         &self,
         workspace_identity: &WorkspaceIdentity,
         session_id: &str,
-    ) -> Result<Option<String>, WorkflowError>;
+    ) -> Result<Option<SessionNodeSelectionDto>, WorkflowError>;
 
     async fn execution_summaries(
         &self,

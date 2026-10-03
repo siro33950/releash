@@ -2073,8 +2073,13 @@ describe("useTerminal", () => {
 		);
 
 		const onTerminalReady = vi.fn();
+		const onTerminalError = vi.fn();
 		const { result } = renderHook(() =>
-			useTerminal(containerRef, { cwd: "/repo", onTerminalReady }),
+			useTerminal(containerRef, {
+				cwd: "/repo",
+				onTerminalReady,
+				onTerminalError,
+			}),
 		);
 		resolveSpawn({ session_key: "late-exit" });
 
@@ -2086,8 +2091,13 @@ describe("useTerminal", () => {
 			"\r\n\x1b[90m[Process exited with code 23]\x1b[0m\r\n",
 			expect.any(Function),
 		);
+		expect(mockTerminalInstance.options.disableStdin).toBe(true);
+		onTerminalError.mockClear();
 		mockInvoke.mockClear();
 		mockOnDataCallback("must not be written");
+		expect(onTerminalError).toHaveBeenCalledWith(
+			"Terminal process is not running",
+		);
 		expect(mockInvoke).not.toHaveBeenCalledWith(
 			"write_terminal_surface",
 			expect.anything(),
@@ -3885,6 +3895,9 @@ describe("useTerminal", () => {
 			expect(mockTerminalInstance.options.disableStdin).toBe(true);
 			expect(mockTerminalInstance.write).toHaveBeenCalledWith(
 				"\r\nTerminal process is not running.\r\n",
+			);
+			expect(onTerminalError).toHaveBeenCalledWith(
+				"Terminal process is not running",
 			);
 			expect(onTerminalReady).not.toHaveBeenCalled();
 		});

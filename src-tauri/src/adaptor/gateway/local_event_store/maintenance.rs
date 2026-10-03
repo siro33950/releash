@@ -85,9 +85,10 @@ impl std::error::Error for StartupMaintenanceError {}
 
 pub fn run_startup_maintenance(
     layout: &StoreLayout,
-    connection: Connection,
+    connection: super::connection::ManagedConnection,
     fault: &FaultInjector,
-) -> Result<Connection, StartupMaintenanceError> {
+) -> Result<super::connection::ManagedConnection, StartupMaintenanceError> {
+    let limiter = connection.retry_limiter();
     if let Err(error) = cleanup_vacuum_artifacts(layout) {
         log_failure("stale artifact cleanup", &error);
         return Ok(connection);
@@ -117,7 +118,7 @@ pub fn run_startup_maintenance(
         return Ok(connection);
     }
 
-    if let Err(error) = prepare_vacuum_database(layout, &connection, fault) {
+    if let Err(error) = prepare_vacuum_database(layout, &connection, fault, limiter.clone()) {
         log_failure("vacuum output preparation", &error);
         cleanup_after_failure(layout);
         return Ok(connection);
@@ -129,7 +130,7 @@ pub fn run_startup_maintenance(
         Err(CanonicalReplacementFailure::PreReplace(error)) => {
             log_failure("canonical database replacement", &error);
             cleanup_after_failure(layout);
-            return reopen_canonical(layout);
+            return reopen_canonical(layout, limiter.clone());
         }
         Err(CanonicalReplacementFailure::PostReplace(error)) => {
             log_failure(
@@ -137,14 +138,14 @@ pub fn run_startup_maintenance(
                 &error,
             );
             cleanup_after_failure(layout);
-            return reopen_canonical(layout);
+            return reopen_canonical(layout, limiter.clone());
         }
     }
 
     if let Err(error) = cleanup_vacuum_artifacts(layout) {
         log_failure("post-replacement artifact cleanup", &error);
     }
-    let reopened = reopen_canonical(layout)?;
+    let reopened = reopen_canonical(layout, limiter.clone())?;
     log::info!(
         "local event store startup maintenance reclaimed free pages: page_count={}, freelist_count={}, page_size={}",
         stats.page_count,
@@ -188,6 +189,7 @@ fn prepare_vacuum_database(
     layout: &StoreLayout,
     connection: &Connection,
     fault: &FaultInjector,
+    limiter: std::sync::Arc<crate::common::retry::RetryLimiter>,
 ) -> Result<(), MaintenanceFailure> {
     let vacuum_path = layout.vacuum_database_path();
     let vacuum_path_text = vacuum_path
@@ -201,7 +203,7 @@ fn prepare_vacuum_database(
     inject(fault, MaintenanceFaultPoint::BeforeOutputValidation)?;
     layout.observe(StorePathOperation::Open, &vacuum_path);
     layout.observe(StorePathOperation::Read, &vacuum_path);
-    let output = open_reader(&vacuum_path)?;
+    let output = open_reader(&vacuum_path, limiter)?;
     validate_current_schema(&output)?;
     drop(output);
 
@@ -272,11 +274,14 @@ fn replace_canonical_database(
     Ok(())
 }
 
-fn reopen_canonical(layout: &StoreLayout) -> Result<Connection, StartupMaintenanceError> {
+fn reopen_canonical(
+    layout: &StoreLayout,
+    limiter: std::sync::Arc<crate::common::retry::RetryLimiter>,
+) -> Result<super::connection::ManagedConnection, StartupMaintenanceError> {
     let database_path = layout.database_path();
     layout.observe(StorePathOperation::Open, &database_path);
     layout.observe(StorePathOperation::Write, &database_path);
-    open_existing_writer(&database_path).map_err(StartupMaintenanceError::Connection)
+    open_existing_writer(&database_path, limiter).map_err(StartupMaintenanceError::Connection)
 }
 
 fn cleanup_vacuum_artifacts(layout: &StoreLayout) -> Result<(), std::io::Error> {
@@ -385,8 +390,11 @@ mod tests {
     }
 
     fn open_store(root: &Path) -> Arc<LocalEventStore> {
-        LocalEventStore::open(LocalEventStoreConfig::production(root.to_path_buf()))
-            .expect("file-backed local event store")
+        LocalEventStore::open(LocalEventStoreConfig::production(
+            root.to_path_buf(),
+            std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
+        ))
+        .expect("file-backed local event store")
     }
 
     fn open_store_with_fault(
@@ -394,7 +402,10 @@ mod tests {
         fault: Arc<FaultInjector>,
         observer: Arc<dyn AppDataPathObserver>,
     ) -> Arc<LocalEventStore> {
-        let mut config = LocalEventStoreConfig::production(root.to_path_buf());
+        let mut config = LocalEventStoreConfig::production(
+            root.to_path_buf(),
+            std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
+        );
         config.fault = fault;
         config.path_observer = observer;
         LocalEventStore::open(config).expect("file-backed local event store with maintenance fault")
@@ -409,7 +420,11 @@ mod tests {
         let installation_id = store.installation_id().to_string();
         drop(store);
         let path = database_path(root);
-        let connection = open_existing_writer(&path).unwrap();
+        let connection = open_existing_writer(
+            &path,
+            std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
+        )
+        .unwrap();
         connection
             .execute_batch("PRAGMA secure_delete = OFF;")
             .unwrap();
@@ -524,12 +539,20 @@ mod tests {
     }
 
     fn snapshot_store_path(root: &Path) -> StoreSnapshot {
-        let connection = open_existing_writer(&database_path(root)).unwrap();
+        let connection = open_existing_writer(
+            &database_path(root),
+            std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
+        )
+        .unwrap();
         snapshot_store(&connection)
     }
 
     fn assert_preserved_content(root: &Path, installation_id: &str) {
-        let connection = open_existing_writer(&database_path(root)).unwrap();
+        let connection = open_existing_writer(
+            &database_path(root),
+            std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
+        )
+        .unwrap();
         let stored_installation_id: String = connection
             .query_row(
                 "SELECT installation_id FROM store_metadata WHERE id = 1",
@@ -651,7 +674,11 @@ mod tests {
         drop(store);
 
         assert_preserved_content(root.path(), &installation_id);
-        let connection = open_existing_writer(&database_path(root.path())).unwrap();
+        let connection = open_existing_writer(
+            &database_path(root.path()),
+            std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
+        )
+        .unwrap();
         let new_commit_count: i64 = connection
             .query_row(
                 "SELECT COUNT(*) FROM logical_commits
@@ -708,8 +735,18 @@ mod tests {
         let layout = StoreLayout::new(root.path());
         let fault = Arc::new(FaultInjector::new());
         fault.arm_maintenance_fault(MaintenanceFaultPoint::AfterReplace);
-        let connection = open_existing_writer(&database_path(root.path())).unwrap();
-        prepare_vacuum_database(&layout, &connection, fault.as_ref()).unwrap();
+        let connection = open_existing_writer(
+            &database_path(root.path()),
+            std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
+        )
+        .unwrap();
+        prepare_vacuum_database(
+            &layout,
+            &connection,
+            fault.as_ref(),
+            std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
+        )
+        .unwrap();
         drop(connection);
 
         assert!(matches!(
@@ -757,12 +794,21 @@ mod tests {
         let root = tempfile::TempDir::new().unwrap();
         create_fragmented_store(root.path());
         let layout = StoreLayout::new(root.path());
-        let connection = open_existing_writer(&database_path(root.path())).unwrap();
+        let connection = open_existing_writer(
+            &database_path(root.path()),
+            std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
+        )
+        .unwrap();
         let fault = FaultInjector::new();
         fault.arm_maintenance_fault(MaintenanceFaultPoint::BeforeVacuumInto);
 
         assert!(matches!(
-            prepare_vacuum_database(&layout, &connection, &fault),
+            prepare_vacuum_database(
+                &layout,
+                &connection,
+                &fault,
+                std::sync::Arc::new(crate::common::retry::RetryLimiter::new())
+            ),
             Err(MaintenanceFailure::Injected(
                 MaintenanceFaultPoint::BeforeVacuumInto
             ))
@@ -780,13 +826,22 @@ mod tests {
 
         let root = tempfile::TempDir::new().unwrap();
         let (_, installation_id) = create_fragmented_store(root.path());
-        let connection = open_existing_writer(&database_path(root.path())).unwrap();
+        let connection = open_existing_writer(
+            &database_path(root.path()),
+            std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
+        )
+        .unwrap();
         let invalid_root =
             std::path::PathBuf::from(std::ffi::OsString::from_vec(b"non-utf8-\xff".to_vec()));
         let layout = StoreLayout::new(&invalid_root);
 
-        let error = prepare_vacuum_database(&layout, &connection, &FaultInjector::new())
-            .expect_err("non-UTF-8 vacuum path must be rejected");
+        let error = prepare_vacuum_database(
+            &layout,
+            &connection,
+            &FaultInjector::new(),
+            std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
+        )
+        .expect_err("non-UTF-8 vacuum path must be rejected");
         let stored_installation_id: String = connection
             .query_row(
                 "SELECT installation_id FROM store_metadata WHERE id = 1",
@@ -864,14 +919,22 @@ mod tests {
         drop(store);
         let layout = StoreLayout::new(root.path());
         let database_path = layout.database_path();
-        let reader = open_reader(&database_path).unwrap();
+        let reader = open_reader(
+            &database_path,
+            std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
+        )
+        .unwrap();
         reader.execute_batch("BEGIN;").unwrap();
         reader
             .query_row("SELECT COUNT(*) FROM store_metadata", [], |row| {
                 row.get::<_, i64>(0)
             })
             .unwrap();
-        let writer = open_existing_writer(&database_path).unwrap();
+        let writer = open_existing_writer(
+            &database_path,
+            std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
+        )
+        .unwrap();
         writer
             .execute(
                 "INSERT INTO logical_commits (
@@ -920,7 +983,11 @@ mod tests {
             )
             .unwrap();
         assert_eq!(main_only_count, 0);
-        let verification = open_reader(&database_path).unwrap();
+        let verification = open_reader(
+            &database_path,
+            std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
+        )
+        .unwrap();
         let retained: i64 = verification
             .query_row(
                 "SELECT COUNT(*) FROM logical_commits WHERE commit_id = 'checkpoint-busy'",

@@ -203,3 +203,51 @@ async fn test_session読取_所有済みとworkflow失敗をgc経由でも保持
         assert_eq!(usecase.get("session").await.unwrap_err(), expected);
     }
 }
+
+#[tokio::test]
+async fn test_session読取_プロセス在否を購読用presenceへ写す() {
+    use crate::domain::agent_session::aggregates::ManagedPtyPresence;
+    struct Presence(ManagedPtyPresence);
+    #[async_trait::async_trait]
+    impl AgentSessionGarbageCollectionPort for Presence {
+        async fn terminal_presence(
+            &self,
+            _: &str,
+        ) -> Result<ManagedPtyPresence, AgentSessionLifecycleUsecaseError> {
+            Ok(self.0)
+        }
+        async fn reconcile_garbage_collection(
+            &self,
+            _: &str,
+            _: &str,
+        ) -> Result<AgentSessionGarbageCollectionOutcome, AgentSessionLifecycleUsecaseError>
+        {
+            Ok(AgentSessionGarbageCollectionOutcome::Retained)
+        }
+    }
+    // Given
+    for (presence, expected) in [
+        (ManagedPtyPresence::Live, "live"),
+        (ManagedPtyPresence::ConfirmedAbsent, "absent"),
+        (ManagedPtyPresence::Unknown, "unknown"),
+    ] {
+        let usecase = AgentSessionReadUsecase::new(
+            Arc::new(crate::adaptor::gateway::identity::RandomIdentityIssuer),
+            Arc::new(MutableSessionQuery {
+                items: Arc::new(Mutex::new(vec![item("session")])),
+            }),
+            Arc::new(Presence(presence)),
+        );
+        // When / Then
+        assert_eq!(
+            usecase
+                .get("session")
+                .await
+                .unwrap()
+                .unwrap()
+                .terminal_presence
+                .as_deref(),
+            Some(expected)
+        );
+    }
+}

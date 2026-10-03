@@ -185,6 +185,11 @@ describe("CreateWorktreeModal", () => {
 		await waitFor(() =>
 			expect(screen.getByText(new RegExp(expected))).toBeInTheDocument(),
 		);
+		expect(screen.getByText(new RegExp(expected))).toHaveTextContent(
+			failure instanceof ConnectError
+				? "処理中にエラーが発生しました"
+				: failure.message,
+		);
 		expect(
 			screen.queryByText(/未実行|未送信|結果不明|操作結果を確認できません/),
 		).not.toBeInTheDocument();

@@ -416,7 +416,7 @@ async fn test_automation購読_置き場のファイル変化で読み直して�
     let on_change = files.on_change.lock().clone().unwrap();
     // When
     *reads.value.lock() = "second".into();
-    on_change();
+    on_change(Ok(()));
     // Then
     let value = tokio::time::timeout(std::time::Duration::from_secs(2), async {
         loop {

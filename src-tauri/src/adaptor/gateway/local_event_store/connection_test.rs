@@ -10,7 +10,11 @@ fn test_busy待ち_呼出期限より早い資源側の2秒で終了する() {
     blocker
         .execute_batch("CREATE TABLE value(n); INSERT INTO value VALUES(1);")
         .unwrap();
-    let reader = open_reader(&path).unwrap();
+    let reader = open_reader(
+        &path,
+        std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
+    )
+    .unwrap();
     blocker.execute_batch("BEGIN EXCLUSIVE").unwrap();
     let context = OperationContext::default()
         .with_deadline(Deadline::new(Instant::now() + Duration::from_secs(10)));

@@ -347,7 +347,7 @@ impl Fixture {
                     config.clone(),
                     config.clone(),
                     Arc::new(crate::adaptor::gateway::notion::NotionApiGatewayImpl::new(
-                        crate::common::retry::RetryLimiter::shared(),
+                        std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
                     )),
                 )
                 .with_state_publisher(publisher.clone()),

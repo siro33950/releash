@@ -26,9 +26,11 @@ impl Fixture {
 
     async fn with_slots(isolated_child: bool, contract: bool, fanout: bool) -> Self {
         let directory = tempfile::tempdir().unwrap();
-        let store =
-            LocalEventStore::open(LocalEventStoreConfig::production(directory.path().into()))
-                .unwrap();
+        let store = LocalEventStore::open(LocalEventStoreConfig::production(
+            directory.path().into(),
+            std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
+        ))
+        .unwrap();
         let mut definition: WorkflowDefinition = serde_saphyr::from_str(&format!("name: context\ndescription: test\nnodes:\n  main: {{worktree: isolated, sequence: {{children: [child]}}}}\n  child: {{worktree: {}, session: {{provider: codex, facets: {{instruction: policy-confirmation}}}}}}", if isolated_child {"isolated"} else {"shared"})).unwrap();
         if fanout {
             definition.nodes.iter_mut().find(|node| node.name == "main").unwrap().kind =
@@ -650,7 +652,10 @@ async fn test_workspace解決_通常pathではstoreを構築せず隔離pathだ�
     // Given
     use crate::usecase::workspace_tree::WorkspaceWorktreePathQuery;
     let fixture = Fixture::new(true).await;
-    let query = StoredWorkspaceWorktreePathQuery::new(fixture.directory.path().into());
+    let query = StoredWorkspaceWorktreePathQuery::new(
+        fixture.directory.path().into(),
+        std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
+    );
     let isolated = IsolatedWorktree::for_attempt(
         "/repo",
         &fixture.child.node_execution_id,
@@ -662,7 +667,10 @@ async fn test_workspace解決_通常pathではstoreを構築せず隔離pathだ�
         ROOT
     );
     let missing_store = fixture.directory.path().join("missing");
-    let query = StoredWorkspaceWorktreePathQuery::new(missing_store.clone());
+    let query = StoredWorkspaceWorktreePathQuery::new(
+        missing_store.clone(),
+        std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
+    );
     assert_eq!(query.workspace_worktree_path(ROOT).await.unwrap(), ROOT);
     assert!(!missing_store.exists());
     assert!(query.workspace_worktree_path(&isolated.path).await.is_err());

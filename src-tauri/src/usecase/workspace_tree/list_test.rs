@@ -415,7 +415,7 @@ async fn test_手動更新_走査済みの値を保持しpr取得完了まで待
         let usecase = fixture.usecase.clone();
         async move { usecase.refresh().await }
     });
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    fixture.watch_until(|rows| rows.len() == 2).await;
     assert!(!refreshing.is_finished());
     let scanned = fixture.usecase.read().await.unwrap();
 
@@ -452,7 +452,7 @@ async fn test_手動更新_pr取得後に前の一覧へprを反映する() {
         let usecase = fixture.usecase.clone();
         async move { usecase.refresh().await }
     });
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    fixture.watch_until(|rows| rows.len() == 2).await;
     assert!(!refreshing.is_finished());
 
     // When
@@ -573,5 +573,86 @@ fn failure(message: &str) -> crate::domain::failure::WorkFailure {
             crate::domain::failure::TechnicalFailureNature::Other,
         ),
         message: message.into(),
+    }
+}
+
+#[tokio::test]
+async fn test_watch_paths_一覧とrootの読み取り失敗をrepositoryに対応させる() {
+    use crate::usecase::repository_state::{
+        scanner::RepositoryScanner, service::RepositoryStateRepository,
+        snapshot::RepositorySnapshotParts, RepositoryStateError,
+    };
+    struct Root(bool);
+    impl RepositoryStateRepository for Root {
+        fn main_repo_path(&self, path: &str) -> Result<String, RepositoryStateError> {
+            if self.0 {
+                Err(RepositoryStateError::Watcher("root failed".into()))
+            } else {
+                Ok(path.into())
+            }
+        }
+    }
+    struct Scan;
+    #[async_trait::async_trait]
+    impl RepositoryScanner for Scan {
+        fn scan(&self, _: &str) -> Result<RepositorySnapshotParts, RepositoryStateError> {
+            Ok(RepositorySnapshotParts {
+                status: vec![],
+                diff_stats: vec![],
+                dirty_count: 0,
+                diff_file_tree: vec![],
+                staged_diff_file_tree: vec![],
+                changes_diff_file_tree: vec![],
+            })
+        }
+        async fn scan_async(
+            &self,
+            path: &str,
+        ) -> Result<RepositorySnapshotParts, RepositoryStateError> {
+            self.scan(path)
+        }
+        fn scan_worktrees(&self, _: &str) -> Result<Vec<Worktree>, RepositoryStateError> {
+            Err(RepositoryStateError::Watcher("list failed".into()))
+        }
+        fn prune_stale_branch_bases(&self, _: &str) -> Result<(), RepositoryStateError> {
+            Ok(())
+        }
+    }
+    for root_failed in [false, true] {
+        let mut fixture = Fixture::new(PullRequests {
+            status: PrStatus::default(),
+            release: None,
+        });
+        let state = Arc::new(RepositoryStateService::new(
+            Arc::new(Root(root_failed)),
+            Arc::new(Scan),
+            fixture.subscriptions.clone(),
+            Arc::new(NoopRepositoryStateWatcher),
+            Arc::new(TestRepositoryStateWorkerRuntime),
+            Arc::new(CanonicalWorktreePathNormalizer),
+            crate::test_support::state_subscription::repository_driver(),
+        ));
+        fixture.usecase.repository_state = state.clone();
+        if !root_failed {
+            state.start_git_dir_watching(&fixture.path).unwrap();
+            tokio::time::timeout(Duration::from_secs(2), async {
+                while state.worktrees(&fixture.path).error.is_none() {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .unwrap();
+        }
+        let (paths, failures) = fixture.usecase.watch_paths();
+        assert!(paths.contains(&fixture.path));
+        assert!(!failures.is_empty());
+        assert!(failures.iter().all(|(path, _)| path == &fixture.path));
+        assert!(failures
+            .iter()
+            .any(|(_, failure)| failure.message.contains(if root_failed {
+                "root failed"
+            } else {
+                "list failed"
+            })));
     }
 }

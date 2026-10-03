@@ -5,6 +5,7 @@ async fn test_受入host終了_残った参照の解放を待ってstoreを閉�
     let directory = tempfile::tempdir().unwrap();
     let store = LocalEventStore::open(LocalEventStoreConfig::production(
         directory.path().to_path_buf(),
+        std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
     ))
     .unwrap();
     let retained = Arc::clone(&store);
@@ -17,6 +18,7 @@ async fn test_受入host終了_残った参照の解放を待ってstoreを閉�
 
     LocalEventStore::open(LocalEventStoreConfig::production(
         directory.path().to_path_buf(),
+        std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
     ))
     .unwrap();
 }
@@ -26,6 +28,7 @@ async fn test_受入host終了_参照が解放されなければ期限付きで�
     let directory = tempfile::tempdir().unwrap();
     let store = LocalEventStore::open(LocalEventStoreConfig::production(
         directory.path().to_path_buf(),
+        std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
     ))
     .unwrap();
     let retained = Arc::clone(&store);

@@ -575,7 +575,10 @@ describe("WorkspaceList", () => {
 				return Promise.resolve({ items: [], hasMore: false });
 			}
 			if (command === "restore_agent_session") {
-				return Promise.resolve("restored-session-node");
+				return Promise.resolve({
+					agentSessionId: "provider-agent-archived",
+					nodeId: "restored-session-node",
+				});
 			}
 			return Promise.resolve(null);
 		});

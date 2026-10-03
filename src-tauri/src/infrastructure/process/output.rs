@@ -39,7 +39,7 @@ pub async fn output(
     let spawn_guard = crate::infrastructure::process::parent_lifetime::spawn_guard();
     let mut child = command.spawn().map_err(ProcessError::Io)?;
     drop(spawn_guard);
-    let group = ProcessGroupGuard(child.id());
+    let mut group = ProcessGroupGuard(child.id());
     let mut stdin = child.stdin.take().expect("piped stdin");
     let mut stdout = child.stdout.take().expect("piped stdout");
     let mut stderr = child.stderr.take().expect("piped stderr");
@@ -55,7 +55,18 @@ pub async fn output(
             tokio::try_join!(stdout.read_to_end(&mut out), stderr.read_to_end(&mut err))?;
             Ok::<_, io::Error>((out, err))
         };
-        let (_, (stdout, stderr), status) = tokio::try_join!(write, read, child.wait())?;
+        let finish = async {
+            #[cfg(unix)]
+            {
+                child_process::wait_without_reaping(group.0.expect("spawned child id")).await?;
+                if let Some(pid) = group.0 {
+                    child_process::signal_process_group(pid as i32, libc::SIGKILL)?;
+                }
+            }
+            group.0 = None;
+            child.wait().await
+        };
+        let (_, (stdout, stderr), status) = tokio::try_join!(write, read, finish)?;
         Ok::<_, io::Error>(Output {
             status,
             stdout,

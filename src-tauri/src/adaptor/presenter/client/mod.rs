@@ -1,5 +1,4 @@
 mod conversions;
-#[cfg(any(test, feature = "desktop"))]
 pub(crate) mod descriptor;
 mod errors;
 mod workspace;

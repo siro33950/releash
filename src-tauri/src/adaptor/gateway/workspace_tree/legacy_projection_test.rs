@@ -5,8 +5,11 @@ use crate::adaptor::gateway::local_event_store::store::LocalEventStoreConfig;
 #[tokio::test]
 async fn legacy_agent_projection_row_is_ignored_by_canonical_session_and_workspace_queries() {
     let root = tempfile::TempDir::new().unwrap();
-    let store = LocalEventStore::open(LocalEventStoreConfig::production(root.path().to_path_buf()))
-        .unwrap();
+    let store = LocalEventStore::open(LocalEventStoreConfig::production(
+        root.path().to_path_buf(),
+        std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
+    ))
+    .unwrap();
 
     let connection =
         rusqlite::Connection::open(StoreLayout::new(root.path()).database_path()).unwrap();

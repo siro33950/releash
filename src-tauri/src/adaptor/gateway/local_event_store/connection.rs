@@ -44,28 +44,78 @@ pub fn check_sqlite_version() -> Result<(), ConnectionError> {
 
 thread_local! { static BUSY_CONTEXT: std::cell::RefCell<crate::common::operation_context::OperationContext> = std::cell::RefCell::default(); }
 
-pub(super) fn configure_busy_handler(connection: &Connection) -> Result<(), rusqlite::Error> {
-    connection.busy_handler(Some(|attempt| {
-        if attempt == 0 {
-            BUSY_CONTEXT.set(crate::common::operation_context::with_timeout(
-                Duration::from_secs(2),
-            ));
-        }
-        BUSY_CONTEXT.with_borrow(|context| {
-            crate::common::retry::RetryLimiter::shared()
-                .wait_sync(
-                    context,
-                    crate::common::retry::RetryBackoff::ITEM,
-                    (attempt as u64).saturating_add(1),
-                )
-                .is_ok()
-        })
-    }))?;
-    Ok(())
+pub struct ManagedConnection {
+    connection: Connection,
+    limiter: std::sync::Arc<crate::common::retry::RetryLimiter>,
+}
+
+impl std::ops::Deref for ManagedConnection {
+    type Target = Connection;
+    fn deref(&self) -> &Connection {
+        &self.connection
+    }
+}
+impl std::ops::DerefMut for ManagedConnection {
+    fn deref_mut(&mut self) -> &mut Connection {
+        &mut self.connection
+    }
+}
+
+pub(super) fn configure_busy_handler(
+    connection: Connection,
+    limiter: std::sync::Arc<crate::common::retry::RetryLimiter>,
+) -> Result<ManagedConnection, rusqlite::Error> {
+    unsafe extern "C" fn busy(
+        data: *mut std::ffi::c_void,
+        attempt: std::ffi::c_int,
+    ) -> std::ffi::c_int {
+        // SAFETY: ManagedConnection owns this Arc until after its SQLite connection closes.
+        let limiter = unsafe { &*data.cast::<crate::common::retry::RetryLimiter>() };
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            if attempt == 0 {
+                BUSY_CONTEXT.set(crate::common::operation_context::with_timeout(
+                    Duration::from_secs(2),
+                ));
+            }
+            BUSY_CONTEXT.with_borrow(|context| {
+                limiter
+                    .wait_sync(
+                        context,
+                        crate::common::retry::RetryBackoff::ITEM,
+                        (attempt as u64).saturating_add(1),
+                    )
+                    .is_ok()
+            })
+        }))
+        .unwrap_or(false) as std::ffi::c_int
+    }
+    // SAFETY: exclusive configuration of this connection; the pointer stays alive in ManagedConnection.
+    let result = unsafe {
+        rusqlite::ffi::sqlite3_busy_handler(
+            connection.handle(),
+            Some(busy),
+            std::sync::Arc::as_ptr(&limiter).cast_mut().cast(),
+        )
+    };
+    if result != rusqlite::ffi::SQLITE_OK {
+        return Err(rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(result),
+            None,
+        ));
+    }
+    Ok(ManagedConnection {
+        connection,
+        limiter,
+    })
+}
+
+impl ManagedConnection {
+    pub(super) fn retry_limiter(&self) -> std::sync::Arc<crate::common::retry::RetryLimiter> {
+        self.limiter.clone()
+    }
 }
 
 fn configure_common(connection: &Connection) -> Result<(), ConnectionError> {
-    configure_busy_handler(connection)?;
     connection.pragma_update(None, "foreign_keys", "ON")?;
     connection.pragma_update(None, "trusted_schema", "OFF")?;
     Ok(())
@@ -85,7 +135,10 @@ fn configure_reader(connection: &Connection) -> Result<(), ConnectionError> {
 }
 
 /// Open the single writer connection.
-pub fn open_writer(path: &Path) -> Result<Connection, ConnectionError> {
+pub fn open_writer(
+    path: &Path,
+    limiter: std::sync::Arc<crate::common::retry::RetryLimiter>,
+) -> Result<ManagedConnection, ConnectionError> {
     check_sqlite_version()?;
     let connection = Connection::open_with_flags(
         path,
@@ -93,28 +146,37 @@ pub fn open_writer(path: &Path) -> Result<Connection, ConnectionError> {
             | OpenFlags::SQLITE_OPEN_CREATE
             | OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )?;
+    let connection = configure_busy_handler(connection, limiter)?;
     configure_writer(&connection)?;
     Ok(connection)
 }
 
 /// Open an existing writer without allowing SQLite to create or replace it.
-pub fn open_existing_writer(path: &Path) -> Result<Connection, ConnectionError> {
+pub fn open_existing_writer(
+    path: &Path,
+    limiter: std::sync::Arc<crate::common::retry::RetryLimiter>,
+) -> Result<ManagedConnection, ConnectionError> {
     check_sqlite_version()?;
     let connection = Connection::open_with_flags(
         path,
         OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )?;
+    let connection = configure_busy_handler(connection, limiter)?;
     configure_writer(&connection)?;
     Ok(connection)
 }
 
 /// Open one reader-pool connection (read only).
-pub fn open_reader(path: &Path) -> Result<Connection, ConnectionError> {
+pub fn open_reader(
+    path: &Path,
+    limiter: std::sync::Arc<crate::common::retry::RetryLimiter>,
+) -> Result<ManagedConnection, ConnectionError> {
     check_sqlite_version()?;
     let connection = Connection::open_with_flags(
         path,
         OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )?;
+    let connection = configure_busy_handler(connection, limiter)?;
     configure_reader(&connection)?;
     Ok(connection)
 }

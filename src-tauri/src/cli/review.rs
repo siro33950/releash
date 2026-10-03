@@ -1598,8 +1598,11 @@ mod tests {
         use crate::domain::workflow::*;
         let tmp = TempDir::new().unwrap();
         write_review_config(tmp.path());
-        let store =
-            LocalEventStore::open(LocalEventStoreConfig::production(tmp.path().into())).unwrap();
+        let store = LocalEventStore::open(LocalEventStoreConfig::production(
+            tmp.path().into(),
+            std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
+        ))
+        .unwrap();
         let id = test_uuid(173);
         let mut facts = SessionExecutionTreeRootFacts::new(
             &id,

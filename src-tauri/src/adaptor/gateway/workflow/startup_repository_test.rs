@@ -11,8 +11,11 @@ use crate::domain::workflow::{RuntimeExecutionState, SessionExecutionTreeRootFac
 async fn test_起動時判定_rootと最初の終端だけで復元し通常の事実をdecodeしない() {
     // Given
     let dir = tempfile::tempdir().unwrap();
-    let store =
-        LocalEventStore::open(LocalEventStoreConfig::production(dir.path().into())).unwrap();
+    let store = LocalEventStore::open(LocalEventStoreConfig::production(
+        dir.path().into(),
+        std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
+    ))
+    .unwrap();
     let root =
         SessionExecutionTreeRootFacts::new("tree", "/repo", "/repo", ProviderKind::Codex, None)
             .unwrap();
@@ -70,8 +73,11 @@ async fn test_起動時判定_rootと最初の終端だけで復元し通常の�
 async fn test_起動時判定_壊れた終端を読取失敗として返す() {
     // Given
     let dir = tempfile::tempdir().unwrap();
-    let store =
-        LocalEventStore::open(LocalEventStoreConfig::production(dir.path().into())).unwrap();
+    let store = LocalEventStore::open(LocalEventStoreConfig::production(
+        dir.path().into(),
+        std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
+    ))
+    .unwrap();
     let root =
         SessionExecutionTreeRootFacts::new("tree", "/repo", "/repo", ProviderKind::Codex, None)
             .unwrap();
@@ -113,8 +119,11 @@ async fn test_起動時判定_読取後に追記された最新の終端状態�
         }),
     ] {
         let dir = tempfile::tempdir().unwrap();
-        let store =
-            LocalEventStore::open(LocalEventStoreConfig::production(dir.path().into())).unwrap();
+        let store = LocalEventStore::open(LocalEventStoreConfig::production(
+            dir.path().into(),
+            std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
+        ))
+        .unwrap();
         let root =
             SessionExecutionTreeRootFacts::new("tree", "/repo", "/repo", ProviderKind::Codex, None)
                 .unwrap();
@@ -151,8 +160,11 @@ async fn test_起動時判定_読取後に追記された最新の終端状態�
 #[tokio::test]
 async fn test_起動時判定_書込口を閉じても保存済み終端を読み重複追記しない() {
     let dir = tempfile::tempdir().unwrap();
-    let store =
-        LocalEventStore::open(LocalEventStoreConfig::production(dir.path().into())).unwrap();
+    let store = LocalEventStore::open(LocalEventStoreConfig::production(
+        dir.path().into(),
+        std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
+    ))
+    .unwrap();
     let root =
         SessionExecutionTreeRootFacts::new("tree", "/repo", "/repo", ProviderKind::Codex, None)
             .unwrap();
@@ -203,8 +215,11 @@ async fn test_起動時判定_書込口を閉じても未終端と異なる終�
         )),
     ] {
         let dir = tempfile::tempdir().unwrap();
-        let store =
-            LocalEventStore::open(LocalEventStoreConfig::production(dir.path().into())).unwrap();
+        let store = LocalEventStore::open(LocalEventStoreConfig::production(
+            dir.path().into(),
+            std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
+        ))
+        .unwrap();
         let root =
             SessionExecutionTreeRootFacts::new("tree", "/repo", "/repo", ProviderKind::Codex, None)
                 .unwrap();
@@ -244,8 +259,11 @@ async fn test_起動時判定_読取失敗を成功や競合に変換しない()
     use crate::adaptor::gateway::local_event_store::test_helpers::ReadFailure;
     use connectrpc::ErrorCode;
     let dir = tempfile::tempdir().unwrap();
-    let store =
-        LocalEventStore::open(LocalEventStoreConfig::production(dir.path().into())).unwrap();
+    let store = LocalEventStore::open(LocalEventStoreConfig::production(
+        dir.path().into(),
+        std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
+    ))
+    .unwrap();
     store.fail_next_read(ReadFailure::Query(
         crate::domain::local_event::LocalEventQueryError::QueryBusy,
     ));
@@ -261,8 +279,11 @@ async fn test_起動時判定_読取失敗を成功や競合に変換しない()
 #[tokio::test]
 async fn test_起動時判定_存在しない実行木の確認で追記しない() {
     let dir = tempfile::tempdir().unwrap();
-    let store =
-        LocalEventStore::open(LocalEventStoreConfig::production(dir.path().into())).unwrap();
+    let store = LocalEventStore::open(LocalEventStoreConfig::production(
+        dir.path().into(),
+        std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
+    ))
+    .unwrap();
     let repository = StoredWorkflowStartupRepository(store);
     crate::usecase::workflow::startup::check_startup_definition(&repository, "missing")
         .await
@@ -276,8 +297,11 @@ async fn test_起動時読取_実経路で失敗分類を保持する() {
     use crate::adaptor::presenter::connect::classified_error;
     // Given
     let directory = tempfile::tempdir().unwrap();
-    let store =
-        LocalEventStore::open(LocalEventStoreConfig::production(directory.path().into())).unwrap();
+    let store = LocalEventStore::open(LocalEventStoreConfig::production(
+        directory.path().into(),
+        std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
+    ))
+    .unwrap();
     let repository = StoredWorkflowStartupRepository(store.clone());
     for (failure, expected) in ReadFailure::cases() {
         store.fail_next_read(failure);

@@ -15,6 +15,7 @@ async fn test_provider_hook_health_repository_warningと解除を再起動後も
     let directory = tempdir().unwrap();
     let store = LocalEventStore::open(LocalEventStoreConfig::production(
         directory.path().to_path_buf(),
+        std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
     ))
     .unwrap();
     let repository = LocalProviderHookHealthRepository::new(
@@ -39,6 +40,7 @@ async fn test_provider_hook_health_repository_warningと解除を再起動後も
     drop(store);
     let restarted = LocalEventStore::open(LocalEventStoreConfig::production(
         directory.path().to_path_buf(),
+        std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
     ))
     .unwrap();
     let repository = LocalProviderHookHealthRepository::new(
@@ -68,6 +70,7 @@ async fn test_provider_hook_health_repository_providerごとの状態を混同�
     let directory = tempdir().unwrap();
     let store = LocalEventStore::open(LocalEventStoreConfig::production(
         directory.path().to_path_buf(),
+        std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
     ))
     .unwrap();
     let repository = LocalProviderHookHealthRepository::new(
@@ -111,8 +114,11 @@ async fn test_hook保存_同一キーの異なる内容と古いrevisionの分�
     use connectrpc::ErrorCode;
     // Given
     let directory = tempdir().unwrap();
-    let store =
-        LocalEventStore::open(LocalEventStoreConfig::production(directory.path().into())).unwrap();
+    let store = LocalEventStore::open(LocalEventStoreConfig::production(
+        directory.path().into(),
+        std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
+    ))
+    .unwrap();
     let repository =
         LocalProviderHookHealthRepository::new(store.clone(), store.installation_id().into());
     let mut first = repository.load(ProviderKind::Codex).await.unwrap();

@@ -1995,7 +1995,7 @@ export interface ClientCommands {
 	): Promise<ReviewThreadDto>;
 	restore_agent_session(
 		args: ClientCommandArgs["restore_agent_session"],
-	): Promise<ResultString>;
+	): Promise<SessionSelection>;
 	restore_workspace_workflow_execution(
 		args: ClientCommandArgs["restore_workspace_workflow_execution"],
 	): Promise<void>;

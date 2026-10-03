@@ -162,7 +162,8 @@ fn table_columns(
 fn open_schema_inspection(
     layout: &StoreLayout,
     path: &std::path::Path,
-) -> Result<rusqlite::Connection, LocalEventStoreOpenError> {
+    limiter: Arc<crate::common::retry::RetryLimiter>,
+) -> Result<super::connection::ManagedConnection, LocalEventStoreOpenError> {
     // Classification reads the fixed authority directly. SQLite's
     // `readonly_shm` URI mode sees committed WAL frames while mapping the
     // fixed SHM wal-index read-only, so a closed classification failure does
@@ -211,15 +212,17 @@ fn open_schema_inspection(
     .map_err(|error| {
         classify_sqlite_error(&error, LocalEventStoreOpenError::InitializationStateInvalid)
     })?;
-    super::connection::configure_busy_handler(&connection).map_err(|error| {
-        classify_sqlite_error(&error, LocalEventStoreOpenError::InitializationStateInvalid)
-    })?;
+    let connection =
+        super::connection::configure_busy_handler(connection, limiter).map_err(|error| {
+            classify_sqlite_error(&error, LocalEventStoreOpenError::InitializationStateInvalid)
+        })?;
     Ok(connection)
 }
 
 fn is_proven_initial_create_residue(
     layout: &StoreLayout,
     path: &std::path::Path,
+    limiter: Arc<crate::common::retry::RetryLimiter>,
 ) -> Result<bool, LocalEventStoreOpenError> {
     layout.observe(StorePathOperation::Metadata, path);
     let length = std::fs::metadata(path).map_err(io_open_failure)?.len();
@@ -231,7 +234,7 @@ fn is_proven_initial_create_residue(
     }
     layout.observe(StorePathOperation::Open, path);
     layout.observe(StorePathOperation::Read, path);
-    let connection = open_schema_inspection(layout, path)?;
+    let connection = open_schema_inspection(layout, path, limiter)?;
     let application_table_count: i64 = connection
         .query_row(
             "SELECT COUNT(*) FROM sqlite_schema
@@ -274,6 +277,7 @@ enum ExistingDatabaseKind {
 fn classify_existing_database(
     layout: &StoreLayout,
     path: &std::path::Path,
+    limiter: Arc<crate::common::retry::RetryLimiter>,
 ) -> Result<ExistingDatabaseKind, LocalEventStoreOpenError> {
     layout.observe(StorePathOperation::Metadata, path);
     let length = std::fs::metadata(path).map_err(io_open_failure)?.len();
@@ -282,10 +286,7 @@ fn classify_existing_database(
     }
     layout.observe(StorePathOperation::Open, path);
     layout.observe(StorePathOperation::Read, path);
-    let connection = open_schema_inspection(layout, path)?;
-    super::connection::configure_busy_handler(&connection).map_err(|error| {
-        classify_sqlite_error(&error, LocalEventStoreOpenError::InitializationStateInvalid)
-    })?;
+    let connection = open_schema_inspection(layout, path, limiter)?;
     let application_id = connection
         .pragma_query_value(None, "application_id", |row| row.get::<_, i64>(0))
         .map_err(|error| {
@@ -398,6 +399,7 @@ impl std::error::Error for LocalEventStoreOpenError {}
 
 pub struct LocalEventStoreConfig {
     pub app_data_root: PathBuf,
+    pub retry_limiter: Arc<crate::common::retry::RetryLimiter>,
     pub clock: Arc<dyn StoreClock>,
     pub registry: Arc<EventCodecRegistry>,
     pub fault: Arc<FaultInjector>,
@@ -406,9 +408,13 @@ pub struct LocalEventStoreConfig {
 
 impl LocalEventStoreConfig {
     /// Production configuration: system clock, default registry, no faults.
-    pub fn production(app_data_root: PathBuf) -> Self {
+    pub fn production(
+        app_data_root: PathBuf,
+        retry_limiter: Arc<crate::common::retry::RetryLimiter>,
+    ) -> Self {
         Self {
             app_data_root,
+            retry_limiter,
             clock: Arc::new(SystemStoreClock),
             registry: Arc::new(EventCodecRegistry::new()),
             fault: Arc::new(FaultInjector::new()),
@@ -491,9 +497,13 @@ impl LocalEventStore {
             .map_err(io_open_failure)?;
             layout.observe(StorePathOperation::Open, &database_path);
             layout.observe(StorePathOperation::Write, &database_path);
-            let connection = open_writer(&database_path).map_err(|error| {
-                classify_connection_error(&error, LocalEventStoreOpenError::SchemaEvolutionFailed)
-            })?;
+            let connection =
+                open_writer(&database_path, config.retry_limiter.clone()).map_err(|error| {
+                    classify_connection_error(
+                        &error,
+                        LocalEventStoreOpenError::SchemaEvolutionFailed,
+                    )
+                })?;
             if config
                 .fault
                 .take_initial_create_fault(InitialCreateFaultPoint::AfterSqliteFileCreate)
@@ -527,17 +537,22 @@ impl LocalEventStore {
             connection
         } else {
             if evidence == InitialCreateEvidenceState::Valid
-                && is_proven_initial_create_residue(&layout, &database_path)?
+                && is_proven_initial_create_residue(
+                    &layout,
+                    &database_path,
+                    config.retry_limiter.clone(),
+                )?
             {
                 remove_initial_create_database(&layout)?;
                 layout.observe(StorePathOperation::Open, &database_path);
                 layout.observe(StorePathOperation::Write, &database_path);
-                let connection = open_writer(&database_path).map_err(|error| {
-                    classify_connection_error(
-                        &error,
-                        LocalEventStoreOpenError::SchemaEvolutionFailed,
-                    )
-                })?;
+                let connection = open_writer(&database_path, config.retry_limiter.clone())
+                    .map_err(|error| {
+                        classify_connection_error(
+                            &error,
+                            LocalEventStoreOpenError::SchemaEvolutionFailed,
+                        )
+                    })?;
                 if config
                     .fault
                     .take_initial_create_fault(InitialCreateFaultPoint::AfterSqliteFileCreate)
@@ -570,15 +585,20 @@ impl LocalEventStore {
                 })?;
                 connection
             } else {
-                let kind = classify_existing_database(&layout, &database_path)?;
+                let kind = classify_existing_database(
+                    &layout,
+                    &database_path,
+                    config.retry_limiter.clone(),
+                )?;
                 layout.observe(StorePathOperation::Open, &database_path);
                 layout.observe(StorePathOperation::Write, &database_path);
-                let connection = open_existing_writer(&database_path).map_err(|error| {
-                    classify_connection_error(
-                        &error,
-                        LocalEventStoreOpenError::StoreValidationFailed,
-                    )
-                })?;
+                let connection = open_existing_writer(&database_path, config.retry_limiter.clone())
+                    .map_err(|error| {
+                        classify_connection_error(
+                            &error,
+                            LocalEventStoreOpenError::StoreValidationFailed,
+                        )
+                    })?;
                 if matches!(
                     kind,
                     ExistingDatabaseKind::SupportedV1
@@ -689,8 +709,8 @@ impl LocalEventStore {
         for index in 0..READER_POOL_SIZE {
             layout.observe(StorePathOperation::Open, &database_path);
             layout.observe(StorePathOperation::Read, &database_path);
-            let connection =
-                open_reader(&database_path).map_err(|error| connection_open_failure(&error))?;
+            let connection = open_reader(&database_path, config.retry_limiter.clone())
+                .map_err(|error| connection_open_failure(&error))?;
             reader_connections.push((index, connection));
         }
 

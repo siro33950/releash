@@ -25,8 +25,24 @@ fn client_priority_level(path: &str) -> Option<&'static str> {
     }
 }
 
+pub(crate) fn default_timeout() -> std::time::Duration {
+    static TIMEOUT: std::sync::LazyLock<std::time::Duration> = std::sync::LazyLock::new(|| {
+        use crate::adaptor::presenter::client::descriptor;
+        let options = descriptor::pool()
+            .get_service_by_name("releash.client.v1.ClientService")
+            .expect("ClientService descriptor")
+            .options();
+        std::time::Duration::from_millis(
+            descriptor::option(&options, "default_timeout_ms")
+                .as_u32()
+                .expect("default_timeout_ms")
+                .into(),
+        )
+    });
+    *TIMEOUT
+}
+
 pub(crate) fn client_priority_interceptor(
-    _failures: Option<Arc<usecase::failure::FailureRecordingUsecase>>,
 ) -> adaptor::controller::api::client_priority::PriorityInterceptor {
     let limits = Arc::new(crate::common::concurrency::PriorityLimits::new(
         64,
@@ -65,11 +81,14 @@ pub(crate) async fn compose(
         infrastructure::process::search_path::LoginShellPathError,
     >,
 ) -> Result<Daemon, Box<dyn std::error::Error>> {
-    let retry_limiter = crate::common::retry::RetryLimiter::shared();
+    let retry_limiter = Arc::new(crate::common::retry::RetryLimiter::new());
     let failure_store = Arc::new(adaptor::gateway::failure_records::FailureRecordStore::default());
     infrastructure::telemetry::metrics::set_startup_origin(std::time::Instant::now());
     let (exit_sender, exit_receiver) = tokio::sync::mpsc::channel(1);
-    let app_data = super::app_data_composition::ProductionAppDataComposition::new(data_dir.clone());
+    let app_data = super::app_data_composition::ProductionAppDataComposition::new(
+        data_dir.clone(),
+        retry_limiter.clone(),
+    );
     let local_event_store = app_data.open_local_event_store().map_err(|error| {
         let failure =
             usecase::application_startup::StartupFailure::new(classify_startup_failure(error));
@@ -467,7 +486,6 @@ pub(crate) async fn compose(
     let dependencies = super::client::ClientDependencies {
         application_startup_authority: Some(startup_authority),
         workspace_node_command_usecase: Some(workspace_node_command_usecase),
-        workspace_query_service: Some(workspace_query_service),
         app_state: Some(app_state),
         workspace_state_store: Some(workspace_state_store),
         agent_session_lifecycle_usecase: Some(agent_session_lifecycle),
@@ -559,25 +577,23 @@ pub(crate) async fn compose(
     client_dispatch.register_dependencies(&dependencies);
     let client_dispatch = Arc::new(client_dispatch);
 
+    let priority = client_priority_interceptor();
+    let local_gate = priority.gate.clone();
     let local_api_router = adaptor::controller::api::build_router(
         Arc::new(workflow_query_usecase.read_usecase()),
         workflow_runtime_usecase.clone(),
         local_api_binding.bearer_token(),
         local_api_binding.client_bearer_token(),
         Some(
-            adaptor::controller::api::ClientApiDeps::new(
-                client_dispatch.clone(),
-                client_priority_interceptor(Some(failure_output)),
-            )
-            .with_state_subscriptions(
-                adaptor::controller::api::StateSubscriptionDeps::new(
+            adaptor::controller::api::ClientApiDeps::new(client_dispatch.clone(), priority)
+                .with_state_subscriptions(adaptor::controller::api::StateSubscriptionDeps::new(
                     state_subscriptions,
                     state_presenter,
                     terminal_subscriptions,
-                ),
-            ),
+                )),
         ),
         Some(provider_lifecycle_ingress.clone()),
+        (local_gate, default_timeout()),
     );
     let local_api = local_api_binding.start(local_api_router, &tokio::runtime::Handle::current());
 
