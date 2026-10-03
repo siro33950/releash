@@ -6,7 +6,19 @@ use crate::adaptor::gateway::{
 };
 use crate::domain::git_host::{CacheTtl, GitHostError, GitHostProvider, IssueInfo, PrStatus};
 use crate::domain::workflow::FacetKind;
-use crate::test_support::state_subscription::start_read;
+async fn start_read(
+    usecase: &crate::usecase::state_subscription::StateSubscriptionUsecase,
+    client: &str,
+    target: &str,
+    cursor: Option<(&str, u64)>,
+) -> Result<(), crate::usecase::state_subscription::StateReadError> {
+    let target = crate::usecase::state_subscription::SubscriptionTarget::parse(target)
+        .map_err(crate::usecase::state_subscription::StateReadError::from_error)?;
+    usecase
+        .deps()
+        .start_subscription(client, &target, &format!("{client}:{target}"), cursor)
+        .await
+}
 use crate::test_support::state_subscription::StateSubscriptionEvent;
 use crate::usecase::agent_session::*;
 use crate::usecase::git_host::GitHostUsecase;
@@ -688,7 +700,7 @@ async fn test_issue手動更新_有効なcacheを無視し30秒前に同じ購�
                 crate::test_support::state_subscription::Event::Change(_, _, value),
             )) = stream.next().await
             {
-                assert_eq!(id, target);
+                assert_eq!(id, format!("client:{target}"));
                 break value;
             }
         }
@@ -857,7 +869,7 @@ async fn test_終了済み実行木のarchive_取り直しなしで空のツリ�
     let Some(StateSubscriptionEvent::Item(received, Event::Change(_, _, value))) = event else {
         panic!("changed tree")
     };
-    assert_eq!(received, target);
+    assert_eq!(received, format!("client:{target}"));
     let Some(crate::adaptor::presenter::client::state_payload::Value::Selection(selection)) =
         &match value.as_ref() {
             crate::adaptor::presenter::state_subscription::PublishedState::Value(value) => value,
@@ -954,7 +966,7 @@ async fn test_終了済み実行木のrestore_取り直しなしでツリーを�
     let Some(StateSubscriptionEvent::Item(received, Event::Change(_, _, value))) = event else {
         panic!("changed tree")
     };
-    assert_eq!(received, target);
+    assert_eq!(received, format!("client:{target}"));
     let Some(crate::adaptor::presenter::client::state_payload::Value::Selection(selection)) =
         &match value.as_ref() {
             crate::adaptor::presenter::state_subscription::PublishedState::Value(value) => value,
@@ -1011,7 +1023,7 @@ async fn test_agent_session購読_状態変更通知から再読取して同じ�
         .await
         .unwrap();
     assert!(
-        matches!(stream.next().await, Some(StateSubscriptionEvent::Item(id, Event::Snapshot(_, value))) if id == target && crate::test_support::state_subscription::same(&value, &StateValue::AgentSession(Some(item.clone()))))
+        matches!(stream.next().await, Some(StateSubscriptionEvent::Item(id, Event::Snapshot(_, value))) if id == format!("client:{target}") && crate::test_support::state_subscription::same(&value, &StateValue::AgentSession(Some(item.clone()))))
     );
     stream.next().await;
     // When / Then
@@ -1039,7 +1051,7 @@ async fn test_agent_session購読_状態変更通知から再読取して同じ�
             .await
             .unwrap();
         assert!(
-            matches!(event, Some(StateSubscriptionEvent::Item(id, Event::Change(_, crate::test_support::state_subscription::Delivery::Full, value))) if id == target && crate::test_support::state_subscription::same(&value, &StateValue::AgentSession(next)))
+            matches!(event, Some(StateSubscriptionEvent::Item(id, Event::Change(_, crate::test_support::state_subscription::Delivery::Full, value))) if id == format!("client:{target}") && crate::test_support::state_subscription::same(&value, &StateValue::AgentSession(next)))
         );
         assert_eq!(fixture.sessions.calls.lock().len(), before + 1);
         assert!(fixture
@@ -1132,7 +1144,7 @@ async fn test_issue手動更新失敗_最後の一覧と失敗を購読へ届け
     // Then
     assert!(result.is_err());
     assert!(
-        matches!(event, StateSubscriptionEvent::Item(id, Event::Change(_, _, value)) if id == target && crate::test_support::state_subscription::same(&value, &StateValue::Issues(crate::usecase::fetched::Fetched {
+        matches!(event, StateSubscriptionEvent::Item(id, Event::Change(_, _, value)) if id == format!("client:{target}") && crate::test_support::state_subscription::same(&value, &StateValue::Issues(crate::usecase::fetched::Fetched {
             value: Some(vec![issue(1)]),
             error: Some(crate::domain::failure::WorkFailure::from_error(&GitHostError::External("issues offline".into()))),
         })))
@@ -1168,6 +1180,6 @@ async fn test_issue手動更新失敗_回復時に新しい一覧を届ける() 
         .unwrap();
     // Then
     assert!(
-        matches!(event, StateSubscriptionEvent::Item(id, Event::Change(_, _, value)) if id == target && crate::test_support::state_subscription::same(&value, &StateValue::Issues(crate::usecase::fetched::Fetched::ready(vec![issue(2)]))))
+        matches!(event, StateSubscriptionEvent::Item(id, Event::Change(_, _, value)) if id == format!("client:{target}") && crate::test_support::state_subscription::same(&value, &StateValue::Issues(crate::usecase::fetched::Fetched::ready(vec![issue(2)]))))
     );
 }

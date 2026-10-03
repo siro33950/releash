@@ -13,18 +13,6 @@ pub(crate) use value::StateValue;
 pub(crate) trait StateSubscriptionOutput: Send + Sync {
     #[cfg(test)]
     fn as_any(&self) -> &dyn std::any::Any;
-    fn start(
-        &self,
-        client: &str,
-        target: &SubscriptionTarget,
-        cursor: Option<(&str, u64)>,
-    ) -> Result<(), StateReadError>;
-    fn stop(
-        &self,
-        client: &str,
-        target: &SubscriptionTarget,
-        active: &std::collections::HashSet<SubscriptionTarget>,
-    ) -> Result<(), SubscriptionError>;
     fn publish_failure(
         &self,
         target: &SubscriptionTarget,
@@ -41,6 +29,33 @@ pub(crate) trait StateSubscriptionOutput: Send + Sync {
         snapshot: StateValue,
         delta: Option<StateValue>,
     ) -> Result<(), SubscriptionError>;
+}
+
+pub(crate) trait StateSubscriptionDelivery: Send + Sync {
+    fn start(&self) -> Result<Option<usize>, StateReadError>;
+    fn claim(&self) -> bool;
+    fn finish(
+        &self,
+        active: &std::collections::HashSet<SubscriptionTarget>,
+    ) -> Result<(), SubscriptionError>;
+}
+
+pub(crate) fn stop_delivery(
+    delivery: &dyn StateSubscriptionDelivery,
+    stop: impl FnOnce() -> Result<(), SubscriptionError>,
+    finish: impl FnOnce(
+        &dyn Fn(&std::collections::HashSet<SubscriptionTarget>) -> Result<(), SubscriptionError>,
+    ) -> Result<(), SubscriptionError>,
+) -> Result<(), SubscriptionError> {
+    if !delivery.claim() {
+        return Ok(());
+    }
+    let result = stop();
+    finish(&|active| delivery.finish(active))?;
+    match result {
+        Err(SubscriptionError::StreamEnded) => Ok(()),
+        other => other,
+    }
 }
 
 pub(crate) type StateSubscriptionOutputRef = Arc<dyn StateSubscriptionOutput>;
@@ -97,7 +112,9 @@ pub(crate) struct StateSubscriptionUsecase {
     #[cfg(test)]
     test_changes: tokio::sync::broadcast::Sender<StateChangeSource>,
     clients: Arc<
-        Mutex<std::collections::HashMap<String, std::collections::HashSet<SubscriptionTarget>>>,
+        Mutex<
+            std::collections::HashMap<String, std::collections::HashMap<SubscriptionTarget, usize>>,
+        >,
     >,
     driver: tokio::sync::mpsc::UnboundedSender<ReadWorker>,
     history_paths: Vec<String>,
@@ -114,29 +131,6 @@ pub(crate) struct StateSubscriptionUsecase {
 }
 
 impl StateSubscriptionUsecase {
-    pub(crate) async fn start_subscription(
-        &self,
-        client: &str,
-        target: &SubscriptionTarget,
-        cursor: Option<(&str, u64)>,
-    ) -> Result<(), StateReadError> {
-        self.start_read(client, target).await?;
-        if let Err(error) = self.publisher.start(client, target, cursor) {
-            let _ = self.stop(client, target);
-            return Err(error);
-        }
-        Ok(())
-    }
-
-    pub(crate) async fn stop_subscription(
-        &self,
-        client: &str,
-        target: &SubscriptionTarget,
-    ) -> Result<(), SubscriptionError> {
-        self.stop_read(client, target).await?;
-        self.with_active_targets(|active| self.publisher.stop(client, target, active))
-    }
-
     pub fn new_with_output(
         publisher: StateSubscriptionOutputRef,
         driver: tokio::sync::mpsc::UnboundedSender<ReadWorker>,
@@ -176,7 +170,36 @@ impl StateSubscriptionUsecase {
         self
     }
 
-    pub async fn start_read(
+    pub(crate) async fn start_subscription(
+        &self,
+        client: &str,
+        target: &SubscriptionTarget,
+        delivery: &dyn StateSubscriptionDelivery,
+    ) -> Result<(), StateReadError> {
+        let _start = self.starts.lock().await;
+        self.start_read_locked(client, target).await?;
+        if let Err(error) = delivery.start() {
+            let _ = self.stop(client, target);
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    pub(crate) async fn stop_subscription(
+        &self,
+        client: &str,
+        target: &SubscriptionTarget,
+        delivery: &dyn StateSubscriptionDelivery,
+    ) -> Result<(), SubscriptionError> {
+        let _start = self.starts.lock().await;
+        stop_delivery(
+            delivery,
+            || self.stop(client, target),
+            |finish| self.with_active_targets(finish),
+        )
+    }
+
+    async fn start_read_locked(
         &self,
         client: &str,
         target: &SubscriptionTarget,
@@ -186,8 +209,6 @@ impl StateSubscriptionUsecase {
             .reads
             .clone()
             .ok_or_else(|| convert(SubscriptionError::UnknownTarget))?;
-        // ponytail: subscription starts are serialized; split by target if initial reads contend.
-        let _start = self.starts.lock().await;
         if self.join_active(client, target).map_err(convert)? {
             return Ok(());
         }
@@ -321,7 +342,7 @@ impl StateSubscriptionUsecase {
             return;
         }
         let clients = self.clients.lock();
-        if !clients.values().any(|targets| targets.contains(target)) {
+        if !clients.values().any(|targets| targets.contains_key(target)) {
             if let Some(reads) = &self.reads {
                 reads.release_external(target);
             }
@@ -439,17 +460,8 @@ impl StateSubscriptionUsecase {
         let subscriptions = clients
             .get_mut(client)
             .ok_or(SubscriptionError::StreamEnded)?;
-        subscriptions.insert(target.clone());
+        *subscriptions.entry(target.clone()).or_default() += 1;
         Ok(())
-    }
-
-    pub async fn stop_read(
-        &self,
-        client: &str,
-        target: &SubscriptionTarget,
-    ) -> Result<(), SubscriptionError> {
-        let _start = self.starts.lock().await;
-        self.stop(client, target)
     }
 
     pub fn stop(&self, client: &str, target: &SubscriptionTarget) -> Result<(), SubscriptionError> {
@@ -457,7 +469,13 @@ impl StateSubscriptionUsecase {
         let subscriptions = clients
             .get_mut(client)
             .ok_or(SubscriptionError::StreamEnded)?;
-        subscriptions.remove(target);
+        if let Some(count) = subscriptions.get_mut(target) {
+            *count -= 1;
+            if *count > 0 {
+                return Ok(());
+            }
+            subscriptions.remove(target);
+        }
         drop(clients);
         if let Err(error) = self.reconcile_watches() {
             log::error!("State watch cleanup failed: {error}");
@@ -500,7 +518,7 @@ impl StateSubscriptionUsecase {
         self.clients
             .lock()
             .values()
-            .any(|targets| targets.contains(target))
+            .any(|targets| targets.contains_key(target))
     }
 
     pub(crate) fn active_targets(&self) -> std::collections::HashSet<SubscriptionTarget> {
@@ -516,7 +534,7 @@ impl StateSubscriptionUsecase {
         let clients = self.clients.lock();
         let active = clients
             .values()
-            .flat_map(|targets| targets.iter().cloned())
+            .flat_map(|targets| targets.keys().cloned())
             .collect();
         read(&active)
     }
@@ -528,13 +546,15 @@ impl StateSubscriptionUsecase {
         target: &SubscriptionTarget,
     ) -> Result<bool, SubscriptionError> {
         let mut clients = self.clients.lock();
-        if !clients.values().any(|targets| targets.contains(target)) {
+        if !clients.values().any(|targets| targets.contains_key(target)) {
             return Ok(false);
         }
         clients
             .get_mut(client)
             .ok_or(SubscriptionError::StreamEnded)?
-            .insert(target.clone());
+            .entry(target.clone())
+            .and_modify(|count| *count += 1)
+            .or_insert(1);
         Ok(true)
     }
 }

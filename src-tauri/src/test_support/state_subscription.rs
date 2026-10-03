@@ -29,84 +29,26 @@ pub(crate) fn registration(
     }
 }
 
-pub(crate) fn start(
-    usecase: &crate::usecase::state_subscription::StateSubscriptionUsecase,
-    client: &str,
-    target: &str,
-    cursor: Option<(&str, u64)>,
-) -> Result<(), crate::usecase::state_subscription::SubscriptionError> {
-    let typed = crate::usecase::state_subscription::SubscriptionTarget::parse(target)?;
-    usecase.start(client, &typed)?;
-    usecase
-        .test_presenter()
-        .expect("test presenter")
-        .start(client, target, cursor)
-}
-
-pub(crate) async fn start_read(
-    usecase: &crate::usecase::state_subscription::StateSubscriptionUsecase,
-    client: &str,
-    target: &str,
-    cursor: Option<(&str, u64)>,
-) -> Result<(), crate::usecase::state_subscription::StateReadError> {
-    let typed = crate::usecase::state_subscription::SubscriptionTarget::parse(target)
-        .map_err(crate::usecase::state_subscription::StateReadError::from_error)?;
-    usecase.start_subscription(client, &typed, cursor).await
-}
-
-pub(crate) fn stop(
-    usecase: &crate::usecase::state_subscription::StateSubscriptionUsecase,
-    client: &str,
-    target: &str,
-) -> Result<(), crate::usecase::state_subscription::SubscriptionError> {
-    let typed = crate::usecase::state_subscription::SubscriptionTarget::parse(target)?;
-    usecase.stop(client, &typed)?;
-    usecase.with_active_targets(|active| usecase.publisher().stop(client, &typed, active))
-}
-
-pub(crate) async fn stop_read(
-    usecase: &crate::usecase::state_subscription::StateSubscriptionUsecase,
-    client: &str,
-    target: &str,
-) -> Result<(), crate::usecase::state_subscription::SubscriptionError> {
-    let typed = crate::usecase::state_subscription::SubscriptionTarget::parse(target)?;
-    usecase.stop_subscription(client, &typed).await
-}
-
-pub(crate) async fn start_terminal(
-    usecase: &TerminalSubscriptions,
-    client: &str,
-    target: &str,
-    cursor: Option<(&str, u64)>,
-    input_id: &str,
-) -> Result<(), crate::usecase::state_subscription::StateReadError> {
-    use crate::usecase::state_subscription::StateReadError;
-    let typed = crate::usecase::state_subscription::SubscriptionTarget::parse(target)
-        .map_err(StateReadError::from_error)?;
-    usecase
-        .deps()
-        .start_subscription(client, &typed, Some(input_id), cursor)
-        .await
-}
-
 pub(crate) fn terminal_processed(
     usecase: &TerminalSubscriptions,
     client: &str,
     target: &str,
     units: usize,
-) -> Result<(), crate::usecase::state_subscription::StateReadError> {
-    use crate::usecase::state_subscription::{StateReadError, StateReadFailure};
-    if units
-        != crate::adaptor::presenter::terminal_subscription::TerminalSubscriptionPresenter::report_units()
-    {
-        return Err(StateReadError {
-            source: StateReadFailure::InvalidTerminalInput,
-            message: "Invalid terminal processed units".into(),
-        });
+) -> Result<(), connectrpc::ConnectError> {
+    use crate::adaptor::presenter::connect::classified_error;
+    if units != crate::adaptor::presenter::terminal_subscription::TerminalSubscriptionPresenter::report_units() {
+        return Err(classified_error(crate::adaptor::presenter::error::AppError::invalid_request("Invalid terminal processed units")));
     }
-    let typed = crate::usecase::state_subscription::SubscriptionTarget::parse(target)
-        .map_err(StateReadError::from_error)?;
-    usecase.terminal.terminal_processed(client, &typed, units)
+    let target = crate::usecase::state_subscription::SubscriptionTarget::parse(target)
+        .map_err(classified_error)?;
+    let id = usecase
+        .terminal
+        .test_input_id(client, &target)
+        .unwrap_or_default();
+    usecase
+        .terminal
+        .terminal_processed(&id, units)
+        .map_err(classified_error)
 }
 
 pub(crate) fn test_output() -> crate::usecase::state_subscription::StateSubscriptionOutputRef {
@@ -383,14 +325,6 @@ impl TerminalSubscriptions {
     pub(crate) fn test_worker_count(&self) -> usize {
         self.terminal.test_worker_count() + self.usecase.test_worker_count()
     }
-    pub(crate) fn stop(
-        &self,
-        client: &str,
-        target: &crate::usecase::state_subscription::SubscriptionTarget,
-    ) -> Result<(), SubscriptionError> {
-        self.terminal.stop_subscription(client, target)
-    }
-
     pub(crate) fn deps(&self) -> crate::adaptor::controller::api::StateSubscriptionDeps {
         crate::adaptor::controller::api::StateSubscriptionDeps::new(
             self.usecase.clone(),
@@ -410,43 +344,10 @@ impl TerminalSubscriptions {
     ) -> Result<impl Stream<Item = StateSubscriptionEvent> + Send + use<>, SubscriptionError> {
         self.deps().stream(id)
     }
-    pub(crate) async fn start_subscription(
-        &self,
-        client: &str,
-        target: &crate::usecase::state_subscription::SubscriptionTarget,
-        input: Option<&str>,
-        cursor: Option<(&str, u64)>,
-    ) -> Result<(), crate::usecase::state_subscription::StateReadError> {
-        self.deps()
-            .start_subscription(client, target, input, cursor)
-            .await
-    }
-    pub(crate) async fn start_terminal(
-        &self,
-        client: &str,
-        target: &crate::usecase::state_subscription::SubscriptionTarget,
-        input: &str,
-        cursor: Option<(&str, u64)>,
-    ) -> Result<(), crate::usecase::state_subscription::StateReadError> {
-        self.terminal
-            .start_terminal(client, target, Some(input), cursor)
-            .await
-    }
     pub(crate) fn close_client(&self, id: &str) {
         self.usecase.close_client(id);
         self.terminal.close_client(id);
     }
-}
-
-pub(crate) fn stop_terminal(
-    usecase: &TerminalSubscriptions,
-    client: &str,
-    target: &str,
-) -> Result<(), SubscriptionError> {
-    usecase.terminal.stop_subscription(
-        client,
-        &crate::usecase::state_subscription::SubscriptionTarget::parse(target)?,
-    )
 }
 
 pub(crate) fn terminal_application_fixture() -> (

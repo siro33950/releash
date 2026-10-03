@@ -26,7 +26,6 @@ pub(crate) struct StateReadError {
 
 #[derive(Debug)]
 pub(crate) enum StateReadFailure {
-    InvalidTerminalInput,
     TerminalSubscriptionEnded,
     Terminal(Box<crate::usecase::terminal_surface::error::UsecaseError>),
     Workflow(Box<crate::domain::workflow::WorkflowError>),

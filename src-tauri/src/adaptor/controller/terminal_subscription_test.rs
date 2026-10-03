@@ -15,17 +15,6 @@ struct Output {
     reset: parking_lot::Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
 }
 impl TerminalSubscriptionOutput for Output {
-    fn start(
-        &self,
-        _: &str,
-        _: &SubscriptionTarget,
-        _: Option<(&str, u64)>,
-    ) -> Result<Option<usize>, StateReadError> {
-        Ok(Some(6000))
-    }
-    fn stop(&self, _: &str, _: &SubscriptionTarget) -> Result<(), SubscriptionError> {
-        Ok(())
-    }
     fn set_snapshot(
         &self,
         _: &SubscriptionTarget,
@@ -66,10 +55,43 @@ async fn assert_stopped(close: bool) {
     });
     let (requests, mut receiver) = tokio::sync::mpsc::unbounded_channel();
     let usecase = TerminalSubscriptionUsecase::new(output.clone(), Some(terminal), requests);
-    let target = SubscriptionTarget::Terminal(surface.owner);
+    let target = SubscriptionTarget::Terminal(surface.owner.clone());
     usecase.open_client("client".into()).unwrap();
+    let presenter =
+        crate::adaptor::presenter::state_subscription::StateSubscriptionPresenter::new();
+    presenter.open("client".into()).unwrap();
+    let terminal_presenter =
+        crate::adaptor::presenter::terminal_subscription::TerminalSubscriptionPresenter::new(
+            &presenter,
+        );
+    crate::usecase::terminal_surface::output::TerminalSurfaceStateSink::initialize(
+        &terminal_presenter,
+        &crate::test_support::state_subscription::registration(
+            &surface.session_key,
+            "/repo",
+            None,
+            1,
+            0,
+        ),
+    )
+    .unwrap();
+    terminal_presenter
+        .set_snapshot(
+            &target,
+            1,
+            0,
+            StateValue::Terminal(
+                crate::usecase::terminal_surface::application::TerminalSurfaceStreamItem::Snapshot(
+                    surface.clone().into(),
+                ),
+            ),
+        )
+        .unwrap();
+    let delivery = presenter
+        .reserve_delivery("client", "input", &target.to_string(), None)
+        .unwrap();
     usecase
-        .start_terminal("client", &target, Some("input"), None)
+        .start_subscription("client", &target, "input", &delivery)
         .await
         .unwrap();
     *output.reset.lock() = Some(Box::new({
@@ -90,7 +112,9 @@ async fn assert_stopped(close: bool) {
     if close {
         usecase.close_client("client");
     } else {
-        usecase.stop_subscription("client", &target).unwrap();
+        usecase
+            .stop_delivery("client", &target, "input", &delivery)
+            .unwrap();
     }
     crate::usecase::terminal_surface::subscription::subscription_tests::add_reset(
         &usecase, &target, "client",

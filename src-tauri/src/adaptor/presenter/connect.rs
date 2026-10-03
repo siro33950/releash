@@ -533,7 +533,6 @@ impl ConnectFailure for crate::usecase::state_subscription::StateReadError {
     fn connect_code(&self) -> connectrpc::ErrorCode {
         use crate::usecase::state_subscription::StateReadFailure as S;
         match &self.source {
-            S::InvalidTerminalInput => connectrpc::ErrorCode::InvalidArgument,
             S::TerminalSubscriptionEnded => connectrpc::ErrorCode::NotFound,
             S::Terminal(error) => error.connect_code(),
             S::Workflow(error) => error.connect_code(),

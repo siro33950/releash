@@ -99,15 +99,18 @@ impl TerminalSubscriptionHarness {
             .stream(client.clone())
             .map_err(|e| e.to_string())?,
         );
-        self.terminal_subscriptions
-            .start_terminal(&client, &target, Some(&input_id), None)
-            .await
-            .map_err(|e| e.to_string())?;
+        crate::adaptor::controller::api::StateSubscriptionDeps::new(
+            self.subscriptions.clone(),
+            self.presenter.clone(),
+            self.terminal_subscriptions.clone(),
+        )
+        .start_subscription(&client, &target, &input_id, None)
+        .await
+        .map_err(|e| e.to_string())?;
         Ok(TerminalSubscription {
             stream,
             subscriptions: self.terminal_subscriptions.clone(),
-            client,
-            target,
+            input_id,
             processed: 0,
             report_units: 0,
         })
@@ -117,8 +120,7 @@ impl TerminalSubscriptionHarness {
 pub struct TerminalSubscription {
     stream: Pin<Box<dyn Stream<Item = StateSubscriptionEvent> + Send>>,
     subscriptions: TerminalSubscriptionUsecase,
-    client: String,
-    target: SubscriptionTarget,
+    input_id: String,
     processed: usize,
     report_units: usize,
 }
@@ -129,7 +131,7 @@ impl TerminalSubscription {
             let StateSubscriptionEvent::Item(target, event) = event else {
                 continue;
             };
-            assert_eq!(target, self.target.to_string());
+            assert_eq!(target, self.input_id);
             let value = match event {
                 Event::Snapshot(_, value) | Event::Change(_, _, value) => value,
                 _ => continue,
@@ -162,7 +164,7 @@ impl TerminalSubscription {
                     while self.processed >= self.report_units {
                         self.processed -= self.report_units;
                         self.subscriptions
-                            .terminal_processed(&self.client, &self.target, self.report_units)
+                            .terminal_processed(&self.input_id, self.report_units)
                             .expect("report processed output");
                     }
                 }

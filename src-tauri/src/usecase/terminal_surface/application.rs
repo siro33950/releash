@@ -188,8 +188,11 @@ impl TerminalSurfaceApplication {
         owner: &TerminalSurfaceOwner,
         client: &str,
         input_id: &str,
+        last: bool,
     ) {
-        self.output.unsubscribe_output(&owner.stable_key(), client);
+        if last {
+            self.output.unsubscribe_output(&owner.stable_key(), client);
+        }
         self.gateway
             .deactivate_input_attachment(&owner.stable_key(), input_id);
     }

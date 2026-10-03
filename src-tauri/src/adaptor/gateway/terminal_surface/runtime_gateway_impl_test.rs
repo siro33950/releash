@@ -1273,15 +1273,16 @@ async fn assert_terminal_recreation(drain_exit: bool) {
     let stream = subscriptions.open("client".into()).unwrap();
     tokio::pin!(stream);
     stream.next().await;
-    crate::test_support::state_subscription::start_terminal(
-        &subscriptions,
-        "client",
-        &target,
-        None,
-        "input",
-    )
-    .await
-    .unwrap();
+    subscriptions
+        .deps()
+        .start_subscription(
+            "client",
+            &crate::usecase::state_subscription::SubscriptionTarget::parse(&target).unwrap(),
+            "input",
+            None,
+        )
+        .await
+        .unwrap();
     stream.next().await;
     stream.next().await;
     terminal
@@ -1392,7 +1393,20 @@ async fn assert_terminal_recreation(drain_exit: bool) {
         .unwrap()
         .unwrap();
     waiter.await.unwrap();
-    crate::test_support::state_subscription::stop_terminal(&subscriptions, "client", &target)
+    subscriptions
+        .terminal
+        .stop_delivery(
+            "client",
+            &crate::usecase::state_subscription::SubscriptionTarget::parse(&target).unwrap(),
+            "input",
+            &subscriptions
+                .usecase
+                .test_presenter()
+                .unwrap()
+                .delivery("input")
+                .unwrap()
+                .2,
+        )
         .unwrap();
     assert!(terminal
         .write_attached(&owner, "input", 2, None, "stale")
@@ -1543,7 +1557,8 @@ async fn test_terminal対象なし_購読開始とsnapshot読取と配信でnot_
     let target = SubscriptionTarget::Terminal(workspace_owner("/repo"));
     // When
     let start = subscriptions
-        .start_terminal("client", &target, "input", None)
+        .deps()
+        .start_subscription("client", &target, "input", None)
         .await
         .unwrap_err();
     let snapshot = subscriptions
@@ -1564,7 +1579,13 @@ async fn test_terminal対象なし_購読開始とsnapshot読取と配信でnot_
         ))
         .unwrap();
     presenter.publish_failure(&target, snapshot).unwrap();
-    presenter.start("client", &target, None).unwrap();
+    let delivery = subscriptions
+        .usecase
+        .test_presenter()
+        .unwrap()
+        .reserve_delivery("client", "input", &target.to_string(), None)
+        .unwrap();
+    crate::usecase::state_subscription::StateSubscriptionDelivery::start(&delivery).unwrap();
     let event = stream.next().await.unwrap();
     assert!(
         matches!(event, StateSubscriptionEvent::Item(_, Event::Snapshot(_, value))

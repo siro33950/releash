@@ -55,32 +55,6 @@ impl TerminalSubscriptionPresenter {
 }
 
 impl TerminalSubscriptionOutput for TerminalSubscriptionPresenter {
-    fn start(
-        &self,
-        client: &str,
-        target: &SubscriptionTarget,
-        cursor: Option<(&str, u64)>,
-    ) -> Result<Option<usize>, StateReadError> {
-        let target = target.to_string();
-        let version = cursor.map(|(epoch, sequence)| Version {
-            epoch: epoch.into(),
-            sequence,
-        });
-        self.runtime
-            .mutate(|state| {
-                let subscribed = state.is_subscribed(client, &target);
-                let result = state.start(client, &target, version.as_ref()).map(|()| {
-                    (!state.awaiting_snapshot(client, &target))
-                        .then(|| state.pending_amount(client, &target))
-                });
-                let changed = result.is_ok() && !subscribed;
-                (result, changed)
-            })
-            .map_err(|error| StateReadError::from_error(SubscriptionError::from(error)))
-    }
-    fn stop(&self, client: &str, target: &SubscriptionTarget) -> Result<(), SubscriptionError> {
-        self.update(|state| state.stop_and_release(client, &target.to_string()))
-    }
     fn publish_failure(
         &self,
         target: &SubscriptionTarget,

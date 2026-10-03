@@ -147,23 +147,6 @@ include!(concat!(env!("OUT_DIR"), "/client_service.rs"));
 #[path = "client_test.rs"]
 mod client_tests;
 
-struct RequestStartPermit<'a> {
-    presenter: &'a crate::adaptor::presenter::state_subscription::StateSubscriptionPresenter,
-    client: &'a str,
-    target: &'a crate::usecase::state_subscription::SubscriptionTarget,
-    args: &'a [String],
-    inserted: bool,
-}
-
-impl Drop for RequestStartPermit<'_> {
-    fn drop(&mut self) {
-        if self.inserted {
-            self.presenter
-                .remove_request(self.client, self.target, self.args);
-        }
-    }
-}
-
 struct StateStreamPermit {
     subscriptions: StateSubscriptionDeps,
     id: String,
@@ -231,42 +214,62 @@ impl StateSubscriptionDeps {
         crate::usecase::state_subscription::SubscriptionError,
     > {
         use futures_util::StreamExt;
-        let presenter = self.presenter.clone();
-        let client = id.clone();
-        Ok(self.stream(id)?.flat_map(move |event| {
-            futures_util::stream::iter(presenter.wire_events(&client, event))
-        }))
+        Ok(self
+            .stream(id)?
+            .map(crate::adaptor::presenter::state_subscription_wire::event))
     }
 
     pub(crate) async fn start_subscription(
         &self,
         client: &str,
         target: &crate::usecase::state_subscription::SubscriptionTarget,
-        input: Option<&str>,
+        id: &str,
         cursor: Option<(&str, u64)>,
     ) -> Result<(), crate::usecase::state_subscription::StateReadError> {
-        use crate::usecase::state_subscription::SubscriptionTarget;
-        if input.is_some() || matches!(target, SubscriptionTarget::Terminal(_)) {
-            self.terminal
-                .start_terminal(client, target, input, cursor)
-                .await
-        } else {
-            self.usecase
-                .start_subscription(client, target, cursor)
-                .await
+        use crate::usecase::state_subscription::{StateReadError, SubscriptionTarget};
+        let delivery = self
+            .presenter
+            .reserve_delivery(client, id, &target.to_string(), cursor)
+            .map_err(StateReadError::from_error)?;
+        match target {
+            SubscriptionTarget::Terminal(_) => {
+                self.terminal
+                    .start_subscription(client, target, id, &delivery)
+                    .await
+            }
+            _ => {
+                self.usecase
+                    .start_subscription(client, target, &delivery)
+                    .await
+            }
         }
     }
 
     pub(crate) async fn stop_subscription(
         &self,
-        client: &str,
-        target: &crate::usecase::state_subscription::SubscriptionTarget,
+        id: &str,
     ) -> Result<(), crate::usecase::state_subscription::SubscriptionError> {
+        let Some((client, raw, delivery)) = self.presenter.delivery(id) else {
+            return Ok(());
+        };
+        let target = crate::usecase::state_subscription::SubscriptionTarget::parse(&raw)?;
         match target {
             crate::usecase::state_subscription::SubscriptionTarget::Terminal(_) => {
-                self.terminal.stop_subscription(client, target)
+                self.terminal.stop_delivery(&client, &target, id, &delivery)
             }
-            _ => self.usecase.stop_subscription(client, target).await,
+            _ => {
+                self.usecase
+                    .stop_subscription(&client, &target, &delivery)
+                    .await
+            }
         }
+    }
+
+    pub(crate) fn terminal_processed(
+        &self,
+        id: &str,
+        units: usize,
+    ) -> Result<(), crate::usecase::state_subscription::StateReadError> {
+        self.terminal.terminal_processed(id, units)
     }
 }

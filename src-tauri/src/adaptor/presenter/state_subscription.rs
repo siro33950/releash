@@ -20,7 +20,6 @@ impl From<StateReadError> for PublishedState {
     }
 }
 
-use parking_lot::Mutex;
 use std::sync::Arc;
 
 use futures_util::Stream;
@@ -47,21 +46,69 @@ impl From<crate::infrastructure::state_subscription::SubscriptionError> for Subs
     }
 }
 
-type RequestedArgs = Arc<
-    Mutex<
-        std::collections::HashMap<
-            String,
-            std::collections::HashMap<String, std::collections::HashSet<Vec<String>>>,
-        >,
-    >,
->;
-
 #[derive(Clone)]
 pub(crate) struct StateSubscriptionPresenter {
     runtime: StateSubscriptionRuntime<PublishedState>,
-    // ponytail: Notion request registration is serialized; split by client if starts contend.
-    pub(crate) request_lock: Arc<tokio::sync::Mutex<()>>,
-    requested_args: RequestedArgs,
+}
+
+pub(crate) struct SubscriptionDelivery {
+    presenter: StateSubscriptionPresenter,
+    client: String,
+    id: String,
+    identity: Arc<()>,
+    cursor: Option<Version>,
+    pending: std::sync::atomic::AtomicBool,
+}
+
+impl crate::usecase::state_subscription::StateSubscriptionDelivery for SubscriptionDelivery {
+    fn start(&self) -> Result<Option<usize>, StateReadError> {
+        let result = self.presenter.runtime.mutate(|state| {
+            if !state.matches_identity(&self.id, &self.identity) {
+                return (Err(crate::infrastructure::state_subscription::SubscriptionError::StreamEnded), false);
+            }
+            let result = state.activate(&self.id, self.cursor.as_ref()).map(|()| {
+                (!state.awaiting_snapshot(&self.client, &self.id))
+                    .then(|| state.pending_amount(&self.client, &self.id))
+            });
+            let changed = result.is_ok();
+            (result, changed)
+        }).map_err(SubscriptionError::from);
+        if result.is_ok() {
+            self.pending
+                .store(false, std::sync::atomic::Ordering::Relaxed);
+        }
+        result.map_err(StateReadError::from_error)
+    }
+
+    fn claim(&self) -> bool {
+        self.presenter
+            .runtime
+            .mutate(|state| (state.claim(&self.id, &self.identity), false))
+    }
+
+    fn finish(
+        &self,
+        active: &std::collections::HashSet<SubscriptionTarget>,
+    ) -> Result<(), SubscriptionError> {
+        let protected = protected_targets(active);
+        self.presenter.update(|state| {
+            let stopped = if state.matches_identity(&self.id, &self.identity) {
+                state.stop(&self.client, &self.id)?
+            } else {
+                false
+            };
+            Ok(state.release_inactive_snapshots_except(&protected) || stopped)
+        })
+    }
+}
+
+impl Drop for SubscriptionDelivery {
+    fn drop(&mut self) {
+        if self.pending.load(std::sync::atomic::Ordering::Relaxed) {
+            use crate::usecase::state_subscription::StateSubscriptionDelivery;
+            let _ = self.finish(&Default::default());
+        }
+    }
 }
 
 impl StateSubscriptionPresenter {
@@ -76,113 +123,57 @@ impl StateSubscriptionPresenter {
 
     pub(crate) fn new() -> Self {
         let runtime = StateSubscriptionRuntime::new(uuid::Uuid::new_v4().to_string());
-        Self {
-            runtime,
-            request_lock: Default::default(),
-            requested_args: Default::default(),
-        }
+        Self { runtime }
     }
 
-    pub(crate) fn add_request(
+    pub(crate) fn reserve_delivery(
         &self,
         client: &str,
-        target: &SubscriptionTarget,
-        args: Vec<String>,
-    ) -> (bool, bool) {
-        let mut requested = self.requested_args.lock();
-        let aliases = requested
-            .entry(client.into())
-            .or_default()
-            .entry(target.to_string())
-            .or_default();
-        let replay = !aliases.is_empty();
-        let inserted = aliases.insert(args);
-        (inserted, inserted && replay)
-    }
-
-    pub(crate) fn has_other_requests(
-        &self,
-        client: &str,
-        target: &SubscriptionTarget,
-        args: &[String],
-    ) -> bool {
-        self.requested_args
-            .lock()
-            .get(client)
-            .and_then(|targets| targets.get(&target.to_string()))
-            .is_some_and(|aliases| aliases.iter().any(|alias| alias != args))
-    }
-
-    pub(crate) fn remove_request(
-        &self,
-        client: &str,
-        target: &SubscriptionTarget,
-        args: &[String],
-    ) -> bool {
-        let mut requested = self.requested_args.lock();
-        let Some(targets) = requested.get_mut(client) else {
-            return true;
-        };
-        let key = target.to_string();
-        if let Some(aliases) = targets.get_mut(&key) {
-            aliases.remove(args);
-            if !aliases.is_empty() {
-                return false;
-            }
-        }
-        targets.remove(&key);
-        if targets.is_empty() {
-            requested.remove(client);
-        }
-        true
-    }
-
-    pub(crate) fn replay_request(
-        &self,
-        client: &str,
-        target: &SubscriptionTarget,
-    ) -> Result<(), SubscriptionError> {
-        let raw = target.to_string();
-        self.update(|state| {
-            state.stop(client, &raw)?;
-            state.start(client, &raw, None)?;
-            Ok(true)
+        id: &str,
+        target: &str,
+        cursor: Option<(&str, u64)>,
+    ) -> Result<SubscriptionDelivery, SubscriptionError> {
+        let identity = self
+            .runtime
+            .mutate(|state| {
+                let result = state
+                    .reserve(client, id, target)
+                    .map(|()| state.identity(id).unwrap());
+                let changed = if result.is_err() {
+                    let existed = state.registered(target);
+                    let _ = state.ensure_active(target);
+                    existed && !state.registered(target)
+                } else {
+                    false
+                };
+                (result, changed)
+            })
+            .map_err(SubscriptionError::from)?;
+        Ok(SubscriptionDelivery {
+            presenter: self.clone(),
+            client: client.into(),
+            id: id.into(),
+            identity,
+            cursor: cursor_version(cursor),
+            pending: std::sync::atomic::AtomicBool::new(true),
         })
     }
 
-    pub(crate) fn wire_events(
-        &self,
-        client: &str,
-        event: StateSubscriptionEvent,
-    ) -> Vec<
-        Result<
-            crate::adaptor::presenter::connect_wire::rpc::StateSubscriptionEvent,
-            connectrpc::ConnectError,
-        >,
-    > {
-        let aliases = match &event {
-            StateSubscriptionEvent::Item(target, _) => self
-                .requested_args
-                .lock()
-                .get(client)
-                .and_then(|targets| targets.get(target))
-                .cloned(),
-            _ => None,
-        };
-        match aliases {
-            Some(aliases) => aliases
-                .into_iter()
-                .map(|args| {
-                    crate::adaptor::presenter::state_subscription_wire::event_with_args(
-                        &event,
-                        Some(args),
-                    )
-                })
-                .collect::<Vec<_>>(),
-            None => vec![crate::adaptor::presenter::state_subscription_wire::event(
-                event,
-            )],
-        }
+    pub(crate) fn delivery(&self, id: &str) -> Option<(String, String, SubscriptionDelivery)> {
+        self.runtime.mutate(|state| {
+            let value = state.lookup(id).map(|(client, target)| {
+                let delivery = SubscriptionDelivery {
+                    presenter: self.clone(),
+                    client: client.clone(),
+                    id: id.into(),
+                    identity: state.identity(id).unwrap(),
+                    cursor: None,
+                    pending: std::sync::atomic::AtomicBool::new(false),
+                };
+                (client, target, delivery)
+            });
+            (value, false)
+        })
     }
 
     fn update(
@@ -197,42 +188,6 @@ impl StateSubscriptionPresenter {
         self.runtime.update(update).map_err(Into::into)
     }
 
-    pub(crate) fn start(
-        &self,
-        client: &str,
-        target: &str,
-        cursor: Option<(&str, u64)>,
-    ) -> Result<(), SubscriptionError> {
-        let version = cursor_version(cursor);
-        self.runtime
-            .mutate(|state| {
-                let subscribed = state.is_subscribed(client, target);
-                let result = state.start(client, target, version.as_ref());
-                let mut changed = result.is_ok() && !subscribed;
-                if result.is_err() {
-                    let existed = state.registered(target);
-                    let _ = state.ensure_active(target);
-                    changed = existed && !state.registered(target);
-                }
-                (result, changed)
-            })
-            .map_err(Into::into)
-    }
-
-    pub(crate) fn stop(
-        &self,
-        client: &str,
-        target: &str,
-        active: &std::collections::HashSet<SubscriptionTarget>,
-    ) -> Result<(), SubscriptionError> {
-        let protected = protected_targets(active);
-        self.update(|state| {
-            let stopped = state.stop(client, target)?;
-            Ok(state.release_inactive_snapshots_except(&protected) || stopped)
-        })?;
-        Ok(())
-    }
-
     pub(crate) fn open(&self, id: String) -> Result<(), SubscriptionError> {
         self.runtime
             .update(|state| state.open(id).map(|_| true))
@@ -240,7 +195,6 @@ impl StateSubscriptionPresenter {
     }
 
     pub(crate) fn close(&self, id: &str, active: &std::collections::HashSet<SubscriptionTarget>) {
-        self.requested_args.lock().remove(id);
         let protected = protected_targets(active);
         self.runtime.mutate(|state| {
             let targets = state.active_targets();
@@ -293,25 +247,6 @@ impl StateSubscriptionOutput for StateSubscriptionPresenter {
     #[cfg(test)]
     fn as_any(&self) -> &dyn std::any::Any {
         self
-    }
-
-    fn start(
-        &self,
-        client: &str,
-        target: &SubscriptionTarget,
-        cursor: Option<(&str, u64)>,
-    ) -> Result<(), StateReadError> {
-        self.start(client, &target.to_string(), cursor)
-            .map_err(StateReadError::from_error)
-    }
-
-    fn stop(
-        &self,
-        client: &str,
-        target: &SubscriptionTarget,
-        active: &std::collections::HashSet<SubscriptionTarget>,
-    ) -> Result<(), SubscriptionError> {
-        self.stop(client, &target.to_string(), active)
     }
 
     fn publish_failure(

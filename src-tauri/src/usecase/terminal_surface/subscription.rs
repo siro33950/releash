@@ -1,7 +1,8 @@
 use super::application::TerminalSurfaceApplication;
 use crate::domain::failure::{TechnicalFailure, TechnicalFailureNature};
 use crate::usecase::state_subscription::{
-    StateReadError, StateReadFailure, StateValue, SubscriptionError, SubscriptionTarget,
+    StateReadError, StateReadFailure, StateSubscriptionDelivery, StateValue, SubscriptionError,
+    SubscriptionTarget,
 };
 use crate::usecase::terminal_surface::application::TerminalSurfaceStreamItem;
 use parking_lot::Mutex;
@@ -9,13 +10,6 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 pub(crate) trait TerminalSubscriptionOutput: Send + Sync {
-    fn start(
-        &self,
-        client: &str,
-        target: &SubscriptionTarget,
-        cursor: Option<(&str, u64)>,
-    ) -> Result<Option<usize>, StateReadError>;
-    fn stop(&self, client: &str, target: &SubscriptionTarget) -> Result<(), SubscriptionError>;
     fn set_snapshot(
         &self,
         target: &SubscriptionTarget,
@@ -30,11 +24,13 @@ pub(crate) trait TerminalSubscriptionOutput: Send + Sync {
     ) -> Result<(), SubscriptionError>;
 }
 
+type TerminalClientSubscriptions = HashMap<SubscriptionTarget, Vec<String>>;
+
 #[derive(Clone)]
 pub(crate) struct TerminalSubscriptionUsecase {
     publisher: Arc<dyn TerminalSubscriptionOutput>,
     terminal: Option<Arc<TerminalSurfaceApplication>>,
-    clients: Arc<Mutex<HashMap<String, HashMap<SubscriptionTarget, String>>>>,
+    clients: Arc<Mutex<HashMap<String, TerminalClientSubscriptions>>>,
     terminal_resets: Arc<Mutex<HashMap<SubscriptionTarget, HashSet<String>>>>,
     workers: Arc<Mutex<HashMap<SubscriptionTarget, tokio::sync::oneshot::Sender<()>>>>,
     refresh_requests: tokio::sync::mpsc::UnboundedSender<TerminalRefresh>,
@@ -45,8 +41,6 @@ pub(crate) struct TerminalRefresh {
     pub target: SubscriptionTarget,
     pub cancelled: tokio::sync::oneshot::Receiver<()>,
 }
-
-const TERMINAL_INPUT_ID_MAX_BYTES: usize = 128;
 
 fn read_error(e: impl std::fmt::Display) -> StateReadError {
     StateReadError::from_error(TechnicalFailure {
@@ -82,8 +76,10 @@ impl TerminalSubscriptionUsecase {
 
     pub(crate) fn close_client(&self, client: &str) {
         let targets = self.clients.lock().remove(client).unwrap_or_default();
-        for (target, input) in targets {
-            self.unsubscribe(client, &target, &input);
+        for (target, inputs) in targets {
+            for input in inputs {
+                self.unsubscribe(client, &target, &input, true);
+            }
         }
         self.terminal_resets
             .lock()
@@ -107,44 +103,62 @@ impl TerminalSubscriptionUsecase {
             .retain(|target, _cancel| is_subscribed(target));
     }
 
-    fn unsubscribe(&self, client: &str, target: &SubscriptionTarget, input: &str) {
+    fn unsubscribe(&self, client: &str, target: &SubscriptionTarget, input: &str, last: bool) {
         if let (Some(terminal), SubscriptionTarget::Terminal(owner)) = (&self.terminal, target) {
-            terminal.unsubscribe_output(owner, client, input);
+            terminal.unsubscribe_output(owner, client, input, last);
         }
     }
 
-    pub(crate) fn stop_subscription(
+    pub(crate) fn stop_delivery(
         &self,
         client: &str,
         target: &SubscriptionTarget,
+        input: &str,
+        delivery: &dyn StateSubscriptionDelivery,
     ) -> Result<(), SubscriptionError> {
-        let input = self
-            .clients
-            .lock()
-            .get_mut(client)
-            .ok_or(SubscriptionError::StreamEnded)?
-            .remove(target);
-        if let Some(input) = input {
-            self.unsubscribe(client, target, &input);
-        }
-        self.stop_inactive_workers();
-        self.publisher.stop(client, target)
+        crate::usecase::state_subscription::stop_delivery(
+            delivery,
+            || self.stop_input(client, target, input),
+            |finish| finish(&Default::default()),
+        )
     }
 
-    pub async fn start_terminal(
+    fn stop_input(
         &self,
         client: &str,
         target: &SubscriptionTarget,
-        input_id: Option<&str>,
-        cursor: Option<(&str, u64)>,
+        input: &str,
+    ) -> Result<(), SubscriptionError> {
+        let mut clients = self.clients.lock();
+        let last = {
+            let targets = clients
+                .get_mut(client)
+                .ok_or(SubscriptionError::StreamEnded)?;
+            if let Some(inputs) = targets.get_mut(target) {
+                inputs.retain(|current| current != input);
+                if inputs.is_empty() {
+                    targets.remove(target);
+                    true
+                } else {
+                    false
+                }
+            } else {
+                true
+            }
+        };
+        self.unsubscribe(client, target, input, last);
+        drop(clients);
+        self.stop_inactive_workers();
+        Ok(())
+    }
+
+    pub async fn start_subscription(
+        &self,
+        client: &str,
+        target: &SubscriptionTarget,
+        input_id: &str,
+        delivery: &dyn StateSubscriptionDelivery,
     ) -> Result<(), StateReadError> {
-        let input_id = input_id.unwrap_or(client);
-        if input_id.trim().is_empty() || input_id.len() > TERMINAL_INPUT_ID_MAX_BYTES {
-            return Err(StateReadError {
-                source: StateReadFailure::InvalidTerminalInput,
-                message: "Invalid terminal input identity".into(),
-            });
-        }
         let SubscriptionTarget::Terminal(_) = target else {
             return Err(read_error("Not a terminal target"));
         };
@@ -155,14 +169,15 @@ impl TerminalSubscriptionUsecase {
             .lock()
             .get_mut(client)
             .ok_or_else(|| StateReadError::from_error(SubscriptionError::StreamEnded))?
-            .insert(target.clone(), input_id.into());
-        if let Err(error) = self.present_start(client, target, input_id, cursor) {
-            let _ = self.stop_subscription(client, target);
+            .entry(target.clone())
+            .or_default()
+            .push(input_id.into());
+        if let Err(error) = self.present_start(client, target, input_id, delivery) {
+            let _ = self.stop_delivery(client, target, input_id, delivery);
             return Err(error);
         }
-        if let Err(error) = self.ensure_subscribed(client, target) {
-            self.unsubscribe(client, target, input_id);
-            let _ = self.publisher.stop(client, target);
+        if let Err(error) = self.ensure_subscribed(client, target, input_id) {
+            let _ = self.stop_delivery(client, target, input_id, delivery);
             return Err(error);
         }
         Ok(())
@@ -173,7 +188,7 @@ impl TerminalSubscriptionUsecase {
         client: &str,
         target: &SubscriptionTarget,
         input_id: &str,
-        cursor: Option<(&str, u64)>,
+        delivery: &dyn StateSubscriptionDelivery,
     ) -> Result<(), StateReadError> {
         let SubscriptionTarget::Terminal(owner) = target else {
             return Err(read_error("Not a terminal target"));
@@ -197,7 +212,7 @@ impl TerminalSubscriptionUsecase {
                     }
                     _ => {}
                 }
-                result = Some(self.publisher.start(client, target, cursor).map(|pending| {
+                result = Some(delivery.start().map(|pending| {
                     terminal.subscribe_output(owner, client, input_id, pending);
                 }));
             });
@@ -214,11 +229,16 @@ impl TerminalSubscriptionUsecase {
         &self,
         client: &str,
         target: &SubscriptionTarget,
+        input_id: &str,
     ) -> Result<(), StateReadError> {
         self.clients
             .lock()
             .get(client)
-            .filter(|targets| targets.contains_key(target))
+            .filter(|targets| {
+                targets
+                    .get(target)
+                    .is_some_and(|inputs| inputs.iter().any(|input| input == input_id))
+            })
             .ok_or_else(|| StateReadError::from_error(SubscriptionError::StreamEnded))?;
         Ok(())
     }
@@ -233,7 +253,7 @@ impl TerminalSubscriptionUsecase {
             .lock()
             .get(client)
             .and_then(|targets| targets.get(target))
-            .cloned()
+            .and_then(|inputs| inputs.iter().next().cloned())
     }
 
     pub(crate) async fn refresh_terminal(
@@ -348,24 +368,29 @@ impl TerminalSubscriptionUsecase {
 
     pub fn terminal_processed(
         &self,
-        client: &str,
-        target: &SubscriptionTarget,
+        subscription_id: &str,
         units: usize,
     ) -> Result<(), StateReadError> {
-        if !self
-            .clients
-            .lock()
-            .get(client)
-            .is_some_and(|targets| targets.contains_key(target))
-        {
+        let clients = self.clients.lock();
+        let subscription = clients.iter().find_map(|(client, targets)| {
+            targets.iter().find_map(|(target, inputs)| {
+                inputs
+                    .iter()
+                    .any(|input| input == subscription_id)
+                    .then_some((client, target, inputs))
+            })
+        });
+        let Some((client, SubscriptionTarget::Terminal(owner), inputs)) = subscription else {
             return Err(StateReadError {
                 source: StateReadFailure::TerminalSubscriptionEnded,
                 message: "Terminal subscription ended".into(),
             });
-        }
-        let SubscriptionTarget::Terminal(owner) = target else {
-            return Err(read_error("Not a terminal target"));
         };
+        // 流量制御は (terminal, client) で 1 つなので、同じ client の購読が複数あっても
+        // 量を引くのは最後に開始した購読の報告だけにする。
+        if inputs.last().map(String::as_str) != Some(subscription_id) {
+            return Ok(());
+        }
         self.terminal
             .as_ref()
             .ok_or_else(|| read_error("Terminal unavailable"))?

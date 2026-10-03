@@ -2857,9 +2857,15 @@ message StartStateSubscriptionRequest {
   string target = 2;
   StateVersion version = 3;
   repeated string args = 4;
-  optional string terminal_input_id = 5;
+  reserved 5;
+  reserved "terminal_input_id";
+  string subscription_id = 6;
 }
-message StopStateSubscriptionRequest { string client_id = 1; string target = 2; repeated string args = 3; }
+message StopStateSubscriptionRequest {
+  reserved 1, 2, 3;
+  reserved "client_id", "target", "args";
+  string subscription_id = 4;
+}
 message StateReadFailure { int32 code = 1; string message = 2; }
 message StatePayload {
   reserved 59;
@@ -2910,8 +2916,9 @@ message StatePayload {
 }
 message StateChange { bool delta = 1; StatePayload payload = 2; }
 message StateSubscriptionEvent {
-  repeated string args = 7;
-  string target = 1;
+  reserved 1, 7;
+  reserved "target", "args";
+  string subscription_id = 9;
   StateVersion version = 2;
   oneof event {
     Unit ready = 3;
@@ -2923,7 +2930,8 @@ message StateSubscriptionEvent {
 }
 
 message ReportTerminalProcessedRequest {
-  string client_id = 1;
-  repeated string args = 2;
+  reserved 1, 2;
+  reserved "client_id", "args";
+  string subscription_id = 4;
   uint32 units = 3;
 }

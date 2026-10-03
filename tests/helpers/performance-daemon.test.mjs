@@ -11,7 +11,7 @@ async function readProviderAvailability(client) {
     try {
         for await (const event of client.openStateStream({ clientId }, { signal: abort.signal, timeoutMs: 0 })) {
             if (event.event.case === "ready") {
-                await client.startStateSubscription({ clientId, target: "provider-availability" });
+                await client.startStateSubscription({ clientId, subscriptionId: crypto.randomUUID(), target: "provider-availability" });
             } else if (event.event.case === "snapshot" && event.event.value.value.case === "providerAvailability") {
                 return event.event.value.value.value;
             }

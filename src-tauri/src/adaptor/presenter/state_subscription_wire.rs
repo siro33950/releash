@@ -221,24 +221,13 @@ fn notion_read_failure(
 pub(crate) fn event(
     event: StateSubscriptionEvent,
 ) -> Result<rpc::StateSubscriptionEvent, connectrpc::ConnectError> {
-    event_with_args(&event, None)
-}
-
-pub(crate) fn event_with_args(
-    event: &StateSubscriptionEvent,
-    requested_args: Option<Vec<String>>,
-) -> Result<rpc::StateSubscriptionEvent, connectrpc::ConnectError> {
+    let event = &event;
     use wire::state_subscription_event::Event as WireEvent;
-    let (target, args, version, event) = match event {
-        StateSubscriptionEvent::Ready => {
-            (String::new(), vec![], None, WireEvent::Ready(wire::Unit {}))
+    let (subscription_id, version, event) = match event {
+        StateSubscriptionEvent::Ready => (String::new(), None, WireEvent::Ready(wire::Unit {})),
+        StateSubscriptionEvent::Bookmark => {
+            (String::new(), None, WireEvent::Bookmark(wire::Unit {}))
         }
-        StateSubscriptionEvent::Bookmark => (
-            String::new(),
-            vec![],
-            None,
-            WireEvent::Bookmark(wire::Unit {}),
-        ),
         StateSubscriptionEvent::Item(target, event) => {
             let version = event.version();
             let version = Some(wire::StateVersion {
@@ -259,15 +248,11 @@ pub(crate) fn event_with_args(
                 },
                 Event::Bookmark(_) => WireEvent::Bookmark(wire::Unit {}),
             };
-            let target = crate::usecase::state_subscription::SubscriptionTarget::parse(target)
-                .map_err(crate::adaptor::presenter::connect::classified_error)?;
-            let (name, args) = target.parts();
-            (name.into(), args, version, event)
+            (target.clone(), version, event)
         }
     };
     to_rpc(&wire::StateSubscriptionEvent {
-        target,
-        args: requested_args.unwrap_or(args),
+        subscription_id,
         version,
         event: Some(event),
     })

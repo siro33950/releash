@@ -8,9 +8,9 @@ fn wire_event(event: StateSubscriptionEvent) -> wire::StateSubscriptionEvent {
 }
 
 #[test]
-fn test_購読事象_対象名と日本語を含む引数を分離して配信する() {
+fn test_購読事象_対象名と引数を載せず識別子で配信する() {
     // Given
-    let target = SubscriptionTarget::BranchBase("/作業:repo".into(), "feature".into());
+    let target = "購読:1";
     let message = wire_event(StateSubscriptionEvent::Item(
         target.to_string(),
         Event::Snapshot(
@@ -28,8 +28,7 @@ fn test_購読事象_対象名と日本語を含む引数を分離して配信�
     assert_eq!(
         message,
         wire::StateSubscriptionEvent {
-            target: "branch-base".into(),
-            args: vec!["/作業:repo".into(), "feature".into()],
+            subscription_id: target.into(),
             version: Some(wire::StateVersion {
                 epoch: "boot:1".into(),
                 sequence: 7,
@@ -45,13 +44,6 @@ fn test_購読事象_対象名と日本語を含む引数を分離して配信�
             )),
         }
     );
-    assert_eq!(
-        SubscriptionTarget::from_parts(
-            &message.target,
-            &message.args.iter().map(String::as_str).collect::<Vec<_>>()
-        ),
-        Ok(target)
-    );
 }
 
 #[test]
@@ -65,8 +57,7 @@ fn test_購読事象_準備の旧転送形式を保つ() {
     assert_eq!(
         actual,
         wire::StateSubscriptionEvent {
-            target: String::new(),
-            args: vec![],
+            subscription_id: String::new(),
             version: None,
             event: Some(WireEvent::Ready(wire::Unit {})),
         }
@@ -83,8 +74,7 @@ fn test_購読事象_全体の定期印の旧転送形式を保つ() {
     assert_eq!(
         actual,
         wire::StateSubscriptionEvent {
-            target: String::new(),
-            args: vec![],
+            subscription_id: String::new(),
             version: None,
             event: Some(WireEvent::Bookmark(wire::Unit {})),
         }
@@ -113,8 +103,7 @@ fn test_購読事象_full変更の旧転送形式を保つ() {
     assert_eq!(
         actual,
         wire::StateSubscriptionEvent {
-            target: "repository-paths".into(),
-            args: vec![],
+            subscription_id: "repository-paths".into(),
             version: Some(wire::StateVersion {
                 epoch: "boot:1".into(),
                 sequence: 8
@@ -155,8 +144,7 @@ fn test_購読事象_delta変更の旧転送形式を保つ() {
     assert_eq!(
         actual,
         wire::StateSubscriptionEvent {
-            target: "repository-paths".into(),
-            args: vec![],
+            subscription_id: "repository-paths".into(),
             version: Some(wire::StateVersion {
                 epoch: "boot:1".into(),
                 sequence: 9
@@ -191,8 +179,7 @@ fn test_購読事象_対象の定期印の旧転送形式を保つ() {
     assert_eq!(
         actual,
         wire::StateSubscriptionEvent {
-            target: "issues".into(),
-            args: vec!["/repo".into()],
+            subscription_id: SubscriptionTarget::Issues("/repo".into()).to_string(),
             version: Some(wire::StateVersion {
                 epoch: "boot:1".into(),
                 sequence: 10
