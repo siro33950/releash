@@ -6,7 +6,7 @@ use crate::adaptor::presenter::notion::{
 use crate::usecase::notion::error::NotionUsecaseError;
 
 fn map_join_error(error: tokio::task::JoinError) -> AppError {
-    AppError::new(format!("task join error: {error}"))
+    AppError::from_failure(crate::domain::failure::TechnicalFailure::from(error))
 }
 
 fn map_usecase_error(error: NotionUsecaseError) -> AppError {
@@ -53,13 +53,10 @@ pub(crate) async fn validate_notion_config_shared(
     api_token: String,
     database_id: String,
 ) -> Result<NotionValidationResultView, AppError> {
-    let notion_usecase = state.notion_usecase.clone();
-    crate::common::operation_context::spawn_blocking(move || {
-        let result = notion_usecase
-            .validate_config(api_token, database_id)
-            .map_err(AppError::from_failure)?;
-        Ok(result.into())
-    })
-    .await
-    .map_err(map_join_error)?
+    state
+        .notion_usecase
+        .validate_config(api_token, database_id)
+        .await
+        .map(Into::into)
+        .map_err(AppError::from_failure)
 }

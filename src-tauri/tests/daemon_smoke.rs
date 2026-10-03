@@ -599,7 +599,7 @@ async fn test_daemon本番配線_状態を購読へ配信する() {
         }),
     )
     .await;
-    request(
+    let selected = request(
         &mut socket,
         "session",
         C::CreateAgentSession(wire::CreateAgentSessionRequest {
@@ -612,6 +612,14 @@ async fn test_daemon本番配線_状態を購読へ配信する() {
         }),
     )
     .await;
+    let wire::command_result::Command::CreateAgentSession(selected) = selected else {
+        panic!("session creation result");
+    };
+    let selected_node_id = selected.node_id.unwrap();
+    assert_eq!(
+        selected.agent_session_id.as_deref(),
+        Some(selected_node_id.as_str())
+    );
     // 購読の最初の値は取得中で届くことがある。走査と実行木の読み取りが終わった値を待つ。
     let mut states = subscribe_workspaces(&socket).await;
     let snapshot = expect_workspace(&mut states, "initial execution tree", |value| {
@@ -633,6 +641,7 @@ async fn test_daemon本番配線_状態を購読へ配信する() {
             _ => None,
         })
         .expect("standalone session node");
+    assert_eq!(node_id, selected_node_id);
     request(
         &mut socket,
         "rename-session",
@@ -750,7 +759,7 @@ async fn test_daemon本番配線_状態を購読へ配信する() {
     let wire::command_result::Command::CreateWorktree(created) = created else {
         panic!("worktree creation result")
     };
-    let linked = created.path.unwrap();
+    let linked = created.value.unwrap();
     expect_workspace(&mut states, "first linked worktree creation", |value| {
         any_branch(value, |branch| {
             branch.name.as_deref() == Some("pushed-branch")

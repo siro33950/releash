@@ -16,11 +16,20 @@ pub(crate) fn acquire(
     match lock.try_lock_exclusive() {
         Ok(()) => {}
         Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-            for _ in 0..50 {
+            let context =
+                crate::common::operation_context::with_timeout(std::time::Duration::from_secs(1));
+            loop {
                 if UnixStream::connect(&socket).is_ok() {
                     return Ok(None);
                 }
-                std::thread::sleep(std::time::Duration::from_millis(20));
+                if crate::common::operation_context::sleep(
+                    &context,
+                    crate::common::retry::RetryBackoff::DESKTOP_POLL.delay(1, 1.0),
+                )
+                .is_err()
+                {
+                    break;
+                }
             }
             return Err(std::io::Error::other(
                 "The running UI could not be activated.",

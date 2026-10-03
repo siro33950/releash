@@ -556,6 +556,7 @@ mod tests {
                     can_delete: false,
                 },
                 last_exit_abnormal: false,
+                terminal_presence: None,
             }),
         )
         .unwrap();

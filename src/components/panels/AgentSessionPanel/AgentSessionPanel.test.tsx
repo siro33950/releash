@@ -174,7 +174,7 @@ describe("AgentSessionPanel", () => {
 	});
 
 	it.each(["open_agent_session", "restore_agent_session"] as const)(
-		"%sがGC済みを返しても受け取ったResumeを表示する",
+		"%sの応答は表示状態を変更しない",
 		async (command) => {
 			const action = resumeAction();
 			if (command === "restore_agent_session") {
@@ -204,15 +204,16 @@ describe("AgentSessionPanel", () => {
 				fireEvent.click(screen.getByRole("button", { name: "Restore" }));
 			}
 			expect(
-				await screen.findByText("AgentSession is no longer available."),
-			).toBeVisible();
+				screen.queryByText("AgentSession is no longer available."),
+			).toBeNull();
+			if (command === "restore_agent_session")
+				expect(screen.getByText("AgentSession is archived.")).toBeVisible();
+			else expect(screen.getByTestId("provider-terminal")).toBeVisible();
 			expect(mockInvoke).toHaveBeenLastCalledWith(
 				command,
 				expect.objectContaining({ agentSessionId: session.id }),
 			);
-			expect(screen.queryByTestId("provider-terminal")).not.toBeInTheDocument();
-			fireEvent.click(screen.getByRole("button", { name: "Resume" }));
-			expect(action.onResume).toHaveBeenCalledOnce();
+			expect(action.onResume).not.toHaveBeenCalled();
 			expect(mockInvoke).toHaveBeenCalledTimes(
 				command === "open_agent_session" ? 1 : 2,
 			);
@@ -246,9 +247,7 @@ describe("AgentSessionPanel", () => {
 
 		const { rerender } = render(<AgentSessionPanel session={session} />);
 
-		expect(await screen.findByRole("alert")).toHaveTextContent(
-			"Provider session is not running",
-		);
+		expect(screen.getByTestId("provider-terminal")).toBeVisible();
 		expect(screen.queryByRole("button", { name: "Resume" })).toBeNull();
 		rerender(
 			<AgentSessionPanel
@@ -377,7 +376,7 @@ describe("AgentSessionPanel", () => {
 				expect.objectContaining({ agentSessionId: "agent-session-1" }),
 			);
 		});
-		expect(await screen.findByText("AgentSession is paused.")).toBeVisible();
+		expect(screen.getByText("AgentSession is archived.")).toBeVisible();
 		expect(screen.queryByTestId("provider-terminal")).toBeNull();
 	});
 });
@@ -390,9 +389,9 @@ describe("AgentSessionRoute", () => {
 	beforeEach(() => {
 		states.clear();
 		mockInvoke.mockReset();
-		mockInvoke.mockResolvedValue("attached");
+		mockInvoke.mockResolvedValue(null);
 	});
-	it("作成済みattachmentは購読の初期値と再Openを待たずTerminalへattachする", () => {
+	it("作成済み識別子は再Openせず購読の初期値を待ってTerminalへattachする", () => {
 		const consumed = vi.fn();
 		render(
 			<StrictMode>
@@ -409,7 +408,7 @@ describe("AgentSessionRoute", () => {
 				/>
 			</StrictMode>,
 		);
-		expect(screen.getByTestId("provider-terminal")).toBeVisible();
+		expect(screen.queryByTestId("provider-terminal")).toBeNull();
 		expect(states.subscribeState).toHaveBeenCalledWith(
 			target,
 			expect.any(Function),
@@ -418,6 +417,7 @@ describe("AgentSessionRoute", () => {
 		expect(mockInvoke).not.toHaveBeenCalled();
 		expect(consumed).toHaveBeenCalledWith("agent-session-1");
 		act(() => publish(session));
+		expect(screen.getByTestId("provider-terminal")).toBeVisible();
 		expect(mockInvoke).not.toHaveBeenCalled();
 	});
 	it("購読から届いたsessionをOpenし更新と削除を取り直し無しで表示する", async () => {

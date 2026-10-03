@@ -1458,7 +1458,7 @@ async fn test_優先度_defaultが埋まっていてもinteractiveの呼び出�
 }
 
 #[tokio::test]
-async fn test_拒否_待ち行列が溢れた拒否を記録し次の受理で解く() {
+async fn test_拒否_待ち行列が溢れても読まれない失敗は記録しない() {
     use axum::http::StatusCode;
     use tower::ServiceExt;
     // Given
@@ -1483,21 +1483,7 @@ async fn test_拒否_待ち行列が溢れた拒否を記録し次の受理で�
     // Then
     assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
     let records = store.records("daemon");
-    assert_eq!(records.len(), 1);
-    let record = &records[0].record;
-    assert_eq!(record.operation, "client_request_limit");
-    assert_eq!(
-        record.kind,
-        crate::usecase::failure::Failure::Technical(
-            crate::domain::failure::TechnicalFailureNature::Transient
-        )
-    );
-    assert_eq!(
-        record.message,
-        "/releash.client.v1.ClientService/UpdateExternalEditor: default requests rejected: queue_full"
-    );
-    assert!(!records[0].requires_attention);
-    assert!(record.active);
+    assert!(records.is_empty());
     drop(permits);
     let accepted = router
         .oneshot(unary_request(
@@ -1507,11 +1493,11 @@ async fn test_拒否_待ち行列が溢れた拒否を記録し次の受理で�
         .await
         .unwrap();
     assert_ne!(accepted.status(), StatusCode::TOO_MANY_REQUESTS);
-    assert!(!store.records("daemon")[0].record.active);
+    assert!(store.records("daemon").is_empty());
 }
 
 #[tokio::test]
-async fn test_拒否_枠の対象外の呼び出しでは保留中の記録を解かない() {
+async fn test_拒否_枠の対象外の呼び出しでも読まれない失敗は記録しない() {
     use axum::http::StatusCode;
     use tower::ServiceExt;
     // Given
@@ -1536,7 +1522,7 @@ async fn test_拒否_枠の対象外の呼び出しでは保留中の記録を�
             .status(),
         StatusCode::TOO_MANY_REQUESTS
     );
-    assert!(store.records("daemon")[0].record.active);
+    assert!(store.records("daemon").is_empty());
 
     // When / Then
     for method in ["GetServerInfo", "ReportTerminalProcessed"] {
@@ -1546,7 +1532,7 @@ async fn test_拒否_枠の対象外の呼び出しでは保留中の記録を�
             .await
             .unwrap();
         assert_ne!(response.status(), StatusCode::TOO_MANY_REQUESTS);
-        assert!(store.records("daemon")[0].record.active);
+        assert!(store.records("daemon").is_empty());
     }
     drop(permits);
     let response = router
@@ -1557,7 +1543,7 @@ async fn test_拒否_枠の対象外の呼び出しでは保留中の記録を�
         .await
         .unwrap();
     assert_ne!(response.status(), StatusCode::TOO_MANY_REQUESTS);
-    assert!(!store.records("daemon")[0].record.active);
+    assert!(store.records("daemon").is_empty());
 }
 
 #[tokio::test]

@@ -1570,7 +1570,7 @@ async fn test_agent_session_history_resume_同一要求の再送は既存session
     )
     .unwrap();
     let sessions = Arc::new(AgentSessionUsecase::new(Arc::new(
-        crate::adaptor::gateway::agent_session::LocalAgentSessionRepository::new(store),
+        crate::adaptor::gateway::agent_session::LocalAgentSessionRepository::new(store.clone()),
     )));
     let lifecycle_events = Arc::new(RecordingLifecycleEvents::default());
     let terminal = Arc::new(RecordingTerminal::default());
@@ -1636,6 +1636,16 @@ tokio::sync::mpsc::unbounded_channel().0,
         Some(request.provider_session_id.as_str())
     );
     assert_eq!(terminal.spawns.lock().unwrap().len(), 2);
+    let query =
+        crate::adaptor::gateway::workspace_tree::SqliteWorkspaceQueryService::with_repository(
+            crate::adaptor::gateway::workspace_tree::SqliteWorkspaceTreeRepository::new(store),
+        );
+    let selected = Arc::new(usecase)
+        .resume_history_selection(request, query.as_ref())
+        .await
+        .unwrap();
+    assert_eq!(selected.agent_session_id, expected_id);
+    assert_eq!(selected.node_id, expected_id);
 }
 
 #[tokio::test]

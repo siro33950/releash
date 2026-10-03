@@ -100,15 +100,19 @@ async fn test_起動再試行登録_読込の一時失敗をやり直し停止�
         let observations = crate::test_support::retry::shared_store().records(id);
         assert!(observations
             .iter()
-            .any(|observation| observation.record.kind
-                == if should_start {
-                    crate::usecase::failure::Failure::Technical(
-                        crate::domain::failure::TechnicalFailureNature::Transient,
-                    )
-                } else {
-                    crate::usecase::failure::Failure::Technical(
-                        crate::domain::failure::TechnicalFailureNature::Other,
-                    )
-                }));
+            .all(|observation| observation.record.operation != "workflow_node_start"));
+        let facts = crate::adaptor::gateway::workflow::fact_log::read_tree_records(
+            &fixture.store,
+            &started.execution_id,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            facts.iter().any(|record| matches!(
+                record.fact,
+                crate::domain::workflow::NodeFact::RuntimeFailureObserved(_)
+            )),
+            !should_start
+        );
     }
 }

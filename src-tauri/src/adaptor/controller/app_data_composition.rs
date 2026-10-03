@@ -72,7 +72,7 @@ impl ProductionAppDataComposition {
         let file_system = StdGcFileSystem::with_observer(self.observer.clone());
         let inventory_file_system = file_system.clone();
         let app_data_dir = self.app_data_dir.clone();
-        let inventory = tokio::task::spawn_blocking(move || {
+        let inventory = crate::common::operation_context::spawn_blocking(move || {
             build_startup_gc_request(app_data_dir, shared_repo_paths, &inventory_file_system)
         })
         .await
@@ -106,7 +106,7 @@ impl ProductionAppDataComposition {
                 }
             };
 
-        tokio::task::spawn_blocking(move || {
+        crate::common::operation_context::spawn_blocking(move || {
             let mut report = crate::usecase::app_data_gc::sweep_startup_gc(
                 plan,
                 revalidated_runtime_protection,

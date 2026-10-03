@@ -13,7 +13,7 @@ where
 {
     crate::adaptor::controller::client::worktree_mutation::spawn_blocking(f)
         .await
-        .map_err(|e| AppError::new(format!("task join error: {e}")))?
+        .map_err(|e| AppError::from_failure(crate::domain::failure::TechnicalFailure::from(e)))?
 }
 
 pub(crate) async fn create_review_thread_shared(

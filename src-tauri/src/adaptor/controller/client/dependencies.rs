@@ -5,6 +5,8 @@ pub(crate) struct ClientDependencies {
         Option<std::sync::Arc<crate::usecase::application_startup::ApplicationStartupAuthority>>,
     pub(crate) workspace_node_command_usecase:
         Option<std::sync::Arc<crate::usecase::workflow::WorkspaceNodeCommandUsecase>>,
+    pub(crate) workspace_query_service:
+        Option<Arc<dyn crate::usecase::workspace_tree::WorkspaceQueryService>>,
     pub(crate) app_state: Option<crate::adaptor::controller::state::AppState>,
     pub(crate) workspace_state_store:
         Option<std::sync::Arc<crate::adaptor::gateway::workspace_state::WorkspaceStateStore>>,

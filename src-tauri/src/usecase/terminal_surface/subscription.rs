@@ -272,7 +272,7 @@ impl TerminalSubscriptionUsecase {
         let target = target.clone();
         let resets = self.terminal_resets.clone();
         let inputs = self.clients.clone();
-        tokio::task::spawn_blocking(move || {
+        crate::common::operation_context::spawn_blocking(move || {
             let mut result = Ok(());
             terminal
                 .visit_snapshot(&owner, &mut |surface| {

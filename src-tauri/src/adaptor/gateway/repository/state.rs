@@ -99,7 +99,10 @@ fn start_file_watcher(
         >| match res {
             Ok(events) => handle_file_events(state.as_ref(), events),
             Err(err) => {
-                log::warn!("file watcher error for {}: {err:?}", state.worktree_path());
+                handle_watch_failure(
+                    state.as_ref(),
+                    format!("file watcher error for {}: {err}", state.worktree_path()),
+                );
             }
         },
     )
@@ -143,9 +146,9 @@ fn start_git_watcher(
             let events = match res {
                 Ok(events) => events,
                 Err(err) => {
-                    log::warn!(
-                        "git dir watcher error for {}: {err:?}",
-                        state.worktree_path()
+                    handle_watch_failure(
+                        state.as_ref(),
+                        format!("git dir watcher error for {}: {err}", state.worktree_path()),
                     );
                     return;
                 }
@@ -161,6 +164,11 @@ fn start_git_watcher(
         .watch(&git_dir, mode)
         .map_err(|err| RepositoryStateError::Watcher(format!("Failed to watch git dir: {err}")))?;
     Ok(debouncer)
+}
+
+fn handle_watch_failure(state: &WorktreeState, message: String) {
+    state.mark_scan_failed(&RepositoryStateError::Watcher(message));
+    state.notify_snapshot_changed();
 }
 
 /// worktree のファイルの変化で、変更の状態を読み直す。

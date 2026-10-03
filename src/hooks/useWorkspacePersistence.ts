@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { PanelImperativeHandle } from "react-resizable-panels";
 import { useWorkspaceStateCache } from "@/hooks/useWorkspaceStateCache";
+import { getErrorMessage } from "@/lib/errorMessage";
 import {
 	buildWorkspaceState,
 	type InternalWorktreeState,
@@ -23,6 +24,7 @@ interface UseWorkspacePersistenceReturn {
 	>;
 	getInitialState: (rootPath: string) => WorkspaceState | undefined;
 	stateReady: boolean;
+	stateError: string | null;
 }
 
 export function useWorkspacePersistence({
@@ -39,6 +41,7 @@ export function useWorkspacePersistence({
 		new Map(),
 	);
 
+	const [stateError, setStateError] = useState<string | null>(null);
 	const [stateReady, setStateReady] = useState(() => {
 		if (!selectedRootPath) return true;
 		return !!workspaceCache.getState(selectedRootPath);
@@ -116,15 +119,26 @@ export function useWorkspacePersistence({
 
 	// Pre-load workspace state on first mount
 	useEffect(() => {
+		setStateError(null);
 		if (!selectedRootPath) return;
 		const cache = workspaceCacheRef.current;
 		if (cache.getState(selectedRootPath)) return;
 		let cancelled = false;
-		cache.loadState(selectedRootPath).then(() => {
-			if (!cancelled) {
-				setStateReady(true);
-			}
-		});
+		cache.loadState(
+			selectedRootPath,
+			() => {
+				if (!cancelled) {
+					setStateError(null);
+					setStateReady(true);
+				}
+			},
+			(error) => {
+				if (!cancelled) {
+					setStateReady(false);
+					setStateError(getErrorMessage(error));
+				}
+			},
+		);
 		return () => {
 			cancelled = true;
 		};
@@ -134,5 +148,6 @@ export function useWorkspacePersistence({
 		internalStateMapRef,
 		getInitialState: workspaceCache.getState,
 		stateReady,
+		stateError,
 	};
 }

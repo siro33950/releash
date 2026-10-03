@@ -6,7 +6,6 @@ export interface UseRepoListReturn {
 	repoPaths: string[] | null;
 	addRepo: (path: string) => void;
 	removeRepo: (path: string) => void;
-	initFromCwd: (cwdRepoPath: string) => void;
 }
 
 export function useRepoList(): UseRepoListReturn {
@@ -27,9 +26,5 @@ export function useRepoList(): UseRepoListReturn {
 		invoke("remove_repo_path", { path }).catch(showClientError);
 	}, []);
 
-	const initFromCwd = useCallback((cwdRepoPath: string) => {
-		invoke("add_repo_path", { path: cwdRepoPath }).catch(showClientError);
-	}, []);
-
-	return { repoPaths, addRepo, removeRepo, initFromCwd };
+	return { repoPaths, addRepo, removeRepo };
 }

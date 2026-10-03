@@ -81,12 +81,7 @@ function createMockAutomation(
 		selectWorkflow: vi.fn(),
 		saveWorkflowSource: vi.fn().mockResolvedValue({
 			ok: true,
-			workflow: {
-				name: "saved-wf",
-				description: "",
-				builtin: false,
-				nodes: [SESSION_NODE],
-			},
+			name: "saved-wf",
 		}),
 		deleteWorkflow: vi.fn(),
 		duplicateWorkflow: vi.fn().mockResolvedValue({ ok: true }),
@@ -182,12 +177,7 @@ describe("AutomationSection", () => {
 		const user = userEvent.setup();
 		const saveWorkflowSource = vi.fn().mockResolvedValue({
 			ok: true,
-			workflow: {
-				name: "new-wf",
-				description: "",
-				builtin: false,
-				nodes: [],
-			},
+			name: "new-wf",
 		});
 		const selectWorkflow = vi.fn();
 		const automation = createMockAutomation({

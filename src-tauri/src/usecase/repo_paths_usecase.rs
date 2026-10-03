@@ -30,6 +30,16 @@ impl RepoPathsUsecase {
         }
     }
 
+    pub(crate) fn initialize_from_cwd(
+        &self,
+        repository: &crate::usecase::repository_usecase::RepositoryUsecase,
+    ) -> Result<(), UsecaseError> {
+        if let Some(root) = repository.find_main_repo_path(&repository.get_cwd()?)? {
+            self.add(&root)?;
+        }
+        Ok(())
+    }
+
     pub fn get(&self) -> Vec<String> {
         self.repo.get()
     }

@@ -52,8 +52,11 @@ export function useUpdateChecker(enabled: boolean): UpdateCheckResult {
 				} else {
 					setStatus("idle");
 				}
-			} catch {
-				if (!cancelled) setStatus("idle");
+			} catch (cause) {
+				if (!cancelled) {
+					setError(getErrorMessage(cause));
+					setStatus("error");
+				}
 			}
 		})();
 

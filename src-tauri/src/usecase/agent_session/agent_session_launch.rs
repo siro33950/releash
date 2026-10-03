@@ -217,6 +217,12 @@ impl From<ProviderLifecycleUsecaseError> for AgentSessionLaunchUsecaseError {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SessionSelection {
+    pub agent_session_id: String,
+    pub node_id: String,
+}
+
 type StandaloneLaunchOutcome = Result<String, AgentSessionLaunchUsecaseError>;
 type SharedStandaloneLaunch = Shared<BoxFuture<'static, StandaloneLaunchOutcome>>;
 
@@ -368,6 +374,50 @@ impl AgentSessionLaunchUsecase {
             activated_workflow_launches: Arc::new(Mutex::new(HashMap::new())),
             hook_health_tasks: std::sync::Mutex::new(Vec::new()),
         }
+    }
+
+    pub(crate) async fn launch_standalone_selection(
+        self: Arc<Self>,
+        request: AgentSessionLaunchRequest,
+        workspace_query: &dyn crate::usecase::workspace_tree::WorkspaceQueryService,
+    ) -> Result<SessionSelection, AgentSessionLaunchUsecaseError> {
+        let id = self.clone().launch_standalone_idempotent(request).await?;
+        let session = self
+            .sessions
+            .find(&id)
+            .await
+            .map_err(map_session_error)?
+            .ok_or(AgentSessionLaunchUsecaseError::Corrupt)?;
+        let node_id = workspace_query
+            .session_node_id(session.session().workspace(), &id)
+            .await
+            .map_err(|error| AgentSessionLaunchUsecaseError::Store(error.into()))?
+            .ok_or(AgentSessionLaunchUsecaseError::Corrupt)?;
+        Ok(SessionSelection {
+            agent_session_id: id,
+            node_id,
+        })
+    }
+
+    pub(crate) async fn resume_history_selection(
+        self: &Arc<Self>,
+        request: AgentSessionHistoryResumeRequest,
+        workspace_query: &dyn crate::usecase::workspace_tree::WorkspaceQueryService,
+    ) -> Result<SessionSelection, AgentSessionLaunchUsecaseError> {
+        let session = match self.resume_history(request).await? {
+            AgentSessionHistoryResumeOutcome::Open(session)
+            | AgentSessionHistoryResumeOutcome::Paused(session) => session,
+        };
+        let id = session.session().id();
+        let node_id = workspace_query
+            .session_node_id(session.session().workspace(), id)
+            .await
+            .map_err(|error| AgentSessionLaunchUsecaseError::Store(error.into()))?
+            .ok_or(AgentSessionLaunchUsecaseError::Corrupt)?;
+        Ok(SessionSelection {
+            agent_session_id: id.into(),
+            node_id,
+        })
     }
 
     pub(crate) async fn launch_standalone_idempotent(

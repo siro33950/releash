@@ -44,9 +44,7 @@ async fn test_providerタイトル入口_一覧のやり直さない失敗で周
     .unwrap_err();
     // Then
     assert!(repository.list_calls.load(Ordering::SeqCst) > 1);
-    let records = store.records("daemon");
-    assert_eq!(records.len(), 1);
-    assert!(!records[0].requires_attention);
+    assert!(store.records("*").is_empty());
 }
 
 #[tokio::test(start_paused = true)]
@@ -77,7 +75,5 @@ async fn test_providerタイトル入口_やり直さない失敗の対象は次
     assert_eq!(repository.list_calls.load(Ordering::SeqCst), 3);
     assert_eq!(gateway.read_count("provider-broken"), 1);
     assert_eq!(gateway.read_count("provider-fine"), 3);
-    let records = store.records("broken");
-    assert_eq!(records.len(), 1);
-    assert!(records[0].requires_attention);
+    assert!(store.records("*").is_empty());
 }

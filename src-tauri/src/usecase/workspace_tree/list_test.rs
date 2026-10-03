@@ -179,20 +179,25 @@ impl RepoPathsRepository for Paths {
 /// 取得を `release` まで止められる PR の取得元。
 struct PullRequests {
     status: PrStatus,
-    release: Option<parking_lot::Mutex<std::sync::mpsc::Receiver<()>>>,
+    release: Option<Arc<parking_lot::Mutex<std::sync::mpsc::Receiver<()>>>>,
 }
 
+#[async_trait::async_trait]
+
 impl GitHostProvider for PullRequests {
-    fn fetch_pr_status(&self, _: &str) -> Result<PrStatus, GitHostError> {
+    async fn fetch_pr_status(&self, _: &str) -> Result<PrStatus, GitHostError> {
         if let Some(release) = &self.release {
-            release
-                .lock()
-                .recv_timeout(Duration::from_secs(5))
-                .map_err(|error| GitHostError::External(error.to_string()))?;
+            let release = release.clone();
+            crate::common::operation_context::spawn_blocking(move || {
+                release.lock().recv_timeout(Duration::from_secs(5))
+            })
+            .await
+            .unwrap()
+            .map_err(|error| GitHostError::External(error.to_string()))?;
         }
         Ok(self.status.clone())
     }
-    fn list_issues(&self, _: &str) -> Result<Vec<IssueInfo>, GitHostError> {
+    async fn list_issues(&self, _: &str) -> Result<Vec<IssueInfo>, GitHostError> {
         Ok(Vec::new())
     }
 }
@@ -296,7 +301,7 @@ impl Fixture {
         let mut watched = std::collections::HashSet::new();
         tokio::time::timeout(Duration::from_secs(10), async {
             loop {
-                for path in self.usecase.watch_paths() {
+                for path in self.usecase.watch_paths().0 {
                     if watched.insert(path.clone()) {
                         self.repository_state.start_git_dir_watching(&path).unwrap();
                     }
@@ -386,7 +391,7 @@ async fn test_一覧の読み取り_走査後にworktreeと変更の数と実行
 }
 
 #[tokio::test]
-async fn test_手動更新_走査を待ちpr取得前に一覧を返す() {
+async fn test_手動更新_走査済みの値を保持しpr取得完了まで待つ() {
     // Given
     let (release, blocked) = std::sync::mpsc::channel();
     let fixture = Fixture::new(PullRequests {
@@ -400,18 +405,22 @@ async fn test_手動更新_走査を待ちpr取得前に一覧を返す() {
             )]),
             merged_branches: Vec::new(),
         },
-        release: Some(parking_lot::Mutex::new(blocked)),
+        release: Some(Arc::new(parking_lot::Mutex::new(blocked))),
     });
     fixture.watch_until(|rows| rows.len() == 1).await;
     fixture.add_worktree("feature");
 
     // When
-    tokio::time::timeout(Duration::from_secs(5), fixture.usecase.refresh())
-        .await
-        .expect("refresh must not wait for pull requests");
+    let refreshing = tokio::spawn({
+        let usecase = fixture.usecase.clone();
+        async move { usecase.refresh().await }
+    });
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(!refreshing.is_finished());
     let scanned = fixture.usecase.read().await.unwrap();
 
     release.send(()).unwrap();
+    refreshing.await.unwrap();
     // Then
     assert_eq!(rows(&scanned).len(), 2);
     assert_eq!(rows(&scanned)[1].worktree.branch, "feature");
@@ -433,18 +442,22 @@ async fn test_手動更新_pr取得後に前の一覧へprを反映する() {
             )]),
             merged_branches: Vec::new(),
         },
-        release: Some(parking_lot::Mutex::new(blocked)),
+        release: Some(Arc::new(parking_lot::Mutex::new(blocked))),
     });
     fixture.watch_until(|rows| rows.len() == 1).await;
     fixture.add_worktree("feature");
     let mut changes = crate::test_support::state_subscription::changes(&fixture.subscriptions);
 
-    tokio::time::timeout(Duration::from_secs(5), fixture.usecase.refresh())
-        .await
-        .expect("refresh must not wait for pull requests");
+    let refreshing = tokio::spawn({
+        let usecase = fixture.usecase.clone();
+        async move { usecase.refresh().await }
+    });
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(!refreshing.is_finished());
 
     // When
     release.send(()).unwrap();
+    refreshing.await.unwrap();
     tokio::time::timeout(Duration::from_secs(5), async {
         while changes.recv().await.unwrap() != StateChangeSource::WorkspaceList {}
     })
@@ -482,7 +495,7 @@ async fn test_repositoryの削除_一覧と監視の対象から外れる() {
         .unwrap()
         .repositories
         .is_empty());
-    assert!(fixture.usecase.watch_paths().is_empty());
+    assert!(fixture.usecase.watch_paths().0.is_empty());
 }
 
 #[test]

@@ -224,7 +224,13 @@ describe("useWorkspaceStateCache", () => {
 
 		let loaded: import("@/types/workspace-state").WorkspaceState | undefined;
 		await act(async () => {
-			loaded = await result.current.loadState("/repo");
+			result.current.loadState(
+				"/repo",
+				(state) => {
+					loaded = state;
+				},
+				vi.fn(),
+			);
 		});
 
 		expect(loaded).toEqual(state);
@@ -252,25 +258,35 @@ describe("useWorkspaceStateCache", () => {
 
 		let loaded: import("@/types/workspace-state").WorkspaceState | undefined;
 		await act(async () => {
-			loaded = await result.current.loadState("/repo");
+			result.current.loadState(
+				"/repo",
+				(state) => {
+					loaded = state;
+				},
+				vi.fn(),
+			);
 		});
 
 		expect(loaded).toBeUndefined();
 		expect(result.current.getState("/repo")).toBeUndefined();
 	});
-	it("保存済み表示状態の購読失敗をundefinedで完了し再試行しない", async () => {
+	it("保存済み表示状態の購読失敗は不在と区別して失敗のcallbackへ渡す", async () => {
 		const { result } = renderHook(() => useWorkspaceStateCache());
-		const loaded = result.current.loadState("/repo");
+		const received = vi.fn();
+		const failed = vi.fn();
+		result.current.loadState("/repo", received, failed);
 		states.fail(
 			{ kind: "workspace-state", args: ["repo", "/repo"] },
 			new Error("offline"),
 		);
-		await expect(loaded).resolves.toBeUndefined();
+		expect(failed).toHaveBeenCalledWith(new Error("offline"));
+		expect(received).not.toHaveBeenCalled();
+		expect(result.current.getState("/repo")).toBeUndefined();
 		expect(states.subscribeState).toHaveBeenCalledTimes(1);
 		expect(mockInvoke).not.toHaveBeenCalled();
 	});
 
-	it("購読失敗でも呼び出し元のstateReadyが完了する", async () => {
+	it("購読失敗では既定状態を復元済みと扱わず原因を返す", async () => {
 		const { result } = renderHook(() =>
 			useWorkspacePersistence({
 				selectedRootPath: "/repo",
@@ -289,7 +305,47 @@ describe("useWorkspaceStateCache", () => {
 				new Error("offline"),
 			),
 		);
+		expect(result.current.stateReady).toBe(false);
+		expect(result.current.stateError).toBe("offline");
+		await act(async () =>
+			states.publish(
+				{ kind: "workspace-state", args: ["repo", "/repo"] },
+				makeState(),
+			),
+		);
+		expect(result.current.stateError).toBeNull();
 		expect(result.current.stateReady).toBe(true);
+		expect(states.subscribeState).toHaveBeenCalledTimes(1);
+	});
+	it("初回失敗後の正常な値なしでも同じ購読で復旧する", async () => {
+		vi.spyOn(console, "error").mockImplementation(() => {});
+		const { result } = renderHook(() =>
+			useWorkspacePersistence({
+				selectedRootPath: "/repo",
+				centerTab: "agent",
+				leftNavVisible: true,
+				rightVisible: true,
+				setCenterTab: vi.fn(),
+				leftNavRef: { current: null },
+				rightPanelRef: { current: null },
+			}),
+		);
+		await act(async () =>
+			states.fail(
+				{ kind: "workspace-state", args: ["repo", "/repo"] },
+				new Error("offline"),
+			),
+		);
+		expect(result.current.stateReady).toBe(false);
+		expect(result.current.stateError).toBe("offline");
+		await act(async () =>
+			states.publish(
+				{ kind: "workspace-state", args: ["repo", "/repo"] },
+				null,
+			),
+		);
+		expect(result.current.stateReady).toBe(true);
+		expect(result.current.stateError).toBeNull();
 		expect(states.subscribeState).toHaveBeenCalledTimes(1);
 	});
 });

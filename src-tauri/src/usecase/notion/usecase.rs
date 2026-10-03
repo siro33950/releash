@@ -101,8 +101,8 @@ impl NotionUsecase {
         acquire_result(&self.task_results, &self.result_generation, request.clone());
     }
 
-    pub(crate) fn refresh_tasks(&self, request: &NotionTaskListRequest) {
-        refresh_result(&self.task_results, request, || {
+    pub(crate) async fn refresh_tasks(&self, request: &NotionTaskListRequest) {
+        refresh_result(&self.task_results, request, async {
             query_task_list(
                 self.repository.as_ref(),
                 self.api.as_ref(),
@@ -111,7 +111,9 @@ impl NotionUsecase {
                 request.title.as_deref(),
                 &request.labels,
             )
-        });
+            .await
+        })
+        .await;
     }
 
     pub(crate) fn cached_tasks(
@@ -136,10 +138,11 @@ impl NotionUsecase {
         );
     }
 
-    pub(crate) fn refresh_label_options(&self, path: &str) {
-        refresh_result(&self.label_results, &path.to_owned(), || {
-            fetch_label_options(self.repository.as_ref(), self.api.as_ref(), path)
-        });
+    pub(crate) async fn refresh_label_options(&self, path: &str) {
+        refresh_result(&self.label_results, &path.to_owned(), async {
+            fetch_label_options(self.repository.as_ref(), self.api.as_ref(), path).await
+        })
+        .await;
     }
 
     pub(crate) fn cached_label_options(
@@ -179,12 +182,12 @@ impl NotionUsecase {
         Ok(())
     }
 
-    pub(crate) fn validate_config(
+    pub(crate) async fn validate_config(
         &self,
         api_token: String,
         database_id: String,
     ) -> Result<NotionValidationResult, NotionUsecaseError> {
-        validate_config(self.api.as_ref(), api_token, database_id)
+        validate_config(self.api.as_ref(), api_token, database_id).await
     }
 }
 
@@ -197,15 +200,15 @@ fn acquire_result<K: Eq + std::hash::Hash, T>(
     results.lock().insert(key, (generation, Fetched::default()));
 }
 
-fn refresh_result<K: Eq + std::hash::Hash, T>(
+async fn refresh_result<K: Eq + std::hash::Hash, T>(
     results: &Results<K, T>,
     key: &K,
-    fetch: impl FnOnce() -> Result<T, NotionUsecaseError>,
+    fetch: impl std::future::Future<Output = Result<T, NotionUsecaseError>>,
 ) {
     let Some(generation) = results.lock().get(key).map(|(generation, _)| *generation) else {
         return;
     };
-    let result = fetch();
+    let result = fetch.await;
     let mut results = results.lock();
     if let Some((_, current)) = results
         .get_mut(key)
@@ -215,7 +218,7 @@ fn refresh_result<K: Eq + std::hash::Hash, T>(
     }
 }
 
-fn query_task_list(
+async fn query_task_list(
     repository: &dyn NotionConfigRepository,
     api: &dyn NotionApiGateway,
     repo_path: &str,
@@ -235,7 +238,7 @@ fn query_task_list(
     };
     let mut tasks = Vec::new();
     loop {
-        let page = api.query_tasks(&config, &query)?;
+        let page = api.query_tasks(&config, &query).await?;
         tasks.extend(page.tasks);
         if tasks.len() >= count || !page.has_more {
             let has_more = tasks.len() > count || page.has_more;
@@ -258,13 +261,13 @@ fn query_task_list(
     }
 }
 
-fn fetch_label_options(
+async fn fetch_label_options(
     repository: &dyn NotionConfigRepository,
     api: &dyn NotionApiGateway,
     repo_path: &str,
 ) -> Result<Vec<NotionLabelOption>, NotionUsecaseError> {
     let config = resolve_config(repository, repo_path)?;
-    api.fetch_label_options(&config).map_err(Into::into)
+    api.fetch_label_options(&config).await.map_err(Into::into)
 }
 
 fn save_config(
@@ -282,7 +285,7 @@ fn delete_config(
     repository.remove(repo_path).map_err(Into::into)
 }
 
-fn validate_config(
+async fn validate_config(
     api: &dyn NotionApiGateway,
     api_token: String,
     database_id: String,
@@ -295,7 +298,7 @@ fn validate_config(
     if !config.is_configured() {
         return Ok(NotionValidationResult::not_configured());
     }
-    api.validate(&config).map_err(Into::into)
+    api.validate(&config).await.map_err(Into::into)
 }
 
 fn resolve_config(

@@ -7,6 +7,14 @@ use super::{
 
 #[async_trait::async_trait]
 pub(crate) trait AgentSessionGarbageCollectionPort: Send + Sync {
+    async fn terminal_presence(
+        &self,
+        agent_session_id: &str,
+    ) -> Result<
+        crate::domain::agent_session::aggregates::ManagedPtyPresence,
+        AgentSessionLifecycleUsecaseError,
+    >;
+
     async fn reconcile_garbage_collection(
         &self,
         agent_session_id: &str,
@@ -16,6 +24,15 @@ pub(crate) trait AgentSessionGarbageCollectionPort: Send + Sync {
 
 #[async_trait::async_trait]
 impl AgentSessionGarbageCollectionPort for AgentSessionLifecycleUsecase {
+    async fn terminal_presence(
+        &self,
+        id: &str,
+    ) -> Result<
+        crate::domain::agent_session::aggregates::ManagedPtyPresence,
+        AgentSessionLifecycleUsecaseError,
+    > {
+        self.terminal_presence(id).await
+    }
     async fn reconcile_garbage_collection(
         &self,
         agent_session_id: &str,
@@ -62,7 +79,7 @@ impl AgentSessionReadUsecase {
         &self,
         agent_session_id: &str,
     ) -> Result<Option<AgentSessionItemDto>, AgentSessionReadUsecaseError> {
-        let Some(item) = self
+        let Some(mut item) = self
             .query
             .get(agent_session_id)
             .await
@@ -78,7 +95,14 @@ impl AgentSessionReadUsecase {
             )
             .await
         {
-            Ok(AgentSessionGarbageCollectionOutcome::Retained) => Ok(Some(item)),
+            Ok(AgentSessionGarbageCollectionOutcome::Retained) => {
+                item.terminal_presence = Some(match self.garbage_collection.terminal_presence(agent_session_id).await.map_err(map_lifecycle_error)? {
+                    crate::domain::agent_session::aggregates::ManagedPtyPresence::Live => "live",
+                    crate::domain::agent_session::aggregates::ManagedPtyPresence::ConfirmedAbsent => "absent",
+                    crate::domain::agent_session::aggregates::ManagedPtyPresence::Unknown => "unknown",
+                }.into());
+                Ok(Some(item))
+            }
             Ok(AgentSessionGarbageCollectionOutcome::GarbageCollected)
             | Err(AgentSessionLifecycleUsecaseError::NotFound) => Ok(self
                 .query

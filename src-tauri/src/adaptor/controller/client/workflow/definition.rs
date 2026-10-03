@@ -4,7 +4,6 @@ use crate::adaptor::presenter::client::{
     SaveWorkflowSuccess,
 };
 use crate::adaptor::presenter::error::AppError;
-use crate::usecase::workflow::dto::workflow_to_dto;
 use crate::usecase::workflow::ports::WorkflowSourceSaveError;
 
 pub(crate) async fn save_workflow_source_shared(
@@ -18,11 +17,7 @@ pub(crate) async fn save_workflow_source_shared(
             Ok(workflow) => Ok(SaveWorkflowSourceResultDto {
                 variant: Some(Variant::Success(SaveWorkflowSuccess {
                     ok: Some(true),
-                    workflow: Some(
-                        workflow_to_dto(&workflow)
-                            .try_into()
-                            .map_err(AppError::new)?,
-                    ),
+                    name: Some(workflow.name),
                 })),
             }),
             Err(WorkflowSourceSaveError::Diagnostics(diagnostics)) => {
@@ -38,7 +33,7 @@ pub(crate) async fn save_workflow_source_shared(
         }
     })
     .await
-    .map_err(|e| AppError::new(format!("task join error: {e}")))?
+    .map_err(|e| AppError::from_failure(crate::domain::failure::TechnicalFailure::from(e)))?
 }
 
 pub(crate) async fn delete_workflow_shared(state: &AppState, name: String) -> Result<(), AppError> {
@@ -49,7 +44,7 @@ pub(crate) async fn delete_workflow_shared(state: &AppState, name: String) -> Re
             .map_err(AppError::from_failure)
     })
     .await
-    .map_err(|e| AppError::new(format!("task join error: {e}")))?
+    .map_err(|e| AppError::from_failure(crate::domain::failure::TechnicalFailure::from(e)))?
 }
 
 pub(crate) fn open_workflow_in_editor_shared(
@@ -74,5 +69,5 @@ pub(crate) async fn duplicate_workflow_shared(
             .map_err(AppError::from_failure)
     })
     .await
-    .map_err(|e| AppError::new(format!("task join error: {e}")))?
+    .map_err(|e| AppError::from_failure(crate::domain::failure::TechnicalFailure::from(e)))?
 }

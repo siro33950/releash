@@ -29,7 +29,7 @@ pub(crate) async fn save_facet_shared(
             .map_err(AppError::from_failure)
     })
     .await
-    .map_err(|e| AppError::new(format!("task join error: {e}")))?
+    .map_err(|e| AppError::from_failure(crate::domain::failure::TechnicalFailure::from(e)))?
 }
 
 pub(crate) async fn delete_facet_shared(
@@ -45,7 +45,7 @@ pub(crate) async fn delete_facet_shared(
             .map_err(AppError::from_failure)
     })
     .await
-    .map_err(|e| AppError::new(format!("task join error: {e}")))?
+    .map_err(|e| AppError::from_failure(crate::domain::failure::TechnicalFailure::from(e)))?
 }
 
 pub(crate) async fn duplicate_facet_shared(
@@ -62,7 +62,7 @@ pub(crate) async fn duplicate_facet_shared(
             .map_err(AppError::from_failure)
     })
     .await
-    .map_err(|e| AppError::new(format!("task join error: {e}")))?
+    .map_err(|e| AppError::from_failure(crate::domain::failure::TechnicalFailure::from(e)))?
 }
 
 pub(crate) fn open_facet_in_editor_shared(

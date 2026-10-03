@@ -129,9 +129,11 @@ impl ClientCommandDispatch {
             })
             .await
             .map_err(|error| {
-                wire::CommandFailure::from(crate::adaptor::presenter::error::AppError::new(
-                    error.to_string(),
-                ))
+                wire::CommandFailure::from(
+                    crate::adaptor::presenter::error::AppError::from_failure(
+                        crate::domain::failure::TechnicalFailure::from(error),
+                    ),
+                )
             })??;
             match handler {
                 Some(handler) => crate::common::operation_context::wait(

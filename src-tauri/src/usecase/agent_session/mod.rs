@@ -19,11 +19,13 @@ pub(crate) use agent_session_history::{
 };
 pub(crate) use agent_session_initial_instruction::AgentSessionInitialInstructionUsecase;
 #[cfg(test)]
+pub(crate) use agent_session_launch::AgentSessionHistoryResumeOutcome;
+#[cfg(test)]
 pub(crate) use agent_session_launch::AgentSessionLaunchExecutionTrees;
 pub(crate) use agent_session_launch::{
-    AgentSessionExecutionTreeLifecycle, AgentSessionHistoryResumeOutcome,
-    AgentSessionHistoryResumeRequest, AgentSessionLaunchRequest, AgentSessionLaunchUsecase,
-    ExecutionTreeCache, ExecutionTreeCacheReleaseError, ProviderAgentRuntime,
+    AgentSessionExecutionTreeLifecycle, AgentSessionHistoryResumeRequest,
+    AgentSessionLaunchRequest, AgentSessionLaunchUsecase, ExecutionTreeCache,
+    ExecutionTreeCacheReleaseError, ProviderAgentRuntime, SessionSelection,
     StartedExecutionTreeRegistrar, StartedExecutionTreeRegistrationError,
     WorkflowAgentSessionLaunchRequest, WorktreeMutationAdmission,
 };

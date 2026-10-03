@@ -1207,7 +1207,9 @@ pub(crate) mod tests {
             app.state::<Arc<crate::adaptor::gateway::app_config::AppConfig>>()
                 .inner()
                 .clone(),
-            Arc::new(crate::adaptor::gateway::notion::NotionApiGatewayImpl::new()),
+            Arc::new(crate::adaptor::gateway::notion::NotionApiGatewayImpl::new(
+                crate::usecase::retry::shared().limiter.clone(),
+            )),
         ));
         let repo_paths_gateway =
             crate::adaptor::gateway::repository::repo_paths::RepoPathsGateway::new(

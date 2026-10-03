@@ -128,6 +128,9 @@ pub(crate) struct StateSubscriptionUsecase {
     starts: Arc<tokio::sync::Mutex<()>>,
     starting_target: Arc<Mutex<Option<SubscriptionTarget>>>,
     watches: Arc<Mutex<std::collections::HashMap<WatchRequirement, u64>>>,
+    watch_failures: Arc<
+        Mutex<std::collections::HashMap<WatchRequirement, crate::domain::failure::WorkFailure>>,
+    >,
 }
 
 impl StateSubscriptionUsecase {
@@ -151,6 +154,7 @@ impl StateSubscriptionUsecase {
             watchers: None,
             workers: Default::default(),
             watches: Default::default(),
+            watch_failures: Default::default(),
             starts: Default::default(),
             starting_target: Default::default(),
         }
@@ -226,10 +230,8 @@ impl StateSubscriptionUsecase {
         if let Err(error) = self.start(client, target) {
             return Err(convert(error));
         }
-        if let Err(error) = self.reconcile_watches() {
-            let _ = self.stop(client, target);
-            return Err(error);
-        }
+        let failures = self.reconcile_watches();
+        let value = self.apply_watch_failures(target, value, failures).await;
         if !self.clients.lock().contains_key(client) {
             return Err(convert(SubscriptionError::StreamEnded));
         }
@@ -315,15 +317,12 @@ impl StateSubscriptionUsecase {
         } else {
             Ok(())
         };
-        if *target == SubscriptionTarget::Workspaces {
-            if let Err(error) = self.reconcile_watches() {
-                log::error!("State watch update failed: {error}");
-            }
-        }
+        let failures = self.reconcile_watches();
         let result = match refresh {
             Ok(()) => reads.read(target).await,
             Err(error) => Err(error),
         };
+        let result = self.apply_watch_failures(target, result, failures).await;
         let publication = match result {
             Ok(value) => self.publisher.publish(target, value, None),
             Err(error) => self.publisher.publish_failure(target, error),
@@ -349,11 +348,24 @@ impl StateSubscriptionUsecase {
         }
     }
 
-    fn reconcile_watches(&self) -> Result<(), StateReadError> {
-        let mut failure = None;
+    fn reconcile_watches(&self) -> Vec<(WatchRequirement, StateReadError)> {
+        let mut failures = Vec::new();
         if let (Some(reads), Some(watcher)) = (&self.reads, &self.watchers) {
             let mut watches = self.watches.lock();
-            let repositories = reads.repositories();
+            let (repositories, path_failures) = reads.watch_paths();
+            if self.is_active(&SubscriptionTarget::Workspaces) {
+                failures.extend(path_failures.into_iter().map(|(path, failure)| {
+                    (
+                        WatchRequirement::Git(path),
+                        StateReadError::from_error(
+                            crate::usecase::repository_state::RepositoryStateError::Background {
+                                kind: failure.kind,
+                                message: failure.message,
+                            },
+                        ),
+                    )
+                }));
+            }
             let review_comments_dir = reads.review_comments_dir();
             let workflows_dir = reads.workflows_dir();
             let required: std::collections::HashSet<_> = self
@@ -373,9 +385,12 @@ impl StateSubscriptionUsecase {
             let start: Vec<_> = required.difference(&current).cloned().collect();
             let stop: Vec<_> = current.difference(&required).cloned().collect();
             for requirement in stop {
-                if let Some(id) = watches.remove(&requirement) {
-                    if let Err(error) = watcher.stop(id) {
-                        log::error!("State watch cleanup failed: {error}");
+                if let Some(id) = watches.get(&requirement).copied() {
+                    match watcher.stop(id) {
+                        Ok(()) => {
+                            watches.remove(&requirement);
+                        }
+                        Err(error) => log::error!("State watch cleanup failed: {error}"),
                     }
                 }
             }
@@ -398,7 +413,7 @@ impl StateSubscriptionUsecase {
                         watches.insert(requirement, id);
                     }
                     Err(error) => {
-                        failure = Some(StateReadError::from_error(error));
+                        failures.push((requirement, StateReadError::from_error(error)));
                     }
                 }
             }
@@ -415,7 +430,132 @@ impl StateSubscriptionUsecase {
                 false
             }
         });
-        failure.map_or(Ok(()), Err)
+        failures
+    }
+
+    fn report_watch_failures(&self, failures: Vec<(WatchRequirement, StateReadError)>) {
+        for (requirement, error) in failures {
+            log::error!("State watch failed for {requirement:?}: {error}");
+        }
+    }
+
+    async fn apply_watch_failures(
+        &self,
+        target: &SubscriptionTarget,
+        result: Result<StateValue, StateReadError>,
+        failures: Vec<(WatchRequirement, StateReadError)>,
+    ) -> Result<StateValue, StateReadError> {
+        let reads = self.reads.as_ref().expect("subscription reads");
+        let mut next = std::collections::HashMap::new();
+        for (requirement, error) in failures {
+            let failure = match &error.source {
+                StateReadFailure::Technical(error) => {
+                    crate::domain::failure::WorkFailure::from(error.as_ref().clone())
+                }
+                StateReadFailure::RepositoryState(error) => {
+                    crate::domain::failure::WorkFailure::from_error(error.as_ref())
+                }
+                StateReadFailure::Watcher(error) => match error.as_ref() {
+                    crate::usecase::watcher::UsecaseError::Repository(error) => {
+                        crate::domain::failure::WorkFailure::from_error(error)
+                    }
+                    _ => crate::domain::failure::WorkFailure {
+                        kind: crate::domain::failure::Failure::Technical(
+                            crate::domain::failure::TechnicalFailureNature::Other,
+                        ),
+                        message: error.to_string(),
+                    },
+                },
+                _ => crate::domain::failure::WorkFailure {
+                    kind: crate::domain::failure::Failure::Technical(
+                        crate::domain::failure::TechnicalFailureNature::Other,
+                    ),
+                    message: error.to_string(),
+                },
+            };
+            next.insert(requirement, failure);
+        }
+        let changed = {
+            let mut previous = self.watch_failures.lock();
+            let changed: std::collections::HashSet<_> = previous
+                .keys()
+                .chain(next.keys())
+                .filter(|key| previous.get(*key) != next.get(*key))
+                .cloned()
+                .collect();
+            *previous = next.clone();
+            changed
+        };
+        for affected in self.active_targets() {
+            if affected == *target {
+                continue;
+            }
+            let requirements = affected.watches(
+                &reads.repositories(),
+                &self.history_paths,
+                &reads.review_comments_dir(),
+                &reads.workflows_dir(),
+                &self.hook_health_markers,
+            );
+            if !changed.iter().any(|requirement| {
+                requirements.contains(requirement)
+                    || (affected == SubscriptionTarget::Workspaces
+                        && matches!(requirement, WatchRequirement::Git(_)))
+            }) {
+                continue;
+            }
+            let value =
+                Self::with_watch_failures(reads.read(&affected).await, &requirements, &next);
+            let publication = match value {
+                Ok(value) => self.publisher.publish(&affected, value, None),
+                Err(error) => self.publisher.publish_failure(&affected, error),
+            };
+            if let Err(error) = publication {
+                log::error!("State watch publication failed: {error}");
+            }
+        }
+        let requirements = target.watches(
+            &reads.repositories(),
+            &self.history_paths,
+            &reads.review_comments_dir(),
+            &reads.workflows_dir(),
+            &self.hook_health_markers,
+        );
+        Self::with_watch_failures(result, &requirements, &next)
+    }
+
+    fn with_watch_failures(
+        mut result: Result<StateValue, StateReadError>,
+        requirements: &[WatchRequirement],
+        failures: &std::collections::HashMap<WatchRequirement, crate::domain::failure::WorkFailure>,
+    ) -> Result<StateValue, StateReadError> {
+        for (requirement, failure) in failures {
+            if let (WatchRequirement::Git(path), Ok(StateValue::Workspaces(list))) =
+                (requirement, &mut result)
+            {
+                for repository in &mut list.repositories {
+                    if repository.path == *path {
+                        repository.worktrees.error = Some(failure.clone());
+                    }
+                    if let Some(worktrees) = &mut repository.worktrees.value {
+                        for worktree in worktrees {
+                            if worktree.worktree.path == *path {
+                                worktree.tree.error = Some(failure.clone());
+                                worktree.dirty_count.error = Some(failure.clone());
+                            }
+                        }
+                    }
+                }
+            } else if requirements.contains(requirement) {
+                return Err(StateReadError::from_error(
+                    crate::usecase::repository_state::RepositoryStateError::Background {
+                        kind: failure.kind,
+                        message: failure.message.clone(),
+                    },
+                ));
+            }
+        }
+        result
     }
 
     #[cfg(test)]
@@ -477,9 +617,7 @@ impl StateSubscriptionUsecase {
             subscriptions.remove(target);
         }
         drop(clients);
-        if let Err(error) = self.reconcile_watches() {
-            log::error!("State watch cleanup failed: {error}");
-        }
+        self.report_watch_failures(self.reconcile_watches());
         Ok(())
     }
 
@@ -494,9 +632,7 @@ impl StateSubscriptionUsecase {
 
     pub(crate) fn close_client(&self, id: &str) {
         self.clients.lock().remove(id);
-        if let Err(error) = self.reconcile_watches() {
-            log::error!("State stream cleanup failed: {error}");
-        }
+        self.report_watch_failures(self.reconcile_watches());
     }
 
     #[cfg(test)]

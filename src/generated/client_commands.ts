@@ -12,7 +12,6 @@ import {
 	AbortWorkflowRequestSchema,
 	AddRepoPathRequestSchema,
 	AgentSessionArchiveResponseSchema,
-	AgentSessionOpenResponseSchema,
 	AppendReviewCommentRequestSchema,
 	ApplicationQuitOutcomeDtoV1Schema,
 	ApproveWorkflowNodeRequestSchema,
@@ -41,6 +40,7 @@ import {
 	DuplicateWorkflowRequestSchema,
 	FetchIssuesRequestSchema,
 	FileNavigationResultDtoSchema,
+	FindRepositoryRootRequestSchema,
 	GetFileNavigationRequestSchema,
 	GetLanguageFromPathRequestSchema,
 	GetOrSpawnTerminalSurfaceRequestSchema,
@@ -60,6 +60,7 @@ import {
 	ListTerminalLaunchPerformanceSampleV1Schema,
 	ListVisibleBlockDtoSchema,
 	NotionValidationResultViewSchema,
+	NullablestringSchema,
 	OpenAgentSessionRequestSchema,
 	OpenFacetInEditorRequestSchema,
 	OpenFolderInEditorRequestSchema,
@@ -93,6 +94,7 @@ import {
 	SaveWorkflowSourceRequestSchema,
 	SaveWorkflowSourceResultDtoSchema,
 	SaveWorkspaceStateRequestSchema,
+	SessionSelectionSchema,
 	SetBranchBaseRequestSchema,
 	SetReleashBaseRequestSchema,
 	StartTerminalInputPerformanceCollectionRequestSchema,
@@ -115,7 +117,6 @@ import {
 	WorkflowSubmitOutputRequestSchema,
 	WorkflowValidateOutputRequestSchema,
 	WorkflowValidateOutputResponseSchema,
-	WorktreeEntryDtoSchema,
 	WritePathsToTerminalSurfaceRequestSchema,
 	WriteTerminalSurfaceRequestSchema,
 } from "./client_pb";
@@ -357,7 +358,7 @@ const commands = {
 		args: ClientCommandArgs["create_agent_session"],
 	) => {
 		const result = decode(
-			ResultStringSchema,
+			SessionSelectionSchema,
 			await client.createAgentSession(
 				fromJson(
 					CreateAgentSessionRequestSchema,
@@ -395,7 +396,7 @@ const commands = {
 		args: ClientCommandArgs["create_worktree"],
 	) => {
 		const result = decode(
-			WorktreeEntryDtoSchema,
+			ResultStringSchema,
 			await client.createWorktree(
 				fromJson(
 					CreateWorktreeRequestSchema,
@@ -737,7 +738,7 @@ const commands = {
 		args: ClientCommandArgs["open_agent_session"],
 	) => {
 		const result = decode(
-			AgentSessionOpenResponseSchema,
+			UnitSchema,
 			await client.openAgentSession(
 				fromJson(
 					OpenAgentSessionRequestSchema,
@@ -1098,7 +1099,7 @@ const commands = {
 		args: ClientCommandArgs["restore_agent_session"],
 	) => {
 		const result = decode(
-			AgentSessionOpenResponseSchema,
+			ResultStringSchema,
 			await client.restoreAgentSession(
 				fromJson(
 					RestoreAgentSessionRequestSchema,
@@ -1136,7 +1137,7 @@ const commands = {
 		args: ClientCommandArgs["resume_agent_session_history_candidate"],
 	) => {
 		const result = decode(
-			ResultStringSchema,
+			SessionSelectionSchema,
 			await client.resumeAgentSessionHistoryCandidate(
 				fromJson(
 					ResumeAgentSessionHistoryCandidateRequestSchema,
@@ -1497,7 +1498,7 @@ const commands = {
 		args: ClientCommandArgs["update_provider_executable"],
 	) => {
 		const result = decode(
-			ResultStringSchema,
+			UnitSchema,
 			await client.updateProviderExecutable(
 				fromJson(
 					UpdateProviderExecutableRequestSchema,
@@ -1712,6 +1713,25 @@ const commands = {
 					RefreshWorkspacesRequestSchema,
 					clientJson(
 						RefreshWorkspacesRequestSchema,
+						JSON.parse(JSON.stringify(args ?? {})),
+						true,
+					),
+				),
+			),
+		);
+		return result;
+	},
+	find_repository_root: async (
+		client: Client<typeof ClientService>,
+		args: ClientCommandArgs["find_repository_root"],
+	) => {
+		const result = decode(
+			NullablestringSchema,
+			await client.findRepositoryRoot(
+				fromJson(
+					FindRepositoryRootRequestSchema,
+					clientJson(
+						FindRepositoryRootRequestSchema,
 						JSON.parse(JSON.stringify(args ?? {})),
 						true,
 					),

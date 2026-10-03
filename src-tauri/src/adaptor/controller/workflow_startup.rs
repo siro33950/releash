@@ -17,11 +17,9 @@ pub(crate) async fn recover(
     usecase: &WorkflowStartupUsecase,
 ) -> Result<(), WorkflowError> {
     let tree_ids = retrying
-        .restart(
-            FailureKey::new("workflow_recovery_list", "daemon"),
-            RetryBackoff::RECOVERY,
-            |_| bounded(ATTEMPT_LIMIT, expired, usecase.list_tree_ids()),
-        )
+        .restart(None, RetryBackoff::RECOVERY, |_| {
+            bounded(ATTEMPT_LIMIT, expired, usecase.list_tree_ids())
+        })
         .await?;
     let results = futures_util::future::join_all(tree_ids.into_iter().map(|tree_id| async move {
         retrying

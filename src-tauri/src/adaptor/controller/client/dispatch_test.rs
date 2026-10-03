@@ -24,6 +24,7 @@ async fn test_更新通知_成功時だけ購読対象を更新する() {
                 }
                 git_host
                     .fetch_issues(args.repo_path.as_deref().unwrap())
+                    .await
                     .unwrap();
                 Ok(wire::command_result::Command::FetchIssues(wire::Unit {}))
             })

@@ -263,15 +263,7 @@ async fn test_lifecycle追記_保存競合は状態を再読込して上位か�
         // Then
         assert_eq!(source.commits.load(Ordering::SeqCst), 6);
         assert_eq!(source.reads.load(Ordering::SeqCst), 6);
-        let records = failure_store.records("*");
-        assert_eq!(records.len(), 1);
-        assert_eq!(
-            records[0].record.kind,
-            crate::usecase::failure::Failure::Business(
-                crate::usecase::failure::BusinessFailure::VersionConflict
-            )
-        );
-        assert_eq!(records[0].record.count, 5);
+        assert!(failure_store.records("*").is_empty());
     }
 }
 
@@ -329,17 +321,7 @@ async fn test_確定照会の一時失敗_確定状態を再確認して同じ�
         );
         let identities = source.identities.lock().unwrap();
         assert!(identities.iter().all(|identity| identity == &identities[0]));
-        let records = failure_store.records("*");
-        assert_eq!(records.len(), if pending { 1 } else { 2 });
-        for record in records {
-            assert_eq!(
-                record.record.kind,
-                crate::usecase::failure::Failure::Technical(
-                    crate::domain::failure::TechnicalFailureNature::Transient
-                )
-            );
-            assert_eq!(record.record.count, 1);
-        }
+        assert!(failure_store.records("*").is_empty());
         assert!(repository.pending.lock().unwrap().is_empty());
     }
 }

@@ -353,13 +353,13 @@ function mockDeferredProviderCreate() {
 			return Promise.resolve(["codex"]);
 		}
 		if (command === "create_agent_session") {
-			return new Promise<string>((resolve, reject) => {
-				deferred.resolve = resolve;
-				deferred.reject = reject;
-			});
-		}
-		if (command === "session-node") {
-			return Promise.resolve("agent-session-node-1");
+			return new Promise<{ agentSessionId: string; nodeId: string }>(
+				(resolve, reject) => {
+					deferred.resolve = (id) =>
+						resolve({ agentSessionId: id, nodeId: "agent-session-node-1" });
+					deferred.reject = reject;
+				},
+			);
 		}
 		return Promise.resolve(null);
 	});
@@ -575,9 +575,6 @@ describe("WorkspaceList", () => {
 				return Promise.resolve({ items: [], hasMore: false });
 			}
 			if (command === "restore_agent_session") {
-				return Promise.resolve("restored");
-			}
-			if (command === "session-node") {
 				return Promise.resolve("restored-session-node");
 			}
 			return Promise.resolve(null);
@@ -1703,10 +1700,10 @@ describe("WorkspaceList", () => {
 				return Promise.resolve(["codex"]);
 			}
 			if (command === "create_agent_session") {
-				return Promise.resolve("agent-session-1");
-			}
-			if (command === "session-node") {
-				return Promise.resolve("agent-session-node-1");
+				return Promise.resolve({
+					agentSessionId: "agent-session-1",
+					nodeId: "agent-session-node-1",
+				});
 			}
 			return Promise.resolve(null);
 		});
@@ -2123,10 +2120,10 @@ describe("WorkspaceList", () => {
 				});
 			}
 			if (command === "resume_agent_session_history_candidate") {
-				return Promise.resolve("agent-session-2");
-			}
-			if (command === "session-node") {
-				return Promise.resolve("agent-session-node-2");
+				return Promise.resolve({
+					agentSessionId: "agent-session-2",
+					nodeId: "agent-session-node-2",
+				});
 			}
 			return Promise.resolve(null);
 		});

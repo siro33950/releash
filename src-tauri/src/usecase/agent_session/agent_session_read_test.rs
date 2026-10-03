@@ -35,6 +35,15 @@ struct RemovingGarbageCollector {
 
 #[async_trait::async_trait]
 impl AgentSessionGarbageCollectionPort for RemovingGarbageCollector {
+    async fn terminal_presence(
+        &self,
+        _: &str,
+    ) -> Result<
+        crate::domain::agent_session::aggregates::ManagedPtyPresence,
+        AgentSessionLifecycleUsecaseError,
+    > {
+        Ok(crate::domain::agent_session::aggregates::ManagedPtyPresence::Live)
+    }
     async fn reconcile_garbage_collection(
         &self,
         agent_session_id: &str,
@@ -75,6 +84,7 @@ fn item(id: &str) -> AgentSessionItemDto {
             can_delete: false,
         },
         last_exit_abnormal: false,
+        terminal_presence: None,
     }
 }
 
@@ -151,6 +161,15 @@ async fn test_session読取_所有済みとworkflow失敗をgc経由でも保持
     struct FailingGc(AgentSessionLifecycleUsecaseError);
     #[async_trait::async_trait]
     impl AgentSessionGarbageCollectionPort for FailingGc {
+        async fn terminal_presence(
+            &self,
+            _: &str,
+        ) -> Result<
+            crate::domain::agent_session::aggregates::ManagedPtyPresence,
+            AgentSessionLifecycleUsecaseError,
+        > {
+            Ok(crate::domain::agent_session::aggregates::ManagedPtyPresence::Live)
+        }
         async fn reconcile_garbage_collection(
             &self,
             _: &str,

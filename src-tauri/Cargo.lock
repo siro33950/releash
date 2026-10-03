@@ -4388,6 +4388,7 @@ dependencies = [
  "futures-util",
  "git2",
  "hex",
+ "httpdate",
  "libc",
  "log",
  "mlua",

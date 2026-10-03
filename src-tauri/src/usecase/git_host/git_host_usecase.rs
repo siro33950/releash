@@ -49,8 +49,8 @@ impl GitHostUsecase {
     }
 
     /// PR の状態を取りに行って保持する。変わったときは Workspaces の購読へ知らせる。
-    pub fn refresh_pr_status(&self, repo_path: &str) -> Result<(), GitHostError> {
-        let result = self.provider.fetch_pr_status(repo_path);
+    pub async fn refresh_pr_status(&self, repo_path: &str) -> Result<(), GitHostError> {
+        let result = self.provider.fetch_pr_status(repo_path).await;
         let previous = self.pr_cache.result(repo_path);
         let unchanged = match &result {
             Ok(value) => previous.error.is_none() && previous.value.as_ref() == Some(value),
@@ -66,8 +66,8 @@ impl GitHostUsecase {
         result.map(|_| ())
     }
 
-    pub fn fetch_issues(&self, repo_path: &str) -> Result<Vec<IssueInfo>, GitHostError> {
-        let result = self.provider.list_issues(repo_path);
+    pub async fn fetch_issues(&self, repo_path: &str) -> Result<Vec<IssueInfo>, GitHostError> {
+        let result = self.provider.list_issues(repo_path).await;
         self.issue_cache.record(repo_path, result.clone());
         if let Some(publisher) = &self.state_publisher {
             publisher.notify(
@@ -77,13 +77,13 @@ impl GitHostUsecase {
         result
     }
 
-    pub(crate) fn get_cached_issues(
+    pub(crate) async fn get_cached_issues(
         &self,
         repo_path: &str,
     ) -> crate::usecase::fetched::Fetched<Vec<IssueInfo>> {
         let mut result = self.issue_cache.result(repo_path);
         if result.value.is_none() && result.error.is_none() {
-            let _ = self.fetch_issues(repo_path);
+            let _ = self.fetch_issues(repo_path).await;
             result = self.issue_cache.result(repo_path);
         }
         crate::usecase::fetched::Fetched {

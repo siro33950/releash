@@ -9,7 +9,6 @@ pub(crate) enum SubscriptionTarget {
     Selection(String, String),
     NodeDetail(String, String),
     AgentSession(String),
-    SessionNode(String, String),
     SessionHistory(String, usize),
     Providers,
     Branches(String, Option<String>),
@@ -20,7 +19,6 @@ pub(crate) enum SubscriptionTarget {
     NotionTasks(crate::usecase::notion::usecase::NotionTaskListRequest),
     NotionLabelOptions(String),
     Worktrees(String),
-    RepositoryRoot(String),
     StartupRepository,
     WorkspaceState(String, String),
     ReviewSnapshot(String, ReviewBase),
@@ -69,7 +67,6 @@ impl SubscriptionTarget {
             | Self::BranchStatus(path)
             | Self::CurrentBranch(path)
             | Self::Worktrees(path)
-            | Self::RepositoryRoot(path)
             | Self::ReviewSnapshot(path, _)
             | Self::ReviewFileView(path, _, _, _)
             | Self::ReleashBase(path) => vec![WatchRequirement::Git(path.clone())],
@@ -144,7 +141,6 @@ impl SubscriptionTarget {
                 | Self::BranchStatus(p)
                 | Self::CurrentBranch(p)
                 | Self::Worktrees(p)
-                | Self::RepositoryRoot(p)
                 | Self::ReviewSnapshot(p, _)
                 | Self::ReviewFileView(p, _, _, _)
                 | Self::ReleashBase(p) => paths.contains(p),
@@ -152,10 +148,9 @@ impl SubscriptionTarget {
             },
             C::Worktree(path) => match self {
                 Self::Workspaces | Self::AgentSession(_) | Self::Workflows => true,
-                Self::Selection(p, _)
-                | Self::NodeDetail(p, _)
-                | Self::SessionNode(p, _)
-                | Self::SessionHistory(p, _) => p == path,
+                Self::Selection(p, _) | Self::NodeDetail(p, _) | Self::SessionHistory(p, _) => {
+                    p == path
+                }
                 _ => false,
             },
             C::WorkspaceList => matches!(self, Self::Workspaces),

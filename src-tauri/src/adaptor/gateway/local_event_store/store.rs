@@ -211,11 +211,9 @@ fn open_schema_inspection(
     .map_err(|error| {
         classify_sqlite_error(&error, LocalEventStoreOpenError::InitializationStateInvalid)
     })?;
-    connection
-        .busy_timeout(std::time::Duration::from_secs(2))
-        .map_err(|error| {
-            classify_sqlite_error(&error, LocalEventStoreOpenError::InitializationStateInvalid)
-        })?;
+    super::connection::configure_busy_handler(&connection).map_err(|error| {
+        classify_sqlite_error(&error, LocalEventStoreOpenError::InitializationStateInvalid)
+    })?;
     Ok(connection)
 }
 
@@ -285,11 +283,9 @@ fn classify_existing_database(
     layout.observe(StorePathOperation::Open, path);
     layout.observe(StorePathOperation::Read, path);
     let connection = open_schema_inspection(layout, path)?;
-    connection
-        .busy_timeout(std::time::Duration::from_secs(2))
-        .map_err(|error| {
-            classify_sqlite_error(&error, LocalEventStoreOpenError::InitializationStateInvalid)
-        })?;
+    super::connection::configure_busy_handler(&connection).map_err(|error| {
+        classify_sqlite_error(&error, LocalEventStoreOpenError::InitializationStateInvalid)
+    })?;
     let application_id = connection
         .pragma_query_value(None, "application_id", |row| row.get::<_, i64>(0))
         .map_err(|error| {

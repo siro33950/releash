@@ -52,6 +52,12 @@ impl ClientApiDeps {
         self
     }
 
+    pub(super) fn local_priority_gate(&self) -> crate::common::priority::PriorityGate {
+        self.priority
+            .gate
+            .with_classifier(super::local_priority_level)
+    }
+
     #[cfg(test)]
     fn priority_limits(&self) -> &crate::common::concurrency::PriorityLimits {
         self.priority.gate.limits()

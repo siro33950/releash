@@ -10,6 +10,7 @@ export interface AgentSessionItem {
 	};
 	lifecycle: "open" | "paused" | "archived";
 	lastExitAbnormal: boolean;
+	terminalPresence?: string;
 	operations: {
 		canArchive: boolean;
 		canRestore: boolean;

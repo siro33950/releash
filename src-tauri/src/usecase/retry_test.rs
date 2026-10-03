@@ -6,6 +6,36 @@ use crate::usecase::failure::{BusinessFailure, Failure};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 #[tokio::test(start_paused = true)]
+async fn test_再試行記録_記録なしでも再試行し恒久失敗を返す() {
+    for stage in [false, true] {
+        let (retrying, store) = test_retrying_with_store();
+        let calls = AtomicUsize::new(0);
+        let operation = |_| {
+            let transient = calls.fetch_add(1, Ordering::SeqCst) < 3;
+            std::future::ready(Err::<(), _>(WorkFailure {
+                kind: Failure::Technical(if transient {
+                    TechnicalFailureNature::Transient
+                } else {
+                    TechnicalFailureNature::Other
+                }),
+                message: "failed".into(),
+            }))
+        };
+        let result = if stage {
+            retrying.stage(None, RetryBackoff::ITEM, operation).await
+        } else {
+            retrying.restart(None, RetryBackoff::ITEM, operation).await
+        };
+        assert_eq!(
+            result.unwrap_err().kind,
+            Failure::Technical(TechnicalFailureNature::Other)
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 4);
+        assert!(store.records("*").is_empty());
+    }
+}
+
+#[tokio::test(start_paused = true)]
 async fn test_やり直しの手順_分類による再試行と失敗の記録を同じ経路で行う() {
     for kind in [
         Failure::Technical(TechnicalFailureNature::Transient),

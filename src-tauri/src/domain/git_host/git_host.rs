@@ -8,9 +8,11 @@ pub enum GitHostError {
     Technical(crate::domain::failure::TechnicalFailure),
 }
 
+#[async_trait::async_trait]
+
 pub trait GitHostProvider: Send + Sync {
-    fn fetch_pr_status(&self, repo_path: &str) -> Result<PrStatus, GitHostError>;
-    fn list_issues(&self, repo_path: &str) -> Result<Vec<IssueInfo>, GitHostError>;
+    async fn fetch_pr_status(&self, repo_path: &str) -> Result<PrStatus, GitHostError>;
+    async fn list_issues(&self, repo_path: &str) -> Result<Vec<IssueInfo>, GitHostError>;
 }
 
 #[derive(Debug, Clone, PartialEq)]

@@ -1,11 +1,11 @@
 use super::*;
-use crate::common::operation_context::sync_scope;
+use crate::common::operation_context::scope;
 use crate::common::operation_context::{Deadline, OperationContext, OperationStopped};
 use std::time::Instant;
 
 #[cfg(unix)]
-#[test]
-fn test_gh実runner_呼出期限と資源期限の早い方で停止する() {
+#[tokio::test]
+async fn test_gh実runner_呼出期限と資源期限の早い方で停止する() {
     // Given
     let runner = SystemGhCommandRunner {
         program: Some("/bin/sh".into()),
@@ -17,7 +17,10 @@ fn test_gh実runner_呼出期限と資源期限の早い方で停止する() {
             context.with_deadline(Deadline::new(start + duration))
         });
         // When
-        let output = sync_scope(context, || runner.output(&["-c", "exec sleep 30"], "/"));
+        let output = scope(context, async {
+            runner.output(&["-c", "exec sleep 30"], "/").await
+        })
+        .await;
         // Then
         assert_eq!(output, GhCommandOutput::Timeout);
         let expected = deadline.unwrap_or(GH_TIMEOUT).min(GH_TIMEOUT);
@@ -27,8 +30,8 @@ fn test_gh実runner_呼出期限と資源期限の早い方で停止する() {
 }
 
 #[cfg(unix)]
-#[test]
-fn test_gh実runner_実行中の取消を保持する() {
+#[tokio::test]
+async fn test_gh実runner_実行中の取消を保持する() {
     // Given
     let directory = tempfile::tempdir().unwrap();
     let started = directory.path().join("started");
@@ -37,45 +40,48 @@ fn test_gh実runner_実行中の取消を保持する() {
     let runner = SystemGhCommandRunner {
         program: Some("/bin/sh".into()),
     };
-    let task = std::thread::spawn(move || {
-        sync_scope(context, || {
-            runner.output(
-                &["-c", "touch started; exec sleep 30"],
-                directory.path().to_str().unwrap(),
-            )
+    let task = tokio::spawn(async move {
+        scope(context, async {
+            runner
+                .output(
+                    &["-c", "touch started; exec sleep 30"],
+                    directory.path().to_str().unwrap(),
+                )
+                .await
         })
+        .await
     });
     let start = Instant::now();
     while !started.exists() {
         assert!(start.elapsed() < Duration::from_secs(3));
-        std::thread::sleep(Duration::from_millis(5));
+        tokio::time::sleep(Duration::from_millis(5)).await;
     }
     // When
     token.cancel();
     // Then
     assert_eq!(
-        task.join().unwrap(),
+        task.await.unwrap(),
         GhCommandOutput::Stopped(OperationStopped::Cancelled)
     );
 }
 
 #[cfg(unix)]
-#[test]
-fn test_gh実runner_出力と起動失敗の変換を保つ() {
+#[tokio::test]
+async fn test_gh実runner_出力と起動失敗の変換を保つ() {
     // Given
     let runner = SystemGhCommandRunner {
         program: Some("/bin/sh".into()),
     };
     // When / Then
     assert_eq!(
-        runner.output(&["-c", "printf ok"], "/"),
+        runner.output(&["-c", "printf ok"], "/").await,
         GhCommandOutput::Success("ok".into())
     );
     assert!(
-        matches!(runner.output(&["-c", "printf error >&2; exit 7"], "/"), GhCommandOutput::NonZero { stderr, .. } if stderr == "error")
+        matches!(runner.output(&["-c", "printf error >&2; exit 7"], "/").await, GhCommandOutput::NonZero { stderr, .. } if stderr == "error")
     );
     assert_eq!(
-        runner.output(&["-c", "printf '\\377'"], "/"),
+        runner.output(&["-c", "printf '\\377'"], "/").await,
         GhCommandOutput::InvalidUtf8
     );
     let missing = tempfile::tempdir().unwrap();
@@ -83,7 +89,7 @@ fn test_gh実runner_出力と起動失敗の変換を保つ() {
         program: Some(missing.path().join("missing-gh")),
     };
     assert!(matches!(
-        runner.output(&[], "/"),
+        runner.output(&[], "/").await,
         GhCommandOutput::SpawnFailed(_)
     ));
 }

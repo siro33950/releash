@@ -21,7 +21,8 @@ const baseIpcHandler: Record<string, unknown> = {
 	// App.tsx 初期化
 	"startup-outcome": { type: "ready" },
 	"provider-hook-health": [],
-	"startup-repository": "/test/repo",
+	"startup-repository": null,
+	find_repository_root: "/test/repo",
 	"worktrees": [],
 	set_menu_items_enabled: null,
 
@@ -131,12 +132,12 @@ const baseIpcHandler: Record<string, unknown> = {
 	// AgentSession TUI
 	"providers": ["claude", "codex"],
 	"agent-session": null,
-	open_agent_session: "attached",
+	open_agent_session: null,
 	restore_agent_session: "restored",
 	archive_agent_session: "archived",
 	delete_agent_session: null,
 	"session-history": { items: [], hasMore: false },
-	resume_agent_session_history_candidate: "mock-agent-session-1",
+	resume_agent_session_history_candidate: { agentSessionId: "mock-agent-session-1", nodeId: "mock-session-node-1" },
 	"provider-availability": {
 		providers: [
 			{
@@ -144,6 +145,7 @@ const baseIpcHandler: Record<string, unknown> = {
 				displayName: "Claude",
 				defaultExecutable: "claude",
 				configuredExecutable: null,
+				configurationRevision: 0,
 				effectiveExecutable: "claude",
 				available: true,
 				resolvedExecutable: "/usr/local/bin/claude",
@@ -154,6 +156,7 @@ const baseIpcHandler: Record<string, unknown> = {
 				displayName: "Codex",
 				defaultExecutable: "codex",
 				configuredExecutable: null,
+				configurationRevision: 0,
 				effectiveExecutable: "codex",
 				available: true,
 				resolvedExecutable: "/usr/local/bin/codex",
@@ -201,7 +204,6 @@ const baseIpcHandler: Record<string, unknown> = {
 	"node-detail": null,
 	close_workspace_node: null,
 	approve_workspace_node: null,
-	"session-node": null,
 	archive_workspace_workflow_execution: null,
 	restore_workspace_workflow_execution: null,
 };
@@ -270,8 +272,14 @@ export function buildMockConfig(
 	overrides: Record<string, unknown> = {},
 ): MockConfig {
 	const values = { ...baseIpcHandler, ...overrides };
-    const stateNames = ["repository-paths", "workspaces", "selection", "node-detail", "agent-session", "session-node", "session-history", "providers", "branches", "branch-base", "branch-status", "current-branch", "issues", "worktrees", "repository-root", "startup-repository", "workspace-state", "review-snapshot", "review-file-view", "review-threads", "workflows", "workflow", "workflow-source", "facets", "facet", "diagnostics", "desktop-settings", "notion-config", "notion-tasks", "notion-label-options", "provider-availability", "external-editor", "releash-base", "workflow-config", "performance-switches", "provider-hook-health", "startup-outcome"];
-    const states: Record<string, unknown> = { "repository-root": "/test/repo", selection: null };
+    if (!("startup-repository" in overrides)) {
+        const worktrees = values.worktrees as Array<{ path: string; branch: string }>;
+        values["startup-repository"] = worktrees.length === 1
+            ? { path: worktrees[0].path, branch: worktrees[0].branch, repositoryName: "repo" }
+            : null;
+    }
+    const stateNames = ["repository-paths", "workspaces", "selection", "node-detail", "agent-session", "session-history", "providers", "branches", "branch-base", "branch-status", "current-branch", "issues", "worktrees", "startup-repository", "workspace-state", "review-snapshot", "review-file-view", "review-threads", "workflows", "workflow", "workflow-source", "facets", "facet", "diagnostics", "desktop-settings", "notion-config", "notion-tasks", "notion-label-options", "provider-availability", "external-editor", "releash-base", "workflow-config", "performance-switches", "provider-hook-health", "startup-outcome"];
+    const states: Record<string, unknown> = { selection: null };
     for (const kind of stateNames) {
         if (kind in values) { states[kind] = values[kind]; delete values[kind]; }
     }

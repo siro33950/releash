@@ -10,8 +10,8 @@ pub(super) fn git_program() -> std::path::PathBuf {
 }
 
 #[cfg(unix)]
-#[test]
-fn test_hunk変更_実行中のprocessを期限と取消で回収し停止分類を返す() {
+#[tokio::test]
+async fn test_hunk変更_実行中のprocessを期限と取消で回収し停止分類を返す() {
     use std::os::unix::fs::PermissionsExt;
     use std::sync::Arc;
     struct Reset;
@@ -58,13 +58,18 @@ fn test_hunk変更_実行中のprocessを期限と取消で回収し停止分類
                 }
             });
             // When
-            let result = crate::common::operation_context::sync_scope(context, || {
+            let result = crate::common::operation_context::scope(context, async {
                 if reverse {
-                    StagingGateway.unstage_hunk(dir.path().to_str().unwrap(), "patch")
+                    StagingGateway
+                        .unstage_hunk(dir.path().to_str().unwrap(), "patch")
+                        .await
                 } else {
-                    StagingGateway.stage_hunk(dir.path().to_str().unwrap(), "patch")
+                    StagingGateway
+                        .stage_hunk(dir.path().to_str().unwrap(), "patch")
+                        .await
                 }
-            });
+            })
+            .await;
             signal.join().unwrap();
             // Then
             assert!(

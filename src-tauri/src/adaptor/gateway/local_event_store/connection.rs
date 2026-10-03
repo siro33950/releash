@@ -44,7 +44,7 @@ pub fn check_sqlite_version() -> Result<(), ConnectionError> {
 
 thread_local! { static BUSY_CONTEXT: std::cell::RefCell<crate::common::operation_context::OperationContext> = std::cell::RefCell::default(); }
 
-fn configure_common(connection: &Connection) -> Result<(), ConnectionError> {
+pub(super) fn configure_busy_handler(connection: &Connection) -> Result<(), rusqlite::Error> {
     connection.busy_handler(Some(|attempt| {
         if attempt == 0 {
             BUSY_CONTEXT.set(crate::common::operation_context::with_timeout(
@@ -52,9 +52,20 @@ fn configure_common(connection: &Connection) -> Result<(), ConnectionError> {
             ));
         }
         BUSY_CONTEXT.with_borrow(|context| {
-            crate::common::operation_context::sleep(context, Duration::from_millis(1)).is_ok()
+            crate::common::retry::RetryLimiter::shared()
+                .wait_sync(
+                    context,
+                    crate::common::retry::RetryBackoff::ITEM,
+                    (attempt as u64).saturating_add(1),
+                )
+                .is_ok()
         })
     }))?;
+    Ok(())
+}
+
+fn configure_common(connection: &Connection) -> Result<(), ConnectionError> {
+    configure_busy_handler(connection)?;
     connection.pragma_update(None, "foreign_keys", "ON")?;
     connection.pragma_update(None, "trusted_schema", "OFF")?;
     Ok(())

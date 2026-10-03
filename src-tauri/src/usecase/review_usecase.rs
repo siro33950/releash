@@ -58,6 +58,8 @@ struct ReviewBlobViewContext<'a> {
     version: u64,
 }
 
+#[async_trait::async_trait]
+
 trait ReviewCodePort: Send + Sync {
     fn get_branch_diff_summary(
         &self,
@@ -92,10 +94,12 @@ trait ReviewCodePort: Send + Sync {
 
     fn generate_group_patch(&self, file_path: &str, hunk: &Hunk, group: &ChangeGroup) -> String;
 
-    fn git_stage_hunk(&self, repo_path: &str, patch: &str) -> Result<(), CodeUsecaseError>;
+    async fn git_stage_hunk(&self, repo_path: &str, patch: &str) -> Result<(), CodeUsecaseError>;
 
-    fn git_unstage_hunk(&self, repo_path: &str, patch: &str) -> Result<(), CodeUsecaseError>;
+    async fn git_unstage_hunk(&self, repo_path: &str, patch: &str) -> Result<(), CodeUsecaseError>;
 }
+
+#[async_trait::async_trait]
 
 impl ReviewCodePort for CodeUsecase {
     fn get_branch_diff_summary(
@@ -145,12 +149,12 @@ impl ReviewCodePort for CodeUsecase {
         CodeUsecase::generate_group_patch(self, file_path, hunk, group)
     }
 
-    fn git_stage_hunk(&self, repo_path: &str, patch: &str) -> Result<(), CodeUsecaseError> {
-        CodeUsecase::git_stage_hunk(self, repo_path, patch)
+    async fn git_stage_hunk(&self, repo_path: &str, patch: &str) -> Result<(), CodeUsecaseError> {
+        CodeUsecase::git_stage_hunk(self, repo_path, patch).await
     }
 
-    fn git_unstage_hunk(&self, repo_path: &str, patch: &str) -> Result<(), CodeUsecaseError> {
-        CodeUsecase::git_unstage_hunk(self, repo_path, patch)
+    async fn git_unstage_hunk(&self, repo_path: &str, patch: &str) -> Result<(), CodeUsecaseError> {
+        CodeUsecase::git_unstage_hunk(self, repo_path, patch).await
     }
 }
 
@@ -306,7 +310,7 @@ impl ReviewUsecase {
         )
     }
 
-    pub fn git_stage_review_group(
+    pub async fn git_stage_review_group(
         &self,
         worktree_path: &str,
         path: &str,
@@ -323,10 +327,10 @@ impl ReviewUsecase {
             group_id,
             snapshot.as_ref(),
         )?;
-        self.code.git_stage_hunk(worktree_path, &patch)
+        self.code.git_stage_hunk(worktree_path, &patch).await
     }
 
-    pub fn git_unstage_review_group(
+    pub async fn git_unstage_review_group(
         &self,
         worktree_path: &str,
         path: &str,
@@ -343,7 +347,7 @@ impl ReviewUsecase {
             group_id,
             snapshot.as_ref(),
         )?;
-        self.code.git_unstage_hunk(worktree_path, &patch)
+        self.code.git_unstage_hunk(worktree_path, &patch).await
     }
 
     fn snapshot(&self, worktree_path: &str) -> Result<Arc<RepositorySnapshot>, CodeUsecaseError> {
@@ -1245,6 +1249,8 @@ mod tests {
         }
     }
 
+    #[async_trait::async_trait]
+
     impl ReviewCodePort for FakeReviewCode {
         fn get_branch_diff_summary(
             &self,
@@ -1382,7 +1388,11 @@ mod tests {
             "patch".to_string()
         }
 
-        fn git_stage_hunk(&self, repo_path: &str, _patch: &str) -> Result<(), CodeUsecaseError> {
+        async fn git_stage_hunk(
+            &self,
+            repo_path: &str,
+            _patch: &str,
+        ) -> Result<(), CodeUsecaseError> {
             self.calls
                 .lock()
                 .unwrap()
@@ -1390,7 +1400,11 @@ mod tests {
             Ok(())
         }
 
-        fn git_unstage_hunk(&self, repo_path: &str, _patch: &str) -> Result<(), CodeUsecaseError> {
+        async fn git_unstage_hunk(
+            &self,
+            repo_path: &str,
+            _patch: &str,
+        ) -> Result<(), CodeUsecaseError> {
             self.calls
                 .lock()
                 .unwrap()
@@ -1698,8 +1712,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn head_snapshot_is_composed_inside_review_usecase_from_repository_snapshot() {
+    #[tokio::test]
+    async fn head_snapshot_is_composed_inside_review_usecase_from_repository_snapshot() {
         let provider = Arc::new(FakeSnapshotProvider::new(vec![
             repository_snapshot_with_parts(
                 42,
@@ -1742,8 +1756,8 @@ mod tests {
         assert!(code.calls().is_empty());
     }
 
-    #[test]
-    fn head_snapshot_read_model_splits_staged_and_changed_status_in_rust() {
+    #[tokio::test]
+    async fn head_snapshot_read_model_splits_staged_and_changed_status_in_rust() {
         let snapshot = repository_snapshot_with_parts(
             7,
             SnapshotFlags {
@@ -1780,8 +1794,8 @@ mod tests {
         assert_eq!(dto.changes_file_count, dto.changed_files.len());
     }
 
-    #[test]
-    fn branch_base_snapshot_is_composed_inside_review_usecase_with_snapshot_flags() {
+    #[tokio::test]
+    async fn branch_base_snapshot_is_composed_inside_review_usecase_with_snapshot_flags() {
         let provider = Arc::new(FakeSnapshotProvider::new(vec![
             repository_snapshot_with_parts(
                 55,
@@ -1850,8 +1864,8 @@ mod tests {
         assert_eq!(code.calls(), vec!["branch-diff:/repo"]);
     }
 
-    #[test]
-    fn branch_diff_statuses_are_normalized_for_git_file_status_contract() {
+    #[tokio::test]
+    async fn branch_diff_statuses_are_normalized_for_git_file_status_contract() {
         let cases = [
             ("added", "new"),
             ("copied", "new"),
@@ -1873,8 +1887,8 @@ mod tests {
         assert!(err.contains("unsupported branch diff status"));
     }
 
-    #[test]
-    fn branch_base_snapshot_version_change_marks_result_stale_with_current_version() {
+    #[tokio::test]
+    async fn branch_base_snapshot_version_change_marks_result_stale_with_current_version() {
         let provider = Arc::new(FakeSnapshotProvider::new(vec![
             repository_snapshot(10, false),
             repository_snapshot(11, false),
@@ -1889,8 +1903,8 @@ mod tests {
         assert_eq!(code.calls(), vec!["branch-diff:/repo"]);
     }
 
-    #[test]
-    fn review_file_view_resolves_path_and_switches_head_sections() {
+    #[tokio::test]
+    async fn review_file_view_resolves_path_and_switches_head_sections() {
         let path = "/repo/src/app.rs";
         let code = FakeReviewCode::new()
             .with_source_bytes(path, ReviewContentSource::Head, present_text("head\n"))
@@ -1928,8 +1942,8 @@ mod tests {
         assert_eq!(staged.source, ReviewTextSource::Diff);
     }
 
-    #[test]
-    fn review_file_view_reports_added_deleted_and_unborn_head_as_text_sources() {
+    #[tokio::test]
+    async fn review_file_view_reports_added_deleted_and_unborn_head_as_text_sources() {
         let added_path = "/repo/new.txt";
         let deleted_path = "/repo/deleted.txt";
         let code = FakeReviewCode::new()
@@ -1970,8 +1984,8 @@ mod tests {
         assert_eq!(deleted.source, ReviewTextSource::Deleted);
     }
 
-    #[test]
-    fn test_差分表示_画像はdata_urlを埋め込みバイナリはサイズだけを返す() {
+    #[tokio::test]
+    async fn test_差分表示_画像はdata_urlを埋め込みバイナリはサイズだけを返す() {
         // Given
         let image_path = "/repo/assets/logo.png";
         let binary_path = "/repo/assets/archive.bin";
@@ -2044,8 +2058,8 @@ mod tests {
         assert_eq!(binary.modified_size, Some(34));
     }
 
-    #[test]
-    fn review_file_view_returns_binary_for_nul_bytes_without_binary_attribute() {
+    #[tokio::test]
+    async fn review_file_view_returns_binary_for_nul_bytes_without_binary_attribute() {
         let path = "/repo/assets/data.bin";
         let code = FakeReviewCode::new().with_source_bytes(
             path,
@@ -2071,8 +2085,8 @@ mod tests {
         assert_eq!(binary.path, "assets/data.bin");
     }
 
-    #[test]
-    fn review_file_view_returns_binary_for_non_utf8_bytes_without_binary_attribute() {
+    #[tokio::test]
+    async fn review_file_view_returns_binary_for_non_utf8_bytes_without_binary_attribute() {
         let path = "/repo/assets/non-utf8.dat";
         let code = FakeReviewCode::new().with_source_bytes(
             path,
@@ -2098,8 +2112,8 @@ mod tests {
         assert_eq!(binary.path, "assets/non-utf8.dat");
     }
 
-    #[test]
-    fn review_file_view_displays_deleted_file_under_removed_parent_directory() {
+    #[tokio::test]
+    async fn review_file_view_displays_deleted_file_under_removed_parent_directory() {
         let path = "/repo/src/nested/file.txt";
         let code = FakeReviewCode::new().with_source_bytes(
             path,
@@ -2127,8 +2141,8 @@ mod tests {
         assert_eq!(view.source, ReviewTextSource::Deleted);
     }
 
-    #[test]
-    fn review_file_view_applies_threshold_boundaries_in_usecase() {
+    #[tokio::test]
+    async fn review_file_view_applies_threshold_boundaries_in_usecase() {
         let exact_size_path = "/repo/exact-size.txt";
         let above_size_path = "/repo/above-size.txt";
         let exact_lines_path = "/repo/exact-lines.txt";
@@ -2268,8 +2282,8 @@ mod tests {
         assert!(above_token.limited);
     }
 
-    #[test]
-    fn review_stage_group_generates_patch_and_delegates_for_head_diff() {
+    #[tokio::test]
+    async fn review_stage_group_generates_patch_and_delegates_for_head_diff() {
         let path = "/repo/file.txt";
         let code = Arc::new(
             FakeReviewCode::new()
@@ -2297,6 +2311,7 @@ mod tests {
 
         usecase
             .git_stage_review_group("/repo", "file.txt", "changes", "head", &group_id)
+            .await
             .unwrap();
 
         assert_eq!(
@@ -2305,8 +2320,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn review_unstage_group_generates_patch_and_delegates_for_head_diff() {
+    #[tokio::test]
+    async fn review_unstage_group_generates_patch_and_delegates_for_head_diff() {
         let path = "/repo/file.txt";
         let code = Arc::new(
             FakeReviewCode::new()
@@ -2330,6 +2345,7 @@ mod tests {
 
         usecase
             .git_unstage_review_group("/repo", "file.txt", "staged", "head", &group_id)
+            .await
             .unwrap();
 
         assert_eq!(
@@ -2338,8 +2354,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn review_group_actions_reject_branch_base_for_stage_and_unstage() {
+    #[tokio::test]
+    async fn review_group_actions_reject_branch_base_for_stage_and_unstage() {
         for action in ["stage", "unstage"] {
             let code = Arc::new(FakeReviewCode::new());
             let usecase = ReviewUsecase::new_with_ports(
@@ -2350,20 +2366,28 @@ mod tests {
             );
 
             let err = match action {
-                "stage" => usecase.git_stage_review_group(
-                    "/repo",
-                    "file.txt",
-                    "changes",
-                    "branch-base",
-                    "g:0",
-                ),
-                "unstage" => usecase.git_unstage_review_group(
-                    "/repo",
-                    "file.txt",
-                    "changes",
-                    "branch-base",
-                    "g:0",
-                ),
+                "stage" => {
+                    usecase
+                        .git_stage_review_group(
+                            "/repo",
+                            "file.txt",
+                            "changes",
+                            "branch-base",
+                            "g:0",
+                        )
+                        .await
+                }
+                "unstage" => {
+                    usecase
+                        .git_unstage_review_group(
+                            "/repo",
+                            "file.txt",
+                            "changes",
+                            "branch-base",
+                            "g:0",
+                        )
+                        .await
+                }
                 _ => unreachable!(),
             }
             .unwrap_err()
@@ -2377,8 +2401,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn review_group_actions_report_missing_group_for_stage_and_unstage() {
+    #[tokio::test]
+    async fn review_group_actions_report_missing_group_for_stage_and_unstage() {
         for action in ["stage", "unstage"] {
             let path = "/repo/file.txt";
             let code = Arc::new(
@@ -2398,20 +2422,28 @@ mod tests {
             );
 
             let err = match action {
-                "stage" => usecase.git_stage_review_group(
-                    "/repo",
-                    "file.txt",
-                    "changes",
-                    "head",
-                    "missing-group",
-                ),
-                "unstage" => usecase.git_unstage_review_group(
-                    "/repo",
-                    "file.txt",
-                    "changes",
-                    "head",
-                    "missing-group",
-                ),
+                "stage" => {
+                    usecase
+                        .git_stage_review_group(
+                            "/repo",
+                            "file.txt",
+                            "changes",
+                            "head",
+                            "missing-group",
+                        )
+                        .await
+                }
+                "unstage" => {
+                    usecase
+                        .git_unstage_review_group(
+                            "/repo",
+                            "file.txt",
+                            "changes",
+                            "head",
+                            "missing-group",
+                        )
+                        .await
+                }
                 _ => unreachable!(),
             }
             .unwrap_err()
@@ -2424,8 +2456,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn review_group_action_missing_group_uses_typed_stale_target_error() {
+    #[tokio::test]
+    async fn review_group_action_missing_group_uses_typed_stale_target_error() {
         let path = "/repo/file.txt";
         let code = Arc::new(
             FakeReviewCode::new()
@@ -2445,6 +2477,7 @@ mod tests {
 
         let err = usecase
             .git_stage_review_group("/repo", "file.txt", "changes", "head", "missing-group")
+            .await
             .unwrap_err();
 
         match err {
@@ -2455,8 +2488,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn review_group_actions_report_missing_snapshot_target_as_typed_stale_target_error() {
+    #[tokio::test]
+    async fn review_group_actions_report_missing_snapshot_target_as_typed_stale_target_error() {
         for action in ["stage", "unstage"] {
             let path = "/repo/file.txt";
             let relative_path = "file.txt";
@@ -2482,20 +2515,22 @@ mod tests {
             let group_id = view.change_groups[0].group_id.clone();
 
             let err = match action {
-                "stage" => usecase.git_stage_review_group(
-                    "/repo",
-                    relative_path,
-                    section,
-                    "head",
-                    &group_id,
-                ),
-                "unstage" => usecase.git_unstage_review_group(
-                    "/repo",
-                    relative_path,
-                    section,
-                    "head",
-                    &group_id,
-                ),
+                "stage" => {
+                    usecase
+                        .git_stage_review_group("/repo", relative_path, section, "head", &group_id)
+                        .await
+                }
+                "unstage" => {
+                    usecase
+                        .git_unstage_review_group(
+                            "/repo",
+                            relative_path,
+                            section,
+                            "head",
+                            &group_id,
+                        )
+                        .await
+                }
                 _ => unreachable!(),
             }
             .unwrap_err();
@@ -2513,8 +2548,9 @@ mod tests {
         }
     }
 
-    #[test]
-    fn review_group_actions_accept_previous_group_id_after_snapshot_refresh_when_content_matches() {
+    #[tokio::test]
+    async fn review_group_actions_accept_previous_group_id_after_snapshot_refresh_when_content_matches(
+    ) {
         for action in ["stage", "unstage"] {
             let path = "/repo/file.txt";
             let relative_path = "file.txt";
@@ -2540,20 +2576,22 @@ mod tests {
             let group_id = view.change_groups[0].group_id.clone();
 
             match action {
-                "stage" => usecase.git_stage_review_group(
-                    "/repo",
-                    relative_path,
-                    section,
-                    "head",
-                    &group_id,
-                ),
-                "unstage" => usecase.git_unstage_review_group(
-                    "/repo",
-                    relative_path,
-                    section,
-                    "head",
-                    &group_id,
-                ),
+                "stage" => {
+                    usecase
+                        .git_stage_review_group("/repo", relative_path, section, "head", &group_id)
+                        .await
+                }
+                "unstage" => {
+                    usecase
+                        .git_unstage_review_group(
+                            "/repo",
+                            relative_path,
+                            section,
+                            "head",
+                            &group_id,
+                        )
+                        .await
+                }
                 _ => unreachable!(),
             }
             .unwrap();
@@ -2574,8 +2612,9 @@ mod tests {
         }
     }
 
-    #[test]
-    fn review_group_action_accepts_later_duplicate_group_id_after_earlier_duplicate_disappears() {
+    #[tokio::test]
+    async fn review_group_action_accepts_later_duplicate_group_id_after_earlier_duplicate_disappears(
+    ) {
         let path = "/repo/file.txt";
         let relative_path = "file.txt";
         let original = "x\na\ny\nx\na\ny\n";
@@ -2612,6 +2651,7 @@ mod tests {
 
         usecase
             .git_stage_review_group("/repo", relative_path, "changes", "head", &later_group_id)
+            .await
             .unwrap();
 
         assert_eq!(
@@ -2623,8 +2663,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn review_file_view_keeps_later_duplicate_hunk_id_after_earlier_duplicate_disappears() {
+    #[tokio::test]
+    async fn review_file_view_keeps_later_duplicate_hunk_id_after_earlier_duplicate_disappears() {
         let path = "/repo/file.txt";
         let relative_path = "file.txt";
         let original = concat!(
@@ -2681,9 +2721,9 @@ mod tests {
         assert_eq!(later_hunk_id, refreshed_view.hunks[0].hunk_id);
     }
 
-    #[test]
-    fn review_group_actions_reject_previous_group_id_after_snapshot_refresh_when_target_disappears()
-    {
+    #[tokio::test]
+    async fn review_group_actions_reject_previous_group_id_after_snapshot_refresh_when_target_disappears(
+    ) {
         for action in ["stage", "unstage"] {
             let path = "/repo/file.txt";
             let relative_path = "file.txt";
@@ -2709,20 +2749,22 @@ mod tests {
             let group_id = view.change_groups[0].group_id.clone();
 
             let err = match action {
-                "stage" => usecase.git_stage_review_group(
-                    "/repo",
-                    relative_path,
-                    section,
-                    "head",
-                    &group_id,
-                ),
-                "unstage" => usecase.git_unstage_review_group(
-                    "/repo",
-                    relative_path,
-                    section,
-                    "head",
-                    &group_id,
-                ),
+                "stage" => {
+                    usecase
+                        .git_stage_review_group("/repo", relative_path, section, "head", &group_id)
+                        .await
+                }
+                "unstage" => {
+                    usecase
+                        .git_unstage_review_group(
+                            "/repo",
+                            relative_path,
+                            section,
+                            "head",
+                            &group_id,
+                        )
+                        .await
+                }
                 _ => unreachable!(),
             }
             .unwrap_err();
@@ -2740,8 +2782,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn review_group_actions_report_missing_hunk_for_stage_and_unstage() {
+    #[tokio::test]
+    async fn review_group_actions_report_missing_hunk_for_stage_and_unstage() {
         for action in ["stage", "unstage"] {
             let path = "/repo/file.txt";
             let code = Arc::new(
@@ -2761,16 +2803,21 @@ mod tests {
                 code,
             );
 
-            let err =
-                match action {
-                    "stage" => usecase
-                        .git_stage_review_group("/repo", "file.txt", "changes", "head", "g:0"),
-                    "unstage" => usecase
-                        .git_unstage_review_group("/repo", "file.txt", "changes", "head", "g:0"),
-                    _ => unreachable!(),
+            let err = match action {
+                "stage" => {
+                    usecase
+                        .git_stage_review_group("/repo", "file.txt", "changes", "head", "g:0")
+                        .await
                 }
-                .unwrap_err()
-                .to_string();
+                "unstage" => {
+                    usecase
+                        .git_unstage_review_group("/repo", "file.txt", "changes", "head", "g:0")
+                        .await
+                }
+                _ => unreachable!(),
+            }
+            .unwrap_err()
+            .to_string();
 
             assert!(
                 err.contains("review hunk not found: 99"),
@@ -2779,8 +2826,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn review_target_rejects_invalid_and_empty_paths() {
+    #[tokio::test]
+    async fn review_target_rejects_invalid_and_empty_paths() {
         for raw in ["../secret.txt", "src/../secret.txt", "/etc/passwd", "/"] {
             let err = resolve_review_target("/repo", raw).unwrap_err().to_string();
             assert!(
@@ -2793,8 +2840,8 @@ mod tests {
         assert!(err.contains("empty review target path"));
     }
 
-    #[test]
-    fn review_target_must_belong_to_snapshot() {
+    #[tokio::test]
+    async fn review_target_must_belong_to_snapshot() {
         let snapshot = head_review_snapshot(
             ReviewBase::Head,
             &snapshot_with_single_status(1, "tracked.txt", "none", "modified"),
@@ -2812,8 +2859,8 @@ mod tests {
         assert!(err.contains("review target is not in snapshot"));
     }
 
-    #[test]
-    fn review_snapshot_contains_target_rejects_disallowed_sections_and_statuses() {
+    #[tokio::test]
+    async fn review_snapshot_contains_target_rejects_disallowed_sections_and_statuses() {
         let branch_snapshot = ReviewSnapshotDto {
             version: 1,
             stale: false,
@@ -2878,8 +2925,8 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn review_blob_mime_mapping_lives_in_usecase() {
+    #[tokio::test]
+    async fn review_blob_mime_mapping_lives_in_usecase() {
         assert_eq!(review_blob_mime_for_path("assets/LOGO.PNG"), "image/png");
         assert_eq!(review_blob_mime_for_path("photo.jpg"), "image/jpeg");
         assert_eq!(review_blob_mime_for_path("photo.jpeg"), "image/jpeg");

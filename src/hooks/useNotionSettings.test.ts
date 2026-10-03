@@ -344,6 +344,13 @@ describe("useNotionSettings", () => {
 			finishSave();
 			await saving;
 		});
+		expect(result.current.isDirty).toBe(true);
+		act(() =>
+			states.publish(target("/repo"), {
+				...config("other"),
+				api_token: "saved",
+			}),
+		);
 		expect(result.current.isDirty).toBe(false);
 		act(() =>
 			states.publish(target("/repo"), {

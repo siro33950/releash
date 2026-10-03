@@ -122,6 +122,16 @@ impl AgentSessionLifecycleUsecase {
         }
     }
 
+    pub(crate) async fn terminal_presence(
+        &self,
+        id: &str,
+    ) -> Result<ManagedPtyPresence, AgentSessionLifecycleUsecaseError> {
+        let session = self.required(id).await?;
+        self.terminal
+            .presence(&session.session().terminal_surface_owner())
+            .map_err(AgentSessionLifecycleUsecaseError::Terminal)
+    }
+
     pub(crate) async fn open(
         &self,
         agent_session_id: &str,
@@ -350,6 +360,23 @@ impl AgentSessionLifecycleUsecase {
             .map_err(map_workflow_error)?;
         self.notify_worktree(session.session().workspace().as_str());
         Ok(AgentSessionOpenOutcome::Restored)
+    }
+
+    pub(crate) async fn restore_selection(
+        &self,
+        id: &str,
+        rows: u16,
+        cols: u16,
+        request: &str,
+        workspace_query: &dyn crate::usecase::workspace_tree::WorkspaceQueryService,
+    ) -> Result<String, AgentSessionLifecycleUsecaseError> {
+        self.restore(id, rows, cols, request).await?;
+        let session = self.required(id).await?;
+        workspace_query
+            .session_node_id(session.session().workspace(), id)
+            .await
+            .map_err(map_workflow_error)?
+            .ok_or(AgentSessionLifecycleUsecaseError::Corrupt)
     }
 
     pub(crate) async fn archive(

@@ -72,6 +72,7 @@ export function useNotionSettings(
 	);
 	const [drafts, setDrafts] = useState<Map<string, NotionRepoDraft>>(new Map());
 	const [errors, setErrors] = useState<Map<string, string>>(new Map());
+	const pendingDrafts = useRef(new Map<string, NotionRepoDraft>());
 	const draftsRef = useRef(drafts);
 	draftsRef.current = drafts;
 	const configsRef = useRef(configs);
@@ -98,7 +99,10 @@ export function useNotionSettings(
 						next.delete(path);
 						return next;
 					});
-					if (draft && draftChanged(draft, previous)) return;
+					const pending = pendingDrafts.current.get(path);
+					if (draft && draft !== pending && draftChanged(draft, previous))
+						return;
+					pendingDrafts.current.delete(path);
 					setDrafts((prev) => new Map(prev).set(path, configToDraft(config)));
 				},
 				(error) =>
@@ -196,17 +200,11 @@ export function useNotionSettings(
 
 		for (const [path, draft] of currentDrafts) {
 			if (draft.markedForDelete) {
+				pendingDrafts.current.set(path, draft);
 				promises.push(
-					invoke("delete_notion_config", { repoPath: path }).then(() => {
-						configsRef.current = new Map(configsRef.current).set(path, null);
-						setConfigs(configsRef.current);
-						if (draftsRef.current.get(path) === draft) {
-							draftsRef.current = new Map(draftsRef.current).set(
-								path,
-								configToDraft(null),
-							);
-							setDrafts(draftsRef.current);
-						}
+					invoke("delete_notion_config", { repoPath: path }).catch((error) => {
+						pendingDrafts.current.delete(path);
+						throw error;
 					}),
 				);
 				continue;
@@ -219,20 +217,16 @@ export function useNotionSettings(
 				JSON.stringify(draft.propertyMapping) !==
 					JSON.stringify(original.propertyMapping);
 			if (changed && draft.apiToken && draft.databaseId) {
+				pendingDrafts.current.set(path, draft);
 				promises.push(
 					invoke("save_notion_config", {
 						repoPath: path,
 						apiToken: draft.apiToken,
 						databaseId: draft.databaseId,
 						propertyMapping: draft.propertyMapping,
-					}).then(() => {
-						const config = {
-							api_token: draft.apiToken,
-							database_id: draft.databaseId,
-							property_mapping: draft.propertyMapping,
-						};
-						configsRef.current = new Map(configsRef.current).set(path, config);
-						setConfigs(configsRef.current);
+					}).catch((error) => {
+						pendingDrafts.current.delete(path);
+						throw error;
 					}),
 				);
 			}

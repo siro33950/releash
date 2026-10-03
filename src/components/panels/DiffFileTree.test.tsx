@@ -424,6 +424,28 @@ describe("DiffFileTree", () => {
 			});
 		});
 
+		it("clipboard の失敗の原因を画面へ通知する", async () => {
+			const writeText = vi
+				.fn()
+				.mockRejectedValue(new Error("clipboard denied"));
+			Object.assign(navigator, { clipboard: { writeText } });
+			const notice = vi.fn();
+			const log = vi.spyOn(console, "error").mockImplementation(() => {});
+			window.addEventListener("releash-client-error", notice);
+			try {
+				renderTree({
+					changesTree: [fileNode("src/app.tsx", "app.tsx")],
+					changesFileCount: 1,
+				});
+				fireEvent.contextMenu(screen.getByText("app.tsx"));
+				fireEvent.click(await screen.findByText("Copy Relative Path"));
+				await waitFor(() => expect(notice).toHaveBeenCalled());
+				expect(notice.mock.calls[0][0].detail).toBe("clipboard denied");
+			} finally {
+				window.removeEventListener("releash-client-error", notice);
+				log.mockRestore();
+			}
+		});
 		it("should copy relative path to clipboard when 'Copy Relative Path' is clicked", async () => {
 			const writeText = vi.fn().mockResolvedValue(undefined);
 			Object.assign(navigator, {

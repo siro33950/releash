@@ -133,9 +133,11 @@ where
     F: std::future::Future<Output = Result<T, CliError>>,
 {
     let data_dir = data_dir.to_path_buf();
-    match tokio::task::spawn_blocking(move || request_classified(&data_dir, api_request))
-        .await
-        .map_err(|error| CliError::Other(format!("local API request task failed: {error}")))?
+    match crate::common::operation_context::spawn_blocking(move || {
+        request_classified(&data_dir, api_request)
+    })
+    .await
+    .map_err(|error| CliError::Other(format!("local API request task failed: {error}")))?
     {
         Ok(value) => Ok(value),
         Err(ApiRequestError::Unavailable) => fallback().await,

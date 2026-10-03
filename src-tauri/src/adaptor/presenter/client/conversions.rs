@@ -88,6 +88,7 @@ impl TryFrom<crate::usecase::agent_session::AgentSessionItemDto> for wire::Agent
             transcript_ref: value.transcript_ref.map(cv).transpose()?,
             operations: Some(cv(value.operations)?),
             last_exit_abnormal: Some(cv(value.last_exit_abnormal)?),
+            terminal_presence: value.terminal_presence,
         })
     }
 }
@@ -130,43 +131,6 @@ impl TryFrom<String> for wire::AgentSessionLifecycleDto {
 }
 
 impl TryFrom<&str> for wire::AgentSessionLifecycleDto {
-    type Error = String;
-    fn try_from(value: &str) -> Result<Self, String> {
-        cv(value.to_owned())
-    }
-}
-
-impl TryFrom<crate::adaptor::presenter::agent_session::AgentSessionOpenResponse>
-    for wire::AgentSessionOpenResponse
-{
-    type Error = String;
-    fn try_from(
-        value: crate::adaptor::presenter::agent_session::AgentSessionOpenResponse,
-    ) -> Result<Self, String> {
-        Ok(Self { value: Some(match value { crate::adaptor::presenter::agent_session::AgentSessionOpenResponse::Attached => wire::agent_session_open_response::Value::Attached as i32, crate::adaptor::presenter::agent_session::AgentSessionOpenResponse::Resumed => wire::agent_session_open_response::Value::Resumed as i32, crate::adaptor::presenter::agent_session::AgentSessionOpenResponse::Restored => wire::agent_session_open_response::Value::Restored as i32, crate::adaptor::presenter::agent_session::AgentSessionOpenResponse::Paused => wire::agent_session_open_response::Value::Paused as i32, crate::adaptor::presenter::agent_session::AgentSessionOpenResponse::Indeterminate => wire::agent_session_open_response::Value::Indeterminate as i32, crate::adaptor::presenter::agent_session::AgentSessionOpenResponse::GarbageCollected => wire::agent_session_open_response::Value::GarbageCollected as i32 }) })
-    }
-}
-
-impl TryFrom<String> for wire::AgentSessionOpenResponse {
-    type Error = String;
-    fn try_from(value: String) -> Result<Self, String> {
-        Ok(Self {
-            value: Some(match value.as_str() {
-                "attached" => wire::agent_session_open_response::Value::Attached as i32,
-                "resumed" => wire::agent_session_open_response::Value::Resumed as i32,
-                "restored" => wire::agent_session_open_response::Value::Restored as i32,
-                "paused" => wire::agent_session_open_response::Value::Paused as i32,
-                "indeterminate" => wire::agent_session_open_response::Value::Indeterminate as i32,
-                "garbage_collected" => {
-                    wire::agent_session_open_response::Value::GarbageCollected as i32
-                }
-                _ => return Err(format!("Invalid AgentSessionOpenResponse: {value}")),
-            }),
-        })
-    }
-}
-
-impl TryFrom<&str> for wire::AgentSessionOpenResponse {
     type Error = String;
     fn try_from(value: &str) -> Result<Self, String> {
         cv(value.to_owned())
@@ -2471,6 +2435,7 @@ impl TryFrom<crate::adaptor::presenter::agent_session::ProviderAvailabilityItemR
             display_name: Some(cv(value.display_name)?),
             default_executable: Some(cv(value.default_executable)?),
             configured_executable: value.configured_executable.map(cv).transpose()?,
+            configuration_revision: Some(value.configuration_revision),
             effective_executable: Some(cv(value.effective_executable)?),
             available: Some(cv(value.available)?),
             resolved_executable: value.resolved_executable.map(cv).transpose()?,
@@ -4138,3 +4103,12 @@ impl TryFrom<&str> for wire::NodeProcessPresence {
 #[cfg(test)]
 #[path = "conversions_test.rs"]
 mod conversions_tests;
+
+impl From<crate::usecase::agent_session::SessionSelection> for wire::SessionSelection {
+    fn from(value: crate::usecase::agent_session::SessionSelection) -> Self {
+        Self {
+            agent_session_id: Some(value.agent_session_id),
+            node_id: Some(value.node_id),
+        }
+    }
+}

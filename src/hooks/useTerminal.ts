@@ -288,7 +288,7 @@ export function useTerminal(
 			pendingPerformanceInputSequences = [];
 		};
 		const startupInput = new StartupInputBuffer((dropped) => {
-			console.warn(
+			onTerminalErrorRef.current?.(
 				`Discarding ${dropped.length} chars of terminal input typed before startup: buffer limit reached`,
 			);
 		});
@@ -500,7 +500,11 @@ export function useTerminal(
 						}
 					},
 					setRunning: (running) => {
+						const wasRunning = isRunningRef.current;
 						isRunningRef.current = running;
+						terminal.options.disableStdin = !running;
+						if (!running && (wasRunning || !hasSnapshot))
+							terminal.write("\r\nTerminal process is not running.\r\n");
 					},
 					completeInitialSnapshot: () => {
 						if (hasSnapshot) return;
@@ -513,6 +517,10 @@ export function useTerminal(
 						const buffered = startupInput.markDone();
 						if (isRunningRef.current) {
 							for (const chunk of buffered) deliverInput(chunk);
+						} else if (buffered.length > 0) {
+							onTerminalErrorRef.current?.(
+								"Terminal failed to start; buffered input could not be sent",
+							);
 						}
 					},
 					takeOutputTraceSequence: () =>
@@ -637,7 +645,10 @@ export function useTerminal(
 			if (!isMounted) return;
 			startupFailure = null;
 			onTerminalErrorRef.current?.(null);
-			if (!isRunningRef.current) return;
+			if (!isRunningRef.current) {
+				onTerminalErrorRef.current?.("Terminal process is not running");
+				return;
+			}
 			onTerminalReadyRef.current?.(streamSessionKey);
 
 			// 初回fit()が不正確だった場合のセーフティネット:
@@ -766,7 +777,10 @@ export function useTerminal(
 				startupInput.push(data);
 				return;
 			}
-			if (!isRunningRef.current) return;
+			if (!isRunningRef.current) {
+				onTerminalErrorRef.current?.("Terminal process is not running");
+				return;
+			}
 			deliverInput(data);
 		};
 		inputDispatchRef.current = dispatchInput;

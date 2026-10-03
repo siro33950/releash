@@ -3773,8 +3773,8 @@ describe("useTerminal", () => {
 	});
 
 	describe("startup input buffer", () => {
-		it("1KiB超過分は警告つきで破棄しsnapshot後に超過前分だけ送出する", async () => {
-			const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+		it("1KiB超過分は画面へ失敗を通知して破棄しsnapshot後に超過前分だけ送出する", async () => {
+			const onTerminalError = vi.fn();
 			const attachResolvers: Array<() => void> = [];
 			const baseImplementation = mockInvoke.getMockImplementation();
 			mockInvoke.mockImplementation(
@@ -3788,14 +3788,14 @@ describe("useTerminal", () => {
 				},
 			);
 
-			renderHook(() => useTerminal(containerRef));
+			renderHook(() => useTerminal(containerRef, { onTerminalError }));
 			await waitFor(() => {
 				expect(mockStreams).toHaveLength(1);
 			});
 
 			mockOnDataCallback("a".repeat(1024));
 			mockOnDataCallback("x");
-			expect(warnSpy).toHaveBeenCalledWith(
+			expect(onTerminalError).toHaveBeenCalledWith(
 				expect.stringContaining("Discarding 1 chars"),
 			);
 
@@ -3828,7 +3828,6 @@ describe("useTerminal", () => {
 				"write_terminal_surface",
 				expect.objectContaining({ data: "x" }),
 			);
-			warnSpy.mockRestore();
 		});
 
 		it("exited snapshotではbuffer済み入力を送出せず破棄する", async () => {
@@ -3880,7 +3879,13 @@ describe("useTerminal", () => {
 				"write_terminal_surface",
 				expect.anything(),
 			);
-			expect(onTerminalError).toHaveBeenCalledWith(null);
+			expect(onTerminalError).toHaveBeenCalledWith(
+				"Terminal failed to start; buffered input could not be sent",
+			);
+			expect(mockTerminalInstance.options.disableStdin).toBe(true);
+			expect(mockTerminalInstance.write).toHaveBeenCalledWith(
+				"\r\nTerminal process is not running.\r\n",
+			);
 			expect(onTerminalReady).not.toHaveBeenCalled();
 		});
 	});

@@ -1396,10 +1396,6 @@ impl WorkflowRuntimeHost {
         error: &WorkflowRuntimeError,
         failed: &mut Vec<crate::usecase::workflow::node_startup::FailedNodeStart>,
     ) -> Result<(), WorkflowRuntimeError> {
-        self.queue.failures.observed(
-            &crate::usecase::failure::FailureKey::new("workflow_node_start", node_execution_id),
-            crate::usecase::failure::WorkFailure::from_error(error),
-        );
         let kind = crate::usecase::failure::Failure::from(error);
         if crate::usecase::failure::next_attempt(kind).is_some() {
             failed.push(crate::usecase::workflow::node_startup::FailedNodeStart {
@@ -1436,139 +1432,139 @@ impl WorkflowRuntimeHost {
         rollback_failure
     }
 
-    async fn spawn_command_execution(
-        &self,
-        app: &WorkflowRuntimeDependencies,
+    fn spawn_command_execution<'a>(
+        &'a self,
+        app: &'a WorkflowRuntimeDependencies,
         mut input: CommandExecutionInput,
-    ) -> Result<(), WorkflowRuntimeError> {
-        let command_admission = self.command_admission.read().await;
-        if !command_admission.accepts_start() {
-            log::warn!(
-                "workflow {}: command {} start was not applied: application is shutting down",
-                input.execution_id,
-                input.node_execution_id
-            );
-            return Ok(());
-        }
-        let raw_command = input.raw_command.take().ok_or_else(|| {
-            WorkflowRuntimeError::InvalidState(format!(
-                "raw command for node execution '{}' is unavailable",
-                input.node_execution_id
-            ))
-        })?;
-        let definition_env = std::mem::take(&mut input.definition_env);
-        let display_command = {
-            let secrets = secret_source::collect_configured_secret_values(app);
-            workflow_secret_masker::mask_sensitive_text(&raw_command, &secrets)
-        };
-        // Keep the execution lock from the final current-node check through process registration.
-        // A concurrent stop therefore has only two observable orders: it wins first and no process
-        // is spawned, or the process is registered first and stop can always find and kill it.
-        let spawn_result = {
-            let commit_lock = self.commit_lock(&input.execution_id).await;
-            let _commit_guard = commit_lock.lock().await;
-            let Some(execution) = self.load_current_command(app, &input).await? else {
-                return Ok(());
-            };
-            if !execution
-                .node_execution(&input.node_execution_id)
-                .is_some_and(|node| node.can_start_process())
-                || self
-                    .node_processes
-                    .active_commands
-                    .lock()
-                    .expect("command process registry poisoned")
-                    .contains_key(&input.node_execution_id)
-            {
+    ) -> futures_util::future::BoxFuture<'a, Result<(), WorkflowRuntimeError>> {
+        Box::pin(async move {
+            let command_admission = self.command_admission.read().await;
+            if !command_admission.accepts_start() {
                 log::warn!(
-                    "workflow {}: command {} start was not applied: node was already started",
+                    "workflow {}: command {} start was not applied: application is shutting down",
                     input.execution_id,
                     input.node_execution_id
                 );
                 return Ok(());
             }
+            let raw_command = input.raw_command.take().ok_or_else(|| {
+                WorkflowRuntimeError::InvalidState(format!(
+                    "raw command for node execution '{}' is unavailable",
+                    input.node_execution_id
+                ))
+            })?;
+            let definition_env = std::mem::take(&mut input.definition_env);
+            let display_command = {
+                let secrets = secret_source::collect_configured_secret_values(app);
+                workflow_secret_masker::mask_sensitive_text(&raw_command, &secrets)
+            };
+            // Keep the execution lock from the final current-node check through process registration.
+            // A concurrent stop therefore has only two observable orders: it wins first and no process
+            // is spawned, or the process is registered first and stop can always find and kill it.
+            let spawn_result = {
+                let commit_lock = self.commit_lock(&input.execution_id).await;
+                let _commit_guard = commit_lock.lock().await;
+                let Some(execution) = self.load_current_command(app, &input).await? else {
+                    return Ok(());
+                };
+                if !execution
+                    .node_execution(&input.node_execution_id)
+                    .is_some_and(|node| node.can_start_process())
+                    || self
+                        .node_processes
+                        .active_commands
+                        .lock()
+                        .expect("command process registry poisoned")
+                        .contains_key(&input.node_execution_id)
+                {
+                    log::warn!(
+                        "workflow {}: command {} start was not applied: node was already started",
+                        input.execution_id,
+                        input.node_execution_id
+                    );
+                    return Ok(());
+                }
 
-            let spawn_result = workflow_command_runner::spawn_shell_command(
-                &input.worktree_path,
-                &raw_command,
-                command_env(&input, definition_env),
-                "workflow command",
-                workflow_command_runner::OutputLimit {
-                    max_bytes: workflow_output_limit::MAX_OUTPUT_SIZE,
-                    truncation_marker: workflow_output_limit::TRUNCATION_MARKER,
-                },
-            );
-            if let Ok(running) = &spawn_result {
-                self.node_processes
-                    .active_commands
-                    .lock()
-                    .expect("command process registry poisoned")
-                    .insert(input.node_execution_id.clone(), running.handle());
-                self.active_command_executions
-                    .lock()
-                    .await
-                    .insert(input.node_execution_id.clone(), input.execution_id.clone());
-            }
-            spawn_result
-        };
-        drop(raw_command);
+                let spawn_result = workflow_command_runner::spawn_shell_command(
+                    &input.worktree_path,
+                    &raw_command,
+                    command_env(&input, definition_env),
+                    "workflow command",
+                    workflow_command_runner::OutputLimit {
+                        max_bytes: workflow_output_limit::MAX_OUTPUT_SIZE,
+                        truncation_marker: workflow_output_limit::TRUNCATION_MARKER,
+                    },
+                );
+                if let Ok(running) = &spawn_result {
+                    self.node_processes
+                        .active_commands
+                        .lock()
+                        .expect("command process registry poisoned")
+                        .insert(input.node_execution_id.clone(), running.handle());
+                    self.active_command_executions
+                        .lock()
+                        .await
+                        .insert(input.node_execution_id.clone(), input.execution_id.clone());
+                }
+                spawn_result
+            };
+            drop(raw_command);
 
-        let running = match spawn_result {
-            Ok(running) => running,
-            Err(CommandRunnerError::Spawn(error)) => {
-                // The caller converts runtime activation failures into a crash checkpoint after
-                // releasing any activation lock. Interrupting here would recurse into that lock
-                // for fanout command children.
-                return Err(WorkflowRuntimeError::SessionStore(format!(
-                    "failed to spawn command: {error}"
-                )));
+            let running = match spawn_result {
+                Ok(running) => running,
+                Err(CommandRunnerError::Spawn(error)) => {
+                    // The caller converts runtime activation failures into a crash checkpoint after
+                    // releasing any activation lock. Interrupting here would recurse into that lock
+                    // for fanout command children.
+                    return Err(WorkflowRuntimeError::SessionStore(format!(
+                        "failed to spawn command: {error}"
+                    )));
+                }
+                Err(error) => {
+                    return Err(WorkflowRuntimeError::SessionStore(format!(
+                        "failed to prepare command: {error}"
+                    )));
+                }
+            };
+            match self
+                .commit_command_spawned(app, &input, display_command)
+                .await
+            {
+                Ok(true) => {}
+                Ok(false) => {
+                    running.handle().request_shutdown();
+                    self.node_processes
+                        .active_commands
+                        .lock()
+                        .expect("command process registry poisoned")
+                        .remove(&input.node_execution_id);
+                    self.active_command_executions
+                        .lock()
+                        .await
+                        .remove(&input.node_execution_id);
+                    return Ok(());
+                }
+                Err(error) => {
+                    running.handle().request_shutdown();
+                    self.node_processes
+                        .active_commands
+                        .lock()
+                        .expect("command process registry poisoned")
+                        .remove(&input.node_execution_id);
+                    self.active_command_executions
+                        .lock()
+                        .await
+                        .remove(&input.node_execution_id);
+                    return Err(error);
+                }
             }
-            Err(error) => {
-                return Err(WorkflowRuntimeError::SessionStore(format!(
-                    "failed to prepare command: {error}"
-                )));
-            }
-        };
-        match self
-            .commit_command_spawned(app, &input, display_command)
-            .await
-        {
-            Ok(true) => {}
-            Ok(false) => {
-                running.handle().request_shutdown();
-                self.node_processes
-                    .active_commands
-                    .lock()
-                    .expect("command process registry poisoned")
-                    .remove(&input.node_execution_id);
-                self.active_command_executions
-                    .lock()
-                    .await
-                    .remove(&input.node_execution_id);
-                return Ok(());
-            }
-            Err(error) => {
-                running.handle().request_shutdown();
-                self.node_processes
-                    .active_commands
-                    .lock()
-                    .expect("command process registry poisoned")
-                    .remove(&input.node_execution_id);
-                self.active_command_executions
-                    .lock()
-                    .await
-                    .remove(&input.node_execution_id);
-                return Err(error);
-            }
-        }
-        let driver = self.clone();
-        let observer_app = app.clone();
-        let node_execution_id = input.node_execution_id.clone();
-        let still_current = self.command_execution_still_current(app, &input).await;
-        let observer_node_execution_id = node_execution_id.clone();
-        let runtime_handle = tokio::runtime::Handle::current();
-        let observer = tokio::task::spawn_blocking(move || {
-            runtime_handle.block_on(async move {
+            let driver = self.clone();
+            let observer_app = app.clone();
+            let node_execution_id = input.node_execution_id.clone();
+            let still_current = self.command_execution_still_current(app, &input).await;
+            let observer_node_execution_id = node_execution_id.clone();
+            let mut observers = self.command_completion_observers.lock().await;
+            let observer = tokio::spawn(async move {
                 driver
                     .observe_command_completion(&observer_app, input, running)
                     .await;
@@ -1578,17 +1574,15 @@ impl WorkflowRuntimeHost {
                     .await
                     .remove(&observer_node_execution_id);
             });
-        });
-        self.command_completion_observers
-            .lock()
-            .await
-            .insert(node_execution_id.clone(), observer);
-        drop(command_admission);
-        if !still_current {
-            self.shutdown_active_command_execution(&node_execution_id)
-                .await;
-        }
-        Ok(())
+            observers.insert(node_execution_id.clone(), observer);
+            drop(observers);
+            drop(command_admission);
+            if !still_current {
+                self.shutdown_active_command_execution(&node_execution_id)
+                    .await;
+            }
+            Ok(())
+        })
     }
 
     async fn observe_command_completion(

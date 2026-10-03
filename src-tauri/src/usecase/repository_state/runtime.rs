@@ -97,7 +97,7 @@ pub(crate) mod tests_support {
             scanner: Arc<dyn RepositoryScanner>,
             repo_path: String,
         ) -> Result<RepositorySnapshotParts, RepositoryStateError> {
-            tokio::task::spawn_blocking(move || scanner.scan(&repo_path))
+            crate::common::operation_context::spawn_blocking(move || scanner.scan(&repo_path))
                 .await
                 .map_err(|err| RepositoryStateError::Watcher(format!("test scan failed: {err}")))?
         }
@@ -107,9 +107,11 @@ pub(crate) mod tests_support {
             scanner: Arc<dyn RepositoryScanner>,
             repo_path: String,
         ) -> Result<Vec<Worktree>, RepositoryStateError> {
-            tokio::task::spawn_blocking(move || scanner.scan_worktrees(&repo_path))
-                .await
-                .map_err(|err| RepositoryStateError::Watcher(format!("test scan failed: {err}")))?
+            crate::common::operation_context::spawn_blocking(move || {
+                scanner.scan_worktrees(&repo_path)
+            })
+            .await
+            .map_err(|err| RepositoryStateError::Watcher(format!("test scan failed: {err}")))?
         }
     }
 

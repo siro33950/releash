@@ -181,6 +181,114 @@ pub(crate) struct RecordingReads {
     pub(crate) calls: std::sync::atomic::AtomicUsize,
 }
 
+#[test]
+fn test_監視後始末_停止失敗は保持して次のreconcileで止め直す() {
+    let files = Arc::new(crate::usecase::watcher::watcher_tests::SubscriptionFiles::default());
+    let subscriptions = StateSubscriptionUsecase::new_with_output(
+        Arc::new(RecordingOutput::default()),
+        crate::test_support::state_subscription::pending_read_driver(),
+    )
+    .with_reads(
+        Arc::new(RecordingReads {
+            calls: Default::default(),
+        }),
+        Some(Arc::new(crate::usecase::watcher::WatcherUsecase::new(
+            None,
+            files.clone(),
+        ))),
+        vec![],
+        String::new(),
+    );
+    let target = SubscriptionTarget::ReviewThreads("/repo".into());
+    subscriptions.open_client("client".into()).unwrap();
+    subscriptions.start("client", &target).unwrap();
+    assert!(subscriptions.reconcile_watches().is_empty());
+    assert_eq!(subscriptions.test_watches().len(), 1);
+    files
+        .fail_stop
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    subscriptions.stop("client", &target).unwrap();
+    assert_eq!(subscriptions.test_watches().len(), 1);
+    files
+        .fail_stop
+        .store(false, std::sync::atomic::Ordering::SeqCst);
+    assert!(subscriptions.reconcile_watches().is_empty());
+    assert!(subscriptions.test_watches().is_empty());
+    assert!(files.active.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn test_監視失敗_読めたrepositoryを残し対象要素だけ失敗にする() {
+    use crate::usecase::fetched::Fetched;
+    use crate::usecase::workspace_tree::{WorkspaceList, WorkspaceListRepository};
+    let subscriptions = StateSubscriptionUsecase::new_with_output(
+        Arc::new(RecordingOutput::default()),
+        crate::test_support::state_subscription::pending_read_driver(),
+    )
+    .with_reads(
+        Arc::new(RecordingReads {
+            calls: Default::default(),
+        }),
+        None,
+        vec![],
+        String::new(),
+    );
+    let list = WorkspaceList {
+        repositories: vec![
+            WorkspaceListRepository {
+                path: "/failed".into(),
+                worktrees: Fetched::ready(vec![]),
+            },
+            WorkspaceListRepository {
+                path: "/healthy".into(),
+                worktrees: Fetched::ready(vec![]),
+            },
+        ],
+    };
+    let result = subscriptions
+        .apply_watch_failures(
+            &SubscriptionTarget::Workspaces,
+            Ok(StateValue::Workspaces(list)),
+            vec![(
+                WatchRequirement::Git("/failed".into()),
+                StateReadError::from_error(crate::usecase::watcher::UsecaseError::File(
+                    "watch failed".into(),
+                )),
+            )],
+        )
+        .await
+        .unwrap();
+    let StateValue::Workspaces(list) = result else {
+        panic!("workspaces expected")
+    };
+    assert!(list.repositories[0].worktrees.value.is_some());
+    assert!(list.repositories[0]
+        .worktrees
+        .error
+        .as_ref()
+        .unwrap()
+        .message
+        .contains("watch failed"));
+    assert!(list.repositories[1].worktrees.error.is_none());
+    let recovered = subscriptions
+        .apply_watch_failures(
+            &SubscriptionTarget::Workspaces,
+            Ok(StateValue::Workspaces(WorkspaceList {
+                repositories: vec![WorkspaceListRepository {
+                    path: "/failed".into(),
+                    worktrees: Fetched::ready(vec![]),
+                }],
+            })),
+            vec![],
+        )
+        .await
+        .unwrap();
+    let StateValue::Workspaces(list) = recovered else {
+        panic!("workspaces expected")
+    };
+    assert!(list.repositories[0].worktrees.error.is_none());
+}
+
 #[async_trait::async_trait]
 impl StateSubscriptionRead for RecordingReads {
     async fn read(&self, target: &SubscriptionTarget) -> Result<StateValue, StateReadError> {
@@ -189,7 +297,7 @@ impl StateSubscriptionRead for RecordingReads {
             SubscriptionTarget::RepositoryPaths => {
                 StateValue::RepositoryPaths(vec!["/repo".into()])
             }
-            _ => StateValue::SessionNode(Some("node".into())),
+            _ => StateValue::NodeDetail(None),
         })
     }
 
@@ -210,7 +318,7 @@ async fn test_購読手順_初回読取を共有し変化で再読取して最�
         crate::test_support::state_subscription::pending_read_driver(),
     )
     .with_reads(reads.clone(), None, vec![], String::new());
-    let target = SubscriptionTarget::SessionNode("/repo".into(), "node".into());
+    let target = SubscriptionTarget::NodeDetail("/repo".into(), "node".into());
     usecase.open_client("first".into()).unwrap();
     usecase.open_client("second".into()).unwrap();
 
@@ -264,7 +372,7 @@ async fn test_購読手順_任意の対象で配信完了を待ち一度だけ�
         crate::test_support::state_subscription::pending_read_driver(),
     )
     .with_reads(reads.clone(), None, vec![], String::new());
-    let target = SubscriptionTarget::SessionNode("/repo".into(), "node".into());
+    let target = SubscriptionTarget::NodeDetail("/repo".into(), "node".into());
     usecase.open_client("client".into()).unwrap();
     usecase
         .start_subscription("client", &target, &FakeDelivery)
@@ -298,8 +406,8 @@ async fn test_配信完了待機_待機対象以外の対象にも同じ変化�
         crate::test_support::state_subscription::pending_read_driver(),
     )
     .with_reads(reads.clone(), None, vec![], String::new());
-    let waited = SubscriptionTarget::SessionNode("/repo".into(), "one".into());
-    let other = SubscriptionTarget::SessionNode("/repo".into(), "two".into());
+    let waited = SubscriptionTarget::NodeDetail("/repo".into(), "one".into());
+    let other = SubscriptionTarget::NodeDetail("/repo".into(), "two".into());
     usecase.open_client("client".into()).unwrap();
     usecase
         .start_subscription("client", &waited, &FakeDelivery)
@@ -368,7 +476,7 @@ impl StateSubscriptionRead for GatedReads {
             self.blocked.notify_one();
             self.release.notified().await;
         }
-        Ok(StateValue::SessionNode(None))
+        Ok(StateValue::NodeDetail(None))
     }
 
     async fn refresh_external(&self, _: &SubscriptionTarget) -> Result<(), StateReadError> {
@@ -715,7 +823,7 @@ impl StateSubscriptionRead for RetainingReads {
         Ok(())
     }
     async fn read(&self, _: &SubscriptionTarget) -> Result<StateValue, StateReadError> {
-        Ok(StateValue::SessionNode(None))
+        Ok(StateValue::NodeDetail(None))
     }
     fn release_external(&self, target: &SubscriptionTarget) {
         self.retained.lock().remove(target);
@@ -768,15 +876,16 @@ async fn test_notion購読_初回取得中にclientが閉じたら開始の対�
 }
 
 #[tokio::test]
-async fn test_notion購読_監視の更新が失敗したら開始の対象だけ解放する() {
+async fn test_notion購読_別対象の監視失敗は開始を妨げず対象へ通知する() {
     // Given
     let reads = Arc::new(RetainingReads::default());
     let watcher = Arc::new(crate::usecase::watcher::WatcherUsecase::new(
         None,
         Arc::new(crate::usecase::watcher::watcher_tests::SubscriptionFiles::default()),
     ));
+    let output = Arc::new(RecordingOutput::default());
     let subscriptions = StateSubscriptionUsecase::new_with_output(
-        Arc::new(RecordingOutput::default()),
+        output.clone(),
         crate::test_support::state_subscription::pending_read_driver(),
     )
     .with_reads(reads.clone(), Some(watcher), vec![], String::new());
@@ -795,13 +904,12 @@ async fn test_notion購読_監視の更新が失敗したら開始の対象だ�
     subscriptions.close_client("watcher");
     subscriptions.close_client("client");
     // Then
-    assert!(matches!(
-        result,
-        Err(StateReadError {
-            source: StateReadFailure::Watcher(_),
-            ..
-        })
-    ));
+    assert!(result.is_ok());
+    assert_eq!(output.failures.lock().len(), 1);
+    assert_eq!(
+        output.failures.lock()[0].0,
+        SubscriptionTarget::ReviewThreads("repo".into())
+    );
     assert!(!reads.retained.lock().contains(&target));
     assert!(reads.retained.lock().contains(&other));
     assert_eq!(*reads.releases.lock(), vec![target]);
@@ -909,8 +1017,10 @@ async fn test_外部情報の購読_Lagged後のrepository通知ではNotionとI
 #[derive(Default)]
 struct ReopeningNotionApi(std::sync::atomic::AtomicUsize);
 
+#[async_trait::async_trait]
+
 impl crate::domain::notion::NotionApiGateway for ReopeningNotionApi {
-    fn query_tasks(
+    async fn query_tasks(
         &self,
         _: &crate::domain::app_config::value_objects::NotionRepoConfig,
         _: &crate::domain::notion::NotionTaskQuery,
@@ -919,7 +1029,7 @@ impl crate::domain::notion::NotionApiGateway for ReopeningNotionApi {
             self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst),
         ))
     }
-    fn fetch_label_options(
+    async fn fetch_label_options(
         &self,
         _: &crate::domain::app_config::value_objects::NotionRepoConfig,
     ) -> Result<Vec<crate::domain::notion::NotionLabelOption>, crate::domain::notion::NotionError>
@@ -928,7 +1038,7 @@ impl crate::domain::notion::NotionApiGateway for ReopeningNotionApi {
             self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst),
         ))
     }
-    fn validate(
+    async fn validate(
         &self,
         _: &crate::domain::app_config::value_objects::NotionRepoConfig,
     ) -> Result<crate::domain::notion::NotionValidationResult, crate::domain::notion::NotionError>
@@ -979,7 +1089,7 @@ impl StateSubscriptionRead for ReopeningReads {
             self.entered.notify_one();
             self.resume.notified().await;
         }
-        self.inner.refresh_external_blocking(target)
+        self.inner.refresh_external_blocking(target).await
     }
     async fn read(&self, target: &SubscriptionTarget) -> Result<StateValue, StateReadError> {
         self.inner.read(target).await
@@ -1400,4 +1510,158 @@ impl StateSubscriptionDelivery for FakeDelivery {
     ) -> Result<(), SubscriptionError> {
         Ok(())
     }
+}
+
+struct WatchFailureReads(crate::usecase::workspace_tree::WorkspaceList);
+
+#[async_trait::async_trait]
+impl StateSubscriptionRead for WatchFailureReads {
+    async fn read(&self, target: &SubscriptionTarget) -> Result<StateValue, StateReadError> {
+        Ok(match target {
+            SubscriptionTarget::Workspaces => StateValue::Workspaces(self.0.clone()),
+            SubscriptionTarget::Workflows => StateValue::Workflows(vec![]),
+            _ => StateValue::CurrentBranch("main".into()),
+        })
+    }
+    fn repositories(&self) -> Vec<String> {
+        vec!["/failed".into(), "/healthy".into()]
+    }
+    fn workflows_dir(&self) -> String {
+        "/workflows".into()
+    }
+}
+
+#[tokio::test]
+async fn test_監視失敗_別購読で検出してもworkspacesの要素へ届け成功で解く() {
+    use crate::usecase::fetched::Fetched;
+    use crate::usecase::workspace_tree::{
+        WorkspaceList, WorkspaceListRepository, WorkspaceListWorktree,
+    };
+    // Given
+    let list = WorkspaceList {
+        repositories: vec![
+            WorkspaceListRepository {
+                path: "/failed".into(),
+                worktrees: Fetched::ready(vec![WorkspaceListWorktree {
+                    worktree: crate::domain::repository::Worktree::being_deleted(
+                        "/failed/linked",
+                        "branch".into(),
+                    ),
+                    deleting: false,
+                    dirty_count: Fetched::ready(42),
+                    merged: false,
+                    pull_request: None,
+                    pull_request_loaded: false,
+                    tree: Fetched::default(),
+                    pull_request_error: None,
+                }]),
+            },
+            WorkspaceListRepository {
+                path: "/healthy".into(),
+                worktrees: Fetched::ready(vec![]),
+            },
+        ],
+    };
+    let output = Arc::new(RecordingOutput::default());
+    let subscriptions = StateSubscriptionUsecase::new_with_output(
+        output.clone(),
+        crate::test_support::state_subscription::pending_read_driver(),
+    )
+    .with_reads(
+        Arc::new(WatchFailureReads(list.clone())),
+        None,
+        vec![],
+        String::new(),
+    );
+    let branch = SubscriptionTarget::CurrentBranch("/failed/linked".into());
+    subscriptions.open_client("client".into()).unwrap();
+    for target in [
+        &SubscriptionTarget::Workspaces,
+        &branch,
+        &SubscriptionTarget::Workflows,
+    ] {
+        subscriptions.start("client", target).unwrap();
+    }
+    // When
+    assert!(subscriptions
+        .apply_watch_failures(
+            &branch,
+            Ok(StateValue::CurrentBranch("main".into())),
+            vec![
+                (
+                    WatchRequirement::Git("/failed".into()),
+                    StateReadError::from_error(crate::usecase::watcher::UsecaseError::File(
+                        "root failed".into()
+                    ))
+                ),
+                (
+                    WatchRequirement::Git("/failed/linked".into()),
+                    StateReadError::from_error(crate::usecase::watcher::UsecaseError::File(
+                        "linked failed".into()
+                    ))
+                ),
+            ]
+        )
+        .await
+        .is_err());
+    // Then
+    let values = output.update_values.lock();
+    let StateValue::Workspaces(failed) = &values[0] else {
+        panic!("workspace list must remain a value")
+    };
+    assert_eq!(failed.repositories[1], list.repositories[1]);
+    assert!(failed.repositories[0].worktrees.error.is_some());
+    let linked = &failed.repositories[0].worktrees.value.as_ref().unwrap()[0];
+    assert_eq!(linked.dirty_count.value, Some(42));
+    assert!(linked.dirty_count.error.is_some());
+    assert!(linked.tree.error.is_some());
+    drop(values);
+    assert!(output
+        .failures
+        .lock()
+        .iter()
+        .all(|(target, _)| *target != SubscriptionTarget::Workspaces));
+    subscriptions
+        .apply_watch_failures(
+            &branch,
+            Ok(StateValue::CurrentBranch("main".into())),
+            vec![],
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        output.update_values.lock().last(),
+        Some(&StateValue::Workspaces(list.clone()))
+    );
+    let files =
+        WatchRequirement::Files("/workflows".into(), StateChangeSource::WorkflowDefinitions);
+    subscriptions
+        .apply_watch_failures(
+            &branch,
+            Ok(StateValue::CurrentBranch("main".into())),
+            vec![(
+                files,
+                StateReadError::from_error(crate::usecase::watcher::UsecaseError::File(
+                    "definitions failed".into(),
+                )),
+            )],
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        output.failures.lock().last().unwrap().0,
+        SubscriptionTarget::Workflows
+    );
+    subscriptions
+        .apply_watch_failures(
+            &branch,
+            Ok(StateValue::CurrentBranch("main".into())),
+            vec![],
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        output.update_values.lock().last(),
+        Some(&StateValue::Workflows(vec![]))
+    );
 }

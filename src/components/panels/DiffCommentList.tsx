@@ -22,6 +22,7 @@ import {
 	ReviewThreadHandoffFeedbackMessage,
 	useReviewThreadHandoff,
 } from "@/contexts/ReviewThreadHandoffContext";
+import { logClientError } from "@/lib/clientErrorNotice";
 import {
 	getThreadEndLine,
 	getThreadFilePath,
@@ -144,7 +145,7 @@ function DeleteThreadButton({
 									await onDelete(threadId);
 									setOpen(false);
 								} catch (error) {
-									console.error("Failed to delete thread:", error);
+									logClientError("Failed to delete thread:", error);
 								} finally {
 									setBusy(false);
 								}

@@ -815,15 +815,19 @@ mod tests {
             let store = Arc::new(FileReviewEventStore::default());
             let guard = acquire_worktree_file_lock(dir.path(), "wt").unwrap();
             let token = tokio_util::sync::CancellationToken::new();
-            let context = OperationContext::new(
-                expire.then(|| Deadline::new(Instant::now() + Duration::from_millis(100))),
-                Arc::new(token.clone()),
-            );
+            let (started, ready) = std::sync::mpsc::channel();
             let (sent, received) = std::sync::mpsc::channel();
             std::thread::scope(|scope| {
                 let store = store.clone();
                 let path = dir.path();
+                let cancellation = token.clone();
                 scope.spawn(move || {
+                    let started_at = Instant::now();
+                    let context = OperationContext::new(
+                        expire.then(|| Deadline::new(started_at + Duration::from_millis(100))),
+                        Arc::new(cancellation),
+                    );
+                    started.send(started_at).unwrap();
                     let result = crate::common::operation_context::sync_scope(context, || {
                         usecase(store).create_thread(
                             path,
@@ -836,11 +840,15 @@ mod tests {
                     sent.send(result).unwrap();
                 });
                 // When / Then
-                assert!(received.recv_timeout(Duration::from_millis(30)).is_err());
+                let started_at = ready.recv_timeout(Duration::from_secs(2)).unwrap();
                 if !expire {
+                    assert!(received.recv_timeout(Duration::from_millis(30)).is_err());
                     token.cancel();
                 }
                 let result = received.recv_timeout(Duration::from_secs(2)).unwrap();
+                if expire {
+                    assert!(started_at.elapsed() >= Duration::from_millis(100));
+                }
                 assert!(
                     matches!(result, Err(ReviewError::Technical(error)) if error == if expire { OperationStopped::Expired.into() } else { OperationStopped::Cancelled.into() })
                 );

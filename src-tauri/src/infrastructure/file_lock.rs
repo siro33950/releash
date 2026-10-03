@@ -1,6 +1,6 @@
 use std::fs::File;
 use std::io;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use crate::common::operation_context::{OperationContext, OperationStopped};
 
@@ -21,8 +21,11 @@ fn try_exclusive(file: &File, context: &OperationContext) -> Result<bool, LockEr
 pub fn exclusive(file: &File) -> Result<(), LockError> {
     let context = crate::common::operation_context::current();
     while !try_exclusive(file, &context)? {
-        crate::common::operation_context::sleep(&context, Duration::from_millis(10))
-            .map_err(LockError::Stopped)?;
+        crate::common::operation_context::sleep(
+            &context,
+            crate::common::retry::RetryBackoff::POLL.delay(1, 1.0),
+        )
+        .map_err(LockError::Stopped)?;
     }
     Ok(())
 }
@@ -32,7 +35,7 @@ pub async fn exclusive_async(file: &File) -> Result<(), LockError> {
     while !try_exclusive(file, &context)? {
         crate::common::operation_context::wait(
             &context,
-            tokio::time::sleep(Duration::from_millis(10)),
+            tokio::time::sleep(crate::common::retry::RetryBackoff::POLL.delay(1, 1.0)),
         )
         .await
         .map_err(LockError::Stopped)?;

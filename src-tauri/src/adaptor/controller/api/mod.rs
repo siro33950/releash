@@ -33,6 +33,14 @@ pub(crate) fn build_router(
         Arc<dyn crate::usecase::provider_lifecycle::ProviderLifecycleIngressPort>,
     >,
 ) -> Router {
+    let priority = Arc::new(client.as_ref().map_or_else(
+        || {
+            super::daemon::client_priority_interceptor(None)
+                .gate
+                .with_classifier(local_priority_level)
+        },
+        ClientApiDeps::local_priority_gate,
+    ));
     let state = LocalApiState { workflow, runtime };
     let application_router = workflow::router()
         .fallback(|| async {
@@ -44,10 +52,59 @@ pub(crate) fn build_router(
         auth::require_client,
     ));
     authenticated(
-        application_router.merge(provider_lifecycle::router(provider_lifecycle)),
+        application_router
+            .merge(provider_lifecycle::router(provider_lifecycle))
+            .layer(middleware::from_fn_with_state(priority, local_ingress)),
         token,
     )
     .merge(terminal_router)
+}
+
+fn local_priority_level(path: &str) -> Option<&'static str> {
+    Some(
+        if path == "/v1/provider-lifecycle/signals"
+            || path.ends_with("/submit")
+            || path.ends_with("/artifacts:validate")
+            || path.contains("/artifacts/")
+        {
+            "workflow"
+        } else {
+            "default"
+        },
+    )
+}
+
+async fn local_ingress(
+    axum::extract::State(priority): axum::extract::State<
+        Arc<crate::common::priority::PriorityGate>,
+    >,
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+    let operation = priority.run(
+        request,
+        |request| request.uri().path(),
+        Some(deadline),
+        |request| async move { Ok(next.run(request).await) },
+        error::ApiError::from,
+    );
+    match crate::common::operation_context::ingress(Some(deadline), async {
+        crate::common::operation_context::wait(
+            &crate::common::operation_context::current(),
+            operation,
+        )
+        .await
+    })
+    .await
+    {
+        Ok(Ok(Ok(response))) => response,
+        Ok(Ok(Err(error))) => error.into_response(),
+        Ok(Err(stopped)) | Err(stopped) => {
+            error::ApiError::from(crate::domain::failure::TechnicalFailure::from(stopped))
+                .into_response()
+        }
+    }
 }
 
 pub(crate) fn authenticated(router: Router, token: Arc<str>) -> Router {
@@ -1253,7 +1310,7 @@ pub(crate) mod test_support {
             serde_json::json!({}),
         )
         .await;
-        assert_eq!(abort.0, StatusCode::CONFLICT);
+        assert_eq!(abort.0, StatusCode::BAD_REQUEST);
         assert_eq!(abort.1["code"], "invalid_state");
 
         gateway.errors.lock().unwrap().approval = Some(WorkflowError::UnauthorizedApprovalTarget(
@@ -1570,5 +1627,127 @@ pub(crate) mod test_support {
             assert_eq!(response.0, StatusCode::BAD_REQUEST, "uri: {uri}");
             assert_eq!(response.1["code"], "invalid_request");
         }
+    }
+
+    #[test]
+    fn test_local_apiの段はoutputとhookがworkflowでその他がdefault() {
+        for path in [
+            "/v1/provider-lifecycle/signals",
+            "/v1/workflow/node-executions/node/submit",
+            "/v1/workflow/executions/execution/artifacts:validate",
+            "/v1/workflow/executions/execution/artifacts/node",
+        ] {
+            assert_eq!(local_priority_level(path), Some("workflow"));
+        }
+        for path in [
+            "/v1/workflow/executions",
+            "/v1/workflow/executions/execution/abort",
+        ] {
+            assert_eq!(local_priority_level(path), Some("default"));
+        }
+    }
+
+    async fn local_ingress_pending_server() -> (
+        std::net::SocketAddr,
+        tokio::task::JoinHandle<()>,
+        Arc<crate::common::priority::PriorityGate>,
+        tokio::sync::oneshot::Receiver<crate::common::operation_context::OperationContext>,
+        tokio_util::sync::CancellationToken,
+    ) {
+        let gate = Arc::new(
+            super::super::daemon::client_priority_interceptor(None)
+                .gate
+                .with_classifier(local_priority_level),
+        );
+        let (sender, receiver) = tokio::sync::oneshot::channel();
+        let sender = Arc::new(Mutex::new(Some(sender)));
+        let stopped = tokio_util::sync::CancellationToken::new();
+        let signal = stopped.clone();
+        let router = Router::new()
+            .route(
+                "/pending",
+                axum::routing::get(move || {
+                    let sender = sender.clone();
+                    let guard = signal.clone().drop_guard();
+                    async move {
+                        let _guard = guard;
+                        sender
+                            .lock()
+                            .unwrap()
+                            .take()
+                            .unwrap()
+                            .send(crate::common::operation_context::current())
+                            .ok()
+                            .unwrap();
+                        std::future::pending::<()>().await;
+                        StatusCode::OK
+                    }
+                }),
+            )
+            .layer(middleware::from_fn_with_state(gate.clone(), local_ingress));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, router).await.unwrap();
+        });
+        (address, server, gate, receiver, stopped)
+    }
+
+    #[tokio::test]
+    async fn test_local_apiの実接続切断で処理と文脈と席を解放する() {
+        use tokio::io::AsyncWriteExt;
+        let (address, server, gate, started, stopped) = local_ingress_pending_server().await;
+        let available = gate.limits().available("default");
+        let mut connection = tokio::net::TcpStream::connect(address).await.unwrap();
+        connection
+            .write_all(b"GET /pending HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+            .await
+            .unwrap();
+        let context = started.await.unwrap();
+        assert_eq!(gate.limits().available("default"), available - 1);
+        drop(connection);
+        let result =
+            tokio::time::timeout(std::time::Duration::from_secs(2), stopped.cancelled()).await;
+        server.abort();
+        result.unwrap();
+        assert_eq!(
+            context.check(std::time::Instant::now()),
+            Err(crate::common::operation_context::OperationStopped::Cancelled)
+        );
+        assert_eq!(gate.limits().available("default"), available);
+    }
+
+    #[tokio::test]
+    async fn test_local_apiの既定期限到達で処理と席を解放し504を返す() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let (address, server, gate, started, stopped) = local_ingress_pending_server().await;
+        let available = gate.limits().available("default");
+        let mut connection = tokio::net::TcpStream::connect(address).await.unwrap();
+        connection
+            .write_all(b"GET /pending HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+            .await
+            .unwrap();
+        let context = started.await.unwrap();
+        let remaining = context.remaining(std::time::Instant::now()).unwrap();
+        assert!(remaining > std::time::Duration::from_secs(119));
+        assert!(remaining <= std::time::Duration::from_secs(120));
+        assert_eq!(gate.limits().available("default"), available - 1);
+        let mut response = Vec::new();
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(125),
+            connection.read_to_end(&mut response),
+        )
+        .await;
+        server.abort();
+        result.unwrap().unwrap();
+        assert!(String::from_utf8(response)
+            .unwrap()
+            .starts_with("HTTP/1.1 504"));
+        assert!(stopped.is_cancelled());
+        assert_eq!(
+            context.check(std::time::Instant::now()),
+            Err(crate::common::operation_context::OperationStopped::Expired)
+        );
+        assert_eq!(gate.limits().available("default"), available);
     }
 }

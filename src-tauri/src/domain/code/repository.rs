@@ -59,11 +59,12 @@ pub trait FileContentRepository: Send + Sync {
 }
 
 /// 差分の Approve（staging）に関わる index 書き込み操作。
+#[async_trait::async_trait]
 pub trait StagingRepository: Send + Sync {
     fn stage(&self, repo_path: &str, paths: Vec<String>) -> Result<(), CodeError>;
     fn unstage(&self, repo_path: &str, paths: Vec<String>) -> Result<(), CodeError>;
-    fn stage_hunk(&self, repo_path: &str, patch: &str) -> Result<(), CodeError>;
-    fn unstage_hunk(&self, repo_path: &str, patch: &str) -> Result<(), CodeError>;
+    async fn stage_hunk(&self, repo_path: &str, patch: &str) -> Result<(), CodeError>;
+    async fn unstage_hunk(&self, repo_path: &str, patch: &str) -> Result<(), CodeError>;
 }
 
 /// 2 つのテキストバッファの差分を hunk 列として計算する。

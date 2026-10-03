@@ -26,15 +26,14 @@ fn client_priority_level(path: &str) -> Option<&'static str> {
 }
 
 pub(crate) fn client_priority_interceptor(
-    failures: Option<Arc<usecase::failure::FailureRecordingUsecase>>,
+    _failures: Option<Arc<usecase::failure::FailureRecordingUsecase>>,
 ) -> adaptor::controller::api::client_priority::PriorityInterceptor {
     let limits = Arc::new(crate::common::concurrency::PriorityLimits::new(
         64,
         &[("interactive", 30), ("workflow", 40), ("default", 120)],
         50,
     ));
-    let events =
-        Arc::new(adaptor::controller::api::client_priority::PriorityFailureReporter::new(failures));
+    let events = Arc::new(adaptor::controller::api::client_priority::PriorityFailureReporter);
     adaptor::controller::api::client_priority::PriorityInterceptor {
         gate: Arc::new(crate::common::priority::PriorityGate::new(
             limits,
@@ -66,7 +65,7 @@ pub(crate) async fn compose(
         infrastructure::process::search_path::LoginShellPathError,
     >,
 ) -> Result<Daemon, Box<dyn std::error::Error>> {
-    let retry_limiter = Arc::new(crate::common::retry::RetryLimiter::new());
+    let retry_limiter = crate::common::retry::RetryLimiter::shared();
     let failure_store = Arc::new(adaptor::gateway::failure_records::FailureRecordStore::default());
     infrastructure::telemetry::metrics::set_startup_origin(std::time::Instant::now());
     let (exit_sender, exit_receiver) = tokio::sync::mpsc::channel(1);
@@ -101,7 +100,7 @@ pub(crate) async fn compose(
             failure_store.clone(),
             Some(state_subscriptions.clone()),
         ));
-    let retrying = usecase::retry::Retrying::new(retry_limiter, failure_output.clone());
+    let retrying = usecase::retry::Retrying::new(retry_limiter.clone(), failure_output.clone());
 
     let projected_local_event_repository: Arc<
         dyn domain::local_event::LocalEventTransactionRepository,
@@ -151,8 +150,9 @@ pub(crate) async fn compose(
     let config_repository: Arc<dyn ConfigRepository> = app_config.clone();
     let config_secret_repository: Arc<dyn ConfigSecretRepository> = app_config.clone();
     let notion_config_repository: Arc<dyn NotionConfigRepository> = app_config.clone();
-    let notion_api_gateway: Arc<dyn domain::notion::NotionApiGateway> =
-        Arc::new(adaptor::gateway::notion::NotionApiGatewayImpl::new());
+    let notion_api_gateway: Arc<dyn domain::notion::NotionApiGateway> = Arc::new(
+        adaptor::gateway::notion::NotionApiGatewayImpl::new(retry_limiter.clone()),
+    );
 
     let provider_executable_config: Arc<
         dyn domain::agent_session::ProviderExecutableConfigRepository,
@@ -282,6 +282,8 @@ pub(crate) async fn compose(
         Arc::new(repo_paths_gateway),
         state_subscriptions.clone(),
     ));
+
+    repo_paths_usecase.initialize_from_cwd(&repository_usecase)?;
 
     let code_usecase = Arc::new(adaptor::controller::wiring::build_code_usecase());
     let git_host_usecase = Arc::new(
@@ -465,6 +467,7 @@ pub(crate) async fn compose(
     let dependencies = super::client::ClientDependencies {
         application_startup_authority: Some(startup_authority),
         workspace_node_command_usecase: Some(workspace_node_command_usecase),
+        workspace_query_service: Some(workspace_query_service),
         app_state: Some(app_state),
         workspace_state_store: Some(workspace_state_store),
         agent_session_lifecycle_usecase: Some(agent_session_lifecycle),

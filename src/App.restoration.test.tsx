@@ -165,7 +165,11 @@ it("設定と一覧の初回失敗でシェルをFailedにせず購読の復旧�
 it("再接続後も起動処理と更新確認は一度だけでReady復帰時にメニューを同期する", async () => {
 	selectedWorktreeId = null;
 	vi.mocked(invokeClient).mockResolvedValue(true);
-	states.publish("startup-repository", "/repo");
+	states.publish("startup-repository", {
+		path: "/repo",
+		branch: "main",
+		repositoryName: "repo",
+	});
 	states.publish({ kind: "worktrees", args: ["/repo"] }, [
 		{
 			path: "/repo",
@@ -179,7 +183,10 @@ it("再接続後も起動処理と更新確認は一度だけでReady復帰時�
 		render(<App />);
 	});
 	expect(openWorktreeTab).toHaveBeenCalledTimes(1);
-	expect(invokeClient).toHaveBeenCalledWith("add_repo_path", { path: "/repo" });
+	expect(invokeClient).not.toHaveBeenCalledWith(
+		"add_repo_path",
+		expect.anything(),
+	);
 	const main = screen.getByRole("main");
 	fireEvent.click(screen.getByRole("button", { name: "Settings" }));
 	for (const phase of ["starting", "backoff", "ready", "starting", "ready"]) {
@@ -196,7 +203,7 @@ it("再接続後も起動処理と更新確認は一度だけでReady復帰時�
 		vi
 			.mocked(invokeClient)
 			.mock.calls.filter(([command]) => command === "add_repo_path"),
-	).toHaveLength(1);
+	).toHaveLength(0);
 	expect(
 		vi
 			.mocked(invoke)

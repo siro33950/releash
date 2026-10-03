@@ -568,8 +568,7 @@ async fn test_provider_title入口_開始の一時失敗と対象の分類別再
         assert_eq!(gateway.read_count("provider-queued"), expected_reads);
         assert_eq!(repository.saved_titles.lock().unwrap().len(), 1);
         let records = store.records("queued");
-        assert_eq!(records.len(), 1);
-        assert_eq!(records[0].record.count, 2);
+        assert!(records.is_empty());
     }
 }
 

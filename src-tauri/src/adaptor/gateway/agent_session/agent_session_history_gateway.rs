@@ -35,7 +35,7 @@ impl AgentSessionHistoryGateway for LocalAgentSessionHistoryGateway {
         let worktree_path = worktree_path.to_string();
         let claude_config_dir = self.claude_config_dir.clone();
         let codex_home = self.codex_home.clone();
-        tokio::task::spawn_blocking(move || match provider {
+        crate::common::operation_context::spawn_blocking(move || match provider {
             ProviderKind::Claude => claude_metadata(&claude_config_dir, &worktree_path, limit),
             ProviderKind::Codex => codex_metadata(&codex_home, &worktree_path, limit),
         })
@@ -63,7 +63,7 @@ impl AgentSessionHistoryGateway for LocalAgentSessionHistoryGateway {
         let codex_home = self.codex_home.clone();
         let worktree_path = worktree_path.to_string();
         let provider_session_ids = provider_session_ids.to_vec();
-        let entries = tokio::task::spawn_blocking(move || match provider {
+        let entries = crate::common::operation_context::spawn_blocking(move || match provider {
             ProviderKind::Claude => provider_session_ids
                 .into_iter()
                 .map(|provider_session_id| {
@@ -107,7 +107,7 @@ impl ProviderSessionTitleGateway for LocalAgentSessionHistoryGateway {
     ) -> Result<Option<String>, ProviderSessionTitleGatewayError> {
         let claude_config_dir = self.claude_config_dir.clone();
         let codex_home = self.codex_home.clone();
-        tokio::task::spawn_blocking(move || {
+        crate::common::operation_context::spawn_blocking(move || {
             provider_session_title(&claude_config_dir, &codex_home, request)
         })
         .await

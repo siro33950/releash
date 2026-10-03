@@ -10,7 +10,7 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { BranchStatus } from "@/generated/client_types";
 import { invokeClient as invoke, subscribeState } from "@/lib/client";
-import type { IssueInfo, WorktreeEntry } from "@/types/git";
+import type { IssueInfo } from "@/types/git";
 import type { NotionTask } from "@/types/notion";
 import { CreateWorktreeModal } from "./CreateWorktreeModal";
 
@@ -97,16 +97,9 @@ describe("CreateWorktreeModal", () => {
 			if (kind === "branch-status") receive(branchStatuses);
 			return vi.fn();
 		});
-		mockInvoke.mockImplementation((command: string, args?: unknown) => {
+		mockInvoke.mockImplementation((command: string) => {
 			if (command === "create_worktree") {
-				const branch = (args as { branch: string }).branch;
-				return Promise.resolve({
-					name: "created-worktree",
-					path: "/fixture/worktree",
-					branch,
-					is_main: false,
-					is_locked: false,
-				} satisfies WorktreeEntry);
+				return Promise.resolve("/fixture/worktree");
 			}
 			return Promise.resolve([]);
 		});
@@ -411,7 +404,7 @@ describe("CreateWorktreeModal", () => {
 	it("通信状態を表示せず作成成功を後続処理へ渡す", async () => {
 		const base = mockInvoke.getMockImplementation();
 		if (!base) throw new Error("Missing invoke fixture");
-		let complete!: (entry: WorktreeEntry) => void;
+		let complete!: (path: string) => void;
 		mockInvoke.mockImplementation((command, args) => {
 			if (command !== "create_worktree") return base(command, args);
 			return new Promise((resolve) => {
@@ -436,20 +429,8 @@ describe("CreateWorktreeModal", () => {
 		expect(
 			screen.queryByText(/操作結果を確認できません/),
 		).not.toBeInTheDocument();
-		await act(async () =>
-			complete({
-				name: "new",
-				path: "/repo/new",
-				branch: "new",
-				is_main: false,
-				is_locked: false,
-			}),
-		);
-		expect(onCreated).toHaveBeenCalledExactlyOnceWith(
-			"/repo/new",
-			"new",
-			"repo",
-		);
+		await act(async () => complete("/repo/new"));
+		expect(onCreated).toHaveBeenCalledExactlyOnceWith("/repo/new");
 		expect(
 			screen.queryByText(/操作結果を確認できません/),
 		).not.toBeInTheDocument();

@@ -12,7 +12,10 @@ impl RetryBackoff {
     pub const ITEM: Self = Self::new(Duration::from_millis(5), 2.0, Duration::from_secs(1000));
     pub const RECOVERY: Self = Self::new(Duration::from_millis(800), 2.0, Duration::from_secs(30));
     pub const CONFLICT: Self = Self::new(Duration::from_millis(10), 5.0, Duration::from_secs(1));
-    pub const SERVICE: Self = Self::new(Duration::from_secs(1), 1.6, Duration::from_secs(120));
+    pub const POLL: Self = Self::new(Duration::from_millis(10), 1.0, Duration::from_millis(10));
+    #[cfg(feature = "desktop")]
+    pub const DESKTOP_POLL: Self =
+        Self::new(Duration::from_millis(20), 1.0, Duration::from_millis(20));
 
     pub const fn new(initial: Duration, multiplier: f64, maximum: Duration) -> Self {
         assert!(!initial.is_zero());
@@ -76,6 +79,38 @@ pub struct RetryLimiter {
 }
 
 impl RetryLimiter {
+    pub fn shared() -> std::sync::Arc<Self> {
+        static SHARED: std::sync::OnceLock<std::sync::Arc<RetryLimiter>> =
+            std::sync::OnceLock::new();
+        SHARED
+            .get_or_init(|| std::sync::Arc::new(Self::new()))
+            .clone()
+    }
+
+    pub fn wait_sync(
+        &self,
+        context: &crate::common::operation_context::OperationContext,
+        policy: RetryBackoff,
+        failures: u64,
+    ) -> Result<(), crate::common::operation_context::OperationStopped> {
+        crate::common::operation_context::sleep(
+            context,
+            policy.delay(failures, 1.0 + (self.jitter)() * 0.2),
+        )?;
+        loop {
+            context.check(std::time::Instant::now())?;
+            let wait = self
+                .bucket
+                .lock()
+                .expect("retry bucket")
+                .acquire(self.origin.elapsed());
+            if wait.is_zero() {
+                return Ok(());
+            }
+            crate::common::operation_context::sleep(context, wait)?;
+        }
+    }
+
     pub fn new() -> Self {
         Self::with_jitter(jitter_fraction)
     }
@@ -137,6 +172,25 @@ pub async fn attempts<T, E, F, Fut>(
     policy: RetryBackoff,
     limiter: &RetryLimiter,
     decide: impl Fn(&E) -> Option<AttemptProgress>,
+    operation: F,
+) -> Result<T, E>
+where
+    F: FnMut(AttemptProgress) -> Fut,
+    Fut: Future<Output = Result<T, E>>,
+{
+    attempts_with_pushback(
+        policy,
+        limiter,
+        |error| decide(error).map(|progress| (progress, None)),
+        operation,
+    )
+    .await
+}
+
+pub async fn attempts_with_pushback<T, E, F, Fut>(
+    policy: RetryBackoff,
+    limiter: &RetryLimiter,
+    decide: impl Fn(&E) -> Option<(AttemptProgress, Option<Duration>)>,
     mut operation: F,
 ) -> Result<T, E>
 where
@@ -150,7 +204,7 @@ where
             Ok(value) => return Ok(value),
             Err(error) => error,
         };
-        let Some(next) = decide(&error) else {
+        let Some((next, pushback)) = decide(&error) else {
             return Err(error);
         };
         failures = failures.saturating_add(1);
@@ -159,7 +213,12 @@ where
         } else {
             policy
         };
-        limiter.wait(policy, failures).await;
+        if let Some(delay) = pushback {
+            tokio::time::sleep(delay).await;
+            limiter.acquire().await;
+        } else {
+            limiter.wait(policy, failures).await;
+        }
         progress = next;
     }
 }

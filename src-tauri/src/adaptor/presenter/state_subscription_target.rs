@@ -51,7 +51,6 @@ impl SubscriptionTarget {
             ("selection", [path, id]) => Ok(Self::Selection((*path).into(), (*id).into())),
             ("node-detail", [path, id]) => Ok(Self::NodeDetail((*path).into(), (*id).into())),
             ("agent-session", [id]) => Ok(Self::AgentSession((*id).into())),
-            ("session-node", [path, id]) => Ok(Self::SessionNode((*path).into(), (*id).into())),
             ("session-history", [path, count]) => {
                 let parsed: usize = count.parse().map_err(|_| SubscriptionError::InvalidId)?;
                 if parsed == 0 || parsed.to_string() != *count {
@@ -73,7 +72,6 @@ impl SubscriptionTarget {
                 parse_notion_tasks(path, count, filters)
             }
             ("worktrees", [path]) => Ok(Self::Worktrees((*path).into())),
-            ("repository-root", [path]) => Ok(Self::RepositoryRoot((*path).into())),
             ("startup-repository", []) => Ok(Self::StartupRepository),
             ("workspace-state", [name, path]) => {
                 Ok(Self::WorkspaceState((*name).into(), (*path).into()))
@@ -130,7 +128,6 @@ impl SubscriptionTarget {
             Self::Selection(p, id) => ("selection", vec![p.clone(), id.clone()]),
             Self::NodeDetail(p, id) => ("node-detail", vec![p.clone(), id.clone()]),
             Self::AgentSession(id) => ("agent-session", vec![id.clone()]),
-            Self::SessionNode(p, id) => ("session-node", vec![p.clone(), id.clone()]),
             Self::SessionHistory(p, count) => {
                 ("session-history", vec![p.clone(), count.to_string()])
             }
@@ -148,7 +145,6 @@ impl SubscriptionTarget {
             Self::NotionLabelOptions(p) => ("notion-label-options", vec![p.clone()]),
             Self::NotionTasks(request) => format_notion_tasks(request),
             Self::Worktrees(p) => ("worktrees", vec![p.clone()]),
-            Self::RepositoryRoot(p) => ("repository-root", vec![p.clone()]),
             Self::StartupRepository => ("startup-repository", vec![]),
             Self::WorkspaceState(n, p) => ("workspace-state", vec![n.clone(), p.clone()]),
             Self::ReviewSnapshot(p, base) => {

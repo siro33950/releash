@@ -121,7 +121,9 @@ pub(crate) fn resize_terminal_surface_shared(
     async move {
         super::client::worktree_mutation::spawn_blocking(resize?)
             .await
-            .map_err(|error| AppError::new(format!("Terminal resize task failed: {error}")))?
+            .map_err(|error| {
+                AppError::from_failure(crate::domain::failure::TechnicalFailure::from(error))
+            })?
             .map_err(terminal_resize_error)
     }
 }

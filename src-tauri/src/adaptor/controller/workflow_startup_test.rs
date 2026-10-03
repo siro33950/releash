@@ -101,12 +101,6 @@ async fn test_起動時の再開_一覧の一時的な失敗をやり直し期�
         failure.source,
         StorageFailureSource::Technical(error) if error.message == attempt_expired().message
     ));
-    let records = store.records("daemon");
-    assert_eq!(records.len(), 2);
-    assert_eq!(
-        records[0].record.kind,
-        crate::usecase::failure::Failure::Technical(TechnicalFailureNature::Transient)
-    );
-    assert!(records[1].requires_attention);
+    assert!(store.records("daemon").is_empty());
     assert!(trees.reconciled.lock().unwrap().is_empty());
 }

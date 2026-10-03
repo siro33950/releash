@@ -28,6 +28,10 @@ impl PriorityGate {
         }
     }
 
+    pub fn with_classifier(&self, classify: fn(&str) -> Option<&'static str>) -> Self {
+        Self::new(self.limits.clone(), classify, self.events.clone())
+    }
+
     pub async fn run<I, T, E, F, Fut>(
         &self,
         request: I,

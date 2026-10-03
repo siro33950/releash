@@ -4,17 +4,22 @@ use super::{
     NotionError, NotionLabelOption, NotionTaskPage, NotionTaskQuery, NotionValidationResult,
 };
 
+#[async_trait::async_trait]
+
 pub(crate) trait NotionApiGateway: Send + Sync {
-    fn query_tasks(
+    async fn query_tasks(
         &self,
         config: &NotionRepoConfig,
         query: &NotionTaskQuery,
     ) -> Result<NotionTaskPage, NotionError>;
 
-    fn fetch_label_options(
+    async fn fetch_label_options(
         &self,
         config: &NotionRepoConfig,
     ) -> Result<Vec<NotionLabelOption>, NotionError>;
 
-    fn validate(&self, config: &NotionRepoConfig) -> Result<NotionValidationResult, NotionError>;
+    async fn validate(
+        &self,
+        config: &NotionRepoConfig,
+    ) -> Result<NotionValidationResult, NotionError>;
 }

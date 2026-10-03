@@ -706,7 +706,7 @@ fn journal_output_context(
             runtime_generation: 1,
             terminal_surface: Arc::clone(&terminal_surface),
             journal: Arc::clone(&journal),
-            io: Arc::new(tokio::sync::Mutex::new(())),
+            io: Arc::new(Mutex::new(())),
         }),
     };
     let context = TerminalOutputReaderContext {
@@ -988,13 +988,13 @@ async fn test_定期保存の期限切れ_子を回収して保留データと�
             TERMINAL_SURFACE_SCROLLBACK_ROWS,
         ))),
         journal: journal.clone(),
-        io: Arc::new(tokio::sync::Mutex::new(())),
+        io: Arc::new(Mutex::new(())),
     });
     let attempt = background.clone();
     // When
     super::super::super::shared::background_worker::background_worker_tests::assert_expired_releases(async move { attempt.flush().await }).await;
     // Then
-    assert!(background.io.try_lock().is_ok());
+    assert!(background.io.try_lock().is_some());
     let pending = journal.lock().take_pending();
     assert!(pending.base.is_some());
     assert_eq!(pending.records.len(), 1);
@@ -1620,7 +1620,7 @@ fn attach_missing_checkpoint_target(
             .unwrap();
     }
     let store = TerminalCheckpointFileStore::new(directory, TERMINAL_SURFACE_SCROLLBACK_ROWS);
-    let io = Arc::new(tokio::sync::Mutex::new(()));
+    let io = Arc::new(Mutex::new(()));
     {
         let mut runtimes = gateway.runtimes.lock();
         let runtime = runtimes.get_mut(&1).unwrap();

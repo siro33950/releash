@@ -239,6 +239,7 @@ pub(crate) struct WorkflowExecutionSummaryDto {
     pub total_token_usage: TokenUsageDto,
 }
 
+#[cfg(test)]
 pub(crate) fn workflow_to_dto(definition: &domain::WorkflowDefinition) -> WorkflowDto {
     workflow_to_dto_with_source_format(definition, domain::WorkflowSourceFormat::Yaml)
 }
