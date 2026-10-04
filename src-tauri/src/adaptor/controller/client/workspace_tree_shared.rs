@@ -218,6 +218,6 @@ pub(crate) fn register_shared(
     }
 }
 
-#[cfg(all(test, feature = "desktop"))]
+#[cfg(test)]
 #[path = "workspace_tree_shared_test.rs"]
 mod workspace_tree_shared_tests;

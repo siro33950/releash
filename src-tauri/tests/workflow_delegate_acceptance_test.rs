@@ -1,4 +1,4 @@
-#![cfg(all(debug_assertions, feature = "desktop"))]
+#![cfg(debug_assertions)]
 
 use releash_lib::workflow_delegate_acceptance::{
     AcceptanceIngressResult, AcceptanceProvider, NodeExecutionStatus,

@@ -4,7 +4,7 @@
 fn test_cli設置_probeは実設置境界を捕捉して管理者認証と書込みを止める() {
     if std::env::var_os("RELEASH_TEST_CLI_INSTALL_ATTEMPT").is_some() {
         assert_eq!(
-            releash_lib::client_api_acceptance::probe_cli_installation().unwrap_err(),
+            releash_lib::desktop_client_acceptance::probe_cli_installation().unwrap_err(),
             "CLI installation intercepted by acceptance probe"
         );
         return;

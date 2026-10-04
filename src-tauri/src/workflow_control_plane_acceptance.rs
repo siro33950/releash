@@ -3,7 +3,6 @@ use std::sync::Arc;
 
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
-use tauri::Manager;
 
 use crate::adaptor::controller::agent_session_wiring::{
     compose_agent_sessions, AgentSessionCompositionInput,
@@ -428,13 +427,14 @@ impl ManagedWorktreeResolver for AcceptanceManagedWorktreeResolver {
     }
 }
 
-pub struct WorkflowControlPlaneAcceptanceHost<R: tauri::Runtime> {
+pub struct WorkflowControlPlaneAcceptanceHost {
     retrying: Arc<crate::usecase::retry::Retrying>,
     startup: Option<Arc<crate::usecase::workflow::startup::WorkflowStartupUsecase>>,
-    _app: tauri::App<R>,
+    store: Arc<LocalEventStore>,
+    workspace_node_commands: Arc<WorkspaceNodeCommandUsecase>,
     writer_lock_path: std::path::PathBuf,
     terminal: TerminalSurfaceRuntime,
-    exit_observer: tauri::async_runtime::JoinHandle<()>,
+    exit_observer: tokio::task::JoinHandle<()>,
     exit_observer_cancellation:
         Arc<dyn crate::domain::terminal_surface::gateway::TerminalSurfaceEventCancellation>,
     provider_sessions: Arc<AgentSessionUsecase>,
@@ -448,11 +448,8 @@ pub struct WorkflowControlPlaneAcceptanceHost<R: tauri::Runtime> {
     local_api_token: String,
 }
 
-impl<R: tauri::Runtime> WorkflowControlPlaneAcceptanceHost<R> {
-    pub fn start(
-        config: AgentSessionTuiAcceptanceConfig,
-        app: tauri::App<R>,
-    ) -> Result<Self, String> {
+impl WorkflowControlPlaneAcceptanceHost {
+    pub fn start(config: AgentSessionTuiAcceptanceConfig) -> Result<Self, String> {
         let work = crate::terminal_surface::initialize_background_work_for_acceptance();
         std::fs::create_dir_all(&config.data_dir).map_err(|error| error.to_string())?;
         let store = LocalEventStore::open(LocalEventStoreConfig::production(
@@ -460,11 +457,6 @@ impl<R: tauri::Runtime> WorkflowControlPlaneAcceptanceHost<R> {
             std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
         ))
         .map_err(|error| error.to_string())?;
-        app.manage(store.clone());
-        app.manage(crate::desktop_test_support::TestDataDir(
-            config.data_dir.clone(),
-        ));
-
         let terminal = TerminalSurfaceRuntime::new(work.clone(), config.data_dir.clone());
         let composition = compose_agent_sessions(AgentSessionCompositionInput {
 launch_retention: crate::adaptor::controller::agent_session_launch_retention::run(crate::infrastructure::timer::delays(crate::adaptor::controller::agent_session_launch_retention::RETENTION)),
@@ -488,7 +480,7 @@ launch_retention: crate::adaptor::controller::agent_session_launch_retention::ru
 			codex_home: config.codex_home,
 			cli_binary: "releash-dev".to_string(),
 			terminal: terminal.application(),
-			subscriptions: crate::desktop_test_support::state_subscriptions(),
+			subscriptions: crate::acceptance_test_support::state_subscriptions(),
 		})
 		.map_err(|error| format!("Provider availability初期化失敗: {error:?}"))?;
 
@@ -516,7 +508,13 @@ launch_retention: crate::adaptor::controller::agent_session_launch_retention::ru
             ),
         );
         driver.node_processes = node_processes.clone();
-        let dependencies = crate::desktop_test_support::workflow_dependencies(app.handle());
+        let dependencies =
+            crate::adaptor::gateway::workflow::workflow_host::WorkflowRuntimeDependencies {
+                store: Some(store.clone()),
+                config: None,
+                secrets: None,
+                state_changes: crate::acceptance_test_support::state_subscriptions(),
+            };
         let driver = Arc::new(driver);
         let startup = crate::adaptor::controller::wiring::wire_workflow_startup(
             dependencies.clone(),
@@ -545,7 +543,6 @@ launch_retention: crate::adaptor::controller::agent_session_launch_retention::ru
             runtime.clone(),
             composition.rename.clone(),
         ));
-        app.manage(workspace_node_commands.clone());
         composition.execution_tree_stops.bind(runtime.clone());
         composition
             .execution_tree_registrations
@@ -580,7 +577,7 @@ launch_retention: crate::adaptor::controller::agent_session_launch_retention::ru
 
         let terminal_events = terminal.application().subscribe_events();
         let exit_observer_cancellation = terminal_events.cancellation.clone();
-        let exit_observer = tauri::async_runtime::spawn(
+        let exit_observer = tokio::spawn(
 			crate::adaptor::controller::agent_session_exit_observer::run_agent_session_exit_observer(
 				terminal_events,
 				composition.exit.clone(),
@@ -590,7 +587,8 @@ launch_retention: crate::adaptor::controller::agent_session_launch_retention::ru
         Ok(Self {
             retrying: work.retrying.clone(),
             startup,
-            _app: app,
+            store,
+            workspace_node_commands,
             writer_lock_path: config.data_dir.join("local-event-store.lock"),
             terminal,
             exit_observer,
@@ -751,7 +749,12 @@ launch_retention: crate::adaptor::controller::agent_session_launch_retention::ru
     ) -> Result<Option<AcceptanceWorkflowExecution>, String> {
         self.runtime_driver
             .acceptance_state_by_execution_id(
-                &crate::desktop_test_support::workflow_dependencies(self._app.handle()),
+                &crate::adaptor::gateway::workflow::workflow_host::WorkflowRuntimeDependencies {
+                    store: Some(self.store.clone()),
+                    config: None,
+                    secrets: None,
+                    state_changes: crate::acceptance_test_support::state_subscriptions(),
+                },
                 execution_id,
             )
             .await
@@ -838,9 +841,7 @@ launch_retention: crate::adaptor::controller::agent_session_launch_retention::ru
         node_id: &str,
     ) -> Result<(), String> {
         crate::adaptor::controller::client::workspace_tree::retry_workspace_node_shared(
-            self._app
-                .state::<Arc<WorkspaceNodeCommandUsecase>>()
-                .inner(),
+            &self.workspace_node_commands,
             worktree_path.to_string(),
             node_id.to_string(),
         )
@@ -925,14 +926,9 @@ launch_retention: crate::adaptor::controller::agent_session_launch_retention::ru
         &self,
         node_execution_id: &str,
     ) -> Result<Option<AcceptanceWorkspaceNodeStatus>, String> {
-        let store = self
-            ._app
-            .try_state::<Arc<LocalEventStore>>()
-            .map(|store| store.inner().clone())
-            .ok_or_else(|| "LocalEventStore is not managed".to_string())?;
         let repository =
             crate::adaptor::gateway::workspace_tree::SqliteWorkspaceTreeRepository::new(
-                store.clone(),
+                self.store.clone(),
             );
         repository
             .load_node_by_node_execution_id(node_execution_id)
@@ -952,12 +948,7 @@ launch_retention: crate::adaptor::controller::agent_session_launch_retention::ru
     }
 
     pub async fn execution_fact_event_types(&self, tree_id: &str) -> Result<Vec<String>, String> {
-        let store = self
-            ._app
-            .try_state::<Arc<LocalEventStore>>()
-            .map(|store| store.inner().clone())
-            .ok_or_else(|| "LocalEventStore is not managed".to_string())?;
-        crate::adaptor::gateway::workflow::fact_log::read_tree_records(&store, tree_id)
+        crate::adaptor::gateway::workflow::fact_log::read_tree_records(&self.store, tree_id)
             .await
             .map(|records| {
                 records
@@ -1064,7 +1055,8 @@ launch_retention: crate::adaptor::controller::agent_session_launch_retention::ru
         let Self {
             retrying,
             startup,
-            _app,
+            store,
+            workspace_node_commands,
             writer_lock_path,
             terminal,
             exit_observer,
@@ -1089,8 +1081,6 @@ launch_retention: crate::adaptor::controller::agent_session_launch_retention::ru
             .shutdown_and_wait()
             .await
             .map_err(|error| format!("join local API server: {error}"))?;
-        _app.unmanage::<Arc<WorkspaceNodeCommandUsecase>>();
-        _app.unmanage::<Arc<LocalEventStore>>();
         drop((
             local_api,
             _runtime,
@@ -1102,7 +1092,8 @@ launch_retention: crate::adaptor::controller::agent_session_launch_retention::ru
             provider_lifecycle,
             runtime_driver,
             terminal,
-            _app,
+            store,
+            workspace_node_commands,
         ));
         tokio::time::timeout(std::time::Duration::from_secs(10), async {
             loop {

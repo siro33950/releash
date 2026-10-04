@@ -111,16 +111,13 @@ struct ProviderAvailabilityItem {
 }
 
 struct AgentSessionTuiAcceptanceHost {
-    composition: AgentSessionTuiAcceptanceComposition<tauri::test::MockRuntime>,
+    composition: AgentSessionTuiAcceptanceComposition,
     client: releash_lib::client_api_acceptance::NativeClient,
 }
 
 impl AgentSessionTuiAcceptanceHost {
     fn start(config: AgentSessionTuiAcceptanceConfig) -> Result<Self, String> {
-        let app = tauri::test::mock_builder()
-            .build(tauri::test::mock_context(tauri::test::noop_assets()))
-            .map_err(|error| error.to_string())?;
-        let composition = AgentSessionTuiAcceptanceComposition::start(config, app)?;
+        let composition = AgentSessionTuiAcceptanceComposition::start(config)?;
         let client =
             releash_lib::client_api_acceptance::connect_client(composition.client_endpoint());
         Ok(Self {

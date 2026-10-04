@@ -1,6 +1,6 @@
 #[cfg(debug_assertions)]
 mod acceptance {
-    use releash_lib::client_api_acceptance::{
+    use releash_lib::desktop_client_acceptance::{
         spawn_desktop_successor, wait_for_desktop_predecessor,
     };
     use std::{

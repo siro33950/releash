@@ -142,7 +142,7 @@ pub(crate) fn router(deps: Option<ClientApiDeps>, default_timeout: std::time::Du
 
 include!(concat!(env!("OUT_DIR"), "/client_service.rs"));
 
-#[cfg(all(test, feature = "desktop"))]
+#[cfg(test)]
 #[path = "client_test.rs"]
 mod client_tests;
 

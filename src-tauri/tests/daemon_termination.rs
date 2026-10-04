@@ -20,7 +20,7 @@ async fn test_daemon停止_親pipe閉鎖と強制終了で実プロセスと子�
         .unwrap();
         std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
         // When
-        let elapsed = releash_lib::client_api_acceptance::terminate_daemon_for_acceptance(
+        let elapsed = releash_lib::desktop_client_acceptance::terminate_daemon_for_acceptance(
             executable,
             directory.path().to_path_buf(),
         )

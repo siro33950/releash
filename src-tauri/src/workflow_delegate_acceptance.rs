@@ -88,7 +88,7 @@ impl WorkflowDelegateAcceptanceHost {
             store: Some(store.clone()),
             config: None,
             secrets: None,
-            state_changes: crate::desktop_test_support::state_subscriptions(),
+            state_changes: crate::acceptance_test_support::state_subscriptions(),
         };
         let host = crate::adaptor::controller::wiring::wire_delegate_continuation(
             dependencies.clone(),

@@ -1,21 +1,21 @@
 mod adaptor;
-#[cfg(all(debug_assertions, feature = "desktop"))]
+#[cfg(debug_assertions)]
 pub mod agent_session_tui_acceptance;
 pub mod cli;
-#[cfg(all(debug_assertions, feature = "desktop"))]
+#[cfg(debug_assertions)]
 pub mod client_api_acceptance;
 mod common;
 mod domain;
 mod infrastructure;
-#[cfg(all(debug_assertions, feature = "desktop"))]
+#[cfg(debug_assertions)]
 pub mod provider_lifecycle_acceptance;
 #[cfg(debug_assertions)]
 pub mod terminal_subscription_acceptance;
-#[cfg(all(debug_assertions, feature = "desktop"))]
+#[cfg(debug_assertions)]
 pub mod workflow_control_plane_acceptance;
-#[cfg(all(debug_assertions, feature = "desktop"))]
+#[cfg(debug_assertions)]
 pub mod workflow_delegate_acceptance;
-#[cfg(all(debug_assertions, feature = "desktop"))]
+#[cfg(debug_assertions)]
 pub mod workflow_diagnostics_acceptance;
 pub mod terminal_surface {
     pub use crate::adaptor::controller::terminal_surface_runtime::{
@@ -85,10 +85,15 @@ pub fn run_daemon(data_dir: Option<std::path::PathBuf>) -> i32 {
     1
 }
 
-#[cfg(all(debug_assertions, feature = "desktop"))]
+#[cfg(all(test, debug_assertions, feature = "desktop"))]
 mod desktop_test_support;
 
 #[doc(hidden)]
 pub fn run_background_worker() -> i32 {
     adaptor::controller::background_worker::run()
 }
+
+#[cfg(any(test, debug_assertions))]
+mod acceptance_test_support;
+#[cfg(all(debug_assertions, feature = "desktop"))]
+pub mod desktop_client_acceptance;

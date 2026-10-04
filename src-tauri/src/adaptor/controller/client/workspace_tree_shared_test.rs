@@ -1,15 +1,11 @@
 use super::*;
-use tauri::Manager;
 
 #[tokio::test]
 async fn test_一覧更新dispatch_登録済みrepositoryの走査をやり直してから応答する() {
     // Given: 監視中の Repository に、監視が気付いていない worktree が増えている
     let (app, _data, _store) =
         crate::adaptor::controller::client::workflow::tests::make_read_only_app();
-    app.manage(Arc::new(
-        crate::infrastructure::file_watcher::FileWatcherManager::default(),
-    ));
-    let deps = crate::desktop_test_support::build_client_dependencies(app.handle());
+    let deps = &app.client;
     let state = deps.app_state.clone().unwrap();
     let (repo_dir, repo) = crate::test_support::git::create_test_repo();
     crate::test_support::git::create_initial_commit(&repo);
@@ -20,9 +16,7 @@ async fn test_一覧更新dispatch_登録済みrepositoryの走査をやり直�
         .to_string_lossy()
         .into_owned();
     state.repo_paths_usecase.add(&path).unwrap();
-    app.state::<Arc<crate::usecase::repository_state::RepositoryStateService>>()
-        .start_git_dir_watching(&path)
-        .unwrap();
+    app.repository_state.start_git_dir_watching(&path).unwrap();
     let worktree_count = || async {
         state
             .workspace_list
@@ -47,7 +41,7 @@ async fn test_一覧更新dispatch_登録済みrepositoryの走査をやり直�
     let mut dispatch = ClientCommandDispatch::new(Arc::new(
         crate::usecase::application_startup::ApplicationStartupAuthority::ready(),
     ));
-    register_shared(&mut dispatch, &deps);
+    register_shared(&mut dispatch, deps);
 
     // When
     let result = dispatch

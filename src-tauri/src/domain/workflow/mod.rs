@@ -47,8 +47,8 @@ pub use value_objects::{
     WorktreeMode, NODE_STATUS_COMPLETED,
 };
 
-#[cfg(any(test, all(debug_assertions, feature = "desktop")))]
+#[cfg(any(test, debug_assertions))]
 pub use value_objects::WorkflowRuntimeSnapshot;
 
-#[cfg(any(test, all(debug_assertions, feature = "desktop")))]
+#[cfg(any(test, debug_assertions))]
 pub use value_objects::{NodeHistoryEntry, RuntimeArtifact};

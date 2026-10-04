@@ -29,7 +29,7 @@ pub(crate) mod watcher;
 
 pub(crate) mod telemetry;
 
-#[cfg(any(test, feature = "desktop"))]
+#[cfg(any(test, debug_assertions, feature = "desktop"))]
 pub(crate) mod client_connection;
 #[cfg(feature = "desktop")]
 pub(crate) mod daemon_supervision;

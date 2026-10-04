@@ -64,5 +64,5 @@ pub use worktree_origin::{
     isolated_worktree_owner, IsolatedWorktree, WorktreeInheritance, WorktreeInventoryEntry,
 };
 
-#[cfg(any(test, all(debug_assertions, feature = "desktop")))]
+#[cfg(any(test, debug_assertions))]
 pub use state::WorkflowRuntimeSnapshot;

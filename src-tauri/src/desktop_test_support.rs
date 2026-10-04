@@ -11,34 +11,6 @@ pub(crate) fn data_dir<R: tauri::Runtime>(
         .unwrap_or_else(crate::infrastructure::platform::app_data_dir::resolve_data_dir)
 }
 
-pub(crate) fn workflow_dependencies<R: tauri::Runtime>(
-    app: &tauri::AppHandle<R>,
-) -> crate::adaptor::gateway::workflow::workflow_host::WorkflowRuntimeDependencies {
-    crate::adaptor::gateway::workflow::workflow_host::WorkflowRuntimeDependencies {
-        store: app
-            .try_state::<Arc<crate::adaptor::gateway::local_event_store::LocalEventStore>>()
-            .map(|state| state.inner().clone()),
-        config: app
-            .try_state::<Arc<dyn crate::domain::app_config::ConfigRepository>>()
-            .map(|state| state.inner().clone()),
-        secrets: app
-            .try_state::<Arc<dyn crate::domain::app_config::ConfigSecretRepository>>()
-            .map(|state| state.inner().clone()),
-        state_changes: state_subscriptions(),
-    }
-}
-
-pub(crate) fn state_subscriptions() -> crate::usecase::state_subscription::StateSubscriptionUsecase
-{
-    crate::usecase::state_subscription::StateSubscriptionUsecase::new_with_output(
-        crate::adaptor::presenter::state_subscription::test_output(),
-        crate::adaptor::controller::state_subscription::drive(Arc::new(|| {
-            let period = crate::domain::git_host::CacheTtl::EXTERNAL_INFORMATION.duration();
-            Box::pin(crate::infrastructure::timer::ticks_after(period, period))
-        })),
-    )
-}
-
 pub(crate) fn build_watcher_usecase<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
 ) -> std::sync::Arc<crate::usecase::watcher::WatcherUsecase> {
@@ -73,6 +45,29 @@ pub(crate) fn build_client_dependencies<R: tauri::Runtime>(
         editor_launcher: Arc::new(crate::adaptor::gateway::external_editor::NativeEditorLauncherGateway),
         watcher: build_watcher_usecase(app),
         data_dir: data_dir(app).map_err(crate::adaptor::presenter::error::AppError::new),
-        process_port: Arc::new(crate::adaptor::gateway::application_lifecycle::TauriApplicationQuitIntentPort::new(app.clone())),
+        process_port: Arc::new(crate::adaptor::gateway::application_lifecycle::DaemonProcessActionPort(tokio::sync::mpsc::channel(1).0)),
     }
+}
+
+#[cfg(test)]
+pub(crate) fn make_read_only_app() -> (
+    tauri::App<tauri::test::MockRuntime>,
+    std::path::PathBuf,
+    Arc<crate::adaptor::gateway::local_event_store::LocalEventStore>,
+) {
+    let (dependencies, data_dir, store) =
+        crate::adaptor::controller::client::workflow::tests::make_read_only_app();
+    let config_secret_repository: Arc<dyn crate::domain::app_config::ConfigSecretRepository> =
+        dependencies.app_config.clone();
+    let app = tauri::test::mock_builder()
+        .invoke_handler(tauri::generate_handler![])
+        .manage(TestDataDir(data_dir.clone()))
+        .manage(dependencies.app_config)
+        .manage(dependencies.client.config_repository.unwrap())
+        .manage(config_secret_repository)
+        .manage(dependencies.repository_state)
+        .manage(dependencies.client.app_state.unwrap())
+        .build(tauri::test::mock_context(tauri::test::noop_assets()))
+        .expect("tauri mock test app must build");
+    (app, data_dir, store)
 }

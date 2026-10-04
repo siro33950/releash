@@ -17,7 +17,7 @@ impl ClientBearerToken {
             .as_ref()
             .is_some_and(|token| bool::from(candidate.as_bytes().ct_eq(token.as_bytes())))
     }
-    #[cfg(any(test, all(debug_assertions, feature = "desktop")))]
+    #[cfg(any(test, debug_assertions))]
     pub(crate) fn token(&self) -> Arc<str> {
         self.0
             .read()

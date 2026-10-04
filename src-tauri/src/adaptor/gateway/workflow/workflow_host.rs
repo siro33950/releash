@@ -1020,7 +1020,7 @@ impl WorkflowRuntimeHost {
             .and_then(|execution| RuntimeCommitSnapshot::from_execution(&execution).ok())
     }
 
-    #[cfg(all(debug_assertions, feature = "desktop"))]
+    #[cfg(debug_assertions)]
     pub(crate) async fn acceptance_state_by_execution_id(
         &self,
         app: &WorkflowRuntimeDependencies,

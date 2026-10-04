@@ -219,7 +219,7 @@ impl StateSubscriptionPresenter {
     }
 }
 
-#[cfg(any(test, all(debug_assertions, feature = "desktop")))]
+#[cfg(any(test, debug_assertions))]
 pub(crate) fn test_output() -> crate::usecase::state_subscription::StateSubscriptionOutputRef {
     Arc::new(StateSubscriptionPresenter::new())
 }

@@ -32,7 +32,7 @@ impl DiscoveryContent {
             && self.process_started_at != 0
     }
 
-    #[cfg(any(test, feature = "desktop"))]
+    #[cfg(any(test, debug_assertions, feature = "desktop"))]
     pub(crate) fn accepts_client(&self, client: &Self) -> bool {
         self.is_acceptable()
             && client.is_acceptable()

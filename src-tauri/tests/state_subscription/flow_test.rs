@@ -22,11 +22,7 @@ async fn test_状態購読の実配線で現在のbranchを届ける() {
     )
     .unwrap();
     git.set_head("refs/heads/ws-branch").unwrap();
-    let host = ClientApiAcceptanceHost::start(
-        tauri::test::mock_builder(),
-        data.path(),
-        Arc::new(BranchGateway),
-    );
+    let host = ClientApiAcceptanceHost::start(data.path(), Arc::new(BranchGateway));
     let client = connect_client(&host.endpoint());
 
     // When
