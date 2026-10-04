@@ -48,10 +48,9 @@ pub(crate) fn build_router(
             error::ApiError::not_found("local API endpoint was not found").into_response()
         })
         .with_state(state.clone());
-    let terminal_router = client::router(client).layer(middleware::from_fn_with_state(
-        terminal_token.into(),
-        auth::require_client,
-    ));
+    let terminal_router = client::router(client, default_timeout).layer(
+        middleware::from_fn_with_state(terminal_token.into(), auth::require_client),
+    );
     authenticated(
         application_router
             .merge(provider_lifecycle::router(provider_lifecycle))
@@ -1721,7 +1720,8 @@ pub(crate) mod test_support {
     async fn test_local_apiの実接続切断で処理と文脈と席を解放する() {
         use tokio::io::AsyncWriteExt;
         let (address, server, gate, started, stopped) =
-            local_ingress_pending_server(std::time::Duration::from_millis(300)).await;
+            local_ingress_pending_server(crate::adaptor::controller::daemon::default_timeout())
+                .await;
         let available = gate.limits().available("default");
         let mut connection = tokio::net::TcpStream::connect(address).await.unwrap();
         connection

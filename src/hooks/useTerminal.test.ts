@@ -3889,16 +3889,14 @@ describe("useTerminal", () => {
 				"write_terminal_surface",
 				expect.anything(),
 			);
-			expect(onTerminalError).toHaveBeenCalledWith(
+			expect(onTerminalError).toHaveBeenLastCalledWith(
 				"Terminal failed to start; buffered input could not be sent",
 			);
 			expect(mockTerminalInstance.options.disableStdin).toBe(true);
 			expect(mockTerminalInstance.write).toHaveBeenCalledWith(
 				"\r\nTerminal process is not running.\r\n",
 			);
-			expect(onTerminalError).toHaveBeenCalledWith(
-				"Terminal process is not running",
-			);
+
 			expect(onTerminalReady).not.toHaveBeenCalled();
 		});
 	});

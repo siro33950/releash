@@ -56,7 +56,7 @@ provider_runtime(
 Arc::new(FixedHistory { entries: Vec::new() }),
 hook_health_usecase(),
 started_execution_trees(),
-activated, crate::usecase::workspace_tree::TestWorkspaceQueryService::new(vec![]),);
+activated, crate::usecase::workspace_tree::TestWorkspaceTreeRepository::new(),);
 
     let launched = usecase
         .prepare_workflow_node(WorkflowAgentSessionLaunchRequest {

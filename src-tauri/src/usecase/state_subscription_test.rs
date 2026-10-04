@@ -1886,7 +1886,7 @@ async fn test_ファイル監視_読取中の失敗は張り直し成功まで�
     let mut changes = subscriptions.changes.subscribe();
     let (_sender, mut waiting) = tokio::sync::mpsc::unbounded_channel();
     subscriptions
-        .refresh_read(&target, ReadSignal::Lagged, &mut changes, &mut waiting)
+        .refresh_read(&target, ReadSignal::Periodic, &mut changes, &mut waiting)
         .await;
     // Then
     assert_eq!(files.attempts.load(Ordering::SeqCst), 2);
@@ -1901,7 +1901,7 @@ async fn test_ファイル監視_読取中の失敗は張り直し成功まで�
     // When
     files.fail_start.store(false, Ordering::SeqCst);
     subscriptions
-        .refresh_read(&target, ReadSignal::Lagged, &mut changes, &mut waiting)
+        .refresh_read(&target, ReadSignal::Periodic, &mut changes, &mut waiting)
         .await;
     // Then
     assert_eq!(files.attempts.load(Ordering::SeqCst), 3);
@@ -1990,10 +1990,15 @@ async fn test_ファイル監視_稼働中の失敗を配信し張り直しで�
         assert!(subscriptions.watches.lock().is_empty());
         assert_eq!(*files.stopped.lock(), vec![1]);
         assert_eq!(subscriptions.watch_failures.lock().len(), 1);
+        let first_message = output.failures.lock().last().unwrap().1.clone();
+        subscriptions
+            .publish_read(&target, Ok(StateValue::Workflows(vec![])), false)
+            .unwrap();
+        assert_eq!(output.failures.lock().last().unwrap().1, first_message);
         let mut changes = subscriptions.changes.subscribe();
         let (_sender, mut waiting) = tokio::sync::mpsc::unbounded_channel();
         subscriptions
-            .refresh_read(&target, ReadSignal::Lagged, &mut changes, &mut waiting)
+            .refresh_read(&target, ReadSignal::Periodic, &mut changes, &mut waiting)
             .await;
         assert_eq!(files.callbacks.lock().len(), 2);
         assert!(subscriptions.watch_failures.lock().is_empty());
@@ -2001,6 +2006,11 @@ async fn test_ファイル監視_稼働中の失敗を配信し張り直しで�
             output.update_values.lock().last(),
             Some(&StateValue::Workflows(vec![]))
         );
+        let failure_count = output.failures.lock().len();
+        callback(Err("late old failure".into()));
+        assert_eq!(subscriptions.watches.lock().len(), 1);
+        assert!(subscriptions.watch_failures.lock().is_empty());
+        assert_eq!(output.failures.lock().len(), failure_count);
         assert!(subscriptions.pending_watch_stops.lock().is_empty());
         assert_eq!(
             *files.stopped.lock(),

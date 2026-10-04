@@ -276,6 +276,7 @@ export function useTerminal(
 		let failedInputId: string | null = null;
 		let uncertainInputError: string | null = null;
 		let startupFailure: string | null = null;
+		let startupInputFailed = false;
 		let pendingInput = Promise.resolve();
 		let pendingPerformanceInputSequences: number[] = [];
 		const unavailableAttachment = () =>
@@ -518,6 +519,7 @@ export function useTerminal(
 						if (isRunningRef.current) {
 							for (const chunk of buffered) deliverInput(chunk);
 						} else if (buffered.length > 0) {
+							startupInputFailed = true;
 							onTerminalErrorRef.current?.(
 								"Terminal failed to start; buffered input could not be sent",
 							);
@@ -644,6 +646,7 @@ export function useTerminal(
 			if (autoFocus) terminal.focus();
 			if (!isMounted) return;
 			startupFailure = null;
+			if (startupInputFailed) return;
 			onTerminalErrorRef.current?.(null);
 			if (!isRunningRef.current) {
 				onTerminalErrorRef.current?.("Terminal process is not running");

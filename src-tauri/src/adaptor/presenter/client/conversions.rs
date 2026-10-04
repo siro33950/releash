@@ -4100,15 +4100,17 @@ impl TryFrom<&str> for wire::NodeProcessPresence {
     }
 }
 
-#[cfg(test)]
-#[path = "conversions_test.rs"]
-mod conversions_tests;
-
-impl From<crate::usecase::workspace_tree::SessionNodeSelectionDto> for wire::SessionSelection {
-    fn from(value: crate::usecase::workspace_tree::SessionNodeSelectionDto) -> Self {
+impl From<(String, crate::domain::workspace_tree::WorkspaceTreeNode)> for wire::SessionSelection {
+    fn from(
+        (agent_session_id, node): (String, crate::domain::workspace_tree::WorkspaceTreeNode),
+    ) -> Self {
         Self {
-            agent_session_id: Some(value.agent_session_id),
-            node_id: Some(value.node_id),
+            agent_session_id: Some(agent_session_id),
+            node_id: Some(node.id),
         }
     }
 }
+
+#[cfg(test)]
+#[path = "conversions_test.rs"]
+mod conversions_tests;

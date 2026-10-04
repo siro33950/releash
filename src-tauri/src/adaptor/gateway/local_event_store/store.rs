@@ -13,10 +13,6 @@ use tokio::sync::oneshot;
 
 use crate::adaptor::gateway::local_event_store::clock::{StoreClock, SystemStoreClock};
 use crate::adaptor::gateway::local_event_store::commit::{execute_commit, resolve_commit_row};
-use crate::adaptor::gateway::local_event_store::connection::{
-    check_sqlite_version, open_existing_writer, open_reader, open_writer,
-    set_owner_only_permissions, ConnectionError,
-};
 use crate::adaptor::gateway::local_event_store::envelope::EventCodecRegistry;
 use crate::adaptor::gateway::local_event_store::fault::FaultInjector;
 use crate::adaptor::gateway::local_event_store::fault::InitialCreateFaultPoint;
@@ -46,6 +42,10 @@ use crate::domain::local_event::{
     CommitBatchError, CommitBatchResult, CommitIdentity, CommitResolution, DomainEventPage,
     LoadStreamRequest, LocalAtomicBatch, LocalEventQuery, LocalEventQueryError,
     LocalEventQueryResult, LocalEventTransactionRepository, LocalStateMutation,
+};
+use crate::infrastructure::local_event_store_connection::{
+    check_sqlite_version, open_existing_writer, open_reader, open_writer,
+    set_owner_only_permissions, ConnectionError,
 };
 
 fn correlation_id() -> String {
@@ -163,7 +163,10 @@ fn open_schema_inspection(
     layout: &StoreLayout,
     path: &std::path::Path,
     limiter: Arc<crate::common::retry::RetryLimiter>,
-) -> Result<super::connection::ManagedConnection, LocalEventStoreOpenError> {
+) -> Result<
+    crate::infrastructure::local_event_store_connection::ManagedConnection,
+    LocalEventStoreOpenError,
+> {
     // Classification reads the fixed authority directly. SQLite's
     // `readonly_shm` URI mode sees committed WAL frames while mapping the
     // fixed SHM wal-index read-only, so a closed classification failure does
@@ -212,10 +215,12 @@ fn open_schema_inspection(
     .map_err(|error| {
         classify_sqlite_error(&error, LocalEventStoreOpenError::InitializationStateInvalid)
     })?;
-    let connection =
-        super::connection::configure_busy_handler(connection, limiter).map_err(|error| {
-            classify_sqlite_error(&error, LocalEventStoreOpenError::InitializationStateInvalid)
-        })?;
+    let connection = crate::infrastructure::local_event_store_connection::configure_busy_handler(
+        connection, limiter,
+    )
+    .map_err(|error| {
+        classify_sqlite_error(&error, LocalEventStoreOpenError::InitializationStateInvalid)
+    })?;
     Ok(connection)
 }
 

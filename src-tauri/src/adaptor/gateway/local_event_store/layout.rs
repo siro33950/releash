@@ -12,12 +12,12 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::adaptor::gateway::local_event_store::connection::set_owner_only_permissions;
 use crate::adaptor::gateway::local_event_store::fault::{FaultInjector, InitialCreateFaultPoint};
 pub use crate::infrastructure::app_data_path::{
     AppDataPathObserver as StorePathObserver, AppDataPathOperation as StorePathOperation,
     NoopAppDataPathObserver as NoopStorePathObserver,
 };
+use crate::infrastructure::local_event_store_connection::set_owner_only_permissions;
 
 pub const DATABASE_FILE: &str = "local-event-store.sqlite3";
 pub const VACUUM_DATABASE_FILE: &str = "local-event-store.vacuum.sqlite3";

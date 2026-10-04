@@ -361,7 +361,10 @@ impl ClientRecoveryAcceptanceHost {
             servers.push(tokio::spawn(async move {
                 axum::serve(
                     listener,
-                    crate::adaptor::controller::api::client::router(Some(deps)),
+                    crate::adaptor::controller::api::client::router(
+                        Some(deps),
+                        crate::adaptor::controller::daemon::default_timeout(),
+                    ),
                 )
                 .await
                 .unwrap();

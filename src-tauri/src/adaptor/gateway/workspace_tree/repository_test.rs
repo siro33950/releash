@@ -793,10 +793,10 @@ async fn test_workspace_tree読み出し_報告実例の後方辺fanout既存fac
         .unwrap();
     let session_id = REPORTED_SESSION_2_ID;
     let session_node_id = repository
-        .session_selection(&workspace, session_id)
+        .load_node_by_session_id(&workspace, session_id)
         .await
         .unwrap()
-        .map(|selection| selection.node_id)
+        .map(|selection| selection.id)
         .unwrap();
     let loaded_session = repository
         .load_node(&workspace, &session_node_id)
@@ -1189,10 +1189,10 @@ async fn public_session_root_id_loads_the_session_node_instead_of_the_internal_o
     let repository = SqliteWorkspaceTreeRepository::new(store);
 
     let node_id = repository
-        .session_selection(&workspace, "agent-session-1")
+        .load_node_by_session_id(&workspace, "agent-session-1")
         .await
         .unwrap()
-        .map(|selection| selection.node_id)
+        .map(|selection| selection.id)
         .expect("the standalone Session must have a public Node id");
     let node = repository
         .load_node(&workspace, &node_id)
@@ -1243,10 +1243,10 @@ async fn test_workspace_tree_repository_workspace同定子がworktreeと異な�
         .await
         .unwrap();
     let node_id = repository
-        .session_selection(&workspace, "agent-session-workspace-identity")
+        .load_node_by_session_id(&workspace, "agent-session-workspace-identity")
         .await
         .unwrap()
-        .map(|selection| selection.node_id)
+        .map(|selection| selection.id)
         .unwrap();
     let node = repository
         .load_node(&workspace, &node_id)
@@ -1295,19 +1295,19 @@ async fn a_session_owned_by_another_worktree_has_no_public_node_id() {
 
     assert!(
         repository
-            .session_selection(&other, "agent-session-1")
+            .load_node_by_session_id(&other, "agent-session-1")
             .await
             .unwrap()
-            .map(|selection| selection.node_id)
+            .map(|selection| selection.id)
             .is_none(),
         "another Worktree must not resolve a public Node id for this Session"
     );
     assert!(
         repository
-            .session_selection(&owner, "unknown-session")
+            .load_node_by_session_id(&owner, "unknown-session")
             .await
             .unwrap()
-            .map(|selection| selection.node_id)
+            .map(|selection| selection.id)
             .is_none(),
         "an unknown Session has no execution tree to publish"
     );

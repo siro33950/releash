@@ -352,11 +352,9 @@ pub(crate) fn compose_agent_sessions(
         launch_gateway.clone(),
         input.terminal.clone(),
     );
-    let workspace_query =
-        crate::adaptor::gateway::workspace_tree::SqliteWorkspaceQueryService::with_repository(
-            crate::adaptor::gateway::workspace_tree::SqliteWorkspaceTreeRepository::new(
-                input.store.clone(),
-            ),
+    let workspace_trees =
+        crate::adaptor::gateway::workspace_tree::SqliteWorkspaceTreeRepository::new(
+            input.store.clone(),
         );
     let launch = Arc::new(AgentSessionLaunchUsecase::new(
         std::sync::Arc::new(crate::adaptor::gateway::telemetry::TelemetryGateway),
@@ -367,7 +365,7 @@ pub(crate) fn compose_agent_sessions(
         hook_health.clone(),
         execution_tree_registrations.clone(),
         input.launch_retention,
-        workspace_query.clone(),
+        workspace_trees.clone(),
     ));
     let lifecycle = Arc::new(AgentSessionLifecycleUsecase::new(
         std::sync::Arc::new(crate::adaptor::gateway::identity::RandomIdentityIssuer),
@@ -376,10 +374,8 @@ pub(crate) fn compose_agent_sessions(
         provider_runtime,
         hook_health.clone(),
         input.subscriptions.clone(),
-        (
-            execution_tree_registrations.clone(),
-            workspace_query.clone(),
-        ),
+        execution_tree_registrations.clone(),
+        workspace_trees.clone(),
     ));
     let query: Arc<dyn AgentSessionQueryService> =
         Arc::new(LocalAgentSessionQueryService::new(input.store.clone()));

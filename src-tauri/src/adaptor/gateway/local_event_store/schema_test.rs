@@ -4,12 +4,12 @@ use std::sync::Arc;
 use rusqlite::Connection;
 
 use super::CURRENT_SCHEMA_VERSION;
-use crate::adaptor::gateway::local_event_store::connection::open_existing_writer;
 use crate::adaptor::gateway::local_event_store::fault::FaultInjector;
 use crate::adaptor::gateway::local_event_store::layout::StoreLayout;
 use crate::adaptor::gateway::local_event_store::store::{
     LocalEventStore, LocalEventStoreConfig, LocalEventStoreOpenError,
 };
+use crate::infrastructure::local_event_store_connection::open_existing_writer;
 
 fn open_store(root: &Path) -> Arc<LocalEventStore> {
     LocalEventStore::open(LocalEventStoreConfig::production(

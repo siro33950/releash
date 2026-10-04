@@ -86,5 +86,3 @@ pub(crate) mod provider_session_title_ingestion_tests;
 pub(crate) use agent_session_read::AgentSessionReadUsecaseError;
 
 pub(crate) use agent_session_initial_instruction::AgentSessionInitialInstructionError;
-
-mod selection;

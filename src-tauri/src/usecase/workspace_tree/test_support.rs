@@ -29,15 +29,6 @@ impl WorkspaceQueryService for TestWorkspaceQueryService {
         Ok(None)
     }
 
-    async fn session_selection(
-        &self,
-        _workspace_identity: &WorkspaceIdentity,
-        _session_id: &str,
-    ) -> Result<Option<crate::usecase::workspace_tree::SessionNodeSelectionDto>, WorkflowError>
-    {
-        Ok(None)
-    }
-
     async fn execution_summaries(
         &self,
         _workspace_identity: Option<&WorkspaceIdentity>,
@@ -56,5 +47,60 @@ impl WorkspaceQueryService for TestWorkspaceQueryService {
             .iter()
             .find(|execution| execution.execution_id == execution_id)
             .cloned())
+    }
+}
+
+pub(crate) struct TestWorkspaceTreeRepository;
+
+impl TestWorkspaceTreeRepository {
+    pub(crate) fn new() -> Arc<Self> {
+        Arc::new(Self)
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::domain::workspace_tree::WorkspaceTreeRepository for TestWorkspaceTreeRepository {
+    async fn load_trees(
+        &self,
+        workspaces: &[WorkspaceIdentity],
+    ) -> Vec<Result<crate::domain::workspace_tree::WorkspaceTree, WorkflowError>> {
+        workspaces
+            .iter()
+            .map(|workspace| {
+                Ok(crate::domain::workspace_tree::WorkspaceTree::empty(
+                    workspace.as_str(),
+                ))
+            })
+            .collect()
+    }
+    async fn load_node_by_session_id(
+        &self,
+        _: &crate::domain::workspace_tree::WorkspaceIdentity,
+        _: &str,
+    ) -> Result<
+        Option<crate::domain::workspace_tree::WorkspaceTreeNode>,
+        crate::domain::local_event::LocalEventQueryError,
+    > {
+        Ok(None)
+    }
+
+    async fn load_node(
+        &self,
+        _: &WorkspaceIdentity,
+        _: &str,
+    ) -> Result<
+        Option<crate::domain::workspace_tree::WorkspaceTreeNode>,
+        crate::domain::local_event::LocalEventQueryError,
+    > {
+        Ok(None)
+    }
+    async fn load_node_by_node_execution_id(
+        &self,
+        _: &str,
+    ) -> Result<
+        Option<crate::domain::workspace_tree::WorkspaceTreeNode>,
+        crate::domain::local_event::LocalEventQueryError,
+    > {
+        Ok(None)
     }
 }

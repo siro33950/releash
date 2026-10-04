@@ -11,6 +11,12 @@ pub trait WorkspaceTreeRepository: Send + Sync {
         workspace_identities: &[WorkspaceIdentity],
     ) -> Vec<Result<WorkspaceTree, crate::domain::workflow::WorkflowError>>;
 
+    async fn load_node_by_session_id(
+        &self,
+        workspace_identity: &WorkspaceIdentity,
+        session_id: &str,
+    ) -> Result<Option<WorkspaceTreeNode>, crate::domain::local_event::LocalEventQueryError>;
+
     async fn load_node(
         &self,
         workspace_identity: &WorkspaceIdentity,

@@ -120,7 +120,7 @@ fn task_error(error: tokio::task::JoinError) -> connectrpc::ConnectError {
     )
 }
 
-pub(crate) fn router(deps: Option<ClientApiDeps>) -> Router {
+pub(crate) fn router(deps: Option<ClientApiDeps>, default_timeout: std::time::Duration) -> Router {
     let Some(deps) = deps else {
         return Router::new();
     };
@@ -130,8 +130,7 @@ pub(crate) fn router(deps: Option<ClientApiDeps>) -> Router {
         .into_axum_service()
         .with_interceptor(priority)
         .with_deadline_policy(
-            connectrpc::DeadlinePolicy::new()
-                .with_default_timeout(super::super::daemon::default_timeout()),
+            connectrpc::DeadlinePolicy::new().with_default_timeout(default_timeout),
         )
         .with_limits(
             connectrpc::Limits::default()

@@ -466,10 +466,10 @@ async fn fetch_database_properties(
         .json()
         .map_err(|error| NotionError::ParseError(error.to_string()))?;
 
-    match extract_first_data_source_id(&json) {
-        Some(data_source_id) => fetch_data_source_properties(client, &data_source_id).await,
-        None => Ok(extract_properties_from_json(&json)),
-    }
+    validation_properties(&json, |id| async move {
+        fetch_data_source_properties(client, &id).await
+    })
+    .await
 }
 
 #[cfg(test)]

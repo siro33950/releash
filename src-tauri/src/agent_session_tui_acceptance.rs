@@ -347,19 +347,22 @@ launch_retention: crate::adaptor::controller::agent_session_launch_retention::ru
             String::new(),
         );
         let client_router = crate::adaptor::controller::api::authenticated(
-            crate::adaptor::controller::api::client::router(Some(
-                crate::adaptor::controller::api::ClientApiDeps::new(
-                    dispatch,
-                    crate::adaptor::controller::daemon::client_priority_interceptor(),
-                )
-                .with_state_subscriptions(
-                    crate::adaptor::controller::api::StateSubscriptionDeps::new(
-                        subscriptions,
-                        terminal.presenter(),
-                        terminal.terminal_subscriptions(),
+            crate::adaptor::controller::api::client::router(
+                Some(
+                    crate::adaptor::controller::api::ClientApiDeps::new(
+                        dispatch,
+                        crate::adaptor::controller::daemon::client_priority_interceptor(),
+                    )
+                    .with_state_subscriptions(
+                        crate::adaptor::controller::api::StateSubscriptionDeps::new(
+                            subscriptions,
+                            terminal.presenter(),
+                            terminal.terminal_subscriptions(),
+                        ),
                     ),
                 ),
-            )),
+                crate::adaptor::controller::daemon::default_timeout(),
+            ),
             client_binding.terminal_bearer_token(),
         );
         let client_api = client_binding.start(client_router, &tokio::runtime::Handle::current());

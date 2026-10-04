@@ -338,6 +338,9 @@ it("メニューの有効切替の拒否を原因とともに画面へ通知す�
 		await act(async () => {
 			render(<App />);
 		});
+		expect(await screen.findByRole("alert")).toHaveTextContent(
+			"menu unavailable",
+		);
 		expect(notice).toHaveBeenCalledWith(
 			expect.objectContaining({ detail: "menu unavailable" }),
 		);

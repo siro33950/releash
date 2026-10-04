@@ -84,7 +84,7 @@ impl AgentSessionLifecycleUsecaseError {
 
 pub(crate) struct AgentSessionLifecycleUsecase {
     identities: Arc<dyn crate::domain::identity::IdentityIssuer>,
-    workspace_query: Arc<dyn crate::usecase::workspace_tree::WorkspaceQueryService>,
+    workspace_trees: Arc<dyn crate::domain::workspace_tree::WorkspaceTreeRepository>,
     sessions: Arc<AgentSessionUsecase>,
     lifecycle: Arc<ProviderLifecycleUsecase>,
     launch_gateway: Arc<dyn ProviderAgentLaunchGateway>,
@@ -96,6 +96,7 @@ pub(crate) struct AgentSessionLifecycleUsecase {
 }
 
 impl AgentSessionLifecycleUsecase {
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         identities: Arc<dyn crate::domain::identity::IdentityIssuer>,
         sessions: Arc<AgentSessionUsecase>,
@@ -103,10 +104,8 @@ impl AgentSessionLifecycleUsecase {
         provider_runtime: ProviderAgentRuntime,
         hook_health: Arc<ProviderHookHealthUsecase>,
         subscriptions: StateSubscriptionUsecase,
-        (execution_trees, workspace_query): (
-            Arc<dyn AgentSessionExecutionTreeLifecycle>,
-            Arc<dyn crate::usecase::workspace_tree::WorkspaceQueryService>,
-        ),
+        execution_trees: Arc<dyn AgentSessionExecutionTreeLifecycle>,
+        workspace_trees: Arc<dyn crate::domain::workspace_tree::WorkspaceTreeRepository>,
     ) -> Self {
         let ProviderAgentRuntime {
             availability,
@@ -114,7 +113,7 @@ impl AgentSessionLifecycleUsecase {
             terminal,
         } = provider_runtime;
         Self {
-            workspace_query,
+            workspace_trees,
             identities,
             sessions,
             lifecycle,
@@ -323,7 +322,13 @@ impl AgentSessionLifecycleUsecase {
         rows: u16,
         cols: u16,
         caller_request_id: &str,
-    ) -> Result<AgentSessionOpenOutcome, AgentSessionLifecycleUsecaseError> {
+    ) -> Result<
+        (
+            AgentSessionOpenOutcome,
+            crate::domain::agent_session::repository::VersionedAgentSession,
+        ),
+        AgentSessionLifecycleUsecaseError,
+    > {
         let session = self.required(agent_session_id).await?;
         let _workspace_mutation = self
             .execution_trees
@@ -343,8 +348,10 @@ impl AgentSessionLifecycleUsecase {
             .lock_operation(agent_session_id)
             .await
             .map_err(map_session_error)?;
-        self.restore_locked(agent_session_id, rows, cols, caller_request_id)
-            .await
+        let outcome = self
+            .restore_locked(agent_session_id, rows, cols, caller_request_id)
+            .await?;
+        Ok((outcome, session))
     }
 
     async fn restore_locked(
@@ -374,19 +381,24 @@ impl AgentSessionLifecycleUsecase {
         cols: u16,
         request: &str,
     ) -> Result<
-        crate::usecase::workspace_tree::SessionNodeSelectionDto,
+        (String, crate::domain::workspace_tree::WorkspaceTreeNode),
         AgentSessionLifecycleUsecaseError,
     > {
-        self.restore(id, rows, cols, request).await?;
-        super::selection::required_selection(&self.sessions, self.workspace_query.as_ref(), id)
+        let (_, session) = self.restore(id, rows, cols, request).await?;
+        let node = self
+            .workspace_trees
+            .load_node_by_session_id(session.session().workspace(), id)
             .await
             .map_err(|error| match error {
-                super::selection::SelectionError::Session(error) => map_session_error(error),
-                super::selection::SelectionError::Query(error) => map_workflow_error(error),
-                super::selection::SelectionError::Missing => {
-                    AgentSessionLifecycleUsecaseError::Corrupt
+                crate::domain::local_event::LocalEventQueryError::Technical(error) => {
+                    AgentSessionLifecycleUsecaseError::Workflow(
+                        crate::domain::workflow::WorkflowError::Technical(error),
+                    )
                 }
-            })
+                error => AgentSessionLifecycleUsecaseError::Store(error.into()),
+            })?
+            .ok_or(AgentSessionLifecycleUsecaseError::Corrupt)?;
+        Ok((id.to_string(), node))
     }
 
     pub(crate) async fn archive(

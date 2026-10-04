@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use rusqlite::{Connection, OpenFlags};
 
-use crate::adaptor::gateway::local_event_store::schema::MIN_SQLITE_VERSION_NUMBER;
+pub const MIN_SQLITE_VERSION_NUMBER: i32 = 3_051_003;
 
 #[derive(Debug)]
 pub enum ConnectionError {
@@ -61,7 +61,7 @@ impl std::ops::DerefMut for ManagedConnection {
     }
 }
 
-pub(super) fn configure_busy_handler(
+pub(crate) fn configure_busy_handler(
     connection: Connection,
     limiter: std::sync::Arc<crate::common::retry::RetryLimiter>,
 ) -> Result<ManagedConnection, rusqlite::Error> {
@@ -110,7 +110,7 @@ pub(super) fn configure_busy_handler(
 }
 
 impl ManagedConnection {
-    pub(super) fn retry_limiter(&self) -> std::sync::Arc<crate::common::retry::RetryLimiter> {
+    pub(crate) fn retry_limiter(&self) -> std::sync::Arc<crate::common::retry::RetryLimiter> {
         self.limiter.clone()
     }
 }
@@ -199,5 +199,5 @@ pub fn set_owner_only_permissions(path: &Path) -> std::io::Result<()> {
 }
 
 #[cfg(test)]
-#[path = "connection_test.rs"]
-mod connection_tests;
+#[path = "local_event_store_connection_test.rs"]
+mod local_event_store_connection_tests;

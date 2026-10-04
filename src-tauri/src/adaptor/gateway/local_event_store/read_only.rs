@@ -8,7 +8,6 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use crate::adaptor::gateway::local_event_store::connection::open_reader;
 use crate::adaptor::gateway::local_event_store::envelope::EventCodecRegistry;
 use crate::adaptor::gateway::local_event_store::layout::StoreLayout;
 use crate::adaptor::gateway::local_event_store::projection_record_codec::canonical_mutation_identity_v1 as canonical_projection_mutation_identity_v1;
@@ -24,6 +23,7 @@ use crate::domain::local_event::{
     LocalEventQueryResult, LocalEventTransactionRepository, LocalStateMutation,
     SafeOperationFailure, SessionOperationFailureKind,
 };
+use crate::infrastructure::local_event_store_connection::open_reader;
 
 const STORE_NOT_READY: &str = "the fixed local event store is not ready";
 
@@ -327,11 +327,11 @@ impl LocalEventTransactionRepository for LocalEventReadStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::adaptor::gateway::local_event_store::connection::open_writer;
     use crate::adaptor::gateway::local_event_store::{LocalEventStore, LocalEventStoreConfig};
     use crate::domain::local_event::{
         CommitOperationKind, IdempotencyBinding, LocalEventQueryResult,
     };
+    use crate::infrastructure::local_event_store_connection::open_writer;
 
     #[test]
     fn unrelated_files_are_never_a_read_fallback_without_sqlite_authority() {

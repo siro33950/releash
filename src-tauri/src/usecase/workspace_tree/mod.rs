@@ -4,9 +4,9 @@ mod query_service;
 #[cfg(test)]
 mod test_support;
 
-pub(crate) use query_service::{SessionNodeSelectionDto, WorkspaceQueryService};
+pub(crate) use query_service::WorkspaceQueryService;
 #[cfg(test)]
-pub(crate) use test_support::TestWorkspaceQueryService;
+pub(crate) use test_support::{TestWorkspaceQueryService, TestWorkspaceTreeRepository};
 
 mod worktree_path;
 pub(crate) use worktree_path::{WorkspaceWorktreePathQuery, WorkspaceWorktreePathUsecase};

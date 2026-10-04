@@ -1306,7 +1306,7 @@ async fn test_session選択_記録済みsessionとnodeのdtoを返し対象外�
     .await
     .unwrap();
     let repository = SqliteWorkspaceTreeRepository::new(store);
-    let query = service(&repository);
+
     let workspace = WorkspaceIdentity::new("/repo/selection");
     let tree = load_tree(&repository, &workspace).await;
     let expected = tree
@@ -1316,20 +1316,20 @@ async fn test_session選択_記録済みsessionとnodeのdtoを返し対象外�
         .unwrap()
         .id
         .clone();
-    let selected = query
-        .session_selection(&workspace, "selection-session")
+    let selected = repository
+        .load_node_by_session_id(&workspace, "selection-session")
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(selected.agent_session_id, "selection-session");
-    assert_eq!(selected.node_id, expected);
-    assert!(query
-        .session_selection(&workspace, "missing")
+    assert_eq!(selected.session_id.as_deref(), Some("selection-session"));
+    assert_eq!(selected.id, expected);
+    assert!(repository
+        .load_node_by_session_id(&workspace, "missing")
         .await
         .unwrap()
         .is_none());
-    assert!(query
-        .session_selection(&WorkspaceIdentity::new("/other"), "selection-session")
+    assert!(repository
+        .load_node_by_session_id(&WorkspaceIdentity::new("/other"), "selection-session")
         .await
         .unwrap()
         .is_none());

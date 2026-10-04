@@ -344,6 +344,17 @@ impl crate::domain::workspace_tree::WorkspaceTreeRepository for FakeWorkspaceTre
             .collect()
     }
 
+    async fn load_node_by_session_id(
+        &self,
+        _: &crate::domain::workspace_tree::WorkspaceIdentity,
+        _: &str,
+    ) -> Result<
+        Option<crate::domain::workspace_tree::WorkspaceTreeNode>,
+        crate::domain::local_event::LocalEventQueryError,
+    > {
+        Ok(None)
+    }
+
     async fn load_node(
         &self,
         _workspace_identity: &crate::domain::workspace_tree::WorkspaceIdentity,

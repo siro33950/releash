@@ -3,7 +3,6 @@
 pub(crate) mod canonical_cbor;
 pub(crate) mod clock;
 pub(crate) mod commit;
-pub(crate) mod connection;
 pub(crate) mod envelope;
 pub(crate) mod fault;
 pub(crate) mod indexed_projection_codec;

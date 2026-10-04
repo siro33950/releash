@@ -255,10 +255,6 @@ impl From<&crate::domain::agent_session::AgentSessionDisplayNameError> for Failu
     }
 }
 
-#[cfg(test)]
-#[path = "work_failure_test.rs"]
-mod work_failure_tests;
-
 impl From<&crate::usecase::watcher::UsecaseError> for Failure {
     fn from(error: &crate::usecase::watcher::UsecaseError) -> Self {
         use crate::usecase::watcher::UsecaseError as E;
@@ -494,3 +490,7 @@ impl From<&crate::domain::agent_session::ProviderExecutableProbeGatewayError> fo
         }
     }
 }
+
+#[cfg(test)]
+#[path = "work_failure_test.rs"]
+mod work_failure_tests;

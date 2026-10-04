@@ -232,10 +232,8 @@ where
             {
                 return Err(error);
             }
-        } else {
-            if limiter.wait(policy, failures).await.is_err() {
-                return Err(error);
-            }
+        } else if limiter.wait(policy, failures).await.is_err() {
+            return Err(error);
         }
         progress = next;
     }

@@ -59,7 +59,7 @@ pub(crate) async fn create_agent_session_shared(
     launch: &Arc<AgentSessionLaunchUsecase>,
     args: crate::adaptor::presenter::client::CreateAgentSessionRequest,
 ) -> Result<
-    crate::usecase::workspace_tree::SessionNodeSelectionDto,
+    (String, crate::domain::workspace_tree::WorkspaceTreeNode),
     crate::adaptor::presenter::client::CommandFailure,
 > {
     use crate::adaptor::controller::client::{convert, required};
@@ -95,7 +95,7 @@ pub(crate) async fn resume_agent_session_history_candidate_shared(
     launch: &Arc<AgentSessionLaunchUsecase>,
     args: crate::adaptor::presenter::client::ResumeAgentSessionHistoryCandidateRequest,
 ) -> Result<
-    crate::usecase::workspace_tree::SessionNodeSelectionDto,
+    (String, crate::domain::workspace_tree::WorkspaceTreeNode),
     crate::adaptor::presenter::client::CommandFailure,
 > {
     use crate::adaptor::controller::client::{convert, required};
@@ -153,7 +153,7 @@ pub(crate) async fn restore_agent_session_shared(
     rows: u16,
     cols: u16,
     caller_request_id: String,
-) -> Result<crate::usecase::workspace_tree::SessionNodeSelectionDto, AppError> {
+) -> Result<(String, crate::domain::workspace_tree::WorkspaceTreeNode), AppError> {
     lifecycle
         .restore_selection(&agent_session_id, rows, cols, &caller_request_id)
         .await

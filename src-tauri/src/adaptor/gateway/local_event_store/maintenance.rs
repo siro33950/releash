@@ -4,12 +4,12 @@ use std::path::Path;
 
 use rusqlite::Connection;
 
-use super::connection::{
-    open_existing_writer, open_reader, set_owner_only_permissions, ConnectionError,
-};
 use super::fault::{FaultInjector, MaintenanceFaultPoint};
 use super::layout::{StoreLayout, StorePathOperation};
 use super::schema::validate_current_schema;
+use crate::infrastructure::local_event_store_connection::{
+    open_existing_writer, open_reader, set_owner_only_permissions, ConnectionError,
+};
 use crate::infrastructure::platform::file_replace;
 
 const MINIMUM_RECLAIM_BYTES: u64 = 64 * 1024 * 1024;
@@ -85,9 +85,12 @@ impl std::error::Error for StartupMaintenanceError {}
 
 pub fn run_startup_maintenance(
     layout: &StoreLayout,
-    connection: super::connection::ManagedConnection,
+    connection: crate::infrastructure::local_event_store_connection::ManagedConnection,
     fault: &FaultInjector,
-) -> Result<super::connection::ManagedConnection, StartupMaintenanceError> {
+) -> Result<
+    crate::infrastructure::local_event_store_connection::ManagedConnection,
+    StartupMaintenanceError,
+> {
     let limiter = connection.retry_limiter();
     if let Err(error) = cleanup_vacuum_artifacts(layout) {
         log_failure("stale artifact cleanup", &error);
@@ -277,7 +280,10 @@ fn replace_canonical_database(
 fn reopen_canonical(
     layout: &StoreLayout,
     limiter: std::sync::Arc<crate::common::retry::RetryLimiter>,
-) -> Result<super::connection::ManagedConnection, StartupMaintenanceError> {
+) -> Result<
+    crate::infrastructure::local_event_store_connection::ManagedConnection,
+    StartupMaintenanceError,
+> {
     let database_path = layout.database_path();
     layout.observe(StorePathOperation::Open, &database_path);
     layout.observe(StorePathOperation::Write, &database_path);
