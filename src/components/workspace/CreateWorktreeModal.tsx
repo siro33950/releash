@@ -44,6 +44,7 @@ import { useIssues } from "@/hooks/useIssues";
 import { useNotionLabelOptions } from "@/hooks/useNotionLabelOptions";
 import { useNotionTasks } from "@/hooks/useNotionTasks";
 import { invokeClient as invoke, subscribeState } from "@/lib/client";
+import { showClientError } from "@/lib/clientErrorNotice";
 import { getErrorMessage } from "@/lib/errorMessage";
 import { trackEvent } from "@/lib/telemetry";
 import { cn } from "@/lib/utils";
@@ -188,7 +189,11 @@ export function CreateWorktreeModal({
 			}
 
 			if (failures.length > 0) {
-				setError(failures.join("\n"));
+				if (createdEntries.length > 0) {
+					showClientError(failures.join("\n"));
+				} else {
+					setError(failures.join("\n"));
+				}
 			}
 		} finally {
 			setCreating(false);

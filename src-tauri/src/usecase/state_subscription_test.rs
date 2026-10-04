@@ -221,8 +221,9 @@ fn test_監視後始末_停止失敗は保持して次のreconcileで止め直�
 async fn test_監視失敗_読めたrepositoryを残し対象要素だけ失敗にする() {
     use crate::usecase::fetched::Fetched;
     use crate::usecase::workspace_tree::{WorkspaceList, WorkspaceListRepository};
+    let output = Arc::new(RecordingOutput::default());
     let subscriptions = StateSubscriptionUsecase::new_with_output(
-        Arc::new(RecordingOutput::default()),
+        output.clone(),
         crate::test_support::state_subscription::pending_read_driver(),
     )
     .with_reads(
@@ -245,10 +246,9 @@ async fn test_監視失敗_読めたrepositoryを残し対象要素だけ失敗�
             },
         ],
     };
-    let result = subscriptions
+    subscriptions
         .apply_watch_failures(
             &SubscriptionTarget::Workspaces,
-            Ok(StateValue::Workspaces(list)),
             vec![(
                 WatchRequirement::Git("/failed".into()),
                 StateReadError::from_error(crate::usecase::watcher::UsecaseError::File(
@@ -256,9 +256,16 @@ async fn test_監視失敗_読めたrepositoryを残し対象要素だけ失敗�
                 )),
             )],
         )
-        .await
+        .await;
+    subscriptions
+        .publish_read(
+            &SubscriptionTarget::Workspaces,
+            Ok(StateValue::Workspaces(list)),
+            false,
+        )
         .unwrap();
-    let StateValue::Workspaces(list) = result else {
+    let values = output.update_values.lock();
+    let StateValue::Workspaces(list) = &values[0] else {
         panic!("workspaces expected")
     };
     assert!(list.repositories[0].worktrees.value.is_some());
@@ -270,8 +277,12 @@ async fn test_監視失敗_読めたrepositoryを残し対象要素だけ失敗�
         .message
         .contains("watch failed"));
     assert!(list.repositories[1].worktrees.error.is_none());
-    let recovered = subscriptions
-        .apply_watch_failures(
+    drop(values);
+    subscriptions
+        .apply_watch_failures(&SubscriptionTarget::Workspaces, vec![])
+        .await;
+    subscriptions
+        .publish_read(
             &SubscriptionTarget::Workspaces,
             Ok(StateValue::Workspaces(WorkspaceList {
                 repositories: vec![WorkspaceListRepository {
@@ -279,11 +290,11 @@ async fn test_監視失敗_読めたrepositoryを残し対象要素だけ失敗�
                     worktrees: Fetched::ready(vec![]),
                 }],
             })),
-            vec![],
+            false,
         )
-        .await
         .unwrap();
-    let StateValue::Workspaces(list) = recovered else {
+    let values = output.update_values.lock();
+    let StateValue::Workspaces(list) = values.last().unwrap() else {
         panic!("workspaces expected")
     };
     assert!(list.repositories[0].worktrees.error.is_none());
@@ -1583,27 +1594,33 @@ async fn test_監視失敗_別購読で検出してもworkspacesの要素へ届�
         subscriptions.start("client", target).unwrap();
     }
     // When
-    assert!(subscriptions
+    subscriptions
         .apply_watch_failures(
             &branch,
-            Ok(StateValue::CurrentBranch("main".into())),
             vec![
                 (
                     WatchRequirement::Git("/failed".into()),
                     StateReadError::from_error(crate::usecase::watcher::UsecaseError::File(
-                        "root failed".into()
-                    ))
+                        "root failed".into(),
+                    )),
                 ),
                 (
                     WatchRequirement::Git("/failed/linked".into()),
                     StateReadError::from_error(crate::usecase::watcher::UsecaseError::File(
-                        "linked failed".into()
-                    ))
+                        "linked failed".into(),
+                    )),
                 ),
-            ]
+            ],
         )
-        .await
-        .is_err());
+        .await;
+    subscriptions
+        .publish_read(&branch, Ok(StateValue::CurrentBranch("main".into())), false)
+        .unwrap();
+    assert!(output
+        .failures
+        .lock()
+        .iter()
+        .any(|(target, _)| target == &branch));
     // Then
     let values = output.update_values.lock();
     let StateValue::Workspaces(failed) = &values[0] else {
@@ -1621,14 +1638,7 @@ async fn test_監視失敗_別購読で検出してもworkspacesの要素へ届�
         .lock()
         .iter()
         .all(|(target, _)| *target != SubscriptionTarget::Workspaces));
-    subscriptions
-        .apply_watch_failures(
-            &branch,
-            Ok(StateValue::CurrentBranch("main".into())),
-            vec![],
-        )
-        .await
-        .unwrap();
+    subscriptions.apply_watch_failures(&branch, vec![]).await;
     assert_eq!(
         output.update_values.lock().last(),
         Some(&StateValue::Workspaces(list.clone()))
@@ -1638,7 +1648,6 @@ async fn test_監視失敗_別購読で検出してもworkspacesの要素へ届�
     subscriptions
         .apply_watch_failures(
             &branch,
-            Ok(StateValue::CurrentBranch("main".into())),
             vec![(
                 files,
                 StateReadError::from_error(crate::usecase::watcher::UsecaseError::File(
@@ -1646,20 +1655,12 @@ async fn test_監視失敗_別購読で検出してもworkspacesの要素へ届�
                 )),
             )],
         )
-        .await
-        .unwrap();
+        .await;
     assert_eq!(
         output.failures.lock().last().unwrap().0,
         SubscriptionTarget::Workflows
     );
-    subscriptions
-        .apply_watch_failures(
-            &branch,
-            Ok(StateValue::CurrentBranch("main".into())),
-            vec![],
-        )
-        .await
-        .unwrap();
+    subscriptions.apply_watch_failures(&branch, vec![]).await;
     assert_eq!(
         output.update_values.lock().last(),
         Some(&StateValue::Workflows(vec![]))
@@ -1919,10 +1920,7 @@ async fn test_ファイル監視_読取中の失敗は張り直し成功まで�
     files.callbacks.lock().last().unwrap().clone()(Err("runtime failed again".into()));
     subscriptions.stop("client", &source).unwrap();
     subscriptions.stop("client", &target).unwrap();
-    subscriptions
-        .apply_watch_failures(&target, Ok(StateValue::Workflows(vec![])), vec![])
-        .await
-        .unwrap();
+    subscriptions.apply_watch_failures(&target, vec![]).await;
     // Then
     assert!(subscriptions.watch_failures.lock().is_empty());
 }
@@ -1985,7 +1983,13 @@ async fn test_ファイル監視_稼働中の失敗を配信し張り直しで�
         callback(Err("runtime watch failed".into()));
         assert_eq!(
             output.failures.lock().last().unwrap(),
-            &(target.clone(), "runtime watch failed".into())
+            &(
+                target.clone(),
+                crate::domain::failure::WorkFailure::from_error(
+                    &crate::usecase::watcher::UsecaseError::File("runtime watch failed".into())
+                )
+                .message
+            )
         );
         assert!(subscriptions.watches.lock().is_empty());
         assert_eq!(*files.stopped.lock(), vec![1]);
@@ -2015,6 +2019,164 @@ async fn test_ファイル監視_稼働中の失敗を配信し張り直しで�
         assert_eq!(
             *files.stopped.lock(),
             if fail_stop { vec![1, 1] } else { vec![1] }
+        );
+    }
+}
+
+#[test]
+fn test_ファイル監視_失敗と張り直しの配信順序を排他で保つ() {
+    use crate::domain::repository::file_watcher::{FileWatchGateway, WatchChangeHandler};
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    #[derive(Default)]
+    struct Files(Mutex<Vec<WatchChangeHandler>>);
+    impl FileWatchGateway for Files {
+        fn start_tree(&self, _: &str, callback: WatchChangeHandler) -> Result<u64, String> {
+            let mut callbacks = self.0.lock();
+            callbacks.push(callback);
+            Ok(callbacks.len() as u64)
+        }
+        fn stop(&self, _: u64) -> Result<(), String> {
+            Ok(())
+        }
+    }
+    struct Output {
+        publications: Mutex<Vec<bool>>,
+        gate: Mutex<Option<(mpsc::Sender<()>, mpsc::Receiver<()>)>>,
+    }
+    impl Output {
+        fn record(&self, failed: bool) -> Result<(), SubscriptionError> {
+            let gate = self.gate.lock().take();
+            if let Some((started, release)) = gate {
+                started.send(()).unwrap();
+                release.recv_timeout(Duration::from_secs(5)).unwrap();
+            }
+            self.publications.lock().push(failed);
+            Ok(())
+        }
+    }
+    impl StateSubscriptionOutput for Output {
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+        fn publish_failure(
+            &self,
+            _: &SubscriptionTarget,
+            _: StateReadError,
+        ) -> Result<(), SubscriptionError> {
+            self.record(true)
+        }
+        fn publish_initial(
+            &self,
+            _: &SubscriptionTarget,
+            _: StateValue,
+        ) -> Result<(), SubscriptionError> {
+            self.record(false)
+        }
+        fn publish(
+            &self,
+            _: &SubscriptionTarget,
+            _: StateValue,
+            _: Option<StateValue>,
+        ) -> Result<(), SubscriptionError> {
+            self.record(false)
+        }
+    }
+
+    for failure_first in [true, false] {
+        // Given
+        let (started, started_rx) = mpsc::channel();
+        let (release, release_rx) = mpsc::channel();
+        let output = Arc::new(Output {
+            publications: Default::default(),
+            gate: Mutex::new(Some((started, release_rx))),
+        });
+        let files = Arc::new(Files::default());
+        let subscriptions = StateSubscriptionUsecase::new_with_output(
+            output.clone(),
+            crate::test_support::state_subscription::pending_read_driver(),
+        )
+        .with_reads(
+            Arc::new(WatchFailureReads(
+                crate::usecase::workspace_tree::WorkspaceList {
+                    repositories: vec![],
+                },
+            )),
+            Some(Arc::new(crate::usecase::watcher::WatcherUsecase::new(
+                None,
+                files.clone(),
+            ))),
+            vec![],
+            String::new(),
+        );
+        let target = SubscriptionTarget::Workflows;
+        subscriptions.open_client("client".into()).unwrap();
+        subscriptions.start("client", &target).unwrap();
+        assert!(subscriptions.reconcile_watches().is_empty());
+        let callback = files.0.lock()[0].clone();
+
+        // When
+        let first_subscriptions = subscriptions.clone();
+        let first_callback = callback.clone();
+        let first = std::thread::spawn(move || {
+            if failure_first {
+                first_callback(Err("runtime watch failed".into()));
+            } else {
+                first_subscriptions
+                    .publish_read(
+                        &SubscriptionTarget::Workflows,
+                        Ok(StateValue::Workflows(vec![])),
+                        false,
+                    )
+                    .unwrap();
+            }
+        });
+        started_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        let excluded = subscriptions.watch_failures.try_lock().is_none();
+        let (attempted, attempted_rx) = mpsc::channel();
+        let second_subscriptions = subscriptions.clone();
+        let second = std::thread::spawn(move || {
+            attempted.send(()).unwrap();
+            if failure_first {
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap()
+                    .block_on(async {
+                        let mut changes = second_subscriptions.changes.subscribe();
+                        let (_sender, mut waiting) = tokio::sync::mpsc::unbounded_channel();
+                        second_subscriptions
+                            .refresh_read(
+                                &SubscriptionTarget::Workflows,
+                                ReadSignal::Periodic,
+                                &mut changes,
+                                &mut waiting,
+                            )
+                            .await;
+                    });
+            } else {
+                callback(Err("runtime watch failed".into()));
+            }
+        });
+        attempted_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        release.send(()).unwrap();
+        first.join().unwrap();
+        second.join().unwrap();
+
+        // Then
+        assert!(excluded, "失敗の参照から配信の完了まで排他を保つ");
+        assert_eq!(
+            *output.publications.lock(),
+            vec![failure_first, !failure_first]
+        );
+        assert_eq!(
+            subscriptions.watch_failures.lock().is_empty(),
+            failure_first
+        );
+        assert_eq!(
+            subscriptions.watches.lock().len(),
+            usize::from(failure_first)
         );
     }
 }

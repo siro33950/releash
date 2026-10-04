@@ -233,7 +233,7 @@ impl StateSubscriptionUsecase {
             return Err(convert(error));
         }
         let failures = self.reconcile_watches();
-        let value = self.apply_watch_failures(target, value, failures).await;
+        self.apply_watch_failures(target, failures).await;
         if !self.clients.lock().contains_key(client) {
             return Err(convert(SubscriptionError::StreamEnded));
         }
@@ -325,7 +325,7 @@ impl StateSubscriptionUsecase {
             Ok(()) => reads.read(target).await,
             Err(error) => Err(error),
         };
-        let result = self.apply_watch_failures(target, result, failures).await;
+        self.apply_watch_failures(target, failures).await;
         let publication = self.publish_read(target, result, false);
         if let Err(error) = publication {
             log::error!("State publication failed: {error}");
@@ -478,32 +478,28 @@ impl StateSubscriptionUsecase {
             }
             watches.remove(requirement);
             let error = crate::usecase::watcher::UsecaseError::File(message);
-            self.watch_failures.lock().insert(
+            let mut failures = self.watch_failures.lock();
+            failures.insert(
                 requirement.clone(),
-                crate::domain::failure::WorkFailure {
-                    kind: (&error).into(),
-                    message: error.to_string(),
-                },
+                crate::domain::failure::WorkFailure::from_error(&error),
             );
+            for target in self.active_targets() {
+                let requirements = self.required_watches(&target, None);
+                if !requirements.contains(requirement) {
+                    continue;
+                }
+                if let Some(error) = Self::watch_failure(&requirements, &failures, false) {
+                    if let Err(error) = self.publisher.publish_failure(&target, error) {
+                        log::error!("State watch publication failed: {error}");
+                    }
+                }
+            }
             id
         };
         if let Some(watcher) = &self.watchers {
             if let Err(error) = watcher.stop(id) {
                 log::error!("State watch cleanup failed: {error}");
                 self.pending_watch_stops.lock().push(id);
-            }
-        }
-        for target in self.active_targets() {
-            let requirements = self.required_watches(&target, None);
-            if !requirements.contains(requirement) {
-                continue;
-            }
-            let result =
-                Self::with_watch_failures(Ok(None), &requirements, &self.watch_failures.lock());
-            if let Err(error) = result {
-                if let Err(error) = self.publisher.publish_failure(&target, error) {
-                    log::error!("State watch publication failed: {error}");
-                }
             }
         }
     }
@@ -517,9 +513,8 @@ impl StateSubscriptionUsecase {
     async fn apply_watch_failures(
         &self,
         target: &SubscriptionTarget,
-        result: Result<StateValue, StateReadError>,
         failures: Vec<(WatchRequirement, StateReadError)>,
-    ) -> Result<StateValue, StateReadError> {
+    ) {
         let reads = self.reads.as_ref().expect("subscription reads");
         let required: std::collections::HashSet<_> = self
             .active_targets()
@@ -578,9 +573,6 @@ impl StateSubscriptionUsecase {
                 log::error!("State watch publication failed: {error}");
             }
         }
-        let requirements = self.required_watches(target, None);
-        Self::with_watch_failures(result.map(Some), &requirements, &self.watch_failures.lock())
-            .map(|value| value.expect("read value"))
     }
 
     fn publish_read(
@@ -590,9 +582,8 @@ impl StateSubscriptionUsecase {
         initial: bool,
     ) -> Result<(), SubscriptionError> {
         let requirements = self.required_watches(target, None);
-        let result =
-            Self::with_watch_failures(result.map(Some), &requirements, &self.watch_failures.lock())
-                .map(|value| value.expect("read value"));
+        let failures = self.watch_failures.lock();
+        let result = Self::with_watch_failures(result, &requirements, &failures);
         match result {
             Ok(value) if initial => self.publisher.publish_initial(target, value),
             Ok(value) => self.publisher.publish(target, value, None),
@@ -601,12 +592,12 @@ impl StateSubscriptionUsecase {
     }
 
     fn with_watch_failures(
-        mut result: Result<Option<StateValue>, StateReadError>,
+        mut result: Result<StateValue, StateReadError>,
         requirements: &[WatchRequirement],
         failures: &std::collections::HashMap<WatchRequirement, crate::domain::failure::WorkFailure>,
-    ) -> Result<Option<StateValue>, StateReadError> {
+    ) -> Result<StateValue, StateReadError> {
         for (requirement, failure) in failures {
-            if let (WatchRequirement::Git(path), Ok(Some(StateValue::Workspaces(list)))) =
+            if let (WatchRequirement::Git(path), Ok(StateValue::Workspaces(list))) =
                 (requirement, &mut result)
             {
                 for repository in &mut list.repositories {
@@ -622,16 +613,33 @@ impl StateSubscriptionUsecase {
                         }
                     }
                 }
-            } else if requirements.contains(requirement) {
-                return Err(StateReadError::from_error(
-                    crate::usecase::repository_state::RepositoryStateError::Background {
-                        kind: failure.kind,
-                        message: failure.message.clone(),
-                    },
-                ));
             }
         }
-        result
+        let workspaces = matches!(&result, Ok(StateValue::Workspaces(_)));
+        match Self::watch_failure(requirements, failures, workspaces) {
+            Some(error) => Err(error),
+            None => result,
+        }
+    }
+
+    fn watch_failure(
+        requirements: &[WatchRequirement],
+        failures: &std::collections::HashMap<WatchRequirement, crate::domain::failure::WorkFailure>,
+        workspaces: bool,
+    ) -> Option<StateReadError> {
+        failures.iter().find_map(|(requirement, failure)| {
+            if (workspaces && matches!(requirement, WatchRequirement::Git(_)))
+                || !requirements.contains(requirement)
+            {
+                return None;
+            }
+            Some(StateReadError::from_error(
+                crate::usecase::repository_state::RepositoryStateError::Background {
+                    kind: failure.kind,
+                    message: failure.message.clone(),
+                },
+            ))
+        })
     }
 
     #[cfg(test)]

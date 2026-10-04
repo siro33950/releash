@@ -19,8 +19,8 @@ use crate::adaptor::gateway::local_event_store::fault::InitialCreateFaultPoint;
 use crate::adaptor::gateway::local_event_store::layout::{
     create_initial_create_evidence_with_fault, inspect_initial_create_evidence,
     remove_initial_create_evidence, replace_invalid_evidence_for_absent_database_with_fault,
-    sqlite_sidecar_paths, InitialCreateEvidenceState, NoopStorePathObserver, StoreLayout,
-    StorePathObserver, StorePathOperation,
+    InitialCreateEvidenceState, NoopStorePathObserver, StoreLayout, StorePathObserver,
+    StorePathOperation,
 };
 use crate::adaptor::gateway::local_event_store::maintenance::{
     run_startup_maintenance, StartupMaintenanceError,
@@ -167,61 +167,28 @@ fn open_schema_inspection(
     crate::infrastructure::local_event_store_connection::ManagedConnection,
     LocalEventStoreOpenError,
 > {
-    // Classification reads the fixed authority directly. SQLite's
-    // `readonly_shm` URI mode sees committed WAL frames while mapping the
-    // fixed SHM wal-index read-only, so a closed classification failure does
-    // not claim a read-mark or change a sidecar byte. `immutable=1` is never
-    // used when a non-empty WAL exists because it could ignore committed
-    // frames. No create flag is permitted at this boundary.
-    let [wal_path, shm_path] = sqlite_sidecar_paths(path);
-    let mut wal_has_bytes = false;
-    for sidecar in [wal_path.clone(), shm_path] {
-        layout.observe(StorePathOperation::Metadata, &sidecar);
-        match std::fs::metadata(&sidecar) {
-            Ok(metadata) => {
-                layout.observe(StorePathOperation::Open, &sidecar);
-                layout.observe(StorePathOperation::Read, &sidecar);
-                if sidecar == wal_path {
-                    wal_has_bytes = metadata.len() > 0;
-                }
+    crate::infrastructure::local_event_store_connection::open_schema_inspection(
+        path,
+        limiter,
+        |operation, path| layout.observe(operation, path),
+    )
+    .map_err(|error| {
+        use crate::infrastructure::local_event_store_connection::SchemaInspectionError;
+        match error {
+            SchemaInspectionError::Io(error) => io_open_failure(error),
+            SchemaInspectionError::InvalidPath(path) => {
+                LocalEventStoreOpenError::StorageUnavailable(
+                    crate::domain::failure::TechnicalFailure {
+                        nature: crate::domain::failure::TechnicalFailureNature::Other,
+                        message: format!("invalid database file path: {}", path.display()),
+                    },
+                )
             }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(io_open_failure(error)),
+            SchemaInspectionError::Sqlite(error) => {
+                classify_sqlite_error(&error, LocalEventStoreOpenError::InitializationStateInvalid)
+            }
         }
-    }
-    layout.observe(StorePathOperation::Open, path);
-    layout.observe(StorePathOperation::Read, path);
-    let mut uri = url::Url::from_file_path(path).map_err(|()| {
-        LocalEventStoreOpenError::StorageUnavailable(crate::domain::failure::TechnicalFailure {
-            nature: crate::domain::failure::TechnicalFailureNature::Other,
-            message: format!("invalid database file path: {}", path.display()),
-        })
-    })?;
-    uri.query_pairs_mut().append_pair("mode", "ro");
-    if wal_has_bytes {
-        uri.query_pairs_mut().append_pair("readonly_shm", "1");
-    } else {
-        // With no committed WAL frame there is no sidecar state to include.
-        // Immutable mode avoids asking a WAL-mode header for a missing SHM
-        // while still opening this same fixed database path.
-        uri.query_pairs_mut().append_pair("immutable", "1");
-    }
-    let connection = rusqlite::Connection::open_with_flags(
-        uri.as_str(),
-        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY
-            | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX
-            | rusqlite::OpenFlags::SQLITE_OPEN_URI,
-    )
-    .map_err(|error| {
-        classify_sqlite_error(&error, LocalEventStoreOpenError::InitializationStateInvalid)
-    })?;
-    let connection = crate::infrastructure::local_event_store_connection::configure_busy_handler(
-        connection, limiter,
-    )
-    .map_err(|error| {
-        classify_sqlite_error(&error, LocalEventStoreOpenError::InitializationStateInvalid)
-    })?;
-    Ok(connection)
+    })
 }
 
 fn is_proven_initial_create_residue(

@@ -1,4 +1,5 @@
 import { Code, ConnectError } from "@connectrpc/connect";
+import { invoke as invokeShell } from "@tauri-apps/api/core";
 import {
 	act,
 	fireEvent,
@@ -7,7 +8,9 @@ import {
 	waitFor,
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { useState } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { DaemonBoundary } from "@/components/DaemonBoundary";
 import type { BranchStatus } from "@/generated/client_types";
 import { invokeClient as invoke, subscribeState } from "@/lib/client";
 import type { IssueInfo } from "@/types/git";
@@ -193,6 +196,71 @@ describe("CreateWorktreeModal", () => {
 		expect(
 			screen.queryByText(/未実行|未送信|結果不明|操作結果を確認できません/),
 		).not.toBeInTheDocument();
+	});
+
+	it("部分成功でモーダルが閉じても失敗したbranchと原因が画面に残る", async () => {
+		const user = userEvent.setup();
+		hookMocks.useIssues.mockReturnValue({
+			issues: [
+				makeIssue({
+					number: 1,
+					title: "Successful issue",
+					default_branch_name: "feat/success",
+				}),
+				makeIssue({
+					number: 2,
+					title: "Failed issue",
+					default_branch_name: "feat/failure",
+				}),
+			],
+			loading: false,
+			refresh: vi.fn(),
+		});
+		vi.mocked(invokeShell).mockImplementationOnce(async (_command, args) => {
+			const { channel } = args as {
+				channel: { onmessage: (value: unknown) => void };
+			};
+			channel.onmessage({ phase: "ready" });
+		});
+		mockInvoke.mockImplementation((command, args) => {
+			if (command === "create_worktree") {
+				return args && "branch" in args && args.branch === "feat/failure"
+					? Promise.reject(new Error("permission denied"))
+					: Promise.resolve("/fixture/success");
+			}
+			return Promise.resolve([]);
+		});
+		const onCreated = vi.fn();
+		function Workspace() {
+			const [open, setOpen] = useState(true);
+			return (
+				<DaemonBoundary>
+					{open && (
+						<CreateWorktreeModal
+							open
+							repoPaths={["/repo"]}
+							onCreated={(entry) => {
+								onCreated(entry);
+								setOpen(false);
+							}}
+							onClose={() => setOpen(false)}
+						/>
+					)}
+				</DaemonBoundary>
+			);
+		}
+		render(<Workspace />);
+		await user.click(await screen.findByRole("tab", { name: /Issue/ }));
+		await user.click(screen.getByRole("button", { name: /Successful issue/ }));
+		await user.click(screen.getByRole("button", { name: /Failed issue/ }));
+		await user.click(screen.getByRole("button", { name: /Create/ }));
+		await waitFor(() =>
+			expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
+		);
+		expect(onCreated).toHaveBeenCalledWith("/fixture/success");
+		expect(screen.getByRole("alert")).toHaveTextContent(
+			"Failed to create: feat/failure: permission denied",
+		);
 	});
 
 	it("create_worktree に frontend 導出の worktreePath を渡さない", async () => {

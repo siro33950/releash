@@ -181,6 +181,87 @@ pub fn open_reader(
     Ok(connection)
 }
 
+#[derive(Debug, thiserror::Error)]
+pub enum SchemaInspectionError {
+    #[error("{0}")]
+    Io(#[from] std::io::Error),
+    #[error("invalid database file path: {0}")]
+    InvalidPath(std::path::PathBuf),
+    #[error("{0}")]
+    Sqlite(#[from] rusqlite::Error),
+}
+
+pub(crate) fn sqlite_sidecar_paths(database_path: &Path) -> [std::path::PathBuf; 2] {
+    [
+        std::path::PathBuf::from(format!("{}-wal", database_path.display())),
+        std::path::PathBuf::from(format!("{}-shm", database_path.display())),
+    ]
+}
+
+pub fn open_schema_inspection(
+    path: &Path,
+    limiter: std::sync::Arc<crate::common::retry::RetryLimiter>,
+    observe: impl Fn(crate::infrastructure::app_data_path::AppDataPathOperation, &Path),
+) -> Result<ManagedConnection, SchemaInspectionError> {
+    // Classification reads the fixed authority directly. SQLite's
+    // `readonly_shm` URI mode sees committed WAL frames while mapping the
+    // fixed SHM wal-index read-only, so a closed classification failure does
+    // not claim a read-mark or change a sidecar byte. `immutable=1` is never
+    // used when a non-empty WAL exists because it could ignore committed
+    // frames. No create flag is permitted at this boundary.
+    let [wal_path, shm_path] = sqlite_sidecar_paths(path);
+    let mut wal_has_bytes = false;
+    for sidecar in [wal_path.clone(), shm_path] {
+        observe(
+            crate::infrastructure::app_data_path::AppDataPathOperation::Metadata,
+            &sidecar,
+        );
+        match std::fs::metadata(&sidecar) {
+            Ok(metadata) => {
+                observe(
+                    crate::infrastructure::app_data_path::AppDataPathOperation::Open,
+                    &sidecar,
+                );
+                observe(
+                    crate::infrastructure::app_data_path::AppDataPathOperation::Read,
+                    &sidecar,
+                );
+                if sidecar == wal_path {
+                    wal_has_bytes = metadata.len() > 0;
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(SchemaInspectionError::Io(error)),
+        }
+    }
+    observe(
+        crate::infrastructure::app_data_path::AppDataPathOperation::Open,
+        path,
+    );
+    observe(
+        crate::infrastructure::app_data_path::AppDataPathOperation::Read,
+        path,
+    );
+    let mut uri = url::Url::from_file_path(path)
+        .map_err(|()| SchemaInspectionError::InvalidPath(path.to_path_buf()))?;
+    uri.query_pairs_mut().append_pair("mode", "ro");
+    if wal_has_bytes {
+        uri.query_pairs_mut().append_pair("readonly_shm", "1");
+    } else {
+        // With no committed WAL frame there is no sidecar state to include.
+        // Immutable mode avoids asking a WAL-mode header for a missing SHM
+        // while still opening this same fixed database path.
+        uri.query_pairs_mut().append_pair("immutable", "1");
+    }
+    let connection = rusqlite::Connection::open_with_flags(
+        uri.as_str(),
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY
+            | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX
+            | rusqlite::OpenFlags::SQLITE_OPEN_URI,
+    )?;
+    configure_busy_handler(connection, limiter).map_err(SchemaInspectionError::Sqlite)
+}
+
 /// Restrict a store file / directory to the owning user.
 pub fn set_owner_only_permissions(path: &Path) -> std::io::Result<()> {
     #[cfg(unix)]
