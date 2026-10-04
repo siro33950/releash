@@ -70,11 +70,13 @@ export function useAutomation(open: boolean) {
 	}, []);
 	const sourceSeenFor = useRef<string | null>(null);
 	const lastSavedSource = useRef<string | null>(null);
+	const workflowListed = useRef<string | null>(null);
 	const facetSeenFor = useRef<string | null>(null);
 	const lastSavedFacet = useRef<string | null>(null);
 
 	useEffect(() => {
 		if (open) return;
+		workflowListed.current = null;
 		setSelectedWorkflow(null);
 		setSelectedWorkflowName(null);
 		setSelectedWorkflowSource(null);
@@ -115,12 +117,50 @@ export function useAutomation(open: boolean) {
 		setSelectedFacetContent(content);
 	}, [selectedFacet, facetSubscription.value]);
 
+	useEffect(() => {
+		if (!selectedWorkflowName) return;
+		if (
+			workflowsSubscription.value?.some(
+				(entry) => entry.name === selectedWorkflowName,
+			)
+		) {
+			workflowListed.current = selectedWorkflowName;
+		} else if (
+			workflowListed.current === selectedWorkflowName &&
+			workflowsSubscription.value
+		) {
+			setSelectedWorkflowName(null);
+			setSelectedWorkflow(null);
+			setSelectedWorkflowSource(null);
+			workflowListed.current = null;
+		}
+	}, [selectedWorkflowName, workflowsSubscription.value]);
+
+	const facetListed = useRef<string | null>(null);
+	useEffect(() => {
+		if (!selectedFacet || !facetsSubscription.value) return;
+		const id = `${selectedFacet.kind}/${selectedFacet.key}`;
+		if (
+			facetsSubscription.value.some(
+				(entry) =>
+					entry.key === selectedFacet.key && entry.kind === selectedFacet.kind,
+			)
+		) {
+			facetListed.current = id;
+		} else if (facetListed.current === id) {
+			setSelectedFacet(null);
+			setSelectedFacetContent(null);
+			facetListed.current = null;
+		}
+	}, [selectedFacet, facetsSubscription.value]);
+
 	// --- Workflow operations ---
 
 	const selectWorkflow = useCallback((name: string) => {
 		setOperationError(null);
 		setExternalChangeDetected(false);
 		sourceSeenFor.current = null;
+		workflowListed.current = null;
 		setSelectedWorkflowName(name);
 	}, []);
 
@@ -138,13 +178,12 @@ export function useAutomation(open: boolean) {
 						diagnostics: response.diagnostics,
 					};
 				}
-				const { workflow } = response;
+				const { name } = response;
 				lastSavedSource.current = source;
-				sourceSeenFor.current = workflow.name;
-				setSelectedWorkflow(workflow);
-				setSelectedWorkflowName(workflow.name);
-				setSelectedWorkflowSource(source);
-				return { ok: true as const, workflow };
+				sourceSeenFor.current = name;
+				workflowListed.current = null;
+				setSelectedWorkflowName(name);
+				return { ok: true as const, name };
 			} catch (e) {
 				return { ok: false as const, error: getErrorMessage(e) };
 			}
@@ -152,21 +191,13 @@ export function useAutomation(open: boolean) {
 		[],
 	);
 
-	const deleteWorkflow = useCallback(
-		async (name: string) => {
-			try {
-				await invoke("delete_workflow", { name });
-				if ((selectedWorkflow?.name ?? selectedWorkflowName) === name) {
-					setSelectedWorkflow(null);
-					setSelectedWorkflowName(null);
-					setSelectedWorkflowSource(null);
-				}
-			} catch (e) {
-				setOperationError(getErrorMessage(e));
-			}
-		},
-		[selectedWorkflow, selectedWorkflowName],
-	);
+	const deleteWorkflow = useCallback(async (name: string) => {
+		try {
+			await invoke("delete_workflow", { name });
+		} catch (e) {
+			setOperationError(getErrorMessage(e));
+		}
+	}, []);
 
 	const duplicateWorkflow = useCallback(
 		async (sourceName: string, newName: string) => {
@@ -197,10 +228,12 @@ export function useAutomation(open: boolean) {
 		setOperationError(null);
 		setExternalChangeDetected(false);
 		facetSeenFor.current = null;
+		facetListed.current = null;
 		setSelectedFacet({ kind, key });
 	}, []);
 
 	const clearFacetSelection = useCallback(() => {
+		facetListed.current = null;
 		setSelectedFacet(null);
 		setSelectedFacetContent(null);
 	}, []);
@@ -223,18 +256,13 @@ export function useAutomation(open: boolean) {
 		[],
 	);
 
-	const deleteFacet = useCallback(
-		async (kind: FacetKind, key: string) => {
-			try {
-				await invoke("delete_facet", { kind, key });
-				if (selectedFacet?.key === key && selectedFacet.kind === kind)
-					clearFacetSelection();
-			} catch (e) {
-				setOperationError(getErrorMessage(e));
-			}
-		},
-		[selectedFacet, clearFacetSelection],
-	);
+	const deleteFacet = useCallback(async (kind: FacetKind, key: string) => {
+		try {
+			await invoke("delete_facet", { kind, key });
+		} catch (e) {
+			setOperationError(getErrorMessage(e));
+		}
+	}, []);
 
 	const duplicateFacet = useCallback(
 		async (kind: FacetKind, sourceKey: string, newKey: string) => {

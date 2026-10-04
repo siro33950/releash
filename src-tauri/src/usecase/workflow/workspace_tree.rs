@@ -167,19 +167,6 @@ impl WorkflowUsecase {
         self.workspace_query.node_detail(&workspace, node_id).await
     }
 
-    pub(crate) async fn get_workspace_session_node_id(
-        &self,
-        worktree_path: &str,
-        session_id: &str,
-    ) -> Result<Option<String>, WorkflowError> {
-        let workspace = crate::domain::workspace_tree::WorkspaceIdentity::new(
-            self.resolve_worktree_path(worktree_path)?,
-        );
-        self.workspace_query
-            .session_node_id(&workspace, session_id)
-            .await
-    }
-
     /// 実行木と、選択している Node が画面に出す木にあるか。
     pub(crate) async fn workspace_tree_selection(
         &self,

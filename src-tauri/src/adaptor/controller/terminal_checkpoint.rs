@@ -1,5 +1,4 @@
 use crate::common::retry::RetryBackoff;
-use crate::usecase::failure::FailureKey;
 use crate::usecase::failure::WorkFailure;
 use crate::usecase::retry::Retrying;
 use std::collections::HashMap;
@@ -59,11 +58,7 @@ pub(crate) async fn run<F, Fut>(
                 delay().await;
                 pending.dirty.store(false, Ordering::SeqCst);
                 let _ = retrying
-                    .restart(
-                        FailureKey::new("terminal_checkpoint", &session_key),
-                        RetryBackoff::ITEM,
-                        |_| flush(session_key.clone()),
-                    )
+                    .restart(None, RetryBackoff::ITEM, |_| flush(session_key.clone()))
                     .await;
                 let mut sessions = sessions.lock().expect("pending checkpoints");
                 pending.scheduled.store(false, Ordering::SeqCst);

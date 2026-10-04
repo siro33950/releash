@@ -9,9 +9,11 @@ async fn test_session読取_親と自身の実行定義を解釈せず接続情�
     // Given
     for unavailable in ["main", "session", "unused"] {
         let directory = tempfile::tempdir().unwrap();
-        let store =
-            LocalEventStore::open(LocalEventStoreConfig::production(directory.path().into()))
-                .unwrap();
+        let store = LocalEventStore::open(LocalEventStoreConfig::production(
+            directory.path().into(),
+            std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
+        ))
+        .unwrap();
         seed_unavailable_definition(&store, "tree", "/repo", unavailable).await;
         let backend = FactLogReadBackend::Live(store);
         let location = locate_session(&backend, "tree-session")
@@ -43,8 +45,11 @@ async fn test_session読取_親と自身の実行定義を解釈せず接続情�
 async fn test_session読取_root欠落と対象provider欠落は接続情報取得エラーになる() {
     // Given
     let directory = tempfile::tempdir().unwrap();
-    let store =
-        LocalEventStore::open(LocalEventStoreConfig::production(directory.path().into())).unwrap();
+    let store = LocalEventStore::open(LocalEventStoreConfig::production(
+        directory.path().into(),
+        std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
+    ))
+    .unwrap();
     let backend = FactLogReadBackend::Live(store.clone());
     let location = SessionLocation {
         tree_id: "tree".into(),
@@ -76,8 +81,11 @@ async fn test_session読取_root欠落と対象provider欠落は接続情報取�
 async fn test_session読取_sql障害とroot欠損を区別する() {
     // Given
     let directory = tempfile::tempdir().unwrap();
-    let store =
-        LocalEventStore::open(LocalEventStoreConfig::production(directory.path().into())).unwrap();
+    let store = LocalEventStore::open(LocalEventStoreConfig::production(
+        directory.path().into(),
+        std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
+    ))
+    .unwrap();
     let backend = FactLogReadBackend::Live(store);
     let location = SessionLocation {
         tree_id: "missing".into(),
@@ -215,8 +223,11 @@ async fn test_session読取_子sessionにもrootのarchiveとrestoreを反映す
     use crate::domain::workflow::services::fact_replay::derive_session_facts;
     use crate::domain::workflow::{NodeFact, NodeFactMeta};
     let directory = tempfile::tempdir().unwrap();
-    let store =
-        LocalEventStore::open(LocalEventStoreConfig::production(directory.path().into())).unwrap();
+    let store = LocalEventStore::open(LocalEventStoreConfig::production(
+        directory.path().into(),
+        std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
+    ))
+    .unwrap();
     seed_unavailable_definition(&store, "tree", "/repo", "unused").await;
     let backend = FactLogReadBackend::Live(store.clone());
     let location = locate_session(&backend, "tree-session")

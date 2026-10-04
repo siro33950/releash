@@ -491,6 +491,42 @@ impl WorkspaceTreeRepository for SqliteWorkspaceTreeRepository {
         trees
     }
 
+    async fn load_node_by_session_id(
+        &self,
+        workspace_identity: &WorkspaceIdentity,
+        session_id: &str,
+    ) -> Result<Option<WorkspaceTreeNode>, LocalEventQueryError> {
+        let workspace = workspace_identity.as_str().to_string();
+        let backend = self.fact_backend();
+        let Some((tree_id, node_execution_id)) =
+            fact_log::find_session_attachment(&backend, session_id)
+                .await
+                .map_err(LocalEventQueryError::from)?
+        else {
+            return Ok(None);
+        };
+        let Some(execution) = self.folded_tree(&tree_id).await? else {
+            return Ok(None);
+        };
+        let (folded, record) = &*execution;
+        if folded.root.workspace_identity != workspace {
+            return Ok(None);
+        }
+        let nodes = self.tree_nodes(&workspace, folded, record)?;
+        Ok(nodes
+            .iter()
+            .find(|node| {
+                node.node_execution_id.as_deref() == Some(node_execution_id.as_str())
+                    && node.session_id.as_deref() == Some(session_id)
+            })
+            .map(|node| {
+                let mut selected = node.clone();
+                selected.id = WorkspacePublicRoot::for_node(&nodes, &node.id)
+                    .map_or_else(|| node.id.clone(), |root| root.public_id().to_string());
+                selected
+            }))
+    }
+
     async fn load_node(
         &self,
         workspace_identity: &WorkspaceIdentity,
@@ -538,37 +574,6 @@ impl WorkspaceTreeRepository for SqliteWorkspaceTreeRepository {
             .tree_nodes(&workspace, folded, record)?
             .into_iter()
             .find(|node| node.node_execution_id.as_deref() == Some(node_execution_id)))
-    }
-
-    async fn node_id_for_session(
-        &self,
-        workspace_identity: &WorkspaceIdentity,
-        session_id: &str,
-    ) -> Result<Option<String>, LocalEventQueryError> {
-        let workspace = workspace_identity.as_str().to_string();
-        let backend = self.fact_backend();
-        let Some((tree_id, node_execution_id)) =
-            fact_log::find_session_attachment(&backend, session_id)
-                .await
-                .map_err(LocalEventQueryError::from)?
-        else {
-            return Ok(None);
-        };
-        let Some(execution) = self.folded_tree(&tree_id).await? else {
-            return Ok(None);
-        };
-        let (folded, record) = &*execution;
-        if folded.root.workspace_identity != workspace {
-            return Ok(None);
-        }
-        let nodes = self.tree_nodes(&workspace, folded, record)?;
-        Ok(nodes
-            .iter()
-            .find(|node| node.node_execution_id.as_deref() == Some(node_execution_id.as_str()))
-            .map(|node| {
-                WorkspacePublicRoot::for_node(&nodes, &node.id)
-                    .map_or_else(|| node.id.clone(), |root| root.public_id().to_string())
-            }))
     }
 }
 

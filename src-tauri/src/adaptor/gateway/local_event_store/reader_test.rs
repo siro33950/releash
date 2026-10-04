@@ -16,7 +16,13 @@ async fn test_読み込み待ち_同じruntimeの別処理が先に完了する(
     assert!(futures_util::poll!(&mut read).is_pending());
     let worker_pool = pool.clone();
     let worker = std::thread::spawn(move || {
-        worker_pool.run_worker(Connection::open_in_memory().unwrap());
+        worker_pool.run_worker(
+            crate::infrastructure::local_event_store_connection::configure_busy_handler(
+                Connection::open_in_memory().unwrap(),
+                std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
+            )
+            .unwrap(),
+        );
     });
     assert_eq!(read.await.unwrap(), 42);
     pool.close();
@@ -45,7 +51,15 @@ async fn test_読み込みキュー_混雑と期限切れとreply喪失を分類
             .with_deadline(crate::common::operation_context::Deadline::new(
                 std::time::Instant::now(),
             )),
-        || (job.task)(&Connection::open_in_memory().unwrap()),
+        || {
+            (job.task)(
+                &crate::infrastructure::local_event_store_connection::configure_busy_handler(
+                    Connection::open_in_memory().unwrap(),
+                    std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
+                )
+                .unwrap(),
+            )
+        },
     );
     assert_eq!(
         pending.remove(0).await,
@@ -105,7 +119,13 @@ async fn test_読み込み実行中_期限と取り消しでsqliteを止め接�
         let pool = ReaderPool::new();
         let worker_pool = pool.clone();
         let worker = std::thread::spawn(move || {
-            worker_pool.run_worker(Connection::open_in_memory().unwrap())
+            worker_pool.run_worker(
+                crate::infrastructure::local_event_store_connection::configure_busy_handler(
+                    Connection::open_in_memory().unwrap(),
+                    std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
+                )
+                .unwrap(),
+            )
         });
         let token = tokio_util::sync::CancellationToken::new();
         let context = OperationContext::new(
@@ -178,8 +198,15 @@ async fn test_読み込み取消_短い文の間で取り消しても次の文�
     // Given
     let pool = ReaderPool::new();
     let worker_pool = pool.clone();
-    let worker =
-        std::thread::spawn(move || worker_pool.run_worker(Connection::open_in_memory().unwrap()));
+    let worker = std::thread::spawn(move || {
+        worker_pool.run_worker(
+            crate::infrastructure::local_event_store_connection::configure_busy_handler(
+                Connection::open_in_memory().unwrap(),
+                std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
+            )
+            .unwrap(),
+        )
+    });
     let token = tokio_util::sync::CancellationToken::new();
     let context = OperationContext::new(None, Arc::new(token.clone()));
     let second_ran = Arc::new(AtomicBool::new(false));
@@ -216,7 +243,11 @@ async fn test_reader_busy待ち_実際のdb競合で期限と取消を引き継�
         blocker
             .execute_batch("CREATE TABLE value(n); INSERT INTO value VALUES(1);")
             .unwrap();
-        let connection = super::super::connection::open_reader(&path).unwrap();
+        let connection = crate::infrastructure::local_event_store_connection::open_reader(
+            &path,
+            std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
+        )
+        .unwrap();
         blocker.execute_batch("BEGIN EXCLUSIVE").unwrap();
         let pool = ReaderPool::new();
         let worker_pool = pool.clone();
@@ -315,7 +346,11 @@ async fn test_読み込み資源期限_親が無期限でも長い期限でも�
     // Then
     assert!(start.elapsed() >= Duration::from_secs(2));
     assert!(start.elapsed() < Duration::from_secs(4));
-    let connection = Connection::open_in_memory().unwrap();
+    let connection = crate::infrastructure::local_event_store_connection::configure_busy_handler(
+        Connection::open_in_memory().unwrap(),
+        std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
+    )
+    .unwrap();
     for _ in 0..2 {
         let job = pool.pop_blocking().unwrap();
         crate::common::operation_context::sync_scope(job.context, || (job.task)(&connection));

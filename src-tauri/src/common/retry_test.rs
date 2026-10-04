@@ -1,5 +1,27 @@
 use super::*;
 
+#[tokio::test(start_paused = true)]
+async fn test_再試行待ち_相手の指定をbackoffより優先する() {
+    let limiter = RetryLimiter::deterministic();
+    for delay in [Duration::ZERO, Duration::from_secs(3)] {
+        let started = tokio::time::Instant::now();
+        let mut calls = 0;
+        attempts_with_pushback(
+            RetryBackoff::RECOVERY,
+            &limiter,
+            |_: &()| Some((AttemptProgress::Continue, Some(delay))),
+            |_| {
+                calls += 1;
+                std::future::ready(if calls == 1 { Err(()) } else { Ok(()) })
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(calls, 2);
+        assert_eq!(started.elapsed(), delay);
+    }
+}
+
 #[test]
 fn test_待ち時間_共通式で増加し上限後も値を返す() {
     // Given
@@ -7,7 +29,7 @@ fn test_待ち時間_共通式で増加し上限後も値を返す() {
         RetryBackoff::ITEM,
         RetryBackoff::RECOVERY,
         RetryBackoff::CONFLICT,
-        RetryBackoff::SERVICE,
+        RetryBackoff::POLL,
     ] {
         // When / Then
         for count in [1, 2, 5, 100, u64::MAX] {
@@ -183,5 +205,37 @@ async fn test_期限の包み_期限で失敗を返し前に終われば結果�
         })
         .await,
         Ok(1)
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn test_予算の即時取得_枯渇を待たずに断り補充後は取得する() {
+    let limiter = RetryLimiter::deterministic();
+    for _ in 0..100 {
+        assert!(limiter.try_acquire());
+    }
+    assert!(!limiter.try_acquire());
+    tokio::time::advance(Duration::from_millis(100)).await;
+    assert!(limiter.try_acquire());
+    assert!(!limiter.try_acquire());
+}
+
+#[tokio::test]
+async fn test_非同期の待ち_呼出期限と取消で打ち切る() {
+    use crate::common::operation_context::{self, Deadline, OperationContext, OperationStopped};
+    let limiter = RetryLimiter::deterministic();
+    let context = OperationContext::default().with_deadline(Deadline::new(
+        std::time::Instant::now() + Duration::from_millis(30),
+    ));
+    assert_eq!(
+        operation_context::scope(context, limiter.wait(RetryBackoff::RECOVERY, 1)).await,
+        Err(OperationStopped::Expired)
+    );
+    let token = std::sync::Arc::new(tokio_util::sync::CancellationToken::new());
+    token.cancel();
+    let context = OperationContext::new(None, token);
+    assert_eq!(
+        operation_context::scope(context, limiter.wait(RetryBackoff::RECOVERY, 1)).await,
+        Err(OperationStopped::Cancelled)
     );
 }

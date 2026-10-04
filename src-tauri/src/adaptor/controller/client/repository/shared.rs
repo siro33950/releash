@@ -11,6 +11,29 @@ pub(crate) fn register_shared(
     {
         let state = deps.app_state.clone();
         router.register_domain(
+            &["find_repository_root"],
+            Box::new(move |command| {
+                let state = state.clone();
+                Box::pin(async move {
+                    let wire::command_request::Command::FindRepositoryRoot(args) = command else {
+                        return Err(invalid_request("Mismatched command"));
+                    };
+                    let state =
+                        state.ok_or_else(|| invalid_request("Command dependency unavailable"))?;
+                    let path = required(args.path, "path")?;
+                    let result =
+                        run_blocking(move || state.repository_usecase.find_main_repo_path(&path))
+                            .await;
+                    Ok(wire::command_result::Command::FindRepositoryRoot(outcome(
+                        result,
+                    )?))
+                })
+            }),
+        );
+    }
+    {
+        let state = deps.app_state.clone();
+        router.register_domain(
             &["add_repo_path"],
             Box::new(move |command| {
                 let state = state.clone();

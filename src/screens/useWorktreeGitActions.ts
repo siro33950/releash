@@ -2,21 +2,16 @@ import { useCallback } from "react";
 import { getErrorMessage } from "@/lib/errorMessage";
 
 // Re-export reducer types used by this hook
-export type GitAction =
-	| { type: "SET_GIT_ERROR"; error: string | null }
-	| { type: "REFRESH" };
+export type GitAction = { type: "SET_GIT_ERROR"; error: string | null };
 
 export interface GitState {
 	gitError: string | null;
-	refreshKey: number;
 }
 
 export function gitReducer(state: GitState, action: GitAction): GitState {
 	switch (action.type) {
 		case "SET_GIT_ERROR":
 			return { ...state, gitError: action.error };
-		case "REFRESH":
-			return { ...state, refreshKey: state.refreshKey + 1 };
 	}
 }
 
@@ -56,7 +51,6 @@ interface UseWorktreeGitActionsParams {
 	stage: (repoPath: string, paths: string[]) => Promise<void>;
 	unstage: (repoPath: string, paths: string[]) => Promise<void>;
 	createBranch: (repoPath: string, branchName: string) => Promise<void>;
-	refreshGit: () => void;
 	newBranchName: string;
 	dispatchGit: React.Dispatch<GitAction>;
 	dispatchUI: React.Dispatch<UIAction>;
@@ -74,7 +68,6 @@ export function useWorktreeGitActions({
 	stage,
 	unstage,
 	createBranch,
-	refreshGit,
 	newBranchName,
 	dispatchGit,
 	dispatchUI,
@@ -82,20 +75,18 @@ export function useWorktreeGitActions({
 	const handleGitStageAll = useCallback(async () => {
 		try {
 			await stage(rootPath, []);
-			refreshGit();
 		} catch (e) {
 			dispatchGit({ type: "SET_GIT_ERROR", error: getErrorMessage(e) });
 		}
-	}, [rootPath, stage, refreshGit, dispatchGit]);
+	}, [rootPath, stage, dispatchGit]);
 
 	const handleGitUnstageAll = useCallback(async () => {
 		try {
 			await unstage(rootPath, []);
-			refreshGit();
 		} catch (e) {
 			dispatchGit({ type: "SET_GIT_ERROR", error: getErrorMessage(e) });
 		}
-	}, [rootPath, unstage, refreshGit, dispatchGit]);
+	}, [rootPath, unstage, dispatchGit]);
 
 	const handleGitCreateBranch = useCallback(() => {
 		dispatchUI({ type: "OPEN_CREATE_BRANCH" });
@@ -107,18 +98,10 @@ export function useWorktreeGitActions({
 		try {
 			await createBranch(rootPath, name);
 			dispatchUI({ type: "CLOSE_CREATE_BRANCH" });
-			refreshGit();
 		} catch (e) {
 			dispatchGit({ type: "SET_GIT_ERROR", error: getErrorMessage(e) });
 		}
-	}, [
-		rootPath,
-		createBranch,
-		newBranchName,
-		refreshGit,
-		dispatchGit,
-		dispatchUI,
-	]);
+	}, [rootPath, createBranch, newBranchName, dispatchGit, dispatchUI]);
 
 	return {
 		handleGitStageAll,

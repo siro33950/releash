@@ -67,6 +67,10 @@ fn start_local_api_test_host_with_policy(
         binding.terminal_bearer_token(),
         None,
         None,
+        (
+            crate::adaptor::controller::daemon::client_priority_interceptor().gate,
+            crate::adaptor::controller::daemon::default_timeout(),
+        ),
     );
     let server_runtime = tokio::runtime::Runtime::new().unwrap();
     let server = binding.start(router, server_runtime.handle());

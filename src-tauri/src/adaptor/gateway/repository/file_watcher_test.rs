@@ -11,7 +11,8 @@ async fn test_木監視_未作成のディレクトリの生成を検知して�
     let id = gateway
         .start_tree(
             path.to_str().unwrap(),
-            Arc::new(move || {
+            Arc::new(move |result| {
+                result.unwrap();
                 let _ = sender.send(());
             }),
         )

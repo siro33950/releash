@@ -17,6 +17,10 @@ pub(crate) async fn update_external_editor_shared(
         )
     })
     .await
-    .map_err(|e| crate::adaptor::presenter::error::AppError::new(format!("task join error: {e}")))?
+    .map_err(|e| {
+        crate::adaptor::presenter::error::AppError::from_failure(
+            crate::domain::failure::TechnicalFailure::from(e),
+        )
+    })?
     .map_err(crate::adaptor::presenter::error::AppError::from_failure)
 }

@@ -22,6 +22,7 @@ pub(crate) struct ProviderAvailabilityItemDto {
     pub display_name: String,
     pub default_executable: String,
     pub configured_executable: Option<String>,
+    pub configuration_revision: u32,
     pub effective_executable: String,
     pub available: bool,
     pub resolved_executable: Option<String>,
@@ -83,6 +84,7 @@ pub(crate) struct ProviderAvailabilityUsecase {
     probe: Arc<dyn ProviderExecutableProbeGateway>,
     registry: RwLock<ProviderRegistry>,
     operation: Mutex<()>,
+    configuration_revisions: Mutex<std::collections::HashMap<ProviderKind, u32>>,
 }
 
 impl ProviderAvailabilityUsecase {
@@ -105,6 +107,7 @@ impl ProviderAvailabilityUsecase {
             probe,
             registry: RwLock::new(registry),
             operation: Mutex::new(()),
+            configuration_revisions: Mutex::new(Default::default()),
         })
     }
 
@@ -118,6 +121,14 @@ impl ProviderAvailabilityUsecase {
     pub(crate) fn snapshot_dto(
         &self,
     ) -> Result<ProviderAvailabilitySnapshotDto, ProviderAvailabilityUsecaseError> {
+        let _operation = self
+            .operation
+            .lock()
+            .map_err(|_| ProviderAvailabilityUsecaseError::Corrupt)?;
+        let revisions = self
+            .configuration_revisions
+            .lock()
+            .map_err(|_| ProviderAvailabilityUsecaseError::Corrupt)?;
         let registry = self
             .registry
             .read()
@@ -128,6 +139,7 @@ impl ProviderAvailabilityUsecase {
                 .iter()
                 .map(|entry| ProviderAvailabilityItemDto {
                     provider: entry.provider().into(),
+                    configuration_revision: revisions.get(&entry.provider()).copied().unwrap_or(0),
                     display_name: entry.display_name().to_string(),
                     default_executable: entry.default_executable().as_str().to_string(),
                     configured_executable: entry
@@ -160,12 +172,10 @@ impl ProviderAvailabilityUsecase {
         &self,
         provider: ProviderKind,
         executable: &str,
-    ) -> Result<String, ProviderAvailabilityUsecaseError> {
+    ) -> Result<(), ProviderAvailabilityUsecaseError> {
         let executable = ProviderExecutable::new(executable)
             .map_err(|_| ProviderAvailabilityUsecaseError::InvalidInput)?;
-        let configured = executable.as_str().to_string();
-        self.replace_configured_executable(provider, Some(executable))?;
-        Ok(configured)
+        self.replace_configured_executable(provider, Some(executable))
     }
 
     pub(crate) fn reset_configured_executable(
@@ -198,6 +208,15 @@ impl ProviderAvailabilityUsecase {
         self.config
             .save_configured_executable(provider, executable.as_ref())
             .map_err(ProviderAvailabilityUsecaseError::Config)?;
+        let mut revisions = self
+            .configuration_revisions
+            .lock()
+            .map_err(|_| ProviderAvailabilityUsecaseError::Corrupt)?;
+        let revision = revisions.entry(provider).or_default();
+        *revision = revision
+            .checked_add(1)
+            .ok_or(ProviderAvailabilityUsecaseError::Corrupt)?;
+        drop(revisions);
         self.rebuild_registry()
     }
 

@@ -88,7 +88,7 @@ describe("macOS WKWebView / real Connect daemon", () => {
 			await browser.execute(
 				async ({ worktreePath, name }) => {
 					const invoke = window.__RELEASH_INVOKE_CLIENT__!;
-					const sessionId = await invoke("create_agent_session", {
+					const { nodeId } = await invoke("create_agent_session", {
 						workspaceIdentity: worktreePath,
 						worktreePath,
 						provider: "codex",
@@ -96,11 +96,6 @@ describe("macOS WKWebView / real Connect daemon", () => {
 						cols: 80,
 						callerRequestId: crypto.randomUUID(),
 					});
-					const nodeId = await window.__RELEASH_FIRST_STATE__!({
-						kind: "session-node",
-						args: [worktreePath, sessionId],
-					});
-					if (!nodeId) throw new Error("Session node was not created");
 					await invoke("rename_workspace_session_node", {
 						worktreePath,
 						nodeId,

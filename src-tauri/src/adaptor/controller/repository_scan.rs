@@ -1,5 +1,4 @@
 use crate::common::retry::RetryBackoff;
-use crate::usecase::failure::FailureKey;
 use crate::usecase::repository_state::runtime::{
     RepositoryStateInvalidationReceiver, RepositoryStateInvalidationSender,
     RepositoryStateWorkerRuntime, ScanWorker,
@@ -38,11 +37,9 @@ pub(crate) async fn run_worker(
             let status = if reason.files {
                 Some(
                     retrying
-                        .restart(
-                            FailureKey::new("repository_scan", state.worktree_path()),
-                            RetryBackoff::ITEM,
-                            |_| state.scan_once(scanner.clone(), runtime.as_ref()),
-                        )
+                        .restart(None, RetryBackoff::ITEM, |_| {
+                            state.scan_once(scanner.clone(), runtime.as_ref())
+                        })
                         .await,
                 )
             } else {

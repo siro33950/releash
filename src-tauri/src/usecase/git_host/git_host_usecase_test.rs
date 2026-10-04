@@ -35,13 +35,15 @@ impl FakeProvider {
     }
 }
 
+#[async_trait::async_trait]
+
 impl GitHostProvider for FakeProvider {
-    fn fetch_pr_status(&self, _repo_path: &str) -> Result<PrStatus, GitHostError> {
+    async fn fetch_pr_status(&self, _repo_path: &str) -> Result<PrStatus, GitHostError> {
         self.pr_fetch_count.fetch_add(1, Ordering::SeqCst);
         self.pr_status.clone()
     }
 
-    fn list_issues(&self, _repo_path: &str) -> Result<Vec<IssueInfo>, GitHostError> {
+    async fn list_issues(&self, _repo_path: &str) -> Result<Vec<IssueInfo>, GitHostError> {
         self.issue_fetch_count.fetch_add(1, Ordering::SeqCst);
         Ok(self.issues.clone())
     }
@@ -151,19 +153,20 @@ fn usecase_with(
     GitHostUsecase::new(provider, pr_cache, issue_cache)
 }
 
-#[test]
-fn test_pr読取_取得失敗を前の成功と区別し回復時に解除する() {
+#[tokio::test]
+async fn test_pr読取_取得失敗を前の成功と区別し回復時に解除する() {
     // Given
     struct Provider(parking_lot::RwLock<bool>);
+    #[async_trait::async_trait]
     impl GitHostProvider for Provider {
-        fn fetch_pr_status(&self, _: &str) -> Result<PrStatus, GitHostError> {
+        async fn fetch_pr_status(&self, _: &str) -> Result<PrStatus, GitHostError> {
             if *self.0.read() {
                 Err(GitHostError::External("denied".into()))
             } else {
                 Ok(PrStatus::default())
             }
         }
-        fn list_issues(&self, _: &str) -> Result<Vec<IssueInfo>, GitHostError> {
+        async fn list_issues(&self, _: &str) -> Result<Vec<IssueInfo>, GitHostError> {
             Ok(vec![])
         }
     }
@@ -174,13 +177,13 @@ fn test_pr読取_取得失敗を前の成功と区別し回復時に解除する
         Arc::new(FakeIssueCache::default()),
     );
     // When
-    usecase.refresh_pr_status("/repo").unwrap();
+    usecase.refresh_pr_status("/repo").await.unwrap();
     let initial = usecase.pr_status_result("/repo");
     *provider.0.write() = true;
-    let failure = usecase.refresh_pr_status("/repo");
+    let failure = usecase.refresh_pr_status("/repo").await;
     let failed = usecase.pr_status_result("/repo");
     *provider.0.write() = false;
-    usecase.refresh_pr_status("/repo").unwrap();
+    usecase.refresh_pr_status("/repo").await.unwrap();
     let recovered = usecase.pr_status_result("/repo");
     // Then
     assert_eq!(initial.value, Some(PrStatus::default()));
@@ -197,15 +200,16 @@ fn test_pr読取_取得失敗を前の成功と区別し回復時に解除する
     assert!(recovered.error.is_none());
 }
 
-#[test]
-fn test_issue手動再取得_失敗を保持し成功時に解除する() {
+#[tokio::test]
+async fn test_issue手動再取得_失敗を保持し成功時に解除する() {
     // Given
     struct Provider(parking_lot::RwLock<bool>);
+    #[async_trait::async_trait]
     impl GitHostProvider for Provider {
-        fn fetch_pr_status(&self, _: &str) -> Result<PrStatus, GitHostError> {
+        async fn fetch_pr_status(&self, _: &str) -> Result<PrStatus, GitHostError> {
             Ok(PrStatus::default())
         }
-        fn list_issues(&self, _: &str) -> Result<Vec<IssueInfo>, GitHostError> {
+        async fn list_issues(&self, _: &str) -> Result<Vec<IssueInfo>, GitHostError> {
             if *self.0.read() {
                 Err(GitHostError::External("offline".into()))
             } else {
@@ -220,15 +224,15 @@ fn test_issue手動再取得_失敗を保持し成功時に解除する() {
         Arc::new(FakeIssueCache::default()),
     );
     // When
-    usecase.fetch_issues("/repo").unwrap();
-    let initial = usecase.get_cached_issues("/repo");
+    usecase.fetch_issues("/repo").await.unwrap();
+    let initial = usecase.get_cached_issues("/repo").await;
     *provider.0.write() = true;
-    let failure = usecase.fetch_issues("/repo");
-    let failed = usecase.get_cached_issues("/repo");
-    let read_failure = usecase.get_cached_issues("/repo");
+    let failure = usecase.fetch_issues("/repo").await;
+    let failed = usecase.get_cached_issues("/repo").await;
+    let read_failure = usecase.get_cached_issues("/repo").await;
     *provider.0.write() = false;
-    usecase.fetch_issues("/repo").unwrap();
-    let recovered = usecase.get_cached_issues("/repo");
+    usecase.fetch_issues("/repo").await.unwrap();
+    let recovered = usecase.get_cached_issues("/repo").await;
     // Then
     assert_eq!(initial.value, Some(vec![sample_issue(1)]));
     assert!(initial.error.is_none());
@@ -246,8 +250,8 @@ fn test_issue手動再取得_失敗を保持し成功時に解除する() {
     assert!(recovered.error.is_none());
 }
 
-#[test]
-fn forced_refresh_updates_caches_even_when_previous_values_are_fresh() {
+#[tokio::test]
+async fn forced_refresh_updates_caches_even_when_previous_values_are_fresh() {
     let fetched_pr = sample_pr_status();
     let fetched_issues = vec![sample_issue(2)];
     let provider = Arc::new(FakeProvider::new(
@@ -257,16 +261,16 @@ fn forced_refresh_updates_caches_even_when_previous_values_are_fresh() {
     let pr_cache = Arc::new(FakePrCache::with_lookup(Some(PrStatus::default())));
     let issue_cache = Arc::new(FakeIssueCache::with_lookup(Some(vec![sample_issue(1)])));
     let uc = usecase_with(provider.clone(), pr_cache.clone(), issue_cache.clone());
-    assert_eq!(uc.refresh_pr_status("/repo"), Ok(()));
-    assert_eq!(uc.fetch_issues("/repo").unwrap(), fetched_issues);
+    assert_eq!(uc.refresh_pr_status("/repo").await, Ok(()));
+    assert_eq!(uc.fetch_issues("/repo").await.unwrap(), fetched_issues);
     assert_eq!(pr_cache.stored_values(), vec![fetched_pr]);
     assert_eq!(issue_cache.stored_values(), vec![fetched_issues]);
     assert_eq!(provider.pr_fetch_count(), 1);
     assert_eq!(provider.issue_fetch_count(), 1);
 }
 
-#[test]
-fn forced_pr_refresh_failure_keeps_the_previous_cache() {
+#[tokio::test]
+async fn forced_pr_refresh_failure_keeps_the_previous_cache() {
     // Given
     let previous = sample_pr_status();
     let provider = Arc::new(FakeProvider {
@@ -280,15 +284,15 @@ fn forced_pr_refresh_failure_keeps_the_previous_cache() {
         Arc::new(FakeIssueCache::default()),
     );
     // When
-    let result = uc.refresh_pr_status("/repo");
+    let result = uc.refresh_pr_status("/repo").await;
     // Then
     assert_eq!(result, Err(GitHostError::External("offline".into())));
     assert!(pr_cache.stored_values().is_empty());
     assert_eq!(uc.pr_status_result("/repo").value, Some(previous));
 }
 
-#[test]
-fn provider_absent_fetches_empty_values() {
+#[tokio::test]
+async fn provider_absent_fetches_empty_values() {
     let provider = Arc::new(FakeProvider::empty());
     let pr_cache = Arc::new(FakePrCache::default());
     let uc = usecase_with(
@@ -297,13 +301,13 @@ fn provider_absent_fetches_empty_values() {
         Arc::new(FakeIssueCache::default()),
     );
 
-    assert_eq!(uc.refresh_pr_status("/repo"), Ok(()));
+    assert_eq!(uc.refresh_pr_status("/repo").await, Ok(()));
     assert_eq!(pr_cache.stored_values(), vec![PrStatus::default()]);
-    assert!(uc.fetch_issues("/repo").unwrap().is_empty());
+    assert!(uc.fetch_issues("/repo").await.unwrap().is_empty());
 }
 
-#[test]
-fn test_pr状態の読み取り_最後に取れた値を返し取りに行かない() {
+#[tokio::test]
+async fn test_pr状態の読み取り_最後に取れた値を返し取りに行かない() {
     // Given
     let known = sample_pr_status();
     let provider = Arc::new(FakeProvider::new(PrStatus::default(), Vec::new()));
@@ -318,8 +322,8 @@ fn test_pr状態の読み取り_最後に取れた値を返し取りに行かな
     assert_eq!(result.value, Some(known));
     assert_eq!(provider.pr_fetch_count(), 0);
 }
-#[test]
-fn test_pr状態の読み取り_未取得なら取りに行かず未設定を返す() {
+#[tokio::test]
+async fn test_pr状態の読み取り_未取得なら取りに行かず未設定を返す() {
     // Given
     let provider = Arc::new(FakeProvider::empty());
     let uc = usecase_with(
@@ -334,8 +338,8 @@ fn test_pr状態の読み取り_未取得なら取りに行かず未設定を返
     assert_eq!(provider.pr_fetch_count(), 0);
 }
 
-#[test]
-fn test_pr状態の取り直し_変わったときだけ保持してworkspacesの購読へ知らせる() {
+#[tokio::test]
+async fn test_pr状態の取り直し_変わったときだけ保持してworkspacesの購読へ知らせる() {
     use crate::usecase::state_subscription::StateChangeSource;
     // Given
     let fetched = sample_pr_status();
@@ -351,7 +355,7 @@ fn test_pr状態の取り直し_変わったときだけ保持してworkspaces�
         )
         .with_state_publisher(publisher);
         // When
-        uc.refresh_pr_status("/repo").unwrap();
+        uc.refresh_pr_status("/repo").await.unwrap();
         // Then
         assert_eq!(pr_cache.stored_values().len(), usize::from(changed));
         assert_eq!(
@@ -365,8 +369,8 @@ fn test_pr状態の取り直し_変わったときだけ保持してworkspaces�
     }
 }
 
-#[test]
-fn cached_issues_hit_does_not_fetch_provider() {
+#[tokio::test]
+async fn cached_issues_hit_does_not_fetch_provider() {
     let cached = vec![sample_issue(1)];
     let provider = Arc::new(FakeProvider::new(PrStatus::default(), Vec::new()));
     let uc = usecase_with(
@@ -375,12 +379,12 @@ fn cached_issues_hit_does_not_fetch_provider() {
         Arc::new(FakeIssueCache::with_lookup(Some(cached.clone()))),
     );
 
-    assert_eq!(uc.get_cached_issues("/repo").value, Some(cached));
+    assert_eq!(uc.get_cached_issues("/repo").await.value, Some(cached));
     assert_eq!(provider.issue_fetch_count(), 0);
 }
 
-#[test]
-fn cached_issues_miss_fetches_and_stores() {
+#[tokio::test]
+async fn cached_issues_miss_fetches_and_stores() {
     let fetched = vec![sample_issue(2)];
     let provider = Arc::new(FakeProvider::new(PrStatus::default(), fetched.clone()));
     let issue_cache = Arc::new(FakeIssueCache::with_lookup(None));
@@ -390,13 +394,16 @@ fn cached_issues_miss_fetches_and_stores() {
         issue_cache.clone(),
     );
 
-    assert_eq!(uc.get_cached_issues("/repo").value, Some(fetched.clone()));
+    assert_eq!(
+        uc.get_cached_issues("/repo").await.value,
+        Some(fetched.clone())
+    );
     assert_eq!(provider.issue_fetch_count(), 1);
     assert_eq!(issue_cache.stored_values(), vec![fetched]);
 }
 
-#[test]
-fn test_github検出_停止時に既定pr状態を保存しない() {
+#[tokio::test]
+async fn test_github検出_停止時に既定pr状態を保存しない() {
     // Given
     use crate::common::operation_context::{OperationContext, OperationStopped};
     let pr_cache = Arc::new(FakePrCache::default());
@@ -410,12 +417,13 @@ fn test_github検出_停止時に既定pr状態を保存しない() {
     token.cancel();
     let context = OperationContext::new(None, Arc::new(token));
     // When
-    let (pr, issues) = crate::common::operation_context::sync_scope(context, || {
+    let (pr, issues) = crate::common::operation_context::scope(context, async {
         (
-            uc.refresh_pr_status("/missing"),
-            uc.fetch_issues("/missing"),
+            uc.refresh_pr_status("/missing").await,
+            uc.fetch_issues("/missing").await,
         )
-    });
+    })
+    .await;
     // Then
     assert!(
         matches!(pr, Err(GitHostError::Technical(error)) if error == OperationStopped::Cancelled.into())
@@ -426,8 +434,8 @@ fn test_github検出_停止時に既定pr状態を保存しない() {
     assert!(pr_cache.stored_values().is_empty());
     assert!(issue_cache.stored_values().is_empty());
 }
-#[test]
-fn test_github検出_期限切れ時に既定pr状態を保存しない() {
+#[tokio::test]
+async fn test_github検出_期限切れ時に既定pr状態を保存しない() {
     // Given
     use crate::common::operation_context::{Deadline, OperationContext, OperationStopped};
     let pr_cache = Arc::new(FakePrCache::default());
@@ -444,12 +452,13 @@ fn test_github検出_期限切れ時に既定pr状態を保存しない() {
         Arc::new(token),
     );
     // When
-    let (pr, issues) = crate::common::operation_context::sync_scope(context, || {
+    let (pr, issues) = crate::common::operation_context::scope(context, async {
         (
-            uc.refresh_pr_status("/missing"),
-            uc.fetch_issues("/missing"),
+            uc.refresh_pr_status("/missing").await,
+            uc.fetch_issues("/missing").await,
         )
-    });
+    })
+    .await;
     // Then
     assert!(
         matches!(pr, Err(GitHostError::Technical(error)) if error == OperationStopped::Expired.into())
@@ -461,8 +470,8 @@ fn test_github検出_期限切れ時に既定pr状態を保存しない() {
     assert!(issue_cache.stored_values().is_empty());
 }
 
-#[test]
-fn test_pr状態の取り直し_同じ失敗なら記録も通知もしない() {
+#[tokio::test]
+async fn test_pr状態の取り直し_同じ失敗なら記録も通知もしない() {
     // Given
     let error = GitHostError::External("offline".into());
     let provider = Arc::new(FakeProvider {
@@ -474,18 +483,18 @@ fn test_pr状態の取り直し_同じ失敗なら記録も通知もしない() 
     let mut changes = crate::test_support::state_subscription::changes(&publisher);
     let uc = usecase_with(provider, cache.clone(), Arc::new(FakeIssueCache::default()))
         .with_state_publisher(publisher);
-    uc.refresh_pr_status("/repo").unwrap_err();
+    uc.refresh_pr_status("/repo").await.unwrap_err();
     crate::test_support::state_subscription::take_changes(&mut changes);
     // When
-    let result = uc.refresh_pr_status("/repo");
+    let result = uc.refresh_pr_status("/repo").await;
     // Then
     assert_eq!(result, Err(error));
     assert_eq!(cache.records.load(Ordering::SeqCst), 1);
     assert!(crate::test_support::state_subscription::take_changes(&mut changes).is_empty());
 }
 
-#[test]
-fn test_pr状態の取り直し_違う失敗なら記録して通知する() {
+#[tokio::test]
+async fn test_pr状態の取り直し_違う失敗なら記録して通知する() {
     // Given
     let error = GitHostError::External("offline".into());
     let provider = Arc::new(FakeProvider {
@@ -499,7 +508,7 @@ fn test_pr状態の取り直し_違う失敗なら記録して通知する() {
     let uc = usecase_with(provider, cache.clone(), Arc::new(FakeIssueCache::default()))
         .with_state_publisher(publisher);
     // When
-    let result = uc.refresh_pr_status("/repo");
+    let result = uc.refresh_pr_status("/repo").await;
     // Then
     assert_eq!(result, Err(error));
     assert_eq!(cache.records.load(Ordering::SeqCst), 2);

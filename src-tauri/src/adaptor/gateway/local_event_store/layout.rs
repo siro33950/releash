@@ -12,12 +12,13 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::adaptor::gateway::local_event_store::connection::set_owner_only_permissions;
 use crate::adaptor::gateway::local_event_store::fault::{FaultInjector, InitialCreateFaultPoint};
 pub use crate::infrastructure::app_data_path::{
     AppDataPathObserver as StorePathObserver, AppDataPathOperation as StorePathOperation,
     NoopAppDataPathObserver as NoopStorePathObserver,
 };
+use crate::infrastructure::local_event_store_connection::set_owner_only_permissions;
+pub(super) use crate::infrastructure::local_event_store_connection::sqlite_sidecar_paths;
 
 pub const DATABASE_FILE: &str = "local-event-store.sqlite3";
 pub const VACUUM_DATABASE_FILE: &str = "local-event-store.vacuum.sqlite3";
@@ -91,13 +92,6 @@ impl StoreLayout {
     pub fn observe(&self, operation: StorePathOperation, path: &Path) {
         self.observer.observe(operation, path);
     }
-}
-
-pub(super) fn sqlite_sidecar_paths(database_path: &Path) -> [PathBuf; 2] {
-    [
-        PathBuf::from(format!("{}-wal", database_path.display())),
-        PathBuf::from(format!("{}-shm", database_path.display())),
-    ]
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -181,6 +181,125 @@ pub(crate) struct RecordingReads {
     pub(crate) calls: std::sync::atomic::AtomicUsize,
 }
 
+#[test]
+fn test_監視後始末_停止失敗は保持して次のreconcileで止め直す() {
+    let files = Arc::new(crate::usecase::watcher::watcher_tests::SubscriptionFiles::default());
+    let subscriptions = StateSubscriptionUsecase::new_with_output(
+        Arc::new(RecordingOutput::default()),
+        crate::test_support::state_subscription::pending_read_driver(),
+    )
+    .with_reads(
+        Arc::new(RecordingReads {
+            calls: Default::default(),
+        }),
+        Some(Arc::new(crate::usecase::watcher::WatcherUsecase::new(
+            None,
+            files.clone(),
+        ))),
+        vec![],
+        String::new(),
+    );
+    let target = SubscriptionTarget::ReviewThreads("/repo".into());
+    subscriptions.open_client("client".into()).unwrap();
+    subscriptions.start("client", &target).unwrap();
+    assert!(subscriptions.reconcile_watches().is_empty());
+    assert_eq!(subscriptions.test_watches().len(), 1);
+    files
+        .fail_stop
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    subscriptions.stop("client", &target).unwrap();
+    assert_eq!(subscriptions.test_watches().len(), 1);
+    files
+        .fail_stop
+        .store(false, std::sync::atomic::Ordering::SeqCst);
+    assert!(subscriptions.reconcile_watches().is_empty());
+    assert!(subscriptions.test_watches().is_empty());
+    assert!(files.active.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn test_監視失敗_読めたrepositoryを残し対象要素だけ失敗にする() {
+    use crate::usecase::fetched::Fetched;
+    use crate::usecase::workspace_tree::{WorkspaceList, WorkspaceListRepository};
+    let output = Arc::new(RecordingOutput::default());
+    let subscriptions = StateSubscriptionUsecase::new_with_output(
+        output.clone(),
+        crate::test_support::state_subscription::pending_read_driver(),
+    )
+    .with_reads(
+        Arc::new(RecordingReads {
+            calls: Default::default(),
+        }),
+        None,
+        vec![],
+        String::new(),
+    );
+    let list = WorkspaceList {
+        repositories: vec![
+            WorkspaceListRepository {
+                path: "/failed".into(),
+                worktrees: Fetched::ready(vec![]),
+            },
+            WorkspaceListRepository {
+                path: "/healthy".into(),
+                worktrees: Fetched::ready(vec![]),
+            },
+        ],
+    };
+    subscriptions
+        .apply_watch_failures(
+            &SubscriptionTarget::Workspaces,
+            vec![(
+                WatchRequirement::Git("/failed".into()),
+                StateReadError::from_error(crate::usecase::watcher::UsecaseError::File(
+                    "watch failed".into(),
+                )),
+            )],
+        )
+        .await;
+    subscriptions
+        .publish_read(
+            &SubscriptionTarget::Workspaces,
+            Ok(StateValue::Workspaces(list)),
+            false,
+        )
+        .unwrap();
+    let values = output.update_values.lock();
+    let StateValue::Workspaces(list) = &values[0] else {
+        panic!("workspaces expected")
+    };
+    assert!(list.repositories[0].worktrees.value.is_some());
+    assert!(list.repositories[0]
+        .worktrees
+        .error
+        .as_ref()
+        .unwrap()
+        .message
+        .contains("watch failed"));
+    assert!(list.repositories[1].worktrees.error.is_none());
+    drop(values);
+    subscriptions
+        .apply_watch_failures(&SubscriptionTarget::Workspaces, vec![])
+        .await;
+    subscriptions
+        .publish_read(
+            &SubscriptionTarget::Workspaces,
+            Ok(StateValue::Workspaces(WorkspaceList {
+                repositories: vec![WorkspaceListRepository {
+                    path: "/failed".into(),
+                    worktrees: Fetched::ready(vec![]),
+                }],
+            })),
+            false,
+        )
+        .unwrap();
+    let values = output.update_values.lock();
+    let StateValue::Workspaces(list) = values.last().unwrap() else {
+        panic!("workspaces expected")
+    };
+    assert!(list.repositories[0].worktrees.error.is_none());
+}
+
 #[async_trait::async_trait]
 impl StateSubscriptionRead for RecordingReads {
     async fn read(&self, target: &SubscriptionTarget) -> Result<StateValue, StateReadError> {
@@ -189,7 +308,7 @@ impl StateSubscriptionRead for RecordingReads {
             SubscriptionTarget::RepositoryPaths => {
                 StateValue::RepositoryPaths(vec!["/repo".into()])
             }
-            _ => StateValue::SessionNode(Some("node".into())),
+            _ => StateValue::NodeDetail(None),
         })
     }
 
@@ -210,7 +329,7 @@ async fn test_購読手順_初回読取を共有し変化で再読取して最�
         crate::test_support::state_subscription::pending_read_driver(),
     )
     .with_reads(reads.clone(), None, vec![], String::new());
-    let target = SubscriptionTarget::SessionNode("/repo".into(), "node".into());
+    let target = SubscriptionTarget::NodeDetail("/repo".into(), "node".into());
     usecase.open_client("first".into()).unwrap();
     usecase.open_client("second".into()).unwrap();
 
@@ -264,7 +383,7 @@ async fn test_購読手順_任意の対象で配信完了を待ち一度だけ�
         crate::test_support::state_subscription::pending_read_driver(),
     )
     .with_reads(reads.clone(), None, vec![], String::new());
-    let target = SubscriptionTarget::SessionNode("/repo".into(), "node".into());
+    let target = SubscriptionTarget::NodeDetail("/repo".into(), "node".into());
     usecase.open_client("client".into()).unwrap();
     usecase
         .start_subscription("client", &target, &FakeDelivery)
@@ -298,8 +417,8 @@ async fn test_配信完了待機_待機対象以外の対象にも同じ変化�
         crate::test_support::state_subscription::pending_read_driver(),
     )
     .with_reads(reads.clone(), None, vec![], String::new());
-    let waited = SubscriptionTarget::SessionNode("/repo".into(), "one".into());
-    let other = SubscriptionTarget::SessionNode("/repo".into(), "two".into());
+    let waited = SubscriptionTarget::NodeDetail("/repo".into(), "one".into());
+    let other = SubscriptionTarget::NodeDetail("/repo".into(), "two".into());
     usecase.open_client("client".into()).unwrap();
     usecase
         .start_subscription("client", &waited, &FakeDelivery)
@@ -368,7 +487,7 @@ impl StateSubscriptionRead for GatedReads {
             self.blocked.notify_one();
             self.release.notified().await;
         }
-        Ok(StateValue::SessionNode(None))
+        Ok(StateValue::NodeDetail(None))
     }
 
     async fn refresh_external(&self, _: &SubscriptionTarget) -> Result<(), StateReadError> {
@@ -715,7 +834,7 @@ impl StateSubscriptionRead for RetainingReads {
         Ok(())
     }
     async fn read(&self, _: &SubscriptionTarget) -> Result<StateValue, StateReadError> {
-        Ok(StateValue::SessionNode(None))
+        Ok(StateValue::NodeDetail(None))
     }
     fn release_external(&self, target: &SubscriptionTarget) {
         self.retained.lock().remove(target);
@@ -768,15 +887,16 @@ async fn test_notion購読_初回取得中にclientが閉じたら開始の対�
 }
 
 #[tokio::test]
-async fn test_notion購読_監視の更新が失敗したら開始の対象だけ解放する() {
+async fn test_notion購読_別対象の監視失敗は開始を妨げず対象へ通知する() {
     // Given
     let reads = Arc::new(RetainingReads::default());
     let watcher = Arc::new(crate::usecase::watcher::WatcherUsecase::new(
         None,
         Arc::new(crate::usecase::watcher::watcher_tests::SubscriptionFiles::default()),
     ));
+    let output = Arc::new(RecordingOutput::default());
     let subscriptions = StateSubscriptionUsecase::new_with_output(
-        Arc::new(RecordingOutput::default()),
+        output.clone(),
         crate::test_support::state_subscription::pending_read_driver(),
     )
     .with_reads(reads.clone(), Some(watcher), vec![], String::new());
@@ -795,13 +915,12 @@ async fn test_notion購読_監視の更新が失敗したら開始の対象だ�
     subscriptions.close_client("watcher");
     subscriptions.close_client("client");
     // Then
-    assert!(matches!(
-        result,
-        Err(StateReadError {
-            source: StateReadFailure::Watcher(_),
-            ..
-        })
-    ));
+    assert!(result.is_ok());
+    assert_eq!(output.failures.lock().len(), 1);
+    assert_eq!(
+        output.failures.lock()[0].0,
+        SubscriptionTarget::ReviewThreads("repo".into())
+    );
     assert!(!reads.retained.lock().contains(&target));
     assert!(reads.retained.lock().contains(&other));
     assert_eq!(*reads.releases.lock(), vec![target]);
@@ -909,8 +1028,10 @@ async fn test_外部情報の購読_Lagged後のrepository通知ではNotionとI
 #[derive(Default)]
 struct ReopeningNotionApi(std::sync::atomic::AtomicUsize);
 
+#[async_trait::async_trait]
+
 impl crate::domain::notion::NotionApiGateway for ReopeningNotionApi {
-    fn query_tasks(
+    async fn query_tasks(
         &self,
         _: &crate::domain::app_config::value_objects::NotionRepoConfig,
         _: &crate::domain::notion::NotionTaskQuery,
@@ -919,7 +1040,7 @@ impl crate::domain::notion::NotionApiGateway for ReopeningNotionApi {
             self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst),
         ))
     }
-    fn fetch_label_options(
+    async fn fetch_label_options(
         &self,
         _: &crate::domain::app_config::value_objects::NotionRepoConfig,
     ) -> Result<Vec<crate::domain::notion::NotionLabelOption>, crate::domain::notion::NotionError>
@@ -928,7 +1049,7 @@ impl crate::domain::notion::NotionApiGateway for ReopeningNotionApi {
             self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst),
         ))
     }
-    fn validate(
+    async fn validate(
         &self,
         _: &crate::domain::app_config::value_objects::NotionRepoConfig,
     ) -> Result<crate::domain::notion::NotionValidationResult, crate::domain::notion::NotionError>
@@ -979,7 +1100,7 @@ impl StateSubscriptionRead for ReopeningReads {
             self.entered.notify_one();
             self.resume.notified().await;
         }
-        self.inner.refresh_external_blocking(target)
+        self.inner.refresh_external_blocking(target).await
     }
     async fn read(&self, target: &SubscriptionTarget) -> Result<StateValue, StateReadError> {
         self.inner.read(target).await
@@ -1399,5 +1520,663 @@ impl StateSubscriptionDelivery for FakeDelivery {
         _: &std::collections::HashSet<SubscriptionTarget>,
     ) -> Result<(), SubscriptionError> {
         Ok(())
+    }
+}
+
+struct WatchFailureReads(crate::usecase::workspace_tree::WorkspaceList);
+
+#[async_trait::async_trait]
+impl StateSubscriptionRead for WatchFailureReads {
+    async fn read(&self, target: &SubscriptionTarget) -> Result<StateValue, StateReadError> {
+        Ok(match target {
+            SubscriptionTarget::Workspaces => StateValue::Workspaces(self.0.clone()),
+            SubscriptionTarget::Workflows => StateValue::Workflows(vec![]),
+            _ => StateValue::CurrentBranch("main".into()),
+        })
+    }
+    fn repositories(&self) -> Vec<String> {
+        vec!["/failed".into(), "/healthy".into()]
+    }
+    fn workflows_dir(&self) -> String {
+        "/workflows".into()
+    }
+}
+
+#[tokio::test]
+async fn test_監視失敗_別購読で検出してもworkspacesの要素へ届け成功で解く() {
+    use crate::usecase::fetched::Fetched;
+    use crate::usecase::workspace_tree::{
+        WorkspaceList, WorkspaceListRepository, WorkspaceListWorktree,
+    };
+    // Given
+    let list = WorkspaceList {
+        repositories: vec![
+            WorkspaceListRepository {
+                path: "/failed".into(),
+                worktrees: Fetched::ready(vec![WorkspaceListWorktree {
+                    worktree: crate::domain::repository::Worktree::being_deleted(
+                        "/failed/linked",
+                        "branch".into(),
+                    ),
+                    deleting: false,
+                    dirty_count: Fetched::ready(42),
+                    merged: false,
+                    pull_request: None,
+                    pull_request_loaded: false,
+                    tree: Fetched::default(),
+                    pull_request_error: None,
+                }]),
+            },
+            WorkspaceListRepository {
+                path: "/healthy".into(),
+                worktrees: Fetched::ready(vec![]),
+            },
+        ],
+    };
+    let output = Arc::new(RecordingOutput::default());
+    let subscriptions = StateSubscriptionUsecase::new_with_output(
+        output.clone(),
+        crate::test_support::state_subscription::pending_read_driver(),
+    )
+    .with_reads(
+        Arc::new(WatchFailureReads(list.clone())),
+        None,
+        vec![],
+        String::new(),
+    );
+    let branch = SubscriptionTarget::CurrentBranch("/failed/linked".into());
+    subscriptions.open_client("client".into()).unwrap();
+    for target in [
+        &SubscriptionTarget::Workspaces,
+        &branch,
+        &SubscriptionTarget::Workflows,
+    ] {
+        subscriptions.start("client", target).unwrap();
+    }
+    // When
+    subscriptions
+        .apply_watch_failures(
+            &branch,
+            vec![
+                (
+                    WatchRequirement::Git("/failed".into()),
+                    StateReadError::from_error(crate::usecase::watcher::UsecaseError::File(
+                        "root failed".into(),
+                    )),
+                ),
+                (
+                    WatchRequirement::Git("/failed/linked".into()),
+                    StateReadError::from_error(crate::usecase::watcher::UsecaseError::File(
+                        "linked failed".into(),
+                    )),
+                ),
+            ],
+        )
+        .await;
+    subscriptions
+        .publish_read(&branch, Ok(StateValue::CurrentBranch("main".into())), false)
+        .unwrap();
+    assert!(output
+        .failures
+        .lock()
+        .iter()
+        .any(|(target, _)| target == &branch));
+    // Then
+    let values = output.update_values.lock();
+    let StateValue::Workspaces(failed) = &values[0] else {
+        panic!("workspace list must remain a value")
+    };
+    assert_eq!(failed.repositories[1], list.repositories[1]);
+    assert!(failed.repositories[0].worktrees.error.is_some());
+    let linked = &failed.repositories[0].worktrees.value.as_ref().unwrap()[0];
+    assert_eq!(linked.dirty_count.value, Some(42));
+    assert!(linked.dirty_count.error.is_some());
+    assert!(linked.tree.error.is_some());
+    drop(values);
+    assert!(output
+        .failures
+        .lock()
+        .iter()
+        .all(|(target, _)| *target != SubscriptionTarget::Workspaces));
+    subscriptions.apply_watch_failures(&branch, vec![]).await;
+    assert_eq!(
+        output.update_values.lock().last(),
+        Some(&StateValue::Workspaces(list.clone()))
+    );
+    let files =
+        WatchRequirement::Files("/workflows".into(), StateChangeSource::WorkflowDefinitions);
+    subscriptions
+        .apply_watch_failures(
+            &branch,
+            vec![(
+                files,
+                StateReadError::from_error(crate::usecase::watcher::UsecaseError::File(
+                    "definitions failed".into(),
+                )),
+            )],
+        )
+        .await;
+    assert_eq!(
+        output.failures.lock().last().unwrap().0,
+        SubscriptionTarget::Workflows
+    );
+    subscriptions.apply_watch_failures(&branch, vec![]).await;
+    assert_eq!(
+        output.update_values.lock().last(),
+        Some(&StateValue::Workflows(vec![]))
+    );
+}
+
+#[tokio::test]
+async fn test_監視対象読み取り失敗_reconcileから該当repositoryだけに載せる() {
+    use crate::usecase::fetched::Fetched;
+    use crate::usecase::workspace_tree::{WorkspaceList, WorkspaceListRepository};
+    struct Reads(WorkspaceList);
+    #[async_trait::async_trait]
+    impl StateSubscriptionRead for Reads {
+        async fn read(&self, _: &SubscriptionTarget) -> Result<StateValue, StateReadError> {
+            Ok(StateValue::Workspaces(self.0.clone()))
+        }
+        fn repositories(&self) -> Vec<String> {
+            vec!["/failed".into(), "/healthy".into()]
+        }
+        fn watch_paths(
+            &self,
+        ) -> (
+            Vec<String>,
+            Vec<(String, crate::domain::failure::WorkFailure)>,
+        ) {
+            (
+                vec![],
+                vec![(
+                    "/failed".into(),
+                    crate::domain::failure::WorkFailure::from_error(
+                        &crate::usecase::watcher::UsecaseError::File("root read failed".into()),
+                    ),
+                )],
+            )
+        }
+    }
+    struct Files;
+    impl crate::domain::repository::file_watcher::FileWatchGateway for Files {
+        fn start_tree(
+            &self,
+            _: &str,
+            _: crate::domain::repository::file_watcher::WatchChangeHandler,
+        ) -> Result<u64, String> {
+            unreachable!()
+        }
+        fn stop(&self, _: u64) -> Result<(), String> {
+            unreachable!()
+        }
+    }
+    let list = WorkspaceList {
+        repositories: vec![
+            WorkspaceListRepository {
+                path: "/failed".into(),
+                worktrees: Fetched::ready(vec![]),
+            },
+            WorkspaceListRepository {
+                path: "/healthy".into(),
+                worktrees: Fetched::ready(vec![]),
+            },
+        ],
+    };
+    let output = Arc::new(RecordingOutput::default());
+    let subscriptions = StateSubscriptionUsecase::new_with_output(
+        output.clone(),
+        crate::test_support::state_subscription::pending_read_driver(),
+    )
+    .with_reads(
+        Arc::new(Reads(list.clone())),
+        Some(Arc::new(crate::usecase::watcher::WatcherUsecase::new(
+            None,
+            Arc::new(Files),
+        ))),
+        vec![],
+        String::new(),
+    );
+    subscriptions.open_client("client".into()).unwrap();
+    subscriptions
+        .start("client", &SubscriptionTarget::Workspaces)
+        .unwrap();
+    let mut changes = subscriptions.changes.subscribe();
+    let (_sender, mut waiting) = tokio::sync::mpsc::unbounded_channel();
+    // When
+    subscriptions
+        .refresh_read(
+            &SubscriptionTarget::Workspaces,
+            ReadSignal::Lagged,
+            &mut changes,
+            &mut waiting,
+        )
+        .await;
+    // Then
+    let updates = output.update_values.lock();
+    let StateValue::Workspaces(failed) = &updates[0] else {
+        panic!("workspace value required")
+    };
+    assert_eq!(failed.repositories[1], list.repositories[1]);
+    assert_eq!(
+        failed.repositories[0].worktrees.value,
+        list.repositories[0].worktrees.value
+    );
+    assert!(failed.repositories[0]
+        .worktrees
+        .error
+        .as_ref()
+        .unwrap()
+        .message
+        .contains("root read failed"));
+}
+
+#[tokio::test]
+async fn test_ファイル監視_読取中の失敗は張り直し成功まで解除しない() {
+    use crate::domain::repository::file_watcher::{FileWatchGateway, WatchChangeHandler};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    #[derive(Default)]
+    struct Files {
+        callbacks: Mutex<Vec<WatchChangeHandler>>,
+        attempts: AtomicUsize,
+        fail_start: AtomicBool,
+    }
+    impl FileWatchGateway for Files {
+        fn start_tree(&self, _: &str, callback: WatchChangeHandler) -> Result<u64, String> {
+            let id = self.attempts.fetch_add(1, Ordering::SeqCst) + 1;
+            if self.fail_start.load(Ordering::SeqCst) {
+                return Err("restart failed".into());
+            }
+            self.callbacks.lock().push(callback);
+            Ok(id as u64)
+        }
+        fn stop(&self, _: u64) -> Result<(), String> {
+            Ok(())
+        }
+    }
+    struct Reads {
+        block: AtomicBool,
+        started: tokio::sync::Notify,
+        release: tokio::sync::Notify,
+    }
+    #[async_trait::async_trait]
+    impl StateSubscriptionRead for Reads {
+        async fn read(&self, target: &SubscriptionTarget) -> Result<StateValue, StateReadError> {
+            match target {
+                SubscriptionTarget::Workflows => {
+                    if self.block.swap(false, Ordering::SeqCst) {
+                        self.started.notify_one();
+                        self.release.notified().await;
+                    }
+                    Ok(StateValue::Workflows(vec![]))
+                }
+                SubscriptionTarget::WorkflowSource(_) => {
+                    Ok(StateValue::WorkflowSource(Some("source".into())))
+                }
+                _ => panic!("unexpected target"),
+            }
+        }
+        fn repositories(&self) -> Vec<String> {
+            vec![]
+        }
+        fn workflows_dir(&self) -> String {
+            "/workflows".into()
+        }
+    }
+    // Given
+    let files = Arc::new(Files::default());
+    let reads = Arc::new(Reads {
+        block: AtomicBool::new(true),
+        started: Default::default(),
+        release: Default::default(),
+    });
+    let output = Arc::new(RecordingOutput::default());
+    let subscriptions = StateSubscriptionUsecase::new_with_output(
+        output.clone(),
+        crate::test_support::state_subscription::pending_read_driver(),
+    )
+    .with_reads(
+        reads.clone(),
+        Some(Arc::new(crate::usecase::watcher::WatcherUsecase::new(
+            None,
+            files.clone(),
+        ))),
+        vec![],
+        String::new(),
+    );
+    subscriptions.open_client("client".into()).unwrap();
+    let target = SubscriptionTarget::Workflows;
+    let source = SubscriptionTarget::WorkflowSource("workflow".into());
+    subscriptions.start("client", &target).unwrap();
+    subscriptions.start("client", &source).unwrap();
+    assert!(subscriptions.reconcile_watches().is_empty());
+    let refreshing = subscriptions.clone();
+    let pending = tokio::spawn(async move {
+        let mut changes = refreshing.changes.subscribe();
+        let (_sender, mut waiting) = tokio::sync::mpsc::unbounded_channel();
+        refreshing
+            .refresh_read(
+                &SubscriptionTarget::Workflows,
+                ReadSignal::Lagged,
+                &mut changes,
+                &mut waiting,
+            )
+            .await;
+    });
+    // When
+    tokio::time::timeout(std::time::Duration::from_secs(1), reads.started.notified())
+        .await
+        .unwrap();
+    files.callbacks.lock()[0].clone()(Err("runtime watch failed".into()));
+    reads.release.notify_one();
+    tokio::time::timeout(std::time::Duration::from_secs(1), pending)
+        .await
+        .unwrap()
+        .unwrap();
+    // Then
+    assert_eq!(files.attempts.load(Ordering::SeqCst), 1);
+    assert!(subscriptions.watches.lock().is_empty());
+    assert_eq!(subscriptions.watch_failures.lock().len(), 1);
+    assert!(output.update_values.lock().is_empty());
+    for affected in [&target, &source] {
+        assert!(output.failures.lock().iter().any(|(reported, message)| {
+            reported == affected && message.contains("runtime watch failed")
+        }));
+    }
+    // When
+    files.fail_start.store(true, Ordering::SeqCst);
+    let mut changes = subscriptions.changes.subscribe();
+    let (_sender, mut waiting) = tokio::sync::mpsc::unbounded_channel();
+    subscriptions
+        .refresh_read(&target, ReadSignal::Periodic, &mut changes, &mut waiting)
+        .await;
+    // Then
+    assert_eq!(files.attempts.load(Ordering::SeqCst), 2);
+    assert!(subscriptions.watches.lock().is_empty());
+    assert_eq!(subscriptions.watch_failures.lock().len(), 1);
+    assert!(output.update_values.lock().is_empty());
+    for affected in [&target, &source] {
+        assert!(output.failures.lock().iter().any(|(reported, message)| {
+            reported == affected && message.contains("restart failed")
+        }));
+    }
+    // When
+    files.fail_start.store(false, Ordering::SeqCst);
+    subscriptions
+        .refresh_read(&target, ReadSignal::Periodic, &mut changes, &mut waiting)
+        .await;
+    // Then
+    assert_eq!(files.attempts.load(Ordering::SeqCst), 3);
+    assert_eq!(subscriptions.watches.lock().len(), 1);
+    assert!(subscriptions.watch_failures.lock().is_empty());
+    assert_eq!(*output.updates.lock(), vec![source.clone(), target.clone()]);
+    assert_eq!(
+        *output.update_values.lock(),
+        vec![
+            StateValue::WorkflowSource(Some("source".into())),
+            StateValue::Workflows(vec![]),
+        ]
+    );
+    // When
+    files.callbacks.lock().last().unwrap().clone()(Err("runtime failed again".into()));
+    subscriptions.stop("client", &source).unwrap();
+    subscriptions.stop("client", &target).unwrap();
+    subscriptions.apply_watch_failures(&target, vec![]).await;
+    // Then
+    assert!(subscriptions.watch_failures.lock().is_empty());
+}
+
+#[tokio::test]
+async fn test_ファイル監視_稼働中の失敗を配信し張り直しで値へ戻す() {
+    use crate::domain::repository::file_watcher::{FileWatchGateway, WatchChangeHandler};
+    #[derive(Default)]
+    struct Files {
+        callbacks: Mutex<Vec<WatchChangeHandler>>,
+        stopped: Mutex<Vec<u64>>,
+        fail_stop: std::sync::atomic::AtomicBool,
+    }
+    impl FileWatchGateway for Files {
+        fn start_tree(&self, _: &str, callback: WatchChangeHandler) -> Result<u64, String> {
+            let mut callbacks = self.callbacks.lock();
+            callbacks.push(callback);
+            Ok(callbacks.len() as u64)
+        }
+        fn stop(&self, id: u64) -> Result<(), String> {
+            self.stopped.lock().push(id);
+            if self
+                .fail_stop
+                .swap(false, std::sync::atomic::Ordering::SeqCst)
+            {
+                Err("stop failed".into())
+            } else {
+                Ok(())
+            }
+        }
+    }
+    for fail_stop in [false, true] {
+        let files = Arc::new(Files::default());
+        files
+            .fail_stop
+            .store(fail_stop, std::sync::atomic::Ordering::SeqCst);
+        let output = Arc::new(RecordingOutput::default());
+        let subscriptions = StateSubscriptionUsecase::new_with_output(
+            output.clone(),
+            crate::test_support::state_subscription::pending_read_driver(),
+        )
+        .with_reads(
+            Arc::new(WatchFailureReads(
+                crate::usecase::workspace_tree::WorkspaceList {
+                    repositories: vec![],
+                },
+            )),
+            Some(Arc::new(crate::usecase::watcher::WatcherUsecase::new(
+                None,
+                files.clone(),
+            ))),
+            vec![],
+            String::new(),
+        );
+        subscriptions.open_client("client".into()).unwrap();
+        let target = SubscriptionTarget::Workflows;
+        subscriptions.start("client", &target).unwrap();
+        assert!(subscriptions.reconcile_watches().is_empty());
+        let callback = files.callbacks.lock()[0].clone();
+        callback(Err("runtime watch failed".into()));
+        assert_eq!(
+            output.failures.lock().last().unwrap(),
+            &(
+                target.clone(),
+                crate::domain::failure::WorkFailure::from_error(
+                    &crate::usecase::watcher::UsecaseError::File("runtime watch failed".into())
+                )
+                .message
+            )
+        );
+        assert!(subscriptions.watches.lock().is_empty());
+        assert_eq!(*files.stopped.lock(), vec![1]);
+        assert_eq!(subscriptions.watch_failures.lock().len(), 1);
+        let first_message = output.failures.lock().last().unwrap().1.clone();
+        subscriptions
+            .publish_read(&target, Ok(StateValue::Workflows(vec![])), false)
+            .unwrap();
+        assert_eq!(output.failures.lock().last().unwrap().1, first_message);
+        let mut changes = subscriptions.changes.subscribe();
+        let (_sender, mut waiting) = tokio::sync::mpsc::unbounded_channel();
+        subscriptions
+            .refresh_read(&target, ReadSignal::Periodic, &mut changes, &mut waiting)
+            .await;
+        assert_eq!(files.callbacks.lock().len(), 2);
+        assert!(subscriptions.watch_failures.lock().is_empty());
+        assert_eq!(
+            output.update_values.lock().last(),
+            Some(&StateValue::Workflows(vec![]))
+        );
+        let failure_count = output.failures.lock().len();
+        callback(Err("late old failure".into()));
+        assert_eq!(subscriptions.watches.lock().len(), 1);
+        assert!(subscriptions.watch_failures.lock().is_empty());
+        assert_eq!(output.failures.lock().len(), failure_count);
+        assert!(subscriptions.pending_watch_stops.lock().is_empty());
+        assert_eq!(
+            *files.stopped.lock(),
+            if fail_stop { vec![1, 1] } else { vec![1] }
+        );
+    }
+}
+
+#[test]
+fn test_ファイル監視_失敗と張り直しの配信順序を排他で保つ() {
+    use crate::domain::repository::file_watcher::{FileWatchGateway, WatchChangeHandler};
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    #[derive(Default)]
+    struct Files(Mutex<Vec<WatchChangeHandler>>);
+    impl FileWatchGateway for Files {
+        fn start_tree(&self, _: &str, callback: WatchChangeHandler) -> Result<u64, String> {
+            let mut callbacks = self.0.lock();
+            callbacks.push(callback);
+            Ok(callbacks.len() as u64)
+        }
+        fn stop(&self, _: u64) -> Result<(), String> {
+            Ok(())
+        }
+    }
+    struct Output {
+        publications: Mutex<Vec<bool>>,
+        gate: Mutex<Option<(mpsc::Sender<()>, mpsc::Receiver<()>)>>,
+    }
+    impl Output {
+        fn record(&self, failed: bool) -> Result<(), SubscriptionError> {
+            let gate = self.gate.lock().take();
+            if let Some((started, release)) = gate {
+                started.send(()).unwrap();
+                release.recv_timeout(Duration::from_secs(5)).unwrap();
+            }
+            self.publications.lock().push(failed);
+            Ok(())
+        }
+    }
+    impl StateSubscriptionOutput for Output {
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+        fn publish_failure(
+            &self,
+            _: &SubscriptionTarget,
+            _: StateReadError,
+        ) -> Result<(), SubscriptionError> {
+            self.record(true)
+        }
+        fn publish_initial(
+            &self,
+            _: &SubscriptionTarget,
+            _: StateValue,
+        ) -> Result<(), SubscriptionError> {
+            self.record(false)
+        }
+        fn publish(
+            &self,
+            _: &SubscriptionTarget,
+            _: StateValue,
+            _: Option<StateValue>,
+        ) -> Result<(), SubscriptionError> {
+            self.record(false)
+        }
+    }
+
+    for failure_first in [true, false] {
+        // Given
+        let (started, started_rx) = mpsc::channel();
+        let (release, release_rx) = mpsc::channel();
+        let output = Arc::new(Output {
+            publications: Default::default(),
+            gate: Mutex::new(Some((started, release_rx))),
+        });
+        let files = Arc::new(Files::default());
+        let subscriptions = StateSubscriptionUsecase::new_with_output(
+            output.clone(),
+            crate::test_support::state_subscription::pending_read_driver(),
+        )
+        .with_reads(
+            Arc::new(WatchFailureReads(
+                crate::usecase::workspace_tree::WorkspaceList {
+                    repositories: vec![],
+                },
+            )),
+            Some(Arc::new(crate::usecase::watcher::WatcherUsecase::new(
+                None,
+                files.clone(),
+            ))),
+            vec![],
+            String::new(),
+        );
+        let target = SubscriptionTarget::Workflows;
+        subscriptions.open_client("client".into()).unwrap();
+        subscriptions.start("client", &target).unwrap();
+        assert!(subscriptions.reconcile_watches().is_empty());
+        let callback = files.0.lock()[0].clone();
+
+        // When
+        let first_subscriptions = subscriptions.clone();
+        let first_callback = callback.clone();
+        let first = std::thread::spawn(move || {
+            if failure_first {
+                first_callback(Err("runtime watch failed".into()));
+            } else {
+                first_subscriptions
+                    .publish_read(
+                        &SubscriptionTarget::Workflows,
+                        Ok(StateValue::Workflows(vec![])),
+                        false,
+                    )
+                    .unwrap();
+            }
+        });
+        started_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        let excluded = subscriptions.watch_failures.try_lock().is_none();
+        let (attempted, attempted_rx) = mpsc::channel();
+        let second_subscriptions = subscriptions.clone();
+        let second = std::thread::spawn(move || {
+            attempted.send(()).unwrap();
+            if failure_first {
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap()
+                    .block_on(async {
+                        let mut changes = second_subscriptions.changes.subscribe();
+                        let (_sender, mut waiting) = tokio::sync::mpsc::unbounded_channel();
+                        second_subscriptions
+                            .refresh_read(
+                                &SubscriptionTarget::Workflows,
+                                ReadSignal::Periodic,
+                                &mut changes,
+                                &mut waiting,
+                            )
+                            .await;
+                    });
+            } else {
+                callback(Err("runtime watch failed".into()));
+            }
+        });
+        attempted_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        release.send(()).unwrap();
+        first.join().unwrap();
+        second.join().unwrap();
+
+        // Then
+        assert!(excluded, "失敗の参照から配信の完了まで排他を保つ");
+        assert_eq!(
+            *output.publications.lock(),
+            vec![failure_first, !failure_first]
+        );
+        assert_eq!(
+            subscriptions.watch_failures.lock().is_empty(),
+            failure_first
+        );
+        assert_eq!(
+            subscriptions.watches.lock().len(),
+            usize::from(failure_first)
+        );
     }
 }

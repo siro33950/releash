@@ -14,7 +14,7 @@ import { useStateSubscriptionResult } from "@/hooks/useStateSubscription";
 import { useUpdateChecker } from "@/hooks/useUpdateChecker";
 import { useWorkspaceList } from "@/hooks/useWorkspaceList";
 import { useWorkspaceNavigation } from "@/hooks/useWorkspaceNavigation";
-import { firstState, invokeClient } from "@/lib/client";
+import { invokeClient } from "@/lib/client";
 import { showClientError } from "@/lib/clientErrorNotice";
 import { MainLayout } from "@/screens/MainLayout";
 import type { CenterSelection } from "@/types/workspace-tree";
@@ -87,7 +87,7 @@ function WorkbenchApp() {
 	const startupStarted = useRef(false);
 	const { worktrees, selectedWorktreeId, openWorktreeTab } =
 		useWorkspaceNavigation();
-	const { repoPaths, addRepo, removeRepo, initFromCwd } = useRepoList();
+	const { repoPaths, addRepo, removeRepo } = useRepoList();
 	const workspaceList = useWorkspaceList();
 	const [showAppSettings, setShowAppSettings] = useState(false);
 	const [centerStateByWorktree, setCenterStateByWorktree] = useState<
@@ -120,40 +120,24 @@ function WorkbenchApp() {
 		return () => document.removeEventListener("contextmenu", suppress);
 	}, []);
 
+	const startupRepository = useStateSubscriptionResult("startup-repository");
 	useEffect(() => {
-		if (startupStarted.current) return;
+		if (startupRepository.error) showClientError(startupRepository.error);
+	}, [startupRepository.error]);
+	useEffect(() => {
+		if (startupStarted.current || startupRepository.value === undefined) return;
 		startupStarted.current = true;
-		(async () => {
-			try {
-				const mainPath = await firstState("startup-repository");
-				if (!mainPath) return;
-				initFromCwd(mainPath);
-				const worktrees = await firstState({
-					kind: "worktrees",
-					args: [mainPath],
-				});
-				const workingAreas = worktrees;
-				if (workingAreas.length === 1) {
-					const repoName = mainPath.split(/[\\/]/).pop() ?? mainPath;
-					openWorktreeTab(
-						workingAreas[0].path,
-						workingAreas[0].branch,
-						repoName,
-					);
-				}
-			} catch (error) {
-				showClientError(error);
-			}
-		})();
-	}, [openWorktreeTab, initFromCwd]);
+		const worktree = startupRepository.value;
+		if (worktree)
+			openWorktreeTab(worktree.path, worktree.branch, worktree.repositoryName);
+	}, [openWorktreeTab, startupRepository.value]);
 
 	const handleAddRepo = useCallback(async () => {
 		const selected = await open({ directory: true, multiple: false });
 		if (!selected) return;
 		try {
-			const mainPath = await firstState({
-				kind: "repository-root",
-				args: [selected],
+			const mainPath = await invokeClient("find_repository_root", {
+				path: selected,
 			});
 			if (mainPath) addRepo(mainPath);
 			else openWorktreeTab(selected as string);
@@ -230,7 +214,7 @@ function WorkbenchApp() {
 	useEffect(() => {
 		if (!daemonReady) return;
 		invokeTauri("set_menu_items_enabled", { enabled: isWorktreeActive }).catch(
-			() => {},
+			showClientError,
 		);
 	}, [isWorktreeActive, daemonReady]);
 

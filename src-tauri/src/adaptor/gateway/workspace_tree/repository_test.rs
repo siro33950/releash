@@ -742,6 +742,7 @@ async fn test_workspace_tree読み出し_報告実例の後方辺fanout既存fac
     let directory = tempfile::TempDir::new().unwrap();
     let store = LocalEventStore::open(LocalEventStoreConfig::production(
         directory.path().to_path_buf(),
+        std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
     ))
     .unwrap();
     let workspace = WorkspaceIdentity::new("/repo/.worktrees/feat-issues-1696");
@@ -792,9 +793,10 @@ async fn test_workspace_tree読み出し_報告実例の後方辺fanout既存fac
         .unwrap();
     let session_id = REPORTED_SESSION_2_ID;
     let session_node_id = repository
-        .node_id_for_session(&workspace, session_id)
+        .load_node_by_session_id(&workspace, session_id)
         .await
         .unwrap()
+        .map(|selection| selection.id)
         .unwrap();
     let loaded_session = repository
         .load_node(&workspace, &session_node_id)
@@ -843,6 +845,7 @@ async fn test_ツリー読み出し_command形のsession成果物を含む複数
     let directory = tempfile::TempDir::new().unwrap();
     let store = LocalEventStore::open(LocalEventStoreConfig::production(
         directory.path().to_path_buf(),
+        std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
     ))
     .unwrap();
     let workspace = WorkspaceIdentity::new("/repo/.worktrees/command-shaped-artifact");
@@ -1022,6 +1025,7 @@ async fn test_workspace_tree読み出し_同一worktreeの複数executionでfano
     let directory = tempfile::TempDir::new().unwrap();
     let store = LocalEventStore::open(LocalEventStoreConfig::production(
         directory.path().to_path_buf(),
+        std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
     ))
     .unwrap();
     let workspace = WorkspaceIdentity::new("/repo/.worktrees/multiple-executions");
@@ -1078,6 +1082,7 @@ async fn test_workspace_tree読み出し_同一worktreeの複数executionで動�
     let directory = tempfile::TempDir::new().unwrap();
     let store = LocalEventStore::open(LocalEventStoreConfig::production(
         directory.path().to_path_buf(),
+        std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
     ))
     .unwrap();
     let workspace = WorkspaceIdentity::new("/repo/.worktrees/dynamic-multiple-executions");
@@ -1133,6 +1138,7 @@ async fn test_workspace_tree読み出し_session二重束縛をcorruptとして�
     let directory = tempfile::TempDir::new().unwrap();
     let store = LocalEventStore::open(LocalEventStoreConfig::production(
         directory.path().to_path_buf(),
+        std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
     ))
     .unwrap();
     let workspace = WorkspaceIdentity::new("/repo/.worktrees/corrupt-session-binding");
@@ -1164,6 +1170,7 @@ async fn public_session_root_id_loads_the_session_node_instead_of_the_internal_o
     let directory = tempfile::TempDir::new().unwrap();
     let store = LocalEventStore::open(LocalEventStoreConfig::production(
         directory.path().to_path_buf(),
+        std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
     ))
     .unwrap();
     let workspace = WorkspaceIdentity::new("/repo/.worktrees/feature");
@@ -1182,9 +1189,10 @@ async fn public_session_root_id_loads_the_session_node_instead_of_the_internal_o
     let repository = SqliteWorkspaceTreeRepository::new(store);
 
     let node_id = repository
-        .node_id_for_session(&workspace, "agent-session-1")
+        .load_node_by_session_id(&workspace, "agent-session-1")
         .await
         .unwrap()
+        .map(|selection| selection.id)
         .expect("the standalone Session must have a public Node id");
     let node = repository
         .load_node(&workspace, &node_id)
@@ -1208,6 +1216,7 @@ async fn test_workspace_tree_repository_workspace同定子がworktreeと異な�
     let directory = tempfile::TempDir::new().unwrap();
     let store = LocalEventStore::open(LocalEventStoreConfig::production(
         directory.path().to_path_buf(),
+        std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
     ))
     .unwrap();
     let workspace = WorkspaceIdentity::new("workspace-1");
@@ -1234,9 +1243,10 @@ async fn test_workspace_tree_repository_workspace同定子がworktreeと異な�
         .await
         .unwrap();
     let node_id = repository
-        .node_id_for_session(&workspace, "agent-session-workspace-identity")
+        .load_node_by_session_id(&workspace, "agent-session-workspace-identity")
         .await
         .unwrap()
+        .map(|selection| selection.id)
         .unwrap();
     let node = repository
         .load_node(&workspace, &node_id)
@@ -1264,6 +1274,7 @@ async fn a_session_owned_by_another_worktree_has_no_public_node_id() {
     let directory = tempfile::TempDir::new().unwrap();
     let store = LocalEventStore::open(LocalEventStoreConfig::production(
         directory.path().to_path_buf(),
+        std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
     ))
     .unwrap();
     let owner = WorkspaceIdentity::new("/repo/.worktrees/feature");
@@ -1284,17 +1295,19 @@ async fn a_session_owned_by_another_worktree_has_no_public_node_id() {
 
     assert!(
         repository
-            .node_id_for_session(&other, "agent-session-1")
+            .load_node_by_session_id(&other, "agent-session-1")
             .await
             .unwrap()
+            .map(|selection| selection.id)
             .is_none(),
         "another Worktree must not resolve a public Node id for this Session"
     );
     assert!(
         repository
-            .node_id_for_session(&owner, "unknown-session")
+            .load_node_by_session_id(&owner, "unknown-session")
             .await
             .unwrap()
+            .map(|selection| selection.id)
             .is_none(),
         "an unknown Session has no execution tree to publish"
     );
@@ -1306,8 +1319,11 @@ async fn test_workspace_repository読取_実経路で失敗分類を保持する
     use crate::adaptor::presenter::connect::classified_error;
     // Given
     let directory = tempfile::tempdir().unwrap();
-    let store =
-        LocalEventStore::open(LocalEventStoreConfig::production(directory.path().into())).unwrap();
+    let store = LocalEventStore::open(LocalEventStoreConfig::production(
+        directory.path().into(),
+        std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
+    ))
+    .unwrap();
     let repository = SqliteWorkspaceTreeRepository::new(store.clone());
     for (failure, expected) in ReadFailure::cases() {
         store.fail_next_read(failure);
@@ -1473,8 +1489,11 @@ async fn delegate_parent_status_from_store(
         ),
     ];
     let directory = tempfile::tempdir().unwrap();
-    let store =
-        LocalEventStore::open(LocalEventStoreConfig::production(directory.path().into())).unwrap();
+    let store = LocalEventStore::open(LocalEventStoreConfig::production(
+        directory.path().into(),
+        std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
+    ))
+    .unwrap();
     for (index, (meta, fact)) in facts.iter().enumerate() {
         append_single_fact(&store, meta, fact, (index as i64 + 1) * 1000)
             .await
@@ -1503,6 +1522,7 @@ async fn standalone_session_store(
     let directory = tempfile::TempDir::new().unwrap();
     let store = LocalEventStore::open(LocalEventStoreConfig::production(
         directory.path().to_path_buf(),
+        std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
     ))
     .unwrap();
     let session = AgentSession::create(
@@ -1717,6 +1737,7 @@ async fn test_workspace_tree読取_sessionのlifecycleと操作の可否を復�
     let directory = tempfile::TempDir::new().unwrap();
     let store = LocalEventStore::open(LocalEventStoreConfig::production(
         directory.path().to_path_buf(),
+        std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
     ))
     .unwrap();
     let sessions = LocalAgentSessionRepository::new(Arc::clone(&store));

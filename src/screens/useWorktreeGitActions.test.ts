@@ -56,7 +56,6 @@ it.each(["stage", "unstage", "createBranch"] as const)(
 					stage: operation === "stage" ? failure : vi.fn(),
 					unstage: operation === "unstage" ? failure : vi.fn(),
 					createBranch: operation === "createBranch" ? failure : vi.fn(),
-					refreshGit: vi.fn(),
 					newBranchName: "feature",
 					dispatchGit,
 					dispatchUI: vi.fn(),
@@ -81,7 +80,6 @@ it.each(["stage", "unstage", "createBranch"] as const)(
 describe("gitReducer", () => {
 	const initialGitState: GitState = {
 		gitError: null,
-		refreshKey: 0,
 	};
 
 	it("SET_GIT_ERROR updates gitError", () => {
@@ -96,13 +94,5 @@ describe("gitReducer", () => {
 		const prev: GitState = { ...initialGitState, gitError: "some error" };
 		const state = gitReducer(prev, { type: "SET_GIT_ERROR", error: null });
 		expect(state.gitError).toBeNull();
-	});
-
-	it("REFRESH increments refreshKey by 1", () => {
-		const state = gitReducer(initialGitState, { type: "REFRESH" });
-		expect(state.refreshKey).toBe(1);
-
-		const state2 = gitReducer(state, { type: "REFRESH" });
-		expect(state2.refreshKey).toBe(2);
 	});
 });

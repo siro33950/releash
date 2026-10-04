@@ -8,7 +8,11 @@ import {
 
 export interface UseWorkspaceStateCacheReturn {
 	getState: (rootPath: string) => WorkspaceState | undefined;
-	loadState: (rootPath: string) => Promise<WorkspaceState | undefined>;
+	loadState: (
+		rootPath: string,
+		onState: (state: WorkspaceState | undefined) => void,
+		onError: (error: unknown) => void,
+	) => void;
 	updateState: (rootPath: string, state: WorkspaceState) => void;
 	flushState: (rootPath: string) => void;
 }
@@ -41,26 +45,31 @@ export function useWorkspaceStateCache(): UseWorkspaceStateCacheReturn {
 	}, []);
 
 	const loadState = useCallback(
-		async (rootPath: string): Promise<WorkspaceState | undefined> => {
+		(
+			rootPath: string,
+			onState: (state: WorkspaceState | undefined) => void,
+			onError: (error: unknown) => void,
+		) => {
 			subscriptions.current.get(rootPath)?.();
-			return new Promise((resolve) => {
-				const release = subscribeState(
-					{
-						kind: "workspace-state",
-						args: [worktreeNameFromPath(rootPath), rootPath],
-					},
-					(state) => {
-						if (state && !dirtyRef.current.has(rootPath))
-							cacheRef.current.set(rootPath, state);
-						resolve(state ?? undefined);
-					},
-					(error) => {
-						logClientError("Failed to load workspace state:", error);
-						resolve(undefined);
-					},
-				);
-				subscriptions.current.set(rootPath, release);
-			});
+
+			const release = subscribeState(
+				{
+					kind: "workspace-state",
+					args: [worktreeNameFromPath(rootPath), rootPath],
+				},
+				(state) => {
+					if (!dirtyRef.current.has(rootPath)) {
+						if (state) cacheRef.current.set(rootPath, state);
+						else cacheRef.current.delete(rootPath);
+					}
+					onState(state ?? undefined);
+				},
+				(error) => {
+					logClientError("Failed to load workspace state:", error);
+					onError(error);
+				},
+			);
+			subscriptions.current.set(rootPath, release);
 		},
 		[],
 	);

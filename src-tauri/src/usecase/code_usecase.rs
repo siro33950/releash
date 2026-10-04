@@ -56,13 +56,21 @@ impl CodeUsecase {
         Ok(())
     }
 
-    pub fn git_stage_hunk(&self, repo_path: &str, patch: &str) -> Result<(), CodeUsecaseError> {
-        self.staging.stage_hunk(repo_path, patch)?;
+    pub async fn git_stage_hunk(
+        &self,
+        repo_path: &str,
+        patch: &str,
+    ) -> Result<(), CodeUsecaseError> {
+        self.staging.stage_hunk(repo_path, patch).await?;
         Ok(())
     }
 
-    pub fn git_unstage_hunk(&self, repo_path: &str, patch: &str) -> Result<(), CodeUsecaseError> {
-        self.staging.unstage_hunk(repo_path, patch)?;
+    pub async fn git_unstage_hunk(
+        &self,
+        repo_path: &str,
+        patch: &str,
+    ) -> Result<(), CodeUsecaseError> {
+        self.staging.unstage_hunk(repo_path, patch).await?;
         Ok(())
     }
 
@@ -268,6 +276,7 @@ mod code_usecase_tests {
     struct RecordingStaging {
         calls: Mutex<Vec<String>>,
     }
+    #[async_trait::async_trait]
     impl StagingRepository for RecordingStaging {
         fn stage(&self, repo_path: &str, paths: Vec<String>) -> Result<(), CodeError> {
             self.calls
@@ -283,14 +292,14 @@ mod code_usecase_tests {
                 .push(format!("unstage:{repo_path}"));
             Ok(())
         }
-        fn stage_hunk(&self, repo_path: &str, _patch: &str) -> Result<(), CodeError> {
+        async fn stage_hunk(&self, repo_path: &str, _patch: &str) -> Result<(), CodeError> {
             self.calls
                 .lock()
                 .unwrap()
                 .push(format!("stage_hunk:{repo_path}"));
             Ok(())
         }
-        fn unstage_hunk(&self, repo_path: &str, _patch: &str) -> Result<(), CodeError> {
+        async fn unstage_hunk(&self, repo_path: &str, _patch: &str) -> Result<(), CodeError> {
             self.calls
                 .lock()
                 .unwrap()
@@ -496,23 +505,23 @@ mod code_usecase_tests {
         )
     }
 
-    #[test]
-    fn test_stageはstagingリポジトリへ委譲する() {
+    #[tokio::test]
+    async fn test_stageはstagingリポジトリへ委譲する() {
         let staging = Arc::new(RecordingStaging {
             calls: Mutex::new(Vec::new()),
         });
         let uc = usecase(staging.clone());
 
         uc.git_stage("/repo", vec!["a.rs".to_string()]).unwrap();
-        uc.git_unstage_hunk("/repo", "patch").unwrap();
+        uc.git_unstage_hunk("/repo", "patch").await.unwrap();
 
         let calls = staging.calls.lock().unwrap();
         assert_eq!(calls[0], "stage:/repo:a.rs");
         assert_eq!(calls[1], "unstage_hunk:/repo");
     }
 
-    #[test]
-    fn review_side_source_mapping_uses_production_metadata_and_bytes_methods() {
+    #[tokio::test]
+    async fn review_side_source_mapping_uses_production_metadata_and_bytes_methods() {
         let file_content = Arc::new(RecordingFileContent::default());
         let uc = usecase_with_file_content(file_content.clone());
         let file_path = "/repo/file.txt";

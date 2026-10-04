@@ -4,6 +4,7 @@ pub(crate) mod desktop_channel;
 pub(crate) mod file_watcher;
 pub mod git;
 pub(crate) mod local_api;
+pub(crate) mod local_event_store_connection;
 pub(crate) mod local_event_store_schema;
 pub(crate) mod local_log;
 pub(crate) mod lua;

@@ -55,6 +55,15 @@ impl AgentSessionQueryService for Sessions {
 }
 #[async_trait::async_trait]
 impl AgentSessionGarbageCollectionPort for Sessions {
+    async fn terminal_presence(
+        &self,
+        _: &str,
+    ) -> Result<
+        crate::domain::agent_session::aggregates::ManagedPtyPresence,
+        AgentSessionLifecycleUsecaseError,
+    > {
+        Ok(crate::domain::agent_session::aggregates::ManagedPtyPresence::Live)
+    }
     async fn reconcile_garbage_collection(
         &self,
         _: &str,
@@ -92,17 +101,15 @@ struct Issues {
     own_runtime: AtomicBool,
     failure: Mutex<bool>,
 }
+#[async_trait::async_trait]
 impl GitHostProvider for Issues {
-    fn fetch_pr_status(&self, _: &str) -> Result<PrStatus, GitHostError> {
+    async fn fetch_pr_status(&self, _: &str) -> Result<PrStatus, GitHostError> {
         Ok(PrStatus::default())
     }
-    fn list_issues(&self, _: &str) -> Result<Vec<IssueInfo>, GitHostError> {
+    async fn list_issues(&self, _: &str) -> Result<Vec<IssueInfo>, GitHostError> {
         self.calls.fetch_add(1, Ordering::SeqCst);
         if self.own_runtime.load(Ordering::SeqCst) {
-            tokio::runtime::Builder::new_current_thread()
-                .build()
-                .unwrap()
-                .block_on(async {});
+            tokio::task::yield_now().await;
         }
         if *self.failure.lock() {
             return Err(GitHostError::External("issues offline".into()));
@@ -339,7 +346,9 @@ impl Fixture {
                 crate::usecase::notion::usecase::NotionUsecase::new(
                     config.clone(),
                     config.clone(),
-                    Arc::new(crate::adaptor::gateway::notion::NotionApiGatewayImpl::new()),
+                    Arc::new(crate::adaptor::gateway::notion::NotionApiGatewayImpl::new(
+                        std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
+                    )),
                 )
                 .with_state_publisher(publisher.clone()),
             ),
@@ -438,10 +447,6 @@ async fn test_状態読取_全対象を対応するサービスへ引数付き�
             StateValue::NodeDetail(None),
         ),
         (
-            T::SessionNode(p.clone(), "missing".into()),
-            StateValue::SessionNode(None),
-        ),
-        (
             T::AgentSession("missing-session".into()),
             StateValue::AgentSession(None),
         ),
@@ -492,16 +497,8 @@ async fn test_状態読取_全対象を対応するサービスへ引数付き�
             StateValue::Worktrees(r.repository.list_worktrees(p).unwrap()),
         ),
         (
-            T::RepositoryRoot(format!("{p}/.git")),
-            StateValue::RepositoryRoot(Some(p.clone())),
-        ),
-        (
             T::StartupRepository,
-            StateValue::StartupRepository(
-                r.repository
-                    .find_main_repo_path(&r.repository.get_cwd().unwrap())
-                    .unwrap(),
-            ),
+            StateValue::StartupRepository(r.repository.startup_worktree().unwrap()),
         ),
         (
             T::WorkspaceState("repo".into(), p.clone()),
@@ -692,7 +689,12 @@ async fn test_issue手動更新_有効なcacheを無視し30秒前に同じ購�
     *fixture.issues.values.lock() = vec![issue(2)];
     // When
     let before = std::time::Instant::now();
-    fixture.reads.git_host.fetch_issues(&fixture.path).unwrap();
+    fixture
+        .reads
+        .git_host
+        .fetch_issues(&fixture.path)
+        .await
+        .unwrap();
     let value = tokio::time::timeout(std::time::Duration::from_secs(2), async {
         loop {
             if let Some(StateSubscriptionEvent::Item(
@@ -1014,6 +1016,7 @@ async fn test_agent_session購読_状態変更通知から再読取して同じ�
             can_delete: false,
         },
         last_exit_abnormal: false,
+        terminal_presence: Some("live".into()),
     };
     *fixture.sessions.item.lock() = Some(item.clone());
     let mut stream = Box::pin(fixture.subscriptions.open("client".into()).unwrap());
@@ -1136,7 +1139,7 @@ async fn test_issue手動更新失敗_最後の一覧と失敗を購読へ届け
     stream.next().await.unwrap();
     // When
     *fixture.issues.failure.lock() = true;
-    let result = fixture.reads.git_host.fetch_issues(&fixture.path);
+    let result = fixture.reads.git_host.fetch_issues(&fixture.path).await;
     let event = tokio::time::timeout(std::time::Duration::from_secs(2), stream.next())
         .await
         .unwrap()
@@ -1165,7 +1168,7 @@ async fn test_issue手動更新失敗_回復時に新しい一覧を届ける() 
     stream.next().await.unwrap();
     stream.next().await.unwrap();
     *fixture.issues.failure.lock() = true;
-    let _ = fixture.reads.git_host.fetch_issues(&fixture.path);
+    let _ = fixture.reads.git_host.fetch_issues(&fixture.path).await;
     let _ = tokio::time::timeout(std::time::Duration::from_secs(2), stream.next())
         .await
         .unwrap()
@@ -1173,7 +1176,12 @@ async fn test_issue手動更新失敗_回復時に新しい一覧を届ける() 
     // When
     *fixture.issues.failure.lock() = false;
     *fixture.issues.values.lock() = vec![issue(2)];
-    fixture.reads.git_host.fetch_issues(&fixture.path).unwrap();
+    fixture
+        .reads
+        .git_host
+        .fetch_issues(&fixture.path)
+        .await
+        .unwrap();
     let event = tokio::time::timeout(std::time::Duration::from_secs(2), stream.next())
         .await
         .unwrap()

@@ -18,7 +18,7 @@ impl Retrying {
 
     pub(crate) async fn restart<T, E, F, Fut>(
         &self,
-        key: FailureKey,
+        key: impl Into<Option<FailureKey>>,
         policy: RetryBackoff,
         operation: F,
     ) -> Result<T, E>
@@ -27,27 +27,34 @@ impl Retrying {
         F: FnMut(AttemptProgress) -> Fut,
         Fut: Future<Output = Result<T, E>>,
     {
+        let key = key.into();
         let result = attempts(
             policy,
             &self.limiter,
             |error: &E| {
                 let failure = error.work_failure();
                 let progress = next_attempt(failure.kind);
-                self.failures.observed(&key, failure);
+                if let Some(key) = &key {
+                    self.failures.observed(key, failure);
+                } else {
+                    log::warn!("Operation failed: {}", failure.message);
+                }
                 progress
             },
             operation,
         )
         .await;
         if result.is_ok() {
-            self.failures.resolved(&key);
+            if let Some(key) = &key {
+                self.failures.resolved(key);
+            }
         }
         result
     }
 
     pub(crate) async fn stage<T, E, F, Fut>(
         &self,
-        key: FailureKey,
+        key: impl Into<Option<FailureKey>>,
         policy: RetryBackoff,
         operation: F,
     ) -> Result<T, E>
@@ -56,22 +63,32 @@ impl Retrying {
         F: FnMut(AttemptProgress) -> Fut,
         Fut: Future<Output = Result<T, E>>,
     {
+        let key = key.into();
         let result = attempts(
             policy,
             &self.limiter,
             |error: &E| {
                 let failure = error.work_failure();
                 if next_attempt(failure.kind) != Some(AttemptProgress::Continue) {
+                    if key.is_none() {
+                        log::warn!("Operation failed: {}", failure.message);
+                    }
                     return None;
                 }
-                self.failures.observed(&key, failure);
+                if let Some(key) = &key {
+                    self.failures.observed(key, failure);
+                } else {
+                    log::warn!("Operation failed: {}", failure.message);
+                }
                 Some(AttemptProgress::Continue)
             },
             operation,
         )
         .await;
         if result.is_ok() {
-            self.failures.resolved(&key);
+            if let Some(key) = &key {
+                self.failures.resolved(key);
+            }
         }
         result
     }

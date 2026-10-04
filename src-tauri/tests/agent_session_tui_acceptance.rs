@@ -8,13 +8,19 @@ use std::time::Duration;
 use agent_tui_fixture::{fixture_process_shell_command, FixtureLifecycleCommand, FixturePlan};
 use releash_lib::agent_session_tui_acceptance::{
     AcceptanceAgentSessionLifecycle, AcceptanceAgentSessionTreeLocation, AcceptanceArchiveOutcome,
-    AcceptanceHookWarning, AcceptanceOpenOutcome, AcceptanceProvider,
-    AgentSessionTuiAcceptanceConfig,
+    AcceptanceHookWarning, AcceptanceProvider, AgentSessionTuiAcceptanceConfig,
     AgentSessionTuiAcceptanceHost as AgentSessionTuiAcceptanceComposition,
 };
 use releash_lib::terminal_surface::{TerminalSurfaceOwnerV1, TerminalSurfaceStreamItemV1};
 use serde::de::DeserializeOwned;
 use serde::Deserialize;
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SessionSelection {
+    agent_session_id: String,
+    node_id: String,
+}
 
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -204,7 +210,7 @@ impl AgentSessionTuiAcceptanceHost {
         &self,
         provider: AcceptanceProvider,
         executable: &Path,
-    ) -> Result<String, String> {
+    ) -> Result<(), String> {
         self.invoke(
             "update_provider_executable",
             serde_json::json!({
@@ -235,7 +241,7 @@ impl AgentSessionTuiAcceptanceHost {
         cols: u16,
         caller_request_id: &str,
     ) -> Result<String, String> {
-        self.invoke(
+        let selection: SessionSelection = self.invoke(
             "create_agent_session",
             serde_json::json!({
                 "workspaceIdentity": workspace_identity,
@@ -245,7 +251,9 @@ impl AgentSessionTuiAcceptanceHost {
                 "cols": cols,
                 "callerRequestId": caller_request_id,
             }),
-        )
+        )?;
+        assert_eq!(selection.node_id, selection.agent_session_id);
+        Ok(selection.agent_session_id)
     }
 
     async fn launch_workflow(
@@ -309,7 +317,7 @@ impl AgentSessionTuiAcceptanceHost {
         cols: u16,
         caller_request_id: &str,
     ) -> Result<String, String> {
-        self.invoke(
+        let selection: SessionSelection = self.invoke(
             "resume_agent_session_history_candidate",
             serde_json::json!({
                 "workspaceIdentity": workspace_identity,
@@ -320,7 +328,9 @@ impl AgentSessionTuiAcceptanceHost {
                 "cols": cols,
                 "callerRequestId": caller_request_id,
             }),
-        )
+        )?;
+        assert_eq!(selection.node_id, selection.agent_session_id);
+        Ok(selection.agent_session_id)
     }
 
     async fn archive(
@@ -343,14 +353,12 @@ impl AgentSessionTuiAcceptanceHost {
         rows: u16,
         cols: u16,
         caller_request_id: &str,
-    ) -> Result<AcceptanceOpenOutcome, String> {
-        self.invoke_open_command(
-            "restore_agent_session",
-            agent_session_id,
-            rows,
-            cols,
-            caller_request_id,
-        )
+    ) -> Result<String, String> {
+        let selection: SessionSelection = self.invoke("restore_agent_session", serde_json::json!({
+            "agentSessionId": agent_session_id, "rows": rows, "cols": cols, "callerRequestId": caller_request_id,
+        }))?;
+        assert_eq!(selection.node_id, selection.agent_session_id);
+        Ok(selection.agent_session_id)
     }
 
     async fn resume_session_node(&self, node_execution_id: &str) -> Result<(), String> {
@@ -366,7 +374,7 @@ impl AgentSessionTuiAcceptanceHost {
         rows: u16,
         cols: u16,
         caller_request_id: &str,
-    ) -> Result<AcceptanceOpenOutcome, String> {
+    ) -> Result<(), String> {
         self.invoke(
             command,
             serde_json::json!({
@@ -1116,7 +1124,7 @@ async fn test_atui_030_provider選択からarchive_restore_deleteまで旧messag
         );
         assert_eq!(
             host.restore(&session_id, 24, 80, "restore").await.unwrap(),
-            AcceptanceOpenOutcome::Restored
+            session_id
         );
         assert_eq!(
             host.get(&session_id).await.unwrap().unwrap().lifecycle,
@@ -1765,7 +1773,7 @@ async fn test_atui_030_provider実行fileが無くてもrestoreできresumeだ�
         host.restore(&session_id, 24, 80, "restore-without-provider")
             .await
             .unwrap(),
-        AcceptanceOpenOutcome::Restored
+        session_id
     );
     assert!(host.terminal().get(terminal_owner).is_err());
     assert!(host.resume_session_node(&session_id).await.is_err());

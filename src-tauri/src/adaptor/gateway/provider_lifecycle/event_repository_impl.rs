@@ -62,14 +62,9 @@ impl LocalProviderLifecycleEventRepository {
             .map(Ok)
             .unwrap_or_else(|| self.prepare_commit(&scoped_events))?;
         self.queue
-            .restart(
-                crate::usecase::failure::FailureKey::new(
-                    "provider_lifecycle_append",
-                    &prepared.identity,
-                ),
-                crate::common::retry::RetryBackoff::SERVICE,
-                |_| self.append_prepared(semantic_key, &prepared),
-            )
+            .restart(None, crate::common::retry::RetryBackoff::ITEM, |_| {
+                self.append_prepared(semantic_key, &prepared)
+            })
             .await
     }
 
@@ -204,21 +199,13 @@ impl LocalProviderLifecycleEventRepository {
         &self,
         identity: &CommitIdentity,
     ) -> Result<CommitResolution, ProviderLifecycleRepositoryError> {
-        let key = crate::usecase::failure::FailureKey::new(
-            "provider_lifecycle_resolution",
-            &format!("{identity:?}"),
-        );
         self.queue
-            .stage(
-                key,
-                crate::common::retry::RetryBackoff::SERVICE,
-                |_| async {
-                    self.repository
-                        .resolve_commit(identity.clone())
-                        .await
-                        .map_err(ProviderLifecycleRepositoryError::from)
-                },
-            )
+            .stage(None, crate::common::retry::RetryBackoff::ITEM, |_| async {
+                self.repository
+                    .resolve_commit(identity.clone())
+                    .await
+                    .map_err(ProviderLifecycleRepositoryError::from)
+            })
             .await
     }
 

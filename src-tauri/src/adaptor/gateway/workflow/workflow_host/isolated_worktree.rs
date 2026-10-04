@@ -81,7 +81,7 @@ impl WorkflowRuntimeHost {
                     )
                 })?;
                 let gateway = self.isolated_worktrees.clone();
-                let result = tokio::task::spawn_blocking(move || {
+                let result = crate::common::operation_context::spawn_blocking(move || {
                     if !gateway.is_created(&parent, &worktree)? {
                         gateway.create(&parent, &worktree)?;
                     }

@@ -8,6 +8,7 @@ export interface ProviderAvailabilityItem {
 	displayName: string;
 	defaultExecutable: string;
 	configuredExecutable: string | null;
+	configurationRevision: number;
 	effectiveExecutable: string;
 	available: boolean;
 	resolvedExecutable: string | null;
@@ -21,11 +22,10 @@ interface ProviderAvailabilitySnapshot {
 type PendingDraft = {
 	draft: string;
 	configured: string | null;
+	revision: number;
 	completed: boolean;
-} & (
-	| { kind: "waiting" }
-	| { kind: "received"; configuredValue: string | null }
-);
+	received?: string | null;
+};
 
 interface FormState {
 	snapshot: ProviderAvailabilitySnapshot | null;
@@ -36,8 +36,8 @@ interface FormState {
 type FormAction =
 	| { type: "receive"; snapshot: ProviderAvailabilitySnapshot }
 	| { type: "start"; provider: string; operation: PendingDraft }
-	| { type: "complete"; provider: string; configured: string | null }
 	| { type: "fail"; provider: string }
+	| { type: "complete"; provider: string }
 	| { type: "input"; provider: string; executable: string }
 	| { type: "clear" };
 
@@ -70,16 +70,16 @@ function receiveSnapshot(
 		if (operation) {
 			if (
 				next.configuredExecutable !== operation.configured ||
-				operation.completed
+				(operation.completed &&
+					next.configurationRevision !== operation.revision)
 			) {
 				if (draft !== operation.draft) drafts[entry.provider] = draft;
 			} else {
 				drafts[entry.provider] = draft;
-				pending[entry.provider] = {
-					...operation,
-					kind: "received",
-					configuredValue: next.configuredExecutable,
-				};
+				pending[entry.provider] =
+					next.configurationRevision !== operation.revision
+						? { ...operation, received: next.configuredExecutable }
+						: operation;
 			}
 		} else if (draft !== (entry.configuredExecutable ?? "")) {
 			drafts[entry.provider] = draft;
@@ -106,39 +106,27 @@ function formReducer(state: FormState, action: FormAction): FormState {
 			const { [action.provider]: _, ...pending } = state.pending;
 			return { ...state, pending };
 		}
+
 		case "complete": {
 			const operation = state.pending[action.provider];
 			if (!operation) return state;
-			const current = state.snapshot?.providers.find(
-				(item) => item.provider === action.provider,
-			);
-			const unchanged =
-				current !== undefined &&
-				current.configuredExecutable === action.configured;
-			if (operation.kind === "waiting" && !unchanged) {
+			if (operation.received !== undefined) {
+				const { [action.provider]: _, ...pending } = state.pending;
 				return {
 					...state,
-					pending: {
-						...state.pending,
-						[action.provider]: { ...operation, completed: true },
-					},
+					pending,
+					drafts:
+						state.drafts[action.provider] === operation.draft
+							? { ...state.drafts, [action.provider]: operation.received ?? "" }
+							: state.drafts,
 				};
 			}
-			const configuredValue =
-				operation.kind === "received"
-					? operation.configuredValue
-					: action.configured;
-			const { [action.provider]: _, ...pending } = state.pending;
 			return {
 				...state,
-				pending,
-				drafts:
-					state.drafts[action.provider] === operation.draft
-						? {
-								...state.drafts,
-								[action.provider]: configuredValue ?? "",
-							}
-						: state.drafts,
+				pending: {
+					...state.pending,
+					[action.provider]: { ...operation, completed: true },
+				},
 			};
 		}
 		case "receive":
@@ -199,20 +187,16 @@ export function useProviderAvailabilitySettings(open: boolean) {
 					operation: {
 						draft: executable,
 						configured: provider.configuredExecutable,
+						revision: provider.configurationRevision,
 						completed: false,
-						kind: "waiting",
 					},
 				});
 				try {
-					const configured = await invoke("update_provider_executable", {
+					await invoke("update_provider_executable", {
 						provider: provider.provider,
 						executable,
 					});
-					dispatch({
-						type: "complete",
-						provider: provider.provider,
-						configured,
-					});
+					dispatch({ type: "complete", provider: provider.provider });
 				} catch (cause) {
 					dispatch({ type: "fail", provider: provider.provider });
 					throw cause;
@@ -236,16 +220,18 @@ export function useProviderAvailabilitySettings(open: boolean) {
 				provider,
 				operation: {
 					draft: drafts[provider] ?? "",
+					completed: false,
 					configured:
 						snapshot.providers.find((item) => item.provider === provider)
 							?.configuredExecutable ?? null,
-					completed: false,
-					kind: "waiting",
+					revision:
+						snapshot.providers.find((item) => item.provider === provider)
+							?.configurationRevision ?? 0,
 				},
 			});
 			try {
 				await invoke("reset_provider_executable", { provider });
-				dispatch({ type: "complete", provider, configured: null });
+				dispatch({ type: "complete", provider });
 			} catch (cause) {
 				dispatch({ type: "fail", provider });
 				setError(getErrorMessage(cause));

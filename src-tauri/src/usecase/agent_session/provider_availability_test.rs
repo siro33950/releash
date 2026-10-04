@@ -205,7 +205,7 @@ fn test_provider_availability_利用可能候補とlaunch実行fileを同じsnap
 }
 
 #[test]
-fn test_provider利用可否_updateは前後の空白を除いた保存値を返す() {
+fn test_provider利用可否_updateは正規化した設定と保存revisionを購読へ渡す() {
     // Given
     let config = Arc::new(FakeProviderExecutableConfigRepository::default());
     let availability = ProviderAvailabilityUsecase::initialize(
@@ -215,12 +215,25 @@ fn test_provider利用可否_updateは前後の空白を除いた保存値を返
     .unwrap();
 
     // When
-    let configured = availability
+    availability
         .update_configured_executable(ProviderKind::Claude, " /custom/claude ")
         .unwrap();
 
     // Then
-    assert_eq!(configured, "/custom/claude");
+    let before = availability.snapshot_dto().unwrap();
+    availability
+        .update_configured_executable(ProviderKind::Claude, " /custom/claude ")
+        .unwrap();
+    let after = availability.snapshot_dto().unwrap();
+    assert_eq!(
+        before.providers[0].configured_executable,
+        after.providers[0].configured_executable
+    );
+    assert_eq!(
+        after.providers[0].configuration_revision,
+        before.providers[0].configuration_revision + 1
+    );
+    assert_eq!(after.providers[1], before.providers[1]);
     assert_eq!(
         config
             .configured_executable(ProviderKind::Claude)

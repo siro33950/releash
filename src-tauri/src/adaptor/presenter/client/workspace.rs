@@ -311,6 +311,7 @@ fn session_item(
             can_delete: Some(operations.can_delete),
         }),
         last_exit_abnormal: Some(session.last_exit_abnormal()),
+        terminal_presence: None,
     })
 }
 

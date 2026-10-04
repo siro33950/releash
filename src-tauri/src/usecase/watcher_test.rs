@@ -24,7 +24,7 @@ impl FileWatchGateway for Files {
 }
 
 fn ignore() -> WatchChangeHandler {
-    Arc::new(|| {})
+    Arc::new(|_| {})
 }
 
 #[test]

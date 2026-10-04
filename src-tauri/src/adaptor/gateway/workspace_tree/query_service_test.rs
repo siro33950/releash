@@ -114,6 +114,7 @@ async fn test_workspace_tree_query_記録済み活動状態を一覧と詳細へ
     let directory = tempfile::tempdir().unwrap();
     let store = LocalEventStore::open(LocalEventStoreConfig::production(
         directory.path().to_path_buf(),
+        std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
     ))
     .unwrap();
     let sessions =
@@ -144,6 +145,7 @@ async fn test_workspace_tree_query_記録済み活動状態を一覧と詳細へ
 
     let reopened = LocalEventStore::open(LocalEventStoreConfig::production(
         directory.path().to_path_buf(),
+        std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
     ))
     .unwrap();
     assert_working_session_projection(reopened).await;
@@ -155,6 +157,7 @@ async fn test_workspace_tree_query_活動未観測の単独sessionは完了node�
     let directory = tempfile::tempdir().unwrap();
     let store = LocalEventStore::open(LocalEventStoreConfig::production(
         directory.path().to_path_buf(),
+        std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
     ))
     .unwrap();
     let workspace = WorkspaceIdentity::new("workspace-initial-activity");
@@ -203,6 +206,7 @@ async fn test_workspace_tree_query_resume直後の単独sessionは緑になる()
     let directory = tempfile::tempdir().unwrap();
     let store = LocalEventStore::open(LocalEventStoreConfig::production(
         directory.path().to_path_buf(),
+        std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
     ))
     .unwrap();
     let workspace = WorkspaceIdentity::new("workspace-resumed-activity");
@@ -273,6 +277,7 @@ async fn test_workspace_tree_query_workflow子sessionの活動状態を一覧と
     let directory = tempfile::tempdir().unwrap();
     let store = LocalEventStore::open(LocalEventStoreConfig::production(
         directory.path().to_path_buf(),
+        std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
     ))
     .unwrap();
     seed_workflow_session_facts(
@@ -307,6 +312,7 @@ async fn test_workspace_tree_query_workflow子sessionの活動状態を一覧と
 
     let reopened = LocalEventStore::open(LocalEventStoreConfig::production(
         directory.path().to_path_buf(),
+        std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
     ))
     .unwrap();
     assert_workflow_child_activity_projection(reopened.clone(), "active").await;
@@ -330,6 +336,7 @@ async fn test_workspace_tree_query_活動終了と再開の反復を一覧と詳
     let directory = tempfile::tempdir().unwrap();
     let store = LocalEventStore::open(LocalEventStoreConfig::production(
         directory.path().to_path_buf(),
+        std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
     ))
     .unwrap();
     let workspace = WorkspaceIdentity::new("workspace-activity-round-trip");
@@ -395,6 +402,7 @@ async fn test_workspace_tree_query_stop事実と後続活動を一覧と詳細�
     let directory = tempfile::tempdir().unwrap();
     let store = LocalEventStore::open(LocalEventStoreConfig::production(
         directory.path().to_path_buf(),
+        std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
     ))
     .unwrap();
     let workspace = WorkspaceIdentity::new("workspace-stop-activity-read");
@@ -464,6 +472,7 @@ async fn test_workspace_tree_query_stop事実と後続活動を一覧と詳細�
     drop(store);
     let reopened = LocalEventStore::open(LocalEventStoreConfig::production(
         directory.path().to_path_buf(),
+        std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
     ))
     .unwrap();
     assert_eq!(projected_classification(reopened.clone()).await, "idle");
@@ -503,6 +512,7 @@ async fn launch区分が同じworktreeのworkflow一覧とsession一覧を分け
     let directory = tempfile::tempdir().unwrap();
     let store = LocalEventStore::open(LocalEventStoreConfig::production(
         directory.path().to_path_buf(),
+        std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
     ))
     .unwrap();
     seed_workflow_session_facts(
@@ -563,6 +573,7 @@ async fn test_workspace_tree_query_workspace同定子がworktreeと異なるsess
     let directory = tempfile::tempdir().unwrap();
     let store = LocalEventStore::open(LocalEventStoreConfig::production(
         directory.path().to_path_buf(),
+        std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
     ))
     .unwrap();
     let workspace = WorkspaceIdentity::new("workspace-1");
@@ -605,6 +616,7 @@ async fn test_workspaceツリー投影_同じfoldのworkflow履歴と表示名�
     let directory = tempfile::tempdir().unwrap();
     let store = LocalEventStore::open(LocalEventStoreConfig::production(
         directory.path().to_path_buf(),
+        std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
     ))
     .unwrap();
     let execution_id = "00000000-0000-4000-8000-000000001662";
@@ -648,6 +660,7 @@ async fn test_workspaceツリー投影_単独agent_sessionのpublic_root表示�
     let directory = tempfile::tempdir().unwrap();
     let store = LocalEventStore::open(LocalEventStoreConfig::production(
         directory.path().to_path_buf(),
+        std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
     ))
     .unwrap();
     let workspace = WorkspaceIdentity::new("/repo");
@@ -688,6 +701,7 @@ async fn test_workspaceノード詳細_public_rootと子nodeの名前はnodeのt
     let directory = tempfile::tempdir().unwrap();
     let store = LocalEventStore::open(LocalEventStoreConfig::production(
         directory.path().to_path_buf(),
+        std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
     ))
     .unwrap();
     let workspace = WorkspaceIdentity::new("/repo");
@@ -903,9 +917,11 @@ async fn test_workspace読取_未対応定義がabort済みでもcommand出力�
     // Given
     for unavailable in ["main", "command", "session", "unused"] {
         let directory = tempfile::tempdir().unwrap();
-        let store =
-            LocalEventStore::open(LocalEventStoreConfig::production(directory.path().into()))
-                .unwrap();
+        let store = LocalEventStore::open(LocalEventStoreConfig::production(
+            directory.path().into(),
+            std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
+        ))
+        .unwrap();
         crate::adaptor::gateway::workflow::test_support::seed_unavailable_definition(
             &store,
             "00000000-0000-4000-8000-000000001744",
@@ -943,6 +959,7 @@ async fn test_workspace読取_未対応定義がabort済みでもcommand出力�
         let read_store =
             crate::adaptor::gateway::local_event_store::read_only::LocalEventReadStore::open(
                 directory.path(),
+                std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
             )
             .unwrap();
         for repository in [
@@ -1025,8 +1042,11 @@ fn test_隔離node詳細_実行中と成果物なし終端でもbranchとpathを
 async fn test_archive履歴_手動とworktree消失の事実の時刻と理由をそのまま投影する() {
     // Given
     let directory = tempfile::tempdir().unwrap();
-    let store =
-        LocalEventStore::open(LocalEventStoreConfig::production(directory.path().into())).unwrap();
+    let store = LocalEventStore::open(LocalEventStoreConfig::production(
+        directory.path().into(),
+        std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
+    ))
+    .unwrap();
     let repository = SqliteWorkspaceTreeRepository::new(store.clone());
     let fixtures = [
         ("00000000-0000-4000-8000-000000000901", 12.345678, "manual"),
@@ -1106,8 +1126,11 @@ async fn test_workflow単一取得_単独sessionをworkflow_summaryとして返�
     use crate::domain::workflow::SessionExecutionTreeRootFacts;
     // Given
     let directory = tempfile::tempdir().unwrap();
-    let store =
-        LocalEventStore::open(LocalEventStoreConfig::production(directory.path().into())).unwrap();
+    let store = LocalEventStore::open(LocalEventStoreConfig::production(
+        directory.path().into(),
+        std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
+    ))
+    .unwrap();
     let session = "00000000-0000-4000-8000-000000000991";
     let workflow = "00000000-0000-4000-8000-000000000992";
     let facts =
@@ -1206,8 +1229,11 @@ async fn test_workspace読取_実経路で失敗分類を保持する() {
     use crate::adaptor::presenter::connect::classified_error;
     // Given
     let directory = tempfile::tempdir().unwrap();
-    let store =
-        LocalEventStore::open(LocalEventStoreConfig::production(directory.path().into())).unwrap();
+    let store = LocalEventStore::open(LocalEventStoreConfig::production(
+        directory.path().into(),
+        std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
+    ))
+    .unwrap();
     let repository = SqliteWorkspaceTreeRepository::new(store.clone());
     let query = service(&repository);
     let workspace = WorkspaceIdentity::new("/repo");
@@ -1254,4 +1280,57 @@ fn test_store問い合わせエラー_停止の分類を保持する() {
         );
         assert!(matches!(error, WorkflowError::Technical(value) if value == stopped.into()));
     }
+}
+
+#[tokio::test]
+async fn test_session選択_記録済みsessionとnodeのdtoを返し対象外は無しを返す() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = LocalEventStore::open(LocalEventStoreConfig::production(
+        directory.path().into(),
+        Arc::new(crate::common::retry::RetryLimiter::new()),
+    ))
+    .unwrap();
+    seed_workflow_session_facts(
+        &store,
+        WorkflowSessionFactSeed {
+            workflow_name: "selection",
+            request: "select",
+            worktree_path: "/repo/selection",
+            provider: ProviderKind::Codex,
+            workflow_execution_id: "00000000-0000-4000-8000-000000001800",
+            node_execution_id: "selection-node",
+            session_id: "selection-session",
+            initial_instruction_admitted: true,
+        },
+    )
+    .await
+    .unwrap();
+    let repository = SqliteWorkspaceTreeRepository::new(store);
+
+    let workspace = WorkspaceIdentity::new("/repo/selection");
+    let tree = load_tree(&repository, &workspace).await;
+    let expected = tree
+        .nodes()
+        .iter()
+        .find(|node| node.session_id.as_deref() == Some("selection-session"))
+        .unwrap()
+        .id
+        .clone();
+    let selected = repository
+        .load_node_by_session_id(&workspace, "selection-session")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(selected.session_id.as_deref(), Some("selection-session"));
+    assert_eq!(selected.id, expected);
+    assert!(repository
+        .load_node_by_session_id(&workspace, "missing")
+        .await
+        .unwrap()
+        .is_none());
+    assert!(repository
+        .load_node_by_session_id(&WorkspaceIdentity::new("/other"), "selection-session")
+        .await
+        .unwrap()
+        .is_none());
 }

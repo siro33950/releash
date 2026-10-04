@@ -39,10 +39,17 @@ describe("activateTerminalLink", () => {
 			.spyOn(console, "error")
 			.mockImplementation(() => {});
 		mocks.openUrl.mockRejectedValueOnce(error);
+		const dispatch = vi.spyOn(window, "dispatchEvent");
 
 		expect(() => activateTerminalLink("https://example.com")).not.toThrow();
 		await Promise.resolve();
 
+		expect(dispatch).toHaveBeenCalledWith(
+			expect.objectContaining({
+				type: "releash-client-error",
+				detail: "open failed",
+			}),
+		);
 		expect(consoleError).toHaveBeenCalledWith(
 			"Failed to open terminal link:",
 			error,

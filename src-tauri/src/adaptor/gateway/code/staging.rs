@@ -105,15 +105,15 @@ pub(crate) fn git_unstage(repo_path: &str, paths: Vec<String>) -> Result<(), Cod
     Ok(())
 }
 
-pub(crate) fn git_stage_hunk(repo_path: &str, patch: &str) -> Result<(), CodeError> {
-    apply_patch(repo_path, patch, false)
+pub(crate) async fn git_stage_hunk(repo_path: &str, patch: &str) -> Result<(), CodeError> {
+    apply_patch(repo_path, patch, false).await
 }
 
-pub(crate) fn git_unstage_hunk(repo_path: &str, patch: &str) -> Result<(), CodeError> {
-    apply_patch(repo_path, patch, true)
+pub(crate) async fn git_unstage_hunk(repo_path: &str, patch: &str) -> Result<(), CodeError> {
+    apply_patch(repo_path, patch, true).await
 }
 
-fn apply_patch(repo_path: &str, patch: &str, reverse: bool) -> Result<(), CodeError> {
+async fn apply_patch(repo_path: &str, patch: &str, reverse: bool) -> Result<(), CodeError> {
     git_operation::run(|| Repository::open(repo_path))?;
     #[cfg(test)]
     let program = staging_tests::git_program();
@@ -125,6 +125,7 @@ fn apply_patch(repo_path: &str, patch: &str, reverse: bool) -> Result<(), CodeEr
         command.arg("--reverse");
     }
     let output = crate::infrastructure::process::output::output(command, patch.as_bytes().to_vec())
+        .await
         .map_err(|error| match error {
             crate::infrastructure::process::output::ProcessError::Io(error) => {
                 CodeError::from(error)
@@ -145,6 +146,8 @@ fn apply_patch(repo_path: &str, patch: &str, reverse: bool) -> Result<(), CodeEr
 /// `StagingRepository` の git2 / git CLI 実装。
 pub struct StagingGateway;
 
+#[async_trait::async_trait]
+
 impl StagingRepository for StagingGateway {
     fn stage(&self, repo_path: &str, paths: Vec<String>) -> Result<(), CodeError> {
         git_stage(repo_path, paths)
@@ -152,11 +155,11 @@ impl StagingRepository for StagingGateway {
     fn unstage(&self, repo_path: &str, paths: Vec<String>) -> Result<(), CodeError> {
         git_unstage(repo_path, paths)
     }
-    fn stage_hunk(&self, repo_path: &str, patch: &str) -> Result<(), CodeError> {
-        git_stage_hunk(repo_path, patch)
+    async fn stage_hunk(&self, repo_path: &str, patch: &str) -> Result<(), CodeError> {
+        git_stage_hunk(repo_path, patch).await
     }
-    fn unstage_hunk(&self, repo_path: &str, patch: &str) -> Result<(), CodeError> {
-        git_unstage_hunk(repo_path, patch)
+    async fn unstage_hunk(&self, repo_path: &str, patch: &str) -> Result<(), CodeError> {
+        git_unstage_hunk(repo_path, patch).await
     }
 }
 
@@ -194,8 +197,8 @@ mod staging_gateway_tests {
         hunk_service::generate_group_patch(file_path, hunk, group)
     }
 
-    #[test]
-    fn test_stage_特定ファイル() {
+    #[tokio::test]
+    async fn test_stage_特定ファイル() {
         let (dir, repo) = create_test_repo();
         create_initial_commit(&repo);
         fs::write(dir.path().join("new.txt"), "hello").unwrap();
@@ -208,8 +211,8 @@ mod staging_gateway_tests {
         assert_eq!(statuses[0].worktree_status, "none");
     }
 
-    #[test]
-    fn test_stage_全ファイル() {
+    #[tokio::test]
+    async fn test_stage_全ファイル() {
         let (dir, repo) = create_test_repo();
         create_initial_commit(&repo);
         fs::write(dir.path().join("a.txt"), "a").unwrap();
@@ -225,8 +228,8 @@ mod staging_gateway_tests {
         }
     }
 
-    #[test]
-    fn test_stage_削除ファイル() {
+    #[tokio::test]
+    async fn test_stage_削除ファイル() {
         let (dir, repo) = create_test_repo();
         create_initial_commit(&repo);
         add_and_commit(&repo, "file.txt", "content", "add file");
@@ -240,8 +243,8 @@ mod staging_gateway_tests {
         assert_eq!(statuses[0].worktree_status, "none");
     }
 
-    #[test]
-    fn test_stage_未追跡ファイル() {
+    #[tokio::test]
+    async fn test_stage_未追跡ファイル() {
         let (dir, repo) = create_test_repo();
         create_initial_commit(&repo);
         fs::write(dir.path().join("untracked.txt"), "data").unwrap();
@@ -260,8 +263,8 @@ mod staging_gateway_tests {
         assert_eq!(after[0].worktree_status, "none");
     }
 
-    #[test]
-    fn test_unstage_特定ファイル() {
+    #[tokio::test]
+    async fn test_unstage_特定ファイル() {
         let (dir, repo) = create_test_repo();
         create_initial_commit(&repo);
         fs::write(dir.path().join("file.txt"), "content").unwrap();
@@ -275,8 +278,8 @@ mod staging_gateway_tests {
         assert_eq!(statuses[0].index_status, "none");
     }
 
-    #[test]
-    fn test_unstage_全ファイル() {
+    #[tokio::test]
+    async fn test_unstage_全ファイル() {
         let (dir, repo) = create_test_repo();
         create_initial_commit(&repo);
         fs::write(dir.path().join("a.txt"), "a").unwrap();
@@ -292,8 +295,8 @@ mod staging_gateway_tests {
         }
     }
 
-    #[test]
-    fn test_unstage_unborn_branch() {
+    #[tokio::test]
+    async fn test_unstage_unborn_branch() {
         let (dir, _repo) = create_test_repo();
         fs::write(dir.path().join("file.txt"), "content").unwrap();
         git_stage(dir.path().to_str().unwrap(), vec!["file.txt".to_string()]).unwrap();
@@ -308,8 +311,8 @@ mod staging_gateway_tests {
         assert_eq!(after[0].worktree_status, "new");
     }
 
-    #[test]
-    fn test_stage_hunk() {
+    #[tokio::test]
+    async fn test_stage_hunk() {
         let (dir, repo) = create_test_repo();
         create_initial_commit(&repo);
         add_and_commit(&repo, "file.txt", "line1\nline2\nline3\n", "add file");
@@ -319,14 +322,16 @@ mod staging_gateway_tests {
         let patch =
             "--- a/file.txt\n+++ b/file.txt\n@@ -1,3 +1,3 @@\n line1\n-line2\n+modified\n line3\n";
 
-        git_stage_hunk(dir.path().to_str().unwrap(), patch).unwrap();
+        git_stage_hunk(dir.path().to_str().unwrap(), patch)
+            .await
+            .unwrap();
 
         let statuses = get_git_status(dir.path().to_str().unwrap()).unwrap();
         assert!(statuses.iter().any(|s| s.index_status == "modified"));
     }
 
-    #[test]
-    fn test_stage_hunk_連続適用はstaged内容で再計算したpatchなら成功する() {
+    #[tokio::test]
+    async fn test_stage_hunk_連続適用はstaged内容で再計算したpatchなら成功する() {
         let (dir, repo) = create_test_repo();
         create_initial_commit(&repo);
         let original = "line1\nline2\nline3\nline4\n";
@@ -341,7 +346,9 @@ mod staging_gateway_tests {
         let second_group_id = groups[1].group_id.clone();
 
         let first_patch = group_patch("file.txt", &hunks, &first_group);
-        git_stage_hunk(dir.path().to_str().unwrap(), &first_patch).unwrap();
+        git_stage_hunk(dir.path().to_str().unwrap(), &first_patch)
+            .await
+            .unwrap();
         assert_eq!(
             index_file_content(&repo, "file.txt"),
             "line1\nchanged2\nline3\nline4\n"
@@ -354,13 +361,15 @@ mod staging_gateway_tests {
             .find(|group| group.group_id == second_group_id)
             .unwrap();
         let second_patch = group_patch("file.txt", &hunks_after_stage, second_group);
-        git_stage_hunk(dir.path().to_str().unwrap(), &second_patch).unwrap();
+        git_stage_hunk(dir.path().to_str().unwrap(), &second_patch)
+            .await
+            .unwrap();
 
         assert_eq!(index_file_content(&repo, "file.txt"), modified);
     }
 
-    #[test]
-    fn test_unstage_hunk() {
+    #[tokio::test]
+    async fn test_unstage_hunk() {
         let (dir, repo) = create_test_repo();
         create_initial_commit(&repo);
         add_and_commit(&repo, "file.txt", "line1\nline2\nline3\n", "add file");
@@ -373,7 +382,9 @@ mod staging_gateway_tests {
 
         let patch =
             "--- a/file.txt\n+++ b/file.txt\n@@ -1,3 +1,3 @@\n line1\n-line2\n+modified\n line3\n";
-        git_unstage_hunk(dir.path().to_str().unwrap(), patch).unwrap();
+        git_unstage_hunk(dir.path().to_str().unwrap(), patch)
+            .await
+            .unwrap();
 
         let after = get_git_status(dir.path().to_str().unwrap()).unwrap();
         let file_status = after.iter().find(|s| s.path == "file.txt").unwrap();

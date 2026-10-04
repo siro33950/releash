@@ -26,7 +26,7 @@ impl FileWatcherManager {
         on_event: F,
     ) -> Result<u64, String>
     where
-        F: Fn(RawFileWatchEvent) + Send + Sync + 'static,
+        F: Fn(Result<RawFileWatchEvent, String>) + Send + Sync + 'static,
     {
         let watch_path = PathBuf::from(&path);
 
@@ -43,11 +43,11 @@ impl FileWatcherManager {
                 match res {
                     Ok(events) => {
                         for event in events {
-                            on_event(RawFileWatchEvent { path: event.path });
+                            on_event(Ok(RawFileWatchEvent { path: event.path }));
                         }
                     }
                     Err(e) => {
-                        eprintln!("File watcher error: {:?}", e);
+                        on_event(Err(e.to_string()));
                     }
                 }
             },

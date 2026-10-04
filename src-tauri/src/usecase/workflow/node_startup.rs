@@ -2,9 +2,7 @@ use super::runtime_error::WorkflowRuntimeError;
 use crate::common::retry::{attempts, bounded, AttemptProgress, RetryBackoff};
 use crate::domain::workflow::entities::workflow_execution::NodeStart;
 use crate::usecase::failure::Failure;
-use crate::usecase::failure::{
-    attempt_expired, next_attempt, FailureKey, WorkFailure, ATTEMPT_LIMIT,
-};
+use crate::usecase::failure::{attempt_expired, next_attempt, WorkFailure, ATTEMPT_LIMIT};
 use crate::usecase::retry::Retrying;
 
 #[derive(Debug, Clone)]
@@ -141,16 +139,10 @@ async fn retry_node(
                     })
                 }
                 Ok(failed) => Ok(failed),
-                Err(error) => {
-                    retrying.failures.observed(
-                        &FailureKey::new("workflow_node_start", &failure.id),
-                        WorkFailure::from_error(&error),
-                    );
-                    Err(NodeStartupError {
-                        node_execution_id,
-                        error,
-                    })
-                }
+                Err(error) => Err(NodeStartupError {
+                    node_execution_id,
+                    error,
+                }),
             }
         },
     );

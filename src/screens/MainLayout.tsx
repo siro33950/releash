@@ -499,7 +499,7 @@ export function MainLayout({
 		}
 	}, [mountedRootPaths]);
 	// --- Workspace state persistence ---
-	const { internalStateMapRef, getInitialState, stateReady } =
+	const { internalStateMapRef, getInitialState, stateReady, stateError } =
 		useWorkspacePersistence({
 			selectedRootPath,
 			centerTab: "agent",
@@ -655,6 +655,10 @@ export function MainLayout({
 												{!selectedRootPath ? (
 													<div className="flex-1 flex items-center justify-center text-muted-foreground text-sm">
 														Select a worktree from the sidebar to start working
+													</div>
+												) : stateError ? (
+													<div role="alert" className="p-4 text-destructive">
+														{stateError}
 													</div>
 												) : (
 													<div className="flex-1" />

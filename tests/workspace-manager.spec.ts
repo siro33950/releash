@@ -206,8 +206,7 @@ test.describe("Workspace Manager", () => {
 				(branch) => branch.name === "feat/wip",
 			),
 			"providers": ["codex"],
-			create_agent_session: agentSessionId,
-			"session-node": agentSessionId,
+			create_agent_session: { agentSessionId, nodeId: agentSessionId },
 			"node-detail": {
 				processPresence: "unknown",
 				id: agentSessionId,
@@ -1124,7 +1123,7 @@ test("worktree作成後の購読配信で新しいworktreeを表示する", asyn
 	const created = { ...kanbanBranches[0], name: "feat/created", worktree_path: "/test/repo-worktrees/created" };
 	await setupTauriMock(page, buildMockConfig({
 		"workspaceBranches": kanbanBranches,
-		create_worktree: { name: "created", path: created.worktree_path, branch: created.name, is_main: false, is_locked: false, },
+		create_worktree: created.worktree_path,
 	}));
 	await waitForApp(page);
 	await page.evaluate(({ created, branches }) => {

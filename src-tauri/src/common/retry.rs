@@ -1,5 +1,8 @@
+use crate::common::operation_context::{self, OperationStopped};
 use std::future::Future;
 use std::time::Duration;
+
+const JITTER_SPREAD: f64 = 0.2;
 
 #[derive(Debug, Clone, Copy)]
 pub struct RetryBackoff {
@@ -12,7 +15,10 @@ impl RetryBackoff {
     pub const ITEM: Self = Self::new(Duration::from_millis(5), 2.0, Duration::from_secs(1000));
     pub const RECOVERY: Self = Self::new(Duration::from_millis(800), 2.0, Duration::from_secs(30));
     pub const CONFLICT: Self = Self::new(Duration::from_millis(10), 5.0, Duration::from_secs(1));
-    pub const SERVICE: Self = Self::new(Duration::from_secs(1), 1.6, Duration::from_secs(120));
+    pub const POLL: Self = Self::new(Duration::from_millis(10), 1.0, Duration::from_millis(10));
+    #[cfg(feature = "desktop")]
+    pub const DESKTOP_POLL: Self =
+        Self::new(Duration::from_millis(20), 1.0, Duration::from_millis(20));
 
     pub const fn new(initial: Duration, multiplier: f64, maximum: Duration) -> Self {
         assert!(!initial.is_zero());
@@ -76,6 +82,41 @@ pub struct RetryLimiter {
 }
 
 impl RetryLimiter {
+    fn backoff_delay(&self, policy: RetryBackoff, failures: u64, spread: f64) -> Duration {
+        policy.delay(failures, 1.0 + (self.jitter)() * spread)
+    }
+
+    fn token_wait(&self) -> Duration {
+        self.bucket
+            .lock()
+            .expect("retry bucket")
+            .acquire(self.origin.elapsed())
+    }
+
+    fn token_waits(&self) -> impl Iterator<Item = Duration> + '_ {
+        std::iter::from_fn(|| {
+            let delay = self.token_wait();
+            (!delay.is_zero()).then_some(delay)
+        })
+    }
+
+    pub fn try_acquire(&self) -> bool {
+        self.token_wait().is_zero()
+    }
+
+    pub fn wait_sync(
+        &self,
+        context: &operation_context::OperationContext,
+        policy: RetryBackoff,
+        failures: u64,
+    ) -> Result<(), OperationStopped> {
+        operation_context::sleep(context, self.backoff_delay(policy, failures, JITTER_SPREAD))?;
+        for delay in self.token_waits() {
+            operation_context::sleep(context, delay)?;
+        }
+        context.check(std::time::Instant::now())
+    }
+
     pub fn new() -> Self {
         Self::with_jitter(jitter_fraction)
     }
@@ -93,27 +134,31 @@ impl RetryLimiter {
         }
     }
 
-    pub async fn wait(&self, policy: RetryBackoff, failures: u64) {
-        self.wait_with_spread(policy, failures, 0.2).await;
+    pub async fn wait(&self, policy: RetryBackoff, failures: u64) -> Result<(), OperationStopped> {
+        self.wait_with_spread(policy, failures, JITTER_SPREAD).await
     }
 
-    pub async fn wait_with_spread(&self, policy: RetryBackoff, failures: u64, spread: f64) {
-        tokio::time::sleep(policy.delay(failures, 1.0 + (self.jitter)() * spread)).await;
-        self.acquire().await;
+    pub async fn wait_with_spread(
+        &self,
+        policy: RetryBackoff,
+        failures: u64,
+        spread: f64,
+    ) -> Result<(), OperationStopped> {
+        self.pause(self.backoff_delay(policy, failures, spread))
+            .await?;
+        self.acquire().await
     }
 
-    pub async fn acquire(&self) {
-        loop {
-            let wait = self
-                .bucket
-                .lock()
-                .expect("retry bucket")
-                .acquire(self.origin.elapsed());
-            if wait.is_zero() {
-                return;
-            }
-            tokio::time::sleep(wait).await;
+    async fn pause(&self, delay: Duration) -> Result<(), OperationStopped> {
+        operation_context::wait(&operation_context::current(), tokio::time::sleep(delay)).await
+    }
+
+    pub async fn acquire(&self) -> Result<(), OperationStopped> {
+        operation_context::check()?;
+        for delay in self.token_waits() {
+            self.pause(delay).await?;
         }
+        operation_context::check()
     }
 }
 
@@ -125,7 +170,7 @@ impl Default for RetryLimiter {
 
 #[cfg(test)]
 fn jitter() -> f64 {
-    1.0 + jitter_fraction() * 0.2
+    1.0 + jitter_fraction() * JITTER_SPREAD
 }
 
 fn jitter_fraction() -> f64 {
@@ -137,6 +182,25 @@ pub async fn attempts<T, E, F, Fut>(
     policy: RetryBackoff,
     limiter: &RetryLimiter,
     decide: impl Fn(&E) -> Option<AttemptProgress>,
+    operation: F,
+) -> Result<T, E>
+where
+    F: FnMut(AttemptProgress) -> Fut,
+    Fut: Future<Output = Result<T, E>>,
+{
+    attempts_with_pushback(
+        policy,
+        limiter,
+        |error| decide(error).map(|progress| (progress, None)),
+        operation,
+    )
+    .await
+}
+
+pub async fn attempts_with_pushback<T, E, F, Fut>(
+    policy: RetryBackoff,
+    limiter: &RetryLimiter,
+    decide: impl Fn(&E) -> Option<(AttemptProgress, Option<Duration>)>,
     mut operation: F,
 ) -> Result<T, E>
 where
@@ -150,7 +214,7 @@ where
             Ok(value) => return Ok(value),
             Err(error) => error,
         };
-        let Some(next) = decide(&error) else {
+        let Some((next, pushback)) = decide(&error) else {
             return Err(error);
         };
         failures = failures.saturating_add(1);
@@ -159,7 +223,18 @@ where
         } else {
             policy
         };
-        limiter.wait(policy, failures).await;
+        if let Some(delay) = pushback {
+            if operation_context::current()
+                .remaining(std::time::Instant::now())
+                .is_some_and(|remaining| delay >= remaining)
+                || !limiter.try_acquire()
+                || limiter.pause(delay).await.is_err()
+            {
+                return Err(error);
+            }
+        } else if limiter.wait(policy, failures).await.is_err() {
+            return Err(error);
+        }
         progress = next;
     }
 }

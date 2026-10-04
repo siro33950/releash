@@ -1789,3 +1789,37 @@ it("terminalの旧開始が保留中でも再開始後の入力先が失効し�
 	releaseFirst();
 	releaseSecond();
 });
+
+it("起動worktree の不在を null として購読する", async () => {
+	const fixture = stateFixture();
+	const result = firstState("startup-repository");
+	await vi.waitFor(() => expect(fixture.starts).toHaveLength(1));
+	fixture.streams[0].send({
+		subscriptionId: fixture.subscriptionId("startup-repository"),
+		version: { epoch: "boot", sequence: 0n },
+		event: {
+			case: "snapshot",
+			value: { value: { case: "startupRepository", value: {} } },
+		},
+	});
+	await expect(result).resolves.toBeNull();
+});
+
+it("作成した Session の識別子と公開 Node ID を操作の結果として返す", async () => {
+	const create = vi.fn(() => ({
+		agentSessionId: "session-1",
+		nodeId: "session-node-1",
+	}));
+	connectFixture({ createAgentSession: create });
+	await expect(
+		invokeClient("create_agent_session", {
+			workspaceIdentity: "/repo",
+			worktreePath: "/repo",
+			provider: "codex",
+			rows: 24,
+			cols: 80,
+			callerRequestId: "create-1",
+		}),
+	).resolves.toEqual({ agentSessionId: "session-1", nodeId: "session-node-1" });
+	expect(create).toHaveBeenCalledOnce();
+});

@@ -46,6 +46,28 @@ pub struct RepositoryUsecase {
 }
 
 impl RepositoryUsecase {
+    pub(crate) fn startup_worktree(
+        &self,
+    ) -> Result<Option<crate::usecase::repository_dto::StartupWorktree>, UsecaseError> {
+        let Some(root) = self.find_main_repo_path(&self.get_cwd()?)? else {
+            return Ok(None);
+        };
+        let mut worktrees = self.list_worktrees(&root)?;
+        if worktrees.len() != 1 {
+            return Ok(None);
+        }
+        let worktree = worktrees.remove(0);
+        let repository_name = std::path::Path::new(&root)
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or(root);
+        Ok(Some(crate::usecase::repository_dto::StartupWorktree {
+            path: worktree.path,
+            branch: worktree.branch,
+            repository_name,
+        }))
+    }
+
     pub(crate) fn with_state_publisher(
         mut self,
         publisher: crate::usecase::state_subscription::StateSubscriptionUsecase,
@@ -262,8 +284,6 @@ impl RepositoryUsecase {
 
     /// worktree 削除の業務手順。
     ///
-    /// 検証・Archive・terminal 停止後に受理し、削除と base 設定の後始末は
-    /// 排他を保持した背景タスクで行う。受理後の成否は保持・通知しない。
     pub async fn remove_worktree(
         &self,
         archives: &dyn WorktreeExecutionArchiver,
@@ -304,18 +324,28 @@ impl RepositoryUsecase {
         self.notify_repository_changed(repo_path);
         let repository = self.clone();
         let repo_path = repo_path.to_string();
-        tokio::task::spawn_blocking(move || {
-            let _deletion = deletion;
-            if let Ok(Some(branch)) = repository
-                .worktree
-                .remove(&repo_path, &worktree_path, force)
-            {
-                let _ = repository
-                    .git_config
-                    .set_branch_base_override(&repo_path, &branch, None);
-            }
-        });
-        Ok(())
+        let result = crate::common::operation_context::spawn_blocking(move || {
+            let result = (|| {
+                if let Some(branch) =
+                    repository
+                        .worktree
+                        .remove(&repo_path, &worktree_path, force)?
+                {
+                    repository
+                        .git_config
+                        .set_branch_base_override(&repo_path, &branch, None)?;
+                }
+                Ok::<_, UsecaseError>(())
+            })();
+            drop(deletion);
+            repository.notify_repository_changed(&repo_path);
+            result
+        })
+        .await
+        .map_err(|error| {
+            RepositoryError::Technical(crate::domain::failure::TechnicalFailure::from(error))
+        })?;
+        result
     }
 
     // ── git_config（読み取り） ──
@@ -393,6 +423,7 @@ mod repository_usecase_tests {
         branch_base: Option<String>,
         fail_create_worktree: bool,
         fail_remove_worktree: bool,
+        fail_cleanup: bool,
         remove_started: tokio::sync::Notify,
         remove_continue: Option<Mutex<std::sync::mpsc::Receiver<()>>>,
         cleanup_started: tokio::sync::Notify,
@@ -598,6 +629,9 @@ mod repository_usecase_tests {
             branch_name: &str,
             base: Option<&str>,
         ) -> Result<(), RepositoryError> {
+            if self.fail_cleanup {
+                return Err(RepositoryError::External("cleanup failed".into()));
+            }
             self.cleanup_started.notify_one();
             if let Some(receiver) = &self.cleanup_continue {
                 receiver
@@ -1017,6 +1051,61 @@ mod repository_usecase_tests {
         );
     }
 
+    #[test]
+    fn test_起動worktree_一件だけのときpathと表示名を返す() {
+        for count in [0, 1, 2] {
+            let fake = Arc::new(FakeRepo {
+                worktrees: (0..count)
+                    .map(|index| Worktree {
+                        name: format!("wt{index}"),
+                        path: format!("/main/wt{index}"),
+                        branch: format!("feature{index}"),
+                        is_main: index == 0,
+                        is_locked: false,
+                        is_merged: false,
+                    })
+                    .collect(),
+                ..Default::default()
+            });
+            let result = usecase(fake).startup_worktree().unwrap();
+            if count == 1 {
+                let worktree = result.unwrap();
+                assert_eq!(worktree.path, "/main/wt0");
+                assert_eq!(worktree.branch, "feature0");
+                assert_eq!(worktree.repository_name, "main");
+            } else {
+                assert!(result.is_none());
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_worktree削除_base後始末の失敗を返し削除中を解いて通知する() {
+        let fake = Arc::new(FakeRepo {
+            removed_branch: Some("feature".into()),
+            fail_cleanup: true,
+            ..Default::default()
+        });
+        let subscriptions = crate::test_support::state_subscription::test_subscriptions();
+        let mut changes = subscriptions.changes();
+        let repository = usecase(fake.clone()).with_state_publisher(subscriptions);
+        let error = repository
+            .remove_worktree(fake.as_ref(), "/repo", "/wt", false)
+            .await
+            .unwrap_err();
+        assert_eq!(error.to_string(), "cleanup failed");
+        assert!(deleting_rows(&repository).is_empty());
+        assert!(fake.operations.mutate("/wt").is_ok());
+        assert_eq!(
+            changes.try_recv().unwrap(),
+            crate::usecase::state_subscription::StateChangeSource::Repository(vec!["/repo".into()])
+        );
+        assert_eq!(
+            changes.try_recv().unwrap(),
+            crate::usecase::state_subscription::StateChangeSource::Repository(vec!["/repo".into()])
+        );
+    }
+
     #[tokio::test]
     async fn test_worktree削除を委譲する() {
         let fake = Arc::new(<FakeRepo as Default>::default());
@@ -1051,7 +1140,7 @@ mod repository_usecase_tests {
     }
 
     #[tokio::test]
-    async fn test_worktree削除_受理後の削除失敗は返さずterminal停止は実行する() {
+    async fn test_worktree削除_削除失敗を返しterminal停止は実行する() {
         let fake = Arc::new(FakeRepo {
             fail_remove_worktree: true,
             ..<FakeRepo as Default>::default()
@@ -1059,7 +1148,7 @@ mod repository_usecase_tests {
         usecase(fake.clone())
             .remove_worktree(fake.as_ref(), "/r", "/wt", false)
             .await
-            .unwrap();
+            .unwrap_err();
         fake.wait_for_deletion("/wt").await;
         assert_eq!(
             *fake.killed_worktree_terminals.lock(),
@@ -1248,13 +1337,15 @@ mod repository_usecase_tests {
             });
             let repository = usecase(fake.clone());
             // When
-            tokio::time::timeout(
-                std::time::Duration::from_secs(5),
-                repository.remove_worktree(fake.as_ref(), "/repo", "/wt", false),
-            )
-            .await
-            .unwrap()
-            .unwrap();
+            let deletion = tokio::spawn({
+                let repository = repository.clone();
+                let fake = fake.clone();
+                async move {
+                    repository
+                        .remove_worktree(fake.as_ref(), "/repo", "/wt", false)
+                        .await
+                }
+            });
             tokio::time::timeout(
                 std::time::Duration::from_secs(5),
                 fake.remove_started.notified(),
@@ -1277,7 +1368,9 @@ mod repository_usecase_tests {
             assert!(rows[0].1);
             assert!(fake.removed_worktrees.lock().is_empty());
             assert!(fake.set_branch_base_override_calls.lock().is_empty());
+            assert!(!deletion.is_finished());
             release.send(()).unwrap();
+            assert_eq!(deletion.await.unwrap().is_err(), fail);
             fake.wait_for_deletion("/wt").await;
             assert!(deleting_rows(&repository).is_empty());
             assert_eq!(fake.removed_worktrees.lock().len(), usize::from(!fail));
@@ -1300,10 +1393,15 @@ mod repository_usecase_tests {
         });
         let repository = usecase(fake.clone());
         // When
-        repository
-            .remove_worktree(fake.as_ref(), "/repo", "/wt", false)
-            .await
-            .unwrap();
+        let deletion = tokio::spawn({
+            let repository = repository.clone();
+            let fake = fake.clone();
+            async move {
+                repository
+                    .remove_worktree(fake.as_ref(), "/repo", "/wt", false)
+                    .await
+            }
+        });
         tokio::time::timeout(
             std::time::Duration::from_secs(5),
             fake.cleanup_started.notified(),
@@ -1317,7 +1415,9 @@ mod repository_usecase_tests {
         assert!(rows[0].1);
         assert!(fake.operations.mutate("/wt").is_err());
         assert!(repository.get_repository_status_scan("/wt").is_ok());
+        assert!(!deletion.is_finished());
         release.send(()).unwrap();
+        deletion.await.unwrap().unwrap();
         fake.wait_for_deletion("/wt").await;
         assert!(deleting_rows(&repository).is_empty());
     }
@@ -1389,10 +1489,16 @@ mod repository_usecase_tests {
             });
             let repository = usecase(fake.clone());
             // When
-            repository
-                .remove_worktree(fake.as_ref(), "/repo", "/wt", force)
-                .await
-                .unwrap();
+            let deletion = tokio::spawn({
+                let repository = repository.clone();
+                let fake = fake.clone();
+                async move {
+                    repository
+                        .remove_worktree(fake.as_ref(), "/repo", "/wt", force)
+                        .await
+                }
+            });
+            fake.remove_started.notified().await;
             // Then
             assert_eq!(*fake.archived_worktrees.lock(), vec![("/wt".into(), 0)]);
             assert_eq!(
@@ -1406,7 +1512,9 @@ mod repository_usecase_tests {
             assert_eq!(rows[0].0.branch, "/wt");
             assert_eq!(rows[0].0.path, "/wt");
             assert!(rows[0].1);
+            assert!(!deletion.is_finished());
             release.send(()).unwrap();
+            deletion.await.unwrap().unwrap();
             fake.wait_for_deletion("/wt").await;
             assert_eq!(*fake.removed_worktrees.lock(), vec![("/wt".into(), force)]);
             assert!(deleting_rows(&repository).is_empty());
@@ -1464,6 +1572,10 @@ mod repository_usecase_tests {
             StateChangeSource::Repository(vec!["/repo".into()])
         );
         fake.wait_for_deletion("/wt").await;
+        assert_eq!(
+            changes.try_recv().unwrap(),
+            StateChangeSource::Repository(vec!["/repo".into()])
+        );
         let failed = Arc::new(FakeRepo {
             fail_create_worktree: true,
             fail_validate_removal: true,

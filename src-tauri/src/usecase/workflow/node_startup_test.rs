@@ -306,14 +306,6 @@ async fn test_node起動再試行_restartとstartに共通の20秒期限を適�
         assert_eq!(started.elapsed(), std::time::Duration::from_millis(20_010));
         assert_eq!(*gateway.restarts.lock().unwrap(), ["blocked", "other"]);
         assert_eq!(*gateway.starts.lock().unwrap(), [vec!["other-next"]]);
-        let records = store.records(target);
-        assert_eq!(records.len(), 1);
-        assert_eq!(
-            records[0].record.kind,
-            crate::usecase::failure::Failure::Technical(
-                crate::domain::failure::TechnicalFailureNature::TimedOut
-            )
-        );
-        assert!(records[0].requires_attention);
+        assert!(store.records(target).is_empty());
     }
 }

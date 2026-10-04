@@ -341,6 +341,7 @@ fn test_購読payload_全種類を旧wire型とフィールドへ変換する() 
                     can_delete: false,
                 },
                 last_exit_abnormal: false,
+                terminal_presence: None,
             })),
             W::AgentSession(wire::NullableAgentSessionItemDto {
                 value: Some(wire::AgentSessionItemDto {
@@ -364,13 +365,8 @@ fn test_購読payload_全種類を旧wire型とフィールドへ変換する() 
                         can_delete: Some(false),
                     }),
                     last_exit_abnormal: Some(false),
+                    terminal_presence: None,
                 }),
-            }),
-        ),
-        (
-            StateValue::SessionNode(Some("node".into())),
-            W::SessionNode(wire::Nullablestring {
-                value: Some("node".into()),
             }),
         ),
         (
@@ -514,15 +510,17 @@ fn test_購読payload_全種類を旧wire型とフィールドへ変換する() 
             }),
         ),
         (
-            StateValue::RepositoryRoot(Some("/repo".into())),
-            W::RepositoryRoot(wire::Nullablestring {
-                value: Some("/repo".into()),
-            }),
-        ),
-        (
-            StateValue::StartupRepository(Some("/startup".into())),
-            W::StartupRepository(wire::Nullablestring {
-                value: Some("/startup".into()),
+            StateValue::StartupRepository(Some(crate::usecase::repository_dto::StartupWorktree {
+                path: "/startup".into(),
+                branch: "main".into(),
+                repository_name: "startup".into(),
+            })),
+            W::StartupRepository(wire::NullableStartupWorktree {
+                value: Some(wire::StartupWorktree {
+                    path: Some("/startup".into()),
+                    branch: Some("main".into()),
+                    repository_name: Some("startup".into()),
+                }),
             }),
         ),
         (
@@ -754,6 +752,7 @@ fn test_購読payload_設定とproviderの出力値を維持する() {
                     display_name: "Codex".into(),
                     default_executable: "codex".into(),
                     configured_executable: None,
+                    configuration_revision: 0,
                     effective_executable: "codex".into(),
                     available: false,
                     resolved_executable: None,
@@ -761,7 +760,7 @@ fn test_購読payload_設定とproviderの出力値を維持する() {
                 }],
             }),
             "releash.client.v1.ProviderAvailabilitySnapshotResponse",
-            serde_json::json!({"providers":[{"provider":"codex","displayName":"Codex","defaultExecutable":"codex","configuredExecutable":null,"effectiveExecutable":"codex","available":false,"resolvedExecutable":null,"unavailableReason":"not_found"}]}),
+            serde_json::json!({"providers":[{"provider":"codex","displayName":"Codex","defaultExecutable":"codex","configuredExecutable":null,"configurationRevision":0,"effectiveExecutable":"codex","available":false,"resolvedExecutable":null,"unavailableReason":"not_found"}]}),
         ),
         (
             StateValue::WorkflowConfig(

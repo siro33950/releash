@@ -71,3 +71,10 @@ pub struct WorktreeEntryDto {
     pub is_main: bool,
     pub is_locked: bool,
 }
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct StartupWorktree {
+    pub path: String,
+    pub branch: String,
+    pub repository_name: String,
+}

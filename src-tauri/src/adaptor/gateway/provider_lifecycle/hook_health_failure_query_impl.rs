@@ -36,7 +36,7 @@ impl ProviderHookHealthFailureQuery for LocalProviderHookHealthFailureQuery {
             return Ok(Vec::new());
         }
         let data_dir = self.data_dir.clone();
-        let failures = tokio::task::spawn_blocking(move || {
+        let failures = crate::common::operation_context::spawn_blocking(move || {
             read_provider_hook_local_api_failures(&data_dir, MAX_SCANNED_MARKERS)
         })
         .await

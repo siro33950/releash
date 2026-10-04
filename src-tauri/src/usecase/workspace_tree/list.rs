@@ -126,7 +126,6 @@ impl WorkspaceListUsecase {
     }
 
     /// 全 Repository の worktree の並びと変更の状態を読み直し、PR を取り直す。
-    /// 走査の終わりまで待つ。PR は待たず、取れた時点で購読へ届く。
     pub async fn refresh(&self) {
         let paths = self.repositories.get();
         futures_util::future::join_all(paths.iter().map(|path| async move {
@@ -135,38 +134,53 @@ impl WorkspaceListUsecase {
             }
         }))
         .await;
-        self.refresh_pull_requests();
+        self.refresh_pull_requests().await;
     }
 
-    /// 全 Repository の PR を取り直す。取り終わるのを待たない。
-    pub fn refresh_pull_requests(&self) {
-        for path in self.repositories.get() {
-            let git_host = self.git_host.clone();
-            tokio::task::spawn_blocking(move || {
-                if let Err(error) = git_host.refresh_pr_status(&path) {
+    pub async fn refresh_pull_requests(&self) {
+        futures_util::future::join_all(self.repositories.get().into_iter().map(
+            |path| async move {
+                if let Err(error) = self.git_host.refresh_pr_status(&path).await {
                     log::warn!("workspace PR status refresh failed for {path}: {error}");
                 }
-            });
-        }
+            },
+        ))
+        .await;
     }
 
     /// 監視する Repository と worktree。
-    pub fn watch_paths(&self) -> Vec<String> {
+    pub fn watch_paths(
+        &self,
+    ) -> (
+        Vec<String>,
+        Vec<(String, crate::domain::failure::WorkFailure)>,
+    ) {
+        let mut failures = Vec::new();
         let mut paths = std::collections::HashSet::new();
         for path in self.repositories.get() {
+            let worktrees = self.repository_state.worktrees(&path);
+            if let Some(error) = worktrees.error {
+                failures.push((path.clone(), error));
+            }
             paths.extend(
-                self.repository_state
-                    .worktrees(&path)
+                worktrees
                     .value
                     .into_iter()
                     .flatten()
                     .map(|worktree| worktree.path),
             );
-            // worktree の並びは root の監視が持つ。登録パスが root でないときも root を監視する。
-            paths.extend(self.repository_state.repository_root(&path).ok());
+            match self.repository_state.repository_root(&path) {
+                Ok(root) => {
+                    paths.insert(root);
+                }
+                Err(error) => failures.push((
+                    path.clone(),
+                    crate::domain::failure::WorkFailure::from_error(&error),
+                )),
+            }
             paths.insert(path);
         }
-        paths.into_iter().collect()
+        (paths.into_iter().collect(), failures)
     }
 }
 

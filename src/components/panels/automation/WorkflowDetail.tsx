@@ -14,7 +14,7 @@ import type {
 import { DiagnosticsPanel } from "./DiagnosticBadge";
 
 type WorkflowSaveResult =
-	| { ok: true; workflow?: WorkflowDefinition }
+	| { ok: true; name?: string }
 	| { ok: false; error: string; diagnostics?: DiagnosticView[] };
 
 export function WorkflowDetail({

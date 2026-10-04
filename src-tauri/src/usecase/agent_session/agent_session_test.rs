@@ -742,6 +742,7 @@ fn launch_usecase_with_tree_registrar(
         hook_health,
         execution_trees,
         tokio::sync::mpsc::unbounded_channel().0,
+        crate::usecase::workspace_tree::TestWorkspaceTreeRepository::new(),
     )
 }
 
@@ -929,8 +930,7 @@ provider_runtime(
 Arc::new(FixedHistory { entries: Vec::new() }),
 hook_health_usecase(),
 execution_trees.clone(),
-tokio::sync::mpsc::unbounded_channel().0,
-);
+tokio::sync::mpsc::unbounded_channel().0, crate::usecase::workspace_tree::TestWorkspaceTreeRepository::new(),);
 
     let error = usecase
         .launch_standalone(AgentSessionLaunchRequest {
@@ -1002,8 +1002,7 @@ Arc::new(FixedHistory {
         }),
 hook_health_usecase(),
 started_execution_trees(),
-tokio::sync::mpsc::unbounded_channel().0,
-);
+tokio::sync::mpsc::unbounded_channel().0, crate::usecase::workspace_tree::TestWorkspaceTreeRepository::new(),);
 
     usecase
         .launch_standalone(AgentSessionLaunchRequest {
@@ -1183,8 +1182,7 @@ Arc::new(FixedHistory {
         }),
 hook_health_usecase(),
 started_execution_trees(),
-tokio::sync::mpsc::unbounded_channel().0,
-));
+tokio::sync::mpsc::unbounded_channel().0, crate::usecase::workspace_tree::TestWorkspaceTreeRepository::new(),));
 
     let first = tokio::spawn(
         Arc::clone(&usecase).launch_standalone_idempotent(idempotent_launch_request("request-dup")),
@@ -1366,8 +1364,7 @@ Arc::new(FixedHistory {
         }),
 hook_health_usecase(),
 started_execution_trees(),
-tokio::sync::mpsc::unbounded_channel().0,
-));
+tokio::sync::mpsc::unbounded_channel().0, crate::usecase::workspace_tree::TestWorkspaceTreeRepository::new(),));
 
     let first = Arc::clone(&usecase)
         .launch_standalone_idempotent(idempotent_launch_request("request-panic"))
@@ -1389,6 +1386,7 @@ async fn test_agent_session_launch_pty起動中のsessionをgcしない() {
     let store = crate::adaptor::gateway::local_event_store::LocalEventStore::open(
         crate::adaptor::gateway::local_event_store::LocalEventStoreConfig::production(
             directory.path().to_path_buf(),
+            std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
         ),
     )
     .unwrap();
@@ -1430,6 +1428,7 @@ async fn test_agent_session_launch_pty起動中のsessionをgcしない() {
         hook_health.clone(),
         started_execution_trees(),
         tokio::sync::mpsc::unbounded_channel().0,
+        crate::usecase::workspace_tree::TestWorkspaceTreeRepository::new(),
     ));
     let lifecycle = Arc::new(AgentSessionLifecycleUsecase::new(
         std::sync::Arc::new(crate::adaptor::gateway::identity::RandomIdentityIssuer),
@@ -1446,6 +1445,7 @@ async fn test_agent_session_launch_pty起動中のsessionをgcしない() {
         hook_health,
         crate::test_support::state_subscription::test_subscriptions(),
         started_execution_trees(),
+        crate::usecase::workspace_tree::TestWorkspaceTreeRepository::new(),
     ));
 
     let launching = tokio::spawn(async move {
@@ -1491,6 +1491,7 @@ async fn test_agent_session_history_resume_実行木登録失敗ではcreateをr
     let store = crate::adaptor::gateway::local_event_store::LocalEventStore::open(
         crate::adaptor::gateway::local_event_store::LocalEventStoreConfig::production(
             directory.path().to_path_buf(),
+            std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
         ),
     )
     .unwrap();
@@ -1530,8 +1531,7 @@ Arc::new(FixedHistory {
         }),
 hook_health_usecase(),
 execution_trees.clone(),
-tokio::sync::mpsc::unbounded_channel().0,
-);
+tokio::sync::mpsc::unbounded_channel().0, crate::usecase::workspace_tree::TestWorkspaceTreeRepository::new(),);
 
     let error = usecase
         .resume_history(AgentSessionHistoryResumeRequest {
@@ -1566,11 +1566,12 @@ async fn test_agent_session_history_resume_同一要求の再送は既存session
     let store = crate::adaptor::gateway::local_event_store::LocalEventStore::open(
         crate::adaptor::gateway::local_event_store::LocalEventStoreConfig::production(
             directory.path().to_path_buf(),
+            std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
         ),
     )
     .unwrap();
     let sessions = Arc::new(AgentSessionUsecase::new(Arc::new(
-        crate::adaptor::gateway::agent_session::LocalAgentSessionRepository::new(store),
+        crate::adaptor::gateway::agent_session::LocalAgentSessionRepository::new(store.clone()),
     )));
     let lifecycle_events = Arc::new(RecordingLifecycleEvents::default());
     let terminal = Arc::new(RecordingTerminal::default());
@@ -1601,8 +1602,7 @@ Arc::new(FixedHistory {
         }),
 hook_health_usecase(),
 started_execution_trees(),
-tokio::sync::mpsc::unbounded_channel().0,
-);
+tokio::sync::mpsc::unbounded_channel().0, crate::adaptor::gateway::workspace_tree::SqliteWorkspaceTreeRepository::new(store.clone()),);
     let request = AgentSessionHistoryResumeRequest {
         workspace: WorkspaceIdentity::new("/repo"),
         worktree_path: "/repo/worktree".to_string(),
@@ -1636,6 +1636,12 @@ tokio::sync::mpsc::unbounded_channel().0,
         Some(request.provider_session_id.as_str())
     );
     assert_eq!(terminal.spawns.lock().unwrap().len(), 2);
+    let selected = Arc::new(usecase)
+        .resume_history_selection(request)
+        .await
+        .unwrap();
+    assert_eq!(selected.0, expected_id);
+    assert_eq!(selected.1.id, expected_id);
 }
 
 #[tokio::test]
@@ -1645,6 +1651,7 @@ async fn test_agent_session_history_resumeは新しいsessionを作り失敗時�
     let store = crate::adaptor::gateway::local_event_store::LocalEventStore::open(
         crate::adaptor::gateway::local_event_store::LocalEventStoreConfig::production(
             directory.path().to_path_buf(),
+            std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
         ),
     )
     .unwrap();
@@ -1687,6 +1694,7 @@ async fn test_agent_session_history_resumeは新しいsessionを作り失敗時�
         hook_health,
         execution_trees.clone(),
         tokio::sync::mpsc::unbounded_channel().0,
+        crate::usecase::workspace_tree::TestWorkspaceTreeRepository::new(),
     );
 
     let outcome = usecase
@@ -1734,6 +1742,7 @@ async fn test_agent_session_history_resume_lifecycle準備失敗でもpausedへ�
     let store = crate::adaptor::gateway::local_event_store::LocalEventStore::open(
         crate::adaptor::gateway::local_event_store::LocalEventStoreConfig::production(
             directory.path().to_path_buf(),
+            std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
         ),
     )
     .unwrap();
@@ -1769,6 +1778,7 @@ async fn test_agent_session_history_resume_lifecycle準備失敗でもpausedへ�
         hook_health_usecase(),
         started_execution_trees(),
         tokio::sync::mpsc::unbounded_channel().0,
+        crate::usecase::workspace_tree::TestWorkspaceTreeRepository::new(),
     );
 
     let outcome = usecase
@@ -1805,6 +1815,7 @@ fn durable_usecase(
     let store = crate::adaptor::gateway::local_event_store::LocalEventStore::open(
         crate::adaptor::gateway::local_event_store::LocalEventStoreConfig::production(
             directory.path().to_path_buf(),
+            std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
         ),
     )
     .unwrap();
@@ -1963,6 +1974,7 @@ async fn test_provider_agent_workflow_session_launch_workflow関連付け後に�
     let store = crate::adaptor::gateway::local_event_store::LocalEventStore::open(
         crate::adaptor::gateway::local_event_store::LocalEventStoreConfig::production(
             directory.path().to_path_buf(),
+            std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
         ),
     )
     .unwrap();
@@ -1991,8 +2003,7 @@ provider_runtime(
 Arc::new(FixedHistory { entries: Vec::new() }),
 hook_health_usecase(),
 started_execution_trees(),
-tokio::sync::mpsc::unbounded_channel().0,
-);
+tokio::sync::mpsc::unbounded_channel().0, crate::usecase::workspace_tree::TestWorkspaceTreeRepository::new(),);
 
     let launched = usecase
         .prepare_workflow_node(WorkflowAgentSessionLaunchRequest {
@@ -2052,6 +2063,7 @@ async fn test_provider_agent_workflow_session_launch_別sessionのactivateを起
     let store = crate::adaptor::gateway::local_event_store::LocalEventStore::open(
         crate::adaptor::gateway::local_event_store::LocalEventStoreConfig::production(
             directory.path().to_path_buf(),
+            std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
         ),
     )
     .unwrap();
@@ -2087,8 +2099,7 @@ provider_runtime(
 Arc::new(FixedHistory { entries: Vec::new() }),
 hook_health_usecase(),
 started_execution_trees(),
-tokio::sync::mpsc::unbounded_channel().0,
-));
+tokio::sync::mpsc::unbounded_channel().0, crate::usecase::workspace_tree::TestWorkspaceTreeRepository::new(),));
     let first = usecase
         .prepare_workflow_node(WorkflowAgentSessionLaunchRequest {
             workspace: WorkspaceIdentity::new("/repo"),
@@ -2161,6 +2172,7 @@ async fn test_provider_agent_workflow_session_launch_activate後のrollbackで�
     let store = crate::adaptor::gateway::local_event_store::LocalEventStore::open(
         crate::adaptor::gateway::local_event_store::LocalEventStoreConfig::production(
             directory.path().to_path_buf(),
+            std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
         ),
     )
     .unwrap();
@@ -2190,8 +2202,7 @@ provider_runtime(
 Arc::new(FixedHistory { entries: Vec::new() }),
 hook_health_usecase(),
 started_execution_trees(),
-tokio::sync::mpsc::unbounded_channel().0,
-);
+tokio::sync::mpsc::unbounded_channel().0, crate::usecase::workspace_tree::TestWorkspaceTreeRepository::new(),);
     let launched = usecase
         .prepare_workflow_node(WorkflowAgentSessionLaunchRequest {
             workspace: WorkspaceIdentity::new("/repo"),
@@ -2238,6 +2249,7 @@ async fn test_agent_session_launch_spawn失敗時はsessionとlaunch資源をrol
     let store = crate::adaptor::gateway::local_event_store::LocalEventStore::open(
         crate::adaptor::gateway::local_event_store::LocalEventStoreConfig::production(
             directory.path().to_path_buf(),
+            std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
         ),
     )
     .unwrap();
@@ -2274,8 +2286,7 @@ provider_runtime(
 Arc::new(FixedHistory { entries: Vec::new() }),
 hook_health,
 execution_trees.clone(),
-tokio::sync::mpsc::unbounded_channel().0,
-);
+tokio::sync::mpsc::unbounded_channel().0, crate::usecase::workspace_tree::TestWorkspaceTreeRepository::new(),);
 
     let result = usecase
         .launch_standalone(AgentSessionLaunchRequest {
@@ -2318,6 +2329,7 @@ async fn test_agent_session_launch_prepare失敗時のrollbackのterminal削除�
     let store = crate::adaptor::gateway::local_event_store::LocalEventStore::open(
         crate::adaptor::gateway::local_event_store::LocalEventStoreConfig::production(
             directory.path().to_path_buf(),
+            std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
         ),
     )
     .unwrap();
@@ -2353,8 +2365,7 @@ Arc::new(FixedHistory {
         }),
 hook_health_usecase(),
 execution_trees.clone(),
-tokio::sync::mpsc::unbounded_channel().0,
-);
+tokio::sync::mpsc::unbounded_channel().0, crate::usecase::workspace_tree::TestWorkspaceTreeRepository::new(),);
 
     let result = usecase
         .launch_standalone(AgentSessionLaunchRequest {
@@ -2398,6 +2409,7 @@ async fn test_agent_session_launch_spawn失敗時のrollbackのterminal削除失
     let store = crate::adaptor::gateway::local_event_store::LocalEventStore::open(
         crate::adaptor::gateway::local_event_store::LocalEventStoreConfig::production(
             directory.path().to_path_buf(),
+            std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
         ),
     )
     .unwrap();
@@ -2438,8 +2450,7 @@ Arc::new(FixedHistory {
         }),
 hook_health_usecase(),
 execution_trees.clone(),
-tokio::sync::mpsc::unbounded_channel().0,
-);
+tokio::sync::mpsc::unbounded_channel().0, crate::usecase::workspace_tree::TestWorkspaceTreeRepository::new(),);
 
     let result = usecase
         .launch_standalone(AgentSessionLaunchRequest {
@@ -2561,8 +2572,7 @@ provider_runtime(availability, launch_gateway.clone(), terminal.clone()),
 Arc::new(FixedHistory { entries: Vec::new() }),
 hook_health.clone(),
 started_execution_trees(),
-tokio::sync::mpsc::unbounded_channel().0,
-);
+tokio::sync::mpsc::unbounded_channel().0, crate::usecase::workspace_tree::TestWorkspaceTreeRepository::new(),);
 
     let launched = usecase
         .launch_standalone(AgentSessionLaunchRequest {
@@ -2598,4 +2608,147 @@ tokio::sync::mpsc::unbounded_channel().0,
         warnings[0].reason,
         ProviderLifecycleUnavailableReason::CodexHookDeliveryUnconfirmed
     );
+}
+
+#[tokio::test]
+async fn test_session選択_欠落はcorruptとしqueryの技術的性質を保持する() {
+    use crate::domain::failure::{TechnicalFailure, TechnicalFailureNature};
+    use crate::domain::local_event::LocalEventQueryError;
+    use crate::domain::workspace_tree::{WorkspaceTreeNode, WorkspaceTreeRepository};
+    struct Trees(Option<LocalEventQueryError>);
+    #[async_trait::async_trait]
+    impl WorkspaceTreeRepository for Trees {
+        async fn load_trees(
+            &self,
+            _: &[WorkspaceIdentity],
+        ) -> Vec<
+            Result<
+                crate::domain::workspace_tree::WorkspaceTree,
+                crate::domain::workflow::WorkflowError,
+            >,
+        > {
+            panic!("unexpected tree read")
+        }
+        async fn load_node(
+            &self,
+            _: &WorkspaceIdentity,
+            _: &str,
+        ) -> Result<Option<WorkspaceTreeNode>, LocalEventQueryError> {
+            panic!("unexpected node read")
+        }
+        async fn load_node_by_node_execution_id(
+            &self,
+            _: &str,
+        ) -> Result<Option<WorkspaceTreeNode>, LocalEventQueryError> {
+            panic!("unexpected node read")
+        }
+        async fn load_node_by_session_id(
+            &self,
+            workspace: &WorkspaceIdentity,
+            id: &str,
+        ) -> Result<Option<WorkspaceTreeNode>, LocalEventQueryError> {
+            assert_eq!(workspace.as_str(), "/repo");
+            assert!(!id.is_empty());
+            match &self.0 {
+                Some(error) => Err(error.clone()),
+                None => Ok(None),
+            }
+        }
+    }
+    let mut cases = vec![
+        (None, AgentSessionLaunchUsecaseError::Corrupt),
+        (
+            Some(LocalEventQueryError::QueryBusy),
+            AgentSessionLaunchUsecaseError::Store(LocalEventQueryError::QueryBusy.into()),
+        ),
+    ];
+    for nature in [
+        TechnicalFailureNature::Transient,
+        TechnicalFailureNature::TimedOut,
+        TechnicalFailureNature::Cancelled,
+        TechnicalFailureNature::Other,
+    ] {
+        let failure = TechnicalFailure {
+            nature,
+            message: "query failed".into(),
+        };
+        cases.push((
+            Some(LocalEventQueryError::Technical(failure.clone())),
+            AgentSessionLaunchUsecaseError::Technical(failure),
+        ));
+    }
+    for (error, expected) in cases {
+        // Given: provider history に再開対象が存在する
+        let directory = tempfile::tempdir().unwrap();
+        let store = crate::adaptor::gateway::local_event_store::LocalEventStore::open(
+            crate::adaptor::gateway::local_event_store::LocalEventStoreConfig::production(
+                directory.path().to_path_buf(),
+                std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
+            ),
+        )
+        .unwrap();
+        let sessions = Arc::new(AgentSessionUsecase::new(Arc::new(
+            crate::adaptor::gateway::agent_session::LocalAgentSessionRepository::new(store.clone()),
+        )));
+        let lifecycle_events = Arc::new(RecordingLifecycleEvents::default());
+        let terminal = Arc::new(RecordingTerminal::default());
+        let usecase = AgentSessionLaunchUsecase::new(
+std::sync::Arc::new(crate::adaptor::gateway::telemetry::TelemetryGateway),
+sessions,
+Arc::new(ProviderLifecycleUsecase::new(
+            Arc::new(
+                crate::adaptor::gateway::provider_lifecycle::LocalProviderLifecycleCredentialGateway,
+            ),
+            lifecycle_events,
+        )),
+provider_runtime(
+            Arc::new(FixedAvailability {
+                available: true,
+                checks: Mutex::new(Vec::new()),
+            }),
+            Arc::new(RecordingLaunchGateway::default()),
+            terminal.clone(),
+        ),
+Arc::new(FixedHistory {
+            entries: vec![AgentSessionHistoryMetadata {
+                provider: ProviderKind::Claude,
+                provider_session_id: "provider-history-idempotent".to_string(),
+                worktree_path: "/repo/worktree".to_string(),
+                updated_at_ms: 10,
+            }],
+        }),
+hook_health_usecase(),
+started_execution_trees(),
+tokio::sync::mpsc::unbounded_channel().0, Arc::new(Trees(error.clone())),);
+        let request = AgentSessionHistoryResumeRequest {
+            workspace: WorkspaceIdentity::new("/repo"),
+            worktree_path: "/repo/worktree".to_string(),
+            provider: ProviderKind::Claude,
+            provider_session_id: "provider-history-idempotent".to_string(),
+            rows: 24,
+            cols: 80,
+            caller_request_id: "history-resume-idempotent".to_string(),
+        };
+
+        let usecase = Arc::new(usecase);
+        assert_eq!(
+            usecase
+                .clone()
+                .launch_standalone_selection(AgentSessionLaunchRequest {
+                    workspace: WorkspaceIdentity::new("/repo"),
+                    worktree_path: "/repo/worktree".into(),
+                    provider: ProviderKind::Claude,
+                    rows: 24,
+                    cols: 80,
+                    caller_request_id: "selection-create".into(),
+                })
+                .await
+                .unwrap_err(),
+            expected
+        );
+        assert_eq!(
+            usecase.resume_history_selection(request).await.unwrap_err(),
+            expected
+        );
+    }
 }

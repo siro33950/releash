@@ -182,8 +182,8 @@ impl StateSubscriptionRead for FakeReads {
     ) -> Result<StateValue, StateReadError> {
         self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         Ok(match target {
-            crate::usecase::state_subscription::SubscriptionTarget::SessionNode(_, _) => {
-                StateValue::SessionNode(Some(self.value.lock().clone()))
+            crate::usecase::state_subscription::SubscriptionTarget::ReleashBase(_) => {
+                StateValue::ReleashBase(Some(self.value.lock().clone()))
             }
             crate::usecase::state_subscription::SubscriptionTarget::WorkflowSource(_) => {
                 StateValue::WorkflowSource(Some(self.value.lock().clone()))
@@ -222,18 +222,18 @@ async fn test_引数付き購読_対象の変更だけを読み直して配信�
     .with_reads(reads.clone(), None, vec![], String::new());
     let mut stream = Box::pin(usecase.open("client".into()).unwrap());
     stream.next().await;
-    let target = SubscriptionTarget::SessionNode("/repo".into(), "session".into()).to_string();
+    let target = SubscriptionTarget::ReleashBase("/repo".into()).to_string();
     // When
     start_read(&usecase, "client", &target, None).await.unwrap();
     // Then
     assert!(
-        matches!(stream.next().await, Some(StateSubscriptionEvent::Item(_, Event::Snapshot(_, value))) if same(&value, StateValue::SessionNode(Some("node-1".into()))))
+        matches!(stream.next().await, Some(StateSubscriptionEvent::Item(_, Event::Snapshot(_, value))) if same(&value, StateValue::ReleashBase(Some("node-1".into()))))
     );
     stream.next().await;
     *reads.value.lock() = "node-2".into();
-    usecase.notify(StateChangeSource::Worktree("/repo".into()));
+    usecase.notify(StateChangeSource::Repository(vec!["/repo".into()]));
     assert!(
-        matches!(stream.next().await, Some(StateSubscriptionEvent::Item(_, Event::Change(_, _, value))) if same(&value, StateValue::SessionNode(Some("node-2".into()))))
+        matches!(stream.next().await, Some(StateSubscriptionEvent::Item(_, Event::Change(_, _, value))) if same(&value, StateValue::ReleashBase(Some("node-2".into()))))
     );
     drop(stream);
     assert_eq!(usecase.test_worker_count(), 0);
@@ -416,7 +416,7 @@ async fn test_automation購読_置き場のファイル変化で読み直して�
     let on_change = files.on_change.lock().clone().unwrap();
     // When
     *reads.value.lock() = "second".into();
-    on_change();
+    on_change(Ok(()));
     // Then
     let value = tokio::time::timeout(std::time::Duration::from_secs(2), async {
         loop {
@@ -489,7 +489,7 @@ async fn test_workspaces購読_最後の停止と切断で実際のgit監視を�
 }
 
 #[tokio::test]
-async fn test_監視開始失敗_購読を残さず次の開始で再度監視を試みる() {
+async fn test_監視開始失敗_失敗を購読へ届け再開で張り直す() {
     use crate::usecase::state_subscription::SubscriptionTarget;
     let files = Arc::new(crate::usecase::watcher::watcher_tests::SubscriptionFiles::default());
     let usecase = StateSubscriptionUsecase::new(
@@ -508,14 +508,20 @@ async fn test_監視開始失敗_購読を残さず次の開始で再度監視�
         vec!["/missing".into()],
         String::new(),
     );
-    let _stream = usecase.open("client".into()).unwrap();
+    let mut stream = Box::pin(usecase.open("client".into()).unwrap());
+    stream.next().await;
     let target = SubscriptionTarget::SessionHistory("/repo".into(), 20).to_string();
-    assert!(start_read(&usecase, "client", &target, None).await.is_err());
+    start_read(&usecase, "client", &target, None).await.unwrap();
+    assert!(matches!(stream.next().await,
+        Some(StateSubscriptionEvent::Item(_, Event::Snapshot(_, value)))
+            if matches!(value.as_ref(), crate::adaptor::presenter::state_subscription::PublishedState::Failure(error)
+                if error.message.contains("missing path"))));
     assert!(usecase
         .test_presenter()
         .unwrap()
         .test_runtime()
-        .inspect(|state| state.active_targets().is_empty()));
+        .inspect(|state| !state.active_targets().is_empty()));
+    stop_read(&usecase, "client", &target).await.unwrap();
     let usecase = usecase.with_reads(
         Arc::new(FakeReads {
             value: Mutex::new(String::new()),
@@ -707,13 +713,13 @@ async fn test_初回読取_保持中の版から再開して変更だけ届け�
         vec![],
         String::new(),
     );
-    let target = SubscriptionTarget::SessionNode("/repo".into(), "node".into()).to_string();
+    let target = SubscriptionTarget::ReleashBase("/repo".into()).to_string();
     let presenter = usecase.test_presenter().unwrap();
-    let before = crate::test_support::state_subscription::payload(&StateValue::SessionNode(Some(
+    let before = crate::test_support::state_subscription::payload(&StateValue::ReleashBase(Some(
         "before".into(),
     )))
     .unwrap();
-    let after = crate::test_support::state_subscription::payload(&StateValue::SessionNode(Some(
+    let after = crate::test_support::state_subscription::payload(&StateValue::ReleashBase(Some(
         "after".into(),
     )))
     .unwrap();
@@ -746,7 +752,7 @@ async fn test_初回読取_保持中の版から再開して変更だけ届け�
         stream.next().await,
         Some(StateSubscriptionEvent::Item(_, Event::Change(next, Delivery::Full, value)))
             if next.sequence == version.sequence + 1
-                && same(&value, StateValue::SessionNode(Some("after".into())))
+                && same(&value, StateValue::ReleashBase(Some("after".into())))
     ));
     assert!(matches!(
         stream.next().await,

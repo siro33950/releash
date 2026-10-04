@@ -27,13 +27,15 @@ impl FileWatchGateway for FileWatcherGateway {
         self.manager.start_watching(
             id,
             watch_path.to_string_lossy().into_owned(),
-            move |event| {
-                if event.path.starts_with(&path) || path.starts_with(&event.path) {
-                    changed();
+            move |event| match event {
+                Ok(event) if event.path.starts_with(&path) || path.starts_with(&event.path) => {
+                    changed(Ok(()))
                 }
+                Ok(_) => {}
+                Err(error) => changed(Err(error)),
             },
         )?;
-        on_change();
+        on_change(Ok(()));
         Ok(id)
     }
 

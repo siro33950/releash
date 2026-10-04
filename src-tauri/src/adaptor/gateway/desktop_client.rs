@@ -213,9 +213,12 @@ async fn watch(
             reconnects = 0;
         }
         reconnects = reconnects.saturating_add(1);
-        limiter
+        if let Err(stopped) = limiter
             .wait_with_spread(POLICY.backoff, reconnects, POLICY.jitter)
-            .await;
+            .await
+        {
+            return stopped.into();
+        }
     }
 }
 

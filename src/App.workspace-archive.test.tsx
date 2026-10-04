@@ -18,7 +18,6 @@ const mocks = vi.hoisted(() => ({
 	listen: vi.fn().mockResolvedValue(vi.fn()),
 	emit: vi.fn().mockResolvedValue(undefined),
 	openWorktreeTab: vi.fn(),
-	initFromCwd: vi.fn(),
 	addRepo: vi.fn(),
 	removeRepo: vi.fn(),
 	updateSettings: vi.fn(),
@@ -72,7 +71,6 @@ vi.mock("@/hooks/useRepoList", () => ({
 	useRepoList: () => ({
 		addRepo: mocks.addRepo,
 		removeRepo: mocks.removeRepo,
-		initFromCwd: mocks.initFromCwd,
 	}),
 }));
 vi.mock("@/hooks/useMenuEvents", () => ({ useMenuEvents: vi.fn() }));
@@ -231,7 +229,11 @@ beforeEach(() => {
 		"workspaces",
 		workspaceListSnapshot(initialSnapshot, "/repo/wt"),
 	);
-	states.publish("startup-repository", "/repo");
+	states.publish("startup-repository", {
+		path: "/repo",
+		branch: "main",
+		repositoryName: "repo",
+	});
 	states.publish({ kind: "worktrees", args: ["/repo"] }, []);
 	mocks.archiveCommitted = false;
 	mocks.postArchiveSnapshot = fallbackSnapshot;
@@ -366,7 +368,12 @@ describe("App Workspace Archive selection reconciliation", () => {
 	});
 });
 
-it("起動repositoryのworktreeが1件ならそのタブを自動表示する", async () => {
+it("daemonが選んだ起動worktreeをそのまま一度だけ表示する", async () => {
+	states.publish("startup-repository", {
+		path: "/repo/only",
+		branch: "feature",
+		repositoryName: "repo",
+	});
 	states.publish({ kind: "worktrees", args: ["/repo"] }, [
 		{
 			name: "only",
@@ -384,12 +391,12 @@ it("起動repositoryのworktreeが1件ならそのタブを自動表示する", 
 			"repo",
 		),
 	);
-	expect(mocks.initFromCwd).toHaveBeenCalledWith("/repo");
-	expect(states.firstState).toHaveBeenCalledWith("startup-repository");
-	expect(states.firstState).toHaveBeenCalledWith({
-		kind: "worktrees",
-		args: ["/repo"],
-	});
+	expect(states.subscribeState).toHaveBeenCalledWith(
+		"startup-repository",
+		expect.any(Function),
+		expect.any(Function),
+	);
+	expect(states.firstState).not.toHaveBeenCalled();
 });
 
 it("起動repositoryの読取失敗を画面に表示する", async () => {
@@ -397,12 +404,10 @@ it("起動repositoryの読取失敗を画面に表示する", async () => {
 		status: { loaded: true, error: null, state: "ready" },
 		repositories: [],
 	});
-	states.firstState.mockImplementationOnce(() =>
-		Promise.reject(new Error("startup repository unreadable")),
-	);
+	states.publish("startup-repository", null);
+	states.fail("startup-repository", new Error("startup repository unreadable"));
 	render(<App />);
 	await screen.findByText("startup repository unreadable");
-	expect(mocks.initFromCwd).not.toHaveBeenCalled();
 	expect(mocks.openWorktreeTab).not.toHaveBeenCalled();
 });
 
@@ -414,9 +419,12 @@ it("repositoryの外の起動は自動表示も失敗表示も行わない", asy
 	states.publish("startup-repository", null);
 	render(<App />);
 	await waitFor(() =>
-		expect(states.firstState).toHaveBeenCalledWith("startup-repository"),
+		expect(states.subscribeState).toHaveBeenCalledWith(
+			"startup-repository",
+			expect.any(Function),
+			expect.any(Function),
+		),
 	);
-	expect(mocks.initFromCwd).not.toHaveBeenCalled();
 	expect(mocks.openWorktreeTab).not.toHaveBeenCalled();
 	expect(screen.queryByRole("alert")).not.toBeInTheDocument();
 });

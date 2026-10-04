@@ -1,3 +1,4 @@
+use crate::adaptor::presenter::connect::ConnectFailure;
 use axum::http::StatusCode;
 
 use crate::adaptor::controller::api::error::{ApiError, ApiErrorBody};
@@ -37,12 +38,9 @@ impl ApiError {
 
 impl From<WorkflowError> for ApiError {
     fn from(error: WorkflowError) -> Self {
-        match error {
-            WorkflowError::Store(_) => Self::new(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "storage_unavailable",
-                error.to_string(),
-            ),
+        let status = error.connect_code().http_status();
+        let mut response = match error {
+            WorkflowError::Store(_) => Self::new(status, "storage_unavailable", error.to_string()),
             WorkflowError::Validation(message) => {
                 Self::new(StatusCode::BAD_REQUEST, "validation_error", message)
             }
@@ -60,16 +58,10 @@ impl From<WorkflowError> for ApiError {
                 "unauthorized_approval_target",
                 message,
             ),
-            WorkflowError::Technical(error) => Self::new(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "workflow_error",
-                error.to_string(),
-            ),
-            WorkflowError::Editor(error) => Self::new(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "workflow_error",
-                error.to_string(),
-            ),
+            WorkflowError::Technical(error) => {
+                Self::new(status, "workflow_error", error.to_string())
+            }
+            WorkflowError::Editor(error) => Self::new(status, "workflow_error", error.to_string()),
             WorkflowError::External(message) => {
                 Self::new(StatusCode::INTERNAL_SERVER_ERROR, "workflow_error", message)
             }
@@ -83,7 +75,9 @@ impl From<WorkflowError> for ApiError {
                 "incompatible_stored_event",
                 message,
             ),
-        }
+        };
+        response.status = status;
+        response
     }
 }
 
@@ -102,12 +96,11 @@ impl From<crate::usecase::provider_lifecycle::ProviderLifecycleIngressUsecaseErr
         error: crate::usecase::provider_lifecycle::ProviderLifecycleIngressUsecaseError,
     ) -> Self {
         use crate::usecase::provider_lifecycle::ProviderLifecycleIngressUsecaseError;
-        match error {
-            ProviderLifecycleIngressUsecaseError::Technical(failure) => ApiError::new(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "INTERNAL",
-                failure.message,
-            ),
+        let status = error.connect_code().http_status();
+        let mut response = match error {
+            ProviderLifecycleIngressUsecaseError::Technical(failure) => {
+                ApiError::new(status, "INTERNAL", failure.message)
+            }
             ProviderLifecycleIngressUsecaseError::InvalidInput => {
                 ApiError::invalid_request("Provider lifecycle input is invalid")
             }
@@ -118,17 +111,36 @@ impl From<crate::usecase::provider_lifecycle::ProviderLifecycleIngressUsecaseErr
             ),
             ProviderLifecycleIngressUsecaseError::Store(_)
             | ProviderLifecycleIngressUsecaseError::StorageUnavailable => ApiError::new(
-                StatusCode::SERVICE_UNAVAILABLE,
+                status,
                 "provider_lifecycle_storage_unavailable",
                 "Provider lifecycle persistence is unavailable",
             ),
             ProviderLifecycleIngressUsecaseError::Corrupt => {
                 ApiError::internal("Provider lifecycle state is corrupt")
             }
-        }
+        };
+        response.status = status;
+        response
     }
 }
 
 #[cfg(test)]
 #[path = "api_error_test.rs"]
 mod api_error_tests;
+
+impl From<crate::domain::failure::TechnicalFailure> for ApiError {
+    fn from(error: crate::domain::failure::TechnicalFailure) -> Self {
+        Self::new(
+            error.connect_code().http_status(),
+            "technical_failure",
+            error.to_string(),
+        )
+    }
+}
+
+impl From<crate::common::concurrency::Rejection> for ApiError {
+    fn from(error: crate::common::concurrency::Rejection) -> Self {
+        let failure = crate::adaptor::presenter::connect::request_rejected(&error);
+        Self::new(failure.http_status(), "request_rejected", error.to_string())
+    }
+}

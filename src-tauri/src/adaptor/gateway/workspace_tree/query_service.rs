@@ -102,17 +102,6 @@ impl WorkspaceQueryService for SqliteWorkspaceQueryService {
             .map_err(query_error)
     }
 
-    async fn session_node_id(
-        &self,
-        workspace_identity: &WorkspaceIdentity,
-        session_id: &str,
-    ) -> Result<Option<String>, WorkflowError> {
-        self.repository
-            .node_id_for_session(workspace_identity, session_id)
-            .await
-            .map_err(query_error)
-    }
-
     async fn execution_summaries(
         &self,
         workspace_identity: Option<&WorkspaceIdentity>,

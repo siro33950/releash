@@ -455,9 +455,11 @@ impl<R: tauri::Runtime> WorkflowControlPlaneAcceptanceHost<R> {
     ) -> Result<Self, String> {
         let work = crate::terminal_surface::initialize_background_work_for_acceptance();
         std::fs::create_dir_all(&config.data_dir).map_err(|error| error.to_string())?;
-        let store =
-            LocalEventStore::open(LocalEventStoreConfig::production(config.data_dir.clone()))
-                .map_err(|error| error.to_string())?;
+        let store = LocalEventStore::open(LocalEventStoreConfig::production(
+            config.data_dir.clone(),
+            std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
+        ))
+        .map_err(|error| error.to_string())?;
         app.manage(store.clone());
         app.manage(crate::desktop_test_support::TestDataDir(
             config.data_dir.clone(),
@@ -569,6 +571,10 @@ launch_retention: crate::adaptor::controller::agent_session_launch_retention::ru
             binding.terminal_bearer_token(),
             None,
             Some(composition.lifecycle_ingress.clone()),
+            (
+                crate::adaptor::controller::daemon::client_priority_interceptor().gate,
+                crate::adaptor::controller::daemon::default_timeout(),
+            ),
         );
         let local_api = binding.start(router, &tokio::runtime::Handle::current());
 

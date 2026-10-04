@@ -7,11 +7,10 @@ pub(crate) mod state_subscription;
 
 pub(crate) fn client_api_deps(
     dispatch: std::sync::Arc<crate::adaptor::controller::client::ClientCommandDispatch>,
-    failures: Option<std::sync::Arc<crate::usecase::failure::FailureRecordingUsecase>>,
 ) -> crate::adaptor::controller::api::ClientApiDeps {
     crate::adaptor::controller::api::ClientApiDeps::new(
         dispatch,
-        crate::adaptor::controller::daemon::client_priority_interceptor(failures),
+        crate::adaptor::controller::daemon::client_priority_interceptor(),
     )
 }
 

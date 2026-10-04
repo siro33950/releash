@@ -221,8 +221,11 @@ impl WorkflowDiagnosticsAcceptanceHost {
                 None,
             )),
         );
-        let store = LocalEventStore::open(LocalEventStoreConfig::production(data_dir.clone()))
-            .map_err(|error| error.to_string())?;
+        let store = LocalEventStore::open(LocalEventStoreConfig::production(
+            data_dir.clone(),
+            std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
+        ))
+        .map_err(|error| error.to_string())?;
         let ui_usecase = crate::adaptor::controller::wiring::build_workflow_services_with_gateways(
             failures.clone(),
             data_dir.clone(),
@@ -263,6 +266,10 @@ impl WorkflowDiagnosticsAcceptanceHost {
             binding.terminal_bearer_token(),
             None,
             None,
+            (
+                crate::adaptor::controller::daemon::client_priority_interceptor().gate,
+                crate::adaptor::controller::daemon::default_timeout(),
+            ),
         );
         let local_api = binding.start(router, &tokio::runtime::Handle::current());
         Ok(Self {

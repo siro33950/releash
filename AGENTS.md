@@ -46,6 +46,10 @@ Releash は、特定の作業単位や特定の道具を主語にしない。コ
 - workflow、session、artifact、terminal、review、persistence のロジックを client に追加しない。
 - 依頼された振る舞いの実装・修正に必要な既存ロジックはサーバへ移す。依頼に直接関係しない既存ロジックは、所在と問題を報告し、移設は別途合意する。
 
+### 通信の原則
+
+- サーバは状態を配信し、client は購読する。client からサーバへの単発の呼び出しは、状態を変える操作と、client の入力に対する計算だけ。
+
 ### 状態の所有者を明確にする
 
 - workflow runtime、workflow artifact、agent session state、review comment、terminal state、persistence の所有者を明確にする。

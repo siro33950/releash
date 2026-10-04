@@ -112,6 +112,7 @@ async fn test_providerライフサイクル利用不能_hook_cli未実行でも�
     let directory = TempDir::new().unwrap();
     let store = LocalEventStore::open(LocalEventStoreConfig::production(
         directory.path().to_path_buf(),
+        std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
     ))
     .unwrap();
     let usecase = provider_lifecycle_usecase(&store);
@@ -160,6 +161,7 @@ async fn test_providerライフサイクルapi_認証済みrequestをusecaseへ�
     let directory = TempDir::new().unwrap();
     let store = LocalEventStore::open(LocalEventStoreConfig::production(
         directory.path().to_path_buf(),
+        std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
     ))
     .unwrap();
     let usecase = provider_lifecycle_usecase(&store);
@@ -229,6 +231,7 @@ async fn test_providerライフサイクルapi_未認証requestでは状態を�
     let directory = TempDir::new().unwrap();
     let store = LocalEventStore::open(LocalEventStoreConfig::production(
         directory.path().to_path_buf(),
+        std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
     ))
     .unwrap();
     let usecase = provider_lifecycle_usecase(&store);
@@ -269,6 +272,7 @@ async fn test_providerライフサイクルapi_不正requestでは状態を変�
     let directory = TempDir::new().unwrap();
     let store = LocalEventStore::open(LocalEventStoreConfig::production(
         directory.path().to_path_buf(),
+        std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
     ))
     .unwrap();
     let usecase = provider_lifecycle_usecase(&store);
@@ -313,6 +317,7 @@ async fn test_providerライフサイクル解放_local_apiに外部routeを公�
     let directory = TempDir::new().unwrap();
     let store = LocalEventStore::open(LocalEventStoreConfig::production(
         directory.path().to_path_buf(),
+        std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
     ))
     .unwrap();
     let usecase = provider_lifecycle_usecase(&store);
@@ -345,6 +350,7 @@ async fn test_providerライフサイクルapi_session_started受理でhook_ingr
     let directory = TempDir::new().unwrap();
     let store = LocalEventStore::open(LocalEventStoreConfig::production(
         directory.path().to_path_buf(),
+        std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
     ))
     .unwrap();
     let usecase = provider_lifecycle_usecase(&store);

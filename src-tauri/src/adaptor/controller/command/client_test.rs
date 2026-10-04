@@ -221,7 +221,8 @@ async fn test_クライアントdispatch_proto全commandの登録と引数検証
     // Given
     let (_app, dispatch) = parity_app();
     // When / Then
-    assert_eq!(wire::COMMAND_NAMES.len(), 84);
+    assert_eq!(wire::COMMAND_NAMES.len(), 85);
+    assert!(wire::COMMAND_NAMES.contains(&"find_repository_root"));
     assert!(wire::COMMAND_NAMES.contains(&"refresh_workspaces"));
     for removed in [
         "delete_branch",
@@ -374,10 +375,7 @@ async fn test_クライアントrpc_期限切れで処理を止め要求枠を�
         data.path(),
         "master",
         "client",
-        Some(crate::test_support::client_api_deps(
-            Arc::new(dispatch),
-            None,
-        )),
+        Some(crate::test_support::client_api_deps(Arc::new(dispatch))),
         None,
     )
     .0;
@@ -524,7 +522,7 @@ async fn test_計算と操作command_connectの実行結果とエラーがtauri�
         data.path(),
         "master",
         "client",
-        Some(crate::test_support::client_api_deps(dispatch, None)),
+        Some(crate::test_support::client_api_deps(dispatch)),
         None,
     )
     .0;
@@ -632,7 +630,7 @@ async fn test_worktree変更_protoは実引数の成功とusecaseエラーを保
     let expected = invoke_tauri(&app, "create_worktree", json!({"repoPath": path.clone(),"branch": branch,"createBranch": true,"baseBranch": Some("base")}))
     .await
     .unwrap();
-    let worktree_path = expected["path"].as_str().unwrap().to_owned();
+    let worktree_path = expected.as_str().unwrap().to_owned();
     let runtime = app.state::<Arc<crate::usecase::workflow::WorkflowRuntimeUsecase>>();
     uc.remove_worktree(runtime.inner().as_ref(), &path, &worktree_path, true)
         .await
@@ -1011,10 +1009,7 @@ async fn test_workspace保存_connectがui追加fieldを受理し既存項目を
         data.path(),
         "master",
         "client",
-        Some(crate::test_support::client_api_deps(
-            Arc::new(dispatch),
-            None,
-        )),
+        Some(crate::test_support::client_api_deps(Arc::new(dispatch))),
         None,
     )
     .0;

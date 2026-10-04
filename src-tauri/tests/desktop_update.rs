@@ -119,8 +119,10 @@ impl Renderer {
 async fn test_実workflow更新_一括停止と旧daemon終了から適用と新接続と状態反映まで順序を守る() {
     // Given
     let directory = tempfile::tempdir().unwrap();
-    let root = directory.path();
+    let root_path = directory.path().canonicalize().unwrap();
+    let root = root_path.as_path();
     git2::Repository::init(root).unwrap();
+    std::env::set_current_dir(root).unwrap();
     for (key, value) in [
         ("HOME", root.to_path_buf()),
         ("XDG_CONFIG_HOME", root.join("config")),
@@ -136,7 +138,7 @@ async fn test_実workflow更新_一括停止と旧daemon終了から適用と新
     wait_phase(&app, "ready").await;
     let old = discovery(root);
     let mut renderer = Renderer::attach(&app).await;
-    renderer.restore(&app, json!([])).await;
+    renderer.restore(&app, json!([root])).await;
     renderer
         .request("add_repo_path", json!({"path":root}))
         .await;

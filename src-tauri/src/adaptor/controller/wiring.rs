@@ -137,7 +137,10 @@ pub(crate) fn build_canonical_agent_session_query(
     data_dir: impl Into<std::path::PathBuf>,
 ) -> Result<crate::adaptor::gateway::agent_session::LocalAgentSessionQueryService, String> {
     let data_dir = data_dir.into();
-    let local_event_store = LocalEventReadStore::open(&data_dir)?;
+    let local_event_store = LocalEventReadStore::open(
+        &data_dir,
+        std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
+    )?;
     Ok(
         crate::adaptor::gateway::agent_session::LocalAgentSessionQueryService::new_read_only(
             local_event_store,
@@ -194,9 +197,11 @@ pub(crate) fn build_workflow_usecase_and_store(
     workflows_dir: Option<std::path::PathBuf>,
 ) -> (WorkflowUsecase, Arc<LocalEventStore>) {
     let data_dir = data_dir.into();
-    let local_event_store =
-        LocalEventStore::open(LocalEventStoreConfig::production(data_dir.clone()))
-            .expect("test workflow composition requires the canonical local event store");
+    let local_event_store = LocalEventStore::open(LocalEventStoreConfig::production(
+        data_dir.clone(),
+        std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
+    ))
+    .expect("test workflow composition requires the canonical local event store");
     let workflow_usecase = build_workflow_services_with_gateways(
         Arc::new(crate::adaptor::gateway::failure_records::FailureRecordStore::default()),
         data_dir,
@@ -245,6 +250,7 @@ pub(crate) fn build_workspace_worktree_path_usecase(
     crate::usecase::workspace_tree::WorkspaceWorktreePathUsecase::new(Arc::new(
         crate::adaptor::gateway::workflow::worktree_context::StoredWorkspaceWorktreePathQuery::new(
             data_dir.to_path_buf(),
+            std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
         ),
     ))
 }
@@ -254,7 +260,10 @@ pub(crate) fn build_canonical_workflow_read_usecase(
     workflows_dir: Option<std::path::PathBuf>,
 ) -> Result<WorkflowReadUsecase, String> {
     let data_dir = data_dir.into();
-    let local_event_store = LocalEventReadStore::open(&data_dir)?;
+    let local_event_store = LocalEventReadStore::open(
+        &data_dir,
+        std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
+    )?;
     let repository_usecase = Arc::new(build_repository_usecase_with_worktree_terminals(Arc::new(
         NoopWorktreeTerminalGateway,
     ), Arc::new(crate::usecase::worktree_operation::WorktreeOperations::new(Arc::new(
@@ -511,9 +520,11 @@ mod tests {
         // Given
         let data = tempfile::tempdir().unwrap();
         let workflows = tempfile::tempdir().unwrap();
-        let _store =
-            LocalEventStore::open(LocalEventStoreConfig::production(data.path().to_path_buf()))
-                .unwrap();
+        let _store = LocalEventStore::open(LocalEventStoreConfig::production(
+            data.path().to_path_buf(),
+            std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
+        ))
+        .unwrap();
         std::fs::write(workflows.path().join("configured.yml"), "name: [").unwrap();
         let read = build_canonical_workflow_read_usecase(
             data.path(),
@@ -569,6 +580,7 @@ mod tests {
         let store = LocalEventStore::open(
             crate::adaptor::gateway::local_event_store::LocalEventStoreConfig::production(
                 root.path().to_path_buf(),
+                std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
             ),
         )
         .unwrap();

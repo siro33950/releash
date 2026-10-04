@@ -180,6 +180,7 @@ export type AgentSessionItemDto = {
 	transcriptRef: string | null;
 	operations: AgentSessionOperationsDto;
 	lastExitAbnormal: boolean;
+	terminalPresence?: string;
 };
 
 export type AgentSessionProviderDto = "claude" | "codex";
@@ -273,8 +274,6 @@ export type WorkspaceCommandResultDto = {
 
 export type NullableAgentSessionItemDto = AgentSessionItemDto | null;
 
-export type Nullablestring = string | null;
-
 export type AgentSessionHistoryPageDto = {
 	items: ListAgentSessionHistoryCandidateDto;
 	hasMore: boolean;
@@ -298,6 +297,8 @@ export type BranchDto = {
 	name: string;
 	is_remote: boolean;
 };
+
+export type Nullablestring = string | null;
 
 export type ListBranchStatus = Array<BranchStatus>;
 
@@ -399,6 +400,14 @@ export type WorktreeEntryDto = {
 	branch: string;
 	is_main: boolean;
 	is_locked: boolean;
+};
+
+export type NullableStartupWorktree = StartupWorktree | null;
+
+export type StartupWorktree = {
+	path: string;
+	branch: string;
+	repositoryName: string;
 };
 
 export type NullableWorkspaceStateDto = WorkspaceStateDto | null;
@@ -926,6 +935,7 @@ export type ProviderAvailabilityItemResponse = {
 	available: boolean;
 	resolvedExecutable: string | null;
 	unavailableReason: string | null;
+	configurationRevision: number;
 };
 
 export type ExternalEditorState = {
@@ -1605,6 +1615,10 @@ export type InputWorkflowGetOutputRequest = {
 
 export type InputRefreshWorkspacesRequest = Record<string, never>;
 
+export type InputFindRepositoryRootRequest = {
+	path: string;
+};
+
 export type AgentSessionArchiveResponse = "archived" | "already_archived";
 
 export type ListHiddenRangeDto = Array<HiddenRangeDto>;
@@ -1653,6 +1667,11 @@ export type VisibleBlockDto = {
 	deletedContent?: string;
 };
 
+export type SessionSelection = {
+	agentSessionId: string;
+	nodeId: string;
+};
+
 export type FileNavigationResultDto = {
 	current_index: number;
 	total: number;
@@ -1663,14 +1682,6 @@ export type FileNavigationResultDto = {
 export type GetOrSpawnTerminalV1 = {
 	session_key: string;
 };
-
-export type AgentSessionOpenResponse =
-	| "attached"
-	| "resumed"
-	| "restored"
-	| "paused"
-	| "indeterminate"
-	| "garbage_collected";
 
 export type StartupFailureQuitOutcomeDtoV1 = {
 	type: "accepted";
@@ -1688,7 +1699,7 @@ export type SaveWorkflowSourceResultDto =
 
 export type SaveWorkflowSuccess = {
 	ok: true;
-	workflow: WorkflowDto;
+	name: string;
 };
 
 export type SaveWorkflowDiagnostics = {
@@ -1845,6 +1856,7 @@ export interface ClientCommandArgs {
 	workflow_validate_output: InputWorkflowValidateOutputRequest;
 	workflow_get_output: InputWorkflowGetOutputRequest;
 	refresh_workspaces: InputRefreshWorkspacesRequest;
+	find_repository_root: InputFindRepositoryRootRequest;
 }
 
 export interface ClientCommands {
@@ -1882,13 +1894,13 @@ export interface ClientCommands {
 	): Promise<ListVisibleBlockDto>;
 	create_agent_session(
 		args: ClientCommandArgs["create_agent_session"],
-	): Promise<ResultString>;
+	): Promise<SessionSelection>;
 	create_review_thread(
 		args: ClientCommandArgs["create_review_thread"],
 	): Promise<ReviewThreadDto>;
 	create_worktree(
 		args: ClientCommandArgs["create_worktree"],
-	): Promise<WorktreeEntryDto>;
+	): Promise<ResultString>;
 	delete_agent_session(
 		args: ClientCommandArgs["delete_agent_session"],
 	): Promise<void>;
@@ -1930,7 +1942,7 @@ export interface ClientCommands {
 	): Promise<void>;
 	open_agent_session(
 		args: ClientCommandArgs["open_agent_session"],
-	): Promise<AgentSessionOpenResponse>;
+	): Promise<void>;
 	open_facet_in_editor(
 		args: ClientCommandArgs["open_facet_in_editor"],
 	): Promise<void>;
@@ -1983,13 +1995,13 @@ export interface ClientCommands {
 	): Promise<ReviewThreadDto>;
 	restore_agent_session(
 		args: ClientCommandArgs["restore_agent_session"],
-	): Promise<AgentSessionOpenResponse>;
+	): Promise<SessionSelection>;
 	restore_workspace_workflow_execution(
 		args: ClientCommandArgs["restore_workspace_workflow_execution"],
 	): Promise<void>;
 	resume_agent_session_history_candidate(
 		args: ClientCommandArgs["resume_agent_session_history_candidate"],
-	): Promise<ResultString>;
+	): Promise<SessionSelection>;
 	retry_workspace_node(
 		args: ClientCommandArgs["retry_workspace_node"],
 	): Promise<void>;
@@ -2040,7 +2052,7 @@ export interface ClientCommands {
 	): Promise<void>;
 	update_provider_executable(
 		args: ClientCommandArgs["update_provider_executable"],
-	): Promise<ResultString>;
+	): Promise<void>;
 	update_workflow_config(
 		args: ClientCommandArgs["update_workflow_config"],
 	): Promise<void>;
@@ -2074,6 +2086,9 @@ export interface ClientCommands {
 	refresh_workspaces(
 		args: ClientCommandArgs["refresh_workspaces"],
 	): Promise<void>;
+	find_repository_root(
+		args: ClientCommandArgs["find_repository_root"],
+	): Promise<Nullablestring>;
 }
 export type ClientCommandResults = {
 	[K in keyof ClientCommands]: Awaited<ReturnType<ClientCommands[K]>>;

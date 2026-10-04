@@ -1,7 +1,37 @@
 use super::*;
 
 #[test]
-fn test_workflow失敗_httpのステータスと本文コードを保持する() {
+fn test_http失敗_入口をまたいで技術的性質のステータスを揃える() {
+    use crate::domain::failure::{TechnicalFailure, TechnicalFailureNature};
+    for nature in [
+        TechnicalFailureNature::Transient,
+        TechnicalFailureNature::TimedOut,
+        TechnicalFailureNature::Cancelled,
+        TechnicalFailureNature::Other,
+    ] {
+        let failure = TechnicalFailure {
+            nature,
+            message: "source failure".into(),
+        };
+        let expected = failure.connect_code().http_status();
+        assert_eq!(
+            ApiError::from(WorkflowError::Technical(failure.clone())).status,
+            expected
+        );
+        assert_eq!(
+            ApiError::from(
+                crate::usecase::provider_lifecycle::ProviderLifecycleIngressUsecaseError::Technical(
+                    failure
+                )
+            )
+            .status,
+            expected
+        );
+    }
+}
+
+#[test]
+fn test_workflow失敗_httpはconnectと同じ分類で本文コードを保持する() {
     // Given
     let cases = [
         (
@@ -9,7 +39,7 @@ fn test_workflow失敗_httpのステータスと本文コードを保持する()
                 nature: crate::domain::failure::TechnicalFailureNature::TimedOut,
                 message: "deadline exceeded".into(),
             }),
-            500,
+            504,
             "workflow_error",
         ),
         (
@@ -19,7 +49,7 @@ fn test_workflow失敗_httpのステータスと本文コードを保持する()
                 })
                 .into(),
             ),
-            503,
+            500,
             "storage_unavailable",
         ),
         (
@@ -44,7 +74,7 @@ fn test_workflow失敗_httpのステータスと本文コードを保持する()
         ),
         (
             WorkflowError::InvalidState("failure".into()),
-            409,
+            400,
             "invalid_state",
         ),
         (WorkflowError::NotFound("failure".into()), 404, "not_found"),
@@ -62,7 +92,7 @@ fn test_workflow失敗_httpのステータスと本文コードを保持する()
             WorkflowError::Editor(crate::domain::external_editor::EditorError::Launch(
                 "failure".into(),
             )),
-            500,
+            400,
             "workflow_error",
         ),
         (
@@ -72,7 +102,7 @@ fn test_workflow失敗_httpのステータスと本文コードを保持する()
         ),
         (
             WorkflowError::IncompatibleStoredEvent("failure".into()),
-            500,
+            400,
             "incompatible_stored_event",
         ),
     ];
@@ -105,7 +135,7 @@ fn test_provider失敗_httpのステータスと本文コードを保持する()
                 })
                 .into(),
             ),
-            503,
+            500,
             "provider_lifecycle_storage_unavailable",
         ),
         (E::Corrupt, 500, "internal_error"),

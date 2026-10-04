@@ -31,8 +31,9 @@ impl Default for GitHubGitHostGateway {
     }
 }
 
+#[async_trait::async_trait]
 trait GhCommandRunner: Send + Sync {
-    fn output(&self, args: &[&str], repo_path: &str) -> GhCommandOutput;
+    async fn output(&self, args: &[&str], repo_path: &str) -> GhCommandOutput;
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -51,49 +52,56 @@ struct SystemGhCommandRunner {
     program: Option<std::path::PathBuf>,
 }
 
+#[async_trait::async_trait]
 impl GhCommandRunner for SystemGhCommandRunner {
-    fn output(&self, args: &[&str], repo_path: &str) -> GhCommandOutput {
+    async fn output(&self, args: &[&str], repo_path: &str) -> GhCommandOutput {
         let program = std::path::Path::new("gh");
         #[cfg(test)]
         let program = self.program.as_deref().unwrap_or(program);
         let mut command = tokio::process::Command::new(program);
         command.args(args).current_dir(repo_path);
-        match crate::common::operation_context::timeout_sync(GH_TIMEOUT, || {
-            crate::infrastructure::process::output::output(command, Vec::new())
-        }) {
-            Ok(output) if output.status.success() => String::from_utf8(output.stdout)
+        match crate::common::operation_context::timeout(GH_TIMEOUT, async {
+            crate::infrastructure::process::output::output(command, Vec::new()).await
+        })
+        .await
+        {
+            Ok(Ok(output)) if output.status.success() => String::from_utf8(output.stdout)
                 .map(GhCommandOutput::Success)
                 .unwrap_or(GhCommandOutput::InvalidUtf8),
-            Ok(output) => GhCommandOutput::NonZero {
+            Ok(Ok(output)) => GhCommandOutput::NonZero {
                 status: output.status.to_string(),
                 stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
             },
-            Err(crate::infrastructure::process::output::ProcessError::Stopped(
+            Ok(Err(crate::infrastructure::process::output::ProcessError::Stopped(
                 crate::common::operation_context::OperationStopped::Expired,
-            )) => GhCommandOutput::Timeout,
-            Err(crate::infrastructure::process::output::ProcessError::Stopped(error)) => {
-                GhCommandOutput::Stopped(error)
+            )))
+            | Err(crate::common::operation_context::OperationStopped::Expired) => {
+                GhCommandOutput::Timeout
             }
-            Err(crate::infrastructure::process::output::ProcessError::Io(error)) => {
+            Ok(Err(crate::infrastructure::process::output::ProcessError::Stopped(error)))
+            | Err(error) => GhCommandOutput::Stopped(error),
+            Ok(Err(crate::infrastructure::process::output::ProcessError::Io(error))) => {
                 GhCommandOutput::SpawnFailed(error.to_string())
             }
         }
     }
 }
 
+#[async_trait::async_trait]
+
 impl GitHostProvider for GitHubGitHostGateway {
-    fn fetch_pr_status(&self, repo_path: &str) -> Result<PrStatus, GitHostError> {
+    async fn fetch_pr_status(&self, repo_path: &str) -> Result<PrStatus, GitHostError> {
         if !is_github_repository(repo_path).map_err(GitHostError::from)? {
             return Ok(PrStatus::default());
         }
 
         Ok(PrStatus {
-            open_prs: detect_open_prs(self.runner.as_ref(), repo_path)?,
-            merged_branches: detect_merged_prs(self.runner.as_ref(), repo_path)?,
+            open_prs: detect_open_prs(self.runner.as_ref(), repo_path).await?,
+            merged_branches: detect_merged_prs(self.runner.as_ref(), repo_path).await?,
         })
     }
 
-    fn list_issues(&self, repo_path: &str) -> Result<Vec<IssueInfo>, GitHostError> {
+    async fn list_issues(&self, repo_path: &str) -> Result<Vec<IssueInfo>, GitHostError> {
         if !is_github_repository(repo_path).map_err(GitHostError::from)? {
             return Ok(Vec::new());
         }
@@ -111,12 +119,13 @@ impl GitHostProvider for GitHubGitHostGateway {
                 "100",
             ],
             repo_path,
-        );
+        )
+        .await;
         parse_gh_issue_list_output(&output?)
     }
 }
 
-fn detect_open_prs(
+async fn detect_open_prs(
     runner: &dyn GhCommandRunner,
     repo_path: &str,
 ) -> Result<HashMap<String, PrInfo>, GitHostError> {
@@ -133,11 +142,12 @@ fn detect_open_prs(
             "100",
         ],
         repo_path,
-    );
+    )
+    .await;
     parse_gh_pr_list_output(&output?)
 }
 
-fn detect_merged_prs(
+async fn detect_merged_prs(
     runner: &dyn GhCommandRunner,
     repo_path: &str,
 ) -> Result<Vec<String>, GitHostError> {
@@ -154,18 +164,23 @@ fn detect_merged_prs(
             "100",
         ],
         repo_path,
-    );
+    )
+    .await;
     parse_gh_merged_pr_output(&output?)
 }
 
-fn run_gh_with_timeout(
+async fn run_gh_with_timeout(
     runner: &dyn GhCommandRunner,
     args: &[&str],
     repo_path: &str,
 ) -> Result<String, GitHostError> {
     let command = args.join(" ");
-    let result = match crate::common::operation_context::before(|| runner.output(args, repo_path))
-        .map_err(GitHostError::from)?
+    let result = match crate::common::operation_context::wait(
+        &crate::common::operation_context::current(),
+        runner.output(args, repo_path),
+    )
+    .await
+    .map_err(GitHostError::from)?
     {
         GhCommandOutput::Success(stdout) => return Ok(stdout),
         GhCommandOutput::Stopped(error) => return Err(GitHostError::from(error)),
@@ -342,8 +357,9 @@ mod tests {
         }
     }
 
+    #[async_trait::async_trait]
     impl GhCommandRunner for FakeGhRunner {
-        fn output(&self, args: &[&str], repo_path: &str) -> GhCommandOutput {
+        async fn output(&self, args: &[&str], repo_path: &str) -> GhCommandOutput {
             let key = args_key(args);
             self.output_calls.lock().unwrap().push(FakeOutputCall {
                 args: key.clone(),
@@ -409,20 +425,22 @@ mod tests {
         ]
     }
 
-    #[test]
-    fn fetch_pr_status_returns_empty_for_non_github_repo() {
+    #[tokio::test]
+    async fn fetch_pr_status_returns_empty_for_non_github_repo() {
         let dir = tempfile::TempDir::new().unwrap();
         let repo = git2::Repository::init(dir.path()).unwrap();
         repo.remote("origin", "https://gitlab.com/user/repo.git")
             .unwrap();
 
-        let status = GitHubGitHostGateway::default().fetch_pr_status(dir.path().to_str().unwrap());
+        let status = GitHubGitHostGateway::default()
+            .fetch_pr_status(dir.path().to_str().unwrap())
+            .await;
 
         assert_eq!(status, Ok(PrStatus::default()));
     }
 
-    #[test]
-    fn list_issues_returns_empty_for_non_github_repo() {
+    #[tokio::test]
+    async fn list_issues_returns_empty_for_non_github_repo() {
         let dir = tempfile::TempDir::new().unwrap();
         let repo = git2::Repository::init(dir.path()).unwrap();
         repo.remote("origin", "https://gitlab.com/user/repo.git")
@@ -430,13 +448,14 @@ mod tests {
 
         let issues = GitHubGitHostGateway::default()
             .list_issues(dir.path().to_str().unwrap())
+            .await
             .unwrap();
 
         assert!(issues.is_empty());
     }
 
-    #[test]
-    fn fetch_pr_status_combines_open_and_merged_runner_outputs() {
+    #[tokio::test]
+    async fn fetch_pr_status_combines_open_and_merged_runner_outputs() {
         let dir = github_repo();
         let runner = Arc::new(
             FakeGhRunner::new()
@@ -457,6 +476,7 @@ mod tests {
 
         let status = GitHubGitHostGateway::with_runner(runner.clone())
             .fetch_pr_status(dir.path().to_str().unwrap())
+            .await
             .unwrap();
 
         assert_eq!(status.open_prs.len(), 1);
@@ -481,8 +501,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn list_issues_returns_runner_output_as_issue_info() {
+    #[tokio::test]
+    async fn list_issues_returns_runner_output_as_issue_info() {
         let dir = github_repo();
         let runner = Arc::new(
             FakeGhRunner::new().with_output(
@@ -510,6 +530,7 @@ mod tests {
 
         let issues = GitHubGitHostGateway::with_runner(runner.clone())
             .list_issues(dir.path().to_str().unwrap())
+            .await
             .unwrap();
 
         assert_eq!(issues.len(), 1);
@@ -525,8 +546,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_gh出力_起動失敗をprとissueの空に変換しない() {
+    #[tokio::test]
+    async fn test_gh出力_起動失敗をprとissueの空に変換しない() {
         // Given
         let failure = GhCommandOutput::SpawnFailed("gh is missing".to_string());
         let dir = github_repo();
@@ -538,14 +559,14 @@ mod tests {
         );
         let gateway = GitHubGitHostGateway::with_runner(runner);
         // When
-        let pr = gateway.fetch_pr_status(dir.path().to_str().unwrap());
-        let issues = gateway.list_issues(dir.path().to_str().unwrap());
+        let pr = gateway.fetch_pr_status(dir.path().to_str().unwrap()).await;
+        let issues = gateway.list_issues(dir.path().to_str().unwrap()).await;
         // Then
         assert!(pr.is_err());
         assert!(issues.is_err());
     }
-    #[test]
-    fn test_gh出力_異常終了をprとissueの空に変換しない() {
+    #[tokio::test]
+    async fn test_gh出力_異常終了をprとissueの空に変換しない() {
         // Given
         let failure = GhCommandOutput::NonZero {
             status: "exit status: 1".to_string(),
@@ -560,14 +581,14 @@ mod tests {
         );
         let gateway = GitHubGitHostGateway::with_runner(runner);
         // When
-        let pr = gateway.fetch_pr_status(dir.path().to_str().unwrap());
-        let issues = gateway.list_issues(dir.path().to_str().unwrap());
+        let pr = gateway.fetch_pr_status(dir.path().to_str().unwrap()).await;
+        let issues = gateway.list_issues(dir.path().to_str().unwrap()).await;
         // Then
         assert!(pr.is_err());
         assert!(issues.is_err());
     }
-    #[test]
-    fn test_gh出力_タイムアウトをprとissueの空に変換しない() {
+    #[tokio::test]
+    async fn test_gh出力_タイムアウトをprとissueの空に変換しない() {
         // Given
         let failure = GhCommandOutput::Timeout;
         let dir = github_repo();
@@ -579,8 +600,8 @@ mod tests {
         );
         let gateway = GitHubGitHostGateway::with_runner(runner);
         // When
-        let pr = gateway.fetch_pr_status(dir.path().to_str().unwrap());
-        let issues = gateway.list_issues(dir.path().to_str().unwrap());
+        let pr = gateway.fetch_pr_status(dir.path().to_str().unwrap()).await;
+        let issues = gateway.list_issues(dir.path().to_str().unwrap()).await;
         // Then
         assert!(pr.is_err());
         assert!(matches!(
@@ -593,8 +614,8 @@ mod tests {
             ))
         ));
     }
-    #[test]
-    fn test_gh出力_json破損をprとissueの空に変換しない() {
+    #[tokio::test]
+    async fn test_gh出力_json破損をprとissueの空に変換しない() {
         // Given
         let failure = GhCommandOutput::Success("not json".to_string());
         let dir = github_repo();
@@ -606,14 +627,14 @@ mod tests {
         );
         let gateway = GitHubGitHostGateway::with_runner(runner);
         // When
-        let pr = gateway.fetch_pr_status(dir.path().to_str().unwrap());
-        let issues = gateway.list_issues(dir.path().to_str().unwrap());
+        let pr = gateway.fetch_pr_status(dir.path().to_str().unwrap()).await;
+        let issues = gateway.list_issues(dir.path().to_str().unwrap()).await;
         // Then
         assert!(pr.is_err());
         assert!(issues.is_err());
     }
-    #[test]
-    fn parse_open_prs_valid_json() {
+    #[tokio::test]
+    async fn parse_open_prs_valid_json() {
         let json = r#"[
             {"headRefName":"feat/login","number":42,"url":"https://github.com/owner/repo/pull/42"},
             {"headRefName":"fix/typo","number":7,"url":"https://github.com/owner/repo/pull/7"}
@@ -627,20 +648,20 @@ mod tests {
         assert_eq!(pr.url, "https://github.com/owner/repo/pull/42");
     }
 
-    #[test]
-    fn parse_open_prs_empty_array() {
+    #[tokio::test]
+    async fn parse_open_prs_empty_array() {
         let map = parse_gh_pr_list_output("[]").unwrap();
 
         assert!(map.is_empty());
     }
 
-    #[test]
-    fn parse_open_prs_invalid_json() {
+    #[tokio::test]
+    async fn parse_open_prs_invalid_json() {
         assert!(parse_gh_pr_list_output("not json").is_err());
     }
 
-    #[test]
-    fn parse_open_prs_missing_fields() {
+    #[tokio::test]
+    async fn parse_open_prs_missing_fields() {
         let json = r#"[{"headRefName":"feat/x"}]"#;
 
         let map = parse_gh_pr_list_output(json).unwrap();
@@ -648,8 +669,8 @@ mod tests {
         assert!(map.is_empty());
     }
 
-    #[test]
-    fn parse_merged_prs_valid() {
+    #[tokio::test]
+    async fn parse_merged_prs_valid() {
         let json = r#"[{"headRefName":"feat/a"},{"headRefName":"feat/b"}]"#;
 
         let branches = parse_gh_merged_pr_output(json).unwrap();
@@ -657,20 +678,20 @@ mod tests {
         assert_eq!(branches, vec!["feat/a", "feat/b"]);
     }
 
-    #[test]
-    fn parse_merged_prs_empty() {
+    #[tokio::test]
+    async fn parse_merged_prs_empty() {
         let branches = parse_gh_merged_pr_output("[]").unwrap();
 
         assert!(branches.is_empty());
     }
 
-    #[test]
-    fn parse_merged_prs_invalid() {
+    #[tokio::test]
+    async fn parse_merged_prs_invalid() {
         assert!(parse_gh_merged_pr_output("invalid").is_err());
     }
 
-    #[test]
-    fn parse_issue_list_valid_json() {
+    #[tokio::test]
+    async fn parse_issue_list_valid_json() {
         // Given
         let json = serde_json::json!([
             {
@@ -713,8 +734,8 @@ mod tests {
         assert!(issues[1].labels.is_empty());
     }
 
-    #[test]
-    fn parse_issue_list_empty_array() {
+    #[tokio::test]
+    async fn parse_issue_list_empty_array() {
         // Given
         let json = "[]";
         // When
@@ -723,8 +744,8 @@ mod tests {
         assert!(issues.is_empty());
     }
 
-    #[test]
-    fn parse_issue_list_invalid_json() {
+    #[tokio::test]
+    async fn parse_issue_list_invalid_json() {
         // Given
         let json = "not json";
         // When
@@ -733,8 +754,8 @@ mod tests {
         assert!(result.is_err());
     }
 
-    #[test]
-    fn parse_issue_list_missing_optional_fields() {
+    #[tokio::test]
+    async fn parse_issue_list_missing_optional_fields() {
         // Given
         let json = serde_json::json!([
             {
@@ -758,8 +779,8 @@ mod tests {
         assert!(issues[0].body.is_empty());
     }
 
-    #[test]
-    fn parse_issue_list_real_gh_output() {
+    #[tokio::test]
+    async fn parse_issue_list_real_gh_output() {
         // Given
         let json = serde_json::json!([
             {
@@ -803,8 +824,8 @@ mod tests {
         assert_eq!(issues[1].labels.len(), 1);
     }
 
-    #[test]
-    fn list_issue_parse_empty_log_message_omits_raw_payload() {
+    #[tokio::test]
+    async fn list_issue_parse_empty_log_message_omits_raw_payload() {
         // Given
         let stdout = serde_json::json!({
             "title": "Sensitive title",

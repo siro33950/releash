@@ -36,17 +36,6 @@ fn hook_health_reason(reason: ProviderLifecycleUnavailableReason) -> &'static st
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub(crate) enum AgentSessionOpenResponse {
-    Attached,
-    Resumed,
-    Restored,
-    Paused,
-    Indeterminate,
-    GarbageCollected,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
 pub(crate) enum AgentSessionArchiveResponse {
     Archived,
     AlreadyArchived,
@@ -80,6 +69,7 @@ pub(crate) struct ProviderAvailabilityItemResponse {
     pub(crate) display_name: String,
     pub(crate) default_executable: String,
     pub(crate) configured_executable: Option<String>,
+    pub(crate) configuration_revision: u32,
     pub(crate) effective_executable: String,
     pub(crate) available: bool,
     pub(crate) resolved_executable: Option<String>,
@@ -99,6 +89,7 @@ impl From<crate::usecase::agent_session::ProviderAvailabilitySnapshotDto>
                     display_name: entry.display_name,
                     default_executable: entry.default_executable,
                     configured_executable: entry.configured_executable,
+                    configuration_revision: entry.configuration_revision,
                     effective_executable: entry.effective_executable,
                     available: entry.available,
                     resolved_executable: entry.resolved_executable,

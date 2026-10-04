@@ -207,6 +207,9 @@ impl WorkspaceStateReads {
                     .map(StateValue::SessionHistory)
                     .map_err(error)
             }
+            T::Issues(p) => {
+                return Ok(StateValue::Issues(self.git_host.get_cached_issues(p).await))
+            }
             T::Workspaces => {
                 return Ok(StateValue::Workspaces(
                     self.workspaces.read().await.map_err(error)?,
@@ -224,14 +227,6 @@ impl WorkspaceStateReads {
                 return Ok(StateValue::NodeDetail(
                     self.workflow
                         .get_workspace_node_detail(p, id)
-                        .await
-                        .map_err(error)?,
-                ))
-            }
-            T::SessionNode(p, id) => {
-                return Ok(StateValue::SessionNode(
-                    self.workflow
-                        .get_workspace_session_node_id(p, id)
                         .await
                         .map_err(error)?,
                 ))
@@ -290,20 +285,11 @@ impl WorkspaceStateReads {
             T::CurrentBranch(p) => {
                 StateValue::CurrentBranch(self.repository.get_current_branch(p).map_err(error)?)
             }
-            T::Issues(p) => StateValue::Issues(
-                self.git_host.get_cached_issues(p),
-            ),
+
             T::Worktrees(p) => {
                 StateValue::Worktrees(self.repository.list_worktrees(p).map_err(error)?)
             }
-            T::RepositoryRoot(p) => {
-                StateValue::RepositoryRoot(self.repository.find_main_repo_path(p).map_err(error)?)
-            }
-            T::StartupRepository => StateValue::StartupRepository(
-                self.repository
-                    .find_main_repo_path(&self.repository.get_cwd().map_err(error)?)
-                    .map_err(error)?,
-            ),
+            T::StartupRepository => StateValue::StartupRepository(self.repository.startup_worktree().map_err(error)?),
             T::WorkspaceState(name, path) => StateValue::WorkspaceState(
                 crate::usecase::workspace_state::usecase::load_workspace_state(
                     self.workspace_state.as_ref(),
@@ -393,14 +379,14 @@ impl WorkspaceStateReads {
             }
             T::PerformanceSwitches => StateValue::PerformanceSwitches(self.performance_switches),
             T::StartupOutcome => StateValue::StartupOutcome(self.startup.outcome()),
-            T::Terminal(_)
+            T::Issues(_)
+            | T::Terminal(_)
             | T::Workspaces
             | T::Workflows
             | T::AgentSession(_)
             | T::SessionHistory(_, _)
             | T::Selection(_, _)
             | T::NodeDetail(_, _)
-            | T::SessionNode(_, _)
             | T::ProviderHookHealth => {
                 unreachable!("async reads handled above")
             }
@@ -409,23 +395,25 @@ impl WorkspaceStateReads {
 }
 
 impl WorkspaceStateReads {
-    pub(crate) fn refresh_external_blocking(
+    pub(crate) async fn refresh_external_blocking(
         &self,
         target: &SubscriptionTarget,
     ) -> Result<(), StateReadError> {
         match target {
-            SubscriptionTarget::Issues(path) => self.refresh_issues(path)?,
-            SubscriptionTarget::NotionTasks(request) => self.notion.refresh_tasks(request),
-            SubscriptionTarget::NotionLabelOptions(path) => self.notion.refresh_label_options(path),
-            SubscriptionTarget::Workspaces => self.workspaces.refresh_pull_requests(),
+            SubscriptionTarget::Issues(path) => self.refresh_issues(path).await?,
+            SubscriptionTarget::NotionTasks(request) => self.notion.refresh_tasks(request).await,
+            SubscriptionTarget::NotionLabelOptions(path) => {
+                self.notion.refresh_label_options(path).await
+            }
+            SubscriptionTarget::Workspaces => self.workspaces.refresh_pull_requests().await,
             _ => {}
         }
         Ok(())
     }
 
-    pub(crate) fn refresh_issues(&self, path: &str) -> Result<(), StateReadError> {
+    pub(crate) async fn refresh_issues(&self, path: &str) -> Result<(), StateReadError> {
         self.repository.get_main_repo_path(path).map_err(error)?;
-        let _ = self.git_host.fetch_issues(path);
+        let _ = self.git_host.fetch_issues(path).await;
         Ok(())
     }
 }
@@ -439,6 +427,14 @@ pub(crate) trait StateSubscriptionRead: Send + Sync {
     fn acquire_external(&self, _target: &SubscriptionTarget) {}
     fn release_external(&self, _target: &SubscriptionTarget) {}
     fn repositories(&self) -> Vec<String>;
+    fn watch_paths(
+        &self,
+    ) -> (
+        Vec<String>,
+        Vec<(String, crate::domain::failure::WorkFailure)>,
+    ) {
+        (self.repositories(), vec![])
+    }
     fn review_comments_dir(&self) -> String {
         String::new()
     }
@@ -453,7 +449,7 @@ impl StateSubscriptionRead for WorkspaceStateReads {
         WorkspaceStateReads::read(self, target).await
     }
     async fn refresh_external(&self, target: &SubscriptionTarget) -> Result<(), StateReadError> {
-        self.refresh_external_blocking(target)
+        self.refresh_external_blocking(target).await
     }
     fn acquire_external(&self, target: &SubscriptionTarget) {
         match target {
@@ -470,6 +466,14 @@ impl StateSubscriptionRead for WorkspaceStateReads {
         }
     }
     fn repositories(&self) -> Vec<String> {
+        self.workspaces.watch_paths().0
+    }
+    fn watch_paths(
+        &self,
+    ) -> (
+        Vec<String>,
+        Vec<(String, crate::domain::failure::WorkFailure)>,
+    ) {
         self.workspaces.watch_paths()
     }
     fn review_comments_dir(&self) -> String {

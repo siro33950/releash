@@ -325,9 +325,11 @@ impl WorkflowRuntimeShutdownGateway for AcceptanceWorkflowRuntimeGateway {
 impl ProviderLifecycleAcceptanceHost {
     pub fn start(data_dir: &Path) -> Result<Self, String> {
         let work = crate::terminal_surface::initialize_background_work_for_acceptance();
-        let store =
-            LocalEventStore::open(LocalEventStoreConfig::production(data_dir.to_path_buf()))
-                .map_err(|error| error.to_string())?;
+        let store = LocalEventStore::open(LocalEventStoreConfig::production(
+            data_dir.to_path_buf(),
+            std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
+        ))
+        .map_err(|error| error.to_string())?;
         let events = Arc::new(LocalProviderLifecycleEventRepository::new(
             work.retrying.clone(),
             store.clone() as Arc<dyn LocalEventTransactionRepository>,
@@ -365,6 +367,10 @@ impl ProviderLifecycleAcceptanceHost {
             binding.terminal_bearer_token(),
             None,
             Some(usecase.clone()),
+            (
+                crate::adaptor::controller::daemon::client_priority_interceptor().gate,
+                crate::adaptor::controller::daemon::default_timeout(),
+            ),
         );
         let server = binding.start(router, &tokio::runtime::Handle::current());
         Ok(Self {

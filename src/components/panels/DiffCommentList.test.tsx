@@ -327,4 +327,28 @@ describe("DiffCommentList", () => {
 			).toBeDisabled();
 		});
 	});
+	it("thread 削除の失敗を原因とともに通知し確認を維持する", async () => {
+		const user = userEvent.setup();
+		const notice = vi.fn();
+		const log = vi.spyOn(console, "error").mockImplementation(() => {});
+		window.addEventListener("releash-client-error", notice);
+		try {
+			renderWithProviders(
+				<DiffCommentList
+					comments={[makeComment()]}
+					{...defaultProps}
+					onDelete={vi.fn().mockRejectedValue(new Error("delete denied"))}
+				/>,
+			);
+			await user.click(screen.getByLabelText("Delete thread"));
+			await user.click(screen.getByRole("button", { name: "Delete" }));
+			expect(notice.mock.calls[0][0].detail).toBe("delete denied");
+			expect(
+				screen.getByRole("alertdialog", { name: "Delete this thread?" }),
+			).toBeInTheDocument();
+		} finally {
+			window.removeEventListener("releash-client-error", notice);
+			log.mockRestore();
+		}
+	});
 });

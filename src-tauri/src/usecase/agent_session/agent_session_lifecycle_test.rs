@@ -650,7 +650,11 @@ async fn test_worktree削除中_sessionのopen_resume_restore_deleteを副作用
         ))
     );
     assert_eq!(
-        context.lifecycle.restore(id, 24, 80, "restore").await,
+        context
+            .lifecycle
+            .restore(id, 24, 80, "restore")
+            .await
+            .map(|(outcome, _)| outcome),
         Err(AgentSessionLifecycleUsecaseError::Conflict(
             (crate::domain::workflow::WorkflowError::Conflict(
                 "worktree deletion is in progress".into()
@@ -678,6 +682,7 @@ fn setup_with_lifecycle_events(
     let directory = tempfile::tempdir().unwrap();
     let store = LocalEventStore::open(LocalEventStoreConfig::production(
         directory.path().to_path_buf(),
+        std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
     ))
     .unwrap();
     let sessions = Arc::new(AgentSessionUsecase::new(Arc::new(
@@ -709,6 +714,7 @@ fn setup_with_lifecycle_events(
         hook_health.clone(),
         change_notifier.subscriptions.clone(),
         execution_trees.clone(),
+        crate::adaptor::gateway::workspace_tree::SqliteWorkspaceTreeRepository::new(store.clone()),
     ));
     *execution_trees.lifecycle.lock().unwrap() = Arc::downgrade(&usecase);
     LifecycleTestContext {
@@ -1610,6 +1616,7 @@ async fn test_agent_session_lifecycle_exit_resume_archive_restore_deleteを接�
         lifecycle
             .restore("agent-1", 24, 80, "restore-1")
             .await
+            .map(|(outcome, _)| outcome)
             .unwrap(),
         AgentSessionOpenOutcome::Restored
     );
@@ -2109,6 +2116,7 @@ async fn test_agent_session_resume状態保存失敗時は起動済みprocessを
     let directory = tempfile::tempdir().unwrap();
     let store = LocalEventStore::open(LocalEventStoreConfig::production(
         directory.path().to_path_buf(),
+        std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
     ))
     .unwrap();
     let repository = Arc::new(LocalAgentSessionRepository::new(store.clone()));
@@ -2161,6 +2169,7 @@ async fn test_agent_session_resume状態保存失敗時は起動済みprocessを
             store: Some(store.clone()),
             ..Default::default()
         }),
+        crate::usecase::workspace_tree::TestWorkspaceTreeRepository::new(),
     );
 
     assert_eq!(
@@ -2241,6 +2250,7 @@ async fn test_agent_session_resume_同一sessionへの並行要求はptyを一�
     let directory = tempfile::tempdir().unwrap();
     let store = LocalEventStore::open(LocalEventStoreConfig::production(
         directory.path().to_path_buf(),
+        std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
     ))
     .unwrap();
     let sessions = Arc::new(AgentSessionUsecase::new(Arc::new(
@@ -2302,6 +2312,7 @@ async fn test_agent_session_resume_同一sessionへの並行要求はptyを一�
             store: Some(store.clone()),
             ..Default::default()
         }),
+        crate::usecase::workspace_tree::TestWorkspaceTreeRepository::new(),
     ));
 
     let first = tokio::spawn({
@@ -2350,6 +2361,7 @@ async fn test_agent_session_resume中のarchiveは同一sessionの操作完了�
     let directory = tempfile::tempdir().unwrap();
     let store = LocalEventStore::open(LocalEventStoreConfig::production(
         directory.path().to_path_buf(),
+        std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
     ))
     .unwrap();
     let sessions = Arc::new(AgentSessionUsecase::new(Arc::new(
@@ -2408,6 +2420,7 @@ async fn test_agent_session_resume中のarchiveは同一sessionの操作完了�
         ))),
         crate::test_support::state_subscription::test_subscriptions(),
         execution_trees.clone(),
+        crate::usecase::workspace_tree::TestWorkspaceTreeRepository::new(),
     ));
 
     *execution_trees.lifecycle.lock().unwrap() = Arc::downgrade(&lifecycle);
@@ -2460,6 +2473,7 @@ async fn test_agent_session_open_同一sessionへの並行要求は一度だけ�
     let directory = tempfile::tempdir().unwrap();
     let store = LocalEventStore::open(LocalEventStoreConfig::production(
         directory.path().to_path_buf(),
+        std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
     ))
     .unwrap();
     let sessions = Arc::new(AgentSessionUsecase::new(Arc::new(
@@ -2511,6 +2525,7 @@ async fn test_agent_session_open_同一sessionへの並行要求は一度だけ�
             store: Some(store.clone()),
             ..Default::default()
         }),
+        crate::usecase::workspace_tree::TestWorkspaceTreeRepository::new(),
     ));
 
     let first = tokio::spawn({
@@ -2571,14 +2586,13 @@ async fn test_agent_session_restoreはprocessを起動せずpausedになり手�
         .await
         .unwrap();
     *context.terminal.fail_spawn.lock().unwrap() = true;
-    assert_eq!(
-        context
-            .lifecycle
-            .restore("restore-agent", 24, 80, "restore")
-            .await
-            .unwrap(),
-        AgentSessionOpenOutcome::Restored
-    );
+    let selected = context
+        .lifecycle
+        .restore_selection("restore-agent", 24, 80, "restore")
+        .await
+        .unwrap();
+    assert_eq!(selected.0, "restore-agent");
+    assert_eq!(selected.1.id, "restore-agent");
     assert_eq!(*context.terminal.spawn_count.lock().unwrap(), 0);
     assert_eq!(
         context
@@ -3024,6 +3038,7 @@ async fn test_workflowのprovider回復_同じnodeを繰り返し再開し永続
             context.hook_health.clone(),
             context.execution_trees.clone(),
             tokio::sync::mpsc::unbounded_channel().0,
+            crate::usecase::workspace_tree::TestWorkspaceTreeRepository::new(),
         )),
         Arc::new(super::AgentSessionInitialInstructionUsecase::new(
             context.sessions.clone(),
@@ -3322,14 +3337,19 @@ async fn test_sessionのarchiveとrestore_共通実行木操作のエラー分�
             context
                 .lifecycle
                 .restore(id, 24, 80, "restore-admission")
-                .await,
+                .await
+                .map(|(outcome, _)| outcome),
             Err(expected.clone())
         );
         assert!(context.change_notifier.notified.lock().unwrap().is_empty());
         *context.execution_trees.mutation_error.lock().unwrap() = None;
         *context.execution_trees.restore_error.lock().unwrap() = Some(error);
         assert_eq!(
-            context.lifecycle.restore(id, 24, 80, "restore").await,
+            context
+                .lifecycle
+                .restore(id, 24, 80, "restore")
+                .await
+                .map(|(outcome, _)| outcome),
             Err(expected.clone())
         );
         assert_eq!(
@@ -3378,6 +3398,7 @@ async fn test_workflow_session準備_入口から期限と取消の分類を保�
                 context.hook_health.clone(),
                 context.execution_trees.clone(),
                 tokio::sync::mpsc::unbounded_channel().0,
+                crate::usecase::workspace_tree::TestWorkspaceTreeRepository::new(),
             )),
             Arc::new(super::AgentSessionInitialInstructionUsecase::new(
                 context.sessions.clone(),
@@ -3467,6 +3488,7 @@ async fn test_agent_session_resume_実行ファイル未解決はprovider利用�
         context.hook_health.clone(),
         context.change_notifier.subscriptions.clone(),
         context.execution_trees.clone(),
+        crate::usecase::workspace_tree::TestWorkspaceTreeRepository::new(),
     );
     *context.terminal.presence.lock().unwrap() = ManagedPtyPresence::ConfirmedAbsent;
     lifecycle
@@ -3483,4 +3505,114 @@ async fn test_agent_session_resume_実行ファイル未解決はprovider利用�
         Err(AgentSessionLifecycleUsecaseError::ProviderUnavailable)
     );
     assert_eq!(*context.terminal.spawn_count.lock().unwrap(), 0);
+}
+
+#[tokio::test]
+async fn test_session選択_restoreは欠落とrepositoryの失敗の性質を保持する() {
+    use crate::domain::failure::{TechnicalFailure, TechnicalFailureNature};
+    use crate::domain::local_event::LocalEventQueryError;
+    use crate::domain::workflow::WorkflowError;
+    use crate::domain::workspace_tree::{
+        WorkspaceIdentity, WorkspaceTree, WorkspaceTreeNode, WorkspaceTreeRepository,
+    };
+    struct Trees(Option<LocalEventQueryError>);
+    #[async_trait::async_trait]
+    impl WorkspaceTreeRepository for Trees {
+        async fn load_trees(
+            &self,
+            _: &[WorkspaceIdentity],
+        ) -> Vec<Result<WorkspaceTree, WorkflowError>> {
+            panic!("unexpected read")
+        }
+        async fn load_node(
+            &self,
+            _: &WorkspaceIdentity,
+            _: &str,
+        ) -> Result<Option<WorkspaceTreeNode>, LocalEventQueryError> {
+            panic!("unexpected read")
+        }
+        async fn load_node_by_node_execution_id(
+            &self,
+            _: &str,
+        ) -> Result<Option<WorkspaceTreeNode>, LocalEventQueryError> {
+            panic!("unexpected read")
+        }
+        async fn load_node_by_session_id(
+            &self,
+            workspace: &WorkspaceIdentity,
+            id: &str,
+        ) -> Result<Option<WorkspaceTreeNode>, LocalEventQueryError> {
+            assert_eq!(workspace.as_str(), "/repo");
+            assert_eq!(id, "restore-selection");
+            match &self.0 {
+                Some(error) => Err(error.clone()),
+                None => Ok(None),
+            }
+        }
+    }
+    let mut cases = vec![
+        (None, AgentSessionLifecycleUsecaseError::Corrupt),
+        (
+            Some(LocalEventQueryError::QueryBusy),
+            AgentSessionLifecycleUsecaseError::Store(LocalEventQueryError::QueryBusy.into()),
+        ),
+    ];
+    for nature in [
+        TechnicalFailureNature::Transient,
+        TechnicalFailureNature::TimedOut,
+        TechnicalFailureNature::Cancelled,
+        TechnicalFailureNature::Other,
+    ] {
+        let failure = TechnicalFailure {
+            nature,
+            message: "selection failed".into(),
+        };
+        cases.push((
+            Some(LocalEventQueryError::Technical(failure.clone())),
+            AgentSessionLifecycleUsecaseError::Workflow(WorkflowError::Technical(failure)),
+        ));
+    }
+    for (error, expected) in cases {
+        // Given
+        let context = setup();
+        context
+            .sessions
+            .create(
+                "restore-selection",
+                WorkspaceIdentity::new("/repo"),
+                "/repo/worktree",
+                ProviderKind::Claude,
+                session_location("restore-selection"),
+                "create",
+            )
+            .await
+            .unwrap();
+        context
+            .lifecycle
+            .archive("restore-selection", "archive")
+            .await
+            .unwrap();
+        let lifecycle = AgentSessionLifecycleUsecase::new(
+            Arc::new(crate::adaptor::gateway::identity::RandomIdentityIssuer),
+            context.sessions.clone(),
+            context.provider_lifecycle.clone(),
+            ProviderAgentRuntime::new(
+                Arc::new(AlwaysProviderAvailable),
+                context.launches.clone(),
+                context.terminal.clone(),
+            ),
+            context.hook_health.clone(),
+            context.change_notifier.subscriptions.clone(),
+            context.execution_trees.clone(),
+            Arc::new(Trees(error)),
+        );
+        // When / Then
+        assert_eq!(
+            lifecycle
+                .restore_selection("restore-selection", 24, 80, "restore")
+                .await
+                .unwrap_err(),
+            expected
+        );
+    }
 }

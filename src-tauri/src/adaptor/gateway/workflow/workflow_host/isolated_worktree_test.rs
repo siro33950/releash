@@ -135,12 +135,7 @@ async fn test_隔離起動_生成失敗後は自動で新しいattemptだけを�
     let failures = crate::test_support::retry::shared_store().records(&attempts[0].id);
     assert!(failures
         .iter()
-        .any(|failure| failure.record.operation == "workflow_node_start"
-            && failure.record.kind
-                == crate::usecase::failure::Failure::Business(
-                    crate::usecase::failure::BusinessFailure::VersionConflict
-                )
-            && failure.record.count == 1));
+        .all(|failure| failure.record.operation != "workflow_node_start"));
     assert_eq!(attempts.len(), 2);
     assert_eq!(attempts[0].status, NodeExecutionStatus::Aborted);
     assert_eq!(attempts[1].status, NodeExecutionStatus::Running);
@@ -187,12 +182,7 @@ async fn test_隔離起動_合成子の生成失敗では子を起動せず復�
         crate::test_support::retry::shared_store().records(&snapshot.node_executions[0].id);
     assert!(failures
         .iter()
-        .any(|failure| failure.record.operation == "workflow_node_start"
-            && failure.record.kind
-                == crate::usecase::failure::Failure::Business(
-                    crate::usecase::failure::BusinessFailure::VersionConflict
-                )
-            && failure.record.count == 1));
+        .all(|failure| failure.record.operation != "workflow_node_start"));
     assert_eq!(snapshot.node_executions.len(), 1);
     assert_eq!(
         snapshot.node_executions[0].status,
@@ -1732,9 +1722,7 @@ async fn test_node起動失敗_版競合だけは失敗として記録しない(
             assert_eq!(failed.len(), usize::from(retry), "{error:?}");
             if let Some(failure) = failed.first() { assert_eq!(failure.kind, kind); assert_eq!(&failure.id, node_id); }
             let records = crate::test_support::retry::shared_store().records(node_id);
-            let observed = records.iter().find(|record| record.record.operation == "workflow_node_start").unwrap();
-            assert_eq!(observed.record.kind, kind);
-            assert_eq!(observed.record.count, 1);
+            assert!(records.iter().all(|record| record.record.operation != "workflow_node_start"));
             let facts = workflow_fact_log::read_tree_records(&fixture.store, &execution.execution_id).await.unwrap();
             assert_eq!(facts.iter().any(|record| matches!(record.fact, NodeFact::RuntimeFailureObserved(_))), !version_conflict);
         }

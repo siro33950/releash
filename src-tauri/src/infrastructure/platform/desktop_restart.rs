@@ -45,16 +45,18 @@ pub(crate) fn wait_for_predecessor() -> Result<bool, String> {
         .ok_or("Missing predecessor identity")?
         .parse::<u64>()
         .map_err(|e| e.to_string())?;
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let context =
+        crate::common::operation_context::with_timeout(std::time::Duration::from_secs(10));
     loop {
         let observation = crate::infrastructure::local_api::lookup_process_start_time(pid);
         if observation.process_list_available && observation.start_time != Some(started) {
             return Ok(true);
         }
-        if std::time::Instant::now() >= deadline {
-            return Err("Previous UI exit could not be confirmed.".into());
-        }
-        std::thread::sleep(std::time::Duration::from_millis(20));
+        crate::common::operation_context::sleep(
+            &context,
+            crate::common::retry::RetryBackoff::DESKTOP_POLL.delay(1, 1.0),
+        )
+        .map_err(|_| "Previous UI exit could not be confirmed.".to_string())?;
     }
 }
 

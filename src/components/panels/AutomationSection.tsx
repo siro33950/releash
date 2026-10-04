@@ -96,7 +96,7 @@ export function AutomationSection({
 			if (result.ok) {
 				setEditingWorkflow(false);
 				setWorkflowSaveDiagnostics([]);
-				return { ok: true as const, workflow: result.workflow };
+				return { ok: true as const, name: result.name };
 			}
 			const diagnostics = result.diagnostics ?? [];
 			setWorkflowSaveDiagnostics(diagnostics);

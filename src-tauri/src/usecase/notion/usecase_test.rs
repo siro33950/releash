@@ -52,7 +52,12 @@ struct FakeNotionApiGateway {
     configs: Mutex<Vec<app_config_vo::NotionRepoConfig>>,
     database_pages: Mutex<HashMap<String, NotionTaskPage>>,
     database_labels: Mutex<HashMap<String, Vec<NotionLabelOption>>>,
-    gate: Mutex<Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>>,
+    gate: Mutex<
+        Option<(
+            tokio::sync::oneshot::Sender<()>,
+            tokio::sync::oneshot::Receiver<()>,
+        )>,
+    >,
     query_pages: Mutex<std::collections::VecDeque<Result<NotionTaskPage, NotionError>>>,
     query_calls: AtomicUsize,
     label_calls: AtomicUsize,
@@ -85,17 +90,21 @@ impl FakeNotionApiGateway {
     }
 }
 
+#[async_trait::async_trait]
+
 impl NotionApiGateway for FakeNotionApiGateway {
-    fn query_tasks(
+    async fn query_tasks(
         &self,
         config: &app_config_vo::NotionRepoConfig,
         query: &NotionTaskQuery,
     ) -> Result<NotionTaskPage, NotionError> {
         self.configs.lock().unwrap().push(config.clone());
-        if let Some((entered, resume)) = self.gate.lock().unwrap().take() {
+        let gate = self.gate.lock().unwrap().take();
+        if let Some((entered, resume)) = gate {
             entered.send(()).unwrap();
-            resume
-                .recv_timeout(std::time::Duration::from_secs(5))
+            tokio::time::timeout(std::time::Duration::from_secs(5), resume)
+                .await
+                .unwrap()
                 .unwrap();
         }
         if let Some(page) = self.database_pages.lock().unwrap().get(&config.database_id) {
@@ -116,7 +125,7 @@ impl NotionApiGateway for FakeNotionApiGateway {
         })
     }
 
-    fn fetch_label_options(
+    async fn fetch_label_options(
         &self,
         config: &app_config_vo::NotionRepoConfig,
     ) -> Result<Vec<NotionLabelOption>, NotionError> {
@@ -138,7 +147,7 @@ impl NotionApiGateway for FakeNotionApiGateway {
             .unwrap_or_else(|| Ok(Vec::new()))
     }
 
-    fn validate(
+    async fn validate(
         &self,
         _config: &app_config_vo::NotionRepoConfig,
     ) -> Result<NotionValidationResult, NotionError> {
@@ -160,8 +169,8 @@ fn config() -> app_config_vo::NotionRepoConfig {
     }
 }
 
-#[test]
-fn test_task_query_configured_repoはtask_pageを返す() {
+#[tokio::test]
+async fn test_task_query_configured_repoはtask_pageを返す() {
     let repo = FakeNotionConfigRepository::with_config("/repo", config());
     let expected = NotionTaskPage {
         tasks: vec![NotionTask {
@@ -178,36 +187,38 @@ fn test_task_query_configured_repoはtask_pageを返す() {
     };
     let api = FakeNotionApiGateway::with_query_result(Ok(expected.clone()));
 
-    let result = query_task_list(&repo, &api, "/repo", 20, None, &Default::default()).unwrap();
+    let result = query_task_list(&repo, &api, "/repo", 20, None, &Default::default())
+        .await
+        .unwrap();
 
     assert_eq!(result, expected);
     assert_eq!(api.query_calls.load(Ordering::SeqCst), 1);
 }
 
-#[test]
-fn test_task_query_unconfigured_repoはapiを呼ばずエラーにする() {
+#[tokio::test]
+async fn test_task_query_unconfigured_repoはapiを呼ばずエラーにする() {
     let repo = FakeNotionConfigRepository::default();
     let api = FakeNotionApiGateway::default();
 
-    let result = query_task_list(&repo, &api, "/repo", 20, None, &Default::default());
+    let result = query_task_list(&repo, &api, "/repo", 20, None, &Default::default()).await;
 
     assert_eq!(result.unwrap_err().to_string(), NOTION_CONFIG_NOT_FOUND);
     assert_eq!(api.query_calls.load(Ordering::SeqCst), 0);
 }
 
-#[test]
-fn test_label_fetch_unconfigured_repoはapiを呼ばずエラーにする() {
+#[tokio::test]
+async fn test_label_fetch_unconfigured_repoはapiを呼ばずエラーにする() {
     let repo = FakeNotionConfigRepository::default();
     let api = FakeNotionApiGateway::default();
 
-    let result = fetch_label_options(&repo, &api, "/repo");
+    let result = fetch_label_options(&repo, &api, "/repo").await;
 
     assert_eq!(result.unwrap_err().to_string(), NOTION_CONFIG_NOT_FOUND);
     assert_eq!(api.label_calls.load(Ordering::SeqCst), 0);
 }
 
-#[test]
-fn test_label_fetch_configured_repoはoptionsを返す() {
+#[tokio::test]
+async fn test_label_fetch_configured_repoはoptionsを返す() {
     let repo = FakeNotionConfigRepository::with_config("/repo", config());
     let expected = vec![NotionLabelOption {
         property_name: "Status".to_string(),
@@ -217,26 +228,26 @@ fn test_label_fetch_configured_repoはoptionsを返す() {
     }];
     let api = FakeNotionApiGateway::with_label_result(Ok(expected.clone()));
 
-    let result = fetch_label_options(&repo, &api, "/repo").unwrap();
+    let result = fetch_label_options(&repo, &api, "/repo").await.unwrap();
 
     assert_eq!(result, expected);
     assert_eq!(api.label_calls.load(Ordering::SeqCst), 1);
 }
 
-#[test]
-fn test_task_query_api_errorは文字列化して伝播する() {
+#[tokio::test]
+async fn test_task_query_api_errorは文字列化して伝播する() {
     let repo = FakeNotionConfigRepository::with_config("/repo", config());
     let api =
         FakeNotionApiGateway::with_query_result(Err(NotionError::ApiError("HTTP 500".to_string())));
 
-    let result = query_task_list(&repo, &api, "/repo", 20, None, &Default::default());
+    let result = query_task_list(&repo, &api, "/repo", 20, None, &Default::default()).await;
 
     assert_eq!(result.unwrap_err().to_string(), "API エラー: HTTP 500");
     assert_eq!(api.query_calls.load(Ordering::SeqCst), 1);
 }
 
-#[test]
-fn test_task_query_configが空文字ならapiを呼ばず未設定エラーにする() {
+#[tokio::test]
+async fn test_task_query_configが空文字ならapiを呼ばず未設定エラーにする() {
     let repo = FakeNotionConfigRepository::with_config(
         "/repo",
         app_config_vo::NotionRepoConfig {
@@ -247,14 +258,14 @@ fn test_task_query_configが空文字ならapiを呼ばず未設定エラーに�
     );
     let api = FakeNotionApiGateway::default();
 
-    let result = query_task_list(&repo, &api, "/repo", 20, None, &Default::default());
+    let result = query_task_list(&repo, &api, "/repo", 20, None, &Default::default()).await;
 
     assert_eq!(result.unwrap_err().to_string(), NOTION_CONFIG_NOT_FOUND);
     assert_eq!(api.query_calls.load(Ordering::SeqCst), 0);
 }
 
-#[test]
-fn test_label_fetch_configが空文字ならapiを呼ばず未設定エラーにする() {
+#[tokio::test]
+async fn test_label_fetch_configが空文字ならapiを呼ばず未設定エラーにする() {
     let repo = FakeNotionConfigRepository::with_config(
         "/repo",
         app_config_vo::NotionRepoConfig {
@@ -265,14 +276,14 @@ fn test_label_fetch_configが空文字ならapiを呼ばず未設定エラーに
     );
     let api = FakeNotionApiGateway::default();
 
-    let result = fetch_label_options(&repo, &api, "/repo");
+    let result = fetch_label_options(&repo, &api, "/repo").await;
 
     assert_eq!(result.unwrap_err().to_string(), NOTION_CONFIG_NOT_FOUND);
     assert_eq!(api.label_calls.load(Ordering::SeqCst), 0);
 }
 
-#[test]
-fn test_notion設定の保存と削除_repositoryに反映される() {
+#[tokio::test]
+async fn test_notion設定の保存と削除_repositoryに反映される() {
     // Given
     let repo = Arc::new(FakeNotionConfigRepository::default());
 
@@ -289,8 +300,8 @@ fn test_notion設定の保存と削除_repositoryに反映される() {
     assert!(deleted.is_none());
 }
 
-#[test]
-fn test_validate_空入力はnot_configuredでapiを呼ばない() {
+#[tokio::test]
+async fn test_validate_空入力はnot_configuredでapiを呼ばない() {
     for (api_token, database_id) in [
         ("", "db-1"),
         ("ntn_token", ""),
@@ -300,7 +311,9 @@ fn test_validate_空入力はnot_configuredでapiを呼ばない() {
     ] {
         let api = FakeNotionApiGateway::default();
 
-        let result = validate_config(&api, api_token.to_string(), database_id.to_string()).unwrap();
+        let result = validate_config(&api, api_token.to_string(), database_id.to_string())
+            .await
+            .unwrap();
 
         assert_eq!(result.status, NotionConfigStatus::NotConfigured);
         assert!(result.properties.is_empty());
@@ -308,8 +321,8 @@ fn test_validate_空入力はnot_configuredでapiを呼ばない() {
     }
 }
 
-#[test]
-fn test_validate_空でない入力はapiへ委譲する() {
+#[tokio::test]
+async fn test_validate_空でない入力はapiへ委譲する() {
     let expected = NotionValidationResult {
         status: NotionConfigStatus::Configured,
         properties: vec![NotionPropertyInfo {
@@ -320,21 +333,25 @@ fn test_validate_空でない入力はapiへ委譲する() {
     };
     let api = FakeNotionApiGateway::with_validate_result(expected.clone());
 
-    let result = validate_config(&api, "ntn_token".to_string(), "db-1".to_string()).unwrap();
+    let result = validate_config(&api, "ntn_token".to_string(), "db-1".to_string())
+        .await
+        .unwrap();
 
     assert_eq!(result, expected);
     assert_eq!(api.validate_calls.load(Ordering::SeqCst), 1);
 }
 
-#[test]
-fn test_validate_invalid_tokenはgateway結果をそのまま返す() {
+#[tokio::test]
+async fn test_validate_invalid_tokenはgateway結果をそのまま返す() {
     let expected = NotionValidationResult {
         status: NotionConfigStatus::InvalidToken,
         properties: Vec::new(),
     };
     let api = FakeNotionApiGateway::with_validate_result(expected.clone());
 
-    let result = validate_config(&api, "ntn_invalid".to_string(), "db-1".to_string()).unwrap();
+    let result = validate_config(&api, "ntn_invalid".to_string(), "db-1".to_string())
+        .await
+        .unwrap();
 
     assert_eq!(result, expected);
     assert_eq!(api.validate_calls.load(Ordering::SeqCst), 1);
@@ -365,8 +382,8 @@ fn page(range: std::ops::Range<usize>, more: bool, cursor: Option<&str>) -> Noti
     }
 }
 
-#[test]
-fn test_notion一覧_先頭から件数までcursorをたどり絞り込みを各ページへ渡す() {
+#[tokio::test]
+async fn test_notion一覧_先頭から件数までcursorをたどり絞り込みを各ページへ渡す() {
     // Given
     let repo = FakeNotionConfigRepository::with_config("/repo", config());
     let api = FakeNotionApiGateway::default();
@@ -380,7 +397,9 @@ fn test_notion一覧_先頭から件数までcursorをたどり絞り込みを�
         std::collections::BTreeSet::from(["Todo".into()]),
     )]);
     // When
-    let result = query_task_list(&repo, &api, "/repo", 40, Some("Task"), &labels).unwrap();
+    let result = query_task_list(&repo, &api, "/repo", 40, Some("Task"), &labels)
+        .await
+        .unwrap();
     // Then
     assert_eq!(result.tasks, (0..40).map(task).collect::<Vec<_>>());
     assert!(result.has_more);
@@ -399,13 +418,15 @@ fn test_notion一覧_先頭から件数までcursorをたどり絞り込みを�
     }
 }
 
-#[test]
-fn test_notion一覧_最終ページで件数に達したら続き無しを返す() {
+#[tokio::test]
+async fn test_notion一覧_最終ページで件数に達したら続き無しを返す() {
     // Given
     let repo = FakeNotionConfigRepository::with_config("/repo", config());
     let api = FakeNotionApiGateway::with_query_result(Ok(page(0..20, false, None)));
     // When
-    let result = query_task_list(&repo, &api, "/repo", 20, None, &Default::default()).unwrap();
+    let result = query_task_list(&repo, &api, "/repo", 20, None, &Default::default())
+        .await
+        .unwrap();
     let shorter = query_task_list(
         &repo,
         &FakeNotionApiGateway::with_query_result(Ok(page(0..20, false, None))),
@@ -414,6 +435,7 @@ fn test_notion一覧_最終ページで件数に達したら続き無しを返�
         None,
         &Default::default(),
     )
+    .await
     .unwrap();
     // Then
     assert_eq!(result.tasks, (0..20).map(task).collect::<Vec<_>>());
@@ -422,26 +444,28 @@ fn test_notion一覧_最終ページで件数に達したら続き無しを返�
     assert!(!shorter.has_more);
 }
 
-#[test]
-fn test_notion一覧_件数の途中で切ったら続き有りを返す() {
+#[tokio::test]
+async fn test_notion一覧_件数の途中で切ったら続き有りを返す() {
     // Given
     let repo = FakeNotionConfigRepository::with_config("/repo", config());
     let api = FakeNotionApiGateway::with_query_result(Ok(page(0..20, false, None)));
     // When
-    let result = query_task_list(&repo, &api, "/repo", 10, None, &Default::default()).unwrap();
+    let result = query_task_list(&repo, &api, "/repo", 10, None, &Default::default())
+        .await
+        .unwrap();
     // Then
     assert_eq!(result.tasks, (0..10).map(task).collect::<Vec<_>>());
     assert_eq!(result.has_more, true);
 }
 
-#[test]
-fn test_notion一覧_続きがあるのにcursorが無ければ取得の失敗にする() {
+#[tokio::test]
+async fn test_notion一覧_続きがあるのにcursorが無ければ取得の失敗にする() {
     // Given
     let repo = FakeNotionConfigRepository::with_config("/repo", config());
     let api = FakeNotionApiGateway::default();
     *api.query_pages.lock().unwrap() = [Ok(page(0..20, true, None))].into();
     // When
-    let result = query_task_list(&repo, &api, "/repo", 40, None, &Default::default());
+    let result = query_task_list(&repo, &api, "/repo", 40, None, &Default::default()).await;
     // Then
     assert!(matches!(
         result,
@@ -449,8 +473,8 @@ fn test_notion一覧_続きがあるのにcursorが無ければ取得の失敗�
     ));
 }
 
-#[test]
-fn test_notion一覧_同じcursorが繰り返されたら取得の失敗にする() {
+#[tokio::test]
+async fn test_notion一覧_同じcursorが繰り返されたら取得の失敗にする() {
     // Given
     let repo = FakeNotionConfigRepository::with_config("/repo", config());
     let api = FakeNotionApiGateway::default();
@@ -460,7 +484,7 @@ fn test_notion一覧_同じcursorが繰り返されたら取得の失敗にす�
     ]
     .into();
     // When
-    let result = query_task_list(&repo, &api, "/repo", 60, None, &Default::default());
+    let result = query_task_list(&repo, &api, "/repo", 60, None, &Default::default()).await;
     // Then
     assert!(matches!(
         result,
@@ -499,48 +523,48 @@ fn notion_fixture() -> (NotionUsecase, Arc<FakeNotionApiGateway>) {
     (notion, api)
 }
 
-#[test]
-fn test_notion購読_タスクの取得失敗で前の一覧と失敗を両方持つ() {
+#[tokio::test]
+async fn test_notion購読_タスクの取得失敗で前の一覧と失敗を両方持つ() {
     // Given
     let (notion, api) = notion_fixture();
-    notion.refresh_tasks(&task_request());
+    notion.refresh_tasks(&task_request()).await;
     *api.query_result.lock().unwrap() = Some(Err(NotionError::ApiError("offline".into())));
     // When
-    notion.refresh_tasks(&task_request());
+    notion.refresh_tasks(&task_request()).await;
     // Then
     let result = notion.cached_tasks(&task_request()).unwrap();
     assert_eq!(result.value, Some(page(0..1, false, None)));
     assert!(matches!(result.error, Some(NotionUsecaseError::Notion(_))));
 }
 
-#[test]
-fn test_notion購読_ラベルの取得失敗で前の選択肢と失敗を両方持つ() {
+#[tokio::test]
+async fn test_notion購読_ラベルの取得失敗で前の選択肢と失敗を両方持つ() {
     // Given
     let (notion, api) = notion_fixture();
-    notion.refresh_label_options("/repo");
+    notion.refresh_label_options("/repo").await;
     *api.label_result.lock().unwrap() = Some(Err(NotionError::ApiError("offline".into())));
     // When
-    notion.refresh_label_options("/repo");
+    notion.refresh_label_options("/repo").await;
     // Then
     let result = notion.cached_label_options("/repo").unwrap();
     assert_eq!(result.value, Some(label_options()));
     assert!(matches!(result.error, Some(NotionUsecaseError::Notion(_))));
 }
 
-#[test]
-fn test_notion購読_設定が揃っていなければapiを呼ばず設定不足の失敗を持つ() {
+#[tokio::test]
+async fn test_notion購読_設定が揃っていなければapiを呼ばず設定不足の失敗を持つ() {
     // Given
     let (notion, api) = notion_fixture();
-    notion.refresh_tasks(&task_request());
-    notion.refresh_label_options("/repo");
+    notion.refresh_tasks(&task_request()).await;
+    notion.refresh_label_options("/repo").await;
     let calls = (
         api.query_calls.load(Ordering::SeqCst),
         api.label_calls.load(Ordering::SeqCst),
     );
     notion.delete_config("/repo").unwrap();
     // When
-    notion.refresh_tasks(&task_request());
-    notion.refresh_label_options("/repo");
+    notion.refresh_tasks(&task_request()).await;
+    notion.refresh_label_options("/repo").await;
     // Then
     let tasks = notion.cached_tasks(&task_request()).unwrap();
     let labels = notion.cached_label_options("/repo").unwrap();
@@ -557,17 +581,17 @@ fn test_notion購読_設定が揃っていなければapiを呼ばず設定不�
     );
 }
 
-#[test]
-fn test_notion購読_設定が戻れば次の取り直しで失敗が消える() {
+#[tokio::test]
+async fn test_notion購読_設定が戻れば次の取り直しで失敗が消える() {
     // Given
     let (notion, _) = notion_fixture();
     notion.delete_config("/repo").unwrap();
-    notion.refresh_tasks(&task_request());
-    notion.refresh_label_options("/repo");
+    notion.refresh_tasks(&task_request()).await;
+    notion.refresh_label_options("/repo").await;
     // When
     notion.save_config("/repo".into(), config()).unwrap();
-    notion.refresh_tasks(&task_request());
-    notion.refresh_label_options("/repo");
+    notion.refresh_tasks(&task_request()).await;
+    notion.refresh_label_options("/repo").await;
     // Then
     assert!(notion
         .cached_tasks(&task_request())
@@ -581,12 +605,12 @@ fn test_notion購読_設定が戻れば次の取り直しで失敗が消える()
         .is_none());
 }
 
-#[test]
-fn test_notion購読_解放した対象の結果は読めない() {
+#[tokio::test]
+async fn test_notion購読_解放した対象の結果は読めない() {
     // Given
     let (notion, _) = notion_fixture();
-    notion.refresh_tasks(&task_request());
-    notion.refresh_label_options("/repo");
+    notion.refresh_tasks(&task_request()).await;
+    notion.refresh_label_options("/repo").await;
     // When
     notion.release_tasks(&task_request());
     notion.release_label_options("/repo");
@@ -595,8 +619,8 @@ fn test_notion購読_解放した対象の結果は読めない() {
     assert!(notion.cached_label_options("/repo").is_none());
 }
 
-#[test]
-fn test_notion購読_別の設定を保存すると新しい設定で取り直した値になる() {
+#[tokio::test]
+async fn test_notion購読_別の設定を保存すると新しい設定で取り直した値になる() {
     // Given
     let (notion, api) = notion_fixture();
     let a = config();
@@ -615,14 +639,14 @@ fn test_notion購読_別の設定を保存すると新しい設定で取り直�
         (b.database_id.clone(), new_labels.clone()),
     ]);
     notion.save_config("/repo".into(), a).unwrap();
-    notion.refresh_tasks(&task_request());
-    notion.refresh_label_options("/repo");
+    notion.refresh_tasks(&task_request()).await;
+    notion.refresh_label_options("/repo").await;
     let previous_tasks = notion.cached_tasks(&task_request()).unwrap();
     let previous_labels = notion.cached_label_options("/repo").unwrap();
     // When
     notion.save_config("/repo".into(), b.clone()).unwrap();
-    notion.refresh_tasks(&task_request());
-    notion.refresh_label_options("/repo");
+    notion.refresh_tasks(&task_request()).await;
+    notion.refresh_label_options("/repo").await;
     // Then
     assert_eq!(&api.configs.lock().unwrap()[2..], &[b.clone(), b]);
     assert_eq!(previous_tasks.value, Some(page(0..1, false, None)));
@@ -637,8 +661,8 @@ fn test_notion購読_別の設定を保存すると新しい設定で取り直�
     );
 }
 
-#[test]
-fn test_notion設定_保存で対象repoの購読へ通知する() {
+#[tokio::test]
+async fn test_notion設定_保存で対象repoの購読へ通知する() {
     // Given
     let subscriptions = crate::test_support::state_subscription::test_subscriptions();
     let mut changes = subscriptions.changes();
@@ -657,8 +681,8 @@ fn test_notion設定_保存で対象repoの購読へ通知する() {
     );
 }
 
-#[test]
-fn test_notion設定_削除で対象repoの購読へ通知する() {
+#[tokio::test]
+async fn test_notion設定_削除で対象repoの購読へ通知する() {
     // Given
     let subscriptions = crate::test_support::state_subscription::test_subscriptions();
     let mut changes = subscriptions.changes();
@@ -677,27 +701,32 @@ fn test_notion設定_削除で対象repoの購読へ通知する() {
     );
 }
 
-fn blocked_fetch(
+async fn blocked_fetch(
     notion: Arc<NotionUsecase>,
     api: &FakeNotionApiGateway,
-) -> (std::thread::JoinHandle<()>, std::sync::mpsc::Sender<()>) {
-    let (entered, wait) = std::sync::mpsc::channel();
-    let (resume, paused) = std::sync::mpsc::channel();
+) -> (
+    tokio::task::JoinHandle<()>,
+    tokio::sync::oneshot::Sender<()>,
+) {
+    let (entered, wait) = tokio::sync::oneshot::channel();
+    let (resume, paused) = tokio::sync::oneshot::channel();
     notion.acquire_tasks(&task_request());
     *api.gate.lock().unwrap() = Some((entered, paused));
-    let worker = std::thread::spawn(move || notion.refresh_tasks(&task_request()));
-    wait.recv_timeout(std::time::Duration::from_secs(2))
+    let worker = tokio::spawn(async move { notion.refresh_tasks(&task_request()).await });
+    tokio::time::timeout(std::time::Duration::from_secs(2), wait)
+        .await
+        .unwrap()
         .unwrap();
     (worker, resume)
 }
 
-#[test]
-fn test_notion購読_取得を待つ間も別の対象の読み取りと解放を待たせない() {
+#[tokio::test]
+async fn test_notion購読_取得を待つ間も別の対象の読み取りと解放を待たせない() {
     // Given
     let (notion, api) = notion_fixture();
     let notion = Arc::new(notion);
-    notion.refresh_label_options("/repo");
-    let (worker, resume) = blocked_fetch(notion.clone(), &api);
+    notion.refresh_label_options("/repo").await;
+    let (worker, resume) = blocked_fetch(notion.clone(), &api).await;
     let (completed, wait) = std::sync::mpsc::channel();
     // When
     let reader = std::thread::spawn(move || {
@@ -708,7 +737,7 @@ fn test_notion購読_取得を待つ間も別の対象の読み取りと解放�
     });
     let result = wait.recv_timeout(std::time::Duration::from_secs(1));
     resume.send(()).unwrap();
-    worker.join().unwrap();
+    worker.await.unwrap();
     reader.join().unwrap();
     // Then
     let (value, released) = result.unwrap();
@@ -716,12 +745,12 @@ fn test_notion購読_取得を待つ間も別の対象の読み取りと解放�
     assert!(released.is_none());
 }
 
-#[test]
-fn test_notion購読_取得中に同じ対象を解放したら結果を書き戻さない() {
+#[tokio::test]
+async fn test_notion購読_取得中に同じ対象を解放したら結果を書き戻さない() {
     // Given
     let (notion, api) = notion_fixture();
     let notion = Arc::new(notion);
-    let (worker, resume) = blocked_fetch(notion.clone(), &api);
+    let (worker, resume) = blocked_fetch(notion.clone(), &api).await;
     let (completed, wait) = std::sync::mpsc::channel();
     let releasing = notion.clone();
     // When
@@ -731,7 +760,7 @@ fn test_notion購読_取得中に同じ対象を解放したら結果を書き�
     });
     let result = wait.recv_timeout(std::time::Duration::from_secs(1));
     resume.send(()).unwrap();
-    worker.join().unwrap();
+    worker.await.unwrap();
     release.join().unwrap();
     // Then
     result.unwrap();
@@ -747,33 +776,33 @@ fn task_request() -> NotionTaskListRequest {
     }
 }
 
-#[test]
-fn test_notion購読_解放後に遅れた取得は項目を作り直さない() {
+#[tokio::test]
+async fn test_notion購読_解放後に遅れた取得は項目を作り直さない() {
     // Given
     let (notion, api) = notion_fixture();
     notion.release_tasks(&task_request());
     notion.release_label_options("/repo");
     // When
-    notion.refresh_tasks(&task_request());
-    notion.refresh_label_options("/repo");
+    notion.refresh_tasks(&task_request()).await;
+    notion.refresh_label_options("/repo").await;
     // Then
     assert!(notion.cached_tasks(&task_request()).is_none());
     assert!(notion.cached_label_options("/repo").is_none());
     assert!(api.configs.lock().unwrap().is_empty());
 }
 
-#[test]
-fn test_notion購読_取得中に解放して作り直した項目に古い結果を書かない() {
+#[tokio::test]
+async fn test_notion購読_取得中に解放して作り直した項目に古い結果を書かない() {
     // Given
     let (notion, api) = notion_fixture();
     let notion = Arc::new(notion);
-    let (worker, resume) = blocked_fetch(notion.clone(), &api);
+    let (worker, resume) = blocked_fetch(notion.clone(), &api).await;
     // When
     notion.release_tasks(&task_request());
     notion.acquire_tasks(&task_request());
     let recreated = notion.cached_tasks(&task_request()).unwrap();
     resume.send(()).unwrap();
-    worker.join().unwrap();
+    worker.await.unwrap();
     // Then
     assert_eq!(notion.cached_tasks(&task_request()), Some(recreated));
     assert!(notion

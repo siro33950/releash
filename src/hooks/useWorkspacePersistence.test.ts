@@ -4,7 +4,9 @@ import type { WorkspaceState } from "@/types/workspace-state";
 
 const mockGetState = vi.fn<(rootPath: string) => WorkspaceState | undefined>();
 const mockLoadState =
-	vi.fn<(rootPath: string) => Promise<WorkspaceState | undefined>>();
+	vi.fn<
+		import("./useWorkspaceStateCache").UseWorkspaceStateCacheReturn["loadState"]
+	>();
 const mockUpdateState =
 	vi.fn<(rootPath: string, state: WorkspaceState) => void>();
 const mockFlushState = vi.fn<(rootPath: string) => void>();
@@ -83,7 +85,9 @@ describe("useWorkspacePersistence", () => {
 
 	beforeEach(() => {
 		vi.clearAllMocks();
-		mockLoadState.mockResolvedValue(undefined);
+		mockLoadState.mockImplementation((_path, onState) => {
+			queueMicrotask(() => onState(undefined));
+		});
 		rafCallbacks = [];
 		vi.stubGlobal("requestAnimationFrame", (cb: () => void) => {
 			rafCallbacks.push(cb);
@@ -536,7 +540,11 @@ describe("useWorkspacePersistence", () => {
 			}),
 		);
 
-		expect(mockLoadState).toHaveBeenCalledWith("/repoX");
+		expect(mockLoadState).toHaveBeenCalledWith(
+			"/repoX",
+			expect.any(Function),
+			expect.any(Function),
+		);
 	});
 
 	it("pre-load: キャッシュ済みならloadStateは呼ばれない", () => {
@@ -585,11 +593,9 @@ describe("useWorkspacePersistence", () => {
 
 	it("stateReady: キャッシュがない場合はloadState完了後にtrue", async () => {
 		let resolveLoad!: (v: WorkspaceState | undefined) => void;
-		mockLoadState.mockReturnValue(
-			new Promise((resolve) => {
-				resolveLoad = resolve;
-			}),
-		);
+		mockLoadState.mockImplementation((_path, onState) => {
+			resolveLoad = onState;
+		});
 		mockGetState.mockReturnValue(undefined);
 
 		const setCenterTab = vi.fn();
@@ -684,11 +690,9 @@ describe("useWorkspacePersistence", () => {
 	it("stateReady: ワークスペース切替時にキャッシュがなければloadState完了後にtrue", async () => {
 		let resolveLoad!: (v: WorkspaceState | undefined) => void;
 		mockGetState.mockReturnValue(undefined);
-		mockLoadState.mockReturnValue(
-			new Promise((resolve) => {
-				resolveLoad = resolve;
-			}),
-		);
+		mockLoadState.mockImplementation((_path, onState) => {
+			resolveLoad = onState;
+		});
 
 		const setCenterTab = vi.fn();
 		const leftNavRef = makePanelRef();
@@ -714,13 +718,11 @@ describe("useWorkspacePersistence", () => {
 		});
 		expect(result.current.stateReady).toBe(true);
 
-		// 新しいloadStateのPromiseを設定
+		// 新しい購読の受け取りを設定
 		let resolveLoad2!: (v: WorkspaceState | undefined) => void;
-		mockLoadState.mockReturnValue(
-			new Promise((resolve) => {
-				resolveLoad2 = resolve;
-			}),
-		);
+		mockLoadState.mockImplementation((_path, onState) => {
+			resolveLoad2 = onState;
+		});
 
 		// /repoBに切替（キャッシュなし）
 		rerender({ selectedRootPath: "/repoB" });

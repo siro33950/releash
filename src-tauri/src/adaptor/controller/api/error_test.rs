@@ -9,7 +9,14 @@ fn test_workflow停止_local_apiの既存エラー形式を保つ() {
         // When
         let error = ApiError::from(WorkflowError::Technical(stopped.into()));
         // Then
-        assert_eq!(error.status, StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(
+            error.status.as_u16(),
+            if stopped == OperationStopped::Expired {
+                504
+            } else {
+                499
+            }
+        );
         assert_eq!(error.body.code, "workflow_error");
         assert_eq!(error.body.message, stopped.to_string());
     }

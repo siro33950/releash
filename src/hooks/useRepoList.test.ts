@@ -55,20 +55,7 @@ describe("useRepoList", () => {
 		});
 	});
 
-	it("should call invoke('add_repo_path') when initFromCwd is called", async () => {
-		const { result } = renderHook(() => useRepoList());
-		await act(async () => {});
-
-		act(() => {
-			result.current.initFromCwd("/workspace/project");
-		});
-
-		expect(mockInvoke).toHaveBeenCalledWith("add_repo_path", {
-			path: "/workspace/project",
-		});
-	});
-
-	it.each(["addRepo", "removeRepo", "initFromCwd"] as const)(
+	it.each(["addRepo", "removeRepo"] as const)(
 		"%sの失敗を画面に通知する",
 		async (operation) => {
 			const notice = vi.fn();

@@ -812,6 +812,7 @@ fn setup_persistence_usecase() -> (TempDir, Arc<LocalEventStore>, ProviderLifecy
     let directory = TempDir::new().unwrap();
     let store = LocalEventStore::open(LocalEventStoreConfig::production(
         directory.path().to_path_buf(),
+        std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
     ))
     .unwrap();
     let events = LocalProviderLifecycleEventRepository::new(
@@ -1180,6 +1181,7 @@ async fn test_providerライフサイクル再試行_outcome_unknownの照会失
     let directory = TempDir::new().unwrap();
     let store = LocalEventStore::open(LocalEventStoreConfig::production(
         directory.path().to_path_buf(),
+        std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
     ))
     .unwrap();
     let repository = Arc::new(ResolveFailureOnceRepository::new(store.clone()));
@@ -1223,6 +1225,7 @@ async fn test_providerライフサイクル再試行_中断後も同一commitを
     let directory = TempDir::new().unwrap();
     let store = LocalEventStore::open(LocalEventStoreConfig::production(
         directory.path().to_path_buf(),
+        std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
     ))
     .unwrap();
     let repository = Arc::new(ResolveFailureRepository::new(store.clone()));

@@ -18,7 +18,7 @@ impl WorkflowDefinitionResolver for DefaultWorkflowDefinitionResolver {
         workflow_name: &str,
     ) -> Result<WorkflowDefinitionYaml, WorkflowDefinitionResolverError> {
         let workflow_name = workflow_name.to_string();
-        tokio::task::spawn_blocking(move || {
+        crate::common::operation_context::spawn_blocking(move || {
             let dir = crate::adaptor::gateway::workflow::storage::workflows_dir();
             let facets_base = crate::adaptor::gateway::workflow::facet::facets_base_dir();
             resolve_workflow_by_name(&dir, &facets_base, &workflow_name)

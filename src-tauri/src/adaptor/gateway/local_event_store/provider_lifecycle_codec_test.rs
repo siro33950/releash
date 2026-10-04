@@ -134,6 +134,7 @@ async fn test_providerライフサイクルcodec_eventをcommit再生しstale_st
     let installation_id = "11111111-1111-4111-8111-111111111596";
     fault.set_initial_installation_id(installation_id);
     let store = LocalEventStore::open(LocalEventStoreConfig {
+        retry_limiter: std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
         app_data_root: directory.path().to_path_buf(),
         clock: Arc::new(clock),
         registry: Arc::new(

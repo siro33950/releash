@@ -10,22 +10,6 @@ import type {
 } from "@/types/agent-session";
 import type { Theme } from "@/types/settings";
 
-type OpenOutcome =
-	| "attached"
-	| "resumed"
-	| "restored"
-	| "paused"
-	| "indeterminate"
-	| "garbage_collected";
-
-type PanelState =
-	| "loading"
-	| "terminal"
-	| "paused"
-	| "archived"
-	| "indeterminate"
-	| "gone";
-
 export interface SessionResumeAction {
 	pending: boolean;
 	error: string | null;
@@ -89,9 +73,14 @@ export function AgentSessionPanel({
 	const pausedMessage = resumeAction
 		? "Provider session is not running. Resume to retry."
 		: "Provider session is not running.";
-	const [state, setState] = useState<PanelState>(
-		initiallyAttached ? "terminal" : "loading",
-	);
+	const state =
+		session?.lifecycle === "open"
+			? session.terminalPresence === "unknown"
+				? "indeterminate"
+				: session.terminalPresence === "absent"
+					? "paused"
+					: "terminal"
+			: (session?.lifecycle ?? "loading");
 	const [error, setError] = useState<string | null>(null);
 	const [terminalError, setTerminalError] = useState<string | null>(null);
 	const [actionPending, setActionPending] = useState(false);
@@ -99,56 +88,22 @@ export function AgentSessionPanel({
 		initiallyAttached ? agentSessionId : null,
 	);
 
-	const applyOutcome = useCallback(
-		(outcome: OpenOutcome) => {
-			setError(null);
-			switch (outcome) {
-				case "attached":
-				case "resumed":
-					setState("terminal");
-					return;
-				case "restored":
-					setState("paused");
-					return;
-				case "paused":
-					setError(pausedMessage);
-					setState("paused");
-					return;
-				case "indeterminate":
-					setState("indeterminate");
-					return;
-				case "garbage_collected":
-					setState("gone");
-					return;
-			}
-		},
-		[pausedMessage],
-	);
-
 	const runLifecycleOperation = useCallback(
 		async (command: "open_agent_session" | "restore_agent_session") => {
 			if (!session) return;
-			setState("loading");
 			setError(null);
 			try {
-				const outcome = await invoke(command, {
+				await invoke(command, {
 					agentSessionId: session.id,
 					rows: 24,
 					cols: 80,
 					callerRequestId: operationId(command),
 				});
-				applyOutcome(outcome);
 			} catch (cause) {
 				setError(getErrorMessage(cause));
-				setState(
-					command === "restore_agent_session" ||
-						(command === "open_agent_session" && session.operations.canRestore)
-						? "archived"
-						: "indeterminate",
-				);
 			}
 		},
-		[applyOutcome, session],
+		[session],
 	);
 
 	const remove = useCallback(async () => {
@@ -160,7 +115,6 @@ export function AgentSessionPanel({
 				agentSessionId: session.id,
 				callerRequestId: operationId("delete_agent_session"),
 			});
-			setState("gone");
 		} catch (cause) {
 			setError(getErrorMessage(cause));
 		} finally {
@@ -175,24 +129,15 @@ export function AgentSessionPanel({
 		void runLifecycleOperation("open_agent_session");
 	}, [runLifecycleOperation, session]);
 
-	useEffect(() => {
-		if (!session) return;
-		if (session.lifecycle === "archived") {
-			setState("archived");
-		} else if (session.lifecycle === "paused") {
-			setState("paused");
-		}
-	}, [session]);
-
 	if (state === "terminal") {
 		return (
 			<div className="flex h-full flex-col bg-background">
-				{terminalError && (
+				{(error || terminalError) && (
 					<div
 						role="alert"
 						className="shrink-0 px-3 py-2 text-sm text-destructive"
 					>
-						{terminalError}
+						{error ?? terminalError}
 					</div>
 				)}
 				<div className="min-h-0 flex-1">
@@ -227,6 +172,9 @@ export function AgentSessionPanel({
 				</div>
 			)}
 			{state === "loading" && <div>Opening AgentSession...</div>}
+			{state === "indeterminate" && (
+				<div role="alert">Provider process state is not confirmed.</div>
+			)}
 			{state === "paused" && (
 				<>
 					<div className="text-muted-foreground">AgentSession is paused.</div>
@@ -251,27 +199,6 @@ export function AgentSessionPanel({
 					>
 						Delete
 					</Button>
-				</>
-			)}
-			{state === "indeterminate" && (
-				<>
-					<div className="text-muted-foreground">
-						Terminal state is temporarily unavailable.
-					</div>
-					<Button
-						type="button"
-						onClick={() => void runLifecycleOperation("open_agent_session")}
-					>
-						Retry
-					</Button>
-				</>
-			)}
-			{state === "gone" && (
-				<>
-					<div className="text-muted-foreground">
-						AgentSession is no longer available.
-					</div>
-					{resumeAction && <SessionResumeButton action={resumeAction} />}
 				</>
 			)}
 		</div>

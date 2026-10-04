@@ -202,14 +202,9 @@ it.each([true, false])(
 			},
 		);
 		vi.mocked(open).mockResolvedValue(selected);
-		vi.mocked(client.firstState).mockImplementation(async (target) => {
-			if (typeof target !== "string" && target.kind === "repository-root") {
-				if (success) return "/resolved/repository" as never;
-				return null as never;
-			}
-			return null as never;
-		});
 		mockInvoke.mockImplementation(async (command) => {
+			if (command === "find_repository_root")
+				return (success ? "/resolved/repository" : null) as never;
 			if (command === "add_repo_path") return undefined as never;
 			return null as never;
 		});
@@ -222,9 +217,8 @@ it.each([true, false])(
 			await screen.findByRole("button", { name: "Add Repository" }),
 		);
 		await waitFor(() =>
-			expect(client.firstState).toHaveBeenCalledWith({
-				kind: "repository-root",
-				args: [selected],
+			expect(mockInvoke).toHaveBeenCalledWith("find_repository_root", {
+				path: selected,
 			}),
 		);
 		if (subscribe)
@@ -254,8 +248,8 @@ it("リポジトリ追加の読取失敗を表示し普通のタブを開かな�
 	const user = userEvent.setup();
 	const selected = "/chosen/unreadable";
 	vi.mocked(open).mockResolvedValue(selected);
-	vi.mocked(client.firstState).mockImplementation(async (target) => {
-		if (typeof target !== "string" && target.kind === "repository-root")
+	mockInvoke.mockImplementation(async (command) => {
+		if (command === "find_repository_root")
 			throw new Error("repository denied");
 		return null as never;
 	});

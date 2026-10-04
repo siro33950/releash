@@ -7,6 +7,22 @@ use crate::usecase::repository_state::scanner::RepositoryScanner;
 use crate::usecase::repository_state::snapshot::RepositorySnapshotParts;
 use notify_debouncer_mini::DebouncedEventKind;
 
+#[test]
+fn test_監視失敗_対象の読取を失敗にして購読へ通知する() {
+    let subscriptions = crate::test_support::state_subscription::test_subscriptions();
+    let mut changes = subscriptions.changes();
+    let state = state_with_subscriptions(subscriptions);
+    handle_watch_failure(&state, "watch unavailable".into());
+    assert_eq!(
+        state.dirty_count().error.unwrap().message,
+        "Watcher(\"watch unavailable\")"
+    );
+    assert!(matches!(
+        changes.try_recv().unwrap(),
+        crate::usecase::state_subscription::StateChangeSource::Repository(_)
+    ));
+}
+
 struct InertSender;
 
 impl RepositoryStateInvalidationSender for InertSender {

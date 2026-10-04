@@ -1207,7 +1207,9 @@ pub(crate) mod tests {
             app.state::<Arc<crate::adaptor::gateway::app_config::AppConfig>>()
                 .inner()
                 .clone(),
-            Arc::new(crate::adaptor::gateway::notion::NotionApiGatewayImpl::new()),
+            Arc::new(crate::adaptor::gateway::notion::NotionApiGatewayImpl::new(
+                crate::usecase::retry::shared().limiter.clone(),
+            )),
         ));
         let repo_paths_gateway =
             crate::adaptor::gateway::repository::repo_paths::RepoPathsGateway::new(
@@ -1254,6 +1256,7 @@ crate::test_support::state_subscription::repository_driver(),
         let local_event_store = crate::adaptor::gateway::local_event_store::LocalEventStore::open(
             crate::adaptor::gateway::local_event_store::LocalEventStoreConfig::production(
                 data_dir.clone(),
+                std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
             ),
         )
         .unwrap();

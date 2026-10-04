@@ -153,7 +153,7 @@ launchDescribe("Provider AgentSession real Tauri launch performance", () => {
 					?.length ?? 0,
 			startedAt: performance.now(),
 		}));
-		const agentSessionId = await browser.execute(
+		const { agentSessionId } = await browser.execute(
 			(request) =>
 				window.__RELEASH_INVOKE_CLIENT__!("create_agent_session", request),
 			{

@@ -50,7 +50,6 @@ fn test_repository通知_path一致の対象だけを選ぶ() {
         SubscriptionTarget::BranchStatus("/repo".into()),
         SubscriptionTarget::CurrentBranch("/repo".into()),
         SubscriptionTarget::Worktrees("/repo".into()),
-        SubscriptionTarget::RepositoryRoot("/repo".into()),
     ];
     // When / Then
     for target in targets {

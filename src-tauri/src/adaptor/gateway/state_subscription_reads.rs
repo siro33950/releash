@@ -14,13 +14,13 @@ impl StateSubscriptionRead for StateSubscriptionReads {
         use SubscriptionTarget as T;
         if matches!(
             target,
-            T::Workspaces
+            T::Issues(_)
+                | T::Workspaces
                 | T::Workflows
                 | T::AgentSession(_)
                 | T::SessionHistory(..)
                 | T::Selection(..)
                 | T::NodeDetail(..)
-                | T::SessionNode(..)
                 | T::ProviderHookHealth
         ) {
             return self.0.read(target).await;
@@ -32,13 +32,7 @@ impl StateSubscriptionRead for StateSubscriptionReads {
             .map_err(task_error)?
     }
     async fn refresh_external(&self, target: &SubscriptionTarget) -> Result<(), StateReadError> {
-        let reads = self.0.clone();
-        let target = target.clone();
-        crate::common::operation_context::spawn_blocking(move || {
-            reads.refresh_external_blocking(&target)
-        })
-        .await
-        .map_err(task_error)?
+        self.0.refresh_external_blocking(target).await
     }
     fn acquire_external(&self, target: &SubscriptionTarget) {
         self.0.acquire_external(target);
@@ -49,6 +43,14 @@ impl StateSubscriptionRead for StateSubscriptionReads {
     fn repositories(&self) -> Vec<String> {
         self.0.repositories()
     }
+    fn watch_paths(
+        &self,
+    ) -> (
+        Vec<String>,
+        Vec<(String, crate::domain::failure::WorkFailure)>,
+    ) {
+        self.0.watch_paths()
+    }
     fn review_comments_dir(&self) -> String {
         self.0.review_comments_dir()
     }
@@ -57,10 +59,7 @@ impl StateSubscriptionRead for StateSubscriptionReads {
     }
 }
 fn task_error(error: tokio::task::JoinError) -> StateReadError {
-    StateReadError::from_error(crate::domain::failure::TechnicalFailure {
-        nature: crate::domain::failure::TechnicalFailureNature::Other,
-        message: error.to_string(),
-    })
+    StateReadError::from_error(crate::domain::failure::TechnicalFailure::from(error))
 }
 
 #[cfg(test)]

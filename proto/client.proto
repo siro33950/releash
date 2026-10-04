@@ -165,6 +165,7 @@ message CommandRequest {
     WorkflowValidateOutputRequest workflow_validate_output = 180;
     WorkflowGetOutputRequest workflow_get_output = 181;
     RefreshWorkspacesRequest refresh_workspaces = 186;
+    FindRepositoryRootRequest find_repository_root = 188;
 
   }
 }
@@ -248,9 +249,9 @@ message CommandResult {
     ListInlineChunkDto compute_markdown_inline_chunks = 22;
     ListSplitRowDto compute_markdown_split_rows = 23;
     ListVisibleBlockDto compute_visible_markdown_blocks = 24;
-    ResultString create_agent_session = 26;
+    SessionSelection create_agent_session = 26;
     ReviewThreadDto create_review_thread = 27;
-    WorktreeEntryDto create_worktree = 28;
+    ResultString create_worktree = 28;
     Unit delete_agent_session = 29;
     Unit delete_facet = 31;
     Unit delete_notion_config = 32;
@@ -275,7 +276,7 @@ message CommandResult {
     Unit kill_terminal_surface = 82;
 
 
-    AgentSessionOpenResponse open_agent_session = 97;
+    Unit open_agent_session = 97;
     Unit open_facet_in_editor = 98;
     Unit open_folder_in_editor = 99;
     Unit open_in_editor = 100;
@@ -295,9 +296,9 @@ message CommandResult {
     Unit resize_terminal_surface = 115;
 
     ReviewThreadDto resolve_review_thread = 117;
-    AgentSessionOpenResponse restore_agent_session = 119;
+    SessionSelection restore_agent_session = 119;
     Unit restore_workspace_workflow_execution = 120;
-    ResultString resume_agent_session_history_candidate = 122;
+    SessionSelection resume_agent_session_history_candidate = 122;
     Unit retry_workspace_node = 124;
     Unit resume_workspace_session_node = 185;
     Unit save_facet = 125;
@@ -316,7 +317,7 @@ message CommandResult {
     Unit update_crash_reporting = 141;
     Unit update_external_editor = 142;
     Unit update_performance_telemetry = 143;
-    ResultString update_provider_executable = 144;
+    Unit update_provider_executable = 144;
     Unit update_workflow_config = 145;
     NotionValidationResultView validate_notion_config = 146;
     Unit write_paths_to_terminal_surface = 147;
@@ -332,6 +333,7 @@ message CommandResult {
     WorkflowValidateOutputResponse workflow_validate_output = 180;
     WorkflowGetOutputResponse workflow_get_output = 181;
     Unit refresh_workspaces = 186;
+    Nullablestring find_repository_root = 188;
 
   }
 }
@@ -835,6 +837,7 @@ message AgentSessionItemDto {
   optional string transcript_ref = 9 [json_name = "transcriptRef", (json_nullable) = true];
   optional AgentSessionOperationsDto operations = 10 [json_name = "operations", (json_required) = true];
   optional bool last_exit_abnormal = 11 [json_name = "lastExitAbnormal", (json_required) = true];
+  optional string terminal_presence = 12 [json_name = "terminalPresence"];
 }
 
 message AgentSessionProviderDto {
@@ -1027,6 +1030,7 @@ message ProviderAvailabilityItemResponse {
   optional bool available = 6 [json_name = "available", (json_required) = true];
   optional string resolved_executable = 7 [json_name = "resolvedExecutable", (json_nullable) = true];
   optional string unavailable_reason = 8 [json_name = "unavailableReason", (json_nullable) = true];
+  optional uint32 configuration_revision = 9 [json_name = "configurationRevision", (json_required) = true];
 }
 
 message ListProviderAvailabilityItemResponse {
@@ -1966,19 +1970,6 @@ message OpenAgentSessionRequest {
   optional string caller_request_id = 4 [json_name = "callerRequestId", (json_required) = true];
 }
 
-message AgentSessionOpenResponse {
-  option (json_wrapper) = "value";
-  enum Value {
-    attached = 0 [(json_enum_name) = "attached"];
-    resumed = 1 [(json_enum_name) = "resumed"];
-    restored = 2 [(json_enum_name) = "restored"];
-    paused = 3 [(json_enum_name) = "paused"];
-    indeterminate = 4 [(json_enum_name) = "indeterminate"];
-    garbage_collected = 5 [(json_enum_name) = "garbage_collected"];
-  }
-  optional Value value = 1 [json_name = "value", (json_required) = true];
-}
-
 message OpenFacetInEditorRequest {
   optional string kind = 1 [json_name = "kind", (json_required) = true];
   optional string key = 2 [json_name = "key", (json_required) = true];
@@ -2180,7 +2171,8 @@ message SaveWorkflowSourceResultDto {
 }
 message SaveWorkflowSuccess {
   optional bool ok = 1 [(json_required) = true, (json_literal) = "true"];
-  optional WorkflowDto workflow = 2 [(json_required) = true];
+  reserved 2;
+  optional string name = 3 [(json_required) = true];
 }
 message SaveWorkflowDiagnostics {
   optional bool ok = 1 [(json_required) = true, (json_literal) = "false"];
@@ -2676,6 +2668,7 @@ service ClientService {
   rpc OpenStateStream(OpenStateStreamRequest) returns (stream StateSubscriptionEvent);
   rpc StartStateSubscription(StartStateSubscriptionRequest) returns (Unit);
   rpc StopStateSubscription(StopStateSubscriptionRequest) returns (Unit);
+  rpc FindRepositoryRoot(FindRepositoryRootRequest) returns (Nullablestring);
   rpc RefreshWorkspaces(RefreshWorkspacesRequest) returns (Unit);
   rpc AbortWorkflow(AbortWorkflowRequest) returns (Unit);
   rpc ReportTerminalProcessed(ReportTerminalProcessedRequest) returns (Unit);
@@ -2690,9 +2683,9 @@ service ClientService {
   rpc ComputeMarkdownInlineChunks(ComputeMarkdownInlineChunksRequest) returns (ListInlineChunkDto);
   rpc ComputeMarkdownSplitRows(ComputeMarkdownSplitRowsRequest) returns (ListSplitRowDto);
   rpc ComputeVisibleMarkdownBlocks(ComputeVisibleMarkdownBlocksRequest) returns (ListVisibleBlockDto);
-  rpc CreateAgentSession(CreateAgentSessionRequest) returns (ResultString);
+  rpc CreateAgentSession(CreateAgentSessionRequest) returns (SessionSelection);
   rpc CreateReviewThread(CreateReviewThreadRequest) returns (ReviewThreadDto);
-  rpc CreateWorktree(CreateWorktreeRequest) returns (WorktreeEntryDto);
+  rpc CreateWorktree(CreateWorktreeRequest) returns (ResultString);
   rpc DeleteAgentSession(DeleteAgentSessionRequest) returns (Unit);
   rpc DeleteFacet(DeleteFacetRequest) returns (Unit);
   rpc DeleteNotionConfig(DeleteNotionConfigRequest) returns (Unit);
@@ -2710,7 +2703,7 @@ service ClientService {
   rpc GitUnstage(GitUnstageRequest) returns (Unit);
   rpc GitUnstageReviewGroup(GitUnstageReviewGroupRequest) returns (Unit);
   rpc KillTerminalSurface(KillTerminalSurfaceRequest) returns (Unit);
-  rpc OpenAgentSession(OpenAgentSessionRequest) returns (AgentSessionOpenResponse);
+  rpc OpenAgentSession(OpenAgentSessionRequest) returns (Unit);
   rpc OpenFacetInEditor(OpenFacetInEditorRequest) returns (Unit);
   rpc OpenFolderInEditor(OpenFolderInEditorRequest) returns (Unit);
   rpc OpenInEditor(OpenInEditorRequest) returns (Unit);
@@ -2729,9 +2722,9 @@ service ClientService {
   rpc ResetProviderExecutable(ResetProviderExecutableRequest) returns (Unit);
   rpc ResizeTerminalSurface(ResizeTerminalSurfaceRequest) returns (Unit);
   rpc ResolveReviewThread(ResolveReviewThreadRequest) returns (ReviewThreadDto);
-  rpc RestoreAgentSession(RestoreAgentSessionRequest) returns (AgentSessionOpenResponse);
+  rpc RestoreAgentSession(RestoreAgentSessionRequest) returns (SessionSelection);
   rpc RestoreWorkspaceWorkflowExecution(RestoreWorkspaceWorkflowExecutionRequest) returns (Unit);
-  rpc ResumeAgentSessionHistoryCandidate(ResumeAgentSessionHistoryCandidateRequest) returns (ResultString);
+  rpc ResumeAgentSessionHistoryCandidate(ResumeAgentSessionHistoryCandidateRequest) returns (SessionSelection);
   rpc RetryWorkspaceNode(RetryWorkspaceNodeRequest) returns (Unit);
   rpc ResumeWorkspaceSessionNode(ResumeWorkspaceSessionNodeRequest) returns (Unit);
   rpc SaveFacet(SaveFacetRequest) returns (Unit);
@@ -2750,7 +2743,7 @@ service ClientService {
   rpc UpdateCrashReporting(UpdateCrashReportingRequest) returns (Unit);
   rpc UpdateExternalEditor(UpdateExternalEditorRequest) returns (Unit);
   rpc UpdatePerformanceTelemetry(UpdatePerformanceTelemetryRequest) returns (Unit);
-  rpc UpdateProviderExecutable(UpdateProviderExecutableRequest) returns (ResultString);
+  rpc UpdateProviderExecutable(UpdateProviderExecutableRequest) returns (Unit);
   rpc UpdateWorkflowConfig(UpdateWorkflowConfigRequest) returns (Unit);
   rpc ValidateNotionConfig(ValidateNotionConfigRequest) returns (NotionValidationResultView);
   rpc WritePathsToTerminalSurface(WritePathsToTerminalSurfaceRequest) returns (Unit);
@@ -2868,6 +2861,8 @@ message StopStateSubscriptionRequest {
 }
 message StateReadFailure { int32 code = 1; string message = 2; }
 message StatePayload {
+  reserved 6, 15;
+  reserved "session_node", "repository_root";
   reserved 59;
   reserved "read_failure";
   reserved 18;
@@ -2880,7 +2875,7 @@ message StatePayload {
     WorkspaceTreeSelectionSnapshot selection = 3;
     NullableWorkspaceNodeDetailDto node_detail = 4;
     NullableAgentSessionItemDto agent_session = 5;
-    Nullablestring session_node = 6;
+
     AgentSessionHistoryPageDto session_history = 7;
     ListAgentSessionProviderDto providers = 8;
     ListBranchDto branches = 9;
@@ -2891,8 +2886,8 @@ message StatePayload {
     NotionTasksSnapshot notion_tasks = 60;
     NotionLabelOptionsSnapshot notion_label_options = 61;
     ListWorktreeEntryDto worktrees = 14;
-    Nullablestring repository_root = 15;
-    Nullablestring startup_repository = 16;
+
+    NullableStartupWorktree startup_repository = 16;
     NullableWorkspaceStateDto workspace_state = 17;
     ReviewSnapshotDto review_snapshot = 30;
     ReviewFileViewDto review_file_view = 31;
@@ -2934,4 +2929,21 @@ message ReportTerminalProcessedRequest {
   reserved "client_id", "args";
   string subscription_id = 4;
   uint32 units = 3;
+}
+
+message FindRepositoryRootRequest {
+  optional string path = 1 [json_name = "path", (json_required) = true];
+}
+message SessionSelection {
+  optional string agent_session_id = 1 [json_name = "agentSessionId", (json_required) = true];
+  optional string node_id = 2 [json_name = "nodeId", (json_required) = true];
+}
+message StartupWorktree {
+  optional string path = 1 [json_name = "path", (json_required) = true];
+  optional string branch = 2 [json_name = "branch", (json_required) = true];
+  optional string repository_name = 3 [json_name = "repositoryName", (json_required) = true];
+}
+message NullableStartupWorktree {
+  option (json_wrapper) = "value";
+  optional StartupWorktree value = 1 [json_name = "value", (json_nullable) = true];
 }

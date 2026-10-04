@@ -45,7 +45,7 @@ pub(crate) struct AttachedTerminalRuntime {
     output_drained: Arc<(Mutex<bool>, Condvar)>,
     checkpoint_journal: Option<Arc<Mutex<IncrementalCheckpointJournal>>>,
     checkpoint_store: Option<TerminalCheckpointFileStore>,
-    checkpoint_io: Option<Arc<tokio::sync::Mutex<()>>>,
+    checkpoint_io: Option<Arc<Mutex<()>>>,
     pending_input_traces:
         Arc<Mutex<VecDeque<crate::infrastructure::telemetry::metrics::TerminalInputTraceKey>>>,
 }
@@ -240,7 +240,7 @@ struct BackgroundCheckpoint {
     runtime_generation: u64,
     terminal_surface: Arc<Mutex<NativeTerminalEmulator>>,
     journal: Arc<Mutex<IncrementalCheckpointJournal>>,
-    io: Arc<tokio::sync::Mutex<()>>,
+    io: Arc<Mutex<()>>,
 }
 
 struct PendingFlush {
@@ -290,7 +290,14 @@ fn technical_failure(failure: WorkFailure) -> crate::domain::failure::TechnicalF
 impl BackgroundCheckpoint {
     async fn flush(&self) -> Result<(), WorkFailure> {
         use super::super::shared::background_worker::{execute, Request};
-        let _io = self.io.lock().await;
+        let io = self.io.clone();
+        let _io = crate::common::operation_context::spawn_blocking(move || io.lock_arc())
+            .await
+            .map_err(|error| {
+                crate::domain::failure::WorkFailure::from(
+                    crate::domain::failure::TechnicalFailure::from(error),
+                )
+            })?;
         let mut pending = PendingFlush {
             journal: self.journal.clone(),
             pending: Some(self.journal.lock().take_pending()),
@@ -864,7 +871,7 @@ impl TerminalSurfaceGateway for TerminalSurfaceRuntimeGatewayFor {
                 }),
             initial_checkpoint.is_some(),
         )));
-        let checkpoint_io = Arc::new(tokio::sync::Mutex::new(()));
+        let checkpoint_io = Arc::new(Mutex::new(()));
         let checkpoint_scheduler = Some({
             let store = checkpoint_store.clone();
             let registry = Arc::clone(&self.registry);
@@ -885,7 +892,7 @@ impl TerminalSurfaceGateway for TerminalSurfaceRuntimeGatewayFor {
                 dirty: self.checkpoint_dirty.clone(),
                 session_key: request.session_key.clone(),
                 flush: Arc::new(move || {
-                    let _io = futures_executor::block_on(checkpoint_io.lock());
+                    let _io = checkpoint_io.lock();
                     flush_incremental_checkpoint(
                         &store,
                         &session_key,
@@ -1342,7 +1349,7 @@ impl TerminalSurfaceGateway for TerminalSurfaceRuntimeGatewayFor {
                         "Terminal Surface not found for owner {session_key}"
                     ))
                 })?;
-            let _io = futures_executor::block_on(checkpoint_io.lock());
+            let _io = checkpoint_io.lock();
             compact_checkpoint(
                 &store,
                 &session_key,

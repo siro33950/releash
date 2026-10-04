@@ -31,6 +31,7 @@ fn test_provider利用可否_四種類の理由を転送文字列へ写す() {
                     display_name: "Claude".into(),
                     default_executable: "claude".into(),
                     configured_executable: None,
+                    configuration_revision: 0,
                     effective_executable: "claude".into(),
                     available: false,
                     resolved_executable: None,

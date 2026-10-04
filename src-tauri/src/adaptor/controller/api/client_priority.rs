@@ -1,10 +1,7 @@
-use parking_lot::Mutex;
 use std::sync::Arc;
 
 use crate::common::concurrency::Rejection;
 use crate::common::priority::{PriorityEvents, PriorityGate};
-use crate::domain::failure::TechnicalFailureNature;
-use crate::usecase::failure::{Failure, FailureKey, FailureRecordingUsecase, WorkFailure};
 
 #[derive(Clone)]
 pub(crate) struct PriorityInterceptor {
@@ -35,50 +32,14 @@ impl connectrpc::Interceptor for PriorityInterceptor {
     }
 }
 
-pub(crate) struct PriorityFailureReporter {
-    failures: Option<Arc<FailureRecordingUsecase>>,
-    pending: Mutex<bool>,
-}
-
-impl PriorityFailureReporter {
-    pub(crate) fn new(failures: Option<Arc<FailureRecordingUsecase>>) -> Self {
-        Self {
-            failures,
-            pending: Mutex::new(false),
-        }
-    }
-}
-
-fn priority_failure_key() -> FailureKey {
-    FailureKey::new("client_request_limit", "daemon")
-}
+pub(crate) struct PriorityFailureReporter;
 
 impl PriorityEvents for PriorityFailureReporter {
     fn rejected(&self, path: &str, rejection: &Rejection) {
-        let Some(failures) = &self.failures else {
-            return;
-        };
-        let mut pending = self.pending.lock();
-        failures.observed(
-            &priority_failure_key(),
-            WorkFailure {
-                kind: Failure::Technical(TechnicalFailureNature::Transient),
-                message: format!("{path}: {rejection}"),
-            },
-        );
-        *pending = true;
+        log::warn!("{path}: {rejection}");
     }
 
-    fn admitted(&self) {
-        let Some(failures) = &self.failures else {
-            return;
-        };
-        let mut pending = self.pending.lock();
-        if *pending {
-            failures.resolved(&priority_failure_key());
-            *pending = false;
-        }
-    }
+    fn admitted(&self) {}
 }
 
 #[cfg(test)]

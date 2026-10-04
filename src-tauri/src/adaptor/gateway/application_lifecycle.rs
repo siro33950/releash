@@ -72,14 +72,14 @@ impl ApplicationShutdownGateway for DaemonShutdownGateway {
 
     async fn stop_provider_exit_observer(&self) -> Result<(), ApplicationLifecycleError> {
         let stop = self.stop_observer.clone();
-        tokio::task::spawn_blocking(move || stop())
+        crate::common::operation_context::spawn_blocking(move || stop())
             .await
             .map_err(|error| ApplicationLifecycleError(error.to_string()))
     }
 
     async fn save_terminals(&self) -> Result<(), ApplicationLifecycleError> {
         let terminal = self.terminal.clone();
-        tokio::task::spawn_blocking(move || terminal.shutdown())
+        crate::common::operation_context::spawn_blocking(move || terminal.shutdown())
             .await
             .map_err(|error| ApplicationLifecycleError(error.to_string()))?
             .map_err(|error| ApplicationLifecycleError(error.to_string()))
@@ -99,14 +99,18 @@ impl ApplicationShutdownGateway for DaemonShutdownGateway {
     }
 
     async fn wait_for_deadline(&self, duration: std::time::Duration) {
-        tokio::time::sleep(duration).await;
+        let _ = crate::common::operation_context::wait(
+            &crate::common::operation_context::current(),
+            tokio::time::sleep(duration),
+        )
+        .await;
     }
 }
 
 async fn shutdown_telemetry(
     telemetry: impl Send + 'static,
 ) -> Result<(), ApplicationLifecycleError> {
-    tokio::task::spawn_blocking(move || drop(telemetry))
+    crate::common::operation_context::spawn_blocking(move || drop(telemetry))
         .await
         .map_err(|error| ApplicationLifecycleError(error.to_string()))
 }

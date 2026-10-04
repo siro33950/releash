@@ -176,6 +176,7 @@ fn test_hook受信_session_start成功だけがdelivery_failure_markerを解除�
     let plugin_data = TempDir::new().unwrap();
     let store = LocalEventStore::open(LocalEventStoreConfig::production(
         store_data.path().to_path_buf(),
+        std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
     ))
     .unwrap();
     let events = Arc::new(LocalProviderLifecycleEventRepository::new(

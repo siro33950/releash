@@ -7,7 +7,7 @@ use connectrpc::ErrorCode;
 async fn test_購読読取の境界_同期queryへ期限を引き継ぐ() {
     let fixture = crate::test_support::state_subscription::StateReadsFixture::new();
     let reads = StateSubscriptionReads(fixture.reads.clone());
-    let target = SubscriptionTarget::RepositoryRoot(fixture.path.clone());
+    let target = SubscriptionTarget::CurrentBranch(fixture.path.clone());
     assert!(reads.read(&target).await.is_ok());
     let context =
         OperationContext::default().with_deadline(Deadline::new(std::time::Instant::now()));
@@ -41,7 +41,7 @@ async fn test_購読読取の境界_review対象とcomment置き場を内側へ�
 }
 
 #[tokio::test]
-async fn test_購読読取の境界_同期queryは自前のruntimeで外部commandを動かせる() {
+async fn test_購読読取の境界_外部commandは非同期queryで実行する() {
     let fixture = crate::test_support::state_subscription::StateReadsFixture::new();
     fixture.list_issues_in_own_runtime();
     let reads = StateSubscriptionReads(fixture.reads.clone());

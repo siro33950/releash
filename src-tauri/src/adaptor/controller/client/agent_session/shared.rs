@@ -49,18 +49,7 @@ pub(crate) fn register_shared(
                     let result = async move {
                         let launch = launch
                             .ok_or_else(|| invalid_request("Command dependency unavailable"))?;
-                        outcome(
-                            provider_tui::create_agent_session_shared(
-                                &launch,
-                                convert(required(args.workspace_identity, "workspaceIdentity")?)?,
-                                convert(required(args.worktree_path, "worktreePath")?)?,
-                                convert(required(args.provider, "provider")?)?,
-                                convert(required(args.rows, "rows")?)?,
-                                convert(required(args.cols, "cols")?)?,
-                                convert(required(args.caller_request_id, "callerRequestId")?)?,
-                            )
-                            .await,
-                        )
+                        outcome(provider_tui::create_agent_session_shared(&launch, args).await)
                     }
                     .await?;
                     Ok(wire::command_result::Command::CreateAgentSession(result))

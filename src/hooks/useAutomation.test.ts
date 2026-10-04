@@ -52,6 +52,28 @@ describe("useAutomation", () => {
 		states.publish("diagnostics", EMPTY_REPORT);
 	});
 
+	it("閉じている間に消えた同名workflowの再作成は一覧配信前も選択を保つ", async () => {
+		const { result, rerender } = renderHook(({ open }) => useAutomation(open), {
+			initialProps: { open: true },
+		});
+		act(() => result.current.selectWorkflow("test"));
+		rerender({ open: false });
+		act(() => states.publish("workflows", []));
+		rerender({ open: true });
+		mocks.invoke.mockResolvedValueOnce({ ok: true, name: "test" });
+		await act(async () => {
+			await result.current.saveWorkflowSource("name: test");
+		});
+		expect(result.current.selectedWorkflowName).toBe("test");
+		act(() => {
+			states.publish("workflows", [summary("test")]);
+			states.publish({ kind: "workflow", args: ["test"] }, workflow("test"));
+		});
+		expect(result.current.selectedWorkflow).toEqual(workflow("test"));
+		act(() => states.publish("workflows", []));
+		expect(result.current.selectedWorkflowName).toBeNull();
+	});
+
 	it("一覧と診断は購読から届き単発取得も監視要求も行わない", () => {
 		const { result } = renderHook(() => useAutomation(true));
 		expect(result.current.loading).toBe(false);
@@ -159,9 +181,7 @@ describe("useAutomation", () => {
 	it("選択中ソースの2回目以降の配信を外部変更として検知し自分の保存内容は除く", async () => {
 		mocks.invoke.mockImplementation((cmd: string) =>
 			Promise.resolve(
-				cmd === "save_workflow_source"
-					? { ok: true, workflow: workflow("test") }
-					: undefined,
+				cmd === "save_workflow_source" ? { ok: true, name: "test" } : undefined,
 			),
 		);
 		const { result } = renderHook(() => useAutomation(true));
@@ -193,7 +213,7 @@ describe("useAutomation", () => {
 		mocks.invoke.mockImplementation((cmd: string) =>
 			Promise.resolve(
 				cmd === "save_workflow_source"
-					? { ok: true, workflow: savedWorkflow }
+					? { ok: true, name: savedWorkflow.name }
 					: undefined,
 			),
 		);
@@ -210,11 +230,20 @@ describe("useAutomation", () => {
 			source: "name: source-wf\nnodes: []\n",
 			originalName: "old-name",
 		});
+		expect(result.current.selectedWorkflow).toBeNull();
+		act(() => states.publish("workflows", [summary("source-wf")]));
+		act(() =>
+			states.publish({ kind: "workflow", args: ["source-wf"] }, savedWorkflow),
+		);
+		act(() =>
+			states.publish(
+				{ kind: "workflow-source", args: ["source-wf"] },
+				"subscribed source",
+			),
+		);
 		expect(result.current.selectedWorkflow).toEqual(savedWorkflow);
 		expect(result.current.selectedWorkflowName).toBe("source-wf");
-		expect(result.current.selectedWorkflowSource).toBe(
-			"name: source-wf\nnodes: []\n",
-		);
+		expect(result.current.selectedWorkflowSource).toBe("subscribed source");
 	});
 
 	it("saveWorkflowSource returns structured diagnostics without stringifying them", async () => {
@@ -250,8 +279,9 @@ describe("useAutomation", () => {
 		});
 	});
 
-	it("deleteWorkflow invokes delete_workflow and clears the selection", async () => {
+	it("deleteWorkflowは応答で選択を消さず購読の削除で解除する", async () => {
 		const { result } = renderHook(() => useAutomation(true));
+		act(() => states.publish("workflows", [summary("test")]));
 		act(() => result.current.selectWorkflow("test"));
 		await act(async () => {
 			await result.current.deleteWorkflow("test");
@@ -259,6 +289,8 @@ describe("useAutomation", () => {
 		expect(mocks.invoke).toHaveBeenCalledWith("delete_workflow", {
 			name: "test",
 		});
+		expect(result.current.selectedWorkflowName).toBe("test");
+		act(() => states.publish("workflows", []));
 		expect(result.current.selectedWorkflowName).toBeNull();
 	});
 
@@ -326,8 +358,62 @@ describe("useAutomation", () => {
 		});
 	});
 
-	it("deleteFacet invokes delete_facet and clears the selection", async () => {
+	it("facet作成の応答が一覧より先でも選択を維持し観測後の削除で解除する", async () => {
+		states.publish({ kind: "facets", args: ["policy"] }, []);
 		const { result } = renderHook(() => useAutomation(true));
+		act(() => result.current.setFacetKind("policy"));
+		await act(async () =>
+			result.current.saveFacet("policy", "new", "content", true),
+		);
+		act(() => result.current.selectFacet("policy", "new"));
+		expect(result.current.selectedFacetKey).toBe("new");
+		act(() =>
+			states.publish({ kind: "facets", args: ["policy"] }, [
+				{ kind: "policy", key: "new", description: "", builtin: false },
+			]),
+		);
+		act(() =>
+			states.publish(
+				{ kind: "facet", args: ["policy", "new"] },
+				"subscribed content",
+			),
+		);
+		expect(result.current.selectedFacetKey).toBe("new");
+		expect(result.current.selectedFacetContent).toBe("subscribed content");
+		act(() => states.publish({ kind: "facets", args: ["policy"] }, []));
+		expect(result.current.selectedFacetKey).toBeNull();
+	});
+
+	it("以前選択したfacetの同じキーを再作成しても作成前の一覧で解除しない", async () => {
+		states.publish({ kind: "facets", args: ["policy"] }, [
+			{ kind: "policy", key: "guide", description: "", builtin: false },
+		]);
+		const { result } = renderHook(() => useAutomation(true));
+		act(() => result.current.setFacetKind("policy"));
+		act(() => result.current.selectFacet("policy", "guide"));
+		act(() => result.current.clearFacetSelection());
+		act(() => states.publish({ kind: "facets", args: ["policy"] }, []));
+		await act(async () =>
+			result.current.saveFacet("policy", "guide", "new content", true),
+		);
+		act(() => result.current.selectFacet("policy", "guide"));
+		expect(result.current.selectedFacetKey).toBe("guide");
+		act(() =>
+			states.publish({ kind: "facets", args: ["policy"] }, [
+				{ kind: "policy", key: "guide", description: "", builtin: false },
+			]),
+		);
+		expect(result.current.selectedFacetKey).toBe("guide");
+		act(() => states.publish({ kind: "facets", args: ["policy"] }, []));
+		expect(result.current.selectedFacetKey).toBeNull();
+	});
+
+	it("deleteFacetは応答で選択を消さず購読の削除で解除する", async () => {
+		states.publish({ kind: "facets", args: ["policy"] }, [
+			{ kind: "policy", key: "my-policy", description: "", builtin: false },
+		]);
+		const { result } = renderHook(() => useAutomation(true));
+		act(() => result.current.setFacetKind("policy"));
 		act(() => result.current.selectFacet("policy", "my-policy"));
 		await act(async () => {
 			await result.current.deleteFacet("policy", "my-policy");
@@ -336,6 +422,8 @@ describe("useAutomation", () => {
 			kind: "policy",
 			key: "my-policy",
 		});
+		expect(result.current.selectedFacetKey).toBe("my-policy");
+		act(() => states.publish({ kind: "facets", args: ["policy"] }, []));
 		expect(result.current.selectedFacetKey).toBeNull();
 	});
 

@@ -4,17 +4,14 @@ use crate::adaptor::presenter::provider_tui::{
 };
 use std::sync::Arc;
 
-use crate::adaptor::presenter::agent_session::{
-    AgentSessionArchiveResponse, AgentSessionOpenResponse,
-};
+use crate::adaptor::presenter::agent_session::AgentSessionArchiveResponse;
 use crate::adaptor::presenter::error::AppError;
 use crate::domain::agent_session::aggregates::AgentSessionArchiveOutcome;
 use crate::domain::provider_lifecycle::ProviderKind;
 use crate::domain::workspace_tree::WorkspaceIdentity;
 use crate::usecase::agent_session::{
     AgentSessionHistoryResumeRequest, AgentSessionLaunchRequest, AgentSessionLaunchUsecase,
-    AgentSessionLifecycleUsecase, AgentSessionOpenOutcome, ProviderAvailabilityUsecase,
-    ProviderAvailabilityUsecaseError,
+    AgentSessionLifecycleUsecase, ProviderAvailabilityUsecase, ProviderAvailabilityUsecaseError,
 };
 
 pub(crate) async fn refresh_provider_availability_shared(
@@ -28,7 +25,7 @@ pub(crate) async fn update_provider_executable_shared(
     availability: &Arc<ProviderAvailabilityUsecase>,
     provider: String,
     executable: String,
-) -> Result<String, AppError> {
+) -> Result<(), AppError> {
     let provider = parse_provider(&provider, ProviderParseOperation::ConfigureProvider)?;
     let availability = Arc::clone(availability);
     run_provider_availability_blocking(move || {
@@ -60,13 +57,13 @@ where
 
 pub(crate) async fn create_agent_session_shared(
     launch: &Arc<AgentSessionLaunchUsecase>,
-    workspace_identity: String,
-    worktree_path: String,
-    provider: String,
-    rows: u16,
-    cols: u16,
-    caller_request_id: String,
-) -> Result<String, AppError> {
+    args: crate::adaptor::presenter::client::CreateAgentSessionRequest,
+) -> Result<
+    (String, crate::domain::workspace_tree::WorkspaceTreeNode),
+    crate::adaptor::presenter::client::CommandFailure,
+> {
+    use crate::adaptor::controller::client::{convert, required};
+    let provider = required(args.provider, "provider")?;
     let provider = crate::common::telemetry::observe_result(
         || parse_provider(&provider, ProviderParseOperation::Start),
         |result, elapsed| {
@@ -79,29 +76,35 @@ pub(crate) async fn create_agent_session_shared(
         },
     )?;
     Arc::clone(launch)
-        .launch_standalone_idempotent(AgentSessionLaunchRequest {
-            workspace: WorkspaceIdentity::new(workspace_identity),
-            worktree_path,
+        .launch_standalone_selection(AgentSessionLaunchRequest {
+            workspace: WorkspaceIdentity::new(required(
+                args.workspace_identity,
+                "workspaceIdentity",
+            )?),
+            worktree_path: required(args.worktree_path, "worktreePath")?,
             provider,
-            rows,
-            cols,
-            caller_request_id,
+            rows: convert(required(args.rows, "rows")?)?,
+            cols: convert(required(args.cols, "cols")?)?,
+            caller_request_id: required(args.caller_request_id, "callerRequestId")?,
         })
         .await
-        .map_err(|error| launch_error(error, AgentSessionLaunchOperation::Start))
+        .map_err(|error| launch_error(error, AgentSessionLaunchOperation::Start).into())
 }
 
 pub(crate) async fn resume_agent_session_history_candidate_shared(
     launch: &Arc<AgentSessionLaunchUsecase>,
     args: crate::adaptor::presenter::client::ResumeAgentSessionHistoryCandidateRequest,
-) -> Result<String, crate::adaptor::presenter::client::CommandFailure> {
+) -> Result<
+    (String, crate::domain::workspace_tree::WorkspaceTreeNode),
+    crate::adaptor::presenter::client::CommandFailure,
+> {
     use crate::adaptor::controller::client::{convert, required};
     let provider = parse_provider(
         &required(args.provider, "provider")?,
         ProviderParseOperation::ResumeHistory,
     )?;
-    let outcome = launch
-        .resume_history(AgentSessionHistoryResumeRequest {
+    launch
+        .resume_history_selection(AgentSessionHistoryResumeRequest {
             workspace: WorkspaceIdentity::new(required(
                 args.workspace_identity,
                 "workspaceIdentity",
@@ -114,13 +117,7 @@ pub(crate) async fn resume_agent_session_history_candidate_shared(
             caller_request_id: required(args.caller_request_id, "callerRequestId")?,
         })
         .await
-        .map_err(|error| launch_error(error, AgentSessionLaunchOperation::ResumeHistory))?;
-    Ok(match outcome {
-        crate::usecase::agent_session::AgentSessionHistoryResumeOutcome::Open(session)
-        | crate::usecase::agent_session::AgentSessionHistoryResumeOutcome::Paused(session) => {
-            session.session().id().to_string()
-        }
-    })
+        .map_err(|error| launch_error(error, AgentSessionLaunchOperation::ResumeHistory).into())
 }
 
 fn parse_provider(
@@ -142,11 +139,11 @@ pub(crate) async fn open_agent_session_shared(
     rows: u16,
     cols: u16,
     caller_request_id: String,
-) -> Result<AgentSessionOpenResponse, AppError> {
+) -> Result<(), AppError> {
     lifecycle
         .open(&agent_session_id, rows, cols, &caller_request_id)
         .await
-        .map(Into::into)
+        .map(|_| ())
         .map_err(lifecycle_error)
 }
 
@@ -156,11 +153,10 @@ pub(crate) async fn restore_agent_session_shared(
     rows: u16,
     cols: u16,
     caller_request_id: String,
-) -> Result<AgentSessionOpenResponse, AppError> {
+) -> Result<(String, crate::domain::workspace_tree::WorkspaceTreeNode), AppError> {
     lifecycle
-        .restore(&agent_session_id, rows, cols, &caller_request_id)
+        .restore_selection(&agent_session_id, rows, cols, &caller_request_id)
         .await
-        .map(Into::into)
         .map_err(lifecycle_error)
 }
 
@@ -185,19 +181,6 @@ pub(crate) async fn delete_agent_session_shared(
         .delete(&agent_session_id, &caller_request_id)
         .await
         .map_err(lifecycle_error)
-}
-
-impl From<AgentSessionOpenOutcome> for AgentSessionOpenResponse {
-    fn from(value: AgentSessionOpenOutcome) -> Self {
-        match value {
-            AgentSessionOpenOutcome::Attached => Self::Attached,
-            AgentSessionOpenOutcome::Resumed => Self::Resumed,
-            AgentSessionOpenOutcome::Restored => Self::Restored,
-            AgentSessionOpenOutcome::Paused => Self::Paused,
-            AgentSessionOpenOutcome::Indeterminate => Self::Indeterminate,
-            AgentSessionOpenOutcome::GarbageCollected => Self::GarbageCollected,
-        }
-    }
 }
 
 impl From<AgentSessionArchiveOutcome> for AgentSessionArchiveResponse {

@@ -29,10 +29,6 @@ pub(crate) fn payload(value: &StateValue) -> Result<wire::StatePayload, connectr
                 crate::adaptor::presenter::client::value(value.clone())
                     .map_err(crate::adaptor::presenter::connect::command_error)?,
             ),
-            StateValue::SessionNode(value) => wire::state_payload::Value::SessionNode(
-                crate::adaptor::presenter::client::value(value.clone())
-                    .map_err(crate::adaptor::presenter::connect::command_error)?,
-            ),
             StateValue::SessionHistory(value) => wire::state_payload::Value::SessionHistory(
                 crate::adaptor::presenter::client::value(value.clone())
                     .map_err(crate::adaptor::presenter::connect::command_error)?,
@@ -75,14 +71,9 @@ pub(crate) fn payload(value: &StateValue) -> Result<wire::StatePayload, connectr
                 crate::adaptor::presenter::client::value(value.clone())
                     .map_err(crate::adaptor::presenter::connect::command_error)?,
             ),
-            StateValue::RepositoryRoot(value) => wire::state_payload::Value::RepositoryRoot(
-                crate::adaptor::presenter::client::value(value.clone())
-                    .map_err(crate::adaptor::presenter::connect::command_error)?,
-            ),
-            StateValue::StartupRepository(value) => wire::state_payload::Value::StartupRepository(
-                crate::adaptor::presenter::client::value(value.clone())
-                    .map_err(crate::adaptor::presenter::connect::command_error)?,
-            ),
+            StateValue::StartupRepository(value) => wire::state_payload::Value::StartupRepository(wire::NullableStartupWorktree {
+                value: value.as_ref().map(|value| wire::StartupWorktree { path: Some(value.path.clone()), branch: Some(value.branch.clone()), repository_name: Some(value.repository_name.clone()) })
+            }),
             StateValue::WorkspaceState(value) => wire::state_payload::Value::WorkspaceState(
                 crate::adaptor::presenter::client::value(value.clone())
                     .map_err(crate::adaptor::presenter::connect::command_error)?,

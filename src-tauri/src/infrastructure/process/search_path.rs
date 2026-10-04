@@ -4,8 +4,7 @@ use std::os::unix::ffi::OsStringExt;
 use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::{Command, Stdio};
-use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 const PATH_BEGIN: &[u8] = b"__RELEASH_PATH_BEGIN__";
 const PATH_END: &[u8] = b"__RELEASH_PATH_END__";
@@ -19,6 +18,7 @@ pub(crate) enum LoginShellPathError {
     Unsuccessful,
     InvalidOutput,
     Timeout,
+    Stopped(crate::common::operation_context::OperationStopped),
 }
 
 pub(crate) trait SearchPathSource: Send + Sync {
@@ -51,6 +51,10 @@ fn capture_login_shell_path_from(
     home: &Path,
     timeout: Duration,
 ) -> Result<OsString, LoginShellPathError> {
+    let context = crate::common::operation_context::with_timeout(timeout);
+    context
+        .check(std::time::Instant::now())
+        .map_err(LoginShellPathError::Stopped)?;
     let mut output = tempfile::tempfile().map_err(|_| LoginShellPathError::Output)?;
     let child_output = output
         .try_clone()
@@ -68,17 +72,23 @@ fn capture_login_shell_path_from(
         let _spawn = super::parent_lifetime::spawn_guard();
         command.spawn().map_err(|_| LoginShellPathError::Spawn)?
     };
-    let started = Instant::now();
     let status = loop {
         match child.try_wait() {
             Ok(Some(status)) => break status,
-            Ok(None) if started.elapsed() < timeout => thread::sleep(
-                Duration::from_millis(10).min(timeout.saturating_sub(started.elapsed())),
-            ),
             Ok(None) => {
-                kill_process_group(&mut child);
-                let _ = child.wait();
-                return Err(LoginShellPathError::Timeout);
+                if let Err(stopped) = crate::common::operation_context::sleep(
+                    &context,
+                    crate::common::retry::RetryBackoff::POLL.delay(1, 1.0),
+                ) {
+                    kill_process_group(&mut child);
+                    let _ = child.wait();
+                    return Err(match stopped {
+                        crate::common::operation_context::OperationStopped::Expired => {
+                            LoginShellPathError::Timeout
+                        }
+                        stopped => LoginShellPathError::Stopped(stopped),
+                    });
+                }
             }
             Err(_) => {
                 kill_process_group(&mut child);
@@ -127,7 +137,7 @@ fn kill_process_group(child: &mut std::process::Child) {
 mod tests {
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
-    use std::time::{Duration, Instant};
+    use std::time::Duration;
 
     use super::{capture_login_shell_path_from, LoginShellPathError};
 
@@ -154,7 +164,7 @@ mod tests {
     #[test]
     fn test_login_shell_path_timeoutでshellを終了する() {
         let (temporary, shell) = shell_script("#!/bin/sh\nsleep 10\n");
-        let started = Instant::now();
+        let started = std::time::Instant::now();
 
         let result =
             capture_login_shell_path_from(&shell, temporary.path(), Duration::from_millis(50));

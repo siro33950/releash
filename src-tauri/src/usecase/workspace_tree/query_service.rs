@@ -13,12 +13,6 @@ pub(crate) trait WorkspaceQueryService: Send + Sync {
         node_id: &str,
     ) -> Result<Option<WorkspaceNodeDetailDto>, WorkflowError>;
 
-    async fn session_node_id(
-        &self,
-        workspace_identity: &WorkspaceIdentity,
-        session_id: &str,
-    ) -> Result<Option<String>, WorkflowError>;
-
     async fn execution_summaries(
         &self,
         workspace_identity: Option<&WorkspaceIdentity>,

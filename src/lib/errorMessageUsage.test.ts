@@ -35,6 +35,7 @@ const TARGET_FILES = [
 	"src/components/workspace/DeleteWorktreeDialog.tsx",
 	"src/components/panels/DiffToolbar.tsx",
 	"src/hooks/useWorkspaceList.ts",
+	"src/hooks/useWorkspacePersistence.ts",
 	"src/contexts/ReviewThreadHandoffContext.tsx",
 	"src/hooks/useNotionSettings.ts",
 	"src/lib/clientErrorNotice.ts",

@@ -22,6 +22,7 @@ import {
 	TooltipContent,
 	TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { logClientError } from "@/lib/clientErrorNotice";
 import { cn } from "@/lib/utils";
 import type { DiffTreeNode } from "@/types/review";
 import type { DiffBase, DiffSection } from "@/types/settings";
@@ -134,13 +135,17 @@ function TreeNode({
 	const handleCopyRelativePath = async () => {
 		try {
 			await navigator.clipboard.writeText(node.path);
-		} catch {}
+		} catch (error) {
+			logClientError("Failed to copy path:", error);
+		}
 	};
 
 	const handleCopyAbsolutePath = async () => {
 		try {
 			await navigator.clipboard.writeText(`${rootPath}/${node.path}`);
-		} catch {}
+		} catch (error) {
+			logClientError("Failed to copy path:", error);
+		}
 	};
 
 	return (

@@ -13,18 +13,14 @@ use tokio::sync::oneshot;
 
 use crate::adaptor::gateway::local_event_store::clock::{StoreClock, SystemStoreClock};
 use crate::adaptor::gateway::local_event_store::commit::{execute_commit, resolve_commit_row};
-use crate::adaptor::gateway::local_event_store::connection::{
-    check_sqlite_version, open_existing_writer, open_reader, open_writer,
-    set_owner_only_permissions, ConnectionError,
-};
 use crate::adaptor::gateway::local_event_store::envelope::EventCodecRegistry;
 use crate::adaptor::gateway::local_event_store::fault::FaultInjector;
 use crate::adaptor::gateway::local_event_store::fault::InitialCreateFaultPoint;
 use crate::adaptor::gateway::local_event_store::layout::{
     create_initial_create_evidence_with_fault, inspect_initial_create_evidence,
     remove_initial_create_evidence, replace_invalid_evidence_for_absent_database_with_fault,
-    sqlite_sidecar_paths, InitialCreateEvidenceState, NoopStorePathObserver, StoreLayout,
-    StorePathObserver, StorePathOperation,
+    InitialCreateEvidenceState, NoopStorePathObserver, StoreLayout, StorePathObserver,
+    StorePathOperation,
 };
 use crate::adaptor::gateway::local_event_store::maintenance::{
     run_startup_maintenance, StartupMaintenanceError,
@@ -46,6 +42,10 @@ use crate::domain::local_event::{
     CommitBatchError, CommitBatchResult, CommitIdentity, CommitResolution, DomainEventPage,
     LoadStreamRequest, LocalAtomicBatch, LocalEventQuery, LocalEventQueryError,
     LocalEventQueryResult, LocalEventTransactionRepository, LocalStateMutation,
+};
+use crate::infrastructure::local_event_store_connection::{
+    check_sqlite_version, open_existing_writer, open_reader, open_writer,
+    set_owner_only_permissions, ConnectionError,
 };
 
 fn correlation_id() -> String {
@@ -162,66 +162,39 @@ fn table_columns(
 fn open_schema_inspection(
     layout: &StoreLayout,
     path: &std::path::Path,
-) -> Result<rusqlite::Connection, LocalEventStoreOpenError> {
-    // Classification reads the fixed authority directly. SQLite's
-    // `readonly_shm` URI mode sees committed WAL frames while mapping the
-    // fixed SHM wal-index read-only, so a closed classification failure does
-    // not claim a read-mark or change a sidecar byte. `immutable=1` is never
-    // used when a non-empty WAL exists because it could ignore committed
-    // frames. No create flag is permitted at this boundary.
-    let [wal_path, shm_path] = sqlite_sidecar_paths(path);
-    let mut wal_has_bytes = false;
-    for sidecar in [wal_path.clone(), shm_path] {
-        layout.observe(StorePathOperation::Metadata, &sidecar);
-        match std::fs::metadata(&sidecar) {
-            Ok(metadata) => {
-                layout.observe(StorePathOperation::Open, &sidecar);
-                layout.observe(StorePathOperation::Read, &sidecar);
-                if sidecar == wal_path {
-                    wal_has_bytes = metadata.len() > 0;
-                }
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(io_open_failure(error)),
-        }
-    }
-    layout.observe(StorePathOperation::Open, path);
-    layout.observe(StorePathOperation::Read, path);
-    let mut uri = url::Url::from_file_path(path).map_err(|()| {
-        LocalEventStoreOpenError::StorageUnavailable(crate::domain::failure::TechnicalFailure {
-            nature: crate::domain::failure::TechnicalFailureNature::Other,
-            message: format!("invalid database file path: {}", path.display()),
-        })
-    })?;
-    uri.query_pairs_mut().append_pair("mode", "ro");
-    if wal_has_bytes {
-        uri.query_pairs_mut().append_pair("readonly_shm", "1");
-    } else {
-        // With no committed WAL frame there is no sidecar state to include.
-        // Immutable mode avoids asking a WAL-mode header for a missing SHM
-        // while still opening this same fixed database path.
-        uri.query_pairs_mut().append_pair("immutable", "1");
-    }
-    let connection = rusqlite::Connection::open_with_flags(
-        uri.as_str(),
-        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY
-            | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX
-            | rusqlite::OpenFlags::SQLITE_OPEN_URI,
+    limiter: Arc<crate::common::retry::RetryLimiter>,
+) -> Result<
+    crate::infrastructure::local_event_store_connection::ManagedConnection,
+    LocalEventStoreOpenError,
+> {
+    crate::infrastructure::local_event_store_connection::open_schema_inspection(
+        path,
+        limiter,
+        |operation, path| layout.observe(operation, path),
     )
     .map_err(|error| {
-        classify_sqlite_error(&error, LocalEventStoreOpenError::InitializationStateInvalid)
-    })?;
-    connection
-        .busy_timeout(std::time::Duration::from_secs(2))
-        .map_err(|error| {
-            classify_sqlite_error(&error, LocalEventStoreOpenError::InitializationStateInvalid)
-        })?;
-    Ok(connection)
+        use crate::infrastructure::local_event_store_connection::SchemaInspectionError;
+        match error {
+            SchemaInspectionError::Io(error) => io_open_failure(error),
+            SchemaInspectionError::InvalidPath(path) => {
+                LocalEventStoreOpenError::StorageUnavailable(
+                    crate::domain::failure::TechnicalFailure {
+                        nature: crate::domain::failure::TechnicalFailureNature::Other,
+                        message: format!("invalid database file path: {}", path.display()),
+                    },
+                )
+            }
+            SchemaInspectionError::Sqlite(error) => {
+                classify_sqlite_error(&error, LocalEventStoreOpenError::InitializationStateInvalid)
+            }
+        }
+    })
 }
 
 fn is_proven_initial_create_residue(
     layout: &StoreLayout,
     path: &std::path::Path,
+    limiter: Arc<crate::common::retry::RetryLimiter>,
 ) -> Result<bool, LocalEventStoreOpenError> {
     layout.observe(StorePathOperation::Metadata, path);
     let length = std::fs::metadata(path).map_err(io_open_failure)?.len();
@@ -233,7 +206,7 @@ fn is_proven_initial_create_residue(
     }
     layout.observe(StorePathOperation::Open, path);
     layout.observe(StorePathOperation::Read, path);
-    let connection = open_schema_inspection(layout, path)?;
+    let connection = open_schema_inspection(layout, path, limiter)?;
     let application_table_count: i64 = connection
         .query_row(
             "SELECT COUNT(*) FROM sqlite_schema
@@ -276,6 +249,7 @@ enum ExistingDatabaseKind {
 fn classify_existing_database(
     layout: &StoreLayout,
     path: &std::path::Path,
+    limiter: Arc<crate::common::retry::RetryLimiter>,
 ) -> Result<ExistingDatabaseKind, LocalEventStoreOpenError> {
     layout.observe(StorePathOperation::Metadata, path);
     let length = std::fs::metadata(path).map_err(io_open_failure)?.len();
@@ -284,12 +258,7 @@ fn classify_existing_database(
     }
     layout.observe(StorePathOperation::Open, path);
     layout.observe(StorePathOperation::Read, path);
-    let connection = open_schema_inspection(layout, path)?;
-    connection
-        .busy_timeout(std::time::Duration::from_secs(2))
-        .map_err(|error| {
-            classify_sqlite_error(&error, LocalEventStoreOpenError::InitializationStateInvalid)
-        })?;
+    let connection = open_schema_inspection(layout, path, limiter)?;
     let application_id = connection
         .pragma_query_value(None, "application_id", |row| row.get::<_, i64>(0))
         .map_err(|error| {
@@ -402,6 +371,7 @@ impl std::error::Error for LocalEventStoreOpenError {}
 
 pub struct LocalEventStoreConfig {
     pub app_data_root: PathBuf,
+    pub retry_limiter: Arc<crate::common::retry::RetryLimiter>,
     pub clock: Arc<dyn StoreClock>,
     pub registry: Arc<EventCodecRegistry>,
     pub fault: Arc<FaultInjector>,
@@ -410,9 +380,13 @@ pub struct LocalEventStoreConfig {
 
 impl LocalEventStoreConfig {
     /// Production configuration: system clock, default registry, no faults.
-    pub fn production(app_data_root: PathBuf) -> Self {
+    pub fn production(
+        app_data_root: PathBuf,
+        retry_limiter: Arc<crate::common::retry::RetryLimiter>,
+    ) -> Self {
         Self {
             app_data_root,
+            retry_limiter,
             clock: Arc::new(SystemStoreClock),
             registry: Arc::new(EventCodecRegistry::new()),
             fault: Arc::new(FaultInjector::new()),
@@ -495,9 +469,13 @@ impl LocalEventStore {
             .map_err(io_open_failure)?;
             layout.observe(StorePathOperation::Open, &database_path);
             layout.observe(StorePathOperation::Write, &database_path);
-            let connection = open_writer(&database_path).map_err(|error| {
-                classify_connection_error(&error, LocalEventStoreOpenError::SchemaEvolutionFailed)
-            })?;
+            let connection =
+                open_writer(&database_path, config.retry_limiter.clone()).map_err(|error| {
+                    classify_connection_error(
+                        &error,
+                        LocalEventStoreOpenError::SchemaEvolutionFailed,
+                    )
+                })?;
             if config
                 .fault
                 .take_initial_create_fault(InitialCreateFaultPoint::AfterSqliteFileCreate)
@@ -531,17 +509,22 @@ impl LocalEventStore {
             connection
         } else {
             if evidence == InitialCreateEvidenceState::Valid
-                && is_proven_initial_create_residue(&layout, &database_path)?
+                && is_proven_initial_create_residue(
+                    &layout,
+                    &database_path,
+                    config.retry_limiter.clone(),
+                )?
             {
                 remove_initial_create_database(&layout)?;
                 layout.observe(StorePathOperation::Open, &database_path);
                 layout.observe(StorePathOperation::Write, &database_path);
-                let connection = open_writer(&database_path).map_err(|error| {
-                    classify_connection_error(
-                        &error,
-                        LocalEventStoreOpenError::SchemaEvolutionFailed,
-                    )
-                })?;
+                let connection = open_writer(&database_path, config.retry_limiter.clone())
+                    .map_err(|error| {
+                        classify_connection_error(
+                            &error,
+                            LocalEventStoreOpenError::SchemaEvolutionFailed,
+                        )
+                    })?;
                 if config
                     .fault
                     .take_initial_create_fault(InitialCreateFaultPoint::AfterSqliteFileCreate)
@@ -574,15 +557,20 @@ impl LocalEventStore {
                 })?;
                 connection
             } else {
-                let kind = classify_existing_database(&layout, &database_path)?;
+                let kind = classify_existing_database(
+                    &layout,
+                    &database_path,
+                    config.retry_limiter.clone(),
+                )?;
                 layout.observe(StorePathOperation::Open, &database_path);
                 layout.observe(StorePathOperation::Write, &database_path);
-                let connection = open_existing_writer(&database_path).map_err(|error| {
-                    classify_connection_error(
-                        &error,
-                        LocalEventStoreOpenError::StoreValidationFailed,
-                    )
-                })?;
+                let connection = open_existing_writer(&database_path, config.retry_limiter.clone())
+                    .map_err(|error| {
+                        classify_connection_error(
+                            &error,
+                            LocalEventStoreOpenError::StoreValidationFailed,
+                        )
+                    })?;
                 if matches!(
                     kind,
                     ExistingDatabaseKind::SupportedV1
@@ -693,8 +681,8 @@ impl LocalEventStore {
         for index in 0..READER_POOL_SIZE {
             layout.observe(StorePathOperation::Open, &database_path);
             layout.observe(StorePathOperation::Read, &database_path);
-            let connection =
-                open_reader(&database_path).map_err(|error| connection_open_failure(&error))?;
+            let connection = open_reader(&database_path, config.retry_limiter.clone())
+                .map_err(|error| connection_open_failure(&error))?;
             reader_connections.push((index, connection));
         }
 

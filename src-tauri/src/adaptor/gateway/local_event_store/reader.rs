@@ -459,7 +459,10 @@ impl ReaderPool {
     }
 
     /// Worker loop for one dedicated reader thread.
-    pub fn run_worker(self: &Arc<Self>, connection: Connection) {
+    pub fn run_worker(
+        self: &Arc<Self>,
+        connection: crate::infrastructure::local_event_store_connection::ManagedConnection,
+    ) {
         #[cfg(test)]
         self.running_workers
             .fetch_add(1, std::sync::atomic::Ordering::AcqRel);

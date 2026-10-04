@@ -30,6 +30,16 @@ impl RepoPathsUsecase {
         }
     }
 
+    pub(crate) fn initialize_from_cwd(
+        &self,
+        repository: &crate::usecase::repository_usecase::RepositoryUsecase,
+    ) -> Result<(), UsecaseError> {
+        if let Some(root) = repository.find_main_repo_path(&repository.get_cwd()?)? {
+            self.add(&root)?;
+        }
+        Ok(())
+    }
+
     pub fn get(&self) -> Vec<String> {
         self.repo.get()
     }
@@ -109,6 +119,98 @@ mod repo_paths_usecase_tests {
         let subscriptions = crate::test_support::state_subscription::test_subscriptions();
         let changes = subscriptions.changes();
         (RepoPathsUsecase::new(repo, subscriptions), changes)
+    }
+
+    #[test]
+    fn test_起動時登録_cwdのrootを追加し非repositoryと読取失敗は一覧を変えない() {
+        use crate::adaptor::gateway::repository::{
+            branch::BranchGateway, git_config::GitConfigGateway, status::StatusGateway,
+        };
+        use crate::domain::repository::{RepoLocator, Worktree, WorktreeRepository};
+        struct Cwd;
+        impl RepoLocator for Cwd {
+            fn cwd(&self) -> Result<String, RepositoryError> {
+                Ok("/repo/subdir".into())
+            }
+        }
+        struct Roots(Result<Option<String>, RepositoryError>);
+        impl WorktreeRepository for Roots {
+            fn find_main_repo_path(&self, path: &str) -> Result<Option<String>, RepositoryError> {
+                assert_eq!(path, "/repo/subdir");
+                self.0.clone()
+            }
+            fn main_repo_path(&self, _: &str) -> Result<String, RepositoryError> {
+                unreachable!()
+            }
+            fn list(&self, _: &str) -> Result<Vec<Worktree>, RepositoryError> {
+                unreachable!()
+            }
+            fn create(
+                &self,
+                _: &str,
+                _: &str,
+                _: &str,
+                _: bool,
+                _: Option<&str>,
+            ) -> Result<Worktree, RepositoryError> {
+                unreachable!()
+            }
+            fn validate_removal(
+                &self,
+                _: &str,
+                _: &str,
+                _: bool,
+            ) -> Result<String, RepositoryError> {
+                unreachable!()
+            }
+            fn remove(&self, _: &str, _: &str, _: bool) -> Result<Option<String>, RepositoryError> {
+                unreachable!()
+            }
+        }
+        struct Terminals;
+        impl crate::domain::repository::WorktreeTerminalGateway for Terminals {
+            fn kill_by_worktree(&self, _: &str) {}
+        }
+        // Given
+        for root in [
+            Ok(Some("/repo".into())),
+            Ok(None),
+            Err(RepositoryError::External("root unreadable".into())),
+        ] {
+            let (usecase, mut changes) = usecase_with(Arc::new(FakeRepoPaths::default()));
+            let repository = crate::usecase::repository_usecase::RepositoryUsecase::new(
+                Arc::new(BranchGateway),
+                Arc::new(StatusGateway),
+                Arc::new(Roots(root.clone())),
+                Arc::new(GitConfigGateway),
+                Arc::new(Cwd),
+                Arc::new(Terminals),
+                Default::default(),
+            );
+            // When
+            let result = usecase.initialize_from_cwd(&repository);
+            // Then
+            match root {
+                Ok(Some(root)) => {
+                    result.unwrap();
+                    assert_eq!(usecase.get(), vec![root]);
+                    assert_eq!(
+                        changes.try_recv().unwrap(),
+                        crate::usecase::state_subscription::StateChangeSource::Repositories
+                    );
+                }
+                Ok(None) => {
+                    result.unwrap();
+                    assert!(usecase.get().is_empty());
+                    assert!(changes.try_recv().is_err());
+                }
+                Err(error) => {
+                    assert_eq!(result.unwrap_err().to_string(), error.to_string());
+                    assert!(usecase.get().is_empty());
+                    assert!(changes.try_recv().is_err());
+                }
+            }
+        }
     }
 
     #[test]

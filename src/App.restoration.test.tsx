@@ -165,7 +165,11 @@ it("設定と一覧の初回失敗でシェルをFailedにせず購読の復旧�
 it("再接続後も起動処理と更新確認は一度だけでReady復帰時にメニューを同期する", async () => {
 	selectedWorktreeId = null;
 	vi.mocked(invokeClient).mockResolvedValue(true);
-	states.publish("startup-repository", "/repo");
+	states.publish("startup-repository", {
+		path: "/repo",
+		branch: "main",
+		repositoryName: "repo",
+	});
 	states.publish({ kind: "worktrees", args: ["/repo"] }, [
 		{
 			path: "/repo",
@@ -179,7 +183,10 @@ it("再接続後も起動処理と更新確認は一度だけでReady復帰時�
 		render(<App />);
 	});
 	expect(openWorktreeTab).toHaveBeenCalledTimes(1);
-	expect(invokeClient).toHaveBeenCalledWith("add_repo_path", { path: "/repo" });
+	expect(invokeClient).not.toHaveBeenCalledWith(
+		"add_repo_path",
+		expect.anything(),
+	);
 	const main = screen.getByRole("main");
 	fireEvent.click(screen.getByRole("button", { name: "Settings" }));
 	for (const phase of ["starting", "backoff", "ready", "starting", "ready"]) {
@@ -196,7 +203,7 @@ it("再接続後も起動処理と更新確認は一度だけでReady復帰時�
 		vi
 			.mocked(invokeClient)
 			.mock.calls.filter(([command]) => command === "add_repo_path"),
-	).toHaveLength(1);
+	).toHaveLength(0);
 	expect(
 		vi
 			.mocked(invoke)
@@ -316,4 +323,28 @@ it("設定の読み込み状態と失敗を設定画面へ渡し回復を反映�
 	await act(async () => states.publish("desktop-settings", desktopSettings));
 	expect(screen.getByText("Settings loaded: true")).toBeVisible();
 	expect(screen.queryByRole("alert")).toBeNull();
+});
+
+it("メニューの有効切替の拒否を原因とともに画面へ通知する", async () => {
+	const base = vi.mocked(invoke).getMockImplementation();
+	const notice = vi.fn();
+	window.addEventListener("releash-client-error", notice);
+	try {
+		vi.mocked(invoke).mockImplementation((command, args) =>
+			command === "set_menu_items_enabled"
+				? Promise.reject(new Error("menu unavailable"))
+				: (base?.(command, args) ?? Promise.resolve()),
+		);
+		await act(async () => {
+			render(<App />);
+		});
+		expect(await screen.findByRole("alert")).toHaveTextContent(
+			"menu unavailable",
+		);
+		expect(notice).toHaveBeenCalledWith(
+			expect.objectContaining({ detail: "menu unavailable" }),
+		);
+	} finally {
+		window.removeEventListener("releash-client-error", notice);
+	}
 });

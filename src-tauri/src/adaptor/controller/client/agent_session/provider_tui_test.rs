@@ -26,11 +26,17 @@ async fn test_provider_availability_controller_blocking操作中もasync_runtime
 }
 
 #[test]
-fn test_agent_session_controller_domain結果をwire語彙へ変換する() {
-    assert_eq!(
-        AgentSessionOpenResponse::from(AgentSessionOpenOutcome::Indeterminate),
-        AgentSessionOpenResponse::Indeterminate
-    );
+fn test_agent_session_controller_成功応答は状態を持たないunitである() {
+    let unit: crate::adaptor::presenter::client::Unit = ().try_into().unwrap();
+    let response = crate::adaptor::presenter::client::CommandResult {
+        command: Some(
+            crate::adaptor::presenter::client::command_result::Command::OpenAgentSession(unit),
+        ),
+    };
+    assert!(matches!(
+        response.command,
+        Some(crate::adaptor::presenter::client::command_result::Command::OpenAgentSession(_))
+    ));
 }
 
 #[test]

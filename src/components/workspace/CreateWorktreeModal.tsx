@@ -44,10 +44,11 @@ import { useIssues } from "@/hooks/useIssues";
 import { useNotionLabelOptions } from "@/hooks/useNotionLabelOptions";
 import { useNotionTasks } from "@/hooks/useNotionTasks";
 import { invokeClient as invoke, subscribeState } from "@/lib/client";
+import { showClientError } from "@/lib/clientErrorNotice";
 import { getErrorMessage } from "@/lib/errorMessage";
 import { trackEvent } from "@/lib/telemetry";
 import { cn } from "@/lib/utils";
-import type { BranchInfo, IssueInfo, WorktreeEntry } from "@/types/git";
+import type { BranchInfo, IssueInfo } from "@/types/git";
 import type { NotionTask } from "@/types/notion";
 
 type CreateMode = "plain" | "branch" | "issue" | "notion";
@@ -55,7 +56,7 @@ type CreateMode = "plain" | "branch" | "issue" | "notion";
 interface CreateWorktreeModalProps {
 	open: boolean;
 	repoPaths: string[];
-	onCreated: (rootPath: string, branchName: string, repoName: string) => void;
+	onCreated: (rootPath: string) => void;
 	onClose: () => void;
 }
 
@@ -76,11 +77,6 @@ export function CreateWorktreeModal({
 	const [branchError, setBranchError] = useState<string | null>(null);
 	const [statusError, setStatusError] = useState<string | null>(null);
 	const [filter, setFilter] = useState("");
-
-	const repoName = useMemo(
-		() => selectedRepoPath.split("/").filter(Boolean).pop() ?? "",
-		[selectedRepoPath],
-	);
 
 	const toggleBranch = useCallback((branch: string) => {
 		setSelectedBranches((prev) =>
@@ -165,7 +161,7 @@ export function CreateWorktreeModal({
 		const existingNames = allBranches.map((b) => b.name);
 
 		try {
-			const createdEntries: WorktreeEntry[] = [];
+			const createdEntries: string[] = [];
 			const failures: string[] = [];
 
 			for (const branch of selectedBranches) {
@@ -179,31 +175,30 @@ export function CreateWorktreeModal({
 					});
 					setError(null);
 					createdEntries.push(entry);
-				} catch {
-					failures.push(`Failed to create: ${branch}`);
+				} catch (cause) {
+					failures.push(
+						`Failed to create: ${branch}: ${getErrorMessage(cause)}`,
+					);
 				}
 			}
 
 			if (createdEntries.length > 0) {
 				const lastEntry = createdEntries[createdEntries.length - 1];
 				trackEvent("worktree_created");
-				onCreated(lastEntry.path, lastEntry.branch, repoName);
+				onCreated(lastEntry);
 			}
 
 			if (failures.length > 0) {
-				setError(failures.join("\n"));
+				if (createdEntries.length > 0) {
+					showClientError(failures.join("\n"));
+				} else {
+					setError(failures.join("\n"));
+				}
 			}
 		} finally {
 			setCreating(false);
 		}
-	}, [
-		selectedBranches,
-		selectedRepoPath,
-		allBranches,
-		baseBranch,
-		repoName,
-		onCreated,
-	]);
+	}, [selectedBranches, selectedRepoPath, allBranches, baseBranch, onCreated]);
 
 	const tabs: { mode: CreateMode; label: string; icon: React.ReactNode }[] = [
 		{ mode: "plain", label: "Plain", icon: <Plus className="size-3.5" /> },

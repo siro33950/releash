@@ -25,12 +25,17 @@ use crate::infrastructure::app_data_path::{AppDataPathObserver, NoopAppDataPathO
 pub(crate) struct ProductionAppDataComposition {
     app_data_dir: PathBuf,
     observer: Arc<dyn AppDataPathObserver>,
+    retry_limiter: Arc<crate::common::retry::RetryLimiter>,
 }
 
 impl ProductionAppDataComposition {
-    pub(crate) fn new(app_data_dir: PathBuf) -> Self {
+    pub(crate) fn new(
+        app_data_dir: PathBuf,
+        retry_limiter: Arc<crate::common::retry::RetryLimiter>,
+    ) -> Self {
         Self {
             app_data_dir,
+            retry_limiter,
             observer: Arc::new(NoopAppDataPathObserver),
         }
     }
@@ -43,6 +48,7 @@ impl ProductionAppDataComposition {
         Self {
             app_data_dir,
             observer,
+            retry_limiter: std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
         }
     }
 
@@ -52,7 +58,10 @@ impl ProductionAppDataComposition {
         Arc<LocalEventStore>,
         crate::adaptor::gateway::local_event_store::store::LocalEventStoreOpenError,
     > {
-        let mut config = LocalEventStoreConfig::production(self.app_data_dir.clone());
+        let mut config = LocalEventStoreConfig::production(
+            self.app_data_dir.clone(),
+            self.retry_limiter.clone(),
+        );
         config.path_observer = self.observer.clone();
         LocalEventStore::open(config)
     }
@@ -72,7 +81,7 @@ impl ProductionAppDataComposition {
         let file_system = StdGcFileSystem::with_observer(self.observer.clone());
         let inventory_file_system = file_system.clone();
         let app_data_dir = self.app_data_dir.clone();
-        let inventory = tokio::task::spawn_blocking(move || {
+        let inventory = crate::common::operation_context::spawn_blocking(move || {
             build_startup_gc_request(app_data_dir, shared_repo_paths, &inventory_file_system)
         })
         .await
@@ -106,7 +115,7 @@ impl ProductionAppDataComposition {
                 }
             };
 
-        tokio::task::spawn_blocking(move || {
+        crate::common::operation_context::spawn_blocking(move || {
             let mut report = crate::usecase::app_data_gc::sweep_startup_gc(
                 plan,
                 revalidated_runtime_protection,
@@ -727,7 +736,10 @@ async fn test_startup_gc結線_消失候補の未終了実行木をabortしてar
             Some(repo.path().to_string_lossy().into_owned());
     }
     fact_log::append_fact_batch_for_seed(&fixture.store, &facts.into_facts(), 1, id).unwrap();
-    let composition = ProductionAppDataComposition::new(fixture.directory.path().into());
+    let composition = ProductionAppDataComposition::new(
+        fixture.directory.path().into(),
+        std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
+    );
     // When
     let report = composition
         .run_startup_gc_pass(

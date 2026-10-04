@@ -4,16 +4,19 @@ use std::sync::Arc;
 use rusqlite::Connection;
 
 use super::CURRENT_SCHEMA_VERSION;
-use crate::adaptor::gateway::local_event_store::connection::open_existing_writer;
 use crate::adaptor::gateway::local_event_store::fault::FaultInjector;
 use crate::adaptor::gateway::local_event_store::layout::StoreLayout;
 use crate::adaptor::gateway::local_event_store::store::{
     LocalEventStore, LocalEventStoreConfig, LocalEventStoreOpenError,
 };
+use crate::infrastructure::local_event_store_connection::open_existing_writer;
 
 fn open_store(root: &Path) -> Arc<LocalEventStore> {
-    LocalEventStore::open(LocalEventStoreConfig::production(root.to_path_buf()))
-        .expect("file-backed local event store")
+    LocalEventStore::open(LocalEventStoreConfig::production(
+        root.to_path_buf(),
+        std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
+    ))
+    .expect("file-backed local event store")
 }
 
 fn database_path(root: &Path) -> PathBuf {
@@ -223,7 +226,11 @@ fn rewrite_as_supported_v1(connection: &Connection) {
 
 fn create_supported_store(root: &Path, version: i64) {
     drop(open_store(root));
-    let connection = open_existing_writer(&database_path(root)).unwrap();
+    let connection = open_existing_writer(
+        &database_path(root),
+        std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
+    )
+    .unwrap();
     restore_v7_schema(&connection);
     if version == 1 {
         rewrite_as_supported_v1(&connection);
@@ -269,12 +276,20 @@ fn test_schema_v5_新規作成と再起動で廃止schemaを作成しない() {
     let root = tempfile::TempDir::new().unwrap();
 
     drop(open_store(root.path()));
-    let connection = open_existing_writer(&database_path(root.path())).unwrap();
+    let connection = open_existing_writer(
+        &database_path(root.path()),
+        std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
+    )
+    .unwrap();
     assert_retired_schema_absent(&connection);
     drop(connection);
 
     drop(open_store(root.path()));
-    let connection = open_existing_writer(&database_path(root.path())).unwrap();
+    let connection = open_existing_writer(
+        &database_path(root.path()),
+        std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
+    )
+    .unwrap();
     assert_retired_schema_absent(&connection);
 }
 
@@ -282,7 +297,11 @@ fn test_schema_v5_新規作成と再起動で廃止schemaを作成しない() {
 fn test_schema_v7_v6からevent_type索引を追加してversionを更新する() {
     let root = tempfile::TempDir::new().unwrap();
     drop(open_store(root.path()));
-    let connection = open_existing_writer(&database_path(root.path())).unwrap();
+    let connection = open_existing_writer(
+        &database_path(root.path()),
+        std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
+    )
+    .unwrap();
     connection
         .execute_batch("DROP INDEX idx_node_events_event_type;")
         .unwrap();
@@ -291,7 +310,11 @@ fn test_schema_v7_v6からevent_type索引を追加してversionを更新する(
     drop(connection);
 
     drop(open_store(root.path()));
-    let connection = open_existing_writer(&database_path(root.path())).unwrap();
+    let connection = open_existing_writer(
+        &database_path(root.path()),
+        std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
+    )
+    .unwrap();
 
     assert_retired_schema_absent(&connection);
     let index_count: i64 = connection
@@ -312,7 +335,11 @@ fn test_schema_v5_supported_schema_v1からv4を開くと廃止schemaを削除�
         create_supported_store(root.path(), version);
 
         drop(open_store(root.path()));
-        let connection = open_existing_writer(&database_path(root.path())).unwrap();
+        let connection = open_existing_writer(
+            &database_path(root.path()),
+            std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
+        )
+        .unwrap();
         assert_retired_schema_absent(&connection);
         // v6: どのテーブルからも参照されなくなった commit 台帳（孤児）は
         // 廃止データと一緒に掃除される（D3）。
@@ -328,7 +355,11 @@ fn test_schema_v5_supported_schema_v1からv4を開くと廃止schemaを削除�
         drop(connection);
 
         drop(open_store(root.path()));
-        let connection = open_existing_writer(&database_path(root.path())).unwrap();
+        let connection = open_existing_writer(
+            &database_path(root.path()),
+            std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
+        )
+        .unwrap();
         assert_retired_schema_absent(&connection);
     }
 }
@@ -339,7 +370,10 @@ fn test_schema_v5_移行commit前の失敗ではv4と廃止dataを原子的に�
     create_supported_store(root.path(), 4);
     let fault = Arc::new(FaultInjector::new());
     fault.arm_schema_fail_before_commit();
-    let mut config = LocalEventStoreConfig::production(root.path().to_path_buf());
+    let mut config = LocalEventStoreConfig::production(
+        root.path().to_path_buf(),
+        std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
+    );
     config.fault = fault;
 
     let error = match LocalEventStore::open(config) {
@@ -347,7 +381,11 @@ fn test_schema_v5_移行commit前の失敗ではv4と廃止dataを原子的に�
         Err(error) => error,
     };
     assert_eq!(error, LocalEventStoreOpenError::SchemaEvolutionFailed);
-    let connection = open_existing_writer(&database_path(root.path())).unwrap();
+    let connection = open_existing_writer(
+        &database_path(root.path()),
+        std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
+    )
+    .unwrap();
     let version: i64 = connection
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .unwrap();
@@ -412,7 +450,11 @@ async fn test_schema_v8_未完了の終了記録があってもsession作成と�
             .await
             .unwrap();
         drop(store);
-        let connection = open_existing_writer(&database_path(directory.path())).unwrap();
+        let connection = open_existing_writer(
+            &database_path(directory.path()),
+            std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
+        )
+        .unwrap();
         restore_v7_schema(&connection);
         let commit_id: String = connection
             .query_row("SELECT commit_id FROM logical_commits LIMIT 1", [], |row| {
@@ -465,7 +507,11 @@ async fn test_schema_v8_未完了の終了記録があってもsession作成と�
             .unwrap();
         // Then
         assert!(repository.find("new").await.unwrap().is_some());
-        let connection = open_existing_writer(&database_path(directory.path())).unwrap();
+        let connection = open_existing_writer(
+            &database_path(directory.path()),
+            std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
+        )
+        .unwrap();
         super::validate_current_schema(&connection).unwrap();
         assert_eq!(
             connection
@@ -509,7 +555,11 @@ fn test_schema_v8_新規storeと再起動で用途を失ったmetadataを持た�
     // When / Then
     for _ in 0..2 {
         drop(open_store(root.path()));
-        let connection = open_existing_writer(&database_path(root.path())).unwrap();
+        let connection = open_existing_writer(
+            &database_path(root.path()),
+            std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
+        )
+        .unwrap();
         assert_eq!(
             super::table_columns(&connection, "store_metadata").unwrap(),
             [
@@ -530,7 +580,11 @@ fn test_schema_v8_移行失敗では旧metadataを残し再起動で必要な値
     // Given
     let root = tempfile::tempdir().unwrap();
     drop(open_store(root.path()));
-    let connection = open_existing_writer(&database_path(root.path())).unwrap();
+    let connection = open_existing_writer(
+        &database_path(root.path()),
+        std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
+    )
+    .unwrap();
     restore_v7_schema(&connection);
     let metadata = |connection: &Connection| -> (String, i64, i64, String) {
         connection.query_row("SELECT installation_id, created_at_ms, next_global_sequence, health FROM store_metadata", [], |row| {
@@ -541,7 +595,10 @@ fn test_schema_v8_移行失敗では旧metadataを残し再起動で必要な値
     drop(connection);
     let fault = Arc::new(FaultInjector::new());
     fault.arm_schema_fail_before_commit();
-    let mut config = LocalEventStoreConfig::production(root.path().to_path_buf());
+    let mut config = LocalEventStoreConfig::production(
+        root.path().to_path_buf(),
+        std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
+    );
     config.fault = fault;
     // When
     assert!(matches!(
@@ -549,7 +606,11 @@ fn test_schema_v8_移行失敗では旧metadataを残し再起動で必要な値
         Err(LocalEventStoreOpenError::SchemaEvolutionFailed)
     ));
     // Then
-    let connection = open_existing_writer(&database_path(root.path())).unwrap();
+    let connection = open_existing_writer(
+        &database_path(root.path()),
+        std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
+    )
+    .unwrap();
     assert_eq!(
         connection
             .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
@@ -567,7 +628,11 @@ fn test_schema_v8_移行失敗では旧metadataを残し再起動で必要な値
     }
     drop(connection);
     drop(open_store(root.path()));
-    let connection = open_existing_writer(&database_path(root.path())).unwrap();
+    let connection = open_existing_writer(
+        &database_path(root.path()),
+        std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
+    )
+    .unwrap();
     assert_eq!(metadata(&connection), before);
     super::validate_current_schema(&connection).unwrap();
 }

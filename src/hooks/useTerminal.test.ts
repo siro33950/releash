@@ -2073,8 +2073,13 @@ describe("useTerminal", () => {
 		);
 
 		const onTerminalReady = vi.fn();
+		const onTerminalError = vi.fn();
 		const { result } = renderHook(() =>
-			useTerminal(containerRef, { cwd: "/repo", onTerminalReady }),
+			useTerminal(containerRef, {
+				cwd: "/repo",
+				onTerminalReady,
+				onTerminalError,
+			}),
 		);
 		resolveSpawn({ session_key: "late-exit" });
 
@@ -2086,8 +2091,13 @@ describe("useTerminal", () => {
 			"\r\n\x1b[90m[Process exited with code 23]\x1b[0m\r\n",
 			expect.any(Function),
 		);
+		expect(mockTerminalInstance.options.disableStdin).toBe(true);
+		onTerminalError.mockClear();
 		mockInvoke.mockClear();
 		mockOnDataCallback("must not be written");
+		expect(onTerminalError).toHaveBeenCalledWith(
+			"Terminal process is not running",
+		);
 		expect(mockInvoke).not.toHaveBeenCalledWith(
 			"write_terminal_surface",
 			expect.anything(),
@@ -3773,8 +3783,8 @@ describe("useTerminal", () => {
 	});
 
 	describe("startup input buffer", () => {
-		it("1KiB超過分は警告つきで破棄しsnapshot後に超過前分だけ送出する", async () => {
-			const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+		it("1KiB超過分は画面へ失敗を通知して破棄しsnapshot後に超過前分だけ送出する", async () => {
+			const onTerminalError = vi.fn();
 			const attachResolvers: Array<() => void> = [];
 			const baseImplementation = mockInvoke.getMockImplementation();
 			mockInvoke.mockImplementation(
@@ -3788,14 +3798,14 @@ describe("useTerminal", () => {
 				},
 			);
 
-			renderHook(() => useTerminal(containerRef));
+			renderHook(() => useTerminal(containerRef, { onTerminalError }));
 			await waitFor(() => {
 				expect(mockStreams).toHaveLength(1);
 			});
 
 			mockOnDataCallback("a".repeat(1024));
 			mockOnDataCallback("x");
-			expect(warnSpy).toHaveBeenCalledWith(
+			expect(onTerminalError).toHaveBeenCalledWith(
 				expect.stringContaining("Discarding 1 chars"),
 			);
 
@@ -3828,7 +3838,65 @@ describe("useTerminal", () => {
 				"write_terminal_surface",
 				expect.objectContaining({ data: "x" }),
 			);
-			warnSpy.mockRestore();
+		});
+
+		it("入力をためていない起動完了で停止通知を最後の値にする", async () => {
+			const attachResolvers: Array<() => void> = [];
+			const baseImplementation = mockInvoke.getMockImplementation();
+			mockInvoke.mockImplementation(
+				(cmd: string, args?: Record<string, unknown>) => {
+					if (cmd === "start_state_subscription") {
+						return new Promise<void>((resolve) => {
+							attachResolvers.push(() => resolve());
+						});
+					}
+					return baseImplementation?.(cmd, args);
+				},
+			);
+
+			const onTerminalError = vi.fn();
+			const onTerminalReady = vi.fn();
+			renderHook(() =>
+				useTerminal(containerRef, { onTerminalError, onTerminalReady }),
+			);
+			await waitFor(() => {
+				expect(mockStreams).toHaveLength(1);
+			});
+
+			await waitFor(() => {
+				expect(attachResolvers).toHaveLength(1);
+			});
+			attachResolvers[0]();
+			mockStreams[0].onmessage({
+				type: "snapshot",
+				surface: {
+					processed_report_units: 5000,
+					session_key: "test-uuid-1234",
+					terminal_surface: { replay: "", sequence: 0, cols: 80, rows: 24 },
+					is_exited: true,
+					exit_code: 1,
+				},
+			});
+
+			await waitFor(() => {
+				expect(mockTerminalInstance.write).toHaveBeenCalledWith(
+					"\r\n\x1b[90m[Process exited with code 1]\x1b[0m\r\n",
+					expect.any(Function),
+				);
+			});
+			expect(mockInvoke).not.toHaveBeenCalledWith(
+				"write_terminal_surface",
+				expect.anything(),
+			);
+			expect(onTerminalError).toHaveBeenLastCalledWith(
+				"Terminal process is not running",
+			);
+			expect(mockTerminalInstance.options.disableStdin).toBe(true);
+			expect(mockTerminalInstance.write).toHaveBeenCalledWith(
+				"\r\nTerminal process is not running.\r\n",
+			);
+
+			expect(onTerminalReady).not.toHaveBeenCalled();
 		});
 
 		it("exited snapshotではbuffer済み入力を送出せず破棄する", async () => {
@@ -3880,7 +3948,14 @@ describe("useTerminal", () => {
 				"write_terminal_surface",
 				expect.anything(),
 			);
-			expect(onTerminalError).toHaveBeenCalledWith(null);
+			expect(onTerminalError).toHaveBeenLastCalledWith(
+				"Terminal failed to start; buffered input could not be sent",
+			);
+			expect(mockTerminalInstance.options.disableStdin).toBe(true);
+			expect(mockTerminalInstance.write).toHaveBeenCalledWith(
+				"\r\nTerminal process is not running.\r\n",
+			);
+
 			expect(onTerminalReady).not.toHaveBeenCalled();
 		});
 	});

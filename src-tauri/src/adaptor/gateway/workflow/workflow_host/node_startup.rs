@@ -81,11 +81,18 @@ impl NodeStartupGateway for HostNodeStartup<'_> {
         if *cancelled.borrow() {
             return false;
         }
-        tokio::select! {
-            biased;
-            _ = cancelled.changed() => false,
-            _ = tokio::time::sleep(duration) => true,
-        }
+        crate::common::operation_context::wait(
+            &crate::common::operation_context::current(),
+            async {
+                tokio::select! {
+                    biased;
+                    _ = cancelled.changed() => false,
+                    _ = tokio::time::sleep(duration) => true,
+                }
+            },
+        )
+        .await
+        .unwrap_or(false)
     }
 }
 

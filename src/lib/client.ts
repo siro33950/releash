@@ -186,7 +186,6 @@ export type StateValues = {
 	"agent-session":
 		| import("@/generated/client_types").AgentSessionItemDto
 		| null;
-	"session-node": string | null;
 	"session-history": import("@/generated/client_types").AgentSessionHistoryPageDto;
 	providers: import("@/generated/client_types").AgentSessionProviderDto[];
 	branches: import("@/generated/client_types").BranchDto[];
@@ -197,8 +196,9 @@ export type StateValues = {
 	"notion-tasks": import("@/generated/client_types").NotionTasksSnapshot;
 	"notion-label-options": import("@/generated/client_types").NotionLabelOptionsSnapshot;
 	worktrees: import("@/generated/client_types").WorktreeEntryDto[];
-	"repository-root": string | null;
-	"startup-repository": string | null;
+	"startup-repository":
+		| import("@/generated/client_types").StartupWorktree
+		| null;
 	"workspace-state":
 		| import("@/generated/client_types").WorkspaceStateDto
 		| null;

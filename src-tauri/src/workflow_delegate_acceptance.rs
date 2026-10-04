@@ -63,8 +63,11 @@ pub struct WorkflowDelegateAcceptanceHost {
 impl WorkflowDelegateAcceptanceHost {
     pub fn new(data_dir: &Path) -> Self {
         let work = crate::terminal_surface::initialize_background_work_for_acceptance();
-        let store =
-            LocalEventStore::open(LocalEventStoreConfig::production(data_dir.into())).unwrap();
+        let store = LocalEventStore::open(LocalEventStoreConfig::production(
+            data_dir.into(),
+            std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
+        ))
+        .unwrap();
         let archives = Arc::new(ExecutionTreeArchiveFactRepository::new(
             store.clone(),
             data_dir,

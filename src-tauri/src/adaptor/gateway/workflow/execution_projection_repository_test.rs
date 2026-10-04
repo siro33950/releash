@@ -57,6 +57,7 @@ async fn test_終端の隔離node出力_旧定義でも状態と同じ保存成�
                 let directory = tempfile::TempDir::new().unwrap();
                 let store = LocalEventStore::open(LocalEventStoreConfig::production(
                     directory.path().into(),
+                    std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
                 ))
                 .unwrap();
                 let id = "00000000-0000-4000-8000-000000001836";
@@ -208,9 +209,11 @@ async fn test_隔離合成子の出力取得_保存されない成果を一度�
     for kind in ["sequence", "fanout"] {
         // Given
         let directory = tempfile::TempDir::new().unwrap();
-        let store =
-            LocalEventStore::open(LocalEventStoreConfig::production(directory.path().into()))
-                .unwrap();
+        let store = LocalEventStore::open(LocalEventStoreConfig::production(
+            directory.path().into(),
+            std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
+        ))
+        .unwrap();
         let id = "00000000-0000-4000-8000-000000001733";
         let definition: WorkflowDefinition = serde_saphyr::from_str(&format!(
             "name: test\ndescription: test\nnodes:\n  main: {{worktree: isolated, {kind}: {{children: [work]}}}}\n  work: {{worktree: isolated, session: {{provider: codex}}}}"
@@ -410,8 +413,11 @@ fn test_成果の事実変換_旧隔離事実を状態入力に復活させず�
 async fn test_空の隔離fanout出力_保存事実を一度だけ読みstatusと同じ完了成果を返す() {
     // Given
     let directory = tempfile::TempDir::new().unwrap();
-    let store =
-        LocalEventStore::open(LocalEventStoreConfig::production(directory.path().into())).unwrap();
+    let store = LocalEventStore::open(LocalEventStoreConfig::production(
+        directory.path().into(),
+        std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
+    ))
+    .unwrap();
     let id = "00000000-0000-4000-8000-000000001733";
     let definition: WorkflowDefinition = serde_saphyr::from_str("name: test\ndescription: test\nnodes:\n  main: {worktree: isolated, fanout: {items: [], children: [work]}}\n  work: {session: {provider: codex}}").unwrap();
     fact_log::append_facts_for_events(
@@ -540,8 +546,11 @@ async fn test_execution読取_実経路で失敗分類を保持する() {
     use crate::adaptor::presenter::connect::classified_error;
     // Given
     let directory = tempfile::tempdir().unwrap();
-    let store =
-        LocalEventStore::open(LocalEventStoreConfig::production(directory.path().into())).unwrap();
+    let store = LocalEventStore::open(LocalEventStoreConfig::production(
+        directory.path().into(),
+        std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
+    ))
+    .unwrap();
     let repository = WorkflowExecutionProjectionLogRepository::new(store.clone());
     let id = ExecutionTreeId::new("00000000-0000-4000-8000-000000000001").unwrap();
     for (failure, expected) in ReadFailure::cases() {

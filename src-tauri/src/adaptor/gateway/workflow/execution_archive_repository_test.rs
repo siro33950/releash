@@ -10,8 +10,11 @@ fn fixture() -> (
     NodeFactMeta,
 ) {
     let directory = tempfile::tempdir().unwrap();
-    let store =
-        LocalEventStore::open(LocalEventStoreConfig::production(directory.path().into())).unwrap();
+    let store = LocalEventStore::open(LocalEventStoreConfig::production(
+        directory.path().into(),
+        std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
+    ))
+    .unwrap();
     let facts = SessionExecutionTreeRootFacts::new(
         "00000000-0000-4000-8000-000000000001",
         "/repo",
@@ -441,6 +444,7 @@ async fn test_repository所属の記録_追記を繰り返さず再読込後も�
     let reader = ExecutionTreeArchiveFactRepository::from_backend(FactLogReadBackend::ReadOnly(
         crate::adaptor::gateway::local_event_store::read_only::LocalEventReadStore::open(
             directory.path(),
+            std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
         )
         .unwrap(),
     ));
@@ -501,6 +505,7 @@ async fn test_repository所属の記録_読取専用では保存失敗を返す(
     let reader = ExecutionTreeArchiveFactRepository::from_backend(FactLogReadBackend::ReadOnly(
         crate::adaptor::gateway::local_event_store::read_only::LocalEventReadStore::open(
             directory.path(),
+            std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
         )
         .unwrap(),
     ));

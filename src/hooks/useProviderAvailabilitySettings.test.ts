@@ -4,12 +4,7 @@ import { stateSubscriptions } from "@/test/stateSubscriptions";
 import { useProviderAvailabilitySettings } from "./useProviderAvailabilitySettings";
 
 const states = stateSubscriptions();
-const savedExecutable = (_command: string, args?: unknown) =>
-	Promise.resolve(
-		(args && typeof args === "object" && "executable" in args
-			? String(args.executable).trim()
-			: null) as never,
-	);
+const savedExecutable = () => Promise.resolve(null as never);
 vi.mock("@/lib/client", async (importOriginal) => ({
 	...(await importOriginal<typeof import("@/lib/client")>()),
 	invokeClient: vi.fn(),
@@ -57,6 +52,7 @@ describe("useProviderAvailabilitySettings", () => {
 			displayName: "Claude",
 			defaultExecutable: "claude",
 			configuredExecutable: null,
+			configurationRevision: 0,
 			effectiveExecutable: "claude",
 			available: true,
 			resolvedExecutable: "/usr/bin/claude",
@@ -81,6 +77,7 @@ describe("useProviderAvailabilitySettings", () => {
 			displayName: "Claude",
 			defaultExecutable: "claude",
 			configuredExecutable: "/custom/claude",
+			configurationRevision: 0,
 			effectiveExecutable: "/custom/claude",
 			available: true,
 			resolvedExecutable: "/custom/claude",
@@ -91,6 +88,7 @@ describe("useProviderAvailabilitySettings", () => {
 			displayName: "Codex",
 			defaultExecutable: "codex",
 			configuredExecutable: null,
+			configurationRevision: 0,
 			effectiveExecutable: "codex",
 			available: true,
 			resolvedExecutable: "/bin/codex",
@@ -109,6 +107,7 @@ describe("useProviderAvailabilitySettings", () => {
 					{
 						...claude,
 						configuredExecutable: null,
+						configurationRevision: 0,
 						effectiveExecutable: "claude",
 					},
 					codex,
@@ -128,6 +127,7 @@ describe("useProviderAvailabilitySettings", () => {
 			displayName: id,
 			defaultExecutable: id,
 			configuredExecutable,
+			configurationRevision: 0,
 			effectiveExecutable: configuredExecutable ?? id,
 			available: true,
 			resolvedExecutable: `/bin/${id}`,
@@ -172,6 +172,7 @@ describe("useProviderAvailabilitySettings", () => {
 			displayName: "Claude",
 			defaultExecutable: "claude",
 			configuredExecutable: "/custom/claude",
+			configurationRevision: 0,
 			effectiveExecutable: "/custom/claude",
 			available: true,
 			resolvedExecutable: "/custom/claude",
@@ -203,6 +204,7 @@ describe("useProviderAvailabilitySettings", () => {
 			displayName: "Claude",
 			defaultExecutable: "claude",
 			configuredExecutable: "/x",
+			configurationRevision: 0,
 			effectiveExecutable: "/x",
 			available: true,
 			resolvedExecutable: "/x",
@@ -223,7 +225,9 @@ describe("useProviderAvailabilitySettings", () => {
 			save = result.current.save();
 		});
 		act(() =>
-			states.publish("provider-availability", { providers: [{ ...provider }] }),
+			states.publish("provider-availability", {
+				providers: [{ ...provider, configurationRevision: 1 }],
+			}),
 		);
 		expect(result.current.drafts.claude).toBe(" /x ");
 		await act(async () => {
@@ -234,13 +238,14 @@ describe("useProviderAvailabilitySettings", () => {
 		expect(result.current.isDirty).toBe(false);
 	});
 
-	it("保存前と同じ値へ正規化されて購読が届かなくても保存済み入力に揃える", async () => {
+	it("同じ設定への正規化保存も購読revisionで同期し再保存しない", async () => {
 		const { invokeClient } = await import("@/lib/client");
 		const provider = {
 			provider: "claude",
 			displayName: "Claude",
 			defaultExecutable: "claude",
 			configuredExecutable: "/x",
+			configurationRevision: 0,
 			effectiveExecutable: "/x",
 			available: true,
 			resolvedExecutable: "/x",
@@ -253,6 +258,13 @@ describe("useProviderAvailabilitySettings", () => {
 		act(() => result.current.setExecutable("claude", " /x "));
 		expect(result.current.isDirty).toBe(true);
 		await act(async () => result.current.save());
+		expect(result.current.drafts.claude).toBe(" /x ");
+		expect(result.current.isDirty).toBe(true);
+		act(() =>
+			states.publish("provider-availability", {
+				providers: [{ ...provider, configurationRevision: 1 }],
+			}),
+		);
 		expect(result.current.drafts.claude).toBe("/x");
 		expect(result.current.isDirty).toBe(false);
 		vi.mocked(invokeClient).mockClear();
@@ -267,6 +279,7 @@ describe("useProviderAvailabilitySettings", () => {
 			displayName: id,
 			defaultExecutable: id,
 			configuredExecutable,
+			configurationRevision: 0,
 			effectiveExecutable: configuredExecutable ?? id,
 			available: true,
 			resolvedExecutable: configuredExecutable,
@@ -276,12 +289,12 @@ describe("useProviderAvailabilitySettings", () => {
 			providers: [provider("claude", null), provider("codex", null)],
 		});
 		let resolveCodex!: (value: string) => void;
-		vi.mocked(invokeClient).mockImplementation((command, args) =>
+		vi.mocked(invokeClient).mockImplementation((_command, args) =>
 			args && "provider" in args && args.provider === "codex"
 				? (new Promise<string>((done) => {
 						resolveCodex = done;
 					}) as never)
-				: savedExecutable(command, args),
+				: savedExecutable(),
 		);
 		const { result } = renderHook(() => useProviderAvailabilitySettings(true));
 		await waitFor(() => expect(result.current.providers).toHaveLength(2));
@@ -324,6 +337,7 @@ describe("useProviderAvailabilitySettings", () => {
 				displayName: id,
 				defaultExecutable: id,
 				configuredExecutable,
+				configurationRevision: 0,
 				effectiveExecutable: configuredExecutable ?? id,
 				available: true,
 				resolvedExecutable: null,
@@ -370,6 +384,51 @@ describe("useProviderAvailabilitySettings", () => {
 				claude: "/draft/claude",
 				codex: "/draft/codex",
 			});
+		},
+	);
+	it.each([false, true])(
+		"同じ設定への保存で追加編集した入力は保持する: subscriptionFirst=%s",
+		async (subscriptionFirst) => {
+			const { invokeClient } = await import("@/lib/client");
+			const provider = {
+				provider: "claude",
+				displayName: "Claude",
+				defaultExecutable: "claude",
+				configuredExecutable: "/x",
+				configurationRevision: 0,
+				effectiveExecutable: "/x",
+				available: true,
+				resolvedExecutable: "/x",
+				unavailableReason: null,
+			};
+			states.publish("provider-availability", { providers: [provider] });
+			let complete!: () => void;
+			vi.mocked(invokeClient).mockReturnValue(
+				new Promise((resolve) => {
+					complete = () => resolve(null as never);
+				}) as never,
+			);
+			const { result } = renderHook(() =>
+				useProviderAvailabilitySettings(true),
+			);
+			act(() => result.current.setExecutable("claude", " /x "));
+			let save!: Promise<void>;
+			act(() => {
+				save = result.current.save();
+			});
+			act(() => result.current.setExecutable("claude", "/additional"));
+			const publish = () =>
+				states.publish("provider-availability", {
+					providers: [{ ...provider, configurationRevision: 1 }],
+				});
+			if (subscriptionFirst) act(publish);
+			await act(async () => {
+				complete();
+				await save;
+			});
+			if (!subscriptionFirst) act(publish);
+			expect(result.current.drafts.claude).toBe("/additional");
+			expect(result.current.isDirty).toBe(true);
 		},
 	);
 });

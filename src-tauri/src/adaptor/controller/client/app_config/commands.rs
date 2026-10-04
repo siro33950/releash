@@ -4,7 +4,7 @@ use std::sync::Arc;
 use crate::usecase::app_config::{AppConfigUsecase, WorkflowConfigInput};
 
 fn map_join_error(error: tokio::task::JoinError) -> AppError {
-    AppError::new(format!("task join error: {error}"))
+    AppError::from_failure(crate::domain::failure::TechnicalFailure::from(error))
 }
 
 pub(crate) async fn update_performance_telemetry_shared(

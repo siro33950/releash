@@ -213,7 +213,7 @@ fn test_mainでstoreだった経路_httpとconnectのコードを保持する() 
     for (error, code) in cases {
         assert!(matches!(error, WorkflowError::Store(_)));
         assert_eq!(error.connect_code(), code);
-        assert_eq!(ApiError::from(error).status.as_u16(), 503);
+        assert_eq!(ApiError::from(error).status, code.http_status());
     }
 
     let runtime = WorkflowRuntimeError::Store(
@@ -225,7 +225,10 @@ fn test_mainでstoreだった経路_httpとconnectのコードを保持する() 
         panic!("runtime error must stay in Store");
     };
     let workflow = WorkflowError::Store(failure);
-    assert_eq!(ApiError::from(workflow).status.as_u16(), 503);
+    assert_eq!(
+        ApiError::from(workflow).status,
+        ErrorCode::Aborted.http_status()
+    );
 
     let owned = AgentSessionRepositoryError::ProviderSessionAlreadyOwned {
         agent_session_id: "owner".into(),
@@ -234,5 +237,8 @@ fn test_mainでstoreだった経路_httpとconnectのコードを保持する() 
         owned.into(),
     );
     assert_eq!(ingress.connect_code(), ErrorCode::FailedPrecondition);
-    assert_eq!(ApiError::from(ingress).status.as_u16(), 503);
+    assert_eq!(
+        ApiError::from(ingress).status,
+        ErrorCode::FailedPrecondition.http_status()
+    );
 }

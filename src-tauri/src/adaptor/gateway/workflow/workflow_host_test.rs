@@ -372,9 +372,11 @@ async fn test_workflow永続化_本番構成で起動から完了とabortまで�
     for status in [ExecutionStatus::Completed, ExecutionStatus::Aborted] {
         // Given
         let directory = tempfile::tempdir().unwrap();
-        let store =
-            LocalEventStore::open(LocalEventStoreConfig::production(directory.path().into()))
-                .unwrap();
+        let store = LocalEventStore::open(LocalEventStoreConfig::production(
+            directory.path().into(),
+            std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
+        ))
+        .unwrap();
         let app = test_helpers::dependencies(Some(store.clone()));
         let query = SqliteWorkspaceQueryService::with_repository(
             SqliteWorkspaceTreeRepository::new(store.clone()),
@@ -1571,6 +1573,7 @@ async fn assert_legacy_linked_worktree_gc(remove_directory: bool, remove_before_
             fact_log::FactLogReadBackend::ReadOnly(
                 crate::adaptor::gateway::local_event_store::read_only::LocalEventReadStore::open(
                     fixture.directory.path(),
+                    std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
                 )
                 .unwrap(),
             ),
@@ -3902,4 +3905,90 @@ async fn test_provider停止_完了済みworkflowと単独sessionはプロセス
         node_signals(&fixture.store, standalone_id, standalone_id).await,
         standalone_before
     );
+}
+
+#[tokio::test]
+async fn test_command完了監視_起動元の期限後も完了を反映して監視を外す() {
+    use crate::common::operation_context::{self, OperationStopped};
+    use std::time::{Duration, Instant};
+    // Given
+    let fixture = test_helpers::Fixture::new(0);
+    let cwd = fixture._directory.path().to_str().unwrap();
+    let snapshot = fixture
+        .persist_started("  main: {command: true}", cwd)
+        .await;
+    let mut input = command_input(&snapshot);
+    input.raw_command = Some("while [ ! -f release ]; do sleep 0.01; done; printf done".into());
+    let id = input.node_execution_id.clone();
+    let deadline = Instant::now() + Duration::from_millis(300);
+    let context = operation_context::ingress(Some(deadline), async {
+        fixture
+            .host
+            .spawn_command_execution(&fixture.app, input)
+            .await
+            .unwrap();
+        operation_context::current()
+    })
+    .await
+    .unwrap();
+    assert!(fixture
+        .host
+        .command_completion_observers
+        .lock()
+        .await
+        .contains_key(&id));
+    // When
+    tokio::time::sleep(deadline.saturating_duration_since(Instant::now())).await;
+    assert_eq!(
+        context.check(Instant::now()),
+        Err(OperationStopped::Expired)
+    );
+    std::fs::write(fixture._directory.path().join("release"), "").unwrap();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if !fixture
+                .host
+                .command_completion_observers
+                .lock()
+                .await
+                .contains_key(&id)
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    // Then
+    let records = workflow_fact_log::read_tree_records(&fixture.store, &snapshot.execution_id)
+        .await
+        .unwrap();
+    assert!(records
+        .iter()
+        .any(|record| record.meta.node_execution_id == id
+            && matches!(
+                record.fact,
+                crate::domain::workflow::NodeFact::ProcessExited(_)
+            )));
+    let folded = workflow_fact_log::fold_tree_from(
+        &workflow_fact_log::FactLogReadBackend::Live(fixture.store.clone()),
+        &snapshot.execution_id,
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let node = folded
+        .aggregate
+        .node_executions
+        .iter()
+        .find(|node| node.id == id)
+        .unwrap();
+    assert_eq!(node.status, NodeExecutionStatus::Succeeded);
+    assert!(fixture
+        .host
+        .command_completion_observers
+        .lock()
+        .await
+        .is_empty());
 }

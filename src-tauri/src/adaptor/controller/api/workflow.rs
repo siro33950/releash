@@ -333,9 +333,9 @@ async fn blocking<T>(
 where
     T: Send + 'static,
 {
-    tokio::task::spawn_blocking(task)
+    crate::common::operation_context::spawn_blocking(task)
         .await
-        .map_err(|error| ApiError::internal(format!("workflow query task failed: {error}")))?
+        .map_err(|error| ApiError::from(crate::domain::failure::TechnicalFailure::from(error)))?
         .map_err(ApiError::from)
 }
 

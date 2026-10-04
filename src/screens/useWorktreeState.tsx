@@ -60,11 +60,8 @@ export function useWorktreeState({
 	const { stage, unstage, createBranch } = useGitActions();
 	const [git, dispatchGit] = useReducer(gitReducer, {
 		gitError: null,
-		refreshKey: 0,
 	});
-	const { gitError, refreshKey: gitRefreshKey } = git;
-
-	const refreshGit = useCallback(() => dispatchGit({ type: "REFRESH" }), []);
+	const { gitError } = git;
 
 	const [ui, dispatchUI] = useReducer(uiReducer, initialUIState);
 	const { isSettingsOpen, showCreateBranch, newBranchName } = ui;
@@ -89,7 +86,6 @@ export function useWorktreeState({
 		stage,
 		unstage,
 		createBranch,
-		refreshGit,
 		newBranchName,
 		dispatchGit,
 		dispatchUI,
@@ -141,8 +137,6 @@ export function useWorktreeState({
 		dispatchGit,
 		gitActions,
 		registerDropZone,
-		refreshGit,
-		gitRefreshKey,
 		onSettingsSave,
 		settings,
 		rootPath,

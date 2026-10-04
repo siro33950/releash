@@ -282,6 +282,7 @@ impl StandaloneLaunchRequestRegistry {
 
 pub(crate) struct AgentSessionLaunchUsecase {
     performance: Arc<dyn crate::usecase::telemetry::PerformanceOutput>,
+    workspace_trees: Arc<dyn crate::domain::workspace_tree::WorkspaceTreeRepository>,
     sessions: Arc<AgentSessionUsecase>,
     lifecycle: Arc<ProviderLifecycleUsecase>,
     availability: Arc<dyn ProviderAvailabilityReader>,
@@ -346,6 +347,7 @@ impl AgentSessionLaunchUsecase {
         hook_health: Arc<ProviderHookHealthUsecase>,
         execution_trees: Arc<dyn AgentSessionLaunchExecutionTrees>,
         retention: tokio::sync::mpsc::UnboundedSender<LaunchRetention>,
+        workspace_trees: Arc<dyn crate::domain::workspace_tree::WorkspaceTreeRepository>,
     ) -> Self {
         let ProviderAgentRuntime {
             availability,
@@ -353,6 +355,7 @@ impl AgentSessionLaunchUsecase {
             terminal,
         } = provider_runtime;
         Self {
+            workspace_trees,
             activated: retention,
             performance,
             sessions,
@@ -368,6 +371,60 @@ impl AgentSessionLaunchUsecase {
             activated_workflow_launches: Arc::new(Mutex::new(HashMap::new())),
             hook_health_tasks: std::sync::Mutex::new(Vec::new()),
         }
+    }
+
+    pub(crate) async fn launch_standalone_selection(
+        self: Arc<Self>,
+        request: AgentSessionLaunchRequest,
+    ) -> Result<
+        (String, crate::domain::workspace_tree::WorkspaceTreeNode),
+        AgentSessionLaunchUsecaseError,
+    > {
+        let id = self.clone().launch_standalone_idempotent(request).await?;
+        let session = self
+            .sessions
+            .find(&id)
+            .await
+            .map_err(map_session_error)?
+            .ok_or(AgentSessionLaunchUsecaseError::Corrupt)?;
+        let node = self
+            .workspace_trees
+            .load_node_by_session_id(session.session().workspace(), &id)
+            .await
+            .map_err(|error| match error {
+                crate::domain::local_event::LocalEventQueryError::Technical(error) => {
+                    AgentSessionLaunchUsecaseError::Technical(error)
+                }
+                error => AgentSessionLaunchUsecaseError::Store(error.into()),
+            })?
+            .ok_or(AgentSessionLaunchUsecaseError::Corrupt)?;
+        Ok((id, node))
+    }
+
+    pub(crate) async fn resume_history_selection(
+        self: &Arc<Self>,
+        request: AgentSessionHistoryResumeRequest,
+    ) -> Result<
+        (String, crate::domain::workspace_tree::WorkspaceTreeNode),
+        AgentSessionLaunchUsecaseError,
+    > {
+        let session = match self.resume_history(request).await? {
+            AgentSessionHistoryResumeOutcome::Open(session)
+            | AgentSessionHistoryResumeOutcome::Paused(session) => session,
+        };
+        let id = session.session().id();
+        let node = self
+            .workspace_trees
+            .load_node_by_session_id(session.session().workspace(), id)
+            .await
+            .map_err(|error| match error {
+                crate::domain::local_event::LocalEventQueryError::Technical(error) => {
+                    AgentSessionLaunchUsecaseError::Technical(error)
+                }
+                error => AgentSessionLaunchUsecaseError::Store(error.into()),
+            })?
+            .ok_or(AgentSessionLaunchUsecaseError::Corrupt)?;
+        Ok((id.to_string(), node))
     }
 
     pub(crate) async fn launch_standalone_idempotent(

@@ -73,8 +73,7 @@ async fn test_ターミナル保存_間隔の後に一度だけ保存し失敗�
     // Then
     assert_eq!(flushes.calls.load(Ordering::SeqCst), 2);
     let records = store.records("terminal");
-    assert_eq!(records.len(), 1);
-    assert!(!records[0].record.active);
+    assert!(records.is_empty());
 }
 
 #[tokio::test(start_paused = true)]
@@ -98,18 +97,14 @@ async fn test_ターミナル保存_停止分類の失敗後は新しい出力�
         tokio::time::sleep(Duration::from_secs(1)).await;
         // When / Then
         assert_eq!(flushes.calls.load(Ordering::SeqCst), 1);
-        assert_eq!(
-            store.records("terminal")[0].requires_attention,
-            kind != Failure::Technical(TechnicalFailureNature::Cancelled)
-        );
+        assert!(store.records("terminal").is_empty());
         tokio::time::sleep(Duration::from_secs(60)).await;
         assert_eq!(flushes.calls.load(Ordering::SeqCst), 1);
         dirty("terminal");
         tokio::time::sleep(Duration::from_secs(1)).await;
         assert_eq!(flushes.calls.load(Ordering::SeqCst), 2);
         let records = store.records("terminal");
-        assert_eq!(records[0].record.count, 1);
-        assert!(!records[0].requires_attention);
+        assert!(records.is_empty());
     }
 }
 
