@@ -854,8 +854,7 @@ impl WorkflowRuntimeHost {
         request: Option<String>,
         created_from: ExecutionOrigin,
     ) -> Result<String, WorkflowRuntimeError> {
-        self.start_workflow(app, workflow, worktree_path, request, created_from)
-            .await
+        Box::pin(self.start_workflow(app, workflow, worktree_path, request, created_from)).await
     }
 
     async fn commit_control_plane_candidate(
