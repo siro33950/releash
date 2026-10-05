@@ -23,43 +23,43 @@ where
 }
 
 pub(crate) use errors::CommandFailure;
-#[cfg(any(test, all(debug_assertions, feature = "desktop")))]
+#[cfg(any(test, debug_assertions))]
 mod json;
 mod workflow_values;
 
-#[cfg(any(test, all(debug_assertions, feature = "desktop")))]
+#[cfg(any(test, debug_assertions))]
 pub(crate) use self::json::from_message;
-#[cfg(any(test, all(debug_assertions, feature = "desktop")))]
+#[cfg(any(test, debug_assertions))]
 use self::json::to_message;
-#[cfg(any(test, all(debug_assertions, feature = "desktop")))]
+#[cfg(any(test, debug_assertions))]
 use serde_json::Value as Json;
 
 include!(concat!(env!("OUT_DIR"), "/releash.client.v1.rs"));
 include!(concat!(env!("OUT_DIR"), "/client_commands.rs"));
 
-#[cfg(any(test, all(debug_assertions, feature = "desktop")))]
+#[cfg(any(test, debug_assertions))]
 pub trait ClientValue {
     fn into_json(self) -> Result<Json, String>;
 }
-#[cfg(any(test, all(debug_assertions, feature = "desktop")))]
+#[cfg(any(test, debug_assertions))]
 impl<T: ClientValue> ClientValue for Box<T> {
     fn into_json(self) -> Result<Json, String> {
         (*self).into_json()
     }
 }
-#[cfg(any(test, all(debug_assertions, feature = "desktop")))]
+#[cfg(any(test, debug_assertions))]
 impl ClientValue for CommandResult {
     fn into_json(self) -> Result<Json, String> {
         self.into_value().map(|(_, value)| value)
     }
 }
-#[cfg(any(test, all(debug_assertions, feature = "desktop")))]
+#[cfg(any(test, debug_assertions))]
 impl ClientValue for CommandError {
     fn into_json(self) -> Result<Json, String> {
         from_message("releash.client.v1.CommandError", &self)
     }
 }
-#[cfg(any(test, all(debug_assertions, feature = "desktop")))]
+#[cfg(any(test, debug_assertions))]
 pub fn from_value(value: impl ClientValue) -> Result<Json, String> {
     value.into_json()
 }

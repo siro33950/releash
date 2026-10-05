@@ -96,7 +96,7 @@ impl LocalApiServerBinding {
         self.token.clone()
     }
 
-    #[cfg(any(test, all(debug_assertions, feature = "desktop")))]
+    #[cfg(any(test, debug_assertions))]
     pub(crate) fn terminal_bearer_token(&self) -> Arc<str> {
         self.terminal_token.token()
     }
@@ -105,7 +105,7 @@ impl LocalApiServerBinding {
         self.terminal_token.clone()
     }
 
-    #[cfg(any(test, all(debug_assertions, feature = "desktop")))]
+    #[cfg(any(test, debug_assertions))]
     pub(crate) fn port(&self) -> u16 {
         self.port
     }

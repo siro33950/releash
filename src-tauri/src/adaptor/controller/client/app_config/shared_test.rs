@@ -2,23 +2,22 @@ use super::*;
 use crate::test_support::state_subscription::StateReadsFixture;
 use crate::usecase::application_startup::ApplicationStartupAuthority;
 use crate::usecase::state_subscription::SubscriptionTarget;
-use tauri::Manager;
 
 fn workflow_config_controller(
     app_config_usecase: Option<std::sync::Arc<crate::usecase::app_config::AppConfigUsecase>>,
-) -> (tauri::App<tauri::test::MockRuntime>, ClientCommandDispatch) {
-    let (app, _data, _store) =
+) -> (
+    crate::adaptor::controller::client::workflow::tests::WorkflowTestDependencies,
+    ClientCommandDispatch,
+) {
+    let (mut app, _data, _store) =
         crate::adaptor::controller::client::workflow::tests::make_read_only_app();
-    app.manage(std::sync::Arc::new(
-        crate::infrastructure::file_watcher::FileWatcherManager::default(),
-    ));
-    let mut deps = crate::desktop_test_support::build_client_dependencies(app.handle());
+    let deps = &mut app.client;
     if let Some(usecase) = app_config_usecase {
         deps.app_config_usecase = Some(usecase);
     }
     let mut controller =
         ClientCommandDispatch::new(std::sync::Arc::new(ApplicationStartupAuthority::ready()));
-    register_shared(&mut controller, &deps);
+    register_shared(&mut controller, deps);
     (app, controller)
 }
 

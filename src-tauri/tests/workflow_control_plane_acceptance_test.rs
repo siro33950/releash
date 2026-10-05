@@ -67,17 +67,11 @@ fn install_fixture_executable(
     executable
 }
 
-fn host(
-    root: &Path,
-    input_lines: usize,
-) -> WorkflowControlPlaneAcceptanceHost<tauri::test::MockRuntime> {
+fn host(root: &Path, input_lines: usize) -> WorkflowControlPlaneAcceptanceHost {
     configured_host(root, input_lines)
 }
 
-fn configured_host(
-    root: &Path,
-    input_lines: usize,
-) -> WorkflowControlPlaneAcceptanceHost<tauri::test::MockRuntime> {
+fn configured_host(root: &Path, input_lines: usize) -> WorkflowControlPlaneAcceptanceHost {
     git2::Repository::init(root).unwrap();
     let bin = root.join("bin");
     std::fs::create_dir_all(&bin).unwrap();
@@ -93,9 +87,6 @@ fn configured_host(
         AcceptanceProvider::Codex,
         input_lines,
     );
-    let app = tauri::test::mock_builder()
-        .build(tauri::test::mock_context(tauri::test::noop_assets()))
-        .unwrap();
     let config = AgentSessionTuiAcceptanceConfig {
         data_dir: root.join("releash-data"),
         claude_executable: Some(claude),
@@ -105,7 +96,7 @@ fn configured_host(
         claude_config_dir: root.join("claude-home"),
         codex_home: root.join("codex-home"),
     };
-    WorkflowControlPlaneAcceptanceHost::start(config, app).unwrap()
+    WorkflowControlPlaneAcceptanceHost::start(config).unwrap()
 }
 
 fn owner(worktree_path: &str, session_id: &str) -> TerminalSurfaceOwnerV1 {
@@ -141,7 +132,7 @@ async fn receive_until_all(attachment: &mut TerminalSurfaceWireAttachment, needl
 }
 
 async fn send_hook(
-    host: &WorkflowControlPlaneAcceptanceHost<tauri::test::MockRuntime>,
+    host: &WorkflowControlPlaneAcceptanceHost,
     terminal: &mut TerminalSurfaceWireAttachment,
     owner: &TerminalSurfaceOwnerV1,
     payload: serde_json::Value,
@@ -176,7 +167,7 @@ async fn send_hook(
 }
 
 async fn wait_for_execution_status(
-    host: &WorkflowControlPlaneAcceptanceHost<tauri::test::MockRuntime>,
+    host: &WorkflowControlPlaneAcceptanceHost,
     execution_id: &str,
     status: AcceptanceWorkflowExecutionStatus,
 ) {
@@ -198,7 +189,7 @@ async fn wait_for_execution_status(
 }
 
 async fn wait_for_agent_session_lifecycle(
-    host: &WorkflowControlPlaneAcceptanceHost<tauri::test::MockRuntime>,
+    host: &WorkflowControlPlaneAcceptanceHost,
     agent_session_id: &str,
     lifecycle: AcceptanceAgentSessionLifecycle,
 ) {
@@ -220,7 +211,7 @@ async fn wait_for_agent_session_lifecycle(
 }
 
 async fn associate_provider_session(
-    host: &WorkflowControlPlaneAcceptanceHost<tauri::test::MockRuntime>,
+    host: &WorkflowControlPlaneAcceptanceHost,
     terminal: &mut TerminalSurfaceWireAttachment,
     owner: &TerminalSurfaceOwnerV1,
     provider_session_id: &str,
@@ -239,7 +230,7 @@ async fn associate_provider_session(
 }
 
 async fn emit_provider_stop(
-    host: &WorkflowControlPlaneAcceptanceHost<tauri::test::MockRuntime>,
+    host: &WorkflowControlPlaneAcceptanceHost,
     terminal: &mut TerminalSurfaceWireAttachment,
     owner: &TerminalSurfaceOwnerV1,
     provider_session_id: &str,
@@ -258,7 +249,7 @@ async fn emit_provider_stop(
 }
 
 async fn emit_provider_working(
-    host: &WorkflowControlPlaneAcceptanceHost<tauri::test::MockRuntime>,
+    host: &WorkflowControlPlaneAcceptanceHost,
     terminal: &mut TerminalSurfaceWireAttachment,
     owner: &TerminalSurfaceOwnerV1,
     provider_session_id: &str,
@@ -277,7 +268,7 @@ async fn emit_provider_working(
 }
 
 async fn wait_for_node_count(
-    host: &WorkflowControlPlaneAcceptanceHost<tauri::test::MockRuntime>,
+    host: &WorkflowControlPlaneAcceptanceHost,
     execution_id: &str,
     count: usize,
 ) -> releash_lib::workflow_control_plane_acceptance::AcceptanceWorkflowExecution {
@@ -315,7 +306,7 @@ fn leaf_nodes(execution: &AcceptanceWorkflowExecution) -> Vec<AcceptanceNodeExec
 }
 
 async fn wait_for_leaf_session_attachment(
-    host: &WorkflowControlPlaneAcceptanceHost<tauri::test::MockRuntime>,
+    host: &WorkflowControlPlaneAcceptanceHost,
     execution_id: &str,
     leaf_index: usize,
 ) -> String {

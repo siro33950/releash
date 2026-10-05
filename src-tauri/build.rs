@@ -20,7 +20,7 @@ fn generate_client_protocol() {
     for message in ["CommandRequest", "CommandResult"] {
         config.message_attribute(
             format!(".releash.client.v1.{message}"),
-            "#[cfg(any(test, all(debug_assertions, feature = \"desktop\")))]",
+            "#[cfg(any(test, debug_assertions))]",
         );
     }
     for field in [
@@ -46,7 +46,7 @@ fn generate_client_protocol() {
         ("CommandResult", "command_result"),
     ] {
         let descriptor = messages.iter().find(|item| item.name() == message).unwrap();
-        let harness_only = "#[cfg(any(test, all(debug_assertions, feature = \"desktop\")))] ";
+        let harness_only = "#[cfg(any(test, debug_assertions))] ";
         let decode_test = if message == "CommandRequest" {
             "#[cfg(test)] "
         } else {

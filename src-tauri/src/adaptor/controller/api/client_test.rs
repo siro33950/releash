@@ -1116,11 +1116,7 @@ async fn test_terminal購読_connectの後段配線と差分再開と流量停�
         crate::adaptor::controller::client::workflow::tests::make_read_only_app_with_terminal(
             terminal.clone(),
         );
-    use tauri::Manager;
-    app.manage(Arc::new(
-        crate::infrastructure::file_watcher::FileWatcherManager::default(),
-    ));
-    let mut dependencies = crate::desktop_test_support::build_client_dependencies(app.handle());
+    let mut dependencies = app.client;
     dependencies.workflow_runtime_usecase = Some(Arc::new(
         crate::usecase::workflow::WorkflowRuntimeUsecase::new(
             Arc::new(super::super::test_support::RecordingRuntimeGateway::default()),

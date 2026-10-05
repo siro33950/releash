@@ -1,37 +1,35 @@
 mod shared;
 pub(crate) use shared::register_shared;
 
-#[cfg(all(test, feature = "desktop"))]
+#[cfg(test)]
 use crate::adaptor::controller::state::AppState;
-#[cfg(all(test, feature = "desktop"))]
+#[cfg(test)]
 use crate::adaptor::gateway::workflow::builtin;
-#[cfg(all(test, feature = "desktop"))]
+#[cfg(test)]
 use crate::adaptor::gateway::workflow::facet::FacetKind;
-#[cfg(all(test, feature = "desktop"))]
+#[cfg(test)]
 use crate::adaptor::gateway::workflow::schema::{
     FacetSummary as GatewayFacetSummary, WorkflowDefinitionYaml,
 };
-#[cfg(all(test, feature = "desktop"))]
+#[cfg(test)]
 use crate::adaptor::gateway::workflow::storage;
-#[cfg(all(test, feature = "desktop"))]
+#[cfg(test)]
 use std::path::Path;
-#[cfg(all(test, feature = "desktop"))]
+#[cfg(test)]
 use std::sync::Arc;
-#[cfg(all(test, feature = "desktop"))]
-use tauri::Manager;
 
 pub(crate) mod definition;
 pub(crate) mod diagnostics;
 pub(crate) mod facet;
 pub(crate) mod output;
 pub(crate) mod runtime;
-#[cfg(all(test, feature = "desktop"))]
+#[cfg(test)]
 pub(crate) mod session_errors;
 
-#[cfg(all(test, feature = "desktop"))]
+#[cfg(test)]
 use self::session_errors::redacted_workflow_tab_error;
 
-#[cfg(all(test, feature = "desktop"))]
+#[cfg(test)]
 fn parse_facet_kind(kind: &str) -> Result<FacetKind, String> {
     match kind {
         "policy" => Ok(FacetKind::Policy),
@@ -47,21 +45,21 @@ fn parse_facet_kind(kind: &str) -> Result<FacetKind, String> {
 // テンポラリディレクトリ上で再現することで、3 種それぞれの正常経路到達と、
 // 廃止済み種別および未知種別での I/O 非発生を直接検証できるようにする。
 
-#[cfg(all(test, feature = "desktop"))]
+#[cfg(test)]
 fn list_facets_inner(kind: &str, base_dir: &Path) -> Result<Vec<String>, String> {
     let facet_kind = parse_facet_kind(kind)?;
     crate::adaptor::gateway::workflow::facet::list_facets(facet_kind, base_dir)
         .map_err(|e| e.to_string())
 }
 
-#[cfg(all(test, feature = "desktop"))]
+#[cfg(test)]
 fn get_facet_inner(kind: &str, key: &str, base_dir: &Path) -> Result<String, String> {
     let facet_kind = parse_facet_kind(kind)?;
     crate::adaptor::gateway::workflow::facet::load_facet(facet_kind, key, base_dir)
         .map_err(|e| e.to_string())
 }
 
-#[cfg(all(test, feature = "desktop"))]
+#[cfg(test)]
 fn save_facet_inner(
     kind: &str,
     key: &str,
@@ -85,7 +83,7 @@ fn save_facet_inner(
         .map_err(|e| e.to_string())
 }
 
-#[cfg(all(test, feature = "desktop"))]
+#[cfg(test)]
 fn delete_facet_inner(kind: &str, key: &str, base_dir: &Path) -> Result<(), String> {
     let facet_kind = parse_facet_kind(kind)?;
     if builtin::is_builtin_facet(facet_kind, key) {
@@ -95,7 +93,7 @@ fn delete_facet_inner(kind: &str, key: &str, base_dir: &Path) -> Result<(), Stri
         .map_err(|e| e.to_string())
 }
 
-#[cfg(all(test, feature = "desktop"))]
+#[cfg(test)]
 fn list_facet_summaries_inner(
     kind: &str,
     base_dir: &Path,
@@ -105,7 +103,7 @@ fn list_facet_summaries_inner(
         .map_err(|e| e.to_string())
 }
 
-#[cfg(all(test, feature = "desktop"))]
+#[cfg(test)]
 fn duplicate_facet_inner(
     kind: &str,
     source_key: &str,
@@ -129,7 +127,7 @@ fn duplicate_facet_inner(
 
 /// `open_facet_in_editor` の中核ロジック。エディタ起動はテストで差し替え可能にするため
 /// `opener` を引数で受け取る（production では実エディタ起動を渡す）。
-#[cfg(all(test, feature = "desktop"))]
+#[cfg(test)]
 fn open_facet_in_editor_inner<F>(
     kind: &str,
     key: &str,
@@ -150,7 +148,7 @@ where
     opener(&path_str)
 }
 
-#[cfg(all(test, feature = "desktop"))]
+#[cfg(test)]
 fn validation_error_string(
     e: crate::domain::workflow::services::validation::ValidationError,
 ) -> String {
@@ -159,7 +157,7 @@ fn validation_error_string(
 
 // ---- ワークフロー実行コマンド ----
 
-#[cfg(all(test, feature = "desktop"))]
+#[cfg(test)]
 fn parse_execution_origin(
     value: Option<String>,
 ) -> Result<crate::domain::workflow::ExecutionOrigin, String> {
@@ -190,7 +188,7 @@ fn validate_execution_id(
 
 // ---- 新規コマンド ----
 
-#[cfg(all(test, feature = "desktop"))]
+#[cfg(test)]
 fn validate_template_variables(content: &str) -> Result<(), String> {
     let errors =
         crate::adaptor::gateway::workflow::workflow_host::prompt_rendering::find_undefined_template_variables(
@@ -205,7 +203,7 @@ fn validate_template_variables(content: &str) -> Result<(), String> {
     Ok(())
 }
 
-#[cfg(all(test, feature = "desktop"))]
+#[cfg(test)]
 pub(crate) mod tests {
     use super::*;
     use crate::adaptor::gateway::workflow::event::WorkflowEvent;
@@ -216,28 +214,11 @@ pub(crate) mod tests {
     use std::path::Path;
     use tempfile::TempDir;
 
-    type AdapterTestApp = tauri::App<tauri::test::MockRuntime>;
-
-    fn make_adapter_app() -> AdapterTestApp {
-        let data_dir =
-            std::env::temp_dir().join(format!("releash-command-adapter-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&data_dir).unwrap();
-        let app_config = Arc::new(crate::adaptor::gateway::app_config::AppConfig::new(
-            crate::adaptor::gateway::app_config::ReleashConfig::default(),
-            data_dir.join("config.toml"),
-        ));
-        let config_repository: Arc<dyn crate::domain::app_config::ConfigRepository> =
-            app_config.clone();
-        let config_secret_repository: Arc<dyn crate::domain::app_config::ConfigSecretRepository> =
-            app_config.clone();
-        tauri::test::mock_builder()
-            .invoke_handler(tauri::generate_handler![])
-            .manage(crate::desktop_test_support::TestDataDir(data_dir))
-            .manage(app_config)
-            .manage(config_repository)
-            .manage(config_secret_repository)
-            .build(tauri::test::mock_context(tauri::test::noop_assets()))
-            .expect("tauri mock test app must build")
+    pub(crate) struct WorkflowTestDependencies {
+        #[cfg(feature = "desktop")]
+        pub(crate) app_config: Arc<crate::adaptor::gateway::app_config::AppConfig>,
+        pub(crate) client: crate::adaptor::controller::client::ClientDependencies,
+        pub(crate) repository_state: Arc<crate::usecase::repository_state::RepositoryStateService>,
     }
 
     const REQUIRED_WORKSPACE_EXECUTION_COMMANDS: &[&str] = &[
@@ -275,14 +256,11 @@ pub(crate) mod tests {
     #[test]
     fn workflow_command_registry_uses_execution_and_node_names() {
         let (app, _data_dir, _store) = make_read_only_app();
-        app.manage(Arc::new(
-            crate::infrastructure::file_watcher::FileWatcherManager::default(),
-        ));
-        let deps = crate::desktop_test_support::build_client_dependencies(app.handle());
+        let deps = &app.client;
         let mut dispatch = crate::adaptor::controller::client::ClientCommandDispatch::new(
             Arc::new(crate::usecase::application_startup::ApplicationStartupAuthority::ready()),
         );
-        register_shared(&mut dispatch, &deps);
+        register_shared(&mut dispatch, deps);
         let handles_command = |command| dispatch.contains(command);
         for command in RETIRED_WORKFLOW_COMMANDS {
             assert!(
@@ -296,7 +274,7 @@ pub(crate) mod tests {
         );
         crate::adaptor::controller::client::workspace_tree::register_shared(
             &mut workspace_dispatch,
-            &deps,
+            deps,
         );
         for command in REQUIRED_WORKSPACE_EXECUTION_COMMANDS {
             assert!(
@@ -1166,7 +1144,7 @@ pub(crate) mod tests {
     }
 
     pub(crate) fn make_read_only_app() -> (
-        AdapterTestApp,
+        WorkflowTestDependencies,
         std::path::PathBuf,
         Arc<crate::adaptor::gateway::local_event_store::LocalEventStore>,
     ) {
@@ -1180,33 +1158,26 @@ pub(crate) mod tests {
             crate::usecase::terminal_surface::application::TerminalSurfaceApplication,
         >,
     ) -> (
-        AdapterTestApp,
+        WorkflowTestDependencies,
         std::path::PathBuf,
         Arc<crate::adaptor::gateway::local_event_store::LocalEventStore>,
     ) {
-        let app = make_adapter_app();
-        let data_dir = crate::desktop_test_support::data_dir(app.handle()).unwrap();
-        // workflow コマンドは repository usecase を State 注入で受け取る。
+        let data_dir =
+            std::env::temp_dir().join(format!("releash-command-adapter-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&data_dir).unwrap();
+        let app_config = Arc::new(crate::adaptor::gateway::app_config::AppConfig::new(
+            crate::adaptor::gateway::app_config::ReleashConfig::default(),
+            data_dir.join("config.toml"),
+        ));
+        let config_repository: Arc<dyn crate::domain::app_config::ConfigRepository> =
+            app_config.clone();
+        let config_secret_repository: Arc<dyn crate::domain::app_config::ConfigSecretRepository> =
+            app_config.clone();
         let repository_usecase =
             Arc::new(crate::adaptor::controller::wiring::build_repository_usecase());
-        app.manage(repository_usecase.clone());
-        let config_repository = app
-            .state::<Arc<dyn crate::domain::app_config::ConfigRepository>>()
-            .inner()
-            .clone();
-        let config_secret_repository = app
-            .state::<Arc<dyn crate::domain::app_config::ConfigSecretRepository>>()
-            .inner()
-            .clone();
-        let notion_config_repository: Arc<dyn crate::domain::app_config::NotionConfigRepository> =
-            app.state::<Arc<crate::adaptor::gateway::app_config::AppConfig>>()
-                .inner()
-                .clone();
         let notion_usecase = Arc::new(crate::usecase::notion::usecase::NotionUsecase::new(
-            notion_config_repository,
-            app.state::<Arc<crate::adaptor::gateway::app_config::AppConfig>>()
-                .inner()
-                .clone(),
+            app_config.clone(),
+            app_config.clone(),
             Arc::new(crate::adaptor::gateway::notion::NotionApiGatewayImpl::new(
                 crate::usecase::retry::shared().limiter.clone(),
             )),
@@ -1265,7 +1236,7 @@ crate::test_support::state_subscription::repository_driver(),
                 Arc::new(crate::adaptor::gateway::failure_records::FailureRecordStore::default()),
                 data_dir.clone(),
                 repository_usecase.clone(),
-                config_repository,
+                config_repository.clone(),
                 config_secret_repository,
                 local_event_store.clone(),
                 Arc::new(
@@ -1285,8 +1256,7 @@ crate::test_support::state_subscription::repository_driver(),
                 git_host_usecase.clone(),
             ),
         );
-        app.manage(repository_state);
-        app.manage(AppState {
+        let app_state = AppState {
             workspace_list,
             repository_usecase: repository_usecase.clone(),
             repo_paths_usecase,
@@ -1296,15 +1266,41 @@ crate::test_support::state_subscription::repository_driver(),
             workflow_usecase,
             terminal_surface,
             git_host_usecase,
-        });
-        (app, data_dir, local_event_store)
+        };
+        let mut client =
+            crate::acceptance_test_support::build_client_dependencies(data_dir.clone());
+        client.app_state = Some(app_state);
+        client.config_repository = Some(config_repository.clone());
+        client.app_config_usecase =
+            Some(Arc::new(crate::usecase::app_config::AppConfigUsecase::new(
+                config_repository,
+                app_config.clone(),
+            )));
+        client.watcher = Arc::new(crate::usecase::watcher::WatcherUsecase::new(
+            Some(repository_state.clone()),
+            Arc::new(
+                crate::adaptor::gateway::repository::file_watcher::FileWatcherGateway::new(
+                    Arc::new(crate::infrastructure::file_watcher::FileWatcherManager::default()),
+                ),
+            ),
+        ));
+        (
+            WorkflowTestDependencies {
+                #[cfg(feature = "desktop")]
+                app_config,
+                client,
+                repository_state,
+            },
+            data_dir,
+            local_event_store,
+        )
     }
 
     /// [05] worktree-scoped 認可境界のテスト用 fixture: 実 git repo + worktree を作り、
     /// `AppConfig.last_repo_paths` に親 repo を登録する。戻り値は test app / engine /
     /// data_dir / canonical worktree path / TempDir guards（lifetime 保持用）。
     fn make_read_only_app_with_managed_worktree() -> (
-        AdapterTestApp,
+        WorkflowTestDependencies,
         std::path::PathBuf,
         Arc<crate::adaptor::gateway::local_event_store::LocalEventStore>,
         String,
@@ -1329,7 +1325,7 @@ crate::test_support::state_subscription::repository_driver(),
         repo.worktree("managed-wt", &worktree_path, None).unwrap();
         let canonical = worktree_path.canonicalize().unwrap();
         let canonical_str = canonical.to_string_lossy().to_string();
-        let config_repository = app.state::<Arc<dyn crate::domain::app_config::ConfigRepository>>();
+        let config_repository = app.client.config_repository.as_ref().unwrap();
         let mut config = config_repository.load().unwrap();
         config.app.last_repo_paths = vec![repo_path.to_string_lossy().to_string()];
         config_repository.save(config).unwrap();
@@ -1379,7 +1375,13 @@ crate::test_support::state_subscription::repository_driver(),
         .await
         .unwrap();
 
-        let read = app.state::<AppState>().workflow_usecase.read_usecase();
+        let read = app
+            .client
+            .app_state
+            .as_ref()
+            .unwrap()
+            .workflow_usecase
+            .read_usecase();
         let view = read
             .get_execution_state(&execution_id)
             .await

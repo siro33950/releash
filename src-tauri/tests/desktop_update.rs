@@ -1,6 +1,7 @@
 #![cfg(all(debug_assertions, feature = "desktop", unix))]
 
-use releash_lib::client_api_acceptance as host;
+use releash_lib::client_api_acceptance as client_api;
+use releash_lib::desktop_client_acceptance as host;
 use serde_json::{json, Value};
 use std::{
     path::Path,
@@ -55,7 +56,7 @@ fn workflow_facts(path: &Path, execution_id: &str) -> Vec<(String, String, Strin
 }
 struct Renderer {
     window: Window,
-    client: host::NativeClient,
+    client: client_api::NativeClient,
     launch: String,
 }
 impl Renderer {
@@ -64,9 +65,9 @@ impl Renderer {
             .build()
             .unwrap();
         let endpoint = host::desktop_client_endpoint(app.handle()).await;
-        let client = host::connect_client(&endpoint);
+        let client = client_api::connect_client(&endpoint);
         let hello = client
-            .get_server_info(host::rpc::Unit::default())
+            .get_server_info(client_api::rpc::Unit::default())
             .await
             .unwrap()
             .into_owned();
@@ -78,7 +79,7 @@ impl Renderer {
         }
     }
     async fn request(&mut self, command: &str, args: Value) -> Value {
-        host::request_client(&self.client, command, args)
+        client_api::request_client(&self.client, command, args)
             .await
             .unwrap()
     }
@@ -89,7 +90,9 @@ impl Renderer {
             .request("refresh_workspaces", json!({}))
             .await
             .is_null());
-        let snapshot = host::read_state(&self.client, "workspaces").await.unwrap();
+        let snapshot = client_api::read_state(&self.client, "workspaces")
+            .await
+            .unwrap();
         let repos = Value::Array(
             snapshot["repositories"]
                 .as_array()
@@ -98,7 +101,7 @@ impl Renderer {
                 .map(|repo| repo["path"].clone())
                 .collect(),
         );
-        let settings = host::read_state(&self.client, "desktop-settings")
+        let settings = client_api::read_state(&self.client, "desktop-settings")
             .await
             .unwrap();
         assert_eq!(repos, expected_repos);

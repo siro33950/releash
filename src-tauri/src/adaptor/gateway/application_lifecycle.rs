@@ -20,37 +20,6 @@ impl ApplicationQuitIntentPort for DaemonProcessActionPort {
     }
 }
 
-#[cfg(all(debug_assertions, feature = "desktop"))]
-pub(crate) struct TauriApplicationQuitIntentPort<R: tauri::Runtime> {
-    app: tauri::AppHandle<R>,
-}
-
-#[cfg(all(debug_assertions, feature = "desktop"))]
-impl<R: tauri::Runtime> TauriApplicationQuitIntentPort<R> {
-    pub(crate) fn new(app: tauri::AppHandle<R>) -> Self {
-        Self { app }
-    }
-}
-
-#[cfg(all(debug_assertions, feature = "desktop"))]
-impl<R: tauri::Runtime> crate::domain::application_lifecycle::ApplicationQuitIntentPort
-    for TauriApplicationQuitIntentPort<R>
-{
-    fn execute(
-        &self,
-        action: ApplicationQuitIntent,
-    ) -> Result<(), crate::domain::application_lifecycle::ApplicationLifecycleError> {
-        match action {
-            ApplicationQuitIntent::Exit { code } => {
-                crate::infrastructure::platform::tray::mark_quit_requested();
-                self.app.exit(code);
-            }
-            ApplicationQuitIntent::Restart { .. } => self.app.request_restart(),
-        }
-        Ok(())
-    }
-}
-
 pub(crate) struct DaemonShutdownGateway {
     pub(crate) workflow: Arc<crate::usecase::workflow::WorkflowRuntimeUsecase>,
     pub(crate) terminal:

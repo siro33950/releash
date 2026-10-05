@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 struct Fixture {
-    host: ClientApiAcceptanceHost<tauri::test::MockRuntime>,
+    host: ClientApiAcceptanceHost,
     url: String,
     token: Arc<str>,
     repo: tempfile::TempDir,
@@ -34,7 +34,7 @@ impl Fixture {
         )
         .unwrap();
         git.set_head("refs/heads/ws-branch").unwrap();
-        let host = ClientApiAcceptanceHost::start(tauri::test::mock_builder(), data.path(), branch);
+        let host = ClientApiAcceptanceHost::start(data.path(), branch);
         let endpoint = host.endpoint();
         assert_ne!(
             format!("releash-bearer.{}", endpoint.token),
@@ -70,7 +70,7 @@ async fn request(client: &NativeClient, frame: Value) -> Value {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn test_クライアントconnect_認証と相関を保ちtauri経路を拒否する() {
+async fn test_クライアントconnect_認証と相関を保つ() {
     // Given
     let fixture = Fixture::new().await;
     for (token, origin, status) in [
@@ -98,19 +98,6 @@ async fn test_クライアントconnect_認証と相関を保ちtauri経路を�
         json!({"request_id":"one","command":"current-branch","args":fixture.args()}),
     )
     .await;
-    let window = tauri::WebviewWindowBuilder::new(&fixture.host.app, "main", Default::default())
-        .build()
-        .unwrap();
-    let invoke = tauri::webview::InvokeRequest {
-        cmd: "current-branch".into(),
-        callback: tauri::ipc::CallbackFn(0),
-        error: tauri::ipc::CallbackFn(1),
-        url: "tauri://localhost".parse().unwrap(),
-        body: tauri::ipc::InvokeBody::Json(fixture.args()),
-        headers: Default::default(),
-        invoke_key: tauri::test::INVOKE_KEY.into(),
-    };
-    assert!(tauri::test::get_ipc_response(&window, invoke).is_err());
     assert_eq!(response["request_id"], "one");
     assert_eq!(response["result"], "ws-branch");
 }
@@ -141,33 +128,6 @@ async fn test_クライアント認証_wsで有効な非master_tokenはhttp入�
             .unwrap();
         assert_eq!(response.status(), expected);
     }
-}
-
-#[tokio::test]
-async fn test_terminal接続情報_削除済みcommandはtauri_invokeでエラーになる() {
-    // Given
-    let fixture = Fixture::new().await;
-    let window = tauri::WebviewWindowBuilder::new(&fixture.host.app, "main", Default::default())
-        .build()
-        .unwrap();
-    // When
-    let result = tauri::test::get_ipc_response(
-        &window,
-        tauri::webview::InvokeRequest {
-            cmd: "get_terminal_stream_endpoint".into(),
-            callback: tauri::ipc::CallbackFn(0),
-            error: tauri::ipc::CallbackFn(1),
-            url: "tauri://localhost".parse().unwrap(),
-            body: tauri::ipc::InvokeBody::Json(json!({})),
-            headers: Default::default(),
-            invoke_key: tauri::test::INVOKE_KEY.into(),
-        },
-    );
-    // Then
-    assert_eq!(
-        result.unwrap_err(),
-        json!("Command get_terminal_stream_endpoint not found")
-    );
 }
 
 #[tokio::test]

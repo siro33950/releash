@@ -42,7 +42,7 @@ pub(crate) mod startup_repository;
 pub(crate) mod state;
 pub(crate) mod storage;
 pub(crate) mod stored_definition;
-#[cfg(any(test, all(debug_assertions, feature = "desktop")))]
+#[cfg(any(test, debug_assertions))]
 pub(crate) mod test_support;
 pub(crate) mod workflow_host;
 pub(crate) mod worktree_context;

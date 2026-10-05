@@ -53,7 +53,7 @@ async fn test_シェル状態購読_tauriコマンドからchannelに初期値�
             false
         }
     });
-    let app = releash_lib::client_api_acceptance::desktop_connection_app(
+    let app = releash_lib::desktop_client_acceptance::desktop_connection_app(
         builder,
         directory.path(),
         Path::new(env!("CARGO_BIN_EXE_releash-backend")),
@@ -62,7 +62,8 @@ async fn test_シェル状態購読_tauriコマンドからchannelに初期値�
         .build()
         .unwrap();
     tokio::time::timeout(Duration::from_secs(35), async {
-        while releash_lib::client_api_acceptance::desktop_supervision_status(app.handle())["phase"]
+        while releash_lib::desktop_client_acceptance::desktop_supervision_status(app.handle())
+            ["phase"]
             != "ready"
         {
             tokio::time::sleep(Duration::from_millis(20)).await;
@@ -72,7 +73,7 @@ async fn test_シェル状態購読_tauriコマンドからchannelに初期値�
     .unwrap_or_else(|error| {
         panic!(
             "{error}: {}",
-            releash_lib::client_api_acceptance::desktop_supervision_status(app.handle())
+            releash_lib::desktop_client_acceptance::desktop_supervision_status(app.handle())
         )
     });
 
@@ -109,7 +110,7 @@ async fn test_シェル状態購読_tauriコマンドからchannelに初期値�
         "stop_daemon_status_subscription",
         json!({"id":"stopped-screen"}),
     );
-    releash_lib::client_api_acceptance::stop_desktop_daemon(app.handle(), false);
+    releash_lib::desktop_client_acceptance::stop_desktop_daemon(app.handle(), false);
     // Then
     let changed = tokio::time::timeout(Duration::from_secs(2), receiver.recv())
         .await

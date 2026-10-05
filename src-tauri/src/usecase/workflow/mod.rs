@@ -468,7 +468,7 @@ impl WorkflowUsecase {
 #[path = "mod_test.rs"]
 mod mod_tests;
 
-#[cfg(all(debug_assertions, feature = "desktop"))]
+#[cfg(debug_assertions)]
 pub(crate) use workspace_node_command::{
     WorkspaceNodeApprovalTarget, WorkspaceNodeRetryTarget, WorkspaceSessionNodeRenameTarget,
 };

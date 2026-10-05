@@ -1,4 +1,4 @@
-#[cfg(all(debug_assertions, feature = "desktop"))]
+#[cfg(debug_assertions)]
 #[path = "state_subscription/flow_test.rs"]
 mod flow_test;
 

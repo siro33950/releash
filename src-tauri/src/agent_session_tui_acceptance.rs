@@ -2,8 +2,6 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use tauri::Manager;
-
 use crate::adaptor::controller::agent_session_wiring::{
     compose_agent_sessions, AgentSessionCompositionInput,
 };
@@ -22,10 +20,8 @@ use crate::infrastructure::local_api::LocalApiServer;
 use crate::terminal_subscription_acceptance::TerminalSubscriptionHarness as TerminalSurfaceRuntime;
 use crate::terminal_surface::TerminalSurfaceOwnerV1;
 use crate::usecase::agent_session::{
-    AgentSessionHistoryReadUsecase, AgentSessionInitialInstructionUsecase,
-    AgentSessionLaunchUsecase, AgentSessionLifecycleUsecase, AgentSessionReadUsecase,
+    AgentSessionHistoryReadUsecase, AgentSessionLaunchUsecase, AgentSessionReadUsecase,
 };
-use crate::usecase::provider_lifecycle::ProviderHookHealthReadUsecase;
 use crate::usecase::workflow::runtime_resolver::{
     ManagedWorktreeResolver, ManagedWorktreeResolverError, WorkflowDefinitionResolver,
     WorkflowDefinitionResolverError,
@@ -152,11 +148,11 @@ impl ManagedWorktreeResolver for AcceptanceManagedWorktreeResolver {
     }
 }
 
-pub struct AgentSessionTuiAcceptanceHost<R: tauri::Runtime> {
-    _app: tauri::App<R>,
+pub struct AgentSessionTuiAcceptanceHost {
+    launch: Arc<AgentSessionLaunchUsecase>,
     client_api: Arc<LocalApiServer>,
     client_endpoint: crate::client_api_acceptance::ClientEndpoint,
-    exit_observer: tauri::async_runtime::JoinHandle<()>,
+    exit_observer: tokio::task::JoinHandle<()>,
     exit_observer_cancellation:
         Arc<dyn crate::domain::terminal_surface::gateway::TerminalSurfaceEventCancellation>,
     terminal: TerminalSurfaceRuntime,
@@ -169,11 +165,8 @@ pub struct AgentSessionTuiAcceptanceHost<R: tauri::Runtime> {
     store: Arc<LocalEventStore>,
 }
 
-impl<R: tauri::Runtime> AgentSessionTuiAcceptanceHost<R> {
-    pub fn start(
-        config: AgentSessionTuiAcceptanceConfig,
-        app: tauri::App<R>,
-    ) -> Result<Self, String> {
+impl AgentSessionTuiAcceptanceHost {
+    pub fn start(config: AgentSessionTuiAcceptanceConfig) -> Result<Self, String> {
         let work = crate::terminal_surface::initialize_background_work_for_acceptance();
         std::fs::create_dir_all(&config.data_dir).map_err(|error| error.to_string())?;
         let store = LocalEventStore::open(LocalEventStoreConfig::production(
@@ -251,7 +244,6 @@ launch_retention: crate::adaptor::controller::agent_session_launch_retention::ru
                 composition.lifecycle.clone(),
                 composition.availability_reader.clone(),
             ));
-        app.manage(store.clone());
         let workspace_query: Arc<dyn crate::usecase::workspace_tree::WorkspaceQueryService> =
             crate::adaptor::gateway::workspace_tree::SqliteWorkspaceQueryService::with_repository(
                 crate::adaptor::gateway::workspace_tree::SqliteWorkspaceTreeRepository::new(
@@ -276,7 +268,13 @@ launch_retention: crate::adaptor::controller::agent_session_launch_retention::ru
         );
         driver.node_processes = node_processes.clone();
         let driver = Arc::new(driver);
-        let dependencies = crate::desktop_test_support::workflow_dependencies(app.handle());
+        let dependencies =
+            crate::adaptor::gateway::workflow::workflow_host::WorkflowRuntimeDependencies {
+                store: Some(store.clone()),
+                config: None,
+                secrets: None,
+                state_changes: crate::acceptance_test_support::state_subscriptions(),
+            };
         let gateway = Arc::new(WorkflowRuntimeCommandGateway::new_with_driver(
             dependencies,
             driver,
@@ -301,30 +299,27 @@ launch_retention: crate::adaptor::controller::agent_session_launch_retention::ru
             .bind(runtime.clone());
         let terminal_events = terminal.application().subscribe_events();
         let exit_observer_cancellation = terminal_events.cancellation.clone();
-        let exit_observer = tauri::async_runtime::spawn(
+        let exit_observer = tokio::spawn(
             crate::adaptor::controller::agent_session_exit_observer::run_agent_session_exit_observer(
                 terminal_events,
                 composition.exit.clone(),
             ),
         );
-        app.manage(composition.history_read.clone());
-        app.manage(composition.hook_health_read.clone());
-        app.manage(composition.launch.clone());
-        app.manage(composition.initial_instruction.clone());
-        app.manage(composition.lifecycle.clone());
-        app.manage(composition.read.clone());
-        app.manage(composition.provider_availability.clone());
         let authority =
             Arc::new(crate::usecase::application_startup::ApplicationStartupAuthority::ready());
-        app.manage(authority.clone());
-        app.manage(Arc::new(
-            crate::infrastructure::file_watcher::FileWatcherManager::default(),
-        ));
+        let mut dependencies =
+            crate::acceptance_test_support::build_client_dependencies(data_dir.clone());
+        dependencies.application_startup_authority = Some(authority.clone());
+        dependencies.agent_session_history_read_usecase = Some(composition.history_read.clone());
+        dependencies.provider_hook_health_read_usecase = Some(composition.hook_health_read.clone());
+        dependencies.agent_session_launch_usecase = Some(composition.launch.clone());
+        dependencies.agent_session_lifecycle_usecase = Some(composition.lifecycle.clone());
+        dependencies.agent_session_read_usecase = Some(composition.read.clone());
+        dependencies.provider_availability_usecase =
+            Some(composition.provider_availability.clone());
         let mut dispatch =
             crate::adaptor::controller::client::ClientCommandDispatch::new(authority);
-        dispatch.register_dependencies(&crate::desktop_test_support::build_client_dependencies(
-            app.handle(),
-        ));
+        dispatch.register_dependencies(&dependencies);
         let dispatch = Arc::new(dispatch);
         let client_binding = crate::infrastructure::local_api::LocalApiServerBinding::bind(
             data_dir.join("desktop-client"),
@@ -367,7 +362,7 @@ launch_retention: crate::adaptor::controller::agent_session_launch_retention::ru
         );
         let client_api = client_binding.start(client_router, &tokio::runtime::Handle::current());
         Ok(Self {
-            _app: app,
+            launch: composition.launch,
             client_api,
             client_endpoint,
             exit_observer,
@@ -538,7 +533,7 @@ launch_retention: crate::adaptor::controller::agent_session_launch_retention::ru
     #[allow(deprecated)]
     pub async fn shutdown(self) -> Result<(), String> {
         let Self {
-            _app: app,
+            launch,
             client_api,
             client_endpoint: _,
             exit_observer,
@@ -567,24 +562,10 @@ launch_retention: crate::adaptor::controller::agent_session_launch_retention::ru
             .shutdown_and_wait()
             .await
             .map_err(|error| format!("join local API server: {error}"))?;
-        let launch = app
-            .try_state::<Arc<AgentSessionLaunchUsecase>>()
-            .map(|state| state.inner().clone());
-        if let Some(launch) = launch {
-            launch
-                .wait_for_background_tasks()
-                .await
-                .map_err(|error| format!("join AgentSession background task: {error}"))?;
-        }
-        app.unmanage::<Arc<AgentSessionHistoryReadUsecase>>();
-        app.unmanage::<Arc<ProviderHookHealthReadUsecase>>();
-        app.unmanage::<Arc<AgentSessionLaunchUsecase>>();
-        app.unmanage::<Arc<AgentSessionInitialInstructionUsecase>>();
-        app.unmanage::<Arc<AgentSessionLifecycleUsecase>>();
-        app.unmanage::<Arc<crate::adaptor::controller::client::ClientCommandDispatch>>();
-        app.unmanage::<Arc<AgentSessionReadUsecase>>();
-        app.unmanage::<Arc<crate::usecase::agent_session::ProviderAvailabilityUsecase>>();
-        app.unmanage::<Arc<LocalEventStore>>();
+        launch
+            .wait_for_background_tasks()
+            .await
+            .map_err(|error| format!("join AgentSession background task: {error}"))?;
         drop((
             local_api,
             _runtime,
@@ -592,7 +573,7 @@ launch_retention: crate::adaptor::controller::agent_session_launch_retention::ru
             provider_lifecycle_ingress,
             terminal,
             client_api,
-            app,
+            launch,
         ));
         drain_and_close_store(store).await
     }

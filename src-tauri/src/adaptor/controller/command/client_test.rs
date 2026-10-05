@@ -42,8 +42,7 @@ fn parity_app_with_runtime(
     tauri::App<tauri::test::MockRuntime>,
     Arc<ClientCommandDispatch>,
 ) {
-    let (app, data_dir, store) =
-        crate::adaptor::controller::client::workflow::tests::make_read_only_app();
+    let (app, data_dir, store) = crate::desktop_test_support::make_read_only_app();
     let runtime = runtime.unwrap_or_else(|| {
         let gateway =
             crate::adaptor::controller::api::test_support::RecordingRuntimeGateway::default();
@@ -493,8 +492,7 @@ async fn test_計算と操作command_connectの実行結果とエラーがtauri�
         gateway.clone(),
         Arc::new(crate::usecase::workflow::NoopArchiveRepository),
     ));
-    let (app, _data_dir, _store) =
-        crate::adaptor::controller::client::workflow::tests::make_read_only_app();
+    let (app, _data_dir, _store) = crate::desktop_test_support::make_read_only_app();
     app.manage(runtime.clone());
     app.manage(Arc::new(ApplicationStartupAuthority::ready()));
     app.manage(Arc::new(

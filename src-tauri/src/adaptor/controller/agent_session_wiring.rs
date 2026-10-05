@@ -46,9 +46,9 @@ pub(crate) struct AgentSessionCompositionInput {
 }
 
 pub(crate) struct AgentSessionComposition {
-    #[cfg(all(debug_assertions, feature = "desktop"))]
+    #[cfg(debug_assertions)]
     pub(crate) provider_lifecycle: Arc<ProviderLifecycleUsecase>,
-    #[cfg(all(debug_assertions, feature = "desktop"))]
+    #[cfg(debug_assertions)]
     pub(crate) sessions: Arc<AgentSessionUsecase>,
     pub(crate) history_read: Arc<AgentSessionHistoryReadUsecase>,
     pub(crate) provider_session_title_ingestion: Arc<ProviderSessionTitleIngestionUsecase>,
@@ -394,9 +394,9 @@ pub(crate) fn compose_agent_sessions(
     ));
 
     Ok(AgentSessionComposition {
-        #[cfg(all(debug_assertions, feature = "desktop"))]
+        #[cfg(debug_assertions)]
         provider_lifecycle,
-        #[cfg(all(debug_assertions, feature = "desktop"))]
+        #[cfg(debug_assertions)]
         sessions,
         history_read,
         provider_session_title_ingestion,

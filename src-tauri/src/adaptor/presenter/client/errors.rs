@@ -64,7 +64,7 @@ impl From<crate::adaptor::controller::terminal_surface::TerminalCommandError> fo
         }
     }
 }
-#[cfg(any(test, all(debug_assertions, feature = "desktop")))]
+#[cfg(any(test, debug_assertions))]
 impl wire::ClientValue for CommandFailure {
     fn into_json(self) -> Result<serde_json::Value, String> {
         self.detail.into_json()

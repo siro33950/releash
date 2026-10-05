@@ -68,17 +68,14 @@ impl TerminalSubscriptionHarness {
         }
     }
 
-    #[cfg(feature = "desktop")]
     pub(crate) fn subscriptions(&self) -> StateSubscriptionUsecase {
         self.subscriptions.clone()
     }
 
-    #[cfg(feature = "desktop")]
     pub(crate) fn presenter(&self) -> Arc<StateSubscriptionPresenter> {
         self.presenter.clone()
     }
 
-    #[cfg(feature = "desktop")]
     pub(crate) fn terminal_subscriptions(&self) -> TerminalSubscriptionUsecase {
         self.terminal_subscriptions.clone()
     }

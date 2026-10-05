@@ -1,15 +1,15 @@
-#[cfg(any(test, all(debug_assertions, feature = "desktop")))]
+#[cfg(any(test, debug_assertions))]
 use std::collections::HashMap;
 
-#[cfg(any(test, all(debug_assertions, feature = "desktop")))]
+#[cfg(any(test, debug_assertions))]
 use super::definition::WorkflowDefinition;
-#[cfg(any(test, all(debug_assertions, feature = "desktop")))]
+#[cfg(any(test, debug_assertions))]
 use super::execution::ExecutionOrigin;
-#[cfg(any(test, all(debug_assertions, feature = "desktop")))]
+#[cfg(any(test, debug_assertions))]
 use super::node_execution::NodeExecution;
 use super::runtime_projection::{NODE_STATUS_ABORTED, NODE_STATUS_COMPLETED, NODE_STATUS_RUNNING};
 
-#[cfg(any(test, all(debug_assertions, feature = "desktop")))]
+#[cfg(any(test, debug_assertions))]
 use super::runtime_projection::{NodeHistoryEntry, RuntimeArtifact, TokenUsage};
 
 /// Private runtime transition state. Public lifecycle state is `ExecutionStatus`.
@@ -39,7 +39,7 @@ impl RuntimeExecutionState {
 ///
 /// This is deliberately separate from the public `ExecutionTree` read model.
 #[derive(Debug, Clone, PartialEq)]
-#[cfg(any(test, all(debug_assertions, feature = "desktop")))]
+#[cfg(any(test, debug_assertions))]
 pub struct WorkflowRuntimeSnapshot {
     pub execution_id: String,
     pub workflow_name: String,

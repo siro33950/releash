@@ -91,9 +91,6 @@ pub fn run() {
             )),
             supervisor.clone(),
         ));
-        app.manage(usecase::client_connection::ClientConnectionUsecase(
-            Box::new(supervisor.clone()),
-        ));
         app.manage(
             infrastructure::platform::window_lifecycle::WindowPreferencesState(
                 parking_lot::RwLock::new(
