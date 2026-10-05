@@ -576,17 +576,15 @@ pub(crate) fn archive_fixture_with_resolver(
 
 pub(crate) async fn archive_workflow(fixture: &ArchiveFixture) -> String {
     let workflow = serde_saphyr::from_str("name: archive\ndescription: test\nnodes:\n  main: {session: {provider: codex, facets: {instruction: policy-confirmation}}}").unwrap();
-    fixture
-        .host
-        .start_resolved_workflow(
-            &fixture.app,
-            workflow,
-            "/missing/worktree".into(),
-            None,
-            ExecutionOrigin::Cli,
-        )
-        .await
-        .unwrap()
+    Box::pin(fixture.host.start_resolved_workflow(
+        &fixture.app,
+        workflow,
+        "/missing/worktree".into(),
+        None,
+        ExecutionOrigin::Cli,
+    ))
+    .await
+    .unwrap()
 }
 pub(crate) async fn reconcile_startup(
     host: &WorkflowRuntimeHost,
