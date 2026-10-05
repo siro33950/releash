@@ -201,10 +201,10 @@ fn map_transport_error(error: LocalApiTransportError) -> LocalApiClientError {
 #[path = "local_api_test.rs"]
 mod local_api_tests;
 
-#[cfg(any(test, debug_assertions, feature = "desktop"))]
+#[cfg(any(test, feature = "desktop"))]
 pub(crate) struct ClientConnectionFileQuery(pub(crate) PathBuf);
 
-#[cfg(any(test, debug_assertions, feature = "desktop"))]
+#[cfg(any(test, feature = "desktop"))]
 impl crate::usecase::client_connection::ClientConnectionQueryService for ClientConnectionFileQuery {
     fn read(
         &self,
@@ -216,7 +216,7 @@ impl crate::usecase::client_connection::ClientConnectionQueryService for ClientC
     }
 }
 
-#[cfg(any(test, debug_assertions, feature = "desktop"))]
+#[cfg(any(test, feature = "desktop"))]
 impl ClientConnectionFileQuery {
     fn read_with_process_lookup(
         &self,

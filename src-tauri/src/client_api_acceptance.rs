@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use crate::adaptor::controller::api::ClientApiDeps;
@@ -24,7 +24,7 @@ pub struct ClientEndpoint {
 }
 
 pub struct ClientApiAcceptanceHost {
-    connection: crate::usecase::client_connection::ClientConnectionUsecase,
+    data_dir: PathBuf,
     server: Arc<LocalApiServer>,
     pub master_subprotocol: String,
 }
@@ -94,9 +94,6 @@ impl ClientApiAcceptanceHost {
             "{TERMINAL_WS_BEARER_SUBPROTOCOL_PREFIX}{}",
             binding.bearer_token()
         );
-        let connection = crate::usecase::client_connection::ClientConnectionUsecase(Box::new(
-            crate::adaptor::gateway::local_api::ClientConnectionFileQuery(data_dir.to_path_buf()),
-        ));
         let store = LocalEventStore::open(LocalEventStoreConfig::production(
             data_dir.to_path_buf(),
             std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
@@ -158,17 +155,19 @@ impl ClientApiAcceptanceHost {
             ),
         );
         Self {
-            connection,
+            data_dir: data_dir.to_path_buf(),
             server: binding.start(router, &tokio::runtime::Handle::current()),
             master_subprotocol,
         }
     }
 
     pub fn endpoint(&self) -> ClientEndpoint {
-        let endpoint = self.connection.endpoint().unwrap();
+        let discovery: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(self.data_dir.join("client-api.json")).unwrap())
+                .unwrap();
         ClientEndpoint {
-            url: endpoint.url,
-            token: endpoint.token,
+            url: format!("http://127.0.0.1:{}", discovery["port"]),
+            token: discovery["token"].as_str().unwrap().to_owned(),
             launch_id: String::new(),
         }
     }

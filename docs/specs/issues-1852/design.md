@@ -8,6 +8,7 @@
 - ハーネスとハーネス専用公開の gate: サーバ用ハーネスの module（`src/lib.rs`）と、サーバ内のハーネス専用の公開（domain・usecase・gateway・infrastructure・controller・presenter、`terminal_subscription_acceptance.rs:71,76,81` の getter、`build.rs` が生成コードに埋め込む cfg）から `feature = "desktop"` の条件を外す。根拠: R-002、B-002。ルート: 固定（「固定するルート」参照）
 - `TauriApplicationQuitIntentPort` の削除: `adaptor/gateway/application_lifecycle.rs` から削除し、テストの `process_port` には `DaemonProcessActionPort` を渡す。根拠: R-003「Tauri を参照するファイルが [03] で移すものだけ」、B-003。ルート: 固定（「固定するルート」参照）
 - Tauri の invoke の拒否の切り出し: `tests/client_api/mod.rs` の invoke 断定をシェルのテストへ移す。根拠: R-005、B-005。ルート: 固定（「固定するルート」参照）
+- `ClientConnectionUsecase` の削除: `usecase/client_connection.rs` の `ClientConnectionUsecase`（struct と impl）とその単体テスト、`desktop.rs` と `desktop_client_acceptance.rs` での登録を削除する。サーバ用ハーネスが `ClientConnectionDto` を参照しなくなると、本番で登録されるだけで読まれないコードになるため。根拠: R-003、「固定するルート」の「`ClientConnectionDto` を参照しない」の帰結。ルート: 固定（「変えないもの」のただし書き参照）
 
 ## 固定するルート
 - ハーネスの公開の gate は `debug_assertions` だけにする（`cfg(any(test, debug_assertions))` 等）。既存の `#[cfg(debug_assertions)] pub mod terminal_subscription_acceptance;`（`src/lib.rs:12-13`）と同じ形にそろえ、新しい Cargo feature は足さない。`desktop` を外すのは、Tauri への参照を抜き終えたサーバ用ハーネスとサーバ内のハーネス専用の公開だけで、シェル用のハーネス（`desktop_test_support`、`client_api_acceptance` のシェル用部分、invoke 拒否のテスト）は `desktop` の gate のまま残す。release ビルドにハーネスが入らない点は変えない。
@@ -17,7 +18,7 @@
 - Tauri の invoke の拒否は、今と同じ空の command router を持つ mock アプリに対して断定する。シェル用ハーネスにその mock アプリを作る関数を置く。`tests/client_api/mod.rs:73-117` は関数を分け、サーバ側の断定（401/403、Connect 経由の相関と結果）をサーバのテストに残し、invoke の部分（`:101-113`）だけをシェルのテストへ移す。`:146-173` は丸ごとシェルのテストへ移す。断定の式と期待値は変えない。
 
 ## 変えないもの
-- `adaptor/gateway/desktop_client.rs` と、それを使うシェル側のコード（`daemon_supervision.rs` ほか）。シェルとサーバが共有するクライアント側コードの持ち方は [03]（#1853）で決めるため。
+- `adaptor/gateway/desktop_client.rs` と、それを使うシェル側のコード（`daemon_supervision.rs` ほか）。シェルとサーバが共有するクライアント側コードの持ち方は [03]（#1853）で決めるため。 ただし `usecase/client_connection.rs` の `ClientConnectionUsecase`（struct と impl）、その単体テスト、`desktop.rs` と `desktop_client_acceptance.rs` での登録は削除する。本番で登録されるだけで読まれておらず、読んでいたのはサーバ用ハーネスだけだったため。共有の型（`ClientConnectionDto`・`ClientConnectionError`・`ClientConnectionQueryService`）は変えない。
 - ハーネスの中の HTTP `/v1` の呼び出し。[05]（#1902）が HTTP の削除と一緒に Connect へ移すため。
 - `tauri` の dev-dependency と `desktop` feature、CI のジョブ構成。[03] で扱うため。
 - テストの断定の式と期待値。置き換えた後に落ちるテストが出た場合は、期待値を変えずに報告する。

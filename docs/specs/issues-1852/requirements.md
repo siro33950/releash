@@ -39,6 +39,7 @@ main `69214d09` で確認した。パスは `src-tauri/` 起点。
 - Tauri の invoke の拒否を断定するテストの、シェルのテストへの切り出し。
 - サーバ内の、ハーネスのためだけの `desktop` 限定の公開と、`build.rs` が生成コードに埋め込む同じ cfg。
 - `TauriApplicationQuitIntentPort` の削除。
+- 本番から読まれていない `ClientConnectionUsecase` とその登録の削除。
 
 変更しないもの
 
@@ -46,7 +47,7 @@ main `69214d09` で確認した。パスは `src-tauri/` 起点。
 - `tauri` の dev-dependency からの削除、`desktop` feature の削除、クレートの分割、CI ジョブの置き換え。[03]（#1853）で行う。
 - シェル用のハーネス（`desktop_test_support` と `client_api_acceptance` のシェル用の部分）とシェルのテスト（`tests/desktop_*.rs`、`tests/daemon_termination.rs`、`adaptor/controller/command/` のテスト）を、サーバの入口を通す形に直すこと。[03] で行う。
 - `adaptor/gateway/desktop_client.rs` と、それを使うシェル側のコード。
-- シェルとサーバが共有するクライアント側コードの持ち方。[03] で決める。
+- シェルとサーバが共有するクライアント側コードの持ち方。[03] で決める。ただし、本番で登録されるだけで読まれていない `ClientConnectionUsecase`（`usecase/client_connection.rs`）とその登録は削除する。共有の型（`ClientConnectionDto`・`ClientConnectionError`・`ClientConnectionQueryService`）は変えない。
 - 本番（release ビルド）の振る舞い。
 
 # Requirements

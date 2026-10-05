@@ -28,9 +28,6 @@ pub fn desktop_connection_app<R: tauri::Runtime>(
     );
     builder
         .manage(Arc::new(ApplicationStartupAuthority::ready()))
-        .manage(crate::usecase::client_connection::ClientConnectionUsecase(
-            Box::new(supervisor.clone()),
-        ))
         .manage(status_presenter)
         .manage(supervisor)
         .invoke_handler(move |invoke| router.handle(invoke))
