@@ -4442,7 +4442,6 @@ dependencies = [
  "objc2-foundation",
  "parking_lot",
  "prost",
- "prost-reflect",
  "releash-backend",
  "rusqlite",
  "serde",

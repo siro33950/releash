@@ -3,23 +3,22 @@ import { copyFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 
 const manifest = "src-tauri/Cargo.toml";
-const host = execFileSync("rustc", ["-vV"], { encoding: "utf8" }).match(/^host: (.+)$/m)[1];
-const target = process.env.TAURI_ENV_TARGET_TRIPLE ?? host;
-const development = process.argv.includes("--dev");
-const profile = development || process.env.TAURI_ENV_DEBUG === "true" ? "debug" : "release";
-const directory = JSON.parse(execFileSync("cargo", ["metadata", "--manifest-path", manifest, "--no-deps", "--format-version", "1"], { encoding: "utf8" })).target_directory;
-const targets = target === "universal-apple-darwin" ? ["aarch64-apple-darwin", "x86_64-apple-darwin"] : [target];
-for (const architecture of targets) {
-  execFileSync("cargo", ["build", "--manifest-path", manifest, "--locked", "-p", "releash-backend", "--bin", "releash-backend", "--target", architecture, ...(profile === "release" ? ["--release"] : []), ...(process.argv.includes("--performance") ? ["--features", "performance"] : []), ...(architecture.endsWith("apple-darwin") ? ["--features", "vendored-openssl"] : [])], { stdio: "inherit" });
-}
-const sidecars = "src-tauri/releash-desktop/binaries";
-const output = development ? join(directory, profile, "releash-backend") : join(sidecars, `releash-backend-${target}`);
-mkdirSync(development ? join(directory, profile) : sidecars, { recursive: true });
-if (!development) {
+if (process.argv.includes("--dev")) {
+  execFileSync("cargo", ["build", "--manifest-path", manifest, "--locked", "-p", "releash-backend", "--bin", "releash-backend"], { stdio: "inherit" });
+} else {
+  const host = execFileSync("rustc", ["-vV"], { encoding: "utf8" }).match(/^host: (.+)$/m)[1];
+  const target = process.env.TAURI_ENV_TARGET_TRIPLE ?? host;
+  const profile = process.env.TAURI_ENV_DEBUG === "true" ? "debug" : "release";
+  const directory = JSON.parse(execFileSync("cargo", ["metadata", "--manifest-path", manifest, "--no-deps", "--format-version", "1"], { encoding: "utf8" })).target_directory;
+  const targets = target === "universal-apple-darwin" ? ["aarch64-apple-darwin", "x86_64-apple-darwin"] : [target];
+  for (const architecture of targets) {
+    execFileSync("cargo", ["build", "--manifest-path", manifest, "--locked", "-p", "releash-backend", "--bin", "releash-backend", "--target", architecture, ...(profile === "release" ? ["--release"] : []), ...(process.argv.includes("--performance") ? ["--features", "performance"] : []), ...(architecture.endsWith("apple-darwin") ? ["--features", "vendored-openssl"] : [])], { stdio: "inherit" });
+  }
+  const sidecars = "src-tauri/releash-desktop/binaries";
+  const output = join(sidecars, `releash-backend-${target}`);
+  mkdirSync(sidecars, { recursive: true });
   for (const architecture of targets) copyFileSync(join(directory, architecture, profile, "releash-backend"), join(sidecars, `releash-backend-${architecture}`));
-}
-if (targets.length === 2) {
-  execFileSync("lipo", ["-create", ...targets.map((architecture) => join(directory, architecture, profile, "releash-backend")), "-output", output], { stdio: "inherit" });
-} else if (development) {
-  copyFileSync(join(directory, target, profile, "releash-backend"), output);
+  if (targets.length === 2) {
+    execFileSync("lipo", ["-create", ...targets.map((architecture) => join(directory, architecture, profile, "releash-backend")), "-output", output], { stdio: "inherit" });
+  }
 }

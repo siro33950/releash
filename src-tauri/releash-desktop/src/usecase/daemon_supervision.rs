@@ -1,10 +1,10 @@
-use super::client_connection::{
-    ClientConnectionDto, ClientConnectionError, ClientConnectionQueryService,
-};
 use crate::domain::daemon_supervision::{
     DaemonSupervision, Failure, FailureStage, Phase, ShellOperation, StopIntent,
 };
 use releash_lib::desktop_api::DesktopSettingsDto;
+use releash_lib::desktop_api::{
+    ClientConnectionDto, ClientConnectionError, ClientConnectionQueryService,
+};
 use std::sync::Arc;
 
 #[derive(Debug, thiserror::Error)]
@@ -431,7 +431,7 @@ fn snapshot(supervision: &DaemonSupervision) -> DaemonStatus {
     }
 }
 
-impl ClientConnectionQueryService for Arc<DaemonSupervisionUsecase> {
+impl ClientConnectionQueryService for DaemonSupervisionUsecase {
     fn read(&self) -> Result<ClientConnectionDto, ClientConnectionError> {
         Ok(self.connection()?.endpoint)
     }

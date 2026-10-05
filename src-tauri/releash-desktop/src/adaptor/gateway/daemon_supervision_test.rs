@@ -147,7 +147,7 @@ async fn test_初回設定待ち_購読開始失敗後も同じclientがprotoの
     // Given
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
-    let endpoint = crate::usecase::client_connection::ClientConnectionDto {
+    let endpoint = releash_lib::desktop_api::ClientConnectionDto {
         url: format!("http://{}", listener.local_addr().unwrap()),
         token: "client".into(),
     };
@@ -316,7 +316,7 @@ async fn test_初回設定待ち_購読開始失敗後も同じclientがprotoの
 async fn test_初回設定待ち_生存失敗が確定したら分類を保って監督へ渡す() {
     // Given
     let gateway = gateway(PathBuf::new());
-    let endpoint = crate::usecase::client_connection::ClientConnectionDto {
+    let endpoint = releash_lib::desktop_api::ClientConnectionDto {
         url: "http://127.0.0.1:1".into(),
         token: "client".into(),
     };

@@ -30,7 +30,7 @@ pub mod descriptor {
     pub use crate::adaptor::presenter::client::descriptor::{option, pool};
 }
 pub use crate::adaptor::gateway::app_config::read_config_if_exists;
-pub use crate::adaptor::gateway::local_api::read_client_connection;
+pub use crate::adaptor::gateway::local_api::ClientConnectionFileQuery;
 pub use crate::adaptor::gateway::telemetry::TelemetryGateway;
 #[cfg(debug_assertions)]
 pub use crate::client_api_acceptance::ClientEndpoint;
@@ -49,7 +49,9 @@ pub use crate::infrastructure::telemetry::metrics::{
     record_startup_from_origin, set_startup_origin, Startup,
 };
 pub use crate::usecase::app_config::query_service::DesktopSettingsDto;
-pub use crate::usecase::client_connection::{ClientConnectionDto, ClientConnectionError};
+pub use crate::usecase::client_connection::{
+    ClientConnectionDto, ClientConnectionError, ClientConnectionQueryService,
+};
 pub use crate::usecase::telemetry::TelemetryPort;
 #[cfg(feature = "test-support")]
 pub mod test_support {

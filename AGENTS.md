@@ -148,7 +148,7 @@ Rust coverage は `llvm-tools-preview` と `cargo-llvm-cov` が必要。Linux �
   cargo llvm-cov clean --workspace
   cargo llvm-cov --no-report --locked
   cargo llvm-cov --no-report --locked -p releash-desktop
-  cargo llvm-cov report --codecov --output-path rust-codecov.json
+  cargo llvm-cov report --workspace --codecov --output-path rust-codecov.json
 )
 ```
 

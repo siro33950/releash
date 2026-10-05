@@ -1,9 +1,9 @@
 use crate::common::retry::RetryLimiter;
 use crate::domain::daemon_supervision::{verify_identity, Failure, FailureStage, StopIntent};
 use crate::domain::daemon_supervision::{DaemonExit, DaemonProcessPort};
-use crate::usecase::client_connection::ClientConnectionQueryService;
 use crate::usecase::daemon_supervision::{DaemonConnection, DaemonGateway};
 use releash_lib::desktop_api::wire;
+use releash_lib::desktop_api::ClientConnectionQueryService;
 use releash_lib::desktop_api::DesktopSettingsDto;
 use releash_lib::desktop_api::TechnicalFailure;
 use std::io::{BufRead, Read};
@@ -25,7 +25,7 @@ struct Process {
 struct PendingConnection {
     client: Arc<super::desktop_client::DesktopClient>,
     hello: wire::ServerInfo,
-    endpoint: crate::usecase::client_connection::ClientConnectionDto,
+    endpoint: releash_lib::desktop_api::ClientConnectionDto,
 }
 
 pub(crate) struct DaemonProcessGateway {
@@ -72,11 +72,11 @@ impl DaemonProcessGateway {
         (
             super::desktop_client::DesktopClient,
             wire::ServerInfo,
-            crate::usecase::client_connection::ClientConnectionDto,
+            releash_lib::desktop_api::ClientConnectionDto,
         ),
         String,
     > {
-        let endpoint = super::local_api::ClientConnectionFileQuery(self.data_dir.clone())
+        let endpoint = releash_lib::desktop_api::ClientConnectionFileQuery(self.data_dir.clone())
             .read()
             .map_err(|error| error.to_string())?;
         let info = super::desktop_client::server_info(&endpoint).await?;

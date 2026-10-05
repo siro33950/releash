@@ -7,3 +7,7 @@ pub struct ClientConnectionDto {
 #[derive(Debug, thiserror::Error)]
 #[error("{0}")]
 pub struct ClientConnectionError(pub String);
+
+pub trait ClientConnectionQueryService: Send + Sync {
+    fn read(&self) -> Result<ClientConnectionDto, ClientConnectionError>;
+}

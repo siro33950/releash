@@ -11,7 +11,9 @@ use crate::infrastructure::local_api::{
     LocalApiDiscoveryReadError, LocalApiHttpClient, LocalApiIdentityRequestError,
     LocalApiTransportError, ProcessStartTimeLookup,
 };
-use crate::usecase::client_connection::{ClientConnectionDto, ClientConnectionError};
+use crate::usecase::client_connection::{
+    ClientConnectionDto, ClientConnectionError, ClientConnectionQueryService,
+};
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum LocalApiClientError {
@@ -187,13 +189,15 @@ fn map_transport_error(error: LocalApiTransportError) -> LocalApiClientError {
 #[path = "local_api_test.rs"]
 mod local_api_tests;
 
-struct ClientConnectionFileQuery(PathBuf);
+pub struct ClientConnectionFileQuery(pub PathBuf);
 
-impl ClientConnectionFileQuery {
+impl ClientConnectionQueryService for ClientConnectionFileQuery {
     fn read(&self) -> Result<ClientConnectionDto, ClientConnectionError> {
         self.read_with_process_lookup(lookup_process_start_time)
     }
+}
 
+impl ClientConnectionFileQuery {
     fn read_with_process_lookup(
         &self,
         lookup_process: impl FnOnce(u32) -> ProcessStartTimeLookup,
@@ -254,10 +258,4 @@ fn assess_discovery(
         discovery.port != 0 && !discovery.token.trim().is_empty(),
         ProcessObservation::from_raw(process.process_list_available, process.start_time),
     )
-}
-
-pub fn read_client_connection(
-    data_dir: &Path,
-) -> Result<ClientConnectionDto, ClientConnectionError> {
-    ClientConnectionFileQuery(data_dir.to_owned()).read()
 }

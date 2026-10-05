@@ -1,9 +1,9 @@
 use crate::common::retry::{RetryBackoff, RetryLimiter};
 use crate::domain::daemon_supervision::DaemonLiveness;
-use crate::usecase::client_connection::ClientConnectionDto;
 use connectrpc::client::{ClientConfig, HttpClient};
 use futures_util::future::BoxFuture;
 use releash_lib::desktop_api::descriptor;
+use releash_lib::desktop_api::ClientConnectionDto;
 use releash_lib::desktop_api::{call, rpc, to_wire, wire};
 use releash_lib::desktop_api::{TechnicalFailure, TechnicalFailureNature};
 use std::sync::{Arc, LazyLock};

@@ -265,7 +265,7 @@ test("nightly measures both coverages with profile retention and uploads the che
   assert.deepEqual(commands(coverage), [
     "pnpm exec vitest run --coverage",
     "python3 .github/scripts/coverage.test.py",
-    "cargo llvm-cov clean --workspace\ncargo llvm-cov --no-report --locked\ncargo llvm-cov --no-report --locked -p releash-desktop\ncargo llvm-cov report --codecov --output-path rust-codecov.json",
+    "cargo llvm-cov clean --workspace\ncargo llvm-cov --no-report --locked\ncargo llvm-cov --no-report --locked -p releash-desktop\ncargo llvm-cov report --workspace --codecov --output-path rust-codecov.json",
   ]);
   const environment = section(coverage, "    env:");
   assert.equal(value(environment, "RUSTFLAGS"), "-C llvm-args=-runtime-counter-relocation");
@@ -1048,10 +1048,15 @@ test("bundle builds each universal sidecar without overwriting the workspace bin
   assert.ok(copies.every(([, to]) => to.startsWith("src-tauri/releash-desktop/binaries/")));
 });
 
-test("debug bundle writes a host sidecar and dev prepares the existing debug sibling", () => {
+test("debug bundle writes a host sidecar", () => {
   const bundled = buildBackendSidecars("aarch64-apple-darwin", [], true);
   assert.deepEqual(bundled.copies, [["/target/aarch64-apple-darwin/debug/releash-backend", "src-tauri/releash-desktop/binaries/releash-backend-aarch64-apple-darwin"]]);
-  const development = buildBackendSidecars("aarch64-apple-darwin", ["--dev"]);
-  assert.deepEqual(development.copies, [["/target/aarch64-apple-darwin/debug/releash-backend", "/target/debug/releash-backend"]]);
-  assert.ok(development.commands.filter(([command, args]) => command === "cargo" && args[0] === "build").every(([, args]) => !args.includes("--release")));
+});
+
+test("dev only builds the normal workspace backend without copying or bundling", () => {
+  for (const target of ["aarch64-apple-darwin", "universal-apple-darwin"]) {
+    const development = buildBackendSidecars(target, ["--dev"]);
+    assert.deepEqual(development.commands, [["cargo", ["build", "--manifest-path", "src-tauri/Cargo.toml", "--locked", "-p", "releash-backend", "--bin", "releash-backend"]]]);
+    assert.deepEqual(development.copies, []);
+  }
 });

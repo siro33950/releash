@@ -475,6 +475,21 @@ fn test_local_api_discovery_空または0の内容を従来の表示で拒否す
 }
 
 #[test]
+fn test_クライアント接続情報_公開入口のqueryserviceとして読み取れる() {
+    // Given
+    let directory = tempfile::tempdir().unwrap();
+    let query = crate::desktop_api::ClientConnectionFileQuery(directory.path().to_owned());
+    let service: &dyn crate::desktop_api::ClientConnectionQueryService = &query;
+    // When
+    let result = service.read();
+    // Then
+    assert_eq!(
+        result.unwrap_err().to_string(),
+        "daemon discovery is unavailable"
+    );
+}
+
+#[test]
 fn test_クライアント接続情報_再起動したinstanceを再読込しmasterを返さない() {
     use crate::infrastructure::local_api::{LocalApiDiscovery, LocalApiDiscoveryFile};
     let directory = tempfile::tempdir().unwrap();

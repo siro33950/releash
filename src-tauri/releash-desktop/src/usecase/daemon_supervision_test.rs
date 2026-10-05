@@ -56,6 +56,21 @@ fn pausing_output(
     )
 }
 
+#[tokio::test(start_paused = true)]
+async fn test_接続情報query_監督usecaseをサーバのtraitとして利用できる() {
+    // Given
+    let gateway = Arc::new(FakeDaemon::default());
+    let supervisor = crate::usecase::test_helpers::start_supervision(gateway.clone());
+    let service: &dyn ClientConnectionQueryService = supervisor.as_ref();
+    // When / Then
+    assert!(service.read().is_err());
+    gateway.ready.store(true, Ordering::SeqCst);
+    tick(200).await;
+    assert_eq!(service.read().unwrap().token, "client-only");
+    gateway.ready.store(false, Ordering::SeqCst);
+    assert!(service.read().is_err());
+}
+
 #[tokio::test]
 async fn test_起動状態の購読_初期通知中の変化が最後に届く() {
     // Given
