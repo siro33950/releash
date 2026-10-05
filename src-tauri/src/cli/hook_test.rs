@@ -22,7 +22,6 @@ use crate::domain::local_event::{
 use crate::domain::provider_lifecycle::{
     ProviderKind, ProviderLifecycleScope, ProviderLifecycleSlotId,
 };
-use crate::infrastructure::local_api::LocalApiServerBinding;
 use crate::test_support::{EnvVarGuard, TEST_ENV_LOCK};
 use crate::usecase::provider_lifecycle::ProviderLifecycleUsecase;
 
@@ -124,14 +123,20 @@ fn test_hook受信_local_api_http失敗もlaunch_health_markerへ記録する() 
         .path()
         .join("provider-launches/agent/http-failure/hook-health.json");
     let runtime = tokio::runtime::Runtime::new().unwrap();
-    let binding = LocalApiServerBinding::bind(data.path().to_path_buf()).unwrap();
-    let server = binding.start(
-        axum::Router::new().route(
-            "/v1/provider-lifecycle/signals",
-            axum::routing::post(|| async { axum::http::StatusCode::SERVICE_UNAVAILABLE }),
-        ),
-        runtime.handle(),
-    );
+    let binding =
+        crate::infrastructure::local_api::test_binding(data.path().to_path_buf()).unwrap();
+    let server = binding
+        .start(
+            axum::Router::new().route(
+                "/v1/provider-lifecycle/signals",
+                axum::routing::post(|| async { axum::http::StatusCode::SERVICE_UNAVAILABLE }),
+            ),
+            runtime.handle(),
+        )
+        .inspect(|server| {
+            server.publish_discovery().unwrap();
+        })
+        .unwrap();
     let _data_dir = EnvVarGuard::set_path("RELEASH_DATA_DIR", data.path());
     let _slot_id =
         EnvVarGuard::set_value("RELEASH_PROVIDER_LIFECYCLE_SLOT_ID", "slot-http-failure");
@@ -210,13 +215,19 @@ fn test_hook受信_session_start成功だけがdelivery_failure_markerを解除�
         Some(plugin_data.path()),
     )
     .unwrap();
-    let binding = LocalApiServerBinding::bind(client_data.path().to_path_buf()).unwrap();
+    let binding =
+        crate::infrastructure::local_api::test_binding(client_data.path().to_path_buf()).unwrap();
     let router = api_test_support::test_router_with_provider_lifecycle(
         store_data.path(),
         binding.bearer_token().as_ref(),
         usecase,
     );
-    let server = binding.start(router, runtime.handle());
+    let server = binding
+        .start(router, runtime.handle())
+        .inspect(|server| {
+            server.publish_discovery().unwrap();
+        })
+        .unwrap();
     let _data_dir = EnvVarGuard::set_path("RELEASH_DATA_DIR", client_data.path());
     let launch_value = |name: &str| {
         launch
@@ -327,7 +338,8 @@ fn test_hook受信_両providerの活動eventを期待するactivityとしてloca
     let _lock = TEST_ENV_LOCK.lock();
     let data = TempDir::new().unwrap();
     let runtime = tokio::runtime::Runtime::new().unwrap();
-    let binding = LocalApiServerBinding::bind(data.path().to_path_buf()).unwrap();
+    let binding =
+        crate::infrastructure::local_api::test_binding(data.path().to_path_buf()).unwrap();
     let requests = Arc::new(std::sync::Mutex::new(
         Vec::<ProviderLifecycleReceiveRequest>::new(),
     ));
@@ -344,7 +356,12 @@ fn test_hook受信_両providerの活動eventを期待するactivityとしてloca
             },
         ),
     );
-    let server = binding.start(router, runtime.handle());
+    let server = binding
+        .start(router, runtime.handle())
+        .inspect(|server| {
+            server.publish_discovery().unwrap();
+        })
+        .unwrap();
     let _data_dir = EnvVarGuard::set_path("RELEASH_DATA_DIR", data.path());
     let _slot_id =
         EnvVarGuard::set_value("RELEASH_PROVIDER_LIFECYCLE_SLOT_ID", "slot-awaiting-answer");

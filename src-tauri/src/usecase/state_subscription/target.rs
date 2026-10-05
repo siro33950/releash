@@ -38,7 +38,6 @@ pub(crate) enum SubscriptionTarget {
     WorkflowConfig,
     PerformanceSwitches,
     ProviderHookHealth,
-    StartupOutcome,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]

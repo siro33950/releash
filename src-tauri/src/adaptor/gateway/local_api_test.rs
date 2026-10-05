@@ -558,3 +558,80 @@ fn test_クライアント接続情報_停止済みとpid再利用と参照不�
         .read_with_process_lookup(|_| found_process(123))
         .is_ok());
 }
+
+#[test]
+fn test_クライアント接続情報_masterと食い違う記録では接続先もtokenも返さない() {
+    use crate::infrastructure::local_api::{LocalApiDiscovery, LocalApiDiscoveryFile};
+    // Given
+    let directory = tempfile::tempdir().unwrap();
+    let master = LocalApiDiscovery {
+        port: 12345,
+        token: "master-secret".into(),
+        instance_id: "instance".into(),
+        pid: 42,
+        process_started_at: 123,
+    };
+    LocalApiDiscoveryFile::create(directory.path(), master.clone()).unwrap();
+    let client = LocalApiDiscovery {
+        token: "client-secret".into(),
+        ..master.clone()
+    };
+    let query = ClientConnectionFileQuery(directory.path().into());
+    for mismatched in [
+        LocalApiDiscovery {
+            token: master.token.clone(),
+            ..client.clone()
+        },
+        LocalApiDiscovery {
+            port: 23456,
+            ..client.clone()
+        },
+        LocalApiDiscovery {
+            token: " ".into(),
+            ..client.clone()
+        },
+        LocalApiDiscovery {
+            instance_id: "other".into(),
+            ..client.clone()
+        },
+        LocalApiDiscovery {
+            pid: 43,
+            ..client.clone()
+        },
+        LocalApiDiscovery {
+            process_started_at: 124,
+            ..client.clone()
+        },
+    ] {
+        LocalApiDiscoveryFile::create_client(directory.path(), mismatched).unwrap();
+        // When
+        let result = query.read_with_process_lookup(|_| found_process(123));
+        // Then
+        let error = result.unwrap_err();
+        assert!(!error.to_string().contains("secret"));
+    }
+    LocalApiDiscoveryFile::create_client(directory.path(), client).unwrap();
+    assert_eq!(
+        query
+            .read_with_process_lookup(|_| found_process(123))
+            .unwrap()
+            .token,
+        "client-secret"
+    );
+}
+
+#[test]
+fn test_local_api接続先確認_応答の状態を確認済みと別応答と応答なしに分ける() {
+    // Given / When / Then
+    assert_eq!(
+        identity_response(Some(204)),
+        ConnectionObservation::IdentityVerified
+    );
+    for status in [200, 401, 404] {
+        assert_eq!(
+            identity_response(Some(status)),
+            ConnectionObservation::UnexpectedResponse
+        );
+    }
+    assert_eq!(identity_response(None), ConnectionObservation::NoResponse);
+}

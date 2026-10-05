@@ -66,7 +66,6 @@ import {
 	OpenFolderInEditorRequestSchema,
 	OpenInEditorRequestSchema,
 	OpenWorkflowInEditorRequestSchema,
-	QuitAfterStartupFailureRequestSchema,
 	RecordTerminalLaunchRendererPhaseRequestSchema,
 	RefreshProviderAvailabilityRequestSchema,
 	RefreshWorkspacesRequestSchema,
@@ -99,7 +98,6 @@ import {
 	SetReleashBaseRequestSchema,
 	StartTerminalInputPerformanceCollectionRequestSchema,
 	StartTerminalLaunchPerformanceCollectionRequestSchema,
-	StartupFailureQuitOutcomeDtoV1Schema,
 	StartWorkflowRequestSchema,
 	TakeTerminalInputPerformanceSamplesRequestSchema,
 	TakeTerminalLaunchPerformanceSamplesRequestSchema,
@@ -820,25 +818,6 @@ const commands = {
 					OpenWorkflowInEditorRequestSchema,
 					clientJson(
 						OpenWorkflowInEditorRequestSchema,
-						JSON.parse(JSON.stringify(args ?? {})),
-						true,
-					),
-				),
-			),
-		);
-		return result;
-	},
-	quit_after_startup_failure: async (
-		client: Client<typeof ClientService>,
-		args: ClientCommandArgs["quit_after_startup_failure"],
-	) => {
-		const result = decode(
-			StartupFailureQuitOutcomeDtoV1Schema,
-			await client.quitAfterStartupFailure(
-				fromJson(
-					QuitAfterStartupFailureRequestSchema,
-					clientJson(
-						QuitAfterStartupFailureRequestSchema,
 						JSON.parse(JSON.stringify(args ?? {})),
 						true,
 					),

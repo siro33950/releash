@@ -2,7 +2,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use crate::adaptor::controller::api::{self, test_support as api_test_support};
-use crate::infrastructure::local_api::{LocalApiServer, LocalApiServerBinding};
+use crate::infrastructure::local_api::LocalApiServer;
 use crate::usecase::workflow::WorkflowUsecase;
 
 pub(crate) struct LocalApiTestHost {
@@ -42,7 +42,7 @@ fn start_local_api_test_host_with_policy(
     skip_forbidden_bind: bool,
 ) -> Option<LocalApiTestHost> {
     let (workflow, runtime, gateway) = api_test_support::usecases(query_data);
-    let binding = match LocalApiServerBinding::bind(client_data.to_path_buf()) {
+    let binding = match crate::infrastructure::local_api::test_binding(client_data.to_path_buf()) {
         Ok(binding) => binding,
         Err(error)
             if skip_forbidden_bind
@@ -73,7 +73,12 @@ fn start_local_api_test_host_with_policy(
         ),
     );
     let server_runtime = tokio::runtime::Runtime::new().unwrap();
-    let server = binding.start(router, server_runtime.handle());
+    let server = binding
+        .start(router, server_runtime.handle())
+        .inspect(|server| {
+            server.publish_discovery().unwrap();
+        })
+        .unwrap();
     Some(LocalApiTestHost {
         workflow,
         gateway,

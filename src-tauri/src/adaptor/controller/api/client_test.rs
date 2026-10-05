@@ -1,12 +1,13 @@
 use super::*;
 
-use crate::usecase::application_startup::ApplicationStartupAuthority;
 use connectrpc::client::{ClientConfig, HttpClient};
 use prost::Message;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 fn dispatch() -> ClientCommandDispatch {
-    ClientCommandDispatch::new(Arc::new(ApplicationStartupAuthority::ready()))
+    ClientCommandDispatch::new(crate::usecase::daemon::DaemonUsecase(
+        crate::adaptor::gateway::daemon::serving(),
+    ))
 }
 
 fn unary_request(method: &str, body: &str) -> axum::http::Request<axum::body::Body> {
@@ -2292,4 +2293,162 @@ async fn test_terminal購読識別子_入口で空と超過を拒み上限と空
             .unwrap();
         assert!(response.status().is_success());
     }
+}
+
+#[tokio::test]
+async fn test_connect受付_停止後の新規streamを拒否し既存streamと重複停止を維持する() {
+    // Given
+    let daemon = crate::usecase::daemon::DaemonUsecase(crate::adaptor::gateway::daemon::serving());
+    let (sender, mut exit) = tokio::sync::mpsc::channel(1);
+    let directory = tempfile::tempdir().unwrap();
+    let mut dependencies =
+        crate::acceptance_test_support::build_client_dependencies(directory.path().into());
+    dependencies.daemon = daemon.clone();
+    dependencies.process_port = sender;
+    let mut dispatch = ClientCommandDispatch::new(daemon.clone());
+    dispatch.register_dependencies(&dependencies);
+    let subscriptions = crate::usecase::state_subscription::StateSubscriptionUsecase::new(
+        vec![],
+        crate::test_support::state_subscription::read_driver(),
+    );
+    let deps = crate::test_support::client_api_deps(Arc::new(dispatch))
+        .with_state_subscriptions(subscriptions.deps());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let config = ClientConfig::new(
+        format!("http://{}", listener.local_addr().unwrap())
+            .parse()
+            .unwrap(),
+    );
+    let server = tokio::spawn(async move {
+        axum::serve(
+            listener,
+            router(
+                Some(deps),
+                crate::adaptor::controller::daemon::default_timeout(),
+            ),
+        )
+        .await
+        .unwrap();
+    });
+    let client = rpc::ClientServiceClient::new(HttpClient::plaintext(), config);
+    let mut stream = client
+        .open_state_stream(rpc::OpenStateStreamRequest {
+            client_id: "existing".into(),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let ready = stream
+        .message::<rpc::StateSubscriptionEvent>()
+        .await
+        .unwrap()
+        .unwrap()
+        .to_owned_message();
+    assert!(matches!(
+        to_wire::<wire::StateSubscriptionEvent>(&ready)
+            .unwrap()
+            .event,
+        Some(wire::state_subscription_event::Event::Ready(_))
+    ));
+    client
+        .start_state_subscription(rpc::StartStateSubscriptionRequest {
+            client_id: "existing".into(),
+            subscription_id: "existing-paths".into(),
+            target: "repository-paths".into(),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    for expected in ["snapshot", "bookmark"] {
+        let event = stream
+            .message::<rpc::StateSubscriptionEvent>()
+            .await
+            .unwrap()
+            .unwrap()
+            .to_owned_message();
+        let event = to_wire::<wire::StateSubscriptionEvent>(&event).unwrap();
+        assert!(matches!(
+            (expected, event.event),
+            (
+                "snapshot",
+                Some(wire::state_subscription_event::Event::Snapshot(_))
+            ) | (
+                "bookmark",
+                Some(wire::state_subscription_event::Event::Bookmark(_))
+            )
+        ));
+    }
+    let quit = |code| {
+        let wire::command_request::Command::RequestApplicationQuit(request) =
+            wire::CommandRequest::from_value(
+                "request_application_quit",
+                serde_json::json!({"request": {"intent": {"type": "restart", "code": code}}}),
+            )
+            .unwrap()
+            .command
+            .unwrap()
+        else {
+            unreachable!()
+        };
+        to_rpc::<rpc::RequestApplicationQuitRequest>(&request).unwrap()
+    };
+    // When
+    client.request_application_quit(quit(23)).await.unwrap();
+    assert_eq!(exit.try_recv().unwrap(), 23);
+    exit.close();
+    // Then
+    client.request_application_quit(quit(99)).await.unwrap();
+    assert_eq!(exit.len(), 0);
+    let info = client
+        .get_server_info(rpc::Unit::default())
+        .await
+        .unwrap()
+        .into_owned();
+    assert_eq!(info.serving_status, rpc::ServingStatus::Stopping);
+    subscriptions.test_set_repository_paths(vec!["/after-stop".into()]);
+    subscriptions.notify(crate::usecase::state_subscription::StateChangeSource::Repositories);
+    let event = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        stream.message::<rpc::StateSubscriptionEvent>(),
+    )
+    .await
+    .unwrap()
+    .unwrap()
+    .unwrap()
+    .to_owned_message();
+    let event = to_wire::<wire::StateSubscriptionEvent>(&event).unwrap();
+    assert_eq!(event.subscription_id, "existing-paths");
+    let Some(wire::state_subscription_event::Event::Change(change)) = event.event else {
+        panic!("post-stop change expected");
+    };
+    assert_eq!(
+        change.payload.unwrap().value,
+        Some(wire::state_payload::Value::RepositoryPaths(
+            wire::Liststring {
+                items: vec!["/after-stop".into()]
+            }
+        ))
+    );
+    let mut rejected = client
+        .open_state_stream(rpc::OpenStateStreamRequest {
+            client_id: "new".into(),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let error = rejected
+        .message::<rpc::StateSubscriptionEvent>()
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, connectrpc::ErrorCode::FailedPrecondition);
+    use base64::Engine;
+    let bytes = base64::engine::general_purpose::STANDARD_NO_PAD
+        .decode(error.details[0].value.as_ref().unwrap())
+        .unwrap();
+    let detail = wire::CommandError::decode(bytes.as_slice()).unwrap();
+    assert!(
+        matches!(detail.variant, Some(wire::command_error::Variant::Coded(value)) if value.code.as_deref() == Some("APPLICATION_UNAVAILABLE"))
+    );
+    drop(stream);
+    server.abort();
 }

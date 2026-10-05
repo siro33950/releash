@@ -141,6 +141,9 @@ async fn test_終了処理_commandの終了結果も次回起動での喪失も�
                 .len();
 
             // When
+            crate::usecase::daemon::DaemonUsecase(fixture.host.daemon.clone())
+                .stop(crate::domain::daemon::StopRequest::Exit { code: 23 })
+                .await;
             fixture.host.shutdown_all_active_commands().await;
             fixture
                 .host
@@ -191,7 +194,7 @@ async fn test_終了処理_commandの終了結果も次回起動での喪失も�
 }
 
 #[tokio::test]
-async fn test_終了処理_commandの保存中は待ち後続commandの起動前に進む() {
+async fn test_終了処理_commandの保存待ちを終了し結果も後続commandも取り込まない() {
     for output in [
         Ok(CommandRunOutput {
             exit_code: 0,
@@ -208,7 +211,6 @@ async fn test_終了処理_commandの保存中は待ち後続commandの起動前
         let input = started_command(&fixture, "  main: {sequence: {children: [work, next]}}\n  work: {command: true}\n  next: {command: true}").await;
         let execution_id = input.execution_id.clone();
         let node_execution_id = input.node_execution_id.clone();
-        let succeeded = output.is_ok();
         let commit_lock = fixture.host.commit_lock(&execution_id).await;
         let executions = commit_lock.lock().await;
         let mut completion = Box::pin(async {
@@ -240,6 +242,9 @@ async fn test_終了処理_commandの保存中は待ち後続commandの起動前
         .await;
 
         // When
+        crate::usecase::daemon::DaemonUsecase(fixture.host.daemon.clone())
+            .stop(crate::domain::daemon::StopRequest::Exit { code: 23 })
+            .await;
         let mut shutdown = Box::pin(fixture.host.shutdown_all_active_commands());
         assert!(futures_util::poll!(shutdown.as_mut()).is_pending());
         drop(executions);
@@ -253,28 +258,29 @@ async fn test_終了処理_commandの保存中は待ち後続commandの起動前
         let records = workflow_fact_log::read_tree_records(&fixture.store, &execution_id)
             .await
             .unwrap();
-        assert!(records.iter().any(|record| {
+        assert!(!records.iter().any(|record| {
             record.meta.node_execution_id == node_execution_id
-                && if succeeded {
-                    matches!(record.fact, NodeFact::ProcessExited(_))
-                } else {
-                    matches!(record.fact, NodeFact::RuntimeFailureObserved(_))
-                }
+                && matches!(
+                    record.fact,
+                    NodeFact::ProcessExited(_)
+                        | NodeFact::RuntimeFailureObserved(_)
+                        | NodeFact::ArtifactProduced(_)
+                )
         }));
         assert!(!records.iter().any(|record| {
             record.meta.node_name == "next" && matches!(record.fact, NodeFact::CommandSpawned(_))
         }));
         assert!(!fixture
             .host
-            .command_admission
-            .read()
+            .daemon
+            .admission()
             .await
-            .accepts_completion());
+            .admits(crate::domain::daemon::DaemonRequest::Operation));
     }
 }
 
 #[tokio::test]
-async fn test_終了処理_command起動の完了を待ち以降の起動を止める() {
+async fn test_終了処理_commandの起動待ちを終了し停止後は起動しない() {
     // Given
     let fixture = Fixture::new(0);
     let cwd = fixture._directory.path().to_str().unwrap();
@@ -309,18 +315,21 @@ async fn test_終了処理_command起動の完了を待ち以降の起動を止�
         .await;
 
     // When
+    crate::usecase::daemon::DaemonUsecase(fixture.host.daemon.clone())
+        .stop(crate::domain::daemon::StopRequest::Exit { code: 23 })
+        .await;
     let mut shutdown = Box::pin(fixture.host.shutdown_all_active_commands());
     assert!(futures_util::poll!(shutdown.as_mut()).is_pending());
     drop(executions);
     spawn.await.unwrap();
-    assert!(fixture
+    assert!(!fixture
         .host
         .node_processes
         .active_commands
         .lock()
         .unwrap()
         .contains_key(&node.id));
-    assert!(fixture
+    assert!(!fixture
         .host
         .command_completion_observers
         .lock()
@@ -355,7 +364,12 @@ async fn test_終了処理_command起動の完了を待ち以降の起動を止�
         .lock()
         .await
         .is_empty());
-    assert!(!fixture.host.command_admission.read().await.accepts_start());
+    assert!(!fixture
+        .host
+        .daemon
+        .admission()
+        .await
+        .admits(crate::domain::daemon::DaemonRequest::Operation));
     let folded = workflow_fact_log::fold_tree_from(
         &workflow_fact_log::FactLogReadBackend::Live(fixture.store.clone()),
         &snapshot.execution_id,
@@ -451,6 +465,9 @@ async fn test_command起動_別executionのobserver登録を待たずプロセ�
         .lock()
         .unwrap()
         .contains_key(&inputs[1].node_execution_id);
+    crate::usecase::daemon::DaemonUsecase(fixture.host.daemon.clone())
+        .stop(crate::domain::daemon::StopRequest::Exit { code: 23 })
+        .await;
     let mut shutdown = Box::pin(fixture.host.shutdown_all_active_commands());
     assert!(futures_util::poll!(shutdown.as_mut()).is_pending());
     drop(observers);
@@ -478,4 +495,31 @@ async fn test_command起動_別executionのobserver登録を待たずプロセ�
         .lock()
         .await
         .is_empty());
+}
+
+#[tokio::test]
+async fn test_終了処理_workflowの後始末だけでは停止要求の終了コードを決めない() {
+    // Given
+    let fixture = Fixture::new(0);
+    let daemon = crate::usecase::daemon::DaemonUsecase(fixture.host.daemon.clone());
+    // When
+    fixture.host.shutdown_all_active_commands().await;
+    // Then
+    assert_eq!(
+        daemon
+            .stop(crate::domain::daemon::StopRequest::Exit { code: 23 })
+            .await,
+        crate::domain::daemon::StopAcceptance::Started { code: 23 }
+    );
+    assert_eq!(
+        daemon
+            .stop(crate::domain::daemon::StopRequest::Exit { code: 99 })
+            .await,
+        crate::domain::daemon::StopAcceptance::AlreadyAccepted
+    );
+    assert!(
+        !daemon
+            .admits(crate::domain::daemon::DaemonRequest::Operation)
+            .await
+    );
 }

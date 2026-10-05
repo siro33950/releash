@@ -1,0 +1,77 @@
+# Design
+
+パスは `src-tauri/src/` を起点とする（`proto/`、`src/`、`docs/` はリポジトリ直下）。行番号は main acac85ef 時点。
+
+## 変える部分
+
+- `Daemon` 集約の新設: `domain/daemon/` に、サーバ自身を表す集約を置く。identity（サーバが発行する ID、pid、起動時刻）、版（release、protocol、capability の集合）、serving status（Starting / Serving / Stopping / Stopped / Failed（理由付き））とその遷移、受付可否、停止要求の受理を所有する。受付可否は、serving status と要求の種類（status・停止・それ以外）から導く。status と停止は常に受け付け、それ以外は Serving のときだけ受け付ける。根拠: R-001、R-005、R-006、B-001、B-006〜B-008、B-010。ルート: 「Serving になった」は、待ち受けを始めて要求を受けられる状態になった時点（今の `adaptor/controller/daemon.rs:598` の後）とし、集約の遷移として 1 か所で表す。
+- `DaemonInfo` の新設: 集約の公開像を表す値を domain に置く。発見ファイルの内容と `GetServerInfo` の応答は、この値から作る。根拠: R-001、R-002、B-001、B-002。ルート: 委任。
+- identity の値と同一性の判定: 発見した記録と到達したサーバが同一かの判定（記録の妥当性、プロセス観測との一致、到達したサーバの応答）を、identity の値が持つ。`domain/local_api_discovery/` の判定（`mod.rs:1-128`）をここへ統合し、`domain/local_api_discovery/` を削除する。pid が生きているかの確認は domain の外で行い、domain は観測の結果を受けて判定する。根拠: R-011、B-015。ルート: domain の identity の値の名前は `daemon_id` にそろえ、発見ファイルの項目名 `instance_id` は保存の形として残す。対応は変換の 1 か所に書く。記録の形の検査（port と token の妥当性、master と client の token が別であること）は domain の外で行い、identity の判定（daemon_id・pid・起動時刻、プロセス観測、到達したサーバの応答）と拒否の分類は domain が持つ。
+- 発見ファイルの表現と評価の組み立てを 1 つにする: port と token を含む発見ファイルの形は、domain の外に 1 つだけ持つ。DTO から値への変換（`adaptor/gateway/local_api.rs:83-89`、`:237-245`）と評価の組み立て（CLI 用 `:69-117`、シェル用 `:221-265`）を、それぞれ 1 つにする。根拠: R-011、B-015。ルート: 委任。
+- 発見ファイルを書く時点と消す経路: bind で確保した port と token は保持し、2 つの発見ファイルを Serving になってから書く。停止時に両方を消す。書いた後に失敗したら両方を消し、片方だけ書けた場合も残さない（`infrastructure/local_api/server.rs:77-82` の保証を保つ）。消す経路（今は `server.rs:77-82`、`:131-142`、`:153-161`、`:184-195`）は、書く時点に合わせて整える。根拠: R-004、B-004、B-005。ルート: 2 つのファイルの形（項目、ファイル名、0600 の権限）と token の分離は変えず、書く時点とそれに合わせた消す経路だけを変える。
+- `GetServerInfo` の応答の追加: `proto/client.proto` の `ServerInfo` に、`string daemon_id = 5;`、`uint32 pid = 6;`、`uint64 process_started_at = 7;`（発見ファイルと同じ単位の秒）、`uint32 protocol = 8;`、`repeated string capabilities = 9;`、`ServingStatus serving_status = 10;` を足す。あわせて `enum ServingStatus { SERVING_STATUS_UNSPECIFIED = 0; SERVING_STATUS_STARTING = 1; SERVING_STATUS_SERVING = 2; SERVING_STATUS_STOPPING = 3; SERVING_STATUS_STOPPED = 4; SERVING_STATUS_FAILED = 5; }` を足す。`adaptor/controller/api/client_service.rs:1-10` は `DaemonInfo` から応答を作る。`src/generated/`、テスト、mock を追従させる。根拠: R-001〜R-003、B-001〜B-003。ルート: 追加だけを行い、`launch_id` と `release` は変えない。reserved の名前 `instance_id` は使わない。enum は proto の標準（0 を UNSPECIFIED、値に型名の接頭辞）で書く。`ServingStatus` は domain の serving status と 1 対 1 に写す。Failed の理由は wire に載せない（Failed のサーバは発見ファイルを書かずに終了し、応答に載ることがないため）。
+- protocol と capability の値: protocol は、手書きの定数を持たず、proto の package 名（descriptor）からメジャー版を導く。capability の集合は空にし、型は文字列の集合にする。根拠: R-003、B-003。ルート: 委任。
+- 受付可否の適用: Daemon 集約の受付可否を、Connect の全 RPC（コマンドと、`client_service.rs` の購読などの RPC）の入口 1 か所に掛ける。RPC の名前から要求の種類への対応付けは controller に置く。今のコマンド経路の判定（`adaptor/controller/api/client.rs:82`、`adaptor/controller/client/dispatch.rs:83-91`、`:183-192` の `command_admitted` と `STARTUP_COMMANDS`）は、この判定に置き換える。根拠: R-005、B-006〜B-008。ルート: 掛ける位置は Connect の入口の 1 か所にし、コマンドの経路と手書きの RPC で別々に書かない。拒否のエラーは今の `AppError::invalid_state` とコード `APPLICATION_UNAVAILABLE`（`dispatch.rs:84-89`）を保つ。新しく届く要求にだけ掛け、開いている stream と進行中の呼び出しは切らない。method ごとの option を proto に足すことはしない（#1901）。
+- `CommandAdmission` の置き換え: `adaptor/gateway/workflow/workflow_host.rs`（`:114`、`:490`、`:1441-1442`、`:1687-1688`、`:1818-1819`、`:1923`、`:2110-2127`）と `workflow_host/node_startup.rs:111-112` が使う `CommandAdmission` を、Daemon 集約の受付可否に置き換える。`domain/application_lifecycle.rs:27-44` の `CommandAdmission` を削除する。根拠: R-006、B-010。ルート: 規則を 2 つにしない。
+- 停止要求の受理と `StopRequest`: domain の `ApplicationQuitIntent`（`domain/application_lifecycle.rs:3-7`）を削除し、停止要求の受理を Daemon 集約が `StopRequest`（Exit だけ）で行う。Serving のとき停止要求を受けると Stopping へ遷移し、その要求の exit code を終了コードとして持つ。Stopping のとき停止要求を受けると、状態も終了コードも変えずに受理済みを返す。集約の戻り値で「遷移した」か「すでに停止中だった」かを区別する。サーバの controller（今の `adaptor/controller/client/application_lifecycle.rs:22-33`）は、wire の Exit と Restart のどちらも `StopRequest::Exit` に変換する。exit code は今と同じくプロセスの終了コードに届ける。根拠: R-007、R-014、B-011、B-019。ルート: wire の `ApplicationQuitIntentDtoV1`（Exit / Restart）と `proto/client.proto` は変えない。Restart を Exit に畳む変換は 1 か所だけにする（今の `adaptor/gateway/application_lifecycle.rs:12-14` に当たる分岐はそこへまとめる）。exit code を `StopRequest::Exit` が持つか、変換の位置で保つかは委任。
+- `ApplicationQuitIntentPort` の削除: `domain/application_lifecycle.rs:13-15` の `ApplicationQuitIntentPort` と、`usecase/application_lifecycle/mod.rs:6-11` の `request_quit` を削除する。停止要求の Usecase は、Daemon 集約に受理を問い、受理された値を返す。それを呼んだ controller が、終了の channel（`adaptor/controller/daemon.rs:87`、`:64`）に exit code を送る。終了の channel に送るのは、集約が「遷移した」を返した最初の 1 回だけにする。controller は集約の戻り値で送るかどうかを決め、受理の判定を書かない。wire の応答は今の `Accepted`（`adaptor/controller/client/application_lifecycle.rs:32`）のままにし、新しい値を足さない。根拠: R-007、R-014、B-011、B-019。ルート: channel の送り口は controller の依存として持つ（今の `ClientDependencies.process_port` の位置。`adaptor/controller/client/dependencies.rs:35`、`daemon.rs:509-511`）。`DaemonProcessActionPort`（`adaptor/gateway/application_lifecycle.rs:8-21`）とそのテスト、テスト補助の組み立て（`acceptance_test_support.rs:45`、`desktop_test_support.rs:48`）は、この形に追従させる。
+- シェルの `ApplicationQuitIngress`: 引数の型を、監督の `StopIntent`（`domain/daemon_supervision.rs:77-82`）にする。`adaptor/controller/desktop_lifecycle.rs:129-130` は `StopIntent::Quit(code)` を渡し、`desktop.rs:117-131` の変換と、到達しない Restart の分岐（`:123-125`）を削除する。根拠: R-012、B-017。ルート: 変えるのは、ingress の引数の型、`desktop_lifecycle.rs:130` が渡す値、`desktop.rs` の変換の削除だけ。
+- 停止の deadline の移動: `domain/application_lifecycle.rs:1` の `SHUTDOWN_TIMEOUT` を domain から出す。値（15 秒）は `proto/client.proto` の `ClientService` の service option に置き、拡張は `proto/client_options.proto:39-45` に足す。`ApplicationShutdownGateway` の `wait_for_deadline`（`domain/application_lifecycle.rs:24`）を trait から外す。期限は、停止手順を呼ぶ側（controller の `Daemon::wait`。`adaptor/controller/daemon.rs:68-74`）が common の包みで掛ける。期限を過ぎたときのログ（今の `usecase/application_lifecycle/mod.rs:34`）は、option から読んだ値を使う。根拠: R-008、B-012。ルート: option の名前と単位は既存の並び（`*_ms`、uint32）にそろえる。値は 15 秒のまま変えない。option の読み方は既存の `default_timeout()`（`adaptor/controller/daemon.rs:28-43`）と同じ形にし、読み方を 2 つ作らない。値の直書きを残さない。期限を過ぎたときの挙動（ログを出して終了へ進む）は変えない。
+- 起動失敗の扱い: 保存先を開けなかったら、Daemon を Failed（理由）にして、今と同じくプロセスを終える。起動失敗の分類（今の `adaptor/controller/daemon.rs:648-663` の `classify_startup_failure`、`usecase/application_startup.rs:22-84` の `StartupFailureKind` と `StartupFailure`）は、Daemon の Failed（理由付き）が持つ。根拠: R-009、B-013。ルート: ログと stderr に出す説明と相関 ID は、今の形を保つ（画面側の監督が stderr を理由として表示するため。`domain/daemon_supervision.rs:190-203`）。
+- 起動失敗の経路の削除: `usecase/application_startup.rs` の authority と失敗分類、controller の `classify_startup_failure` を削除する。購読 `startup-outcome`（`usecase/state_subscription/reads.rs:184`、`:381`、`usecase/state_subscription/target.rs:41`、`usecase/state_subscription/value.rs:65`、`adaptor/presenter/state_subscription_wire.rs:182`、`adaptor/presenter/application_lifecycle.rs`）、`QuitAfterStartupFailure`（`proto/client.proto:116`、`:2017`、`:2711` と CommandResult の項目、`adaptor/controller/client/application_lifecycle.rs:12-20`、`application_lifecycle_shared.rs:11-33`）、`ApplicationStartupOutcomeDtoV1` 系と `StartupFailureQuitOutcomeDtoV1`（`adaptor/presenter/application_lifecycle_v1.rs:9-50`、`proto/client.proto:896-910` ほか、`adaptor/presenter/client/conversions.rs:247`）、`ClientDependencies` の `application_startup_authority`（`adaptor/controller/client/dependencies.rs:4-5`）を削除する。画面の `StartupGate` と `StartupFailureScreen`（`src/App.tsx:26-80`、`:291-323`）、`src/lib/client.ts:224` の購読の型、関連するテストと mock（`src/test/`）を追従させる。`App` は `DaemonBoundary` の中で `WorkbenchApp` を描く。根拠: R-010、B-014。ルート: proto から消す項目は、field 番号と名前の両方を reserved にする。削除する機能だけを断定するテストは、機能と一緒に削除する。残る機能のテストからは、削除する購読の publish だけを取り除き、それ以外の断定は変えない。画面のテストと Rust のテストの両方に同じ規則を当てる。
+- `ApplicationUnavailable` の移動: `usecase/application_startup.rs:159-164` の `ApplicationUnavailable` を、シェルの受付の側（desktop 限定の `adaptor/controller/command/` の中）へ移す。Connect への変換（`adaptor/presenter/client/errors.rs:21-24`、`:74-80`、`adaptor/presenter/connect.rs:624-628`）と、そのテスト（`errors_test.rs:8-14`）を削除する。これで `CommandError` の `Application` を作る箇所が無くなるので、`proto/client.proto` の `CommandError` の `application = 3` と message `ApplicationError`（`:2434-2451`）を削除し、field 番号と名前を reserved にする。`adaptor/gateway/desktop_client.rs:451` の match の 1 行も追従して消す。根拠: R-012、B-016。ルート: 移した型の直列化の形（`{"type":"application_unavailable"}`）と、`adaptor/controller/command/mod.rs:305-312` の断定は変えない。
+- 文書の更新: `docs/architecture/README.md:74-93` のドメイン一覧から `local_api_discovery` の行（`:82`）を消し、`daemon` の行を足す。`docs/glossary/DOMAIN.md` の正規語の表に、Daemon、DaemonInfo、serving status、StopRequest を足す。この編集は実装の範囲で行う。根拠: R-013、B-018。ルート: README は、見出しの個数を 16 のままにし、責務はほかの行と同じ粒度の 1 行にする。一覧に無い `daemon_supervision`・`application_lifecycle` は扱わない。README のほかの節と規則の文は変えない。glossary は、既存の行と同じ形（正規語・定義 1 文・所有者）にし、実装の詳細（field 名、ファイルの場所、値）を書かない。足す行は次のとおり。
+  - README: `` | `daemon` | サーバ自身。identity、版と capability、serving status、受付可否、停止要求の受理、発見した記録と到達したサーバの同一性の判定 | ``（`local_api_discovery` の行の位置に置く）
+  - glossary: `| Daemon | サーバ自身を表す集約。identity、版、capability、serving status、受付可否、停止要求の受理を所有する | daemon |`
+  - glossary: `| DaemonInfo | Daemon の公開像。発見ファイル、サーバ情報の応答、CLI と画面の表示はこの投影である | daemon / Daemon |`
+  - glossary: `| serving status | サーバが要求を受けられるかを表す状態。Starting、Serving、Stopping、Stopped、Failed のいずれか | daemon / Daemon |`
+  - glossary: `| StopRequest | サーバへの停止要求。Exit だけを持つ | daemon / Daemon |`
+
+## 固定するルート
+
+- Daemon 集約の実体はプロセスに 1 つだけ持ち、状態の複製を各層に持たない。保持と受け渡しは、規約の部品の表（`docs/architecture/README.md:14-33`）にある部品だけで行う。集約の保存は、domain の Repository の trait と、それを実装する adaptor/gateway が担う。gateway は集約を保持して判断を委ねる（`docs/architecture/DOMAIN.md` の参照実装 `terminal_surface_registry.rs` と同じ形）。
+  - 起動時の遷移（Starting から Serving、Failed）を進めるのは controller の compose（`adaptor/controller/daemon.rs:77-612`）。controller は Usecase を通じて集約を遷移させる。
+  - Connect の入口の受付は、controller が RPC の名前を要求の種類に変え、その種類を Usecase に渡して集約に受理を問う。受理するかは集約の戻り値で決まり、controller に受理の判定を書かない（`docs/architecture/DOMAIN.md` の「controller — 入口。受理判定を書かない」）。
+  - workflow の Command の開始と結果の取り込み（`adaptor/gateway/workflow/workflow_host.rs`）は、同じ集約を保持する gateway の実装を通じて、集約の受付可否に問う。
+  - 停止要求は、Usecase が集約に受理を問う。`GetServerInfo` の応答は、Usecase が集約から得た `DaemonInfo` から作る。
+  - 具体の型と名前は委任。
+- serving status の 5 つの状態は、それぞれ次の時点で成立する。本番の経路で作られない状態は残さない。
+  - Starting: compose の開始時に集約を作った時点。保存先を開く（`adaptor/controller/daemon.rs:92`）より前。
+  - Failed（理由）: 保存先を開けなかった時点（今の `daemon.rs:92-104`）。理由は今の起動失敗の分類。compose は、この状態から作った説明と相関 ID で `Err` を返し、プロセスは今と同じく終了する（`lib.rs:73-85`）。
+  - Serving: 待ち受けを始めた時点（今の `daemon.rs:598` の `local_api_binding.start` の後）。この遷移の後に発見ファイルを書く。
+  - Stopping: 停止要求を受理した時点（今の `adaptor/controller/client/application_lifecycle_shared.rs:36-58` の停止要求の経路）。
+  - Stopped: 停止手順が終わった時点、または deadline で打ち切った時点。プロセスを終える直前（今の `daemon.rs:71` の `shutdown` の後、`:72-73` の前）。
+- 受付可否の規則は Daemon 集約に 1 つだけ置く。RPC の名前から要求の種類（status・停止・それ以外）への対応付けは、転送の知識として controller に置く。掛ける位置は Connect の入口の 1 か所にする。
+- 進行中の Command の結果の取り込みを待つ時間は、停止の deadline の中にある。待つのは停止手順の最初の段（`src-tauri/src/usecase/application_lifecycle/mod.rs:4` の `stop_commands`）から呼ばれる `drain_commands`（`src-tauri/src/adaptor/gateway/workflow/workflow_host.rs:1989`、`src-tauri/src/adaptor/gateway/daemon.rs:16-18`）で、停止手順全体に deadline が掛かる（`src-tauri/src/adaptor/controller/daemon.rs:48-66`）。deadline を過ぎたら、この待ちも打ち切られる（R-008）。
+- 停止中に新しい要求を拒否しても、停止手順は滞らない。読んで確かめた根拠は次のとおり。
+  - save_terminals（`usecase/terminal_surface/application.rs:422-462`）が出す `request_runtime_stop`（`adaptor/gateway/terminal_surface/runtime_gateway_impl.rs:1249-1262`）は、kill の前に `release_output` を呼んで、出力の一時停止を解く（`infrastructure/terminal/output_flow_control.rs:109-113`）。このため drain（`runtime_gateway_impl.rs:540-542`、`:597-603`）は、`ReportTerminalProcessed` を待たずに進む。
+  - 停止手順（`usecase/application_lifecycle/mod.rs:13-38`）に、購読の後始末を待つ段は無い。開いた stream は `stop_local_api` が閉じる。待つ上限は 5 秒（`infrastructure/local_api/server.rs:13`、`:197-220`）。
+- 停止に入った後（監督が停止要求を送ってから、サーバが API を止めるまで）に、Connect の RPC が拒否されることを受け入れる。画面に見えるものは次のとおりで、確かめた根拠を残す。
+  - 監督は Stopping を publish してから停止要求を送る（`src-tauri/src/usecase/daemon_supervision.rs:131-147`）。Stopping のとき `DaemonBoundary` は全面の overlay を出し、中身を inert にする（`src/components/DaemonBoundary.tsx:37-41`、`:108-114`、`:123-171`）。そのため、拒否が始まる時点で利用者の操作は止まっている。
+  - `StartStateSubscription`: FailedPrecondition は再接続のコード（`src/lib/client.ts:247-252`）ではないので、`console.error` を出し、その購読の error を受け手に渡す（`client.ts:323-337`）。表示は overlay の下になる。
+  - `StopStateSubscription`: `console.debug` だけ（`client.ts:349-352`）。
+  - `ReportTerminalProcessed`: `console.debug` を出し、attachment の回復を試みる（`src/hooks/useTerminal.ts:470-475`）。回復の購読開始は、上と同じく overlay の下でエラーになる。
+  - 再接続の `OpenStateStream`: `console.debug` を出し（`client.ts:410-414`）、接続を失敗にする（`:428-431`）。`DaemonBoundary` が「再接続中」を overlay の上に出す（`DaemonBoundary.tsx:115-122`）。今も API の停止後は同じ表示になり、変わるのは出る時点が早くなることだけ。
+  - コマンド: `invokeClient`（`src/generated/client_commands.ts:1750-1767`）は表示しない。`showClientError` を使う呼び出し側は、`DaemonBoundary` の alert を overlay の上に出す（`src/lib/clientErrorNotice.ts:3-9`、`DaemonBoundary.tsx:73-75`、`:93-107`）。今も API の停止後は `getClient` が `Daemon connection is …` を投げ（`client.ts:170-176`）、同じ呼び出し側が alert を出しうる。変わるのは、出る時点が早くなることと文言（「Application is unavailable」）。この区間に effect やタイマーから自動で出るコマンドは特定していない。
+  - 停止に入った後の拒否の影響で落ちる既存の画面のテスト（`src/**/*.test.tsx`、`tests/*.spec.ts`）が出たら、期待値を変えずに扱いを人と決める。
+- 発見ファイルを書く時点を Serving の後にしても、待つ側は期限の上限に当たらない。読んで確かめた根拠は次のとおり。
+  - 画面側の監督は、ファイルが無いか pid が違えば再試行を続ける。起動を打ち切るのは Identity の失敗か 30 秒の期限だけ（`adaptor/gateway/daemon_supervision.rs:336-358`、`usecase/daemon_supervision.rs:357-381`、`domain/daemon_supervision.rs:204-221`）。接続できるのは今も待ち受けの開始の後。
+  - `tests/daemon_smoke.rs:221-236` は、最大 30 秒ファイルを待つ。
+  - `src/client_api_acceptance.rs:155-170` は、`start` の後にファイルを読む。
+  - CLI（`cli/api_client.rs:41-45`、`:175-183`）は待たずに 1 回だけ読む。
+
+## 変えないもの
+
+- 画面側の監督（`domain/daemon_supervision.rs`、`usecase/daemon_supervision.rs`、`adaptor/gateway/daemon_supervision.rs`）の中身と `StopIntent` の定義、`verify_identity`、`launch_id` の受け渡し、stdout の完了マーカー。#1904 で監督ごと消すため、ここで 2 回変えない。例外は、`desktop_client.rs:451` の match の 1 行（proto の variant の削除に伴うもの）と、`ApplicationQuitIngress` の引数の型。
+- 監督の `QUIT_TIMEOUT_MS`（`domain/daemon_supervision.rs:2`、15 秒）。停止の deadline と同じ 15 秒が 2 か所に残るが、#1904 で監督ごと消えるため変えない。
+- wire の停止要求 `ApplicationQuitIntentDtoV1`（Exit / Restart）と `RequestApplicationQuit`。#1904 で `StopDaemon` に置き換えるため。
+- HTTP local API の受付。#1902 で HTTP ごと消え、ここで掛けると停止中の hook の信号の扱いが変わるため。
+- `LOCAL_API_SHUTDOWN_TIMEOUT`（`infrastructure/local_api/server.rs:13`）、HTTP クライアントの期限（`infrastructure/local_api/client.rs:76-77`）、`desktop_restart` の期限（`infrastructure/platform/desktop_restart.rs:48`）。どれもクライアントと共有しない値か、後続の ISSUE で消える値のため。
+- 発見ファイルの形（項目、ファイル名、0600 の権限）と token の分離。token の持ち方と scope は #1901 で扱うため。
+- 既存の proto の enum の書き方（`enum Value { ... }` の形）。
+- `domain/application_lifecycle.rs` の `ApplicationShutdownGateway`（`:17-25`。`wait_for_deadline` を除く 5 つの段）と `ApplicationLifecycleError`（`:9-11`）は、今の場所と名前のまま残す。domain から出す先は、規約の部品の表（`docs/architecture/README.md:14-33`）に無い。置き場所を決めるのは規約の側の判断であり、停止の段の分け方を変えるのは停止の作り直しになるため。この 2 つが残るので、`domain/application_lifecycle.rs` は消さない。
+- シェルの Tauri コマンドの受付の reject の形と、既存のシェルのテスト（`tests/desktop_*.rs`）の断定。
+
+## 未確定・リスク
+
+なし

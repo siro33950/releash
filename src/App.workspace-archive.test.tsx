@@ -224,7 +224,6 @@ const { default: App } = await import("./App");
 beforeEach(() => {
 	vi.clearAllMocks();
 	states.clear();
-	states.publish("startup-outcome", { type: "ready" });
 	states.publish(
 		"workspaces",
 		workspaceListSnapshot(initialSnapshot, "/repo/wt"),

@@ -448,7 +448,6 @@ fn error_message(error: connectrpc::ConnectError) -> String {
             match detail.variant? {
                 wire::command_error::Variant::Message(value) => value.value,
                 wire::command_error::Variant::Coded(value) => value.message,
-                wire::command_error::Variant::Application(value) => value.message,
             }
         })
         .unwrap_or_else(|| error.to_string())

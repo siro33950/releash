@@ -108,8 +108,8 @@ impl WorkflowRuntimeHost {
             if failed.is_empty() {
                 return;
             }
-            let admission = self.command_admission.read().await;
-            if !admission.accepts_start() {
+            let admission = self.daemon.admission().await;
+            if !admission.admits(crate::domain::daemon::DaemonRequest::Operation) {
                 return;
             }
             let mut tasks = self.startup_retries.lock().await;

@@ -1,5 +1,4 @@
 use crate::adaptor::presenter::client as wire;
-use crate::usecase::application_startup::ApplicationStartupAuthority;
 use std::{collections::HashMap, future::Future, pin::Pin, sync::Arc};
 
 pub(crate) type CommandHandler = Box<
@@ -20,17 +19,17 @@ mod tests;
 
 pub(crate) struct ClientCommandDispatch {
     handlers: HashMap<&'static str, Arc<CommandHandler>>,
-    authority: Arc<ApplicationStartupAuthority>,
+    pub(crate) daemon: crate::usecase::daemon::DaemonUsecase,
     pub(super) publisher: Option<crate::usecase::state_subscription::StateSubscriptionUsecase>,
     mutations: Option<Arc<crate::usecase::workflow::WorkflowRuntimeUsecase>>,
 }
 
 impl ClientCommandDispatch {
-    pub(crate) fn new(authority: Arc<ApplicationStartupAuthority>) -> Self {
+    pub(crate) fn new(daemon: crate::usecase::daemon::DaemonUsecase) -> Self {
         Self {
             handlers: HashMap::new(),
             mutations: None,
-            authority,
+            daemon,
             publisher: None,
         }
     }
@@ -44,6 +43,7 @@ impl ClientCommandDispatch {
     }
 
     pub(crate) fn register_dependencies(&mut self, deps: &super::ClientDependencies) {
+        self.daemon = deps.daemon.clone();
         self.mutations = deps.workflow_runtime_usecase.clone();
         super::repository::register_shared(self, deps);
         super::code::register_shared(self, deps);
@@ -80,16 +80,6 @@ impl ClientCommandDispatch {
     pub(crate) fn contains(&self, name: &str) -> bool {
         self.handlers.contains_key(name)
     }
-    pub(crate) fn admit(&self, command: &str) -> Result<(), wire::CommandFailure> {
-        if !command_admitted(command, Some(&self.authority)) {
-            return Err(crate::adaptor::presenter::error::AppError::invalid_state(
-                "Application is unavailable",
-            )
-            .with_code("APPLICATION_UNAVAILABLE")
-            .into());
-        }
-        Ok(())
-    }
     #[cfg(test)]
     pub(crate) fn dispatch(
         &self,
@@ -99,9 +89,6 @@ impl ClientCommandDispatch {
             dyn Future<Output = Result<wire::command_result::Command, wire::CommandFailure>> + Send,
         >,
     > {
-        if let Err(error) = self.admit(command.name()) {
-            return Box::pin(std::future::ready(Err(error)));
-        }
         self.dispatch_admitted(command)
     }
     pub(crate) fn dispatch_admitted(
@@ -180,17 +167,6 @@ where
 {
     value.map(convert).transpose()
 }
-pub(crate) const STARTUP_COMMANDS: [&str; 1] = ["quit_after_startup_failure"];
-
-pub(crate) fn command_admitted(
-    command: &str,
-    authority: Option<&crate::usecase::application_startup::ApplicationStartupAuthority>,
-) -> bool {
-    authority.is_some_and(|authority| {
-        STARTUP_COMMANDS.contains(&command) || authority.normal_admission_ready()
-    })
-}
-
 pub(crate) fn finite(value: f64) -> Result<f64, wire::CommandFailure> {
     if value.is_finite() {
         Ok(value)

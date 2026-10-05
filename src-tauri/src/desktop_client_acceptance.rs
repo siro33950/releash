@@ -1,6 +1,5 @@
 use crate::adaptor::controller::command::CommandRouter;
 use crate::client_api_acceptance::ClientEndpoint;
-use crate::usecase::application_startup::ApplicationStartupAuthority;
 use std::path::Path;
 use std::sync::Arc;
 use tauri::Manager;
@@ -27,7 +26,6 @@ pub fn desktop_connection_app<R: tauri::Runtime>(
         status_presenter.clone(),
     );
     builder
-        .manage(Arc::new(ApplicationStartupAuthority::ready()))
         .manage(status_presenter)
         .manage(supervisor)
         .invoke_handler(move |invoke| router.handle(invoke))

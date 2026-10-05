@@ -65,19 +65,41 @@ pub(crate) struct LocalApiDiscoveryFile {
 }
 
 impl LocalApiDiscoveryFile {
+    #[cfg(test)]
     pub(crate) fn create(data_dir: &Path, discovery: LocalApiDiscovery) -> io::Result<Self> {
         Self::create_named(data_dir, LOCAL_API_DISCOVERY_FILE_NAME, discovery)
     }
 
+    #[cfg(test)]
     pub(crate) fn create_client(data_dir: &Path, discovery: LocalApiDiscovery) -> io::Result<Self> {
         Self::create_named(data_dir, "client-api.json", discovery)
     }
 
+    #[cfg(test)]
     fn create_named(data_dir: &Path, name: &str, discovery: LocalApiDiscovery) -> io::Result<Self> {
+        let file = Self::prepare_named(data_dir, name, discovery);
+        file.publish()?;
+        Ok(file)
+    }
+
+    pub(crate) fn prepare_named(data_dir: &Path, name: &str, discovery: LocalApiDiscovery) -> Self {
+        Self {
+            path: data_dir.join(name),
+            discovery,
+        }
+    }
+
+    pub(crate) fn publish(&self) -> io::Result<()> {
+        let data_dir = self.path.parent().expect("discovery directory");
         fs::create_dir_all(data_dir)?;
-        let path = data_dir.join(name);
+        let path = &self.path;
+        let name = path
+            .file_name()
+            .expect("discovery file name")
+            .to_string_lossy();
+        let discovery = &self.discovery;
         let temporary_path = data_dir.join(format!(".{name}.{}.tmp", uuid::Uuid::new_v4()));
-        let encoded = serde_json::to_vec(&discovery).map_err(io::Error::other)?;
+        let encoded = serde_json::to_vec(discovery).map_err(io::Error::other)?;
 
         let result = (|| {
             let mut options = OpenOptions::new();
@@ -92,14 +114,14 @@ impl LocalApiDiscoveryFile {
 
             // A previous process may have left stale discovery behind. The temporary
             // file is already complete and private before replacing it.
-            fs::rename(&temporary_path, &path)
+            fs::rename(&temporary_path, path)
         })();
         if result.is_err() {
             let _ = fs::remove_file(&temporary_path);
         }
         result?;
 
-        Ok(Self { path, discovery })
+        Ok(())
     }
 
     pub(crate) fn remove_if_owned(&self) -> io::Result<()> {

@@ -982,31 +982,6 @@ export type ProviderHookHealthWarningResponse = {
 
 export type ProviderHookHealthProviderResponse = "claude" | "codex";
 
-export type ApplicationStartupOutcomeDtoV1 =
-	| { type: "ready" }
-	| ({ type: "failed" } & ApplicationStartupOutcomeDtoV1Failed);
-
-export type ApplicationStartupOutcomeDtoV1Failed = {
-	kind: StartupFailureKindDtoV1;
-	safeDescription: string;
-	correlationId: string;
-	retryOnNextLaunch: boolean;
-	actions: ListStartupFailureActionDtoV1;
-};
-
-export type StartupFailureKindDtoV1 =
-	| "store_in_use"
-	| "storage_unavailable"
-	| "unsupported_runtime"
-	| "unsupported_store_version"
-	| "initialization_state_invalid"
-	| "store_validation_failed"
-	| "schema_evolution_failed";
-
-export type ListStartupFailureActionDtoV1 = Array<StartupFailureActionDtoV1>;
-
-export type StartupFailureActionDtoV1 = "quit";
-
 export type InputAbortWorkflowRequest = {
 	executionId: string;
 };
@@ -1239,8 +1214,6 @@ export type InputOpenInEditorRequest = {
 export type InputOpenWorkflowInEditorRequest = {
 	name: string;
 };
-
-export type InputQuitAfterStartupFailureRequest = Record<string, never>;
 
 export type InputRecordTerminalLaunchRendererPhaseRequest = {
 	phase: string;
@@ -1683,14 +1656,6 @@ export type GetOrSpawnTerminalV1 = {
 	session_key: string;
 };
 
-export type StartupFailureQuitOutcomeDtoV1 = {
-	type: "accepted";
-} & StartupFailureQuitOutcomeDtoV1Accepted;
-
-export type StartupFailureQuitOutcomeDtoV1Accepted = {
-	correlationId: string;
-};
-
 export type ApplicationQuitOutcomeDtoV1 = { type: "accepted" };
 
 export type SaveWorkflowSourceResultDto =
@@ -1809,7 +1774,6 @@ export interface ClientCommandArgs {
 	open_folder_in_editor: InputOpenFolderInEditorRequest;
 	open_in_editor: InputOpenInEditorRequest;
 	open_workflow_in_editor: InputOpenWorkflowInEditorRequest;
-	quit_after_startup_failure: InputQuitAfterStartupFailureRequest;
 	record_terminal_launch_renderer_phase: InputRecordTerminalLaunchRendererPhaseRequest;
 	refresh_provider_availability: InputRefreshProviderAvailabilityRequest;
 	remove_repo_path: InputRemoveRepoPathRequest;
@@ -1953,9 +1917,6 @@ export interface ClientCommands {
 	open_workflow_in_editor(
 		args: ClientCommandArgs["open_workflow_in_editor"],
 	): Promise<void>;
-	quit_after_startup_failure(
-		args: ClientCommandArgs["quit_after_startup_failure"],
-	): Promise<StartupFailureQuitOutcomeDtoV1>;
 	record_terminal_launch_renderer_phase(
 		args: ClientCommandArgs["record_terminal_launch_renderer_phase"],
 	): Promise<void>;

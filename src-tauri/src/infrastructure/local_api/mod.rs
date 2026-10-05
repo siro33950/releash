@@ -32,3 +32,6 @@ pub(crate) enum LocalApiServerError {
     #[error("failed to write local API discovery file: {0}")]
     Discovery(#[source] std::io::Error),
 }
+
+#[cfg(any(test, debug_assertions))]
+pub(crate) use server::test_binding;

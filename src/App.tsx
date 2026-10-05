@@ -23,62 +23,6 @@ type WorktreeCenterState =
 	| { phase: "awaitingInitial" }
 	| { phase: "selected"; selection: CenterSelection };
 
-type ApplicationStartupOutcome =
-	import("@/generated/client_types").ApplicationStartupOutcomeDtoV1;
-
-function StartupFailureScreen({
-	failure,
-}: {
-	failure: Extract<ApplicationStartupOutcome, { type: "failed" }>;
-}) {
-	const [quitting, setQuitting] = useState(false);
-	const quit = useCallback(async () => {
-		if (quitting) return;
-		setQuitting(true);
-		try {
-			await invokeClient("quit_after_startup_failure");
-		} catch (error) {
-			showClientError(error);
-			setQuitting(false);
-		}
-	}, [quitting]);
-	return (
-		<main className="flex min-h-screen items-center justify-center bg-background p-6 text-foreground">
-			<section
-				aria-labelledby="startup-failure-title"
-				className="w-full max-w-lg rounded-xl border border-border bg-card p-6 shadow-lg"
-			>
-				<p className="mb-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
-					Releash could not start
-				</p>
-				<h1 id="startup-failure-title" className="text-xl font-semibold">
-					{failure.safeDescription}
-				</h1>
-				<p className="mt-3 text-sm text-muted-foreground">
-					Classification:{" "}
-					<code className="font-mono text-xs">{failure.kind}</code>
-				</p>
-				<p className="mt-4 text-sm">
-					{failure.retryOnNextLaunch
-						? "Quit Releash, then launch it again to retry."
-						: "Quit Releash and use a compatible build or resolve the local data issue before launching again."}
-				</p>
-				<p className="mt-4 break-all font-mono text-xs text-muted-foreground">
-					Correlation: {failure.correlationId}
-				</p>
-				<button
-					type="button"
-					className="mt-6 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground disabled:opacity-50"
-					disabled={quitting}
-					onClick={() => void quit()}
-				>
-					{quitting ? "Quitting…" : "Quit"}
-				</button>
-			</section>
-		</main>
-	);
-}
-
 function WorkbenchApp() {
 	const { settings, updateSettings, updateTheme, loaded, loadError } =
 		useSettings();
@@ -288,44 +232,10 @@ function WorkbenchApp() {
 	);
 }
 
-function StartupGate() {
-	const outcome = useStateSubscriptionResult("startup-outcome");
-	if (outcome.error) {
-		return (
-			<main className="flex min-h-screen items-center justify-center bg-background p-6 text-foreground">
-				<section className="w-full max-w-lg rounded-xl border border-border bg-card p-6 shadow-lg">
-					<p className="mb-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
-						Releash could not start
-					</p>
-					<h1 className="text-xl font-semibold">Startup outcome unavailable</h1>
-					<p className="mt-3 text-sm leading-6 text-muted-foreground">
-						Close Releash and launch it again. No application operation is
-						available in this state.
-					</p>
-				</section>
-			</main>
-		);
-	}
-	if (!outcome.value) {
-		return (
-			<main
-				aria-label="Starting Releash"
-				className="flex min-h-screen items-center justify-center bg-background text-sm text-muted-foreground"
-			>
-				Starting Releash…
-			</main>
-		);
-	}
-	if (outcome.value.type === "failed") {
-		return <StartupFailureScreen failure={outcome.value} />;
-	}
-	return <WorkbenchApp />;
-}
-
 function App() {
 	return (
 		<DaemonBoundary>
-			<StartupGate />
+			<WorkbenchApp />
 		</DaemonBoundary>
 	);
 }

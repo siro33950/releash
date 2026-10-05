@@ -399,6 +399,7 @@ pub(crate) fn build_workflow_runtime_usecase(
     retrying: Arc<crate::usecase::retry::Retrying>,
     app: crate::adaptor::gateway::workflow::workflow_host::WorkflowRuntimeDependencies,
     deps: WorkflowRuntimeCommandGatewayDeps,
+    daemon: Arc<crate::adaptor::gateway::daemon::InMemoryDaemonRepository>,
 ) -> Result<
     (
         WorkflowRuntimeUsecase,
@@ -424,6 +425,7 @@ pub(crate) fn build_workflow_runtime_usecase(
         deps.agent_session_lifecycle,
         deps.provider_availability,
         deps.isolated_worktrees,
+        daemon,
     );
     driver.node_processes = deps.node_processes;
     let driver = wire_delegate_continuation(app.clone(), driver);

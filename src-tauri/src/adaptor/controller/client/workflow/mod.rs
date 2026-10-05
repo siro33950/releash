@@ -258,7 +258,7 @@ pub(crate) mod tests {
         let (app, _data_dir, _store) = make_read_only_app();
         let deps = &app.client;
         let mut dispatch = crate::adaptor::controller::client::ClientCommandDispatch::new(
-            Arc::new(crate::usecase::application_startup::ApplicationStartupAuthority::ready()),
+            crate::usecase::daemon::DaemonUsecase(crate::adaptor::gateway::daemon::serving()),
         );
         register_shared(&mut dispatch, deps);
         let handles_command = |command| dispatch.contains(command);
@@ -270,7 +270,7 @@ pub(crate) mod tests {
         }
 
         let mut workspace_dispatch = crate::adaptor::controller::client::ClientCommandDispatch::new(
-            Arc::new(crate::usecase::application_startup::ApplicationStartupAuthority::ready()),
+            crate::usecase::daemon::DaemonUsecase(crate::adaptor::gateway::daemon::serving()),
         );
         crate::adaptor::controller::client::workspace_tree::register_shared(
             &mut workspace_dispatch,

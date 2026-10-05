@@ -221,7 +221,6 @@ export type StateValues = {
 	"workflow-config": import("@/generated/client_types").WorkflowSection;
 	"performance-switches": import("@/generated/client_types").PerformanceSwitchesV1;
 	"provider-hook-health": import("@/generated/client_types").ProviderHookHealthSnapshot;
-	"startup-outcome": import("@/generated/client_types").ApplicationStartupOutcomeDtoV1;
 };
 export type StateTarget<K extends keyof StateValues> =
 	| K

@@ -1,12 +1,12 @@
 pub(crate) mod agent_session;
 pub(crate) mod api_error;
 pub(crate) mod api_response;
-pub(crate) mod application_lifecycle;
 pub(crate) mod application_lifecycle_v1;
 pub(crate) mod client;
 pub(crate) mod code;
 pub(crate) mod connect;
 pub(crate) mod connect_wire;
+pub(crate) mod daemon;
 #[cfg(feature = "desktop")]
 pub(crate) mod daemon_status;
 pub(crate) mod error;

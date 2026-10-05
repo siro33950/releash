@@ -28,6 +28,12 @@ fn shell_operation(command: &str) -> crate::domain::daemon_supervision::ShellOpe
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub(crate) enum ApplicationUnavailable {
+    ApplicationUnavailable,
+}
+
 pub(crate) fn gate_invoke_before_domain_routing<R: tauri::Runtime>(
     invoke: tauri::ipc::Invoke<R>,
 ) -> Result<tauri::ipc::Invoke<R>, bool> {
@@ -40,9 +46,9 @@ pub(crate) fn gate_invoke_before_domain_routing<R: tauri::Runtime>(
         })
     };
     if !admitted {
-        invoke.resolver.reject(
-            crate::usecase::application_startup::ApplicationUnavailable::ApplicationUnavailable,
-        );
+        invoke
+            .resolver
+            .reject(ApplicationUnavailable::ApplicationUnavailable);
         Err(true)
     } else {
         Ok(invoke)
@@ -366,13 +372,12 @@ mod tests {
     #[test]
     fn test_共有dispatch_対象外commandは既存domain_handlerとfallbackへ届く() {
         use crate::adaptor::controller::client::ClientCommandDispatch;
-        use crate::usecase::application_startup::ApplicationStartupAuthority;
         use std::sync::atomic::{AtomicUsize, Ordering};
         // Given
         let effects = Arc::new(AtomicUsize::new(0));
-        let dispatch = Arc::new(ClientCommandDispatch::new(Arc::new(
-            ApplicationStartupAuthority::ready(),
-        )));
+        let dispatch = Arc::new(ClientCommandDispatch::new(
+            crate::usecase::daemon::DaemonUsecase(crate::adaptor::gateway::daemon::serving()),
+        ));
         let mut router: CommandRouter<InvokeHandler<tauri::test::MockRuntime>> =
             CommandRouter::new(Box::new(|invoke| {
                 invoke.resolver.resolve("fallback-result");

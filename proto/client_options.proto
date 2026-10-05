@@ -42,4 +42,5 @@ extend google.protobuf.ServiceOptions {
   optional uint32 state_stream_silence_ms = 51032;
   optional uint32 default_timeout_ms = 51033;
   optional uint32 min_connect_timeout_ms = 51034;
+  optional uint32 shutdown_timeout_ms = 51035;
 }

@@ -101,7 +101,6 @@ impl SubscriptionTarget {
             ("workflow-config", []) => Ok(Self::WorkflowConfig),
             ("performance-switches", []) => Ok(Self::PerformanceSwitches),
             ("provider-hook-health", []) => Ok(Self::ProviderHookHealth),
-            ("startup-outcome", []) => Ok(Self::StartupOutcome),
             _ => Err(SubscriptionError::UnknownTarget),
         }?;
         Ok(target)
@@ -174,7 +173,6 @@ impl SubscriptionTarget {
             Self::WorkflowConfig => ("workflow-config", vec![]),
             Self::PerformanceSwitches => ("performance-switches", vec![]),
             Self::ProviderHookHealth => ("provider-hook-health", vec![]),
-            Self::StartupOutcome => ("startup-outcome", vec![]),
         }
     }
 }

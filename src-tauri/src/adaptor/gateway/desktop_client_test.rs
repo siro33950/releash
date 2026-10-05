@@ -812,20 +812,10 @@ async fn test_ネイティブ要求_停止とログイン項目の具体的な�
             connectrpc::ErrorCode::Internal,
         )
         .into(),
-        wire::CommandError {
-            variant: Some(wire::command_error::Variant::Application(Box::new(
-                wire::ApplicationError {
-                    r#type: Some("shutdown_failed".into()),
-                    message: Some("実行中の処理を停止できません".into()),
-                    ..Default::default()
-                },
-            ))),
-        },
     ] {
         let expected = match detail.variant.as_ref().unwrap() {
             wire::command_error::Variant::Message(value) => value.value.as_ref().unwrap(),
             wire::command_error::Variant::Coded(value) => value.message.as_ref().unwrap(),
-            wire::command_error::Variant::Application(value) => value.message.as_ref().unwrap(),
         }
         .clone();
         let (endpoint, server, _) = error_server(command_error(wire::CommandFailure {

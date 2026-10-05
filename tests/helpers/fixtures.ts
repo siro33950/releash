@@ -19,7 +19,6 @@ interface WorktreeBranch {
 
 const baseIpcHandler: Record<string, unknown> = {
 	// App.tsx 初期化
-	"startup-outcome": { type: "ready" },
 	"provider-hook-health": [],
 	"startup-repository": null,
 	find_repository_root: "/test/repo",
@@ -278,7 +277,7 @@ export function buildMockConfig(
             ? { path: worktrees[0].path, branch: worktrees[0].branch, repositoryName: "repo" }
             : null;
     }
-    const stateNames = ["repository-paths", "workspaces", "selection", "node-detail", "agent-session", "session-history", "providers", "branches", "branch-base", "branch-status", "current-branch", "issues", "worktrees", "startup-repository", "workspace-state", "review-snapshot", "review-file-view", "review-threads", "workflows", "workflow", "workflow-source", "facets", "facet", "diagnostics", "desktop-settings", "notion-config", "notion-tasks", "notion-label-options", "provider-availability", "external-editor", "releash-base", "workflow-config", "performance-switches", "provider-hook-health", "startup-outcome"];
+    const stateNames = ["repository-paths", "workspaces", "selection", "node-detail", "agent-session", "session-history", "providers", "branches", "branch-base", "branch-status", "current-branch", "issues", "worktrees", "startup-repository", "workspace-state", "review-snapshot", "review-file-view", "review-threads", "workflows", "workflow", "workflow-source", "facets", "facet", "diagnostics", "desktop-settings", "notion-config", "notion-tasks", "notion-label-options", "provider-availability", "external-editor", "releash-base", "workflow-config", "performance-switches", "provider-hook-health"];
     const states: Record<string, unknown> = { selection: null };
     for (const kind of stateNames) {
         if (kind in values) { states[kind] = values[kind]; delete values[kind]; }

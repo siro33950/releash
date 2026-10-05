@@ -8,6 +8,10 @@ Releash のドメイン横断ユビキタス言語を定義する。この文書
 
 | 正規語 | 定義 | 所有者 / 所属 |
 | --- | --- | --- |
+| Daemon | サーバ自身を表す集約。identity、版、capability、serving status、受付可否、停止要求の受理を所有する | daemon |
+| DaemonInfo | Daemon の公開像。発見ファイル、サーバ情報の応答、CLI と画面の表示はこの投影である | daemon / Daemon |
+| serving status | サーバが要求を受けられるかを表す状態。Starting、Serving、Stopping、Stopped、Failed のいずれか | daemon / Daemon |
+| StopRequest | サーバへの停止要求。Exit だけを持つ | daemon / Daemon |
 | WorkflowDefinition | workflow の定義。NodeDefinition、Contract、配線、辺を持つ | workflow / Global |
 | WorkflowExecution | WorkflowDefinition から開始された1本の実行木 | workflow / Worktree |
 | NodeDefinition | Node の Interface、kind 固有設定、completion の定義 | workflow / WorkflowDefinition |

@@ -177,15 +177,6 @@ pub(crate) fn payload(value: &StateValue) -> Result<wire::StatePayload, connectr
                 })
             }
 
-            StateValue::StartupOutcome(value) => wire::state_payload::Value::StartupOutcome(
-                crate::adaptor::presenter::client::value(
-                    crate::adaptor::presenter::application_lifecycle::application_startup_outcome(
-                        value.clone(),
-                    ),
-                )
-                .map_err(crate::adaptor::presenter::connect::command_error)?,
-            ),
-
             StateValue::RepositoryPaths(paths) => {
                 wire::state_payload::Value::RepositoryPaths(wire::Liststring {
                     items: paths.clone(),

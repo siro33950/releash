@@ -1,27 +1,40 @@
 use crate::adaptor::controller::client::ClientCommandDispatch;
-use crate::usecase::application_startup::ApplicationStartupAuthority;
 use serde_json::Value;
 use std::sync::Arc;
 use tauri::Manager;
 
 #[tokio::test]
-async fn test_クライアントdispatch_startup失敗時はusecase実行前に拒否する() {
+async fn test_クライアントrpc_停止中はusecase実行前に拒否する() {
+    use tower::ServiceExt;
     // Given
-    let dispatch = ClientCommandDispatch::new(Arc::new(ApplicationStartupAuthority::failed_kind(
-        crate::usecase::application_startup::StartupFailureKind::StoreValidationFailed,
-    )));
-    // When
-    let error = dispatch
-        .dispatch(wire::command_request::Command::UpdateExternalEditor(
-            Default::default(),
-        ))
-        .await
-        .unwrap_err();
-    // Then
-    assert_eq!(
-        wire::from_value(error).unwrap()["code"],
-        "APPLICATION_UNAVAILABLE"
+    let daemon = crate::usecase::daemon::DaemonUsecase(crate::adaptor::gateway::daemon::serving());
+    let dispatch = Arc::new(ClientCommandDispatch::new(daemon.clone()));
+    let router = crate::adaptor::controller::api::client::router(
+        Some(crate::test_support::client_api_deps(dispatch)),
+        crate::adaptor::controller::daemon::default_timeout(),
     );
+    daemon
+        .stop(crate::domain::daemon::StopRequest::Exit { code: 0 })
+        .await;
+    // When
+    let request =
+        axum::http::Request::post("/releash.client.v1.ClientService/UpdateExternalEditor")
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from("{}"))
+            .unwrap();
+    let response = router.oneshot(request).await.unwrap();
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    // Then
+    let error: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(error["code"], "failed_precondition");
+    use base64::Engine;
+    let bytes = base64::engine::general_purpose::STANDARD_NO_PAD
+        .decode(error["details"][0]["value"].as_str().unwrap())
+        .unwrap();
+    let detail = wire::from_value(wire::CommandError::decode(bytes.as_slice()).unwrap()).unwrap();
+    assert_eq!(detail["code"], "APPLICATION_UNAVAILABLE");
 }
 
 use crate::adaptor::controller::command as commands;
@@ -57,8 +70,6 @@ fn parity_app_with_runtime(
         ))
     });
     app.manage(runtime);
-    let authority = Arc::new(ApplicationStartupAuthority::ready());
-    app.manage(authority.clone());
     app.manage(Arc::new(
         crate::adaptor::controller::wiring::build_review_comment_usecase(),
     ));
@@ -78,7 +89,9 @@ fn parity_app_with_runtime(
         )
         .unwrap(),
     ));
-    let mut dispatch = ClientCommandDispatch::new(authority);
+    let mut dispatch = ClientCommandDispatch::new(crate::usecase::daemon::DaemonUsecase(
+        crate::adaptor::gateway::daemon::serving(),
+    ));
     dispatch.register_dependencies(&crate::desktop_test_support::build_client_dependencies(
         app.handle(),
     ));
@@ -220,10 +233,11 @@ async fn test_クライアントdispatch_proto全commandの登録と引数検証
     // Given
     let (_app, dispatch) = parity_app();
     // When / Then
-    assert_eq!(wire::COMMAND_NAMES.len(), 85);
+    assert_eq!(wire::COMMAND_NAMES.len(), 84);
     assert!(wire::COMMAND_NAMES.contains(&"find_repository_root"));
     assert!(wire::COMMAND_NAMES.contains(&"refresh_workspaces"));
     for removed in [
+        "quit_after_startup_failure",
         "delete_branch",
         "get_terminal_surface",
         "ack_terminal_surface_output",
@@ -323,25 +337,46 @@ async fn test_クライアントdispatch_proto全commandの登録と引数検証
 }
 
 #[tokio::test]
-async fn test_クライアントdispatch_startup失敗時はstreamも拒否する() {
+async fn test_クライアントrpc_停止中はstreamも拒否する() {
+    use tower::ServiceExt;
     // Given
-    let dispatch = ClientCommandDispatch::new(Arc::new(ApplicationStartupAuthority::failed_kind(
-        crate::usecase::application_startup::StartupFailureKind::StoreValidationFailed,
-    )));
-    // When / Then
-    for command in ["start_state_subscription", "stop_state_subscription"] {
-        assert_eq!(
-            wire::from_value(dispatch.admit(command).unwrap_err()).unwrap()["code"],
-            "APPLICATION_UNAVAILABLE"
-        );
-    }
+    let daemon = crate::usecase::daemon::DaemonUsecase(crate::adaptor::gateway::daemon::serving());
+    let dispatch = Arc::new(ClientCommandDispatch::new(daemon.clone()));
+    let router = crate::adaptor::controller::api::client::router(
+        Some(crate::test_support::client_api_deps(dispatch)),
+        crate::adaptor::controller::daemon::default_timeout(),
+    );
+    daemon
+        .stop(crate::domain::daemon::StopRequest::Exit { code: 0 })
+        .await;
+    // When
+    let request =
+        axum::http::Request::post("/releash.client.v1.ClientService/StartStateSubscription")
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from("{}"))
+            .unwrap();
+    let response = router.oneshot(request).await.unwrap();
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    // Then
+    let error: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(error["code"], "failed_precondition");
+    use base64::Engine;
+    let bytes = base64::engine::general_purpose::STANDARD_NO_PAD
+        .decode(error["details"][0]["value"].as_str().unwrap())
+        .unwrap();
+    let detail = wire::from_value(wire::CommandError::decode(bytes.as_slice()).unwrap()).unwrap();
+    assert_eq!(detail["code"], "APPLICATION_UNAVAILABLE");
 }
 
 #[tokio::test]
 async fn test_クライアントrpc_期限切れで処理を止め要求枠を再利用できる() {
     use crate::adaptor::controller::api;
     // Given
-    let mut dispatch = ClientCommandDispatch::new(Arc::new(ApplicationStartupAuthority::ready()));
+    let mut dispatch = ClientCommandDispatch::new(crate::usecase::daemon::DaemonUsecase(
+        crate::adaptor::gateway::daemon::serving(),
+    ));
     let started = Arc::new(tokio::sync::Notify::new());
     let resume = Arc::new(tokio::sync::Semaphore::new(0));
     let completed = Arc::new(tokio::sync::Semaphore::new(0));
@@ -494,7 +529,6 @@ async fn test_計算と操作command_connectの実行結果とエラーがtauri�
     ));
     let (app, _data_dir, _store) = crate::desktop_test_support::make_read_only_app();
     app.manage(runtime.clone());
-    app.manage(Arc::new(ApplicationStartupAuthority::ready()));
     app.manage(Arc::new(
         crate::adaptor::controller::wiring::build_review_comment_usecase(),
     ));
@@ -506,11 +540,9 @@ async fn test_計算と操作command_connectの実行結果とエラーがtauri�
     settings.app.last_repo_paths = vec![path.clone()];
     config.save(settings).unwrap();
     let data = tempfile::tempdir().unwrap();
-    let mut dispatch = ClientCommandDispatch::new(
-        app.state::<Arc<ApplicationStartupAuthority>>()
-            .inner()
-            .clone(),
-    );
+    let mut dispatch = ClientCommandDispatch::new(crate::usecase::daemon::DaemonUsecase(
+        crate::adaptor::gateway::daemon::serving(),
+    ));
     dispatch.register_dependencies(&crate::desktop_test_support::build_client_dependencies(
         app.handle(),
     ));
@@ -1001,7 +1033,9 @@ async fn test_workspace保存_connectがui追加fieldを受理し既存項目を
     let (app, _) = parity_app();
     let mut deps = crate::desktop_test_support::build_client_dependencies(app.handle());
     deps.workspace_state_store = Some(Arc::new(WorkspaceStateStore::new(data.path().to_owned())));
-    let mut dispatch = ClientCommandDispatch::new(Arc::new(ApplicationStartupAuthority::ready()));
+    let mut dispatch = ClientCommandDispatch::new(crate::usecase::daemon::DaemonUsecase(
+        crate::adaptor::gateway::daemon::serving(),
+    ));
     dispatch.register_dependencies(&deps);
     let router = api::test_support::test_router_with_optional_deps(
         data.path(),

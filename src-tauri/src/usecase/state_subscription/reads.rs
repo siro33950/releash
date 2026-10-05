@@ -181,7 +181,6 @@ pub(crate) struct WorkspaceStateReads {
     pub editor_scanner: Arc<dyn crate::domain::external_editor::InstalledEditorGateway>,
     pub performance_switches: crate::usecase::telemetry::PerformanceSwitches,
     pub hook_health: Arc<crate::usecase::provider_lifecycle::ProviderHookHealthReadUsecase>,
-    pub startup: Arc<crate::usecase::application_startup::ApplicationStartupAuthority>,
 }
 
 impl WorkspaceStateReads {
@@ -378,7 +377,6 @@ impl WorkspaceStateReads {
                 StateValue::WorkflowConfig(self.app_config.get_workflow_config().map_err(error)?)
             }
             T::PerformanceSwitches => StateValue::PerformanceSwitches(self.performance_switches),
-            T::StartupOutcome => StateValue::StartupOutcome(self.startup.outcome()),
             T::Issues(_)
             | T::Terminal(_)
             | T::Workspaces

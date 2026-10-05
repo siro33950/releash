@@ -23,12 +23,7 @@ fn generate_client_protocol() {
             "#[cfg(any(test, debug_assertions))]",
         );
     }
-    for field in [
-        "Push.event.workflow_execution_changed",
-        "CommandError.variant.application",
-    ] {
-        config.boxed(format!(".releash.client.v1.{field}"));
-    }
+    config.boxed(".releash.client.v1.Push.event.workflow_execution_changed");
     config.protoc_executable(protoc_bin_vendored::protoc_bin_path().expect("bundled protoc"));
     config.file_descriptor_set_path(directory.join("client_descriptor.bin"));
     let descriptors = config

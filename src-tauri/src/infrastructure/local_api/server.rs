@@ -8,7 +8,7 @@ use axum::Router;
 use axum::{http::StatusCode, routing::get};
 use tokio::sync::oneshot;
 
-use super::{process_start_time, LocalApiDiscovery, LocalApiDiscoveryFile, LocalApiServerError};
+use super::{LocalApiDiscovery, LocalApiDiscoveryFile, LocalApiServerError};
 
 const LOCAL_API_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -23,7 +23,12 @@ pub(crate) struct LocalApiServerBinding {
 }
 
 impl LocalApiServerBinding {
-    pub(crate) fn bind(data_dir: PathBuf) -> Result<Self, LocalApiServerError> {
+    pub(crate) fn bind(
+        data_dir: PathBuf,
+        instance_id: String,
+        pid: u32,
+        process_started_at: u64,
+    ) -> Result<Self, LocalApiServerError> {
         let listener = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
             .map_err(LocalApiServerError::ListenerBind)?;
         let address = listener
@@ -45,15 +50,9 @@ impl LocalApiServerBinding {
         let token = Arc::<str>::from(generate_token());
         // rendererのclient / terminal共通token。masterとは別のdiscovery fileへ書き出す。
         let terminal_token = Arc::<str>::from(generate_token());
-        let instance_id = uuid::Uuid::new_v4().simple().to_string();
-        let pid = std::process::id();
-        let process_started_at = process_start_time(pid).ok_or_else(|| {
-            LocalApiServerError::Discovery(io::Error::other(
-                "failed to resolve local API process identity",
-            ))
-        })?;
-        let discovery = LocalApiDiscoveryFile::create(
+        let discovery = LocalApiDiscoveryFile::prepare_named(
             &data_dir,
+            "local-api.json",
             LocalApiDiscovery {
                 port: address.port(),
                 token: token.to_string(),
@@ -61,11 +60,11 @@ impl LocalApiServerBinding {
                 pid,
                 process_started_at,
             },
-        )
-        .map_err(LocalApiServerError::Discovery)?;
+        );
 
-        let client_discovery = LocalApiDiscoveryFile::create_client(
+        let client_discovery = LocalApiDiscoveryFile::prepare_named(
             &data_dir,
+            "client-api.json",
             LocalApiDiscovery {
                 port: address.port(),
                 token: terminal_token.to_string(),
@@ -73,13 +72,7 @@ impl LocalApiServerBinding {
                 pid,
                 process_started_at,
             },
-        )
-        .map_err(|error| {
-            if let Err(cleanup) = discovery.remove_if_owned() {
-                log::warn!("failed to remove incomplete daemon discovery: {cleanup}");
-            }
-            LocalApiServerError::Discovery(error)
-        })?;
+        );
 
         Ok(Self {
             listener,
@@ -114,7 +107,7 @@ impl LocalApiServerBinding {
         self,
         router: Router,
         runtime: &tokio::runtime::Handle,
-    ) -> Arc<LocalApiServer> {
+    ) -> Result<Arc<LocalApiServer>, LocalApiServerError> {
         let Self {
             listener,
             port,
@@ -124,23 +117,13 @@ impl LocalApiServerBinding {
             terminal_token,
             ..
         } = self;
+        let _runtime = runtime.enter();
+        let listener = tokio::net::TcpListener::from_std(listener)
+            .map_err(LocalApiServerError::ListenerBind)?;
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
         let discovery_for_task = discovery.clone();
         let client_discovery_for_task = client_discovery.clone();
         let task = runtime.spawn(async move {
-            let listener = match tokio::net::TcpListener::from_std(listener) {
-                Ok(listener) => listener,
-                Err(error) => {
-                    log::error!("failed to initialize local API listener: {error}");
-                    if let Err(error) = client_discovery_for_task.remove_if_owned() {
-                        log::warn!("failed to remove client discovery file: {error}");
-                    }
-                    if let Err(error) = discovery_for_task.remove_if_owned() {
-                        log::warn!("failed to remove local API discovery file: {error}");
-                    }
-                    return;
-                }
-            };
             let identity_path = format!("/.well-known/releash-local-api/{instance_id}");
             let router = Router::new()
                 .route(&identity_path, get(|| async { StatusCode::NO_CONTENT }))
@@ -162,13 +145,13 @@ impl LocalApiServerBinding {
         });
 
         log::info!("local API listening on 127.0.0.1:{port}");
-        Arc::new(LocalApiServer {
+        Ok(Arc::new(LocalApiServer {
             shutdown: parking_lot::Mutex::new(Some(shutdown_tx)),
             task: parking_lot::Mutex::new(Some(task)),
             terminal_token,
             discovery,
             client_discovery,
-        })
+        }))
     }
 }
 
@@ -181,6 +164,17 @@ pub(crate) struct LocalApiServer {
 }
 
 impl LocalApiServer {
+    pub(crate) fn publish_discovery(&self) -> Result<(), LocalApiServerError> {
+        let result = self
+            .discovery
+            .publish()
+            .and_then(|()| self.client_discovery.publish());
+        if let Err(error) = result {
+            self.shutdown();
+            return Err(LocalApiServerError::Discovery(error));
+        }
+        Ok(())
+    }
     pub(crate) fn shutdown(&self) {
         self.terminal_token.revoke();
         if let Some(sender) = self.shutdown.lock().take() {
@@ -230,6 +224,22 @@ fn generate_token() -> String {
         "{}{}",
         uuid::Uuid::new_v4().simple(),
         uuid::Uuid::new_v4().simple()
+    )
+}
+
+#[cfg(any(test, debug_assertions))]
+pub(crate) fn test_binding(
+    data_dir: PathBuf,
+) -> Result<LocalApiServerBinding, LocalApiServerError> {
+    let pid = std::process::id();
+    let started = super::process_start_time(pid).ok_or_else(|| {
+        LocalApiServerError::Discovery(io::Error::other("process identity unavailable"))
+    })?;
+    LocalApiServerBinding::bind(
+        data_dir,
+        uuid::Uuid::new_v4().simple().to_string(),
+        pid,
+        started,
     )
 }
 

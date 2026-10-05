@@ -1,6 +1,7 @@
 use super::*;
+use crate::usecase::application_lifecycle::test_helpers::{FakeShutdown, STAGES};
 use adaptor::gateway::local_event_store::store::LocalEventStoreOpenError as E;
-use usecase::application_startup::StartupFailureKind as K;
+use domain::daemon::StartupFailureKind as K;
 
 #[test]
 fn test_performance_fixture_replaces_both_provider_executables_without_affecting_defaults() {
@@ -52,7 +53,7 @@ fn b071_store_open_failures_map_to_the_closed_safe_startup_vocabulary() {
         (E::StoreValidationFailed, K::StoreValidationFailed),
         (E::SchemaEvolutionFailed, K::SchemaEvolutionFailed),
     ] {
-        assert_eq!(classify_startup_failure(error), expected);
+        assert_eq!(K::from(error), expected);
     }
 }
 
@@ -63,9 +64,16 @@ async fn test_daemon終了_受信先が閉じた場合のエラーを維持す�
     drop(sender);
     let shutdown = Arc::new(usecase::application_lifecycle::test_helpers::FakeShutdown::default());
     // When
+    let directory = tempfile::tempdir().unwrap();
+    let server = infrastructure::local_api::test_binding(directory.path().into())
+        .unwrap()
+        .start(axum::Router::new(), &tokio::runtime::Handle::current())
+        .unwrap();
     let error = Daemon {
+        server,
         shutdown: shutdown.clone(),
         exit,
+        daemon: crate::usecase::daemon::DaemonUsecase(crate::adaptor::gateway::daemon::serving()),
     }
     .wait()
     .await
@@ -85,8 +93,10 @@ fn test_daemon終了_成功と各段階の失敗と停止で完了通知と指�
                 .flat_map(|mode| STAGES.map(|stage| format!("{mode}:{stage}"))),
         )
         .chain(["stop", "drain", "flush"].map(|stage| format!("terminal:block:{stage}")))
+        .chain(["command:admission".to_string()])
     {
         // Given
+        let directory = tempfile::tempdir().unwrap();
         let mut child = std::process::Command::new(std::env::current_exe().unwrap())
             .args([
                 "--exact",
@@ -95,6 +105,7 @@ fn test_daemon終了_成功と各段階の失敗と停止で完了通知と指�
                 "--nocapture",
             ])
             .env("RELEASH_SHUTDOWN_TEST_CASE", &scenario)
+            .env("RELEASH_SHUTDOWN_DATA_DIR", directory.path())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .spawn()
@@ -127,7 +138,18 @@ fn test_daemon終了_成功と各段階の失敗と停止で完了通知と指�
             .lines()
             .filter_map(|line| line.strip_prefix("shutdown-stage:"))
             .collect();
-        if let Some(blocked) = scenario.strip_prefix("terminal:block:") {
+        for name in ["local-api.json", "client-api.json"] {
+            assert!(
+                !directory.path().join(name).exists(),
+                "{scenario}: {name} remains"
+            );
+        }
+        if scenario == "command:admission" {
+            assert!(
+                stdout.contains("15 second deadline exceeded; exiting"),
+                "{stdout}"
+            );
+        } else if let Some(blocked) = scenario.strip_prefix("terminal:block:") {
             assert!(
                 stdout.contains(&format!("terminal-blocked:{blocked}")),
                 "{stdout}"
@@ -139,7 +161,7 @@ fn test_daemon終了_成功と各段階の失敗と停止で完了通知と指�
         } else if let Some(blocked) = scenario.strip_prefix("block:") {
             let index = STAGES.iter().position(|stage| *stage == blocked).unwrap();
             assert_eq!(called, STAGES[..=index]);
-            assert!(stdout.contains("shutdown-deadline:15"));
+
             assert!(stdout.contains("15 second deadline exceeded; exiting"));
         } else {
             assert_eq!(called, STAGES);
@@ -192,7 +214,12 @@ fn test_daemon終了_subprocess() {
         .build()
         .unwrap();
     let error = runtime.block_on(async {
-        if let Some(blocked) = scenario.strip_prefix("terminal:block:") {
+        let directory = std::path::PathBuf::from(std::env::var_os("RELEASH_SHUTDOWN_DATA_DIR").unwrap());
+        let server = infrastructure::local_api::test_binding(directory).unwrap()
+            .start(axum::Router::new(), &tokio::runtime::Handle::current()).unwrap();
+        server.publish_discovery().unwrap();
+        if scenario == "command:admission" || scenario.starts_with("terminal:block:") {
+            let blocked = scenario.strip_prefix("terminal:block:").unwrap_or("stop");
             let blocked = match blocked {
                 "stop" => "stop",
                 "drain" => "drain",
@@ -224,8 +251,6 @@ fn test_daemon終了_subprocess() {
                 Arc::new(crate::adaptor::gateway::terminal_surface::event_source::TerminalSurfaceEventSourceGateway::new(hub.event_sender())),
                 hub,
             ));
-            let server = infrastructure::local_api::LocalApiServerBinding::bind(fixture._directory.path().into())
-                .unwrap().start(axum::Router::new(), &tokio::runtime::Handle::current());
             let shutdown = adaptor::gateway::application_lifecycle::DaemonShutdownGateway {
                 workflow: Arc::new(usecase::workflow::WorkflowRuntimeUsecase::new(Arc::new(
                     adaptor::gateway::workflow::WorkflowRuntimeCommandGateway::new_with_driver(
@@ -233,21 +258,27 @@ fn test_daemon終了_subprocess() {
                     ),
                 ), Arc::new(crate::adaptor::gateway::workflow::ExecutionTreeArchiveFactRepository::from_backend(crate::adaptor::gateway::workflow::fact_log::FactLogReadBackend::Live(fixture.app.store.clone().unwrap()))))),
                 terminal,
-                server,
+                server: server.clone(),
                 stop_observer: Arc::new(|| {}),
                 telemetry: parking_lot::Mutex::new(None),
             };
-            tokio::spawn(async move {
+            let repository = fixture.daemon_repository();
+            let daemon = usecase::daemon::DaemonUsecase(repository.clone());
+            daemon.stop(domain::daemon::StopRequest::Exit { code: 23 }).await;
+            let _admission = if scenario == "command:admission" {
+                Some(repository.admission().await)
+            } else { None };
+            if scenario != "command:admission" { tokio::spawn(async move {
                 ready.await.unwrap();
                 assert!(sender.is_closed());
                 for code in 0..1000 {
                     assert!(sender.try_send(code).is_err());
                 }
                 tokio::time::advance(std::time::Duration::from_secs(15)).await;
-            });
-            Daemon { shutdown: Arc::new(shutdown), exit }.wait().await
+            }); }
+            Daemon { shutdown: Arc::new(shutdown), server, exit, daemon }.wait().await
         } else {
-            Daemon { shutdown: Arc::new(shutdown), exit }.wait().await
+            Daemon { shutdown: Arc::new(shutdown), server, exit, daemon: crate::usecase::daemon::DaemonUsecase(crate::adaptor::gateway::daemon::serving()) }.wait().await
         }
     }).unwrap_err();
     panic!("daemon wait returned: {error}");
@@ -323,4 +354,60 @@ async fn test_開始計測_組み立て失敗前に起点を記録する() {
     assert_eq!(startup.len(), 1);
     assert!(startup[0].value >= 0.0);
     metrics::reset_test_metrics();
+}
+
+#[tokio::test(start_paused = true)]
+async fn test_終了処理_どの段階が停止しても全体で15秒以内に打ち切る() {
+    for (index, blocked) in STAGES.into_iter().enumerate() {
+        // Given
+        let gateway = FakeShutdown {
+            blocked: Some(blocked),
+            delay: std::time::Duration::from_secs(2),
+            ..Default::default()
+        };
+        let directory = tempfile::tempdir().unwrap();
+        let server = infrastructure::local_api::test_binding(directory.path().into())
+            .unwrap()
+            .start(axum::Router::new(), &tokio::runtime::Handle::current())
+            .unwrap();
+        server.publish_discovery().unwrap();
+        let started = tokio::time::Instant::now();
+        // When
+        crate::adaptor::controller::daemon::shutdown_with_deadline(&gateway, &server).await;
+        // Then
+        assert_eq!(started.elapsed(), std::time::Duration::from_secs(15));
+        assert_eq!(*gateway.calls.lock().unwrap(), STAGES[..=index]);
+        for name in ["local-api.json", "client-api.json"] {
+            assert!(!directory.path().join(name).exists());
+        }
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn test_終了処理_期限切れで別サーバの発見ファイルを削除しない() {
+    // Given
+    let directory = tempfile::tempdir().unwrap();
+    let start = || {
+        infrastructure::local_api::test_binding(directory.path().into())
+            .unwrap()
+            .start(axum::Router::new(), &tokio::runtime::Handle::current())
+            .unwrap()
+    };
+    let original = start();
+    original.publish_discovery().unwrap();
+    let replacement = start();
+    replacement.publish_discovery().unwrap();
+    let files = ["local-api.json", "client-api.json"].map(|name| directory.path().join(name));
+    let contents = files.each_ref().map(|path| std::fs::read(path).unwrap());
+    let gateway = FakeShutdown {
+        blocked: Some("commands"),
+        ..Default::default()
+    };
+    // When
+    shutdown_with_deadline(&gateway, &original).await;
+    // Then
+    assert_eq!(
+        files.each_ref().map(|path| std::fs::read(path).unwrap()),
+        contents
+    );
 }

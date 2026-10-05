@@ -79,7 +79,7 @@ Main → 全ての層
 | `repository` | branch、commit、log、worktree、status、repo_paths、git_config |
 | `workflow` | 定義、実行木、Artifact、Contract、facet、completion と承認、Diagnostic |
 | `local_event` | 永続 local event store の語彙。store identity、atomic batch、state mutation、query、transaction port |
-| `local_api_discovery` | local API discovery の内容、プロセス観測、接続先観測に基づく受理・拒否判定 |
+| `daemon` | サーバ自身。identity、版と capability、serving status、受付可否、停止要求の受理、発見した記録と到達したサーバの同一性の判定 |
 | `workspace_tree` | Workspace / Session の bounded な query 集約。canonical な execution / node / session record から復元する |
 | `comment` | diff_comment_store、diff_comment_sender |
 | `agent_session` | AgentSession identity、lifecycle、Provider、Terminal ownership |

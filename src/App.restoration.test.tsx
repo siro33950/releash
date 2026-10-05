@@ -118,7 +118,6 @@ beforeEach(() => {
 	states.clear();
 	states.publish("repository-paths", []);
 	states.publish("workspaces", workspaceListSnapshot());
-	states.publish("startup-outcome", { type: "ready" });
 	states.publish("desktop-settings", desktopSettings);
 	status = {
 		phase: "ready",
@@ -138,7 +137,6 @@ beforeEach(() => {
 
 it("設定と一覧の初回失敗でシェルをFailedにせず購読の復旧を表示する", async () => {
 	states.clear();
-	states.publish("startup-outcome", { type: "ready" });
 	vi.mocked(invokeClient).mockResolvedValue(true);
 	await act(async () => {
 		render(<App />);
@@ -309,7 +307,6 @@ it("設定画面で自動更新をONにすると確認し成功後の切替と�
 
 it("設定の読み込み状態と失敗を設定画面へ渡し回復を反映する", async () => {
 	states.clear();
-	states.publish("startup-outcome", { type: "ready" });
 	states.publish("startup-repository", null);
 	await act(async () => {
 		render(<App />);

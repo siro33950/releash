@@ -426,6 +426,9 @@ async fn test_自動再試行_abortとshutdownは待機を終了し追加起動�
                 .await
                 .unwrap();
         } else {
+            crate::usecase::daemon::DaemonUsecase(fixture.host.daemon.clone())
+                .stop(crate::domain::daemon::StopRequest::Exit { code: 23 })
+                .await;
             fixture.host.shutdown_all_active_commands().await;
         }
         fixture.wait_startup_retries().await;
@@ -506,6 +509,9 @@ async fn test_自動再試行_shutdownは進行中の準備の終了を待つ() 
     )
     .await
     .unwrap();
+    crate::usecase::daemon::DaemonUsecase(fixture.host.daemon.clone())
+        .stop(crate::domain::daemon::StopRequest::Exit { code: 23 })
+        .await;
     let mut shutdown = Box::pin(fixture.host.shutdown_all_active_commands());
     assert!(
         tokio::time::timeout(std::time::Duration::from_millis(1), &mut shutdown)

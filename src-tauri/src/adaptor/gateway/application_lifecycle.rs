@@ -1,24 +1,6 @@
 use std::sync::Arc;
 
-use crate::domain::application_lifecycle::{
-    ApplicationLifecycleError, ApplicationQuitIntent, ApplicationQuitIntentPort,
-    ApplicationShutdownGateway,
-};
-
-pub(crate) struct DaemonProcessActionPort(pub(crate) tokio::sync::mpsc::Sender<i32>);
-
-impl ApplicationQuitIntentPort for DaemonProcessActionPort {
-    fn execute(&self, action: ApplicationQuitIntent) -> Result<(), ApplicationLifecycleError> {
-        let code = match action {
-            ApplicationQuitIntent::Exit { code } | ApplicationQuitIntent::Restart { code } => code,
-        };
-        self.0.try_send(code).map_err(|error| {
-            ApplicationLifecycleError(format!(
-                "daemon exit request could not be accepted: {error}"
-            ))
-        })
-    }
-}
+use crate::domain::application_lifecycle::{ApplicationLifecycleError, ApplicationShutdownGateway};
 
 pub(crate) struct DaemonShutdownGateway {
     pub(crate) workflow: Arc<crate::usecase::workflow::WorkflowRuntimeUsecase>,
@@ -65,14 +47,6 @@ impl ApplicationShutdownGateway for DaemonShutdownGateway {
     async fn shutdown_telemetry(&self) -> Result<(), ApplicationLifecycleError> {
         let telemetry = self.telemetry.lock().take();
         shutdown_telemetry(telemetry).await
-    }
-
-    async fn wait_for_deadline(&self, duration: std::time::Duration) {
-        let _ = crate::common::operation_context::wait(
-            &crate::common::operation_context::current(),
-            tokio::time::sleep(duration),
-        )
-        .await;
     }
 }
 

@@ -18,16 +18,20 @@ fn fixture() -> (Router, crate::infrastructure::local_api::ClientBearerToken) {
 
 #[tokio::test]
 async fn test_リクエスト認証_server停止で共有client_tokenが失効する() {
-    use crate::infrastructure::local_api::LocalApiServerBinding;
-
     // Given
     let directory = tempfile::tempdir().unwrap();
-    let binding = LocalApiServerBinding::bind(directory.path().to_owned()).unwrap();
+    let binding =
+        crate::infrastructure::local_api::test_binding(directory.path().to_owned()).unwrap();
     let bearer = binding.terminal_bearer_token();
     let router = Router::new().route("/rpc", post(|| async { "ok" })).layer(
         axum::middleware::from_fn_with_state(binding.client_bearer_token(), require_client),
     );
-    let server = binding.start(router.clone(), &tokio::runtime::Handle::current());
+    let server = binding
+        .start(router.clone(), &tokio::runtime::Handle::current())
+        .inspect(|server| {
+            server.publish_discovery().unwrap();
+        })
+        .unwrap();
     let request = || {
         Request::post("/rpc")
             .header("origin", "tauri://localhost")

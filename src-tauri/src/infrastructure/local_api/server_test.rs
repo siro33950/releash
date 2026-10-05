@@ -14,16 +14,24 @@ fn test_local_api_token_空でなく起動ごとに異なる値を生成する()
     assert_ne!(first, second);
 }
 
-#[test]
-fn test_クライアントtoken_masterと分離しdiscoveryへ書き込まない() {
+#[tokio::test]
+async fn test_クライアントtoken_masterと分離しdiscoveryへ書き込まない() {
     // Given / When
     let directory = tempfile::tempdir().unwrap();
-    let binding = LocalApiServerBinding::bind(directory.path().to_path_buf()).unwrap();
-    let discovery = std::fs::read_to_string(binding.discovery.path()).unwrap();
+    let binding =
+        crate::infrastructure::local_api::test_binding(directory.path().to_path_buf()).unwrap();
+    assert!(!binding.discovery.path().exists());
+    let master = binding.bearer_token();
+    let client = binding.terminal_bearer_token();
+    let server = binding
+        .start(Router::new(), &tokio::runtime::Handle::current())
+        .unwrap();
+    server.publish_discovery().unwrap();
+    let discovery = std::fs::read_to_string(directory.path().join("local-api.json")).unwrap();
     // Then
-    assert_ne!(binding.terminal_bearer_token(), binding.bearer_token());
-    assert!(discovery.contains(binding.bearer_token().as_ref()));
-    assert!(!discovery.contains(binding.terminal_bearer_token().as_ref()));
+    assert_ne!(client, master);
+    assert!(discovery.contains(master.as_ref()));
+    assert!(!discovery.contains(client.as_ref()));
 }
 
 #[test]
@@ -45,16 +53,17 @@ fn test_local_api_server_error_全variantが原因errorを保持する() {
     }
 }
 
-#[test]
-fn test_local_api_server起動_discovery作成失敗を専用errorで返す() {
+#[tokio::test]
+async fn test_local_api_server起動_discovery作成失敗を専用errorで返す() {
     let directory = tempfile::tempdir().unwrap();
     let data_path = directory.path().join("not-a-directory");
     std::fs::write(&data_path, "occupied").unwrap();
 
-    let error = match LocalApiServerBinding::bind(data_path) {
-        Ok(_) => panic!("discovery creation unexpectedly succeeded"),
-        Err(error) => error,
-    };
+    let server = crate::infrastructure::local_api::test_binding(data_path)
+        .unwrap()
+        .start(Router::new(), &tokio::runtime::Handle::current())
+        .unwrap();
+    let error = server.publish_discovery().unwrap_err();
 
     assert!(matches!(error, LocalApiServerError::Discovery(_)));
     assert!(error.source().is_some());
@@ -63,13 +72,20 @@ fn test_local_api_server起動_discovery作成失敗を専用errorで返す() {
 #[tokio::test]
 async fn test_local_api_server終了_停止を通知して所有discoveryを削除する() {
     let directory = tempfile::tempdir().unwrap();
-    let binding = LocalApiServerBinding::bind(directory.path().to_path_buf()).unwrap();
+    let binding =
+        crate::infrastructure::local_api::test_binding(directory.path().to_path_buf()).unwrap();
     let discovery_path = binding.discovery.path().to_path_buf();
-    let server = binding.start(Router::new(), &tokio::runtime::Handle::current());
+    let server = binding
+        .start(Router::new(), &tokio::runtime::Handle::current())
+        .inspect(|server| {
+            server.publish_discovery().unwrap();
+        })
+        .unwrap();
 
     assert!(discovery_path.exists());
     server.shutdown_and_wait().await.unwrap();
     assert!(!discovery_path.exists());
+    assert!(!directory.path().join("client-api.json").exists());
 }
 
 #[tokio::test]
@@ -99,12 +115,16 @@ async fn test_local_api_server終了_timeout時にtaskをabortして待機する
     assert!(dropped.load(Ordering::SeqCst));
 }
 
-#[test]
-fn test_クライアントdiscovery_作成失敗時はmasterの公開を取り消す() {
+#[tokio::test]
+async fn test_クライアントdiscovery_作成失敗時はmasterの公開を取り消す() {
     let directory = tempfile::tempdir().unwrap();
     // Given
     std::fs::create_dir(directory.path().join("client-api.json")).unwrap();
     // When / Then
-    assert!(LocalApiServerBinding::bind(directory.path().to_owned()).is_err());
+    let server = crate::infrastructure::local_api::test_binding(directory.path().to_owned())
+        .unwrap()
+        .start(Router::new(), &tokio::runtime::Handle::current())
+        .unwrap();
+    assert!(server.publish_discovery().is_err());
     assert!(!directory.path().join("local-api.json").exists());
 }

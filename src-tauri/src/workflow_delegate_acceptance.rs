@@ -83,6 +83,7 @@ impl WorkflowDelegateAcceptanceHost {
             workspace_query,
             sessions.clone(),
             Arc::new(AcceptanceWorktrees),
+            crate::adaptor::gateway::daemon::serving(),
         );
         let dependencies = WorkflowRuntimeDependencies {
             store: Some(store.clone()),
