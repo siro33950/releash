@@ -187,6 +187,19 @@ fn new_node_execution_id() -> String {
     uuid::Uuid::new_v4().to_string()
 }
 
+fn with_append_context(error: WorkflowRuntimeError, context: &str) -> WorkflowRuntimeError {
+    match error {
+        WorkflowRuntimeError::SessionStore(reason) => {
+            WorkflowRuntimeError::SessionStore(format!("{context}: {reason}"))
+        }
+        WorkflowRuntimeError::Store(failure) => {
+            let message = format!("{context}: {failure}");
+            WorkflowRuntimeError::Store(failure.with_message(message))
+        }
+        other => other,
+    }
+}
+
 fn build_command_artifact(
     schemas: &BTreeMap<String, DomainSchemaDef>,
     contract: Option<&str>,
@@ -1842,17 +1855,8 @@ impl WorkflowRuntimeHost {
                     },
                 )
                 .await
-                .map_err(|error| match error {
-                    WorkflowRuntimeError::SessionStore(reason) => {
-                        WorkflowRuntimeError::SessionStore(format!(
-                            "command completion event append failed: {reason}"
-                        ))
-                    }
-                    WorkflowRuntimeError::Store(failure) => {
-                        let message = format!("command completion event append failed: {failure}");
-                        WorkflowRuntimeError::Store(failure.with_message(message))
-                    }
-                    other => other,
+                .map_err(|error| {
+                    with_append_context(error, "command completion event append failed")
                 })?
             else {
                 return Ok(None);
@@ -2077,16 +2081,7 @@ impl WorkflowRuntimeHost {
             },
         )
         .await
-        .map_err(|error| match error {
-            WorkflowRuntimeError::SessionStore(reason) => {
-                WorkflowRuntimeError::SessionStore(format!("{append_error_context}: {reason}"))
-            }
-            WorkflowRuntimeError::Store(failure) => {
-                let message = format!("{append_error_context}: {failure}");
-                WorkflowRuntimeError::Store(failure.with_message(message))
-            }
-            other => other,
-        })
+        .map_err(|error| with_append_context(error, append_error_context))
     }
 
     /// [04] post-commit phase: broadcast and runtime release. Every required

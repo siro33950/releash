@@ -61,8 +61,9 @@ THEN 受け付けるかどうかは今と同じである
 ## B-010: 停止後の workflow の Command
 
 GIVEN サーバが停止要求を受理した
-WHEN workflow が Command を開始しようとする、または Command の結果が届く
+WHEN workflow が Command を開始しようとする、または Command の結果の取り込みを始めようとする
 THEN Command は開始されず、結果は workflow に取り込まれない
+AND 受理の時点で進行中だった結果の取り込みは完了してから、Command が止められる
 
 ## B-011: 停止要求の exit code
 

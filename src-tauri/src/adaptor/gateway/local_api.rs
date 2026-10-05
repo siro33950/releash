@@ -87,17 +87,13 @@ impl LocalApiClientGateway {
         let discovery_identity = discovery.clone();
         let client = LocalApiHttpClient::new(discovery).map_err(map_transport_error)?;
         let (connection_observation, request_error) = match client.identity_status(&instance_id) {
-            Ok(status) => (
-                ConnectionObservation::from_response_status(Some(status)),
-                None,
-            ),
+            Ok(status) => (identity_response(Some(status)), None),
             Err(LocalApiIdentityRequestError::InvalidEndpoint) => {
                 return Err(LocalApiClientError::InvalidEndpoint);
             }
-            Err(LocalApiIdentityRequestError::Request(source)) => (
-                ConnectionObservation::from_response_status(None),
-                Some(source),
-            ),
+            Err(LocalApiIdentityRequestError::Request(source)) => {
+                (identity_response(None), Some(source))
+            }
         };
         daemon_identity(&discovery_identity)
             .assess_connection(connection_observation)
@@ -242,6 +238,14 @@ impl ClientConnectionFileQuery {
             url: format!("http://127.0.0.1:{}", client.port),
             token: client.token,
         })
+    }
+}
+
+fn identity_response(status: Option<u16>) -> ConnectionObservation {
+    match status {
+        Some(204) => ConnectionObservation::IdentityVerified,
+        Some(_) => ConnectionObservation::UnexpectedResponse,
+        None => ConnectionObservation::NoResponse,
     }
 }
 

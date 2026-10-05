@@ -18,3 +18,19 @@ pub(crate) fn option(options: &DynamicMessage, name: &str) -> Value {
         .expect("protocol option");
     options.get_extension(&extension).into_owned()
 }
+
+pub(crate) fn client_service() -> prost_reflect::ServiceDescriptor {
+    POOL.get_service_by_name("releash.client.v1.ClientService")
+        .expect("ClientService descriptor")
+}
+
+pub(crate) fn protocol() -> u32 {
+    client_service()
+        .parent_file()
+        .package_name()
+        .rsplit('.')
+        .next()
+        .and_then(|version| version.strip_prefix('v'))
+        .and_then(|version| version.parse().ok())
+        .expect("versioned protocol package")
+}

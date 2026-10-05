@@ -79,6 +79,50 @@ fn test_daemon起動失敗_理由と相関idを状態として保持する() {
     assert!(!daemon.admits(DaemonRequest::Operation));
 }
 #[test]
+fn test_daemon起動失敗_すべての分類の説明に内部の詳細を含まない() {
+    // Given
+    let kinds = [
+        StartupFailureKind::StoreInUse,
+        StartupFailureKind::StorageUnavailable(
+            crate::domain::failure::TechnicalFailureNature::Transient,
+        ),
+        StartupFailureKind::StorageUnavailable(
+            crate::domain::failure::TechnicalFailureNature::TimedOut,
+        ),
+        StartupFailureKind::StorageUnavailable(
+            crate::domain::failure::TechnicalFailureNature::Cancelled,
+        ),
+        StartupFailureKind::StorageUnavailable(
+            crate::domain::failure::TechnicalFailureNature::Other,
+        ),
+        StartupFailureKind::UnsupportedRuntime,
+        StartupFailureKind::UnsupportedStoreVersion,
+        StartupFailureKind::InitializationStateInvalid,
+        StartupFailureKind::StoreValidationFailed,
+        StartupFailureKind::SchemaEvolutionFailed,
+    ];
+    for kind in kinds {
+        // When
+        let description = kind.safe_description().to_ascii_lowercase();
+        // Then
+        for forbidden in [
+            "select ",
+            "pragma ",
+            "sqlite_",
+            ".db",
+            "/users/",
+            "\\users\\",
+            "session",
+            "workflow",
+        ] {
+            assert!(
+                !description.contains(forbidden),
+                "{kind:?} leaked forbidden detail {forbidden:?}"
+            );
+        }
+    }
+}
+#[test]
 fn test_daemon同一性_不正な記録とプロセス観測と接続先を区別する() {
     // Given
     let identity = daemon().info().identity;
@@ -145,14 +189,17 @@ fn test_daemon同一性_不正な記録とプロセス観測と接続先を区�
         },
         true
     ));
-    for (status, expected) in [
-        (Some(204), Ok(())),
-        (Some(404), Err(DiscoveryRejection::InstanceMismatch)),
-        (None, Err(DiscoveryRejection::ConnectionUnreachable)),
+    for (observation, expected) in [
+        (ConnectionObservation::IdentityVerified, Ok(())),
+        (
+            ConnectionObservation::UnexpectedResponse,
+            Err(DiscoveryRejection::InstanceMismatch),
+        ),
+        (
+            ConnectionObservation::NoResponse,
+            Err(DiscoveryRejection::ConnectionUnreachable),
+        ),
     ] {
-        assert_eq!(
-            identity.assess_connection(ConnectionObservation::from_response_status(status)),
-            expected
-        );
+        assert_eq!(identity.assess_connection(observation), expected);
     }
 }

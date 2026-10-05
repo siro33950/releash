@@ -6,7 +6,7 @@
 
 - `Daemon` 集約の新設: `domain/daemon/` に、サーバ自身を表す集約を置く。identity（サーバが発行する ID、pid、起動時刻）、版（release、protocol、capability の集合）、serving status（Starting / Serving / Stopping / Stopped / Failed（理由付き））とその遷移、受付可否、停止要求の受理を所有する。受付可否は、serving status と要求の種類（status・停止・それ以外）から導く。status と停止は常に受け付け、それ以外は Serving のときだけ受け付ける。根拠: R-001、R-005、R-006、B-001、B-006〜B-008、B-010。ルート: 「Serving になった」は、待ち受けを始めて要求を受けられる状態になった時点（今の `adaptor/controller/daemon.rs:598` の後）とし、集約の遷移として 1 か所で表す。
 - `DaemonInfo` の新設: 集約の公開像を表す値を domain に置く。発見ファイルの内容と `GetServerInfo` の応答は、この値から作る。根拠: R-001、R-002、B-001、B-002。ルート: 委任。
-- identity の値と同一性の判定: 発見した記録と到達したサーバが同一かの判定（記録の妥当性、プロセス観測との一致、到達したサーバの応答）を、identity の値が持つ。`domain/local_api_discovery/` の判定（`mod.rs:1-128`）をここへ統合し、`domain/local_api_discovery/` を削除する。pid が生きているかの確認は domain の外で行い、domain は観測の結果を受けて判定する。根拠: R-011、B-015。ルート: domain の identity の値の名前は `daemon_id` にそろえ、発見ファイルの項目名 `instance_id` は保存の形として残す。対応は変換の 1 か所に書く。
+- identity の値と同一性の判定: 発見した記録と到達したサーバが同一かの判定（記録の妥当性、プロセス観測との一致、到達したサーバの応答）を、identity の値が持つ。`domain/local_api_discovery/` の判定（`mod.rs:1-128`）をここへ統合し、`domain/local_api_discovery/` を削除する。pid が生きているかの確認は domain の外で行い、domain は観測の結果を受けて判定する。根拠: R-011、B-015。ルート: domain の identity の値の名前は `daemon_id` にそろえ、発見ファイルの項目名 `instance_id` は保存の形として残す。対応は変換の 1 か所に書く。記録の形の検査（port と token の妥当性、master と client の token が別であること）は domain の外で行い、identity の判定（daemon_id・pid・起動時刻、プロセス観測、到達したサーバの応答）と拒否の分類は domain が持つ。
 - 発見ファイルの表現と評価の組み立てを 1 つにする: port と token を含む発見ファイルの形は、domain の外に 1 つだけ持つ。DTO から値への変換（`adaptor/gateway/local_api.rs:83-89`、`:237-245`）と評価の組み立て（CLI 用 `:69-117`、シェル用 `:221-265`）を、それぞれ 1 つにする。根拠: R-011、B-015。ルート: 委任。
 - 発見ファイルを書く時点と消す経路: bind で確保した port と token は保持し、2 つの発見ファイルを Serving になってから書く。停止時に両方を消す。書いた後に失敗したら両方を消し、片方だけ書けた場合も残さない（`infrastructure/local_api/server.rs:77-82` の保証を保つ）。消す経路（今は `server.rs:77-82`、`:131-142`、`:153-161`、`:184-195`）は、書く時点に合わせて整える。根拠: R-004、B-004、B-005。ルート: 2 つのファイルの形（項目、ファイル名、0600 の権限）と token の分離は変えず、書く時点とそれに合わせた消す経路だけを変える。
 - `GetServerInfo` の応答の追加: `proto/client.proto` の `ServerInfo` に、`string daemon_id = 5;`、`uint32 pid = 6;`、`uint64 process_started_at = 7;`（発見ファイルと同じ単位の秒）、`uint32 protocol = 8;`、`repeated string capabilities = 9;`、`ServingStatus serving_status = 10;` を足す。あわせて `enum ServingStatus { SERVING_STATUS_UNSPECIFIED = 0; SERVING_STATUS_STARTING = 1; SERVING_STATUS_SERVING = 2; SERVING_STATUS_STOPPING = 3; SERVING_STATUS_STOPPED = 4; SERVING_STATUS_FAILED = 5; }` を足す。`adaptor/controller/api/client_service.rs:1-10` は `DaemonInfo` から応答を作る。`src/generated/`、テスト、mock を追従させる。根拠: R-001〜R-003、B-001〜B-003。ルート: 追加だけを行い、`launch_id` と `release` は変えない。reserved の名前 `instance_id` は使わない。enum は proto の標準（0 を UNSPECIFIED、値に型名の接頭辞）で書く。`ServingStatus` は domain の serving status と 1 対 1 に写す。Failed の理由は wire に載せない（Failed のサーバは発見ファイルを書かずに終了し、応答に載ることがないため）。
@@ -42,6 +42,7 @@
   - Stopping: 停止要求を受理した時点（今の `adaptor/controller/client/application_lifecycle_shared.rs:36-58` の停止要求の経路）。
   - Stopped: 停止手順が終わった時点、または deadline で打ち切った時点。プロセスを終える直前（今の `daemon.rs:71` の `shutdown` の後、`:72-73` の前）。
 - 受付可否の規則は Daemon 集約に 1 つだけ置く。RPC の名前から要求の種類（status・停止・それ以外）への対応付けは、転送の知識として controller に置く。掛ける位置は Connect の入口の 1 か所にする。
+- 進行中の Command の結果の取り込みを待つ時間は、停止の deadline の中にある。待つのは停止手順の最初の段（`src-tauri/src/usecase/application_lifecycle/mod.rs:4` の `stop_commands`）から呼ばれる `drain_commands`（`src-tauri/src/adaptor/gateway/workflow/workflow_host.rs:1989`、`src-tauri/src/adaptor/gateway/daemon.rs:16-18`）で、停止手順全体に deadline が掛かる（`src-tauri/src/adaptor/controller/daemon.rs:48-66`）。deadline を過ぎたら、この待ちも打ち切られる（R-008）。
 - 停止中に新しい要求を拒否しても、停止手順は滞らない。読んで確かめた根拠は次のとおり。
   - save_terminals（`usecase/terminal_surface/application.rs:422-462`）が出す `request_runtime_stop`（`adaptor/gateway/terminal_surface/runtime_gateway_impl.rs:1249-1262`）は、kill の前に `release_output` を呼んで、出力の一時停止を解く（`infrastructure/terminal/output_flow_control.rs:109-113`）。このため drain（`runtime_gateway_impl.rs:540-542`、`:597-603`）は、`ReportTerminalProcessed` を待たずに進む。
   - 停止手順（`usecase/application_lifecycle/mod.rs:13-38`）に、購読の後始末を待つ段は無い。開いた stream は `stop_local_api` が閉じる。待つ上限は 5 秒（`infrastructure/local_api/server.rs:13`、`:197-220`）。
@@ -58,7 +59,6 @@
   - `tests/daemon_smoke.rs:221-236` は、最大 30 秒ファイルを待つ。
   - `src/client_api_acceptance.rs:155-170` は、`start` の後にファイルを読む。
   - CLI（`cli/api_client.rs:41-45`、`:175-183`）は待たずに 1 回だけ読む。
-- `Compatibility` は release を判定の入力にしない。proto の標準（AIP-180・AIP-185）では、互換を壊す変更はメジャー版を上げて package 名に表し、同じメジャー版の中は追加だけで互換を保つ。release の一致・比較で互換を決めると、`verify_identity` の完全一致の問題が残り、「版の違うクライアントとサーバが共存できる」（マイルストーン #100）に合わない。release は `DaemonInfo` に載せて表示に使う。同じメジャー版の中でサーバが新しい RPC を知らない場合は、互換のままその RPC が `Unimplemented` になり（#1905 が扱う）、`Compatibility` はこれを「サーバが古い」としない。
 
 ## 変えないもの
 
@@ -74,4 +74,4 @@
 
 ## 未確定・リスク
 
-- `Compatibility`（クライアントの protocol と `DaemonInfo` の protocol から、互換 / サーバが古い / クライアントが古い を判定するドメインサービス）を、この ISSUE で作るか。この ISSUE の範囲には、`Compatibility` を本番の経路から呼ぶ箇所が無い。`GetServerInfo` を呼ぶのは画面側の監督だけで、判定には #1904 まで `verify_identity` を使う（`adaptor/gateway/daemon_supervision.rs:79-82`、`:103`、`usecase/daemon_supervision.rs:358`）。CLI は HTTP local API だけを使う（`cli/api_client.rs:41-45`）。作れば、規約の「モデルは実行経路にある」（`docs/architecture/DOMAIN.md`）と食い違い、`cargo clippy --locked -- -D warnings` の dead_code に当たる見込みが高い。作る時期は利用者の判断を待っている。決まるまで、Requirements と Behavior に `Compatibility` の項目を入れていない。
+なし

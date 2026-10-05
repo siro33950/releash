@@ -70,16 +70,6 @@ pub(crate) enum ConnectionObservation {
     NoResponse,
 }
 
-impl ConnectionObservation {
-    pub(crate) fn from_response_status(status: Option<u16>) -> Self {
-        match status {
-            Some(204) => Self::IdentityVerified,
-            Some(_) => Self::UnexpectedResponse,
-            None => Self::NoResponse,
-        }
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum DiscoveryRejection {
     InvalidOrStale,

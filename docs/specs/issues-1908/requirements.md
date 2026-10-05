@@ -53,6 +53,7 @@
 - method ごとの scope、hook 用 token、Origin、buf（#1901）。HTTP local API の受付制御と HTTP の削除、CLI のクレート分け（#1902）。
 - `releashd` への改名（#1903）。`StopDaemon` RPC、CLI の status / server コマンド、`DaemonInfo` の購読での配信（#1904・#1905）。
 - クレートの分割（#1853）。
+- `Compatibility`（互換の判定）。この ISSUE の範囲に本番の呼び出し元が無いため、最初に呼ぶ #1902 で作る。この ISSUE では、判定の材料になる protocol を `GetServerInfo` の応答に載せるところまで行う。
 - 停止の deadline 以外の期限の値（`LOCAL_API_SHUTDOWN_TIMEOUT`、HTTP クライアントの期限、`desktop_restart` の期限、画面側の監督の期限）の移動。
 - 既存の proto の enum（`enum Value { ... }` の形）の書き方。
 - 発見ファイルの形（項目、ファイル名、権限）と、master token・client token の分離。
@@ -65,7 +66,7 @@
 - R-003: `GetServerInfo` が返す protocol は、サーバがコンパイルした proto package のメジャー版（今は 1）である。capability の集合は空である。
 - R-004: サーバは、要求を受けられる状態になってから、2 つの発見ファイル（`local-api.json` と `client-api.json`）を書く。停止時には両方を消す。片方だけが残る状態を作らない。発見ファイルの項目、ファイル名、権限、token の分離は今と同じである。
 - R-005: Connect の RPC のうち、`GetServerInfo` と停止要求は serving status にかかわらず受け付ける。それ以外の RPC は、serving status が Serving のときだけ受け付ける。拒否したときのエラーの分類とコード（`APPLICATION_UNAVAILABLE`）は今と同じである。判定は新しく届く要求に掛け、すでに開いている stream と進行中の呼び出しは切らない。HTTP local API の受付は今と同じである。
-- R-006: サーバが停止要求を受理した後は、workflow の Command を新しく開始せず、Command の結果を取り込まない。
+- R-006: サーバが停止要求を受理した後は、workflow の Command を新しく開始せず、受理の後に始まる Command の結果の取り込みを行わない。受理の時点で進行中の取り込みは完了させる。停止手順は、進行中の取り込みが終わるのを待ってから Command を止める。
 - R-007: 停止要求の Exit と Restart は、どちらもサーバの終了として扱う。サーバは、要求が運んだ exit code で終了する。
 - R-008: サーバの停止手順は、停止の deadline（15 秒）を過ぎたら打ち切って終了する。deadline の値は proto の service option に 1 か所だけ定義され、サーバはその値を使う。
 - R-009: 保存先を開けずに起動に失敗したサーバは、発見ファイルを書かずに終了する。失敗の説明と相関 ID は、今と同じ形でログと stderr に出る。

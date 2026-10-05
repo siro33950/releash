@@ -27,10 +27,7 @@ fn client_priority_level(path: &str) -> Option<&'static str> {
 
 fn service_timeout(name: &str) -> std::time::Duration {
     use crate::adaptor::presenter::client::descriptor;
-    let options = descriptor::pool()
-        .get_service_by_name("releash.client.v1.ClientService")
-        .expect("ClientService descriptor")
-        .options();
+    let options = descriptor::client_service().options();
     std::time::Duration::from_millis(
         descriptor::option(&options, name)
             .as_u32()
@@ -50,17 +47,16 @@ async fn shutdown_with_deadline(
     server: &infrastructure::local_api::LocalApiServer,
 ) {
     let timeout = shutdown_timeout();
-    if crate::common::operation_context::runtime_timeout(
-        timeout,
-        usecase::application_lifecycle::shutdown(gateway),
-    )
-    .await
-    .is_err()
-    {
-        log::error!(
-            "application shutdown: {} second deadline exceeded; exiting",
-            timeout.as_secs()
-        );
+    let context = crate::common::operation_context::current();
+    tokio::select! {
+        biased;
+        _ = crate::common::operation_context::wait(&context, tokio::time::sleep(timeout)) => {
+            log::error!(
+                "application shutdown: {} second deadline exceeded; exiting",
+                timeout.as_secs()
+            );
+        }
+        () = usecase::application_lifecycle::shutdown(gateway) => {}
     }
     server.shutdown();
 }
@@ -114,18 +110,7 @@ pub(crate) async fn compose(
         process_started_at: infrastructure::local_api::process_start_time(pid)
             .ok_or("failed to resolve daemon process identity")?,
     };
-    let package = adaptor::presenter::client::descriptor::pool()
-        .get_service_by_name("releash.client.v1.ClientService")
-        .expect("ClientService descriptor")
-        .parent_file()
-        .package_name()
-        .to_owned();
-    let protocol = package
-        .rsplit('.')
-        .next()
-        .and_then(|version| version.strip_prefix('v'))
-        .and_then(|version| version.parse::<u32>().ok())
-        .expect("versioned protocol package");
+    let protocol = adaptor::presenter::client::descriptor::protocol();
     let daemon_repository = Arc::new(adaptor::gateway::daemon::InMemoryDaemonRepository::new(
         identity,
         env!("CARGO_PKG_VERSION").into(),

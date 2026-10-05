@@ -29,18 +29,6 @@ impl StartupFailureKind {
             }
         }
     }
-
-    pub(crate) fn retry_on_next_launch(&self) -> bool {
-        matches!(
-            self,
-            Self::StoreInUse
-                | Self::StorageUnavailable(
-                    crate::domain::failure::TechnicalFailureNature::Transient
-                        | crate::domain::failure::TechnicalFailureNature::TimedOut
-                )
-                | Self::SchemaEvolutionFailed
-        )
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -48,7 +36,6 @@ pub(crate) struct StartupFailure {
     pub(crate) kind: StartupFailureKind,
     pub(crate) safe_description: &'static str,
     pub(crate) correlation_id: String,
-    pub(crate) retry_on_next_launch: bool,
 }
 
 impl StartupFailure {
@@ -57,7 +44,6 @@ impl StartupFailure {
             kind: kind.clone(),
             safe_description: kind.safe_description(),
             correlation_id,
-            retry_on_next_launch: kind.retry_on_next_launch(),
         }
     }
 }
