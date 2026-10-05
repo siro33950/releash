@@ -1,5 +1,5 @@
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(crate) enum ProviderKind {
+pub enum ProviderKind {
     Claude,
     Codex,
 }

@@ -13,6 +13,10 @@
 //! ```compile_fail,E0432
 //! use releash_lib::desktop_api::wire::Unit;
 //! ```
+//!
+//! ```compile_fail,E0432
+//! use releash_lib::desktop_api::to_rpc;
+//! ```
 
 pub mod wire {
     pub use crate::adaptor::presenter::client::{
@@ -25,7 +29,7 @@ pub mod wire {
     };
 }
 pub use crate::adaptor::presenter::client_calls::call;
-pub use crate::adaptor::presenter::connect_wire::{rpc, to_rpc, to_wire};
+pub use crate::adaptor::presenter::connect_wire::{rpc, to_wire};
 pub mod descriptor {
     pub use crate::adaptor::presenter::client::descriptor::{option, pool};
 }
@@ -57,6 +61,7 @@ pub use crate::usecase::telemetry::TelemetryPort;
 pub mod test_support {
     pub use crate::adaptor::presenter::client::{StateChange, Unit, COMMAND_NAMES};
     pub use crate::adaptor::presenter::connect::command_error;
+    pub use crate::adaptor::presenter::connect_wire::to_rpc;
     pub use crate::adaptor::presenter::error::AppError;
     pub use crate::infrastructure::local_api::LocalApiDiscoveryFile;
     pub use crate::infrastructure::telemetry::crash::{

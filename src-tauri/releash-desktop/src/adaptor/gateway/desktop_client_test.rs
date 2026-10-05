@@ -1,6 +1,6 @@
 use super::*;
 use futures_util::StreamExt;
-use releash_lib::desktop_api::test_support::{StateChange, Unit};
+use releash_lib::desktop_api::test_support::{to_rpc, StateChange, Unit};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 fn start(endpoint: &ClientConnectionDto) -> DesktopClient {

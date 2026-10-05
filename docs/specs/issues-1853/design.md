@@ -34,7 +34,7 @@
 | 項目（今の場所） | シェルで使う箇所（今の場所） |
 | --- | --- |
 | proto の生成型 `presenter::client`（`command_request::Command`、`command_result::Command`、`StatePayload`、`state_payload::Value`、`StateSubscriptionEvent`、`state_subscription_event::Event`、`ServerInfo`、`CommandError`、`command_error::Variant`、`DesktopSettings`、`RequestApplicationQuitRequest`、`ApplicationQuitRequestDtoV1`、`ApplicationQuitIntentDtoV1`、`application_quit_intent_dto_v1`、`ApplicationQuitIntentDtoV1Restart`、`ApplicationQuitIntentDtoV1Exit`、`ApplicationQuitOutcomeDtoV1`、`application_quit_outcome_dto_v1`、`UpdateLoginItemPreferenceRequest`） | `adaptor/gateway/desktop_client.rs:2-4,191-192,308-311,368-375,423,447-450`、`gateway/login_item.rs:61-62,77,87-88`（`UpdateLoginItemPreferenceRequest` は `:88`）、`gateway/daemon_supervision.rs:1`（`RequestApplicationQuitRequest` は `:287`、`ApplicationQuitRequestDtoV1` は `:288`、`ApplicationQuitIntentDtoV1` は `:289`、`application_quit_intent_dto_v1` は `:292,298`、`ApplicationQuitIntentDtoV1Restart` は `:293`、`ApplicationQuitIntentDtoV1Exit` は `:299`、`application_quit_outcome_dto_v1` は `:394`、`ApplicationQuitOutcomeDtoV1` は `:391-397`（`shutdown_response` が受ける値の型）） |
-| `connect_wire::{rpc, to_rpc, to_wire}`（`ClientServiceClient` を含む） | `gateway/desktop_client.rs:2-5` |
+| `connect_wire::{rpc, to_wire}`（`ClientServiceClient` を含む） | `gateway/desktop_client.rs:7,365,425` |
 | 呼び出し表の `call`（生成物 `client_calls.rs`） | `gateway/desktop_client.rs:193,460` |
 | descriptor の `pool`・`option`（`presenter/client/descriptor.rs:11-20`） | `gateway/desktop_client.rs:24-73`（`POLICY`） |
 | `ClientConnectionQueryService`・`ClientConnectionDto`・`ClientConnectionError`（`usecase/client_connection`）と、それを実装する `ClientConnectionFileQuery`（`gateway/local_api.rs`） | `gateway/daemon_supervision.rs:4,28,75,79`、`usecase/daemon_supervision.rs:1-2`、`gateway/desktop_client.rs:3`、`controller/command/client.rs:20`、`usecase/test_helpers.rs:3` |
@@ -59,6 +59,7 @@
 | --- | --- |
 | `COMMAND_NAMES`（`build.rs:42` の生成物） | `adaptor/controller/command/mod.rs:154,243`、`command/client_test.rs` のうちシェルに残す部分 |
 | `StateChange`・`Unit`（`presenter::client` の生成型） | `gateway/desktop_client_test.rs:3,101,310,353,409,486,628,699`、`gateway/daemon_supervision_test.rs:2,82` |
+| `connect_wire::to_rpc` | `gateway/desktop_client_test.rs:34-40` |
 | `metrics::{lock_test_telemetry, reset_test_metrics, test_metric_records, set_performance_configured, set_performance_enabled}`（`infrastructure/telemetry/metrics/mod.rs:398,402,535-561`） | `desktop_test.rs:84,115,143-166`、`command/client_test.rs:216` のうちシェルに残す部分があればそこ |
 | `crash::tests::{TEST_LOCK, install_test_exporter}`、`crash::reset_for_tests`（`infrastructure/telemetry/crash.rs:29-30,153-,181`） | `desktop_test.rs:85,112-113,138` |
 | `presenter::connect::command_error`、`presenter::error::AppError::{new, coded}` | `gateway/desktop_client_test.rs:801-815` |

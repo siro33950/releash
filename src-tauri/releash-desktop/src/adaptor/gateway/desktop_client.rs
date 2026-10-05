@@ -453,6 +453,3 @@ fn error_message(error: connectrpc::ConnectError) -> String {
 #[cfg(test)]
 #[path = "desktop_client_test.rs"]
 mod desktop_client_tests;
-
-#[cfg(test)]
-use releash_lib::desktop_api::to_rpc;
