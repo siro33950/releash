@@ -19,7 +19,7 @@ use crate::domain::workflow::{
 };
 use crate::domain::workspace_tree::WorkspaceIdentity;
 use crate::domain::workspace_tree::{WorkspaceNodeStatusClassification, WorkspaceTreeRepository};
-use crate::infrastructure::local_api::{LocalApiServer, LocalApiServerBinding};
+use crate::infrastructure::local_api::LocalApiServer;
 use crate::terminal_subscription_acceptance::TerminalSubscriptionHarness as TerminalSurfaceRuntime;
 use crate::usecase::agent_session::{
     AgentSessionLaunchRequest, AgentSessionLaunchUsecase, AgentSessionLifecycleUsecase,
@@ -501,6 +501,7 @@ launch_retention: crate::adaptor::controller::agent_session_launch_retention::ru
             composition.lifecycle.clone(),
             composition.availability_reader.clone(),
             Arc::new(crate::adaptor::gateway::workflow::RepositoryIsolatedWorktreeGateway),
+            crate::adaptor::gateway::daemon::serving(),
         );
         let node_processes = Arc::new(
             crate::adaptor::gateway::workflow::node_process::WorkflowNodeProcesses::new(
@@ -557,7 +558,7 @@ launch_retention: crate::adaptor::controller::agent_session_launch_retention::ru
             )
             .map_err(|error| error.to_string())?,
         );
-        let binding = LocalApiServerBinding::bind(config.data_dir.clone())
+        let binding = crate::infrastructure::local_api::test_binding(config.data_dir.clone())
             .map_err(|error| error.to_string())?;
         let port = binding.port();
         let token = binding.bearer_token();
@@ -573,7 +574,12 @@ launch_retention: crate::adaptor::controller::agent_session_launch_retention::ru
                 crate::adaptor::controller::daemon::default_timeout(),
             ),
         );
-        let local_api = binding.start(router, &tokio::runtime::Handle::current());
+        let local_api = binding
+            .start(router, &tokio::runtime::Handle::current())
+            .inspect(|server| {
+                server.publish_discovery().unwrap();
+            })
+            .unwrap();
 
         let terminal_events = terminal.application().subscribe_events();
         let exit_observer_cancellation = terminal_events.cancellation.clone();

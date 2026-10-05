@@ -5,8 +5,7 @@ use crate::adaptor::controller::api::ClientApiDeps;
 use crate::adaptor::controller::client::ClientCommandDispatch;
 use crate::adaptor::controller::terminal_surface_runtime::TerminalSurfaceRuntime;
 use crate::adaptor::gateway::local_event_store::{LocalEventStore, LocalEventStoreConfig};
-use crate::infrastructure::local_api::{LocalApiServer, LocalApiServerBinding};
-use crate::usecase::application_startup::ApplicationStartupAuthority;
+use crate::infrastructure::local_api::LocalApiServer;
 use crate::usecase::repository_usecase::RepositoryUsecase;
 use crate::usecase::workflow::WorkflowRuntimeUsecase;
 
@@ -45,7 +44,6 @@ impl ClientApiAcceptanceHost {
             Arc::new(repository::worktree_terminal::NoopWorktreeTerminalGateway),
             operations.clone(),
         );
-        let authority = Arc::new(ApplicationStartupAuthority::ready());
         let repository = Arc::new(repository);
         let state_presenter = Arc::new(
             crate::adaptor::presenter::state_subscription::StateSubscriptionPresenter::new(),
@@ -63,7 +61,9 @@ impl ClientApiAcceptanceHost {
             vec![],
             String::new(),
         );
-        let mut dispatch = ClientCommandDispatch::new(authority.clone());
+        let mut dispatch = ClientCommandDispatch::new(crate::usecase::daemon::DaemonUsecase(
+            crate::adaptor::gateway::daemon::serving(),
+        ));
         dispatch.register_domain(
             &["get_language_from_path"],
             Box::new(move |command| {
@@ -89,7 +89,8 @@ impl ClientApiAcceptanceHost {
             }),
         );
         let dispatch = Arc::new(dispatch);
-        let binding = LocalApiServerBinding::bind(data_dir.to_path_buf()).unwrap();
+        let binding =
+            crate::infrastructure::local_api::test_binding(data_dir.to_path_buf()).unwrap();
         let master_subprotocol = format!(
             "{TERMINAL_WS_BEARER_SUBPROTOCOL_PREFIX}{}",
             binding.bearer_token()
@@ -156,7 +157,12 @@ impl ClientApiAcceptanceHost {
         );
         Self {
             data_dir: data_dir.to_path_buf(),
-            server: binding.start(router, &tokio::runtime::Handle::current()),
+            server: binding
+                .start(router, &tokio::runtime::Handle::current())
+                .inspect(|server| {
+                    server.publish_discovery().unwrap();
+                })
+                .unwrap(),
             master_subprotocol,
         }
     }
@@ -243,8 +249,9 @@ impl ClientRecoveryAcceptanceHost {
     pub async fn start() -> Self {
         use crate::adaptor::presenter::client as wire;
         let state = Arc::new(std::sync::Mutex::new(ClientRecoveryState::default()));
-        let mut dispatch =
-            ClientCommandDispatch::new(Arc::new(ApplicationStartupAuthority::ready()));
+        let mut dispatch = ClientCommandDispatch::new(crate::usecase::daemon::DaemonUsecase(
+            crate::adaptor::gateway::daemon::serving(),
+        ));
         for names in [
             &["update_crash_reporting"][..],
             &["report_mounted_xterm_count"][..],

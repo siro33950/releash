@@ -316,3 +316,46 @@ fn test_一覧更新_引数なしの要求と空の応答をprotobuf往復で保
         ("refresh_workspaces", Json::Null)
     );
 }
+
+#[test]
+fn test_起動失敗経路削除_wire番号と名前を予約しrpcと型を残さない() {
+    // Given
+    let pool = descriptor::pool();
+    // When / Then
+    for (message, number, field) in [
+        ("CommandRequest", 103, "quit_after_startup_failure"),
+        ("CommandResult", 103, "quit_after_startup_failure"),
+        ("StatePayload", 58, "startup_outcome"),
+        ("CommandError", 3, "application"),
+    ] {
+        let message = pool
+            .get_message_by_name(&format!("releash.client.v1.{message}"))
+            .unwrap();
+        assert!(message
+            .reserved_ranges()
+            .any(|range| range.contains(&number)));
+        assert!(message.reserved_names().any(|name| name == field));
+        assert!(message.get_field(number).is_none());
+    }
+    for message in [
+        "ApplicationStartupOutcomeDtoV1",
+        "ApplicationStartupOutcomeDtoV1Failed",
+        "StartupFailureKindDtoV1",
+        "StartupFailureActionDtoV1",
+        "ListStartupFailureActionDtoV1",
+        "QuitAfterStartupFailureRequest",
+        "StartupFailureQuitOutcomeDtoV1",
+        "StartupFailureQuitOutcomeDtoV1Accepted",
+        "ApplicationError",
+    ] {
+        assert!(pool
+            .get_message_by_name(&format!("releash.client.v1.{message}"))
+            .is_none());
+    }
+    let service = pool
+        .get_service_by_name("releash.client.v1.ClientService")
+        .unwrap();
+    assert!(!service
+        .methods()
+        .any(|method| method.name() == "QuitAfterStartupFailure"));
+}

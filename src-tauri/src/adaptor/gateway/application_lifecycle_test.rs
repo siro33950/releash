@@ -60,25 +60,3 @@ async fn test_終了処理_telemetryが停止しても呼び出し側の期限�
     // Then
     assert!(result.is_err());
 }
-
-#[test]
-fn test_終了要求_後続要求を保持せず最初のコードだけを渡す() {
-    // Given
-    let (sender, mut receiver) = tokio::sync::mpsc::channel(1);
-    let port = DaemonProcessActionPort(sender);
-    port.execute(ApplicationQuitIntent::Exit { code: 23 })
-        .unwrap();
-    // When / Then
-    for code in 0..1000 {
-        assert!(port
-            .execute(ApplicationQuitIntent::Restart { code })
-            .is_err());
-        assert_eq!(receiver.len(), 1);
-    }
-    assert_eq!(receiver.try_recv().unwrap(), 23);
-    receiver.close();
-    for code in 0..1000 {
-        assert!(port.execute(ApplicationQuitIntent::Exit { code }).is_err());
-        assert_eq!(receiver.len(), 0);
-    }
-}

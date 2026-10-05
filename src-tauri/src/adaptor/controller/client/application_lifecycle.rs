@@ -3,32 +3,28 @@ use crate::adaptor::presenter::error::AppError;
 mod shared;
 use crate::adaptor::presenter::application_lifecycle_v1::{
     ApplicationQuitIntentDtoV1, ApplicationQuitOutcomeDtoV1, ApplicationQuitRequestDtoV1,
-    StartupFailureQuitOutcomeDtoV1,
 };
-use crate::domain::application_lifecycle::ApplicationQuitIntent;
+use crate::domain::daemon::{StopAcceptance, StopRequest};
 pub(crate) use shared::register_shared;
-use std::sync::Arc;
 
-pub(crate) fn quit_after_startup_failure_shared(
-    authority: &Arc<crate::usecase::application_startup::ApplicationStartupAuthority>,
-) -> Result<
-    StartupFailureQuitOutcomeDtoV1,
-    crate::usecase::application_startup::ApplicationUnavailable,
-> {
-    let correlation_id = authority.quit_after_failure()?;
-    Ok(StartupFailureQuitOutcomeDtoV1::Accepted { correlation_id })
-}
-
-pub(crate) fn request_application_quit_shared(
-    process_port: &dyn crate::domain::application_lifecycle::ApplicationQuitIntentPort,
+pub(crate) async fn request_application_quit_shared(
+    daemon: &crate::usecase::daemon::DaemonUsecase,
+    process_port: &tokio::sync::mpsc::Sender<i32>,
     request: ApplicationQuitRequestDtoV1,
 ) -> Result<ApplicationQuitOutcomeDtoV1, AppError> {
-    let intent = match request.intent {
-        ApplicationQuitIntentDtoV1::Exit { code } => ApplicationQuitIntent::Exit { code },
-        ApplicationQuitIntentDtoV1::Restart { code } => ApplicationQuitIntent::Restart { code },
+    let code = match request.intent {
+        ApplicationQuitIntentDtoV1::Exit { code }
+        | ApplicationQuitIntentDtoV1::Restart { code } => code,
     };
-    crate::usecase::application_lifecycle::request_quit(process_port, intent)
-        .map_err(AppError::from_failure)?;
+    if let StopAcceptance::Started { code } = daemon.stop(StopRequest::Exit { code }).await {
+        process_port.try_send(code).map_err(|error| {
+            AppError::from_failure(
+                crate::domain::application_lifecycle::ApplicationLifecycleError(format!(
+                    "daemon exit request could not be accepted: {error}"
+                )),
+            )
+        })?;
+    }
     Ok(ApplicationQuitOutcomeDtoV1::Accepted)
 }
 

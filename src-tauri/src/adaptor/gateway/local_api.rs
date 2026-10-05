@@ -3,9 +3,8 @@ use std::path::{Path, PathBuf};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 
-use crate::domain::local_api_discovery::{
-    ConnectionObservation, DiscoveryAdmissionService, DiscoveryContent, DiscoveryRejection,
-    ProcessObservation,
+use crate::domain::daemon::{
+    ConnectionObservation, DaemonIdentity, DiscoveryRejection, ProcessObservation,
 };
 use crate::infrastructure::local_api::{
     local_api_discovery_path, lookup_process_start_time, read_local_api_discovery,
@@ -80,23 +79,12 @@ impl LocalApiClientGateway {
             return Ok(None);
         };
         let path = local_api_discovery_path(data_dir);
-        let content = DiscoveryContent::new(
-            discovery.port,
-            discovery.token.clone(),
-            discovery.instance_id.clone(),
-            discovery.pid,
-            discovery.process_started_at,
-        );
-        let process_lookup = lookup_process(discovery.pid);
-        let process_observation = ProcessObservation::from_raw(
-            process_lookup.process_list_available,
-            process_lookup.start_time,
-        );
-        DiscoveryAdmissionService::assess_process(&content, process_observation)
+        assess_discovery(&discovery, lookup_process)
             .map_err(|rejection| map_process_rejection(rejection, path.clone()))?;
 
         let port = discovery.port;
         let instance_id = discovery.instance_id.clone();
+        let discovery_identity = discovery.clone();
         let client = LocalApiHttpClient::new(discovery).map_err(map_transport_error)?;
         let (connection_observation, request_error) = match client.identity_status(&instance_id) {
             Ok(status) => (
@@ -111,7 +99,8 @@ impl LocalApiClientGateway {
                 Some(source),
             ),
         };
-        DiscoveryAdmissionService::assess_connection(connection_observation)
+        daemon_identity(&discovery_identity)
+            .assess_connection(connection_observation)
             .map_err(|rejection| map_connection_rejection(rejection, path, port, request_error))?;
         Ok(Some(Self { client }))
     }
@@ -234,26 +223,17 @@ impl ClientConnectionFileQuery {
                 .map_err(|_| ClientConnectionError("client discovery is unreadable".into()))?,
         )
         .map_err(|_| ClientConnectionError("client discovery is invalid".into()))?;
-        let content = |value: &crate::infrastructure::local_api::LocalApiDiscovery| {
-            DiscoveryContent::new(
-                value.port,
-                value.token.clone(),
-                value.instance_id.clone(),
-                value.pid,
-                value.process_started_at,
-            )
-        };
-        if !content(&discovery).accepts_client(&content(&client)) {
+        let endpoints_match = discovery.port != 0
+            && discovery.port == client.port
+            && !discovery.token.trim().is_empty()
+            && !client.token.trim().is_empty()
+            && discovery.token != client.token;
+        if !daemon_identity(&discovery).matches_client(&daemon_identity(&client), endpoints_match) {
             return Err(ClientConnectionError(
                 "client discovery does not match daemon identity".into(),
             ));
         }
-        let process = lookup_process(discovery.pid);
-        DiscoveryAdmissionService::assess_process(
-            &content(&discovery),
-            ProcessObservation::from_raw(process.process_list_available, process.start_time),
-        )
-        .map_err(|rejection| {
+        assess_discovery(&discovery, lookup_process).map_err(|rejection| {
             ClientConnectionError(
                 map_process_rejection(rejection, local_api_discovery_path(&self.0)).to_string(),
             )
@@ -263,4 +243,24 @@ impl ClientConnectionFileQuery {
             token: client.token,
         })
     }
+}
+
+fn daemon_identity(
+    discovery: &crate::infrastructure::local_api::LocalApiDiscovery,
+) -> DaemonIdentity {
+    DaemonIdentity {
+        daemon_id: discovery.instance_id.clone(),
+        pid: discovery.pid,
+        process_started_at: discovery.process_started_at,
+    }
+}
+fn assess_discovery(
+    discovery: &crate::infrastructure::local_api::LocalApiDiscovery,
+    lookup: impl FnOnce(u32) -> ProcessStartTimeLookup,
+) -> Result<(), DiscoveryRejection> {
+    let process = lookup(discovery.pid);
+    daemon_identity(discovery).assess_process(
+        discovery.port != 0 && !discovery.token.trim().is_empty(),
+        ProcessObservation::from_raw(process.process_list_available, process.start_time),
+    )
 }

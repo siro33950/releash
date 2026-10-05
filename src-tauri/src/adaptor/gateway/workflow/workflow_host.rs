@@ -11,7 +11,7 @@ use crate::adaptor::gateway::workflow::fact_codec;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Weak};
 
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::Mutex;
 
 mod activation;
 pub(crate) mod approval_runtime;
@@ -111,7 +111,7 @@ pub struct WorkflowRuntimeHost {
     startup_retries: Arc<Mutex<HashMap<String, node_startup::NodeStartupTask>>>,
     /// node_execution_id → active command process shutdown handle.
     pub(crate) node_processes: Arc<super::node_process::WorkflowNodeProcesses>,
-    command_admission: Arc<RwLock<crate::domain::application_lifecycle::CommandAdmission>>,
+    daemon: Arc<crate::adaptor::gateway::daemon::InMemoryDaemonRepository>,
     /// node_execution_id → owning workflow execution_id.
     active_command_executions: Arc<Mutex<HashMap<String, String>>>,
     /// node_execution_id → command completion observer task owned by this workflow runtime.
@@ -455,6 +455,7 @@ impl WorkflowRuntimeHost {
         agent_session_lifecycle: Arc<AgentSessionLifecycleUsecase>,
         provider_availability: Arc<dyn crate::domain::agent_session::ProviderAvailabilityReader>,
         isolated_worktrees: Arc<dyn crate::domain::workflow::IsolatedWorktreeGateway>,
+        daemon: Arc<crate::adaptor::gateway::daemon::InMemoryDaemonRepository>,
     ) -> Self {
         Self::with_runtime_ports(
             queue,
@@ -468,6 +469,7 @@ impl WorkflowRuntimeHost {
                 provider_availability,
             )),
             isolated_worktrees,
+            daemon,
         )
     }
 
@@ -478,6 +480,7 @@ impl WorkflowRuntimeHost {
         workspace_query: Arc<dyn crate::usecase::workspace_tree::WorkspaceQueryService>,
         workflow_agent_sessions: Arc<dyn WorkflowAgentSessionPort>,
         isolated_worktrees: Arc<dyn crate::domain::workflow::IsolatedWorktreeGateway>,
+        daemon: Arc<crate::adaptor::gateway::daemon::InMemoryDaemonRepository>,
     ) -> Self {
         Self {
             queue,
@@ -487,7 +490,7 @@ impl WorkflowRuntimeHost {
             runtime_activation_locks: Arc::new(Mutex::new(HashMap::new())),
             startup_retries: Arc::new(Mutex::new(HashMap::new())),
             node_processes: Arc::new(Default::default()),
-            command_admission: Arc::new(RwLock::new(Default::default())),
+            daemon,
             active_command_executions: Arc::new(Mutex::new(HashMap::new())),
             command_completion_observers: Arc::new(Mutex::new(HashMap::new())),
             command_shutdown_intents: Arc::new(Mutex::new(HashMap::new())),
@@ -861,6 +864,41 @@ impl WorkflowRuntimeHost {
         app: &WorkflowRuntimeDependencies,
         commit: ControlPlaneCommitCandidate<'_>,
     ) -> Result<RuntimeCommitSnapshot, WorkflowRuntimeError> {
+        let commit_lock = self.commit_lock(commit.execution_id).await;
+        let _commit_guard = commit_lock.lock().await;
+        self.commit_control_plane_candidate_locked(app, commit)
+            .await
+    }
+
+    async fn commit_admitted_command_candidate(
+        &self,
+        app: &WorkflowRuntimeDependencies,
+        admission: &crate::adaptor::gateway::daemon::DaemonAdmissionGuard<'_>,
+        commit: ControlPlaneCommitCandidate<'_>,
+    ) -> Result<Option<RuntimeCommitSnapshot>, WorkflowRuntimeError> {
+        self.queue
+            .stage(
+                crate::usecase::failure::FailureKey::new("workflow_runtime", commit.execution_id),
+                crate::common::retry::RetryBackoff::CONFLICT,
+                |_| async {
+                    let commit_lock = self.commit_lock(commit.execution_id).await;
+                    let _commit_guard = commit_lock.lock().await;
+                    if !admission.admits(crate::domain::daemon::DaemonRequest::Operation) {
+                        return Ok(None);
+                    }
+                    self.commit_control_plane_candidate_locked(app, commit.clone())
+                        .await
+                        .map(Some)
+                },
+            )
+            .await
+    }
+
+    async fn commit_control_plane_candidate_locked(
+        &self,
+        app: &WorkflowRuntimeDependencies,
+        commit: ControlPlaneCommitCandidate<'_>,
+    ) -> Result<RuntimeCommitSnapshot, WorkflowRuntimeError> {
         let ControlPlaneCommitCandidate {
             execution_id,
             snapshot_before,
@@ -882,8 +920,6 @@ impl WorkflowRuntimeHost {
                 "invalid control-plane transaction preparation: {error:?}"
             ))
         })?;
-        let commit_lock = self.commit_lock(execution_id).await;
-        let _commit_guard = commit_lock.lock().await;
         let (mut current, head) = Self::load_execution_revision(app, execution_id)
             .await?
             .ok_or_else(|| WorkflowRuntimeError::ExecutionNotFound(execution_id.into()))?;
@@ -1438,8 +1474,8 @@ impl WorkflowRuntimeHost {
         mut input: CommandExecutionInput,
     ) -> futures_util::future::BoxFuture<'a, Result<(), WorkflowRuntimeError>> {
         Box::pin(async move {
-            let command_admission = self.command_admission.read().await;
-            if !command_admission.accepts_start() {
+            let command_admission = self.daemon.admission().await;
+            if !command_admission.admits(crate::domain::daemon::DaemonRequest::Operation) {
                 log::warn!(
                     "workflow {}: command {} start was not applied: application is shutting down",
                     input.execution_id,
@@ -1485,16 +1521,23 @@ impl WorkflowRuntimeHost {
                     return Ok(());
                 }
 
-                let spawn_result = workflow_command_runner::spawn_shell_command(
-                    &input.worktree_path,
-                    &raw_command,
-                    command_env(&input, definition_env),
-                    "workflow command",
-                    workflow_command_runner::OutputLimit {
-                        max_bytes: workflow_output_limit::MAX_OUTPUT_SIZE,
-                        truncation_marker: workflow_output_limit::TRUNCATION_MARKER,
+                let Some(spawn_result) = command_admission.if_admitted(
+                    crate::domain::daemon::DaemonRequest::Operation,
+                    || {
+                        workflow_command_runner::spawn_shell_command(
+                            &input.worktree_path,
+                            &raw_command,
+                            command_env(&input, definition_env),
+                            "workflow command",
+                            workflow_command_runner::OutputLimit {
+                                max_bytes: workflow_output_limit::MAX_OUTPUT_SIZE,
+                                truncation_marker: workflow_output_limit::TRUNCATION_MARKER,
+                            },
+                        )
                     },
-                );
+                ) else {
+                    return Ok(());
+                };
                 if let Ok(running) = &spawn_result {
                     self.node_processes
                         .active_commands
@@ -1684,8 +1727,8 @@ impl WorkflowRuntimeHost {
         input: CommandExecutionInput,
         output: CommandRunOutput,
     ) -> Result<(), WorkflowRuntimeError> {
-        let command_admission = self.command_admission.read().await;
-        if !command_admission.accepts_completion() {
+        let command_admission = self.daemon.admission().await;
+        if !command_admission.admits(crate::domain::daemon::DaemonRequest::Operation) {
             log::warn!(
                 "workflow {}: command {} result was not applied: application is shutting down",
                 input.execution_id,
@@ -1706,6 +1749,9 @@ impl WorkflowRuntimeHost {
                 let Some(mut loaded) = self.load_current_command(app, &input).await? else {
                     return Ok(None);
                 };
+                if !command_admission.admits(crate::domain::daemon::DaemonRequest::Operation) {
+                    return Ok(None);
+                }
                 let exec = &mut loaded;
                 let snapshot_before = exec.clone();
                 let requires_approval = exec
@@ -1781,19 +1827,36 @@ impl WorkflowRuntimeHost {
                 )
             };
 
-            let snapshot_for_commit = self
-                .commit_required_events(
+            let Some(snapshot_for_commit) = self
+                .commit_admitted_command_candidate(
                     app,
-                    RequiredEventCommit {
+                    &command_admission,
+                    ControlPlaneCommitCandidate {
                         execution_id: &input.execution_id,
 
                         snapshot_before,
                         candidate,
-                        required_events,
-                        append_error_context: "command completion event append failed",
+                        transition_outcome: TransitionOutcome::Applied,
+                        events: &required_events,
+                        provider_events: Vec::new(),
                     },
                 )
-                .await?;
+                .await
+                .map_err(|error| match error {
+                    WorkflowRuntimeError::SessionStore(reason) => {
+                        WorkflowRuntimeError::SessionStore(format!(
+                            "command completion event append failed: {reason}"
+                        ))
+                    }
+                    WorkflowRuntimeError::Store(failure) => {
+                        let message = format!("command completion event append failed: {failure}");
+                        WorkflowRuntimeError::Store(failure.with_message(message))
+                    }
+                    other => other,
+                })?
+            else {
+                return Ok(None);
+            };
             Ok(Some((outcome, snapshot_for_commit, worktree_path)))
         })
         .await?;
@@ -1815,8 +1878,8 @@ impl WorkflowRuntimeHost {
         input: &CommandExecutionInput,
         reason: String,
     ) -> Result<(), WorkflowRuntimeError> {
-        let command_admission = self.command_admission.read().await;
-        if !command_admission.accepts_completion() {
+        let command_admission = self.daemon.admission().await;
+        if !command_admission.admits(crate::domain::daemon::DaemonRequest::Operation) {
             log::warn!(
                 "workflow {}: command {} failure was not applied: application is shutting down",
                 input.execution_id,
@@ -1838,8 +1901,12 @@ impl WorkflowRuntimeHost {
             let Some(before) = self.load_current_command(app, input).await? else {
                 return Ok(None);
             };
-            self.commit_control_plane_candidate(
+            if !command_admission.admits(crate::domain::daemon::DaemonRequest::Operation) {
+                return Ok(None);
+            }
+            self.commit_admitted_command_candidate(
                 app,
+                &command_admission,
                 ControlPlaneCommitCandidate {
                     execution_id: &input.execution_id,
                     snapshot_before: before.clone(),
@@ -1850,7 +1917,6 @@ impl WorkflowRuntimeHost {
                 },
             )
             .await
-            .map(Some)
         })
         .await
         .inspect_err(|error| {
@@ -1920,7 +1986,7 @@ impl WorkflowRuntimeHost {
     }
 
     pub(crate) async fn shutdown_all_active_commands(&self) {
-        self.command_admission.write().await.stop();
+        self.daemon.drain_commands().await;
         self.shutdown_startup_retries().await;
         let commands = {
             let active_commands = self
@@ -2107,9 +2173,9 @@ impl WorkflowRuntimeHost {
         reason: String,
         failure_kind: NodeExecutionFailureKind,
     ) -> Result<(), WorkflowRuntimeError> {
-        let command_admission = self.command_admission.read().await;
+        let command_admission = self.daemon.admission().await;
         let timestamp = current_timestamp();
-        let (snapshot_before, candidate, node_name, attempt) = {
+        let (snapshot_before, candidate, node_name, attempt, is_command) = {
             let loaded = self.load_execution(app, execution_id).await?;
             let execution = &loaded;
             if !execution.is_active() {
@@ -2124,7 +2190,9 @@ impl WorkflowRuntimeHost {
                         "workflow '{execution_id}' has no active NodeExecution '{node_execution_id}' to fail"
                     ))
                 })?;
-            if node.kind == NodeKindName::Command && !command_admission.accepts_completion() {
+            if node.kind == NodeKindName::Command
+                && !command_admission.admits(crate::domain::daemon::DaemonRequest::Operation)
+            {
                 return Ok(());
             }
             (
@@ -2132,6 +2200,7 @@ impl WorkflowRuntimeHost {
                 execution.clone(),
                 node.node_name.clone(),
                 node.attempt,
+                node.kind == NodeKindName::Command,
             )
         };
         let events = vec![WorkflowEvent::NodeFailed {
@@ -2144,19 +2213,25 @@ impl WorkflowRuntimeHost {
             retry_count: None,
             timestamp,
         }];
-        let snapshot = self
-            .commit_control_plane_candidate(
-                app,
-                ControlPlaneCommitCandidate {
-                    execution_id,
-                    snapshot_before,
-                    candidate,
-                    transition_outcome: TransitionOutcome::AlreadyApplied,
-                    events: &events,
-                    provider_events: Vec::new(),
-                },
-            )
-            .await?;
+        let commit = ControlPlaneCommitCandidate {
+            execution_id,
+            snapshot_before,
+            candidate,
+            transition_outcome: TransitionOutcome::AlreadyApplied,
+            events: &events,
+            provider_events: Vec::new(),
+        };
+        let snapshot = if is_command {
+            let Some(snapshot) = self
+                .commit_admitted_command_candidate(app, &command_admission, commit)
+                .await?
+            else {
+                return Ok(());
+            };
+            snapshot
+        } else {
+            self.commit_control_plane_candidate(app, commit).await?
+        };
         drop(command_admission);
         self.finish_control_plane_commit(app, &snapshot.worktree_path, &snapshot, None)
             .await?;
@@ -2335,6 +2410,7 @@ mod workflow_host_tests {
                     test_helpers::workspace_query(store.clone()),
                     Arc::new(FailingWorkflowAgentSessions),
                     Arc::new(test_helpers::TestWorktrees::default()),
+                    crate::adaptor::gateway::daemon::serving(),
                 ));
                 let node_name = if parent.is_empty() { "main" } else { "run" };
                 let workflow = serde_saphyr::from_str::<WorkflowDefinition>(&format!(
@@ -2755,6 +2831,7 @@ mod workflow_host_tests {
             test_helpers::workspace_query(store.clone()),
             Arc::new(FailingWorkflowAgentSessions),
             Arc::new(test_helpers::TestWorktrees::default()),
+            crate::adaptor::gateway::daemon::serving(),
         );
         let workflow = serde_saphyr::from_str::<WorkflowDefinition>(
             r#"name: missing-command-env
@@ -2837,6 +2914,7 @@ nodes:
             test_helpers::workspace_query(store.clone()),
             Arc::new(FailingWorkflowAgentSessions),
             Arc::new(test_helpers::TestWorktrees::default()),
+            crate::adaptor::gateway::daemon::serving(),
         );
         let workflow = serde_saphyr::from_str::<WorkflowDefinition>(
             r#"name: nul-command-env
@@ -3472,6 +3550,7 @@ nodes:
                 test_helpers::workspace_query(store.clone()),
                 sessions,
                 Arc::new(test_helpers::TestWorktrees::default()),
+                crate::adaptor::gateway::daemon::serving(),
             ));
             let nodes = vec![NodeDefinition {
                 name: EFFECT_NODE_NAME.to_string(),
@@ -3566,6 +3645,7 @@ nodes:
                     calls: calls.clone(),
                 }),
                 Arc::new(test_helpers::TestWorktrees::default()),
+                crate::adaptor::gateway::daemon::serving(),
             ));
             let session_node = |name: &str| NodeDefinition {
                 name: name.to_string(),
@@ -3879,6 +3959,7 @@ nodes:
                 test_helpers::workspace_query(fixture.store.clone()),
                 Arc::new(FailingWorkflowAgentSessions),
                 Arc::new(crate::adaptor::gateway::workflow::RepositoryIsolatedWorktreeGateway),
+                crate::adaptor::gateway::daemon::serving(),
             );
             test_helpers::reconcile_startup(&restarted, &fixture.app)
                 .await
@@ -3980,6 +4061,7 @@ nodes:
                 test_helpers::workspace_query(store.clone()),
                 sessions.clone(),
                 Arc::new(test_helpers::TestWorktrees::default()),
+                crate::adaptor::gateway::daemon::serving(),
             ));
             let gateway = Arc::new(WorkflowRuntimeCommandGateway::new_with_driver(
                 app.clone(),
@@ -4194,6 +4276,7 @@ nodes:
                     failing_agent_session_id: String::new(),
                 }),
                 Arc::new(test_helpers::TestWorktrees::default()),
+                crate::adaptor::gateway::daemon::serving(),
             ));
             host.register_started_execution_tree(&app, session_id)
                 .await
@@ -4737,6 +4820,7 @@ nodes:
                 test_helpers::workspace_query(store.clone()),
                 Arc::new(FailingWorkflowAgentSessions),
                 Arc::new(crate::adaptor::gateway::workflow::RepositoryIsolatedWorktreeGateway),
+                crate::adaptor::gateway::daemon::serving(),
             );
 
             // When
@@ -4916,6 +5000,7 @@ nodes:
                 test_helpers::workspace_query(store.clone()),
                 Arc::new(FailingWorkflowAgentSessions),
                 Arc::new(crate::adaptor::gateway::workflow::RepositoryIsolatedWorktreeGateway),
+                crate::adaptor::gateway::daemon::serving(),
             );
 
             let error = test_helpers::reconcile_startup(&host, &app)
@@ -4997,6 +5082,7 @@ nodes:
                 test_helpers::workspace_query(store.clone()),
                 Arc::new(FailingWorkflowAgentSessions),
                 Arc::new(crate::adaptor::gateway::workflow::RepositoryIsolatedWorktreeGateway),
+                crate::adaptor::gateway::daemon::serving(),
             );
 
             use crate::adaptor::gateway::workflow::startup_repository::{

@@ -1,8 +1,6 @@
 use std::sync::Arc;
 
 pub(crate) struct ClientDependencies {
-    pub(crate) application_startup_authority:
-        Option<std::sync::Arc<crate::usecase::application_startup::ApplicationStartupAuthority>>,
     pub(crate) workspace_node_command_usecase:
         Option<std::sync::Arc<crate::usecase::workflow::WorkspaceNodeCommandUsecase>>,
     pub(crate) app_state: Option<crate::adaptor::controller::state::AppState>,
@@ -31,6 +29,6 @@ pub(crate) struct ClientDependencies {
     pub(crate) editor_launcher: Arc<dyn crate::domain::external_editor::EditorLauncherGateway>,
     pub(crate) watcher: Arc<crate::usecase::watcher::WatcherUsecase>,
     pub(crate) data_dir: Result<std::path::PathBuf, crate::adaptor::presenter::error::AppError>,
-    pub(crate) process_port:
-        Arc<dyn crate::domain::application_lifecycle::ApplicationQuitIntentPort>,
+    pub(crate) daemon: crate::usecase::daemon::DaemonUsecase,
+    pub(crate) process_port: tokio::sync::mpsc::Sender<i32>,
 }

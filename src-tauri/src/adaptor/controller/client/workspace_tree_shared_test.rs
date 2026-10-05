@@ -38,8 +38,8 @@ async fn test_一覧更新dispatch_登録済みrepositoryの走査をやり直�
     let worktrees = tempfile::tempdir().unwrap();
     repo.worktree("feature", &worktrees.path().join("feature"), None)
         .unwrap();
-    let mut dispatch = ClientCommandDispatch::new(Arc::new(
-        crate::usecase::application_startup::ApplicationStartupAuthority::ready(),
+    let mut dispatch = ClientCommandDispatch::new(crate::usecase::daemon::DaemonUsecase(
+        crate::adaptor::gateway::daemon::serving(),
     ));
     register_shared(&mut dispatch, deps);
 

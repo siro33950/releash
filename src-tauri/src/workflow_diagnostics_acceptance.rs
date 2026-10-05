@@ -4,7 +4,7 @@ use std::sync::Arc;
 use crate::adaptor::gateway::local_event_store::{LocalEventStore, LocalEventStoreConfig};
 use crate::domain::workflow::entities::workflow_execution::ExecutionTree;
 use crate::domain::workflow::{ManagedWorktreeGateway, SecretSourceGateway, WorkflowError};
-use crate::infrastructure::local_api::{LocalApiServer, LocalApiServerBinding};
+use crate::infrastructure::local_api::LocalApiServer;
 use crate::usecase::workflow::command::{AbortExecutionCommand, ResolvedStartExecutionCommand};
 use crate::usecase::workflow::control_plane::{
     WorkflowControlPlaneCommit, WorkflowControlPlaneGateway,
@@ -256,7 +256,8 @@ impl WorkflowDiagnosticsAcceptanceHost {
                 crate::adaptor::gateway::repository::worktree_operation::FileWorktreeOperationLocks::new(&data_dir),
             ))),
         ));
-        let binding = LocalApiServerBinding::bind(data_dir).map_err(|error| error.to_string())?;
+        let binding = crate::infrastructure::local_api::test_binding(data_dir)
+            .map_err(|error| error.to_string())?;
         let port = binding.port();
         let token = binding.bearer_token();
         let router = crate::adaptor::controller::api::build_router(
@@ -271,7 +272,12 @@ impl WorkflowDiagnosticsAcceptanceHost {
                 crate::adaptor::controller::daemon::default_timeout(),
             ),
         );
-        let local_api = binding.start(router, &tokio::runtime::Handle::current());
+        let local_api = binding
+            .start(router, &tokio::runtime::Handle::current())
+            .inspect(|server| {
+                server.publish_discovery().unwrap();
+            })
+            .unwrap();
         Ok(Self {
             ui_usecase: Arc::new(ui_usecase),
             _store: store,

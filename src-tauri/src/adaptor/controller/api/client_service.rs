@@ -3,10 +3,9 @@ async fn get_server_info<'a>(
     _ctx: connectrpc::RequestContext,
     _request: connectrpc::ServiceRequest<'_, rpc::Unit>,
 ) -> connectrpc::ServiceResult<impl connectrpc::Encodable<rpc::ServerInfo> + Send + use<'a>> {
-    connectrpc::Response::ok(to_rpc::<rpc::ServerInfo>(&wire::ServerInfo {
-        launch_id: std::env::var("RELEASH_DAEMON_LAUNCH_ID").unwrap_or_default(),
-        release: env!("CARGO_PKG_VERSION").into(),
-    })?)
+    let info = crate::adaptor::presenter::daemon::server_info(self.daemon.info().await,
+        std::env::var("RELEASH_DAEMON_LAUNCH_ID").unwrap_or_default());
+    connectrpc::Response::ok(to_rpc::<rpc::ServerInfo>(&info)?)
 }
 
 async fn open_state_stream(

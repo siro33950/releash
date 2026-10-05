@@ -226,3 +226,5 @@ pub async fn timeout<T>(
 #[cfg(test)]
 #[path = "operation_context_test.rs"]
 mod operation_context_tests;
+
+pub(crate) use tokio::time::timeout as runtime_timeout;

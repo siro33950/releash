@@ -621,12 +621,6 @@ impl ConnectFailure for crate::usecase::failure::Failure {
     }
 }
 
-impl ConnectFailure for crate::usecase::application_startup::ApplicationUnavailable {
-    fn connect_code(&self) -> connectrpc::ErrorCode {
-        connectrpc::ErrorCode::FailedPrecondition
-    }
-}
-
 pub(crate) fn request_rejected(
     rejection: &crate::common::concurrency::Rejection,
 ) -> connectrpc::ConnectError {

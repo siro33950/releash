@@ -281,6 +281,11 @@ pub(crate) struct Fixture {
 }
 
 impl Fixture {
+    pub(crate) fn daemon_repository(
+        &self,
+    ) -> Arc<crate::adaptor::gateway::daemon::InMemoryDaemonRepository> {
+        self.host.daemon.clone()
+    }
     pub(crate) fn new(failures: usize) -> Self {
         let directory = tempfile::tempdir().unwrap();
         let store = LocalEventStore::open(LocalEventStoreConfig::production(
@@ -301,6 +306,7 @@ impl Fixture {
             workspace_query(store.clone()),
             sessions.clone(),
             worktrees.clone(),
+            crate::adaptor::gateway::daemon::serving(),
         );
         let processes = Arc::new(
             crate::adaptor::gateway::workflow::node_process::WorkflowNodeProcesses::new(
@@ -403,6 +409,7 @@ impl Fixture {
             self.host.workspace_query.clone(),
             self.sessions.clone(),
             self.host.isolated_worktrees.clone(),
+            crate::adaptor::gateway::daemon::serving(),
         );
         host.node_processes = self.host.node_processes.clone();
         crate::adaptor::controller::wiring::wire_delegate_continuation(self.app.clone(), host)
@@ -546,6 +553,7 @@ pub(crate) fn archive_fixture_with_resolver(
         query,
         sessions.clone(),
         Arc::new(TestWorktrees::default()),
+        crate::adaptor::gateway::daemon::serving(),
     ));
     let runtime = crate::usecase::workflow::WorkflowRuntimeUsecase::new(
         Arc::new(WorkflowRuntimeCommandGateway::new_with_driver(

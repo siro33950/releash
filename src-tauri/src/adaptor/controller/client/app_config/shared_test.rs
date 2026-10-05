@@ -1,6 +1,5 @@
 use super::*;
 use crate::test_support::state_subscription::StateReadsFixture;
-use crate::usecase::application_startup::ApplicationStartupAuthority;
 use crate::usecase::state_subscription::SubscriptionTarget;
 
 fn workflow_config_controller(
@@ -15,8 +14,9 @@ fn workflow_config_controller(
     if let Some(usecase) = app_config_usecase {
         deps.app_config_usecase = Some(usecase);
     }
-    let mut controller =
-        ClientCommandDispatch::new(std::sync::Arc::new(ApplicationStartupAuthority::ready()));
+    let mut controller = ClientCommandDispatch::new(crate::usecase::daemon::DaemonUsecase(
+        crate::adaptor::gateway::daemon::serving(),
+    ));
     register_shared(&mut controller, deps);
     (app, controller)
 }

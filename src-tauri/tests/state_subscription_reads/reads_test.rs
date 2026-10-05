@@ -375,9 +375,6 @@ impl Fixture {
                     Arc::new(NoHookHealthFailures),
                 ),
             ),
-            startup: Arc::new(
-                crate::usecase::application_startup::ApplicationStartupAuthority::ready(),
-            ),
         };
         Self {
             subscriptions: subscriptions.with_reads(

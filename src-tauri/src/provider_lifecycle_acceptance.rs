@@ -23,7 +23,7 @@ use crate::domain::provider_lifecycle::{
     ProviderLifecycleUnavailableReason,
 };
 use crate::domain::workflow::{WorkflowDefinition, WorkflowError};
-use crate::infrastructure::local_api::{LocalApiServer, LocalApiServerBinding};
+use crate::infrastructure::local_api::LocalApiServer;
 use crate::usecase::provider_lifecycle::ProviderLifecycleUsecase;
 use crate::usecase::workflow::command::{AbortExecutionCommand, ResolvedStartExecutionCommand};
 use crate::usecase::workflow::control_plane::{
@@ -339,7 +339,7 @@ impl ProviderLifecycleAcceptanceHost {
             Arc::new(LocalProviderLifecycleCredentialGateway),
             events,
         ));
-        let binding = LocalApiServerBinding::bind(data_dir.to_path_buf())
+        let binding = crate::infrastructure::local_api::test_binding(data_dir.to_path_buf())
             .map_err(|error| error.to_string())?;
         let workflow = crate::adaptor::controller::wiring::build_canonical_workflow_read_usecase(
             data_dir, None,
@@ -372,7 +372,12 @@ impl ProviderLifecycleAcceptanceHost {
                 crate::adaptor::controller::daemon::default_timeout(),
             ),
         );
-        let server = binding.start(router, &tokio::runtime::Handle::current());
+        let server = binding
+            .start(router, &tokio::runtime::Handle::current())
+            .inspect(|server| {
+                server.publish_discovery().unwrap();
+            })
+            .unwrap();
         Ok(Self {
             data_dir: data_dir.to_path_buf(),
             store,

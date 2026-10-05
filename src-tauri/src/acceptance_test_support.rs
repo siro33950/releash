@@ -15,7 +15,6 @@ pub(crate) fn build_client_dependencies(
     data_dir: std::path::PathBuf,
 ) -> crate::adaptor::controller::client::ClientDependencies {
     crate::adaptor::controller::client::ClientDependencies {
-        application_startup_authority: None,
         workspace_node_command_usecase: None,
         app_state: None,
         workspace_state_store: None,
@@ -41,10 +40,7 @@ pub(crate) fn build_client_dependencies(
             ),
         )),
         data_dir: Ok(data_dir),
-        process_port: Arc::new(
-            crate::adaptor::gateway::application_lifecycle::DaemonProcessActionPort(
-                tokio::sync::mpsc::channel(1).0,
-            ),
-        ),
+        daemon: crate::usecase::daemon::DaemonUsecase(crate::adaptor::gateway::daemon::serving()),
+        process_port: tokio::sync::mpsc::channel(1).0,
     }
 }

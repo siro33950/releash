@@ -49,9 +49,4 @@ impl ApplicationShutdownGateway for FakeShutdown {
     async fn shutdown_telemetry(&self) -> Result<(), ApplicationLifecycleError> {
         self.stage("telemetry").await
     }
-    async fn wait_for_deadline(&self, duration: Duration) {
-        assert_eq!(duration, Duration::from_secs(15));
-        tokio::time::sleep(duration).await;
-        println!("shutdown-deadline:15");
-    }
 }

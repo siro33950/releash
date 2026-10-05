@@ -9,8 +9,10 @@ async fn test_更新通知_成功時だけ購読対象を更新する() {
     let publisher = fixture.subscriptions.clone();
     let git_host = fixture.reads.git_host.clone();
     let mut changes = crate::test_support::state_subscription::changes(&publisher);
-    let mut dispatch = ClientCommandDispatch::new(Arc::new(ApplicationStartupAuthority::ready()))
-        .with_state_publisher(publisher);
+    let mut dispatch = ClientCommandDispatch::new(crate::usecase::daemon::DaemonUsecase(
+        crate::adaptor::gateway::daemon::serving(),
+    ))
+    .with_state_publisher(publisher);
     dispatch.register_domain(
         &["fetch_issues"],
         Box::new(move |command| {

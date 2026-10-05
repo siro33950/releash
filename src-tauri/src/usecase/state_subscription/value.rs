@@ -62,5 +62,4 @@ pub(crate) enum StateValue {
     WorkflowConfig(crate::usecase::app_config::query_service::WorkflowConfigDto),
     PerformanceSwitches(crate::usecase::telemetry::PerformanceSwitches),
     ProviderHookHealth(crate::usecase::provider_lifecycle::ProviderHookHealthReadResult),
-    StartupOutcome(crate::usecase::application_startup::ApplicationStartupOutcome),
 }

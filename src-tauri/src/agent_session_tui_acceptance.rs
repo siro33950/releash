@@ -223,9 +223,8 @@ launch_retention: crate::adaptor::controller::agent_session_launch_retention::ru
             subscriptions: subscriptions.clone(),
         })
         .map_err(|error| format!("Provider availability初期化失敗: {error:?}"))?;
-        let local_api_binding =
-            crate::infrastructure::local_api::LocalApiServerBinding::bind(data_dir.clone())
-                .map_err(|error| error.to_string())?;
+        let local_api_binding = crate::infrastructure::local_api::test_binding(data_dir.clone())
+            .map_err(|error| error.to_string())?;
         let provider_lifecycle_ingress: Arc<
             dyn crate::usecase::provider_lifecycle::ProviderLifecycleIngressPort,
         > = composition.lifecycle_ingress.clone();
@@ -235,8 +234,12 @@ launch_retention: crate::adaptor::controller::agent_session_launch_retention::ru
             )),
             local_api_binding.bearer_token(),
         );
-        let local_api =
-            local_api_binding.start(local_api_router, &tokio::runtime::Handle::current());
+        let local_api = local_api_binding
+            .start(local_api_router, &tokio::runtime::Handle::current())
+            .inspect(|server| {
+                server.publish_discovery().unwrap();
+            })
+            .unwrap();
         let workflow_agent_sessions: Arc<dyn WorkflowAgentSessionPort> =
             Arc::new(ProviderWorkflowAgentSessionPort::new(
                 composition.launch.clone(),
@@ -260,6 +263,7 @@ launch_retention: crate::adaptor::controller::agent_session_launch_retention::ru
             composition.lifecycle.clone(),
             composition.availability_reader.clone(),
             Arc::new(crate::adaptor::gateway::workflow::RepositoryIsolatedWorktreeGateway),
+            crate::adaptor::gateway::daemon::serving(),
         );
         let node_processes = Arc::new(
             crate::adaptor::gateway::workflow::node_process::WorkflowNodeProcesses::new(
@@ -305,11 +309,8 @@ launch_retention: crate::adaptor::controller::agent_session_launch_retention::ru
                 composition.exit.clone(),
             ),
         );
-        let authority =
-            Arc::new(crate::usecase::application_startup::ApplicationStartupAuthority::ready());
         let mut dependencies =
             crate::acceptance_test_support::build_client_dependencies(data_dir.clone());
-        dependencies.application_startup_authority = Some(authority.clone());
         dependencies.agent_session_history_read_usecase = Some(composition.history_read.clone());
         dependencies.provider_hook_health_read_usecase = Some(composition.hook_health_read.clone());
         dependencies.agent_session_launch_usecase = Some(composition.launch.clone());
@@ -317,14 +318,14 @@ launch_retention: crate::adaptor::controller::agent_session_launch_retention::ru
         dependencies.agent_session_read_usecase = Some(composition.read.clone());
         dependencies.provider_availability_usecase =
             Some(composition.provider_availability.clone());
-        let mut dispatch =
-            crate::adaptor::controller::client::ClientCommandDispatch::new(authority);
+        let mut dispatch = crate::adaptor::controller::client::ClientCommandDispatch::new(
+            crate::usecase::daemon::DaemonUsecase(crate::adaptor::gateway::daemon::serving()),
+        );
         dispatch.register_dependencies(&dependencies);
         let dispatch = Arc::new(dispatch);
-        let client_binding = crate::infrastructure::local_api::LocalApiServerBinding::bind(
-            data_dir.join("desktop-client"),
-        )
-        .map_err(|error| error.to_string())?;
+        let client_binding =
+            crate::infrastructure::local_api::test_binding(data_dir.join("desktop-client"))
+                .map_err(|error| error.to_string())?;
         let client_endpoint = crate::client_api_acceptance::ClientEndpoint {
             url: format!("http://127.0.0.1:{}", client_binding.port()),
             token: client_binding.terminal_bearer_token().to_string(),
@@ -360,7 +361,12 @@ launch_retention: crate::adaptor::controller::agent_session_launch_retention::ru
             ),
             client_binding.terminal_bearer_token(),
         );
-        let client_api = client_binding.start(client_router, &tokio::runtime::Handle::current());
+        let client_api = client_binding
+            .start(client_router, &tokio::runtime::Handle::current())
+            .inspect(|server| {
+                server.publish_discovery().unwrap();
+            })
+            .unwrap();
         Ok(Self {
             launch: composition.launch,
             client_api,
@@ -394,17 +400,21 @@ launch_retention: crate::adaptor::controller::agent_session_launch_retention::ru
     }
 
     pub fn restart_local_api(&self) -> Result<(), String> {
-        let binding = crate::infrastructure::local_api::LocalApiServerBinding::bind(
-            self.local_api_data_dir.clone(),
-        )
-        .map_err(|error| error.to_string())?;
+        let binding =
+            crate::infrastructure::local_api::test_binding(self.local_api_data_dir.clone())
+                .map_err(|error| error.to_string())?;
         let router = crate::adaptor::controller::api::authenticated(
             crate::adaptor::controller::api::provider_lifecycle::router(Some(
                 self.provider_lifecycle_ingress.clone(),
             )),
             binding.bearer_token(),
         );
-        let server = binding.start(router, &tokio::runtime::Handle::current());
+        let server = binding
+            .start(router, &tokio::runtime::Handle::current())
+            .inspect(|server| {
+                server.publish_discovery().unwrap();
+            })
+            .unwrap();
         *self
             .local_api
             .lock()

@@ -116,14 +116,6 @@ pub fn run() {
         app.manage(Arc::new(
             adaptor::controller::application_lifecycle::ApplicationQuitIngress::new(
                 move |intent| {
-                    let intent = match intent {
-                        crate::domain::application_lifecycle::ApplicationQuitIntent::Exit { code } => {
-                            crate::domain::daemon_supervision::StopIntent::Quit(code)
-                        }
-                        crate::domain::application_lifecycle::ApplicationQuitIntent::Restart {
-                            ..
-                        } => crate::domain::daemon_supervision::StopIntent::Restart,
-                    };
                     if let Err(error) = quit.stop(intent) {
                         log::error!("{error}");
                     }

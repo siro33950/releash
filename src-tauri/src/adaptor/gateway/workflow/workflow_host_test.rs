@@ -388,6 +388,7 @@ async fn test_workflow永続化_本番構成で起動から完了とabortまで�
             query.clone(),
             Arc::new(TestSessions::default()),
             Arc::new(TestWorktrees::default()),
+            crate::adaptor::gateway::daemon::serving(),
         ));
         let workflow = serde_saphyr::from_str(
             "name: persistence\ndescription: test\nnodes:\n  main: {session: {provider: codex, facets: {instruction: policy-confirmation}}}",

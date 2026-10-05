@@ -18,11 +18,6 @@ impl From<crate::adaptor::presenter::error::AppError> for wire::CommandError {
         }
     }
 }
-impl From<crate::usecase::application_startup::ApplicationUnavailable> for wire::CommandError {
-    fn from(value: crate::usecase::application_startup::ApplicationUnavailable) -> Self {
-        Self { variant: Some(wire::command_error::Variant::Application(Box::new(match value { crate::usecase::application_startup::ApplicationUnavailable::ApplicationUnavailable => wire::ApplicationError { r#type: Some("application_unavailable".into()), message: None, correlation_id: None } }))) }
-    }
-}
 impl From<crate::adaptor::controller::terminal_surface::TerminalCommandError>
     for wire::CommandError
 {
@@ -68,16 +63,6 @@ impl From<crate::adaptor::controller::terminal_surface::TerminalCommandError> fo
 impl wire::ClientValue for CommandFailure {
     fn into_json(self) -> Result<serde_json::Value, String> {
         self.detail.into_json()
-    }
-}
-
-impl From<crate::usecase::application_startup::ApplicationUnavailable> for CommandFailure {
-    fn from(error: crate::usecase::application_startup::ApplicationUnavailable) -> Self {
-        Self {
-            kind: error.connect_code(),
-            message: None,
-            detail: error.into(),
-        }
     }
 }
 

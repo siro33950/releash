@@ -86,6 +86,7 @@ async fn test_worktree削除一覧_本番runtime配線で受理した削除状�
             provider_availability: sessions.availability_reader,
             isolated_worktrees: Arc::new(RepositoryIsolatedWorktreeGateway),
         },
+        crate::adaptor::gateway::daemon::serving(),
     )
     .unwrap();
     let rows = || {

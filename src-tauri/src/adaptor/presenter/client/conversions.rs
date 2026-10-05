@@ -237,17 +237,6 @@ impl TryFrom<wire::ApplicationQuitRequestDtoV1>
     }
 }
 
-impl TryFrom<crate::adaptor::presenter::application_lifecycle_v1::ApplicationStartupOutcomeDtoV1>
-    for wire::ApplicationStartupOutcomeDtoV1
-{
-    type Error = String;
-    fn try_from(
-        value: crate::adaptor::presenter::application_lifecycle_v1::ApplicationStartupOutcomeDtoV1,
-    ) -> Result<Self, String> {
-        Ok(Self { variant: Some(match value { crate::adaptor::presenter::application_lifecycle_v1::ApplicationStartupOutcomeDtoV1::Ready => wire::application_startup_outcome_dto_v1::Variant::Ready(wire::Unit {}), crate::adaptor::presenter::application_lifecycle_v1::ApplicationStartupOutcomeDtoV1::Failed { kind, safe_description, correlation_id, retry_on_next_launch, actions } => wire::application_startup_outcome_dto_v1::Variant::Failed(wire::ApplicationStartupOutcomeDtoV1Failed { kind: Some(cv(kind)?), safe_description: Some(cv(safe_description)?), correlation_id: Some(cv(correlation_id)?), retry_on_next_launch: Some(cv(retry_on_next_launch)?), actions: Some(cv(actions.to_vec())?) }) }) })
-    }
-}
-
 impl TryFrom<crate::adaptor::presenter::workflow_wire::ApprovalTargetView>
     for wire::ApprovalTargetView
 {
@@ -1562,18 +1551,6 @@ impl<T> TryFrom<Vec<T>> for wire::ListSplitRowDto
 where
     wire::SplitRowDto: TryFrom<T>,
     <wire::SplitRowDto as TryFrom<T>>::Error: std::fmt::Display,
-{
-    type Error = String;
-    fn try_from(value: Vec<T>) -> Result<Self, String> {
-        Ok(Self {
-            items: value.into_iter().map(cv).collect::<Result<_, _>>()?,
-        })
-    }
-}
-impl<T> TryFrom<Vec<T>> for wire::ListStartupFailureActionDtoV1
-where
-    wire::StartupFailureActionDtoV1: TryFrom<T>,
-    <wire::StartupFailureActionDtoV1 as TryFrom<T>>::Error: std::fmt::Display,
 {
     type Error = String;
     fn try_from(value: Vec<T>) -> Result<Self, String> {
@@ -3136,95 +3113,6 @@ impl TryFrom<&str> for wire::SplitRowKindDto {
     type Error = String;
     fn try_from(value: &str) -> Result<Self, String> {
         cv(value.to_owned())
-    }
-}
-
-impl TryFrom<crate::adaptor::presenter::application_lifecycle_v1::StartupFailureActionDtoV1>
-    for wire::StartupFailureActionDtoV1
-{
-    type Error = String;
-    fn try_from(
-        value: crate::adaptor::presenter::application_lifecycle_v1::StartupFailureActionDtoV1,
-    ) -> Result<Self, String> {
-        Ok(Self { value: Some(match value { crate::adaptor::presenter::application_lifecycle_v1::StartupFailureActionDtoV1::Quit => wire::startup_failure_action_dto_v1::Value::Quit as i32 }) })
-    }
-}
-
-impl TryFrom<String> for wire::StartupFailureActionDtoV1 {
-    type Error = String;
-    fn try_from(value: String) -> Result<Self, String> {
-        Ok(Self {
-            value: Some(match value.as_str() {
-                "quit" => wire::startup_failure_action_dto_v1::Value::Quit as i32,
-                _ => return Err(format!("Invalid StartupFailureActionDtoV1: {value}")),
-            }),
-        })
-    }
-}
-
-impl TryFrom<&str> for wire::StartupFailureActionDtoV1 {
-    type Error = String;
-    fn try_from(value: &str) -> Result<Self, String> {
-        cv(value.to_owned())
-    }
-}
-
-impl TryFrom<crate::adaptor::presenter::application_lifecycle_v1::StartupFailureKindDtoV1>
-    for wire::StartupFailureKindDtoV1
-{
-    type Error = String;
-    fn try_from(
-        value: crate::adaptor::presenter::application_lifecycle_v1::StartupFailureKindDtoV1,
-    ) -> Result<Self, String> {
-        Ok(Self { value: Some(match value { crate::adaptor::presenter::application_lifecycle_v1::StartupFailureKindDtoV1::StoreInUse => wire::startup_failure_kind_dto_v1::Value::StoreInUse as i32, crate::adaptor::presenter::application_lifecycle_v1::StartupFailureKindDtoV1::StorageUnavailable => wire::startup_failure_kind_dto_v1::Value::StorageUnavailable as i32, crate::adaptor::presenter::application_lifecycle_v1::StartupFailureKindDtoV1::UnsupportedRuntime => wire::startup_failure_kind_dto_v1::Value::UnsupportedRuntime as i32, crate::adaptor::presenter::application_lifecycle_v1::StartupFailureKindDtoV1::UnsupportedStoreVersion => wire::startup_failure_kind_dto_v1::Value::UnsupportedStoreVersion as i32, crate::adaptor::presenter::application_lifecycle_v1::StartupFailureKindDtoV1::InitializationStateInvalid => wire::startup_failure_kind_dto_v1::Value::InitializationStateInvalid as i32, crate::adaptor::presenter::application_lifecycle_v1::StartupFailureKindDtoV1::StoreValidationFailed => wire::startup_failure_kind_dto_v1::Value::StoreValidationFailed as i32, crate::adaptor::presenter::application_lifecycle_v1::StartupFailureKindDtoV1::SchemaEvolutionFailed => wire::startup_failure_kind_dto_v1::Value::SchemaEvolutionFailed as i32 }) })
-    }
-}
-
-impl TryFrom<String> for wire::StartupFailureKindDtoV1 {
-    type Error = String;
-    fn try_from(value: String) -> Result<Self, String> {
-        Ok(Self {
-            value: Some(match value.as_str() {
-                "store_in_use" => wire::startup_failure_kind_dto_v1::Value::StoreInUse as i32,
-                "storage_unavailable" => {
-                    wire::startup_failure_kind_dto_v1::Value::StorageUnavailable as i32
-                }
-                "unsupported_runtime" => {
-                    wire::startup_failure_kind_dto_v1::Value::UnsupportedRuntime as i32
-                }
-                "unsupported_store_version" => {
-                    wire::startup_failure_kind_dto_v1::Value::UnsupportedStoreVersion as i32
-                }
-                "initialization_state_invalid" => {
-                    wire::startup_failure_kind_dto_v1::Value::InitializationStateInvalid as i32
-                }
-                "store_validation_failed" => {
-                    wire::startup_failure_kind_dto_v1::Value::StoreValidationFailed as i32
-                }
-                "schema_evolution_failed" => {
-                    wire::startup_failure_kind_dto_v1::Value::SchemaEvolutionFailed as i32
-                }
-                _ => return Err(format!("Invalid StartupFailureKindDtoV1: {value}")),
-            }),
-        })
-    }
-}
-
-impl TryFrom<&str> for wire::StartupFailureKindDtoV1 {
-    type Error = String;
-    fn try_from(value: &str) -> Result<Self, String> {
-        cv(value.to_owned())
-    }
-}
-
-impl TryFrom<crate::adaptor::presenter::application_lifecycle_v1::StartupFailureQuitOutcomeDtoV1>
-    for wire::StartupFailureQuitOutcomeDtoV1
-{
-    type Error = String;
-    fn try_from(
-        value: crate::adaptor::presenter::application_lifecycle_v1::StartupFailureQuitOutcomeDtoV1,
-    ) -> Result<Self, String> {
-        Ok(Self { variant: Some(match value { crate::adaptor::presenter::application_lifecycle_v1::StartupFailureQuitOutcomeDtoV1::Accepted { correlation_id } => wire::startup_failure_quit_outcome_dto_v1::Variant::Accepted(wire::StartupFailureQuitOutcomeDtoV1Accepted { correlation_id: Some(cv(correlation_id)?) }) }) })
     }
 }
 

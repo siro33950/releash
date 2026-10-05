@@ -58,6 +58,7 @@ async fn test_daemon接続_認証と検証が完了した呼び出しで接続�
                 let info = wire::ServerInfo {
                     launch_id: "launch".into(),
                     release: env!("CARGO_PKG_VERSION").into(),
+                    ..Default::default()
                 };
                 (
                     [("content-type", "application/proto")],
@@ -190,6 +191,7 @@ async fn test_初回設定待ち_購読開始失敗後も同じclientがprotoの
                     wire::ServerInfo {
                         launch_id: "launch".into(),
                         release: env!("CARGO_PKG_VERSION").into(),
+                        ..Default::default()
                     }
                     .encode_to_vec(),
                 )
@@ -329,6 +331,7 @@ async fn test_初回設定待ち_生存失敗が確定したら分類を保っ�
         hello: wire::ServerInfo {
             launch_id: "launch".into(),
             release: env!("CARGO_PKG_VERSION").into(),
+            ..Default::default()
         },
         endpoint,
     });

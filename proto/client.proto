@@ -3,6 +3,8 @@ package releash.client.v1;
 import "client_options.proto";
 
 message CommandRequest {
+  reserved 103;
+  reserved "quit_after_startup_failure";
   reserved 41, 102;
   reserved "fetch_notion_label_options", "query_notion_tasks";
   reserved 11, 35, 69;
@@ -113,7 +115,6 @@ message CommandRequest {
     OpenFolderInEditorRequest open_folder_in_editor = 99;
     OpenInEditorRequest open_in_editor = 100;
     OpenWorkflowInEditorRequest open_workflow_in_editor = 101;
-    QuitAfterStartupFailureRequest quit_after_startup_failure = 103;
     RecordTerminalLaunchRendererPhaseRequest record_terminal_launch_renderer_phase = 104;
     RefreshProviderAvailabilityRequest refresh_provider_availability = 105;
     RemoveRepoPathRequest remove_repo_path = 106;
@@ -171,6 +172,8 @@ message CommandRequest {
 }
 
 message CommandResult {
+  reserved 103;
+  reserved "quit_after_startup_failure";
   reserved 41, 102;
   reserved "fetch_notion_label_options", "query_notion_tasks";
   reserved 11, 35, 69;
@@ -281,7 +284,6 @@ message CommandResult {
     Unit open_folder_in_editor = 99;
     Unit open_in_editor = 100;
     Unit open_workflow_in_editor = 101;
-    StartupFailureQuitOutcomeDtoV1 quit_after_startup_failure = 103;
     Unit record_terminal_launch_renderer_phase = 104;
     Unit refresh_provider_availability = 105;
     ResultBool remove_repo_path = 106;
@@ -892,50 +894,6 @@ message ApplicationQuitIntentDtoV1Exit {
 message ApplicationQuitIntentDtoV1Restart {
   optional int32 code = 1 [json_name = "code", (json_required) = true];
 }
-
-message ApplicationStartupOutcomeDtoV1 {
-  option (json_tag) = "type";
-  oneof variant {
-    Unit ready = 1 [json_name = "ready"];
-    ApplicationStartupOutcomeDtoV1Failed failed = 2 [json_name = "failed"];
-  }
-}
-
-message ApplicationStartupOutcomeDtoV1Failed {
-  optional StartupFailureKindDtoV1 kind = 1 [json_name = "kind", (json_required) = true];
-  optional string safe_description = 2 [json_name = "safeDescription", (json_required) = true];
-  optional string correlation_id = 3 [json_name = "correlationId", (json_required) = true];
-  optional bool retry_on_next_launch = 4 [json_name = "retryOnNextLaunch", (json_required) = true];
-  optional ListStartupFailureActionDtoV1 actions = 5 [json_name = "actions", (json_required) = true];
-}
-
-message StartupFailureKindDtoV1 {
-  option (json_wrapper) = "value";
-  enum Value {
-    store_in_use = 0 [(json_enum_name) = "store_in_use"];
-    storage_unavailable = 1 [(json_enum_name) = "storage_unavailable"];
-    unsupported_runtime = 2 [(json_enum_name) = "unsupported_runtime"];
-    unsupported_store_version = 3 [(json_enum_name) = "unsupported_store_version"];
-    initialization_state_invalid = 4 [(json_enum_name) = "initialization_state_invalid"];
-    store_validation_failed = 5 [(json_enum_name) = "store_validation_failed"];
-    schema_evolution_failed = 6 [(json_enum_name) = "schema_evolution_failed"];
-  }
-  optional Value value = 1 [json_name = "value", (json_required) = true];
-}
-
-message StartupFailureActionDtoV1 {
-  option (json_wrapper) = "value";
-  enum Value {
-    quit = 0 [(json_enum_name) = "quit"];
-  }
-  optional Value value = 1 [json_name = "value", (json_required) = true];
-}
-
-message ListStartupFailureActionDtoV1 {
-  option (json_wrapper) = "items";
-  repeated StartupFailureActionDtoV1 items = 1;
-}
-
 
 message Nullablestring {
   option (json_wrapper) = "value";
@@ -2014,21 +1972,6 @@ message ListNotionTaskView {
   repeated NotionTaskView items = 1;
 }
 
-message QuitAfterStartupFailureRequest {
-
-}
-
-message StartupFailureQuitOutcomeDtoV1 {
-  option (json_tag) = "type";
-  oneof variant {
-    StartupFailureQuitOutcomeDtoV1Accepted accepted = 1 [json_name = "accepted"];
-  }
-}
-
-message StartupFailureQuitOutcomeDtoV1Accepted {
-  optional string correlation_id = 1 [json_name = "correlationId", (json_required) = true];
-}
-
 message RecordTerminalLaunchRendererPhaseRequest {
   optional string phase = 1 [json_name = "phase", (json_required) = true];
   optional double duration_ms = 2 [json_name = "durationMs", (json_required) = true];
@@ -2432,24 +2375,18 @@ message WorkflowGetOutputResponseSubmitted {
 }
 
 message CommandError {
+  reserved 3;
+  reserved "application";
   option (json_untagged) = true;
   oneof variant {
     ResultString message = 1;
     CodedError coded = 2;
-    ApplicationError application = 3;
   }
 }
 message CodedError {
   optional string code = 1 [(json_required) = true];
   optional string message = 2;
 }
-message ApplicationError {
-  optional string type = 1 [(json_required) = true];
-  optional string message = 2;
-  optional string correlation_id = 3 [json_name = "correlation_id"];
-  reserved 4;
-}
-
 message TerminalEvent {
   reserved 5;
   reserved "input_unavailable";
@@ -2664,6 +2601,7 @@ service ClientService {
   option (reconnect_status_code) = RECONNECT_STATUS_CODE_RESOURCE_EXHAUSTED;
   option (state_stream_silence_ms) = 20000;
   option (default_timeout_ms) = 120000;
+  option (shutdown_timeout_ms) = 15000;
   option (min_connect_timeout_ms) = 20000;
   rpc OpenStateStream(OpenStateStreamRequest) returns (stream StateSubscriptionEvent);
   rpc StartStateSubscription(StartStateSubscriptionRequest) returns (Unit);
@@ -2708,7 +2646,6 @@ service ClientService {
   rpc OpenFolderInEditor(OpenFolderInEditorRequest) returns (Unit);
   rpc OpenInEditor(OpenInEditorRequest) returns (Unit);
   rpc OpenWorkflowInEditor(OpenWorkflowInEditorRequest) returns (Unit);
-  rpc QuitAfterStartupFailure(QuitAfterStartupFailureRequest) returns (StartupFailureQuitOutcomeDtoV1);
   rpc RecordTerminalLaunchRendererPhase(RecordTerminalLaunchRendererPhaseRequest) returns (Unit);
   rpc RefreshProviderAvailability(RefreshProviderAvailabilityRequest) returns (Unit);
   rpc RemoveRepoPath(RemoveRepoPathRequest) returns (ResultBool);
@@ -2764,6 +2701,13 @@ message ServerInfo {
   string release = 3;
   reserved 4;
   reserved "desktop_settings";
+  string daemon_id = 5;
+  uint32 pid = 6;
+  uint64 process_started_at = 7;
+  uint32 protocol = 8;
+  repeated string capabilities = 9;
+  ServingStatus serving_status = 10;
+
 }
 
 message RefreshWorkspacesRequest {
@@ -2861,6 +2805,8 @@ message StopStateSubscriptionRequest {
 }
 message StateReadFailure { int32 code = 1; string message = 2; }
 message StatePayload {
+  reserved 58;
+  reserved "startup_outcome";
   reserved 6, 15;
   reserved "session_node", "repository_root";
   reserved 59;
@@ -2906,7 +2852,6 @@ message StatePayload {
     WorkflowSection workflow_config = 55;
     PerformanceSwitchesV1 performance_switches = 56;
     ProviderHookHealthSnapshot provider_hook_health = 57;
-    ApplicationStartupOutcomeDtoV1 startup_outcome = 58;
   }
 }
 message StateChange { bool delta = 1; StatePayload payload = 2; }
@@ -2946,4 +2891,13 @@ message StartupWorktree {
 message NullableStartupWorktree {
   option (json_wrapper) = "value";
   optional StartupWorktree value = 1 [json_name = "value", (json_nullable) = true];
+}
+
+enum ServingStatus {
+  SERVING_STATUS_UNSPECIFIED = 0;
+  SERVING_STATUS_STARTING = 1;
+  SERVING_STATUS_SERVING = 2;
+  SERVING_STATUS_STOPPING = 3;
+  SERVING_STATUS_STOPPED = 4;
+  SERVING_STATUS_FAILED = 5;
 }

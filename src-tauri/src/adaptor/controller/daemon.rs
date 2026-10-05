@@ -25,21 +25,44 @@ fn client_priority_level(path: &str) -> Option<&'static str> {
     }
 }
 
+fn service_timeout(name: &str) -> std::time::Duration {
+    use crate::adaptor::presenter::client::descriptor;
+    let options = descriptor::pool()
+        .get_service_by_name("releash.client.v1.ClientService")
+        .expect("ClientService descriptor")
+        .options();
+    std::time::Duration::from_millis(
+        descriptor::option(&options, name)
+            .as_u32()
+            .expect("timeout option")
+            .into(),
+    )
+}
 pub(crate) fn default_timeout() -> std::time::Duration {
-    static TIMEOUT: std::sync::LazyLock<std::time::Duration> = std::sync::LazyLock::new(|| {
-        use crate::adaptor::presenter::client::descriptor;
-        let options = descriptor::pool()
-            .get_service_by_name("releash.client.v1.ClientService")
-            .expect("ClientService descriptor")
-            .options();
-        std::time::Duration::from_millis(
-            descriptor::option(&options, "default_timeout_ms")
-                .as_u32()
-                .expect("default_timeout_ms")
-                .into(),
-        )
-    });
-    *TIMEOUT
+    service_timeout("default_timeout_ms")
+}
+fn shutdown_timeout() -> std::time::Duration {
+    service_timeout("shutdown_timeout_ms")
+}
+
+async fn shutdown_with_deadline(
+    gateway: &dyn domain::application_lifecycle::ApplicationShutdownGateway,
+    server: &infrastructure::local_api::LocalApiServer,
+) {
+    let timeout = shutdown_timeout();
+    if crate::common::operation_context::runtime_timeout(
+        timeout,
+        usecase::application_lifecycle::shutdown(gateway),
+    )
+    .await
+    .is_err()
+    {
+        log::error!(
+            "application shutdown: {} second deadline exceeded; exiting",
+            timeout.as_secs()
+        );
+    }
+    server.shutdown();
 }
 
 pub(crate) fn client_priority_interceptor(
@@ -61,14 +84,17 @@ pub(crate) fn client_priority_interceptor(
 
 pub(crate) struct Daemon {
     shutdown: Arc<dyn domain::application_lifecycle::ApplicationShutdownGateway>,
+    server: Arc<infrastructure::local_api::LocalApiServer>,
     exit: tokio::sync::mpsc::Receiver<i32>,
+    daemon: usecase::daemon::DaemonUsecase,
 }
 
 impl Daemon {
     pub(crate) async fn wait(mut self) -> Result<std::convert::Infallible, String> {
         let code = self.exit.recv().await.ok_or("daemon exit channel closed")?;
         self.exit.close();
-        usecase::application_lifecycle::shutdown(self.shutdown.as_ref()).await;
+        shutdown_with_deadline(self.shutdown.as_ref(), &self.server).await;
+        self.daemon.stopped().await;
         println!("releash-shutdown-complete");
         std::process::exit(code)
     }
@@ -81,6 +107,31 @@ pub(crate) async fn compose(
         infrastructure::process::search_path::LoginShellPathError,
     >,
 ) -> Result<Daemon, Box<dyn std::error::Error>> {
+    let pid = std::process::id();
+    let identity = domain::daemon::DaemonIdentity {
+        daemon_id: uuid::Uuid::new_v4().simple().to_string(),
+        pid,
+        process_started_at: infrastructure::local_api::process_start_time(pid)
+            .ok_or("failed to resolve daemon process identity")?,
+    };
+    let package = adaptor::presenter::client::descriptor::pool()
+        .get_service_by_name("releash.client.v1.ClientService")
+        .expect("ClientService descriptor")
+        .parent_file()
+        .package_name()
+        .to_owned();
+    let protocol = package
+        .rsplit('.')
+        .next()
+        .and_then(|version| version.strip_prefix('v'))
+        .and_then(|version| version.parse::<u32>().ok())
+        .expect("versioned protocol package");
+    let daemon_repository = Arc::new(adaptor::gateway::daemon::InMemoryDaemonRepository::new(
+        identity,
+        env!("CARGO_PKG_VERSION").into(),
+        protocol,
+    ));
+    let daemon = usecase::daemon::DaemonUsecase(daemon_repository.clone());
     let retry_limiter = Arc::new(crate::common::retry::RetryLimiter::new());
     let failure_store = Arc::new(adaptor::gateway::failure_records::FailureRecordStore::default());
     infrastructure::telemetry::metrics::set_startup_origin(std::time::Instant::now());
@@ -89,21 +140,31 @@ pub(crate) async fn compose(
         data_dir.clone(),
         retry_limiter.clone(),
     );
-    let local_event_store = app_data.open_local_event_store().map_err(|error| {
-        let failure =
-            usecase::application_startup::StartupFailure::new(classify_startup_failure(error));
-        log::error!(
-            "application startup admission failed: {} ({})",
-            failure.safe_description,
-            failure.correlation_id
-        );
-        std::io::Error::other(format!(
-            "{} ({})",
-            failure.safe_description, failure.correlation_id
-        ))
-    })?;
-    let startup_authority =
-        Arc::new(usecase::application_startup::ApplicationStartupAuthority::ready());
+    let local_event_store = match app_data.open_local_event_store() {
+        Ok(store) => store,
+        Err(error) => {
+            daemon
+                .fail(domain::daemon::StartupFailure::new(
+                    error.into(),
+                    uuid::Uuid::new_v4().to_string(),
+                ))
+                .await;
+            let domain::daemon::ServingStatus::Failed(failure) = daemon.info().await.serving_status
+            else {
+                unreachable!("failed startup")
+            };
+            log::error!(
+                "application startup admission failed: {} ({})",
+                failure.safe_description,
+                failure.correlation_id
+            );
+            return Err(std::io::Error::other(format!(
+                "{} ({})",
+                failure.safe_description, failure.correlation_id
+            ))
+            .into());
+        }
+    };
     let state_presenter =
         Arc::new(adaptor::presenter::state_subscription::StateSubscriptionPresenter::new());
     let state_subscriptions =
@@ -418,6 +479,7 @@ pub(crate) async fn compose(
                     adaptor::gateway::workflow::RepositoryIsolatedWorktreeGateway,
                 ),
             },
+            daemon_repository.clone(),
         )
         .map_err(|error| format!("workflow recovery admission failed: {error}"))?;
     let workflow_runtime_usecase = Arc::new(workflow_runtime_usecase);
@@ -438,16 +500,6 @@ pub(crate) async fn compose(
         &workflow_runtime_usecase,
     )
     .await?;
-    if let Some(startup) = workflow_startup {
-        let retrying = retrying.clone();
-        tokio::spawn(async move {
-            if let Err(error) =
-                adaptor::controller::workflow_startup::recover(&retrying, &startup).await
-            {
-                log::warn!("workflow startup advancement failed: {error}");
-            }
-        });
-    }
 
     let workflow_query_usecase = workflow_usecase.clone();
     let review_comments_dir = adaptor::gateway::comment::state_dir(&data_dir);
@@ -457,11 +509,16 @@ pub(crate) async fn compose(
         projected_local_event_repository.clone(),
         workflow_runtime_usecase.clone(),
     );
-    let local_api_binding =
-        infrastructure::local_api::LocalApiServerBinding::bind(data_dir.clone())
-            .map_err(|error| format!("local API の起動に失敗しました: {error}"))?;
+    let info = daemon.info().await;
+    let local_api_binding = infrastructure::local_api::LocalApiServerBinding::bind(
+        data_dir.clone(),
+        info.identity.daemon_id,
+        info.identity.pid,
+        info.identity.process_started_at,
+    )
+    .map_err(|error| format!("local API の起動に失敗しました: {error}"))?;
     let mut client_dispatch =
-        adaptor::controller::client::ClientCommandDispatch::new(startup_authority.clone())
+        adaptor::controller::client::ClientCommandDispatch::new(daemon.clone())
             .with_state_publisher(state_subscriptions.clone());
     let reads_data_dir = data_dir.clone();
     let review_usecase_for_reads = app_state.review_usecase.clone();
@@ -484,7 +541,6 @@ pub(crate) async fn compose(
         .to_string_lossy()
         .into_owned();
     let dependencies = super::client::ClientDependencies {
-        application_startup_authority: Some(startup_authority),
         workspace_node_command_usecase: Some(workspace_node_command_usecase),
         app_state: Some(app_state),
         workspace_state_store: Some(workspace_state_store),
@@ -506,9 +562,8 @@ pub(crate) async fn compose(
             ),
         )),
         data_dir: Ok(data_dir),
-        process_port: Arc::new(
-            adaptor::gateway::application_lifecycle::DaemonProcessActionPort(exit_sender),
-        ),
+        daemon: daemon.clone(),
+        process_port: exit_sender,
     };
     let state_subscriptions = state_subscriptions.with_reads(
         Arc::new(
@@ -566,7 +621,6 @@ pub(crate) async fn compose(
                         .provider_hook_health_read_usecase
                         .clone()
                         .unwrap(),
-                    startup: dependencies.application_startup_authority.clone().unwrap(),
                 },
             ),
         ),
@@ -595,9 +649,23 @@ pub(crate) async fn compose(
         Some(provider_lifecycle_ingress.clone()),
         (local_gate, default_timeout()),
     );
-    let local_api = local_api_binding.start(local_api_router, &tokio::runtime::Handle::current());
+    let local_api =
+        local_api_binding.start(local_api_router, &tokio::runtime::Handle::current())?;
+    daemon.serve().await;
+    local_api.publish_discovery()?;
+    if let Some(startup) = workflow_startup {
+        let retrying = retrying.clone();
+        tokio::spawn(async move {
+            if let Err(error) =
+                adaptor::controller::workflow_startup::recover(&retrying, &startup).await
+            {
+                log::warn!("workflow startup advancement failed: {error}");
+            }
+        });
+    }
 
     Ok(Daemon {
+        server: local_api.clone(),
         shutdown: Arc::new(
             adaptor::gateway::application_lifecycle::DaemonShutdownGateway {
                 server: local_api,
@@ -608,6 +676,7 @@ pub(crate) async fn compose(
             },
         ),
         exit: exit_receiver,
+        daemon,
     })
 }
 
@@ -643,23 +712,6 @@ fn performance_provider_fixture_executable() -> Option<String> {
 #[cfg(not(feature = "performance"))]
 fn performance_provider_fixture_executable() -> Option<String> {
     None
-}
-
-fn classify_startup_failure(
-    error: adaptor::gateway::local_event_store::store::LocalEventStoreOpenError,
-) -> usecase::application_startup::StartupFailureKind {
-    use adaptor::gateway::local_event_store::store::LocalEventStoreOpenError as E;
-    use usecase::application_startup::StartupFailureKind as K;
-
-    match error {
-        E::WriterLockHeld => K::StoreInUse,
-        E::StorageUnavailable(failure) => K::StorageUnavailable(failure.nature),
-        E::UnsupportedRuntime => K::UnsupportedRuntime,
-        E::UnsupportedStoreVersion => K::UnsupportedStoreVersion,
-        E::InitializationStateInvalid => K::InitializationStateInvalid,
-        E::StoreValidationFailed => K::StoreValidationFailed,
-        E::SchemaEvolutionFailed => K::SchemaEvolutionFailed,
-    }
 }
 
 #[cfg(test)]

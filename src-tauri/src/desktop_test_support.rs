@@ -28,7 +28,6 @@ pub(crate) fn build_client_dependencies<R: tauri::Runtime>(
 ) -> crate::adaptor::controller::client::ClientDependencies {
     use tauri::Manager;
     crate::adaptor::controller::client::ClientDependencies {
-        application_startup_authority: app.try_state::<std::sync::Arc<crate::usecase::application_startup::ApplicationStartupAuthority>>().map(|state| state.inner().clone()),
         workspace_node_command_usecase: app.try_state::<std::sync::Arc<crate::usecase::workflow::WorkspaceNodeCommandUsecase>>().map(|state| state.inner().clone()),
         app_state: app.try_state::<crate::adaptor::controller::state::AppState>().map(|state| state.inner().clone()),
         workspace_state_store: app.try_state::<std::sync::Arc<crate::adaptor::gateway::workspace_state::WorkspaceStateStore>>().map(|state| state.inner().clone()),
@@ -45,7 +44,8 @@ pub(crate) fn build_client_dependencies<R: tauri::Runtime>(
         editor_launcher: Arc::new(crate::adaptor::gateway::external_editor::NativeEditorLauncherGateway),
         watcher: build_watcher_usecase(app),
         data_dir: data_dir(app).map_err(crate::adaptor::presenter::error::AppError::new),
-        process_port: Arc::new(crate::adaptor::gateway::application_lifecycle::DaemonProcessActionPort(tokio::sync::mpsc::channel(1).0)),
+        daemon: crate::usecase::daemon::DaemonUsecase(crate::adaptor::gateway::daemon::serving()),
+        process_port: tokio::sync::mpsc::channel(1).0,
     }
 }
 

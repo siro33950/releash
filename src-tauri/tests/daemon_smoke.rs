@@ -256,6 +256,15 @@ async fn connect(discovery: &Value) -> (Socket, String) {
         .into_owned();
     assert!(!info.launch_id.is_empty());
     assert_eq!(info.release, env!("CARGO_PKG_VERSION"));
+    assert_eq!(info.daemon_id, discovery["instance_id"].as_str().unwrap());
+    assert_eq!(info.pid as u64, discovery["pid"].as_u64().unwrap());
+    assert_eq!(
+        info.process_started_at,
+        discovery["process_started_at"].as_u64().unwrap()
+    );
+    assert_eq!(info.protocol, 1);
+    assert!(info.capabilities.is_empty());
+    assert_eq!(info.serving_status, rpc::ServingStatus::Serving);
     (Socket { client }, info.launch_id)
 }
 async fn request(

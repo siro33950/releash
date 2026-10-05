@@ -12,6 +12,7 @@ pub(crate) struct ClientApiDeps {
     dispatch: Arc<ClientCommandDispatch>,
     state_subscriptions: Option<StateSubscriptionDeps>,
     priority: super::client_priority::PriorityInterceptor,
+    daemon: crate::usecase::daemon::DaemonUsecase,
 }
 
 #[derive(Clone)]
@@ -41,9 +42,10 @@ impl ClientApiDeps {
         priority: super::client_priority::PriorityInterceptor,
     ) -> Self {
         Self {
-            dispatch,
+            dispatch: dispatch.clone(),
             state_subscriptions: None,
             priority,
+            daemon: dispatch.daemon.clone(),
         }
     }
 
@@ -79,7 +81,6 @@ impl ClientApiDeps {
         &self,
         command: wire::command_request::Command,
     ) -> Result<wire::command_result::Command, connectrpc::ConnectError> {
-        self.dispatch.admit(command.name()).map_err(command_error)?;
         let dispatch = self.dispatch.clone();
         crate::common::operation_context::spawned(async move {
             dispatch
@@ -125,10 +126,12 @@ pub(crate) fn router(deps: Option<ClientApiDeps>, default_timeout: std::time::Du
         return Router::new();
     };
     let priority = deps.priority.clone();
+    let admission = super::client_admission::DaemonAdmission(deps.daemon.clone());
     let service = connectrpc::Router::new()
         .add_service(Arc::new(deps))
         .into_axum_service()
         .with_interceptor(priority)
+        .with_interceptor(admission)
         .with_deadline_policy(
             connectrpc::DeadlinePolicy::new().with_default_timeout(default_timeout),
         )
