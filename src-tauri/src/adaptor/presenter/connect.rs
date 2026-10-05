@@ -13,7 +13,7 @@ pub(crate) fn classified_error(
     connectrpc::ConnectError::new(error.connect_code(), error.to_string())
 }
 
-pub(crate) fn command_error(
+pub fn command_error(
     error: crate::adaptor::presenter::client::CommandFailure,
 ) -> connectrpc::ConnectError {
     match to_rpc::<rpc::CommandError>(&error.detail) {

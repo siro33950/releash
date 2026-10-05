@@ -40,9 +40,10 @@ yarn-error.log*
 
 # Tauri
 src-tauri/target/
-src-tauri/WixTools/
-src-tauri/icons/generated/
-src-tauri/generated/
+src-tauri/releash-desktop/WixTools/
+src-tauri/releash-desktop/icons/generated/
+src-tauri/releash-desktop/generated/
+src-tauri/releash-desktop/gen/schemas/
 
 # Rust
 *.rs.bk
@@ -72,3 +73,5 @@ performance-results/
 *.tfstate.*
 *.tfvars
 !*.tfvars.example
+
+src-tauri/releash-desktop/binaries/

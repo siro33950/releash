@@ -99,13 +99,15 @@ jobs:
           workspaces: src-tauri
           key: nightly-performance
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - name: Performance headless unit tests
-        run: cargo test --locked --no-default-features --features performance --lib
+      - name: Performance backend unit tests
+        run: cargo test --locked --features performance --lib
       - name: Performance daemon helper self-test
         working-directory: .
         run: pnpm test:performance:daemon
       - name: Desktop CLI installation test
-        run: cargo test --locked --features performance --test desktop_cli_install
+        run: |
+          cargo build --locked -p releash-backend --bin releash-backend
+          cargo test --locked -p releash-desktop --features performance --test desktop_cli_install
 
   coverage:
     needs: check
@@ -165,7 +167,11 @@ jobs:
       - uses: taiki-e/install-action@cargo-llvm-cov
       - name: Coverage process termination regression test
         run: python3 .github/scripts/coverage.test.py
-      - run: cargo llvm-cov --locked --codecov --output-path rust-codecov.json
+      - run: |
+          cargo llvm-cov clean --workspace
+          cargo llvm-cov --no-report --locked
+          cargo llvm-cov --no-report --locked -p releash-desktop
+          cargo llvm-cov report --codecov --output-path rust-codecov.json
         working-directory: src-tauri
       - uses: codecov/codecov-action@v7
         with:
@@ -258,7 +264,7 @@ jobs:
           uploadUpdaterJson: true
           releaseId: ${{ steps.create.outputs.release-id }}
           tauriScript: pnpm tauri
-          args: --target universal-apple-darwin -- --features vendored-openssl
+          args: --target universal-apple-darwin --config src-tauri/releash-desktop/tauri.conf.bundle.json -- --features vendored-openssl
 
       - name: Publish nightly
         uses: actions/github-script@v9

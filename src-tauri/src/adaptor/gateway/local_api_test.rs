@@ -477,7 +477,6 @@ fn test_local_api_discovery_空または0の内容を従来の表示で拒否す
 #[test]
 fn test_クライアント接続情報_再起動したinstanceを再読込しmasterを返さない() {
     use crate::infrastructure::local_api::{LocalApiDiscovery, LocalApiDiscoveryFile};
-    use crate::usecase::client_connection::ClientConnectionQueryService;
     let directory = tempfile::tempdir().unwrap();
     // Given
     let query = super::ClientConnectionFileQuery(directory.path().to_owned());

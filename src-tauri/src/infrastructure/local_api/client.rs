@@ -9,7 +9,7 @@ use url::Url;
 use super::{local_api_discovery_path, LocalApiDiscovery};
 
 #[derive(Debug)]
-pub(crate) enum LocalApiDiscoveryReadError {
+pub enum LocalApiDiscoveryReadError {
     Read {
         path: PathBuf,
         source: std::io::Error,
@@ -45,7 +45,7 @@ struct ErrorResponse {
     message: String,
 }
 
-pub(crate) fn read_local_api_discovery(
+pub fn read_local_api_discovery(
     data_dir: &Path,
 ) -> Result<Option<LocalApiDiscovery>, LocalApiDiscoveryReadError> {
     let path = local_api_discovery_path(data_dir);

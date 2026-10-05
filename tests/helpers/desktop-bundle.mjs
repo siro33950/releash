@@ -38,7 +38,7 @@ export function processes() {
 }
 export function pair(bundle) {
     const all = processes();
-    const ui = all.filter(p => p.executable === join(bundle, "Contents/MacOS/releash"));
+    const ui = all.filter(p => p.executable === join(bundle, "Contents/MacOS/releash-desktop"));
     const daemon = all.filter(p => p.executable === join(bundle, "Contents/MacOS/releash-backend"));
     if (ui.length !== 1 || daemon.length !== 1) return null;
     assert.equal(daemon[0].parent, ui[0].pid, "bundled daemon must be owned by UI");
@@ -49,7 +49,7 @@ export function discovery() {
     return existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : null;
 }
 export function start(bundle, args = []) {
-    const child = spawn(join(bundle, "Contents/MacOS/releash"), args, {
+    const child = spawn(join(bundle, "Contents/MacOS/releash-desktop"), args, {
         cwd: bundle,
         env: { ...process.env, PATH: "/usr/bin:/bin:/usr/sbin:/sbin", TAURI_WEBDRIVER_PORT: String(port), RELEASH_PERF_REAL_APP: "1", RELEASH_TEST_CLI_INSTALL_ATTEMPT: join(dataDir, "cli-install-attempt") },
         stdio: "ignore",

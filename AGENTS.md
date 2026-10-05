@@ -60,7 +60,7 @@ Releash は、特定の作業単位や特定の道具を主語にしない。コ
 ## 技術スタック
 
 - **フロントエンド**: React 19 + TypeScript + TailwindCSS 4 + shadcn/ui (Radix)。差分表示は Shiki（Web Worker）、terminal は xterm.js + WebGL
-- **バックエンド**: Rust (Tauri 2) + tokio
+- **バックエンド**: Rust + tokio。Tauri 2 は `releash-desktop` のシェルだけで使う
 - **永続化**: SQLite（rusqlite bundled）
 - **workflow 定義の評価**: mlua (Lua 5.4)
 - **観測**: OpenTelemetry (OTLP)
@@ -68,10 +68,12 @@ Releash は、特定の作業単位や特定の道具を主語にしない。コ
 
 ## 構成で押さえる点
 
+`src-tauri/` は Cargo workspace。root package `releash-backend` と `releash-desktop/` のシェルで Cargo.lock と target を共有し、版は `[workspace.package]` から継承する。シェルがサーバを使う公開入口は `desktop_api`、テスト用区画は `test-support` feature でのみ有効になる。
+
 ディレクトリの内訳はコードを見る。コードからは読み取りにくい点だけ挙げる。
 
 - **workflow 定義はリポジトリ直下の `workflows/`** に置く。`*.yml` と `facets/{instructions,policies,knowledge}/*.md`。builtin は `adaptor/gateway/workflow/builtin.rs` が `include_str!` でコンパイル時に取り込むため、定義を追加するときは builtin.rs 側の登録も要る。
-- **実行ファイルは2つある**。`releash`（`src/main.rs`、Tauri のシェル）は daemon を子プロセスとして起動・監視する。`releash-backend`（`src/bin/backend.rs`）は `--internal-daemon` で daemon、それ以外で CLI（`cli/`、`releash workflow|review|hook`）として動く。
+- **実行ファイルは2つある**。`releash-desktop`（`src-tauri/releash-desktop/src/main.rs`、Tauri のシェル）は daemon を子プロセスとして起動・監視する。`releash-backend`（`src-tauri/src/bin/backend.rs`）は `--internal-daemon` で daemon、それ以外で CLI（`cli/`、`releash workflow|review|hook`）として動く。
 - **daemon の入口は2つあり、同じ usecase を共有する**。画面用は Connect の ClientService（契約は `proto/client.proto`、入口は `adaptor/controller/api/client*.rs`、コマンドごとの処理は `adaptor/controller/client/`）。CLI / hook 用は HTTP local API（`adaptor/controller/api/` の `workflow.rs` / `provider_lifecycle.rs`）。Tauri コマンド（`adaptor/controller/command/`）は desktop 固有の操作だけを扱う。
 - **daemon は 127.0.0.1 のみに bind する**。discovery file に port と token を書き出す。画面へ渡す client token は master token と分離する。
 - **永続化は event store**。`domain/local_event/` と `adaptor/gateway/local_event_store/`。事実を追記し、読み側で projection を導出する。full-recompute 経路を増やさない。
@@ -103,11 +105,14 @@ PR 層（`src-tauri/`。CI では `CARGO_PROFILE_DEV_DEBUG="0"`）:
 cargo fmt --check
 cargo clippy --locked -- -D warnings
 cargo deny --locked check
-cargo clippy --locked --no-default-features --bin releash-backend -- -D warnings
+cargo clippy --locked -p releash-desktop -- -D warnings
+cargo clippy --locked -p releash-desktop --tests -- -D warnings
 cargo test --locked
-cargo test --locked --no-default-features --lib
-cargo test --locked --no-default-features --test state_subscription_scenarios scenarios_tests::
-cargo test --locked --no-default-features --test daemon_smoke
+cargo build --locked -p releash-backend --bin releash-backend
+cargo clippy --locked -p releash-desktop --tests -- -D warnings
+cargo test --locked -p releash-desktop
+cargo test --locked --test state_subscription_scenarios scenarios_tests::
+cargo test --locked --test daemon_smoke
 ```
 
 品質ゲート（プロジェクトルート。clippy と biome を横断で走らせる）:
@@ -126,8 +131,9 @@ pnpm exec vitest run --coverage
 nightly 層（`src-tauri/`）:
 
 ```bash
-cargo test --locked --no-default-features --features performance --lib
-cargo test --locked --features performance --test desktop_cli_install
+cargo test --locked --features performance --lib
+cargo build --locked -p releash-backend --bin releash-backend
+cargo test --locked -p releash-desktop --features performance --test desktop_cli_install
 ```
 
 Rust coverage は `llvm-tools-preview` と `cargo-llvm-cov` が必要。Linux で強制終了する子プロセスの profile を保持し、短い RPC deadline を使うテストの負荷干渉を避けるため、coverage 計測だけに環境変数を適用する（プロジェクトルート）:
@@ -139,9 +145,14 @@ Rust coverage は `llvm-tools-preview` と `cargo-llvm-cov` が必要。Linux �
   export RUST_TEST_THREADS="2"
   python3 .github/scripts/coverage.test.py
   cd src-tauri
-  cargo llvm-cov --locked --codecov --output-path rust-codecov.json
+  cargo llvm-cov clean --workspace
+  cargo llvm-cov --no-report --locked
+  cargo llvm-cov --no-report --locked -p releash-desktop
+  cargo llvm-cov report --codecov --output-path rust-codecov.json
 )
 ```
+
+サーバの Tauri 依存は、`src-tauri/` で `cargo tree -p releash-backend -i tauri -e normal,dev,build --target all --all-features` を実行して確認する。依存がないときの確認済みの結果は終了コード `101`、出力は ``error: package ID specification `tauri` did not match any packages``（続いて ``help: a package with a similar name exists: `ntapi` ``）。この終了コードは依存が見つからないことを示す。
 
 ## テスト方針
 
@@ -184,13 +195,13 @@ Rust テストの配置、命名、レイヤー別の必須／柔軟、モック
 2. PR 層の検証一式と `performance` がすべて成功したら、tauri-action で署名・公証済みの macOS universal ビルドを作り、prerelease を公開する。`coverage` は関門に含めない。署名・公証、updater の署名、telemetry の値は 1Password から取得する。
 3. nightly のタグは `v{X.Y.Z}-nightly.{YYYYMMDD}.{N}`（UTC のビルド日、日ごとに 1 から採番）。リポジトリとアプリの版は `X.Y.Z` のまま。nightly の Release は直近 14 件を残す。nightly は GitHub Release から手動で取得する。
 4. `Stable` を `workflow_dispatch` で起動し、`nightly` に公開済み nightly のタグを指定する。その commit からビルド・署名・公証をやり直し、`vX.Y.Z` を stable の latest Release として公開する。`vX.Y.Z` タグは 1Password の `releash-stable-release`（Contents / Workflows write の fine-grained PAT）で作る。`GITHUB_TOKEN` は workflow ファイルがブランチ先端と異なる commit にタグを作れないため。`latest.json` により既存の Tauri updater で更新できる。
-5. stable 公開後、main の版の patch を 1 つ上げ、`package.json`、`src-tauri/tauri.conf.json`、`src-tauri/Cargo.toml`、`src-tauri/Cargo.lock` を揃える PR を作る。別の上げ幅が必要なら、`Bump Version` を `workflow_dispatch`（patch / minor / major）で実行して版更新 PR を作る。
+5. stable 公開後、main の版の patch を 1 つ上げ、`package.json`、`src-tauri/releash-desktop/tauri.conf.json`、`src-tauri/Cargo.toml`、`src-tauri/Cargo.lock` を揃える PR を作る。別の上げ幅が必要なら、`Bump Version` を `workflow_dispatch`（patch / minor / major）で実行して版更新 PR を作る。
 
 ## セキュリティ
 
 - 依存の advisory とライセンスは `cargo deny`（`src-tauri/deny.toml` の allow list）で検査する。新しいライセンスの依存を足すときは allow list への追記が要る。
 - CodeQL が javascript-typescript を PR と週次で解析する。
-- Tauri capability は `src-tauri/capabilities/`。`startup-pre-admission` は permissions を空にし、main window は Rust の startup authority が Ready に達した後にだけ作る。permission を追加するときは対象 window を確認する。
+- Tauri capability は `src-tauri/releash-desktop/capabilities/`。`startup-pre-admission` は permissions を空にし、main window は Rust の startup authority が Ready に達した後にだけ作る。permission を追加するときは対象 window を確認する。
 - local API の master token を renderer JS へ渡さない。terminal 用は別 token を使う。
 - Lua の評価環境は外部 I/O を持たず、メモリ量と命令数に上限がある。この上限を緩めない。
 - command テンプレートの `{{ }}` は shell quoting を行わない。信頼できない値を shell syntax へ直接連結しない。

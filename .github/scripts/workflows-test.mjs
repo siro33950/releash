@@ -4,6 +4,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
+import { runInNewContext } from "node:vm";
 
 function block(file, marker, key) {
   const text = readFileSync(new URL(`../workflows/${file}`, import.meta.url), "utf8").split(marker)[1];
@@ -45,7 +46,9 @@ function steps(job) {
 }
 
 function command(step) {
-  return value(step, "run")?.replace(/^"(.*)"$/, "$1");
+  const run = value(step, "run");
+  if (run === "|") return step.split("\n").slice(step.split("\n").findIndex(line => /run: \|$/.test(line)) + 1).filter(line => line.startsWith("          ")).map(line => line.trim()).join("\n");
+  return run?.replace(/^"(.*)"$/, "$1");
 }
 
 function commands(job) {
@@ -57,13 +60,14 @@ const rustCommands = {
     "cargo fmt --check",
     "cargo clippy --locked -- -D warnings",
     "cargo deny --locked check",
-    "cargo clippy --locked --no-default-features --bin releash-backend -- -D warnings",
+    "cargo clippy --locked -p releash-desktop -- -D warnings",
+    "cargo clippy --locked -p releash-desktop --tests -- -D warnings",
   ],
-  "rust-test-desktop": ["cargo test --locked"],
-  "rust-test-headless": [
-    "cargo test --locked --no-default-features --lib",
-    "cargo test --locked --no-default-features --test state_subscription_scenarios scenarios_tests::",
-    "cargo test --locked --no-default-features --test daemon_smoke",
+  "rust-test-desktop": ["cargo build --locked -p releash-backend --bin releash-backend", "cargo clippy --locked -p releash-desktop --tests -- -D warnings", "cargo test --locked -p releash-desktop"],
+  "rust-test-backend": [
+    "cargo test --locked",
+    "cargo test --locked --test state_subscription_scenarios scenarios_tests::",
+    "cargo test --locked --test daemon_smoke",
   ],
 };
 
@@ -73,7 +77,7 @@ function assertPrChecks(config) {
     for (const line of step.split("\n")) {
       if (line.trimStart().startsWith("#")) continue;
       if (/^\S|^ {8}\S/.test(line)) executable = /^(?: {8})?(run|uses|with|env):/.test(line);
-      if (executable) assert.doesNotMatch(line, /performance|llvm-cov|coverage|cargo build|agent_tui_harness/);
+      if (executable && line.trim() !== "run: cargo build --locked -p releash-backend --bin releash-backend") assert.doesNotMatch(line, /performance|llvm-cov|coverage|cargo build|agent_tui_harness/);
     }
   }
 }
@@ -93,7 +97,7 @@ test("PR and main push share the required parallel jobs and command allocation",
     assert.equal(value(ciJobs[name], "working-directory"), "src-tauri");
   }
   assertPrChecks(ciConfig);
-  assert.equal(value(ciJobs.rust, "needs"), "[rust-lint, rust-test-desktop, rust-test-headless]");
+  assert.equal(value(ciJobs.rust, "needs"), "[rust-lint, rust-test-desktop, rust-test-backend]");
   assert.equal(value(ciJobs.rust, "if"), "always()");
 });
 
@@ -159,11 +163,11 @@ test("integration comments skip cancelled runs and report failures on both creat
   assert.equal(condition(() => false, { event_name: "push" }), false);
 });
 
-test("headless tests retain Tauri system dependencies without frontend setup", () => {
-  const job = jobs(ciConfig)["rust-test-headless"];
+test("backend tests need neither Tauri system dependencies nor frontend setup", () => {
+  const job = jobs(ciConfig)["rust-test-backend"];
   assert.doesNotMatch(job, /pnpm|setup-node|frontend/);
-  assert.match(job, /sudo apt-get install -y libwebkit2gtk-4\.1-dev/);
-  assert.deepEqual(commands(job), rustCommands["rust-test-headless"]);
+  assert.doesNotMatch(job, /apt-get|libwebkit/);
+  assert.deepEqual(commands(job), rustCommands["rust-test-backend"]);
 });
 
 test("every Rust check requires successful setup, survives check failures, and respects docs-only/cancellation", () => {
@@ -244,15 +248,15 @@ test("nightly runs daily and manually with performance pinned and coverage track
 test("nightly runs all performance lib tests, the release daemon, and desktop CLI installation", () => {
   const performance = jobs(nightlyConfig).performance;
   assert.deepEqual(commands(performance), [
-    "cargo test --locked --no-default-features --features performance --lib",
+    "cargo test --locked --features performance --lib",
     "pnpm test:performance:daemon",
-    "cargo test --locked --features performance --test desktop_cli_install",
+    "cargo build --locked -p releash-backend --bin releash-backend\ncargo test --locked -p releash-desktop --features performance --test desktop_cli_install",
   ]);
   assert.equal(value(performance, "working-directory"), "src-tauri");
   const daemon = steps(performance).find(step => value(step, "run") === "pnpm test:performance:daemon");
   assert.equal(value(daemon, "working-directory"), ".");
   const packageJson = JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8"));
-  assert.equal(packageJson.scripts["test:performance:daemon"], "cargo build --manifest-path src-tauri/Cargo.toml --locked --release --no-default-features --features performance --bin releash-backend && node --test tests/helpers/performance-daemon.test.mjs");
+  assert.equal(packageJson.scripts["test:performance:daemon"], "cargo build --manifest-path src-tauri/Cargo.toml --locked --release --features performance --bin releash-backend && node --test tests/helpers/performance-daemon.test.mjs");
 });
 
 test("nightly measures both coverages with profile retention and uploads the checked-out main commit", () => {
@@ -261,7 +265,7 @@ test("nightly measures both coverages with profile retention and uploads the che
   assert.deepEqual(commands(coverage), [
     "pnpm exec vitest run --coverage",
     "python3 .github/scripts/coverage.test.py",
-    "cargo llvm-cov --locked --codecov --output-path rust-codecov.json",
+    "cargo llvm-cov clean --workspace\ncargo llvm-cov --no-report --locked\ncargo llvm-cov --no-report --locked -p releash-desktop\ncargo llvm-cov report --codecov --output-path rust-codecov.json",
   ]);
   const environment = section(coverage, "    env:");
   assert.equal(value(environment, "RUSTFLAGS"), "-C llvm-args=-runtime-counter-relocation");
@@ -303,7 +307,7 @@ test("AGENTS validation commands, directories, layers, and coverage environment 
     const actual = Object.values(jobs(config)).flatMap(job => steps(job).filter(step => commands(job).includes(command(step))).map(step => [
       value(step, "working-directory") ?? value(job.split("    steps:\n")[0], "working-directory") ?? ".",
       command(step),
-    ]));
+    ]).flatMap(([directory, script]) => script.split("\n").map(line => [directory, line])));
     assert.deepEqual(actual.sort(), expected.sort());
   }
   assert.ok(instructions.includes(`CARGO_PROFILE_DEV_DEBUG=${value(section(ciConfig, "env:"), "CARGO_PROFILE_DEV_DEBUG")}`));
@@ -434,7 +438,7 @@ test("rust aggregate accepts success/skips and rejects every failure/cancellatio
   for (const lint of ["success", "skipped", "failure", "cancelled"]) {
     for (const desktop of ["success", "skipped", "failure", "cancelled"]) {
       for (const headless of ["success", "skipped", "failure", "cancelled"]) {
-        const results = { "rust-lint": lint, "rust-test-desktop": desktop, "rust-test-headless": headless };
+        const results = { "rust-lint": lint, "rust-test-desktop": desktop, "rust-test-backend": headless };
         const run = () => execFileSync("bash", ["-e", "-c", script.replace(/\$\{\{ needs\.(\S+)\.result \}\}/g, (_, job) => results[job])], { stdio: "pipe" });
         if (Object.values(results).every(result => ["success", "skipped"].includes(result))) run();
         else assert.throws(run);
@@ -557,14 +561,15 @@ test("nightly tags use the build date and the next daily ordinal across versions
 
 test("repository versions agree across all four files and contain only three integers", () => {
   const packageJson = JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8"));
-  const tauriConfig = JSON.parse(readFileSync(new URL("../../src-tauri/tauri.conf.json", import.meta.url), "utf8"));
-  const cargoPackage = readFileSync(new URL("../../src-tauri/Cargo.toml", import.meta.url), "utf8").split("[package]\n")[1].split("\n[")[0];
-  const lockedPackage = readFileSync(new URL("../../src-tauri/Cargo.lock", import.meta.url), "utf8").split("[[package]]\n").find(entry => /^name = "releash"$/m.test(entry));
+  const tauriConfig = JSON.parse(readFileSync(new URL("../../src-tauri/releash-desktop/tauri.conf.json", import.meta.url), "utf8"));
+  const cargoPackage = readFileSync(new URL("../../src-tauri/Cargo.toml", import.meta.url), "utf8").split("[workspace.package]\n")[1].split("\n[")[0];
+  const lockedPackages = readFileSync(new URL("../../src-tauri/Cargo.lock", import.meta.url), "utf8").split("[[package]]\n").filter(entry => /^name = "releash-(backend|desktop)"$/m.test(entry));
+  assert.equal(lockedPackages.length, 2);
   for (const [file, version] of [
     ["package.json", packageJson.version],
-    ["src-tauri/tauri.conf.json", tauriConfig.version],
+    ["src-tauri/releash-desktop/tauri.conf.json", tauriConfig.version],
     ["src-tauri/Cargo.toml", cargoPackage.match(/^version = "([^"]+)"$/m)?.[1]],
-    ["src-tauri/Cargo.lock", lockedPackage?.match(/^version = "([^"]+)"$/m)?.[1]],
+    ...lockedPackages.map(entry => ["src-tauri/Cargo.lock", entry.match(/^version = "([^"]+)"$/m)?.[1]]),
   ]) {
     assert.match(version, /^\d+\.\d+\.\d+$/, `${file}: expected an X.Y.Z version`);
     assert.equal(version, packageJson.version, `${file}: must match package.json`);
@@ -909,13 +914,13 @@ test("both builds preserve signing, notarization, updater artifacts, telemetry a
     assert.equal(value(secrets, "export-env"), "true");
     const tauri = steps(build).find(step => value(step, "uses") === "tauri-apps/tauri-action@v1");
     assert.equal(value(tauri, "releaseId"), config === nightlyConfig ? "${{ steps.create.outputs.release-id }}" : "${{ needs.create-release.outputs.release-id }}");
-    assert.equal(value(tauri, "args"), "--target universal-apple-darwin -- --features vendored-openssl");
+    assert.equal(value(tauri, "args"), "--target universal-apple-darwin --config src-tauri/releash-desktop/tauri.conf.bundle.json -- --features vendored-openssl");
     assert.equal(value(tauri, "uploadUpdaterJson"), "true");
     assert.equal(value(tauri, "tauriScript"), "pnpm tauri");
     assert.equal(value(tauri, "OTLP_ENDPOINT"), "${{ env.OTLP_ENDPOINT }}");
     assert.equal(value(tauri, "NEW_RELIC_LICENSE_KEY"), "${{ env.NEW_RELIC_LICENSE_KEY }}");
   }
-  const config = JSON.parse(readFileSync(new URL("../../src-tauri/tauri.conf.json", import.meta.url), "utf8"));
+  const config = JSON.parse(readFileSync(new URL("../../src-tauri/releash-desktop/tauri.conf.json", import.meta.url), "utf8"));
   assert.deepEqual(config.plugins.updater.endpoints, ["https://github.com/siro33950/releash/releases/latest/download/latest.json"]);
   assert.equal(config.bundle.createUpdaterArtifacts, true);
 });
@@ -941,13 +946,13 @@ test("stable bumps main's patch after publication and reuses Bump Version's four
   assert.equal(value(pr, "base"), "main");
   assert.equal(value(pr, "branch"), "release/v${{ env.VERSION }}");
   assert.equal(value(pr, "title"), '"release: v${{ env.VERSION }}"');
-  assert.match(pr, /add-paths: \|\n            package.json\n            src-tauri\/tauri.conf.json\n            src-tauri\/Cargo.toml\n            src-tauri\/Cargo.lock/);
+  assert.match(pr, /add-paths: \|\n            package.json\n            src-tauri\/releash-desktop\/tauri.conf.json\n            src-tauri\/Cargo.toml\n            src-tauri\/Cargo.lock/);
 });
 
 test("Bump Version calculates each bump and updates all four files without changing dependencies", t => {
   const directory = mkdtempSync(join(tmpdir(), "releash-bump-"));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
-  mkdirSync(join(directory, "src-tauri"));
+  mkdirSync(join(directory, "src-tauri/releash-desktop"), { recursive: true });
   const githubEnv = join(directory, "github-env");
   const calculate = block("bump-version.yml", "      - name: Calculate new version", "run");
   const update = block("bump-version.yml", "      - name: Bump version in files", "run");
@@ -960,11 +965,11 @@ test("Bump Version calculates each bump and updates all four files without chang
   ]) {
     const packageJson = { name: "releash", version: current, dependencies: { example: current } };
     const tauriConfig = { version: current, identifier: "com.releash.app" };
-    const cargoToml = `[package]\nname = "releash"\nversion = "${current}"\n\n[dependencies]\nexample = "${current}"\n`;
-    const cargoLock = `version = 4\n\n[[package]]\nname = "before"\nversion = "${current}"\n\n[[package]]\nname = "releash"\nversion = "${current}"\ndependencies = ["before", "after"]\n\n[[package]]\nname = "after"\nversion = "${current}"\n`;
+    const cargoToml = `[workspace.package]\nversion = "${current}"\n\n[package]\nname = "releash-backend"\nversion.workspace = true\n\n[dependencies]\nexample = "${current}"\n`;
+    const cargoLock = `version = 4\n\n[[package]]\nname = "before"\nversion = "${current}"\n\n[[package]]\nname = "releash-backend"\nversion = "${current}"\ndependencies = ["before", "after"]\n\n[[package]]\nname = "releash-desktop"\nversion = "${current}"\n\n[[package]]\nname = "after"\nversion = "${current}"\n`;
     for (const [file, contents] of [
       ["package.json", JSON.stringify(packageJson)],
-      ["src-tauri/tauri.conf.json", JSON.stringify(tauriConfig)],
+      ["src-tauri/releash-desktop/tauri.conf.json", JSON.stringify(tauriConfig)],
       ["src-tauri/Cargo.toml", cargoToml],
       ["src-tauri/Cargo.lock", cargoLock],
     ]) writeFileSync(join(directory, file), contents);
@@ -978,9 +983,9 @@ test("Bump Version calculates each bump and updates all four files without chang
       cwd: directory, env: { ...process.env, VERSION: output.slice("VERSION=".length) }, stdio: "pipe",
     });
     assert.deepEqual(JSON.parse(readFileSync(join(directory, "package.json"), "utf8")), { ...packageJson, version: expected });
-    assert.deepEqual(JSON.parse(readFileSync(join(directory, "src-tauri/tauri.conf.json"), "utf8")), { ...tauriConfig, version: expected });
+    assert.deepEqual(JSON.parse(readFileSync(join(directory, "src-tauri/releash-desktop/tauri.conf.json"), "utf8")), { ...tauriConfig, version: expected });
     for (const [file, original] of [["Cargo.toml", cargoToml], ["Cargo.lock", cargoLock]]) {
-      assert.equal(readFileSync(join(directory, "src-tauri", file), "utf8"), original.replace(`name = "releash"\nversion = "${current}"`, `name = "releash"\nversion = "${expected}"`));
+      assert.equal(readFileSync(join(directory, "src-tauri", file), "utf8"), file === "Cargo.toml" ? original.replace(`[workspace.package]\nversion = "${current}"`, `[workspace.package]\nversion = "${expected}"`) : original.replaceAll(/(name = "releash-(?:backend|desktop)"\nversion = ")[^"]+"/g, `$1${expected}"`));
     }
   }
 });
@@ -995,4 +1000,58 @@ test("old release triggers are removed and AGENTS describes nightly, stable and 
   const release = agents.split("## リリース\n")[1].split("\n## ")[0];
   for (const text of ["Nightly", "main", "スキップ", "手動起動は常に", "coverage", "14", "Stable", "nightly", "latest.json", "patch", "Bump Version", "patch / minor / major"]) assert.ok(release.includes(text), text);
   assert.match(agents, /版を上げるコミットは `release: vX.Y.Z`/);
+});
+
+
+test("desktop bundle entrances use sidecars only while packaging", () => {
+  const packageJson = JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8"));
+  const root = "../../src-tauri/releash-desktop/";
+  const base = JSON.parse(readFileSync(new URL(`${root}tauri.conf.json`, import.meta.url), "utf8"));
+  assert.equal(base.bundle.externalBin, undefined);
+  assert.equal(base.build.beforeBundleCommand, undefined);
+  assert.equal(base.build.frontendDist, "../../dist");
+  for (const [name, frontend] of [["bundle", "build"], ["bundle.performance", "build:performance"]]) {
+    const config = JSON.parse(readFileSync(new URL(`${root}tauri.conf.${name}.json`, import.meta.url), "utf8"));
+    assert.deepEqual(config.bundle.externalBin, ["binaries/releash-backend"]);
+    assert.ok(config.build.beforeBuildCommand.startsWith(`pnpm ${frontend} && node scripts/build-desktop-backend.mjs`));
+  }
+  assert.match(packageJson.scripts["tauri:build"], /--config src-tauri\/releash-desktop\/tauri.conf.bundle.json/);
+  assert.match(packageJson.scripts["build:desktop:acceptance"], /--config src-tauri\/releash-desktop\/tauri.conf.performance.json --config src-tauri\/releash-desktop\/tauri.conf.bundle.performance.json/);
+  for (const script of Object.values(packageJson.scripts).filter(script => script.includes("--no-bundle"))) assert.doesNotMatch(script, /tauri.conf.bundle/);
+});
+
+const backendBuildSource = readFileSync(new URL("../../scripts/build-desktop-backend.mjs", import.meta.url), "utf8").replace(/^import .*;\n/gm, "");
+function buildBackendSidecars(target, args = [], debug = false) {
+  const commands = [];
+  const copies = [];
+  runInNewContext(backendBuildSource, {
+    process: { argv: args, env: { TAURI_ENV_TARGET_TRIPLE: target, TAURI_ENV_DEBUG: String(debug) } },
+    join,
+    mkdirSync() {},
+    copyFileSync(from, to) { copies.push([from, to]); },
+    execFileSync(command, arguments_) {
+      commands.push([command, Array.from(arguments_)]);
+      if (command === "rustc") return "host: aarch64-apple-darwin\n";
+      if (arguments_[0] === "metadata") return JSON.stringify({ target_directory: "/target" });
+    },
+  });
+  return { commands, copies };
+}
+
+test("bundle builds each universal sidecar without overwriting the workspace binary", () => {
+  const { commands, copies } = buildBackendSidecars("universal-apple-darwin", ["--performance"]);
+  for (const arch of ["aarch64-apple-darwin", "x86_64-apple-darwin"]) {
+    assert.ok(commands.some(([command, args]) => command === "cargo" && args.includes(arch) && args.includes("releash-backend") && args.includes("performance") && args.includes("vendored-openssl") && args.includes("--release")));
+    assert.deepEqual(copies.find(([, to]) => to.endsWith(arch)), [`/target/${arch}/release/releash-backend`, `src-tauri/releash-desktop/binaries/releash-backend-${arch}`]);
+  }
+  assert.ok(commands.some(([command, args]) => command === "lipo" && args.at(-1) === "src-tauri/releash-desktop/binaries/releash-backend-universal-apple-darwin"));
+  assert.ok(copies.every(([, to]) => to.startsWith("src-tauri/releash-desktop/binaries/")));
+});
+
+test("debug bundle writes a host sidecar and dev prepares the existing debug sibling", () => {
+  const bundled = buildBackendSidecars("aarch64-apple-darwin", [], true);
+  assert.deepEqual(bundled.copies, [["/target/aarch64-apple-darwin/debug/releash-backend", "src-tauri/releash-desktop/binaries/releash-backend-aarch64-apple-darwin"]]);
+  const development = buildBackendSidecars("aarch64-apple-darwin", ["--dev"]);
+  assert.deepEqual(development.copies, [["/target/aarch64-apple-darwin/debug/releash-backend", "/target/debug/releash-backend"]]);
+  assert.ok(development.commands.filter(([command, args]) => command === "cargo" && args[0] === "build").every(([, args]) => !args.includes("--release")));
 });

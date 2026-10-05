@@ -21,3 +21,7 @@ pub(crate) use dispatch::{
 };
 
 pub(super) mod worktree_mutation;
+
+#[cfg(test)]
+#[path = "dispatch_parity_test.rs"]
+mod dispatch_parity_tests;

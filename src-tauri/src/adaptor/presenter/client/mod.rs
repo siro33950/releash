@@ -22,7 +22,7 @@ where
     result.map_err(Into::into).and_then(value)
 }
 
-pub(crate) use errors::CommandFailure;
+pub use errors::CommandFailure;
 #[cfg(any(test, debug_assertions))]
 mod json;
 mod workflow_values;
@@ -132,7 +132,6 @@ impl From<crate::usecase::app_config::query_service::DesktopSettingsDto> for Des
     }
 }
 
-#[cfg(feature = "desktop")]
 impl TryFrom<DesktopSettings> for crate::usecase::app_config::query_service::DesktopSettingsDto {
     type Error = String;
     fn try_from(value: DesktopSettings) -> Result<Self, String> {

@@ -16,9 +16,6 @@ impl RetryBackoff {
     pub const RECOVERY: Self = Self::new(Duration::from_millis(800), 2.0, Duration::from_secs(30));
     pub const CONFLICT: Self = Self::new(Duration::from_millis(10), 5.0, Duration::from_secs(1));
     pub const POLL: Self = Self::new(Duration::from_millis(10), 1.0, Duration::from_millis(10));
-    #[cfg(feature = "desktop")]
-    pub const DESKTOP_POLL: Self =
-        Self::new(Duration::from_millis(20), 1.0, Duration::from_millis(20));
 
     pub const fn new(initial: Duration, multiplier: f64, maximum: Duration) -> Self {
         assert!(!initial.is_zero());
@@ -121,7 +118,7 @@ impl RetryLimiter {
         Self::with_jitter(jitter_fraction)
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn deterministic() -> Self {
         Self::with_jitter(|| 0.0)
     }

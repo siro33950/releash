@@ -1,11 +1,17 @@
-[package]
-name = "releash"
+[workspace]
+members = ["releash-desktop"]
+resolver = "2"
+
+[workspace.package]
 version = "0.4.19"
+
+[package]
+name = "releash-backend"
+version.workspace = true
 description = "A Tauri App"
 authors = ["you"]
 license = "MIT OR Apache-2.0"
 edition = "2021"
-default-run = "releash"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -14,12 +20,6 @@ default-run = "releash"
 # to make the lib name unique and wouldn't conflict with the bin name.
 # This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
 name = "releash_lib"
-crate-type = ["staticlib", "cdylib", "rlib"]
-
-[[bin]]
-name = "releash"
-path = "src/main.rs"
-required-features = ["desktop"]
 
 [[bin]]
 name = "releash-backend"
@@ -29,18 +29,10 @@ path = "src/bin/backend.rs"
 connectrpc-build = "=0.9.0"
 prost-build = "0.14.4"
 protoc-bin-vendored = "3"
-tauri-build = { version = "2", features = [], optional = true }
 
 [dependencies]
 connectrpc = { version = "=0.9.1", features = ["axum", "client"] }
 buffa = { version = "0.9.2", features = ["json"] }
-tauri = { version = "2.12", features = ["tray-icon", "image-png"], optional = true }
-tauri-plugin-opener = { version = "2", optional = true }
-tauri-plugin-fs = { version = "2", optional = true }
-tauri-plugin-dialog = { version = "2", optional = true }
-tauri-plugin-updater = { version = "2", optional = true }
-tauri-plugin-wdio = { version = "1", optional = true }
-tauri-plugin-wdio-webdriver = { version = "1", optional = true }
 open = "5"
 async-trait = "0.1"
 axum = { version = "0.8", features = ["http2"] }
@@ -89,17 +81,10 @@ libc = "0.2"
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage_FileSystem"] }
 
-[target.'cfg(target_os = "macos")'.dependencies]
-objc2 = { version = "0.6", optional = true }
-objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSString", "NSObject", "NSURL", "NSGeometry", "NSError"], optional = true }
-objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSDragging", "NSPasteboard", "NSPasteboardItem", "NSView", "NSWindow", "NSResponder"], optional = true }
-
 [features]
-default = ["desktop"]
-desktop = ["dep:tauri", "dep:tauri-build", "dep:tauri-plugin-opener", "dep:tauri-plugin-fs", "dep:tauri-plugin-dialog", "dep:tauri-plugin-updater", "dep:objc2", "dep:objc2-foundation", "dep:objc2-app-kit"]
+test-support = ["opentelemetry_sdk/testing"]
 vendored-openssl = ["git2/vendored-openssl"]
 performance = []
-performance-wdio = ["desktop", "performance", "dep:tauri-plugin-wdio", "dep:tauri-plugin-wdio-webdriver"]
 
 [dev-dependencies]
 filetime = "0.2"
@@ -107,7 +92,6 @@ opentelemetry_sdk = { version = "0.33", features = ["testing"] }
 proptest = "1"
 tokio = { version = "1", features = ["test-util"] }
 tower = { version = "0.5", features = ["util"] }
-tauri = { version = "2.12", features = ["tray-icon", "image-png", "test"] }
 
 [[test]]
 name = "client_api"
@@ -117,15 +101,3 @@ path = "tests/client_api/mod.rs"
 name = "state_subscription_scenarios"
 path = "tests/state_subscription_scenarios.rs"
 test = false
-
-[[test]]
-name = "desktop_restart"
-path = "tests/desktop_restart.rs"
-harness = false
-required-features = ["desktop"]
-
-[[test]]
-name = "desktop_tray"
-path = "tests/desktop_tray.rs"
-harness = false
-required-features = ["desktop"]

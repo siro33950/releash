@@ -455,8 +455,4 @@ pub async fn read_state(
     Ok(value.unwrap())
 }
 
-use crate::adaptor::presenter::{
-    client as wire,
-    connect_wire::{to_rpc, to_wire},
-};
-include!(concat!(env!("OUT_DIR"), "/client_calls.rs"));
+use crate::adaptor::presenter::client_calls::call;

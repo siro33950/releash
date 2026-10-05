@@ -1,0 +1,9 @@
+pub(crate) mod cli_install;
+pub(crate) mod desktop_restart;
+pub(crate) mod login_item;
+pub(crate) mod menu;
+pub(crate) mod native_drop;
+pub(crate) mod native_termination;
+pub(crate) mod single_instance;
+pub(crate) mod tray;
+pub(crate) mod window_lifecycle;

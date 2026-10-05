@@ -209,9 +209,12 @@ jobs:
         if: ${{ !cancelled() && steps.changes.outputs.rust == 'true' && steps.setup.outcome == 'success' }}
       - run: cargo deny --locked check
         if: ${{ !cancelled() && steps.changes.outputs.rust == 'true' && steps.setup.outcome == 'success' }}
-      - name: Lint Tauri-free backend
+      - name: Lint desktop shell
         if: ${{ !cancelled() && steps.changes.outputs.rust == 'true' && steps.setup.outcome == 'success' }}
-        run: cargo clippy --locked --no-default-features --bin releash-backend -- -D warnings
+        run: cargo clippy --locked -p releash-desktop -- -D warnings
+      - name: Lint desktop test support
+        if: ${{ !cancelled() && steps.changes.outputs.rust == 'true' && steps.setup.outcome == 'success' }}
+        run: cargo clippy --locked -p releash-desktop --tests -- -D warnings
 
   rust-test-desktop:
     runs-on: ubuntu-latest
@@ -264,10 +267,14 @@ jobs:
           workspaces: src-tauri
           key: rust-test-desktop
           save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
-      - run: cargo test --locked
+      - run: cargo build --locked -p releash-backend --bin releash-backend
+        if: ${{ !cancelled() && steps.changes.outputs.rust == 'true' && steps.setup.outcome == 'success' }}
+      - run: cargo clippy --locked -p releash-desktop --tests -- -D warnings
+        if: ${{ !cancelled() && steps.changes.outputs.rust == 'true' && steps.setup.outcome == 'success' }}
+      - run: cargo test --locked -p releash-desktop
         if: ${{ !cancelled() && steps.changes.outputs.rust == 'true' && steps.setup.outcome == 'success' }}
 
-  rust-test-headless:
+  rust-test-backend:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     defaults:
@@ -279,22 +286,6 @@ jobs:
           ref: ${{ inputs.ref || github.sha }}
           fetch-depth: 0
       - *rust-changes
-      - id: apt-key
-        if: steps.changes.outputs.rust == 'true'
-        run: echo "key=apt-$ImageOS-$ImageVersion" >> "$GITHUB_OUTPUT"
-      - uses: actions/cache@v6
-        if: steps.changes.outputs.rust == 'true'
-        with:
-          path: ~/apt-archives
-          key: ${{ steps.apt-key.outputs.key }}
-          restore-keys: apt-
-      - name: Install Tauri dependencies
-        if: steps.changes.outputs.rust == 'true'
-        run: |
-          mkdir -p ~/apt-archives/partial
-          sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libgtk-3-dev libsoup-3.0-dev libjavascriptcoregtk-4.1-dev -o Dir::Cache::Archives="$HOME/apt-archives"
-          sudo chown -R "$USER" ~/apt-archives
       - name: Install Rust toolchain
         if: steps.changes.outputs.rust == 'true'
         run: rustup toolchain install
@@ -303,22 +294,22 @@ jobs:
         if: steps.changes.outputs.rust == 'true'
         with:
           workspaces: src-tauri
-          key: rust-test-headless
+          key: rust-test-backend
           save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
-      - name: Headless backend unit tests
+      - name: Backend tests
         if: ${{ !cancelled() && steps.changes.outputs.rust == 'true' && steps.setup.outcome == 'success' }}
-        run: cargo test --locked --no-default-features --lib
-      - name: Headless state subscription scenarios
+        run: cargo test --locked
+      - name: Backend state subscription scenarios
         if: ${{ !cancelled() && steps.changes.outputs.rust == 'true' && steps.setup.outcome == 'success' }}
-        run: "cargo test --locked --no-default-features --test state_subscription_scenarios scenarios_tests::"
-      - name: Headless daemon protocol smoke test
+        run: "cargo test --locked --test state_subscription_scenarios scenarios_tests::"
+      - name: Backend daemon protocol smoke test
         if: ${{ !cancelled() && steps.changes.outputs.rust == 'true' && steps.setup.outcome == 'success' }}
-        run: cargo test --locked --no-default-features --test daemon_smoke
+        run: cargo test --locked --test daemon_smoke
 
   # ruleset の required status check が参照する名前を保つための集約ジョブ。
   # lint と test を並列に回しても、片方の失敗でもう片方の結果を失わない。
   rust:
-    needs: [rust-lint, rust-test-desktop, rust-test-headless]
+    needs: [rust-lint, rust-test-desktop, rust-test-backend]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -327,9 +318,9 @@ jobs:
         run: |
           lint='${{ needs.rust-lint.result }}'
           desktop='${{ needs.rust-test-desktop.result }}'
-          headless='${{ needs.rust-test-headless.result }}'
-          echo "rust-lint=$lint rust-test-desktop=$desktop rust-test-headless=$headless"
-          for result in "$lint" "$desktop" "$headless"; do
+          backend='${{ needs.rust-test-backend.result }}'
+          echo "rust-lint=$lint rust-test-desktop=$desktop rust-test-backend=$backend"
+          for result in "$lint" "$desktop" "$backend"; do
             if [ "$result" != "success" ] && [ "$result" != "skipped" ]; then
               exit 1
             fi

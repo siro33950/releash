@@ -5,7 +5,7 @@ use crate::usecase::app_config::error::UsecaseError;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct DesktopSettingsDto {
+pub struct DesktopSettingsDto {
     pub close_to_tray: bool,
     pub start_minimized: bool,
     pub crash_reporting: bool,

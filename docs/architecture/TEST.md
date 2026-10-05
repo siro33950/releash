@@ -23,11 +23,15 @@
 
 | 種類 | 置き場所 | 実行 | CI |
 |---|---|---|---|
-| 単体（Rust） | `src-tauri/src/` の `<impl>_test.rs` | `cargo test --lib --bins` | PR 層の単体ジョブ |
+| 単体（サーバ） | `src-tauri/src/` の `<impl>_test.rs` | `cargo test --lib --bins -p releash-backend` | PR 層の単体ジョブ |
+| 単体（シェル） | `src-tauri/releash-desktop/src/` の `<impl>_test.rs` | `cargo test --lib --bins -p releash-desktop` | PR 層の単体ジョブ |
 | 単体（フロント） | `src/` の `*.test.ts(x)` | `pnpm test` | PR 層の単体ジョブ |
-| 統合（Rust） | `src-tauri/tests/` | `cargo test --test '*'` | PR 層の統合ジョブ |
+| 統合（サーバ） | `src-tauri/tests/` | `cargo test --test '*' -p releash-backend` | PR 層の統合ジョブ |
+| 統合（シェル） | `src-tauri/releash-desktop/tests/` | `cargo test --test '*' -p releash-desktop` | PR 層の統合ジョブ |
 | 統合（フロント） | `tests/integration/` | `pnpm test:integration` | PR 層の統合ジョブ |
 | 振る舞い | `tests/behavior/` | `pnpm test:behavior` | nightly 層 |
+
+シェルの統合テストの前に、`src-tauri/` で `cargo build --locked -p releash-backend --bin releash-backend` を実行する。テストから cargo は呼ばない。
 
 Rust の単体テストは、実装と同じディレクトリに `<impl>_test.rs` を置き、`<impl>.rs` の末尾で `#[path]` を指定して取り込む。ファイル名は `<impl>_test.rs`、テストモジュール名は `<impl>_tests` とする。
 

@@ -4370,7 +4370,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 
 [[package]]
-name = "releash"
+name = "releash-backend"
 version = "0.4.19"
 dependencies = [
  "async-trait",
@@ -4393,9 +4393,6 @@ dependencies = [
  "log",
  "mlua",
  "notify-debouncer-mini",
- "objc2",
- "objc2-app-kit",
- "objc2-foundation",
  "open",
  "opentelemetry",
  "opentelemetry-otlp",
@@ -4416,6 +4413,40 @@ dependencies = [
  "sha2 0.11.0",
  "subtle",
  "sysinfo",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "tokio-util",
+ "toml 1.1.6+spec-1.1.0",
+ "tower",
+ "url",
+ "uuid",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "releash-desktop"
+version = "0.4.19"
+dependencies = [
+ "async-trait",
+ "axum",
+ "base64 0.23.1",
+ "connectrpc",
+ "fs2",
+ "futures-util",
+ "git2",
+ "libc",
+ "log",
+ "objc2",
+ "objc2-app-kit",
+ "objc2-foundation",
+ "parking_lot",
+ "prost",
+ "prost-reflect",
+ "releash-backend",
+ "rusqlite",
+ "serde",
+ "serde_json",
  "tauri",
  "tauri-build",
  "tauri-plugin-dialog",
@@ -4427,12 +4458,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "tokio",
- "tokio-util",
- "toml 1.1.6+spec-1.1.0",
- "tower",
- "url",
  "uuid",
- "windows-sys 0.61.2",
 ]
 
 [[package]]

@@ -6,7 +6,7 @@ import { config as performanceConfig } from "./wdio.performance.conf";
 
 const directory = process.env.RELEASH_CLIENT_STREAMS_DIRECTORY;
 if (!directory) throw new Error("Run with pnpm test:client-streams:macos");
-const appBinaryPath = "./src-tauri/target/debug/releash";
+const appBinaryPath = "./src-tauri/target/debug/releash-desktop";
 
 export const config: Options.Testrunner = {
 	...performanceConfig,

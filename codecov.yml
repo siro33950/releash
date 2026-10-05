@@ -24,6 +24,7 @@ flags:
   rust:
     paths:
       - src-tauri/src/
+      - src-tauri/releash-desktop/src/
     carryforward: true
   typescript:
     paths:

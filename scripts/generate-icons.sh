@@ -3,7 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-ICONS_DIR="$PROJECT_DIR/src-tauri/icons"
+ICONS_DIR="$PROJECT_DIR/src-tauri/releash-desktop/icons"
 SRC="$ICONS_DIR/icon.png"
 TMP_DIR=$(mktemp -d)
 

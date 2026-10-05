@@ -4,7 +4,7 @@ use crate::usecase::telemetry::{
 };
 use std::time::Duration;
 
-pub(crate) struct TelemetryGateway;
+pub struct TelemetryGateway;
 impl TelemetryPort for TelemetryGateway {
     fn report_frontend_error(&self, error_type: &str, message: &str, stack: Option<&str>) {
         crate::infrastructure::telemetry::crash::report_frontend_error(error_type, message, stack);
