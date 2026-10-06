@@ -53,7 +53,7 @@ function command(step) {
 }
 
 function commands(job) {
-  return steps(job).map(command).filter(command => /^(cargo |pnpm (lint|test|build|exec (?:vitest|biome))\b|node (?:--test |\.github\/scripts\/test-placement\.mjs)|python3 |qlty check )/.test(command));
+  return steps(job).map(command).filter(command => /^(cargo |pnpm (lint|test|build|exec (?:vitest|biome))\b|node (?:--test |\.github\/scripts\/test-placement\.mjs)|python3 |ast-grep test|qlty check )/.test(command));
 }
 
 const rustCommands = {
@@ -97,7 +97,7 @@ test("PR and main push share the required parallel jobs and command allocation",
   }
   assert.deepEqual(commands(ciJobs.frontend), ["pnpm exec biome ci .", "node .github/scripts/test-placement.mjs", "pnpm test", "pnpm build"]);
   assert.deepEqual(commands(ciJobs.integration), ["pnpm test:integration"]);
-  assert.deepEqual(commands(ciJobs.quality), ["qlty check --no-progress --all"]);
+  assert.deepEqual(commands(ciJobs.quality), ["ast-grep test", "qlty check --no-progress --all"]);
   for (const [name, expected] of Object.entries(rustCommands)) {
     assert.deepEqual(commands(ciJobs[name]), expected);
     assert.equal(value(ciJobs[name], "working-directory"), "src-tauri");
@@ -172,7 +172,8 @@ test("integration comments skip cancelled runs and report failures on both creat
 test("Rust jobs build both packages with Tauri system dependencies", () => {
   for (const name of ["rust-unit", "rust-integration"]) {
     const job = jobs(ciConfig)[name];
-    assert.match(job, /pnpm install --frozen-lockfile/);
+    if (name === "rust-integration") assert.match(job, /Install Node dependencies for client acceptance tests/);
+    else assert.doesNotMatch(job, /pnpm|setup-node/);
     assert.match(job, /libwebkit/);
     assert.deepEqual(commands(job), rustCommands[name]);
   }
@@ -1071,25 +1072,44 @@ test("test placement rejects misplaced tests and accepts each supported location
   for (const path of ["tests/settings.spec.ts", "src-tauri/src/example.rs", "scripts/example_test.rs"]) {
     assert.ok(placementErrors(path, "#[test] fn test_case() {}").length, path);
   }
-  for (const path of ["src/example.test.tsx", "tests/integration/example.spec.ts", "tests/behavior/example.spec.ts", "src-tauri/src/example_test.rs", "src-tauri/releash-desktop/src/example_test.rs", "src-tauri/tests/example.rs", "src-tauri/releash-desktop/tests/example.rs", ".github/scripts/example.test.mjs", "src-tauri/src/test_helpers.rs", "src-tauri/src/test_support/example.rs", "tests/helpers/example.spec.ts", "src/test/setup.ts"]) {
-    assert.deepEqual(placementErrors(path, "#[tokio::test] async fn test_case() {}"), [], path);
+  for (const path of ["src/example.test.tsx", "tests/integration/example.spec.ts", "tests/behavior/example.spec.ts", "src-tauri/src/example_test.rs", "src-tauri/releash-desktop/src/example_test.rs", "src-tauri/tests/example.rs", "src-tauri/releash-desktop/tests/example.rs", ".github/scripts/example.test.mjs", ".ast-grep/tests/example.yml"]) {
+    assert.deepEqual(placementErrors(path, "#[tokio::test] async fn test_case() {}", () => true), [], path);
   }
   assert.ok(placementErrors("src-tauri/src/example.rs", "#[tokio::test(flavor = \"multi_thread\")] async fn test_case() {}").length);
 });
 
-
-test("test placement does not treat ordinary support, helpers, or fixtures directories as test auxiliaries", () => {
-  for (const directory of ["support", "helpers", "fixtures", "test_helpers_domain"]) {
-    for (const root of ["src-tauri/src/domain", "src-tauri/releash-desktop/src/domain"]) {
-      const path = `${root}/${directory}/example.rs`;
-      assert.ok(placementErrors(path, "#[test] fn test_case() {}").length, path);
-    }
-    const path = `scripts/${directory}/example_test.rs`;
+test("test placement allows auxiliaries only when they contain no tests", () => {
+  for (const path of ["tests/helpers/example.ts", "tests/fixtures/example.rs", "src-tauri/tests/support/example.rs", "src-tauri/releash-desktop/tests/support/example.rs", "src-tauri/src/domain/test_support/example.rs", "src-tauri/src/domain/test_helpers_example.rs", "src/test/setup.ts"]) {
+    assert.deepEqual(placementErrors(path, ""), [], path);
     assert.ok(placementErrors(path, "#[test] fn test_case() {}").length, path);
-    const frontendPath = `src/domain/${directory}/example.spec.ts`;
-    assert.ok(placementErrors(frontendPath, "").length, frontendPath);
+    assert.ok(placementErrors(path.replace(/\.[^.]+$/, "_test.rs"), "").length, path);
   }
-  for (const path of ["tests/helpers/example.spec.ts", "tests/fixtures/example.spec.ts", "src-tauri/tests/support/example.rs", "src-tauri/src/domain/test_support/example.rs", "src-tauri/src/domain/test_helpers_example.rs", "src/test/setup.ts"]) {
-    assert.deepEqual(placementErrors(path, "#[test] fn test_case() {}"), [], path);
+  for (const path of ["tests/helpers/example.spec.ts", "tests/fixtures/example.test.tsx", "src/test/example.test.ts"]) {
+    assert.ok(placementErrors(path, "").length, path);
   }
+  for (const directory of ["support", "helpers", "fixtures", "test_helpers_domain"]) {
+    const path = `src-tauri/src/domain/${directory}/example.rs`;
+    assert.ok(placementErrors(path, "#[test] fn test_case() {}").length, path);
+  }
+});
+
+test("test placement checks Rust implementation pairing and path module names", () => {
+  assert.ok(placementErrors("src-tauri/src/example_test.rs", "", () => false).length);
+  const correct = '#[cfg(test)]\n#[path = "example_test.rs"]\nmod example_tests;';
+  assert.deepEqual(placementErrors("src-tauri/src/example.rs", correct, () => true), []);
+  assert.ok(placementErrors("src-tauri/src/example.rs", correct.replace("example_tests", "tests"), () => true).length);
+  assert.ok(placementErrors("src-tauri/src/example.rs", correct + '\n#[path = "other_test.rs"] mod other_tests;', () => true).length);
+  assert.ok(placementErrors("src-tauri/src/example.rs", correct, () => false).length);
+  assert.deepEqual(placementErrors("src-tauri/src/domain/mod.rs", '#[path = "mod_test.rs"] mod mod_tests;', () => true), []);
+});
+
+
+test("test placement checks imports with attributes between path and mod", () => {
+  const path = "src-tauri/src/example.rs";
+  const correct = '#[path = "example_test.rs"]\n#[cfg(test)]\n#[allow(unused, reason = "test module")]\npub(crate) mod example_tests;';
+  assert.deepEqual(placementErrors(path, correct, () => true), []);
+  const wrongName = placementErrors(path, correct.replace("mod example_tests", "mod tests"), () => true);
+  assert.ok(wrongName.some(error => error.startsWith(`${path}:`) && error.includes("モジュール名")));
+  const multiple = placementErrors(path, correct + '\n#[path = "other_test.rs"]\n#[cfg(test)]\nmod other_tests;', () => true);
+  assert.ok(multiple.some(error => error.startsWith(`${path}:`) && error.includes("一つだけ")));
 });

@@ -22,8 +22,6 @@ pub(crate) mod facet;
 pub(crate) mod facet_repository;
 pub(crate) mod fact_codec;
 pub(crate) mod fact_log;
-#[cfg(test)]
-pub(crate) mod failure_policy_config;
 pub(crate) mod failure_wire;
 pub(crate) mod lua;
 pub(crate) mod mapper;
@@ -71,3 +69,6 @@ pub(crate) use worktree_gateway::RepoPathsManagedWorktreeGateway;
 pub(crate) use worktree_gateway::RepositoryManagedWorktreeGateway;
 
 pub(crate) use worktree_gateway::RepositoryIsolatedWorktreeGateway;
+
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) mod test_helpers;

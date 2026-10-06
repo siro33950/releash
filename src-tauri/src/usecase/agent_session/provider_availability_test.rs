@@ -12,7 +12,7 @@ use crate::domain::provider_lifecycle::ProviderKind;
 
 use super::{ProviderAvailabilityUsecase, ProviderAvailabilityUsecaseError};
 
-use super::test_helpers_provider_availability::{
+use super::super::test_helpers_provider_availability::{
     FakeProviderExecutableConfigRepository, FakeProviderExecutableProbeGateway,
 };
 
@@ -417,7 +417,7 @@ fn test_provider利用可否_四種類の利用不可理由を出力へ写す() 
 
 #[test]
 fn test_provider設定失敗_全変種から技術的な失敗だけを参照する() {
-    use super::provider_availability::ProviderAvailabilityUsecaseError as E;
+    use super::ProviderAvailabilityUsecaseError as E;
     use crate::domain::agent_session::{
         ProviderExecutableConfigRepositoryError as C, ProviderExecutableProbeGatewayError as P,
     };

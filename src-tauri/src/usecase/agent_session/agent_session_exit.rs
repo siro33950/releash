@@ -99,3 +99,7 @@ impl AgentSessionExitPort for AgentSessionLifecycleUsecase {
         .await
     }
 }
+
+#[cfg(test)]
+#[path = "agent_session_exit_test.rs"]
+mod agent_session_exit_tests;

@@ -144,3 +144,7 @@ impl ProviderSessionTitleIngestionUsecase {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "provider_session_title_ingestion_test.rs"]
+pub(crate) mod provider_session_title_ingestion_tests;

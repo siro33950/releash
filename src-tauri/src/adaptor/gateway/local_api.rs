@@ -255,3 +255,7 @@ fn assess_discovery(
         ProcessObservation::from_raw(process.process_list_available, process.start_time),
     )
 }
+
+#[cfg(test)]
+#[path = "local_api_test.rs"]
+mod local_api_tests;

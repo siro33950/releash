@@ -240,6 +240,7 @@ pub struct WorkflowExecutionSummaryDto {
 }
 
 #[cfg(any(test, feature = "test-support"))]
+#[cfg(test)]
 pub fn workflow_to_dto(definition: &domain::WorkflowDefinition) -> WorkflowDto {
     workflow_to_dto_with_source_format(definition, domain::WorkflowSourceFormat::Yaml)
 }

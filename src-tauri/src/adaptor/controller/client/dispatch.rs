@@ -159,3 +159,7 @@ where
 {
     value.map(convert).transpose()
 }
+
+#[cfg(test)]
+#[path = "dispatch_test.rs"]
+mod dispatch_tests;

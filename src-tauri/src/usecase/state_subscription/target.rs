@@ -107,7 +107,7 @@ impl SubscriptionTarget {
 
 #[cfg(test)]
 #[path = "target_test.rs"]
-mod subscription_target_tests;
+mod target_tests;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum StateChangeSource {

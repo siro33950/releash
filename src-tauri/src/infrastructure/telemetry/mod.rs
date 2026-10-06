@@ -133,10 +133,6 @@ pub(crate) fn build_resource(build_type: config::BuildType) -> Resource {
         .build()
 }
 
-#[cfg(test)]
-#[path = "telemetry_test.rs"]
-mod telemetry_tests;
-
 pub(crate) mod metrics;
 
 #[cfg(test)]

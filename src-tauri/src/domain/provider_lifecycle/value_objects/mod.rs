@@ -5,9 +5,7 @@ mod provider_lifecycle_capability_hash;
 pub(crate) mod provider_lifecycle_event;
 pub(crate) mod provider_lifecycle_outcome;
 pub(crate) mod provider_lifecycle_scope;
-#[cfg(test)]
-#[path = "provider_lifecycle_scope_test.rs"]
-mod provider_lifecycle_scope_tests;
+
 pub(crate) mod provider_lifecycle_signal;
 pub(crate) mod provider_lifecycle_slot_id;
 pub(crate) mod provider_lifecycle_unavailable;

@@ -176,3 +176,7 @@ fn classify_transport_error(error: reqwest::Error) -> LocalApiTransportError {
 #[cfg(test)]
 #[path = "client_test.rs"]
 mod client_tests;
+
+#[cfg(any(test, feature = "test-support"))]
+#[path = "test_helpers_client.rs"]
+pub(crate) mod shared_test_helpers;

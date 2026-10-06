@@ -60,3 +60,7 @@ impl AgentSessionHistoryReadUsecase {
         self.query.list(request).await
     }
 }
+
+#[cfg(test)]
+#[path = "agent_session_history_test.rs"]
+mod agent_session_history_tests;

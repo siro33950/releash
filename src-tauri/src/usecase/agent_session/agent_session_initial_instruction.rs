@@ -112,5 +112,5 @@ fn map_session_error(error: AgentSessionUsecaseError) -> AgentSessionInitialInst
 }
 
 #[cfg(test)]
-#[path = "agent_session_initial_instruction_classification_test.rs"]
-mod classification_tests;
+#[path = "agent_session_initial_instruction_test.rs"]
+mod agent_session_initial_instruction_tests;

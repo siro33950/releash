@@ -269,3 +269,7 @@ fn build_registry(
         .collect::<Result<Vec<_>, ProviderAvailabilityUsecaseError>>()?;
     ProviderRegistry::new(entries).map_err(|_| ProviderAvailabilityUsecaseError::Corrupt)
 }
+
+#[cfg(test)]
+#[path = "provider_availability_test.rs"]
+mod provider_availability_tests;

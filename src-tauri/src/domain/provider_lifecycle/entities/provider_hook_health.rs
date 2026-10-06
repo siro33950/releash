@@ -185,3 +185,7 @@ impl ProviderHookHealth {
         ProviderHookHealthOutcome::Applied(event)
     }
 }
+
+#[cfg(test)]
+#[path = "provider_hook_health_test.rs"]
+mod provider_hook_health_tests;

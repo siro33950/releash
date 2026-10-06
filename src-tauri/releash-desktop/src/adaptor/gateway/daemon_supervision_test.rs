@@ -83,3 +83,53 @@ async fn test_daemon停止_終了観測とkillのエラーを伝播する() {
         "kill failed"
     );
 }
+
+#[test]
+fn test_接続失敗_技術的分類を監督へ渡す() {
+    // Given
+    let failure = TechnicalFailure {
+        nature: releash_lib::desktop_api::TechnicalFailureNature::TimedOut,
+        message: "State stream was silent".into(),
+    };
+    // When
+    let result = supervised_connection_failure(failure);
+    // Then
+    assert_eq!(
+        result.stage,
+        FailureStage::Connection(releash_lib::desktop_api::TechnicalFailureNature::TimedOut)
+    );
+    assert_eq!(result.reason, "State stream was silent");
+}
+
+#[tokio::test]
+async fn test_daemon停止_子がない場合は即座に完了する() {
+    // Given
+    let gateway = DaemonProcessGateway::new(
+        PathBuf::new(),
+        PathBuf::new(),
+        Arc::new(RetryLimiter::new()),
+    );
+    // When / Then
+    gateway.terminate_and_wait().await.unwrap();
+}
+
+#[test]
+fn test_停止応答_acceptedを受理し異なる応答を拒否する() {
+    // Given
+    use wire::{application_quit_outcome_dto_v1 as outcome, command_result::Command};
+    let response = |variant| {
+        Command::RequestApplicationQuit(wire::ApplicationQuitOutcomeDtoV1 {
+            variant: Some(variant),
+        })
+    };
+    // When / Then
+    shutdown_response(response(outcome::Variant::Accepted(Default::default()))).unwrap();
+    assert!(shutdown_response(Command::RequestApplicationQuit(
+        wire::ApplicationQuitOutcomeDtoV1 { variant: None },
+    ))
+    .is_err());
+    assert_eq!(
+        shutdown_response(Command::UpdateExternalEditor(Default::default())).unwrap_err(),
+        "Unexpected shutdown response."
+    );
+}

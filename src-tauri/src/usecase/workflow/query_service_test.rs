@@ -1,5 +1,7 @@
+use crate::usecase::workflow::shared_test_helpers::FakeEventRepository;
 pub(crate) mod tests {
     use super::super::*;
+    use super::*;
     use crate::domain::workflow::{
         ExecutionOrigin, ExecutionStatus, FacetRefs, NodeCompletion, NodeDefinition, NodeExecution,
         NodeExecutionStatus, NodeKind, NodeKindName, SessionSpec, TokenUsage,
@@ -115,27 +117,6 @@ pub(crate) mod tests {
                     builtin: false,
                 })
                 .collect())
-        }
-    }
-
-    #[derive(Default)]
-    struct FakeEventRepository {
-        events: Mutex<Vec<WorkflowEventDraft>>,
-    }
-
-    #[async_trait::async_trait]
-    impl WorkflowEventRepository for FakeEventRepository {
-        #[cfg(test)]
-        fn append(&self, event: &WorkflowEventDraft) -> Result<(), WorkflowError> {
-            self.events.lock().unwrap().push(event.clone());
-            Ok(())
-        }
-
-        async fn read(
-            &self,
-            _execution_id: &ExecutionTreeId,
-        ) -> Result<Vec<WorkflowEventDraft>, WorkflowError> {
-            Ok(self.events.lock().unwrap().clone())
         }
     }
 

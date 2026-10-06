@@ -123,7 +123,7 @@ pub(crate) mod tests {
     }
 
     #[derive(Default)]
-    struct FakeRuntimeGateway {
+    pub(crate) struct FakeRuntimeGateway {
         calls: Mutex<Vec<&'static str>>,
         failure: Option<WorkflowError>,
     }

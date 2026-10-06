@@ -2,7 +2,7 @@ use releash_lib::test_support::terminal_subscription_acceptance::{
     TerminalSubscription as TerminalSurfaceWireAttachment,
     TerminalSubscriptionHarness as TerminalSurfaceRuntime,
 };
-#[path = "support/agent_tui_fixture.rs"]
+#[path = "agent_tui_fixture.rs"]
 mod agent_tui_fixture;
 
 use std::time::Duration;

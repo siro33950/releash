@@ -876,5 +876,5 @@ fn map_workflow_error(
 }
 
 #[cfg(test)]
-#[path = "agent_session_lifecycle_error_test.rs"]
-pub(crate) mod error_tests;
+#[path = "agent_session_lifecycle_test.rs"]
+mod agent_session_lifecycle_tests;

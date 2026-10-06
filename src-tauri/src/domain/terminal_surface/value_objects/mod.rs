@@ -1,7 +1,5 @@
 pub(crate) mod terminal_process_launch;
-#[cfg(test)]
-#[path = "terminal_process_launch_test.rs"]
-mod terminal_process_launch_tests;
+
 pub(crate) mod terminal_process_state;
 mod terminal_runtime_generation;
 pub(crate) mod terminal_surface_checkpoint;
@@ -9,8 +7,6 @@ pub(crate) mod terminal_surface_owner;
 mod terminal_surface_startup_command;
 
 pub use terminal_process_launch::TerminalProcessLaunch;
-#[cfg(test)]
-pub use terminal_process_launch::TerminalProcessLaunchError;
 pub use terminal_process_state::TerminalProcessState;
 pub use terminal_runtime_generation::TerminalRuntimeGeneration;
 pub use terminal_surface_checkpoint::{

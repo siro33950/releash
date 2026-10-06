@@ -13,7 +13,7 @@ rule:
   any:
     - all:
         - kind: use_declaration
-        - regex: '(tempfile|std[^;]*process[^;]*Command|tokio[^;]*process|TcpListener|TcpStream|git2[^;]*Repository)'
+        - regex: '(tempfile|(?:std|tokio)[^;]*process[^;]*(?:Command|\*|\bas\b)|std[^;]*net[^;]*(?:\*|\bas\b)|tokio[^;]*process|TcpListener|TcpStream|git2[^;]*Repository)'
     - all:
         - kind: use_declaration
         - regex: 'rusqlite[^;]*Connection'
@@ -26,7 +26,7 @@ rule:
               stopBy: end
     - all:
         - kind: scoped_identifier
-        - regex: '^(?:::)?(tempfile\s*::|std\s*::\s*process\s*::\s*Command|tokio\s*::\s*process\s*::|(?:rusqlite\s*::\s*)?Connection\s*::\s*open\w*$|(?:git2\s*::\s*)?Repository\s*::\s*(init|open)\w*$)'
+        - regex: '(?:^|::)\s*(Command\s*::\s*new|Connection\s*::\s*open\w*|Repository\s*::\s*(init|open)\w*)$|^(?:::)?(tempfile\s*::|tokio\s*::\s*process\s*::)'
     - all:
         - kind: identifier
         - regex: '^(tempfile|TcpListener|TcpStream)$'

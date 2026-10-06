@@ -400,3 +400,7 @@ impl ProviderLifecycleBinding {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "provider_lifecycle_binding_test.rs"]
+mod provider_lifecycle_binding_tests;

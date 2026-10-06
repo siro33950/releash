@@ -136,3 +136,130 @@ fn only_lock_contention_is_store_in_use() {
         );
     }
 }
+
+mod restored_memory_cases {
+    use super::super::*;
+    use crate::adaptor::gateway::local_event_store::store::memory_test_helpers::*;
+
+    #[test]
+    pub fn test_store起動失敗_io種類とメッセージが実行中と一致する() {
+        use crate::domain::failure::Failure;
+        use crate::domain::failure::TechnicalFailureNature::Other;
+        use crate::domain::failure::TechnicalFailureNature::TimedOut;
+        use crate::domain::failure::TechnicalFailureNature::Transient;
+        use std::io::ErrorKind as E;
+        for (kind, expected) in [
+            (E::Interrupted, Transient),
+            (E::WouldBlock, Transient),
+            (E::ConnectionReset, Transient),
+            (E::ConnectionAborted, Transient),
+            (E::NotConnected, Transient),
+            (E::TimedOut, TimedOut),
+            (E::PermissionDenied, Other),
+            (E::StorageFull, Other),
+        ] {
+            // Given
+            let error = std::io::Error::new(kind, "original io failure");
+            // When
+            let LocalEventStoreOpenError::StorageUnavailable(failure) =
+                crate::adaptor::gateway::local_event_store::store::io_open_failure(error)
+            else {
+                panic!("expected technical failure")
+            };
+            let runtime = crate::adaptor::gateway::shared::background_io::failure(
+                std::io::Error::new(kind, "original io failure"),
+            );
+            // Then
+            assert_eq!(failure.nature, expected);
+            assert_eq!(runtime.kind, Failure::Technical(expected));
+            assert_eq!(runtime.message, failure.message);
+        }
+    }
+
+    #[test]
+    pub fn sqlite_io_permission_and_capacity_failures_are_storage_unavailable() {
+        for code in [
+            rusqlite::ffi::SQLITE_PERM,
+            rusqlite::ffi::SQLITE_BUSY,
+            rusqlite::ffi::SQLITE_LOCKED,
+            rusqlite::ffi::SQLITE_NOMEM,
+            rusqlite::ffi::SQLITE_READONLY,
+            rusqlite::ffi::SQLITE_IOERR,
+            rusqlite::ffi::SQLITE_FULL,
+            rusqlite::ffi::SQLITE_CANTOPEN,
+            rusqlite::ffi::SQLITE_PROTOCOL,
+            rusqlite::ffi::SQLITE_TOOBIG,
+        ] {
+            assert_eq!(
+                classify_sqlite_error(
+                    &sqlite_failure(code),
+                    LocalEventStoreOpenError::SchemaEvolutionFailed,
+                ),
+                LocalEventStoreOpenError::StorageUnavailable(
+                    crate::domain::failure::TechnicalFailure {
+                        nature: match code {
+                            rusqlite::ffi::SQLITE_BUSY | rusqlite::ffi::SQLITE_LOCKED =>
+                                crate::domain::failure::TechnicalFailureNature::Transient,
+                            _ => crate::domain::failure::TechnicalFailureNature::Other,
+                        },
+                        message: sqlite_failure(code).to_string(),
+                    }
+                )
+            );
+        }
+        assert_eq!(
+            classify_sqlite_error(
+                &sqlite_failure(rusqlite::ffi::SQLITE_CORRUPT),
+                LocalEventStoreOpenError::StoreValidationFailed,
+            ),
+            LocalEventStoreOpenError::StoreValidationFailed
+        );
+        assert_eq!(
+            classify_connection_error(
+                &ConnectionError::SqliteTooOld { version_number: 0 },
+                LocalEventStoreOpenError::StoreValidationFailed,
+            ),
+            LocalEventStoreOpenError::UnsupportedRuntime
+        );
+    }
+
+    #[test]
+    pub fn test_store接続失敗_版不足とsqliteの性質を保持する() {
+        use crate::domain::failure::TechnicalFailure;
+        use crate::domain::failure::TechnicalFailureNature::Other;
+        use crate::domain::failure::TechnicalFailureNature::Transient;
+        // Given / When / Then
+        assert_eq!(
+            connection_open_failure(&ConnectionError::SqliteTooOld { version_number: 0 }),
+            LocalEventStoreOpenError::UnsupportedRuntime
+        );
+        for (code, nature) in [
+            (rusqlite::ffi::SQLITE_BUSY, Transient),
+            (rusqlite::ffi::SQLITE_PERM, Other),
+            (rusqlite::ffi::SQLITE_CORRUPT, Other),
+        ] {
+            let error = sqlite_failure(code);
+            let message = error.to_string();
+            assert_eq!(
+                connection_open_failure(&ConnectionError::Sqlite(error)),
+                LocalEventStoreOpenError::StorageUnavailable(TechnicalFailure { nature, message })
+            );
+        }
+    }
+
+    #[test]
+    pub fn startup_maintenance_reopen_failures_use_the_connection_classifier() {
+        assert_eq!(
+            classify_startup_maintenance_error(&StartupMaintenanceError::Connection(
+                ConnectionError::Sqlite(sqlite_failure(rusqlite::ffi::SQLITE_IOERR)),
+            )),
+            sqlite_open_failure(&sqlite_failure(rusqlite::ffi::SQLITE_IOERR))
+        );
+        assert_eq!(
+            classify_startup_maintenance_error(&StartupMaintenanceError::Connection(
+                ConnectionError::SqliteTooOld { version_number: 0 },
+            )),
+            LocalEventStoreOpenError::UnsupportedRuntime
+        );
+    }
+}

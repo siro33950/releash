@@ -184,5 +184,5 @@ pub fn run() -> i32 {
 }
 
 #[cfg(test)]
-#[path = "cli_test.rs"]
-mod cli_tests;
+#[path = "mod_test.rs"]
+mod mod_tests;

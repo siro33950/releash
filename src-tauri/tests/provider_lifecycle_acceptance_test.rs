@@ -1,4 +1,4 @@
-#[path = "support/agent_tui_fixture.rs"]
+#[path = "agent_tui_fixture.rs"]
 mod agent_tui_fixture;
 
 use std::io::{Read, Write};

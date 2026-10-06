@@ -432,8 +432,5 @@ fn scoped(
 }
 
 #[cfg(test)]
-#[path = "provider_lifecycle_ingress_test.rs"]
-mod provider_lifecycle_ingress_tests;
-#[cfg(test)]
-#[path = "provider_lifecycle_usecase_test.rs"]
-mod provider_lifecycle_usecase_tests;
+#[path = "mod_test.rs"]
+mod mod_tests;

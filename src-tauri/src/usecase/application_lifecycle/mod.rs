@@ -18,9 +18,9 @@ pub(crate) async fn shutdown(gateway: &dyn ApplicationShutdownGateway) {
     }
 }
 
-#[cfg(test)]
-#[path = "application_lifecycle_test.rs"]
-mod application_lifecycle_tests;
-
 #[cfg(any(test, feature = "test-support"))]
 pub(crate) mod test_helpers;
+
+#[cfg(test)]
+#[path = "mod_test.rs"]
+mod mod_tests;

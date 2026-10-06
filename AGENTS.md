@@ -120,6 +120,7 @@ cargo test --locked --test '*' -p releash-desktop
 品質ゲート（プロジェクトルート。clippy と biome を横断で走らせる）:
 
 ```bash
+ast-grep test
 qlty check --no-progress --all
 ```
 

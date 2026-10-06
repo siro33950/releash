@@ -1,9 +1,9 @@
-#[path = "support/internal/adaptor/gateway/daemon_supervision_test.rs"]
+#[path = "internal/daemon_supervision.rs"]
 mod daemon_supervision_tests;
-#[path = "support/internal/adaptor/gateway/desktop_client_test.rs"]
+#[path = "internal/desktop_client.rs"]
 mod desktop_client_tests;
-#[path = "support/internal/desktop_test.rs"]
+#[path = "internal/desktop.rs"]
 mod desktop_tests;
 #[cfg(unix)]
-#[path = "support/internal/infrastructure/platform/single_instance_test.rs"]
+#[path = "internal/single_instance.rs"]
 mod single_instance_tests;

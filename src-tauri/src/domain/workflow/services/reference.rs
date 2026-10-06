@@ -540,10 +540,6 @@ pub(crate) fn is_reserved_artifact_name(value: &str) -> bool {
     value == REQUEST_ARTIFACT
 }
 
-#[cfg(test)]
-#[path = "reference_path_test.rs"]
-mod reference_path_test;
-
 pub(crate) fn node_has_artifact(node: &NodeDefinition) -> bool {
     match node.kind_name() {
         NodeKindName::Command | NodeKindName::Fanout | NodeKindName::Sequence => true,

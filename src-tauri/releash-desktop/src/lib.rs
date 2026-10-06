@@ -11,15 +11,5 @@ pub use desktop::run;
 mod desktop_client_acceptance;
 
 #[cfg(feature = "test-support")]
-pub mod test_support {
-    pub use crate::desktop_client_acceptance::*;
-    #[cfg(unix)]
-    pub mod cli_install {
-        pub use crate::infrastructure::platform::cli_install::{
-            install_cli_symlink_with_runner, CliInstallStatus,
-        };
-    }
-    pub mod integration {
-        include!("integration_test_support.rs");
-    }
-}
+#[path = "test_support.rs"]
+pub mod test_support;

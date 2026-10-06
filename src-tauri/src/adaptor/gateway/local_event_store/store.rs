@@ -1090,3 +1090,7 @@ impl Drop for LocalEventStore {
 #[cfg(test)]
 #[path = "store_test.rs"]
 mod store_tests;
+
+#[cfg(any(test, feature = "test-support"))]
+#[path = "test_helpers_memory_store.rs"]
+pub(crate) mod memory_test_helpers;

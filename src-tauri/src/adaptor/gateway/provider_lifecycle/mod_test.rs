@@ -1,22 +1,9 @@
 use super::launch_spec::ProviderLaunchSpecError;
+use super::shared_test_helpers::*;
 use super::*;
 use crate::domain::agent_session::{ProviderSessionLaunch, ProviderSessionLaunchError};
-use crate::domain::provider_lifecycle::{
-    ProviderKind, ProviderLifecycleScope, ProviderLifecycleSignalKind, ProviderLifecycleSlotId,
-};
+use crate::domain::provider_lifecycle::{ProviderKind, ProviderLifecycleSignalKind};
 use crate::domain::workflow::AgentSessionActivity;
-
-fn scope() -> ProviderLifecycleScope {
-    ProviderLifecycleScope::new("agent-1").unwrap()
-}
-
-fn context() -> ProviderLaunchContext {
-    ProviderLaunchContext::new(slot_id(), "binding-1", "capability-1", scope()).unwrap()
-}
-
-fn slot_id() -> ProviderLifecycleSlotId {
-    ProviderLifecycleSlotId::new("slot-1").unwrap()
-}
 
 #[test]
 fn test_provider信号変換_claude_payloadを正確なdomain_signalへ変換する() {

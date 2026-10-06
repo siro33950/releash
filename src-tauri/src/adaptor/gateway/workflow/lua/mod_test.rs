@@ -231,3 +231,109 @@ fn source_pathsは深いsourceの各段を線形個のpathとして追跡する(
     assert_eq!(paths.parents.len(), DEPTH + 3);
     assert!(prefixes.into_iter().all(|path| paths.contains(path)));
 }
+
+mod restored_memory_tests {
+    use super::super::*;
+
+    const DELEGATE_YAML: &str = r#"name: delegate
+description: test
+schemas:
+  result:
+    type: object
+    properties: {done: {type: boolean}, task: {type: string}}
+    required: [done, task]
+  verdict:
+    type: object
+    properties:
+      complete: {type: boolean}
+      detail: {type: object, properties: {clean: {type: boolean}}, required: [clean]}
+    required: [complete, detail]
+nodes:
+  main:
+    sequence:
+      children:
+        - work: {inputs: {task: request}}
+  work:
+    session: {provider: codex, facets: {instruction: implement_fix_plan}}
+    artifact: result
+    input: [task]
+    completion:
+      require: approval
+      delegate: {child: check, inputs: {result: work}, when: child.complete, max_iterations: 3}
+  check:
+    session: {provider: codex, facets: {instruction: implement_fix_plan}}
+    artifact: verdict
+    input: [result]
+"#;
+
+    #[test]
+    pub fn test_completion_delegate_生成名参照と内部snapshot表記をyamlで受理しない() {
+        // Given
+        for (source, code, message) in [
+            (
+                "main#0",
+                "WFR007",
+                "source must be `<name>` or `<name>.<field>...`",
+            ),
+            (
+                "{node_artifact: main#0}",
+                "WFS002",
+                "invalid type: map, expected a string",
+            ),
+        ] {
+            let yaml = DELEGATE_YAML.replace(
+                "inputs: {result: work}",
+                &format!("inputs: {{result: {source}}}"),
+            );
+            // When
+            let result = crate::adaptor::gateway::workflow::diagnostics::diagnose_workflow_source(
+                &yaml, None,
+            );
+            // Then
+            assert!(result.has_errors());
+            assert_eq!(result.diagnostics.len(), 1, "{:?}", result.diagnostics);
+            assert_eq!(result.diagnostics[0].code, code);
+            assert!(
+                result.diagnostics[0].message.contains(message),
+                "{:?}",
+                result.diagnostics
+            );
+        }
+    }
+
+    #[test]
+    pub fn test_completion_delegate_yamlのinputs記述順を保存復元前後のread_modelが保持する() {
+        // Given
+        let yaml = DELEGATE_YAML
+            .replace("input: [result]", "input: [zebra, apple, middle]")
+            .replace(
+                "inputs: {result: work}",
+                "inputs: {zebra: work, apple: work.task, middle: request}",
+            );
+        // When
+        let loaded =
+            crate::adaptor::gateway::workflow::diagnostics::diagnose_workflow_source(&yaml, None);
+        assert!(loaded.diagnostics.is_empty(), "{:?}", loaded.diagnostics);
+        let workflow = loaded.workflow.unwrap();
+        let restored: WorkflowDefinition =
+            serde_json::from_str(&serde_json::to_string(&workflow).unwrap()).unwrap();
+        // Then
+        for definition in [&workflow, &restored] {
+            let dto = crate::usecase::workflow::dto::workflow_to_dto(definition);
+            let work = dto.nodes.iter().find(|node| node.name == "work").unwrap();
+            let delegate = work.completion.as_ref().unwrap().delegate.as_ref().unwrap();
+            assert_eq!(
+                delegate
+                    .inputs
+                    .iter()
+                    .map(|input| (input.parameter.as_str(), input.source.as_str()))
+                    .collect::<Vec<_>>(),
+                [
+                    ("zebra", "work"),
+                    ("apple", "work.task"),
+                    ("middle", "request"),
+                ]
+            );
+        }
+    }
+}

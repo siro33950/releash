@@ -23,8 +23,6 @@ pub use repository::{
     WorkflowDefinitionRepository,
 };
 pub use services::{contract, secret_masker, validation};
-#[cfg(test)]
-pub use services::{TimeoutContext, TimeoutPolicy};
 pub use value_objects::{
     is_reserved_node_name, isolated_worktree_owner, AbortRequestedFact, AgentActivityObservedFact,
     AgentSessionActivity, ApprovalGrantedFact, ApprovalTarget, ArchiveRequestedFact, Artifact,

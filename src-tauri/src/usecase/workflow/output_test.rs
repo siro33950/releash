@@ -1,5 +1,7 @@
+use crate::usecase::workflow::shared_test_helpers::FakeSecretSourceGateway;
 pub(crate) mod tests {
     use super::super::*;
+    use super::*;
     use crate::domain::workflow::{
         ExecutionTree, ExecutionTreeId, FacetKind, FacetRefs, FacetRepository, FacetSummary,
         NodeDefinition, NodeKind, SchemaDef, SessionSpec, WorkflowDefinition,
@@ -126,14 +128,6 @@ pub(crate) mod tests {
             _execution_id: &ExecutionTreeId,
         ) -> Result<Option<ExecutionTree>, WorkflowError> {
             Ok(None)
-        }
-    }
-
-    struct FakeSecretSourceGateway;
-
-    impl SecretSourceGateway for FakeSecretSourceGateway {
-        fn configured_secret_values(&self) -> Result<Vec<String>, WorkflowError> {
-            Ok(vec!["token-123".to_string()])
         }
     }
 

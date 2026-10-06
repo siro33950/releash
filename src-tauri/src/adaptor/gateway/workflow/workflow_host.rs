@@ -2394,3 +2394,7 @@ impl WorkflowExecutionInsert {
 
 #[cfg(feature = "test-support")]
 type RuntimeLockMap = Arc<Mutex<HashMap<String, Weak<Mutex<()>>>>>;
+
+#[cfg(any(test, feature = "test-support"))]
+#[path = "test_helpers_memory_workflow_host.rs"]
+pub(crate) mod memory_test_helpers;

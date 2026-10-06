@@ -1,3 +1,4 @@
+use super::shared_test_helpers::*;
 use super::*;
 
 #[test]
@@ -20,7 +21,7 @@ fn test_review停止_技術的な失敗の値とメッセージを保持する()
     }
 }
 pub(crate) mod tests {
-    use super::super::*;
+    use super::*;
 
     #[test]
     fn test_provider_tui_actor_does_not_fabricate_a_model_identity() {
@@ -32,11 +33,6 @@ pub(crate) mod tests {
         assert_eq!(actor.session_id.as_deref(), Some("session-1"));
         assert_eq!(actor.display_name, "claude");
         assert_eq!(actor.participant_key(), "agent:claude:");
-    }
-
-    fn agent(backend_id: &str, model: &str) -> ReviewActor {
-        let _ = model;
-        ReviewActor::provider_agent(backend_id.to_string(), None)
     }
 
     fn target(file_path: Option<&str>) -> ReviewTarget {

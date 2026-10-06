@@ -361,6 +361,7 @@ impl TerminalSubscriptions {
     }
 }
 
+#[cfg(test)]
 pub fn terminal_application_fixture() -> (
     Arc<crate::usecase::terminal_surface::application::TerminalSurfaceApplication>,
     Arc<crate::adaptor::gateway::terminal_surface::runtime_gateway_impl::TerminalSurfaceRuntimeGatewayFor>,
@@ -386,6 +387,7 @@ pub fn terminal_application_fixture() -> (
     (terminal, gateway, hub, surface)
 }
 
+#[cfg(test)]
 pub(crate) fn terminal_application_with_gateway(
     gateway: Arc<
         dyn crate::domain::terminal_surface::gateway::TerminalSurfaceGateway + Send + Sync,
@@ -406,7 +408,7 @@ thread_local! {
     };
 }
 
-fn driver<T: 'static>(
+pub(crate) fn driver<T: 'static>(
     start: impl FnOnce() -> tokio::sync::mpsc::UnboundedSender<T>,
 ) -> tokio::sync::mpsc::UnboundedSender<T> {
     if tokio::runtime::Handle::try_current().is_ok() {
@@ -462,7 +464,3 @@ pub fn repository_driver(
     )
     })
 }
-
-#[cfg(test)]
-#[path = "state_subscription_test.rs"]
-pub(crate) mod state_subscription_tests;

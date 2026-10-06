@@ -894,4 +894,4 @@ fn is_reachable<'a>(
 
 #[cfg(test)]
 #[path = "routing_test.rs"]
-mod routing_sequence_tests;
+mod routing_tests;

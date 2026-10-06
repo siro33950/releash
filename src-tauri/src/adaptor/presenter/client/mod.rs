@@ -116,10 +116,6 @@ impl From<crate::adaptor::presenter::terminal::TerminalSurfaceStreamItemV1> for 
     }
 }
 
-#[cfg(test)]
-#[path = "client_test.rs"]
-pub(crate) mod client_tests;
-
 impl From<crate::usecase::app_config::query_service::DesktopSettingsDto> for DesktopSettings {
     fn from(value: crate::usecase::app_config::query_service::DesktopSettingsDto) -> Self {
         Self {
@@ -151,3 +147,7 @@ impl TryFrom<DesktopSettings> for crate::usecase::app_config::query_service::Des
 #[cfg(feature = "test-support")]
 #[path = "test_helpers.rs"]
 pub(crate) mod test_helpers;
+
+#[cfg(test)]
+#[path = "mod_test.rs"]
+mod mod_tests;

@@ -1,3 +1,4 @@
+use super::shared_test_helpers::*;
 use super::*;
 use crate::adaptor::gateway::workflow::schema::Rule;
 
@@ -6,14 +7,6 @@ const MERGED_REFERENCES: &str = include_str!("fixtures/valid/sequence-merged-ref
 const FANOUT_REFERENCES: &str = include_str!("fixtures/valid/fanout-map-references.yml");
 
 const FANOUT_ROUTING: &str = include_str!("fixtures/valid/fanout-map-routing.yml");
-
-const PREDICATE_ROUTING: &str = include_str!("fixtures/valid/predicate-routing.yml");
-
-const NESTED_PREDICATE: &str = "{and: [passed, {or: [clean, skipped]}]}";
-
-fn predicate_yaml(on: &str) -> String {
-    PREDICATE_ROUTING.replace(NESTED_PREDICATE, on)
-}
 
 #[test]
 fn test_sequence多段参照の診断_配線と述語の未解決と末端型を既存codeで拒否する() {
@@ -1041,7 +1034,8 @@ nodes:
 }
 
 mod delegate_diagnostics_tests {
-    use super::super::*;
+    use super::*;
+
     use serde_json::{json, Value};
 
     fn definition() -> Value {
@@ -1675,5 +1669,35 @@ mod delegate_diagnostics_tests {
             inputs
         );
         assert_eq!(restored, workflow);
+    }
+}
+
+mod restored_memory_cases {
+    use super::super::*;
+
+    #[test]
+    pub fn test_fanout変更後のbuiltin定義_8本すべて診断ゼロでloadする() {
+        // Given
+        let summaries = crate::adaptor::gateway::workflow::builtin::list_builtin_workflows();
+        for summary in summaries {
+            let source =
+                crate::adaptor::gateway::workflow::builtin::builtin_workflow_source(&summary.name)
+                    .unwrap();
+
+            // When
+            let diagnosis = diagnose_workflow_source(source, Some(&summary.name));
+            let loaded = crate::adaptor::gateway::workflow::builtin::load_builtin_workflow_resolved(
+                &summary.name,
+            );
+
+            // Then
+            assert!(
+                diagnosis.diagnostics.is_empty(),
+                "{}: {:?}",
+                summary.name,
+                diagnosis.diagnostics
+            );
+            assert!(matches!(loaded, Ok(Some(_))), "{loaded:?}");
+        }
     }
 }

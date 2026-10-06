@@ -99,3 +99,7 @@ fn mutation_error(error: crate::domain::workflow::WorkflowError) -> wire::Comman
         .with_code("WORKTREE_MUTATION_REJECTED")
         .into()
 }
+
+#[cfg(test)]
+#[path = "worktree_mutation_test.rs"]
+mod worktree_mutation_tests;

@@ -635,9 +635,5 @@ fn prefix_matches_at_boundary(value: &str, prefix: &str, boundary_chars: &[char]
 }
 
 #[cfg(test)]
-#[path = "execution_tree_gc_test.rs"]
-mod execution_tree_gc_tests;
-
-#[cfg(test)]
 #[path = "mod_test.rs"]
 pub(crate) mod mod_tests;

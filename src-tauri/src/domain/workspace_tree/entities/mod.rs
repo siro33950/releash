@@ -1172,5 +1172,5 @@ fn dynamic_fanout_sentinel_id(execution_id: &str, node_name: &str) -> String {
 }
 
 #[cfg(test)]
-#[path = "workspace_tree_test.rs"]
-pub(crate) mod workspace_tree_tests;
+#[path = "mod_test.rs"]
+mod mod_tests;

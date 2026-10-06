@@ -1,3 +1,4 @@
+use super::shared_test_helpers::*;
 use super::*;
 use serde_json::{json, Value};
 
@@ -20,22 +21,6 @@ fn test_workflow状態復元_三状態をそのまま復元する() {
 
         // Then
         assert_eq!(execution.state(), &state);
-    }
-}
-
-fn execution(yaml: &str) -> ExecutionTree {
-    ExecutionTree::restore_runtime(ExecutionTreeRestore {
-        id: "execution".to_string(),
-        workflow: serde_saphyr::from_str(yaml).unwrap(),
-        ..Default::default()
-    })
-}
-
-fn id_source() -> impl FnMut() -> String {
-    let mut counter = 0;
-    move || {
-        counter += 1;
-        format!("node-{counter}")
     }
 }
 
@@ -1321,7 +1306,7 @@ fn test_session再開_プロセスが居るか不明なnodeとsession以外と�
     );
 }
 pub(crate) mod tests {
-    use super::super::*;
+    use super::*;
 
     fn aggregate(state: RuntimeExecutionState) -> ExecutionTree {
         ExecutionTree::restore(state)
@@ -2502,26 +2487,6 @@ pub(crate) mod tests {
             .unwrap(),
             vec![("DOC".to_string(), "document body".to_string())]
         );
-    }
-
-    pub(crate) fn started_names(events: &[WorkflowEvent]) -> Vec<String> {
-        events
-            .iter()
-            .filter_map(|event| match event {
-                WorkflowEvent::NodeStarted { node_name, .. } => Some(node_name.clone()),
-                _ => None,
-            })
-            .collect()
-    }
-
-    pub(crate) fn execution_id_of(execution: &ExecutionTree, node_name: &str) -> String {
-        execution
-            .node_executions()
-            .iter()
-            .find(|node| node.node_name == node_name)
-            .unwrap_or_else(|| panic!("node execution '{node_name}' must exist"))
-            .id
-            .clone()
     }
 
     /// 起動済み leaf 群を先入れ先出しで完了させ続け、実行を終端まで進める。

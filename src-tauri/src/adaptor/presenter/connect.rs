@@ -31,7 +31,7 @@ pub fn command_error(
 
 #[cfg(test)]
 #[path = "connect_test.rs"]
-pub(crate) mod tests;
+pub(crate) mod connect_tests;
 
 pub trait ConnectFailure {
     fn connect_code(&self) -> connectrpc::ErrorCode;
@@ -692,7 +692,3 @@ impl ConnectFailure for crate::domain::agent_session::ProviderExecutableProbeGat
         }
     }
 }
-
-#[cfg(test)]
-#[path = "connect_mapping_test.rs"]
-mod connect_mapping_tests;

@@ -351,7 +351,7 @@ fn map_started_execution_tree_error(
 
 #[cfg(test)]
 #[path = "runtime_command_test.rs"]
-mod runtime_command_tests;
+pub(crate) mod runtime_command_tests;
 
 #[cfg(feature = "test-support")]
 impl WorkflowRuntimeUsecase {

@@ -1,13 +1,5 @@
+use super::shared_test_helpers::*;
 use super::*;
-fn discovery(port: u16, token: &str) -> LocalApiDiscovery {
-    LocalApiDiscovery {
-        port,
-        token: token.to_string(),
-        instance_id: "test-instance".to_string(),
-        pid: 42,
-        process_started_at: 123,
-    }
-}
 
 #[test]
 fn test_local_api認証_discoveryのbearer_tokenをrequestへ設定する() {

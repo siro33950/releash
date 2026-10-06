@@ -151,9 +151,6 @@ impl CommandExecutionInput {
     pub fn test_node_name(&self) -> String {
         self.node_name.clone()
     }
-    pub fn test_raw_command(&self) -> Option<String> {
-        self.raw_command.clone()
-    }
     pub fn test_raw_command_mut(&mut self) -> &mut Option<String> {
         &mut self.raw_command
     }

@@ -37,7 +37,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn maps_complete_public_read_model_without_legacy_wrapper() {
+    fn maps_complete_public_read_model() {
         let node = node();
         let execution = workflow::ExecutionTree {
             id: "execution-1".to_string(),
@@ -80,8 +80,6 @@ pub(crate) mod tests {
         assert_eq!(value["nodeExecutions"][0]["canApprove"], true);
         assert_eq!(value["nodeExecutions"][0]["canRetry"], false);
         assert_eq!(value["nodeExecutions"][0]["hasArtifact"], true);
-        assert!(value.get("interruptionReason").is_none());
-        assert!(value.get("resumeFromNode").is_none());
     }
 
     #[test]

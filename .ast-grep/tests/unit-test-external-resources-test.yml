@@ -1,6 +1,7 @@
 id: unit-test-external-resources
 valid:
   - 'use std::process::Stdio;'
+  - 'fn test_case(response: Response) { response.status(); }'
   - 'fn test_case() { assert_eq!(1 + 1, 2); }'
 invalid:
   - 'use std::{process::{Command as Process}};'
@@ -17,3 +18,11 @@ invalid:
   - 'fn test_case() { std::process::Command::new("cmd"); }'
   - 'fn test_case() { tokio::process::Command::new("cmd"); }'
   - 'fn test_case() { std::net::TcpListener::bind("localhost:0"); }'
+  - 'use std::process::*; fn test_case() { Command::new("sh"); }'
+  - 'use super::*; fn test_case() { Command::new("sh"); }'
+  - 'use std::process as process; fn test_case() { process::Command::new("sh"); }'
+  - 'use tokio::process as process;'
+  - 'use std::net::*;'
+  - 'use std::net as net;'
+  - 'fn test_case() { storage::Connection::open_in_memory(); }'
+  - 'fn test_case() { git::Repository::open_bare("repo"); }'

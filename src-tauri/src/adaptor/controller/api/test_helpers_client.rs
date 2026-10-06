@@ -1,0 +1,6 @@
+use super::*;
+pub fn dispatch() -> ClientCommandDispatch {
+    ClientCommandDispatch::new(crate::usecase::daemon::DaemonUsecase::test_with_repository(
+        crate::adaptor::gateway::daemon::serving(),
+    ))
+}

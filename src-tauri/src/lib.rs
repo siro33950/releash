@@ -21,11 +21,11 @@ mod workflow_diagnostics_acceptance;
 mod terminal_surface {
     pub use crate::adaptor::controller::terminal_surface_runtime::{
         initialize_background_work_for_acceptance, BackgroundWork, TerminalSurfaceEventFault,
-        TerminalSurfaceEventFaultController, TerminalSurfaceRuntime,
+        TerminalSurfaceRuntime,
     };
     pub use crate::adaptor::presenter::terminal::{
-        GetOrSpawnTerminalV1, TerminalProcessLaunchV1, TerminalSurfaceOwnerV1,
-        TerminalSurfaceStreamItemV1, TerminalSurfaceV1,
+        TerminalProcessLaunchV1, TerminalSurfaceOwnerV1, TerminalSurfaceStreamItemV1,
+        TerminalSurfaceV1,
     };
 }
 pub mod desktop_api;

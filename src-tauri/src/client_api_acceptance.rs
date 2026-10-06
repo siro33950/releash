@@ -11,7 +11,9 @@ use crate::usecase::workflow::WorkflowRuntimeUsecase;
 
 pub use crate::adaptor::gateway::repository::branch::BranchGateway;
 pub use crate::adaptor::presenter::terminal::TERMINAL_WS_BEARER_SUBPROTOCOL_PREFIX;
-pub use crate::adaptor::presenter::workflow_wire::*;
+pub use crate::adaptor::presenter::workflow_wire::{
+    DiagnosticReport, DiagnosticSpan, DiagnosticStage, Severity,
+};
 pub use crate::domain::repository::{Branch, BranchRepository, RepositoryError};
 
 #[derive(serde::Serialize)]
@@ -224,12 +226,6 @@ pub async fn request_client(
     .into_value()
     .unwrap()
     .1)
-}
-
-pub fn decode_client_value(
-    value: impl crate::adaptor::presenter::client::ClientValue,
-) -> serde_json::Value {
-    crate::adaptor::presenter::client::from_value(value).unwrap()
 }
 
 #[derive(Default, Debug, PartialEq)]

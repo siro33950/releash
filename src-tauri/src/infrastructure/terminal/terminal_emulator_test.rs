@@ -66,3 +66,42 @@ fn test_checkpoint失敗_文脈を加えてもio種類を保持する() {
         assert_eq!(error.to_string(), "repair /checkpoint: source failure");
     }
 }
+
+mod restored_memory_tests {
+    use super::super::*;
+
+    #[derive(serde::Deserialize)]
+    struct BackendXtermCheckpointFixture {
+        initial_cols: u16,
+        initial_rows: u16,
+        resized_cols: u16,
+        resized_rows: u16,
+        sequence: u64,
+        before_resize: String,
+        after_resize: String,
+        checkpoint: NativeTerminalCheckpoint,
+    }
+
+    #[test]
+    pub fn test_ターミナル画面再現_backend生成checkpointが実xterm用golden_fixtureと一致する() {
+        let fixture: BackendXtermCheckpointFixture = serde_json::from_str(include_str!(
+            "../../../../tests/fixtures/terminal-surface-checkpoint-v1.json"
+        ))
+        .unwrap();
+        let mut emulator = NativeTerminalEmulator::new(
+            fixture.initial_cols,
+            fixture.initial_rows,
+            crate::domain::terminal_surface::TERMINAL_SURFACE_SCROLLBACK_ROWS,
+        );
+        emulator.apply(&fixture.before_resize);
+        emulator.resize(fixture.resized_cols, fixture.resized_rows);
+        emulator.apply(&fixture.after_resize);
+
+        let generated = emulator.snapshot(fixture.sequence);
+
+        assert_eq!(generated.replay, fixture.checkpoint.replay);
+        assert_eq!(generated.sequence, fixture.checkpoint.sequence);
+        assert_eq!(generated.cols, fixture.checkpoint.cols);
+        assert_eq!(generated.rows, fixture.checkpoint.rows);
+    }
+}

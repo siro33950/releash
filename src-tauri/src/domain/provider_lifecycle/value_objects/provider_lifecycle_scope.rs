@@ -23,3 +23,7 @@ fn non_empty(value: String, field: &'static str) -> Result<String, ProviderLifec
         Ok(value)
     }
 }
+
+#[cfg(test)]
+#[path = "provider_lifecycle_scope_test.rs"]
+mod provider_lifecycle_scope_tests;

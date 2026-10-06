@@ -96,5 +96,5 @@ fn map_repository_error(error: AgentSessionRepositoryError) -> AgentSessionRenam
 }
 
 #[cfg(test)]
-#[path = "agent_session_rename_classification_test.rs"]
-mod classification_tests;
+#[path = "agent_session_rename_test.rs"]
+mod agent_session_rename_tests;

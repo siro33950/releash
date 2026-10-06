@@ -287,3 +287,7 @@ impl StateSubscriptionDeps {
         &self.usecase
     }
 }
+
+#[cfg(any(test, feature = "test-support"))]
+#[path = "test_helpers_client.rs"]
+pub(crate) mod shared_test_helpers;

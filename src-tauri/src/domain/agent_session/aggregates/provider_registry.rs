@@ -209,3 +209,7 @@ fn provider_definition(provider: ProviderKind) -> (&'static str, &'static str) {
         ProviderKind::Codex => ("Codex", "codex"),
     }
 }
+
+#[cfg(test)]
+#[path = "provider_registry_test.rs"]
+mod provider_registry_tests;

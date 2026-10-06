@@ -301,5 +301,5 @@ fn provider_label(provider: ProviderKind) -> &'static str {
 }
 
 #[cfg(test)]
-#[path = "hook_health_error_test.rs"]
-pub(crate) mod error_tests;
+#[path = "hook_health_test.rs"]
+mod hook_health_tests;

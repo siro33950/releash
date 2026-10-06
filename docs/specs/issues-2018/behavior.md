@@ -85,6 +85,12 @@ GIVEN プロダクトのテストファイルを TEST.md の表の置き場所�
 WHEN CI が実行される
 THEN 置き場所の検査が違反したファイルを示して失敗する
 
+## B-019: 単体テストと実装の対応の違反で CI が落ちる
+
+GIVEN 同じディレクトリに対応する `<impl>.rs` が無い `*_test.rs`、一つの実装に二つ以上の test ファイルを取り込む変更、または `#[path = "<impl>_test.rs"]` の mod 名を `<impl>_tests` 以外にした変更
+WHEN CI が実行される
+THEN 置き場所の検査が違反したファイルを示して失敗する
+
 ## B-012: 単体テストが外部の資源を使うと CI が落ちる
 
 GIVEN `src-tauri/src/` または `src-tauri/releash-desktop/src/` の `*_test.rs`・`test_helpers*.rs`・`test_support/` で、`rusqlite::Connection::open*`・`git2::Repository::{init,open}`・`tempfile`・`std::process::Command`・`tokio::process`・`TcpListener`・`TcpStream` を `use` 宣言または完全修飾で使う変更
@@ -127,7 +133,7 @@ THEN 手動での起動を前提とするテスト（使い捨てのアカウン
 | R-006 | B-007, B-008 |
 | R-007 | B-009 |
 | R-008 | B-010 |
-| R-009 | B-011 |
+| R-009 | B-011, B-019 |
 | R-010 | B-012 |
 | R-011 | B-013 |
 | R-012 | B-014 |

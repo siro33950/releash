@@ -21,9 +21,9 @@ pub(crate) mod writer;
 
 pub(crate) use store::{LocalEventStore, LocalEventStoreConfig};
 
-#[cfg(test)]
-#[path = "failure_test.rs"]
-mod failure_tests;
-
 #[cfg(any(test, feature = "test-support"))]
 pub(crate) mod test_helpers;
+
+#[cfg(test)]
+#[path = "mod_test.rs"]
+mod mod_tests;

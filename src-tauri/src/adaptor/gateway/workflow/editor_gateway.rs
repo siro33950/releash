@@ -120,3 +120,7 @@ impl WorkflowExternalEditorGateway {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "editor_gateway_test.rs"]
+mod editor_gateway_tests;

@@ -1,7 +1,7 @@
 use crate::usecase::agent_session::agent_session_read::AgentSessionGarbageCollectionPort;
 use std::sync::{Arc, Mutex};
 
-use super::{
+use crate::usecase::agent_session::{
     AgentSessionGarbageCollectionOutcome, AgentSessionItemDto, AgentSessionLifecycleDto,
     AgentSessionLifecycleUsecaseError, AgentSessionOperationsDto, AgentSessionQueryError,
     AgentSessionQueryService, AgentSessionReadUsecase, AgentSessionReadUsecaseError,

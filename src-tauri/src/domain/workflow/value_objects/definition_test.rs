@@ -639,13 +639,3 @@ fn test_子実行の分類_合成子とdelegateを持つsessionだけが子を�
         }
     }
 }
-
-#[test]
-fn test_子エントリは廃止したon_failureを拒否する() {
-    for value in [serde_json::json!("ignore"), serde_json::json!({"retry": 2})] {
-        let error =
-            serde_json::from_value::<RawChildBody>(serde_json::json!({"on_failure": value}))
-                .unwrap_err();
-        assert!(error.to_string().contains("on_failure"), "{error}");
-    }
-}

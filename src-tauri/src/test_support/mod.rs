@@ -106,40 +106,68 @@ pub mod integration;
 
 #[cfg(feature = "test-support")]
 pub mod agent_session_tui_acceptance {
-    pub use crate::agent_session_tui_acceptance::*;
+    pub use crate::agent_session_tui_acceptance::{
+        drain_and_close_store, AcceptanceAgentSession, AcceptanceAgentSessionLifecycle,
+        AcceptanceAgentSessionTreeLocation, AcceptanceArchiveOutcome, AcceptanceHistoryCandidate,
+        AcceptanceHookWarning, AcceptanceProvider, AgentSessionTuiAcceptanceConfig,
+        AgentSessionTuiAcceptanceHost,
+    };
 }
 
 #[cfg(feature = "test-support")]
 pub mod client_api_acceptance {
-    pub use crate::client_api_acceptance::*;
+    pub use crate::client_api_acceptance::{
+        connect_client, read_current_branch, read_state, request_client, rpc, Branch,
+        BranchGateway, BranchRepository, ClientApiAcceptanceHost, ClientEndpoint,
+        ClientRecoveryAcceptanceHost, ClientRecoveryState, DiagnosticReport, DiagnosticSpan,
+        DiagnosticStage, NativeClient, RepositoryError, Severity,
+        TERMINAL_WS_BEARER_SUBPROTOCOL_PREFIX,
+    };
 }
 
 #[cfg(feature = "test-support")]
 pub mod provider_lifecycle_acceptance {
-    pub use crate::provider_lifecycle_acceptance::*;
+    pub use crate::provider_lifecycle_acceptance::{
+        AcceptanceFact, AcceptanceFactKind, AcceptanceIngressResult, AcceptanceLaunch,
+        AcceptanceLedgerEventCounts, AcceptanceProvider, AcceptanceScope,
+        AcceptanceUnavailableReason, ProviderLifecycleAcceptanceHost,
+    };
 }
 
 #[cfg(feature = "test-support")]
 pub mod terminal_subscription_acceptance {
-    pub use crate::terminal_subscription_acceptance::*;
+    pub use crate::terminal_subscription_acceptance::{
+        TerminalSubscription, TerminalSubscriptionHarness,
+    };
 }
 
 #[cfg(feature = "test-support")]
 pub mod workflow_control_plane_acceptance {
-    pub use crate::workflow_control_plane_acceptance::*;
+    pub use crate::workflow_control_plane_acceptance::{
+        AcceptanceNodeExecution, AcceptanceNodeExecutionStatus, AcceptanceNodeKind,
+        AcceptanceWorkflowExecution, AcceptanceWorkflowExecutionStatus,
+        AcceptanceWorkspaceNodeStatus, WorkflowControlPlaneAcceptanceHost,
+    };
 }
 
 #[cfg(feature = "test-support")]
 pub mod workflow_delegate_acceptance {
-    pub use crate::workflow_delegate_acceptance::*;
+    pub use crate::workflow_delegate_acceptance::{
+        AcceptanceIngressResult, AcceptanceLaunch, AcceptanceProvider, NodeExecutionStatus,
+        RuntimeNodeExecution, WorkflowDelegateAcceptanceHost,
+    };
 }
 
 #[cfg(feature = "test-support")]
 pub mod workflow_diagnostics_acceptance {
-    pub use crate::workflow_diagnostics_acceptance::*;
+    pub use crate::workflow_diagnostics_acceptance::WorkflowDiagnosticsAcceptanceHost;
 }
 
 #[cfg(feature = "test-support")]
 pub mod terminal_surface {
-    pub use crate::terminal_surface::*;
+    pub use crate::terminal_surface::{
+        initialize_background_work_for_acceptance, TerminalProcessLaunchV1,
+        TerminalSurfaceEventFault, TerminalSurfaceOwnerV1, TerminalSurfaceRuntime,
+        TerminalSurfaceStreamItemV1, TerminalSurfaceV1,
+    };
 }

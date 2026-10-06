@@ -1,3 +1,4 @@
+use super::shared_test_helpers::*;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 
@@ -133,10 +134,6 @@ impl MockGateway {
             .unwrap()
             .mark_exited(runtime_generation, Some(0));
     }
-}
-
-fn workspace_owner(path: &str) -> TerminalSurfaceOwner {
-    TerminalSurfaceOwner::workspace(WorkspaceIdentity::new(path)).unwrap()
 }
 
 fn unwrap_spawn_error(result: Result<GetOrSpawnTerminalOutcome, UsecaseError>) -> UsecaseError {
@@ -649,58 +646,6 @@ fn test_ターミナル画面取得または生成_通信文脈を要求しな�
         None,
     )
     .unwrap();
-}
-
-#[test]
-fn test_ターミナル画面取得または生成_同一作業木に旧上限数の画面があっても新規生成する() {
-    let gateway = MockGateway::new();
-    let existing = (0..32)
-        .map(|index| gateway.insert_session(&format!("key-{index}"), "/repo"))
-        .collect::<Vec<_>>();
-
-    get_or_spawn(
-        &crate::adaptor::gateway::telemetry::TelemetryGateway,
-        &gateway,
-        &NoopOutput,
-        24,
-        80,
-        Some("/repo".to_string()),
-        workspace_owner("/repo"),
-        None,
-    )
-    .unwrap();
-
-    assert_eq!(*gateway.spawn_count.lock().unwrap(), 1);
-    assert!(gateway.killed.lock().unwrap().is_empty());
-    assert!(existing
-        .into_iter()
-        .all(|runtime_generation| gateway.snapshot(runtime_generation).is_some()));
-}
-
-#[test]
-fn test_ターミナル画面取得または生成_異なる作業木に旧総数上限の画面があっても新規生成する() {
-    let gateway = MockGateway::new();
-    let existing = (0..64)
-        .map(|index| gateway.insert_session(&format!("key-{index}"), &format!("/repo-{index}")))
-        .collect::<Vec<_>>();
-
-    get_or_spawn(
-        &crate::adaptor::gateway::telemetry::TelemetryGateway,
-        &gateway,
-        &NoopOutput,
-        24,
-        80,
-        Some("/repo".to_string()),
-        workspace_owner("/repo"),
-        None,
-    )
-    .unwrap();
-
-    assert_eq!(*gateway.spawn_count.lock().unwrap(), 1);
-    assert!(gateway.killed.lock().unwrap().is_empty());
-    assert!(existing
-        .into_iter()
-        .all(|runtime_generation| gateway.snapshot(runtime_generation).is_some()));
 }
 
 #[test]

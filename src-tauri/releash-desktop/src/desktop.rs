@@ -135,3 +135,7 @@ pub fn record_window_ready() {
         releash_lib::desktop_api::Startup::AppStartup,
     );
 }
+
+#[cfg(test)]
+#[path = "desktop_test.rs"]
+mod desktop_tests;

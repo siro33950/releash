@@ -1337,3 +1337,7 @@ mod runtime_gateway_impl_tests;
 #[cfg(feature = "test-support")]
 #[path = "runtime_gateway_test_support.rs"]
 pub(crate) mod test_support;
+
+#[cfg(any(test, feature = "test-support"))]
+#[path = "test_helpers_runtime_gateway_impl.rs"]
+pub(crate) mod shared_test_helpers;

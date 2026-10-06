@@ -260,3 +260,7 @@ impl LocalEventPayloadCodec for ProviderLifecycleEventCodec {
 #[cfg(test)]
 #[path = "provider_lifecycle_codec_test.rs"]
 mod provider_lifecycle_codec_tests;
+
+#[cfg(any(test, feature = "test-support"))]
+#[path = "test_helpers_provider_lifecycle_codec.rs"]
+pub(crate) mod shared_test_helpers;

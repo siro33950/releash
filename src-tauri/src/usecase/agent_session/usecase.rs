@@ -350,3 +350,7 @@ fn map_repository_error(error: AgentSessionRepositoryError) -> AgentSessionUseca
         AgentSessionRepositoryError::Unavailable => AgentSessionUsecaseError::Unavailable,
     }
 }
+
+#[cfg(test)]
+#[path = "usecase_test.rs"]
+mod usecase_tests;

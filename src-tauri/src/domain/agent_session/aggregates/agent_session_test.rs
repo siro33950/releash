@@ -1,27 +1,24 @@
-use super::agent_session::{
-    AgentSessionArchiveError, AgentSessionAssociationError, AgentSessionCreationError,
-    AgentSessionExecutionTreeNodeStopError, AgentSessionInitialInstructionError,
-    AgentSessionRecoveryError, AgentSessionRemovalAuthorization, AgentSessionRemovalError,
-    AgentSessionTreeLocationError,
-};
 use super::{
     AgentSession, AgentSessionArchiveOutcome, AgentSessionInitialInstructionOutcome,
     AgentSessionLifecycle, AgentSessionLifecycleEvent, AgentSessionMutationOutcome,
     AgentSessionOpenAction, AgentSessionOperations, AgentSessionProcessExitOutcome,
     AgentSessionRecoveryResult, AgentSessionTreeLocation, ManagedPtyPresence,
 };
+use super::{
+    AgentSessionArchiveError, AgentSessionAssociationError, AgentSessionCreationError,
+    AgentSessionExecutionTreeNodeStopError, AgentSessionInitialInstructionError,
+    AgentSessionRecoveryError, AgentSessionRemovalAuthorization, AgentSessionRemovalError,
+    AgentSessionTreeLocationError,
+};
 use crate::domain::agent_session::AgentSessionDisplayNameError;
 use crate::domain::provider_lifecycle::ProviderKind;
 use crate::domain::terminal_surface::TerminalSurfaceOwner;
 use crate::domain::workflow::{AgentSessionActivity, ExecutionTreeLaunch};
 use crate::domain::workspace_tree::WorkspaceIdentity;
+use crate::usecase::agent_session::test_helpers_session::workflow_location;
 
 fn standalone_location(id: &str) -> AgentSessionTreeLocation {
     AgentSessionTreeLocation::session_tree_root(id).unwrap()
-}
-
-fn workflow_location(tree_id: &str, node_execution_id: &str) -> AgentSessionTreeLocation {
-    AgentSessionTreeLocation::workflow_node(tree_id, node_execution_id).unwrap()
 }
 
 #[test]

@@ -226,3 +226,7 @@ impl WorktreePathNormalizer for FsWorktreePathNormalizer {
 #[cfg(test)]
 #[path = "state_test.rs"]
 mod state_tests;
+
+#[cfg(any(test, feature = "test-support"))]
+#[path = "test_helpers_state.rs"]
+pub(crate) mod shared_test_helpers;

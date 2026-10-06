@@ -7,7 +7,7 @@ pub(crate) mod agent_session_query;
 pub(crate) mod agent_session_read;
 mod agent_session_rename;
 pub(crate) mod provider_availability;
-mod provider_session_title_ingestion;
+pub(crate) mod provider_session_title_ingestion;
 pub(crate) mod usecase;
 
 #[cfg(test)]
@@ -49,30 +49,12 @@ pub(crate) use usecase::{
     AgentSessionCreateRequest, AgentSessionUsecase, AgentSessionUsecaseError,
 };
 
-#[cfg(test)]
-#[path = "agent_session_exit_test.rs"]
-mod agent_session_exit_tests;
-#[cfg(test)]
-#[path = "agent_session_history_test.rs"]
-mod agent_session_history_tests;
-
-#[cfg(test)]
-#[path = "agent_session_read_test.rs"]
-mod agent_session_read_tests;
-#[cfg(test)]
-#[path = "agent_session_rename_test.rs"]
-mod agent_session_rename_tests;
-
-#[cfg(test)]
-#[path = "provider_availability_test.rs"]
-pub(crate) mod provider_availability_tests;
-#[cfg(test)]
-#[path = "provider_session_title_ingestion_test.rs"]
-pub(crate) mod provider_session_title_ingestion_tests;
-
 pub(crate) use agent_session_read::AgentSessionReadUsecaseError;
 
 pub(crate) use agent_session_initial_instruction::AgentSessionInitialInstructionError;
 
 #[cfg(any(test, feature = "test-support"))]
 pub(crate) mod test_helpers_provider_availability;
+
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) mod test_helpers_session;

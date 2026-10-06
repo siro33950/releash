@@ -1,29 +1,5 @@
 use super::*;
 
-pub fn insert_runtime(
-    gateway: &TerminalSurfaceRuntimeGatewayFor,
-    runtime_generation: u64,
-    session_key: String,
-    native_pty: NativePtyRuntime,
-    terminal_surface: Arc<Mutex<NativeTerminalEmulator>>,
-) {
-    gateway.runtimes.lock().insert(
-        runtime_generation,
-        AttachedTerminalRuntime {
-            native_pty,
-            output: None,
-            event_order: Arc::new(TerminalSurfaceEventOrder::default()),
-            terminal_surface,
-            checkpoint_scheduler: None,
-            session_key,
-            output_drained: Arc::new((Mutex::new(true), Condvar::new())),
-            checkpoint_journal: None,
-            checkpoint_store: None,
-            checkpoint_io: None,
-        },
-    );
-}
-
 pub fn attach_checkpoint(
     gateway: &TerminalSurfaceRuntimeGatewayFor,
     runtime_generation: u64,

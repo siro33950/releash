@@ -229,4 +229,4 @@ pub(crate) fn event(
 
 #[cfg(test)]
 #[path = "state_subscription_wire_test.rs"]
-pub(crate) mod state_subscription_tests;
+pub(crate) mod state_subscription_wire_tests;

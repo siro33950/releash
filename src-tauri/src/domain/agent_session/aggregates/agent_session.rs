@@ -784,3 +784,7 @@ impl AgentSession {
         Ok(AgentSessionRemovalAuthorization::WorkflowLaunchRollback)
     }
 }
+
+#[cfg(test)]
+#[path = "agent_session_test.rs"]
+mod agent_session_tests;

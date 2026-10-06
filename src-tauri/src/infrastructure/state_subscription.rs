@@ -937,4 +937,8 @@ impl<T: Clone + PartialEq> Subscriptions<T> {
 
 #[cfg(test)]
 #[path = "state_subscription_test.rs"]
-mod subscriptions_tests;
+mod state_subscription_tests;
+
+#[cfg(any(test, feature = "test-support"))]
+#[path = "test_helpers_state_subscription.rs"]
+pub(crate) mod shared_test_helpers;

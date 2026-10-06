@@ -1,13 +1,8 @@
+use super::shared_test_helpers::FailingSearchPathSource;
 use super::*;
 use crate::domain::agent_session::ProviderExecutableProbeGateway;
-use crate::infrastructure::process::search_path::{LoginShellPathError, SearchPathSource};
+use crate::infrastructure::process::search_path::LoginShellPathError;
 use std::sync::Arc;
-struct FailingSearchPathSource(LoginShellPathError);
-impl SearchPathSource for FailingSearchPathSource {
-    fn load(&self) -> Result<std::ffi::OsString, LoginShellPathError> {
-        Err(self.0)
-    }
-}
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 #[test]

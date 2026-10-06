@@ -106,5 +106,5 @@ pub trait DaemonRepository: Send + Sync {
 }
 
 #[cfg(test)]
-#[path = "daemon_test.rs"]
-pub(crate) mod daemon_tests;
+#[path = "mod_test.rs"]
+mod mod_tests;

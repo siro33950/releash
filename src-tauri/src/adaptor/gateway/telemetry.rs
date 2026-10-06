@@ -55,3 +55,7 @@ impl From<TerminalLaunch> for metrics::TerminalLaunch {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "telemetry_test.rs"]
+mod telemetry_tests;

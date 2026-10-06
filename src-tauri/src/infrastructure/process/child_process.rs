@@ -5,7 +5,7 @@ use tokio::process::{Child, Command};
 pub(crate) const FIRST_SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
 pub(crate) const SECOND_SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
 
-pub(crate) fn configure_process_group(command: &mut Command) {
+pub fn configure_process_group(command: &mut Command) {
     #[cfg(unix)]
     // SAFETY: setsid() is async-signal-safe per POSIX and the closure only calls it.
     unsafe {
@@ -22,7 +22,7 @@ pub(crate) fn configure_process_group(command: &mut Command) {
 }
 
 #[cfg(unix)]
-pub(crate) async fn wait_without_reaping(pid: u32) -> std::io::Result<()> {
+pub async fn wait_without_reaping(pid: u32) -> std::io::Result<()> {
     loop {
         {
             let mut info = std::mem::MaybeUninit::<libc::siginfo_t>::zeroed();
@@ -144,7 +144,7 @@ fn kill_child_group(child: &mut impl ShutdownChild) {
 }
 
 #[cfg(unix)]
-pub(crate) fn signal_process_group(pgid: i32, signal: i32) -> std::io::Result<()> {
+pub fn signal_process_group(pgid: i32, signal: i32) -> std::io::Result<()> {
     if pgid <= 1 {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
@@ -169,7 +169,7 @@ pub(crate) fn signal_process_group(pgid: i32, signal: i32) -> std::io::Result<()
 }
 
 #[cfg(target_os = "macos")]
-fn group_has_live_members(pgid: i32) -> std::io::Result<bool> {
+pub fn group_has_live_members(pgid: i32) -> std::io::Result<bool> {
     // SAFETY: a null buffer asks libproc for the required PID capacity.
     let capacity = unsafe { libc::proc_listpgrppids(pgid, std::ptr::null_mut(), 0) };
     if capacity <= 0 {

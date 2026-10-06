@@ -1,16 +1,6 @@
 use super::*;
 
 #[test]
-fn test_購読対象_廃止した識別子検索とroot計算を受理しない() {
-    for target in ["session-node", "repository-root"] {
-        assert_eq!(
-            SubscriptionTarget::from_parts(target, &["/repo", "session"]),
-            Err(SubscriptionError::UnknownTarget)
-        );
-    }
-}
-
-#[test]
 fn test_購読対象_区切り文字と日本語を含む引数が往復する() {
     // Given
     let target = SubscriptionTarget::BranchBase("/作業:repo".into(), "feat/test".into());

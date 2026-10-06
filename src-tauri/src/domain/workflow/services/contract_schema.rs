@@ -430,9 +430,5 @@ fn parse_string_array(value: &Value, field: &str) -> Result<Vec<String>, String>
 }
 
 #[cfg(test)]
-#[path = "contract_schema_path_test.rs"]
-mod contract_schema_path_test;
-
-#[cfg(test)]
 #[path = "contract_schema_test.rs"]
 mod contract_schema_tests;

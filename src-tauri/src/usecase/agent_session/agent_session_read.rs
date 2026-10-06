@@ -143,3 +143,7 @@ fn map_lifecycle_error(error: AgentSessionLifecycleUsecaseError) -> AgentSession
         }
     }
 }
+
+#[cfg(test)]
+#[path = "agent_session_read_test.rs"]
+mod agent_session_read_tests;

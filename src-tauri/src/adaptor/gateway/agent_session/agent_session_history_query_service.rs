@@ -179,3 +179,11 @@ fn map_gateway_error(error: AgentSessionHistoryGatewayError) -> AgentSessionHist
         AgentSessionHistoryGatewayError::Corrupt => AgentSessionHistoryQueryError::Corrupt,
     }
 }
+
+#[cfg(test)]
+#[path = "agent_session_history_query_service_test.rs"]
+mod agent_session_history_query_service_tests;
+
+#[cfg(any(test, feature = "test-support"))]
+#[path = "test_helpers_agent_session_history_query_service.rs"]
+pub(crate) mod shared_test_helpers;

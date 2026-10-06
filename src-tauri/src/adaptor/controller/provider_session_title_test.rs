@@ -1,5 +1,5 @@
 use super::*;
-use crate::usecase::agent_session::provider_session_title_ingestion_tests::{
+use crate::usecase::agent_session::provider_session_title_ingestion::provider_session_title_ingestion_tests::{
     session, FixedTitleGateway, RecordingNotifier, RecordingRepository,
 };
 use futures_util::StreamExt;
