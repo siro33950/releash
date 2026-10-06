@@ -1,4 +1,4 @@
-#![cfg(all(debug_assertions))]
+#![cfg(debug_assertions)]
 
 use std::path::Path;
 use std::process::Stdio;

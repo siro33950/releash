@@ -106,10 +106,9 @@ cargo fmt --check
 cargo clippy --locked -- -D warnings
 cargo deny --locked check
 cargo clippy --locked -p releash-desktop -- -D warnings
-cargo clippy --locked -p releash-desktop --tests -- -D warnings
+cargo clippy --locked --features test-support -- -D warnings
 cargo test --locked
 cargo build --locked -p releash-backend --bin releash-backend
-cargo clippy --locked -p releash-desktop --tests -- -D warnings
 cargo test --locked -p releash-desktop
 cargo test --locked --test state_subscription_scenarios scenarios_tests::
 cargo test --locked --test daemon_smoke

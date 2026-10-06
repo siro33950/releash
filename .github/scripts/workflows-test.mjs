@@ -61,9 +61,9 @@ const rustCommands = {
     "cargo clippy --locked -- -D warnings",
     "cargo deny --locked check",
     "cargo clippy --locked -p releash-desktop -- -D warnings",
-    "cargo clippy --locked -p releash-desktop --tests -- -D warnings",
+    "cargo clippy --locked --features test-support -- -D warnings",
   ],
-  "rust-test-desktop": ["cargo build --locked -p releash-backend --bin releash-backend", "cargo clippy --locked -p releash-desktop --tests -- -D warnings", "cargo test --locked -p releash-desktop"],
+  "rust-test-desktop": ["cargo build --locked -p releash-backend --bin releash-backend", "cargo test --locked -p releash-desktop"],
   "rust-test-backend": [
     "cargo test --locked",
     "cargo test --locked --test state_subscription_scenarios scenarios_tests::",

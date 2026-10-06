@@ -1,4 +1,4 @@
-#![cfg(all(debug_assertions))]
+#![cfg(debug_assertions)]
 
 use serde_json::json;
 

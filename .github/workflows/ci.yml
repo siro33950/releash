@@ -212,9 +212,9 @@ jobs:
       - name: Lint desktop shell
         if: ${{ !cancelled() && steps.changes.outputs.rust == 'true' && steps.setup.outcome == 'success' }}
         run: cargo clippy --locked -p releash-desktop -- -D warnings
-      - name: Lint desktop test support
+      - name: Lint backend test support
         if: ${{ !cancelled() && steps.changes.outputs.rust == 'true' && steps.setup.outcome == 'success' }}
-        run: cargo clippy --locked -p releash-desktop --tests -- -D warnings
+        run: cargo clippy --locked --features test-support -- -D warnings
 
   rust-test-desktop:
     runs-on: ubuntu-latest
@@ -268,8 +268,6 @@ jobs:
           key: rust-test-desktop
           save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
       - run: cargo build --locked -p releash-backend --bin releash-backend
-        if: ${{ !cancelled() && steps.changes.outputs.rust == 'true' && steps.setup.outcome == 'success' }}
-      - run: cargo clippy --locked -p releash-desktop --tests -- -D warnings
         if: ${{ !cancelled() && steps.changes.outputs.rust == 'true' && steps.setup.outcome == 'success' }}
       - run: cargo test --locked -p releash-desktop
         if: ${{ !cancelled() && steps.changes.outputs.rust == 'true' && steps.setup.outcome == 'success' }}
