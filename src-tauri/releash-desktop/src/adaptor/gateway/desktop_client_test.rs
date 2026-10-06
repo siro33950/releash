@@ -735,11 +735,12 @@ async fn test_長時間続いたstreamの後は初回の待ちへ戻る() {
     );
     // Then
     let opened = opened.lock();
+    // 初回の待ち（1.0 秒）と 2 回目の待ち（1.6 秒）を区別する。止めた時計は実際の TCP の待ちの間も進むので、上限は 1.6 秒未満にする。
     assert!(opened[1].duration_since(opened[0]) >= Duration::from_secs(1));
-    assert!(opened[1].duration_since(opened[0]) < Duration::from_millis(1_200));
+    assert!(opened[1].duration_since(opened[0]) < Duration::from_millis(1_600));
     assert!(opened[2].duration_since(opened[1]) >= Duration::from_secs(131));
     assert!(
-        opened[2].duration_since(opened[1]) < Duration::from_millis(131_200),
+        opened[2].duration_since(opened[1]) < Duration::from_millis(131_600),
         "{:?}",
         opened[2].duration_since(opened[1])
     );
