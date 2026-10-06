@@ -26,6 +26,7 @@ name = "releash-backend"
 path = "src/bin/backend.rs"
 
 [build-dependencies]
+prost-reflect = "0.16.5"
 connectrpc-build = "=0.9.0"
 prost-build = "0.14.4"
 protoc-bin-vendored = "3"

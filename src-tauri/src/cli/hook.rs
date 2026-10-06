@@ -7,9 +7,7 @@ use crate::adaptor::controller::api::protocol::{
     ProviderActivityRequest, ProviderLifecycleProvider, ProviderLifecycleReceiveRequest,
     ProviderLifecycleSignalRequest,
 };
-use crate::adaptor::gateway::provider_lifecycle::{
-    parse_provider_payload, ProviderLifecycleGatewayError,
-};
+use crate::adaptor::gateway::provider_lifecycle::parse_provider_payload;
 use crate::adaptor::presenter::provider_lifecycle_response::ProviderLifecycleReceiveResponse;
 use crate::domain::provider_lifecycle::{
     ProviderKind, ProviderLifecycleScope, ProviderLifecycleSignalKind,
@@ -58,8 +56,12 @@ pub fn receive_from(_reader: impl Read, provider: HookProvider) -> Result<String
     let scope = ProviderLifecycleScope::new(&agent_session_id)
         .map_err(|error| CliError::InvalidInput(error.to_string()))?;
     let signal = match parse_provider_payload(provider_kind, &binding_id, scope, &payload) {
-        Ok(signal) => signal,
-        Err(ProviderLifecycleGatewayError::SubagentPayload) => return Ok("{}".to_string()),
+        Ok(crate::domain::provider_lifecycle::ProviderPayloadInterpretation::Signal(signal)) => {
+            signal
+        }
+        Ok(crate::domain::provider_lifecycle::ProviderPayloadInterpretation::Subagent) => {
+            return Ok("{}".to_string())
+        }
         Err(error) => return Err(CliError::InvalidInput(error.to_string())),
     };
     let signal = signal.into_kind();
@@ -130,6 +132,7 @@ pub fn receive_from(_reader: impl Read, provider: HookProvider) -> Result<String
         }
     })?;
     match response {
+        ProviderLifecycleReceiveResponse::Ignored => Ok("{}".to_string()),
         ProviderLifecycleReceiveResponse::Applied | ProviderLifecycleReceiveResponse::Duplicate => {
             if session_started {
                 if let Ok(marker_path) = std::env::var(HEALTH_FILE_ENV) {

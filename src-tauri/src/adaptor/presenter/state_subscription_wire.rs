@@ -90,6 +90,21 @@ pub fn payload(value: &StateValue) -> Result<wire::StatePayload, connectrpc::Con
                 crate::adaptor::presenter::client::value(value.clone())
                     .map_err(crate::adaptor::presenter::connect::command_error)?,
             ),
+            StateValue::WorkflowExecution(value) => wire::state_payload::Value::WorkflowExecution(wire::NullableWorkflowExecutionView {
+                value: value.as_ref().map(|tree| crate::adaptor::presenter::client::value(crate::adaptor::presenter::workflow::workflow_execution_to_view(tree.clone()))).transpose().map_err(crate::adaptor::presenter::connect::command_error)?,
+            }),
+            StateValue::WorkflowOutput(value) => wire::state_payload::Value::WorkflowOutput(wire::NullableWorkflowOutputView {
+                value: value.clone().map(|output| crate::adaptor::presenter::client::value(crate::adaptor::presenter::workflow_wire::WorkflowGetOutputResponse::from(output))).transpose().map_err(crate::adaptor::presenter::connect::command_error)?,
+            }),
+            StateValue::ReviewSessionThreads(value) => wire::state_payload::Value::ReviewSessionThreads(wire::NullableListReviewThreadDto {
+                value: value.clone().map(crate::adaptor::presenter::client::value).transpose().map_err(crate::adaptor::presenter::connect::command_error)?,
+            }),
+            StateValue::ReviewSessionThread(value) => wire::state_payload::Value::ReviewSessionThread(wire::NullableReviewThreadDto {
+                value: value.clone().map(crate::adaptor::presenter::client::value).transpose().map_err(crate::adaptor::presenter::connect::command_error)?,
+            }),
+            StateValue::ReviewSessionThreadHistory(value) => wire::state_payload::Value::ReviewSessionThreadHistory(wire::NullableListReviewHistoryEntryDto {
+                value: value.as_ref().map(|entries| entries.iter().cloned().map(wire::ReviewHistoryEntryDto::try_from).collect::<Result<Vec<_>, _>>().map(|items| wire::ListReviewHistoryEntryDto { items })).transpose().map_err(|error| crate::adaptor::presenter::connect::command_error(crate::adaptor::presenter::error::AppError::new(error).into()))?,
+            }),
             StateValue::Workflows(value) => wire::state_payload::Value::Workflows(
                 crate::adaptor::presenter::client::value(value.clone())
                     .map_err(crate::adaptor::presenter::connect::command_error)?,

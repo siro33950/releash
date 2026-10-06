@@ -1,7 +1,6 @@
 use crate::usecase::{
     agent_session::{AgentSessionHistoryPageDto, AgentSessionItemDto},
     code_dto::{ReviewFileViewDto, ReviewSnapshotDto},
-    comment::ReviewThreadDto,
     provider_dto::AgentSessionProviderDto,
     repository_dto::{BranchDto, WorktreeEntryDto},
     workflow::{
@@ -47,7 +46,12 @@ pub enum StateValue {
     WorkspaceState(Option<WorkspaceStateDto>),
     ReviewSnapshot(ReviewSnapshotDto),
     ReviewFileView(ReviewFileViewDto),
-    ReviewThreads(Vec<ReviewThreadDto>),
+    ReviewThreads(Vec<crate::domain::comment::ReviewThread>),
+    WorkflowExecution(Option<crate::domain::workflow::ExecutionTree>),
+    WorkflowOutput(Option<crate::usecase::workflow::WorkflowGetOutputResult>),
+    ReviewSessionThreads(Option<Vec<crate::domain::comment::ReviewThread>>),
+    ReviewSessionThread(Option<crate::domain::comment::ReviewThread>),
+    ReviewSessionThreadHistory(Option<Vec<crate::domain::comment::ReviewHistoryEntry>>),
     Workflows(Vec<WorkflowSummaryDto>),
     Workflow(Option<WorkflowDto>),
     WorkflowSource(Option<String>),

@@ -1,15 +1,13 @@
+pub(crate) mod context;
+pub(crate) use context::{ReviewContextTarget, ReviewContextUsecase};
 use std::path::Path;
 use std::sync::Arc;
-
-pub(crate) mod dto;
 
 use crate::domain::comment::{
     apply_filter, ensure_can_delete, ensure_thread_open, project_thread, project_threads,
     validate_content, validate_filter, validate_target, ReviewActor, ReviewError, ReviewEvent,
     ReviewHistoryEntry, ReviewTarget, ReviewThread, ReviewThreadFilter,
 };
-
-pub(crate) use dto::{ReviewHistoryEntryDto, ReviewThreadDto};
 
 pub type ReviewEventMutation<'a> =
     Box<dyn FnOnce(&[ReviewEvent]) -> Result<Vec<ReviewEvent>, ReviewError> + Send + 'a>;
@@ -38,6 +36,7 @@ pub trait ReviewIdGenerator: Send + Sync {
 }
 
 pub struct ReviewCommentUsecase {
+    context: Option<ReviewContextUsecase>,
     store: Arc<dyn ReviewEventStore>,
     clock: Arc<dyn ReviewClock>,
     id_generator: Arc<dyn ReviewIdGenerator>,
@@ -51,6 +50,7 @@ impl ReviewCommentUsecase {
         id_generator: Arc<dyn ReviewIdGenerator>,
     ) -> Self {
         Self {
+            context: None,
             store,
             clock,
             id_generator,
@@ -58,6 +58,31 @@ impl ReviewCommentUsecase {
         }
     }
 
+    pub fn with_context(mut self, context: ReviewContextUsecase) -> Self {
+        self.context = Some(context);
+        self
+    }
+    pub async fn resolve_context(
+        &self,
+        target: ReviewContextTarget<'_>,
+        mutation: bool,
+    ) -> Result<Option<(String, ReviewActor)>, ReviewError> {
+        let context = self.context.as_ref().ok_or_else(|| {
+            ReviewError::Technical(crate::domain::failure::TechnicalFailure {
+                nature: crate::domain::failure::TechnicalFailureNature::Other,
+                message: "Review context unavailable".into(),
+            })
+        })?;
+        context.resolve(target, mutation).await
+    }
+    pub async fn required_session_context(
+        &self,
+        id: &str,
+    ) -> Result<(String, ReviewActor), ReviewError> {
+        self.resolve_context(ReviewContextTarget::Session(id), true)
+            .await?
+            .ok_or_else(|| ReviewError::NotFound(format!("Session not found: {id}")))
+    }
     pub fn with_subscriptions(
         mut self,
         subscriptions: crate::usecase::state_subscription::StateSubscriptionUsecase,

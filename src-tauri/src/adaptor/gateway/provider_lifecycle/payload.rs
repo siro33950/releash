@@ -1,21 +1,20 @@
-use serde::Deserialize;
-use thiserror::Error;
-
 use crate::domain::provider_lifecycle::{
-    ProviderKind, ProviderLifecycleInputError, ProviderLifecycleScope, ProviderLifecycleSignal,
+    ProviderKind, ProviderLifecycleScope, ProviderLifecycleSignal, ProviderPayloadError,
+    ProviderPayloadInterpretation, ProviderPayloadInterpreter,
 };
 use crate::domain::workflow::AgentSessionActivity;
-
-#[derive(Debug, Error)]
-pub(crate) enum ProviderLifecycleGatewayError {
-    #[error("Provider lifecycle payload is invalid")]
-    InvalidPayload,
-    #[error("Provider lifecycle payload belongs to a subagent")]
-    SubagentPayload,
-    #[error("unsupported Provider lifecycle event: {0}")]
-    UnsupportedEvent(String),
-    #[error(transparent)]
-    InvalidSignal(#[from] ProviderLifecycleInputError),
+use serde::Deserialize;
+pub struct LocalProviderPayloadInterpreter;
+impl ProviderPayloadInterpreter for LocalProviderPayloadInterpreter {
+    fn interpret(
+        &self,
+        provider: ProviderKind,
+        binding_id: &str,
+        scope: ProviderLifecycleScope,
+        payload: &[u8],
+    ) -> Result<ProviderPayloadInterpretation, ProviderPayloadError> {
+        parse_provider_payload(provider, binding_id, scope, payload)
+    }
 }
 
 pub(crate) fn parse_provider_payload(
@@ -23,15 +22,15 @@ pub(crate) fn parse_provider_payload(
     binding_id: &str,
     scope: ProviderLifecycleScope,
     payload: &[u8],
-) -> Result<ProviderLifecycleSignal, ProviderLifecycleGatewayError> {
+) -> Result<ProviderPayloadInterpretation, ProviderPayloadError> {
     let payload = serde_json::from_slice::<ProviderPayload>(payload)
-        .map_err(|_| ProviderLifecycleGatewayError::InvalidPayload)?;
+        .map_err(|_| ProviderPayloadError::InvalidPayload)?;
     if provider == ProviderKind::Claude && payload.agent_id.is_some() {
-        return Err(ProviderLifecycleGatewayError::SubagentPayload);
+        return Ok(ProviderPayloadInterpretation::Subagent);
     }
     let transcript_ref = payload.transcript_path.as_deref();
 
-    match (provider, payload.hook_event_name.as_str()) {
+    let signal = match (provider, payload.hook_event_name.as_str()) {
         (ProviderKind::Claude | ProviderKind::Codex, "SessionStart") => {
             ProviderLifecycleSignal::session_started(
                 binding_id,
@@ -57,7 +56,7 @@ pub(crate) fn parse_provider_payload(
                 .error
                 .as_deref()
                 .filter(|value| !value.trim().is_empty())
-                .ok_or(ProviderLifecycleGatewayError::InvalidPayload)?;
+                .ok_or(ProviderPayloadError::InvalidPayload)?;
             let reason = match payload
                 .error_details
                 .as_deref()
@@ -88,10 +87,9 @@ pub(crate) fn parse_provider_payload(
             activity_for_event(event, payload.tool_name.as_deref()),
         )
         .map_err(Into::into),
-        (_, event) => Err(ProviderLifecycleGatewayError::UnsupportedEvent(
-            event.to_string(),
-        )),
-    }
+        (_, event) => Err(ProviderPayloadError::UnsupportedEvent(event.to_string())),
+    }?;
+    Ok(ProviderPayloadInterpretation::Signal(signal))
 }
 
 fn activity_for_event(event: &str, tool_name: Option<&str>) -> AgentSessionActivity {

@@ -16,7 +16,8 @@ pub struct LocalApiServerBinding {
     listener: std::net::TcpListener,
     port: u16,
     token: Arc<str>,
-    terminal_token: super::ClientBearerToken,
+    terminal_token: super::BearerToken,
+    hook_token: super::BearerToken,
     instance_id: String,
     discovery: LocalApiDiscoveryFile,
     client_discovery: LocalApiDiscoveryFile,
@@ -33,6 +34,7 @@ impl LocalApiServerBinding {
         instance_id: String,
         pid: u32,
         process_started_at: u64,
+        hook_token: super::BearerToken,
     ) -> Result<Self, LocalApiServerError> {
         let listener = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
             .map_err(LocalApiServerError::ListenerBind)?;
@@ -84,6 +86,7 @@ impl LocalApiServerBinding {
             port: address.port(),
             token,
             terminal_token: terminal_token.into(),
+            hook_token,
             instance_id,
             discovery,
             client_discovery,
@@ -99,10 +102,18 @@ impl LocalApiServerBinding {
         self.terminal_token.token()
     }
 
-    pub fn client_bearer_token(&self) -> super::ClientBearerToken {
+    pub fn client_bearer_token(&self) -> super::BearerToken {
         self.terminal_token.clone()
     }
 
+    #[cfg(feature = "test-support")]
+    pub fn test_hook_token(&self) -> Arc<str> {
+        self.hook_token.token()
+    }
+
+    pub fn hook_bearer_token(&self) -> super::BearerToken {
+        self.hook_token.clone()
+    }
     #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn port(&self) -> u16 {
         self.port
@@ -120,6 +131,7 @@ impl LocalApiServerBinding {
             discovery,
             client_discovery,
             terminal_token,
+            hook_token,
             ..
         } = self;
         let _runtime = runtime.enter();
@@ -154,6 +166,7 @@ impl LocalApiServerBinding {
             shutdown: parking_lot::Mutex::new(Some(shutdown_tx)),
             task: parking_lot::Mutex::new(Some(task)),
             terminal_token,
+            hook_token,
             discovery,
             client_discovery,
         }))
@@ -161,7 +174,8 @@ impl LocalApiServerBinding {
 }
 
 pub struct LocalApiServer {
-    terminal_token: super::ClientBearerToken,
+    terminal_token: super::BearerToken,
+    hook_token: super::BearerToken,
     shutdown: parking_lot::Mutex<Option<oneshot::Sender<()>>>,
     task: parking_lot::Mutex<Option<tokio::task::JoinHandle<()>>>,
     discovery: LocalApiDiscoveryFile,
@@ -182,6 +196,7 @@ impl LocalApiServer {
     }
     pub fn shutdown(&self) {
         self.terminal_token.revoke();
+        self.hook_token.revoke();
         if let Some(sender) = self.shutdown.lock().take() {
             let _ = sender.send(());
         }
@@ -224,7 +239,7 @@ impl Drop for LocalApiServer {
     }
 }
 
-fn generate_token() -> String {
+pub(crate) fn generate_token() -> String {
     format!(
         "{}{}",
         uuid::Uuid::new_v4().simple(),
@@ -243,6 +258,7 @@ pub fn test_binding(data_dir: PathBuf) -> Result<LocalApiServerBinding, LocalApi
         uuid::Uuid::new_v4().simple().to_string(),
         pid,
         started,
+        Arc::<str>::from(generate_token()).into(),
     )
 }
 

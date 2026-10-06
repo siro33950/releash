@@ -25,3 +25,8 @@ pub(crate) use value_objects::{
     ProviderLifecycleUnavailableObservation, ProviderLifecycleUnavailableReason,
     ScopedProviderLifecycleEvent,
 };
+
+mod payload;
+pub(crate) use payload::{
+    ProviderPayloadError, ProviderPayloadInterpretation, ProviderPayloadInterpreter,
+};

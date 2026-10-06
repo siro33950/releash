@@ -148,6 +148,8 @@ impl ConnectFailure for crate::domain::git_host::git_host::GitHostError {
 impl ConnectFailure for crate::domain::comment::ReviewError {
     fn connect_code(&self) -> connectrpc::ErrorCode {
         match self {
+            Self::Store(error) => error.connect_code(),
+            Self::SessionNotOpen(_) => connectrpc::ErrorCode::FailedPrecondition,
             Self::Technical(error) => ConnectFailure::connect_code(error),
             Self::InvalidInput(_) => connectrpc::ErrorCode::InvalidArgument,
             Self::NotFound(_) => connectrpc::ErrorCode::NotFound,
@@ -691,4 +693,14 @@ impl ConnectFailure for crate::domain::agent_session::ProviderExecutableProbeGat
             Self::Technical(failure) => failure.connect_code(),
         }
     }
+}
+
+pub(crate) fn scope_denied(headers: &axum::http::HeaderMap) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    connectrpc::ConnectError::new(
+        connectrpc::ErrorCode::PermissionDenied,
+        "Token scope is not allowed",
+    )
+    .into_http_response(headers)
+    .into_response()
 }

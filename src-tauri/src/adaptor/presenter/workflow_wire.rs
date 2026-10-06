@@ -16,13 +16,6 @@ pub use crate::usecase::workflow::diagnostic_dto::{
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
-pub enum WorkflowValidateOutputResponse {
-    Valid,
-    Invalid { reason: String, details: String },
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "status", rename_all = "snake_case")]
 pub enum WorkflowGetOutputResponse {
     Submitted {
         contract: Option<String>,
@@ -183,3 +176,25 @@ pub struct WorkflowExecutionView {
 #[cfg(test)]
 #[path = "workflow_wire_test.rs"]
 mod workflow_wire_tests;
+
+impl From<crate::usecase::workflow::WorkflowGetOutputResult> for WorkflowGetOutputResponse {
+    fn from(value: crate::usecase::workflow::WorkflowGetOutputResult) -> Self {
+        use crate::usecase::workflow::WorkflowGetOutputResult as Result;
+        match value {
+            Result::Submitted {
+                contract,
+                structured_output,
+                submitted_at,
+                request_id,
+                timestamp,
+            } => Self::Submitted {
+                contract,
+                structured_output,
+                submitted_at,
+                request_id,
+                timestamp,
+            },
+            Result::NotSubmitted => Self::NotSubmitted,
+        }
+    }
+}

@@ -87,6 +87,31 @@ impl SubscriptionTarget {
                 ReviewBase::parse(base).map_err(|_| SubscriptionError::InvalidId)?,
             )),
             ("review-threads", [name]) => Ok(Self::ReviewThreads((*name).into())),
+            ("workflow-execution", [id]) => Ok(Self::WorkflowExecution((*id).into())),
+            ("workflow-output", [id, node]) => {
+                Ok(Self::WorkflowOutput((*id).into(), (*node).into()))
+            }
+            ("review-session-threads", [id, filters @ ..]) => Ok(Self::ReviewSessionThreads(
+                (*id).into(),
+                parse_review_filters(filters, true)?,
+            )),
+            ("review-worktree-threads", [path, filters @ ..]) => {
+                let filter = parse_review_filters(filters, false)?;
+                Ok(Self::ReviewWorktreeThreads(
+                    (*path).into(),
+                    crate::domain::comment::ReviewWorktreeFilter {
+                        file: filter.file,
+                        state: filter.state,
+                        thread_id: filter.thread_id,
+                    },
+                ))
+            }
+            ("review-session-thread", [id, thread]) => {
+                Ok(Self::ReviewSessionThread((*id).into(), (*thread).into()))
+            }
+            ("review-session-thread-history", [id, thread]) => Ok(
+                Self::ReviewSessionThreadHistory((*id).into(), (*thread).into()),
+            ),
             ("workflows", []) => Ok(Self::Workflows),
             ("workflow", [name]) => Ok(Self::Workflow((*name).into())),
             ("workflow-source", [name]) => Ok(Self::WorkflowSource((*name).into())),
@@ -158,6 +183,22 @@ impl SubscriptionTarget {
                 ],
             ),
             Self::ReviewThreads(name) => ("review-threads", vec![name.clone()]),
+            Self::WorkflowExecution(id) => ("workflow-execution", vec![id.clone()]),
+            Self::WorkflowOutput(id, node) => ("workflow-output", vec![id.clone(), node.clone()]),
+            Self::ReviewSessionThreads(id, filter) => {
+                ("review-session-threads", review_filter_parts(id, filter))
+            }
+            Self::ReviewWorktreeThreads(path, filter) => (
+                "review-worktree-threads",
+                review_filter_parts(path, &filter.clone().into()),
+            ),
+            Self::ReviewSessionThread(id, thread) => {
+                ("review-session-thread", vec![id.clone(), thread.clone()])
+            }
+            Self::ReviewSessionThreadHistory(id, thread) => (
+                "review-session-thread-history",
+                vec![id.clone(), thread.clone()],
+            ),
             Self::Workflows => ("workflows", vec![]),
             Self::Workflow(name) => ("workflow", vec![name.clone()]),
             Self::WorkflowSource(name) => ("workflow-source", vec![name.clone()]),
@@ -275,3 +316,68 @@ impl std::fmt::Display for SubscriptionTarget {
 #[cfg(test)]
 #[path = "state_subscription_target_test.rs"]
 mod state_subscription_target_tests;
+
+fn parse_review_filters(
+    args: &[&str],
+    session: bool,
+) -> Result<crate::domain::comment::ReviewThreadFilter, SubscriptionError> {
+    use crate::domain::comment::{AuthorScope, ReviewThreadFilter, ReviewThreadState};
+    let mut filter = ReviewThreadFilter::default();
+    for arg in args {
+        let (key, value) = arg.split_once('=').ok_or(SubscriptionError::InvalidId)?;
+        if value.is_empty() {
+            return Err(SubscriptionError::InvalidId);
+        }
+        match key {
+            "file" if filter.file.is_none() => filter.file = Some(value.into()),
+            "state" if filter.state.is_none() => {
+                filter.state = Some(
+                    ReviewThreadState::parse(value).map_err(|_| SubscriptionError::InvalidId)?,
+                )
+            }
+            "author" if session && filter.author.is_none() => {
+                filter.author =
+                    Some(AuthorScope::parse(value).map_err(|_| SubscriptionError::InvalidId)?)
+            }
+            "unread" if session && filter.unread.is_none() => {
+                filter.unread = Some(
+                    ReviewThreadFilter::parse_unread(value)
+                        .map_err(|_| SubscriptionError::InvalidId)?,
+                )
+            }
+            "thread" => filter.thread_id.push(value.into()),
+            _ => return Err(SubscriptionError::InvalidId),
+        }
+    }
+    filter.thread_id.sort();
+    filter.thread_id.dedup();
+    let canonical = review_filter_parts("", &filter);
+    if canonical[1..]
+        .iter()
+        .map(String::as_str)
+        .ne(args.iter().copied())
+    {
+        return Err(SubscriptionError::InvalidId);
+    }
+    Ok(filter)
+}
+fn review_filter_parts(
+    id: &str,
+    filter: &crate::domain::comment::ReviewThreadFilter,
+) -> Vec<String> {
+    let mut args = vec![id.into()];
+    if let Some(file) = &filter.file {
+        args.push(format!("file={file}"));
+    }
+    if let Some(state) = &filter.state {
+        args.push(format!("state={}", state.as_str()));
+    }
+    if let Some(author) = &filter.author {
+        args.push(format!("author={}", author.as_str()));
+    }
+    if let Some(unread) = filter.unread {
+        args.push(format!("unread={unread}"));
+    }
+    args.extend(filter.thread_id.iter().map(|id| format!("thread={id}")));
+    args
+}

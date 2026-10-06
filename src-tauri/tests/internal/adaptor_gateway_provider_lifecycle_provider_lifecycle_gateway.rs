@@ -328,6 +328,10 @@ pub fn test_provider起動設定_launch_contextをchild_environmentだけに保�
             spec.environment(),
             &[
                 (
+                    "RELEASH_PROVIDER_LIFECYCLE_TOKEN".to_string(),
+                    "hook-token".to_string()
+                ),
+                (
                     "RELEASH_PROVIDER_LIFECYCLE_SLOT_ID".to_string(),
                     "slot-1".to_string(),
                 ),

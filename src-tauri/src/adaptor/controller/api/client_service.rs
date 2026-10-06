@@ -88,3 +88,33 @@ async fn report_terminal_processed<'a>(
         .map_err(crate::adaptor::presenter::connect::classified_error)?;
     connectrpc::Response::ok(rpc::Unit::default())
 }
+
+async fn receive_provider_signal<'a>(
+    &'a self, ctx: connectrpc::RequestContext,
+    request: connectrpc::ServiceRequest<'_, rpc::ReceiveProviderSignalRequest>,
+) -> connectrpc::ServiceResult<impl connectrpc::Encodable<rpc::ReceiveProviderSignalResponse> + Send + use<'a>> {
+    use crate::domain::provider_lifecycle::{ProviderKind, ProviderLifecycleScope, ProviderLifecycleSlotId};
+    let request: wire::ReceiveProviderSignalRequest = to_wire(&request.to_owned_message())?;
+    if request.payload.len() > 65_536 {
+        return Err(crate::adaptor::presenter::connect::invalid_request("Provider payload exceeds 65536 bytes"));
+    }
+    let provider = match request.provider.and_then(|provider| provider.value).and_then(|value| wire::agent_session_provider_dto::Value::try_from(value).ok()) {
+        Some(wire::agent_session_provider_dto::Value::Claude) => ProviderKind::Claude,
+        Some(wire::agent_session_provider_dto::Value::Codex) => ProviderKind::Codex,
+        None => return Err(crate::adaptor::presenter::connect::invalid_request("Invalid provider")),
+    };
+    let slot = ProviderLifecycleSlotId::new(&request.slot_id).map_err(|error| crate::adaptor::presenter::connect::invalid_request(error.to_string()))?;
+    let scope = ProviderLifecycleScope::new(&request.agent_session_id).map_err(|error| crate::adaptor::presenter::connect::invalid_request(error.to_string()))?;
+    let (ingress, interpreter) = self.provider_lifecycle.as_ref().ok_or_else(|| crate::adaptor::presenter::connect::classified_error(crate::adaptor::presenter::error::AppError::unavailable("Provider lifecycle unavailable")))?;
+    let result = crate::common::telemetry::observe_result_async(
+        crate::adaptor::controller::api::client::ingress(ctx.deadline(), async {
+            ingress.receive_payload(interpreter.as_ref(), &slot, &request.capability, crate::usecase::provider_lifecycle::ingress::ProviderPayloadInput { provider, binding_id: &request.binding_id, scope, payload: &request.payload }).await.map_err(crate::adaptor::presenter::connect::classified_error)
+        }),
+        |result, elapsed| {
+            if matches!(result, Ok((crate::domain::provider_lifecycle::ProviderLifecycleIngressResult::Applied, true))) {
+                crate::infrastructure::telemetry::metrics::record_terminal_launch(crate::infrastructure::telemetry::metrics::TerminalLaunch::HookIngress, elapsed);
+            }
+        },
+    ).await?;
+    connectrpc::Response::ok(to_rpc::<rpc::ReceiveProviderSignalResponse>(&wire::ReceiveProviderSignalResponse::from(result.0))?)
+}

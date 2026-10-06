@@ -3,6 +3,8 @@ package releash.client.v1;
 import "client_options.proto";
 
 message CommandRequest {
+  reserved 180, 181;
+  reserved "workflow_validate_output", "workflow_get_output";
   reserved 104, 132, 133, 138, 139;
   reserved "record_terminal_launch_renderer_phase", "start_terminal_input_performance_collection", "start_terminal_launch_performance_collection", "take_terminal_input_performance_samples", "take_terminal_launch_performance_samples";
   reserved 103;
@@ -73,6 +75,10 @@ message CommandRequest {
   reserved 65, 66, 91, 183;
   reserved "get_review_file_view", "get_review_snapshot", "list_review_threads", "get_review_blob";
   oneof command {
+    ResolveSessionReviewThreadRequest resolve_session_review_thread = 191;
+    AppendSessionReviewCommentRequest append_session_review_comment = 190;
+    CreateSessionReviewThreadRequest create_session_review_thread = 189;
+    DiagnoseWorkflowDirectoryRequest diagnose_workflow_directory = 192;
     AbortWorkflowRequest abort_workflow = 10;
     AddRepoPathRequest add_repo_path = 13;
     AppendReviewCommentRequest append_review_comment = 14;
@@ -152,14 +158,14 @@ message CommandRequest {
     ComputeHiddenRangesRequest compute_hidden_ranges = 159;
     ApproveWorkflowNodeRequest approve_workflow_node = 172;
     WorkflowSubmitOutputRequest workflow_submit_output = 179;
-    WorkflowValidateOutputRequest workflow_validate_output = 180;
-    WorkflowGetOutputRequest workflow_get_output = 181;
     RefreshWorkspacesRequest refresh_workspaces = 186;
     FindRepositoryRootRequest find_repository_root = 188;
   }
 }
 
 message CommandResult {
+  reserved 180, 181;
+  reserved "workflow_validate_output", "workflow_get_output";
   reserved 104, 132, 133, 138, 139;
   reserved "record_terminal_launch_renderer_phase", "start_terminal_input_performance_collection", "start_terminal_launch_performance_collection", "take_terminal_input_performance_samples", "take_terminal_launch_performance_samples";
   reserved 103;
@@ -230,6 +236,10 @@ message CommandResult {
   reserved 65, 66, 91, 183;
   reserved "get_review_file_view", "get_review_snapshot", "list_review_threads", "get_review_blob";
   oneof command {
+    ResolveSessionReviewThreadResponse resolve_session_review_thread = 191;
+    AppendSessionReviewCommentResponse append_session_review_comment = 190;
+    CreateSessionReviewThreadResponse create_session_review_thread = 189;
+    DiagnoseWorkflowDirectoryResponse diagnose_workflow_directory = 192;
     Unit abort_workflow = 10;
     ResultBool add_repo_path = 13;
     ReviewThreadDto append_review_comment = 14;
@@ -309,8 +319,6 @@ message CommandResult {
     ListHiddenRangeDto compute_hidden_ranges = 159;
     Unit approve_workflow_node = 172;
     Unit workflow_submit_output = 179;
-    WorkflowValidateOutputResponse workflow_validate_output = 180;
-    WorkflowGetOutputResponse workflow_get_output = 181;
     Unit refresh_workspaces = 186;
     Nullablestring find_repository_root = 188;
   }
@@ -2249,46 +2257,21 @@ message WorkflowSubmitArtifactInput {
 }
 
 message WorkflowSubmitOutputRequest {
-  optional string worktree_path = 1 [json_name = "worktreePath", (json_required) = true];
+  reserved 1;
+  reserved "worktree_path";
   optional string node_execution_id = 2 [json_name = "nodeExecutionId", (json_required) = true];
   optional WorkflowSubmitArtifactInput artifact = 3 [json_name = "artifact", (json_nullable) = true];
 }
 
-message WorkflowValidateOutputRequest {
-  optional string worktree_path = 1 [json_name = "worktreePath", (json_required) = true];
-  optional string execution_id = 2 [json_name = "executionId", (json_required) = true];
-  optional string node_name = 3 [json_name = "nodeName", (json_required) = true];
-  optional WorkflowValue structured_output = 4 [json_name = "structuredOutput", (json_required) = true];
-}
-
-message WorkflowValidateOutputResponse {
+message WorkflowOutputView {
   option (json_tag) = "status";
   oneof variant {
-    Unit valid = 1 [json_name = "valid"];
-    WorkflowValidateOutputResponseInvalid invalid = 2 [json_name = "invalid"];
-  }
-}
-
-message WorkflowValidateOutputResponseInvalid {
-  optional string reason = 1 [json_name = "reason", (json_required) = true];
-  optional string details = 2 [json_name = "details", (json_required) = true];
-}
-
-message WorkflowGetOutputRequest {
-  optional string worktree_path = 1 [json_name = "worktreePath", (json_required) = true];
-  optional string execution_id = 2 [json_name = "executionId", (json_required) = true];
-  optional string node_name = 3 [json_name = "nodeName", (json_required) = true];
-}
-
-message WorkflowGetOutputResponse {
-  option (json_tag) = "status";
-  oneof variant {
-    WorkflowGetOutputResponseSubmitted submitted = 1 [json_name = "submitted"];
+    WorkflowOutputViewSubmitted submitted = 1 [json_name = "submitted"];
     Unit not_submitted = 2 [json_name = "not_submitted"];
   }
 }
 
-message WorkflowGetOutputResponseSubmitted {
+message WorkflowOutputViewSubmitted {
   optional string contract = 1 [json_name = "contract", (json_nullable) = true];
   optional WorkflowValue structured_output = 2 [json_name = "structured_output", (json_required) = true];
   optional double submitted_at = 3 [json_name = "submitted_at"];
@@ -2520,90 +2503,93 @@ service ClientService {
   option (default_timeout_ms) = 120000;
   option (shutdown_timeout_ms) = 15000;
   option (min_connect_timeout_ms) = 20000;
-  rpc OpenStateStream(OpenStateStreamRequest) returns (stream StateSubscriptionEvent);
-  rpc StartStateSubscription(StartStateSubscriptionRequest) returns (Unit);
-  rpc StopStateSubscription(StopStateSubscriptionRequest) returns (Unit);
-  rpc FindRepositoryRoot(FindRepositoryRootRequest) returns (Nullablestring);
-  rpc RefreshWorkspaces(RefreshWorkspacesRequest) returns (Unit);
-  rpc AbortWorkflow(AbortWorkflowRequest) returns (Unit);
-  rpc ReportTerminalProcessed(ReportTerminalProcessedRequest) returns (Unit);
-  rpc AddRepoPath(AddRepoPathRequest) returns (ResultBool);
-  rpc AppendReviewComment(AppendReviewCommentRequest) returns (ReviewThreadDto);
-  rpc ApproveWorkspaceNode(ApproveWorkspaceNodeRequest) returns (Unit);
-  rpc ArchiveAgentSession(ArchiveAgentSessionRequest) returns (AgentSessionArchiveResponse);
-  rpc ArchiveWorkspaceWorkflowExecution(ArchiveWorkspaceWorkflowExecutionRequest) returns (Unit);
-  rpc BuildReviewThreadHandoff(BuildReviewThreadHandoffRequest) returns (ResultString);
-  rpc ComputeHiddenRangesFromContent(ComputeHiddenRangesFromContentRequest) returns (ListHiddenRangeDto);
-  rpc ComputeMarkdownDiffRanges(ComputeMarkdownDiffRangesRequest) returns (ListDiffRangeDto);
-  rpc ComputeMarkdownInlineChunks(ComputeMarkdownInlineChunksRequest) returns (ListInlineChunkDto);
-  rpc ComputeMarkdownSplitRows(ComputeMarkdownSplitRowsRequest) returns (ListSplitRowDto);
-  rpc ComputeVisibleMarkdownBlocks(ComputeVisibleMarkdownBlocksRequest) returns (ListVisibleBlockDto);
-  rpc CreateAgentSession(CreateAgentSessionRequest) returns (SessionSelection);
-  rpc CreateReviewThread(CreateReviewThreadRequest) returns (ReviewThreadDto);
-  rpc CreateWorktree(CreateWorktreeRequest) returns (ResultString);
-  rpc DeleteAgentSession(DeleteAgentSessionRequest) returns (Unit);
-  rpc DeleteFacet(DeleteFacetRequest) returns (Unit);
-  rpc DeleteNotionConfig(DeleteNotionConfigRequest) returns (Unit);
-  rpc DeleteReviewThread(DeleteReviewThreadRequest) returns (Unit);
-  rpc DeleteWorkflow(DeleteWorkflowRequest) returns (Unit);
-  rpc DuplicateFacet(DuplicateFacetRequest) returns (Unit);
-  rpc DuplicateWorkflow(DuplicateWorkflowRequest) returns (Unit);
-  rpc FetchIssues(FetchIssuesRequest) returns (Unit);
-  rpc GetFileNavigation(GetFileNavigationRequest) returns (FileNavigationResultDto);
-  rpc GetLanguageFromPath(GetLanguageFromPathRequest) returns (ResultString);
-  rpc GetOrSpawnTerminalSurface(GetOrSpawnTerminalSurfaceRequest) returns (GetOrSpawnTerminalV1);
-  rpc GitCreateBranch(GitCreateBranchRequest) returns (Unit);
-  rpc GitStage(GitStageRequest) returns (Unit);
-  rpc GitStageReviewGroup(GitStageReviewGroupRequest) returns (Unit);
-  rpc GitUnstage(GitUnstageRequest) returns (Unit);
-  rpc GitUnstageReviewGroup(GitUnstageReviewGroupRequest) returns (Unit);
-  rpc KillTerminalSurface(KillTerminalSurfaceRequest) returns (Unit);
-  rpc OpenAgentSession(OpenAgentSessionRequest) returns (Unit);
-  rpc OpenFacetInEditor(OpenFacetInEditorRequest) returns (Unit);
-  rpc OpenFolderInEditor(OpenFolderInEditorRequest) returns (Unit);
-  rpc OpenInEditor(OpenInEditorRequest) returns (Unit);
-  rpc OpenWorkflowInEditor(OpenWorkflowInEditorRequest) returns (Unit);
-  rpc RefreshProviderAvailability(RefreshProviderAvailabilityRequest) returns (Unit);
-  rpc RemoveRepoPath(RemoveRepoPathRequest) returns (ResultBool);
-  rpc RemoveWorktree(RemoveWorktreeRequest) returns (Unit);
-  rpc RenameWorkspaceSessionNode(RenameWorkspaceSessionNodeRequest) returns (Unit);
-  rpc RenderFacetPreview(RenderFacetPreviewRequest) returns (ResultString);
-  rpc ReportFrontendError(ReportFrontendErrorRequest) returns (Unit);
-  rpc ReportMountedXtermCount(ReportMountedXtermCountRequest) returns (Unit);
-  rpc ReportUsageEvent(ReportUsageEventRequest) returns (Unit);
-  rpc RequestApplicationQuit(RequestApplicationQuitRequest) returns (ApplicationQuitOutcomeDtoV1);
-  rpc ResetProviderExecutable(ResetProviderExecutableRequest) returns (Unit);
-  rpc ResizeTerminalSurface(ResizeTerminalSurfaceRequest) returns (Unit);
-  rpc ResolveReviewThread(ResolveReviewThreadRequest) returns (ReviewThreadDto);
-  rpc RestoreAgentSession(RestoreAgentSessionRequest) returns (SessionSelection);
-  rpc RestoreWorkspaceWorkflowExecution(RestoreWorkspaceWorkflowExecutionRequest) returns (Unit);
-  rpc ResumeAgentSessionHistoryCandidate(ResumeAgentSessionHistoryCandidateRequest) returns (SessionSelection);
-  rpc RetryWorkspaceNode(RetryWorkspaceNodeRequest) returns (Unit);
-  rpc ResumeWorkspaceSessionNode(ResumeWorkspaceSessionNodeRequest) returns (Unit);
-  rpc SaveFacet(SaveFacetRequest) returns (Unit);
-  rpc SaveNotionConfig(SaveNotionConfigRequest) returns (Unit);
-  rpc SaveWorkflowSource(SaveWorkflowSourceRequest) returns (SaveWorkflowSourceResultDto);
-  rpc SaveWorkspaceState(SaveWorkspaceStateRequest) returns (Unit);
-  rpc SetBranchBase(SetBranchBaseRequest) returns (Unit);
-  rpc SetReleashBase(SetReleashBaseRequest) returns (Unit);
-  rpc StartWorkflow(StartWorkflowRequest) returns (ResultString);
-  rpc UpdateAppSettings(UpdateAppSettingsRequest) returns (Unit);
-  rpc UpdateLoginItemPreference(UpdateLoginItemPreferenceRequest) returns (Unit);
-  rpc UpdateCrashReporting(UpdateCrashReportingRequest) returns (Unit);
-  rpc UpdateExternalEditor(UpdateExternalEditorRequest) returns (Unit);
-  rpc UpdatePerformanceTelemetry(UpdatePerformanceTelemetryRequest) returns (Unit);
-  rpc UpdateProviderExecutable(UpdateProviderExecutableRequest) returns (Unit);
-  rpc UpdateWorkflowConfig(UpdateWorkflowConfigRequest) returns (Unit);
-  rpc ValidateNotionConfig(ValidateNotionConfigRequest) returns (NotionValidationResultView);
-  rpc WritePathsToTerminalSurface(WritePathsToTerminalSurfaceRequest) returns (Unit);
-  rpc WriteTerminalSurface(WriteTerminalSurfaceRequest) returns (Unit);
-  rpc BuildDiffFileTree(BuildDiffFileTreeRequest) returns (ListDiffTreeNodeDto);
-  rpc ComputeHiddenRanges(ComputeHiddenRangesRequest) returns (ListHiddenRangeDto);
-  rpc ApproveWorkflowNode(ApproveWorkflowNodeRequest) returns (Unit);
-  rpc WorkflowSubmitOutput(WorkflowSubmitOutputRequest) returns (Unit);
-  rpc WorkflowValidateOutput(WorkflowValidateOutputRequest) returns (WorkflowValidateOutputResponse);
-  rpc WorkflowGetOutput(WorkflowGetOutputRequest) returns (WorkflowGetOutputResponse);
-  rpc GetServerInfo(Unit) returns (ServerInfo);
+  rpc OpenStateStream(OpenStateStreamRequest) returns (stream StateSubscriptionEvent) { option (scope) = SCOPE_OPERATOR; }
+  rpc StartStateSubscription(StartStateSubscriptionRequest) returns (Unit) { option (scope) = SCOPE_OPERATOR; }
+  rpc StopStateSubscription(StopStateSubscriptionRequest) returns (Unit) { option (scope) = SCOPE_OPERATOR; }
+  rpc FindRepositoryRoot(FindRepositoryRootRequest) returns (Nullablestring) { option (scope) = SCOPE_OPERATOR; }
+  rpc RefreshWorkspaces(RefreshWorkspacesRequest) returns (Unit) { option (scope) = SCOPE_OPERATOR; }
+  rpc AbortWorkflow(AbortWorkflowRequest) returns (Unit) { option (scope) = SCOPE_OPERATOR; }
+  rpc ReportTerminalProcessed(ReportTerminalProcessedRequest) returns (Unit) { option (scope) = SCOPE_OPERATOR; }
+  rpc AddRepoPath(AddRepoPathRequest) returns (ResultBool) { option (scope) = SCOPE_OPERATOR; }
+  rpc AppendReviewComment(AppendReviewCommentRequest) returns (ReviewThreadDto) { option (scope) = SCOPE_OPERATOR; }
+  rpc ApproveWorkspaceNode(ApproveWorkspaceNodeRequest) returns (Unit) { option (scope) = SCOPE_OPERATOR; }
+  rpc ArchiveAgentSession(ArchiveAgentSessionRequest) returns (AgentSessionArchiveResponse) { option (scope) = SCOPE_OPERATOR; }
+  rpc ArchiveWorkspaceWorkflowExecution(ArchiveWorkspaceWorkflowExecutionRequest) returns (Unit) { option (scope) = SCOPE_OPERATOR; }
+  rpc BuildReviewThreadHandoff(BuildReviewThreadHandoffRequest) returns (ResultString) { option (scope) = SCOPE_OPERATOR; }
+  rpc ComputeHiddenRangesFromContent(ComputeHiddenRangesFromContentRequest) returns (ListHiddenRangeDto) { option (scope) = SCOPE_OPERATOR; }
+  rpc ComputeMarkdownDiffRanges(ComputeMarkdownDiffRangesRequest) returns (ListDiffRangeDto) { option (scope) = SCOPE_OPERATOR; }
+  rpc ComputeMarkdownInlineChunks(ComputeMarkdownInlineChunksRequest) returns (ListInlineChunkDto) { option (scope) = SCOPE_OPERATOR; }
+  rpc ComputeMarkdownSplitRows(ComputeMarkdownSplitRowsRequest) returns (ListSplitRowDto) { option (scope) = SCOPE_OPERATOR; }
+  rpc ComputeVisibleMarkdownBlocks(ComputeVisibleMarkdownBlocksRequest) returns (ListVisibleBlockDto) { option (scope) = SCOPE_OPERATOR; }
+  rpc CreateAgentSession(CreateAgentSessionRequest) returns (SessionSelection) { option (scope) = SCOPE_OPERATOR; }
+  rpc CreateReviewThread(CreateReviewThreadRequest) returns (ReviewThreadDto) { option (scope) = SCOPE_OPERATOR; }
+  rpc CreateWorktree(CreateWorktreeRequest) returns (ResultString) { option (scope) = SCOPE_OPERATOR; }
+  rpc DeleteAgentSession(DeleteAgentSessionRequest) returns (Unit) { option (scope) = SCOPE_OPERATOR; }
+  rpc DeleteFacet(DeleteFacetRequest) returns (Unit) { option (scope) = SCOPE_OPERATOR; }
+  rpc DeleteNotionConfig(DeleteNotionConfigRequest) returns (Unit) { option (scope) = SCOPE_OPERATOR; }
+  rpc DeleteReviewThread(DeleteReviewThreadRequest) returns (Unit) { option (scope) = SCOPE_OPERATOR; }
+  rpc DeleteWorkflow(DeleteWorkflowRequest) returns (Unit) { option (scope) = SCOPE_OPERATOR; }
+  rpc DuplicateFacet(DuplicateFacetRequest) returns (Unit) { option (scope) = SCOPE_OPERATOR; }
+  rpc DuplicateWorkflow(DuplicateWorkflowRequest) returns (Unit) { option (scope) = SCOPE_OPERATOR; }
+  rpc FetchIssues(FetchIssuesRequest) returns (Unit) { option (scope) = SCOPE_OPERATOR; }
+  rpc GetFileNavigation(GetFileNavigationRequest) returns (FileNavigationResultDto) { option (scope) = SCOPE_OPERATOR; }
+  rpc GetLanguageFromPath(GetLanguageFromPathRequest) returns (ResultString) { option (scope) = SCOPE_OPERATOR; }
+  rpc GetOrSpawnTerminalSurface(GetOrSpawnTerminalSurfaceRequest) returns (GetOrSpawnTerminalV1) { option (scope) = SCOPE_OPERATOR; }
+  rpc GitCreateBranch(GitCreateBranchRequest) returns (Unit) { option (scope) = SCOPE_OPERATOR; }
+  rpc GitStage(GitStageRequest) returns (Unit) { option (scope) = SCOPE_OPERATOR; }
+  rpc GitStageReviewGroup(GitStageReviewGroupRequest) returns (Unit) { option (scope) = SCOPE_OPERATOR; }
+  rpc GitUnstage(GitUnstageRequest) returns (Unit) { option (scope) = SCOPE_OPERATOR; }
+  rpc GitUnstageReviewGroup(GitUnstageReviewGroupRequest) returns (Unit) { option (scope) = SCOPE_OPERATOR; }
+  rpc KillTerminalSurface(KillTerminalSurfaceRequest) returns (Unit) { option (scope) = SCOPE_OPERATOR; }
+  rpc OpenAgentSession(OpenAgentSessionRequest) returns (Unit) { option (scope) = SCOPE_OPERATOR; }
+  rpc OpenFacetInEditor(OpenFacetInEditorRequest) returns (Unit) { option (scope) = SCOPE_OPERATOR; }
+  rpc OpenFolderInEditor(OpenFolderInEditorRequest) returns (Unit) { option (scope) = SCOPE_OPERATOR; }
+  rpc OpenInEditor(OpenInEditorRequest) returns (Unit) { option (scope) = SCOPE_OPERATOR; }
+  rpc OpenWorkflowInEditor(OpenWorkflowInEditorRequest) returns (Unit) { option (scope) = SCOPE_OPERATOR; }
+  rpc RefreshProviderAvailability(RefreshProviderAvailabilityRequest) returns (Unit) { option (scope) = SCOPE_OPERATOR; }
+  rpc RemoveRepoPath(RemoveRepoPathRequest) returns (ResultBool) { option (scope) = SCOPE_OPERATOR; }
+  rpc RemoveWorktree(RemoveWorktreeRequest) returns (Unit) { option (scope) = SCOPE_OPERATOR; }
+  rpc RenameWorkspaceSessionNode(RenameWorkspaceSessionNodeRequest) returns (Unit) { option (scope) = SCOPE_OPERATOR; }
+  rpc RenderFacetPreview(RenderFacetPreviewRequest) returns (ResultString) { option (scope) = SCOPE_OPERATOR; }
+  rpc ReportFrontendError(ReportFrontendErrorRequest) returns (Unit) { option (scope) = SCOPE_OPERATOR; }
+  rpc ReportMountedXtermCount(ReportMountedXtermCountRequest) returns (Unit) { option (scope) = SCOPE_OPERATOR; }
+  rpc ReportUsageEvent(ReportUsageEventRequest) returns (Unit) { option (scope) = SCOPE_OPERATOR; }
+  rpc RequestApplicationQuit(RequestApplicationQuitRequest) returns (ApplicationQuitOutcomeDtoV1) { option (scope) = SCOPE_OPERATOR; }
+  rpc ResetProviderExecutable(ResetProviderExecutableRequest) returns (Unit) { option (scope) = SCOPE_OPERATOR; }
+  rpc ResizeTerminalSurface(ResizeTerminalSurfaceRequest) returns (Unit) { option (scope) = SCOPE_OPERATOR; }
+  rpc ResolveReviewThread(ResolveReviewThreadRequest) returns (ReviewThreadDto) { option (scope) = SCOPE_OPERATOR; }
+  rpc RestoreAgentSession(RestoreAgentSessionRequest) returns (SessionSelection) { option (scope) = SCOPE_OPERATOR; }
+  rpc RestoreWorkspaceWorkflowExecution(RestoreWorkspaceWorkflowExecutionRequest) returns (Unit) { option (scope) = SCOPE_OPERATOR; }
+  rpc ResumeAgentSessionHistoryCandidate(ResumeAgentSessionHistoryCandidateRequest) returns (SessionSelection) { option (scope) = SCOPE_OPERATOR; }
+  rpc RetryWorkspaceNode(RetryWorkspaceNodeRequest) returns (Unit) { option (scope) = SCOPE_OPERATOR; }
+  rpc ResumeWorkspaceSessionNode(ResumeWorkspaceSessionNodeRequest) returns (Unit) { option (scope) = SCOPE_OPERATOR; }
+  rpc SaveFacet(SaveFacetRequest) returns (Unit) { option (scope) = SCOPE_OPERATOR; }
+  rpc SaveNotionConfig(SaveNotionConfigRequest) returns (Unit) { option (scope) = SCOPE_OPERATOR; }
+  rpc SaveWorkflowSource(SaveWorkflowSourceRequest) returns (SaveWorkflowSourceResultDto) { option (scope) = SCOPE_OPERATOR; }
+  rpc SaveWorkspaceState(SaveWorkspaceStateRequest) returns (Unit) { option (scope) = SCOPE_OPERATOR; }
+  rpc SetBranchBase(SetBranchBaseRequest) returns (Unit) { option (scope) = SCOPE_OPERATOR; }
+  rpc SetReleashBase(SetReleashBaseRequest) returns (Unit) { option (scope) = SCOPE_OPERATOR; }
+  rpc StartWorkflow(StartWorkflowRequest) returns (ResultString) { option (scope) = SCOPE_OPERATOR; }
+  rpc UpdateAppSettings(UpdateAppSettingsRequest) returns (Unit) { option (scope) = SCOPE_OPERATOR; }
+  rpc UpdateLoginItemPreference(UpdateLoginItemPreferenceRequest) returns (Unit) { option (scope) = SCOPE_OPERATOR; }
+  rpc UpdateCrashReporting(UpdateCrashReportingRequest) returns (Unit) { option (scope) = SCOPE_OPERATOR; }
+  rpc UpdateExternalEditor(UpdateExternalEditorRequest) returns (Unit) { option (scope) = SCOPE_OPERATOR; }
+  rpc UpdatePerformanceTelemetry(UpdatePerformanceTelemetryRequest) returns (Unit) { option (scope) = SCOPE_OPERATOR; }
+  rpc UpdateProviderExecutable(UpdateProviderExecutableRequest) returns (Unit) { option (scope) = SCOPE_OPERATOR; }
+  rpc UpdateWorkflowConfig(UpdateWorkflowConfigRequest) returns (Unit) { option (scope) = SCOPE_OPERATOR; }
+  rpc ValidateNotionConfig(ValidateNotionConfigRequest) returns (NotionValidationResultView) { option (scope) = SCOPE_OPERATOR; }
+  rpc WritePathsToTerminalSurface(WritePathsToTerminalSurfaceRequest) returns (Unit) { option (scope) = SCOPE_OPERATOR; }
+  rpc WriteTerminalSurface(WriteTerminalSurfaceRequest) returns (Unit) { option (scope) = SCOPE_OPERATOR; }
+  rpc BuildDiffFileTree(BuildDiffFileTreeRequest) returns (ListDiffTreeNodeDto) { option (scope) = SCOPE_OPERATOR; }
+  rpc ComputeHiddenRanges(ComputeHiddenRangesRequest) returns (ListHiddenRangeDto) { option (scope) = SCOPE_OPERATOR; }
+  rpc ApproveWorkflowNode(ApproveWorkflowNodeRequest) returns (Unit) { option (scope) = SCOPE_OPERATOR; }
+  rpc WorkflowSubmitOutput(WorkflowSubmitOutputRequest) returns (Unit) { option (scope) = SCOPE_OPERATOR; }
+  rpc DiagnoseWorkflowDirectory(DiagnoseWorkflowDirectoryRequest) returns (DiagnoseWorkflowDirectoryResponse) { option (scope) = SCOPE_OPERATOR; }
+  rpc CreateSessionReviewThread(CreateSessionReviewThreadRequest) returns (CreateSessionReviewThreadResponse) { option (scope) = SCOPE_OPERATOR; }
+  rpc AppendSessionReviewComment(AppendSessionReviewCommentRequest) returns (AppendSessionReviewCommentResponse) { option (scope) = SCOPE_OPERATOR; }
+  rpc ResolveSessionReviewThread(ResolveSessionReviewThreadRequest) returns (ResolveSessionReviewThreadResponse) { option (scope) = SCOPE_OPERATOR; }
+  rpc ReceiveProviderSignal(ReceiveProviderSignalRequest) returns (ReceiveProviderSignalResponse) { option (scope) = SCOPE_HOOK; }
+  rpc GetServerInfo(Unit) returns (ServerInfo) { option (scope) = SCOPE_OPERATOR; option (scope) = SCOPE_HOOK; }
 }
 
 message ServerInfo {
@@ -2765,6 +2751,11 @@ message StatePayload {
     Nullablestring releash_base = 54;
     WorkflowSection workflow_config = 55;
 
+    NullableWorkflowExecutionView workflow_execution = 62;
+    NullableWorkflowOutputView workflow_output = 63;
+    NullableListReviewThreadDto review_session_threads = 64;
+    NullableReviewThreadDto review_session_thread = 65;
+    NullableListReviewHistoryEntryDto review_session_thread_history = 66;
     ProviderHookHealthSnapshot provider_hook_health = 57;
   }
 }
@@ -2815,3 +2806,69 @@ enum ServingStatus {
   SERVING_STATUS_STOPPED = 4;
   SERVING_STATUS_FAILED = 5;
 }
+
+
+message NullableWorkflowExecutionView { optional WorkflowExecutionView value = 1; }
+message NullableWorkflowOutputView { optional WorkflowOutputView value = 1; }
+message NullableListReviewThreadDto { optional ListReviewThreadDto value = 1; }
+message NullableReviewThreadDto { optional ReviewThreadDto value = 1; }
+message ListReviewHistoryEntryDto { repeated ReviewHistoryEntryDto items = 1; }
+message NullableListReviewHistoryEntryDto { optional ListReviewHistoryEntryDto value = 1; }
+message ReviewHistoryEntryDto {
+  oneof entry {
+    ReviewHistoryThreadCreatedDto thread_created = 1;
+    ReviewHistoryCommentAppendedDto comment_appended = 2;
+    ReviewHistoryThreadResolvedDto thread_resolved = 3;
+    ReviewHistoryThreadDeletedDto thread_deleted = 4;
+  }
+}
+message ReviewHistoryThreadCreatedDto {
+  string id = 1; string thread_id = 2; string comment_id = 3;
+  ReviewActorWireDto actor = 4; ReviewTargetWireDto target = 5;
+  string content = 6; double at = 7;
+}
+message ReviewHistoryCommentAppendedDto {
+  string id = 1; string thread_id = 2; string comment_id = 3;
+  ReviewActorWireDto actor = 4; string content = 5; double at = 6;
+}
+message ReviewHistoryThreadResolvedDto {
+  string id = 1; string thread_id = 2; ReviewActorWireDto actor = 3;
+  string outcome = 4; string summary = 5; double at = 6;
+}
+message ReviewHistoryThreadDeletedDto {
+  string id = 1; string thread_id = 2; ReviewActorWireDto actor = 3; double at = 4;
+}
+message DiagnoseWorkflowDirectoryRequest { optional string dir = 1 [(json_required) = true]; }
+message DiagnoseWorkflowDirectoryResponse { DiagnosticReport report = 1; }
+message CreateSessionReviewThreadRequest {
+  optional string session_id = 1 [(json_required) = true];
+  optional string file_path = 2;
+  optional uint32 line_number = 3; optional uint32 end_line = 4;
+  optional string content = 5 [(json_required) = true];
+}
+message CreateSessionReviewThreadResponse { ReviewThreadDto thread = 1; }
+message AppendSessionReviewCommentRequest {
+  optional string session_id = 1 [(json_required) = true];
+  optional string thread_id = 2 [(json_required) = true];
+  optional string content = 3 [(json_required) = true];
+}
+message AppendSessionReviewCommentResponse { ReviewThreadDto thread = 1; }
+message ResolveSessionReviewThreadRequest {
+  optional string session_id = 1 [(json_required) = true];
+  optional string thread_id = 2 [(json_required) = true];
+  optional string outcome = 3 [(json_required) = true];
+  optional string summary = 4 [(json_required) = true];
+}
+message ResolveSessionReviewThreadResponse { ReviewThreadDto thread = 1; }
+message ReceiveProviderSignalRequest {
+  AgentSessionProviderDto provider = 1;
+  string slot_id = 2; string binding_id = 3; string capability = 4;
+  string agent_session_id = 5; bytes payload = 6;
+}
+message ReceiveProviderSignalResponse {
+  oneof result {
+    Unit applied = 1; Unit duplicate = 2;
+    ReceiveProviderSignalRejected rejected = 3; Unit ignored = 4;
+  }
+}
+message ReceiveProviderSignalRejected { string reason = 1; }

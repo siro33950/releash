@@ -177,8 +177,7 @@ async fn test_生成client_connectとgrpcとgrpcwebが同じserviceを呼べる(
     for protocol in [Protocol::Connect, Protocol::Grpc, Protocol::GrpcWeb] {
         let config = ClientConfig::new(fixture.url.parse().unwrap())
             .with_protocol(protocol)
-            .with_default_header("authorization", format!("Bearer {}", fixture.token))
-            .with_default_header("origin", "tauri://localhost");
+            .with_default_header("authorization", format!("Bearer {}", fixture.token));
         let transport = if matches!(protocol, Protocol::Grpc) {
             HttpClient::plaintext_http2_only()
         } else {

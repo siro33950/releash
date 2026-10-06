@@ -252,6 +252,7 @@ impl WorkflowUsecase {
         self.read.clone()
     }
 
+    #[cfg(any(test, feature = "test-support"))]
     pub async fn get_execution(
         &self,
         execution_id: &str,
@@ -259,6 +260,7 @@ impl WorkflowUsecase {
         self.workspace_query.execution_summary(execution_id).await
     }
 
+    #[cfg(any(test, feature = "test-support"))]
     pub async fn authorize_execution_summary(
         &self,
         execution_id: &str,
@@ -270,66 +272,6 @@ impl WorkflowUsecase {
             Ok(_) => Ok(Some(summary)),
             Err(_) => Ok(None),
         }
-    }
-
-    pub async fn authorize_execution_summary_for_worktree(
-        &self,
-        execution_id: &str,
-        worktree_path: &str,
-    ) -> Result<Option<WorkflowExecutionSummary>, WorkflowError> {
-        let canonical = self.resolve_worktree_path(worktree_path)?;
-        let Some(summary) = self.authorize_execution_summary(execution_id).await? else {
-            return Ok(None);
-        };
-        if summary.worktree_path == canonical {
-            Ok(Some(summary))
-        } else {
-            Ok(None)
-        }
-    }
-
-    pub async fn authorize_execution_access_for_worktree(
-        &self,
-        execution_id: &str,
-        worktree_path: &str,
-    ) -> Result<(), WorkflowError> {
-        let execution_id = crate::domain::workflow::ExecutionTreeId::new(execution_id.to_string())?;
-        if self
-            .authorize_execution_summary_for_worktree(execution_id.as_str(), worktree_path)
-            .await?
-            .is_some()
-        {
-            Ok(())
-        } else {
-            Err(WorkflowError::external(format!(
-                "Workflow execution not found: {execution_id}"
-            )))
-        }
-    }
-
-    pub async fn authorize_node_execution_access_for_worktree(
-        &self,
-        node_execution_id: &str,
-        worktree_path: &str,
-    ) -> Result<(), WorkflowError> {
-        if node_execution_id.trim().is_empty() {
-            return Err(WorkflowError::validation(
-                "node_execution_id must not be empty",
-            ));
-        }
-        let node = self
-            .workspace_nodes
-            .load_node_by_node_execution_id(node_execution_id)
-            .await
-            .map_err(|error| WorkflowError::external(error.to_string()))?
-            .ok_or_else(|| {
-                WorkflowError::external(format!("Node execution not found: {node_execution_id}"))
-            })?;
-        let execution_id = node.execution_id.ok_or_else(|| {
-            WorkflowError::external(format!("Node execution not found: {node_execution_id}"))
-        })?;
-        self.authorize_execution_access_for_worktree(&execution_id, worktree_path)
-            .await
     }
 
     pub fn resolve_worktree_path(&self, worktree_path: &str) -> Result<String, WorkflowError> {
@@ -442,17 +384,6 @@ impl WorkflowUsecase {
     ) -> String {
         self.facet_commands
             .render_facet_preview(content, sample_values)
-    }
-
-    pub async fn validate_output(
-        &self,
-        execution_id: &str,
-        node_name: &str,
-        structured_output: Value,
-    ) -> Result<WorkflowValidateOutputResult, WorkflowError> {
-        self.output
-            .validate_output(execution_id, node_name, structured_output)
-            .await
     }
 
     pub async fn get_output(

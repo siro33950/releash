@@ -190,25 +190,11 @@ struct Fixture {
     definitions: Arc<FakeDefinitionRepository>,
     definition_sources: Arc<FakeDefinitionSourceGateway>,
     diagnostics: Arc<FakeDiagnosticsGateway>,
-    workspace_nodes: Arc<FakeWorkspaceTreeRepository>,
 }
 
 #[derive(Default)]
 struct FakeWorkspaceTreeRepository {
     nodes: Mutex<HashMap<String, crate::domain::workspace_tree::value_objects::WorkspaceTreeNode>>,
-}
-
-impl FakeWorkspaceTreeRepository {
-    fn insert(
-        &self,
-        node_execution_id: &str,
-        node: crate::domain::workspace_tree::value_objects::WorkspaceTreeNode,
-    ) {
-        self.nodes
-            .lock()
-            .unwrap()
-            .insert(node_execution_id.to_string(), node);
-    }
 }
 
 #[async_trait::async_trait]
@@ -253,6 +239,7 @@ impl crate::domain::workspace_tree::repository::WorkspaceTreeRepository
         Ok(None)
     }
 
+    #[cfg(any(test, feature = "test-support"))]
     async fn load_node_by_node_execution_id(
         &self,
         node_execution_id: &str,
@@ -321,50 +308,7 @@ impl Fixture {
             definitions,
             definition_sources,
             diagnostics,
-            workspace_nodes,
         }
-    }
-}
-
-fn workspace_node(
-    node_execution_id: &str,
-    execution_id: Option<&str>,
-) -> crate::domain::workspace_tree::value_objects::WorkspaceTreeNode {
-    crate::domain::workspace_tree::value_objects::WorkspaceTreeNode {
-        process_presence: Default::default(),
-        can_resume_session: false,
-        worktree: None,
-        id: format!("node:{node_execution_id}"),
-        parent_id: execution_id.map(str::to_string),
-        sibling_order: 0,
-        kind: crate::domain::workspace_tree::value_objects::WorkspaceNodeKind::WorkflowSession,
-        title: "node".to_string(),
-        status: crate::domain::workspace_tree::value_objects::WorkspaceNodeStatus::Running,
-        status_classification:
-            crate::domain::workspace_tree::value_objects::WorkspaceNodeStatusClassification::Active,
-        delegate_waits_for_child: false,
-        background_failure: false,
-        activity: Some(crate::domain::workflow::value_objects::node_fact::AgentSessionActivity::AwaitingInstruction),
-        error_reason: None,
-        updated_at_bits: 1.0_f64.to_bits(),
-        execution_id: execution_id.map(str::to_string),
-        node_execution_id: Some(node_execution_id.to_string()),
-        node_name: Some("node".to_string()),
-        attempt: Some(1),
-        retry_predecessor_id: None,
-        past_attempt_ids: Vec::new(),
-        is_retry_history: false,
-        completion_signals: Default::default(),
-        has_artifact: false,
-        session_id: None,
-        can_rename: false,
-        can_approve: false,
-        can_retry: false,
-        can_abort: false,
-        can_archive: false,
-        display_command: None,
-        command_result: None,
-        dynamic_fanout: false,
     }
 }
 
@@ -525,120 +469,6 @@ pub fn save_workflow_source_returns_saved_definition_and_surfaces_gateway_errors
         .usecase
         .save_workflow_source("name: failed-wf\n", None)
         .is_err());
-}
-
-#[tokio::test]
-pub async fn authorize_execution_summary_for_worktree_hides_unmanaged_or_mismatched_runs() {
-    let executions = vec![
-        execution_summary(
-            "00000000-0000-0000-0000-000000000011",
-            "/canonical/repo",
-            ExecutionStatus::Running,
-        )
-        .await,
-        execution_summary(
-            "00000000-0000-0000-0000-000000000012",
-            "reject",
-            ExecutionStatus::Running,
-        )
-        .await,
-    ];
-    let fixture = Fixture::with_executions(executions);
-
-    let authorized = fixture
-        .usecase
-        .authorize_execution_summary_for_worktree("00000000-0000-0000-0000-000000000011", "repo")
-        .await
-        .unwrap();
-    assert!(authorized.is_some());
-
-    let mismatched = fixture
-        .usecase
-        .authorize_execution_summary_for_worktree("00000000-0000-0000-0000-000000000011", "other")
-        .await
-        .unwrap();
-    assert!(mismatched.is_none());
-
-    let unmanaged = fixture
-        .usecase
-        .authorize_execution_summary("00000000-0000-0000-0000-000000000012")
-        .await
-        .unwrap();
-    assert!(unmanaged.is_none());
-
-    fixture
-        .usecase
-        .authorize_execution_access_for_worktree("00000000-0000-0000-0000-000000000011", "repo")
-        .await
-        .unwrap();
-    assert_eq!(
-        fixture
-            .usecase
-            .authorize_execution_access_for_worktree(
-                "00000000-0000-0000-0000-000000000011",
-                "other",
-            )
-            .await
-            .unwrap_err(),
-        WorkflowError::external(
-            "Workflow execution not found: 00000000-0000-0000-0000-000000000011"
-        )
-    );
-    assert!(matches!(
-        fixture
-            .usecase
-            .authorize_execution_access_for_worktree("invalid", "repo")
-            .await,
-        Err(WorkflowError::Validation(_))
-    ));
-}
-
-#[tokio::test]
-pub async fn authorize_node_execution_access_for_worktree_checks_identity_and_execution_ownership()
-{
-    let execution_id = "00000000-0000-0000-0000-000000000011";
-    let fixture = Fixture::with_executions(vec![
-        execution_summary(execution_id, "/canonical/repo", ExecutionStatus::Running).await,
-    ]);
-    fixture.workspace_nodes.insert(
-        "node-execution-1",
-        workspace_node("node-execution-1", Some(execution_id)),
-    );
-    fixture.workspace_nodes.insert(
-        "node-execution-without-owner",
-        workspace_node("node-execution-without-owner", None),
-    );
-
-    fixture
-        .usecase
-        .authorize_node_execution_access_for_worktree("node-execution-1", "repo")
-        .await
-        .unwrap();
-    assert!(matches!(
-        fixture
-            .usecase
-            .authorize_node_execution_access_for_worktree("   ", "repo")
-            .await,
-        Err(WorkflowError::Validation(_))
-    ));
-    for node_execution_id in ["missing", "node-execution-without-owner"] {
-        assert_eq!(
-            fixture
-                .usecase
-                .authorize_node_execution_access_for_worktree(node_execution_id, "repo")
-                .await
-                .unwrap_err(),
-            WorkflowError::external(format!("Node execution not found: {node_execution_id}"))
-        );
-    }
-    assert_eq!(
-        fixture
-            .usecase
-            .authorize_node_execution_access_for_worktree("node-execution-1", "other")
-            .await
-            .unwrap_err(),
-        WorkflowError::external(format!("Workflow execution not found: {execution_id}"))
-    );
 }
 
 #[test]

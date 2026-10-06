@@ -118,12 +118,16 @@ cargo test --locked --test '*' -p releash-desktop
 品質ゲート（プロジェクトルート。サーバ・シェル・フロントをまたぐ検査）:
 
 ```bash
+buf lint
+buf breaking --against '.git#branch=main,subdir=proto'
 node .github/scripts/test-placement.mjs
 ast-grep test
 qlty check --no-progress --all
 cd src-tauri
 cargo deny --locked check
 ```
+
+buf は CI と同じ 1.47.2 を使う。意図した非互換に `buf skip breaking` ラベルを効かせるには、ラベルを付けてから次の commit を push するか、PR を閉じて開き直す。
 
 nightly 層（プロジェクトルート）:
 
@@ -198,7 +202,7 @@ Rust テストの配置、命名、レイヤー別の必須／柔軟、モック
 - 依存の advisory とライセンスは `cargo deny`（`src-tauri/deny.toml` の allow list）で検査する。新しいライセンスの依存を足すときは allow list への追記が要る。
 - CodeQL が javascript-typescript を PR と週次で解析する。
 - Tauri capability は `src-tauri/releash-desktop/capabilities/`。`startup-pre-admission` は permissions を空にし、main window は Rust の startup authority が Ready に達した後にだけ作る。permission を追加するときは対象 window を確認する。
-- local API の master token を renderer JS へ渡さない。terminal 用は別 token を使う。
+- hook の token は hook のプロセスにしか渡さない。terminal 用は別 token を使う。
 - Lua の評価環境は外部 I/O を持たず、メモリ量と命令数に上限がある。この上限を緩めない。
 - command テンプレートの `{{ }}` は shell quoting を行わない。信頼できない値を shell syntax へ直接連結しない。
 

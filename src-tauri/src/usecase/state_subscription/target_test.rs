@@ -237,3 +237,30 @@ fn test_notion購読対象_別のrepoの設定変更と他の設定変更では�
     // Then
     assert_eq!(results, vec![(false, false); targets.len()]);
 }
+
+#[test]
+fn test_cli購読通知_実行は全worktreeでreviewは全comment通知で読み直す() {
+    // Given / When / Then
+    for target in [
+        SubscriptionTarget::WorkflowExecution("id".into()),
+        SubscriptionTarget::WorkflowOutput("id".into(), "node".into()),
+    ] {
+        assert!(target.affected_by(&StateChangeSource::Worktree("/other".into())));
+        assert!(!target.affected_by(&StateChangeSource::ReviewComments(None)));
+    }
+    for target in [
+        SubscriptionTarget::ReviewSessionThreads("id".into(), Default::default()),
+        SubscriptionTarget::ReviewWorktreeThreads("/repo".into(), Default::default()),
+        SubscriptionTarget::ReviewSessionThread("id".into(), "thread".into()),
+        SubscriptionTarget::ReviewSessionThreadHistory("id".into(), "thread".into()),
+    ] {
+        assert!(target.affected_by(&StateChangeSource::ReviewComments(Some("/other".into()))));
+        assert_eq!(
+            target.watches(&[], &[], "/comments", "", ""),
+            vec![WatchRequirement::Files(
+                "/comments".into(),
+                StateChangeSource::ReviewComments(None)
+            )]
+        );
+    }
+}

@@ -1,3 +1,6 @@
+#[path = "src/infrastructure/client_scope.rs"]
+mod client_scope;
+
 fn main() {
     generate_client_protocol();
     println!("cargo:rerun-if-env-changed=OTLP_ENDPOINT");
@@ -11,6 +14,7 @@ fn main() {
 }
 
 fn generate_client_protocol() {
+    println!("cargo:rerun-if-changed=src/infrastructure/client_scope.rs");
     println!("cargo:rerun-if-changed=../proto/client.proto");
     println!("cargo:rerun-if-changed=../proto/client_options.proto");
     let directory = std::path::PathBuf::from(std::env::var("OUT_DIR").unwrap());
@@ -97,6 +101,45 @@ fn generate_client_protocol() {
         .flat_map(|file| &file.service)
         .find(|service| service.name() == "ClientService")
         .expect("ClientService");
+    let pool = prost_reflect::DescriptorPool::decode(
+        std::fs::read(directory.join("client_descriptor.bin"))
+            .unwrap()
+            .as_slice(),
+    )
+    .expect("client descriptors with options");
+    let scope_extension = pool
+        .get_extension_by_name("releash.client.v1.scope")
+        .expect("scope option");
+    let reflected_service = pool
+        .get_service_by_name("releash.client.v1.ClientService")
+        .unwrap();
+    let mut scopes = String::from(
+        "pub(crate) fn method_scopes(method: &str) -> Option<&'static [i32]> { match method {\n",
+    );
+    for method in reflected_service.methods() {
+        let value = method
+            .options()
+            .get_extension(&scope_extension)
+            .into_owned();
+        let prost_reflect::Value::List(values) = value else {
+            panic!("scope must be repeated");
+        };
+        let values: Vec<i32> = values
+            .into_iter()
+            .map(|value| match value {
+                prost_reflect::Value::EnumNumber(value) => value,
+                _ => panic!("invalid scope"),
+            })
+            .collect();
+        assert!(
+            client_scope::valid_scopes(&values),
+            "{} must have nonempty, specified, unique scopes",
+            method.name()
+        );
+        scopes.push_str(&format!("{:?} => Some(&{:?}),\n", method.name(), values));
+    }
+    scopes.push_str("_ => None, } }\n");
+    std::fs::write(directory.join("client_scopes.rs"), scopes).expect("write method scopes");
     let mut handlers = String::from("impl rpc::ClientService for ClientApiDeps {\n");
     let mut calls = String::from("pub fn call(client: &rpc::ClientServiceClient<connectrpc::client::HttpClient>, command: wire::command_request::Command) -> futures_util::future::BoxFuture<'_ , Result<wire::command_result::Command, connectrpc::ConnectError>> { match command {\n");
     let commands = messages

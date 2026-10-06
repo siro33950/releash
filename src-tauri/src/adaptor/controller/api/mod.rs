@@ -28,7 +28,7 @@ pub fn build_router(
     workflow: Arc<WorkflowReadUsecase>,
     runtime: Arc<WorkflowRuntimeUsecase>,
     token: Arc<str>,
-    terminal_token: impl Into<crate::infrastructure::local_api::ClientBearerToken>,
+    terminal_token: impl Into<auth::ClientTokens>,
     client: Option<ClientApiDeps>,
     provider_lifecycle: Option<
         Arc<dyn crate::usecase::provider_lifecycle::ProviderLifecycleIngressPort>,

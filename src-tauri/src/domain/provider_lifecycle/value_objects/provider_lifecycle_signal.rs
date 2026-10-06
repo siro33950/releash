@@ -156,3 +156,12 @@ fn optional_non_empty(
         .map(|value| non_empty(value.to_string(), field))
         .transpose()
 }
+
+impl ProviderLifecycleSignal {
+    pub fn is_session_started(&self) -> bool {
+        matches!(
+            self.kind,
+            ProviderLifecycleSignalKind::SessionStarted { .. }
+        )
+    }
+}

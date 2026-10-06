@@ -32,9 +32,9 @@ async fn serve(
         releash_lib::test_support::integration::daemon::default_timeout(),
     )
     .layer(axum::middleware::from_fn_with_state(
-        releash_lib::test_support::integration::transport::ClientBearerToken::from(
-            Arc::<str>::from("client"),
-        ),
+        releash_lib::test_support::integration::transport::ClientTokens::from(Arc::<str>::from(
+            "client",
+        )),
         releash_lib::test_support::integration::transport::require_client,
     ));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -43,8 +43,7 @@ async fn serve(
             .parse()
             .unwrap(),
     )
-    .with_default_header("authorization", "Bearer client")
-    .with_default_header("origin", "tauri://localhost");
+    .with_default_header("authorization", "Bearer client");
     let task = tokio::spawn(async move {
         axum::serve(listener, router).await.unwrap();
     });

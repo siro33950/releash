@@ -59,8 +59,28 @@ fn is_websocket_handshake(request: &Request) -> bool {
         })
 }
 
+#[derive(Clone)]
+pub struct ClientTokens {
+    pub operator: crate::infrastructure::local_api::BearerToken,
+    pub hook: Option<crate::infrastructure::local_api::BearerToken>,
+}
+impl From<crate::infrastructure::local_api::BearerToken> for ClientTokens {
+    fn from(operator: crate::infrastructure::local_api::BearerToken) -> Self {
+        Self {
+            operator,
+            hook: None,
+        }
+    }
+}
+impl From<Arc<str>> for ClientTokens {
+    fn from(operator: Arc<str>) -> Self {
+        crate::infrastructure::local_api::BearerToken::from(operator).into()
+    }
+}
+include!(concat!(env!("OUT_DIR"), "/client_scopes.rs"));
+
 pub async fn require_client(
-    State(token): State<crate::infrastructure::local_api::ClientBearerToken>,
+    State(tokens): State<ClientTokens>,
     request: Request,
     next: Next,
 ) -> Response {
@@ -75,11 +95,11 @@ pub async fn require_client(
                 origin,
                 Some("http://localhost:1420" | "http://127.0.0.1:1420")
             ));
-    if !allowed {
+    if request.headers().contains_key(header::ORIGIN) && !allowed {
         return (StatusCode::FORBIDDEN, "Origin is not allowed").into_response();
     }
-    let origin = request.headers()[header::ORIGIN].clone();
-    let mut response = if request.method() == Method::OPTIONS {
+    let origin = request.headers().get(header::ORIGIN).cloned();
+    let mut response = if request.method() == Method::OPTIONS && origin.is_some() {
         let method = request
             .headers()
             .get(header::ACCESS_CONTROL_REQUEST_METHOD)
@@ -116,29 +136,50 @@ pub async fn require_client(
         );
         response.headers_mut().insert(header::ACCESS_CONTROL_ALLOW_HEADERS, "authorization, content-type, connect-protocol-version, connect-timeout-ms, x-user-agent, grpc-timeout, x-grpc-web".parse().unwrap());
         response
-    } else if request
-        .headers()
-        .get(AUTHORIZATION)
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.strip_prefix("Bearer "))
-        .is_some_and(|candidate| token.accepts(candidate))
-    {
-        next.run(request).await
     } else {
-        ApiError::unauthorized().into_response()
+        let candidate = request
+            .headers()
+            .get(AUTHORIZATION)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.strip_prefix("Bearer "));
+        let scope = candidate.and_then(|candidate| {
+            if tokens.operator.accepts(candidate) {
+                Some(1)
+            } else if tokens
+                .hook
+                .as_ref()
+                .is_some_and(|token| token.accepts(candidate))
+            {
+                Some(2)
+            } else {
+                None
+            }
+        });
+        match scope {
+            None => ApiError::unauthorized().into_response(),
+            Some(scope)
+                if method_scopes(request.uri().path().rsplit('/').next().unwrap_or_default())
+                    .is_some_and(|scopes| !scopes.contains(&scope)) =>
+            {
+                crate::adaptor::presenter::connect::scope_denied(request.headers())
+            }
+            Some(_) => next.run(request).await,
+        }
     };
-    response
-        .headers_mut()
-        .insert(header::ACCESS_CONTROL_ALLOW_ORIGIN, origin);
-    response
-        .headers_mut()
-        .insert(header::VARY, "Origin".parse().unwrap());
-    response.headers_mut().insert(
-        header::ACCESS_CONTROL_EXPOSE_HEADERS,
-        "grpc-status, grpc-message, grpc-status-details-bin"
-            .parse()
-            .unwrap(),
-    );
+    if let Some(origin) = origin {
+        response
+            .headers_mut()
+            .insert(header::ACCESS_CONTROL_ALLOW_ORIGIN, origin);
+        response
+            .headers_mut()
+            .insert(header::VARY, "Origin".parse().unwrap());
+        response.headers_mut().insert(
+            header::ACCESS_CONTROL_EXPOSE_HEADERS,
+            "grpc-status, grpc-message, grpc-status-details-bin"
+                .parse()
+                .unwrap(),
+        );
+    }
     response
 }
 

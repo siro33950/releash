@@ -2,9 +2,10 @@ use crate::adaptor::presenter::error::AppError;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use crate::adaptor::presenter::comment::ReviewThreadDto;
 use crate::domain::comment::{ReviewActor, ReviewTarget};
 use crate::infrastructure::platform::path_aliases::{alias_name_for_profile, BuildProfile};
-use crate::usecase::comment::{ReviewCommentUsecase, ReviewThreadDto};
+use crate::usecase::comment::ReviewCommentUsecase;
 
 async fn blocking<T, F>(f: F) -> Result<T, AppError>
 where
@@ -88,6 +89,65 @@ pub(crate) async fn resolve_review_thread_shared(
     })
     .await?;
     Ok(thread)
+}
+
+pub(crate) async fn create_session_review_thread_shared(
+    data_dir: PathBuf,
+    usecase: &Arc<ReviewCommentUsecase>,
+    session_id: String,
+    target: ReviewTarget,
+    content: String,
+) -> Result<crate::domain::comment::ReviewThread, AppError> {
+    let (path, actor) = required_session_context(usecase, &session_id).await?;
+    let usecase = usecase.clone();
+    blocking(move || {
+        usecase
+            .create_thread(&data_dir, &path, actor, target, content)
+            .map_err(AppError::from_failure)
+    })
+    .await
+}
+pub(crate) async fn append_session_review_comment_shared(
+    data_dir: PathBuf,
+    usecase: &Arc<ReviewCommentUsecase>,
+    session_id: String,
+    thread_id: String,
+    content: String,
+) -> Result<crate::domain::comment::ReviewThread, AppError> {
+    let (path, actor) = required_session_context(usecase, &session_id).await?;
+    let usecase = usecase.clone();
+    blocking(move || {
+        usecase
+            .append_comment(&data_dir, &path, actor, &thread_id, content)
+            .map_err(AppError::from_failure)
+    })
+    .await
+}
+pub(crate) async fn resolve_session_review_thread_shared(
+    data_dir: PathBuf,
+    usecase: &Arc<ReviewCommentUsecase>,
+    session_id: String,
+    thread_id: String,
+    outcome: String,
+    summary: String,
+) -> Result<crate::domain::comment::ReviewThread, AppError> {
+    let (path, actor) = required_session_context(usecase, &session_id).await?;
+    let usecase = usecase.clone();
+    blocking(move || {
+        usecase
+            .resolve_thread(&data_dir, &path, actor, &thread_id, outcome, summary)
+            .map_err(AppError::from_failure)
+    })
+    .await
+}
+async fn required_session_context(
+    usecase: &ReviewCommentUsecase,
+    id: &str,
+) -> Result<(String, ReviewActor), AppError> {
+    usecase
+        .required_session_context(id)
+        .await
+        .map_err(AppError::from_failure)
 }
 
 pub(crate) async fn delete_review_thread_shared(

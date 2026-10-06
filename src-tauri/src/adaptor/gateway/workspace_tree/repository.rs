@@ -553,6 +553,7 @@ impl WorkspaceTreeRepository for SqliteWorkspaceTreeRepository {
         Ok(None)
     }
 
+    #[cfg(any(test, feature = "test-support"))]
     async fn load_node_by_node_execution_id(
         &self,
         node_execution_id: &str,

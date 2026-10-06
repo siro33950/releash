@@ -244,3 +244,51 @@ fn test_notion購読対象_不正な引数はinvalid_idにする() {
         assert_eq!(result, Err(SubscriptionError::InvalidId), "{args:?}");
     }
 }
+
+#[test]
+fn test_cli購読対象_絞り込みの正規順序とpathで使える軸を守る() {
+    // Given
+    let valid = [
+        "session",
+        "file=src/a.rs",
+        "state=open",
+        "author=self",
+        "unread=true",
+        "thread=a",
+        "thread=b",
+    ];
+    // When
+    let target = SubscriptionTarget::from_parts("review-session-threads", &valid).unwrap();
+    // Then
+    assert_eq!(
+        SubscriptionTarget::parse(&target.to_string()).unwrap(),
+        target
+    );
+    for args in [
+        vec!["session", "state=open", "file=src/a.rs"],
+        vec!["session", "thread=b", "thread=a"],
+        vec!["session", "thread=a", "thread=a"],
+        vec!["session", "unread=1"],
+        vec!["session", "state=unknown"],
+    ] {
+        assert!(SubscriptionTarget::from_parts("review-session-threads", &args).is_err());
+    }
+    for filter in ["author=self", "unread=false"] {
+        assert!(
+            SubscriptionTarget::from_parts("review-worktree-threads", &["/repo", filter]).is_err()
+        );
+    }
+    for (name, args) in [
+        ("workflow-execution", vec!["id"]),
+        ("workflow-output", vec!["id", "node"]),
+        ("review-session-thread", vec!["id", "thread"]),
+        ("review-session-thread-history", vec!["id", "thread"]),
+        ("review-worktree-threads", vec!["/repo", "state=resolved"]),
+    ] {
+        let target = SubscriptionTarget::from_parts(name, &args).unwrap();
+        assert_eq!(
+            SubscriptionTarget::parse(&target.to_string()).unwrap(),
+            target
+        );
+    }
+}

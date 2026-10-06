@@ -6,7 +6,7 @@ use crate::usecase::{
         AgentSessionHistoryReadUsecase, AgentSessionHistoryRequest, AgentSessionReadUsecase,
         ProviderAvailabilityUsecase,
     },
-    comment::{ReviewCommentUsecase, ReviewThreadDto},
+    comment::ReviewCommentUsecase,
     git_host::GitHostUsecase,
     provider_dto::AgentSessionProviderDto,
     repo_paths_usecase::RepoPathsUsecase,
@@ -186,6 +186,98 @@ impl WorkspaceStateReads {
     pub async fn read(&self, target: &SubscriptionTarget) -> Result<StateValue, StateReadError> {
         use SubscriptionTarget as T;
         match target {
+            T::WorkflowExecution(id) => {
+                return self
+                    .workflow
+                    .read_usecase()
+                    .get_execution_state(id)
+                    .await
+                    .map(StateValue::WorkflowExecution)
+                    .map_err(error)
+            }
+            T::WorkflowOutput(id, node) => {
+                return match self.workflow.get_output(id, node).await {
+                    Ok(output) => Ok(StateValue::WorkflowOutput(Some(output))),
+                    Err(crate::domain::workflow::WorkflowError::NotFound(_)) => {
+                        Ok(StateValue::WorkflowOutput(None))
+                    }
+                    Err(failure) => Err(error(failure)),
+                };
+            }
+            T::ReviewSessionThreads(id, filter) => {
+                let context = self
+                    .comments
+                    .resolve_context(
+                        crate::usecase::comment::ReviewContextTarget::Session(id),
+                        false,
+                    )
+                    .await
+                    .map_err(error)?;
+                return Ok(StateValue::ReviewSessionThreads(
+                    context
+                        .map(|(path, actor)| {
+                            self.comments.list_threads(
+                                &self.data_dir,
+                                &path,
+                                Some(filter.clone()),
+                                actor,
+                            )
+                        })
+                        .transpose()
+                        .map_err(error)?,
+                ));
+            }
+            T::ReviewWorktreeThreads(path, filter) => {
+                let (path, actor) = self
+                    .comments
+                    .resolve_context(
+                        crate::usecase::comment::ReviewContextTarget::Worktree(path),
+                        false,
+                    )
+                    .await
+                    .map_err(error)?
+                    .expect("worktree resolution returns a context");
+                return Ok(StateValue::ReviewThreads(
+                    self.comments
+                        .list_threads(&self.data_dir, &path, Some(filter.clone().into()), actor)
+                        .map_err(error)?,
+                ));
+            }
+            T::ReviewSessionThread(id, thread) | T::ReviewSessionThreadHistory(id, thread) => {
+                let context = self
+                    .comments
+                    .resolve_context(
+                        crate::usecase::comment::ReviewContextTarget::Session(id),
+                        false,
+                    )
+                    .await
+                    .map_err(error)?;
+                if matches!(target, T::ReviewSessionThread(..)) {
+                    let value = context
+                        .map(|(path, _)| self.comments.get_thread(&self.data_dir, &path, thread))
+                        .transpose();
+                    return match value {
+                        Ok(value) => Ok(StateValue::ReviewSessionThread(value)),
+                        Err(crate::domain::comment::ReviewError::NotFound(_)) => {
+                            Ok(StateValue::ReviewSessionThread(None))
+                        }
+                        Err(failure) => Err(error(failure)),
+                    };
+                }
+                let value = context
+                    .map(|(path, _)| {
+                        self.comments.get_thread(&self.data_dir, &path, thread)?;
+                        self.comments.history(&self.data_dir, &path, thread)
+                    })
+                    .transpose();
+                return match value {
+                    Ok(value) => Ok(StateValue::ReviewSessionThreadHistory(value)),
+                    Err(crate::domain::comment::ReviewError::NotFound(_)) => {
+                        Ok(StateValue::ReviewSessionThreadHistory(None))
+                    }
+                    Err(failure) => Err(error(failure)),
+                };
+            }
             T::AgentSession(id) => {
                 return self
                     .sessions
@@ -315,10 +407,7 @@ impl WorkspaceStateReads {
                         None,
                         crate::domain::comment::ReviewActor::human(),
                     )
-                    .map_err(error)?
-                    .into_iter()
-                    .map(ReviewThreadDto::from)
-                    .collect(),
+                    .map_err(error)?,
             ),
             T::Workflow(name) => {
                 StateValue::Workflow(self.workflow.get_workflow_dto(name).map_err(error)?)
@@ -375,7 +464,8 @@ impl WorkspaceStateReads {
             T::WorkflowConfig => {
                 StateValue::WorkflowConfig(self.app_config.get_workflow_config().map_err(error)?)
             }
-            T::Issues(_)
+            T::WorkflowExecution(_) | T::WorkflowOutput(..) | T::ReviewSessionThreads(..) | T::ReviewWorktreeThreads(..)
+            | T::ReviewSessionThread(..) | T::ReviewSessionThreadHistory(..) | T::Issues(_)
             | T::Terminal(_)
             | T::Workspaces
             | T::Workflows

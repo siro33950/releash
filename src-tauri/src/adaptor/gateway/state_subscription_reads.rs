@@ -14,7 +14,13 @@ impl StateSubscriptionRead for StateSubscriptionReads {
         use SubscriptionTarget as T;
         if matches!(
             target,
-            T::Issues(_)
+            T::WorkflowExecution(_)
+                | T::WorkflowOutput(..)
+                | T::ReviewSessionThreads(..)
+                | T::ReviewWorktreeThreads(..)
+                | T::ReviewSessionThread(..)
+                | T::ReviewSessionThreadHistory(..)
+                | T::Issues(_)
                 | T::Workspaces
                 | T::Workflows
                 | T::AgentSession(_)

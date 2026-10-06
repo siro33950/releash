@@ -204,7 +204,6 @@ pub fn connect_client(endpoint: &ClientEndpoint) -> NativeClient {
         HttpClient::plaintext(),
         ClientConfig::new(endpoint.url.parse().unwrap())
             .with_default_header("authorization", format!("Bearer {}", endpoint.token))
-            .with_default_header("origin", "tauri://localhost")
             .with_default_timeout(std::time::Duration::from_millis(timeout.into())),
     )
 }

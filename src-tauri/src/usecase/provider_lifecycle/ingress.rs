@@ -78,6 +78,13 @@ pub struct ProviderLifecycleIngressUsecase {
     subscriptions: StateSubscriptionUsecase,
 }
 
+pub struct ProviderPayloadInput<'a> {
+    pub provider: crate::domain::provider_lifecycle::ProviderKind,
+    pub binding_id: &'a str,
+    pub scope: crate::domain::provider_lifecycle::ProviderLifecycleScope,
+    pub payload: &'a [u8],
+}
+
 #[async_trait::async_trait]
 pub trait ProviderLifecycleIngressPort: Send + Sync {
     async fn receive(
@@ -86,6 +93,30 @@ pub trait ProviderLifecycleIngressPort: Send + Sync {
         capability: &str,
         signal: ProviderLifecycleSignal,
     ) -> Result<ProviderLifecycleIngressResult, ProviderLifecycleIngressUsecaseError>;
+
+    async fn receive_payload(
+        &self,
+        interpreter: &dyn crate::domain::provider_lifecycle::ProviderPayloadInterpreter,
+        slot_id: &ProviderLifecycleSlotId,
+        capability: &str,
+        input: ProviderPayloadInput<'_>,
+    ) -> Result<(ProviderLifecycleIngressResult, bool), ProviderLifecycleIngressUsecaseError> {
+        use crate::domain::provider_lifecycle::ProviderPayloadInterpretation;
+        match interpreter
+            .interpret(input.provider, input.binding_id, input.scope, input.payload)
+            .map_err(|_| ProviderLifecycleIngressUsecaseError::InvalidInput)?
+        {
+            ProviderPayloadInterpretation::Subagent => {
+                Ok((ProviderLifecycleIngressResult::Ignored, false))
+            }
+            ProviderPayloadInterpretation::Signal(signal) => {
+                let started = signal.is_session_started();
+                self.receive(slot_id, capability, signal)
+                    .await
+                    .map(|result| (result, started))
+            }
+        }
+    }
 
     async fn report_unavailable(
         &self,
@@ -482,3 +513,16 @@ fn map_session_repository_error(
 #[cfg(test)]
 #[path = "ingress_test.rs"]
 mod ingress_tests;
+
+impl std::fmt::Display for ProviderLifecycleIngressUsecaseError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Technical(error) => error.fmt(f),
+            Self::Store(error) => error.fmt(f),
+            Self::InvalidInput => f.write_str("Invalid provider lifecycle input"),
+            Self::Conflict => f.write_str("Provider lifecycle conflict"),
+            Self::StorageUnavailable => f.write_str("Provider lifecycle storage unavailable"),
+            Self::Corrupt => f.write_str("Provider lifecycle state is corrupt"),
+        }
+    }
+}

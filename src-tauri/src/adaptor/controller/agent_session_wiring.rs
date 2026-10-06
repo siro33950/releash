@@ -40,6 +40,7 @@ pub struct AgentSessionCompositionInput {
     pub claude_config_dir: PathBuf,
     pub codex_home: PathBuf,
     pub cli_binary: String,
+    pub hook_token: Arc<str>,
     pub terminal: Arc<TerminalSurfaceApplication>,
     pub subscriptions: StateSubscriptionUsecase,
 }
@@ -317,6 +318,7 @@ pub fn compose_agent_sessions(
     let launch_gateway = Arc::new(LocalProviderAgentLaunchGateway::new(
         input.data_dir,
         input.cli_binary,
+        input.hook_token,
     ));
     let mut provider_availability = ProviderAvailabilityUsecase::initialize(
         input.provider_executable_config,

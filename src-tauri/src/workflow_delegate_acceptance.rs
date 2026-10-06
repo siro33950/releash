@@ -254,6 +254,7 @@ impl WorkflowDelegateAcceptanceHost {
             .await
             .unwrap()
         {
+            ProviderLifecycleIngressResult::Ignored => AcceptanceIngressResult::Ignored,
             ProviderLifecycleIngressResult::Applied => AcceptanceIngressResult::Applied,
             ProviderLifecycleIngressResult::Duplicate => AcceptanceIngressResult::Duplicate,
             ProviderLifecycleIngressResult::Rejected(reason) => AcceptanceIngressResult::Rejected {

@@ -44,3 +44,10 @@ extend google.protobuf.ServiceOptions {
   optional uint32 min_connect_timeout_ms = 51034;
   optional uint32 shutdown_timeout_ms = 51035;
 }
+
+enum Scope {
+  SCOPE_UNSPECIFIED = 0;
+  SCOPE_OPERATOR = 1;
+  SCOPE_HOOK = 2;
+}
+extend google.protobuf.MethodOptions { repeated Scope scope = 51040; }

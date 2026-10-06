@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum ProviderLifecycleReceiveResponse {
     Applied,
+    Ignored,
     Duplicate,
     Rejected { reason: String },
 }
@@ -14,6 +15,7 @@ pub enum ProviderLifecycleReceiveResponse {
 impl From<ProviderLifecycleIngressResult> for ProviderLifecycleReceiveResponse {
     fn from(result: ProviderLifecycleIngressResult) -> Self {
         match result {
+            ProviderLifecycleIngressResult::Ignored => Self::Ignored,
             ProviderLifecycleIngressResult::Applied => Self::Applied,
             ProviderLifecycleIngressResult::Duplicate => Self::Duplicate,
             ProviderLifecycleIngressResult::Rejected(reason) => Self::Rejected {
@@ -23,7 +25,7 @@ impl From<ProviderLifecycleIngressResult> for ProviderLifecycleReceiveResponse {
     }
 }
 
-fn rejection_reason(reason: ProviderLifecycleRejection) -> &'static str {
+pub(crate) fn rejection_reason(reason: ProviderLifecycleRejection) -> &'static str {
     match reason {
         ProviderLifecycleRejection::BindingNotActive => "binding_not_active",
         ProviderLifecycleRejection::InvalidCapability => "invalid_capability",
@@ -41,3 +43,25 @@ fn rejection_reason(reason: ProviderLifecycleRejection) -> &'static str {
 #[cfg(test)]
 #[path = "provider_lifecycle_response_test.rs"]
 mod provider_lifecycle_response_tests;
+
+impl From<ProviderLifecycleIngressResult>
+    for crate::adaptor::presenter::client::ReceiveProviderSignalResponse
+{
+    fn from(result: ProviderLifecycleIngressResult) -> Self {
+        use crate::adaptor::presenter::client::{
+            receive_provider_signal_response::Result as Wire, ReceiveProviderSignalRejected,
+        };
+        Self {
+            result: Some(match result {
+                ProviderLifecycleIngressResult::Applied => Wire::Applied(Default::default()),
+                ProviderLifecycleIngressResult::Duplicate => Wire::Duplicate(Default::default()),
+                ProviderLifecycleIngressResult::Ignored => Wire::Ignored(Default::default()),
+                ProviderLifecycleIngressResult::Rejected(reason) => {
+                    Wire::Rejected(ReceiveProviderSignalRejected {
+                        reason: rejection_reason(reason).into(),
+                    })
+                }
+            }),
+        }
+    }
+}

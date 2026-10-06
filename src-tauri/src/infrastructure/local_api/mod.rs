@@ -1,5 +1,5 @@
 pub(crate) mod client_token;
-pub(crate) use client_token::ClientBearerToken;
+pub(crate) use client_token::BearerToken;
 pub(crate) mod client;
 pub(crate) mod discovery;
 pub(crate) mod server;
@@ -37,3 +37,5 @@ pub(crate) use server::test_binding;
 
 #[cfg(any(test, feature = "test-support"))]
 pub(crate) mod test_helpers;
+
+pub(crate) use server::generate_token;

@@ -164,6 +164,7 @@ pub fn test_hook受信_session_start成功だけがdelivery_failure_markerを解
             armed.binding_id(),
             armed.capability(),
             scope,
+            "hook-token",
         )
         .unwrap(),
         "releash",

@@ -31,8 +31,11 @@ fn armed(provider: ProviderKind) -> ArmedProviderLifecycle {
 #[test]
 pub fn test_provider_launch_gateway_claudeのpluginをlaunch単位で生成しcleanupする() {
     let data_dir = tempdir().unwrap();
-    let gateway =
-        LocalProviderAgentLaunchGateway::new(data_dir.path().to_path_buf(), "releash".to_string());
+    let gateway = LocalProviderAgentLaunchGateway::new(
+        data_dir.path().to_path_buf(),
+        "releash".to_string(),
+        std::sync::Arc::<str>::from("hook-token"),
+    );
 
     let prepared = gateway
         .prepare(
@@ -82,6 +85,7 @@ pub fn test_provider_launch_gateway_codexのresumeを同じroot_process契約で
     let gateway = LocalProviderAgentLaunchGateway::new(
         data_dir.path().to_path_buf(),
         "releash-dev".to_string(),
+        std::sync::Arc::<str>::from("hook-token"),
     );
 
     let prepared = gateway
@@ -114,8 +118,11 @@ pub fn test_provider_launch_gateway_codexのresumeを同じroot_process契約で
 #[test]
 pub fn test_provider_launch_gateway_modelとauto_permissionをresume引数より前にcli引数へ注入する() {
     let data_dir = tempdir().unwrap();
-    let gateway =
-        LocalProviderAgentLaunchGateway::new(data_dir.path().to_path_buf(), "releash".to_string());
+    let gateway = LocalProviderAgentLaunchGateway::new(
+        data_dir.path().to_path_buf(),
+        "releash".to_string(),
+        std::sync::Arc::<str>::from("hook-token"),
+    );
 
     for (provider, executable, permission_arguments, resume_flag) in [
         (
@@ -179,8 +186,11 @@ pub fn test_provider_launch_gateway_modelとauto_permissionをresume引数より
 #[test]
 pub fn test_provider_launch_gateway_両providerへhook実行環境を渡す() {
     let data_dir = tempdir().unwrap();
-    let gateway =
-        LocalProviderAgentLaunchGateway::new(data_dir.path().to_path_buf(), "releash".to_string());
+    let gateway = LocalProviderAgentLaunchGateway::new(
+        data_dir.path().to_path_buf(),
+        "releash".to_string(),
+        std::sync::Arc::<str>::from("hook-token"),
+    );
 
     for provider in [ProviderKind::Claude, ProviderKind::Codex] {
         let prepared = gateway
@@ -240,8 +250,11 @@ pub fn test_provider_launch_gateway_解決済みbase_branchを両providerへ渡�
         Some(&base_branch),
     )
     .unwrap();
-    let gateway =
-        LocalProviderAgentLaunchGateway::new(data_dir.path().to_path_buf(), "releash".to_string());
+    let gateway = LocalProviderAgentLaunchGateway::new(
+        data_dir.path().to_path_buf(),
+        "releash".to_string(),
+        std::sync::Arc::<str>::from("hook-token"),
+    );
 
     for provider in [ProviderKind::Claude, ProviderKind::Codex] {
         let prepared = gateway
@@ -274,8 +287,11 @@ pub fn test_provider_launch_gateway_base_branch未解決なら環境変数を渡
     let (repo_dir, repo) = crate::test_support_git::create_test_repo();
     let head = crate::test_support_git::create_initial_commit(&repo);
     repo.set_head_detached(head).unwrap();
-    let gateway =
-        LocalProviderAgentLaunchGateway::new(data_dir.path().to_path_buf(), "releash".to_string());
+    let gateway = LocalProviderAgentLaunchGateway::new(
+        data_dir.path().to_path_buf(),
+        "releash".to_string(),
+        std::sync::Arc::<str>::from("hook-token"),
+    );
 
     let prepared = gateway
         .prepare(
@@ -299,8 +315,11 @@ pub fn test_provider_launch_gateway_non_utf8実行pathをterminal_processまで�
     use std::os::unix::ffi::OsStringExt;
 
     let data_dir = tempdir().unwrap();
-    let gateway =
-        LocalProviderAgentLaunchGateway::new(data_dir.path().to_path_buf(), "releash".to_string());
+    let gateway = LocalProviderAgentLaunchGateway::new(
+        data_dir.path().to_path_buf(),
+        "releash".to_string(),
+        std::sync::Arc::<str>::from("hook-token"),
+    );
     let executable = std::path::PathBuf::from(std::ffi::OsString::from_vec(
         b"/opt/bin/claude-\xff".to_vec(),
     ));
@@ -325,8 +344,11 @@ pub fn test_provider起動準備_base解決の停止を欠損へ変換しない(
     use releash_lib::test_support::integration::sessions::ProviderAgentLaunchGatewayError;
     // Given
     let data_dir = tempdir().unwrap();
-    let gateway =
-        LocalProviderAgentLaunchGateway::new(data_dir.path().to_path_buf(), "releash".into());
+    let gateway = LocalProviderAgentLaunchGateway::new(
+        data_dir.path().to_path_buf(),
+        "releash".into(),
+        std::sync::Arc::<str>::from("hook-token"),
+    );
     let (dir, repo) = crate::test_support_git::create_test_repo();
     crate::test_support_git::create_initial_commit(&repo);
     for expire in [false, true] {
@@ -360,7 +382,11 @@ pub fn test_provider起動準備_ファイル生成失敗の性質とメッセ�
     use releash_lib::test_support::integration::platform::TechnicalFailureNature;
     // Given
     let data_dir = tempdir().unwrap();
-    let gateway = LocalProviderAgentLaunchGateway::new(data_dir.path().into(), "releash".into());
+    let gateway = LocalProviderAgentLaunchGateway::new(
+        data_dir.path().into(),
+        "releash".into(),
+        std::sync::Arc::<str>::from("hook-token"),
+    );
     let armed = armed(ProviderKind::Claude);
     let path = gateway.session_directory("agent-1").join(
         releash_lib::test_support::integration::sessions::digest(armed.binding_id()),
@@ -391,7 +417,11 @@ pub fn test_provider起動準備_ファイル生成失敗の性質とメッセ�
 pub fn test_provider起動資源削除_失敗の性質とメッセージを保持する() {
     // Given
     let data_dir = tempdir().unwrap();
-    let gateway = LocalProviderAgentLaunchGateway::new(data_dir.path().into(), "releash".into());
+    let gateway = LocalProviderAgentLaunchGateway::new(
+        data_dir.path().into(),
+        "releash".into(),
+        std::sync::Arc::<str>::from("hook-token"),
+    );
     let path = gateway.session_directory("agent-1");
     fs::create_dir_all(path.parent().unwrap()).unwrap();
     fs::write(&path, b"file").unwrap();
