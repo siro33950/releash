@@ -9,7 +9,7 @@
   - 振る舞い: 本物のサーバ・DB・OS を含む構成に対し、ユーザと同様の操作をする。偽サーバ相手の Playwright は振る舞いでも統合でもなく、フロントの単体。
 - `AGENTS.md`「構成で押さえる点」: テスト用区画は `test-support` feature でのみ有効になる。
 - `AGENTS.md`「ビルド・テスト・Lint」「リリース」は、PR 層と nightly 層のコマンドと、nightly のリリース関門を記載している。
-- 必須チェックの名前は `frontend`・`quality`・`integration`・`rust`。
+- 開発開始時点の必須チェックの名前は `frontend`・`quality`・`integration`・`rust`。
 - GitHub Actions のキャッシュ上限は1リポジトリ 10GB。Playwright 公式はブラウザのキャッシュを推奨していない。Biome 公式は CI で `biome ci` を推奨している。
 
 # Outcome
@@ -74,7 +74,6 @@ Non-goals:
 - フロントの統合テスト（`tests/integration/`）と振る舞いテスト（`tests/behavior/`）を新しく書くこと。
 - `docs/architecture/TEST.md` の変更。
 - `.github/scripts/` にある CI 用スクリプトのテスト（`workflows-test.mjs`・`coverage.test.py`）の置き場所と実行箇所。
-- 必須チェックの名前の変更。
 - 定数の値・削除済み機能の否定・パフォーマンス・層の重複・同じ入力区分の重複・主要パターン以外の振る舞いを lint で検出すること。
 
 # Requirements
@@ -82,10 +81,10 @@ Non-goals:
 - R-001: プロダクトのどのテストも、TEST.md の「書かないテスト」に当たらない。
 - R-002: プロダクトのすべてのテストが、TEST.md の「配置と実行」の表で種類に対応する置き場所にある。Rust の単体テストは `<impl>_test.rs` に置き、`<impl>.rs` から `#[path]` で取り込む。
 - R-003: 種類ごとの実行コマンドが TEST.md の「配置と実行」の表と一致し、各コマンドはその種類のテストだけを実行する。対象のテストが0件の種類のコマンドも成功する。
-- R-004: CI のジョブが種類ごとに分かれ、TEST.md の「配置と実行」の表の CI 列と一致する。Rust の単体と統合は、`releash-backend` と `releash-desktop` の両方を対象とする別々のジョブで並列に実行し、ビルドは各ジョブで行う。フロントの単体と統合は別のジョブで実行し、振る舞いは nightly 層で実行する。
+- R-004: CI のジョブが、TEST.md の「配置と実行」の表の役割（サーバ・シェル・フロント）と種類ごとに分かれ、表の CI 列と一致する。ジョブ名は `<役割>-<種類>`（`server-lint`・`server-unit`・`server-integration`、`shell-lint`・`shell-unit`・`shell-integration`、`frontend-lint`・`frontend-unit`・`frontend-integration`）とし、並列に実行する。Rust のビルドは各ジョブで行う。振る舞いは nightly 層で実行する。
 - R-005: 計測のためのビルド切り替え（Cargo の `performance` feature、フロントの `performance` モード）と、計測テストのためだけの実行時の仕組み（計測サンプルを集める呼び出し、計測用の A/B 切り替え、画面側の計測の差し込み口、計測時にだけ送る描画側の起動段階）が無い。利用者向けの設定で OTLP へ送る計測は変わらない。nightly 層に計測のジョブは無く、リリースの関門は計測のジョブに依存しない。
-- R-006: 必須チェックの名前（`frontend`・`quality`・`integration`・`rust`）は変わらず、集約ジョブ `rust` は Rust の単体ジョブ・統合ジョブ・Lint ジョブの結果で成否が決まる。Rust に関係しない変更で Rust のジョブを飛ばしても、必須チェックは Pending のまま残らない。
-- R-007: rust-cache は、ビルド条件（パッケージ・features・環境変数）が同じジョブ同士でキャッシュを共有し、保存は main への push の1ジョブだけが行う。Playwright のブラウザはキャッシュしない。pnpm は `actions/setup-node` のキャッシュを使う。
+- R-006: 必須チェックは、役割ごとの集約ジョブ `server`・`shell`・`frontend` と、役割をまたぐ検査の `quality` である。各集約ジョブは、その役割の Lint・単体・統合のジョブの結果で成否が決まる。Rust に関係しない変更で Rust のジョブを飛ばしても、必須チェックは Pending のまま残らない。
+- R-007: rust-cache は、ビルド条件（パッケージ・features・環境変数）が同じジョブ同士でキャッシュを共有し、保存は共有するキャッシュごとに main への push の1ジョブだけが行う。Playwright のブラウザはキャッシュしない。pnpm は `actions/setup-node` のキャッシュを使う。
 - R-008: CI の Biome は `biome ci` で実行する。
 - R-009: プロダクトのテストファイルが TEST.md の「配置と実行」の表の置き場所から外れている場合、`*_test.rs` と `tests/` 以外に `#[test]` がある場合、Rust の単体テストが TEST.md の「配置と実行」の対応（同じディレクトリに `<impl>.rs` があり、一つの実装に `<impl>_test.rs` が一つだけで、`#[path = "<impl>_test.rs"]` の mod 名が `<impl>_tests`。mod.rs の `<impl>` は `mod`）から外れている場合、`*_test.rs` が対応する `<impl>.rs` から `#[path]` で取り込まれていない場合、Rust の統合テストのファイルが Cargo の統合テストの入口（`tests/` 直下の `*.rs` と `[[test]]` で登録したファイル）から取り込まれていない場合、テストヘルパーが TEST.md の「テストヘルパー」の置き方（ディレクトリごとに `test_helpers.rs` 一つ）から外れている場合（`test_helpers_<名前>.rs` などの別名の補助ファイル）に、CI が落ちる。`.github/` 配下と `.ast-grep/` 配下（CI の道具のテスト）と、テストではない補助ファイル（`test_helpers.rs`・`test_support/`・`tests/helpers/`・`tests/fixtures/`・`src-tauri/tests/support/`・`src/test/` の setup 等）は検査の対象外とする。
 - R-010: `src-tauri/src/` と `src-tauri/releash-desktop/src/` の単体テスト側のファイル（`*_test.rs`・`test_helpers*.rs`・`test_support/`）が `rusqlite::Connection::open*`・`git2::Repository::{init,open}`・`tempfile`・`std::process::Command`・`tokio::process`・`TcpListener`・`TcpStream` を、`use` 宣言と完全修飾のどちらで使っても、CI が落ちる。

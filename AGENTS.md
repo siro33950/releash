@@ -93,7 +93,6 @@ PR 層（プロジェクトルート）:
 
 ```bash
 pnpm exec biome ci .
-node .github/scripts/test-placement.mjs
 pnpm test
 pnpm build
 pnpm test:integration
@@ -103,25 +102,28 @@ node --test .github/scripts/workflows-test.mjs
 PR 層（`src-tauri/`。CI では `CARGO_PROFILE_DEV_DEBUG="0"`）:
 
 ```bash
-cargo fmt --check
-cargo clippy --locked -- -D warnings
-cargo deny --locked check
-cargo clippy --locked -p releash-desktop -- -D warnings
-cargo clippy --locked --features test-support -- -D warnings
+cargo fmt --check -p releash-backend
+cargo clippy --locked -p releash-backend -- -D warnings
+cargo clippy --locked -p releash-backend --features test-support -- -D warnings
 cargo test --locked --lib --bins -p releash-backend
 cargo test --locked --doc -p releash-backend
+cargo test --locked --test '*' -p releash-backend
+cargo fmt --check -p releash-desktop
+cargo clippy --locked -p releash-desktop -- -D warnings
 cargo test --locked --lib --bins -p releash-desktop
 cargo test --locked --doc -p releash-desktop
 cargo build --locked -p releash-backend --bin releash-backend
-cargo test --locked --test '*' -p releash-backend
 cargo test --locked --test '*' -p releash-desktop
 ```
 
-品質ゲート（プロジェクトルート。clippy と biome を横断で走らせる）:
+品質ゲート（プロジェクトルート。サーバ・シェル・フロントをまたぐ検査）:
 
 ```bash
+node .github/scripts/test-placement.mjs
 ast-grep test
 qlty check --no-progress --all
+cd src-tauri
+cargo deny --locked check
 ```
 
 nightly 層（プロジェクトルート）:

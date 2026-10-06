@@ -18,7 +18,7 @@ function block(file, marker, key) {
 }
 
 const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
-const changes = new AsyncFunction("context", "core", "require", block("ci.yml", "  rust-lint:", "script"));
+const changes = new AsyncFunction("context", "core", "require", block("ci.yml", "  server-lint:", "script"));
 const nightly = new AsyncFunction("context", "core", "github", block("nightly.yml", "  check:", "script"));
 
 const ciConfig = readFileSync(new URL("../workflows/ci.yml", import.meta.url), "utf8");
@@ -57,24 +57,35 @@ function commands(job) {
 }
 
 const rustCommands = {
-  "rust-lint": [
-    "cargo fmt --check",
-    "cargo clippy --locked -- -D warnings",
-    "cargo deny --locked check",
-    "cargo clippy --locked -p releash-desktop -- -D warnings",
-    "cargo clippy --locked --features test-support -- -D warnings",
+  "server-lint": [
+    "cargo fmt --check -p releash-backend",
+    "cargo clippy --locked -p releash-backend -- -D warnings",
+    "cargo clippy --locked -p releash-backend --features test-support -- -D warnings",
   ],
-  "rust-unit": [
+  "server-unit": [
     "cargo test --locked --lib --bins -p releash-backend",
     "cargo test --locked --doc -p releash-backend",
+  ],
+  "server-integration": [
+    "cargo test --locked --test '*' -p releash-backend",
+  ],
+  "shell-lint": [
+    "cargo fmt --check -p releash-desktop",
+    "cargo clippy --locked -p releash-desktop -- -D warnings",
+  ],
+  "shell-unit": [
     "cargo test --locked --lib --bins -p releash-desktop",
     "cargo test --locked --doc -p releash-desktop",
   ],
-  "rust-integration": [
+  "shell-integration": [
     "cargo build --locked -p releash-backend --bin releash-backend",
-    "cargo test --locked --test '*' -p releash-backend",
     "cargo test --locked --test '*' -p releash-desktop",
   ],
+};
+const aggregates = {
+  frontend: ["frontend-lint", "frontend-unit", "frontend-integration"],
+  server: ["server-lint", "server-unit", "server-integration"],
+  shell: ["shell-lint", "shell-unit", "shell-integration"],
 };
 
 function assertPrChecks(config) {
@@ -91,20 +102,23 @@ function assertPrChecks(config) {
 test("PR and main push share the required parallel jobs and command allocation", () => {
   assert.equal(section(ciConfig, "on:").trim(), "push:\n    branches: [main]\n  pull_request:\n    branches: [main]\n  workflow_call:\n    inputs:\n      ref:\n        required: true\n        type: string");
   const ciJobs = jobs(ciConfig);
-  assert.deepEqual(Object.keys(ciJobs).sort(), ["frontend", "integration", "quality", "workflow-tests", "rust", ...Object.keys(rustCommands)].sort());
+  assert.deepEqual(Object.keys(ciJobs).sort(), ["quality", "workflow-tests", ...Object.keys(aggregates), ...Object.values(aggregates).flat()].sort());
   for (const [name, job] of Object.entries(ciJobs)) {
-    if (name !== "rust") assert.doesNotMatch(job, /^    (if|needs|strategy):/m, `${name} starts for both events independently`);
+    if (!(name in aggregates)) assert.doesNotMatch(job, /^    (if|needs|strategy):/m, `${name} starts for both events independently`);
   }
-  assert.deepEqual(commands(ciJobs.frontend), ["pnpm exec biome ci .", "node .github/scripts/test-placement.mjs", "pnpm test", "pnpm build"]);
-  assert.deepEqual(commands(ciJobs.integration), ["pnpm test:integration"]);
-  assert.deepEqual(commands(ciJobs.quality), ["ast-grep test", "qlty check --no-progress --all"]);
+  assert.deepEqual(commands(ciJobs["frontend-lint"]), ["pnpm exec biome ci .", "pnpm build"]);
+  assert.deepEqual(commands(ciJobs["frontend-unit"]), ["pnpm test"]);
+  assert.deepEqual(commands(ciJobs["frontend-integration"]), ["pnpm test:integration"]);
+  assert.deepEqual(commands(ciJobs.quality), ["node .github/scripts/test-placement.mjs", "ast-grep test", "qlty check --no-progress --all", "cargo deny --locked check"]);
   for (const [name, expected] of Object.entries(rustCommands)) {
     assert.deepEqual(commands(ciJobs[name]), expected);
     assert.equal(value(ciJobs[name], "working-directory"), "src-tauri");
   }
   assertPrChecks(ciConfig);
-  assert.equal(value(ciJobs.rust, "needs"), "[rust-lint, rust-unit, rust-integration]");
-  assert.equal(value(ciJobs.rust, "if"), "always()");
+  for (const [name, needs] of Object.entries(aggregates)) {
+    assert.equal(value(ciJobs[name], "needs"), `[${needs.join(", ")}]`);
+    assert.equal(value(ciJobs[name], "if"), "always()");
+  }
 });
 
 test("PR check restrictions ignore explanatory comments and step names", () => {
@@ -139,7 +153,7 @@ test("workflow decision tests run independently with only Node, including docs-o
 });
 
 test("integration comments skip cancelled runs and report failures on both create and update", async () => {
-  const step = steps(jobs(ciConfig).integration).find(step => value(step, "name") === "Add PR comment with test results");
+  const step = steps(jobs(ciConfig)["frontend-integration"]).find(step => value(step, "name") === "Add PR comment with test results");
   assert.equal(value(step, "if"), "${{ !cancelled() && github.event_name == 'pull_request' }}");
   const condition = new Function("cancelled", "github", `return ${value(step, "if").slice(3, -2)}`);
   const script = block("ci.yml", "      - name: Add PR comment with test results", "script");
@@ -169,13 +183,14 @@ test("integration comments skip cancelled runs and report failures on both creat
   assert.equal(condition(() => false, { event_name: "push" }), false);
 });
 
-test("Rust jobs build both packages with Tauri system dependencies", () => {
-  for (const name of ["rust-unit", "rust-integration"]) {
+test("server jobs build without Tauri system dependencies and shell jobs build with them", () => {
+  for (const [name, expected] of Object.entries(rustCommands)) {
     const job = jobs(ciConfig)[name];
-    if (name === "rust-integration") assert.match(job, /Install Node dependencies for client acceptance tests/);
+    if (name.endsWith("-integration")) assert.match(job, /Install Node dependencies for client acceptance tests/);
     else assert.doesNotMatch(job, /pnpm|setup-node/);
-    assert.match(job, /libwebkit/);
-    assert.deepEqual(commands(job), rustCommands[name]);
+    if (name.startsWith("shell-")) assert.match(job, /libwebkit/);
+    else assert.doesNotMatch(job, /libwebkit/);
+    assert.deepEqual(commands(job), expected);
   }
 });
 
@@ -183,7 +198,7 @@ test("every Rust check requires successful setup, survives check failures, and r
   for (const [name, expected] of Object.entries(rustCommands)) {
     const job = jobs(ciConfig)[name];
     assert.doesNotMatch(job, /continue-on-error:/);
-    assert.match(job, name === "rust-lint" ? /      - &rust-changes\n/ : /      - \*rust-changes\n/);
+    assert.match(job, name === "server-lint" ? /      - &rust-changes\n/ : /      - \*rust-changes\n/);
     const jobSteps = steps(job);
     const firstCheck = jobSteps.findIndex(step => expected.includes(value(step, "run")));
     const preparation = jobSteps.slice(0, firstCheck);
@@ -211,20 +226,17 @@ test("every Rust check requires successful setup, survives check failures, and r
   }
 });
 
-test("PR Rust disables debuginfo and shares job caches and saves only the unit cache on main push", () => {
+test("PR Rust disables debuginfo, shares one cache per role, and saves only the unit cache on main push", () => {
   assert.equal(value(section(ciConfig, "env:"), "CARGO_PROFILE_DEV_DEBUG"), '"0"');
-  const keys = [];
   for (const name of Object.keys(rustCommands)) {
     const job = jobs(ciConfig)[name];
     assert.doesNotMatch(job, /CARGO_PROFILE_(DEV|TEST)_DEBUG|--profile|--release/);
     const caches = steps(job).filter(step => value(step, "uses")?.startsWith("Swatinem/rust-cache@"));
     assert.equal(caches.length, 1);
-    assert.equal(value(caches[0], "save-if"), name === "rust-unit" ? "${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}" : "false");
+    assert.equal(value(caches[0], "save-if"), name.endsWith("-unit") ? "${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}" : "false");
     assert.equal(value(caches[0], "workspaces"), "src-tauri");
-    keys.push(value(caches[0], "shared-key"));
+    assert.equal(value(caches[0], "shared-key"), `pr-${name.split("-")[0]}`);
   }
-  assert.ok(keys.every(Boolean));
-  assert.equal(new Set(keys).size, 1);
 });
 
 test("nightly and stable share universal caches without saving release caches", () => {
@@ -440,15 +452,18 @@ test("nightly rejects a workflow commit different from the release target while 
     error => error.status === 1 && error.stdout.toString().includes("::error::"));
 });
 
-test("rust aggregate accepts success/skips and rejects every failure/cancellation combination", () => {
-  const script = block("ci.yml", "  rust:", "run");
-  for (const lint of ["success", "skipped", "failure", "cancelled"]) {
-    for (const desktop of ["success", "skipped", "failure", "cancelled"]) {
-      for (const headless of ["success", "skipped", "failure", "cancelled"]) {
-        const results = { "rust-lint": lint, "rust-unit": desktop, "rust-integration": headless };
-        const run = () => execFileSync("bash", ["-e", "-c", script.replace(/\$\{\{ needs\.(\S+)\.result \}\}/g, (_, job) => results[job])], { stdio: "pipe" });
-        if (Object.values(results).every(result => ["success", "skipped"].includes(result))) run();
-        else assert.throws(run);
+test("aggregates accept success/skips and reject every failure/cancellation combination", () => {
+  const outcomes = ["success", "skipped", "failure", "cancelled"];
+  for (const [name, needs] of Object.entries(aggregates)) {
+    const script = block("ci.yml", `  ${name}:`, "run");
+    for (const lint of outcomes) {
+      for (const unit of outcomes) {
+        for (const integration of outcomes) {
+          const results = Object.fromEntries(needs.map((job, index) => [job, [lint, unit, integration][index]]));
+          const run = () => execFileSync("bash", ["-e", "-c", script.replace(/\$\{\{ needs\.(\S+)\.result \}\}/g, (_, job) => results[job])], { stdio: "pipe" });
+          if (Object.values(results).every(result => ["success", "skipped"].includes(result))) run();
+          else assert.throws(run);
+        }
       }
     }
   }
