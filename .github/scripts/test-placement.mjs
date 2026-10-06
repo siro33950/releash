@@ -105,7 +105,7 @@ export function integrationErrors(sources) {
       reachable.add(path);
       const source = rustCode(sources.get(path));
       const moduleDirectory = path.endsWith("/mod.rs") || entries.includes(path) ? dirname(path) : join(dirname(path), basename(path, ".rs"));
-      for (const match of source.matchAll(/(?:#\[[^\n]*\]\s*)*(?:pub(?:\([^)]*\))?\s+)?mod\s+(\w+)\s*;/g)) {
+      for (const match of source.matchAll(/(?:#\[[^\]\n]*\]\s*)*(?:pub(?:\([^)]*\))?\s+)?mod\s+(\w+)\s*;/g)) {
         const explicit = match[0].match(/#\[path\s*=\s*"([^"]+)"\]/)?.[1];
         if (explicit) visit(normalize(join(dirname(path), explicit)));
         else {
