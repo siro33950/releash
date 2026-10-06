@@ -163,9 +163,10 @@ test("integration comments skip cancelled runs and report failures on both creat
   assert.equal(condition(() => false, { event_name: "push" }), false);
 });
 
-test("backend tests need neither Tauri system dependencies nor frontend setup", () => {
+test("backend tests install Node helpers for acceptance tests but no Tauri system dependencies", () => {
   const job = jobs(ciConfig)["rust-test-backend"];
-  assert.doesNotMatch(job, /pnpm|setup-node|frontend/);
+  assert.match(job, /pnpm install --frozen-lockfile/);
+  assert.doesNotMatch(job, /frontend/);
   assert.doesNotMatch(job, /apt-get|libwebkit/);
   assert.deepEqual(commands(job), rustCommands["rust-test-backend"]);
 });
