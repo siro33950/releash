@@ -1,4 +1,4 @@
-mod evaluator;
+pub(crate) mod evaluator;
 
 pub(crate) use evaluator::{
     evaluate, LuaData, LuaEvaluationRequest, LuaFailure, LuaFailureKind, LuaHost, LuaHostError,

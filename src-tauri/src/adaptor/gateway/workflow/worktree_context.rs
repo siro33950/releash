@@ -4,12 +4,12 @@ use crate::adaptor::gateway::local_event_store::{node_events, reader::storage_un
 use crate::domain::workflow::{IsolatedWorktree, NodeFactMeta, WorktreeInheritance, WorktreeMode};
 
 #[derive(Debug)]
-pub(crate) enum WorktreeContextReadError {
+pub enum WorktreeContextReadError {
     Read(crate::domain::local_event::LocalEventQueryError),
     Corrupt(String),
 }
 
-pub(crate) async fn execution_worktree_path(
+pub async fn execution_worktree_path(
     backend: &FactLogReadBackend,
     mut node: NodeFactMeta,
     root_meta: NodeFactMeta,
@@ -77,13 +77,13 @@ pub(crate) async fn execution_worktree_path(
         .map_err(WorktreeContextReadError::Read)?
 }
 
-pub(crate) struct StoredWorkspaceWorktreePathQuery {
+pub struct StoredWorkspaceWorktreePathQuery {
     data_dir: std::path::PathBuf,
     limiter: std::sync::Arc<crate::common::retry::RetryLimiter>,
 }
 
 impl StoredWorkspaceWorktreePathQuery {
-    pub(crate) fn new(
+    pub fn new(
         data_dir: std::path::PathBuf,
         limiter: std::sync::Arc<crate::common::retry::RetryLimiter>,
     ) -> Self {
@@ -111,7 +111,7 @@ impl crate::usecase::workspace_tree::WorkspaceWorktreePathQuery
     }
 }
 
-async fn workspace_worktree_path_with(
+pub async fn workspace_worktree_path_with(
     path: &str,
     backend: impl FnOnce() -> Result<FactLogReadBackend, crate::domain::workflow::WorkflowError>,
 ) -> Result<String, crate::domain::workflow::WorkflowError> {
@@ -152,7 +152,3 @@ async fn workspace_worktree_path_with(
         .map_err(FactReadError::Corrupt)
         .map_err(crate::domain::workflow::WorkflowError::from)
 }
-
-#[cfg(test)]
-#[path = "worktree_context_test.rs"]
-mod worktree_context_tests;

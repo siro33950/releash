@@ -1,7 +1,7 @@
 use super::{ProviderKind, ProviderLifecycleScope, ProviderLifecycleSlotId};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ArmedProviderLifecycle {
+pub struct ArmedProviderLifecycle {
     slot_id: ProviderLifecycleSlotId,
     binding_id: String,
     capability: String,
@@ -10,7 +10,7 @@ pub(crate) struct ArmedProviderLifecycle {
 }
 
 impl ArmedProviderLifecycle {
-    pub(crate) fn new(
+    pub fn new(
         slot_id: ProviderLifecycleSlotId,
         binding_id: String,
         capability: String,
@@ -26,23 +26,23 @@ impl ArmedProviderLifecycle {
         }
     }
 
-    pub(crate) fn slot_id(&self) -> &ProviderLifecycleSlotId {
+    pub fn slot_id(&self) -> &ProviderLifecycleSlotId {
         &self.slot_id
     }
 
-    pub(crate) fn binding_id(&self) -> &str {
+    pub fn binding_id(&self) -> &str {
         &self.binding_id
     }
 
-    pub(crate) fn capability(&self) -> &str {
+    pub fn capability(&self) -> &str {
         &self.capability
     }
 
-    pub(crate) fn provider(&self) -> ProviderKind {
+    pub fn provider(&self) -> ProviderKind {
         self.provider
     }
 
-    pub(crate) fn scope(&self) -> &ProviderLifecycleScope {
+    pub fn scope(&self) -> &ProviderLifecycleScope {
         &self.scope
     }
 }

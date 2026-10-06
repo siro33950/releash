@@ -64,7 +64,7 @@ impl ProcessObservation {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ConnectionObservation {
+pub enum ConnectionObservation {
     IdentityVerified,
     UnexpectedResponse,
     NoResponse,

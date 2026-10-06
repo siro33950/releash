@@ -151,7 +151,7 @@ async fn test_ターミナル保存_偽の遅延で待機中のdirtyを一度の
     let armed = Arc::new(tokio::sync::Notify::new());
     let (flushed, mut flushes) = tokio::sync::mpsc::unbounded_channel();
     let task = tokio::spawn(run(
-        crate::usecase::retry::test_retrying(),
+        crate::test_support::retry::test_retrying(),
         move |session| {
             let flushed = flushed.clone();
             async move {

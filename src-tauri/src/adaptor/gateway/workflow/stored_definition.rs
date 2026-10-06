@@ -29,13 +29,13 @@ pub(crate) fn read_tree_header(detail: &str) -> Result<Option<TreeRootHeader>, S
 }
 
 #[derive(Deserialize)]
-pub(crate) struct TreeRootContext {
+pub struct TreeRootContext {
     #[serde(flatten)]
     pub(crate) header: TreeRootHeader,
-    pub(crate) definition: Value,
+    pub definition: Value,
 }
 
-pub(crate) fn read_tree_context(detail: &str) -> Result<Option<TreeRootContext>, String> {
+pub fn read_tree_context(detail: &str) -> Result<Option<TreeRootContext>, String> {
     #[derive(Deserialize)]
     struct Record {
         root: Option<TreeRootContext>,
@@ -67,7 +67,7 @@ struct RootRecord {
     launched_as: ExecutionTreeLaunch,
 }
 
-pub(crate) fn decode_started(detail: &str) -> Result<NodeFact, String> {
+pub fn decode_started(detail: &str) -> Result<NodeFact, String> {
     fact_codec::decode("started", detail).map_err(|error| error.to_string())
 }
 

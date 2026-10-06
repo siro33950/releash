@@ -1,59 +1,77 @@
-use super::*;
-use crate::test_support::state_subscription::StateReadsFixture;
-use crate::usecase::state_subscription::StateChangeSource;
+use crate::adaptor::controller::client::ClientCommandDispatch;
+use crate::adaptor::presenter::client as wire;
+use prost::Message;
+use serde_json::Value;
+use std::sync::Arc;
 
 #[tokio::test]
-async fn test_更新通知_成功時だけ購読対象を更新する() {
+pub async fn test_クライアントrpc_停止中はusecase実行前に拒否する() {
+    use tower::ServiceExt;
     // Given
-    let fixture = StateReadsFixture::new();
-    let publisher = fixture.subscriptions.clone();
-    let git_host = fixture.reads.git_host.clone();
-    let mut changes = crate::test_support::state_subscription::changes(&publisher);
-    let mut dispatch = ClientCommandDispatch::new(crate::usecase::daemon::DaemonUsecase(
+    let daemon = crate::usecase::daemon::DaemonUsecase::test_with_repository(
         crate::adaptor::gateway::daemon::serving(),
-    ))
-    .with_state_publisher(publisher);
-    dispatch.register_domain(
-        &["fetch_issues"],
-        Box::new(move |command| {
-            let git_host = git_host.clone();
-            Box::pin(async move {
-                let wire::command_request::Command::FetchIssues(args) = command else {
-                    return Err(invalid_request("Mismatched command"));
-                };
-                if args.repo_path.as_deref() == Some("/fail") {
-                    return Err(invalid_request("Fetch failed"));
-                }
-                git_host
-                    .fetch_issues(args.repo_path.as_deref().unwrap())
-                    .await
-                    .unwrap();
-                Ok(wire::command_result::Command::FetchIssues(wire::Unit {}))
-            })
-        }),
     );
+    let dispatch = Arc::new(ClientCommandDispatch::new(daemon.clone()));
+    let router = crate::adaptor::controller::api::client::router(
+        Some(crate::test_support::client_api_deps(dispatch)),
+        crate::adaptor::controller::daemon::default_timeout(),
+    );
+    daemon
+        .stop(crate::domain::daemon::StopRequest::Exit { code: 0 })
+        .await;
     // When
-    for path in ["/repo", "/fail"] {
-        let result = dispatch
-            .dispatch(wire::command_request::Command::FetchIssues(
-                wire::FetchIssuesRequest {
-                    repo_path: Some(path.into()),
-                },
-            ))
-            .await;
-        // Then
-        if path == "/repo" {
-            assert!(result.is_ok());
-            assert_eq!(
-                changes.try_recv().unwrap(),
-                StateChangeSource::Issues(path.into())
-            );
-        } else {
-            assert!(result.is_err());
-            assert!(matches!(
-                changes.try_recv(),
-                Err(tokio::sync::broadcast::error::TryRecvError::Empty)
-            ));
-        }
-    }
+    let request =
+        axum::http::Request::post("/releash.client.v1.ClientService/UpdateExternalEditor")
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from("{}"))
+            .unwrap();
+    let response = router.oneshot(request).await.unwrap();
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    // Then
+    let error: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(error["code"], "failed_precondition");
+    use base64::Engine;
+    let bytes = base64::engine::general_purpose::STANDARD_NO_PAD
+        .decode(error["details"][0]["value"].as_str().unwrap())
+        .unwrap();
+    let detail = wire::from_value(wire::CommandError::decode(bytes.as_slice()).unwrap()).unwrap();
+    assert_eq!(detail["code"], "APPLICATION_UNAVAILABLE");
+}
+
+#[tokio::test]
+pub async fn test_クライアントrpc_停止中はstreamも拒否する() {
+    use tower::ServiceExt;
+    // Given
+    let daemon = crate::usecase::daemon::DaemonUsecase::test_with_repository(
+        crate::adaptor::gateway::daemon::serving(),
+    );
+    let dispatch = Arc::new(ClientCommandDispatch::new(daemon.clone()));
+    let router = crate::adaptor::controller::api::client::router(
+        Some(crate::test_support::client_api_deps(dispatch)),
+        crate::adaptor::controller::daemon::default_timeout(),
+    );
+    daemon
+        .stop(crate::domain::daemon::StopRequest::Exit { code: 0 })
+        .await;
+    // When
+    let request =
+        axum::http::Request::post("/releash.client.v1.ClientService/StartStateSubscription")
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from("{}"))
+            .unwrap();
+    let response = router.oneshot(request).await.unwrap();
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    // Then
+    let error: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(error["code"], "failed_precondition");
+    use base64::Engine;
+    let bytes = base64::engine::general_purpose::STANDARD_NO_PAD
+        .decode(error["details"][0]["value"].as_str().unwrap())
+        .unwrap();
+    let detail = wire::from_value(wire::CommandError::decode(bytes.as_slice()).unwrap()).unwrap();
+    assert_eq!(detail["code"], "APPLICATION_UNAVAILABLE");
 }

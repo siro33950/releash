@@ -746,39 +746,6 @@ describe("SettingsModal", () => {
 		expect(screen.getByText("Font Size: 18px")).toBeInTheDocument();
 	});
 
-	it("does not expose the retired agent command palette settings", async () => {
-		const { invokeClient: invoke } = await import("@/lib/client");
-		render(<SettingsModal {...defaultProps} />);
-		fireEvent.click(screen.getByText("Agent"));
-
-		expect(screen.queryByText("Agent shortcuts")).not.toBeInTheDocument();
-		expect(screen.queryByLabelText(/Command menu/)).not.toBeInTheDocument();
-		expect(
-			vi
-				.mocked(invoke)
-				.mock.calls.some(([command]) =>
-					String(command).includes("agent_shortcut"),
-				),
-		).toBe(false);
-	});
-
-	it("does not expose or invoke the legacy Claude Hook configuration", async () => {
-		const { invokeClient: invoke } = await import("@/lib/client");
-		render(<SettingsModal {...defaultProps} />);
-		fireEvent.click(screen.getByText("Agent"));
-
-		expect(screen.queryByText("Claude Code Hooks")).not.toBeInTheDocument();
-		for (const removed of [
-			"generate_hooks_config",
-			"get_hooks_status",
-			"apply_hooks_config",
-		]) {
-			expect(
-				vi.mocked(invoke).mock.calls.some(([command]) => command === removed),
-			).toBe(false);
-		}
-	});
-
 	it("Provider CLIはbackend一覧から利用可能と利用不可を表示する", async () => {
 		render(<SettingsModal {...defaultProps} />);
 		fireEvent.click(screen.getByText("Agent"));
@@ -1152,12 +1119,6 @@ describe("SettingsModal", () => {
 		expect(invoke).toHaveBeenCalledWith("report_usage_event", {
 			name: "settings_saved",
 		});
-	});
-
-	it("does not expose the removed Notifications settings", () => {
-		render(<SettingsModal {...defaultProps} />);
-		expect(screen.queryByText("Notifications")).not.toBeInTheDocument();
-		expect(screen.queryByLabelText("Webhook URL")).not.toBeInTheDocument();
 	});
 
 	it("should show Appearance section by default", () => {

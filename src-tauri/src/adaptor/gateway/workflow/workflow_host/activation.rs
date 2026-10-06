@@ -10,7 +10,8 @@ const ACTIVATION_CANCEL_PENDING: u8 = 0;
 const ACTIVATION_CANCEL_COMMIT: u8 = 1;
 const ACTIVATION_CANCEL_ROLLBACK: u8 = 2;
 
-pub(super) struct RuntimeActivationGate {
+#[derive(Default)]
+pub struct RuntimeActivationGate {
     pub(super) lock: Mutex<()>,
     cancel_requested: AtomicBool,
     cancel_notify: Notify,
@@ -21,7 +22,7 @@ pub(super) struct RuntimeActivationGate {
 }
 
 impl RuntimeActivationGate {
-    pub(super) fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             lock: Mutex::new(()),
             cancel_requested: AtomicBool::new(false),
@@ -158,5 +159,12 @@ where
             }
             result = &mut future => return result,
         }
+    }
+}
+
+#[cfg(feature = "test-support")]
+impl RuntimeActivationGate {
+    pub fn test_lock(&self) -> &Mutex<()> {
+        &self.lock
     }
 }

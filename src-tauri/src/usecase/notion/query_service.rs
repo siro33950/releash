@@ -1,6 +1,6 @@
 use super::usecase::NotionRepoConfigDto;
 
-pub(crate) trait NotionConfigQueryService: Send + Sync {
+pub trait NotionConfigQueryService: Send + Sync {
     fn get_config(
         &self,
         repo_path: &str,

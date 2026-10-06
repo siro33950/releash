@@ -1,15 +1,15 @@
 pub mod aggregates;
 mod display_name;
-mod launch_identity;
-mod provider_availability_gateway;
-mod provider_history_gateway;
+pub(crate) mod launch_identity;
+pub(crate) mod provider_availability_gateway;
+pub(crate) mod provider_history_gateway;
 mod provider_history_label;
-mod provider_launch;
-mod provider_launch_gateway;
+pub(crate) mod provider_launch;
+pub(crate) mod provider_launch_gateway;
 mod provider_session_ownership;
 mod provider_session_title_cadence;
-mod provider_session_title_gateway;
-mod provider_terminal_gateway;
+pub(crate) mod provider_session_title_gateway;
+pub(crate) mod provider_terminal_gateway;
 pub mod repository;
 pub(crate) mod services;
 
@@ -45,3 +45,6 @@ pub(crate) use provider_terminal_gateway::{
     ProviderAgentTerminalGateway, ProviderAgentTerminalGatewayError,
     ProviderAgentTerminalInputGateway, ProviderAgentTerminalObservationGateway,
 };
+
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) mod test_helpers;

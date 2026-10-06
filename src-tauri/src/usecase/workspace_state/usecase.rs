@@ -2,7 +2,7 @@ use crate::domain::workspace_state::{
     WorkspaceState, WorkspaceStateError, WorkspaceStateRepository,
 };
 
-pub(crate) fn save_workspace_state(
+pub fn save_workspace_state(
     repository: &dyn WorkspaceStateRepository,
     publisher: Option<&crate::usecase::state_subscription::StateSubscriptionUsecase>,
     worktree_name: &str,

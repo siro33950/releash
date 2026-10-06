@@ -11,13 +11,18 @@ use crate::domain::workspace_tree::WorkspaceIdentity;
 use crate::infrastructure::process::command_runner::ActiveCommandHandle;
 
 #[derive(Default)]
-pub(crate) struct WorkflowNodeProcesses {
+pub struct WorkflowNodeProcesses {
     pub(super) active_commands: Mutex<HashMap<String, ActiveCommandHandle>>,
     terminal: Option<Arc<dyn ProviderAgentTerminalGateway>>,
 }
 
 impl WorkflowNodeProcesses {
-    pub(crate) fn new(terminal: Arc<dyn ProviderAgentTerminalGateway>) -> Self {
+    #[cfg(feature = "test-support")]
+    pub fn test_active_commands(&self) -> &Mutex<HashMap<String, ActiveCommandHandle>> {
+        &self.active_commands
+    }
+
+    pub fn new(terminal: Arc<dyn ProviderAgentTerminalGateway>) -> Self {
         Self {
             terminal: Some(terminal),
             ..Self::default()

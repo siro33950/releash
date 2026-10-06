@@ -127,7 +127,7 @@ impl Serialize for StorageError {
 }
 
 /// 同じ名前を複数の形式が宣言した一覧エントリの説明。
-const DUPLICATE_NAME_DESCRIPTION: &str = "Duplicate workflow definition";
+pub const DUPLICATE_NAME_DESCRIPTION: &str = "Duplicate workflow definition";
 
 pub fn workflows_dir() -> PathBuf {
     dirs::config_dir()
@@ -271,7 +271,7 @@ impl WorkflowDefinitionLoader for LuaWorkflowDefinitionLoader {
     }
 }
 
-pub(crate) fn diagnose_workflow_file(
+pub fn diagnose_workflow_file(
     path: &Path,
     content: &str,
     workflows_dir: &Path,
@@ -331,9 +331,7 @@ pub fn load_workflow(
     Ok(workflow)
 }
 
-pub(crate) fn workflow_files(
-    dir: &Path,
-) -> Result<Vec<(String, std::path::PathBuf)>, StorageError> {
+pub fn workflow_files(dir: &Path) -> Result<Vec<(String, std::path::PathBuf)>, StorageError> {
     let entries = match fs::read_dir(dir) {
         Ok(entries) => entries,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
@@ -407,12 +405,12 @@ fn collapse_duplicate_names(summaries: Vec<Summary>) -> Vec<Summary> {
     collapsed
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub fn list_workflows(dir: &Path) -> Result<Vec<Summary>, StorageError> {
     list_workflows_with_facets(dir, dir)
 }
 
-pub(crate) fn list_workflows_with_facets(
+pub fn list_workflows_with_facets(
     dir: &Path,
     facets_base_dir: &Path,
 ) -> Result<Vec<Summary>, StorageError> {
@@ -468,7 +466,7 @@ fn validate_workflow_definition(workflow: &WorkflowDefinitionYaml) -> Result<(),
     Ok(())
 }
 
-pub(crate) fn resolve_and_validate_workflow_facets(
+pub fn resolve_and_validate_workflow_facets(
     workflow: &WorkflowDefinitionYaml,
     facets_base_dir: &Path,
 ) -> Result<facet::WorkflowFacetContents, StorageError> {

@@ -1,5 +1,5 @@
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) enum PublishedState {
+pub enum PublishedState {
     Value(Box<crate::adaptor::presenter::client::StatePayload>),
     Failure(crate::adaptor::presenter::client::StateReadFailure),
 }
@@ -27,7 +27,7 @@ use futures_util::Stream;
 use crate::infrastructure::state_subscription::{
     Delivery, StateSubscriptionRuntime, Subscriptions, Version,
 };
-pub(crate) type StateSubscriptionEvent =
+pub type StateSubscriptionEvent =
     crate::infrastructure::state_subscription::StateSubscriptionEvent<PublishedState>;
 use crate::usecase::state_subscription::{
     StateReadError, StateSubscriptionOutput, StateValue, SubscriptionError, SubscriptionTarget,
@@ -47,11 +47,11 @@ impl From<crate::infrastructure::state_subscription::SubscriptionError> for Subs
 }
 
 #[derive(Clone)]
-pub(crate) struct StateSubscriptionPresenter {
+pub struct StateSubscriptionPresenter {
     runtime: StateSubscriptionRuntime<PublishedState>,
 }
 
-pub(crate) struct SubscriptionDelivery {
+pub struct SubscriptionDelivery {
     presenter: StateSubscriptionPresenter,
     client: String,
     id: String,
@@ -126,7 +126,7 @@ impl StateSubscriptionPresenter {
         Self { runtime }
     }
 
-    pub(crate) fn reserve_delivery(
+    pub fn reserve_delivery(
         &self,
         client: &str,
         id: &str,
@@ -159,7 +159,7 @@ impl StateSubscriptionPresenter {
         })
     }
 
-    pub(crate) fn delivery(&self, id: &str) -> Option<(String, String, SubscriptionDelivery)> {
+    pub fn delivery(&self, id: &str) -> Option<(String, String, SubscriptionDelivery)> {
         self.runtime.mutate(|state| {
             let value = state.lookup(id).map(|(client, target)| {
                 let delivery = SubscriptionDelivery {
@@ -219,7 +219,7 @@ impl StateSubscriptionPresenter {
     }
 }
 
-#[cfg(any(test, debug_assertions))]
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) fn test_output() -> crate::usecase::state_subscription::StateSubscriptionOutputRef {
     Arc::new(StateSubscriptionPresenter::new())
 }
@@ -244,7 +244,7 @@ fn cursor_version(cursor: Option<(&str, u64)>) -> Option<Version> {
 }
 
 impl StateSubscriptionOutput for StateSubscriptionPresenter {
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     fn as_any(&self) -> &dyn std::any::Any {
         self
     }
@@ -311,4 +311,4 @@ impl StateSubscriptionOutput for StateSubscriptionPresenter {
 
 #[cfg(test)]
 #[path = "state_subscription_test.rs"]
-mod state_subscription_tests;
+pub(crate) mod state_subscription_tests;

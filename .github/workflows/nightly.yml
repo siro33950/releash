@@ -58,31 +58,15 @@ jobs:
     with:
       ref: ${{ needs.check.outputs.sha }}
 
-  performance:
+  behavior:
     needs: check
     if: needs.check.outputs.run == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 45
-    defaults:
-      run:
-        working-directory: src-tauri
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
         with:
           ref: ${{ needs.check.outputs.sha }}
-      - id: apt-key
-        run: echo "key=apt-$ImageOS-$ImageVersion" >> "$GITHUB_OUTPUT"
-      - uses: actions/cache@v6
-        with:
-          path: ~/apt-archives
-          key: ${{ steps.apt-key.outputs.key }}
-          restore-keys: apt-
-      - name: Install Tauri dependencies
-        run: |
-          mkdir -p ~/apt-archives/partial
-          sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libgtk-3-dev libsoup-3.0-dev libjavascriptcoregtk-4.1-dev -o Dir::Cache::Archives="$HOME/apt-archives"
-          sudo chown -R "$USER" ~/apt-archives
       - uses: pnpm/action-setup@v6
         with:
           version: 10
@@ -91,23 +75,8 @@ jobs:
           node-version: 24
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-        working-directory: .
-      - name: Install Rust toolchain
-        run: rustup toolchain install
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: src-tauri
-          key: nightly-performance
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-      - name: Performance backend unit tests
-        run: cargo test --locked --features performance --lib
-      - name: Performance daemon helper self-test
-        working-directory: .
-        run: pnpm test:performance:daemon
-      - name: Desktop CLI installation test
-        run: |
-          cargo build --locked -p releash-backend --bin releash-backend
-          cargo test --locked -p releash-desktop --features performance --test desktop_cli_install
+      - run: pnpm exec playwright install --with-deps chromium
+      - run: pnpm test:behavior
 
   coverage:
     needs: check
@@ -162,8 +131,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
-          key: nightly-coverage
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          shared-key: coverage
+          save-if: false
       - uses: taiki-e/install-action@cargo-llvm-cov
       - name: Coverage process termination regression test
         run: python3 .github/scripts/coverage.test.py
@@ -183,7 +152,7 @@ jobs:
           fail_ci_if_error: true
 
   release:
-    needs: [check, validation, performance]
+    needs: [check, validation]
     runs-on: macos-latest
     timeout-minutes: 60
     permissions:
@@ -236,7 +205,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
-          key: macos-universal
+          shared-key: macos-universal
+          save-if: false
 
       - uses: 1password/load-secrets-action@70062d7a876d3eb6334754fa26efd2fbd90c32f2 # v5
         env:

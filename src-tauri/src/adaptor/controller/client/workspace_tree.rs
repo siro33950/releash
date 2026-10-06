@@ -1,6 +1,6 @@
 use crate::adaptor::presenter::error::AppError;
 #[path = "workspace_tree_shared.rs"]
-mod shared;
+pub(crate) mod shared;
 pub(crate) use shared::register_shared;
 
 use std::sync::Arc;

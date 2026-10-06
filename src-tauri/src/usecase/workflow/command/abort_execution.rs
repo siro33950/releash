@@ -12,13 +12,13 @@ pub struct AbortExecutionCommand {
 }
 
 #[derive(Clone)]
-pub(crate) struct WorkflowAbortExecutionUsecase {
+pub struct WorkflowAbortExecutionUsecase {
     runtime: Arc<dyn WorkflowAbortExecutionGateway>,
     preflight: WorkflowRuntimeCommandPreflight,
 }
 
 impl WorkflowAbortExecutionUsecase {
-    pub(crate) fn new(runtime: Arc<dyn WorkflowAbortExecutionGateway>) -> Self {
+    pub fn new(runtime: Arc<dyn WorkflowAbortExecutionGateway>) -> Self {
         Self {
             runtime,
             preflight: WorkflowRuntimeCommandPreflight,

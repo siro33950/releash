@@ -18,7 +18,7 @@ use crate::domain::workflow::{
 
 #[cfg(test)]
 #[path = "fact_replay_test.rs"]
-mod fact_replay_test;
+mod fact_replay_tests;
 
 /// fold の結果: 導出された実行木の状態。
 #[derive(Debug, Clone, PartialEq)]
@@ -297,10 +297,10 @@ fn fold_all(
     tree_id: &str,
     records: &[NodeFactRecord],
 ) -> Result<Option<(TreeFold, FoldedTree)>, String> {
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     TREE_FOLDS.with(|count| count.set(count.get() + 1));
     let result = fold_records_from_start(tree_id, records)?;
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     if let Some((_, folded)) = &result {
         assert_appending_matches_full_fold(tree_id, records, folded);
     }
@@ -375,7 +375,7 @@ fn fold_records(
 }
 
 /// どの位置で区切っても、途中まで fold してから残りを足した結果が全件 fold と一致する。
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 fn assert_appending_matches_full_fold(
     tree_id: &str,
     records: &[NodeFactRecord],
@@ -404,19 +404,19 @@ fn assert_appending_matches_full_fold(
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 thread_local! {
     static TREE_FOLDS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 /// この thread で、事実を最初から fold した回数。
-#[cfg(test)]
-pub(crate) fn tree_fold_count() -> usize {
+#[cfg(any(test, feature = "test-support"))]
+pub fn tree_fold_count() -> usize {
     TREE_FOLDS.with(std::cell::Cell::get)
 }
 
-#[cfg(test)]
-pub(crate) fn without_tree_fold<T>(read: impl FnOnce() -> T) -> T {
+#[cfg(any(test, feature = "test-support"))]
+pub fn without_tree_fold<T>(read: impl FnOnce() -> T) -> T {
     let before = TREE_FOLDS.with(std::cell::Cell::get);
     let result = read();
     assert_eq!(
@@ -485,7 +485,7 @@ pub fn derive_read_model(tree: &FoldedTree) -> ExecutionTreeReadModel {
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub fn derive_node_artifact(
     tree: &FoldedTree,
     records: &[NodeFactRecord],

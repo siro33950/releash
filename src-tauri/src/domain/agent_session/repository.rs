@@ -18,19 +18,19 @@ pub struct VersionedAgentSession {
 }
 
 impl VersionedAgentSession {
-    pub(crate) fn restored(session: AgentSession, revision: u64) -> Self {
+    pub fn restored(session: AgentSession, revision: u64) -> Self {
         Self { session, revision }
     }
 
-    pub(crate) fn session(&self) -> &AgentSession {
+    pub fn session(&self) -> &AgentSession {
         &self.session
     }
 
-    pub(crate) fn session_mut(&mut self) -> &mut AgentSession {
+    pub fn session_mut(&mut self) -> &mut AgentSession {
         &mut self.session
     }
 
-    pub(crate) fn revision(&self) -> u64 {
+    pub fn revision(&self) -> u64 {
         self.revision
     }
 

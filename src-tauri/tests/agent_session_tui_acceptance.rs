@@ -1,17 +1,19 @@
-use releash_lib::terminal_subscription_acceptance::TerminalSubscription as TerminalSurfaceWireAttachment;
-#[path = "support/agent_tui_fixture.rs"]
+use releash_lib::test_support::terminal_subscription_acceptance::TerminalSubscription as TerminalSurfaceWireAttachment;
+#[path = "agent_tui_fixture.rs"]
 mod agent_tui_fixture;
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use agent_tui_fixture::{fixture_process_shell_command, FixtureLifecycleCommand, FixturePlan};
-use releash_lib::agent_session_tui_acceptance::{
+use releash_lib::test_support::agent_session_tui_acceptance::{
     AcceptanceAgentSessionLifecycle, AcceptanceAgentSessionTreeLocation, AcceptanceArchiveOutcome,
     AcceptanceHookWarning, AcceptanceProvider, AgentSessionTuiAcceptanceConfig,
     AgentSessionTuiAcceptanceHost as AgentSessionTuiAcceptanceComposition,
 };
-use releash_lib::terminal_surface::{TerminalSurfaceOwnerV1, TerminalSurfaceStreamItemV1};
+use releash_lib::test_support::terminal_surface::{
+    TerminalSurfaceOwnerV1, TerminalSurfaceStreamItemV1,
+};
 use serde::de::DeserializeOwned;
 use serde::Deserialize;
 
@@ -22,74 +24,10 @@ struct SessionSelection {
     node_id: String,
 }
 
-#[derive(serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-struct LaunchDistribution {
-    count: usize,
-    p50: f64,
-    p95: f64,
-    max: f64,
-}
-
-#[derive(serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-struct DeterministicLaunchPerformanceReport {
-    schema_version: u8,
-    source: &'static str,
-    provider: &'static str,
-    warm_runs: usize,
-    total_to_first_provider_byte_ms: LaunchDistribution,
-    phase_ms: std::collections::BTreeMap<String, LaunchDistribution>,
-}
-
-fn launch_distribution(mut samples: Vec<f64>) -> LaunchDistribution {
-    samples.sort_by(f64::total_cmp);
-    let middle = samples.len() / 2;
-    let p50 = if samples.len().is_multiple_of(2) {
-        (samples[middle - 1] + samples[middle]) / 2.0
-    } else {
-        samples[middle]
-    };
-    LaunchDistribution {
-        count: samples.len(),
-        p50,
-        p95: samples[(samples.len() * 95).div_ceil(100) - 1],
-        max: *samples.last().expect("non-empty launch samples"),
-    }
-}
-
-fn write_actual_provider_launch_report(
-    provider: &'static str,
-    total_to_first_visible_ms: f64,
-    samples: Vec<
-        releash_lib::agent_session_tui_acceptance::AcceptanceTerminalLaunchPerformanceSample,
-    >,
-) {
-    let phase_ms = samples
-        .into_iter()
-        .map(|sample| (sample.phase, sample.duration_ms))
-        .collect::<std::collections::BTreeMap<_, _>>();
-    let report = serde_json::json!({
-        "schemaVersion": 1,
-        "source": "provider-observation",
-        "provider": provider,
-        "totalToFirstVisibleMs": total_to_first_visible_ms,
-        "phaseMs": phase_ms,
-    });
-    let report_json = serde_json::to_string_pretty(&report).unwrap();
-    println!("{report_json}");
-    if let Some(path) = std::env::var_os("RELEASH_ACTUAL_PROVIDER_LAUNCH_REPORT_PATH") {
-        std::fs::write(path, format!("{report_json}\n")).unwrap();
-    }
-}
-
-static TERMINAL_LAUNCH_PERFORMANCE_GATE_LOCK: tokio::sync::Mutex<()> =
-    tokio::sync::Mutex::const_new(());
-
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct AgentSessionHistoryPage {
-    items: Vec<releash_lib::agent_session_tui_acceptance::AcceptanceHistoryCandidate>,
+    items: Vec<releash_lib::test_support::agent_session_tui_acceptance::AcceptanceHistoryCandidate>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -112,14 +50,15 @@ struct ProviderAvailabilityItem {
 
 struct AgentSessionTuiAcceptanceHost {
     composition: AgentSessionTuiAcceptanceComposition,
-    client: releash_lib::client_api_acceptance::NativeClient,
+    client: releash_lib::test_support::client_api_acceptance::NativeClient,
 }
 
 impl AgentSessionTuiAcceptanceHost {
     fn start(config: AgentSessionTuiAcceptanceConfig) -> Result<Self, String> {
         let composition = AgentSessionTuiAcceptanceComposition::start(config)?;
-        let client =
-            releash_lib::client_api_acceptance::connect_client(composition.client_endpoint());
+        let client = releash_lib::test_support::client_api_acceptance::connect_client(
+            composition.client_endpoint(),
+        );
         Ok(Self {
             composition,
             client,
@@ -133,7 +72,11 @@ impl AgentSessionTuiAcceptanceHost {
     ) -> Result<T, String> {
         let value = tokio::task::block_in_place(|| {
             tokio::runtime::Handle::current().block_on(
-                releash_lib::client_api_acceptance::request_client(&self.client, command, body),
+                releash_lib::test_support::client_api_acceptance::request_client(
+                    &self.client,
+                    command,
+                    body,
+                ),
             )
         })
         .map_err(|error| error.to_string())?;
@@ -142,7 +85,8 @@ impl AgentSessionTuiAcceptanceHost {
 
     fn terminal(
         &self,
-    ) -> &releash_lib::terminal_subscription_acceptance::TerminalSubscriptionHarness {
+    ) -> &releash_lib::test_support::terminal_subscription_acceptance::TerminalSubscriptionHarness
+    {
         self.composition.terminal()
     }
 
@@ -171,23 +115,10 @@ impl AgentSessionTuiAcceptanceHost {
     fn hook_health_marker_contents(&self) -> Result<Vec<String>, String> {
         self.composition.hook_health_marker_contents()
     }
-
-    fn start_terminal_launch_performance_collection(&self) {
-        self.composition
-            .start_terminal_launch_performance_collection();
-    }
-
-    fn take_terminal_launch_performance_samples(
-        &self,
-    ) -> Vec<releash_lib::agent_session_tui_acceptance::AcceptanceTerminalLaunchPerformanceSample>
-    {
-        self.composition.take_terminal_launch_performance_samples()
-    }
-
     fn read_state<T: DeserializeOwned>(&self, target: &str) -> Result<T, String> {
         let value = tokio::task::block_in_place(|| {
             tokio::runtime::Handle::current().block_on(
-                releash_lib::client_api_acceptance::read_state(&self.client, target),
+                releash_lib::test_support::client_api_acceptance::read_state(&self.client, target),
             )
         })
         .map_err(|e| e.to_string())?;
@@ -275,13 +206,17 @@ impl AgentSessionTuiAcceptanceHost {
     async fn get(
         &self,
         agent_session_id: &str,
-    ) -> Result<Option<releash_lib::agent_session_tui_acceptance::AcceptanceAgentSession>, String>
-    {
+    ) -> Result<
+        Option<releash_lib::test_support::agent_session_tui_acceptance::AcceptanceAgentSession>,
+        String,
+    > {
         let target = format!(
             "agent-session:{}:{agent_session_id}",
             agent_session_id.len()
         );
-        match releash_lib::client_api_acceptance::read_state(&self.client, &target).await {
+        match releash_lib::test_support::client_api_acceptance::read_state(&self.client, &target)
+            .await
+        {
             Ok(value) => serde_json::from_value(value).map_err(|e| e.to_string()),
             Err(error) if error.code == connectrpc::ErrorCode::NotFound => Ok(None),
             Err(error) => Err(error.to_string()),
@@ -292,8 +227,10 @@ impl AgentSessionTuiAcceptanceHost {
         &self,
         worktree_path: &str,
         limit: usize,
-    ) -> Result<Vec<releash_lib::agent_session_tui_acceptance::AcceptanceHistoryCandidate>, String>
-    {
+    ) -> Result<
+        Vec<releash_lib::test_support::agent_session_tui_acceptance::AcceptanceHistoryCandidate>,
+        String,
+    > {
         let count = limit.to_string();
         self.read_state::<AgentSessionHistoryPage>(&format!(
             "session-history:{}:{worktree_path}{}:{count}",
@@ -362,25 +299,6 @@ impl AgentSessionTuiAcceptanceHost {
         self.composition
             .resume_session_node(node_execution_id)
             .await
-    }
-
-    fn invoke_open_command(
-        &self,
-        command: &str,
-        agent_session_id: &str,
-        rows: u16,
-        cols: u16,
-        caller_request_id: &str,
-    ) -> Result<(), String> {
-        self.invoke(
-            command,
-            serde_json::json!({
-                "agentSessionId": agent_session_id,
-                "rows": rows,
-                "cols": cols,
-                "callerRequestId": caller_request_id,
-            }),
-        )
     }
 
     async fn delete(&self, agent_session_id: &str, caller_request_id: &str) -> Result<(), String> {
@@ -752,205 +670,6 @@ fn fixture_label(provider: AcceptanceProvider) -> &'static str {
     }
 }
 
-fn set_executable(path: &Path) {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-
-        let mut permissions = std::fs::metadata(path).unwrap().permissions();
-        permissions.set_mode(0o755);
-        std::fs::set_permissions(path, permissions).unwrap();
-    }
-}
-
-fn resolve_executable(name: &str) -> PathBuf {
-    std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
-        .map(|directory| directory.join(name))
-        .find(|candidate| candidate.is_file())
-        .unwrap_or_else(|| panic!("{name} executable is required"))
-}
-
-fn install_actual_provider_host(root: &Path) -> AgentSessionTuiAcceptanceHost {
-    let bin = root.join("actual-bin");
-    let claude_config_dir = root.join("claude-home");
-    let codex_home = root.join("codex-home");
-    std::fs::create_dir_all(&bin).unwrap();
-    std::fs::create_dir_all(&claude_config_dir).unwrap();
-    std::fs::create_dir_all(&codex_home).unwrap();
-
-    let releash_dev = bin.join("releash-dev");
-    std::fs::write(
-        &releash_dev,
-        format!(
-            "#!/bin/sh\nexec \"{}\" \"$@\"\n",
-            env!("CARGO_BIN_EXE_releash-backend")
-        ),
-    )
-    .unwrap();
-    set_executable(&releash_dev);
-
-    let claude = bin.join("claude-actual");
-    std::fs::write(
-        &claude,
-        format!(
-            "#!/bin/sh\nexport PATH=\"{}:$PATH\"\nexec \"{}\" \"$@\"\n",
-            bin.display(),
-            resolve_executable("claude").display(),
-        ),
-    )
-    .unwrap();
-    set_executable(&claude);
-
-    let source_auth =
-        PathBuf::from(std::env::var_os("HOME").expect("HOME is required")).join(".codex/auth.json");
-    std::fs::copy(&source_auth, codex_home.join("auth.json")).unwrap_or_else(|error| {
-        panic!(
-            "copy installed Codex auth from {}: {error}",
-            source_auth.display()
-        )
-    });
-    let codex = bin.join("codex-actual");
-    std::fs::write(
-        &codex,
-        format!(
-            "#!/bin/sh\nexport PATH=\"{}:$PATH\"\nexport CODEX_HOME=\"{}\"\nexec \"{}\" \"$@\"\n",
-            bin.display(),
-            codex_home.display(),
-            resolve_executable("codex").display(),
-        ),
-    )
-    .unwrap();
-    set_executable(&codex);
-
-    AgentSessionTuiAcceptanceHost::start(AgentSessionTuiAcceptanceConfig {
-        data_dir: root.join("releash-data"),
-        claude_executable: Some(claude),
-        codex_executable: Some(codex),
-        provider_search_path: None,
-        provider_refresh_search_path: None,
-        claude_config_dir,
-        codex_home,
-    })
-    .unwrap()
-}
-
-fn normalized_terminal_output(bytes: &[u8]) -> String {
-    #[derive(Clone, Copy)]
-    enum EscapeState {
-        Text,
-        Escape,
-        Csi,
-        Osc,
-        OscEscape,
-    }
-
-    let mut state = EscapeState::Text;
-    let mut normalized = String::new();
-    for &byte in bytes {
-        state = match state {
-            EscapeState::Text if byte == 0x1b => EscapeState::Escape,
-            EscapeState::Text => {
-                if byte.is_ascii_alphanumeric() {
-                    normalized.push(char::from(byte).to_ascii_lowercase());
-                }
-                EscapeState::Text
-            }
-            EscapeState::Escape if byte == b'[' => EscapeState::Csi,
-            EscapeState::Escape if byte == b']' => EscapeState::Osc,
-            EscapeState::Escape => EscapeState::Text,
-            EscapeState::Csi if (0x40..=0x7e).contains(&byte) => EscapeState::Text,
-            EscapeState::Csi => EscapeState::Csi,
-            EscapeState::Osc if byte == 0x07 => EscapeState::Text,
-            EscapeState::Osc if byte == 0x1b => EscapeState::OscEscape,
-            EscapeState::Osc => EscapeState::Osc,
-            EscapeState::OscEscape if byte == b'\\' => EscapeState::Text,
-            EscapeState::OscEscape => EscapeState::Osc,
-        };
-    }
-    normalized
-}
-
-async fn receive_until_any_normalized(
-    attachment: &mut TerminalSurfaceWireAttachment,
-    output: &mut Vec<u8>,
-    needles: &[&str],
-    timeout: Duration,
-) -> usize {
-    let needles = needles
-        .iter()
-        .map(|needle| needle.to_ascii_lowercase())
-        .collect::<Vec<_>>();
-    tokio::time::timeout(timeout, async {
-        loop {
-            match attachment.next().await.expect("Terminal Surface stream") {
-                TerminalSurfaceStreamItemV1::Snapshot { surface } => {
-                    output.extend_from_slice(surface.terminal_surface.replay.as_bytes())
-                }
-                TerminalSurfaceStreamItemV1::Output { data, .. } => {
-                    output.extend_from_slice(data.as_bytes())
-                }
-                _ => {}
-            }
-            let normalized = normalized_terminal_output(output);
-            if let Some(index) = needles
-                .iter()
-                .position(|needle| normalized.contains(needle))
-            {
-                return index;
-            }
-        }
-    })
-    .await
-    .unwrap_or_else(|_| {
-        panic!(
-            "timed out waiting for {needles:?}: {}",
-            String::from_utf8_lossy(output)
-        )
-    })
-}
-
-async fn wait_for_provider_session_id(
-    host: &AgentSessionTuiAcceptanceHost,
-    agent_session_id: &str,
-    terminal: &mut TerminalSurfaceWireAttachment,
-    output: &mut Vec<u8>,
-) -> String {
-    let result = tokio::time::timeout(Duration::from_secs(30), async {
-        loop {
-            if let Some(provider_session_id) = host
-                .get(agent_session_id)
-                .await
-                .unwrap()
-                .and_then(|session| session.provider_session_id)
-            {
-                return provider_session_id;
-            }
-            if let Ok(item) = tokio::time::timeout(Duration::from_millis(50), terminal.next()).await
-            {
-                match item.expect("Terminal Surface stream") {
-                    TerminalSurfaceStreamItemV1::Snapshot { surface } => {
-                        output.extend_from_slice(surface.terminal_surface.replay.as_bytes());
-                    }
-                    TerminalSurfaceStreamItemV1::Output { data, .. } => {
-                        output.extend_from_slice(data.as_bytes());
-                    }
-                    _ => {}
-                }
-            }
-        }
-    })
-    .await;
-    match result {
-        Ok(provider_session_id) => provider_session_id,
-        Err(_) => panic!(
-            "timed out waiting for root Provider SessionStart; terminal={}; warnings={:?}; markers={:?}",
-            String::from_utf8_lossy(output),
-            host.hook_warnings(),
-            host.hook_health_marker_contents(),
-        ),
-    }
-}
-
 async fn receive_until(attachment: &mut TerminalSurfaceWireAttachment, needle: &str) {
     let mut output = String::new();
     tokio::time::timeout(Duration::from_secs(10), async {
@@ -1045,7 +764,7 @@ async fn test_atui_030_provider選択からarchive_restore_deleteまで旧messag
             }
         );
         let terminal_owner = owner("workspace-1", &session_id);
-        use releash_lib::client_api_acceptance::rpc;
+        use releash_lib::test_support::client_api_acceptance::rpc;
         let client_id = format!("terminal-wire-{session_id}");
         let mut stream = host
             .client
@@ -1777,342 +1496,6 @@ async fn test_atui_030_provider実行fileが無くてもrestoreできresumeだ�
     assert_eq!(
         host.get(&session_id).await.unwrap().unwrap().lifecycle,
         AcceptanceAgentSessionLifecycle::Paused
-    );
-    host.shutdown().await.unwrap();
-}
-
-#[tokio::test(flavor = "multi_thread")]
-#[ignore = "dedicated 30 warm-run Terminal launch performance harness"]
-async fn test_terminal_launch_deterministic_fixture_reports_30_warm_runs() {
-    let _gate = TERMINAL_LAUNCH_PERFORMANCE_GATE_LOCK.lock().await;
-    const WARM_RUNS: usize = 30;
-    const PHASES: &[&str] = &[
-        "terminal.launch.command_ingress",
-        "terminal.launch.availability_and_lock",
-        "terminal.launch.durable_create_commit",
-        "terminal.launch.launch_file_materialize",
-        "terminal.launch.checkpoint_lookup",
-        "terminal.launch.child_environment",
-        "terminal.launch.pty_open_and_spawn",
-        "terminal.launch.output_reader_ready",
-        "terminal.launch.first_provider_byte",
-    ];
-
-    let root = tempfile::TempDir::new().unwrap();
-    let workspace = root.path().join("worktree");
-    std::fs::create_dir_all(&workspace).unwrap();
-    let workspace = workspace.to_string_lossy().into_owned();
-    let (host, _, _) = host(root.path(), 0);
-
-    let warmup_id = host
-        .launch_standalone(
-            "performance-workspace",
-            &workspace,
-            AcceptanceProvider::Codex,
-            24,
-            80,
-            "performance-warmup",
-        )
-        .await
-        .unwrap();
-    let mut warmup = host
-        .terminal()
-        .subscribe(
-            "performance-warmup".to_string(),
-            owner("performance-workspace", &warmup_id),
-        )
-        .await
-        .unwrap();
-    receive_until(&mut warmup, fixture_label(AcceptanceProvider::Codex)).await;
-    drop(warmup);
-
-    host.start_terminal_launch_performance_collection();
-    let mut totals = Vec::with_capacity(WARM_RUNS);
-    for index in 0..WARM_RUNS {
-        let started_at = std::time::Instant::now();
-        let session_id = host
-            .launch_standalone(
-                "performance-workspace",
-                &workspace,
-                AcceptanceProvider::Codex,
-                24,
-                80,
-                &format!("performance-run-{index}"),
-            )
-            .await
-            .unwrap();
-        let mut terminal = host
-            .terminal()
-            .subscribe(
-                format!("performance-run-{index}"),
-                owner("performance-workspace", &session_id),
-            )
-            .await
-            .unwrap();
-        receive_until(&mut terminal, fixture_label(AcceptanceProvider::Codex)).await;
-        totals.push(started_at.elapsed().as_secs_f64() * 1_000.0);
-    }
-
-    let samples = host.take_terminal_launch_performance_samples();
-    let mut samples_by_phase = std::collections::BTreeMap::<String, Vec<f64>>::new();
-    for sample in samples {
-        samples_by_phase
-            .entry(sample.phase)
-            .or_default()
-            .push(sample.duration_ms);
-    }
-    assert_eq!(samples_by_phase.len(), PHASES.len());
-    let phase_ms = PHASES
-        .iter()
-        .map(|phase| {
-            let samples = samples_by_phase
-                .remove(*phase)
-                .unwrap_or_else(|| panic!("missing launch phase {phase}"));
-            assert_eq!(samples.len(), WARM_RUNS, "phase {phase}");
-            ((*phase).to_string(), launch_distribution(samples))
-        })
-        .collect();
-    assert!(samples_by_phase.is_empty());
-    let report = DeterministicLaunchPerformanceReport {
-        schema_version: 1,
-        source: "deterministic-fixture",
-        provider: "fixture",
-        warm_runs: WARM_RUNS,
-        total_to_first_provider_byte_ms: launch_distribution(totals),
-        phase_ms,
-    };
-    let report_json = serde_json::to_string_pretty(&report).unwrap();
-    println!("{report_json}");
-    if let Some(path) = std::env::var_os("RELEASH_TERMINAL_LAUNCH_REPORT_PATH") {
-        std::fs::write(path, format!("{report_json}\n")).unwrap();
-    }
-
-    host.shutdown().await.unwrap();
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "installed Claude Code production AgentSession gate"]
-async fn test_atui_030_実claudeをproduction経路で起動しroot_session_startからarchiveする() {
-    let _gate = TERMINAL_LAUNCH_PERFORMANCE_GATE_LOCK.lock().await;
-    let root = tempfile::TempDir::new().unwrap();
-    let workspace = root.path().join("claude-worktree");
-    std::fs::create_dir_all(&workspace).unwrap();
-    let workspace = workspace.to_string_lossy().into_owned();
-    let host = install_actual_provider_host(root.path());
-    host.start_terminal_launch_performance_collection();
-    let launch_started_at = std::time::Instant::now();
-    let session_id = host
-        .launch_standalone(
-            &workspace,
-            &workspace,
-            AcceptanceProvider::Claude,
-            30,
-            100,
-            "actual-claude-launch",
-        )
-        .await
-        .unwrap();
-    let terminal_owner = owner(&workspace, &session_id);
-    let mut terminal = host
-        .terminal()
-        .subscribe("actual-claude".to_string(), terminal_owner.clone())
-        .await
-        .unwrap();
-    let mut output = Vec::new();
-
-    receive_until_any_normalized(
-        &mut terminal,
-        &mut output,
-        &["yesitrustthisfolder"],
-        Duration::from_secs(30),
-    )
-    .await;
-    write_actual_provider_launch_report(
-        "claude",
-        launch_started_at.elapsed().as_secs_f64() * 1_000.0,
-        host.take_terminal_launch_performance_samples(),
-    );
-    host.terminal().write(terminal_owner.clone(), "\r").unwrap();
-    let provider_session_id =
-        wait_for_provider_session_id(&host, &session_id, &mut terminal, &mut output).await;
-    assert!(!provider_session_id.is_empty());
-    assert!(host
-        .hook_warnings()
-        .unwrap()
-        .iter()
-        .all(|warning| warning.provider != AcceptanceProvider::Claude));
-    assert_eq!(
-        host.archive(&session_id, "actual-claude-archive")
-            .await
-            .unwrap(),
-        AcceptanceArchiveOutcome::Archived
-    );
-    assert_eq!(
-        host.get(&session_id).await.unwrap().unwrap().lifecycle,
-        AcceptanceAgentSessionLifecycle::Archived
-    );
-    host.shutdown().await.unwrap();
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "installed Codex CLI production AgentSession gate"]
-async fn test_atui_030_実codexをproduction経路でtrustしroot_session_startからarchiveする() {
-    let _gate = TERMINAL_LAUNCH_PERFORMANCE_GATE_LOCK.lock().await;
-    let root = tempfile::TempDir::new().unwrap();
-    let workspace = root.path().join("codex-worktree");
-    std::fs::create_dir_all(&workspace).unwrap();
-    let workspace = workspace.to_string_lossy().into_owned();
-    let host = install_actual_provider_host(root.path());
-
-    host.start_terminal_launch_performance_collection();
-    let launch_started_at = std::time::Instant::now();
-    let untrusted_session_id = host
-        .launch_standalone(
-            &workspace,
-            &workspace,
-            AcceptanceProvider::Codex,
-            30,
-            100,
-            "actual-codex-untrusted-launch",
-        )
-        .await
-        .unwrap();
-    let untrusted_owner = owner(&workspace, &untrusted_session_id);
-    let mut untrusted_terminal = host
-        .terminal()
-        .subscribe(
-            "actual-codex-untrusted".to_string(),
-            untrusted_owner.clone(),
-        )
-        .await
-        .unwrap();
-    let mut untrusted_output = Vec::new();
-    receive_until_any_normalized(
-        &mut untrusted_terminal,
-        &mut untrusted_output,
-        &["doyoutrustthecontentsofthisdirectory"],
-        Duration::from_secs(30),
-    )
-    .await;
-    write_actual_provider_launch_report(
-        "codex",
-        launch_started_at.elapsed().as_secs_f64() * 1_000.0,
-        host.take_terminal_launch_performance_samples(),
-    );
-    assert!(host.hook_warnings().unwrap().iter().any(|warning| {
-        warning.provider == AcceptanceProvider::Codex
-            && warning.reason == "codex_hook_delivery_unconfirmed"
-    }));
-    host.terminal()
-        .write(untrusted_owner.clone(), "\r")
-        .unwrap();
-    receive_until_any_normalized(
-        &mut untrusted_terminal,
-        &mut untrusted_output,
-        &["hooksneedreview"],
-        Duration::from_secs(30),
-    )
-    .await;
-    host.terminal()
-        .write(untrusted_owner.clone(), "\x1b[B\r")
-        .unwrap();
-    receive_until_any_normalized(
-        &mut untrusted_terminal,
-        &mut untrusted_output,
-        &["pressentertoconfirm"],
-        Duration::from_secs(30),
-    )
-    .await;
-    host.terminal()
-        .write(untrusted_owner.clone(), "\r")
-        .unwrap();
-    receive_until_any_normalized(
-        &mut untrusted_terminal,
-        &mut untrusted_output,
-        &["modelgpt56solmodeltochangedirectory"],
-        Duration::from_secs(30),
-    )
-    .await;
-    assert!(host
-        .get(&untrusted_session_id)
-        .await
-        .unwrap()
-        .unwrap()
-        .provider_session_id
-        .is_none());
-    assert_eq!(
-        host.archive(&untrusted_session_id, "actual-codex-untrusted-archive")
-            .await
-            .unwrap(),
-        AcceptanceArchiveOutcome::Archived
-    );
-    host.delete(&untrusted_session_id, "actual-codex-untrusted-delete")
-        .await
-        .unwrap();
-
-    let session_id = host
-        .launch_standalone(
-            &workspace,
-            &workspace,
-            AcceptanceProvider::Codex,
-            30,
-            100,
-            "actual-codex-trusted-launch",
-        )
-        .await
-        .unwrap();
-    let terminal_owner = owner(&workspace, &session_id);
-    let mut terminal = host
-        .terminal()
-        .subscribe("actual-codex-trusted".to_string(), terminal_owner.clone())
-        .await
-        .unwrap();
-    let mut output = Vec::new();
-    let startup = receive_until_any_normalized(
-        &mut terminal,
-        &mut output,
-        &[
-            "skipuntilnextversion",
-            "openaicodexv01450",
-            "modelgpt56solmodeltochangedirectory",
-        ],
-        Duration::from_secs(30),
-    )
-    .await;
-    if startup == 0 {
-        host.terminal()
-            .write(terminal_owner.clone(), "\x1b[B\r")
-            .unwrap();
-    }
-    receive_until_any_normalized(
-        &mut terminal,
-        &mut output,
-        &["modelgpt56solmodeltochangedirectory"],
-        Duration::from_secs(30),
-    )
-    .await;
-    host.terminal()
-        .write(terminal_owner.clone(), "Reply with exactly ok.")
-        .unwrap();
-    tokio::time::sleep(Duration::from_millis(50)).await;
-    host.terminal().write(terminal_owner.clone(), "\r").unwrap();
-    let provider_session_id =
-        wait_for_provider_session_id(&host, &session_id, &mut terminal, &mut output).await;
-    assert!(!provider_session_id.is_empty());
-    assert!(host
-        .hook_warnings()
-        .unwrap()
-        .iter()
-        .all(|warning| warning.provider != AcceptanceProvider::Codex));
-    assert_eq!(
-        host.archive(&session_id, "actual-codex-archive")
-            .await
-            .unwrap(),
-        AcceptanceArchiveOutcome::Archived
-    );
-    assert_eq!(
-        host.get(&session_id).await.unwrap().unwrap().lifecycle,
-        AcceptanceAgentSessionLifecycle::Archived
     );
     host.shutdown().await.unwrap();
 }

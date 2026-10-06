@@ -4,7 +4,7 @@ use crate::domain::repository::file_watcher::FileWatchGateway;
 use crate::usecase::repository_state::RepositoryStateService;
 
 #[derive(Debug, thiserror::Error)]
-pub(crate) enum UsecaseError {
+pub enum UsecaseError {
     #[error("{0}")]
     Repository(crate::usecase::repository_state::RepositoryStateError),
     #[error("{0}")]
@@ -13,13 +13,13 @@ pub(crate) enum UsecaseError {
     RepositoryUnavailable,
 }
 
-pub(crate) struct WatcherUsecase {
+pub struct WatcherUsecase {
     repository: Option<Arc<RepositoryStateService>>,
     files: Arc<dyn FileWatchGateway>,
 }
 
 impl WatcherUsecase {
-    pub(crate) fn new(
+    pub fn new(
         repository: Option<Arc<RepositoryStateService>>,
         files: Arc<dyn FileWatchGateway>,
     ) -> Self {
@@ -36,7 +36,7 @@ impl WatcherUsecase {
             .map_err(UsecaseError::File)
     }
 
-    pub(crate) fn start_git_dir(&self, path: &str) -> Result<u64, UsecaseError> {
+    pub fn start_git_dir(&self, path: &str) -> Result<u64, UsecaseError> {
         self.repository
             .as_ref()
             .ok_or(UsecaseError::RepositoryUnavailable)?
@@ -44,7 +44,7 @@ impl WatcherUsecase {
             .map_err(UsecaseError::Repository)
     }
 
-    pub(crate) fn stop(&self, watcher_id: u64) -> Result<(), UsecaseError> {
+    pub fn stop(&self, watcher_id: u64) -> Result<(), UsecaseError> {
         if let Some(repository) = &self.repository {
             if repository
                 .stop_watching(watcher_id)
@@ -59,4 +59,4 @@ impl WatcherUsecase {
 
 #[cfg(test)]
 #[path = "watcher_test.rs"]
-pub(crate) mod watcher_tests;
+mod watcher_tests;

@@ -21,13 +21,13 @@ pub enum LocalApiDiscoveryReadError {
 }
 
 #[derive(Debug)]
-pub(crate) enum LocalApiIdentityRequestError {
+pub enum LocalApiIdentityRequestError {
     InvalidEndpoint,
     Request(reqwest::Error),
 }
 
 #[derive(Debug)]
-pub(crate) enum LocalApiTransportError {
+pub enum LocalApiTransportError {
     InvalidUrl(url::ParseError),
     ClientInitialization(reqwest::Error),
     InvalidEndpoint,
@@ -60,14 +60,22 @@ pub fn read_local_api_discovery(
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct LocalApiHttpClient {
+pub struct LocalApiHttpClient {
     base_url: Url,
     token: String,
     client: Client,
 }
 
 impl LocalApiHttpClient {
-    pub(crate) fn new(discovery: LocalApiDiscovery) -> Result<Self, LocalApiTransportError> {
+    #[cfg(feature = "test-support")]
+    pub fn test_with_client(base_url: Url, token: String, client: Client) -> Self {
+        Self {
+            base_url,
+            token,
+            client,
+        }
+    }
+    pub fn new(discovery: LocalApiDiscovery) -> Result<Self, LocalApiTransportError> {
         let base_url = Url::parse(&format!("http://127.0.0.1:{}/", discovery.port))
             .map_err(LocalApiTransportError::InvalidUrl)?;
         let client = Client::builder()
@@ -84,7 +92,7 @@ impl LocalApiHttpClient {
         })
     }
 
-    pub(crate) fn get_json<T: DeserializeOwned>(
+    pub fn get_json<T: DeserializeOwned>(
         &self,
         segments: &[&str],
         query: &[(&str, &str)],
@@ -105,10 +113,7 @@ impl LocalApiHttpClient {
         self.send(self.client.post(url).json(body))
     }
 
-    pub(crate) fn identity_status(
-        &self,
-        instance_id: &str,
-    ) -> Result<u16, LocalApiIdentityRequestError> {
+    pub fn identity_status(&self, instance_id: &str) -> Result<u16, LocalApiIdentityRequestError> {
         let url = self
             .endpoint(&[".well-known", "releash-local-api", instance_id])
             .map_err(|error| match error {

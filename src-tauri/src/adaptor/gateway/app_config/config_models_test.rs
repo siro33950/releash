@@ -142,34 +142,3 @@ fn test_notion_config_model_debugでtokenをマスクする() {
     assert!(output.contains("[REDACTED]"));
     assert!(!output.contains("ntn_secret_token"));
 }
-
-#[test]
-fn test_設定serialize_legacy_hook_portを含めない() {
-    let serialized = toml::to_string_pretty(&ReleashConfig::default()).unwrap();
-
-    assert!(!serialized.contains("hook_port"), "{serialized}");
-}
-
-#[test]
-fn test_agent_tui_atomic_cutover_旧defaultとmodelsを再出力せずcli_pathを保持する() {
-    let legacy = r#"
-[agents]
-default = "codex"
-
-[agents.claude]
-cli_path = "/opt/bin/claude"
-models = ["legacy-claude"]
-
-[agents.codex]
-cli_path = "/opt/bin/codex"
-models = ["legacy-codex"]
-"#;
-    let config: ReleashConfig = toml::from_str(legacy).unwrap();
-
-    let serialized = toml::to_string_pretty(&config).unwrap();
-
-    assert!(!serialized.contains("default ="), "{serialized}");
-    assert!(!serialized.contains("models ="), "{serialized}");
-    assert!(serialized.contains("cli_path = \"/opt/bin/claude\""));
-    assert!(serialized.contains("cli_path = \"/opt/bin/codex\""));
-}

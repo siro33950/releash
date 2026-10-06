@@ -11,18 +11,18 @@ use crate::usecase::{
 
 /// Workspaces の購読で配信する値。持ち主から集めた値を、そのまま並べる。
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct WorkspaceList {
+pub struct WorkspaceList {
     pub repositories: Vec<WorkspaceListRepository>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct WorkspaceListRepository {
+pub struct WorkspaceListRepository {
     pub path: String,
     pub worktrees: Fetched<Vec<WorkspaceListWorktree>>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct WorkspaceListWorktree {
+pub struct WorkspaceListWorktree {
     pub worktree: Worktree,
     pub deleting: bool,
     pub dirty_count: Fetched<usize>,
@@ -49,7 +49,7 @@ struct WorktreeValues {
 
 /// Workspaces の一覧。値は持たず、読むときに持ち主から集める。
 #[derive(Clone)]
-pub(crate) struct WorkspaceListUsecase {
+pub struct WorkspaceListUsecase {
     repositories: Arc<RepoPathsUsecase>,
     repository: Arc<RepositoryUsecase>,
     repository_state: Arc<RepositoryStateService>,
@@ -238,3 +238,14 @@ fn compose(
 #[cfg(test)]
 #[path = "list_test.rs"]
 mod list_tests;
+
+#[cfg(feature = "test-support")]
+impl WorkspaceListUsecase {
+    pub fn test_replace_repositories(&mut self, repositories: Arc<RepoPathsUsecase>) {
+        self.repositories = repositories;
+    }
+
+    pub fn test_replace_repository_state(&mut self, repository_state: Arc<RepositoryStateService>) {
+        self.repository_state = repository_state;
+    }
+}

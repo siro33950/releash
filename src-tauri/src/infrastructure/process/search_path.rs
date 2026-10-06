@@ -11,7 +11,7 @@ const PATH_END: &[u8] = b"__RELEASH_PATH_END__";
 pub(crate) const LOGIN_SHELL_PATH_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum LoginShellPathError {
+pub enum LoginShellPathError {
     Spawn,
     Wait,
     Output,
@@ -21,7 +21,7 @@ pub(crate) enum LoginShellPathError {
     Stopped(crate::common::operation_context::OperationStopped),
 }
 
-pub(crate) trait SearchPathSource: Send + Sync {
+pub trait SearchPathSource: Send + Sync {
     fn load(&self) -> Result<OsString, LoginShellPathError>;
 }
 
@@ -46,7 +46,7 @@ pub(crate) fn capture_login_shell_path(timeout: Duration) -> Result<OsString, Lo
     capture_login_shell_path_from(&shell, &home, timeout)
 }
 
-fn capture_login_shell_path_from(
+pub fn capture_login_shell_path_from(
     shell: &Path,
     home: &Path,
     timeout: Duration,
@@ -131,45 +131,4 @@ fn kill_process_group(child: &mut std::process::Child) {
         let _ = unsafe { libc::kill(-(process_id as i32), libc::SIGKILL) };
     }
     let _ = child.kill();
-}
-
-#[cfg(test)]
-mod tests {
-    use std::fs;
-    use std::os::unix::fs::PermissionsExt;
-    use std::time::Duration;
-
-    use super::{capture_login_shell_path_from, LoginShellPathError};
-
-    fn shell_script(contents: &str) -> (tempfile::TempDir, std::path::PathBuf) {
-        let temporary = tempfile::tempdir().unwrap();
-        let shell = temporary.path().join("shell");
-        fs::write(&shell, contents).unwrap();
-        fs::set_permissions(&shell, fs::Permissions::from_mode(0o755)).unwrap();
-        (temporary, shell)
-    }
-
-    #[test]
-    fn test_login_shell_path_startup_outputからpathだけを取得する() {
-        let (temporary, shell) = shell_script(
-            "#!/bin/sh\nprintf 'startup noise\\n__RELEASH_PATH_BEGIN__/custom/bin:/usr/bin__RELEASH_PATH_END__\\n'\n",
-        );
-
-        let path = capture_login_shell_path_from(&shell, temporary.path(), Duration::from_secs(1))
-            .unwrap();
-
-        assert_eq!(path, "/custom/bin:/usr/bin");
-    }
-
-    #[test]
-    fn test_login_shell_path_timeoutでshellを終了する() {
-        let (temporary, shell) = shell_script("#!/bin/sh\nsleep 10\n");
-        let started = std::time::Instant::now();
-
-        let result =
-            capture_login_shell_path_from(&shell, temporary.path(), Duration::from_millis(50));
-
-        assert_eq!(result, Err(LoginShellPathError::Timeout));
-        assert!(started.elapsed() < Duration::from_secs(2));
-    }
 }

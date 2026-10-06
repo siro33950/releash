@@ -23,7 +23,6 @@ impl Drop for BackgroundWorker {
 impl BackgroundWorker {
     pub(crate) fn start(notify_changed: Arc<dyn Fn() + Send + Sync>) -> io::Result<Self> {
         let executable = std::env::current_exe()?;
-        #[cfg(not(test))]
         let executable = if cfg!(debug_assertions)
             && executable
                 .parent()
@@ -39,16 +38,7 @@ impl BackgroundWorker {
             executable.with_file_name("releash-backend")
         };
         let mut command = Command::new(executable);
-        #[cfg(not(test))]
         command.arg("--internal-background-worker");
-        #[cfg(test)]
-        command
-            .args([
-                "--exact",
-                "adaptor::controller::background_worker::background_worker_tests::worker_entry",
-                "--nocapture",
-            ])
-            .env("RELEASH_TEST_BACKGROUND_WORKER", "1");
         command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -109,7 +99,7 @@ impl BackgroundWorker {
         attempt::stop(&self.child).await
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn child(&self) -> SharedChild {
         self.child.clone()
     }

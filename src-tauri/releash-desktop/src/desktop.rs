@@ -6,7 +6,7 @@ pub(crate) fn application_context<R: tauri::Runtime>() -> tauri::Context<R> {
     tauri::generate_context!()
 }
 
-pub(crate) fn apply_desktop_settings<R: tauri::Runtime>(
+pub fn apply_desktop_settings<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     settings: releash_lib::desktop_api::DesktopSettingsDto,
 ) {
@@ -38,10 +38,6 @@ pub fn run() {
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build());
-    #[cfg(feature = "performance-wdio")]
-    let builder = builder
-        .plugin(tauri_plugin_wdio::init())
-        .plugin(tauri_plugin_wdio_webdriver::init());
     let builder = builder.setup(|app| {
         infrastructure::platform::desktop_restart::wait_for_predecessor()?;
         let data_dir = releash_lib::desktop_api::resolve_data_dir()?;
@@ -131,7 +127,7 @@ pub fn run() {
         .run(adaptor::controller::desktop_lifecycle::handle_run_event);
 }
 
-pub(crate) fn record_window_ready() {
+pub fn record_window_ready() {
     releash_lib::desktop_api::record_startup_from_origin(
         releash_lib::desktop_api::Startup::FirstWindowReady,
     );

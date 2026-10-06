@@ -33,7 +33,7 @@ impl WorkspaceTree {
         self.executions = executions;
     }
 
-    pub(crate) fn executions(&self) -> &[WorkspaceExecution] {
+    pub fn executions(&self) -> &[WorkspaceExecution] {
         &self.executions
     }
 
@@ -124,7 +124,7 @@ impl WorkspaceTree {
             .map(|node| node.id.clone())
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn session_node(&self, session_id: &str) -> Option<&WorkspaceTreeNode> {
         self.nodes
             .iter()
@@ -1172,5 +1172,5 @@ fn dynamic_fanout_sentinel_id(execution_id: &str, node_name: &str) -> String {
 }
 
 #[cfg(test)]
-#[path = "workspace_tree_test.rs"]
-mod workspace_tree_tests;
+#[path = "mod_test.rs"]
+mod mod_tests;

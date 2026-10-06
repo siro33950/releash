@@ -1,22 +1,22 @@
 use crate::domain::provider_lifecycle::ProviderKind;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct AgentSessionHistoryMetadata {
-    pub(crate) provider: ProviderKind,
-    pub(crate) provider_session_id: String,
-    pub(crate) worktree_path: String,
-    pub(crate) updated_at_ms: i64,
+pub struct AgentSessionHistoryMetadata {
+    pub provider: ProviderKind,
+    pub provider_session_id: String,
+    pub worktree_path: String,
+    pub updated_at_ms: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ProviderSessionTitleEntry {
-    pub(crate) provider_session_id: String,
-    pub(crate) session_title: Option<String>,
-    pub(crate) first_user_prompt: Option<String>,
+pub struct ProviderSessionTitleEntry {
+    pub provider_session_id: String,
+    pub session_title: Option<String>,
+    pub first_user_prompt: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum AgentSessionHistoryGatewayError {
+pub enum AgentSessionHistoryGatewayError {
     Conflict,
     ProviderSessionAlreadyOwned { agent_session_id: String },
     Store(crate::domain::failure::StorageFailure),
@@ -26,7 +26,7 @@ pub(crate) enum AgentSessionHistoryGatewayError {
 }
 
 #[async_trait::async_trait]
-pub(crate) trait AgentSessionHistoryGateway: Send + Sync {
+pub trait AgentSessionHistoryGateway: Send + Sync {
     async fn list_metadata(
         &self,
         provider: ProviderKind,
@@ -43,7 +43,7 @@ pub(crate) trait AgentSessionHistoryGateway: Send + Sync {
 }
 
 #[async_trait::async_trait]
-pub(crate) trait AgentSessionOwnershipQuery: Send + Sync {
+pub trait AgentSessionOwnershipQuery: Send + Sync {
     async fn is_owned(
         &self,
         provider: ProviderKind,

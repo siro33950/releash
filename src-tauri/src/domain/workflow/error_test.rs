@@ -60,3 +60,18 @@ fn test_workflow停止_分類とメッセージを保持する() {
         assert_eq!(error.to_string(), stopped.to_string());
     }
 }
+pub(crate) mod workflow_error_tests {
+    use super::super::*;
+
+    #[test]
+    fn test_workflow_error_display_keeps_legacy_prefixes() {
+        assert_eq!(
+            WorkflowError::validation("bad input").to_string(),
+            "validation_error: bad input"
+        );
+        assert_eq!(
+            WorkflowError::invalid_state("not waiting").to_string(),
+            "invalid_state: not waiting"
+        );
+    }
+}

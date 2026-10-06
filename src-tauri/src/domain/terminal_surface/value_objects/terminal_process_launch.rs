@@ -57,3 +57,7 @@ impl TerminalProcessLaunch {
         &self.environment
     }
 }
+
+#[cfg(test)]
+#[path = "terminal_process_launch_test.rs"]
+mod terminal_process_launch_tests;

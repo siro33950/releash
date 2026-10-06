@@ -6,28 +6,28 @@ use crate::usecase::provider_dto::AgentSessionProviderDto;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct AgentSessionHistoryCandidateDto {
-    pub(crate) provider: AgentSessionProviderDto,
-    pub(crate) provider_session_id: String,
-    pub(crate) label: String,
-    pub(crate) updated_at_ms: i64,
+pub struct AgentSessionHistoryCandidateDto {
+    pub provider: AgentSessionProviderDto,
+    pub provider_session_id: String,
+    pub label: String,
+    pub updated_at_ms: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct AgentSessionHistoryPageDto {
-    pub(crate) items: Vec<AgentSessionHistoryCandidateDto>,
-    pub(crate) has_more: bool,
+pub struct AgentSessionHistoryPageDto {
+    pub items: Vec<AgentSessionHistoryCandidateDto>,
+    pub has_more: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct AgentSessionHistoryRequest {
-    pub(crate) worktree_path: String,
-    pub(crate) visible_count: usize,
+pub struct AgentSessionHistoryRequest {
+    pub worktree_path: String,
+    pub visible_count: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum AgentSessionHistoryQueryError {
+pub enum AgentSessionHistoryQueryError {
     Technical(crate::domain::failure::TechnicalFailure),
     Conflict,
     ProviderSessionAlreadyOwned { agent_session_id: String },
@@ -37,19 +37,19 @@ pub(crate) enum AgentSessionHistoryQueryError {
 }
 
 #[async_trait::async_trait]
-pub(crate) trait AgentSessionHistoryQueryService: Send + Sync {
+pub trait AgentSessionHistoryQueryService: Send + Sync {
     async fn list(
         &self,
         request: AgentSessionHistoryRequest,
     ) -> Result<AgentSessionHistoryPageDto, AgentSessionHistoryQueryError>;
 }
 
-pub(crate) struct AgentSessionHistoryReadUsecase {
+pub struct AgentSessionHistoryReadUsecase {
     query: Arc<dyn AgentSessionHistoryQueryService>,
 }
 
 impl AgentSessionHistoryReadUsecase {
-    pub(crate) fn new(query: Arc<dyn AgentSessionHistoryQueryService>) -> Self {
+    pub fn new(query: Arc<dyn AgentSessionHistoryQueryService>) -> Self {
         Self { query }
     }
 
@@ -60,3 +60,7 @@ impl AgentSessionHistoryReadUsecase {
         self.query.list(request).await
     }
 }
+
+#[cfg(test)]
+#[path = "agent_session_history_test.rs"]
+mod agent_session_history_tests;

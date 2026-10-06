@@ -5,8 +5,6 @@
 //! lookup over a direct index or projection table — never a scan of
 //! `events` and never a full-history fold.
 
-#[cfg(test)]
-use crate::adaptor::gateway::workflow::fact_codec;
 use std::collections::VecDeque;
 use std::sync::{Arc, Condvar, Mutex};
 
@@ -40,7 +38,7 @@ fn correlation_id() -> String {
     uuid::Uuid::new_v4().to_string()
 }
 
-pub(crate) fn storage_unavailable(error: &rusqlite::Error) -> LocalEventQueryError {
+pub fn storage_unavailable(error: &rusqlite::Error) -> LocalEventQueryError {
     use crate::adaptor::gateway::shared::sqlite_failure::{condition, SqliteFailureCondition};
     let correlation = correlation_id();
     log::warn!("local event store read failure [{correlation}]: {error}");
@@ -243,7 +241,7 @@ fn session_projection_by_identity(
     .transpose()
 }
 
-fn canonical_runtime_owner_snapshot(
+pub fn canonical_runtime_owner_snapshot(
     connection: &Connection,
     limit: usize,
 ) -> Result<Vec<CanonicalRuntimeOwnerView>, LocalEventQueryError> {
@@ -311,7 +309,7 @@ fn canonical_runtime_owner_snapshot(
 
 type ReadTask = Box<dyn FnOnce(&Connection) + Send>;
 
-struct ReadJob {
+pub struct ReadJob {
     context: OperationContext,
     task: ReadTask,
 }
@@ -325,9 +323,9 @@ struct ReadQueueState {
 pub struct ReaderPool {
     state: Mutex<ReadQueueState>,
     available: Condvar,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     running_workers: std::sync::atomic::AtomicUsize,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub(super) next_failure: Mutex<Option<super::test_helpers::ReadFailure>>,
 }
 
@@ -339,9 +337,9 @@ impl ReaderPool {
                 closed: false,
             }),
             available: Condvar::new(),
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             running_workers: std::sync::atomic::AtomicUsize::new(0),
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             next_failure: Mutex::new(None),
         })
     }
@@ -364,7 +362,7 @@ impl ReaderPool {
         T: Send + 'static,
         F: FnOnce(&Connection) -> Result<T, LocalEventQueryError> + Send + 'static,
     {
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         let failure = self.next_failure.lock().unwrap().take();
         let (reply, receiver) = oneshot::channel();
         let context = crate::common::operation_context::current();
@@ -383,7 +381,7 @@ impl ReaderPool {
                 context: context.clone(),
                 task: Box::new(move |connection| {
                     let job_context = crate::common::operation_context::current();
-                    #[cfg(test)]
+                    #[cfg(any(test, feature = "test-support"))]
                     let run = |connection: &Connection| match failure {
                         Some(failure) => failure.run(connection, run),
                         None => run(connection),
@@ -437,7 +435,7 @@ impl ReaderPool {
         })?
     }
 
-    fn pop_blocking(&self) -> Option<ReadJob> {
+    pub fn pop_blocking(&self) -> Option<ReadJob> {
         let mut state = self.state.lock().expect("reader queue poisoned");
         loop {
             if let Some(job) = state.jobs.pop_front() {
@@ -463,13 +461,13 @@ impl ReaderPool {
         self: &Arc<Self>,
         connection: crate::infrastructure::local_event_store_connection::ManagedConnection,
     ) {
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         self.running_workers
             .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
         while let Some(job) = self.pop_blocking() {
             crate::common::operation_context::sync_scope(job.context, || (job.task)(&connection));
         }
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         self.running_workers
             .fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
     }
@@ -478,324 +476,12 @@ impl ReaderPool {
 // --- Snapshot-stable recovery pager ---
 
 #[cfg(test)]
-mod canonical_runtime_owner_snapshot_tests {
-    use super::*;
-    use crate::adaptor::gateway::local_event_store::fault::FaultInjector;
-    use crate::adaptor::gateway::local_event_store::schema::{
-        initialize_schema, InitialStoreMetadata,
-    };
-    use crate::domain::provider_lifecycle::ProviderKind;
-    use crate::domain::workflow::{
-        ExecutionOrigin, ExecutionTreeLaunch, NodeCompletion, NodeDefinition, NodeFact, NodeKind,
-        SessionAttachedFact, SessionExecutionTreeRootFacts, SessionSpec, StartedFact, TreeRootFact,
-        WorkflowDefinition,
-    };
-
-    fn connection_with_node_events() -> Connection {
-        let connection = Connection::open_in_memory().expect("in-memory SQLite");
-        initialize_schema(
-            &connection,
-            &InitialStoreMetadata {
-                installation_id: "00000000-0000-4000-8000-000000000001",
-                created_at_ms: 1,
-            },
-            &FaultInjector::new(),
-        )
-        .expect("initialize schema");
-        connection
-    }
-
-    fn insert_root(connection: &Connection, tree_id: &str, fact: &NodeFact) {
-        let node_name = match fact {
-            NodeFact::Started(StartedFact {
-                worktree: None,
-                root: Some(root),
-                ..
-            }) => root.definition.as_ref().unwrap().entry.as_str(),
-            _ => panic!("root fact must contain a definition"),
-        };
-        connection
-            .execute(
-                "INSERT INTO node_events (
-                    tree_id, seq, node_execution_id, parent_id, node_name, kind,
-                    attempt, event_type, detail, timestamp
-                 ) VALUES (?1, 1, ?1, NULL, ?2, 'session', 1, ?3, ?4, 1)",
-                params![
-                    tree_id,
-                    node_name,
-                    fact_codec::event_type(&fact),
-                    fact_codec::encode_detail(&fact).unwrap()
-                ],
-            )
-            .expect("insert root fact");
-    }
-
-    fn insert_second_fact(connection: &Connection, tree_id: &str, fact: &NodeFact) {
-        connection
-            .execute(
-                "INSERT INTO node_events (
-                    tree_id, seq, node_execution_id, parent_id, node_name, kind,
-                    attempt, event_type, detail, timestamp
-                 ) VALUES (?1, 2, ?1, NULL, 'session', 'session', 1, ?2, ?3, 2)",
-                params![
-                    tree_id,
-                    fact_codec::event_type(&fact),
-                    fact_codec::encode_detail(&fact).unwrap()
-                ],
-            )
-            .expect("insert second fact");
-    }
-
-    fn insert_third_fact(connection: &Connection, tree_id: &str, fact: &NodeFact) {
-        connection
-            .execute(
-                "INSERT INTO node_events (
-                    tree_id, seq, node_execution_id, parent_id, node_name, kind,
-                    attempt, event_type, detail, timestamp
-                 ) VALUES (?1, 3, ?1, NULL, 'session', 'session', 1, ?2, ?3, 3)",
-                params![
-                    tree_id,
-                    fact_codec::event_type(&fact),
-                    fact_codec::encode_detail(&fact).unwrap()
-                ],
-            )
-            .expect("insert third fact");
-    }
-
-    fn session_root(session_id: &str, workspace_identity: &str, worktree_path: &str) -> NodeFact {
-        SessionExecutionTreeRootFacts::new(
-            session_id,
-            workspace_identity,
-            worktree_path,
-            ProviderKind::Codex,
-            None,
-        )
-        .unwrap()
-        .started
-    }
-
-    fn session_attached(session_id: &str) -> NodeFact {
-        NodeFact::SessionAttached(SessionAttachedFact {
-            session_id: session_id.to_string(),
-            provider_session_id: None,
-            transcript_ref: None,
-            initial_instruction_admitted: false,
-        })
-    }
-
-    fn workflow_root(worktree_path: &str) -> NodeFact {
-        NodeFact::Started(StartedFact {
-            worktree: None,
-            parent: None,
-            root: Some(Box::new(TreeRootFact {
-                repository_root: None,
-                workspace_identity: worktree_path.to_string(),
-                worktree_path: worktree_path.to_string(),
-                created_from: ExecutionOrigin::Cli,
-                request: String::new(),
-                workflow_name: "wf".to_string(),
-                definition: Some(WorkflowDefinition {
-                    name: "wf".to_string(),
-                    description: String::new(),
-                    builtin: false,
-                    schemas: Default::default(),
-                    nodes: vec![NodeDefinition {
-                        name: "main".to_string(),
-                        kind: NodeKind::Session(SessionSpec::default()),
-                        artifact: None,
-                        input: Vec::new(),
-                        completion: NodeCompletion::default(),
-                        worktree: None,
-                    }],
-                    entry: "main".to_string(),
-                }),
-                launched_as: ExecutionTreeLaunch::Workflow,
-            })),
-        })
-    }
-
-    fn connection_with_active_workflow_owners(count: usize) -> Connection {
-        let connection = connection_with_node_events();
-        for index in 0..count {
-            insert_root(
-                &connection,
-                &format!("execution-{index}"),
-                &workflow_root(&format!("/snapshot/worktree-{index}")),
-            );
-        }
-        connection
-    }
-
-    #[test]
-    fn test_owner一覧_decodeとfoldの破損をdata_lossで返す() {
-        use crate::adaptor::presenter::connect::classified_error;
-
-        for decode_failure in [true, false] {
-            // Given
-            let connection = connection_with_active_workflow_owners(1);
-            if decode_failure {
-                connection
-                    .execute("UPDATE node_events SET detail = '{'", [])
-                    .unwrap();
-            } else {
-                insert_second_fact(
-                    &connection,
-                    "execution-0",
-                    &NodeFact::RepositoryRootObserved("/first".into()),
-                );
-                insert_third_fact(
-                    &connection,
-                    "execution-0",
-                    &NodeFact::RepositoryRootObserved("/conflicting".into()),
-                );
-            }
-
-            // When
-            let error = canonical_runtime_owner_snapshot(&connection, 1).unwrap_err();
-
-            // Then
-            assert_eq!(
-                classified_error(error).code,
-                connectrpc::ErrorCode::DataLoss
-            );
-        }
-    }
-
-    #[test]
-    fn test_owner一覧_limit範囲外はinvalid_argumentを維持する() {
-        use crate::adaptor::presenter::connect::classified_error;
-        // Given
-        let connection = connection_with_node_events();
-        for limit in [0, MAX_CANONICAL_RUNTIME_OWNER_SNAPSHOT + 1] {
-            // When
-            let error = canonical_runtime_owner_snapshot(&connection, limit).unwrap_err();
-            // Then
-            assert_eq!(
-                classified_error(error).code,
-                connectrpc::ErrorCode::InvalidArgument
-            );
-        }
-    }
-
-    #[test]
-    fn app_data_gc_owner_snapshot_returns_one_bounded_lightweight_inventory() {
-        let connection = connection_with_active_workflow_owners(2);
-
-        let owners =
-            canonical_runtime_owner_snapshot(&connection, 2).expect("complete owner snapshot");
-
-        assert_eq!(owners.len(), 2);
-        assert!(owners
-            .iter()
-            .all(|owner| matches!(owner, CanonicalRuntimeOwnerView::ActiveWorkflow { .. })));
-    }
-
-    #[test]
-    fn test_owner一覧_旧定義の完了とabortを除外してactiveだけを返す() {
-        // Given
-        let connection = connection_with_active_workflow_owners(1);
-        for (tree_id, terminal) in [
-            ("completed", NodeFact::ExecutionCompleted),
-            ("aborted", NodeFact::AbortRequested(Default::default())),
-        ] {
-            let fact = workflow_root("/snapshot/legacy");
-            insert_root(&connection, tree_id, &fact);
-            let mut detail: serde_json::Value =
-                serde_json::from_str(&fact_codec::encode_detail(&fact).unwrap()).unwrap();
-            detail["root"]["definition"]["nodes"]["main"]["completion"] =
-                serde_json::json!("approval");
-            assert!(fact_codec::decode("started", &detail.to_string()).is_err());
-            connection
-                .execute(
-                    "UPDATE node_events SET detail = ?1 WHERE tree_id = ?2 AND seq = 1",
-                    params![detail.to_string(), tree_id],
-                )
-                .unwrap();
-            insert_second_fact(&connection, tree_id, &terminal);
-        }
-
-        // When
-        let owners = canonical_runtime_owner_snapshot(&connection, 1).unwrap();
-
-        // Then
-        assert_eq!(
-            owners,
-            vec![CanonicalRuntimeOwnerView::ActiveWorkflow {
-                worktree_path: "/snapshot/worktree-0".into(),
-            }]
-        );
-    }
-
-    #[test]
-    fn app_data_gc_owner_snapshot_lists_open_session_trees() {
-        let connection = connection_with_node_events();
-        insert_root(
-            &connection,
-            "agent-session-1",
-            &session_root(
-                "agent-session-1",
-                "/snapshot/worktree-a",
-                "/snapshot/worktree-a",
-            ),
-        );
-        insert_second_fact(
-            &connection,
-            "agent-session-1",
-            &session_attached("agent-session-1"),
-        );
-
-        let owners =
-            canonical_runtime_owner_snapshot(&connection, 8).expect("complete owner snapshot");
-
-        assert_eq!(
-            owners,
-            vec![CanonicalRuntimeOwnerView::AgentSession {
-                worktree_path: "/snapshot/worktree-a".to_string(),
-                active: true,
-            }]
-        );
-    }
-
-    #[test]
-    fn app_data_gc_owner_snapshot_limit_plus_one_fails_closed() {
-        let connection = connection_with_active_workflow_owners(2);
-
-        assert_eq!(
-            canonical_runtime_owner_snapshot(&connection, 1),
-            Err(LocalEventQueryError::ResponseTooLarge)
-        );
-    }
-
-    #[test]
-    fn app_data_gc_owner_snapshot_applies_limit_after_closed_sessions_are_removed() {
-        let connection = connection_with_active_workflow_owners(1);
-        for session_id in ["closed-session-1", "closed-session-2"] {
-            insert_root(
-                &connection,
-                session_id,
-                &session_root(session_id, "/snapshot", &format!("/snapshot/{session_id}")),
-            );
-            insert_second_fact(&connection, session_id, &session_attached(session_id));
-            insert_third_fact(
-                &connection,
-                session_id,
-                &NodeFact::ArchiveRequested(crate::domain::workflow::ArchiveRequestedFact {
-                    reason: "manual".into(),
-                    archived_at: 0.0,
-                }),
-            );
-        }
-
-        let owners = canonical_runtime_owner_snapshot(&connection, 1).unwrap();
-
-        assert_eq!(owners.len(), 1);
-        assert!(matches!(
-            owners[0],
-            CanonicalRuntimeOwnerView::ActiveWorkflow { .. }
-        ));
-    }
-}
-
-#[cfg(test)]
 #[path = "reader_test.rs"]
 mod reader_tests;
+
+#[cfg(feature = "test-support")]
+impl ReadJob {
+    pub fn test_into_parts(self) -> (OperationContext, ReadTask) {
+        (self.context, self.task)
+    }
+}

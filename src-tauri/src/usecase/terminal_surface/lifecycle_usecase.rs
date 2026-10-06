@@ -56,8 +56,8 @@ pub fn delete<G: TerminalSurfaceGateway + ?Sized>(
     remove_and_stop(manager, surface.runtime_generation.value(), true)
 }
 
-#[cfg(test)]
-pub(crate) fn kill_runtime_generation<G: TerminalSurfaceGateway + ?Sized>(
+#[cfg(any(test, feature = "test-support"))]
+pub fn kill_runtime_generation<G: TerminalSurfaceGateway + ?Sized>(
     manager: &G,
     runtime_generation: u64,
 ) -> Result<(), UsecaseError> {

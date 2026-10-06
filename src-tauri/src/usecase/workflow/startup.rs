@@ -5,19 +5,19 @@ use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 
 #[async_trait::async_trait]
-pub(crate) trait WorkflowStartupGateway: Send + Sync {
+pub trait WorkflowStartupGateway: Send + Sync {
     fn current_timestamp(&self) -> f64;
     async fn reconcile_tree(&self, tree_id: &str, timestamp: f64) -> Result<(), WorkflowError>;
 }
 
-pub(crate) struct WorkflowStartupUsecase {
+pub struct WorkflowStartupUsecase {
     repository: Arc<dyn WorkflowStartupRepository>,
     runtime: Arc<dyn WorkflowStartupGateway>,
     checked: Mutex<HashSet<String>>,
 }
 
 impl WorkflowStartupUsecase {
-    pub(crate) fn new(
+    pub fn new(
         repository: Arc<dyn WorkflowStartupRepository>,
         runtime: Arc<dyn WorkflowStartupGateway>,
     ) -> Self {
@@ -58,7 +58,7 @@ impl WorkflowStartupUsecase {
     }
 }
 
-pub(crate) async fn check_startup_definition(
+pub async fn check_startup_definition(
     repository: &dyn WorkflowStartupRepository,
     tree_id: &str,
 ) -> Result<(), WorkflowError> {

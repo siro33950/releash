@@ -108,3 +108,260 @@ fn test_delegate表示dto_配線と述語と上限を含むcompletionを保持�
         dto
     );
 }
+pub(crate) mod tests {
+    use super::super::*;
+
+    #[test]
+    fn test_workflow出力_既存の転送形式で直列化する() {
+        // Given
+        let workflow = WorkflowDto {
+            name: "wf".to_string(),
+            description: "desc".to_string(),
+            builtin: false,
+            source_format: WorkflowSourceFormatDto::Yaml,
+            schemas: [(
+                "plan".to_string(),
+                serde_json::json!({
+                    "type": "object",
+                    "properties": {},
+                    "required": []
+                }),
+            )]
+            .into_iter()
+            .collect(),
+            nodes: vec![NodeDefinitionDto {
+                name: "node".to_string(),
+                kind: NodeKindDto::Session,
+                session: Some(SessionSpecDto {
+                    provider: AgentSessionProviderDto::Claude,
+                    model: None,
+                    permission: None,
+                    facets: FacetRefsDto {
+                        instruction: Some("inst".to_string()),
+                        ..Default::default()
+                    },
+                }),
+                artifact: Some("plan".to_string()),
+                input: vec![InputParamDto {
+                    name: "item".to_string(),
+                    contract: Some("plan".to_string()),
+                }],
+                ..Default::default()
+            }],
+        };
+
+        // When
+        let actual = serde_json::to_value(workflow).unwrap();
+
+        // Then
+        assert_eq!(
+            actual,
+            serde_json::json!({
+                "name": "wf",
+                "description": "desc",
+                "builtin": false,
+                "sourceFormat": "yaml",
+                "schemas": {
+                    "plan": {
+                        "type": "object",
+                        "properties": {},
+                        "required": []
+                    }
+                },
+                "nodes": [{
+                    "name": "node",
+                    "kind": "session",
+                    "session": {
+                        "provider": "claude",
+                        "facets": {
+                            "instruction": "inst"
+                        }
+                    },
+                    "artifact": "plan",
+                    "input": [{"name": "item", "contract": "plan"}]
+                }]
+            })
+        );
+    }
+
+    #[test]
+    fn workflow_dto_exposes_lua_only_as_definition_source_metadata() {
+        let workflow = domain::WorkflowDefinition {
+            name: "lua-workflow".to_string(),
+            description: "Lua".to_string(),
+            ..domain::WorkflowDefinition::default()
+        };
+
+        let value = serde_json::to_value(workflow_to_dto_with_source_format(
+            &workflow,
+            domain::WorkflowSourceFormat::Lua,
+        ))
+        .unwrap();
+
+        assert_eq!(value["sourceFormat"], "lua");
+        assert!(serde_json::to_value(workflow)
+            .unwrap()
+            .get("sourceFormat")
+            .is_none());
+    }
+
+    #[test]
+    fn workflow_to_dto_maps_knowledge_refs_to_ordered_json_array() {
+        let definition = domain::WorkflowDefinition {
+            name: "wf".to_string(),
+            description: String::new(),
+            nodes: vec![domain::NodeDefinition {
+                name: "review".to_string(),
+                kind: domain::NodeKind::Session(domain::SessionSpec {
+                    provider: crate::domain::provider_lifecycle::ProviderKind::Codex,
+                    permission: Some(domain::SessionPermission::ReadOnly),
+                    facets: domain::FacetRefs {
+                        knowledge: vec!["knowledge-a".to_string(), "knowledge-b".to_string()],
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }],
+            entry: "review".to_string(),
+            ..Default::default()
+        };
+
+        let dto = workflow_to_dto(&definition);
+
+        assert_eq!(
+            dto.nodes[0].session.as_ref().unwrap().facets.knowledge,
+            vec!["knowledge-a", "knowledge-b"]
+        );
+        assert_eq!(
+            serde_json::to_value(dto).unwrap()["nodes"][0]["session"]["facets"]["knowledge"],
+            serde_json::json!(["knowledge-a", "knowledge-b"])
+        );
+        assert_eq!(
+            serde_json::to_value(workflow_to_dto(&definition)).unwrap()["nodes"][0]["session"]
+                ["provider"],
+            serde_json::json!("codex")
+        );
+        assert_eq!(
+            serde_json::to_value(workflow_to_dto(&definition)).unwrap()["nodes"][0]["session"]
+                ["permission"],
+            serde_json::json!("read-only")
+        );
+    }
+
+    #[test]
+    fn workflow_to_dto_preserves_loop_guard() {
+        let definition = domain::WorkflowDefinition {
+            name: "wf".to_string(),
+            description: String::new(),
+            nodes: vec![
+                domain::NodeDefinition {
+                    name: "main".to_string(),
+                    kind: domain::NodeKind::Sequence(domain::SequenceSpec {
+                        entry: None,
+                        children: vec![domain::ChildEntry {
+                            name: "fix".to_string(),
+                            inputs: Vec::new(),
+                            rules: Some(vec![domain::Rule::LoopGuard {
+                                max_iterations: 2,
+                                on_exhausted: "done".to_string(),
+                            }]),
+                        }],
+                    }),
+                    ..Default::default()
+                },
+                domain::NodeDefinition {
+                    name: "fix".to_string(),
+                    ..Default::default()
+                },
+            ],
+            entry: "main".to_string(),
+            ..Default::default()
+        };
+
+        let dto = workflow_to_dto(&definition);
+
+        assert_eq!(
+            serde_json::to_value(dto).unwrap()["nodes"][0]["sequence"]["children"][0]["rules"][0],
+            serde_json::json!({
+                "type": "loop_guard",
+                "max_iterations": 2,
+                "on_exhausted": "done"
+            })
+        );
+    }
+
+    #[test]
+    fn fanout_spec_dto_serializes_child_and_items_sources() {
+        let literal = FanoutSpecDto {
+            children: vec![ChildEntryDto {
+                name: "review".to_string(),
+                inputs: Vec::new(),
+                rules: None,
+            }],
+            items: Some(ItemsSourceDto::Literal(vec![serde_json::json!({
+                "thread_id": "thread-1"
+            })])),
+        };
+        assert_eq!(
+            serde_json::to_value(literal).unwrap(),
+            serde_json::json!({
+                "children": [{"name": "review"}],
+                "items": [{"thread_id": "thread-1"}]
+            })
+        );
+
+        let reference = FanoutSpecDto {
+            children: vec![
+                ChildEntryDto {
+                    name: "review-opus".to_string(),
+                    inputs: Vec::new(),
+                    rules: None,
+                },
+                ChildEntryDto {
+                    name: "review-gpt".to_string(),
+                    inputs: Vec::new(),
+                    rules: None,
+                },
+            ],
+            items: Some(ItemsSourceDto::ArtifactField("scan.threads".to_string())),
+        };
+        assert_eq!(
+            serde_json::to_value(reference).unwrap(),
+            serde_json::json!({
+                "children": [{"name": "review-opus"}, {"name": "review-gpt"}],
+                "items": "scan.threads"
+            })
+        );
+    }
+
+    #[test]
+    fn execution_summary_dto_serializes_like_canonical_wire_shape() {
+        let summary = workflow_execution_summary_to_dto(domain::WorkflowExecutionSummary {
+            execution_id: "00000000-0000-4000-8000-000000000001".to_string(),
+            workflow_name: "wf".to_string(),
+            status: domain::ExecutionStatus::Running,
+            worktree_path: "/repo".to_string(),
+            current_node: None,
+            created_from: domain::ExecutionOrigin::DesktopUi,
+            started_at: 1.0,
+            updated_at: 2.0,
+            completed_at: None,
+            error_reason: None,
+            total_token_usage: domain::TokenUsage {
+                input_tokens: 13,
+                output_tokens: 8,
+            },
+        });
+
+        assert_eq!(summary.execution_id, "00000000-0000-4000-8000-000000000001");
+        assert_eq!(summary.workflow_name, "wf");
+        assert_eq!(summary.status, ExecutionStatusDto::Running);
+        assert_eq!(summary.worktree_path, "/repo");
+        assert_eq!(summary.created_from, ExecutionOriginDto::DesktopUi);
+        assert_eq!(summary.started_at, 1.0);
+        assert_eq!(summary.updated_at, 2.0);
+        assert_eq!(summary.total_token_usage.input_tokens, 13);
+        assert_eq!(summary.total_token_usage.output_tokens, 8);
+    }
+}

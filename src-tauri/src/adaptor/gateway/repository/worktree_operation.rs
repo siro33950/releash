@@ -9,11 +9,11 @@ use crate::domain::repository::worktree_operation::{
 use crate::domain::repository::{normalize_repo_path, RepositoryError};
 
 #[derive(Clone)]
-pub(crate) struct FileWorktreeOperationLocks {
+pub struct FileWorktreeOperationLocks {
     directory: PathBuf,
 }
 
-struct FileLease {
+pub struct FileLease {
     files: Vec<File>,
     locks: FileWorktreeOperationLocks,
     key: String,
@@ -21,13 +21,13 @@ struct FileLease {
 impl WorktreeOperationLease for FileLease {}
 
 impl FileWorktreeOperationLocks {
-    pub(crate) fn new(app_data_dir: &Path) -> Self {
+    pub fn new(app_data_dir: &Path) -> Self {
         Self {
             directory: app_data_dir.join("worktree-operations"),
         }
     }
 
-    fn open(&self, name: &str) -> Result<File, RepositoryError> {
+    pub fn open(&self, name: &str) -> Result<File, RepositoryError> {
         Ok(OpenOptions::new()
             .read(true)
             .write(true)
@@ -36,14 +36,14 @@ impl FileWorktreeOperationLocks {
             .open(self.directory.join(name))?)
     }
 
-    fn registry_lock(&self) -> Result<File, RepositoryError> {
+    pub fn registry_lock(&self) -> Result<File, RepositoryError> {
         std::fs::create_dir_all(&self.directory)?;
         let registry = self.open("registry")?;
         wait_lock(&registry)?;
         Ok(registry)
     }
 
-    fn lease(&self, identity: &str, deleting: bool) -> Result<FileLease, RepositoryError> {
+    pub fn lease(&self, identity: &str, deleting: bool) -> Result<FileLease, RepositoryError> {
         let registry = self.registry_lock()?;
         self.lease_registered(identity, deleting, registry)
     }
@@ -147,7 +147,7 @@ impl Drop for FileLease {
     }
 }
 
-pub(crate) fn worktree_identity(identity: &str) -> Result<PathBuf, RepositoryError> {
+pub fn worktree_identity(identity: &str) -> Result<PathBuf, RepositoryError> {
     let path = PathBuf::from(normalize_repo_path(identity));
     for ancestor in path.ancestors() {
         match ancestor.canonicalize() {
@@ -197,10 +197,6 @@ impl WorktreeOperationLocks for FileWorktreeOperationLocks {
     }
 }
 
-#[cfg(test)]
-#[path = "worktree_operation_test.rs"]
-mod worktree_operation_tests;
-
 fn wait_lock(file: &File) -> Result<(), RepositoryError> {
     crate::infrastructure::file_lock::exclusive(file).map_err(lock_error)
 }
@@ -208,5 +204,22 @@ fn lock_error(error: crate::infrastructure::file_lock::LockError) -> RepositoryE
     match error {
         crate::infrastructure::file_lock::LockError::Io(error) => error.into(),
         crate::infrastructure::file_lock::LockError::Stopped(error) => error.into(),
+    }
+}
+
+#[cfg(feature = "test-support")]
+impl FileWorktreeOperationLocks {
+    pub fn test_directory(&self) -> &PathBuf {
+        &self.directory
+    }
+}
+
+#[cfg(feature = "test-support")]
+impl FileLease {
+    pub fn test_files(&self) -> &[File] {
+        &self.files
+    }
+    pub fn test_key(&self) -> &str {
+        &self.key
     }
 }

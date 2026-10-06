@@ -13,7 +13,7 @@ use super::{
 
 #[cfg(test)]
 #[path = "node_fact_test.rs"]
-mod node_fact_test;
+mod node_fact_tests;
 
 /// node_events 行の同定カラム（tree / node / kind / attempt の絞り込み用）。
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -1,5 +1,5 @@
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum ProviderLifecycleInputError {
+pub enum ProviderLifecycleInputError {
     Empty(&'static str),
 }
 
@@ -13,9 +13,9 @@ impl std::fmt::Display for ProviderLifecycleInputError {
 
 impl std::error::Error for ProviderLifecycleInputError {}
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum ProviderLifecycleReplayError {
+pub enum ProviderLifecycleReplayError {
     EmptyHistory,
     FirstEventNotBindingArmed,
     DuplicateBindingArmed,
@@ -23,7 +23,7 @@ pub(crate) enum ProviderLifecycleReplayError {
     InvalidTransition,
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 impl std::fmt::Display for ProviderLifecycleReplayError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -44,5 +44,5 @@ impl std::fmt::Display for ProviderLifecycleReplayError {
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 impl std::error::Error for ProviderLifecycleReplayError {}

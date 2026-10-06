@@ -60,22 +60,5 @@ impl WorkflowError {
 }
 
 #[cfg(test)]
-mod workflow_error_tests {
-    use super::*;
-
-    #[test]
-    fn test_workflow_error_display_keeps_legacy_prefixes() {
-        assert_eq!(
-            WorkflowError::validation("bad input").to_string(),
-            "validation_error: bad input"
-        );
-        assert_eq!(
-            WorkflowError::invalid_state("not waiting").to_string(),
-            "invalid_state: not waiting"
-        );
-    }
-}
-
-#[cfg(test)]
 #[path = "error_test.rs"]
-mod error_tests;
+pub(crate) mod error_tests;

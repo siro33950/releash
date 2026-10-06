@@ -25,7 +25,7 @@ impl From<DaemonSupervisionError> for String {
 }
 
 #[derive(Clone)]
-pub(crate) struct DaemonConnection {
+pub struct DaemonConnection {
     pub connected_at_ms: u64,
     pub endpoint: ClientConnectionDto,
     pub settings: DesktopSettingsDto,
@@ -34,9 +34,7 @@ pub(crate) struct DaemonConnection {
 }
 
 #[async_trait::async_trait]
-pub(crate) trait DaemonGateway:
-    crate::domain::daemon_supervision::DaemonProcessPort
-{
+pub trait DaemonGateway: crate::domain::daemon_supervision::DaemonProcessPort {
     async fn connection(&self) -> Result<Option<DaemonConnection>, Failure>;
     fn connected(&self) -> bool;
     /// 接続後に届いた desktop 設定の変更。無ければ `None`。
@@ -431,4 +429,4 @@ fn snapshot(supervision: &DaemonSupervision) -> DaemonStatus {
 
 #[cfg(test)]
 #[path = "daemon_supervision_test.rs"]
-mod daemon_supervision_tests;
+pub(crate) mod daemon_supervision_tests;

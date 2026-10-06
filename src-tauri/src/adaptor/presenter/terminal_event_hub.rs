@@ -14,7 +14,7 @@ use crate::infrastructure::terminal::output_flow_control::TerminalOutputFlow;
 
 const TERMINAL_SURFACE_STREAM_CAPACITY: usize = 256;
 
-pub(crate) struct TerminalSurfaceEventHub {
+pub struct TerminalSurfaceEventHub {
     sender: tokio::sync::broadcast::Sender<TerminalSurfaceEvent>,
     state_sink:
         Mutex<Option<Arc<dyn crate::usecase::terminal_surface::output::TerminalSurfaceStateSink>>>,
@@ -22,16 +22,18 @@ pub(crate) struct TerminalSurfaceEventHub {
     output: TerminalOutputFlow,
 }
 
+impl Default for TerminalSurfaceEventHub {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl TerminalSurfaceEventHub {
-    pub(crate) fn new() -> Self {
-        let switches = crate::infrastructure::performance_switches::terminal_performance_switches();
-        Self::with_flags(
-            TERMINAL_SURFACE_STREAM_CAPACITY,
-            !switches.disable_output_flow_control,
-        )
+    pub fn new() -> Self {
+        Self::with_flags(TERMINAL_SURFACE_STREAM_CAPACITY, true)
     }
 
-    pub(crate) fn with_flags(capacity: usize, flow_control_enabled: bool) -> Self {
+    pub fn with_flags(capacity: usize, flow_control_enabled: bool) -> Self {
         let (sender, _) = tokio::sync::broadcast::channel(capacity);
         Self {
             sender,
@@ -41,7 +43,7 @@ impl TerminalSurfaceEventHub {
         }
     }
 
-    pub(crate) fn event_sender(&self) -> tokio::sync::broadcast::Sender<TerminalSurfaceEvent> {
+    pub fn event_sender(&self) -> tokio::sync::broadcast::Sender<TerminalSurfaceEvent> {
         self.sender.clone()
     }
 

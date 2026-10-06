@@ -121,12 +121,6 @@ pub async fn desktop_client_endpoint<R: tauri::Runtime>(
         launch_id: connection.launch_id,
     }
 }
-
-#[cfg(feature = "performance")]
-pub fn probe_cli_installation() -> Result<String, String> {
-    crate::infrastructure::platform::cli_install::install_cli()
-}
-
 pub type DesktopUpdateAction = Arc<dyn Fn(&str) -> Result<(), String> + Send + Sync>;
 
 pub async fn apply_desktop_update<R: tauri::Runtime>(

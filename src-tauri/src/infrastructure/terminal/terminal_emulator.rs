@@ -2,19 +2,24 @@
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 
 #[derive(Clone, serde::Deserialize, serde::Serialize)]
-pub(crate) struct NativeTerminalCheckpoint {
-    pub(crate) replay: String,
-    pub(crate) sequence: u64,
-    pub(crate) cols: u16,
-    pub(crate) rows: u16,
+pub struct NativeTerminalCheckpoint {
+    pub replay: String,
+    pub sequence: u64,
+    pub cols: u16,
+    pub rows: u16,
 }
 
-pub(crate) struct NativeTerminalEmulator {
+pub struct NativeTerminalEmulator {
     terminal: avt::Vt,
 }
 
 impl NativeTerminalEmulator {
-    pub(crate) fn new(cols: u16, rows: u16, scrollback_rows: usize) -> Self {
+    #[cfg(feature = "test-support")]
+    pub fn test_text(&self) -> String {
+        self.terminal.text().join("\n")
+    }
+
+    pub fn new(cols: u16, rows: u16, scrollback_rows: usize) -> Self {
         let terminal = avt::Vt::builder()
             .size(usize::from(cols), usize::from(rows))
             .scrollback_limit(scrollback_rows)
@@ -22,7 +27,7 @@ impl NativeTerminalEmulator {
         Self { terminal }
     }
 
-    pub(crate) fn restore(checkpoint: &NativeTerminalCheckpoint, scrollback_rows: usize) -> Self {
+    pub fn restore(checkpoint: &NativeTerminalCheckpoint, scrollback_rows: usize) -> Self {
         let mut terminal = avt::Vt::builder()
             .size(usize::from(checkpoint.cols), usize::from(checkpoint.rows))
             .scrollback_limit(scrollback_rows)
@@ -31,15 +36,15 @@ impl NativeTerminalEmulator {
         Self { terminal }
     }
 
-    pub(crate) fn apply(&mut self, output: &str) {
+    pub fn apply(&mut self, output: &str) {
         self.terminal.feed_str(output);
     }
 
-    pub(crate) fn resize(&mut self, cols: u16, rows: u16) {
+    pub fn resize(&mut self, cols: u16, rows: u16) {
         self.terminal.resize(usize::from(cols), usize::from(rows));
     }
 
-    pub(crate) fn snapshot(&self, sequence: u64) -> NativeTerminalCheckpoint {
+    pub fn snapshot(&self, sequence: u64) -> NativeTerminalCheckpoint {
         let (cols, rows) = self.terminal.size();
         NativeTerminalCheckpoint {
             replay: self.replay(),
@@ -165,7 +170,7 @@ fn append_color_codes(codes: &mut Vec<String>, color: Option<avt::Color>, foregr
 }
 
 #[derive(Debug, thiserror::Error)]
-pub(crate) enum CheckpointWriteError {
+pub enum CheckpointWriteError {
     #[error(transparent)]
     Io(std::io::Error),
     #[error(transparent)]
@@ -173,7 +178,7 @@ pub(crate) enum CheckpointWriteError {
 }
 
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
-pub(crate) struct TerminalCheckpointFileStore {
+pub struct TerminalCheckpointFileStore {
     root: std::path::PathBuf,
     scrollback_rows: usize,
 }
@@ -187,7 +192,7 @@ struct StoredTerminalCheckpointBase {
 
 #[derive(Clone, serde::Deserialize, serde::Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
-pub(crate) enum NativeTerminalCheckpointRecord {
+pub enum NativeTerminalCheckpointRecord {
     Output {
         sequence: u64,
         data: std::sync::Arc<str>,
@@ -213,14 +218,19 @@ impl NativeTerminalCheckpointRecord {
 }
 
 impl TerminalCheckpointFileStore {
-    pub(crate) fn new(app_data_dir: &std::path::Path, scrollback_rows: usize) -> Self {
+    #[cfg(feature = "test-support")]
+    pub fn test_root(&self) -> &std::path::Path {
+        &self.root
+    }
+
+    pub fn new(app_data_dir: &std::path::Path, scrollback_rows: usize) -> Self {
         Self {
             root: app_data_dir.join("terminal-surfaces"),
             scrollback_rows,
         }
     }
 
-    pub(crate) fn load(
+    pub fn load(
         &self,
         session_key: &str,
     ) -> Result<Option<NativeTerminalCheckpoint>, std::io::Error> {
@@ -307,8 +317,8 @@ impl TerminalCheckpointFileStore {
         Ok(Some(terminal.snapshot(sequence)))
     }
 
-    #[cfg(test)]
-    pub(crate) fn save(
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn save(
         &self,
         session_key: &str,
         checkpoint: &NativeTerminalCheckpoint,
@@ -317,7 +327,7 @@ impl TerminalCheckpointFileStore {
             .map_err(|error| error.to_string())
     }
 
-    pub(crate) fn replace_base(
+    pub fn replace_base(
         &self,
         session_key: &str,
         checkpoint: &NativeTerminalCheckpoint,
@@ -357,7 +367,7 @@ impl TerminalCheckpointFileStore {
         Ok(())
     }
 
-    pub(crate) fn append_records(
+    pub fn append_records(
         &self,
         session_key: &str,
         records: &[NativeTerminalCheckpointRecord],
@@ -389,7 +399,7 @@ impl TerminalCheckpointFileStore {
         Ok(bytes.len())
     }
 
-    pub(crate) fn journal_len(&self, session_key: &str) -> Result<u64, CheckpointWriteError> {
+    pub fn journal_len(&self, session_key: &str) -> Result<u64, CheckpointWriteError> {
         match std::fs::metadata(self.journal_path_for(session_key)) {
             Ok(metadata) => Ok(metadata.len()),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(0),
@@ -397,7 +407,7 @@ impl TerminalCheckpointFileStore {
         }
     }
 
-    pub(crate) fn delete(&self, session_key: &str) -> std::io::Result<()> {
+    pub fn delete(&self, session_key: &str) -> std::io::Result<()> {
         let path = self.path_for(session_key);
         match std::fs::remove_file(&path) {
             Ok(()) => {}
@@ -430,14 +440,14 @@ impl TerminalCheckpointFileStore {
         result.map_err(CheckpointWriteError::Io)
     }
 
-    fn path_for(&self, session_key: &str) -> std::path::PathBuf {
+    pub fn path_for(&self, session_key: &str) -> std::path::PathBuf {
         use sha2::{Digest, Sha256};
         let digest = Sha256::digest(session_key.as_bytes());
         self.root
             .join(format!("{}.base-v2.json", hex::encode(digest)))
     }
 
-    fn journal_path_for(&self, session_key: &str) -> std::path::PathBuf {
+    pub fn journal_path_for(&self, session_key: &str) -> std::path::PathBuf {
         use sha2::{Digest, Sha256};
         let digest = Sha256::digest(session_key.as_bytes());
         self.root

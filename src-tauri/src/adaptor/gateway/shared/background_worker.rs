@@ -8,7 +8,7 @@ use crate::usecase::failure::WorkFailure;
 use crate::usecase::failure::{BusinessFailure, Failure};
 use serde::{Deserialize, Serialize};
 use std::io::{BufRead, Write};
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -26,7 +26,7 @@ pub(crate) enum Request {
         key: String,
         checkpoint: NativeTerminalCheckpoint,
     },
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     Block(PathBuf),
 }
 
@@ -78,14 +78,14 @@ pub(crate) async fn request<T: serde::de::DeserializeOwned>(
     worker: &mut BackgroundWorker,
     request: &Request,
 ) -> Result<T, WorkFailure> {
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     let blocked = BLOCKED_REQUEST
         .try_with(|blocked| {
             *blocked.child.lock().unwrap() = Some(worker.child());
             Request::Block(blocked.path.clone())
         })
         .ok();
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     let request = blocked.as_ref().unwrap_or(request);
     let bytes = serde_json::to_vec(request).map_err(encoding_failure)?;
     let response = match crate::infrastructure::process::attempt::timed(
@@ -169,7 +169,7 @@ pub(crate) fn serve(
                         .map_err(checkpoint_failure)?;
                     Ok(serde_json::Value::Null)
                 }
-                #[cfg(test)]
+                #[cfg(any(test, feature = "test-support"))]
                 Request::Block(path) => {
                     let file = std::fs::File::create(path).map_err(background_io::failure)?;
                     fs2::FileExt::lock_exclusive(&file).map_err(background_io::failure)?;
@@ -200,13 +200,31 @@ pub(crate) fn checkpoint_failure(
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 #[derive(Clone)]
-struct BlockedRequest {
+pub struct BlockedRequest {
     path: PathBuf,
     child: Arc<std::sync::Mutex<Option<crate::infrastructure::process::attempt::SharedChild>>>,
 }
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
+impl BlockedRequest {
+    pub fn new(
+        path: PathBuf,
+        child: Arc<std::sync::Mutex<Option<crate::infrastructure::process::attempt::SharedChild>>>,
+    ) -> Self {
+        Self { path, child }
+    }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+pub async fn with_blocked_request<F: std::future::Future>(
+    blocked: BlockedRequest,
+    operation: F,
+) -> F::Output {
+    BLOCKED_REQUEST.scope(blocked, operation).await
+}
+
+#[cfg(any(test, feature = "test-support"))]
 tokio::task_local! { static BLOCKED_REQUEST: BlockedRequest; }
 
 #[cfg(test)]

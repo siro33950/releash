@@ -114,4 +114,4 @@ pub(crate) fn is_valid_segment(value: &str) -> bool {
 
 #[cfg(test)]
 #[path = "field_path_test.rs"]
-mod field_path_test;
+mod field_path_tests;

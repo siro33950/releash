@@ -30,17 +30,6 @@ import {
 	type TerminalLinkTooltip,
 } from "@/lib/terminalLinkTooltip";
 import { TerminalOutputScheduler } from "@/lib/terminalOutputScheduler";
-import {
-	isTerminalPerformanceProbeActive,
-	readTerminalLogicalBuffer,
-	registerTerminalBufferReader,
-	reportTerminalInputPerformancePoint,
-	reportTerminalPerformancePhase,
-	reportTerminalRendererMetrics,
-	shouldReportTerminalSnapshotLaunchPhase,
-	takeTerminalLaunchPerformanceOrigin,
-} from "@/lib/terminalPerformanceProbe";
-import { getTerminalPerformanceSwitches } from "@/lib/terminalPerformanceSwitches";
 import { StartupInputBuffer } from "@/lib/terminalStartupInputBuffer";
 import {
 	applyTerminalStreamItem,
@@ -278,7 +267,6 @@ export function useTerminal(
 		let startupFailure: string | null = null;
 		let startupInputFailed = false;
 		let pendingInput = Promise.resolve();
-		let pendingPerformanceInputSequences: number[] = [];
 		const unavailableAttachment = () =>
 			new Error("Terminal input attachment is unavailable");
 		const selectInputAttachment = (id: string) => {
@@ -286,7 +274,6 @@ export function useTerminal(
 			inputSequence = 0;
 			failedInputId = null;
 			uncertainInputError = null;
-			pendingPerformanceInputSequences = [];
 		};
 		const startupInput = new StartupInputBuffer((dropped) => {
 			onTerminalErrorRef.current?.(
@@ -324,51 +311,9 @@ export function useTerminal(
 		};
 		let recoverAttachment: ((failedEpoch?: number) => void) | null = null;
 		let attachmentEpoch = 0;
-		let performanceRequestStartedAt: number | null = null;
-		let firstXtermParsed = false;
-		const performanceProbeActive = isTerminalPerformanceProbeActive();
-		const unregisterBufferReader = registerTerminalBufferReader(() =>
-			readTerminalLogicalBuffer(terminal),
-		);
-		const recordRendererLaunchPhase = (
-			phase: "first_xterm_parsed" | "first_paint",
-			durationMs: number,
-		) => {
-			reportTerminalPerformancePhase(phase, durationMs);
-			void invoke("record_terminal_launch_renderer_phase", {
-				phase,
-				durationMs,
-			}).catch((error) =>
-				console.error("Terminal launch telemetry failed", error),
-			);
-		};
-		const reportFirstXtermParsed = () => {
-			if (
-				!performanceProbeActive ||
-				firstXtermParsed ||
-				performanceRequestStartedAt === null
-			)
-				return;
-			firstXtermParsed = true;
-			recordRendererLaunchPhase(
-				"first_xterm_parsed",
-				performance.now() - performanceRequestStartedAt,
-			);
-			requestAnimationFrame(() => {
-				if (performanceRequestStartedAt === null) return;
-				recordRendererLaunchPhase(
-					"first_paint",
-					performance.now() - performanceRequestStartedAt,
-				);
-			});
-		};
 		const liveOutputScheduler = new TerminalOutputScheduler({
 			write: (data, parsed) => terminal.write(data, parsed),
 			onOverflow: () => recoverAttachment?.(),
-			onMetrics: performanceProbeActive
-				? reportTerminalRendererMetrics
-				: undefined,
-			onParsed: performanceProbeActive ? reportFirstXtermParsed : undefined,
 		});
 		const drainLiveOutput = () => liveOutputScheduler.drain();
 
@@ -378,15 +323,8 @@ export function useTerminal(
 			}
 
 			// 1. Get or spawn the PTY owned by the selected product surface.
-			const performanceSwitchesPromise = getTerminalPerformanceSwitches();
 			const { rows, cols } = terminal;
 			const worktreePath = cwd ?? null;
-			const requestStartedAt = performance.now();
-			const launchOrigin =
-				terminalOwner.kind === "session"
-					? takeTerminalLaunchPerformanceOrigin(terminalOwner.sessionId)
-					: null;
-			performanceRequestStartedAt = launchOrigin ?? requestStartedAt;
 			const result =
 				initialization === "attach-existing"
 					? null
@@ -401,10 +339,6 @@ export function useTerminal(
 								startupCommand: terminalStartupCommand?.trim() || null,
 							},
 						);
-			reportTerminalPerformancePhase(
-				"frontend_request_to_command_response",
-				performance.now() - requestStartedAt,
-			);
 
 			if (!isMounted) {
 				const shouldKillDetachedPty =
@@ -425,24 +359,18 @@ export function useTerminal(
 			}
 
 			// 2. Attach to one backend-owned snapshot + sequenced stream.
-			const performanceSwitches = await performanceSwitchesPromise;
-			liveOutputScheduler.setMaxWritesInFlight(
-				performanceSwitches.disableRendererWriteSerialization ? 8 : 1,
-			);
-			if (!performanceSwitches.disableWebglRenderer) {
-				try {
-					const { WebglAddon } = await import("@xterm/addon-webgl");
-					const webglAddon = new WebglAddon();
-					webglAddon.onContextLoss(() => {
-						webglAddon.dispose();
-					});
-					terminal.loadAddon(webglAddon);
-				} catch (error) {
-					console.error(
-						"Failed to enable WebGL renderer, falling back to DOM:",
-						error,
-					);
-				}
+			try {
+				const { WebglAddon } = await import("@xterm/addon-webgl");
+				const webglAddon = new WebglAddon();
+				webglAddon.onContextLoss(() => {
+					webglAddon.dispose();
+				});
+				terminal.loadAddon(webglAddon);
+			} catch (error) {
+				console.error(
+					"Failed to enable WebGL renderer, falling back to DOM:",
+					error,
+				);
 			}
 			let resolveInitialSnapshot!: () => void;
 			const initialSnapshot = new Promise<void>((resolve) => {
@@ -452,7 +380,6 @@ export function useTerminal(
 			let streamSessionKey = result?.session_key ?? "";
 			let streamProcessing = Promise.resolve();
 			let recoveringSinceEpoch: number | null = null;
-			let firstChannelReceived = false;
 			const attachStream = async (recovery: boolean) => {
 				const previousReleaseStream = releaseStream;
 				const epoch = ++attachmentEpoch;
@@ -488,11 +415,6 @@ export function useTerminal(
 						const { rows, cols } = terminal;
 						syncPtySize(rows, cols);
 					},
-					reportSnapshotReplayParsed: (sequence) => {
-						if (shouldReportTerminalSnapshotLaunchPhase(sequence)) {
-							reportFirstXtermParsed();
-						}
-					},
 					completeRecovery: () => {
 						if (!recovery) return;
 						liveOutputScheduler.resumeAfterSnapshot();
@@ -525,11 +447,6 @@ export function useTerminal(
 							);
 						}
 					},
-					takeOutputTraceSequence: () =>
-						performanceProbeActive
-							? pendingPerformanceInputSequences.shift()
-							: undefined,
-					reportOutputTracePoint: reportTerminalInputPerformancePoint,
 					enqueueOutput: (data, onParsed) =>
 						liveOutputScheduler.enqueue(data, onParsed),
 					reportProcessed,
@@ -539,13 +456,6 @@ export function useTerminal(
 					},
 				};
 				const handleStreamItem = (item: TerminalSurfaceStreamItem) => {
-					if (!firstChannelReceived) {
-						firstChannelReceived = true;
-						reportTerminalPerformancePhase(
-							"channel_receive",
-							performance.now() - requestStartedAt,
-						);
-					}
 					streamProcessing = streamProcessing
 						.then(() => (item.type === "snapshot" ? attached : undefined))
 						.then(() =>
@@ -694,9 +604,6 @@ export function useTerminal(
 			}
 			const deadline =
 				Date.now() + getOption(ClientService, default_timeout_ms);
-			const clientStartedAtUnixMs = performanceProbeActive
-				? Date.now()
-				: undefined;
 			pendingInput = pendingInput
 				.then(async () => {
 					if (Date.now() > deadline)
@@ -731,19 +638,12 @@ export function useTerminal(
 					if (failedInputId === activeAttachmentId)
 						throw unavailableAttachment();
 					const sequence = inputSequence++;
-					if (performanceProbeActive) {
-						pendingPerformanceInputSequences.push(sequence);
-						reportTerminalInputPerformancePoint(sequence, "on_data");
-					}
 					try {
 						await invoke("write_terminal_surface", {
 							owner: terminalOwner,
 							attachmentId: activeAttachmentId,
 							sequence,
 							data,
-							...(clientStartedAtUnixMs === undefined
-								? {}
-								: { clientStartedAtUnixMs }),
 						});
 					} catch (error) {
 						failedInputId = activeAttachmentId;
@@ -844,7 +744,6 @@ export function useTerminal(
 		return () => {
 			isMounted = false;
 			resolveUnmount();
-			unregisterBufferReader();
 			inputDispatchRef.current = () => {};
 			liveOutputScheduler.dispose();
 			if (resizeTimer !== null) {

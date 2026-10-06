@@ -1,7 +1,7 @@
 use crate::usecase::workflow::diagnostic_dto::DiagnosticSpan;
 
 // 64bit の Token は32 byte。Vec の容量増加と table・宣言の補助領域も含め64MiB以内に収める。
-const MAX_SPAN_SOURCE_BYTES: usize = 128 * 1024;
+pub const MAX_SPAN_SOURCE_BYTES: usize = 128 * 1024;
 
 #[derive(Debug, Default)]
 pub(super) struct ArtifactSpanMap {

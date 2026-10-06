@@ -5,11 +5,11 @@ use super::super::value_objects::{
     ProviderLifecycleUnavailableReason,
 };
 use super::super::ProviderLifecycleInputError;
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 use super::super::ProviderLifecycleReplayError;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ProviderLifecycleBinding {
+pub struct ProviderLifecycleBinding {
     binding_id: String,
     provider: ProviderKind,
     scope: ProviderLifecycleScope,
@@ -20,8 +20,8 @@ pub(crate) struct ProviderLifecycleBinding {
 }
 
 impl ProviderLifecycleBinding {
-    #[cfg(test)]
-    pub(crate) fn rehydrate(
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn rehydrate(
         events: impl IntoIterator<Item = ProviderLifecycleEvent>,
     ) -> Result<Self, ProviderLifecycleReplayError> {
         let mut events = events.into_iter();
@@ -65,8 +65,8 @@ impl ProviderLifecycleBinding {
         })
     }
 
-    #[cfg(test)]
-    pub(crate) fn provider_session_id(&self) -> Option<&str> {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn provider_session_id(&self) -> Option<&str> {
         self.provider_session_id.as_deref()
     }
 
@@ -294,7 +294,7 @@ impl ProviderLifecycleBinding {
         }
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     fn apply_replayed_event(
         &mut self,
         event: ProviderLifecycleEvent,
@@ -400,3 +400,7 @@ impl ProviderLifecycleBinding {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "provider_lifecycle_binding_test.rs"]
+mod provider_lifecycle_binding_tests;

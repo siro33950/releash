@@ -1,14 +1,14 @@
 mod agent_session_exit;
-mod agent_session_history;
-mod agent_session_initial_instruction;
-mod agent_session_launch;
-mod agent_session_lifecycle;
-mod agent_session_query;
-mod agent_session_read;
+pub(crate) mod agent_session_history;
+pub(crate) mod agent_session_initial_instruction;
+pub(crate) mod agent_session_launch;
+pub(crate) mod agent_session_lifecycle;
+pub(crate) mod agent_session_query;
+pub(crate) mod agent_session_read;
 mod agent_session_rename;
-mod provider_availability;
-mod provider_session_title_ingestion;
-mod usecase;
+pub(crate) mod provider_availability;
+pub(crate) mod provider_session_title_ingestion;
+pub(crate) mod usecase;
 
 #[cfg(test)]
 pub(crate) use agent_session_exit::AgentSessionExitPort;
@@ -18,10 +18,6 @@ pub(crate) use agent_session_history::{
     AgentSessionHistoryQueryService, AgentSessionHistoryReadUsecase, AgentSessionHistoryRequest,
 };
 pub(crate) use agent_session_initial_instruction::AgentSessionInitialInstructionUsecase;
-#[cfg(test)]
-pub(crate) use agent_session_launch::AgentSessionHistoryResumeOutcome;
-#[cfg(test)]
-pub(crate) use agent_session_launch::AgentSessionLaunchExecutionTrees;
 pub(crate) use agent_session_launch::{
     AgentSessionExecutionTreeLifecycle, AgentSessionHistoryResumeRequest,
     AgentSessionLaunchRequest, AgentSessionLaunchUsecase, ExecutionTreeCache,
@@ -38,8 +34,6 @@ pub(crate) use agent_session_query::{
     AgentSessionItemDto, AgentSessionLifecycleDto, AgentSessionOperationsDto,
     AgentSessionQueryError, AgentSessionQueryService, AgentSessionTreeLocationDto,
 };
-#[cfg(test)]
-pub(crate) use agent_session_read::AgentSessionGarbageCollectionPort;
 pub(crate) use agent_session_read::AgentSessionReadUsecase;
 pub(crate) use agent_session_rename::{
     AgentSessionRenameError, AgentSessionRenameExecutor, AgentSessionRenameUsecase,
@@ -55,34 +49,9 @@ pub(crate) use usecase::{
     AgentSessionCreateRequest, AgentSessionUsecase, AgentSessionUsecaseError,
 };
 
-#[cfg(test)]
-#[path = "agent_session_exit_test.rs"]
-mod agent_session_exit_tests;
-#[cfg(test)]
-#[path = "agent_session_history_test.rs"]
-mod agent_session_history_tests;
-#[cfg(test)]
-#[path = "agent_session_initial_instruction_test.rs"]
-mod agent_session_initial_instruction_tests;
-#[cfg(test)]
-#[path = "agent_session_lifecycle_test.rs"]
-mod agent_session_lifecycle_tests;
-#[cfg(test)]
-#[path = "agent_session_read_test.rs"]
-mod agent_session_read_tests;
-#[cfg(test)]
-#[path = "agent_session_rename_test.rs"]
-mod agent_session_rename_tests;
-#[cfg(test)]
-#[path = "agent_session_test.rs"]
-pub(crate) mod agent_session_tests;
-#[cfg(test)]
-#[path = "provider_availability_test.rs"]
-pub(crate) mod provider_availability_tests;
-#[cfg(test)]
-#[path = "provider_session_title_ingestion_test.rs"]
-pub(crate) mod provider_session_title_ingestion_tests;
-
 pub(crate) use agent_session_read::AgentSessionReadUsecaseError;
 
 pub(crate) use agent_session_initial_instruction::AgentSessionInitialInstructionError;
+
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) mod test_helpers;

@@ -4,11 +4,11 @@ use crate::usecase::failure::FailureRecordingUsecase;
 use crate::usecase::retry::Retrying;
 use std::sync::{Arc, OnceLock};
 
-pub(crate) fn test_retrying() -> Arc<Retrying> {
+pub fn test_retrying() -> Arc<Retrying> {
     test_retrying_with_store().0
 }
 
-pub(crate) fn test_retrying_with_store() -> (Arc<Retrying>, Arc<FailureRecordStore>) {
+pub fn test_retrying_with_store() -> (Arc<Retrying>, Arc<FailureRecordStore>) {
     let store = Arc::new(FailureRecordStore::default());
     let retrying = Arc::new(Retrying {
         limiter: Arc::new(RetryLimiter::deterministic()),
@@ -17,15 +17,45 @@ pub(crate) fn test_retrying_with_store() -> (Arc<Retrying>, Arc<FailureRecordSto
     (retrying, store)
 }
 
-pub(crate) fn shared() -> &'static Arc<Retrying> {
+pub fn shared() -> &'static Arc<Retrying> {
     &shared_pair().0
 }
 
-pub(crate) fn shared_store() -> &'static Arc<FailureRecordStore> {
+pub fn shared_store() -> &'static Arc<FailureRecordStore> {
     &shared_pair().1
 }
 
 fn shared_pair() -> &'static (Arc<Retrying>, Arc<FailureRecordStore>) {
     static SHARED: OnceLock<(Arc<Retrying>, Arc<FailureRecordStore>)> = OnceLock::new();
     SHARED.get_or_init(test_retrying_with_store)
+}
+
+impl crate::usecase::workflow::WorkflowRuntimeUsecase {
+    pub fn new(
+        runtime: Arc<dyn crate::usecase::workflow::ports::WorkflowRuntimeCommandGateway>,
+        execution_archives: Arc<dyn crate::domain::workflow::ExecutionTreeArchiveRepository>,
+    ) -> Self {
+        #[cfg(test)]
+        let retrying = crate::usecase::test_helpers::retry::test_retrying();
+        #[cfg(not(test))]
+        let retrying = shared().clone();
+        Self::new_with_worktree_operations(
+            retrying,
+            runtime,
+            execution_archives,
+            Default::default(),
+        )
+    }
+}
+
+pub fn shared_limiter() -> Arc<RetryLimiter> {
+    shared().limiter.clone()
+}
+
+pub fn record_retry_failure(
+    retrying: &Retrying,
+    key: &crate::usecase::failure::FailureKey,
+    failure: crate::usecase::failure::WorkFailure,
+) {
+    retrying.failures.observed(key, failure);
 }

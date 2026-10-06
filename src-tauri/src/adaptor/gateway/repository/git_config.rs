@@ -6,7 +6,7 @@ use crate::adaptor::gateway::shared::git_operation;
 use crate::domain::repository::{GitConfigRepository, RepositoryError};
 use crate::infrastructure::git::client;
 
-pub(crate) fn get_branch_base(
+pub fn get_branch_base(
     repo_path: &str,
     branch_name: &str,
 ) -> Result<Option<String>, RepositoryError> {
@@ -34,7 +34,7 @@ fn set_or_remove(
     Ok(())
 }
 
-pub(crate) fn set_branch_base_override(
+pub fn set_branch_base_override(
     repo_path: &str,
     branch_name: &str,
     base: Option<&str>,
@@ -45,7 +45,7 @@ pub(crate) fn set_branch_base_override(
     set_or_remove(&mut config, &key, base)
 }
 
-pub(crate) fn get_releash_base(repo_path: &str) -> Result<Option<String>, RepositoryError> {
+pub fn get_releash_base(repo_path: &str) -> Result<Option<String>, RepositoryError> {
     let repo = git_operation::run(|| client::open(repo_path))?;
     let base = match git_operation::optional(git_operation::run(|| repo.config()))? {
         Some(cfg) => {
@@ -56,14 +56,14 @@ pub(crate) fn get_releash_base(repo_path: &str) -> Result<Option<String>, Reposi
     Ok(base)
 }
 
-pub(crate) fn set_releash_base(repo_path: &str, base: Option<&str>) -> Result<(), RepositoryError> {
+pub fn set_releash_base(repo_path: &str, base: Option<&str>) -> Result<(), RepositoryError> {
     let repo = git_operation::run(|| client::open(repo_path))?;
     let mut config = git_operation::run(|| repo.config())?;
     set_or_remove(&mut config, "releash.base", base)
 }
 
 /// `existing_branches` に含まれないブランチの `branch.*.releash-base` エントリを掃除する。
-pub(crate) fn prune_stale_branch_bases(
+pub fn prune_stale_branch_bases(
     repo_path: &str,
     existing_branches: &[String],
 ) -> Result<(), RepositoryError> {
@@ -115,9 +115,7 @@ fn discover_repo(path: &std::path::Path) -> Result<git2::Repository, RepositoryE
 
 /// 現在ブランチのベースブランチ名を解決する（per-branch override → global → default）。
 /// detached HEAD / unborn / 解決不可は `None`。ref 存在検証・merge-base は行わない。
-pub(crate) fn resolve_current_base_branch(
-    path_hint: &str,
-) -> Result<Option<String>, RepositoryError> {
+pub fn resolve_current_base_branch(path_hint: &str) -> Result<Option<String>, RepositoryError> {
     let repo = discover_repo(std::path::Path::new(path_hint))?;
     let head = match git_operation::run(|| repo.head()) {
         Ok(h) => h,
@@ -159,9 +157,7 @@ fn resolve_base_ref_oid(
 
 /// Provider TUI の `RELEASH_BASE_BRANCH` に渡す現在ブランチの実効 base 名を返す。
 /// detached / unborn / ref 不在 / merge-base 不成立は `None`。
-pub(crate) fn resolve_effective_base_branch(
-    repo_path: &str,
-) -> Result<Option<String>, RepositoryError> {
+pub fn resolve_effective_base_branch(repo_path: &str) -> Result<Option<String>, RepositoryError> {
     let Some(repo) = git_operation::optional(git_operation::run(|| client::open(repo_path)))?
     else {
         return Ok(None);
@@ -200,7 +196,7 @@ pub(crate) fn resolve_effective_base_branch(
     Ok(Some(base_name))
 }
 
-pub(crate) fn resolve_base_commit_oid(
+pub fn resolve_base_commit_oid(
     path_hint: &str,
     base_name: &str,
 ) -> Result<Option<String>, RepositoryError> {
@@ -254,173 +250,3 @@ impl GitConfigRepository for GitConfigGateway {
         resolve_base_commit_oid(path_hint, base_name)
     }
 }
-
-#[cfg(test)]
-mod git_config_gateway_tests {
-    use super::*;
-    use crate::test_support::git::*;
-
-    #[test]
-    fn test_ベース解決_per_branch() {
-        let (dir, repo) = create_test_repo();
-        create_initial_commit(&repo);
-        let repo_path = dir.path().to_str().unwrap();
-
-        set_branch_base_override(repo_path, "feat", Some("develop")).unwrap();
-        let config = repo.config().ok();
-        let result = resolve_branch_base(&repo, config.as_ref(), "feat").unwrap();
-        assert_eq!(result, Some("develop".to_string()));
-    }
-
-    #[test]
-    fn test_ベース解決_releash_baseフォールバック() {
-        let (dir, repo) = create_test_repo();
-        create_initial_commit(&repo);
-        let repo_path = dir.path().to_str().unwrap();
-
-        set_releash_base(repo_path, Some("develop")).unwrap();
-        let config = repo.config().ok();
-        let result = resolve_branch_base(&repo, config.as_ref(), "feat").unwrap();
-        assert_eq!(result, Some("develop".to_string()));
-    }
-
-    #[test]
-    fn test_ベース解決_既定ブランチフォールバック() {
-        let (_dir, repo) = create_test_repo();
-        create_initial_commit(&repo);
-        let config = repo.config().ok();
-        let result = resolve_branch_base(&repo, config.as_ref(), "feat").unwrap();
-        assert!(result.is_some());
-    }
-
-    #[test]
-    fn test_branch_base_取得設定() {
-        let (dir, repo) = create_test_repo();
-        create_initial_commit(&repo);
-        let repo_path = dir.path().to_str().unwrap();
-
-        let base = get_branch_base(repo_path, "feat").unwrap();
-        assert!(base.is_some());
-
-        set_branch_base_override(repo_path, "feat", Some("develop")).unwrap();
-        let base = get_branch_base(repo_path, "feat").unwrap();
-        assert_eq!(base, Some("develop".to_string()));
-
-        set_branch_base_override(repo_path, "feat", None).unwrap();
-        let base = get_branch_base(repo_path, "feat").unwrap();
-        assert!(base.is_some());
-        assert_ne!(base, Some("develop".to_string()));
-    }
-
-    #[test]
-    fn test_releash_base_取得設定() {
-        let (dir, repo) = create_test_repo();
-        create_initial_commit(&repo);
-
-        let repo_path = dir.path().to_str().unwrap();
-
-        let base = get_releash_base(repo_path).unwrap();
-        assert_eq!(base, None);
-
-        set_releash_base(repo_path, Some("develop")).unwrap();
-        let base = get_releash_base(repo_path).unwrap();
-        assert_eq!(base, Some("develop".to_string()));
-
-        set_releash_base(repo_path, None).unwrap();
-        let base = get_releash_base(repo_path).unwrap();
-        assert_eq!(base, None);
-    }
-
-    fn checkout_feature_branch(repo: &git2::Repository) {
-        let head = repo.head().unwrap().peel_to_commit().unwrap();
-        repo.branch("feature", &head, false).unwrap();
-        repo.set_head("refs/heads/feature").unwrap();
-        repo.checkout_head(Some(git2::build::CheckoutBuilder::new().force()))
-            .unwrap();
-    }
-
-    #[test]
-    fn test_現在ブランチbase解決_override優先() {
-        let (dir, repo) = create_test_repo();
-        create_initial_commit(&repo);
-        let repo_path = dir.path().to_str().unwrap();
-        let default_branch = repo.head().unwrap().shorthand().unwrap().to_string();
-
-        checkout_feature_branch(&repo);
-        set_branch_base_override(repo_path, "feature", Some(&default_branch)).unwrap();
-
-        let result = resolve_current_base_branch(repo_path).unwrap();
-        assert_eq!(result, Some(default_branch));
-    }
-
-    #[test]
-    fn test_現在ブランチbase解決_detached_none() {
-        let (dir, repo) = create_test_repo();
-        let oid = create_initial_commit(&repo);
-        repo.set_head_detached(oid).unwrap();
-
-        let result = resolve_current_base_branch(dir.path().to_str().unwrap()).unwrap();
-        assert_eq!(result, None);
-    }
-
-    #[test]
-    fn test_実効base_ref実在ならsome_ref不在ならnone() {
-        let (dir, repo) = create_test_repo();
-        create_initial_commit(&repo);
-        let repo_path = dir.path().to_str().unwrap();
-        let default_branch = repo.head().unwrap().shorthand().unwrap().to_string();
-
-        checkout_feature_branch(&repo);
-        set_branch_base_override(repo_path, "feature", Some(&default_branch)).unwrap();
-        assert_eq!(
-            resolve_effective_base_branch(repo_path).unwrap(),
-            Some(default_branch)
-        );
-
-        set_branch_base_override(repo_path, "feature", Some("no-such-branch")).unwrap();
-        assert_eq!(resolve_effective_base_branch(repo_path).unwrap(), None);
-    }
-
-    #[test]
-    fn test_実効base_merge_base不成立ならnone() {
-        let (dir, repo) = create_test_repo();
-        create_initial_commit(&repo);
-        let repo_path = dir.path().to_str().unwrap();
-        let default_branch = repo.head().unwrap().shorthand().unwrap().to_string();
-        let signature = repo.signature().unwrap();
-        let tree_id = repo.index().unwrap().write_tree().unwrap();
-        let tree = repo.find_tree(tree_id).unwrap();
-        let orphan = repo
-            .commit(None, &signature, &signature, "orphan root", &tree, &[])
-            .unwrap();
-        repo.reference("refs/heads/feature", orphan, true, "orphan")
-            .unwrap();
-        repo.set_head("refs/heads/feature").unwrap();
-        repo.checkout_head(Some(git2::build::CheckoutBuilder::new().force()))
-            .unwrap();
-        set_branch_base_override(repo_path, "feature", Some(&default_branch)).unwrap();
-
-        assert_eq!(resolve_effective_base_branch(repo_path).unwrap(), None);
-    }
-
-    #[test]
-    fn test_gc_現存しないブランチのbaseを掃除() {
-        let (dir, repo) = create_test_repo();
-        create_initial_commit(&repo);
-        let repo_path = dir.path().to_str().unwrap();
-
-        set_branch_base_override(repo_path, "alive", Some("main")).unwrap();
-        set_branch_base_override(repo_path, "stale", Some("main")).unwrap();
-
-        // "alive" のみ現存ブランチとして渡すと "stale" の base が掃除される
-        prune_stale_branch_bases(repo_path, &["alive".to_string()]).unwrap();
-
-        let config = repo.config().unwrap();
-        assert!(config.get_string("branch.alive.releash-base").is_ok());
-        assert!(config.get_string("branch.stale.releash-base").is_err());
-    }
-}
-
-#[cfg(test)]
-#[path = "git_config_test.rs"]
-mod git_config_tests;

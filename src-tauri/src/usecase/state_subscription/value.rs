@@ -14,7 +14,7 @@ use crate::usecase::{
 };
 
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) enum StateValue {
+pub enum StateValue {
     Terminal(crate::usecase::terminal_surface::application::TerminalSurfaceStreamItem),
     RepositoryPaths(Vec<String>),
     Workspaces(WorkspaceList),
@@ -60,6 +60,5 @@ pub(crate) enum StateValue {
     ExternalEditor(crate::usecase::external_editor::dto::ExternalEditorState),
     ReleashBase(Option<String>),
     WorkflowConfig(crate::usecase::app_config::query_service::WorkflowConfigDto),
-    PerformanceSwitches(crate::usecase::telemetry::PerformanceSwitches),
     ProviderHookHealth(crate::usecase::provider_lifecycle::ProviderHookHealthReadResult),
 }

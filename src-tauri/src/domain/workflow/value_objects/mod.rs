@@ -1,19 +1,19 @@
 mod contract;
-mod definition;
+pub(crate) mod definition;
 pub(crate) use definition::{InputsMap, InputsMapSeed};
-mod execution;
-mod execution_metadata;
-mod facet;
-mod failure;
-mod field_path;
-mod ids;
-mod node_execution;
-mod node_fact;
-mod predicate;
-mod runtime_event;
-mod runtime_projection;
-mod state;
-mod worktree_origin;
+pub(crate) mod execution;
+pub(crate) mod execution_metadata;
+pub(crate) mod facet;
+pub(crate) mod failure;
+pub(crate) mod field_path;
+pub(crate) mod ids;
+pub(crate) mod node_execution;
+pub(crate) mod node_fact;
+pub(crate) mod predicate;
+pub(crate) mod runtime_event;
+pub(crate) mod runtime_projection;
+pub(crate) mod state;
+pub(crate) mod worktree_origin;
 
 pub use contract::{ContractType, ContractValidationResult, ContractViolation};
 pub use definition::{
@@ -64,5 +64,5 @@ pub use worktree_origin::{
     isolated_worktree_owner, IsolatedWorktree, WorktreeInheritance, WorktreeInventoryEntry,
 };
 
-#[cfg(any(test, debug_assertions))]
+#[cfg(any(test, feature = "test-support"))]
 pub use state::WorkflowRuntimeSnapshot;

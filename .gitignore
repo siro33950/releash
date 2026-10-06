@@ -4,7 +4,7 @@
 !.claude/rules/
 
 # Dependencies
-node_modules/
+node_modules
 .pnpm-store/
 
 # Build outputs

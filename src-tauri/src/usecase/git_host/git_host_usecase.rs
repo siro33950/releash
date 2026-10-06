@@ -13,7 +13,7 @@ pub struct GitHostUsecase {
 }
 
 impl GitHostUsecase {
-    pub(crate) fn with_state_publisher(
+    pub fn with_state_publisher(
         mut self,
         publisher: crate::usecase::state_subscription::StateSubscriptionUsecase,
     ) -> Self {

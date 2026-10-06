@@ -6,16 +6,13 @@ use crate::usecase::workflow::ports::{WorkflowDiagnosticsGateway, WorkflowDiagno
 use super::diagnostics;
 
 #[derive(Debug, Clone)]
-pub(crate) struct WorkflowDiagnosticsFileGateway {
+pub struct WorkflowDiagnosticsFileGateway {
     workflows_dir: PathBuf,
     facets_base_dir: PathBuf,
 }
 
 impl WorkflowDiagnosticsFileGateway {
-    pub(crate) fn new(
-        workflows_dir: impl Into<PathBuf>,
-        facets_base_dir: impl Into<PathBuf>,
-    ) -> Self {
+    pub fn new(workflows_dir: impl Into<PathBuf>, facets_base_dir: impl Into<PathBuf>) -> Self {
         Self {
             workflows_dir: workflows_dir.into(),
             facets_base_dir: facets_base_dir.into(),
@@ -49,157 +46,5 @@ impl WorkflowDiagnosticsGateway for WorkflowDiagnosticsFileGateway {
             }
         };
         report.map_err(|error| WorkflowError::external(error.to_string()))
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use tempfile::TempDir;
-
-    #[test]
-    fn returns_existing_diagnostic_report_wire_shape() {
-        let workflows = TempDir::new().unwrap();
-        let facets = TempDir::new().unwrap();
-
-        let report = WorkflowDiagnosticsFileGateway::new(workflows.path(), facets.path())
-            .diagnose_all(WorkflowDiagnosticsTarget::AppliedConfigDirectory)
-            .unwrap();
-
-        assert!(serde_json::to_value(
-            crate::adaptor::presenter::workflow_api::DiagnosticReportResponse::from(report.clone())
-        )
-        .unwrap()["items"]
-            .is_array());
-        assert!(serde_json::to_value(
-            crate::adaptor::presenter::workflow_api::DiagnosticReportResponse::from(report.clone())
-        )
-        .unwrap()["workflow_summaries"]
-            .is_object());
-        assert!(serde_json::to_value(
-            crate::adaptor::presenter::workflow_api::DiagnosticReportResponse::from(report.clone())
-        )
-        .unwrap()["facet_summaries"]
-            .is_object());
-        assert!(serde_json::to_value(
-            crate::adaptor::presenter::workflow_api::DiagnosticReportResponse::from(report.clone())
-        )
-        .unwrap()["facet_usage"]
-            .is_object());
-    }
-
-    #[test]
-    fn test_診断gateway_指定directoryを使う() {
-        // Given
-        let configured = TempDir::new().unwrap();
-        let requested = TempDir::new().unwrap();
-        std::fs::write(requested.path().join("broken.yml"), "name: [").unwrap();
-
-        // When
-        let report = WorkflowDiagnosticsFileGateway::new(configured.path(), configured.path())
-            .diagnose_all(WorkflowDiagnosticsTarget::Directory(
-                requested.path().to_path_buf(),
-            ))
-            .unwrap();
-
-        // Then
-        assert!(serde_json::to_value(
-            crate::adaptor::presenter::workflow_api::DiagnosticReportResponse::from(report.clone())
-        )
-        .unwrap()["items"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|item| { item["code"] == "WFS001" && item["workflow_name"] == "broken" }));
-    }
-
-    #[test]
-    fn test_診断gateway_適用済みreportを保持する() {
-        // Given
-        let workflows = TempDir::new().unwrap();
-        let facets = TempDir::new().unwrap();
-        let expected = serde_json::to_value(
-            crate::adaptor::presenter::workflow_api::DiagnosticReportResponse::from(
-                diagnostics::diagnose_all(workflows.path(), facets.path()).unwrap(),
-            ),
-        )
-        .unwrap();
-
-        // When
-        let actual = WorkflowDiagnosticsFileGateway::new(workflows.path(), facets.path())
-            .diagnose_all(WorkflowDiagnosticsTarget::AppliedConfigDirectory)
-            .unwrap();
-
-        // Then
-        assert_eq!(
-            serde_json::to_value(
-                crate::adaptor::presenter::workflow_api::DiagnosticReportResponse::from(actual)
-            )
-            .unwrap(),
-            expected
-        );
-    }
-
-    #[test]
-    fn test_診断gateway_存在しない指定directoryをnot_foundにする() {
-        // Given
-        let configured = TempDir::new().unwrap();
-        let missing = configured.path().join("missing");
-
-        // When
-        let error = WorkflowDiagnosticsFileGateway::new(configured.path(), configured.path())
-            .diagnose_all(WorkflowDiagnosticsTarget::Directory(missing.clone()))
-            .unwrap_err();
-
-        // Then
-        assert!(matches!(
-            error,
-            WorkflowError::NotFound(message)
-                if message == format!("directory does not exist: {}", missing.display())
-        ));
-    }
-
-    #[test]
-    fn test_診断gateway_通常fileの指定をexternal_errorにする() {
-        // Given
-        let configured = TempDir::new().unwrap();
-        let file = configured.path().join("workflow.yml");
-        std::fs::write(&file, "name: workflow").unwrap();
-
-        // When
-        let error = WorkflowDiagnosticsFileGateway::new(configured.path(), configured.path())
-            .diagnose_all(WorkflowDiagnosticsTarget::Directory(file))
-            .unwrap_err();
-
-        // Then
-        assert!(matches!(error, WorkflowError::External(_)));
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn test_診断gateway_列挙不能な指定directoryをexternal_errorにする() {
-        use std::os::unix::fs::PermissionsExt;
-
-        // Given
-        let configured = TempDir::new().unwrap();
-        let unreadable = configured.path().join("unreadable");
-        std::fs::create_dir(&unreadable).unwrap();
-        std::fs::set_permissions(&unreadable, std::fs::Permissions::from_mode(0o000)).unwrap();
-        if std::fs::read_dir(&unreadable).is_ok() {
-            std::fs::set_permissions(&unreadable, std::fs::Permissions::from_mode(0o700)).unwrap();
-            eprintln!(
-                "skipping unreadable directory test because this process can read mode 0o000"
-            );
-            return;
-        }
-
-        // When
-        let result = WorkflowDiagnosticsFileGateway::new(configured.path(), configured.path())
-            .diagnose_all(WorkflowDiagnosticsTarget::Directory(unreadable.clone()));
-        std::fs::set_permissions(&unreadable, std::fs::Permissions::from_mode(0o700)).unwrap();
-        let error = result.unwrap_err();
-
-        // Then
-        assert!(matches!(error, WorkflowError::External(_)));
     }
 }

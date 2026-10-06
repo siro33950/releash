@@ -22,7 +22,7 @@ use crate::adaptor::gateway::comment::{
 use crate::adaptor::gateway::git_host::{GitHubGitHostGateway, InMemoryTtlCache, LatestPrStatuses};
 use crate::adaptor::gateway::local_event_store::read_only::LocalEventReadStore;
 use crate::adaptor::gateway::local_event_store::LocalEventStore;
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 use crate::adaptor::gateway::local_event_store::LocalEventStoreConfig;
 use crate::adaptor::gateway::repository::branch::BranchGateway;
 use crate::adaptor::gateway::repository::git_config::GitConfigGateway;
@@ -30,9 +30,9 @@ use crate::adaptor::gateway::repository::status::StatusGateway;
 use crate::adaptor::gateway::repository::util::RepoLocatorGateway;
 use crate::adaptor::gateway::repository::worktree::WorktreeGateway;
 use crate::adaptor::gateway::repository::worktree_terminal::NoopWorktreeTerminalGateway;
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 use crate::adaptor::gateway::terminal_surface::runtime_gateway_impl::TerminalSurfaceRuntimeGateway;
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 use crate::adaptor::gateway::workflow::{
     EmptySecretSourceGateway, NoopWorkflowExternalEditorGateway, PassthroughManagedWorktreeGateway,
 };
@@ -55,7 +55,7 @@ use crate::usecase::comment::{
 };
 use crate::usecase::git_host::GitHostUsecase;
 use crate::usecase::repository_usecase::RepositoryUsecase;
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 use crate::usecase::terminal_surface::application::TerminalSurfaceApplication;
 use crate::usecase::workflow::ports::ExternalEditorGateway;
 use crate::usecase::workflow::query_service::WorkflowQueryService;
@@ -69,8 +69,8 @@ use crate::usecase::workspace_tree::WorkspaceQueryService;
 /// git ベースの repository usecase を既定の gateway 実装で構築する。
 /// terminal runtime を持たない composition（standalone read-only・テスト）向けに、
 /// worktree terminal 停止は no-op とする。
-#[cfg(test)]
-pub(crate) fn build_repository_usecase() -> RepositoryUsecase {
+#[cfg(any(test, feature = "test-support"))]
+pub fn build_repository_usecase() -> RepositoryUsecase {
     build_repository_usecase_with_worktree_terminals(
         Arc::new(NoopWorktreeTerminalGateway),
         Default::default(),
@@ -94,7 +94,7 @@ pub(crate) fn build_repository_usecase_with_worktree_terminals(
     )
 }
 
-pub(crate) fn build_git_host_usecase() -> GitHostUsecase {
+pub fn build_git_host_usecase() -> GitHostUsecase {
     let ttl = CacheTtl::EXTERNAL_INFORMATION;
     GitHostUsecase::new(
         Arc::new(GitHubGitHostGateway::default()),
@@ -117,12 +117,12 @@ fn build_code_usecase_with_gateways() -> CodeUsecase {
     CodeUsecase::new(Arc::new(StagingGateway), query)
 }
 
-pub(crate) fn build_code_usecase() -> CodeUsecase {
+pub fn build_code_usecase() -> CodeUsecase {
     build_code_usecase_with_gateways()
 }
 
-#[cfg(test)]
-pub(crate) fn build_terminal_surface_application_for_tests() -> TerminalSurfaceApplication {
+#[cfg(any(test, feature = "test-support"))]
+pub fn build_terminal_surface_application_for_tests() -> TerminalSurfaceApplication {
     let hub =
         Arc::new(crate::adaptor::presenter::terminal_event_hub::TerminalSurfaceEventHub::new());
     TerminalSurfaceApplication::new(
@@ -148,14 +148,14 @@ pub(crate) fn build_canonical_agent_session_query(
     )
 }
 
-pub(crate) fn build_review_comment_usecase() -> ReviewCommentUsecase {
+pub fn build_review_comment_usecase() -> ReviewCommentUsecase {
     let store: Arc<dyn ReviewEventStore> = Arc::new(FileReviewEventStore::default());
     let clock: Arc<dyn ReviewClock> = Arc::new(SystemReviewClock);
     let id_generator: Arc<dyn ReviewIdGenerator> = Arc::new(UuidReviewIdGenerator);
     ReviewCommentUsecase::new(store, clock, id_generator)
 }
 
-pub(crate) fn build_workspace_list_usecase(
+pub fn build_workspace_list_usecase(
     repositories: Arc<crate::usecase::repo_paths_usecase::RepoPathsUsecase>,
     repository: Arc<RepositoryUsecase>,
     repository_state: Arc<crate::usecase::repository_state::RepositoryStateService>,
@@ -180,8 +180,8 @@ pub(crate) fn build_workspace_node_command_usecase(
 }
 
 /// Test helper using the same mandatory canonical store wiring as production.
-#[cfg(test)]
-pub(crate) fn build_workflow_usecase(
+#[cfg(any(test, feature = "test-support"))]
+pub fn build_workflow_usecase(
     data_dir: impl Into<std::path::PathBuf>,
     workflows_dir: Option<std::path::PathBuf>,
 ) -> WorkflowUsecase {
@@ -191,8 +191,8 @@ pub(crate) fn build_workflow_usecase(
 /// Test composition hook that exposes the single writer owned by the workflow
 /// services. Integration tests that exercise canonical runtime commits must
 /// reuse this writer instead of opening a competing writer for the same DB.
-#[cfg(test)]
-pub(crate) fn build_workflow_usecase_and_store(
+#[cfg(any(test, feature = "test-support"))]
+pub fn build_workflow_usecase_and_store(
     data_dir: impl Into<std::path::PathBuf>,
     workflows_dir: Option<std::path::PathBuf>,
 ) -> (WorkflowUsecase, Arc<LocalEventStore>) {
@@ -216,7 +216,7 @@ pub(crate) fn build_workflow_usecase_and_store(
     (workflow_usecase, local_event_store)
 }
 
-pub(crate) fn build_workflow_services_with_repository_worktrees(
+pub fn build_workflow_services_with_repository_worktrees(
     failures: Arc<crate::adaptor::gateway::failure_records::FailureRecordStore>,
     data_dir: impl Into<std::path::PathBuf>,
     repository_usecase: Arc<RepositoryUsecase>,
@@ -244,7 +244,7 @@ pub(crate) fn build_workflow_services_with_repository_worktrees(
     )
 }
 
-pub(crate) fn build_workspace_worktree_path_usecase(
+pub fn build_workspace_worktree_path_usecase(
     data_dir: &std::path::Path,
 ) -> crate::usecase::workspace_tree::WorkspaceWorktreePathUsecase {
     crate::usecase::workspace_tree::WorkspaceWorktreePathUsecase::new(Arc::new(
@@ -255,7 +255,7 @@ pub(crate) fn build_workspace_worktree_path_usecase(
     ))
 }
 
-pub(crate) fn build_canonical_workflow_read_usecase(
+pub fn build_canonical_workflow_read_usecase(
     data_dir: impl Into<std::path::PathBuf>,
     workflows_dir: Option<std::path::PathBuf>,
 ) -> Result<WorkflowReadUsecase, String> {
@@ -327,7 +327,7 @@ pub(crate) fn build_canonical_workflow_read_usecase(
 /// gateway を呼び出し側から差し替えられる workflow composition。production 配線と
 /// acceptance harness の双方がこの一箇所を通る。
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn build_workflow_services_with_gateways(
+pub fn build_workflow_services_with_gateways(
     failures: Arc<crate::adaptor::gateway::failure_records::FailureRecordStore>,
     data_dir: impl Into<std::path::PathBuf>,
     worktrees: Arc<dyn ManagedWorktreeGateway>,
@@ -395,7 +395,7 @@ pub(crate) fn build_workflow_services_with_gateways(
     (workflow_usecase, workspace_query)
 }
 
-pub(crate) fn build_workflow_runtime_usecase(
+pub fn build_workflow_runtime_usecase(
     retrying: Arc<crate::usecase::retry::Retrying>,
     app: crate::adaptor::gateway::workflow::workflow_host::WorkflowRuntimeDependencies,
     deps: WorkflowRuntimeCommandGatewayDeps,
@@ -451,7 +451,7 @@ pub(crate) fn build_workflow_runtime_usecase(
     ))
 }
 
-pub(crate) fn wire_delegate_continuation(
+pub fn wire_delegate_continuation(
     app: crate::adaptor::gateway::workflow::workflow_host::WorkflowRuntimeDependencies,
     mut host: crate::adaptor::gateway::workflow::workflow_host::WorkflowRuntimeHost,
 ) -> crate::adaptor::gateway::workflow::workflow_host::WorkflowRuntimeHost {
@@ -467,7 +467,7 @@ pub(crate) fn wire_delegate_continuation(
     host
 }
 
-pub(crate) fn wire_workflow_startup(
+pub fn wire_workflow_startup(
     app: crate::adaptor::gateway::workflow::workflow_host::WorkflowRuntimeDependencies,
     host: Arc<crate::adaptor::gateway::workflow::workflow_host::WorkflowRuntimeHost>,
 ) -> Option<Arc<crate::usecase::workflow::startup::WorkflowStartupUsecase>> {
@@ -507,129 +507,4 @@ pub(crate) fn spawn_startup_app_data_gc(
             log::error!("{error}");
         }
     });
-}
-
-#[cfg(test)]
-#[path = "wiring_test.rs"]
-mod wiring_tests;
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_診断read_usecase_適用済みdirectoryを診断する() {
-        // Given
-        let data = tempfile::tempdir().unwrap();
-        let workflows = tempfile::tempdir().unwrap();
-        let _store = LocalEventStore::open(LocalEventStoreConfig::production(
-            data.path().to_path_buf(),
-            std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
-        ))
-        .unwrap();
-        std::fs::write(workflows.path().join("configured.yml"), "name: [").unwrap();
-        let read = build_canonical_workflow_read_usecase(
-            data.path(),
-            Some(workflows.path().to_path_buf()),
-        )
-        .unwrap();
-
-        // When
-        let report = read
-            .diagnose_all(
-                crate::usecase::workflow::ports::WorkflowDiagnosticsTarget::AppliedConfigDirectory,
-            )
-            .unwrap();
-
-        // Then
-        assert!(serde_json::to_value(
-            crate::adaptor::presenter::workflow_api::DiagnosticReportResponse::from(report)
-        )
-        .unwrap()["workflow_summaries"]["configured"]
-            .is_object());
-    }
-
-    async fn seed_b006_execution(store: &Arc<LocalEventStore>, workspace: &str) {
-        use crate::domain::workflow::{ExecutionOrigin, ExecutionStatus};
-
-        let execution_id = "00000000-0000-4000-8000-000000001491";
-        crate::adaptor::gateway::workflow::test_support::seed_canonical_execution(
-            store,
-            &crate::domain::workflow::WorkflowExecutionSummary {
-                execution_id: execution_id.to_string(),
-                workflow_name: "B006 workflow".to_string(),
-                status: ExecutionStatus::Running,
-                worktree_path: workspace.to_string(),
-                current_node: None,
-                created_from: ExecutionOrigin::DesktopUi,
-                started_at: 1.0,
-                updated_at: 2.0,
-                completed_at: None,
-                error_reason: None,
-                total_token_usage: Default::default(),
-            },
-            &[],
-        )
-        .await;
-    }
-
-    #[tokio::test]
-    async fn b006_all_client_surfaces_use_the_production_workspace_query_contract() {
-        // Given: the production composition root owns one live query object,
-        // and the standalone loopback composition opens the same SQLite
-        // authority through its read-only backend.
-        let root = tempfile::tempdir().unwrap();
-        let store = LocalEventStore::open(
-            crate::adaptor::gateway::local_event_store::LocalEventStoreConfig::production(
-                root.path().to_path_buf(),
-                std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
-            ),
-        )
-        .unwrap();
-        let workspace = root
-            .path()
-            .canonicalize()
-            .unwrap()
-            .to_string_lossy()
-            .into_owned();
-        seed_b006_execution(&store, &workspace).await;
-        let (workflow, query) = build_workflow_services_with_gateways(
-            Arc::new(crate::adaptor::gateway::failure_records::FailureRecordStore::default()),
-            root.path(),
-            Arc::new(PassthroughManagedWorktreeGateway),
-            Arc::new(NoopWorkflowExternalEditorGateway),
-            Arc::new(EmptySecretSourceGateway),
-            store.clone(),
-            None,
-            None,
-        );
-        let standalone =
-            build_canonical_workflow_read_usecase(root.path(), Some(root.path().join("workflows")))
-                .unwrap();
-
-        // When
-        let page = crate::domain::workflow::WorkflowPageRequest::new(0, 10);
-        let direct_executions = query
-            .execution_summaries(None, None, Some(page))
-            .await
-            .unwrap()
-            .into_iter()
-            .map(crate::usecase::workflow::dto::workflow_execution_summary_to_dto)
-            .collect::<Vec<_>>();
-        let live_loopback_executions = workflow
-            .read_usecase()
-            .list_executions_filtered(None, None, page)
-            .await
-            .unwrap();
-        let standalone_executions = standalone
-            .list_executions_filtered(None, None, page)
-            .await
-            .unwrap();
-        let tree = workflow.workspace_tree(&workspace).await.unwrap();
-        // Then
-        assert_eq!(direct_executions.len(), 1);
-        assert!(!tree.visible().roots().is_empty());
-        assert_eq!(live_loopback_executions, direct_executions);
-        assert_eq!(standalone_executions, direct_executions);
-    }
 }

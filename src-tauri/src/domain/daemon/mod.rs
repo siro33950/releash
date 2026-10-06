@@ -1,5 +1,5 @@
 mod failure;
-mod identity;
+pub(crate) mod identity;
 pub(crate) use failure::{StartupFailure, StartupFailureKind};
 pub(crate) use identity::{
     ConnectionObservation, DaemonIdentity, DiscoveryRejection, ProcessObservation,
@@ -16,25 +16,25 @@ pub(crate) enum ServingStatus {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum DaemonRequest {
+pub enum DaemonRequest {
     Status,
     Stop,
     Operation,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum StopRequest {
+pub enum StopRequest {
     Exit { code: i32 },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum StopAcceptance {
+pub enum StopAcceptance {
     Started { code: i32 },
     AlreadyAccepted,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct DaemonInfo {
+pub struct DaemonInfo {
     pub(crate) identity: DaemonIdentity,
     pub(crate) release: String,
     pub(crate) protocol: u32,
@@ -96,7 +96,7 @@ impl Daemon {
 }
 
 #[async_trait::async_trait]
-pub(crate) trait DaemonRepository: Send + Sync {
+pub trait DaemonRepository: Send + Sync {
     async fn info(&self) -> DaemonInfo;
     async fn admits(&self, request: DaemonRequest) -> bool;
     async fn serve(&self);
@@ -106,5 +106,5 @@ pub(crate) trait DaemonRepository: Send + Sync {
 }
 
 #[cfg(test)]
-#[path = "daemon_test.rs"]
-mod daemon_tests;
+#[path = "mod_test.rs"]
+mod mod_tests;

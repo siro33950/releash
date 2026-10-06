@@ -7,7 +7,7 @@ pub(crate) fn invalid_response(message: impl Into<String>) -> connectrpc::Connec
     connectrpc::ConnectError::new(connectrpc::ErrorCode::Internal, message.into())
 }
 
-pub(crate) fn classified_error(
+pub fn classified_error(
     error: impl ConnectFailure + std::fmt::Display,
 ) -> connectrpc::ConnectError {
     connectrpc::ConnectError::new(error.connect_code(), error.to_string())
@@ -31,9 +31,9 @@ pub fn command_error(
 
 #[cfg(test)]
 #[path = "connect_test.rs"]
-mod tests;
+pub(crate) mod connect_tests;
 
-pub(crate) trait ConnectFailure {
+pub trait ConnectFailure {
     fn connect_code(&self) -> connectrpc::ErrorCode;
 }
 
@@ -692,7 +692,3 @@ impl ConnectFailure for crate::domain::agent_session::ProviderExecutableProbeGat
         }
     }
 }
-
-#[cfg(test)]
-#[path = "connect_mapping_test.rs"]
-mod connect_mapping_tests;

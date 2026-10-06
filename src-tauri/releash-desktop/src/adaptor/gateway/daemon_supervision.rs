@@ -22,24 +22,24 @@ struct Process {
     readers: Vec<tokio::sync::oneshot::Receiver<()>>,
 }
 
-struct PendingConnection {
-    client: Arc<super::desktop_client::DesktopClient>,
-    hello: wire::ServerInfo,
-    endpoint: releash_lib::desktop_api::ClientConnectionDto,
+pub struct PendingConnection {
+    pub client: Arc<super::desktop_client::DesktopClient>,
+    pub hello: wire::ServerInfo,
+    pub endpoint: releash_lib::desktop_api::ClientConnectionDto,
 }
 
-pub(crate) struct DaemonProcessGateway {
+pub struct DaemonProcessGateway {
     origin: std::time::Instant,
     executable: PathBuf,
     data_dir: PathBuf,
     process: parking_lot::Mutex<Option<Process>>,
     connection: parking_lot::Mutex<Option<DaemonConnection>>,
     client: parking_lot::Mutex<Option<Arc<super::desktop_client::DesktopClient>>>,
-    pending: parking_lot::Mutex<Option<PendingConnection>>,
+    pub pending: parking_lot::Mutex<Option<PendingConnection>>,
     limiter: Arc<RetryLimiter>,
 }
 
-fn supervised_connection_failure(failure: TechnicalFailure) -> Failure {
+pub fn supervised_connection_failure(failure: TechnicalFailure) -> Failure {
     Failure {
         stage: FailureStage::Connection(failure.nature),
         reason: failure.message,
@@ -87,7 +87,10 @@ impl DaemonProcessGateway {
         );
         Ok((client, info, endpoint))
     }
-    async fn connect_client(&self, launch_id: &str) -> Result<Option<DaemonConnection>, Failure> {
+    pub async fn connect_client(
+        &self,
+        launch_id: &str,
+    ) -> Result<Option<DaemonConnection>, Failure> {
         let result =
             tokio::time::timeout(std::time::Duration::from_millis(500), self.connect()).await;
         let (client, hello, endpoint) = match result {
@@ -388,7 +391,7 @@ async fn wait_for_termination<F: std::future::Future<Output = Result<bool, Strin
 #[path = "daemon_supervision_test.rs"]
 mod daemon_supervision_tests;
 
-fn shutdown_response(response: wire::command_result::Command) -> Result<(), String> {
+pub fn shutdown_response(response: wire::command_result::Command) -> Result<(), String> {
     match response {
         wire::command_result::Command::RequestApplicationQuit(outcome) => match outcome.variant {
             Some(wire::application_quit_outcome_dto_v1::Variant::Accepted(_)) => Ok(()),

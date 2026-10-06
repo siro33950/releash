@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+#[cfg(feature = "test-support")]
 use crate::adaptor::presenter::terminal::{
     GetOrSpawnTerminalV1, TerminalProcessLaunchV1, TerminalSurfaceOwnerV1, TerminalSurfaceV1,
 };
@@ -12,6 +13,7 @@ pub struct TerminalSurfaceRuntime {
 
 pub struct BackgroundWork {
     pub retrying: Arc<crate::usecase::retry::Retrying>,
+    #[cfg(feature = "test-support")]
     pub failures: Arc<crate::adaptor::gateway::failure_records::FailureRecordStore>,
     pub handle: tokio::runtime::Handle,
 }
@@ -19,20 +21,22 @@ pub struct BackgroundWork {
 impl BackgroundWork {
     pub(crate) fn new(
         retrying: Arc<crate::usecase::retry::Retrying>,
-        failures: Arc<crate::adaptor::gateway::failure_records::FailureRecordStore>,
+        _failures: Arc<crate::adaptor::gateway::failure_records::FailureRecordStore>,
         handle: tokio::runtime::Handle,
     ) -> Self {
         Self {
             retrying,
-            failures,
+            #[cfg(feature = "test-support")]
+            failures: _failures,
             handle,
         }
     }
 }
 
-pub use crate::adaptor::presenter::terminal_event_fault_relay::{
-    TerminalSurfaceEventFault, TerminalSurfaceEventFaultController,
-};
+#[cfg(feature = "test-support")]
+pub use crate::adaptor::presenter::terminal_event_fault_relay::TerminalSurfaceEventFault;
+#[cfg(feature = "test-support")]
+pub use crate::adaptor::presenter::terminal_event_fault_relay::TerminalSurfaceEventFaultController;
 
 impl TerminalSurfaceRuntime {
     pub fn new(work: Arc<BackgroundWork>, data_dir: PathBuf) -> Self {
@@ -40,6 +44,7 @@ impl TerminalSurfaceRuntime {
     }
 
     #[doc(hidden)]
+    #[cfg(feature = "test-support")]
     pub fn new_with_data_dir_and_event_faults(
         work: Arc<BackgroundWork>,
         data_dir: PathBuf,
@@ -70,9 +75,7 @@ impl TerminalSurfaceRuntime {
         event_hub: Arc<crate::adaptor::presenter::terminal_event_hub::TerminalSurfaceEventHub>,
         event_sink: Arc<dyn TerminalSurfaceEventSink>,
     ) -> Self {
-        let journal_enabled =
-            !crate::infrastructure::performance_switches::terminal_performance_switches()
-                .disable_terminal_journal;
+        let journal_enabled = true;
         let (dirty, dirty_receiver) = super::terminal_checkpoint::dirty_channel();
         let gateway = Arc::new(crate::adaptor::gateway::terminal_surface::runtime_gateway_impl::TerminalSurfaceRuntimeGatewayFor::new_with_event_sink(dirty,
             data_dir,
@@ -108,6 +111,7 @@ impl TerminalSurfaceRuntime {
         Arc::clone(&self.application)
     }
 
+    #[cfg(feature = "test-support")]
     pub fn get_or_spawn(
         &self,
         rows: u16,
@@ -123,6 +127,7 @@ impl TerminalSurfaceRuntime {
     }
 
     #[allow(clippy::too_many_arguments)]
+    #[cfg(feature = "test-support")]
     pub fn get_or_spawn_with_startup(
         &self,
         rows: u16,
@@ -139,6 +144,7 @@ impl TerminalSurfaceRuntime {
     }
 
     #[allow(clippy::too_many_arguments)]
+    #[cfg(feature = "test-support")]
     pub fn get_or_spawn_with_process(
         &self,
         rows: u16,
@@ -161,6 +167,7 @@ impl TerminalSurfaceRuntime {
             .map_err(|error| error.to_string())
     }
 
+    #[cfg(feature = "test-support")]
     pub fn get(&self, owner: TerminalSurfaceOwnerV1) -> Result<TerminalSurfaceV1, String> {
         self.application
             .get(&owner.try_into()?)
@@ -168,12 +175,14 @@ impl TerminalSurfaceRuntime {
             .map_err(|error| error.to_string())
     }
 
+    #[cfg(feature = "test-support")]
     pub fn write(&self, owner: TerminalSurfaceOwnerV1, data: &str) -> Result<(), String> {
         self.application
             .write(&owner.try_into()?, data)
             .map_err(|error| error.to_string())
     }
 
+    #[cfg(feature = "test-support")]
     pub fn resize(
         &self,
         owner: TerminalSurfaceOwnerV1,
@@ -185,18 +194,21 @@ impl TerminalSurfaceRuntime {
             .map_err(|error| error.to_string())
     }
 
+    #[cfg(feature = "test-support")]
     pub fn kill(&self, owner: TerminalSurfaceOwnerV1) -> Result<(), String> {
         self.application
             .kill(&owner.try_into()?)
             .map_err(|error| error.to_string())
     }
 
+    #[cfg(feature = "test-support")]
     pub fn flush_checkpoints(&self) -> Result<(), String> {
         self.application
             .flush_checkpoints()
             .map_err(|error| error.to_string())
     }
 
+    #[cfg(feature = "test-support")]
     pub fn shutdown(&self) -> Result<(), String> {
         self.application
             .shutdown()
@@ -205,6 +217,7 @@ impl TerminalSurfaceRuntime {
 }
 
 #[doc(hidden)]
+#[cfg(feature = "test-support")]
 pub fn initialize_background_work_for_acceptance() -> Arc<BackgroundWork> {
     static RUNTIME: std::sync::OnceLock<tokio::runtime::Runtime> = std::sync::OnceLock::new();
     let runtime = RUNTIME.get_or_init(|| {
@@ -229,7 +242,3 @@ pub fn initialize_background_work_for_acceptance() -> Arc<BackgroundWork> {
         runtime.handle().clone(),
     ))
 }
-
-#[cfg(test)]
-#[path = "terminal_surface_runtime_test.rs"]
-mod terminal_surface_runtime_tests;

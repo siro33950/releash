@@ -14,8 +14,7 @@ fn discovery(directory: &Path, filename: &str) -> Value {
 async fn wait_phase(app: &tauri::AppHandle<tauri::test::MockRuntime>, phase: &str) {
     tokio::time::timeout(Duration::from_secs(35), async {
         loop {
-            let status =
-                releash_desktop::desktop_client_acceptance::desktop_supervision_status(app);
+            let status = releash_desktop::test_support::desktop_supervision_status(app);
             if status["phase"] == phase {
                 break;
             }
@@ -48,7 +47,7 @@ async fn test_desktop接続_discoveryとtauri経由で外部daemonの初回接�
     }
     std::env::set_var("SHELL", "/bin/sh");
     std::env::remove_var("RELEASH_DATA_DIR");
-    let app = releash_desktop::desktop_client_acceptance::desktop_connection_app(
+    let app = releash_desktop::test_support::desktop_connection_app(
         tauri::test::mock_builder(),
         directory.path(),
         &support::backend_executable(),
@@ -59,9 +58,9 @@ async fn test_desktop接続_discoveryとtauri経由で外部daemonの初回接�
         .build()
         .unwrap();
     assert_eq!(discovery(directory.path(), "client-api.json"), first);
-    releash_desktop::desktop_client_acceptance::initialize_desktop_settings(app.handle()).await;
+    releash_desktop::test_support::initialize_desktop_settings(app.handle()).await;
     assert_eq!(
-        releash_desktop::desktop_client_acceptance::desktop_window_preferences(app.handle()),
+        releash_desktop::test_support::desktop_window_preferences(app.handle()),
         false
     );
     let mut client = tokio::process::Command::new("node")
@@ -93,10 +92,7 @@ async fn test_desktop接続_discoveryとtauri経由で外部daemonの初回接�
             let result = match request["command"].as_str().unwrap() {
                 "get_client_endpoint" => {
                     let endpoint =
-                        releash_desktop::desktop_client_acceptance::desktop_client_endpoint(
-                            app.handle(),
-                        )
-                        .await;
+                        releash_desktop::test_support::desktop_client_endpoint(app.handle()).await;
                     let current = discovery(directory.path(), "client-api.json");
                     assert_ne!(
                         current["token"],
@@ -121,9 +117,7 @@ async fn test_desktop接続_discoveryとtauri経由で外部daemonの初回接�
                     .unwrap();
                     let settings = &request["args"]["settings"];
                     assert_eq!(
-                        releash_desktop::desktop_client_acceptance::desktop_window_preferences(
-                            app.handle()
-                        ),
+                        releash_desktop::test_support::desktop_window_preferences(app.handle()),
                         settings["closeToTray"].as_bool().unwrap()
                     );
                     Value::Null
@@ -147,7 +141,7 @@ async fn test_desktop接続_discoveryとtauri経由で外部daemonの初回接�
                 }
                 "damage_settings" => {
                     for content in [
-                        Some("[app]\nclose_to_tray = true\n"),
+                        Some("[app]\nclose_to_tray = \"invalid\"\n"),
                         Some("[invalid"),
                         None,
                     ] {
@@ -156,26 +150,17 @@ async fn test_desktop接続_discoveryとtauri経由で外部daemonの初回接�
                             Some(content) => std::fs::write(&path, content).unwrap(),
                             None => std::fs::remove_file(&path).unwrap(),
                         }
-                        releash_desktop::desktop_client_acceptance::initialize_desktop_settings(
-                            app.handle(),
-                        )
-                        .await;
+                        releash_desktop::test_support::initialize_desktop_settings(app.handle())
+                            .await;
                         assert_eq!(
-                            releash_desktop::desktop_client_acceptance::desktop_window_preferences(
-                                app.handle()
-                            ),
+                            releash_desktop::test_support::desktop_window_preferences(app.handle()),
                             false
                         );
                     }
                     std::fs::create_dir(directory.path().join("releash.toml")).unwrap();
-                    releash_desktop::desktop_client_acceptance::initialize_desktop_settings(
-                        app.handle(),
-                    )
-                    .await;
+                    releash_desktop::test_support::initialize_desktop_settings(app.handle()).await;
                     assert_eq!(
-                        releash_desktop::desktop_client_acceptance::desktop_window_preferences(
-                            app.handle()
-                        ),
+                        releash_desktop::test_support::desktop_window_preferences(app.handle()),
                         false
                     );
                     std::fs::remove_dir(directory.path().join("releash.toml")).unwrap();
@@ -219,10 +204,10 @@ async fn test_desktop接続_discoveryとtauri経由で外部daemonの初回接�
         .unwrap() as i32;
     window.destroy().unwrap();
     assert_eq!(unsafe { libc::kill(old_pid, 0) }, 0);
-    releash_desktop::desktop_client_acceptance::stop_desktop_daemon(app.handle(), true);
+    releash_desktop::test_support::stop_desktop_daemon(app.handle(), true);
     wait_phase(app.handle(), "stopped").await;
     assert_eq!(unsafe { libc::kill(old_pid, 0) }, -1);
-    let next = releash_desktop::desktop_client_acceptance::desktop_connection_app(
+    let next = releash_desktop::test_support::desktop_connection_app(
         tauri::test::mock_builder(),
         directory.path(),
         &support::backend_executable(),
@@ -260,10 +245,8 @@ async fn test_desktop接続_discoveryとtauri経由で外部daemonの初回接�
             };
             let request: Value = serde_json::from_str(&line).unwrap();
             let result = if request["command"] == "get_client_endpoint" {
-                let endpoint = releash_desktop::desktop_client_acceptance::desktop_client_endpoint(
-                    next.handle(),
-                )
-                .await;
+                let endpoint =
+                    releash_desktop::test_support::desktop_client_endpoint(next.handle()).await;
                 serde_json::to_value(endpoint).unwrap()
             } else {
                 tauri::test::get_ipc_response(
@@ -293,7 +276,7 @@ async fn test_desktop接続_discoveryとtauri経由で外部daemonの初回接�
     })
     .await
     .unwrap();
-    releash_desktop::desktop_client_acceptance::stop_desktop_daemon(next.handle(), false);
+    releash_desktop::test_support::stop_desktop_daemon(next.handle(), false);
     wait_phase(next.handle(), "stopped").await;
     let failed_dir = directory.path().join("initialization-failure");
     std::fs::create_dir(&failed_dir).unwrap();
@@ -306,20 +289,41 @@ async fn test_desktop接続_discoveryとtauri経由で外部daemonの初回接�
         (Path::new("/missing/releash-backend"), "spawn", 0),
         (&support::backend_executable(), "backend_initialization", 3),
     ] {
-        let failed = releash_desktop::desktop_client_acceptance::desktop_connection_app(
+        let failed = releash_desktop::test_support::desktop_connection_app(
             tauri::test::mock_builder(),
             &failed_dir,
             executable,
         );
         wait_phase(failed.handle(), "failed").await;
-        let status =
-            releash_desktop::desktop_client_acceptance::desktop_supervision_status(failed.handle());
+        let status = releash_desktop::test_support::desktop_supervision_status(failed.handle());
         assert_eq!(status["stage"], expected_stage);
         assert_eq!(status["retries"], retries);
         assert!(!status["reason"].as_str().unwrap().is_empty());
-        releash_desktop::desktop_client_acceptance::stop_desktop_daemon(failed.handle(), false);
+        releash_desktop::test_support::stop_desktop_daemon(failed.handle(), false);
         wait_phase(failed.handle(), "stopped").await;
     }
 }
 
 mod support;
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn test_サーバ実行ファイル_同じprofileの出力を使い未ビルド時に手順を示す() {
+        // Given
+        let directory = tempfile::tempdir().unwrap();
+        let test = directory.path().join("deps/desktop-test");
+        let backend = directory
+            .path()
+            .join(format!("releash-backend{}", std::env::consts::EXE_SUFFIX));
+        // When
+        let error = std::panic::catch_unwind(|| super::support::backend_path(&test)).unwrap_err();
+        // Then
+        let message = error.downcast_ref::<String>().unwrap();
+        assert!(message.contains("cargo build -p releash-backend --bin releash-backend"));
+        // When
+        std::fs::write(&backend, []).unwrap();
+        // Then
+        assert_eq!(super::support::backend_path(&test), backend);
+    }
+}

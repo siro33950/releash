@@ -11,7 +11,7 @@ enum WorktreeDeletion {
     Accepted(WorktreeDeletionTarget),
 }
 
-pub(crate) struct WorktreeDeletionTarget {
+pub struct WorktreeDeletionTarget {
     pub repository_root: String,
     pub path: String,
     pub branch: Option<String>,
@@ -71,12 +71,12 @@ impl WorktreeOperationState {
 
 #[cfg(test)]
 #[path = "worktree_operation_test.rs"]
-mod worktree_operation_tests;
+pub(crate) mod worktree_operation_tests;
 
-pub(crate) trait WorktreeOperationLease: Send + Sync {}
+pub trait WorktreeOperationLease: Send + Sync {}
 
 #[async_trait::async_trait]
-pub(crate) trait WorktreeOperationLocks: Send + Sync {
+pub trait WorktreeOperationLocks: Send + Sync {
     fn mutation(&self, identity: &str) -> Result<Box<dyn WorktreeOperationLease>, RepositoryError>;
     async fn deletion(
         &self,

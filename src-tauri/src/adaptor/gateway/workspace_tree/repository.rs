@@ -67,10 +67,10 @@ const FOLD_IDLE_LIMIT: std::time::Duration = std::time::Duration::from_secs(600)
 /// The only concrete `WorkspaceTreeRepository` implementation.
 ///
 /// tree ごとに fold 済みの結果を保持し、読むときに追記された事実だけを足す。
-pub(crate) struct SqliteWorkspaceTreeRepository {
+pub struct SqliteWorkspaceTreeRepository {
     backend: WorkspaceSqliteBackend,
-    pub(crate) processes: Option<Arc<dyn crate::domain::workflow::NodeProcessReader>>,
-    pub(crate) fold_idle_limit: std::time::Duration,
+    pub processes: Option<Arc<dyn crate::domain::workflow::NodeProcessReader>>,
+    pub fold_idle_limit: std::time::Duration,
     // ponytail: 全 tree で 1 つの排他。読み取りが競合するなら tree ごとに分ける。
     held: tokio::sync::Mutex<BTreeMap<String, HeldTree>>,
     /// Session として起動した木の root の位置と実行の文脈。root started から決まり、変わらない。
@@ -78,7 +78,7 @@ pub(crate) struct SqliteWorkspaceTreeRepository {
 }
 
 impl SqliteWorkspaceTreeRepository {
-    pub(crate) fn new(store: Arc<LocalEventStore>) -> Arc<Self> {
+    pub fn new(store: Arc<LocalEventStore>) -> Arc<Self> {
         Arc::new(Self {
             backend: WorkspaceSqliteBackend::Live(store),
             processes: None,
@@ -88,7 +88,7 @@ impl SqliteWorkspaceTreeRepository {
         })
     }
 
-    pub(crate) fn new_read_only(store: Arc<LocalEventReadStore>) -> Arc<Self> {
+    pub fn new_read_only(store: Arc<LocalEventReadStore>) -> Arc<Self> {
         Arc::new(Self {
             backend: WorkspaceSqliteBackend::ReadOnly(store),
             processes: None,
@@ -245,7 +245,7 @@ impl SqliteWorkspaceTreeRepository {
     }
 
     /// workspace identity が一致する全実行木の fold と metadata。
-    pub(super) async fn folded_workspace_trees(
+    pub async fn folded_workspace_trees(
         &self,
         workspace: &str,
     ) -> Result<Vec<FoldedExecution>, LocalEventQueryError> {
@@ -256,7 +256,7 @@ impl SqliteWorkspaceTreeRepository {
     }
 
     /// 複数の workspace をまとめて読む。store の確認は 1 回だけ行う。
-    pub(super) async fn folded_workspaces(
+    pub async fn folded_workspaces(
         &self,
         workspaces: &[&str],
     ) -> Vec<Result<Vec<FoldedExecution>, LocalEventQueryError>> {
@@ -292,7 +292,7 @@ impl SqliteWorkspaceTreeRepository {
     }
 
     /// 1 tree の fold と metadata。
-    pub(super) async fn folded_tree(
+    pub async fn folded_tree(
         &self,
         tree_id: &str,
     ) -> Result<Option<FoldedExecution>, LocalEventQueryError> {
@@ -445,7 +445,7 @@ impl SqliteWorkspaceTreeRepository {
         Ok(Some(root))
     }
 
-    pub(super) fn workspace_tree_from_folded(
+    pub fn workspace_tree_from_folded(
         &self,
         workspace: &str,
         trees: &[FoldedExecution],
@@ -622,10 +622,6 @@ fn execution_summary_fact(execution: &WorkflowExecutionMetadataRecord) -> Worksp
 pub(super) fn fold_query_error(error: fact_log::FactReadError) -> LocalEventQueryError {
     error.into()
 }
-
-#[cfg(test)]
-#[path = "legacy_projection_test.rs"]
-mod legacy_projection_tests;
 
 fn invariant_query_error(error: impl std::fmt::Display) -> LocalEventQueryError {
     let correlation_id = uuid::Uuid::new_v4().to_string();

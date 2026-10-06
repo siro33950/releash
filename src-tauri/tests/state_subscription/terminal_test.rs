@@ -1,5 +1,5 @@
-use releash_lib::terminal_subscription_acceptance::TerminalSubscriptionHarness;
-use releash_lib::terminal_surface::{
+use releash_lib::test_support::terminal_subscription_acceptance::TerminalSubscriptionHarness;
+use releash_lib::test_support::terminal_surface::{
     initialize_background_work_for_acceptance, TerminalProcessLaunchV1, TerminalSurfaceOwnerV1,
     TerminalSurfaceStreamItemV1,
 };

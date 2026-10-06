@@ -37,7 +37,7 @@ impl WorkflowDefinitionResolver for DefaultWorkflowDefinitionResolver {
 /// 宣言した状態を先勝ちにすると実行対象が directory iteration order に依存するため、
 /// §7 の閉じた code 表で workflow name の妥当性にも使われる WFS006 Diagnostic として
 /// 明示的に拒否する（表にない新 code は追加しない）。
-pub(crate) fn resolve_workflow_by_name(
+pub fn resolve_workflow_by_name(
     workflows_dir: &Path,
     facets_base_dir: &Path,
     workflow_name: &str,
@@ -115,13 +115,13 @@ pub(crate) fn resolve_workflow_by_name(
     }
 }
 
-pub(crate) struct AppConfigManagedWorktreeResolver {
+pub struct AppConfigManagedWorktreeResolver {
     usecase: Arc<RepositoryUsecase>,
     config: Arc<dyn ConfigRepository>,
 }
 
 impl AppConfigManagedWorktreeResolver {
-    pub(crate) fn new(usecase: Arc<RepositoryUsecase>, config: Arc<dyn ConfigRepository>) -> Self {
+    pub fn new(usecase: Arc<RepositoryUsecase>, config: Arc<dyn ConfigRepository>) -> Self {
         Self { usecase, config }
     }
 }
@@ -143,109 +143,3 @@ impl ManagedWorktreeResolver for AppConfigManagedWorktreeResolver {
         })
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use tempfile::TempDir;
-
-    use super::resolve_workflow_by_name;
-    use crate::adaptor::gateway::workflow::schema::{
-        CommandSpec, NodeDefinition, NodeKind, WorkflowDefinitionYaml,
-    };
-    use crate::adaptor::gateway::workflow::storage;
-
-    fn workflow(name: &str) -> WorkflowDefinitionYaml {
-        WorkflowDefinitionYaml {
-            name: name.to_string(),
-            description: "test workflow".to_string(),
-            nodes: vec![NodeDefinition {
-                name: "main".to_string(),
-                kind: NodeKind::Command(CommandSpec {
-                    command: "true".to_string(),
-                    env: Default::default(),
-                }),
-                ..NodeDefinition::default()
-            }],
-            ..WorkflowDefinitionYaml::default()
-        }
-    }
-
-    #[test]
-    fn resolves_definition_name_when_filename_differs() {
-        let tmp = TempDir::new().unwrap();
-        storage::save_workflow(tmp.path(), &workflow("declared-name")).unwrap();
-        std::fs::rename(
-            tmp.path().join("declared-name.yml"),
-            tmp.path().join("different-filename.yml"),
-        )
-        .unwrap();
-
-        let resolved = resolve_workflow_by_name(tmp.path(), tmp.path(), "declared-name").unwrap();
-
-        assert_eq!(resolved.name, "declared-name");
-    }
-
-    #[test]
-    fn duplicate_definition_names_are_reported_as_diagnostic() {
-        let tmp = TempDir::new().unwrap();
-        storage::save_workflow(tmp.path(), &workflow("duplicate-name")).unwrap();
-        std::fs::copy(
-            tmp.path().join("duplicate-name.yml"),
-            tmp.path().join("second-file.yml"),
-        )
-        .unwrap();
-
-        let error = resolve_workflow_by_name(tmp.path(), tmp.path(), "duplicate-name")
-            .expect_err("duplicate names must not be selected by directory order");
-
-        assert!(error.to_string().contains("WFS006"));
-        assert!(error.to_string().contains("duplicate-name"));
-    }
-
-    #[test]
-    fn resolves_lua_definition_by_declared_name() {
-        let tmp = TempDir::new().unwrap();
-        std::fs::write(
-            tmp.path().join("lua-runtime.lua"),
-            r#"
-local r = require("releash")
-return r.workflow{
-  name = "lua-runtime", description = "Lua runtime",
-  main = r.command{ command = "true" },
-}
-"#,
-        )
-        .unwrap();
-
-        let resolved = resolve_workflow_by_name(tmp.path(), tmp.path(), "lua-runtime").unwrap();
-
-        assert_eq!(resolved.name, "lua-runtime");
-        assert_eq!(resolved.entry, "main");
-    }
-
-    #[test]
-    fn duplicate_name_across_yaml_and_lua_is_reported() {
-        let tmp = TempDir::new().unwrap();
-        storage::save_workflow(tmp.path(), &workflow("duplicate-cross-format")).unwrap();
-        std::fs::write(
-            tmp.path().join("duplicate-cross-format.lua"),
-            r#"
-local r = require("releash")
-return r.workflow{
-  name = "duplicate-cross-format", description = "Lua duplicate",
-  main = r.command{ command = "true" },
-}
-"#,
-        )
-        .unwrap();
-
-        let error =
-            resolve_workflow_by_name(tmp.path(), tmp.path(), "duplicate-cross-format").unwrap_err();
-
-        assert!(error.to_string().contains("WFS006"));
-    }
-}
-
-#[cfg(test)]
-#[path = "runtime_resolver_test.rs"]
-mod runtime_resolver_tests;

@@ -1,4 +1,4 @@
-use super::super::{
+use crate::domain::provider_lifecycle::{
     ProviderKind, ProviderLifecycleBinding, ProviderLifecycleCapabilityHash,
     ProviderLifecycleEvent, ProviderLifecycleOutcome, ProviderLifecycleRejection,
     ProviderLifecycleScope, ProviderLifecycleSignal, ProviderLifecycleSlot,

@@ -7,7 +7,7 @@ use crate::domain::workflow::{NodeFactMeta, NodeKindName};
 use crate::usecase::agent_session::AgentSessionQueryError;
 
 #[derive(Debug)]
-pub(crate) enum SessionContextReadError {
+pub enum SessionContextReadError {
     Read(LocalEventQueryError),
     Corrupt(String),
 }
@@ -53,7 +53,7 @@ impl From<SessionContextReadError> for AgentSessionQueryError {
     }
 }
 
-pub(crate) async fn read_session_context(
+pub async fn read_session_context(
     backend: &FactLogReadBackend,
     location: &SessionLocation,
 ) -> Result<SessionExecutionContext, SessionContextReadError> {
@@ -115,7 +115,7 @@ pub(crate) async fn read_session_context(
     })
 }
 
-pub(crate) async fn read_session_records(
+pub async fn read_session_records(
     backend: &FactLogReadBackend,
     location: &SessionLocation,
 ) -> Result<Vec<NodeFactRecord>, fact_log::FactReadError> {
@@ -145,12 +145,12 @@ pub(crate) async fn read_session_records(
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct SessionLocation {
-    pub(crate) tree_id: String,
-    pub(crate) node_execution_id: String,
-    pub(crate) parent_id: Option<String>,
-    pub(crate) node_name: String,
-    pub(crate) attempt: u32,
+pub struct SessionLocation {
+    pub tree_id: String,
+    pub node_execution_id: String,
+    pub parent_id: Option<String>,
+    pub node_name: String,
+    pub attempt: u32,
 }
 
 impl SessionLocation {
@@ -176,7 +176,7 @@ impl SessionLocation {
     }
 }
 
-pub(crate) async fn locate_session(
+pub async fn locate_session(
     backend: &FactLogReadBackend,
     session_id: &str,
 ) -> Result<Option<SessionLocation>, fact_log::FactReadError> {
@@ -185,10 +185,6 @@ pub(crate) async fn locate_session(
     };
     Ok(Some(SessionLocation::from_meta(&record.meta)))
 }
-
-#[cfg(test)]
-#[path = "session_facts_test.rs"]
-mod session_facts_tests;
 
 impl From<fact_log::FactReadError> for AgentSessionRepositoryError {
     fn from(error: fact_log::FactReadError) -> Self {
@@ -204,3 +200,7 @@ impl From<fact_log::FactReadError> for AgentSessionQueryError {
         Self::Store(error.into())
     }
 }
+
+#[cfg(test)]
+#[path = "session_facts_test.rs"]
+mod session_facts_tests;

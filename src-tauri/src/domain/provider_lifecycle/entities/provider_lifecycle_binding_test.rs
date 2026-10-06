@@ -1,4 +1,4 @@
-use super::super::{
+use crate::domain::provider_lifecycle::{
     ProviderKind, ProviderLifecycleBinding, ProviderLifecycleEvent, ProviderLifecycleOutcome,
     ProviderLifecycleRejection, ProviderLifecycleReplayError, ProviderLifecycleScope,
     ProviderLifecycleSignal, ProviderLifecycleSlotId, ProviderLifecycleUnavailableObservation,

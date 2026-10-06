@@ -9,14 +9,14 @@ use crate::domain::agent_session::{
 };
 use crate::domain::provider_lifecycle::{ArmedProviderLifecycle, ProviderKind};
 
-pub(crate) struct LocalProviderAgentLaunchGateway {
+pub struct LocalProviderAgentLaunchGateway {
     data_dir: PathBuf,
     root: PathBuf,
     hook_cli_alias: String,
 }
 
 impl LocalProviderAgentLaunchGateway {
-    pub(crate) fn new(data_dir: PathBuf, hook_cli_alias: String) -> Self {
+    pub fn new(data_dir: PathBuf, hook_cli_alias: String) -> Self {
         Self {
             root: data_dir.join("provider-launches"),
             data_dir,
@@ -24,7 +24,7 @@ impl LocalProviderAgentLaunchGateway {
         }
     }
 
-    fn session_directory(&self, agent_session_id: &str) -> PathBuf {
+    pub fn session_directory(&self, agent_session_id: &str) -> PathBuf {
         self.root.join(digest(agent_session_id))
     }
 }
@@ -122,7 +122,7 @@ impl ProviderAgentLaunchGateway for LocalProviderAgentLaunchGateway {
     }
 }
 
-fn digest(value: &str) -> String {
+pub fn digest(value: &str) -> String {
     hex::encode(Sha256::digest(value.as_bytes()))
 }
 

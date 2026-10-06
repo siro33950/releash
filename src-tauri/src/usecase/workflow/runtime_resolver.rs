@@ -1,7 +1,7 @@
 use crate::domain::workflow::WorkflowDefinition;
 
 #[derive(Debug)]
-pub(crate) enum WorkflowDefinitionResolverError {
+pub enum WorkflowDefinitionResolverError {
     InvalidWorkflow(String),
     Infrastructure(String),
 }
@@ -17,7 +17,7 @@ impl std::fmt::Display for WorkflowDefinitionResolverError {
 }
 
 #[derive(Debug)]
-pub(crate) enum ManagedWorktreeResolverError {
+pub enum ManagedWorktreeResolverError {
     Technical(crate::domain::failure::TechnicalFailure),
     Validation(String),
 }
@@ -34,7 +34,7 @@ impl std::fmt::Display for ManagedWorktreeResolverError {
 /// WorkflowRuntimeHost core が workflow 定義の保存形式や builtin 解決方法を知らずに済むよう、
 /// YAML / builtin / facet 解決を担う境界。
 #[async_trait::async_trait]
-pub(crate) trait WorkflowDefinitionResolver: Send + Sync {
+pub trait WorkflowDefinitionResolver: Send + Sync {
     async fn resolve(
         &self,
         workflow_name: &str,
@@ -44,6 +44,6 @@ pub(crate) trait WorkflowDefinitionResolver: Send + Sync {
 /// WorkflowRuntimeHost core が AppConfig / filesystem canonicalize / Git worktree 列挙を
 /// 直接知らずに済むよう、managed worktree 解決を担う境界。
 #[async_trait::async_trait]
-pub(crate) trait ManagedWorktreeResolver: Send + Sync {
+pub trait ManagedWorktreeResolver: Send + Sync {
     async fn resolve(&self, worktree_path: String) -> Result<String, ManagedWorktreeResolverError>;
 }

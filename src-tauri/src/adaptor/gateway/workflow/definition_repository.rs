@@ -10,16 +10,13 @@ use crate::usecase::workflow::ports::{WorkflowDefinitionSourceGateway, WorkflowS
 use super::mapper;
 
 #[derive(Debug, Clone)]
-pub(crate) struct WorkflowDefinitionFileRepository {
+pub struct WorkflowDefinitionFileRepository {
     workflows_dir: PathBuf,
     facets_base_dir: PathBuf,
 }
 
 impl WorkflowDefinitionFileRepository {
-    pub(crate) fn new(
-        workflows_dir: impl Into<PathBuf>,
-        facets_base_dir: impl Into<PathBuf>,
-    ) -> Self {
+    pub fn new(workflows_dir: impl Into<PathBuf>, facets_base_dir: impl Into<PathBuf>) -> Self {
         Self {
             workflows_dir: workflows_dir.into(),
             facets_base_dir: facets_base_dir.into(),
@@ -32,16 +29,13 @@ impl WorkflowDefinitionFileRepository {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct WorkflowDefinitionFileSourceGateway {
+pub struct WorkflowDefinitionFileSourceGateway {
     workflows_dir: PathBuf,
     facets_base_dir: PathBuf,
 }
 
 impl WorkflowDefinitionFileSourceGateway {
-    pub(crate) fn new(
-        workflows_dir: impl Into<PathBuf>,
-        facets_base_dir: impl Into<PathBuf>,
-    ) -> Self {
+    pub fn new(workflows_dir: impl Into<PathBuf>, facets_base_dir: impl Into<PathBuf>) -> Self {
         Self {
             workflows_dir: workflows_dir.into(),
             facets_base_dir: facets_base_dir.into(),
@@ -258,7 +252,3 @@ fn storage_error_to_source_save_error(error: storage::StorageError) -> WorkflowS
         other => WorkflowSourceSaveError::Workflow(WorkflowError::external(other.to_string())),
     }
 }
-
-#[cfg(test)]
-#[path = "definition_repository_test.rs"]
-mod definition_repository_tests;

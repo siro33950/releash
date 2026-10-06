@@ -136,3 +136,7 @@ fn scoped(
         .map(|event| ScopedProviderLifecycleEvent::new(scope.clone(), event))
         .collect()
 }
+
+#[cfg(test)]
+#[path = "provider_lifecycle_slot_test.rs"]
+mod provider_lifecycle_slot_tests;

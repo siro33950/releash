@@ -16,8 +16,6 @@ tauri-plugin-opener = { version = "2" }
 tauri-plugin-fs = { version = "2" }
 tauri-plugin-dialog = { version = "2" }
 tauri-plugin-updater = { version = "2" }
-tauri-plugin-wdio = { version = "1", optional = true }
-tauri-plugin-wdio-webdriver = { version = "1", optional = true }
 async-trait = "0.1"
 serde = { version = "1", features = ["derive", "rc"] }
 serde_json = { version = "1", features = ["raw_value"] }
@@ -38,11 +36,11 @@ objc2-foundation = { version = "0.3", default-features = false, features = ["std
 objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSDragging", "NSPasteboard", "NSPasteboardItem", "NSView", "NSWindow", "NSResponder"] }
 
 [features]
+test-support = ["releash-backend/test-support"]
 vendored-openssl = ["releash-backend/vendored-openssl"]
-performance = ["releash-backend/performance"]
-performance-wdio = ["performance", "dep:tauri-plugin-wdio", "dep:tauri-plugin-wdio-webdriver"]
 
 [dev-dependencies]
+releash-desktop = { path = ".", features = ["test-support"] }
 rusqlite = { version = "0.40", features = ["bundled", "hooks"] }
 axum = { version = "0.8", features = ["http2"] }
 git2 = "0.21"

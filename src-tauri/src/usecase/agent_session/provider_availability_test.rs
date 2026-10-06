@@ -1,106 +1,20 @@
-use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Barrier, Mutex};
+use std::sync::{Arc, Barrier};
 
 use crate::domain::agent_session::aggregates::{
     ProviderAvailability, ProviderExecutable, ProviderUnavailableReason, ResolvedProviderExecutable,
 };
 use crate::domain::agent_session::{
-    ProviderAvailabilityReader, ProviderExecutableConfigRepository,
-    ProviderExecutableConfigRepositoryError, ProviderExecutableProbeGateway,
+    ProviderAvailabilityReader, ProviderExecutableConfigRepository, ProviderExecutableProbeGateway,
     ProviderExecutableProbeGatewayError,
 };
 use crate::domain::provider_lifecycle::ProviderKind;
 
 use super::{ProviderAvailabilityUsecase, ProviderAvailabilityUsecaseError};
 
-#[derive(Default)]
-pub(crate) struct FakeProviderExecutableConfigRepository {
-    overrides: Mutex<HashMap<ProviderKind, ProviderExecutable>>,
-    fail_save: AtomicBool,
-}
-
-impl FakeProviderExecutableConfigRepository {
-    fn with_override(provider: ProviderKind, executable: &str) -> Self {
-        Self {
-            overrides: Mutex::new(HashMap::from([(
-                provider,
-                ProviderExecutable::new(executable).unwrap(),
-            )])),
-            fail_save: AtomicBool::new(false),
-        }
-    }
-
-    fn fail_save(&self) {
-        self.fail_save.store(true, Ordering::SeqCst);
-    }
-}
-
-impl ProviderExecutableConfigRepository for FakeProviderExecutableConfigRepository {
-    fn configured_executable(
-        &self,
-        provider: ProviderKind,
-    ) -> Result<Option<ProviderExecutable>, ProviderExecutableConfigRepositoryError> {
-        Ok(self.overrides.lock().unwrap().get(&provider).cloned())
-    }
-
-    fn save_configured_executable(
-        &self,
-        provider: ProviderKind,
-        executable: Option<&ProviderExecutable>,
-    ) -> Result<(), ProviderExecutableConfigRepositoryError> {
-        if self.fail_save.load(Ordering::SeqCst) {
-            return Err(ProviderExecutableConfigRepositoryError::Technical(
-                crate::domain::failure::TechnicalFailure {
-                    nature: crate::domain::failure::TechnicalFailureNature::Transient,
-                    message: "unavailable".into(),
-                },
-            ));
-        }
-        let mut overrides = self.overrides.lock().unwrap();
-        match executable {
-            Some(executable) => {
-                overrides.insert(provider, executable.clone());
-            }
-            None => {
-                overrides.remove(&provider);
-            }
-        }
-        Ok(())
-    }
-}
-
-#[derive(Default)]
-pub(crate) struct FakeProviderExecutableProbeGateway {
-    force_missing: AtomicBool,
-    refreshes: Mutex<usize>,
-}
-
-impl FakeProviderExecutableProbeGateway {
-    fn set_force_missing(&self, force_missing: bool) {
-        self.force_missing.store(force_missing, Ordering::SeqCst);
-    }
-}
-
-impl ProviderExecutableProbeGateway for FakeProviderExecutableProbeGateway {
-    fn resolve(&self, executable: &ProviderExecutable) -> ProviderAvailability {
-        if self.force_missing.load(Ordering::SeqCst) || executable.as_str().contains("missing") {
-            ProviderAvailability::unavailable(ProviderUnavailableReason::NotFound)
-        } else {
-            let resolved = if executable.as_str().starts_with('/') {
-                executable.as_str().into()
-            } else {
-                format!("/resolved/{}", executable.as_str()).into()
-            };
-            ProviderAvailability::available(ResolvedProviderExecutable::new(resolved).unwrap())
-        }
-    }
-
-    fn refresh_search_path(&self) -> Result<(), ProviderExecutableProbeGatewayError> {
-        *self.refreshes.lock().unwrap() += 1;
-        Ok(())
-    }
-}
+use super::super::test_helpers::{
+    FakeProviderExecutableConfigRepository, FakeProviderExecutableProbeGateway,
+};
 
 #[test]
 fn test_provider利用可否_初期化時にconfigとprobeから全providerのsnapshotを構築する() {
@@ -503,7 +417,7 @@ fn test_provider利用可否_四種類の利用不可理由を出力へ写す() 
 
 #[test]
 fn test_provider設定失敗_全変種から技術的な失敗だけを参照する() {
-    use super::provider_availability::ProviderAvailabilityUsecaseError as E;
+    use super::ProviderAvailabilityUsecaseError as E;
     use crate::domain::agent_session::{
         ProviderExecutableConfigRepositoryError as C, ProviderExecutableProbeGatewayError as P,
     };

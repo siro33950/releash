@@ -7,12 +7,12 @@ use crate::domain::terminal_surface::gateway::{
     TerminalSurfaceEventSource, TerminalSurfaceEventStream, TerminalSurfaceEventSubscription,
 };
 
-pub(crate) struct TerminalSurfaceEventSourceGateway {
+pub struct TerminalSurfaceEventSourceGateway {
     sender: tokio::sync::broadcast::Sender<TerminalSurfaceEvent>,
 }
 
 impl TerminalSurfaceEventSourceGateway {
-    pub(crate) fn new(sender: tokio::sync::broadcast::Sender<TerminalSurfaceEvent>) -> Self {
+    pub fn new(sender: tokio::sync::broadcast::Sender<TerminalSurfaceEvent>) -> Self {
         Self { sender }
     }
 }

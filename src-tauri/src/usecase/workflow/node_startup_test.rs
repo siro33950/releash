@@ -8,7 +8,12 @@ async fn retry_failed_nodes(
     gateway: &FakeStartup,
     failed: Vec<FailedNodeStart>,
 ) -> Result<(), NodeStartupError> {
-    super::retry_failed_nodes(gateway, failed, &crate::usecase::retry::test_retrying()).await
+    super::retry_failed_nodes(
+        gateway,
+        failed,
+        &crate::usecase::test_helpers::retry::test_retrying(),
+    )
+    .await
 }
 
 struct FakeStartup {
@@ -282,7 +287,7 @@ async fn test_node起動再試行_restartとstartに共通の20秒期限を適�
         let mut gateway = FakeStartup::new(0);
         gateway.pending_restart = pending_restart;
         gateway.pending_start = !pending_restart;
-        let (queue, store) = crate::test_support::retry::test_retrying_with_store();
+        let (queue, store) = crate::usecase::test_helpers::retry::test_retrying_with_store();
         let started = tokio::time::Instant::now();
         // When
         let failure = tokio::time::timeout(

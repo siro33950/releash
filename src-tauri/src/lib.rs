@@ -1,36 +1,37 @@
 mod adaptor;
-#[cfg(debug_assertions)]
-pub mod agent_session_tui_acceptance;
+#[cfg(feature = "test-support")]
+mod agent_session_tui_acceptance;
 pub mod cli;
-#[cfg(debug_assertions)]
-pub mod client_api_acceptance;
+#[cfg(feature = "test-support")]
+mod client_api_acceptance;
 mod common;
 mod domain;
 mod infrastructure;
-#[cfg(debug_assertions)]
-pub mod provider_lifecycle_acceptance;
-#[cfg(debug_assertions)]
-pub mod terminal_subscription_acceptance;
-#[cfg(debug_assertions)]
-pub mod workflow_control_plane_acceptance;
-#[cfg(debug_assertions)]
-pub mod workflow_delegate_acceptance;
-#[cfg(debug_assertions)]
-pub mod workflow_diagnostics_acceptance;
-pub mod terminal_surface {
+#[cfg(feature = "test-support")]
+mod provider_lifecycle_acceptance;
+#[cfg(feature = "test-support")]
+mod terminal_subscription_acceptance;
+#[cfg(feature = "test-support")]
+mod workflow_control_plane_acceptance;
+#[cfg(feature = "test-support")]
+mod workflow_delegate_acceptance;
+#[cfg(feature = "test-support")]
+mod workflow_diagnostics_acceptance;
+#[cfg(feature = "test-support")]
+mod terminal_surface {
     pub use crate::adaptor::controller::terminal_surface_runtime::{
         initialize_background_work_for_acceptance, BackgroundWork, TerminalSurfaceEventFault,
-        TerminalSurfaceEventFaultController, TerminalSurfaceRuntime,
+        TerminalSurfaceRuntime,
     };
     pub use crate::adaptor::presenter::terminal::{
-        GetOrSpawnTerminalV1, TerminalProcessLaunchV1, TerminalSurfaceOwnerV1,
-        TerminalSurfaceStreamItemV1, TerminalSurfaceV1,
+        TerminalProcessLaunchV1, TerminalSurfaceOwnerV1, TerminalSurfaceStreamItemV1,
+        TerminalSurfaceV1,
     };
 }
 pub mod desktop_api;
 // Test-only helpers are intentionally kept as a root module.
-#[cfg(test)]
-mod test_support;
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_support;
 mod usecase;
 
 pub fn run_daemon(data_dir: Option<std::path::PathBuf>) -> i32 {
@@ -84,5 +85,5 @@ pub fn run_background_worker() -> i32 {
     adaptor::controller::background_worker::run()
 }
 
-#[cfg(any(test, debug_assertions))]
+#[cfg(any(test, feature = "test-support"))]
 mod acceptance_test_support;

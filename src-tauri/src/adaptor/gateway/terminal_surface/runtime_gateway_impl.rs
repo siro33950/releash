@@ -1,5 +1,5 @@
 use parking_lot::{Condvar, Mutex};
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 use std::sync::mpsc;
 use std::sync::Arc;
 use std::time::Instant;
@@ -36,21 +36,19 @@ use crate::infrastructure::terminal::utf8_decoder::decode_utf8_chunk;
 use crate::usecase::failure::WorkFailure;
 
 pub(crate) struct AttachedTerminalRuntime {
-    native_pty: NativePtyRuntime,
-    output: Option<NativePtyOutput>,
-    event_order: Arc<TerminalSurfaceEventOrder>,
-    terminal_surface: Arc<Mutex<NativeTerminalEmulator>>,
-    checkpoint_scheduler: Option<CheckpointScheduler>,
-    session_key: String,
-    output_drained: Arc<(Mutex<bool>, Condvar)>,
-    checkpoint_journal: Option<Arc<Mutex<IncrementalCheckpointJournal>>>,
-    checkpoint_store: Option<TerminalCheckpointFileStore>,
-    checkpoint_io: Option<Arc<Mutex<()>>>,
-    pending_input_traces:
-        Arc<Mutex<VecDeque<crate::infrastructure::telemetry::metrics::TerminalInputTraceKey>>>,
+    pub(super) native_pty: NativePtyRuntime,
+    pub(super) output: Option<NativePtyOutput>,
+    pub(super) event_order: Arc<TerminalSurfaceEventOrder>,
+    pub(super) terminal_surface: Arc<Mutex<NativeTerminalEmulator>>,
+    pub(super) checkpoint_scheduler: Option<CheckpointScheduler>,
+    pub(super) session_key: String,
+    pub(super) output_drained: Arc<(Mutex<bool>, Condvar)>,
+    pub(super) checkpoint_journal: Option<Arc<Mutex<IncrementalCheckpointJournal>>>,
+    pub(super) checkpoint_store: Option<TerminalCheckpointFileStore>,
+    pub(super) checkpoint_io: Option<Arc<Mutex<()>>>,
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub type TerminalSurfaceRuntimeGateway = TerminalSurfaceRuntimeGatewayFor;
 
 pub struct TerminalSurfaceRuntimeGatewayFor {
@@ -60,22 +58,22 @@ pub struct TerminalSurfaceRuntimeGatewayFor {
     registry: Arc<Mutex<TerminalSurfaceRegistry>>,
     input_ingress: Mutex<TerminalSurfaceInputIngressRegistry>,
     spawn_resolved: Condvar,
-    runtimes: Mutex<HashMap<u64, AttachedTerminalRuntime>>,
+    pub(super) runtimes: Mutex<HashMap<u64, AttachedTerminalRuntime>>,
     native_pty: NativePtySystem,
     journal_enabled: bool,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     snapshot_materialization_count: std::sync::atomic::AtomicUsize,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) before_output_order: Mutex<Option<Box<dyn FnOnce() + Send>>>,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) during_output_order: Mutex<Option<Box<dyn FnOnce() + Send>>>,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) after_output_order: Mutex<Option<Box<dyn FnOnce() + Send>>>,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     test_output_orders: Mutex<HashMap<u64, Arc<TerminalSurfaceEventOrder>>>,
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 impl Default for TerminalSurfaceRuntimeGatewayFor {
     fn default() -> Self {
         Self {
@@ -89,13 +87,13 @@ impl Default for TerminalSurfaceRuntimeGatewayFor {
             native_pty: NativePtySystem,
             journal_enabled: true,
             snapshot_materialization_count: std::sync::atomic::AtomicUsize::new(0),
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             before_output_order: Mutex::new(None),
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             during_output_order: Mutex::new(None),
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             after_output_order: Mutex::new(None),
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             test_output_orders: Mutex::new(HashMap::new()),
         }
     }
@@ -112,7 +110,7 @@ fn process_pty_output(raw_chunk: &[u8], pending: &mut Vec<u8>) -> Option<String>
     Some(result.filtered_output)
 }
 
-fn to_domain_checkpoint(checkpoint: &NativeTerminalCheckpoint) -> DomainTerminalCheckpoint {
+pub fn to_domain_checkpoint(checkpoint: &NativeTerminalCheckpoint) -> DomainTerminalCheckpoint {
     DomainTerminalCheckpoint {
         replay: checkpoint.replay.clone(),
         sequence: checkpoint.sequence,
@@ -190,7 +188,7 @@ fn compact_checkpoint(
     Ok(())
 }
 
-const CHECKPOINT_JOURNAL_COMPACTION_BYTES: u64 = 2 * 1024 * 1024;
+pub const CHECKPOINT_JOURNAL_COMPACTION_BYTES: u64 = 2 * 1024 * 1024;
 
 fn flush_incremental_checkpoint(
     store: &TerminalCheckpointFileStore,
@@ -258,7 +256,7 @@ impl Drop for PendingFlush {
 type CheckpointFlush = Arc<dyn Fn() -> Result<(), WorkFailure> + Send + Sync>;
 
 #[derive(Clone)]
-struct CheckpointScheduler {
+pub(super) struct CheckpointScheduler {
     dirty: Arc<dyn Fn(&str) + Send + Sync>,
     session_key: String,
     flush: CheckpointFlush,
@@ -334,7 +332,7 @@ impl BackgroundCheckpoint {
 }
 
 #[derive(Default)]
-struct TerminalSurfaceEventOrder {
+pub(super) struct TerminalSurfaceEventOrder {
     serialization: Mutex<()>,
 }
 
@@ -365,30 +363,18 @@ struct TerminalOutputReaderContext {
     checkpoint_journal: Option<Arc<Mutex<IncrementalCheckpointJournal>>>,
     journal_enabled: bool,
     first_provider_byte_started_at: Instant,
-    pending_input_traces:
-        Arc<Mutex<VecDeque<crate::infrastructure::telemetry::metrics::TerminalInputTraceKey>>>,
 }
 
 enum TerminalOutputCommand {
-    Data {
-        data: String,
-        input_traces: Vec<crate::infrastructure::telemetry::metrics::TerminalInputTraceKey>,
-    },
+    Data { data: String },
     Exit(Option<i32>),
 }
 
 const OUTPUT_READER_QUEUE_CAPACITY: usize = 256;
 
-fn publish_terminal_output(
-    context: &TerminalOutputReaderContext,
-    data: String,
-    input_traces: Vec<crate::infrastructure::telemetry::metrics::TerminalInputTraceKey>,
-) {
-    for trace in &input_traces {
-        crate::infrastructure::telemetry::metrics::record_terminal_input_model_apply(trace);
-    }
+fn publish_terminal_output(context: &TerminalOutputReaderContext, data: String) {
     let data: Arc<str> = Arc::from(data);
-    let published = context
+    context
         .event_order
         .advance_and_publish(context.event_sink.as_deref(), || {
             let sequence = {
@@ -427,11 +413,6 @@ fn publish_terminal_output(
                 },
             ))
         });
-    if published.is_some() {
-        for trace in &input_traces {
-            crate::infrastructure::telemetry::metrics::record_terminal_input_event_publish(trace);
-        }
-    }
 }
 
 fn publish_terminal_exit(context: &TerminalOutputReaderContext, exit_code: Option<i32>) {
@@ -481,7 +462,6 @@ fn run_output_processor(
     context: TerminalOutputReaderContext,
 ) {
     let mut batcher = TerminalOutputBatcher::default();
-    let mut pending_input_traces = Vec::new();
     loop {
         if let Some(sink) = &context.event_sink {
             sink.wait_output(&context.session_key);
@@ -494,44 +474,27 @@ fn run_output_processor(
             None => receiver.recv().map_err(|_| Some(())),
         };
         match command {
-            Ok(TerminalOutputCommand::Data { data, input_traces }) => {
-                pending_input_traces.extend(input_traces);
+            Ok(TerminalOutputCommand::Data { data }) => {
                 let now = Instant::now();
                 for ready in batcher.push(now, data) {
-                    publish_terminal_output(
-                        &context,
-                        ready,
-                        std::mem::take(&mut pending_input_traces),
-                    );
+                    publish_terminal_output(&context, ready);
                 }
             }
             Ok(TerminalOutputCommand::Exit(exit_code)) => {
                 if let Some(ready) = batcher.flush() {
-                    publish_terminal_output(
-                        &context,
-                        ready,
-                        std::mem::take(&mut pending_input_traces),
-                    );
+                    publish_terminal_output(&context, ready);
                 }
                 publish_terminal_exit(&context, exit_code);
                 break;
             }
             Err(None) => {
                 if let Some(ready) = batcher.flush_due(Instant::now()) {
-                    publish_terminal_output(
-                        &context,
-                        ready,
-                        std::mem::take(&mut pending_input_traces),
-                    );
+                    publish_terminal_output(&context, ready);
                 }
             }
             Err(Some(())) => {
                 if let Some(ready) = batcher.flush() {
-                    publish_terminal_output(
-                        &context,
-                        ready,
-                        std::mem::take(&mut pending_input_traces),
-                    );
+                    publish_terminal_output(&context, ready);
                 }
                 break;
             }
@@ -545,7 +508,6 @@ fn run_output_processor(
 fn spawn_output_reader(mut output: NativePtyOutput, context: TerminalOutputReaderContext) {
     let (sender, receiver) = mpsc::sync_channel(OUTPUT_READER_QUEUE_CAPACITY);
     let first_provider_byte_started_at = context.first_provider_byte_started_at;
-    let pending_input_traces = Arc::clone(&context.pending_input_traces);
     let event_sink = context.event_sink.clone();
     let session_key = context.session_key.clone();
     std::thread::spawn(move || run_output_processor(receiver, context));
@@ -568,16 +530,8 @@ fn spawn_output_reader(mut output: NativePtyOutput, context: TerminalOutputReade
                         );
                     }
                     if let Some(filtered) = process_pty_output(&buf[..n], &mut pending) {
-                        let input_traces =
-                            pending_input_traces.lock().drain(..).collect::<Vec<_>>();
-                        for trace in &input_traces {
-                            crate::infrastructure::telemetry::metrics::record_terminal_input_output_read(trace);
-                        }
                         if sender
-                            .send(TerminalOutputCommand::Data {
-                                data: filtered,
-                                input_traces,
-                            })
+                            .send(TerminalOutputCommand::Data { data: filtered })
                             .is_err()
                         {
                             return;
@@ -603,7 +557,7 @@ fn wait_for_output_drain(output_drained: &Arc<(Mutex<bool>, Condvar)>) {
 }
 
 impl TerminalSurfaceRuntimeGatewayFor {
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn new(data_dir: std::path::PathBuf) -> Self {
         Self {
             checkpoint_dirty: Arc::new(|_| {}),
@@ -616,13 +570,13 @@ impl TerminalSurfaceRuntimeGatewayFor {
             native_pty: NativePtySystem,
             journal_enabled: true,
             snapshot_materialization_count: std::sync::atomic::AtomicUsize::new(0),
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             before_output_order: Mutex::new(None),
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             during_output_order: Mutex::new(None),
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             after_output_order: Mutex::new(None),
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             test_output_orders: Mutex::new(HashMap::new()),
         }
     }
@@ -643,15 +597,15 @@ impl TerminalSurfaceRuntimeGatewayFor {
             runtimes: Mutex::new(HashMap::new()),
             native_pty: NativePtySystem,
             journal_enabled,
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             snapshot_materialization_count: std::sync::atomic::AtomicUsize::new(0),
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             before_output_order: Mutex::new(None),
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             during_output_order: Mutex::new(None),
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             after_output_order: Mutex::new(None),
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             test_output_orders: Mutex::new(HashMap::new()),
         }
     }
@@ -681,7 +635,6 @@ impl TerminalSurfaceRuntimeGatewayFor {
         &self,
         session_key: &str,
         data: &str,
-        input_trace: Option<crate::infrastructure::telemetry::metrics::TerminalInputTraceKey>,
     ) -> Result<(), TerminalSurfaceGatewayError> {
         let runtime_generation = {
             let registry = self.registry.lock();
@@ -701,23 +654,10 @@ impl TerminalSurfaceRuntimeGatewayFor {
         let runtime = runtimes.get(&runtime_generation).ok_or_else(|| {
             TerminalSurfaceGatewayError::NotFound(format!("PTY {} not found", runtime_generation))
         })?;
-        if let Some(trace) = &input_trace {
-            crate::infrastructure::telemetry::metrics::record_terminal_input_writer_enqueue(
-                trace.attachment_id(),
-                trace.sequence(),
-            );
-            runtime.pending_input_traces.lock().push_back(trace.clone());
-        }
-        if let Err(error) = runtime.native_pty.write(data.as_bytes()) {
-            if let Some(trace) = &input_trace {
-                runtime
-                    .pending_input_traces
-                    .lock()
-                    .retain(|pending| pending != trace);
-            }
-            return Err(pty_failure(error));
-        }
-        Ok(())
+        runtime
+            .native_pty
+            .write(data.as_bytes())
+            .map_err(pty_failure)
     }
 
     fn materialize_surface(&self, runtime_generation: u64) -> Option<TerminalSurface> {
@@ -916,7 +856,6 @@ impl TerminalSurfaceGateway for TerminalSurfaceRuntimeGatewayFor {
             checkpoint_journal: Some(checkpoint_journal),
             checkpoint_store: Some(checkpoint_store),
             checkpoint_io: Some(checkpoint_io),
-            pending_input_traces: Arc::new(Mutex::new(VecDeque::new())),
         };
         let mut runtimes = self.runtimes.lock();
         if runtimes.contains_key(&runtime_generation) {
@@ -935,7 +874,7 @@ impl TerminalSurfaceGateway for TerminalSurfaceRuntimeGatewayFor {
     }
 
     fn insert_surface(&self, surface: TerminalSurface) {
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         self.test_output_orders
             .lock()
             .entry(surface.runtime_generation.value())
@@ -960,7 +899,6 @@ impl TerminalSurfaceGateway for TerminalSurfaceRuntimeGatewayFor {
             session_key,
             output_drained,
             checkpoint_journal,
-            pending_input_traces,
         ) = {
             let mut runtimes = self.runtimes.lock();
             let runtime = runtimes.get_mut(&runtime_generation).ok_or_else(|| {
@@ -983,7 +921,6 @@ impl TerminalSurfaceGateway for TerminalSurfaceRuntimeGatewayFor {
                 runtime.session_key.clone(),
                 Arc::clone(&runtime.output_drained),
                 runtime.checkpoint_journal.clone(),
-                Arc::clone(&runtime.pending_input_traces),
             )
         };
         spawn_output_reader(
@@ -1000,21 +937,20 @@ impl TerminalSurfaceGateway for TerminalSurfaceRuntimeGatewayFor {
                 checkpoint_journal,
                 journal_enabled: self.journal_enabled,
                 first_provider_byte_started_at: Instant::now(),
-                pending_input_traces,
             },
         );
         Ok(())
     }
 
     fn snapshot(&self, runtime_generation: u64) -> Option<TerminalSurface> {
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         self.snapshot_materialization_count
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         self.materialize_surface(runtime_generation)
     }
 
     fn with_output_order(&self, runtime_generation: u64, visit: &mut dyn FnMut()) -> bool {
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         {
             let before = self.before_output_order.lock().take();
             if let Some(before) = before {
@@ -1026,7 +962,7 @@ impl TerminalSurfaceGateway for TerminalSurfaceRuntimeGatewayFor {
             .lock()
             .get(&runtime_generation)
             .map(|runtime| runtime.event_order.clone());
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         let order = order.or_else(|| {
             self.test_output_orders
                 .lock()
@@ -1037,13 +973,13 @@ impl TerminalSurfaceGateway for TerminalSurfaceRuntimeGatewayFor {
             return false;
         };
         let _order = order.serialization.lock();
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         if let Some(during) = self.during_output_order.lock().take() {
             during();
         }
         visit();
         drop(_order);
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         {
             let after = self.after_output_order.lock().take();
             if let Some(after) = after {
@@ -1061,7 +997,7 @@ impl TerminalSurfaceGateway for TerminalSurfaceRuntimeGatewayFor {
 
     fn remove_surface(&self, runtime_generation: u64) -> Option<TerminalSurface> {
         self.runtimes.lock().remove(&runtime_generation);
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         self.test_output_orders.lock().remove(&runtime_generation);
         let (removed, active_count, subscribed) = {
             let mut registry = self.registry.lock();
@@ -1134,14 +1070,7 @@ impl TerminalSurfaceGateway for TerminalSurfaceRuntimeGatewayFor {
             }
         };
         for index in 0..ready.len() {
-            let result = self.write_runtime(
-                session_key,
-                &ready[index].data,
-                crate::infrastructure::telemetry::metrics::terminal_input_trace_key(
-                    attachment_id,
-                    ready[index].sequence,
-                ),
-            );
+            let result = self.write_runtime(session_key, &ready[index].data);
             if let Err(error) = result {
                 let failed = ready.split_off(index);
                 let _ = ingress.restore_failed(session_key, attachment_id, failed);
@@ -1165,7 +1094,7 @@ impl TerminalSurfaceGateway for TerminalSurfaceRuntimeGatewayFor {
     }
 
     fn write(&self, session_key: &str, data: &str) -> Result<(), TerminalSurfaceGatewayError> {
-        self.write_runtime(session_key, data, None)
+        self.write_runtime(session_key, data)
     }
 
     fn resize(
@@ -1404,3 +1333,7 @@ fn checkpoint_work_failure(error: WorkFailure) -> TerminalSurfaceGatewayError {
 #[cfg(test)]
 #[path = "runtime_gateway_impl_test.rs"]
 mod runtime_gateway_impl_tests;
+
+#[cfg(feature = "test-support")]
+#[path = "runtime_gateway_test_support.rs"]
+pub(crate) mod test_support;

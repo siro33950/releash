@@ -58,7 +58,7 @@ pub(crate) fn open_settings() -> Result<(), String> {
     Err("Login items require macOS.".into())
 }
 
-pub(crate) fn registration_location(executable: &std::path::Path) -> Result<(bool, bool), String> {
+pub fn registration_location(executable: &std::path::Path) -> Result<(bool, bool), String> {
     let translocated = executable
         .components()
         .any(|part| part.as_os_str() == "AppTranslocation");
@@ -77,7 +77,3 @@ pub(crate) fn registration_location(executable: &std::path::Path) -> Result<(boo
     let read_only = false;
     Ok((translocated, read_only))
 }
-
-#[cfg(test)]
-#[path = "login_item_test.rs"]
-mod login_item_tests;

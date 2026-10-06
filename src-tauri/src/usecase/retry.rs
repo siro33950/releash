@@ -95,8 +95,5 @@ impl Retrying {
 }
 
 #[cfg(test)]
-pub(crate) use crate::test_support::retry::{shared, test_retrying};
-
-#[cfg(test)]
 #[path = "retry_test.rs"]
 mod retry_tests;

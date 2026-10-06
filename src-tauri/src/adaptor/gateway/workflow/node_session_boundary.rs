@@ -11,10 +11,10 @@ use crate::usecase::agent_session::{
 use crate::usecase::workflow::runtime_error::WorkflowRuntimeError;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct WorkflowSessionLaunchConfig {
-    pub(crate) provider: ProviderKind,
-    pub(crate) model: Option<String>,
-    pub(crate) permission: Option<crate::domain::workflow::SessionPermission>,
+pub struct WorkflowSessionLaunchConfig {
+    pub provider: ProviderKind,
+    pub model: Option<String>,
+    pub permission: Option<crate::domain::workflow::SessionPermission>,
 }
 
 impl WorkflowSessionLaunchConfig {
@@ -28,12 +28,12 @@ impl WorkflowSessionLaunchConfig {
 }
 
 /// 起動済み Workflow AgentSession の識別情報。
-pub(crate) struct NodeSessionInfo {
-    pub(crate) id: String,
+pub struct NodeSessionInfo {
+    pub id: String,
 }
 
 #[async_trait::async_trait]
-pub(crate) trait WorkflowAgentSessionPort: Send + Sync {
+pub trait WorkflowAgentSessionPort: Send + Sync {
     fn is_provider_available(&self, provider: ProviderKind) -> bool;
 
     async fn prepare_workflow_agent_session(
@@ -89,7 +89,7 @@ pub(crate) trait WorkflowAgentSessionPort: Send + Sync {
     ) -> Result<(), WorkflowRuntimeError>;
 }
 
-pub(crate) struct ProviderWorkflowAgentSessionPort {
+pub struct ProviderWorkflowAgentSessionPort {
     launch: Arc<AgentSessionLaunchUsecase>,
     initial_instruction: Arc<AgentSessionInitialInstructionUsecase>,
     lifecycle: Arc<AgentSessionLifecycleUsecase>,
@@ -108,7 +108,7 @@ fn activation_error(
 }
 
 impl ProviderWorkflowAgentSessionPort {
-    pub(crate) fn new(
+    pub fn new(
         launch: Arc<AgentSessionLaunchUsecase>,
         initial_instruction: Arc<AgentSessionInitialInstructionUsecase>,
         lifecycle: Arc<AgentSessionLifecycleUsecase>,

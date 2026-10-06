@@ -61,19 +61,14 @@ fn test_completion保存形式_要求をmapにし要求なしはnodeから省略
 }
 
 #[test]
-fn test_completion保存形式_旧形式と不正な要求を拒否する() {
+fn test_completion保存形式_不正な型と要求を拒否する() {
     // Given
     for (value, expected) in [
-        (json!("auto"), CompletionShapeError::ExpectedMap),
-        (json!("approval"), CompletionShapeError::ExpectedMap),
+        (json!("unknown"), CompletionShapeError::ExpectedMap),
         (json!(null), CompletionShapeError::ExpectedMap),
         (json!(true), CompletionShapeError::ExpectedMap),
         (json!([]), CompletionShapeError::ExpectedMap),
         (json!({}), CompletionShapeError::Empty),
-        (
-            json!({"require": "auto"}),
-            CompletionShapeError::InvalidRequirement,
-        ),
         (
             json!({"require": "unknown"}),
             CompletionShapeError::InvalidRequirement,

@@ -11,13 +11,13 @@ struct Entry<T> {
     fetched_at: Instant,
 }
 
-pub(crate) struct InMemoryTtlCache<T> {
+pub struct InMemoryTtlCache<T> {
     ttl: CacheTtl,
     entries: Mutex<HashMap<String, Entry<T>>>,
 }
 
 impl<T> InMemoryTtlCache<T> {
-    pub(crate) fn new(ttl: CacheTtl) -> Self {
+    pub fn new(ttl: CacheTtl) -> Self {
         Self {
             ttl,
             entries: Mutex::new(HashMap::new()),
@@ -56,7 +56,7 @@ where
 
 /// Repository ごとに、最後に取れた PR の状態を持つ。期限では捨てない。
 #[derive(Default)]
-pub(crate) struct LatestPrStatuses {
+pub struct LatestPrStatuses {
     entries: Mutex<HashMap<String, CachedResult<PrStatus>>>,
 }
 

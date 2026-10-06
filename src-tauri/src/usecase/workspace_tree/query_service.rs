@@ -6,7 +6,7 @@ use crate::usecase::workflow::WorkspaceNodeDetailDto;
 
 /// The one backend-owned read contract shared by every client surface.
 #[async_trait::async_trait]
-pub(crate) trait WorkspaceQueryService: Send + Sync {
+pub trait WorkspaceQueryService: Send + Sync {
     async fn node_detail(
         &self,
         workspace_identity: &WorkspaceIdentity,

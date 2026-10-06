@@ -11,7 +11,7 @@ pub struct TerminalRegistration {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum TerminalSurfaceOutputEvent {
+pub enum TerminalSurfaceOutputEvent {
     Output {
         session_key: String,
         data: Arc<str>,

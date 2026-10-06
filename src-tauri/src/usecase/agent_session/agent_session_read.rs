@@ -6,7 +6,7 @@ use super::{
 };
 
 #[async_trait::async_trait]
-pub(crate) trait AgentSessionGarbageCollectionPort: Send + Sync {
+pub trait AgentSessionGarbageCollectionPort: Send + Sync {
     async fn terminal_presence(
         &self,
         agent_session_id: &str,
@@ -48,7 +48,7 @@ impl AgentSessionGarbageCollectionPort for AgentSessionLifecycleUsecase {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum AgentSessionReadUsecaseError {
+pub enum AgentSessionReadUsecaseError {
     Lifecycle(AgentSessionLifecycleUsecaseError),
     Store(crate::domain::failure::StorageFailure),
     InvalidRequest,
@@ -56,14 +56,14 @@ pub(crate) enum AgentSessionReadUsecaseError {
     Corrupt,
 }
 
-pub(crate) struct AgentSessionReadUsecase {
+pub struct AgentSessionReadUsecase {
     identities: Arc<dyn crate::domain::identity::IdentityIssuer>,
     query: Arc<dyn AgentSessionQueryService>,
     garbage_collection: Arc<dyn AgentSessionGarbageCollectionPort>,
 }
 
 impl AgentSessionReadUsecase {
-    pub(crate) fn new(
+    pub fn new(
         identities: Arc<dyn crate::domain::identity::IdentityIssuer>,
         query: Arc<dyn AgentSessionQueryService>,
         garbage_collection: Arc<dyn AgentSessionGarbageCollectionPort>,
@@ -143,3 +143,7 @@ fn map_lifecycle_error(error: AgentSessionLifecycleUsecaseError) -> AgentSession
         }
     }
 }
+
+#[cfg(test)]
+#[path = "agent_session_read_test.rs"]
+mod agent_session_read_tests;

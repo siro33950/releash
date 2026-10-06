@@ -9,14 +9,14 @@ use crate::domain::workspace_tree::WorkspaceIdentity;
 use super::super::{AgentSessionDisplayName, AgentSessionDisplayNameError};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum AgentSessionLifecycle {
+pub enum AgentSessionLifecycle {
     Open,
     Paused,
     Archived,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum AgentSessionLifecycleEvent {
+pub enum AgentSessionLifecycleEvent {
     Created {
         id: String,
         workspace: WorkspaceIdentity,
@@ -49,21 +49,21 @@ pub(crate) enum AgentSessionLifecycleEvent {
 
 /// AgentSession が属する実行木と NodeExecution の必須の所在。
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct AgentSessionTreeLocation {
+pub struct AgentSessionTreeLocation {
     tree_id: String,
     node_execution_id: String,
     launched_as: ExecutionTreeLaunch,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum AgentSessionTreeLocationError {
+pub enum AgentSessionTreeLocationError {
     EmptyTreeId,
     EmptyNodeExecutionId,
     SessionTreeRootIdentityMismatch,
 }
 
 impl AgentSessionTreeLocation {
-    pub(crate) fn session_tree_root(
+    pub fn session_tree_root(
         agent_session_id: impl Into<String>,
     ) -> Result<Self, AgentSessionTreeLocationError> {
         let agent_session_id = agent_session_id.into();
@@ -95,7 +95,7 @@ impl AgentSessionTreeLocation {
         Self::new(tree_id, node_execution_id, launched_as)
     }
 
-    pub(crate) fn workflow_node(
+    pub fn workflow_node(
         tree_id: impl Into<String>,
         node_execution_id: impl Into<String>,
     ) -> Result<Self, AgentSessionTreeLocationError> {
@@ -164,7 +164,7 @@ impl AgentSessionTreeLocation {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum AgentSessionCreationError {
+pub enum AgentSessionCreationError {
     Identity,
     Workspace,
     Worktree,
@@ -172,31 +172,31 @@ pub(crate) enum AgentSessionCreationError {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum AgentSessionMutationOutcome {
+pub enum AgentSessionMutationOutcome {
     Applied,
     AlreadyApplied,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum AgentSessionRecoveryResult {
+pub enum AgentSessionRecoveryResult {
     Succeeded,
     Failed,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum AgentSessionInitialInstructionOutcome {
+pub enum AgentSessionInitialInstructionOutcome {
     Admitted,
     AlreadyAdmitted,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum AgentSessionInitialInstructionError {
+pub enum AgentSessionInitialInstructionError {
     NotWorkflowOwned,
     EmptyRequestId,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum AgentSessionAssociationError {
+pub enum AgentSessionAssociationError {
     EmptyProviderSessionId,
     EmptyTranscriptReference,
     ProviderSessionMismatch,
@@ -204,7 +204,7 @@ pub(crate) enum AgentSessionAssociationError {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum AgentSessionProcessExitOutcome {
+pub enum AgentSessionProcessExitOutcome {
     Paused,
     AlreadyPaused,
     AlreadyArchived,
@@ -212,18 +212,18 @@ pub(crate) enum AgentSessionProcessExitOutcome {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum AgentSessionArchiveOutcome {
+pub enum AgentSessionArchiveOutcome {
     Archived,
     AlreadyArchived,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum AgentSessionArchiveError {
+pub enum AgentSessionArchiveError {
     WorkflowOwned,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum AgentSessionRecoveryError {
+pub enum AgentSessionRecoveryError {
     WorkflowOwned,
     NotArchived,
     NotPaused,
@@ -236,14 +236,14 @@ pub(crate) enum AgentSessionExecutionTreeNodeStopError {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum AgentSessionRemovalAuthorization {
+pub enum AgentSessionRemovalAuthorization {
     ExplicitDelete,
     GarbageCollection,
     WorkflowLaunchRollback,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ManagedPtyPresence {
+pub enum ManagedPtyPresence {
     ConfirmedAbsent,
     Live,
     Unknown,
@@ -260,10 +260,10 @@ pub(crate) enum AgentSessionOpenAction {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct AgentSessionOperations {
-    pub(crate) can_archive: bool,
-    pub(crate) can_restore: bool,
-    pub(crate) can_delete: bool,
+pub struct AgentSessionOperations {
+    pub can_archive: bool,
+    pub can_restore: bool,
+    pub can_delete: bool,
 }
 
 pub(crate) fn derive_agent_session_operations(
@@ -279,7 +279,7 @@ pub(crate) fn derive_agent_session_operations(
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum AgentSessionRemovalError {
+pub enum AgentSessionRemovalError {
     NotWorkflowOwned,
     WorkflowOwned,
     NotArchived,
@@ -289,7 +289,7 @@ pub(crate) enum AgentSessionRemovalError {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct AgentSession {
+pub struct AgentSession {
     id: String,
     workspace: WorkspaceIdentity,
     worktree_path: String,
@@ -309,7 +309,7 @@ pub(crate) struct AgentSession {
 }
 
 impl AgentSession {
-    pub(crate) fn create(
+    pub fn create(
         id: impl Into<String>,
         workspace: WorkspaceIdentity,
         worktree_path: impl Into<String>,
@@ -383,36 +383,36 @@ impl AgentSession {
         self.provider_session_title = provider_session_title;
     }
 
-    pub(crate) fn id(&self) -> &str {
+    pub fn id(&self) -> &str {
         &self.id
     }
 
-    pub(crate) fn workspace(&self) -> &WorkspaceIdentity {
+    pub fn workspace(&self) -> &WorkspaceIdentity {
         &self.workspace
     }
 
-    pub(crate) fn worktree_path(&self) -> &str {
+    pub fn worktree_path(&self) -> &str {
         &self.worktree_path
     }
 
-    pub(crate) fn provider(&self) -> ProviderKind {
+    pub fn provider(&self) -> ProviderKind {
         self.provider
     }
 
-    pub(crate) fn tree_location(&self) -> &AgentSessionTreeLocation {
+    pub fn tree_location(&self) -> &AgentSessionTreeLocation {
         &self.tree_location
     }
 
-    pub(crate) fn lifecycle(&self) -> AgentSessionLifecycle {
+    pub fn lifecycle(&self) -> AgentSessionLifecycle {
         self.lifecycle
     }
 
-    #[cfg(test)]
-    pub(crate) fn activity(&self) -> AgentSessionActivity {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn activity(&self) -> AgentSessionActivity {
         self.activity
     }
 
-    pub(crate) fn observe_activity(
+    pub fn observe_activity(
         &mut self,
         activity: AgentSessionActivity,
     ) -> AgentSessionMutationOutcome {
@@ -425,7 +425,7 @@ impl AgentSession {
         AgentSessionMutationOutcome::Applied
     }
 
-    pub(crate) fn rename(
+    pub fn rename(
         &mut self,
         name: impl Into<String>,
     ) -> Result<AgentSessionMutationOutcome, AgentSessionDisplayNameError> {
@@ -439,7 +439,7 @@ impl AgentSession {
         Ok(AgentSessionMutationOutcome::Applied)
     }
 
-    pub(crate) fn observe_provider_session_title(
+    pub fn observe_provider_session_title(
         &mut self,
         title: impl Into<String>,
     ) -> Result<AgentSessionMutationOutcome, AgentSessionDisplayNameError> {
@@ -453,30 +453,30 @@ impl AgentSession {
         Ok(AgentSessionMutationOutcome::Applied)
     }
 
-    pub(crate) fn manual_name(&self) -> Option<&str> {
+    pub fn manual_name(&self) -> Option<&str> {
         self.manual_name
             .as_ref()
             .map(AgentSessionDisplayName::as_str)
     }
 
-    pub(crate) fn provider_session_title(&self) -> Option<&str> {
+    pub fn provider_session_title(&self) -> Option<&str> {
         self.provider_session_title
             .as_ref()
             .map(AgentSessionDisplayName::as_str)
     }
 
-    pub(crate) fn operations(&self) -> AgentSessionOperations {
+    pub fn operations(&self) -> AgentSessionOperations {
         derive_agent_session_operations(
             self.tree_location.launched_as,
             self.lifecycle == AgentSessionLifecycle::Archived,
         )
     }
 
-    pub(crate) fn uncommitted_events(&self) -> &[AgentSessionLifecycleEvent] {
+    pub fn uncommitted_events(&self) -> &[AgentSessionLifecycleEvent] {
         &self.uncommitted_events
     }
 
-    pub(crate) fn take_uncommitted_events(&mut self) -> Vec<AgentSessionLifecycleEvent> {
+    pub fn take_uncommitted_events(&mut self) -> Vec<AgentSessionLifecycleEvent> {
         std::mem::take(&mut self.uncommitted_events)
     }
 
@@ -484,7 +484,7 @@ impl AgentSession {
         TerminalSurfaceOwner::session_from_validated(self.workspace.clone(), &self.id)
     }
 
-    pub(crate) fn associate_provider_session(
+    pub fn associate_provider_session(
         &mut self,
         provider_session_id: impl Into<String>,
         transcript_ref: Option<&str>,
@@ -525,19 +525,19 @@ impl AgentSession {
         Ok(AgentSessionMutationOutcome::Applied)
     }
 
-    pub(crate) fn provider_session_id(&self) -> Option<&str> {
+    pub fn provider_session_id(&self) -> Option<&str> {
         self.provider_session_id.as_deref()
     }
 
-    pub(crate) fn transcript_ref(&self) -> Option<&str> {
+    pub fn transcript_ref(&self) -> Option<&str> {
         self.transcript_ref.as_deref()
     }
 
-    pub(crate) fn initial_instruction_admitted(&self) -> bool {
+    pub fn initial_instruction_admitted(&self) -> bool {
         self.initial_instruction_admitted
     }
 
-    pub(crate) fn last_exit_abnormal(&self) -> bool {
+    pub fn last_exit_abnormal(&self) -> bool {
         self.last_exit_abnormal
     }
 
@@ -565,7 +565,7 @@ impl AgentSession {
         }
     }
 
-    pub(crate) fn observe_provider_process_exit(
+    pub fn observe_provider_process_exit(
         &mut self,
         exit_code: Option<i32>,
     ) -> AgentSessionProcessExitOutcome {
@@ -611,10 +611,8 @@ impl AgentSession {
         })
     }
 
-    #[cfg(test)]
-    pub(crate) fn archive(
-        &mut self,
-    ) -> Result<AgentSessionArchiveOutcome, AgentSessionArchiveError> {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn archive(&mut self) -> Result<AgentSessionArchiveOutcome, AgentSessionArchiveError> {
         let outcome = self.authorize_archive()?;
         if outcome == AgentSessionArchiveOutcome::Archived {
             self.lifecycle = AgentSessionLifecycle::Archived;
@@ -627,7 +625,7 @@ impl AgentSession {
         Ok(outcome)
     }
 
-    pub(crate) fn complete_resume(
+    pub fn complete_resume(
         &mut self,
         result: AgentSessionRecoveryResult,
     ) -> Result<AgentSessionMutationOutcome, AgentSessionRecoveryError> {
@@ -679,7 +677,7 @@ impl AgentSession {
             && self.lifecycle == AgentSessionLifecycle::Open
     }
 
-    pub(crate) fn admit_initial_instruction(
+    pub fn admit_initial_instruction(
         &mut self,
     ) -> Result<AgentSessionInitialInstructionOutcome, AgentSessionInitialInstructionError> {
         if self.tree_location.launched_as != ExecutionTreeLaunch::Workflow {
@@ -696,7 +694,7 @@ impl AgentSession {
 
     /// delegate child の結果の続行指示を識別子ごとに一度だけ受理する。
     /// 受理の永続化後に provider へ書くため、書く前に中断した続行指示は再送されない。
-    pub(crate) fn admit_continuation(
+    pub fn admit_continuation(
         &mut self,
         request_id: &str,
     ) -> Result<AgentSessionInitialInstructionOutcome, AgentSessionInitialInstructionError> {
@@ -716,7 +714,7 @@ impl AgentSession {
         Ok(AgentSessionInitialInstructionOutcome::Admitted)
     }
 
-    pub(crate) fn authorize_delete(
+    pub fn authorize_delete(
         &self,
     ) -> Result<AgentSessionRemovalAuthorization, AgentSessionRemovalError> {
         if self.tree_location.launched_as == ExecutionTreeLaunch::Workflow {
@@ -786,3 +784,7 @@ impl AgentSession {
         Ok(AgentSessionRemovalAuthorization::WorkflowLaunchRollback)
     }
 }
+
+#[cfg(test)]
+#[path = "agent_session_test.rs"]
+mod agent_session_tests;

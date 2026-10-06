@@ -1,74 +1,32 @@
-use super::*;
-use crate::domain::workflow::{
-    ExecutionOrigin, ExecutionStatus, ExecutionStatusFilter, ExecutionTree, ExecutionTreeId,
-    WorkflowSummary,
+use crate::domain::workflow::error::WorkflowError;
+use crate::domain::workflow::gateway::ManagedWorktreeGateway;
+use crate::domain::workflow::value_objects::definition::WorkflowDefinition;
+use crate::domain::workflow::value_objects::execution::ExecutionOrigin;
+use crate::domain::workflow::value_objects::execution::ExecutionStatus;
+use crate::domain::workflow::value_objects::execution::ExecutionTree;
+use crate::domain::workflow::value_objects::execution_metadata::ExecutionStatusFilter;
+use crate::domain::workflow::value_objects::execution_metadata::WorkflowExecutionSummary;
+use crate::domain::workflow::value_objects::execution_metadata::WorkflowPageRequest;
+use crate::domain::workflow::value_objects::facet::FacetKind;
+use crate::usecase::workflow::ports::ExternalEditorGateway;
+use crate::usecase::workflow::ports::WorkflowDefinitionSourceGateway;
+use crate::usecase::workflow::ports::WorkflowDiagnosticsGateway;
+use crate::usecase::workflow::ports::WorkflowDiagnosticsTarget;
+use crate::usecase::workflow::query_service::WorkflowQueryService;
+use crate::usecase::workflow::test_helpers::FakeDefinitionRepository;
+use crate::usecase::workflow::test_helpers::NoopArchiveRepository;
+use crate::usecase::workflow::test_helpers::{
+    FakeEventRepository, FakeFacetRepository, FakeSecretSourceGateway,
 };
-use crate::usecase::workflow::ports::{
-    ExternalEditorGateway, WorkflowDiagnosticsGateway, WorkflowDiagnosticsTarget,
-    WorkflowEventDraft, WorkflowEventRepository, WorkflowExecutionProjectionRepository,
-};
+use crate::usecase::workflow::WorkflowUsecase;
+
+use crate::domain::workflow::value_objects::ids::ExecutionTreeId;
+
+use crate::usecase::workflow::ports::WorkflowEventDraft;
+use crate::usecase::workflow::ports::WorkflowExecutionProjectionRepository;
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
-
-#[derive(Default)]
-struct FakeDefinitionRepository {
-    definitions: Mutex<HashMap<String, WorkflowDefinition>>,
-    read_error: Mutex<Option<String>>,
-}
-
-impl FakeDefinitionRepository {
-    fn insert(&self, definition: WorkflowDefinition) {
-        self.definitions
-            .lock()
-            .unwrap()
-            .insert(definition.name.clone(), definition);
-    }
-}
-
-impl WorkflowDefinitionRepository for FakeDefinitionRepository {
-    fn list(&self, running_names: &[String]) -> Result<Vec<WorkflowSummary>, WorkflowError> {
-        let mut summaries = self
-            .definitions
-            .lock()
-            .unwrap()
-            .values()
-            .map(|definition| WorkflowSummary {
-                failure: None,
-                name: definition.name.clone(),
-                description: definition.description.clone(),
-                builtin: definition.builtin,
-                is_running: running_names.contains(&definition.name),
-                source_format: crate::domain::workflow::WorkflowSourceFormat::Yaml,
-            })
-            .collect::<Vec<_>>();
-        summaries.sort_by(|left, right| left.name.cmp(&right.name));
-        Ok(summaries)
-    }
-
-    fn get(&self, file_stem: &str) -> Result<Option<WorkflowDefinition>, WorkflowError> {
-        if let Some(message) = self.read_error.lock().unwrap().as_ref() {
-            return Err(WorkflowError::external(message));
-        }
-        Ok(self.definitions.lock().unwrap().get(file_stem).cloned())
-    }
-
-    fn save(
-        &self,
-        definition: WorkflowDefinition,
-        _original_name: Option<&str>,
-    ) -> Result<(), WorkflowError> {
-        self.definitions
-            .lock()
-            .unwrap()
-            .insert(definition.name.clone(), definition);
-        Ok(())
-    }
-
-    fn delete(&self, name: &str) -> Result<(), WorkflowError> {
-        self.definitions.lock().unwrap().remove(name);
-        Ok(())
-    }
-}
+use std::sync::Arc;
+use std::sync::Mutex;
 
 #[derive(Default)]
 struct FakeDefinitionSourceGateway {
@@ -104,11 +62,14 @@ impl WorkflowDefinitionSourceGateway for FakeDefinitionSourceGateway {
     fn source_format(
         &self,
         _: &str,
-    ) -> Result<crate::domain::workflow::WorkflowSourceFormat, WorkflowError> {
+    ) -> Result<
+        crate::domain::workflow::value_objects::definition::WorkflowSourceFormat,
+        WorkflowError,
+    > {
         if let Some(message) = self.format_error.lock().unwrap().as_ref() {
             return Err(WorkflowError::external(message));
         }
-        Ok(crate::domain::workflow::WorkflowSourceFormat::Yaml)
+        Ok(crate::domain::workflow::value_objects::definition::WorkflowSourceFormat::Yaml)
     }
 
     fn get_source(&self, file_stem: &str) -> Result<Option<String>, WorkflowError> {
@@ -138,76 +99,6 @@ impl WorkflowDefinitionSourceGateway for FakeDefinitionSourceGateway {
     }
 }
 
-#[derive(Default)]
-struct FakeFacetRepository {
-    facets: Mutex<HashMap<(FacetKind, String), String>>,
-}
-
-impl FacetRepository for FakeFacetRepository {
-    fn list(&self, kind: FacetKind) -> Result<Vec<String>, WorkflowError> {
-        Ok(self
-            .facets
-            .lock()
-            .unwrap()
-            .keys()
-            .filter(|(candidate, _)| *candidate == kind)
-            .map(|(_, key)| key.clone())
-            .collect())
-    }
-
-    fn get(&self, kind: FacetKind, key: &str) -> Result<String, WorkflowError> {
-        self.facets
-            .lock()
-            .unwrap()
-            .get(&(kind, key.to_string()))
-            .cloned()
-            .ok_or_else(|| WorkflowError::NotFound(key.to_string()))
-    }
-
-    fn save(
-        &self,
-        kind: FacetKind,
-        key: &str,
-        content: &str,
-        _is_new: bool,
-    ) -> Result<(), WorkflowError> {
-        self.facets
-            .lock()
-            .unwrap()
-            .insert((kind, key.to_string()), content.to_string());
-        Ok(())
-    }
-
-    fn delete(&self, kind: FacetKind, key: &str) -> Result<(), WorkflowError> {
-        self.facets.lock().unwrap().remove(&(kind, key.to_string()));
-        Ok(())
-    }
-
-    fn list_summaries(&self, _kind: FacetKind) -> Result<Vec<FacetSummary>, WorkflowError> {
-        Ok(Vec::new())
-    }
-}
-
-#[derive(Default)]
-struct FakeEventRepository {
-    events: Mutex<Vec<WorkflowEventDraft>>,
-}
-
-#[async_trait::async_trait]
-impl WorkflowEventRepository for FakeEventRepository {
-    fn append(&self, event: &WorkflowEventDraft) -> Result<(), WorkflowError> {
-        self.events.lock().unwrap().push(event.clone());
-        Ok(())
-    }
-
-    async fn read(
-        &self,
-        _execution_id: &ExecutionTreeId,
-    ) -> Result<Vec<WorkflowEventDraft>, WorkflowError> {
-        Ok(self.events.lock().unwrap().clone())
-    }
-}
-
 struct NoopExecutionProjectionRepository;
 
 #[async_trait::async_trait]
@@ -217,7 +108,8 @@ impl WorkflowExecutionProjectionRepository for NoopExecutionProjectionRepository
         _execution_id: &ExecutionTreeId,
         _node_name: &str,
         _events: &[WorkflowEventDraft],
-    ) -> Result<Option<crate::domain::workflow::Artifact>, WorkflowError> {
+    ) -> Result<Option<crate::domain::workflow::value_objects::execution::Artifact>, WorkflowError>
+    {
         Ok(None)
     }
 
@@ -281,22 +173,14 @@ impl WorkflowDiagnosticsGateway for FakeDiagnosticsGateway {
     fn diagnose_all(
         &self,
         target: WorkflowDiagnosticsTarget,
-    ) -> Result<diagnostic_dto::DiagnosticReport, WorkflowError> {
+    ) -> Result<crate::usecase::workflow::diagnostic_dto::DiagnosticReport, WorkflowError> {
         self.targets.lock().unwrap().push(target);
-        Ok(diagnostic_dto::DiagnosticReport {
+        Ok(crate::usecase::workflow::diagnostic_dto::DiagnosticReport {
             items: vec![],
             workflow_summaries: Default::default(),
             facet_summaries: Default::default(),
             facet_usage: Default::default(),
         })
-    }
-}
-
-struct FakeSecretSourceGateway;
-
-impl SecretSourceGateway for FakeSecretSourceGateway {
-    fn configured_secret_values(&self) -> Result<Vec<String>, WorkflowError> {
-        Ok(vec!["token-123".to_string()])
     }
 }
 
@@ -307,19 +191,18 @@ struct Fixture {
     definition_sources: Arc<FakeDefinitionSourceGateway>,
     diagnostics: Arc<FakeDiagnosticsGateway>,
     workspace_nodes: Arc<FakeWorkspaceTreeRepository>,
-    _workspace_root: tempfile::TempDir,
 }
 
 #[derive(Default)]
 struct FakeWorkspaceTreeRepository {
-    nodes: Mutex<HashMap<String, crate::domain::workspace_tree::WorkspaceTreeNode>>,
+    nodes: Mutex<HashMap<String, crate::domain::workspace_tree::value_objects::WorkspaceTreeNode>>,
 }
 
 impl FakeWorkspaceTreeRepository {
     fn insert(
         &self,
         node_execution_id: &str,
-        node: crate::domain::workspace_tree::WorkspaceTreeNode,
+        node: crate::domain::workspace_tree::value_objects::WorkspaceTreeNode,
     ) {
         self.nodes
             .lock()
@@ -329,39 +212,43 @@ impl FakeWorkspaceTreeRepository {
 }
 
 #[async_trait::async_trait]
-impl crate::domain::workspace_tree::WorkspaceTreeRepository for FakeWorkspaceTreeRepository {
+impl crate::domain::workspace_tree::repository::WorkspaceTreeRepository
+    for FakeWorkspaceTreeRepository
+{
     async fn load_trees(
         &self,
-        workspace_identities: &[crate::domain::workspace_tree::WorkspaceIdentity],
-    ) -> Vec<Result<crate::domain::workspace_tree::WorkspaceTree, WorkflowError>> {
+        workspace_identities: &[crate::domain::workspace_tree::value_objects::WorkspaceIdentity],
+    ) -> Vec<Result<crate::domain::workspace_tree::entities::WorkspaceTree, WorkflowError>> {
         workspace_identities
             .iter()
             .map(|identity| {
-                Ok(crate::domain::workspace_tree::WorkspaceTree::empty(
-                    identity.as_str(),
-                ))
+                Ok(
+                    crate::domain::workspace_tree::entities::WorkspaceTree::empty(
+                        identity.as_str(),
+                    ),
+                )
             })
             .collect()
     }
 
     async fn load_node_by_session_id(
         &self,
-        _: &crate::domain::workspace_tree::WorkspaceIdentity,
+        _: &crate::domain::workspace_tree::value_objects::WorkspaceIdentity,
         _: &str,
     ) -> Result<
-        Option<crate::domain::workspace_tree::WorkspaceTreeNode>,
-        crate::domain::local_event::LocalEventQueryError,
+        Option<crate::domain::workspace_tree::value_objects::WorkspaceTreeNode>,
+        crate::domain::local_event::query::LocalEventQueryError,
     > {
         Ok(None)
     }
 
     async fn load_node(
         &self,
-        _workspace_identity: &crate::domain::workspace_tree::WorkspaceIdentity,
+        _workspace_identity: &crate::domain::workspace_tree::value_objects::WorkspaceIdentity,
         _node_id: &str,
     ) -> Result<
-        Option<crate::domain::workspace_tree::WorkspaceTreeNode>,
-        crate::domain::local_event::LocalEventQueryError,
+        Option<crate::domain::workspace_tree::value_objects::WorkspaceTreeNode>,
+        crate::domain::local_event::query::LocalEventQueryError,
     > {
         Ok(None)
     }
@@ -370,8 +257,8 @@ impl crate::domain::workspace_tree::WorkspaceTreeRepository for FakeWorkspaceTre
         &self,
         node_execution_id: &str,
     ) -> Result<
-        Option<crate::domain::workspace_tree::WorkspaceTreeNode>,
-        crate::domain::local_event::LocalEventQueryError,
+        Option<crate::domain::workspace_tree::value_objects::WorkspaceTreeNode>,
+        crate::domain::local_event::query::LocalEventQueryError,
     > {
         Ok(self.nodes.lock().unwrap().get(node_execution_id).cloned())
     }
@@ -403,9 +290,10 @@ impl Fixture {
         let editors = Arc::new(FakeExternalEditorGateway::default());
         let diagnostics = Arc::new(FakeDiagnosticsGateway::default());
         let workspace_nodes = Arc::new(FakeWorkspaceTreeRepository::default());
-        let workspace_root = tempfile::tempdir().unwrap();
         let workspace_query =
-            crate::usecase::workspace_tree::TestWorkspaceQueryService::new(executions);
+            crate::usecase::workspace_tree::test_support::TestWorkspaceQueryService::new(
+                executions,
+            );
         let query = WorkflowQueryService::new(
             definitions.clone(),
             definition_sources.clone(),
@@ -425,7 +313,7 @@ impl Fixture {
             Arc::new(NoopArchiveRepository),
             workspace_nodes.clone(),
             workspace_query,
-            Arc::new(crate::adaptor::gateway::failure_records::FailureRecordStore::default()),
+            Arc::new(UnexpectedFailures),
         );
         Self {
             usecase,
@@ -434,7 +322,6 @@ impl Fixture {
             definition_sources,
             diagnostics,
             workspace_nodes,
-            _workspace_root: workspace_root,
         }
     }
 }
@@ -442,22 +329,22 @@ impl Fixture {
 fn workspace_node(
     node_execution_id: &str,
     execution_id: Option<&str>,
-) -> crate::domain::workspace_tree::WorkspaceTreeNode {
-    crate::domain::workspace_tree::WorkspaceTreeNode {
+) -> crate::domain::workspace_tree::value_objects::WorkspaceTreeNode {
+    crate::domain::workspace_tree::value_objects::WorkspaceTreeNode {
         process_presence: Default::default(),
         can_resume_session: false,
         worktree: None,
         id: format!("node:{node_execution_id}"),
         parent_id: execution_id.map(str::to_string),
         sibling_order: 0,
-        kind: crate::domain::workspace_tree::WorkspaceNodeKind::WorkflowSession,
+        kind: crate::domain::workspace_tree::value_objects::WorkspaceNodeKind::WorkflowSession,
         title: "node".to_string(),
-        status: crate::domain::workspace_tree::WorkspaceNodeStatus::Running,
+        status: crate::domain::workspace_tree::value_objects::WorkspaceNodeStatus::Running,
         status_classification:
-            crate::domain::workspace_tree::WorkspaceNodeStatusClassification::Active,
+            crate::domain::workspace_tree::value_objects::WorkspaceNodeStatusClassification::Active,
         delegate_waits_for_child: false,
         background_failure: false,
-        activity: Some(crate::domain::workflow::AgentSessionActivity::AwaitingInstruction),
+        activity: Some(crate::domain::workflow::value_objects::node_fact::AgentSessionActivity::AwaitingInstruction),
         error_reason: None,
         updated_at_bits: 1.0_f64.to_bits(),
         execution_id: execution_id.map(str::to_string),
@@ -513,7 +400,7 @@ async fn execution_summary(
 }
 
 #[test]
-fn resolve_worktree_path_delegates_to_managed_worktree_gateway() {
+pub fn resolve_worktree_path_delegates_to_managed_worktree_gateway() {
     let fixture = Fixture::new();
 
     assert_eq!(
@@ -524,7 +411,7 @@ fn resolve_worktree_path_delegates_to_managed_worktree_gateway() {
 }
 
 #[tokio::test]
-async fn workflow_read_facade_owns_active_aggregation_filtering_and_dto_projection() {
+pub async fn workflow_read_facade_owns_active_aggregation_filtering_and_dto_projection() {
     let executions = vec![
         execution_summary(
             "00000000-0000-0000-0000-000000000001",
@@ -562,7 +449,7 @@ async fn workflow_read_facade_owns_active_aggregation_filtering_and_dto_projecti
 }
 
 #[test]
-fn get_workflow_source_returns_some_and_none_from_gateway() {
+pub fn get_workflow_source_returns_some_and_none_from_gateway() {
     let definition_sources = Arc::new(FakeDefinitionSourceGateway::default());
     definition_sources.insert_source("wf", "name: wf\n");
     let fixture = Fixture::with_definition_sources(definition_sources);
@@ -578,7 +465,7 @@ fn get_workflow_source_returns_some_and_none_from_gateway() {
 }
 
 #[test]
-fn test_workflow読取_定義不在を返す() {
+pub fn test_workflow読取_定義不在を返す() {
     // Given
     let fixture = Fixture::new();
     // When
@@ -586,8 +473,9 @@ fn test_workflow読取_定義不在を返す() {
     // Then
     assert!(result.unwrap().is_none());
 }
+
 #[test]
-fn test_workflow読取_定義読取失敗を不在と区別する() {
+pub fn test_workflow読取_定義読取失敗を不在と区別する() {
     // Given
     let fixture = Fixture::new();
     *fixture.definitions.read_error.lock().unwrap() = Some("definition unreadable".into());
@@ -598,8 +486,9 @@ fn test_workflow読取_定義読取失敗を不在と区別する() {
         matches!(result, Err(WorkflowError::External(message)) if message == "definition unreadable")
     );
 }
+
 #[test]
-fn test_workflow読取_形式読取失敗を既定形式と区別する() {
+pub fn test_workflow読取_形式読取失敗を既定形式と区別する() {
     // Given
     let fixture = Fixture::new();
     fixture.definitions.insert(workflow_definition("present"));
@@ -613,7 +502,7 @@ fn test_workflow読取_形式読取失敗を既定形式と区別する() {
 }
 
 #[test]
-fn save_workflow_source_returns_saved_definition_and_surfaces_gateway_errors() {
+pub fn save_workflow_source_returns_saved_definition_and_surfaces_gateway_errors() {
     let fixture = Fixture::new();
     fixture
         .definition_sources
@@ -639,7 +528,7 @@ fn save_workflow_source_returns_saved_definition_and_surfaces_gateway_errors() {
 }
 
 #[tokio::test]
-async fn authorize_execution_summary_for_worktree_hides_unmanaged_or_mismatched_runs() {
+pub async fn authorize_execution_summary_for_worktree_hides_unmanaged_or_mismatched_runs() {
     let executions = vec![
         execution_summary(
             "00000000-0000-0000-0000-000000000011",
@@ -705,7 +594,8 @@ async fn authorize_execution_summary_for_worktree_hides_unmanaged_or_mismatched_
 }
 
 #[tokio::test]
-async fn authorize_node_execution_access_for_worktree_checks_identity_and_execution_ownership() {
+pub async fn authorize_node_execution_access_for_worktree_checks_identity_and_execution_ownership()
+{
     let execution_id = "00000000-0000-0000-0000-000000000011";
     let fixture = Fixture::with_executions(vec![
         execution_summary(execution_id, "/canonical/repo", ExecutionStatus::Running).await,
@@ -752,7 +642,7 @@ async fn authorize_node_execution_access_for_worktree_checks_identity_and_execut
 }
 
 #[test]
-fn editor_commands_delegate_to_external_editor_gateway() {
+pub fn editor_commands_delegate_to_external_editor_gateway() {
     let fixture = Fixture::new();
 
     fixture
@@ -774,7 +664,7 @@ fn editor_commands_delegate_to_external_editor_gateway() {
 }
 
 #[test]
-fn test_診断usecase_指定directoryをgatewayへ渡す() {
+pub fn test_診断usecase_指定directoryをgatewayへ渡す() {
     // Given
     let fixture = Fixture::new();
     let path = std::path::PathBuf::from("/tmp/custom-workflows");
@@ -794,7 +684,7 @@ fn test_診断usecase_指定directoryをgatewayへ渡す() {
 }
 
 #[test]
-fn test_診断usecase_適用済みdirectoryをgatewayへ渡す() {
+pub fn test_診断usecase_適用済みdirectoryをgatewayへ渡す() {
     // Given
     let fixture = Fixture::new();
 
@@ -810,4 +700,22 @@ fn test_診断usecase_適用済みdirectoryをgatewayへ渡す() {
         fixture.diagnostics.targets(),
         vec![WorkflowDiagnosticsTarget::AppliedConfigDirectory]
     );
+}
+
+struct UnexpectedFailures;
+impl crate::domain::failure::FailureRecordRepository for UnexpectedFailures {
+    fn record_observed(
+        &self,
+        _: &crate::domain::failure::FailureKey,
+        _: crate::domain::failure::WorkFailure,
+        _: bool,
+    ) -> bool {
+        panic!("unexpected failure observation")
+    }
+    fn record_resolved(&self, _: &crate::domain::failure::FailureKey) -> bool {
+        panic!("unexpected failure resolution")
+    }
+    fn attention_messages(&self, _: &str) -> Vec<String> {
+        Vec::new()
+    }
 }

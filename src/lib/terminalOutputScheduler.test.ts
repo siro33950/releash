@@ -44,7 +44,6 @@ describe("TerminalOutputScheduler", () => {
 		callbacks.shift()?.();
 
 		expect(writes).toEqual(["a".repeat(16 * 1024 - 1), "🙂"]);
-		expect(scheduler.metrics().currentQueuedCodeUnits).toBe(0);
 	});
 
 	it("xterm parse callback前に次のchunkをwriteしない", () => {
@@ -99,23 +98,6 @@ describe("TerminalOutputScheduler", () => {
 
 		expect(write).toHaveBeenCalledTimes(2);
 		expect(continuation.tasks).toHaveLength(1);
-	});
-
-	it("UTF-16 code unitのcurrentとpeakをparse完了時まで保持する", () => {
-		const callbacks: Array<() => void> = [];
-		const scheduler = new TerminalOutputScheduler({
-			write: (_data, parsed) => callbacks.push(parsed),
-			continuation: new ManualContinuation(),
-			clock: () => 0,
-		});
-
-		scheduler.enqueue("🙂a");
-		expect(scheduler.metrics()).toMatchObject({
-			currentQueuedCodeUnits: 3,
-			peakQueuedCodeUnits: 3,
-		});
-		callbacks.shift()?.();
-		expect(scheduler.metrics().currentQueuedCodeUnits).toBe(0);
 	});
 
 	it("drainは全parse完了後だけresolveする", async () => {
@@ -174,17 +156,10 @@ describe("TerminalOutputScheduler", () => {
 		scheduler.enqueue("ignored-during-resync");
 
 		expect(onOverflow).toHaveBeenCalledTimes(1);
-		expect(scheduler.metrics()).toMatchObject({
-			currentQueuedCodeUnits: 16 * 1024,
-			peakQueuedCodeUnits: 2 * 1024 * 1024,
-			droppedBacklogs: 1,
-			snapshotResyncs: 0,
-		});
 
 		callbacks.shift()?.();
 		scheduler.resumeAfterSnapshot();
 		scheduler.enqueue("after-snapshot");
-		expect(scheduler.metrics().snapshotResyncs).toBe(1);
 		expect(callbacks).toHaveLength(1);
 	});
 });
@@ -209,81 +184,5 @@ describe("MessageChannel continuation", () => {
 		expect(setTimeoutSpy).not.toHaveBeenCalled();
 		continuation.dispose();
 		vi.unstubAllGlobals();
-	});
-});
-
-describe("TerminalOutputScheduler pipeline mode", () => {
-	it("maxWritesInFlight>1ではparse callbackを待たずに複数writeを発行する", () => {
-		const callbacks: Array<() => void> = [];
-		const write = vi.fn((_data: string, parsed: () => void) => {
-			callbacks.push(parsed);
-		});
-		const scheduler = new TerminalOutputScheduler({
-			write,
-			continuation: new ManualContinuation(),
-			clock: () => 0,
-			maxWritesInFlight: 4,
-		});
-
-		scheduler.enqueue("a".repeat(16 * 1024 * 3));
-
-		expect(write).toHaveBeenCalledTimes(3);
-		expect(scheduler.metrics().currentQueuedCodeUnits).toBe(16 * 1024 * 3);
-		for (const parsed of callbacks.splice(0)) parsed();
-		expect(scheduler.metrics().currentQueuedCodeUnits).toBe(0);
-	});
-
-	it("maxWritesInFlight上限に達したら残りはparse完了後に発行する", () => {
-		const callbacks: Array<() => void> = [];
-		const write = vi.fn((_data: string, parsed: () => void) => {
-			callbacks.push(parsed);
-		});
-		const scheduler = new TerminalOutputScheduler({
-			write,
-			continuation: new ManualContinuation(),
-			clock: () => 0,
-			maxWritesInFlight: 2,
-		});
-
-		scheduler.enqueue("a".repeat(16 * 1024 * 3));
-
-		expect(write).toHaveBeenCalledTimes(2);
-		callbacks.shift()?.();
-		expect(write).toHaveBeenCalledTimes(3);
-	});
-
-	it("setMaxWritesInFlightで直列から切替できる", () => {
-		const callbacks: Array<() => void> = [];
-		const write = vi.fn((_data: string, parsed: () => void) => {
-			callbacks.push(parsed);
-		});
-		const scheduler = new TerminalOutputScheduler({
-			write,
-			continuation: new ManualContinuation(),
-			clock: () => 0,
-		});
-		scheduler.setMaxWritesInFlight(8);
-
-		scheduler.enqueue("a".repeat(16 * 1024 * 2));
-
-		expect(write).toHaveBeenCalledTimes(2);
-	});
-
-	it("既定はこれまで通り1 write in-flightの直列を維持する", () => {
-		const callbacks: Array<() => void> = [];
-		const write = vi.fn((_data: string, parsed: () => void) => {
-			callbacks.push(parsed);
-		});
-		const scheduler = new TerminalOutputScheduler({
-			write,
-			continuation: new ManualContinuation(),
-			clock: () => 0,
-		});
-
-		scheduler.enqueue("a".repeat(16 * 1024 * 2));
-
-		expect(write).toHaveBeenCalledTimes(1);
-		callbacks.shift()?.();
-		expect(write).toHaveBeenCalledTimes(2);
 	});
 });

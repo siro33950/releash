@@ -4,7 +4,7 @@
 //! query service に委ねる。git2 のブロッキング呼び出しを非同期境界へ
 //! 載せるため、各コマンドは `spawn_blocking` でユースケースを呼ぶ。
 
-mod shared;
+pub(crate) mod shared;
 pub(crate) use shared::register_shared;
 
 pub(crate) mod branch;
@@ -26,7 +26,7 @@ impl From<UsecaseError> for AppError {
 
 /// ユースケース呼び出しを `spawn_blocking` 上で実行し、結果を `AppError`
 /// に集約する共通ヘルパー。join 失敗時のメッセージは移行前と等価に保つ。
-pub(crate) async fn run_blocking<T, F>(f: F) -> Result<T, AppError>
+pub async fn run_blocking<T, F>(f: F) -> Result<T, AppError>
 where
     T: Send + 'static,
     F: FnOnce() -> Result<T, UsecaseError> + Send + 'static,
@@ -38,31 +38,5 @@ where
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::domain::repository::RepositoryError;
-
-    // RepositoryError → UsecaseError → AppError の 3 ホップ変換でメッセージ文字列が
-    // 保持され、serialize 表現が移行前（gateway が返していたプレーン文字列）と
-    // 等価であることをガードする（behavior.md: 失敗は移行前後で等価に観測される）。
-
-    #[test]
-    fn rule違反のdisplayが変換チェーンを通じて保持される() {
-        let usecase_err = UsecaseError::Rule("既定ブランチは削除できません".to_string());
-        let app_err = AppError::from(usecase_err);
-        assert_eq!(app_err.to_string(), "既定ブランチは削除できません");
-        assert_eq!(
-            serde_json::to_string(&app_err).unwrap(),
-            "\"既定ブランチは削除できません\""
-        );
-    }
-
-    #[test]
-    fn repository_external由来のdisplayが変換チェーンを通じて保持される() {
-        let usecase_err =
-            UsecaseError::Repository(RepositoryError::External("git2 boom".to_string()));
-        let app_err = AppError::from(usecase_err);
-        assert_eq!(app_err.to_string(), "git2 boom");
-        assert_eq!(serde_json::to_string(&app_err).unwrap(), "\"git2 boom\"");
-    }
-}
+#[path = "mod_test.rs"]
+mod mod_tests;

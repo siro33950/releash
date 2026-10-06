@@ -21,7 +21,7 @@ use super::{
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum AgentSessionOpenOutcome {
+pub enum AgentSessionOpenOutcome {
     Attached,
     Resumed,
     Restored,
@@ -31,13 +31,13 @@ pub(crate) enum AgentSessionOpenOutcome {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum AgentSessionGarbageCollectionOutcome {
+pub enum AgentSessionGarbageCollectionOutcome {
     Retained,
     GarbageCollected,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum AgentSessionLifecycleUsecaseError {
+pub enum AgentSessionLifecycleUsecaseError {
     Workflow(crate::domain::workflow::WorkflowError),
     Store(crate::domain::failure::StorageFailure),
     NotFound,
@@ -82,7 +82,7 @@ impl AgentSessionLifecycleUsecaseError {
     }
 }
 
-pub(crate) struct AgentSessionLifecycleUsecase {
+pub struct AgentSessionLifecycleUsecase {
     identities: Arc<dyn crate::domain::identity::IdentityIssuer>,
     workspace_trees: Arc<dyn crate::domain::workspace_tree::WorkspaceTreeRepository>,
     sessions: Arc<AgentSessionUsecase>,
@@ -97,7 +97,7 @@ pub(crate) struct AgentSessionLifecycleUsecase {
 
 impl AgentSessionLifecycleUsecase {
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn new(
+    pub fn new(
         identities: Arc<dyn crate::domain::identity::IdentityIssuer>,
         sessions: Arc<AgentSessionUsecase>,
         lifecycle: Arc<ProviderLifecycleUsecase>,
@@ -136,7 +136,7 @@ impl AgentSessionLifecycleUsecase {
             .map_err(AgentSessionLifecycleUsecaseError::Terminal)
     }
 
-    pub(crate) async fn open(
+    pub async fn open(
         &self,
         agent_session_id: &str,
         rows: u16,
@@ -222,7 +222,7 @@ impl AgentSessionLifecycleUsecase {
         }
     }
 
-    pub(crate) async fn has_recoverable_conversation(
+    pub async fn has_recoverable_conversation(
         &self,
         agent_session_id: &str,
     ) -> Result<bool, AgentSessionLifecycleUsecaseError> {
@@ -235,7 +235,7 @@ impl AgentSessionLifecycleUsecase {
             .is_some_and(|session| session.session().provider_session_id_for_recovery().is_ok()))
     }
 
-    pub(crate) async fn ensure_provider_running(
+    pub async fn ensure_provider_running(
         &self,
         agent_session_id: &str,
         rows: u16,
@@ -316,7 +316,7 @@ impl AgentSessionLifecycleUsecase {
         Ok(AgentSessionOpenOutcome::Resumed)
     }
 
-    pub(crate) async fn restore(
+    pub async fn restore(
         &self,
         agent_session_id: &str,
         rows: u16,
@@ -374,7 +374,7 @@ impl AgentSessionLifecycleUsecase {
         Ok(AgentSessionOpenOutcome::Restored)
     }
 
-    pub(crate) async fn restore_selection(
+    pub async fn restore_selection(
         &self,
         id: &str,
         rows: u16,
@@ -401,7 +401,7 @@ impl AgentSessionLifecycleUsecase {
         Ok((id.to_string(), node))
     }
 
-    pub(crate) async fn archive(
+    pub async fn archive(
         &self,
         agent_session_id: &str,
         _caller_request_id: &str,
@@ -419,7 +419,7 @@ impl AgentSessionLifecycleUsecase {
         Ok(outcome)
     }
 
-    pub(crate) async fn stop_for_terminal_execution_tree_node_preserving_checkpoint(
+    pub async fn stop_for_terminal_execution_tree_node_preserving_checkpoint(
         &self,
         agent_session_id: &str,
         node_execution_id: &str,
@@ -456,7 +456,7 @@ impl AgentSessionLifecycleUsecase {
             .map_err(AgentSessionLifecycleUsecaseError::Launch)
     }
 
-    pub(crate) async fn delete(
+    pub async fn delete(
         &self,
         agent_session_id: &str,
         caller_request_id: &str,
@@ -486,7 +486,7 @@ impl AgentSessionLifecycleUsecase {
             .await
     }
 
-    pub(crate) async fn observe_process_exit(
+    pub async fn observe_process_exit(
         &self,
         agent_session_id: &str,
         runtime_generation: u64,
@@ -572,7 +572,7 @@ impl AgentSessionLifecycleUsecase {
             .await
     }
 
-    pub(crate) async fn reconcile_garbage_collection(
+    pub async fn reconcile_garbage_collection(
         &self,
         agent_session_id: &str,
         caller_request_id: &str,
@@ -876,5 +876,5 @@ fn map_workflow_error(
 }
 
 #[cfg(test)]
-#[path = "agent_session_lifecycle_error_test.rs"]
-mod error_tests;
+#[path = "agent_session_lifecycle_test.rs"]
+mod agent_session_lifecycle_tests;

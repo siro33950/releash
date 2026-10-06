@@ -2,7 +2,7 @@ use crate::domain::daemon::{
     Daemon, DaemonIdentity, DaemonInfo, DaemonRepository, DaemonRequest, StartupFailure,
     StopAcceptance, StopRequest,
 };
-pub(crate) struct InMemoryDaemonRepository {
+pub struct InMemoryDaemonRepository {
     daemon: parking_lot::Mutex<Daemon>,
     commands: tokio::sync::RwLock<()>,
 }
@@ -16,14 +16,14 @@ impl InMemoryDaemonRepository {
     pub(crate) async fn drain_commands(&self) {
         let _commands = self.commands.write().await;
     }
-    pub(crate) async fn admission(&self) -> DaemonAdmissionGuard<'_> {
+    pub async fn admission(&self) -> DaemonAdmissionGuard<'_> {
         DaemonAdmissionGuard {
             _commands: self.commands.read().await,
             repository: self,
         }
     }
 }
-pub(crate) struct DaemonAdmissionGuard<'a> {
+pub struct DaemonAdmissionGuard<'a> {
     _commands: tokio::sync::RwLockReadGuard<'a, ()>,
     repository: &'a InMemoryDaemonRepository,
 }
@@ -36,7 +36,7 @@ impl DaemonAdmissionGuard<'_> {
         let daemon = self.repository.daemon.lock();
         daemon.admits(request).then(operation)
     }
-    pub(crate) fn admits(&self, request: DaemonRequest) -> bool {
+    pub fn admits(&self, request: DaemonRequest) -> bool {
         self.repository.daemon.lock().admits(request)
     }
 }
@@ -62,8 +62,8 @@ impl DaemonRepository for InMemoryDaemonRepository {
     }
 }
 
-#[cfg(any(test, debug_assertions))]
-pub(crate) fn serving() -> std::sync::Arc<InMemoryDaemonRepository> {
+#[cfg(any(test, feature = "test-support"))]
+pub fn serving() -> std::sync::Arc<InMemoryDaemonRepository> {
     let repository = std::sync::Arc::new(InMemoryDaemonRepository::new(
         DaemonIdentity {
             daemon_id: "test-daemon".into(),
@@ -78,7 +78,7 @@ pub(crate) fn serving() -> std::sync::Arc<InMemoryDaemonRepository> {
 }
 #[cfg(test)]
 #[path = "daemon_test.rs"]
-mod daemon_tests;
+pub(crate) mod daemon_tests;
 
 impl From<crate::adaptor::gateway::local_event_store::store::LocalEventStoreOpenError>
     for crate::domain::daemon::StartupFailureKind

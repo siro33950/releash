@@ -19,14 +19,14 @@ impl DaemonLiveness {
     }
 }
 
-pub(crate) struct DaemonExit {
+pub struct DaemonExit {
     pub success: bool,
     pub shutdown_complete: bool,
     pub reason: String,
 }
 
 #[async_trait::async_trait]
-pub(crate) trait DaemonProcessPort: Send + Sync {
+pub trait DaemonProcessPort: Send + Sync {
     fn monotonic_ms(&self) -> u64;
     async fn wait_for_poll(&self);
     async fn spawn(&self) -> Result<String, String>;
@@ -54,7 +54,7 @@ pub(crate) enum Phase {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum FailureStage {
+pub enum FailureStage {
     Spawn,
     Initialization,
     Connection(releash_lib::desktop_api::TechnicalFailureNature),
@@ -67,13 +67,13 @@ pub(crate) enum FailureStage {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct Failure {
+pub struct Failure {
     pub stage: FailureStage,
     pub reason: String,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum StopIntent {
+pub enum StopIntent {
     Quit(i32),
     Restart,
     Update,
@@ -429,4 +429,4 @@ pub(crate) fn verify_identity(
 
 #[cfg(test)]
 #[path = "daemon_supervision_test.rs"]
-mod daemon_supervision_tests;
+pub(crate) mod daemon_supervision_tests;

@@ -16,7 +16,7 @@ use crate::usecase::terminal_surface::subscription::TerminalSubscriptionOutput;
 use std::sync::Arc;
 
 #[derive(Clone)]
-pub(crate) struct TerminalSubscriptionPresenter {
+pub struct TerminalSubscriptionPresenter {
     runtime: StateSubscriptionRuntime<PublishedState>,
     boot: Arc<str>,
 }
@@ -28,7 +28,7 @@ impl TerminalSubscriptionPresenter {
             boot: uuid::Uuid::new_v4().to_string().into(),
         }
     }
-    pub(crate) fn report_units() -> usize {
+    pub fn report_units() -> usize {
         OUTPUT_REPORT_UNITS
     }
     #[cfg(test)]

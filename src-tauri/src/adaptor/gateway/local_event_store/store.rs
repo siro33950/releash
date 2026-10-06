@@ -52,26 +52,26 @@ fn correlation_id() -> String {
     uuid::Uuid::new_v4().to_string()
 }
 
-fn io_open_failure(error: std::io::Error) -> LocalEventStoreOpenError {
+pub fn io_open_failure(error: std::io::Error) -> LocalEventStoreOpenError {
     LocalEventStoreOpenError::StorageUnavailable(crate::domain::failure::TechnicalFailure::from(
         error,
     ))
 }
 
-fn sqlite_open_failure(error: &rusqlite::Error) -> LocalEventStoreOpenError {
+pub fn sqlite_open_failure(error: &rusqlite::Error) -> LocalEventStoreOpenError {
     LocalEventStoreOpenError::StorageUnavailable(crate::domain::failure::TechnicalFailure::from(
         error,
     ))
 }
 
-fn connection_open_failure(error: &ConnectionError) -> LocalEventStoreOpenError {
+pub fn connection_open_failure(error: &ConnectionError) -> LocalEventStoreOpenError {
     match error {
         ConnectionError::Sqlite(error) => sqlite_open_failure(error),
         ConnectionError::SqliteTooOld { .. } => LocalEventStoreOpenError::UnsupportedRuntime,
     }
 }
 
-fn classify_sqlite_error(
+pub fn classify_sqlite_error(
     error: &rusqlite::Error,
     otherwise: LocalEventStoreOpenError,
 ) -> LocalEventStoreOpenError {
@@ -86,7 +86,7 @@ fn classify_sqlite_error(
     }
 }
 
-fn classify_connection_error(
+pub fn classify_connection_error(
     error: &ConnectionError,
     otherwise: LocalEventStoreOpenError,
 ) -> LocalEventStoreOpenError {
@@ -96,7 +96,9 @@ fn classify_connection_error(
     }
 }
 
-fn classify_startup_maintenance_error(error: &StartupMaintenanceError) -> LocalEventStoreOpenError {
+pub fn classify_startup_maintenance_error(
+    error: &StartupMaintenanceError,
+) -> LocalEventStoreOpenError {
     match error {
         StartupMaintenanceError::Connection(error) => {
             classify_connection_error(error, LocalEventStoreOpenError::StoreValidationFailed)
@@ -235,7 +237,7 @@ fn remove_initial_create_database(layout: &StoreLayout) -> Result<(), LocalEvent
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ExistingDatabaseKind {
+pub enum ExistingDatabaseKind {
     Current,
     SupportedV1,
     SupportedV2,
@@ -246,7 +248,7 @@ enum ExistingDatabaseKind {
     SupportedV7,
 }
 
-fn classify_existing_database(
+pub fn classify_existing_database(
     layout: &StoreLayout,
     path: &std::path::Path,
     limiter: Arc<crate::common::retry::RetryLimiter>,
@@ -411,9 +413,19 @@ pub struct LocalEventStore {
 }
 
 impl LocalEventStore {
+    #[cfg(feature = "test-support")]
+    pub fn test_writer_lock(&self) -> &std::fs::File {
+        &self.writer_lock
+    }
+
+    #[cfg(feature = "test-support")]
+    pub fn test_queue(&self) -> &Arc<WriteQueue> {
+        &self.queue
+    }
+
     /// Stop new writes, persist every request already admitted to the writer,
     /// then join all store workers.
-    #[cfg(any(test, debug_assertions))]
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn drain_and_close(mut self) {
         self.queue.close_after_drain();
         self.readers.close();
@@ -480,7 +492,7 @@ impl LocalEventStore {
                 .fault
                 .take_initial_create_fault(InitialCreateFaultPoint::AfterSqliteFileCreate)
             {
-                #[cfg(test)]
+                #[cfg(any(test, feature = "test-support"))]
                 config.fault.crash_initial_create_process_if_armed(
                     InitialCreateFaultPoint::AfterSqliteFileCreate,
                 );
@@ -529,7 +541,7 @@ impl LocalEventStore {
                     .fault
                     .take_initial_create_fault(InitialCreateFaultPoint::AfterSqliteFileCreate)
                 {
-                    #[cfg(test)]
+                    #[cfg(any(test, feature = "test-support"))]
                     config.fault.crash_initial_create_process_if_armed(
                         InitialCreateFaultPoint::AfterSqliteFileCreate,
                     );
@@ -614,7 +626,7 @@ impl LocalEventStore {
             .fault
             .take_initial_create_fault(InitialCreateFaultPoint::AfterDatabaseSync)
         {
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             config
                 .fault
                 .crash_initial_create_process_if_armed(InitialCreateFaultPoint::AfterDatabaseSync);
@@ -626,7 +638,7 @@ impl LocalEventStore {
             .fault
             .take_initial_create_fault(InitialCreateFaultPoint::BeforeEvidenceUnlink)
         {
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             config.fault.crash_initial_create_process_if_armed(
                 InitialCreateFaultPoint::BeforeEvidenceUnlink,
             );
@@ -639,7 +651,7 @@ impl LocalEventStore {
             .fault
             .take_initial_create_fault(InitialCreateFaultPoint::AfterEvidenceUnlink)
         {
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             config.fault.crash_initial_create_process_if_armed(
                 InitialCreateFaultPoint::AfterEvidenceUnlink,
             );
@@ -743,28 +755,28 @@ impl LocalEventStore {
         &self.installation_id
     }
 
-    #[cfg(test)]
-    pub(crate) fn fail_next_read(&self, failure: super::test_helpers::ReadFailure) {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn fail_next_read(&self, failure: super::test_helpers::ReadFailure) {
         *self.readers.next_failure.lock().unwrap() = Some(failure);
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn fault_injector(&self) -> &Arc<FaultInjector> {
         &self.fault
     }
 
-    #[cfg(test)]
-    pub(crate) fn close_write_queue_for_tests(&self) {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn close_write_queue_for_tests(&self) {
         self.queue.close();
     }
 
-    #[cfg(test)]
-    pub(crate) fn pending_write_request_count(&self) -> usize {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn pending_write_request_count(&self) -> usize {
         self.queue.pending_request_count()
     }
 
     /// Validate and encode a batch before queue admission (design step 1).
-    fn prepare(
+    pub fn prepare(
         &self,
         batch: LocalAtomicBatch,
         node_event_count: usize,
@@ -833,7 +845,7 @@ impl LocalEventStore {
         })
     }
 
-    pub(crate) async fn commit_batch_with_node_events(
+    pub async fn commit_batch_with_node_events(
         &self,
         batch: LocalAtomicBatch,
         node_events: Vec<PreparedNodeEvent>,
@@ -863,7 +875,7 @@ impl LocalEventStore {
         .await
     }
 
-    fn validate_batch_size(
+    pub fn validate_batch_size(
         event_count: usize,
         node_event_count: usize,
         state_mutation_count: usize,
@@ -926,7 +938,7 @@ impl LocalEventStore {
         }
     }
 
-    pub(crate) async fn submit_query<T, F>(&self, run: F) -> Result<T, LocalEventQueryError>
+    pub async fn submit_query<T, F>(&self, run: F) -> Result<T, LocalEventQueryError>
     where
         T: Send + 'static,
         F: FnOnce(&rusqlite::Connection) -> Result<T, LocalEventQueryError> + Send + 'static,
@@ -937,7 +949,7 @@ impl LocalEventStore {
     /// Append one fact row to the unified-node fact log on the writer thread.
     ///
     /// `timestamp_ms` は事実の発生時刻。None なら store の clock で刻む。
-    pub(crate) async fn append_node_event(
+    pub async fn append_node_event(
         &self,
         row: NewNodeEventRow,
         timestamp_ms: Option<i64>,
@@ -947,14 +959,14 @@ impl LocalEventStore {
             .map(|sequences| sequences[0])
     }
 
-    pub(crate) async fn append_node_events(
+    pub async fn append_node_events(
         &self,
         rows: Vec<(NewNodeEventRow, Option<i64>)>,
     ) -> Result<Vec<i64>, CommitBatchError> {
         self.append_node_events_at_head(rows, None).await
     }
 
-    pub(crate) async fn append_node_events_at_head(
+    pub async fn append_node_events_at_head(
         &self,
         rows: Vec<(NewNodeEventRow, Option<i64>)>,
         expected_tree_head: Option<(String, i64)>,
@@ -1078,118 +1090,3 @@ impl Drop for LocalEventStore {
 #[cfg(test)]
 #[path = "store_test.rs"]
 mod store_tests;
-
-#[cfg(test)]
-mod startup_error_classification_tests {
-    use super::*;
-
-    fn sqlite_failure(code: i32) -> rusqlite::Error {
-        rusqlite::Error::SqliteFailure(rusqlite::ffi::Error::new(code), None)
-    }
-
-    #[test]
-    fn only_lock_contention_is_store_in_use() {
-        assert_eq!(
-            classify_writer_lock_error(std::io::Error::from(std::io::ErrorKind::WouldBlock)),
-            LocalEventStoreOpenError::WriterLockHeld
-        );
-        for kind in [
-            std::io::ErrorKind::PermissionDenied,
-            std::io::ErrorKind::StorageFull,
-            std::io::ErrorKind::Other,
-        ] {
-            assert_eq!(
-                classify_writer_lock_error(std::io::Error::from(kind)),
-                io_open_failure(std::io::Error::from(kind))
-            );
-        }
-    }
-
-    #[test]
-    fn sqlite_io_permission_and_capacity_failures_are_storage_unavailable() {
-        for code in [
-            rusqlite::ffi::SQLITE_PERM,
-            rusqlite::ffi::SQLITE_BUSY,
-            rusqlite::ffi::SQLITE_LOCKED,
-            rusqlite::ffi::SQLITE_NOMEM,
-            rusqlite::ffi::SQLITE_READONLY,
-            rusqlite::ffi::SQLITE_IOERR,
-            rusqlite::ffi::SQLITE_FULL,
-            rusqlite::ffi::SQLITE_CANTOPEN,
-            rusqlite::ffi::SQLITE_PROTOCOL,
-            rusqlite::ffi::SQLITE_TOOBIG,
-        ] {
-            assert_eq!(
-                classify_sqlite_error(
-                    &sqlite_failure(code),
-                    LocalEventStoreOpenError::SchemaEvolutionFailed,
-                ),
-                LocalEventStoreOpenError::StorageUnavailable(
-                    crate::domain::failure::TechnicalFailure {
-                        nature: match code {
-                            rusqlite::ffi::SQLITE_BUSY | rusqlite::ffi::SQLITE_LOCKED =>
-                                crate::domain::failure::TechnicalFailureNature::Transient,
-                            _ => crate::domain::failure::TechnicalFailureNature::Other,
-                        },
-                        message: sqlite_failure(code).to_string(),
-                    }
-                )
-            );
-        }
-        assert_eq!(
-            classify_sqlite_error(
-                &sqlite_failure(rusqlite::ffi::SQLITE_CORRUPT),
-                LocalEventStoreOpenError::StoreValidationFailed,
-            ),
-            LocalEventStoreOpenError::StoreValidationFailed
-        );
-        assert_eq!(
-            classify_connection_error(
-                &ConnectionError::SqliteTooOld { version_number: 0 },
-                LocalEventStoreOpenError::StoreValidationFailed,
-            ),
-            LocalEventStoreOpenError::UnsupportedRuntime
-        );
-    }
-
-    #[test]
-    fn test_store接続失敗_版不足とsqliteの性質を保持する() {
-        use crate::domain::failure::{
-            TechnicalFailure,
-            TechnicalFailureNature::{Other, Transient},
-        };
-        // Given / When / Then
-        assert_eq!(
-            connection_open_failure(&ConnectionError::SqliteTooOld { version_number: 0 }),
-            LocalEventStoreOpenError::UnsupportedRuntime
-        );
-        for (code, nature) in [
-            (rusqlite::ffi::SQLITE_BUSY, Transient),
-            (rusqlite::ffi::SQLITE_PERM, Other),
-            (rusqlite::ffi::SQLITE_CORRUPT, Other),
-        ] {
-            let error = sqlite_failure(code);
-            let message = error.to_string();
-            assert_eq!(
-                connection_open_failure(&ConnectionError::Sqlite(error)),
-                LocalEventStoreOpenError::StorageUnavailable(TechnicalFailure { nature, message })
-            );
-        }
-    }
-
-    #[test]
-    fn startup_maintenance_reopen_failures_use_the_connection_classifier() {
-        assert_eq!(
-            classify_startup_maintenance_error(&StartupMaintenanceError::Connection(
-                ConnectionError::Sqlite(sqlite_failure(rusqlite::ffi::SQLITE_IOERR)),
-            )),
-            sqlite_open_failure(&sqlite_failure(rusqlite::ffi::SQLITE_IOERR))
-        );
-        assert_eq!(
-            classify_startup_maintenance_error(&StartupMaintenanceError::Connection(
-                ConnectionError::SqliteTooOld { version_number: 0 },
-            )),
-            LocalEventStoreOpenError::UnsupportedRuntime
-        );
-    }
-}

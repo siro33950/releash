@@ -1,10 +1,11 @@
+use crate::usecase::agent_session::agent_session_read::AgentSessionGarbageCollectionPort;
 use std::sync::{Arc, Mutex};
 
-use super::{
-    AgentSessionGarbageCollectionOutcome, AgentSessionGarbageCollectionPort, AgentSessionItemDto,
-    AgentSessionLifecycleDto, AgentSessionLifecycleUsecaseError, AgentSessionOperationsDto,
-    AgentSessionQueryError, AgentSessionQueryService, AgentSessionReadUsecase,
-    AgentSessionReadUsecaseError, AgentSessionTreeLocationDto,
+use crate::usecase::agent_session::{
+    AgentSessionGarbageCollectionOutcome, AgentSessionItemDto, AgentSessionLifecycleDto,
+    AgentSessionLifecycleUsecaseError, AgentSessionOperationsDto, AgentSessionQueryError,
+    AgentSessionQueryService, AgentSessionReadUsecase, AgentSessionReadUsecaseError,
+    AgentSessionTreeLocationDto,
 };
 use crate::usecase::provider_dto::AgentSessionProviderDto;
 
@@ -99,7 +100,7 @@ async fn test_agent_session_read単体取得時にgc済みsessionを返さない
         calls: Mutex::new(Vec::new()),
     });
     let usecase = AgentSessionReadUsecase::new(
-        std::sync::Arc::new(crate::adaptor::gateway::identity::RandomIdentityIssuer),
+        std::sync::Arc::new(crate::usecase::test_helpers::TestIdentity),
         query,
         collector,
     );
@@ -123,7 +124,7 @@ async fn test_agent_session_read_lifecycleと異常終了状態をquery結果の
         calls: Mutex::new(Vec::new()),
     });
     let usecase = AgentSessionReadUsecase::new(
-        std::sync::Arc::new(crate::adaptor::gateway::identity::RandomIdentityIssuer),
+        std::sync::Arc::new(crate::usecase::test_helpers::TestIdentity),
         query,
         collector,
     );
@@ -193,7 +194,7 @@ async fn test_session読取_所有済みとworkflow失敗をgc経由でも保持
     ] {
         let expected = AgentSessionReadUsecaseError::Lifecycle(source.clone());
         let usecase = AgentSessionReadUsecase::new(
-            std::sync::Arc::new(crate::adaptor::gateway::identity::RandomIdentityIssuer),
+            std::sync::Arc::new(crate::usecase::test_helpers::TestIdentity),
             Arc::new(MutableSessionQuery {
                 items: Arc::new(Mutex::new(vec![item("session")])),
             }),
@@ -232,7 +233,7 @@ async fn test_session読取_プロセス在否を購読用presenceへ写す() {
         (ManagedPtyPresence::Unknown, "unknown"),
     ] {
         let usecase = AgentSessionReadUsecase::new(
-            Arc::new(crate::adaptor::gateway::identity::RandomIdentityIssuer),
+            Arc::new(crate::usecase::test_helpers::TestIdentity),
             Arc::new(MutableSessionQuery {
                 items: Arc::new(Mutex::new(vec![item("session")])),
             }),

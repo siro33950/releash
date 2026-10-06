@@ -954,18 +954,6 @@ export type WorkflowSection = {
 	approval_auto_approve: boolean;
 };
 
-export type PerformanceSwitchesV1 = {
-	realAppMode: boolean;
-	terminal: TerminalPerformanceSwitchesV1;
-};
-
-export type TerminalPerformanceSwitchesV1 = {
-	disableOutputFlowControl: boolean;
-	disableTerminalJournal: boolean;
-	disableRendererWriteSerialization: boolean;
-	disableWebglRenderer: boolean;
-};
-
 export type ProviderHookHealthSnapshot = {
 	warnings: ListProviderHookHealthWarningResponse;
 	readErrors?: Array<string>;
@@ -1215,11 +1203,6 @@ export type InputOpenWorkflowInEditorRequest = {
 	name: string;
 };
 
-export type InputRecordTerminalLaunchRendererPhaseRequest = {
-	phase: string;
-	durationMs: number;
-};
-
 export type InputRefreshProviderAvailabilityRequest = Record<string, never>;
 
 export type InputRemoveRepoPathRequest = {
@@ -1413,32 +1396,12 @@ export type InputSetReleashBaseRequest = {
 	base?: string | null;
 };
 
-export type InputStartTerminalInputPerformanceCollectionRequest = Record<
-	string,
-	never
->;
-
-export type InputStartTerminalLaunchPerformanceCollectionRequest = Record<
-	string,
-	never
->;
-
 export type InputStartWorkflowRequest = {
 	workflowName: string;
 	worktreePath: string;
 	request?: string | null;
 	createdFrom?: string | null;
 };
-
-export type InputTakeTerminalInputPerformanceSamplesRequest = Record<
-	string,
-	never
->;
-
-export type InputTakeTerminalLaunchPerformanceSamplesRequest = Record<
-	string,
-	never
->;
 
 export type InputUpdateAppSettingsRequest = {
 	app: InputWindowSettings;
@@ -1492,7 +1455,6 @@ export type InputWriteTerminalSurfaceRequest = {
 	owner: InputTerminalSurfaceOwnerV1;
 	attachmentId: string;
 	sequence: number;
-	clientStartedAtUnixMs?: number | null;
 	data: string;
 };
 
@@ -1673,28 +1635,6 @@ export type SaveWorkflowDiagnostics = {
 	diagnostics: ListDiagnosticItem;
 };
 
-export type ListTerminalInputPerformanceSampleV1 =
-	Array<TerminalInputPerformanceSampleV1>;
-
-export type TerminalInputPerformanceSampleV1 = {
-	sequence: number;
-	onDataToCommandIngressMs: number;
-	commandIngressToAdmissionMs: number;
-	admissionToWriterEnqueueMs: number;
-	writerEnqueueToOutputReadMs: number;
-	outputReadToModelApplyMs: number;
-	modelApplyToEventPublishMs: number;
-	eventPublishedAtUnixMs: number;
-};
-
-export type ListTerminalLaunchPerformanceSampleV1 =
-	Array<TerminalLaunchPerformanceSampleV1>;
-
-export type TerminalLaunchPerformanceSampleV1 = {
-	phase: string;
-	durationMs: number;
-};
-
 export type NotionValidationResultView = {
 	status: NotionConfigStatusView;
 	properties: ListNotionPropertyInfoView;
@@ -1774,7 +1714,6 @@ export interface ClientCommandArgs {
 	open_folder_in_editor: InputOpenFolderInEditorRequest;
 	open_in_editor: InputOpenInEditorRequest;
 	open_workflow_in_editor: InputOpenWorkflowInEditorRequest;
-	record_terminal_launch_renderer_phase: InputRecordTerminalLaunchRendererPhaseRequest;
 	refresh_provider_availability: InputRefreshProviderAvailabilityRequest;
 	remove_repo_path: InputRemoveRepoPathRequest;
 	remove_worktree: InputRemoveWorktreeRequest;
@@ -1798,11 +1737,7 @@ export interface ClientCommandArgs {
 	save_workspace_state: InputSaveWorkspaceStateRequest;
 	set_branch_base: InputSetBranchBaseRequest;
 	set_releash_base: InputSetReleashBaseRequest;
-	start_terminal_input_performance_collection: InputStartTerminalInputPerformanceCollectionRequest;
-	start_terminal_launch_performance_collection: InputStartTerminalLaunchPerformanceCollectionRequest;
 	start_workflow: InputStartWorkflowRequest;
-	take_terminal_input_performance_samples: InputTakeTerminalInputPerformanceSamplesRequest;
-	take_terminal_launch_performance_samples: InputTakeTerminalLaunchPerformanceSamplesRequest;
 	update_app_settings: InputUpdateAppSettingsRequest;
 	update_login_item_preference: InputUpdateLoginItemPreferenceRequest;
 	update_crash_reporting: InputUpdateCrashReportingRequest;
@@ -1917,9 +1852,6 @@ export interface ClientCommands {
 	open_workflow_in_editor(
 		args: ClientCommandArgs["open_workflow_in_editor"],
 	): Promise<void>;
-	record_terminal_launch_renderer_phase(
-		args: ClientCommandArgs["record_terminal_launch_renderer_phase"],
-	): Promise<void>;
 	refresh_provider_availability(
 		args: ClientCommandArgs["refresh_provider_availability"],
 	): Promise<void>;
@@ -1981,21 +1913,9 @@ export interface ClientCommands {
 	): Promise<void>;
 	set_branch_base(args: ClientCommandArgs["set_branch_base"]): Promise<void>;
 	set_releash_base(args: ClientCommandArgs["set_releash_base"]): Promise<void>;
-	start_terminal_input_performance_collection(
-		args: ClientCommandArgs["start_terminal_input_performance_collection"],
-	): Promise<void>;
-	start_terminal_launch_performance_collection(
-		args: ClientCommandArgs["start_terminal_launch_performance_collection"],
-	): Promise<void>;
 	start_workflow(
 		args: ClientCommandArgs["start_workflow"],
 	): Promise<ResultString>;
-	take_terminal_input_performance_samples(
-		args: ClientCommandArgs["take_terminal_input_performance_samples"],
-	): Promise<ListTerminalInputPerformanceSampleV1>;
-	take_terminal_launch_performance_samples(
-		args: ClientCommandArgs["take_terminal_launch_performance_samples"],
-	): Promise<ListTerminalLaunchPerformanceSampleV1>;
 	update_app_settings(
 		args: ClientCommandArgs["update_app_settings"],
 	): Promise<void>;

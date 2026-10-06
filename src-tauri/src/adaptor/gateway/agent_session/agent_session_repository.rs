@@ -49,7 +49,7 @@ use crate::usecase::provider_lifecycle::ProviderSessionStartTransaction;
 /// 事実（node_events）として記録され、読み出しは行の走査による導出。
 /// provider session の所有権（ownership）と provider lifecycle は従来の
 /// commit 機構のまま（実世界突合の材料としてスコープ外で存続）。
-pub(crate) struct LocalAgentSessionRepository {
+pub struct LocalAgentSessionRepository {
     repository: Arc<dyn LocalEventTransactionRepository>,
     installation_id: String,
     store: Arc<LocalEventStore>,
@@ -65,7 +65,7 @@ pub(super) fn map_commit_batch_error(error: CommitBatchError) -> AgentSessionRep
 }
 
 impl LocalAgentSessionRepository {
-    pub(crate) fn new(store: Arc<LocalEventStore>) -> Self {
+    pub fn new(store: Arc<LocalEventStore>) -> Self {
         let repository: Arc<dyn LocalEventTransactionRepository> = store.clone();
         let installation_id = store.installation_id().to_string();
         Self {
@@ -331,7 +331,7 @@ impl LocalAgentSessionRepository {
     }
 }
 
-pub(super) const OPEN_SESSION_LIFECYCLE_EVENT_TYPES: &[&str] = &[
+pub const OPEN_SESSION_LIFECYCLE_EVENT_TYPES: &[&str] = &[
     "session_attached",
     "process_exited",
     "archive_requested",
@@ -340,12 +340,12 @@ pub(super) const OPEN_SESSION_LIFECYCLE_EVENT_TYPES: &[&str] = &[
 ];
 
 #[derive(Debug)]
-pub(super) struct OpenSessionTitleCandidate {
+pub struct OpenSessionTitleCandidate {
     pub(super) location: SessionLocation,
     records: Vec<NodeFactRecord>,
 }
 
-pub(super) fn open_session_title_candidates(
+pub fn open_session_title_candidates(
     lifecycle_records: Vec<NodeFactRecord>,
 ) -> BTreeMap<String, OpenSessionTitleCandidate> {
     let mut records_by_node = BTreeMap::<String, Vec<NodeFactRecord>>::new();
@@ -1150,4 +1150,15 @@ fn now_ms() -> i64 {
         .ok()
         .and_then(|duration| i64::try_from(duration.as_millis()).ok())
         .unwrap_or(0)
+}
+
+#[cfg(test)]
+#[path = "agent_session_repository_test.rs"]
+mod agent_session_repository_tests;
+
+#[cfg(feature = "test-support")]
+impl OpenSessionTitleCandidate {
+    pub fn test_location(&self) -> &SessionLocation {
+        &self.location
+    }
 }

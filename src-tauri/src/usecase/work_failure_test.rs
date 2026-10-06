@@ -134,7 +134,6 @@ fn test_技術的な失敗の包み_全ての性質を同じ値で保持する()
 
 #[test]
 fn test_監視失敗_リポジトリ未提供は業務失敗として入口の分類と一致する() {
-    use crate::adaptor::presenter::connect::ConnectFailure;
     use crate::usecase::state_subscription::StateReadError;
     use crate::usecase::watcher::UsecaseError;
     // Given
@@ -142,18 +141,12 @@ fn test_監視失敗_リポジトリ未提供は業務失敗として入口の�
     let expected = Failure::Business(BusinessFailure::Other);
     // When / Then
     assert_eq!(Failure::from(&error), expected);
-    assert_eq!(
-        error.connect_code(),
-        connectrpc::ErrorCode::FailedPrecondition
-    );
     let read = StateReadError::from_error(error);
     assert_eq!(Failure::from(&read), expected);
-    assert_eq!(Failure::from(&read).connect_code(), read.connect_code());
 }
 
 #[test]
 fn test_読み取り失敗_中の技術的性質とnotion通信失敗の分類を保つ() {
-    use crate::adaptor::presenter::connect::ConnectFailure;
     use crate::usecase::state_subscription::StateReadError;
     // Given / When / Then
     for nature in [
@@ -167,12 +160,10 @@ fn test_読み取り失敗_中の技術的性質とnotion通信失敗の分類�
             message: "read failed".into(),
         });
         assert_eq!(Failure::from(&read), Failure::Technical(nature));
-        assert_eq!(Failure::from(&read).connect_code(), read.connect_code());
     }
     let error = crate::domain::notion::NotionError::RequestFailed("request failed".into());
     assert_eq!(
         Failure::from(&error),
         Failure::Technical(TechnicalFailureNature::Transient)
     );
-    assert_eq!(Failure::from(&error).connect_code(), error.connect_code());
 }

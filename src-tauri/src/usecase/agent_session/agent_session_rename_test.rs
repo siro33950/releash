@@ -199,3 +199,26 @@ async fn test_隔離通知_sessionの実行先と異なるworkspaceへrenameを�
         &["/repo/worktree"]
     );
 }
+
+mod classification_tests {
+    #[test]
+    fn test_session所有済みと保存競合を区別して伝播する() {
+        use super::super::AgentSessionRepositoryError;
+
+        // Given / When / Then
+        for (source, expected) in [
+            (
+                AgentSessionRepositoryError::Conflict,
+                super::super::AgentSessionRenameError::Conflict,
+            ),
+            (
+                AgentSessionRepositoryError::ProviderSessionAlreadyOwned {
+                    agent_session_id: "owner".into(),
+                },
+                super::super::AgentSessionRenameError::ProviderSessionAlreadyOwned,
+            ),
+        ] {
+            assert_eq!(super::super::map_repository_error(source), expected);
+        }
+    }
+}

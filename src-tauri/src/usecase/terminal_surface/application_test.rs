@@ -26,8 +26,6 @@ impl crate::usecase::telemetry::PerformanceOutput for Noop {
     ) -> Box<dyn crate::usecase::telemetry::TerminalLaunchCompletion> {
         Box::new(Self)
     }
-    fn start_terminal_input_trace(&self, _: &str, _: u64, _: f64) {}
-    fn record_terminal_input_admission(&self, _: &str, _: u64) {}
 }
 
 impl TerminalSurfaceEventSource for Noop {
@@ -55,7 +53,7 @@ impl TerminalSurfaceOutputControl for Noop {
 }
 
 fn make_application(
-    gateway: Arc<super::super::io_usecase::io_usecase_tests::FakePtyGateway>,
+    gateway: Arc<crate::usecase::terminal_surface::test_helpers::FakePtyGateway>,
 ) -> super::TerminalSurfaceApplication {
     super::TerminalSurfaceApplication::new(Arc::new(Noop), gateway, Arc::new(Noop), Arc::new(Noop))
 }
@@ -64,7 +62,7 @@ fn make_application(
 fn test_ターミナル画面_所有者概要lookup_不在とowner不整合を区別する() {
     let owner =
         TerminalSurfaceOwner::session(WorkspaceIdentity::new("/repo"), "agent-session-1").unwrap();
-    let gateway = Arc::new(super::super::io_usecase::io_usecase_tests::FakePtyGateway::new());
+    let gateway = Arc::new(crate::usecase::terminal_surface::test_helpers::FakePtyGateway::new());
     let application = make_application(gateway);
 
     assert_eq!(
@@ -72,7 +70,7 @@ fn test_ターミナル画面_所有者概要lookup_不在とowner不整合を�
         super::OwnedTerminalSummaryLookup::Absent
     );
 
-    let mut gateway = super::super::io_usecase::io_usecase_tests::FakePtyGateway::new();
+    let mut gateway = crate::usecase::terminal_surface::test_helpers::FakePtyGateway::new();
     gateway.surface = Some(TerminalSurface {
         session_key: owner.stable_key(),
         owner: TerminalSurfaceOwner::session(
@@ -101,7 +99,7 @@ fn test_ターミナル画面_所有者概要lookup_不在とowner不整合を�
 fn test_summary系読み取りはsnapshot全量再構築を伴わない() {
     let owner =
         TerminalSurfaceOwner::session(WorkspaceIdentity::new("/repo"), "agent-session-1").unwrap();
-    let mut gateway = super::super::io_usecase::io_usecase_tests::FakePtyGateway::new();
+    let mut gateway = crate::usecase::terminal_surface::test_helpers::FakePtyGateway::new();
     gateway.surface = Some(TerminalSurface {
         session_key: owner.stable_key(),
         owner: owner.clone(),
@@ -137,7 +135,7 @@ fn test_summary系読み取りはsnapshot全量再構築を伴わない() {
 #[tokio::test]
 async fn test_サイズ更新_別入口からも予約順を守り別terminalを待たせない() {
     // Given
-    let gateway = Arc::new(super::super::io_usecase::io_usecase_tests::FakePtyGateway::new());
+    let gateway = Arc::new(crate::usecase::terminal_surface::test_helpers::FakePtyGateway::new());
     let application = make_application(gateway.clone());
     let other_entry = application.clone();
     let owner = TerminalSurfaceOwner::workspace(WorkspaceIdentity::new("/repo")).unwrap();
@@ -171,7 +169,7 @@ async fn test_サイズ更新_別入口からも予約順を守り別terminalを
 #[test]
 fn test_サイズ更新_最後の完了で待機列を解放し後続予約は保持する() {
     // Given
-    let gateway = Arc::new(super::super::io_usecase::io_usecase_tests::FakePtyGateway::new());
+    let gateway = Arc::new(crate::usecase::terminal_surface::test_helpers::FakePtyGateway::new());
     let application = make_application(gateway.clone());
     // When / Then
     for id in 0..10 {
@@ -191,7 +189,7 @@ fn test_サイズ更新_最後の完了で待機列を解放し後続予約は�
 #[test]
 fn test_サイズ更新_予約の破棄と受付失敗でも待機列を解放する() {
     // Given
-    let gateway = Arc::new(super::super::io_usecase::io_usecase_tests::FakePtyGateway::new());
+    let gateway = Arc::new(crate::usecase::terminal_surface::test_helpers::FakePtyGateway::new());
     let application = make_application(gateway.clone());
     let owner = TerminalSurfaceOwner::workspace(WorkspaceIdentity::new("/repo")).unwrap();
     // When / Then
@@ -221,7 +219,7 @@ fn test_終了保存_停止と出力排出の失敗後も別terminalと保存へ
         vec![("stop", 1), ("drain", 2), ("flush", 0)],
     ] {
         // Given
-        let mut gateway = super::super::io_usecase::io_usecase_tests::FakePtyGateway::new();
+        let mut gateway = crate::usecase::terminal_surface::test_helpers::FakePtyGateway::new();
         gateway.shutdown_failures = failures.clone();
         gateway.shutdown_surfaces = (1..=3)
             .map(|generation| {

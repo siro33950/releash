@@ -1,0 +1,150 @@
+id: unit-test-external-resources
+snapshots:
+  fn test_case() { git2::Repository::init("repo"); }:
+    labels:
+    - source: git2::Repository::init
+      style: primary
+      start: 17
+      end: 39
+  fn test_case() { git::Repository::open_bare("repo"); }:
+    labels:
+    - source: git::Repository::open_bare
+      style: primary
+      start: 17
+      end: 43
+  fn test_case() { rusqlite::Connection::open("db"); }:
+    labels:
+    - source: rusqlite::Connection::open
+      style: primary
+      start: 17
+      end: 43
+  fn test_case() { std::net::TcpListener::bind("localhost:0"); }:
+    labels:
+    - source: TcpListener
+      style: primary
+      start: 27
+      end: 38
+  fn test_case() { std::process::Command::new("cmd"); }:
+    labels:
+    - source: std::process::Command::new
+      style: primary
+      start: 17
+      end: 43
+  fn test_case() { storage::Connection::open_in_memory(); }:
+    labels:
+    - source: storage::Connection::open_in_memory
+      style: primary
+      start: 17
+      end: 52
+  fn test_case() { tempfile::tempdir(); }:
+    labels:
+    - source: tempfile::tempdir
+      style: primary
+      start: 17
+      end: 34
+  fn test_case() { tokio::process::Command::new("cmd"); }:
+    labels:
+    - source: tokio::process::Command::new
+      style: primary
+      start: 17
+      end: 45
+  use git2::Repository as Repo;:
+    labels:
+    - source: use git2::Repository as Repo;
+      style: primary
+      start: 0
+      end: 29
+  use rusqlite::Connection as Db; fn test_case() { Db::open("db"); }:
+    labels:
+    - source: use rusqlite::Connection as Db;
+      style: primary
+      start: 0
+      end: 31
+    - source: Db::open
+      style: secondary
+      start: 49
+      end: 57
+    - source: use rusqlite::Connection as Db; fn test_case() { Db::open("db"); }
+      style: secondary
+      start: 0
+      end: 66
+  use rusqlite::Connection; fn test_case() { Connection::open_in_memory(); }:
+    labels:
+    - source: use rusqlite::Connection;
+      style: primary
+      start: 0
+      end: 25
+    - source: Connection::open_in_memory
+      style: secondary
+      start: 43
+      end: 69
+    - source: use rusqlite::Connection; fn test_case() { Connection::open_in_memory(); }
+      style: secondary
+      start: 0
+      end: 74
+  use std::net as net;:
+    labels:
+    - source: use std::net as net;
+      style: primary
+      start: 0
+      end: 20
+  use std::net::*;:
+    labels:
+    - source: use std::net::*;
+      style: primary
+      start: 0
+      end: 16
+  use std::net::{TcpListener as Listener, TcpStream};:
+    labels:
+    - source: use std::net::{TcpListener as Listener, TcpStream};
+      style: primary
+      start: 0
+      end: 51
+  use std::process as process; fn test_case() { process::Command::new("sh"); }:
+    labels:
+    - source: use std::process as process;
+      style: primary
+      start: 0
+      end: 28
+  use std::process::*; fn test_case() { Command::new("sh"); }:
+    labels:
+    - source: use std::process::*;
+      style: primary
+      start: 0
+      end: 20
+  use std::process::{Command as Process, Stdio};:
+    labels:
+    - source: use std::process::{Command as Process, Stdio};
+      style: primary
+      start: 0
+      end: 46
+  use std::{process::{Command as Process}};:
+    labels:
+    - source: use std::{process::{Command as Process}};
+      style: primary
+      start: 0
+      end: 41
+  use super::*; fn test_case() { Command::new("sh"); }:
+    labels:
+    - source: Command::new
+      style: primary
+      start: 31
+      end: 43
+  use tempfile::tempdir;:
+    labels:
+    - source: use tempfile::tempdir;
+      style: primary
+      start: 0
+      end: 22
+  use tokio::process as process;:
+    labels:
+    - source: use tokio::process as process;
+      style: primary
+      start: 0
+      end: 30
+  use tokio::{process::Command};:
+    labels:
+    - source: use tokio::{process::Command};
+      style: primary
+      start: 0
+      end: 30

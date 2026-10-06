@@ -169,7 +169,7 @@ impl From<diagnostic::DiagnosticSpan> for DiagnosticSpanResponse {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
-pub(crate) struct DiagnosticItemResponse {
+pub struct DiagnosticItemResponse {
     pub(crate) code: String,
     pub(crate) severity: SeverityResponse,
     pub(crate) stage: DiagnosticStageResponse,
@@ -238,7 +238,7 @@ impl From<diagnostic::FacetUsageEntry> for FacetUsageEntryResponse {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
-pub(crate) struct DiagnosticReportResponse {
+pub struct DiagnosticReportResponse {
     pub(crate) items: Vec<DiagnosticItemResponse>,
     pub(crate) workflow_summaries: HashMap<String, DiagnosticSummaryResponse>,
     pub(crate) facet_summaries: HashMap<String, DiagnosticSummaryResponse>,

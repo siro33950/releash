@@ -1,17 +1,15 @@
-mod armed_provider_lifecycle;
+pub(crate) mod armed_provider_lifecycle;
 mod issued_provider_lifecycle_credential;
-mod provider_kind;
+pub(crate) mod provider_kind;
 mod provider_lifecycle_capability_hash;
-mod provider_lifecycle_event;
-mod provider_lifecycle_outcome;
-mod provider_lifecycle_scope;
-#[cfg(test)]
-#[path = "provider_lifecycle_scope_test.rs"]
-mod provider_lifecycle_scope_tests;
-mod provider_lifecycle_signal;
-mod provider_lifecycle_slot_id;
-mod provider_lifecycle_unavailable;
-mod scoped_provider_lifecycle_event;
+pub(crate) mod provider_lifecycle_event;
+pub(crate) mod provider_lifecycle_outcome;
+pub(crate) mod provider_lifecycle_scope;
+
+pub(crate) mod provider_lifecycle_signal;
+pub(crate) mod provider_lifecycle_slot_id;
+pub(crate) mod provider_lifecycle_unavailable;
+pub(crate) mod scoped_provider_lifecycle_event;
 
 pub(crate) use armed_provider_lifecycle::ArmedProviderLifecycle;
 pub(crate) use issued_provider_lifecycle_credential::IssuedProviderLifecycleCredential;
@@ -27,4 +25,4 @@ pub(crate) use provider_lifecycle_unavailable::{
     ProviderLifecycleUnavailableObservation, ProviderLifecycleUnavailableReason,
 };
 pub(crate) use scoped_provider_lifecycle_event::ScopedProviderLifecycleEvent;
-mod provider_lifecycle_ingress_result;
+pub(crate) mod provider_lifecycle_ingress_result;

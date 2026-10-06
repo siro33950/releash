@@ -1,15 +1,15 @@
-#[cfg(any(test, debug_assertions))]
+#[cfg(any(test, feature = "test-support"))]
 use std::collections::HashMap;
 
-#[cfg(any(test, debug_assertions))]
+#[cfg(any(test, feature = "test-support"))]
 use super::definition::WorkflowDefinition;
-#[cfg(any(test, debug_assertions))]
+#[cfg(any(test, feature = "test-support"))]
 use super::execution::ExecutionOrigin;
-#[cfg(any(test, debug_assertions))]
+#[cfg(any(test, feature = "test-support"))]
 use super::node_execution::NodeExecution;
 use super::runtime_projection::{NODE_STATUS_ABORTED, NODE_STATUS_COMPLETED, NODE_STATUS_RUNNING};
 
-#[cfg(any(test, debug_assertions))]
+#[cfg(any(test, feature = "test-support"))]
 use super::runtime_projection::{NodeHistoryEntry, RuntimeArtifact, TokenUsage};
 
 /// Private runtime transition state. Public lifecycle state is `ExecutionStatus`.
@@ -29,7 +29,7 @@ impl RuntimeExecutionState {
         }
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn is_active(&self) -> bool {
         matches!(self, Self::Running)
     }
@@ -39,7 +39,7 @@ impl RuntimeExecutionState {
 ///
 /// This is deliberately separate from the public `ExecutionTree` read model.
 #[derive(Debug, Clone, PartialEq)]
-#[cfg(any(test, debug_assertions))]
+#[cfg(any(test, feature = "test-support"))]
 pub struct WorkflowRuntimeSnapshot {
     pub execution_id: String,
     pub workflow_name: String,
@@ -60,13 +60,5 @@ pub struct WorkflowRuntimeSnapshot {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn runtime_execution_state_active_is_derived() {
-        assert!(RuntimeExecutionState::Running.is_active());
-        assert!(!RuntimeExecutionState::Aborted.is_active());
-        assert!(!RuntimeExecutionState::Completed.is_active());
-    }
-}
+#[path = "state_test.rs"]
+pub(crate) mod state_tests;

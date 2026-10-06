@@ -20,6 +20,11 @@ name = "clippy"
 name = "biome"
 version = "2.5.15"
 
+[[plugin]]
+name = "ast-grep"
+version = "0.40.0"
+affects_cache = [".ast-grep/rules/*.yml"]
+
 [smells.function_complexity]
 threshold = 20
 

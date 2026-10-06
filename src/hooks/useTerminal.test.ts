@@ -2,8 +2,6 @@ import { Code, ConnectError } from "@connectrpc/connect";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { TerminalOutputScheduler } from "@/lib/terminalOutputScheduler";
-import { resetTerminalPerformanceSwitchesCache } from "@/lib/terminalPerformanceSwitches";
 import { useTerminal } from "./useTerminal";
 
 const mockWebglAddonInstances: Array<{
@@ -68,14 +66,12 @@ function streamForAttachment(attachmentId: unknown) {
 	return stream;
 }
 
-const mockFirstState = vi.fn();
 vi.mock("@/lib/client", () => ({
 	invokeClient: (...args: unknown[]) =>
 		mockConnectionPhase === "TRANSIENT_FAILURE" ||
 		mockConnectionPhase === "SHUTDOWN"
 			? Promise.reject(new Error(`Daemon connection is ${mockConnectionPhase}`))
 			: mockInvoke(...args),
-	firstState: (...args: unknown[]) => mockFirstState(...args),
 	currentTerminalInputId: () => mockCurrentInputId,
 	getConnectionState: () => mockConnectionPhase,
 	getClient: () => mockGetClient(),
@@ -312,9 +308,6 @@ describe("useTerminal", () => {
 		mockInputIdPublished = true;
 		mockStreamCompletion = null;
 		mockConnectionPhase = "READY";
-		mockFirstState.mockReset().mockRejectedValue(new Error("No state fixture"));
-		resetTerminalPerformanceSwitchesCache();
-		delete window.__RELEASH_TERMINAL_PERFORMANCE__;
 
 		containerRef = { current: document.createElement("div") };
 
@@ -486,25 +479,6 @@ describe("useTerminal", () => {
 			mockWebglAddonInstances[0],
 		);
 		expect(mockWebglAddonInstances[0].onContextLoss).toHaveBeenCalled();
-	});
-
-	it("disableWebglRenderer switch時はWebGL addonをロードしない", async () => {
-		mockFirstState.mockResolvedValue({
-			realAppMode: false,
-			terminal: {
-				disableOutputFlowControl: false,
-				disableTerminalJournal: false,
-				disableRendererWriteSerialization: false,
-				disableWebglRenderer: true,
-			},
-		});
-
-		renderHook(() => useTerminal(containerRef));
-
-		await waitFor(() => {
-			expect(mockStreams.length).toBeGreaterThan(0);
-		});
-		expect(mockWebglAddonInstances).toHaveLength(0);
 	});
 
 	it("dark themeは専用の黒背景とxterm標準ANSI paletteを使う", () => {
@@ -878,25 +852,23 @@ describe("useTerminal", () => {
 
 	it("frontend内部の初期化失敗には操作文脈を付けて通知する", async () => {
 		const onTerminalError = vi.fn();
-		const schedulerSetup = vi
-			.spyOn(TerminalOutputScheduler.prototype, "setMaxWritesInFlight")
-			.mockImplementationOnce(() => {
-				throw new Error("renderer attachment setup failed");
-			});
-
-		try {
-			renderHook(() =>
-				useTerminal(containerRef, { cwd: "/repo", onTerminalError }),
-			);
-
-			await waitFor(() => {
-				expect(onTerminalError).toHaveBeenCalledWith(
-					"Failed to initialize terminal: renderer attachment setup failed",
-				);
-			});
-		} finally {
-			schedulerSetup.mockRestore();
-		}
+		mockInvoke.mockImplementation((command: string) => {
+			if (command === "get_or_spawn_terminal_surface")
+				return Promise.resolve({
+					get session_key() {
+						throw new Error("renderer attachment setup failed");
+					},
+				});
+			return Promise.resolve();
+		});
+		renderHook(() =>
+			useTerminal(containerRef, { cwd: "/repo", onTerminalError }),
+		);
+		await waitFor(() =>
+			expect(onTerminalError).toHaveBeenCalledWith(
+				"Failed to initialize terminal: renderer attachment setup failed",
+			),
+		);
 	});
 
 	it("ユーザー入力時に write_terminal_surface が呼び出される", async () => {
@@ -2272,64 +2244,52 @@ describe("useTerminal", () => {
 		completeCoalescedWrite?.();
 	});
 
-	it.each([false, true])(
-		"backend flow control無効=%sでもparse完了後に通知単位ごとに処理済み量を知らせる",
-		async (disabled) => {
-			mockFirstState.mockResolvedValue({
-				realAppMode: false,
-				terminal: {
-					disableOutputFlowControl: disabled,
-					disableTerminalJournal: false,
-					disableRendererWriteSerialization: false,
-					disableWebglRenderer: false,
-				},
-			});
-			let parsed!: () => void;
-			renderHook(() => useTerminal(containerRef));
+	it("parse完了後に通知単位ごとに処理済み量を知らせる", async () => {
+		let parsed!: () => void;
+		renderHook(() => useTerminal(containerRef));
 
-			await waitFor(() => {
-				expect(mockStreams).toHaveLength(1);
-			});
-			const attachmentCall = mockInvoke.mock.calls.find(
-				([command]) => command === "start_state_subscription",
-			);
-			const attachmentId = (
-				attachmentCall?.[1] as { attachmentId?: string } | undefined
-			)?.attachmentId;
-			expect(attachmentId).toEqual(expect.any(String));
-			mockTerminalInstance.write.mockImplementation(
-				(_data: string, callback?: () => void) => {
-					if (callback) parsed = callback;
-				},
-			);
-			mockInvoke.mockClear();
+		await waitFor(() => {
+			expect(mockStreams).toHaveLength(1);
+		});
+		const attachmentCall = mockInvoke.mock.calls.find(
+			([command]) => command === "start_state_subscription",
+		);
+		const attachmentId = (
+			attachmentCall?.[1] as { attachmentId?: string } | undefined
+		)?.attachmentId;
+		expect(attachmentId).toEqual(expect.any(String));
+		mockTerminalInstance.write.mockImplementation(
+			(_data: string, callback?: () => void) => {
+				if (callback) parsed = callback;
+			},
+		);
+		mockInvoke.mockClear();
 
-			mockStreams[0].onmessage({
-				type: "output",
-				session_key: "test-uuid-1234",
-				data: "x".repeat(5000),
-				sequence: 7,
-			});
-			await waitFor(() => {
-				expect(mockTerminalInstance.write).toHaveBeenCalledWith(
-					"x".repeat(5000),
-					expect.any(Function),
-				);
-			});
-			expect(mockInvoke).not.toHaveBeenCalledWith(
-				"report_terminal_processed",
-				expect.anything(),
+		mockStreams[0].onmessage({
+			type: "output",
+			session_key: "test-uuid-1234",
+			data: "x".repeat(5000),
+			sequence: 7,
+		});
+		await waitFor(() => {
+			expect(mockTerminalInstance.write).toHaveBeenCalledWith(
+				"x".repeat(5000),
+				expect.any(Function),
 			);
+		});
+		expect(mockInvoke).not.toHaveBeenCalledWith(
+			"report_terminal_processed",
+			expect.anything(),
+		);
 
-			parsed();
-			await waitFor(() => {
-				expect(mockInvoke).toHaveBeenCalledWith("report_terminal_processed", {
-					owner: expect.any(Object),
-					units: 5000,
-				});
+		parsed();
+		await waitFor(() => {
+			expect(mockInvoke).toHaveBeenCalledWith("report_terminal_processed", {
+				owner: expect.any(Object),
+				units: 5000,
 			});
-		},
-	);
+		});
+	});
 
 	it("snapshotで受け取った単位でUTF16の処理済み量を蓄積し端数を次へ持ち越す", async () => {
 		renderHook(() => useTerminal(containerRef));
@@ -2445,136 +2405,6 @@ describe("useTerminal", () => {
 		expect(onTerminalError.mock.calls.every(([error]) => error === null)).toBe(
 			true,
 		);
-	});
-
-	it("性能probe有効時はfirst parseとfirst paintを匿名backend phaseへ記録する", async () => {
-		window.__RELEASH_TERMINAL_PERFORMANCE__ = {
-			recordInputPoint: vi.fn(),
-			recordPhase: vi.fn(),
-			recordRendererMetrics: vi.fn(),
-		};
-		renderHook(() => useTerminal(containerRef));
-
-		await waitFor(() => {
-			expect(mockStreams).toHaveLength(1);
-		});
-		mockStreams[0].onmessage({
-			type: "output",
-			session_key: "test-uuid-1234",
-			data: "first provider frame",
-			sequence: 1,
-		});
-
-		await waitFor(() => {
-			expect(mockInvoke).toHaveBeenCalledWith(
-				"record_terminal_launch_renderer_phase",
-				{
-					phase: "first_xterm_parsed",
-					durationMs: expect.any(Number),
-				},
-			);
-			expect(mockInvoke).toHaveBeenCalledWith(
-				"record_terminal_launch_renderer_phase",
-				{
-					phase: "first_paint",
-					durationMs: expect.any(Number),
-				},
-			);
-		});
-	});
-
-	it("起動計測が失敗してもログだけを残しterminal入力を続ける", async () => {
-		const onTerminalError = vi.fn();
-		const notice = vi.fn();
-		window.addEventListener("releash-client-error", notice);
-		const error = new Error("telemetry unavailable");
-		const logged = vi.spyOn(console, "error").mockImplementation(() => {});
-		const original = mockInvoke.getMockImplementation();
-		mockInvoke.mockImplementation(
-			(command: string, args?: Record<string, unknown>) =>
-				command === "record_terminal_launch_renderer_phase"
-					? Promise.reject(error)
-					: original?.(command, args),
-		);
-		try {
-			window.__RELEASH_TERMINAL_PERFORMANCE__ = {
-				recordInputPoint: vi.fn(),
-				recordPhase: vi.fn(),
-				recordRendererMetrics: vi.fn(),
-			};
-			renderHook(() => useTerminal(containerRef, { onTerminalError }));
-			await waitFor(() => expect(mockStreams).toHaveLength(1));
-			mockStreams[0].onmessage({
-				type: "output",
-				session_key: "test-uuid-1234",
-				data: "first provider frame",
-				sequence: 1,
-			});
-			await waitFor(() =>
-				expect(logged).toHaveBeenCalledWith(
-					"Terminal launch telemetry failed",
-					error,
-				),
-			);
-			mockOnDataCallback("still works");
-			await waitFor(() =>
-				expect(terminalInputWrites()).toEqual([
-					expect.objectContaining({ data: "still works", sequence: 0 }),
-				]),
-			);
-			expect(notice).not.toHaveBeenCalled();
-			expect(
-				onTerminalError.mock.calls.every(([value]) => value === null),
-			).toBe(true);
-		} finally {
-			window.removeEventListener("releash-client-error", notice);
-			logged.mockRestore();
-		}
-	});
-
-	it("AgentSession作成開始時刻からfirst parseとpaintまでを同一runとして記録する", async () => {
-		const launchOrigin = performance.now() - 50;
-		const takeLaunchOrigin = vi.fn().mockReturnValue(launchOrigin);
-		window.__RELEASH_TERMINAL_PERFORMANCE__ = {
-			recordInputPoint: vi.fn(),
-			recordPhase: vi.fn(),
-			recordRendererMetrics: vi.fn(),
-			takeLaunchOrigin,
-		};
-
-		renderHook(() =>
-			useTerminal(containerRef, {
-				cwd: "/repo",
-				theme: "dark",
-				owner: {
-					kind: "session",
-					workspacePath: "/repo",
-					sessionId: "agent-session-1",
-				},
-				label: "Codex AgentSession",
-				initialization: "attach-existing",
-			}),
-		);
-
-		await waitFor(() => expect(mockStreams).toHaveLength(1));
-		mockStreams[0].onmessage({
-			type: "output",
-			session_key: "test-uuid-1234",
-			data: "first provider frame",
-			sequence: 1,
-		});
-
-		await waitFor(() => {
-			expect(takeLaunchOrigin).toHaveBeenCalledWith("agent-session-1");
-			const parsed = mockInvoke.mock.calls.find(
-				([command, args]) =>
-					command === "record_terminal_launch_renderer_phase" &&
-					(args as { phase?: string }).phase === "first_xterm_parsed",
-			);
-			expect(
-				(parsed?.[1] as { durationMs?: number } | undefined)?.durationMs,
-			).toBeGreaterThanOrEqual(50);
-		});
 	});
 
 	it("backend resizeはstream順にxtermへ投影する", async () => {

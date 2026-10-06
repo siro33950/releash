@@ -14,13 +14,13 @@ use crate::usecase::agent_session::{
 
 const MAX_SCAN_PER_PROVIDER: usize = 201;
 
-pub(crate) struct LocalAgentSessionHistoryQueryService {
+pub struct LocalAgentSessionHistoryQueryService {
     history: Arc<dyn AgentSessionHistoryGateway>,
     ownership: Arc<dyn AgentSessionOwnershipQuery>,
 }
 
 impl LocalAgentSessionHistoryQueryService {
-    pub(crate) fn new(
+    pub fn new(
         history: Arc<dyn AgentSessionHistoryGateway>,
         ownership: Arc<dyn AgentSessionOwnershipQuery>,
     ) -> Self {
@@ -179,3 +179,7 @@ fn map_gateway_error(error: AgentSessionHistoryGatewayError) -> AgentSessionHist
         AgentSessionHistoryGatewayError::Corrupt => AgentSessionHistoryQueryError::Corrupt,
     }
 }
+
+#[cfg(test)]
+#[path = "agent_session_history_query_service_test.rs"]
+mod agent_session_history_query_service_tests;

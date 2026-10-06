@@ -32,7 +32,7 @@ impl StartupFailureKind {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct StartupFailure {
+pub struct StartupFailure {
     pub(crate) kind: StartupFailureKind,
     pub(crate) safe_description: &'static str,
     pub(crate) correlation_id: String,

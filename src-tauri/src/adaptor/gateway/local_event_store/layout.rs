@@ -146,7 +146,7 @@ pub fn create_initial_create_evidence_with_fault(
     if fault.is_some_and(|fault| {
         fault.take_initial_create_fault(InitialCreateFaultPoint::BeforeEvidenceCreate)
     }) {
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         fault
             .expect("armed initial-create fault injector")
             .crash_initial_create_process_if_armed(InitialCreateFaultPoint::BeforeEvidenceCreate);
@@ -171,7 +171,7 @@ pub fn create_initial_create_evidence_with_fault(
         fault.take_initial_create_fault(InitialCreateFaultPoint::AfterPartialEvidenceWrite)
     }) {
         file.write_all(&encoded[..encoded.len() / 2])?;
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         fault
             .expect("armed initial-create fault injector")
             .crash_initial_create_process_if_armed(
@@ -188,7 +188,7 @@ pub fn create_initial_create_evidence_with_fault(
     if fault.is_some_and(|fault| {
         fault.take_initial_create_fault(InitialCreateFaultPoint::AfterEvidenceFileSync)
     }) {
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         fault
             .expect("armed initial-create fault injector")
             .crash_initial_create_process_if_armed(InitialCreateFaultPoint::AfterEvidenceFileSync);
@@ -203,7 +203,7 @@ pub fn create_initial_create_evidence_with_fault(
     if fault.is_some_and(|fault| {
         fault.take_initial_create_fault(InitialCreateFaultPoint::AfterEvidenceDirectorySync)
     }) {
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         fault
             .expect("armed initial-create fault injector")
             .crash_initial_create_process_if_armed(

@@ -8,7 +8,7 @@ use crate::adaptor::presenter::connect::command_error;
 use crate::adaptor::presenter::connect_wire::{rpc, to_rpc, to_wire};
 
 #[derive(Clone)]
-pub(crate) struct ClientApiDeps {
+pub struct ClientApiDeps {
     dispatch: Arc<ClientCommandDispatch>,
     state_subscriptions: Option<StateSubscriptionDeps>,
     priority: super::client_priority::PriorityInterceptor,
@@ -16,7 +16,7 @@ pub(crate) struct ClientApiDeps {
 }
 
 #[derive(Clone)]
-pub(crate) struct StateSubscriptionDeps {
+pub struct StateSubscriptionDeps {
     usecase: crate::usecase::state_subscription::StateSubscriptionUsecase,
     presenter: Arc<crate::adaptor::presenter::state_subscription::StateSubscriptionPresenter>,
     terminal: crate::usecase::terminal_surface::subscription::TerminalSubscriptionUsecase,
@@ -49,13 +49,13 @@ impl ClientApiDeps {
         }
     }
 
-    pub(crate) fn with_state_subscriptions(mut self, subscriptions: StateSubscriptionDeps) -> Self {
+    pub fn with_state_subscriptions(mut self, subscriptions: StateSubscriptionDeps) -> Self {
         self.state_subscriptions = Some(subscriptions);
         self
     }
 
-    #[cfg(test)]
-    fn priority_limits(&self) -> &crate::common::concurrency::PriorityLimits {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn priority_limits(&self) -> &crate::common::concurrency::PriorityLimits {
         self.priority.gate.limits()
     }
 
@@ -69,7 +69,7 @@ impl ClientApiDeps {
         })
     }
 
-    async fn execute(
+    pub async fn execute(
         &self,
         deadline: Option<std::time::Instant>,
         command: wire::command_request::Command,
@@ -100,7 +100,7 @@ impl ClientApiDeps {
     }
 }
 
-async fn ingress<T>(
+pub async fn ingress<T>(
     deadline: Option<std::time::Instant>,
     operation: impl std::future::Future<Output = Result<T, connectrpc::ConnectError>>,
 ) -> Result<T, connectrpc::ConnectError> {
@@ -115,13 +115,13 @@ async fn ingress<T>(
         })?
 }
 
-fn task_error(error: tokio::task::JoinError) -> connectrpc::ConnectError {
+pub fn task_error(error: tokio::task::JoinError) -> connectrpc::ConnectError {
     crate::adaptor::presenter::connect::classified_error(
         crate::domain::failure::TechnicalFailure::from(error),
     )
 }
 
-pub(crate) fn router(deps: Option<ClientApiDeps>, default_timeout: std::time::Duration) -> Router {
+pub fn router(deps: Option<ClientApiDeps>, default_timeout: std::time::Duration) -> Router {
     let Some(deps) = deps else {
         return Router::new();
     };
@@ -145,11 +145,7 @@ pub(crate) fn router(deps: Option<ClientApiDeps>, default_timeout: std::time::Du
 
 include!(concat!(env!("OUT_DIR"), "/client_service.rs"));
 
-#[cfg(test)]
-#[path = "client_test.rs"]
-mod client_tests;
-
-struct StateStreamPermit {
+pub struct StateStreamPermit {
     subscriptions: StateSubscriptionDeps,
     id: String,
 }
@@ -165,7 +161,7 @@ impl Drop for StateStreamPermit {
 }
 
 impl StateSubscriptionDeps {
-    fn open_stream(
+    pub fn open_stream(
         &self,
         id: String,
     ) -> Result<StateStreamPermit, crate::usecase::state_subscription::SubscriptionError> {
@@ -185,7 +181,7 @@ impl StateSubscriptionDeps {
         })
     }
 
-    pub(crate) fn stream(
+    pub fn stream(
         &self,
         id: String,
     ) -> Result<
@@ -221,7 +217,7 @@ impl StateSubscriptionDeps {
             .map(crate::adaptor::presenter::state_subscription_wire::event))
     }
 
-    pub(crate) async fn start_subscription(
+    pub async fn start_subscription(
         &self,
         client: &str,
         target: &crate::usecase::state_subscription::SubscriptionTarget,
@@ -247,7 +243,7 @@ impl StateSubscriptionDeps {
         }
     }
 
-    pub(crate) async fn stop_subscription(
+    pub async fn stop_subscription(
         &self,
         id: &str,
     ) -> Result<(), crate::usecase::state_subscription::SubscriptionError> {
@@ -267,11 +263,27 @@ impl StateSubscriptionDeps {
         }
     }
 
-    pub(crate) fn terminal_processed(
+    pub fn terminal_processed(
         &self,
         id: &str,
         units: usize,
     ) -> Result<(), crate::usecase::state_subscription::StateReadError> {
         self.terminal.terminal_processed(id, units)
+    }
+}
+
+#[cfg(test)]
+#[path = "client_test.rs"]
+mod client_tests;
+
+#[cfg(feature = "test-support")]
+impl StateSubscriptionDeps {
+    pub fn test_presenter(
+        &self,
+    ) -> Arc<crate::adaptor::presenter::state_subscription::StateSubscriptionPresenter> {
+        self.presenter.clone()
+    }
+    pub fn test_usecase(&self) -> &crate::usecase::state_subscription::StateSubscriptionUsecase {
+        &self.usecase
     }
 }

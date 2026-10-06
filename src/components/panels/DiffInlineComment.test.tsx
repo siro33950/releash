@@ -258,18 +258,6 @@ describe("DiffInlineComment", () => {
 		expect(screen.getByText("all").tagName).toBe("STRONG");
 	});
 
-	it("does not render legacy edit, delete, or send controls", () => {
-		render(
-			<DiffInlineComment
-				comment={makeComment({ state: "open" })}
-				{...defaultProps}
-			/>,
-		);
-		expect(screen.queryByTitle("Edit")).not.toBeInTheDocument();
-		expect(screen.queryByTitle("Delete")).not.toBeInTheDocument();
-		expect(screen.queryByTitle("Send to Agent")).not.toBeInTheDocument();
-	});
-
 	it("does not render delete button when onDelete is not provided", () => {
 		render(<DiffInlineComment comment={makeComment()} {...defaultProps} />);
 		expect(screen.queryByLabelText("Delete thread")).not.toBeInTheDocument();

@@ -10,7 +10,7 @@ use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 
 const LOCAL_API_DISCOVERY_FILE_NAME: &str = "local-api.json";
 
-pub(crate) fn local_api_discovery_path(data_dir: &Path) -> PathBuf {
+pub fn local_api_discovery_path(data_dir: &Path) -> PathBuf {
     data_dir.join(LOCAL_API_DISCOVERY_FILE_NAME)
 }
 
@@ -124,7 +124,7 @@ impl LocalApiDiscoveryFile {
         Ok(())
     }
 
-    pub(crate) fn remove_if_owned(&self) -> io::Result<()> {
+    pub fn remove_if_owned(&self) -> io::Result<()> {
         let current = match fs::read(&self.path) {
             Ok(bytes) => serde_json::from_slice::<LocalApiDiscovery>(&bytes).ok(),
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
@@ -143,12 +143,8 @@ impl LocalApiDiscoveryFile {
         }
     }
 
-    #[cfg(test)]
-    pub(crate) fn path(&self) -> &Path {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn path(&self) -> &Path {
         &self.path
     }
 }
-
-#[cfg(test)]
-#[path = "discovery_test.rs"]
-mod discovery_tests;

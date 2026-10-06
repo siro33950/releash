@@ -1,15 +1,15 @@
-mod entities;
-mod error;
-mod gateway;
-mod repository;
-mod value_objects;
+pub(crate) mod entities;
+pub(crate) mod error;
+pub(crate) mod gateway;
+pub(crate) mod repository;
+pub(crate) mod value_objects;
 
 pub(crate) use entities::{
     ProviderHookHealth, ProviderHookHealthEvent, ProviderHookHealthOutcome,
     ProviderLifecycleBinding, ProviderLifecycleSlot,
 };
 pub(crate) use error::ProviderLifecycleInputError;
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) use error::ProviderLifecycleReplayError;
 pub(crate) use gateway::ProviderLifecycleCredentialGateway;
 pub(crate) use repository::{

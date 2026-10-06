@@ -59,7 +59,7 @@ impl PriorityGate {
         next(request).await
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn limits(&self) -> &PriorityLimits {
         &self.limits
     }

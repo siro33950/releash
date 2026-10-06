@@ -16,6 +16,7 @@ mod state_subscription_target;
 pub(crate) mod state_subscription_wire;
 pub(crate) mod terminal;
 pub(crate) mod terminal_error;
+#[cfg(feature = "test-support")]
 pub(crate) mod terminal_event_fault_relay;
 pub(crate) mod terminal_event_hub;
 pub(crate) mod workflow;

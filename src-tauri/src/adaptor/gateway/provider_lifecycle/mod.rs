@@ -1,8 +1,8 @@
-mod credential_gateway_impl;
-mod event_repository_impl;
-mod hook_health_failure_query_impl;
-mod hook_health_repository_impl;
-mod launch_spec;
+pub(crate) mod credential_gateway_impl;
+pub(crate) mod event_repository_impl;
+pub(crate) mod hook_health_failure_query_impl;
+pub(crate) mod hook_health_repository_impl;
+pub(crate) mod launch_spec;
 mod payload;
 
 pub(crate) use credential_gateway_impl::LocalProviderLifecycleCredentialGateway;
@@ -13,11 +13,8 @@ pub(crate) use launch_spec::{ProviderLaunchContext, ProviderLaunchSpec};
 pub(crate) use payload::{parse_provider_payload, ProviderLifecycleGatewayError};
 
 #[cfg(test)]
-#[path = "provider_hook_health_failure_query_test.rs"]
-mod provider_hook_health_failure_query_tests;
-#[cfg(test)]
-#[path = "provider_hook_health_repository_test.rs"]
-mod provider_hook_health_repository_tests;
-#[cfg(test)]
-#[path = "provider_lifecycle_gateway_test.rs"]
-mod provider_lifecycle_gateway_tests;
+#[path = "mod_test.rs"]
+mod mod_tests;
+
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) mod test_helpers;

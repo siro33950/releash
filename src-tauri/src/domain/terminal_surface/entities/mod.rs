@@ -1,4 +1,4 @@
-mod terminal_surface;
+pub(crate) mod terminal_surface;
 mod terminal_surface_input_ingress;
 mod terminal_surface_registry;
 mod terminal_surface_runtime_lifecycle;

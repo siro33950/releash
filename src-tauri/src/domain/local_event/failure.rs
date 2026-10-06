@@ -88,29 +88,5 @@ impl fmt::Display for SafeOperationFailure {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn label_truncates_on_char_boundary() {
-        let raw = "あ".repeat(100); // 300 bytes
-        let text = BoundedNoticeText::label(&raw);
-        assert!(text.value().len() <= NOTICE_LABEL_MAX_BYTES);
-        assert!(text.value().ends_with('…'));
-        assert!(text
-            .value()
-            .trim_end_matches('…')
-            .chars()
-            .all(|c| c == 'あ'));
-    }
-
-    #[test]
-    fn short_text_is_not_truncated() {
-        let text = BoundedNoticeText::label("ok");
-        assert_eq!(text.value(), "ok");
-    }
-}
-
-#[cfg(test)]
 #[path = "failure_test.rs"]
 mod failure_tests;

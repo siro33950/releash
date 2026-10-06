@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct NotionTaskQuery {
+pub struct NotionTaskQuery {
     pub title_filter: String,
     pub label_filters: HashMap<String, Vec<String>>,
     pub cursor: Option<String>,
@@ -9,7 +9,7 @@ pub(crate) struct NotionTaskQuery {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct NotionLabelOption {
+pub struct NotionLabelOption {
     pub property_name: String,
     pub property_type: String,
     pub options: Vec<String>,
@@ -17,14 +17,14 @@ pub(crate) struct NotionLabelOption {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct NotionTaskPage {
+pub struct NotionTaskPage {
     pub tasks: Vec<NotionTask>,
     pub has_more: bool,
     pub next_cursor: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct NotionTask {
+pub struct NotionTask {
     pub id: String,
     pub title: String,
     pub url: String,
@@ -35,13 +35,13 @@ pub(crate) struct NotionTask {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct NotionValidationResult {
+pub struct NotionValidationResult {
     pub status: NotionConfigStatus,
     pub properties: Vec<NotionPropertyInfo>,
 }
 
 impl NotionValidationResult {
-    pub(crate) fn not_configured() -> Self {
+    pub fn not_configured() -> Self {
         Self {
             status: NotionConfigStatus::NotConfigured,
             properties: Vec::new(),
@@ -50,14 +50,14 @@ impl NotionValidationResult {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct NotionPropertyInfo {
+pub struct NotionPropertyInfo {
     pub name: String,
     pub property_type: String,
     pub options: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum NotionConfigStatus {
+pub enum NotionConfigStatus {
     NotConfigured,
     Configured,
     InvalidToken,
@@ -66,14 +66,5 @@ pub(crate) enum NotionConfigStatus {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_validate結果_未設定はプロパティ空で返る() {
-        let result = NotionValidationResult::not_configured();
-
-        assert_eq!(result.status, NotionConfigStatus::NotConfigured);
-        assert!(result.properties.is_empty());
-    }
-}
+#[path = "value_objects_test.rs"]
+mod value_objects_tests;

@@ -75,5 +75,5 @@ pub struct NotionLabelProperty {
 }
 
 #[cfg(test)]
-#[path = "value_objects_test.rs"]
-mod value_objects_tests;
+#[path = "mod_test.rs"]
+mod mod_tests;

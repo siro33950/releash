@@ -1,16 +1,18 @@
-use releash_lib::terminal_subscription_acceptance::TerminalSubscription as TerminalSurfaceWireAttachment;
-#[path = "support/agent_tui_fixture.rs"]
+use releash_lib::test_support::terminal_subscription_acceptance::TerminalSubscription as TerminalSurfaceWireAttachment;
+#[path = "agent_tui_fixture.rs"]
 mod agent_tui_fixture;
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use agent_tui_fixture::{fixture_process_shell_command, FixtureLifecycleCommand, FixturePlan};
-use releash_lib::agent_session_tui_acceptance::{
+use releash_lib::test_support::agent_session_tui_acceptance::{
     AcceptanceAgentSessionLifecycle, AcceptanceProvider, AgentSessionTuiAcceptanceConfig,
 };
-use releash_lib::terminal_surface::{TerminalSurfaceOwnerV1, TerminalSurfaceStreamItemV1};
-use releash_lib::workflow_control_plane_acceptance::{
+use releash_lib::test_support::terminal_surface::{
+    TerminalSurfaceOwnerV1, TerminalSurfaceStreamItemV1,
+};
+use releash_lib::test_support::workflow_control_plane_acceptance::{
     AcceptanceNodeExecution, AcceptanceNodeExecutionStatus, AcceptanceNodeKind,
     AcceptanceWorkflowExecution, AcceptanceWorkflowExecutionStatus, AcceptanceWorkspaceNodeStatus,
     WorkflowControlPlaneAcceptanceHost,
@@ -271,7 +273,7 @@ async fn wait_for_node_count(
     host: &WorkflowControlPlaneAcceptanceHost,
     execution_id: &str,
     count: usize,
-) -> releash_lib::workflow_control_plane_acceptance::AcceptanceWorkflowExecution {
+) -> releash_lib::test_support::workflow_control_plane_acceptance::AcceptanceWorkflowExecution {
     let result = tokio::time::timeout(Duration::from_secs(10), async {
         loop {
             let execution = host.execution(execution_id).await.unwrap().unwrap();

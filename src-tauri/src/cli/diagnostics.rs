@@ -8,7 +8,7 @@ use crate::adaptor::presenter::workflow_api::{
     DiagnosticReportResponse as DiagnosticReport, SeverityResponse as Severity,
 };
 
-pub(super) fn cmd_diagnostics(
+pub fn cmd_diagnostics(
     data_dir: &Path,
     dir: Option<PathBuf>,
     json: bool,
@@ -46,7 +46,7 @@ fn absolutize(dir: PathBuf, cwd: &Path) -> PathBuf {
     }
 }
 
-fn ensure_existing_target_dir(path: &Path) -> Result<(), CliError> {
+pub fn ensure_existing_target_dir(path: &Path) -> Result<(), CliError> {
     if !path.exists() {
         return Err(CliError::NotFound(format!(
             "directory does not exist: {}",

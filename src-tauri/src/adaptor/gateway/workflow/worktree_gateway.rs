@@ -19,7 +19,7 @@ fn configured_repo_paths(app: &AppSettings) -> Vec<String> {
 
 /// [05] API / CLI 共有 helper: `worktree_path` filter input を OS レベルで canonicalize し、
 /// 末尾 `/` を除去した正規化済み文字列を返す。
-pub(crate) fn normalize_worktree_filter_path(worktree_path: &str) -> Result<String, String> {
+pub fn normalize_worktree_filter_path(worktree_path: &str) -> Result<String, String> {
     let canonical = PathBuf::from(worktree_path)
         .canonicalize()
         .map_err(|e| format!("invalid worktree_path: {e}"))?;
@@ -29,7 +29,7 @@ pub(crate) fn normalize_worktree_filter_path(worktree_path: &str) -> Result<Stri
         .ok_or_else(|| "worktree_path has invalid encoding".to_string())
 }
 
-pub(crate) fn canonicalize_managed_worktree_path_inner(
+pub fn canonicalize_managed_worktree_path_inner(
     usecase: &RepositoryUsecase,
     repo_paths: Vec<String>,
     worktree_path: String,
@@ -115,7 +115,7 @@ impl ManagedWorktreeGateway for RepositoryManagedWorktreeGateway {
 }
 
 #[derive(Clone)]
-pub(crate) struct RepositoryIsolatedWorktreeGateway;
+pub struct RepositoryIsolatedWorktreeGateway;
 
 fn isolated_worktree_error(error: RepositoryError) -> WorkflowError {
     match error {
@@ -197,13 +197,13 @@ impl crate::domain::workflow::IsolatedWorktreeGateway for RepositoryIsolatedWork
 }
 
 #[derive(Clone)]
-pub(crate) struct RepoPathsManagedWorktreeGateway {
+pub struct RepoPathsManagedWorktreeGateway {
     repository: Arc<RepositoryUsecase>,
     repo_paths: Vec<String>,
 }
 
 impl RepoPathsManagedWorktreeGateway {
-    pub(crate) fn new(repository: Arc<RepositoryUsecase>, repo_paths: Vec<String>) -> Self {
+    pub fn new(repository: Arc<RepositoryUsecase>, repo_paths: Vec<String>) -> Self {
         Self {
             repository,
             repo_paths,
@@ -221,55 +221,13 @@ impl ManagedWorktreeGateway for RepoPathsManagedWorktreeGateway {
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 #[derive(Clone)]
-pub(crate) struct PassthroughManagedWorktreeGateway;
+pub struct PassthroughManagedWorktreeGateway;
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 impl ManagedWorktreeGateway for PassthroughManagedWorktreeGateway {
     fn resolve(&self, worktree_path: &str) -> Result<String, WorkflowError> {
         normalize_worktree_filter_path(worktree_path).map_err(WorkflowError::external)
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn test_usecase() -> RepositoryUsecase {
-        crate::adaptor::controller::wiring::build_repository_usecase()
-    }
-
-    #[test]
-    fn canonicalize_managed_worktree_path_accepts_configured_git_worktree_only() {
-        let (repo_dir, repo) = crate::test_support::git::create_test_repo();
-        crate::test_support::git::create_initial_commit(&repo);
-        let worktree_parent = tempfile::TempDir::new().unwrap();
-        let worktree_path = worktree_parent.path().join("managed-wt");
-        repo.worktree("managed-wt", &worktree_path, None).unwrap();
-
-        let usecase = test_usecase();
-        let canonical = worktree_path.canonicalize().unwrap();
-        let accepted = canonicalize_managed_worktree_path_inner(
-            &usecase,
-            vec![repo_dir.path().to_string_lossy().to_string()],
-            worktree_path.join(".").to_string_lossy().to_string(),
-        )
-        .unwrap();
-        assert_eq!(std::path::PathBuf::from(accepted), canonical);
-
-        let outside = tempfile::TempDir::new().unwrap();
-        std::fs::create_dir_all(outside.path()).unwrap();
-        let err = canonicalize_managed_worktree_path_inner(
-            &usecase,
-            vec![repo_dir.path().to_string_lossy().to_string()],
-            outside.path().to_string_lossy().to_string(),
-        )
-        .unwrap_err();
-        assert!(err.to_string().contains("not a configured git worktree"));
-    }
-}
-
-#[cfg(test)]
-#[path = "worktree_gateway_test.rs"]
-mod worktree_gateway_tests;

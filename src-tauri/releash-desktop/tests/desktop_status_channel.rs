@@ -53,7 +53,7 @@ async fn test_シェル状態購読_tauriコマンドからchannelに初期値�
             false
         }
     });
-    let app = releash_desktop::desktop_client_acceptance::desktop_connection_app(
+    let app = releash_desktop::test_support::desktop_connection_app(
         builder,
         directory.path(),
         &support::backend_executable(),
@@ -62,8 +62,7 @@ async fn test_シェル状態購読_tauriコマンドからchannelに初期値�
         .build()
         .unwrap();
     tokio::time::timeout(Duration::from_secs(35), async {
-        while releash_desktop::desktop_client_acceptance::desktop_supervision_status(app.handle())
-            ["phase"]
+        while releash_desktop::test_support::desktop_supervision_status(app.handle())["phase"]
             != "ready"
         {
             tokio::time::sleep(Duration::from_millis(20)).await;
@@ -73,7 +72,7 @@ async fn test_シェル状態購読_tauriコマンドからchannelに初期値�
     .unwrap_or_else(|error| {
         panic!(
             "{error}: {}",
-            releash_desktop::desktop_client_acceptance::desktop_supervision_status(app.handle())
+            releash_desktop::test_support::desktop_supervision_status(app.handle())
         )
     });
 
@@ -110,7 +109,7 @@ async fn test_シェル状態購読_tauriコマンドからchannelに初期値�
         "stop_daemon_status_subscription",
         json!({"id":"stopped-screen"}),
     );
-    releash_desktop::desktop_client_acceptance::stop_desktop_daemon(app.handle(), false);
+    releash_desktop::test_support::stop_desktop_daemon(app.handle(), false);
     // Then
     let changed = tokio::time::timeout(Duration::from_secs(2), receiver.recv())
         .await

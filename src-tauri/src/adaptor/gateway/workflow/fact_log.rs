@@ -25,7 +25,7 @@ use crate::domain::workflow::{
 use crate::domain::workspace_tree::WorkspaceIdentity;
 
 #[derive(Debug, thiserror::Error)]
-pub(crate) enum FactReadError {
+pub enum FactReadError {
     #[error(transparent)]
     Query(#[from] LocalEventQueryError),
     #[error("{0}")]
@@ -59,10 +59,6 @@ impl From<FactReadError> for crate::domain::workflow::WorkflowError {
 
 const MAX_RECONCILIATION_ADVANCE_ROUNDS: usize = 4_096;
 
-#[cfg(test)]
-#[path = "fact_log_test.rs"]
-mod fact_log_test;
-
 fn kind_column(kind: NodeKindName) -> &'static str {
     match kind {
         NodeKindName::Session => "session",
@@ -84,12 +80,12 @@ fn kind_from_column(value: &str) -> Result<NodeKindName, String> {
 
 /// 追記待ちの1事実行（時刻つき）。
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct PendingFactRow {
-    pub(crate) row: NewNodeEventRow,
-    pub(crate) timestamp_ms: i64,
+pub struct PendingFactRow {
+    pub row: NewNodeEventRow,
+    pub timestamp_ms: i64,
 }
 
-pub(crate) async fn resolve_unknown_append(
+pub async fn resolve_unknown_append(
     store: &Arc<LocalEventStore>,
     rows: Vec<PendingFactRow>,
     expected_head: Option<i64>,
@@ -496,7 +492,7 @@ fn meta_from_row(row: &NodeEventRow) -> Result<FactRowMeta, String> {
     })
 }
 
-pub(crate) fn node_meta_from_row(row: &NodeEventRow) -> Result<NodeFactMeta, String> {
+pub fn node_meta_from_row(row: &NodeEventRow) -> Result<NodeFactMeta, String> {
     let meta = meta_from_row(row)?;
     Ok(NodeFactMeta {
         tree_id: row.tree_id.clone(),
@@ -509,7 +505,7 @@ pub(crate) fn node_meta_from_row(row: &NodeEventRow) -> Result<NodeFactMeta, Str
 }
 
 /// イベント列を事実行へ写像して node_events に追記する。
-pub(crate) async fn append_facts_for_events(
+pub async fn append_facts_for_events(
     store: &Arc<LocalEventStore>,
     events: &[WorkflowEvent],
 ) -> Result<(), crate::domain::workflow::WorkflowError> {
@@ -560,7 +556,7 @@ pub(crate) async fn pending_rows_for_events(
 }
 
 /// 完了事実を含む行列は原子的に、それ以外は単一行ずつ append する。
-pub(crate) async fn append_pending_rows(
+pub async fn append_pending_rows(
     store: &Arc<LocalEventStore>,
     rows: Vec<PendingFactRow>,
 ) -> Result<(), crate::domain::workflow::WorkflowError> {
@@ -590,8 +586,8 @@ pub(crate) async fn append_pending_rows(
     Ok(())
 }
 
-#[cfg(test)]
-pub(crate) fn append_fact_batch_for_seed(
+#[cfg(any(test, feature = "test-support"))]
+pub fn append_fact_batch_for_seed(
     store: &Arc<LocalEventStore>,
     facts: &[(NodeFactMeta, NodeFact)],
     first_timestamp_ms: i64,
@@ -681,13 +677,13 @@ pub(crate) fn append_fact_batch_for_seed(
 /// 事実ログの読み出し元。writer プロセスの store と read-only の store の
 /// どちらからでも同じ形で読める。
 #[derive(Clone)]
-pub(crate) enum FactLogReadBackend {
+pub enum FactLogReadBackend {
     Live(Arc<LocalEventStore>),
     ReadOnly(Arc<LocalEventReadStore>),
 }
 
 impl FactLogReadBackend {
-    pub(crate) async fn run_indexed<T, F>(&self, run: F) -> Result<T, LocalEventQueryError>
+    pub async fn run_indexed<T, F>(&self, run: F) -> Result<T, LocalEventQueryError>
     where
         T: Send + 'static,
         F: FnOnce(&rusqlite::Connection) -> Result<T, LocalEventQueryError> + Send + 'static,
@@ -716,7 +712,7 @@ impl FactLogReadBackend {
 }
 
 /// 1 tree 分の事実行列を読み出して domain の record へ復元する。
-pub(crate) async fn read_tree_records_from(
+pub async fn read_tree_records_from(
     backend: &FactLogReadBackend,
     tree_id: &str,
 ) -> Result<Vec<NodeFactRecord>, FactReadError> {
@@ -863,7 +859,7 @@ pub(crate) async fn read_tree_archive_records_for(
         .map_err(FactReadError::Corrupt)
 }
 
-pub(crate) async fn read_records_for_event_types(
+pub async fn read_records_for_event_types(
     backend: &FactLogReadBackend,
     event_types: &[&str],
 ) -> Result<Vec<NodeFactRecord>, FactReadError> {
@@ -916,7 +912,7 @@ pub(crate) async fn read_latest_record_for_node_with_event_types(
 }
 
 /// 1 tree 分の事実行列を読み出して domain の record へ復元する（writer store）。
-pub(crate) async fn read_tree_records(
+pub async fn read_tree_records(
     store: &Arc<LocalEventStore>,
     tree_id: &str,
 ) -> Result<Vec<NodeFactRecord>, FactReadError> {
@@ -1001,7 +997,7 @@ pub(crate) fn record_from_row(row: &NodeEventRow) -> Result<Option<NodeFactRecor
 }
 
 /// 単独の事実（human の行動等）を1行 append する。
-pub(crate) async fn append_single_fact(
+pub async fn append_single_fact(
     store: &Arc<LocalEventStore>,
     meta: &NodeFactMeta,
     fact: &NodeFact,
@@ -1015,7 +1011,7 @@ pub(crate) async fn append_single_fact(
     .await
 }
 
-pub(crate) fn pending_single_fact(
+pub fn pending_single_fact(
     meta: &NodeFactMeta,
     fact: &NodeFact,
     timestamp_ms: i64,
@@ -1040,10 +1036,10 @@ pub(crate) fn pending_single_fact(
 }
 
 /// 1 tree に対する reconciliation パスの結果。
-pub(crate) struct TreeReconciliation {
-    pub(crate) folded: crate::domain::workflow::services::fact_replay::FoldedTree,
+pub struct TreeReconciliation {
+    pub folded: crate::domain::workflow::services::fact_replay::FoldedTree,
     /// 前進の実行で必要になった合成子の準備と葉 runtime の起動。
-    pub(crate) starts: Vec<crate::domain::workflow::entities::workflow_execution::NodeStart>,
+    pub starts: Vec<crate::domain::workflow::entities::workflow_execution::NodeStart>,
 }
 
 /// 1 tree の冪等 reconciliation パス:
@@ -1051,7 +1047,7 @@ pub(crate) struct TreeReconciliation {
 ///
 /// 既に事実が揃っている行動は導出の差分に現れないため、同じパスを何度
 /// 実行しても新しい行は生まれない（冪等）。
-pub(crate) async fn reconcile_tree_pass(
+pub async fn reconcile_tree_pass(
     store: &Arc<LocalEventStore>,
     tree_id: &str,
     now: f64,
@@ -1250,7 +1246,7 @@ pub(crate) async fn list_tree_roots(
     Ok(roots)
 }
 
-pub(crate) async fn list_tree_ids(
+pub async fn list_tree_ids(
     backend: &FactLogReadBackend,
     worktree_path: Option<&str>,
 ) -> Result<Vec<String>, FactReadError> {
@@ -1260,7 +1256,7 @@ pub(crate) async fn list_tree_ids(
 }
 
 /// 1 tree の fold（読み出し + 導出）。
-pub(crate) async fn fold_tree_from(
+pub async fn fold_tree_from(
     backend: &FactLogReadBackend,
     tree_id: &str,
 ) -> Result<Option<crate::domain::workflow::services::fact_replay::FoldedTree>, FactReadError> {
@@ -1332,3 +1328,7 @@ pub(crate) async fn find_session_attachment_record(
     }
     Ok(Some(record))
 }
+
+#[cfg(test)]
+#[path = "fact_log_test.rs"]
+mod fact_log_tests;

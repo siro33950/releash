@@ -51,7 +51,7 @@ pub(crate) async fn update_login_item_preference_shared(
     .map_err(AppError::from_failure)
 }
 
-pub(crate) async fn update_workflow_config_shared(
+pub async fn update_workflow_config_shared(
     usecase: &Arc<AppConfigUsecase>,
     workflow: WorkflowConfigInput,
 ) -> Result<(), AppError> {
@@ -80,7 +80,3 @@ pub(crate) async fn update_crash_reporting_shared(
     .map_err(AppError::from_failure)?;
     Ok(())
 }
-
-#[cfg(test)]
-#[path = "commands_test.rs"]
-mod commands_tests;

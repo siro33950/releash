@@ -1,3 +1,4 @@
+use crate::adaptor::gateway::agent_session::test_helpers::*;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
@@ -263,19 +264,6 @@ async fn test_agent_session_history_query_表示件数を増やすと先頭か�
     assert_eq!(second.items.len(), 3);
     assert_eq!(second.items[2].provider_session_id, "claude-1");
     assert!(!second.has_more);
-}
-
-fn metadata(
-    provider: ProviderKind,
-    provider_session_id: &str,
-    updated_at_ms: i64,
-) -> AgentSessionHistoryMetadata {
-    AgentSessionHistoryMetadata {
-        provider,
-        provider_session_id: provider_session_id.to_string(),
-        worktree_path: "/repo/worktree".to_string(),
-        updated_at_ms,
-    }
 }
 
 #[tokio::test]

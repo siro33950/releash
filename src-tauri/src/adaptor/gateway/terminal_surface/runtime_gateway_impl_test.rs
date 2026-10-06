@@ -1,14 +1,12 @@
 use super::*;
+use crate::adaptor::gateway::terminal_surface::test_helpers::*;
 use crate::domain::terminal_surface::TerminalSurfaceOwner;
 use crate::domain::workspace_tree::WorkspaceIdentity;
 use crate::usecase::terminal_surface::output::TerminalSurfaceOutputControl;
+use crate::usecase::terminal_surface::test_helpers::workspace_owner;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Condvar, Mutex as StdMutex};
 use std::time::Duration;
-
-fn workspace_owner(path: &str) -> TerminalSurfaceOwner {
-    TerminalSurfaceOwner::workspace(WorkspaceIdentity::new(path)).unwrap()
-}
 
 fn session_owner(path: &str, session_id: &str) -> TerminalSurfaceOwner {
     TerminalSurfaceOwner::session(WorkspaceIdentity::new(path), session_id).unwrap()
@@ -44,24 +42,9 @@ struct RecordingEventSink {
     events: StdMutex<Vec<TerminalSurfaceOutputEvent>>,
 }
 
-impl TerminalSurfaceEventSink for RecordingEventSink {
-    fn publish(&self, event: TerminalSurfaceOutputEvent) {
-        self.events.lock().unwrap().push(event);
-    }
-}
-
 #[derive(Default)]
 struct SummarySink {
     removed: StdMutex<Vec<u64>>,
-}
-
-impl TerminalSurfaceEventSink for SummarySink {
-    fn remove(&self, runtime_generation: u64) -> bool {
-        self.removed.lock().unwrap().push(runtime_generation);
-        false
-    }
-
-    fn publish(&self, _: TerminalSurfaceOutputEvent) {}
 }
 
 #[test]
@@ -88,26 +71,6 @@ fn test_ターミナル状態通知_削除時に世代を伝える() {
 
     // Then
     assert_eq!(*sink.removed.lock().unwrap(), vec![1, 2]);
-}
-
-impl TerminalSurfaceEventSink for BlockingFirstEventSink {
-    fn publish(&self, event: TerminalSurfaceOutputEvent) {
-        let sequence = match event {
-            TerminalSurfaceOutputEvent::Output { sequence, .. }
-            | TerminalSurfaceOutputEvent::Resize { sequence, .. }
-            | TerminalSurfaceOutputEvent::Exit { sequence, .. } => sequence,
-        };
-        if sequence == 1 {
-            let (started, changed) = &*self.first_started;
-            *started.lock().unwrap() = true;
-            changed.notify_all();
-            let (released, changed) = &*self.release_first;
-            let _guard = changed
-                .wait_while(released.lock().unwrap(), |released| !*released)
-                .unwrap();
-        }
-        self.sequences.lock().unwrap().push(sequence);
-    }
 }
 
 #[test]
@@ -172,106 +135,10 @@ fn test_ターミナル画面イベント_連番採番と配信を一つの順�
     assert_eq!(*sink.sequences.lock().unwrap(), vec![1, 2]);
 }
 
-#[derive(Default)]
-struct CapturedTerminalOutput {
-    resizes: StdMutex<Vec<(u16, u16, u64)>>,
-}
-
-impl TerminalSurfaceEventSink for CapturedTerminalOutput {
-    fn publish(&self, event: TerminalSurfaceOutputEvent) {
-        match event {
-            TerminalSurfaceOutputEvent::Resize {
-                cols,
-                rows,
-                sequence,
-                ..
-            } => {
-                self.resizes.lock().unwrap().push((cols, rows, sequence));
-            }
-            TerminalSurfaceOutputEvent::Output { .. } | TerminalSurfaceOutputEvent::Exit { .. } => {
-            }
-        }
-    }
-}
-
-#[test]
-fn test_ターミナル画面_再起動復元_復元点破損時は新規画面で上書きしない() {
-    let data_dir = tempfile::TempDir::new().unwrap();
-    let store = TerminalCheckpointFileStore::new(data_dir.path(), TERMINAL_SURFACE_SCROLLBACK_ROWS);
-    store
-        .save(
-            "workspace:5:/repo",
-            &NativeTerminalCheckpoint {
-                replay: "recoverable".to_string(),
-                sequence: 4,
-                cols: 80,
-                rows: 24,
-            },
-        )
-        .unwrap();
-    let checkpoint_path = std::fs::read_dir(data_dir.path().join("terminal-surfaces"))
-        .unwrap()
-        .next()
-        .unwrap()
-        .unwrap()
-        .path();
-    std::fs::write(&checkpoint_path, b"{broken-checkpoint").unwrap();
-    let gateway = TerminalSurfaceRuntimeGatewayFor::new(data_dir.path().to_path_buf());
-
-    let result = crate::usecase::terminal_surface::spawn_usecase::get_or_spawn(
-        &crate::adaptor::gateway::telemetry::TelemetryGateway,
-        &gateway,
-        &crate::adaptor::presenter::terminal_event_hub::TerminalSurfaceEventHub::new(),
-        24,
-        80,
-        Some("/repo".to_string()),
-        workspace_owner("/repo"),
-        None,
-    );
-    if let Ok(outcome) = &result {
-        crate::usecase::terminal_surface::lifecycle_usecase::kill_runtime_generation(
-            &gateway,
-            outcome.surface.runtime_generation.value(),
-        )
-        .unwrap();
-    }
-
-    assert!(result.is_err());
-    assert_eq!(
-        std::fs::read(checkpoint_path).unwrap(),
-        b"{broken-checkpoint"
-    );
-}
-
 #[test]
 fn test_ターミナル画面_実行環境_初期状態では画面を持たない() {
     let gateway = TerminalSurfaceRuntimeGateway::default();
     assert!(gateway.list_summaries().is_empty());
-}
-
-#[test]
-fn test_ターミナル画面_pty起動は初期checkpoint永続化を待たない() {
-    let data_dir = tempfile::TempDir::new().unwrap();
-    std::fs::write(
-        data_dir.path().join("terminal-surfaces"),
-        b"not-a-directory",
-    )
-    .unwrap();
-    let gateway = TerminalSurfaceRuntimeGatewayFor::new(data_dir.path().to_path_buf());
-
-    gateway
-        .spawn_runtime(TerminalRuntimeSpawnRequest {
-            runtime_generation: 1,
-            session_key: "session:test".to_string(),
-            rows: 24,
-            cols: 80,
-            cwd: Some(data_dir.path().to_string_lossy().into_owned()),
-            process: None,
-            initial_terminal_surface: None,
-        })
-        .unwrap();
-
-    gateway.request_runtime_stop(1).unwrap();
 }
 
 #[test]
@@ -385,54 +252,6 @@ fn test_ターミナル画面出力_空入力では出力しない() {
     assert!(process_pty_output(b"", &mut pending).is_none());
 }
 
-struct MockWriter(Arc<Mutex<Vec<u8>>>);
-
-impl std::io::Write for MockWriter {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        self.0.lock().extend_from_slice(buf);
-        Ok(buf.len())
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
-}
-
-#[derive(Debug)]
-struct MockKiller {
-    killed: Arc<std::sync::atomic::AtomicBool>,
-}
-
-impl portable_pty::ChildKiller for MockKiller {
-    fn kill(&mut self) -> Result<(), std::io::Error> {
-        self.killed.store(true, std::sync::atomic::Ordering::SeqCst);
-        Ok(())
-    }
-
-    fn clone_killer(&self) -> Box<dyn portable_pty::ChildKiller + Send + Sync> {
-        Box::new(MockKiller {
-            killed: Arc::clone(&self.killed),
-        })
-    }
-}
-
-struct MockResizer {
-    rows: u16,
-    cols: u16,
-}
-
-impl NativePtyResizer for MockResizer {
-    fn resize(
-        &mut self,
-        rows: u16,
-        cols: u16,
-    ) -> Result<(), crate::infrastructure::terminal::native_pty::NativePtyError> {
-        self.rows = rows;
-        self.cols = cols;
-        Ok(())
-    }
-}
-
 struct BlockingResizer {
     started: Arc<(StdMutex<bool>, Condvar)>,
     release: Arc<(StdMutex<bool>, Condvar)>,
@@ -453,102 +272,6 @@ impl NativePtyResizer for BlockingResizer {
             .unwrap();
         Ok(())
     }
-}
-
-struct BlockingSessionSink {
-    blocked_session_key: String,
-    started: Arc<(StdMutex<bool>, Condvar)>,
-    release: Arc<(StdMutex<bool>, Condvar)>,
-}
-
-impl TerminalSurfaceEventSink for BlockingSessionSink {
-    fn publish(&self, event: TerminalSurfaceOutputEvent) {
-        let session_key = match event {
-            TerminalSurfaceOutputEvent::Output { session_key, .. }
-            | TerminalSurfaceOutputEvent::Resize { session_key, .. }
-            | TerminalSurfaceOutputEvent::Exit { session_key, .. } => session_key,
-        };
-        if session_key != self.blocked_session_key {
-            return;
-        }
-        let (started, changed) = &*self.started;
-        *started.lock().unwrap() = true;
-        changed.notify_all();
-        let (released, changed) = &*self.release;
-        let _guard = changed
-            .wait_while(released.lock().unwrap(), |released| !*released)
-            .unwrap();
-    }
-}
-
-fn insert_test_session_with_resizer(
-    gateway: &TerminalSurfaceRuntimeGatewayFor,
-    runtime_generation: u64,
-    session_key: &str,
-    worktree_path: Option<&str>,
-    label: Option<&str>,
-    resizer: Box<dyn NativePtyResizer + Send>,
-) -> (Arc<std::sync::atomic::AtomicBool>, Arc<Mutex<Vec<u8>>>) {
-    let written = Arc::new(Mutex::new(Vec::<u8>::new()));
-    let killed = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let terminal_surface = Arc::new(Mutex::new(NativeTerminalEmulator::new(
-        80,
-        24,
-        TERMINAL_SURFACE_SCROLLBACK_ROWS,
-    )));
-    terminal_surface.lock().apply("buffered data");
-    let workspace = WorkspaceIdentity::new(worktree_path.unwrap_or("/"));
-    let mut session = TerminalSurface::new_with_session_key(
-        runtime_generation,
-        session_key.to_string(),
-        TerminalSurfaceOwner::session(workspace, session_key).unwrap(),
-        label.map(str::to_string),
-    );
-    session.worktree_path = worktree_path.map(str::to_string);
-    let checkpoint = terminal_surface.lock().snapshot(1);
-    assert!(session.apply_checkpoint(runtime_generation, to_domain_checkpoint(&checkpoint)));
-    gateway.runtimes.lock().insert(
-        runtime_generation,
-        AttachedTerminalRuntime {
-            native_pty: NativePtyRuntime::from_parts(
-                Box::new(MockWriter(Arc::clone(&written))),
-                Box::new(MockKiller {
-                    killed: Arc::clone(&killed),
-                }),
-                resizer,
-            ),
-            output: None,
-            event_order: Arc::new(TerminalSurfaceEventOrder::default()),
-            terminal_surface,
-            checkpoint_scheduler: None,
-            session_key: session_key.to_string(),
-            output_drained: Arc::new((Mutex::new(true), parking_lot::Condvar::new())),
-            checkpoint_journal: None,
-            checkpoint_store: None,
-            checkpoint_io: None,
-            pending_input_traces: Arc::new(Mutex::new(VecDeque::new())),
-        },
-    );
-    gateway.insert_surface(session);
-    (killed, written)
-}
-
-fn insert_test_session(
-    gateway: &TerminalSurfaceRuntimeGatewayFor,
-    runtime_generation: u64,
-    session_key: &str,
-    worktree_path: Option<&str>,
-    label: Option<&str>,
-) -> Arc<std::sync::atomic::AtomicBool> {
-    insert_test_session_with_resizer(
-        gateway,
-        runtime_generation,
-        session_key,
-        worktree_path,
-        label,
-        Box::new(MockResizer { rows: 24, cols: 80 }),
-    )
-    .0
 }
 
 #[test]
@@ -721,7 +444,6 @@ fn journal_output_context(
         checkpoint_journal: Some(Arc::clone(&journal)),
         journal_enabled,
         first_provider_byte_started_at: Instant::now(),
-        pending_input_traces: Arc::new(Mutex::new(VecDeque::new())),
     };
     (context, journal)
 }
@@ -731,7 +453,7 @@ fn test_ターミナル出力journal_有効時はrecordとmark_dirtyを実行す
     let flush_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let (context, journal) = journal_output_context(true, Arc::clone(&flush_calls));
 
-    publish_terminal_output(&context, "journal-data".to_string(), Vec::new());
+    publish_terminal_output(&context, "journal-data".to_string());
 
     let pending = journal.lock().take_pending();
     assert!(matches!(
@@ -751,7 +473,7 @@ fn test_ターミナル出力journal_無効時はrecordとmark_dirtyを実行し
     let flush_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let (context, journal) = journal_output_context(false, Arc::clone(&flush_calls));
 
-    publish_terminal_output(&context, "journal-data".to_string(), Vec::new());
+    publish_terminal_output(&context, "journal-data".to_string());
 
     assert!(journal.lock().take_pending().records.is_empty());
     std::thread::sleep(Duration::from_millis(100));
@@ -841,72 +563,6 @@ fn test_ターミナル画面_寸法変更_実pty変更中の出力適用を同�
 }
 
 #[test]
-fn test_ターミナル画面_イベント順序_別画面の配信を相互に停止させない() {
-    let data_dir = tempfile::tempdir().unwrap();
-    let first_started = Arc::new((StdMutex::new(false), Condvar::new()));
-    let release_first = Arc::new((StdMutex::new(false), Condvar::new()));
-    let sink = Arc::new(BlockingSessionSink {
-        blocked_session_key: "surface-a".to_string(),
-        started: Arc::clone(&first_started),
-        release: Arc::clone(&release_first),
-    });
-    let gateway = Arc::new(TerminalSurfaceRuntimeGatewayFor::new_with_event_sink(
-        Arc::new(|_| {}),
-        data_dir.path().to_path_buf(),
-        sink,
-        true,
-    ));
-    insert_test_session(&gateway, 1, "surface-a", Some("/repo"), None);
-    insert_test_session(&gateway, 2, "surface-b", Some("/repo"), None);
-
-    let first = std::thread::spawn({
-        let gateway = Arc::clone(&gateway);
-        move || gateway.resize("surface-a", 30, 100)
-    });
-    let (started, changed) = &*first_started;
-    let _guard = changed
-        .wait_while(started.lock().unwrap(), |started| !*started)
-        .unwrap();
-    let (completed, observed) = std::sync::mpsc::channel();
-    let second = std::thread::spawn({
-        let gateway = Arc::clone(&gateway);
-        move || {
-            let result = gateway.resize("surface-b", 31, 101);
-            completed.send(()).unwrap();
-            result
-        }
-    });
-    let second_completed = observed.recv_timeout(Duration::from_millis(100)).is_ok();
-    let (released, changed) = &*release_first;
-    *released.lock().unwrap() = true;
-    changed.notify_all();
-
-    first.join().unwrap().unwrap();
-    second.join().unwrap().unwrap();
-    assert!(
-        second_completed,
-        "one Terminal Surface publish must not block another surface"
-    );
-}
-
-#[test]
-fn test_ターミナル画面_寸法変更_次の画面_連番で配信する() {
-    let data_dir = tempfile::tempdir().unwrap();
-    let captured = Arc::new(CapturedTerminalOutput::default());
-    let gateway = TerminalSurfaceRuntimeGatewayFor::new_with_event_sink(
-        Arc::new(|_| {}),
-        data_dir.path().to_path_buf(),
-        captured.clone(),
-        true,
-    );
-    insert_test_session(&gateway, 1, "key", Some("/repo"), None);
-
-    gateway.resize("key", 30, 100).unwrap();
-
-    assert_eq!(*captured.resizes.lock().unwrap(), vec![(100, 30, 1)]);
-}
-
-#[test]
 fn test_ターミナル画面参照_登録簿の概要を返す() {
     let gateway = TerminalSurfaceRuntimeGateway::default();
     insert_test_session(&gateway, 1, "key", Some("/repo"), Some("dev"));
@@ -955,72 +611,10 @@ fn test_ターミナル画面終了_画面削除後の終了通知を拒否す�
     assert!(gateway.registry.lock().mark_exited(1, Some(0)).is_none());
 }
 
-#[tokio::test]
-async fn test_定期保存の期限切れ_子を回収して保留データと保存枠を返す() {
-    // Given
-    let directory = tempfile::tempdir().unwrap();
-    let store =
-        TerminalCheckpointFileStore::new(directory.path(), TERMINAL_SURFACE_SCROLLBACK_ROWS);
-    let journal = Arc::new(Mutex::new(IncrementalCheckpointJournal::new(
-        NativeTerminalCheckpoint {
-            replay: String::new(),
-            sequence: 0,
-            cols: 80,
-            rows: 24,
-        },
-        false,
-    )));
-    journal
-        .lock()
-        .record(NativeTerminalCheckpointRecord::Output {
-            sequence: 1,
-            data: "kept-output".into(),
-        })
-        .unwrap();
-    let background = Arc::new(BackgroundCheckpoint {
-        store: store.clone(),
-        session_key: "deadline".into(),
-        registry: Arc::new(Mutex::new(TerminalSurfaceRegistry::default())),
-        runtime_generation: 1,
-        terminal_surface: Arc::new(Mutex::new(NativeTerminalEmulator::new(
-            80,
-            24,
-            TERMINAL_SURFACE_SCROLLBACK_ROWS,
-        ))),
-        journal: journal.clone(),
-        io: Arc::new(Mutex::new(())),
-    });
-    let attempt = background.clone();
-    // When
-    super::super::super::shared::background_worker::background_worker_tests::assert_expired_releases(async move { attempt.flush().await }).await;
-    // Then
-    assert!(background.io.try_lock().is_some());
-    let pending = journal.lock().take_pending();
-    assert!(pending.base.is_some());
-    assert_eq!(pending.records.len(), 1);
-    journal.lock().restore_failed(pending);
-    background.flush().await.unwrap();
-    let loaded = store.load("deadline").unwrap().unwrap();
-    assert_eq!(loaded.sequence, 1);
-    assert!(loaded.replay.contains("kept-output"));
-}
-
 struct FlowControlledSink {
     hub: Arc<crate::adaptor::presenter::terminal_event_hub::TerminalSurfaceEventHub>,
     waiting: mpsc::Sender<std::thread::ThreadId>,
     events: mpsc::Sender<TerminalSurfaceOutputEvent>,
-}
-
-impl TerminalSurfaceEventSink for FlowControlledSink {
-    fn wait_output(&self, session_key: &str) {
-        self.waiting.send(std::thread::current().id()).unwrap();
-        self.hub.wait_output(session_key);
-    }
-
-    fn publish(&self, event: TerminalSurfaceOutputEvent) {
-        self.hub.publish(event.clone());
-        self.events.send(event).unwrap();
-    }
 }
 
 struct ObservedReader {
@@ -1032,25 +626,6 @@ impl std::io::Read for ObservedReader {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         self.read.send(()).unwrap();
         self.data.read(buf)
-    }
-}
-
-impl portable_pty::Child for MockKiller {
-    fn try_wait(&mut self) -> std::io::Result<Option<portable_pty::ExitStatus>> {
-        Ok(Some(portable_pty::ExitStatus::with_exit_code(0)))
-    }
-
-    fn wait(&mut self) -> std::io::Result<portable_pty::ExitStatus> {
-        Ok(portable_pty::ExitStatus::with_exit_code(0))
-    }
-
-    fn process_id(&self) -> Option<u32> {
-        None
-    }
-
-    #[cfg(windows)]
-    fn as_raw_handle(&self) -> Option<std::os::windows::io::RawHandle> {
-        None
     }
 }
 
@@ -1150,7 +725,6 @@ fn test_流量停止_実processorの出力で高水位を超えると後続出�
     let units = 7 * crate::infrastructure::terminal::output_batcher::OUTPUT_BATCH_MAX_CODE_UNITS;
     send.send(TerminalOutputCommand::Data {
         data: "x".repeat(units),
-        input_traces: vec![],
     })
     .unwrap();
     let mut published = 0;
@@ -1165,7 +739,6 @@ fn test_流量停止_実processorの出力で高水位を超えると後続出�
     let stopped = waits.recv_timeout(Duration::from_secs(1));
     send.send(TerminalOutputCommand::Data {
         data: "next".into(),
-        input_traces: vec![],
     })
     .unwrap();
     send.send(TerminalOutputCommand::Exit(Some(0))).unwrap();
@@ -1285,9 +858,7 @@ async fn assert_terminal_recreation(drain_exit: bool) {
         .unwrap();
     stream.next().await;
     stream.next().await;
-    terminal
-        .write_attached(&owner, "input", 0, None, "old")
-        .unwrap();
+    terminal.write_attached(&owner, "input", 0, "old").unwrap();
     tokio::time::timeout(Duration::from_secs(2), async {
         while old_written.lock().len() < 3 {
             tokio::task::yield_now().await;
@@ -1341,9 +912,7 @@ async fn assert_terminal_recreation(drain_exit: bool) {
     assert!(
         matches!(next, Some(StateSubscriptionEvent::Item(_, Event::Snapshot(version, value))) if version.epoch.ends_with(":2") && matches!(crate::test_support::state_subscription::terminal_item(&value), crate::adaptor::presenter::client::terminal_event::Item::Snapshot(surface) if surface.session_key == key))
     );
-    terminal
-        .write_attached(&owner, "input", 1, None, "new")
-        .unwrap();
+    terminal.write_attached(&owner, "input", 1, "new").unwrap();
     tokio::time::timeout(Duration::from_secs(2), async {
         while new_written.lock().len() < 3 {
             tokio::task::yield_now().await;
@@ -1409,7 +978,7 @@ async fn assert_terminal_recreation(drain_exit: bool) {
         )
         .unwrap();
     assert!(terminal
-        .write_attached(&owner, "input", 2, None, "stale")
+        .write_attached(&owner, "input", 2, "stale")
         .is_err());
     assert!(crate::test_support::state_subscription::terminal_processed(
         &subscriptions,
@@ -1421,6 +990,7 @@ async fn assert_terminal_recreation(drain_exit: bool) {
 }
 
 struct FailingResizer(std::io::ErrorKind);
+
 impl NativePtyResizer for FailingResizer {
     fn resize(
         &mut self,
@@ -1438,14 +1008,6 @@ impl NativePtyResizer for FailingResizer {
 
 #[derive(Debug)]
 struct FailingKiller(std::io::ErrorKind);
-impl portable_pty::ChildKiller for FailingKiller {
-    fn kill(&mut self) -> std::io::Result<()> {
-        Err(std::io::Error::new(self.0, "kill source failure"))
-    }
-    fn clone_killer(&self) -> Box<dyn portable_pty::ChildKiller + Send + Sync> {
-        Box::new(Self(self.0))
-    }
-}
 
 #[test]
 fn test_pty外部失敗_resizeで性質と元のメッセージを保持する() {
@@ -1593,111 +1155,6 @@ async fn test_terminal対象なし_購読開始とsnapshot読取と配信でnot_
     );
 }
 
-fn attach_missing_checkpoint_target(
-    directory: &std::path::Path,
-    background_flush: bool,
-) -> TerminalSurfaceRuntimeGatewayFor {
-    let gateway = TerminalSurfaceRuntimeGatewayFor::default();
-    insert_test_session(&gateway, 1, "missing-checkpoint", Some("/repo"), None);
-    let journal = Arc::new(Mutex::new(IncrementalCheckpointJournal::new(
-        NativeTerminalCheckpoint {
-            replay: String::new(),
-            sequence: 0,
-            cols: 80,
-            rows: 24,
-        },
-        false,
-    )));
-    if background_flush {
-        journal
-            .lock()
-            .record(NativeTerminalCheckpointRecord::Output {
-                sequence: 1,
-                data: "x"
-                    .repeat(CHECKPOINT_JOURNAL_COMPACTION_BYTES as usize)
-                    .into(),
-            })
-            .unwrap();
-    }
-    let store = TerminalCheckpointFileStore::new(directory, TERMINAL_SURFACE_SCROLLBACK_ROWS);
-    let io = Arc::new(Mutex::new(()));
-    {
-        let mut runtimes = gateway.runtimes.lock();
-        let runtime = runtimes.get_mut(&1).unwrap();
-        let background = Arc::new(BackgroundCheckpoint {
-            store: store.clone(),
-            session_key: runtime.session_key.clone(),
-            registry: gateway.registry.clone(),
-            runtime_generation: 1,
-            terminal_surface: runtime.terminal_surface.clone(),
-            journal: journal.clone(),
-            io: io.clone(),
-        });
-        let flush = background.clone();
-        runtime.checkpoint_scheduler = Some(CheckpointScheduler {
-            dirty: Arc::new(|_| {}),
-            session_key: runtime.session_key.clone(),
-            flush: Arc::new(move || {
-                if background_flush {
-                    futures_executor::block_on(flush.flush())
-                } else {
-                    Ok(())
-                }
-            }),
-            background,
-        });
-        runtime.checkpoint_store = Some(store);
-        runtime.checkpoint_journal = Some(journal);
-        runtime.checkpoint_io = Some(io);
-    }
-    gateway.registry.lock().remove(1);
-    gateway
-}
-
-#[test]
-fn test_checkpoint一括保存_対象不存在を業務の失敗として返す() {
-    // Given
-    let directory = tempfile::tempdir().unwrap();
-    let gateway = attach_missing_checkpoint_target(directory.path(), false);
-    // When / Then
-    assert_eq!(
-        gateway.flush_checkpoints(),
-        Err(TerminalSurfaceGatewayError::NotFound(
-            "Terminal Surface not found for owner missing-checkpoint".into()
-        ))
-    );
-    let runtimes = gateway.runtimes.lock();
-    let runtime = runtimes.get(&1).unwrap();
-    let result = compact_checkpoint(
-        runtime.checkpoint_store.as_ref().unwrap(),
-        &runtime.session_key,
-        &gateway.registry,
-        1,
-        &runtime.terminal_surface,
-        runtime.checkpoint_journal.as_ref().unwrap(),
-    );
-    assert_eq!(
-        result.map_err(checkpoint_work_failure),
-        Err(TerminalSurfaceGatewayError::NotFound(
-            "Terminal Surface for PTY 1 not found".into()
-        ))
-    );
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_checkpoint背景保存_scheduler経由でも対象不存在を業務の失敗として返す() {
-    // Given
-    let directory = tempfile::tempdir().unwrap();
-    let gateway = attach_missing_checkpoint_target(directory.path(), true);
-    // When / Then
-    assert_eq!(
-        gateway.flush_checkpoints(),
-        Err(TerminalSurfaceGatewayError::NotFound(
-            "Terminal Surface for PTY 1 not found".into()
-        ))
-    );
-}
-
 #[test]
 fn test_checkpoint保存_技術的な失敗の性質とメッセージを保持する() {
     use crate::domain::failure::{TechnicalFailure, TechnicalFailureNature};
@@ -1719,63 +1176,58 @@ fn test_checkpoint保存_技術的な失敗の性質とメッセージを保持�
     }
 }
 
-#[test]
-fn test_checkpoint一括保存_schedulerの技術的失敗を保持する() {
-    use crate::domain::failure::{TechnicalFailure, TechnicalFailureNature};
-    // Given
-    let directory = tempfile::tempdir().unwrap();
-    for nature in [
-        TechnicalFailureNature::Transient,
-        TechnicalFailureNature::TimedOut,
-        TechnicalFailureNature::Cancelled,
-        TechnicalFailureNature::Other,
-    ] {
-        let gateway = attach_missing_checkpoint_target(directory.path(), false);
-        let failure = TechnicalFailure {
-            nature,
-            message: "scheduler failure".into(),
-        };
-        let source = failure.clone();
-        gateway
-            .runtimes
-            .lock()
-            .get_mut(&1)
-            .unwrap()
-            .checkpoint_scheduler
-            .as_mut()
-            .unwrap()
-            .flush = Arc::new(move || Err(source.clone().into()));
-        // When / Then
-        assert_eq!(
-            gateway.flush_checkpoints(),
-            Err(TerminalSurfaceGatewayError::Technical(failure))
-        );
+impl TerminalSurfaceEventSink for RecordingEventSink {
+    fn publish(&self, event: TerminalSurfaceOutputEvent) {
+        self.events.lock().unwrap().push(event);
     }
 }
 
-#[test]
-fn test_checkpoint一括保存_compactのio失敗を保持する() {
-    use crate::domain::failure::{TechnicalFailure, TechnicalFailureNature};
-    // Given
-    let directory = tempfile::tempdir().unwrap();
-    let gateway = attach_missing_checkpoint_target(directory.path(), false);
-    gateway.insert_surface(TerminalSurface::new_with_session_key(
-        1,
-        "missing-checkpoint".into(),
-        TerminalSurfaceOwner::session(WorkspaceIdentity::new("/repo"), "missing-checkpoint")
-            .unwrap(),
-        None,
-    ));
-    let path = directory.path().join("terminal-surfaces");
-    std::fs::write(&path, b"file").unwrap();
-    let source = std::fs::create_dir_all(&path).unwrap_err();
-    assert_eq!(source.kind(), std::io::ErrorKind::AlreadyExists);
-    // When / Then
-    assert_eq!(
-        gateway.flush_checkpoints(),
-        Err(TerminalSurfaceGatewayError::Technical(TechnicalFailure {
-            nature: TechnicalFailureNature::Other,
-            message: source.to_string(),
-        }))
-    );
+impl TerminalSurfaceEventSink for SummarySink {
+    fn remove(&self, runtime_generation: u64) -> bool {
+        self.removed.lock().unwrap().push(runtime_generation);
+        false
+    }
+
+    fn publish(&self, _: TerminalSurfaceOutputEvent) {}
+}
+
+impl TerminalSurfaceEventSink for BlockingFirstEventSink {
+    fn publish(&self, event: TerminalSurfaceOutputEvent) {
+        let sequence = match event {
+            TerminalSurfaceOutputEvent::Output { sequence, .. }
+            | TerminalSurfaceOutputEvent::Resize { sequence, .. }
+            | TerminalSurfaceOutputEvent::Exit { sequence, .. } => sequence,
+        };
+        if sequence == 1 {
+            let (started, changed) = &*self.first_started;
+            *started.lock().unwrap() = true;
+            changed.notify_all();
+            let (released, changed) = &*self.release_first;
+            let _guard = changed
+                .wait_while(released.lock().unwrap(), |released| !*released)
+                .unwrap();
+        }
+        self.sequences.lock().unwrap().push(sequence);
+    }
+}
+
+impl TerminalSurfaceEventSink for FlowControlledSink {
+    fn wait_output(&self, session_key: &str) {
+        self.waiting.send(std::thread::current().id()).unwrap();
+        self.hub.wait_output(session_key);
+    }
+
+    fn publish(&self, event: TerminalSurfaceOutputEvent) {
+        self.hub.publish(event.clone());
+        self.events.send(event).unwrap();
+    }
+}
+
+impl portable_pty::ChildKiller for FailingKiller {
+    fn kill(&mut self) -> std::io::Result<()> {
+        Err(std::io::Error::new(self.0, "kill source failure"))
+    }
+    fn clone_killer(&self) -> Box<dyn portable_pty::ChildKiller + Send + Sync> {
+        Box::new(Self(self.0))
+    }
 }

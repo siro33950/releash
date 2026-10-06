@@ -2,7 +2,7 @@ use super::super::ProviderLifecycleInputError;
 use super::{ProviderKind, ProviderLifecycleScope};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ProviderLifecycleUnavailableReason {
+pub enum ProviderLifecycleUnavailableReason {
     SessionStartDeadlineExceeded,
     CodexHookDeliveryUnconfirmed,
     ProviderHookConfigurationRejected,
@@ -10,7 +10,7 @@ pub(crate) enum ProviderLifecycleUnavailableReason {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ProviderLifecycleUnavailableObservation {
+pub struct ProviderLifecycleUnavailableObservation {
     binding_id: String,
     provider: ProviderKind,
     scope: ProviderLifecycleScope,

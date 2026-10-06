@@ -11,7 +11,7 @@ use crate::usecase::notion::error::NotionUsecaseError;
 use crate::usecase::fetched::Fetched;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub(crate) struct NotionTaskListRequest {
+pub struct NotionTaskListRequest {
     pub path: String,
     pub count: usize,
     pub title: Option<String>,
@@ -21,7 +21,7 @@ pub(crate) struct NotionTaskListRequest {
 type Results<K, T> = parking_lot::Mutex<HashMap<K, (u64, Fetched<T, NotionUsecaseError>)>>;
 
 #[derive(Clone, PartialEq, Eq)]
-pub(crate) struct NotionRepoConfigDto {
+pub struct NotionRepoConfigDto {
     pub api_token: String,
     pub database_id: String,
     pub property_mapping: NotionPropertyMappingDto,
@@ -38,7 +38,7 @@ impl std::fmt::Debug for NotionRepoConfigDto {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct NotionPropertyMappingDto {
+pub struct NotionPropertyMappingDto {
     pub title: String,
     pub labels: Vec<NotionLabelPropertyDto>,
     pub branch_name: String,
@@ -46,12 +46,12 @@ pub(crate) struct NotionPropertyMappingDto {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct NotionLabelPropertyDto {
+pub struct NotionLabelPropertyDto {
     pub name: String,
     pub property_type: String,
 }
 
-pub(crate) struct NotionUsecase {
+pub struct NotionUsecase {
     repository: Arc<dyn NotionConfigRepository>,
     config_query: Arc<dyn super::query_service::NotionConfigQueryService>,
     api: Arc<dyn NotionApiGateway>,
@@ -62,7 +62,7 @@ pub(crate) struct NotionUsecase {
 }
 
 impl NotionUsecase {
-    pub(crate) fn new(
+    pub fn new(
         repository: Arc<dyn NotionConfigRepository>,
         config_query: Arc<dyn super::query_service::NotionConfigQueryService>,
         api: Arc<dyn NotionApiGateway>,
@@ -78,7 +78,7 @@ impl NotionUsecase {
         }
     }
 
-    pub(crate) fn with_state_publisher(
+    pub fn with_state_publisher(
         mut self,
         publisher: crate::usecase::state_subscription::StateSubscriptionUsecase,
     ) -> Self {
@@ -159,7 +159,7 @@ impl NotionUsecase {
         self.label_results.lock().remove(path);
     }
 
-    pub(crate) fn save_config(
+    pub fn save_config(
         &self,
         repo_path: String,
         config: app_config_vo::NotionRepoConfig,

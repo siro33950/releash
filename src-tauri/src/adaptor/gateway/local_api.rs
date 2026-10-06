@@ -16,7 +16,7 @@ use crate::usecase::client_connection::{
 };
 
 #[derive(Debug, thiserror::Error)]
-pub(crate) enum LocalApiClientError {
+pub enum LocalApiClientError {
     #[error("local API discovery file の読み込みに失敗しました ({}): {source}", path.display())]
     DiscoveryRead {
         path: PathBuf,
@@ -63,16 +63,16 @@ pub(crate) enum LocalApiClientError {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct LocalApiClientGateway {
+pub struct LocalApiClientGateway {
     client: LocalApiHttpClient,
 }
 
 impl LocalApiClientGateway {
-    pub(crate) fn discover(data_dir: &Path) -> Result<Option<Self>, LocalApiClientError> {
+    pub fn discover(data_dir: &Path) -> Result<Option<Self>, LocalApiClientError> {
         Self::discover_with_process_lookup(data_dir, lookup_process_start_time)
     }
 
-    fn discover_with_process_lookup(
+    pub fn discover_with_process_lookup(
         data_dir: &Path,
         lookup_process: impl FnOnce(u32) -> ProcessStartTimeLookup,
     ) -> Result<Option<Self>, LocalApiClientError> {
@@ -114,7 +114,7 @@ impl LocalApiClientGateway {
             .map_err(map_transport_error)
     }
 
-    pub(crate) fn post_json<B: Serialize + ?Sized, T: DeserializeOwned>(
+    pub fn post_json<B: Serialize + ?Sized, T: DeserializeOwned>(
         &self,
         segments: &[&str],
         body: &B,
@@ -185,10 +185,6 @@ fn map_transport_error(error: LocalApiTransportError) -> LocalApiClientError {
     }
 }
 
-#[cfg(test)]
-#[path = "local_api_test.rs"]
-mod local_api_tests;
-
 pub struct ClientConnectionFileQuery(pub PathBuf);
 
 impl ClientConnectionQueryService for ClientConnectionFileQuery {
@@ -198,7 +194,7 @@ impl ClientConnectionQueryService for ClientConnectionFileQuery {
 }
 
 impl ClientConnectionFileQuery {
-    fn read_with_process_lookup(
+    pub fn read_with_process_lookup(
         &self,
         lookup_process: impl FnOnce(u32) -> ProcessStartTimeLookup,
     ) -> Result<ClientConnectionDto, ClientConnectionError> {
@@ -232,7 +228,7 @@ impl ClientConnectionFileQuery {
     }
 }
 
-fn identity_response(status: Option<u16>) -> ConnectionObservation {
+pub fn identity_response(status: Option<u16>) -> ConnectionObservation {
     match status {
         Some(204) => ConnectionObservation::IdentityVerified,
         Some(_) => ConnectionObservation::UnexpectedResponse,
@@ -259,3 +255,7 @@ fn assess_discovery(
         ProcessObservation::from_raw(process.process_list_available, process.start_time),
     )
 }
+
+#[cfg(test)]
+#[path = "local_api_test.rs"]
+mod local_api_tests;

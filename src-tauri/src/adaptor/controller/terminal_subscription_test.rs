@@ -98,7 +98,7 @@ async fn assert_stopped(close: bool) {
         let usecase = usecase.clone();
         let target = target.clone();
         move || {
-            crate::usecase::terminal_surface::subscription::subscription_tests::add_reset(
+            crate::usecase::terminal_surface::test_helpers::subscription::add_reset(
                 &usecase, &target, "client",
             )
         }
@@ -116,7 +116,7 @@ async fn assert_stopped(close: bool) {
             .stop_delivery("client", &target, "input", &delivery)
             .unwrap();
     }
-    crate::usecase::terminal_surface::subscription::subscription_tests::add_reset(
+    crate::usecase::terminal_surface::test_helpers::subscription::add_reset(
         &usecase, &target, "client",
     );
     release.send(()).unwrap();

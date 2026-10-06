@@ -12,7 +12,7 @@ use super::{LocalApiDiscovery, LocalApiDiscoveryFile, LocalApiServerError};
 
 const LOCAL_API_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 
-pub(crate) struct LocalApiServerBinding {
+pub struct LocalApiServerBinding {
     listener: std::net::TcpListener,
     port: u16,
     token: Arc<str>,
@@ -23,6 +23,11 @@ pub(crate) struct LocalApiServerBinding {
 }
 
 impl LocalApiServerBinding {
+    #[cfg(feature = "test-support")]
+    pub fn test_discovery_path(&self) -> &std::path::Path {
+        self.discovery.path()
+    }
+
     pub(crate) fn bind(
         data_dir: PathBuf,
         instance_id: String,
@@ -85,25 +90,25 @@ impl LocalApiServerBinding {
         })
     }
 
-    pub(crate) fn bearer_token(&self) -> Arc<str> {
+    pub fn bearer_token(&self) -> Arc<str> {
         self.token.clone()
     }
 
-    #[cfg(any(test, debug_assertions))]
-    pub(crate) fn terminal_bearer_token(&self) -> Arc<str> {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn terminal_bearer_token(&self) -> Arc<str> {
         self.terminal_token.token()
     }
 
-    pub(crate) fn client_bearer_token(&self) -> super::ClientBearerToken {
+    pub fn client_bearer_token(&self) -> super::ClientBearerToken {
         self.terminal_token.clone()
     }
 
-    #[cfg(any(test, debug_assertions))]
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn port(&self) -> u16 {
         self.port
     }
 
-    pub(crate) fn start(
+    pub fn start(
         self,
         router: Router,
         runtime: &tokio::runtime::Handle,
@@ -155,7 +160,7 @@ impl LocalApiServerBinding {
     }
 }
 
-pub(crate) struct LocalApiServer {
+pub struct LocalApiServer {
     terminal_token: super::ClientBearerToken,
     shutdown: parking_lot::Mutex<Option<oneshot::Sender<()>>>,
     task: parking_lot::Mutex<Option<tokio::task::JoinHandle<()>>>,
@@ -164,7 +169,7 @@ pub(crate) struct LocalApiServer {
 }
 
 impl LocalApiServer {
-    pub(crate) fn publish_discovery(&self) -> Result<(), LocalApiServerError> {
+    pub fn publish_discovery(&self) -> Result<(), LocalApiServerError> {
         let result = self
             .discovery
             .publish()
@@ -175,7 +180,7 @@ impl LocalApiServer {
         }
         Ok(())
     }
-    pub(crate) fn shutdown(&self) {
+    pub fn shutdown(&self) {
         self.terminal_token.revoke();
         if let Some(sender) = self.shutdown.lock().take() {
             let _ = sender.send(());
@@ -188,7 +193,7 @@ impl LocalApiServer {
         }
     }
 
-    pub(crate) async fn shutdown_and_wait(&self) -> Result<(), tokio::task::JoinError> {
+    pub async fn shutdown_and_wait(&self) -> Result<(), tokio::task::JoinError> {
         self.shutdown();
         let task = self.task.lock().take();
         if let Some(task) = task {
@@ -198,7 +203,7 @@ impl LocalApiServer {
     }
 }
 
-async fn wait_for_server_task(
+pub async fn wait_for_server_task(
     mut task: tokio::task::JoinHandle<()>,
     timeout: Duration,
 ) -> Result<(), tokio::task::JoinError> {
@@ -227,10 +232,8 @@ fn generate_token() -> String {
     )
 }
 
-#[cfg(any(test, debug_assertions))]
-pub(crate) fn test_binding(
-    data_dir: PathBuf,
-) -> Result<LocalApiServerBinding, LocalApiServerError> {
+#[cfg(any(test, feature = "test-support"))]
+pub fn test_binding(data_dir: PathBuf) -> Result<LocalApiServerBinding, LocalApiServerError> {
     let pid = std::process::id();
     let started = super::process_start_time(pid).ok_or_else(|| {
         LocalApiServerError::Discovery(io::Error::other("process identity unavailable"))

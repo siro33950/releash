@@ -9,16 +9,16 @@ use releash_lib::desktop_api::{TechnicalFailure, TechnicalFailureNature};
 use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 
-struct ConnectionPolicy {
-    backoff: RetryBackoff,
-    jitter: f64,
+pub struct ConnectionPolicy {
+    pub backoff: RetryBackoff,
+    pub jitter: f64,
     reset_after: Duration,
     reconnect_codes: Vec<i32>,
     silence: Duration,
     default_timeout: Duration,
 }
 
-static POLICY: LazyLock<ConnectionPolicy> = LazyLock::new(|| {
+pub static POLICY: LazyLock<ConnectionPolicy> = LazyLock::new(|| {
     let options = descriptor::pool()
         .get_service_by_name("releash.client.v1.ClientService")
         .expect("ClientService descriptor")
@@ -81,7 +81,7 @@ fn config(endpoint: &ClientConnectionDto) -> Result<ClientConfig, String> {
     .with_default_header("origin", "tauri://localhost"))
 }
 
-pub(crate) fn client(
+pub fn client(
     endpoint: &ClientConnectionDto,
 ) -> Result<rpc::ClientServiceClient<HttpClient>, String> {
     Ok(rpc::ClientServiceClient::new(
@@ -90,7 +90,7 @@ pub(crate) fn client(
     ))
 }
 
-pub(crate) fn stream_client(
+pub fn stream_client(
     endpoint: &ClientConnectionDto,
 ) -> Result<rpc::ClientServiceClient<HttpClient>, String> {
     Ok(rpc::ClientServiceClient::new(
@@ -101,7 +101,7 @@ pub(crate) fn stream_client(
 
 type DesktopSettingsDto = releash_lib::desktop_api::DesktopSettingsDto;
 
-pub(crate) struct DesktopClient {
+pub struct DesktopClient {
     client: Arc<rpc::ClientServiceClient<HttpClient>>,
     task: tokio::task::JoinHandle<()>,
     settings: parking_lot::Mutex<tokio::sync::watch::Receiver<Option<DesktopSettingsDto>>>,
@@ -270,13 +270,13 @@ fn start_settings_subscription(
 }
 
 #[derive(Default)]
-struct SettingsSubscription<'a> {
+pub struct SettingsSubscription<'a> {
     requested: bool,
-    pending: Option<BoxFuture<'a, Result<(), connectrpc::ConnectError>>>,
+    pub pending: Option<BoxFuture<'a, Result<(), connectrpc::ConnectError>>>,
 }
 
 impl<'a> SettingsSubscription<'a> {
-    fn request_if_needed(
+    pub fn request_if_needed(
         &mut self,
         client: &'a rpc::ClientServiceClient<HttpClient>,
         client_id: &str,
@@ -287,7 +287,7 @@ impl<'a> SettingsSubscription<'a> {
         }
     }
 
-    fn has_pending(&self) -> bool {
+    pub fn has_pending(&self) -> bool {
         self.pending.is_some()
     }
 
@@ -401,7 +401,7 @@ fn silence_failure() -> Observation {
     }
 }
 
-fn liveness_failure(error: connectrpc::ConnectError) -> TechnicalFailure {
+pub fn liveness_failure(error: connectrpc::ConnectError) -> TechnicalFailure {
     use connectrpc::ErrorCode;
     let nature = match error.code {
         ErrorCode::DeadlineExceeded => TechnicalFailureNature::TimedOut,
@@ -415,9 +415,7 @@ fn liveness_failure(error: connectrpc::ConnectError) -> TechnicalFailure {
     }
 }
 
-pub(crate) async fn server_info(
-    endpoint: &ClientConnectionDto,
-) -> Result<wire::ServerInfo, String> {
+pub async fn server_info(endpoint: &ClientConnectionDto) -> Result<wire::ServerInfo, String> {
     let response = client(endpoint)?
         .get_server_info(rpc::Unit::default())
         .await
@@ -425,7 +423,7 @@ pub(crate) async fn server_info(
     to_wire(&response.into_owned()).map_err(|error| error.to_string())
 }
 
-fn error_message(error: connectrpc::ConnectError) -> String {
+pub fn error_message(error: connectrpc::ConnectError) -> String {
     use base64::Engine;
     use prost::Message;
     let decoder = base64::engine::GeneralPurpose::new(

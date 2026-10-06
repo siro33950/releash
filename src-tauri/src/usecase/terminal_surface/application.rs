@@ -14,7 +14,7 @@ use crate::usecase::terminal_surface::output::TerminalSurfaceOutputControl;
 use crate::usecase::terminal_surface::spawn_usecase::GetOrSpawnTerminalOutcome;
 
 #[derive(Clone)]
-pub(crate) struct TerminalSurfaceApplication {
+pub struct TerminalSurfaceApplication {
     performance: Arc<dyn crate::usecase::telemetry::PerformanceOutput>,
     gateway: Arc<dyn TerminalSurfaceGateway + Send + Sync>,
     event_source: Arc<dyn TerminalSurfaceEventSource>,
@@ -52,7 +52,7 @@ pub(crate) enum OwnedTerminalSummaryLookup {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum TerminalSurfaceStreamItem {
+pub enum TerminalSurfaceStreamItem {
     Snapshot(TerminalSurfaceSnapshotDto),
     Output {
         session_key: String,
@@ -73,7 +73,7 @@ pub(crate) enum TerminalSurfaceStreamItem {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct TerminalSurfaceSnapshotDto {
+pub struct TerminalSurfaceSnapshotDto {
     pub session_key: String,
     pub replay: String,
     pub sequence: u64,
@@ -104,7 +104,7 @@ impl TerminalSurfaceApplication {
         UsecaseError::InvalidOperation("Terminal Surface runtime is shutting down".to_string())
     }
 
-    pub(crate) fn new(
+    pub fn new(
         performance: Arc<dyn crate::usecase::telemetry::PerformanceOutput>,
         gateway: Arc<dyn TerminalSurfaceGateway + Send + Sync>,
         event_source: Arc<dyn TerminalSurfaceEventSource>,
@@ -261,6 +261,7 @@ impl TerminalSurfaceApplication {
         self.owned_summary(owner)
     }
 
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn get(
         &self,
         owner: &TerminalSurfaceOwner,
@@ -337,19 +338,9 @@ impl TerminalSurfaceApplication {
         owner: &TerminalSurfaceOwner,
         attachment_id: &str,
         sequence: u64,
-        client_started_at_unix_ms: Option<f64>,
         data: &str,
     ) -> Result<(), UsecaseError> {
-        if let Some(client_started_at_unix_ms) = client_started_at_unix_ms {
-            self.performance.start_terminal_input_trace(
-                attachment_id,
-                sequence,
-                client_started_at_unix_ms,
-            );
-        }
         let _admission = self.admit_mutation()?;
-        self.performance
-            .record_terminal_input_admission(attachment_id, sequence);
         self.gateway
             .write_attached(&owner.stable_key(), attachment_id, sequence, data)
             .map_err(UsecaseError::from)
@@ -364,6 +355,7 @@ impl TerminalSurfaceApplication {
         super::io_usecase::write_paths(self.gateway.as_ref(), owner, paths)
     }
 
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn resize(
         &self,
         owner: &TerminalSurfaceOwner,
@@ -473,6 +465,7 @@ impl TerminalSurfaceApplication {
             .map_err(Into::into)
     }
 
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn flush_checkpoints(&self) -> Result<(), UsecaseError> {
         self.gateway.flush_checkpoints().map_err(UsecaseError::from)
     }

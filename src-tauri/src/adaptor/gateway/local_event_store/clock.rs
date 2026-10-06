@@ -1,8 +1,8 @@
 //! Store clock abstraction so tests can drive deadlines deterministically.
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 use std::sync::atomic::{AtomicI64, Ordering};
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -24,13 +24,13 @@ impl StoreClock for SystemStoreClock {
 }
 
 /// Deterministic fake clock for tests and fault harnesses.
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 #[derive(Debug, Default, Clone)]
 pub struct FakeStoreClock {
     now_ms: Arc<AtomicI64>,
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 impl FakeStoreClock {
     pub fn at(now_ms: i64) -> Self {
         Self {
@@ -39,7 +39,7 @@ impl FakeStoreClock {
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 impl StoreClock for FakeStoreClock {
     fn now_ms(&self) -> i64 {
         self.now_ms.load(Ordering::SeqCst)

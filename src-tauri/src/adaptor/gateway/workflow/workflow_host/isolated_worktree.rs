@@ -5,7 +5,7 @@ use crate::domain::workflow::entities::workflow_execution::{
 };
 use std::collections::VecDeque;
 
-pub(super) enum NodePreparation {
+pub enum NodePreparation {
     Leaf(LeafStart),
     Composite(CompositePreparation),
 }
@@ -20,7 +20,7 @@ impl NodePreparation {
 }
 
 #[derive(Default)]
-pub(super) struct PreparedNodes {
+pub struct PreparedNodes {
     pub(super) leaves: Vec<LeafStart>,
     pub(super) failed: Vec<crate::usecase::workflow::node_startup::FailedNodeStart>,
     pub(super) injections: Vec<DelegateInjection>,
@@ -44,7 +44,7 @@ pub(super) fn partition_actions(
 }
 
 impl WorkflowRuntimeHost {
-    pub(super) async fn prepare_isolated_starts(
+    pub async fn prepare_isolated_starts(
         &self,
         app: &WorkflowRuntimeDependencies,
         execution_id: &str,
@@ -144,7 +144,7 @@ impl WorkflowRuntimeHost {
         Ok(prepared)
     }
 
-    pub(super) async fn commit_prepared_composite(
+    pub async fn commit_prepared_composite(
         &self,
         app: &WorkflowRuntimeDependencies,
         execution_id: &str,
@@ -179,5 +179,12 @@ impl WorkflowRuntimeHost {
             Ok(Some((snapshot, applied.decision)))
         })
         .await
+    }
+}
+
+#[cfg(feature = "test-support")]
+impl PreparedNodes {
+    pub fn test_leaf_count(&self) -> usize {
+        self.leaves.len()
     }
 }

@@ -26,49 +26,49 @@ use crate::usecase::provider_lifecycle::{
 use super::{AgentSessionCreateRequest, AgentSessionUsecase, AgentSessionUsecaseError};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct AgentSessionLaunchRequest {
-    pub(crate) workspace: WorkspaceIdentity,
-    pub(crate) worktree_path: String,
-    pub(crate) provider: ProviderKind,
-    pub(crate) rows: u16,
-    pub(crate) cols: u16,
-    pub(crate) caller_request_id: String,
+pub struct AgentSessionLaunchRequest {
+    pub workspace: WorkspaceIdentity,
+    pub worktree_path: String,
+    pub provider: ProviderKind,
+    pub rows: u16,
+    pub cols: u16,
+    pub caller_request_id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct WorkflowAgentSessionLaunchRequest {
-    pub(crate) workspace: WorkspaceIdentity,
-    pub(crate) worktree_path: String,
-    pub(crate) provider: ProviderKind,
-    pub(crate) model: Option<String>,
-    pub(crate) permission: Option<SessionPermission>,
-    pub(crate) workflow_execution_id: String,
-    pub(crate) node_execution_id: String,
-    pub(crate) initial_instruction: String,
-    pub(crate) rows: u16,
-    pub(crate) cols: u16,
-    pub(crate) caller_request_id: String,
+pub struct WorkflowAgentSessionLaunchRequest {
+    pub workspace: WorkspaceIdentity,
+    pub worktree_path: String,
+    pub provider: ProviderKind,
+    pub model: Option<String>,
+    pub permission: Option<SessionPermission>,
+    pub workflow_execution_id: String,
+    pub node_execution_id: String,
+    pub initial_instruction: String,
+    pub rows: u16,
+    pub cols: u16,
+    pub caller_request_id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct AgentSessionHistoryResumeRequest {
-    pub(crate) workspace: WorkspaceIdentity,
-    pub(crate) worktree_path: String,
-    pub(crate) provider: ProviderKind,
-    pub(crate) provider_session_id: String,
-    pub(crate) rows: u16,
-    pub(crate) cols: u16,
-    pub(crate) caller_request_id: String,
+pub struct AgentSessionHistoryResumeRequest {
+    pub workspace: WorkspaceIdentity,
+    pub worktree_path: String,
+    pub provider: ProviderKind,
+    pub provider_session_id: String,
+    pub rows: u16,
+    pub cols: u16,
+    pub caller_request_id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum AgentSessionHistoryResumeOutcome {
+pub enum AgentSessionHistoryResumeOutcome {
     Open(VersionedAgentSession),
     Paused(VersionedAgentSession),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum AgentSessionLaunchUsecaseError {
+pub enum AgentSessionLaunchUsecaseError {
     Technical(crate::domain::failure::TechnicalFailure),
     Store(crate::domain::failure::StorageFailure),
     ProviderUnavailable,
@@ -112,20 +112,20 @@ impl AgentSessionLaunchUsecaseError {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum StartedExecutionTreeRegistrationError {
+pub enum StartedExecutionTreeRegistrationError {
     Store(crate::domain::failure::StorageFailure),
     Unavailable,
     Corrupt,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum ExecutionTreeCacheReleaseError {
+pub enum ExecutionTreeCacheReleaseError {
     Store(crate::domain::failure::StorageFailure),
     Unavailable,
     Corrupt,
 }
 
-pub(crate) trait WorktreeMutationAdmission: Send + Sync {
+pub trait WorktreeMutationAdmission: Send + Sync {
     fn begin_worktree_mutation(
         &self,
         path: &str,
@@ -136,7 +136,7 @@ pub(crate) trait WorktreeMutationAdmission: Send + Sync {
 }
 
 #[async_trait::async_trait]
-pub(crate) trait ExecutionTreeCache: Send + Sync {
+pub trait ExecutionTreeCache: Send + Sync {
     async fn release_deleted_execution_tree(
         &self,
         tree_id: &str,
@@ -144,14 +144,14 @@ pub(crate) trait ExecutionTreeCache: Send + Sync {
 }
 
 #[async_trait::async_trait]
-pub(crate) trait StartedExecutionTreeRegistrar: Send + Sync {
+pub trait StartedExecutionTreeRegistrar: Send + Sync {
     async fn register_started_execution_tree(
         &self,
         tree_id: &str,
     ) -> Result<(), StartedExecutionTreeRegistrationError>;
 }
 
-pub(crate) trait AgentSessionLaunchExecutionTrees:
+pub trait AgentSessionLaunchExecutionTrees:
     StartedExecutionTreeRegistrar + WorktreeMutationAdmission + ExecutionTreeCache
 {
 }
@@ -161,7 +161,7 @@ impl<T: StartedExecutionTreeRegistrar + WorktreeMutationAdmission + ExecutionTre
 }
 
 #[async_trait::async_trait]
-pub(crate) trait AgentSessionExecutionTreeLifecycle:
+pub trait AgentSessionExecutionTreeLifecycle:
     WorktreeMutationAdmission + ExecutionTreeCache
 {
     async fn lock_execution_tree(
@@ -180,14 +180,14 @@ pub(crate) trait AgentSessionExecutionTreeLifecycle:
 }
 
 #[derive(Clone)]
-pub(crate) struct ProviderAgentRuntime {
+pub struct ProviderAgentRuntime {
     pub(super) availability: Arc<dyn ProviderAvailabilityReader>,
     pub(super) launch_gateway: Arc<dyn ProviderAgentLaunchGateway>,
     pub(super) terminal: Arc<dyn ProviderAgentTerminalGateway>,
 }
 
 impl ProviderAgentRuntime {
-    pub(crate) fn new(
+    pub fn new(
         availability: Arc<dyn ProviderAvailabilityReader>,
         launch_gateway: Arc<dyn ProviderAgentLaunchGateway>,
         terminal: Arc<dyn ProviderAgentTerminalGateway>,
@@ -280,7 +280,7 @@ impl StandaloneLaunchRequestRegistry {
     }
 }
 
-pub(crate) struct AgentSessionLaunchUsecase {
+pub struct AgentSessionLaunchUsecase {
     performance: Arc<dyn crate::usecase::telemetry::PerformanceOutput>,
     workspace_trees: Arc<dyn crate::domain::workspace_tree::WorkspaceTreeRepository>,
     sessions: Arc<AgentSessionUsecase>,
@@ -319,7 +319,7 @@ struct DurableAgentSessionLaunch {
     executable: ResolvedProviderExecutable,
 }
 
-pub(crate) struct LaunchRetention {
+pub struct LaunchRetention {
     launches: Arc<Mutex<HashMap<String, WorkflowLaunchActivation>>>,
     session: String,
 }
@@ -338,7 +338,7 @@ impl LaunchRetention {
 
 impl AgentSessionLaunchUsecase {
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn new(
+    pub fn new(
         performance: Arc<dyn crate::usecase::telemetry::PerformanceOutput>,
         sessions: Arc<AgentSessionUsecase>,
         lifecycle: Arc<ProviderLifecycleUsecase>,
@@ -373,7 +373,7 @@ impl AgentSessionLaunchUsecase {
         }
     }
 
-    pub(crate) async fn launch_standalone_selection(
+    pub async fn launch_standalone_selection(
         self: Arc<Self>,
         request: AgentSessionLaunchRequest,
     ) -> Result<
@@ -401,7 +401,7 @@ impl AgentSessionLaunchUsecase {
         Ok((id, node))
     }
 
-    pub(crate) async fn resume_history_selection(
+    pub async fn resume_history_selection(
         self: &Arc<Self>,
         request: AgentSessionHistoryResumeRequest,
     ) -> Result<
@@ -427,7 +427,7 @@ impl AgentSessionLaunchUsecase {
         Ok((id.to_string(), node))
     }
 
-    pub(crate) async fn launch_standalone_idempotent(
+    pub async fn launch_standalone_idempotent(
         self: Arc<Self>,
         request: AgentSessionLaunchRequest,
     ) -> StandaloneLaunchOutcome {
@@ -471,7 +471,7 @@ impl AgentSessionLaunchUsecase {
         shared.await
     }
 
-    pub(crate) async fn launch_standalone(
+    pub async fn launch_standalone(
         &self,
         request: AgentSessionLaunchRequest,
     ) -> Result<VersionedAgentSession, AgentSessionLaunchUsecaseError> {
@@ -497,7 +497,7 @@ impl AgentSessionLaunchUsecase {
         self.spawn_prepared(pending).await
     }
 
-    pub(crate) async fn confirm_workflow_node_attachment(
+    pub async fn confirm_workflow_node_attachment(
         &self,
         agent_session_id: &str,
     ) -> Result<(), AgentSessionLaunchUsecaseError> {
@@ -531,7 +531,7 @@ impl AgentSessionLaunchUsecase {
         }
     }
 
-    pub(crate) async fn prepare_workflow_node(
+    pub async fn prepare_workflow_node(
         &self,
         request: WorkflowAgentSessionLaunchRequest,
     ) -> Result<VersionedAgentSession, AgentSessionLaunchUsecaseError> {
@@ -576,7 +576,7 @@ impl AgentSessionLaunchUsecase {
         Ok(created)
     }
 
-    pub(crate) async fn activate_workflow_node(
+    pub async fn activate_workflow_node(
         &self,
         agent_session_id: &str,
     ) -> Result<VersionedAgentSession, AgentSessionLaunchUsecaseError> {
@@ -630,8 +630,8 @@ impl AgentSessionLaunchUsecase {
         Ok(activated)
     }
 
-    #[cfg(test)]
-    pub(crate) async fn test_has_activated_launch(&self, session: &str) -> bool {
+    #[cfg(any(test, feature = "test-support"))]
+    pub async fn test_has_activated_launch(&self, session: &str) -> bool {
         matches!(
             self.activated_workflow_launches.lock().await.get(session),
             Some(WorkflowLaunchActivation::Activated(_))
@@ -721,7 +721,7 @@ impl AgentSessionLaunchUsecase {
             .map_err(map_execution_tree_registration_error)
     }
 
-    pub(crate) async fn rollback_workflow_node(
+    pub async fn rollback_workflow_node(
         &self,
         agent_session_id: &str,
         _caller_request_id: &str,
@@ -877,7 +877,7 @@ impl AgentSessionLaunchUsecase {
         Ok(created)
     }
 
-    pub(crate) async fn resume_history(
+    pub async fn resume_history(
         &self,
         request: AgentSessionHistoryResumeRequest,
     ) -> Result<AgentSessionHistoryResumeOutcome, AgentSessionLaunchUsecaseError> {
@@ -1160,12 +1160,12 @@ impl AgentSessionLaunchUsecase {
         Ok(())
     }
 
-    #[cfg(test)]
-    pub(crate) async fn standalone_in_flight_request_count(&self) -> usize {
+    #[cfg(any(test, feature = "test-support"))]
+    pub async fn standalone_in_flight_request_count(&self) -> usize {
         self.standalone_requests.lock().await.in_flight.len()
     }
 
-    #[cfg(any(test, debug_assertions))]
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) async fn wait_for_background_tasks(&self) -> Result<(), tokio::task::JoinError> {
         let tasks = {
             let mut tasks = self

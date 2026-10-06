@@ -4,7 +4,7 @@ use crate::domain::workflow::entities::workflow_execution::SessionResumeAction;
 use crate::domain::workflow::{NodeProcessPresence, NodeProcessReader};
 use crate::usecase::workflow::node_startup::{FailedNodeStart, NodeStartupGateway};
 
-pub(super) struct HostNodeStartup<'a> {
+pub struct HostNodeStartup<'a> {
     pub host: &'a WorkflowRuntimeHost,
     pub app: &'a WorkflowRuntimeDependencies,
     pub execution_id: &'a str,
@@ -12,7 +12,7 @@ pub(super) struct HostNodeStartup<'a> {
     pub cancelled: tokio::sync::watch::Receiver<bool>,
 }
 
-pub(super) struct NodeStartupTask {
+pub struct NodeStartupTask {
     pub execution_id: String,
     pub cancel: tokio::sync::watch::Sender<bool>,
     pub handle: tokio::task::JoinHandle<()>,
@@ -97,7 +97,7 @@ impl NodeStartupGateway for HostNodeStartup<'_> {
 }
 
 impl WorkflowRuntimeHost {
-    pub(super) fn schedule_startup_retries<'a>(
+    pub fn schedule_startup_retries<'a>(
         &'a self,
         app: &'a WorkflowRuntimeDependencies,
         execution_id: &'a str,
@@ -202,7 +202,7 @@ impl WorkflowRuntimeHost {
             .await
     }
 
-    pub(crate) async fn resume_session_process(
+    pub async fn resume_session_process(
         &self,
         app: &WorkflowRuntimeDependencies,
         execution_id: &str,
@@ -267,7 +267,7 @@ impl WorkflowRuntimeHost {
         Ok(())
     }
 
-    pub(super) async fn restart_node_attempt(
+    pub async fn restart_node_attempt(
         &self,
         app: &WorkflowRuntimeDependencies,
         execution_id: &str,
@@ -350,7 +350,3 @@ impl WorkflowRuntimeHost {
         .await
     }
 }
-
-#[cfg(test)]
-#[path = "node_startup_test.rs"]
-mod node_startup_tests;

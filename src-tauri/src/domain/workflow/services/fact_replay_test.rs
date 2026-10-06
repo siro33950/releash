@@ -3,6 +3,7 @@ use crate::domain::provider_lifecycle::ProviderKind;
 use crate::domain::workflow::entities::workflow_execution::{
     NodeSubmitRejection, RuntimeNodeExecutionStatus, TransitionOutcome,
 };
+use crate::domain::workflow::services::test_helpers::session_attached as attached;
 use crate::domain::workflow::{
     AgentActivityObservedFact, AgentSessionActivity, ApprovalGrantedFact, ArtifactProducedFact,
     ChildEntry, CommandSpec, ExecutionOrigin, ExecutionParentRef, ExecutionTreeLaunch, FanoutSpec,
@@ -459,15 +460,6 @@ fn started_child(parent: ExecutionParentRef) -> NodeFact {
         worktree: None,
         parent: Some(parent),
         root: None,
-    })
-}
-
-fn attached(session_id: &str) -> NodeFact {
-    NodeFact::SessionAttached(SessionAttachedFact {
-        session_id: session_id.to_string(),
-        provider_session_id: None,
-        transcript_ref: None,
-        initial_instruction_admitted: false,
     })
 }
 

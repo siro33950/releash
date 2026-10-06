@@ -5,14 +5,10 @@
 
 use rusqlite::Connection;
 
-#[cfg(test)]
-#[path = "node_events_test.rs"]
-mod node_events_test;
-
 /// A fact about to be appended. `seq` and `timestamp` are assigned by the
 /// store at append time.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct NewNodeEventRow {
+pub struct NewNodeEventRow {
     pub tree_id: String,
     pub node_execution_id: String,
     pub parent_id: Option<String>,
@@ -26,7 +22,7 @@ pub(crate) struct NewNodeEventRow {
 
 /// A stored fact row.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct NodeEventRow {
+pub struct NodeEventRow {
     pub tree_id: String,
     pub seq: i64,
     pub node_execution_id: String,
@@ -42,7 +38,7 @@ pub(crate) struct NodeEventRow {
 
 /// Append one fact row. `seq` is `MAX(seq) + 1` within the tree, computed
 /// inside the single INSERT statement so the append is atomic on its own.
-pub(crate) fn append_node_event(
+pub fn append_node_event(
     connection: &Connection,
     row: &NewNodeEventRow,
     timestamp_ms: i64,
@@ -73,10 +69,7 @@ pub(crate) fn append_node_event(
 
 /// Physically delete every row of one tree. This is the delete operation's
 /// meaning (removing the data), not a fact append.
-pub(crate) fn delete_tree(
-    connection: &Connection,
-    tree_id: &str,
-) -> Result<usize, rusqlite::Error> {
+pub fn delete_tree(connection: &Connection, tree_id: &str) -> Result<usize, rusqlite::Error> {
     connection.execute("DELETE FROM node_events WHERE tree_id = ?1", [tree_id])
 }
 
@@ -100,7 +93,7 @@ const ROW_COLUMNS: &str = "tree_id, seq, node_execution_id, parent_id, node_name
      kind, attempt, event_type, session_id, detail, timestamp";
 
 /// Read one tree's facts in append order.
-pub(crate) fn read_tree(
+pub fn read_tree(
     connection: &Connection,
     tree_id: &str,
 ) -> Result<Vec<NodeEventRow>, rusqlite::Error> {
@@ -112,7 +105,7 @@ pub(crate) fn read_tree(
 }
 
 /// Read the facts of one tree appended after `seq`, in append order.
-pub(crate) fn read_tree_after(
+pub fn read_tree_after(
     connection: &Connection,
     tree_id: &str,
     seq: i64,
@@ -126,7 +119,7 @@ pub(crate) fn read_tree_after(
 
 /// Every tree with its latest `seq`. Each tree is reached through the primary
 /// key, so the cost follows the number of trees, not the number of facts.
-pub(crate) fn tree_heads(connection: &Connection) -> Result<Vec<(String, i64)>, rusqlite::Error> {
+pub fn tree_heads(connection: &Connection) -> Result<Vec<(String, i64)>, rusqlite::Error> {
     let mut statement = connection.prepare(
         "WITH RECURSIVE trees(tree_id) AS (
              SELECT MIN(tree_id) FROM node_events
@@ -143,7 +136,7 @@ pub(crate) fn tree_heads(connection: &Connection) -> Result<Vec<(String, i64)>, 
 
 /// First root fact (`parent_id IS NULL`) of the given event type in one tree,
 /// in the same order [`list_tree_roots`] uses.
-pub(crate) fn first_root_row_of_tree(
+pub fn first_root_row_of_tree(
     connection: &Connection,
     tree_id: &str,
     root_event_type: &str,
@@ -198,7 +191,7 @@ pub(crate) fn latest_row_for_node(
     rows.next().transpose()
 }
 
-pub(crate) fn latest_row_for_node_with_event_types(
+pub fn latest_row_for_node_with_event_types(
     connection: &Connection,
     node_execution_id: &str,
     event_types: &[&str],
@@ -220,7 +213,7 @@ pub(crate) fn latest_row_for_node_with_event_types(
     rows.next().transpose()
 }
 
-pub(crate) fn first_row_for_tree_with_event_types(
+pub fn first_row_for_tree_with_event_types(
     connection: &Connection,
     tree_id: &str,
     event_types: &[&str],
@@ -241,7 +234,7 @@ pub(crate) fn first_row_for_tree_with_event_types(
     Ok(first)
 }
 
-pub(crate) fn rows_for_event_types(
+pub fn rows_for_event_types(
     connection: &Connection,
     event_types: &[&str],
 ) -> Result<Vec<NodeEventRow>, rusqlite::Error> {
@@ -262,7 +255,7 @@ pub(crate) fn rows_for_event_types(
 }
 
 /// First row of one tree (the root started fact).
-pub(crate) fn first_row_of_tree(
+pub fn first_row_of_tree(
     connection: &Connection,
     tree_id: &str,
 ) -> Result<Option<NodeEventRow>, rusqlite::Error> {
@@ -277,7 +270,7 @@ pub(crate) fn first_row_of_tree(
 /// List every root fact of the given event type (`parent_id IS NULL`),
 /// oldest tree first. The event type is a caller-provided narrowing value so
 /// the fact vocabulary stays owned by the domain.
-pub(crate) fn list_tree_roots(
+pub fn list_tree_roots(
     connection: &Connection,
     root_event_type: &str,
 ) -> Result<Vec<NodeEventRow>, rusqlite::Error> {
@@ -302,7 +295,7 @@ pub(crate) fn latest_session_attachment(
     rows.next().transpose()
 }
 
-pub(crate) fn latest_root_rows_for_trees(
+pub fn latest_root_rows_for_trees(
     connection: &Connection,
     tree_ids: &[String],
     event_types: &[&str],

@@ -4,7 +4,7 @@
 
 /// 最後に取れた値と、直近の取得の失敗。
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct Fetched<T, E = crate::domain::failure::WorkFailure> {
+pub struct Fetched<T, E = crate::domain::failure::WorkFailure> {
     pub value: Option<T>,
     pub error: Option<E>,
 }
@@ -19,7 +19,7 @@ impl<T, E> Default for Fetched<T, E> {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum FetchState {
+pub enum FetchState {
     Loading,
     InitialFailed,
     Empty,

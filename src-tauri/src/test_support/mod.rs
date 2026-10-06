@@ -1,11 +1,10 @@
 use std::ffi::{OsStr, OsString};
 use std::path::Path;
 
-pub(crate) mod git;
 pub(crate) mod retry;
 pub(crate) mod state_subscription;
 
-pub(crate) fn client_api_deps(
+pub fn client_api_deps(
     dispatch: std::sync::Arc<crate::adaptor::controller::client::ClientCommandDispatch>,
 ) -> crate::adaptor::controller::api::ClientApiDeps {
     crate::adaptor::controller::api::ClientApiDeps::new(
@@ -14,22 +13,19 @@ pub(crate) fn client_api_deps(
     )
 }
 
-#[path = "../../tests/support/agent_tui_fixture.rs"]
-pub(crate) mod agent_tui_fixture;
+pub static TEST_ENV_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
 
-pub(crate) static TEST_ENV_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
-
-pub(crate) struct EnvVarGuard {
+pub struct EnvVarGuard {
     key: &'static str,
     previous: Option<OsString>,
 }
 
 impl EnvVarGuard {
-    pub(crate) fn set_value(key: &'static str, value: &str) -> Self {
+    pub fn set_value(key: &'static str, value: &str) -> Self {
         Self::set_os(key, OsStr::new(value))
     }
 
-    pub(crate) fn set_path(key: &'static str, value: &Path) -> Self {
+    pub fn set_path(key: &'static str, value: &Path) -> Self {
         Self::set_os(key, value.as_os_str())
     }
 
@@ -75,14 +71,14 @@ static CAPTURING_LOGGER: CapturingLogger = CapturingLogger {
 };
 static CAPTURING_LOGGER_INIT: std::sync::Once = std::sync::Once::new();
 
-pub(crate) fn install_capturing_logger() {
+pub fn install_capturing_logger() {
     CAPTURING_LOGGER_INIT.call_once(|| {
         log::set_logger(&CAPTURING_LOGGER).unwrap();
         log::set_max_level(log::LevelFilter::Trace);
     });
 }
 
-pub(crate) fn captured_error_messages() -> Vec<String> {
+pub fn captured_error_messages() -> Vec<String> {
     CAPTURING_LOGGER
         .messages
         .lock()
@@ -93,7 +89,7 @@ pub(crate) fn captured_error_messages() -> Vec<String> {
         .collect()
 }
 
-pub(crate) fn captured_warning_messages() -> Vec<String> {
+pub fn captured_warning_messages() -> Vec<String> {
     CAPTURING_LOGGER
         .messages
         .lock()
@@ -102,4 +98,83 @@ pub(crate) fn captured_warning_messages() -> Vec<String> {
         .filter(|(level, _)| *level == log::Level::Warn)
         .map(|(_, message)| message.clone())
         .collect()
+}
+
+#[cfg(feature = "test-support")]
+#[path = "../integration_test_support.rs"]
+pub mod integration;
+
+#[cfg(feature = "test-support")]
+pub mod agent_session_tui_acceptance {
+    pub use crate::agent_session_tui_acceptance::{
+        drain_and_close_store, AcceptanceAgentSession, AcceptanceAgentSessionLifecycle,
+        AcceptanceAgentSessionTreeLocation, AcceptanceArchiveOutcome, AcceptanceHistoryCandidate,
+        AcceptanceHookWarning, AcceptanceProvider, AgentSessionTuiAcceptanceConfig,
+        AgentSessionTuiAcceptanceHost,
+    };
+}
+
+#[cfg(feature = "test-support")]
+pub mod client_api_acceptance {
+    pub use crate::client_api_acceptance::{
+        connect_client, read_current_branch, read_state, request_client, rpc, Branch,
+        BranchGateway, BranchRepository, ClientApiAcceptanceHost, ClientEndpoint,
+        ClientRecoveryAcceptanceHost, ClientRecoveryState, DiagnosticReport, DiagnosticSpan,
+        DiagnosticStage, NativeClient, RepositoryError, Severity,
+        TERMINAL_WS_BEARER_SUBPROTOCOL_PREFIX,
+    };
+}
+
+#[cfg(feature = "test-support")]
+pub mod provider_lifecycle_acceptance {
+    pub use crate::provider_lifecycle_acceptance::{
+        AcceptanceFact, AcceptanceFactKind, AcceptanceIngressResult, AcceptanceLaunch,
+        AcceptanceLedgerEventCounts, AcceptanceProvider, AcceptanceScope,
+        AcceptanceUnavailableReason, ProviderLifecycleAcceptanceHost,
+    };
+}
+
+#[cfg(feature = "test-support")]
+pub mod terminal_subscription_acceptance {
+    pub use crate::terminal_subscription_acceptance::{
+        TerminalSubscription, TerminalSubscriptionHarness,
+    };
+}
+
+#[cfg(feature = "test-support")]
+pub mod workflow_control_plane_acceptance {
+    pub use crate::workflow_control_plane_acceptance::{
+        AcceptanceNodeExecution, AcceptanceNodeExecutionStatus, AcceptanceNodeKind,
+        AcceptanceWorkflowExecution, AcceptanceWorkflowExecutionStatus,
+        AcceptanceWorkspaceNodeStatus, WorkflowControlPlaneAcceptanceHost,
+    };
+}
+
+#[cfg(feature = "test-support")]
+pub mod workflow_delegate_acceptance {
+    pub use crate::workflow_delegate_acceptance::{
+        AcceptanceIngressResult, AcceptanceLaunch, AcceptanceProvider, NodeExecutionStatus,
+        RuntimeNodeExecution, WorkflowDelegateAcceptanceHost,
+    };
+}
+
+#[cfg(feature = "test-support")]
+pub mod workflow_diagnostics_acceptance {
+    pub use crate::workflow_diagnostics_acceptance::WorkflowDiagnosticsAcceptanceHost;
+}
+
+#[cfg(feature = "test-support")]
+pub mod terminal_surface {
+    pub use crate::terminal_surface::{
+        initialize_background_work_for_acceptance, TerminalProcessLaunchV1,
+        TerminalSurfaceEventFault, TerminalSurfaceOwnerV1, TerminalSurfaceRuntime,
+        TerminalSurfaceStreamItemV1, TerminalSurfaceV1,
+    };
+}
+
+#[cfg(test)]
+pub(crate) fn lock_crash_telemetry() -> std::sync::MutexGuard<'static, ()> {
+    crate::infrastructure::telemetry::test_helpers::TEST_LOCK
+        .lock()
+        .unwrap()
 }

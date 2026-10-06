@@ -32,10 +32,10 @@ pub struct PreparedEvent {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct PreparedNodeEvent {
-    pub(crate) row: NewNodeEventRow,
-    pub(crate) timestamp_ms: i64,
-    pub(crate) expect_tree_absent: bool,
+pub struct PreparedNodeEvent {
+    pub row: NewNodeEventRow,
+    pub timestamp_ms: i64,
+    pub expect_tree_absent: bool,
 }
 
 /// A batch validated and encoded before queue admission.
@@ -126,7 +126,7 @@ impl WriteQueue {
         Ok(())
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn pending_request_count(&self) -> usize {
         let state = self.state.lock().expect("write queue poisoned");
         state.normal.queue.len() + state.critical.queue.len()
@@ -196,7 +196,7 @@ impl WriteQueue {
 
     /// Stop admission and let the writer consume every already-admitted
     /// request before it exits.
-    #[cfg(any(test, debug_assertions))]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn close_after_drain(&self) {
         let mut state = self.state.lock().expect("write queue poisoned");
         state.closed = true;
@@ -206,60 +206,5 @@ impl WriteQueue {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    fn request(critical: bool, bytes: usize) -> WriteJob {
-        WriteJob {
-            run: Box::new(|_| {}),
-            critical,
-            bytes,
-        }
-    }
-
-    #[test]
-    fn critical_lane_is_popped_first() {
-        let queue = WriteQueue::new();
-        assert!(queue.admit(request(false, 1)).is_ok());
-        assert!(queue.admit(request(true, 1)).is_ok());
-        assert!(queue.pop_blocking().unwrap().critical);
-        assert!(!queue.pop_blocking().unwrap().critical);
-    }
-
-    #[test]
-    fn lane_request_bounds_are_enforced() {
-        let queue = WriteQueue::new();
-        for _ in 0..CRITICAL_LANE_MAX_REQUESTS {
-            assert!(queue.admit(request(true, 1)).is_ok());
-        }
-        assert!(queue.admit(request(true, 1)).is_err());
-        // The normal lane still admits.
-        assert!(queue.admit(request(false, 1)).is_ok());
-    }
-
-    #[test]
-    fn lane_byte_bounds_are_enforced() {
-        let queue = WriteQueue::new();
-        assert!(queue
-            .admit(request(false, NORMAL_LANE_MAX_BYTES - 1))
-            .is_ok());
-        assert!(queue.admit(request(false, 2)).is_err());
-        assert!(queue.admit(request(false, 1)).is_ok());
-    }
-
-    #[test]
-    fn close_after_drain_preserves_admitted_requests() {
-        let queue = WriteQueue::new();
-        assert!(queue.admit(request(false, 1)).is_ok());
-        assert!(queue.admit(request(true, 1)).is_ok());
-
-        queue.close_after_drain();
-
-        assert!(queue.pop_blocking().unwrap().critical);
-        assert!(!queue.pop_blocking().unwrap().critical);
-        assert!(queue.pop_blocking().is_none());
-        assert!(matches!(
-            queue.admit(request(false, 1)),
-            Err(AdmitRejection::Closed)
-        ));
-    }
-}
+#[path = "writer_test.rs"]
+mod writer_tests;

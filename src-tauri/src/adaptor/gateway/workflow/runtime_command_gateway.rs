@@ -19,28 +19,26 @@ use crate::adaptor::gateway::workflow::workflow_host::WorkflowRuntimeHost;
 use crate::usecase::workflow::runtime_error::WorkflowRuntimeError;
 
 #[derive(Clone)]
-pub(crate) struct WorkflowRuntimeCommandGateway {
+pub struct WorkflowRuntimeCommandGateway {
     app: WorkflowRuntimeDependencies,
     driver: Arc<WorkflowRuntimeHost>,
 }
 
-pub(crate) struct WorkflowRuntimeCommandGatewayDeps {
-    pub(crate) node_processes: Arc<super::node_process::WorkflowNodeProcesses>,
-    pub(crate) isolated_worktrees: Arc<dyn crate::domain::workflow::IsolatedWorktreeGateway>,
-    pub(crate) repository_usecase: Arc<RepositoryUsecase>,
-    pub(crate) app_config: Arc<dyn ConfigRepository>,
-    pub(crate) workspace_query: Arc<dyn crate::usecase::workspace_tree::WorkspaceQueryService>,
-    pub(crate) agent_session_launch: Arc<crate::usecase::agent_session::AgentSessionLaunchUsecase>,
-    pub(crate) agent_session_initial_instruction:
+pub struct WorkflowRuntimeCommandGatewayDeps {
+    pub node_processes: Arc<super::node_process::WorkflowNodeProcesses>,
+    pub isolated_worktrees: Arc<dyn crate::domain::workflow::IsolatedWorktreeGateway>,
+    pub repository_usecase: Arc<RepositoryUsecase>,
+    pub app_config: Arc<dyn ConfigRepository>,
+    pub workspace_query: Arc<dyn crate::usecase::workspace_tree::WorkspaceQueryService>,
+    pub agent_session_launch: Arc<crate::usecase::agent_session::AgentSessionLaunchUsecase>,
+    pub agent_session_initial_instruction:
         Arc<crate::usecase::agent_session::AgentSessionInitialInstructionUsecase>,
-    pub(crate) agent_session_lifecycle:
-        Arc<crate::usecase::agent_session::AgentSessionLifecycleUsecase>,
-    pub(crate) provider_availability:
-        Arc<dyn crate::domain::agent_session::ProviderAvailabilityReader>,
+    pub agent_session_lifecycle: Arc<crate::usecase::agent_session::AgentSessionLifecycleUsecase>,
+    pub provider_availability: Arc<dyn crate::domain::agent_session::ProviderAvailabilityReader>,
 }
 
 impl WorkflowRuntimeCommandGateway {
-    pub(crate) fn new_with_driver(
+    pub fn new_with_driver(
         app: WorkflowRuntimeDependencies,
         driver: Arc<WorkflowRuntimeHost>,
     ) -> Self {
@@ -317,100 +315,12 @@ impl WorkflowRuntimeShutdownGateway for WorkflowRuntimeCommandGateway {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn workflow_name_resolution_diagnostics_remain_validation_errors() {
-        let error =
-            workflow_runtime_error_to_workflow_error(WorkflowRuntimeError::InvalidWorkflow(
-                "workflow_diagnostics: WFS006: duplicate workflow name".to_string(),
-            ));
-
-        assert!(matches!(
-            error,
-            WorkflowError::Validation(message)
-                if message.contains("WFS006") && message.contains("duplicate workflow name")
-        ));
-    }
-
-    #[test]
-    fn runtime_command_error_mapping_preserves_domain_variants() {
-        assert!(matches!(
-            workflow_runtime_error_to_workflow_error(WorkflowRuntimeError::ExecutionNotFound(
-                "missing".to_string()
-            )),
-            WorkflowError::NotFound(message)
-                if message == "No workflow execution found for session 'missing'"
-        ));
-        assert!(matches!(
-            workflow_runtime_error_to_workflow_error(WorkflowRuntimeError::InvalidState(
-                "terminal".to_string()
-            )),
-            WorkflowError::InvalidState(message) if message == "terminal"
-        ));
-        assert!(matches!(
-            workflow_runtime_error_to_workflow_error(
-                WorkflowRuntimeError::UnauthorizedApprovalTarget("wrong target".to_string())
-            ),
-            WorkflowError::UnauthorizedApprovalTarget(message) if message == "wrong target"
-        ));
-        assert!(matches!(
-            workflow_runtime_error_to_workflow_error(WorkflowRuntimeError::ValidationError(
-                "bad output".to_string()
-            )),
-            WorkflowError::Validation(message) if message == "bad output"
-        ));
-        assert!(matches!(
-            workflow_runtime_error_to_workflow_error(WorkflowRuntimeError::SessionStore(
-                "io".to_string()
-            )),
-            WorkflowError::External(message) if message == "io"
-        ));
-    }
-    #[test]
-    fn test_node事実追記_runtimeからconnectまで分類を保持する() {
-        use crate::adaptor::presenter::connect::ConnectFailure;
-        // Given
-        for (failure, code) in [
-            (
-                crate::domain::local_event::CommitBatchError::QueueBusy.into(),
-                connectrpc::ErrorCode::Unavailable,
-            ),
-            (
-                crate::domain::local_event::CommitBatchError::Corrupt {
-                    correlation_id: "id".into(),
-                }
-                .into(),
-                connectrpc::ErrorCode::DataLoss,
-            ),
-            (
-                crate::domain::failure::TechnicalFailure {
-                    nature: crate::domain::failure::TechnicalFailureNature::TimedOut,
-                    message: "timeout".into(),
-                }
-                .into(),
-                connectrpc::ErrorCode::DeadlineExceeded,
-            ),
-            (
-                crate::domain::local_event::CommitBatchError::AppendOutcomeUnknown.into(),
-                connectrpc::ErrorCode::Aborted,
-            ),
-        ] {
-            let failure: crate::domain::failure::StorageFailure = failure;
-            let error = workflow_runtime_error_to_workflow_error(WorkflowRuntimeError::Store(
-                failure.with_message("node append failed"),
-            ));
-            // Then
-            assert_eq!(error.connect_code(), code);
-            assert_eq!(
-                crate::adaptor::presenter::connect::classified_error(error).code,
-                code
-            );
-        }
-    }
-}
-
-#[cfg(test)]
 #[path = "runtime_command_gateway_test.rs"]
 mod runtime_command_gateway_tests;
+
+#[cfg(feature = "test-support")]
+impl WorkflowRuntimeCommandGateway {
+    pub fn test_app(&self) -> &WorkflowRuntimeDependencies {
+        &self.app
+    }
+}

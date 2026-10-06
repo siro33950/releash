@@ -9,7 +9,7 @@ use crate::domain::repository::worktree_operation::{
 };
 use crate::domain::repository::RepositoryError;
 
-pub(crate) struct WorktreeOperations {
+pub struct WorktreeOperations {
     worktrees: Mutex<HashMap<String, Weak<OperationSlot>>>,
     locks: Arc<dyn WorktreeOperationLocks>,
 }
@@ -30,7 +30,7 @@ pub struct WorktreeDeletionGuard(
 );
 
 impl WorktreeDeletionGuard {
-    pub(crate) fn accept(&mut self, target: WorktreeDeletionTarget) -> Result<(), RepositoryError> {
+    pub fn accept(&mut self, target: WorktreeDeletionTarget) -> Result<(), RepositoryError> {
         self.0[0].state.lock().accept_deletion(target)
     }
 }
@@ -47,7 +47,7 @@ impl WorktreeOperations {
         }
     }
 
-    pub(crate) fn new(locks: Arc<dyn WorktreeOperationLocks>) -> Self {
+    pub fn new(locks: Arc<dyn WorktreeOperationLocks>) -> Self {
         Self {
             worktrees: Mutex::default(),
             locks,
@@ -65,7 +65,7 @@ impl WorktreeOperations {
         slot
     }
 
-    pub(crate) fn mutate(&self, identity: &str) -> Result<WorktreeMutationGuard, RepositoryError> {
+    pub fn mutate(&self, identity: &str) -> Result<WorktreeMutationGuard, RepositoryError> {
         let lease = self.locks.mutation(identity)?;
         let slot = self.slot(identity);
         slot.state.lock().begin_mutation()?;
@@ -75,11 +75,8 @@ impl WorktreeOperations {
         })
     }
 
-    #[cfg(test)]
-    pub(crate) async fn delete(
-        &self,
-        identity: &str,
-    ) -> Result<WorktreeDeletionGuard, RepositoryError> {
+    #[cfg(any(test, feature = "test-support"))]
+    pub async fn delete(&self, identity: &str) -> Result<WorktreeDeletionGuard, RepositoryError> {
         self.delete_many(&[identity.to_string()]).await
     }
 
@@ -128,9 +125,9 @@ impl Drop for WorktreeDeletionGuard {
 
 #[cfg(test)]
 #[path = "worktree_operation_test.rs"]
-mod worktree_operation_tests;
+pub(crate) mod worktree_operation_tests;
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 impl Default for WorktreeOperations {
     fn default() -> Self {
         struct Locks;

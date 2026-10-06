@@ -9,7 +9,7 @@ use crate::usecase::app_config::query_service::{
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct WorkflowConfigInput {
+pub struct WorkflowConfigInput {
     pub approval_auto_approve: bool,
 }
 
@@ -20,7 +20,7 @@ pub struct AppConfigUsecase {
 }
 
 impl AppConfigUsecase {
-    pub(crate) fn new(
+    pub fn new(
         repository: Arc<dyn ConfigRepository>,
         workflow_query: Arc<dyn WorkflowConfigQueryService>,
     ) -> Self {
@@ -32,7 +32,7 @@ impl AppConfigUsecase {
         }
     }
 
-    pub(crate) fn with_state_publisher(
+    pub fn with_state_publisher(
         mut self,
         publisher: crate::usecase::state_subscription::StateSubscriptionUsecase,
     ) -> Self {

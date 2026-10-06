@@ -7,7 +7,7 @@ pub(crate) struct RawProviderHookHealthFailure {
 }
 
 #[derive(Debug, thiserror::Error)]
-pub(crate) enum ProviderHookHealthMarkerError {
+pub enum ProviderHookHealthMarkerError {
     #[error("Provider Hook health marker path is invalid")]
     InvalidPath,
     #[error("Provider Hook health marker is unavailable")]
@@ -16,7 +16,7 @@ pub(crate) enum ProviderHookHealthMarkerError {
     Encode(serde_json::Error),
 }
 
-pub(crate) fn write_local_api_failure(
+pub fn write_local_api_failure(
     data_dir: &Path,
     marker_path: &Path,
     provider: &str,

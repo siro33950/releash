@@ -12,7 +12,7 @@ fn expired() -> WorkflowError {
     )
 }
 
-pub(crate) async fn recover(
+pub async fn recover(
     retrying: &Retrying,
     usecase: &WorkflowStartupUsecase,
 ) -> Result<(), WorkflowError> {

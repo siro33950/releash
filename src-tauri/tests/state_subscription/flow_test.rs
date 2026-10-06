@@ -1,4 +1,4 @@
-use releash_lib::client_api_acceptance::{
+use releash_lib::test_support::client_api_acceptance::{
     connect_client, read_current_branch, BranchGateway, ClientApiAcceptanceHost,
 };
 use std::sync::Arc;

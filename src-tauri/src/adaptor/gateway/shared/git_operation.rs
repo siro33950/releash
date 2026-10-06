@@ -1,7 +1,7 @@
 use crate::common::operation_context::OperationStopped;
 
 #[derive(Debug)]
-pub(crate) enum GitOperationError {
+pub enum GitOperationError {
     Git(git2::Error),
     Stopped(OperationStopped),
 }
@@ -28,9 +28,7 @@ impl From<git2::Error> for GitOperationError {
     }
 }
 
-pub(crate) fn run<T>(
-    operation: impl FnOnce() -> Result<T, git2::Error>,
-) -> Result<T, GitOperationError> {
+pub fn run<T>(operation: impl FnOnce() -> Result<T, git2::Error>) -> Result<T, GitOperationError> {
     crate::common::operation_context::checked(operation)
         .map_err(GitOperationError::Stopped)?
         .map_err(GitOperationError::Git)
@@ -53,7 +51,7 @@ impl From<GitOperationError> for crate::domain::repository::RepositoryError {
     }
 }
 
-pub(crate) fn checkout() -> git2::build::CheckoutBuilder<'static> {
+pub fn checkout() -> git2::build::CheckoutBuilder<'static> {
     let context = crate::common::operation_context::current();
     let mut options = git2::build::CheckoutBuilder::new();
     options.notify_on(git2::CheckoutNotificationType::all());
@@ -61,20 +59,12 @@ pub(crate) fn checkout() -> git2::build::CheckoutBuilder<'static> {
     options
 }
 
-#[cfg(test)]
-#[path = "git_operation_test.rs"]
-mod git_operation_tests;
-
-pub(crate) fn detect_default_branch(
-    repo: &git2::Repository,
-) -> Result<Option<String>, GitOperationError> {
+pub fn detect_default_branch(repo: &git2::Repository) -> Result<Option<String>, GitOperationError> {
     crate::infrastructure::git::helpers::detect_default_branch(repo, &|| {
         crate::common::operation_context::check().map_err(GitOperationError::Stopped)
     })
 }
-pub(crate) fn get_branch_name_for_repo(
-    repo: &git2::Repository,
-) -> Result<String, GitOperationError> {
+pub fn get_branch_name_for_repo(repo: &git2::Repository) -> Result<String, GitOperationError> {
     crate::infrastructure::git::helpers::get_branch_name_for_repo(repo, &|| {
         crate::common::operation_context::check().map_err(GitOperationError::Stopped)
     })
@@ -117,3 +107,7 @@ impl From<GitOperationError> for crate::domain::failure::TechnicalFailure {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "git_operation_test.rs"]
+mod git_operation_tests;

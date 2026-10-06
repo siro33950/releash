@@ -5,12 +5,12 @@
 //! fresh readback, dropped reply channels, and a stopped writer worker.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 use std::sync::{Arc, Condvar, Mutex};
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 use std::time::Duration;
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 #[derive(Debug, Default)]
 struct NodeEventAppendStallState {
     armed: bool,
@@ -18,7 +18,7 @@ struct NodeEventAppendStallState {
     released: bool,
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 #[derive(Debug, Default)]
 struct NodeEventAppendStall {
     state: Mutex<NodeEventAppendStallState>,
@@ -26,15 +26,15 @@ struct NodeEventAppendStall {
     released: Condvar,
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 #[derive(Debug)]
-pub(crate) struct NodeEventAppendStallGuard {
+pub struct NodeEventAppendStallGuard {
     stall: Arc<NodeEventAppendStall>,
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 impl NodeEventAppendStallGuard {
-    pub(crate) fn wait_until_arrived(&self) {
+    pub fn wait_until_arrived(&self) {
         let state = self
             .stall
             .state
@@ -51,7 +51,7 @@ impl NodeEventAppendStallGuard {
         );
     }
 
-    pub(crate) fn release(&self) {
+    pub fn release(&self) {
         let mut state = self
             .stall
             .state
@@ -63,7 +63,7 @@ impl NodeEventAppendStallGuard {
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 impl Drop for NodeEventAppendStallGuard {
     fn drop(&mut self) {
         self.release();
@@ -110,11 +110,11 @@ pub struct FaultInjector {
     schema_fail_before_readback: AtomicUsize,
     initial_create_fault_point: AtomicUsize,
     maintenance_fault_point: AtomicUsize,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     node_event_append_stall: Arc<NodeEventAppendStall>,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     initial_create_process_crash_point: AtomicUsize,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     initial_installation_id: Mutex<Option<String>>,
 }
 
@@ -143,14 +143,14 @@ impl FaultInjector {
             .is_ok_and(|previous| previous == 1)
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn arm_fail_after_participant_write(&self, participant: usize) {
         self.fail_after_participant_write
             .store(participant, Ordering::SeqCst);
     }
 
     /// Storage failure at COMMIT boundary before COMMIT executes.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn arm_fail_before_commit(&self) {
         self.fail_before_commit.fetch_add(1, Ordering::SeqCst);
     }
@@ -161,7 +161,7 @@ impl FaultInjector {
 
     /// Crash equivalent between COMMIT and the fresh readback: the commit is
     /// durable but the caller only sees `OutcomeUnknown`.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn arm_crash_after_commit_before_readback(&self) {
         self.crash_after_commit_before_readback
             .fetch_add(1, Ordering::SeqCst);
@@ -175,13 +175,13 @@ impl FaultInjector {
         Self::take(&self.drop_reply)
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn arm_drop_reply(&self) {
         self.drop_reply.fetch_add(1, Ordering::SeqCst);
     }
 
-    #[cfg(test)]
-    pub(crate) fn arm_node_event_append_stall(&self) -> NodeEventAppendStallGuard {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn arm_node_event_append_stall(&self) -> NodeEventAppendStallGuard {
         let mut state = self
             .node_event_append_stall
             .state
@@ -199,7 +199,7 @@ impl FaultInjector {
         }
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn wait_before_node_event_append_if_armed(&self) {
         let mut state = self
             .node_event_append_stall
@@ -221,7 +221,7 @@ impl FaultInjector {
         *state = NodeEventAppendStallState::default();
     }
 
-    #[cfg(not(test))]
+    #[cfg(not(any(test, feature = "test-support")))]
     pub(crate) fn wait_before_node_event_append_if_armed(&self) {}
 
     pub fn take_schema_fail_before_begin(&self) -> bool {
@@ -232,7 +232,7 @@ impl FaultInjector {
         Self::take(&self.schema_fail_before_commit)
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn arm_schema_fail_before_commit(&self) {
         self.schema_fail_before_commit
             .fetch_add(1, Ordering::SeqCst);
@@ -258,7 +258,7 @@ impl FaultInjector {
             .is_ok()
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn arm_maintenance_fault(&self, point: MaintenanceFaultPoint) {
         self.maintenance_fault_point
             .store(point as usize, Ordering::SeqCst);
@@ -271,7 +271,7 @@ impl FaultInjector {
     /// typed error. `abort` deliberately skips Rust destructors and SQLite
     /// connection cleanup, leaving the same artifacts as an abrupt process
     /// loss for the parent acceptance test to recover.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn crash_initial_create_process_if_armed(&self, point: InitialCreateFaultPoint) {
         if self
             .initial_create_process_crash_point
@@ -282,7 +282,7 @@ impl FaultInjector {
         }
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn set_initial_installation_id(&self, installation_id: &str) {
         *self
             .initial_installation_id
@@ -290,7 +290,7 @@ impl FaultInjector {
             .expect("initial installation identity fault lock") = Some(installation_id.to_string());
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn initial_installation_id(&self) -> Option<String> {
         self.initial_installation_id
             .lock()
@@ -298,7 +298,7 @@ impl FaultInjector {
             .clone()
     }
 
-    #[cfg(not(test))]
+    #[cfg(not(any(test, feature = "test-support")))]
     pub fn initial_installation_id(&self) -> Option<String> {
         None
     }

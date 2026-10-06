@@ -15,12 +15,12 @@ use crate::usecase::workflow::{
 };
 use crate::usecase::workspace_tree::WorkspaceQueryService;
 
-pub(crate) struct SqliteWorkspaceQueryService {
+pub struct SqliteWorkspaceQueryService {
     repository: Arc<SqliteWorkspaceTreeRepository>,
 }
 
 impl SqliteWorkspaceQueryService {
-    pub(crate) fn with_repository(repository: Arc<SqliteWorkspaceTreeRepository>) -> Arc<Self> {
+    pub fn with_repository(repository: Arc<SqliteWorkspaceTreeRepository>) -> Arc<Self> {
         Arc::new(Self { repository })
     }
 
@@ -30,7 +30,7 @@ impl SqliteWorkspaceQueryService {
         })
     }
 
-    async fn execution_records(
+    pub async fn execution_records(
         &self,
         workspace_identity: Option<&WorkspaceIdentity>,
         status: Option<ExecutionStatusFilter>,
@@ -129,7 +129,7 @@ impl WorkspaceQueryService for SqliteWorkspaceQueryService {
     }
 }
 
-fn node_detail(node: WorkspaceTreeNode) -> WorkspaceNodeDetailDto {
+pub fn node_detail(node: WorkspaceTreeNode) -> WorkspaceNodeDetailDto {
     let updated_at = node.updated_at();
     let submit_received = matches!(
         node.completion_signals,
@@ -200,7 +200,7 @@ fn sqlite_page_bounds(page: Option<WorkflowPageRequest>) -> (i64, i64) {
     .unwrap_or((i64::MAX, 0))
 }
 
-fn execution_summary(
+pub fn execution_summary(
     record: crate::domain::local_event::WorkflowExecutionMetadataRecord,
 ) -> Result<WorkflowExecutionSummary, WorkflowError> {
     let started_at = f64::from_bits(record.started_at_bits);

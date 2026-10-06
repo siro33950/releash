@@ -99,7 +99,6 @@ impl SubscriptionTarget {
             ("external-editor", []) => Ok(Self::ExternalEditor),
             ("releash-base", [path]) => Ok(Self::ReleashBase((*path).into())),
             ("workflow-config", []) => Ok(Self::WorkflowConfig),
-            ("performance-switches", []) => Ok(Self::PerformanceSwitches),
             ("provider-hook-health", []) => Ok(Self::ProviderHookHealth),
             _ => Err(SubscriptionError::UnknownTarget),
         }?;
@@ -171,7 +170,6 @@ impl SubscriptionTarget {
             Self::ExternalEditor => ("external-editor", vec![]),
             Self::ReleashBase(p) => ("releash-base", vec![p.clone()]),
             Self::WorkflowConfig => ("workflow-config", vec![]),
-            Self::PerformanceSwitches => ("performance-switches", vec![]),
             Self::ProviderHookHealth => ("provider-hook-health", vec![]),
         }
     }

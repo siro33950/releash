@@ -1,6 +1,6 @@
 mod conversions;
 pub(crate) mod descriptor;
-mod errors;
+pub(crate) mod errors;
 mod workspace;
 pub(crate) fn value<T, U: TryFrom<T>>(value: T) -> Result<U, CommandFailure>
 where
@@ -23,43 +23,43 @@ where
 }
 
 pub use errors::CommandFailure;
-#[cfg(any(test, debug_assertions))]
+#[cfg(any(test, feature = "test-support"))]
 mod json;
 mod workflow_values;
 
-#[cfg(any(test, debug_assertions))]
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) use self::json::from_message;
-#[cfg(any(test, debug_assertions))]
+#[cfg(any(test, feature = "test-support"))]
 use self::json::to_message;
-#[cfg(any(test, debug_assertions))]
+#[cfg(any(test, feature = "test-support"))]
 use serde_json::Value as Json;
 
 include!(concat!(env!("OUT_DIR"), "/releash.client.v1.rs"));
 include!(concat!(env!("OUT_DIR"), "/client_commands.rs"));
 
-#[cfg(any(test, debug_assertions))]
+#[cfg(any(test, feature = "test-support"))]
 pub trait ClientValue {
     fn into_json(self) -> Result<Json, String>;
 }
-#[cfg(any(test, debug_assertions))]
+#[cfg(any(test, feature = "test-support"))]
 impl<T: ClientValue> ClientValue for Box<T> {
     fn into_json(self) -> Result<Json, String> {
         (*self).into_json()
     }
 }
-#[cfg(any(test, debug_assertions))]
+#[cfg(any(test, feature = "test-support"))]
 impl ClientValue for CommandResult {
     fn into_json(self) -> Result<Json, String> {
         self.into_value().map(|(_, value)| value)
     }
 }
-#[cfg(any(test, debug_assertions))]
+#[cfg(any(test, feature = "test-support"))]
 impl ClientValue for CommandError {
     fn into_json(self) -> Result<Json, String> {
         from_message("releash.client.v1.CommandError", &self)
     }
 }
-#[cfg(any(test, debug_assertions))]
+#[cfg(any(test, feature = "test-support"))]
 pub fn from_value(value: impl ClientValue) -> Result<Json, String> {
     value.into_json()
 }
@@ -116,10 +116,6 @@ impl From<crate::adaptor::presenter::terminal::TerminalSurfaceStreamItemV1> for 
     }
 }
 
-#[cfg(test)]
-#[path = "client_test.rs"]
-mod client_tests;
-
 impl From<crate::usecase::app_config::query_service::DesktopSettingsDto> for DesktopSettings {
     fn from(value: crate::usecase::app_config::query_service::DesktopSettingsDto) -> Self {
         Self {
@@ -147,3 +143,11 @@ impl TryFrom<DesktopSettings> for crate::usecase::app_config::query_service::Des
         })
     }
 }
+
+#[cfg(feature = "test-support")]
+#[path = "test_helpers.rs"]
+pub(crate) mod test_helpers;
+
+#[cfg(test)]
+#[path = "mod_test.rs"]
+mod mod_tests;

@@ -94,7 +94,7 @@ impl PriorityLimits {
             .map(|seat| seat.expect("priority semaphore is never closed"))
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn fill(&self, name: &str) -> Vec<OwnedSemaphorePermit> {
         let level = self.level(name);
         [&level.seats, &level.queue]
@@ -108,17 +108,17 @@ impl PriorityLimits {
             .collect()
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn available(&self, name: &str) -> usize {
         self.level(name).seats.available_permits()
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn seats(&self, name: &str) -> Arc<Semaphore> {
         self.level(name).seats.clone()
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn queue_length(&self, name: &str) -> usize {
         self.level(name).queue.available_permits()
     }

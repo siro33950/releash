@@ -1,19 +1,19 @@
-#[path = "../../tests/state_subscription_reads/reads_test.rs"]
-mod reads_tests;
-
+#[cfg(test)]
 pub(crate) use crate::adaptor::presenter::state_subscription::StateSubscriptionEvent;
+#[cfg(test)]
 pub(crate) use crate::infrastructure::state_subscription::{Delivery, Event};
-pub(crate) use reads_tests::Fixture as StateReadsFixture;
 
+#[cfg(test)]
 pub(crate) struct WakeFlag(pub(crate) std::sync::atomic::AtomicBool);
 
+#[cfg(test)]
 impl std::task::Wake for WakeFlag {
     fn wake(self: std::sync::Arc<Self>) {
         self.0.store(true, std::sync::atomic::Ordering::SeqCst);
     }
 }
 
-pub(crate) fn registration(
+pub fn registration(
     session_key: &str,
     workspace_path: &str,
     session_id: Option<&str>,
@@ -29,6 +29,7 @@ pub(crate) fn registration(
     }
 }
 
+#[cfg(test)]
 pub(crate) fn terminal_processed(
     usecase: &TerminalSubscriptions,
     client: &str,
@@ -55,20 +56,20 @@ pub(crate) fn test_output() -> crate::usecase::state_subscription::StateSubscrip
     crate::adaptor::presenter::state_subscription::test_output()
 }
 
-pub(crate) fn test_subscriptions() -> crate::usecase::state_subscription::StateSubscriptionUsecase {
+pub fn test_subscriptions() -> crate::usecase::state_subscription::StateSubscriptionUsecase {
     crate::usecase::state_subscription::StateSubscriptionUsecase::new_with_output(
         test_output(),
         read_driver(),
     )
 }
 
-pub(crate) fn changes(
+pub fn changes(
     subscriptions: &crate::usecase::state_subscription::StateSubscriptionUsecase,
 ) -> tokio::sync::broadcast::Receiver<crate::usecase::state_subscription::StateChangeSource> {
     subscriptions.changes()
 }
 
-pub(crate) fn take_changes(
+pub fn take_changes(
     receiver: &mut tokio::sync::broadcast::Receiver<
         crate::usecase::state_subscription::StateChangeSource,
     >,
@@ -80,7 +81,7 @@ pub(crate) fn take_changes(
     changes
 }
 
-pub(crate) struct CapturingNotifier<T> {
+pub struct CapturingNotifier<T> {
     changes: std::sync::Mutex<
         tokio::sync::broadcast::Receiver<crate::usecase::state_subscription::StateChangeSource>,
     >,
@@ -100,7 +101,7 @@ impl<T> CapturingNotifier<T> {
         }
     }
 
-    pub(crate) fn lock(&self) -> std::sync::LockResult<std::sync::MutexGuard<'_, Vec<T>>> {
+    pub fn lock(&self) -> std::sync::LockResult<std::sync::MutexGuard<'_, Vec<T>>> {
         let mut values = self.values.lock()?;
         let mut changes = self.changes.lock().expect("captured state changes");
         values.extend(
@@ -111,13 +112,13 @@ impl<T> CapturingNotifier<T> {
         Ok(values)
     }
 
-    pub(crate) fn take(&self) -> Vec<T> {
+    pub fn take(&self) -> Vec<T> {
         std::mem::take(&mut self.lock().expect("captured state changes"))
     }
 }
 
 impl CapturingNotifier<Vec<String>> {
-    pub(crate) fn repositories(
+    pub fn repositories(
         subscriptions: &crate::usecase::state_subscription::StateSubscriptionUsecase,
     ) -> Self {
         Self::new(subscriptions, |change| match change {
@@ -128,7 +129,7 @@ impl CapturingNotifier<Vec<String>> {
 }
 
 impl CapturingNotifier<String> {
-    pub(crate) fn worktrees(
+    pub fn worktrees(
         subscriptions: &crate::usecase::state_subscription::StateSubscriptionUsecase,
     ) -> Self {
         Self::new(subscriptions, |change| match change {
@@ -138,7 +139,7 @@ impl CapturingNotifier<String> {
     }
 }
 
-pub(crate) fn same(
+pub fn same(
     value: &crate::adaptor::presenter::state_subscription::PublishedState,
     expected: impl std::borrow::Borrow<crate::usecase::state_subscription::StateValue>,
 ) -> bool {
@@ -148,6 +149,7 @@ pub(crate) fn same(
         )
 }
 
+#[cfg(test)]
 pub(crate) fn payload(
     value: &crate::usecase::state_subscription::StateValue,
 ) -> Result<crate::adaptor::presenter::state_subscription::PublishedState, connectrpc::ConnectError>
@@ -156,6 +158,7 @@ pub(crate) fn payload(
         .map(crate::adaptor::presenter::state_subscription::PublishedState::from)
 }
 
+#[cfg(test)]
 pub(crate) fn terminal_item(
     value: &crate::adaptor::presenter::state_subscription::PublishedState,
 ) -> &crate::adaptor::presenter::client::terminal_event::Item {
@@ -174,9 +177,9 @@ use crate::usecase::state_subscription::{StateSubscriptionUsecase, SubscriptionE
 use futures_util::Stream;
 use std::sync::Arc;
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 impl StateSubscriptionUsecase {
-    pub(crate) fn new(
+    pub fn new(
         paths: Vec<String>,
         timer: tokio::sync::mpsc::UnboundedSender<crate::usecase::state_subscription::ReadWorker>,
     ) -> Self {
@@ -188,7 +191,7 @@ impl StateSubscriptionUsecase {
         usecase
     }
 
-    pub(crate) fn test_set_repository_paths(&self, paths: Vec<String>) {
+    pub fn test_set_repository_paths(&self, paths: Vec<String>) {
         *self
             .test_repository_paths
             .as_ref()
@@ -196,11 +199,11 @@ impl StateSubscriptionUsecase {
             .write() = paths;
     }
 
-    pub(crate) fn test_presenter(&self) -> Option<&StateSubscriptionPresenter> {
+    pub fn test_presenter(&self) -> Option<&StateSubscriptionPresenter> {
         self.output_ref().as_any().downcast_ref()
     }
 
-    pub(crate) fn open(
+    pub fn open(
         &self,
         id: String,
     ) -> Result<
@@ -247,7 +250,7 @@ impl crate::usecase::state_subscription::StateSubscriptionRead for TestRepositor
     }
 }
 
-pub(crate) fn deps(
+pub fn deps(
     usecase: StateSubscriptionUsecase,
     presenter: Arc<StateSubscriptionPresenter>,
 ) -> crate::adaptor::controller::api::StateSubscriptionDeps {
@@ -266,23 +269,24 @@ pub(crate) fn deps(
 }
 
 #[derive(Clone)]
-pub(crate) struct TerminalSubscriptions {
+pub struct TerminalSubscriptions {
     pub(crate) usecase: StateSubscriptionUsecase,
     pub(crate) terminal:
         crate::usecase::terminal_surface::subscription::TerminalSubscriptionUsecase,
+    #[cfg(test)]
     pub(crate) presenter:
         Arc<crate::adaptor::presenter::terminal_subscription::TerminalSubscriptionPresenter>,
 }
 
 impl StateSubscriptionUsecase {
-    pub(crate) fn deps(&self) -> crate::adaptor::controller::api::StateSubscriptionDeps {
+    pub fn deps(&self) -> crate::adaptor::controller::api::StateSubscriptionDeps {
         deps(
             self.clone(),
             Arc::new(self.test_presenter().unwrap().clone()),
         )
     }
 
-    pub(crate) fn with_terminal(
+    pub fn with_terminal(
         self,
         terminal: Arc<crate::usecase::terminal_surface::application::TerminalSurfaceApplication>,
     ) -> TerminalSubscriptions {
@@ -302,12 +306,14 @@ impl StateSubscriptionUsecase {
         TerminalSubscriptions {
             usecase: self,
             terminal: subscriptions,
+            #[cfg(test)]
             presenter,
         }
     }
 }
 
 impl TerminalSubscriptions {
+    #[cfg(test)]
     pub(crate) fn with_terminal(
         self,
         terminal: Arc<crate::usecase::terminal_surface::application::TerminalSurfaceApplication>,
@@ -315,6 +321,7 @@ impl TerminalSubscriptions {
         self.usecase.with_terminal(terminal)
     }
 
+    #[cfg(test)]
     pub(crate) fn schedule_terminal_refresh(
         &self,
         clients: Vec<String>,
@@ -322,35 +329,40 @@ impl TerminalSubscriptions {
     ) {
         self.terminal.schedule_terminal_refresh(clients, target);
     }
+    #[cfg(test)]
     pub(crate) fn test_worker_count(&self) -> usize {
         self.terminal.test_worker_count() + self.usecase.test_worker_count()
     }
-    pub(crate) fn deps(&self) -> crate::adaptor::controller::api::StateSubscriptionDeps {
+    pub fn deps(&self) -> crate::adaptor::controller::api::StateSubscriptionDeps {
         crate::adaptor::controller::api::StateSubscriptionDeps::new(
             self.usecase.clone(),
             Arc::new(self.usecase.test_presenter().unwrap().clone()),
             self.terminal.clone(),
         )
     }
+    #[cfg(test)]
     pub(crate) fn test_presenter(
         &self,
     ) -> Option<&crate::adaptor::presenter::terminal_subscription::TerminalSubscriptionPresenter>
     {
         Some(&self.presenter)
     }
+    #[cfg(test)]
     pub(crate) fn open(
         &self,
         id: String,
     ) -> Result<impl Stream<Item = StateSubscriptionEvent> + Send + use<>, SubscriptionError> {
         self.deps().stream(id)
     }
+    #[cfg(test)]
     pub(crate) fn close_client(&self, id: &str) {
         self.usecase.close_client(id);
         self.terminal.close_client(id);
     }
 }
 
-pub(crate) fn terminal_application_fixture() -> (
+#[cfg(test)]
+pub fn terminal_application_fixture() -> (
     Arc<crate::usecase::terminal_surface::application::TerminalSurfaceApplication>,
     Arc<crate::adaptor::gateway::terminal_surface::runtime_gateway_impl::TerminalSurfaceRuntimeGatewayFor>,
     Arc<crate::adaptor::presenter::terminal_event_hub::TerminalSurfaceEventHub>,
@@ -375,6 +387,7 @@ pub(crate) fn terminal_application_fixture() -> (
     (terminal, gateway, hub, surface)
 }
 
+#[cfg(test)]
 pub(crate) fn terminal_application_with_gateway(
     gateway: Arc<
         dyn crate::domain::terminal_surface::gateway::TerminalSurfaceGateway + Send + Sync,
@@ -395,7 +408,7 @@ thread_local! {
     };
 }
 
-fn driver<T: 'static>(
+pub(crate) fn driver<T: 'static>(
     start: impl FnOnce() -> tokio::sync::mpsc::UnboundedSender<T>,
 ) -> tokio::sync::mpsc::UnboundedSender<T> {
     if tokio::runtime::Handle::try_current().is_ok() {
@@ -406,7 +419,7 @@ fn driver<T: 'static>(
     sender
 }
 
-pub(crate) fn read_driver(
+pub fn read_driver(
 ) -> tokio::sync::mpsc::UnboundedSender<crate::usecase::state_subscription::ReadWorker> {
     driver(|| {
         crate::adaptor::controller::state_subscription::drive(Arc::new(|| {
@@ -416,7 +429,7 @@ pub(crate) fn read_driver(
     })
 }
 
-pub(crate) fn pending_read_driver(
+pub fn pending_read_driver(
 ) -> tokio::sync::mpsc::UnboundedSender<crate::usecase::state_subscription::ReadWorker> {
     driver(|| {
         crate::adaptor::controller::state_subscription::drive(Arc::new(|| {
@@ -425,11 +438,11 @@ pub(crate) fn pending_read_driver(
     })
 }
 
-pub(crate) fn scan_driver(
+pub fn scan_driver(
     duration: std::time::Duration,
 ) -> tokio::sync::mpsc::UnboundedSender<crate::usecase::repository_state::runtime::ScanWorker> {
     crate::adaptor::controller::repository_scan::start(
-        crate::usecase::retry::shared().clone(),
+        crate::test_support::retry::shared().clone(),
         Arc::new(crate::usecase::repository_state::runtime::tests_support::TestRepositoryStateWorkerRuntime),
         crate::infrastructure::timer::delays(duration),
     )
@@ -441,17 +454,13 @@ pub(crate) fn terminal_driver() -> tokio::sync::mpsc::UnboundedSender<
     driver(crate::adaptor::controller::terminal_subscription::start)
 }
 
-pub(crate) fn repository_driver(
+pub fn repository_driver(
 ) -> tokio::sync::mpsc::UnboundedSender<crate::usecase::repository_state::runtime::ScanWorker> {
     driver(|| {
         crate::adaptor::controller::repository_scan::start(
-        crate::usecase::retry::shared().clone(),
+        crate::test_support::retry::shared().clone(),
         Arc::new(crate::usecase::repository_state::runtime::tests_support::TestRepositoryStateWorkerRuntime),
         Arc::new(|| Box::pin(async {})),
     )
     })
 }
-
-#[cfg(test)]
-#[path = "state_subscription_test.rs"]
-mod state_subscription_tests;

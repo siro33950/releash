@@ -9,12 +9,12 @@ use crate::usecase::workflow::WorkspaceNodeDetailDto;
 use super::WorkspaceQueryService;
 
 /// Explicit unit-test fake. Production composition never branches to this type.
-pub(crate) struct TestWorkspaceQueryService {
+pub struct TestWorkspaceQueryService {
     executions: Vec<WorkflowExecutionSummary>,
 }
 
 impl TestWorkspaceQueryService {
-    pub(crate) fn new(executions: Vec<WorkflowExecutionSummary>) -> Arc<Self> {
+    pub fn new(executions: Vec<WorkflowExecutionSummary>) -> Arc<Self> {
         Arc::new(Self { executions })
     }
 }
@@ -50,10 +50,10 @@ impl WorkspaceQueryService for TestWorkspaceQueryService {
     }
 }
 
-pub(crate) struct TestWorkspaceTreeRepository;
+pub struct TestWorkspaceTreeRepository;
 
 impl TestWorkspaceTreeRepository {
-    pub(crate) fn new() -> Arc<Self> {
+    pub fn new() -> Arc<Self> {
         Arc::new(Self)
     }
 }

@@ -3,7 +3,7 @@ pub(crate) mod app_config;
 pub(crate) mod application_lifecycle;
 pub(crate) mod code;
 pub(crate) mod comment;
-mod dependencies;
+pub(crate) mod dependencies;
 pub(crate) mod dispatch;
 pub(crate) mod external_editor;
 pub(crate) mod git_host;
@@ -16,12 +16,6 @@ pub(crate) mod workspace_state;
 pub(crate) mod workspace_tree;
 pub(crate) use crate::adaptor::presenter::client::{outcome, value};
 pub(crate) use dependencies::ClientDependencies;
-pub(crate) use dispatch::{
-    convert, finite, invalid_request, optional, required, ClientCommandDispatch,
-};
+pub(crate) use dispatch::{convert, invalid_request, optional, required, ClientCommandDispatch};
 
-pub(super) mod worktree_mutation;
-
-#[cfg(test)]
-#[path = "dispatch_parity_test.rs"]
-mod dispatch_parity_tests;
+pub(crate) mod worktree_mutation;

@@ -4,7 +4,6 @@ pub mod contract;
 pub mod contract_schema;
 pub mod event_replay;
 pub mod fact_replay;
-pub mod failure_policy;
 pub mod history;
 pub mod projection;
 pub mod prompt_composition;
@@ -16,5 +15,5 @@ pub mod template_preview;
 pub mod transition;
 pub mod validation;
 
-#[cfg(test)]
-pub use failure_policy::{TimeoutContext, TimeoutPolicy};
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) mod test_helpers;

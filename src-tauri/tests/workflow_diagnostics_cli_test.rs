@@ -233,7 +233,7 @@ async fn test_診断local_api_実http経由で指定directoryのreportを返す(
     let fixture_directory = tempfile::tempdir().unwrap();
     std::fs::write(fixture_directory.path().join("custom.yml"), "name: [").unwrap();
     let host =
-        releash_lib::workflow_diagnostics_acceptance::WorkflowDiagnosticsAcceptanceHost::start(
+        releash_lib::test_support::workflow_diagnostics_acceptance::WorkflowDiagnosticsAcceptanceHost::start(
             data_directory.path().to_path_buf(),
             applied_directory.path().to_path_buf(),
         )
@@ -262,7 +262,7 @@ async fn test_診断_ui経路とcli経路が同じvalid_fixtureで同一report�
     write_valid_fixture(fixture_directory.path());
     write_applied_fixture(applied_directory.path());
     let host =
-        releash_lib::workflow_diagnostics_acceptance::WorkflowDiagnosticsAcceptanceHost::start(
+        releash_lib::test_support::workflow_diagnostics_acceptance::WorkflowDiagnosticsAcceptanceHost::start(
             data_directory.path().to_path_buf(),
             applied_directory.path().to_path_buf(),
         )
@@ -291,7 +291,7 @@ async fn test_診断_ui経路とcli経路が同じinvalid_fixtureで同一report
     write_invalid_fixture(fixture_directory.path());
     write_applied_fixture(applied_directory.path());
     let host =
-        releash_lib::workflow_diagnostics_acceptance::WorkflowDiagnosticsAcceptanceHost::start(
+        releash_lib::test_support::workflow_diagnostics_acceptance::WorkflowDiagnosticsAcceptanceHost::start(
             data_directory.path().to_path_buf(),
             applied_directory.path().to_path_buf(),
         )
@@ -330,7 +330,7 @@ async fn test_診断_ui経路とcli経路がscalar_schema宣言のwfs002で同�
     let fixture_directory = tempfile::tempdir().unwrap();
     write_scalar_schema_fixture(fixture_directory.path());
     let host =
-        releash_lib::workflow_diagnostics_acceptance::WorkflowDiagnosticsAcceptanceHost::start(
+        releash_lib::test_support::workflow_diagnostics_acceptance::WorkflowDiagnosticsAcceptanceHost::start(
             data_directory.path().to_path_buf(),
             applied_directory.path().to_path_buf(),
         )
@@ -381,7 +381,7 @@ async fn test_診断_ui経路とcli経路がnested_schema_validationのwfs002で
     let fixture_directory = tempfile::tempdir().unwrap();
     write_invalid_nested_array_schema_fixture(fixture_directory.path());
     let host =
-        releash_lib::workflow_diagnostics_acceptance::WorkflowDiagnosticsAcceptanceHost::start(
+        releash_lib::test_support::workflow_diagnostics_acceptance::WorkflowDiagnosticsAcceptanceHost::start(
             data_directory.path().to_path_buf(),
             applied_directory.path().to_path_buf(),
         )
@@ -424,7 +424,7 @@ async fn test_診断_cli経路は指定directory配下のfacetを含めて適用
     write_valid_fixture(fixture_directory.path());
     write_applied_fixture(applied_directory.path());
     let host =
-        releash_lib::workflow_diagnostics_acceptance::WorkflowDiagnosticsAcceptanceHost::start(
+        releash_lib::test_support::workflow_diagnostics_acceptance::WorkflowDiagnosticsAcceptanceHost::start(
             data_directory.path().to_path_buf(),
             applied_directory.path().to_path_buf(),
         )
@@ -463,7 +463,7 @@ async fn test_診断_error検出時に終了コード3を返す() {
     let fixture_directory = tempfile::tempdir().unwrap();
     write_invalid_fixture(fixture_directory.path());
     let host =
-        releash_lib::workflow_diagnostics_acceptance::WorkflowDiagnosticsAcceptanceHost::start(
+        releash_lib::test_support::workflow_diagnostics_acceptance::WorkflowDiagnosticsAcceptanceHost::start(
             data_directory.path().to_path_buf(),
             applied_directory.path().to_path_buf(),
         )
@@ -485,7 +485,7 @@ async fn test_診断_error無しなら終了コード0を返す() {
     let fixture_directory = tempfile::tempdir().unwrap();
     write_valid_fixture(fixture_directory.path());
     let host =
-        releash_lib::workflow_diagnostics_acceptance::WorkflowDiagnosticsAcceptanceHost::start(
+        releash_lib::test_support::workflow_diagnostics_acceptance::WorkflowDiagnosticsAcceptanceHost::start(
             data_directory.path().to_path_buf(),
             applied_directory.path().to_path_buf(),
         )
@@ -514,7 +514,7 @@ async fn test_診断_dir省略時は適用済みconfig_directoryを対象にす�
     write_valid_fixture(fixture_directory.path());
     write_applied_fixture(applied_directory.path());
     let host =
-        releash_lib::workflow_diagnostics_acceptance::WorkflowDiagnosticsAcceptanceHost::start(
+        releash_lib::test_support::workflow_diagnostics_acceptance::WorkflowDiagnosticsAcceptanceHost::start(
             data_directory.path().to_path_buf(),
             applied_directory.path().to_path_buf(),
         )
@@ -539,7 +539,7 @@ async fn test_診断_human_readable出力に検出したdiagnosticが含まれ�
     let fixture_directory = tempfile::tempdir().unwrap();
     write_invalid_fixture(fixture_directory.path());
     let host =
-        releash_lib::workflow_diagnostics_acceptance::WorkflowDiagnosticsAcceptanceHost::start(
+        releash_lib::test_support::workflow_diagnostics_acceptance::WorkflowDiagnosticsAcceptanceHost::start(
             data_directory.path().to_path_buf(),
             applied_directory.path().to_path_buf(),
         )

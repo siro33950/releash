@@ -8,14 +8,14 @@ use crate::domain::agent_session::{
 use super::{AgentSessionUsecase, AgentSessionUsecaseError};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum AgentSessionInitialInstructionDeliveryOutcome {
+pub enum AgentSessionInitialInstructionDeliveryOutcome {
     Delivered,
     DeliveryUnknown,
     AlreadyDispatched,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum AgentSessionInitialInstructionError {
+pub enum AgentSessionInitialInstructionError {
     Store(crate::domain::failure::StorageFailure),
     InvalidInput,
     NotFound,
@@ -24,13 +24,13 @@ pub(crate) enum AgentSessionInitialInstructionError {
     Corrupt,
 }
 
-pub(crate) struct AgentSessionInitialInstructionUsecase {
+pub struct AgentSessionInitialInstructionUsecase {
     sessions: Arc<AgentSessionUsecase>,
     terminal: Arc<dyn ProviderAgentTerminalInputGateway>,
 }
 
 impl AgentSessionInitialInstructionUsecase {
-    pub(crate) fn new(
+    pub fn new(
         sessions: Arc<AgentSessionUsecase>,
         terminal: Arc<dyn ProviderAgentTerminalInputGateway>,
     ) -> Self {
@@ -40,7 +40,7 @@ impl AgentSessionInitialInstructionUsecase {
     /// delegate child の結果を親 session へ続行指示として送る。
     /// session 側が `caller_request_id` ごとに受理を永続化してから terminal に書くため、
     /// 同じ識別子の再送は書かずに `AlreadyDispatched` を返す。
-    pub(crate) async fn dispatch_continuation(
+    pub async fn dispatch_continuation(
         &self,
         agent_session_id: &str,
         instruction: &str,
@@ -112,5 +112,5 @@ fn map_session_error(error: AgentSessionUsecaseError) -> AgentSessionInitialInst
 }
 
 #[cfg(test)]
-#[path = "agent_session_initial_instruction_classification_test.rs"]
-mod classification_tests;
+#[path = "agent_session_initial_instruction_test.rs"]
+mod agent_session_initial_instruction_tests;

@@ -77,11 +77,4 @@ describe("ViewToolbar", () => {
 
 		expect(screen.getByTestId("branch")).toBeInTheDocument();
 	});
-
-	it("does not render the removed Agent / Workflow mode switch", () => {
-		renderToolbar({});
-		expect(screen.queryByTestId("center-mode-switch")).toBeNull();
-		expect(screen.queryByLabelText("Agent mode")).toBeNull();
-		expect(screen.queryByLabelText("Workflow mode")).toBeNull();
-	});
 });

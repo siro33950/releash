@@ -4,7 +4,7 @@ use crate::adaptor::presenter::state_subscription::{PublishedState, StateSubscri
 use crate::infrastructure::state_subscription::{Delivery, Event};
 use crate::usecase::state_subscription::StateValue;
 
-pub(crate) fn payload(value: &StateValue) -> Result<wire::StatePayload, connectrpc::ConnectError> {
+pub fn payload(value: &StateValue) -> Result<wire::StatePayload, connectrpc::ConnectError> {
     Ok(wire::StatePayload {
         value: Some(match value {
             StateValue::Terminal(value) => wire::state_payload::Value::Terminal(
@@ -152,19 +152,6 @@ pub(crate) fn payload(value: &StateValue) -> Result<wire::StatePayload, connectr
                 crate::adaptor::presenter::client::value(*value)
                 .map_err(crate::adaptor::presenter::connect::command_error)?,
             ),
-            StateValue::PerformanceSwitches(value) => {
-                wire::state_payload::Value::PerformanceSwitches(wire::PerformanceSwitchesV1 {
-                    real_app_mode: Some(value.real_app_mode),
-                    terminal: Some(
-                        crate::adaptor::presenter::client::value(
-                            crate::adaptor::presenter::terminal::TerminalPerformanceSwitchesV1::from(
-                                value.terminal,
-                            ),
-                        )
-                        .map_err(crate::adaptor::presenter::connect::command_error)?,
-                    ),
-                })
-            }
             StateValue::ProviderHookHealth(value) => {
                 wire::state_payload::Value::ProviderHookHealth(wire::ProviderHookHealthSnapshot {
                     warnings: Some(crate::adaptor::presenter::client::value(
@@ -242,4 +229,4 @@ pub(crate) fn event(
 
 #[cfg(test)]
 #[path = "state_subscription_wire_test.rs"]
-mod state_subscription_tests;
+pub(crate) mod state_subscription_wire_tests;

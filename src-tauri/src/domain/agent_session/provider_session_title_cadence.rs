@@ -8,32 +8,5 @@ pub(crate) fn should_read_provider_session_title(tick: u64, has_title: bool) -> 
 }
 
 #[cfg(test)]
-mod provider_session_title_cadence_tests {
-    use super::{
-        should_read_provider_session_title, PROVIDER_SESSION_TITLE_REFRESH_TICKS,
-        PROVIDER_SESSION_TITLE_TICK_INTERVAL,
-    };
-
-    #[test]
-    fn test_provider_session_title_cadenceの基準tickは20秒で再読周期は15tick() {
-        assert_eq!(PROVIDER_SESSION_TITLE_TICK_INTERVAL.as_secs(), 20);
-        assert_eq!(PROVIDER_SESSION_TITLE_REFRESH_TICKS, 15);
-    }
-
-    #[test]
-    fn test_provider_session_title_cadence_タイトル未取得なら毎tick読む() {
-        for tick in 0..=30 {
-            assert!(should_read_provider_session_title(tick, false));
-        }
-    }
-
-    #[test]
-    fn test_provider_session_title_cadence_タイトル取得済みなら15tickごとに読む() {
-        for tick in 0..=30 {
-            assert_eq!(
-                should_read_provider_session_title(tick, true),
-                matches!(tick, 0 | 15 | 30)
-            );
-        }
-    }
-}
+#[path = "provider_session_title_cadence_test.rs"]
+mod provider_session_title_cadence_tests;

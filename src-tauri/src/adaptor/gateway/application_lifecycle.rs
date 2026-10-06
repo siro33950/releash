@@ -2,14 +2,12 @@ use std::sync::Arc;
 
 use crate::domain::application_lifecycle::{ApplicationLifecycleError, ApplicationShutdownGateway};
 
-pub(crate) struct DaemonShutdownGateway {
-    pub(crate) workflow: Arc<crate::usecase::workflow::WorkflowRuntimeUsecase>,
-    pub(crate) terminal:
-        Arc<crate::usecase::terminal_surface::application::TerminalSurfaceApplication>,
-    pub(crate) server: Arc<crate::infrastructure::local_api::LocalApiServer>,
-    pub(crate) stop_observer: Arc<dyn Fn() + Send + Sync>,
-    pub(crate) telemetry:
-        parking_lot::Mutex<Option<crate::infrastructure::telemetry::TelemetryGuard>>,
+pub struct DaemonShutdownGateway {
+    pub workflow: Arc<crate::usecase::workflow::WorkflowRuntimeUsecase>,
+    pub terminal: Arc<crate::usecase::terminal_surface::application::TerminalSurfaceApplication>,
+    pub server: Arc<crate::infrastructure::local_api::LocalApiServer>,
+    pub stop_observer: Arc<dyn Fn() + Send + Sync>,
+    pub telemetry: parking_lot::Mutex<Option<crate::infrastructure::telemetry::TelemetryGuard>>,
 }
 
 #[async_trait::async_trait]

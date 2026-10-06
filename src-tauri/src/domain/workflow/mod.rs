@@ -23,8 +23,6 @@ pub use repository::{
     WorkflowDefinitionRepository,
 };
 pub use services::{contract, secret_masker, validation};
-#[cfg(test)]
-pub use services::{TimeoutContext, TimeoutPolicy};
 pub use value_objects::{
     is_reserved_node_name, isolated_worktree_owner, AbortRequestedFact, AgentActivityObservedFact,
     AgentSessionActivity, ApprovalGrantedFact, ApprovalTarget, ArchiveRequestedFact, Artifact,
@@ -47,8 +45,8 @@ pub use value_objects::{
     WorktreeMode, NODE_STATUS_COMPLETED,
 };
 
-#[cfg(any(test, debug_assertions))]
+#[cfg(any(test, feature = "test-support"))]
 pub use value_objects::WorkflowRuntimeSnapshot;
 
-#[cfg(any(test, debug_assertions))]
+#[cfg(any(test, feature = "test-support"))]
 pub use value_objects::{NodeHistoryEntry, RuntimeArtifact};

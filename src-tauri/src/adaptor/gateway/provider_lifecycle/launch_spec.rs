@@ -10,7 +10,7 @@ use crate::domain::terminal_surface::TerminalProcessLaunch;
 use crate::domain::workflow::SessionPermission;
 
 #[derive(Debug, Error, PartialEq, Eq)]
-pub(crate) enum ProviderLaunchSpecError {
+pub enum ProviderLaunchSpecError {
     #[error("Provider launch field is empty: {0}")]
     EmptyField(&'static str),
     #[error("Claude plugin directory is required")]
@@ -22,7 +22,7 @@ pub(crate) enum ProviderLaunchSpecError {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ProviderLaunchContext {
+pub struct ProviderLaunchContext {
     slot_id: ProviderLifecycleSlotId,
     binding_id: String,
     capability: String,
@@ -30,7 +30,7 @@ pub(crate) struct ProviderLaunchContext {
 }
 
 impl ProviderLaunchContext {
-    pub(crate) fn new(
+    pub fn new(
         slot_id: ProviderLifecycleSlotId,
         binding_id: impl Into<String>,
         capability: impl Into<String>,
@@ -54,23 +54,23 @@ impl ProviderLaunchContext {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ProviderLaunchFile {
+pub struct ProviderLaunchFile {
     relative_path: PathBuf,
     contents: Vec<u8>,
 }
 
 impl ProviderLaunchFile {
-    pub(crate) fn relative_path(&self) -> &Path {
+    pub fn relative_path(&self) -> &Path {
         &self.relative_path
     }
 
-    pub(crate) fn contents(&self) -> &[u8] {
+    pub fn contents(&self) -> &[u8] {
         &self.contents
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ProviderLaunchSpec {
+pub struct ProviderLaunchSpec {
     provider: ProviderKind,
     arguments: Vec<String>,
     environment: Vec<(String, String)>,
@@ -79,7 +79,7 @@ pub(crate) struct ProviderLaunchSpec {
 }
 
 impl ProviderLaunchSpec {
-    pub(crate) fn for_provider(
+    pub fn for_provider(
         provider: ProviderKind,
         context: ProviderLaunchContext,
         hook_cli_alias: &str,
@@ -163,25 +163,25 @@ impl ProviderLaunchSpec {
         }
     }
 
-    #[cfg(any(test, debug_assertions))]
-    pub(crate) fn arguments(&self) -> &[String] {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn arguments(&self) -> &[String] {
         &self.arguments
     }
 
-    #[cfg(any(test, debug_assertions))]
-    pub(crate) fn environment(&self) -> &[(String, String)] {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn environment(&self) -> &[(String, String)] {
         &self.environment
     }
 
-    pub(crate) fn files(&self) -> &[ProviderLaunchFile] {
+    pub fn files(&self) -> &[ProviderLaunchFile] {
         &self.files
     }
 
-    pub(crate) fn requires_hook_trust(&self) -> bool {
+    pub fn requires_hook_trust(&self) -> bool {
         self.requires_hook_trust
     }
 
-    pub(crate) fn terminal_process(
+    pub fn terminal_process(
         &self,
         executable: impl Into<std::ffi::OsString>,
         launch: ProviderSessionLaunch,

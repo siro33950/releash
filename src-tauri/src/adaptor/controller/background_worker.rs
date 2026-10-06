@@ -26,7 +26,3 @@ pub(crate) fn run() -> i32 {
         }
     }
 }
-
-#[cfg(test)]
-#[path = "background_worker_test.rs"]
-mod background_worker_tests;

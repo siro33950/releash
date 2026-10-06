@@ -3,13 +3,13 @@ use connectrpc::ErrorCode;
 use rusqlite::{ffi, Connection};
 
 #[derive(Clone)]
-pub(crate) enum ReadFailure {
+pub enum ReadFailure {
     Query(LocalEventQueryError),
     Sqlite(i32),
 }
 
 impl ReadFailure {
-    pub(crate) fn cases() -> [(Self, ErrorCode); 7] {
+    pub fn cases() -> [(Self, ErrorCode); 7] {
         [
             (
                 Self::Query(LocalEventQueryError::QueryBusy),
@@ -84,4 +84,14 @@ impl ReadFailure {
             .unwrap();
         result
     }
+}
+
+#[cfg(test)]
+pub fn sqlite_failure(code: i32) -> rusqlite::Error {
+    rusqlite::Error::SqliteFailure(rusqlite::ffi::Error::new(code), None)
+}
+
+use crate::domain::provider_lifecycle::ProviderLifecycleScope;
+pub fn scope() -> ProviderLifecycleScope {
+    ProviderLifecycleScope::new("agent-session-1").unwrap()
 }

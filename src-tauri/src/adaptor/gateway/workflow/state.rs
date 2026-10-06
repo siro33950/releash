@@ -2,12 +2,12 @@ use crate::adaptor::gateway::workflow::domain_mapping::{
     artifacts_to_domain, node_history_entries_to_domain, runtime_execution_state_to_domain,
     token_usage_to_domain, workflow_definition_to_domain,
 };
-use crate::adaptor::gateway::workflow::schema::NodeKindName;
 pub use crate::domain::workflow::entities::workflow_execution::{
     RuntimeNodeExecution as NodeExecution, RuntimeNodeExecutionStatus as NodeExecutionStatus,
 };
 #[cfg(test)]
 pub use crate::domain::workflow::value_objects::FanoutChildSnapshot;
+use crate::domain::workflow::NodeKindName;
 pub use crate::domain::workflow::{
     NodeHistoryEntry, RuntimeArtifact, RuntimeExecutionState, TokenUsage,
 };

@@ -2,12 +2,12 @@ use crate::infrastructure::terminal::terminal_emulator::{
     NativeTerminalCheckpoint, NativeTerminalCheckpointRecord,
 };
 
-pub(crate) struct PendingCheckpointFlush {
-    pub(crate) base: Option<NativeTerminalCheckpoint>,
-    pub(crate) records: Vec<NativeTerminalCheckpointRecord>,
+pub struct PendingCheckpointFlush {
+    pub base: Option<NativeTerminalCheckpoint>,
+    pub records: Vec<NativeTerminalCheckpointRecord>,
 }
 
-pub(crate) struct IncrementalCheckpointJournal {
+pub struct IncrementalCheckpointJournal {
     base: NativeTerminalCheckpoint,
     base_persisted: bool,
     pending: Vec<NativeTerminalCheckpointRecord>,
@@ -15,7 +15,7 @@ pub(crate) struct IncrementalCheckpointJournal {
 }
 
 impl IncrementalCheckpointJournal {
-    pub(crate) fn new(base: NativeTerminalCheckpoint, base_persisted: bool) -> Self {
+    pub fn new(base: NativeTerminalCheckpoint, base_persisted: bool) -> Self {
         let latest_sequence = base.sequence;
         Self {
             base,
@@ -25,7 +25,7 @@ impl IncrementalCheckpointJournal {
         }
     }
 
-    pub(crate) fn record(&mut self, record: NativeTerminalCheckpointRecord) -> Result<(), String> {
+    pub fn record(&mut self, record: NativeTerminalCheckpointRecord) -> Result<(), String> {
         let sequence = record.sequence();
         let expected = match &record {
             NativeTerminalCheckpointRecord::Output { .. } => self.latest_sequence.checked_add(1),
@@ -42,7 +42,7 @@ impl IncrementalCheckpointJournal {
         Ok(())
     }
 
-    pub(crate) fn take_pending(&mut self) -> PendingCheckpointFlush {
+    pub fn take_pending(&mut self) -> PendingCheckpointFlush {
         let base = (!self.base_persisted).then(|| self.base.clone());
         self.base_persisted = true;
         PendingCheckpointFlush {
@@ -51,7 +51,7 @@ impl IncrementalCheckpointJournal {
         }
     }
 
-    pub(crate) fn restore_failed(&mut self, mut failed: PendingCheckpointFlush) {
+    pub fn restore_failed(&mut self, mut failed: PendingCheckpointFlush) {
         if failed.base.is_some() {
             self.base_persisted = false;
         }

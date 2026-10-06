@@ -1,6 +1,6 @@
 use crate::adaptor::presenter::error::AppError;
 #[path = "application_lifecycle_shared.rs"]
-mod shared;
+pub(crate) mod shared;
 use crate::adaptor::presenter::application_lifecycle_v1::{
     ApplicationQuitIntentDtoV1, ApplicationQuitOutcomeDtoV1, ApplicationQuitRequestDtoV1,
 };
