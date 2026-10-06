@@ -45,3 +45,6 @@ pub(crate) use provider_terminal_gateway::{
     ProviderAgentTerminalGateway, ProviderAgentTerminalGatewayError,
     ProviderAgentTerminalInputGateway, ProviderAgentTerminalObservationGateway,
 };
+
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) mod test_helpers;

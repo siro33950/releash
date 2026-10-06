@@ -8,4 +8,4 @@ pub(crate) mod spawn_usecase;
 pub(crate) mod subscription;
 
 #[cfg(any(test, feature = "test-support"))]
-pub(crate) mod test_helpers_io;
+pub(crate) mod test_helpers;

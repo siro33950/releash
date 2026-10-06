@@ -54,7 +54,4 @@ pub(crate) use agent_session_read::AgentSessionReadUsecaseError;
 pub(crate) use agent_session_initial_instruction::AgentSessionInitialInstructionError;
 
 #[cfg(any(test, feature = "test-support"))]
-pub(crate) mod test_helpers_provider_availability;
-
-#[cfg(any(test, feature = "test-support"))]
-pub(crate) mod test_helpers_session;
+pub(crate) mod test_helpers;

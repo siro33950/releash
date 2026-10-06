@@ -103,3 +103,21 @@ fn test_workflow_output_submit_requires_attempt_identity_and_accepts_optional_ar
     .is_err());
     assert!(Cli::try_parse_from(["releash", "workflow", "output", "submit"]).is_err());
 }
+
+use super::cmd_output_submit;
+use crate::cli::CliError;
+
+#[test]
+fn test_workflow_output_submit_rejects_blank_node_execution_id() {
+    assert_eq!(
+        cmd_output_submit(
+            std::path::Path::new("/unused"),
+            "   ".to_string(),
+            None,
+            None,
+            None
+        )
+        .unwrap_err(),
+        CliError::InvalidInput("--node-execution must not be empty".to_string())
+    );
+}

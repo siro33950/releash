@@ -116,7 +116,7 @@ pub async fn git_unstage_hunk(repo_path: &str, patch: &str) -> Result<(), CodeEr
 async fn apply_patch(repo_path: &str, patch: &str, reverse: bool) -> Result<(), CodeError> {
     git_operation::run(|| Repository::open(repo_path))?;
     #[cfg(any(test, feature = "test-support"))]
-    let program = staging_test_helpers::git_program();
+    let program = crate::adaptor::gateway::code::test_helpers::git_program();
     #[cfg(not(any(test, feature = "test-support")))]
     let program = "git";
     let mut command = Command::new(program);
@@ -162,7 +162,3 @@ impl StagingRepository for StagingGateway {
         git_unstage_hunk(repo_path, patch).await
     }
 }
-
-#[cfg(any(test, feature = "test-support"))]
-#[path = "staging_test_helpers.rs"]
-pub(crate) mod staging_test_helpers;

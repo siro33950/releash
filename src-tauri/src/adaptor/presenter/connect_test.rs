@@ -2901,3 +2901,39 @@ mod connect_mapping_tests {
         );
     }
 }
+
+#[test]
+fn test_失敗の分類_domainと読取失敗を同じstatusへ写す() {
+    use crate::domain::failure::{
+        BusinessFailure, Failure, TechnicalFailure, TechnicalFailureNature,
+    };
+    use crate::usecase::state_subscription::StateReadError;
+    use crate::usecase::watcher::UsecaseError;
+    let error = UsecaseError::RepositoryUnavailable;
+    assert_eq!(
+        error.connect_code(),
+        connectrpc::ErrorCode::FailedPrecondition
+    );
+    let read = StateReadError::from_error(error);
+    assert_eq!(
+        Failure::Business(BusinessFailure::Other).connect_code(),
+        read.connect_code()
+    );
+    for nature in [
+        TechnicalFailureNature::Transient,
+        TechnicalFailureNature::TimedOut,
+        TechnicalFailureNature::Cancelled,
+        TechnicalFailureNature::Other,
+    ] {
+        let read = StateReadError::from_error(TechnicalFailure {
+            nature,
+            message: "read failed".into(),
+        });
+        assert_eq!(
+            Failure::Technical(nature).connect_code(),
+            read.connect_code()
+        );
+    }
+    let error = crate::domain::notion::NotionError::RequestFailed("request failed".into());
+    assert_eq!(Failure::from(&error).connect_code(), error.connect_code());
+}

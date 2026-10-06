@@ -1,4 +1,4 @@
-use super::shared_test_helpers::*;
+use crate::usecase::terminal_surface::test_helpers::*;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 
@@ -349,7 +349,7 @@ fn test_ターミナル画面取得または生成_上限未到達なら新規�
     let gateway = MockGateway::new();
 
     get_or_spawn(
-        &crate::adaptor::gateway::telemetry::TelemetryGateway,
+        &crate::usecase::test_helpers::NoopPerformance,
         &gateway,
         &NoopOutput,
         24,
@@ -380,7 +380,7 @@ fn test_ターミナル生成通知_入力の所有者とcheckpoint番号を新�
     // When
     for owner in [&workspace, &workspace, &session] {
         get_or_spawn(
-            &crate::adaptor::gateway::telemetry::TelemetryGateway,
+            &crate::usecase::test_helpers::NoopPerformance,
             &gateway,
             &output,
             24,
@@ -420,7 +420,7 @@ fn test_ターミナル生成通知_登録失敗時に画面と予約を解放�
 
     // When
     let failed = get_or_spawn(
-        &crate::adaptor::gateway::telemetry::TelemetryGateway,
+        &crate::usecase::test_helpers::NoopPerformance,
         &gateway,
         &output,
         24,
@@ -441,7 +441,7 @@ fn test_ターミナル生成通知_登録失敗時に画面と予約を解放�
     assert_eq!(*gateway.killed.lock().unwrap(), vec![1]);
     assert!(gateway.registry.lock().unwrap().list_summaries().is_empty());
     get_or_spawn(
-        &crate::adaptor::gateway::telemetry::TelemetryGateway,
+        &crate::usecase::test_helpers::NoopPerformance,
         &gateway,
         &NoopOutput,
         24,
@@ -458,7 +458,7 @@ fn test_ターミナル画面生成_新規ptyだけに起動コマンドを一�
     let gateway = MockGateway::new();
 
     get_or_spawn_with_startup(
-        &crate::adaptor::gateway::telemetry::TelemetryGateway,
+        &crate::usecase::test_helpers::NoopPerformance,
         &gateway,
         &NoopOutput,
         24,
@@ -490,7 +490,7 @@ fn test_agent_session_terminal生成_providerをstructured_root_processとして
     .unwrap();
 
     get_or_spawn_with_process(
-        &crate::adaptor::gateway::telemetry::TelemetryGateway,
+        &crate::usecase::test_helpers::NoopPerformance,
         &gateway,
         &NoopOutput,
         24,
@@ -522,7 +522,7 @@ fn test_agent_session_terminal再開_終了済みruntimeを新しいprocessへ�
     .unwrap();
 
     let result = get_or_spawn_with_process(
-        &crate::adaptor::gateway::telemetry::TelemetryGateway,
+        &crate::usecase::test_helpers::NoopPerformance,
         &gateway,
         &NoopOutput,
         24,
@@ -583,7 +583,7 @@ fn test_ターミナル画面_取得または生成_同一所有者の生成中�
         let gateway = Arc::clone(&gateway);
         move || {
             get_or_spawn(
-                &crate::adaptor::gateway::telemetry::TelemetryGateway,
+                &crate::usecase::test_helpers::NoopPerformance,
                 gateway.as_ref(),
                 &NoopOutput,
                 24,
@@ -603,7 +603,7 @@ fn test_ターミナル画面_取得または生成_同一所有者の生成中�
         let gateway = Arc::clone(&gateway);
         move || {
             get_or_spawn(
-                &crate::adaptor::gateway::telemetry::TelemetryGateway,
+                &crate::usecase::test_helpers::NoopPerformance,
                 gateway.as_ref(),
                 &NoopOutput,
                 24,
@@ -636,7 +636,7 @@ fn test_ターミナル画面取得または生成_通信文脈を要求しな�
     let gateway = MockGateway::new();
 
     get_or_spawn(
-        &crate::adaptor::gateway::telemetry::TelemetryGateway,
+        &crate::usecase::test_helpers::NoopPerformance,
         &gateway,
         &NoopOutput,
         24,
@@ -669,7 +669,7 @@ fn test_ターミナル画面取得または生成_owner衝突を分類する() 
     });
 
     let result = get_or_spawn_with_process(
-        &crate::adaptor::gateway::telemetry::TelemetryGateway,
+        &crate::usecase::test_helpers::NoopPerformance,
         &gateway,
         &NoopOutput,
         24,
@@ -689,7 +689,7 @@ fn test_ターミナル画面生成_実行環境生成失敗時に予約を解�
     gateway.fail_spawn.store(true, Ordering::SeqCst);
 
     let result = get_or_spawn(
-        &crate::adaptor::gateway::telemetry::TelemetryGateway,
+        &crate::usecase::test_helpers::NoopPerformance,
         &gateway,
         &NoopOutput,
         24,
@@ -709,7 +709,7 @@ fn test_ターミナル画面生成_実行環境生成失敗時に予約を解�
     gateway.fail_spawn.store(false, Ordering::SeqCst);
 
     get_or_spawn(
-        &crate::adaptor::gateway::telemetry::TelemetryGateway,
+        &crate::usecase::test_helpers::NoopPerformance,
         &gateway,
         &NoopOutput,
         24,
@@ -729,7 +729,7 @@ fn test_ターミナル画面生成_復元点読込失敗時に予約を解除�
     gateway.fail_load_checkpoint.store(true, Ordering::SeqCst);
 
     let result = get_or_spawn(
-        &crate::adaptor::gateway::telemetry::TelemetryGateway,
+        &crate::usecase::test_helpers::NoopPerformance,
         &gateway,
         &NoopOutput,
         24,
@@ -751,7 +751,7 @@ fn test_ターミナル画面生成_復元点読込失敗時に予約を解除�
     gateway.fail_load_checkpoint.store(false, Ordering::SeqCst);
 
     get_or_spawn(
-        &crate::adaptor::gateway::telemetry::TelemetryGateway,
+        &crate::usecase::test_helpers::NoopPerformance,
         &gateway,
         &NoopOutput,
         24,
@@ -771,7 +771,7 @@ fn test_ターミナル画面生成_出力読取開始失敗時に新規画面�
     gateway.fail_start_reader.store(true, Ordering::SeqCst);
 
     let result = get_or_spawn(
-        &crate::adaptor::gateway::telemetry::TelemetryGateway,
+        &crate::usecase::test_helpers::NoopPerformance,
         &gateway,
         &NoopOutput,
         24,
@@ -805,7 +805,7 @@ fn test_ターミナル画面生成_出力読取開始失敗時は復元点も�
     gateway.fail_start_reader.store(true, Ordering::SeqCst);
 
     let failed = get_or_spawn_with_startup(
-        &crate::adaptor::gateway::telemetry::TelemetryGateway,
+        &crate::usecase::test_helpers::NoopPerformance,
         &gateway,
         &NoopOutput,
         24,
@@ -820,7 +820,7 @@ fn test_ターミナル画面生成_出力読取開始失敗時は復元点も�
 
     gateway.fail_start_reader.store(false, Ordering::SeqCst);
     get_or_spawn_with_startup(
-        &crate::adaptor::gateway::telemetry::TelemetryGateway,
+        &crate::usecase::test_helpers::NoopPerformance,
         &gateway,
         &NoopOutput,
         24,
@@ -855,7 +855,7 @@ fn test_ターミナル画面明示終了_復元点も破棄して再生成の�
     assert!(gateway.checkpoint.lock().unwrap().is_none());
 
     get_or_spawn_with_startup(
-        &crate::adaptor::gateway::telemetry::TelemetryGateway,
+        &crate::usecase::test_helpers::NoopPerformance,
         &gateway,
         &NoopOutput,
         24,
@@ -880,7 +880,7 @@ fn test_ターミナル画面生成_後始末終了失敗時は明示再試行�
     gateway.fail_kill_runtime.store(true, Ordering::SeqCst);
 
     let result = get_or_spawn(
-        &crate::adaptor::gateway::telemetry::TelemetryGateway,
+        &crate::usecase::test_helpers::NoopPerformance,
         &gateway,
         &NoopOutput,
         24,
@@ -912,7 +912,7 @@ fn test_ターミナル画面取得または生成_既存所有者なら生成�
     let runtime_generation = gateway.insert_session("session-1", "/repo");
 
     let result = get_or_spawn(
-        &crate::adaptor::gateway::telemetry::TelemetryGateway,
+        &crate::usecase::test_helpers::NoopPerformance,
         &gateway,
         &NoopOutput,
         24,
@@ -936,7 +936,7 @@ fn test_ターミナル画面取得または生成_既存所有者確認で復�
     gateway.insert_session("session-1", "/repo");
 
     let result = get_or_spawn(
-        &crate::adaptor::gateway::telemetry::TelemetryGateway,
+        &crate::usecase::test_helpers::NoopPerformance,
         &gateway,
         &NoopOutput,
         24,
@@ -956,7 +956,7 @@ fn test_ターミナル画面取得または生成_別ワークスペースの�
     let runtime_generation = gateway.insert_session("session-1", "/repo");
 
     let result = get_or_spawn(
-        &crate::adaptor::gateway::telemetry::TelemetryGateway,
+        &crate::usecase::test_helpers::NoopPerformance,
         &gateway,
         &NoopOutput,
         24,
@@ -985,7 +985,7 @@ fn test_ターミナル画面_再起動復元_復元点寸法で新規ptyを開�
     });
 
     get_or_spawn_with_startup(
-        &crate::adaptor::gateway::telemetry::TelemetryGateway,
+        &crate::usecase::test_helpers::NoopPerformance,
         &gateway,
         &NoopOutput,
         24,

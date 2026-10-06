@@ -1,4 +1,5 @@
 use crate::adaptor_gateway_workflow_workflow_host_test_helpers::archive_fixture;
+use releash_lib::test_support::integration::sessions::MemoryHookHealthRepository as MemoryHookHealth;
 use releash_lib::test_support::integration::subscriptions::SubscriptionTarget as T;
 
 use releash_lib::test_support::integration::subscriptions::Event;
@@ -176,53 +177,6 @@ fn issue(number: u64) -> IssueInfo {
     }
 }
 
-#[derive(Default)]
-struct MemoryHookHealth(
-    Mutex<
-        std::collections::HashMap<
-            releash_lib::test_support::integration::providers::ProviderKind,
-            releash_lib::test_support::integration::providers::VersionedProviderHookHealth,
-        >,
-    >,
-);
-#[async_trait::async_trait]
-impl releash_lib::test_support::integration::providers::ProviderHookHealthRepository
-    for MemoryHookHealth
-{
-    async fn load(
-        &self,
-        provider: releash_lib::test_support::integration::providers::ProviderKind,
-    ) -> Result<
-        releash_lib::test_support::integration::providers::VersionedProviderHookHealth,
-        releash_lib::test_support::integration::providers::ProviderHookHealthRepositoryError,
-    > {
-        Ok(self.0.lock().get(&provider).cloned().unwrap_or_else(|| {
-            releash_lib::test_support::integration::providers::VersionedProviderHookHealth::restored(
-                releash_lib::test_support::integration::providers::ProviderHookHealth::new(provider),
-                0,
-            )
-        }))
-    }
-    async fn save(
-        &self,
-        mut health: releash_lib::test_support::integration::providers::VersionedProviderHookHealth,
-        _: &str,
-    ) -> Result<
-        releash_lib::test_support::integration::providers::VersionedProviderHookHealth,
-        releash_lib::test_support::integration::providers::ProviderHookHealthRepositoryError,
-    > {
-        let revision = health.revision()
-            + u64::try_from(health.health_mut().take_uncommitted_events().len()).unwrap();
-        let saved = releash_lib::test_support::integration::providers::VersionedProviderHookHealth::restored(
-            health.into_health(),
-            revision,
-        );
-        self.0
-            .lock()
-            .insert(saved.health().provider(), saved.clone());
-        Ok(saved)
-    }
-}
 struct NoHookHealthFailures;
 #[async_trait::async_trait]
 impl releash_lib::test_support::integration::providers::ProviderHookHealthFailureQuery

@@ -1,5 +1,5 @@
-use super::state_subscription_test_helpers::*;
 use super::*;
+use crate::usecase::test_helpers::state_subscription::*;
 
 #[tokio::test]
 async fn test_購読手順_開始と停止で購読状態と出力を更新する() {
@@ -126,8 +126,7 @@ fn test_購読手順_対象を検証してclient状態を更新する() {
 
 #[test]
 fn test_監視後始末_停止失敗は保持して次のreconcileで止め直す() {
-    let files =
-        Arc::new(crate::usecase::watcher::watcher_test_helpers::SubscriptionFiles::default());
+    let files = Arc::new(crate::usecase::test_helpers::watcher::SubscriptionFiles::default());
     let subscriptions = StateSubscriptionUsecase::new_with_output(
         Arc::new(RecordingOutput::default()),
         crate::test_support::state_subscription::pending_read_driver(),
@@ -749,7 +748,7 @@ async fn test_notion購読_別対象の監視失敗は開始を妨げず対象�
     let reads = Arc::new(RetainingReads::default());
     let watcher = Arc::new(crate::usecase::watcher::WatcherUsecase::new(
         None,
-        Arc::new(crate::usecase::watcher::watcher_test_helpers::SubscriptionFiles::default()),
+        Arc::new(crate::usecase::test_helpers::watcher::SubscriptionFiles::default()),
     ));
     let output = Arc::new(RecordingOutput::default());
     let subscriptions = StateSubscriptionUsecase::new_with_output(

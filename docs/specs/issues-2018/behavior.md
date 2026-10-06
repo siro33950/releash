@@ -85,9 +85,15 @@ GIVEN プロダクトのテストファイルを TEST.md の表の置き場所�
 WHEN CI が実行される
 THEN 置き場所の検査が違反したファイルを示して失敗する
 
-## B-019: 単体テストと実装の対応の違反で CI が落ちる
+## B-019: テストの取り込みと実装との対応の違反で CI が落ちる
 
-GIVEN 同じディレクトリに対応する `<impl>.rs` が無い `*_test.rs`、一つの実装に二つ以上の test ファイルを取り込む変更、または `#[path = "<impl>_test.rs"]` の mod 名を `<impl>_tests` 以外にした変更
+GIVEN 同じディレクトリに対応する `<impl>.rs` が無い `*_test.rs`、対応する `<impl>.rs` から取り込まれていない `*_test.rs`、一つの実装に二つ以上の test ファイルを取り込む変更、`#[path = "<impl>_test.rs"]` の mod 名を `<impl>_tests` 以外にした変更、または `src-tauri/tests/`・`src-tauri/releash-desktop/tests/` のサブディレクトリにあってテストを持つファイルを、統合テストの入口（`tests/` 直下の `*.rs` と `[[test]]` で登録したファイル）から取り込まない変更
+WHEN CI が実行される
+THEN 置き場所の検査が違反したファイルを示して失敗する
+
+## B-020: テストヘルパーの置き方の違反で CI が落ちる
+
+GIVEN `src-tauri/src/` または `src-tauri/releash-desktop/src/` に `test_helpers.rs` 以外の名前のテストヘルパー（`test_helpers_<名前>.rs` など）を置く変更
 WHEN CI が実行される
 THEN 置き場所の検査が違反したファイルを示して失敗する
 
@@ -133,7 +139,7 @@ THEN 手動での起動を前提とするテスト（使い捨てのアカウン
 | R-006 | B-007, B-008 |
 | R-007 | B-009 |
 | R-008 | B-010 |
-| R-009 | B-011, B-019 |
+| R-009 | B-011, B-019, B-020 |
 | R-010 | B-012 |
 | R-011 | B-013 |
 | R-012 | B-014 |

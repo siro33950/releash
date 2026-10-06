@@ -1,4 +1,4 @@
-use super::*;
+use releash_desktop::test_support::integration::login_item::registration_location;
 #[test]
 fn test_ログイン項目_配置のos情報を返す() {
     // Given

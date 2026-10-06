@@ -1,4 +1,4 @@
-import { placementErrors } from "./test-placement.mjs";
+import { integrationErrors, placementErrors } from "./test-placement.mjs";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -1073,13 +1073,13 @@ test("test placement rejects misplaced tests and accepts each supported location
     assert.ok(placementErrors(path, "#[test] fn test_case() {}").length, path);
   }
   for (const path of ["src/example.test.tsx", "tests/integration/example.spec.ts", "tests/behavior/example.spec.ts", "src-tauri/src/example_test.rs", "src-tauri/releash-desktop/src/example_test.rs", "src-tauri/tests/example.rs", "src-tauri/releash-desktop/tests/example.rs", ".github/scripts/example.test.mjs", ".ast-grep/tests/example.yml"]) {
-    assert.deepEqual(placementErrors(path, "#[tokio::test] async fn test_case() {}", () => true), [], path);
+    assert.deepEqual(placementErrors(path, "#[tokio::test] async fn test_case() {}", () => true, () => '#[path = "example_test.rs"] mod example_tests;'), [], path);
   }
   assert.ok(placementErrors("src-tauri/src/example.rs", "#[tokio::test(flavor = \"multi_thread\")] async fn test_case() {}").length);
 });
 
 test("test placement allows auxiliaries only when they contain no tests", () => {
-  for (const path of ["tests/helpers/example.ts", "tests/fixtures/example.rs", "src-tauri/tests/support/example.rs", "src-tauri/releash-desktop/tests/support/example.rs", "src-tauri/src/domain/test_support/example.rs", "src-tauri/src/domain/test_helpers_example.rs", "src/test/setup.ts"]) {
+  for (const path of ["tests/helpers/example.ts", "tests/fixtures/example.rs", "src-tauri/tests/support/example.rs", "src-tauri/releash-desktop/tests/support/example.rs", "src-tauri/src/domain/test_support/example.rs", "src-tauri/src/domain/test_helpers.rs", "src/test/setup.ts"]) {
     assert.deepEqual(placementErrors(path, ""), [], path);
     assert.ok(placementErrors(path, "#[test] fn test_case() {}").length, path);
     assert.ok(placementErrors(path.replace(/\.[^.]+$/, "_test.rs"), "").length, path);
@@ -1112,4 +1112,53 @@ test("test placement checks imports with attributes between path and mod", () =>
   assert.ok(wrongName.some(error => error.startsWith(`${path}:`) && error.includes("モジュール名")));
   const multiple = placementErrors(path, correct + '\n#[path = "other_test.rs"]\n#[cfg(test)]\nmod other_tests;', () => true);
   assert.ok(multiple.some(error => error.startsWith(`${path}:`) && error.includes("一つだけ")));
+});
+
+
+test("test placement rejects missing unit imports and nonstandard helpers", () => {
+  const path = "src-tauri/src/example_test.rs";
+  assert.ok(placementErrors(path, "", () => true, () => "").some(error => error.startsWith(path) && error.includes("取り込まれていません")));
+  assert.deepEqual(placementErrors(path, "", () => true, () => '#[path = "example_test.rs"] mod example_tests;'), []);
+  for (const path of ["src-tauri/src/test_helpers_example.rs", "src-tauri/src/example_test_helpers.rs"]) assert.ok(placementErrors(path, "").length);
+});
+
+test("integration placement follows nested modules and explicit Cargo targets", () => {
+  const sources = new Map([
+    ["src-tauri/Cargo.toml", '[[test]]\nname = "custom"\npath = "tests/custom/entry.rs"\n'],
+    ["src-tauri/tests/main.rs", 'mod nested;'],
+    ["src-tauri/tests/nested/mod.rs", '#[path = "../cases/test.rs"] mod case;'],
+    ["src-tauri/tests/cases/test.rs", '#[test] fn test_case() {}'],
+    ["src-tauri/tests/custom/entry.rs", 'mod child;'],
+    ["src-tauri/tests/custom/child.rs", '#[tokio::test] async fn test_case() {}'],
+  ]);
+  assert.deepEqual(integrationErrors(sources), []);
+  sources.set("src-tauri/tests/main.rs", "");
+  assert.ok(integrationErrors(sources).some(error => error.startsWith("src-tauri/tests/cases/test.rs:")));
+  sources.set("src-tauri/Cargo.toml", sources.get("src-tauri/Cargo.toml") + "test = false\n");
+  assert.ok(integrationErrors(sources).some(error => error.startsWith("src-tauri/Cargo.toml:")));
+});
+
+
+test("test placement excludes commented declarations and string contents", () => {
+  const declaration = '#[path = "example_test.rs"] mod example_tests;';
+  for (const commented of ["// " + declaration, "/* " + declaration + " */", "/* nested /* comment */ " + declaration + " */", 'let text = r#"' + declaration + '"#;', '#[path = "example_test.rs"] // mod example_tests;']) {
+    assert.ok(placementErrors("src-tauri/src/example_test.rs", "#[test] fn test_case() {}", () => true, () => commented).some(error => error.startsWith("src-tauri/src/example_test.rs:") && error.includes("取り込まれていません")));
+    const sources = new Map([
+      ["src-tauri/tests/main.rs", commented.replaceAll("example_test.rs", "nested/case.rs").replaceAll("example_tests", "case")],
+      ["src-tauri/tests/nested/case.rs", "#[test] fn test_case() {}"],
+    ]);
+    assert.ok(integrationErrors(sources).some(error => error.startsWith("src-tauri/tests/nested/case.rs:")));
+  }
+  assert.deepEqual(integrationErrors(new Map([
+    ["src-tauri/tests/main.rs", '#[path = "nested/case.rs"] mod case;'],
+    ["src-tauri/tests/nested/case.rs", "#[test] fn test_case() {}"],
+  ])), []);
+  for (const declaration of ["// mod nested;", "/* mod nested; */"]) {
+    assert.ok(integrationErrors(new Map([
+      ["src-tauri/tests/main.rs", declaration],
+      ["src-tauri/tests/nested/mod.rs", "#[test] fn test_case() {}"],
+    ])).some(error => error.startsWith("src-tauri/tests/nested/mod.rs:")));
+  }
+  assert.deepEqual(placementErrors("src-tauri/src/example_test.rs", "", () => true, () => `const QUOTE: char = '"';\n` + declaration), []);
+  assert.deepEqual(placementErrors("src-tauri/src/example_test.rs", "", () => true, () => 'const URL: &str = "http://example.test";\n' + declaration), []);
 });

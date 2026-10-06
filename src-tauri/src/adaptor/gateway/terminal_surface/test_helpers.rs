@@ -1,4 +1,12 @@
-use super::*;
+use crate::domain::terminal_surface::entities::terminal_surface::TerminalSurface;
+use crate::domain::terminal_surface::gateway::TerminalSurfaceGateway;
+use crate::domain::terminal_surface::TERMINAL_SURFACE_SCROLLBACK_ROWS;
+use crate::infrastructure::terminal::native_pty::NativePtyRuntime;
+use crate::infrastructure::terminal::terminal_emulator::NativeTerminalEmulator;
+use parking_lot::Mutex;
+use std::sync::Arc;
+
+use crate::adaptor::gateway::terminal_surface::runtime_gateway_impl::*;
 use crate::domain::terminal_surface::TerminalSurfaceOwner;
 use crate::domain::workspace_tree::WorkspaceIdentity;
 use crate::infrastructure::terminal::native_pty::NativePtyResizer;

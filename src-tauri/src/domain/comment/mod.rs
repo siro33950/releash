@@ -675,5 +675,4 @@ pub(crate) fn apply_filter(
 pub(crate) mod mod_tests;
 
 #[cfg(any(test, feature = "test-support"))]
-#[path = "test_helpers_mod.rs"]
-pub(crate) mod shared_test_helpers;
+pub(crate) mod test_helpers;

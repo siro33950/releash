@@ -17,3 +17,6 @@ pub(crate) mod worktree_operation;
 pub(crate) mod worktree_terminal;
 
 pub(crate) mod file_watcher;
+
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) mod test_helpers;

@@ -12,7 +12,7 @@ use crate::domain::provider_lifecycle::ProviderKind;
 
 use super::{ProviderAvailabilityUsecase, ProviderAvailabilityUsecaseError};
 
-use super::super::test_helpers_provider_availability::{
+use super::super::test_helpers::{
     FakeProviderExecutableConfigRepository, FakeProviderExecutableProbeGateway,
 };
 

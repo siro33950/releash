@@ -1,4 +1,4 @@
-use super::init_crash_reporting;
+use crate::infrastructure::telemetry::crash::init_crash_reporting;
 use opentelemetry_sdk::logs::{InMemoryLogExporter, SdkLoggerProvider};
 use std::sync::Mutex;
 

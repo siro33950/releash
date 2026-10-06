@@ -1,6 +1,6 @@
-use super::shared_test_helpers::Files;
 use super::*;
 use crate::domain::repository::file_watcher::WatchChangeHandler;
+use crate::usecase::test_helpers::Files;
 
 fn ignore() -> WatchChangeHandler {
     Arc::new(|_| {})

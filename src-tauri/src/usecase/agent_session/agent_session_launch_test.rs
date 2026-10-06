@@ -188,7 +188,7 @@ async fn test_workflow起動保持_期限が来てもactivating記録を消さ�
 }
 
 mod memory_tests {
-    use crate::usecase::agent_session::test_helpers_session::*;
+    use crate::usecase::agent_session::test_helpers::*;
     use std::sync::atomic::AtomicUsize;
     use std::sync::atomic::Ordering;
     use std::sync::mpsc;
@@ -339,26 +339,28 @@ mod memory_tests {
             ..RecordingStartedExecutionTrees::default()
         });
         let usecase = AgentSessionLaunchUsecase::new(
-std::sync::Arc::new(crate::adaptor::gateway::telemetry::TelemetryGateway),
-Arc::new(AgentSessionUsecase::new(repository.clone())),
-Arc::new(ProviderLifecycleUsecase::new(
-            Arc::new(
-                crate::adaptor::gateway::provider_lifecycle::credential_gateway_impl::LocalProviderLifecycleCredentialGateway,
+            std::sync::Arc::new(crate::usecase::test_helpers::NoopPerformance),
+            Arc::new(AgentSessionUsecase::new(repository.clone())),
+            Arc::new(ProviderLifecycleUsecase::new(
+                Arc::new(crate::usecase::test_helpers::TestCredentials),
+                lifecycle_events.clone(),
+            )),
+            provider_runtime(
+                Arc::new(FixedAvailability {
+                    available: true,
+                    checks: Mutex::new(Vec::new()),
+                }),
+                launch_gateway.clone(),
+                terminal.clone(),
             ),
-            lifecycle_events.clone(),
-        )),
-provider_runtime(
-            Arc::new(FixedAvailability {
-                available: true,
-                checks: Mutex::new(Vec::new()),
+            Arc::new(FixedHistory {
+                entries: Vec::new(),
             }),
-            launch_gateway.clone(),
-            terminal.clone(),
-        ),
-Arc::new(FixedHistory { entries: Vec::new() }),
-hook_health_usecase(),
-execution_trees.clone(),
-tokio::sync::mpsc::unbounded_channel().0, crate::usecase::workspace_tree::test_support::TestWorkspaceTreeRepository::new(),);
+            hook_health_usecase(),
+            execution_trees.clone(),
+            tokio::sync::mpsc::unbounded_channel().0,
+            crate::usecase::workspace_tree::test_support::TestWorkspaceTreeRepository::new(),
+        );
 
         let error = usecase
             .launch_standalone(AgentSessionLaunchRequest {
@@ -410,28 +412,28 @@ tokio::sync::mpsc::unbounded_channel().0, crate::usecase::workspace_tree::test_s
         *repository.stored.lock().unwrap() = None;
         let lifecycle_events = Arc::new(RecordingLifecycleEvents::default());
         let usecase = AgentSessionLaunchUsecase::new(
-std::sync::Arc::new(crate::adaptor::gateway::telemetry::TelemetryGateway),
-Arc::new(AgentSessionUsecase::new(repository.clone())),
-Arc::new(ProviderLifecycleUsecase::new(
-            Arc::new(
-                crate::adaptor::gateway::provider_lifecycle::credential_gateway_impl::LocalProviderLifecycleCredentialGateway,
+            std::sync::Arc::new(crate::usecase::test_helpers::NoopPerformance),
+            Arc::new(AgentSessionUsecase::new(repository.clone())),
+            Arc::new(ProviderLifecycleUsecase::new(
+                Arc::new(crate::usecase::test_helpers::TestCredentials),
+                lifecycle_events.clone(),
+            )),
+            provider_runtime(
+                Arc::new(FixedAvailability {
+                    available: true,
+                    checks: Mutex::new(Vec::new()),
+                }),
+                Arc::new(RecordingLaunchGateway::default()),
+                Arc::new(RecordingTerminal::default()),
             ),
-            lifecycle_events.clone(),
-        )),
-provider_runtime(
-            Arc::new(FixedAvailability {
-                available: true,
-                checks: Mutex::new(Vec::new()),
+            Arc::new(FixedHistory {
+                entries: Vec::new(),
             }),
-            Arc::new(RecordingLaunchGateway::default()),
-            Arc::new(RecordingTerminal::default()),
-        ),
-Arc::new(FixedHistory {
-            entries: Vec::new(),
-        }),
-hook_health_usecase(),
-started_execution_trees(),
-tokio::sync::mpsc::unbounded_channel().0, crate::usecase::workspace_tree::test_support::TestWorkspaceTreeRepository::new(),);
+            hook_health_usecase(),
+            started_execution_trees(),
+            tokio::sync::mpsc::unbounded_channel().0,
+            crate::usecase::workspace_tree::test_support::TestWorkspaceTreeRepository::new(),
+        );
 
         usecase
             .launch_standalone(AgentSessionLaunchRequest {
@@ -579,28 +581,28 @@ tokio::sync::mpsc::unbounded_channel().0, crate::usecase::workspace_tree::test_s
             deletes: Mutex::new(0),
         });
         let usecase = Arc::new(AgentSessionLaunchUsecase::new(
-std::sync::Arc::new(crate::adaptor::gateway::telemetry::TelemetryGateway),
-Arc::new(AgentSessionUsecase::new(repository.clone())),
-Arc::new(ProviderLifecycleUsecase::new(
-            Arc::new(
-                crate::adaptor::gateway::provider_lifecycle::credential_gateway_impl::LocalProviderLifecycleCredentialGateway,
+            std::sync::Arc::new(crate::usecase::test_helpers::NoopPerformance),
+            Arc::new(AgentSessionUsecase::new(repository.clone())),
+            Arc::new(ProviderLifecycleUsecase::new(
+                Arc::new(crate::usecase::test_helpers::TestCredentials),
+                Arc::new(RecordingLifecycleEvents::default()),
+            )),
+            provider_runtime(
+                Arc::new(FixedAvailability {
+                    available: true,
+                    checks: Mutex::new(Vec::new()),
+                }),
+                Arc::new(RecordingLaunchGateway::default()),
+                terminal,
             ),
-            Arc::new(RecordingLifecycleEvents::default()),
-        )),
-provider_runtime(
-            Arc::new(FixedAvailability {
-                available: true,
-                checks: Mutex::new(Vec::new()),
+            Arc::new(FixedHistory {
+                entries: Vec::new(),
             }),
-            Arc::new(RecordingLaunchGateway::default()),
-            terminal,
-        ),
-Arc::new(FixedHistory {
-            entries: Vec::new(),
-        }),
-hook_health_usecase(),
-started_execution_trees(),
-tokio::sync::mpsc::unbounded_channel().0, crate::usecase::workspace_tree::test_support::TestWorkspaceTreeRepository::new(),));
+            hook_health_usecase(),
+            started_execution_trees(),
+            tokio::sync::mpsc::unbounded_channel().0,
+            crate::usecase::workspace_tree::test_support::TestWorkspaceTreeRepository::new(),
+        ));
 
         let first = tokio::spawn(
             Arc::clone(&usecase)
@@ -753,59 +755,61 @@ tokio::sync::mpsc::unbounded_channel().0, crate::usecase::workspace_tree::test_s
     #[test]
     fn test_agent_session_launch_起動panic後はin_flightに残さず同一request_id再送へ同じ失敗を返す()
     {
-        let _guard = crate::infrastructure::telemetry::crash::crash_test_helpers::TEST_LOCK
-            .lock()
-            .unwrap();
-        tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap().block_on(async {
+        let _guard = crate::test_support::lock_crash_telemetry();
+        tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(async {
+                let seed = AgentSession::create(
+                    "seed",
+                    WorkspaceIdentity::new("/seed"),
+                    "/seed",
+                    ProviderKind::Claude,
+                    session_location("seed"),
+                )
+                .unwrap();
+                let repository = Arc::new(FailingSaveRepository::new(seed));
+                *repository.stored.lock().unwrap() = None;
+                let availability = Arc::new(PanicOnFirstCheckAvailability {
+                    checks: AtomicUsize::new(0),
+                });
+                let usecase = Arc::new(AgentSessionLaunchUsecase::new(
+                    std::sync::Arc::new(crate::usecase::test_helpers::NoopPerformance),
+                    Arc::new(AgentSessionUsecase::new(repository.clone())),
+                    Arc::new(ProviderLifecycleUsecase::new(
+                        Arc::new(crate::usecase::test_helpers::TestCredentials),
+                        Arc::new(RecordingLifecycleEvents::default()),
+                    )),
+                    provider_runtime(
+                        availability.clone(),
+                        Arc::new(RecordingLaunchGateway::default()),
+                        Arc::new(RecordingTerminal::default()),
+                    ),
+                    Arc::new(FixedHistory {
+                        entries: Vec::new(),
+                    }),
+                    hook_health_usecase(),
+                    started_execution_trees(),
+                    tokio::sync::mpsc::unbounded_channel().0,
+                    crate::usecase::workspace_tree::test_support::TestWorkspaceTreeRepository::new(
+                    ),
+                ));
 
-        let seed = AgentSession::create(
-            "seed",
-            WorkspaceIdentity::new("/seed"),
-            "/seed",
-            ProviderKind::Claude,
-            session_location("seed"),
-        )
-        .unwrap();
-        let repository = Arc::new(FailingSaveRepository::new(seed));
-        *repository.stored.lock().unwrap() = None;
-        let availability = Arc::new(PanicOnFirstCheckAvailability {
-            checks: AtomicUsize::new(0),
-        });
-        let usecase = Arc::new(AgentSessionLaunchUsecase::new(
-std::sync::Arc::new(crate::adaptor::gateway::telemetry::TelemetryGateway),
-Arc::new(AgentSessionUsecase::new(repository.clone())),
-Arc::new(ProviderLifecycleUsecase::new(
-            Arc::new(
-                crate::adaptor::gateway::provider_lifecycle::credential_gateway_impl::LocalProviderLifecycleCredentialGateway,
-            ),
-            Arc::new(RecordingLifecycleEvents::default()),
-        )),
-provider_runtime(
-            availability.clone(),
-            Arc::new(RecordingLaunchGateway::default()),
-            Arc::new(RecordingTerminal::default()),
-        ),
-Arc::new(FixedHistory {
-            entries: Vec::new(),
-        }),
-hook_health_usecase(),
-started_execution_trees(),
-tokio::sync::mpsc::unbounded_channel().0, crate::usecase::workspace_tree::test_support::TestWorkspaceTreeRepository::new(),));
+                let first = Arc::clone(&usecase)
+                    .launch_standalone_idempotent(idempotent_launch_request("request-panic"))
+                    .await;
+                let replay = Arc::clone(&usecase)
+                    .launch_standalone_idempotent(idempotent_launch_request("request-panic"))
+                    .await;
 
-        let first = Arc::clone(&usecase)
-            .launch_standalone_idempotent(idempotent_launch_request("request-panic"))
-            .await;
-        let replay = Arc::clone(&usecase)
-            .launch_standalone_idempotent(idempotent_launch_request("request-panic"))
-            .await;
-
-        assert_eq!(first.unwrap_err(), AgentSessionLaunchUsecaseError::Corrupt);
-        assert_eq!(replay.unwrap_err(), AgentSessionLaunchUsecaseError::Corrupt);
-        assert_eq!(usecase.standalone_in_flight_request_count().await, 0);
-        assert_eq!(availability.checks.load(Ordering::SeqCst), 1);
-        assert!(repository.stored.lock().unwrap().is_none());
-
-        });
+                assert_eq!(first.unwrap_err(), AgentSessionLaunchUsecaseError::Corrupt);
+                assert_eq!(replay.unwrap_err(), AgentSessionLaunchUsecaseError::Corrupt);
+                assert_eq!(usecase.standalone_in_flight_request_count().await, 0);
+                assert_eq!(availability.checks.load(Ordering::SeqCst), 1);
+                assert!(repository.stored.lock().unwrap().is_none());
+            });
     }
 
     #[tokio::test]
@@ -883,19 +887,21 @@ tokio::sync::mpsc::unbounded_channel().0, crate::usecase::workspace_tree::test_s
         let terminal = Arc::new(RecordingTerminal::default());
         let hook_health = hook_health_usecase();
         let usecase = AgentSessionLaunchUsecase::new(
-std::sync::Arc::new(crate::adaptor::gateway::telemetry::TelemetryGateway),
-Arc::new(AgentSessionUsecase::new(repository)),
-Arc::new(ProviderLifecycleUsecase::new(
-            Arc::new(
-                crate::adaptor::gateway::provider_lifecycle::credential_gateway_impl::LocalProviderLifecycleCredentialGateway,
-            ),
-            Arc::new(RecordingLifecycleEvents::default()),
-        )),
-provider_runtime(availability, launch_gateway.clone(), terminal.clone()),
-Arc::new(FixedHistory { entries: Vec::new() }),
-hook_health.clone(),
-started_execution_trees(),
-tokio::sync::mpsc::unbounded_channel().0, crate::usecase::workspace_tree::test_support::TestWorkspaceTreeRepository::new(),);
+            std::sync::Arc::new(crate::usecase::test_helpers::NoopPerformance),
+            Arc::new(AgentSessionUsecase::new(repository)),
+            Arc::new(ProviderLifecycleUsecase::new(
+                Arc::new(crate::usecase::test_helpers::TestCredentials),
+                Arc::new(RecordingLifecycleEvents::default()),
+            )),
+            provider_runtime(availability, launch_gateway.clone(), terminal.clone()),
+            Arc::new(FixedHistory {
+                entries: Vec::new(),
+            }),
+            hook_health.clone(),
+            started_execution_trees(),
+            tokio::sync::mpsc::unbounded_channel().0,
+            crate::usecase::workspace_tree::test_support::TestWorkspaceTreeRepository::new(),
+        );
 
         let launched = usecase
             .launch_standalone(AgentSessionLaunchRequest {

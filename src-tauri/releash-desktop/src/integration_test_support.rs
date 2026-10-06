@@ -24,3 +24,7 @@ pub mod desktop_client {
 pub mod single_instance {
     pub use crate::infrastructure::platform::single_instance::acquire;
 }
+
+pub mod login_item {
+    pub use crate::infrastructure::platform::login_item::registration_location;
+}

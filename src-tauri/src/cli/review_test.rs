@@ -1,7 +1,5 @@
 use super::*;
-use crate::cli::common::test_helpers_common::{
-    review_cli_thread, review_history_entries, test_uuid,
-};
+use crate::cli::test_helpers::{review_cli_thread, review_history_entries, test_uuid};
 use crate::cli::{Cli, TopCommand};
 use clap::Parser;
 

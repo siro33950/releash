@@ -170,7 +170,3 @@ impl ProviderExecutableProbeGateway for LocalProviderExecutableProbeGateway {
 #[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
 #[path = "provider_availability_gateway_test.rs"]
 mod provider_availability_gateway_tests;
-
-#[cfg(any(test, feature = "test-support"))]
-#[path = "test_helpers_provider_availability_gateway.rs"]
-pub(crate) mod shared_test_helpers;

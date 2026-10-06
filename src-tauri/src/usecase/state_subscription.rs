@@ -790,10 +790,6 @@ fn adds_external_information(target: &SubscriptionTarget, source: &StateChangeSo
 #[path = "state_subscription_test.rs"]
 mod state_subscription_tests;
 
-#[cfg(any(test, feature = "test-support"))]
-#[path = "state_subscription_test_helpers.rs"]
-pub(crate) mod state_subscription_test_helpers;
-
 #[cfg(feature = "test-support")]
 impl StateSubscriptionUsecase {
     pub fn test_remove_client_registration(&self, client_id: &str) {

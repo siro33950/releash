@@ -493,11 +493,12 @@ impl WorkflowUsecase {
     }
 }
 
-#[cfg(any(test, feature = "test-support"))]
-pub(crate) mod test_helpers_archive;
 #[cfg(test)]
-pub(crate) use test_helpers_archive::NoopArchiveRepository;
+pub(crate) use crate::usecase::workflow::test_helpers::NoopArchiveRepository;
 
 #[cfg(any(test, feature = "test-support"))]
-#[path = "test_helpers_shared_fixtures.rs"]
-pub(crate) mod shared_test_helpers;
+pub(crate) mod test_helpers;
+
+#[cfg(test)]
+#[path = "mod_test.rs"]
+mod mod_tests;

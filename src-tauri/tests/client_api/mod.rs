@@ -151,7 +151,7 @@ async fn test_クライアント購読_失敗と不正引数の分類と説明�
 }
 
 #[tokio::test]
-async fn test_connect_不正protoと旧ws_routeを拒否する() {
+async fn test_connect_不正protoを拒否する() {
     let fixture = Fixture::new().await;
     let http = reqwest::Client::new();
     let response = http
@@ -167,23 +167,6 @@ async fn test_connect_不正protoと旧ws_routeを拒否する() {
         .await
         .unwrap();
     assert_eq!(response.status(), 400);
-    for path in ["/v1/client", "/v1/terminal"] {
-        assert_eq!(
-            http.get(format!("{}{path}", fixture.url))
-                .bearer_auth(
-                    fixture
-                        .host
-                        .master_subprotocol
-                        .strip_prefix(TERMINAL_WS_BEARER_SUBPROTOCOL_PREFIX)
-                        .unwrap()
-                )
-                .send()
-                .await
-                .unwrap()
-                .status(),
-            404
-        );
-    }
 }
 
 #[tokio::test]

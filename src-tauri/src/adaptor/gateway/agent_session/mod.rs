@@ -17,3 +17,6 @@ pub(crate) use provider_availability_gateway::LocalProviderExecutableProbeGatewa
 #[cfg(any(test, feature = "test-support"))]
 pub(crate) use provider_executable_config_repository::InMemoryProviderExecutableConfigRepository;
 pub(crate) use session_facts::{read_session_context, SessionContextReadError, SessionLocation};
+
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) mod test_helpers;

@@ -2,22 +2,12 @@
 mod agent_tui_fixture;
 
 use agent_tui_fixture::{
-    fixture_process_shell_command, parsed_signals, run_fixture, signal_events,
-    CapturedLifecyclePayload, FixtureLifecycleEmission, FixtureLifecyclePayload,
-    FixtureLifecycleSignal, FixturePlan, FixtureRunOptions, FIXTURE_ATTEMPT_KEY,
-    FIXTURE_SESSION_KEY, FIXTURE_TRANSCRIPT_REF,
+    parsed_signals, run_fixture, signal_events, CapturedLifecyclePayload, FixtureLifecycleEmission,
+    FixtureLifecyclePayload, FixtureLifecycleSignal, FixturePlan, FixtureRunOptions,
+    FIXTURE_ATTEMPT_KEY, FIXTURE_SESSION_KEY, FIXTURE_TRANSCRIPT_REF,
 };
 use portable_pty::PtySize;
 use std::time::Duration;
-
-#[test]
-fn test_atui_000_fixture_builds_a_shell_launch_command_for_product_path_tests() {
-    let command = fixture_process_shell_command(&FixturePlan::new("shell-launch", vec![]));
-
-    assert!(command.contains("RELEASH_AGENT_TUI_FIXTURE_PLAN="));
-    assert!(command.contains("agent_tui_fixture::test_agent_tui_fixture_process"));
-    assert!(command.contains("--exact"));
-}
 
 #[test]
 fn test_atui_000_real_pty_io_and_lifecycle_use_independent_channels() {

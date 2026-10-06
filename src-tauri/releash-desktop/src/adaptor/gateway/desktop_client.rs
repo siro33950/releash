@@ -447,3 +447,7 @@ pub fn error_message(error: connectrpc::ConnectError) -> String {
         })
         .unwrap_or_else(|| error.to_string())
 }
+
+#[cfg(test)]
+#[path = "desktop_client_test.rs"]
+mod desktop_client_tests;

@@ -12,8 +12,6 @@ mod adaptor_controller_api_provider_lifecycle_controller;
 mod adaptor_controller_api_workflow;
 #[path = "internal/adaptor_controller_app_data_composition.rs"]
 mod adaptor_controller_app_data_composition;
-#[path = "internal/adaptor_controller_app_data_composition_test_extra.rs"]
-mod adaptor_controller_app_data_composition_test_extra;
 #[path = "internal/adaptor_controller_client_app_config_commands.rs"]
 mod adaptor_controller_client_app_config_commands;
 #[path = "internal/adaptor_controller_client_app_config_shared.rs"]
@@ -202,8 +200,6 @@ mod cli_hook;
 mod cli_output;
 #[path = "internal/cli_review.rs"]
 mod cli_review;
-#[path = "internal/cli_review_test_extra.rs"]
-mod cli_review_test_extra;
 #[path = "internal/cli_test_helpers.rs"]
 mod cli_test_helpers;
 #[path = "internal/cli_workflow.rs"]
@@ -272,8 +268,6 @@ mod usecase_state_subscription;
 mod usecase_watcher;
 #[path = "internal/usecase_workflow_execution_archive.rs"]
 mod usecase_workflow_execution_archive;
-#[path = "internal/usecase_workflow_mod.rs"]
-mod usecase_workflow_mod;
 #[path = "internal/usecase_workflow_workspace_tree.rs"]
 mod usecase_workflow_workspace_tree;
 #[path = "internal/usecase_workspace_tree_list.rs"]

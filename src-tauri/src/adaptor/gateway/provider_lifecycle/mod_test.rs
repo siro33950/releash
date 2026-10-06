@@ -1,5 +1,5 @@
 use super::launch_spec::ProviderLaunchSpecError;
-use super::shared_test_helpers::*;
+use super::test_helpers::*;
 use super::*;
 use crate::domain::agent_session::{ProviderSessionLaunch, ProviderSessionLaunchError};
 use crate::domain::provider_lifecycle::{ProviderKind, ProviderLifecycleSignalKind};

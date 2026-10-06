@@ -210,3 +210,78 @@ fn list_issue_parse_empty_log_message_omits_raw_payload() {
     assert!(!message.contains("Sensitive body"));
     assert!(!message.contains(&stdout));
 }
+
+mod cancellation_contract {
+    use crate::domain::git_host::GitHostError;
+    use crate::usecase::git_host::git_host_usecase::GitHostUsecase;
+    use crate::usecase::git_host::test_helpers::{FakeIssueCache, FakePrCache};
+    use std::sync::Arc;
+    #[tokio::test]
+    async fn test_github検出_停止時に既定pr状態を保存しない() {
+        // Given
+        use crate::common::operation_context::{OperationContext, OperationStopped};
+        let pr_cache = Arc::new(FakePrCache::default());
+        let issue_cache = Arc::new(FakeIssueCache::default());
+        let uc = GitHostUsecase::new(
+            Arc::new(crate::adaptor::gateway::git_host::github::GitHubGitHostGateway::default()),
+            pr_cache.clone(),
+            issue_cache.clone(),
+        );
+        let token = tokio_util::sync::CancellationToken::new();
+        token.cancel();
+        let context = OperationContext::new(None, Arc::new(token));
+        // When
+        let (pr, issues) = crate::common::operation_context::scope(context, async {
+            (
+                uc.refresh_pr_status("/missing").await,
+                uc.fetch_issues("/missing").await,
+            )
+        })
+        .await;
+        // Then
+        assert!(
+            matches!(pr, Err(GitHostError::Technical(error)) if error == OperationStopped::Cancelled.into())
+        );
+        assert!(
+            matches!(issues, Err(GitHostError::Technical(error)) if error == OperationStopped::Cancelled.into())
+        );
+        assert!(pr_cache.stored_values().is_empty());
+        assert!(issue_cache.stored_values().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_github検出_期限切れ時に既定pr状態を保存しない() {
+        // Given
+        use crate::common::operation_context::{Deadline, OperationContext, OperationStopped};
+        let pr_cache = Arc::new(FakePrCache::default());
+        let issue_cache = Arc::new(FakeIssueCache::default());
+        let uc = GitHostUsecase::new(
+            Arc::new(crate::adaptor::gateway::git_host::github::GitHubGitHostGateway::default()),
+            pr_cache.clone(),
+            issue_cache.clone(),
+        );
+        let token = tokio_util::sync::CancellationToken::new();
+        token.cancel();
+        let context = OperationContext::new(
+            Some(Deadline::new(std::time::Instant::now())),
+            Arc::new(token),
+        );
+        // When
+        let (pr, issues) = crate::common::operation_context::scope(context, async {
+            (
+                uc.refresh_pr_status("/missing").await,
+                uc.fetch_issues("/missing").await,
+            )
+        })
+        .await;
+        // Then
+        assert!(
+            matches!(pr, Err(GitHostError::Technical(error)) if error == OperationStopped::Expired.into())
+        );
+        assert!(
+            matches!(issues, Err(GitHostError::Technical(error)) if error == OperationStopped::Expired.into())
+        );
+        assert!(pr_cache.stored_values().is_empty());
+        assert!(issue_cache.stored_values().is_empty());
+    }
+}

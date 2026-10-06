@@ -1,56 +1,7 @@
 pub(crate) mod tests {
     use super::super::*;
-    use crate::domain::workflow::WorkflowSummary;
+    use crate::usecase::workflow::test_helpers::FakeDefinitionRepository;
     use crate::usecase::workflow::test_support::NoopDefinitionSourceGateway;
-    use std::collections::HashMap;
-    use std::sync::Mutex;
-
-    #[derive(Default)]
-    struct FakeDefinitionRepository {
-        definitions: Mutex<HashMap<String, WorkflowDefinition>>,
-        deleted: Mutex<Vec<String>>,
-    }
-
-    impl FakeDefinitionRepository {
-        fn seed(&self, definition: WorkflowDefinition) {
-            self.definitions
-                .lock()
-                .unwrap()
-                .insert(definition.name.clone(), definition);
-        }
-
-        fn get_saved(&self, name: &str) -> Option<WorkflowDefinition> {
-            self.definitions.lock().unwrap().get(name).cloned()
-        }
-    }
-
-    impl WorkflowDefinitionRepository for FakeDefinitionRepository {
-        fn list(&self, _running_names: &[String]) -> Result<Vec<WorkflowSummary>, WorkflowError> {
-            Ok(Vec::new())
-        }
-
-        fn get(&self, file_stem: &str) -> Result<Option<WorkflowDefinition>, WorkflowError> {
-            Ok(self.definitions.lock().unwrap().get(file_stem).cloned())
-        }
-
-        fn save(
-            &self,
-            definition: WorkflowDefinition,
-            _original_name: Option<&str>,
-        ) -> Result<(), WorkflowError> {
-            self.definitions
-                .lock()
-                .unwrap()
-                .insert(definition.name.clone(), definition);
-            Ok(())
-        }
-
-        fn delete(&self, name: &str) -> Result<(), WorkflowError> {
-            self.deleted.lock().unwrap().push(name.to_string());
-            self.definitions.lock().unwrap().remove(name);
-            Ok(())
-        }
-    }
 
     fn definition(name: &str, builtin: bool) -> WorkflowDefinition {
         WorkflowDefinition {

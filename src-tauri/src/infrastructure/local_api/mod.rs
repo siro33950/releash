@@ -34,3 +34,6 @@ pub enum LocalApiServerError {
 
 #[cfg(any(test, feature = "test-support"))]
 pub(crate) use server::test_binding;
+
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) mod test_helpers;

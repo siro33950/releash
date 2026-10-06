@@ -1,5 +1,5 @@
-use super::shared_test_helpers::FailingSearchPathSource;
 use super::*;
+use crate::adaptor::gateway::agent_session::test_helpers::FailingSearchPathSource;
 use crate::domain::agent_session::ProviderExecutableProbeGateway;
 use crate::infrastructure::process::search_path::LoginShellPathError;
 use std::sync::Arc;

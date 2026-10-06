@@ -1,11 +1,16 @@
-use super::*;
+use crate::usecase::repository_state::worker::InvalidateReason;
+use crate::usecase::repository_state::worktree::WorktreeState;
+use crate::usecase::repository_state::RepositoryStateError;
+use notify_debouncer_mini::DebouncedEvent;
+use std::sync::Arc;
+
 use crate::usecase::repository_state::runtime::{
     RepositoryStateInvalidationReceiver, RepositoryStateInvalidationSender,
     RepositoryStateWorkerRuntime,
 };
 use crate::usecase::repository_state::scanner::RepositoryScanner;
-use crate::usecase::repository_state::service::fixture_helpers::EmptyScanner;
 use crate::usecase::repository_state::snapshot::RepositorySnapshotParts;
+use crate::usecase::repository_state::test_helpers::EmptyScanner;
 use notify_debouncer_mini::DebouncedEventKind;
 pub struct InertSender;
 impl RepositoryStateInvalidationSender for InertSender {

@@ -64,12 +64,10 @@ pub mod test_support {
     pub use crate::adaptor::presenter::connect_wire::to_rpc;
     pub use crate::adaptor::presenter::error::AppError;
     pub use crate::infrastructure::local_api::LocalApiDiscoveryFile;
-    pub use crate::infrastructure::telemetry::crash::{
-        crash_test_helpers::{install_test_exporter, TEST_LOCK},
-        reset_for_tests,
-    };
+    pub use crate::infrastructure::telemetry::crash::reset_for_tests;
     pub use crate::infrastructure::telemetry::metrics::{
         lock_test_telemetry, reset_test_metrics, set_performance_configured,
         set_performance_enabled, test_metric_records,
     };
+    pub use crate::infrastructure::telemetry::test_helpers::{install_test_exporter, TEST_LOCK};
 }

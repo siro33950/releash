@@ -2190,7 +2190,3 @@ fn increment_summary(
 #[cfg(test)]
 #[path = "diagnostics_test.rs"]
 mod diagnostics_tests;
-
-#[cfg(any(test, feature = "test-support"))]
-#[path = "test_helpers_diagnostics.rs"]
-pub(crate) mod shared_test_helpers;

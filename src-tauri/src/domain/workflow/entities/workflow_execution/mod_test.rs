@@ -1,4 +1,4 @@
-use super::shared_test_helpers::*;
+use super::test_helpers::*;
 use super::*;
 use serde_json::{json, Value};
 

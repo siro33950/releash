@@ -51,3 +51,6 @@ pub fn resolve_merge_base_commit<'a>(
     let merge_base_oid = git_operation::run(|| repo.merge_base(current_oid, base_oid))?;
     Ok(git_operation::run(|| repo.find_commit(merge_base_oid))?)
 }
+
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) mod test_helpers;

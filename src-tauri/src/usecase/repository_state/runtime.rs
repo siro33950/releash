@@ -50,8 +50,4 @@ pub trait WorktreePathNormalizer: Send + Sync {
 }
 
 #[cfg(any(test, feature = "test-support"))]
-#[path = "test_helpers_runtime.rs"]
-pub(crate) mod test_helpers_runtime;
-
-#[cfg(any(test, feature = "test-support"))]
-pub(crate) use test_helpers_runtime::tests_support;
+pub(crate) use crate::usecase::repository_state::test_helpers::tests_support;

@@ -10,7 +10,7 @@ mod restored_memory_cases {
             // Given
             let runtime = WorkflowRuntimeUsecase::new(
             Arc::new(crate::usecase::workflow::runtime_command::runtime_command_tests::tests::FakeRuntimeGateway::default()),
-            Arc::new(crate::usecase::workflow::test_helpers_archive::NoopArchiveRepository),
+            Arc::new(crate::usecase::workflow::test_helpers::NoopArchiveRepository),
         );
             let guard = runtime.begin_worktree_mutation("/repo").unwrap();
             let started = Arc::new(tokio::sync::Notify::new());

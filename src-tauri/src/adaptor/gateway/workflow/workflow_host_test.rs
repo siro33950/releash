@@ -42,7 +42,7 @@ fn command_env_includes_worktree_path() {
 
 mod restored_memory_cases {
     use super::super::*;
-    use crate::adaptor::gateway::workflow::workflow_host::memory_test_helpers::*;
+    use crate::adaptor::gateway::workflow::test_helpers::*;
     use std::sync::Arc;
 
     #[tokio::test]

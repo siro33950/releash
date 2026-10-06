@@ -1,5 +1,6 @@
 use releash_lib::test_support::integration::sessions::session_location;
 use releash_lib::test_support::integration::sessions::workflow_location;
+use releash_lib::test_support::integration::sessions::MemoryHookHealthRepository;
 use releash_lib::test_support::integration::workflow::WorkflowAgentSessionPort;
 
 use releash_lib::test_support::integration::workflow::ProviderWorkflowAgentSessionPort;
@@ -16,9 +17,6 @@ use releash_lib::test_support::integration::providers::ArmedProviderLifecycle;
 use releash_lib::test_support::integration::providers::LocalProviderLifecycleCredentialGateway;
 use releash_lib::test_support::integration::providers::ProviderExecutionTreeStopCommand;
 use releash_lib::test_support::integration::providers::ProviderExecutionTreeStopTransaction;
-use releash_lib::test_support::integration::providers::ProviderHookHealth;
-use releash_lib::test_support::integration::providers::ProviderHookHealthRepository;
-use releash_lib::test_support::integration::providers::ProviderHookHealthRepositoryError;
 use releash_lib::test_support::integration::providers::ProviderHookHealthUsecase;
 use releash_lib::test_support::integration::providers::ProviderKind;
 use releash_lib::test_support::integration::providers::ProviderLifecycleEvent;
@@ -33,7 +31,6 @@ use releash_lib::test_support::integration::providers::ProviderLifecycleSignal;
 use releash_lib::test_support::integration::providers::ProviderLifecycleSlotId;
 use releash_lib::test_support::integration::providers::ProviderLifecycleUsecase;
 use releash_lib::test_support::integration::providers::ScopedProviderLifecycleEvent;
-use releash_lib::test_support::integration::providers::VersionedProviderHookHealth;
 use releash_lib::test_support::integration::sessions::AgentSessionArchiveOutcome;
 use releash_lib::test_support::integration::sessions::AgentSessionLifecycle;
 use releash_lib::test_support::integration::sessions::AgentSessionLifecycleUsecase;
@@ -405,44 +402,6 @@ impl ProviderAvailabilityReader for AlwaysProviderAvailable {
 
     fn resolved_executable(&self, _provider: ProviderKind) -> Option<ResolvedProviderExecutable> {
         Some(ResolvedProviderExecutable::new("/provider".into()).unwrap())
-    }
-}
-
-#[derive(Default)]
-struct MemoryHookHealthRepository {
-    stored: Mutex<std::collections::HashMap<ProviderKind, VersionedProviderHookHealth>>,
-}
-
-#[async_trait::async_trait]
-impl ProviderHookHealthRepository for MemoryHookHealthRepository {
-    async fn load(
-        &self,
-        provider: ProviderKind,
-    ) -> Result<VersionedProviderHookHealth, ProviderHookHealthRepositoryError> {
-        Ok(self
-            .stored
-            .lock()
-            .unwrap()
-            .get(&provider)
-            .cloned()
-            .unwrap_or_else(|| {
-                VersionedProviderHookHealth::restored(ProviderHookHealth::new(provider), 0)
-            }))
-    }
-
-    async fn save(
-        &self,
-        mut health: VersionedProviderHookHealth,
-        _caller_request_id: &str,
-    ) -> Result<VersionedProviderHookHealth, ProviderHookHealthRepositoryError> {
-        let revision =
-            health.revision() + health.health_mut().take_uncommitted_events().len() as u64;
-        let saved = VersionedProviderHookHealth::restored(health.into_health(), revision);
-        self.stored
-            .lock()
-            .unwrap()
-            .insert(saved.health().provider(), saved.clone());
-        Ok(saved)
     }
 }
 

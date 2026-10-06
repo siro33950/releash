@@ -1,4 +1,4 @@
-use super::ProviderLaunchContext;
+use crate::adaptor::gateway::provider_lifecycle::ProviderLaunchContext;
 use crate::domain::provider_lifecycle::{ProviderLifecycleScope, ProviderLifecycleSlotId};
 pub fn scope() -> ProviderLifecycleScope {
     ProviderLifecycleScope::new("agent-1").unwrap()

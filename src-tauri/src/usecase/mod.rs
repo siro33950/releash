@@ -37,3 +37,6 @@ pub(crate) mod retry;
 pub(crate) mod state_subscription;
 
 mod work_failure;
+
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) mod test_helpers;

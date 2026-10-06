@@ -1,4 +1,4 @@
-use crate::usecase::workflow::shared_test_helpers::FakeEventRepository;
+use crate::usecase::workflow::test_helpers::FakeEventRepository;
 pub(crate) mod tests {
     use super::super::*;
     use super::*;
@@ -60,65 +60,7 @@ pub(crate) mod tests {
         }
     }
 
-    #[derive(Default)]
-    struct FakeFacetRepository {
-        values: Mutex<HashMap<(FacetKind, String), String>>,
-    }
-
-    impl crate::domain::workflow::FacetRepository for FakeFacetRepository {
-        fn list(&self, kind: FacetKind) -> Result<Vec<String>, WorkflowError> {
-            Ok(self
-                .values
-                .lock()
-                .unwrap()
-                .keys()
-                .filter(|(candidate, _)| *candidate == kind)
-                .map(|(_, key)| key.clone())
-                .collect())
-        }
-
-        fn get(&self, kind: FacetKind, key: &str) -> Result<String, WorkflowError> {
-            self.values
-                .lock()
-                .unwrap()
-                .get(&(kind, key.to_string()))
-                .cloned()
-                .ok_or_else(|| WorkflowError::NotFound(key.to_string()))
-        }
-
-        fn save(
-            &self,
-            _kind: FacetKind,
-            _key: &str,
-            _content: &str,
-            _is_new: bool,
-        ) -> Result<(), WorkflowError> {
-            Ok(())
-        }
-
-        fn delete(&self, _kind: FacetKind, _key: &str) -> Result<(), WorkflowError> {
-            Ok(())
-        }
-
-        fn list_summaries(&self, kind: FacetKind) -> Result<Vec<FacetSummary>, WorkflowError> {
-            Ok(self
-                .list(kind)?
-                .into_iter()
-                .map(|key| FacetSummary {
-                    key,
-                    // 本番 (gateway facet.rs) と同じ canonical 語彙をテストでも再現する。
-                    kind: match kind {
-                        FacetKind::Policy => "policy",
-                        FacetKind::Knowledge => "knowledge",
-                        FacetKind::Instruction => "instruction",
-                    }
-                    .to_string(),
-                    description: String::new(),
-                    builtin: false,
-                })
-                .collect())
-        }
-    }
+    use crate::usecase::workflow::test_helpers::FakeFacetRepository;
 
     #[derive(Default)]
     struct FakeExecutionProjectionRepository {
@@ -387,7 +329,7 @@ pub(crate) mod tests {
                 payload: serde_json::json!({}),
             })
             .unwrap();
-        fixture.facets.values.lock().unwrap().insert(
+        fixture.facets.facets.lock().unwrap().insert(
             (FacetKind::Instruction, "implement".to_string()),
             "instruction body".to_string(),
         );

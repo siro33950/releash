@@ -1,5 +1,5 @@
-use super::shared_test_helpers::*;
 use super::*;
+use crate::infrastructure::local_api::test_helpers::*;
 
 #[test]
 fn test_local_api認証_discoveryのbearer_tokenをrequestへ設定する() {

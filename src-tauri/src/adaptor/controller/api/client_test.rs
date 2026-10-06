@@ -1,5 +1,5 @@
-use super::shared_test_helpers::*;
 use super::*;
+use crate::adaptor::controller::api::test_helpers::*;
 use prost::Message;
 
 #[test]

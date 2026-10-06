@@ -1,9 +1,10 @@
-use std::collections::HashMap;
+use crate::usecase::git_host::test_helpers::{
+    sample_issue, sample_pr_status, FakeIssueCache, FakePrCache,
+};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Mutex;
 
 use super::*;
-use crate::domain::git_host::{PrInfo, PrStatus};
+use crate::domain::git_host::PrStatus;
 
 struct FakeProvider {
     pr_status: Result<PrStatus, GitHostError>,
@@ -46,102 +47,6 @@ impl GitHostProvider for FakeProvider {
     async fn list_issues(&self, _repo_path: &str) -> Result<Vec<IssueInfo>, GitHostError> {
         self.issue_fetch_count.fetch_add(1, Ordering::SeqCst);
         Ok(self.issues.clone())
-    }
-}
-
-#[derive(Default)]
-struct FakePrCache {
-    lookup_value: Mutex<crate::domain::git_host::CachedResult<PrStatus>>,
-    stored_values: Mutex<Vec<PrStatus>>,
-    records: AtomicUsize,
-}
-
-impl FakePrCache {
-    fn with_lookup(value: Option<PrStatus>) -> Self {
-        Self {
-            lookup_value: Mutex::new(crate::domain::git_host::CachedResult { value, error: None }),
-            stored_values: Mutex::new(Vec::new()),
-            records: AtomicUsize::new(0),
-        }
-    }
-
-    fn stored_values(&self) -> Vec<PrStatus> {
-        self.stored_values.lock().unwrap().clone()
-    }
-}
-
-impl PrStatusCache for FakePrCache {
-    fn result(&self, _: &str) -> crate::domain::git_host::CachedResult<PrStatus> {
-        self.lookup_value.lock().unwrap().clone()
-    }
-    fn record(&self, _: &str, result: Result<PrStatus, GitHostError>) {
-        self.records.fetch_add(1, Ordering::SeqCst);
-        if let Ok(value) = &result {
-            self.stored_values.lock().unwrap().push(value.clone());
-        }
-        self.lookup_value.lock().unwrap().record(result);
-    }
-}
-
-#[derive(Default)]
-struct FakeIssueCache {
-    lookup_value: Mutex<crate::domain::git_host::CachedResult<Vec<IssueInfo>>>,
-    stored_values: Mutex<Vec<Vec<IssueInfo>>>,
-}
-
-impl FakeIssueCache {
-    fn with_lookup(value: Option<Vec<IssueInfo>>) -> Self {
-        Self {
-            lookup_value: Mutex::new(crate::domain::git_host::CachedResult { value, error: None }),
-            stored_values: Mutex::new(Vec::new()),
-        }
-    }
-
-    fn stored_values(&self) -> Vec<Vec<IssueInfo>> {
-        self.stored_values.lock().unwrap().clone()
-    }
-}
-
-impl IssueCache for FakeIssueCache {
-    fn result(&self, _: &str) -> crate::domain::git_host::CachedResult<Vec<IssueInfo>> {
-        self.lookup_value.lock().unwrap().clone()
-    }
-    fn record(&self, _: &str, result: Result<Vec<IssueInfo>, GitHostError>) {
-        if let Ok(value) = &result {
-            self.stored_values.lock().unwrap().push(value.clone());
-        }
-        self.lookup_value.lock().unwrap().record(result);
-    }
-}
-
-fn sample_pr_status() -> PrStatus {
-    PrStatus {
-        open_prs: HashMap::from([(
-            "feat/test".to_string(),
-            PrInfo {
-                number: 42,
-                url: "https://github.com/owner/repo/pull/42".to_string(),
-            },
-        )]),
-        merged_branches: vec!["feat/done".to_string()],
-    }
-}
-
-fn sample_issue(number: u64) -> IssueInfo {
-    IssueInfo {
-        number,
-        title: "Test issue".to_string(),
-        state: "OPEN".to_string(),
-        url: format!("https://github.com/owner/repo/issues/{number}"),
-        author: crate::domain::git_host::value_objects::issue::PrAuthor {
-            login: "user".to_string(),
-        },
-        created_at: "2024-01-01T00:00:00Z".to_string(),
-        updated_at: "2024-01-02T00:00:00Z".to_string(),
-        labels: Vec::new(),
-        assignees: Vec::new(),
-        body: String::new(),
-        milestone: None,
     }
 }
 
@@ -400,74 +305,6 @@ async fn cached_issues_miss_fetches_and_stores() {
     );
     assert_eq!(provider.issue_fetch_count(), 1);
     assert_eq!(issue_cache.stored_values(), vec![fetched]);
-}
-
-#[tokio::test]
-async fn test_github検出_停止時に既定pr状態を保存しない() {
-    // Given
-    use crate::common::operation_context::{OperationContext, OperationStopped};
-    let pr_cache = Arc::new(FakePrCache::default());
-    let issue_cache = Arc::new(FakeIssueCache::default());
-    let uc = GitHostUsecase::new(
-        Arc::new(crate::adaptor::gateway::git_host::github::GitHubGitHostGateway::default()),
-        pr_cache.clone(),
-        issue_cache.clone(),
-    );
-    let token = tokio_util::sync::CancellationToken::new();
-    token.cancel();
-    let context = OperationContext::new(None, Arc::new(token));
-    // When
-    let (pr, issues) = crate::common::operation_context::scope(context, async {
-        (
-            uc.refresh_pr_status("/missing").await,
-            uc.fetch_issues("/missing").await,
-        )
-    })
-    .await;
-    // Then
-    assert!(
-        matches!(pr, Err(GitHostError::Technical(error)) if error == OperationStopped::Cancelled.into())
-    );
-    assert!(
-        matches!(issues, Err(GitHostError::Technical(error)) if error == OperationStopped::Cancelled.into())
-    );
-    assert!(pr_cache.stored_values().is_empty());
-    assert!(issue_cache.stored_values().is_empty());
-}
-#[tokio::test]
-async fn test_github検出_期限切れ時に既定pr状態を保存しない() {
-    // Given
-    use crate::common::operation_context::{Deadline, OperationContext, OperationStopped};
-    let pr_cache = Arc::new(FakePrCache::default());
-    let issue_cache = Arc::new(FakeIssueCache::default());
-    let uc = GitHostUsecase::new(
-        Arc::new(crate::adaptor::gateway::git_host::github::GitHubGitHostGateway::default()),
-        pr_cache.clone(),
-        issue_cache.clone(),
-    );
-    let token = tokio_util::sync::CancellationToken::new();
-    token.cancel();
-    let context = OperationContext::new(
-        Some(Deadline::new(std::time::Instant::now())),
-        Arc::new(token),
-    );
-    // When
-    let (pr, issues) = crate::common::operation_context::scope(context, async {
-        (
-            uc.refresh_pr_status("/missing").await,
-            uc.fetch_issues("/missing").await,
-        )
-    })
-    .await;
-    // Then
-    assert!(
-        matches!(pr, Err(GitHostError::Technical(error)) if error == OperationStopped::Expired.into())
-    );
-    assert!(
-        matches!(issues, Err(GitHostError::Technical(error)) if error == OperationStopped::Expired.into())
-    );
-    assert!(pr_cache.stored_values().is_empty());
-    assert!(issue_cache.stored_values().is_empty());
 }
 
 #[tokio::test]

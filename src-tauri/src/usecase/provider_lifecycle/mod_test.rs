@@ -1,5 +1,5 @@
-use crate::usecase::agent_session::test_helpers_session::session_location;
-use crate::usecase::agent_session::test_helpers_session::workflow_location;
+use crate::usecase::agent_session::test_helpers::session_location;
+use crate::usecase::agent_session::test_helpers::workflow_location;
 
 mod provider_lifecycle_ingress_tests {
     use super::*;
@@ -11,7 +11,6 @@ mod provider_lifecycle_ingress_tests {
         ProviderLifecycleIngressUsecaseError, ProviderLifecycleUsecase,
         ProviderSessionStartTransaction,
     };
-    use crate::adaptor::gateway::provider_lifecycle::LocalProviderLifecycleCredentialGateway;
     use crate::domain::agent_session::aggregates::{AgentSession, AgentSessionTreeLocation};
     use crate::domain::agent_session::repository::{
         AgentSessionRepository, AgentSessionRepositoryError, VersionedAgentSession,
@@ -27,6 +26,7 @@ mod provider_lifecycle_ingress_tests {
     use crate::domain::workflow::AgentSessionActivity;
     use crate::domain::workspace_tree::WorkspaceIdentity;
     use crate::usecase::agent_session::AgentSessionUsecase;
+    use crate::usecase::test_helpers::TestCredentials as LocalProviderLifecycleCredentialGateway;
 
     struct RecordingChangeNotifier {
         subscriptions: crate::usecase::state_subscription::StateSubscriptionUsecase,
@@ -253,7 +253,7 @@ mod provider_lifecycle_ingress_tests {
         ));
         let notifier = Arc::new(RecordingChangeNotifier::default());
         let ingress = ProviderLifecycleIngressUsecase::new(
-            std::sync::Arc::new(crate::adaptor::gateway::identity::RandomIdentityIssuer),
+            std::sync::Arc::new(crate::usecase::test_helpers::TestIdentity),
             lifecycle.clone(),
             Arc::new(AgentSessionUsecase::new(agent_repository.clone())),
             Arc::new(ProviderHookHealthUsecase::new(Arc::new(
@@ -433,7 +433,7 @@ mod provider_lifecycle_ingress_tests {
             Arc::new(MemoryLifecycleEvents),
         ));
         let ingress = ProviderLifecycleIngressUsecase::new(
-            std::sync::Arc::new(crate::adaptor::gateway::identity::RandomIdentityIssuer),
+            std::sync::Arc::new(crate::usecase::test_helpers::TestIdentity),
             lifecycle.clone(),
             Arc::new(AgentSessionUsecase::new(repository.clone())),
             Arc::new(ProviderHookHealthUsecase::new(health.clone())),
@@ -529,7 +529,7 @@ mod provider_lifecycle_ingress_tests {
         ));
         let notifier = Arc::new(RecordingChangeNotifier::default());
         let ingress = ProviderLifecycleIngressUsecase::new(
-            std::sync::Arc::new(crate::adaptor::gateway::identity::RandomIdentityIssuer),
+            std::sync::Arc::new(crate::usecase::test_helpers::TestIdentity),
             lifecycle.clone(),
             Arc::new(AgentSessionUsecase::new(agent_repository.clone())),
             Arc::new(ProviderHookHealthUsecase::new(Arc::new(
@@ -640,7 +640,7 @@ mod provider_lifecycle_ingress_tests {
         ));
         let notifier = Arc::new(RecordingChangeNotifier::default());
         let ingress = ProviderLifecycleIngressUsecase::new(
-            std::sync::Arc::new(crate::adaptor::gateway::identity::RandomIdentityIssuer),
+            std::sync::Arc::new(crate::usecase::test_helpers::TestIdentity),
             lifecycle.clone(),
             Arc::new(AgentSessionUsecase::new(agent_repository.clone())),
             Arc::new(ProviderHookHealthUsecase::new(Arc::new(
@@ -730,7 +730,7 @@ mod provider_lifecycle_ingress_tests {
         ));
         let notifier = Arc::new(RecordingChangeNotifier::default());
         let ingress = ProviderLifecycleIngressUsecase::new(
-            std::sync::Arc::new(crate::adaptor::gateway::identity::RandomIdentityIssuer),
+            std::sync::Arc::new(crate::usecase::test_helpers::TestIdentity),
             lifecycle.clone(),
             Arc::new(AgentSessionUsecase::new(agent_repository.clone())),
             Arc::new(ProviderHookHealthUsecase::new(Arc::new(
@@ -834,7 +834,7 @@ mod provider_lifecycle_ingress_tests {
             Arc::new(MemoryLifecycleEvents),
         ));
         let ingress = ProviderLifecycleIngressUsecase::new(
-            std::sync::Arc::new(crate::adaptor::gateway::identity::RandomIdentityIssuer),
+            std::sync::Arc::new(crate::usecase::test_helpers::TestIdentity),
             lifecycle.clone(),
             Arc::new(AgentSessionUsecase::new(agent_repository.clone())),
             Arc::new(ProviderHookHealthUsecase::new(Arc::new(
@@ -916,7 +916,7 @@ mod provider_lifecycle_ingress_tests {
             MemoryHookHealth::default(),
         )));
         let ingress = ProviderLifecycleIngressUsecase::new(
-            std::sync::Arc::new(crate::adaptor::gateway::identity::RandomIdentityIssuer),
+            std::sync::Arc::new(crate::usecase::test_helpers::TestIdentity),
             lifecycle.clone(),
             sessions,
             health.clone(),
@@ -1002,7 +1002,7 @@ mod provider_lifecycle_ingress_tests {
             MemoryHookHealth::default(),
         )));
         let ingress = ProviderLifecycleIngressUsecase::new(
-            std::sync::Arc::new(crate::adaptor::gateway::identity::RandomIdentityIssuer),
+            std::sync::Arc::new(crate::usecase::test_helpers::TestIdentity),
             lifecycle.clone(),
             sessions,
             health.clone(),
@@ -1084,7 +1084,7 @@ mod provider_lifecycle_ingress_tests {
             Arc::new(MemoryLifecycleEvents),
         ));
         let ingress = ProviderLifecycleIngressUsecase::new(
-            std::sync::Arc::new(crate::adaptor::gateway::identity::RandomIdentityIssuer),
+            std::sync::Arc::new(crate::usecase::test_helpers::TestIdentity),
             lifecycle.clone(),
             sessions,
             Arc::new(ProviderHookHealthUsecase::new(Arc::new(
@@ -1166,7 +1166,7 @@ mod provider_lifecycle_ingress_tests {
             MemoryHookHealth::default(),
         )));
         let ingress = Arc::new(ProviderLifecycleIngressUsecase::new(
-            std::sync::Arc::new(crate::adaptor::gateway::identity::RandomIdentityIssuer),
+            std::sync::Arc::new(crate::usecase::test_helpers::TestIdentity),
             lifecycle.clone(),
             sessions.clone(),
             health,
@@ -1242,7 +1242,7 @@ mod provider_lifecycle_ingress_tests {
             Arc::new(MemoryLifecycleEvents),
         ));
         let ingress = Arc::new(ProviderLifecycleIngressUsecase::new(
-            std::sync::Arc::new(crate::adaptor::gateway::identity::RandomIdentityIssuer),
+            std::sync::Arc::new(crate::usecase::test_helpers::TestIdentity),
             lifecycle.clone(),
             sessions.clone(),
             Arc::new(ProviderHookHealthUsecase::new(Arc::new(

@@ -85,3 +85,13 @@ impl ReadFailure {
         result
     }
 }
+
+#[cfg(test)]
+pub fn sqlite_failure(code: i32) -> rusqlite::Error {
+    rusqlite::Error::SqliteFailure(rusqlite::ffi::Error::new(code), None)
+}
+
+use crate::domain::provider_lifecycle::ProviderLifecycleScope;
+pub fn scope() -> ProviderLifecycleScope {
+    ProviderLifecycleScope::new("agent-session-1").unwrap()
+}

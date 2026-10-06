@@ -46,10 +46,8 @@ mod repo_paths_usecase_tests {
 
     #[test]
     fn test_起動時登録_cwdのrootを追加し非repositoryと読取失敗は一覧を変えない() {
-        use crate::adaptor::gateway::repository::{
-            branch::BranchGateway, git_config::GitConfigGateway, status::StatusGateway,
-        };
         use crate::domain::repository::{RepoLocator, Worktree, WorktreeRepository};
+        use crate::usecase::test_helpers::FakeRepo;
         struct Cwd;
         impl RepoLocator for Cwd {
             fn cwd(&self) -> Result<String, RepositoryError> {
@@ -102,10 +100,10 @@ mod repo_paths_usecase_tests {
         ] {
             let (usecase, mut changes) = usecase_with(Arc::new(FakeRepoPaths::default()));
             let repository = crate::usecase::repository_usecase::RepositoryUsecase::new(
-                Arc::new(BranchGateway),
-                Arc::new(StatusGateway),
+                Arc::new(FakeRepo::default()),
+                Arc::new(FakeRepo::default()),
                 Arc::new(Roots(root.clone())),
-                Arc::new(GitConfigGateway),
+                Arc::new(FakeRepo::default()),
                 Arc::new(Cwd),
                 Arc::new(Terminals),
                 Default::default(),

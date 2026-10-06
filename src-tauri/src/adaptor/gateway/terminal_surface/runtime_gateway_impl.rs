@@ -36,16 +36,16 @@ use crate::infrastructure::terminal::utf8_decoder::decode_utf8_chunk;
 use crate::usecase::failure::WorkFailure;
 
 pub(crate) struct AttachedTerminalRuntime {
-    native_pty: NativePtyRuntime,
-    output: Option<NativePtyOutput>,
-    event_order: Arc<TerminalSurfaceEventOrder>,
-    terminal_surface: Arc<Mutex<NativeTerminalEmulator>>,
-    checkpoint_scheduler: Option<CheckpointScheduler>,
-    session_key: String,
-    output_drained: Arc<(Mutex<bool>, Condvar)>,
-    checkpoint_journal: Option<Arc<Mutex<IncrementalCheckpointJournal>>>,
-    checkpoint_store: Option<TerminalCheckpointFileStore>,
-    checkpoint_io: Option<Arc<Mutex<()>>>,
+    pub(super) native_pty: NativePtyRuntime,
+    pub(super) output: Option<NativePtyOutput>,
+    pub(super) event_order: Arc<TerminalSurfaceEventOrder>,
+    pub(super) terminal_surface: Arc<Mutex<NativeTerminalEmulator>>,
+    pub(super) checkpoint_scheduler: Option<CheckpointScheduler>,
+    pub(super) session_key: String,
+    pub(super) output_drained: Arc<(Mutex<bool>, Condvar)>,
+    pub(super) checkpoint_journal: Option<Arc<Mutex<IncrementalCheckpointJournal>>>,
+    pub(super) checkpoint_store: Option<TerminalCheckpointFileStore>,
+    pub(super) checkpoint_io: Option<Arc<Mutex<()>>>,
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -58,7 +58,7 @@ pub struct TerminalSurfaceRuntimeGatewayFor {
     registry: Arc<Mutex<TerminalSurfaceRegistry>>,
     input_ingress: Mutex<TerminalSurfaceInputIngressRegistry>,
     spawn_resolved: Condvar,
-    runtimes: Mutex<HashMap<u64, AttachedTerminalRuntime>>,
+    pub(super) runtimes: Mutex<HashMap<u64, AttachedTerminalRuntime>>,
     native_pty: NativePtySystem,
     journal_enabled: bool,
     #[cfg(any(test, feature = "test-support"))]
@@ -256,7 +256,7 @@ impl Drop for PendingFlush {
 type CheckpointFlush = Arc<dyn Fn() -> Result<(), WorkFailure> + Send + Sync>;
 
 #[derive(Clone)]
-struct CheckpointScheduler {
+pub(super) struct CheckpointScheduler {
     dirty: Arc<dyn Fn(&str) + Send + Sync>,
     session_key: String,
     flush: CheckpointFlush,
@@ -332,7 +332,7 @@ impl BackgroundCheckpoint {
 }
 
 #[derive(Default)]
-struct TerminalSurfaceEventOrder {
+pub(super) struct TerminalSurfaceEventOrder {
     serialization: Mutex<()>,
 }
 
@@ -1337,7 +1337,3 @@ mod runtime_gateway_impl_tests;
 #[cfg(feature = "test-support")]
 #[path = "runtime_gateway_test_support.rs"]
 pub(crate) mod test_support;
-
-#[cfg(any(test, feature = "test-support"))]
-#[path = "test_helpers_runtime_gateway_impl.rs"]
-pub(crate) mod shared_test_helpers;

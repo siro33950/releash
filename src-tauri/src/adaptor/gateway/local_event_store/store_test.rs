@@ -139,7 +139,7 @@ fn only_lock_contention_is_store_in_use() {
 
 mod restored_memory_cases {
     use super::super::*;
-    use crate::adaptor::gateway::local_event_store::store::memory_test_helpers::*;
+    use crate::adaptor::gateway::local_event_store::test_helpers::*;
 
     #[test]
     pub fn test_store起動失敗_io種類とメッセージが実行中と一致する() {

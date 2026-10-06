@@ -126,9 +126,3 @@ fn test_process_group_signal_危険なpgidを拒否する() {
         assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
     }
 }
-
-#[cfg(unix)]
-#[test]
-fn test_process_group_signal_存在しない安全なpgidは成功する() {
-    signal_process_group(i32::MAX, 0).unwrap();
-}

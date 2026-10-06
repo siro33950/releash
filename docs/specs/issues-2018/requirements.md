@@ -66,6 +66,7 @@ Scope:
 - `.github/workflows/ci.yml` と `.github/workflows/nightly.yml` のジョブ、キャッシュ、Lint。
 - 置き場所の検査と、単体テストで外部の資源を使わない検査の追加（ast-grep の設定と規則、qlty の設定を含む）。
 - `AGENTS.md` の「ビルド・テスト・Lint」と「リリース」の記述。
+- `.gitignore` の `node_modules` の除外を、シンボリックリンクにも当たるようにすること。
 - `.github/scripts/workflows-test.mjs` の期待値（ci.yml・nightly.yml・AGENTS.md の構成を検査している）を、変更後の構成に合わせること。
 
 Non-goals:
@@ -86,7 +87,7 @@ Non-goals:
 - R-006: 必須チェックの名前（`frontend`・`quality`・`integration`・`rust`）は変わらず、集約ジョブ `rust` は Rust の単体ジョブ・統合ジョブ・Lint ジョブの結果で成否が決まる。Rust に関係しない変更で Rust のジョブを飛ばしても、必須チェックは Pending のまま残らない。
 - R-007: rust-cache は、ビルド条件（パッケージ・features・環境変数）が同じジョブ同士でキャッシュを共有し、保存は main への push の1ジョブだけが行う。Playwright のブラウザはキャッシュしない。pnpm は `actions/setup-node` のキャッシュを使う。
 - R-008: CI の Biome は `biome ci` で実行する。
-- R-009: プロダクトのテストファイルが TEST.md の「配置と実行」の表の置き場所から外れている場合、`*_test.rs` と `tests/` 以外に `#[test]` がある場合、Rust の単体テストが TEST.md の「配置と実行」の対応（同じディレクトリに `<impl>.rs` があり、一つの実装に `<impl>_test.rs` が一つだけで、`#[path = "<impl>_test.rs"]` の mod 名が `<impl>_tests`。mod.rs の `<impl>` は `mod`）から外れている場合に、CI が落ちる。`.github/` 配下と `.ast-grep/` 配下（CI の道具のテスト）と、テストではない補助ファイル（`test_helpers*.rs`・`test_support/`・`tests/helpers/`・`tests/fixtures/`・`src-tauri/tests/support/`・`src/test/` の setup 等）は検査の対象外とする。
+- R-009: プロダクトのテストファイルが TEST.md の「配置と実行」の表の置き場所から外れている場合、`*_test.rs` と `tests/` 以外に `#[test]` がある場合、Rust の単体テストが TEST.md の「配置と実行」の対応（同じディレクトリに `<impl>.rs` があり、一つの実装に `<impl>_test.rs` が一つだけで、`#[path = "<impl>_test.rs"]` の mod 名が `<impl>_tests`。mod.rs の `<impl>` は `mod`）から外れている場合、`*_test.rs` が対応する `<impl>.rs` から `#[path]` で取り込まれていない場合、Rust の統合テストのファイルが Cargo の統合テストの入口（`tests/` 直下の `*.rs` と `[[test]]` で登録したファイル）から取り込まれていない場合、テストヘルパーが TEST.md の「テストヘルパー」の置き方（ディレクトリごとに `test_helpers.rs` 一つ）から外れている場合（`test_helpers_<名前>.rs` などの別名の補助ファイル）に、CI が落ちる。`.github/` 配下と `.ast-grep/` 配下（CI の道具のテスト）と、テストではない補助ファイル（`test_helpers.rs`・`test_support/`・`tests/helpers/`・`tests/fixtures/`・`src-tauri/tests/support/`・`src/test/` の setup 等）は検査の対象外とする。
 - R-010: `src-tauri/src/` と `src-tauri/releash-desktop/src/` の単体テスト側のファイル（`*_test.rs`・`test_helpers*.rs`・`test_support/`）が `rusqlite::Connection::open*`・`git2::Repository::{init,open}`・`tempfile`・`std::process::Command`・`tokio::process`・`TcpListener`・`TcpStream` を、`use` 宣言と完全修飾のどちらで使っても、CI が落ちる。
 - R-011: R-009 と R-010 の検査は、既存の違反を許可リストで除外せず、違反0件の状態で CI に入る。
 - R-012: 統合テストがクレート内部に触れる入口は `test-support` feature の中だけにあり、層のモジュール（adaptor・domain・usecase など）はライブラリの外へ公開されない。

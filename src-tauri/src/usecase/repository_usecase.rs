@@ -420,7 +420,3 @@ impl RepositoryUsecase {
         self.worktree = worktree;
     }
 }
-
-#[cfg(any(test, feature = "test-support"))]
-#[path = "test_helpers_repository.rs"]
-pub(crate) mod test_helpers;

@@ -1,4 +1,5 @@
-use super::*;
+use crate::infrastructure::local_api::discovery::LocalApiDiscovery;
+
 pub fn discovery(port: u16, token: &str) -> LocalApiDiscovery {
     LocalApiDiscovery {
         port,

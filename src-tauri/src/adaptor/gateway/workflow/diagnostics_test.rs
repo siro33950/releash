@@ -1,6 +1,6 @@
-use super::shared_test_helpers::*;
 use super::*;
 use crate::adaptor::gateway::workflow::schema::Rule;
+use crate::adaptor::gateway::workflow::test_helpers::*;
 
 const MERGED_REFERENCES: &str = include_str!("fixtures/valid/sequence-merged-references.yml");
 

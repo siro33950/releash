@@ -1,18 +1,14 @@
-use crate::usecase::workflow::shared_test_helpers::FakeSecretSourceGateway;
+use crate::usecase::workflow::test_helpers::FakeSecretSourceGateway;
 pub(crate) mod tests {
     use super::super::*;
     use super::*;
     use crate::domain::workflow::{
-        ExecutionTree, ExecutionTreeId, FacetKind, FacetRefs, FacetRepository, FacetSummary,
-        NodeDefinition, NodeKind, SchemaDef, SessionSpec, WorkflowDefinition,
-        WorkflowDefinitionRepository, WorkflowSummary,
+        ExecutionTree, ExecutionTreeId, FacetRefs, NodeDefinition, NodeKind, SchemaDef,
+        SessionSpec, WorkflowDefinition, WorkflowDefinitionRepository, WorkflowSummary,
     };
-    use crate::usecase::workflow::ports::{
-        WorkflowEventRepository, WorkflowExecutionProjectionRepository,
-    };
+    use crate::usecase::workflow::ports::WorkflowExecutionProjectionRepository;
     use crate::usecase::workflow::test_support::NoopDefinitionSourceGateway;
-    use std::collections::{BTreeMap, BTreeSet, HashMap};
-    use std::sync::Mutex;
+    use std::collections::{BTreeMap, BTreeSet};
 
     struct NoopDefinitionRepository;
 
@@ -38,77 +34,7 @@ pub(crate) mod tests {
         }
     }
 
-    #[derive(Default)]
-    struct FakeEventRepository {
-        events: Mutex<Vec<WorkflowEventDraft>>,
-        reads: std::sync::atomic::AtomicUsize,
-    }
-
-    impl FakeEventRepository {
-        fn seed(&self, event: WorkflowEventDraft) {
-            self.events.lock().unwrap().push(event);
-        }
-    }
-
-    #[async_trait::async_trait]
-    impl WorkflowEventRepository for FakeEventRepository {
-        #[cfg(test)]
-        fn append(&self, event: &WorkflowEventDraft) -> Result<(), WorkflowError> {
-            self.events.lock().unwrap().push(event.clone());
-            Ok(())
-        }
-
-        async fn read(
-            &self,
-            _execution_id: &ExecutionTreeId,
-        ) -> Result<Vec<WorkflowEventDraft>, WorkflowError> {
-            self.reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            Ok(self.events.lock().unwrap().clone())
-        }
-    }
-
-    #[derive(Default)]
-    struct FakeFacetRepository {
-        facets: Mutex<HashMap<(FacetKind, String), String>>,
-    }
-
-    impl FacetRepository for FakeFacetRepository {
-        fn list(&self, _kind: FacetKind) -> Result<Vec<String>, WorkflowError> {
-            Ok(Vec::new())
-        }
-
-        fn get(&self, kind: FacetKind, key: &str) -> Result<String, WorkflowError> {
-            self.facets
-                .lock()
-                .unwrap()
-                .get(&(kind, key.to_string()))
-                .cloned()
-                .ok_or_else(|| WorkflowError::NotFound(key.to_string()))
-        }
-
-        fn save(
-            &self,
-            kind: FacetKind,
-            key: &str,
-            content: &str,
-            _is_new: bool,
-        ) -> Result<(), WorkflowError> {
-            self.facets
-                .lock()
-                .unwrap()
-                .insert((kind, key.to_string()), content.to_string());
-            Ok(())
-        }
-
-        fn delete(&self, kind: FacetKind, key: &str) -> Result<(), WorkflowError> {
-            self.facets.lock().unwrap().remove(&(kind, key.to_string()));
-            Ok(())
-        }
-
-        fn list_summaries(&self, _kind: FacetKind) -> Result<Vec<FacetSummary>, WorkflowError> {
-            Ok(Vec::new())
-        }
-    }
+    use crate::usecase::workflow::test_helpers::{FakeEventRepository, FakeFacetRepository};
 
     struct NoopExecutionProjectionRepository;
 

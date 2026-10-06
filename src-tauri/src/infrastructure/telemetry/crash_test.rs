@@ -1,5 +1,5 @@
-use super::crash_test_helpers::{install_test_exporter, TEST_LOCK};
 use super::*;
+use crate::infrastructure::telemetry::test_helpers::{install_test_exporter, TEST_LOCK};
 use opentelemetry::logs::AnyValue;
 use opentelemetry::Key;
 

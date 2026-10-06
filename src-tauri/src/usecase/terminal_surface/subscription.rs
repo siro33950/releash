@@ -30,8 +30,8 @@ type TerminalClientSubscriptions = HashMap<SubscriptionTarget, Vec<String>>;
 pub(crate) struct TerminalSubscriptionUsecase {
     publisher: Arc<dyn TerminalSubscriptionOutput>,
     terminal: Option<Arc<TerminalSurfaceApplication>>,
-    clients: Arc<Mutex<HashMap<String, TerminalClientSubscriptions>>>,
-    terminal_resets: Arc<Mutex<HashMap<SubscriptionTarget, HashSet<String>>>>,
+    pub(super) clients: Arc<Mutex<HashMap<String, TerminalClientSubscriptions>>>,
+    pub(super) terminal_resets: Arc<Mutex<HashMap<SubscriptionTarget, HashSet<String>>>>,
     workers: Arc<Mutex<HashMap<SubscriptionTarget, tokio::sync::oneshot::Sender<()>>>>,
     refresh_requests: tokio::sync::mpsc::UnboundedSender<TerminalRefresh>,
 }

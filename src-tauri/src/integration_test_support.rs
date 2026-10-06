@@ -13,8 +13,8 @@ pub mod code {
     pub use crate::adaptor::gateway::code::staging::git_stage_hunk;
     pub use crate::adaptor::gateway::code::staging::git_unstage;
     pub use crate::adaptor::gateway::code::staging::git_unstage_hunk;
-    pub use crate::adaptor::gateway::code::staging::staging_test_helpers::set_git_program;
     pub use crate::adaptor::gateway::code::staging::StagingGateway;
+    pub use crate::adaptor::gateway::code::test_helpers::set_git_program;
     pub use crate::domain::code::error::CodeError;
     pub use crate::domain::code::services::hunk::assign_hunk_ids;
     pub use crate::domain::code::services::hunk::compute_change_groups;
@@ -179,9 +179,10 @@ pub mod platform {
     pub use crate::domain::failure::StorageFailureSource;
     pub use crate::domain::notion::value_objects::NotionTask;
     pub use crate::infrastructure::local_api::LocalApiDiscovery;
+    pub use crate::infrastructure::telemetry::metrics::resource::ProcessResourceObserver;
     pub use crate::usecase::repository_dto::BranchDto;
-    pub use crate::usecase::repository_state::runtime::test_helpers_runtime::tests_support::IdentityWorktreePathNormalizer;
-    pub use crate::usecase::repository_state::runtime::test_helpers_runtime::tests_support::TestRepositoryStateWorkerRuntime;
+    pub use crate::usecase::repository_state::test_helpers::tests_support::IdentityWorktreePathNormalizer;
+    pub use crate::usecase::repository_state::test_helpers::tests_support::TestRepositoryStateWorkerRuntime;
 
     pub use crate::adaptor::gateway::shared::background_worker::with_blocked_request;
     pub use crate::adaptor::gateway::shared::background_worker::BlockedRequest;
@@ -204,10 +205,6 @@ pub mod platform {
     pub use crate::cli::common::cli_error_stderr;
     pub use crate::cli::common::ensure_existing_data_dir;
     pub use crate::cli::common::resolve_data_dir_from_env;
-    pub use crate::cli::common::test_helpers_common::execution_started_event;
-    pub use crate::cli::common::test_helpers_common::make_execution;
-    pub use crate::cli::common::test_helpers_common::root_node_started_event;
-    pub use crate::cli::common::test_helpers_common::test_uuid;
     pub use crate::cli::common::CliError;
     pub use crate::cli::common::CliSuccess;
     pub use crate::cli::diagnostics::cmd_diagnostics;
@@ -216,6 +213,10 @@ pub mod platform {
     pub use crate::cli::hook::receive_from;
     pub use crate::cli::output::cmd_output_get;
     pub use crate::cli::output::cmd_output_submit;
+    pub use crate::cli::test_helpers::execution_started_event;
+    pub use crate::cli::test_helpers::make_execution;
+    pub use crate::cli::test_helpers::root_node_started_event;
+    pub use crate::cli::test_helpers::test_uuid;
     pub use crate::cli::HookProvider;
     pub use crate::common::operation_context::current;
     pub use crate::common::operation_context::ingress;
@@ -384,7 +385,7 @@ pub mod platform {
     pub use crate::usecase::repository_usecase::RepositoryUsecase;
     pub use crate::usecase::repository_usecase::WorktreeExecutionArchiver;
     pub use crate::usecase::review_usecase::ReviewUsecase;
-    pub use crate::usecase::watcher::watcher_test_helpers::SubscriptionFiles;
+    pub use crate::usecase::test_helpers::watcher::SubscriptionFiles;
     pub use crate::usecase::watcher::UsecaseError as watcher_UsecaseError;
     pub use crate::usecase::watcher::WatcherUsecase;
     pub use crate::usecase::workspace_state::dto::WorkspaceStateDto;
@@ -503,8 +504,8 @@ pub mod repository {
     pub use crate::domain::code::repository::FileContentRepository;
     pub use crate::domain::code::repository::StagingRepository;
     pub use crate::domain::repository::worktree_operation::WorktreeOperationLocks;
-    pub use crate::usecase::repository_usecase::test_helpers::usecase as repository_usecase;
-    pub use crate::usecase::repository_usecase::test_helpers::FakeRepo;
+    pub use crate::usecase::test_helpers::usecase as repository_usecase;
+    pub use crate::usecase::test_helpers::FakeRepo;
 
     pub use crate::domain::app_config::repository::ConfigRepository;
     pub use crate::domain::app_config::repository::ConfigSecretRepository;
@@ -534,17 +535,18 @@ pub mod review {
     pub use crate::domain::code::value_objects::review::ReviewSection;
 }
 pub mod sessions {
+    pub use crate::usecase::agent_session::test_helpers::MemoryHookHealthRepository;
 
-    pub use crate::usecase::agent_session::test_helpers_session::FixedHistory;
+    pub use crate::usecase::agent_session::test_helpers::FixedHistory;
 
-    pub use crate::usecase::agent_session::test_helpers_session::BlockingLaunchTerminal;
-    pub use crate::usecase::agent_session::test_helpers_session::RecordingTerminal;
+    pub use crate::usecase::agent_session::test_helpers::BlockingLaunchTerminal;
+    pub use crate::usecase::agent_session::test_helpers::RecordingTerminal;
 
-    pub use crate::usecase::agent_session::test_helpers_session::hook_health_usecase;
+    pub use crate::usecase::agent_session::test_helpers::hook_health_usecase;
 
-    pub use crate::usecase::agent_session::test_helpers_session::FailingFirstLifecycleEvents;
-    pub use crate::usecase::agent_session::test_helpers_session::RecordingLaunchGateway;
-    pub use crate::usecase::agent_session::test_helpers_session::RecordingLifecycleEvents;
+    pub use crate::usecase::agent_session::test_helpers::FailingFirstLifecycleEvents;
+    pub use crate::usecase::agent_session::test_helpers::RecordingLaunchGateway;
+    pub use crate::usecase::agent_session::test_helpers::RecordingLifecycleEvents;
 
     pub use crate::adaptor::gateway::agent_session::agent_session_history_gateway::LocalAgentSessionHistoryGateway;
     pub use crate::adaptor::gateway::agent_session::agent_session_history_query_service::LocalAgentSessionHistoryQueryService;
@@ -610,14 +612,14 @@ pub mod sessions {
     pub use crate::usecase::agent_session::agent_session_launch::AgentSessionExecutionTreeLifecycle;
     pub use crate::usecase::agent_session::agent_session_launch::AgentSessionHistoryResumeOutcome;
     pub use crate::usecase::agent_session::agent_session_launch::AgentSessionHistoryResumeRequest;
-    pub use crate::usecase::agent_session::test_helpers_session::captured_terminal_spawn_failure;
-    pub use crate::usecase::agent_session::test_helpers_session::provider_runtime;
-    pub use crate::usecase::agent_session::test_helpers_session::session_location;
-    pub use crate::usecase::agent_session::test_helpers_session::started_execution_trees;
-    pub use crate::usecase::agent_session::test_helpers_session::workflow_location;
+    pub use crate::usecase::agent_session::test_helpers::captured_terminal_spawn_failure;
+    pub use crate::usecase::agent_session::test_helpers::provider_runtime;
+    pub use crate::usecase::agent_session::test_helpers::session_location;
+    pub use crate::usecase::agent_session::test_helpers::started_execution_trees;
+    pub use crate::usecase::agent_session::test_helpers::workflow_location;
 
-    pub use crate::usecase::agent_session::test_helpers_session::FixedAvailability;
-    pub use crate::usecase::agent_session::test_helpers_session::RecordingStartedExecutionTrees;
+    pub use crate::usecase::agent_session::test_helpers::FixedAvailability;
+    pub use crate::usecase::agent_session::test_helpers::RecordingStartedExecutionTrees;
 
     pub use crate::usecase::agent_session::agent_session_launch::AgentSessionLaunchRequest;
     pub use crate::usecase::agent_session::agent_session_launch::AgentSessionLaunchUsecase;
@@ -642,8 +644,8 @@ pub mod sessions {
     pub use crate::usecase::agent_session::agent_session_read::AgentSessionGarbageCollectionPort;
     pub use crate::usecase::agent_session::agent_session_read::AgentSessionReadUsecase;
     pub use crate::usecase::agent_session::provider_availability::ProviderAvailabilityUsecase;
-    pub use crate::usecase::agent_session::test_helpers_provider_availability::FakeProviderExecutableConfigRepository;
-    pub use crate::usecase::agent_session::test_helpers_provider_availability::FakeProviderExecutableProbeGateway;
+    pub use crate::usecase::agent_session::test_helpers::FakeProviderExecutableConfigRepository;
+    pub use crate::usecase::agent_session::test_helpers::FakeProviderExecutableProbeGateway;
     pub use crate::usecase::agent_session::usecase::AgentSessionUsecase;
     pub use crate::usecase::agent_session::usecase::AgentSessionUsecaseError;
 }
@@ -689,15 +691,15 @@ pub mod subscriptions {
     pub use crate::usecase::state_subscription::reads::StateReadFailure;
     pub use crate::usecase::state_subscription::reads::StateSubscriptionRead;
     pub use crate::usecase::state_subscription::reads::WorkspaceStateReads;
-    pub use crate::usecase::state_subscription::state_subscription_test_helpers::notion_target;
-    pub use crate::usecase::state_subscription::state_subscription_test_helpers::FakeDelivery;
-    pub use crate::usecase::state_subscription::state_subscription_test_helpers::RecordingOutput;
     pub use crate::usecase::state_subscription::target::StateChangeSource;
     pub use crate::usecase::state_subscription::target::SubscriptionTarget;
     pub use crate::usecase::state_subscription::target::WatchRequirement;
     pub use crate::usecase::state_subscription::value::StateValue;
     pub use crate::usecase::state_subscription::StateSubscriptionOutput;
     pub use crate::usecase::state_subscription::StateSubscriptionUsecase;
+    pub use crate::usecase::test_helpers::state_subscription::notion_target;
+    pub use crate::usecase::test_helpers::state_subscription::FakeDelivery;
+    pub use crate::usecase::test_helpers::state_subscription::RecordingOutput;
 }
 pub mod telemetry {
     pub use crate::adaptor::gateway::telemetry::TelemetryGateway;
@@ -737,7 +739,7 @@ pub mod terminal {
     pub use crate::usecase::terminal_surface::output::TerminalSurfaceOutputControl;
     pub use crate::usecase::terminal_surface::output::TerminalSurfaceOutputEvent;
     pub use crate::usecase::terminal_surface::spawn_usecase::get_or_spawn;
-    pub use crate::usecase::terminal_surface::test_helpers_io::FakePtyGateway;
+    pub use crate::usecase::terminal_surface::test_helpers::FakePtyGateway;
 }
 pub mod transport {
 
@@ -834,7 +836,8 @@ pub mod workflow {
     pub use crate::domain::workflow::value_objects::field_path::FieldPath;
     pub use crate::usecase::workflow::dto::facet_summary_to_dto;
     pub use crate::usecase::workflow::node_startup::NodeStartupGateway;
-    pub use crate::usecase::workflow::test_helpers_archive::NoopArchiveRepository;
+    pub use crate::usecase::workflow::test_helpers::FakeDefinitionRepository;
+    pub use crate::usecase::workflow::test_helpers::NoopArchiveRepository;
 
     pub use crate::adaptor::gateway::workflow::builtin::get_builtin_facet;
     pub use crate::adaptor::gateway::workflow::builtin::list_builtin_facet_keys;
@@ -1200,41 +1203,41 @@ pub mod wire {
 }
 
 pub mod fixtures {
-    pub use crate::domain::workflow::services::fact_replay::shared_test_helpers::session_attached;
-    pub use crate::adaptor::gateway::agent_session::provider_availability_gateway::shared_test_helpers::FailingSearchPathSource as availability_FailingSearchPathSource;
-pub use crate::usecase::watcher::shared_test_helpers::Files as watcher_Files;
-pub use crate::usecase::workflow::shared_test_helpers::FakeFacetRepository as workflow_FakeFacetRepository;
-pub use crate::usecase::workflow::shared_test_helpers::FakeEventRepository as workflow_FakeEventRepository;
-pub use crate::usecase::workflow::shared_test_helpers::FakeSecretSourceGateway as workflow_FakeSecretSourceGateway;
-pub use crate::usecase::repository_state::service::fixture_helpers::EmptyScanner as repository_state_EmptyScanner;
+    pub use crate::adaptor::gateway::agent_session::test_helpers::FailingSearchPathSource as availability_FailingSearchPathSource;
+    pub use crate::domain::workflow::services::test_helpers::session_attached;
+    pub use crate::usecase::repository_state::test_helpers::EmptyScanner as repository_state_EmptyScanner;
+    pub use crate::usecase::test_helpers::Files as watcher_Files;
+    pub use crate::usecase::workflow::test_helpers::FakeEventRepository as workflow_FakeEventRepository;
+    pub use crate::usecase::workflow::test_helpers::FakeFacetRepository as workflow_FakeFacetRepository;
+    pub use crate::usecase::workflow::test_helpers::FakeSecretSourceGateway as workflow_FakeSecretSourceGateway;
 
-    pub use crate::adaptor::gateway::workflow::diagnostics::shared_test_helpers::predicate_yaml as fixtures_adaptor_gateway_workflow_diagnostics_predicate_yaml;
-    pub use crate::adaptor::gateway::workflow::workflow_host::memory_test_helpers::RecordingWorkflowAgentSessions as adaptor_gateway_workflow_workflow_host_RecordingWorkflowAgentSessions;
-    pub use crate::adaptor::gateway::workflow::workflow_host::memory_test_helpers::EFFECT_AGENT_SESSION_ID as adaptor_gateway_workflow_workflow_host_EFFECT_AGENT_SESSION_ID;
-    pub use crate::usecase::repository_state::service::fixture_helpers::counting_service as repository_state_counting_service;
+    pub use crate::adaptor::gateway::workflow::test_helpers::predicate_yaml as fixtures_adaptor_gateway_workflow_diagnostics_predicate_yaml;
+    pub use crate::adaptor::gateway::workflow::test_helpers::RecordingWorkflowAgentSessions as adaptor_gateway_workflow_workflow_host_RecordingWorkflowAgentSessions;
+    pub use crate::adaptor::gateway::workflow::test_helpers::EFFECT_AGENT_SESSION_ID as adaptor_gateway_workflow_workflow_host_EFFECT_AGENT_SESSION_ID;
+    pub use crate::usecase::repository_state::test_helpers::counting_service as repository_state_counting_service;
 
-    pub use crate::usecase::repository_state::service::fixture_helpers::CountingScanner as repository_state_CountingScanner;
+    pub use crate::usecase::repository_state::test_helpers::CountingScanner as repository_state_CountingScanner;
 
-    pub use crate::usecase::repository_state::service::fixture_helpers::TestRepositoryStateRepository as repository_state_TestRepositoryStateRepository;
+    pub use crate::usecase::repository_state::test_helpers::TestRepositoryStateRepository as repository_state_TestRepositoryStateRepository;
 
-    pub use crate::adaptor::gateway::terminal_surface::runtime_gateway_impl::shared_test_helpers::insert_test_session as fixtures_adaptor_gateway_terminal_surface_runtime_gateway_impl_insert_test_session;
-    pub use crate::adaptor::controller::api::client::shared_test_helpers::dispatch as fixtures_adaptor_controller_api_client_dispatch;
-    pub use crate::adaptor::gateway::agent_session::agent_session_history_query_service::shared_test_helpers::metadata as fixtures_adaptor_gateway_agent_session_agent_session_history_query_service_metadata;
-    pub use crate::domain::workflow::entities::workflow_execution::shared_test_helpers::started_names as fixtures_domain_workflow_entities_workflow_execution_mod_started_names;
-    pub use crate::domain::workflow::entities::workflow_execution::shared_test_helpers::id_source as fixtures_domain_workflow_entities_workflow_execution_mod_id_source;
-    pub use crate::domain::workflow::entities::workflow_execution::shared_test_helpers::execution_id_of as fixtures_domain_workflow_entities_workflow_execution_mod_execution_id_of;
+    pub use crate::adaptor::controller::api::test_helpers::dispatch as fixtures_adaptor_controller_api_client_dispatch;
+    pub use crate::adaptor::gateway::agent_session::test_helpers::metadata as fixtures_adaptor_gateway_agent_session_agent_session_history_query_service_metadata;
+    pub use crate::adaptor::gateway::terminal_surface::test_helpers::insert_test_session as fixtures_adaptor_gateway_terminal_surface_runtime_gateway_impl_insert_test_session;
+    pub use crate::domain::workflow::entities::workflow_execution::test_helpers::execution_id_of as fixtures_domain_workflow_entities_workflow_execution_mod_execution_id_of;
+    pub use crate::domain::workflow::entities::workflow_execution::test_helpers::id_source as fixtures_domain_workflow_entities_workflow_execution_mod_id_source;
+    pub use crate::domain::workflow::entities::workflow_execution::test_helpers::started_names as fixtures_domain_workflow_entities_workflow_execution_mod_started_names;
 
-    pub use crate::adaptor::gateway::repository::state::shared_test_helpers::event as fixtures_adaptor_gateway_repository_state_event;
+    pub use crate::adaptor::gateway::repository::test_helpers::event as fixtures_adaptor_gateway_repository_state_event;
 
-    pub use crate::adaptor::gateway::repository::state::shared_test_helpers::state_with_subscriptions as fixtures_adaptor_gateway_repository_state_state_with_subscriptions;
+    pub use crate::adaptor::gateway::repository::test_helpers::state_with_subscriptions as fixtures_adaptor_gateway_repository_state_state_with_subscriptions;
 
-    pub use crate::adaptor::gateway::provider_lifecycle::shared_test_helpers::context as fixtures_adaptor_gateway_provider_lifecycle_mod_context;
-    pub use crate::adaptor::gateway::provider_lifecycle::shared_test_helpers::slot_id as fixtures_adaptor_gateway_provider_lifecycle_mod_slot_id;
+    pub use crate::adaptor::gateway::provider_lifecycle::test_helpers::context as fixtures_adaptor_gateway_provider_lifecycle_mod_context;
+    pub use crate::adaptor::gateway::provider_lifecycle::test_helpers::slot_id as fixtures_adaptor_gateway_provider_lifecycle_mod_slot_id;
 
-    pub use crate::domain::comment::shared_test_helpers::agent as fixtures_domain_comment_mod_agent;
-    pub use crate::infrastructure::state_subscription::shared_test_helpers::start_read as fixtures_infrastructure_state_subscription_start_read;
-    pub use crate::infrastructure::state_subscription::shared_test_helpers::stop_read as fixtures_infrastructure_state_subscription_stop_read;
-    pub use crate::adaptor::gateway::local_event_store::provider_lifecycle_codec::shared_test_helpers::scope as fixtures_adaptor_gateway_local_event_store_provider_lifecycle_codec_scope;
-    pub use crate::usecase::terminal_surface::spawn_usecase::shared_test_helpers::workspace_owner as fixtures_usecase_terminal_surface_spawn_usecase_workspace_owner;
-    pub use crate::infrastructure::local_api::client::shared_test_helpers::discovery as fixtures_infrastructure_local_api_client_discovery;
+    pub use crate::adaptor::gateway::local_event_store::test_helpers::scope as fixtures_adaptor_gateway_local_event_store_provider_lifecycle_codec_scope;
+    pub use crate::domain::comment::test_helpers::agent as fixtures_domain_comment_mod_agent;
+    pub use crate::infrastructure::local_api::test_helpers::discovery as fixtures_infrastructure_local_api_client_discovery;
+    pub use crate::usecase::terminal_surface::test_helpers::workspace_owner as fixtures_usecase_terminal_surface_spawn_usecase_workspace_owner;
+    pub use crate::usecase::test_helpers::start_read as fixtures_infrastructure_state_subscription_start_read;
+    pub use crate::usecase::test_helpers::stop_read as fixtures_infrastructure_state_subscription_stop_read;
 }

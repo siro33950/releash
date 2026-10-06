@@ -1,4 +1,4 @@
-use crate::usecase::workflow::shared_test_helpers::FakeFacetRepository;
+use crate::usecase::workflow::test_helpers::FakeFacetRepository;
 pub(crate) mod tests {
     use super::super::*;
     use super::*;

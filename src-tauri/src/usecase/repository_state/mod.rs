@@ -9,3 +9,6 @@ pub(crate) mod worktree;
 
 pub(crate) use error::RepositoryStateError;
 pub(crate) use service::RepositoryStateService;
+
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) mod test_helpers;

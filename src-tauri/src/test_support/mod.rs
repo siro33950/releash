@@ -171,3 +171,10 @@ pub mod terminal_surface {
         TerminalSurfaceStreamItemV1, TerminalSurfaceV1,
     };
 }
+
+#[cfg(test)]
+pub(crate) fn lock_crash_telemetry() -> std::sync::MutexGuard<'static, ()> {
+    crate::infrastructure::telemetry::test_helpers::TEST_LOCK
+        .lock()
+        .unwrap()
+}

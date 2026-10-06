@@ -314,7 +314,3 @@ impl RepositoryStateService {
 #[cfg(test)]
 #[path = "service_test.rs"]
 mod service_tests;
-
-#[cfg(any(test, feature = "test-support"))]
-#[path = "test_helpers_service_fixtures.rs"]
-pub(crate) mod fixture_helpers;

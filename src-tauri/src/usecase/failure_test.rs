@@ -1,5 +1,4 @@
 use super::*;
-use crate::adaptor::gateway::failure_records::FailureRecordStore;
 use std::sync::Arc;
 
 #[test]
@@ -55,7 +54,7 @@ fn test_記録する失敗_作業の失敗は文面をそのまま他はdebug表
 #[test]
 fn test_失敗記録_usecaseが要対応を判定してrepositoryへ渡す() {
     // Given
-    let store = Arc::new(crate::adaptor::gateway::failure_records::FailureRecordStore::default());
+    let store = Arc::new(RecordingFailures::default());
     let recording = FailureRecordingUsecase::new(store.clone(), None);
     let key = FailureKey::new("workflow_start", "tree");
     // When
@@ -67,7 +66,7 @@ fn test_失敗記録_usecaseが要対応を判定してrepositoryへ渡す() {
         },
     );
     // Then
-    assert!(store.records("tree")[0].record.requires_attention);
+    assert!(store.records("tree")[0].requires_attention);
     // When
     recording.observed(
         &key,
@@ -77,24 +76,17 @@ fn test_失敗記録_usecaseが要対応を判定してrepositoryへ渡す() {
         },
     );
     // Then
-    assert!(
-        !store
-            .records("tree")
-            .last()
-            .unwrap()
-            .record
-            .requires_attention
-    );
+    assert!(!store.records("tree").last().unwrap().requires_attention);
 }
 
 fn presenter() -> (
     FailureRecordingUsecase,
-    Arc<FailureRecordStore>,
+    Arc<RecordingFailures>,
     tokio::sync::broadcast::Receiver<crate::usecase::state_subscription::StateChangeSource>,
 ) {
     let output = crate::test_support::state_subscription::test_subscriptions();
     let changes = crate::test_support::state_subscription::changes(&output);
-    let store = Arc::new(FailureRecordStore::default());
+    let store = Arc::new(RecordingFailures::default());
     (
         FailureRecordingUsecase::new(store.clone(), Some(output)),
         store,
@@ -163,4 +155,59 @@ async fn test_要対応の通知_workflow以外の操作と要対応でない失
     presenter.resolved(&FailureKey::new("workflow_recovery", "tree"));
     // Then
     assert!(changes.try_recv().is_err());
+}
+
+#[derive(Clone)]
+struct Observation {
+    record: WorkFailure,
+    requires_attention: bool,
+}
+#[derive(Default)]
+struct RecordingFailures(std::sync::Mutex<std::collections::HashMap<FailureKey, Observation>>);
+impl RecordingFailures {
+    fn records(&self, target: &str) -> Vec<Observation> {
+        self.0
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(key, _)| key.target == target)
+            .map(|(_, value)| value.clone())
+            .collect()
+    }
+}
+impl crate::domain::failure::FailureRecordRepository for RecordingFailures {
+    fn record_observed(
+        &self,
+        key: &FailureKey,
+        record: WorkFailure,
+        requires_attention: bool,
+    ) -> bool {
+        let mut records = self.0.lock().unwrap();
+        let previous = records.insert(
+            key.clone(),
+            Observation {
+                record: record.clone(),
+                requires_attention,
+            },
+        );
+        previous
+            .as_ref()
+            .filter(|value| value.requires_attention)
+            .map(|value| &value.record)
+            != requires_attention.then_some(&record)
+    }
+    fn record_resolved(&self, key: &FailureKey) -> bool {
+        let mut records = self.0.lock().unwrap();
+        let Some(value) = records.get_mut(key) else {
+            return false;
+        };
+        std::mem::replace(&mut value.requires_attention, false)
+    }
+    fn attention_messages(&self, target: &str) -> Vec<String> {
+        self.records(target)
+            .into_iter()
+            .filter(|value| value.requires_attention)
+            .map(|value| value.record.message)
+            .collect()
+    }
 }

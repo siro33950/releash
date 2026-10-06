@@ -17,5 +17,4 @@ pub(crate) use payload::{parse_provider_payload, ProviderLifecycleGatewayError};
 mod mod_tests;
 
 #[cfg(any(test, feature = "test-support"))]
-#[path = "test_helpers_mod.rs"]
-pub(crate) mod shared_test_helpers;
+pub(crate) mod test_helpers;

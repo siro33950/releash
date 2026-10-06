@@ -16,10 +16,6 @@ use crate::domain::workflow::{
     NodeKindName, RuntimeExecutionState, TreeRootFact,
 };
 
-#[cfg(any(test, feature = "test-support"))]
-#[path = "test_helpers_fact_replay.rs"]
-pub(crate) mod shared_test_helpers;
-
 #[cfg(test)]
 #[path = "fact_replay_test.rs"]
 mod fact_replay_tests;

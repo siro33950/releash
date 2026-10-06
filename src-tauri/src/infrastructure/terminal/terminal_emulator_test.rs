@@ -31,11 +31,7 @@ fn test_ターミナル画面再現_本番1000行履歴の境界markerを厳密�
     const ROWS: u16 = 4;
     const TOTAL_MARKERS: usize = 1_014;
     const FIRST_RETAINED_MARKER: usize = 11;
-    let mut emulator = NativeTerminalEmulator::new(
-        40,
-        ROWS,
-        crate::domain::terminal_surface::TERMINAL_SURFACE_SCROLLBACK_ROWS,
-    );
+    let mut emulator = NativeTerminalEmulator::new(40, ROWS, TEST_SCROLLBACK_ROWS);
     for index in 0..TOTAL_MARKERS {
         emulator.apply(&format!("boundary-marker-{index:04}\r\n"));
     }
@@ -68,7 +64,7 @@ fn test_checkpoint失敗_文脈を加えてもio種類を保持する() {
 }
 
 mod restored_memory_tests {
-    use super::super::*;
+    use super::*;
 
     #[derive(serde::Deserialize)]
     struct BackendXtermCheckpointFixture {
@@ -91,7 +87,7 @@ mod restored_memory_tests {
         let mut emulator = NativeTerminalEmulator::new(
             fixture.initial_cols,
             fixture.initial_rows,
-            crate::domain::terminal_surface::TERMINAL_SURFACE_SCROLLBACK_ROWS,
+            TEST_SCROLLBACK_ROWS,
         );
         emulator.apply(&fixture.before_resize);
         emulator.resize(fixture.resized_cols, fixture.resized_rows);

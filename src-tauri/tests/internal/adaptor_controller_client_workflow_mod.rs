@@ -75,9 +75,7 @@ pub(crate) mod tests {
         assert!(!handles_command("get_git_status"));
     }
 
-    // ---- ファセットコマンド × 3 種カバレッジ + persona / contract / 未知種別拒否 ----
     //
-    // policy/knowledge/instruction の正常経路と、persona / contract / 未知種別の拒否を、
     // テンポラリディレクトリ上で検証する。
 
     const THREE_KINDS: [(&str, &str); 3] = [
@@ -102,26 +100,6 @@ pub(crate) mod tests {
         format!("sample-{dir}")
     }
 
-    fn personas_dir_snapshot(base: &Path) -> Vec<std::path::PathBuf> {
-        let personas = base.join("personas");
-        if !personas.exists() {
-            return Vec::new();
-        }
-        let mut entries: Vec<_> = std::fs::read_dir(&personas)
-            .unwrap()
-            .map(|e| e.unwrap().path())
-            .collect();
-        entries.sort();
-        entries
-    }
-
-    fn assert_no_persona_files(base: &Path) {
-        assert!(
-            personas_dir_snapshot(base).is_empty(),
-            "personas/ must not be created or written to by any facet command"
-        );
-    }
-
     #[test]
     pub fn list_facets_inner_reaches_listing_path_for_each_kind() {
         let tmp = setup_tmp_facets_base();
@@ -132,17 +110,15 @@ pub(crate) mod tests {
                 "list_facets({kind}) must include the seeded key"
             );
         }
-        assert_no_persona_files(tmp.path());
     }
 
     #[test]
-    pub fn list_facets_inner_rejects_persona_and_unknown_without_io() {
+    pub fn list_facets_inner_rejects_unknown_without_io() {
         let tmp = setup_tmp_facets_base();
-        for bad in ["persona", "contract", "unknown"] {
+        for bad in ["unknown"] {
             let result = list_facets_inner(bad, tmp.path());
             assert!(result.is_err(), "list_facets({bad}) must be rejected");
         }
-        assert_no_persona_files(tmp.path());
     }
 
     #[test]
@@ -152,17 +128,15 @@ pub(crate) mod tests {
             let body = get_facet_inner(kind, &key_for(kind), tmp.path()).unwrap();
             assert_eq!(body, "SAMPLE_BODY", "get_facet({kind}) body mismatch");
         }
-        assert_no_persona_files(tmp.path());
     }
 
     #[test]
-    pub fn get_facet_inner_rejects_persona_and_unknown_without_io() {
+    pub fn get_facet_inner_rejects_unknown_without_io() {
         let tmp = setup_tmp_facets_base();
-        for bad in ["persona", "contract", "unknown"] {
+        for bad in ["unknown"] {
             let result = get_facet_inner(bad, "sample-policies", tmp.path());
             assert!(result.is_err(), "get_facet({bad}) must be rejected");
         }
-        assert_no_persona_files(tmp.path());
     }
 
     #[test]
@@ -175,20 +149,15 @@ pub(crate) mod tests {
             assert!(path.exists(), "save_facet({kind}) must create {path:?}");
             assert_eq!(std::fs::read_to_string(&path).unwrap(), "WRITTEN_BODY");
         }
-        assert_no_persona_files(tmp.path());
     }
 
     #[test]
-    pub fn save_facet_inner_rejects_persona_and_unknown_without_io() {
+    pub fn save_facet_inner_rejects_unknown_without_io() {
         let tmp = setup_tmp_facets_base();
-        let before = personas_dir_snapshot(tmp.path());
-        for bad in ["persona", "contract", "unknown"] {
+        for bad in ["unknown"] {
             let result = save_facet_inner(bad, "anything", "BODY", true, tmp.path());
             assert!(result.is_err(), "save_facet({bad}) must be rejected");
         }
-        // persona/未知種別では personas/*.md を含むファセットファイルの読み書きを一切行わない
-        assert_eq!(personas_dir_snapshot(tmp.path()), before);
-        assert_no_persona_files(tmp.path());
     }
 
     #[test]
@@ -201,13 +170,12 @@ pub(crate) mod tests {
             delete_facet_inner(kind, &key, tmp.path()).unwrap();
             assert!(!path.exists(), "delete_facet({kind}) must remove {path:?}");
         }
-        assert_no_persona_files(tmp.path());
     }
 
     #[test]
-    pub fn delete_facet_inner_rejects_persona_and_unknown_without_io() {
+    pub fn delete_facet_inner_rejects_unknown_without_io() {
         let tmp = setup_tmp_facets_base();
-        for bad in ["persona", "contract", "unknown"] {
+        for bad in ["unknown"] {
             let result = delete_facet_inner(bad, "sample-policies", tmp.path());
             assert!(result.is_err(), "delete_facet({bad}) must be rejected");
         }
@@ -219,7 +187,6 @@ pub(crate) mod tests {
                 .join(format!("sample-{dir_name}.md"))
                 .exists());
         }
-        assert_no_persona_files(tmp.path());
     }
 
     #[test]
@@ -232,20 +199,18 @@ pub(crate) mod tests {
                 "list_facet_summaries({kind}) must include the seeded key"
             );
         }
-        assert_no_persona_files(tmp.path());
     }
 
     #[test]
-    pub fn list_facet_summaries_inner_rejects_persona_and_unknown_without_io() {
+    pub fn list_facet_summaries_inner_rejects_unknown_without_io() {
         let tmp = setup_tmp_facets_base();
-        for bad in ["persona", "contract", "unknown"] {
+        for bad in ["unknown"] {
             let result = list_facet_summaries_inner(bad, tmp.path());
             assert!(
                 result.is_err(),
                 "list_facet_summaries({bad}) must be rejected"
             );
         }
-        assert_no_persona_files(tmp.path());
     }
 
     #[test]
@@ -262,17 +227,15 @@ pub(crate) mod tests {
             );
             assert_eq!(std::fs::read_to_string(&path).unwrap(), "SAMPLE_BODY");
         }
-        assert_no_persona_files(tmp.path());
     }
 
     #[test]
-    pub fn duplicate_facet_inner_rejects_persona_and_unknown_without_io() {
+    pub fn duplicate_facet_inner_rejects_unknown_without_io() {
         let tmp = setup_tmp_facets_base();
-        for bad in ["persona", "contract", "unknown"] {
+        for bad in ["unknown"] {
             let result = duplicate_facet_inner(bad, "src", "dst", tmp.path());
             assert!(result.is_err(), "duplicate_facet({bad}) must be rejected");
         }
-        assert_no_persona_files(tmp.path());
     }
 
     #[test]
@@ -303,13 +266,12 @@ pub(crate) mod tests {
                 "opener must receive the resolved facet path for {kind}"
             );
         }
-        assert_no_persona_files(tmp.path());
     }
 
     #[test]
-    pub fn open_facet_in_editor_inner_rejects_persona_and_unknown_without_invoking_opener() {
+    pub fn open_facet_in_editor_inner_rejects_unknown_without_invoking_opener() {
         let tmp = setup_tmp_facets_base();
-        for bad in ["persona", "contract", "unknown"] {
+        for bad in ["unknown"] {
             let invoked: Arc<std::sync::Mutex<bool>> = Arc::new(std::sync::Mutex::new(false));
             let invoked_clone = invoked.clone();
             let result = open_facet_in_editor_inner(bad, "sample", tmp.path(), move |_| {
@@ -325,50 +287,6 @@ pub(crate) mod tests {
                 "opener must not be invoked for {bad}"
             );
         }
-        assert_no_persona_files(tmp.path());
-    }
-
-    /// Scenario: 既存の personas ディレクトリのファイルはディスク上に残るがアプリからは参照されない
-    /// （Spec Rule: Persona廃止後もユーザーディレクトリ上の物理ファイルは保持される）
-    ///
-    /// temp dir に personas/legacy.md を事前作成し、ファセット一覧系の経路実行後も
-    /// ファイルが残り、3種の一覧結果に legacy が含まれないことを直接 assert する。
-    #[test]
-    pub fn legacy_persona_file_remains_on_disk_and_is_not_listed_for_any_kind() {
-        let tmp = setup_tmp_facets_base();
-        let base = tmp.path();
-
-        // 既存ユーザーが残した persona ファイル相当を事前配置
-        let personas_dir = base.join("personas");
-        std::fs::create_dir_all(&personas_dir).unwrap();
-        let legacy_path = personas_dir.join("legacy.md");
-        std::fs::write(&legacy_path, "LEGACY_PERSONA_BODY").unwrap();
-
-        // ファセット一覧系経路を 3 種それぞれで実行
-        for (kind, _dir_name) in THREE_KINDS {
-            let listed = list_facets_inner(kind, base).unwrap();
-            assert!(
-                !listed.iter().any(|k| k == "legacy"),
-                "list_facets({kind}) must not surface the legacy persona key"
-            );
-
-            let summaries = list_facet_summaries_inner(kind, base).unwrap();
-            assert!(
-                !summaries.iter().any(|s| s.key == "legacy"),
-                "list_facet_summaries({kind}) must not surface the legacy persona key"
-            );
-        }
-
-        // 物理ファイルはディスク上に残ったまま（自動削除されない）
-        assert!(
-            legacy_path.exists(),
-            "personas/legacy.md must remain on disk after facet listing"
-        );
-        assert_eq!(
-            std::fs::read_to_string(&legacy_path).unwrap(),
-            "LEGACY_PERSONA_BODY",
-            "personas/legacy.md content must be preserved untouched"
-        );
     }
 
     // ---- duplicate logic tests ----

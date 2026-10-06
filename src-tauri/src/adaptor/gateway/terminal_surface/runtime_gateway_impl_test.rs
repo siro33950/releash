@@ -1,9 +1,9 @@
-use super::shared_test_helpers::*;
 use super::*;
+use crate::adaptor::gateway::terminal_surface::test_helpers::*;
 use crate::domain::terminal_surface::TerminalSurfaceOwner;
 use crate::domain::workspace_tree::WorkspaceIdentity;
 use crate::usecase::terminal_surface::output::TerminalSurfaceOutputControl;
-use crate::usecase::terminal_surface::spawn_usecase::shared_test_helpers::workspace_owner;
+use crate::usecase::terminal_surface::test_helpers::workspace_owner;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Condvar, Mutex as StdMutex};
 use std::time::Duration;

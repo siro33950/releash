@@ -142,10 +142,6 @@ pub(super) fn truncate(s: &str, max: usize) -> String {
     }
 }
 
-#[cfg(any(test, feature = "test-support"))]
-#[path = "test_helpers_common.rs"]
-pub(crate) mod test_helpers_common;
-
 #[cfg(test)]
 #[path = "common_test.rs"]
 mod common_tests;

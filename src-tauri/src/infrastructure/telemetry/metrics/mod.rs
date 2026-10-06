@@ -1,5 +1,5 @@
 pub(crate) mod attributes;
-mod resource;
+pub(crate) mod resource;
 
 #[cfg(not(any(test, feature = "test-support")))]
 use std::sync::atomic::AtomicBool;

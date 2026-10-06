@@ -1,6 +1,6 @@
 use super::*;
 use crate::domain::workspace_tree::WorkspaceIdentity;
-use crate::usecase::terminal_surface::test_helpers_io::FakePtyGateway;
+use crate::usecase::terminal_surface::test_helpers::FakePtyGateway;
 
 #[test]
 fn test_ターミナル画面_パス入力_引用符処理して結合後に書き込む() {

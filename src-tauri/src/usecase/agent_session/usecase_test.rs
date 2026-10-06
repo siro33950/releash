@@ -1,5 +1,5 @@
 mod memory_tests {
-    use crate::usecase::agent_session::test_helpers_session::*;
+    use crate::usecase::agent_session::test_helpers::*;
     use std::sync::Arc;
 
     use crate::domain::agent_session::aggregates::agent_session::AgentSession;

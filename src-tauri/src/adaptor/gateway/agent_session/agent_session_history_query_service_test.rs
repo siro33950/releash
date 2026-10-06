@@ -1,4 +1,4 @@
-use super::shared_test_helpers::*;
+use crate::adaptor::gateway::agent_session::test_helpers::*;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 

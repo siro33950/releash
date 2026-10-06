@@ -320,7 +320,3 @@ pub fn get_or_spawn_with_process<G: TerminalSurfaceGateway + ?Sized>(
 #[cfg(test)]
 #[path = "spawn_usecase_test.rs"]
 mod spawn_usecase_tests;
-
-#[cfg(any(test, feature = "test-support"))]
-#[path = "test_helpers_spawn_usecase.rs"]
-pub(crate) mod shared_test_helpers;

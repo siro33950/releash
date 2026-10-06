@@ -60,11 +60,3 @@ impl WatcherUsecase {
 #[cfg(test)]
 #[path = "watcher_test.rs"]
 mod watcher_tests;
-
-#[cfg(any(test, feature = "test-support"))]
-#[path = "watcher_test_helpers.rs"]
-pub(crate) mod watcher_test_helpers;
-
-#[cfg(any(test, feature = "test-support"))]
-#[path = "test_helpers_watcher.rs"]
-pub(crate) mod shared_test_helpers;

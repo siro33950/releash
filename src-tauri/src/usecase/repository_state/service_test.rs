@@ -1,64 +1,14 @@
-use super::fixture_helpers::EmptyScanner;
 use super::*;
-use crate::usecase::repository_dto::{FileDiffStatDto, FileStatusDto};
 use crate::usecase::repository_state::runtime::tests_support::TestRepositoryStateWorkerRuntime;
 use crate::usecase::repository_state::runtime::tests_support::{
     IdentityWorktreePathNormalizer, NoSpawnRepositoryStateWorkerRuntime,
 };
-use crate::usecase::repository_state::snapshot::RepositorySnapshotParts;
+use crate::usecase::repository_state::test_helpers::{
+    CountingScanner, EmptyScanner, TestRepositoryStateRepository,
+};
 use crate::usecase::repository_state::worktree::NoopRepositoryStateWatcher;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::Duration;
-struct TestRepositoryStateRepository;
-
-impl RepositoryStateRepository for TestRepositoryStateRepository {
-    fn main_repo_path(&self, path: &str) -> Result<String, RepositoryStateError> {
-        Ok(path.to_string())
-    }
-}
-
-#[derive(Default)]
-struct CountingScanner {
-    scans: AtomicUsize,
-    prunes: parking_lot::Mutex<Vec<String>>,
-    status: parking_lot::Mutex<Vec<FileStatusDto>>,
-    diff_stats: parking_lot::Mutex<Vec<FileDiffStatDto>>,
-    worktrees: parking_lot::Mutex<Vec<Worktree>>,
-}
-
-#[async_trait::async_trait]
-
-impl RepositoryScanner for CountingScanner {
-    async fn scan_async(
-        &self,
-        repo_path: &str,
-    ) -> Result<RepositorySnapshotParts, RepositoryStateError> {
-        self.scan(repo_path)
-    }
-
-    fn scan(&self, _repo_path: &str) -> Result<RepositorySnapshotParts, RepositoryStateError> {
-        self.scans.fetch_add(1, Ordering::SeqCst);
-        let status = self.status.lock().clone();
-        Ok(RepositorySnapshotParts {
-            dirty_count: status.len(),
-            status,
-            diff_stats: self.diff_stats.lock().clone(),
-            diff_file_tree: Vec::new(),
-            staged_diff_file_tree: Vec::new(),
-            changes_diff_file_tree: Vec::new(),
-        })
-    }
-
-    fn scan_worktrees(&self, _repo_path: &str) -> Result<Vec<Worktree>, RepositoryStateError> {
-        Ok(self.worktrees.lock().clone())
-    }
-
-    fn prune_stale_branch_bases(&self, repo_path: &str) -> Result<(), RepositoryStateError> {
-        self.prunes.lock().push(repo_path.to_string());
-        Ok(())
-    }
-}
-
 struct GateWatchSession {
     drop_entered: Arc<std::sync::atomic::AtomicBool>,
     release: Arc<std::sync::Barrier>,
@@ -293,12 +243,12 @@ mod rescan_tests {
     use crate::usecase::repository_dto::FileDiffStatDto;
     use crate::usecase::repository_dto::FileStatusDto;
     use crate::usecase::repository_state::error::RepositoryStateError;
-    use crate::usecase::repository_state::runtime::test_helpers_runtime::tests_support::IdentityWorktreePathNormalizer;
-    use crate::usecase::repository_state::runtime::test_helpers_runtime::tests_support::TestRepositoryStateWorkerRuntime;
     use crate::usecase::repository_state::scanner::RepositoryScanner;
     use crate::usecase::repository_state::service::RepositoryStateRepository;
     use crate::usecase::repository_state::service::RepositoryStateService;
     use crate::usecase::repository_state::snapshot::RepositorySnapshotParts;
+    use crate::usecase::repository_state::test_helpers::tests_support::IdentityWorktreePathNormalizer;
+    use crate::usecase::repository_state::test_helpers::tests_support::TestRepositoryStateWorkerRuntime;
     use crate::usecase::repository_state::worktree::NoopRepositoryStateWatcher;
     use std::sync::atomic::AtomicBool;
     use std::sync::atomic::AtomicUsize;
@@ -728,11 +678,11 @@ mod rescan_tests {
 
 mod fixture_memory_tests {
     use super::super::*;
-    use crate::usecase::repository_state::runtime::test_helpers_runtime::tests_support::{
+    use crate::usecase::repository_state::snapshot::RepositorySnapshotParts;
+    use crate::usecase::repository_state::test_helpers::tests_support::{
         IdentityWorktreePathNormalizer, TestRepositoryStateWorkerRuntime,
     };
-    use crate::usecase::repository_state::service::fixture_helpers::*;
-    use crate::usecase::repository_state::snapshot::RepositorySnapshotParts;
+    use crate::usecase::repository_state::test_helpers::*;
     use crate::usecase::repository_state::worker::InvalidateReason;
     use crate::usecase::repository_state::worktree::NoopRepositoryStateWatcher;
     use std::sync::atomic::Ordering;

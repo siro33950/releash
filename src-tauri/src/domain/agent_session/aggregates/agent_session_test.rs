@@ -10,12 +10,12 @@ use super::{
     AgentSessionRecoveryError, AgentSessionRemovalAuthorization, AgentSessionRemovalError,
     AgentSessionTreeLocationError,
 };
+use crate::domain::agent_session::test_helpers::workflow_location;
 use crate::domain::agent_session::AgentSessionDisplayNameError;
 use crate::domain::provider_lifecycle::ProviderKind;
 use crate::domain::terminal_surface::TerminalSurfaceOwner;
 use crate::domain::workflow::{AgentSessionActivity, ExecutionTreeLaunch};
 use crate::domain::workspace_tree::WorkspaceIdentity;
-use crate::usecase::agent_session::test_helpers_session::workflow_location;
 
 fn standalone_location(id: &str) -> AgentSessionTreeLocation {
     AgentSessionTreeLocation::session_tree_root(id).unwrap()

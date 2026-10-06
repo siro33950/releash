@@ -149,7 +149,3 @@ fn scrub_sensitive(text: &str) -> String {
 #[cfg(test)]
 #[path = "crash_test.rs"]
 mod crash_tests;
-
-#[cfg(any(test, feature = "test-support"))]
-#[path = "crash_test_helpers.rs"]
-pub(crate) mod crash_test_helpers;
