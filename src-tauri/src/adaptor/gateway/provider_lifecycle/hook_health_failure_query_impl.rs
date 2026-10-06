@@ -13,12 +13,12 @@ use crate::usecase::provider_lifecycle::{
 
 const MAX_SCANNED_MARKERS: usize = 1024;
 
-pub(crate) struct LocalProviderHookHealthFailureQuery {
+pub struct LocalProviderHookHealthFailureQuery {
     data_dir: PathBuf,
 }
 
 impl LocalProviderHookHealthFailureQuery {
-    pub(crate) fn new(data_dir: PathBuf) -> Self {
+    pub fn new(data_dir: PathBuf) -> Self {
         Self { data_dir }
     }
 }

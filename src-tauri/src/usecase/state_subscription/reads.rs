@@ -19,13 +19,13 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 #[derive(Debug)]
-pub(crate) struct StateReadError {
+pub struct StateReadError {
     pub source: StateReadFailure,
     pub message: String,
 }
 
 #[derive(Debug)]
-pub(crate) enum StateReadFailure {
+pub enum StateReadFailure {
     TerminalSubscriptionEnded,
     Terminal(Box<crate::usecase::terminal_surface::error::UsecaseError>),
     Workflow(Box<crate::domain::workflow::WorkflowError>),
@@ -137,7 +137,7 @@ impl From<crate::domain::workspace_state::WorkspaceStateError> for StateReadFail
     }
 }
 impl StateReadError {
-    pub(crate) fn from_error<E: std::fmt::Display>(error: E) -> Self
+    pub fn from_error<E: std::fmt::Display>(error: E) -> Self
     where
         StateReadFailure: From<E>,
     {
@@ -160,7 +160,7 @@ where
 }
 
 #[derive(Clone)]
-pub(crate) struct WorkspaceStateReads {
+pub struct WorkspaceStateReads {
     pub repositories: Arc<RepoPathsUsecase>,
     pub repository: Arc<RepositoryUsecase>,
     pub workflow: Arc<WorkflowUsecase>,
@@ -179,7 +179,6 @@ pub(crate) struct WorkspaceStateReads {
     pub notion: Arc<crate::usecase::notion::usecase::NotionUsecase>,
     pub editor_settings: Arc<dyn crate::domain::external_editor::EditorSettingsGateway>,
     pub editor_scanner: Arc<dyn crate::domain::external_editor::InstalledEditorGateway>,
-    pub performance_switches: crate::usecase::telemetry::PerformanceSwitches,
     pub hook_health: Arc<crate::usecase::provider_lifecycle::ProviderHookHealthReadUsecase>,
 }
 
@@ -376,7 +375,6 @@ impl WorkspaceStateReads {
             T::WorkflowConfig => {
                 StateValue::WorkflowConfig(self.app_config.get_workflow_config().map_err(error)?)
             }
-            T::PerformanceSwitches => StateValue::PerformanceSwitches(self.performance_switches),
             T::Issues(_)
             | T::Terminal(_)
             | T::Workspaces
@@ -393,7 +391,7 @@ impl WorkspaceStateReads {
 }
 
 impl WorkspaceStateReads {
-    pub(crate) async fn refresh_external_blocking(
+    pub async fn refresh_external_blocking(
         &self,
         target: &SubscriptionTarget,
     ) -> Result<(), StateReadError> {
@@ -417,7 +415,7 @@ impl WorkspaceStateReads {
 }
 
 #[async_trait::async_trait]
-pub(crate) trait StateSubscriptionRead: Send + Sync {
+pub trait StateSubscriptionRead: Send + Sync {
     async fn read(&self, target: &SubscriptionTarget) -> Result<StateValue, StateReadError>;
     async fn refresh_external(&self, _target: &SubscriptionTarget) -> Result<(), StateReadError> {
         Ok(())

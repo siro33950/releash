@@ -136,15 +136,6 @@ describe("DiffToolbar", () => {
 		});
 	});
 
-	describe("stage buttons removed from toolbar", () => {
-		it("should not show Stage All or Unstage All buttons", () => {
-			renderToolbar();
-
-			expect(screen.queryByText("Stage All")).not.toBeInTheDocument();
-			expect(screen.queryByText("Unstage All")).not.toBeInTheDocument();
-		});
-	});
-
 	describe("file navigation", () => {
 		it("should render Previous/Next file buttons when fileNavigation is provided", () => {
 			renderToolbar({

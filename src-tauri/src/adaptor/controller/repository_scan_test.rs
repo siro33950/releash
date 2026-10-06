@@ -23,7 +23,7 @@ impl RepositoryScanner for Scanner {
         self.scans.fetch_add(1, Ordering::SeqCst);
         if self
             .transient_failures
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |left| {
+            .try_update(Ordering::SeqCst, Ordering::SeqCst, |left| {
                 (left > 0).then(|| left - 1)
             })
             .is_ok()
@@ -184,4 +184,29 @@ async fn test_repository走査_単回操作は一時エラーを再試行せず�
     ));
     assert!(state.read_snapshot().is_err());
     state.shutdown();
+}
+
+#[test]
+fn test_失効通知_送信した走査理由を受信側へ渡す() {
+    let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
+    let sender = TokioInvalidationSender(sender);
+    let reason = InvalidateReason::refs();
+
+    sender.send(reason).unwrap();
+
+    assert_eq!(receiver.try_recv().unwrap(), reason);
+}
+
+#[test]
+fn test_失効通知_受信側終了をrepository状態エラーとして返す() {
+    let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
+    let sender = TokioInvalidationSender(sender);
+    drop(receiver);
+
+    let error = sender.send(InvalidateReason::change()).unwrap_err();
+
+    assert!(matches!(
+        error,
+        RepositoryStateError::Watcher(message) if message == "repository snapshot worker is stopped"
+    ));
 }

@@ -173,7 +173,7 @@ fn handle_watch_failure(state: &WorktreeState, message: String) {
 
 /// worktree のファイルの変化で、変更の状態を読み直す。
 /// git ディレクトリの中の変化は git の監視が扱うので、ここでは数えない。
-fn handle_file_events(state: &WorktreeState, events: Vec<DebouncedEvent>) {
+pub fn handle_file_events(state: &WorktreeState, events: Vec<DebouncedEvent>) {
     let git_dir = Path::new(state.worktree_path()).join(".git");
     if events.iter().any(|event| !event.path.starts_with(&git_dir)) {
         state.invalidate(InvalidateReason::files());
@@ -182,7 +182,7 @@ fn handle_file_events(state: &WorktreeState, events: Vec<DebouncedEvent>) {
 
 /// ref・HEAD・worktree の登録の変化は Repository の root が worktree の並びを読み直す。
 /// index の変化は、その index を持つ worktree だけが変更の状態を読み直す。
-fn handle_git_events(state: &WorktreeState, own_git_dir: &Path, events: &[DebouncedEvent]) {
+pub fn handle_git_events(state: &WorktreeState, own_git_dir: &Path, events: &[DebouncedEvent]) {
     let (branch_change, _) = classify_git_dir_events(events);
     let own_events = events
         .iter()

@@ -173,7 +173,6 @@ describe("Connect message codecs", () => {
 				attachmentId: "id",
 				sequence: 42,
 				data: "x",
-				clientStartedAtUnixMs: null,
 			},
 			true,
 		);

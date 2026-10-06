@@ -11,7 +11,7 @@ pub(crate) fn state_subscriptions() -> crate::usecase::state_subscription::State
     )
 }
 
-pub(crate) fn build_client_dependencies(
+pub fn build_client_dependencies(
     data_dir: std::path::PathBuf,
 ) -> crate::adaptor::controller::client::ClientDependencies {
     crate::adaptor::controller::client::ClientDependencies {

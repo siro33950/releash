@@ -14,16 +14,16 @@ const HOOK_INSTRUCTION_INTERVAL: u32 = 10_000;
 
 /// Lua table を `LuaData` へ変換するときの入れ子の上限。Rust 側の再帰変換が
 /// stack を使い切る前に打ち切る。
-const MAX_TABLE_DEPTH: usize = 64;
+pub const MAX_TABLE_DEPTH: usize = 64;
 
 /// 一度の変換で扱う table 要素数の上限。共有 table の展開が組み合わせ的に
 /// 増える経路を有界にする。
-const MAX_TABLE_ELEMENTS: usize = 100_000;
+pub const MAX_TABLE_ELEMENTS: usize = 100_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct LuaLimits {
-    pub(crate) memory_bytes: usize,
-    pub(crate) instructions: u64,
+pub struct LuaLimits {
+    pub memory_bytes: usize,
+    pub instructions: u64,
 }
 
 impl Default for LuaLimits {
@@ -35,27 +35,27 @@ impl Default for LuaLimits {
     }
 }
 
-pub(crate) struct LuaEvaluationRequest<'a> {
-    pub(crate) source_name: &'a str,
-    pub(crate) source: &'a str,
-    pub(crate) workflows_dir: &'a Path,
-    pub(crate) limits: LuaLimits,
+pub struct LuaEvaluationRequest<'a> {
+    pub source_name: &'a str,
+    pub source: &'a str,
+    pub workflows_dir: &'a Path,
+    pub limits: LuaLimits,
 }
 
 #[derive(Debug)]
-pub(crate) struct LuaEvaluation<H> {
-    pub(crate) value: LuaData,
-    pub(crate) host: H,
+pub struct LuaEvaluation<H> {
+    pub value: LuaData,
+    pub host: H,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct LuaSourceLocation {
-    pub(crate) source: String,
-    pub(crate) line: usize,
+pub struct LuaSourceLocation {
+    pub source: String,
+    pub line: usize,
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) enum LuaData {
+pub enum LuaData {
     Nil,
     Boolean(bool),
     Integer(i64),
@@ -70,15 +70,15 @@ pub(crate) enum LuaData {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub(crate) enum LuaTableKey {
+pub enum LuaTableKey {
     Boolean(bool),
     Integer(i64),
     String(String),
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
-pub(crate) struct LuaTableData {
-    pub(crate) entries: BTreeMap<LuaTableKey, LuaData>,
+pub struct LuaTableData {
+    pub entries: BTreeMap<LuaTableKey, LuaData>,
 }
 
 impl LuaTableData {
@@ -93,7 +93,7 @@ impl LuaTableData {
         })
     }
 
-    pub(crate) fn as_array(&self) -> Option<Vec<&LuaData>> {
+    pub fn as_array(&self) -> Option<Vec<&LuaData>> {
         if self.entries.is_empty() {
             return Some(Vec::new());
         }
@@ -106,29 +106,29 @@ impl LuaTableData {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct LuaHostHandle {
-    pub(crate) kind: String,
+pub struct LuaHostHandle {
+    pub kind: String,
     pub(crate) index: usize,
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
-pub(crate) struct LuaModule {
-    pub(crate) members: BTreeMap<String, LuaModuleValue>,
+pub struct LuaModule {
+    pub members: BTreeMap<String, LuaModuleValue>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) enum LuaModuleValue {
+pub enum LuaModuleValue {
     Function(u32),
     Module(LuaModule),
     Data(LuaData),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct LuaHostError {
-    pub(crate) category: String,
-    pub(crate) message: String,
-    pub(crate) location: Option<LuaSourceLocation>,
-    pub(crate) field: Option<String>,
+pub struct LuaHostError {
+    pub category: String,
+    pub message: String,
+    pub location: Option<LuaSourceLocation>,
+    pub field: Option<String>,
 }
 
 impl fmt::Display for LuaHostError {
@@ -139,7 +139,7 @@ impl fmt::Display for LuaHostError {
 
 impl std::error::Error for LuaHostError {}
 
-pub(crate) trait LuaHost {
+pub trait LuaHost {
     fn source_loaded(&mut self, name: &str, source: &str);
 
     fn module(&self, name: &str) -> Option<LuaModule>;
@@ -160,7 +160,7 @@ pub(crate) trait LuaHost {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum LuaFailureKind {
+pub enum LuaFailureKind {
     Syntax,
     Evaluation,
     Require,
@@ -168,12 +168,12 @@ pub(crate) enum LuaFailureKind {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct LuaFailure {
-    pub(crate) kind: LuaFailureKind,
-    pub(crate) location: Option<LuaSourceLocation>,
-    pub(crate) category: Option<String>,
-    pub(crate) message: String,
-    pub(crate) field: Option<String>,
+pub struct LuaFailure {
+    pub kind: LuaFailureKind,
+    pub location: Option<LuaSourceLocation>,
+    pub category: Option<String>,
+    pub message: String,
+    pub field: Option<String>,
 }
 
 impl fmt::Display for LuaFailure {
@@ -225,7 +225,7 @@ impl<H: LuaHost + 'static> UserData for HostUserData<H> {
     }
 }
 
-pub(crate) fn evaluate<H: LuaHost + 'static>(
+pub fn evaluate<H: LuaHost + 'static>(
     request: LuaEvaluationRequest<'_>,
     mut host: H,
 ) -> Result<LuaEvaluation<H>, LuaFailure> {
@@ -699,306 +699,4 @@ fn line_from_error_message(message: &str) -> Option<usize> {
     message
         .split(':')
         .find_map(|part| part.trim().parse::<usize>().ok())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use tempfile::TempDir;
-
-    #[derive(Debug, Default)]
-    struct TestHost {
-        calls: Vec<(u32, LuaSourceLocation)>,
-    }
-
-    impl LuaHost for TestHost {
-        fn source_loaded(&mut self, _name: &str, _source: &str) {}
-
-        fn module(&self, name: &str) -> Option<LuaModule> {
-            (name == "test").then(|| LuaModule {
-                members: BTreeMap::from([("value".to_string(), LuaModuleValue::Function(1))]),
-            })
-        }
-
-        fn call(
-            &mut self,
-            function: u32,
-            arguments: Vec<LuaData>,
-            location: LuaSourceLocation,
-        ) -> Result<LuaData, LuaHostError> {
-            self.calls.push((function, location));
-            Ok(arguments.into_iter().next().unwrap_or(LuaData::Nil))
-        }
-
-        fn index(
-            &mut self,
-            _handle: &LuaHostHandle,
-            key: &str,
-            location: LuaSourceLocation,
-        ) -> Result<LuaData, LuaHostError> {
-            Err(LuaHostError {
-                category: "test".to_string(),
-                message: format!("unknown field '{key}'"),
-                location: Some(location),
-                field: None,
-            })
-        }
-    }
-
-    fn request<'a>(dir: &'a Path, source: &'a str) -> LuaEvaluationRequest<'a> {
-        LuaEvaluationRequest {
-            source_name: "main.lua",
-            source,
-            workflows_dir: dir,
-            limits: LuaLimits::default(),
-        }
-    }
-
-    #[test]
-    fn test_lua評価_許可moduleを呼び出して呼出位置を返す() {
-        let dir = TempDir::new().unwrap();
-
-        let result = evaluate(
-            request(
-                dir.path(),
-                "local test = require('test')\nreturn test.value('ok')",
-            ),
-            TestHost::default(),
-        )
-        .unwrap();
-
-        assert_eq!(result.value, LuaData::String("ok".to_string()));
-        assert_eq!(result.host.calls.len(), 1);
-        assert_eq!(result.host.calls[0].1.line, 2);
-    }
-
-    #[test]
-    fn test_lua評価_標準外部ioと動的loadを公開しない() {
-        let dir = TempDir::new().unwrap();
-        let source = "return { io = io, os = os, package = package, load = load, print = print, pairs = pairs, next = next, collectgarbage = collectgarbage, tostring = tostring, random = math.random }";
-
-        let result = evaluate(request(dir.path(), source), TestHost::default()).unwrap();
-        let LuaData::Table(table) = result.value else {
-            panic!("table expected");
-        };
-
-        assert!(table.entries.is_empty());
-    }
-
-    #[test]
-    fn test_lua評価_循環参照するtableを拒否する() {
-        let dir = TempDir::new().unwrap();
-
-        let error = evaluate(
-            request(dir.path(), "local t = {}\nt.self = t\nreturn t"),
-            TestHost::default(),
-        )
-        .unwrap_err();
-
-        assert_eq!(error.kind, LuaFailureKind::Evaluation);
-        assert!(error.message.contains("recursive reference"));
-    }
-
-    #[test]
-    fn test_lua評価_table入れ子の上限を超えたら拒否する() {
-        let dir = TempDir::new().unwrap();
-        let source = format!(
-            "local t = {{}}\nfor _ = 1, {} do t = {{ inner = t }} end\nreturn t",
-            MAX_TABLE_DEPTH + 1
-        );
-
-        let error = evaluate(request(dir.path(), &source), TestHost::default()).unwrap_err();
-
-        assert_eq!(error.kind, LuaFailureKind::Evaluation);
-        assert!(error.message.contains("nesting exceeded"));
-    }
-
-    #[test]
-    fn test_lua評価_table要素数の上限を超えたら拒否する() {
-        let dir = TempDir::new().unwrap();
-        let source = format!(
-            "local t = {{}}\nfor i = 1, {} do t[i] = i end\nreturn t",
-            MAX_TABLE_ELEMENTS + 1
-        );
-
-        let error = evaluate(request(dir.path(), &source), TestHost::default()).unwrap_err();
-
-        assert_eq!(error.kind, LuaFailureKind::Evaluation);
-        assert!(error.message.contains("exceeded the limit"));
-    }
-
-    #[test]
-    fn test_lua評価_命令上限で終了しない定義を打ち切る() {
-        let dir = TempDir::new().unwrap();
-        let mut request = request(dir.path(), "while true do end");
-        request.limits.instructions = 20_000;
-
-        let error = evaluate(request, TestHost::default()).unwrap_err();
-
-        assert_eq!(error.kind, LuaFailureKind::Evaluation);
-        assert!(error.message.contains("instruction limit"));
-    }
-
-    #[test]
-    fn test_lua評価_メモリ上限で過大な定義だけを打ち切る() {
-        let dir = TempDir::new().unwrap();
-        let mut oversized = request(dir.path(), "return string.rep('x', 16777216)");
-        oversized.limits.memory_bytes = 4 * 1024 * 1024;
-
-        let error = evaluate(oversized, TestHost::default()).unwrap_err();
-        let following = evaluate(request(dir.path(), "return true"), TestHost::default()).unwrap();
-
-        assert_eq!(error.kind, LuaFailureKind::Evaluation);
-        assert!(error.message.contains("memory limit"));
-        assert_eq!(following.value, LuaData::Boolean(true));
-    }
-
-    #[test]
-    fn test_lua評価_requireはworkflow配下だけを解決して一度だけ評価する() {
-        let dir = TempDir::new().unwrap();
-        fs::write(
-            dir.path().join("part.lua"),
-            "return function() return 'part' end",
-        )
-        .unwrap();
-
-        let result = evaluate(
-            request(
-                dir.path(),
-                "local a = require('part')\nlocal b = require('part')\nreturn { a(), b(), a == b }",
-            ),
-            TestHost::default(),
-        )
-        .unwrap();
-        let LuaData::Table(table) = result.value else {
-            panic!("table expected");
-        };
-        assert_eq!(
-            table.as_array().unwrap(),
-            vec![
-                &LuaData::String("part".to_string()),
-                &LuaData::String("part".to_string()),
-                &LuaData::Boolean(true),
-            ]
-        );
-    }
-
-    #[test]
-    fn test_lua評価_require先moduleの評価中にhost関数を呼べる() {
-        // Given
-        let dir = TempDir::new().unwrap();
-        let module = dir.path().join("parts.lua");
-        fs::write(
-            &module,
-            "local test = require('test')\nreturn { made = test.value('ok') }",
-        )
-        .unwrap();
-
-        // When
-        let result = evaluate(
-            request(
-                dir.path(),
-                "local parts = require('parts')\nreturn parts.made",
-            ),
-            TestHost::default(),
-        )
-        .unwrap();
-
-        // Then
-        assert_eq!(result.value, LuaData::String("ok".to_string()));
-        assert_eq!(result.host.calls.len(), 1);
-        assert_eq!(result.host.calls[0].0, 1);
-        assert_eq!(
-            result.host.calls[0].1.source,
-            fs::canonicalize(module).unwrap().to_string_lossy()
-        );
-        assert_eq!(result.host.calls[0].1.line, 2);
-    }
-
-    #[test]
-    fn test_lua評価_require循環を検出して拒否する() {
-        let dir = TempDir::new().unwrap();
-        fs::write(dir.path().join("a.lua"), "return require('b')").unwrap();
-        fs::write(dir.path().join("b.lua"), "return require('a')").unwrap();
-
-        let error = evaluate(
-            request(dir.path(), "return require('a')"),
-            TestHost::default(),
-        )
-        .unwrap_err();
-
-        assert_eq!(error.kind, LuaFailureKind::Require);
-        assert!(error.message.contains("cyclic require"));
-        assert!(error.location.unwrap().source.ends_with("b.lua"));
-    }
-
-    #[test]
-    fn test_lua評価_requireのpath走査を拒否する() {
-        let dir = TempDir::new().unwrap();
-
-        let error = evaluate(
-            request(dir.path(), "return require('../outside')"),
-            TestHost::default(),
-        )
-        .unwrap_err();
-
-        assert_eq!(error.kind, LuaFailureKind::Require);
-        assert!(error.message.contains("invalid require module name"));
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn test_lua評価_requireのsymlinkによるdirectory外脱出を拒否する() {
-        use std::os::unix::fs::symlink;
-
-        let workflows = TempDir::new().unwrap();
-        let outside = TempDir::new().unwrap();
-        let outside_module = outside.path().join("outside.lua");
-        fs::write(&outside_module, "return 'outside'").unwrap();
-        symlink(&outside_module, workflows.path().join("escape.lua")).unwrap();
-
-        let error = evaluate(
-            request(workflows.path(), "return require('escape')"),
-            TestHost::default(),
-        )
-        .unwrap_err();
-
-        assert_eq!(error.kind, LuaFailureKind::Require);
-        assert!(error.message.contains("outside the workflows directory"));
-    }
-
-    #[test]
-    fn test_lua評価_構文エラーをsourceと行番号付きで返す() {
-        let dir = TempDir::new().unwrap();
-
-        let error = evaluate(
-            request(dir.path(), "local ok = true\nreturn )"),
-            TestHost::default(),
-        )
-        .unwrap_err();
-
-        assert_eq!(error.kind, LuaFailureKind::Syntax);
-        assert_eq!(error.location.unwrap().line, 2);
-    }
-
-    #[test]
-    fn test_lua評価_require先の構文エラーをmodule位置で返す() {
-        let dir = TempDir::new().unwrap();
-        let module = dir.path().join("broken.lua");
-        fs::write(&module, "local ok = true\nreturn )").unwrap();
-
-        let error = evaluate(
-            request(dir.path(), "return require('broken')"),
-            TestHost::default(),
-        )
-        .unwrap_err();
-        let location = error.location.unwrap();
-
-        assert_eq!(error.kind, LuaFailureKind::Syntax);
-        assert_eq!(
-            location.source,
-            fs::canonicalize(module).unwrap().to_string_lossy()
-        );
-        assert_eq!(location.line, 2);
-    }
 }

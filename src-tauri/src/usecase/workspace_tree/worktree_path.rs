@@ -2,11 +2,11 @@ use crate::domain::workflow::WorkflowError;
 use std::sync::Arc;
 
 #[async_trait::async_trait]
-pub(crate) trait WorkspaceWorktreePathQuery: Send + Sync {
+pub trait WorkspaceWorktreePathQuery: Send + Sync {
     async fn workspace_worktree_path(&self, path: &str) -> Result<String, WorkflowError>;
 }
 
-pub(crate) struct WorkspaceWorktreePathUsecase {
+pub struct WorkspaceWorktreePathUsecase {
     query: Arc<dyn WorkspaceWorktreePathQuery>,
 }
 
@@ -15,10 +15,7 @@ impl WorkspaceWorktreePathUsecase {
         Self { query }
     }
 
-    pub(crate) async fn workspace_worktree_path(
-        &self,
-        path: &str,
-    ) -> Result<String, WorkflowError> {
+    pub async fn workspace_worktree_path(&self, path: &str) -> Result<String, WorkflowError> {
         self.query.workspace_worktree_path(path).await
     }
 }

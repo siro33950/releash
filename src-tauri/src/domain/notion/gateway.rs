@@ -6,7 +6,7 @@ use super::{
 
 #[async_trait::async_trait]
 
-pub(crate) trait NotionApiGateway: Send + Sync {
+pub trait NotionApiGateway: Send + Sync {
     async fn query_tasks(
         &self,
         config: &NotionRepoConfig,

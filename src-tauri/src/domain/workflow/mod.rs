@@ -47,8 +47,8 @@ pub use value_objects::{
     WorktreeMode, NODE_STATUS_COMPLETED,
 };
 
-#[cfg(any(test, debug_assertions))]
+#[cfg(any(test, feature = "test-support"))]
 pub use value_objects::WorkflowRuntimeSnapshot;
 
-#[cfg(any(test, debug_assertions))]
+#[cfg(any(test, feature = "test-support"))]
 pub use value_objects::{NodeHistoryEntry, RuntimeArtifact};

@@ -10,7 +10,7 @@ use crate::adaptor::gateway::workflow::{
 /// 編集支援ファイルの生成で発生しうるエラー。I/O 失敗と facet カタログの失敗を
 /// 型で分ける。
 #[derive(Debug)]
-pub(crate) enum StubGenerationError {
+pub enum StubGenerationError {
     Io(std::io::Error),
     Facet(FacetError),
     MissingBuiltinFacet { kind: FacetKind, key: String },
@@ -208,7 +208,7 @@ local releash = {}
 return releash
 "#;
 
-const LUARC: &str = r#"{
+pub const LUARC: &str = r#"{
   "runtime.version": "Lua 5.4",
   "workspace.library": [
     ".releash"
@@ -216,7 +216,7 @@ const LUARC: &str = r#"{
 }
 "#;
 
-pub(crate) fn generate_editor_support(workflows_dir: &Path) -> Result<(), StubGenerationError> {
+pub fn generate_editor_support(workflows_dir: &Path) -> Result<(), StubGenerationError> {
     fs::create_dir_all(workflows_dir)?;
     let generated_dir = workflows_dir.join(".releash");
     fs::create_dir_all(&generated_dir)?;
@@ -295,7 +295,7 @@ fn generate_builtin_facet_documents(base_dir: &Path) -> Result<(), StubGeneratio
 ///
 /// `Url::from_file_path` は相対パスを受け付けないため、先に current_dir で絶対化する
 /// （`dirs::config_dir()` が解決できない環境では `workflows_dir()` が相対パスを返す）。
-fn facet_document_url(path: &Path) -> Result<String, StubGenerationError> {
+pub fn facet_document_url(path: &Path) -> Result<String, StubGenerationError> {
     let absolute = if path.is_absolute() {
         path.to_path_buf()
     } else {
@@ -332,171 +332,6 @@ fn lua_doc_field(key: &str) -> String {
         key.to_string()
     } else {
         format!("[\"{}\"]", key.replace('"', "\\\""))
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use tempfile::TempDir;
-
-    #[test]
-    fn generates_idempotent_stubs_and_preserves_existing_luarc() {
-        let directory = TempDir::new().unwrap();
-        let instructions = directory.path().join("instructions");
-        fs::create_dir_all(&instructions).unwrap();
-        fs::write(instructions.join("custom.md"), "# Custom facet\nBody").unwrap();
-        fs::write(directory.path().join(".luarc.json"), "{\"custom\":true}").unwrap();
-
-        generate_editor_support(directory.path()).unwrap();
-        let first = fs::read_to_string(directory.path().join(".releash/facets.lua")).unwrap();
-        let builtin_path = directory.path().join(".releash/facets/policies/coding.md");
-        let first_builtin = fs::read_to_string(&builtin_path).unwrap();
-        generate_editor_support(directory.path()).unwrap();
-
-        assert_eq!(
-            fs::read_to_string(directory.path().join(".luarc.json")).unwrap(),
-            "{\"custom\":true}"
-        );
-        assert_eq!(
-            fs::read_to_string(directory.path().join(".releash/facets.lua")).unwrap(),
-            first
-        );
-        assert_eq!(fs::read_to_string(&builtin_path).unwrap(), first_builtin);
-        assert_eq!(
-            first_builtin,
-            builtin::get_builtin_facet(FacetKind::Policy, "coding").unwrap()
-        );
-        assert!(first.contains("custom ReleashFacet Custom facet"));
-        assert!(first.contains(&format!(
-            "file://{}",
-            instructions.join("custom.md").display()
-        )));
-        assert!(first.contains(&format!("file://{}", builtin_path.display())));
-        let releash = fs::read_to_string(directory.path().join(".releash/releash.lua")).unwrap();
-        assert!(releash.contains("---@class ReleashNode: ReleashSource"));
-        assert!(releash.contains("---@field sequence fun(options: ReleashSequenceOptions)"));
-        assert!(releash.contains("---@field workflow fun(options: ReleashWorkflowOptions)"));
-        assert!(releash.contains("---@field on_true ReleashNode"));
-        assert!(releash.contains("---@field env? table<string, ReleashSource>"));
-        assert!(!releash.contains("---@field equals ReleashNode"));
-    }
-
-    #[test]
-    fn test_編集支援生成_permission補完を4値unionに限定する() {
-        // Given
-        let directory = TempDir::new().unwrap();
-
-        // When
-        generate_editor_support(directory.path()).unwrap();
-        let releash = fs::read_to_string(directory.path().join(".releash/releash.lua")).unwrap();
-
-        // Then
-        let permission_aliases = releash
-            .lines()
-            .filter(|line| line.starts_with("---@alias ReleashPermission "))
-            .collect::<Vec<_>>();
-        assert_eq!(
-            permission_aliases,
-            vec!["---@alias ReleashPermission \"manual\" | \"auto\" | \"bypass\" | \"read-only\""]
-        );
-
-        let permission_fields = releash
-            .lines()
-            .filter(|line| line.starts_with("---@field permission? "))
-            .collect::<Vec<_>>();
-        assert_eq!(
-            permission_fields,
-            vec!["---@field permission? ReleashPermission"]
-        );
-    }
-
-    #[test]
-    fn facet_links_percent_encode_paths_with_spaces() {
-        let directory = TempDir::new().unwrap();
-        let base = directory.path().join("Application Support");
-        let instructions = base.join("instructions");
-        fs::create_dir_all(&instructions).unwrap();
-        fs::write(instructions.join("custom.md"), "# Custom facet\nBody").unwrap();
-
-        generate_editor_support(&base).unwrap();
-
-        let facets = fs::read_to_string(base.join(".releash/facets.lua")).unwrap();
-        assert!(facets.contains("Application%20Support"));
-        assert!(!facets.contains("Application Support"));
-    }
-
-    #[test]
-    fn facet_document_url_absolutizes_relative_paths() {
-        let url = facet_document_url(Path::new("releash/workflows/policies/coding.md")).unwrap();
-
-        assert!(url.starts_with("file:///"), "{url}");
-        assert!(
-            url.ends_with("/releash/workflows/policies/coding.md"),
-            "{url}"
-        );
-    }
-
-    #[test]
-    fn lua_doc_field_quotes_keys_that_are_not_plain_identifiers() {
-        assert_eq!(lua_doc_field("coding"), "coding");
-        assert_eq!(lua_doc_field("_private"), "_private");
-        assert_eq!(
-            lua_doc_field("releash-thread-cli"),
-            "[\"releash-thread-cli\"]"
-        );
-        assert_eq!(lua_doc_field("with\"quote"), "[\"with\\\"quote\"]");
-    }
-
-    #[test]
-    fn custom_facet_with_builtin_key_links_to_custom_document() {
-        let directory = TempDir::new().unwrap();
-        let policies = directory.path().join("policies");
-        fs::create_dir_all(&policies).unwrap();
-        let custom_path = policies.join("coding.md");
-        fs::write(&custom_path, "# Custom coding\nBody").unwrap();
-
-        generate_editor_support(directory.path()).unwrap();
-
-        let facets = fs::read_to_string(directory.path().join(".releash/facets.lua")).unwrap();
-        let generated_builtin = directory.path().join(".releash/facets/policies/coding.md");
-        assert!(facets.contains("coding ReleashFacet Custom coding"));
-        assert!(facets.contains(&format!("file://{}", custom_path.display())));
-        assert!(!facets.contains(&format!("file://{}", generated_builtin.display())));
-    }
-
-    #[test]
-    fn generated_builtin_document_is_not_a_runtime_facet_source() {
-        let directory = TempDir::new().unwrap();
-        generate_editor_support(directory.path()).unwrap();
-        let generated_builtin = directory.path().join(".releash/facets/policies/coding.md");
-        let expected = builtin::get_builtin_facet(FacetKind::Policy, "coding")
-            .unwrap()
-            .to_string();
-
-        fs::write(&generated_builtin, "stale generated content").unwrap();
-        assert_eq!(
-            facet::load_facet(FacetKind::Policy, "coding", directory.path()).unwrap(),
-            expected
-        );
-
-        fs::remove_file(generated_builtin).unwrap();
-        assert_eq!(
-            facet::load_facet(FacetKind::Policy, "coding", directory.path()).unwrap(),
-            expected
-        );
-    }
-
-    #[test]
-    fn generates_luarc_only_when_absent() {
-        let directory = TempDir::new().unwrap();
-
-        generate_editor_support(directory.path()).unwrap();
-
-        assert_eq!(
-            fs::read_to_string(directory.path().join(".luarc.json")).unwrap(),
-            LUARC
-        );
     }
 }
 

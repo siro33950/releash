@@ -14,13 +14,13 @@ use crate::usecase::agent_session::{
 
 const MAX_SCAN_PER_PROVIDER: usize = 201;
 
-pub(crate) struct LocalAgentSessionHistoryQueryService {
+pub struct LocalAgentSessionHistoryQueryService {
     history: Arc<dyn AgentSessionHistoryGateway>,
     ownership: Arc<dyn AgentSessionOwnershipQuery>,
 }
 
 impl LocalAgentSessionHistoryQueryService {
-    pub(crate) fn new(
+    pub fn new(
         history: Arc<dyn AgentSessionHistoryGateway>,
         ownership: Arc<dyn AgentSessionOwnershipQuery>,
     ) -> Self {

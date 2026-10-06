@@ -28,7 +28,7 @@ pub(crate) struct SpawnedNativePty {
 }
 
 #[derive(Clone)]
-pub(crate) struct NativePtyRuntime {
+pub struct NativePtyRuntime {
     input: mpsc::SyncSender<Vec<u8>>,
     input_error: Arc<Mutex<Option<NativePtyError>>>,
     killer: Arc<Mutex<Box<dyn portable_pty::ChildKiller + Send + Sync>>>,
@@ -105,8 +105,8 @@ impl NativePtyRuntime {
         }
     }
 
-    #[cfg(test)]
-    pub(crate) fn from_parts(
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn from_parts(
         writer: Box<dyn Write + Send>,
         killer: Box<dyn portable_pty::ChildKiller + Send + Sync>,
         resizer: Box<dyn NativePtyResizer + Send>,
@@ -141,7 +141,7 @@ impl NativePtyOutput {
     }
 }
 
-pub(crate) trait NativePtyResizer {
+pub trait NativePtyResizer {
     fn resize(&mut self, rows: u16, cols: u16) -> Result<(), NativePtyError>;
 }
 
@@ -266,7 +266,7 @@ impl NativePtySystem {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct NativePtyError {
+pub struct NativePtyError {
     pub(crate) kind: std::io::ErrorKind,
     pub(crate) message: String,
 }

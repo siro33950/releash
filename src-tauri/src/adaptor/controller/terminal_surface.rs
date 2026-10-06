@@ -5,80 +5,13 @@ pub(crate) use crate::adaptor::presenter::terminal_error::{
 };
 
 use crate::adaptor::controller::state::AppState;
-use crate::adaptor::presenter::terminal::{
-    GetOrSpawnTerminalV1, TerminalInputPerformanceSampleV1, TerminalLaunchPerformanceSampleV1,
-    TerminalSurfaceOwnerV1,
-};
-
-pub(crate) fn start_terminal_launch_performance_collection_shared() {
-    telemetry().start_terminal_launch_collection();
-}
-
-pub(crate) fn take_terminal_launch_performance_samples_shared(
-) -> Vec<TerminalLaunchPerformanceSampleV1> {
-    telemetry()
-        .take_terminal_launch_samples()
-        .into_iter()
-        .map(|sample| TerminalLaunchPerformanceSampleV1 {
-            phase: sample.phase.to_string(),
-            duration_ms: sample.duration_ms,
-        })
-        .collect()
-}
-
-pub(crate) fn start_terminal_input_performance_collection_shared() {
-    telemetry().start_terminal_input_collection();
-}
-
-pub(crate) fn take_terminal_input_performance_samples_shared(
-) -> Vec<TerminalInputPerformanceSampleV1> {
-    telemetry()
-        .take_terminal_input_samples()
-        .into_iter()
-        .map(|sample| TerminalInputPerformanceSampleV1 {
-            sequence: sample.sequence,
-            on_data_to_command_ingress_ms: sample.on_data_to_command_ingress_ms,
-            command_ingress_to_admission_ms: sample.command_ingress_to_admission_ms,
-            admission_to_writer_enqueue_ms: sample.admission_to_writer_enqueue_ms,
-            writer_enqueue_to_output_read_ms: sample.writer_enqueue_to_output_read_ms,
-            output_read_to_model_apply_ms: sample.output_read_to_model_apply_ms,
-            model_apply_to_event_publish_ms: sample.model_apply_to_event_publish_ms,
-            event_published_at_unix_ms: sample.event_published_at_unix_ms,
-        })
-        .collect()
-}
-
-pub(crate) fn record_terminal_launch_renderer_phase_shared(
-    phase: String,
-    duration_ms: f64,
-) -> Result<(), AppError> {
-    if !duration_ms.is_finite() || duration_ms < 0.0 {
-        return Err(AppError::invalid_request(
-            "Terminal launch renderer duration must be finite and non-negative",
-        ));
-    }
-    let metric = match phase.as_str() {
-        "first_xterm_parsed" => crate::usecase::telemetry::TerminalLaunch::FirstXtermParsed,
-        "first_paint" => crate::usecase::telemetry::TerminalLaunch::FirstPaint,
-        _ => {
-            return Err(AppError::invalid_request(
-                "Unknown Terminal launch renderer phase",
-            ))
-        }
-    };
-    let duration = std::time::Duration::try_from_secs_f64(duration_ms / 1_000.0).map_err(|_| {
-        AppError::invalid_request("Terminal launch renderer duration is out of range")
-    })?;
-    telemetry().record_terminal_launch(metric, duration);
-    Ok(())
-}
+use crate::adaptor::presenter::terminal::{GetOrSpawnTerminalV1, TerminalSurfaceOwnerV1};
 
 pub(crate) fn write_terminal_surface_shared(
     state: &AppState,
     owner: TerminalSurfaceOwnerV1,
     attachment_id: String,
     sequence: u64,
-    client_started_at_unix_ms: Option<f64>,
     data: String,
 ) -> Result<(), AppError> {
     let owner = owner
@@ -86,13 +19,7 @@ pub(crate) fn write_terminal_surface_shared(
         .map_err(invalid_terminal_write_owner_error)?;
     state
         .terminal_surface
-        .write_attached(
-            &owner,
-            &attachment_id,
-            sequence,
-            client_started_at_unix_ms,
-            &data,
-        )
+        .write_attached(&owner, &attachment_id, sequence, &data)
         .map_err(terminal_write_error)
 }
 
@@ -163,9 +90,3 @@ pub(crate) fn get_or_spawn_terminal_surface_shared(
 #[cfg(test)]
 #[path = "terminal_surface_test.rs"]
 mod terminal_surface_tests;
-
-fn telemetry() -> crate::usecase::telemetry::TelemetryUsecase<'static> {
-    crate::usecase::telemetry::TelemetryUsecase::new(
-        &crate::adaptor::gateway::telemetry::TelemetryGateway,
-    )
-}

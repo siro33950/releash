@@ -20,18 +20,18 @@ use crate::usecase::agent_session::{
 ///
 /// 一覧は Session の起動として作られた実行木を対象にする。workflow の実行として
 /// 作られた木の session は実行木の view（workspace_tree）で観測する。
-pub(crate) struct LocalAgentSessionQueryService {
+pub struct LocalAgentSessionQueryService {
     backend: FactLogReadBackend,
 }
 
 impl LocalAgentSessionQueryService {
-    pub(crate) fn new(store: Arc<LocalEventStore>) -> Self {
+    pub fn new(store: Arc<LocalEventStore>) -> Self {
         Self {
             backend: FactLogReadBackend::Live(store),
         }
     }
 
-    pub(crate) fn new_read_only(store: Arc<LocalEventReadStore>) -> Self {
+    pub fn new_read_only(store: Arc<LocalEventReadStore>) -> Self {
         Self {
             backend: FactLogReadBackend::ReadOnly(store),
         }

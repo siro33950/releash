@@ -1,5 +1,5 @@
 use crate::adaptor::presenter::state_subscription::StateSubscriptionPresenter;
-use crate::usecase::state_subscription::state_subscription_tests::{
+use crate::usecase::state_subscription::state_subscription_test_helpers::{
     notion_target, FailingReads, GatedReads, RecordingOutput, RecordingReads,
 };
 use crate::usecase::state_subscription::*;

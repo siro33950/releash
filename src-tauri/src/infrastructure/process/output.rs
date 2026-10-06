@@ -84,7 +84,3 @@ pub async fn output(
         .map_err(ProcessError::Stopped)?
         .map_err(ProcessError::Io)
 }
-
-#[cfg(test)]
-#[path = "output_test.rs"]
-mod process_tests;

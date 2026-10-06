@@ -13,11 +13,7 @@ pub(crate) type CommandHandler = Box<
         + Sync,
 >;
 
-#[cfg(test)]
-#[path = "dispatch_test.rs"]
-mod tests;
-
-pub(crate) struct ClientCommandDispatch {
+pub struct ClientCommandDispatch {
     handlers: HashMap<&'static str, Arc<CommandHandler>>,
     pub(crate) daemon: crate::usecase::daemon::DaemonUsecase,
     pub(super) publisher: Option<crate::usecase::state_subscription::StateSubscriptionUsecase>,
@@ -25,7 +21,7 @@ pub(crate) struct ClientCommandDispatch {
 }
 
 impl ClientCommandDispatch {
-    pub(crate) fn new(daemon: crate::usecase::daemon::DaemonUsecase) -> Self {
+    pub fn new(daemon: crate::usecase::daemon::DaemonUsecase) -> Self {
         Self {
             handlers: HashMap::new(),
             mutations: None,
@@ -34,7 +30,7 @@ impl ClientCommandDispatch {
         }
     }
 
-    pub(crate) fn with_state_publisher(
+    pub fn with_state_publisher(
         mut self,
         publisher: crate::usecase::state_subscription::StateSubscriptionUsecase,
     ) -> Self {
@@ -42,7 +38,7 @@ impl ClientCommandDispatch {
         self
     }
 
-    pub(crate) fn register_dependencies(&mut self, deps: &super::ClientDependencies) {
+    pub fn register_dependencies(&mut self, deps: &super::ClientDependencies) {
         self.daemon = deps.daemon.clone();
         self.mutations = deps.workflow_runtime_usecase.clone();
         super::repository::register_shared(self, deps);
@@ -60,28 +56,24 @@ impl ClientCommandDispatch {
         super::telemetry::register_shared(self, deps);
         super::application_lifecycle::register_shared(self, deps);
     }
-    #[cfg(test)]
-    pub(crate) fn with_worktree_mutations(
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn with_worktree_mutations(
         mut self,
         runtime: Arc<crate::usecase::workflow::WorkflowRuntimeUsecase>,
     ) -> Self {
         self.mutations = Some(runtime);
         self
     }
-    pub(crate) fn register_domain(
-        &mut self,
-        names: &'static [&'static str],
-        handler: CommandHandler,
-    ) {
+    pub fn register_domain(&mut self, names: &'static [&'static str], handler: CommandHandler) {
         assert_eq!(names.len(), 1);
         assert!(self.handlers.insert(names[0], Arc::new(handler)).is_none());
     }
-    #[cfg(test)]
-    pub(crate) fn contains(&self, name: &str) -> bool {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn contains(&self, name: &str) -> bool {
         self.handlers.contains_key(name)
     }
-    #[cfg(test)]
-    pub(crate) fn dispatch(
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn dispatch(
         &self,
         command: wire::command_request::Command,
     ) -> Pin<
@@ -91,7 +83,7 @@ impl ClientCommandDispatch {
     > {
         self.dispatch_admitted(command)
     }
-    pub(crate) fn dispatch_admitted(
+    pub fn dispatch_admitted(
         &self,
         command: wire::command_request::Command,
     ) -> Pin<
@@ -145,12 +137,12 @@ impl ClientCommandDispatch {
     }
 }
 
-pub(crate) fn invalid_request(message: impl Into<String>) -> wire::CommandFailure {
+pub fn invalid_request(message: impl Into<String>) -> wire::CommandFailure {
     crate::adaptor::presenter::error::AppError::invalid_request(message)
         .with_code("INVALID_REQUEST")
         .into()
 }
-pub(crate) fn required<T>(value: Option<T>, field: &str) -> Result<T, wire::CommandFailure> {
+pub fn required<T>(value: Option<T>, field: &str) -> Result<T, wire::CommandFailure> {
     value.ok_or_else(|| invalid_request(format!("Missing {field}")))
 }
 pub(crate) fn convert<T, U: TryFrom<T>>(value: T) -> Result<U, wire::CommandFailure>
@@ -166,11 +158,4 @@ where
     U::Error: std::fmt::Display,
 {
     value.map(convert).transpose()
-}
-pub(crate) fn finite(value: f64) -> Result<f64, wire::CommandFailure> {
-    if value.is_finite() {
-        Ok(value)
-    } else {
-        Err(invalid_request("Expected finite number"))
-    }
 }

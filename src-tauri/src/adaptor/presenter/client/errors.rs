@@ -39,7 +39,7 @@ mod errors_tests;
 pub struct CommandFailure {
     pub(crate) kind: connectrpc::ErrorCode,
     pub(crate) message: Option<String>,
-    pub(crate) detail: wire::CommandError,
+    pub detail: wire::CommandError,
 }
 impl From<crate::adaptor::presenter::error::AppError> for CommandFailure {
     fn from(error: crate::adaptor::presenter::error::AppError) -> Self {
@@ -59,7 +59,7 @@ impl From<crate::adaptor::controller::terminal_surface::TerminalCommandError> fo
         }
     }
 }
-#[cfg(any(test, debug_assertions))]
+#[cfg(any(test, feature = "test-support"))]
 impl wire::ClientValue for CommandFailure {
     fn into_json(self) -> Result<serde_json::Value, String> {
         self.detail.into_json()

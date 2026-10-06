@@ -1,8 +1,6 @@
 #[cfg(debug_assertions)]
 mod acceptance {
-    use releash_desktop::desktop_client_acceptance::{
-        spawn_desktop_successor, wait_for_desktop_predecessor,
-    };
+    use releash_desktop::test_support::{spawn_desktop_successor, wait_for_desktop_predecessor};
     use std::{
         path::Path,
         process::Command,

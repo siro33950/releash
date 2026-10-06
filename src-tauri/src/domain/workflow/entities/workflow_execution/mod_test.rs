@@ -2,6 +2,7 @@ use super::*;
 use serde_json::{json, Value};
 
 #[test]
+
 fn test_workflow状態復元_三状態をそのまま復元する() {
     for state in [
         RuntimeExecutionState::Running,
@@ -39,6 +40,7 @@ fn id_source() -> impl FnMut() -> String {
 }
 
 #[test]
+
 fn test_単独session_node完了事実はworkflowの木で拒否される() {
     // Given
     let mut tree = execution(
@@ -65,6 +67,7 @@ fn test_単独session_node完了事実はworkflowの木で拒否される() {
 }
 
 #[test]
+
 fn test_単独session_node完了事実は子nodeで拒否される() {
     // Given
     let mut tree = execution(
@@ -100,6 +103,7 @@ fn test_単独session_node完了事実は子nodeで拒否される() {
 }
 
 #[test]
+
 fn test_単独session_node完了事実は存在しないnodeで拒否される() {
     // Given
     let mut tree = execution(
@@ -126,6 +130,7 @@ fn test_単独session_node完了事実は存在しないnodeで拒否される()
 }
 
 #[test]
+
 fn test_単独session_node完了事実はrootを一度だけ完了する() {
     // Given
     let mut tree = execution(
@@ -163,6 +168,7 @@ fn test_単独session_node完了事実はrootを一度だけ完了する() {
 }
 
 #[test]
+
 fn test_provider停止_完了済みsessionではstopを受理しnodeの完了シグナルは適用しない() {
     // Given
     let mut tree = execution(
@@ -197,6 +203,7 @@ fn test_provider停止_完了済みsessionではstopを受理しnodeの完了シ
 }
 
 #[test]
+
 fn test_provider停止_中断済みsessionではstopを受理しnodeの完了シグナルは適用しない() {
     // Given
     let mut tree = execution(
@@ -280,6 +287,7 @@ fn next_leaf(decision: ExecutionAdvanceDecision) -> LeafStart {
 }
 
 #[test]
+
 fn test_node起動_起動済みのleafと終了したleafは再起動しない() {
     for kind in ["session: {provider: codex}", "command: true"] {
         // Given
@@ -337,6 +345,7 @@ fn test_node起動_起動済みのleafと終了したleafは再起動しない()
 }
 
 #[test]
+
 fn test_sequenceの成果_通って成果を産出した子だけをmapに統合する() {
     // Given
     let mut execution = execution(
@@ -427,6 +436,7 @@ nodes:
 }
 
 #[test]
+
 fn test_sequenceの成果_成果を持たない子だけなら空mapで完了する() {
     // Given
     let mut execution = execution(
@@ -454,6 +464,7 @@ nodes:
 }
 
 #[test]
+
 fn test_sequenceの成果_後方辺で再訪した子は最後の成果だけを残す() {
     // Given
     let mut execution = execution(
@@ -508,6 +519,7 @@ nodes:
 }
 
 #[test]
+
 fn test_sequenceの多段参照_配線と辺とfanout展開へ統合mapの値を渡す() {
     // Given
     let source = include_str!(concat!(
@@ -602,6 +614,7 @@ fn start_fanout(
 }
 
 #[test]
+
 fn test_fanoutの成果_itemsの有無と複数childrenでキーが決まり空なら空mapになる() {
     // Given
     for (children, items, expected) in [
@@ -666,6 +679,7 @@ fn test_fanoutの成果_itemsの有無と複数childrenでキーが決まり空�
 }
 
 #[test]
+
 fn test_fanoutの成果_artifact未宣言の完了slotをnullで残す() {
     // Given
     let mut execution = execution(
@@ -696,6 +710,7 @@ nodes:
 }
 
 #[test]
+
 fn test_fanoutの成果_replayのpush順が異なっても展開座標から同じキーを作る() {
     // Given
     let mut execution = fanout_execution("[a, b]", "items: [x, y]");
@@ -744,6 +759,7 @@ fn test_fanoutの成果_replayのpush順が異なっても展開座標から同�
 }
 
 #[test]
+
 fn test_fanoutの成果_解決不能な展開座標は集約エラーになる() {
     // Given
     let mut execution = fanout_execution("[a]", "");
@@ -776,6 +792,7 @@ fn test_fanoutの成果_解決不能な展開座標は集約エラーになる()
 }
 
 #[test]
+
 fn test_fanoutの多段参照_名前と添字とsequence経由で入力束縛とitems展開へ値を渡す() {
     // Given
     let mut execution = execution(include_str!(concat!(
@@ -849,6 +866,7 @@ fn test_fanoutの多段参照_名前と添字とsequence経由で入力束縛と
 }
 
 #[test]
+
 fn test_fanoutの辺_確定したmapのwhenとswitchとsequence経由で次のleafを起動する() {
     // Given
     for (passed, verdict, nested_passed, target) in [
@@ -920,6 +938,7 @@ fn test_fanoutの辺_確定したmapのwhenとswitchとsequence経由で次のle
 }
 
 #[test]
+
 fn test_fanout集約node_commandとsessionが同じslot集合のmapを型なしinputで受ける() {
     // Given
     for source in [
@@ -983,6 +1002,7 @@ fn test_fanout集約node_commandとsessionが同じslot集合のmapを型なしi
 }
 
 #[test]
+
 fn test_承認対象検証_承認要求未宣言ならrequire形式で不足を示す() {
     // Given
     let mut execution = execution(
@@ -1015,6 +1035,7 @@ nodes:
 }
 
 #[test]
+
 fn test_completion要求_全node種別で本来の完了条件後に承認を待ち省略時は自動完了する() {
     // Given
     for kind in [
@@ -1150,194 +1171,7 @@ fn test_completion要求_全node種別で本来の完了条件後に承認を待
 }
 
 #[test]
-fn test_正本サンプル_fanout内の隔離sessionがdelegateを発火して成果をmergeへ渡す() {
-    // Given
-    use super::tests::{execution_id_of, settle_session_leaf, started_names};
-    let source_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../workflows/examples/full-cycle-development.yml");
-    let source = std::fs::read_to_string(source_path).unwrap();
-    let workflow: WorkflowDefinition = serde_saphyr::from_str(&source).unwrap();
-    let mut execution = ExecutionTree::restore_runtime(ExecutionTreeRestore {
-        id: "canonical-example-execution".to_string(),
-        repository_root: Some("/repo".into()),
-        worktree_path: "/repo".into(),
-        workflow,
-        ..ExecutionTreeRestore::default()
-    });
 
-    execution
-        .replay_node_started("main", "main", NodeKindName::Sequence, 1, None, 1.0)
-        .unwrap();
-    execution
-        .replay_node_started(
-            "implementation",
-            "implementation",
-            NodeKindName::Sequence,
-            1,
-            Some(ExecutionParentRef::sequence_child("main")),
-            2.0,
-        )
-        .unwrap();
-    execution
-        .replay_node_started(
-            "create-detailed-design",
-            "create_detailed_design",
-            NodeKindName::Session,
-            1,
-            Some(ExecutionParentRef::sequence_child("implementation")),
-            3.0,
-        )
-        .unwrap();
-
-    let tasks = serde_json::json!({
-        "tasks": [
-            {
-                "task_id": "task-1",
-                "requirements": [],
-                "depends_on": [],
-                "parallel": true,
-                "files": [],
-                "outputs": [],
-                "verify": []
-            },
-            {
-                "task_id": "task-2",
-                "requirements": [],
-                "depends_on": [],
-                "parallel": true,
-                "files": [],
-                "outputs": [],
-                "verify": []
-            }
-        ]
-    });
-    assert_eq!(
-        execution.record_pending_result(
-            "create-detailed-design",
-            Some("created two tasks".to_string()),
-            Some(tasks),
-            Some("implement-tasks".to_string()),
-            None,
-            4.0,
-        ),
-        TransitionOutcome::Applied
-    );
-
-    let mut new_id = id_source();
-    // When
-    let applied = settle_session_leaf(&mut execution, "create-detailed-design", &mut new_id, 5.0);
-    assert_eq!(
-        started_names(&applied.events),
-        ["implement_all", "implement_task", "implement_task",]
-    );
-    let Some(ExecutionAdvanceDecision::StartNodes(implement_leaves)) = applied.advance else {
-        panic!("canonical example must start one implementation leaf per task");
-    };
-    assert_eq!(implement_leaves.len(), 2);
-    assert_ne!(
-        execution.execution_worktree_path(implement_leaves[0].node_execution_id()),
-        execution.execution_worktree_path(implement_leaves[1].node_execution_id())
-    );
-
-    let mut verify_leaves = Vec::new();
-    for (index, leaf) in implement_leaves.iter().enumerate() {
-        let id = leaf.node_execution_id();
-        execution.apply_submitted_output(
-            "implement_task".into(),
-            id,
-            1,
-            None,
-            "implement-task-result".into(),
-            serde_json::json!({"task_id": format!("task-{}", index + 1), "summary": "implemented"}),
-            None,
-            6.0 + index as f64,
-        );
-        let applied = settle_session_leaf(&mut execution, id, &mut new_id, 6.0 + index as f64);
-        let Some(ExecutionAdvanceDecision::StartNodes(leaves)) = applied.advance else {
-            panic!("implement_task must advance from implement_task to verify_task");
-        };
-        assert_eq!(
-            leaves
-                .iter()
-                .map(|leaf| leaf.node_name())
-                .collect::<Vec<_>>(),
-            ["verify_task"]
-        );
-        verify_leaves.extend(leaves);
-    }
-
-    let mut final_started = Vec::new();
-    for (index, leaf) in verify_leaves.iter().enumerate() {
-        assert_eq!(
-            execution.record_pending_result(
-                leaf.node_execution_id(),
-                Some("verified".to_string()),
-                Some(serde_json::json!({
-                    "task_id": format!("task-{}", index + 1),
-                    "complete": true,
-                    "reason": "ok"
-                })),
-                Some("implement-task-check-result".to_string()),
-                None,
-                8.0 + index as f64,
-            ),
-            TransitionOutcome::Applied
-        );
-        let applied = settle_session_leaf(
-            &mut execution,
-            leaf.node_execution_id(),
-            &mut new_id,
-            10.0 + index as f64,
-        );
-        final_started.extend(started_names(&applied.events));
-    }
-
-    // Then
-    assert_eq!(final_started, ["merge_implementations"]);
-    let worktrees = execution
-        .node_executions
-        .iter()
-        .filter(|node| node.node_name == "implement_task")
-        .map(|node| node.worktree.as_ref().unwrap())
-        .collect::<Vec<_>>();
-    let expected_results = serde_json::json!({
-        "0": {"task_id": "task-1", "summary": "implemented", "child": {"task_id": "task-1", "complete": true, "reason": "ok"}, "worktree": {"branch": worktrees[0].branch, "path": worktrees[0].path}},
-        "1": {"task_id": "task-2", "summary": "implemented", "child": {"task_id": "task-2", "complete": true, "reason": "ok"}, "worktree": {"branch": worktrees[1].branch, "path": worktrees[1].path}}
-    });
-    let merge_id = execution_id_of(&execution, "merge_implementations");
-    let merge = execution.leaf_start_for(&merge_id).unwrap();
-    assert_eq!(
-        merge
-            .bindings
-            .iter()
-            .find(|(name, _)| name == "results")
-            .map(|(_, value)| value),
-        Some(&expected_results)
-    );
-    assert_eq!(
-        execution
-            .node_executions()
-            .iter()
-            .filter(|node| node.node_name == "implement_task")
-            .map(|node| node.status)
-            .collect::<Vec<_>>(),
-        [
-            RuntimeNodeExecutionStatus::Succeeded,
-            RuntimeNodeExecutionStatus::Succeeded,
-        ]
-    );
-    assert_eq!(
-        execution
-            .node_executions()
-            .iter()
-            .find(|node| node.node_name == "implement_all")
-            .expect("canonical fanout must have started")
-            .status,
-        RuntimeNodeExecutionStatus::Succeeded
-    );
-}
-
-#[test]
 fn test_実行木archive遷移_未終了を拒否し終了状態を変えずarchiveとrestoreを冪等に受理する() {
     use crate::domain::workflow::{ArchiveRequestedFact, NodeFact};
     // Given
@@ -1365,6 +1199,7 @@ fn test_実行木archive遷移_未終了を拒否し終了状態を変えずarch
 }
 
 #[test]
+
 fn test_command反映判定_実行木とnodeとattemptが一致するrunningだけを受理する() {
     // Given
     let mut tree = execution("name: wf\ndescription: test\nnodes:\n  main:\n    command: true\n");
@@ -1400,6 +1235,7 @@ fn session_tree() -> (ExecutionTree, LeafStart) {
 }
 
 #[test]
+
 fn test_session再開_動いているnodeは会話が残れば再開し無ければ新しいattemptで起動し直す() {
     use crate::domain::workflow::NodeProcessPresence as P;
     // Given
@@ -1422,6 +1258,7 @@ fn test_session再開_動いているnodeは会話が残れば再開し無けれ
 }
 
 #[test]
+
 fn test_session再開_終わったnodeも会話が残れば再開し無ければ起動し直せず拒否する() {
     use crate::domain::workflow::NodeProcessPresence as P;
     // Given
@@ -1454,6 +1291,7 @@ fn test_session再開_終わったnodeも会話が残れば再開し無ければ
 }
 
 #[test]
+
 fn test_session再開_プロセスが居るか不明なnodeとsession以外と存在しないnodeは拒否する() {
     use crate::domain::workflow::NodeProcessPresence as P;
     // Given
@@ -1481,4 +1319,1888 @@ fn test_session再開_プロセスが居るか不明なnodeとsession以外と�
         tree.session_resume_action("missing", P::ConfirmedAbsent, true, true),
         Err(SessionResumeRejection::NodeExecutionNotFound)
     );
+}
+pub(crate) mod tests {
+    use super::super::*;
+
+    fn aggregate(state: RuntimeExecutionState) -> ExecutionTree {
+        ExecutionTree::restore(state)
+    }
+
+    fn states() -> [(ExecutionStateSet, RuntimeExecutionState); 3] {
+        [
+            (ExecutionStateSet::Active, RuntimeExecutionState::Running),
+            (ExecutionStateSet::Finished, RuntimeExecutionState::Aborted),
+            (
+                ExecutionStateSet::Finished,
+                RuntimeExecutionState::Completed,
+            ),
+        ]
+    }
+
+    #[test]
+
+    fn test_fanout_items実行時解決_多段の終端配列で展開する() {
+        // Given
+        let parent_scope = ScopeRuntime {
+            node_execution_id: "main-execution".to_string(),
+            node_name: "main".to_string(),
+            parent_scope_id: None,
+            parameters: Vec::new(),
+            kind: ScopeRuntimeKind::Sequence(SequenceScopeRuntime {
+                artifacts: HashMap::from([(
+                    "producer".to_string(),
+                    RuntimeArtifact {
+                        node_name: "producer".to_string(),
+                        attempt: 1,
+                        session_id: None,
+                        result: None,
+                        artifact: Some(serde_json::json!({
+                            "payload": {"groups": {"items": [1, 2, 3]}}
+                        })),
+                        contract: Some("result".to_string()),
+                        token_usage: None,
+                        completed_at: 1.0,
+                    },
+                )]),
+                ..Default::default()
+            }),
+        };
+        let fanout_scope = ScopeRuntime {
+            node_execution_id: "fan-execution".to_string(),
+            node_name: "fan".to_string(),
+            parent_scope_id: Some("main-execution".to_string()),
+            parameters: Vec::new(),
+            kind: ScopeRuntimeKind::Fanout(FanoutScopeRuntime::default()),
+        };
+        let execution = ExecutionTree::restore_runtime(ExecutionTreeRestore {
+            scopes: vec![parent_scope, fanout_scope],
+            ..Default::default()
+        });
+        let spec = crate::domain::workflow::value_objects::FanoutSpec {
+            children: Vec::new(),
+            items: Some(crate::domain::workflow::ItemsSource::ArtifactField {
+                node: "producer".to_string(),
+                field_path: crate::domain::workflow::FieldPath::new(["payload", "groups", "items"]),
+            }),
+        };
+
+        // When
+        let items = execution
+            .resolve_fanout_items_in_scope(execution.scope("fan-execution").unwrap(), &spec)
+            .unwrap();
+
+        // Then
+        assert_eq!(
+            items,
+            Some(vec![
+                serde_json::json!(1),
+                serde_json::json!(2),
+                serde_json::json!(3)
+            ])
+        );
+    }
+
+    #[test]
+
+    fn state_sets_are_exhaustive() {
+        for (expected, state) in states() {
+            assert_eq!(aggregate(state).state_set(), expected);
+        }
+        assert_eq!(
+            aggregate(RuntimeExecutionState::Aborted).state_set(),
+            ExecutionStateSet::Finished
+        );
+    }
+
+    #[test]
+
+    fn test_workflow状態遷移_実行中だけ完了とabortへ遷移する() {
+        // Given / When / Then
+        for (state, complete, abort) in [
+            (
+                RuntimeExecutionState::Running,
+                TransitionOutcome::Applied,
+                TransitionOutcome::Applied,
+            ),
+            (
+                RuntimeExecutionState::Completed,
+                TransitionOutcome::AlreadyApplied,
+                TransitionOutcome::NotApplicable,
+            ),
+            (
+                RuntimeExecutionState::Aborted,
+                TransitionOutcome::NotApplicable,
+                TransitionOutcome::NotApplicable,
+            ),
+        ] {
+            let mut completed = aggregate(state.clone());
+            assert_eq!(completed.complete(), complete);
+            let expected = if state == RuntimeExecutionState::Aborted {
+                &state
+            } else {
+                &RuntimeExecutionState::Completed
+            };
+            assert_eq!(completed.state(), expected);
+            let mut aborted = aggregate(state.clone());
+            assert_eq!(aborted.abort(), abort);
+            let expected = if state == RuntimeExecutionState::Completed {
+                &state
+            } else {
+                &RuntimeExecutionState::Aborted
+            };
+            assert_eq!(aborted.state(), expected);
+        }
+    }
+
+    fn restored_execution(state: RuntimeExecutionState) -> ExecutionTree {
+        ExecutionTree::restore_runtime(ExecutionTreeRestore {
+            id: "execution-1".to_string(),
+            workflow: WorkflowDefinition {
+                name: "workflow".to_string(),
+                nodes: vec![crate::domain::workflow::NodeDefinition {
+                    name: "implement".to_string(),
+                    ..Default::default()
+                }],
+                entry: "implement".to_string(),
+                ..Default::default()
+            },
+            state,
+            ..ExecutionTreeRestore::default()
+        })
+    }
+
+    #[test]
+
+    fn newly_terminal_sessions_activeから終端への初回遷移だけを導出する() {
+        for active in [
+            RuntimeNodeExecutionStatus::Running,
+            RuntimeNodeExecutionStatus::WaitingApproval,
+        ] {
+            for terminal in [
+                RuntimeNodeExecutionStatus::Succeeded,
+                RuntimeNodeExecutionStatus::Aborted,
+            ] {
+                let mut before = restored_execution(RuntimeExecutionState::Running);
+                before
+                    .begin_node_attempt(
+                        "implement".to_string(),
+                        NodeKindName::Session,
+                        1,
+                        None,
+                        "node-execution-1".to_string(),
+                        10.0,
+                    )
+                    .unwrap();
+                before.attach_node_session("node-execution-1", "agent-session-1".to_string(), 11.0);
+                before.node_executions[0].status = active;
+                let mut after = before.clone();
+                after.node_executions[0].status = terminal;
+
+                assert_eq!(
+                    after.newly_terminal_sessions_since(&before),
+                    vec![NewlyTerminalSession {
+                        node_execution_id: "node-execution-1".to_string(),
+                        agent_session_id: "agent-session-1".to_string(),
+                    }],
+                    "{active:?} -> {terminal:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+
+    fn newly_terminal_sessions_active維持と既終端と非sessionと参照なしを除外する() {
+        let mut before = restored_execution(RuntimeExecutionState::Running);
+        for (id, kind, session_id, status) in [
+            (
+                "running",
+                NodeKindName::Session,
+                Some("running-session"),
+                RuntimeNodeExecutionStatus::Running,
+            ),
+            (
+                "waiting-approval",
+                NodeKindName::Session,
+                Some("waiting-approval-session"),
+                RuntimeNodeExecutionStatus::WaitingApproval,
+            ),
+            (
+                "terminal",
+                NodeKindName::Session,
+                Some("terminal-session"),
+                RuntimeNodeExecutionStatus::Succeeded,
+            ),
+            (
+                "command",
+                NodeKindName::Command,
+                Some("command-session"),
+                RuntimeNodeExecutionStatus::Running,
+            ),
+            (
+                "unattached",
+                NodeKindName::Session,
+                None,
+                RuntimeNodeExecutionStatus::Running,
+            ),
+        ] {
+            before
+                .begin_node_attempt("implement".to_string(), kind, 1, None, id.to_string(), 10.0)
+                .unwrap();
+            if let Some(session_id) = session_id {
+                before.attach_node_session(id, session_id.to_string(), 11.0);
+            }
+            before
+                .node_executions
+                .iter_mut()
+                .find(|node| node.id == id)
+                .unwrap()
+                .status = status;
+        }
+        let mut after = before.clone();
+        for id in ["terminal", "command", "unattached"] {
+            after
+                .node_executions
+                .iter_mut()
+                .find(|node| node.id == id)
+                .unwrap()
+                .status = RuntimeNodeExecutionStatus::Aborted;
+        }
+
+        assert!(after.newly_terminal_sessions_since(&before).is_empty());
+        after.id = "different-execution".to_string();
+        assert!(after.newly_terminal_sessions_since(&before).is_empty());
+    }
+
+    #[test]
+
+    fn node_submit_target_is_derived_from_node_execution_identity() {
+        let mut execution = restored_execution(RuntimeExecutionState::Running);
+        execution
+            .begin_node_attempt(
+                "implement".to_string(),
+                NodeKindName::Session,
+                1,
+                None,
+                "node-execution-1".to_string(),
+                10.0,
+            )
+            .unwrap();
+
+        let target = execution.admit_node_submit("node-execution-1").unwrap();
+        assert_eq!(target.node_name, "implement");
+        assert_eq!(target.attempt, 1);
+        assert_eq!(
+            execution.admit_node_submit("missing"),
+            Err(NodeSubmitRejection::NodeExecutionNotFound)
+        );
+    }
+
+    #[test]
+
+    fn aggregate_owns_node_attempt_session_and_terminal_fact() {
+        let mut execution = restored_execution(RuntimeExecutionState::Running);
+        let node_execution_id = execution
+            .begin_node_attempt(
+                "implement".to_string(),
+                NodeKindName::Session,
+                1,
+                None,
+                "node-execution-1".to_string(),
+                10.0,
+            )
+            .unwrap();
+
+        assert_eq!(
+            execution.decide_node_completion_handshake(&node_execution_id),
+            NodeCompletionHandshakeDecision::AwaitingSignal
+        );
+        assert_eq!(
+            execution.attach_node_session(&node_execution_id, "session-1".to_string(), 11.0),
+            TransitionOutcome::Applied
+        );
+        assert_eq!(
+            execution.record_node_completion_signal(
+                &node_execution_id,
+                NodeCompletionSignal::Submit,
+                11.5,
+            ),
+            TransitionOutcome::Applied
+        );
+        assert_eq!(
+            execution.record_node_completion_signal(
+                &node_execution_id,
+                NodeCompletionSignal::Stop,
+                11.75,
+            ),
+            TransitionOutcome::Applied
+        );
+        assert_eq!(
+            execution.complete_node_execution(
+                &node_execution_id,
+                Some(serde_json::json!({"ok": true})),
+                Some(TokenUsage {
+                    input_tokens: 2,
+                    output_tokens: 3,
+                }),
+                12.0,
+            ),
+            TransitionOutcome::Applied
+        );
+
+        let node = &execution.node_executions()[0];
+        assert_eq!(node.status, RuntimeNodeExecutionStatus::Succeeded);
+        assert_eq!(node.session_id.as_deref(), Some("session-1"));
+        assert_eq!(
+            node.artifact.as_ref(),
+            Some(&serde_json::json!({"ok": true}))
+        );
+        assert_eq!(
+            execution.complete_node_execution(&node_execution_id, None, None, 13.0),
+            TransitionOutcome::AlreadyApplied
+        );
+    }
+
+    #[test]
+
+    fn provider_stop_admission_belongs_to_the_workflow_aggregate() {
+        let mut execution = restored_execution(RuntimeExecutionState::Running);
+        let node_execution_id = execution
+            .begin_node_attempt(
+                "implement".to_string(),
+                NodeKindName::Session,
+                1,
+                None,
+                "node-execution-1".to_string(),
+                10.0,
+            )
+            .unwrap();
+        execution.attach_node_session(&node_execution_id, "session-1".to_string(), 11.0);
+
+        assert_eq!(
+            execution.record_provider_stop(&node_execution_id, "session-2", 12.0),
+            Err(ProviderStopRejection::SessionDoesNotOwnAttempt)
+        );
+        assert_eq!(
+            execution.record_provider_stop(&node_execution_id, "session-1", 13.0),
+            Ok(ProviderStopAccepted {
+                node_signal: TransitionOutcome::Applied
+            })
+        );
+        assert_eq!(
+            execution.record_provider_stop(&node_execution_id, "session-1", 14.0),
+            Ok(ProviderStopAccepted {
+                node_signal: TransitionOutcome::AlreadyApplied
+            })
+        );
+    }
+
+    #[test]
+
+    fn routing_failure_surfaces_an_error_without_workflow_terminal_transition() {
+        let mut execution = restored_execution(RuntimeExecutionState::Running);
+        execution.runtime.workflow.as_mut().unwrap().nodes.push(
+            crate::domain::workflow::NodeDefinition {
+                name: "main".to_string(),
+                kind: crate::domain::workflow::NodeKind::Sequence(
+                    crate::domain::workflow::SequenceSpec {
+                        entry: None,
+                        children: vec![crate::domain::workflow::ChildEntry {
+                            name: "implement".to_string(),
+                            inputs: Vec::new(),
+                            rules: Some(vec![crate::domain::workflow::Rule::Next(
+                                "missing-node".to_string(),
+                            )]),
+                        }],
+                    },
+                ),
+                ..Default::default()
+            },
+        );
+        execution.runtime.workflow.as_mut().unwrap().entry = "main".to_string();
+        execution
+            .replay_node_started("main-1", "main", NodeKindName::Sequence, 1, None, 9.0)
+            .unwrap();
+        execution
+            .replay_node_started(
+                "node-execution-1",
+                "implement",
+                NodeKindName::Session,
+                1,
+                Some(ExecutionParentRef::sequence_child("main-1")),
+                10.0,
+            )
+            .unwrap();
+        execution.record_node_completion_signal(
+            "node-execution-1",
+            NodeCompletionSignal::Submit,
+            10.5,
+        );
+        execution.record_node_completion_signal(
+            "node-execution-1",
+            NodeCompletionSignal::Stop,
+            10.75,
+        );
+
+        let mut new_id = || "next-node".to_string();
+        let result =
+            execution.apply_node_completion_handshake("node-execution-1", &mut new_id, 11.0);
+
+        assert!(result.is_err());
+        assert_ne!(execution.state(), &RuntimeExecutionState::Completed);
+    }
+
+    #[test]
+
+    fn agent_node_attempt_cannot_complete_before_submit_and_stop() {
+        let mut execution = restored_execution(RuntimeExecutionState::Running);
+        let node_execution_id = execution
+            .begin_node_attempt(
+                "implement".to_string(),
+                NodeKindName::Session,
+                1,
+                None,
+                "node-execution-1".to_string(),
+                10.0,
+            )
+            .unwrap();
+
+        assert_eq!(
+            execution.complete_node_execution(&node_execution_id, None, None, 11.0),
+            TransitionOutcome::NotApplicable
+        );
+        assert_eq!(
+            execution.node_executions()[0].status,
+            RuntimeNodeExecutionStatus::Running
+        );
+        assert_eq!(
+            execution.record_node_completion_signal(
+                &node_execution_id,
+                NodeCompletionSignal::Stop,
+                12.0,
+            ),
+            TransitionOutcome::Applied
+        );
+        assert_eq!(
+            execution.node_executions()[0].completion_signals,
+            NodeCompletionSignalState::StopReceived
+        );
+        assert_eq!(
+            execution.decide_node_completion_handshake(&node_execution_id),
+            NodeCompletionHandshakeDecision::AwaitingSignal
+        );
+        assert_eq!(
+            execution.complete_node_execution(&node_execution_id, None, None, 13.0),
+            TransitionOutcome::NotApplicable
+        );
+        assert_eq!(
+            execution.record_node_completion_signal(
+                &node_execution_id,
+                NodeCompletionSignal::Stop,
+                14.0,
+            ),
+            TransitionOutcome::AlreadyApplied
+        );
+        assert_eq!(
+            execution.record_node_completion_signal(
+                &node_execution_id,
+                NodeCompletionSignal::Submit,
+                15.0,
+            ),
+            TransitionOutcome::Applied
+        );
+        assert_eq!(
+            execution.node_executions()[0].completion_signals,
+            NodeCompletionSignalState::Ready
+        );
+        assert_eq!(
+            execution.decide_node_completion_handshake(&node_execution_id),
+            NodeCompletionHandshakeDecision::CompleteAuto
+        );
+        assert_eq!(
+            execution.complete_node_execution(&node_execution_id, None, None, 16.0),
+            TransitionOutcome::Applied
+        );
+        assert_eq!(
+            execution.decide_node_completion_handshake(&node_execution_id),
+            NodeCompletionHandshakeDecision::AlreadySettled
+        );
+    }
+
+    #[test]
+
+    fn test_fanout親_completion承認はauto子の完了経路でも承認待ちになる() {
+        let mut execution = restored_execution(RuntimeExecutionState::Running);
+        execution.runtime.workflow.as_mut().unwrap().nodes = vec![
+            crate::domain::workflow::NodeDefinition {
+                name: "fanout".to_string(),
+                kind: crate::domain::workflow::NodeKind::Fanout(
+                    crate::domain::workflow::FanoutSpec {
+                        children: vec![crate::domain::workflow::ChildEntry::reference("worker")],
+                        items: None,
+                    },
+                ),
+                completion: crate::domain::workflow::NodeCompletion::require_approval(),
+                ..Default::default()
+            },
+            crate::domain::workflow::NodeDefinition {
+                name: "worker".to_string(),
+                ..Default::default()
+            },
+        ];
+        execution.runtime.workflow.as_mut().unwrap().entry = "fanout".to_string();
+        execution
+            .replay_node_started(
+                "parent-execution-1",
+                "fanout",
+                NodeKindName::Fanout,
+                1,
+                None,
+                10.0,
+            )
+            .unwrap();
+        execution
+            .replay_node_started(
+                "child-execution-1",
+                "worker",
+                NodeKindName::Session,
+                1,
+                Some(ExecutionParentRef::fanout_child(
+                    "parent-execution-1",
+                    None,
+                    0,
+                )),
+                10.0,
+            )
+            .unwrap();
+        execution.record_node_completion_signal(
+            "child-execution-1",
+            NodeCompletionSignal::Submit,
+            11.0,
+        );
+        execution.record_node_completion_signal(
+            "child-execution-1",
+            NodeCompletionSignal::Stop,
+            12.0,
+        );
+
+        let mut new_id = || "node-execution-next".to_string();
+        let result = execution
+            .apply_node_completion_handshake("child-execution-1", &mut new_id, 13.0)
+            .unwrap();
+
+        assert_eq!(
+            result.advance,
+            Some(ExecutionAdvanceDecision::Persist),
+            "承認まで次 node へ進まない"
+        );
+        assert!(
+            result.events.iter().any(|event| matches!(
+                event,
+                WorkflowEvent::ApprovalRequested { node_execution_id, node_name, .. }
+                    if node_execution_id == "parent-execution-1" && node_name == "fanout"
+            )),
+            "親の ApprovalRequested が発行される: {:?}",
+            result.events
+        );
+        let parent = execution
+            .node_executions()
+            .iter()
+            .find(|node| node.id == "parent-execution-1")
+            .unwrap();
+        assert_eq!(
+            parent.status,
+            RuntimeNodeExecutionStatus::WaitingApproval,
+            "親は承認待ちで完了しない"
+        );
+        assert!(
+            execution.scope("parent-execution-1").is_some(),
+            "承認時の artifact 集約のため fanout スコープは保持される"
+        );
+    }
+
+    #[test]
+
+    fn completion_handshake_applies_the_domain_transition_and_uses_the_supplied_next_id() {
+        let mut execution = restored_execution(RuntimeExecutionState::Running);
+        execution.runtime.workflow.as_mut().unwrap().nodes.push(
+            crate::domain::workflow::NodeDefinition {
+                name: "verify".to_string(),
+                kind: crate::domain::workflow::NodeKind::Command(
+                    crate::domain::workflow::CommandSpec {
+                        command: "true".to_string(),
+                        env: Default::default(),
+                    },
+                ),
+                ..Default::default()
+            },
+        );
+        execution.runtime.workflow.as_mut().unwrap().nodes.push(
+            crate::domain::workflow::NodeDefinition {
+                name: "main".to_string(),
+                kind: crate::domain::workflow::NodeKind::Sequence(
+                    crate::domain::workflow::SequenceSpec {
+                        entry: None,
+                        children: vec![
+                            crate::domain::workflow::ChildEntry::reference("implement"),
+                            crate::domain::workflow::ChildEntry::reference("verify"),
+                        ],
+                    },
+                ),
+                ..Default::default()
+            },
+        );
+        execution.runtime.workflow.as_mut().unwrap().entry = "main".to_string();
+        execution
+            .replay_node_started("main-1", "main", NodeKindName::Sequence, 1, None, 9.0)
+            .unwrap();
+        execution
+            .replay_node_started(
+                "node-execution-1",
+                "implement",
+                NodeKindName::Session,
+                1,
+                Some(ExecutionParentRef::sequence_child("main-1")),
+                10.0,
+            )
+            .unwrap();
+        execution.record_node_completion_signal(
+            "node-execution-1",
+            NodeCompletionSignal::Submit,
+            11.0,
+        );
+        execution.record_node_completion_signal(
+            "node-execution-1",
+            NodeCompletionSignal::Stop,
+            12.0,
+        );
+
+        let mut new_id = || "node-execution-2".to_string();
+        let result = execution
+            .apply_node_completion_handshake("node-execution-1", &mut new_id, 13.0)
+            .unwrap();
+
+        assert_eq!(
+            result.advance,
+            Some(ExecutionAdvanceDecision::StartNodes(vec![NodeStart::Leaf(
+                LeafStart {
+                    node_execution_id: "node-execution-2".to_string(),
+                    node_name: "verify".to_string(),
+                    kind: LeafKind::Command,
+                    bindings: Vec::new(),
+                    item: None,
+                }
+            )]))
+        );
+        assert_eq!(
+            execution.node_executions().last().unwrap().id,
+            "node-execution-2"
+        );
+        assert!(result.events.iter().any(|event| matches!(
+            event,
+            WorkflowEvent::NodeStarted { node_execution_id, node_name, .. }
+                if node_execution_id == "node-execution-2" && node_name == "verify"
+        )));
+    }
+
+    #[test]
+
+    fn approval_target_requires_an_exact_attempt_when_fanout_names_are_ambiguous() {
+        let mut execution = restored_execution(RuntimeExecutionState::Running);
+        execution.runtime.workflow.as_mut().unwrap().nodes[0].completion =
+            crate::domain::workflow::NodeCompletion::require_approval();
+        for (id, child_index) in [("child-1", 0), ("child-2", 1)] {
+            execution
+                .begin_node_attempt(
+                    "implement".to_string(),
+                    NodeKindName::Session,
+                    1,
+                    Some(ExecutionParentRef::fanout_child(
+                        "parent-execution-1",
+                        None,
+                        child_index,
+                    )),
+                    id.to_string(),
+                    10.0,
+                )
+                .unwrap();
+            assert_eq!(
+                execution.mark_node_waiting_approval(id, 11.0),
+                TransitionOutcome::Applied
+            );
+        }
+
+        assert!(matches!(
+            execution.resolve_approval_attempt_target("implement", None),
+            Err(crate::domain::workflow::WorkflowError::InvalidState(_))
+        ));
+        let target = execution
+            .resolve_approval_attempt_target("implement", Some("child-2"))
+            .unwrap();
+        assert_eq!(target.node_execution_id, "child-2");
+        assert_eq!(target.parent.unwrap().fanout_slot().unwrap().child_index, 1);
+    }
+
+    #[test]
+
+    fn new_attempt_isolates_previous_completion_signals_and_preserves_its_history() {
+        let mut execution = restored_execution(RuntimeExecutionState::Running);
+        let previous_id = execution
+            .begin_node_attempt(
+                "implement".to_string(),
+                NodeKindName::Session,
+                1,
+                None,
+                "node-execution-1".to_string(),
+                10.0,
+            )
+            .unwrap();
+        assert_eq!(
+            execution.attach_node_session(&previous_id, "session-1".to_string(), 11.0),
+            TransitionOutcome::Applied
+        );
+        assert_eq!(
+            execution.record_node_completion_signal(
+                &previous_id,
+                NodeCompletionSignal::Submit,
+                12.0,
+            ),
+            TransitionOutcome::Applied
+        );
+        assert_eq!(
+            execution.apply_submitted_output(
+                "implement".to_string(),
+                &previous_id,
+                1,
+                Some("session-1".to_string()),
+                "result".to_string(),
+                serde_json::json!({"attempt": 1}),
+                Some("first".to_string()),
+                13.0,
+            ),
+            TransitionOutcome::Applied
+        );
+
+        execution.restart_node_attempt_at(&previous_id, "node-execution-2".to_string(), 20.0);
+
+        assert_eq!(execution.node_executions().len(), 2);
+        let previous = &execution.node_executions()[0];
+        assert_eq!(previous.id, previous_id);
+        assert_eq!(previous.status, RuntimeNodeExecutionStatus::Aborted);
+        assert_eq!(
+            previous.completion_signals,
+            NodeCompletionSignalState::SubmitReceived
+        );
+        assert_eq!(previous.session_id.as_deref(), Some("session-1"));
+        assert_eq!(
+            previous.artifact.as_ref(),
+            Some(&serde_json::json!({"attempt": 1}))
+        );
+
+        let current = &execution.node_executions()[1];
+        assert_eq!(current.id, "node-execution-2");
+        assert_eq!(current.attempt, 2);
+        assert_eq!(current.status, RuntimeNodeExecutionStatus::Running);
+        assert_eq!(
+            execution
+                .runtime
+                .retry_predecessors
+                .get("node-execution-2")
+                .map(String::as_str),
+            Some(previous_id.as_str())
+        );
+        assert_eq!(
+            current.completion_signals,
+            NodeCompletionSignalState::Pending
+        );
+        assert!(current.session_id.is_none());
+        assert!(current.artifact.is_none());
+
+        assert_eq!(
+            execution
+                .record_node_completion_signal(&previous_id, NodeCompletionSignal::Stop, 21.0,),
+            TransitionOutcome::NotApplicable
+        );
+        assert_eq!(
+            execution.node_executions()[1].completion_signals,
+            NodeCompletionSignalState::Pending
+        );
+    }
+
+    #[test]
+
+    fn test_workflow_execution_session起動木もresume用の新attemptを作れる() {
+        let mut execution = restored_execution(RuntimeExecutionState::Running);
+        execution.launched_as = ExecutionTreeLaunch::Session;
+        let node_execution_id = execution
+            .begin_node_attempt(
+                "implement".to_string(),
+                NodeKindName::Session,
+                1,
+                None,
+                "session-root".to_string(),
+                10.0,
+            )
+            .unwrap();
+        execution.record_node_completion_signal(
+            &node_execution_id,
+            NodeCompletionSignal::Stop,
+            11.0,
+        );
+
+        let restarted = execution.restart_node_attempt_at(
+            &node_execution_id,
+            "retry-attempt".to_string(),
+            12.0,
+        );
+
+        let restarted = restarted.unwrap();
+        assert_eq!(restarted.attempt.attempt, 2);
+        assert_eq!(
+            execution.node_execution(&node_execution_id).unwrap().status,
+            RuntimeNodeExecutionStatus::Aborted
+        );
+        assert_eq!(
+            restarted.attempt.status,
+            RuntimeNodeExecutionStatus::Running
+        );
+    }
+
+    #[test]
+
+    fn node_attempt_abort_and_approval_transitions_are_closed() {
+        let mut execution = restored_execution(RuntimeExecutionState::Running);
+        let first_id = execution
+            .begin_node_attempt(
+                "implement".to_string(),
+                NodeKindName::Session,
+                1,
+                None,
+                "node-execution-1".to_string(),
+                10.0,
+            )
+            .unwrap();
+        assert_eq!(
+            execution.mark_node_waiting_approval(&first_id, 11.0),
+            TransitionOutcome::Applied
+        );
+        assert_eq!(
+            execution.mark_node_waiting_approval(&first_id, 11.5),
+            TransitionOutcome::AlreadyApplied
+        );
+        assert_eq!(
+            execution.mark_node_running(&first_id, 12.0),
+            TransitionOutcome::Applied
+        );
+        assert_eq!(
+            execution.abort_node_execution(&first_id, 13.0),
+            TransitionOutcome::Applied
+        );
+        assert_eq!(
+            execution.complete_node_execution(&first_id, None, None, 15.0),
+            TransitionOutcome::NotApplicable
+        );
+
+        let second_id = execution
+            .begin_node_attempt(
+                "implement".to_string(),
+                NodeKindName::Session,
+                2,
+                None,
+                "node-execution-2".to_string(),
+                16.0,
+            )
+            .unwrap();
+        assert_eq!(
+            execution.abort_node_execution(&second_id, 17.0),
+            TransitionOutcome::Applied
+        );
+        assert_eq!(
+            execution.abort_node_execution(&second_id, 18.0),
+            TransitionOutcome::AlreadyApplied
+        );
+        assert_eq!(execution.node_executions.len(), 2);
+    }
+
+    #[test]
+
+    fn fanout_child_completion_updates_slot_and_node_as_one_transition() {
+        let mut execution = restored_execution(RuntimeExecutionState::Running);
+        execution.runtime.workflow.as_mut().unwrap().nodes = vec![
+            crate::domain::workflow::NodeDefinition {
+                name: "fanout".to_string(),
+                kind: crate::domain::workflow::NodeKind::Fanout(
+                    crate::domain::workflow::FanoutSpec {
+                        children: vec![
+                            crate::domain::workflow::ChildEntry::reference("implement"),
+                            crate::domain::workflow::ChildEntry::reference("verify"),
+                        ],
+                        items: None,
+                    },
+                ),
+                ..Default::default()
+            },
+            crate::domain::workflow::NodeDefinition {
+                name: "implement".to_string(),
+                ..Default::default()
+            },
+            crate::domain::workflow::NodeDefinition {
+                name: "verify".to_string(),
+                ..Default::default()
+            },
+        ];
+        execution.runtime.workflow.as_mut().unwrap().entry = "fanout".to_string();
+        execution
+            .replay_node_started(
+                "parent-execution-1",
+                "fanout",
+                NodeKindName::Fanout,
+                1,
+                None,
+                10.0,
+            )
+            .unwrap();
+        for (id, name, child_index) in [("child-1", "implement", 0), ("child-2", "verify", 1)] {
+            execution
+                .replay_node_started(
+                    id,
+                    name,
+                    NodeKindName::Session,
+                    1,
+                    Some(ExecutionParentRef::fanout_child(
+                        "parent-execution-1",
+                        None,
+                        child_index,
+                    )),
+                    10.5,
+                )
+                .unwrap();
+        }
+        execution.record_node_completion_signal("child-1", NodeCompletionSignal::Submit, 11.25);
+        execution.record_node_completion_signal("child-1", NodeCompletionSignal::Stop, 11.5);
+        execution.record_pending_result(
+            "child-1",
+            Some("done".to_string()),
+            Some(serde_json::json!({"ok": true})),
+            Some("result".to_string()),
+            None,
+            11.9,
+        );
+
+        let mut new_id = || "unused".to_string();
+        let applied = execution
+            .complete_leaf_and_advance("child-1", &mut new_id, 12.0)
+            .unwrap();
+
+        assert_eq!(applied.decision, ExecutionAdvanceDecision::Persist);
+        let fanout = execution
+            .scope("parent-execution-1")
+            .unwrap()
+            .fanout()
+            .unwrap();
+        assert_eq!(fanout.children[0].state, FanoutChildRuntimeState::Completed);
+        assert_eq!(
+            fanout.children[0].artifact,
+            Some(serde_json::json!({"ok": true}))
+        );
+        assert_eq!(fanout.children[1].state, FanoutChildRuntimeState::Running);
+        assert_eq!(
+            execution
+                .node_executions()
+                .iter()
+                .find(|node| node.id == "child-1")
+                .unwrap()
+                .status,
+            RuntimeNodeExecutionStatus::Succeeded
+        );
+        assert_eq!(execution.state(), &RuntimeExecutionState::Running);
+    }
+
+    #[test]
+
+    fn fanout_child_retry_replaces_only_the_current_logical_child_attempt() {
+        let mut execution = restored_execution(RuntimeExecutionState::Running);
+        execution.runtime.workflow.as_mut().unwrap().nodes = vec![
+            crate::domain::workflow::NodeDefinition {
+                name: "fanout".to_string(),
+                kind: crate::domain::workflow::NodeKind::Fanout(
+                    crate::domain::workflow::FanoutSpec {
+                        children: vec![crate::domain::workflow::ChildEntry::reference("implement")],
+                        items: None,
+                    },
+                ),
+                ..Default::default()
+            },
+            crate::domain::workflow::NodeDefinition {
+                name: "implement".to_string(),
+                ..Default::default()
+            },
+        ];
+        execution.runtime.workflow.as_mut().unwrap().entry = "fanout".to_string();
+        execution
+            .replay_node_started(
+                "parent-execution-1",
+                "fanout",
+                NodeKindName::Fanout,
+                1,
+                None,
+                10.0,
+            )
+            .unwrap();
+        execution
+            .replay_node_started(
+                "child-execution-1",
+                "implement",
+                NodeKindName::Session,
+                1,
+                Some(ExecutionParentRef::fanout_child(
+                    "parent-execution-1",
+                    Some(0),
+                    0,
+                )),
+                10.5,
+            )
+            .unwrap();
+        execution.record_node_completion_signal(
+            "child-execution-1",
+            NodeCompletionSignal::Stop,
+            12.0,
+        );
+
+        let restarted = execution
+            .restart_node_attempt_at("child-execution-1", "child-execution-2".to_string(), 13.0)
+            .unwrap();
+
+        assert!(restarted.fanout_child);
+        assert_eq!(execution.node_executions().len(), 3);
+        let old = execution
+            .node_executions()
+            .iter()
+            .find(|node| node.id == "child-execution-1")
+            .unwrap();
+        assert_eq!(old.status, RuntimeNodeExecutionStatus::Aborted);
+        assert_eq!(
+            old.completion_signals,
+            NodeCompletionSignalState::StopReceived
+        );
+        let current = execution
+            .node_executions()
+            .iter()
+            .find(|node| node.id == "child-execution-2")
+            .unwrap();
+        assert_eq!(current.attempt, 2);
+        assert_eq!(
+            current.completion_signals,
+            NodeCompletionSignalState::Pending
+        );
+        let fanout = execution
+            .scope("parent-execution-1")
+            .unwrap()
+            .fanout()
+            .unwrap();
+        assert_eq!(fanout.children.len(), 1);
+        assert_eq!(fanout.children[0].node_execution_id, "child-execution-2");
+        assert_eq!(fanout.children[0].attempt, 2);
+        assert_eq!(fanout.children[0].state, FanoutChildRuntimeState::Running);
+    }
+
+    // --- 実行木（#1463）: 合成子の再帰実行 -----------------------------------
+
+    use crate::domain::workflow::{
+        ChildEntry, CommandSpec, FanoutSpec, NodeCompletion, NodeKind, Rule, SequenceSpec,
+    };
+
+    fn tree_command_node(name: &str) -> NodeDefinition {
+        NodeDefinition {
+            name: name.to_string(),
+            kind: NodeKind::Command(CommandSpec {
+                command: format!("printf {name}"),
+                env: Default::default(),
+            }),
+            ..Default::default()
+        }
+    }
+
+    fn tree_sequence_node(name: &str, children: Vec<ChildEntry>) -> NodeDefinition {
+        NodeDefinition {
+            name: name.to_string(),
+            kind: NodeKind::Sequence(SequenceSpec {
+                entry: None,
+                children,
+            }),
+            ..Default::default()
+        }
+    }
+
+    fn tree_execution(nodes: Vec<NodeDefinition>) -> ExecutionTree {
+        ExecutionTree::restore_runtime(ExecutionTreeRestore {
+            id: "execution-1".to_string(),
+            workflow: WorkflowDefinition {
+                name: "tree".to_string(),
+                entry: "main".to_string(),
+                nodes,
+                ..Default::default()
+            },
+            ..ExecutionTreeRestore::default()
+        })
+    }
+
+    fn tree_id_source() -> impl FnMut() -> String {
+        let mut counter = 0;
+        move || {
+            counter += 1;
+            format!("id-{counter}")
+        }
+    }
+
+    #[test]
+
+    fn test_command_env_resumeは保存済み宣言と再構築bindingから値を再解決できる() {
+        let mut command = tree_command_node("run");
+        command.input.push(crate::domain::workflow::InputParam {
+            name: "document".to_string(),
+            contract: None,
+        });
+        let NodeKind::Command(command_spec) = &mut command.kind else {
+            unreachable!();
+        };
+        command_spec.env = [(
+            crate::domain::workflow::EnvironmentVariableName::new("DOC").unwrap(),
+            crate::domain::workflow::InputParameterRef::new("document").unwrap(),
+        )]
+        .into_iter()
+        .collect();
+        let mut entry = ChildEntry::reference("run");
+        entry.inputs.push((
+            "document".to_string(),
+            crate::domain::workflow::value_objects::InputSourceRef::new("request"),
+        ));
+        let mut execution = tree_execution(vec![tree_sequence_node("main", vec![entry]), command]);
+        execution.request = Some("document body".to_string());
+        let mut new_id = tree_id_source();
+        let started = execution.start_root(&mut new_id, 1.0).unwrap();
+        let ExecutionAdvanceDecision::StartNodes(leaves) = started.decision else {
+            panic!("command leaf must start");
+        };
+        let original = leaves[0].node_execution_id();
+
+        let restarted = execution
+            .restart_node_attempt_at(original, "resumed-command".to_string(), 3.0)
+            .unwrap();
+
+        assert_eq!(restarted.leaf.bindings, expect_leaf(&leaves[0]).bindings);
+        let command = execution
+            .node_definition("run")
+            .and_then(NodeDefinition::command_spec)
+            .unwrap();
+        assert_eq!(
+            crate::domain::workflow::services::reference::resolve_command_environment(
+                &command.env,
+                &restarted.leaf.bindings,
+            )
+            .unwrap(),
+            vec![("DOC".to_string(), "document body".to_string())]
+        );
+    }
+
+    pub(crate) fn started_names(events: &[WorkflowEvent]) -> Vec<String> {
+        events
+            .iter()
+            .filter_map(|event| match event {
+                WorkflowEvent::NodeStarted { node_name, .. } => Some(node_name.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    pub(crate) fn execution_id_of(execution: &ExecutionTree, node_name: &str) -> String {
+        execution
+            .node_executions()
+            .iter()
+            .find(|node| node.node_name == node_name)
+            .unwrap_or_else(|| panic!("node execution '{node_name}' must exist"))
+            .id
+            .clone()
+    }
+
+    /// 起動済み leaf 群を先入れ先出しで完了させ続け、実行を終端まで進める。
+    /// 完了させた leaf の (node_name, node_execution_id) を完了順で返す。
+    fn drive_leaves_to_end(
+        execution: &mut ExecutionTree,
+        initial: Vec<NodeStart>,
+        new_id: &mut dyn FnMut() -> String,
+    ) -> Vec<(String, String)> {
+        let mut queue: std::collections::VecDeque<NodeStart> = initial.into();
+        let mut completed = Vec::new();
+        let mut now = 10.0;
+        while let Some(leaf) = queue.pop_front() {
+            now += 1.0;
+            let applied = execution
+                .complete_leaf_and_advance(leaf.node_execution_id(), new_id, now)
+                .unwrap();
+            completed.push((
+                leaf.node_name().to_string(),
+                leaf.node_execution_id().to_string(),
+            ));
+            if let ExecutionAdvanceDecision::StartNodes(next) = applied.decision {
+                queue.extend(next);
+            }
+        }
+        completed
+    }
+
+    #[test]
+
+    fn fanout_child_sequence_runs_recursively_and_completes_bottom_up() {
+        let mut execution = tree_execution(vec![
+            tree_sequence_node(
+                "main",
+                vec![ChildEntry::reference("fan"), ChildEntry::reference("after")],
+            ),
+            NodeDefinition {
+                name: "fan".to_string(),
+                kind: NodeKind::Fanout(FanoutSpec {
+                    children: vec![ChildEntry::reference("part"), ChildEntry::reference("solo")],
+                    items: None,
+                }),
+                ..Default::default()
+            },
+            tree_sequence_node(
+                "part",
+                vec![ChildEntry::reference("s1"), ChildEntry::reference("s2")],
+            ),
+            tree_command_node("s1"),
+            tree_command_node("s2"),
+            tree_command_node("solo"),
+            tree_command_node("after"),
+        ]);
+        let mut new_id = tree_id_source();
+
+        let applied = execution.start_root(&mut new_id, 1.0).unwrap();
+        assert_eq!(
+            started_names(&applied.events),
+            ["main", "fan", "part", "s1", "solo"]
+        );
+        let ExecutionAdvanceDecision::StartNodes(leaves) = applied.decision else {
+            panic!("nested start must yield leaves");
+        };
+        assert_eq!(
+            leaves
+                .iter()
+                .map(|leaf| leaf.node_name())
+                .collect::<Vec<_>>(),
+            ["s1", "solo"]
+        );
+
+        // 親参照が実行木を成す: s1 → part（sequence の子）、part → fan（fanout の子）。
+        let main_id = execution_id_of(&execution, "main");
+        let fan_id = execution_id_of(&execution, "fan");
+        let part_id = execution_id_of(&execution, "part");
+        let s1 = execution
+            .node_executions()
+            .iter()
+            .find(|node| node.node_name == "s1")
+            .unwrap();
+        assert_eq!(
+            s1.parent,
+            Some(ExecutionParentRef::sequence_child(&part_id))
+        );
+        let part = execution
+            .node_executions()
+            .iter()
+            .find(|node| node.node_name == "part")
+            .unwrap();
+        let part_parent = part.parent.clone().unwrap();
+        assert_eq!(part_parent.parent_id, fan_id);
+        assert!(part_parent.fanout_slot().is_some());
+        let fan = execution
+            .node_executions()
+            .iter()
+            .find(|node| node.node_name == "fan")
+            .unwrap();
+        assert_eq!(
+            fan.parent,
+            Some(ExecutionParentRef::sequence_child(&main_id))
+        );
+
+        let completed = drive_leaves_to_end(&mut execution, leaves, &mut new_id);
+        assert_eq!(
+            completed
+                .iter()
+                .map(|(name, _)| name.as_str())
+                .collect::<Vec<_>>(),
+            ["s1", "solo", "s2", "after"]
+        );
+        assert_eq!(*execution.state(), RuntimeExecutionState::Completed);
+        for name in ["main", "fan", "part"] {
+            assert_eq!(
+                execution
+                    .node_executions()
+                    .iter()
+                    .find(|node| node.node_name == name)
+                    .unwrap()
+                    .status,
+                RuntimeNodeExecutionStatus::Succeeded,
+                "composite instance '{name}' must complete bottom-up"
+            );
+        }
+    }
+
+    #[test]
+
+    fn nested_approval_pauses_inside_the_tree_and_resumes_in_place() {
+        let mut execution = tree_execution(vec![
+            tree_sequence_node(
+                "main",
+                vec![
+                    ChildEntry::reference("part"),
+                    ChildEntry::reference("report"),
+                ],
+            ),
+            NodeDefinition {
+                completion: NodeCompletion::require_approval(),
+                ..tree_sequence_node("part", vec![ChildEntry::reference("inner")])
+            },
+            tree_command_node("inner"),
+            tree_command_node("report"),
+        ]);
+        let mut new_id = tree_id_source();
+
+        let applied = execution.start_root(&mut new_id, 1.0).unwrap();
+        let ExecutionAdvanceDecision::StartNodes(leaves) = applied.decision else {
+            panic!("start must yield the inner leaf");
+        };
+        let part_id = execution_id_of(&execution, "part");
+        let applied = execution
+            .complete_leaf_and_advance(leaves[0].node_execution_id(), &mut new_id, 2.0)
+            .unwrap();
+
+        // ネスト内で承認待ち停止: part は WaitingApproval、前進しない。
+        assert!(applied.events.iter().any(|event| matches!(
+            event,
+            WorkflowEvent::ApprovalRequested { node_execution_id, .. }
+                if node_execution_id == &part_id
+        )));
+        assert_eq!(applied.decision, ExecutionAdvanceDecision::Persist);
+        assert_eq!(
+            execution
+                .node_executions()
+                .iter()
+                .find(|node| node.id == part_id)
+                .unwrap()
+                .status,
+            RuntimeNodeExecutionStatus::WaitingApproval
+        );
+        assert_eq!(execution.display_current_node(), Some("part".to_string()));
+
+        // 承認でネスト位置から再開し、親 sequence が report へ前進する。
+        let applied = execution
+            .apply_approval(&part_id, &mut new_id, 3.0)
+            .unwrap();
+        let ExecutionAdvanceDecision::StartNodes(leaves) = applied.decision else {
+            panic!("approval must resume the parent sequence");
+        };
+        assert_eq!(leaves[0].node_name(), "report");
+        let applied = execution
+            .complete_leaf_and_advance(leaves[0].node_execution_id(), &mut new_id, 4.0)
+            .unwrap();
+        assert!(applied
+            .events
+            .iter()
+            .any(|event| matches!(event, WorkflowEvent::ExecutionCompleted { .. })));
+        assert_eq!(*execution.state(), RuntimeExecutionState::Completed);
+    }
+
+    #[test]
+
+    fn replay_restores_the_nested_position_for_resume() {
+        let nodes = vec![
+            tree_sequence_node(
+                "main",
+                vec![
+                    ChildEntry::reference("part"),
+                    ChildEntry::reference("report"),
+                ],
+            ),
+            tree_sequence_node(
+                "part",
+                vec![
+                    ChildEntry::reference("inner-a"),
+                    ChildEntry::reference("inner-b"),
+                ],
+            ),
+            tree_command_node("inner-a"),
+            tree_command_node("inner-b"),
+            tree_command_node("report"),
+        ];
+        let mut live = tree_execution(nodes.clone());
+        let mut new_id = tree_id_source();
+        let applied = live.start_root(&mut new_id, 1.0).unwrap();
+        let ExecutionAdvanceDecision::StartNodes(leaves) = applied.decision else {
+            panic!("start must yield the inner-a leaf");
+        };
+        let advanced = live
+            .complete_leaf_and_advance(leaves[0].node_execution_id(), &mut new_id, 2.0)
+            .unwrap();
+        let mut events = applied.events;
+        events.extend(advanced.events);
+
+        // 事実列だけからスコープ木を再構築する（inner-b 実行中の位置）。
+        let mut replayed = tree_execution(nodes);
+        for event in &events {
+            match event {
+                WorkflowEvent::NodeStarted {
+                    node_execution_id,
+                    node_name,
+                    kind,
+                    attempt,
+                    parent,
+                    timestamp,
+                    ..
+                } => replayed
+                    .replay_node_started(
+                        node_execution_id,
+                        node_name,
+                        *kind,
+                        *attempt,
+                        parent.clone(),
+                        *timestamp,
+                    )
+                    .unwrap(),
+                WorkflowEvent::NodeCompleted {
+                    node_execution_id,
+                    timestamp,
+                    ..
+                } => replayed
+                    .derive_session_settlement(node_execution_id, *timestamp)
+                    .unwrap(),
+                _ => {}
+            }
+        }
+
+        let main_id = execution_id_of(&live, "main");
+        let part_id = execution_id_of(&live, "part");
+        let inner_b_id = execution_id_of(&live, "inner-b");
+        assert!(replayed.scope(&main_id).is_some());
+        assert!(replayed.scope(&part_id).is_some());
+        assert_eq!(
+            replayed
+                .scope(&part_id)
+                .and_then(ScopeRuntime::sequence)
+                .and_then(|sequence| sequence.current_child.clone()),
+            Some("inner-b".to_string())
+        );
+        assert_eq!(replayed.display_current_node(), Some("inner-b".to_string()));
+        let leaf = replayed
+            .leaf_start_for(&inner_b_id)
+            .expect("the interrupted leaf must be restartable in place");
+        assert_eq!(leaf.node_name, "inner-b");
+        assert_eq!(
+            replayed
+                .node_executions()
+                .iter()
+                .find(|node| node.id == inner_b_id)
+                .unwrap()
+                .parent,
+            Some(ExecutionParentRef::sequence_child(&part_id))
+        );
+    }
+
+    #[test]
+
+    fn parallel_fanout_lanes_keep_independent_loop_guard_counts() {
+        // fan は同じ部品 sequence "part" を items 2 件で並走させる。part 内の
+        // fix は loop_guard(2) で自己ループする。lane 0 が予算を使い切っても
+        // lane 1 の fix は自分のスコープの予算で 2 回目に入れる。
+        let mut execution = tree_execution(vec![
+            tree_sequence_node("main", vec![ChildEntry::reference("fan")]),
+            NodeDefinition {
+                name: "fan".to_string(),
+                kind: NodeKind::Fanout(FanoutSpec {
+                    children: vec![ChildEntry::reference("part")],
+                    items: Some(crate::domain::workflow::ItemsSource::Literal(vec![
+                        serde_json::json!("a"),
+                        serde_json::json!("b"),
+                    ])),
+                }),
+                ..Default::default()
+            },
+            tree_sequence_node(
+                "part",
+                vec![
+                    ChildEntry {
+                        name: "fix".to_string(),
+                        inputs: Vec::new(),
+                        rules: Some(vec![
+                            Rule::LoopGuard {
+                                max_iterations: 2,
+                                on_exhausted: "exit".to_string(),
+                            },
+                            Rule::Next("fix".to_string()),
+                        ]),
+                    },
+                    ChildEntry::reference("exit"),
+                ],
+            ),
+            tree_command_node("fix"),
+            tree_command_node("exit"),
+        ]);
+        let mut new_id = tree_id_source();
+
+        let applied = execution.start_root(&mut new_id, 1.0).unwrap();
+        let ExecutionAdvanceDecision::StartNodes(leaves) = applied.decision else {
+            panic!("start must yield one fix leaf per lane");
+        };
+        assert_eq!(
+            leaves
+                .iter()
+                .map(|leaf| leaf.node_name())
+                .collect::<Vec<_>>(),
+            ["fix", "fix"]
+        );
+        let lane_parts: Vec<String> = leaves
+            .iter()
+            .map(|leaf| {
+                execution
+                    .node_executions()
+                    .iter()
+                    .find(|node| node.id == leaf.node_execution_id())
+                    .and_then(|node| node.parent.clone())
+                    .expect("a lane fix must hang under its part instance")
+                    .parent_id
+            })
+            .collect();
+        assert_ne!(
+            lane_parts[0], lane_parts[1],
+            "each lane must run its own part instance"
+        );
+
+        // lane 0 が fix の予算 2 回を使い切り exit へ抜ける。
+        let applied = execution
+            .complete_leaf_and_advance(leaves[0].node_execution_id(), &mut new_id, 2.0)
+            .unwrap();
+        let ExecutionAdvanceDecision::StartNodes(lane0_second) = applied.decision else {
+            panic!("lane 0 must revisit fix");
+        };
+        assert_eq!(lane0_second[0].node_name(), "fix");
+        let applied = execution
+            .complete_leaf_and_advance(lane0_second[0].node_execution_id(), &mut new_id, 3.0)
+            .unwrap();
+        let ExecutionAdvanceDecision::StartNodes(lane0_exit) = applied.decision else {
+            panic!("lane 0 must exhaust into exit");
+        };
+        assert_eq!(lane0_exit[0].node_name(), "exit");
+
+        // lane 1 の fix はカウント独立: lane 0 が 2 回消費済みでも 2 回目に入れる。
+        let applied = execution
+            .complete_leaf_and_advance(leaves[1].node_execution_id(), &mut new_id, 4.0)
+            .unwrap();
+        let ExecutionAdvanceDecision::StartNodes(lane1_second) = applied.decision else {
+            panic!("lane 1 must revisit fix with its own budget");
+        };
+        assert_eq!(lane1_second[0].node_name(), "fix");
+        assert_eq!(
+            execution
+                .node_executions()
+                .iter()
+                .find(|node| node.id == lane1_second[0].node_execution_id())
+                .and_then(|node| node.parent.clone())
+                .unwrap()
+                .parent_id,
+            lane_parts[1],
+            "the second fix of lane 1 must stay in lane 1's part instance"
+        );
+
+        // 残りを流し切ると全体が完了する。
+        let mut queue = vec![lane0_exit[0].clone(), lane1_second[0].clone()];
+        let mut now = 5.0;
+        while let Some(leaf) = queue.pop() {
+            now += 1.0;
+            let applied = execution
+                .complete_leaf_and_advance(leaf.node_execution_id(), &mut new_id, now)
+                .unwrap();
+            if let ExecutionAdvanceDecision::StartNodes(next) = applied.decision {
+                queue.extend(next);
+            }
+        }
+        assert_eq!(*execution.state(), RuntimeExecutionState::Completed);
+        assert_eq!(
+            execution
+                .node_executions()
+                .iter()
+                .filter(|node| node.node_name == "fix")
+                .count(),
+            4,
+            "each lane must have run fix twice"
+        );
+    }
+
+    #[test]
+
+    fn part_sequence_input_parameters_feed_child_bindings() {
+        // main は prepare の Artifact を part の input `target` に配線し、
+        // part 内の worker は `target` を自分のパラメータ `data` として受け取る。
+        let mut execution = tree_execution(vec![
+            tree_sequence_node(
+                "main",
+                vec![
+                    ChildEntry::reference("prepare"),
+                    ChildEntry {
+                        name: "part".to_string(),
+                        inputs: vec![(
+                            "target".to_string(),
+                            crate::domain::workflow::value_objects::InputSourceRef::new("prepare"),
+                        )],
+                        rules: None,
+                    },
+                ],
+            ),
+            NodeDefinition {
+                input: vec![crate::domain::workflow::InputParam {
+                    name: "target".to_string(),
+                    contract: None,
+                }],
+                ..tree_sequence_node(
+                    "part",
+                    vec![ChildEntry {
+                        name: "worker".to_string(),
+                        inputs: vec![(
+                            "data".to_string(),
+                            crate::domain::workflow::value_objects::InputSourceRef::new("target"),
+                        )],
+                        rules: None,
+                    }],
+                )
+            },
+            tree_command_node("prepare"),
+            tree_command_node("worker"),
+        ]);
+        let mut new_id = tree_id_source();
+
+        let applied = execution.start_root(&mut new_id, 1.0).unwrap();
+        let ExecutionAdvanceDecision::StartNodes(leaves) = applied.decision else {
+            panic!("start must yield the prepare leaf");
+        };
+        let prepared_value = serde_json::json!({"path": "src/lib.rs"});
+        assert_eq!(
+            execution.record_pending_result(
+                leaves[0].node_execution_id(),
+                Some("done".to_string()),
+                Some(prepared_value.clone()),
+                None,
+                None,
+                2.0,
+            ),
+            TransitionOutcome::Applied
+        );
+        let applied = execution
+            .complete_leaf_and_advance(leaves[0].node_execution_id(), &mut new_id, 3.0)
+            .unwrap();
+
+        // part スコープは input `target` を prepare の Artifact で束縛し、
+        // worker の起動束縛は `target` から `data` を受け取る。
+        let ExecutionAdvanceDecision::StartNodes(leaves) = applied.decision else {
+            panic!("main must advance into part");
+        };
+        assert_eq!(leaves[0].node_name(), "worker");
+        assert_eq!(
+            expect_leaf(&leaves[0]).bindings,
+            vec![("data".to_string(), prepared_value.clone())]
+        );
+        let part_id = execution_id_of(&execution, "part");
+        assert_eq!(
+            execution
+                .scope(&part_id)
+                .map(|scope| scope.parameters.clone()),
+            Some(vec![("target".to_string(), prepared_value)])
+        );
+    }
+
+    #[test]
+
+    fn abort_records_every_active_lane_leaf_even_with_equal_name_and_attempt() {
+        // fanout の並走 lane は同じ部品 sequence を走らせるため、同名 node が
+        // 同一 attempt（スコープ採番）でアクティブになる。abort は全 lane の
+        // leaf を記録する。
+        let mut execution = tree_execution(vec![
+            tree_sequence_node("main", vec![ChildEntry::reference("fan")]),
+            NodeDefinition {
+                name: "fan".to_string(),
+                kind: NodeKind::Fanout(FanoutSpec {
+                    children: vec![ChildEntry::reference("part")],
+                    items: Some(crate::domain::workflow::ItemsSource::Literal(vec![
+                        serde_json::json!("a"),
+                        serde_json::json!("b"),
+                    ])),
+                }),
+                ..Default::default()
+            },
+            tree_sequence_node("part", vec![ChildEntry::reference("fix")]),
+            tree_command_node("fix"),
+        ]);
+        let mut new_id = tree_id_source();
+        let applied = execution.start_root(&mut new_id, 1.0).unwrap();
+        let ExecutionAdvanceDecision::StartNodes(leaves) = applied.decision else {
+            panic!("start must yield one fix leaf per lane");
+        };
+        assert_eq!(leaves.len(), 2);
+        let fixes: Vec<_> = execution
+            .node_executions()
+            .iter()
+            .filter(|node| node.node_name == "fix")
+            .collect();
+        assert_eq!(
+            (fixes[0].attempt, fixes[1].attempt),
+            (1, 1),
+            "both lanes must carry the same scope-local attempt"
+        );
+
+        execution.record_aborted_history_for_active_leaves(2.0);
+
+        let aborted: Vec<_> = execution
+            .node_history
+            .iter()
+            .filter(|entry| {
+                entry.node_name == "fix"
+                    && entry.state == crate::domain::workflow::value_objects::NODE_STATUS_ABORTED
+            })
+            .collect();
+        assert_eq!(
+            aborted.len(),
+            2,
+            "every active lane leaf must get its own aborted entry"
+        );
+    }
+
+    #[test]
+
+    fn direct_fanout_child_lanes_each_start_at_attempt_one_and_retry_independently() {
+        // items 2 件の直接 fanout 子（leaf）は lane ごとに attempt 1 で始まり、
+        // 片方の retry だけがその lane の attempt 2 になる。
+        let mut execution = tree_execution(vec![
+            tree_sequence_node("main", vec![ChildEntry::reference("fan")]),
+            NodeDefinition {
+                name: "fan".to_string(),
+                kind: NodeKind::Fanout(FanoutSpec {
+                    children: vec![ChildEntry::reference("worker")],
+                    items: Some(crate::domain::workflow::ItemsSource::Literal(vec![
+                        serde_json::json!("a"),
+                        serde_json::json!("b"),
+                    ])),
+                }),
+                ..Default::default()
+            },
+            tree_command_node("worker"),
+        ]);
+        let mut new_id = tree_id_source();
+
+        let applied = execution.start_root(&mut new_id, 1.0).unwrap();
+        let ExecutionAdvanceDecision::StartNodes(leaves) = applied.decision else {
+            panic!("start must yield one worker leaf per lane");
+        };
+        let attempts: Vec<u32> = leaves
+            .iter()
+            .map(|leaf| {
+                execution
+                    .node_executions()
+                    .iter()
+                    .find(|node| node.id == leaf.node_execution_id())
+                    .unwrap()
+                    .attempt
+            })
+            .collect();
+        assert_eq!(attempts, [1, 1], "each lane must start at attempt 1");
+
+        // lane 0 を失敗させて retry すると、その lane だけ attempt 2 になる。
+        let lane0 = leaves[0].node_execution_id().to_string();
+        let restarted = execution
+            .restart_node_attempt_at(&lane0, "retry-1".to_string(), 3.0)
+            .expect("a failed lane leaf must be retryable");
+        assert_eq!(restarted.attempt.attempt, 2);
+        // lane 1 は attempt 1 のまま。
+        assert_eq!(
+            execution
+                .node_executions()
+                .iter()
+                .find(|node| node.id == leaves[1].node_execution_id())
+                .unwrap()
+                .attempt,
+            1
+        );
+    }
+
+    #[test]
+
+    fn revisited_part_sequence_gets_a_fresh_loop_guard_budget() {
+        // main は part を loop_guard(2) で再訪し、part 内部の fix も
+        // loop_guard(2) で自己ループする。カウントの範囲はスコープなので、
+        // part の再訪ごとに内部カウントはフレッシュになる。
+        let mut execution = tree_execution(vec![
+            tree_sequence_node(
+                "main",
+                vec![
+                    ChildEntry {
+                        name: "part".to_string(),
+                        inputs: Vec::new(),
+                        rules: Some(vec![
+                            Rule::LoopGuard {
+                                max_iterations: 2,
+                                on_exhausted: "finish".to_string(),
+                            },
+                            Rule::Next("part".to_string()),
+                        ]),
+                    },
+                    ChildEntry::reference("finish"),
+                ],
+            ),
+            tree_sequence_node(
+                "part",
+                vec![
+                    ChildEntry {
+                        name: "fix".to_string(),
+                        inputs: Vec::new(),
+                        rules: Some(vec![
+                            Rule::LoopGuard {
+                                max_iterations: 2,
+                                on_exhausted: "exit".to_string(),
+                            },
+                            Rule::Next("fix".to_string()),
+                        ]),
+                    },
+                    ChildEntry::reference("exit"),
+                ],
+            ),
+            tree_command_node("fix"),
+            tree_command_node("exit"),
+            tree_command_node("finish"),
+        ]);
+        let mut new_id = tree_id_source();
+
+        let applied = execution.start_root(&mut new_id, 1.0).unwrap();
+        let ExecutionAdvanceDecision::StartNodes(leaves) = applied.decision else {
+            panic!("start must yield the first fix leaf");
+        };
+        let completed = drive_leaves_to_end(&mut execution, leaves, &mut new_id);
+
+        // part 2 訪問 × 内部 fix 2 回ずつ。1 回目の消費が持ち越されるなら
+        // 2 回目の fix は 1 回で exhausted になり、この列は崩れる。
+        assert_eq!(
+            completed
+                .iter()
+                .map(|(name, _)| name.as_str())
+                .collect::<Vec<_>>(),
+            ["fix", "fix", "exit", "fix", "fix", "exit", "finish"]
+        );
+        assert_eq!(*execution.state(), RuntimeExecutionState::Completed);
+        assert_eq!(
+            execution
+                .node_executions()
+                .iter()
+                .filter(|node| node.node_name == "part")
+                .count(),
+            2,
+            "part must have one execution instance per visit"
+        );
+    }
 }

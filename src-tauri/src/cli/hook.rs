@@ -34,7 +34,7 @@ fn complete_receive(result: Result<String, CliError>) -> Result<String, CliError
     Ok("{}".to_string())
 }
 
-fn receive_from(_reader: impl Read, provider: HookProvider) -> Result<String, CliError> {
+pub fn receive_from(_reader: impl Read, provider: HookProvider) -> Result<String, CliError> {
     let payload = read_bounded(_reader, MAX_PAYLOAD_BYTES).map_err(|error| match error {
         BoundedReadError::LimitExceeded { limit } => CliError::InvalidInput(format!(
             "Provider lifecycle payload exceeds the {limit} byte limit"

@@ -7,9 +7,9 @@ use std::sync::Arc;
 
 pub struct StoredWorkflowStartupRepository(pub Arc<LocalEventStore>);
 
-pub(crate) struct HostWorkflowStartup {
-    pub(crate) host: Arc<super::workflow_host::WorkflowRuntimeHost>,
-    pub(crate) app: super::workflow_host::WorkflowRuntimeDependencies,
+pub struct HostWorkflowStartup {
+    pub host: Arc<super::workflow_host::WorkflowRuntimeHost>,
+    pub app: super::workflow_host::WorkflowRuntimeDependencies,
 }
 
 #[async_trait::async_trait]
@@ -115,7 +115,3 @@ impl WorkflowStartupRepository for StoredWorkflowStartupRepository {
         }))
     }
 }
-
-#[cfg(test)]
-#[path = "startup_repository_test.rs"]
-mod startup_repository_tests;

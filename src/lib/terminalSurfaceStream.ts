@@ -42,11 +42,6 @@ export type TerminalSurfaceStreamItem =
 			sequence: number;
 	  };
 
-export type TerminalOutputTracePhase =
-	| "channel_receive"
-	| "xterm_parsed"
-	| "paint";
-
 export interface TerminalStreamApplyContext {
 	isCurrent(): boolean;
 	drainLiveOutput(): Promise<void>;
@@ -54,16 +49,10 @@ export interface TerminalStreamApplyContext {
 	writeToTerminal(data: string): Promise<void>;
 	applySnapshotIdentity(sessionKey: string): void;
 	syncPtySizeAfterEmptySnapshot(): void;
-	reportSnapshotReplayParsed(sequence: number): void;
 	completeRecovery(): void;
 	setRunning(running: boolean): void;
 	completeInitialSnapshot(): void;
 	flushStartupInput(): void;
-	takeOutputTraceSequence(): number | undefined;
-	reportOutputTracePoint(
-		sequence: number,
-		phase: TerminalOutputTracePhase,
-	): void;
 	enqueueOutput(data: string, onParsed: () => void): void;
 	setProcessedReportUnits(units: number): void;
 	reportProcessed(units: number): void;
@@ -88,7 +77,6 @@ export async function applyTerminalStreamItem(
 			// replayは記録時の寸法で描画する必要がある
 			ctx.resizeTerminal(checkpoint.cols, checkpoint.rows);
 			await ctx.writeToTerminal(checkpoint.replay);
-			ctx.reportSnapshotReplayParsed(checkpoint.sequence);
 		} else {
 			// 新規サーフェスに保存画面は無い。fit済みの実サイズを維持し、
 			// providerの初回描画前にPTY寸法を確定させて二重描画を防ぐ
@@ -104,18 +92,8 @@ export async function applyTerminalStreamItem(
 		return;
 	}
 	if (item.type === "output") {
-		const traceSequence = ctx.takeOutputTraceSequence();
-		if (traceSequence !== undefined) {
-			ctx.reportOutputTracePoint(traceSequence, "channel_receive");
-		}
 		ctx.enqueueOutput(item.data, () => {
 			ctx.reportProcessed(item.data.length);
-			if (traceSequence !== undefined) {
-				ctx.reportOutputTracePoint(traceSequence, "xterm_parsed");
-				requestAnimationFrame(() => {
-					ctx.reportOutputTracePoint(traceSequence, "paint");
-				});
-			}
 		});
 		return;
 	}

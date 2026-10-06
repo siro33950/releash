@@ -190,14 +190,7 @@ fn start_with_parent(directory: &Path, parent_pipe: bool) -> (Daemon, Value) {
     command
         .arg("--internal-daemon")
         .arg(directory)
-        .env(
-            "RELEASH_DATA_DIR",
-            directory.join(if cfg!(target_os = "macos") {
-                "Library/Application Support/com.releash.app.performance"
-            } else {
-                ".local/share/com.releash.app.performance"
-            }),
-        )
+        .env_remove("RELEASH_DATA_DIR")
         .env("SHELL", "/bin/sh")
         .env("XDG_CONFIG_HOME", directory.join("config"))
         .env("HOME", directory)

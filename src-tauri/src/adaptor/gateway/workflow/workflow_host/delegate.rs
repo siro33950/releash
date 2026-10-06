@@ -4,14 +4,14 @@ use crate::usecase::workflow::control_plane::WorkflowControlPlaneCommit;
 use crate::usecase::workflow::delegate::DelegateContinuationGateway;
 
 #[derive(Clone, Copy)]
-pub(super) enum DelegateInjectionOrigin {
+pub enum DelegateInjectionOrigin {
     Automatic,
     Resume,
 }
 
-pub(crate) struct HostDelegateContinuation {
-    pub(crate) host: WorkflowRuntimeHost,
-    pub(crate) app: WorkflowRuntimeDependencies,
+pub struct HostDelegateContinuation {
+    pub host: WorkflowRuntimeHost,
+    pub app: WorkflowRuntimeDependencies,
 }
 
 #[async_trait::async_trait]
@@ -64,7 +64,7 @@ impl DelegateContinuationGateway for HostDelegateContinuation {
 }
 
 impl WorkflowRuntimeHost {
-    pub(super) async fn inject_delegate_result(
+    pub async fn inject_delegate_result(
         &self,
         app: &WorkflowRuntimeDependencies,
         execution_id: &str,
@@ -105,7 +105,3 @@ impl WorkflowRuntimeHost {
         Ok(())
     }
 }
-
-#[cfg(test)]
-#[path = "delegate_test.rs"]
-mod delegate_tests;

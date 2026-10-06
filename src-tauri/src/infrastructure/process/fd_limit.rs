@@ -1,4 +1,4 @@
-pub(crate) fn raise_open_file_limit() -> std::io::Result<()> {
+pub fn raise_open_file_limit() -> std::io::Result<()> {
     let mut limit = current_limit()?;
     let target = target_soft_limit(limit.rlim_max)?;
     if limit.rlim_cur >= target {
@@ -12,7 +12,7 @@ pub(crate) fn raise_open_file_limit() -> std::io::Result<()> {
     Ok(())
 }
 
-fn current_limit() -> std::io::Result<libc::rlimit> {
+pub fn current_limit() -> std::io::Result<libc::rlimit> {
     let mut limit = std::mem::MaybeUninit::<libc::rlimit>::uninit();
     // SAFETY: getrlimit writes one rlimit value to the valid out pointer.
     if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, limit.as_mut_ptr()) } != 0 {
@@ -23,7 +23,7 @@ fn current_limit() -> std::io::Result<libc::rlimit> {
 }
 
 #[cfg(target_os = "macos")]
-fn target_soft_limit(hard: libc::rlim_t) -> std::io::Result<libc::rlim_t> {
+pub fn target_soft_limit(hard: libc::rlim_t) -> std::io::Result<libc::rlim_t> {
     let mut max_files_per_process: libc::c_int = 0;
     let mut size = std::mem::size_of::<libc::c_int>();
     // SAFETY: the name is NUL-terminated and the out pointer and size describe one c_int.
@@ -43,10 +43,6 @@ fn target_soft_limit(hard: libc::rlim_t) -> std::io::Result<libc::rlim_t> {
 }
 
 #[cfg(not(target_os = "macos"))]
-fn target_soft_limit(hard: libc::rlim_t) -> std::io::Result<libc::rlim_t> {
+pub fn target_soft_limit(hard: libc::rlim_t) -> std::io::Result<libc::rlim_t> {
     Ok(hard)
 }
-
-#[cfg(test)]
-#[path = "fd_limit_test.rs"]
-mod fd_limit_tests;

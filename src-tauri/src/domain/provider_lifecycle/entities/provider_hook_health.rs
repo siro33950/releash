@@ -1,7 +1,7 @@
 use crate::domain::provider_lifecycle::{ProviderKind, ProviderLifecycleUnavailableReason};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum ProviderHookHealthEvent {
+pub enum ProviderHookHealthEvent {
     LaunchObserved {
         provider: ProviderKind,
         launch_id: String,
@@ -18,7 +18,7 @@ pub(crate) enum ProviderHookHealthEvent {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum ProviderHookHealthOutcome {
+pub enum ProviderHookHealthOutcome {
     Applied(ProviderHookHealthEvent),
     Duplicate,
 }
@@ -30,7 +30,7 @@ struct ProviderHookWarning {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ProviderHookHealth {
+pub struct ProviderHookHealth {
     provider: ProviderKind,
     latest_launch_id: Option<String>,
     session_started_launch_id: Option<String>,
@@ -39,7 +39,7 @@ pub(crate) struct ProviderHookHealth {
 }
 
 impl ProviderHookHealth {
-    pub(crate) fn new(provider: ProviderKind) -> Self {
+    pub fn new(provider: ProviderKind) -> Self {
         Self {
             provider,
             latest_launch_id: None,
@@ -90,11 +90,11 @@ impl ProviderHookHealth {
         Some(health)
     }
 
-    pub(crate) fn provider(&self) -> ProviderKind {
+    pub fn provider(&self) -> ProviderKind {
         self.provider
     }
 
-    pub(crate) fn warning(&self) -> Option<(&str, ProviderLifecycleUnavailableReason)> {
+    pub fn warning(&self) -> Option<(&str, ProviderLifecycleUnavailableReason)> {
         self.warning
             .as_ref()
             .map(|warning| (warning.launch_id.as_str(), warning.reason))
@@ -109,11 +109,11 @@ impl ProviderHookHealth {
             && self.latest_launch_id.as_deref() == self.session_started_launch_id.as_deref()
     }
 
-    pub(crate) fn take_uncommitted_events(&mut self) -> Vec<ProviderHookHealthEvent> {
+    pub fn take_uncommitted_events(&mut self) -> Vec<ProviderHookHealthEvent> {
         std::mem::take(&mut self.uncommitted_events)
     }
 
-    pub(crate) fn observe_unavailable(
+    pub fn observe_unavailable(
         &mut self,
         launch_id: &str,
         reason: ProviderLifecycleUnavailableReason,
@@ -144,7 +144,7 @@ impl ProviderHookHealth {
         ProviderHookHealthOutcome::Applied(event)
     }
 
-    pub(crate) fn observe_session_started(&mut self, launch_id: &str) -> ProviderHookHealthOutcome {
+    pub fn observe_session_started(&mut self, launch_id: &str) -> ProviderHookHealthOutcome {
         if self.latest_launch_id() != Some(launch_id)
             || (self.session_started_launch_id.as_deref() == Some(launch_id)
                 && self.warning.is_none())
@@ -171,7 +171,7 @@ impl ProviderHookHealth {
         self.observe_session_started(launch_id)
     }
 
-    pub(crate) fn observe_launch(&mut self, launch_id: &str) -> ProviderHookHealthOutcome {
+    pub fn observe_launch(&mut self, launch_id: &str) -> ProviderHookHealthOutcome {
         if self.latest_launch_id() == Some(launch_id) {
             return ProviderHookHealthOutcome::Duplicate;
         }

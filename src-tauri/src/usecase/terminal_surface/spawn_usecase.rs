@@ -148,7 +148,7 @@ fn cleanup_failed_spawn<G: TerminalSurfaceGateway + ?Sized>(
 }
 
 #[allow(clippy::too_many_arguments)]
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub fn get_or_spawn<G: TerminalSurfaceGateway + ?Sized>(
     performance: &dyn crate::usecase::telemetry::PerformanceOutput,
     manager: &G,

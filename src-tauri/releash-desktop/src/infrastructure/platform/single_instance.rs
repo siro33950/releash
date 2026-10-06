@@ -1,5 +1,5 @@
 #[cfg(unix)]
-pub(crate) fn acquire(
+pub fn acquire(
     data_dir: &std::path::Path,
     activate: impl Fn() + Send + 'static,
 ) -> std::io::Result<Option<std::fs::File>> {
@@ -53,13 +53,9 @@ pub(crate) fn acquire(
 }
 
 #[cfg(not(unix))]
-pub(crate) fn acquire(
+pub fn acquire(
     _data_dir: &std::path::Path,
     _activate: impl Fn() + Send + 'static,
 ) -> std::io::Result<Option<std::fs::File>> {
     Err(std::io::Error::other("Desktop supervision requires macOS."))
 }
-
-#[cfg(all(test, unix))]
-#[path = "single_instance_test.rs"]
-mod single_instance_tests;

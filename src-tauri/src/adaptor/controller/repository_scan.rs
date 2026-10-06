@@ -88,9 +88,9 @@ fn collect_pending_reasons(rx: &mut dyn RepositoryStateInvalidationReceiver) -> 
     reason
 }
 
-pub(crate) const DEBOUNCE: Duration = Duration::from_millis(300);
+pub const DEBOUNCE: Duration = Duration::from_millis(300);
 
-pub(crate) fn start(
+pub fn start(
     retrying: Arc<Retrying>,
     runtime: Arc<dyn RepositoryStateWorkerRuntime>,
     delay: crate::infrastructure::timer::Delay,
@@ -109,6 +109,7 @@ pub(crate) fn start(
     sender
 }
 
+#[derive(Default)]
 pub struct RepositoryScanWorkerRuntime;
 
 impl RepositoryScanWorkerRuntime {
@@ -120,8 +121,10 @@ impl RepositoryScanWorkerRuntime {
 struct TokioInvalidationSender(tokio::sync::mpsc::UnboundedSender<InvalidateReason>);
 
 impl RepositoryStateInvalidationSender for TokioInvalidationSender {
-    fn send(&self, reason: InvalidateReason) -> Result<(), ()> {
-        self.0.send(reason).map_err(|_| ())
+    fn send(&self, reason: InvalidateReason) -> Result<(), RepositoryStateError> {
+        self.0.send(reason).map_err(|_| {
+            RepositoryStateError::Watcher("repository snapshot worker is stopped".into())
+        })
     }
 }
 

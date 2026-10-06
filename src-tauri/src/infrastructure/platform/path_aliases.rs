@@ -20,18 +20,9 @@ pub enum BuildProfile {
     Production,
     /// dev ビルド (debug)。
     Development,
-    Performance,
 }
 
 impl BuildProfile {
-    pub fn application() -> Self {
-        if cfg!(feature = "performance") {
-            Self::Performance
-        } else {
-            Self::current()
-        }
-    }
-
     /// 現在の cargo ビルド種別から `BuildProfile` を導出する。
     pub fn current() -> Self {
         if cfg!(debug_assertions) {
@@ -45,7 +36,7 @@ impl BuildProfile {
 /// `BuildProfile` から CLI alias 名を決定する。
 pub fn alias_name_for_profile(profile: BuildProfile) -> &'static str {
     match profile {
-        BuildProfile::Production | BuildProfile::Performance => "releash",
+        BuildProfile::Production => "releash",
         BuildProfile::Development => "releash-dev",
     }
 }
@@ -55,7 +46,6 @@ pub fn default_data_dir_name_for_profile(profile: BuildProfile) -> &'static str 
     match profile {
         BuildProfile::Production => "com.releash.app",
         BuildProfile::Development => "com.releash.app.dev",
-        BuildProfile::Performance => "com.releash.app.performance",
     }
 }
 
@@ -80,6 +70,10 @@ pub struct PathAliases {
 }
 
 impl PathAliases {
+    #[cfg(feature = "test-support")]
+    pub fn test_from_releash(releash: PathAlias) -> Self {
+        Self { releash }
+    }
     /// 起動環境から `PathAliases` を構築する。
     ///
     /// daemon が解決した data_dir を使い、子プロセスの接続先を一致させる。
@@ -104,14 +98,6 @@ impl PathAliases {
     /// `releash` alias の解決結果を返す。
     pub fn releash(&self) -> &PathAlias {
         &self.releash
-    }
-
-    /// 公開対象の alias key 一覧（namespace `path_alias.<key>` の `<key>` 部分）。
-    ///
-    /// facet 展開エンジン側で「既知 alias key」を判定する際に使う。
-    #[cfg(test)]
-    pub fn known_keys() -> &'static [&'static str] {
-        &["releash"]
     }
 }
 
@@ -150,7 +136,6 @@ pub fn known_alias_data_dirs() -> Result<Vec<PathBuf>, String> {
     Ok(vec![
         default_data_dir_for_profile(BuildProfile::Production)?,
         default_data_dir_for_profile(BuildProfile::Development)?,
-        default_data_dir_for_profile(BuildProfile::Performance)?,
     ])
 }
 
@@ -298,7 +283,7 @@ pub fn prepare_child_env(
 ///
 /// wrapper はシェルスクリプトで、呼び出し側が `RELEASH_DATA_DIR` を明示指定していない
 /// 場合のみ alias 内包の data_dir を設定する（spec 解決順序: 明示指定 > alias 内包値）。
-fn ensure_alias_wrapper(releash: &PathAlias) -> Result<PathBuf, std::io::Error> {
+pub fn ensure_alias_wrapper(releash: &PathAlias) -> Result<PathBuf, std::io::Error> {
     let bin_dir = releash.data_dir.join("bin");
     std::fs::create_dir_all(&bin_dir).map_err(|e| {
         std::io::Error::new(
@@ -385,310 +370,3 @@ fn write_wrapper_script(path: &Path, script: &str) -> Result<(), std::io::Error>
 #[cfg(test)]
 #[path = "path_aliases_test.rs"]
 mod path_aliases_tests;
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn alias_name_for_profile_returns_releash_for_production() {
-        assert_eq!(alias_name_for_profile(BuildProfile::Production), "releash");
-    }
-
-    #[test]
-    fn alias_name_for_profile_returns_releash_dev_for_development() {
-        assert_eq!(
-            alias_name_for_profile(BuildProfile::Development),
-            "releash-dev"
-        );
-    }
-
-    #[test]
-    fn default_data_dir_name_distinguishes_dev_and_production() {
-        assert_eq!(
-            default_data_dir_name_for_profile(BuildProfile::Production),
-            "com.releash.app"
-        );
-        assert_eq!(
-            default_data_dir_name_for_profile(BuildProfile::Development),
-            "com.releash.app.dev"
-        );
-    }
-
-    #[test]
-    fn from_runtime_uses_build_profile_for_alias_name() {
-        let aliases = PathAliases::from_runtime(PathBuf::from("/tmp/data")).unwrap();
-        let releash = aliases.releash();
-        assert_eq!(
-            releash.name,
-            alias_name_for_profile(BuildProfile::current())
-        );
-        assert_eq!(releash.data_dir, PathBuf::from("/tmp/data"));
-    }
-
-    #[test]
-    fn known_keys_contains_only_releash() {
-        assert_eq!(PathAliases::known_keys(), &["releash"]);
-    }
-
-    #[test]
-    fn compose_path_with_alias_bin_prepends_to_head_when_path_set() {
-        // alias bin dir は既存 PATH の**先頭**にあること。末尾だと既存 PATH 前方に
-        // `releash` / `releash-dev` を含む別ディレクトリがあると wrapper が解決されず
-        // alias と実行 binary の一意対応 (spec [01]) が崩れる。bin dir に置く実体は
-        // wrapper のみで、システムコマンドの shadow 経路は生じない。
-        let bin_dir = PathBuf::from("/tmp/my-data/bin");
-        let composed =
-            compose_path_with_alias_bin(Some("/system-bin:/other-bin"), bin_dir.as_path());
-        assert_eq!(composed, "/tmp/my-data/bin:/system-bin:/other-bin");
-    }
-
-    #[test]
-    fn compose_path_with_alias_bin_falls_back_to_bin_only_when_path_unset() {
-        let bin_dir = PathBuf::from("/tmp/my-data/bin");
-        assert_eq!(
-            compose_path_with_alias_bin(None, bin_dir.as_path()),
-            "/tmp/my-data/bin"
-        );
-        assert_eq!(
-            compose_path_with_alias_bin(Some(""), bin_dir.as_path()),
-            "/tmp/my-data/bin"
-        );
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn child_env_overrides_from_sets_releash_data_dir_when_parent_unset() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let exe = tmp.path().join("releash-bin");
-        std::fs::write(&exe, "").unwrap();
-        let aliases = PathAliases {
-            releash: PathAlias {
-                name: "releash-test".to_string(),
-                exe_path: exe,
-                data_dir: tmp.path().join("data"),
-            },
-        };
-        let overrides = child_env_overrides_from(&aliases, Some("/bin"), None).unwrap();
-        let data_dir_value = overrides
-            .iter()
-            .find_map(|(k, v)| (k == "RELEASH_DATA_DIR").then(|| v.clone()))
-            .expect("RELEASH_DATA_DIR override missing");
-        assert_eq!(
-            data_dir_value,
-            tmp.path().join("data").display().to_string()
-        );
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn child_env_overrides_from_omits_releash_data_dir_when_parent_set() {
-        // spec issues-1054 解決順序「明示指定 > alias 内包値」: 親プロセスに
-        // RELEASH_DATA_DIR が明示されているときは alias 内包値で上書きしない。
-        let tmp = tempfile::TempDir::new().unwrap();
-        let exe = tmp.path().join("releash-bin");
-        std::fs::write(&exe, "").unwrap();
-        let aliases = PathAliases {
-            releash: PathAlias {
-                name: "releash-test".to_string(),
-                exe_path: exe,
-                data_dir: tmp.path().join("data"),
-            },
-        };
-        let overrides =
-            child_env_overrides_from(&aliases, Some("/bin"), Some("/explicit/path")).unwrap();
-        assert!(
-            overrides.iter().all(|(k, _)| k != "RELEASH_DATA_DIR"),
-            "RELEASH_DATA_DIR must not be in overrides when parent set it: {overrides:?}"
-        );
-        // PATH は依然として alias bin を先頭に積む。
-        let path_value = overrides
-            .iter()
-            .find_map(|(k, v)| (k == "PATH").then(|| v.clone()))
-            .expect("PATH override missing");
-        assert!(path_value.starts_with(tmp.path().join("data").join("bin").to_str().unwrap()));
-        assert!(path_value.ends_with(":/bin"));
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn child_env_overrides_from_treats_empty_parent_data_dir_as_unset() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let exe = tmp.path().join("releash-bin");
-        std::fs::write(&exe, "").unwrap();
-        let aliases = PathAliases {
-            releash: PathAlias {
-                name: "releash-test".to_string(),
-                exe_path: exe,
-                data_dir: tmp.path().join("data"),
-            },
-        };
-        let overrides = child_env_overrides_from(&aliases, None, Some("")).unwrap();
-        assert!(
-            overrides.iter().any(|(k, _)| k == "RELEASH_DATA_DIR"),
-            "empty parent RELEASH_DATA_DIR should be treated as unset: {overrides:?}"
-        );
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn prepare_child_env_returns_empty_when_data_dir_none() {
-        // app_data_dir() 解決失敗時の経路: 既存挙動 (silent skip) を温存。
-        let env = prepare_child_env(None).unwrap();
-        assert!(
-            env.is_empty(),
-            "no overrides expected when data_dir is None"
-        );
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn prepare_child_env_returns_path_and_data_dir_when_data_dir_provided() {
-        // spec issues-1054「agent 子プロセスへの実行環境の伝搬」:
-        // PTY / agent bridge が共有する env builder は alias bin の PATH と
-        // RELEASH_DATA_DIR の両方を出力する。
-        let tmp = tempfile::TempDir::new().unwrap();
-        let env = prepare_child_env(Some(tmp.path().join("data"))).unwrap();
-        assert!(env.iter().any(|(k, _)| k == "PATH"));
-        // 親プロセスに RELEASH_DATA_DIR が無いテスト前提でのみ data_dir が積まれる。
-        if std::env::var("RELEASH_DATA_DIR").is_err() {
-            assert!(env.iter().any(|(k, _)| k == "RELEASH_DATA_DIR"));
-        }
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn prepare_child_env_propagates_wrapper_failure() {
-        // wrapper 作成不能（既存ファイルが bin dir 位置を占有）→ Err を返し、
-        // 呼び出し側（PTY / bridge）で spawn を中止する。
-        let tmp = tempfile::TempDir::new().unwrap();
-        let data_dir = tmp.path().join("data");
-        std::fs::create_dir_all(&data_dir).unwrap();
-        // bin に通常ファイルを置くと create_dir_all が失敗する。
-        std::fs::write(data_dir.join("bin"), "").unwrap();
-        let err = prepare_child_env(Some(data_dir)).unwrap_err();
-        assert!(
-            err.to_string().contains("alias bin dir"),
-            "expected wrapper bin dir error, got: {err}"
-        );
-    }
-
-    #[test]
-    fn default_data_dir_for_profile_returns_path_when_dirs_available() {
-        // dirs::data_dir() が解決できる環境では Ok を返し、bundle identifier suffix を持つ。
-        if dirs::data_dir().is_none() {
-            return;
-        }
-        let path = default_data_dir_for_profile(BuildProfile::Production).unwrap();
-        assert!(path.ends_with("com.releash.app"));
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn ensure_alias_wrapper_exports_data_dir_only_when_unset() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let exe = tmp.path().join("releash-bin");
-        std::fs::write(&exe, "").unwrap();
-        let alias = PathAlias {
-            name: "releash-test".to_string(),
-            exe_path: exe,
-            data_dir: tmp.path().join("data"),
-        };
-        let bin_dir = ensure_alias_wrapper(&alias).unwrap();
-        let wrapper = bin_dir.join("releash-test");
-        let script = std::fs::read_to_string(&wrapper).unwrap();
-        // wrapper は `RELEASH_DATA_DIR` 未設定時のみ alias 内包値を export する
-        // （spec 解決順序: 明示指定 > alias 内包値）。
-        assert!(
-            script.contains(r#"if [ -z "$RELEASH_DATA_DIR" ]; then"#),
-            "wrapper must guard RELEASH_DATA_DIR export: {script}"
-        );
-        assert!(
-            script.contains("export RELEASH_DATA_DIR="),
-            "wrapper must export alias data_dir when unset: {script}"
-        );
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn ensure_alias_wrapper_creates_executable() {
-        use std::os::unix::fs::PermissionsExt;
-        let tmp = tempfile::TempDir::new().unwrap();
-        let exe = tmp.path().join("releash-bin");
-        std::fs::write(&exe, "").unwrap();
-        let alias = PathAlias {
-            name: "releash-test".to_string(),
-            exe_path: exe,
-            data_dir: tmp.path().join("data"),
-        };
-        let bin_dir = ensure_alias_wrapper(&alias).unwrap();
-        let wrapper = bin_dir.join("releash-test");
-        let mode = std::fs::metadata(&wrapper).unwrap().permissions().mode();
-        assert_eq!(mode & 0o111, 0o111, "wrapper should be executable");
-    }
-
-    // ----- resolve_session_data_dir_env -----
-
-    /// 親 env が None なら自分の data_dir を設置する。
-    #[test]
-    fn resolve_session_data_dir_env_sets_self_when_parent_env_absent() {
-        let self_dir = PathBuf::from("/home/u/.local/share/com.releash.app.dev");
-        let known = vec![
-            PathBuf::from("/home/u/.local/share/com.releash.app"),
-            self_dir.clone(),
-        ];
-        let result = resolve_session_data_dir_env(None, &self_dir, &known);
-        assert_eq!(result, ResolvedDataDirEnv::Set(self_dir));
-    }
-
-    /// 親 env が空文字なら自分の data_dir を設置する。
-    #[test]
-    fn resolve_session_data_dir_env_sets_self_when_parent_env_empty() {
-        let self_dir = PathBuf::from("/home/u/.local/share/com.releash.app.dev");
-        let known = vec![
-            PathBuf::from("/home/u/.local/share/com.releash.app"),
-            self_dir.clone(),
-        ];
-        let result = resolve_session_data_dir_env(Some(""), &self_dir, &known);
-        assert_eq!(result, ResolvedDataDirEnv::Set(self_dir));
-    }
-
-    /// 親 env が「別 alias の data_dir」を指している場合は、別 Releash binary 由来の
-    /// inherit と判定して自分の alias data_dir で上書きする (バグ修正の主シナリオ)。
-    #[test]
-    fn resolve_session_data_dir_env_overrides_when_parent_matches_other_alias() {
-        let self_dir = PathBuf::from("/home/u/.local/share/com.releash.app.dev");
-        let other_alias = PathBuf::from("/home/u/.local/share/com.releash.app");
-        let known = vec![other_alias.clone(), self_dir.clone()];
-        let result =
-            resolve_session_data_dir_env(Some(other_alias.to_str().unwrap()), &self_dir, &known);
-        assert_eq!(result, ResolvedDataDirEnv::Set(self_dir));
-    }
-
-    /// 親 env が「自分と同じ alias の data_dir」を指している場合も Set(self) を返す
-    /// (同種 inherit 経路で値が一致しているケースの整合性確認、結果は no-op 同等)。
-    #[test]
-    fn resolve_session_data_dir_env_overrides_when_parent_matches_own_alias() {
-        let self_dir = PathBuf::from("/home/u/.local/share/com.releash.app.dev");
-        let known = vec![
-            PathBuf::from("/home/u/.local/share/com.releash.app"),
-            self_dir.clone(),
-        ];
-        let result =
-            resolve_session_data_dir_env(Some(self_dir.to_str().unwrap()), &self_dir, &known);
-        assert_eq!(result, ResolvedDataDirEnv::Set(self_dir));
-    }
-
-    /// 親 env が「既知 alias data_dir のいずれにも一致しない任意パス」を指している場合は
-    /// ユーザーの真の明示指定として尊重 (Keep) する。
-    #[test]
-    fn resolve_session_data_dir_env_keeps_parent_when_arbitrary_path() {
-        let self_dir = PathBuf::from("/home/u/.local/share/com.releash.app.dev");
-        let known = vec![
-            PathBuf::from("/home/u/.local/share/com.releash.app"),
-            self_dir.clone(),
-        ];
-        let result = resolve_session_data_dir_env(Some("/tmp/custom-releash"), &self_dir, &known);
-        assert_eq!(result, ResolvedDataDirEnv::Keep);
-    }
-}

@@ -1,8 +1,8 @@
-use releash_lib::client_api_acceptance::*;
+use releash_lib::test_support::client_api_acceptance::*;
 use serde_json::{json, Value};
 use std::path::Path;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 struct Fixture {
     host: ClientApiAcceptanceHost,
@@ -148,28 +148,6 @@ async fn test_クライアント購読_失敗と不正引数の分類と説明�
             .as_ref()
             .is_some_and(|message| !message.is_empty()));
     }
-}
-
-#[tokio::test]
-#[ignore = "local Connect latency measurement"]
-async fn test_クライアントconnect_往復レイテンシ実測() {
-    let fixture = Fixture::new().await;
-    let client = fixture.client();
-    let mut samples = Vec::new();
-    for index in 0..1100 {
-        let frame = json!({"request_id":index.to_string(),"command":"current-branch","args":fixture.args()});
-        let start = Instant::now();
-        let response = request(&client, frame).await;
-        let elapsed = start.elapsed().as_secs_f64() * 1000.0;
-        assert_eq!(response["result"], "ws-branch");
-        if index >= 100 {
-            samples.push(elapsed);
-        }
-    }
-    samples.sort_by(f64::total_cmp);
-    assert!(samples[949] <= 1.0, "p95 exceeds 1ms: {}", samples[949]);
-    assert!(samples[989] <= 2.0, "p99 exceeds 2ms: {}", samples[989]);
-    println!("client-ws current-branch n={} warmup=100 min_ms={:.6} median_ms={:.6} p95_ms={:.6} p99_ms={:.6} max_ms={:.6} mean_ms={:.6}", samples.len(), samples[0], samples[499], samples[949], samples[989], samples[999], samples.iter().sum::<f64>() / samples.len() as f64);
 }
 
 #[tokio::test]

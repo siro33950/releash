@@ -10,20 +10,20 @@ use crate::domain::workflow::{
     WorkflowError,
 };
 
-pub(crate) struct ExecutionTreeArchiveFactRepository {
+pub struct ExecutionTreeArchiveFactRepository {
     backend: FactLogReadBackend,
     legacy_path: Option<PathBuf>,
 }
 
 impl ExecutionTreeArchiveFactRepository {
-    pub(crate) fn new(store: Arc<LocalEventStore>, data_dir: impl Into<PathBuf>) -> Self {
+    pub fn new(store: Arc<LocalEventStore>, data_dir: impl Into<PathBuf>) -> Self {
         Self {
             backend: FactLogReadBackend::Live(store),
             legacy_path: Some(data_dir.into().join("workflow_execution_archives.json")),
         }
     }
 
-    pub(crate) fn from_backend(backend: FactLogReadBackend) -> Self {
+    pub fn from_backend(backend: FactLogReadBackend) -> Self {
         Self {
             backend,
             legacy_path: None,
@@ -60,7 +60,7 @@ impl ExecutionTreeArchiveFactRepository {
         }).await.map_err(|error| WorkflowError::from(fact_log::FactReadError::Query(error)))
     }
 
-    async fn append(
+    pub async fn append(
         &self,
         execution_id: &str,
         fact: NodeFact,
@@ -383,7 +383,3 @@ fn archive_path_key(path: &str) -> Result<PathBuf, WorkflowError> {
         },
     )
 }
-
-#[cfg(test)]
-#[path = "execution_archive_repository_test.rs"]
-mod execution_archive_repository_tests;

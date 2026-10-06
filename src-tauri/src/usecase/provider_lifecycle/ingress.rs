@@ -18,7 +18,7 @@ use super::{
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum ProviderLifecycleIngressUsecaseError {
+pub enum ProviderLifecycleIngressUsecaseError {
     Technical(crate::domain::failure::TechnicalFailure),
     Store(crate::domain::failure::StorageFailure),
     InvalidInput,
@@ -28,7 +28,7 @@ pub(crate) enum ProviderLifecycleIngressUsecaseError {
 }
 
 #[async_trait::async_trait]
-pub(crate) trait ProviderSessionStartTransaction: Send + Sync {
+pub trait ProviderSessionStartTransaction: Send + Sync {
     async fn commit_session_started(
         &self,
         session: VersionedAgentSession,
@@ -38,15 +38,15 @@ pub(crate) trait ProviderSessionStartTransaction: Send + Sync {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ProviderExecutionTreeStopCommand {
-    pub(crate) agent_session_id: String,
-    pub(crate) tree_id: String,
-    pub(crate) node_execution_id: String,
-    pub(crate) binding_id: String,
+pub struct ProviderExecutionTreeStopCommand {
+    pub agent_session_id: String,
+    pub tree_id: String,
+    pub node_execution_id: String,
+    pub binding_id: String,
 }
 
 #[async_trait::async_trait]
-pub(crate) trait ProviderExecutionTreeStopTransaction: Send + Sync {
+pub trait ProviderExecutionTreeStopTransaction: Send + Sync {
     fn begin_worktree_mutation(
         &self,
         path: &str,
@@ -68,7 +68,7 @@ impl From<ProviderLifecycleUsecaseError> for ProviderLifecycleIngressUsecaseErro
     }
 }
 
-pub(crate) struct ProviderLifecycleIngressUsecase {
+pub struct ProviderLifecycleIngressUsecase {
     identities: Arc<dyn crate::domain::identity::IdentityIssuer>,
     lifecycle: Arc<ProviderLifecycleUsecase>,
     sessions: Arc<AgentSessionUsecase>,
@@ -79,7 +79,7 @@ pub(crate) struct ProviderLifecycleIngressUsecase {
 }
 
 #[async_trait::async_trait]
-pub(crate) trait ProviderLifecycleIngressPort: Send + Sync {
+pub trait ProviderLifecycleIngressPort: Send + Sync {
     async fn receive(
         &self,
         slot_id: &ProviderLifecycleSlotId,
@@ -96,7 +96,7 @@ pub(crate) trait ProviderLifecycleIngressPort: Send + Sync {
 }
 
 impl ProviderLifecycleIngressUsecase {
-    pub(crate) fn new(
+    pub fn new(
         identities: Arc<dyn crate::domain::identity::IdentityIssuer>,
         lifecycle: Arc<ProviderLifecycleUsecase>,
         sessions: Arc<AgentSessionUsecase>,
@@ -116,7 +116,7 @@ impl ProviderLifecycleIngressUsecase {
         }
     }
 
-    pub(crate) async fn receive(
+    pub async fn receive(
         &self,
         slot_id: &ProviderLifecycleSlotId,
         capability: &str,

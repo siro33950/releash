@@ -1,3 +1,4 @@
+import { placementErrors } from "./test-placement.mjs";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -52,7 +53,7 @@ function command(step) {
 }
 
 function commands(job) {
-  return steps(job).map(command).filter(command => /^(cargo |pnpm (lint|test|build|exec vitest)\b|node --test |python3 |qlty check )/.test(command));
+  return steps(job).map(command).filter(command => /^(cargo |pnpm (lint|test|build|exec (?:vitest|biome))\b|node (?:--test |\.github\/scripts\/test-placement\.mjs)|python3 |qlty check )/.test(command));
 }
 
 const rustCommands = {
@@ -63,11 +64,16 @@ const rustCommands = {
     "cargo clippy --locked -p releash-desktop -- -D warnings",
     "cargo clippy --locked --features test-support -- -D warnings",
   ],
-  "rust-test-desktop": ["cargo build --locked -p releash-backend --bin releash-backend", "cargo test --locked -p releash-desktop"],
-  "rust-test-backend": [
-    "cargo test --locked",
-    "cargo test --locked --test state_subscription_scenarios scenarios_tests::",
-    "cargo test --locked --test daemon_smoke",
+  "rust-unit": [
+    "cargo test --locked --lib --bins -p releash-backend",
+    "cargo test --locked --doc -p releash-backend",
+    "cargo test --locked --lib --bins -p releash-desktop",
+    "cargo test --locked --doc -p releash-desktop",
+  ],
+  "rust-integration": [
+    "cargo build --locked -p releash-backend --bin releash-backend",
+    "cargo test --locked --test '*' -p releash-backend",
+    "cargo test --locked --test '*' -p releash-desktop",
   ],
 };
 
@@ -89,7 +95,7 @@ test("PR and main push share the required parallel jobs and command allocation",
   for (const [name, job] of Object.entries(ciJobs)) {
     if (name !== "rust") assert.doesNotMatch(job, /^    (if|needs|strategy):/m, `${name} starts for both events independently`);
   }
-  assert.deepEqual(commands(ciJobs.frontend), ["pnpm lint", "pnpm test", "pnpm build"]);
+  assert.deepEqual(commands(ciJobs.frontend), ["pnpm exec biome ci .", "node .github/scripts/test-placement.mjs", "pnpm test", "pnpm build"]);
   assert.deepEqual(commands(ciJobs.integration), ["pnpm test:integration"]);
   assert.deepEqual(commands(ciJobs.quality), ["qlty check --no-progress --all"]);
   for (const [name, expected] of Object.entries(rustCommands)) {
@@ -97,13 +103,13 @@ test("PR and main push share the required parallel jobs and command allocation",
     assert.equal(value(ciJobs[name], "working-directory"), "src-tauri");
   }
   assertPrChecks(ciConfig);
-  assert.equal(value(ciJobs.rust, "needs"), "[rust-lint, rust-test-desktop, rust-test-backend]");
+  assert.equal(value(ciJobs.rust, "needs"), "[rust-lint, rust-unit, rust-integration]");
   assert.equal(value(ciJobs.rust, "if"), "always()");
 });
 
 test("PR check restrictions ignore explanatory comments and step names", () => {
   const note = "performance llvm-cov coverage cargo build agent_tui_harness";
-  const config = `# ${note}\n${ciConfig}`.replace("      - run: pnpm lint", `      # ${note}\n      - name: ${note}\n        # ${note}\n        run: pnpm lint`);
+  const config = `# ${note}\n${ciConfig}`.replace("      - run: pnpm exec biome ci .", `      # ${note}\n      - name: ${note}\n        # ${note}\n        run: pnpm exec biome ci .`);
   assert.doesNotThrow(() => assertPrChecks(config));
 });
 
@@ -118,7 +124,7 @@ test("PR check restrictions still reject prohibited commands, actions, and actio
     "uses: example/coverage-action@v1",
     "uses: actions/github-script@v9\n        with:\n          script: |\n            await exec.exec('cargo build --locked');",
   ]) {
-    const config = ciConfig.replace("      - run: pnpm lint", `      - ${step}`);
+    const config = ciConfig.replace("      - run: pnpm exec biome ci .", `      - ${step}`);
     assert.throws(() => assertPrChecks(config), assert.AssertionError, step);
   }
 });
@@ -163,12 +169,13 @@ test("integration comments skip cancelled runs and report failures on both creat
   assert.equal(condition(() => false, { event_name: "push" }), false);
 });
 
-test("backend tests install Node helpers for acceptance tests but no Tauri system dependencies", () => {
-  const job = jobs(ciConfig)["rust-test-backend"];
-  assert.match(job, /pnpm install --frozen-lockfile/);
-  assert.doesNotMatch(job, /frontend/);
-  assert.doesNotMatch(job, /apt-get|libwebkit/);
-  assert.deepEqual(commands(job), rustCommands["rust-test-backend"]);
+test("Rust jobs build both packages with Tauri system dependencies", () => {
+  for (const name of ["rust-unit", "rust-integration"]) {
+    const job = jobs(ciConfig)[name];
+    assert.match(job, /pnpm install --frozen-lockfile/);
+    assert.match(job, /libwebkit/);
+    assert.deepEqual(commands(job), rustCommands[name]);
+  }
 });
 
 test("every Rust check requires successful setup, survives check failures, and respects docs-only/cancellation", () => {
@@ -203,7 +210,7 @@ test("every Rust check requires successful setup, survives check failures, and r
   }
 });
 
-test("PR Rust disables debuginfo and saves separate job caches only on main push", () => {
+test("PR Rust disables debuginfo and shares job caches and saves only the unit cache on main push", () => {
   assert.equal(value(section(ciConfig, "env:"), "CARGO_PROFILE_DEV_DEBUG"), '"0"');
   const keys = [];
   for (const name of Object.keys(rustCommands)) {
@@ -211,12 +218,20 @@ test("PR Rust disables debuginfo and saves separate job caches only on main push
     assert.doesNotMatch(job, /CARGO_PROFILE_(DEV|TEST)_DEBUG|--profile|--release/);
     const caches = steps(job).filter(step => value(step, "uses")?.startsWith("Swatinem/rust-cache@"));
     assert.equal(caches.length, 1);
-    assert.equal(value(caches[0], "save-if"), "${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}");
+    assert.equal(value(caches[0], "save-if"), name === "rust-unit" ? "${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}" : "false");
     assert.equal(value(caches[0], "workspaces"), "src-tauri");
-    keys.push(value(caches[0], "key"));
+    keys.push(value(caches[0], "shared-key"));
   }
   assert.ok(keys.every(Boolean));
-  assert.equal(new Set(keys).size, keys.length);
+  assert.equal(new Set(keys).size, 1);
+});
+
+test("nightly and stable share universal caches without saving release caches", () => {
+  for (const [config, name, key] of [[nightlyConfig, "release", "macos-universal"], [stableConfig, "build", "macos-universal"], [nightlyConfig, "coverage", "coverage"]]) {
+    const cache = steps(jobs(config)[name]).find(step => value(step, "uses")?.startsWith("Swatinem/rust-cache@"));
+    assert.equal(value(cache, "shared-key"), key);
+    assert.equal(value(cache, "save-if"), "false");
+  }
 });
 
 test("concurrency cancels the same PR only and keeps main runs in separate groups", () => {
@@ -225,14 +240,14 @@ test("concurrency cancels the same PR only and keeps main runs in separate group
   assert.equal(value(concurrency, "cancel-in-progress"), "${{ github.event_name == 'pull_request' }}");
 });
 
-test("nightly runs daily and manually with performance pinned and coverage tracking main", () => {
+test("nightly runs daily and manually with behavior pinned and coverage tracking main", () => {
   const triggers = section(nightlyConfig, "on:");
   assert.deepEqual([...triggers.matchAll(/^  ([\w-]+):$/gm)].map(([, name]) => name).sort(), ["schedule", "workflow_dispatch"]);
   assert.match(triggers, /^    - cron: '\d{1,2} \d{1,2} \* \* \*'$/m);
   const nightlyJobs = jobs(nightlyConfig);
-  assert.deepEqual(Object.keys(nightlyJobs).sort(), ["check", "cleanup", "coverage", "performance", "release", "validation"]);
+  assert.deepEqual(Object.keys(nightlyJobs).sort(), ["behavior", "check", "cleanup", "coverage", "release", "validation"]);
   assert.equal(value(section(nightlyJobs.check, "    outputs:"), "run"), "${{ steps.changes.outputs.run }}");
-  for (const [name, ref] of [["performance", "${{ needs.check.outputs.sha }}"], ["coverage", "main"]]) {
+  for (const [name, ref] of [["behavior", "${{ needs.check.outputs.sha }}"], ["coverage", "main"]]) {
     const job = nightlyJobs[name];
     assert.equal(value(job, "needs"), "check");
     assert.equal(value(job, "if"), "needs.check.outputs.run == 'true'");
@@ -246,18 +261,8 @@ test("nightly runs daily and manually with performance pinned and coverage track
   }
 });
 
-test("nightly runs all performance lib tests, the release daemon, and desktop CLI installation", () => {
-  const performance = jobs(nightlyConfig).performance;
-  assert.deepEqual(commands(performance), [
-    "cargo test --locked --features performance --lib",
-    "pnpm test:performance:daemon",
-    "cargo build --locked -p releash-backend --bin releash-backend\ncargo test --locked -p releash-desktop --features performance --test desktop_cli_install",
-  ]);
-  assert.equal(value(performance, "working-directory"), "src-tauri");
-  const daemon = steps(performance).find(step => value(step, "run") === "pnpm test:performance:daemon");
-  assert.equal(value(daemon, "working-directory"), ".");
-  const packageJson = JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8"));
-  assert.equal(packageJson.scripts["test:performance:daemon"], "cargo build --manifest-path src-tauri/Cargo.toml --locked --release --features performance --bin releash-backend && node --test tests/helpers/performance-daemon.test.mjs");
+test("nightly runs behavior tests on the pinned checkout", () => {
+  assert.deepEqual(commands(jobs(nightlyConfig).behavior), ["pnpm test:behavior"]);
 });
 
 test("nightly measures both coverages with profile retention and uploads the checked-out main commit", () => {
@@ -295,9 +300,9 @@ test("AGENTS validation commands, directories, layers, and coverage environment 
   const instructions = agents.split("## ビルド・テスト・Lint\n")[1]?.split("\n## ")[0];
   assert.ok(instructions);
   const blocks = [...instructions.matchAll(/```bash\n([\s\S]*?)```/g)].map(([, script]) => script);
-  assert.equal(blocks.length, 6);
+  assert.equal(blocks.length, 5);
   const documented = blocks.map((script, index) => {
-    let directory = [1, 4].includes(index) ? "src-tauri" : ".";
+    let directory = index === 1 ? "src-tauri" : ".";
     return script.split("\n").map(line => line.trim()).filter(Boolean).flatMap(line => {
       if (line.startsWith("cd ")) { directory = line.slice(3); return []; }
       if (line.startsWith("export ") || line === "(" || line === ")") return [];
@@ -312,7 +317,7 @@ test("AGENTS validation commands, directories, layers, and coverage environment 
     assert.deepEqual(actual.sort(), expected.sort());
   }
   assert.ok(instructions.includes(`CARGO_PROFILE_DEV_DEBUG=${value(section(ciConfig, "env:"), "CARGO_PROFILE_DEV_DEBUG")}`));
-  const exported = Object.fromEntries([...blocks[5].matchAll(/^  export (\w+)="(.*)"$/gm)].map(([, key, setting]) => [key, setting]));
+  const exported = Object.fromEntries([...blocks[4].matchAll(/^  export (\w+)="(.*)"$/gm)].map(([, key, setting]) => [key, setting]));
   const configured = Object.fromEntries([...section(jobs(nightlyConfig).coverage, "    env:").matchAll(/^      (\w+): (.+)$/gm)].map(([, key, setting]) => [key, setting.replace(/^"(.*)"$/, "$1")]));
   assert.deepEqual(exported, configured);
 });
@@ -439,7 +444,7 @@ test("rust aggregate accepts success/skips and rejects every failure/cancellatio
   for (const lint of ["success", "skipped", "failure", "cancelled"]) {
     for (const desktop of ["success", "skipped", "failure", "cancelled"]) {
       for (const headless of ["success", "skipped", "failure", "cancelled"]) {
-        const results = { "rust-lint": lint, "rust-test-desktop": desktop, "rust-test-backend": headless };
+        const results = { "rust-lint": lint, "rust-unit": desktop, "rust-integration": headless };
         const run = () => execFileSync("bash", ["-e", "-c", script.replace(/\$\{\{ needs\.(\S+)\.result \}\}/g, (_, job) => results[job])], { stdio: "pipe" });
         if (Object.values(results).every(result => ["success", "skipped"].includes(result))) run();
         else assert.throws(run);
@@ -470,11 +475,11 @@ test("only successful gates can create a release; coverage cannot block publicat
   const nightlyJobs = jobs(nightlyConfig);
   for (const [name, job] of [
     ...Object.entries(jobs(ciConfig)),
-    ...["check", "validation", "performance"].map(name => [name, nightlyJobs[name]]),
+    ...["check", "validation"].map(name => [name, nightlyJobs[name]]),
   ]) {
     assert.doesNotMatch(job, /continue-on-error:/, `${name}: job and step failures must fail the gate`);
   }
-  assert.equal(value(nightlyJobs.release, "needs"), "[check, validation, performance]");
+  assert.equal(value(nightlyJobs.release, "needs"), "[check, validation]");
   assert.doesNotMatch(nightlyJobs.release, /continue-on-error:|^    if:/m);
   const releaseSteps = steps(nightlyJobs.release);
   const createIndex = releaseSteps.findIndex(step => value(step, "id") === "create");
@@ -1011,13 +1016,12 @@ test("desktop bundle entrances use sidecars only while packaging", () => {
   assert.equal(base.bundle.externalBin, undefined);
   assert.equal(base.build.beforeBundleCommand, undefined);
   assert.equal(base.build.frontendDist, "../../dist");
-  for (const [name, frontend] of [["bundle", "build"], ["bundle.performance", "build:performance"]]) {
+  for (const [name, frontend] of [["bundle", "build"]]) {
     const config = JSON.parse(readFileSync(new URL(`${root}tauri.conf.${name}.json`, import.meta.url), "utf8"));
     assert.deepEqual(config.bundle.externalBin, ["binaries/releash-backend"]);
     assert.ok(config.build.beforeBuildCommand.startsWith(`pnpm ${frontend} && node scripts/build-desktop-backend.mjs`));
   }
   assert.match(packageJson.scripts["tauri:build"], /--config src-tauri\/releash-desktop\/tauri.conf.bundle.json/);
-  assert.match(packageJson.scripts["build:desktop:acceptance"], /--config src-tauri\/releash-desktop\/tauri.conf.performance.json --config src-tauri\/releash-desktop\/tauri.conf.bundle.performance.json/);
   for (const script of Object.values(packageJson.scripts).filter(script => script.includes("--no-bundle"))) assert.doesNotMatch(script, /tauri.conf.bundle/);
 });
 
@@ -1040,9 +1044,9 @@ function buildBackendSidecars(target, args = [], debug = false) {
 }
 
 test("bundle builds each universal sidecar without overwriting the workspace binary", () => {
-  const { commands, copies } = buildBackendSidecars("universal-apple-darwin", ["--performance"]);
+  const { commands, copies } = buildBackendSidecars("universal-apple-darwin");
   for (const arch of ["aarch64-apple-darwin", "x86_64-apple-darwin"]) {
-    assert.ok(commands.some(([command, args]) => command === "cargo" && args.includes(arch) && args.includes("releash-backend") && args.includes("performance") && args.includes("vendored-openssl") && args.includes("--release")));
+    assert.ok(commands.some(([command, args]) => command === "cargo" && args.includes(arch) && args.includes("releash-backend") && args.includes("vendored-openssl") && args.includes("--release")));
     assert.deepEqual(copies.find(([, to]) => to.endsWith(arch)), [`/target/${arch}/release/releash-backend`, `src-tauri/releash-desktop/binaries/releash-backend-${arch}`]);
   }
   assert.ok(commands.some(([command, args]) => command === "lipo" && args.at(-1) === "src-tauri/releash-desktop/binaries/releash-backend-universal-apple-darwin"));
@@ -1059,5 +1063,33 @@ test("dev only builds the normal workspace backend without copying or bundling",
     const development = buildBackendSidecars(target, ["--dev"]);
     assert.deepEqual(development.commands, [["cargo", ["build", "--manifest-path", "src-tauri/Cargo.toml", "--locked", "-p", "releash-backend", "--bin", "releash-backend"]]]);
     assert.deepEqual(development.copies, []);
+  }
+});
+
+
+test("test placement rejects misplaced tests and accepts each supported location", () => {
+  for (const path of ["tests/settings.spec.ts", "src-tauri/src/example.rs", "scripts/example_test.rs"]) {
+    assert.ok(placementErrors(path, "#[test] fn test_case() {}").length, path);
+  }
+  for (const path of ["src/example.test.tsx", "tests/integration/example.spec.ts", "tests/behavior/example.spec.ts", "src-tauri/src/example_test.rs", "src-tauri/releash-desktop/src/example_test.rs", "src-tauri/tests/example.rs", "src-tauri/releash-desktop/tests/example.rs", ".github/scripts/example.test.mjs", "src-tauri/src/test_helpers.rs", "src-tauri/src/test_support/example.rs", "tests/helpers/example.spec.ts", "src/test/setup.ts"]) {
+    assert.deepEqual(placementErrors(path, "#[tokio::test] async fn test_case() {}"), [], path);
+  }
+  assert.ok(placementErrors("src-tauri/src/example.rs", "#[tokio::test(flavor = \"multi_thread\")] async fn test_case() {}").length);
+});
+
+
+test("test placement does not treat ordinary support, helpers, or fixtures directories as test auxiliaries", () => {
+  for (const directory of ["support", "helpers", "fixtures", "test_helpers_domain"]) {
+    for (const root of ["src-tauri/src/domain", "src-tauri/releash-desktop/src/domain"]) {
+      const path = `${root}/${directory}/example.rs`;
+      assert.ok(placementErrors(path, "#[test] fn test_case() {}").length, path);
+    }
+    const path = `scripts/${directory}/example_test.rs`;
+    assert.ok(placementErrors(path, "#[test] fn test_case() {}").length, path);
+    const frontendPath = `src/domain/${directory}/example.spec.ts`;
+    assert.ok(placementErrors(frontendPath, "").length, frontendPath);
+  }
+  for (const path of ["tests/helpers/example.spec.ts", "tests/fixtures/example.spec.ts", "src-tauri/tests/support/example.rs", "src-tauri/src/domain/test_support/example.rs", "src-tauri/src/domain/test_helpers_example.rs", "src/test/setup.ts"]) {
+    assert.deepEqual(placementErrors(path, "#[test] fn test_case() {}"), [], path);
   }
 });

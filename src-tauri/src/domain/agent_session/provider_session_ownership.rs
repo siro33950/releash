@@ -1,7 +1,7 @@
 use crate::domain::provider_lifecycle::ProviderKind;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum ProviderSessionOwnershipEvent {
+pub enum ProviderSessionOwnershipEvent {
     Claimed {
         provider: ProviderKind,
         provider_session_id: String,

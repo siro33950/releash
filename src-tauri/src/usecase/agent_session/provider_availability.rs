@@ -12,12 +12,12 @@ use crate::domain::provider_lifecycle::ProviderKind;
 use crate::usecase::provider_dto::AgentSessionProviderDto;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ProviderAvailabilitySnapshotDto {
+pub struct ProviderAvailabilitySnapshotDto {
     pub providers: Vec<ProviderAvailabilityItemDto>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ProviderAvailabilityItemDto {
+pub struct ProviderAvailabilityItemDto {
     pub provider: AgentSessionProviderDto,
     pub display_name: String,
     pub default_executable: String,
@@ -30,7 +30,7 @@ pub(crate) struct ProviderAvailabilityItemDto {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ProviderUnavailableReasonDto {
+pub enum ProviderUnavailableReasonDto {
     NotFound,
     NotExecutable,
     SearchPathUnavailable,
@@ -49,7 +49,7 @@ impl From<ProviderUnavailableReason> for ProviderUnavailableReasonDto {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum ProviderAvailabilityUsecaseError {
+pub enum ProviderAvailabilityUsecaseError {
     InvalidInput,
     Config(crate::domain::agent_session::ProviderExecutableConfigRepositoryError),
     Refresh(crate::domain::agent_session::ProviderExecutableProbeGatewayError),
@@ -78,7 +78,7 @@ impl ProviderAvailabilityUsecaseError {
     }
 }
 
-pub(crate) struct ProviderAvailabilityUsecase {
+pub struct ProviderAvailabilityUsecase {
     state_publisher: Option<crate::usecase::state_subscription::StateSubscriptionUsecase>,
     config: Arc<dyn ProviderExecutableConfigRepository>,
     probe: Arc<dyn ProviderExecutableProbeGateway>,
@@ -88,7 +88,7 @@ pub(crate) struct ProviderAvailabilityUsecase {
 }
 
 impl ProviderAvailabilityUsecase {
-    pub(crate) fn with_state_publisher(
+    pub fn with_state_publisher(
         mut self,
         publisher: crate::usecase::state_subscription::StateSubscriptionUsecase,
     ) -> Self {
@@ -96,7 +96,7 @@ impl ProviderAvailabilityUsecase {
         self
     }
 
-    pub(crate) fn initialize(
+    pub fn initialize(
         config: Arc<dyn ProviderExecutableConfigRepository>,
         probe: Arc<dyn ProviderExecutableProbeGateway>,
     ) -> Result<Self, ProviderAvailabilityUsecaseError> {

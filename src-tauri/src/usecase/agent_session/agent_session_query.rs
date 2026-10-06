@@ -5,14 +5,14 @@ use crate::usecase::provider_dto::AgentSessionProviderDto;
 /// AgentSession が属する実行木と NodeExecution の所在。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct AgentSessionTreeLocationDto {
+pub struct AgentSessionTreeLocationDto {
     pub tree_id: String,
     pub node_execution_id: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
-pub(crate) enum AgentSessionLifecycleDto {
+pub enum AgentSessionLifecycleDto {
     Open,
     Paused,
     Archived,
@@ -20,7 +20,7 @@ pub(crate) enum AgentSessionLifecycleDto {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct AgentSessionOperationsDto {
+pub struct AgentSessionOperationsDto {
     pub can_archive: bool,
     pub can_restore: bool,
     pub can_delete: bool,
@@ -28,7 +28,7 @@ pub(crate) struct AgentSessionOperationsDto {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct AgentSessionItemDto {
+pub struct AgentSessionItemDto {
     pub id: String,
     pub workspace_identity: String,
     pub worktree_path: String,
@@ -45,7 +45,7 @@ pub(crate) struct AgentSessionItemDto {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum AgentSessionQueryError {
+pub enum AgentSessionQueryError {
     Store(crate::domain::failure::StorageFailure),
     InvalidRequest,
     Unavailable,
@@ -53,7 +53,7 @@ pub(crate) enum AgentSessionQueryError {
 }
 
 #[async_trait::async_trait]
-pub(crate) trait AgentSessionQueryService: Send + Sync {
+pub trait AgentSessionQueryService: Send + Sync {
     async fn get(
         &self,
         agent_session_id: &str,

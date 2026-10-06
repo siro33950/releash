@@ -7,7 +7,7 @@ use crate::usecase::provider_dto::AgentSessionProviderDto;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "lowercase")]
-pub(crate) enum WorkflowSourceFormatDto {
+pub enum WorkflowSourceFormatDto {
     #[default]
     Yaml,
     Lua,
@@ -24,7 +24,7 @@ impl From<domain::WorkflowSourceFormat> for WorkflowSourceFormatDto {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct WorkflowDto {
+pub struct WorkflowDto {
     pub name: String,
     pub description: String,
     #[serde(default)]
@@ -38,7 +38,7 @@ pub(crate) struct WorkflowDto {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
 #[serde(rename_all = "lowercase")]
-pub(crate) enum NodeKindDto {
+pub enum NodeKindDto {
     #[default]
     Session,
     Command,
@@ -47,7 +47,7 @@ pub(crate) enum NodeKindDto {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
-pub(crate) struct FacetRefsDto {
+pub struct FacetRefsDto {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub policy: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -57,7 +57,7 @@ pub(crate) struct FacetRefsDto {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub(crate) struct SessionSpecDto {
+pub struct SessionSpecDto {
     pub provider: AgentSessionProviderDto,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
@@ -68,12 +68,12 @@ pub(crate) struct SessionSpecDto {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
-pub(crate) enum CompletionRequirementDto {
+pub enum CompletionRequirementDto {
     Approval,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub(crate) struct NodeCompletionDto {
+pub struct NodeCompletionDto {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub require: Option<CompletionRequirementDto>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -81,7 +81,7 @@ pub(crate) struct NodeCompletionDto {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub(crate) struct SessionDelegateDto {
+pub struct SessionDelegateDto {
     pub child: String,
     pub inputs: Vec<ChildInputDto>,
     pub when: PredicateDto,
@@ -89,28 +89,28 @@ pub(crate) struct SessionDelegateDto {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub(crate) struct InputParamDto {
+pub struct InputParamDto {
     pub name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub contract: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
-pub(crate) struct FanoutSpecDto {
+pub struct FanoutSpecDto {
     pub children: Vec<ChildEntryDto>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub items: Option<ItemsSourceDto>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
-pub(crate) struct SequenceSpecDto {
+pub struct SequenceSpecDto {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub entry: Option<String>,
     pub children: Vec<ChildEntryDto>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub(crate) struct ChildEntryDto {
+pub struct ChildEntryDto {
     pub name: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub inputs: Vec<ChildInputDto>,
@@ -119,21 +119,21 @@ pub(crate) struct ChildEntryDto {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub(crate) struct ChildInputDto {
+pub struct ChildInputDto {
     pub parameter: String,
     pub source: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(untagged)]
-pub(crate) enum ItemsSourceDto {
+pub enum ItemsSourceDto {
     Literal(Vec<serde_json::Value>),
     ArtifactField(String),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct NodeDefinitionDto {
+pub struct NodeDefinitionDto {
     pub name: String,
     pub kind: NodeKindDto,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -156,7 +156,7 @@ pub(crate) struct NodeDefinitionDto {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(untagged)]
-pub(crate) enum PredicateDto {
+pub enum PredicateDto {
     Ref(String),
     And { and: Vec<PredicateDto> },
     Or { or: Vec<PredicateDto> },
@@ -164,7 +164,7 @@ pub(crate) enum PredicateDto {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case", tag = "type")]
-pub(crate) enum RuleDto {
+pub enum RuleDto {
     When {
         on: PredicateDto,
         then: String,
@@ -186,7 +186,7 @@ pub(crate) enum RuleDto {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct WorkflowSummaryDto {
+pub struct WorkflowSummaryDto {
     pub failure: Option<crate::domain::failure::WorkFailure>,
     pub name: String,
     pub description: String,
@@ -196,7 +196,7 @@ pub(crate) struct WorkflowSummaryDto {
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
-pub(crate) struct FacetSummaryDto {
+pub struct FacetSummaryDto {
     pub key: String,
     pub kind: String,
     pub description: String,
@@ -204,14 +204,14 @@ pub(crate) struct FacetSummaryDto {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ExecutionStatusDto {
+pub enum ExecutionStatusDto {
     Running,
     Completed,
     Aborted,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ExecutionOriginDto {
+pub enum ExecutionOriginDto {
     DesktopUi,
     Cli,
     Agent,
@@ -219,13 +219,13 @@ pub(crate) enum ExecutionOriginDto {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct TokenUsageDto {
+pub struct TokenUsageDto {
     pub input_tokens: u64,
     pub output_tokens: u64,
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct WorkflowExecutionSummaryDto {
+pub struct WorkflowExecutionSummaryDto {
     pub execution_id: String,
     pub workflow_name: String,
     pub status: ExecutionStatusDto,
@@ -239,8 +239,8 @@ pub(crate) struct WorkflowExecutionSummaryDto {
     pub total_token_usage: TokenUsageDto,
 }
 
-#[cfg(test)]
-pub(crate) fn workflow_to_dto(definition: &domain::WorkflowDefinition) -> WorkflowDto {
+#[cfg(any(test, feature = "test-support"))]
+pub fn workflow_to_dto(definition: &domain::WorkflowDefinition) -> WorkflowDto {
     workflow_to_dto_with_source_format(definition, domain::WorkflowSourceFormat::Yaml)
 }
 
@@ -278,7 +278,7 @@ pub(crate) fn workflow_summary_to_dto(summary: domain::WorkflowSummary) -> Workf
     }
 }
 
-pub(crate) fn facet_summary_to_dto(summary: domain::FacetSummary) -> FacetSummaryDto {
+pub fn facet_summary_to_dto(summary: domain::FacetSummary) -> FacetSummaryDto {
     FacetSummaryDto {
         key: summary.key,
         kind: summary.kind,
@@ -287,7 +287,7 @@ pub(crate) fn facet_summary_to_dto(summary: domain::FacetSummary) -> FacetSummar
     }
 }
 
-pub(crate) fn workflow_execution_summary_to_dto(
+pub fn workflow_execution_summary_to_dto(
     summary: domain::WorkflowExecutionSummary,
 ) -> WorkflowExecutionSummaryDto {
     WorkflowExecutionSummaryDto {
@@ -476,265 +476,6 @@ fn execution_origin_to_dto(source: domain::ExecutionOrigin) -> ExecutionOriginDt
         domain::ExecutionOrigin::Api => ExecutionOriginDto::Api,
         domain::ExecutionOrigin::Cli => ExecutionOriginDto::Cli,
         domain::ExecutionOrigin::Agent => ExecutionOriginDto::Agent,
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_workflow出力_既存の転送形式で直列化する() {
-        // Given
-        let workflow = WorkflowDto {
-            name: "wf".to_string(),
-            description: "desc".to_string(),
-            builtin: false,
-            source_format: WorkflowSourceFormatDto::Yaml,
-            schemas: [(
-                "plan".to_string(),
-                serde_json::json!({
-                    "type": "object",
-                    "properties": {},
-                    "required": []
-                }),
-            )]
-            .into_iter()
-            .collect(),
-            nodes: vec![NodeDefinitionDto {
-                name: "node".to_string(),
-                kind: NodeKindDto::Session,
-                session: Some(SessionSpecDto {
-                    provider: AgentSessionProviderDto::Claude,
-                    model: None,
-                    permission: None,
-                    facets: FacetRefsDto {
-                        instruction: Some("inst".to_string()),
-                        ..Default::default()
-                    },
-                }),
-                artifact: Some("plan".to_string()),
-                input: vec![InputParamDto {
-                    name: "item".to_string(),
-                    contract: Some("plan".to_string()),
-                }],
-                ..Default::default()
-            }],
-        };
-
-        // When
-        let actual = serde_json::to_value(workflow).unwrap();
-
-        // Then
-        assert_eq!(
-            actual,
-            serde_json::json!({
-                "name": "wf",
-                "description": "desc",
-                "builtin": false,
-                "sourceFormat": "yaml",
-                "schemas": {
-                    "plan": {
-                        "type": "object",
-                        "properties": {},
-                        "required": []
-                    }
-                },
-                "nodes": [{
-                    "name": "node",
-                    "kind": "session",
-                    "session": {
-                        "provider": "claude",
-                        "facets": {
-                            "instruction": "inst"
-                        }
-                    },
-                    "artifact": "plan",
-                    "input": [{"name": "item", "contract": "plan"}]
-                }]
-            })
-        );
-    }
-
-    #[test]
-    fn workflow_dto_exposes_lua_only_as_definition_source_metadata() {
-        let workflow = domain::WorkflowDefinition {
-            name: "lua-workflow".to_string(),
-            description: "Lua".to_string(),
-            ..domain::WorkflowDefinition::default()
-        };
-
-        let value = serde_json::to_value(workflow_to_dto_with_source_format(
-            &workflow,
-            domain::WorkflowSourceFormat::Lua,
-        ))
-        .unwrap();
-
-        assert_eq!(value["sourceFormat"], "lua");
-        assert!(serde_json::to_value(workflow)
-            .unwrap()
-            .get("sourceFormat")
-            .is_none());
-    }
-
-    #[test]
-    fn workflow_to_dto_maps_knowledge_refs_to_ordered_json_array() {
-        let definition = domain::WorkflowDefinition {
-            name: "wf".to_string(),
-            description: String::new(),
-            nodes: vec![domain::NodeDefinition {
-                name: "review".to_string(),
-                kind: domain::NodeKind::Session(domain::SessionSpec {
-                    provider: crate::domain::provider_lifecycle::ProviderKind::Codex,
-                    permission: Some(domain::SessionPermission::ReadOnly),
-                    facets: domain::FacetRefs {
-                        knowledge: vec!["knowledge-a".to_string(), "knowledge-b".to_string()],
-                        ..Default::default()
-                    },
-                    ..Default::default()
-                }),
-                ..Default::default()
-            }],
-            entry: "review".to_string(),
-            ..Default::default()
-        };
-
-        let dto = workflow_to_dto(&definition);
-
-        assert_eq!(
-            dto.nodes[0].session.as_ref().unwrap().facets.knowledge,
-            vec!["knowledge-a", "knowledge-b"]
-        );
-        assert_eq!(
-            serde_json::to_value(dto).unwrap()["nodes"][0]["session"]["facets"]["knowledge"],
-            serde_json::json!(["knowledge-a", "knowledge-b"])
-        );
-        assert_eq!(
-            serde_json::to_value(workflow_to_dto(&definition)).unwrap()["nodes"][0]["session"]
-                ["provider"],
-            serde_json::json!("codex")
-        );
-        assert_eq!(
-            serde_json::to_value(workflow_to_dto(&definition)).unwrap()["nodes"][0]["session"]
-                ["permission"],
-            serde_json::json!("read-only")
-        );
-    }
-
-    #[test]
-    fn workflow_to_dto_preserves_loop_guard() {
-        let definition = domain::WorkflowDefinition {
-            name: "wf".to_string(),
-            description: String::new(),
-            nodes: vec![
-                domain::NodeDefinition {
-                    name: "main".to_string(),
-                    kind: domain::NodeKind::Sequence(domain::SequenceSpec {
-                        entry: None,
-                        children: vec![domain::ChildEntry {
-                            name: "fix".to_string(),
-                            inputs: Vec::new(),
-                            rules: Some(vec![domain::Rule::LoopGuard {
-                                max_iterations: 2,
-                                on_exhausted: "done".to_string(),
-                            }]),
-                        }],
-                    }),
-                    ..Default::default()
-                },
-                domain::NodeDefinition {
-                    name: "fix".to_string(),
-                    ..Default::default()
-                },
-            ],
-            entry: "main".to_string(),
-            ..Default::default()
-        };
-
-        let dto = workflow_to_dto(&definition);
-
-        assert_eq!(
-            serde_json::to_value(dto).unwrap()["nodes"][0]["sequence"]["children"][0]["rules"][0],
-            serde_json::json!({
-                "type": "loop_guard",
-                "max_iterations": 2,
-                "on_exhausted": "done"
-            })
-        );
-    }
-
-    #[test]
-    fn fanout_spec_dto_serializes_child_and_items_sources() {
-        let literal = FanoutSpecDto {
-            children: vec![ChildEntryDto {
-                name: "review".to_string(),
-                inputs: Vec::new(),
-                rules: None,
-            }],
-            items: Some(ItemsSourceDto::Literal(vec![serde_json::json!({
-                "thread_id": "thread-1"
-            })])),
-        };
-        assert_eq!(
-            serde_json::to_value(literal).unwrap(),
-            serde_json::json!({
-                "children": [{"name": "review"}],
-                "items": [{"thread_id": "thread-1"}]
-            })
-        );
-
-        let reference = FanoutSpecDto {
-            children: vec![
-                ChildEntryDto {
-                    name: "review-opus".to_string(),
-                    inputs: Vec::new(),
-                    rules: None,
-                },
-                ChildEntryDto {
-                    name: "review-gpt".to_string(),
-                    inputs: Vec::new(),
-                    rules: None,
-                },
-            ],
-            items: Some(ItemsSourceDto::ArtifactField("scan.threads".to_string())),
-        };
-        assert_eq!(
-            serde_json::to_value(reference).unwrap(),
-            serde_json::json!({
-                "children": [{"name": "review-opus"}, {"name": "review-gpt"}],
-                "items": "scan.threads"
-            })
-        );
-    }
-
-    #[test]
-    fn execution_summary_dto_serializes_like_canonical_wire_shape() {
-        let summary = workflow_execution_summary_to_dto(domain::WorkflowExecutionSummary {
-            execution_id: "00000000-0000-4000-8000-000000000001".to_string(),
-            workflow_name: "wf".to_string(),
-            status: domain::ExecutionStatus::Running,
-            worktree_path: "/repo".to_string(),
-            current_node: None,
-            created_from: domain::ExecutionOrigin::DesktopUi,
-            started_at: 1.0,
-            updated_at: 2.0,
-            completed_at: None,
-            error_reason: None,
-            total_token_usage: domain::TokenUsage {
-                input_tokens: 13,
-                output_tokens: 8,
-            },
-        });
-
-        assert_eq!(summary.execution_id, "00000000-0000-4000-8000-000000000001");
-        assert_eq!(summary.workflow_name, "wf");
-        assert_eq!(summary.status, ExecutionStatusDto::Running);
-        assert_eq!(summary.worktree_path, "/repo");
-        assert_eq!(summary.created_from, ExecutionOriginDto::DesktopUi);
-        assert_eq!(summary.started_at, 1.0);
-        assert_eq!(summary.updated_at, 2.0);
-        assert_eq!(summary.total_token_usage.input_tokens, 13);
-        assert_eq!(summary.total_token_usage.output_tokens, 8);
     }
 }
 

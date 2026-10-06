@@ -1,13 +1,13 @@
 use crate::domain::workflow::SessionPermission;
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub(crate) struct ProviderLaunchOptions {
+pub struct ProviderLaunchOptions {
     pub(crate) model: Option<String>,
     pub(crate) permission: Option<SessionPermission>,
 }
 
 impl ProviderLaunchOptions {
-    pub(crate) fn new(model: Option<String>, permission: Option<SessionPermission>) -> Self {
+    pub fn new(model: Option<String>, permission: Option<SessionPermission>) -> Self {
         Self { model, permission }
     }
 }
@@ -20,20 +20,20 @@ enum ProviderSessionLaunchMode {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ProviderSessionLaunch {
+pub struct ProviderSessionLaunch {
     mode: ProviderSessionLaunchMode,
     options: ProviderLaunchOptions,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ProviderSessionLaunchError {
+pub enum ProviderSessionLaunchError {
     InitialInstructionMissing,
     ProviderSessionIdMissing,
 }
 
 impl ProviderSessionLaunch {
     #[allow(non_upper_case_globals)]
-    pub(crate) const New: Self = Self {
+    pub const New: Self = Self {
         mode: ProviderSessionLaunchMode::New,
         options: ProviderLaunchOptions {
             model: None,
@@ -41,7 +41,7 @@ impl ProviderSessionLaunch {
         },
     };
 
-    pub(crate) fn new_with_initial_instruction(
+    pub fn new_with_initial_instruction(
         initial_instruction: impl Into<String>,
     ) -> Result<Self, ProviderSessionLaunchError> {
         let initial_instruction = initial_instruction.into();
@@ -54,7 +54,7 @@ impl ProviderSessionLaunch {
         })
     }
 
-    pub(crate) fn resume(
+    pub fn resume(
         provider_session_id: impl Into<String>,
     ) -> Result<Self, ProviderSessionLaunchError> {
         let provider_session_id = provider_session_id.into();
@@ -67,7 +67,7 @@ impl ProviderSessionLaunch {
         })
     }
 
-    pub(crate) fn with_options(mut self, options: ProviderLaunchOptions) -> Self {
+    pub fn with_options(mut self, options: ProviderLaunchOptions) -> Self {
         self.options = options;
         self
     }

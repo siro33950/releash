@@ -45,7 +45,7 @@ pub(crate) fn activity_replay_event_types() -> &'static [&'static str] {
 }
 
 /// event_type カラムの値。語彙の正はこの列挙のみが持つ。
-pub(crate) fn event_type(fact: &NodeFact) -> &'static str {
+pub fn event_type(fact: &NodeFact) -> &'static str {
     match fact {
         NodeFact::Started(_) => "started",
         NodeFact::RepositoryRootObserved(_) => "repository_root_observed",
@@ -74,7 +74,7 @@ pub(crate) fn event_type(fact: &NodeFact) -> &'static str {
 }
 
 /// detail カラムの JSON。payload を持たない事実は空 object。
-pub(crate) fn encode_detail(fact: &NodeFact) -> Result<String, serde_json::Error> {
+pub fn encode_detail(fact: &NodeFact) -> Result<String, serde_json::Error> {
     match fact {
         NodeFact::Started(fact) => serde_json::to_string(fact),
         NodeFact::RepositoryRootObserved(root) => {
@@ -112,7 +112,7 @@ pub(crate) fn encode_detail(fact: &NodeFact) -> Result<String, serde_json::Error
 }
 
 /// (event_type, detail) からの復元。
-pub(crate) fn decode(event_type: &str, detail: &str) -> Result<NodeFact, NodeFactDecodeError> {
+pub fn decode(event_type: &str, detail: &str) -> Result<NodeFact, NodeFactDecodeError> {
     fn parse<T: serde::de::DeserializeOwned>(
         event_type: &str,
         detail: &str,

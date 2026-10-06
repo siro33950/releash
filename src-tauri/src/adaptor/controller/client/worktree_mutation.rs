@@ -7,7 +7,7 @@ tokio::task_local! {
     static MUTATION_GUARDS: std::sync::Arc<Vec<WorktreeMutationGuard>>;
 }
 
-pub(super) async fn scope<T>(
+pub async fn scope<T>(
     guards: Vec<WorktreeMutationGuard>,
     future: impl std::future::Future<Output = T>,
 ) -> T {
@@ -16,9 +16,7 @@ pub(super) async fn scope<T>(
         .await
 }
 
-pub(in crate::adaptor::controller) fn spawn_blocking<F, T>(
-    operation: F,
-) -> tokio::task::JoinHandle<T>
+pub fn spawn_blocking<F, T>(operation: F) -> tokio::task::JoinHandle<T>
 where
     F: FnOnce() -> T + Send + 'static,
     T: Send + 'static,
@@ -30,7 +28,7 @@ where
     })
 }
 
-pub(super) fn admit(
+pub fn admit(
     runtime: Option<&WorkflowRuntimeUsecase>,
     command: &wire::command_request::Command,
 ) -> Result<Vec<WorktreeMutationGuard>, wire::CommandFailure> {
@@ -101,7 +99,3 @@ fn mutation_error(error: crate::domain::workflow::WorkflowError) -> wire::Comman
         .with_code("WORKTREE_MUTATION_REJECTED")
         .into()
 }
-
-#[cfg(test)]
-#[path = "worktree_mutation_test.rs"]
-mod worktree_mutation_tests;

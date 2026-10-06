@@ -5,11 +5,11 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-const LOG_DIRECTORY_NAME: &str = "logs";
-const ACTIVE_FILE_NAME: &str = "releash.log";
-const LOCK_FILE_NAME: &str = "releash.lock";
+pub const LOG_DIRECTORY_NAME: &str = "logs";
+pub const ACTIVE_FILE_NAME: &str = "releash.log";
+pub const LOCK_FILE_NAME: &str = "releash.lock";
 const MAX_FILE_BYTES: u64 = 10 * 1024 * 1024;
-const MAX_FILE_COUNT: usize = 5;
+pub const MAX_FILE_COUNT: usize = 5;
 const QUEUE_CAPACITY: usize = 256;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -20,7 +20,7 @@ pub enum LocalLogProcess {
 }
 
 impl LocalLogProcess {
-    fn as_str(self) -> &'static str {
+    pub fn as_str(self) -> &'static str {
         match self {
             Self::Gui => "gui",
             Self::Daemon => "daemon",
@@ -56,7 +56,7 @@ pub fn init(data_dir: &Path, process: LocalLogProcess) -> Result<(), LocalLogIni
     init_with_limits(data_dir, process, MAX_FILE_BYTES, MAX_FILE_COUNT)
 }
 
-fn init_with_limits(
+pub fn init_with_limits(
     data_dir: &Path,
     process: LocalLogProcess,
     max_file_bytes: u64,
@@ -112,13 +112,18 @@ enum WriterCommand {
     Flush(SyncSender<()>),
 }
 
-struct LocalFileLogger {
+pub struct LocalFileLogger {
     sender: SyncSender<WriterCommand>,
     dropped_records: AtomicU64,
 }
 
 impl LocalFileLogger {
-    fn new(
+    #[cfg(feature = "test-support")]
+    pub fn test_dropped_records(&self) -> u64 {
+        self.dropped_records.load(Ordering::Relaxed)
+    }
+
+    pub fn new(
         data_dir: &Path,
         process: LocalLogProcess,
         max_file_bytes: u64,
@@ -133,7 +138,7 @@ impl LocalFileLogger {
         )
     }
 
-    fn new_with_queue_capacity(
+    pub fn new_with_queue_capacity(
         data_dir: &Path,
         process: LocalLogProcess,
         max_file_bytes: u64,
@@ -217,7 +222,7 @@ impl log::Log for LocalFileLogger {
     }
 }
 
-struct LocalLogWriter {
+pub struct LocalLogWriter {
     directory: PathBuf,
     directory_initialized: bool,
     process: LocalLogProcess,
@@ -226,7 +231,7 @@ struct LocalLogWriter {
 }
 
 impl LocalLogWriter {
-    fn new(
+    pub fn new(
         data_dir: &Path,
         process: LocalLogProcess,
         max_file_bytes: u64,
@@ -254,11 +259,11 @@ impl LocalLogWriter {
         }
     }
 
-    fn active_path(&self) -> PathBuf {
+    pub fn active_path(&self) -> PathBuf {
         self.directory.join(ACTIVE_FILE_NAME)
     }
 
-    fn generation_path(&self, generation: usize) -> PathBuf {
+    pub fn generation_path(&self, generation: usize) -> PathBuf {
         self.directory.join(format!("releash.{generation}.log"))
     }
 
@@ -301,7 +306,7 @@ impl LocalLogWriter {
         Ok(serialized)
     }
 
-    fn append_locked(&self, record: &[u8]) -> Result<(), io::Error> {
+    pub fn append_locked(&self, record: &[u8]) -> Result<(), io::Error> {
         let active_path = self.active_path();
         if self.max_file_count == 1
             && fs::metadata(&active_path).is_ok_and(|metadata| metadata.len() > self.max_file_bytes)
@@ -347,7 +352,3 @@ impl LocalLogWriter {
         Ok(())
     }
 }
-
-#[cfg(test)]
-#[path = "local_log_test.rs"]
-mod local_log_tests;

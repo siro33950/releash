@@ -17,33 +17,7 @@ async function loadRealApp(): Promise<React.ReactNode> {
 }
 
 async function bootstrap() {
-	let root: React.ReactNode;
-	if (import.meta.env.MODE === "performance") {
-		await import("@wdio/tauri-plugin");
-		const [
-			{ invokeClient: invoke, firstState },
-			{ installPerformanceCollector },
-		] = await Promise.all([
-			import("./lib/client"),
-			import("./test/performance/performanceCollector"),
-		]);
-		window.__RELEASH_INVOKE_CLIENT__ = invoke;
-		window.__RELEASH_FIRST_STATE__ = firstState;
-		const realAppMode = await firstState("performance-switches")
-			.then((switches) => switches.realAppMode)
-			.catch(() => false);
-		if (realAppMode) {
-			installPerformanceCollector();
-			root = await loadRealApp();
-		} else {
-			const { TerminalPerformanceScreen } = await import(
-				"./test/performance/TerminalPerformanceScreen"
-			);
-			root = <TerminalPerformanceScreen />;
-		}
-	} else {
-		root = await loadRealApp();
-	}
+	const root = await loadRealApp();
 	installFrontendErrorHandlers();
 
 	ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(

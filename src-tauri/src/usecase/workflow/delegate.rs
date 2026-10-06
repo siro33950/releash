@@ -8,7 +8,7 @@ use crate::domain::workflow::services::prompt_composition::delegate_continuation
 use crate::domain::workflow::WorkflowEvent;
 
 #[async_trait::async_trait]
-pub(crate) trait DelegateContinuationGateway: Send + Sync {
+pub trait DelegateContinuationGateway: Send + Sync {
     fn current_timestamp(&self) -> f64;
     async fn load_execution(
         &self,
@@ -31,9 +31,9 @@ pub(crate) trait DelegateContinuationGateway: Send + Sync {
     ) -> Result<RuntimeCommitSnapshot, WorkflowRuntimeError>;
 }
 
-pub(crate) struct DelegateContinuationUsecase {
-    pub(crate) retrying: std::sync::Arc<crate::usecase::retry::Retrying>,
-    pub(crate) gateway: std::sync::Arc<dyn DelegateContinuationGateway>,
+pub struct DelegateContinuationUsecase {
+    pub retrying: std::sync::Arc<crate::usecase::retry::Retrying>,
+    pub gateway: std::sync::Arc<dyn DelegateContinuationGateway>,
 }
 
 impl DelegateContinuationUsecase {
@@ -120,4 +120,4 @@ impl DelegateContinuationUsecase {
 
 #[cfg(test)]
 #[path = "delegate_test.rs"]
-mod delegate_tests;
+pub(crate) mod delegate_tests;

@@ -1,0 +1,447 @@
+pub(crate) mod tests {
+    use super::super::*;
+    use crate::domain::workflow::{
+        ExecutionTree, ExecutionTreeId, FacetKind, FacetRefs, FacetRepository, FacetSummary,
+        NodeDefinition, NodeKind, SchemaDef, SessionSpec, WorkflowDefinition,
+        WorkflowDefinitionRepository, WorkflowSummary,
+    };
+    use crate::usecase::workflow::ports::{
+        WorkflowEventRepository, WorkflowExecutionProjectionRepository,
+    };
+    use crate::usecase::workflow::test_support::NoopDefinitionSourceGateway;
+    use std::collections::{BTreeMap, BTreeSet, HashMap};
+    use std::sync::Mutex;
+
+    struct NoopDefinitionRepository;
+
+    impl WorkflowDefinitionRepository for NoopDefinitionRepository {
+        fn list(&self, _running_names: &[String]) -> Result<Vec<WorkflowSummary>, WorkflowError> {
+            Ok(Vec::new())
+        }
+
+        fn get(&self, _file_stem: &str) -> Result<Option<WorkflowDefinition>, WorkflowError> {
+            Ok(None)
+        }
+
+        fn save(
+            &self,
+            _definition: WorkflowDefinition,
+            _original_name: Option<&str>,
+        ) -> Result<(), WorkflowError> {
+            Ok(())
+        }
+
+        fn delete(&self, _name: &str) -> Result<(), WorkflowError> {
+            Ok(())
+        }
+    }
+
+    #[derive(Default)]
+    struct FakeEventRepository {
+        events: Mutex<Vec<WorkflowEventDraft>>,
+        reads: std::sync::atomic::AtomicUsize,
+    }
+
+    impl FakeEventRepository {
+        fn seed(&self, event: WorkflowEventDraft) {
+            self.events.lock().unwrap().push(event);
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl WorkflowEventRepository for FakeEventRepository {
+        #[cfg(test)]
+        fn append(&self, event: &WorkflowEventDraft) -> Result<(), WorkflowError> {
+            self.events.lock().unwrap().push(event.clone());
+            Ok(())
+        }
+
+        async fn read(
+            &self,
+            _execution_id: &ExecutionTreeId,
+        ) -> Result<Vec<WorkflowEventDraft>, WorkflowError> {
+            self.reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(self.events.lock().unwrap().clone())
+        }
+    }
+
+    #[derive(Default)]
+    struct FakeFacetRepository {
+        facets: Mutex<HashMap<(FacetKind, String), String>>,
+    }
+
+    impl FacetRepository for FakeFacetRepository {
+        fn list(&self, _kind: FacetKind) -> Result<Vec<String>, WorkflowError> {
+            Ok(Vec::new())
+        }
+
+        fn get(&self, kind: FacetKind, key: &str) -> Result<String, WorkflowError> {
+            self.facets
+                .lock()
+                .unwrap()
+                .get(&(kind, key.to_string()))
+                .cloned()
+                .ok_or_else(|| WorkflowError::NotFound(key.to_string()))
+        }
+
+        fn save(
+            &self,
+            kind: FacetKind,
+            key: &str,
+            content: &str,
+            _is_new: bool,
+        ) -> Result<(), WorkflowError> {
+            self.facets
+                .lock()
+                .unwrap()
+                .insert((kind, key.to_string()), content.to_string());
+            Ok(())
+        }
+
+        fn delete(&self, kind: FacetKind, key: &str) -> Result<(), WorkflowError> {
+            self.facets.lock().unwrap().remove(&(kind, key.to_string()));
+            Ok(())
+        }
+
+        fn list_summaries(&self, _kind: FacetKind) -> Result<Vec<FacetSummary>, WorkflowError> {
+            Ok(Vec::new())
+        }
+    }
+
+    struct NoopExecutionProjectionRepository;
+
+    #[async_trait::async_trait]
+    impl WorkflowExecutionProjectionRepository for NoopExecutionProjectionRepository {
+        fn get_node_artifact_from_events(
+            &self,
+            _execution_id: &ExecutionTreeId,
+            _node_name: &str,
+            _events: &[WorkflowEventDraft],
+        ) -> Result<Option<crate::domain::workflow::Artifact>, WorkflowError> {
+            panic!("submitted output must not reconstruct the execution aggregate")
+        }
+
+        async fn get_execution(
+            &self,
+            _execution_id: &ExecutionTreeId,
+        ) -> Result<Option<ExecutionTree>, WorkflowError> {
+            Ok(None)
+        }
+    }
+
+    struct FakeSecretSourceGateway;
+
+    impl SecretSourceGateway for FakeSecretSourceGateway {
+        fn configured_secret_values(&self) -> Result<Vec<String>, WorkflowError> {
+            Ok(vec!["token-123".to_string()])
+        }
+    }
+
+    struct Fixture {
+        usecase: WorkflowOutputUsecase,
+        events: Arc<FakeEventRepository>,
+    }
+
+    impl Fixture {
+        fn new() -> Self {
+            let facets = Arc::new(FakeFacetRepository::default());
+            let events = Arc::new(FakeEventRepository::default());
+            let query = WorkflowQueryService::new(
+                Arc::new(NoopDefinitionRepository),
+                Arc::new(NoopDefinitionSourceGateway),
+                facets.clone(),
+                events.clone(),
+                Arc::new(NoopExecutionProjectionRepository),
+            );
+            let usecase = WorkflowOutputUsecase::new(query, Arc::new(FakeSecretSourceGateway));
+            Self { usecase, events }
+        }
+    }
+
+    fn definition_with_artifact_contract(contract: &str) -> WorkflowDefinition {
+        WorkflowDefinition {
+            name: "wf".to_string(),
+            description: "desc".to_string(),
+            builtin: false,
+            schemas: BTreeMap::from([(
+                contract.to_string(),
+                SchemaDef::Object {
+                    properties: BTreeMap::from([(
+                        "status".to_string(),
+                        SchemaDef::String { r#enum: None },
+                    )]),
+                    required: BTreeSet::from(["status".to_string()]),
+                },
+            )]),
+            nodes: vec![NodeDefinition {
+                name: "review".to_string(),
+                kind: NodeKind::Session(SessionSpec {
+                    facets: FacetRefs {
+                        instruction: Some("implement".to_string()),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                }),
+                artifact: Some(contract.to_string()),
+                ..Default::default()
+            }],
+            entry: "review".to_string(),
+        }
+    }
+
+    fn execution_started(execution_id: &str, definition: WorkflowDefinition) -> WorkflowEventDraft {
+        WorkflowEventDraft {
+            execution_id: execution_id.to_string(),
+            event_kind: "started".to_string(),
+            timestamp: 1.0,
+            payload: serde_json::json!({
+                "nodeExecutionId": format!("{execution_id}:review:1"),
+                "nodeName": "review",
+                "kind": "session",
+                "attempt": 1,
+                "root": {
+                    "tree": "workflow",
+                    "workflowName": definition.name.clone(),
+                    "worktreePath": "/repo",
+                    "createdFrom": "cli",
+                    "request": "",
+                    "definition": serde_json::to_value(&definition).unwrap(),
+                },
+            }),
+        }
+    }
+
+    fn artifact_produced(
+        execution_id: &str,
+        node_name: &str,
+        contract: &str,
+        structured_output: serde_json::Value,
+        timestamp: f64,
+        request_id: &str,
+    ) -> WorkflowEventDraft {
+        WorkflowEventDraft {
+            execution_id: execution_id.to_string(),
+            event_kind: "artifact_produced".to_string(),
+            timestamp,
+            payload: serde_json::json!({
+                "nodeExecutionId": format!("{execution_id}:{node_name}:1"),
+                "nodeName": node_name,
+                "kind": "session",
+                "attempt": 1,
+                "contract": contract,
+                "value": structured_output,
+                "requestId": request_id,
+            }),
+        }
+    }
+
+    fn test_execution_id() -> &'static str {
+        "00000000-0000-4000-8000-000000000301"
+    }
+
+    #[tokio::test]
+    async fn validate_output_resolves_contract_from_execution_started_and_masks_before_validation()
+    {
+        let fixture = Fixture::new();
+        fixture.events.seed(execution_started(
+            test_execution_id(),
+            definition_with_artifact_contract("review-result"),
+        ));
+        let result = fixture
+            .usecase
+            .validate_output(
+                test_execution_id(),
+                "review",
+                serde_json::json!({"status":"ok","secret":"token-123"}),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(result, WorkflowValidateOutputResult::Valid);
+        let invalid = fixture
+            .usecase
+            .validate_output(test_execution_id(), "review", serde_json::json!({}))
+            .await
+            .unwrap();
+        assert!(matches!(
+            invalid,
+            WorkflowValidateOutputResult::Invalid { reason, .. } if reason == "schema_violation"
+        ));
+    }
+
+    #[tokio::test]
+    async fn validate_output_for_contract_rejects_a_mismatched_contract() {
+        let fixture = Fixture::new();
+        fixture.events.seed(execution_started(
+            test_execution_id(),
+            definition_with_artifact_contract("review-result"),
+        ));
+
+        let error = fixture
+            .usecase
+            .validate_output_for_contract(
+                test_execution_id(),
+                "review",
+                "different-result",
+                serde_json::json!({"status":"ok"}),
+            )
+            .await
+            .unwrap_err();
+
+        assert!(matches!(
+            error,
+            WorkflowError::Validation(message)
+                if message.contains("expects contract 'review-result'")
+        ));
+    }
+
+    #[tokio::test]
+    async fn get_output_delegates_to_query_projection() {
+        let fixture = Fixture::new();
+        fixture.events.seed(execution_started(
+            test_execution_id(),
+            definition_with_artifact_contract("review-result"),
+        ));
+        fixture.events.seed(artifact_produced(
+            test_execution_id(),
+            "review",
+            "review-result",
+            serde_json::json!({"status":"ok"}),
+            2.0,
+            "req-1",
+        ));
+
+        let output = fixture
+            .usecase
+            .get_output(test_execution_id(), "review")
+            .await
+            .unwrap();
+
+        assert!(matches!(
+            output,
+            WorkflowGetOutputResult::Submitted { request_id, .. }
+                if request_id.as_deref() == Some("req-1")
+        ));
+    }
+
+    #[tokio::test]
+    async fn get_output_rejects_an_unknown_node_through_the_shared_usecase() {
+        let fixture = Fixture::new();
+        fixture.events.seed(execution_started(
+            test_execution_id(),
+            definition_with_artifact_contract("review-result"),
+        ));
+
+        let error = fixture
+            .usecase
+            .get_output(test_execution_id(), "missing")
+            .await
+            .unwrap_err();
+
+        assert!(matches!(
+            error,
+            WorkflowError::Validation(message) if message.contains("is not defined")
+        ));
+    }
+    #[tokio::test]
+    async fn test_隔離出力_開始順によらず最後の提出と同じattemptの成果を一度の読取で返す() {
+        // Given
+        let fixture = Fixture::new();
+        let mut definition = definition_with_artifact_contract("review-result");
+        definition.nodes[0].worktree = Some(crate::domain::workflow::WorktreeMode::Isolated);
+        let mut root = execution_started(test_execution_id(), definition);
+        root.payload["root"]["repositoryRoot"] = "/repo".into();
+        fixture.events.seed(root);
+        for (id, attempt) in [("earlier-slot", 2), ("later-slot", 1)] {
+            fixture.events.seed(WorkflowEventDraft {
+                execution_id: test_execution_id().into(),
+                event_kind: "started".into(),
+                timestamp: 1.5,
+                payload: serde_json::json!({"nodeExecutionId": id, "nodeName": "review", "kind": "session", "attempt": attempt}),
+            });
+        }
+        for (id, attempt, timestamp, request_id) in [
+            ("earlier-slot", 2, 2.0, "first"),
+            ("later-slot", 1, 3.0, "second"),
+            ("earlier-slot", 2, 4.0, "last"),
+        ] {
+            let mut submitted = artifact_produced(
+                test_execution_id(),
+                "review",
+                "review-result",
+                serde_json::json!({"status": request_id}),
+                timestamp,
+                request_id,
+            );
+            submitted.payload["nodeExecutionId"] = id.into();
+            submitted.payload["attempt"] = attempt.into();
+            fixture.events.seed(submitted);
+            // When
+            fixture
+                .events
+                .reads
+                .store(0, std::sync::atomic::Ordering::SeqCst);
+            let output = fixture
+                .usecase
+                .get_output(test_execution_id(), "review")
+                .await
+                .unwrap();
+            // Then
+            let worktree =
+                crate::domain::workflow::IsolatedWorktree::for_attempt("/repo", id, attempt);
+            assert_eq!(
+                output,
+                WorkflowGetOutputResult::Submitted {
+                    contract: Some("review-result".into()),
+                    structured_output: serde_json::json!({"status": request_id, "worktree": {"branch": worktree.branch, "path": worktree.path}}),
+                    submitted_at: Some(timestamp),
+                    request_id: Some(request_id.into()),
+                    timestamp,
+                }
+            );
+            assert_eq!(
+                fixture
+                    .events
+                    .reads
+                    .load(std::sync::atomic::Ordering::SeqCst),
+                1
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_隔離出力_所有者情報の破損を未提出に置き換えない() {
+        for field in ["nodeExecutionId", "attempt", "repositoryRoot"] {
+            // Given
+            let fixture = Fixture::new();
+            let mut definition = definition_with_artifact_contract("review-result");
+            definition.nodes[0].worktree = Some(crate::domain::workflow::WorktreeMode::Isolated);
+            let mut root = execution_started(test_execution_id(), definition);
+            root.payload["root"]["repositoryRoot"] = "/repo".into();
+            let mut submitted = artifact_produced(
+                test_execution_id(),
+                "review",
+                "review-result",
+                serde_json::json!({"status":"ok"}),
+                2.0,
+                "request",
+            );
+            if field == "repositoryRoot" {
+                root.payload["root"].as_object_mut().unwrap().remove(field);
+            } else {
+                submitted.payload.as_object_mut().unwrap().remove(field);
+            }
+            fixture.events.seed(root);
+            fixture.events.seed(submitted);
+            // When / Then
+            assert!(
+                fixture
+                    .usecase
+                    .get_output(test_execution_id(), "review")
+                    .await
+                    .is_err(),
+                "{field}"
+            );
+        }
+    }
+}

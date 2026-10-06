@@ -35,7 +35,7 @@ pub(crate) fn render_template_variables(content: &str, values: &HashMap<String, 
 
 /// `{{ <パラメータ>(.field...) }}` を束縛済みパラメータ値で置換する。
 /// 解決できない参照はそのまま残す。
-pub(crate) fn render_parameter_references(content: &str, bindings: &[(String, Value)]) -> String {
+pub fn render_parameter_references(content: &str, bindings: &[(String, Value)]) -> String {
     let values = binding_values(bindings);
     replace_template_refs(content, |inner| {
         let (root, field_path) = reference::split_reference(inner)?;
@@ -177,99 +177,3 @@ pub(crate) fn build_leaf_prompt(
 #[cfg(test)]
 #[path = "prompt_rendering_test.rs"]
 mod prompt_rendering_tests;
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_commandテンプレート_既存のparameterとfield展開を維持する() {
-        let bindings = vec![
-            (
-                "document".to_string(),
-                Value::String("it's {{ literal }}".to_string()),
-            ),
-            ("metadata".to_string(), serde_json::json!({"count": 2})),
-        ];
-
-        let rendered = render_parameter_references(
-            "printf '%s' '{{ document }}'; printf '%s' '{{ metadata.count }}'",
-            &bindings,
-        );
-
-        assert_eq!(
-            rendered,
-            "printf '%s' 'it's {{ literal }}'; printf '%s' '2'"
-        );
-    }
-
-    #[test]
-    fn test_commandテンプレート_未解決参照を従来どおり残す() {
-        assert_eq!(
-            render_parameter_references("echo '{{ missing }}'", &[]),
-            "echo '{{ missing }}'"
-        );
-    }
-
-    #[test]
-    fn test_commandテンプレート_多段fieldを終端値へ展開する() {
-        // Given
-        let bindings = vec![(
-            "document".to_string(),
-            serde_json::json!({"outer": {"inner": {"text": "rendered"}}}),
-        )];
-
-        // When
-        let rendered =
-            render_parameter_references("echo '{{ document.outer.inner.text }}'", &bindings);
-
-        // Then
-        assert_eq!(rendered, "echo 'rendered'");
-    }
-
-    #[test]
-    fn test_sessionファセット_システムとユーザー本文の多段fieldを展開する() {
-        // Given
-        let node = NodeDefinition {
-            name: "main".to_string(),
-            kind: crate::domain::workflow::NodeKind::Session(
-                crate::domain::workflow::SessionSpec {
-                    facets: crate::domain::workflow::FacetRefs {
-                        policy: Some("policy".to_string()),
-                        instruction: Some("instruction".to_string()),
-                        ..Default::default()
-                    },
-                    ..Default::default()
-                },
-            ),
-            input: vec![crate::domain::workflow::InputParam {
-                name: "context".to_string(),
-                contract: None,
-            }],
-            ..Default::default()
-        };
-        let facets = FacetContents {
-            policy: Some("Policy {{ context.outer.value }}".to_string()),
-            instruction: Some("Do {{ context.outer.value }}".to_string()),
-            ..Default::default()
-        };
-        let bindings = vec![(
-            "context".to_string(),
-            serde_json::json!({"outer": {"value": "nested"}}),
-        )];
-
-        // When
-        let (system, user) = build_leaf_prompt(
-            &node,
-            Some(&facets),
-            "00000000-0000-4000-8000-000000000001",
-            &bindings,
-            &BTreeMap::new(),
-        )
-        .unwrap();
-
-        // Then
-        assert!(system.unwrap().contains("Policy nested"));
-        assert!(user.contains("Do nested"));
-    }
-}

@@ -101,12 +101,6 @@ pub struct AcceptanceHookWarning {
     pub reason: String,
 }
 
-#[derive(Debug, Clone, PartialEq, serde::Serialize)]
-pub struct AcceptanceTerminalLaunchPerformanceSample {
-    pub phase: String,
-    pub duration_ms: f64,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AcceptanceArchiveOutcome {
@@ -438,23 +432,6 @@ launch_retention: crate::adaptor::controller::agent_session_launch_retention::ru
         })
         .collect()
     }
-
-    pub fn start_terminal_launch_performance_collection(&self) {
-        crate::infrastructure::telemetry::metrics::start_terminal_launch_sample_collection();
-    }
-
-    pub fn take_terminal_launch_performance_samples(
-        &self,
-    ) -> Vec<AcceptanceTerminalLaunchPerformanceSample> {
-        crate::infrastructure::telemetry::metrics::take_terminal_launch_samples()
-            .into_iter()
-            .map(|sample| AcceptanceTerminalLaunchPerformanceSample {
-                phase: sample.phase.to_string(),
-                duration_ms: sample.duration_ms,
-            })
-            .collect()
-    }
-
     pub async fn launch_workflow(
         &self,
         worktree_path: &str,
@@ -589,7 +566,7 @@ launch_retention: crate::adaptor::controller::agent_session_launch_retention::ru
     }
 }
 
-async fn drain_and_close_store(mut store: Arc<LocalEventStore>) -> Result<(), String> {
+pub async fn drain_and_close_store(mut store: Arc<LocalEventStore>) -> Result<(), String> {
     let store = tokio::time::timeout(Duration::from_secs(10), async move {
         loop {
             match Arc::try_unwrap(store) {
@@ -613,10 +590,6 @@ fn provider_kind(provider: AcceptanceProvider) -> ProviderKind {
         AcceptanceProvider::Codex => ProviderKind::Codex,
     }
 }
-
-#[cfg(test)]
-#[path = "agent_session_tui_acceptance_test.rs"]
-mod agent_session_tui_acceptance_tests;
 
 struct AcceptanceSessionReads {
     sessions: Arc<AgentSessionReadUsecase>,

@@ -2,7 +2,7 @@ use super::{command::AbortExecutionCommand, WorkflowRuntimeUsecase};
 use crate::domain::workflow::{ExecutionTreeArchiveRepository, ExecutionTreeId, WorkflowError};
 
 impl WorkflowRuntimeUsecase {
-    pub(crate) fn begin_worktree_mutation(
+    pub fn begin_worktree_mutation(
         &self,
         path: &str,
     ) -> Result<crate::usecase::worktree_operation::WorktreeMutationGuard, WorkflowError> {
@@ -180,7 +180,7 @@ impl WorkflowRuntimeUsecase {
         Ok(())
     }
 
-    pub(crate) async fn migrate_execution_archives(
+    pub async fn migrate_execution_archives(
         &self,
         repository: &dyn ExecutionTreeArchiveRepository,
     ) -> Result<(), WorkflowError> {
@@ -279,7 +279,3 @@ fn map_worktree_operation_error(
         }
     }
 }
-
-#[cfg(test)]
-#[path = "execution_archive_test.rs"]
-mod execution_archive_tests;

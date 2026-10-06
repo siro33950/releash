@@ -8,9 +8,9 @@ pub struct FailureRecordStore {
     records: Mutex<VecDeque<FailureRecord>>,
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 #[derive(Debug, Clone)]
-pub(crate) struct FailureRecordObservation {
+pub struct FailureRecordObservation {
     pub record: FailureRecord,
     pub requires_attention: bool,
 }
@@ -24,12 +24,12 @@ impl Default for FailureRecordStore {
 }
 
 impl FailureRecordStore {
-    #[cfg(test)]
-    pub(crate) fn observe(&self, key: &FailureKey, failure: WorkFailure) -> bool {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn observe(&self, key: &FailureKey, failure: WorkFailure) -> bool {
         self.observe_at(key, failure, now_ms())
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn observe_at(&self, key: &FailureKey, failure: WorkFailure, now_ms: u64) -> bool {
         let attention = crate::usecase::failure::requires_attention(failure.kind);
         self.observe_at_with_attention(key, failure, attention, now_ms)
@@ -83,8 +83,8 @@ impl FailureRecordStore {
         changed
     }
 
-    #[cfg(test)]
-    pub(crate) fn resolve(&self, key: &FailureKey) -> bool {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn resolve(&self, key: &FailureKey) -> bool {
         self.record_resolved(key)
     }
 
@@ -98,8 +98,8 @@ impl FailureRecordStore {
         changed
     }
 
-    #[cfg(test)]
-    pub(crate) fn records(&self, target: &str) -> Vec<FailureRecordObservation> {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn records(&self, target: &str) -> Vec<FailureRecordObservation> {
         self.records
             .lock()
             .expect("failure records")

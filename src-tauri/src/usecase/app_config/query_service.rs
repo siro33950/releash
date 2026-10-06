@@ -14,11 +14,11 @@ pub struct DesktopSettingsDto {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct WorkflowConfigDto {
+pub struct WorkflowConfigDto {
     pub approval_auto_approve: bool,
 }
 
-pub(crate) trait WorkflowConfigQueryService: Send + Sync {
+pub trait WorkflowConfigQueryService: Send + Sync {
     fn get_workflow_config(
         &self,
     ) -> Result<WorkflowConfigDto, crate::domain::app_config::AppConfigError>;

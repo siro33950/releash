@@ -3,7 +3,7 @@
 use super::*;
 
 #[derive(Clone)]
-pub(super) struct CommandExecutionInput {
+pub struct CommandExecutionInput {
     pub(super) execution_id: String,
     pub(super) node_execution_id: String,
     pub(super) node_name: String,
@@ -69,7 +69,7 @@ impl WorkflowRuntimeHost {
         }
     }
 
-    pub(super) async fn commit_command_spawned(
+    pub async fn commit_command_spawned(
         &self,
         app: &WorkflowRuntimeDependencies,
         input: &CommandExecutionInput,
@@ -128,66 +128,60 @@ impl WorkflowRuntimeHost {
 }
 
 #[cfg(test)]
-mod command_preparation_tests {
-    use super::*;
-    use crate::domain::workflow::entities::workflow_execution::{
-        ExecutionTree, ExecutionTreeRestore,
-    };
-    use crate::domain::workflow::{NodeDefinition, NodeKindName, WorkflowDefinition};
+#[path = "command_preparation_test.rs"]
+mod command_preparation_tests;
 
-    fn input_for(node_execution_id: &str) -> CommandExecutionInput {
-        CommandExecutionInput {
-            execution_id: "execution-1".to_string(),
-            node_execution_id: node_execution_id.to_string(),
-            node_name: "check".to_string(),
-            attempt: 1,
-            worktree_path: "/repo".to_string(),
-            raw_command: Some("true".to_string()),
-            definition_env: Vec::new(),
-            contract: None,
-            schemas: Default::default(),
-            session_id: None,
+#[cfg(feature = "test-support")]
+impl CommandExecutionInput {
+    pub fn test_attempt(&self) -> u32 {
+        self.attempt
+    }
+    pub fn test_attempt_mut(&mut self) -> &mut u32 {
+        &mut self.attempt
+    }
+    pub fn test_execution_id(&self) -> String {
+        self.execution_id.clone()
+    }
+    pub fn test_execution_id_mut(&mut self) -> &mut String {
+        &mut self.execution_id
+    }
+    pub fn test_node_execution_id(&self) -> String {
+        self.node_execution_id.clone()
+    }
+    pub fn test_node_name(&self) -> String {
+        self.node_name.clone()
+    }
+    pub fn test_raw_command(&self) -> Option<String> {
+        self.raw_command.clone()
+    }
+    pub fn test_raw_command_mut(&mut self) -> &mut Option<String> {
+        &mut self.raw_command
+    }
+}
+
+#[cfg(feature = "test-support")]
+impl CommandExecutionInput {
+    pub fn test_new(
+        identity: (String, String, String, u32),
+        worktree_path: String,
+        raw_command: Option<String>,
+        definition_env: Vec<(String, String)>,
+        contract: Option<String>,
+        schemas: BTreeMap<String, DomainSchemaDef>,
+        session_id: Option<String>,
+    ) -> Self {
+        let (execution_id, node_execution_id, node_name, attempt) = identity;
+        Self {
+            execution_id,
+            node_execution_id,
+            node_name,
+            attempt,
+            worktree_path,
+            raw_command,
+            definition_env,
+            contract,
+            schemas,
+            session_id,
         }
-    }
-
-    fn execution_with_running_command() -> (ExecutionTree, String) {
-        let mut execution = ExecutionTree::restore_runtime(ExecutionTreeRestore {
-            id: "execution-1".to_string(),
-            workflow: WorkflowDefinition {
-                name: "wf".to_string(),
-                entry: "check".to_string(),
-                nodes: vec![NodeDefinition {
-                    name: "check".to_string(),
-                    ..Default::default()
-                }],
-                ..Default::default()
-            },
-            ..ExecutionTreeRestore::default()
-        });
-        let node_execution_id = execution
-            .begin_node_attempt(
-                "check".to_string(),
-                NodeKindName::Command,
-                1,
-                None,
-                "command-1".to_string(),
-                1.0,
-            )
-            .unwrap();
-        (execution, node_execution_id)
-    }
-
-    #[test]
-    fn command_input_is_current_only_while_the_node_execution_is_running() {
-        let (mut execution, node_execution_id) = execution_with_running_command();
-        let input = input_for(&node_execution_id);
-        assert!(command_execution_input_is_current(&execution, &input));
-
-        // Abort 後の command は起動しない。
-        assert_eq!(
-            execution.abort_node_execution(&node_execution_id, 2.0),
-            crate::domain::workflow::entities::workflow_execution::TransitionOutcome::Applied
-        );
-        assert!(!command_execution_input_is_current(&execution, &input));
     }
 }

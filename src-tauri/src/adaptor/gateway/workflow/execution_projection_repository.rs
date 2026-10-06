@@ -9,13 +9,13 @@ use crate::usecase::workflow::ports::{WorkflowEventDraft, WorkflowExecutionProje
 
 /// 事実ログ（node_events）の tree fold から実行 read model を導出する。
 #[derive(Clone)]
-pub(crate) struct WorkflowExecutionProjectionLogRepository {
+pub struct WorkflowExecutionProjectionLogRepository {
     backend: FactLogReadBackend,
-    pub(crate) processes: Option<Arc<dyn crate::domain::workflow::NodeProcessReader>>,
+    pub processes: Option<Arc<dyn crate::domain::workflow::NodeProcessReader>>,
 }
 
 impl WorkflowExecutionProjectionLogRepository {
-    pub(crate) fn new(store: Arc<LocalEventStore>) -> Self {
+    pub fn new(store: Arc<LocalEventStore>) -> Self {
         Self {
             backend: FactLogReadBackend::Live(store),
             processes: None,

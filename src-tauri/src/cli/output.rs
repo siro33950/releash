@@ -46,7 +46,7 @@ pub(super) enum OutputSubcommand {
     },
 }
 
-pub(super) fn cmd_output_submit(
+pub fn cmd_output_submit(
     data_dir: &Path,
     node_execution: String,
     contract: Option<&str>,
@@ -86,7 +86,7 @@ pub(super) fn cmd_output_submit(
     })
 }
 
-pub(super) async fn cmd_output_get(
+pub async fn cmd_output_get(
     data_dir: &Path,
     execution_id: &str,
     node: &str,

@@ -3,16 +3,15 @@
 //! workflow command/query は localhost local API を正とする。アプリ未起動時は
 //! read-only query だけ backend-owned read model の file-direct fallback を許可する。
 
-mod api_client;
-mod common;
-mod diagnostics;
-mod file_direct;
-mod hook;
-mod output;
-mod review;
-#[cfg(test)]
-mod test_helpers;
-mod workflow;
+pub(crate) mod api_client;
+pub(crate) mod common;
+pub(crate) mod diagnostics;
+pub(crate) mod file_direct;
+pub(crate) mod hook;
+pub(crate) mod output;
+pub(crate) mod review;
+
+pub(crate) mod workflow;
 
 use std::sync::OnceLock;
 
@@ -64,7 +63,7 @@ enum HookSubcommand {
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
-enum HookProvider {
+pub enum HookProvider {
     Claude,
     Codex,
 }

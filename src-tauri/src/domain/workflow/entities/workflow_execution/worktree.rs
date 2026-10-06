@@ -138,4 +138,4 @@ impl ExecutionTree {
 
 #[cfg(test)]
 #[path = "worktree_test.rs"]
-mod worktree_tests;
+pub(crate) mod worktree_tests;

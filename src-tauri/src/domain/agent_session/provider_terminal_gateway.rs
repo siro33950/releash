@@ -2,7 +2,7 @@ use crate::domain::agent_session::aggregates::ManagedPtyPresence;
 use crate::domain::terminal_surface::{TerminalProcessLaunch, TerminalSurfaceOwner};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum ProviderAgentTerminalGatewayError {
+pub enum ProviderAgentTerminalGatewayError {
     Technical(crate::domain::failure::TechnicalFailure),
     NotFound(String),
     InvalidOperation(String),
@@ -27,7 +27,7 @@ impl std::fmt::Display for ProviderAgentTerminalGatewayError {
 
 impl std::error::Error for ProviderAgentTerminalGatewayError {}
 
-pub(crate) trait ProviderAgentTerminalGateway: Send + Sync {
+pub trait ProviderAgentTerminalGateway: Send + Sync {
     fn spawn(
         &self,
         owner: TerminalSurfaceOwner,
@@ -57,7 +57,7 @@ pub(crate) trait ProviderAgentTerminalGateway: Send + Sync {
     ) -> Result<bool, ProviderAgentTerminalGatewayError>;
 }
 
-pub(crate) trait ProviderAgentTerminalInputGateway: Send + Sync {
+pub trait ProviderAgentTerminalInputGateway: Send + Sync {
     fn write(
         &self,
         owner: &TerminalSurfaceOwner,
@@ -77,3 +77,7 @@ pub(crate) trait ProviderAgentTerminalObservationGateway: Send + Sync {
     /// owner の surface summary が保持する exit_code。surface 不在・実行中は None。
     fn session_exit_code(&self, owner: &TerminalSurfaceOwner) -> Option<i32>;
 }
+
+#[cfg(test)]
+#[path = "provider_terminal_gateway_test.rs"]
+mod provider_terminal_gateway_tests;

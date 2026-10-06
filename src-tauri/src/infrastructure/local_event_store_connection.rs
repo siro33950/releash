@@ -61,7 +61,7 @@ impl std::ops::DerefMut for ManagedConnection {
     }
 }
 
-pub(crate) fn configure_busy_handler(
+pub fn configure_busy_handler(
     connection: Connection,
     limiter: std::sync::Arc<crate::common::retry::RetryLimiter>,
 ) -> Result<ManagedConnection, rusqlite::Error> {
@@ -278,7 +278,3 @@ pub fn set_owner_only_permissions(path: &Path) -> std::io::Result<()> {
     }
     Ok(())
 }
-
-#[cfg(test)]
-#[path = "local_event_store_connection_test.rs"]
-mod local_event_store_connection_tests;

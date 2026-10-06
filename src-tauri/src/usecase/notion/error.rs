@@ -4,7 +4,7 @@ use crate::domain::notion::NotionError;
 pub(crate) const NOTION_CONFIG_NOT_FOUND: &str = "Notion設定が見つかりません";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum NotionUsecaseError {
+pub enum NotionUsecaseError {
     ConfigNotFound,
     AppConfig(AppConfigError),
     Notion(NotionError),
@@ -43,21 +43,5 @@ impl From<NotionError> for NotionUsecaseError {
 }
 
 #[cfg(test)]
-mod notion_usecase_error_tests {
-    use super::*;
-
-    #[test]
-    fn test_notion_usecaseエラー_未設定メッセージを維持する() {
-        assert_eq!(
-            NotionUsecaseError::ConfigNotFound.to_string(),
-            NOTION_CONFIG_NOT_FOUND
-        );
-    }
-
-    #[test]
-    fn test_notion_usecaseエラー_notionエラー文字列を維持する() {
-        let error = NotionUsecaseError::from(NotionError::ApiError("HTTP 500".to_string()));
-
-        assert_eq!(error.to_string(), "API エラー: HTTP 500");
-    }
-}
+#[path = "error_test.rs"]
+pub(crate) mod error_tests;

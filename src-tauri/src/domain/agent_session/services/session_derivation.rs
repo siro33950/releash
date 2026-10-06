@@ -6,12 +6,12 @@ use crate::domain::workflow::services::fact_replay::{derive_session_facts, Sessi
 use crate::domain::workflow::NodeFactRecord;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct SessionExecutionContext {
+pub struct SessionExecutionContext {
     pub(crate) workspace_identity: String,
-    pub(crate) worktree_path: String,
+    pub worktree_path: String,
     pub(crate) workspace_worktree_path: String,
     pub(crate) launched_as: crate::domain::workflow::ExecutionTreeLaunch,
-    pub(crate) provider: ProviderKind,
+    pub provider: ProviderKind,
 }
 
 #[cfg(test)]

@@ -7,7 +7,7 @@ pub struct EditorInfoDto {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ExternalEditorState {
+pub struct ExternalEditorState {
     pub selected: String,
     pub editors: Vec<EditorInfoDto>,
 }

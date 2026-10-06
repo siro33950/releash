@@ -28,40 +28,39 @@ use crate::usecase::provider_lifecycle::{
 use crate::usecase::state_subscription::StateSubscriptionUsecase;
 use crate::usecase::terminal_surface::application::TerminalSurfaceApplication;
 
-pub(crate) struct AgentSessionCompositionInput {
-    pub(crate) launch_retention:
+pub struct AgentSessionCompositionInput {
+    pub launch_retention:
         tokio::sync::mpsc::UnboundedSender<crate::usecase::agent_session::LaunchRetention>,
-    pub(crate) retrying: Arc<crate::usecase::retry::Retrying>,
-    pub(crate) state_publisher:
-        Option<crate::usecase::state_subscription::StateSubscriptionUsecase>,
-    pub(crate) store: Arc<crate::adaptor::gateway::local_event_store::LocalEventStore>,
-    pub(crate) data_dir: PathBuf,
-    pub(crate) provider_executable_config: Arc<dyn ProviderExecutableConfigRepository>,
-    pub(crate) provider_executable_probe: Arc<dyn ProviderExecutableProbeGateway>,
-    pub(crate) claude_config_dir: PathBuf,
-    pub(crate) codex_home: PathBuf,
-    pub(crate) cli_binary: String,
-    pub(crate) terminal: Arc<TerminalSurfaceApplication>,
-    pub(crate) subscriptions: StateSubscriptionUsecase,
+    pub retrying: Arc<crate::usecase::retry::Retrying>,
+    pub state_publisher: Option<crate::usecase::state_subscription::StateSubscriptionUsecase>,
+    pub store: Arc<crate::adaptor::gateway::local_event_store::LocalEventStore>,
+    pub data_dir: PathBuf,
+    pub provider_executable_config: Arc<dyn ProviderExecutableConfigRepository>,
+    pub provider_executable_probe: Arc<dyn ProviderExecutableProbeGateway>,
+    pub claude_config_dir: PathBuf,
+    pub codex_home: PathBuf,
+    pub cli_binary: String,
+    pub terminal: Arc<TerminalSurfaceApplication>,
+    pub subscriptions: StateSubscriptionUsecase,
 }
 
-pub(crate) struct AgentSessionComposition {
-    #[cfg(debug_assertions)]
+pub struct AgentSessionComposition {
+    #[cfg(feature = "test-support")]
     pub(crate) provider_lifecycle: Arc<ProviderLifecycleUsecase>,
-    #[cfg(debug_assertions)]
+    #[cfg(feature = "test-support")]
     pub(crate) sessions: Arc<AgentSessionUsecase>,
     pub(crate) history_read: Arc<AgentSessionHistoryReadUsecase>,
     pub(crate) provider_session_title_ingestion: Arc<ProviderSessionTitleIngestionUsecase>,
     pub(crate) rename: Arc<AgentSessionRenameUsecase>,
     pub(crate) hook_health_read: Arc<ProviderHookHealthReadUsecase>,
     pub(crate) lifecycle_ingress: Arc<ProviderLifecycleIngressUsecase>,
-    pub(crate) launch: Arc<AgentSessionLaunchUsecase>,
-    pub(crate) initial_instruction: Arc<AgentSessionInitialInstructionUsecase>,
-    pub(crate) lifecycle: Arc<AgentSessionLifecycleUsecase>,
+    pub launch: Arc<AgentSessionLaunchUsecase>,
+    pub initial_instruction: Arc<AgentSessionInitialInstructionUsecase>,
+    pub lifecycle: Arc<AgentSessionLifecycleUsecase>,
     pub(crate) exit: Arc<AgentSessionExitUsecase>,
     pub(crate) read: Arc<AgentSessionReadUsecase>,
     pub(crate) provider_availability: Arc<ProviderAvailabilityUsecase>,
-    pub(crate) availability_reader: Arc<dyn ProviderAvailabilityReader>,
+    pub availability_reader: Arc<dyn ProviderAvailabilityReader>,
     pub(crate) execution_tree_stops: Arc<DeferredProviderExecutionTreeStopTransaction>,
     pub(crate) execution_tree_registrations: Arc<DeferredStartedExecutionTreeRegistrar>,
 }
@@ -275,7 +274,7 @@ impl ProviderExecutionTreeStopTransaction for DeferredProviderExecutionTreeStopT
     }
 }
 
-pub(crate) fn compose_agent_sessions(
+pub fn compose_agent_sessions(
     input: AgentSessionCompositionInput,
 ) -> Result<AgentSessionComposition, ProviderAvailabilityUsecaseError> {
     let repository: Arc<dyn crate::domain::local_event::LocalEventTransactionRepository> =
@@ -394,9 +393,9 @@ pub(crate) fn compose_agent_sessions(
     ));
 
     Ok(AgentSessionComposition {
-        #[cfg(debug_assertions)]
+        #[cfg(feature = "test-support")]
         provider_lifecycle,
-        #[cfg(debug_assertions)]
+        #[cfg(feature = "test-support")]
         sessions,
         history_read,
         provider_session_title_ingestion,

@@ -13,7 +13,7 @@ use crate::domain::agent_session::aggregates::{AgentSession, AgentSessionLifecyc
 use crate::domain::workflow::ExecutionTreeLaunch;
 
 /// archive 済みの実行と内部の節を除いた、画面に出す木。
-pub(crate) struct WorkspaceVisibleTree<'a> {
+pub struct WorkspaceVisibleTree<'a> {
     tree: &'a WorkspaceTree,
     children: HashMap<Option<&'a str>, Vec<&'a WorkspaceTreeNode>>,
     by_id: HashMap<&'a str, &'a WorkspaceTreeNode>,
@@ -24,14 +24,14 @@ pub(crate) struct WorkspaceVisibleTree<'a> {
 
 /// 画面に出す木の 1 項目。Workflow を表す節は現れず、最初の子が実行を代表する。
 #[derive(Clone, Copy)]
-pub(crate) struct WorkspaceVisibleNode<'a> {
+pub struct WorkspaceVisibleNode<'a> {
     visible: &'a WorkspaceVisibleTree<'a>,
     node: &'a WorkspaceTreeNode,
     root: Option<WorkspacePublicRoot<'a>>,
 }
 
 impl WorkspaceTree {
-    pub(crate) fn visible(&self) -> WorkspaceVisibleTree<'_> {
+    pub fn visible(&self) -> WorkspaceVisibleTree<'_> {
         let mut children: HashMap<Option<&str>, Vec<&WorkspaceTreeNode>> = HashMap::new();
         for node in self.nodes() {
             if !node.is_internal_rule_record() && !node.is_retry_history {
@@ -67,7 +67,7 @@ impl WorkspaceTree {
     }
 
     /// archive 済みの session を持つ実行（session の識別子順）。
-    pub(crate) fn archived_sessions(&self) -> Vec<&WorkspaceExecution> {
+    pub fn archived_sessions(&self) -> Vec<&WorkspaceExecution> {
         let mut archived = self
             .executions()
             .iter()
@@ -83,7 +83,7 @@ impl WorkspaceTree {
     }
 
     /// archive 済みの workflow の実行（archive の新しい順）。
-    pub(crate) fn archived_workflows(&self) -> Vec<&WorkspaceExecution> {
+    pub fn archived_workflows(&self) -> Vec<&WorkspaceExecution> {
         let mut archived = self
             .executions()
             .iter()
@@ -109,7 +109,7 @@ impl WorkspaceTree {
 }
 
 impl<'a> WorkspaceVisibleTree<'a> {
-    pub(crate) fn roots(&'a self) -> Vec<WorkspaceVisibleNode<'a>> {
+    pub fn roots(&'a self) -> Vec<WorkspaceVisibleNode<'a>> {
         self.items(None)
     }
 
@@ -162,17 +162,17 @@ fn contains(items: &[WorkspaceVisibleNode<'_>], node_id: &str) -> bool {
 }
 
 impl<'a> WorkspaceVisibleNode<'a> {
-    pub(crate) fn node(&self) -> &'a WorkspaceTreeNode {
+    pub fn node(&self) -> &'a WorkspaceTreeNode {
         self.node
     }
 
     /// 公開する識別子。実行を代表する節は、実行の識別子で公開する。
-    pub(crate) fn id(&self) -> &'a str {
+    pub fn id(&self) -> &'a str {
         self.root
             .map_or(self.node.id.as_str(), |root| root.public_id())
     }
 
-    pub(crate) fn title(&self) -> &'a str {
+    pub fn title(&self) -> &'a str {
         self.root
             .map_or(self.node.title.as_str(), |root| root.public_title())
     }
@@ -199,7 +199,7 @@ impl<'a> WorkspaceVisibleNode<'a> {
             .filter(|session| session.id() == session_id)
     }
 
-    pub(crate) fn children(&self) -> Vec<WorkspaceVisibleNode<'a>> {
+    pub fn children(&self) -> Vec<WorkspaceVisibleNode<'a>> {
         self.visible.items(Some(&self.node.id))
     }
 

@@ -19,8 +19,8 @@ use crate::infrastructure::lua::{
 };
 use crate::usecase::workflow::diagnostic_dto::DiagnosticSpan;
 
-mod field_span;
-mod stubs;
+pub(crate) mod field_span;
+pub(crate) mod stubs;
 
 use super::predicate_wire::PredicateShapeError;
 use field_span::ArtifactSpanMap;
@@ -29,14 +29,14 @@ pub(crate) use stubs::generate_editor_support;
 
 /// 一度の評価で Lua 側から生成できる中間ハンドルの総数。Lua VM のメモリ上限は
 /// Rust 側の arena を数えないため、ここで別途有界にする。
-const MAX_HOST_ARENA_ENTRIES: usize = 100_000;
+pub const MAX_HOST_ARENA_ENTRIES: usize = 100_000;
 
-const HANDLE_NODE: &str = "node";
-const HANDLE_CHILD: &str = "child";
-const HANDLE_RULE: &str = "rule";
-const HANDLE_PREDICATE: &str = "predicate";
+pub const HANDLE_NODE: &str = "node";
+pub const HANDLE_CHILD: &str = "child";
+pub const HANDLE_RULE: &str = "rule";
+pub const HANDLE_PREDICATE: &str = "predicate";
 const HANDLE_INPUT: &str = "input";
-const HANDLE_SOURCE: &str = "source";
+pub const HANDLE_SOURCE: &str = "source";
 const HANDLE_SCHEMA: &str = "schema";
 const HANDLE_FACET: &str = "facet";
 const HANDLE_FACET_INDEX: &str = "facet_index";
@@ -51,7 +51,7 @@ const FN_FANOUT: u32 = 3;
 const FN_SEQUENCE: u32 = 4;
 const FN_CHILD: u32 = 5;
 const FN_NEXT: u32 = 6;
-const FN_WHEN: u32 = 7;
+pub const FN_WHEN: u32 = 7;
 const FN_SWITCH: u32 = 8;
 const FN_LOOP_GUARD: u32 = 9;
 const FN_INPUT: u32 = 11;
@@ -62,15 +62,15 @@ const FN_SCHEMA_BOOLEAN: u32 = 15;
 const FN_SCHEMA_INTEGER: u32 = 16;
 const FN_SCHEMA_NUMBER: u32 = 17;
 const FN_WORKFLOW: u32 = 18;
-const FN_ALL: u32 = 19;
-const FN_ANY: u32 = 20;
+pub const FN_ALL: u32 = 19;
+pub const FN_ANY: u32 = 20;
 const FN_DELEGATE: u32 = 21;
 
 #[derive(Debug, Clone, Default)]
-pub(crate) struct LuaFacetCatalog {
-    pub(crate) instruction: Vec<String>,
-    pub(crate) policy: Vec<String>,
-    pub(crate) knowledge: Vec<String>,
+pub struct LuaFacetCatalog {
+    pub instruction: Vec<String>,
+    pub policy: Vec<String>,
+    pub knowledge: Vec<String>,
 }
 
 pub(crate) fn facet_catalog(
@@ -86,18 +86,18 @@ pub(crate) fn facet_catalog(
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct LuaWorkflowDefinition {
-    pub(crate) workflow: WorkflowDefinition,
+pub struct LuaWorkflowDefinition {
+    pub workflow: WorkflowDefinition,
     pub(crate) node_locations: BTreeMap<String, LuaSourceLocation>,
     pub(crate) node_artifact_spans: BTreeMap<String, DiagnosticSpan>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct LuaWorkflowError {
-    pub(crate) code: String,
-    pub(crate) message: String,
-    pub(crate) location: Option<LuaSourceLocation>,
-    pub(crate) field: Option<String>,
+pub struct LuaWorkflowError {
+    pub code: String,
+    pub message: String,
+    pub location: Option<LuaSourceLocation>,
+    pub field: Option<String>,
 }
 
 impl std::fmt::Display for LuaWorkflowError {
@@ -108,7 +108,7 @@ impl std::fmt::Display for LuaWorkflowError {
 
 impl std::error::Error for LuaWorkflowError {}
 
-pub(crate) fn load_lua_workflow(
+pub fn load_lua_workflow(
     source_name: &str,
     source: &str,
     workflows_dir: &Path,
@@ -123,7 +123,7 @@ pub(crate) fn load_lua_workflow(
     )
 }
 
-fn load_lua_workflow_with_limits(
+pub fn load_lua_workflow_with_limits(
     source_name: &str,
     source: &str,
     workflows_dir: &Path,
@@ -231,7 +231,7 @@ struct ChildDraft {
 }
 
 #[derive(Debug, Clone)]
-enum RuleDraft {
+pub enum RuleDraft {
     Next(usize),
     When {
         on: Predicate<usize>,
@@ -256,7 +256,7 @@ struct InputDraft {
 }
 
 #[derive(Debug, Clone)]
-enum SourceDraft {
+pub enum SourceDraft {
     Node {
         node: usize,
         path: usize,
@@ -282,7 +282,7 @@ impl SourceDraft {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-enum SourceRoot {
+pub enum SourceRoot {
     Node(usize),
     Input(usize),
 }
@@ -407,7 +407,7 @@ struct WorkflowDraft {
 }
 
 #[derive(Debug)]
-struct WorkflowLuaHost {
+pub struct WorkflowLuaHost {
     artifact_spans: HashMap<String, ArtifactSpanMap>,
     nodes: Vec<NodeDraft>,
     children: Vec<ChildDraft>,
@@ -427,7 +427,7 @@ struct WorkflowLuaHost {
 }
 
 impl WorkflowLuaHost {
-    fn new(catalog: LuaFacetCatalog) -> Self {
+    pub fn new(catalog: LuaFacetCatalog) -> Self {
         let mut host = Self {
             artifact_spans: HashMap::new(),
             nodes: Vec::new(),
@@ -587,7 +587,7 @@ impl WorkflowLuaHost {
     }
 
     /// arena に積まれた中間ハンドルの総数。
-    fn arena_entries(&self) -> usize {
+    pub fn arena_entries(&self) -> usize {
         self.nodes.len()
             + self.children.len()
             + self.rules.len()
@@ -2273,7 +2273,7 @@ impl WorkflowGraphBuilder {
     }
 }
 
-fn handle(kind: &str, index: usize) -> LuaData {
+pub fn handle(kind: &str, index: usize) -> LuaData {
     LuaData::Handle(LuaHostHandle {
         kind: kind.to_string(),
         index,
@@ -2650,1167 +2650,43 @@ fn build_error(
 }
 
 #[cfg(test)]
-mod tests {
-    use std::fs;
-    use std::time::{Duration, Instant};
+#[path = "mod_test.rs"]
+mod mod_tests;
 
-    use tempfile::TempDir;
-
-    use super::*;
-
-    fn load(source: &str) -> Result<LuaWorkflowDefinition, LuaWorkflowError> {
-        let directory = TempDir::new().unwrap();
-        load_lua_workflow(
-            "review.lua",
-            source,
-            directory.path(),
-            LuaFacetCatalog::default(),
-        )
+#[cfg(feature = "test-support")]
+impl WorkflowLuaHost {
+    pub fn test_predicate_entries(&self) -> usize {
+        self.predicate_entries
     }
-
-    fn load_many_source_entries(entry_count: usize) -> (LuaWorkflowDefinition, Duration) {
-        let source = format!(
-            r#"
-local r = require("releash")
-local result = r.schema.object{{ properties = {{ value = r.schema.string{{}} }} }}
-local source = r.command{{ name = "source", command = "source", artifact = result }}
-local target_inputs = {{}}
-local environment = {{}}
-local child_inputs = {{}}
-for i = 1, {entry_count} do
-  local input = r.input("p" .. i)
-  target_inputs[i] = input
-  environment["V" .. i] = input
-  child_inputs["p" .. i] = source.value
-end
-local target = r.command{{
-  name = "target",
-  command = "target",
-  input = target_inputs,
-  env = environment,
-}}
-return r.workflow{{
-  name = "many-references",
-  description = "Many references",
-  main = r.sequence{{ children = {{
-    r.child{{ node = source }},
-    r.child{{ node = target, inputs = child_inputs }},
-  }} }},
-}}
-"#
-        );
-        let started = Instant::now();
-        let loaded = load(&source).unwrap();
-        (loaded, started.elapsed())
+    pub fn test_predicates(&self) -> &Vec<(Predicate<usize>, usize)> {
+        &self.predicates
     }
-
-    #[test]
-    fn source_pathsは供給元と段が同じ別sourceをprefixまで消費済みにする() {
-        // Given
-        let mut paths = SourcePaths::new();
-        let root = paths.root(SourceRoot::Node(3));
-        let same_prefix = paths.child(root, "a");
-        let same_prefix_from_another_reference = paths.child(root, "a");
-        let consumed_source = paths.child(same_prefix, "b");
-        let sibling = paths.child(same_prefix, "c");
-
-        // When
-        paths.mark(consumed_source);
-
-        // Then
-        assert!(paths.contains(consumed_source));
-        assert!(paths.contains(same_prefix));
-        assert!(paths.contains(same_prefix_from_another_reference));
-        assert!(!paths.contains(sibling));
+    pub fn test_rules(&self) -> &Vec<RuleDraft> {
+        &self.rules
     }
-
-    #[test]
-    fn source_pathsは深いsourceの各段を線形個のpathとして追跡する() {
-        // Given
-        const DEPTH: usize = 10_000;
-        let mut paths = SourcePaths::new();
-        let mut path = paths.root(SourceRoot::Input(7));
-        let mut prefixes = Vec::with_capacity(DEPTH);
-        for index in 0..DEPTH {
-            path = paths.child(path, &format!("field{index}"));
-            prefixes.push(path);
-        }
-
-        // When
-        paths.mark(path);
-
-        // Then
-        assert_eq!(paths.parents.len(), DEPTH + 3);
-        assert!(prefixes.into_iter().all(|path| paths.contains(path)));
-    }
-
-    #[test]
-    fn loads_many_child_inputs_and_command_env_entries_with_linear_source_tracking() {
-        // Given
-        const SMALL_ENTRY_COUNT: usize = 2_000;
-        const LARGE_ENTRY_COUNT: usize = 6_000;
-
-        // When
-        let (_, small_elapsed) = load_many_source_entries(SMALL_ENTRY_COUNT);
-        let (loaded, large_elapsed) = load_many_source_entries(LARGE_ENTRY_COUNT);
-
-        // Then
-        let target = loaded.workflow.node_by_name("target").unwrap();
-        assert_eq!(target.input.len(), LARGE_ENTRY_COUNT);
-        assert_eq!(target.command_spec().unwrap().env.len(), LARGE_ENTRY_COUNT);
-        let sequence = loaded.workflow.entry_node().unwrap().sequence().unwrap();
-        assert_eq!(sequence.children[1].inputs.len(), LARGE_ENTRY_COUNT);
-        let linear_budget = small_elapsed.saturating_mul(5) + Duration::from_millis(250);
-        assert!(
-            large_elapsed <= linear_budget,
-            "source tracking must scale linearly: {SMALL_ENTRY_COUNT} entries took {small_elapsed:?}, {LARGE_ENTRY_COUNT} entries took {large_elapsed:?}"
-        );
-    }
-
-    #[test]
-    fn builds_a_workflow_and_synthesizes_child_names() {
-        let loaded = load(
-            r#"
-local r = require("releash")
-local first = r.command{ command = "echo first" }
-local second = r.command{ command = "echo second" }
-return r.workflow{
-  name = "review",
-  description = "Review",
-  main = r.sequence{
-    children = {
-      r.child{ node = first },
-      r.child{ node = second },
-    },
-  },
-}
-"#,
-        )
-        .unwrap();
-
-        assert_eq!(loaded.workflow.entry, "main");
-        assert_eq!(loaded.workflow.nodes[0].name, "main");
-        assert!(loaded.workflow.node_by_name("main#0").is_some());
-        assert!(loaded.workflow.node_by_name("main#1").is_some());
-    }
-
-    #[test]
-    fn rejects_same_node_value_in_multiple_children() {
-        let error = load(
-            r#"
-local r = require("releash")
-local child = r.command{ command = "echo" }
-return r.workflow{
-  name = "review", description = "Review",
-  main = r.sequence{ children = {
-    r.child{ node = child }, r.child{ node = child },
-  } },
-}
-"#,
-        )
-        .unwrap_err();
-
-        assert_eq!(error.code, "WFC007");
-    }
-
-    #[test]
-    fn rejects_unknown_builder_field_at_call_line() {
-        let error = load(
-            r#"
-local r = require("releash")
-local child = r.command{ command = "echo", unknown = true }
-return r.workflow{ name = "review", description = "Review", main = child }
-"#,
-        )
-        .unwrap_err();
-
-        assert_eq!(error.code, "WFS002");
-        assert_eq!(error.location.unwrap().line, 3);
-    }
-
-    #[test]
-    fn test_lua_session_permission_4値からworkflow_definitionを構築する() {
-        for (value, expected) in [
-            ("manual", SessionPermission::Manual),
-            ("auto", SessionPermission::Auto),
-            ("bypass", SessionPermission::Bypass),
-            ("read-only", SessionPermission::ReadOnly),
-        ] {
-            let source = format!(
-                r#"
-local r = require("releash")
-return r.workflow{{ name = "review", description = "Review", main = r.session{{ provider = r.provider.claude, permission = "{value}" }} }}
-"#
-            );
-
-            let loaded = load(&source).unwrap();
-            assert_eq!(
-                loaded
-                    .workflow
-                    .node_by_name("main")
-                    .unwrap()
-                    .session()
-                    .unwrap()
-                    .permission,
-                Some(expected)
-            );
-        }
-    }
-
-    #[test]
-    fn test_lua_session_permission_未知値とprovider固有値をwfs002で拒否する() {
-        for invalid in [
-            "unknown",
-            "acceptEdits",
-            "danger-full-access",
-            "workspace-write",
-            "bypassPermissions",
-            "plan",
-        ] {
-            let source = format!(
-                r#"
-local r = require("releash")
-return r.workflow{{ name = "review", description = "Review", main = r.session{{ provider = r.provider.claude, permission = "{invalid}" }} }}
-"#
-            );
-
-            let error = load(&source).unwrap_err();
-            assert_eq!(error.code, "WFS002");
-            assert_eq!(error.field.as_deref(), Some("permission"));
-            assert!(error.message.contains(invalid));
-            assert_eq!(error.location.unwrap().line, 3);
-        }
-    }
-
-    #[test]
-    fn maps_require_failures_and_non_workflow_returns_to_spec_codes() {
-        let directory = TempDir::new().unwrap();
-        let require_error = load_lua_workflow(
-            "review.lua",
-            "local value = require('../outside')\nreturn value",
-            directory.path(),
-            LuaFacetCatalog::default(),
-        )
-        .unwrap_err();
-        let return_error = load_lua_workflow(
-            "review.lua",
-            "return {}",
-            directory.path(),
-            LuaFacetCatalog::default(),
-        )
-        .unwrap_err();
-
-        assert_eq!(require_error.code, "WFS011");
-        assert_eq!(require_error.location.unwrap().line, 1);
-        assert_eq!(return_error.code, "WFS010");
-        assert_eq!(return_error.location.unwrap().line, 1);
-    }
-
-    #[test]
-    fn rejects_unknown_artifact_field_at_index_line() {
-        let error = load(
-            r#"
-local r = require("releash")
-local child = r.command{
-  command = "echo",
-  artifact = r.schema.object{ properties = { ok = r.schema.boolean() } },
-}
-local invalid = child.missing
-return r.workflow{ name = "review", description = "Review", main = child }
-"#,
-        )
-        .unwrap_err();
-
-        assert_eq!(error.code, "WFR003");
-        let location = error.location.unwrap();
-        assert_eq!(location.source, "review.lua");
-        assert_eq!(location.line, 7);
-    }
-
-    #[test]
-    fn rejects_unknown_facet_at_reference_line() {
-        let directory = TempDir::new().unwrap();
-        let error = load_lua_workflow(
-            "review.lua",
-            r#"
-local r = require("releash")
-local f = require("facets")
-local child = r.session{
-  provider = r.provider.claude,
-  facets = { instruction = f.instruction.missing },
-}
-return r.workflow{ name = "review", description = "Review", main = child }
-"#,
-            directory.path(),
-            LuaFacetCatalog::default(),
-        )
-        .unwrap_err();
-
-        assert_eq!(error.code, "WFR900");
-        let location = error.location.unwrap();
-        assert_eq!(location.source, "review.lua");
-        assert_eq!(location.line, 6);
-    }
-
-    #[test]
-    fn reports_reference_error_at_required_component_file_and_line() {
-        let directory = TempDir::new().unwrap();
-        let component = directory.path().join("component.lua");
-        fs::write(
-            &component,
-            r#"
-local r = require("releash")
-return function()
-  local child = r.command{ command = "echo" }
-  local invalid = child.missing
-  return child
-end
-"#,
-        )
-        .unwrap();
-
-        let error = load_lua_workflow(
-            "review.lua",
-            r#"
-local r = require("releash")
-local component = require("component")
-return r.workflow{ name = "review", description = "Review", main = component() }
-"#,
-            directory.path(),
-            LuaFacetCatalog::default(),
-        )
-        .unwrap_err();
-        let location = error.location.unwrap();
-
-        assert_eq!(error.code, "WFR003");
-        assert_eq!(
-            location.source,
-            fs::canonicalize(component).unwrap().to_string_lossy()
-        );
-        assert_eq!(location.line, 5);
-    }
-
-    #[test]
-    fn require_component_function_creates_independent_nodes() {
-        let directory = TempDir::new().unwrap();
-        fs::write(
-            directory.path().join("component.lua"),
-            r#"
-local r = require("releash")
-return function(command)
-  local leaf = r.command{ command = command }
-  return r.sequence{
-    completion = { require = r.completion.approval },
-    children = { r.child{ node = leaf } },
-  }
-end
-"#,
-        )
-        .unwrap();
-        let loaded = load_lua_workflow(
-            "review.lua",
-            r#"
-local r = require("releash")
-local component = require("component")
-return r.workflow{
-  name = "review", description = "Review",
-  main = r.sequence{ children = {
-    r.child{ node = component("one") },
-    r.child{ node = component("two") },
-  } },
-}
-"#,
-            directory.path(),
-            LuaFacetCatalog::default(),
-        )
-        .unwrap();
-
-        assert_eq!(loaded.workflow.nodes.len(), 5);
-        assert_eq!(
-            loaded
-                .workflow
-                .nodes
-                .iter()
-                .map(|node| node.name.as_str())
-                .collect::<Vec<_>>(),
-            ["main", "main#0", "main#0#0", "main#1", "main#1#0"]
-        );
-        assert_eq!(
-            loaded.workflow.node_by_name("main#0").unwrap().completion,
-            NodeCompletion::require_approval()
-        );
-        assert!(loaded
-            .workflow
-            .node_by_name("main#0")
-            .unwrap()
-            .is_sequence());
-    }
-
-    #[test]
-    fn builds_schema_fanout_items_and_scoped_item_wiring() {
-        let directory = TempDir::new().unwrap();
-        let loaded = load_lua_workflow(
-            "review.lua",
-            r#"
-local r = require("releash")
-local f = require("facets")
-local topic = r.schema.string{}
-local detail = r.schema.object{
-  name = "topic-detail",
-  properties = { label = r.schema.string{} },
-}
-local payload = r.schema.object{
-  properties = {
-    topics = r.schema.array{ items = topic },
-    detail = detail,
-  },
-  required = { "topics" },
-}
-local scan = r.command{
-  command = "scan",
-  artifact = r.schema.object{
-    properties = { payload = payload },
-  },
-}
-local worker = r.session{
-  provider = r.provider.codex,
-  facets = { instruction = f.instruction.review },
-  input = { r.input("topic", topic) },
-}
-local spread = r.fanout{
-  items = scan.payload.topics,
-  children = {
-    r.child{ node = worker, inputs = { topic = r.items } },
-  },
-}
-return r.workflow{
-  name = "review", description = "Review",
-  main = r.sequence{ children = {
-    r.child{ node = scan },
-    r.child{ node = spread },
-  } },
-}
-"#,
-            directory.path(),
-            LuaFacetCatalog {
-                instruction: vec!["review".to_string()],
-                ..LuaFacetCatalog::default()
-            },
-        )
-        .unwrap();
-
-        assert_eq!(
-            loaded
-                .workflow
-                .nodes
-                .iter()
-                .map(|node| node.name.as_str())
-                .collect::<Vec<_>>(),
-            ["main", "main#0", "main#1", "main#1#0"]
-        );
-        let validation_errors = crate::domain::workflow::validation::validate_all(&loaded.workflow);
-        assert!(validation_errors.is_empty(), "{validation_errors:#?}");
-        assert!(loaded.workflow.schemas.contains_key("topic-detail"));
-    }
-
-    #[test]
-    fn test_lua多段参照_whenとswitchを共有domain検証へ渡せる() {
-        let loaded = load(
-            r#"
-local r = require("releash")
-local route = r.schema.object{ properties = {
-  flag = r.schema.boolean(),
-  status = r.schema.string{ enum = { "A" } },
-}, required = { "flag", "status" } }
-local result = r.schema.object{ properties = { route = route } }
-local yes = r.command{ name = "yes", command = "yes" }
-local no = r.command{ name = "no", command = "no" }
-local when_source = r.command{ name = "when-source", command = "source", artifact = result }
-local switch_source = r.command{ name = "switch-source", command = "source", artifact = result }
-return r.workflow{ name = "routing", description = "routing", main = r.sequence{ children = {
-  r.child{ node = when_source, rules = {
-    r.when{ on = when_source.route.flag, on_true = switch_source, next = switch_source },
-  } },
-  r.child{ node = switch_source, rules = {
-    r.switch{ on = switch_source.route.status, cases = { A = yes }, next = no },
-  } },
-  r.child{ node = yes },
-  r.child{ node = no },
-} } }
-"#,
-        )
-        .unwrap();
-
-        let errors = crate::domain::workflow::validation::validate_all(&loaded.workflow);
-
-        assert!(errors.is_empty(), "{errors:#?}");
-    }
-
-    #[test]
-    fn rejects_input_source_from_outer_composite_scope() {
-        let error = load(
-            r#"
-local r = require("releash")
-local outer = r.input("outer")
-local leaf = r.command{ command = "echo", input = { r.input("value") } }
-local inner = r.sequence{
-  children = { r.child{ node = leaf, inputs = { value = outer } } },
-}
-return r.workflow{
-  name = "review", description = "Review",
-  main = r.sequence{
-    input = { outer },
-    children = { r.child{ node = inner } },
-  },
-}
-"#,
-        )
-        .unwrap_err();
-
-        assert_eq!(error.code, "WFR007");
-        let location = error.location.unwrap();
-        assert_eq!(location.source, "review.lua");
-        assert_eq!(location.line, 6);
-    }
-
-    #[test]
-    fn accepts_field_reference_from_composite_input_contract() {
-        let loaded = load(
-            r#"
-local r = require("releash")
-local payload = r.input("payload", r.schema.object{
-  properties = { message = r.schema.string{} },
-  required = { "message" },
-})
-local leaf = r.command{ command = "echo", input = { r.input("value") } }
-return r.workflow{
-  name = "review", description = "Review",
-  main = r.sequence{
-    input = { payload },
-    children = { r.child{ node = leaf, inputs = { value = payload.message } } },
-  },
-}
-"#,
-        )
-        .unwrap();
-
-        let sequence = loaded.workflow.entry_node().unwrap().sequence().unwrap();
-        assert_eq!(sequence.children[0].inputs[0].1.raw(), "payload.message");
-    }
-
-    #[test]
-    fn test_lua多段参照_child配線を保持して実行時に末端値を解決する() {
-        // Given
-        let loaded = load(
-            r#"
-local r = require("releash")
-local result = r.schema.object{ properties = {
-  payload = r.schema.object{ properties = {
-    nested = r.schema.object{ properties = { title = r.schema.string{} } },
-  } },
-} }
-local source = r.command{ name = "source", command = "source", artifact = result }
-local target = r.command{ name = "target", command = "target", input = { r.input("title") } }
-return r.workflow{ name = "wiring", description = "wiring", main = r.sequence{ children = {
-  r.child{ node = source },
-  r.child{ node = target, inputs = { title = source.payload.nested.title } },
-} } }
-"#,
-        )
-        .unwrap();
-        let validation_errors = crate::domain::workflow::validation::validate_all(&loaded.workflow);
-        let sequence = loaded.workflow.entry_node().unwrap().sequence().unwrap();
-        let target_entry = &sequence.children[1];
-        let artifacts = HashMap::from([(
-            "source".to_string(),
-            serde_json::json!({"payload": {"nested": {"title": "resolved"}}}),
-        )]);
-
-        // When
-        let bindings = crate::domain::workflow::services::reference::resolve_entry_bindings(
-            Some(target_entry),
-            &artifacts,
-        );
-
-        // Then
-        assert!(validation_errors.is_empty(), "{validation_errors:#?}");
-        assert_eq!(
-            target_entry.inputs[0].1.raw(),
-            "source.payload.nested.title"
-        );
-        assert_eq!(
-            bindings,
-            vec![("title".to_string(), serde_json::json!("resolved"))]
-        );
-    }
-
-    #[test]
-    fn rejects_untyped_input_field_in_child_wiring_at_the_index_line() {
-        let error = load(
-            r#"
-local r = require("releash")
-local payload = r.input("payload")
-local leaf = r.command{ command = "echo", input = { r.input("value") } }
-return r.workflow{
-  name = "review", description = "Review",
-  main = r.sequence{
-    input = { payload },
-    children = { r.child{ node = leaf, inputs = { value = payload.message } } },
-  },
-}
-"#,
-        )
-        .unwrap_err();
-
-        assert_eq!(error.code, "WFR003");
-        assert_eq!(error.message, "input does not declare a contract");
-        assert_eq!(error.location.unwrap().line, 9);
-    }
-
-    #[test]
-    fn test_lua_child配線_owner外の型なしinput_fieldをindex行のwfr003で拒否する() {
-        let error = load(
-            r#"
-local r = require("releash")
-local payload = r.input("payload")
-local leaf = r.command{ command = "echo", input = { r.input("value") } }
-return r.workflow{
-  name = "review", description = "Review",
-  main = r.sequence{
-    children = { r.child{ node = leaf, inputs = { value = payload.message } } },
-  },
-}
-"#,
-        )
-        .unwrap_err();
-
-        assert_eq!(error.code, "WFR003");
-        assert_eq!(error.message, "input does not declare a contract");
-        assert_eq!(error.location.unwrap().line, 8);
-    }
-
-    #[test]
-    fn rejects_named_main_node() {
-        let error = load(
-            r#"
-local r = require("releash")
-return r.workflow{
-  name = "review", description = "Review",
-  main = r.command{ name = "root", command = "true" },
-}
-"#,
-        )
-        .unwrap_err();
-
-        assert_eq!(error.code, "WFS006");
-        assert_eq!(error.location.unwrap().line, 5);
-    }
-
-    #[test]
-    fn rejects_missing_main_with_existing_resolve_diagnostic() {
-        let error = load(
-            r#"
-local r = require("releash")
-return r.workflow{ name = "review", description = "Review" }
-"#,
-        )
-        .unwrap_err();
-
-        assert_eq!(error.code, "WFR006");
-        let location = error.location.unwrap();
-        assert_eq!(location.source, "review.lua");
-        assert_eq!(location.line, 3);
-    }
-
-    #[test]
-    fn test_lua未消費参照_全段が存在する多段fieldを受理する() {
-        let loaded = load(
-            r#"
-local r = require("releash")
-local child = r.command{
-  command = "echo",
-  artifact = r.schema.object{ properties = {
-    nested = r.schema.object{ properties = { value = r.schema.string{} } },
-  } },
-}
-local nested = child.nested.value
-return r.workflow{ name = "review", description = "Review", main = child }
-"#,
-        )
-        .unwrap();
-
-        assert_eq!(loaded.workflow.entry_node().unwrap().name, "main");
-    }
-
-    #[test]
-    fn test_lua未消費参照_存在しない段をwfr003で拒否する() {
-        let error = load(
-            r#"
-local r = require("releash")
-local child = r.command{
-  command = "echo",
-  artifact = r.schema.object{ properties = {
-    nested = r.schema.object{ properties = { value = r.schema.string{} } },
-  } },
-}
-local invalid = child.nested.missing
-return r.workflow{ name = "review", description = "Review", main = child }
-"#,
-        )
-        .unwrap_err();
-
-        assert_eq!(error.code, "WFR003");
-        assert_eq!(error.message, "artifact field 'missing' does not exist");
-        assert_eq!(error.location.unwrap().line, 9);
-    }
-
-    #[test]
-    fn test_lua消費済み参照_多段artifactとinputを共有domain検証へ渡す() {
-        let loaded = load(
-            r#"
-local r = require("releash")
-local text = r.schema.string{}
-local payload = r.schema.object{
-  name = "payload",
-  properties = { nested = r.schema.object{ properties = { value = text } } },
-}
-local source = r.command{
-  name = "source", command = "source",
-  artifact = r.schema.object{ properties = { payload = payload } },
-}
-local input = r.input("input", payload)
-local target = r.command{
-  name = "target", command = "echo {{ input.nested.value }}",
-  input = { input }, env = { VALUE = input.nested.value },
-}
-return r.workflow{
-  name = "review", description = "Review",
-  main = r.sequence{ children = {
-    r.child{ node = source },
-    r.child{ node = target, inputs = { input = source.payload } },
-  } },
-}
-"#,
-        )
-        .unwrap();
-
-        let errors = crate::domain::workflow::validation::validate_all(&loaded.workflow);
-        assert!(errors.is_empty(), "{errors:#?}");
-        let target = loaded.workflow.node_by_name("target").unwrap();
-        assert_eq!(
-            target
-                .command_spec()
-                .unwrap()
-                .env
-                .values()
-                .next()
-                .unwrap()
-                .as_string(),
-            "input.nested.value"
-        );
-    }
-
-    #[test]
-    fn rejects_non_field_fanout_items_at_the_builder_line() {
-        let error = load(
-            r#"
-local r = require("releash")
-local source = r.command{ command = "source" }
-local child = r.command{ command = "child" }
-local spread = r.fanout{
-  items = source,
-  children = { r.child{ node = child } },
-}
-return r.workflow{
-  name = "review", description = "Review",
-  main = r.sequence{ children = {
-    r.child{ node = source }, r.child{ node = spread },
-  } },
-}
-"#,
-        )
-        .unwrap_err();
-
-        assert_eq!(error.code, "WFR003");
-        assert_eq!(error.location.unwrap().line, 5);
-    }
-
-    #[test]
-    fn rejects_fanout_items_with_a_non_reference_segment() {
-        let error = load(
-            r#"
-local r = require("releash")
-local source = r.command{
-  name = "source",
-  command = "source",
-  artifact = r.schema.object{ properties = {
-    ["legacy values"] = r.schema.array{ items = r.schema.string{} },
-  } },
-}
-local child = r.command{ name = "child", command = "child" }
-local spread = r.fanout{
-  name = "spread",
-  items = source["legacy values"],
-  children = { r.child{ node = child } },
-}
-return r.workflow{
-  name = "review", description = "Review",
-  main = r.sequence{ children = {
-    r.child{ node = source }, r.child{ node = spread },
-  } },
-}
-"#,
-        )
-        .unwrap_err();
-
-        assert_eq!(error.code, "WFR003");
-        assert_eq!(error.message, "invalid fanout items field path");
-    }
-
-    #[test]
-    fn lua_definition_equals_the_same_yaml_definition_without_origin_metadata() {
-        let loaded = load(
-            r#"
-local r = require("releash")
-local result = r.schema.object{
-  name = "result",
-  properties = { message = r.schema.string{} },
-  required = { "message" },
-}
-local inspect = r.command{
-  name = "inspect",
-  command = "echo inspect",
-  artifact = result,
-  input = { r.input("request_text") },
-  completion = { require = r.completion.approval },
-}
-return r.workflow{
-  name = "review", description = "Review",
-  main = r.sequence{ children = {
-    r.child{ node = inspect, inputs = { request_text = r.request } },
-  } },
-}
-"#,
-        )
-        .unwrap();
-        let yaml: WorkflowDefinition = serde_saphyr::from_str(
-            r#"
-name: review
-description: Review
-schemas:
-  result:
-    type: object
-    properties:
-      message: string
-    required:
-      - message
-nodes:
-  main:
-    sequence:
-      children:
-        - inspect:
-            command: echo inspect
-            artifact: result
-            input:
-              - request_text
-            completion:
-              require: approval
-            inputs:
-              request_text: request
-"#,
-        )
-        .unwrap();
-
-        assert_eq!(loaded.workflow, yaml);
-
-        use crate::domain::workflow::entities::workflow_execution::{
-            ExecutionTree, ExecutionTreeRestore,
-        };
-        let mut lua_execution = ExecutionTree::restore_runtime(ExecutionTreeRestore {
-            id: "execution".to_string(),
-            workflow: loaded.workflow,
-            ..ExecutionTreeRestore::default()
-        });
-        let mut yaml_execution = ExecutionTree::restore_runtime(ExecutionTreeRestore {
-            id: "execution".to_string(),
-            workflow: yaml,
-            ..ExecutionTreeRestore::default()
-        });
-        let mut lua_index = 0_u32;
-        let mut yaml_index = 0_u32;
-        let lua_started = lua_execution
-            .start_root(
-                &mut || {
-                    lua_index += 1;
-                    format!("node-{lua_index}")
-                },
-                1.0,
-            )
-            .unwrap();
-        let yaml_started = yaml_execution
-            .start_root(
-                &mut || {
-                    yaml_index += 1;
-                    format!("node-{yaml_index}")
-                },
-                1.0,
-            )
-            .unwrap();
-
-        assert_eq!(lua_started, yaml_started);
-        assert_eq!(lua_execution, yaml_execution);
-    }
-
-    #[test]
-    fn builds_all_rule_and_completion_variants() {
-        let loaded = load(
-            r#"
-local r = require("releash")
-local check = r.command{
-  command = "check",
-}
-local classify = r.command{
-  command = "classify",
-  completion = { require = r.completion.approval },
-  artifact = r.schema.object{
-    properties = { status = r.schema.string{ enum = { "done", "retry" } } },
-    required = { "status" },
-  },
-}
-local retry = r.command{ command = "retry" }
-local done = r.command{ command = "done" }
-return r.workflow{
-  name = "review", description = "Review",
-  main = r.sequence{ children = {
-    r.child{
-      node = check,
-      rules = { r.when{ on = check.ok, on_true = classify, next = retry } },
-    },
-    r.child{
-      node = classify,
-      rules = { r.switch{ on = classify.status, cases = {
-        done = done,
-        retry = retry,
-      }, next = done } },
-    },
-    r.child{
-      node = retry,
-      rules = {
-        r.loop_guard{ max_iterations = 3, on_exhausted = done },
-        r.next(check),
-      },
-    },
-    r.child{ node = done, rules = {} },
-  } },
-}
-"#,
-        )
-        .unwrap();
-
-        let main = loaded.workflow.root_sequence().unwrap();
-        assert!(matches!(
-            main.children[0].rules.as_deref(),
-            Some([Rule::When { .. }])
-        ));
-        assert!(matches!(
-            main.children[1].rules.as_deref(),
-            Some([Rule::Switch { .. }])
-        ));
-        assert!(matches!(
-            main.children[2].rules.as_deref(),
-            Some([Rule::LoopGuard { .. }, Rule::Next(_)])
-        ));
-        assert_eq!(main.children[3].rules.as_deref(), Some(&[][..]));
-        assert_eq!(
-            loaded.workflow.node_by_name("main#1").unwrap().completion,
-            NodeCompletion::require_approval()
-        );
-        let errors = crate::domain::workflow::validation::validate_all(&loaded.workflow);
-        assert!(errors.is_empty(), "{errors:#?}");
-    }
-
-    #[test]
-    fn runtime_modules_ignore_missing_or_stale_editor_stubs() {
-        let directory = TempDir::new().unwrap();
-        let source = r#"
-local r = require("releash")
-local f = require("facets")
-return r.workflow{
-  name = "review", description = "Review",
-  main = r.session{
-    provider = r.provider.claude,
-    facets = { instruction = f.instruction.live },
-  },
-}
-"#;
-        let catalog = || LuaFacetCatalog {
-            instruction: vec!["live".to_string()],
-            ..LuaFacetCatalog::default()
-        };
-        let without_stubs =
-            load_lua_workflow("review.lua", source, directory.path(), catalog()).unwrap();
-        fs::create_dir_all(directory.path().join(".releash")).unwrap();
-        fs::write(
-            directory.path().join(".releash/releash.lua"),
-            "error('stale runtime stub must not run')",
-        )
-        .unwrap();
-        fs::write(
-            directory.path().join(".releash/facets.lua"),
-            "return { instruction = {} }",
-        )
-        .unwrap();
-
-        let with_stale_stubs =
-            load_lua_workflow("review.lua", source, directory.path(), catalog()).unwrap();
-
-        assert_eq!(with_stale_stubs.workflow, without_stubs.workflow);
-    }
-
-    #[test]
-    fn repeated_loads_of_the_same_file_group_are_deterministic() {
-        let directory = TempDir::new().unwrap();
-        fs::write(
-            directory.path().join("component.lua"),
-            r#"
-local r = require("releash")
-return function(label)
-  return r.command{ command = "echo " .. label }
-end
-"#,
-        )
-        .unwrap();
-        let source = r#"
-local r = require("releash")
-local component = require("component")
-return r.workflow{
-  name = "review", description = "Review",
-  main = r.sequence{ children = {
-    r.child{ node = component("one") },
-    r.child{ node = component("two") },
-  } },
-}
-"#;
-
-        let first = load_lua_workflow(
-            "review.lua",
-            source,
-            directory.path(),
-            LuaFacetCatalog::default(),
-        )
-        .unwrap();
-        let second = load_lua_workflow(
-            "review.lua",
-            source,
-            directory.path(),
-            LuaFacetCatalog::default(),
-        )
-        .unwrap();
-
-        assert_eq!(second.workflow, first.workflow);
-    }
-
-    #[test]
-    fn rejects_definitions_that_exhaust_the_host_arena_budget() {
-        let directory = TempDir::new().unwrap();
-
-        let error = load_lua_workflow(
-            "review.lua",
-            r#"
-local r = require("releash")
-for _ = 1, 200000 do
-  r.command{ command = "x" }
-end
-return r.workflow{
-  name = "review", description = "Review",
-  main = r.sequence{ children = { r.child{ node = r.command{ command = "true" } } } },
-}
-"#,
-            directory.path(),
-            LuaFacetCatalog::default(),
-        )
-        .unwrap_err();
-
-        assert_eq!(error.code, "WFS010");
-        assert!(error.message.contains("builder values"));
-    }
-
-    #[test]
-    fn rejects_a_single_child_whose_inputs_exhaust_the_arena_budget() {
-        let directory = TempDir::new().unwrap();
-
-        let error = load_lua_workflow(
-            "review.lua",
-            r#"
-local r = require("releash")
-local target = r.command{ command = "x" }
--- arena を上限の手前まで埋めてから、1 回の r.child で残りを超える inputs を渡す。
-for _ = 1, 99000 do
-  r.command{ command = "x" }
-end
-local inputs = {}
-for i = 1, 5000 do
-  inputs["p" .. i] = target
-end
-return r.workflow{
-  name = "review", description = "Review",
-  main = r.sequence{ children = { r.child{ node = target, inputs = inputs } } },
-}
-"#,
-            directory.path(),
-            LuaFacetCatalog::default(),
-        )
-        .unwrap_err();
-
-        assert_eq!(error.code, "WFS010");
-        assert!(error.message.contains("builder values"));
-    }
-
-    #[test]
-    fn resource_limits_are_reported_as_wfs010_without_poisoning_following_loads() {
-        let directory = TempDir::new().unwrap();
-        let infinite = load_lua_workflow_with_limits(
-            "infinite.lua",
-            "while true do end",
-            directory.path(),
-            LuaFacetCatalog::default(),
-            LuaLimits {
-                memory_bytes: 64 * 1024 * 1024,
-                instructions: 20_000,
-            },
-        )
-        .unwrap_err();
-        let oversized = load_lua_workflow_with_limits(
-            "oversized.lua",
-            "return string.rep('x', 16777216)",
-            directory.path(),
-            LuaFacetCatalog::default(),
-            LuaLimits {
-                memory_bytes: 4 * 1024 * 1024,
-                instructions: 50_000_000,
-            },
-        )
-        .unwrap_err();
-        let following = load_lua_workflow(
-            "review.lua",
-            r#"
-local r = require("releash")
-return r.workflow{
-  name = "review", description = "Review",
-  main = r.command{ command = "true" },
-}
-"#,
-            directory.path(),
-            LuaFacetCatalog::default(),
-        );
-
-        assert_eq!(infinite.code, "WFS010");
-        assert!(infinite.message.contains("instruction limit"));
-        assert_eq!(oversized.code, "WFS010");
-        assert!(oversized.message.contains("memory limit"));
-        assert!(following.is_ok());
+    pub fn test_sources(&self) -> &Vec<SourceDraft> {
+        &self.sources
     }
 }
 
-#[cfg(test)]
-mod mod_test;
+#[cfg(feature = "test-support")]
+impl WorkflowLuaHost {
+    pub fn test_predicate_entries_mut(&mut self) -> &mut usize {
+        &mut self.predicate_entries
+    }
+}
+
+#[cfg(feature = "test-support")]
+impl WorkflowLuaHost {
+    pub fn test_child_inputs(&self, index: usize) -> &[(String, usize)] {
+        &self.children[index].inputs
+    }
+    pub fn test_source_fields(&self, path: usize) -> Vec<String> {
+        self.source_paths.fields(path)
+    }
+}
+
+#[cfg(feature = "test-support")]
+pub fn test_handle_index(value: &LuaData, kind: &str) -> Option<usize> {
+    expect_handle(value, kind).ok()
+}

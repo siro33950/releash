@@ -1,6 +1,6 @@
 #![cfg(debug_assertions)]
 
-use releash_lib::workflow_delegate_acceptance::{
+use releash_lib::test_support::workflow_delegate_acceptance::{
     AcceptanceIngressResult, AcceptanceProvider, NodeExecutionStatus,
     WorkflowDelegateAcceptanceHost,
 };

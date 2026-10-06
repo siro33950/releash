@@ -28,11 +28,11 @@ fn state_dir(app_data_dir: &Path) -> PathBuf {
     app_data_dir.join("workspace_state")
 }
 
-pub(crate) fn storage_key(worktree_name: &str) -> String {
+pub fn storage_key(worktree_name: &str) -> String {
     worktree_name.replace(['/', '\\'], "_")
 }
 
-fn state_file(app_data_dir: &Path, worktree_name: &str) -> PathBuf {
+pub fn state_file(app_data_dir: &Path, worktree_name: &str) -> PathBuf {
     let safe_name = storage_key(worktree_name);
     state_dir(app_data_dir).join(format!("{safe_name}.json"))
 }
@@ -103,12 +103,8 @@ impl WorkspaceStateStore {
             .map_err(|error| WorkspaceStateError::Message(error.to_string()))
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn get(&self, worktree_name: &str) -> Option<WorkspaceState> {
         self.entries.read().get(worktree_name).cloned()
     }
 }
-
-#[cfg(test)]
-#[path = "repository_impl_test.rs"]
-mod repository_impl_tests;

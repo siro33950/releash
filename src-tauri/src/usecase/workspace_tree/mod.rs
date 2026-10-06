@@ -1,17 +1,15 @@
 //! Shared Workspace read contract and source-fact projection helpers.
 
-mod query_service;
-#[cfg(test)]
-mod test_support;
+pub(crate) mod query_service;
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) mod test_support;
 
 pub(crate) use query_service::WorkspaceQueryService;
-#[cfg(test)]
-pub(crate) use test_support::{TestWorkspaceQueryService, TestWorkspaceTreeRepository};
 
-mod worktree_path;
+pub(crate) mod worktree_path;
 pub(crate) use worktree_path::{WorkspaceWorktreePathQuery, WorkspaceWorktreePathUsecase};
 
-mod list;
+pub(crate) mod list;
 pub(crate) use list::{
     WorkspaceList, WorkspaceListRepository, WorkspaceListUsecase, WorkspaceListWorktree,
 };

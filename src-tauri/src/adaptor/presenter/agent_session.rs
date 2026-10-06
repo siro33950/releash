@@ -119,4 +119,4 @@ impl From<crate::usecase::provider_lifecycle::ProviderHookHealthWarning>
 
 #[cfg(test)]
 #[path = "agent_session_test.rs"]
-mod agent_session_tests;
+pub(crate) mod agent_session_tests;

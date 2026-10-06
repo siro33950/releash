@@ -1,65 +1,3 @@
-use super::*;
-
-#[tokio::test]
-async fn test_承認記録読取_実経路で失敗分類を保持する() {
-    use crate::adaptor::gateway::local_event_store::test_helpers::ReadFailure;
-    use crate::adaptor::presenter::connect::classified_error;
-    // Given
-    let fixture = super::super::workflow_host::test_helpers::Fixture::new(0);
-    let gateway =
-        WorkflowRuntimeCommandGateway::new_with_driver(fixture.app, Arc::new(fixture.host));
-    for (failure, expected) in ReadFailure::cases() {
-        gateway.app.store.as_ref().unwrap().fail_next_read(failure);
-        // When
-        let error = gateway
-            .approval_persisted("tree", "main", None)
-            .await
-            .unwrap_err();
-        // Then
-        assert_eq!(classified_error(error).code, expected);
-    }
-}
-
-#[tokio::test]
-async fn test_承認記録読取_保存された事実の破損をdata_lossとして返す() {
-    use crate::adaptor::gateway::local_event_store::node_events::NewNodeEventRow;
-    // Given
-    let fixture = super::super::workflow_host::test_helpers::Fixture::new(0);
-    fixture
-        .app
-        .store
-        .as_ref()
-        .unwrap()
-        .append_node_event(
-            NewNodeEventRow {
-                tree_id: "tree".into(),
-                node_execution_id: "node".into(),
-                parent_id: None,
-                node_name: "main".into(),
-                kind: "session".into(),
-                attempt: 1,
-                event_type: "approval_granted".into(),
-                session_id: None,
-                detail: "{".into(),
-            },
-            Some(1000),
-        )
-        .await
-        .unwrap();
-    let gateway =
-        WorkflowRuntimeCommandGateway::new_with_driver(fixture.app, Arc::new(fixture.host));
-    // When
-    let error = gateway
-        .approval_persisted("tree", "main", None)
-        .await
-        .unwrap_err();
-    // Then
-    assert_eq!(
-        crate::adaptor::presenter::connect::classified_error(error).code,
-        connectrpc::ErrorCode::DataLoss
-    );
-}
-
 #[test]
 fn test_workflow起動_停止分類をgateway境界で保持する() {
     use crate::adaptor::presenter::connect::ConnectFailure;
@@ -77,5 +15,98 @@ fn test_workflow起動_停止分類をgateway境界で保持する() {
             error.connect_code(),
             crate::domain::failure::TechnicalFailure::from(stopped).connect_code()
         );
+    }
+}
+pub(crate) mod tests {
+    use super::super::*;
+
+    #[test]
+    fn workflow_name_resolution_diagnostics_remain_validation_errors() {
+        let error =
+            workflow_runtime_error_to_workflow_error(WorkflowRuntimeError::InvalidWorkflow(
+                "workflow_diagnostics: WFS006: duplicate workflow name".to_string(),
+            ));
+
+        assert!(matches!(
+            error,
+            WorkflowError::Validation(message)
+                if message.contains("WFS006") && message.contains("duplicate workflow name")
+        ));
+    }
+
+    #[test]
+    fn runtime_command_error_mapping_preserves_domain_variants() {
+        assert!(matches!(
+            workflow_runtime_error_to_workflow_error(WorkflowRuntimeError::ExecutionNotFound(
+                "missing".to_string()
+            )),
+            WorkflowError::NotFound(message)
+                if message == "No workflow execution found for session 'missing'"
+        ));
+        assert!(matches!(
+            workflow_runtime_error_to_workflow_error(WorkflowRuntimeError::InvalidState(
+                "terminal".to_string()
+            )),
+            WorkflowError::InvalidState(message) if message == "terminal"
+        ));
+        assert!(matches!(
+            workflow_runtime_error_to_workflow_error(
+                WorkflowRuntimeError::UnauthorizedApprovalTarget("wrong target".to_string())
+            ),
+            WorkflowError::UnauthorizedApprovalTarget(message) if message == "wrong target"
+        ));
+        assert!(matches!(
+            workflow_runtime_error_to_workflow_error(WorkflowRuntimeError::ValidationError(
+                "bad output".to_string()
+            )),
+            WorkflowError::Validation(message) if message == "bad output"
+        ));
+        assert!(matches!(
+            workflow_runtime_error_to_workflow_error(WorkflowRuntimeError::SessionStore(
+                "io".to_string()
+            )),
+            WorkflowError::External(message) if message == "io"
+        ));
+    }
+    #[test]
+    fn test_node事実追記_runtimeからconnectまで分類を保持する() {
+        use crate::adaptor::presenter::connect::ConnectFailure;
+        // Given
+        for (failure, code) in [
+            (
+                crate::domain::local_event::CommitBatchError::QueueBusy.into(),
+                connectrpc::ErrorCode::Unavailable,
+            ),
+            (
+                crate::domain::local_event::CommitBatchError::Corrupt {
+                    correlation_id: "id".into(),
+                }
+                .into(),
+                connectrpc::ErrorCode::DataLoss,
+            ),
+            (
+                crate::domain::failure::TechnicalFailure {
+                    nature: crate::domain::failure::TechnicalFailureNature::TimedOut,
+                    message: "timeout".into(),
+                }
+                .into(),
+                connectrpc::ErrorCode::DeadlineExceeded,
+            ),
+            (
+                crate::domain::local_event::CommitBatchError::AppendOutcomeUnknown.into(),
+                connectrpc::ErrorCode::Aborted,
+            ),
+        ] {
+            let failure: crate::domain::failure::StorageFailure = failure;
+            let error = workflow_runtime_error_to_workflow_error(WorkflowRuntimeError::Store(
+                failure.with_message("node append failed"),
+            ));
+            // Then
+            assert_eq!(error.connect_code(), code);
+            assert_eq!(
+                crate::adaptor::presenter::connect::classified_error(error).code,
+                code
+            );
+        }
     }
 }

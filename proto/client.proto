@@ -3,6 +3,8 @@ package releash.client.v1;
 import "client_options.proto";
 
 message CommandRequest {
+  reserved 104, 132, 133, 138, 139;
+  reserved "record_terminal_launch_renderer_phase", "start_terminal_input_performance_collection", "start_terminal_launch_performance_collection", "take_terminal_input_performance_samples", "take_terminal_launch_performance_samples";
   reserved 103;
   reserved "quit_after_startup_failure";
   reserved 41, 102;
@@ -94,13 +96,9 @@ message CommandRequest {
     DuplicateFacetRequest duplicate_facet = 38;
     DuplicateWorkflowRequest duplicate_workflow = 39;
     FetchIssuesRequest fetch_issues = 40;
-
     GetFileNavigationRequest get_file_navigation = 55;
     GetLanguageFromPathRequest get_language_from_path = 56;
-
     GetOrSpawnTerminalSurfaceRequest get_or_spawn_terminal_surface = 59;
-
-
 
     GitCreateBranchRequest git_create_branch = 77;
     GitStageRequest git_stage = 78;
@@ -109,13 +107,11 @@ message CommandRequest {
     GitUnstageReviewGroupRequest git_unstage_review_group = 81;
     KillTerminalSurfaceRequest kill_terminal_surface = 82;
 
-
     OpenAgentSessionRequest open_agent_session = 97;
     OpenFacetInEditorRequest open_facet_in_editor = 98;
     OpenFolderInEditorRequest open_folder_in_editor = 99;
     OpenInEditorRequest open_in_editor = 100;
     OpenWorkflowInEditorRequest open_workflow_in_editor = 101;
-    RecordTerminalLaunchRendererPhaseRequest record_terminal_launch_renderer_phase = 104;
     RefreshProviderAvailabilityRequest refresh_provider_availability = 105;
     RemoveRepoPathRequest remove_repo_path = 106;
     RemoveWorktreeRequest remove_worktree = 107;
@@ -127,7 +123,6 @@ message CommandRequest {
     RequestApplicationQuitRequest request_application_quit = 113;
     ResetProviderExecutableRequest reset_provider_executable = 114;
     ResizeTerminalSurfaceRequest resize_terminal_surface = 115;
-
     ResolveReviewThreadRequest resolve_review_thread = 117;
     RestoreAgentSessionRequest restore_agent_session = 119;
     RestoreWorkspaceWorkflowExecutionRequest restore_workspace_workflow_execution = 120;
@@ -140,11 +135,9 @@ message CommandRequest {
     SaveWorkspaceStateRequest save_workspace_state = 128;
     SetBranchBaseRequest set_branch_base = 129;
     SetReleashBaseRequest set_releash_base = 130;
-    StartTerminalInputPerformanceCollectionRequest start_terminal_input_performance_collection = 132;
-    StartTerminalLaunchPerformanceCollectionRequest start_terminal_launch_performance_collection = 133;
+
     StartWorkflowRequest start_workflow = 135;
-    TakeTerminalInputPerformanceSamplesRequest take_terminal_input_performance_samples = 138;
-    TakeTerminalLaunchPerformanceSamplesRequest take_terminal_launch_performance_samples = 139;
+
     UpdateAppSettingsRequest update_app_settings = 140;
     UpdateLoginItemPreferenceRequest update_login_item_preference = 184;
     UpdateCrashReportingRequest update_crash_reporting = 141;
@@ -155,23 +148,20 @@ message CommandRequest {
     ValidateNotionConfigRequest validate_notion_config = 146;
     WritePathsToTerminalSurfaceRequest write_paths_to_terminal_surface = 147;
     WriteTerminalSurfaceRequest write_terminal_surface = 148;
-
     BuildDiffFileTreeRequest build_diff_file_tree = 157;
-
     ComputeHiddenRangesRequest compute_hidden_ranges = 159;
-
     ApproveWorkflowNodeRequest approve_workflow_node = 172;
-
     WorkflowSubmitOutputRequest workflow_submit_output = 179;
     WorkflowValidateOutputRequest workflow_validate_output = 180;
     WorkflowGetOutputRequest workflow_get_output = 181;
     RefreshWorkspacesRequest refresh_workspaces = 186;
     FindRepositoryRootRequest find_repository_root = 188;
-
   }
 }
 
 message CommandResult {
+  reserved 104, 132, 133, 138, 139;
+  reserved "record_terminal_launch_renderer_phase", "start_terminal_input_performance_collection", "start_terminal_launch_performance_collection", "take_terminal_input_performance_samples", "take_terminal_launch_performance_samples";
   reserved 103;
   reserved "quit_after_startup_failure";
   reserved 41, 102;
@@ -263,13 +253,9 @@ message CommandResult {
     Unit duplicate_facet = 38;
     Unit duplicate_workflow = 39;
     Unit fetch_issues = 40;
-
     FileNavigationResultDto get_file_navigation = 55;
     ResultString get_language_from_path = 56;
-
     GetOrSpawnTerminalV1 get_or_spawn_terminal_surface = 59;
-
-
 
     Unit git_create_branch = 77;
     Unit git_stage = 78;
@@ -278,13 +264,11 @@ message CommandResult {
     Unit git_unstage_review_group = 81;
     Unit kill_terminal_surface = 82;
 
-
     Unit open_agent_session = 97;
     Unit open_facet_in_editor = 98;
     Unit open_folder_in_editor = 99;
     Unit open_in_editor = 100;
     Unit open_workflow_in_editor = 101;
-    Unit record_terminal_launch_renderer_phase = 104;
     Unit refresh_provider_availability = 105;
     ResultBool remove_repo_path = 106;
     Unit remove_worktree = 107;
@@ -296,7 +280,6 @@ message CommandResult {
     ApplicationQuitOutcomeDtoV1 request_application_quit = 113;
     Unit reset_provider_executable = 114;
     Unit resize_terminal_surface = 115;
-
     ReviewThreadDto resolve_review_thread = 117;
     SessionSelection restore_agent_session = 119;
     Unit restore_workspace_workflow_execution = 120;
@@ -309,11 +292,9 @@ message CommandResult {
     Unit save_workspace_state = 128;
     Unit set_branch_base = 129;
     Unit set_releash_base = 130;
-    Unit start_terminal_input_performance_collection = 132;
-    Unit start_terminal_launch_performance_collection = 133;
+
     ResultString start_workflow = 135;
-    ListTerminalInputPerformanceSampleV1 take_terminal_input_performance_samples = 138;
-    ListTerminalLaunchPerformanceSampleV1 take_terminal_launch_performance_samples = 139;
+
     Unit update_app_settings = 140;
     Unit update_login_item_preference = 184;
     Unit update_crash_reporting = 141;
@@ -324,19 +305,14 @@ message CommandResult {
     NotionValidationResultView validate_notion_config = 146;
     Unit write_paths_to_terminal_surface = 147;
     Unit write_terminal_surface = 148;
-
     ListDiffTreeNodeDto build_diff_file_tree = 157;
-
     ListHiddenRangeDto compute_hidden_ranges = 159;
-
     Unit approve_workflow_node = 172;
-
     Unit workflow_submit_output = 179;
     WorkflowValidateOutputResponse workflow_validate_output = 180;
     WorkflowGetOutputResponse workflow_get_output = 181;
     Unit refresh_workspaces = 186;
     Nullablestring find_repository_root = 188;
-
   }
 }
 
@@ -1179,14 +1155,6 @@ message ListDiffTreeNodeDto {
   repeated DiffTreeNodeDto items = 1;
 }
 
-message TerminalPerformanceSwitchesV1 {
-  optional bool disable_output_flow_control = 1 [json_name = "disableOutputFlowControl", (json_required) = true];
-  optional bool disable_terminal_journal = 2 [json_name = "disableTerminalJournal", (json_required) = true];
-  optional bool disable_renderer_write_serialization = 3 [json_name = "disableRendererWriteSerialization", (json_required) = true];
-  optional bool disable_webgl_renderer = 4 [json_name = "disableWebglRenderer", (json_required) = true];
-}
-
-
 message WorkflowDto {
   optional string name = 1 [json_name = "name", (json_required) = true];
   optional string description = 2 [json_name = "description", (json_required) = true];
@@ -1972,11 +1940,6 @@ message ListNotionTaskView {
   repeated NotionTaskView items = 1;
 }
 
-message RecordTerminalLaunchRendererPhaseRequest {
-  optional string phase = 1 [json_name = "phase", (json_required) = true];
-  optional double duration_ms = 2 [json_name = "durationMs", (json_required) = true];
-}
-
 message RefreshProviderAvailabilityRequest {
 
 }
@@ -2144,53 +2107,11 @@ message ResultUint64 {
   optional uint64 value = 1 [json_name = "value", (json_required) = true];
 }
 
-message StartTerminalInputPerformanceCollectionRequest {
-
-}
-
-message StartTerminalLaunchPerformanceCollectionRequest {
-
-}
-
 message StartWorkflowRequest {
   optional string workflow_name = 1 [json_name = "workflowName", (json_required) = true];
   optional string worktree_path = 2 [json_name = "worktreePath", (json_required) = true];
   optional string request = 3 [json_name = "request", (json_nullable) = true];
   optional string created_from = 4 [json_name = "createdFrom", (json_nullable) = true];
-}
-
-message TakeTerminalInputPerformanceSamplesRequest {
-
-}
-
-message TerminalInputPerformanceSampleV1 {
-  optional uint64 sequence = 1 [json_name = "sequence", (json_required) = true];
-  optional double on_data_to_command_ingress_ms = 2 [json_name = "onDataToCommandIngressMs", (json_required) = true];
-  optional double command_ingress_to_admission_ms = 3 [json_name = "commandIngressToAdmissionMs", (json_required) = true];
-  optional double admission_to_writer_enqueue_ms = 4 [json_name = "admissionToWriterEnqueueMs", (json_required) = true];
-  optional double writer_enqueue_to_output_read_ms = 5 [json_name = "writerEnqueueToOutputReadMs", (json_required) = true];
-  optional double output_read_to_model_apply_ms = 6 [json_name = "outputReadToModelApplyMs", (json_required) = true];
-  optional double model_apply_to_event_publish_ms = 7 [json_name = "modelApplyToEventPublishMs", (json_required) = true];
-  optional double event_published_at_unix_ms = 8 [json_name = "eventPublishedAtUnixMs", (json_required) = true];
-}
-
-message ListTerminalInputPerformanceSampleV1 {
-  option (json_wrapper) = "items";
-  repeated TerminalInputPerformanceSampleV1 items = 1;
-}
-
-message TakeTerminalLaunchPerformanceSamplesRequest {
-
-}
-
-message TerminalLaunchPerformanceSampleV1 {
-  optional string phase = 1 [json_name = "phase", (json_required) = true];
-  optional double duration_ms = 2 [json_name = "durationMs", (json_required) = true];
-}
-
-message ListTerminalLaunchPerformanceSampleV1 {
-  option (json_wrapper) = "items";
-  repeated TerminalLaunchPerformanceSampleV1 items = 1;
 }
 
 message UpdateAppSettingsRequest {
@@ -2269,7 +2190,8 @@ message WriteTerminalSurfaceRequest {
   optional TerminalSurfaceOwnerV1 owner = 1 [json_name = "owner", (json_required) = true];
   optional string attachment_id = 2 [json_name = "attachmentId", (json_required) = true];
   optional uint64 sequence = 3 [json_name = "sequence", (json_required) = true];
-  optional double client_started_at_unix_ms = 4 [json_name = "clientStartedAtUnixMs", (json_nullable) = true];
+  reserved 4;
+  reserved "client_started_at_unix_ms";
   optional string data = 5 [json_name = "data", (json_required) = true];
 }
 
@@ -2583,11 +2505,6 @@ message ExternalEditorState {
   optional ListEditorInfoDto editors = 2 [json_name = "editors", (json_required) = true];
 }
 
-message PerformanceSwitchesV1 {
-  optional bool real_app_mode = 1 [json_name = "realAppMode", (json_required) = true];
-  optional TerminalPerformanceSwitchesV1 terminal = 2 [json_name = "terminal", (json_required) = true];
-}
-
 service ClientService {
   option (connection_backoff) = {
     initial_backoff_ms: 1000
@@ -2646,7 +2563,6 @@ service ClientService {
   rpc OpenFolderInEditor(OpenFolderInEditorRequest) returns (Unit);
   rpc OpenInEditor(OpenInEditorRequest) returns (Unit);
   rpc OpenWorkflowInEditor(OpenWorkflowInEditorRequest) returns (Unit);
-  rpc RecordTerminalLaunchRendererPhase(RecordTerminalLaunchRendererPhaseRequest) returns (Unit);
   rpc RefreshProviderAvailability(RefreshProviderAvailabilityRequest) returns (Unit);
   rpc RemoveRepoPath(RemoveRepoPathRequest) returns (ResultBool);
   rpc RemoveWorktree(RemoveWorktreeRequest) returns (Unit);
@@ -2670,11 +2586,7 @@ service ClientService {
   rpc SaveWorkspaceState(SaveWorkspaceStateRequest) returns (Unit);
   rpc SetBranchBase(SetBranchBaseRequest) returns (Unit);
   rpc SetReleashBase(SetReleashBaseRequest) returns (Unit);
-  rpc StartTerminalInputPerformanceCollection(StartTerminalInputPerformanceCollectionRequest) returns (Unit);
-  rpc StartTerminalLaunchPerformanceCollection(StartTerminalLaunchPerformanceCollectionRequest) returns (Unit);
   rpc StartWorkflow(StartWorkflowRequest) returns (ResultString);
-  rpc TakeTerminalInputPerformanceSamples(TakeTerminalInputPerformanceSamplesRequest) returns (ListTerminalInputPerformanceSampleV1);
-  rpc TakeTerminalLaunchPerformanceSamples(TakeTerminalLaunchPerformanceSamplesRequest) returns (ListTerminalLaunchPerformanceSampleV1);
   rpc UpdateAppSettings(UpdateAppSettingsRequest) returns (Unit);
   rpc UpdateLoginItemPreference(UpdateLoginItemPreferenceRequest) returns (Unit);
   rpc UpdateCrashReporting(UpdateCrashReportingRequest) returns (Unit);
@@ -2805,6 +2717,8 @@ message StopStateSubscriptionRequest {
 }
 message StateReadFailure { int32 code = 1; string message = 2; }
 message StatePayload {
+  reserved 56;
+  reserved "performance_switches";
   reserved 58;
   reserved "startup_outcome";
   reserved 6, 15;
@@ -2850,7 +2764,7 @@ message StatePayload {
     ExternalEditorState external_editor = 53;
     Nullablestring releash_base = 54;
     WorkflowSection workflow_config = 55;
-    PerformanceSwitchesV1 performance_switches = 56;
+
     ProviderHookHealthSnapshot provider_hook_health = 57;
   }
 }

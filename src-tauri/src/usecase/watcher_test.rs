@@ -48,47 +48,6 @@ fn test_監視_repository外ではfile_gatewayに引数と結果を委譲する(
     ));
 }
 
-#[tokio::test]
-async fn test_監視_repositoryのgit監視の開始と停止ではfile_gatewayを呼ばない() {
-    // Given
-    let directory = tempfile::tempdir().unwrap();
-    let path = directory.path().to_str().unwrap();
-    let repository = Arc::new(crate::usecase::repository_state::service::tests::watching_service());
-    let files = Arc::new(Files::default());
-    let usecase = WatcherUsecase::new(Some(repository), files.clone());
-    // When / Then
-    let git = usecase.start_git_dir(path).unwrap();
-    usecase.stop(git).unwrap();
-    assert!(files.0.lock().unwrap().is_empty());
-    assert!(
-        matches!(usecase.stop(u64::MAX), Err(UsecaseError::File(message)) if message == "unknown watcher")
-    );
-}
-
-#[derive(Default)]
-pub(crate) struct SubscriptionFiles {
-    pub(crate) next: std::sync::atomic::AtomicU64,
-    pub(crate) active: Mutex<std::collections::HashSet<u64>>,
-    pub(crate) fail_stop: std::sync::atomic::AtomicBool,
-}
-impl FileWatchGateway for SubscriptionFiles {
-    fn start_tree(&self, path: &str, _on_change: WatchChangeHandler) -> Result<u64, String> {
-        if path == "/missing" {
-            return Err("missing path".into());
-        }
-        let id = self.next.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        self.active.lock().unwrap().insert(id);
-        Ok(id)
-    }
-    fn stop(&self, id: u64) -> Result<(), String> {
-        if self.fail_stop.load(std::sync::atomic::Ordering::SeqCst) {
-            return Err("stop failed".into());
-        }
-        self.active.lock().unwrap().remove(&id);
-        Ok(())
-    }
-}
-
 #[test]
 fn test_監視_repositoryの再走査競合と下位エラーの分類を保持する() {
     use crate::usecase::repository_state::RepositoryStateError;

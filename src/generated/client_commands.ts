@@ -56,8 +56,6 @@ import {
 	ListHiddenRangeDtoSchema,
 	ListInlineChunkDtoSchema,
 	ListSplitRowDtoSchema,
-	ListTerminalInputPerformanceSampleV1Schema,
-	ListTerminalLaunchPerformanceSampleV1Schema,
 	ListVisibleBlockDtoSchema,
 	NotionValidationResultViewSchema,
 	NullablestringSchema,
@@ -66,7 +64,6 @@ import {
 	OpenFolderInEditorRequestSchema,
 	OpenInEditorRequestSchema,
 	OpenWorkflowInEditorRequestSchema,
-	RecordTerminalLaunchRendererPhaseRequestSchema,
 	RefreshProviderAvailabilityRequestSchema,
 	RefreshWorkspacesRequestSchema,
 	RemoveRepoPathRequestSchema,
@@ -96,11 +93,7 @@ import {
 	SessionSelectionSchema,
 	SetBranchBaseRequestSchema,
 	SetReleashBaseRequestSchema,
-	StartTerminalInputPerformanceCollectionRequestSchema,
-	StartTerminalLaunchPerformanceCollectionRequestSchema,
 	StartWorkflowRequestSchema,
-	TakeTerminalInputPerformanceSamplesRequestSchema,
-	TakeTerminalLaunchPerformanceSamplesRequestSchema,
 	UnitSchema,
 	UpdateAppSettingsRequestSchema,
 	UpdateCrashReportingRequestSchema,
@@ -826,25 +819,6 @@ const commands = {
 		);
 		return result;
 	},
-	record_terminal_launch_renderer_phase: async (
-		client: Client<typeof ClientService>,
-		args: ClientCommandArgs["record_terminal_launch_renderer_phase"],
-	) => {
-		const result = decode(
-			UnitSchema,
-			await client.recordTerminalLaunchRendererPhase(
-				fromJson(
-					RecordTerminalLaunchRendererPhaseRequestSchema,
-					clientJson(
-						RecordTerminalLaunchRendererPhaseRequestSchema,
-						JSON.parse(JSON.stringify(args ?? {})),
-						true,
-					),
-				),
-			),
-		);
-		return result;
-	},
 	refresh_provider_availability: async (
 		client: Client<typeof ClientService>,
 		args: ClientCommandArgs["refresh_provider_availability"],
@@ -1282,44 +1256,6 @@ const commands = {
 		);
 		return result;
 	},
-	start_terminal_input_performance_collection: async (
-		client: Client<typeof ClientService>,
-		args: ClientCommandArgs["start_terminal_input_performance_collection"],
-	) => {
-		const result = decode(
-			UnitSchema,
-			await client.startTerminalInputPerformanceCollection(
-				fromJson(
-					StartTerminalInputPerformanceCollectionRequestSchema,
-					clientJson(
-						StartTerminalInputPerformanceCollectionRequestSchema,
-						JSON.parse(JSON.stringify(args ?? {})),
-						true,
-					),
-				),
-			),
-		);
-		return result;
-	},
-	start_terminal_launch_performance_collection: async (
-		client: Client<typeof ClientService>,
-		args: ClientCommandArgs["start_terminal_launch_performance_collection"],
-	) => {
-		const result = decode(
-			UnitSchema,
-			await client.startTerminalLaunchPerformanceCollection(
-				fromJson(
-					StartTerminalLaunchPerformanceCollectionRequestSchema,
-					clientJson(
-						StartTerminalLaunchPerformanceCollectionRequestSchema,
-						JSON.parse(JSON.stringify(args ?? {})),
-						true,
-					),
-				),
-			),
-		);
-		return result;
-	},
 	start_workflow: async (
 		client: Client<typeof ClientService>,
 		args: ClientCommandArgs["start_workflow"],
@@ -1331,44 +1267,6 @@ const commands = {
 					StartWorkflowRequestSchema,
 					clientJson(
 						StartWorkflowRequestSchema,
-						JSON.parse(JSON.stringify(args ?? {})),
-						true,
-					),
-				),
-			),
-		);
-		return result;
-	},
-	take_terminal_input_performance_samples: async (
-		client: Client<typeof ClientService>,
-		args: ClientCommandArgs["take_terminal_input_performance_samples"],
-	) => {
-		const result = decode(
-			ListTerminalInputPerformanceSampleV1Schema,
-			await client.takeTerminalInputPerformanceSamples(
-				fromJson(
-					TakeTerminalInputPerformanceSamplesRequestSchema,
-					clientJson(
-						TakeTerminalInputPerformanceSamplesRequestSchema,
-						JSON.parse(JSON.stringify(args ?? {})),
-						true,
-					),
-				),
-			),
-		);
-		return result;
-	},
-	take_terminal_launch_performance_samples: async (
-		client: Client<typeof ClientService>,
-		args: ClientCommandArgs["take_terminal_launch_performance_samples"],
-	) => {
-		const result = decode(
-			ListTerminalLaunchPerformanceSampleV1Schema,
-			await client.takeTerminalLaunchPerformanceSamples(
-				fromJson(
-					TakeTerminalLaunchPerformanceSamplesRequestSchema,
-					clientJson(
-						TakeTerminalLaunchPerformanceSamplesRequestSchema,
 						JSON.parse(JSON.stringify(args ?? {})),
 						true,
 					),

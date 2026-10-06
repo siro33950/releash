@@ -74,3 +74,33 @@ fn test_managed_worktree停止_runtime境界で分類を保持する() {
         assert_eq!(error.to_string(), stopped.to_string());
     }
 }
+pub(crate) mod tests {
+    use super::super::*;
+
+    #[test]
+    fn workflow_failure_kind_only_uses_crash_for_storage_or_process_loss() {
+        let validation_errors = [
+            WorkflowRuntimeError::InvalidWorkflow("missing facet".to_string()),
+            WorkflowRuntimeError::ValidationError("bad output".to_string()),
+            WorkflowRuntimeError::InvalidState("not accepting output".to_string()),
+            WorkflowRuntimeError::UnauthorizedApprovalTarget("wrong execution".to_string()),
+        ];
+        for error in validation_errors {
+            assert_eq!(
+                error.workflow_failure_kind(),
+                NodeExecutionFailureKind::ValidationFailure,
+                "unexpected failure kind for {error:?}"
+            );
+        }
+
+        assert_eq!(
+            WorkflowRuntimeError::SessionStore("io".to_string()).workflow_failure_kind(),
+            NodeExecutionFailureKind::InfrastructureCrash
+        );
+        assert_eq!(
+            WorkflowRuntimeError::AgentSession("admission rejected".to_string())
+                .workflow_failure_kind(),
+            NodeExecutionFailureKind::ValidationFailure
+        );
+    }
+}

@@ -5,7 +5,7 @@ use futures_util::{FutureExt, Stream, StreamExt};
 use parking_lot::Mutex;
 use tokio::sync::Notify;
 
-pub(crate) enum StateSubscriptionEvent<T> {
+pub enum StateSubscriptionEvent<T> {
     Ready,
     Item(String, Event<T>),
     Bookmark,
@@ -150,19 +150,19 @@ impl std::error::Error for SubscriptionError {}
 const RETAINED_CHANGES: usize = 64;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct Version {
+pub struct Version {
     pub epoch: String,
     pub sequence: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Delivery {
+pub enum Delivery {
     Full,
     Delta,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum Event<T> {
+pub enum Event<T> {
     Snapshot(Version, Arc<T>),
     Change(Version, Delivery, Arc<T>),
     Bookmark(Version),

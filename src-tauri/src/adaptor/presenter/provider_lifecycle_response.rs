@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "status", rename_all = "snake_case")]
-pub(crate) enum ProviderLifecycleReceiveResponse {
+pub enum ProviderLifecycleReceiveResponse {
     Applied,
     Duplicate,
     Rejected { reason: String },

@@ -4,8 +4,8 @@ use std::future::Future;
 use std::sync::Arc;
 
 pub struct Retrying {
-    pub(crate) limiter: Arc<RetryLimiter>,
-    pub(crate) failures: Arc<FailureRecordingUsecase>,
+    pub limiter: Arc<RetryLimiter>,
+    pub failures: Arc<FailureRecordingUsecase>,
 }
 
 impl Retrying {
@@ -94,8 +94,10 @@ impl Retrying {
     }
 }
 
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) use crate::test_support::retry::shared;
 #[cfg(test)]
-pub(crate) use crate::test_support::retry::{shared, test_retrying};
+pub(crate) use crate::test_support::retry::test_retrying;
 
 #[cfg(test)]
 #[path = "retry_test.rs"]

@@ -1,5 +1,5 @@
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum SubscriptionError {
+pub enum SubscriptionError {
     InvalidId,
     AlreadyExists,
     StreamEnded,

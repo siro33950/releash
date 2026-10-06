@@ -4,8 +4,8 @@ use crate::common::concurrency::Rejection;
 use crate::common::priority::{PriorityEvents, PriorityGate};
 
 #[derive(Clone)]
-pub(crate) struct PriorityInterceptor {
-    pub(crate) gate: Arc<PriorityGate>,
+pub struct PriorityInterceptor {
+    pub gate: Arc<PriorityGate>,
 }
 
 #[connectrpc::async_trait]

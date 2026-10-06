@@ -1559,30 +1559,6 @@ where
         })
     }
 }
-impl<T> TryFrom<Vec<T>> for wire::ListTerminalInputPerformanceSampleV1
-where
-    wire::TerminalInputPerformanceSampleV1: TryFrom<T>,
-    <wire::TerminalInputPerformanceSampleV1 as TryFrom<T>>::Error: std::fmt::Display,
-{
-    type Error = String;
-    fn try_from(value: Vec<T>) -> Result<Self, String> {
-        Ok(Self {
-            items: value.into_iter().map(cv).collect::<Result<_, _>>()?,
-        })
-    }
-}
-impl<T> TryFrom<Vec<T>> for wire::ListTerminalLaunchPerformanceSampleV1
-where
-    wire::TerminalLaunchPerformanceSampleV1: TryFrom<T>,
-    <wire::TerminalLaunchPerformanceSampleV1 as TryFrom<T>>::Error: std::fmt::Display,
-{
-    type Error = String;
-    fn try_from(value: Vec<T>) -> Result<Self, String> {
-        Ok(Self {
-            items: value.into_iter().map(cv).collect::<Result<_, _>>()?,
-        })
-    }
-}
 impl<T> TryFrom<Vec<T>> for wire::ListVisibleBlockDto
 where
     wire::VisibleBlockDto: TryFrom<T>,
@@ -3113,58 +3089,6 @@ impl TryFrom<&str> for wire::SplitRowKindDto {
     type Error = String;
     fn try_from(value: &str) -> Result<Self, String> {
         cv(value.to_owned())
-    }
-}
-
-impl TryFrom<crate::adaptor::presenter::terminal::TerminalInputPerformanceSampleV1>
-    for wire::TerminalInputPerformanceSampleV1
-{
-    type Error = String;
-    fn try_from(
-        value: crate::adaptor::presenter::terminal::TerminalInputPerformanceSampleV1,
-    ) -> Result<Self, String> {
-        Ok(Self {
-            sequence: Some(cv(value.sequence)?),
-            on_data_to_command_ingress_ms: Some(cv(value.on_data_to_command_ingress_ms)?),
-            command_ingress_to_admission_ms: Some(cv(value.command_ingress_to_admission_ms)?),
-            admission_to_writer_enqueue_ms: Some(cv(value.admission_to_writer_enqueue_ms)?),
-            writer_enqueue_to_output_read_ms: Some(cv(value.writer_enqueue_to_output_read_ms)?),
-            output_read_to_model_apply_ms: Some(cv(value.output_read_to_model_apply_ms)?),
-            model_apply_to_event_publish_ms: Some(cv(value.model_apply_to_event_publish_ms)?),
-            event_published_at_unix_ms: Some(cv(value.event_published_at_unix_ms)?),
-        })
-    }
-}
-
-impl TryFrom<crate::adaptor::presenter::terminal::TerminalLaunchPerformanceSampleV1>
-    for wire::TerminalLaunchPerformanceSampleV1
-{
-    type Error = String;
-    fn try_from(
-        value: crate::adaptor::presenter::terminal::TerminalLaunchPerformanceSampleV1,
-    ) -> Result<Self, String> {
-        Ok(Self {
-            phase: Some(cv(value.phase)?),
-            duration_ms: Some(cv(value.duration_ms)?),
-        })
-    }
-}
-
-impl TryFrom<crate::adaptor::presenter::terminal::TerminalPerformanceSwitchesV1>
-    for wire::TerminalPerformanceSwitchesV1
-{
-    type Error = String;
-    fn try_from(
-        value: crate::adaptor::presenter::terminal::TerminalPerformanceSwitchesV1,
-    ) -> Result<Self, String> {
-        Ok(Self {
-            disable_output_flow_control: Some(cv(value.disable_output_flow_control)?),
-            disable_terminal_journal: Some(cv(value.disable_terminal_journal)?),
-            disable_renderer_write_serialization: Some(cv(
-                value.disable_renderer_write_serialization
-            )?),
-            disable_webgl_renderer: Some(cv(value.disable_webgl_renderer)?),
-        })
     }
 }
 

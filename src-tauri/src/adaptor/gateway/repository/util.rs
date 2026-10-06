@@ -11,7 +11,7 @@ use crate::domain::repository::{RepoLocator, RepositoryError};
 ///
 /// 複数情報源を合成する解決順序は infrastructure の責務外のため、infrastructure の
 /// プリミティブ（`detect_default_branch` と raw な config 読み）を gateway 側で組み立てる。
-pub(crate) fn resolve_branch_base(
+pub fn resolve_branch_base(
     repo: &Repository,
     config: Option<&git2::Config>,
     branch_name: &str,
@@ -46,7 +46,3 @@ impl RepoLocator for RepoLocatorGateway {
         get_cwd()
     }
 }
-
-#[cfg(test)]
-#[path = "util_test.rs"]
-mod util_tests;

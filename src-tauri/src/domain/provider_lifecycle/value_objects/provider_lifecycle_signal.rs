@@ -3,7 +3,7 @@ use super::{ProviderKind, ProviderLifecycleScope};
 use crate::domain::workflow::AgentSessionActivity;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ProviderLifecycleSignal {
+pub struct ProviderLifecycleSignal {
     binding_id: String,
     provider: ProviderKind,
     scope: ProviderLifecycleScope,
@@ -11,7 +11,7 @@ pub(crate) struct ProviderLifecycleSignal {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum ProviderLifecycleSignalKind {
+pub enum ProviderLifecycleSignalKind {
     SessionStarted {
         provider_session_id: String,
         transcript_ref: Option<String>,
@@ -33,7 +33,7 @@ pub(crate) enum ProviderLifecycleSignalKind {
 }
 
 impl ProviderLifecycleSignal {
-    pub(crate) fn session_started(
+    pub fn session_started(
         binding_id: impl Into<String>,
         provider: ProviderKind,
         scope: ProviderLifecycleScope,
@@ -51,7 +51,7 @@ impl ProviderLifecycleSignal {
         )
     }
 
-    pub(crate) fn stop_observed(
+    pub fn stop_observed(
         binding_id: impl Into<String>,
         provider: ProviderKind,
         scope: ProviderLifecycleScope,
@@ -89,7 +89,7 @@ impl ProviderLifecycleSignal {
         )
     }
 
-    pub(crate) fn activity_observed(
+    pub fn activity_observed(
         binding_id: impl Into<String>,
         provider: ProviderKind,
         scope: ProviderLifecycleScope,
@@ -135,7 +135,7 @@ impl ProviderLifecycleSignal {
         &self.scope
     }
 
-    pub(crate) fn into_kind(self) -> ProviderLifecycleSignalKind {
+    pub fn into_kind(self) -> ProviderLifecycleSignalKind {
         self.kind
     }
 }

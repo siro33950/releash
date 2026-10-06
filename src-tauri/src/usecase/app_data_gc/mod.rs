@@ -11,7 +11,7 @@ use crate::domain::local_event::{
 };
 
 #[async_trait::async_trait]
-pub(crate) trait ExecutionTreeGc: Send + Sync {
+pub trait ExecutionTreeGc: Send + Sync {
     async fn execution_trees(
         &self,
         after: Option<&str>,
@@ -30,7 +30,7 @@ pub(crate) trait ExecutionTreeGc: Send + Sync {
     ) -> Result<(), crate::domain::workflow::WorkflowError>;
 }
 
-pub(crate) async fn archive_removed_execution_trees(
+pub async fn archive_removed_execution_trees(
     resolution: Option<&LiveWorktreeResolution>,
     trees: &dyn ExecutionTreeGc,
 ) -> Result<u64, crate::domain::workflow::WorkflowError> {
@@ -100,13 +100,13 @@ pub(crate) enum GcFileType {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub(crate) struct GcMetadata {
+pub struct GcMetadata {
     pub(crate) file_type: GcFileType,
     pub(crate) len: u64,
     pub(crate) modified_secs: Option<f64>,
 }
 
-pub(crate) trait GcFileSystem: Send + Sync {
+pub trait GcFileSystem: Send + Sync {
     fn metadata(&self, path: &Path) -> Result<GcMetadata, GcFileSystemError>;
     fn read_dir(&self, path: &Path) -> Result<Vec<PathBuf>, GcFileSystemError>;
     fn remove_path(&self, path: &Path) -> Result<bool, GcFileSystemError>;
@@ -120,7 +120,7 @@ pub(crate) enum GcFileSystemErrorKind {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct GcFileSystemError {
+pub struct GcFileSystemError {
     kind: GcFileSystemErrorKind,
     message: String,
 }
@@ -162,21 +162,21 @@ impl From<io::Error> for GcFileSystemError {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct LiveWorktree {
-    pub(crate) path: String,
-    pub(crate) workspace_state_keys: Vec<String>,
-    pub(crate) review_comment_keys: Vec<String>,
+pub struct LiveWorktree {
+    pub path: String,
+    pub workspace_state_keys: Vec<String>,
+    pub review_comment_keys: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub(crate) struct LiveWorktreeSet {
+pub struct LiveWorktreeSet {
     paths: HashSet<String>,
     workspace_state_keys: HashSet<String>,
     review_comment_keys: HashSet<String>,
 }
 
 impl LiveWorktreeSet {
-    pub(crate) fn from_worktrees(worktrees: impl IntoIterator<Item = LiveWorktree>) -> Self {
+    pub fn from_worktrees(worktrees: impl IntoIterator<Item = LiveWorktree>) -> Self {
         let mut result = Self::default();
         for worktree in worktrees {
             result.paths.insert(worktree_path_key(&worktree.path));
@@ -200,7 +200,7 @@ impl LiveWorktreeSet {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct LiveWorktreeResolution {
+pub struct LiveWorktreeResolution {
     live_worktrees: LiveWorktreeSet,
     unresolved_repo_paths: Vec<String>,
     repository_paths: Vec<String>,
@@ -209,7 +209,7 @@ pub(crate) struct LiveWorktreeResolution {
 }
 
 impl LiveWorktreeResolution {
-    pub(crate) fn new(
+    pub fn new(
         live_worktrees: LiveWorktreeSet,
         unresolved_repo_paths: Vec<String>,
         unresolved_workspace_state_key_prefixes: HashSet<String>,
@@ -226,7 +226,7 @@ impl LiveWorktreeResolution {
         }
     }
 
-    pub(crate) fn with_repository_paths(mut self, paths: Vec<String>) -> Self {
+    pub fn with_repository_paths(mut self, paths: Vec<String>) -> Self {
         self.repository_paths = paths
             .into_iter()
             .map(|path| worktree_path_key(&path))
@@ -259,7 +259,7 @@ impl LiveWorktreeResolution {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub(crate) struct CanonicalRuntimeOwners {
+pub struct CanonicalRuntimeOwners {
     pub(crate) protected_worktree_paths: HashSet<String>,
 }
 
@@ -298,26 +298,26 @@ pub(crate) struct ReviewCommentGcRecord {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct CacheGcRecord {
-    pub(crate) path: PathBuf,
-    pub(crate) updated_at: f64,
+pub struct CacheGcRecord {
+    pub path: PathBuf,
+    pub updated_at: f64,
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct StartupGcRequest {
+pub struct StartupGcRequest {
     pub(crate) app_data_dir: PathBuf,
-    pub(crate) live_worktrees: Option<LiveWorktreeResolution>,
+    pub live_worktrees: Option<LiveWorktreeResolution>,
     pub(crate) workspace_state_records: Vec<WorkspaceStateGcRecord>,
     pub(crate) review_comment_records: Vec<ReviewCommentGcRecord>,
     /// Checkpoints remain retained until their worktree mapping can be proven.
     /// Keeping the observed paths in the request makes that conservative
     /// decision explicit and testable.
     pub(crate) checkpoint_paths: Vec<PathBuf>,
-    pub(crate) cache_records: Vec<CacheGcRecord>,
+    pub cache_records: Vec<CacheGcRecord>,
     pub(crate) legacy_comment_paths: Vec<PathBuf>,
     pub(crate) runtime_protection: RuntimeProtection,
-    pub(crate) now_secs: f64,
-    pub(crate) retention: RetentionPolicy,
+    pub now_secs: f64,
+    pub retention: RetentionPolicy,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -471,11 +471,8 @@ pub(crate) fn sweep_startup_gc(
     report
 }
 
-#[cfg(test)]
-pub(crate) fn run_startup_gc(
-    request: StartupGcRequest,
-    file_system: &dyn GcFileSystem,
-) -> GcReport {
+#[cfg(any(test, feature = "test-support"))]
+pub fn run_startup_gc(request: StartupGcRequest, file_system: &dyn GcFileSystem) -> GcReport {
     let revalidated_runtime_protection = request.runtime_protection.clone();
     let plan = plan_startup_gc(request);
     sweep_startup_gc(plan, revalidated_runtime_protection, file_system)
@@ -638,90 +635,9 @@ fn prefix_matches_at_boundary(value: &str, prefix: &str, boundary_chars: &[char]
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn live_worktree(path: &str, key: &str) -> LiveWorktree {
-        LiveWorktree {
-            path: path.to_string(),
-            workspace_state_keys: vec![key.to_string()],
-            review_comment_keys: vec![key.to_string()],
-        }
-    }
-
-    #[test]
-    fn canonical_projection_owners_protect_active_session_and_running_workflow_paths() {
-        let mut owners = CanonicalRuntimeOwners::default();
-        apply_runtime_owner(
-            CanonicalRuntimeOwnerView::AgentSession {
-                worktree_path: "/worktrees/active".to_string(),
-                active: true,
-            },
-            &mut owners,
-        );
-        apply_runtime_owner(
-            CanonicalRuntimeOwnerView::ActiveWorkflow {
-                worktree_path: "/worktrees/running".to_string(),
-            },
-            &mut owners,
-        );
-
-        assert!(owners
-            .protected_worktree_paths
-            .contains("/worktrees/active"));
-        assert!(owners
-            .protected_worktree_paths
-            .contains("/worktrees/running"));
-    }
-
-    #[test]
-    fn workspace_cleanup_is_closed_when_runtime_projection_is_incomplete() {
-        let app_data = PathBuf::from("/app-data");
-        let mut request = StartupGcRequest {
-            app_data_dir: app_data.clone(),
-            live_worktrees: Some(LiveWorktreeResolution::new(
-                LiveWorktreeSet::from_worktrees([live_worktree("/live", "live")]),
-                Vec::new(),
-                HashSet::new(),
-            )),
-            workspace_state_records: vec![WorkspaceStateGcRecord {
-                path: app_data.join("workspace_state/stale.json"),
-                key: "stale".to_string(),
-            }],
-            review_comment_records: Vec::new(),
-            checkpoint_paths: Vec::new(),
-            cache_records: Vec::new(),
-            legacy_comment_paths: Vec::new(),
-            runtime_protection: RuntimeProtection::incomplete(),
-            now_secs: 0.0,
-            retention: RetentionPolicy::default(),
-        };
-        let mut plan = DeletionPlan::new(app_data);
-        collect_workspace_keyed_deletions(&request, &mut plan);
-        assert!(plan.candidates.is_empty());
-
-        request.runtime_protection = RuntimeProtection::complete(LiveWorktreeSet::default());
-        collect_workspace_keyed_deletions(&request, &mut plan);
-        assert_eq!(plan.candidates.len(), 1);
-    }
-
-    #[test]
-    fn candidate_containment_rejects_parent_traversal_and_siblings() {
-        assert!(candidate_is_contained(
-            Path::new("/app-data"),
-            Path::new("/app-data/lsp/old")
-        ));
-        assert!(!candidate_is_contained(
-            Path::new("/app-data"),
-            Path::new("/app-data/../outside")
-        ));
-        assert!(!candidate_is_contained(
-            Path::new("/app-data"),
-            Path::new("/app-data-other/file")
-        ));
-    }
-}
-
-#[cfg(test)]
 #[path = "execution_tree_gc_test.rs"]
 mod execution_tree_gc_tests;
+
+#[cfg(test)]
+#[path = "mod_test.rs"]
+pub(crate) mod mod_tests;

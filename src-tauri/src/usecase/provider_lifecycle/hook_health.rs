@@ -6,27 +6,27 @@ use crate::domain::provider_lifecycle::{
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ProviderHookHealthWarning {
+pub struct ProviderHookHealthWarning {
     pub(crate) provider: ProviderKind,
     pub(crate) launch_id: String,
-    pub(crate) reason: ProviderLifecycleUnavailableReason,
+    pub reason: ProviderLifecycleUnavailableReason,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ProviderHookHealthFailureObservation {
-    pub(crate) provider: ProviderKind,
-    pub(crate) launch_id: String,
-    pub(crate) reason: ProviderLifecycleUnavailableReason,
+pub struct ProviderHookHealthFailureObservation {
+    pub provider: ProviderKind,
+    pub launch_id: String,
+    pub reason: ProviderLifecycleUnavailableReason,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum ProviderHookHealthFailureQueryError {
+pub enum ProviderHookHealthFailureQueryError {
     Technical(crate::domain::failure::TechnicalFailure),
     Corrupt,
 }
 
 #[async_trait::async_trait]
-pub(crate) trait ProviderHookHealthFailureQuery: Send + Sync {
+pub trait ProviderHookHealthFailureQuery: Send + Sync {
     async fn list(
         &self,
         limit: usize,
@@ -37,7 +37,7 @@ pub(crate) trait ProviderHookHealthFailureQuery: Send + Sync {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum ProviderHookHealthUsecaseError {
+pub enum ProviderHookHealthUsecaseError {
     Technical(crate::domain::failure::TechnicalFailure),
     Conflict,
     Store(crate::domain::failure::StorageFailure),
@@ -46,23 +46,23 @@ pub(crate) enum ProviderHookHealthUsecaseError {
     Corrupt,
 }
 
-pub(crate) struct ProviderHookHealthUsecase {
+pub struct ProviderHookHealthUsecase {
     repository: Arc<dyn ProviderHookHealthRepository>,
     state_publisher: Option<crate::usecase::state_subscription::StateSubscriptionUsecase>,
 }
 
-pub(crate) struct ProviderHookHealthReadUsecase {
+pub struct ProviderHookHealthReadUsecase {
     health: Arc<ProviderHookHealthUsecase>,
     failures: Arc<dyn ProviderHookHealthFailureQuery>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ProviderHookHealthReadResult {
+pub struct ProviderHookHealthReadResult {
     pub warnings: Vec<ProviderHookHealthWarning>,
     pub failures: Vec<ProviderHookHealthFailureQueryError>,
 }
 impl ProviderHookHealthReadUsecase {
-    pub(crate) fn new(
+    pub fn new(
         health: Arc<ProviderHookHealthUsecase>,
         failures: Arc<dyn ProviderHookHealthFailureQuery>,
     ) -> Self {
@@ -108,14 +108,14 @@ impl ProviderHookHealthReadUsecase {
 }
 
 impl ProviderHookHealthUsecase {
-    pub(crate) fn new(repository: Arc<dyn ProviderHookHealthRepository>) -> Self {
+    pub fn new(repository: Arc<dyn ProviderHookHealthRepository>) -> Self {
         Self {
             repository,
             state_publisher: None,
         }
     }
 
-    pub(crate) fn with_state_publisher(
+    pub fn with_state_publisher(
         mut self,
         publisher: crate::usecase::state_subscription::StateSubscriptionUsecase,
     ) -> Self {
@@ -130,8 +130,8 @@ impl ProviderHookHealthUsecase {
         }
     }
 
-    #[cfg(test)]
-    pub(crate) async fn record_launch(
+    #[cfg(any(test, feature = "test-support"))]
+    pub async fn record_launch(
         &self,
         provider: ProviderKind,
         launch_id: &str,
@@ -259,7 +259,7 @@ impl ProviderHookHealthUsecase {
         Err(ProviderHookHealthUsecaseError::StorageUnavailable)
     }
 
-    pub(crate) async fn warnings(
+    pub async fn warnings(
         &self,
     ) -> Result<Vec<ProviderHookHealthWarning>, ProviderHookHealthUsecaseError> {
         let mut warnings = Vec::new();
@@ -302,4 +302,4 @@ fn provider_label(provider: ProviderKind) -> &'static str {
 
 #[cfg(test)]
 #[path = "hook_health_error_test.rs"]
-mod error_tests;
+pub(crate) mod error_tests;

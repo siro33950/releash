@@ -22,4 +22,4 @@ impl IntoResponse for ApiError {
 
 #[cfg(test)]
 #[path = "error_test.rs"]
-mod error_tests;
+pub(crate) mod error_tests;

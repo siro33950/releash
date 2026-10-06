@@ -17,17 +17,17 @@ use super::runtime_error::WorkflowRuntimeError;
 use super::runtime_snapshot::RuntimeCommitSnapshot;
 
 #[derive(Clone)]
-pub(crate) struct WorkflowControlPlaneCommit {
+pub struct WorkflowControlPlaneCommit {
     pub(crate) execution_id: String,
     pub(crate) before: DomainExecutionTree,
-    pub(crate) after: DomainExecutionTree,
+    pub after: DomainExecutionTree,
     pub(crate) transition_outcome: TransitionOutcome,
-    pub(crate) workflow_events: Vec<WorkflowEvent>,
+    pub workflow_events: Vec<WorkflowEvent>,
     pub(crate) provider_events: Vec<ScopedProviderLifecycleEvent>,
 }
 
 #[async_trait::async_trait]
-pub(crate) trait WorkflowControlPlaneGateway: Send + Sync {
+pub trait WorkflowControlPlaneGateway: Send + Sync {
     fn current_timestamp(&self) -> f64;
 
     fn new_node_execution_id(&self) -> String;
@@ -94,7 +94,7 @@ pub(crate) trait WorkflowControlPlaneGateway: Send + Sync {
 }
 
 #[derive(Clone)]
-pub(crate) struct WorkflowControlPlaneUsecase {
+pub struct WorkflowControlPlaneUsecase {
     retrying: std::sync::Arc<crate::usecase::retry::Retrying>,
     runtime: Arc<dyn WorkflowControlPlaneGateway>,
 }
@@ -142,17 +142,14 @@ impl WorkflowControlPlaneUsecase {
         move || runtime.new_node_execution_id()
     }
 
-    pub(crate) fn new(
+    pub fn new(
         retrying: std::sync::Arc<crate::usecase::retry::Retrying>,
         runtime: Arc<dyn WorkflowControlPlaneGateway>,
     ) -> Self {
         Self { retrying, runtime }
     }
 
-    pub(crate) async fn resolve_approval(
-        &self,
-        command: ApprovalCommand,
-    ) -> Result<(), WorkflowError> {
+    pub async fn resolve_approval(&self, command: ApprovalCommand) -> Result<(), WorkflowError> {
         super::command::WorkflowRuntimeCommandPreflight.validate_approval(&command)?;
         super::command::retry_control_plane_conflicts(&self.retrying, &command.execution_id, || {
             self.resolve_approval_once(command.clone())
@@ -254,10 +251,7 @@ impl WorkflowControlPlaneUsecase {
         .await
     }
 
-    pub(crate) async fn submit_output(
-        &self,
-        command: SubmitOutputCommand,
-    ) -> Result<(), WorkflowError> {
+    pub async fn submit_output(&self, command: SubmitOutputCommand) -> Result<(), WorkflowError> {
         super::command::retry_control_plane_conflicts(
             &self.retrying,
             &command.node_execution_id,
@@ -410,7 +404,7 @@ impl WorkflowControlPlaneUsecase {
         self.auto_approve_if_needed(&snapshot).await
     }
 
-    pub(crate) async fn retry_node(&self, command: RetryNodeCommand) -> Result<(), WorkflowError> {
+    pub async fn retry_node(&self, command: RetryNodeCommand) -> Result<(), WorkflowError> {
         super::command::retry_control_plane_conflicts(
             &self.retrying,
             &command.node_execution_id,
@@ -458,7 +452,7 @@ impl WorkflowControlPlaneUsecase {
             .await
     }
 
-    pub(crate) async fn resume_session_node(
+    pub async fn resume_session_node(
         &self,
         command: ResumeSessionNodeCommand,
     ) -> Result<(), WorkflowError> {
@@ -598,7 +592,7 @@ impl WorkflowControlPlaneUsecase {
         Ok(())
     }
 
-    pub(crate) async fn record_provider_stop(
+    pub async fn record_provider_stop(
         &self,
         command: crate::usecase::provider_lifecycle::ProviderExecutionTreeStopCommand,
         lifecycle_events: Vec<ScopedProviderLifecycleEvent>,

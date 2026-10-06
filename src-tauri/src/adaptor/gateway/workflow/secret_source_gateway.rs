@@ -4,12 +4,12 @@ use crate::domain::app_config::ConfigSecretRepository;
 use crate::domain::workflow::{secret_masker, SecretSourceGateway, WorkflowError};
 
 #[derive(Clone)]
-pub(crate) struct WorkflowSecretSourceConfigGateway {
+pub struct WorkflowSecretSourceConfigGateway {
     config: Arc<dyn ConfigSecretRepository>,
 }
 
 impl WorkflowSecretSourceConfigGateway {
-    pub(crate) fn new(config: Arc<dyn ConfigSecretRepository>) -> Self {
+    pub fn new(config: Arc<dyn ConfigSecretRepository>) -> Self {
         Self { config }
     }
 }
@@ -27,48 +27,12 @@ impl SecretSourceGateway for WorkflowSecretSourceConfigGateway {
     }
 }
 
-#[cfg(test)]
-pub(crate) struct EmptySecretSourceGateway;
+#[cfg(any(test, feature = "test-support"))]
+pub struct EmptySecretSourceGateway;
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 impl SecretSourceGateway for EmptySecretSourceGateway {
     fn configured_secret_values(&self) -> Result<Vec<String>, WorkflowError> {
         Ok(Vec::new())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::adaptor::gateway::app_config::{AppConfig, ReleashConfig};
-    use tempfile::TempDir;
-
-    #[test]
-    fn collects_and_normalizes_configured_secret_values() {
-        let tmp = TempDir::new().unwrap();
-        let mut config = ReleashConfig::default();
-        config.notion.insert(
-            "/repo".to_string(),
-            crate::adaptor::gateway::app_config::config_models::NotionRepoConfigModel {
-                api_token: "token-12345678".to_string(),
-                database_id: "db".to_string(),
-                property_mapping: Default::default(),
-            },
-        );
-        let app_config: Arc<dyn ConfigSecretRepository> =
-            Arc::new(AppConfig::new(config, tmp.path().join("config.toml")));
-
-        let secrets = WorkflowSecretSourceConfigGateway::new(app_config)
-            .configured_secret_values()
-            .unwrap();
-
-        assert!(secrets.contains(&"token-12345678".to_string()));
-        assert_eq!(
-            secrets
-                .iter()
-                .filter(|secret| secret.as_str() == "token-12345678")
-                .count(),
-            1
-        );
     }
 }

@@ -3,13 +3,13 @@ use connectrpc::ErrorCode;
 use rusqlite::{ffi, Connection};
 
 #[derive(Clone)]
-pub(crate) enum ReadFailure {
+pub enum ReadFailure {
     Query(LocalEventQueryError),
     Sqlite(i32),
 }
 
 impl ReadFailure {
-    pub(crate) fn cases() -> [(Self, ErrorCode); 7] {
+    pub fn cases() -> [(Self, ErrorCode); 7] {
         [
             (
                 Self::Query(LocalEventQueryError::QueryBusy),

@@ -92,7 +92,8 @@ CI と同じコマンドを使う。PR・main push の検証は `.github/workflo
 PR 層（プロジェクトルート）:
 
 ```bash
-pnpm lint
+pnpm exec biome ci .
+node .github/scripts/test-placement.mjs
 pnpm test
 pnpm build
 pnpm test:integration
@@ -107,11 +108,13 @@ cargo clippy --locked -- -D warnings
 cargo deny --locked check
 cargo clippy --locked -p releash-desktop -- -D warnings
 cargo clippy --locked --features test-support -- -D warnings
-cargo test --locked
+cargo test --locked --lib --bins -p releash-backend
+cargo test --locked --doc -p releash-backend
+cargo test --locked --lib --bins -p releash-desktop
+cargo test --locked --doc -p releash-desktop
 cargo build --locked -p releash-backend --bin releash-backend
-cargo test --locked -p releash-desktop
-cargo test --locked --test state_subscription_scenarios scenarios_tests::
-cargo test --locked --test daemon_smoke
+cargo test --locked --test '*' -p releash-backend
+cargo test --locked --test '*' -p releash-desktop
 ```
 
 品質ゲート（プロジェクトルート。clippy と biome を横断で走らせる）:
@@ -120,19 +123,11 @@ cargo test --locked --test daemon_smoke
 qlty check --no-progress --all
 ```
 
-nightly 層（プロジェクトルート。daemon の自己検証は release ビルド）:
+nightly 層（プロジェクトルート）:
 
 ```bash
-pnpm test:performance:daemon
+pnpm test:behavior
 pnpm exec vitest run --coverage
-```
-
-nightly 層（`src-tauri/`）:
-
-```bash
-cargo test --locked --features performance --lib
-cargo build --locked -p releash-backend --bin releash-backend
-cargo test --locked -p releash-desktop --features performance --test desktop_cli_install
 ```
 
 Rust coverage は `llvm-tools-preview` と `cargo-llvm-cov` が必要。Linux で強制終了する子プロセスの profile を保持し、短い RPC deadline を使うテストの負荷干渉を避けるため、coverage 計測だけに環境変数を適用する（プロジェクトルート）:
@@ -191,7 +186,7 @@ Rust テストの配置、命名、レイヤー別の必須／柔軟、モック
 対応プラットフォームは macOS。
 
 1. `Nightly` は毎日（UTC 18:23 / JST 03:23）と `workflow_dispatch` で起動する。main の HEAD を対象とし、日次は直近の公開済み nightly のタグが指す commit と同じならスキップする。手動起動は常に実行する。
-2. PR 層の検証一式と `performance` がすべて成功したら、tauri-action で署名・公証済みの macOS universal ビルドを作り、prerelease を公開する。`coverage` は関門に含めない。署名・公証、updater の署名、telemetry の値は 1Password から取得する。
+2. PR 層の検証一式がすべて成功したら、tauri-action で署名・公証済みの macOS universal ビルドを作り、prerelease を公開する。`coverage` は関門に含めない。署名・公証、updater の署名、telemetry の値は 1Password から取得する。
 3. nightly のタグは `v{X.Y.Z}-nightly.{YYYYMMDD}.{N}`（UTC のビルド日、日ごとに 1 から採番）。リポジトリとアプリの版は `X.Y.Z` のまま。nightly の Release は直近 14 件を残す。nightly は GitHub Release から手動で取得する。
 4. `Stable` を `workflow_dispatch` で起動し、`nightly` に公開済み nightly のタグを指定する。その commit からビルド・署名・公証をやり直し、`vX.Y.Z` を stable の latest Release として公開する。`vX.Y.Z` タグは 1Password の `releash-stable-release`（Contents / Workflows write の fine-grained PAT）で作る。`GITHUB_TOKEN` は workflow ファイルがブランチ先端と異なる commit にタグを作れないため。`latest.json` により既存の Tauri updater で更新できる。
 5. stable 公開後、main の版の patch を 1 つ上げ、`package.json`、`src-tauri/releash-desktop/tauri.conf.json`、`src-tauri/Cargo.toml`、`src-tauri/Cargo.lock` を揃える PR を作る。別の上げ幅が必要なら、`Bump Version` を `workflow_dispatch`（patch / minor / major）で実行して版更新 PR を作る。

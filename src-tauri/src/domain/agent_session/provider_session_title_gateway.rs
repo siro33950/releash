@@ -1,21 +1,21 @@
 use crate::domain::provider_lifecycle::ProviderKind;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ProviderSessionTitleRequest {
-    pub(crate) provider: ProviderKind,
-    pub(crate) provider_session_id: String,
-    pub(crate) worktree_path: String,
-    pub(crate) transcript_ref: Option<String>,
+pub struct ProviderSessionTitleRequest {
+    pub provider: ProviderKind,
+    pub provider_session_id: String,
+    pub worktree_path: String,
+    pub transcript_ref: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum ProviderSessionTitleGatewayError {
+pub enum ProviderSessionTitleGatewayError {
     Technical(crate::domain::failure::TechnicalFailure),
     Corrupt,
 }
 
 #[async_trait::async_trait]
-pub(crate) trait ProviderSessionTitleGateway: Send + Sync {
+pub trait ProviderSessionTitleGateway: Send + Sync {
     async fn read_title(
         &self,
         request: ProviderSessionTitleRequest,

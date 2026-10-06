@@ -9,7 +9,7 @@ use agent_tui_fixture::{
     run_fixture, FixtureLifecycleCommand, FixtureLifecycleEmission, FixturePlan, FixtureRun,
     FixtureRunOptions,
 };
-use releash_lib::provider_lifecycle_acceptance::{
+use releash_lib::test_support::provider_lifecycle_acceptance::{
     AcceptanceFact, AcceptanceFactKind, AcceptanceIngressResult, AcceptanceLaunch,
     AcceptanceLedgerEventCounts, AcceptanceProvider, AcceptanceScope, AcceptanceUnavailableReason,
     ProviderLifecycleAcceptanceHost,
@@ -17,11 +17,6 @@ use releash_lib::provider_lifecycle_acceptance::{
 
 const CLI_PATH: &str = env!("CARGO_BIN_EXE_releash-backend");
 const TRANSCRIPT_BODY_MARKER: &str = "provider-conversation-body-must-not-be-persisted";
-
-#[test]
-fn test_providerライフサイクルcharacterization_installed_cli実行gateが存在する() {
-    assert!(Path::new("tests/provider_lifecycle_characterization_test.rs").is_file());
-}
 
 fn provider_name(provider: AcceptanceProvider) -> &'static str {
     match provider {

@@ -2,7 +2,7 @@ use crate::domain::failure::TechnicalFailure;
 use crate::domain::failure::TechnicalFailureNature;
 use crate::usecase::failure::WorkFailure;
 
-pub(crate) fn failure(error: std::io::Error) -> WorkFailure {
+pub fn failure(error: std::io::Error) -> WorkFailure {
     WorkFailure::from(TechnicalFailure::from(&error))
 }
 

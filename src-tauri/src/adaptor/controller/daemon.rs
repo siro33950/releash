@@ -1,4 +1,5 @@
-use crate::{adaptor, domain, infrastructure, terminal_surface, usecase};
+use crate::adaptor::controller::terminal_surface_runtime as terminal_surface;
+use crate::{adaptor, domain, infrastructure, usecase};
 use adaptor::gateway::app_config::{load_or_create_config, AppConfig};
 use domain::app_config::{ConfigRepository, ConfigSecretRepository, NotionConfigRepository};
 use std::path::PathBuf;
@@ -35,14 +36,14 @@ fn service_timeout(name: &str) -> std::time::Duration {
             .into(),
     )
 }
-pub(crate) fn default_timeout() -> std::time::Duration {
+pub fn default_timeout() -> std::time::Duration {
     service_timeout("default_timeout_ms")
 }
 fn shutdown_timeout() -> std::time::Duration {
     service_timeout("shutdown_timeout_ms")
 }
 
-async fn shutdown_with_deadline(
+pub async fn shutdown_with_deadline(
     gateway: &dyn domain::application_lifecycle::ApplicationShutdownGateway,
     server: &infrastructure::local_api::LocalApiServer,
 ) {
@@ -61,7 +62,7 @@ async fn shutdown_with_deadline(
     server.shutdown();
 }
 
-pub(crate) fn client_priority_interceptor(
+pub fn client_priority_interceptor(
 ) -> adaptor::controller::api::client_priority::PriorityInterceptor {
     let limits = Arc::new(crate::common::concurrency::PriorityLimits::new(
         64,
@@ -78,7 +79,7 @@ pub(crate) fn client_priority_interceptor(
     }
 }
 
-pub(crate) struct Daemon {
+pub struct Daemon {
     shutdown: Arc<dyn domain::application_lifecycle::ApplicationShutdownGateway>,
     server: Arc<infrastructure::local_api::LocalApiServer>,
     exit: tokio::sync::mpsc::Receiver<i32>,
@@ -86,7 +87,7 @@ pub(crate) struct Daemon {
 }
 
 impl Daemon {
-    pub(crate) async fn wait(mut self) -> Result<std::convert::Infallible, String> {
+    pub async fn wait(mut self) -> Result<std::convert::Infallible, String> {
         let code = self.exit.recv().await.ok_or("daemon exit channel closed")?;
         self.exit.close();
         shutdown_with_deadline(self.shutdown.as_ref(), &self.server).await;
@@ -96,7 +97,7 @@ impl Daemon {
     }
 }
 
-pub(crate) async fn compose(
+pub async fn compose(
     data_dir: PathBuf,
     #[cfg(any(target_os = "macos", target_os = "linux"))] provider_initial_search_path: Result<
         std::ffi::OsString,
@@ -221,24 +222,7 @@ pub(crate) async fn compose(
 
     let provider_executable_config: Arc<
         dyn domain::agent_session::ProviderExecutableConfigRepository,
-    > = if let Some(fixture) = performance_provider_fixture_executable() {
-        let (claude, codex) = select_provider_agent_executables(
-            "claude".to_string(),
-            "codex".to_string(),
-            Some(fixture),
-        );
-        Arc::new(
-            adaptor::gateway::agent_session::InMemoryProviderExecutableConfigRepository::new(
-                Some(claude),
-                Some(codex),
-            )
-            .map_err(|error| {
-                format!("Provider performance fixture設定の初期化に失敗: {error:?}")
-            })?,
-        )
-    } else {
-        app_config.clone()
-    };
+    > = app_config.clone();
     let provider_history_home =
         dirs::home_dir().unwrap_or_else(|| data_dir.join("provider-history-unavailable"));
     let history_paths = vec![
@@ -512,15 +496,6 @@ pub(crate) async fn compose(
         usecase::app_config::AppConfigUsecase::new(config_repository.clone(), app_config.clone())
             .with_state_publisher(state_subscriptions.clone()),
     );
-    let performance_switches = {
-        let telemetry = usecase::telemetry::TelemetryUsecase::new(
-            &adaptor::gateway::telemetry::TelemetryGateway,
-        );
-        usecase::telemetry::PerformanceSwitches {
-            real_app_mode: telemetry.performance_real_app_mode(),
-            terminal: telemetry.terminal_performance_switches(),
-        }
-    };
     let hook_health_markers = data_dir
         .join("provider-launches")
         .to_string_lossy()
@@ -601,7 +576,6 @@ pub(crate) async fn compose(
                     editor_scanner: Arc::new(
                         adaptor::gateway::external_editor::MacInstalledEditorGateway,
                     ),
-                    performance_switches,
                     hook_health: dependencies
                         .provider_hook_health_read_usecase
                         .clone()
@@ -665,7 +639,7 @@ pub(crate) async fn compose(
     })
 }
 
-async fn migrate_legacy_execution_archives(
+pub async fn migrate_legacy_execution_archives(
     data_dir: &std::path::Path,
     store: Arc<adaptor::gateway::local_event_store::LocalEventStore>,
     runtime: &usecase::workflow::WorkflowRuntimeUsecase,
@@ -678,27 +652,23 @@ async fn migrate_legacy_execution_archives(
         .map_err(|error| format!("execution archive migration failed: {error}"))
 }
 
-fn select_provider_agent_executables(
-    claude_executable: String,
-    codex_executable: String,
-    fixture_executable: Option<String>,
-) -> (String, String) {
-    match fixture_executable.filter(|path| !path.trim().is_empty()) {
-        Some(path) => (path.clone(), path),
-        None => (claude_executable, codex_executable),
-    }
-}
-
-#[cfg(feature = "performance")]
-fn performance_provider_fixture_executable() -> Option<String> {
-    std::env::var("RELEASH_PERFORMANCE_PROVIDER_FIXTURE_EXECUTABLE").ok()
-}
-
-#[cfg(not(feature = "performance"))]
-fn performance_provider_fixture_executable() -> Option<String> {
-    None
-}
-
 #[cfg(test)]
 #[path = "daemon_test.rs"]
 mod daemon_tests;
+
+#[cfg(feature = "test-support")]
+impl Daemon {
+    pub fn test_new(
+        shutdown: Arc<dyn domain::application_lifecycle::ApplicationShutdownGateway>,
+        server: Arc<infrastructure::local_api::LocalApiServer>,
+        exit: tokio::sync::mpsc::Receiver<i32>,
+        daemon: usecase::daemon::DaemonUsecase,
+    ) -> Self {
+        Self {
+            shutdown,
+            server,
+            exit,
+            daemon,
+        }
+    }
+}

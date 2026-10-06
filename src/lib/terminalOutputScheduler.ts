@@ -1,7 +1,6 @@
 const OUTPUT_CHUNK_CODE_UNITS = 16 * 1024;
 const MAX_WRITES_PER_DRAIN = 8;
 const MAX_DRAIN_MS = 8;
-const LONG_STALL_MS = 100;
 const MAX_QUEUED_CODE_UNITS = 2 * 1024 * 1024;
 
 export interface TerminalOutputContinuation {
@@ -44,23 +43,11 @@ export function createMessageChannelContinuation(): TerminalOutputContinuation {
 	return new MessageChannelContinuation();
 }
 
-export interface TerminalOutputSchedulerMetrics {
-	currentQueuedCodeUnits: number;
-	peakQueuedCodeUnits: number;
-	writeCount: number;
-	longStallsOver100Ms: number;
-	droppedBacklogs: number;
-	snapshotResyncs: number;
-}
-
 interface TerminalOutputSchedulerOptions {
 	write: (data: string, parsed: () => void) => void;
 	continuation?: TerminalOutputContinuation;
 	clock?: () => number;
 	onOverflow?: () => void;
-	onMetrics?: (metrics: TerminalOutputSchedulerMetrics) => void;
-	onParsed?: () => void;
-	maxWritesInFlight?: number;
 }
 
 interface TerminalOutputSegment {
@@ -79,12 +66,7 @@ export class TerminalOutputScheduler {
 	private readonly continuation: TerminalOutputContinuation;
 	private readonly clock: () => number;
 	private readonly onOverflow: () => void;
-	private readonly onMetrics?: (
-		metrics: TerminalOutputSchedulerMetrics,
-	) => void;
-	private readonly onParsed?: () => void;
 	private queue: TerminalOutputSegment[] = [];
-	private maxWritesInFlight: number;
 	private writesInFlight = 0;
 	private inFlightCodeUnits = 0;
 	private continuationPending = false;
@@ -93,11 +75,6 @@ export class TerminalOutputScheduler {
 	private disposed = false;
 	private drainWaiters: Array<() => void> = [];
 	private currentQueuedCodeUnits = 0;
-	private peakQueuedCodeUnits = 0;
-	private writeCount = 0;
-	private longStallsOver100Ms = 0;
-	private droppedBacklogs = 0;
-	private snapshotResyncs = 0;
 	private awaitingSnapshot = false;
 
 	constructor(options: TerminalOutputSchedulerOptions) {
@@ -106,13 +83,6 @@ export class TerminalOutputScheduler {
 			options.continuation ?? createMessageChannelContinuation();
 		this.clock = options.clock ?? (() => performance.now());
 		this.onOverflow = options.onOverflow ?? (() => {});
-		this.onMetrics = options.onMetrics;
-		this.onParsed = options.onParsed;
-		this.maxWritesInFlight = Math.max(1, options.maxWritesInFlight ?? 1);
-	}
-
-	setMaxWritesInFlight(count: number): void {
-		this.maxWritesInFlight = Math.max(1, count);
 	}
 
 	enqueue(data: string, onParsed?: () => void): void {
@@ -121,42 +91,22 @@ export class TerminalOutputScheduler {
 			this.queue = [];
 			this.currentQueuedCodeUnits = this.inFlightCodeUnits;
 			this.awaitingSnapshot = true;
-			this.droppedBacklogs += 1;
-			this.emitMetrics();
 			this.onOverflow();
 			return;
 		}
 		this.queue.push({ data, offset: 0, onParsed });
 		this.currentQueuedCodeUnits += data.length;
-		this.peakQueuedCodeUnits = Math.max(
-			this.peakQueuedCodeUnits,
-			this.currentQueuedCodeUnits,
-		);
-		this.emitMetrics();
 		this.pump();
 	}
 
 	resumeAfterSnapshot(): void {
 		if (!this.awaitingSnapshot || this.disposed) return;
 		this.awaitingSnapshot = false;
-		this.snapshotResyncs += 1;
-		this.emitMetrics();
 	}
 
 	drain(): Promise<void> {
 		if (this.currentQueuedCodeUnits === 0) return Promise.resolve();
 		return new Promise((resolve) => this.drainWaiters.push(resolve));
-	}
-
-	metrics(): TerminalOutputSchedulerMetrics {
-		return {
-			currentQueuedCodeUnits: this.currentQueuedCodeUnits,
-			peakQueuedCodeUnits: this.peakQueuedCodeUnits,
-			writeCount: this.writeCount,
-			longStallsOver100Ms: this.longStallsOver100Ms,
-			droppedBacklogs: this.droppedBacklogs,
-			snapshotResyncs: this.snapshotResyncs,
-		};
 	}
 
 	dispose(): void {
@@ -172,7 +122,7 @@ export class TerminalOutputScheduler {
 	private pump(): void {
 		if (
 			this.disposed ||
-			this.writesInFlight >= this.maxWritesInFlight ||
+			this.writesInFlight >= 1 ||
 			this.continuationPending ||
 			this.currentQueuedCodeUnits === 0
 		) {
@@ -198,23 +148,17 @@ export class TerminalOutputScheduler {
 
 		const { data, completedSegments } = this.takeChunk();
 		const codeUnits = data.length;
-		const startedAt = this.clock();
 		this.writesInFlight += 1;
 		this.inFlightCodeUnits += codeUnits;
 		let completed = false;
 		this.write(data, () => {
 			if (completed) return;
 			completed = true;
-			const elapsed = this.clock() - startedAt;
-			if (elapsed > LONG_STALL_MS) this.longStallsOver100Ms += 1;
 			this.currentQueuedCodeUnits -= codeUnits;
 			this.inFlightCodeUnits = Math.max(0, this.inFlightCodeUnits - codeUnits);
-			this.writeCount += 1;
 			this.writesInDrain += 1;
 			this.writesInFlight = Math.max(0, this.writesInFlight - 1);
-			this.onParsed?.();
 			for (const complete of completedSegments) complete();
-			this.emitMetrics();
 			this.pump();
 		});
 		this.pump();
@@ -253,10 +197,6 @@ export class TerminalOutputScheduler {
 		const waiters = this.drainWaiters;
 		this.drainWaiters = [];
 		for (const resolve of waiters) resolve();
-	}
-
-	private emitMetrics(): void {
-		this.onMetrics?.(this.metrics());
 	}
 }
 

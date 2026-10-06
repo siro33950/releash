@@ -524,7 +524,7 @@ async fn wait_workers(usecase: &TerminalSubscriptionUsecase) {
 #[tokio::test]
 async fn test_terminal作り直し予約_一つのworkerで追加clientのresetも併合する() {
     // Given
-    use super::super::io_usecase::io_usecase_tests::FakePtyGateway;
+    use crate::usecase::terminal_surface::test_helpers_io::FakePtyGateway;
     let (_, _, hub, surface) =
         crate::test_support::state_subscription::terminal_application_fixture();
     let mut gateway = FakePtyGateway::new();
@@ -596,7 +596,7 @@ async fn test_terminal作り直し予約_一つのworkerで追加clientのreset�
 #[tokio::test]
 async fn test_terminal作り直し失敗_失敗を配信してworkerを消す() {
     // Given
-    use super::super::io_usecase::io_usecase_tests::FakePtyGateway;
+    use crate::usecase::terminal_surface::test_helpers_io::FakePtyGateway;
     let (_, _, hub, surface) =
         crate::test_support::state_subscription::terminal_application_fixture();
     let mut gateway = FakePtyGateway::new();

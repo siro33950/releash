@@ -9,21 +9,21 @@ use super::child_process;
 
 /// 出力キャプチャの上限。ドメイン固有の定数を持ち込まないよう呼び出し側が注入する。
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct OutputLimit {
-    pub(crate) max_bytes: usize,
-    pub(crate) truncation_marker: &'static str,
+pub struct OutputLimit {
+    pub max_bytes: usize,
+    pub truncation_marker: &'static str,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct CommandRunOutput {
-    pub(crate) exit_code: i32,
-    pub(crate) stdout: String,
-    pub(crate) stderr: String,
-    pub(crate) duration_ms: u64,
+pub struct CommandRunOutput {
+    pub exit_code: i32,
+    pub stdout: String,
+    pub stderr: String,
+    pub duration_ms: u64,
 }
 
 #[derive(Debug, thiserror::Error)]
-pub(crate) enum CommandRunnerError {
+pub enum CommandRunnerError {
     #[error("failed to spawn command: {0}")]
     Spawn(std::io::Error),
     #[error("failed to wait for command: {0}")]
@@ -35,24 +35,24 @@ pub(crate) enum CommandRunnerError {
 }
 
 #[derive(Clone)]
-pub(crate) struct ActiveCommandHandle {
+pub struct ActiveCommandHandle {
     shutdown_tx: watch::Sender<bool>,
 }
 
 impl ActiveCommandHandle {
-    #[cfg(test)]
-    pub(crate) fn for_test() -> Self {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn for_test() -> Self {
         Self {
             shutdown_tx: watch::channel(false).0,
         }
     }
 
-    pub(crate) fn request_shutdown(&self) {
+    pub fn request_shutdown(&self) {
         let _ = self.shutdown_tx.send(true);
     }
 }
 
-pub(crate) struct RunningCommand {
+pub struct RunningCommand {
     label: String,
     output_limit: OutputLimit,
     child: tokio::process::Child,
@@ -64,11 +64,16 @@ pub(crate) struct RunningCommand {
 }
 
 impl RunningCommand {
-    pub(crate) fn handle(&self) -> ActiveCommandHandle {
+    #[cfg(feature = "test-support")]
+    pub fn test_label(&self) -> &str {
+        &self.label
+    }
+
+    pub fn handle(&self) -> ActiveCommandHandle {
         self.handle.clone()
     }
 
-    pub(crate) async fn wait(mut self) -> Result<CommandRunOutput, CommandRunnerError> {
+    pub async fn wait(mut self) -> Result<CommandRunOutput, CommandRunnerError> {
         let mut stdout = self.stdout.take();
         let mut stderr = self.stderr.take();
         let limit = self.output_limit;
@@ -110,7 +115,7 @@ impl RunningCommand {
     }
 }
 
-pub(crate) fn spawn_shell_command(
+pub fn spawn_shell_command(
     cwd: impl AsRef<Path>,
     shell_command: &str,
     env: impl IntoIterator<Item = (String, String)>,
@@ -186,206 +191,8 @@ fn command_label(prefix: &str, cwd: &Path) -> String {
     format!("{prefix} in {display}")
 }
 
-fn display_cwd(cwd: &Path) -> String {
+pub fn display_cwd(cwd: &Path) -> String {
     cwd.to_str()
         .map(ToOwned::to_owned)
         .unwrap_or_else(|| cwd.display().to_string())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use tempfile::TempDir;
-
-    const TEST_LABEL: &str = "workflow command";
-    const TEST_LIMIT: OutputLimit = OutputLimit {
-        max_bytes: 100 * 1024,
-        truncation_marker: "... (truncated)",
-    };
-
-    #[tokio::test]
-    async fn shell_command_runs_in_cwd_and_captures_output_and_status() {
-        let cwd = TempDir::new().unwrap();
-        let canonical_cwd = std::fs::canonicalize(cwd.path()).unwrap();
-
-        let output = spawn_shell_command(
-            cwd.path(),
-            "printf '%s' \"$PWD\"; printf '%s' err >&2; exit 7",
-            std::iter::empty::<(String, String)>(),
-            TEST_LABEL,
-            TEST_LIMIT,
-        )
-        .unwrap()
-        .wait()
-        .await
-        .unwrap();
-
-        assert_eq!(output.exit_code, 7);
-        assert_eq!(output.stdout, canonical_cwd.to_string_lossy());
-        assert_eq!(output.stderr, "err");
-        assert!(output.duration_ms < 60_000);
-    }
-
-    #[tokio::test]
-    async fn running_command_label_does_not_retain_shell_command() {
-        let cwd = TempDir::new().unwrap();
-        let secret_command = "printf '%s' label-secret-sentinel";
-
-        let running = spawn_shell_command(
-            cwd.path(),
-            secret_command,
-            std::iter::empty::<(String, String)>(),
-            TEST_LABEL,
-            TEST_LIMIT,
-        )
-        .unwrap();
-
-        assert_eq!(
-            running.label,
-            format!("workflow command in {}", display_cwd(cwd.path()))
-        );
-        assert!(!running.label.contains(secret_command));
-        assert!(!running.label.contains("label-secret-sentinel"));
-
-        running.wait().await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn shell_command_cancellation_returns_cancelled() {
-        let cwd = TempDir::new().unwrap();
-        let running = spawn_shell_command(
-            cwd.path(),
-            "sleep 30",
-            std::iter::empty::<(String, String)>(),
-            TEST_LABEL,
-            TEST_LIMIT,
-        )
-        .unwrap();
-        let handle = running.handle();
-
-        let waiter = tokio::spawn(async move { running.wait().await });
-        handle.request_shutdown();
-        let err = waiter.await.unwrap().unwrap_err();
-
-        assert!(matches!(err, CommandRunnerError::Cancelled));
-    }
-
-    #[tokio::test]
-    async fn shell_command_output_capture_is_bounded_and_drains_to_exit() {
-        let cwd = TempDir::new().unwrap();
-        let output = spawn_shell_command(
-            cwd.path(),
-            "head -c 200000 /dev/zero | tr '\\0' x; head -c 200000 /dev/zero | tr '\\0' e >&2",
-            std::iter::empty::<(String, String)>(),
-            TEST_LABEL,
-            TEST_LIMIT,
-        )
-        .unwrap()
-        .wait()
-        .await
-        .unwrap();
-
-        assert_eq!(output.exit_code, 0);
-        let marker = TEST_LIMIT.truncation_marker;
-        assert!(output.stdout.ends_with(marker));
-        assert!(output.stderr.ends_with(marker));
-        assert!(output.stdout.len() <= TEST_LIMIT.max_bytes + marker.len());
-        assert!(output.stderr.len() <= TEST_LIMIT.max_bytes + marker.len());
-    }
-
-    #[tokio::test]
-    async fn test_shell環境変数_引用付き参照は値を再解釈せず元の内容を渡す() {
-        // Given
-        let cwd = TempDir::new().unwrap();
-        let marker = cwd.path().join("must-not-exist");
-        let value = format!(
-            "single' double\" `touch {}`\n$HOME; touch {}",
-            marker.display(),
-            marker.display()
-        );
-
-        // When
-        let output = spawn_shell_command(
-            cwd.path(),
-            "printf '%s' \"$DOC\"",
-            [("DOC".to_string(), value.clone())],
-            TEST_LABEL,
-            TEST_LIMIT,
-        )
-        .unwrap()
-        .wait()
-        .await
-        .unwrap();
-
-        // Then
-        assert_eq!(output.exit_code, 0);
-        assert_eq!(output.stdout, value);
-        assert!(!marker.exists());
-    }
-
-    #[tokio::test]
-    async fn test_shell環境変数_引用なし参照でも値のshell構文はcommandにならない() {
-        // Given
-        let cwd = TempDir::new().unwrap();
-        let marker = cwd.path().join("must-not-exist");
-        let value = format!(
-            "one two; touch {} `touch {}`",
-            marker.display(),
-            marker.display()
-        );
-
-        // When
-        let output = spawn_shell_command(
-            cwd.path(),
-            "printf '<%s>\\n' $DOC",
-            [("DOC".to_string(), value)],
-            TEST_LABEL,
-            TEST_LIMIT,
-        )
-        .unwrap()
-        .wait()
-        .await
-        .unwrap();
-
-        // Then
-        assert_eq!(output.exit_code, 0);
-        assert!(!marker.exists());
-        assert!(output.stdout.contains("<two;>"));
-        assert!(output.stdout.contains("<`touch>"));
-    }
-
-    #[test]
-    fn test_shell環境変数_nulを含む値は既存spawn_errorになる() {
-        let cwd = TempDir::new().unwrap();
-
-        let error = spawn_shell_command(
-            cwd.path(),
-            "true",
-            [("DOC".to_string(), "before\0after".to_string())],
-            TEST_LABEL,
-            TEST_LIMIT,
-        )
-        .err()
-        .expect("NULを含む環境変数ではprocessを起動できない");
-
-        assert!(matches!(error, CommandRunnerError::Spawn(_)));
-    }
-
-    #[test]
-    fn test_shell環境変数_platform上限超過は既存spawn_errorになる() {
-        let cwd = TempDir::new().unwrap();
-        let value = "x".repeat(2 * 1024 * 1024);
-
-        let error = spawn_shell_command(
-            cwd.path(),
-            "true",
-            [("DOC".to_string(), value)],
-            TEST_LABEL,
-            TEST_LIMIT,
-        )
-        .err()
-        .expect("platform上限を超える環境変数ではprocessを起動できない");
-
-        assert!(matches!(error, CommandRunnerError::Spawn(_)));
-    }
 }

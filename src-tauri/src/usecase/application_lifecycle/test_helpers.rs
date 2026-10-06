@@ -3,15 +3,15 @@ use std::time::Duration;
 
 use crate::domain::application_lifecycle::{ApplicationLifecycleError, ApplicationShutdownGateway};
 
-pub(crate) const STAGES: [&str; 5] = ["commands", "observer", "terminals", "api", "telemetry"];
+pub const STAGES: [&str; 5] = ["commands", "observer", "terminals", "api", "telemetry"];
 
 #[derive(Default)]
-pub(crate) struct FakeShutdown {
-    pub(crate) failed: Option<&'static str>,
-    pub(crate) blocked: Option<&'static str>,
-    pub(crate) delay: Duration,
-    pub(crate) calls: Mutex<Vec<&'static str>>,
-    pub(crate) failure_id: String,
+pub struct FakeShutdown {
+    pub failed: Option<&'static str>,
+    pub blocked: Option<&'static str>,
+    pub delay: Duration,
+    pub calls: Mutex<Vec<&'static str>>,
+    pub failure_id: String,
 }
 
 impl FakeShutdown {

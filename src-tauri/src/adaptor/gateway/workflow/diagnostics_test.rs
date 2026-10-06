@@ -1,210 +1,18 @@
 use super::*;
+use crate::adaptor::gateway::workflow::schema::Rule;
 
 const MERGED_REFERENCES: &str = include_str!("fixtures/valid/sequence-merged-references.yml");
 
-#[test]
-fn test_lua未消費参照の診断_非object契約のleafを唯一の診断で指す() {
-    // Given
-    let tmp = tempfile::tempdir().unwrap();
-    let source = r#"local r = require('releash')
-local bad = r.command{ name = 'bad', command = 'check', artifact = r.schema.string{} }
-local part = r.sequence{ name = 'part', children = { r.child{ node = bad } } }
-local main = r.sequence{ children = { r.child{ node = part } } }
-local ref = main.part.bad.ok
-return r.workflow{ name = 'nonobject-leaf', description = 'test', main = main }
-"#;
+const FANOUT_REFERENCES: &str = include_str!("fixtures/valid/fanout-map-references.yml");
 
-    // When
-    let diagnosis =
-        diagnose_lua_workflow_source("nonobject-leaf.lua", source, tmp.path(), tmp.path(), None);
+const FANOUT_ROUTING: &str = include_str!("fixtures/valid/fanout-map-routing.yml");
 
-    // Then
-    assert!(diagnosis.workflow.is_none());
-    assert_eq!(
-        diagnosis.diagnostics.len(),
-        1,
-        "{:?}",
-        diagnosis.diagnostics
-    );
-    let diagnostic = &diagnosis.diagnostics[0];
-    assert_eq!(diagnostic.code, "WFR003");
-    assert_eq!(diagnostic.stage, DiagnosticStage::Resolve);
-    assert_eq!(diagnostic.severity, Severity::Error);
-    assert_eq!(
-        diagnostic.message,
-        "artifact field 'bad' cannot be read from a non-object schema"
-    );
-}
+const PREDICATE_ROUTING: &str = include_str!("fixtures/valid/predicate-routing.yml");
 
-#[test]
-fn test_sequence宣言の診断_luaの入れ子とrequire先のartifact位置を指す() {
-    // Given
-    let tmp = tempfile::tempdir().unwrap();
-    let component = r#"local r = require("releash")
-return function()
-  local result = r.schema.object{ properties = {} }
-  local nested = r.sequence({
-    name = "nested",
-    children = { r.child{ node = r.command{
-      command = [[artifact = ignored, }]],
-      artifact = result,
-    } } },
-    -- artifact = ignored
-    artifact = result,
-  })
-  return r.sequence{
-    children = { r.child{ node = nested } },
-    artifact = result,
-  }
-end
-"#;
-    std::fs::create_dir(tmp.path().join("parts")).unwrap();
-    std::fs::write(tmp.path().join("parts/sequence.lua"), component).unwrap();
-    let inline = format!(
-        "local component = (function()\n{component}\nend)()\nlocal r = require('releash')\nreturn r.workflow{{ name = 'review', description = 'test', main = component() }}"
-    );
-    let imported = "local r = require('releash')\nreturn r.workflow{ name = 'review', description = 'test', main = require('parts.sequence')() }";
-    for (source, expected_source, offset) in [
-        (inline.as_str(), "review.lua", 1),
-        (imported, "parts/sequence.lua", 0),
-    ] {
-        // When
-        let diagnosis = diagnose_lua_workflow_source(
-            "review.lua",
-            source,
-            tmp.path(),
-            tmp.path(),
-            Some("review"),
-        );
+const NESTED_PREDICATE: &str = "{and: [passed, {or: [clean, skipped]}]}";
 
-        // Then
-        assert_eq!(
-            diagnosis.diagnostics.len(),
-            2,
-            "{:?}",
-            diagnosis.diagnostics
-        );
-        for (node, line, col) in [("nested", 11 + offset, 5), ("main", 15 + offset, 5)] {
-            let diagnostic = diagnosis
-                .diagnostics
-                .iter()
-                .find(|item| item.node_name.as_deref() == Some(node))
-                .unwrap();
-            assert_eq!(diagnostic.code, "WFS008");
-            assert_eq!(diagnostic.stage, DiagnosticStage::ParseShape);
-            assert_eq!(diagnostic.severity, Severity::Error);
-            assert_eq!(diagnostic.field.as_deref(), Some("artifact"));
-            assert_eq!(
-                diagnostic.span,
-                Some(DiagnosticSpan {
-                    source: Some(expected_source.to_string()),
-                    start_line: line,
-                    start_col: col,
-                    end_line: line,
-                    end_col: col + 8,
-                })
-            );
-        }
-    }
-}
-
-#[test]
-fn test_sequence宣言の診断_yamlとluaでoutputとartifactを同じcodeとstageで拒否する() {
-    // Given
-    let tmp = tempfile::tempdir().unwrap();
-    let cases = [
-        (
-            "output",
-            "WFS002",
-            include_str!("fixtures/invalid/WFS002_sequence-output.yml"),
-        ),
-        (
-            "artifact",
-            "WFS008",
-            include_str!("fixtures/invalid/WFS008_sequence-artifact.yml"),
-        ),
-    ];
-    for (field, code, yaml) in cases {
-        let option = if field == "output" {
-            "output = check"
-        } else {
-            "artifact = result"
-        };
-        let name = format!("sequence-{field}");
-        let lua = format!(
-            r#"local r = require("releash")
-local result = r.schema.object{{ name = "result", properties = {{ passed = r.schema.boolean() }}, required = {{ "passed" }} }}
-local check = r.command{{ name = "check", command = "check", artifact = result }}
-return r.workflow{{ name = "{name}", description = "test", main = r.sequence{{
-    {option},
-    children = {{ r.child{{ node = check }} }},
-}} }}
-"#
-        );
-
-        // When
-        let yaml_diagnosis = diagnose_workflow_source(yaml, None);
-        let lua_diagnosis = diagnose_lua_workflow_source(
-            &format!("{name}.lua"),
-            &lua,
-            tmp.path(),
-            tmp.path(),
-            None,
-        );
-
-        // Then
-        for diagnosis in [&yaml_diagnosis, &lua_diagnosis] {
-            let errors: Vec<_> = diagnosis
-                .diagnostics
-                .iter()
-                .filter(|item| item.severity == Severity::Error)
-                .collect();
-            assert_eq!(errors.len(), 1, "{:?}", diagnosis.diagnostics);
-            assert_eq!(errors[0].code, code);
-            assert_eq!(errors[0].stage, DiagnosticStage::ParseShape);
-            assert!(errors[0].span.is_some());
-        }
-        if field == "artifact" {
-            let diagnostic = &yaml_diagnosis.diagnostics[0];
-            assert_eq!(diagnostic.field.as_deref(), Some("artifact"));
-            assert_eq!(diagnostic.node_name.as_deref(), Some("main"));
-            assert_eq!(
-                diagnostic.span.as_ref().unwrap().start_line,
-                yaml.lines()
-                    .position(|line| line == "    artifact: result")
-                    .unwrap()
-                    + 1
-            );
-            assert_eq!(diagnostic.message, lua_diagnosis.diagnostics[0].message);
-            let diagnostic = &lua_diagnosis.diagnostics[0];
-            assert_eq!(diagnostic.field.as_deref(), Some("artifact"));
-            assert_eq!(diagnostic.node_name.as_deref(), Some("main"));
-            assert_eq!(
-                diagnostic.span,
-                Some(DiagnosticSpan {
-                    source: Some(format!("{name}.lua")),
-                    start_line: 5,
-                    start_col: 5,
-                    end_line: 5,
-                    end_col: 13,
-                })
-            );
-        }
-        for (extension, source) in [("yml", yaml), ("lua", lua.as_str())] {
-            let path = tmp.path().join(format!("{name}.{extension}"));
-            std::fs::write(&path, source).unwrap();
-            let error =
-                crate::adaptor::gateway::workflow::storage::load_workflow(&path, tmp.path())
-                    .unwrap_err();
-            assert!(
-                matches!(error,
-                    crate::adaptor::gateway::workflow::storage::StorageError::Diagnostics(ref items)
-                        if items.iter().any(|item| item.code == code && item.stage == DiagnosticStage::ParseShape)
-                ),
-                "{error:?}"
-            );
-        }
-    }
+fn predicate_yaml(on: &str) -> String {
+    PREDICATE_ROUTING.replace(NESTED_PREDICATE, on)
 }
 
 #[test]
@@ -270,76 +78,7 @@ fn test_sequence多段参照の診断_配線と述語の未解決と末端型を
 }
 
 #[test]
-fn test_sequence多段参照の診断_実loaderが統合mapの参照を受理する() {
-    // Given
-    let tmp = tempfile::tempdir().unwrap();
-    let path = tmp.path().join("sequence-merged-references.yml");
-    std::fs::write(&path, MERGED_REFERENCES).unwrap();
-
-    // When
-    let diagnosis = diagnose_workflow_source(MERGED_REFERENCES, None);
-    let loaded = crate::adaptor::gateway::workflow::storage::load_workflow(&path, tmp.path());
-
-    // Then
-    assert!(
-        diagnosis.diagnostics.is_empty(),
-        "{:?}",
-        diagnosis.diagnostics
-    );
-    assert!(loaded.is_ok(), "{loaded:?}");
-}
-
-const FANOUT_REFERENCES: &str = include_str!("fixtures/valid/fanout-map-references.yml");
-const FANOUT_LUA_REFERENCES: &str = r#"local r = require('releash')
-local result = r.schema.object{ name = 'result', properties = {
-  passed = r.schema.boolean(), tasks = r.schema.array{ items = r.schema.string{} },
-}, required = { 'passed', 'tasks' } }
-local a = r.command{ name = 'a', command = 'collect', artifact = result }
-local fan = r.fanout{ name = 'fan', children = { r.child{ node = a } } }
-local indexed_worker = r.command{ name = 'indexed_worker', command = 'work', input = { r.input('item') }, artifact = result }
-local indexed = r.fanout{ name = 'indexed', items = fan.a.tasks, children = { r.child{ node = indexed_worker } } }
-local nested_a = r.command{ name = 'nested_a', command = 'collect', artifact = result }
-local nested_fan = r.fanout{ name = 'nested_fan', children = { r.child{ node = nested_a } } }
-local seq = r.sequence{ name = 'seq', children = { r.child{ node = nested_fan } } }
-local consume = r.command{ name = 'consume', command = 'consume', input = { r.input('all'), r.input('slot'), r.input('named'), r.input('indexed'), r.input('nested') } }
-local worker = r.command{ name = 'worker', command = 'work', input = { r.input('item') } }
-local expand = r.fanout{ name = 'expand', items = seq.nested_fan.nested_a.tasks, children = { r.child{ node = worker } } }
-return r.workflow{ name = 'fanout-map-references', description = 'Fanout references', main = r.sequence{ children = {
-  r.child{ node = fan }, r.child{ node = indexed }, r.child{ node = seq },
-  r.child{ node = consume, inputs = { all = fan, slot = fan.a, named = fan.a.passed, indexed = indexed['0'].passed, nested = seq.nested_fan.nested_a.passed } },
-  r.child{ node = expand },
-} } }
-"#;
-
-#[test]
-fn test_fanout多段参照の診断_yamlとluaの配線とitemsを診断ゼロでloadする() {
-    // Given
-    let tmp = tempfile::tempdir().unwrap();
-    for (extension, source) in [("yml", FANOUT_REFERENCES), ("lua", FANOUT_LUA_REFERENCES)] {
-        let filename = format!("fanout-map-references.{extension}");
-        let path = tmp.path().join(&filename);
-        std::fs::write(&path, source).unwrap();
-
-        // When
-        let diagnosis = if extension == "yml" {
-            diagnose_workflow_source(source, None)
-        } else {
-            diagnose_lua_workflow_source(&filename, source, tmp.path(), tmp.path(), None)
-        };
-        let loaded = crate::adaptor::gateway::workflow::storage::load_workflow(&path, tmp.path());
-
-        // Then
-        assert!(
-            diagnosis.diagnostics.is_empty(),
-            "{extension}: {:?}",
-            diagnosis.diagnostics
-        );
-        assert!(loaded.is_ok(), "{loaded:?}");
-    }
-}
-
-#[test]
-fn test_fanout多段参照の診断_未解決の配線をWFR007と絶対位置で報告する() {
+fn test_fanout多段参照の診断_未解決の配線を_wfr007と絶対位置で報告する() {
     // Given
     for (from, to, message) in [
         (
@@ -375,10 +114,8 @@ fn test_fanout多段参照の診断_未解決の配線をWFR007と絶対位置�
     }
 }
 
-const FANOUT_ROUTING: &str = include_str!("fixtures/valid/fanout-map-routing.yml");
-
 #[test]
-fn test_fanoutの判別規則の診断_終端の型とrequiredでWFT001とWFT002を返す() {
+fn test_fanoutの判別規則の診断_終端の型とrequiredで_wft001と_wft002を返す() {
     // Given
     for (from, to, code) in [
         ("on: a.passed", "on: a.verdict", "WFT001"),
@@ -414,86 +151,6 @@ fn test_fanoutの判別規則の診断_終端の型とrequiredでWFT001とWFT002
             .iter()
             .any(|item| item.code == "WFT006"));
     }
-}
-
-#[test]
-fn test_fanoutの判別規則の診断_yamlとluaのwhenとswitchと入れ子を診断ゼロでloadする() {
-    // Given
-    let tmp = tempfile::tempdir().unwrap();
-    let lua = r#"local r = require('releash')
-local result = r.schema.object{ name = 'result', properties = {
-  passed = r.schema.boolean(), verdict = r.schema.string{ enum = { 'READY', 'HOLD' } },
-}, required = { 'passed', 'verdict' } }
-local a = r.command{ name = 'a', command = 'collect', artifact = result }
-local fan = r.fanout{ name = 'fan', children = { r.child{ node = a } } }
-local indexed_worker = r.command{ name = 'indexed_worker', command = 'collect', input = { r.input('item') }, artifact = result }
-local indexed = r.fanout{ name = 'indexed', items = { 'task' }, children = { r.child{ node = indexed_worker } } }
-local classify = r.command{ name = 'classify', command = 'collect', artifact = result }
-local classifier = r.fanout{ name = 'classifier', children = { r.child{ node = classify } } }
-local nested_a = r.command{ name = 'nested_a', command = 'collect', artifact = result }
-local nested_fan = r.fanout{ name = 'nested_fan', children = { r.child{ node = nested_a } } }
-local seq = r.sequence{ name = 'seq', children = { r.child{ node = nested_fan } } }
-local ready = r.command{ name = 'ready', command = 'ready' }
-local finished = r.command{ name = 'finished', command = 'finished' }
-return r.workflow{ name = 'fanout-map-routing', description = 'Fanout routing', main = r.sequence{ children = {
-  r.child{ node = fan, rules = { r.when{ on = fan.a.passed, on_true = indexed, next = finished } } },
-  r.child{ node = indexed, rules = { r.switch{ on = indexed['0'].verdict, cases = { READY = classifier, HOLD = finished } } } },
-  r.child{ node = classifier, rules = { r.switch{ on = classifier.classify.verdict, cases = { READY = seq, HOLD = finished } } } },
-  r.child{ node = seq, rules = { r.when{ on = seq.nested_fan.nested_a.passed, on_true = ready, next = finished } } },
-  r.child{ node = ready, rules = {} }, r.child{ node = finished },
-} } }
-"#;
-    for (extension, source) in [("yml", FANOUT_ROUTING), ("lua", lua)] {
-        let filename = format!("fanout-map-routing.{extension}");
-        let path = tmp.path().join(&filename);
-        std::fs::write(&path, source).unwrap();
-
-        // When
-        let diagnosis = if extension == "yml" {
-            diagnose_workflow_source(source, None)
-        } else {
-            diagnose_lua_workflow_source(&filename, source, tmp.path(), tmp.path(), None)
-        };
-        let loaded = crate::adaptor::gateway::workflow::storage::load_workflow(&path, tmp.path());
-
-        // Then
-        assert!(
-            diagnosis.diagnostics.is_empty(),
-            "{extension}: {:?}",
-            diagnosis.diagnostics
-        );
-        assert!(loaded.is_ok(), "{loaded:?}");
-    }
-}
-
-#[test]
-fn test_fanout変更後のbuiltin定義_8本すべて診断ゼロでloadする() {
-    // Given
-    let summaries = builtin::list_builtin_workflows();
-    assert_eq!(summaries.len(), 8);
-    for summary in summaries {
-        let source = builtin::builtin_workflow_source(&summary.name).unwrap();
-
-        // When
-        let diagnosis = diagnose_workflow_source(source, Some(&summary.name));
-        let loaded = builtin::load_builtin_workflow_resolved(&summary.name);
-
-        // Then
-        assert!(
-            diagnosis.diagnostics.is_empty(),
-            "{}: {:?}",
-            summary.name,
-            diagnosis.diagnostics
-        );
-        assert!(matches!(loaded, Ok(Some(_))), "{loaded:?}");
-    }
-}
-
-const PREDICATE_ROUTING: &str = include_str!("fixtures/valid/predicate-routing.yml");
-const NESTED_PREDICATE: &str = "{and: [passed, {or: [clean, skipped]}]}";
-
-fn predicate_yaml(on: &str) -> String {
-    PREDICATE_ROUTING.replace(NESTED_PREDICATE, on)
 }
 
 #[test]
@@ -720,454 +377,6 @@ fn test_述語load_全参照の型検査は単一参照の理由を保持する(
     }
 }
 
-const PREDICATE_LUA: &str = include_str!("fixtures/valid/predicate-routing.lua");
-
-#[test]
-fn test_lua容量の診断_述語再利用の上限超過は位置を保持してloadを拒否する() {
-    // Given
-    let directory = tempfile::tempdir().unwrap();
-    let path = directory.path().join("budget.lua");
-    std::fs::write(
-        &path,
-        r#"local r = require('releash')
-local judge = r.command{ command = 'judge' }
-local predicate = r.all{ judge.ok }
-for i = 1, 30 do predicate = r.all{ predicate, predicate } end
-return r.workflow{ name = 'budget', description = 'test', main = judge }
-"#,
-    )
-    .unwrap();
-    // When
-    let result = super::super::storage::load_workflow(&path, directory.path());
-    // Then
-    let Err(super::super::storage::StorageError::Diagnostics(diagnostics)) = result else {
-        panic!("{result:?}");
-    };
-    assert_eq!(diagnostics.len(), 1);
-    let diagnostic = &diagnostics[0];
-    assert_eq!(diagnostic.code, "WFS010");
-    assert_eq!(diagnostic.stage, DiagnosticStage::ParseShape);
-    assert_eq!(diagnostic.severity, Severity::Error);
-    assert_eq!(
-        diagnostic.message,
-        "Lua definition exceeded the limit of 100000 builder values"
-    );
-    assert_eq!(diagnostic.field, None);
-    assert_eq!(
-        diagnostic.span,
-        Some(DiagnosticSpan {
-            source: Some("budget.lua".to_string()),
-            start_line: 4,
-            start_col: 1,
-            end_line: 4,
-            end_col: 2,
-        })
-    );
-}
-const NESTED_LUA: &str = "r.all{ judge.passed, r.any{ judge.clean, judge.skipped } }";
-
-fn predicate_lua(on: &str) -> String {
-    PREDICATE_LUA.replace(NESTED_LUA, on)
-}
-
-#[test]
-fn test_lua参照解決の診断_変換不能な値は利用箇所ごとの理由とfieldでloadを拒否する() {
-    // Given
-    let directory = tempfile::tempdir().unwrap();
-    let invalid_predicate = "predicate must be a field reference or an and/or map";
-    let mut cases = Vec::new();
-    for value in ["true", "42", "'passed'", "{}", "{ value = true }"] {
-        cases.push((predicate_lua(value), invalid_predicate, "on"));
-        for builder in ["all", "any"] {
-            cases.push((
-                predicate_lua(&format!("r.{builder}{{ {value} }}")),
-                invalid_predicate,
-                "predicate element",
-            ));
-        }
-    }
-    for value in ["true", "42", "'passed'", "{}", NESTED_LUA] {
-        cases.push((
-            predicate_lua(value)
-                .replace("r.when{", "r.switch{")
-                .replace(
-                    "on_true = done, next = fix",
-                    "cases = { yes = done }, next = fix",
-                ),
-            "field 'on' must be Source",
-            "on",
-        ));
-        cases.push((
-            PREDICATE_LUA.replace(
-                "node = judge, rules = {",
-                &format!("node = judge, inputs = {{ data = {value} }}, rules = {{"),
-            ),
-            "field 'inputs' must be Source values",
-            "inputs",
-        ));
-    }
-    for (source, message, field) in cases {
-        let path = directory.path().join("sources.lua");
-        std::fs::write(&path, &source).unwrap();
-        // When
-        let result = super::super::storage::load_workflow(&path, directory.path());
-        // Then
-        let Err(super::super::storage::StorageError::Diagnostics(diagnostics)) = result else {
-            panic!("{source}: {result:?}");
-        };
-        assert_eq!(diagnostics.len(), 1, "{source}: {diagnostics:?}");
-        let diagnostic = &diagnostics[0];
-        assert_eq!(diagnostic.code, "WFS002", "{source}");
-        assert_eq!(diagnostic.stage, DiagnosticStage::ParseShape);
-        assert_eq!(diagnostic.severity, Severity::Error);
-        assert_eq!(diagnostic.message, message, "{source}");
-        assert_eq!(diagnostic.field.as_deref(), Some(field));
-        let line = if field == "inputs" { 22 } else { 23 };
-        assert_eq!(
-            diagnostic.span,
-            Some(DiagnosticSpan {
-                source: Some("sources.lua".to_string()),
-                start_line: line,
-                start_col: 1,
-                end_line: line,
-                end_col: 2,
-            }),
-            "{source}"
-        );
-    }
-}
-
-#[test]
-fn test_lua述語の診断_自childのartifact_field以外はresolveでloadを拒否する() {
-    // Given
-    let directory = tempfile::tempdir().unwrap();
-    for reference in [
-        "done.ok",
-        "judge",
-        "r.request",
-        "r.items",
-        "r.input('value')",
-    ] {
-        for expression in [
-            reference.to_string(),
-            format!("r.all{{ judge.passed, r.any{{ {reference} }} }}"),
-        ] {
-            let path = directory.path().join("scope.lua");
-            std::fs::write(&path, predicate_lua(&expression)).unwrap();
-            // When
-            let result = super::super::storage::load_workflow(&path, directory.path());
-            // Then
-            let Err(super::super::storage::StorageError::Diagnostics(diagnostics)) = result else {
-                panic!("{expression}: {result:?}");
-            };
-            assert_eq!(diagnostics.len(), 1, "{expression}: {diagnostics:?}");
-            let diagnostic = &diagnostics[0];
-            assert_eq!(diagnostic.code, "WFR003", "{expression}");
-            assert_eq!(diagnostic.stage, DiagnosticStage::Resolve);
-            assert_eq!(diagnostic.severity, Severity::Error);
-            assert_eq!(
-                diagnostic.message,
-                "rule discriminator must reference the current child artifact field"
-            );
-            assert_eq!(diagnostic.field, None);
-        }
-    }
-}
-
-#[test]
-fn test_述語の表面間同値性_受理と全真理値の遷移が一致する() {
-    use crate::domain::workflow::services::routing::{route_in_scope, RouteDecision};
-    // Given
-    let directory = tempfile::tempdir().unwrap();
-    for (yaml_on, lua_on) in [
-        ("passed", "judge.passed"),
-        ("{and: [passed]}", "r.all{ judge.passed }"),
-        ("{or: [passed]}", "r.any{ judge.passed }"),
-        (
-            "{and: [passed, clean]}",
-            "r.all{ judge.passed, judge.clean }",
-        ),
-        (
-            "{or: [passed, clean]}",
-            "r.any{ judge.passed, judge.clean }",
-        ),
-        (NESTED_PREDICATE, NESTED_LUA),
-        (
-            "{and: [details.passed, {or: [details.passed, passed]}]}",
-            "r.all{ judge.details.passed, r.any{ judge.details.passed, judge.passed } }",
-        ),
-        ("legacy flag", "judge['legacy flag']"),
-    ] {
-        let yaml = diagnose_workflow_source(&predicate_yaml(yaml_on), None);
-        let lua = diagnose_lua_workflow_source(
-            "predicate-routing.lua",
-            &predicate_lua(lua_on),
-            directory.path(),
-            directory.path(),
-            None,
-        );
-        // When / Then
-        for diagnosis in [&yaml, &lua] {
-            assert!(
-                diagnosis.diagnostics.is_empty(),
-                "{yaml_on}: {:?}",
-                diagnosis.diagnostics
-            );
-            assert!(diagnosis.workflow.is_some());
-        }
-        for passed in [false, true] {
-            for clean in [false, true] {
-                for skipped in [false, true] {
-                    let expected = match yaml_on {
-                        "passed" | "{and: [passed]}" | "{or: [passed]}" | "legacy flag" => passed,
-                        "{and: [passed, clean]}" => passed && clean,
-                        "{or: [passed, clean]}" => passed || clean,
-                        NESTED_PREDICATE => passed && (clean || skipped),
-                        _ => passed,
-                    };
-                    let value = serde_json::json!({"passed": passed, "clean": clean, "skipped": skipped, "details": {"passed": passed}, "legacy flag": passed});
-                    for diagnosis in [&yaml, &lua] {
-                        let workflow = diagnosis.workflow.as_ref().unwrap();
-                        let sequence = workflow.entry_node().unwrap().sequence().unwrap();
-                        let target = route_in_scope(
-                            workflow,
-                            sequence,
-                            "judge",
-                            Some(&value),
-                            &HashMap::new(),
-                        )
-                        .unwrap();
-                        assert_eq!(
-                            target,
-                            RouteDecision::TransitionTo(
-                                if expected { "done" } else { "fix" }.to_string()
-                            ),
-                            "{yaml_on}: {value}"
-                        );
-                    }
-                }
-            }
-        }
-    }
-}
-
-#[test]
-fn test_述語の表面間同値性_空と型とrequiredとpathの診断が一致する() {
-    // Given
-    let directory = tempfile::tempdir().unwrap();
-    for (yaml_on, lua_on) in [
-        ("{and: []}", "r.all{}"),
-        ("{or: []}", "r.any{}"),
-        ("{or: [passed, {and: []}]}", "r.any{ judge.passed, r.all{} }"),
-        ("{and: [passed, {or: []}]}", "r.all{ judge.passed, r.any{} }"),
-        ("details.text", "judge.details.text"),
-        ("{or: [passed, details.text]}", "r.any{ judge.passed, judge.details.text }"),
-        ("{and: [passed, {or: [details.optional]}]}", "r.all{ judge.passed, r.any{ judge.details.optional } }"),
-        ("{or: [passed, details.unknown]}", "r.any{ judge.passed, judge.details.unknown }"),
-        ("{or: [passed, passed.flag]}", "r.any{ judge.passed, judge.passed.flag }"),
-        ("{or: [passed, {and: [details.text, details.optional, details.unknown]}]}", "r.any{ judge.passed, r.all{ judge.details.text, judge.details.optional, judge.details.unknown } }"),
-    ] {
-        let yaml = diagnose_workflow_source(&predicate_yaml(yaml_on), None);
-        let lua = diagnose_lua_workflow_source("predicate-routing.lua", &predicate_lua(lua_on), directory.path(), directory.path(), None);
-        // When / Then
-        assert!(yaml.has_errors(), "{yaml_on}");
-        assert!(lua.has_errors(), "{lua_on}");
-        let signature = |diagnosis: &WorkflowSourceDiagnostics| diagnosis.diagnostics.iter().map(|diagnostic| (diagnostic.code.clone(), diagnostic.stage, diagnostic.message.clone())).collect::<Vec<_>>();
-        assert_eq!(signature(&yaml), signature(&lua), "{yaml_on} / {lua_on}");
-    }
-}
-
-#[test]
-fn test_述語の表面間同値性_空と不正な要素と配列以外は同じ診断でloadを拒否する() {
-    // Given
-    let directory = tempfile::tempdir().unwrap();
-    let invalid_predicate = "predicate must be a field reference or an and/or map";
-    let expected_array = "predicate and/or must contain an array";
-    let empty = "predicate and/or must contain at least one element";
-    for (yaml_on, lua_on, message) in [
-        ("{and: []}", "r.all{}", empty),
-        ("{or: []}", "r.any{}", empty),
-        (
-            "{or: [passed, {and: []}]}",
-            "r.any{ judge.passed, r.all{} }",
-            empty,
-        ),
-        (
-            "{and: [passed, {or: []}]}",
-            "r.all{ judge.passed, r.any{} }",
-            empty,
-        ),
-        ("true", "true", invalid_predicate),
-        ("42", "42", invalid_predicate),
-        ("[passed]", "{ judge.passed }", invalid_predicate),
-        ("{and: [true]}", "r.all{ true }", invalid_predicate),
-        (
-            "{and: [passed, false]}",
-            "r.all{ judge.passed, false }",
-            invalid_predicate,
-        ),
-        (
-            "{or: [passed, false]}",
-            "r.any{ judge.passed, false }",
-            invalid_predicate,
-        ),
-        ("{and: [42]}", "r.all{ 42 }", invalid_predicate),
-        ("{or: [42]}", "r.any{ 42 }", invalid_predicate),
-        (
-            "{and: [passed, {or: [false]}]}",
-            "r.all{ judge.passed, r.any{ false } }",
-            invalid_predicate,
-        ),
-        (
-            "{or: [passed, {and: [false]}]}",
-            "r.any{ judge.passed, r.all{ false } }",
-            invalid_predicate,
-        ),
-        (
-            "{and: {field: passed}}",
-            "r.all{ field = judge.passed }",
-            expected_array,
-        ),
-        (
-            "{or: {field: passed}}",
-            "r.any{ field = judge.passed }",
-            expected_array,
-        ),
-        ("{and: true}", "r.all(true)", expected_array),
-        ("{or: passed}", "r.any('passed')", expected_array),
-        ("{and: null}", "r.all(nil)", expected_array),
-        ("{or: 42}", "r.any(42)", expected_array),
-        (
-            "{and: [passed, {or: {field: passed}}]}",
-            "r.all{ judge.passed, r.any{ field = judge.passed } }",
-            expected_array,
-        ),
-        (
-            "{or: [passed, {and: false}]}",
-            "r.any{ judge.passed, r.all(false) }",
-            expected_array,
-        ),
-    ] {
-        for (extension, source) in [
-            ("yml", predicate_yaml(yaml_on)),
-            ("lua", predicate_lua(lua_on)),
-        ] {
-            let path = directory
-                .path()
-                .join(format!("predicate-routing.{extension}"));
-            std::fs::write(&path, source).unwrap();
-            // When
-            let result = super::super::storage::load_workflow(&path, directory.path());
-            // Then
-            let Err(super::super::storage::StorageError::Diagnostics(diagnostics)) = result else {
-                panic!("{extension}: {yaml_on} / {lua_on}: {result:?}");
-            };
-            let signature: Vec<_> = diagnostics
-                .iter()
-                .map(|diagnostic| {
-                    (
-                        diagnostic.code.as_str(),
-                        diagnostic.stage,
-                        diagnostic.severity,
-                        diagnostic.message.as_str(),
-                    )
-                })
-                .collect();
-            assert_eq!(
-                signature,
-                vec![(
-                    "WFS002",
-                    DiagnosticStage::ParseShape,
-                    Severity::Error,
-                    message
-                )],
-                "{extension}: {yaml_on} / {lua_on}",
-            );
-        }
-    }
-}
-
-#[test]
-fn test_述語の表面間同値性_sequenceとfanoutの異なるslotを合成する() {
-    use crate::domain::workflow::services::routing::{route_in_scope, RouteDecision};
-    // Given
-    let directory = tempfile::tempdir().unwrap();
-    for (yaml_node, lua_node, fields) in [
-        ("sequence: {children: [a, b]}", "r.sequence{ name = 'judge', children = { r.child{node = a}, r.child{node = b} } }", ["a.details.passed", "b.passed"]),
-        ("fanout: {children: [a, b]}", "r.fanout{ name = 'judge', children = { r.child{node = a}, r.child{node = b} } }", ["a.details.passed", "b.passed"]),
-        ("fanout: {children: [a], items: [first, second]}", "r.fanout{ name = 'judge', children = { r.child{node = a} }, items = {'first', 'second'} }", ["0.details.passed", "1.passed"]),
-        ("sequence: {children: [fan]}", "r.sequence{ name = 'judge', children = { r.child{node = fan} } }", ["fan.a.details.passed", "fan.b.passed"]),
-    ] {
-        let indexed = fields[0].starts_with('0');
-        let nested = fields[0].starts_with("fan.");
-        let yaml = predicate_yaml(&format!("{{and: [{}, {{or: [{}]}}]}}", fields[0], fields[1]))
-            .replace("  judge:\n    command: judge\n    artifact: result", &format!("  judge:\n    {yaml_node}\n  a: {{command: a, artifact: result{}}}{}{}", if indexed {", input: [item]"} else {""}, if indexed {""} else {"\n  b: {command: b, artifact: result}"}, if nested {"\n  fan: {fanout: {children: [a, b]}}"} else {""}));
-        let lua_reference = |field: &str| field.split('.').fold("judge".to_string(), |source, segment| format!("{source}['{segment}']"));
-        let lua = predicate_lua(&format!("r.all{{ {}, r.any{{ {} }} }}", lua_reference(fields[0]), lua_reference(fields[1])))
-            .replace("local judge = r.command{ name = \"judge\", command = \"judge\", artifact = result }", &format!("local a = r.command{{name = 'a', command = 'a', artifact = result{}}}\n{}{}local judge = {lua_node}", if indexed {", input = { r.input('item') }"} else {""}, if indexed {""} else {"local b = r.command{name = 'b', command = 'b', artifact = result}\n"}, if nested {"local fan = r.fanout{name = 'fan', children = { r.child{node = a}, r.child{node = b} }}\n"} else {""}));
-        for (extension, source) in [("yml", yaml), ("lua", lua)] {
-            let path = directory.path().join(format!("predicate-routing.{extension}"));
-            std::fs::write(&path, source).unwrap();
-            // When
-            let workflow = super::super::storage::load_workflow(&path, directory.path()).unwrap();
-            let sequence = workflow.entry_node().unwrap().sequence().unwrap();
-            // Then
-            for first in [false, true] {
-                for second in [false, true] {
-                    let mut artifact = serde_json::json!({});
-                    for (field, value) in fields.iter().zip([first, second]) {
-                        let mut cursor = &mut artifact;
-                        let parts: Vec<_> = field.split('.').collect();
-                        for segment in &parts[..parts.len()-1] {
-                            if cursor.get(*segment).is_none() { cursor[*segment] = serde_json::json!({}); }
-                            cursor = &mut cursor[*segment];
-                        }
-                        cursor[parts[parts.len()-1]] = serde_json::json!(value);
-                    }
-                    let decision = route_in_scope(&workflow, sequence, "judge", Some(&artifact), &HashMap::new()).unwrap();
-                    assert_eq!(decision, RouteDecision::TransitionTo(if first && second {"done"} else {"fix"}.to_string()), "{extension}: {artifact}");
-                }
-            }
-        }
-    }
-}
-
-#[test]
-fn test_述語の実loader_不正なshapeと参照を両表面でloadしない() {
-    // Given
-    let directory = tempfile::tempdir().unwrap();
-    for (yaml_on, lua_on) in [
-        ("{and: []}", "r.all{}"),
-        (
-            "{or: [passed, details.text]}",
-            "r.any{judge.passed, judge.details.text}",
-        ),
-        ("{and: [details.optional]}", "r.all{judge.details.optional}"),
-        ("{or: [details.unknown]}", "r.any{judge.details.unknown}"),
-        ("{and: [passed.flag]}", "r.all{judge.passed.flag}"),
-    ] {
-        for (extension, source) in [
-            ("yml", predicate_yaml(yaml_on)),
-            ("lua", predicate_lua(lua_on)),
-        ] {
-            let path = directory
-                .path()
-                .join(format!("predicate-routing.{extension}"));
-            std::fs::write(&path, source).unwrap();
-            // When
-            let result = super::super::storage::load_workflow(&path, directory.path());
-            // Then
-            assert!(
-                matches!(
-                    result,
-                    Err(super::super::storage::StorageError::Diagnostics(_))
-                ),
-                "{result:?}"
-            );
-        }
-    }
-}
-
 #[test]
 fn test_述語の回帰_builtinと正本サンプルの全18辺は単一参照の遷移を保つ() {
     use crate::domain::workflow::{
@@ -1182,7 +391,6 @@ fn test_述語の回帰_builtinと正本サンプルの全18辺は単一参照�
     sources.push(include_str!(
         "../../../../../workflows/examples/full-cycle-development.yml"
     ));
-    let mut count = 0;
     for source in sources {
         let diagnosis = diagnose_workflow_source(source, None);
         assert!(
@@ -1200,7 +408,6 @@ fn test_述語の回帰_builtinと正本サンプルの全18辺は単一参照�
                     let Predicate::Ref(field) = on else {
                         panic!("existing when must remain a single reference")
                     };
-                    count += 1;
                     for (value, target) in [(true, then), (false, next)] {
                         let artifact = field.split('.').rev().fold(
                             serde_json::json!(value),
@@ -1226,146 +433,6 @@ fn test_述語の回帰_builtinと正本サンプルの全18辺は単一参照�
                     }
                 }
             }
-        }
-    }
-    assert_eq!(count, 18);
-}
-
-#[test]
-fn test_completion診断_yamlとluaの同じ誤りはcode_stageと各表面のmessageを保つ() {
-    // Given
-    let directory = tempfile::tempdir().unwrap();
-    for (yaml_value, lua_value, message) in [
-        (
-            "{require: approval, extra: true}",
-            "{ require = r.completion.approval, extra = true }",
-            "completion map contains an unsupported key",
-        ),
-        (
-            "approval",
-            "r.completion.approval",
-            "completion must be a map",
-        ),
-        ("auto", "'auto'", "completion must be a map"),
-        ("approval", "'approval'", "completion must be a map"),
-        ("true", "true", "completion must be a map"),
-        ("42", "42", "completion must be a map"),
-        (
-            "[approval]",
-            "{ r.completion.approval }",
-            "completion must be a map",
-        ),
-        (
-            "{}",
-            "{}",
-            "completion must contain at least one requirement",
-        ),
-        (
-            "{require: auto}",
-            "{ require = 'auto' }",
-            "completion require must be approval",
-        ),
-        (
-            "{require: other}",
-            "{ require = 'other' }",
-            "completion require must be approval",
-        ),
-        (
-            "{require: true}",
-            "{ require = true }",
-            "completion require must be approval",
-        ),
-        (
-            "{require: 1}",
-            "{ require = 1 }",
-            "completion require must be approval",
-        ),
-        (
-            "{require: {}}",
-            "{ require = {} }",
-            "completion require must be approval",
-        ),
-        (
-            "{require: []}",
-            "{ require = { r.completion.approval } }",
-            "completion require must be approval",
-        ),
-    ] {
-        let lua_source = format!("local r = require('releash')\nreturn r.workflow{{ name = 'completion', description = 'test', main = r.command{{\n  command = 'true',\n  completion = {lua_value},\n}} }}");
-        let yaml_bodies = [
-            format!("  main:\n    command: 'true'\n    completion: {yaml_value}"),
-            format!("  main:\n    sequence:\n      children:\n        - leaf:\n            command: 'true'\n            completion: {yaml_value}"),
-            format!("  main:\n    fanout:\n      children:\n        - command: 'true'\n          completion: {yaml_value}"),
-        ];
-        for body in yaml_bodies {
-            let yaml_source = format!("name: completion\ndescription: test\nnodes:\n{body}\n");
-            // When
-            let yaml = diagnose_workflow_source(&yaml_source, None);
-            let lua = diagnose_lua_workflow_source(
-                "completion.lua",
-                &lua_source,
-                directory.path(),
-                directory.path(),
-                None,
-            );
-            // Then
-            let lua_message = match message {
-                "completion map contains an unsupported key" => {
-                    "completion map only accepts the key 'require'"
-                }
-                _ => message,
-            };
-            for (diagnosis, message) in [(&yaml, message), (&lua, lua_message)] {
-                assert!(diagnosis.workflow.is_none(), "{yaml_value} / {lua_value}");
-                assert_eq!(
-                    diagnosis.diagnostics.len(),
-                    1,
-                    "{:?}",
-                    diagnosis.diagnostics
-                );
-                let diagnostic = &diagnosis.diagnostics[0];
-                assert_eq!(diagnostic.code, "WFS002");
-                assert_eq!(diagnostic.stage, DiagnosticStage::ParseShape);
-                assert_eq!(diagnostic.severity, Severity::Error);
-                assert_eq!(diagnostic.message, message);
-                assert_eq!(diagnostic.field.as_deref(), Some("completion"));
-                assert!(diagnostic.span.is_some());
-            }
-        }
-    }
-}
-
-#[test]
-fn test_completion診断_全node種別でyamlとluaが同じ要求の有無を持つ定義を構築する() {
-    // Given
-    let directory = tempfile::tempdir().unwrap();
-    std::fs::create_dir_all(directory.path().join("instructions")).unwrap();
-    std::fs::write(
-        directory.path().join("instructions/test.md"),
-        "test instruction",
-    )
-    .unwrap();
-    for (yaml_kind, lua_kind) in [
-        ("session: {provider: claude, facets: {instruction: test}}", "r.session{ provider = r.provider.claude, facets = {instruction = f.instruction.test}, %COMPLETION% }"),
-        ("command: 'true'", "r.command{ command = 'true', %COMPLETION% }"),
-        ("fanout: {children: [{leaf: {command: 'true'}}]}", "r.fanout{ children = {r.child{node = r.command{name = 'leaf', command = 'true'}}}, %COMPLETION% }"),
-        ("sequence: {children: [{leaf: {command: 'true'}}]}", "r.sequence{ children = {r.child{node = r.command{name = 'leaf', command = 'true'}}}, %COMPLETION% }"),
-    ] {
-        for required in [false, true] {
-            let yaml_completion = if required { "\n    completion: {require: approval}" } else { "" };
-            let lua_completion = if required { "completion = { require = r.completion.approval }" } else { "" };
-            let yaml_source = format!("name: completion\ndescription: test\nnodes:\n  main:\n    {yaml_kind}{yaml_completion}\n");
-            let lua_source = format!("local r = require('releash')\nlocal f = require('facets')\nreturn r.workflow{{ name = 'completion', description = 'test', main = {} }}", lua_kind.replace("%COMPLETION%", lua_completion));
-            // When
-            let yaml = diagnose_workflow_source(&yaml_source, None);
-            let lua = diagnose_lua_workflow_source("completion.lua", &lua_source, directory.path(), directory.path(), None);
-            // Then
-            assert!(yaml.diagnostics.is_empty(), "{:?}", yaml.diagnostics);
-            assert!(lua.diagnostics.is_empty(), "{:?}", lua.diagnostics);
-            let yaml_workflow = yaml.workflow.unwrap();
-            let lua_workflow = lua.workflow.unwrap();
-            assert_eq!(serde_json::to_value(&yaml_workflow).unwrap(), serde_json::to_value(&lua_workflow).unwrap());
-            assert_eq!(yaml_workflow.node_by_name("main").unwrap().requires_approval_completion(), required);
         }
     }
 }
@@ -1425,103 +492,6 @@ fn test_completion移行_builtin8本と正本サンプルが診断なしで既�
 }
 
 #[test]
-fn test_隔離定義_yamlとluaの全node種別でmodeを受理する() {
-    // Given
-    let directory = tempfile::tempdir().unwrap();
-    std::fs::create_dir_all(directory.path().join("instructions")).unwrap();
-    std::fs::write(
-        directory.path().join("instructions/test.md"),
-        "test instruction",
-    )
-    .unwrap();
-    for mode in ["shared", "isolated"] {
-        let yaml = format!("name: isolation\ndescription: test\nnodes:\n  main: {{worktree: {mode}, sequence: {{children: [group]}}}}\n  group: {{worktree: {mode}, fanout: {{children: [agent, check]}}}}\n  agent: {{worktree: {mode}, session: {{provider: codex, facets: {{instruction: test}}}}}}\n  check: {{worktree: {mode}, command: 'true'}}");
-        let lua = format!(
-            r#"local r = require('releash')
-local f = require('facets')
-local agent = r.session{{name = 'agent', provider = r.provider.codex, facets = {{instruction = f.instruction.test}}, worktree = r.worktree.{mode}}}
-local check = r.command{{name = 'check', command = 'true', worktree = r.worktree.{mode}}}
-local group = r.fanout{{name = 'group', worktree = r.worktree.{mode}, children = {{r.child{{node = agent}}, r.child{{node = check}}}}}}
-return r.workflow{{name = 'isolation', description = 'test', main = r.sequence{{worktree = r.worktree.{mode}, children = {{r.child{{node = group}}}}}}}}
-"#
-        );
-
-        // When
-        let diagnoses = [
-            diagnose_workflow_source(&yaml, None),
-            diagnose_lua_workflow_source(
-                "isolation.lua",
-                &lua,
-                directory.path(),
-                directory.path(),
-                None,
-            ),
-        ];
-
-        // Then
-        for diagnosis in diagnoses {
-            assert!(
-                diagnosis.diagnostics.is_empty(),
-                "{:?}",
-                diagnosis.diagnostics
-            );
-            let workflow = diagnosis.workflow.unwrap();
-            assert_eq!(workflow.nodes.len(), 4);
-            assert!(workflow
-                .nodes
-                .iter()
-                .all(|node| node.is_isolated() == (mode == "isolated")));
-        }
-    }
-}
-
-#[test]
-fn test_隔離定義_値域外のyaml値とluaの文字列や他のhandleを拒否する() {
-    // Given
-    let directory = tempfile::tempdir().unwrap();
-    std::fs::create_dir_all(directory.path().join("instructions")).unwrap();
-    std::fs::write(
-        directory.path().join("instructions/test.md"),
-        "test instruction",
-    )
-    .unwrap();
-    for value in ["unknown", "42", "true", "[]", "{}", "null"] {
-        let source = format!("name: invalid\ndescription: test\nnodes:\n  main: {{command: 'true', worktree: {value}}}");
-
-        // When
-        let diagnosis = diagnose_workflow_source(&source, None);
-
-        // Then
-        assert!(diagnosis.workflow.is_none(), "{value}");
-        assert!(
-            diagnosis
-                .diagnostics
-                .iter()
-                .any(|diagnostic| diagnostic.severity == Severity::Error),
-            "{value}"
-        );
-    }
-    for value in ["'isolated'", "42", "true", "{}", "r.provider.codex"] {
-        let source = format!("local r = require('releash')\nreturn r.workflow{{name = 'invalid', description = 'test', main = r.command{{command = 'true', worktree = {value}}}}}");
-        let diagnosis = diagnose_lua_workflow_source(
-            "invalid.lua",
-            &source,
-            directory.path(),
-            directory.path(),
-            None,
-        );
-        assert!(diagnosis.workflow.is_none(), "{value}");
-        assert!(
-            diagnosis
-                .diagnostics
-                .iter()
-                .any(|diagnostic| diagnostic.severity == Severity::Error),
-            "{value}"
-        );
-    }
-}
-
-#[test]
 fn test_隔離定義_宣言の有無を問わずcontract直下のworktreeを拒否する() {
     // Given
     for mode in ["", "worktree: shared,", "worktree: isolated,"] {
@@ -1556,44 +526,1154 @@ fn test_隔離定義_宣言の有無を問わずcontract直下のworktreeを拒�
 }
 
 #[test]
-fn test_隔離定義_合成子とcontractなしsessionを経由してworktreeを参照する() {
+fn test_診断itemは省略されたoptional_fieldをnoneとしてdeserializeする() {
     // Given
-    let yaml = "name: references\ndescription: test\nnodes:\n  main:\n    sequence:\n      children:\n        - seq\n        - report: {inputs: {path: seq.work.worktree.path, branch: seq.worktree.branch}}\n  seq: {worktree: isolated, sequence: {children: [work]}}\n  work: {worktree: isolated, session: {provider: codex, facets: {instruction: test}}}\n  report: {input: [path, branch], command: 'echo {{ path }}', env: {BRANCH: branch}}";
-    let directory = tempfile::tempdir().unwrap();
-    std::fs::create_dir_all(directory.path().join("instructions")).unwrap();
-    std::fs::write(
-        directory.path().join("instructions/test.md"),
-        "test instruction",
-    )
-    .unwrap();
-    let lua = r#"local r = require('releash')
-local f = require('facets')
-local work = r.session{name = 'work', provider = r.provider.codex, facets = {instruction = f.instruction.test}, worktree = r.worktree.isolated}
-local seq = r.sequence{name = 'seq', worktree = r.worktree.isolated, children = {r.child{node = work}}}
-local path = seq.work.worktree.path
-local branch = seq.worktree.branch
-return r.workflow{name = 'references', description = 'test', main = r.sequence{children = {r.child{node = seq}}}}
-"#;
+    let value = serde_json::json!({
+        "code": "X",
+        "severity": "error",
+        "stage": "parse_shape",
+        "message": "m"
+    });
 
     // When
-    let diagnoses = [
-        diagnose_workflow_source(yaml, None),
-        diagnose_lua_workflow_source(
-            "references.lua",
-            lua,
-            directory.path(),
-            directory.path(),
-            None,
+    let item = serde_json::from_value::<
+        crate::adaptor::presenter::workflow_api::DiagnosticItemResponse,
+    >(value)
+    .unwrap();
+
+    // Then
+    assert!(item.span.is_none());
+    assert!(item.workflow_name.is_none());
+    assert!(item.node_name.is_none());
+    assert!(item.facet_key.is_none());
+    assert!(item.facet_kind.is_none());
+    assert!(item.field.is_none());
+}
+
+#[test]
+fn test_診断spanは省略されたsourceをnoneとしてdeserializeする() {
+    // Given
+    let value = serde_json::json!({
+        "start_line": 7,
+        "start_col": 5,
+        "end_line": 7,
+        "end_col": 6
+    });
+
+    // When
+    let span = serde_json::from_value::<
+        crate::adaptor::presenter::workflow_api::DiagnosticSpanResponse,
+    >(value)
+    .unwrap();
+
+    // Then
+    assert!(span.source.is_none());
+}
+
+#[test]
+fn workflow_source_diagnosticsは未知fieldとkeywordを拒否する() {
+    let cases = [
+        (
+            "root",
+            r#"
+name: unknown-root-field
+description: unknown root field
+future_field: ignored
+nodes:
+  main:
+    session:
+      provider: claude
+      facets:
+        instruction: implement
+"#,
+        ),
+        (
+            "node",
+            r#"
+name: unknown-node-field
+description: unknown node field
+nodes:
+  main:
+    future_field: ignored
+    session:
+      provider: claude
+      facets:
+        instruction: implement
+"#,
+        ),
+        (
+            "session",
+            r#"
+name: unknown-session-field
+description: unknown session field
+nodes:
+  main:
+    session:
+      provider: claude
+      future_field: ignored
+      facets:
+        instruction: implement
+"#,
+        ),
+        (
+            "session.facets",
+            r#"
+name: unknown-facet-field
+description: unknown session facet field
+nodes:
+  main:
+    session:
+      provider: claude
+      facets:
+        instruction: implement
+        future_field: ignored
+"#,
+        ),
+        (
+            "fanout",
+            r#"
+name: unknown-fanout-field
+description: unknown fanout field
+nodes:
+  main:
+    fanout:
+      children:
+      - worker
+      future_field: ignored
+  worker:
+    session:
+      provider: claude
+      facets:
+        instruction: implement
+"#,
+        ),
+        (
+            "rule",
+            r#"
+name: unknown-rule-field
+description: unknown rule field
+nodes:
+  main:
+    sequence:
+      children:
+      - work:
+          rules:
+          - next: review
+            future_field: ignored
+      - review
+  work:
+    session:
+      provider: claude
+      facets:
+        instruction: implement
+  review:
+    session:
+      provider: claude
+      facets:
+        instruction: implement
+"#,
+        ),
+        (
+            "schemas",
+            r#"
+name: unknown-schema-keyword
+description: unknown schema keyword
+schemas:
+  review:
+    type: object
+    future_keyword: ignored
+    properties:
+      verdict:
+        type: boolean
+    required:
+      - verdict
+nodes:
+  main:
+    session:
+      provider: claude
+      facets:
+        instruction: implement
+"#,
         ),
     ];
 
-    // Then
-    for diagnosis in diagnoses {
+    for (label, source) in cases {
+        let known = source
+            .lines()
+            .filter(|line| !line.contains("future_"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let known_diagnosis = diagnose_workflow_source(&known, None);
+        assert!(
+            known_diagnosis.diagnostics.is_empty(),
+            "{label} without unknown input must be accepted: {:?}",
+            known_diagnosis.diagnostics
+        );
+
+        let diagnosis = diagnose_workflow_source(source, None);
+        assert!(
+            diagnosis
+                .diagnostics
+                .iter()
+                .any(|item| item.code == "WFS002"),
+            "unknown input at {label} must be rejected: {:?}",
+            diagnosis.diagnostics
+        );
+        assert!(diagnosis.workflow.is_none(), "{label}");
+    }
+}
+
+#[test]
+fn validation_error_code_stage_uses_typed_variants() {
+    let cases = vec![
+        (
+            validation::ValidationError::InvalidSchema {
+                schema: "list".to_string(),
+                kind: InvalidSchemaKind::UnknownSchemaReference,
+                reason: "renamed wording".to_string(),
+            },
+            "WFR002",
+            DiagnosticStage::Resolve,
+        ),
+        (
+            validation::ValidationError::InvalidSchema {
+                schema: "bad".to_string(),
+                kind: InvalidSchemaKind::InvalidDeclaration,
+                reason: "renamed wording".to_string(),
+            },
+            "WFS002",
+            DiagnosticStage::ParseShape,
+        ),
+        (
+            validation::ValidationError::InvalidArtifactReference {
+                reference: "request".to_string(),
+                kind: InvalidArtifactReferenceKind::ReservedArtifactName,
+                reason: "renamed wording".to_string(),
+            },
+            "WFR004",
+            DiagnosticStage::Resolve,
+        ),
+        (
+            validation::ValidationError::InvalidArtifactReference {
+                reference: "item".to_string(),
+                kind: InvalidArtifactReferenceKind::UnknownParameter,
+                reason: "renamed wording".to_string(),
+            },
+            "WFR003",
+            DiagnosticStage::Resolve,
+        ),
+        (
+            validation::ValidationError::CompositeInclusionCycle {
+                node: "part".to_string(),
+                cycle: "part -> part".to_string(),
+            },
+            "WFC008",
+            DiagnosticStage::ControlFlow,
+        ),
+        (
+            validation::ValidationError::InvalidInputWiring(Box::new(
+                validation::InputWiringViolation {
+                    node: "main".to_string(),
+                    child: "consume".to_string(),
+                    parameter: "spec".to_string(),
+                    source: "ghost".to_string(),
+                    kind: validation::InputWiringKind::UnknownSource,
+                    reason: "renamed wording".to_string(),
+                },
+            )),
+            "WFR007",
+            DiagnosticStage::Resolve,
+        ),
+        (
+            validation::ValidationError::InvalidArtifactReference {
+                reference: "plan.field".to_string(),
+                kind: InvalidArtifactReferenceKind::UnknownField,
+                reason: "renamed wording".to_string(),
+            },
+            "WFR003",
+            DiagnosticStage::Resolve,
+        ),
+        (
+            validation::ValidationError::InvalidArtifactReference {
+                reference: "bad ref".to_string(),
+                kind: InvalidArtifactReferenceKind::InvalidInputRef,
+                reason: "renamed wording".to_string(),
+            },
+            "WFR003",
+            DiagnosticStage::Resolve,
+        ),
+        (
+            validation::ValidationError::InvalidRules {
+                node: "route".to_string(),
+                kind: InvalidRuleKind::WhenFieldNotBoolean,
+                reason: "renamed wording".to_string(),
+            },
+            "WFT001",
+            DiagnosticStage::Typecheck,
+        ),
+        (
+            validation::ValidationError::InvalidRules {
+                node: "route".to_string(),
+                kind: InvalidRuleKind::SwitchFieldNotEnum,
+                reason: "renamed wording".to_string(),
+            },
+            "WFT002",
+            DiagnosticStage::Typecheck,
+        ),
+        (
+            validation::ValidationError::InvalidRules {
+                node: "route".to_string(),
+                kind: InvalidRuleKind::SwitchUnknownCase,
+                reason: "renamed wording".to_string(),
+            },
+            "WFT002",
+            DiagnosticStage::Typecheck,
+        ),
+        (
+            validation::ValidationError::InvalidRules {
+                node: "route".to_string(),
+                kind: InvalidRuleKind::DiscriminatorWithoutArtifact,
+                reason: "renamed wording".to_string(),
+            },
+            "WFT006",
+            DiagnosticStage::Typecheck,
+        ),
+        (
+            validation::ValidationError::InvalidRules {
+                node: "route".to_string(),
+                kind: InvalidRuleKind::SwitchMissingCases,
+                reason: "renamed wording".to_string(),
+            },
+            "WFC004",
+            DiagnosticStage::ControlFlow,
+        ),
+        (
+            validation::ValidationError::InvalidRules {
+                node: "route".to_string(),
+                kind: InvalidRuleKind::CycleWithoutLoopGuard,
+                reason: "renamed wording".to_string(),
+            },
+            "WFC005",
+            DiagnosticStage::ControlFlow,
+        ),
+        (
+            validation::ValidationError::InvalidRules {
+                node: "route".to_string(),
+                kind: InvalidRuleKind::LoopGuardMaxIterations,
+                reason: "renamed wording".to_string(),
+            },
+            "WFC005",
+            DiagnosticStage::ControlFlow,
+        ),
+        (
+            validation::ValidationError::InvalidRules {
+                node: "route".to_string(),
+                kind: InvalidRuleKind::SwitchRequiresNext,
+                reason: "renamed wording".to_string(),
+            },
+            "WFC003",
+            DiagnosticStage::ControlFlow,
+        ),
+        (
+            validation::ValidationError::InvalidRules {
+                node: "route".to_string(),
+                kind: InvalidRuleKind::SwitchExhaustiveHasNext,
+                reason: "renamed wording".to_string(),
+            },
+            "WFC003",
+            DiagnosticStage::ControlFlow,
+        ),
+        (
+            validation::ValidationError::InvalidRules {
+                node: "route".to_string(),
+                kind: InvalidRuleKind::MultipleNextCatchAll,
+                reason: "renamed wording".to_string(),
+            },
+            "WFC003",
+            DiagnosticStage::ControlFlow,
+        ),
+        (
+            validation::ValidationError::InvalidRules {
+                node: "route".to_string(),
+                kind: InvalidRuleKind::MultipleDiscriminators,
+                reason: "renamed wording".to_string(),
+            },
+            "WFC002",
+            DiagnosticStage::ControlFlow,
+        ),
+        (
+            validation::ValidationError::InvalidRules {
+                node: "route".to_string(),
+                kind: InvalidRuleKind::MultipleLoopGuards,
+                reason: "renamed wording".to_string(),
+            },
+            "WFC002",
+            DiagnosticStage::ControlFlow,
+        ),
+        (
+            validation::ValidationError::InvalidRules {
+                node: "route".to_string(),
+                kind: InvalidRuleKind::StandaloneNextWithDiscriminator,
+                reason: "renamed wording".to_string(),
+            },
+            "WFC002",
+            DiagnosticStage::ControlFlow,
+        ),
+        (
+            validation::ValidationError::UnreachableNode {
+                node: "orphan".to_string(),
+            },
+            "WFC001",
+            DiagnosticStage::ControlFlow,
+        ),
+    ];
+
+    for (error, expected_code, expected_stage) in cases {
+        let (code, stage) = validation_error_code_stage(&error);
+        assert_eq!(code, expected_code, "wrong code for {error:?}");
+        assert_eq!(stage, expected_stage, "wrong stage for {error:?}");
+    }
+}
+
+#[test]
+fn deserialize_error_diagnostic_classifies_error_messages() {
+    let span_map = YamlSpanMap::parse("name: sample\nnodes: {}\n").unwrap();
+    let cases = [
+        ("unknown field `future_field`", "WFS002"),
+        ("unknown variant `future_variant`", "WFS002"),
+        ("when rule requires sibling next", "WFS003"),
+        ("YAML syntax problem", "WFS001"),
+        ("unclassified deserialize problem", "WFS002"),
+    ];
+
+    for (message, expected_code) in cases {
+        let error = <serde_saphyr::Error as serde::de::Error>::custom(message);
+        let item = deserialize_error_diagnostic(&error, &span_map, Some("sample"));
+        assert_eq!(item.code, expected_code, "wrong code for {message}");
+        assert_eq!(item.stage, DiagnosticStage::ParseShape);
+    }
+}
+
+#[test]
+fn empty_workflow_nodes_diagnostic_uses_node_vocabulary_and_targets_nodes_field() {
+    assert_eq!(
+        validation_error_context(&validation::ValidationError::EmptyNodes),
+        (None, Some("nodes".to_string()))
+    );
+}
+
+#[test]
+fn test_診断_nodesマップの重複キーはwfs006で再出現位置を指す() {
+    let source = r#"name: dup-node
+description: duplicate node key
+nodes:
+  main:
+    command: printf first
+  main:
+    command: printf second
+"#;
+
+    let diagnosis = diagnose_workflow_source(source, Some("dup-node"));
+    let item = diagnosis
+        .diagnostics
+        .iter()
+        .find(|item| item.code == "WFS006")
+        .expect("duplicate node key must produce WFS006");
+    assert_eq!(item.severity, Severity::Error);
+    assert_eq!(item.stage, DiagnosticStage::ParseShape);
+    assert_eq!(item.workflow_name.as_deref(), Some("dup-node"));
+    let span = item
+        .span
+        .as_ref()
+        .expect("duplicate node key diagnostic must carry a span");
+    assert_eq!(
+        span.start_line, 6,
+        "span must point at the re-occurring node key"
+    );
+    assert!(diagnosis.workflow.is_none());
+}
+
+#[test]
+fn test_診断_main不在はwfr006になる() {
+    let source = r#"name: no-main
+description: nodes without the main root node
+nodes:
+  prepare:
+    command: printf prepare
+"#;
+
+    let diagnosis = diagnose_workflow_source(source, None);
+    let item = diagnosis
+        .diagnostics
+        .iter()
+        .find(|item| item.code == "WFR006")
+        .expect("nodes without main must produce WFR006");
+    assert_eq!(item.severity, Severity::Error);
+    assert_eq!(item.stage, DiagnosticStage::Resolve);
+    assert_eq!(item.field.as_deref(), Some("nodes"));
+    assert!(item.message.contains("main"));
+}
+
+#[test]
+fn test_診断_予約語node名はwfr004になる() {
+    let source = r#"name: reserved-node-name
+description: sequence is a reserved node name
+nodes:
+  main:
+    command: printf main
+    rules:
+      - next: sequence
+  sequence:
+    command: printf work
+"#;
+
+    let diagnosis = diagnose_workflow_source(source, None);
+    let item = diagnosis
+        .diagnostics
+        .iter()
+        .find(|item| item.code == "WFR004")
+        .expect("reserved node name must produce WFR004");
+    assert_eq!(item.severity, Severity::Error);
+    assert_eq!(item.stage, DiagnosticStage::Resolve);
+    assert_eq!(item.node_name.as_deref(), Some("sequence"));
+    assert!(item.span.is_some());
+    assert!(diagnosis.workflow.is_none());
+}
+
+mod delegate_diagnostics_tests {
+    use super::super::*;
+    use serde_json::{json, Value};
+
+    fn definition() -> Value {
+        json!({
+            "name": "delegate", "description": "delegate tests",
+            "schemas": {
+                "parent-result": {"type": "object", "properties": {"done": {"type": "boolean"}, "task": "string"}, "required": ["done", "task"]},
+                "verdict": {"type": "object", "properties": {"passed": {"type": "boolean"}, "skipped": {"type": "boolean"}}, "required": ["passed", "skipped"]},
+                "text": {"type": "string"}, "flag": {"type": "boolean"}
+            },
+            "nodes": {
+                "main": {"session": {"provider": "codex", "facets": {"instruction": "implement"}}, "artifact": "parent-result",
+                    "completion": {"delegate": {"child": "verify", "when": "child.passed", "max_iterations": 2}}},
+                "verify": {"command": "check", "artifact": "verdict"}
+            }
+        })
+    }
+
+    fn check(value: &Value) -> WorkflowSourceDiagnostics {
+        diagnose_workflow_source(&value.to_string(), None)
+    }
+
+    #[test]
+    fn test_delegate定義_承認との併記と述語の合成を受理して保存復元する() {
+        // Given
+        for approval in [false, true] {
+            let mut value = definition();
+            if approval {
+                value["nodes"]["main"]["completion"]["require"] = json!("approval");
+            }
+            value["nodes"]["main"]["completion"]["delegate"]["when"] =
+                json!({"and": ["done", {"or": ["child.passed", "child.skipped"]}]});
+            // When
+            let diagnosis = check(&value);
+            // Then
+            assert!(
+                diagnosis.diagnostics.is_empty(),
+                "{:?}",
+                diagnosis.diagnostics
+            );
+            let workflow = diagnosis.workflow.unwrap();
+            let restored: WorkflowDefinitionYaml =
+                serde_json::from_value(serde_json::to_value(&workflow).unwrap()).unwrap();
+            assert_eq!(restored, workflow);
+            assert_eq!(
+                restored
+                    .node_by_name("main")
+                    .unwrap()
+                    .requires_approval_completion(),
+                approval
+            );
+        }
+    }
+
+    #[test]
+    fn test_delegate定義_必須fieldと未知キーと回数値域を拒否する() {
+        // Given
+        let delegate = definition()["nodes"]["main"]["completion"]["delegate"].clone();
+        let mut cases = vec![json!(null), json!("verify"), json!({}), json!([])];
+        for field in ["child", "when", "max_iterations"] {
+            let mut invalid = delegate.clone();
+            invalid.as_object_mut().unwrap().remove(field);
+            cases.push(invalid);
+        }
+        for count in [json!(-1), json!(1.5), json!("2"), json!(null)] {
+            let mut invalid = delegate.clone();
+            invalid["max_iterations"] = count;
+            cases.push(invalid);
+        }
+        for (field, value) in [
+            ("unknown", json!(true)),
+            ("when", json!({"and": []})),
+            ("when", json!({"or": ["done", {"and": []}]})),
+            ("inputs", json!(42)),
+        ] {
+            let mut invalid = delegate.clone();
+            invalid[field] = value;
+            cases.push(invalid);
+        }
+        for invalid in cases {
+            let mut value = definition();
+            value["nodes"]["main"]["completion"]["delegate"] = invalid;
+            // When
+            let diagnosis = check(&value);
+            // Then
+            assert!(diagnosis.workflow.is_none());
+            assert!(
+                diagnosis
+                    .diagnostics
+                    .iter()
+                    .any(|item| item.code == "WFS002"),
+                "{:?}",
+                diagnosis.diagnostics
+            );
+        }
+    }
+
+    #[test]
+    fn test_delegate定義_宣言するnodeとchildの条件を検査する() {
+        // Given
+        let mut cases = Vec::new();
+        for kind in [
+            json!({"command": "check"}),
+            json!({"fanout": {"children": ["extra"]}}),
+            json!({"sequence": {"children": ["extra"]}}),
+        ] {
+            let mut value = definition();
+            value["nodes"]["main"]
+                .as_object_mut()
+                .unwrap()
+                .remove("session");
+            value["nodes"]["main"]
+                .as_object_mut()
+                .unwrap()
+                .extend(kind.as_object().unwrap().clone());
+            value["nodes"]["extra"] = json!({"command": "true"});
+            cases.push((value, "WFC011"));
+        }
+        for isolated in [false, true] {
+            let mut value = definition();
+            value["nodes"]["main"]
+                .as_object_mut()
+                .unwrap()
+                .remove("artifact");
+            if isolated {
+                value["nodes"]["main"]["worktree"] = json!("isolated");
+            }
+            cases.push((value, "WFT006"));
+        }
+        for child in ["unknown", "main"] {
+            let mut value = definition();
+            value["nodes"]["main"]["completion"]["delegate"]["child"] = json!(child);
+            cases.push((
+                value,
+                if child == "unknown" {
+                    "WFR001"
+                } else {
+                    "WFC008"
+                },
+            ));
+        }
+        let mut missing_artifact = definition();
+        missing_artifact["nodes"]["verify"] =
+            json!({"session": {"provider": "claude", "facets": {"instruction": "check"}}});
+        cases.push((missing_artifact, "WFT006"));
+        let mut cycle = definition();
+        cycle["nodes"]["verify"] = json!({"sequence": {"children": ["main"]}});
+        cases.push((cycle, "WFC008"));
+        for (value, expected_code) in cases {
+            // When
+            let diagnosis = check(&value);
+            // Then
+            assert!(diagnosis.has_errors(), "{value}");
+            assert!(
+                crate::adaptor::gateway::workflow::storage::parse_workflow_source(
+                    &value.to_string(),
+                    std::path::Path::new(".")
+                )
+                .is_err()
+            );
+            assert!(
+                diagnosis
+                    .diagnostics
+                    .iter()
+                    .any(|item| item.code == expected_code),
+                "{:?}",
+                diagnosis.diagnostics
+            );
+        }
+    }
+
+    #[test]
+    fn test_delegate定義_child共有を拒否しdelegateだけからの参照を到達可能にする() {
+        // Given
+        assert!(check(&definition()).diagnostics.is_empty());
+        for other_delegate in [false, true] {
+            let mut value = definition();
+            value["nodes"]["worker"] = value["nodes"]["main"].clone();
+            value["nodes"]["main"] = if other_delegate {
+                value["nodes"]["other"] = value["nodes"]["worker"].clone();
+                json!({"sequence": {"children": ["worker", "other"]}})
+            } else {
+                json!({"sequence": {"children": ["worker", "verify"]}})
+            };
+            // When
+            let diagnosis = check(&value);
+            // Then
+            assert!(diagnosis.has_errors());
+            assert!(
+                crate::adaptor::gateway::workflow::storage::parse_workflow_source(
+                    &value.to_string(),
+                    std::path::Path::new(".")
+                )
+                .is_err()
+            );
+            assert!(diagnosis
+                .diagnostics
+                .iter()
+                .any(|item| item.code == "WFC006"));
+        }
+    }
+
+    #[test]
+    fn test_delegate定義_childの全kindのschemaと多段参照を検査する() {
+        // Given
+        for (kind, path) in [
+            (
+                json!({"command": "check", "artifact": "verdict"}),
+                "child.passed",
+            ),
+            (
+                json!({"session": {"provider": "claude", "facets": {"instruction": "check"}}, "artifact": "verdict"}),
+                "child.passed",
+            ),
+            (
+                json!({"sequence": {"children": ["judge"]}}),
+                "child.judge.passed",
+            ),
+            (
+                json!({"fanout": {"children": ["judge"]}}),
+                "child.judge.passed",
+            ),
+            (
+                json!({"fanout": {"items": [1, 2], "children": [{"judge": {"inputs": {"item": "items"}}}]}}),
+                "child.1.passed",
+            ),
+        ] {
+            let mut value = definition();
+            value["nodes"]["verify"] = kind;
+            if path != "child.passed" {
+                value["nodes"]["judge"] =
+                    json!({"command": "check", "artifact": "verdict", "input": ["item"]});
+            }
+            value["nodes"]["main"]["completion"]["delegate"]["when"] = json!(path);
+            // When / Then
+            assert!(
+                check(&value).diagnostics.is_empty(),
+                "{:?}",
+                check(&value).diagnostics
+            );
+            for invalid in [path.replace("passed", "missing"), format!("{path}.field")] {
+                value["nodes"]["main"]["completion"]["delegate"]["when"] = json!(invalid);
+                assert!(check(&value)
+                    .diagnostics
+                    .iter()
+                    .any(|item| item.code == "WFT001"));
+            }
+        }
+    }
+
+    #[test]
+    fn test_delegate定義_optionalと非booleanを拒否しchild予約はdelegate親だけに適用する() {
+        // Given
+        for schema in [
+            json!({"type": "object", "properties": {"passed": {"type": "boolean"}}, "required": []}),
+            json!({"type": "object", "properties": {"passed": "string"}, "required": ["passed"]}),
+        ] {
+            let mut value = definition();
+            value["schemas"]["verdict"] = schema;
+            // When / Then
+            assert!(check(&value)
+                .diagnostics
+                .iter()
+                .any(|item| item.code == "WFT001"));
+        }
+        let mut value = definition();
+        value["schemas"]["parent-result"]["properties"]["child"] = json!("string");
+        assert!(check(&value)
+            .diagnostics
+            .iter()
+            .any(|item| item.code == "WFT005"));
+        value["nodes"]["main"]
+            .as_object_mut()
+            .unwrap()
+            .remove("completion");
+        value["nodes"].as_object_mut().unwrap().remove("verify");
+        assert!(check(&value).diagnostics.is_empty());
+    }
+
+    #[test]
+    fn test_delegate配線_親inputと親artifactとrequestを受理し名前と参照を検査する() {
+        // Given
+        for source in ["spec", "main.task", "request"] {
+            let mut value = definition();
+            value["nodes"]["main"]["input"] = json!([{"spec": "text"}]);
+            value["nodes"]["verify"]["input"] = json!([{"task": "text"}]);
+            value["nodes"]["main"]["completion"]["delegate"]["inputs"] = json!({"task": source});
+            // When / Then
+            assert!(
+                check(&value).diagnostics.is_empty(),
+                "{:?}",
+                check(&value).diagnostics
+            );
+            for invalid in [
+                json!({"unknown": "request"}),
+                json!({"task": "main.unknown"}),
+                json!({"task": "items"}),
+                json!({"task": " main.task"}),
+                json!({"task": "request.field"}),
+            ] {
+                value["nodes"]["main"]["completion"]["delegate"]["inputs"] = invalid;
+                assert!(check(&value).has_errors(), "{value}");
+                assert!(
+                    crate::adaptor::gateway::workflow::storage::parse_workflow_source(
+                        &value.to_string(),
+                        std::path::Path::new(".")
+                    )
+                    .is_err()
+                );
+            }
+        }
+        let mut ambiguous = definition();
+        ambiguous["nodes"]["main"]["input"] = json!(["main"]);
+        ambiguous["nodes"]["verify"]["input"] = json!(["task"]);
+        ambiguous["nodes"]["main"]["completion"]["delegate"]["inputs"] = json!({"task": "main"});
+        assert!(check(&ambiguous)
+            .diagnostics
+            .iter()
+            .any(|item| item.code == "WFR008"));
+    }
+
+    #[test]
+    fn test_delegate定義_親sessionと合成子との包含循環を拒否する() {
+        // Given
+        let mut value = definition();
+        let parent = value["nodes"]
+            .as_object_mut()
+            .unwrap()
+            .remove("main")
+            .unwrap();
+        value["nodes"]["worker"] = parent;
+        value["nodes"]["main"] = json!({"sequence": {"children": ["worker"]}});
+        // When / Then
+        assert!(
+            check(&value).diagnostics.is_empty(),
+            "{:?}",
+            check(&value).diagnostics
+        );
+        value["nodes"]["verify"] = json!({"sequence": {"children": ["worker"]}});
+        let diagnosis = check(&value);
+        assert!(diagnosis.has_errors());
+        let workflow = diagnosis.workflow.unwrap();
+        let errors = crate::domain::workflow::services::validation::validate_all(&workflow);
+        assert!(errors.iter().any(|error| matches!(error, crate::domain::workflow::services::validation::ValidationError::CompositeInclusionCycle { .. })));
+    }
+
+    #[test]
+    fn test_delegate配線_異なるcontractの親artifactと合成子mapも受理する() {
+        // Given
+        let mut value = definition();
+        value["schemas"]["composed"] = json!({"type": "object", "properties": {"task": "string", "child": value["schemas"]["verdict"].clone()}, "required": ["task", "child"]});
+        value["nodes"]["verify"]["input"] = json!([{"result": "composed"}]);
+        value["nodes"]["main"]["completion"]["delegate"]["inputs"] = json!({"result": "main"});
+        // When / Then
+        assert!(
+            check(&value).diagnostics.is_empty(),
+            "{:?}",
+            check(&value).diagnostics
+        );
+        value["schemas"]["composed"]["properties"]["child"]["properties"]["passed"] =
+            json!("string");
+        assert!(
+            check(&value).diagnostics.is_empty(),
+            "{:?}",
+            check(&value).diagnostics
+        );
+
+        value = definition();
+        value["nodes"]["verify"] =
+            json!({"sequence": {"children": ["check"]}, "input": [{"result": "flag"}]});
+        value["nodes"]["check"] = json!({"command": "check", "artifact": "verdict"});
+        value["nodes"]["main"]["completion"]["delegate"]["when"] = json!("child.check.passed");
+        value["nodes"]["main"]["completion"]["delegate"]["inputs"] =
+            json!({"result": "main.child"});
+        assert!(
+            check(&value).diagnostics.is_empty(),
+            "{:?}",
+            check(&value).diagnostics
+        );
+        value["schemas"]["checks"] = json!({"type": "object", "properties": {"check": value["schemas"]["verdict"].clone()}, "required": ["check"]});
+        value["nodes"]["verify"]["input"] = json!([{"result": "checks"}]);
+        assert!(
+            check(&value).diagnostics.is_empty(),
+            "{:?}",
+            check(&value).diagnostics
+        );
+    }
+
+    #[test]
+    fn test_delegate定義_ゼロ回と意味的違反を構造化して分類する() {
+        // Given
+        for (mutation, code, stage, field) in [
+            (
+                "zero",
+                "WFC005",
+                DiagnosticStage::ControlFlow,
+                "completion.delegate.max_iterations",
+            ),
+            (
+                "kind",
+                "WFC011",
+                DiagnosticStage::ControlFlow,
+                "completion.delegate",
+            ),
+            (
+                "artifact",
+                "WFT006",
+                DiagnosticStage::Typecheck,
+                "completion.delegate",
+            ),
+            (
+                "child",
+                "WFT006",
+                DiagnosticStage::Typecheck,
+                "completion.delegate.child",
+            ),
+        ] {
+            let mut value = definition();
+            match mutation {
+                "zero" => {
+                    value["nodes"]["main"]["completion"]["delegate"]["max_iterations"] = json!(0)
+                }
+                "kind" => {
+                    value["nodes"]["main"]
+                        .as_object_mut()
+                        .unwrap()
+                        .remove("session");
+                    value["nodes"]["main"]["command"] = json!("true");
+                }
+                "artifact" => {
+                    value["nodes"]["main"]
+                        .as_object_mut()
+                        .unwrap()
+                        .remove("artifact");
+                }
+                "child" => {
+                    value["nodes"]["verify"] = json!({"session": {"provider": "codex", "facets": {"instruction": "check"}}})
+                }
+                _ => unreachable!(),
+            }
+            // When
+            let diagnosis = check(&value);
+            // Then
+            assert!(
+                diagnosis.diagnostics.iter().any(|d| d.code == code
+                    && d.stage == stage
+                    && d.field.as_deref() == Some(field)),
+                "{:?}",
+                diagnosis.diagnostics
+            );
+        }
+    }
+
+    #[test]
+    fn test_delegate配線_異なるcontractの型付き親inputを受理する() {
+        // Given
+        let mut value = definition();
+        value["nodes"]["main"]["input"] = json!([{"spec": "text"}]);
+        value["nodes"]["verify"]["input"] = json!([{"task": "flag"}]);
+        value["nodes"]["main"]["completion"]["delegate"]["inputs"] = json!({"task": "spec"});
+        // When / Then
+        assert!(
+            check(&value).diagnostics.is_empty(),
+            "{:?}",
+            check(&value).diagnostics
+        );
+    }
+
+    #[test]
+    fn test_delegate定義_述語型エラーは辺でなくsessionの宣言位置を指す() {
+        // Given
+        let source = "name: delegate\ndescription: test\nschemas:\n  result: {type: object, properties: {done: {type: boolean}}, required: [done]}\nnodes:\n  main:\n    sequence:\n      children:\n        - worker:\n            rules:\n              - when: {on: done, then: end}\n                next: end\n        - end: {command: true}\n  worker:\n    session: {provider: codex, facets: {instruction: implement}}\n    artifact: result\n    completion:\n      delegate:\n        child: verify\n        when: child.stdout\n        max_iterations: 1\n  verify: {command: check}\n".replace("command: true", "command: 'true'");
+        // When
+        let diagnosis = diagnose_workflow_source(&source, None);
+        // Then
+        let diagnostic = diagnosis
+            .diagnostics
+            .iter()
+            .find(|d| d.code == "WFT001")
+            .unwrap_or_else(|| panic!("{:?}", diagnosis.diagnostics));
+        assert_eq!(
+            diagnostic.field.as_deref(),
+            Some("completion.delegate.when")
+        );
+        assert!(diagnostic.message.contains("completion.delegate.when"));
+        assert!(!diagnostic.message.contains("rules"));
+        let span =
+            crate::adaptor::gateway::workflow::span_map::YamlSpanMap::parse(&source).unwrap();
+        assert_eq!(
+            diagnostic.span,
+            span.field_span("nodes.worker.completion.delegate.when")
+        );
+    }
+
+    #[test]
+    fn test_delegate定義_共有と包含循環の文言はsessionをcompositeと呼ばない() {
+        // Given
+        let mut value = definition();
+        value["nodes"]["worker"] = value["nodes"]["main"].clone();
+        value["nodes"]["main"] = json!({"sequence": {"children": ["worker", "verify"]}});
+        // When / Then
+        let diagnosis = check(&value);
+        let errors: Vec<_> = diagnosis
+            .diagnostics
+            .iter()
+            .filter(|d| d.code == "WFC006")
+            .collect();
+        assert!(!errors.is_empty());
+        assert!(
+            errors
+                .iter()
+                .all(|d| !d.message.contains("composite node 'worker'")),
+            "{errors:?}"
+        );
+        value["nodes"]["verify"] = json!({"sequence": {"children": ["worker"]}});
+        let diagnosis = check(&value);
+        let errors: Vec<_> = diagnosis
+            .diagnostics
+            .iter()
+            .filter(|d| d.code == "WFC008")
+            .collect();
+        assert!(!errors.is_empty());
+        assert!(
+            errors
+                .iter()
+                .all(|d| !d.message.contains("composite node 'worker'")),
+            "{errors:?}"
+        );
+    }
+
+    #[test]
+    fn test_delegate正本サンプル_itemsの要素contractを実装sessionのtaskと照合する() {
+        // Given
+        let source = include_str!("../../../../../workflows/examples/full-cycle-development.yml");
+        assert!(diagnose_workflow_source(source, None)
+            .diagnostics
+            .is_empty());
+        let source = source.replacen(
+            "    - task: implement-task",
+            "    - task: implement-task-result",
+            1,
+        );
+        // When
+        let diagnosis = diagnose_workflow_source(&source, None);
+        // Then
+        assert!(
+            diagnosis.diagnostics.iter().any(|d| d.code == "WFT003"),
+            "{:?}",
+            diagnosis.diagnostics
+        );
+    }
+
+    #[test]
+    fn test_delegate定義_下流配線は親のchild合成schemaを参照できる() {
+        // Given
+        let mut value = definition();
+        value["nodes"]["implement"] = value["nodes"]["main"].clone();
+        value["nodes"]["main"] = json!({"sequence": {"children": ["implement", {"done": {"inputs": {"verdict": "implement.child.passed"}}}]}});
+        value["nodes"]["done"] = json!({"command": "done", "input": ["verdict"]});
+        // When / Then
+        assert!(
+            check(&value).diagnostics.is_empty(),
+            "{:?}",
+            check(&value).diagnostics
+        );
+        value["nodes"]["main"]["sequence"]["children"][1]["done"]["inputs"]["verdict"] =
+            json!("implement.child.unknown");
+        assert!(check(&value).diagnostics.iter().any(|d| d.code == "WFR007"));
+    }
+
+    #[test]
+    fn test_delegate定義_enumをwhenに使う型エラーはdelegateの宣言を指す() {
+        // Given
+        let mut value = definition();
+        value["schemas"]["verdict"]["properties"]["passed"] =
+            json!({"type": "string", "enum": ["yes", "no"]});
+        // When
+        let diagnosis = check(&value);
+        // Then
+        let diagnostic = diagnosis
+            .diagnostics
+            .iter()
+            .find(|item| item.code == "WFT001")
+            .unwrap();
+        assert_eq!(
+            diagnostic.field.as_deref(),
+            Some("completion.delegate.when")
+        );
+        assert_eq!(diagnostic.message, "node 'main' completion.delegate.when: completion.delegate.when field 'child.passed' must be a required boolean");
+        assert!(!diagnostic.message.contains("when.on"));
+    }
+
+    #[test]
+    fn test_delegate定義_artifactを省略したisolated_sessionのchildを受理する() {
+        // Given
+        let mut value = definition();
+        value["nodes"]["verify"] = json!({"session": {"provider": "codex", "facets": {"instruction": "verify"}}, "worktree": "isolated"});
+        value["nodes"]["main"]["completion"]["delegate"]["when"] = json!("done");
+        // When
+        let diagnosis = check(&value);
+        // Then
         assert!(
             diagnosis.diagnostics.is_empty(),
             "{:?}",
             diagnosis.diagnostics
         );
         assert!(diagnosis.workflow.is_some());
+    }
+
+    #[test]
+    fn test_delegate定義_非空inputsは定義の保存復元で配線を保つ() {
+        // Given
+        let mut value = definition();
+        value["nodes"]["main"]["input"] = json!(["spec"]);
+        value["nodes"]["verify"]["input"] = json!(["spec", "task", "previous", "requested"]);
+        let inputs = json!({"spec": "spec", "task": "main.task", "previous": "main.child.passed", "requested": "request"});
+        value["nodes"]["main"]["completion"]["delegate"]["inputs"] = inputs.clone();
+        let diagnosis = check(&value);
+        assert!(
+            diagnosis.diagnostics.is_empty(),
+            "{:?}",
+            diagnosis.diagnostics
+        );
+        let workflow = diagnosis.workflow.unwrap();
+        // When
+        let serialized = serde_json::to_value(&workflow).unwrap();
+        let restored: WorkflowDefinitionYaml = serde_json::from_value(serialized.clone()).unwrap();
+        // Then
+        assert_eq!(
+            serialized["nodes"]["main"]["completion"]["delegate"]["inputs"],
+            inputs
+        );
+        assert_eq!(restored, workflow);
     }
 }

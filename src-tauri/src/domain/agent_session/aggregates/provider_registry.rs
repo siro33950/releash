@@ -4,10 +4,10 @@ use std::path::{Path, PathBuf};
 use crate::domain::provider_lifecycle::ProviderKind;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ProviderExecutable(String);
+pub struct ProviderExecutable(String);
 
 impl ProviderExecutable {
-    pub(crate) fn new(value: impl Into<String>) -> Result<Self, ProviderRegistryError> {
+    pub fn new(value: impl Into<String>) -> Result<Self, ProviderRegistryError> {
         let value = value.into();
         let trimmed = value.trim();
         if trimmed.is_empty() || trimmed.contains('\0') {
@@ -16,29 +16,29 @@ impl ProviderExecutable {
         Ok(Self(trimmed.to_string()))
     }
 
-    pub(crate) fn as_str(&self) -> &str {
+    pub fn as_str(&self) -> &str {
         &self.0
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ResolvedProviderExecutable(PathBuf);
+pub struct ResolvedProviderExecutable(PathBuf);
 
 impl ResolvedProviderExecutable {
-    pub(crate) fn new(path: PathBuf) -> Result<Self, ProviderRegistryError> {
+    pub fn new(path: PathBuf) -> Result<Self, ProviderRegistryError> {
         if path.as_os_str().is_empty() || !path.is_absolute() {
             return Err(ProviderRegistryError::InvalidResolvedExecutable);
         }
         Ok(Self(path))
     }
 
-    pub(crate) fn as_path(&self) -> &Path {
+    pub fn as_path(&self) -> &Path {
         &self.0
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ProviderUnavailableReason {
+pub enum ProviderUnavailableReason {
     NotFound,
     NotExecutable,
     SearchPathUnavailable,
@@ -46,7 +46,7 @@ pub(crate) enum ProviderUnavailableReason {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum ProviderAvailability {
+pub enum ProviderAvailability {
     Available {
         resolved_executable: ResolvedProviderExecutable,
     },
@@ -66,8 +66,8 @@ impl ProviderAvailability {
         Self::Unavailable { reason }
     }
 
-    #[cfg(test)]
-    pub(crate) fn resolved_executable(&self) -> Option<&ResolvedProviderExecutable> {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn resolved_executable(&self) -> Option<&ResolvedProviderExecutable> {
         match self {
             Self::Available {
                 resolved_executable,
@@ -76,8 +76,8 @@ impl ProviderAvailability {
         }
     }
 
-    #[cfg(test)]
-    pub(crate) fn unavailable_reason(&self) -> Option<ProviderUnavailableReason> {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn unavailable_reason(&self) -> Option<ProviderUnavailableReason> {
         match self {
             Self::Available { .. } => None,
             Self::Unavailable { reason } => Some(*reason),
@@ -196,7 +196,7 @@ impl ProviderRegistry {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ProviderRegistryError {
+pub enum ProviderRegistryError {
     InvalidExecutable,
     InvalidResolvedExecutable,
     DuplicateProvider,

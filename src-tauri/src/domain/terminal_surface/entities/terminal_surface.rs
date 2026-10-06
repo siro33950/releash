@@ -34,7 +34,7 @@ pub struct TerminalSurfaceSummary {
 }
 
 impl TerminalSurface {
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn new(
         runtime_generation: impl Into<TerminalRuntimeGeneration>,
         owner: TerminalSurfaceOwner,
@@ -146,7 +146,7 @@ impl TerminalSurface {
         Some(sequence)
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn new_with_session_key(
         runtime_generation: impl Into<TerminalRuntimeGeneration>,
         session_key: String,

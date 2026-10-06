@@ -17,6 +17,3 @@ pub(crate) mod worktree_operation;
 pub(crate) mod worktree_terminal;
 
 pub(crate) mod file_watcher;
-
-#[cfg(test)]
-pub(crate) mod test_helpers;

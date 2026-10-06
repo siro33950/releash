@@ -5,10 +5,6 @@ use rusqlite::Connection;
 
 use super::fault::{FaultInjector, InitialCreateFaultPoint};
 
-#[cfg(test)]
-#[path = "schema_test.rs"]
-mod schema_test;
-
 /// Minimum SQLite version containing the WAL-reset corruption fix.
 pub const APPLICATION_ID: i32 = 0x524C_5348;
 pub const CURRENT_SCHEMA_VERSION: i64 = 8;
@@ -144,7 +140,7 @@ fn evolve_session_projection_v3(connection: &Connection) -> Result<(), rusqlite:
     connection.execute_batch(SESSION_PROJECTION_EVOLUTION_V3)
 }
 
-fn create_store_metadata(
+pub fn create_store_metadata(
     connection: &Connection,
     table_name: &str,
     shutdown_plans_table: &str,
@@ -203,7 +199,7 @@ pub fn initialize_schema(
         connection.pragma_update(None, "application_id", APPLICATION_ID)?;
         connection.pragma_update(None, "user_version", CURRENT_SCHEMA_VERSION)?;
         if fault.take_initial_create_fault(InitialCreateFaultPoint::BeforeInitializationCommit) {
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             fault.crash_initial_create_process_if_armed(
                 InitialCreateFaultPoint::BeforeInitializationCommit,
             );
@@ -213,7 +209,7 @@ pub fn initialize_schema(
     })?;
     if fault.take_initial_create_fault(InitialCreateFaultPoint::AfterInitializationCommitReplyLoss)
     {
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         fault.crash_initial_create_process_if_armed(
             InitialCreateFaultPoint::AfterInitializationCommitReplyLoss,
         );
@@ -969,7 +965,7 @@ fn require_columns(
     Ok(())
 }
 
-fn require_index(connection: &Connection, index: &str) -> Result<(), rusqlite::Error> {
+pub fn require_index(connection: &Connection, index: &str) -> Result<(), rusqlite::Error> {
     let exists: i64 = connection.query_row(
         "SELECT COUNT(*) FROM sqlite_schema
          WHERE type = 'index' AND name = ?1 AND sql IS NOT NULL",
@@ -982,7 +978,7 @@ fn require_index(connection: &Connection, index: &str) -> Result<(), rusqlite::E
     Ok(())
 }
 
-fn require_schema_object_absent(
+pub fn require_schema_object_absent(
     connection: &Connection,
     object_type: &str,
     name: &str,
@@ -998,7 +994,7 @@ fn require_schema_object_absent(
     Ok(())
 }
 
-fn require_foreign_key_integrity(connection: &Connection) -> Result<(), rusqlite::Error> {
+pub fn require_foreign_key_integrity(connection: &Connection) -> Result<(), rusqlite::Error> {
     let mut statement = connection.prepare("PRAGMA foreign_key_check")?;
     if statement.query([])?.next()?.is_some() {
         return Err(rusqlite::Error::InvalidQuery);
@@ -1006,106 +1002,10 @@ fn require_foreign_key_integrity(connection: &Connection) -> Result<(), rusqlite
     Ok(())
 }
 
-fn table_columns(connection: &Connection, table: &str) -> Result<Vec<String>, rusqlite::Error> {
+pub fn table_columns(connection: &Connection, table: &str) -> Result<Vec<String>, rusqlite::Error> {
     let mut statement = connection.prepare(&format!("PRAGMA table_info({table})"))?;
     let columns = statement
         .query_map([], |row| row.get::<_, String>(1))?
         .collect::<Result<Vec<_>, _>>()?;
     Ok(columns)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn metadata() -> InitialStoreMetadata<'static> {
-        InitialStoreMetadata {
-            installation_id: "00000000-0000-4000-8000-000000000001",
-            created_at_ms: 1,
-        }
-    }
-
-    fn initialize(connection: &Connection) {
-        initialize_schema(connection, &metadata(), &FaultInjector::new()).unwrap();
-    }
-
-    #[test]
-    fn schema_v5_evolves_to_node_events() {
-        let connection = Connection::open_in_memory().unwrap();
-        initialize(&connection);
-        super::schema_test::restore_v7_schema(&connection);
-        connection
-            .execute_batch(
-                "BEGIN IMMEDIATE;
-                 DROP INDEX idx_node_events_node;
-                 DROP INDEX idx_node_events_kind;
-                 DROP INDEX idx_node_events_session;
-                 DROP TABLE node_events;
-                 ALTER TABLE store_metadata RENAME TO store_metadata_old;",
-            )
-            .unwrap();
-        connection
-            .execute_batch(
-                "INSERT INTO logical_commits VALUES
-                    ('keep-recovery', '00000000-0000-4000-8000-000000000001', 'recovery', 'keep-recovery', zeroblob(32), 'sealed', NULL, NULL, 0, 1, '{}', NULL, 1),
-                    ('keep-plan', '00000000-0000-4000-8000-000000000001', 'application_quit', 'keep-plan', zeroblob(32), 'sealed', NULL, NULL, 0, 1, '{}', NULL, 1),
-                    ('keep-target', '00000000-0000-4000-8000-000000000001', 'shutdown_target', 'keep-target', zeroblob(32), 'sealed', NULL, NULL, 0, 1, '{}', NULL, 1),
-                    ('keep-snapshot', '00000000-0000-4000-8000-000000000001', 'recovery', 'keep-snapshot', zeroblob(32), 'sealed', NULL, NULL, 0, 1, '{}', NULL, 1),
-                    ('delete-orphan', '00000000-0000-4000-8000-000000000001', 'workflow', 'delete-orphan', zeroblob(32), 'sealed', NULL, NULL, 0, 0, '{}', NULL, 1);
-                 INSERT INTO recovery_action_attempts VALUES
-                    ('action-1', zeroblob(32), '{}', NULL, 0, 'keep-recovery');
-                 INSERT INTO shutdown_plans VALUES
-                    ('shutdown-1', 'prepared', '{}', 'available', 0, 'keep-plan');
-                 INSERT INTO shutdown_targets VALUES
-                    ('shutdown-1', 0, '{}', 0, 'keep-target');
-                 INSERT INTO shutdown_recovery_snapshots VALUES
-                    ('shutdown-1', 'owner', 0, '{}', 'keep-snapshot');",
-            )
-            .unwrap();
-        create_store_metadata(&connection, "store_metadata", "shutdown_plans", 5).unwrap();
-        connection
-            .execute_batch(
-                "INSERT INTO store_metadata (
-                     id, schema_version, installation_id, created_at_ms,
-                     cursor_hmac_key, operation_binding_hmac_key,
-                     process_instance_id, next_global_sequence, health,
-                     current_shutdown_id, shutdown_pointer_revision
-                 )
-                 SELECT id, 5, installation_id, created_at_ms,
-                        cursor_hmac_key, operation_binding_hmac_key,
-                        process_instance_id, next_global_sequence, health,
-                        current_shutdown_id, shutdown_pointer_revision
-                 FROM store_metadata_old;
-                 DROP TABLE store_metadata_old;
-                 PRAGMA user_version = 5;
-                 COMMIT;",
-            )
-            .unwrap();
-
-        assert!(evolve_schema(&connection, &FaultInjector::new()).unwrap());
-        validate_current_schema(&connection).unwrap();
-        require_index(&connection, "idx_node_events_node").unwrap();
-        require_index(&connection, "idx_node_events_kind").unwrap();
-        require_index(&connection, "idx_node_events_session").unwrap();
-        require_index(&connection, "idx_node_events_event_type").unwrap();
-        for commit_id in ["keep-recovery", "keep-plan", "keep-target", "keep-snapshot"] {
-            let count: i64 = connection
-                .query_row(
-                    "SELECT COUNT(*) FROM logical_commits WHERE commit_id = ?1",
-                    [commit_id],
-                    |row| row.get(0),
-                )
-                .unwrap();
-            assert_eq!(count, 1, "referenced commit must survive: {commit_id}");
-        }
-        let orphan_count: i64 = connection
-            .query_row(
-                "SELECT COUNT(*) FROM logical_commits WHERE commit_id = 'delete-orphan'",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(orphan_count, 0);
-        require_foreign_key_integrity(&connection).unwrap();
-    }
 }

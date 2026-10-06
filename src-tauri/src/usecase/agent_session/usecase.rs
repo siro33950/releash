@@ -1,4 +1,4 @@
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 use crate::domain::agent_session::aggregates::AgentSessionArchiveOutcome;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, Weak};
@@ -18,7 +18,7 @@ use crate::domain::workflow::AgentSessionActivity;
 use crate::domain::workspace_tree::WorkspaceIdentity;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum AgentSessionUsecaseError {
+pub enum AgentSessionUsecaseError {
     Store(crate::domain::failure::StorageFailure),
     NotFound,
     InvalidOperation,
@@ -37,25 +37,25 @@ pub(crate) struct AgentSessionCreateRequest {
     pub(crate) admit_initial_instruction: bool,
 }
 
-pub(crate) struct AgentSessionActivityObservation {
-    pub(crate) outcome: AgentSessionMutationOutcome,
+pub struct AgentSessionActivityObservation {
+    pub outcome: AgentSessionMutationOutcome,
     pub(crate) worktree_path: String,
 }
 
-pub(crate) struct AgentSessionUsecase {
+pub struct AgentSessionUsecase {
     repository: Arc<dyn AgentSessionRepository>,
     operation_locks: Mutex<HashMap<String, Weak<AsyncMutex<()>>>>,
 }
 
 impl AgentSessionUsecase {
-    pub(crate) fn new(repository: Arc<dyn AgentSessionRepository>) -> Self {
+    pub fn new(repository: Arc<dyn AgentSessionRepository>) -> Self {
         Self {
             repository,
             operation_locks: Mutex::new(HashMap::new()),
         }
     }
 
-    pub(crate) async fn lock_operation(
+    pub async fn lock_operation(
         &self,
         agent_session_id: &str,
     ) -> Result<OwnedMutexGuard<()>, AgentSessionUsecaseError> {
@@ -76,7 +76,7 @@ impl AgentSessionUsecase {
         Ok(lock.lock_owned().await)
     }
 
-    pub(crate) async fn create(
+    pub async fn create(
         &self,
         agent_session_id: &str,
         workspace: WorkspaceIdentity,
@@ -124,7 +124,7 @@ impl AgentSessionUsecase {
             .map_err(map_repository_error)
     }
 
-    pub(crate) async fn find(
+    pub async fn find(
         &self,
         agent_session_id: &str,
     ) -> Result<Option<VersionedAgentSession>, AgentSessionUsecaseError> {
@@ -134,7 +134,7 @@ impl AgentSessionUsecase {
             .map_err(map_repository_error)
     }
 
-    pub(crate) async fn associate_provider_session(
+    pub async fn associate_provider_session(
         &self,
         agent_session_id: &str,
         provider_session_id: &str,
@@ -176,7 +176,7 @@ impl AgentSessionUsecase {
         Ok(session)
     }
 
-    pub(crate) async fn observe_process_exit(
+    pub async fn observe_process_exit(
         &self,
         agent_session_id: &str,
         exit_code: Option<i32>,
@@ -195,7 +195,7 @@ impl AgentSessionUsecase {
         Ok(outcome)
     }
 
-    pub(crate) async fn observe_activity(
+    pub async fn observe_activity(
         &self,
         agent_session_id: &str,
         activity: AgentSessionActivity,
@@ -236,7 +236,7 @@ impl AgentSessionUsecase {
         Ok(outcome)
     }
 
-    pub(crate) async fn complete_resume(
+    pub async fn complete_resume(
         &self,
         agent_session_id: &str,
         result: AgentSessionRecoveryResult,
@@ -251,8 +251,8 @@ impl AgentSessionUsecase {
         Ok(outcome)
     }
 
-    #[cfg(test)]
-    pub(crate) async fn archive(
+    #[cfg(any(test, feature = "test-support"))]
+    pub async fn archive(
         &self,
         agent_session_id: &str,
         caller_request_id: &str,
@@ -266,7 +266,7 @@ impl AgentSessionUsecase {
         Ok(outcome)
     }
 
-    pub(crate) async fn delete(
+    pub async fn delete(
         &self,
         agent_session_id: &str,
         caller_request_id: &str,
@@ -282,7 +282,7 @@ impl AgentSessionUsecase {
             .map_err(map_repository_error)
     }
 
-    pub(crate) async fn garbage_collect(
+    pub async fn garbage_collect(
         &self,
         agent_session_id: &str,
         pty_presence: ManagedPtyPresence,
@@ -299,7 +299,7 @@ impl AgentSessionUsecase {
             .map_err(map_repository_error)
     }
 
-    pub(crate) async fn admit_continuation(
+    pub async fn admit_continuation(
         &self,
         agent_session_id: &str,
         request_id: &str,

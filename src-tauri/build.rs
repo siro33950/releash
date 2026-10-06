@@ -18,7 +18,7 @@ fn generate_client_protocol() {
     for message in ["CommandRequest", "CommandResult"] {
         config.message_attribute(
             format!(".releash.client.v1.{message}"),
-            "#[cfg(any(test, debug_assertions))]",
+            "#[cfg(any(test, feature = \"test-support\"))]",
         );
     }
     config.boxed(".releash.client.v1.Push.event.workflow_execution_changed");
@@ -39,7 +39,7 @@ fn generate_client_protocol() {
         ("CommandResult", "command_result"),
     ] {
         let descriptor = messages.iter().find(|item| item.name() == message).unwrap();
-        let harness_only = "#[cfg(any(test, debug_assertions))] ";
+        let harness_only = "#[cfg(any(test, feature = \"test-support\"))] ";
         let decode_test = if message == "CommandRequest" {
             "#[cfg(test)] "
         } else {

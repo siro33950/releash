@@ -9,16 +9,16 @@ use crate::domain::workflow::WorkflowError;
 use crate::usecase::workflow::ports::ExternalEditorGateway;
 
 #[derive(Clone)]
-pub(crate) struct WorkflowExternalEditorGateway {
+pub struct WorkflowExternalEditorGateway {
     config: Arc<dyn ConfigRepository>,
     workflows_dir: PathBuf,
     facets_base_dir: PathBuf,
 }
 
-#[cfg(test)]
-pub(crate) struct NoopWorkflowExternalEditorGateway;
+#[cfg(any(test, feature = "test-support"))]
+pub struct NoopWorkflowExternalEditorGateway;
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 impl ExternalEditorGateway for NoopWorkflowExternalEditorGateway {
     fn open_workflow(&self, _name: &str) -> Result<(), WorkflowError> {
         Ok(())
@@ -67,7 +67,7 @@ impl ExternalEditorGateway for WorkflowExternalEditorGateway {
     }
 }
 
-fn resolve_workflow_editor_path(
+pub fn resolve_workflow_editor_path(
     workflows_dir: &Path,
     name: &str,
 ) -> Result<PathBuf, WorkflowError> {
@@ -80,7 +80,7 @@ fn resolve_workflow_editor_path(
         .map_err(|e| WorkflowError::external(e.to_string()))
 }
 
-fn resolve_facet_editor_path(
+pub fn resolve_facet_editor_path(
     facets_base_dir: &Path,
     kind: &str,
     key: &str,
@@ -95,7 +95,7 @@ fn resolve_facet_editor_path(
         .map_err(|e| WorkflowError::external(e.to_string()))
 }
 
-fn parse_editor_facet_kind(kind: &str) -> Result<facet::FacetKind, WorkflowError> {
+pub fn parse_editor_facet_kind(kind: &str) -> Result<facet::FacetKind, WorkflowError> {
     match kind {
         "policy" | "policies" => Ok(facet::FacetKind::Policy),
         "knowledge" => Ok(facet::FacetKind::Knowledge),
@@ -106,82 +106,17 @@ fn parse_editor_facet_kind(kind: &str) -> Result<facet::FacetKind, WorkflowError
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::adaptor::gateway::workflow::schema::{
-        FacetRefs, NodeDefinition, NodeKind, SessionSpec, WorkflowDefinitionYaml,
-    };
-    use tempfile::TempDir;
-
-    #[test]
-    fn workflow_editor_path_rejects_builtin_and_resolves_custom_file() {
-        let tmp = TempDir::new().unwrap();
-        let workflow = WorkflowDefinitionYaml {
-            name: "custom".to_string(),
-            description: String::new(),
-            builtin: false,
-            schemas: Default::default(),
-            nodes: vec![NodeDefinition {
-                name: "main".to_string(),
-                kind: NodeKind::Session(SessionSpec {
-                    facets: FacetRefs {
-                        instruction: Some("implement".to_string()),
-                        ..Default::default()
-                    },
-                    ..Default::default()
-                }),
-                ..NodeDefinition::default()
-            }],
-            entry: "main".to_string(),
-        };
-        storage::save_workflow(tmp.path(), &workflow).unwrap();
-
-        let path = resolve_workflow_editor_path(tmp.path(), "custom").unwrap();
-
-        assert_eq!(path.file_name().unwrap(), "custom.yml");
-        if let Some(summary) = builtin::list_builtin_workflows().first() {
-            assert!(resolve_workflow_editor_path(tmp.path(), &summary.name).is_err());
+#[cfg(feature = "test-support")]
+impl WorkflowExternalEditorGateway {
+    pub fn test_new(
+        config: Arc<dyn ConfigRepository>,
+        workflows_dir: PathBuf,
+        facets_base_dir: PathBuf,
+    ) -> Self {
+        Self {
+            config,
+            workflows_dir,
+            facets_base_dir,
         }
-    }
-
-    #[test]
-    fn workflow_editor_path_resolves_lua_file() {
-        let tmp = TempDir::new().unwrap();
-        std::fs::write(tmp.path().join("custom-lua.lua"), "return nil").unwrap();
-
-        let path = resolve_workflow_editor_path(tmp.path(), "custom-lua").unwrap();
-
-        assert_eq!(path.file_name().unwrap(), "custom-lua.lua");
-    }
-
-    #[test]
-    fn facet_editor_path_rejects_builtin_and_resolves_custom_file() {
-        let tmp = TempDir::new().unwrap();
-        facet::save_facet(facet::FacetKind::Instruction, "custom", "body", tmp.path()).unwrap();
-
-        let path = resolve_facet_editor_path(tmp.path(), "instructions", "custom").unwrap();
-
-        assert_eq!(path.file_name().unwrap(), "custom.md");
-        if let Some(key) = builtin::list_builtin_facet_keys(facet::FacetKind::Instruction).first() {
-            assert!(resolve_facet_editor_path(tmp.path(), "instructions", key).is_err());
-        }
-        assert!(resolve_facet_editor_path(tmp.path(), "persona", "custom").is_err());
-    }
-
-    #[test]
-    fn parse_editor_facet_kind_accepts_wire_and_directory_names() {
-        assert_eq!(
-            parse_editor_facet_kind("policy").unwrap(),
-            facet::FacetKind::Policy
-        );
-        assert_eq!(
-            parse_editor_facet_kind("policies").unwrap(),
-            facet::FacetKind::Policy
-        );
     }
 }
-
-#[cfg(test)]
-#[path = "editor_gateway_test.rs"]
-mod editor_gateway_tests;

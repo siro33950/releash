@@ -4,12 +4,12 @@ use crate::adaptor::gateway::repository::watch::generate_watcher_id;
 use crate::domain::repository::file_watcher::{FileWatchGateway, WatchChangeHandler};
 use crate::infrastructure::file_watcher::FileWatcherManager;
 
-pub(crate) struct FileWatcherGateway {
+pub struct FileWatcherGateway {
     manager: Arc<FileWatcherManager>,
 }
 
 impl FileWatcherGateway {
-    pub(crate) fn new(manager: Arc<FileWatcherManager>) -> Self {
+    pub fn new(manager: Arc<FileWatcherManager>) -> Self {
         Self { manager }
     }
 }
@@ -43,7 +43,3 @@ impl FileWatchGateway for FileWatcherGateway {
         self.manager.stop_watching(watcher_id)
     }
 }
-
-#[cfg(test)]
-#[path = "file_watcher_test.rs"]
-mod file_watcher_tests;

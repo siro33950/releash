@@ -6,12 +6,12 @@ use crate::usecase::failure::{attempt_expired, next_attempt, WorkFailure, ATTEMP
 use crate::usecase::retry::Retrying;
 
 #[derive(Debug, Clone)]
-pub(crate) struct FailedNodeStart {
+pub struct FailedNodeStart {
     pub id: String,
     pub kind: Failure,
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 impl From<&str> for FailedNodeStart {
     fn from(id: &str) -> Self {
         Self {
@@ -22,7 +22,7 @@ impl From<&str> for FailedNodeStart {
 }
 
 #[async_trait::async_trait]
-pub(crate) trait NodeStartupGateway: Send + Sync {
+pub trait NodeStartupGateway: Send + Sync {
     async fn start(
         &self,
         starts: Vec<NodeStart>,

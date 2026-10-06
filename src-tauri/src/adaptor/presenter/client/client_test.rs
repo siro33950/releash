@@ -57,10 +57,10 @@ fn test_クライアント引数_必須フィールドと整数型を検証す�
     assert!(CommandRequest::from_value("build_diff_file_tree", json!({})).is_err());
     assert!(CommandRequest::from_value(
         "write_terminal_surface",
-        json!({"owner":{"kind":"workspace","workspacePath":"/repo"},"attachmentId":"a", "sequence": 1.5,"data":"x","clientStartedAtUnixMs":null})
+        json!({"owner":{"kind":"workspace","workspacePath":"/repo"},"attachmentId":"a", "sequence": 1.5,"data":"x"})
     )
     .is_err());
-    let args = json!({"owner":{"kind":"workspace","workspacePath":"/repo"},"attachmentId":"a", "sequence": u64::MAX,"data":"x","clientStartedAtUnixMs":null});
+    let args = json!({"owner":{"kind":"workspace","workspacePath":"/repo"},"attachmentId":"a", "sequence": u64::MAX,"data":"x"});
     let request = CommandRequest::from_value("write_terminal_surface", args.clone()).unwrap();
     let decoded = CommandRequest::decode(request.encode_to_vec().as_slice())
         .unwrap()

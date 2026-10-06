@@ -1,8 +1,8 @@
-mod client_token;
+pub(crate) mod client_token;
 pub(crate) use client_token::ClientBearerToken;
-mod client;
-mod discovery;
-mod server;
+pub(crate) mod client;
+pub(crate) mod discovery;
+pub(crate) mod server;
 
 pub use client::{read_local_api_discovery, LocalApiDiscoveryReadError};
 pub(crate) use client::{LocalApiHttpClient, LocalApiIdentityRequestError, LocalApiTransportError};
@@ -15,7 +15,7 @@ pub(crate) use server::LocalApiServer;
 pub(crate) use server::LocalApiServerBinding;
 
 #[derive(Debug, thiserror::Error)]
-pub(crate) enum LocalApiServerError {
+pub enum LocalApiServerError {
     #[error("failed to bind local API to 127.0.0.1: {0}")]
     ListenerBind(#[source] std::io::Error),
     #[error("failed to resolve local API address: {0}")]
@@ -32,5 +32,5 @@ pub(crate) enum LocalApiServerError {
     Discovery(#[source] std::io::Error),
 }
 
-#[cfg(any(test, debug_assertions))]
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) use server::test_binding;

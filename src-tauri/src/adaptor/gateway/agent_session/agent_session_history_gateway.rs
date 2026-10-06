@@ -7,13 +7,13 @@ use crate::domain::agent_session::{
 };
 use crate::domain::provider_lifecycle::ProviderKind;
 
-pub(crate) struct LocalAgentSessionHistoryGateway {
+pub struct LocalAgentSessionHistoryGateway {
     claude_config_dir: PathBuf,
     codex_home: PathBuf,
 }
 
 impl LocalAgentSessionHistoryGateway {
-    pub(crate) fn new(claude_config_dir: PathBuf, codex_home: PathBuf) -> Self {
+    pub fn new(claude_config_dir: PathBuf, codex_home: PathBuf) -> Self {
         Self {
             claude_config_dir,
             codex_home,

@@ -2,12 +2,12 @@ use std::sync::Arc;
 
 use crate::adaptor::gateway::local_event_store::LocalEventStore;
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 use super::event::WorkflowEvent;
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 use crate::domain::workflow::WorkflowExecutionSummary as WorkflowExecutionMetadata;
 
-pub(crate) struct WorkflowSessionFactSeed<'a> {
+pub struct WorkflowSessionFactSeed<'a> {
     pub workflow_name: &'a str,
     pub request: &'a str,
     pub worktree_path: &'a str,
@@ -18,7 +18,7 @@ pub(crate) struct WorkflowSessionFactSeed<'a> {
     pub initial_instruction_admitted: bool,
 }
 
-pub(crate) async fn seed_workflow_session_facts(
+pub async fn seed_workflow_session_facts(
     store: &Arc<LocalEventStore>,
     seed: WorkflowSessionFactSeed<'_>,
 ) -> Result<(), String> {
@@ -138,8 +138,8 @@ pub(crate) async fn seed_workflow_session_facts(
     .map_err(|error| error.to_string())
 }
 
-#[cfg(test)]
-pub(crate) async fn seed_canonical_execution(
+#[cfg(any(test, feature = "test-support"))]
+pub async fn seed_canonical_execution(
     store: &Arc<LocalEventStore>,
     execution: &WorkflowExecutionMetadata,
     events: &[WorkflowEvent],
@@ -164,7 +164,7 @@ pub(crate) async fn seed_canonical_execution(
 
 /// metadata のみの seed を fold（node_events）でも観測できるよう、
 /// 状態に対応する最小の事実列を合成する。
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 fn synthesized_metadata_events(execution: &WorkflowExecutionMetadata) -> Vec<WorkflowEvent> {
     use crate::domain::workflow::{
         ExecutionStatus, NodeDefinition, NodeKindName, WorkflowDefinition,
@@ -241,8 +241,8 @@ fn synthesized_metadata_events(execution: &WorkflowExecutionMetadata) -> Vec<Wor
     events
 }
 
-#[cfg(test)]
-pub(crate) async fn append_canonical_events(
+#[cfg(any(test, feature = "test-support"))]
+pub async fn append_canonical_events(
     store: &Arc<LocalEventStore>,
     events: &[WorkflowEvent],
 ) -> Result<(), String> {
@@ -251,8 +251,8 @@ pub(crate) async fn append_canonical_events(
         .map_err(|error| error.to_string())
 }
 
-#[cfg(test)]
-pub(crate) async fn seed_unavailable_definition(
+#[cfg(any(test, feature = "test-support"))]
+pub async fn seed_unavailable_definition(
     store: &Arc<LocalEventStore>,
     tree_id: &str,
     workspace: &str,

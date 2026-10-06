@@ -1,5 +1,5 @@
-mod provider_hook_health;
-mod provider_lifecycle_binding;
+pub(crate) mod provider_hook_health;
+pub(crate) mod provider_lifecycle_binding;
 mod provider_lifecycle_slot;
 
 pub(crate) use provider_hook_health::{

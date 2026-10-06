@@ -2,7 +2,7 @@ use super::super::ProviderLifecycleInputError;
 use super::{ProviderKind, ProviderLifecycleScope, ProviderLifecycleUnavailableReason};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum ProviderLifecycleEvent {
+pub enum ProviderLifecycleEvent {
     BindingArmed {
         slot_id: String,
         binding_id: String,
@@ -37,7 +37,7 @@ pub(crate) enum ProviderLifecycleEvent {
 }
 
 impl ProviderLifecycleEvent {
-    pub(crate) fn binding_armed(
+    pub fn binding_armed(
         slot_id: impl Into<String>,
         binding_id: impl Into<String>,
         provider: ProviderKind,
@@ -51,7 +51,7 @@ impl ProviderLifecycleEvent {
         })
     }
 
-    pub(crate) fn session_associated(
+    pub fn session_associated(
         binding_id: impl Into<String>,
         provider_session_id: impl Into<String>,
         transcript_ref: Option<String>,
@@ -73,7 +73,7 @@ impl ProviderLifecycleEvent {
         })
     }
 
-    pub(crate) fn stop_observed(
+    pub fn stop_observed(
         binding_id: impl Into<String>,
     ) -> Result<Self, ProviderLifecycleInputError> {
         Ok(Self::StopObserved {

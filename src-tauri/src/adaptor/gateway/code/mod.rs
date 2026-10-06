@@ -13,7 +13,7 @@ use crate::adaptor::gateway::shared::git_operation;
 pub(crate) mod branch_base;
 pub(crate) mod branch_diff;
 pub(crate) mod diff_compute;
-mod error;
+pub(crate) mod error;
 pub(crate) mod file_content;
 pub(crate) mod staging;
 
@@ -27,7 +27,7 @@ use crate::domain::code::CodeError;
 /// フォールバックする。base 名 → ref → コミット OID の解決は `repository` ドメインが
 /// 所有し、本関数は OID から merge-base 計算のみを担う（`file_content` / `branch_diff`
 /// が共有し、ref 解決ロジックを重複実装しない）。
-pub(crate) fn resolve_merge_base_commit<'a>(
+pub fn resolve_merge_base_commit<'a>(
     repo: &'a Repository,
     base_commit_oid: Option<&str>,
 ) -> Result<git2::Commit<'a>, CodeError> {
@@ -51,7 +51,3 @@ pub(crate) fn resolve_merge_base_commit<'a>(
     let merge_base_oid = git_operation::run(|| repo.merge_base(current_oid, base_oid))?;
     Ok(git_operation::run(|| repo.find_commit(merge_base_oid))?)
 }
-
-#[cfg(test)]
-#[path = "mod_test.rs"]
-mod mod_tests;

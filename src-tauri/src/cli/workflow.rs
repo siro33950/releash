@@ -49,7 +49,7 @@ pub(super) enum WorkflowSubcommand {
     },
 }
 
-pub(super) async fn cmd_status(
+pub async fn cmd_status(
     data_dir: &Path,
     execution_id: &str,
     json: bool,
@@ -97,4 +97,4 @@ fn execution_status_name(status: ExecutionStatusView) -> &'static str {
 
 #[cfg(test)]
 #[path = "workflow_test.rs"]
-mod workflow_tests;
+pub(crate) mod workflow_tests;

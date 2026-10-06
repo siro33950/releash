@@ -108,6 +108,42 @@ describe("CreateWorktreeModal", () => {
 		});
 	});
 
+	it("Branch候補をfilterしCancelで閉じ、Plain入力時だけCreateを有効にする", async () => {
+		const user = userEvent.setup();
+		vi.mocked(subscribeState).mockImplementation((target, receive) => {
+			if (typeof target !== "string" && target.kind === "branch-status") {
+				receive([
+					{ name: "feat/todo", has_worktree: false },
+					{ name: "feat/done", has_worktree: false },
+				]);
+			} else receive([]);
+			return vi.fn();
+		});
+		const onClose = vi.fn();
+		render(
+			<CreateWorktreeModal
+				open
+				repoPaths={["/repo"]}
+				onCreated={vi.fn()}
+				onClose={onClose}
+			/>,
+		);
+		const create = screen.getByRole("button", { name: "Create" });
+		expect(create).toBeDisabled();
+		await user.type(
+			screen.getByPlaceholderText("feat/my-feature"),
+			"feat/new-feature",
+		);
+		expect(create).toBeEnabled();
+		await user.click(screen.getByRole("tab", { name: "Branch" }));
+		expect(screen.getByText("feat/todo")).toBeVisible();
+		await user.type(screen.getByPlaceholderText("Filter branches..."), "done");
+		expect(screen.getByText("feat/done")).toBeVisible();
+		expect(screen.queryByText("feat/todo")).not.toBeInTheDocument();
+		await user.click(screen.getByRole("button", { name: "Cancel" }));
+		expect(onClose).toHaveBeenCalledOnce();
+	});
+
 	it("ブランチ読取の失敗を表示し成功後に解除する", () => {
 		let recover!: Parameters<typeof subscribeState>[1];
 		vi.mocked(subscribeState).mockImplementation((target, receive, fail) => {

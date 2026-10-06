@@ -6,7 +6,7 @@ use crate::domain::provider_lifecycle::{
 };
 
 #[derive(Default)]
-pub(crate) struct LocalProviderLifecycleCredentialGateway;
+pub struct LocalProviderLifecycleCredentialGateway;
 
 impl ProviderLifecycleCredentialGateway for LocalProviderLifecycleCredentialGateway {
     fn issue(&self) -> IssuedProviderLifecycleCredential {

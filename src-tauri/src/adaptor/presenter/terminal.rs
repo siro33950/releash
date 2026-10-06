@@ -7,48 +7,6 @@ use crate::domain::workspace_tree::WorkspaceIdentity;
 use crate::usecase::terminal_surface::application::TerminalSurfaceSnapshotDto;
 use crate::usecase::terminal_surface::spawn_usecase::GetOrSpawnTerminalOutcome;
 
-#[derive(Clone, Debug, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct TerminalLaunchPerformanceSampleV1 {
-    pub phase: String,
-    pub duration_ms: f64,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct TerminalPerformanceSwitchesV1 {
-    pub disable_output_flow_control: bool,
-    pub disable_terminal_journal: bool,
-    pub disable_renderer_write_serialization: bool,
-    pub disable_webgl_renderer: bool,
-}
-
-impl From<crate::usecase::telemetry::TerminalPerformanceSwitches>
-    for TerminalPerformanceSwitchesV1
-{
-    fn from(switches: crate::usecase::telemetry::TerminalPerformanceSwitches) -> Self {
-        Self {
-            disable_output_flow_control: switches.disable_output_flow_control,
-            disable_terminal_journal: switches.disable_terminal_journal,
-            disable_renderer_write_serialization: switches.disable_renderer_write_serialization,
-            disable_webgl_renderer: switches.disable_webgl_renderer,
-        }
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct TerminalInputPerformanceSampleV1 {
-    pub sequence: u64,
-    pub on_data_to_command_ingress_ms: f64,
-    pub command_ingress_to_admission_ms: f64,
-    pub admission_to_writer_enqueue_ms: f64,
-    pub writer_enqueue_to_output_read_ms: f64,
-    pub output_read_to_model_apply_ms: f64,
-    pub model_apply_to_event_publish_ms: f64,
-    pub event_published_at_unix_ms: f64,
-}
-
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TerminalProcessLaunchV1 {

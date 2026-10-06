@@ -13,7 +13,7 @@ impl EditorLauncherGateway for NativeEditorLauncherGateway {
     }
 }
 
-fn open_path_with(
+pub fn open_path_with(
     path: &str,
     editor: &str,
     label: &str,
@@ -28,7 +28,3 @@ fn open_path_with(
             .map_err(|e| EditorError::Launch(format!("エディタで{label}を開けませんでした: {e}")))
     }
 }
-
-#[cfg(test)]
-#[path = "launcher_impl_test.rs"]
-mod launcher_impl_tests;

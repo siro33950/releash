@@ -36,7 +36,7 @@ impl WorkflowRuntimeHost {
         Ok(())
     }
 
-    pub(crate) async fn abort_workflow_execution(
+    pub async fn abort_workflow_execution(
         &self,
         app: &WorkflowRuntimeDependencies,
         execution_id: &str,

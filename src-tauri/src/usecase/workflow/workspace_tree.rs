@@ -11,7 +11,7 @@ use crate::usecase::fetched::Fetched;
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct WorkspaceNodeCapabilitiesDto {
+pub struct WorkspaceNodeCapabilitiesDto {
     pub can_rename: bool,
     pub can_approve: bool,
     pub can_retry: bool,
@@ -26,7 +26,7 @@ pub struct NodeWorktreeDto {
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct WorkspaceNodeDetailDto {
+pub struct WorkspaceNodeDetailDto {
     pub process_presence: &'static str,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worktree: Option<NodeWorktreeDto>,
@@ -47,21 +47,21 @@ pub(crate) struct WorkspaceNodeDetailDto {
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(tag = "kind", rename_all = "camelCase")]
-pub(crate) enum WorkspaceNodeContentDto {
+pub enum WorkspaceNodeContentDto {
     Session(WorkspaceSessionNodeContentDto),
     Command(WorkspaceCommandNodeContentDto),
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct WorkspaceSessionNodeContentDto {
+pub struct WorkspaceSessionNodeContentDto {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct WorkspaceCommandNodeContentDto {
+pub struct WorkspaceCommandNodeContentDto {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub display_command: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -70,7 +70,7 @@ pub(crate) struct WorkspaceCommandNodeContentDto {
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct WorkspaceCommandResultDto {
+pub struct WorkspaceCommandResultDto {
     pub exit_code: i64,
     /// Milliseconds, matching the command Artifact reserved field.
     pub duration: u64,
@@ -80,7 +80,7 @@ pub(crate) struct WorkspaceCommandResultDto {
 
 impl WorkflowUsecase {
     /// worktree の実行木。要対応の失敗を反映した集約を返す。
-    pub(crate) async fn workspace_tree(
+    pub async fn workspace_tree(
         &self,
         worktree_path: &str,
     ) -> Result<WorkspaceTree, WorkflowError> {
@@ -112,7 +112,7 @@ impl WorkflowUsecase {
     /// 指定に無い worktree の保持値は捨てる。
     ///
     /// 渡すのは Repository の走査で読めた worktree の場所なので、管理対象かは確かめ直さない。
-    pub(crate) async fn retained_workspace_trees(
+    pub async fn retained_workspace_trees(
         &self,
         worktree_paths: &[String],
     ) -> Vec<Fetched<WorkspaceTree>> {
@@ -168,7 +168,7 @@ impl WorkflowUsecase {
     }
 
     /// 実行木と、選択している Node が画面に出す木にあるか。
-    pub(crate) async fn workspace_tree_selection(
+    pub async fn workspace_tree_selection(
         &self,
         worktree_path: &str,
         selected_node_id: &str,
@@ -200,7 +200,7 @@ impl WorkflowUsecase {
         runtime.restore_execution_tree(execution_id).await
     }
 
-    async fn authorize_archive_target(
+    pub async fn authorize_archive_target(
         &self,
         worktree_path: &str,
         execution_id: &str,
@@ -336,7 +336,3 @@ impl WorkspaceNodeActionResolver for WorkflowUsecase {
         Ok(WorkspaceSessionNodeRenameTarget { agent_session_id })
     }
 }
-
-#[cfg(test)]
-#[path = "workspace_tree_test.rs"]
-mod workspace_tree_tests;

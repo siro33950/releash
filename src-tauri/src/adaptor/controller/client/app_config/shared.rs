@@ -4,7 +4,7 @@ use crate::adaptor::controller::client::{convert, required};
 use crate::adaptor::controller::client::{invalid_request, outcome};
 use crate::adaptor::presenter::client as wire;
 
-pub(crate) fn register_shared(
+pub fn register_shared(
     router: &mut ClientCommandDispatch,
     deps: &crate::adaptor::controller::client::ClientDependencies,
 ) {
@@ -149,7 +149,3 @@ pub(crate) fn register_shared(
         );
     }
 }
-
-#[cfg(test)]
-#[path = "shared_test.rs"]
-mod shared_tests;

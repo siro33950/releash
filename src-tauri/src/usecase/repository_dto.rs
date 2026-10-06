@@ -73,7 +73,7 @@ pub struct WorktreeEntryDto {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct StartupWorktree {
+pub struct StartupWorktree {
     pub path: String,
     pub branch: String,
     pub repository_name: String,

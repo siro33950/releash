@@ -219,7 +219,6 @@ export type StateValues = {
 	"external-editor": import("@/generated/client_types").ExternalEditorState;
 	"releash-base": string | null;
 	"workflow-config": import("@/generated/client_types").WorkflowSection;
-	"performance-switches": import("@/generated/client_types").PerformanceSwitchesV1;
 	"provider-hook-health": import("@/generated/client_types").ProviderHookHealthSnapshot;
 };
 export type StateTarget<K extends keyof StateValues> =

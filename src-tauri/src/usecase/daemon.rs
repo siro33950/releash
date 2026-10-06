@@ -3,12 +3,17 @@ use crate::domain::daemon::{
 };
 use std::sync::Arc;
 #[derive(Clone)]
-pub(crate) struct DaemonUsecase(pub(crate) Arc<dyn DaemonRepository>);
+pub struct DaemonUsecase(pub(crate) Arc<dyn DaemonRepository>);
 impl DaemonUsecase {
+    #[cfg(feature = "test-support")]
+    pub fn test_with_repository(repository: Arc<dyn DaemonRepository>) -> Self {
+        Self(repository)
+    }
+
     pub(crate) async fn info(&self) -> DaemonInfo {
         self.0.info().await
     }
-    pub(crate) async fn admits(&self, request: DaemonRequest) -> bool {
+    pub async fn admits(&self, request: DaemonRequest) -> bool {
         self.0.admits(request).await
     }
     pub(crate) async fn serve(&self) {
@@ -17,7 +22,7 @@ impl DaemonUsecase {
     pub(crate) async fn fail(&self, failure: StartupFailure) {
         self.0.fail(failure).await;
     }
-    pub(crate) async fn stop(&self, request: StopRequest) -> StopAcceptance {
+    pub async fn stop(&self, request: StopRequest) -> StopAcceptance {
         self.0.stop(request).await
     }
     pub(crate) async fn stopped(&self) {
@@ -26,4 +31,4 @@ impl DaemonUsecase {
 }
 #[cfg(test)]
 #[path = "daemon_test.rs"]
-mod daemon_tests;
+pub(crate) mod daemon_tests;

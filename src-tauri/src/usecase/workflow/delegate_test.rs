@@ -58,7 +58,7 @@ impl DelegateContinuationGateway for Gateway {
         let mut execution = self.execution.lock().unwrap();
         if self
             .conflicts
-            .fetch_update(
+            .try_update(
                 std::sync::atomic::Ordering::SeqCst,
                 std::sync::atomic::Ordering::SeqCst,
                 |count| count.checked_sub(1),

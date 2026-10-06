@@ -1,0 +1,19 @@
+id: unit-test-external-resources
+valid:
+  - 'use std::process::Stdio;'
+  - 'fn test_case() { assert_eq!(1 + 1, 2); }'
+invalid:
+  - 'use std::{process::{Command as Process}};'
+  - 'use rusqlite::Connection; fn test_case() { Connection::open_in_memory(); }'
+  - 'use tempfile::tempdir;'
+  - 'use std::process::{Command as Process, Stdio};'
+  - 'use tokio::{process::Command};'
+  - 'use std::net::{TcpListener as Listener, TcpStream};'
+  - 'use git2::Repository as Repo;'
+  - 'use rusqlite::Connection as Db; fn test_case() { Db::open("db"); }'
+  - 'fn test_case() { rusqlite::Connection::open("db"); }'
+  - 'fn test_case() { git2::Repository::init("repo"); }'
+  - 'fn test_case() { tempfile::tempdir(); }'
+  - 'fn test_case() { std::process::Command::new("cmd"); }'
+  - 'fn test_case() { tokio::process::Command::new("cmd"); }'
+  - 'fn test_case() { std::net::TcpListener::bind("localhost:0"); }'

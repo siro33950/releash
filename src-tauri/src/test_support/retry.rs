@@ -4,11 +4,11 @@ use crate::usecase::failure::FailureRecordingUsecase;
 use crate::usecase::retry::Retrying;
 use std::sync::{Arc, OnceLock};
 
-pub(crate) fn test_retrying() -> Arc<Retrying> {
+pub fn test_retrying() -> Arc<Retrying> {
     test_retrying_with_store().0
 }
 
-pub(crate) fn test_retrying_with_store() -> (Arc<Retrying>, Arc<FailureRecordStore>) {
+pub fn test_retrying_with_store() -> (Arc<Retrying>, Arc<FailureRecordStore>) {
     let store = Arc::new(FailureRecordStore::default());
     let retrying = Arc::new(Retrying {
         limiter: Arc::new(RetryLimiter::deterministic()),
@@ -17,11 +17,11 @@ pub(crate) fn test_retrying_with_store() -> (Arc<Retrying>, Arc<FailureRecordSto
     (retrying, store)
 }
 
-pub(crate) fn shared() -> &'static Arc<Retrying> {
+pub fn shared() -> &'static Arc<Retrying> {
     &shared_pair().0
 }
 
-pub(crate) fn shared_store() -> &'static Arc<FailureRecordStore> {
+pub fn shared_store() -> &'static Arc<FailureRecordStore> {
     &shared_pair().1
 }
 

@@ -4,7 +4,7 @@ use crate::domain::comment as domain;
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub(crate) enum ReviewActorKindWireDto {
+pub enum ReviewActorKindWireDto {
     Human,
     Agent,
 }
@@ -20,7 +20,7 @@ impl From<&domain::ReviewActorKind> for ReviewActorKindWireDto {
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct ReviewActorWireDto {
+pub struct ReviewActorWireDto {
     pub kind: ReviewActorKindWireDto,
     pub backend_id: Option<String>,
     pub model: Option<String>,
@@ -40,7 +40,7 @@ impl From<&domain::ReviewActorDto> for ReviewActorWireDto {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub(crate) enum ReviewThreadStateDto {
+pub enum ReviewThreadStateDto {
     Open,
     Resolved,
 }
@@ -65,7 +65,7 @@ impl From<ReviewThreadStateDto> for domain::ReviewThreadState {
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct ReviewTargetWireDto {
+pub struct ReviewTargetWireDto {
     pub file_path: Option<String>,
     pub line_number: Option<u32>,
     pub end_line: Option<u32>,
@@ -83,7 +83,7 @@ impl From<&domain::ReviewTarget> for ReviewTargetWireDto {
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct ReviewCommentDto {
+pub struct ReviewCommentDto {
     pub id: String,
     pub thread_id: String,
     pub author: ReviewActorWireDto,
@@ -105,7 +105,7 @@ impl From<&domain::ReviewComment> for ReviewCommentDto {
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct ReviewResolveInfoDto {
+pub struct ReviewResolveInfoDto {
     pub actor: ReviewActorWireDto,
     pub outcome: String,
     pub summary: String,
@@ -125,7 +125,7 @@ impl From<&domain::ReviewResolveInfo> for ReviewResolveInfoDto {
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct ReviewThreadDto {
+pub struct ReviewThreadDto {
     pub id: String,
     pub worktree_name: String,
     pub author: ReviewActorWireDto,

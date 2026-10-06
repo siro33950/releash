@@ -1,4 +1,4 @@
-mod health_marker;
+pub(crate) mod health_marker;
 mod launch_files;
 mod stdin;
 

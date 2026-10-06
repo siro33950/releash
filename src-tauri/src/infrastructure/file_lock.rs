@@ -42,7 +42,3 @@ pub async fn exclusive_async(file: &File) -> Result<(), LockError> {
     }
     Ok(())
 }
-
-#[cfg(test)]
-#[path = "file_lock_test.rs"]
-mod file_lock_tests;

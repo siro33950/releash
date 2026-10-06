@@ -84,9 +84,9 @@ windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage
 [features]
 test-support = ["opentelemetry_sdk/testing"]
 vendored-openssl = ["git2/vendored-openssl"]
-performance = []
 
 [dev-dependencies]
+releash-backend = { path = ".", features = ["test-support"] }
 filetime = "0.2"
 opentelemetry_sdk = { version = "0.33", features = ["testing"] }
 proptest = "1"
@@ -96,8 +96,3 @@ tower = { version = "0.5", features = ["util"] }
 [[test]]
 name = "client_api"
 path = "tests/client_api/mod.rs"
-
-[[test]]
-name = "state_subscription_scenarios"
-path = "tests/state_subscription_scenarios.rs"
-test = false

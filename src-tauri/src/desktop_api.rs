@@ -36,7 +36,7 @@ pub mod descriptor {
 pub use crate::adaptor::gateway::app_config::read_config_if_exists;
 pub use crate::adaptor::gateway::local_api::ClientConnectionFileQuery;
 pub use crate::adaptor::gateway::telemetry::TelemetryGateway;
-#[cfg(debug_assertions)]
+#[cfg(feature = "test-support")]
 pub use crate::client_api_acceptance::ClientEndpoint;
 pub use crate::common::operation_context::{sleep, spawn_blocking, with_timeout};
 pub use crate::common::retry::{RetryBackoff, RetryLimiter};
@@ -65,8 +65,8 @@ pub mod test_support {
     pub use crate::adaptor::presenter::error::AppError;
     pub use crate::infrastructure::local_api::LocalApiDiscoveryFile;
     pub use crate::infrastructure::telemetry::crash::{
+        crash_test_helpers::{install_test_exporter, TEST_LOCK},
         reset_for_tests,
-        tests::{install_test_exporter, TEST_LOCK},
     };
     pub use crate::infrastructure::telemetry::metrics::{
         lock_test_telemetry, reset_test_metrics, set_performance_configured,

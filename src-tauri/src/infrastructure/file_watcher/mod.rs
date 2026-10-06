@@ -19,7 +19,7 @@ pub struct FileWatcherManager {
 }
 
 impl FileWatcherManager {
-    pub(crate) fn start_watching<F>(
+    pub fn start_watching<F>(
         &self,
         watcher_id: u64,
         path: String,
@@ -69,7 +69,7 @@ impl FileWatcherManager {
         Ok(watcher_id)
     }
 
-    pub(crate) fn stop_watching(&self, watcher_id: u64) -> Result<(), String> {
+    pub fn stop_watching(&self, watcher_id: u64) -> Result<(), String> {
         if self.release_watching(watcher_id) {
             Ok(())
         } else {
@@ -84,23 +84,5 @@ impl FileWatcherManager {
         // debouncer の drop はブロックし得るため sessions ロックの外・別スレッドで行う（#1641）
         crate::infrastructure::dispose::dispose_in_background("file-watcher-dispose", session);
         true
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn stop_watching_removes_session_and_errors_on_unknown_id() {
-        let manager = FileWatcherManager::default();
-        let dir = tempfile::TempDir::new().unwrap();
-        let path = dir.path().to_string_lossy().to_string();
-
-        let id = manager.start_watching(1, path, |_| {}).unwrap();
-        assert_eq!(id, 1);
-
-        manager.stop_watching(1).unwrap();
-        assert!(manager.stop_watching(1).is_err());
     }
 }

@@ -1,0 +1,32 @@
+id: unit-test-external-resources
+language: Rust
+severity: warning
+message: 外部の資源を使うテストは Rust の tests/ に移してください
+files:
+  - src-tauri/src/**/*_test.rs
+  - src-tauri/src/**/test_helpers*.rs
+  - src-tauri/src/**/test_support/**/*.rs
+  - src-tauri/releash-desktop/src/**/*_test.rs
+  - src-tauri/releash-desktop/src/**/test_helpers*.rs
+  - src-tauri/releash-desktop/src/**/test_support/**/*.rs
+rule:
+  any:
+    - all:
+        - kind: use_declaration
+        - regex: '(tempfile|std[^;]*process[^;]*Command|tokio[^;]*process|TcpListener|TcpStream|git2[^;]*Repository)'
+    - all:
+        - kind: use_declaration
+        - regex: 'rusqlite[^;]*Connection'
+        - inside:
+            kind: source_file
+            stopBy: end
+            has:
+              kind: scoped_identifier
+              regex: '::\s*open\w*$'
+              stopBy: end
+    - all:
+        - kind: scoped_identifier
+        - regex: '^(?:::)?(tempfile\s*::|std\s*::\s*process\s*::\s*Command|tokio\s*::\s*process\s*::|(?:rusqlite\s*::\s*)?Connection\s*::\s*open\w*$|(?:git2\s*::\s*)?Repository\s*::\s*(init|open)\w*$)'
+    - all:
+        - kind: identifier
+        - regex: '^(tempfile|TcpListener|TcpStream)$'

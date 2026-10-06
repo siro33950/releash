@@ -1,4 +1,4 @@
-pub(crate) fn collect_configured_secret_values(
+pub fn collect_configured_secret_values(
     app: &super::workflow_host::WorkflowRuntimeDependencies,
 ) -> Vec<String> {
     let mut values = Vec::new();

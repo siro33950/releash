@@ -10,7 +10,7 @@ use crate::adaptor::presenter::workflow::workflow_execution_to_view;
 use crate::domain::workflow::WorkflowError;
 use crate::usecase::workflow::{WorkflowGetOutputResult, WorkflowReadUsecase};
 
-pub(super) async fn execution_status(
+pub async fn execution_status(
     data_dir: &Path,
     execution_id: &str,
 ) -> Result<crate::adaptor::presenter::workflow_wire::WorkflowExecutionView, CliError> {

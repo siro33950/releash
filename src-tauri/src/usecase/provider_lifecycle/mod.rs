@@ -14,8 +14,8 @@ use crate::domain::provider_lifecycle::{
     ScopedProviderLifecycleEvent,
 };
 
-mod hook_health;
-mod ingress;
+pub(crate) mod hook_health;
+pub(crate) mod ingress;
 pub(crate) use hook_health::ProviderHookHealthWarning;
 pub(crate) use hook_health::{
     ProviderHookHealthFailureObservation, ProviderHookHealthFailureQuery,
@@ -29,7 +29,7 @@ pub(crate) use ingress::{
 };
 
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
-pub(crate) enum ProviderLifecycleUsecaseError {
+pub enum ProviderLifecycleUsecaseError {
     #[error("provider lifecycle version conflict")]
     Conflict,
     #[error("Storage failure: {0:?}")]
@@ -56,14 +56,14 @@ impl From<ProviderLifecycleRepositoryError> for ProviderLifecycleUsecaseError {
 
 type LiveSlot = Arc<AsyncMutex<ProviderLifecycleSlot>>;
 
-pub(crate) struct ProviderLifecycleUsecase {
+pub struct ProviderLifecycleUsecase {
     credentials: Arc<dyn ProviderLifecycleCredentialGateway>,
     events: Arc<dyn ProviderLifecycleEventRepository>,
     slots: Mutex<HashMap<ProviderLifecycleSlotId, LiveSlot>>,
 }
 
 impl ProviderLifecycleUsecase {
-    pub(crate) fn new(
+    pub fn new(
         credentials: Arc<dyn ProviderLifecycleCredentialGateway>,
         events: Arc<dyn ProviderLifecycleEventRepository>,
     ) -> Self {
@@ -74,7 +74,7 @@ impl ProviderLifecycleUsecase {
         }
     }
 
-    pub(crate) async fn arm(
+    pub async fn arm(
         &self,
         slot_id: ProviderLifecycleSlotId,
         provider: ProviderKind,
@@ -136,7 +136,7 @@ impl ProviderLifecycleUsecase {
         ))
     }
 
-    pub(crate) async fn receive(
+    pub async fn receive(
         &self,
         slot_id: &ProviderLifecycleSlotId,
         capability: &str,
@@ -313,7 +313,7 @@ impl ProviderLifecycleUsecase {
         Ok(released)
     }
 
-    pub(crate) async fn active_launch_id(
+    pub async fn active_launch_id(
         &self,
         provider: ProviderKind,
         scope: &ProviderLifecycleScope,

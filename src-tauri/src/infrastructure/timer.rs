@@ -20,7 +20,7 @@ pub(crate) type Delay = std::sync::Arc<
     dyn Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send + Sync,
 >;
 
-pub(crate) fn delays(duration: Duration) -> Delay {
+pub fn delays(duration: Duration) -> Delay {
     std::sync::Arc::new(move || Box::pin(tokio::time::sleep(duration)))
 }
 

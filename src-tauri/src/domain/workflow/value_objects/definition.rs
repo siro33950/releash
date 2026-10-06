@@ -283,14 +283,14 @@ impl WorkflowDefinition {
     }
 
     /// root node が sequence の場合の children（テスト用の互換入口）。
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn root_sequence(&self) -> Option<&SequenceSpec> {
         self.entry_node().and_then(NodeDefinition::sequence)
     }
 
     /// 実行開始 node。root が sequence なら実効 entry（entry 指定 or children
     /// 先頭）の子、それ以外は root 自身。
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn initial_execution_node_index(&self) -> Option<usize> {
         let entry_index = self.entry_index()?;
         match self.nodes[entry_index].sequence() {
@@ -302,7 +302,7 @@ impl WorkflowDefinition {
         }
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn initial_execution_node(&self) -> Option<&NodeDefinition> {
         self.initial_execution_node_index()
             .map(|index| &self.nodes[index])
@@ -371,7 +371,7 @@ pub enum NodeKind {
     Sequence(SequenceSpec),
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 impl Default for NodeKind {
     fn default() -> Self {
         Self::Session(SessionSpec::default())
@@ -563,7 +563,7 @@ pub struct SessionSpec {
     pub facets: FacetRefs,
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 impl Default for SessionSpec {
     fn default() -> Self {
         Self {
@@ -965,7 +965,7 @@ pub enum WorktreeMode {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-#[cfg_attr(test, derive(Default))]
+#[cfg_attr(any(test, feature = "test-support"), derive(Default))]
 pub struct NodeDefinition {
     pub name: String,
     pub kind: NodeKind,
@@ -1587,7 +1587,7 @@ impl NodeDefinition {
         }
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn session_mut(&mut self) -> Option<&mut SessionSpec> {
         match &mut self.kind {
             NodeKind::Session(spec) => Some(spec),

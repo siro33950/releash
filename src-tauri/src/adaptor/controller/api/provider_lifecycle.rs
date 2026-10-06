@@ -178,7 +178,3 @@ async fn report_unavailable(
         .map_err(ApiError::from)?;
     Ok(Json(result.into()))
 }
-
-#[cfg(test)]
-#[path = "provider_lifecycle_controller_test.rs"]
-mod provider_lifecycle_controller_tests;

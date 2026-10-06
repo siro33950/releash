@@ -10,7 +10,7 @@ use crate::adaptor::presenter::provider_lifecycle_response::ProviderLifecycleRec
 use crate::usecase::workflow::WorkflowGetOutputResult;
 
 #[derive(Debug)]
-pub(super) enum ApiRequestError {
+pub enum ApiRequestError {
     Unavailable,
     Cli(CliError),
 }
@@ -34,7 +34,7 @@ impl From<LocalApiClientError> for ApiRequestError {
 }
 
 #[derive(Debug, Clone)]
-pub(super) struct LocalApiClient {
+pub struct LocalApiClient {
     transport: LocalApiClientGateway,
 }
 
@@ -99,7 +99,7 @@ impl LocalApiClient {
     }
 
     /// workflow diagnostics を local API 経由で取得する。診断結果 DTO をそのまま返す。
-    pub(super) fn workflow_diagnostics(
+    pub fn workflow_diagnostics(
         &self,
         dir: Option<&str>,
     ) -> Result<serde_json::Value, ApiRequestError> {
@@ -123,7 +123,7 @@ fn discovery_error(error: LocalApiClientError) -> CliError {
     CliError::Other(error.to_string())
 }
 
-pub(super) async fn read_with_fallback<T, F>(
+pub async fn read_with_fallback<T, F>(
     data_dir: &Path,
     api_request: impl FnOnce(&LocalApiClient) -> Result<T, ApiRequestError> + Send + 'static,
     fallback: impl FnOnce() -> F,
@@ -147,7 +147,7 @@ where
 
 /// アプリ起動を要する mutation。local API へ到達できない場合は
 /// 「アプリ起動が必要」失敗になる。
-pub(super) fn mutation<T>(
+pub fn mutation<T>(
     data_dir: &Path,
     api_request: impl FnOnce(&LocalApiClient) -> Result<T, ApiRequestError>,
 ) -> Result<T, CliError> {
@@ -157,7 +157,7 @@ pub(super) fn mutation<T>(
 /// アプリ起動を要する read-only query。fallback を持たず、失敗表現は
 /// mutation と同じにする。read と mutation を別入口に保つのは、file_direct が
 /// 定める「read だけが fallback を持てる」区別を呼び出し側で崩さないためである。
-pub(super) fn read_without_fallback<T>(
+pub fn read_without_fallback<T>(
     data_dir: &Path,
     api_request: impl FnOnce(&LocalApiClient) -> Result<T, ApiRequestError>,
 ) -> Result<T, CliError> {
@@ -187,7 +187,7 @@ fn app_must_be_running_error() -> CliError {
     CliError::Other("この操作には Releash アプリの起動が必要です".to_string())
 }
 
-fn api_error(status: u16, message: Option<&str>) -> CliError {
+pub fn api_error(status: u16, message: Option<&str>) -> CliError {
     let message = message
         .filter(|message| !message.trim().is_empty())
         .map(str::to_string)

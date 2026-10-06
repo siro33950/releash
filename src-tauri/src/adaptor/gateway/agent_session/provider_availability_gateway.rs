@@ -13,7 +13,7 @@ use crate::infrastructure::process::executable_probe::ExecutableProbeResult;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 use crate::infrastructure::process::search_path::{LoginShellSearchPathSource, SearchPathSource};
 
-pub(crate) struct LocalProviderExecutableProbeGateway {
+pub struct LocalProviderExecutableProbeGateway {
     search_path: RwLock<SearchPathState>,
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     search_path_source: Arc<dyn SearchPathSource>,
@@ -37,8 +37,8 @@ impl LocalProviderExecutableProbeGateway {
         }
     }
 
-    #[cfg(any(test, debug_assertions))]
-    pub(crate) fn with_search_path(search_path: Option<OsString>) -> Self {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn with_search_path(search_path: Option<OsString>) -> Self {
         Self {
             search_path: RwLock::new(SearchPathState {
                 value: search_path,
@@ -50,7 +50,7 @@ impl LocalProviderExecutableProbeGateway {
     }
 
     #[cfg(any(target_os = "macos", target_os = "linux"))]
-    pub(crate) fn with_initial_search_path(
+    pub fn with_initial_search_path(
         search_path: Result<
             OsString,
             crate::infrastructure::process::search_path::LoginShellPathError,
@@ -67,10 +67,10 @@ impl LocalProviderExecutableProbeGateway {
     }
 
     #[cfg(all(
-        any(test, debug_assertions),
+        any(test, feature = "test-support"),
         any(target_os = "macos", target_os = "linux")
     ))]
-    pub(crate) fn with_search_path_source(
+    pub fn with_search_path_source(
         search_path: Option<OsString>,
         search_path_source: Arc<dyn SearchPathSource>,
     ) -> Self {
@@ -166,3 +166,7 @@ impl ProviderExecutableProbeGateway for LocalProviderExecutableProbeGateway {
         Ok(())
     }
 }
+
+#[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
+#[path = "provider_availability_gateway_test.rs"]
+mod provider_availability_gateway_tests;

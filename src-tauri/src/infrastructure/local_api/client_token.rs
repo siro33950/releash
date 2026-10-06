@@ -2,7 +2,7 @@ use std::sync::Arc;
 use subtle::ConstantTimeEq;
 
 #[derive(Clone)]
-pub(crate) struct ClientBearerToken(Arc<parking_lot::RwLock<Option<Arc<str>>>>);
+pub struct ClientBearerToken(Arc<parking_lot::RwLock<Option<Arc<str>>>>);
 
 impl From<Arc<str>> for ClientBearerToken {
     fn from(token: Arc<str>) -> Self {
@@ -17,7 +17,7 @@ impl ClientBearerToken {
             .as_ref()
             .is_some_and(|token| bool::from(candidate.as_bytes().ct_eq(token.as_bytes())))
     }
-    #[cfg(any(test, debug_assertions))]
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn token(&self) -> Arc<str> {
         self.0
             .read()
@@ -25,7 +25,7 @@ impl ClientBearerToken {
             .expect("token requested before server shutdown")
             .clone()
     }
-    pub(crate) fn revoke(&self) {
+    pub fn revoke(&self) {
         self.0.write().take();
     }
 }

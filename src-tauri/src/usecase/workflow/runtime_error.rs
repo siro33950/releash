@@ -114,38 +114,6 @@ impl From<ManagedWorktreeResolverError> for WorkflowRuntimeError {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn workflow_failure_kind_only_uses_crash_for_storage_or_process_loss() {
-        let validation_errors = [
-            WorkflowRuntimeError::InvalidWorkflow("missing facet".to_string()),
-            WorkflowRuntimeError::ValidationError("bad output".to_string()),
-            WorkflowRuntimeError::InvalidState("not accepting output".to_string()),
-            WorkflowRuntimeError::UnauthorizedApprovalTarget("wrong execution".to_string()),
-        ];
-        for error in validation_errors {
-            assert_eq!(
-                error.workflow_failure_kind(),
-                NodeExecutionFailureKind::ValidationFailure,
-                "unexpected failure kind for {error:?}"
-            );
-        }
-
-        assert_eq!(
-            WorkflowRuntimeError::SessionStore("io".to_string()).workflow_failure_kind(),
-            NodeExecutionFailureKind::InfrastructureCrash
-        );
-        assert_eq!(
-            WorkflowRuntimeError::AgentSession("admission rejected".to_string())
-                .workflow_failure_kind(),
-            NodeExecutionFailureKind::ValidationFailure
-        );
-    }
-}
-
-#[cfg(test)]
 #[path = "runtime_error_test.rs"]
 mod runtime_error_tests;
 

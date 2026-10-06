@@ -3,7 +3,7 @@ use crate::usecase::state_subscription::{
     StateReadError, StateSubscriptionRead, WorkspaceStateReads,
 };
 
-pub(crate) struct StateSubscriptionReads(pub WorkspaceStateReads);
+pub struct StateSubscriptionReads(pub WorkspaceStateReads);
 
 #[async_trait::async_trait]
 impl StateSubscriptionRead for StateSubscriptionReads {
@@ -61,7 +61,3 @@ impl StateSubscriptionRead for StateSubscriptionReads {
 fn task_error(error: tokio::task::JoinError) -> StateReadError {
     StateReadError::from_error(crate::domain::failure::TechnicalFailure::from(error))
 }
-
-#[cfg(test)]
-#[path = "state_subscription_reads_test.rs"]
-mod state_subscription_reads_tests;

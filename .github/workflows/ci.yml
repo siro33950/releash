@@ -38,7 +38,8 @@ jobs:
           node-version: 24
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - run: pnpm lint
+      - run: pnpm exec biome ci .
+      - run: node .github/scripts/test-placement.mjs
       - run: pnpm test
       - run: pnpm build
 
@@ -57,15 +58,7 @@ jobs:
           node-version: 24
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - id: playwright-cache
-        uses: actions/cache@v6
-        with:
-          path: ~/.cache/ms-playwright
-          key: playwright-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
-      - if: steps.playwright-cache.outputs.cache-hit != 'true'
-        run: pnpm exec playwright install --with-deps chromium
-      - if: steps.playwright-cache.outputs.cache-hit == 'true'
-        run: pnpm exec playwright install-deps chromium
+      - run: pnpm exec playwright install --with-deps chromium
       - id: test
         run: pnpm test:integration
       - uses: actions/upload-artifact@v7
@@ -198,8 +191,8 @@ jobs:
         if: steps.changes.outputs.rust == 'true'
         with:
           workspaces: src-tauri
-          key: rust-lint
-          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+          shared-key: pr-rust
+          save-if: false
       - uses: taiki-e/install-action@cargo-deny
         id: setup
         if: steps.changes.outputs.rust == 'true'
@@ -216,7 +209,7 @@ jobs:
         if: ${{ !cancelled() && steps.changes.outputs.rust == 'true' && steps.setup.outcome == 'success' }}
         run: cargo clippy --locked --features test-support -- -D warnings
 
-  rust-test-desktop:
+  rust-unit:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     defaults:
@@ -265,14 +258,18 @@ jobs:
         if: steps.changes.outputs.rust == 'true'
         with:
           workspaces: src-tauri
-          key: rust-test-desktop
+          shared-key: pr-rust
           save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
-      - run: cargo build --locked -p releash-backend --bin releash-backend
+      - run: cargo test --locked --lib --bins -p releash-backend
         if: ${{ !cancelled() && steps.changes.outputs.rust == 'true' && steps.setup.outcome == 'success' }}
-      - run: cargo test --locked -p releash-desktop
+      - run: cargo test --locked --doc -p releash-backend
+        if: ${{ !cancelled() && steps.changes.outputs.rust == 'true' && steps.setup.outcome == 'success' }}
+      - run: cargo test --locked --lib --bins -p releash-desktop
+        if: ${{ !cancelled() && steps.changes.outputs.rust == 'true' && steps.setup.outcome == 'success' }}
+      - run: cargo test --locked --doc -p releash-desktop
         if: ${{ !cancelled() && steps.changes.outputs.rust == 'true' && steps.setup.outcome == 'success' }}
 
-  rust-test-backend:
+  rust-integration:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     defaults:
@@ -284,6 +281,22 @@ jobs:
           ref: ${{ inputs.ref || github.sha }}
           fetch-depth: 0
       - *rust-changes
+      - id: apt-key
+        if: steps.changes.outputs.rust == 'true'
+        run: echo "key=apt-$ImageOS-$ImageVersion" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@v6
+        if: steps.changes.outputs.rust == 'true'
+        with:
+          path: ~/apt-archives
+          key: ${{ steps.apt-key.outputs.key }}
+          restore-keys: apt-
+      - name: Install Tauri dependencies
+        if: steps.changes.outputs.rust == 'true'
+        run: |
+          mkdir -p ~/apt-archives/partial
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libgtk-3-dev libsoup-3.0-dev libjavascriptcoregtk-4.1-dev -o Dir::Cache::Archives="$HOME/apt-archives"
+          sudo chown -R "$USER" ~/apt-archives
       - uses: pnpm/action-setup@v6
         if: steps.changes.outputs.rust == 'true'
         with:
@@ -293,7 +306,7 @@ jobs:
         with:
           node-version: 24
           cache: pnpm
-      - name: Install Node helpers for backend acceptance tests
+      - name: Build frontend assets for Tauri
         if: steps.changes.outputs.rust == 'true'
         working-directory: .
         run: pnpm install --frozen-lockfile
@@ -305,22 +318,19 @@ jobs:
         if: steps.changes.outputs.rust == 'true'
         with:
           workspaces: src-tauri
-          key: rust-test-backend
-          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
-      - name: Backend tests
+          shared-key: pr-rust
+          save-if: false
+      - run: cargo build --locked -p releash-backend --bin releash-backend
         if: ${{ !cancelled() && steps.changes.outputs.rust == 'true' && steps.setup.outcome == 'success' }}
-        run: cargo test --locked
-      - name: Backend state subscription scenarios
+      - run: cargo test --locked --test '*' -p releash-backend
         if: ${{ !cancelled() && steps.changes.outputs.rust == 'true' && steps.setup.outcome == 'success' }}
-        run: "cargo test --locked --test state_subscription_scenarios scenarios_tests::"
-      - name: Backend daemon protocol smoke test
+      - run: cargo test --locked --test '*' -p releash-desktop
         if: ${{ !cancelled() && steps.changes.outputs.rust == 'true' && steps.setup.outcome == 'success' }}
-        run: cargo test --locked --test daemon_smoke
 
   # ruleset の required status check が参照する名前を保つための集約ジョブ。
   # lint と test を並列に回しても、片方の失敗でもう片方の結果を失わない。
   rust:
-    needs: [rust-lint, rust-test-desktop, rust-test-backend]
+    needs: [rust-lint, rust-unit, rust-integration]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -328,10 +338,10 @@ jobs:
       - name: Verify Rust jobs
         run: |
           lint='${{ needs.rust-lint.result }}'
-          desktop='${{ needs.rust-test-desktop.result }}'
-          backend='${{ needs.rust-test-backend.result }}'
-          echo "rust-lint=$lint rust-test-desktop=$desktop rust-test-backend=$backend"
-          for result in "$lint" "$desktop" "$backend"; do
+          unit='${{ needs.rust-unit.result }}'
+          integration='${{ needs.rust-integration.result }}'
+          echo "rust-lint=$lint rust-unit=$unit rust-integration=$integration"
+          for result in "$lint" "$unit" "$integration"; do
             if [ "$result" != "success" ] && [ "$result" != "skipped" ]; then
               exit 1
             fi

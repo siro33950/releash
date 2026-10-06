@@ -8,7 +8,7 @@ pub(crate) enum ProviderLifecycleOutcome {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ProviderLifecycleRejection {
+pub enum ProviderLifecycleRejection {
     BindingNotActive,
     InvalidCapability,
     BindingMismatch,

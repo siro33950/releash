@@ -43,7 +43,7 @@ pub struct WorkflowRuntimeUsecase {
 }
 
 impl WorkflowRuntimeUsecase {
-    pub(crate) fn with_state_publisher(
+    pub fn with_state_publisher(
         mut self,
         publisher: crate::usecase::state_subscription::StateSubscriptionUsecase,
     ) -> Self {
@@ -51,7 +51,7 @@ impl WorkflowRuntimeUsecase {
         self
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn new(
         runtime: Arc<dyn WorkflowRuntimeCommandGateway>,
         execution_archives: Arc<dyn crate::domain::workflow::ExecutionTreeArchiveRepository>,
@@ -164,7 +164,7 @@ impl WorkflowRuntimeUsecase {
         self.submit_output.execute(command).await
     }
 
-    pub(crate) async fn record_provider_stop(
+    pub async fn record_provider_stop(
         &self,
         command: crate::usecase::provider_lifecycle::ProviderExecutionTreeStopCommand,
         lifecycle_events: Vec<crate::domain::provider_lifecycle::ScopedProviderLifecycleEvent>,
@@ -350,337 +350,25 @@ fn map_started_execution_tree_error(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::domain::workflow::{ExecutionOrigin, WorkflowDefinition};
-    use std::sync::Mutex;
+#[path = "runtime_command_test.rs"]
+mod runtime_command_tests;
 
-    mod runtime_command_tests {
-        include!("runtime_command_test.rs");
+#[cfg(feature = "test-support")]
+impl WorkflowRuntimeUsecase {
+    pub fn test_replace_abort_execution(&mut self, abort_execution: WorkflowAbortExecutionUsecase) {
+        self.abort_execution = abort_execution;
     }
 
-    #[derive(Default)]
-    struct FakeRuntimeGateway {
-        calls: Mutex<Vec<&'static str>>,
-        failure: Option<WorkflowError>,
+    pub fn test_replace_worktree_operations(
+        &mut self,
+        operations: Arc<crate::usecase::worktree_operation::WorktreeOperations>,
+    ) {
+        self.worktree_operations = operations;
     }
 
-    #[async_trait::async_trait]
-    impl WorkflowStartExecutionGateway for FakeRuntimeGateway {
-        async fn resolve_start_execution_worktree(
-            &self,
-            worktree_path: String,
-        ) -> Result<String, WorkflowError> {
-            self.calls.lock().unwrap().push("resolve_worktree");
-            Ok(worktree_path)
-        }
-
-        async fn resolve_start_execution_workflow(
-            &self,
-            _workflow_name: &str,
-        ) -> Result<WorkflowDefinition, WorkflowError> {
-            self.calls.lock().unwrap().push("resolve_workflow");
-            Ok(WorkflowDefinition::default())
-        }
-
-        async fn start_resolved_execution(
-            &self,
-            _command: ResolvedStartExecutionCommand,
-        ) -> Result<String, WorkflowError> {
-            self.calls.lock().unwrap().push("start");
-            Ok("00000000-0000-0000-0000-000000000001".to_string())
-        }
-    }
-
-    #[async_trait::async_trait]
-    impl WorkflowAbortExecutionGateway for FakeRuntimeGateway {
-        async fn abort_execution(
-            &self,
-            _command: AbortExecutionCommand,
-        ) -> Result<(), WorkflowError> {
-            self.calls.lock().unwrap().push("abort");
-            Ok(())
-        }
-    }
-
-    #[async_trait::async_trait]
-    impl WorkflowControlPlaneGateway for FakeRuntimeGateway {
-        fn node_process_presence(
-            &self,
-            _execution: &crate::domain::workflow::entities::workflow_execution::ExecutionTree,
-            _id: &str,
-        ) -> Result<
-            crate::domain::workflow::NodeProcessPresence,
-            crate::domain::workflow::WorkflowError,
-        > {
-            Ok(crate::domain::workflow::NodeProcessPresence::ConfirmedAbsent)
-        }
-        fn worktree_exists(
-            &self,
-            _path: &str,
-        ) -> Result<bool, crate::domain::workflow::WorkflowError> {
-            Ok(true)
-        }
-        async fn session_conversation_exists(
-            &self,
-            _session_id: &str,
-        ) -> Result<bool, crate::domain::workflow::WorkflowError> {
-            Ok(true)
-        }
-        async fn resume_session_process(
-            &self,
-            _execution_id: &str,
-            _node_id: &str,
-            _session_id: &str,
-        ) -> Result<(), crate::domain::workflow::WorkflowError> {
-            Ok(())
-        }
-
-        fn current_timestamp(&self) -> f64 {
-            100.0
-        }
-
-        fn new_node_execution_id(&self) -> String {
-            "node-execution-test".to_string()
-        }
-
-        async fn resolve_workflow_execution_id(
-            &self,
-            _node_execution_id: &str,
-        ) -> Result<Option<String>, WorkflowError> {
-            Err(WorkflowError::external(
-                "control plane is not used by this test",
-            ))
-        }
-
-        async fn load_active_execution(
-            &self,
-            _execution_id: &str,
-        ) -> Result<
-            Option<crate::domain::workflow::entities::workflow_execution::ExecutionTree>,
-            WorkflowError,
-        > {
-            self.calls.lock().unwrap().push("load_active");
-            if let Some(error) = &self.failure {
-                return Err(error.clone());
-            }
-            Ok(None)
-        }
-
-        async fn register_started_execution_tree(
-            &self,
-            _tree_id: &str,
-        ) -> Result<(), WorkflowError> {
-            if let Some(error) = &self.failure {
-                return Err(error.clone());
-            }
-            Err(WorkflowError::external(
-                "control plane is not used by this test",
-            ))
-        }
-
-        async fn release_deleted_execution_tree(&self, _: &str) -> Result<(), WorkflowError> {
-            match &self.failure {
-                Some(error) => Err(error.clone()),
-                None => Ok(()),
-            }
-        }
-
-        async fn approval_persisted(
-            &self,
-            _execution_id: &str,
-            _node_name: &str,
-            _node_execution_id: Option<&str>,
-        ) -> Result<bool, WorkflowError> {
-            Err(WorkflowError::external(
-                "control plane is not used by this test",
-            ))
-        }
-
-        fn configured_secret_values(&self) -> Vec<String> {
-            Vec::new()
-        }
-
-        async fn commit_control_plane(
-            &self,
-            _commit: crate::usecase::workflow::control_plane::WorkflowControlPlaneCommit,
-        ) -> Result<crate::usecase::workflow::runtime_snapshot::RuntimeCommitSnapshot, WorkflowError>
-        {
-            Err(WorkflowError::external(
-                "control plane is not used by this test",
-            ))
-        }
-
-        async fn finish_control_plane_commit(
-            &self,
-            _worktree_path: &str,
-            _snapshot: &crate::usecase::workflow::runtime_snapshot::RuntimeCommitSnapshot,
-            _outcome: Option<crate::usecase::workflow::runtime_driver::NodeOutcome>,
-        ) -> Result<(), WorkflowError> {
-            Ok(())
-        }
-    }
-
-    #[async_trait::async_trait]
-    impl crate::usecase::workflow::ports::ExecutionTreeProcessGateway for FakeRuntimeGateway {
-        async fn stop_execution_tree_processes(&self, _: &str) -> Result<(), WorkflowError> {
-            unreachable!("process cleanup is not used by this fixture")
-        }
-    }
-
-    #[async_trait::async_trait]
-    impl WorkflowRuntimeStateGateway for FakeRuntimeGateway {
-        async fn get_state_by_execution_id(
-            &self,
-            _execution_id: &str,
-        ) -> Result<Option<WorkflowRuntimeSnapshot>, WorkflowError> {
-            self.calls.lock().unwrap().push("state_by_execution");
-            Ok(None)
-        }
-    }
-
-    #[async_trait::async_trait]
-    impl WorkflowRuntimeShutdownGateway for FakeRuntimeGateway {
-        async fn shutdown_active_commands(&self) {
-            self.calls.lock().unwrap().push("shutdown_active_commands");
-        }
-    }
-
-    #[tokio::test]
-    async fn runtime_usecase_delegates_runtime_commands() {
-        let gateway = Arc::new(FakeRuntimeGateway::default());
-        let usecase = WorkflowRuntimeUsecase::new(
-            gateway.clone(),
-            Arc::new(crate::usecase::workflow::NoopArchiveRepository),
-        );
-
-        let _ = usecase
-            .start_execution(StartExecutionCommand {
-                workflow_name: "wf".to_string(),
-                worktree_path: "/tmp/wt".to_string(),
-                request: None,
-                created_from: ExecutionOrigin::DesktopUi,
-            })
-            .await
-            .unwrap();
-        usecase
-            .abort_execution(AbortExecutionCommand {
-                execution_id: "00000000-0000-0000-0000-000000000001".to_string(),
-                expected_node_name: None,
-            })
-            .await
-            .unwrap();
-        let _ = usecase
-            .get_state_by_execution_id("00000000-0000-0000-0000-000000000001")
-            .await
-            .unwrap();
-        assert_eq!(
-            gateway.calls.lock().unwrap().as_slice(),
-            [
-                "resolve_worktree",
-                "resolve_workflow",
-                "start",
-                "abort",
-                "state_by_execution"
-            ]
-        );
-    }
-
-    #[tokio::test]
-    async fn runtime_usecase_delegates_active_command_shutdown() {
-        let gateway = Arc::new(FakeRuntimeGateway::default());
-        let usecase = WorkflowRuntimeUsecase::new(
-            gateway.clone(),
-            Arc::new(crate::usecase::workflow::NoopArchiveRepository),
-        );
-
-        usecase.shutdown_active_commands().await;
-
-        assert_eq!(
-            gateway.calls.lock().unwrap().as_slice(),
-            ["shutdown_active_commands"]
-        );
-    }
-
-    #[tokio::test]
-    async fn start_execution_rejects_invalid_workflow_name_before_gateway() {
-        let gateway = Arc::new(FakeRuntimeGateway::default());
-        let usecase = WorkflowRuntimeUsecase::new(
-            gateway.clone(),
-            Arc::new(crate::usecase::workflow::NoopArchiveRepository),
-        );
-
-        let err = usecase
-            .start_execution(StartExecutionCommand {
-                workflow_name: "bad name!".to_string(),
-                worktree_path: "/tmp/wt".to_string(),
-                request: None,
-                created_from: ExecutionOrigin::DesktopUi,
-            })
-            .await
-            .unwrap_err();
-
-        assert!(matches!(err, WorkflowError::Validation(_)));
-        assert!(gateway.calls.lock().unwrap().is_empty());
-    }
-
-    #[tokio::test]
-    async fn runtime_preflight_rejects_invalid_mutations_before_gateway() {
-        let gateway = Arc::new(FakeRuntimeGateway::default());
-        let usecase = WorkflowRuntimeUsecase::new(
-            gateway.clone(),
-            Arc::new(crate::usecase::workflow::NoopArchiveRepository),
-        );
-
-        let abort_err = usecase
-            .abort_execution(AbortExecutionCommand {
-                execution_id: "not-a-uuid".to_string(),
-                expected_node_name: None,
-            })
-            .await
-            .unwrap_err();
-        assert!(matches!(abort_err, WorkflowError::Validation(_)));
-
-        let approval_err = usecase
-            .resolve_approval(ApprovalCommand {
-                execution_id: "00000000-0000-0000-0000-000000000001".to_string(),
-                node_name: " ".to_string(),
-                node_execution_id: None,
-                comment: None,
-            })
-            .await
-            .unwrap_err();
-        assert!(matches!(approval_err, WorkflowError::Validation(_)));
-
-        let submit_err = usecase
-            .submit_output(SubmitOutputCommand {
-                node_execution_id: "node-execution-1".to_string(),
-                artifact: Some(crate::usecase::workflow::command::SubmitOutputArtifact {
-                    contract: " ".to_string(),
-                    value: serde_json::json!({}),
-                }),
-            })
-            .await
-            .unwrap_err();
-        assert!(matches!(submit_err, WorkflowError::Validation(_)));
-
-        assert!(gateway.calls.lock().unwrap().is_empty());
-    }
-
-    #[tokio::test]
-    async fn runtime_preflight_rejects_invalid_queries_before_gateway() {
-        let gateway = Arc::new(FakeRuntimeGateway::default());
-        let usecase = WorkflowRuntimeUsecase::new(
-            gateway.clone(),
-            Arc::new(crate::usecase::workflow::NoopArchiveRepository),
-        );
-
-        let execution_err = usecase
-            .get_state_by_execution_id("not-a-uuid")
-            .await
-            .unwrap_err();
-        assert!(matches!(execution_err, WorkflowError::Validation(_)));
-
-        assert!(gateway.calls.lock().unwrap().is_empty());
+    pub fn test_worktree_operations(
+        &self,
+    ) -> &crate::usecase::worktree_operation::WorktreeOperations {
+        &self.worktree_operations
     }
 }

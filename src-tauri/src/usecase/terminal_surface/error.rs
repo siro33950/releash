@@ -48,4 +48,4 @@ impl From<TerminalSurfaceGatewayError> for UsecaseError {
 
 #[cfg(test)]
 #[path = "error_test.rs"]
-mod error_tests;
+pub(crate) mod error_tests;

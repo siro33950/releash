@@ -25,11 +25,11 @@ pub trait RepositoryStateWatcher: Send + Sync {
     ) -> Result<Box<dyn RepositoryStateWatchSession>, RepositoryStateError>;
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 #[derive(Default)]
 pub struct NoopRepositoryStateWatcher;
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 impl RepositoryStateWatcher for NoopRepositoryStateWatcher {
     fn next_watcher_id(&self) -> u64 {
         static NEXT_ID: AtomicU64 = AtomicU64::new(1);
@@ -316,7 +316,7 @@ impl WorktreeState {
         snapshot
     }
 
-    pub(crate) fn commit_snapshot(
+    pub fn commit_snapshot(
         &self,
         parts: RepositorySnapshotParts,
         generation: u64,
@@ -333,7 +333,7 @@ impl WorktreeState {
         Some(snapshot)
     }
 
-    pub(crate) fn notify_snapshot_changed(&self) {
+    pub fn notify_snapshot_changed(&self) {
         self.state_subscriptions.notify(
             crate::usecase::state_subscription::StateChangeSource::Repository(
                 self.notification_paths(),
@@ -373,4 +373,11 @@ impl Drop for WorktreeState {
 
 #[cfg(test)]
 #[path = "worktree_test.rs"]
-mod worktree_tests;
+pub(crate) mod worktree_tests;
+
+#[cfg(feature = "test-support")]
+impl WorktreeState {
+    pub async fn test_lock_scan(&self) -> tokio::sync::MutexGuard<'_, ()> {
+        self.scan_lock.lock().await
+    }
+}

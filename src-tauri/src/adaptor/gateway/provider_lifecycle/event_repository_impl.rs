@@ -14,7 +14,7 @@ use crate::domain::provider_lifecycle::{
     ScopedProviderLifecycleEvent,
 };
 
-pub(crate) struct LocalProviderLifecycleEventRepository {
+pub struct LocalProviderLifecycleEventRepository {
     repository: Arc<dyn LocalEventTransactionRepository>,
     installation_id: String,
     pending: Mutex<HashMap<[u8; 32], PreparedCommit>>,
@@ -31,7 +31,7 @@ struct PreparedCommit {
 }
 
 impl LocalProviderLifecycleEventRepository {
-    pub(crate) fn new(
+    pub fn new(
         queue: std::sync::Arc<crate::usecase::retry::Retrying>,
         repository: Arc<dyn LocalEventTransactionRepository>,
         installation_id: String,

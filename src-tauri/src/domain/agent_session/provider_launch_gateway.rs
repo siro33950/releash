@@ -1,4 +1,4 @@
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 use std::path::Path;
 
 use crate::domain::provider_lifecycle::{
@@ -10,14 +10,14 @@ use super::aggregates::ResolvedProviderExecutable;
 use super::ProviderSessionLaunch;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct PreparedProviderLaunch {
+pub struct PreparedProviderLaunch {
     process: TerminalProcessLaunch,
     resource_directory: Option<std::path::PathBuf>,
     initial_hook_warning: Option<ProviderLifecycleUnavailableReason>,
 }
 
 impl PreparedProviderLaunch {
-    pub(crate) fn new(
+    pub fn new(
         process: TerminalProcessLaunch,
         resource_directory: Option<std::path::PathBuf>,
         initial_hook_warning: Option<ProviderLifecycleUnavailableReason>,
@@ -29,8 +29,8 @@ impl PreparedProviderLaunch {
         }
     }
 
-    #[cfg(test)]
-    pub(crate) fn process(&self) -> &TerminalProcessLaunch {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn process(&self) -> &TerminalProcessLaunch {
         &self.process
     }
 
@@ -38,23 +38,23 @@ impl PreparedProviderLaunch {
         self.process
     }
 
-    pub(crate) fn initial_hook_warning(&self) -> Option<ProviderLifecycleUnavailableReason> {
+    pub fn initial_hook_warning(&self) -> Option<ProviderLifecycleUnavailableReason> {
         self.initial_hook_warning
     }
 
-    #[cfg(test)]
-    pub(crate) fn resource_directory(&self) -> Option<&Path> {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn resource_directory(&self) -> Option<&Path> {
         self.resource_directory.as_deref()
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum ProviderAgentLaunchGatewayError {
+pub enum ProviderAgentLaunchGatewayError {
     Technical(crate::domain::failure::TechnicalFailure),
     InvalidInput,
 }
 
-pub(crate) trait ProviderAgentLaunchGateway: Send + Sync {
+pub trait ProviderAgentLaunchGateway: Send + Sync {
     fn prepare(
         &self,
         armed: &ArmedProviderLifecycle,

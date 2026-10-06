@@ -297,7 +297,7 @@ impl ExecutionTree {
             })
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn pending_delegate_injections(&self) -> Vec<DelegateInjection> {
         self.delegates
             .keys()
@@ -335,4 +335,4 @@ impl ExecutionTree {
 
 #[cfg(test)]
 #[path = "delegate_test.rs"]
-mod delegate_tests;
+pub(crate) mod delegate_tests;

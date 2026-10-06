@@ -1,5 +1,12 @@
 import { invoke as invokeTauri } from "@tauri-apps/api/core";
-import { act, render, screen, waitFor, within } from "@testing-library/react";
+import {
+	act,
+	fireEvent,
+	render,
+	screen,
+	waitFor,
+	within,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useWorkspaceList } from "@/hooks/useWorkspaceList";
@@ -1939,14 +1946,6 @@ describe("WorkspaceList", () => {
 		);
 	});
 
-	it("未登録のClose操作を表示せずTauri commandを呼ばない", () => {
-		renderWorkspaceList();
-		expect(
-			screen.queryByRole("button", { name: "Close Direct session" }),
-		).not.toBeInTheDocument();
-		expect(invokeTauri).not.toHaveBeenCalled();
-	});
-
 	it("notifies App after Archive refresh says the current selection left the snapshot", async () => {
 		const user = userEvent.setup();
 		const selectedNodeId = "workflow-session-internal-uuid";
@@ -2241,6 +2240,21 @@ describe("WorkspaceList", () => {
 				name: "Second provider conversation",
 			}),
 		).toBeVisible();
+	});
+
+	it("Workflow menuはhoverを外してもtriggerを保持して開き続ける", async () => {
+		const user = userEvent.setup();
+		renderWorkspaceList();
+		const trigger = screen.getByRole("button", {
+			name: "Open menu for Release workflow",
+		});
+		await user.hover(trigger);
+		await user.click(trigger);
+		fireEvent.pointerLeave(trigger);
+		expect(screen.getByRole("menu")).toBeVisible();
+		expect(document.getElementById(trigger.id)).toBe(trigger);
+		expect(trigger).toBeVisible();
+		expect(trigger.closest("[data-state=open]")).not.toBeNull();
 	});
 
 	it("enables Workflow actions only from backend capabilities", async () => {

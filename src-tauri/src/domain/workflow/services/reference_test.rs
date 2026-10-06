@@ -343,3 +343,271 @@ nodes:
     );
     assert_eq!(missing, Err(missing_node_field(2, "missing")));
 }
+pub(crate) mod tests {
+    use super::super::*;
+    use crate::domain::workflow::value_objects::InputSourceRef;
+    use crate::domain::workflow::{CommandSpec, InputParam, NodeKind};
+
+    fn command_node_with_params(
+        name: &str,
+        command: &str,
+        params: Vec<InputParam>,
+    ) -> NodeDefinition {
+        NodeDefinition {
+            name: name.to_string(),
+            kind: NodeKind::Command(CommandSpec {
+                command: command.to_string(),
+                env: Default::default(),
+            }),
+            artifact: None,
+            input: params,
+            completion: Default::default(),
+            worktree: None,
+        }
+    }
+
+    fn untyped(name: &str) -> InputParam {
+        InputParam {
+            name: name.to_string(),
+            contract: None,
+        }
+    }
+
+    fn command_env(
+        entries: &[(&str, &str)],
+    ) -> BTreeMap<EnvironmentVariableName, InputParameterRef> {
+        entries
+            .iter()
+            .map(|(name, reference)| {
+                (
+                    EnvironmentVariableName::new(*name).unwrap(),
+                    InputParameterRef::new(*reference).unwrap(),
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn test_本文検証_宣言済みパラメータ名のみ参照できる() {
+        let node = command_node_with_params(
+            "delete",
+            "rm -f -- '{{ spec }}/behavior.md'",
+            vec![untyped("spec")],
+        );
+        let errors =
+            validate_template_references_for_node(&node, &BTreeMap::new(), node.command().unwrap());
+        assert!(errors.is_empty());
+    }
+
+    #[test]
+    fn test_本文検証_未宣言の参照を拒否する() {
+        let node = command_node_with_params("echo", "echo '{{ item }}'", vec![untyped("task")]);
+        let errors =
+            validate_template_references_for_node(&node, &BTreeMap::new(), node.command().unwrap());
+        assert!(errors.iter().any(|error| matches!(
+            error,
+            ReferenceResolveError::UnknownParameter { name } if name == "item"
+        )));
+    }
+
+    #[test]
+    fn test_command環境解決_stringは無変換で非stringはcompact_jsonになる() {
+        let env = command_env(&[
+            ("DOC", "document"),
+            ("META", "metadata"),
+            ("COUNT", "metadata.count"),
+        ]);
+        let bindings = vec![
+            (
+                "document".to_string(),
+                Value::String("{{ untouched }}; `still data`\n$HOME".to_string()),
+            ),
+            (
+                "metadata".to_string(),
+                serde_json::json!({"count": 2, "ready": true}),
+            ),
+        ];
+
+        let resolved = resolve_command_environment(&env, &bindings).unwrap();
+
+        assert!(resolved.contains(&(
+            "DOC".to_string(),
+            "{{ untouched }}; `still data`\n$HOME".to_string()
+        )));
+        assert!(resolved.contains(&(
+            "META".to_string(),
+            r#"{"count":2,"ready":true}"#.to_string()
+        )));
+        assert!(resolved.contains(&("COUNT".to_string(), "2".to_string())));
+    }
+
+    #[test]
+    fn test_command環境解決_束縛またはfieldが無ければ全体を失敗する() {
+        let missing_parameter = command_env(&[("DOC", "document")]);
+        assert!(matches!(
+            resolve_command_environment(&missing_parameter, &[]),
+            Err(CommandEnvironmentResolutionError::MissingParameter { .. })
+        ));
+
+        let missing_field = command_env(&[("DOC", "document.body")]);
+        let bindings = vec![("document".to_string(), serde_json::json!({"title": "x"}))];
+        assert!(matches!(
+            resolve_command_environment(&missing_field, &bindings),
+            Err(CommandEnvironmentResolutionError::MissingField { .. })
+        ));
+    }
+
+    #[test]
+    fn test_command環境参照検証_未宣言inputと型ありinputの未知fieldを拒否する() {
+        let mut node = command_node_with_params(
+            "main",
+            "true",
+            vec![InputParam {
+                name: "document".to_string(),
+                contract: Some("document-contract".to_string()),
+            }],
+        );
+        let NodeKind::Command(command) = &mut node.kind else {
+            unreachable!();
+        };
+        command.env = command_env(&[("UNKNOWN", "missing"), ("FIELD", "document.body")]);
+        let workflow = WorkflowDefinition {
+            name: "wf".to_string(),
+            description: String::new(),
+            schemas: [(
+                "document-contract".to_string(),
+                SchemaDef::Object {
+                    properties: BTreeMap::new(),
+                    required: Default::default(),
+                },
+            )]
+            .into_iter()
+            .collect(),
+            nodes: vec![node],
+            entry: "main".to_string(),
+            ..Default::default()
+        };
+
+        let errors = validate_workflow_command_environment_references(&workflow);
+
+        assert!(errors.iter().any(|error| matches!(
+            &error.source,
+            ReferenceResolveError::UnknownParameter { .. }
+        )));
+        assert!(errors
+            .iter()
+            .any(|error| matches!(&error.source, ReferenceResolveError::UnknownField { .. })));
+    }
+
+    #[test]
+    fn test_束縛解決_sequenceは兄弟とrequestを解決する() {
+        let entry = ChildEntry {
+            name: "consume".to_string(),
+            inputs: vec![
+                ("spec".to_string(), InputSourceRef::new("collect.spec_dir")),
+                ("goal".to_string(), InputSourceRef::new("request")),
+            ],
+            rules: None,
+        };
+        let mut artifacts = HashMap::new();
+        artifacts.insert(
+            "collect".to_string(),
+            serde_json::json!({"spec_dir": "specs/x"}),
+        );
+        artifacts.insert(
+            REQUEST_ARTIFACT.to_string(),
+            Value::String("build it".to_string()),
+        );
+
+        let bindings = resolve_entry_bindings(Some(&entry), &artifacts);
+
+        assert_eq!(
+            bindings,
+            vec![
+                ("spec".to_string(), Value::String("specs/x".to_string())),
+                ("goal".to_string(), Value::String("build it".to_string())),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_束縛解決_fanout子は親パラメータとrequestとitemsを解決する() {
+        let node = command_node_with_params(
+            "worker",
+            "echo",
+            vec![untyped("thread"), untyped("spec"), untyped("goal")],
+        );
+        let entry = ChildEntry {
+            name: "worker".to_string(),
+            inputs: vec![
+                ("thread".to_string(), InputSourceRef::new("items")),
+                ("spec".to_string(), InputSourceRef::new("context.spec_dir")),
+                ("goal".to_string(), InputSourceRef::new("request")),
+            ],
+            rules: None,
+        };
+        let mut parent_parameters = HashMap::new();
+        parent_parameters.insert(
+            "context".to_string(),
+            serde_json::json!({"spec_dir": "specs/x"}),
+        );
+        let request = Value::String("build it".to_string());
+        let item = serde_json::json!({"thread_id": "t-1"});
+
+        let bindings = resolve_fanout_child_bindings(
+            Some(&entry),
+            &node,
+            &parent_parameters,
+            Some(&request),
+            Some(&item),
+        );
+
+        assert_eq!(
+            bindings,
+            vec![
+                ("thread".to_string(), item.clone()),
+                ("spec".to_string(), Value::String("specs/x".to_string())),
+                ("goal".to_string(), Value::String("build it".to_string())),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_束縛解決_fanout子は兄弟nodeを直接参照できない() {
+        let node = command_node_with_params("worker", "echo", vec![untyped("spec")]);
+        let entry = ChildEntry {
+            name: "worker".to_string(),
+            inputs: vec![("spec".to_string(), InputSourceRef::new("collect"))],
+            rules: None,
+        };
+
+        let bindings =
+            resolve_fanout_child_bindings(Some(&entry), &node, &HashMap::new(), None, None);
+
+        assert!(bindings.is_empty());
+    }
+
+    #[test]
+    fn test_束縛解決_単一パラメータへのitems自動束縛() {
+        let node = command_node_with_params("worker", "echo", vec![untyped("task")]);
+        let item = serde_json::json!({"task_id": "T1"});
+
+        let bindings =
+            resolve_fanout_child_bindings(None, &node, &HashMap::new(), None, Some(&item));
+
+        assert_eq!(bindings, vec![("task".to_string(), item)]);
+    }
+
+    #[test]
+    fn test_束縛解決_解決できない供給元は束縛から除かれる() {
+        let entry = ChildEntry {
+            name: "consume".to_string(),
+            inputs: vec![("spec".to_string(), InputSourceRef::new("missing_node"))],
+            rules: None,
+        };
+
+        let bindings = resolve_entry_bindings(Some(&entry), &HashMap::new());
+
+        assert!(bindings.is_empty());
+    }
+}

@@ -1,8 +1,8 @@
-mod agent_session;
+pub(crate) mod agent_session;
 #[cfg(test)]
 #[path = "agent_session_test.rs"]
-mod agent_session_tests;
-mod provider_registry;
+pub(crate) mod agent_session_tests;
+pub(crate) mod provider_registry;
 #[cfg(test)]
 #[path = "provider_registry_test.rs"]
 mod provider_registry_tests;

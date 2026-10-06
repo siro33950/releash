@@ -17,13 +17,13 @@ use crate::domain::provider_lifecycle::{
     VersionedProviderHookHealth,
 };
 
-pub(crate) struct LocalProviderHookHealthRepository {
+pub struct LocalProviderHookHealthRepository {
     repository: Arc<dyn LocalEventTransactionRepository>,
     installation_id: String,
 }
 
 impl LocalProviderHookHealthRepository {
-    pub(crate) fn new(
+    pub fn new(
         repository: Arc<dyn LocalEventTransactionRepository>,
         installation_id: String,
     ) -> Self {

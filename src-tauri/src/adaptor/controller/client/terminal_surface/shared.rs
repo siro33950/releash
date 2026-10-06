@@ -1,7 +1,7 @@
 use super::*;
 use crate::adaptor::controller::client::ClientCommandDispatch;
 use crate::adaptor::controller::client::{convert, optional, required};
-use crate::adaptor::controller::client::{invalid_request, outcome, value};
+use crate::adaptor::controller::client::{invalid_request, outcome};
 use crate::adaptor::presenter::client as wire;
 
 pub(crate) fn register_shared(
@@ -66,31 +66,6 @@ pub(crate) fn register_shared(
         );
     }
     {
-        router.register_domain(
-            &["record_terminal_launch_renderer_phase"],
-            Box::new(move |command| {
-                Box::pin(async move {
-                    let wire::command_request::Command::RecordTerminalLaunchRendererPhase(args) =
-                        command
-                    else {
-                        return Err(invalid_request("Mismatched command"));
-                    };
-                    let result = async move {
-                        outcome(commands::record_terminal_launch_renderer_phase_shared(
-                            convert(required(args.phase, "phase")?)?,
-                            crate::adaptor::controller::client::finite(required(
-                                args.duration_ms,
-                                "durationMs",
-                            )?)?,
-                        ))
-                    }
-                    .await?;
-                    Ok(wire::command_result::Command::RecordTerminalLaunchRendererPhase(result))
-                })
-            }),
-        );
-    }
-    {
         let state = deps.app_state.clone();
         router.register_domain(
             &["resize_terminal_surface"],
@@ -113,89 +88,6 @@ pub(crate) fn register_shared(
                 Box::pin(async move {
                     let result = outcome(resize?.await)?;
                     Ok(wire::command_result::Command::ResizeTerminalSurface(result))
-                })
-            }),
-        );
-    }
-    {
-        router.register_domain(
-            &["start_terminal_input_performance_collection"],
-            Box::new(move |command| {
-                Box::pin(async move {
-                    let wire::command_request::Command::StartTerminalInputPerformanceCollection(
-                        _args,
-                    ) = command
-                    else {
-                        return Err(invalid_request("Mismatched command"));
-                    };
-                    let result = async move {
-                        commands::start_terminal_input_performance_collection_shared();
-                        value(())
-                    }
-                    .await?;
-                    Ok(
-                        wire::command_result::Command::StartTerminalInputPerformanceCollection(
-                            result,
-                        ),
-                    )
-                })
-            }),
-        );
-    }
-    {
-        router.register_domain(
-            &["start_terminal_launch_performance_collection"],
-            Box::new(move |command| {
-                Box::pin(async move {
-                    let wire::command_request::Command::StartTerminalLaunchPerformanceCollection(
-                        _args,
-                    ) = command
-                    else {
-                        return Err(invalid_request("Mismatched command"));
-                    };
-                    let result = async move {
-                        commands::start_terminal_launch_performance_collection_shared();
-                        value(())
-                    }
-                    .await?;
-                    Ok(
-                        wire::command_result::Command::StartTerminalLaunchPerformanceCollection(
-                            result,
-                        ),
-                    )
-                })
-            }),
-        );
-    }
-    {
-        router.register_domain(
-            &["take_terminal_input_performance_samples"],
-            Box::new(move |command| {
-                Box::pin(async move {
-                    let wire::command_request::Command::TakeTerminalInputPerformanceSamples(_args) =
-                        command
-                    else {
-                        return Err(invalid_request("Mismatched command"));
-                    };
-                    let result = async move {
-                        value(commands::take_terminal_input_performance_samples_shared())
-                    }
-                    .await?;
-                    Ok(wire::command_result::Command::TakeTerminalInputPerformanceSamples(result))
-                })
-            }),
-        );
-    }
-    {
-        router.register_domain(
-            &["take_terminal_launch_performance_samples"],
-            Box::new(move |command| {
-                Box::pin(async move {
-                    let wire::command_request::Command::TakeTerminalLaunchPerformanceSamples(_args) = command else { return Err(invalid_request("Mismatched command")); };
-                    let result = async move {
-                    value(commands::take_terminal_launch_performance_samples_shared())
-                    }.await?;
-                    Ok(wire::command_result::Command::TakeTerminalLaunchPerformanceSamples(result))
                 })
             }),
         );
@@ -246,9 +138,6 @@ pub(crate) fn register_shared(
                             convert(required(args.owner, "owner")?)?,
                             convert(required(args.attachment_id, "attachmentId")?)?,
                             convert(required(args.sequence, "sequence")?)?,
-                            args.client_started_at_unix_ms
-                                .map(crate::adaptor::controller::client::finite)
-                                .transpose()?,
                             convert(required(args.data, "data")?)?,
                         ))
                     }

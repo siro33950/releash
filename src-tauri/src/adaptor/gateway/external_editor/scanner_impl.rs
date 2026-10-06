@@ -20,13 +20,5 @@ impl InstalledEditorGateway for MacInstalledEditorGateway {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use std::path::Path;
-
-    #[test]
-    fn application_dirs_includes_system() {
-        let dirs = application_dirs();
-        assert!(dirs.iter().any(|d| d == Path::new("/Applications")));
-    }
-}
+#[path = "scanner_impl_test.rs"]
+mod scanner_impl_tests;

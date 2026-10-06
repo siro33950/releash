@@ -1,17 +1,17 @@
-mod error;
-mod reads;
+pub(crate) mod error;
+pub(crate) mod reads;
 pub(crate) use reads::StateSubscriptionRead;
 pub(crate) use reads::{StateReadError, StateReadFailure, WorkspaceStateReads};
-mod target;
-mod value;
+pub(crate) mod target;
+pub(crate) mod value;
 pub(crate) use error::SubscriptionError;
 use parking_lot::Mutex;
 use std::sync::Arc;
 pub(crate) use target::{StateChangeSource, SubscriptionTarget, WatchRequirement};
 pub(crate) use value::StateValue;
 
-pub(crate) trait StateSubscriptionOutput: Send + Sync {
-    #[cfg(test)]
+pub trait StateSubscriptionOutput: Send + Sync {
+    #[cfg(any(test, feature = "test-support"))]
     fn as_any(&self) -> &dyn std::any::Any;
     fn publish_failure(
         &self,
@@ -31,7 +31,7 @@ pub(crate) trait StateSubscriptionOutput: Send + Sync {
     ) -> Result<(), SubscriptionError>;
 }
 
-pub(crate) trait StateSubscriptionDelivery: Send + Sync {
+pub trait StateSubscriptionDelivery: Send + Sync {
     fn start(&self) -> Result<Option<usize>, StateReadError>;
     fn claim(&self) -> bool;
     fn finish(
@@ -61,16 +61,16 @@ pub(crate) fn stop_delivery(
 pub(crate) type StateSubscriptionOutputRef = Arc<dyn StateSubscriptionOutput>;
 
 #[derive(Clone)]
-pub(crate) struct StateChange {
+pub struct StateChange {
     source: StateChangeSource,
     skip: Option<SubscriptionTarget>,
 }
 
-pub(crate) struct PendingChange {
+pub struct PendingChange {
     completed: std::sync::mpsc::Sender<()>,
 }
 
-pub(crate) struct ReadWorker {
+pub struct ReadWorker {
     pub usecase: StateSubscriptionUsecase,
     pub target: SubscriptionTarget,
     pub changes: tokio::sync::broadcast::Receiver<StateChange>,
@@ -98,7 +98,7 @@ impl Drop for ReadStartPermit<'_> {
 }
 
 #[derive(Clone)]
-pub(crate) struct StateSubscriptionUsecase {
+pub struct StateSubscriptionUsecase {
     publisher: StateSubscriptionOutputRef,
     changes: tokio::sync::broadcast::Sender<StateChange>,
     waiting_workers: Arc<
@@ -109,7 +109,7 @@ pub(crate) struct StateSubscriptionUsecase {
             >,
         >,
     >,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     test_changes: tokio::sync::broadcast::Sender<StateChangeSource>,
     clients: Arc<
         Mutex<
@@ -120,7 +120,7 @@ pub(crate) struct StateSubscriptionUsecase {
     history_paths: Vec<String>,
     hook_health_markers: String,
     pub(crate) reads: Option<Arc<dyn StateSubscriptionRead>>,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) test_repository_paths: Option<Arc<parking_lot::RwLock<Vec<String>>>>,
     watchers: Option<Arc<crate::usecase::watcher::WatcherUsecase>>,
     workers:
@@ -143,12 +143,12 @@ impl StateSubscriptionUsecase {
             publisher,
             changes: tokio::sync::broadcast::channel(64).0,
             waiting_workers: Default::default(),
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             test_changes: tokio::sync::broadcast::channel(64).0,
             clients: Default::default(),
             driver,
             reads: None,
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             test_repository_paths: None,
             history_paths: vec![],
             hook_health_markers: String::new(),
@@ -176,7 +176,7 @@ impl StateSubscriptionUsecase {
         self
     }
 
-    pub(crate) async fn start_subscription(
+    pub async fn start_subscription(
         &self,
         client: &str,
         target: &SubscriptionTarget,
@@ -191,7 +191,7 @@ impl StateSubscriptionUsecase {
         Ok(())
     }
 
-    pub(crate) async fn stop_subscription(
+    pub async fn stop_subscription(
         &self,
         client: &str,
         target: &SubscriptionTarget,
@@ -647,7 +647,7 @@ impl StateSubscriptionUsecase {
         self.publisher.clone()
     }
 
-    pub(crate) fn notify(&self, source: StateChangeSource) {
+    pub fn notify(&self, source: StateChangeSource) {
         self.send_change(source, None);
     }
 
@@ -665,13 +665,13 @@ impl StateSubscriptionUsecase {
     }
 
     fn send_change(&self, source: StateChangeSource, skip: Option<SubscriptionTarget>) {
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         let _ = self.test_changes.send(source.clone());
         let _ = self.changes.send(StateChange { source, skip });
     }
 
-    #[cfg(test)]
-    pub(crate) fn changes(&self) -> tokio::sync::broadcast::Receiver<StateChangeSource> {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn changes(&self) -> tokio::sync::broadcast::Receiver<StateChangeSource> {
         self.test_changes.subscribe()
     }
 
@@ -705,7 +705,7 @@ impl StateSubscriptionUsecase {
         Ok(())
     }
 
-    pub(crate) fn open_client(&self, id: String) -> Result<(), SubscriptionError> {
+    pub fn open_client(&self, id: String) -> Result<(), SubscriptionError> {
         let mut clients = self.clients.lock();
         if clients.contains_key(&id) {
             return Err(SubscriptionError::AlreadyExists);
@@ -714,23 +714,23 @@ impl StateSubscriptionUsecase {
         Ok(())
     }
 
-    pub(crate) fn close_client(&self, id: &str) {
+    pub fn close_client(&self, id: &str) {
         self.clients.lock().remove(id);
         self.report_watch_failures(self.reconcile_watches());
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn output_ref(&self) -> &dyn StateSubscriptionOutput {
         self.publisher.as_ref()
     }
 
-    #[cfg(test)]
-    pub(crate) fn test_worker_count(&self) -> usize {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn test_worker_count(&self) -> usize {
         self.workers.lock().len()
     }
 
-    #[cfg(test)]
-    pub(crate) fn test_watches(&self) -> std::collections::HashMap<WatchRequirement, u64> {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn test_watches(&self) -> std::collections::HashMap<WatchRequirement, u64> {
         self.watches.lock().clone()
     }
 
@@ -741,7 +741,7 @@ impl StateSubscriptionUsecase {
             .any(|targets| targets.contains_key(target))
     }
 
-    pub(crate) fn active_targets(&self) -> std::collections::HashSet<SubscriptionTarget> {
+    pub fn active_targets(&self) -> std::collections::HashSet<SubscriptionTarget> {
         self.with_active_targets(Clone::clone)
     }
 
@@ -788,4 +788,15 @@ fn adds_external_information(target: &SubscriptionTarget, source: &StateChangeSo
 
 #[cfg(test)]
 #[path = "state_subscription_test.rs"]
-pub(crate) mod state_subscription_tests;
+mod state_subscription_tests;
+
+#[cfg(any(test, feature = "test-support"))]
+#[path = "state_subscription_test_helpers.rs"]
+pub(crate) mod state_subscription_test_helpers;
+
+#[cfg(feature = "test-support")]
+impl StateSubscriptionUsecase {
+    pub fn test_remove_client_registration(&self, client_id: &str) {
+        self.clients.lock().remove(client_id);
+    }
+}

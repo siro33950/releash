@@ -2,7 +2,7 @@ use crate::domain::code::{ReviewBase, ReviewSection};
 use crate::domain::workflow::FacetKind;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub(crate) enum SubscriptionTarget {
+pub enum SubscriptionTarget {
     Terminal(crate::domain::terminal_surface::TerminalSurfaceOwner),
     RepositoryPaths,
     Workspaces,
@@ -36,12 +36,11 @@ pub(crate) enum SubscriptionTarget {
     ExternalEditor,
     ReleashBase(String),
     WorkflowConfig,
-    PerformanceSwitches,
     ProviderHookHealth,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub(crate) enum WatchRequirement {
+pub enum WatchRequirement {
     Git(String),
     Files(String, StateChangeSource),
 }
@@ -111,7 +110,7 @@ impl SubscriptionTarget {
 mod subscription_target_tests;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub(crate) enum StateChangeSource {
+pub enum StateChangeSource {
     Repositories,
     Repository(Vec<String>),
     Worktree(String),

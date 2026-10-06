@@ -17,7 +17,7 @@ impl WorkflowStartupRepository for Trees {
     async fn list_tree_ids(&self) -> Result<Vec<String>, WorkflowError> {
         if self
             .list_failures
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |left| {
+            .try_update(Ordering::SeqCst, Ordering::SeqCst, |left| {
                 (left > 0).then(|| left - 1)
             })
             == Ok(1)
