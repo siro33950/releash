@@ -67,13 +67,13 @@ Scope:
 - 置き場所の検査と、単体テストで外部の資源を使わない検査の追加（ast-grep の設定と規則、qlty の設定を含む）。
 - `AGENTS.md` の「ビルド・テスト・Lint」と「リリース」の記述。
 - `.gitignore` の `node_modules` の除外を、シンボリックリンクにも当たるようにすること。
-- `.github/scripts/workflows-test.mjs` の期待値（ci.yml・nightly.yml・AGENTS.md の構成を検査している）を、変更後の構成に合わせること。
+- CI の設定を書き写して検査する `.github/scripts/workflows-test.mjs` と、それを実行する `workflow-tests` ジョブの削除。
 
 Non-goals:
 - 利用者向けの設定「Send anonymous performance metrics」（`update_performance_telemetry`）と、それで OTLP へ送る計測。
 - フロントの統合テスト（`tests/integration/`）と振る舞いテスト（`tests/behavior/`）を新しく書くこと。
 - `docs/architecture/TEST.md` の変更。
-- `.github/scripts/` にある CI 用スクリプトのテスト（`workflows-test.mjs`・`coverage.test.py`）の置き場所と実行箇所。
+- `.github/scripts/coverage.test.py` の置き場所と実行箇所。
 - 定数の値・削除済み機能の否定・パフォーマンス・層の重複・同じ入力区分の重複・主要パターン以外の振る舞いを lint で検出すること。
 
 # Requirements

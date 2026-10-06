@@ -1,7 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
-import { dirname, basename, join, normalize, resolve } from "node:path";
-import { pathToFileURL } from "node:url";
+import { dirname, basename, join, normalize } from "node:path";
 
 const TEST_ATTRIBUTE = /#\s*\[\s*(?:(?:tokio|actix_web)::)?test(?:\s*\([^\]]*\))?\s*\]/;
 
@@ -55,7 +54,7 @@ function unitImports(source) {
   return [...rustCode(source).matchAll(/#\[path\s*=\s*"([^"/]+_test\.rs)"\]\s*(?:#\[(?:[^\[\]"]|"(?:\\.|[^"\\])*"|\[[^\]]*\])*\]\s*)*(?:pub(?:\([^)]*\))?\s+)?mod\s+(\w+)\s*;/g)];
 }
 
-export function placementErrors(path, source, implementationExists = existsSync, readSource = path => readFileSync(path, "utf8")) {
+function placementErrors(path, source) {
   if (/^(?:\.github|\.ast-grep)\//.test(path)) return [];
   if (path.endsWith(".rs")) source = rustCode(source);
   const testFile = /(?:_test\.rs|\.(?:test|spec)\.[cm]?[jt]sx?)$/.test(path);
@@ -71,21 +70,21 @@ export function placementErrors(path, source, implementationExists = existsSync,
   if (path.endsWith(".rs") && testAttribute && !rustIntegration && !(rustSource && path.endsWith("_test.rs"))) errors.push("#[test] は *_test.rs または Rust の tests/ に置いてください");
   if (rustSource && path.endsWith("_test.rs")) {
     const implementation = path.replace(/_test\.rs$/, ".rs");
-    if (!implementationExists(implementation)) errors.push("同じディレクトリに対応する実装がありません");
-    else if (!unitImports(readSource(implementation)).some(([, file]) => file === basename(path))) errors.push("対応する実装から #[path] で取り込まれていません");
+    if (!existsSync(implementation)) errors.push("同じディレクトリに対応する実装がありません");
+    else if (!unitImports(readFileSync(implementation, "utf8")).some(([, file]) => file === basename(path))) errors.push("対応する実装から #[path] で取り込まれていません");
   }
   if (rustSource && path.endsWith(".rs") && !path.endsWith("_test.rs")) {
     const imports = unitImports(source);
     if (imports.length > 1) errors.push("一つの実装に取り込む単体テストファイルは一つだけにしてください");
     for (const [, file, module] of imports) {
       if (file !== basename(path, ".rs") + "_test.rs" || module !== file.replace(/_test\.rs$/, "_tests")) errors.push(`${file} の取り込み先とモジュール名が実装に対応していません`);
-      if (!implementationExists(join(dirname(path), file))) errors.push(`${file} が存在しません`);
+      if (!existsSync(join(dirname(path), file))) errors.push(`${file} が存在しません`);
     }
   }
   return errors.map(message => `${path}: ${message}`);
 }
 
-export function integrationErrors(sources) {
+function integrationErrors(sources) {
   const errors = [];
   for (const root of ["src-tauri", "src-tauri/releash-desktop"]) {
     const directory = `${root}/tests/`;
@@ -122,10 +121,8 @@ export function integrationErrors(sources) {
   return errors;
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
-  const paths = execFileSync("git", ["ls-files", "--cached", "--others", "--exclude-standard", "-z"]).toString().split("\0").filter(path => path && existsSync(path));
-  const sources = new Map(paths.map(path => [path, /\.(?:rs|toml|[cm]?[jt]sx?)$/.test(path) ? readFileSync(path, "utf8") : ""]));
-  const errors = [...paths.flatMap(path => placementErrors(path, sources.get(path))), ...integrationErrors(sources)];
-  for (const error of errors) console.error(error);
-  if (errors.length) process.exitCode = 1;
-}
+const paths = execFileSync("git", ["ls-files", "--cached", "--others", "--exclude-standard", "-z"]).toString().split("\0").filter(path => path && existsSync(path));
+const sources = new Map(paths.map(path => [path, /\.(?:rs|toml|[cm]?[jt]sx?)$/.test(path) ? readFileSync(path, "utf8") : ""]));
+const errors = [...paths.flatMap(path => placementErrors(path, sources.get(path))), ...integrationErrors(sources)];
+for (const error of errors) console.error(error);
+if (errors.length) process.exitCode = 1;

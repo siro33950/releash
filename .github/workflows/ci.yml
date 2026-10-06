@@ -441,19 +441,6 @@ jobs:
             fi
           done
 
-  workflow-tests:
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          ref: ${{ inputs.ref || github.sha }}
-      - uses: actions/setup-node@v7
-        with:
-          node-version: 24
-      - name: Workflow decision tests
-        run: node --test .github/scripts/workflows-test.mjs
-
   quality:
     runs-on: ubuntu-latest
     timeout-minutes: 15

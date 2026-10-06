@@ -17,7 +17,7 @@
 - rust-cache: サーバのジョブは `pr-server`、シェルのジョブは `pr-shell` の `shared-key` を共有し、`save-if` で保存をそれぞれの単体ジョブの main への push に絞る。根拠: R-007。ルート: 委任
 - 置き場所の検査: `git ls-files` の結果を TEST.md の「配置と実行」の表と突き合わせ、外れたテストファイルと、`*_test.rs` と `tests/` 以外の `#[test]` を検出するスクリプトを CI で実行する。`.github/` 配下と補助ファイルは対象外。根拠: R-009、R-011。ルート: 委任
 - 外部の資源を使わない検査: `sgconfig.yml` と規則ディレクトリを置き、ast-grep の規則を qlty の ast-grep プラグインで実行する。根拠: R-010、R-011。ルート: 「固定するルート」2
-- CI 構成のテスト: `.github/scripts/workflows-test.mjs` の期待値を、変更後の ci.yml・nightly.yml・AGENTS.md の構成に合わせる。根拠: R-004、R-006、R-007、R-013（このテストは CI と AGENTS.md の構成そのものを検査しており、変更後も `workflow-tests` ジョブが通る必要がある）。ルート: 委任
+- CI 構成のテスト: `.github/scripts/workflows-test.mjs` と `workflow-tests` ジョブを削除する。CI の設定をテストへ書き写して比べるもので、設定を変えるたびに書き換えが要り、回帰を検出しない。`test-placement.mjs` の、このテストのためだけの export と差し込み口も消す。根拠: 利用者の判断。ルート: 委任
 - AGENTS.md: 「ビルド・テスト・Lint」のコマンド一覧と「リリース」2の関門を、上記の結果に合わせる。根拠: R-013。ルート: 委任
 
 ## 固定するルート
@@ -35,7 +35,7 @@
    - B-005・B-016・B-017 を確かめるテストは書かない（TEST.md の書かないテスト: 削除済み機能が存在しないことを確かめるテスト）。差分の確認（grep やビルドの確認）で確かめる。
 
 ## 変えないもの
-- `.github/scripts/` の CI 用スクリプトのテストの置き場所と実行箇所（ci.yml の `workflow-tests`、nightly.yml の coverage）は変えない。プロダクトのテストではなく、TEST.md の表の対象外のため。
+- `.github/scripts/coverage.test.py` の置き場所と実行箇所（nightly.yml の coverage）は変えない。プロダクトのテストではなく、TEST.md の表の対象外のため。
 - nextest の archive は使わず、ビルドはジョブ間で共有しない。
 - Rust に関係しない変更での飛ばし方は、ワークフロー単位ではなくステップの `if` のままにする。ワークフロー単位で飛ばすと必須チェックが Pending のまま残るため。
 

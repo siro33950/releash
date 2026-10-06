@@ -96,7 +96,6 @@ pnpm exec biome ci .
 pnpm test
 pnpm build
 pnpm test:integration
-node --test .github/scripts/workflows-test.mjs
 ```
 
 PR 層（`src-tauri/`。CI では `CARGO_PROFILE_DEV_DEBUG="0"`）:
