@@ -8,8 +8,6 @@ fn main() {
     if std::env::var("NEW_RELIC_LICENSE_KEY").is_err() {
         println!("cargo:rustc-env=NEW_RELIC_LICENSE_KEY=");
     }
-    #[cfg(feature = "desktop")]
-    tauri_build::build()
 }
 
 fn generate_client_protocol() {
@@ -55,7 +53,9 @@ fn generate_client_protocol() {
         let mut decode = format!("{harness_only}impl {message} {{ {decode_test}pub(crate) fn into_value(self) -> Result<(&'static str, serde_json::Value), String> {{ match self.command.ok_or(\"Missing command\")? {{\n");
         let mut encode = format!("{harness_only}impl {message} {{ {encode_test}pub(crate) fn from_value(name: &str, value: serde_json::Value) -> Result<Self, String> {{ Ok(Self {{ command: Some(match name {{\n");
         let mut command_names = format!("impl {module}::Command {{ pub(crate) fn name(&self) -> &'static str {{ match self {{\n");
-        let mut names = String::from("#[cfg(test)] pub const COMMAND_NAMES: &[&str] = &[\n");
+        let mut names = String::from(
+            "#[cfg(any(test, feature = \"test-support\"))] pub const COMMAND_NAMES: &[&str] = &[\n",
+        );
         for field in descriptor
             .field
             .iter()
@@ -98,7 +98,7 @@ fn generate_client_protocol() {
         .find(|service| service.name() == "ClientService")
         .expect("ClientService");
     let mut handlers = String::from("impl rpc::ClientService for ClientApiDeps {\n");
-    let mut calls = String::from("pub(crate) fn call(client: &rpc::ClientServiceClient<connectrpc::client::HttpClient>, command: wire::command_request::Command) -> futures_util::future::BoxFuture<'_ , Result<wire::command_result::Command, connectrpc::ConnectError>> { match command {\n");
+    let mut calls = String::from("pub fn call(client: &rpc::ClientServiceClient<connectrpc::client::HttpClient>, command: wire::command_request::Command) -> futures_util::future::BoxFuture<'_ , Result<wire::command_result::Command, connectrpc::ConnectError>> { match command {\n");
     let commands = messages
         .iter()
         .find(|message| message.name() == "CommandRequest")

@@ -4,13 +4,12 @@ mod client;
 mod discovery;
 mod server;
 
-pub(crate) use client::{
-    read_local_api_discovery, LocalApiDiscoveryReadError, LocalApiHttpClient,
-    LocalApiIdentityRequestError, LocalApiTransportError,
-};
-pub(crate) use discovery::{
-    local_api_discovery_path, lookup_process_start_time, process_start_time, LocalApiDiscovery,
-    LocalApiDiscoveryFile, ProcessStartTimeLookup,
+pub use client::{read_local_api_discovery, LocalApiDiscoveryReadError};
+pub(crate) use client::{LocalApiHttpClient, LocalApiIdentityRequestError, LocalApiTransportError};
+pub(crate) use discovery::local_api_discovery_path;
+pub use discovery::{
+    lookup_process_start_time, process_start_time, LocalApiDiscovery, LocalApiDiscoveryFile,
+    ProcessStartTimeLookup,
 };
 pub(crate) use server::LocalApiServer;
 pub(crate) use server::LocalApiServerBinding;

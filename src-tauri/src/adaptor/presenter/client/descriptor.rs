@@ -8,11 +8,11 @@ static POOL: LazyLock<DescriptorPool> = LazyLock::new(|| {
     .expect("client descriptors")
 });
 
-pub(crate) fn pool() -> &'static DescriptorPool {
+pub fn pool() -> &'static DescriptorPool {
     &POOL
 }
 
-pub(crate) fn option(options: &DynamicMessage, name: &str) -> Value {
+pub fn option(options: &DynamicMessage, name: &str) -> Value {
     let extension = POOL
         .get_extension_by_name(&format!("releash.client.v1.{name}"))
         .expect("protocol option");

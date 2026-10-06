@@ -11,6 +11,9 @@ use crate::infrastructure::local_api::{
     LocalApiDiscoveryReadError, LocalApiHttpClient, LocalApiIdentityRequestError,
     LocalApiTransportError, ProcessStartTimeLookup,
 };
+use crate::usecase::client_connection::{
+    ClientConnectionDto, ClientConnectionError, ClientConnectionQueryService,
+};
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum LocalApiClientError {
@@ -186,31 +189,19 @@ fn map_transport_error(error: LocalApiTransportError) -> LocalApiClientError {
 #[path = "local_api_test.rs"]
 mod local_api_tests;
 
-#[cfg(any(test, feature = "desktop"))]
-pub(crate) struct ClientConnectionFileQuery(pub(crate) PathBuf);
+pub struct ClientConnectionFileQuery(pub PathBuf);
 
-#[cfg(any(test, feature = "desktop"))]
-impl crate::usecase::client_connection::ClientConnectionQueryService for ClientConnectionFileQuery {
-    fn read(
-        &self,
-    ) -> Result<
-        crate::usecase::client_connection::ClientConnectionDto,
-        crate::usecase::client_connection::ClientConnectionError,
-    > {
+impl ClientConnectionQueryService for ClientConnectionFileQuery {
+    fn read(&self) -> Result<ClientConnectionDto, ClientConnectionError> {
         self.read_with_process_lookup(lookup_process_start_time)
     }
 }
 
-#[cfg(any(test, feature = "desktop"))]
 impl ClientConnectionFileQuery {
     fn read_with_process_lookup(
         &self,
         lookup_process: impl FnOnce(u32) -> ProcessStartTimeLookup,
-    ) -> Result<
-        crate::usecase::client_connection::ClientConnectionDto,
-        crate::usecase::client_connection::ClientConnectionError,
-    > {
-        use crate::usecase::client_connection::{ClientConnectionDto, ClientConnectionError};
+    ) -> Result<ClientConnectionDto, ClientConnectionError> {
         let discovery = read_local_api_discovery(&self.0)
             .map_err(|_| ClientConnectionError("daemon discovery is unreadable".into()))?
             .ok_or_else(|| ClientConnectionError("daemon discovery is unavailable".into()))?;

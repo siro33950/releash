@@ -24,7 +24,7 @@ jobs:
 
       - name: Calculate new version
         run: |
-          CURRENT=$(jq -r '.version' src-tauri/tauri.conf.json)
+          CURRENT=$(jq -r '.version' src-tauri/releash-desktop/tauri.conf.json)
           IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT"
           case "${{ inputs.bump }}" in
             major) MAJOR=$((MAJOR + 1)); MINOR=0; PATCH=0 ;;
@@ -38,9 +38,9 @@ jobs:
       - name: Bump version in files
         run: |
           jq --tab --arg v "$VERSION" '.version = $v' package.json > tmp.json && mv tmp.json package.json
-          jq --arg v "$VERSION" '.version = $v' src-tauri/tauri.conf.json > tmp.json && mv tmp.json src-tauri/tauri.conf.json
+          jq --arg v "$VERSION" '.version = $v' src-tauri/releash-desktop/tauri.conf.json > tmp.json && mv tmp.json src-tauri/releash-desktop/tauri.conf.json
           sed -i "s/^version = \".*\"/version = \"$VERSION\"/" src-tauri/Cargo.toml
-          sed -i '/^name = "releash"$/{n;s/^version = ".*"/version = "'"$VERSION"'"/}' src-tauri/Cargo.lock
+          sed -i -E '/^name = "releash-(backend|desktop)"$/{n;s/^version = ".*"/version = "'"$VERSION"'"/}' src-tauri/Cargo.lock
 
       - name: Create PR
         uses: peter-evans/create-pull-request@v8

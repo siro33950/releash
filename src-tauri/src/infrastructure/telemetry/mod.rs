@@ -11,7 +11,7 @@ use opentelemetry_sdk::metrics::SdkMeterProvider;
 use opentelemetry_sdk::trace::SdkTracerProvider;
 use opentelemetry_sdk::Resource;
 
-pub(crate) struct TelemetryGuard {
+pub struct TelemetryGuard {
     tracer_provider: SdkTracerProvider,
     meter_provider: SdkMeterProvider,
     logger_provider: SdkLoggerProvider,
@@ -31,7 +31,7 @@ impl Drop for TelemetryGuard {
     }
 }
 
-pub(crate) fn init_telemetry(
+pub fn init_telemetry(
     crash_reporting: bool,
     performance_telemetry: bool,
 ) -> Option<TelemetryGuard> {

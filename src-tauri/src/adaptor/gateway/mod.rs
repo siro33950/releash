@@ -5,10 +5,6 @@ pub(crate) mod application_lifecycle;
 pub(crate) mod code;
 pub(crate) mod comment;
 pub(crate) mod daemon;
-#[cfg(feature = "desktop")]
-pub(crate) mod daemon_supervision;
-#[cfg(feature = "desktop")]
-pub(crate) mod desktop_update;
 pub(crate) mod external_editor;
 pub(crate) mod git_host;
 pub(crate) mod local_api;
@@ -23,15 +19,6 @@ pub(crate) mod workspace_state;
 pub(crate) mod workspace_tree;
 
 pub(crate) mod telemetry;
-
-#[cfg(feature = "desktop")]
-pub(crate) mod login_item;
-
-#[cfg(feature = "desktop")]
-pub(crate) mod desktop_client;
-
-#[cfg(feature = "desktop")]
-pub(crate) mod cli_install;
 
 pub(crate) mod failure_records;
 pub(crate) mod identity;

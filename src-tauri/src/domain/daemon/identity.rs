@@ -28,7 +28,7 @@ impl DaemonIdentity {
             ProcessObservation::StartedAt(_) => Ok(()),
         }
     }
-    #[cfg(any(test, feature = "desktop"))]
+
     pub(crate) fn matches_client(&self, client: &Self, endpoints_match: bool) -> bool {
         self.is_valid() && client.is_valid() && self == client && endpoints_match
     }

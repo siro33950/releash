@@ -152,7 +152,7 @@ jobs:
           uploadUpdaterJson: true
           releaseId: ${{ needs.create-release.outputs.release-id }}
           tauriScript: pnpm tauri
-          args: --target universal-apple-darwin -- --features vendored-openssl
+          args: --target universal-apple-darwin --config src-tauri/releash-desktop/tauri.conf.bundle.json -- --features vendored-openssl
 
   publish:
     needs: [create-release, build]
@@ -191,7 +191,7 @@ jobs:
 
       - name: Calculate next patch version
         run: |
-          CURRENT=$(jq -r '.version' src-tauri/tauri.conf.json)
+          CURRENT=$(jq -r '.version' src-tauri/releash-desktop/tauri.conf.json)
           [[ "$CURRENT" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
           IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT"
           echo "VERSION=${MAJOR}.${MINOR}.$((PATCH + 1))" >> "$GITHUB_ENV"
@@ -199,9 +199,9 @@ jobs:
       - name: Bump version in files
         run: |
           jq --tab --arg v "$VERSION" '.version = $v' package.json > tmp.json && mv tmp.json package.json
-          jq --arg v "$VERSION" '.version = $v' src-tauri/tauri.conf.json > tmp.json && mv tmp.json src-tauri/tauri.conf.json
+          jq --arg v "$VERSION" '.version = $v' src-tauri/releash-desktop/tauri.conf.json > tmp.json && mv tmp.json src-tauri/releash-desktop/tauri.conf.json
           sed -i "s/^version = \".*\"/version = \"$VERSION\"/" src-tauri/Cargo.toml
-          sed -i '/^name = "releash"$/{n;s/^version = ".*"/version = "'"$VERSION"'"/}' src-tauri/Cargo.lock
+          sed -i -E '/^name = "releash-(backend|desktop)"$/{n;s/^version = ".*"/version = "'"$VERSION"'"/}' src-tauri/Cargo.lock
 
       - name: Create PR
         uses: peter-evans/create-pull-request@v8
@@ -209,7 +209,7 @@ jobs:
           base: main
           add-paths: |
             package.json
-            src-tauri/tauri.conf.json
+            src-tauri/releash-desktop/tauri.conf.json
             src-tauri/Cargo.toml
             src-tauri/Cargo.lock
           commit-message: "release: v${{ env.VERSION }}"

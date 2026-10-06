@@ -1,5 +1,3 @@
-#![cfg(not(feature = "desktop"))]
-
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};

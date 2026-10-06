@@ -1,0 +1,62 @@
+[package]
+name = "releash-desktop"
+version.workspace = true
+edition = "2021"
+license = "MIT OR Apache-2.0"
+default-run = "releash-desktop"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+releash-backend = { path = ".." }
+connectrpc = { version = "=0.9.1", features = ["axum", "client"] }
+tauri = { version = "2.12", features = ["tray-icon", "image-png"] }
+tauri-plugin-opener = { version = "2" }
+tauri-plugin-fs = { version = "2" }
+tauri-plugin-dialog = { version = "2" }
+tauri-plugin-updater = { version = "2" }
+tauri-plugin-wdio = { version = "1", optional = true }
+tauri-plugin-wdio-webdriver = { version = "1", optional = true }
+async-trait = "0.1"
+serde = { version = "1", features = ["derive", "rc"] }
+serde_json = { version = "1", features = ["raw_value"] }
+parking_lot = { version = "0.12.5", features = ["arc_lock", "send_guard"] }
+base64 = "0.23"
+thiserror = "2"
+tokio = { version = "1", features = ["rt-multi-thread", "net", "sync", "time", "macros", "io-util", "process"] }
+futures-util = "0.3"
+log = "0.4"
+fs2 = "0.4"
+uuid = { version = "1", features = ["v4"] }
+prost = "0.14.4"
+libc = "0.2"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = { version = "0.6" }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSString", "NSObject", "NSURL", "NSGeometry", "NSError"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSDragging", "NSPasteboard", "NSPasteboardItem", "NSView", "NSWindow", "NSResponder"] }
+
+[features]
+vendored-openssl = ["releash-backend/vendored-openssl"]
+performance = ["releash-backend/performance"]
+performance-wdio = ["performance", "dep:tauri-plugin-wdio", "dep:tauri-plugin-wdio-webdriver"]
+
+[dev-dependencies]
+rusqlite = { version = "0.40", features = ["bundled", "hooks"] }
+axum = { version = "0.8", features = ["http2"] }
+git2 = "0.21"
+releash-backend = { path = "..", features = ["test-support"] }
+tauri = { version = "2.12", features = ["tray-icon", "image-png", "test"] }
+tokio = { version = "1", features = ["test-util"] }
+tempfile = "3"
+
+[[test]]
+name = "desktop_restart"
+path = "tests/desktop_restart.rs"
+harness = false
+
+[[test]]
+name = "desktop_tray"
+path = "tests/desktop_tray.rs"
+harness = false

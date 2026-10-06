@@ -215,8 +215,6 @@ pub(crate) mod tests {
     use tempfile::TempDir;
 
     pub(crate) struct WorkflowTestDependencies {
-        #[cfg(feature = "desktop")]
-        pub(crate) app_config: Arc<crate::adaptor::gateway::app_config::AppConfig>,
         pub(crate) client: crate::adaptor::controller::client::ClientDependencies,
         pub(crate) repository_state: Arc<crate::usecase::repository_state::RepositoryStateService>,
     }
@@ -1286,8 +1284,6 @@ crate::test_support::state_subscription::repository_driver(),
         ));
         (
             WorkflowTestDependencies {
-                #[cfg(feature = "desktop")]
-                app_config,
                 client,
                 repository_state,
             },

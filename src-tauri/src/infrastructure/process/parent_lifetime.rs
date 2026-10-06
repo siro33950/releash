@@ -31,7 +31,7 @@ pub(crate) fn watch_parent_pipe() {
     });
 }
 
-pub(crate) fn terminate_descendants(root: u32) {
+pub fn terminate_descendants(root: u32) {
     let mut system = System::new();
     let mut parents = vec![Pid::from_u32(root)];
     let mut descendants = Vec::new();

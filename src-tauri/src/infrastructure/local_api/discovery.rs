@@ -15,27 +15,27 @@ pub(crate) fn local_api_discovery_path(data_dir: &Path) -> PathBuf {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub(crate) struct LocalApiDiscovery {
-    pub(crate) port: u16,
-    pub(crate) token: String,
-    pub(crate) instance_id: String,
-    pub(crate) pid: u32,
-    pub(crate) process_started_at: u64,
+pub struct LocalApiDiscovery {
+    pub port: u16,
+    pub token: String,
+    pub instance_id: String,
+    pub pid: u32,
+    pub process_started_at: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct ProcessStartTimeLookup {
-    pub(crate) process_list_available: bool,
-    pub(crate) start_time: Option<u64>,
+pub struct ProcessStartTimeLookup {
+    pub process_list_available: bool,
+    pub start_time: Option<u64>,
 }
 
-pub(crate) fn process_start_time(pid: u32) -> Option<u64> {
+pub fn process_start_time(pid: u32) -> Option<u64> {
     lookup_process_start_time(pid)
         .start_time
         .filter(|start_time| *start_time != 0)
 }
 
-pub(crate) fn lookup_process_start_time(pid: u32) -> ProcessStartTimeLookup {
+pub fn lookup_process_start_time(pid: u32) -> ProcessStartTimeLookup {
     let pid = Pid::from_u32(pid);
     let mut system = System::new();
     system.refresh_processes_specifics(
@@ -59,23 +59,23 @@ pub(crate) fn lookup_process_start_time(pid: u32) -> ProcessStartTimeLookup {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct LocalApiDiscoveryFile {
+pub struct LocalApiDiscoveryFile {
     path: PathBuf,
     discovery: LocalApiDiscovery,
 }
 
 impl LocalApiDiscoveryFile {
-    #[cfg(test)]
-    pub(crate) fn create(data_dir: &Path, discovery: LocalApiDiscovery) -> io::Result<Self> {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn create(data_dir: &Path, discovery: LocalApiDiscovery) -> io::Result<Self> {
         Self::create_named(data_dir, LOCAL_API_DISCOVERY_FILE_NAME, discovery)
     }
 
-    #[cfg(test)]
-    pub(crate) fn create_client(data_dir: &Path, discovery: LocalApiDiscovery) -> io::Result<Self> {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn create_client(data_dir: &Path, discovery: LocalApiDiscovery) -> io::Result<Self> {
         Self::create_named(data_dir, "client-api.json", discovery)
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     fn create_named(data_dir: &Path, name: &str, discovery: LocalApiDiscovery) -> io::Result<Self> {
         let file = Self::prepare_named(data_dir, name, discovery);
         file.publish()?;

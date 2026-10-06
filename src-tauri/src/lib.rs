@@ -27,17 +27,11 @@ pub mod terminal_surface {
         TerminalSurfaceStreamItemV1, TerminalSurfaceV1,
     };
 }
+pub mod desktop_api;
 // Test-only helpers are intentionally kept as a root module.
 #[cfg(test)]
 mod test_support;
 mod usecase;
-
-#[cfg(feature = "desktop")]
-mod desktop;
-#[cfg(all(debug_assertions, feature = "desktop"))]
-use desktop::application_context;
-#[cfg(feature = "desktop")]
-pub use desktop::run;
 
 pub fn run_daemon(data_dir: Option<std::path::PathBuf>) -> i32 {
     infrastructure::process::parent_lifetime::watch_parent_pipe();
@@ -85,9 +79,6 @@ pub fn run_daemon(data_dir: Option<std::path::PathBuf>) -> i32 {
     1
 }
 
-#[cfg(all(test, debug_assertions, feature = "desktop"))]
-mod desktop_test_support;
-
 #[doc(hidden)]
 pub fn run_background_worker() -> i32 {
     adaptor::controller::background_worker::run()
@@ -95,5 +86,3 @@ pub fn run_background_worker() -> i32 {
 
 #[cfg(any(test, debug_assertions))]
 mod acceptance_test_support;
-#[cfg(all(debug_assertions, feature = "desktop"))]
-pub mod desktop_client_acceptance;

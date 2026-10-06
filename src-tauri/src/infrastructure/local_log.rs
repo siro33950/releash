@@ -13,8 +13,7 @@ const MAX_FILE_COUNT: usize = 5;
 const QUEUE_CAPACITY: usize = 256;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum LocalLogProcess {
-    #[cfg(any(test, feature = "desktop"))]
+pub enum LocalLogProcess {
     Gui,
     Daemon,
     Cli,
@@ -23,7 +22,6 @@ pub(crate) enum LocalLogProcess {
 impl LocalLogProcess {
     fn as_str(self) -> &'static str {
         match self {
-            #[cfg(any(test, feature = "desktop"))]
             Self::Gui => "gui",
             Self::Daemon => "daemon",
             Self::Cli => "cli",
@@ -32,7 +30,7 @@ impl LocalLogProcess {
 }
 
 #[derive(Debug)]
-pub(crate) enum LocalLogInitError {
+pub enum LocalLogInitError {
     Io(io::Error),
     AlreadyInitialized,
 }
@@ -54,7 +52,7 @@ impl From<io::Error> for LocalLogInitError {
     }
 }
 
-pub(crate) fn init(data_dir: &Path, process: LocalLogProcess) -> Result<(), LocalLogInitError> {
+pub fn init(data_dir: &Path, process: LocalLogProcess) -> Result<(), LocalLogInitError> {
     init_with_limits(data_dir, process, MAX_FILE_BYTES, MAX_FILE_COUNT)
 }
 

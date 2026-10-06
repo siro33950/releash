@@ -1,14 +1,13 @@
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct ClientConnectionDto {
-    pub(crate) url: String,
-    pub(crate) token: String,
+pub struct ClientConnectionDto {
+    pub url: String,
+    pub token: String,
 }
-
 #[derive(Debug, thiserror::Error)]
 #[error("{0}")]
-pub(crate) struct ClientConnectionError(pub(crate) String);
+pub struct ClientConnectionError(pub String);
 
-pub(crate) trait ClientConnectionQueryService: Send + Sync {
+pub trait ClientConnectionQueryService: Send + Sync {
     fn read(&self) -> Result<ClientConnectionDto, ClientConnectionError>;
 }

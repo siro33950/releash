@@ -3,7 +3,7 @@ import { resolve } from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 
-export const appBinaryPath = "./src-tauri/target/release/releash";
+export const appBinaryPath = "./src-tauri/target/release/releash-desktop";
 const launchProvider = process.env.RELEASH_PERFORMANCE_LAUNCH_PROVIDER;
 const realAppMode = process.env.RELEASH_PERFORMANCE_REAL_APP === "1";
 
@@ -43,7 +43,6 @@ export const config: Options.Testrunner = {
 				"build",
 				"--locked",
 				"--release",
-				"--no-default-features",
 				"--features",
 				"performance",
 				"--bin",

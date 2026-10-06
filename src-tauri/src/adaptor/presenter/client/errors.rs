@@ -36,7 +36,7 @@ impl From<crate::adaptor::controller::terminal_surface::TerminalCommandError>
 mod errors_tests;
 
 #[derive(Debug)]
-pub(crate) struct CommandFailure {
+pub struct CommandFailure {
     pub(crate) kind: connectrpc::ErrorCode,
     pub(crate) message: Option<String>,
     pub(crate) detail: wire::CommandError,
@@ -69,5 +69,16 @@ impl wire::ClientValue for CommandFailure {
 impl From<crate::domain::external_editor::EditorError> for CommandFailure {
     fn from(error: crate::domain::external_editor::EditorError) -> Self {
         crate::adaptor::presenter::error::AppError::from_failure(error).into()
+    }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+impl From<wire::CommandError> for CommandFailure {
+    fn from(detail: wire::CommandError) -> Self {
+        Self {
+            message: None,
+            kind: connectrpc::ErrorCode::Internal,
+            detail,
+        }
     }
 }

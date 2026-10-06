@@ -27,7 +27,7 @@ pub enum AppError {
 }
 
 impl AppError {
-    pub fn from_failure(
+    pub(crate) fn from_failure(
         error: impl crate::adaptor::presenter::connect::ConnectFailure + std::fmt::Display,
     ) -> Self {
         let kind = error.connect_code();

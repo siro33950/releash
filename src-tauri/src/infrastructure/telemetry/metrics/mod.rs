@@ -16,13 +16,13 @@ use opentelemetry::KeyValue;
 use resource::ProcessResourceObserver;
 
 pub(crate) use attributes::HotPathMetric as HotPath;
-#[cfg(feature = "desktop")]
-pub(crate) use attributes::StartupMetric as Startup;
+
+pub use attributes::StartupMetric as Startup;
 pub(crate) use attributes::TerminalLaunchMetric as TerminalLaunch;
 
-#[cfg(not(test))]
+#[cfg(not(any(test, feature = "test-support")))]
 static PERFORMANCE_CONFIGURED: AtomicBool = AtomicBool::new(false);
-#[cfg(not(test))]
+#[cfg(not(any(test, feature = "test-support")))]
 static PERFORMANCE_ENABLED: AtomicBool = AtomicBool::new(true);
 static MOUNTED_XTERM_COUNT: AtomicU64 = AtomicU64::new(0);
 static ACTIVE_PTY_COUNT: AtomicU64 = AtomicU64::new(0);
@@ -33,24 +33,24 @@ static TERMINAL_INPUT_SAMPLES: Mutex<
     Option<HashMap<TerminalInputTraceKey, PendingTerminalInputSample>>,
 > = Mutex::new(None);
 static TERMINAL_INPUT_COLLECTION_ACTIVE: AtomicBool = AtomicBool::new(false);
-#[cfg(not(test))]
+#[cfg(not(any(test, feature = "test-support")))]
 static STARTUP_ORIGIN: Mutex<Option<Instant>> = Mutex::new(None);
-#[cfg(not(test))]
+#[cfg(not(any(test, feature = "test-support")))]
 static FIRST_REPO_SNAPSHOT_RECORDED: AtomicBool = AtomicBool::new(false);
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 #[derive(Clone, Debug, PartialEq)]
-pub(crate) struct TestMetricRecord {
-    pub(crate) name: &'static str,
-    pub(crate) value: f64,
-    pub(crate) attributes: Vec<(String, String)>,
+pub struct TestMetricRecord {
+    pub name: &'static str,
+    pub value: f64,
+    pub attributes: Vec<(String, String)>,
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 static TEST_METRIC_RECORDS: Mutex<Vec<TestMetricRecord>> = Mutex::new(Vec::new());
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 static TEST_TELEMETRY_LOCK: Mutex<()> = Mutex::new(());
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 thread_local! {
     static PERFORMANCE_CONFIGURED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     static PERFORMANCE_ENABLED: std::cell::Cell<bool> = const { std::cell::Cell::new(true) };
@@ -59,17 +59,17 @@ thread_local! {
     static TEST_TELEMETRY_RECORDING_ENABLED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 fn test_telemetry_recording_enabled() -> bool {
     TEST_TELEMETRY_RECORDING_ENABLED.with(|enabled| enabled.get())
 }
 
-#[cfg(test)]
-pub(crate) struct TestTelemetryGuard {
+#[cfg(any(test, feature = "test-support"))]
+pub struct TestTelemetryGuard {
     _guard: std::sync::MutexGuard<'static, ()>,
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 impl Drop for TestTelemetryGuard {
     fn drop(&mut self) {
         TEST_TELEMETRY_RECORDING_ENABLED.with(|enabled| enabled.set(false));
@@ -303,57 +303,57 @@ pub(crate) fn take_terminal_launch_samples() -> Vec<TerminalLaunchSample> {
         .unwrap_or_default()
 }
 
-#[cfg(not(test))]
+#[cfg(not(any(test, feature = "test-support")))]
 fn store_performance_configured(configured: bool) {
     PERFORMANCE_CONFIGURED.store(configured, Ordering::Relaxed);
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 fn store_performance_configured(configured: bool) {
     PERFORMANCE_CONFIGURED.with(|value| value.set(configured));
 }
 
-#[cfg(not(test))]
+#[cfg(not(any(test, feature = "test-support")))]
 fn store_performance_enabled(enabled: bool) {
     PERFORMANCE_ENABLED.store(enabled, Ordering::Relaxed);
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 fn store_performance_enabled(enabled: bool) {
     PERFORMANCE_ENABLED.with(|value| value.set(enabled));
 }
 
-#[cfg(not(test))]
+#[cfg(not(any(test, feature = "test-support")))]
 fn load_performance_configured() -> bool {
     PERFORMANCE_CONFIGURED.load(Ordering::Relaxed)
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 fn load_performance_configured() -> bool {
     PERFORMANCE_CONFIGURED.with(|value| value.get())
 }
 
-#[cfg(not(test))]
+#[cfg(not(any(test, feature = "test-support")))]
 fn load_performance_enabled() -> bool {
     PERFORMANCE_ENABLED.load(Ordering::Relaxed)
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 fn load_performance_enabled() -> bool {
     PERFORMANCE_ENABLED.with(|value| value.get())
 }
 
-#[cfg(not(test))]
+#[cfg(not(any(test, feature = "test-support")))]
 fn store_startup_origin(origin: Option<Instant>) {
     *STARTUP_ORIGIN.lock().unwrap_or_else(|e| e.into_inner()) = origin;
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 fn store_startup_origin(origin: Option<Instant>) {
     STARTUP_ORIGIN.with(|value| *value.borrow_mut() = origin);
 }
 
-#[cfg(not(test))]
+#[cfg(not(any(test, feature = "test-support")))]
 fn load_startup_elapsed() -> Option<Duration> {
     STARTUP_ORIGIN
         .lock()
@@ -361,27 +361,27 @@ fn load_startup_elapsed() -> Option<Duration> {
         .map(|origin| origin.elapsed())
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 fn load_startup_elapsed() -> Option<Duration> {
     STARTUP_ORIGIN.with(|value| value.borrow().map(|origin| origin.elapsed()))
 }
 
-#[cfg(not(test))]
+#[cfg(not(any(test, feature = "test-support")))]
 fn reset_first_repo_snapshot_recorded() {
     FIRST_REPO_SNAPSHOT_RECORDED.store(false, Ordering::Relaxed);
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 fn reset_first_repo_snapshot_recorded() {
     FIRST_REPO_SNAPSHOT_RECORDED.with(|value| value.set(false));
 }
 
-#[cfg(not(test))]
+#[cfg(not(any(test, feature = "test-support")))]
 fn mark_first_repo_snapshot_recorded() -> bool {
     FIRST_REPO_SNAPSHOT_RECORDED.swap(true, Ordering::AcqRel)
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 fn mark_first_repo_snapshot_recorded() -> bool {
     FIRST_REPO_SNAPSHOT_RECORDED.with(|value| {
         let already_recorded = value.get();
@@ -395,15 +395,15 @@ fn first_repo_snapshot_recorded() -> bool {
     FIRST_REPO_SNAPSHOT_RECORDED.with(|value| value.get())
 }
 
-pub(crate) fn set_performance_configured(configured: bool) {
+pub fn set_performance_configured(configured: bool) {
     store_performance_configured(configured);
 }
 
-pub(crate) fn set_performance_enabled(enabled: bool) {
+pub fn set_performance_enabled(enabled: bool) {
     store_performance_enabled(enabled);
 }
 
-pub(crate) fn set_startup_origin(origin: Instant) {
+pub fn set_startup_origin(origin: Instant) {
     store_startup_origin(Some(origin));
     reset_first_repo_snapshot_recorded();
 }
@@ -490,8 +490,7 @@ fn startup_elapsed() -> Option<Duration> {
     load_startup_elapsed()
 }
 
-#[cfg(feature = "desktop")]
-pub(crate) fn record_startup_from_origin(metric: StartupMetric) {
+pub fn record_startup_from_origin(metric: StartupMetric) {
     if let Some(elapsed) = startup_elapsed() {
         record_startup(metric, elapsed);
     }
@@ -501,7 +500,7 @@ pub(crate) fn record_first_repo_snapshot_ready() {
     if !is_performance_active() {
         return;
     }
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     if !test_telemetry_recording_enabled() {
         return;
     }
@@ -514,7 +513,7 @@ pub(crate) fn record_first_repo_snapshot_ready() {
     record_startup(StartupMetric::FirstRepoSnapshotReady, elapsed);
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 fn record_test_metric(name: &'static str, value: f64, attrs: &[KeyValue]) {
     if !TEST_TELEMETRY_RECORDING_ENABLED.with(|enabled| enabled.get()) {
         return;
@@ -532,8 +531,8 @@ fn record_test_metric(name: &'static str, value: f64, attrs: &[KeyValue]) {
         });
 }
 
-#[cfg(test)]
-pub(crate) fn reset_test_metrics() {
+#[cfg(any(test, feature = "test-support"))]
+pub fn reset_test_metrics() {
     TEST_METRIC_RECORDS
         .lock()
         .unwrap_or_else(|e| e.into_inner())
@@ -544,8 +543,8 @@ pub(crate) fn reset_test_metrics() {
     set_performance_enabled(true);
 }
 
-#[cfg(test)]
-pub(crate) fn test_metric_records() -> Vec<TestMetricRecord> {
+#[cfg(any(test, feature = "test-support"))]
+pub fn test_metric_records() -> Vec<TestMetricRecord> {
     TEST_METRIC_RECORDS
         .lock()
         .unwrap_or_else(|e| e.into_inner())
@@ -557,8 +556,8 @@ pub(crate) fn first_repo_snapshot_recorded_for_tests() -> bool {
     first_repo_snapshot_recorded()
 }
 
-#[cfg(test)]
-pub(crate) fn lock_test_telemetry() -> TestTelemetryGuard {
+#[cfg(any(test, feature = "test-support"))]
+pub fn lock_test_telemetry() -> TestTelemetryGuard {
     let guard = TEST_TELEMETRY_LOCK
         .lock()
         .unwrap_or_else(|e| e.into_inner());
@@ -597,13 +596,13 @@ pub(crate) fn record_hot_path_duration(metric: HotPathMetric, status: OpStatus, 
         KeyValue::new(KEY_OPERATION, metric.operation()),
         KeyValue::new(KEY_STATUS, status.as_str()),
     ];
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     record_test_metric(
         "releash.hot_path.duration_ms",
         elapsed.as_secs_f64() * 1000.0,
         &attrs,
     );
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     record_test_metric("releash.operation.status", 1.0, &attrs);
     let Some(metrics) = METRICS.get() else {
         return;
@@ -638,7 +637,7 @@ pub(crate) fn record_workflow_node_failure(
     if let Some(timeout_kind) = timeout_kind {
         attrs.push(KeyValue::new(attributes::KEY_TIMEOUT_KIND, timeout_kind));
     }
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     record_test_metric("releash.operation.status", 1.0, &attrs);
     let Some(metrics) = METRICS.get() else {
         return;
@@ -651,7 +650,7 @@ pub(crate) fn record_startup(metric: StartupMetric, elapsed: Duration) {
         return;
     }
     let attrs = [KeyValue::new(KEY_OPERATION, metric.operation())];
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     record_test_metric(
         "releash.startup.duration_ms",
         elapsed.as_secs_f64() * 1000.0,
@@ -703,7 +702,7 @@ pub(crate) fn record_terminal_launch(metric: TerminalLaunchMetric, elapsed: Dura
         return;
     }
     let attrs = [KeyValue::new(KEY_OPERATION, metric.operation())];
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     record_test_metric("releash.terminal.launch.duration_ms", duration_ms, &attrs);
     let Some(metrics) = METRICS.get() else {
         return;
@@ -716,7 +715,7 @@ pub(crate) fn record_usage_event(name: &str) {
         return;
     }
     let attrs = [KeyValue::new(KEY_USAGE_EVENT, name.to_string())];
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     record_test_metric("releash.usage.events", 1.0, &attrs);
     let Some(metrics) = METRICS.get() else {
         return;

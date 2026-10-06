@@ -2,6 +2,7 @@ pub(crate) mod agent_session;
 pub(crate) mod app_config;
 pub(crate) mod app_data_gc;
 pub(crate) mod application_lifecycle;
+pub(crate) mod client_connection;
 pub(crate) mod code_dto;
 pub(crate) mod code_error;
 pub(crate) mod code_query_service;
@@ -28,22 +29,6 @@ pub(crate) mod workspace_tree;
 pub(crate) mod watcher;
 
 pub(crate) mod telemetry;
-
-#[cfg(any(test, feature = "desktop"))]
-pub(crate) mod client_connection;
-#[cfg(feature = "desktop")]
-pub(crate) mod daemon_supervision;
-#[cfg(feature = "desktop")]
-pub(crate) mod desktop_update;
-
-#[cfg(all(test, feature = "desktop"))]
-pub(crate) mod test_helpers;
-
-#[cfg(feature = "desktop")]
-pub(crate) mod login_item;
-
-#[cfg(feature = "desktop")]
-pub(crate) mod cli_install;
 
 pub mod worktree_operation;
 

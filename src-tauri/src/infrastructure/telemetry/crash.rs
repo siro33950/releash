@@ -26,8 +26,8 @@ pub(crate) fn set_crash_reporting_enabled(enabled: bool) {
     CRASH_REPORTING_ENABLED.store(enabled, Ordering::Relaxed);
 }
 
-#[cfg(test)]
-pub(crate) fn reset_for_tests() {
+#[cfg(any(test, feature = "test-support"))]
+pub fn reset_for_tests() {
     CRASH_REPORTING_ENABLED.store(true, Ordering::Relaxed);
     OTLP_CONFIGURED.store(false, Ordering::Relaxed);
     *LOGGER_PROVIDER.lock().unwrap_or_else(|e| e.into_inner()) = None;
@@ -150,15 +150,21 @@ fn scrub_sensitive(text: &str) -> String {
         .into_owned()
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) mod tests {
     use super::*;
+    #[cfg(test)]
     use opentelemetry::logs::AnyValue;
+    #[cfg(test)]
     use opentelemetry::Key;
-    use opentelemetry_sdk::logs::{InMemoryLogExporter, SdkLogRecord, SdkLoggerProvider};
+    use opentelemetry_sdk::logs::{InMemoryLogExporter, SdkLoggerProvider};
 
-    pub(crate) static TEST_LOCK: Mutex<()> = Mutex::new(());
+    #[cfg(test)]
+    use opentelemetry_sdk::logs::SdkLogRecord;
 
+    pub static TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    #[cfg(test)]
     fn any_value_to_string(value: &AnyValue) -> String {
         match value {
             AnyValue::String(value) => value.to_string(),
@@ -166,6 +172,7 @@ pub(crate) mod tests {
         }
     }
 
+    #[cfg(test)]
     fn attr(record: &SdkLogRecord, key: &str) -> Option<String> {
         let key = Key::new(key.to_string());
         record
@@ -174,11 +181,12 @@ pub(crate) mod tests {
             .map(|(_, value)| any_value_to_string(value))
     }
 
+    #[cfg(test)]
     fn body(record: &SdkLogRecord) -> Option<String> {
         record.body().map(any_value_to_string)
     }
 
-    pub(crate) fn install_test_exporter(
+    pub fn install_test_exporter(
         enabled: bool,
         configured: bool,
     ) -> (SdkLoggerProvider, InMemoryLogExporter) {
