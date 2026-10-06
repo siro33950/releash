@@ -30,7 +30,8 @@ pub(crate) mod tests {
 
         for entry in BUILTINS {
             let name = entry.filename.strip_suffix(".yml").unwrap();
-            let workflow = load_builtin_workflow_resolved(name).unwrap().unwrap();
+            let workflow: crate::domain::workflow::WorkflowDefinition =
+                serde_saphyr::from_str(builtin_workflow_source(name).unwrap()).unwrap();
             for node in workflow.nodes {
                 let NodeKind::Session(session) = node.kind else {
                     continue;

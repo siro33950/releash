@@ -2,6 +2,7 @@ use releash_lib::test_support::integration::platform::checkout;
 use releash_lib::test_support::integration::platform::detect_default_branch;
 use releash_lib::test_support::integration::platform::get_branch_name_for_repo;
 use releash_lib::test_support::integration::platform::git_operation_run as run;
+use releash_lib::test_support::integration::platform::CancelAfter;
 use releash_lib::test_support::integration::platform::Deadline;
 use releash_lib::test_support::integration::platform::GitOperationError;
 use releash_lib::test_support::integration::platform::OperationContext;
@@ -60,15 +61,6 @@ pub fn test_checkout_notifyで操作途中の取消を検出する() {
     );
     assert!(cancel.calls.load(Ordering::SeqCst) >= 3);
     assert!(!directory.path().join("file").exists());
-}
-
-struct CancelAfter {
-    remaining: AtomicUsize,
-}
-impl releash_lib::test_support::integration::platform::Cancellation for CancelAfter {
-    fn is_cancelled(&self) -> bool {
-        self.remaining.fetch_sub(1, Ordering::SeqCst) == 0
-    }
 }
 
 #[test]

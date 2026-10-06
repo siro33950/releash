@@ -176,6 +176,7 @@ pub mod platform {
     pub use crate::adaptor::gateway::notion::service_impl::send_with_retry;
     pub use crate::adaptor::gateway::notion::service_impl::NotionApiGatewayImpl;
     pub use crate::cli::common::cli_result_exit_code;
+    pub use crate::common::test_helpers::CancelAfter;
     pub use crate::domain::failure::StorageFailureSource;
     pub use crate::domain::notion::value_objects::NotionTask;
     pub use crate::infrastructure::local_api::LocalApiDiscovery;
@@ -343,7 +344,9 @@ pub mod platform {
 
     pub use crate::test_support::captured_warning_messages;
     pub use crate::test_support::install_capturing_logger;
+    pub use crate::test_support::retry::record_retry_failure;
     pub use crate::test_support::retry::shared;
+    pub use crate::test_support::retry::shared_limiter;
     pub use crate::test_support::retry::shared_store;
     pub use crate::test_support::retry::test_retrying;
     pub use crate::test_support::retry::test_retrying_with_store;
@@ -1207,9 +1210,6 @@ pub mod fixtures {
     pub use crate::domain::workflow::services::test_helpers::session_attached;
     pub use crate::usecase::repository_state::test_helpers::EmptyScanner as repository_state_EmptyScanner;
     pub use crate::usecase::test_helpers::Files as watcher_Files;
-    pub use crate::usecase::workflow::test_helpers::FakeEventRepository as workflow_FakeEventRepository;
-    pub use crate::usecase::workflow::test_helpers::FakeFacetRepository as workflow_FakeFacetRepository;
-    pub use crate::usecase::workflow::test_helpers::FakeSecretSourceGateway as workflow_FakeSecretSourceGateway;
 
     pub use crate::adaptor::gateway::workflow::test_helpers::predicate_yaml as fixtures_adaptor_gateway_workflow_diagnostics_predicate_yaml;
     pub use crate::adaptor::gateway::workflow::test_helpers::RecordingWorkflowAgentSessions as adaptor_gateway_workflow_workflow_host_RecordingWorkflowAgentSessions;

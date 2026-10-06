@@ -17,7 +17,8 @@ pub async fn test_背景処理の配線_複数のcompositionで失敗状態を�
         TerminalSurfaceRuntime::new(second.clone(), directory.path().join("second"));
 
     // When
-    first.retrying.failures.observed(
+    releash_lib::test_support::integration::platform::record_retry_failure(
+        &first.retrying,
         &FailureKey::new("terminal_checkpoint", "terminal"),
         WorkFailure {
             kind: Failure::Business(BusinessFailure::Other),

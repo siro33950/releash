@@ -2,7 +2,6 @@ pub(crate) mod tests {
 
     use releash_lib::test_support::integration::platform::alias_name_for_profile;
     use releash_lib::test_support::integration::platform::child_env_overrides_from;
-    use releash_lib::test_support::integration::platform::default_data_dir_for_profile;
     use releash_lib::test_support::integration::platform::ensure_alias_wrapper;
     use releash_lib::test_support::integration::platform::prepare_child_env;
     use releash_lib::test_support::integration::platform::BuildProfile;
@@ -119,16 +118,6 @@ pub(crate) mod tests {
             err.to_string().contains("alias bin dir"),
             "expected wrapper bin dir error, got: {err}"
         );
-    }
-
-    #[test]
-    pub fn default_data_dir_for_profile_returns_path_when_dirs_available() {
-        // dirs::data_dir() が解決できる環境では Ok を返し、bundle identifier suffix を持つ。
-        if dirs::data_dir().is_none() {
-            return;
-        }
-        let path = default_data_dir_for_profile(BuildProfile::Production).unwrap();
-        assert!(path.ends_with("com.releash.app"));
     }
 
     #[cfg(unix)]

@@ -613,3 +613,101 @@ pub(crate) mod watcher {
         }
     }
 }
+
+#[cfg(test)]
+pub(crate) mod retry {
+    use crate::common::retry::RetryLimiter;
+    use crate::domain::failure::{FailureKey, FailureRecord, FailureRecordRepository, WorkFailure};
+    use crate::usecase::failure::FailureRecordingUsecase;
+    use crate::usecase::retry::Retrying;
+    use std::sync::{Arc, Mutex};
+
+    #[derive(Default)]
+    pub(crate) struct FakeFailureRecords(Mutex<Vec<FailureRecord>>);
+
+    impl FakeFailureRecords {
+        pub(crate) fn records(&self, target: &str) -> Vec<FailureRecord> {
+            self.0
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|record| target == "*" || record.target == target)
+                .cloned()
+                .collect()
+        }
+    }
+
+    impl FailureRecordRepository for FakeFailureRecords {
+        fn record_observed(
+            &self,
+            key: &FailureKey,
+            failure: WorkFailure,
+            requires_attention: bool,
+        ) -> bool {
+            let mut records = self.0.lock().unwrap();
+            for record in records
+                .iter_mut()
+                .filter(|r| r.operation == key.operation && r.target == key.target)
+            {
+                record.active = false;
+                record.requires_attention = false;
+            }
+            if let Some(record) = records.iter_mut().find(|r| {
+                r.operation == key.operation && r.target == key.target && r.kind == failure.kind
+            }) {
+                record.count += 1;
+                record.message = failure.message;
+                record.active = true;
+                record.requires_attention = requires_attention;
+            } else {
+                records.push(FailureRecord {
+                    operation: key.operation.clone(),
+                    target: key.target.clone(),
+                    kind: failure.kind,
+                    message: failure.message,
+                    active: true,
+                    requires_attention,
+                    count: 1,
+                    first_observed_ms: 0,
+                    last_observed_ms: 0,
+                });
+            }
+            requires_attention
+        }
+        fn record_resolved(&self, key: &FailureKey) -> bool {
+            let mut changed = false;
+            for record in self
+                .0
+                .lock()
+                .unwrap()
+                .iter_mut()
+                .filter(|r| r.operation == key.operation && r.target == key.target)
+            {
+                changed |= record.requires_attention;
+                record.active = false;
+                record.requires_attention = false;
+            }
+            changed
+        }
+        fn attention_messages(&self, target: &str) -> Vec<String> {
+            self.records(target)
+                .into_iter()
+                .filter(|r| r.requires_attention)
+                .map(|r| r.message)
+                .collect()
+        }
+    }
+
+    pub(crate) fn test_retrying_with_store() -> (Arc<Retrying>, Arc<FakeFailureRecords>) {
+        let store = Arc::new(FakeFailureRecords::default());
+        let retrying = Retrying::new(
+            Arc::new(RetryLimiter::deterministic()),
+            Arc::new(FailureRecordingUsecase::new(store.clone(), None)),
+        );
+        (retrying, store)
+    }
+
+    pub(crate) fn test_retrying() -> Arc<Retrying> {
+        test_retrying_with_store().0
+    }
+}

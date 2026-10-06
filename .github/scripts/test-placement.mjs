@@ -3,6 +3,8 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname, basename, join, normalize, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
+const TEST_ATTRIBUTE = /#\s*\[\s*(?:(?:tokio|actix_web)::)?test(?:\s*\([^\]]*\))?\s*\]/;
+
 function rustCode(source) {
   let result = "";
   const blank = text => text.replace(/[^\n]/g, " ");
@@ -57,7 +59,7 @@ export function placementErrors(path, source, implementationExists = existsSync,
   if (/^(?:\.github|\.ast-grep)\//.test(path)) return [];
   if (path.endsWith(".rs")) source = rustCode(source);
   const testFile = /(?:_test\.rs|\.(?:test|spec)\.[cm]?[jt]sx?)$/.test(path);
-  const testAttribute = /#\s*\[\s*(?:(?:tokio|actix_web)::)?test(?:\s*\([^\]]*\))?\s*\]/.test(source);
+  const testAttribute = TEST_ATTRIBUTE.test(source);
   const rustSource = /^(?:src-tauri\/src\/|src-tauri\/releash-desktop\/src\/)/.test(path);
   if (rustSource && /(?:^|\/)(?:test_helpers[^/]+|[^/]+_test_helpers)\.rs$/.test(path)) return [`${path}: テスト補助は test_helpers.rs にまとめてください`];
   const auxiliary = /(?:^|\/)test_support\//.test(path) || /(?:^|\/)test_helpers\.rs$/.test(path) || /^(?:tests\/(?:helpers|fixtures)\/|src-tauri\/(?:releash-desktop\/)?tests\/support\/|src\/test\/)/.test(path);
@@ -114,7 +116,7 @@ export function integrationErrors(sources) {
     }
     entries.forEach(visit);
     for (const [path, source] of sources) {
-      if (path.startsWith(directory) && /#\s*\[\s*(?:(?:tokio|actix_web)::)?test(?:\s*\([^\]]*\))?\s*\]/.test(rustCode(source)) && !reachable.has(path)) errors.push(`${path}: 統合テストの入口から取り込まれていません`);
+      if (path.startsWith(directory) && TEST_ATTRIBUTE.test(rustCode(source)) && !reachable.has(path)) errors.push(`${path}: 統合テストの入口から取り込まれていません`);
     }
   }
   return errors;

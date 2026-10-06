@@ -82,17 +82,22 @@ impl ExecutionTreeArchiveRepository for NoopArchiveRepository {
     }
 }
 
+#[cfg(test)]
 use crate::domain::workflow::ExecutionTreeId;
+#[cfg(test)]
 use crate::usecase::workflow::ports::{WorkflowEventDraft, WorkflowEventRepository};
+#[cfg(test)]
 use crate::usecase::workflow::*;
 use std::collections::HashMap;
 use std::sync::Mutex;
 
+#[cfg(test)]
 #[derive(Default)]
 pub struct FakeFacetRepository {
     pub facets: Mutex<HashMap<(FacetKind, String), String>>,
 }
 
+#[cfg(test)]
 impl FakeFacetRepository {
     pub fn get_saved(&self, kind: FacetKind, key: &str) -> Option<String> {
         self.facets
@@ -103,6 +108,7 @@ impl FakeFacetRepository {
     }
 }
 
+#[cfg(test)]
 impl FacetRepository for FakeFacetRepository {
     fn list(&self, kind: FacetKind) -> Result<Vec<String>, WorkflowError> {
         Ok(self
@@ -162,12 +168,14 @@ impl FacetRepository for FakeFacetRepository {
     }
 }
 
+#[cfg(test)]
 #[derive(Default)]
 pub struct FakeEventRepository {
     pub events: Mutex<Vec<WorkflowEventDraft>>,
     pub reads: std::sync::atomic::AtomicUsize,
 }
 
+#[cfg(test)]
 impl FakeEventRepository {
     #[cfg(test)]
     pub(crate) fn seed(&self, event: WorkflowEventDraft) {
@@ -175,6 +183,7 @@ impl FakeEventRepository {
     }
 }
 
+#[cfg(test)]
 #[async_trait::async_trait]
 impl WorkflowEventRepository for FakeEventRepository {
     #[cfg(test)]
@@ -192,8 +201,10 @@ impl WorkflowEventRepository for FakeEventRepository {
     }
 }
 
+#[cfg(test)]
 pub struct FakeSecretSourceGateway;
 
+#[cfg(test)]
 impl SecretSourceGateway for FakeSecretSourceGateway {
     fn configured_secret_values(&self) -> Result<Vec<String>, WorkflowError> {
         Ok(vec!["token-123".to_string()])

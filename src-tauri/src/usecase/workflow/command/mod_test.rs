@@ -170,7 +170,7 @@ pub(crate) mod tests {
         let attempts = AtomicUsize::new(0);
 
         let result = super::retry_control_plane_conflicts(
-            crate::usecase::retry::shared(),
+            &crate::usecase::test_helpers::retry::test_retrying(),
             "test",
             || async {
                 if attempts.fetch_add(1, Ordering::SeqCst) == 0 {
@@ -191,7 +191,7 @@ pub(crate) mod tests {
         let attempts = AtomicUsize::new(0);
 
         let result = super::retry_control_plane_conflicts(
-            crate::usecase::retry::shared(),
+            &crate::usecase::test_helpers::retry::test_retrying(),
             "test",
             || async {
                 if attempts.fetch_add(1, Ordering::SeqCst) < 5 {
@@ -254,7 +254,7 @@ pub(crate) mod tests {
             .await
             .is_err());
         assert!(WorkflowSubmitOutputUsecase::new(
-            crate::usecase::retry::shared().clone(),
+            crate::usecase::test_helpers::retry::test_retrying(),
             gateway.clone()
         )
         .execute(SubmitOutputCommand {

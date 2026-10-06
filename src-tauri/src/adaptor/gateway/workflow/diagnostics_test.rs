@@ -1686,9 +1686,7 @@ mod restored_memory_cases {
 
             // When
             let diagnosis = diagnose_workflow_source(source, Some(&summary.name));
-            let loaded = crate::adaptor::gateway::workflow::builtin::load_builtin_workflow_resolved(
-                &summary.name,
-            );
+            let loaded = diagnosis.workflow;
 
             // Then
             assert!(
@@ -1697,7 +1695,7 @@ mod restored_memory_cases {
                 summary.name,
                 diagnosis.diagnostics
             );
-            assert!(matches!(loaded, Ok(Some(_))), "{loaded:?}");
+            assert!(loaded.is_some(), "{loaded:?}");
         }
     }
 }

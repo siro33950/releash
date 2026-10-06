@@ -131,3 +131,24 @@ async fn test_terminal作り直し予約_異常終了したworkerを再登録す
     assert_eq!(usecase.test_worker_count(), 1);
     assert!(!usecase.workers.lock()[&target].is_closed());
 }
+
+#[tokio::test]
+async fn test_terminal作り直し予約_一つのworkerで追加clientのresetも併合する() {
+    // Given
+    let (requests, mut receiver) = tokio::sync::mpsc::unbounded_channel();
+    let usecase = TerminalSubscriptionUsecase::new(Arc::new(FakeOutput::default()), None, requests);
+    let target = SubscriptionTarget::from_parts("terminal", &["/repo"]).unwrap();
+    usecase.schedule_terminal_refresh(vec!["first".into()], target.clone());
+    let request = receiver.recv().await.unwrap();
+    // When
+    usecase.schedule_terminal_refresh(vec!["second".into()], target.clone());
+    // Then
+    assert_eq!(request.target, target);
+    assert!(receiver.try_recv().is_err());
+    assert_eq!(usecase.test_worker_count(), 1);
+    assert!(!usecase.workers.lock()[&target].is_closed());
+    assert_eq!(
+        usecase.terminal_resets.lock()[&target],
+        HashSet::from(["first".into(), "second".into()])
+    );
+}

@@ -106,7 +106,7 @@ async fn test_repository走査_偽の遅延で理由を併合しshutdown後は�
     let elapsed = Arc::new(tokio::sync::Notify::new());
     let armed = Arc::new(tokio::sync::Notify::new());
     let task = tokio::spawn(run_worker(
-        crate::usecase::retry::test_retrying(),
+        crate::test_support::retry::test_retrying(),
         requests.recv().await.unwrap(),
         runtime,
         Arc::new({

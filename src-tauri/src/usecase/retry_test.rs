@@ -1,8 +1,8 @@
 use super::*;
 use crate::domain::failure::TechnicalFailureNature;
-use crate::test_support::retry::{shared_store, test_retrying_with_store};
 use crate::usecase::failure::WorkFailure;
 use crate::usecase::failure::{BusinessFailure, Failure};
+use crate::usecase::test_helpers::retry::test_retrying_with_store;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 #[tokio::test(start_paused = true)]
@@ -84,7 +84,7 @@ async fn test_やり直しの手順_分類による再試行と失敗の記録�
         assert_eq!(result.is_ok(), retryable);
         assert_eq!(attempts, if retryable { 7 } else { 1 });
         assert_eq!(records.len(), 1);
-        assert_eq!(records[0].record.count, if retryable { 6 } else { 1 });
+        assert_eq!(records[0].count, if retryable { 6 } else { 1 });
         assert_eq!(
             records[0].requires_attention,
             !retryable && kind != Failure::Technical(TechnicalFailureNature::Cancelled)
@@ -126,7 +126,7 @@ async fn test_段階のやり直し_版の競合は記録せず呼び出し元�
     assert_eq!(calls.load(Ordering::SeqCst), 2);
     assert_eq!(records.len(), 1);
     assert_eq!(
-        records[0].record.kind,
+        records[0].kind,
         Failure::Technical(TechnicalFailureNature::Transient)
     );
 }
@@ -135,11 +135,12 @@ async fn test_段階のやり直し_版の競合は記録せず呼び出し元�
 async fn test_試行の失敗記録_下位の再試行と上位への伝播を二重計上しない() {
     // Given
     let key = FailureKey::new("workflow_test", "retry-stage-count");
+    let (retrying, store) = test_retrying_with_store();
     let calls = AtomicUsize::new(0);
     // When
-    let result = shared()
+    let result = retrying
         .restart(key.clone(), RetryBackoff::ITEM, |_| {
-            shared().stage(key.clone(), RetryBackoff::ITEM, |_| async {
+            retrying.stage(key.clone(), RetryBackoff::ITEM, |_| async {
                 Err::<(), _>(WorkFailure {
                     kind: if calls.fetch_add(1, Ordering::SeqCst) == 0 {
                         Failure::Technical(TechnicalFailureNature::Transient)
@@ -151,7 +152,7 @@ async fn test_試行の失敗記録_下位の再試行と上位への伝播を�
             })
         })
         .await;
-    let records = shared_store().records(&key.target);
+    let records = store.records(&key.target);
     // Then
     assert_eq!(
         result.unwrap_err().kind,
@@ -159,7 +160,7 @@ async fn test_試行の失敗記録_下位の再試行と上位への伝播を�
     );
     assert_eq!(calls.load(Ordering::SeqCst), 2);
     assert_eq!(records.len(), 2);
-    assert!(records.iter().all(|record| record.record.count == 1));
+    assert!(records.iter().all(|record| record.count == 1));
 }
 
 #[tokio::test(start_paused = true)]
@@ -186,6 +187,6 @@ async fn test_やり直しの手順_成功で要対応を解消する() {
     // Then
     assert!(before[0].requires_attention);
     assert_eq!(after.len(), 1);
-    assert_eq!(after[0].record.count, 1);
+    assert_eq!(after[0].count, 1);
     assert!(!after[0].requires_attention);
 }

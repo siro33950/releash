@@ -280,7 +280,7 @@ fn test_repository_with_store(
     Arc<crate::adaptor::gateway::failure_records::FailureRecordStore>,
 ) {
     let mut repository = LocalProviderLifecycleEventRepository::new(
-        crate::usecase::retry::shared().clone(),
+        crate::test_support::retry::shared().clone(),
         source,
         "installation".into(),
     );

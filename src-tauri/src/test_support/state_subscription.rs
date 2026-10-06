@@ -442,7 +442,7 @@ pub fn scan_driver(
     duration: std::time::Duration,
 ) -> tokio::sync::mpsc::UnboundedSender<crate::usecase::repository_state::runtime::ScanWorker> {
     crate::adaptor::controller::repository_scan::start(
-        crate::usecase::retry::shared().clone(),
+        crate::test_support::retry::shared().clone(),
         Arc::new(crate::usecase::repository_state::runtime::tests_support::TestRepositoryStateWorkerRuntime),
         crate::infrastructure::timer::delays(duration),
     )
@@ -458,7 +458,7 @@ pub fn repository_driver(
 ) -> tokio::sync::mpsc::UnboundedSender<crate::usecase::repository_state::runtime::ScanWorker> {
     driver(|| {
         crate::adaptor::controller::repository_scan::start(
-        crate::usecase::retry::shared().clone(),
+        crate::test_support::retry::shared().clone(),
         Arc::new(crate::usecase::repository_state::runtime::tests_support::TestRepositoryStateWorkerRuntime),
         Arc::new(|| Box::pin(async {})),
     )

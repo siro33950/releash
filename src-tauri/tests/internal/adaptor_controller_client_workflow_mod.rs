@@ -710,9 +710,7 @@ pub(crate) mod tests {
                 app_config.clone(),
                 Arc::new(
                     releash_lib::test_support::integration::platform::NotionApiGatewayImpl::new(
-                        releash_lib::test_support::integration::platform::shared()
-                            .limiter
-                            .clone(),
+                        releash_lib::test_support::integration::platform::shared_limiter(),
                     ),
                 ),
             ),

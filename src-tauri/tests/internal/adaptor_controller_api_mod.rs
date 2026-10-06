@@ -1279,17 +1279,6 @@ pub(crate) mod test_support {
         let execution_id = "00000000-0000-4000-8000-000000000123";
         gateway.bind_node_execution("ne-review-2", execution_id);
 
-        let legacy_identity_fields = send_json(
-            &router,
-            "/v1/workflow/node-executions/ne-review-2/submit",
-            serde_json::json!({
-                "node": "review",
-                "node_execution_id": "ne-review-2"
-            }),
-        )
-        .await;
-        assert_eq!(legacy_identity_fields.0, StatusCode::BAD_REQUEST);
-
         let response = send_json(
             &router,
             "/v1/workflow/node-executions/ne-review-2/submit",

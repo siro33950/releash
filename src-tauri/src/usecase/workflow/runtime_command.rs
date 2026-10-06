@@ -51,19 +51,6 @@ impl WorkflowRuntimeUsecase {
         self
     }
 
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn new(
-        runtime: Arc<dyn WorkflowRuntimeCommandGateway>,
-        execution_archives: Arc<dyn crate::domain::workflow::ExecutionTreeArchiveRepository>,
-    ) -> Self {
-        Self::new_with_worktree_operations(
-            crate::usecase::retry::shared().clone(),
-            runtime,
-            execution_archives,
-            Default::default(),
-        )
-    }
-
     pub(crate) fn new_with_worktree_operations(
         retrying: std::sync::Arc<crate::usecase::retry::Retrying>,
         runtime: Arc<dyn WorkflowRuntimeCommandGateway>,

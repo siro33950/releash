@@ -1,21 +1,17 @@
 use super::*;
 
-#[cfg(any(test, feature = "test-support"))]
 #[test]
 fn test_diff_途中の取消を空や部分結果へ変換しない() {
-    use crate::common::operation_context::{Cancellation, Deadline, OperationContext};
-    use std::sync::{
-        atomic::{AtomicUsize, Ordering},
-        Arc,
-    };
-    struct CancelAfter(AtomicUsize);
-    impl Cancellation for CancelAfter {
-        fn is_cancelled(&self) -> bool {
-            self.0.fetch_sub(1, Ordering::SeqCst) == 0
-        }
-    }
+    use crate::common::operation_context::{Deadline, OperationContext};
+    use crate::common::test_helpers::CancelAfter;
+    use std::sync::{atomic::AtomicUsize, Arc};
     for after in [0, 2, 4, 6, 8] {
-        let context = OperationContext::new(None, Arc::new(CancelAfter(AtomicUsize::new(after))));
+        let context = OperationContext::new(
+            None,
+            Arc::new(CancelAfter {
+                remaining: AtomicUsize::new(after),
+            }),
+        );
         assert!(matches!(
             crate::common::operation_context::sync_scope(context, || diff_buffers(
                 "a\nb\n", "c\nd\n", None

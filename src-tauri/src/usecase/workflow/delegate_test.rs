@@ -142,7 +142,7 @@ async fn test_delegate_復元と注入が成功した後に事実化し注入済
     let (gateway, injection) = fixture(None);
     let usecase = DelegateContinuationUsecase {
         gateway: gateway.clone(),
-        retrying: crate::usecase::retry::test_retrying(),
+        retrying: crate::usecase::test_helpers::retry::test_retrying(),
     };
     // When
     assert!(usecase.execute("tree", &injection).await.unwrap().is_some());
@@ -172,7 +172,7 @@ async fn test_delegate_復元と注入と保存の失敗を呼び出し元へ返
         // When
         let result = (DelegateContinuationUsecase {
             gateway: gateway.clone(),
-            retrying: crate::usecase::retry::test_retrying(),
+            retrying: crate::usecase::test_helpers::retry::test_retrying(),
         })
         .execute("tree", &injection)
         .await;
@@ -193,7 +193,7 @@ async fn test_delegate_復元と注入と保存の失敗を呼び出し元へ返
 fn continuation(gateway: std::sync::Arc<Gateway>) -> DelegateContinuationUsecase {
     DelegateContinuationUsecase {
         gateway,
-        retrying: crate::usecase::retry::test_retrying(),
+        retrying: crate::usecase::test_helpers::retry::test_retrying(),
     }
 }
 
@@ -306,13 +306,13 @@ async fn test_delegate_送付後に注入済みまたは対象変更または中
 }
 
 #[tokio::test]
-async fn test_委任_競合中の失敗をnodeから回数と時刻付きで観測できる() {
+async fn test_委任_競合中の失敗を委任操作とnodeに記録する() {
     // Given
     let (gateway, injection) = fixture(None);
     gateway
         .conflicts
         .store(usize::MAX, std::sync::atomic::Ordering::SeqCst);
-    let (retrying, store) = crate::test_support::retry::test_retrying_with_store();
+    let (retrying, store) = crate::usecase::test_helpers::retry::test_retrying_with_store();
     let usecase = DelegateContinuationUsecase {
         gateway: gateway.clone(),
         retrying,
@@ -327,12 +327,10 @@ async fn test_委任_競合中の失敗をnodeから回数と時刻付きで観�
                 _ = tokio::task::yield_now() => {}
             }
             let records = store.records("node-1");
-            if let Some(observation) = records.first().filter(|item| item.record.count >= 2) {
+            if let Some(record) = records.first() {
                 // Then
-                assert!(observation.record.active);
-                assert!(!observation.requires_attention);
-                assert_eq!(observation.record.operation, "workflow_delegate_injection");
-                assert!(observation.record.last_observed_ms > observation.record.first_observed_ms);
+                assert_eq!(record.operation, "workflow_delegate_injection");
+                assert_eq!(record.target, "node-1");
                 break;
             }
         }

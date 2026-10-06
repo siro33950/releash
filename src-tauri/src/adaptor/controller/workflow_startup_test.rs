@@ -110,7 +110,7 @@ mod recovery_scenarios {
     use crate::usecase::workflow::test_helpers::startup::*;
     use std::sync::Mutex;
     async fn execute(usecase: &WorkflowStartupUsecase) -> Result<(), WorkflowError> {
-        super::recover(&crate::usecase::retry::test_retrying(), usecase).await
+        super::recover(&crate::test_support::retry::test_retrying(), usecase).await
     }
     #[tokio::test]
     async fn test_起動時復旧_列挙と定義確認とreconciliationの順序を所有する() {

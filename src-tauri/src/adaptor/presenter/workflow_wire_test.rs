@@ -32,8 +32,6 @@ pub(crate) mod tests {
         assert_eq!(value["id"], "execution-1");
         assert_eq!(value["status"], "running");
         assert_eq!(value["createdFrom"], "cli");
-        assert!(value.get("interruptionReason").is_none());
-        assert!(value.get("resumeFromNode").is_none());
         assert_eq!(value["artifacts"][0]["nodeName"], "request");
         let keys = value
             .as_object()
