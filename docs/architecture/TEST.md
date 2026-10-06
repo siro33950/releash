@@ -33,6 +33,8 @@
 | 統合（フロント） | `tests/integration/` | `pnpm test:integration` | PR 層の統合ジョブ |
 | 振る舞い | `tests/behavior/` | `pnpm test:behavior` | nightly 層 |
 
+手動で実行するテストはコミットしない。
+
 シェルの統合テストの前に、`src-tauri/` で `cargo build --locked -p releash-backend --bin releash-backend` を実行する。テストから cargo は呼ばない。
 
 Rust の単体テストは、実装と同じディレクトリに `<impl>_test.rs` を置き、`<impl>.rs` の末尾で `#[path]` を指定して取り込む。ファイル名は `<impl>_test.rs`、テストモジュール名は `<impl>_tests` とする。
