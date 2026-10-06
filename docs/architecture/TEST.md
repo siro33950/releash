@@ -1,8 +1,35 @@
 # テスト 規約
 
-## 配置
+## 種類
 
-実装と同じディレクトリに `<impl>_test.rs` を置き、`<impl>.rs` の末尾で `#[path]` を指定して取り込む。ファイル名は `<impl>_test.rs`、テストモジュール名は `<impl>_tests` とする。
+種類は検証に関わる仕組みと操作の仕方で決める。置き場所・実行手段・CI は種類ごとに分け、置き場所から種類が決まるようにする。
+
+| 種類 | 確かめること |
+|---|---|
+| 単体 | 単一の仕組みで完結すること |
+| 統合 | 2つ以上の仕組み（サーバ/DB、フロント/サーバ、サーバ/OS）の関連 |
+| 振る舞い | 本物のサーバ・DB・OS を含む構成に対し、ユーザと同様の操作をして確かめる妥当性 |
+
+## 書かないテスト
+
+- 削除済み機能が存在しないことを確かめるテスト
+- 定数の値を確かめるテスト
+- 単体テストで証明できることを確かめる統合テスト
+- 統合テストで証明できることを確かめる振る舞いテスト
+- 主要パターン以外の振る舞いテスト
+- パフォーマンステスト
+
+## 配置と実行
+
+| 種類 | 置き場所 | 実行 | CI |
+|---|---|---|---|
+| 単体（Rust） | `src-tauri/src/` の `<impl>_test.rs` | `cargo test --lib --bins` | PR 層の単体ジョブ |
+| 単体（フロント） | `src/` の `*.test.ts(x)` | `pnpm test` | PR 層の単体ジョブ |
+| 統合（Rust） | `src-tauri/tests/` | `cargo test --test '*'` | PR 層の統合ジョブ |
+| 統合（フロント） | `tests/integration/` | `pnpm test:integration` | PR 層の統合ジョブ |
+| 振る舞い | `tests/behavior/` | `pnpm test:behavior` | nightly 層 |
+
+Rust の単体テストは、実装と同じディレクトリに `<impl>_test.rs` を置き、`<impl>.rs` の末尾で `#[path]` を指定して取り込む。ファイル名は `<impl>_test.rs`、テストモジュール名は `<impl>_tests` とする。
 
 例: `terminal_surface_registry.rs` と同じディレクトリの `terminal_surface_registry_test.rs` を取り込む。
 
@@ -40,21 +67,13 @@ Given / When / Then をコメントで区切り、前提・操作・検証を分
 
 - **domain の trait（Repository、ドメインサービス）と usecase の trait（QueryService、購読の配信の口）**: `mockall` でモック生成可、または手書きの fake 実装
 - **Tauri API**: テストでは呼ばない設計を優先。やむを得ない場合は薄いラッパー化してテスト側で差し替え
-- **git2**: 実 git リポジトリを `tempdir` 上に作って統合テスト寄りに書く
+- **git2**: 実 git リポジトリを `tempdir` 上に作り、統合テストとして書く
 - **外部 HTTP API**: 偽サーバを立てる
 - **長時間プロセス（PTY, Provider CLI）**: 単体テストでは呼ばず、Terminal Surfaceのbyte I/O、AgentSession lifecycle、Provider lifecycle signalを個別に単体テストし、実processは別途手動・統合テストで検証する。Provider conversationをReleashのMessage modelへ変換するtestは作らない
 
 ## テストヘルパー
 
 ドメインごとに `test_helpers.rs` をテストファイルと同じディレクトリに置ける。
-
-## 統合テスト
-
-`src-tauri/tests/` に配置する。
-
-- 複数レイヤーをまたぐシナリオ
-- 実 git リポジトリ操作
-- 実 local API 通信
 
 ## CI
 
