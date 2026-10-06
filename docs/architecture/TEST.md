@@ -23,8 +23,8 @@
 
 | 種類 | 置き場所 | 実行 | CI |
 |---|---|---|---|
-| 単体（サーバ） | `src-tauri/src/` の `<impl>_test.rs` | `cargo test --lib --bins -p releash-backend` | PR 層の単体ジョブ |
-| 単体（シェル） | `src-tauri/releash-desktop/src/` の `<impl>_test.rs` | `cargo test --lib --bins -p releash-desktop` | PR 層の単体ジョブ |
+| 単体（サーバ） | `src-tauri/src/` の `<impl>_test.rs` | `cargo test --lib --bins -p releash-backend`、`cargo test --doc -p releash-backend` | PR 層の単体ジョブ |
+| 単体（シェル） | `src-tauri/releash-desktop/src/` の `<impl>_test.rs` | `cargo test --lib --bins -p releash-desktop`、`cargo test --doc -p releash-desktop` | PR 層の単体ジョブ |
 | 単体（フロント） | `src/` の `*.test.ts(x)` | `pnpm test` | PR 層の単体ジョブ |
 | 統合（サーバ） | `src-tauri/tests/` | `cargo test --test '*' -p releash-backend` | PR 層の統合ジョブ |
 | 統合（シェル） | `src-tauri/releash-desktop/tests/` | `cargo test --test '*' -p releash-desktop` | PR 層の統合ジョブ |
