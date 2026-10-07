@@ -3,19 +3,10 @@ pub mod desktop {
     pub use crate::infrastructure::platform::window_lifecycle::NORMAL_WINDOW_LABEL;
     pub use crate::infrastructure::platform::window_lifecycle::STARTUP_FAILURE_WINDOW_LABEL;
 }
-pub mod daemon_supervision {
-    pub use crate::adaptor::gateway::daemon_supervision::DaemonProcessGateway;
-    pub use crate::adaptor::gateway::daemon_supervision::PendingConnection;
-    pub use crate::domain::daemon_supervision::DaemonProcessPort;
-    pub use crate::domain::daemon_supervision::Failure;
-    pub use crate::domain::daemon_supervision::FailureStage;
-    pub use crate::usecase::daemon_supervision::DaemonGateway;
-}
 pub mod desktop_client {
     pub use crate::adaptor::gateway::desktop_client::client;
+    pub use crate::adaptor::gateway::desktop_client::connection_failure;
     pub use crate::adaptor::gateway::desktop_client::error_message;
-    pub use crate::adaptor::gateway::desktop_client::liveness_failure;
-    pub use crate::adaptor::gateway::desktop_client::server_info;
     pub use crate::adaptor::gateway::desktop_client::stream_client;
     pub use crate::adaptor::gateway::desktop_client::DesktopClient;
     pub use crate::adaptor::gateway::desktop_client::SettingsSubscription;
@@ -27,4 +18,15 @@ pub mod single_instance {
 
 pub mod login_item {
     pub use crate::infrastructure::platform::login_item::registration_location;
+}
+
+pub mod daemon_connection {
+    pub use crate::adaptor::gateway::daemon_connection::DaemonConnection;
+    pub use crate::domain::daemon_connection::{
+        ConnectionError, DaemonConnectionPort, DaemonEndpoint,
+    };
+    pub use crate::usecase::daemon_connection::DaemonConnectionUsecase;
+    pub use crate::usecase::daemon_connection_query::{
+        ConnectionFailure, DaemonConnectionQueryService,
+    };
 }

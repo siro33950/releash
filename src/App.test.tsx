@@ -27,22 +27,13 @@ vi.mock("@/components/panels/TerminalPanel", () => ({
 vi.mock("@/components/panels/ReviewPanel", () => ({ ReviewPanel: () => null }));
 
 const mockInvoke = vi.mocked(invokeClient);
-let statusChannel: {
-	onmessage?: (status: { phase: string }) => void;
-} | null;
-
 beforeEach(() => {
-	statusChannel = null;
 	mockInvoke.mockClear();
 	vi.mocked(client.firstState).mockClear();
 	localStorage.clear();
-	vi.mocked(invoke).mockImplementation(async (command, args) => {
+	vi.mocked(invoke).mockImplementation(async (command) => {
 		if (command === "check_desktop_update") return null;
-		if (command === "subscribe_daemon_status") {
-			statusChannel = (args as { channel: typeof statusChannel }).channel;
-			statusChannel?.onmessage?.({ phase: "ready" });
-			return;
-		}
+
 		return { type: "ready" };
 	});
 	mockInvoke.mockImplementation(() =>

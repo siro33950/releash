@@ -1,2 +1,2 @@
-pub(crate) mod daemon_supervision;
+pub(crate) mod daemon_connection;
 pub(crate) mod login_item;

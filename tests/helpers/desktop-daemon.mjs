@@ -29,7 +29,7 @@ function invokeHost(command, args = {}) {
 globalThis.window = Object.assign(new EventTarget(), {
     __TAURI_INTERNALS__: { invoke: async (command, args) => {
         const result = await invokeHost(command, args);
-        if (command === "get_client_endpoint") generations.add(result.launchId);
+        if (command === "get_client_endpoint") generations.add(result.token);
         return result;
     } },
 });
@@ -60,7 +60,6 @@ async function waitFor(predicate) {
 let refreshedEditor;
 const restore = async () => {
     await Promise.all([firstState("workspaces"), firstState("desktop-settings")]);
-    await waitFor(async () => (await invokeHost("get_daemon_status")).phase === "ready");
 };
 const stopRefresh = subscribeState("external-editor", editor => { refreshedEditor = editor; }, error => { console.error(error instanceof Error ? error.message : error); });
 try {

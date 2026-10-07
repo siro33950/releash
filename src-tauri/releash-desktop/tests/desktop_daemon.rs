@@ -11,10 +11,25 @@ fn discovery(directory: &Path, filename: &str) -> Value {
     serde_json::from_slice(&std::fs::read(directory.join(filename)).unwrap()).unwrap()
 }
 
+struct DaemonGuard(std::path::PathBuf);
+impl Drop for DaemonGuard {
+    fn drop(&mut self) {
+        if let Ok(Some(discovery)) = releash_sdk::discovery::read_optional(&self.0) {
+            if releash_sdk::discovery::process_start_time(discovery.pid)
+                == Some(discovery.process_started_at)
+            {
+                unsafe {
+                    libc::kill(discovery.pid as i32, libc::SIGTERM);
+                }
+            }
+        }
+    }
+}
+
 async fn wait_phase(app: &tauri::AppHandle<tauri::test::MockRuntime>, phase: &str) {
     tokio::time::timeout(Duration::from_secs(35), async {
         loop {
-            let status = releash_desktop::test_support::desktop_supervision_status(app);
+            let status = releash_desktop::test_support::desktop_connection_status(app);
             if status["phase"] == phase {
                 break;
             }
@@ -32,6 +47,7 @@ async fn wait_phase(app: &tauri::AppHandle<tauri::test::MockRuntime>, phase: &st
 async fn test_desktop接続_discoveryとtauri経由で外部daemonの初回接続と再起動から復旧する() {
     // Given
     let directory = tempfile::tempdir().unwrap();
+    let _daemon = DaemonGuard(directory.path().to_path_buf());
     std::fs::write(
         directory.path().join("releash.toml"),
         "[app]\nclose_to_tray = false\nstart_minimized = true\n",
@@ -118,23 +134,21 @@ async fn test_desktop接続_discoveryとtauri経由で外部daemonの初回接�
                     );
                     Value::Null
                 }
-                command @ ("get_daemon_status" | "validate_daemon_connection") => {
-                    tauri::test::get_ipc_response(
-                        &window,
-                        tauri::webview::InvokeRequest {
-                            cmd: command.into(),
-                            callback: tauri::ipc::CallbackFn(0),
-                            error: tauri::ipc::CallbackFn(1),
-                            url: "tauri://localhost".parse().unwrap(),
-                            body: tauri::ipc::InvokeBody::Json(request["args"].clone()),
-                            headers: Default::default(),
-                            invoke_key: tauri::test::INVOKE_KEY.to_string(),
-                        },
-                    )
-                    .unwrap()
-                    .deserialize::<Value>()
-                    .unwrap()
-                }
+                command @ "get_desktop_connection_failure" => tauri::test::get_ipc_response(
+                    &window,
+                    tauri::webview::InvokeRequest {
+                        cmd: command.into(),
+                        callback: tauri::ipc::CallbackFn(0),
+                        error: tauri::ipc::CallbackFn(1),
+                        url: "tauri://localhost".parse().unwrap(),
+                        body: tauri::ipc::InvokeBody::Json(request["args"].clone()),
+                        headers: Default::default(),
+                        invoke_key: tauri::test::INVOKE_KEY.to_string(),
+                    },
+                )
+                .unwrap()
+                .deserialize::<Value>()
+                .unwrap(),
                 "damage_settings" => {
                     for content in [
                         Some("[app]\nclose_to_tray = \"invalid\"\n"),
@@ -164,12 +178,37 @@ async fn test_desktop接続_discoveryとtauri経由で外部daemonの初回接�
                 }
                 "restart" => {
                     assert!(!restarted);
+                    let endpoint =
+                        releash_desktop::test_support::desktop_client_endpoint(app.handle()).await;
+                    let client =
+                        releashd::test_support::client_api_acceptance::connect_client(&endpoint);
+                    releashd::test_support::client_api_acceptance::request_client(
+                        &client,
+                        "update_app_settings",
+                        json!({"app":{"close_to_tray":true,"start_minimized":false}}),
+                    )
+                    .await
+                    .unwrap();
+                    releashd::test_support::client_api_acceptance::request_client(
+                        &client,
+                        "update_login_item_preference",
+                        json!({"requested":true}),
+                    )
+                    .await
+                    .unwrap();
                     assert_eq!(
                         unsafe { libc::kill(first["pid"].as_i64().unwrap() as i32, libc::SIGKILL) },
                         0
                     );
                     tokio::time::sleep(Duration::from_millis(250)).await;
-                    wait_phase(app.handle(), "ready").await;
+                    assert_eq!(discovery(directory.path(), "client-api.json"), first);
+                    releash_sdk::daemon::start(
+                        &support::backend_executable(),
+                        directory.path(),
+                        directory.path(),
+                    )
+                    .await
+                    .unwrap();
                     let current = discovery(directory.path(), "client-api.json");
                     assert_ne!(first["instance_id"], current["instance_id"]);
                     assert_ne!(first["token"], current["token"]);
@@ -193,6 +232,52 @@ async fn test_desktop接続_discoveryとtauri経由で外部daemonの初回接�
     .expect("desktop recovery deadline");
     // Then
     assert!(restarted);
+    tokio::time::timeout(Duration::from_secs(3), async {
+        while !releash_desktop::test_support::desktop_window_preferences(app.handle()) {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert!(releash_desktop::test_support::desktop_login_preference(app.handle(), None).await);
+    releash_desktop::test_support::desktop_login_preference(app.handle(), Some(false)).await;
+    tokio::time::timeout(Duration::from_secs(3), async {
+        while releash_desktop::test_support::desktop_login_preference(app.handle(), None).await {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert!(
+        releash_desktop::test_support::desktop_login_item_calls(app.handle()).contains(&"register")
+    );
+    assert!(
+        releash_desktop::test_support::desktop_login_item_calls(app.handle())
+            .contains(&"unregister")
+    );
+    let endpoint = releash_desktop::test_support::desktop_client_endpoint(app.handle()).await;
+    let current_client = releashd::test_support::client_api_acceptance::connect_client(&endpoint);
+    let settings = releashd::test_support::client_api_acceptance::read_state(
+        &current_client,
+        "desktop-settings",
+    )
+    .await
+    .unwrap();
+    assert_eq!(settings["autoLaunch"], false);
+    releashd::test_support::client_api_acceptance::request_client(
+        &current_client,
+        "update_app_settings",
+        json!({"app":{"close_to_tray":false,"start_minimized":true}}),
+    )
+    .await
+    .unwrap();
+    tokio::time::timeout(Duration::from_secs(3), async {
+        while releash_desktop::test_support::desktop_window_preferences(app.handle()) {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .unwrap();
     assert!(tokens.len() >= 2);
     assert_ne!(tokens.first().unwrap(), tokens.last().unwrap());
     let old_pid = discovery(directory.path(), "client-api.json")["pid"]
@@ -200,8 +285,8 @@ async fn test_desktop接続_discoveryとtauri経由で外部daemonの初回接�
         .unwrap() as i32;
     window.destroy().unwrap();
     assert_eq!(unsafe { libc::kill(old_pid, 0) }, 0);
-    releash_desktop::test_support::stop_desktop_daemon(app.handle(), true);
-    wait_phase(app.handle(), "stopped").await;
+    releash_desktop::test_support::stop_desktop_daemon(app.handle()).await;
+    assert!(!directory.path().join("client-api.json").exists());
     assert_eq!(unsafe { libc::kill(old_pid, 0) }, -1);
     let next = releash_desktop::test_support::desktop_connection_app(
         tauri::test::mock_builder(),
@@ -272,8 +357,8 @@ async fn test_desktop接続_discoveryとtauri経由で外部daemonの初回接�
     })
     .await
     .unwrap();
-    releash_desktop::test_support::stop_desktop_daemon(next.handle(), false);
-    wait_phase(next.handle(), "stopped").await;
+    releash_desktop::test_support::stop_desktop_daemon(next.handle()).await;
+    assert!(!directory.path().join("client-api.json").exists());
     let failed_dir = directory.path().join("initialization-failure");
     std::fs::create_dir(&failed_dir).unwrap();
     std::fs::write(
@@ -281,9 +366,9 @@ async fn test_desktop接続_discoveryとtauri経由で外部daemonの初回接�
         "not a database",
     )
     .unwrap();
-    for (executable, expected_stage, retries) in [
-        (Path::new("/missing/releashd"), "spawn", 0),
-        (&support::backend_executable(), "backend_initialization", 3),
+    for executable in [
+        Path::new("/missing/releashd"),
+        &support::backend_executable(),
     ] {
         let failed = releash_desktop::test_support::desktop_connection_app(
             tauri::test::mock_builder(),
@@ -291,12 +376,8 @@ async fn test_desktop接続_discoveryとtauri経由で外部daemonの初回接�
             executable,
         );
         wait_phase(failed.handle(), "failed").await;
-        let status = releash_desktop::test_support::desktop_supervision_status(failed.handle());
-        assert_eq!(status["stage"], expected_stage);
-        assert_eq!(status["retries"], retries);
+        let status = releash_desktop::test_support::desktop_connection_status(failed.handle());
         assert!(!status["reason"].as_str().unwrap().is_empty());
-        releash_desktop::test_support::stop_desktop_daemon(failed.handle(), false);
-        wait_phase(failed.handle(), "stopped").await;
     }
 }
 

@@ -1443,25 +1443,7 @@ export type InputReportUsageEventRequest = {
 	name: string;
 };
 
-export type InputRequestApplicationQuitRequest = {
-	request: InputApplicationQuitRequestDtoV1;
-};
-
-export type InputApplicationQuitRequestDtoV1 = {
-	intent: InputApplicationQuitIntentDtoV1;
-};
-
-export type InputApplicationQuitIntentDtoV1 =
-	| ({ type: "exit" } & InputApplicationQuitIntentDtoV1Exit)
-	| ({ type: "restart" } & InputApplicationQuitIntentDtoV1Restart);
-
-export type InputApplicationQuitIntentDtoV1Exit = {
-	code: number;
-};
-
-export type InputApplicationQuitIntentDtoV1Restart = {
-	code: number;
-};
+export type InputStopDaemonRequest = Record<string, never>;
 
 export type InputResetProviderExecutableRequest = {
 	provider: string;
@@ -1817,8 +1799,6 @@ export type GetOrSpawnTerminalV1 = {
 	session_key: string;
 };
 
-export type ApplicationQuitOutcomeDtoV1 = { type: "accepted" };
-
 export type SaveWorkflowSourceResultDto =
 	| SaveWorkflowSuccess
 	| SaveWorkflowDiagnostics;
@@ -1904,7 +1884,7 @@ export interface ClientCommandArgs {
 	report_frontend_error: InputReportFrontendErrorRequest;
 	report_mounted_xterm_count: InputReportMountedXtermCountRequest;
 	report_usage_event: InputReportUsageEventRequest;
-	request_application_quit: InputRequestApplicationQuitRequest;
+	stop_daemon: InputStopDaemonRequest;
 	reset_provider_executable: InputResetProviderExecutableRequest;
 	resize_terminal_surface: InputResizeTerminalSurfaceRequest;
 	resolve_review_thread: InputResolveReviewThreadRequest;
@@ -2066,9 +2046,7 @@ export interface ClientCommands {
 	report_usage_event(
 		args: ClientCommandArgs["report_usage_event"],
 	): Promise<void>;
-	request_application_quit(
-		args: ClientCommandArgs["request_application_quit"],
-	): Promise<ApplicationQuitOutcomeDtoV1>;
+	stop_daemon(args: ClientCommandArgs["stop_daemon"]): Promise<void>;
 	reset_provider_executable(
 		args: ClientCommandArgs["reset_provider_executable"],
 	): Promise<void>;

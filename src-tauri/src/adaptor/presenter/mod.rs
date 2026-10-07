@@ -1,6 +1,5 @@
 pub(crate) mod agent_session;
 pub(crate) mod api_error;
-pub(crate) mod application_lifecycle_v1;
 pub(crate) mod client;
 pub(crate) mod code;
 pub(crate) mod connect;

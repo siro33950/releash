@@ -1,16 +1,11 @@
-use crate::adaptor::presenter::daemon_status::{DaemonStatusMessage, DaemonStatusPresenter};
-use crate::domain::daemon_supervision::StopIntent;
-use crate::usecase::daemon_supervision::DaemonSupervisionUsecase;
+use crate::usecase::daemon_connection::DaemonConnectionUsecase;
+use crate::usecase::daemon_connection_query::ConnectionFailure;
 use std::sync::Arc;
-
 pub(crate) const COMMAND_NAMES: &[&str] = &[
-    "get_daemon_status",
-    "subscribe_daemon_status",
-    "stop_daemon_status_subscription",
-    "retry_daemon",
+    "get_desktop_connection_failure",
+    "start_daemon",
+    "replace_daemon",
     "quit_desktop",
-    "restart_desktop",
-    "validate_daemon_connection",
     "get_login_item_status",
     "open_login_item_settings",
     "install_cli",
@@ -24,13 +19,10 @@ pub(crate) fn register<R: tauri::Runtime>(
     router.register_domain(
         COMMAND_NAMES,
         Box::new(tauri::generate_handler![
-            get_daemon_status,
-            subscribe_daemon_status,
-            stop_daemon_status_subscription,
-            retry_daemon,
+            get_desktop_connection_failure,
+            start_daemon,
+            replace_daemon,
             quit_desktop,
-            restart_desktop,
-            validate_daemon_connection,
             get_login_item_status,
             open_login_item_settings,
             install_cli,
@@ -41,51 +33,32 @@ pub(crate) fn register<R: tauri::Runtime>(
     );
 }
 #[tauri::command]
-fn get_daemon_status(
-    supervisor: tauri::State<'_, Arc<DaemonSupervisionUsecase>>,
-) -> DaemonStatusMessage {
-    supervisor.status().into()
+fn get_desktop_connection_failure(
+    connection: tauri::State<'_, Arc<DaemonConnectionUsecase>>,
+) -> Option<ConnectionFailure> {
+    connection.failure()
 }
 #[tauri::command]
-fn subscribe_daemon_status(
-    supervisor: tauri::State<'_, Arc<DaemonSupervisionUsecase>>,
-    presenter: tauri::State<'_, Arc<DaemonStatusPresenter>>,
-    id: String,
-    channel: tauri::ipc::Channel<DaemonStatusMessage>,
-) {
-    presenter.register(id.clone(), channel);
-    supervisor.subscribe_status(id);
-}
-#[tauri::command]
-fn stop_daemon_status_subscription(
-    supervisor: tauri::State<'_, Arc<DaemonSupervisionUsecase>>,
-    id: String,
-) {
-    supervisor.stop_status_subscription(&id);
-}
-#[tauri::command]
-fn retry_daemon(supervisor: tauri::State<'_, Arc<DaemonSupervisionUsecase>>) -> Result<(), String> {
-    supervisor.retry().map_err(Into::into)
-}
-#[tauri::command]
-fn quit_desktop(supervisor: tauri::State<'_, Arc<DaemonSupervisionUsecase>>) -> Result<(), String> {
-    supervisor.stop(StopIntent::Quit(0)).map_err(Into::into)
-}
-#[tauri::command]
-fn restart_desktop(
-    supervisor: tauri::State<'_, Arc<DaemonSupervisionUsecase>>,
+async fn start_daemon<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+    connection: tauri::State<'_, Arc<DaemonConnectionUsecase>>,
 ) -> Result<(), String> {
-    supervisor.stop(StopIntent::Restart).map_err(Into::into)
+    connection.connect().await.map_err(|e| e.to_string())?;
+    super::super::desktop_lifecycle::connected(&app, false);
+    Ok(())
 }
 #[tauri::command]
-fn validate_daemon_connection(
-    supervisor: tauri::State<'_, Arc<DaemonSupervisionUsecase>>,
-    launch_id: String,
-    release: String,
+async fn replace_daemon<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+    connection: tauri::State<'_, Arc<DaemonConnectionUsecase>>,
 ) -> Result<(), String> {
-    supervisor
-        .validate_connection(&launch_id, &release)
-        .map_err(Into::into)
+    connection.replace().await.map_err(|e| e.to_string())?;
+    super::super::desktop_lifecycle::connected(&app, false);
+    Ok(())
+}
+#[tauri::command]
+pub(crate) fn quit_desktop<R: tauri::Runtime>(app: tauri::AppHandle<R>) {
+    super::super::desktop_lifecycle::quit(&app, 0);
 }
 #[tauri::command]
 async fn get_login_item_status(

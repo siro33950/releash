@@ -1,4 +1,3 @@
-use super::daemon_supervision::DaemonSupervisionUsecase;
 use std::sync::Arc;
 
 #[derive(Clone, serde::Serialize)]
@@ -8,9 +7,7 @@ pub(crate) struct UpdateInfo {
 }
 
 #[async_trait::async_trait]
-pub(crate) trait DesktopUpdateGateway:
-    crate::domain::daemon_supervision::DesktopUpdateInstaller
-{
+pub(crate) trait DesktopUpdateGateway: DesktopUpdateInstaller {
     async fn check(&self) -> Result<Option<UpdateInfo>, String>;
 }
 
@@ -18,24 +15,17 @@ pub(crate) trait DesktopUpdateGateway:
 pub(crate) enum DesktopUpdateError {
     #[error("{0}")]
     Operation(String),
-    #[error(transparent)]
-    Supervision(#[from] super::daemon_supervision::DaemonSupervisionError),
 }
 
 pub(crate) struct DesktopUpdateUsecase {
     gateway: Arc<dyn DesktopUpdateGateway>,
-    supervisor: Arc<DaemonSupervisionUsecase>,
     applying: tokio::sync::Mutex<()>,
 }
 
 impl DesktopUpdateUsecase {
-    pub fn new(
-        gateway: Arc<dyn DesktopUpdateGateway>,
-        supervisor: Arc<DaemonSupervisionUsecase>,
-    ) -> Self {
+    pub fn new(gateway: Arc<dyn DesktopUpdateGateway>) -> Self {
         Self {
             gateway,
-            supervisor,
             applying: tokio::sync::Mutex::new(()),
         }
     }
@@ -53,19 +43,13 @@ impl DesktopUpdateUsecase {
             .download()
             .await
             .map_err(DesktopUpdateError::Operation)?;
-        self.supervisor.wait_for_update_stop().await?;
-        self.supervisor.begin_update_install()?;
-        if let Err(error) = self.gateway.install().await {
-            self.supervisor.finish_update_install(Some(error.clone()));
-            return Err(DesktopUpdateError::Operation(error));
-        }
-        if !self.supervisor.finish_update_install(None) {
-            return Ok(());
-        }
-        if let Err(error) = self.gateway.restart() {
-            self.supervisor.restart_failed(error.clone())?;
-            return Err(DesktopUpdateError::Operation(error));
-        }
+        self.gateway
+            .install()
+            .await
+            .map_err(DesktopUpdateError::Operation)?;
+        self.gateway
+            .restart()
+            .map_err(DesktopUpdateError::Operation)?;
         Ok(())
     }
 }
@@ -73,3 +57,10 @@ impl DesktopUpdateUsecase {
 #[cfg(test)]
 #[path = "desktop_update_test.rs"]
 mod desktop_update_tests;
+
+#[async_trait::async_trait]
+pub(crate) trait DesktopUpdateInstaller: Send + Sync {
+    async fn download(&self) -> Result<(), String>;
+    async fn install(&self) -> Result<(), String>;
+    fn restart(&self) -> Result<(), String>;
+}

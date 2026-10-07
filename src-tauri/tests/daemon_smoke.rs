@@ -181,7 +181,7 @@ fn start(directory: &Path) -> (Daemon, Value) {
 fn start_with_parent(directory: &Path, parent_pipe: bool) -> (Daemon, Value) {
     let mut command = Command::new(env!("CARGO_BIN_EXE_releashd"));
     command
-        .arg("--internal-daemon")
+        .arg("--data-dir")
         .arg(directory)
         .env_remove("RELEASH_DATA_DIR")
         .env("SHELL", "/bin/sh")
@@ -190,7 +190,6 @@ fn start_with_parent(directory: &Path, parent_pipe: bool) -> (Daemon, Value) {
         .env("CLAUDE_CONFIG_DIR", directory.join(".claude"))
         .env("CODEX_HOME", directory.join(".codex"))
         .current_dir(directory)
-        .env("RELEASH_DAEMON_LAUNCH_ID", uuid::Uuid::new_v4().to_string())
         .stdin(if parent_pipe {
             Stdio::piped()
         } else {
@@ -240,7 +239,6 @@ async fn connect(discovery: &Value) -> (Socket, String) {
         .await
         .unwrap()
         .into_owned();
-    assert!(!info.launch_id.is_empty());
     assert_eq!(info.release, env!("CARGO_PKG_VERSION"));
     assert_eq!(info.daemon_id, discovery["instance_id"].as_str().unwrap());
     assert_eq!(info.pid as u64, discovery["pid"].as_u64().unwrap());
@@ -251,13 +249,13 @@ async fn connect(discovery: &Value) -> (Socket, String) {
     assert_eq!(info.protocol, 1);
     assert!(info.capabilities.is_empty());
     assert_eq!(info.serving_status, rpc::ServingStatus::Serving);
-    (Socket { client }, info.launch_id)
+    (Socket { client }, info.daemon_id)
 }
 
 #[cfg(unix)]
 #[tokio::test]
 async fn test_daemon起動_data_dirの全解決経路で子プロセスへ解決済みpathを渡す() {
-    for mode in ["--data-dir", "--internal-daemon", "environment", "default"] {
+    for mode in ["--data-dir", "environment", "default"] {
         // Given
         let directory = tempfile::tempdir().unwrap();
         let root = directory.path().canonicalize().unwrap();
@@ -284,7 +282,6 @@ async fn test_daemon起動_data_dirの全解決経路で子プロセスへ解決
             .env("CLAUDE_CONFIG_DIR", root.join(".claude"))
             .env("CODEX_HOME", root.join(".codex"))
             .env("SHELL", "/bin/sh")
-            .env("RELEASH_DAEMON_LAUNCH_ID", uuid::Uuid::new_v4().to_string())
             .env_remove("RELEASH_DAEMON_PARENT_PIPE")
             .current_dir(&root)
             .stdin(Stdio::null())
@@ -295,7 +292,7 @@ async fn test_daemon起動_data_dirの全解決経路で子プロセスへ解決
         } else {
             command.env("RELEASH_DATA_DIR", &environment);
         }
-        if matches!(mode, "--data-dir" | "--internal-daemon") {
+        if mode == "--data-dir" {
             command.arg(mode).arg(&resolved);
         }
         // When
@@ -336,7 +333,7 @@ async fn test_daemon起動_data_dirの全解決経路で子プロセスへ解決
             assert!(Instant::now() < deadline, "{mode}: child data dir mismatch");
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
-        quit(&mut daemon, &mut socket, false).await;
+        quit(&mut daemon, &mut socket).await;
     }
 }
 async fn request(
@@ -347,38 +344,16 @@ async fn request(
     call(&socket.client, command).await.unwrap()
 }
 
-async fn quit(daemon: &mut Daemon, socket: &mut Socket, restart: bool) {
+async fn quit(daemon: &mut Daemon, socket: &mut Socket) {
     let _ = call(
         &socket.client,
-        wire::command_request::Command::RequestApplicationQuit(
-            wire::RequestApplicationQuitRequest {
-                request: Some(wire::ApplicationQuitRequestDtoV1 {
-                    intent: Some(wire::ApplicationQuitIntentDtoV1 {
-                        variant: Some(if restart {
-                            wire::application_quit_intent_dto_v1::Variant::Restart(
-                                wire::ApplicationQuitIntentDtoV1Restart { code: Some(0) },
-                            )
-                        } else {
-                            wire::application_quit_intent_dto_v1::Variant::Exit(
-                                wire::ApplicationQuitIntentDtoV1Exit { code: Some(0) },
-                            )
-                        }),
-                    }),
-                }),
-            },
-        ),
+        wire::command_request::Command::StopDaemon(wire::StopDaemonRequest {}),
     )
     .await;
     let deadline = Instant::now() + Duration::from_secs(15);
     loop {
         if let Some(status) = daemon.0.try_wait().unwrap() {
             assert!(status.success(), "{status}");
-            let mut proof = String::new();
-            std::io::Read::read_to_string(&mut daemon.0.stdout.take().unwrap(), &mut proof)
-                .unwrap();
-            assert!(proof
-                .lines()
-                .any(|line| line == "releash-shutdown-complete"));
             return;
         }
         assert!(
@@ -405,7 +380,7 @@ async fn test_headless単独起動_commandと永続化と再起動とexitを実p
         u64::from(std::process::id())
     );
     let duplicate = Command::new(env!("CARGO_BIN_EXE_releashd"))
-        .arg("--internal-daemon")
+        .arg("--data-dir")
         .arg(directory.path())
         .env("HOME", directory.path())
         .env("XDG_CONFIG_HOME", directory.path().join("config"))
@@ -496,7 +471,7 @@ async fn test_headless単独起動_commandと永続化と再起動とexitを実p
         .unwrap()
         .parse::<i32>()
         .unwrap();
-    quit(&mut daemon, &mut socket, false).await;
+    quit(&mut daemon, &mut socket).await;
     assert_eq!(
         unsafe { libc::kill(child_pid, 0) },
         -1,
@@ -510,7 +485,7 @@ async fn test_headless単独起動_commandと永続化と再起動とexitを実p
     assert_ne!(instance, next_instance);
     assert_eq!(read_external_editor(&socket).await, "daemon-smoke");
     assert_eq!(read_external_editor(&socket).await, "daemon-smoke");
-    quit(&mut restarted, &mut socket, true).await;
+    quit(&mut restarted, &mut socket).await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -528,7 +503,7 @@ async fn test_daemon起動_ログ作成失敗でも従来どおりstoreとapiを
     };
     // Then
     assert_eq!(settings.close_to_tray, Some(true));
-    quit(&mut daemon, &mut socket, false).await;
+    quit(&mut daemon, &mut socket).await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -631,7 +606,7 @@ async fn test_daemon本番配線_repository一覧が購読へ配信される() {
     };
     assert!(workflows.join(".luarc.json").exists());
     assert!(workflows.join(".releash").is_dir());
-    quit(&mut daemon, &mut socket, true).await;
+    quit(&mut daemon, &mut socket).await;
 }
 
 #[cfg(unix)]
@@ -1103,7 +1078,7 @@ async fn test_daemon本番配線_状態を購読へ配信する() {
     assert!(!before_quit
         .iter()
         .any(|(event, _)| event == "process_exited"));
-    quit(&mut daemon, &mut socket, false).await;
+    quit(&mut daemon, &mut socket).await;
     assert_eq!(
         sessions(),
         before_quit,
@@ -1159,11 +1134,11 @@ async fn test_daemon本番配線_状態を購読へ配信する() {
         archived.status.as_ref().unwrap().value,
         Some(wire::workspace_history_status::Value::Aborted as i32)
     );
-    quit(&mut restarted, &mut socket, false).await;
+    quit(&mut restarted, &mut socket).await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn test_親ui終了_daemonとterminal子孫が一括停止なしで終了する() {
+async fn test_親ui終了_stdinを閉じてもdaemonとterminalが動き続ける() {
     let directory = tempfile::tempdir().unwrap();
     let (mut daemon, discovery) = start_with_parent(directory.path(), true);
     let (mut socket, _) = connect(&discovery).await;
@@ -1206,29 +1181,19 @@ async fn test_親ui終了_daemonとterminal子孫が一括停止なしで終了�
         })
         .collect();
     drop(daemon.0.stdin.take());
-    loop {
-        if let Some(status) = daemon.0.try_wait().unwrap() {
-            assert!(!status.success());
-            break;
-        }
-        assert!(Instant::now() < deadline, "daemon survived parent EOF");
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(daemon.0.try_wait().unwrap().is_none());
+    assert!(directory.path().join("client-api.json").exists());
     for pid in pids {
-        while unsafe { libc::kill(pid, 0) } == 0 {
-            assert!(
-                Instant::now() < deadline,
-                "daemon descendant survived: {pid}"
-            );
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
+        assert_eq!(unsafe { libc::kill(pid, 0) }, 0);
     }
-    let mut output = String::new();
-    std::io::Read::read_to_string(&mut daemon.0.stdout.take().unwrap(), &mut output).unwrap();
-    assert!(!output.contains("releash-shutdown-complete"));
-    let (mut restarted, discovery) = start(directory.path());
-    let (mut socket, _) = connect(&discovery).await;
-    quit(&mut restarted, &mut socket, false).await;
+    socket
+        .client
+        .get_server_info(rpc::Unit::default())
+        .await
+        .unwrap();
+    quit(&mut daemon, &mut socket).await;
+    assert!(!directory.path().join("client-api.json").exists());
 }
 
 #[tokio::test]
@@ -1360,5 +1325,5 @@ async fn test_connect提出_worktreeなしで待機中nodeにartifactを記録�
     .await;
     expect_state(&mut output, "submitted output", |state| matches!(state, wire::state_payload::Value::WorkflowOutput(snapshot) if snapshot.value.as_ref().is_some_and(|output| matches!(&output.variant, Some(wire::workflow_output_view::Variant::Submitted(output)) if output.contract.as_deref() == Some("result") && output.structured_output.as_ref() == Some(&value))))).await;
     drop((execution, output));
-    quit(&mut daemon, &mut socket, false).await;
+    quit(&mut daemon, &mut socket).await;
 }

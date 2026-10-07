@@ -79,7 +79,7 @@ fn test_メニューバーアイコン_外観と色付けと選択状態に追�
         .setup(|app| {
             // Given: build the production tray, including its actual image and template flag.
             let _guard = tray::QUIT_REQUESTED_TEST_LOCK.lock().unwrap();
-            tray::setup_tray(app, |_| panic!("unexpected Quit"), |_| {})?;
+            tray::setup_tray(app, |_| panic!("unexpected Quit"), |_| {}, |_| panic!("unexpected Stop"))?;
             unsafe {
                 let application: *mut AnyObject = msg_send![AnyClass::get(c"NSApplication").unwrap(), sharedApplication];
                 let windows: *mut AnyObject = msg_send![application, windows];

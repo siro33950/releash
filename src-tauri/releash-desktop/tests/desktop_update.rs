@@ -11,25 +11,10 @@ use std::{
 type App = tauri::App<tauri::test::MockRuntime>;
 type Window = tauri::WebviewWindow<tauri::test::MockRuntime>;
 
-fn ipc(window: &Window, command: &str, args: Value) -> Result<Value, Value> {
-    tauri::test::get_ipc_response(
-        window,
-        tauri::webview::InvokeRequest {
-            cmd: command.into(),
-            callback: tauri::ipc::CallbackFn(0),
-            error: tauri::ipc::CallbackFn(1),
-            url: "tauri://localhost".parse().unwrap(),
-            body: tauri::ipc::InvokeBody::Json(args),
-            headers: Default::default(),
-            invoke_key: tauri::test::INVOKE_KEY.to_string(),
-        },
-    )
-    .map(|response| response.deserialize().unwrap())
-}
 async fn wait_phase(app: &App, phase: &str) {
     tokio::time::timeout(Duration::from_secs(35), async {
         loop {
-            let status = host::desktop_supervision_status(app.handle());
+            let status = host::desktop_connection_status(app.handle());
             assert_ne!(status["phase"], "failed", "{status}");
             if status["phase"] == phase {
                 break;
@@ -57,7 +42,7 @@ fn workflow_facts(path: &Path, execution_id: &str) -> Vec<(String, String, Strin
 struct Renderer {
     window: Window,
     client: client_api::NativeClient,
-    launch: String,
+    daemon_id: String,
 }
 impl Renderer {
     async fn attach(app: &App) -> Self {
@@ -75,7 +60,7 @@ impl Renderer {
         Self {
             window,
             client,
-            launch: hello.launch_id,
+            daemon_id: hello.daemon_id,
         }
     }
     async fn request(&mut self, command: &str, args: Value) -> Value {
@@ -107,7 +92,7 @@ impl Renderer {
         assert_eq!(repos, expected_repos);
         assert!(settings["performanceTelemetry"].is_boolean());
         assert_eq!(
-            host::desktop_supervision_status(app.handle())["phase"],
+            host::desktop_connection_status(app.handle())["phase"],
             "ready"
         );
         self.request("update_external_editor", json!({"editor":"vim"}))
@@ -119,7 +104,7 @@ impl Renderer {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn test_実workflow更新_一括停止と旧daemon終了から適用と新接続と状態反映まで順序を守る() {
+async fn test_画面更新_実workflowとサーバを停止せず更新後の画面が同じサーバへ接続する() {
     // Given
     let directory = tempfile::tempdir().unwrap();
     let root_path = directory.path().canonicalize().unwrap();
@@ -179,92 +164,67 @@ async fn test_実workflow更新_一括停止と旧daemon終了から適用と新
         .unwrap();
     assert_eq!(unsafe { libc::kill(command_pid, 0) }, 0);
     let facts_before = workflow_facts(root, &execution_id);
-    let command_node_id = facts_before
-        .iter()
-        .find(|(_, event, _)| event == "command_spawned")
-        .expect("the running command must have a durable spawn fact")
-        .0
-        .clone();
     assert!(!facts_before
         .iter()
         .any(|(_, event, _)| event == "process_exited"));
     let pid = old["pid"].as_i64().unwrap() as i32;
-    let old_launch = renderer.launch.clone();
+    let old_daemon_id = renderer.daemon_id.clone();
     let next_binary = root.join("updated-backend");
     let steps = Arc::new(Mutex::new(Vec::new()));
     // When
-    host::apply_desktop_update(app.handle(), Arc::new({
-        let backend = backend.clone();
-        let execution_id = execution_id.clone();
-        let root = root.to_path_buf(); let next_binary = next_binary.clone(); let steps = steps.clone();
-        move |stage| {
-            if stage == "download" { assert_eq!(unsafe { libc::kill(pid,0) },0); }
-            if stage == "install" {
-                assert_eq!(unsafe { libc::kill(pid,0) },-1,"old daemon must exit before installation");
-                assert_eq!(unsafe { libc::kill(command_pid,0) },-1,"workflow command must stop before installation");
-                assert_eq!(workflow_facts(&root, &execution_id), facts_before, "shutdown must not append workflow facts");
-                let db = rusqlite::Connection::open_with_flags(root.join("local-event-store.sqlite3"),rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
-                let retired: i64 = db.query_row("SELECT COUNT(*) FROM sqlite_master WHERE name IN ('shutdown_plans', 'shutdown_targets', 'caller_attempts')",[],|row| row.get(0)).unwrap();
-                assert_eq!(retired,0,"shutdown must not persist procedure records");
-                std::fs::copy(&backend,&next_binary).unwrap();
+    host::apply_desktop_update(
+        app.handle(),
+        Arc::new({
+            let backend = backend.clone();
+            let execution_id = execution_id.clone();
+            let facts_before = facts_before.clone();
+            let root = root.to_path_buf();
+            let next_binary = next_binary.clone();
+            let steps = steps.clone();
+            move |stage| {
+                if stage == "download" {
+                    assert_eq!(unsafe { libc::kill(pid, 0) }, 0);
+                }
+                if stage == "install" {
+                    assert_eq!(
+                        unsafe { libc::kill(pid, 0) },
+                        0,
+                        "server must survive installation"
+                    );
+                    assert_eq!(
+                        unsafe { libc::kill(command_pid, 0) },
+                        0,
+                        "workflow command must survive installation"
+                    );
+                    assert_eq!(workflow_facts(&root, &execution_id), facts_before);
+                    std::fs::copy(&backend, &next_binary).unwrap();
+                }
+                steps.lock().unwrap().push(stage.to_string());
+                Ok(())
             }
-            steps.lock().unwrap().push(stage.to_string());
-            Ok(())
-        }
-    })).await.unwrap();
+        }),
+    )
+    .await
+    .unwrap();
     // Then
     assert_eq!(*steps.lock().unwrap(), ["download", "install", "restart"]);
-    assert_eq!(
-        host::desktop_supervision_status(app.handle())["phase"],
-        "stopped"
-    );
-    let startup_probe = "startup-completion-probe";
-    {
-        let db = rusqlite::Connection::open(root.join("local-event-store.sqlite3")).unwrap();
-        assert_eq!(db.execute(
-            "INSERT INTO node_events (tree_id, seq, node_execution_id, parent_id, node_name, kind, attempt, event_type, session_id, detail, timestamp)
-             SELECT ?1, 1, ?1, NULL, node_name, kind, attempt, event_type, NULL,
-                    json_set(detail, '$.root.definition', json('{}')), timestamp + 1
-             FROM node_events WHERE tree_id = ?2 AND seq = 1",
-            [startup_probe, &execution_id],
-        ).unwrap(), 1);
-    }
+    assert_eq!(unsafe { libc::kill(pid, 0) }, 0);
+    assert_eq!(unsafe { libc::kill(command_pid, 0) }, 0);
+    renderer.window.destroy().unwrap();
+    drop(renderer);
+    drop(app);
     let next = host::desktop_connection_app(tauri::test::mock_builder(), root, &next_binary);
     wait_phase(&next, "ready").await;
     let mut renderer = Renderer::attach(&next).await;
-    assert!(!workflow_facts(root, startup_probe)
-        .iter()
-        .any(|(_, event, _)| event == "abort_requested"));
-    assert!(!workflow_facts(root, &execution_id)
-        .iter()
-        .any(|(node, event, _)| node == &command_node_id && event == "process_exited"));
     let current = discovery(root);
-    assert_ne!(current["pid"], old["pid"]);
-    assert_ne!(current["instance_id"], old["instance_id"]);
-    assert_ne!(renderer.launch, old_launch);
-    assert_ne!(renderer.launch, old_launch);
-    ipc(
-        &renderer.window,
-        "validate_daemon_connection",
-        json!({"launchId": renderer.launch, "release": env!("CARGO_PKG_VERSION")}),
-    )
-    .unwrap();
-    assert!(ipc(
-        &renderer.window,
-        "validate_daemon_connection",
-        json!({"launchId":old_launch,"release":env!("CARGO_PKG_VERSION")})
-    )
-    .is_err());
-    assert!(ipc(
-        &renderer.window,
-        "validate_daemon_connection",
-        json!({"launchId":renderer.launch,"release":"wrong-release"})
-    )
-    .is_err());
+    assert_eq!(current, old);
+    assert_eq!(renderer.daemon_id, old_daemon_id);
+    assert_eq!(unsafe { libc::kill(command_pid, 0) }, 0);
+    assert_eq!(workflow_facts(root, &execution_id), facts_before);
     renderer.restore(&next, json!([root])).await;
     assert_eq!(discovery(root)["pid"], current["pid"]);
-    host::stop_desktop_daemon(next.handle(), false);
-    wait_phase(&next, "stopped").await;
+    host::stop_desktop_daemon(next.handle()).await;
+    assert!(!root.join("client-api.json").exists());
 }
 
 mod support;

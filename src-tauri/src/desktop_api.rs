@@ -20,12 +20,9 @@
 
 pub mod wire {
     pub use crate::adaptor::presenter::client::{
-        application_quit_intent_dto_v1, application_quit_outcome_dto_v1, command_error,
-        command_request, command_result, state_payload, state_subscription_event,
-        ApplicationQuitIntentDtoV1, ApplicationQuitIntentDtoV1Exit,
-        ApplicationQuitIntentDtoV1Restart, ApplicationQuitOutcomeDtoV1,
-        ApplicationQuitRequestDtoV1, CommandError, DesktopSettings, RequestApplicationQuitRequest,
-        ServerInfo, StatePayload, StateSubscriptionEvent, UpdateLoginItemPreferenceRequest,
+        command_error, command_request, command_result, state_payload, state_subscription_event,
+        CommandError, DesktopSettings, ServerInfo, StatePayload, StateSubscriptionEvent,
+        StopDaemonRequest, StopDaemonResponse, UpdateLoginItemPreferenceRequest,
     };
 }
 pub use crate::adaptor::presenter::client_calls::call;
@@ -45,11 +42,10 @@ pub use crate::infrastructure::local_api::{
     lookup_process_start_time, process_start_time, LocalApiDiscovery, ProcessStartTimeLookup,
 };
 pub use crate::infrastructure::local_log::{init as init_local_log, LocalLogProcess};
-pub use crate::infrastructure::process::parent_lifetime::terminate_descendants;
-pub use crate::infrastructure::telemetry::init_telemetry;
 pub use crate::infrastructure::telemetry::metrics::{
     record_startup_from_origin, set_startup_origin, Startup,
 };
+pub use crate::infrastructure::telemetry::{init_telemetry, TelemetryGuard};
 pub use crate::usecase::app_config::query_service::DesktopSettingsDto;
 pub use crate::usecase::client_connection::{
     ClientConnectionDto, ClientConnectionError, ClientConnectionQueryService,

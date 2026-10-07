@@ -9,11 +9,6 @@ fn test_起動引数_通常起動と内部起動を解決する() {
             vec!["--data-dir", "data"],
             Mode::Daemon(Some("data".into())),
         ),
-        (vec!["--internal-daemon"], Mode::Daemon(None)),
-        (
-            vec!["--internal-daemon", "data"],
-            Mode::Daemon(Some("data".into())),
-        ),
         (vec!["--internal-background-worker"], Mode::BackgroundWorker),
     ];
     for (arguments, expected) in cases {

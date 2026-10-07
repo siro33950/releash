@@ -6,7 +6,7 @@ async fn test_connect受付_停止後は情報と停止以外を同じ分類で�
     let admission = DaemonAdmission(daemon.clone());
     let paths = [
         "GetServerInfo",
-        "RequestApplicationQuit",
+        "StopDaemon",
         "OpenStateStream",
         "StartStateSubscription",
         "StopStateSubscription",
@@ -28,7 +28,7 @@ async fn test_connect受付_停止後は情報と停止以外を同じ分類で�
         let result = admission
             .admit(&format!("/releash.client.v1.ClientService/{method}"))
             .await;
-        if matches!(method, "GetServerInfo" | "RequestApplicationQuit") {
+        if matches!(method, "GetServerInfo" | "StopDaemon") {
             result.unwrap();
         } else {
             assert_eq!(

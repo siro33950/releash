@@ -1144,26 +1144,18 @@ pub async fn test_connect受付_停止後の新規streamを拒否し既存stream
             )
         ));
     }
-    let quit = |code| {
-        let wire::command_request::Command::RequestApplicationQuit(request) =
-            wire::command_request_from_value(
-                "request_application_quit",
-                serde_json::json!({"request": {"intent": {"type": "restart", "code": code}}}),
-            )
-            .unwrap()
-            .command
-            .unwrap()
-        else {
-            unreachable!()
-        };
-        to_rpc::<rpc::RequestApplicationQuitRequest>(&request).unwrap()
-    };
     // When
-    client.request_application_quit(quit(23)).await.unwrap();
-    assert_eq!(exit.try_recv().unwrap(), 23);
+    client
+        .stop_daemon(rpc::StopDaemonRequest::default())
+        .await
+        .unwrap();
+    assert_eq!(exit.try_recv().unwrap(), 0);
     exit.close();
     // Then
-    client.request_application_quit(quit(99)).await.unwrap();
+    client
+        .stop_daemon(rpc::StopDaemonRequest::default())
+        .await
+        .unwrap();
     assert_eq!(exit.len(), 0);
     let info = client
         .get_server_info(rpc::Unit::default())

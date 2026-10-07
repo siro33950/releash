@@ -10,3 +10,5 @@ pub mod compatibility;
 pub mod data_dir;
 pub mod descriptor;
 pub mod discovery;
+
+pub mod daemon;

@@ -1,5 +1,5 @@
 use super::*;
-use crate::domain::daemon_supervision::DesktopUpdateInstaller;
+use crate::usecase::desktop_update::DesktopUpdateInstaller;
 #[derive(Default)]
 struct Runtime {
     failure: Option<&'static str>,

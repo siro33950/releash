@@ -75,6 +75,9 @@ vi.mock("@/lib/client", async (importOriginal) => {
 	const original = await importOriginal<typeof import("@/lib/client")>();
 	return {
 		...original,
+		getConnectionState: vi.fn().mockReturnValue("READY"),
+		onConnectionStateChange: vi.fn().mockReturnValue(() => {}),
+		getClient: vi.fn().mockResolvedValue({}),
 		invokeClient: vi.fn().mockResolvedValue(1),
 		firstState: vi.fn().mockRejectedValue(new Error("No state fixture")),
 		subscribeState: vi.fn(

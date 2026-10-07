@@ -11,10 +11,7 @@ fn parse_arguments(arguments: &[OsString]) -> Option<Mode> {
     match arguments {
         [] => Some(Mode::Daemon(None)),
         [mode] if mode == "--internal-background-worker" => Some(Mode::BackgroundWorker),
-        [mode] if mode == "--internal-daemon" => Some(Mode::Daemon(None)),
-        [mode, directory] if mode == "--internal-daemon" || mode == "--data-dir" => {
-            Some(Mode::Daemon(Some(directory.into())))
-        }
+        [mode, directory] if mode == "--data-dir" => Some(Mode::Daemon(Some(directory.into()))),
         _ => None,
     }
 }

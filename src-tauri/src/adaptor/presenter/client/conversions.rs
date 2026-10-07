@@ -143,37 +143,6 @@ impl TryFrom<crate::usecase::agent_session::AgentSessionTreeLocationDto>
     }
 }
 
-impl TryFrom<crate::adaptor::presenter::application_lifecycle_v1::ApplicationQuitIntentDtoV1>
-    for wire::ApplicationQuitIntentDtoV1
-{
-    type Error = String;
-    fn try_from(
-        value: crate::adaptor::presenter::application_lifecycle_v1::ApplicationQuitIntentDtoV1,
-    ) -> Result<Self, String> {
-        Ok(Self { variant: Some(match value { crate::adaptor::presenter::application_lifecycle_v1::ApplicationQuitIntentDtoV1::Exit { code } => wire::application_quit_intent_dto_v1::Variant::Exit(wire::ApplicationQuitIntentDtoV1Exit { code: Some(cv(code)?) }), crate::adaptor::presenter::application_lifecycle_v1::ApplicationQuitIntentDtoV1::Restart { code } => wire::application_quit_intent_dto_v1::Variant::Restart(wire::ApplicationQuitIntentDtoV1Restart { code: Some(cv(code)?) }) }) })
-    }
-}
-
-impl TryFrom<wire::ApplicationQuitIntentDtoV1>
-    for crate::adaptor::presenter::application_lifecycle_v1::ApplicationQuitIntentDtoV1
-{
-    type Error = String;
-    fn try_from(value: wire::ApplicationQuitIntentDtoV1) -> Result<Self, String> {
-        Ok(match req(value.variant,"variant")? { wire::application_quit_intent_dto_v1::Variant::Exit(value) => crate::adaptor::presenter::application_lifecycle_v1::ApplicationQuitIntentDtoV1::Exit { code: cv(req(value.code, "code")?)? }, wire::application_quit_intent_dto_v1::Variant::Restart(value) => crate::adaptor::presenter::application_lifecycle_v1::ApplicationQuitIntentDtoV1::Restart { code: cv(req(value.code, "code")?)? } })
-    }
-}
-
-impl TryFrom<wire::ApplicationQuitRequestDtoV1>
-    for crate::adaptor::presenter::application_lifecycle_v1::ApplicationQuitRequestDtoV1
-{
-    type Error = String;
-    fn try_from(value: wire::ApplicationQuitRequestDtoV1) -> Result<Self, String> {
-        Ok(Self {
-            intent: cv(req(value.intent, "intent")?)?,
-        })
-    }
-}
-
 impl TryFrom<crate::adaptor::presenter::workflow_wire::ApprovalTargetView>
     for wire::ApprovalTargetView
 {
@@ -2077,21 +2046,6 @@ impl TryFrom<crate::domain::workflow::WorktreeMode> for wire::WorktreeMode {
                     wire::worktree_mode::Value::Isolated as i32
                 }
             }),
-        })
-    }
-}
-
-impl TryFrom<crate::adaptor::presenter::application_lifecycle_v1::ApplicationQuitOutcomeDtoV1>
-    for wire::ApplicationQuitOutcomeDtoV1
-{
-    type Error = String;
-    fn try_from(
-        _: crate::adaptor::presenter::application_lifecycle_v1::ApplicationQuitOutcomeDtoV1,
-    ) -> Result<Self, Self::Error> {
-        Ok(Self {
-            variant: Some(wire::application_quit_outcome_dto_v1::Variant::Accepted(
-                wire::Unit {},
-            )),
         })
     }
 }

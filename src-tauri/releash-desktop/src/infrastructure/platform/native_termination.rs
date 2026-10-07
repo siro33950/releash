@@ -79,7 +79,7 @@ pub(crate) fn install(_: impl Fn() + Send + Sync + 'static) -> Result<(), String
     Ok(())
 }
 
-pub(crate) fn exit(app: &tauri::AppHandle, code: i32) {
+pub(crate) fn exit<R: tauri::Runtime>(app: &tauri::AppHandle<R>, code: i32) {
     super::tray::mark_quit_requested();
     let handle = app.clone();
     let result = app.run_on_main_thread(move || {

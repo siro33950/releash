@@ -229,3 +229,19 @@ async fn test_登録希望_読込失敗ではosを変えず保存失敗は成功
         );
     }
 }
+
+#[tokio::test]
+async fn test_設定購読_サーバの登録希望がfalseなら既存の登録を解除する() {
+    // Given
+    let port = Arc::new(FakeLogin {
+        status: parking_lot::Mutex::new(LoginItemStatus::Enabled),
+        calls: Default::default(),
+        error: None,
+    });
+    let service = service(port.clone());
+    // When
+    service.restore(false).unwrap();
+    // Then
+    assert_eq!(*port.calls.lock(), ["unregister"]);
+    assert!(!service.status().await.unwrap().enabled);
+}

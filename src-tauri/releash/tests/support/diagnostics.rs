@@ -39,8 +39,6 @@ impl DiagnosticsHost {
         let child = Command::new(backend_executable())
             .env("HOME", &data_dir)
             .env("RELEASH_DATA_DIR", &data_dir)
-            .env_remove("RELEASH_DAEMON_LAUNCH_ID")
-            .env_remove("RELEASH_DAEMON_PARENT_PIPE")
             .env("SHELL", "/bin/sh")
             .env("XDG_CONFIG_HOME", data_dir.join("config"))
             .env("CLAUDE_CONFIG_DIR", data_dir.join(".claude"))

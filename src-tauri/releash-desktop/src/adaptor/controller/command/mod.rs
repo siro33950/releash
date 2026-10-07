@@ -14,47 +14,6 @@ struct CommandDomainRoute<H> {
     handler: H,
 }
 
-fn shell_operation(command: &str) -> crate::domain::daemon_supervision::ShellOperation {
-    use crate::domain::daemon_supervision::ShellOperation;
-    match command {
-        "get_daemon_status"
-        | "subscribe_daemon_status"
-        | "stop_daemon_status_subscription"
-        | "retry_daemon"
-        | "quit_desktop"
-        | "validate_daemon_connection"
-        | "get_client_endpoint" => ShellOperation::Supervision,
-        _ => ShellOperation::Normal,
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub(crate) enum ApplicationUnavailable {
-    ApplicationUnavailable,
-}
-
-pub(crate) fn gate_invoke_before_domain_routing<R: tauri::Runtime>(
-    invoke: tauri::ipc::Invoke<R>,
-) -> Result<tauri::ipc::Invoke<R>, bool> {
-    let admitted = {
-        let supervisor = tauri::Manager::try_state::<
-            std::sync::Arc<crate::usecase::daemon_supervision::DaemonSupervisionUsecase>,
-        >(invoke.message.webview_ref());
-        supervisor.is_none_or(|supervisor| {
-            supervisor.command_admitted(shell_operation(invoke.message.command()))
-        })
-    };
-    if !admitted {
-        invoke
-            .resolver
-            .reject(ApplicationUnavailable::ApplicationUnavailable);
-        Err(true)
-    } else {
-        Ok(invoke)
-    }
-}
-
 impl<H> CommandRouter<H> {
     pub(crate) fn new(fallback: H) -> Self {
         Self {
@@ -85,10 +44,6 @@ impl<H> CommandRouter<H> {
 
 impl<R: tauri::Runtime> CommandRouter<InvokeHandler<R>> {
     pub(crate) fn handle(&self, invoke: tauri::ipc::Invoke<R>) -> bool {
-        let invoke = match gate_invoke_before_domain_routing(invoke) {
-            Ok(invoke) => invoke,
-            Err(handled) => return handled,
-        };
         (self.resolve(invoke.message.command()))(invoke)
     }
 }

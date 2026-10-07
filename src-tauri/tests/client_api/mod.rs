@@ -50,7 +50,6 @@ impl Fixture {
         connect_client(&ClientEndpoint {
             url: self.url.clone(),
             token: self.token.to_string(),
-            launch_id: String::new(),
         })
     }
     fn args(&self) -> Value {

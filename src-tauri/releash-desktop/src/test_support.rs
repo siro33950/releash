@@ -1,7 +1,8 @@
 pub use crate::desktop_client_acceptance::{
     apply_desktop_update, command_rejection_app, desktop_client_endpoint, desktop_connection_app,
-    desktop_supervision_status, desktop_window_preferences, initialize_desktop_settings,
-    spawn_desktop_successor, stop_desktop_daemon, terminate_daemon_for_acceptance,
+    desktop_connection_status, desktop_login_item_calls, desktop_login_preference,
+    desktop_window_preferences, initialize_desktop, initialize_desktop_settings,
+    spawn_desktop_successor, start_desktop_daemon, stop_desktop_daemon,
     wait_for_desktop_predecessor,
 };
 #[cfg(unix)]
@@ -13,3 +14,11 @@ pub mod cli_install {
 #[cfg(feature = "test-support")]
 #[path = "integration_test_support.rs"]
 pub mod integration;
+
+#[cfg(target_os = "macos")]
+pub use crate::desktop_client_acceptance::{
+    dispatch_desktop_tray_quit, install_desktop_native_quit,
+};
+
+#[cfg(target_os = "macos")]
+pub use crate::desktop_client_acceptance::quit_desktop;

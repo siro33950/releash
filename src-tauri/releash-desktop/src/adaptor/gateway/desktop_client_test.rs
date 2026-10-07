@@ -39,7 +39,7 @@ fn test_生存確認_connectの失敗を技術的な失敗の性質へ写す() {
     ] {
         let error = connectrpc::ConnectError::new(code, "reason");
         let message = error.to_string();
-        let failure = liveness_failure(error);
+        let failure = connection_failure(error);
         assert_eq!(failure.nature, nature);
         assert_eq!(failure.message, message);
     }

@@ -63,30 +63,30 @@ pub fn run() {
         ) {
             eprintln!("{error}");
         }
-        let startup_config = releashd::desktop_api::read_config_if_exists(&data_dir.join("releash.toml"));
-        if let Err(reason) = &startup_config { log::error!("Startup preferences are unavailable; daemon initialization will report the failure: {reason}"); }
-        let hidden = std::env::args().any(|arg| arg == "--hidden") && startup_config.as_ref().is_ok_and(|config| config.as_ref().is_some_and(|config| config.app.start_minimized));
-        app.manage(usecase::cli_install::CliInstallUsecase(Arc::new(adaptor::gateway::cli_install::MacCliInstall)));
-        let executable = std::env::current_exe()?.with_file_name("releashd");
-        let gateway = Arc::new(adaptor::gateway::daemon_supervision::DaemonProcessGateway::new(
-            executable,
+        let hidden = std::env::args().any(|arg| arg == "--hidden");
+        app.manage(usecase::cli_install::CliInstallUsecase(Arc::new(
+            adaptor::gateway::cli_install::MacCliInstall,
+        )));
+        let connection = Arc::new(adaptor::gateway::daemon_connection::DaemonConnection::new(
+            std::env::current_exe()?.with_file_name("releashd"),
             data_dir,
-            Arc::new(crate::common::retry::RetryLimiter::new()),
         ));
-        let login = usecase::login_item::LoginItemUsecase::new(Arc::new(adaptor::gateway::login_item::MacLoginItem), Arc::new(adaptor::gateway::login_item::DaemonLoginPreference(gateway.clone())));
-        if let Ok(Some(config)) = &startup_config { if let Err(error) = login.restore(config.app.auto_launch) { log::error!("{error}"); } }
-        app.manage(login);
-        let status_presenter = Arc::new(adaptor::presenter::daemon_status::DaemonStatusPresenter::new());
-        let supervisor = tauri::async_runtime::block_on(async {
-            usecase::daemon_supervision::DaemonSupervisionUsecase::start(gateway, status_presenter.clone())
-        });
-        app.manage(status_presenter);
-        app.manage(supervisor.clone());
+        let connection_usecase =
+            Arc::new(usecase::daemon_connection::DaemonConnectionUsecase::new(
+                connection.clone(),
+                connection.clone(),
+            ));
+        app.manage(connection_usecase.clone());
+        app.manage(usecase::login_item::LoginItemUsecase::new(
+            Arc::new(adaptor::gateway::login_item::MacLoginItem),
+            Arc::new(adaptor::gateway::login_item::DaemonLoginPreference(
+                connection.clone(),
+            )),
+        ));
         app.manage(usecase::desktop_update::DesktopUpdateUsecase::new(
             Arc::new(adaptor::gateway::desktop_update::TauriUpdateGateway::new(
                 app.handle().clone(),
             )),
-            supervisor.clone(),
         ));
         app.manage(
             infrastructure::platform::window_lifecycle::WindowPreferencesState(
@@ -98,28 +98,24 @@ pub fn run() {
             ),
         );
         infrastructure::platform::menu::setup_menu(app)?;
-        infrastructure::platform::tray::setup_tray(app, |app| {
-            adaptor::controller::desktop_lifecycle::request_quit(
-                &app.state::<Arc<usecase::daemon_supervision::DaemonSupervisionUsecase>>(),
-            );
-        }, |app| {
-            if let Err(error) = adaptor::controller::desktop_lifecycle::show(&app) { log::error!("{error}"); }
-        })?;
-        let native_quit = supervisor.clone();
+        infrastructure::platform::tray::setup_tray(
+            app,
+            |app| adaptor::controller::desktop_lifecycle::quit(&app, 0),
+            |app| {
+                if let Err(error) = adaptor::controller::desktop_lifecycle::show(&app) {
+                    log::error!("{error}");
+                }
+            },
+            adaptor::controller::desktop_lifecycle::confirm_stop,
+        )?;
+        let handle = app.handle().clone();
         infrastructure::platform::native_termination::install(move || {
-            adaptor::controller::desktop_lifecycle::request_quit(&native_quit);
+            adaptor::controller::desktop_lifecycle::quit(&handle, 0)
         })?;
-        let quit = supervisor.clone();
-        app.manage(Arc::new(
-            adaptor::controller::application_lifecycle::ApplicationQuitIngress::new(
-                move |intent| {
-                    if let Err(error) = quit.stop(intent) {
-                        log::error!("{error}");
-                    }
-                },
-            ),
-        ));
-        adaptor::controller::desktop_lifecycle::observe(app.handle().clone(), supervisor, hidden);
+        let handle = app.handle().clone();
+        tauri::async_runtime::spawn(async move {
+            adaptor::controller::desktop_lifecycle::initialize(&handle, hidden).await;
+        });
         Ok(())
     });
     adaptor::controller::command::register_all(builder)

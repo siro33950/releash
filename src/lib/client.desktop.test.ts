@@ -28,7 +28,6 @@ it("desktopの業務要求をHTTPへ送りIPCには接続情報と同一性検�
 		expect(request.headers.get("authorization")).toBe("Bearer client-token");
 	expect(vi.mocked(invoke).mock.calls.map(([name]) => name)).toEqual([
 		"get_client_endpoint",
-		"validate_daemon_connection",
 	]);
 	expect(invoke).toHaveBeenCalledWith("get_client_endpoint");
 });
@@ -58,7 +57,7 @@ it("破棄済み画面の遅い接続情報が次の接続を上書きしない"
 	await expect(invokeClient("add_repo_path", { path: "/repo" })).resolves.toBe(
 		true,
 	);
-	release({ url: "http://127.0.0.1:9829", token: "old", launchId: "launch" });
+	release({ url: "http://127.0.0.1:9829", token: "old" });
 	expect(await old).toBeInstanceOf(Error);
 	await expect(invokeClient("add_repo_path", { path: "/repo" })).resolves.toBe(
 		true,
@@ -66,26 +65,28 @@ it("破棄済み画面の遅い接続情報が次の接続を上書きしない"
 	expect(endpoints).toBe(2);
 });
 
-it("Rustの同一性検証が失敗した接続では業務RPCを呼ばない", async () => {
+it("Rustの発見検証が失敗した接続では業務RPCを呼ばない", async () => {
 	const read = vi.fn(() => ({ value: true }));
-	connectFixture({
-		getServerInfo: () => ({ launchId: "different", release: "test" }),
-		addRepoPath: read,
-	});
-	const original = vi.mocked(invoke).getMockImplementation();
-	if (!original) throw new Error("Missing fixture implementation");
-	vi.mocked(invoke).mockClear();
-	vi.mocked(invoke).mockImplementation(async (command, args) => {
-		if (command === "validate_daemon_connection")
-			throw new Error("Daemon identity changed");
-		return original(command, args);
-	});
+	connectFixture({ addRepoPath: read });
+	vi.mocked(invoke).mockRejectedValue(new Error("Daemon identity changed"));
 	await expect(
 		invokeClient("add_repo_path", { path: "/repo" }),
 	).rejects.toThrow("Daemon identity changed");
-	expect(invoke).toHaveBeenCalledWith("validate_daemon_connection", {
-		launchId: "different",
-		release: "test",
-	});
 	expect(read).not.toHaveBeenCalled();
 });
+
+it.each(["settings denied", "deadline has elapsed"])(
+	"初回desktop設定の失敗(%s)ではREADYにならず業務要求を送らない",
+	async (message) => {
+		const read = vi.fn(() => ({ value: true }));
+		connectFixture({ addRepoPath: read });
+		const { getClient, getConnectionState } = await import("./client");
+		vi.mocked(invoke).mockRejectedValue(new Error(message));
+		await expect(getClient()).rejects.toThrow(message);
+		expect(getConnectionState()).toBe("TRANSIENT_FAILURE");
+		await expect(
+			invokeClient("add_repo_path", { path: "/repo" }),
+		).rejects.toThrow("Daemon connection is TRANSIENT_FAILURE");
+		expect(read).not.toHaveBeenCalled();
+	},
+);

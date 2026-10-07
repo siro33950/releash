@@ -1,5 +1,4 @@
 use crate::common::retry::{RetryBackoff, RetryLimiter};
-use crate::domain::daemon_supervision::DaemonLiveness;
 use connectrpc::client::{ClientConfig, HttpClient};
 use futures_util::future::BoxFuture;
 use releashd::desktop_api::descriptor;
@@ -14,7 +13,6 @@ pub struct ConnectionPolicy {
     pub jitter: f64,
     reset_after: Duration,
     reconnect_codes: Vec<i32>,
-    silence: Duration,
     default_timeout: Duration,
 }
 
@@ -55,12 +53,6 @@ pub static POLICY: LazyLock<ConnectionPolicy> = LazyLock::new(|| {
             .iter()
             .map(|code| code.as_enum_number().expect("reconnect status code"))
             .collect(),
-        silence: Duration::from_millis(
-            option("state_stream_silence_ms")
-                .as_u32()
-                .expect("state_stream_silence_ms")
-                .into(),
-        ),
         default_timeout: Duration::from_millis(
             option("default_timeout_ms")
                 .as_u32()
@@ -146,9 +138,6 @@ impl DesktopClient {
             exit,
         }
     }
-    pub fn connected(&self) -> bool {
-        self.exit.lock().is_none() && !self.task.is_finished()
-    }
     /// 購読で最初に届いた desktop 設定を待つ。届く前に購読の開始が再接続の対象でない失敗で終わったら、その失敗を返す。
     pub async fn first_settings(&self) -> Result<DesktopSettingsDto, TechnicalFailure> {
         let mut settings = self.settings.lock().clone();
@@ -197,14 +186,11 @@ async fn watch(
     rejected: &tokio::sync::watch::Sender<Option<TechnicalFailure>>,
     limiter: &RetryLimiter,
 ) -> TechnicalFailure {
-    let mut liveness = DaemonLiveness::default();
     let mut reconnects = 0u64;
     loop {
         let attempt_started = tokio::time::Instant::now();
-        let observed = observe(client, stream_client, settings, rejected, &mut liveness).await;
-        if observed.liveness && liveness.failed() {
-            return observed.failure;
-        }
+        let observed = observe(client, stream_client, settings, rejected).await;
+        log::debug!("Desktop settings reconnect: {}", observed.message);
         if attempt_started.elapsed() > POLICY.reset_after {
             reconnects = 0;
         }
@@ -218,35 +204,20 @@ async fn watch(
     }
 }
 
-struct Observation {
-    failure: TechnicalFailure,
-    liveness: bool,
-}
-
-fn connection_error(error: connectrpc::ConnectError, liveness: bool) -> Observation {
-    Observation {
-        failure: liveness_failure(error),
-        liveness,
-    }
-}
-
 fn subscription_result(
     result: Result<(), connectrpc::ConnectError>,
     rejected: &tokio::sync::watch::Sender<Option<TechnicalFailure>>,
-) -> Option<Observation> {
+) -> Option<TechnicalFailure> {
     let Err(error) = result else { return None };
     let reconnect = POLICY
         .reconnect_codes
         .contains(&(error.code.grpc_code() as i32));
-    let observed = connection_error(error, false);
+    let observed = connection_failure(error);
     if reconnect {
         Some(observed)
     } else {
-        log::warn!(
-            "Desktop settings subscription failed: {}",
-            observed.failure.message
-        );
-        rejected.send_replace(Some(observed.failure));
+        log::warn!("Desktop settings subscription failed: {}", observed.message);
+        rejected.send_replace(Some(observed));
         None
     }
 }
@@ -293,7 +264,7 @@ impl<'a> SettingsSubscription<'a> {
     async fn finish_pending(
         &mut self,
         rejected: &tokio::sync::watch::Sender<Option<TechnicalFailure>>,
-    ) -> Option<Observation> {
+    ) -> Option<TechnicalFailure> {
         let result = self.pending.as_mut().expect("pending subscription").await;
         self.pending = None;
         subscription_result(result, rejected)
@@ -319,23 +290,18 @@ async fn observe(
     stream_client: &rpc::ClientServiceClient<HttpClient>,
     settings: &tokio::sync::watch::Sender<Option<DesktopSettingsDto>>,
     rejected: &tokio::sync::watch::Sender<Option<TechnicalFailure>>,
-    liveness: &mut DaemonLiveness,
-) -> Observation {
+) -> TechnicalFailure {
     let client_id = uuid::Uuid::new_v4().to_string();
-    let opened = tokio::time::timeout(
-        POLICY.silence,
-        stream_client.open_state_stream(rpc::OpenStateStreamRequest {
+    let mut stream = match stream_client
+        .open_state_stream(rpc::OpenStateStreamRequest {
             client_id: client_id.clone(),
             ..Default::default()
-        }),
-    )
-    .await;
-    let mut stream = match opened {
-        Ok(Ok(stream)) => stream,
-        Ok(Err(error)) => return connection_error(error, true),
-        Err(_) => return silence_failure(),
+        })
+        .await
+    {
+        Ok(stream) => stream,
+        Err(error) => return connection_failure(error),
     };
-    let mut bookmark_deadline = tokio::time::Instant::now() + POLICY.silence;
     let mut subscription = SettingsSubscription::default();
     loop {
         let message = tokio::select! {
@@ -345,21 +311,17 @@ async fn observe(
                 }
                 continue;
             }
-            message = tokio::time::timeout_at(bookmark_deadline, stream.message()) => message,
+            message = stream.message() => message,
         };
         let message = match message {
-            Ok(Ok(Some(message))) => message,
-            Ok(Ok(None)) => {
-                return Observation {
-                    failure: TechnicalFailure {
-                        nature: TechnicalFailureNature::Transient,
-                        message: "State stream ended".into(),
-                    },
-                    liveness: true,
+            Ok(Some(message)) => message,
+            Ok(None) => {
+                return TechnicalFailure {
+                    nature: TechnicalFailureNature::Transient,
+                    message: "State stream ended".into(),
                 };
             }
-            Ok(Err(error)) => return connection_error(error, true),
-            Err(_) => return silence_failure(),
+            Err(error) => return connection_failure(error),
         };
         let event: wire::StateSubscriptionEvent = match to_wire(&message.to_owned_message()) {
             Ok(event) => event,
@@ -371,8 +333,6 @@ async fn observe(
         use wire::state_subscription_event::Event;
         let payload = match event.event {
             Some(Event::Bookmark(_)) => {
-                liveness.succeeded();
-                bookmark_deadline = tokio::time::Instant::now() + POLICY.silence;
                 continue;
             }
             Some(Event::Ready(_)) => {
@@ -390,17 +350,7 @@ async fn observe(
     }
 }
 
-fn silence_failure() -> Observation {
-    Observation {
-        failure: TechnicalFailure {
-            nature: TechnicalFailureNature::TimedOut,
-            message: "State stream was silent".into(),
-        },
-        liveness: true,
-    }
-}
-
-pub fn liveness_failure(error: connectrpc::ConnectError) -> TechnicalFailure {
+pub fn connection_failure(error: connectrpc::ConnectError) -> TechnicalFailure {
     use connectrpc::ErrorCode;
     let nature = match error.code {
         ErrorCode::DeadlineExceeded => TechnicalFailureNature::TimedOut,
@@ -412,14 +362,6 @@ pub fn liveness_failure(error: connectrpc::ConnectError) -> TechnicalFailure {
         nature,
         message: error_message(error),
     }
-}
-
-pub async fn server_info(endpoint: &ClientConnectionDto) -> Result<wire::ServerInfo, String> {
-    let response = client(endpoint)?
-        .get_server_info(rpc::Unit::default())
-        .await
-        .map_err(error_message)?;
-    to_wire(&response.into_owned()).map_err(|error| error.to_string())
 }
 
 pub fn error_message(error: connectrpc::ConnectError) -> String {

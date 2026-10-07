@@ -1,15 +1,13 @@
 use crate::infrastructure::platform::window_lifecycle::{
     NORMAL_WINDOW_LABEL, STARTUP_FAILURE_WINDOW_LABEL,
 };
-use crate::{
-    domain::daemon_supervision::StopIntent, usecase::daemon_supervision::DaemonSupervisionUsecase,
-};
+use crate::usecase::daemon_connection::DaemonConnectionUsecase;
 use std::sync::Arc;
 use tauri::Manager;
 
-pub(crate) fn show(app: &tauri::AppHandle) -> Result<(), String> {
-    let supervisor = app.state::<Arc<DaemonSupervisionUsecase>>();
-    let ready = supervisor.connection().is_ok();
+pub(crate) fn show<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<(), String> {
+    let connection = app.state::<Arc<DaemonConnectionUsecase>>();
+    let ready = connection.settings().is_some();
     let label = if ready {
         NORMAL_WINDOW_LABEL
     } else {
@@ -45,84 +43,126 @@ pub(crate) fn show(app: &tauri::AppHandle) -> Result<(), String> {
     window.set_focus().map_err(|e| e.to_string())
 }
 
-pub(crate) fn request_quit(supervisor: &DaemonSupervisionUsecase) {
-    if let Err(error) = supervisor.stop(StopIntent::Quit(0)) {
+struct SettingsObserverStarted;
+
+pub(crate) async fn initialize<R: tauri::Runtime>(app: &tauri::AppHandle<R>, hidden: bool) {
+    match app.state::<Arc<DaemonConnectionUsecase>>().connect().await {
+        Ok(()) => connected(app, hidden),
+        Err(error) => {
+            log::error!("{error}");
+            let main = app.clone();
+            let _ = app.run_on_main_thread(move || {
+                if let Err(error) = show(&main) {
+                    log::error!("{error}");
+                }
+            });
+        }
+    }
+}
+
+pub(crate) fn connected<R: tauri::Runtime>(app: &tauri::AppHandle<R>, hidden: bool) {
+    let connection = app.state::<Arc<DaemonConnectionUsecase>>().inner().clone();
+    let Some(settings) = connection.settings() else {
+        return;
+    };
+    if app
+        .try_state::<Option<releashd::desktop_api::TelemetryGuard>>()
+        .is_none()
+    {
+        app.manage(releashd::desktop_api::init_telemetry(
+            settings.crash_reporting,
+            settings.performance_telemetry,
+        ));
+    }
+    crate::desktop::apply_desktop_settings(app, settings);
+    if let Err(error) = app
+        .state::<crate::usecase::login_item::LoginItemUsecase>()
+        .restore(settings.auto_launch)
+    {
         log::error!("{error}");
     }
-}
-
-trait DesktopHost: Send + Sync + 'static {
-    fn has_failure_window(&self) -> bool;
-    fn ready(&self, settings: releashd::desktop_api::DesktopSettingsDto, first: bool, show: bool);
-    fn show(&self);
-    fn exit(&self, code: i32);
-    fn restart(&self) -> Result<(), String>;
-}
-
-struct TauriDesktop(tauri::AppHandle);
-impl DesktopHost for TauriDesktop {
-    fn has_failure_window(&self) -> bool {
-        self.0
-            .get_webview_window(STARTUP_FAILURE_WINDOW_LABEL)
-            .is_some()
-    }
-    fn ready(
-        &self,
-        settings: releashd::desktop_api::DesktopSettingsDto,
-        first: bool,
-        show_window: bool,
-    ) {
-        if first {
-            self.0.manage(releashd::desktop_api::init_telemetry(
-                settings.crash_reporting,
-                settings.performance_telemetry,
-            ));
-        }
-        crate::desktop::apply_desktop_settings(&self.0, settings);
-        let handle = self.0.clone();
-        let _ = self.0.run_on_main_thread(move || {
-            if let Some(failure) = handle.get_webview_window(STARTUP_FAILURE_WINDOW_LABEL) {
-                let _ = failure.destroy();
+    let main = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        let failed = main.get_webview_window(STARTUP_FAILURE_WINDOW_LABEL);
+        if show_after_connection(hidden, settings.start_minimized, failed.is_some()) {
+            if let Err(error) = show(&main) {
+                log::error!("{error}");
             }
-            if show_window {
-                if let Err(error) = show(&handle) {
+        }
+        if let Some(failed) = failed {
+            let _ = failed.destroy();
+        }
+    });
+    if !app.manage(SettingsObserverStarted) {
+        return;
+    }
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            if let Some(settings) = connection.settings_update() {
+                crate::desktop::apply_desktop_settings(&app, settings);
+                if let Err(error) = app
+                    .state::<crate::usecase::login_item::LoginItemUsecase>()
+                    .restore(settings.auto_launch)
+                {
                     log::error!("{error}");
                 }
             }
-        });
-    }
-    fn show(&self) {
-        let handle = self.0.clone();
-        let _ = self.0.run_on_main_thread(move || {
-            if let Err(error) = show(&handle) {
-                log::error!("{error}");
-            }
-        });
-    }
-    fn exit(&self, code: i32) {
-        crate::infrastructure::platform::native_termination::exit(&self.0, code);
-    }
-    fn restart(&self) -> Result<(), String> {
-        crate::infrastructure::platform::desktop_restart::restart(&self.0)
-    }
+        }
+    });
 }
 
-pub(crate) fn observe(
-    app: tauri::AppHandle,
-    supervisor: Arc<DaemonSupervisionUsecase>,
-    hidden: bool,
+type ConfirmationReply = Box<dyn FnOnce(bool) + Send>;
+
+fn confirm_stop_with(
+    confirm: impl FnOnce(&str, ConfirmationReply),
+    stop: impl FnOnce() + Send + 'static,
 ) {
-    tauri::async_runtime::spawn(observe_with(TauriDesktop(app), supervisor, hidden));
+    confirm(
+        "サーバを停止すると、動いている agent の Session も停止します。停止しますか？",
+        Box::new(move |confirmed| {
+            if confirmed {
+                stop();
+            }
+        }),
+    );
+}
+
+pub(crate) fn confirm_stop(app: tauri::AppHandle) {
+    use tauri_plugin_dialog::{DialogExt, MessageDialogButtons};
+    let handle = app.clone();
+    confirm_stop_with(
+        |message, reply| {
+            app.dialog()
+                .message(message)
+                .title("サーバを停止")
+                .buttons(MessageDialogButtons::OkCancel)
+                .show(reply)
+        },
+        move || {
+            tauri::async_runtime::spawn(async move {
+                if let Err(error) = handle.state::<Arc<DaemonConnectionUsecase>>().stop().await {
+                    handle
+                        .dialog()
+                        .message(error.to_string())
+                        .title("サーバを停止できませんでした")
+                        .show(|_| {});
+                }
+            });
+        },
+    );
+}
+
+pub(crate) fn quit<R: tauri::Runtime>(app: &tauri::AppHandle<R>, code: i32) {
+    crate::infrastructure::platform::native_termination::exit(app, code);
 }
 
 pub(crate) fn handle_run_event(app: &tauri::AppHandle, event: tauri::RunEvent) {
     crate::infrastructure::platform::window_lifecycle::handle_run_event(
         app,
         event,
-        |code| {
-            app.state::<Arc<super::application_lifecycle::ApplicationQuitIngress>>()
-                .request(crate::domain::daemon_supervision::StopIntent::Quit(code))
-        },
+        |code| quit(app, code),
         || {
             if let Err(error) = show(app) {
                 log::error!("{error}");
@@ -131,40 +171,8 @@ pub(crate) fn handle_run_event(app: &tauri::AppHandle, event: tauri::RunEvent) {
     );
 }
 
-async fn observe_with(
-    host: impl DesktopHost,
-    supervisor: Arc<DaemonSupervisionUsecase>,
-    hidden: bool,
-) {
-    let mut changes = supervisor.subscribe();
-    let mut first_ready = true;
-    loop {
-        changes.borrow_and_update();
-        use crate::domain::daemon_supervision::DesktopAction;
-        match supervisor.desktop_action(hidden, first_ready, host.has_failure_window()) {
-            DesktopAction::Ready { show_window } => {
-                if let Ok(connection) = supervisor.connection() {
-                    host.ready(connection.settings, first_ready, show_window);
-                    first_ready = false;
-                }
-            }
-            DesktopAction::Show => host.show(),
-            DesktopAction::Exit(code) => {
-                host.exit(code);
-                break;
-            }
-            DesktopAction::Restart => match host.restart() {
-                Ok(()) => break,
-                Err(error) => {
-                    let _ = supervisor.restart_failed(error);
-                }
-            },
-            DesktopAction::Wait => {}
-        }
-        if changes.changed().await.is_err() {
-            break;
-        }
-    }
+fn show_after_connection(hidden: bool, start_minimized: bool, failure_window: bool) -> bool {
+    !hidden || !start_minimized || failure_window
 }
 
 #[cfg(test)]

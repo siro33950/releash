@@ -20,6 +20,14 @@ const desktopSettings = {
 };
 vi.mock("@/lib/client", async (importOriginal) => ({
 	...(await importOriginal<typeof import("@/lib/client")>()),
+	getConnectionState: vi.fn(() =>
+		status.phase === "ready" ? "READY" : "TRANSIENT_FAILURE",
+	),
+	onConnectionStateChange: vi.fn((listener: () => void) => {
+		connectionListeners.add(listener);
+		return () => connectionListeners.delete(listener);
+	}),
+	getClient: vi.fn().mockResolvedValue({}),
 	invokeClient: vi.fn(),
 	subscribeState: (...args: Parameters<typeof states.subscribeState>) =>
 		states.subscribeState(...args),
@@ -110,8 +118,10 @@ let status: {
 	stage: string | null;
 	reason: string | null;
 };
-let channel: { onmessage?: (next: typeof status) => void } | null;
-const notifyStatus = () => channel?.onmessage?.({ ...status });
+const connectionListeners = new Set<() => void>();
+const notifyStatus = () => {
+	for (const listener of connectionListeners) listener();
+};
 beforeEach(() => {
 	vi.clearAllMocks();
 	localStorage.clear();
@@ -125,14 +135,7 @@ beforeEach(() => {
 		stage: null,
 		reason: null,
 	};
-	channel = null;
-	vi.mocked(invoke).mockImplementation(async (command, args) => {
-		if (command === "subscribe_daemon_status") {
-			channel = (args as { channel: typeof channel }).channel;
-			notifyStatus();
-			return;
-		}
-	});
+	vi.mocked(invoke).mockResolvedValue(null);
 });
 
 it("設定と一覧の初回失敗でシェルをFailedにせず購読の復旧を表示する", async () => {
@@ -145,7 +148,7 @@ it("設定と一覧の初回失敗でシェルをFailedにせず購読の復旧�
 	await act(async () =>
 		states.fail("desktop-settings", new Error("temporary read failure")),
 	);
-	expect(screen.getByRole("main")).toBe(main);
+	expect(screen.getByRole("main", { hidden: true })).toBe(main);
 	expect(screen.queryByRole("region", { name: "Daemon status" })).toBeNull();
 	await act(async () => {
 		states.publish("desktop-settings", desktopSettings);
@@ -187,14 +190,15 @@ it("再接続後も起動処理と更新確認は一度だけでReady復帰時�
 	);
 	const main = screen.getByRole("main");
 	fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+	const settingsPanel = screen.getByRole("region", {
+		name: "Registered repositories",
+	});
 	for (const phase of ["starting", "backoff", "ready", "starting", "ready"]) {
 		status = { ...status, phase };
 		if (phase === "starting") selectedWorktreeId = "selected";
 		await act(async () => notifyStatus());
-		expect(screen.getByRole("main")).toBe(main);
-		expect(
-			screen.getByRole("region", { name: "Registered repositories" }),
-		).toBeVisible();
+		expect(screen.getByRole("main", { hidden: true })).toBe(main);
+		expect(settingsPanel).toBeVisible();
 	}
 	expect(openWorktreeTab).toHaveBeenCalledTimes(1);
 	expect(

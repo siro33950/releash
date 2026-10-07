@@ -10,7 +10,6 @@ export function connectFixture(
 	const requests: Request[] = [];
 	const router = createConnectRouter().service(ClientService, {
 		getServerInfo: () => ({
-			launchId: "launch",
 			release: "test",
 		}),
 		...implementation,
@@ -43,9 +42,7 @@ export function connectFixture(
 			return {
 				url: "http://127.0.0.1:9829",
 				token: "client-token",
-				launchId: "launch",
 			};
-		if (command === "validate_daemon_connection") return;
 		throw new Error(`Unexpected IPC: ${command}`);
 	});
 	return {
