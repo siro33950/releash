@@ -1,11 +1,11 @@
 use crate::adaptor_gateway_workflow_workflow_host_test_helpers::Fixture;
-use releash_lib::test_support::integration::process::CommandRunOutput;
-use releash_lib::test_support::integration::process::CommandRunnerError;
-use releash_lib::test_support::integration::workflow::CommandExecutionInput;
-use releash_lib::test_support::integration::workflow::NodeExecutionFailureKind;
-use releash_lib::test_support::integration::workflow::NodeExecutionStatus;
-use releash_lib::test_support::integration::workflow::NodeFact;
-use releash_lib::test_support::integration::workflow::NodeKindName;
+use releashd::test_support::integration::process::CommandRunOutput;
+use releashd::test_support::integration::process::CommandRunnerError;
+use releashd::test_support::integration::workflow::CommandExecutionInput;
+use releashd::test_support::integration::workflow::NodeExecutionFailureKind;
+use releashd::test_support::integration::workflow::NodeExecutionStatus;
+use releashd::test_support::integration::workflow::NodeFact;
+use releashd::test_support::integration::workflow::NodeKindName;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -77,11 +77,10 @@ pub async fn test_command起動_起動済みの記録か登録があれば同じ
                 .unwrap()
                 .insert(
                     node.id.clone(),
-                    releash_lib::test_support::integration::process::ActiveCommandHandle::for_test(
-                    ),
+                    releashd::test_support::integration::process::ActiveCommandHandle::for_test(),
                 );
         }
-        let before = releash_lib::test_support::integration::workflow::read_tree_records(
+        let before = releashd::test_support::integration::workflow::read_tree_records(
             &fixture.store,
             &snapshot.execution_id,
         )
@@ -97,7 +96,7 @@ pub async fn test_command起動_起動済みの記録か登録があれば同じ
 
         // Then
         assert_eq!(
-            releash_lib::test_support::integration::workflow::read_tree_records(
+            releashd::test_support::integration::workflow::read_tree_records(
                 &fixture.store,
                 &snapshot.execution_id
             )
@@ -153,7 +152,7 @@ pub async fn test_終了処理_commandの終了結果も次回起動での喪失
             let input =
                 started_command(&fixture, &format!("  main:\n    command: true{completion}")).await;
             let execution_id = input.test_execution_id().clone();
-            let before = releash_lib::test_support::integration::workflow::read_tree_records(
+            let before = releashd::test_support::integration::workflow::read_tree_records(
                 &fixture.store,
                 &execution_id,
             )
@@ -162,10 +161,10 @@ pub async fn test_終了処理_commandの終了結果も次回起動での喪失
             .len();
 
             // When
-            releash_lib::test_support::integration::daemon::DaemonUsecase::test_with_repository(
+            releashd::test_support::integration::daemon::DaemonUsecase::test_with_repository(
                 fixture.host.test_daemon().clone(),
             )
-            .stop(releash_lib::test_support::integration::daemon::StopRequest::Exit { code: 23 })
+            .stop(releashd::test_support::integration::daemon::StopRequest::Exit { code: 23 })
             .await;
             fixture.host.shutdown_all_active_commands().await;
             fixture
@@ -174,7 +173,7 @@ pub async fn test_終了処理_commandの終了結果も次回起動での喪失
                 .await;
 
             // Then
-            let records = releash_lib::test_support::integration::workflow::read_tree_records(
+            let records = releashd::test_support::integration::workflow::read_tree_records(
                 &fixture.store,
                 &execution_id,
             )
@@ -185,8 +184,8 @@ pub async fn test_終了処理_commandの終了結果も次回起動での喪失
                 before,
                 "shutdown must not append command facts"
             );
-            let folded = releash_lib::test_support::integration::workflow::fold_tree_from(
-                &releash_lib::test_support::integration::workflow::FactLogReadBackend::Live(
+            let folded = releashd::test_support::integration::workflow::fold_tree_from(
+                &releashd::test_support::integration::workflow::FactLogReadBackend::Live(
                     fixture.store.clone(),
                 ),
                 &execution_id,
@@ -205,7 +204,7 @@ pub async fn test_終了処理_commandの終了結果も次回起動での喪失
             )
             .await
             .unwrap();
-            let records = releash_lib::test_support::integration::workflow::read_tree_records(
+            let records = releashd::test_support::integration::workflow::read_tree_records(
                 &fixture.store,
                 &execution_id,
             )
@@ -277,10 +276,10 @@ pub async fn test_終了処理_commandの保存待ちを終了し結果も後続
         .await;
 
         // When
-        releash_lib::test_support::integration::daemon::DaemonUsecase::test_with_repository(
+        releashd::test_support::integration::daemon::DaemonUsecase::test_with_repository(
             fixture.host.test_daemon().clone(),
         )
-        .stop(releash_lib::test_support::integration::daemon::StopRequest::Exit { code: 23 })
+        .stop(releashd::test_support::integration::daemon::StopRequest::Exit { code: 23 })
         .await;
         let mut shutdown = Box::pin(fixture.host.shutdown_all_active_commands());
         assert!(futures_util::poll!(shutdown.as_mut()).is_pending());
@@ -292,7 +291,7 @@ pub async fn test_終了処理_commandの保存待ちを終了し結果も後続
         .unwrap();
 
         // Then
-        let records = releash_lib::test_support::integration::workflow::read_tree_records(
+        let records = releashd::test_support::integration::workflow::read_tree_records(
             &fixture.store,
             &execution_id,
         )
@@ -315,7 +314,7 @@ pub async fn test_終了処理_commandの保存待ちを終了し結果も後続
             .test_daemon()
             .admission()
             .await
-            .admits(releash_lib::test_support::integration::daemon::DaemonRequest::Operation));
+            .admits(releashd::test_support::integration::daemon::DaemonRequest::Operation));
     }
 }
 
@@ -360,10 +359,10 @@ pub async fn test_終了処理_commandの起動待ちを終了し停止後は起
     .await;
 
     // When
-    releash_lib::test_support::integration::daemon::DaemonUsecase::test_with_repository(
+    releashd::test_support::integration::daemon::DaemonUsecase::test_with_repository(
         fixture.host.test_daemon().clone(),
     )
-    .stop(releash_lib::test_support::integration::daemon::StopRequest::Exit { code: 23 })
+    .stop(releashd::test_support::integration::daemon::StopRequest::Exit { code: 23 })
     .await;
     let mut shutdown = Box::pin(fixture.host.shutdown_all_active_commands());
     assert!(futures_util::poll!(shutdown.as_mut()).is_pending());
@@ -416,9 +415,9 @@ pub async fn test_終了処理_commandの起動待ちを終了し停止後は起
         .test_daemon()
         .admission()
         .await
-        .admits(releash_lib::test_support::integration::daemon::DaemonRequest::Operation));
-    let folded = releash_lib::test_support::integration::workflow::fold_tree_from(
-        &releash_lib::test_support::integration::workflow::FactLogReadBackend::Live(
+        .admits(releashd::test_support::integration::daemon::DaemonRequest::Operation));
+    let folded = releashd::test_support::integration::workflow::fold_tree_from(
+        &releashd::test_support::integration::workflow::FactLogReadBackend::Live(
             fixture.store.clone(),
         ),
         &snapshot.execution_id,
@@ -526,10 +525,10 @@ pub async fn test_command起動_別executionのobserver登録を待たずプロ�
         .lock()
         .unwrap()
         .contains_key(&inputs[1].test_node_execution_id());
-    releash_lib::test_support::integration::daemon::DaemonUsecase::test_with_repository(
+    releashd::test_support::integration::daemon::DaemonUsecase::test_with_repository(
         fixture.host.test_daemon().clone(),
     )
-    .stop(releash_lib::test_support::integration::daemon::StopRequest::Exit { code: 23 })
+    .stop(releashd::test_support::integration::daemon::StopRequest::Exit { code: 23 })
     .await;
     let mut shutdown = Box::pin(fixture.host.shutdown_all_active_commands());
     assert!(futures_util::poll!(shutdown.as_mut()).is_pending());
@@ -564,28 +563,27 @@ pub async fn test_command起動_別executionのobserver登録を待たずプロ�
 pub async fn test_終了処理_workflowの後始末だけでは停止要求の終了コードを決めない() {
     // Given
     let fixture = Fixture::new(0);
-    let daemon =
-        releash_lib::test_support::integration::daemon::DaemonUsecase::test_with_repository(
-            fixture.host.test_daemon().clone(),
-        );
+    let daemon = releashd::test_support::integration::daemon::DaemonUsecase::test_with_repository(
+        fixture.host.test_daemon().clone(),
+    );
     // When
     fixture.host.shutdown_all_active_commands().await;
     // Then
     assert_eq!(
         daemon
-            .stop(releash_lib::test_support::integration::daemon::StopRequest::Exit { code: 23 })
+            .stop(releashd::test_support::integration::daemon::StopRequest::Exit { code: 23 })
             .await,
-        releash_lib::test_support::integration::daemon::StopAcceptance::Started { code: 23 }
+        releashd::test_support::integration::daemon::StopAcceptance::Started { code: 23 }
     );
     assert_eq!(
         daemon
-            .stop(releash_lib::test_support::integration::daemon::StopRequest::Exit { code: 99 })
+            .stop(releashd::test_support::integration::daemon::StopRequest::Exit { code: 99 })
             .await,
-        releash_lib::test_support::integration::daemon::StopAcceptance::AlreadyAccepted
+        releashd::test_support::integration::daemon::StopAcceptance::AlreadyAccepted
     );
     assert!(
         !daemon
-            .admits(releash_lib::test_support::integration::daemon::DaemonRequest::Operation)
+            .admits(releashd::test_support::integration::daemon::DaemonRequest::Operation)
             .await
     );
 }

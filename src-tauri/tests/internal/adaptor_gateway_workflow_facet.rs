@@ -1,11 +1,11 @@
-use releash_lib::test_support::integration::workflow::delete_facet;
-use releash_lib::test_support::integration::workflow::list_facet_summaries;
-use releash_lib::test_support::integration::workflow::list_facets;
-use releash_lib::test_support::integration::workflow::load_facet;
-use releash_lib::test_support::integration::workflow::resolve_facet_path;
-use releash_lib::test_support::integration::workflow::save_facet;
-use releash_lib::test_support::integration::workflow::FacetError;
-use releash_lib::test_support::integration::workflow::FacetKind;
+use releashd::test_support::integration::workflow::delete_facet;
+use releashd::test_support::integration::workflow::list_facet_summaries;
+use releashd::test_support::integration::workflow::list_facets;
+use releashd::test_support::integration::workflow::load_facet;
+use releashd::test_support::integration::workflow::resolve_facet_path;
+use releashd::test_support::integration::workflow::save_facet;
+use releashd::test_support::integration::workflow::FacetError;
+use releashd::test_support::integration::workflow::FacetKind;
 use std::fs;
 use std::path::Path;
 use tempfile::TempDir;
@@ -29,7 +29,7 @@ fn setup_facet_files(dir: &Path) {
 pub fn test_facet読取_読めない上書きをbuiltinへ切り替えず一覧と診断にも失敗を返す() {
     // Given
     let directory = tempfile::tempdir().unwrap();
-    let key = releash_lib::test_support::integration::workflow::list_builtin_facet_keys(
+    let key = releashd::test_support::integration::workflow::list_builtin_facet_keys(
         FacetKind::Instruction,
     )[0];
     let path = directory
@@ -40,7 +40,7 @@ pub fn test_facet読取_読めない上書きをbuiltinへ切り替えず一覧�
     // When
     let content = load_facet(FacetKind::Instruction, key, directory.path());
     let summaries = list_facet_summaries(FacetKind::Instruction, directory.path());
-    let diagnosis = releash_lib::test_support::integration::workflow::diagnose_all(
+    let diagnosis = releashd::test_support::integration::workflow::diagnose_all(
         directory.path(),
         directory.path(),
     );
@@ -125,7 +125,7 @@ pub fn list_facets_sorted() {
     let tmp = TempDir::new().unwrap();
     setup_facet_files(tmp.path());
     let keys = list_facets(FacetKind::Knowledge, tmp.path()).unwrap();
-    let mut expected = releash_lib::test_support::integration::workflow::list_builtin_facet_keys(
+    let mut expected = releashd::test_support::integration::workflow::list_builtin_facet_keys(
         FacetKind::Knowledge,
     )
     .into_iter()
@@ -143,7 +143,7 @@ pub fn list_facets_empty_dir() {
     fs::create_dir_all(tmp.path().join("knowledge")).unwrap();
     let keys = list_facets(FacetKind::Knowledge, tmp.path()).unwrap();
     // custom dir は空でも builtin Knowledge facets は含まれる
-    let mut expected = releash_lib::test_support::integration::workflow::list_builtin_facet_keys(
+    let mut expected = releashd::test_support::integration::workflow::list_builtin_facet_keys(
         FacetKind::Knowledge,
     )
     .into_iter()
@@ -158,7 +158,7 @@ pub fn list_facets_nonexistent_dir() {
     let tmp = TempDir::new().unwrap();
     let keys = list_facets(FacetKind::Knowledge, tmp.path()).unwrap();
     // custom dir が存在しなくても builtin Knowledge facets は含まれる
-    let mut expected = releash_lib::test_support::integration::workflow::list_builtin_facet_keys(
+    let mut expected = releashd::test_support::integration::workflow::list_builtin_facet_keys(
         FacetKind::Knowledge,
     )
     .into_iter()
@@ -184,10 +184,9 @@ pub fn list_facet_summaries_merges_builtin_and_custom() {
     .unwrap();
 
     let summaries = list_facet_summaries(FacetKind::Policy, tmp.path()).unwrap();
-    let builtin_count = releash_lib::test_support::integration::workflow::list_builtin_facet_keys(
-        FacetKind::Policy,
-    )
-    .len();
+    let builtin_count =
+        releashd::test_support::integration::workflow::list_builtin_facet_keys(FacetKind::Policy)
+            .len();
     assert_eq!(summaries.len(), builtin_count + 1);
 
     let custom = summaries.iter().find(|s| s.key == "custom-policy").unwrap();
@@ -237,9 +236,8 @@ pub fn list_facets_includes_builtin_keys() {
 pub fn delete_builtin_facet_is_protected() {
     let tmp = TempDir::new().unwrap();
     // ビルトインキーの削除はBuiltinProtectedエラー
-    let builtin_keys = releash_lib::test_support::integration::workflow::list_builtin_facet_keys(
-        FacetKind::Policy,
-    );
+    let builtin_keys =
+        releashd::test_support::integration::workflow::list_builtin_facet_keys(FacetKind::Policy);
     if let Some(key) = builtin_keys.first() {
         let result = delete_facet(FacetKind::Policy, key, tmp.path());
         assert!(matches!(

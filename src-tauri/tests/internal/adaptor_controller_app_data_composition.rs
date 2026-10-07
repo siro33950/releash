@@ -13,46 +13,46 @@ pub(crate) mod tests {
 
     struct NoExecutionTrees;
     #[async_trait::async_trait]
-    impl releash_lib::test_support::integration::persistence::ExecutionTreeGc for NoExecutionTrees {
+    impl releashd::test_support::integration::persistence::ExecutionTreeGc for NoExecutionTrees {
         async fn record_repository_root(
             &self,
             _: &str,
             _: &str,
-        ) -> Result<(), releash_lib::test_support::integration::workflow::WorkflowError> {
+        ) -> Result<(), releashd::test_support::integration::workflow::WorkflowError> {
             unreachable!()
         }
         async fn execution_trees(
             &self,
             _: Option<&str>,
         ) -> Result<
-            Vec<releash_lib::test_support::integration::workflow::ExecutionTreeArchiveCandidate>,
-            releash_lib::test_support::integration::workflow::WorkflowError,
+            Vec<releashd::test_support::integration::workflow::ExecutionTreeArchiveCandidate>,
+            releashd::test_support::integration::workflow::WorkflowError,
         > {
             Ok(Vec::new())
         }
         async fn archive_removed_tree(
             &self,
             _: &str,
-        ) -> Result<(), releash_lib::test_support::integration::workflow::WorkflowError> {
+        ) -> Result<(), releashd::test_support::integration::workflow::WorkflowError> {
             unreachable!()
         }
     }
-    use releash_lib::test_support::integration::platform::AppDataPathObserver;
-    use releash_lib::test_support::integration::platform::ProductionAppDataComposition;
-    use releash_lib::test_support::integration::repository::LocalEventTransactionRepository;
+    use releashd::test_support::integration::platform::AppDataPathObserver;
+    use releashd::test_support::integration::platform::ProductionAppDataComposition;
+    use releashd::test_support::integration::repository::LocalEventTransactionRepository;
 
-    use releash_lib::test_support::integration::platform::AppDataPathOperation;
-    use releash_lib::test_support::integration::platform::CanonicalRuntimeOwnerView;
-    use releash_lib::test_support::integration::platform::CommitBatchError;
-    use releash_lib::test_support::integration::platform::CommitBatchResult;
-    use releash_lib::test_support::integration::platform::CommitIdentity;
-    use releash_lib::test_support::integration::platform::CommitResolution;
-    use releash_lib::test_support::integration::platform::DomainEventPage;
-    use releash_lib::test_support::integration::platform::LocalAtomicBatch;
-    use releash_lib::test_support::integration::platform::LocalEventQuery;
-    use releash_lib::test_support::integration::platform::LocalEventQueryError;
-    use releash_lib::test_support::integration::platform::LocalEventQueryResult;
-    use releash_lib::test_support::integration::platform::LocalStateMutation;
+    use releashd::test_support::integration::platform::AppDataPathOperation;
+    use releashd::test_support::integration::platform::CanonicalRuntimeOwnerView;
+    use releashd::test_support::integration::platform::CommitBatchError;
+    use releashd::test_support::integration::platform::CommitBatchResult;
+    use releashd::test_support::integration::platform::CommitIdentity;
+    use releashd::test_support::integration::platform::CommitResolution;
+    use releashd::test_support::integration::platform::DomainEventPage;
+    use releashd::test_support::integration::platform::LocalAtomicBatch;
+    use releashd::test_support::integration::platform::LocalEventQuery;
+    use releashd::test_support::integration::platform::LocalEventQueryError;
+    use releashd::test_support::integration::platform::LocalEventQueryResult;
+    use releashd::test_support::integration::platform::LocalStateMutation;
 
     #[derive(Default)]
     struct RecordingObserver {
@@ -71,8 +71,8 @@ pub(crate) mod tests {
     enum OwnerQueryAction {
         AppendFacts(
             Vec<(
-                releash_lib::test_support::integration::workflow::NodeFactMeta,
-                releash_lib::test_support::integration::workflow::NodeFact,
+                releashd::test_support::integration::workflow::NodeFactMeta,
+                releashd::test_support::integration::workflow::NodeFact,
             )>,
         ),
         FailRevalidation,
@@ -81,7 +81,7 @@ pub(crate) mod tests {
     }
 
     struct OwnerRaceRepository {
-        inner: Arc<releash_lib::test_support::integration::persistence::LocalEventStore>,
+        inner: Arc<releashd::test_support::integration::persistence::LocalEventStore>,
         action: Mutex<Option<OwnerQueryAction>>,
         action_at_owner_query: usize,
         owner_query_calls: AtomicUsize,
@@ -91,7 +91,7 @@ pub(crate) mod tests {
 
     impl OwnerRaceRepository {
         fn new(
-            inner: Arc<releash_lib::test_support::integration::persistence::LocalEventStore>,
+            inner: Arc<releashd::test_support::integration::persistence::LocalEventStore>,
             action: OwnerQueryAction,
         ) -> Self {
             Self {
@@ -105,7 +105,7 @@ pub(crate) mod tests {
         }
 
         fn at_initial_query(
-            inner: Arc<releash_lib::test_support::integration::persistence::LocalEventStore>,
+            inner: Arc<releashd::test_support::integration::persistence::LocalEventStore>,
             action: OwnerQueryAction,
         ) -> Self {
             Self {
@@ -142,7 +142,7 @@ pub(crate) mod tests {
 
         fn canonical_event_batch_identity_v1(
             &self,
-            events: &[releash_lib::test_support::integration::platform::UncommittedDomainEvent],
+            events: &[releashd::test_support::integration::platform::UncommittedDomainEvent],
         ) -> Result<Vec<u8>, String> {
             self.inner.canonical_event_batch_identity_v1(events)
         }
@@ -163,7 +163,7 @@ pub(crate) mod tests {
 
         async fn load_stream(
             &self,
-            request: releash_lib::test_support::integration::platform::LoadStreamRequest,
+            request: releashd::test_support::integration::platform::LoadStreamRequest,
         ) -> Result<DomainEventPage, LocalEventQueryError> {
             self.inner.load_stream(request).await
         }
@@ -188,7 +188,7 @@ pub(crate) mod tests {
                                 .first()
                                 .map(|(meta, _)| meta.tree_id.as_str())
                                 .unwrap_or("owner-race-empty");
-                            releash_lib::test_support::integration::workflow::append_fact_batch_for_seed(
+                            releashd::test_support::integration::workflow::append_fact_batch_for_seed(
                                 &self.inner,
                                 &facts,
                                 1,
@@ -221,14 +221,14 @@ pub(crate) mod tests {
         session_id: &str,
         worktree_path: &str,
     ) -> Vec<(
-        releash_lib::test_support::integration::workflow::NodeFactMeta,
-        releash_lib::test_support::integration::workflow::NodeFact,
+        releashd::test_support::integration::workflow::NodeFactMeta,
+        releashd::test_support::integration::workflow::NodeFact,
     )> {
-        releash_lib::test_support::integration::workflow::SessionExecutionTreeRootFacts::new(
+        releashd::test_support::integration::workflow::SessionExecutionTreeRootFacts::new(
             session_id,
             worktree_path,
             worktree_path,
-            releash_lib::test_support::integration::providers::ProviderKind::Claude,
+            releashd::test_support::integration::providers::ProviderKind::Claude,
             None,
         )
         .unwrap()
@@ -241,21 +241,21 @@ pub(crate) mod tests {
         execution_id: &str,
         worktree_path: &str,
     ) -> Vec<(
-        releash_lib::test_support::integration::workflow::NodeFactMeta,
-        releash_lib::test_support::integration::workflow::NodeFact,
+        releashd::test_support::integration::workflow::NodeFactMeta,
+        releashd::test_support::integration::workflow::NodeFact,
     )> {
-        use releash_lib::test_support::integration::workflow::ExecutionOrigin;
-        use releash_lib::test_support::integration::workflow::ExecutionTreeLaunch;
-        use releash_lib::test_support::integration::workflow::NodeCompletion;
-        use releash_lib::test_support::integration::workflow::NodeDefinition;
-        use releash_lib::test_support::integration::workflow::NodeFact;
-        use releash_lib::test_support::integration::workflow::NodeFactMeta;
-        use releash_lib::test_support::integration::workflow::NodeKind;
-        use releash_lib::test_support::integration::workflow::NodeKindName;
-        use releash_lib::test_support::integration::workflow::SessionSpec;
-        use releash_lib::test_support::integration::workflow::StartedFact;
-        use releash_lib::test_support::integration::workflow::TreeRootFact;
-        use releash_lib::test_support::integration::workflow::WorkflowDefinition;
+        use releashd::test_support::integration::workflow::ExecutionOrigin;
+        use releashd::test_support::integration::workflow::ExecutionTreeLaunch;
+        use releashd::test_support::integration::workflow::NodeCompletion;
+        use releashd::test_support::integration::workflow::NodeDefinition;
+        use releashd::test_support::integration::workflow::NodeFact;
+        use releashd::test_support::integration::workflow::NodeFactMeta;
+        use releashd::test_support::integration::workflow::NodeKind;
+        use releashd::test_support::integration::workflow::NodeKindName;
+        use releashd::test_support::integration::workflow::SessionSpec;
+        use releashd::test_support::integration::workflow::StartedFact;
+        use releashd::test_support::integration::workflow::TreeRootFact;
+        use releashd::test_support::integration::workflow::WorkflowDefinition;
         vec![(
             NodeFactMeta {
                 tree_id: execution_id.to_string(),
@@ -309,9 +309,9 @@ pub(crate) mod tests {
         worktree_path: &str,
     ) -> (PathBuf, PathBuf) {
         let workspace_key =
-            releash_lib::test_support::integration::platform::storage_key(worktree_path);
+            releashd::test_support::integration::platform::storage_key(worktree_path);
         let review_key =
-            releash_lib::test_support::integration::platform::worktree_storage_key(worktree_path);
+            releashd::test_support::integration::platform::worktree_storage_key(worktree_path);
         let workspace_state = app_data_dir
             .join("workspace_state")
             .join(format!("{workspace_key}.json"));
@@ -329,7 +329,7 @@ pub(crate) mod tests {
 
     fn live_repo_paths() -> (
         tempfile::TempDir,
-        releash_lib::test_support::integration::repository::SharedRepoPaths,
+        releashd::test_support::integration::repository::SharedRepoPaths,
     ) {
         let live_repo = tempfile::tempdir().expect("live repo");
         git2::Repository::init(live_repo.path()).expect("initialize live repo");
@@ -342,8 +342,8 @@ pub(crate) mod tests {
 
     async fn assert_facts_appended_at_sweep_boundary_are_protected(
         facts: Vec<(
-            releash_lib::test_support::integration::workflow::NodeFactMeta,
-            releash_lib::test_support::integration::workflow::NodeFact,
+            releashd::test_support::integration::workflow::NodeFactMeta,
+            releashd::test_support::integration::workflow::NodeFact,
         )>,
         protected_worktree: &str,
     ) {
@@ -598,16 +598,16 @@ pub(crate) mod tests {
     }
 }
 
-use releash_lib::test_support::integration::platform::ProductionAppDataComposition;
+use releashd::test_support::integration::platform::ProductionAppDataComposition;
 use std::sync::Arc;
 
 #[tokio::test]
 pub async fn test_startup_gc結線_消失候補の未終了実行木をabortしてarchiveする() {
     use crate::adaptor_gateway_workflow_workflow_host_test_helpers::archive_fixture;
-    use releash_lib::test_support::integration::workflow::ExecutionStatus;
-    use releash_lib::test_support::integration::workflow::ExecutionTreeArchiveRepository;
-    use releash_lib::test_support::integration::workflow::NodeFact;
-    use releash_lib::test_support::integration::workflow::SessionExecutionTreeRootFacts;
+    use releashd::test_support::integration::workflow::ExecutionStatus;
+    use releashd::test_support::integration::workflow::ExecutionTreeArchiveRepository;
+    use releashd::test_support::integration::workflow::NodeFact;
+    use releashd::test_support::integration::workflow::SessionExecutionTreeRootFacts;
     // Given
     let fixture = archive_fixture();
     let repo = tempfile::tempdir().unwrap();
@@ -619,7 +619,7 @@ pub async fn test_startup_gc結線_消失候補の未終了実行木をabortし�
         id,
         path.to_str().unwrap(),
         path.to_str().unwrap(),
-        releash_lib::test_support::integration::providers::ProviderKind::Codex,
+        releashd::test_support::integration::providers::ProviderKind::Codex,
         None,
     )
     .unwrap();
@@ -627,7 +627,7 @@ pub async fn test_startup_gc結線_消失候補の未終了実行木をabortし�
         started.root.as_mut().unwrap().repository_root =
             Some(repo.path().to_string_lossy().into_owned());
     }
-    releash_lib::test_support::integration::workflow::append_fact_batch_for_seed(
+    releashd::test_support::integration::workflow::append_fact_batch_for_seed(
         &fixture.store,
         &facts.into_facts(),
         1,
@@ -636,7 +636,7 @@ pub async fn test_startup_gc結線_消失候補の未終了実行木をabortし�
     .unwrap();
     let composition = ProductionAppDataComposition::new(
         fixture.directory.path().into(),
-        std::sync::Arc::new(releash_lib::test_support::integration::platform::RetryLimiter::new()),
+        std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
     );
     // When
     let report = composition

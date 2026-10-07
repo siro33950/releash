@@ -1,9 +1,9 @@
-use releash_lib::test_support::integration::platform::Deadline;
-use releash_lib::test_support::integration::platform::OperationContext;
-use releash_lib::test_support::integration::platform::OperationStopped;
-use releash_lib::test_support::integration::repository::FileWorktreeOperationLocks;
-use releash_lib::test_support::integration::repository::RepositoryError;
-use releash_lib::test_support::integration::repository::WorktreeOperationLocks;
+use releashd::test_support::integration::platform::Deadline;
+use releashd::test_support::integration::platform::OperationContext;
+use releashd::test_support::integration::platform::OperationStopped;
+use releashd::test_support::integration::repository::FileWorktreeOperationLocks;
+use releashd::test_support::integration::repository::RepositoryError;
+use releashd::test_support::integration::repository::WorktreeOperationLocks;
 use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
@@ -154,9 +154,9 @@ pub async fn test_worktree削除排他_保存先がファイルならioエラー
 
 #[tokio::test]
 pub async fn test_worktree削除排他_registryとactive待ちを期限と取消で終了する() {
-    use releash_lib::test_support::integration::platform::Deadline;
-    use releash_lib::test_support::integration::platform::OperationContext;
-    use releash_lib::test_support::integration::platform::OperationStopped;
+    use releashd::test_support::integration::platform::Deadline;
+    use releashd::test_support::integration::platform::OperationContext;
+    use releashd::test_support::integration::platform::OperationStopped;
     use std::sync::Arc;
     use std::time::Duration;
     use std::time::Instant;
@@ -171,7 +171,7 @@ pub async fn test_worktree削除排他_registryとactive待ちを期限と取消
                 expire.then(|| Deadline::new(Instant::now() + Duration::from_millis(50))),
                 Arc::new(token.clone()),
             );
-            let mut deletion = Box::pin(releash_lib::test_support::integration::platform::scope(
+            let mut deletion = Box::pin(releashd::test_support::integration::platform::scope(
                 context,
                 locks.deletion("/repo/worktree"),
             ));
@@ -211,7 +211,7 @@ pub fn test_worktree削除排他_複製されたfdが残ってもleaseの破棄�
 
 #[test]
 pub fn test_worktree変更排他_registry待ちを期限と取消で終了し再取得できる() {
-    use releash_lib::test_support::integration::platform::Cancellation;
+    use releashd::test_support::integration::platform::Cancellation;
 
     use std::sync::mpsc;
 
@@ -242,10 +242,9 @@ pub fn test_worktree変更排他_registry待ちを期限と取消で終了し再
         let worker_locks = locks.clone();
         let (reply, result) = mpsc::channel();
         let worker = std::thread::spawn(move || {
-            let result =
-                releash_lib::test_support::integration::platform::sync_scope(context, || {
-                    worker_locks.mutation("/repo/worktree").map(drop)
-                });
+            let result = releashd::test_support::integration::platform::sync_scope(context, || {
+                worker_locks.mutation("/repo/worktree").map(drop)
+            });
             reply.send(result).unwrap();
         });
         // When
@@ -289,7 +288,7 @@ pub fn test_worktree排他_停止済みscopeの破棄でも最後の所有者が
                 Arc::new(token),
             );
             // When / Then
-            releash_lib::test_support::integration::platform::sync_scope(context, || {
+            releashd::test_support::integration::platform::sync_scope(context, || {
                 drop(lease);
                 if another.is_some() {
                     assert_eq!(
@@ -329,9 +328,7 @@ pub fn test_worktree排他_破棄時のregistry競合では待たずlockを解�
             let (done, finished) = std::sync::mpsc::channel();
             // When
             let worker = std::thread::spawn(move || {
-                releash_lib::test_support::integration::platform::sync_scope(context, || {
-                    drop(lease)
-                });
+                releashd::test_support::integration::platform::sync_scope(context, || drop(lease));
                 done.send(()).unwrap();
             });
             let result = finished.recv_timeout(Duration::from_secs(2));

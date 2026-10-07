@@ -1,4 +1,4 @@
-use releash_lib::test_support::integration::workflow::generate_editor_support;
+use releashd::test_support::integration::workflow::generate_editor_support;
 
 #[test]
 pub fn test_worktreeのstub_生成物が型とhandleと全builderの公開契約を持つ() {
@@ -122,10 +122,10 @@ pub fn test_completionのstub_delegateメソッドとchild段を再生成する(
 }
 pub(crate) mod tests {
 
-    use releash_lib::test_support::integration::workflow::facet_document_url;
-    use releash_lib::test_support::integration::workflow::generate_editor_support;
-    use releash_lib::test_support::integration::workflow::FacetKind;
-    use releash_lib::test_support::integration::workflow::LUARC;
+    use releashd::test_support::integration::workflow::facet_document_url;
+    use releashd::test_support::integration::workflow::generate_editor_support;
+    use releashd::test_support::integration::workflow::FacetKind;
+    use releashd::test_support::integration::workflow::LUARC;
     use std::fs;
     use std::path::Path;
     use tempfile::TempDir;
@@ -155,7 +155,7 @@ pub(crate) mod tests {
         assert_eq!(fs::read_to_string(&builtin_path).unwrap(), first_builtin);
         assert_eq!(
             first_builtin,
-            releash_lib::test_support::integration::workflow::get_builtin_facet(
+            releashd::test_support::integration::workflow::get_builtin_facet(
                 FacetKind::Policy,
                 "coding"
             )
@@ -253,7 +253,7 @@ pub(crate) mod tests {
         let directory = TempDir::new().unwrap();
         generate_editor_support(directory.path()).unwrap();
         let generated_builtin = directory.path().join(".releash/facets/policies/coding.md");
-        let expected = releash_lib::test_support::integration::workflow::get_builtin_facet(
+        let expected = releashd::test_support::integration::workflow::get_builtin_facet(
             FacetKind::Policy,
             "coding",
         )
@@ -262,7 +262,7 @@ pub(crate) mod tests {
 
         fs::write(&generated_builtin, "stale generated content").unwrap();
         assert_eq!(
-            releash_lib::test_support::integration::workflow::load_facet(
+            releashd::test_support::integration::workflow::load_facet(
                 FacetKind::Policy,
                 "coding",
                 directory.path()
@@ -273,7 +273,7 @@ pub(crate) mod tests {
 
         fs::remove_file(generated_builtin).unwrap();
         assert_eq!(
-            releash_lib::test_support::integration::workflow::load_facet(
+            releashd::test_support::integration::workflow::load_facet(
                 FacetKind::Policy,
                 "coding",
                 directory.path()

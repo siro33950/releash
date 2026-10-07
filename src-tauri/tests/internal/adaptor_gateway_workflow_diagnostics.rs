@@ -1,13 +1,13 @@
-use releash_lib::test_support::integration::fixtures::fixtures_adaptor_gateway_workflow_diagnostics_predicate_yaml as predicate_yaml;
+use releashd::test_support::integration::fixtures::fixtures_adaptor_gateway_workflow_diagnostics_predicate_yaml as predicate_yaml;
 
-use releash_lib::test_support::integration::workflow::diagnose_lua_workflow_source;
-use releash_lib::test_support::integration::workflow::diagnose_workflow_source;
-use releash_lib::test_support::integration::workflow::route_in_scope;
-use releash_lib::test_support::integration::workflow::DiagnosticSpan;
-use releash_lib::test_support::integration::workflow::DiagnosticStage;
-use releash_lib::test_support::integration::workflow::RouteDecision;
-use releash_lib::test_support::integration::workflow::Severity;
-use releash_lib::test_support::integration::workflow::WorkflowSourceDiagnostics;
+use releashd::test_support::integration::workflow::diagnose_lua_workflow_source;
+use releashd::test_support::integration::workflow::diagnose_workflow_source;
+use releashd::test_support::integration::workflow::route_in_scope;
+use releashd::test_support::integration::workflow::DiagnosticSpan;
+use releashd::test_support::integration::workflow::DiagnosticStage;
+use releashd::test_support::integration::workflow::RouteDecision;
+use releashd::test_support::integration::workflow::Severity;
+use releashd::test_support::integration::workflow::WorkflowSourceDiagnostics;
 use std::collections::HashMap;
 
 const MERGED_REFERENCES: &str = include_str!(
@@ -210,11 +210,11 @@ return r.workflow{{ name = "{name}", description = "test", main = r.sequence{{
             let path = tmp.path().join(format!("{name}.{extension}"));
             std::fs::write(&path, source).unwrap();
             let error =
-                releash_lib::test_support::integration::workflow::load_workflow(&path, tmp.path())
+                releashd::test_support::integration::workflow::load_workflow(&path, tmp.path())
                     .unwrap_err();
             assert!(
                 matches!(error,
-                    releash_lib::test_support::integration::workflow::StorageError::Diagnostics(ref items)
+                    releashd::test_support::integration::workflow::StorageError::Diagnostics(ref items)
                         if items.iter().any(|item| item.code == code && item.stage == DiagnosticStage::ParseShape)
                 ),
                 "{error:?}"
@@ -232,7 +232,7 @@ pub fn test_sequence多段参照の診断_実loaderが統合mapの参照を受�
 
     // When
     let diagnosis = diagnose_workflow_source(MERGED_REFERENCES, None);
-    let loaded = releash_lib::test_support::integration::workflow::load_workflow(&path, tmp.path());
+    let loaded = releashd::test_support::integration::workflow::load_workflow(&path, tmp.path());
 
     // Then
     assert!(
@@ -282,7 +282,7 @@ pub fn test_fanout多段参照の診断_yamlとluaの配線とitemsを診断ゼ�
             diagnose_lua_workflow_source(&filename, source, tmp.path(), tmp.path(), None)
         };
         let loaded =
-            releash_lib::test_support::integration::workflow::load_workflow(&path, tmp.path());
+            releashd::test_support::integration::workflow::load_workflow(&path, tmp.path());
 
         // Then
         assert!(
@@ -336,7 +336,7 @@ return r.workflow{ name = 'fanout-map-routing', description = 'Fanout routing', 
             diagnose_lua_workflow_source(&filename, source, tmp.path(), tmp.path(), None)
         };
         let loaded =
-            releash_lib::test_support::integration::workflow::load_workflow(&path, tmp.path());
+            releashd::test_support::integration::workflow::load_workflow(&path, tmp.path());
 
         // Then
         assert!(
@@ -370,11 +370,10 @@ return r.workflow{ name = 'budget', description = 'test', main = judge }
     .unwrap();
     // When
     let result =
-        releash_lib::test_support::integration::workflow::load_workflow(&path, directory.path());
+        releashd::test_support::integration::workflow::load_workflow(&path, directory.path());
     // Then
-    let Err(releash_lib::test_support::integration::workflow::StorageError::Diagnostics(
-        diagnostics,
-    )) = result
+    let Err(releashd::test_support::integration::workflow::StorageError::Diagnostics(diagnostics)) =
+        result
     else {
         panic!("{result:?}");
     };
@@ -445,12 +444,10 @@ pub fn test_lua参照解決の診断_変換不能な値は利用箇所ごとの�
         let path = directory.path().join("sources.lua");
         std::fs::write(&path, &source).unwrap();
         // When
-        let result = releash_lib::test_support::integration::workflow::load_workflow(
-            &path,
-            directory.path(),
-        );
+        let result =
+            releashd::test_support::integration::workflow::load_workflow(&path, directory.path());
         // Then
-        let Err(releash_lib::test_support::integration::workflow::StorageError::Diagnostics(
+        let Err(releashd::test_support::integration::workflow::StorageError::Diagnostics(
             diagnostics,
         )) = result
         else {
@@ -496,12 +493,12 @@ pub fn test_lua述語の診断_自childのartifact_field以外はresolveでload�
             let path = directory.path().join("scope.lua");
             std::fs::write(&path, predicate_lua(&expression)).unwrap();
             // When
-            let result = releash_lib::test_support::integration::workflow::load_workflow(
+            let result = releashd::test_support::integration::workflow::load_workflow(
                 &path,
                 directory.path(),
             );
             // Then
-            let Err(releash_lib::test_support::integration::workflow::StorageError::Diagnostics(
+            let Err(releashd::test_support::integration::workflow::StorageError::Diagnostics(
                 diagnostics,
             )) = result
             else {
@@ -523,8 +520,8 @@ pub fn test_lua述語の診断_自childのartifact_field以外はresolveでload�
 
 #[test]
 pub fn test_述語の表面間同値性_受理と全真理値の遷移が一致する() {
-    use releash_lib::test_support::integration::workflow::route_in_scope;
-    use releash_lib::test_support::integration::workflow::RouteDecision;
+    use releashd::test_support::integration::workflow::route_in_scope;
+    use releashd::test_support::integration::workflow::RouteDecision;
     // Given
     let directory = tempfile::tempdir().unwrap();
     for (yaml_on, lua_on) in [
@@ -705,12 +702,12 @@ pub fn test_述語の表面間同値性_空と不正な要素と配列以外は�
                 .join(format!("predicate-routing.{extension}"));
             std::fs::write(&path, source).unwrap();
             // When
-            let result = releash_lib::test_support::integration::workflow::load_workflow(
+            let result = releashd::test_support::integration::workflow::load_workflow(
                 &path,
                 directory.path(),
             );
             // Then
-            let Err(releash_lib::test_support::integration::workflow::StorageError::Diagnostics(
+            let Err(releashd::test_support::integration::workflow::StorageError::Diagnostics(
                 diagnostics,
             )) = result
             else {
@@ -762,7 +759,7 @@ pub fn test_述語の表面間同値性_sequenceとfanoutの異なるslotを合�
             let path = directory.path().join(format!("predicate-routing.{extension}"));
             std::fs::write(&path, source).unwrap();
             // When
-            let workflow = releash_lib::test_support::integration::workflow::load_workflow(&path, directory.path()).unwrap();
+            let workflow = releashd::test_support::integration::workflow::load_workflow(&path, directory.path()).unwrap();
             let sequence = workflow.entry_node().unwrap().sequence().unwrap();
             // Then
             for first in [false, true] {
@@ -808,7 +805,7 @@ pub fn test_述語の実loader_不正なshapeと参照を両表面でloadしな�
                 .join(format!("predicate-routing.{extension}"));
             std::fs::write(&path, source).unwrap();
             // When
-            let result = releash_lib::test_support::integration::workflow::load_workflow(
+            let result = releashd::test_support::integration::workflow::load_workflow(
                 &path,
                 directory.path(),
             );
@@ -817,9 +814,7 @@ pub fn test_述語の実loader_不正なshapeと参照を両表面でloadしな�
                 matches!(
                     result,
                     Err(
-                        releash_lib::test_support::integration::workflow::StorageError::Diagnostics(
-                            _
-                        )
+                        releashd::test_support::integration::workflow::StorageError::Diagnostics(_)
                     )
                 ),
                 "{result:?}"
@@ -1108,35 +1103,35 @@ return r.workflow{name = 'references', description = 'test', main = r.sequence{c
 }
 pub(crate) mod tests {
 
-    use releash_lib::test_support::integration::workflow::collect_all_facet_keys;
-    use releash_lib::test_support::integration::workflow::definition_FacetRefs as FacetRefs;
-    use releash_lib::test_support::integration::workflow::diagnose_all;
-    use releash_lib::test_support::integration::workflow::diagnose_directory;
-    use releash_lib::test_support::integration::workflow::diagnose_lua_workflow_source;
-    use releash_lib::test_support::integration::workflow::diagnose_workflow_facet_references;
-    use releash_lib::test_support::integration::workflow::diagnose_workflow_source;
-    use releash_lib::test_support::integration::workflow::load_workflows_in_scope;
-    use releash_lib::test_support::integration::workflow::CommandSpec;
-    use releash_lib::test_support::integration::workflow::DiagnosticReport;
-    use releash_lib::test_support::integration::workflow::DiagnosticScope;
-    use releash_lib::test_support::integration::workflow::DiagnosticStage;
-    use releash_lib::test_support::integration::workflow::FacetKind;
-    use releash_lib::test_support::integration::workflow::NodeDefinition;
-    use releash_lib::test_support::integration::workflow::NodeKind;
-    use releash_lib::test_support::integration::workflow::Rule;
-    use releash_lib::test_support::integration::workflow::Severity;
-    use releash_lib::test_support::integration::workflow::WorkflowDefinition as WorkflowDefinitionYaml;
-    use releash_lib::test_support::integration::workflow::YamlSpanMap;
+    use releashd::test_support::integration::workflow::collect_all_facet_keys;
+    use releashd::test_support::integration::workflow::definition_FacetRefs as FacetRefs;
+    use releashd::test_support::integration::workflow::diagnose_all;
+    use releashd::test_support::integration::workflow::diagnose_directory;
+    use releashd::test_support::integration::workflow::diagnose_lua_workflow_source;
+    use releashd::test_support::integration::workflow::diagnose_workflow_facet_references;
+    use releashd::test_support::integration::workflow::diagnose_workflow_source;
+    use releashd::test_support::integration::workflow::load_workflows_in_scope;
+    use releashd::test_support::integration::workflow::CommandSpec;
+    use releashd::test_support::integration::workflow::DiagnosticReport;
+    use releashd::test_support::integration::workflow::DiagnosticScope;
+    use releashd::test_support::integration::workflow::DiagnosticStage;
+    use releashd::test_support::integration::workflow::FacetKind;
+    use releashd::test_support::integration::workflow::NodeDefinition;
+    use releashd::test_support::integration::workflow::NodeKind;
+    use releashd::test_support::integration::workflow::Rule;
+    use releashd::test_support::integration::workflow::Severity;
+    use releashd::test_support::integration::workflow::WorkflowDefinition as WorkflowDefinitionYaml;
+    use releashd::test_support::integration::workflow::YamlSpanMap;
     use std::collections::HashSet;
     use std::path::Path;
 
-    use releash_lib::test_support::integration::workflow::FanoutSpec;
-    use releash_lib::test_support::integration::workflow::ItemsSource;
+    use releashd::test_support::integration::workflow::FanoutSpec;
+    use releashd::test_support::integration::workflow::ItemsSource;
 
-    use releash_lib::test_support::integration::workflow::SchemaDef;
-    use releash_lib::test_support::integration::workflow::SessionSpec;
+    use releashd::test_support::integration::workflow::SchemaDef;
+    use releashd::test_support::integration::workflow::SessionSpec;
 
-    use releash_lib::test_support::integration::workflow::InputParam;
+    use releashd::test_support::integration::workflow::InputParam;
     use std::fs;
     use tempfile::TempDir;
 
@@ -1195,7 +1190,7 @@ pub(crate) mod tests {
             kind: NodeKind::Fanout(FanoutSpec {
                 children: children
                     .into_iter()
-                    .map(releash_lib::test_support::integration::workflow::ChildEntry::reference)
+                    .map(releashd::test_support::integration::workflow::ChildEntry::reference)
                     .collect(),
                 items: None,
             }),
@@ -1461,7 +1456,7 @@ nodes:
         )
         .unwrap();
         let builtin_names: HashSet<_> =
-            releash_lib::test_support::integration::workflow::list_builtin_workflows()
+            releashd::test_support::integration::workflow::list_builtin_workflows()
                 .into_iter()
                 .map(|summary| summary.name)
                 .collect();
@@ -1557,7 +1552,7 @@ nodes:
         // Given
         let tmp = TempDir::new().unwrap();
         let builtin_instruction =
-            releash_lib::test_support::integration::workflow::list_builtin_facet_keys(
+            releashd::test_support::integration::workflow::list_builtin_facet_keys(
                 FacetKind::Instruction,
             )[0]
             .to_string();
@@ -1597,7 +1592,7 @@ nodes:
             "{{ bad ref }}",
         );
         let builtin_knowledge =
-            releash_lib::test_support::integration::workflow::list_builtin_facet_keys(
+            releashd::test_support::integration::workflow::list_builtin_facet_keys(
                 FacetKind::Knowledge,
             )[0]
             .to_string();
@@ -1670,7 +1665,7 @@ nodes:
         // Then
         assert!(matches!(
             result,
-            Err(releash_lib::test_support::integration::workflow::StorageError::FacetResolution(_))
+            Err(releashd::test_support::integration::workflow::StorageError::FacetResolution(_))
         ));
     }
 
@@ -1794,7 +1789,7 @@ nodes:
         // Then
         assert!(matches!(
             result,
-            Err(releash_lib::test_support::integration::workflow::StorageError::FacetResolution(_))
+            Err(releashd::test_support::integration::workflow::StorageError::FacetResolution(_))
         ));
     }
 
@@ -1955,7 +1950,7 @@ nodes:
         // Given
         let tmp = TempDir::new().unwrap();
         let builtin_instruction =
-            releash_lib::test_support::integration::workflow::list_builtin_facet_keys(
+            releashd::test_support::integration::workflow::list_builtin_facet_keys(
                 FacetKind::Instruction,
             )[0]
             .to_string();
@@ -2071,7 +2066,7 @@ nodes:
 
         assert!(matches!(
             error,
-            releash_lib::test_support::integration::workflow::FacetError::Io(_)
+            releashd::test_support::integration::workflow::FacetError::Io(_)
         ));
     }
 
@@ -2190,7 +2185,7 @@ nodes:
             }
         }
 
-        let workflow = releash_lib::test_support::integration::workflow::load_workflow(
+        let workflow = releashd::test_support::integration::workflow::load_workflow(
             &workflow_path,
             tmp.path(),
         )
@@ -2234,7 +2229,7 @@ nodes:
                 path.display()
             );
 
-            let load_error = releash_lib::test_support::integration::workflow::load_workflow(
+            let load_error = releashd::test_support::integration::workflow::load_workflow(
                 &path,
                 path.parent().expect("fixture path must have a parent"),
             )
@@ -2242,7 +2237,7 @@ nodes:
             assert!(
                 matches!(
                     load_error,
-                    releash_lib::test_support::integration::workflow::StorageError::Diagnostics(ref items)
+                    releashd::test_support::integration::workflow::StorageError::Diagnostics(ref items)
                         if items.iter().any(|item| item.code == expected_code)
                 ),
                 "loader rejection for {} did not preserve expected code {expected_code}: {load_error:?}",
@@ -2664,10 +2659,10 @@ nodes:
             nodes: vec![
                 NodeDefinition {
                     kind: NodeKind::Sequence(
-                        releash_lib::test_support::integration::workflow::SequenceSpec {
+                        releashd::test_support::integration::workflow::SequenceSpec {
                             entry: None,
                             children: vec![
-                                releash_lib::test_support::integration::workflow::ChildEntry {
+                                releashd::test_support::integration::workflow::ChildEntry {
                                     name: "work".to_string(),
                                     inputs: Vec::new(),
                                     rules: Some(vec![Rule::Next("nonexistent".to_string())]),
@@ -2719,11 +2714,11 @@ nodes:
             nodes: vec![
                 NodeDefinition {
                     kind: NodeKind::Sequence(
-                        releash_lib::test_support::integration::workflow::SequenceSpec {
+                        releashd::test_support::integration::workflow::SequenceSpec {
                             entry: None,
                             children: vec![
-                                releash_lib::test_support::integration::workflow::ChildEntry::reference("start"),
-                                releash_lib::test_support::integration::workflow::ChildEntry::reference("node3"),
+                                releashd::test_support::integration::workflow::ChildEntry::reference("start"),
+                                releashd::test_support::integration::workflow::ChildEntry::reference("node3"),
                             ],
                         },
                     ),
@@ -3141,15 +3136,15 @@ nodes:
             nodes: vec![
                 NodeDefinition {
                     kind: NodeKind::Sequence(
-                        releash_lib::test_support::integration::workflow::SequenceSpec {
+                        releashd::test_support::integration::workflow::SequenceSpec {
                             entry: None,
                             children: vec![
-                                releash_lib::test_support::integration::workflow::ChildEntry::reference("produce"),
-                                releash_lib::test_support::integration::workflow::ChildEntry {
+                                releashd::test_support::integration::workflow::ChildEntry::reference("produce"),
+                                releashd::test_support::integration::workflow::ChildEntry {
                                     name: "consume".to_string(),
                                     inputs: vec![(
                                         "doc".to_string(),
-                                        releash_lib::test_support::integration::workflow::InputSourceRef::new(
+                                        releashd::test_support::integration::workflow::InputSourceRef::new(
                                             "produce",
                                         ),
                                     )],

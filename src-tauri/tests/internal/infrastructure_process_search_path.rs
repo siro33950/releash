@@ -4,8 +4,8 @@ pub(crate) mod tests {
     use std::os::unix::fs::PermissionsExt;
     use std::time::Duration;
 
-    use releash_lib::test_support::integration::process::capture_login_shell_path_from;
-    use releash_lib::test_support::integration::process::LoginShellPathError;
+    use releashd::test_support::integration::process::capture_login_shell_path_from;
+    use releashd::test_support::integration::process::LoginShellPathError;
 
     fn shell_script(contents: &str) -> (tempfile::TempDir, std::path::PathBuf) {
         let temporary = tempfile::tempdir().unwrap();

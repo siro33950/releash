@@ -53,12 +53,7 @@ pub(crate) fn request_quit(supervisor: &DaemonSupervisionUsecase) {
 
 trait DesktopHost: Send + Sync + 'static {
     fn has_failure_window(&self) -> bool;
-    fn ready(
-        &self,
-        settings: releash_lib::desktop_api::DesktopSettingsDto,
-        first: bool,
-        show: bool,
-    );
+    fn ready(&self, settings: releashd::desktop_api::DesktopSettingsDto, first: bool, show: bool);
     fn show(&self);
     fn exit(&self, code: i32);
     fn restart(&self) -> Result<(), String>;
@@ -73,12 +68,12 @@ impl DesktopHost for TauriDesktop {
     }
     fn ready(
         &self,
-        settings: releash_lib::desktop_api::DesktopSettingsDto,
+        settings: releashd::desktop_api::DesktopSettingsDto,
         first: bool,
         show_window: bool,
     ) {
         if first {
-            self.0.manage(releash_lib::desktop_api::init_telemetry(
+            self.0.manage(releashd::desktop_api::init_telemetry(
                 settings.crash_reporting,
                 settings.performance_telemetry,
             ));

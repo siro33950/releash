@@ -58,8 +58,8 @@ pub(crate) struct DaemonLoginPreference(
 impl DaemonLoginPreference {
     async fn request(
         &self,
-        command: releash_lib::desktop_api::wire::command_request::Command,
-    ) -> Result<releash_lib::desktop_api::wire::command_result::Command, String> {
+        command: releashd::desktop_api::wire::command_request::Command,
+    ) -> Result<releashd::desktop_api::wire::command_result::Command, String> {
         self.0.client()?.request(command).await
     }
 }
@@ -74,7 +74,7 @@ impl crate::domain::login_item::LoginPreferencePort for DaemonLoginPreference {
     }
 
     async fn save(&self, requested: bool) -> Result<(), String> {
-        use releash_lib::desktop_api::wire;
+        use releashd::desktop_api::wire;
         match self.request(preference_request(requested)).await? {
             wire::command_result::Command::UpdateLoginItemPreference(_) => Ok(()),
             _ => Err("Unexpected login preference update result".into()),
@@ -82,8 +82,8 @@ impl crate::domain::login_item::LoginPreferencePort for DaemonLoginPreference {
     }
 }
 
-fn preference_request(requested: bool) -> releash_lib::desktop_api::wire::command_request::Command {
-    use releash_lib::desktop_api::wire;
+fn preference_request(requested: bool) -> releashd::desktop_api::wire::command_request::Command {
+    use releashd::desktop_api::wire;
     wire::command_request::Command::UpdateLoginItemPreference(
         wire::UpdateLoginItemPreferenceRequest {
             requested: Some(requested),

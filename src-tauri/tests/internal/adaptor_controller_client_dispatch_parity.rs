@@ -3,8 +3,8 @@ fn value(result: impl serde::Serialize) -> Result<serde_json::Value, serde_json:
 }
 use base64::Engine;
 
-use releash_lib::test_support::integration::transport::ClientCommandDispatch;
-use releash_lib::test_support::integration::wire;
+use releashd::test_support::integration::transport::ClientCommandDispatch;
+use releashd::test_support::integration::wire;
 use serde_json::Value;
 use std::sync::Arc;
 
@@ -16,16 +16,16 @@ fn parity_app() -> (ClientTestDependencies, Arc<ClientCommandDispatch>) {
 }
 
 fn parity_app_with_runtime(
-    runtime: Option<Arc<releash_lib::test_support::integration::workflow::WorkflowRuntimeUsecase>>,
+    runtime: Option<Arc<releashd::test_support::integration::workflow::WorkflowRuntimeUsecase>>,
 ) -> (ClientTestDependencies, Arc<ClientCommandDispatch>) {
     let (mut app, data_dir, store) = make_client_dependencies();
     let runtime = runtime.unwrap_or_else(|| {
         let gateway =
             crate::adaptor_controller_api_mod::test_support::RecordingRuntimeGateway::default();
-        Arc::new(releash_lib::test_support::integration::workflow::WorkflowRuntimeUsecase::new(
+        Arc::new(releashd::test_support::integration::workflow::WorkflowRuntimeUsecase::new(
             Arc::new(gateway),
             Arc::new(
-                releash_lib::test_support::integration::workflow::ExecutionTreeArchiveFactRepository::new(
+                releashd::test_support::integration::workflow::ExecutionTreeArchiveFactRepository::new(
                     store,
                     data_dir.clone(),
                 ),
@@ -34,23 +34,23 @@ fn parity_app_with_runtime(
     });
     app.client.workflow_runtime_usecase = Some(runtime);
     app.client.review_comment_usecase = Some(Arc::new(
-        releash_lib::test_support::integration::platform::build_review_comment_usecase(),
+        releashd::test_support::integration::platform::build_review_comment_usecase(),
     ));
     app.client.workspace_state_store = Some(Arc::new(
-        releash_lib::test_support::integration::platform::WorkspaceStateStore::new(data_dir),
+        releashd::test_support::integration::platform::WorkspaceStateStore::new(data_dir),
     ));
-    use releash_lib::test_support::integration::sessions::FakeProviderExecutableConfigRepository;
-    use releash_lib::test_support::integration::sessions::FakeProviderExecutableProbeGateway;
+    use releashd::test_support::integration::sessions::FakeProviderExecutableConfigRepository;
+    use releashd::test_support::integration::sessions::FakeProviderExecutableProbeGateway;
     app.client.provider_availability_usecase = Some(Arc::new(
-        releash_lib::test_support::integration::sessions::ProviderAvailabilityUsecase::initialize(
+        releashd::test_support::integration::sessions::ProviderAvailabilityUsecase::initialize(
             Arc::new(FakeProviderExecutableConfigRepository::default()),
             Arc::new(FakeProviderExecutableProbeGateway::default()),
         )
         .unwrap(),
     ));
     let mut dispatch = ClientCommandDispatch::new(
-        releash_lib::test_support::integration::daemon::DaemonUsecase::test_with_repository(
-            releash_lib::test_support::integration::daemon::serving(),
+        releashd::test_support::integration::daemon::DaemonUsecase::test_with_repository(
+            releashd::test_support::integration::daemon::serving(),
         ),
     );
     dispatch.register_dependencies(&app.client);
@@ -68,14 +68,14 @@ async fn assert_parity(
     let payload = wire::command_request_from_value(command, args).unwrap();
     let request = wire::CommandRequest::decode(payload.encode_to_vec().as_slice()).unwrap();
     let actual = match dispatch.dispatch(request.command.unwrap()).await {
-        Ok(result) => Ok(
-            releash_lib::test_support::integration::transport::from_value(wire::CommandResult {
+        Ok(result) => Ok(releashd::test_support::integration::transport::from_value(
+            wire::CommandResult {
                 command: Some(result),
-            })
-            .unwrap(),
-        ),
+            },
+        )
+        .unwrap()),
         Err(error) => {
-            Err(releash_lib::test_support::integration::transport::from_value(error).unwrap())
+            Err(releashd::test_support::integration::transport::from_value(error).unwrap())
         }
     };
     assert_eq!(actual, expected, "{command}");
@@ -84,7 +84,7 @@ async fn assert_parity(
 #[tokio::test]
 pub async fn test_telemetry_protoはcommand結果と一致する() {
     // Given
-    let _guard = releash_lib::test_support::integration::telemetry::lock_test_telemetry();
+    let _guard = releashd::test_support::integration::telemetry::lock_test_telemetry();
     let (app, dispatch) = parity_app();
     // When / Then
     invoke_dispatch(&app, "report_mounted_xterm_count", json!({"count": 2}))
@@ -121,8 +121,8 @@ pub async fn test_クライアントdispatch_proto全commandの登録と引数�
 pub async fn test_クライアントrpc_期限切れで処理を止め要求枠を再利用できる() {
     // Given
     let mut dispatch = ClientCommandDispatch::new(
-        releash_lib::test_support::integration::daemon::DaemonUsecase::test_with_repository(
-            releash_lib::test_support::integration::daemon::serving(),
+        releashd::test_support::integration::daemon::DaemonUsecase::test_with_repository(
+            releashd::test_support::integration::daemon::serving(),
         ),
     );
     let started = Arc::new(tokio::sync::Notify::new());
@@ -156,9 +156,7 @@ pub async fn test_クライアントrpc_期限切れで処理を止め要求枠�
     let router = crate::adaptor_controller_api_mod::test_support::test_router_with_optional_deps(
         data.path(),
         "client",
-        Some(
-            releash_lib::test_support::integration::transport::client_api_deps(Arc::new(dispatch)),
-        ),
+        Some(releashd::test_support::integration::transport::client_api_deps(Arc::new(dispatch))),
     )
     .0;
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -166,8 +164,8 @@ pub async fn test_クライアントrpc_期限切れで処理を止め要求枠�
     let server = tokio::spawn(async move {
         axum::serve(listener, router).await.unwrap();
     });
-    let client = releash_lib::test_support::integration::transport::connect_client(
-        &releash_lib::test_support::integration::transport::ClientEndpoint {
+    let client = releashd::test_support::integration::transport::connect_client(
+        &releashd::test_support::integration::transport::ClientEndpoint {
             url: format!("http://{address}"),
             token: "client".into(),
             launch_id: String::new(),
@@ -175,7 +173,7 @@ pub async fn test_クライアントrpc_期限切れで処理を止め要求枠�
     );
     for _ in 0..64 {
         let request = client.get_language_from_path_with_options(
-            releash_lib::test_support::integration::transport::rpc::GetLanguageFromPathRequest {
+            releashd::test_support::integration::transport::rpc::GetLanguageFromPathRequest {
                 file_path: Some("/repo".into()),
                 ..Default::default()
             },
@@ -197,7 +195,7 @@ pub async fn test_クライアントrpc_期限切れで処理を止め要求枠�
     resume.add_permits(1);
     let result = client
         .get_language_from_path_with_options(
-            releash_lib::test_support::integration::transport::rpc::GetLanguageFromPathRequest {
+            releashd::test_support::integration::transport::rpc::GetLanguageFromPathRequest {
                 file_path: Some("/repo".into()),
                 ..Default::default()
             },
@@ -269,15 +267,15 @@ pub async fn test_計算と操作command_connectの実行結果とエラーがdi
         crate::adaptor_controller_api_mod::test_support::RecordingRuntimeGateway::default(),
     );
     let runtime = Arc::new(
-        releash_lib::test_support::integration::workflow::WorkflowRuntimeUsecase::new(
+        releashd::test_support::integration::workflow::WorkflowRuntimeUsecase::new(
             gateway.clone(),
-            Arc::new(releash_lib::test_support::integration::workflow::NoopArchiveRepository),
+            Arc::new(releashd::test_support::integration::workflow::NoopArchiveRepository),
         ),
     );
     let (mut app, _, _store) = make_client_dependencies();
     app.client.workflow_runtime_usecase = Some(runtime.clone());
     app.client.review_comment_usecase = Some(Arc::new(
-        releash_lib::test_support::integration::platform::build_review_comment_usecase(),
+        releashd::test_support::integration::platform::build_review_comment_usecase(),
     ));
     let config = app.client.config_repository.as_ref().unwrap();
     let mut settings = config.load().unwrap();
@@ -285,8 +283,8 @@ pub async fn test_計算と操作command_connectの実行結果とエラーがdi
     config.save(settings).unwrap();
     let data = tempfile::tempdir().unwrap();
     let mut dispatch = ClientCommandDispatch::new(
-        releash_lib::test_support::integration::daemon::DaemonUsecase::test_with_repository(
-            releash_lib::test_support::integration::daemon::serving(),
+        releashd::test_support::integration::daemon::DaemonUsecase::test_with_repository(
+            releashd::test_support::integration::daemon::serving(),
         ),
     );
     dispatch.register_dependencies(&app.client);
@@ -295,7 +293,7 @@ pub async fn test_計算と操作command_connectの実行結果とエラーがdi
     let router = crate::adaptor_controller_api_mod::test_support::test_router_with_optional_deps(
         data.path(),
         "client",
-        Some(releash_lib::test_support::integration::transport::client_api_deps(dispatch)),
+        Some(releashd::test_support::integration::transport::client_api_deps(dispatch)),
     )
     .0;
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -303,8 +301,8 @@ pub async fn test_計算と操作command_connectの実行結果とエラーがdi
     let server = tokio::spawn(async move {
         axum::serve(listener, router).await.unwrap();
     });
-    let client = releash_lib::test_support::integration::transport::connect_client(
-        &releash_lib::test_support::integration::transport::ClientEndpoint {
+    let client = releashd::test_support::integration::transport::connect_client(
+        &releashd::test_support::integration::transport::ClientEndpoint {
             url: format!("http://{address}"),
             token: "client".into(),
             launch_id: String::new(),
@@ -349,19 +347,18 @@ pub async fn test_計算と操作command_connectの実行結果とエラーがdi
         if let Err(error) = &expected {
             assert!(error.is_string(), "usecase error: {command}: {error}");
         }
-        let actual = releash_lib::test_support::integration::transport::request_client(
-            &client, command, args,
-        )
-        .await
-        .map_err(|error| {
-            let bytes = base64::engine::general_purpose::STANDARD_NO_PAD
-                .decode(error.details[0].value.as_ref().unwrap())
-                .unwrap();
-            releash_lib::test_support::integration::transport::from_value(
-                wire::CommandError::decode(bytes.as_slice()).unwrap(),
-            )
-            .unwrap()
-        });
+        let actual =
+            releashd::test_support::integration::transport::request_client(&client, command, args)
+                .await
+                .map_err(|error| {
+                    let bytes = base64::engine::general_purpose::STANDARD_NO_PAD
+                        .decode(error.details[0].value.as_ref().unwrap())
+                        .unwrap();
+                    releashd::test_support::integration::transport::from_value(
+                        wire::CommandError::decode(bytes.as_slice()).unwrap(),
+                    )
+                    .unwrap()
+                });
         assert_eq!(actual, expected, "{command}");
     }
     server.abort();
@@ -374,7 +371,7 @@ pub async fn test_計算と操作command_connectの実行結果とエラーがdi
 #[tokio::test]
 pub async fn test_worktree変更_protoは実引数の成功とusecaseエラーを保持する() {
     async fn wait_for_deletion(
-        runtime: &releash_lib::test_support::integration::workflow::WorkflowRuntimeUsecase,
+        runtime: &releashd::test_support::integration::workflow::WorkflowRuntimeUsecase,
         path: &str,
     ) {
         tokio::time::timeout(std::time::Duration::from_secs(5), async {
@@ -569,7 +566,7 @@ pub async fn test_staging変更_protoは複数pathとusecaseエラーを保持�
 
 #[tokio::test]
 pub async fn test_review_group変更_protoは複合引数と部分stagingとusecaseエラーを保持する() {
-    use releash_lib::test_support::integration::platform::ReviewFileViewDto;
+    use releashd::test_support::integration::platform::ReviewFileViewDto;
 
     for (command, section) in [
         ("git_stage_review_group", "changes"),
@@ -677,11 +674,11 @@ pub async fn test_review_group変更_protoは複合引数と部分stagingとusec
 pub async fn test_workflow変更_protoは実引数とruntime結果を保持する() {
     // Given
     use crate::adaptor_controller_api_mod::test_support::RecordingRuntimeGateway;
-    use releash_lib::test_support::integration::workflow::WorkflowRuntimeUsecase;
+    use releashd::test_support::integration::workflow::WorkflowRuntimeUsecase;
     let gateway = Arc::new(RecordingRuntimeGateway::default());
     let runtime = Arc::new(WorkflowRuntimeUsecase::new(
         gateway.clone(),
-        Arc::new(releash_lib::test_support::integration::workflow::NoopArchiveRepository),
+        Arc::new(releashd::test_support::integration::workflow::NoopArchiveRepository),
     ));
     let (app, dispatch) = parity_app_with_runtime(Some(runtime));
     let id = "00000000-0000-4000-8000-000000000001";
@@ -689,12 +686,12 @@ pub async fn test_workflow変更_protoは実引数とruntime結果を保持す�
         if failure {
             let mut errors = gateway.errors.lock().unwrap();
             errors.start = Some(
-                releash_lib::test_support::integration::workflow::WorkflowError::external(
+                releashd::test_support::integration::workflow::WorkflowError::external(
                     "start failed",
                 ),
             );
             errors.abort = Some(
-                releash_lib::test_support::integration::workflow::WorkflowError::external(
+                releashd::test_support::integration::workflow::WorkflowError::external(
                     "abort failed",
                 ),
             );
@@ -725,7 +722,7 @@ pub async fn test_workflow変更_protoは実引数とruntime結果を保持す�
     assert_eq!(commands.starts[0].request.as_deref(), Some("日本語の依頼"));
     assert_eq!(
         commands.starts[0].created_from,
-        releash_lib::test_support::integration::workflow::ExecutionOrigin::Cli
+        releashd::test_support::integration::workflow::ExecutionOrigin::Cli
     );
     assert_eq!(commands.aborts.len(), 2);
     assert_eq!(commands.aborts[0], commands.aborts[1]);
@@ -749,21 +746,19 @@ async fn invoke_dispatch(
         .dispatch(request.command.unwrap())
         .await
         .map(|command| {
-            releash_lib::test_support::integration::transport::from_value(wire::CommandResult {
+            releashd::test_support::integration::transport::from_value(wire::CommandResult {
                 command: Some(command),
             })
             .unwrap()
         })
-        .map_err(|error| {
-            releash_lib::test_support::integration::transport::from_value(error).unwrap()
-        })
+        .map_err(|error| releashd::test_support::integration::transport::from_value(error).unwrap())
 }
 
 #[tokio::test]
 pub async fn test_workspace保存_connectがui追加fieldを受理し既存項目を再起動後に復元する() {
     // Given
 
-    use releash_lib::test_support::integration::platform::WorkspaceStateStore;
+    use releashd::test_support::integration::platform::WorkspaceStateStore;
     let data = tempfile::tempdir().unwrap();
     let worktree = data.path().join("worktree");
     std::fs::create_dir_all(worktree.join("src")).unwrap();
@@ -773,17 +768,15 @@ pub async fn test_workspace保存_connectがui追加fieldを受理し既存項�
     let mut deps = app.client;
     deps.workspace_state_store = Some(Arc::new(WorkspaceStateStore::new(data.path().to_owned())));
     let mut dispatch = ClientCommandDispatch::new(
-        releash_lib::test_support::integration::daemon::DaemonUsecase::test_with_repository(
-            releash_lib::test_support::integration::daemon::serving(),
+        releashd::test_support::integration::daemon::DaemonUsecase::test_with_repository(
+            releashd::test_support::integration::daemon::serving(),
         ),
     );
     dispatch.register_dependencies(&deps);
     let router = crate::adaptor_controller_api_mod::test_support::test_router_with_optional_deps(
         data.path(),
         "client",
-        Some(
-            releash_lib::test_support::integration::transport::client_api_deps(Arc::new(dispatch)),
-        ),
+        Some(releashd::test_support::integration::transport::client_api_deps(Arc::new(dispatch))),
     )
     .0;
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -792,8 +785,8 @@ pub async fn test_workspace保存_connectがui追加fieldを受理し既存項�
         // When
         axum::serve(listener, router).await.unwrap();
     });
-    let client = releash_lib::test_support::integration::transport::connect_client(
-        &releash_lib::test_support::integration::transport::ClientEndpoint {
+    let client = releashd::test_support::integration::transport::connect_client(
+        &releashd::test_support::integration::transport::ClientEndpoint {
             url: format!("http://{address}"),
             token: "client".into(),
             launch_id: String::new(),
@@ -801,7 +794,7 @@ pub async fn test_workspace保存_connectがui追加fieldを受理し既存項�
     );
     // Then
     assert_eq!(
-        releash_lib::test_support::integration::transport::request_client(
+        releashd::test_support::integration::transport::request_client(
             &client,
             "save_workspace_state",
             json!({"worktreeName":"workspace","state":state})
@@ -821,13 +814,12 @@ pub async fn test_workspace保存_connectがui追加fieldを受理し既存項�
         .as_object_mut()
         .unwrap()
         .remove("diffOnlyMode");
-    use releash_lib::test_support::integration::repository::WorkspaceStateRepository;
+    use releashd::test_support::integration::repository::WorkspaceStateRepository;
     let restored = restarted
         .load("workspace", worktree.to_str().unwrap())
         .unwrap()
         .unwrap();
-    let restored =
-        releash_lib::test_support::integration::platform::WorkspaceStateDto::from(restored);
+    let restored = releashd::test_support::integration::platform::WorkspaceStateDto::from(restored);
     assert_eq!(serde_json::to_value(restored).unwrap(), expected);
     let persisted: Value = serde_json::from_slice(
         &std::fs::read(data.path().join("workspace_state/workspace.json")).unwrap(),
@@ -854,7 +846,7 @@ pub async fn test_生成要求_必須fieldと非有限数をusecase実行前に�
     ] {
         let error = dispatch.dispatch(request).await.unwrap_err();
         assert_eq!(
-            releash_lib::test_support::integration::transport::from_value(error).unwrap()["code"],
+            releashd::test_support::integration::transport::from_value(error).unwrap()["code"],
             "INVALID_REQUEST"
         );
     }
@@ -898,7 +890,7 @@ pub async fn test_登録希望_proto経由の一般設定保存から独立し�
         .unwrap_err();
     // Then
     assert_eq!(
-        releash_lib::test_support::integration::transport::from_value(error).unwrap()["code"],
+        releashd::test_support::integration::transport::from_value(error).unwrap()["code"],
         "INVALID_REQUEST"
     );
     assert!(!repository.load().unwrap().app.auto_launch);
@@ -930,7 +922,7 @@ pub async fn test_一般設定保存_必須入力の欠落ではどの設定も�
             .unwrap_err();
         // Then
         assert_eq!(
-            releash_lib::test_support::integration::transport::from_value(error).unwrap()["code"],
+            releashd::test_support::integration::transport::from_value(error).unwrap()["code"],
             "INVALID_REQUEST"
         );
         assert_eq!(repository.load().unwrap(), original);
@@ -938,13 +930,13 @@ pub async fn test_一般設定保存_必須入力の欠落ではどの設定も�
 }
 
 struct ClientTestDependencies {
-    client: releash_lib::test_support::integration::transport::ClientDependencies,
+    client: releashd::test_support::integration::transport::ClientDependencies,
     dispatch: Option<Arc<ClientCommandDispatch>>,
 }
 fn make_client_dependencies() -> (
     ClientTestDependencies,
     std::path::PathBuf,
-    Arc<releash_lib::test_support::integration::persistence::LocalEventStore>,
+    Arc<releashd::test_support::integration::persistence::LocalEventStore>,
 ) {
     let (dependencies, data_dir, store) =
         crate::adaptor_controller_client_workflow_mod::tests::make_read_only_app();

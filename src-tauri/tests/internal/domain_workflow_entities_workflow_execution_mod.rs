@@ -1,16 +1,16 @@
-use releash_lib::test_support::integration::fixtures::fixtures_domain_workflow_entities_workflow_execution_mod_execution_id_of as execution_id_of;
-use releash_lib::test_support::integration::fixtures::fixtures_domain_workflow_entities_workflow_execution_mod_id_source as id_source;
-use releash_lib::test_support::integration::fixtures::fixtures_domain_workflow_entities_workflow_execution_mod_started_names as started_names;
-use releash_lib::test_support::integration::workflow::workflow_execution_ExecutionTree as ExecutionTree;
-use releash_lib::test_support::integration::workflow::AppliedNodeCompletionHandshake;
-use releash_lib::test_support::integration::workflow::ExecutionAdvanceDecision;
-use releash_lib::test_support::integration::workflow::ExecutionParentRef;
-use releash_lib::test_support::integration::workflow::ExecutionTreeRestore;
-use releash_lib::test_support::integration::workflow::NodeCompletionSignal;
-use releash_lib::test_support::integration::workflow::NodeExecutionStatus as RuntimeNodeExecutionStatus;
-use releash_lib::test_support::integration::workflow::NodeKindName;
-use releash_lib::test_support::integration::workflow::TransitionOutcome;
-use releash_lib::test_support::integration::workflow::WorkflowDefinition;
+use releashd::test_support::integration::fixtures::fixtures_domain_workflow_entities_workflow_execution_mod_execution_id_of as execution_id_of;
+use releashd::test_support::integration::fixtures::fixtures_domain_workflow_entities_workflow_execution_mod_id_source as id_source;
+use releashd::test_support::integration::fixtures::fixtures_domain_workflow_entities_workflow_execution_mod_started_names as started_names;
+use releashd::test_support::integration::workflow::workflow_execution_ExecutionTree as ExecutionTree;
+use releashd::test_support::integration::workflow::AppliedNodeCompletionHandshake;
+use releashd::test_support::integration::workflow::ExecutionAdvanceDecision;
+use releashd::test_support::integration::workflow::ExecutionParentRef;
+use releashd::test_support::integration::workflow::ExecutionTreeRestore;
+use releashd::test_support::integration::workflow::NodeCompletionSignal;
+use releashd::test_support::integration::workflow::NodeExecutionStatus as RuntimeNodeExecutionStatus;
+use releashd::test_support::integration::workflow::NodeKindName;
+use releashd::test_support::integration::workflow::TransitionOutcome;
+use releashd::test_support::integration::workflow::WorkflowDefinition;
 
 #[test]
 pub fn test_正本サンプル_fanout内の隔離sessionがdelegateを発火して成果をmergeへ渡す() {

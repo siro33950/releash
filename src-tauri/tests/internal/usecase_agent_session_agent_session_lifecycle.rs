@@ -1,9 +1,9 @@
-use releash_lib::test_support::integration::sessions::session_location;
-use releash_lib::test_support::integration::sessions::workflow_location;
-use releash_lib::test_support::integration::sessions::MemoryHookHealthRepository;
-use releash_lib::test_support::integration::workflow::WorkflowAgentSessionPort;
+use releashd::test_support::integration::sessions::session_location;
+use releashd::test_support::integration::sessions::workflow_location;
+use releashd::test_support::integration::sessions::MemoryHookHealthRepository;
+use releashd::test_support::integration::workflow::WorkflowAgentSessionPort;
 
-use releash_lib::test_support::integration::workflow::ProviderWorkflowAgentSessionPort;
+use releashd::test_support::integration::workflow::ProviderWorkflowAgentSessionPort;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use std::sync::mpsc;
@@ -11,66 +11,66 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::Duration;
 
-use releash_lib::test_support::integration::persistence::LocalEventStore;
-use releash_lib::test_support::integration::persistence::LocalEventStoreConfig;
-use releash_lib::test_support::integration::providers::ArmedProviderLifecycle;
-use releash_lib::test_support::integration::providers::LocalProviderLifecycleCredentialGateway;
-use releash_lib::test_support::integration::providers::ProviderExecutionTreeStopCommand;
-use releash_lib::test_support::integration::providers::ProviderExecutionTreeStopTransaction;
-use releash_lib::test_support::integration::providers::ProviderHookHealthUsecase;
-use releash_lib::test_support::integration::providers::ProviderKind;
-use releash_lib::test_support::integration::providers::ProviderLifecycleEvent;
-use releash_lib::test_support::integration::providers::ProviderLifecycleEventRepository;
-use releash_lib::test_support::integration::providers::ProviderLifecycleIngressResult;
-use releash_lib::test_support::integration::providers::ProviderLifecycleIngressUsecase;
-use releash_lib::test_support::integration::providers::ProviderLifecycleIngressUsecaseError;
-use releash_lib::test_support::integration::providers::ProviderLifecycleRejection;
-use releash_lib::test_support::integration::providers::ProviderLifecycleRepositoryError;
-use releash_lib::test_support::integration::providers::ProviderLifecycleScope;
-use releash_lib::test_support::integration::providers::ProviderLifecycleSignal;
-use releash_lib::test_support::integration::providers::ProviderLifecycleSlotId;
-use releash_lib::test_support::integration::providers::ProviderLifecycleUsecase;
-use releash_lib::test_support::integration::providers::ScopedProviderLifecycleEvent;
-use releash_lib::test_support::integration::sessions::AgentSessionArchiveOutcome;
-use releash_lib::test_support::integration::sessions::AgentSessionLifecycle;
-use releash_lib::test_support::integration::sessions::AgentSessionLifecycleUsecase;
-use releash_lib::test_support::integration::sessions::AgentSessionLifecycleUsecaseError;
-use releash_lib::test_support::integration::sessions::AgentSessionOpenOutcome;
-use releash_lib::test_support::integration::sessions::AgentSessionRepository;
-use releash_lib::test_support::integration::sessions::AgentSessionRepositoryError;
-use releash_lib::test_support::integration::sessions::AgentSessionUsecase;
-use releash_lib::test_support::integration::sessions::ExecutionTreeCacheReleaseError;
-use releash_lib::test_support::integration::sessions::LocalAgentSessionRepository;
-use releash_lib::test_support::integration::sessions::ManagedPtyPresence;
-use releash_lib::test_support::integration::sessions::PreparedProviderLaunch;
-use releash_lib::test_support::integration::sessions::ProviderAgentLaunchGateway;
-use releash_lib::test_support::integration::sessions::ProviderAgentLaunchGatewayError;
-use releash_lib::test_support::integration::sessions::ProviderAgentRuntime;
-use releash_lib::test_support::integration::sessions::ProviderAgentTerminalGateway;
-use releash_lib::test_support::integration::sessions::ProviderAgentTerminalGatewayError;
-use releash_lib::test_support::integration::sessions::ProviderAvailabilityReader;
-use releash_lib::test_support::integration::sessions::ProviderSessionLaunch;
-use releash_lib::test_support::integration::sessions::ResolvedProviderExecutable;
-use releash_lib::test_support::integration::sessions::StartedExecutionTreeRegistrationError;
-use releash_lib::test_support::integration::sessions::VersionedAgentSession;
-use releash_lib::test_support::integration::terminal::TerminalProcessLaunch;
-use releash_lib::test_support::integration::terminal::TerminalSurfaceOwner;
-use releash_lib::test_support::integration::workflow::seed_workflow_session_facts;
-use releash_lib::test_support::integration::workflow::AgentSessionActivity;
-use releash_lib::test_support::integration::workflow::NodeFact;
-use releash_lib::test_support::integration::workflow::WorkflowSessionFactSeed;
-use releash_lib::test_support::integration::workspace::WorkspaceIdentity;
+use releashd::test_support::integration::persistence::LocalEventStore;
+use releashd::test_support::integration::persistence::LocalEventStoreConfig;
+use releashd::test_support::integration::providers::ArmedProviderLifecycle;
+use releashd::test_support::integration::providers::LocalProviderLifecycleCredentialGateway;
+use releashd::test_support::integration::providers::ProviderExecutionTreeStopCommand;
+use releashd::test_support::integration::providers::ProviderExecutionTreeStopTransaction;
+use releashd::test_support::integration::providers::ProviderHookHealthUsecase;
+use releashd::test_support::integration::providers::ProviderKind;
+use releashd::test_support::integration::providers::ProviderLifecycleEvent;
+use releashd::test_support::integration::providers::ProviderLifecycleEventRepository;
+use releashd::test_support::integration::providers::ProviderLifecycleIngressResult;
+use releashd::test_support::integration::providers::ProviderLifecycleIngressUsecase;
+use releashd::test_support::integration::providers::ProviderLifecycleIngressUsecaseError;
+use releashd::test_support::integration::providers::ProviderLifecycleRejection;
+use releashd::test_support::integration::providers::ProviderLifecycleRepositoryError;
+use releashd::test_support::integration::providers::ProviderLifecycleScope;
+use releashd::test_support::integration::providers::ProviderLifecycleSignal;
+use releashd::test_support::integration::providers::ProviderLifecycleSlotId;
+use releashd::test_support::integration::providers::ProviderLifecycleUsecase;
+use releashd::test_support::integration::providers::ScopedProviderLifecycleEvent;
+use releashd::test_support::integration::sessions::AgentSessionArchiveOutcome;
+use releashd::test_support::integration::sessions::AgentSessionLifecycle;
+use releashd::test_support::integration::sessions::AgentSessionLifecycleUsecase;
+use releashd::test_support::integration::sessions::AgentSessionLifecycleUsecaseError;
+use releashd::test_support::integration::sessions::AgentSessionOpenOutcome;
+use releashd::test_support::integration::sessions::AgentSessionRepository;
+use releashd::test_support::integration::sessions::AgentSessionRepositoryError;
+use releashd::test_support::integration::sessions::AgentSessionUsecase;
+use releashd::test_support::integration::sessions::ExecutionTreeCacheReleaseError;
+use releashd::test_support::integration::sessions::LocalAgentSessionRepository;
+use releashd::test_support::integration::sessions::ManagedPtyPresence;
+use releashd::test_support::integration::sessions::PreparedProviderLaunch;
+use releashd::test_support::integration::sessions::ProviderAgentLaunchGateway;
+use releashd::test_support::integration::sessions::ProviderAgentLaunchGatewayError;
+use releashd::test_support::integration::sessions::ProviderAgentRuntime;
+use releashd::test_support::integration::sessions::ProviderAgentTerminalGateway;
+use releashd::test_support::integration::sessions::ProviderAgentTerminalGatewayError;
+use releashd::test_support::integration::sessions::ProviderAvailabilityReader;
+use releashd::test_support::integration::sessions::ProviderSessionLaunch;
+use releashd::test_support::integration::sessions::ResolvedProviderExecutable;
+use releashd::test_support::integration::sessions::StartedExecutionTreeRegistrationError;
+use releashd::test_support::integration::sessions::VersionedAgentSession;
+use releashd::test_support::integration::terminal::TerminalProcessLaunch;
+use releashd::test_support::integration::terminal::TerminalSurfaceOwner;
+use releashd::test_support::integration::workflow::seed_workflow_session_facts;
+use releashd::test_support::integration::workflow::AgentSessionActivity;
+use releashd::test_support::integration::workflow::NodeFact;
+use releashd::test_support::integration::workflow::WorkflowSessionFactSeed;
+use releashd::test_support::integration::workspace::WorkspaceIdentity;
 
 struct RecordingChangeNotifier {
-    subscriptions: releash_lib::test_support::integration::subscriptions::StateSubscriptionUsecase,
-    notified: releash_lib::test_support::integration::subscriptions::CapturingNotifier<String>,
+    subscriptions: releashd::test_support::integration::subscriptions::StateSubscriptionUsecase,
+    notified: releashd::test_support::integration::subscriptions::CapturingNotifier<String>,
 }
 impl Default for RecordingChangeNotifier {
     fn default() -> Self {
         let subscriptions =
-            releash_lib::test_support::integration::subscriptions::test_subscriptions();
+            releashd::test_support::integration::subscriptions::test_subscriptions();
         let notified =
-            releash_lib::test_support::integration::subscriptions::CapturingNotifier::worktrees(
+            releashd::test_support::integration::subscriptions::CapturingNotifier::worktrees(
                 &subscriptions,
             );
         Self {
@@ -82,12 +82,12 @@ impl Default for RecordingChangeNotifier {
 
 #[derive(Default)]
 struct RecordingExecutionTrees {
-    worktree_operations: releash_lib::test_support::integration::platform::WorktreeOperations,
+    worktree_operations: releashd::test_support::integration::platform::WorktreeOperations,
     operation_lock: Arc<tokio::sync::Mutex<()>>,
     block_archive: AtomicBool,
-    archive_error: Mutex<Option<releash_lib::test_support::integration::workflow::WorkflowError>>,
-    mutation_error: Mutex<Option<releash_lib::test_support::integration::workflow::WorkflowError>>,
-    restore_error: Mutex<Option<releash_lib::test_support::integration::workflow::WorkflowError>>,
+    archive_error: Mutex<Option<releashd::test_support::integration::workflow::WorkflowError>>,
+    mutation_error: Mutex<Option<releashd::test_support::integration::workflow::WorkflowError>>,
+    restore_error: Mutex<Option<releashd::test_support::integration::workflow::WorkflowError>>,
     archive_stopped: tokio::sync::Notify,
     archive_release: tokio::sync::Notify,
     store: Option<Arc<LocalEventStore>>,
@@ -96,21 +96,21 @@ struct RecordingExecutionTrees {
     release_error: Mutex<Option<ExecutionTreeCacheReleaseError>>,
 }
 
-impl releash_lib::test_support::integration::sessions::WorktreeMutationAdmission
+impl releashd::test_support::integration::sessions::WorktreeMutationAdmission
     for RecordingExecutionTrees
 {
     fn begin_worktree_mutation(
         &self,
         path: &str,
     ) -> Result<
-        releash_lib::test_support::integration::platform::WorktreeMutationGuard,
-        releash_lib::test_support::integration::workflow::WorkflowError,
+        releashd::test_support::integration::platform::WorktreeMutationGuard,
+        releashd::test_support::integration::workflow::WorkflowError,
     > {
         if let Some(error) = self.mutation_error.lock().unwrap().clone() {
             return Err(error);
         }
         self.worktree_operations.mutate(path).map_err(|error| {
-            releash_lib::test_support::integration::workflow::WorkflowError::Conflict(
+            releashd::test_support::integration::workflow::WorkflowError::Conflict(
                 error.to_string(),
             )
         })
@@ -118,9 +118,7 @@ impl releash_lib::test_support::integration::sessions::WorktreeMutationAdmission
 }
 
 #[async_trait::async_trait]
-impl releash_lib::test_support::integration::sessions::ExecutionTreeCache
-    for RecordingExecutionTrees
-{
+impl releashd::test_support::integration::sessions::ExecutionTreeCache for RecordingExecutionTrees {
     async fn release_deleted_execution_tree(
         &self,
         tree_id: &str,
@@ -136,7 +134,7 @@ impl releash_lib::test_support::integration::sessions::ExecutionTreeCache
 }
 
 #[async_trait::async_trait]
-impl releash_lib::test_support::integration::sessions::StartedExecutionTreeRegistrar
+impl releashd::test_support::integration::sessions::StartedExecutionTreeRegistrar
     for RecordingExecutionTrees
 {
     async fn register_started_execution_tree(
@@ -148,7 +146,7 @@ impl releash_lib::test_support::integration::sessions::StartedExecutionTreeRegis
 }
 
 #[async_trait::async_trait]
-impl releash_lib::test_support::integration::sessions::AgentSessionExecutionTreeLifecycle
+impl releashd::test_support::integration::sessions::AgentSessionExecutionTreeLifecycle
     for RecordingExecutionTrees
 {
     async fn lock_execution_tree(
@@ -156,7 +154,7 @@ impl releash_lib::test_support::integration::sessions::AgentSessionExecutionTree
         _: &str,
     ) -> Result<
         tokio::sync::OwnedMutexGuard<()>,
-        releash_lib::test_support::integration::workflow::WorkflowError,
+        releashd::test_support::integration::workflow::WorkflowError,
     > {
         Ok(self.operation_lock.clone().lock_owned().await)
     }
@@ -164,18 +162,18 @@ impl releash_lib::test_support::integration::sessions::AgentSessionExecutionTree
     async fn archive_execution_tree(
         &self,
         tree_id: &str,
-    ) -> Result<(), releash_lib::test_support::integration::workflow::WorkflowError> {
+    ) -> Result<(), releashd::test_support::integration::workflow::WorkflowError> {
         if let Some(error) = self.archive_error.lock().unwrap().clone() {
             return Err(error);
         }
         let _operation = self.lock_execution_tree(tree_id).await?;
         let store = self.store.as_ref().expect("archive fact store");
         let records =
-            releash_lib::test_support::integration::workflow::read_tree_records(store, tree_id)
+            releashd::test_support::integration::workflow::read_tree_records(store, tree_id)
                 .await
                 .unwrap();
         let meta = &records[0].meta;
-        releash_lib::test_support::integration::workflow::append_single_fact(
+        releashd::test_support::integration::workflow::append_single_fact(
             store,
             meta,
             &NodeFact::AbortRequested(Default::default()),
@@ -201,11 +199,11 @@ impl releash_lib::test_support::integration::sessions::AgentSessionExecutionTree
             self.archive_stopped.notify_one();
             self.archive_release.notified().await;
         }
-        releash_lib::test_support::integration::workflow::append_single_fact(
+        releashd::test_support::integration::workflow::append_single_fact(
             store,
             meta,
             &NodeFact::ArchiveRequested(
-                releash_lib::test_support::integration::workflow::ArchiveRequestedFact {
+                releashd::test_support::integration::workflow::ArchiveRequestedFact {
                     reason: "manual".into(),
                     archived_at: 0.0,
                 },
@@ -220,16 +218,16 @@ impl releash_lib::test_support::integration::sessions::AgentSessionExecutionTree
     async fn restore_execution_tree(
         &self,
         tree_id: &str,
-    ) -> Result<(), releash_lib::test_support::integration::workflow::WorkflowError> {
+    ) -> Result<(), releashd::test_support::integration::workflow::WorkflowError> {
         if let Some(error) = self.restore_error.lock().unwrap().clone() {
             return Err(error);
         }
         let store = self.store.as_ref().expect("restore fact store");
         let records =
-            releash_lib::test_support::integration::workflow::read_tree_records(store, tree_id)
+            releashd::test_support::integration::workflow::read_tree_records(store, tree_id)
                 .await
                 .unwrap();
-        releash_lib::test_support::integration::workflow::append_single_fact(
+        releashd::test_support::integration::workflow::append_single_fact(
             store,
             &records[0].meta,
             &NodeFact::RestoreRequested,
@@ -333,10 +331,10 @@ impl ProviderExecutionTreeStopTransaction for NoopProviderExecutionTreeStops {
         &self,
         path: &str,
     ) -> Result<
-        releash_lib::test_support::integration::platform::WorktreeMutationGuard,
+        releashd::test_support::integration::platform::WorktreeMutationGuard,
         ProviderLifecycleIngressUsecaseError,
     > {
-        releash_lib::test_support::integration::platform::WorktreeOperations::default()
+        releashd::test_support::integration::platform::WorktreeOperations::default()
             .mutate(path)
             .map_err(|_| ProviderLifecycleIngressUsecaseError::Conflict)
     }
@@ -352,15 +350,12 @@ impl ProviderExecutionTreeStopTransaction for NoopProviderExecutionTreeStops {
 
 #[derive(Default)]
 struct RecordingResumeLaunches {
-    prepare_stopped:
-        Mutex<Option<releash_lib::test_support::integration::platform::OperationStopped>>,
+    prepare_stopped: Mutex<Option<releashd::test_support::integration::platform::OperationStopped>>,
     launches: Mutex<Vec<ProviderSessionLaunch>>,
     cleanups: Mutex<Vec<String>>,
     armed: Mutex<Vec<ArmedProviderLifecycle>>,
     initial_hook_warning: Mutex<
-        Option<
-            releash_lib::test_support::integration::providers::ProviderLifecycleUnavailableReason,
-        >,
+        Option<releashd::test_support::integration::providers::ProviderLifecycleUnavailableReason>,
     >,
 }
 
@@ -429,7 +424,7 @@ struct SaveFailingAgentSessionRepository {
 impl AgentSessionRepository for SaveFailingAgentSessionRepository {
     async fn create(
         &self,
-        session: releash_lib::test_support::integration::sessions::AgentSession,
+        session: releashd::test_support::integration::sessions::AgentSession,
         caller_request_id: &str,
     ) -> Result<VersionedAgentSession, AgentSessionRepositoryError> {
         self.inner.create(session, caller_request_id).await
@@ -437,7 +432,7 @@ impl AgentSessionRepository for SaveFailingAgentSessionRepository {
 
     async fn create_with_lifecycle_events(
         &self,
-        session: releash_lib::test_support::integration::sessions::AgentSession,
+        session: releashd::test_support::integration::sessions::AgentSession,
         lifecycle_events: Vec<ScopedProviderLifecycleEvent>,
         caller_request_id: &str,
     ) -> Result<VersionedAgentSession, AgentSessionRepositoryError> {
@@ -464,7 +459,7 @@ impl AgentSessionRepository for SaveFailingAgentSessionRepository {
     async fn remove(
         &self,
         session: VersionedAgentSession,
-        authorization: releash_lib::test_support::integration::sessions::AgentSessionRemovalAuthorization,
+        authorization: releashd::test_support::integration::sessions::AgentSessionRemovalAuthorization,
         caller_request_id: &str,
     ) -> Result<(), AgentSessionRepositoryError> {
         self.inner
@@ -517,8 +512,9 @@ impl ProviderAgentTerminalGateway for LifecycleTerminal {
         }
         if *self.fail_spawn.lock().unwrap() {
             return Err(ProviderAgentTerminalGatewayError::Technical(
-                releash_lib::test_support::integration::platform::TechnicalFailure {
-                    nature: releash_lib::test_support::integration::platform::TechnicalFailureNature::Other,
+                releashd::test_support::integration::platform::TechnicalFailure {
+                    nature:
+                        releashd::test_support::integration::platform::TechnicalFailureNature::Other,
                     message: "test terminal spawn failure".to_string(),
                 },
             ));
@@ -548,8 +544,8 @@ impl ProviderAgentTerminalGateway for LifecycleTerminal {
         self.stops.lock().unwrap().push(owner.clone());
         if *self.fail_stop.lock().unwrap() {
             return Err(ProviderAgentTerminalGatewayError::Technical(
-                releash_lib::test_support::integration::platform::TechnicalFailure {
-                    nature: releash_lib::test_support::integration::platform::TechnicalFailureNature::Transient,
+                releashd::test_support::integration::platform::TechnicalFailure {
+                    nature: releashd::test_support::integration::platform::TechnicalFailureNature::Transient,
                     message: "unavailable".into(),
                 },
             ));
@@ -627,7 +623,7 @@ pub async fn test_worktree削除中_sessionのopen_resume_restore_deleteを副�
     assert_eq!(
         context.lifecycle.open(id, 24, 80, "open").await,
         Err(AgentSessionLifecycleUsecaseError::Conflict(
-            (releash_lib::test_support::integration::workflow::WorkflowError::Conflict(
+            (releashd::test_support::integration::workflow::WorkflowError::Conflict(
                 "worktree deletion is in progress".into()
             ))
             .into()
@@ -639,7 +635,7 @@ pub async fn test_worktree削除中_sessionのopen_resume_restore_deleteを副�
             .ensure_provider_running(id, 24, 80, "resume")
             .await,
         Err(AgentSessionLifecycleUsecaseError::Conflict(
-            (releash_lib::test_support::integration::workflow::WorkflowError::Conflict(
+            (releashd::test_support::integration::workflow::WorkflowError::Conflict(
                 "worktree deletion is in progress".into()
             ))
             .into()
@@ -652,7 +648,7 @@ pub async fn test_worktree削除中_sessionのopen_resume_restore_deleteを副�
             .await
             .map(|(outcome, _)| outcome),
         Err(AgentSessionLifecycleUsecaseError::Conflict(
-            (releash_lib::test_support::integration::workflow::WorkflowError::Conflict(
+            (releashd::test_support::integration::workflow::WorkflowError::Conflict(
                 "worktree deletion is in progress".into()
             ))
             .into()
@@ -661,7 +657,7 @@ pub async fn test_worktree削除中_sessionのopen_resume_restore_deleteを副�
     assert_eq!(
         context.lifecycle.delete(id, "delete").await,
         Err(AgentSessionLifecycleUsecaseError::Conflict(
-            (releash_lib::test_support::integration::workflow::WorkflowError::Conflict(
+            (releashd::test_support::integration::workflow::WorkflowError::Conflict(
                 "worktree deletion is in progress".into()
             ))
             .into()
@@ -678,7 +674,7 @@ fn setup_with_lifecycle_events(
     let directory = tempfile::tempdir().unwrap();
     let store = LocalEventStore::open(LocalEventStoreConfig::production(
         directory.path().to_path_buf(),
-        std::sync::Arc::new(releash_lib::test_support::integration::platform::RetryLimiter::new()),
+        std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
     ))
     .unwrap();
     let sessions = Arc::new(AgentSessionUsecase::new(Arc::new(
@@ -699,7 +695,7 @@ fn setup_with_lifecycle_events(
         ..Default::default()
     });
     let usecase = Arc::new(AgentSessionLifecycleUsecase::new(
-        std::sync::Arc::new(releash_lib::test_support::integration::platform::RandomIdentityIssuer),
+        std::sync::Arc::new(releashd::test_support::integration::platform::RandomIdentityIssuer),
         sessions.clone(),
         lifecycle.clone(),
         ProviderAgentRuntime::new(
@@ -710,7 +706,7 @@ fn setup_with_lifecycle_events(
         hook_health.clone(),
         change_notifier.subscriptions.clone(),
         execution_trees.clone(),
-        releash_lib::test_support::integration::workspace::SqliteWorkspaceTreeRepository::new(
+        releashd::test_support::integration::workspace::SqliteWorkspaceTreeRepository::new(
             store.clone(),
         ),
     ));
@@ -782,9 +778,9 @@ async fn setup_activity_stop_exclusion_with_events(
         .unwrap();
     let ingress = ProviderLifecycleIngressUsecase::new(
         std::sync::Arc::new(
-            releash_lib::test_support::integration::providers::LocalProviderPayloadInterpreter,
+            releashd::test_support::integration::providers::LocalProviderPayloadInterpreter,
         ),
-        std::sync::Arc::new(releash_lib::test_support::integration::platform::RandomIdentityIssuer),
+        std::sync::Arc::new(releashd::test_support::integration::platform::RandomIdentityIssuer),
         context.provider_lifecycle.clone(),
         context.sessions.clone(),
         context.hook_health.clone(),
@@ -833,7 +829,7 @@ async fn setup_activity_stop_exclusion_with_events(
 }
 
 async fn activity_fact_count(store: &Arc<LocalEventStore>, tree_id: &str) -> usize {
-    releash_lib::test_support::integration::workflow::read_tree_records(store, tree_id)
+    releashd::test_support::integration::workflow::read_tree_records(store, tree_id)
         .await
         .unwrap()
         .into_iter()
@@ -1407,7 +1403,7 @@ pub async fn test_workflow所有agent_session停止_provider未確定でもgcせ
             )
             .await
             .unwrap(),
-        releash_lib::test_support::integration::sessions::AgentSessionGarbageCollectionOutcome::Retained
+        releashd::test_support::integration::sessions::AgentSessionGarbageCollectionOutcome::Retained
     );
     let retained = sessions
         .find("workflow-agent-unknown")
@@ -1481,7 +1477,7 @@ pub async fn test_実行木node終端停止_node不一致と停止失敗ではse
             )
             .await
             .unwrap_err(),
-        releash_lib::test_support::integration::sessions::AgentSessionLifecycleUsecaseError::InvalidOperation
+        releashd::test_support::integration::sessions::AgentSessionLifecycleUsecaseError::InvalidOperation
     );
     assert_eq!(
         lifecycle
@@ -1492,7 +1488,7 @@ pub async fn test_実行木node終端停止_node不一致と停止失敗ではse
             )
             .await
             .unwrap_err(),
-        releash_lib::test_support::integration::sessions::AgentSessionLifecycleUsecaseError::InvalidOperation
+        releashd::test_support::integration::sessions::AgentSessionLifecycleUsecaseError::InvalidOperation
     );
     assert!(terminal.stops.lock().unwrap().is_empty());
 
@@ -1506,10 +1502,10 @@ pub async fn test_実行木node終端停止_node不一致と停止失敗ではse
             )
             .await
             .unwrap_err(),
-        releash_lib::test_support::integration::sessions::AgentSessionLifecycleUsecaseError::Terminal(
-            releash_lib::test_support::integration::sessions::ProviderAgentTerminalGatewayError::Technical(
-                releash_lib::test_support::integration::platform::TechnicalFailure {
-                    nature: releash_lib::test_support::integration::platform::TechnicalFailureNature::Transient,
+        releashd::test_support::integration::sessions::AgentSessionLifecycleUsecaseError::Terminal(
+            releashd::test_support::integration::sessions::ProviderAgentTerminalGatewayError::Technical(
+                releashd::test_support::integration::platform::TechnicalFailure {
+                    nature: releashd::test_support::integration::platform::TechnicalFailureNature::Transient,
                     message: "unavailable".into()
                 }
             )
@@ -1599,7 +1595,7 @@ pub async fn test_agent_session_lifecycle_exit_resume_archive_restore_deleteを�
             .receive(
                 archived_binding.slot_id(),
                 archived_binding.capability(),
-                releash_lib::test_support::integration::providers::ProviderLifecycleSignal::session_started(
+                releashd::test_support::integration::providers::ProviderLifecycleSignal::session_started(
                     archived_binding.binding_id(),
                     archived_binding.provider(),
                     archived_binding.scope().clone(),
@@ -1610,8 +1606,8 @@ pub async fn test_agent_session_lifecycle_exit_resume_archive_restore_deleteを�
             )
             .await
             .unwrap(),
-        releash_lib::test_support::integration::providers::ProviderLifecycleIngressResult::Rejected(
-            releash_lib::test_support::integration::providers::ProviderLifecycleRejection::BindingNotActive,
+        releashd::test_support::integration::providers::ProviderLifecycleIngressResult::Rejected(
+            releashd::test_support::integration::providers::ProviderLifecycleRejection::BindingNotActive,
         )
     );
     *terminal.fail_spawn.lock().unwrap() = true;
@@ -1686,15 +1682,13 @@ pub async fn test_agent_session_lifecycle_unknown_idのprocess_exitをgcする()
         .unwrap();
     provider_lifecycle
         .arm(
-            releash_lib::test_support::integration::providers::ProviderLifecycleSlotId::new(
+            releashd::test_support::integration::providers::ProviderLifecycleSlotId::new(
                 "launch-gc",
             )
             .unwrap(),
             ProviderKind::Codex,
-            releash_lib::test_support::integration::providers::ProviderLifecycleScope::new(
-                "agent-gc",
-            )
-            .unwrap(),
+            releashd::test_support::integration::providers::ProviderLifecycleScope::new("agent-gc")
+                .unwrap(),
         )
         .await
         .unwrap();
@@ -1716,7 +1710,7 @@ pub async fn test_agent_session_lifecycle_unknown_idのprocess_exitをgcする()
     assert_eq!(warnings.len(), 1);
     assert_eq!(
         warnings[0].reason,
-        releash_lib::test_support::integration::providers::ProviderLifecycleUnavailableReason::SessionStartDeadlineExceeded
+        releashd::test_support::integration::providers::ProviderLifecycleUnavailableReason::SessionStartDeadlineExceeded
     );
 }
 
@@ -1903,7 +1897,7 @@ pub async fn test_agent_session_gc再照合は確定不在かつunknown_idだけ
             .reconcile_garbage_collection("agent-reconcile", "reconcile-unknown")
             .await
             .unwrap(),
-        releash_lib::test_support::integration::sessions::AgentSessionGarbageCollectionOutcome::Retained
+        releashd::test_support::integration::sessions::AgentSessionGarbageCollectionOutcome::Retained
     );
     assert!(sessions.find("agent-reconcile").await.unwrap().is_some());
 
@@ -1913,7 +1907,7 @@ pub async fn test_agent_session_gc再照合は確定不在かつunknown_idだけ
             .reconcile_garbage_collection("agent-reconcile", "reconcile-absent")
             .await
             .unwrap(),
-        releash_lib::test_support::integration::sessions::AgentSessionGarbageCollectionOutcome::GarbageCollected
+        releashd::test_support::integration::sessions::AgentSessionGarbageCollectionOutcome::GarbageCollected
     );
     assert!(sessions.find("agent-reconcile").await.unwrap().is_none());
     assert_eq!(
@@ -2002,7 +1996,7 @@ pub async fn test_agent_session_gc_execution_cache解放失敗でも削除を完
             .reconcile_garbage_collection("agent-gc-release-failure", "gc-release-failure",)
             .await
             .unwrap(),
-        releash_lib::test_support::integration::sessions::AgentSessionGarbageCollectionOutcome::GarbageCollected
+        releashd::test_support::integration::sessions::AgentSessionGarbageCollectionOutcome::GarbageCollected
     );
     assert!(sessions
         .find("agent-gc-release-failure")
@@ -2094,7 +2088,7 @@ pub async fn test_agent_session_resume_spawn失敗時は未起動launchのhook�
         .await
         .unwrap();
     *launches.initial_hook_warning.lock().unwrap() = Some(
-        releash_lib::test_support::integration::providers::ProviderLifecycleUnavailableReason::CodexHookDeliveryUnconfirmed,
+        releashd::test_support::integration::providers::ProviderLifecycleUnavailableReason::CodexHookDeliveryUnconfirmed,
     );
     *terminal.fail_spawn.lock().unwrap() = true;
 
@@ -2108,10 +2102,10 @@ pub async fn test_agent_session_resume_spawn失敗時は未起動launchのhook�
             )
             .await
             .unwrap_err(),
-        releash_lib::test_support::integration::sessions::AgentSessionLifecycleUsecaseError::Terminal(
-            releash_lib::test_support::integration::sessions::ProviderAgentTerminalGatewayError::Technical(
-                releash_lib::test_support::integration::platform::TechnicalFailure {
-                    nature: releash_lib::test_support::integration::platform::TechnicalFailureNature::Other,
+        releashd::test_support::integration::sessions::AgentSessionLifecycleUsecaseError::Terminal(
+            releashd::test_support::integration::sessions::ProviderAgentTerminalGatewayError::Technical(
+                releashd::test_support::integration::platform::TechnicalFailure {
+                    nature: releashd::test_support::integration::platform::TechnicalFailureNature::Other,
                     message: "test terminal spawn failure".into()
                 }
             )
@@ -2125,7 +2119,7 @@ pub async fn test_agent_session_resume状態保存失敗時は起動済みproces
     let directory = tempfile::tempdir().unwrap();
     let store = LocalEventStore::open(LocalEventStoreConfig::production(
         directory.path().to_path_buf(),
-        std::sync::Arc::new(releash_lib::test_support::integration::platform::RetryLimiter::new()),
+        std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
     ))
     .unwrap();
     let repository = Arc::new(LocalAgentSessionRepository::new(store.clone()));
@@ -2164,7 +2158,7 @@ pub async fn test_agent_session_resume状態保存失敗時は起動済みproces
         MemoryHookHealthRepository::default(),
     )));
     let lifecycle = AgentSessionLifecycleUsecase::new(
-        std::sync::Arc::new(releash_lib::test_support::integration::platform::RandomIdentityIssuer),
+        std::sync::Arc::new(releashd::test_support::integration::platform::RandomIdentityIssuer),
         sessions,
         provider_lifecycle,
         ProviderAgentRuntime::new(
@@ -2173,12 +2167,12 @@ pub async fn test_agent_session_resume状態保存失敗時は起動済みproces
             terminal.clone(),
         ),
         hook_health,
-        releash_lib::test_support::integration::subscriptions::test_subscriptions(),
+        releashd::test_support::integration::subscriptions::test_subscriptions(),
         Arc::new(RecordingExecutionTrees {
             store: Some(store.clone()),
             ..Default::default()
         }),
-        releash_lib::test_support::integration::workspace::TestWorkspaceTreeRepository::new(),
+        releashd::test_support::integration::workspace::TestWorkspaceTreeRepository::new(),
     );
 
     assert_eq!(
@@ -2186,7 +2180,7 @@ pub async fn test_agent_session_resume状態保存失敗時は起動済みproces
             .ensure_provider_running("agent-save-failure", 24, 80, "resume-save-failure")
             .await
             .unwrap_err(),
-        releash_lib::test_support::integration::sessions::AgentSessionLifecycleUsecaseError::StorageUnavailable
+        releashd::test_support::integration::sessions::AgentSessionLifecycleUsecaseError::StorageUnavailable
     );
     assert_eq!(
         *terminal.presence.lock().unwrap(),
@@ -2259,7 +2253,7 @@ pub async fn test_agent_session_resume_同一sessionへの並行要求はptyを�
     let directory = tempfile::tempdir().unwrap();
     let store = LocalEventStore::open(LocalEventStoreConfig::production(
         directory.path().to_path_buf(),
-        std::sync::Arc::new(releash_lib::test_support::integration::platform::RetryLimiter::new()),
+        std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
     ))
     .unwrap();
     let sessions = Arc::new(AgentSessionUsecase::new(Arc::new(
@@ -2305,7 +2299,7 @@ pub async fn test_agent_session_resume_同一sessionへの並行要求はptyを�
     *terminal.first_spawn_entered.lock().unwrap() = Some(entered_sender);
     *terminal.first_spawn_release.lock().unwrap() = Some(release_receiver);
     let lifecycle = Arc::new(AgentSessionLifecycleUsecase::new(
-        std::sync::Arc::new(releash_lib::test_support::integration::platform::RandomIdentityIssuer),
+        std::sync::Arc::new(releashd::test_support::integration::platform::RandomIdentityIssuer),
         sessions,
         provider_lifecycle,
         ProviderAgentRuntime::new(
@@ -2316,12 +2310,12 @@ pub async fn test_agent_session_resume_同一sessionへの並行要求はptyを�
         Arc::new(ProviderHookHealthUsecase::new(Arc::new(
             MemoryHookHealthRepository::default(),
         ))),
-        releash_lib::test_support::integration::subscriptions::test_subscriptions(),
+        releashd::test_support::integration::subscriptions::test_subscriptions(),
         Arc::new(RecordingExecutionTrees {
             store: Some(store.clone()),
             ..Default::default()
         }),
-        releash_lib::test_support::integration::workspace::TestWorkspaceTreeRepository::new(),
+        releashd::test_support::integration::workspace::TestWorkspaceTreeRepository::new(),
     ));
 
     let first = tokio::spawn({
@@ -2370,7 +2364,7 @@ pub async fn test_agent_session_resume中のarchiveは同一sessionの操作完�
     let directory = tempfile::tempdir().unwrap();
     let store = LocalEventStore::open(LocalEventStoreConfig::production(
         directory.path().to_path_buf(),
-        std::sync::Arc::new(releash_lib::test_support::integration::platform::RetryLimiter::new()),
+        std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
     ))
     .unwrap();
     let sessions = Arc::new(AgentSessionUsecase::new(Arc::new(
@@ -2416,7 +2410,7 @@ pub async fn test_agent_session_resume中のarchiveは同一sessionの操作完�
         ..Default::default()
     });
     let lifecycle = Arc::new(AgentSessionLifecycleUsecase::new(
-        std::sync::Arc::new(releash_lib::test_support::integration::platform::RandomIdentityIssuer),
+        std::sync::Arc::new(releashd::test_support::integration::platform::RandomIdentityIssuer),
         sessions.clone(),
         provider_lifecycle,
         ProviderAgentRuntime::new(
@@ -2427,9 +2421,9 @@ pub async fn test_agent_session_resume中のarchiveは同一sessionの操作完�
         Arc::new(ProviderHookHealthUsecase::new(Arc::new(
             MemoryHookHealthRepository::default(),
         ))),
-        releash_lib::test_support::integration::subscriptions::test_subscriptions(),
+        releashd::test_support::integration::subscriptions::test_subscriptions(),
         execution_trees.clone(),
-        releash_lib::test_support::integration::workspace::TestWorkspaceTreeRepository::new(),
+        releashd::test_support::integration::workspace::TestWorkspaceTreeRepository::new(),
     ));
 
     *execution_trees.lifecycle.lock().unwrap() = Arc::downgrade(&lifecycle);
@@ -2482,7 +2476,7 @@ pub async fn test_agent_session_open_同一sessionへの並行要求は一度だ
     let directory = tempfile::tempdir().unwrap();
     let store = LocalEventStore::open(LocalEventStoreConfig::production(
         directory.path().to_path_buf(),
-        std::sync::Arc::new(releash_lib::test_support::integration::platform::RetryLimiter::new()),
+        std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
     ))
     .unwrap();
     let sessions = Arc::new(AgentSessionUsecase::new(Arc::new(
@@ -2515,7 +2509,7 @@ pub async fn test_agent_session_open_同一sessionへの並行要求は一度だ
     *terminal.first_spawn_entered.lock().unwrap() = Some(entered_sender);
     *terminal.first_spawn_release.lock().unwrap() = Some(release_receiver);
     let lifecycle = Arc::new(AgentSessionLifecycleUsecase::new(
-        std::sync::Arc::new(releash_lib::test_support::integration::platform::RandomIdentityIssuer),
+        std::sync::Arc::new(releashd::test_support::integration::platform::RandomIdentityIssuer),
         sessions,
         Arc::new(ProviderLifecycleUsecase::new(
             Arc::new(LocalProviderLifecycleCredentialGateway),
@@ -2529,12 +2523,12 @@ pub async fn test_agent_session_open_同一sessionへの並行要求は一度だ
         Arc::new(ProviderHookHealthUsecase::new(Arc::new(
             MemoryHookHealthRepository::default(),
         ))),
-        releash_lib::test_support::integration::subscriptions::test_subscriptions(),
+        releashd::test_support::integration::subscriptions::test_subscriptions(),
         Arc::new(RecordingExecutionTrees {
             store: Some(store.clone()),
             ..Default::default()
         }),
-        releash_lib::test_support::integration::workspace::TestWorkspaceTreeRepository::new(),
+        releashd::test_support::integration::workspace::TestWorkspaceTreeRepository::new(),
     ));
 
     let first = tokio::spawn({
@@ -2776,7 +2770,7 @@ pub async fn test_agent_session_open_未対応の親または自身の定義が�
     // Given
     for unavailable in ["main", "session", "unused"] {
         let context = setup();
-        releash_lib::test_support::integration::workflow::seed_unavailable_definition(
+        releashd::test_support::integration::workflow::seed_unavailable_definition(
             &context.store,
             "tree",
             "/repo",
@@ -2975,7 +2969,7 @@ pub async fn test_provider回復_openでも在否不明なら待機し不在な�
 #[derive(Default)]
 struct RecordingContinuationInput(Mutex<Vec<String>>);
 
-impl releash_lib::test_support::integration::sessions::ProviderAgentTerminalInputGateway
+impl releashd::test_support::integration::sessions::ProviderAgentTerminalInputGateway
     for RecordingContinuationInput
 {
     fn write(
@@ -2990,8 +2984,8 @@ impl releash_lib::test_support::integration::sessions::ProviderAgentTerminalInpu
 
 #[tokio::test]
 pub async fn test_workflowのprovider回復_同じnodeを繰り返し再開し永続化と結果配送ができる() {
-    use releash_lib::test_support::integration::workflow::ProviderWorkflowAgentSessionPort;
-    use releash_lib::test_support::integration::workflow::WorkflowAgentSessionPort;
+    use releashd::test_support::integration::workflow::ProviderWorkflowAgentSessionPort;
+    use releashd::test_support::integration::workflow::WorkflowAgentSessionPort;
     // Given
     let context = setup();
     seed_workflow_session_facts(
@@ -3028,8 +3022,8 @@ pub async fn test_workflowのprovider回復_同じnodeを繰り返し再開し�
         .unwrap();
     let input = Arc::new(RecordingContinuationInput::default());
     let port = ProviderWorkflowAgentSessionPort::new(
-        Arc::new(releash_lib::test_support::integration::sessions::AgentSessionLaunchUsecase::new(
-            std::sync::Arc::new(releash_lib::test_support::integration::telemetry::TelemetryGateway),
+        Arc::new(releashd::test_support::integration::sessions::AgentSessionLaunchUsecase::new(
+            std::sync::Arc::new(releashd::test_support::integration::telemetry::TelemetryGateway),
             context.sessions.clone(),
             context.provider_lifecycle.clone(),
             ProviderAgentRuntime::new(
@@ -3038,7 +3032,7 @@ pub async fn test_workflowのprovider回復_同じnodeを繰り返し再開し�
                 context.terminal.clone(),
             ),
             Arc::new(
-                releash_lib::test_support::integration::sessions::LocalAgentSessionHistoryGateway::new(
+                releashd::test_support::integration::sessions::LocalAgentSessionHistoryGateway::new(
                     context._directory.path().join("claude"),
                     context._directory.path().join("codex"),
                 ),
@@ -3046,9 +3040,9 @@ pub async fn test_workflowのprovider回復_同じnodeを繰り返し再開し�
             context.hook_health.clone(),
             context.execution_trees.clone(),
             tokio::sync::mpsc::unbounded_channel().0,
-            releash_lib::test_support::integration::workspace::TestWorkspaceTreeRepository::new(),
+            releashd::test_support::integration::workspace::TestWorkspaceTreeRepository::new(),
         )),
-        Arc::new(releash_lib::test_support::integration::sessions::AgentSessionInitialInstructionUsecase::new(
+        Arc::new(releashd::test_support::integration::sessions::AgentSessionInitialInstructionUsecase::new(
             context.sessions.clone(),
             input.clone(),
         )),
@@ -3212,7 +3206,7 @@ pub async fn test_agent_session_archive中のexitとgcはarchive確定後に評�
     exit.await.unwrap().unwrap();
     assert_eq!(
         gc.await.unwrap().unwrap(),
-        releash_lib::test_support::integration::sessions::AgentSessionGarbageCollectionOutcome::Retained
+        releashd::test_support::integration::sessions::AgentSessionGarbageCollectionOutcome::Retained
     );
     assert_eq!(
         context
@@ -3229,7 +3223,7 @@ pub async fn test_agent_session_archive中のexitとgcはarchive確定後に評�
 
 #[tokio::test]
 pub async fn test_sessionのarchiveとrestore_共通実行木操作のエラー分類を保持する() {
-    use releash_lib::test_support::integration::workflow::WorkflowError as W;
+    use releashd::test_support::integration::workflow::WorkflowError as W;
     use AgentSessionLifecycleUsecaseError as E;
     for (error, expected) in [
         (
@@ -3253,14 +3247,14 @@ pub async fn test_sessionのarchiveとrestore_共通実行木操作のエラー�
         ),
         (
             W::Store(
-                releash_lib::test_support::integration::platform::StorageFailure::from(
-                    releash_lib::test_support::integration::platform::CommitBatchError::QueueBusy,
+                releashd::test_support::integration::platform::StorageFailure::from(
+                    releashd::test_support::integration::platform::CommitBatchError::QueueBusy,
                 )
                 .with_message("unavailable"),
             ),
             E::Store(
-                releash_lib::test_support::integration::platform::StorageFailure::from(
-                    releash_lib::test_support::integration::platform::CommitBatchError::QueueBusy,
+                releashd::test_support::integration::platform::StorageFailure::from(
+                    releashd::test_support::integration::platform::CommitBatchError::QueueBusy,
                 )
                 .with_message("unavailable"),
             ),
@@ -3271,29 +3265,29 @@ pub async fn test_sessionのarchiveとrestore_共通実行木操作のエラー�
         ),
         (
             W::Store(
-                releash_lib::test_support::integration::platform::StorageFailure::from(
-                    releash_lib::test_support::integration::platform::CommitBatchError::PayloadConflict,
+                releashd::test_support::integration::platform::StorageFailure::from(
+                    releashd::test_support::integration::platform::CommitBatchError::PayloadConflict,
                 )
                 .with_message("repair"),
             ),
             E::Store(
-                releash_lib::test_support::integration::platform::StorageFailure::from(
-                    releash_lib::test_support::integration::platform::CommitBatchError::PayloadConflict,
+                releashd::test_support::integration::platform::StorageFailure::from(
+                    releashd::test_support::integration::platform::CommitBatchError::PayloadConflict,
                 )
                 .with_message("repair"),
             ),
         ),
         (
             W::Store(
-                (releash_lib::test_support::integration::platform::TechnicalFailure {
-                    nature: releash_lib::test_support::integration::platform::TechnicalFailureNature::TimedOut,
+                (releashd::test_support::integration::platform::TechnicalFailure {
+                    nature: releashd::test_support::integration::platform::TechnicalFailureNature::TimedOut,
                     message: "failure".into(),
                 })
                 .into(),
             ),
             E::Store(
-                (releash_lib::test_support::integration::platform::TechnicalFailure {
-                    nature: releash_lib::test_support::integration::platform::TechnicalFailureNature::TimedOut,
+                (releashd::test_support::integration::platform::TechnicalFailure {
+                    nature: releashd::test_support::integration::platform::TechnicalFailureNature::TimedOut,
                     message: "failure".into(),
                 })
                 .into(),
@@ -3377,17 +3371,17 @@ pub async fn test_sessionのarchiveとrestore_共通実行木操作のエラー�
 
 #[tokio::test]
 pub async fn test_workflow_session準備_入口から期限と取消の分類を保持する() {
-    use releash_lib::test_support::integration::workflow::WorkflowSessionLaunchConfig;
+    use releashd::test_support::integration::workflow::WorkflowSessionLaunchConfig;
 
-    use releash_lib::test_support::integration::platform::OperationStopped;
-    use releash_lib::test_support::integration::workflow::WorkflowRuntimeError;
+    use releashd::test_support::integration::platform::OperationStopped;
+    use releashd::test_support::integration::workflow::WorkflowRuntimeError;
     for stopped in [OperationStopped::Expired, OperationStopped::Cancelled] {
         // Given
         let context = setup();
         *context.launches.prepare_stopped.lock().unwrap() = Some(stopped);
         let port = ProviderWorkflowAgentSessionPort::new(
-            Arc::new(releash_lib::test_support::integration::sessions::AgentSessionLaunchUsecase::new(
-                std::sync::Arc::new(releash_lib::test_support::integration::telemetry::TelemetryGateway),
+            Arc::new(releashd::test_support::integration::sessions::AgentSessionLaunchUsecase::new(
+                std::sync::Arc::new(releashd::test_support::integration::telemetry::TelemetryGateway),
                 context.sessions.clone(),
                 context.provider_lifecycle.clone(),
                 ProviderAgentRuntime::new(
@@ -3396,7 +3390,7 @@ pub async fn test_workflow_session準備_入口から期限と取消の分類を
                     context.terminal.clone(),
                 ),
                 Arc::new(
-                    releash_lib::test_support::integration::sessions::LocalAgentSessionHistoryGateway::new(
+                    releashd::test_support::integration::sessions::LocalAgentSessionHistoryGateway::new(
                         context._directory.path().join("claude"),
                         context._directory.path().join("codex"),
                     ),
@@ -3404,9 +3398,9 @@ pub async fn test_workflow_session準備_入口から期限と取消の分類を
                 context.hook_health.clone(),
                 context.execution_trees.clone(),
                 tokio::sync::mpsc::unbounded_channel().0,
-                releash_lib::test_support::integration::workspace::TestWorkspaceTreeRepository::new(),
+                releashd::test_support::integration::workspace::TestWorkspaceTreeRepository::new(),
             )),
-            Arc::new(releash_lib::test_support::integration::sessions::AgentSessionInitialInstructionUsecase::new(
+            Arc::new(releashd::test_support::integration::sessions::AgentSessionInitialInstructionUsecase::new(
                 context.sessions.clone(),
                 Arc::new(RecordingContinuationInput::default()),
             )),
@@ -3433,14 +3427,13 @@ pub async fn test_workflow_session準備_入口から期限と取消の分類を
             Err(error) => error,
             Ok(_) => panic!("prepare must stop"),
         };
-        let source =
-            releash_lib::test_support::integration::platform::TechnicalFailure::from(stopped);
+        let source = releashd::test_support::integration::platform::TechnicalFailure::from(stopped);
         let WorkflowRuntimeError::Technical(actual) = error else {
             panic!("prepare must return a technical failure");
         };
         assert_eq!(
             actual,
-            releash_lib::test_support::integration::platform::TechnicalFailure {
+            releashd::test_support::integration::platform::TechnicalFailure {
                 nature: source.nature,
                 message: format!(
                     "launch Workflow AgentSession for NodeExecution 'node-1': {}",
@@ -3484,7 +3477,7 @@ pub async fn test_agent_session_resume_実行ファイル未解決はprovider利
         .await
         .unwrap();
     let lifecycle = AgentSessionLifecycleUsecase::new(
-        Arc::new(releash_lib::test_support::integration::platform::RandomIdentityIssuer),
+        Arc::new(releashd::test_support::integration::platform::RandomIdentityIssuer),
         context.sessions.clone(),
         context.provider_lifecycle.clone(),
         ProviderAgentRuntime::new(
@@ -3495,7 +3488,7 @@ pub async fn test_agent_session_resume_実行ファイル未解決はprovider利
         context.hook_health.clone(),
         context.change_notifier.subscriptions.clone(),
         context.execution_trees.clone(),
-        releash_lib::test_support::integration::workspace::TestWorkspaceTreeRepository::new(),
+        releashd::test_support::integration::workspace::TestWorkspaceTreeRepository::new(),
     );
     *context.terminal.presence.lock().unwrap() = ManagedPtyPresence::ConfirmedAbsent;
     lifecycle
@@ -3516,14 +3509,14 @@ pub async fn test_agent_session_resume_実行ファイル未解決はprovider利
 
 #[tokio::test]
 pub async fn test_session選択_restoreは欠落とrepositoryの失敗の性質を保持する() {
-    use releash_lib::test_support::integration::platform::LocalEventQueryError;
-    use releash_lib::test_support::integration::platform::TechnicalFailure;
-    use releash_lib::test_support::integration::platform::TechnicalFailureNature;
-    use releash_lib::test_support::integration::workflow::WorkflowError;
+    use releashd::test_support::integration::platform::LocalEventQueryError;
+    use releashd::test_support::integration::platform::TechnicalFailure;
+    use releashd::test_support::integration::platform::TechnicalFailureNature;
+    use releashd::test_support::integration::workflow::WorkflowError;
 
-    use releash_lib::test_support::integration::workspace::WorkspaceTree;
-    use releash_lib::test_support::integration::workspace::WorkspaceTreeNode;
-    use releash_lib::test_support::integration::workspace::WorkspaceTreeRepository;
+    use releashd::test_support::integration::workspace::WorkspaceTree;
+    use releashd::test_support::integration::workspace::WorkspaceTreeNode;
+    use releashd::test_support::integration::workspace::WorkspaceTreeRepository;
     struct Trees(Option<LocalEventQueryError>);
     #[async_trait::async_trait]
     impl WorkspaceTreeRepository for Trees {
@@ -3596,7 +3589,7 @@ pub async fn test_session選択_restoreは欠落とrepositoryの失敗の性質�
             .await
             .unwrap();
         let lifecycle = AgentSessionLifecycleUsecase::new(
-            Arc::new(releash_lib::test_support::integration::platform::RandomIdentityIssuer),
+            Arc::new(releashd::test_support::integration::platform::RandomIdentityIssuer),
             context.sessions.clone(),
             context.provider_lifecycle.clone(),
             ProviderAgentRuntime::new(

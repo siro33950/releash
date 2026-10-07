@@ -1,11 +1,11 @@
 use crate::adaptor_controller_api_mod::test_support::RecordingRuntimeGateway;
-use releash_lib::test_support::integration::persistence::LocalEventStore;
-use releash_lib::test_support::integration::persistence::LocalEventStoreConfig;
-use releash_lib::test_support::integration::platform::WorktreeExecutionArchiver;
-use releash_lib::test_support::integration::transport::admit;
-use releash_lib::test_support::integration::wire;
-use releash_lib::test_support::integration::workflow::ExecutionTreeArchiveFactRepository;
-use releash_lib::test_support::integration::workflow::WorkflowRuntimeUsecase;
+use releashd::test_support::integration::persistence::LocalEventStore;
+use releashd::test_support::integration::persistence::LocalEventStoreConfig;
+use releashd::test_support::integration::platform::WorktreeExecutionArchiver;
+use releashd::test_support::integration::transport::admit;
+use releashd::test_support::integration::wire;
+use releashd::test_support::integration::workflow::ExecutionTreeArchiveFactRepository;
+use releashd::test_support::integration::workflow::WorkflowRuntimeUsecase;
 use std::sync::Arc;
 
 #[tokio::test]
@@ -15,7 +15,7 @@ pub async fn test_worktree削除中_変更対象を共通境界で拒否して�
     let directory = tempfile::tempdir().unwrap();
     let store = LocalEventStore::open(LocalEventStoreConfig::production(
         directory.path().into(),
-        std::sync::Arc::new(releash_lib::test_support::integration::platform::RetryLimiter::new()),
+        std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
     ))
     .unwrap();
     let runtime = WorkflowRuntimeUsecase::new(

@@ -1,4 +1,4 @@
-use releash_lib::test_support::integration::process::*;
+use releashd::test_support::integration::process::*;
 use std::time::Duration;
 use tokio::process::Command;
 

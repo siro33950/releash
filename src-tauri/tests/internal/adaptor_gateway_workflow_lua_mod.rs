@@ -1,33 +1,33 @@
-use releash_lib::test_support::integration::platform::evaluate;
-use releash_lib::test_support::integration::platform::LuaData;
-use releash_lib::test_support::integration::platform::LuaEvaluationRequest;
-use releash_lib::test_support::integration::platform::LuaHost;
-use releash_lib::test_support::integration::platform::LuaLimits;
-use releash_lib::test_support::integration::platform::LuaSourceLocation;
-use releash_lib::test_support::integration::platform::LuaTableData;
-use releash_lib::test_support::integration::platform::LuaTableKey;
-use releash_lib::test_support::integration::workflow::handle;
-use releash_lib::test_support::integration::workflow::load_lua_workflow;
-use releash_lib::test_support::integration::workflow::test_handle_index;
-use releash_lib::test_support::integration::workflow::InputSourceRef;
-use releash_lib::test_support::integration::workflow::LuaFacetCatalog;
-use releash_lib::test_support::integration::workflow::LuaWorkflowDefinition;
-use releash_lib::test_support::integration::workflow::LuaWorkflowError;
-use releash_lib::test_support::integration::workflow::Predicate;
-use releash_lib::test_support::integration::workflow::RuleDraft;
-use releash_lib::test_support::integration::workflow::SourceDraft;
-use releash_lib::test_support::integration::workflow::SourceRoot;
-use releash_lib::test_support::integration::workflow::WorkflowDefinition;
-use releash_lib::test_support::integration::workflow::WorkflowLuaHost;
-use releash_lib::test_support::integration::workflow::FN_ALL;
-use releash_lib::test_support::integration::workflow::FN_ANY;
-use releash_lib::test_support::integration::workflow::FN_WHEN;
-use releash_lib::test_support::integration::workflow::HANDLE_CHILD;
-use releash_lib::test_support::integration::workflow::HANDLE_NODE;
-use releash_lib::test_support::integration::workflow::HANDLE_PREDICATE;
-use releash_lib::test_support::integration::workflow::HANDLE_RULE;
-use releash_lib::test_support::integration::workflow::HANDLE_SOURCE;
-use releash_lib::test_support::integration::workflow::MAX_HOST_ARENA_ENTRIES;
+use releashd::test_support::integration::platform::evaluate;
+use releashd::test_support::integration::platform::LuaData;
+use releashd::test_support::integration::platform::LuaEvaluationRequest;
+use releashd::test_support::integration::platform::LuaHost;
+use releashd::test_support::integration::platform::LuaLimits;
+use releashd::test_support::integration::platform::LuaSourceLocation;
+use releashd::test_support::integration::platform::LuaTableData;
+use releashd::test_support::integration::platform::LuaTableKey;
+use releashd::test_support::integration::workflow::handle;
+use releashd::test_support::integration::workflow::load_lua_workflow;
+use releashd::test_support::integration::workflow::test_handle_index;
+use releashd::test_support::integration::workflow::InputSourceRef;
+use releashd::test_support::integration::workflow::LuaFacetCatalog;
+use releashd::test_support::integration::workflow::LuaWorkflowDefinition;
+use releashd::test_support::integration::workflow::LuaWorkflowError;
+use releashd::test_support::integration::workflow::Predicate;
+use releashd::test_support::integration::workflow::RuleDraft;
+use releashd::test_support::integration::workflow::SourceDraft;
+use releashd::test_support::integration::workflow::SourceRoot;
+use releashd::test_support::integration::workflow::WorkflowDefinition;
+use releashd::test_support::integration::workflow::WorkflowLuaHost;
+use releashd::test_support::integration::workflow::FN_ALL;
+use releashd::test_support::integration::workflow::FN_ANY;
+use releashd::test_support::integration::workflow::FN_WHEN;
+use releashd::test_support::integration::workflow::HANDLE_CHILD;
+use releashd::test_support::integration::workflow::HANDLE_NODE;
+use releashd::test_support::integration::workflow::HANDLE_PREDICATE;
+use releashd::test_support::integration::workflow::HANDLE_RULE;
+use releashd::test_support::integration::workflow::HANDLE_SOURCE;
+use releashd::test_support::integration::workflow::MAX_HOST_ARENA_ENTRIES;
 use std::collections::HashMap;
 
 fn load_unconsumed_source(source: &str) -> Result<LuaWorkflowDefinition, LuaWorkflowError> {
@@ -54,7 +54,7 @@ return r.workflow{ name = 'example', description = 'example', main = s }
     let loaded = load_unconsumed_source(source).unwrap();
 
     // Then
-    releash_lib::test_support::integration::workflow::validate(&loaded.workflow).unwrap();
+    releashd::test_support::integration::workflow::validate(&loaded.workflow).unwrap();
 }
 
 #[test]
@@ -75,7 +75,7 @@ return r.workflow{ name = 'example', description = 'example', main = main }
     let loaded = load_unconsumed_source(source).unwrap();
 
     // Then
-    releash_lib::test_support::integration::workflow::validate(&loaded.workflow).unwrap();
+    releashd::test_support::integration::workflow::validate(&loaded.workflow).unwrap();
 }
 
 #[test]
@@ -120,7 +120,7 @@ return r.workflow{ name = 'example', description = 'example', main = r.command{ 
 
     // Then
     assert_eq!(loaded.workflow.nodes.len(), 1);
-    releash_lib::test_support::integration::workflow::validate(&loaded.workflow).unwrap();
+    releashd::test_support::integration::workflow::validate(&loaded.workflow).unwrap();
 }
 
 #[test]
@@ -136,7 +136,7 @@ return r.workflow{ name = 'example', description = 'example', main = r.fanout{ c
     let loaded = load_unconsumed_source(source).unwrap();
 
     // Then
-    releash_lib::test_support::integration::workflow::validate(&loaded.workflow).unwrap();
+    releashd::test_support::integration::workflow::validate(&loaded.workflow).unwrap();
 }
 
 #[test]
@@ -731,9 +731,9 @@ nodes:
 
 fn diagnose_delegate_lua(
     source: &str,
-) -> releash_lib::test_support::integration::workflow::WorkflowSourceDiagnostics {
+) -> releashd::test_support::integration::workflow::WorkflowSourceDiagnostics {
     let directory = tempfile::tempdir().unwrap();
-    releash_lib::test_support::integration::workflow::diagnose_lua_workflow_source(
+    releashd::test_support::integration::workflow::diagnose_lua_workflow_source(
         "delegate.lua",
         source,
         directory.path(),
@@ -744,10 +744,9 @@ fn diagnose_delegate_lua(
 
 fn assert_delegate_equivalent(lua: &str, yaml: &str, accepted: bool) -> Option<WorkflowDefinition> {
     let lua = diagnose_delegate_lua(lua);
-    let yaml =
-        releash_lib::test_support::integration::workflow::diagnose_workflow_source(yaml, None);
+    let yaml = releashd::test_support::integration::workflow::diagnose_workflow_source(yaml, None);
     let signature =
-        |result: &releash_lib::test_support::integration::workflow::WorkflowSourceDiagnostics| {
+        |result: &releashd::test_support::integration::workflow::WorkflowSourceDiagnostics| {
             let mut items = result
                 .diagnostics
                 .iter()
@@ -1079,7 +1078,7 @@ pub fn test_completion_delegate_二重宣言をshapeエラーにしてfield名�
     assert_eq!(error.code, "WFS002");
     assert_eq!(
         error.stage,
-        releash_lib::test_support::integration::workflow::DiagnosticStage::ParseShape
+        releashd::test_support::integration::workflow::DiagnosticStage::ParseShape
     );
     assert!(error.message.contains("same Session handle"));
     assert!(error.message.contains("twice"));
@@ -1129,7 +1128,7 @@ pub fn test_completion_delegate_同名fieldがあってもメソッドを供給�
         assert_eq!(error.code, "WFS010", "{new}");
         assert_eq!(
             error.stage,
-            releash_lib::test_support::integration::workflow::DiagnosticStage::ParseShape,
+            releashd::test_support::integration::workflow::DiagnosticStage::ParseShape,
             "{new}"
         );
         assert!(
@@ -1281,8 +1280,8 @@ pub fn test_completion_delegate_無名sessionの自己artifactを正準名で配
             assert_eq!(workflow, expected_workflow);
             let restored: WorkflowDefinition =
                 serde_json::from_str(&serde_json::to_string(&workflow).unwrap()).unwrap();
-            releash_lib::test_support::integration::workflow::validate(&restored).unwrap();
-            let bindings = releash_lib::test_support::integration::workflow::resolve_entry_bindings(
+            releashd::test_support::integration::workflow::validate(&restored).unwrap();
+            let bindings = releashd::test_support::integration::workflow::resolve_entry_bindings(
                 Some(
                     &restored
                         .node_by_name(&owner.name)
@@ -1437,7 +1436,7 @@ pub fn test_completion_delegate_非sessionのhandleからの宣言を受理し�
         assert_eq!(result.diagnostics[0].code, "WFS010", "{owner}");
         assert_eq!(
             result.diagnostics[0].stage,
-            releash_lib::test_support::integration::workflow::DiagnosticStage::ParseShape
+            releashd::test_support::integration::workflow::DiagnosticStage::ParseShape
         );
         assert!(
             result.diagnostics[0].message.contains("attempt to call"),
@@ -1453,16 +1452,16 @@ pub(crate) mod tests {
 
     use tempfile::TempDir;
 
-    use releash_lib::test_support::integration::platform::LuaLimits;
-    use releash_lib::test_support::integration::workflow::load_lua_workflow;
-    use releash_lib::test_support::integration::workflow::load_lua_workflow_with_limits;
-    use releash_lib::test_support::integration::workflow::LuaFacetCatalog;
-    use releash_lib::test_support::integration::workflow::LuaWorkflowDefinition;
-    use releash_lib::test_support::integration::workflow::LuaWorkflowError;
-    use releash_lib::test_support::integration::workflow::NodeCompletion;
-    use releash_lib::test_support::integration::workflow::Rule;
-    use releash_lib::test_support::integration::workflow::SessionPermission;
-    use releash_lib::test_support::integration::workflow::WorkflowDefinition;
+    use releashd::test_support::integration::platform::LuaLimits;
+    use releashd::test_support::integration::workflow::load_lua_workflow;
+    use releashd::test_support::integration::workflow::load_lua_workflow_with_limits;
+    use releashd::test_support::integration::workflow::LuaFacetCatalog;
+    use releashd::test_support::integration::workflow::LuaWorkflowDefinition;
+    use releashd::test_support::integration::workflow::LuaWorkflowError;
+    use releashd::test_support::integration::workflow::NodeCompletion;
+    use releashd::test_support::integration::workflow::Rule;
+    use releashd::test_support::integration::workflow::SessionPermission;
+    use releashd::test_support::integration::workflow::WorkflowDefinition;
     use std::collections::HashMap;
 
     fn load(source: &str) -> Result<LuaWorkflowDefinition, LuaWorkflowError> {
@@ -1817,7 +1816,7 @@ return r.workflow{
             ["main", "main#0", "main#1", "main#1#0"]
         );
         let validation_errors =
-            releash_lib::test_support::integration::workflow::validate_all(&loaded.workflow);
+            releashd::test_support::integration::workflow::validate_all(&loaded.workflow);
         assert!(validation_errors.is_empty(), "{validation_errors:#?}");
         assert!(loaded.workflow.schemas.contains_key("topic-detail"));
     }
@@ -1850,8 +1849,7 @@ return r.workflow{ name = "routing", description = "routing", main = r.sequence{
         )
         .unwrap();
 
-        let errors =
-            releash_lib::test_support::integration::workflow::validate_all(&loaded.workflow);
+        let errors = releashd::test_support::integration::workflow::validate_all(&loaded.workflow);
 
         assert!(errors.is_empty(), "{errors:#?}");
     }
@@ -1929,7 +1927,7 @@ return r.workflow{ name = "wiring", description = "wiring", main = r.sequence{ c
         )
         .unwrap();
         let validation_errors =
-            releash_lib::test_support::integration::workflow::validate_all(&loaded.workflow);
+            releashd::test_support::integration::workflow::validate_all(&loaded.workflow);
         let sequence = loaded.workflow.entry_node().unwrap().sequence().unwrap();
         let target_entry = &sequence.children[1];
         let artifacts = HashMap::from([(
@@ -1938,7 +1936,7 @@ return r.workflow{ name = "wiring", description = "wiring", main = r.sequence{ c
         )]);
 
         // When
-        let bindings = releash_lib::test_support::integration::workflow::resolve_entry_bindings(
+        let bindings = releashd::test_support::integration::workflow::resolve_entry_bindings(
             Some(target_entry),
             &artifacts,
         );
@@ -2105,8 +2103,7 @@ return r.workflow{
         )
         .unwrap();
 
-        let errors =
-            releash_lib::test_support::integration::workflow::validate_all(&loaded.workflow);
+        let errors = releashd::test_support::integration::workflow::validate_all(&loaded.workflow);
         assert!(errors.is_empty(), "{errors:#?}");
         let target = loaded.workflow.node_by_name("target").unwrap();
         assert_eq!(
@@ -2235,8 +2232,8 @@ nodes:
 
         assert_eq!(loaded.workflow, yaml);
 
-        use releash_lib::test_support::integration::workflow::workflow_execution_ExecutionTree as ExecutionTree;
-        use releash_lib::test_support::integration::workflow::ExecutionTreeRestore;
+        use releashd::test_support::integration::workflow::workflow_execution_ExecutionTree as ExecutionTree;
+        use releashd::test_support::integration::workflow::ExecutionTreeRestore;
         let mut lua_execution = ExecutionTree::restore_runtime(ExecutionTreeRestore {
             id: "execution".to_string(),
             workflow: loaded.workflow,
@@ -2336,8 +2333,7 @@ return r.workflow{
             loaded.workflow.node_by_name("main#1").unwrap().completion,
             NodeCompletion::require_approval()
         );
-        let errors =
-            releash_lib::test_support::integration::workflow::validate_all(&loaded.workflow);
+        let errors = releashd::test_support::integration::workflow::validate_all(&loaded.workflow);
         assert!(errors.is_empty(), "{errors:#?}");
     }
 

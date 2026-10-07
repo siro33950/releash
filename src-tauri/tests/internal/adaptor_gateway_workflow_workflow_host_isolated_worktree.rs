@@ -1,18 +1,18 @@
 use crate::adaptor_gateway_workflow_workflow_host_test_helpers::*;
-use releash_lib::test_support::integration::workflow::current_timestamp;
-use releash_lib::test_support::integration::workflow::ControlPlaneCommitCandidate;
-use releash_lib::test_support::integration::workflow::ManagedWorktreeResolver;
-use releash_lib::test_support::integration::workflow::NodeExecutionStatus;
-use releash_lib::test_support::integration::workflow::NodeKindName;
-use releash_lib::test_support::integration::workflow::NodeStart;
-use releash_lib::test_support::integration::workflow::RuntimeExecutionState;
-use releash_lib::test_support::integration::workflow::TransitionOutcome;
-use releash_lib::test_support::integration::workflow::WorkflowEvent;
-use releash_lib::test_support::integration::workflow::WorkflowRuntimeError;
+use releashd::test_support::integration::workflow::current_timestamp;
+use releashd::test_support::integration::workflow::ControlPlaneCommitCandidate;
+use releashd::test_support::integration::workflow::ManagedWorktreeResolver;
+use releashd::test_support::integration::workflow::NodeExecutionStatus;
+use releashd::test_support::integration::workflow::NodeKindName;
+use releashd::test_support::integration::workflow::NodeStart;
+use releashd::test_support::integration::workflow::RuntimeExecutionState;
+use releashd::test_support::integration::workflow::TransitionOutcome;
+use releashd::test_support::integration::workflow::WorkflowEvent;
+use releashd::test_support::integration::workflow::WorkflowRuntimeError;
 use std::sync::Arc;
 
-use releash_lib::test_support::integration::workflow::NodeFact;
-use releash_lib::test_support::integration::workflow::NodeProcessPresence;
+use releashd::test_support::integration::workflow::NodeFact;
+use releashd::test_support::integration::workflow::NodeProcessPresence;
 use std::sync::atomic::Ordering;
 
 #[tokio::test]
@@ -34,7 +34,7 @@ pub async fn test_隔離起動_commandのcwdと環境変数は生成済みworktr
         repo.head().unwrap().shorthand().unwrap(),
         artifact["worktree"]["branch"].as_str().unwrap()
     );
-    let records = releash_lib::test_support::integration::workflow::read_tree_records(
+    let records = releashd::test_support::integration::workflow::read_tree_records(
         &fixture.store,
         &execution_id,
     )
@@ -64,7 +64,7 @@ pub async fn test_隔離復旧_生成後かつ起動記録前のleafと合成子
         let worktree = node.worktree.as_ref().unwrap();
         fixture.host.test_isolated_worktrees().create(&root, worktree).unwrap();
         std::fs::write(format!("{}/keep", worktree.path), "uncommitted").unwrap();
-        let before = releash_lib::test_support::integration::workflow::read_tree_records(&fixture.store, &started.execution_id).await.unwrap();
+        let before = releashd::test_support::integration::workflow::read_tree_records(&fixture.store, &started.execution_id).await.unwrap();
         assert!(!before.iter().any(|record| matches!(record.fact, NodeFact::SessionAttached(_) | NodeFact::CommandSpawned(_))));
         let restored = fixture.restarted_host();
 
@@ -85,8 +85,8 @@ pub async fn test_隔離復旧_生成後かつ起動記録前のleafと合成子
             }
             assert_eq!(fixture.sessions.activated.lock().unwrap().len(), 1);
         }
-        let folded = releash_lib::test_support::integration::workflow::fold_tree_from(
-            &releash_lib::test_support::integration::workflow::FactLogReadBackend::Live(fixture.store.clone()),
+        let folded = releashd::test_support::integration::workflow::fold_tree_from(
+            &releashd::test_support::integration::workflow::FactLogReadBackend::Live(fixture.store.clone()),
             &started.execution_id,
         ).await.unwrap().unwrap();
         let attempts = folded.aggregate.node_executions.iter().filter(|attempt| attempt.node_name == "main").collect::<Vec<_>>();
@@ -119,14 +119,14 @@ pub async fn test_隔離起動_合成子の生成後に同じcwdとroot所属で
             && cwd == &generated[0].1.path));
         assert_eq!(fixture.sessions.activated.lock().unwrap().len(), 2);
     }
-    let records = releash_lib::test_support::integration::workflow::read_tree_records(
+    let records = releashd::test_support::integration::workflow::read_tree_records(
         &fixture.store,
         &execution_id,
     )
     .await
     .unwrap();
     assert!(records.iter().all(|record| {
-        !releash_lib::test_support::integration::workflow::event_type(&record.fact)
+        !releashd::test_support::integration::workflow::event_type(&record.fact)
             .starts_with("isolated_worktree")
     }));
 }
@@ -152,7 +152,7 @@ pub async fn test_隔離起動_生成失敗後は自動で新しいattemptだけ
         .filter(|node| node.node_name == "work")
         .collect::<Vec<_>>();
     let failures =
-        releash_lib::test_support::integration::platform::shared_store().records(&attempts[0].id);
+        releashd::test_support::integration::platform::shared_store().records(&attempts[0].id);
     assert!(failures
         .iter()
         .all(|failure| failure.record.operation != "workflow_node_start"));
@@ -167,8 +167,8 @@ pub async fn test_隔離起動_生成失敗後は自動で新しいattemptだけ
         fixture.sessions.activated.lock().unwrap().as_slice(),
         &[attempts[1].id.clone()]
     );
-    let folded = releash_lib::test_support::integration::workflow::fold_tree_from(
-        &releash_lib::test_support::integration::workflow::FactLogReadBackend::Live(
+    let folded = releashd::test_support::integration::workflow::fold_tree_from(
+        &releashd::test_support::integration::workflow::FactLogReadBackend::Live(
             fixture.store.clone(),
         ),
         &execution_id,
@@ -200,7 +200,7 @@ pub async fn test_隔離起動_合成子の生成失敗では子を起動せず�
         .get_state_by_execution_id(&fixture.app, &execution_id)
         .await
         .unwrap();
-    let failures = releash_lib::test_support::integration::platform::shared_store()
+    let failures = releashd::test_support::integration::platform::shared_store()
         .records(&snapshot.node_executions[0].id);
     assert!(failures
         .iter()
@@ -212,8 +212,8 @@ pub async fn test_隔離起動_合成子の生成失敗では子を起動せず�
     );
     assert!(!snapshot.node_executions[0].can_retry(NodeProcessPresence::ConfirmedAbsent));
     assert!(fixture.sessions.prepared.lock().unwrap().is_empty());
-    let restored = releash_lib::test_support::integration::workflow::fold_tree_from(
-        &releash_lib::test_support::integration::workflow::FactLogReadBackend::Live(
+    let restored = releashd::test_support::integration::workflow::fold_tree_from(
+        &releashd::test_support::integration::workflow::FactLogReadBackend::Live(
             fixture.store.clone(),
         ),
         &execution_id,
@@ -243,8 +243,8 @@ pub async fn test_隔離合成子_子開始のappend失敗はrootと入れ子の
             // When
             let execution_id = fixture.start(&nodes).await;
             // Then
-            let folded = releash_lib::test_support::integration::workflow::fold_tree_from(
-                &releash_lib::test_support::integration::workflow::FactLogReadBackend::Live(
+            let folded = releashd::test_support::integration::workflow::fold_tree_from(
+                &releashd::test_support::integration::workflow::FactLogReadBackend::Live(
                     fixture.store.clone(),
                 ),
                 &execution_id,
@@ -260,7 +260,7 @@ pub async fn test_隔離合成子_子開始のappend失敗はrootと入れ子の
                 .find(|node| node.node_name == target_name)
                 .unwrap();
             assert_eq!(target.status, NodeExecutionStatus::Running);
-            let records = releash_lib::test_support::integration::workflow::read_tree_records(
+            let records = releashd::test_support::integration::workflow::read_tree_records(
                 &fixture.store,
                 &execution_id,
             )
@@ -312,11 +312,7 @@ pub async fn test_隔離合成子_子開始commitの状態通知は一度だけ�
             &fixture.app,
             &snapshot.execution_id,
             "/repo",
-            vec![
-                releash_lib::test_support::integration::workflow::NodePreparation::Composite(
-                    starts,
-                ),
-            ],
+            vec![releashd::test_support::integration::workflow::NodePreparation::Composite(starts)],
         )
         .await
         .unwrap();
@@ -332,8 +328,8 @@ pub async fn test_空の隔離fanout_liveと再読取で同じworktree成果を�
     let mut broadcasts = record_workflow_execution_broadcasts(&fixture.app);
     // When
     let id = fixture.start("  main: {worktree: isolated, fanout: {items: [], children: [work]}}\n  work: {session: {provider: codex}}").await;
-    let folded = releash_lib::test_support::integration::workflow::fold_tree_from(
-        &releash_lib::test_support::integration::workflow::FactLogReadBackend::Live(
+    let folded = releashd::test_support::integration::workflow::fold_tree_from(
+        &releashd::test_support::integration::workflow::FactLogReadBackend::Live(
             fixture.store.clone(),
         ),
         &id,
@@ -341,11 +337,11 @@ pub async fn test_空の隔離fanout_liveと再読取で同じworktree成果を�
     .await
     .unwrap()
     .unwrap();
-    let read = releash_lib::test_support::integration::workflow::derive_read_model(&folded);
+    let read = releashd::test_support::integration::workflow::derive_read_model(&folded);
     // Then
     assert_eq!(
         read.status,
-        releash_lib::test_support::integration::workflow::ExecutionStatus::Completed
+        releashd::test_support::integration::workflow::ExecutionStatus::Completed
     );
     assert_eq!(fixture.worktrees.calls.lock().unwrap().len(), 1);
     assert!(fixture.sessions.prepared.lock().unwrap().is_empty());
@@ -378,8 +374,8 @@ pub async fn test_起動再試行_停止する分類では最初のattemptだけ
             .start(&format!("  main: {{worktree: isolated, {kind}}}"))
             .await;
         fixture.wait_startup_retries().await;
-        let folded = releash_lib::test_support::integration::workflow::fold_tree_from(
-            &releash_lib::test_support::integration::workflow::FactLogReadBackend::Live(
+        let folded = releashd::test_support::integration::workflow::fold_tree_from(
+            &releashd::test_support::integration::workflow::FactLogReadBackend::Live(
                 fixture.store.clone(),
             ),
             &id,
@@ -417,12 +413,10 @@ pub async fn test_起動再試行_停止する分類では最初のattemptだけ
             .lock()
             .unwrap()
             .is_empty());
-        let records = releash_lib::test_support::integration::workflow::read_tree_records(
-            &fixture.store,
-            &id,
-        )
-        .await
-        .unwrap();
+        let records =
+            releashd::test_support::integration::workflow::read_tree_records(&fixture.store, &id)
+                .await
+                .unwrap();
         assert_eq!(
             records
                 .iter()
@@ -443,12 +437,9 @@ pub async fn test_起動再試行_停止する分類では最初のattemptだけ
         assert_eq!(after.node_executions(), attempts);
         assert_eq!(fixture.worktrees.calls.lock().unwrap().len(), 1);
         assert_eq!(
-            releash_lib::test_support::integration::workflow::read_tree_records(
-                &fixture.store,
-                &id
-            )
-            .await
-            .unwrap(),
+            releashd::test_support::integration::workflow::read_tree_records(&fixture.store, &id)
+                .await
+                .unwrap(),
             records
         );
     }
@@ -469,10 +460,10 @@ pub async fn test_自動再試行_abortとshutdownは待機を終了し追加起
                 .await
                 .unwrap();
         } else {
-            releash_lib::test_support::integration::daemon::DaemonUsecase::test_with_repository(
+            releashd::test_support::integration::daemon::DaemonUsecase::test_with_repository(
                 fixture.host.test_daemon().clone(),
             )
-            .stop(releash_lib::test_support::integration::daemon::StopRequest::Exit { code: 23 })
+            .stop(releashd::test_support::integration::daemon::StopRequest::Exit { code: 23 })
             .await;
             fixture.host.shutdown_all_active_commands().await;
         }
@@ -482,7 +473,7 @@ pub async fn test_自動再試行_abortとshutdownは待機を終了し追加起
         tokio::time::resume();
         assert_eq!(fixture.worktrees.calls.lock().unwrap().len(), 1);
         assert!(
-            !releash_lib::test_support::integration::workflow::read_tree_records(
+            !releashd::test_support::integration::workflow::read_tree_records(
                 &fixture.store,
                 &tree
             )
@@ -518,7 +509,7 @@ pub async fn test_自動再試行_待機中の手動resume後に旧attemptを再
         .store(false, Ordering::SeqCst);
     control(&fixture)
         .resume_session_node(
-            releash_lib::test_support::integration::workflow::ResumeSessionNodeCommand {
+            releashd::test_support::integration::workflow::ResumeSessionNodeCommand {
                 execution_id: tree.clone(),
                 node_execution_id: previous.id,
             },
@@ -559,10 +550,10 @@ pub async fn test_自動再試行_shutdownは進行中の準備の終了を待�
     )
     .await
     .unwrap();
-    releash_lib::test_support::integration::daemon::DaemonUsecase::test_with_repository(
+    releashd::test_support::integration::daemon::DaemonUsecase::test_with_repository(
         fixture.host.test_daemon().clone(),
     )
-    .stop(releash_lib::test_support::integration::daemon::StopRequest::Exit { code: 23 })
+    .stop(releashd::test_support::integration::daemon::StopRequest::Exit { code: 23 })
     .await;
     let mut shutdown = Box::pin(fixture.host.shutdown_all_active_commands());
     assert!(
@@ -612,7 +603,7 @@ pub async fn test_session起動_準備済みの旧attemptを除外して兄弟�
         .collect();
     control(&fixture)
         .resume_session_node(
-            releash_lib::test_support::integration::workflow::ResumeSessionNodeCommand {
+            releashd::test_support::integration::workflow::ResumeSessionNodeCommand {
                 execution_id: snapshot.execution_id.clone(),
                 node_execution_id: first.id.clone(),
             },
@@ -652,11 +643,11 @@ pub async fn test_session起動_準備済みの旧attemptを除外して兄弟�
 
 fn control(
     fixture: &Fixture,
-) -> releash_lib::test_support::integration::workflow::WorkflowControlPlaneUsecase {
-    releash_lib::test_support::integration::workflow::WorkflowControlPlaneUsecase::new(
-        releash_lib::test_support::integration::platform::shared().clone(),
+) -> releashd::test_support::integration::workflow::WorkflowControlPlaneUsecase {
+    releashd::test_support::integration::workflow::WorkflowControlPlaneUsecase::new(
+        releashd::test_support::integration::platform::shared().clone(),
         Arc::new(
-            releash_lib::test_support::integration::workflow::WorkflowRuntimeCommandGateway::new_with_driver(
+            releashd::test_support::integration::workflow::WorkflowRuntimeCommandGateway::new_with_driver(
                 fixture.app.clone(),
                 Arc::new(fixture.host.clone()),
             ),
@@ -692,7 +683,7 @@ pub async fn resume_after_never_successful_session_launch_creates_a_new_attempt_
         .store(false, Ordering::SeqCst);
     control(&fixture)
         .resume_session_node(
-            releash_lib::test_support::integration::workflow::ResumeSessionNodeCommand {
+            releashd::test_support::integration::workflow::ResumeSessionNodeCommand {
                 execution_id: id.clone(),
                 node_execution_id: current.id,
             },
@@ -735,7 +726,7 @@ pub async fn resume_recreates_a_lost_isolated_worktree_but_recovers_an_existing_
         }
         control(&fixture)
             .resume_session_node(
-                releash_lib::test_support::integration::workflow::ResumeSessionNodeCommand {
+                releashd::test_support::integration::workflow::ResumeSessionNodeCommand {
                     execution_id: id.clone(),
                     node_execution_id: previous.id.clone(),
                 },
@@ -799,7 +790,7 @@ pub async fn session_resume_requires_confirmed_absence_and_manual_retry_is_rejec
             .store(unknown, Ordering::SeqCst);
         assert!(control(&fixture)
             .resume_session_node(
-                releash_lib::test_support::integration::workflow::ResumeSessionNodeCommand {
+                releashd::test_support::integration::workflow::ResumeSessionNodeCommand {
                     execution_id: id.clone(),
                     node_execution_id: previous.id.clone()
                 }
@@ -814,7 +805,7 @@ pub async fn session_resume_requires_confirmed_absence_and_manual_retry_is_rejec
     fixture.sessions.live_sessions.lock().unwrap().clear();
     assert!(control(&fixture)
         .retry_node(
-            releash_lib::test_support::integration::workflow::RetryNodeCommand {
+            releashd::test_support::integration::workflow::RetryNodeCommand {
                 execution_id: id.clone(),
                 node_execution_id: previous.id.clone()
             }
@@ -857,7 +848,7 @@ pub async fn resume_without_a_conversation_starts_a_new_attempt_even_when_the_wo
         .store(true, Ordering::SeqCst);
     control(&fixture)
         .resume_session_node(
-            releash_lib::test_support::integration::workflow::ResumeSessionNodeCommand {
+            releashd::test_support::integration::workflow::ResumeSessionNodeCommand {
                 execution_id: id.clone(),
                 node_execution_id: previous.id.clone(),
             },
@@ -904,7 +895,7 @@ pub async fn missing_worktree_rejects_command_retry_but_does_not_prevent_abort()
         .is_err());
     let error = control(&fixture)
         .retry_node(
-            releash_lib::test_support::integration::workflow::RetryNodeCommand {
+            releashd::test_support::integration::workflow::RetryNodeCommand {
                 execution_id: id.clone(),
                 node_execution_id: node.id.clone(),
             },
@@ -922,8 +913,8 @@ pub async fn missing_worktree_rejects_command_retry_but_does_not_prevent_abort()
         .abort_workflow_execution(&fixture.app, &id, None)
         .await
         .unwrap();
-    let folded = releash_lib::test_support::integration::workflow::fold_tree_from(
-        &releash_lib::test_support::integration::workflow::FactLogReadBackend::Live(
+    let folded = releashd::test_support::integration::workflow::fold_tree_from(
+        &releashd::test_support::integration::workflow::FactLogReadBackend::Live(
             fixture.store.clone(),
         ),
         &id,
@@ -1002,7 +993,7 @@ pub async fn new_attempt_commit_rechecks_process_presence_before_recording_retry
         before
     );
     assert!(
-        !releash_lib::test_support::integration::workflow::read_tree_records(&fixture.store, &id)
+        !releashd::test_support::integration::workflow::read_tree_records(&fixture.store, &id)
             .await
             .unwrap()
             .iter()
@@ -1025,8 +1016,8 @@ pub async fn test_session再開_fanoutの準備中は起動を待ち兄弟を取
         _ = fixture.sessions.preparation_entered.notified() => {}
         _ = &mut start => panic!("preparation must wait"),
     }
-    let tree_id = releash_lib::test_support::integration::workflow::list_tree_ids(
-        &releash_lib::test_support::integration::workflow::FactLogReadBackend::Live(
+    let tree_id = releashd::test_support::integration::workflow::list_tree_ids(
+        &releashd::test_support::integration::workflow::FactLogReadBackend::Live(
             fixture.store.clone(),
         ),
         None,
@@ -1047,7 +1038,7 @@ pub async fn test_session再開_fanoutの準備中は起動を待ち兄弟を取
         .unwrap();
     let control = control(&fixture);
     let mut resume = Box::pin(control.resume_session_node(
-        releash_lib::test_support::integration::workflow::ResumeSessionNodeCommand {
+        releashd::test_support::integration::workflow::ResumeSessionNodeCommand {
             execution_id: before.id.clone(),
             node_execution_id: target.id.clone(),
         },
@@ -1081,7 +1072,7 @@ pub async fn test_session再開_fanoutの準備中は起動を待ち兄弟を取
         .all(|node| node.status == NodeExecutionStatus::Running));
     assert_eq!(fixture.sessions.activated.lock().unwrap().len(), 2);
     assert!(
-        !releash_lib::test_support::integration::workflow::read_tree_records(
+        !releashd::test_support::integration::workflow::read_tree_records(
             &fixture.store,
             &before.id
         )
@@ -1099,13 +1090,11 @@ impl ManagedWorktreeResolver for CanonicalizingWorktreeResolver {
     async fn resolve(
         &self,
         path: String,
-    ) -> Result<
-        String,
-        releash_lib::test_support::integration::workflow::ManagedWorktreeResolverError,
-    > {
-        releash_lib::test_support::integration::workflow::normalize_worktree_filter_path(&path)
+    ) -> Result<String, releashd::test_support::integration::workflow::ManagedWorktreeResolverError>
+    {
+        releashd::test_support::integration::workflow::normalize_worktree_filter_path(&path)
             .map_err(
-            releash_lib::test_support::integration::workflow::ManagedWorktreeResolverError::Validation,
+            releashd::test_support::integration::workflow::ManagedWorktreeResolverError::Validation,
         )
     }
 }
@@ -1122,7 +1111,7 @@ pub async fn test_command再試行_プロセス無しでフォルダがあれば
     // When
     control(&fixture)
         .retry_node(
-            releash_lib::test_support::integration::workflow::RetryNodeCommand {
+            releashd::test_support::integration::workflow::RetryNodeCommand {
                 execution_id: snapshot.execution_id.clone(),
                 node_execution_id: old.id.clone(),
             },
@@ -1132,8 +1121,8 @@ pub async fn test_command再試行_プロセス無しでフォルダがあれば
     // Then
     tokio::time::timeout(std::time::Duration::from_secs(10), async {
         loop {
-            let current = releash_lib::test_support::integration::workflow::fold_tree_from(
-                &releash_lib::test_support::integration::workflow::FactLogReadBackend::Live(
+            let current = releashd::test_support::integration::workflow::fold_tree_from(
+                &releashd::test_support::integration::workflow::FactLogReadBackend::Live(
                     fixture.store.clone(),
                 ),
                 &snapshot.execution_id,
@@ -1162,8 +1151,8 @@ pub async fn test_command再試行_プロセス無しでフォルダがあれば
     })
     .await
     .unwrap();
-    let folded = releash_lib::test_support::integration::workflow::fold_tree_from(
-        &releash_lib::test_support::integration::workflow::FactLogReadBackend::Live(
+    let folded = releashd::test_support::integration::workflow::fold_tree_from(
+        &releashd::test_support::integration::workflow::FactLogReadBackend::Live(
             fixture.store.clone(),
         ),
         &snapshot.execution_id,
@@ -1181,7 +1170,7 @@ pub async fn test_command再試行_プロセス無しでフォルダがあれば
     assert_eq!(next.attempt, 2);
     assert_eq!(next.status, NodeExecutionStatus::Succeeded);
     assert!(
-        releash_lib::test_support::integration::workflow::read_tree_records(
+        releashd::test_support::integration::workflow::read_tree_records(
             &fixture.store,
             &snapshot.execution_id
         )
@@ -1195,9 +1184,9 @@ pub async fn test_command再試行_プロセス無しでフォルダがあれば
 
 #[tokio::test]
 pub async fn test_プロセス在否_実供給元の変化が読取と通知と操作可否に反映される() {
-    use releash_lib::test_support::integration::workflow::NodeProcessReader;
-    use releash_lib::test_support::integration::workflow::WorkflowExecutionProjectionRepository;
-    use releash_lib::test_support::integration::workspace::WorkspaceNodeStatusClassification;
+    use releashd::test_support::integration::workflow::NodeProcessReader;
+    use releashd::test_support::integration::workflow::WorkflowExecutionProjectionRepository;
+    use releashd::test_support::integration::workspace::WorkspaceNodeStatusClassification;
     // Given
     for kind in [NodeKindName::Command, NodeKindName::Session] {
         let fixture = Fixture::new(0);
@@ -1220,7 +1209,7 @@ pub async fn test_プロセス在否_実供給元の変化が読取と通知と�
             .clone();
         let node = &current.node_executions[0];
         if kind == NodeKindName::Session {
-            let records = releash_lib::test_support::integration::workflow::read_tree_records(
+            let records = releashd::test_support::integration::workflow::read_tree_records(
                 &fixture.store,
                 &tree,
             )
@@ -1231,12 +1220,12 @@ pub async fn test_プロセス在否_実供給元の変化が読取と通知と�
                 .find(|record| record.meta.node_execution_id == node.id)
                 .unwrap()
                 .meta;
-            releash_lib::test_support::integration::workflow::append_single_fact(
+            releashd::test_support::integration::workflow::append_single_fact(
                 &fixture.store,
                 meta,
                 &NodeFact::AgentActivityObserved(
-                    releash_lib::test_support::integration::workflow::AgentActivityObservedFact {
-                        activity: releash_lib::test_support::integration::workflow::AgentSessionActivity::Working,
+                    releashd::test_support::integration::workflow::AgentActivityObservedFact {
+                        activity: releashd::test_support::integration::workflow::AgentSessionActivity::Working,
                     },
                 ),
                 (current_timestamp() * 1000.0) as i64,
@@ -1244,10 +1233,10 @@ pub async fn test_プロセス在否_実供給元の変化が読取と通知と�
             .await
             .unwrap();
         }
-        let mut projection = releash_lib::test_support::integration::workflow::WorkflowExecutionProjectionLogRepository::new(fixture.store.clone());
+        let mut projection = releashd::test_support::integration::workflow::WorkflowExecutionProjectionLogRepository::new(fixture.store.clone());
         projection.processes = Some(fixture.host.node_processes.clone());
         let mut workspace =
-            releash_lib::test_support::integration::workspace::SqliteWorkspaceTreeRepository::new(
+            releashd::test_support::integration::workspace::SqliteWorkspaceTreeRepository::new(
                 fixture.store.clone(),
             );
         Arc::get_mut(&mut workspace).unwrap().processes = Some(fixture.host.node_processes.clone());
@@ -1268,7 +1257,11 @@ pub async fn test_プロセス在否_実供給元の変化が読取と通知と�
                     .lock()
                     .unwrap();
                 if expected == NodeProcessPresence::Live {
-                    commands.insert(node.id.clone(), releash_lib::test_support::integration::process::ActiveCommandHandle::for_test());
+                    commands.insert(
+                        node.id.clone(),
+                        releashd::test_support::integration::process::ActiveCommandHandle::for_test(
+                        ),
+                    );
                 } else {
                     commands.remove(&node.id);
                 }
@@ -1304,7 +1297,7 @@ pub async fn test_プロセス在否_実供給元の変化が読取と通知と�
                 kind == NodeKindName::Session && expected == NodeProcessPresence::ConfirmedAbsent;
             let model = projection
                 .get_execution(
-                    &releash_lib::test_support::integration::workflow::ExecutionTreeId::new(
+                    &releashd::test_support::integration::workflow::ExecutionTreeId::new(
                         tree.clone(),
                     )
                     .unwrap(),
@@ -1320,9 +1313,9 @@ pub async fn test_プロセス在否_実供給元の変化が読取と通知と�
             assert_eq!(read.process_presence, expected);
             assert_eq!(read.can_retry(), retry);
             assert_eq!(read.can_resume_session(), resume);
-            let read = releash_lib::test_support::integration::workspace::node_for_execution(
+            let read = releashd::test_support::integration::workspace::node_for_execution(
                 &*workspace,
-                &releash_lib::test_support::integration::workspace::WorkspaceIdentity::new(
+                &releashd::test_support::integration::workspace::WorkspaceIdentity::new(
                     &current.worktree_path,
                 ),
                 &node.id,
@@ -1342,7 +1335,7 @@ pub async fn test_プロセス在否_実供給元の変化が読取と通知と�
                 }
             );
             let mut receiver = record_workflow_execution_broadcasts(&fixture.app);
-            releash_lib::test_support::integration::workflow::broadcast_state(
+            releashd::test_support::integration::workflow::broadcast_state(
                 &fixture.app,
                 &current.worktree_path,
             )
@@ -1351,7 +1344,7 @@ pub async fn test_プロセス在否_実供給元の変化が読取と通知と�
             assert_eq!(
                 broadcasts,
                 vec![
-                    releash_lib::test_support::integration::subscriptions::StateChangeSource::Worktree(
+                    releashd::test_support::integration::subscriptions::StateChangeSource::Worktree(
                         current.worktree_path.clone()
                     )
                 ]
@@ -1420,7 +1413,7 @@ pub async fn test_隔離合成子競合_最新記録で子開始を再評価し�
                     || Arc::strong_count(&commit_lock) > 1,
                 )
                 .await;
-                releash_lib::test_support::integration::workflow::append_facts_for_events(
+                releashd::test_support::integration::workflow::append_facts_for_events(
                     &fixture.store,
                     &[if change == "abort" {
                         WorkflowEvent::ExecutionAborted {
@@ -1459,10 +1452,10 @@ pub async fn test_隔離合成子競合_最新記録で子開始を再評価し�
                 _ => {
                     let (_, decision) = result.unwrap().unwrap();
                     assert!(matches!(decision,
-                        releash_lib::test_support::integration::workflow::ExecutionAdvanceDecision::StartNodes(ref starts) if starts.len() == 1));
+                        releashd::test_support::integration::workflow::ExecutionAdvanceDecision::StartNodes(ref starts) if starts.len() == 1));
                 }
             }
-            let records = releash_lib::test_support::integration::workflow::read_tree_records(
+            let records = releashd::test_support::integration::workflow::read_tree_records(
                 &fixture.store,
                 &snapshot.execution_id,
             )
@@ -1558,7 +1551,7 @@ pub async fn test_隔離合成子競合_上限後も兄弟と競合したchild�
             || Arc::strong_count(&commit_lock) > 1,
         )
         .await;
-        releash_lib::test_support::integration::workflow::append_facts_for_events(
+        releashd::test_support::integration::workflow::append_facts_for_events(
             &fixture.store,
             &[WorkflowEvent::CommandSpawned {
                 execution_id: snapshot.execution_id.clone(),
@@ -1584,7 +1577,7 @@ pub async fn test_隔離合成子競合_上限後も兄弟と競合したchild�
     operation.await.unwrap();
     fixture.wait_startup_retries().await;
     // Then
-    let records = releash_lib::test_support::integration::workflow::read_tree_records(
+    let records = releashd::test_support::integration::workflow::read_tree_records(
         &fixture.store,
         &snapshot.execution_id,
     )
@@ -1655,7 +1648,7 @@ pub async fn test_session再開_完了したnodeは状態を変えずに会話�
     let control = control(&fixture);
     control
         .submit_output(
-            releash_lib::test_support::integration::workflow::SubmitOutputCommand {
+            releashd::test_support::integration::workflow::SubmitOutputCommand {
                 node_execution_id: node.id.clone(),
                 artifact: None,
             },
@@ -1664,7 +1657,7 @@ pub async fn test_session再開_完了したnodeは状態を変えずに会話�
         .unwrap();
     control
         .record_provider_stop(
-            releash_lib::test_support::integration::providers::ProviderExecutionTreeStopCommand {
+            releashd::test_support::integration::providers::ProviderExecutionTreeStopCommand {
                 agent_session_id: node.session_id.clone().unwrap(),
                 tree_id: id.clone(),
                 node_execution_id: node.id.clone(),
@@ -1688,7 +1681,7 @@ pub async fn test_session再開_完了したnodeは状態を変えずに会話�
     fixture.sessions.live_sessions.lock().unwrap().clear();
     let resume = || {
         control.resume_session_node(
-            releash_lib::test_support::integration::workflow::ResumeSessionNodeCommand {
+            releashd::test_support::integration::workflow::ResumeSessionNodeCommand {
                 execution_id: id.clone(),
                 node_execution_id: node.id.clone(),
             },
@@ -1740,9 +1733,9 @@ pub async fn test_session再開_完了したnodeは状態を変えずに会話�
 
 #[tokio::test]
 pub async fn test_起動時再開_実経路でstore失敗の分類を保持する() {
-    use releash_lib::test_support::integration::persistence::ReadFailure;
-    use releash_lib::test_support::integration::workflow::HostWorkflowStartup;
-    use releash_lib::test_support::integration::workflow::WorkflowStartupGateway;
+    use releashd::test_support::integration::persistence::ReadFailure;
+    use releashd::test_support::integration::workflow::HostWorkflowStartup;
+    use releashd::test_support::integration::workflow::WorkflowStartupGateway;
     let fixture = Fixture::new(0);
     let startup = HostWorkflowStartup {
         host: Arc::new(fixture.host),
@@ -1752,7 +1745,7 @@ pub async fn test_起動時再開_実経路でstore失敗の分類を保持す�
         fixture.store.fail_next_read(failure);
         let error = startup.reconcile_tree("tree", 1.0).await.unwrap_err();
         assert_eq!(
-            releash_lib::test_support::integration::transport::classified_error(error).code,
+            releashd::test_support::integration::transport::classified_error(error).code,
             expected
         );
     }
@@ -1761,20 +1754,20 @@ pub async fn test_起動時再開_実経路でstore失敗の分類を保持す�
 #[tokio::test]
 pub async fn test_node起動失敗_版競合だけは失敗として記録しない() {
     // Given
-    use releash_lib::test_support::integration::platform::Failure;
-    use releash_lib::test_support::integration::platform::TechnicalFailure;
-    use releash_lib::test_support::integration::platform::TechnicalFailureNature;
+    use releashd::test_support::integration::platform::Failure;
+    use releashd::test_support::integration::platform::TechnicalFailure;
+    use releashd::test_support::integration::platform::TechnicalFailureNature;
     for (error, retry, version_conflict) in [
         (
             WorkflowRuntimeError::Store(
-                releash_lib::test_support::integration::platform::CommitBatchError::QueueBusy.into(),
+                releashd::test_support::integration::platform::CommitBatchError::QueueBusy.into(),
             ),
             true,
             false,
         ),
         (
             WorkflowRuntimeError::Store(
-                releash_lib::test_support::integration::platform::CommitBatchError::AppendOutcomeUnknown.into(),
+                releashd::test_support::integration::platform::CommitBatchError::AppendOutcomeUnknown.into(),
             ),
             true,
             false,
@@ -1832,9 +1825,9 @@ pub async fn test_node起動失敗_版競合だけは失敗として記録しな
             // Then
             assert_eq!(failed.len(), usize::from(retry), "{error:?}");
             if let Some(failure) = failed.first() { assert_eq!(failure.kind, kind); assert_eq!(&failure.id, node_id); }
-            let records = releash_lib::test_support::integration::platform::shared_store().records(node_id);
+            let records = releashd::test_support::integration::platform::shared_store().records(node_id);
             assert!(records.iter().all(|record| record.record.operation != "workflow_node_start"));
-            let facts = releash_lib::test_support::integration::workflow::read_tree_records(&fixture.store, &execution.execution_id).await.unwrap();
+            let facts = releashd::test_support::integration::workflow::read_tree_records(&fixture.store, &execution.execution_id).await.unwrap();
             assert_eq!(facts.iter().any(|record| matches!(record.fact, NodeFact::RuntimeFailureObserved(_))), !version_conflict);
         }
     }

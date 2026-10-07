@@ -1,10 +1,10 @@
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 
-use releash_lib::test_support::integration::transport::lookup_process_start_time;
-use releash_lib::test_support::integration::transport::process_start_time;
-use releash_lib::test_support::integration::transport::LocalApiDiscovery;
-use releash_lib::test_support::integration::transport::LocalApiDiscoveryFile;
+use releashd::test_support::integration::transport::lookup_process_start_time;
+use releashd::test_support::integration::transport::process_start_time;
+use releashd::test_support::integration::transport::LocalApiDiscovery;
+use releashd::test_support::integration::transport::LocalApiDiscoveryFile;
 use std::fs;
 
 #[test]

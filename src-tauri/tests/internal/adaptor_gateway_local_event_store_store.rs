@@ -1,24 +1,24 @@
-use releash_lib::test_support::integration::persistence::PreparedNodeEvent;
-use releash_lib::test_support::integration::platform::AgentSessionRemovalMutation;
-use releash_lib::test_support::integration::platform::ExpectedStreamHead;
-use releash_lib::test_support::integration::platform::UncommittedDomainEvent;
-use releash_lib::test_support::integration::repository::LocalEventTransactionRepository;
+use releashd::test_support::integration::persistence::PreparedNodeEvent;
+use releashd::test_support::integration::platform::AgentSessionRemovalMutation;
+use releashd::test_support::integration::platform::ExpectedStreamHead;
+use releashd::test_support::integration::platform::UncommittedDomainEvent;
+use releashd::test_support::integration::repository::LocalEventTransactionRepository;
 
-use releash_lib::test_support::integration::persistence::LocalEventStore;
-use releash_lib::test_support::integration::persistence::LocalEventStoreConfig;
-use releash_lib::test_support::integration::persistence::LocalEventStoreOpenError;
-use releash_lib::test_support::integration::persistence::MAX_BATCH_DECODED_BYTES;
-use releash_lib::test_support::integration::persistence::MAX_BATCH_EVENTS;
-use releash_lib::test_support::integration::persistence::MAX_BATCH_STATE_MUTATIONS;
-use releash_lib::test_support::integration::platform::CommitBatchError;
-use releash_lib::test_support::integration::platform::CommitOperationKind;
-use releash_lib::test_support::integration::platform::Deadline;
-use releash_lib::test_support::integration::platform::LocalDomainEvent;
-use releash_lib::test_support::integration::platform::LocalStateMutation;
-use releash_lib::test_support::integration::platform::OperationContext;
-use releash_lib::test_support::integration::platform::StreamId;
-use releash_lib::test_support::integration::platform::StreamVersion;
-use releash_lib::test_support::integration::transport::classified_error;
+use releashd::test_support::integration::persistence::LocalEventStore;
+use releashd::test_support::integration::persistence::LocalEventStoreConfig;
+use releashd::test_support::integration::persistence::LocalEventStoreOpenError;
+use releashd::test_support::integration::persistence::MAX_BATCH_DECODED_BYTES;
+use releashd::test_support::integration::persistence::MAX_BATCH_EVENTS;
+use releashd::test_support::integration::persistence::MAX_BATCH_STATE_MUTATIONS;
+use releashd::test_support::integration::platform::CommitBatchError;
+use releashd::test_support::integration::platform::CommitOperationKind;
+use releashd::test_support::integration::platform::Deadline;
+use releashd::test_support::integration::platform::LocalDomainEvent;
+use releashd::test_support::integration::platform::LocalStateMutation;
+use releashd::test_support::integration::platform::OperationContext;
+use releashd::test_support::integration::platform::StreamId;
+use releashd::test_support::integration::platform::StreamVersion;
+use releashd::test_support::integration::transport::classified_error;
 use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
@@ -30,9 +30,7 @@ pub fn test_local_event_store_複製descriptorが残っても終了後にwriter_
     let config = || {
         LocalEventStoreConfig::production(
             directory.path().to_path_buf(),
-            std::sync::Arc::new(
-                releash_lib::test_support::integration::platform::RetryLimiter::new(),
-            ),
+            std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
         )
     };
     let store = LocalEventStore::open(config()).unwrap();
@@ -57,14 +55,14 @@ pub fn test_local_event_store_複製descriptorが残っても終了後にwriter_
 
 #[tokio::test]
 pub async fn test_node事実追記_読取後の外部追記と競合したbatchは一行も保存しない() {
-    use releash_lib::test_support::integration::persistence::read_tree;
-    use releash_lib::test_support::integration::persistence::NewNodeEventRow;
-    use releash_lib::test_support::integration::platform::CommitBatchError;
+    use releashd::test_support::integration::persistence::read_tree;
+    use releashd::test_support::integration::persistence::NewNodeEventRow;
+    use releashd::test_support::integration::platform::CommitBatchError;
     // Given
     let directory = tempfile::tempdir().unwrap();
     let store = LocalEventStore::open(LocalEventStoreConfig::production(
         directory.path().into(),
-        std::sync::Arc::new(releash_lib::test_support::integration::platform::RetryLimiter::new()),
+        std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
     ))
     .unwrap();
     let row = NewNodeEventRow {
@@ -91,8 +89,9 @@ pub async fn test_node事実追記_読取後の外部追記と競合したbatch�
     assert!(matches!(result, Err(CommitBatchError::TreeHeadConflict)));
     let rows = store
         .submit_query(|connection| {
-            read_tree(connection, "tree")
-                .map_err(|_| releash_lib::test_support::integration::platform::LocalEventQueryError::InvalidRequest)
+            read_tree(connection, "tree").map_err(|_| {
+                releashd::test_support::integration::platform::LocalEventQueryError::InvalidRequest
+            })
         })
         .await
         .unwrap();
@@ -111,11 +110,11 @@ pub async fn test_node事実追記_読取後の外部追記と競合したbatch�
 
 fn empty_batch(
     store: &LocalEventStore,
-) -> releash_lib::test_support::integration::platform::LocalAtomicBatch {
-    use releash_lib::test_support::integration::platform::CommitIdentity;
-    use releash_lib::test_support::integration::platform::CommitOperationKind;
-    use releash_lib::test_support::integration::platform::IdempotencyBinding;
-    use releash_lib::test_support::integration::platform::LocalAtomicBatch;
+) -> releashd::test_support::integration::platform::LocalAtomicBatch {
+    use releashd::test_support::integration::platform::CommitIdentity;
+    use releashd::test_support::integration::platform::CommitOperationKind;
+    use releashd::test_support::integration::platform::IdempotencyBinding;
+    use releashd::test_support::integration::platform::LocalAtomicBatch;
     LocalAtomicBatch {
         commit_id: CommitIdentity::parse("write-test").unwrap(),
         idempotency: IdempotencyBinding {
@@ -130,8 +129,8 @@ fn empty_batch(
     }
 }
 
-fn fact_row() -> releash_lib::test_support::integration::persistence::NewNodeEventRow {
-    releash_lib::test_support::integration::persistence::NewNodeEventRow {
+fn fact_row() -> releashd::test_support::integration::persistence::NewNodeEventRow {
+    releashd::test_support::integration::persistence::NewNodeEventRow {
         tree_id: "tree".into(),
         node_execution_id: "node".into(),
         parent_id: None,
@@ -150,7 +149,7 @@ pub async fn test_書込待ち_writer停滞中も同じruntimeの読取が完了
     let directory = tempfile::tempdir().unwrap();
     let store = LocalEventStore::open(LocalEventStoreConfig::production(
         directory.path().into(),
-        std::sync::Arc::new(releash_lib::test_support::integration::platform::RetryLimiter::new()),
+        std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
     ))
     .unwrap();
     let stall = store.fault_injector().arm_node_event_append_stall();
@@ -173,23 +172,21 @@ pub async fn test_書込待ち_writer停滞中も同じruntimeの読取が完了
 
 #[tokio::test]
 pub async fn test_書込混雑_全入口と両車線でunavailableを返す() {
-    use releash_lib::test_support::integration::persistence::PreparedNodeEvent;
-    use releash_lib::test_support::integration::persistence::WriteJob;
-    use releash_lib::test_support::integration::persistence::CRITICAL_LANE_MAX_BYTES;
-    use releash_lib::test_support::integration::persistence::CRITICAL_LANE_MAX_REQUESTS;
-    use releash_lib::test_support::integration::persistence::NORMAL_LANE_MAX_BYTES;
-    use releash_lib::test_support::integration::persistence::NORMAL_LANE_MAX_REQUESTS;
+    use releashd::test_support::integration::persistence::PreparedNodeEvent;
+    use releashd::test_support::integration::persistence::WriteJob;
+    use releashd::test_support::integration::persistence::CRITICAL_LANE_MAX_BYTES;
+    use releashd::test_support::integration::persistence::CRITICAL_LANE_MAX_REQUESTS;
+    use releashd::test_support::integration::persistence::NORMAL_LANE_MAX_BYTES;
+    use releashd::test_support::integration::persistence::NORMAL_LANE_MAX_REQUESTS;
 
-    use releash_lib::test_support::integration::transport::classified_error;
+    use releashd::test_support::integration::transport::classified_error;
 
     // Given: writer を停止し、車線を件数または byte 上限まで満たす
     for by_bytes in [false, true] {
         let directory = tempfile::tempdir().unwrap();
         let store = LocalEventStore::open(LocalEventStoreConfig::production(
             directory.path().into(),
-            std::sync::Arc::new(
-                releash_lib::test_support::integration::platform::RetryLimiter::new(),
-            ),
+            std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
         ))
         .unwrap();
         let stall = store.fault_injector().arm_node_event_append_stall();
@@ -254,7 +251,7 @@ pub async fn test_書込混雑_全入口と両車線でunavailableを返す() {
                 .unwrap_err(),
         ] {
             let workflow =
-                releash_lib::test_support::integration::workflow::WorkflowError::from(error);
+                releashd::test_support::integration::workflow::WorkflowError::from(error);
             assert_eq!(
                 classified_error(workflow).code,
                 connectrpc::ErrorCode::Unavailable
@@ -272,7 +269,7 @@ pub async fn test_batch上限_件数と合計byte超過は保存せずresource_e
     let directory = tempfile::tempdir().unwrap();
     let store = LocalEventStore::open(LocalEventStoreConfig::production(
         directory.path().into(),
-        std::sync::Arc::new(releash_lib::test_support::integration::platform::RetryLimiter::new()),
+        std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
     ))
     .unwrap();
     let stream_id = StreamId::provider_lifecycle("test").unwrap();
@@ -285,7 +282,7 @@ pub async fn test_batch上限_件数と合計byte超過は保存せずresource_e
         stream_id,
         occurred_at_ms: 1,
         event: LocalDomainEvent::ProviderLifecycle(
-            releash_lib::test_support::integration::providers::ProviderLifecycleEvent::StopObserved {
+            releashd::test_support::integration::providers::ProviderLifecycleEvent::StopObserved {
                 binding_id: "test".into(),
             },
         ),
@@ -294,7 +291,7 @@ pub async fn test_batch上限_件数と合計byte超過は保存せずresource_e
     // When / Then
     let error = store.commit_batch(batch).await.unwrap_err();
     assert_eq!(
-        releash_lib::test_support::integration::transport::classified_error(error).code,
+        releashd::test_support::integration::transport::classified_error(error).code,
         connectrpc::ErrorCode::ResourceExhausted
     );
     for (count, detail_bytes) in [(MAX_BATCH_EVENTS + 1, 2), (1, MAX_BATCH_DECODED_BYTES)] {
@@ -313,7 +310,7 @@ pub async fn test_batch上限_件数と合計byte超過は保存せずresource_e
             .await
             .unwrap_err();
         assert_eq!(
-            releash_lib::test_support::integration::transport::classified_error(error).code,
+            releashd::test_support::integration::transport::classified_error(error).code,
             connectrpc::ErrorCode::ResourceExhausted
         );
     }
@@ -327,7 +324,7 @@ pub async fn test_batch上限_件数と合計byte超過は保存せずresource_e
     oversized.state_mutations = vec![mutation.clone(); MAX_BATCH_STATE_MUTATIONS + 1];
     let error = store.commit_batch(oversized).await.unwrap_err();
     assert_eq!(
-        releash_lib::test_support::integration::transport::classified_error(error).code,
+        releashd::test_support::integration::transport::classified_error(error).code,
         connectrpc::ErrorCode::ResourceExhausted
     );
     let mut oversized = empty_batch(&store);
@@ -341,7 +338,7 @@ pub async fn test_batch上限_件数と合計byte超過は保存せずresource_e
     )];
     let error = store.commit_batch(oversized).await.unwrap_err();
     assert_eq!(
-        releash_lib::test_support::integration::transport::classified_error(error).code,
+        releashd::test_support::integration::transport::classified_error(error).code,
         connectrpc::ErrorCode::ResourceExhausted
     );
     let mut combined = empty_batch(&store);
@@ -360,7 +357,7 @@ pub async fn test_batch上限_件数と合計byte超過は保存せずresource_e
         .await
         .unwrap_err();
     assert_eq!(
-        releash_lib::test_support::integration::transport::classified_error(error).code,
+        releashd::test_support::integration::transport::classified_error(error).code,
         connectrpc::ErrorCode::ResourceExhausted
     );
     let mut boundary = empty_batch(&store);
@@ -380,10 +377,10 @@ pub async fn test_batch上限_件数と合計byte超過は保存せずresource_e
 
 #[tokio::test]
 pub async fn test_batch件数超過_shape検査とcodec実行より前に拒否する() {
-    use releash_lib::test_support::integration::persistence::CborValue;
-    use releash_lib::test_support::integration::persistence::EventCodecError;
-    use releash_lib::test_support::integration::persistence::EventCodecRegistry;
-    use releash_lib::test_support::integration::persistence::LocalEventPayloadCodec;
+    use releashd::test_support::integration::persistence::CborValue;
+    use releashd::test_support::integration::persistence::EventCodecError;
+    use releashd::test_support::integration::persistence::EventCodecRegistry;
+    use releashd::test_support::integration::persistence::LocalEventPayloadCodec;
 
     use std::sync::Arc;
 
@@ -413,7 +410,7 @@ pub async fn test_batch件数超過_shape検査とcodec実行より前に拒否�
     let directory = tempfile::tempdir().unwrap();
     let mut config = LocalEventStoreConfig::production(
         directory.path().into(),
-        std::sync::Arc::new(releash_lib::test_support::integration::platform::RetryLimiter::new()),
+        std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
     );
     let mut registry = EventCodecRegistry::new();
     registry.register(Arc::new(RejectEncoding));
@@ -434,7 +431,7 @@ pub async fn test_batch件数超過_shape検査とcodec実行より前に拒否�
                 vec![UncommittedDomainEvent {
                 stream_id, occurred_at_ms: 1,
                 event: LocalDomainEvent::ProviderLifecycle(
-                    releash_lib::test_support::integration::providers::ProviderLifecycleEvent::StopObserved {
+                    releashd::test_support::integration::providers::ProviderLifecycleEvent::StopObserved {
                         binding_id: "test".into(),
                     }),
             }; if kind == "events" { MAX_BATCH_EVENTS + 1 } else { 1 }];
@@ -487,9 +484,7 @@ pub async fn test_node事実追記_件数とbyteの上限まで保存し超過�
         let directory = tempfile::tempdir().unwrap();
         let store = LocalEventStore::open(LocalEventStoreConfig::production(
             directory.path().into(),
-            std::sync::Arc::new(
-                releash_lib::test_support::integration::platform::RetryLimiter::new(),
-            ),
+            std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
         ))
         .unwrap();
         let mut row = fact_row();
@@ -505,7 +500,7 @@ pub async fn test_node事実追記_件数とbyteの上限まで保存し超過�
         assert_eq!(error, CommitBatchError::CapacityExceeded);
         assert_eq!(
             classified_error(
-                releash_lib::test_support::integration::workflow::WorkflowError::from(error)
+                releashd::test_support::integration::workflow::WorkflowError::from(error)
             )
             .code,
             connectrpc::ErrorCode::ResourceExhausted
@@ -523,9 +518,9 @@ pub async fn test_node事実追記_件数とbyteの上限まで保存し超過�
 #[tokio::test]
 pub async fn test_書込待ち_期限と取り消しで待ちを終えても受理済みの事実は保存する() {
     use connectrpc::ErrorCode;
-    use releash_lib::test_support::integration::platform::Deadline;
-    use releash_lib::test_support::integration::platform::OperationContext;
-    use releash_lib::test_support::integration::transport::ConnectFailure;
+    use releashd::test_support::integration::platform::Deadline;
+    use releashd::test_support::integration::platform::OperationContext;
+    use releashd::test_support::integration::transport::ConnectFailure;
     use std::time::Duration;
     use std::time::Instant;
     for expire in [false, true] {
@@ -533,9 +528,7 @@ pub async fn test_書込待ち_期限と取り消しで待ちを終えても受�
         let directory = tempfile::tempdir().unwrap();
         let store = LocalEventStore::open(LocalEventStoreConfig::production(
             directory.path().into(),
-            std::sync::Arc::new(
-                releash_lib::test_support::integration::platform::RetryLimiter::new(),
-            ),
+            std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
         ))
         .unwrap();
         let stall = store.fault_injector().arm_node_event_append_stall();
@@ -544,7 +537,7 @@ pub async fn test_書込待ち_期限と取り消しで待ちを終えても受�
             expire.then(|| Deadline::new(Instant::now() + Duration::from_millis(30))),
             std::sync::Arc::new(token.clone()),
         );
-        let append = releash_lib::test_support::integration::platform::scope(
+        let append = releashd::test_support::integration::platform::scope(
             context,
             store.append_node_event(fact_row(), None),
         );
@@ -576,7 +569,7 @@ pub async fn test_書込待ち_期限と取り消しで待ちを終えても受�
                     .query_row("SELECT count(*) FROM node_events", [], |row| row
                         .get::<_, i64>(0))
                     .map_err(|error| {
-                        releash_lib::test_support::integration::persistence::storage_unavailable(
+                        releashd::test_support::integration::persistence::storage_unavailable(
                             &error,
                         )
                     }))
@@ -592,7 +585,7 @@ pub fn test_起動時分類_db競合を呼出期限で打ち切り既存の資�
     // Given
     let directory = tempfile::tempdir().unwrap();
     let layout =
-        releash_lib::test_support::integration::persistence::StoreLayout::new(directory.path());
+        releashd::test_support::integration::persistence::StoreLayout::new(directory.path());
     let path = layout.database_path();
     let blocker = rusqlite::Connection::open(&path).unwrap();
     blocker
@@ -604,11 +597,11 @@ pub fn test_起動時分類_db競合を呼出期限で打ち切り既存の資�
     let context = OperationContext::default()
         .with_deadline(Deadline::new(started + Duration::from_millis(100)));
     // When
-    let result = releash_lib::test_support::integration::platform::sync_scope(context, || {
-        releash_lib::test_support::integration::persistence::classify_existing_database(
+    let result = releashd::test_support::integration::platform::sync_scope(context, || {
+        releashd::test_support::integration::persistence::classify_existing_database(
             &layout,
             &path,
-            Arc::new(releash_lib::test_support::integration::platform::RetryLimiter::new()),
+            Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
         )
     });
     // Then
@@ -616,8 +609,8 @@ pub fn test_起動時分類_db競合を呼出期限で打ち切り既存の資�
         matches!(
             result,
             Err(LocalEventStoreOpenError::StorageUnavailable(
-                releash_lib::test_support::integration::platform::TechnicalFailure {
-                    nature: releash_lib::test_support::integration::platform::TechnicalFailureNature::Transient,
+                releashd::test_support::integration::platform::TechnicalFailure {
+                    nature: releashd::test_support::integration::platform::TechnicalFailureNature::Transient,
                     ..
                 }
             ))

@@ -1,16 +1,16 @@
-use releash_lib::test_support::integration::persistence::LocalEventStore;
-use releash_lib::test_support::integration::persistence::LocalEventStoreConfig;
-use releash_lib::test_support::integration::persistence::NewNodeEventRow;
-use releash_lib::test_support::integration::persistence::ReadFailure;
-use releash_lib::test_support::integration::providers::ProviderKind;
-use releash_lib::test_support::integration::transport::ConnectFailure;
-use releash_lib::test_support::integration::workflow::NodeFact;
-use releash_lib::test_support::integration::workflow::NodeFactMeta;
-use releash_lib::test_support::integration::workflow::RuntimeExecutionState;
-use releash_lib::test_support::integration::workflow::SessionExecutionTreeRootFacts;
-use releash_lib::test_support::integration::workflow::StoredWorkflowStartupRepository;
-use releash_lib::test_support::integration::workflow::WorkflowError;
-use releash_lib::test_support::integration::workflow::WorkflowStartupRepository;
+use releashd::test_support::integration::persistence::LocalEventStore;
+use releashd::test_support::integration::persistence::LocalEventStoreConfig;
+use releashd::test_support::integration::persistence::NewNodeEventRow;
+use releashd::test_support::integration::persistence::ReadFailure;
+use releashd::test_support::integration::providers::ProviderKind;
+use releashd::test_support::integration::transport::ConnectFailure;
+use releashd::test_support::integration::workflow::NodeFact;
+use releashd::test_support::integration::workflow::NodeFactMeta;
+use releashd::test_support::integration::workflow::RuntimeExecutionState;
+use releashd::test_support::integration::workflow::SessionExecutionTreeRootFacts;
+use releashd::test_support::integration::workflow::StoredWorkflowStartupRepository;
+use releashd::test_support::integration::workflow::WorkflowError;
+use releashd::test_support::integration::workflow::WorkflowStartupRepository;
 
 #[tokio::test]
 pub async fn test_起動時判定_rootと最初の終端だけで復元し通常の事実をdecodeしない() {
@@ -18,13 +18,13 @@ pub async fn test_起動時判定_rootと最初の終端だけで復元し通常
     let dir = tempfile::tempdir().unwrap();
     let store = LocalEventStore::open(LocalEventStoreConfig::production(
         dir.path().into(),
-        std::sync::Arc::new(releash_lib::test_support::integration::platform::RetryLimiter::new()),
+        std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
     ))
     .unwrap();
     let root =
         SessionExecutionTreeRootFacts::new("tree", "/repo", "/repo", ProviderKind::Codex, None)
             .unwrap();
-    releash_lib::test_support::integration::workflow::append_single_fact(
+    releashd::test_support::integration::workflow::append_single_fact(
         &store,
         &root.meta,
         &root.started,
@@ -54,7 +54,7 @@ pub async fn test_起動時判定_rootと最初の終端だけで復元し通常
         attempt: 2,
         ..root.meta.clone()
     };
-    releash_lib::test_support::integration::workflow::append_single_fact(
+    releashd::test_support::integration::workflow::append_single_fact(
         &store,
         &retried_root,
         &NodeFact::ExecutionCompleted,
@@ -62,7 +62,7 @@ pub async fn test_起動時判定_rootと最初の終端だけで復元し通常
     )
     .await
     .unwrap();
-    releash_lib::test_support::integration::workflow::append_single_fact(
+    releashd::test_support::integration::workflow::append_single_fact(
         &store,
         &root.meta,
         &NodeFact::AbortRequested(Default::default()),
@@ -90,13 +90,13 @@ pub async fn test_起動時判定_壊れた終端を読取失敗として返す(
     let dir = tempfile::tempdir().unwrap();
     let store = LocalEventStore::open(LocalEventStoreConfig::production(
         dir.path().into(),
-        std::sync::Arc::new(releash_lib::test_support::integration::platform::RetryLimiter::new()),
+        std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
     ))
     .unwrap();
     let root =
         SessionExecutionTreeRootFacts::new("tree", "/repo", "/repo", ProviderKind::Codex, None)
             .unwrap();
-    releash_lib::test_support::integration::workflow::append_single_fact(
+    releashd::test_support::integration::workflow::append_single_fact(
         &store,
         &root.meta,
         &root.started,
@@ -134,7 +134,7 @@ pub async fn test_起動時判定_読取後に追記された最新の終端状�
         NodeFact::ExecutionCompleted,
         NodeFact::AbortRequested(Default::default()),
         NodeFact::StopReceived(
-            releash_lib::test_support::integration::workflow::StopReceivedFact {
+            releashd::test_support::integration::workflow::StopReceivedFact {
                 result_summary: None,
                 token_usage: None,
             },
@@ -143,15 +143,13 @@ pub async fn test_起動時判定_読取後に追記された最新の終端状�
         let dir = tempfile::tempdir().unwrap();
         let store = LocalEventStore::open(LocalEventStoreConfig::production(
             dir.path().into(),
-            std::sync::Arc::new(
-                releash_lib::test_support::integration::platform::RetryLimiter::new(),
-            ),
+            std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
         ))
         .unwrap();
         let root =
             SessionExecutionTreeRootFacts::new("tree", "/repo", "/repo", ProviderKind::Codex, None)
                 .unwrap();
-        releash_lib::test_support::integration::workflow::append_single_fact(
+        releashd::test_support::integration::workflow::append_single_fact(
             &store,
             &root.meta,
             &root.started,
@@ -167,7 +165,7 @@ pub async fn test_起動時判定_読取後に追記された最新の終端状�
             .unwrap()
             .execution
             .is_active());
-        releash_lib::test_support::integration::workflow::append_single_fact(
+        releashd::test_support::integration::workflow::append_single_fact(
             &store,
             &root.meta,
             &concurrent,
@@ -176,10 +174,10 @@ pub async fn test_起動時判定_読取後に追記された最新の終端状�
         .await
         .unwrap();
         let before =
-            releash_lib::test_support::integration::workflow::read_tree_records(&store, "tree")
+            releashd::test_support::integration::workflow::read_tree_records(&store, "tree")
                 .await
                 .unwrap();
-        releash_lib::test_support::integration::workflow::check_startup_definition(
+        releashd::test_support::integration::workflow::check_startup_definition(
             &repository,
             "tree",
         )
@@ -191,7 +189,7 @@ pub async fn test_起動時判定_読取後に追記された最新の終端状�
             concurrent.terminal_state().is_none()
         );
         assert_eq!(
-            releash_lib::test_support::integration::workflow::read_tree_records(&store, "tree")
+            releashd::test_support::integration::workflow::read_tree_records(&store, "tree")
                 .await
                 .unwrap(),
             before
@@ -204,13 +202,13 @@ pub async fn test_起動時判定_書込口を閉じても保存済み終端を�
     let dir = tempfile::tempdir().unwrap();
     let store = LocalEventStore::open(LocalEventStoreConfig::production(
         dir.path().into(),
-        std::sync::Arc::new(releash_lib::test_support::integration::platform::RetryLimiter::new()),
+        std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
     ))
     .unwrap();
     let root =
         SessionExecutionTreeRootFacts::new("tree", "/repo", "/repo", ProviderKind::Codex, None)
             .unwrap();
-    releash_lib::test_support::integration::workflow::append_single_fact(
+    releashd::test_support::integration::workflow::append_single_fact(
         &store,
         &root.meta,
         &root.started,
@@ -218,7 +216,7 @@ pub async fn test_起動時判定_書込口を閉じても保存済み終端を�
     )
     .await
     .unwrap();
-    releash_lib::test_support::integration::workflow::append_single_fact(
+    releashd::test_support::integration::workflow::append_single_fact(
         &store,
         &root.meta,
         &NodeFact::AbortRequested(Default::default()),
@@ -226,14 +224,13 @@ pub async fn test_起動時判定_書込口を閉じても保存済み終端を�
     )
     .await
     .unwrap();
-    let before =
-        releash_lib::test_support::integration::workflow::read_tree_records(&store, "tree")
-            .await
-            .unwrap();
+    let before = releashd::test_support::integration::workflow::read_tree_records(&store, "tree")
+        .await
+        .unwrap();
     store.close_write_queue_for_tests();
     let repository = StoredWorkflowStartupRepository(store.clone());
     for _ in 0..2 {
-        releash_lib::test_support::integration::workflow::check_startup_definition(
+        releashd::test_support::integration::workflow::check_startup_definition(
             &repository,
             "tree",
         )
@@ -250,7 +247,7 @@ pub async fn test_起動時判定_書込口を閉じても保存済み終端を�
             &RuntimeExecutionState::Aborted
         );
         assert_eq!(
-            releash_lib::test_support::integration::workflow::read_tree_records(&store, "tree")
+            releashd::test_support::integration::workflow::read_tree_records(&store, "tree")
                 .await
                 .unwrap(),
             before
@@ -264,7 +261,7 @@ pub async fn test_起動時判定_書込口を閉じても未終端と異なる�
         None,
         Some(NodeFact::ExecutionCompleted),
         Some(NodeFact::AbortRequested(
-            releash_lib::test_support::integration::workflow::AbortRequestedFact {
+            releashd::test_support::integration::workflow::AbortRequestedFact {
                 reason: Some("user abort".into()),
             },
         )),
@@ -272,15 +269,13 @@ pub async fn test_起動時判定_書込口を閉じても未終端と異なる�
         let dir = tempfile::tempdir().unwrap();
         let store = LocalEventStore::open(LocalEventStoreConfig::production(
             dir.path().into(),
-            std::sync::Arc::new(
-                releash_lib::test_support::integration::platform::RetryLimiter::new(),
-            ),
+            std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
         ))
         .unwrap();
         let root =
             SessionExecutionTreeRootFacts::new("tree", "/repo", "/repo", ProviderKind::Codex, None)
                 .unwrap();
-        releash_lib::test_support::integration::workflow::append_single_fact(
+        releashd::test_support::integration::workflow::append_single_fact(
             &store,
             &root.meta,
             &root.started,
@@ -289,19 +284,19 @@ pub async fn test_起動時判定_書込口を閉じても未終端と異なる�
         .await
         .unwrap();
         if let Some(fact) = &terminal {
-            releash_lib::test_support::integration::workflow::append_single_fact(
+            releashd::test_support::integration::workflow::append_single_fact(
                 &store, &root.meta, fact, 2_000,
             )
             .await
             .unwrap();
         }
         let before =
-            releash_lib::test_support::integration::workflow::read_tree_records(&store, "tree")
+            releashd::test_support::integration::workflow::read_tree_records(&store, "tree")
                 .await
                 .unwrap();
         store.close_write_queue_for_tests();
         let repository = StoredWorkflowStartupRepository(store.clone());
-        releash_lib::test_support::integration::workflow::check_startup_definition(
+        releashd::test_support::integration::workflow::check_startup_definition(
             &repository,
             "tree",
         )
@@ -318,7 +313,7 @@ pub async fn test_起動時判定_書込口を閉じても未終端と異なる�
             terminal.is_none()
         );
         assert_eq!(
-            releash_lib::test_support::integration::workflow::read_tree_records(&store, "tree")
+            releashd::test_support::integration::workflow::read_tree_records(&store, "tree")
                 .await
                 .unwrap(),
             before
@@ -329,15 +324,15 @@ pub async fn test_起動時判定_書込口を閉じても未終端と異なる�
 #[tokio::test]
 pub async fn test_起動時判定_読取失敗を成功や競合に変換しない() {
     use connectrpc::ErrorCode;
-    use releash_lib::test_support::integration::persistence::ReadFailure;
+    use releashd::test_support::integration::persistence::ReadFailure;
     let dir = tempfile::tempdir().unwrap();
     let store = LocalEventStore::open(LocalEventStoreConfig::production(
         dir.path().into(),
-        std::sync::Arc::new(releash_lib::test_support::integration::platform::RetryLimiter::new()),
+        std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
     ))
     .unwrap();
     store.fail_next_read(ReadFailure::Query(
-        releash_lib::test_support::integration::platform::LocalEventQueryError::QueryBusy,
+        releashd::test_support::integration::platform::LocalEventQueryError::QueryBusy,
     ));
     let error = StoredWorkflowStartupRepository(store)
         .load("tree")
@@ -353,27 +348,24 @@ pub async fn test_起動時判定_存在しない実行木の確認で追記し�
     let dir = tempfile::tempdir().unwrap();
     let store = LocalEventStore::open(LocalEventStoreConfig::production(
         dir.path().into(),
-        std::sync::Arc::new(releash_lib::test_support::integration::platform::RetryLimiter::new()),
+        std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
     ))
     .unwrap();
     let repository = StoredWorkflowStartupRepository(store);
-    releash_lib::test_support::integration::workflow::check_startup_definition(
-        &repository,
-        "missing",
-    )
-    .await
-    .unwrap();
+    releashd::test_support::integration::workflow::check_startup_definition(&repository, "missing")
+        .await
+        .unwrap();
     assert!(repository.list_tree_ids().await.unwrap().is_empty());
 }
 
 #[tokio::test]
 pub async fn test_起動時読取_実経路で失敗分類を保持する() {
-    use releash_lib::test_support::integration::transport::classified_error;
+    use releashd::test_support::integration::transport::classified_error;
     // Given
     let directory = tempfile::tempdir().unwrap();
     let store = LocalEventStore::open(LocalEventStoreConfig::production(
         directory.path().into(),
-        std::sync::Arc::new(releash_lib::test_support::integration::platform::RetryLimiter::new()),
+        std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
     ))
     .unwrap();
     let repository = StoredWorkflowStartupRepository(store.clone());

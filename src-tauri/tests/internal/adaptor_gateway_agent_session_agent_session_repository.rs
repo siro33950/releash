@@ -1,5 +1,5 @@
-use releash_lib::test_support::integration::sessions::session_location;
-use releash_lib::test_support::integration::sessions::workflow_location;
+use releashd::test_support::integration::sessions::session_location;
+use releashd::test_support::integration::sessions::workflow_location;
 
 use std::sync::Arc;
 
@@ -7,44 +7,44 @@ use sha2::Digest;
 use sha2::Sha256;
 use tempfile::TempDir;
 
-use releash_lib::test_support::integration::persistence::LocalEventStore;
-use releash_lib::test_support::integration::persistence::LocalEventStoreConfig;
-use releash_lib::test_support::integration::sessions::open_session_title_candidates;
-use releash_lib::test_support::integration::sessions::LocalAgentSessionQueryService;
-use releash_lib::test_support::integration::sessions::LocalAgentSessionRepository;
-use releash_lib::test_support::integration::sessions::OPEN_SESSION_LIFECYCLE_EVENT_TYPES;
+use releashd::test_support::integration::persistence::LocalEventStore;
+use releashd::test_support::integration::persistence::LocalEventStoreConfig;
+use releashd::test_support::integration::sessions::open_session_title_candidates;
+use releashd::test_support::integration::sessions::LocalAgentSessionQueryService;
+use releashd::test_support::integration::sessions::LocalAgentSessionRepository;
+use releashd::test_support::integration::sessions::OPEN_SESSION_LIFECYCLE_EVENT_TYPES;
 
-use releash_lib::test_support::integration::platform::CommitBatchError;
-use releash_lib::test_support::integration::providers::ProviderKind;
-use releash_lib::test_support::integration::providers::ProviderLifecycleEvent;
-use releash_lib::test_support::integration::providers::ProviderLifecycleScope;
-use releash_lib::test_support::integration::providers::ProviderSessionStartTransaction;
-use releash_lib::test_support::integration::providers::ScopedProviderLifecycleEvent;
-use releash_lib::test_support::integration::repository::LocalEventTransactionRepository;
-use releash_lib::test_support::integration::sessions::AgentSession;
-use releash_lib::test_support::integration::sessions::AgentSessionInitialInstructionOutcome;
-use releash_lib::test_support::integration::sessions::AgentSessionLifecycle;
-use releash_lib::test_support::integration::sessions::AgentSessionLifecycleDto;
-use releash_lib::test_support::integration::sessions::AgentSessionOwnershipQuery;
-use releash_lib::test_support::integration::sessions::AgentSessionQueryService;
-use releash_lib::test_support::integration::sessions::AgentSessionRepository;
-use releash_lib::test_support::integration::sessions::AgentSessionRepositoryError;
-use releash_lib::test_support::integration::sessions::AgentSessionUsecase;
-use releash_lib::test_support::integration::workflow::seed_workflow_session_facts;
-use releash_lib::test_support::integration::workflow::AgentSessionActivity;
-use releash_lib::test_support::integration::workflow::ExecutionOrigin;
-use releash_lib::test_support::integration::workflow::ExecutionTreeLaunch;
-use releash_lib::test_support::integration::workflow::NodeFact;
-use releash_lib::test_support::integration::workflow::NodeKindName;
-use releash_lib::test_support::integration::workflow::StopReceivedFact;
-use releash_lib::test_support::integration::workflow::TreeRootFact;
-use releash_lib::test_support::integration::workflow::WorkflowSessionFactSeed;
-use releash_lib::test_support::integration::workspace::WorkspaceIdentity;
+use releashd::test_support::integration::platform::CommitBatchError;
+use releashd::test_support::integration::providers::ProviderKind;
+use releashd::test_support::integration::providers::ProviderLifecycleEvent;
+use releashd::test_support::integration::providers::ProviderLifecycleScope;
+use releashd::test_support::integration::providers::ProviderSessionStartTransaction;
+use releashd::test_support::integration::providers::ScopedProviderLifecycleEvent;
+use releashd::test_support::integration::repository::LocalEventTransactionRepository;
+use releashd::test_support::integration::sessions::AgentSession;
+use releashd::test_support::integration::sessions::AgentSessionInitialInstructionOutcome;
+use releashd::test_support::integration::sessions::AgentSessionLifecycle;
+use releashd::test_support::integration::sessions::AgentSessionLifecycleDto;
+use releashd::test_support::integration::sessions::AgentSessionOwnershipQuery;
+use releashd::test_support::integration::sessions::AgentSessionQueryService;
+use releashd::test_support::integration::sessions::AgentSessionRepository;
+use releashd::test_support::integration::sessions::AgentSessionRepositoryError;
+use releashd::test_support::integration::sessions::AgentSessionUsecase;
+use releashd::test_support::integration::workflow::seed_workflow_session_facts;
+use releashd::test_support::integration::workflow::AgentSessionActivity;
+use releashd::test_support::integration::workflow::ExecutionOrigin;
+use releashd::test_support::integration::workflow::ExecutionTreeLaunch;
+use releashd::test_support::integration::workflow::NodeFact;
+use releashd::test_support::integration::workflow::NodeKindName;
+use releashd::test_support::integration::workflow::StopReceivedFact;
+use releashd::test_support::integration::workflow::TreeRootFact;
+use releashd::test_support::integration::workflow::WorkflowSessionFactSeed;
+use releashd::test_support::integration::workspace::WorkspaceIdentity;
 
 fn open_store(directory: &TempDir) -> Arc<LocalEventStore> {
     LocalEventStore::open(LocalEventStoreConfig::production(
         directory.path().to_path_buf(),
-        std::sync::Arc::new(releash_lib::test_support::integration::platform::RetryLimiter::new()),
+        std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
     ))
     .unwrap()
 }
@@ -65,24 +65,24 @@ fn standalone_session(id: &str, worktree_path: &str, provider: ProviderKind) -> 
 }
 
 async fn tree_event_types(store: &Arc<LocalEventStore>, tree_id: &str) -> Vec<&'static str> {
-    releash_lib::test_support::integration::workflow::read_tree_records(store, tree_id)
+    releashd::test_support::integration::workflow::read_tree_records(store, tree_id)
         .await
         .unwrap()
         .iter()
-        .map(|record| releash_lib::test_support::integration::workflow::event_type(&record.fact))
+        .map(|record| releashd::test_support::integration::workflow::event_type(&record.fact))
         .collect()
 }
 
 fn ownership_stream(
     provider: ProviderKind,
     provider_session_id: &str,
-) -> releash_lib::test_support::integration::platform::StreamId {
+) -> releashd::test_support::integration::platform::StreamId {
     let provider = match provider {
         ProviderKind::Claude => "claude",
         ProviderKind::Codex => "codex",
     };
     let digest = hex::encode(Sha256::digest(provider_session_id.as_bytes()));
-    releash_lib::test_support::integration::platform::StreamId::provider_session_ownership(
+    releashd::test_support::integration::platform::StreamId::provider_session_ownership(
         provider, &digest,
     )
     .unwrap()
@@ -107,12 +107,10 @@ pub async fn test_agent_session_repository_単独session作成をnode_eventsへ�
 
     assert_eq!(saved.revision(), 1);
     assert!(saved.session().uncommitted_events().is_empty());
-    let records = releash_lib::test_support::integration::workflow::read_tree_records(
-        &store,
-        "agent-session-1",
-    )
-    .await
-    .unwrap();
+    let records =
+        releashd::test_support::integration::workflow::read_tree_records(&store, "agent-session-1")
+            .await
+            .unwrap();
     assert_eq!(records.len(), 3);
     let record = &records[0];
     assert_eq!(record.meta.tree_id, "agent-session-1");
@@ -137,7 +135,7 @@ pub async fn test_agent_session_repository_単独session作成をnode_eventsへ�
         .as_ref()
         .unwrap()
         .node_by_name("session")
-        .and_then(releash_lib::test_support::integration::workflow::NodeDefinition::session)
+        .and_then(releashd::test_support::integration::workflow::NodeDefinition::session)
         .unwrap();
     assert_eq!(session.provider, ProviderKind::Codex);
     assert!(matches!(
@@ -206,7 +204,7 @@ pub async fn test_agent_session_repository_活動遷移だけをnode行へ追記
             .await
             .unwrap()
             .outcome,
-        releash_lib::test_support::integration::sessions::AgentSessionMutationOutcome::Applied
+        releashd::test_support::integration::sessions::AgentSessionMutationOutcome::Applied
     );
     assert_eq!(
         sessions
@@ -218,7 +216,7 @@ pub async fn test_agent_session_repository_活動遷移だけをnode行へ追記
             .await
             .unwrap()
             .outcome,
-        releash_lib::test_support::integration::sessions::AgentSessionMutationOutcome::AlreadyApplied
+        releashd::test_support::integration::sessions::AgentSessionMutationOutcome::AlreadyApplied
     );
     assert_eq!(
         sessions
@@ -230,7 +228,7 @@ pub async fn test_agent_session_repository_活動遷移だけをnode行へ追記
             .await
             .unwrap()
             .outcome,
-        releash_lib::test_support::integration::sessions::AgentSessionMutationOutcome::Applied
+        releashd::test_support::integration::sessions::AgentSessionMutationOutcome::Applied
     );
     assert_eq!(
         sessions
@@ -242,7 +240,7 @@ pub async fn test_agent_session_repository_活動遷移だけをnode行へ追記
             .await
             .unwrap()
             .outcome,
-        releash_lib::test_support::integration::sessions::AgentSessionMutationOutcome::Applied
+        releashd::test_support::integration::sessions::AgentSessionMutationOutcome::Applied
     );
     assert_eq!(
         sessions
@@ -254,7 +252,7 @@ pub async fn test_agent_session_repository_活動遷移だけをnode行へ追記
             .await
             .unwrap()
             .outcome,
-        releash_lib::test_support::integration::sessions::AgentSessionMutationOutcome::Applied
+        releashd::test_support::integration::sessions::AgentSessionMutationOutcome::Applied
     );
     assert_eq!(
         sessions
@@ -266,7 +264,7 @@ pub async fn test_agent_session_repository_活動遷移だけをnode行へ追記
             .await
             .unwrap()
             .outcome,
-        releash_lib::test_support::integration::sessions::AgentSessionMutationOutcome::Applied
+        releashd::test_support::integration::sessions::AgentSessionMutationOutcome::Applied
     );
     assert_eq!(
         sessions
@@ -278,11 +276,11 @@ pub async fn test_agent_session_repository_活動遷移だけをnode行へ追記
             .await
             .unwrap()
             .outcome,
-        releash_lib::test_support::integration::sessions::AgentSessionMutationOutcome::AlreadyApplied
+        releashd::test_support::integration::sessions::AgentSessionMutationOutcome::AlreadyApplied
     );
 
     // Then: 遷移だけが事実として同じ Session Node へ追記される
-    let records = releash_lib::test_support::integration::workflow::read_tree_records(
+    let records = releashd::test_support::integration::workflow::read_tree_records(
         &store,
         "agent-session-activity",
     )
@@ -366,7 +364,7 @@ pub async fn test_agent_session_repository_process_exit後のworking再観測を
             .await
             .unwrap()
             .outcome,
-        releash_lib::test_support::integration::sessions::AgentSessionMutationOutcome::Applied
+        releashd::test_support::integration::sessions::AgentSessionMutationOutcome::Applied
     );
     sessions
         .observe_process_exit(
@@ -376,7 +374,7 @@ pub async fn test_agent_session_repository_process_exit後のworking再観測を
         )
         .await
         .unwrap();
-    let before = releash_lib::test_support::integration::workflow::read_tree_records(
+    let before = releashd::test_support::integration::workflow::read_tree_records(
         &store,
         "agent-session-activity-exit",
     )
@@ -407,9 +405,9 @@ pub async fn test_agent_session_repository_process_exit後のworking再観測を
     // Then: ProcessExited 後は遷移として受理され、活動事実が1件増える
     assert_eq!(
         observation.outcome,
-        releash_lib::test_support::integration::sessions::AgentSessionMutationOutcome::Applied
+        releashd::test_support::integration::sessions::AgentSessionMutationOutcome::Applied
     );
-    let after = releash_lib::test_support::integration::workflow::read_tree_records(
+    let after = releashd::test_support::integration::workflow::read_tree_records(
         &store,
         "agent-session-activity-exit",
     )
@@ -458,11 +456,11 @@ pub async fn test_agent_session_repository_stop事実後のworking再観測をbo
         .await
         .unwrap();
     let records =
-        releash_lib::test_support::integration::workflow::read_tree_records(&store, session_id)
+        releashd::test_support::integration::workflow::read_tree_records(&store, session_id)
             .await
             .unwrap();
     let meta = records.last().unwrap().meta.clone();
-    releash_lib::test_support::integration::workflow::append_single_fact(
+    releashd::test_support::integration::workflow::append_single_fact(
         &store,
         &meta,
         &NodeFact::StopReceived(StopReceivedFact {
@@ -497,10 +495,10 @@ pub async fn test_agent_session_repository_stop事実後のworking再観測をbo
     // Then: bounded read が Stop を最新活動入力として読み、Working を新しい遷移として追記する
     assert_eq!(
         observation.outcome,
-        releash_lib::test_support::integration::sessions::AgentSessionMutationOutcome::Applied
+        releashd::test_support::integration::sessions::AgentSessionMutationOutcome::Applied
     );
     let records =
-        releash_lib::test_support::integration::workflow::read_tree_records(&store, session_id)
+        releashd::test_support::integration::workflow::read_tree_records(&store, session_id)
             .await
             .unwrap();
     assert_eq!(
@@ -554,7 +552,7 @@ pub async fn test_agent_session_repository_workflow子sessionも同じ活動保�
         .await
         .unwrap();
 
-    let records = releash_lib::test_support::integration::workflow::read_tree_records(
+    let records = releashd::test_support::integration::workflow::read_tree_records(
         &store,
         "workflow-activity",
     )
@@ -603,7 +601,7 @@ pub async fn test_agent_session_repository_続行指示の受理を木の事実�
         .await
         .unwrap();
 
-    let records = releash_lib::test_support::integration::workflow::read_tree_records(
+    let records = releashd::test_support::integration::workflow::read_tree_records(
         &store,
         "workflow-delegate",
     )
@@ -687,7 +685,7 @@ pub async fn test_agent_session_repository_同一idの再createを拒否する()
 
     assert_eq!(
         error,
-        releash_lib::test_support::integration::sessions::AgentSessionRepositoryError::Conflict
+        releashd::test_support::integration::sessions::AgentSessionRepositoryError::Conflict
     );
     assert_eq!(
         tree_event_types(&store, "agent-session-1").await,
@@ -720,13 +718,13 @@ pub async fn test_agent_session_repository_workflow子sessionのcreateは木に�
 
     assert!(saved.session().initial_instruction_admitted());
     assert!(
-        releash_lib::test_support::integration::workflow::read_tree_records(&store, "workflow-1")
+        releashd::test_support::integration::workflow::read_tree_records(&store, "workflow-1")
             .await
             .unwrap()
             .is_empty()
     );
     assert!(
-        releash_lib::test_support::integration::workflow::read_tree_records(
+        releashd::test_support::integration::workflow::read_tree_records(
             &store,
             "agent-session-workflow"
         )
@@ -781,9 +779,9 @@ pub async fn test_agent_session_repository_attach前に再起動したworkflow�
 
     let stream = store
         .load_stream(
-            releash_lib::test_support::integration::platform::LoadStreamRequest {
+            releashd::test_support::integration::platform::LoadStreamRequest {
                 stream_id:
-                    releash_lib::test_support::integration::platform::StreamId::provider_lifecycle(
+                    releashd::test_support::integration::platform::StreamId::provider_lifecycle(
                         "agent-session-workflow-rearm",
                     )
                     .unwrap(),
@@ -795,7 +793,7 @@ pub async fn test_agent_session_repository_attach前に再起動したworkflow�
         .unwrap();
     assert_eq!(stream.events.len(), 2);
     assert!(
-        releash_lib::test_support::integration::workflow::read_tree_records(&store, "workflow-1")
+        releashd::test_support::integration::workflow::read_tree_records(&store, "workflow-1")
             .await
             .unwrap()
             .is_empty()
@@ -923,10 +921,10 @@ pub async fn test_agent_session_repository_openかつprovider_session確定済�
 
     // When: 一括取得した lifecycle 事実から追加読み対象を絞り、Session を列挙する
     let lifecycle_records =
-        releash_lib::test_support::integration::workflow::read_records_for_event_types(
-            &releash_lib::test_support::integration::workflow::FactLogReadBackend::Live(
-                Arc::clone(&store),
-            ),
+        releashd::test_support::integration::workflow::read_records_for_event_types(
+            &releashd::test_support::integration::workflow::FactLogReadBackend::Live(Arc::clone(
+                &store,
+            )),
             OPEN_SESSION_LIFECYCLE_EVENT_TYPES,
         )
         .await
@@ -1082,7 +1080,7 @@ pub async fn test_agent_session_repository_異常exitをfailure付きprocess_exi
 
     repository.save(saved, "abnormal-exit-1").await.unwrap();
 
-    let records = releash_lib::test_support::integration::workflow::read_tree_records(
+    let records = releashd::test_support::integration::workflow::read_tree_records(
         &store,
         "agent-session-abnormal",
     )
@@ -1127,8 +1125,8 @@ pub async fn test_agent_session_repository_異常終了したsession起動木を
         .save(saved, "abnormal-exit-before-resume")
         .await
         .unwrap();
-    let failed = releash_lib::test_support::integration::workflow::fold_tree_from(
-        &releash_lib::test_support::integration::workflow::FactLogReadBackend::Live(store.clone()),
+    let failed = releashd::test_support::integration::workflow::fold_tree_from(
+        &releashd::test_support::integration::workflow::FactLogReadBackend::Live(store.clone()),
         "agent-session-abnormal-resume",
     )
     .await
@@ -1140,13 +1138,13 @@ pub async fn test_agent_session_repository_異常終了したsession起動木を
             .node_execution("agent-session-abnormal-resume")
             .unwrap()
             .status,
-        releash_lib::test_support::integration::workflow::NodeExecutionStatus::Succeeded
+        releashd::test_support::integration::workflow::NodeExecutionStatus::Succeeded
     );
 
     saved
         .session_mut()
         .complete_resume(
-            releash_lib::test_support::integration::sessions::AgentSessionRecoveryResult::Succeeded,
+            releashd::test_support::integration::sessions::AgentSessionRecoveryResult::Succeeded,
         )
         .unwrap();
     repository
@@ -1154,8 +1152,8 @@ pub async fn test_agent_session_repository_異常終了したsession起動木を
         .await
         .unwrap();
 
-    let resumed = releash_lib::test_support::integration::workflow::fold_tree_from(
-        &releash_lib::test_support::integration::workflow::FactLogReadBackend::Live(store),
+    let resumed = releashd::test_support::integration::workflow::fold_tree_from(
+        &releashd::test_support::integration::workflow::FactLogReadBackend::Live(store),
         "agent-session-abnormal-resume",
     )
     .await
@@ -1167,7 +1165,7 @@ pub async fn test_agent_session_repository_異常終了したsession起動木を
             .node_execution("agent-session-abnormal-resume")
             .unwrap()
             .status,
-        releash_lib::test_support::integration::workflow::NodeExecutionStatus::Succeeded
+        releashd::test_support::integration::workflow::NodeExecutionStatus::Succeeded
     );
 }
 
@@ -1204,13 +1202,13 @@ pub async fn test_agent_session_repository_restore後の指示待ちを事実か
         .await
         .unwrap();
 
-    let records = releash_lib::test_support::integration::workflow::read_tree_records(
+    let records = releashd::test_support::integration::workflow::read_tree_records(
         &store,
         "agent-session-restore-activity",
     )
     .await
     .unwrap();
-    releash_lib::test_support::integration::workflow::append_single_fact(
+    releashd::test_support::integration::workflow::append_single_fact(
         &store,
         &records[0].meta,
         &NodeFact::RestoreRequested,
@@ -1227,7 +1225,7 @@ pub async fn test_agent_session_repository_restore後の指示待ちを事実か
         restored.session().activity(),
         AgentSessionActivity::AwaitingInstruction
     );
-    let activities = releash_lib::test_support::integration::workflow::read_tree_records(
+    let activities = releashd::test_support::integration::workflow::read_tree_records(
         &store,
         "agent-session-restore-activity",
     )
@@ -1264,7 +1262,7 @@ pub async fn test_agent_session_repository_resumeとarchiveとrestoreを行と�
     saved
         .session_mut()
         .complete_resume(
-            releash_lib::test_support::integration::sessions::AgentSessionRecoveryResult::Succeeded,
+            releashd::test_support::integration::sessions::AgentSessionRecoveryResult::Succeeded,
         )
         .unwrap();
     let mut saved = repository.save(saved, "resume-request-1").await.unwrap();
@@ -1288,13 +1286,13 @@ pub async fn test_agent_session_repository_resumeとarchiveとrestoreを行と�
         AgentSessionLifecycle::Archived
     );
 
-    let records = releash_lib::test_support::integration::workflow::read_tree_records(
+    let records = releashd::test_support::integration::workflow::read_tree_records(
         &store,
         "agent-session-flow",
     )
     .await
     .unwrap();
-    releash_lib::test_support::integration::workflow::append_single_fact(
+    releashd::test_support::integration::workflow::append_single_fact(
         &store,
         &records[0].meta,
         &NodeFact::RestoreRequested,
@@ -1364,7 +1362,7 @@ pub async fn test_agent_session_repository同じprovider_session_idの同時所�
     // 同時実行の敗者は CAS 敗北後に勝者を読み直し、所有者付きで決定的に拒否される。
     assert_eq!(
         loser,
-        releash_lib::test_support::integration::sessions::AgentSessionRepositoryError::ProviderSessionAlreadyOwned {
+        releashd::test_support::integration::sessions::AgentSessionRepositoryError::ProviderSessionAlreadyOwned {
             agent_session_id: winner.session().id().to_string(),
         }
     );
@@ -1387,7 +1385,7 @@ pub async fn test_agent_session_repository同じprovider_session_idの同時所�
         .unwrap_err();
     assert_eq!(
         retry_error,
-        releash_lib::test_support::integration::sessions::AgentSessionRepositoryError::ProviderSessionAlreadyOwned {
+        releashd::test_support::integration::sessions::AgentSessionRepositoryError::ProviderSessionAlreadyOwned {
             agent_session_id: winner.session().id().to_string(),
         }
     );
@@ -1424,13 +1422,10 @@ pub async fn test_agent_session_repository削除で木の行を物理削除しpr
 
     assert!(repository.find("agent-session-1").await.unwrap().is_none());
     assert!(
-        releash_lib::test_support::integration::workflow::read_tree_records(
-            &store,
-            "agent-session-1"
-        )
-        .await
-        .unwrap()
-        .is_empty()
+        releashd::test_support::integration::workflow::read_tree_records(&store, "agent-session-1")
+            .await
+            .unwrap()
+            .is_empty()
     );
     assert!(!repository
         .is_owned(ProviderKind::Claude, "provider-session-1")
@@ -1438,7 +1433,7 @@ pub async fn test_agent_session_repository削除で木の行を物理削除しpr
         .unwrap());
     let ownership_page = store
         .load_stream(
-            releash_lib::test_support::integration::platform::LoadStreamRequest {
+            releashd::test_support::integration::platform::LoadStreamRequest {
                 stream_id: ownership_stream(ProviderKind::Claude, "provider-session-1"),
                 after: None,
                 limit: 16,
@@ -1504,9 +1499,9 @@ pub async fn test_agent_session_repository削除失敗時に木とprovider所有
         .await;
 
     assert!(
-        matches!(result.unwrap_err(), releash_lib::test_support::integration::sessions::AgentSessionRepositoryError::Store(failure)
-        if failure.nature == releash_lib::test_support::integration::platform::TechnicalFailureNature::Transient
-        && matches!(failure.source, releash_lib::test_support::integration::platform::StorageFailureSource::Commit(CommitBatchError::StorageUnavailable { .. })))
+        matches!(result.unwrap_err(), releashd::test_support::integration::sessions::AgentSessionRepositoryError::Store(failure)
+        if failure.nature == releashd::test_support::integration::platform::TechnicalFailureNature::Transient
+        && matches!(failure.source, releashd::test_support::integration::platform::StorageFailureSource::Commit(CommitBatchError::StorageUnavailable { .. })))
     );
     let retained = repository
         .find("agent-session-atomic-delete")
@@ -1514,7 +1509,7 @@ pub async fn test_agent_session_repository削除失敗時に木とprovider所有
         .unwrap()
         .unwrap();
     assert!(
-        !releash_lib::test_support::integration::workflow::read_tree_records(
+        !releashd::test_support::integration::workflow::read_tree_records(
             &store,
             "agent-session-atomic-delete"
         )
@@ -1569,9 +1564,9 @@ pub async fn test_agent_session_repository永続化失敗時に所有権も導�
     let result = repository.save(saved, "associate-request-1").await;
 
     assert!(
-        matches!(result.unwrap_err(), releash_lib::test_support::integration::sessions::AgentSessionRepositoryError::Store(failure)
-        if failure.nature == releash_lib::test_support::integration::platform::TechnicalFailureNature::Transient
-        && matches!(failure.source, releash_lib::test_support::integration::platform::StorageFailureSource::Commit(CommitBatchError::StorageUnavailable { .. })))
+        matches!(result.unwrap_err(), releashd::test_support::integration::sessions::AgentSessionRepositoryError::Store(failure)
+        if failure.nature == releashd::test_support::integration::platform::TechnicalFailureNature::Transient
+        && matches!(failure.source, releashd::test_support::integration::platform::StorageFailureSource::Commit(CommitBatchError::StorageUnavailable { .. })))
     );
     let unchanged = repository.find("agent-session-1").await.unwrap().unwrap();
     assert_eq!(unchanged.revision(), 3);
@@ -1626,9 +1621,9 @@ pub async fn test_agent_session_repository_session_startをlifecycleと原子的
         .await;
 
     assert!(matches!(failed.unwrap_err(),
-        releash_lib::test_support::integration::sessions::AgentSessionRepositoryError::Store(failure)
-        if failure.nature == releash_lib::test_support::integration::platform::TechnicalFailureNature::Transient
-        && matches!(failure.source, releash_lib::test_support::integration::platform::StorageFailureSource::Commit(CommitBatchError::StorageUnavailable { .. }))));
+        releashd::test_support::integration::sessions::AgentSessionRepositoryError::Store(failure)
+        if failure.nature == releashd::test_support::integration::platform::TechnicalFailureNature::Transient
+        && matches!(failure.source, releashd::test_support::integration::platform::StorageFailureSource::Commit(CommitBatchError::StorageUnavailable { .. }))));
     assert_eq!(
         repository
             .find("agent-session-atomic")
@@ -1641,9 +1636,9 @@ pub async fn test_agent_session_repository_session_startをlifecycleと原子的
     );
     let lifecycle_stream = store
         .load_stream(
-            releash_lib::test_support::integration::platform::LoadStreamRequest {
+            releashd::test_support::integration::platform::LoadStreamRequest {
                 stream_id:
-                    releash_lib::test_support::integration::platform::StreamId::provider_lifecycle(
+                    releashd::test_support::integration::platform::StreamId::provider_lifecycle(
                         "agent-session-atomic",
                     )
                     .unwrap(),
@@ -1671,9 +1666,9 @@ pub async fn test_agent_session_repository_session_startをlifecycleと原子的
     );
     let lifecycle_stream = store
         .load_stream(
-            releash_lib::test_support::integration::platform::LoadStreamRequest {
+            releashd::test_support::integration::platform::LoadStreamRequest {
                 stream_id:
-                    releash_lib::test_support::integration::platform::StreamId::provider_lifecycle(
+                    releashd::test_support::integration::platform::StreamId::provider_lifecycle(
                         "agent-session-atomic",
                     )
                     .unwrap(),
@@ -1714,21 +1709,21 @@ pub async fn test_agent_session_repository_単独rootとprovider_lifecycleを原
         .await;
 
     assert!(matches!(failed.unwrap_err(),
-        releash_lib::test_support::integration::sessions::AgentSessionRepositoryError::Store(failure)
-        if failure.nature == releash_lib::test_support::integration::platform::TechnicalFailureNature::Transient
-        && matches!(failure.source, releash_lib::test_support::integration::platform::StorageFailureSource::Commit(CommitBatchError::StorageUnavailable { .. }))));
+        releashd::test_support::integration::sessions::AgentSessionRepositoryError::Store(failure)
+        if failure.nature == releashd::test_support::integration::platform::TechnicalFailureNature::Transient
+        && matches!(failure.source, releashd::test_support::integration::platform::StorageFailureSource::Commit(CommitBatchError::StorageUnavailable { .. }))));
     assert!(repository
         .find("agent-session-create-atomic")
         .await
         .unwrap()
         .is_none());
-    let stream_id = releash_lib::test_support::integration::platform::StreamId::provider_lifecycle(
+    let stream_id = releashd::test_support::integration::platform::StreamId::provider_lifecycle(
         "agent-session-create-atomic",
     )
     .unwrap();
     assert!(store
         .load_stream(
-            releash_lib::test_support::integration::platform::LoadStreamRequest {
+            releashd::test_support::integration::platform::LoadStreamRequest {
                 stream_id: stream_id.clone(),
                 after: None,
                 limit: 16,
@@ -1759,7 +1754,7 @@ pub async fn test_agent_session_repository_単独rootとprovider_lifecycleを原
     assert_eq!(
         store
             .load_stream(
-                releash_lib::test_support::integration::platform::LoadStreamRequest {
+                releashd::test_support::integration::platform::LoadStreamRequest {
                     stream_id,
                     after: None,
                     limit: 16,
@@ -1780,7 +1775,7 @@ pub async fn test_agent_session_repository_session起動由来の同一要求を
     let store = open_store(&directory);
     let repository = new_repository(&store);
     let caller_request_id = "standalone-restart-request";
-    let session_id = releash_lib::test_support::integration::sessions::launch_resource_id(
+    let session_id = releashd::test_support::integration::sessions::launch_resource_id(
         "agent-session",
         caller_request_id,
     )
@@ -1847,9 +1842,9 @@ pub async fn test_agent_session_repository_session起動由来の同一要求を
     );
     let stream = store
         .load_stream(
-            releash_lib::test_support::integration::platform::LoadStreamRequest {
+            releashd::test_support::integration::platform::LoadStreamRequest {
                 stream_id:
-                    releash_lib::test_support::integration::platform::StreamId::provider_lifecycle(
+                    releashd::test_support::integration::platform::StreamId::provider_lifecycle(
                         &session_id,
                     )
                     .unwrap(),
@@ -1862,10 +1857,10 @@ pub async fn test_agent_session_repository_session起動由来の同一要求を
     assert_eq!(stream.events.len(), 2);
     assert!(matches!(
         &stream.events[1].event,
-        releash_lib::test_support::integration::platform::LoadedDomainEvent::Known(event)
+        releashd::test_support::integration::platform::LoadedDomainEvent::Known(event)
             if matches!(
                 event.as_ref(),
-                releash_lib::test_support::integration::platform::LocalDomainEvent::ProviderLifecycle(
+                releashd::test_support::integration::platform::LocalDomainEvent::ProviderLifecycle(
                     ProviderLifecycleEvent::BindingArmed { binding_id, .. }
                 ) if binding_id == "binding-2"
             )
@@ -1878,7 +1873,7 @@ pub async fn test_agent_session_repository_workflow起動由来sessionをsession
     let store = open_store(&directory);
     let repository = new_repository(&store);
     let caller_request_id = "launch-origin-collision";
-    let session_id = releash_lib::test_support::integration::sessions::launch_resource_id(
+    let session_id = releashd::test_support::integration::sessions::launch_resource_id(
         "agent-session",
         caller_request_id,
     )
@@ -1935,13 +1930,13 @@ pub async fn test_agent_session_repository_workflow起動由来sessionをsession
 
     assert_eq!(
         error,
-        releash_lib::test_support::integration::sessions::AgentSessionRepositoryError::Conflict
+        releashd::test_support::integration::sessions::AgentSessionRepositoryError::Conflict
     );
     let stream = store
         .load_stream(
-            releash_lib::test_support::integration::platform::LoadStreamRequest {
+            releashd::test_support::integration::platform::LoadStreamRequest {
                 stream_id:
-                    releash_lib::test_support::integration::platform::StreamId::provider_lifecycle(
+                    releashd::test_support::integration::platform::StreamId::provider_lifecycle(
                         &session_id,
                     )
                     .unwrap(),
@@ -2028,15 +2023,20 @@ pub async fn test_agent_session_repository_workflow起動由来sessionのtree所
 
         assert_eq!(
             error,
-            releash_lib::test_support::integration::sessions::AgentSessionRepositoryError::Conflict
+            releashd::test_support::integration::sessions::AgentSessionRepositoryError::Conflict
         );
         let stream = store
-            .load_stream(releash_lib::test_support::integration::platform::LoadStreamRequest {
-                stream_id: releash_lib::test_support::integration::platform::StreamId::provider_lifecycle(session_id)
-                    .unwrap(),
-                after: None,
-                limit: 16,
-            })
+            .load_stream(
+                releashd::test_support::integration::platform::LoadStreamRequest {
+                    stream_id:
+                        releashd::test_support::integration::platform::StreamId::provider_lifecycle(
+                            session_id,
+                        )
+                        .unwrap(),
+                    after: None,
+                    limit: 16,
+                },
+            )
             .await
             .unwrap();
         assert_eq!(stream.events.len(), 1);
@@ -2081,7 +2081,7 @@ pub async fn test_エージェントセッション読取_idで一件の表示�
     assert_eq!(detail.worktree_path, "/repo/worktree");
     assert_eq!(
         detail.provider,
-        releash_lib::test_support::integration::platform::AgentSessionProviderDto::Claude
+        releashd::test_support::integration::platform::AgentSessionProviderDto::Claude
     );
     assert_eq!(detail.tree_location.tree_id, "agent-session-detail");
     assert_eq!(
@@ -2102,7 +2102,7 @@ pub async fn test_agent_session_repository_workflow子sessionの事実は元node
     let directory = TempDir::new().unwrap();
     let store = open_store(&directory);
     let repository = new_repository(&store);
-    let meta = releash_lib::test_support::integration::workflow::NodeFactMeta {
+    let meta = releashd::test_support::integration::workflow::NodeFactMeta {
         tree_id: "workflow-attempt".to_string(),
         node_execution_id: "session-attempt-3".to_string(),
         parent_id: None,
@@ -2110,8 +2110,8 @@ pub async fn test_agent_session_repository_workflow子sessionの事実は元node
         kind: NodeKindName::Session,
         attempt: 3,
     };
-    let root = NodeFact::Started(
-        releash_lib::test_support::integration::workflow::StartedFact {
+    let root =
+        NodeFact::Started(releashd::test_support::integration::workflow::StartedFact {
             worktree: None,
             parent: None,
             root: Some(Box::new(TreeRootFact {
@@ -2122,16 +2122,15 @@ pub async fn test_agent_session_repository_workflow子sessionの事実は元node
                 request: String::new(),
                 workflow_name: "workflow".to_string(),
                 definition: Some(
-                    releash_lib::test_support::integration::workflow::WorkflowDefinition {
+                    releashd::test_support::integration::workflow::WorkflowDefinition {
                         name: "workflow".to_string(),
                         description: String::new(),
                         builtin: false,
                         schemas: Default::default(),
-                        nodes:
-                            vec![releash_lib::test_support::integration::workflow::NodeDefinition {
+                        nodes: vec![releashd::test_support::integration::workflow::NodeDefinition {
                     name: "session".to_string(),
-                    kind: releash_lib::test_support::integration::workflow::NodeKind::Session(
-                        releash_lib::test_support::integration::workflow::SessionSpec {
+                    kind: releashd::test_support::integration::workflow::NodeKind::Session(
+                        releashd::test_support::integration::workflow::SessionSpec {
                             provider: ProviderKind::Codex,
                             model: None,
                             permission: None,
@@ -2145,16 +2144,15 @@ pub async fn test_agent_session_repository_workflow子sessionの事実は元node
                 ),
                 launched_as: ExecutionTreeLaunch::Workflow,
             })),
-        },
-    );
-    releash_lib::test_support::integration::workflow::append_single_fact(&store, &meta, &root, 1)
+        });
+    releashd::test_support::integration::workflow::append_single_fact(&store, &meta, &root, 1)
         .await
         .unwrap();
-    releash_lib::test_support::integration::workflow::append_single_fact(
+    releashd::test_support::integration::workflow::append_single_fact(
         &store,
         &meta,
         &NodeFact::SessionAttached(
-            releash_lib::test_support::integration::workflow::SessionAttachedFact {
+            releashd::test_support::integration::workflow::SessionAttachedFact {
                 session_id: "workflow-session".to_string(),
                 provider_session_id: None,
                 transcript_ref: None,
@@ -2176,7 +2174,7 @@ pub async fn test_agent_session_repository_workflow子sessionの事実は元node
         .await
         .unwrap();
 
-    let records = releash_lib::test_support::integration::workflow::read_tree_records(
+    let records = releashd::test_support::integration::workflow::read_tree_records(
         &store,
         "workflow-attempt",
     )
@@ -2191,7 +2189,7 @@ pub async fn test_agent_session読取_未対応node定義があってもqueryと
     for unavailable in ["main", "session", "command", "unused"] {
         let directory = TempDir::new().unwrap();
         let store = open_store(&directory);
-        releash_lib::test_support::integration::workflow::seed_unavailable_definition(
+        releashd::test_support::integration::workflow::seed_unavailable_definition(
             &store,
             "tree",
             "/repo",
@@ -2239,14 +2237,14 @@ pub async fn test_agent_session_repository_所属repoの取得失敗では作成
     assert_eq!(
         result,
         Err(AgentSessionRepositoryError::Store(
-            releash_lib::test_support::integration::repository::RepositoryError::Rule(
+            releashd::test_support::integration::repository::RepositoryError::Rule(
                 "bare repository".into()
             )
             .into()
         ))
     );
     assert!(
-        releash_lib::test_support::integration::workflow::read_tree_records(&store, "session-bare")
+        releashd::test_support::integration::workflow::read_tree_records(&store, "session-bare")
             .await
             .unwrap()
             .is_empty()
@@ -2266,12 +2264,12 @@ pub async fn test_review文脈読取_書き込み側storeを保持したままse
         )
         .await
         .unwrap();
-    let context = releash_lib::test_support::integration::platform::ReviewContextUsecase::new(
+    let context = releashd::test_support::integration::platform::ReviewContextUsecase::new(
         Arc::new(new_repository(&store)),
         Arc::new(
-            releash_lib::test_support::integration::workflow::StoredWorkspaceWorktreePathQuery::new(
+            releashd::test_support::integration::workflow::StoredWorkspaceWorktreePathQuery::new(
                 directory.path().to_path_buf(),
-                Arc::new(releash_lib::test_support::integration::platform::RetryLimiter::new()),
+                Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
             ),
         ),
     );
@@ -2283,7 +2281,7 @@ pub async fn test_review文脈読取_書き込み側storeを保持したままse
         resolved,
         Some((
             "/repo".into(),
-            releash_lib::test_support::integration::platform::ReviewActor::provider_agent(
+            releashd::test_support::integration::platform::ReviewActor::provider_agent(
                 "codex".into(),
                 Some("agent-session-1".into())
             )

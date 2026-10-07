@@ -1,7 +1,7 @@
-use releash_lib::test_support::integration::providers::LocalProviderHookHealthFailureQuery;
-use releash_lib::test_support::integration::providers::ProviderHookHealthFailureQuery;
-use releash_lib::test_support::integration::providers::ProviderKind;
-use releash_lib::test_support::integration::providers::ProviderLifecycleUnavailableReason;
+use releashd::test_support::integration::providers::LocalProviderHookHealthFailureQuery;
+use releashd::test_support::integration::providers::ProviderHookHealthFailureQuery;
+use releashd::test_support::integration::providers::ProviderKind;
+use releashd::test_support::integration::providers::ProviderLifecycleUnavailableReason;
 use std::os::unix::fs::PermissionsExt;
 
 #[tokio::test]
@@ -18,7 +18,7 @@ pub async fn test_hook警告読取_正常な記録と破損を一緒に返す() 
             .join(agent)
             .join(launch)
             .join("hook-health.json");
-        releash_lib::test_support::integration::providers::write_hook_failure(
+        releashd::test_support::integration::providers::write_hook_failure(
             directory.path(),
             &marker,
             provider,
@@ -38,7 +38,7 @@ pub async fn test_hook警告読取_正常な記録と破損を一緒に返す() 
     // Then
     assert!(matches!(
         records[2],
-        Err(releash_lib::test_support::integration::providers::ProviderHookHealthFailureQueryError::Corrupt)
+        Err(releashd::test_support::integration::providers::ProviderHookHealthFailureQueryError::Corrupt)
     ));
 }
 
@@ -56,7 +56,7 @@ pub async fn test_hook警告読取_件数上限までの正常な記録を変換
             .join(agent)
             .join(launch)
             .join("hook-health.json");
-        releash_lib::test_support::integration::providers::write_hook_failure(
+        releashd::test_support::integration::providers::write_hook_failure(
             directory.path(),
             &marker,
             provider,
@@ -116,7 +116,7 @@ pub async fn test_hook警告読取_記録情報を読めない場合も他の警
         .path()
         .join("provider-launches/b/invalid/hook-health.json");
     for marker in [&healthy, &path] {
-        releash_lib::test_support::integration::providers::write_hook_failure(
+        releashd::test_support::integration::providers::write_hook_failure(
             directory.path(),
             marker,
             "claude",
@@ -144,9 +144,9 @@ pub async fn test_hook警告読取_記録情報を読めない場合も他の警
     assert_eq!(
         records[1],
         Err(
-            releash_lib::test_support::integration::providers::ProviderHookHealthFailureQueryError::Technical(
-                releash_lib::test_support::integration::platform::TechnicalFailure {
-                    nature: releash_lib::test_support::integration::platform::TechnicalFailureNature::Other,
+            releashd::test_support::integration::providers::ProviderHookHealthFailureQueryError::Technical(
+                releashd::test_support::integration::platform::TechnicalFailure {
+                    nature: releashd::test_support::integration::platform::TechnicalFailureNature::Other,
                     message: std::io::Error::from_raw_os_error(13).to_string()
                 }
             )
@@ -166,7 +166,7 @@ pub async fn test_hook警告読取_通常ファイルではない場合も他の
         .path()
         .join("provider-launches/b/invalid/hook-health.json");
     for marker in [&healthy, &path] {
-        releash_lib::test_support::integration::providers::write_hook_failure(
+        releashd::test_support::integration::providers::write_hook_failure(
             directory.path(),
             marker,
             "claude",
@@ -186,7 +186,7 @@ pub async fn test_hook警告読取_通常ファイルではない場合も他の
     assert!(records[0].is_ok());
     assert_eq!(
         records[1],
-        Err(releash_lib::test_support::integration::providers::ProviderHookHealthFailureQueryError::Corrupt)
+        Err(releashd::test_support::integration::providers::ProviderHookHealthFailureQueryError::Corrupt)
     );
 }
 
@@ -202,7 +202,7 @@ pub async fn test_hook警告読取_サイズが大きすぎる場合も他の警
         .path()
         .join("provider-launches/b/invalid/hook-health.json");
     for marker in [&healthy, &path] {
-        releash_lib::test_support::integration::providers::write_hook_failure(
+        releashd::test_support::integration::providers::write_hook_failure(
             directory.path(),
             marker,
             "claude",
@@ -221,7 +221,7 @@ pub async fn test_hook警告読取_サイズが大きすぎる場合も他の警
     assert!(records[0].is_ok());
     assert_eq!(
         records[1],
-        Err(releash_lib::test_support::integration::providers::ProviderHookHealthFailureQueryError::Corrupt)
+        Err(releashd::test_support::integration::providers::ProviderHookHealthFailureQueryError::Corrupt)
     );
 }
 
@@ -237,7 +237,7 @@ pub async fn test_hook警告読取_中身を読めない場合も他の警告を
         .path()
         .join("provider-launches/b/invalid/hook-health.json");
     for marker in [&healthy, &path] {
-        releash_lib::test_support::integration::providers::write_hook_failure(
+        releashd::test_support::integration::providers::write_hook_failure(
             directory.path(),
             marker,
             "claude",
@@ -257,9 +257,9 @@ pub async fn test_hook警告読取_中身を読めない場合も他の警告を
     assert_eq!(
         records[1],
         Err(
-            releash_lib::test_support::integration::providers::ProviderHookHealthFailureQueryError::Technical(
-                releash_lib::test_support::integration::platform::TechnicalFailure {
-                    nature: releash_lib::test_support::integration::platform::TechnicalFailureNature::Other,
+            releashd::test_support::integration::providers::ProviderHookHealthFailureQueryError::Technical(
+                releashd::test_support::integration::platform::TechnicalFailure {
+                    nature: releashd::test_support::integration::platform::TechnicalFailureNature::Other,
                     message: std::io::Error::from_raw_os_error(13).to_string()
                 }
             )
@@ -279,7 +279,7 @@ pub async fn test_hook警告読取_解析できない場合も他の警告を返
         .path()
         .join("provider-launches/b/invalid/hook-health.json");
     for marker in [&healthy, &path] {
-        releash_lib::test_support::integration::providers::write_hook_failure(
+        releashd::test_support::integration::providers::write_hook_failure(
             directory.path(),
             marker,
             "claude",
@@ -298,7 +298,7 @@ pub async fn test_hook警告読取_解析できない場合も他の警告を返
     assert!(records[0].is_ok());
     assert_eq!(
         records[1],
-        Err(releash_lib::test_support::integration::providers::ProviderHookHealthFailureQueryError::Corrupt)
+        Err(releashd::test_support::integration::providers::ProviderHookHealthFailureQueryError::Corrupt)
     );
 }
 
@@ -314,7 +314,7 @@ pub async fn test_hook警告読取_sessionを読めない場合も他の警告�
         .path()
         .join("provider-launches/b/invalid/hook-health.json");
     for marker in [&healthy, &path] {
-        releash_lib::test_support::integration::providers::write_hook_failure(
+        releashd::test_support::integration::providers::write_hook_failure(
             directory.path(),
             marker,
             "claude",
@@ -342,9 +342,9 @@ pub async fn test_hook警告読取_sessionを読めない場合も他の警告�
     assert_eq!(
         records[1],
         Err(
-            releash_lib::test_support::integration::providers::ProviderHookHealthFailureQueryError::Technical(
-                releash_lib::test_support::integration::platform::TechnicalFailure {
-                    nature: releash_lib::test_support::integration::platform::TechnicalFailureNature::Other,
+            releashd::test_support::integration::providers::ProviderHookHealthFailureQueryError::Technical(
+                releashd::test_support::integration::platform::TechnicalFailure {
+                    nature: releashd::test_support::integration::platform::TechnicalFailureNature::Other,
                     message: std::io::Error::from_raw_os_error(13).to_string()
                 }
             )
@@ -368,9 +368,9 @@ pub async fn test_hook警告読取_置き場所を読めない場合は一覧全
     assert_eq!(
         result,
         Err(
-            releash_lib::test_support::integration::providers::ProviderHookHealthFailureQueryError::Technical(
-                releash_lib::test_support::integration::platform::TechnicalFailure {
-                    nature: releash_lib::test_support::integration::platform::TechnicalFailureNature::Other,
+            releashd::test_support::integration::providers::ProviderHookHealthFailureQueryError::Technical(
+                releashd::test_support::integration::platform::TechnicalFailure {
+                    nature: releashd::test_support::integration::platform::TechnicalFailureNature::Other,
                     message: std::io::Error::from_raw_os_error(13).to_string()
                 }
             )

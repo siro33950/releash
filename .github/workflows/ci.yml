@@ -187,11 +187,11 @@ jobs:
           workspaces: src-tauri
           shared-key: pr-server
           save-if: false
-      - run: cargo fmt --check -p releash-backend
+      - run: cargo fmt --check -p releashd
         if: ${{ !cancelled() && steps.changes.outputs.rust == 'true' && steps.setup.outcome == 'success' }}
-      - run: cargo clippy --locked -p releash-backend -- -D warnings
+      - run: cargo clippy --locked -p releashd -- -D warnings
         if: ${{ !cancelled() && steps.changes.outputs.rust == 'true' && steps.setup.outcome == 'success' }}
-      - run: cargo clippy --locked -p releash-backend --features test-support -- -D warnings
+      - run: cargo clippy --locked -p releashd --features test-support -- -D warnings
         if: ${{ !cancelled() && steps.changes.outputs.rust == 'true' && steps.setup.outcome == 'success' }}
 
   server-unit:
@@ -216,9 +216,9 @@ jobs:
           workspaces: src-tauri
           shared-key: pr-server
           save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
-      - run: cargo test --locked --lib --bins -p releash-backend
+      - run: cargo test --locked --lib --bins -p releashd
         if: ${{ !cancelled() && steps.changes.outputs.rust == 'true' && steps.setup.outcome == 'success' }}
-      - run: cargo test --locked --doc -p releash-backend
+      - run: cargo test --locked --doc -p releashd
         if: ${{ !cancelled() && steps.changes.outputs.rust == 'true' && steps.setup.outcome == 'success' }}
 
   server-integration:
@@ -258,7 +258,7 @@ jobs:
           save-if: false
       - run: cargo build --locked -p releash --bin releash
         if: ${{ !cancelled() && steps.changes.outputs.rust == 'true' && steps.setup.outcome == 'success' }}
-      - run: cargo test --locked --test '*' -p releash-backend
+      - run: cargo test --locked --test '*' -p releashd
         if: ${{ !cancelled() && steps.changes.outputs.rust == 'true' && steps.setup.outcome == 'success' }}
 
   # ruleset の required status check が参照する集約ジョブ。
@@ -418,7 +418,7 @@ jobs:
           workspaces: src-tauri
           shared-key: pr-shell
           save-if: false
-      - run: cargo build --locked -p releash-backend --bin releash-backend -p releash --bin releash
+      - run: cargo build --locked -p releashd --bin releashd -p releash --bin releash
         if: ${{ !cancelled() && steps.changes.outputs.rust == 'true' && steps.setup.outcome == 'success' }}
       - run: cargo test --locked --test '*' -p releash-desktop
         if: ${{ !cancelled() && steps.changes.outputs.rust == 'true' && steps.setup.outcome == 'success' }}
@@ -519,7 +519,7 @@ jobs:
           workspaces: src-tauri
           shared-key: pr-cli
           save-if: false
-      - run: cargo build --locked -p releash-backend --bin releash-backend -p releash --bin releash
+      - run: cargo build --locked -p releashd --bin releashd -p releash --bin releash
         if: ${{ !cancelled() && steps.changes.outputs.rust == 'true' && steps.setup.outcome == 'success' }}
       - run: cargo test --locked --test '*' -p releash
         if: ${{ !cancelled() && steps.changes.outputs.rust == 'true' && steps.setup.outcome == 'success' }}

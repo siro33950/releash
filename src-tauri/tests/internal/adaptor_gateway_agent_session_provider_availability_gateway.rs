@@ -1,4 +1,4 @@
-use releash_lib::test_support::integration::fixtures::availability_FailingSearchPathSource as FailingSearchPathSource;
+use releashd::test_support::integration::fixtures::availability_FailingSearchPathSource as FailingSearchPathSource;
 use std::ffi::OsString;
 use std::fs;
 use std::sync::Arc;
@@ -6,15 +6,15 @@ use std::sync::Arc;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 
-use releash_lib::test_support::integration::sessions::ProviderExecutable;
-use releash_lib::test_support::integration::sessions::ProviderExecutableProbeGateway;
-use releash_lib::test_support::integration::sessions::ProviderUnavailableReason;
+use releashd::test_support::integration::sessions::ProviderExecutable;
+use releashd::test_support::integration::sessions::ProviderExecutableProbeGateway;
+use releashd::test_support::integration::sessions::ProviderUnavailableReason;
 
-use releash_lib::test_support::integration::sessions::LocalProviderExecutableProbeGateway;
+use releashd::test_support::integration::sessions::LocalProviderExecutableProbeGateway;
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
-use releash_lib::test_support::integration::process::LoginShellPathError;
-use releash_lib::test_support::integration::process::SearchPathSource;
+use releashd::test_support::integration::process::LoginShellPathError;
+use releashd::test_support::integration::process::SearchPathSource;
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 struct FixedSearchPathSource(OsString);
@@ -127,9 +127,9 @@ pub fn test_provider_availability_refresh_shell取得失敗を返し既存path�
     assert_eq!(
         gateway.refresh_search_path(),
         Err(
-            releash_lib::test_support::integration::sessions::ProviderExecutableProbeGatewayError::Technical(
-                releash_lib::test_support::integration::platform::TechnicalFailure {
-                    nature: releash_lib::test_support::integration::platform::TechnicalFailureNature::Other,
+            releashd::test_support::integration::sessions::ProviderExecutableProbeGatewayError::Technical(
+                releashd::test_support::integration::platform::TechnicalFailure {
+                    nature: releashd::test_support::integration::platform::TechnicalFailureNature::Other,
                     message: "Spawn".into()
                 }
             )

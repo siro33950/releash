@@ -1,8 +1,8 @@
 use crate::state_subscription_reads::Fixture as StateReadsFixture;
-use releash_lib::test_support::integration::subscriptions::StateChangeSource;
-use releash_lib::test_support::integration::transport::invalid_request;
-use releash_lib::test_support::integration::transport::ClientCommandDispatch;
-use releash_lib::test_support::integration::wire;
+use releashd::test_support::integration::subscriptions::StateChangeSource;
+use releashd::test_support::integration::transport::invalid_request;
+use releashd::test_support::integration::transport::ClientCommandDispatch;
+use releashd::test_support::integration::wire;
 
 #[tokio::test]
 pub async fn test_更新通知_成功時だけ購読対象を更新する() {
@@ -10,10 +10,10 @@ pub async fn test_更新通知_成功時だけ購読対象を更新する() {
     let fixture = StateReadsFixture::new();
     let publisher = fixture.subscriptions.clone();
     let git_host = fixture.reads.git_host.clone();
-    let mut changes = releash_lib::test_support::integration::subscriptions::changes(&publisher);
+    let mut changes = releashd::test_support::integration::subscriptions::changes(&publisher);
     let mut dispatch = ClientCommandDispatch::new(
-        releash_lib::test_support::integration::daemon::DaemonUsecase::test_with_repository(
-            releash_lib::test_support::integration::daemon::serving(),
+        releashd::test_support::integration::daemon::DaemonUsecase::test_with_repository(
+            releashd::test_support::integration::daemon::serving(),
         ),
     )
     .with_state_publisher(publisher);

@@ -2,18 +2,18 @@ use crate::test_support_git::{create_initial_commit, create_test_repo};
 pub(crate) mod repository_usecase_tests {
     use super::*;
 
-    use releash_lib::test_support::integration::repository::WorktreeGateway;
+    use releashd::test_support::integration::repository::WorktreeGateway;
 
     use std::sync::Arc;
 
-    use releash_lib::test_support::integration::repository::{
+    use releashd::test_support::integration::repository::{
         repository_usecase as usecase, FakeRepo,
     };
     #[tokio::test]
     pub async fn test_worktree削除_実gitの拒否条件では実行木を変更しない() {
         use crate::test_support_git::create_initial_commit;
         use crate::test_support_git::create_test_repo;
-        use releash_lib::test_support::integration::repository::WorktreeGateway;
+        use releashd::test_support::integration::repository::WorktreeGateway;
         for condition in ["wrong-repo", "locked", "dirty", "valid", "archive-failure"] {
             // Given
             let (repo_dir, repo) = create_test_repo();

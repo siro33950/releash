@@ -1,22 +1,22 @@
-use releash_lib::test_support::integration::fixtures::fixtures_domain_comment_mod_agent as agent;
+use releashd::test_support::integration::fixtures::fixtures_domain_comment_mod_agent as agent;
 pub(crate) mod tests {
     use super::*;
 
     use parking_lot::Mutex;
-    use releash_lib::test_support::integration::platform::AuthorScope;
-    use releash_lib::test_support::integration::platform::ReviewActor;
-    use releash_lib::test_support::integration::platform::ReviewActorKind;
-    use releash_lib::test_support::integration::platform::ReviewClock;
-    use releash_lib::test_support::integration::platform::ReviewCommentUsecase;
-    use releash_lib::test_support::integration::platform::ReviewError;
-    use releash_lib::test_support::integration::platform::ReviewEvent;
-    use releash_lib::test_support::integration::platform::ReviewEventMutation;
-    use releash_lib::test_support::integration::platform::ReviewEventStore;
-    use releash_lib::test_support::integration::platform::ReviewHistoryEntry;
-    use releash_lib::test_support::integration::platform::ReviewIdGenerator;
-    use releash_lib::test_support::integration::platform::ReviewTarget;
-    use releash_lib::test_support::integration::platform::ReviewThreadFilter;
-    use releash_lib::test_support::integration::platform::ReviewThreadState;
+    use releashd::test_support::integration::platform::AuthorScope;
+    use releashd::test_support::integration::platform::ReviewActor;
+    use releashd::test_support::integration::platform::ReviewActorKind;
+    use releashd::test_support::integration::platform::ReviewClock;
+    use releashd::test_support::integration::platform::ReviewCommentUsecase;
+    use releashd::test_support::integration::platform::ReviewError;
+    use releashd::test_support::integration::platform::ReviewEvent;
+    use releashd::test_support::integration::platform::ReviewEventMutation;
+    use releashd::test_support::integration::platform::ReviewEventStore;
+    use releashd::test_support::integration::platform::ReviewHistoryEntry;
+    use releashd::test_support::integration::platform::ReviewIdGenerator;
+    use releashd::test_support::integration::platform::ReviewTarget;
+    use releashd::test_support::integration::platform::ReviewThreadFilter;
+    use releashd::test_support::integration::platform::ReviewThreadState;
     use std::path::Path;
     use std::sync::Arc;
     use tempfile::TempDir;
@@ -84,10 +84,10 @@ pub(crate) mod tests {
 
     #[test]
     pub fn test_comment変更_成功した操作だけ購読口へ通知する() {
-        use releash_lib::test_support::integration::subscriptions::StateChangeSource;
+        use releashd::test_support::integration::subscriptions::StateChangeSource;
         // Given
         let subscriptions =
-            releash_lib::test_support::integration::subscriptions::test_subscriptions();
+            releashd::test_support::integration::subscriptions::test_subscriptions();
         let mut changes = subscriptions.changes();
         let usecase = usecase().with_subscriptions(subscriptions);
         let dir = TempDir::new().unwrap();
@@ -665,9 +665,9 @@ pub(crate) mod tests {
             .unwrap();
 
         assert_eq!(thread.author.kind, ReviewActorKind::Agent);
-        let wire = releash_lib::test_support::integration::wire::ReviewThreadDto::try_from(thread)
-            .unwrap();
-        let json = releash_lib::test_support::integration::wire::from_message(
+        let wire =
+            releashd::test_support::integration::wire::ReviewThreadDto::try_from(thread).unwrap();
+        let json = releashd::test_support::integration::wire::from_message(
             "releash.client.v1.ReviewThreadDto",
             &wire,
         )

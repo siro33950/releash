@@ -33,9 +33,9 @@ impl BackgroundWorker {
                 .parent()
                 .and_then(|path| path.parent())
                 .expect("cargo target directory")
-                .join("releash-backend")
+                .join("releashd")
         } else {
-            executable.with_file_name("releash-backend")
+            executable.with_file_name("releashd")
         };
         let mut command = Command::new(executable);
         command.arg("--internal-background-worker");

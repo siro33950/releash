@@ -3,22 +3,21 @@ use axum::http::Request;
 use axum::http::StatusCode;
 use axum::routing::post;
 use axum::Router;
-use releash_lib::test_support::integration::transport::require_client;
+use releashd::test_support::integration::transport::require_client;
 use tower::ServiceExt;
 
 #[tokio::test]
 pub async fn test_リクエスト認証_server停止でoperatorとhook_tokenが失効する() {
     // Given
     let directory = tempfile::tempdir().unwrap();
-    let binding = releash_lib::test_support::integration::transport::test_binding(
-        directory.path().to_owned(),
-    )
-    .unwrap();
+    let binding =
+        releashd::test_support::integration::transport::test_binding(directory.path().to_owned())
+            .unwrap();
     let bearer = binding.terminal_bearer_token();
     let hook_value = binding.test_hook_token();
     let router = Router::new().route("/rpc", post(|| async { "ok" })).layer(
         axum::middleware::from_fn_with_state(
-            releash_lib::test_support::integration::transport::ClientTokens {
+            releashd::test_support::integration::transport::ClientTokens {
                 operator: binding.client_bearer_token(),
                 hook: binding.hook_bearer_token(),
             },

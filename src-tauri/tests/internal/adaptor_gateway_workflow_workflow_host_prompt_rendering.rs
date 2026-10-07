@@ -1,7 +1,7 @@
-use releash_lib::test_support::integration::process::spawn_shell_command;
-use releash_lib::test_support::integration::process::OutputLimit;
-use releash_lib::test_support::integration::workflow::render_parameter_references;
-use releash_lib::test_support::integration::workflow::WorkflowDefinition;
+use releashd::test_support::integration::process::spawn_shell_command;
+use releashd::test_support::integration::process::OutputLimit;
+use releashd::test_support::integration::workflow::render_parameter_references;
+use releashd::test_support::integration::workflow::WorkflowDefinition;
 use serde_json::json;
 use serde_json::Value;
 use tempfile::TempDir;

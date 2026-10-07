@@ -13,14 +13,14 @@ use opentelemetry_sdk::logs::InMemoryLogExporter;
 use opentelemetry_sdk::logs::SdkLogRecord;
 use opentelemetry_sdk::logs::SdkLoggerProvider;
 
-use releash_lib::test_support::integration::platform::init_with_limits;
-use releash_lib::test_support::integration::platform::LocalFileLogger;
-use releash_lib::test_support::integration::platform::LocalLogProcess;
-use releash_lib::test_support::integration::platform::LocalLogWriter;
-use releash_lib::test_support::integration::platform::ACTIVE_FILE_NAME;
-use releash_lib::test_support::integration::platform::LOCK_FILE_NAME;
-use releash_lib::test_support::integration::platform::LOG_DIRECTORY_NAME;
-use releash_lib::test_support::integration::platform::MAX_FILE_COUNT;
+use releashd::test_support::integration::platform::init_with_limits;
+use releashd::test_support::integration::platform::LocalFileLogger;
+use releashd::test_support::integration::platform::LocalLogProcess;
+use releashd::test_support::integration::platform::LocalLogWriter;
+use releashd::test_support::integration::platform::ACTIVE_FILE_NAME;
+use releashd::test_support::integration::platform::LOCK_FILE_NAME;
+use releashd::test_support::integration::platform::LOG_DIRECTORY_NAME;
+use releashd::test_support::integration::platform::MAX_FILE_COUNT;
 
 const CHILD_TEST_NAME: &str = "infrastructure_local_log::test_local_log_child_writer";
 const CONFIGURATION_CHILD_TEST_NAME: &str =
@@ -178,7 +178,7 @@ pub fn test_local_log_file_only構成_child() {
     let provider = SdkLoggerProvider::builder()
         .with_simple_exporter(exporter.clone())
         .build();
-    releash_lib::test_support::integration::telemetry::init_crash_reporting(
+    releashd::test_support::integration::telemetry::init_crash_reporting(
         Some(provider.clone()),
         true,
         true,
@@ -192,7 +192,7 @@ pub fn test_local_log_file_only構成_child() {
     .unwrap();
 
     log::warn!(target: "local_log_configuration_test", "local-file-only-marker");
-    releash_lib::test_support::integration::telemetry::report_error(
+    releashd::test_support::integration::telemetry::report_error(
         "rust",
         "local-log-configuration-test",
         "crash-otlp-only-marker",

@@ -1,4 +1,4 @@
-use releash_lib::test_support::integration::platform::open_path_with;
+use releashd::test_support::integration::platform::open_path_with;
 
 #[test]
 pub fn test_外部エディタ_既定と指定の起動先を既存どおり渡す() {

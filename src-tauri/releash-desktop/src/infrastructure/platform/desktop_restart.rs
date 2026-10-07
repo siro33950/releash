@@ -1,6 +1,6 @@
 pub(crate) fn spawn_successor() -> Result<(), String> {
     let pid = std::process::id();
-    let started = releash_lib::desktop_api::process_start_time(pid)
+    let started = releashd::desktop_api::process_start_time(pid)
         .ok_or("UI process identity is unavailable")?;
     let mut command =
         std::process::Command::new(std::env::current_exe().map_err(|e| e.to_string())?);
@@ -45,13 +45,13 @@ pub(crate) fn wait_for_predecessor() -> Result<bool, String> {
         .ok_or("Missing predecessor identity")?
         .parse::<u64>()
         .map_err(|e| e.to_string())?;
-    let context = releash_lib::desktop_api::with_timeout(std::time::Duration::from_secs(10));
+    let context = releashd::desktop_api::with_timeout(std::time::Duration::from_secs(10));
     loop {
-        let observation = releash_lib::desktop_api::lookup_process_start_time(pid);
+        let observation = releashd::desktop_api::lookup_process_start_time(pid);
         if observation.process_list_available && observation.start_time != Some(started) {
             return Ok(true);
         }
-        releash_lib::desktop_api::sleep(&context, crate::common::retry::DESKTOP_POLL.delay(1, 1.0))
+        releashd::desktop_api::sleep(&context, crate::common::retry::DESKTOP_POLL.delay(1, 1.0))
             .map_err(|_| "Previous UI exit could not be confirmed.".to_string())?;
     }
 }

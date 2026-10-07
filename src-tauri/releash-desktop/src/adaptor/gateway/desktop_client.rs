@@ -2,10 +2,10 @@ use crate::common::retry::{RetryBackoff, RetryLimiter};
 use crate::domain::daemon_supervision::DaemonLiveness;
 use connectrpc::client::{ClientConfig, HttpClient};
 use futures_util::future::BoxFuture;
-use releash_lib::desktop_api::descriptor;
-use releash_lib::desktop_api::ClientConnectionDto;
-use releash_lib::desktop_api::{call, rpc, to_wire, wire};
-use releash_lib::desktop_api::{TechnicalFailure, TechnicalFailureNature};
+use releashd::desktop_api::descriptor;
+use releashd::desktop_api::ClientConnectionDto;
+use releashd::desktop_api::{call, rpc, to_wire, wire};
+use releashd::desktop_api::{TechnicalFailure, TechnicalFailureNature};
 use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 
@@ -98,7 +98,7 @@ pub fn stream_client(
     ))
 }
 
-type DesktopSettingsDto = releash_lib::desktop_api::DesktopSettingsDto;
+type DesktopSettingsDto = releashd::desktop_api::DesktopSettingsDto;
 
 pub struct DesktopClient {
     client: Arc<rpc::ClientServiceClient<HttpClient>>,

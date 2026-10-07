@@ -1,13 +1,13 @@
-use releash_lib::test_support::integration::repository::ConfigRepository;
-use releash_lib::test_support::integration::repository::NotionConfigRepository;
-use releash_lib::test_support::integration::settings::config_to_domain;
-use releash_lib::test_support::integration::settings::load_or_create_config;
-use releash_lib::test_support::integration::settings::AppConfig;
-use releash_lib::test_support::integration::settings::AppConfigError;
-use releash_lib::test_support::integration::settings::ReleashConfig;
+use releashd::test_support::integration::repository::ConfigRepository;
+use releashd::test_support::integration::repository::NotionConfigRepository;
+use releashd::test_support::integration::settings::config_to_domain;
+use releashd::test_support::integration::settings::load_or_create_config;
+use releashd::test_support::integration::settings::AppConfig;
+use releashd::test_support::integration::settings::AppConfigError;
+use releashd::test_support::integration::settings::ReleashConfig;
 use std::fs;
 
-use releash_lib::test_support::integration::repository::ConfigSecretRepository;
+use releashd::test_support::integration::repository::ConfigSecretRepository;
 use tempfile::TempDir;
 
 #[test]
@@ -40,15 +40,15 @@ database_id = "database-id"
     for value in ["0123456789abcdef0123456789abcdef", "notion-value-1234"] {
         assert!(secrets.contains(&value.to_string()));
         assert_eq!(
-            releash_lib::test_support::integration::workflow::mask_sensitive_text(value, &[]),
+            releashd::test_support::integration::workflow::mask_sensitive_text(value, &[]),
             value
         );
         assert_eq!(
-            releash_lib::test_support::integration::workflow::mask_sensitive_text(value, &secrets),
+            releashd::test_support::integration::workflow::mask_sensitive_text(value, &secrets),
             "[REDACTED]"
         );
         assert_eq!(
-            releash_lib::test_support::integration::workflow::mask_sensitive_artifact(
+            releashd::test_support::integration::workflow::mask_sensitive_artifact(
                 "result",
                 serde_json::json!({"output": [value, {"nested": value}], "count": 1}),
                 &secrets,
@@ -179,20 +179,20 @@ pub fn test_設定の秘匿対象_パース失敗にtokenを含めず通知す�
 
 pub(crate) mod tests {
 
-    use releash_lib::test_support::integration::settings::NotionPropertyMappingModel;
-    use releash_lib::test_support::integration::settings::NotionRepoConfigModel;
+    use releashd::test_support::integration::settings::NotionPropertyMappingModel;
+    use releashd::test_support::integration::settings::NotionRepoConfigModel;
 
-    use releash_lib::test_support::integration::providers::ProviderKind;
-    use releash_lib::test_support::integration::repository::NotionConfigRepository;
-    use releash_lib::test_support::integration::sessions::ProviderExecutable;
-    use releash_lib::test_support::integration::sessions::ProviderExecutableConfigRepository;
-    use releash_lib::test_support::integration::sessions::ProviderExecutableConfigRepositoryError;
-    use releash_lib::test_support::integration::settings::load_or_create_config;
-    use releash_lib::test_support::integration::settings::read_config_if_exists;
-    use releash_lib::test_support::integration::settings::write_config;
-    use releash_lib::test_support::integration::settings::write_config_tmp_file;
-    use releash_lib::test_support::integration::settings::AppConfig;
-    use releash_lib::test_support::integration::settings::ReleashConfig;
+    use releashd::test_support::integration::providers::ProviderKind;
+    use releashd::test_support::integration::repository::NotionConfigRepository;
+    use releashd::test_support::integration::sessions::ProviderExecutable;
+    use releashd::test_support::integration::sessions::ProviderExecutableConfigRepository;
+    use releashd::test_support::integration::sessions::ProviderExecutableConfigRepositoryError;
+    use releashd::test_support::integration::settings::load_or_create_config;
+    use releashd::test_support::integration::settings::read_config_if_exists;
+    use releashd::test_support::integration::settings::write_config;
+    use releashd::test_support::integration::settings::write_config_tmp_file;
+    use releashd::test_support::integration::settings::AppConfig;
+    use releashd::test_support::integration::settings::ReleashConfig;
     use std::fs;
     use std::path::PathBuf;
     use tempfile::TempDir;
@@ -261,8 +261,9 @@ pub(crate) mod tests {
             )
             .unwrap_err(),
             ProviderExecutableConfigRepositoryError::Technical(
-                releash_lib::test_support::integration::platform::TechnicalFailure {
-                    nature: releash_lib::test_support::integration::platform::TechnicalFailureNature::Other,
+                releashd::test_support::integration::platform::TechnicalFailure {
+                    nature:
+                        releashd::test_support::integration::platform::TechnicalFailureNature::Other,
                     message: format!(
                         "ディレクトリ作成失敗: {}",
                         std::io::Error::from_raw_os_error(17)
@@ -713,18 +714,18 @@ token = "existing_token_value_here_with_enough_length_!!"
         let path = config_path(&dir);
         let app_config = AppConfig::new(ReleashConfig::default(), path);
         let repo_path = "/path/to/repo";
-        let config = releash_lib::test_support::integration::settings::NotionRepoConfig {
+        let config = releashd::test_support::integration::settings::NotionRepoConfig {
             api_token: "ntn_test_token".to_string(),
             database_id: "db-id-456".to_string(),
             property_mapping:
-                releash_lib::test_support::integration::settings::NotionPropertyMapping {
+                releashd::test_support::integration::settings::NotionPropertyMapping {
                     title: "Task Name".to_string(),
                     labels: vec![
-                        releash_lib::test_support::integration::settings::NotionLabelProperty {
+                        releashd::test_support::integration::settings::NotionLabelProperty {
                             name: "Status".to_string(),
                             property_type: "status".to_string(),
                         },
-                        releash_lib::test_support::integration::settings::NotionLabelProperty {
+                        releashd::test_support::integration::settings::NotionLabelProperty {
                             name: "Tags".to_string(),
                             property_type: "multi_select".to_string(),
                         },

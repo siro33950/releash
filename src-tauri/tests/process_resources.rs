@@ -1,5 +1,5 @@
-use releash_lib::test_support::integration::platform::ProcessResourceObserver;
-use releash_lib::test_support::integration::process::signal_process_group;
+use releashd::test_support::integration::platform::ProcessResourceObserver;
+use releashd::test_support::integration::process::signal_process_group;
 
 #[test]
 fn test_プロセス資源_現在のプロセスを取得する() {

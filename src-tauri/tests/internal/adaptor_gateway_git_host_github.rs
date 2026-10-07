@@ -1,11 +1,11 @@
-use releash_lib::test_support::integration::platform::scope;
-use releash_lib::test_support::integration::platform::Deadline;
-use releash_lib::test_support::integration::platform::GhCommandOutput;
-use releash_lib::test_support::integration::platform::GhCommandRunner;
-use releash_lib::test_support::integration::platform::OperationContext;
-use releash_lib::test_support::integration::platform::OperationStopped;
-use releash_lib::test_support::integration::platform::SystemGhCommandRunner;
-use releash_lib::test_support::integration::platform::GH_TIMEOUT;
+use releashd::test_support::integration::platform::scope;
+use releashd::test_support::integration::platform::Deadline;
+use releashd::test_support::integration::platform::GhCommandOutput;
+use releashd::test_support::integration::platform::GhCommandRunner;
+use releashd::test_support::integration::platform::OperationContext;
+use releashd::test_support::integration::platform::OperationStopped;
+use releashd::test_support::integration::platform::SystemGhCommandRunner;
+use releashd::test_support::integration::platform::GH_TIMEOUT;
 use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
@@ -96,15 +96,15 @@ pub(crate) mod tests {
 
     use std::collections::HashMap;
 
-    use releash_lib::test_support::integration::platform::GitHostProvider;
+    use releashd::test_support::integration::platform::GitHostProvider;
     use std::sync::Arc;
     use std::sync::Mutex;
 
-    use releash_lib::test_support::integration::platform::GhCommandOutput;
-    use releash_lib::test_support::integration::platform::GhCommandRunner;
-    use releash_lib::test_support::integration::platform::GitHostError;
-    use releash_lib::test_support::integration::platform::GitHubGitHostGateway;
-    use releash_lib::test_support::integration::platform::PrStatus;
+    use releashd::test_support::integration::platform::GhCommandOutput;
+    use releashd::test_support::integration::platform::GhCommandRunner;
+    use releashd::test_support::integration::platform::GitHostError;
+    use releashd::test_support::integration::platform::GitHubGitHostGateway;
+    use releashd::test_support::integration::platform::PrStatus;
 
     #[derive(Default)]
     struct FakeGhRunner {
@@ -388,8 +388,8 @@ pub(crate) mod tests {
         assert!(matches!(
             issues,
             Err(GitHostError::Technical(
-                releash_lib::test_support::integration::platform::TechnicalFailure {
-                    nature: releash_lib::test_support::integration::platform::TechnicalFailureNature::TimedOut,
+                releashd::test_support::integration::platform::TechnicalFailure {
+                    nature: releashd::test_support::integration::platform::TechnicalFailureNature::TimedOut,
                     ..
                 }
             ))

@@ -5,28 +5,28 @@ pub(crate) mod tests {
     use std::sync::Arc;
     use std::sync::Mutex;
 
-    use releash_lib::test_support::integration::persistence::cleanup_vacuum_artifacts;
-    use releash_lib::test_support::integration::persistence::prepare_vacuum_database;
-    use releash_lib::test_support::integration::persistence::read_freelist_stats;
-    use releash_lib::test_support::integration::persistence::replace_canonical_database;
-    use releash_lib::test_support::integration::persistence::should_reclaim;
-    use releash_lib::test_support::integration::persistence::verify_owner_only_permissions;
-    use releash_lib::test_support::integration::persistence::CanonicalReplacementFailure;
-    use releash_lib::test_support::integration::persistence::FaultInjector;
-    use releash_lib::test_support::integration::persistence::LocalEventStore;
-    use releash_lib::test_support::integration::persistence::LocalEventStoreConfig;
-    use releash_lib::test_support::integration::persistence::MaintenanceFailure;
-    use releash_lib::test_support::integration::persistence::MaintenanceFaultPoint;
-    use releash_lib::test_support::integration::persistence::StoreLayout;
-    use releash_lib::test_support::integration::platform::AppDataPathObserver;
-    use releash_lib::test_support::integration::platform::AppDataPathOperation;
-    use releash_lib::test_support::integration::platform::CommitIdentity;
-    use releash_lib::test_support::integration::platform::CommitOperationKind;
-    use releash_lib::test_support::integration::platform::IdempotencyBinding;
-    use releash_lib::test_support::integration::platform::LocalAtomicBatch;
-    use releash_lib::test_support::integration::repository::LocalEventTransactionRepository;
-    use releash_lib::test_support::integration::transport::open_existing_writer;
-    use releash_lib::test_support::integration::transport::open_reader;
+    use releashd::test_support::integration::persistence::cleanup_vacuum_artifacts;
+    use releashd::test_support::integration::persistence::prepare_vacuum_database;
+    use releashd::test_support::integration::persistence::read_freelist_stats;
+    use releashd::test_support::integration::persistence::replace_canonical_database;
+    use releashd::test_support::integration::persistence::should_reclaim;
+    use releashd::test_support::integration::persistence::verify_owner_only_permissions;
+    use releashd::test_support::integration::persistence::CanonicalReplacementFailure;
+    use releashd::test_support::integration::persistence::FaultInjector;
+    use releashd::test_support::integration::persistence::LocalEventStore;
+    use releashd::test_support::integration::persistence::LocalEventStoreConfig;
+    use releashd::test_support::integration::persistence::MaintenanceFailure;
+    use releashd::test_support::integration::persistence::MaintenanceFaultPoint;
+    use releashd::test_support::integration::persistence::StoreLayout;
+    use releashd::test_support::integration::platform::AppDataPathObserver;
+    use releashd::test_support::integration::platform::AppDataPathOperation;
+    use releashd::test_support::integration::platform::CommitIdentity;
+    use releashd::test_support::integration::platform::CommitOperationKind;
+    use releashd::test_support::integration::platform::IdempotencyBinding;
+    use releashd::test_support::integration::platform::LocalAtomicBatch;
+    use releashd::test_support::integration::repository::LocalEventTransactionRepository;
+    use releashd::test_support::integration::transport::open_existing_writer;
+    use releashd::test_support::integration::transport::open_reader;
     use rusqlite::Connection;
 
     #[derive(Default)]
@@ -56,9 +56,7 @@ pub(crate) mod tests {
     fn open_store(root: &Path) -> Arc<LocalEventStore> {
         LocalEventStore::open(LocalEventStoreConfig::production(
             root.to_path_buf(),
-            std::sync::Arc::new(
-                releash_lib::test_support::integration::platform::RetryLimiter::new(),
-            ),
+            std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
         ))
         .expect("file-backed local event store")
     }
@@ -70,9 +68,7 @@ pub(crate) mod tests {
     ) -> Arc<LocalEventStore> {
         let mut config = LocalEventStoreConfig::production(
             root.to_path_buf(),
-            std::sync::Arc::new(
-                releash_lib::test_support::integration::platform::RetryLimiter::new(),
-            ),
+            std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
         );
         config.fault = fault;
         config.path_observer = observer;
@@ -90,9 +86,7 @@ pub(crate) mod tests {
         let path = database_path(root);
         let connection = open_existing_writer(
             &path,
-            std::sync::Arc::new(
-                releash_lib::test_support::integration::platform::RetryLimiter::new(),
-            ),
+            std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
         )
         .unwrap();
         connection
@@ -211,9 +205,7 @@ pub(crate) mod tests {
     fn snapshot_store_path(root: &Path) -> StoreSnapshot {
         let connection = open_existing_writer(
             &database_path(root),
-            std::sync::Arc::new(
-                releash_lib::test_support::integration::platform::RetryLimiter::new(),
-            ),
+            std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
         )
         .unwrap();
         snapshot_store(&connection)
@@ -222,9 +214,7 @@ pub(crate) mod tests {
     fn assert_preserved_content(root: &Path, installation_id: &str) {
         let connection = open_existing_writer(
             &database_path(root),
-            std::sync::Arc::new(
-                releash_lib::test_support::integration::platform::RetryLimiter::new(),
-            ),
+            std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
         )
         .unwrap();
         let stored_installation_id: String = connection
@@ -245,7 +235,7 @@ pub(crate) mod tests {
             )
             .unwrap();
         assert_eq!(commit_count, 1);
-        releash_lib::test_support::integration::persistence::validate_current_schema(&connection)
+        releashd::test_support::integration::persistence::validate_current_schema(&connection)
             .unwrap();
     }
 
@@ -308,9 +298,7 @@ pub(crate) mod tests {
         assert_preserved_content(root.path(), &installation_id);
         let connection = open_existing_writer(
             &database_path(root.path()),
-            std::sync::Arc::new(
-                releash_lib::test_support::integration::platform::RetryLimiter::new(),
-            ),
+            std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
         )
         .unwrap();
         let new_commit_count: i64 = connection
@@ -371,18 +359,14 @@ pub(crate) mod tests {
         fault.arm_maintenance_fault(MaintenanceFaultPoint::AfterReplace);
         let connection = open_existing_writer(
             &database_path(root.path()),
-            std::sync::Arc::new(
-                releash_lib::test_support::integration::platform::RetryLimiter::new(),
-            ),
+            std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
         )
         .unwrap();
         prepare_vacuum_database(
             &layout,
             &connection,
             fault.as_ref(),
-            std::sync::Arc::new(
-                releash_lib::test_support::integration::platform::RetryLimiter::new(),
-            ),
+            std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
         )
         .unwrap();
         drop(connection);
@@ -434,9 +418,7 @@ pub(crate) mod tests {
         let layout = StoreLayout::new(root.path());
         let connection = open_existing_writer(
             &database_path(root.path()),
-            std::sync::Arc::new(
-                releash_lib::test_support::integration::platform::RetryLimiter::new(),
-            ),
+            std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
         )
         .unwrap();
         let fault = FaultInjector::new();
@@ -448,7 +430,7 @@ pub(crate) mod tests {
                 &connection,
                 &fault,
                 std::sync::Arc::new(
-                    releash_lib::test_support::integration::platform::RetryLimiter::new()
+                    releashd::test_support::integration::platform::RetryLimiter::new()
                 )
             ),
             Err(MaintenanceFailure::Injected(
@@ -470,9 +452,7 @@ pub(crate) mod tests {
         let (_, installation_id) = create_fragmented_store(root.path());
         let connection = open_existing_writer(
             &database_path(root.path()),
-            std::sync::Arc::new(
-                releash_lib::test_support::integration::platform::RetryLimiter::new(),
-            ),
+            std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
         )
         .unwrap();
         let invalid_root =
@@ -483,9 +463,7 @@ pub(crate) mod tests {
             &layout,
             &connection,
             &FaultInjector::new(),
-            std::sync::Arc::new(
-                releash_lib::test_support::integration::platform::RetryLimiter::new(),
-            ),
+            std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
         )
         .expect_err("non-UTF-8 vacuum path must be rejected");
         let stored_installation_id: String = connection
@@ -567,9 +545,7 @@ pub(crate) mod tests {
         let database_path = layout.database_path();
         let reader = open_reader(
             &database_path,
-            std::sync::Arc::new(
-                releash_lib::test_support::integration::platform::RetryLimiter::new(),
-            ),
+            std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
         )
         .unwrap();
         reader.execute_batch("BEGIN;").unwrap();
@@ -580,9 +556,7 @@ pub(crate) mod tests {
             .unwrap();
         let writer = open_existing_writer(
             &database_path,
-            std::sync::Arc::new(
-                releash_lib::test_support::integration::platform::RetryLimiter::new(),
-            ),
+            std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
         )
         .unwrap();
         writer
@@ -635,9 +609,7 @@ pub(crate) mod tests {
         assert_eq!(main_only_count, 0);
         let verification = open_reader(
             &database_path,
-            std::sync::Arc::new(
-                releash_lib::test_support::integration::platform::RetryLimiter::new(),
-            ),
+            std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
         )
         .unwrap();
         let retained: i64 = verification

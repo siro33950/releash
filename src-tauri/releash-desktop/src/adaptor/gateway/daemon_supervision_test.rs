@@ -88,7 +88,7 @@ async fn test_daemon停止_終了観測とkillのエラーを伝播する() {
 fn test_接続失敗_技術的分類を監督へ渡す() {
     // Given
     let failure = TechnicalFailure {
-        nature: releash_lib::desktop_api::TechnicalFailureNature::TimedOut,
+        nature: releashd::desktop_api::TechnicalFailureNature::TimedOut,
         message: "State stream was silent".into(),
     };
     // When
@@ -96,7 +96,7 @@ fn test_接続失敗_技術的分類を監督へ渡す() {
     // Then
     assert_eq!(
         result.stage,
-        FailureStage::Connection(releash_lib::desktop_api::TechnicalFailureNature::TimedOut)
+        FailureStage::Connection(releashd::desktop_api::TechnicalFailureNature::TimedOut)
     );
     assert_eq!(result.reason, "State stream was silent");
 }

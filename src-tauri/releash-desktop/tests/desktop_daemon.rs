@@ -282,7 +282,7 @@ async fn test_desktop接続_discoveryとtauri経由で外部daemonの初回接�
     )
     .unwrap();
     for (executable, expected_stage, retries) in [
-        (Path::new("/missing/releash-backend"), "spawn", 0),
+        (Path::new("/missing/releashd"), "spawn", 0),
         (&support::backend_executable(), "backend_initialization", 3),
     ] {
         let failed = releash_desktop::test_support::desktop_connection_app(
@@ -311,12 +311,12 @@ mod tests {
         let test = directory.path().join("deps/desktop-test");
         let backend = directory
             .path()
-            .join(format!("releash-backend{}", std::env::consts::EXE_SUFFIX));
+            .join(format!("releashd{}", std::env::consts::EXE_SUFFIX));
         // When
         let error = std::panic::catch_unwind(|| super::support::backend_path(&test)).unwrap_err();
         // Then
         let message = error.downcast_ref::<String>().unwrap();
-        assert!(message.contains("cargo build -p releash-backend --bin releash-backend"));
+        assert!(message.contains("cargo build -p releashd --bin releashd"));
         // When
         std::fs::write(&backend, []).unwrap();
         // Then

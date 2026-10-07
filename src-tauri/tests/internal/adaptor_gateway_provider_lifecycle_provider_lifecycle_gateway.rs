@@ -1,5 +1,5 @@
-use releash_lib::test_support::integration::fixtures::fixtures_adaptor_gateway_provider_lifecycle_mod_context as context;
-use releash_lib::test_support::integration::fixtures::fixtures_adaptor_gateway_provider_lifecycle_mod_slot_id as slot_id;
+use releashd::test_support::integration::fixtures::fixtures_adaptor_gateway_provider_lifecycle_mod_context as context;
+use releashd::test_support::integration::fixtures::fixtures_adaptor_gateway_provider_lifecycle_mod_slot_id as slot_id;
 use std::fs;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
@@ -8,35 +8,35 @@ use std::sync::Arc;
 use tempfile::tempdir;
 use tempfile::TempDir;
 
-use releash_lib::test_support::integration::persistence::LocalEventStore;
-use releash_lib::test_support::integration::persistence::LocalEventStoreConfig;
-use releash_lib::test_support::integration::platform::CommitBatchError;
-use releash_lib::test_support::integration::platform::CommitBatchResult;
-use releash_lib::test_support::integration::platform::CommitIdentity;
-use releash_lib::test_support::integration::platform::CommitResolution;
-use releash_lib::test_support::integration::platform::DomainEventPage;
-use releash_lib::test_support::integration::platform::LoadStreamRequest;
-use releash_lib::test_support::integration::platform::LocalAtomicBatch;
-use releash_lib::test_support::integration::platform::LocalDomainEvent;
-use releash_lib::test_support::integration::platform::LocalEventQuery;
-use releash_lib::test_support::integration::platform::LocalEventQueryError;
-use releash_lib::test_support::integration::platform::LocalEventQueryResult;
-use releash_lib::test_support::integration::platform::LocalStateMutation;
-use releash_lib::test_support::integration::platform::StreamId;
-use releash_lib::test_support::integration::platform::UncommittedDomainEvent;
-use releash_lib::test_support::integration::providers::LocalProviderLifecycleCredentialGateway;
-use releash_lib::test_support::integration::providers::LocalProviderLifecycleEventRepository;
-use releash_lib::test_support::integration::providers::ProviderKind;
-use releash_lib::test_support::integration::providers::ProviderLaunchSpec;
-use releash_lib::test_support::integration::providers::ProviderLifecycleIngressResult;
-use releash_lib::test_support::integration::providers::ProviderLifecycleRejection;
-use releash_lib::test_support::integration::providers::ProviderLifecycleScope;
-use releash_lib::test_support::integration::providers::ProviderLifecycleSignal;
-use releash_lib::test_support::integration::providers::ProviderLifecycleUsecase;
-use releash_lib::test_support::integration::repository::LocalEventTransactionRepository;
-use releash_lib::test_support::integration::sessions::ProviderLaunchOptions;
-use releash_lib::test_support::integration::sessions::ProviderSessionLaunch;
-use releash_lib::test_support::integration::workflow::SessionPermission;
+use releashd::test_support::integration::persistence::LocalEventStore;
+use releashd::test_support::integration::persistence::LocalEventStoreConfig;
+use releashd::test_support::integration::platform::CommitBatchError;
+use releashd::test_support::integration::platform::CommitBatchResult;
+use releashd::test_support::integration::platform::CommitIdentity;
+use releashd::test_support::integration::platform::CommitResolution;
+use releashd::test_support::integration::platform::DomainEventPage;
+use releashd::test_support::integration::platform::LoadStreamRequest;
+use releashd::test_support::integration::platform::LocalAtomicBatch;
+use releashd::test_support::integration::platform::LocalDomainEvent;
+use releashd::test_support::integration::platform::LocalEventQuery;
+use releashd::test_support::integration::platform::LocalEventQueryError;
+use releashd::test_support::integration::platform::LocalEventQueryResult;
+use releashd::test_support::integration::platform::LocalStateMutation;
+use releashd::test_support::integration::platform::StreamId;
+use releashd::test_support::integration::platform::UncommittedDomainEvent;
+use releashd::test_support::integration::providers::LocalProviderLifecycleCredentialGateway;
+use releashd::test_support::integration::providers::LocalProviderLifecycleEventRepository;
+use releashd::test_support::integration::providers::ProviderKind;
+use releashd::test_support::integration::providers::ProviderLaunchSpec;
+use releashd::test_support::integration::providers::ProviderLifecycleIngressResult;
+use releashd::test_support::integration::providers::ProviderLifecycleRejection;
+use releashd::test_support::integration::providers::ProviderLifecycleScope;
+use releashd::test_support::integration::providers::ProviderLifecycleSignal;
+use releashd::test_support::integration::providers::ProviderLifecycleUsecase;
+use releashd::test_support::integration::repository::LocalEventTransactionRepository;
+use releashd::test_support::integration::sessions::ProviderLaunchOptions;
+use releashd::test_support::integration::sessions::ProviderSessionLaunch;
+use releashd::test_support::integration::workflow::SessionPermission;
 
 #[test]
 pub fn test_provider起動設定_development_profileでは両providerにreleash_devを使う() {
@@ -378,11 +378,11 @@ fn setup_persistence_usecase() -> (TempDir, Arc<LocalEventStore>, ProviderLifecy
     let directory = TempDir::new().unwrap();
     let store = LocalEventStore::open(LocalEventStoreConfig::production(
         directory.path().to_path_buf(),
-        std::sync::Arc::new(releash_lib::test_support::integration::platform::RetryLimiter::new()),
+        std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
     ))
     .unwrap();
     let events = LocalProviderLifecycleEventRepository::new(
-        releash_lib::test_support::integration::platform::shared().clone(),
+        releashd::test_support::integration::platform::shared().clone(),
         store.clone() as Arc<dyn LocalEventTransactionRepository>,
         store.installation_id().to_string(),
     );
@@ -407,7 +407,7 @@ async fn provider_event_count(store: &LocalEventStore, agent_session_id: &str) -
         .filter(|event| {
             matches!(
                 &event.event,
-                releash_lib::test_support::integration::platform::LoadedDomainEvent::Known(inner)
+                releashd::test_support::integration::platform::LoadedDomainEvent::Known(inner)
                     if matches!(inner.as_ref(), LocalDomainEvent::ProviderLifecycle(_))
             )
         })
@@ -748,12 +748,12 @@ pub async fn test_providerライフサイクル再試行_outcome_unknownの照�
     let directory = TempDir::new().unwrap();
     let store = LocalEventStore::open(LocalEventStoreConfig::production(
         directory.path().to_path_buf(),
-        std::sync::Arc::new(releash_lib::test_support::integration::platform::RetryLimiter::new()),
+        std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
     ))
     .unwrap();
     let repository = Arc::new(ResolveFailureOnceRepository::new(store.clone()));
     let events = LocalProviderLifecycleEventRepository::new(
-        releash_lib::test_support::integration::platform::shared().clone(),
+        releashd::test_support::integration::platform::shared().clone(),
         repository as Arc<dyn LocalEventTransactionRepository>,
         store.installation_id().to_string(),
     );
@@ -792,12 +792,12 @@ pub async fn test_providerライフサイクル再試行_中断後も同一commi
     let directory = TempDir::new().unwrap();
     let store = LocalEventStore::open(LocalEventStoreConfig::production(
         directory.path().to_path_buf(),
-        std::sync::Arc::new(releash_lib::test_support::integration::platform::RetryLimiter::new()),
+        std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
     ))
     .unwrap();
     let repository = Arc::new(ResolveFailureRepository::new(store.clone()));
     let events = LocalProviderLifecycleEventRepository::new(
-        releash_lib::test_support::integration::platform::shared().clone(),
+        releashd::test_support::integration::platform::shared().clone(),
         repository.clone() as Arc<dyn LocalEventTransactionRepository>,
         store.installation_id().to_string(),
     );

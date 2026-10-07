@@ -1,6 +1,6 @@
-use releash_lib::test_support::integration::fixtures::watcher_Files as Files;
-use releash_lib::test_support::integration::platform::watcher_UsecaseError as UsecaseError;
-use releash_lib::test_support::integration::platform::WatcherUsecase;
+use releashd::test_support::integration::fixtures::watcher_Files as Files;
+use releashd::test_support::integration::platform::watcher_UsecaseError as UsecaseError;
+use releashd::test_support::integration::platform::WatcherUsecase;
 use std::sync::Arc;
 
 #[tokio::test]

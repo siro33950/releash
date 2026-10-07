@@ -1,21 +1,21 @@
 //! 発見ファイルの読み取りエラーは、戻り値から扱います。
 //!
 //! ```compile_fail,E0432
-//! use releash_lib::desktop_api::LocalApiDiscoveryReadError;
+//! use releashd::desktop_api::LocalApiDiscoveryReadError;
 //! ```
 //!
 //! テスト専用の生成型は、`test-support` の区画から利用します。
 //!
 //! ```compile_fail,E0432
-//! use releash_lib::desktop_api::wire::StateChange;
+//! use releashd::desktop_api::wire::StateChange;
 //! ```
 //!
 //! ```compile_fail,E0432
-//! use releash_lib::desktop_api::wire::Unit;
+//! use releashd::desktop_api::wire::Unit;
 //! ```
 //!
 //! ```compile_fail,E0432
-//! use releash_lib::desktop_api::to_rpc;
+//! use releashd::desktop_api::to_rpc;
 //! ```
 
 pub mod wire {

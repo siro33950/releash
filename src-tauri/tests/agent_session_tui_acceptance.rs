@@ -1,4 +1,4 @@
-use releash_lib::test_support::terminal_subscription_acceptance::TerminalSubscription as TerminalSurfaceWireAttachment;
+use releashd::test_support::terminal_subscription_acceptance::TerminalSubscription as TerminalSurfaceWireAttachment;
 #[path = "agent_tui_fixture.rs"]
 mod agent_tui_fixture;
 
@@ -6,12 +6,12 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use agent_tui_fixture::{fixture_process_shell_command, FixtureLifecycleCommand, FixturePlan};
-use releash_lib::test_support::agent_session_tui_acceptance::{
+use releashd::test_support::agent_session_tui_acceptance::{
     AcceptanceAgentSessionLifecycle, AcceptanceAgentSessionTreeLocation, AcceptanceArchiveOutcome,
     AcceptanceHookWarning, AcceptanceProvider, AgentSessionTuiAcceptanceConfig,
     AgentSessionTuiAcceptanceHost as AgentSessionTuiAcceptanceComposition,
 };
-use releash_lib::test_support::terminal_surface::{
+use releashd::test_support::terminal_surface::{
     TerminalSurfaceOwnerV1, TerminalSurfaceStreamItemV1,
 };
 use serde::de::DeserializeOwned;
@@ -27,7 +27,7 @@ struct SessionSelection {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct AgentSessionHistoryPage {
-    items: Vec<releash_lib::test_support::agent_session_tui_acceptance::AcceptanceHistoryCandidate>,
+    items: Vec<releashd::test_support::agent_session_tui_acceptance::AcceptanceHistoryCandidate>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -50,13 +50,13 @@ struct ProviderAvailabilityItem {
 
 struct AgentSessionTuiAcceptanceHost {
     composition: AgentSessionTuiAcceptanceComposition,
-    client: releash_lib::test_support::client_api_acceptance::NativeClient,
+    client: releashd::test_support::client_api_acceptance::NativeClient,
 }
 
 impl AgentSessionTuiAcceptanceHost {
     fn start(config: AgentSessionTuiAcceptanceConfig) -> Result<Self, String> {
         let composition = AgentSessionTuiAcceptanceComposition::start(config)?;
-        let client = releash_lib::test_support::client_api_acceptance::connect_client(
+        let client = releashd::test_support::client_api_acceptance::connect_client(
             composition.client_endpoint(),
         );
         Ok(Self {
@@ -72,7 +72,7 @@ impl AgentSessionTuiAcceptanceHost {
     ) -> Result<T, String> {
         let value = tokio::task::block_in_place(|| {
             tokio::runtime::Handle::current().block_on(
-                releash_lib::test_support::client_api_acceptance::request_client(
+                releashd::test_support::client_api_acceptance::request_client(
                     &self.client,
                     command,
                     body,
@@ -85,7 +85,7 @@ impl AgentSessionTuiAcceptanceHost {
 
     fn terminal(
         &self,
-    ) -> &releash_lib::test_support::terminal_subscription_acceptance::TerminalSubscriptionHarness
+    ) -> &releashd::test_support::terminal_subscription_acceptance::TerminalSubscriptionHarness
     {
         self.composition.terminal()
     }
@@ -118,7 +118,7 @@ impl AgentSessionTuiAcceptanceHost {
     fn read_state<T: DeserializeOwned>(&self, target: &str) -> Result<T, String> {
         let value = tokio::task::block_in_place(|| {
             tokio::runtime::Handle::current().block_on(
-                releash_lib::test_support::client_api_acceptance::read_state(&self.client, target),
+                releashd::test_support::client_api_acceptance::read_state(&self.client, target),
             )
         })
         .map_err(|e| e.to_string())?;
@@ -207,15 +207,14 @@ impl AgentSessionTuiAcceptanceHost {
         &self,
         agent_session_id: &str,
     ) -> Result<
-        Option<releash_lib::test_support::agent_session_tui_acceptance::AcceptanceAgentSession>,
+        Option<releashd::test_support::agent_session_tui_acceptance::AcceptanceAgentSession>,
         String,
     > {
         let target = format!(
             "agent-session:{}:{agent_session_id}",
             agent_session_id.len()
         );
-        match releash_lib::test_support::client_api_acceptance::read_state(&self.client, &target)
-            .await
+        match releashd::test_support::client_api_acceptance::read_state(&self.client, &target).await
         {
             Ok(value) => serde_json::from_value(value).map_err(|e| e.to_string()),
             Err(error) if error.code == connectrpc::ErrorCode::NotFound => Ok(None),
@@ -228,7 +227,7 @@ impl AgentSessionTuiAcceptanceHost {
         worktree_path: &str,
         limit: usize,
     ) -> Result<
-        Vec<releash_lib::test_support::agent_session_tui_acceptance::AcceptanceHistoryCandidate>,
+        Vec<releashd::test_support::agent_session_tui_acceptance::AcceptanceHistoryCandidate>,
         String,
     > {
         let count = limit.to_string();
@@ -381,7 +380,7 @@ fn install_fixture_executable(
         input_lines,
         alternate_screen: true,
         lifecycle_command: Some(FixtureLifecycleCommand {
-            executable: std::path::Path::new(env!("CARGO_BIN_EXE_releash-backend"))
+            executable: std::path::Path::new(env!("CARGO_BIN_EXE_releashd"))
                 .with_file_name("releash")
                 .to_string_lossy()
                 .into_owned(),
@@ -767,7 +766,7 @@ async fn test_atui_030_provider選択からarchive_restore_deleteまで旧messag
             }
         );
         let terminal_owner = owner("workspace-1", &session_id);
-        use releash_lib::test_support::client_api_acceptance::rpc;
+        use releashd::test_support::client_api_acceptance::rpc;
         let client_id = format!("terminal-wire-{session_id}");
         let mut stream = host
             .client

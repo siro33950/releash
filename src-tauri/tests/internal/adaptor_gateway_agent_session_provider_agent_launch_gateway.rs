@@ -1,22 +1,22 @@
-use releash_lib::test_support::integration::platform::TechnicalFailure;
+use releashd::test_support::integration::platform::TechnicalFailure;
 
-use releash_lib::test_support::integration::platform::TechnicalFailureNature;
-use releash_lib::test_support::integration::sessions::ProviderAgentLaunchGatewayError;
+use releashd::test_support::integration::platform::TechnicalFailureNature;
+use releashd::test_support::integration::sessions::ProviderAgentLaunchGatewayError;
 use std::fs;
 
 use tempfile::tempdir;
 
-use releash_lib::test_support::integration::providers::ArmedProviderLifecycle;
-use releash_lib::test_support::integration::providers::ProviderKind;
-use releash_lib::test_support::integration::providers::ProviderLifecycleScope;
-use releash_lib::test_support::integration::providers::ProviderLifecycleSlotId;
-use releash_lib::test_support::integration::providers::ProviderLifecycleUnavailableReason;
-use releash_lib::test_support::integration::sessions::LocalProviderAgentLaunchGateway;
-use releash_lib::test_support::integration::sessions::ProviderAgentLaunchGateway;
-use releash_lib::test_support::integration::sessions::ProviderLaunchOptions;
-use releash_lib::test_support::integration::sessions::ProviderSessionLaunch;
-use releash_lib::test_support::integration::sessions::ResolvedProviderExecutable;
-use releash_lib::test_support::integration::workflow::SessionPermission;
+use releashd::test_support::integration::providers::ArmedProviderLifecycle;
+use releashd::test_support::integration::providers::ProviderKind;
+use releashd::test_support::integration::providers::ProviderLifecycleScope;
+use releashd::test_support::integration::providers::ProviderLifecycleSlotId;
+use releashd::test_support::integration::providers::ProviderLifecycleUnavailableReason;
+use releashd::test_support::integration::sessions::LocalProviderAgentLaunchGateway;
+use releashd::test_support::integration::sessions::ProviderAgentLaunchGateway;
+use releashd::test_support::integration::sessions::ProviderLaunchOptions;
+use releashd::test_support::integration::sessions::ProviderSessionLaunch;
+use releashd::test_support::integration::sessions::ResolvedProviderExecutable;
+use releashd::test_support::integration::workflow::SessionPermission;
 
 fn armed(provider: ProviderKind) -> ArmedProviderLifecycle {
     ArmedProviderLifecycle::new(
@@ -244,7 +244,7 @@ pub fn test_provider_launch_gateway_解決済みbase_branchを両providerへ渡�
     repo.set_head("refs/heads/feature").unwrap();
     repo.checkout_head(Some(git2::build::CheckoutBuilder::new().force()))
         .unwrap();
-    releash_lib::test_support::integration::repository::set_branch_base_override(
+    releashd::test_support::integration::repository::set_branch_base_override(
         repo_path,
         "feature",
         Some(&base_branch),
@@ -338,10 +338,10 @@ pub fn test_provider_launch_gateway_non_utf8実行pathをterminal_processまで�
 
 #[test]
 pub fn test_provider起動準備_base解決の停止を欠損へ変換しない() {
-    use releash_lib::test_support::integration::platform::Deadline;
-    use releash_lib::test_support::integration::platform::OperationContext;
-    use releash_lib::test_support::integration::platform::OperationStopped;
-    use releash_lib::test_support::integration::sessions::ProviderAgentLaunchGatewayError;
+    use releashd::test_support::integration::platform::Deadline;
+    use releashd::test_support::integration::platform::OperationContext;
+    use releashd::test_support::integration::platform::OperationStopped;
+    use releashd::test_support::integration::sessions::ProviderAgentLaunchGatewayError;
     // Given
     let data_dir = tempdir().unwrap();
     let gateway = LocalProviderAgentLaunchGateway::new(
@@ -361,7 +361,7 @@ pub fn test_provider起動準備_base解決の停止を欠損へ変換しない(
             std::sync::Arc::new(token),
         );
         // When
-        let result = releash_lib::test_support::integration::platform::sync_scope(context, || {
+        let result = releashd::test_support::integration::platform::sync_scope(context, || {
             gateway.prepare(
                 &armed(ProviderKind::Claude),
                 ResolvedProviderExecutable::new("/opt/bin/claude".into()).unwrap(),
@@ -378,8 +378,8 @@ pub fn test_provider起動準備_base解決の停止を欠損へ変換しない(
 
 #[test]
 pub fn test_provider起動準備_ファイル生成失敗の性質とメッセージを保持する() {
-    use releash_lib::test_support::integration::platform::TechnicalFailure;
-    use releash_lib::test_support::integration::platform::TechnicalFailureNature;
+    use releashd::test_support::integration::platform::TechnicalFailure;
+    use releashd::test_support::integration::platform::TechnicalFailureNature;
     // Given
     let data_dir = tempdir().unwrap();
     let gateway = LocalProviderAgentLaunchGateway::new(
@@ -389,7 +389,7 @@ pub fn test_provider起動準備_ファイル生成失敗の性質とメッセ�
     );
     let armed = armed(ProviderKind::Claude);
     let path = gateway.session_directory("agent-1").join(
-        releash_lib::test_support::integration::sessions::digest(armed.binding_id()),
+        releashd::test_support::integration::sessions::digest(armed.binding_id()),
     );
     fs::create_dir_all(path.parent().unwrap()).unwrap();
     fs::write(&path, b"file").unwrap();

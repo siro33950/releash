@@ -1,6 +1,6 @@
-use releash_lib::test_support::integration::workflow::diagnose_lua_workflow_source;
-use releash_lib::test_support::integration::workflow::DiagnosticStage;
-use releash_lib::test_support::integration::workflow::Severity;
+use releashd::test_support::integration::workflow::diagnose_lua_workflow_source;
+use releashd::test_support::integration::workflow::DiagnosticStage;
+use releashd::test_support::integration::workflow::Severity;
 
 #[test]
 pub fn test_delegate定義_luaは従来どおりdelegateを拒否する() {

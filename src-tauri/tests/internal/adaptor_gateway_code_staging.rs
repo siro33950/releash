@@ -1,13 +1,13 @@
-use releash_lib::test_support::integration::code::CodeError;
-use releash_lib::test_support::integration::code::StagingGateway;
-use releash_lib::test_support::integration::platform::Deadline;
-use releash_lib::test_support::integration::platform::OperationContext;
-use releash_lib::test_support::integration::platform::OperationStopped;
-use releash_lib::test_support::integration::repository::StagingRepository;
+use releashd::test_support::integration::code::CodeError;
+use releashd::test_support::integration::code::StagingGateway;
+use releashd::test_support::integration::platform::Deadline;
+use releashd::test_support::integration::platform::OperationContext;
+use releashd::test_support::integration::platform::OperationStopped;
+use releashd::test_support::integration::repository::StagingRepository;
 use std::time::Duration;
 use std::time::Instant;
 
-use releash_lib::test_support::integration::code::set_git_program;
+use releashd::test_support::integration::code::set_git_program;
 
 #[cfg(unix)]
 #[tokio::test]
@@ -58,7 +58,7 @@ pub async fn test_hunk変更_実行中のprocessを期限と取消で回収し�
                 }
             });
             // When
-            let result = releash_lib::test_support::integration::platform::scope(context, async {
+            let result = releashd::test_support::integration::platform::scope(context, async {
                 if reverse {
                     StagingGateway
                         .unstage_hunk(dir.path().to_str().unwrap(), "patch")
@@ -99,16 +99,16 @@ pub async fn test_hunk変更_実行中のprocessを期限と取消で回収し�
 pub(crate) mod staging_gateway_tests {
 
     use git2::Repository;
-    use releash_lib::test_support::integration::code::git_stage;
-    use releash_lib::test_support::integration::code::git_stage_hunk;
-    use releash_lib::test_support::integration::code::git_unstage;
-    use releash_lib::test_support::integration::code::git_unstage_hunk;
+    use releashd::test_support::integration::code::git_stage;
+    use releashd::test_support::integration::code::git_stage_hunk;
+    use releashd::test_support::integration::code::git_unstage;
+    use releashd::test_support::integration::code::git_unstage_hunk;
 
-    use releash_lib::test_support::integration::repository::get_git_status;
+    use releashd::test_support::integration::repository::get_git_status;
 
     use crate::test_support_git::*;
-    use releash_lib::test_support::integration::code::ChangeGroup;
-    use releash_lib::test_support::integration::code::Hunk;
+    use releashd::test_support::integration::code::ChangeGroup;
+    use releashd::test_support::integration::code::Hunk;
     use std::fs;
     use std::path::Path;
 
@@ -121,14 +121,14 @@ pub(crate) mod staging_gateway_tests {
     }
 
     fn diff_hunks_and_groups(original: &str, modified: &str) -> (Vec<Hunk>, Vec<ChangeGroup>) {
-        let raw_hunks = releash_lib::test_support::integration::code::diff_buffers(
+        let raw_hunks = releashd::test_support::integration::code::diff_buffers(
             original,
             modified,
             Some("file.txt"),
         )
         .unwrap();
-        let hunks = releash_lib::test_support::integration::code::assign_hunk_ids(&raw_hunks);
-        let groups = releash_lib::test_support::integration::code::compute_change_groups(&hunks);
+        let hunks = releashd::test_support::integration::code::assign_hunk_ids(&raw_hunks);
+        let groups = releashd::test_support::integration::code::compute_change_groups(&hunks);
         (hunks, groups)
     }
 
@@ -137,7 +137,7 @@ pub(crate) mod staging_gateway_tests {
             .iter()
             .find(|hunk| hunk.index == group.hunk_index)
             .unwrap();
-        releash_lib::test_support::integration::code::generate_group_patch(file_path, hunk, group)
+        releashd::test_support::integration::code::generate_group_patch(file_path, hunk, group)
     }
 
     #[tokio::test]

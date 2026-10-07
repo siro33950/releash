@@ -1,11 +1,11 @@
 use connectrpc::ErrorCode;
-use releash_lib::test_support::integration::persistence::storage_unavailable;
-use releash_lib::test_support::integration::persistence::ReaderPool;
-use releash_lib::test_support::integration::persistence::READ_QUEUE_MAX_DEPTH;
-use releash_lib::test_support::integration::platform::Deadline;
-use releash_lib::test_support::integration::platform::LocalEventQueryError;
-use releash_lib::test_support::integration::platform::OperationContext;
-use releash_lib::test_support::integration::transport::ConnectFailure;
+use releashd::test_support::integration::persistence::storage_unavailable;
+use releashd::test_support::integration::persistence::ReaderPool;
+use releashd::test_support::integration::persistence::READ_QUEUE_MAX_DEPTH;
+use releashd::test_support::integration::platform::Deadline;
+use releashd::test_support::integration::platform::LocalEventQueryError;
+use releashd::test_support::integration::platform::OperationContext;
+use releashd::test_support::integration::transport::ConnectFailure;
 use rusqlite::Connection;
 use std::sync::Arc;
 use std::time::Duration;
@@ -28,18 +28,16 @@ pub async fn test_読み込みキュー_混雑と期限切れとreply喪失を�
         Err(LocalEventQueryError::QueryBusy)
     );
     let (context, task) = pool.pop_blocking().unwrap().test_into_parts();
-    releash_lib::test_support::integration::platform::sync_scope(
+    releashd::test_support::integration::platform::sync_scope(
         context.with_deadline(
-            releash_lib::test_support::integration::platform::Deadline::new(
-                std::time::Instant::now(),
-            ),
+            releashd::test_support::integration::platform::Deadline::new(std::time::Instant::now()),
         ),
         || {
             (task)(
-                &releash_lib::test_support::integration::transport::configure_busy_handler(
+                &releashd::test_support::integration::transport::configure_busy_handler(
                     Connection::open_in_memory().unwrap(),
                     std::sync::Arc::new(
-                        releash_lib::test_support::integration::platform::RetryLimiter::new(),
+                        releashd::test_support::integration::platform::RetryLimiter::new(),
                     ),
                 )
                 .unwrap(),
@@ -49,8 +47,9 @@ pub async fn test_読み込みキュー_混雑と期限切れとreply喪失を�
     assert_eq!(
         pending.remove(0).await,
         Err(LocalEventQueryError::Technical(
-            releash_lib::test_support::integration::platform::TechnicalFailure {
-                nature: releash_lib::test_support::integration::platform::TechnicalFailureNature::TimedOut,
+            releashd::test_support::integration::platform::TechnicalFailure {
+                nature:
+                    releashd::test_support::integration::platform::TechnicalFailureNature::TimedOut,
                 message: "deadline exceeded".into()
             }
         ))
@@ -68,7 +67,7 @@ pub async fn test_読み込みキュー_混雑と期限切れとreply喪失を�
 
 #[tokio::test]
 pub async fn test_読み込み実行中_期限と取り消しでsqliteを止め接続を再利用できる() {
-    use releash_lib::test_support::integration::platform::Deadline;
+    use releashd::test_support::integration::platform::Deadline;
 
     use std::time::Duration;
     use std::time::Instant;
@@ -78,10 +77,10 @@ pub async fn test_読み込み実行中_期限と取り消しでsqliteを止め�
         let worker_pool = pool.clone();
         let worker = std::thread::spawn(move || {
             worker_pool.run_worker(
-                releash_lib::test_support::integration::transport::configure_busy_handler(
+                releashd::test_support::integration::transport::configure_busy_handler(
                     Connection::open_in_memory().unwrap(),
                     std::sync::Arc::new(
-                        releash_lib::test_support::integration::platform::RetryLimiter::new(),
+                        releashd::test_support::integration::platform::RetryLimiter::new(),
                     ),
                 )
                 .unwrap(),
@@ -93,7 +92,7 @@ pub async fn test_読み込み実行中_期限と取り消しでsqliteを止め�
             Arc::new(token.clone()),
         );
         let (started, ready) = tokio::sync::oneshot::channel();
-        let query = releash_lib::test_support::integration::platform::scope(context, pool.submit(move |connection| {
+        let query = releashd::test_support::integration::platform::scope(context, pool.submit(move |connection| {
             let _ = started.send(());
             connection.query_row("WITH RECURSIVE numbers(n) AS (VALUES(0) UNION ALL SELECT n+1 FROM numbers WHERE n<1000000000) SELECT sum(n) FROM numbers", [], |row| row.get::<_, i64>(0)).map_err(|error| storage_unavailable(&error))
         }));
@@ -138,10 +137,10 @@ pub async fn test_読み込み取消_短い文の間で取り消しても次の�
     let worker_pool = pool.clone();
     let worker = std::thread::spawn(move || {
         worker_pool.run_worker(
-            releash_lib::test_support::integration::transport::configure_busy_handler(
+            releashd::test_support::integration::transport::configure_busy_handler(
                 Connection::open_in_memory().unwrap(),
                 std::sync::Arc::new(
-                    releash_lib::test_support::integration::platform::RetryLimiter::new(),
+                    releashd::test_support::integration::platform::RetryLimiter::new(),
                 ),
             )
             .unwrap(),
@@ -152,7 +151,7 @@ pub async fn test_読み込み取消_短い文の間で取り消しても次の�
     let second_ran = Arc::new(AtomicBool::new(false));
     let observed = second_ran.clone();
     // When
-    let result = releash_lib::test_support::integration::platform::scope(
+    let result = releashd::test_support::integration::platform::scope(
         context,
         pool.submit(move |connection| {
             connection
@@ -181,11 +180,9 @@ pub async fn test_reader_busy待ち_実際のdb競合で期限と取消を引き
         blocker
             .execute_batch("CREATE TABLE value(n); INSERT INTO value VALUES(1);")
             .unwrap();
-        let connection = releash_lib::test_support::integration::transport::open_reader(
+        let connection = releashd::test_support::integration::transport::open_reader(
             &path,
-            std::sync::Arc::new(
-                releash_lib::test_support::integration::platform::RetryLimiter::new(),
-            ),
+            std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
         )
         .unwrap();
         blocker.execute_batch("BEGIN EXCLUSIVE").unwrap();
@@ -199,7 +196,7 @@ pub async fn test_reader_busy待ち_実際のdb競合で期限と取消を引き
         );
         let (started, ready) = tokio::sync::oneshot::channel();
         let (finished, completion) = tokio::sync::oneshot::channel();
-        let mut query = Box::pin(releash_lib::test_support::integration::platform::scope(
+        let mut query = Box::pin(releashd::test_support::integration::platform::scope(
             context,
             pool.submit(move |connection| {
                 started.send(()).unwrap();
@@ -258,7 +255,7 @@ pub async fn test_読み込み資源期限_親が無期限でも長い期限で�
     ];
     let mut queries = Vec::new();
     for context in contexts {
-        let mut query = Box::pin(releash_lib::test_support::integration::platform::scope(
+        let mut query = Box::pin(releashd::test_support::integration::platform::scope(
             context,
             pool.submit(|_| -> Result<(), LocalEventQueryError> {
                 panic!("expired queued query must not run")
@@ -274,8 +271,8 @@ pub async fn test_読み込み資源期限_親が無期限でも長い期限で�
                 .await
                 .unwrap(),
             Err(LocalEventQueryError::Technical(
-                releash_lib::test_support::integration::platform::TechnicalFailure {
-                    nature: releash_lib::test_support::integration::platform::TechnicalFailureNature::TimedOut,
+                releashd::test_support::integration::platform::TechnicalFailure {
+                    nature: releashd::test_support::integration::platform::TechnicalFailureNature::TimedOut,
                     message: "deadline exceeded".into()
                 }
             ))
@@ -284,43 +281,41 @@ pub async fn test_読み込み資源期限_親が無期限でも長い期限で�
     // Then
     assert!(start.elapsed() >= Duration::from_secs(2));
     assert!(start.elapsed() < Duration::from_secs(4));
-    let connection = releash_lib::test_support::integration::transport::configure_busy_handler(
+    let connection = releashd::test_support::integration::transport::configure_busy_handler(
         Connection::open_in_memory().unwrap(),
-        std::sync::Arc::new(releash_lib::test_support::integration::platform::RetryLimiter::new()),
+        std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
     )
     .unwrap();
     for _ in 0..2 {
         let (context, task) = pool.pop_blocking().unwrap().test_into_parts();
-        releash_lib::test_support::integration::platform::sync_scope(context, || {
-            (task)(&connection)
-        });
+        releashd::test_support::integration::platform::sync_scope(context, || (task)(&connection));
     }
     pool.close();
 }
 pub(crate) mod canonical_runtime_owner_snapshot_tests {
 
-    use releash_lib::test_support::integration::transport::classified_error;
+    use releashd::test_support::integration::transport::classified_error;
 
-    use releash_lib::test_support::integration::fixtures::session_attached;
-    use releash_lib::test_support::integration::persistence::canonical_runtime_owner_snapshot;
-    use releash_lib::test_support::integration::persistence::initialize_schema;
-    use releash_lib::test_support::integration::persistence::FaultInjector;
-    use releash_lib::test_support::integration::persistence::InitialStoreMetadata;
-    use releash_lib::test_support::integration::persistence::MAX_CANONICAL_RUNTIME_OWNER_SNAPSHOT;
-    use releash_lib::test_support::integration::platform::CanonicalRuntimeOwnerView;
-    use releash_lib::test_support::integration::platform::LocalEventQueryError;
-    use releash_lib::test_support::integration::providers::ProviderKind;
-    use releash_lib::test_support::integration::workflow::ExecutionOrigin;
-    use releash_lib::test_support::integration::workflow::ExecutionTreeLaunch;
-    use releash_lib::test_support::integration::workflow::NodeCompletion;
-    use releash_lib::test_support::integration::workflow::NodeDefinition;
-    use releash_lib::test_support::integration::workflow::NodeFact;
-    use releash_lib::test_support::integration::workflow::NodeKind;
-    use releash_lib::test_support::integration::workflow::SessionExecutionTreeRootFacts;
-    use releash_lib::test_support::integration::workflow::SessionSpec;
-    use releash_lib::test_support::integration::workflow::StartedFact;
-    use releash_lib::test_support::integration::workflow::TreeRootFact;
-    use releash_lib::test_support::integration::workflow::WorkflowDefinition;
+    use releashd::test_support::integration::fixtures::session_attached;
+    use releashd::test_support::integration::persistence::canonical_runtime_owner_snapshot;
+    use releashd::test_support::integration::persistence::initialize_schema;
+    use releashd::test_support::integration::persistence::FaultInjector;
+    use releashd::test_support::integration::persistence::InitialStoreMetadata;
+    use releashd::test_support::integration::persistence::MAX_CANONICAL_RUNTIME_OWNER_SNAPSHOT;
+    use releashd::test_support::integration::platform::CanonicalRuntimeOwnerView;
+    use releashd::test_support::integration::platform::LocalEventQueryError;
+    use releashd::test_support::integration::providers::ProviderKind;
+    use releashd::test_support::integration::workflow::ExecutionOrigin;
+    use releashd::test_support::integration::workflow::ExecutionTreeLaunch;
+    use releashd::test_support::integration::workflow::NodeCompletion;
+    use releashd::test_support::integration::workflow::NodeDefinition;
+    use releashd::test_support::integration::workflow::NodeFact;
+    use releashd::test_support::integration::workflow::NodeKind;
+    use releashd::test_support::integration::workflow::SessionExecutionTreeRootFacts;
+    use releashd::test_support::integration::workflow::SessionSpec;
+    use releashd::test_support::integration::workflow::StartedFact;
+    use releashd::test_support::integration::workflow::TreeRootFact;
+    use releashd::test_support::integration::workflow::WorkflowDefinition;
     use rusqlite::params;
     use rusqlite::Connection;
 
@@ -356,8 +351,8 @@ pub(crate) mod canonical_runtime_owner_snapshot_tests {
                 params![
                     tree_id,
                     node_name,
-                    releash_lib::test_support::integration::workflow::event_type(fact),
-                    releash_lib::test_support::integration::workflow::encode_detail(fact).unwrap()
+                    releashd::test_support::integration::workflow::event_type(fact),
+                    releashd::test_support::integration::workflow::encode_detail(fact).unwrap()
                 ],
             )
             .expect("insert root fact");
@@ -372,8 +367,8 @@ pub(crate) mod canonical_runtime_owner_snapshot_tests {
                  ) VALUES (?1, 2, ?1, NULL, 'session', 'session', 1, ?2, ?3, 2)",
                 params![
                     tree_id,
-                    releash_lib::test_support::integration::workflow::event_type(fact),
-                    releash_lib::test_support::integration::workflow::encode_detail(fact).unwrap()
+                    releashd::test_support::integration::workflow::event_type(fact),
+                    releashd::test_support::integration::workflow::encode_detail(fact).unwrap()
                 ],
             )
             .expect("insert second fact");
@@ -388,8 +383,8 @@ pub(crate) mod canonical_runtime_owner_snapshot_tests {
                  ) VALUES (?1, 3, ?1, NULL, 'session', 'session', 1, ?2, ?3, 3)",
                 params![
                     tree_id,
-                    releash_lib::test_support::integration::workflow::event_type(fact),
-                    releash_lib::test_support::integration::workflow::encode_detail(fact).unwrap()
+                    releashd::test_support::integration::workflow::event_type(fact),
+                    releashd::test_support::integration::workflow::encode_detail(fact).unwrap()
                 ],
             )
             .expect("insert third fact");
@@ -452,7 +447,7 @@ pub(crate) mod canonical_runtime_owner_snapshot_tests {
 
     #[test]
     pub fn test_owner一覧_decodeとfoldの破損をdata_lossで返す() {
-        use releash_lib::test_support::integration::transport::classified_error;
+        use releashd::test_support::integration::transport::classified_error;
 
         for decode_failure in [true, false] {
             // Given
@@ -524,12 +519,12 @@ pub(crate) mod canonical_runtime_owner_snapshot_tests {
             let fact = workflow_root("/snapshot/legacy");
             insert_root(&connection, tree_id, &fact);
             let mut detail: serde_json::Value = serde_json::from_str(
-                &releash_lib::test_support::integration::workflow::encode_detail(&fact).unwrap(),
+                &releashd::test_support::integration::workflow::encode_detail(&fact).unwrap(),
             )
             .unwrap();
             detail["root"]["definition"]["nodes"]["main"]["completion"] =
                 serde_json::json!("approval");
-            assert!(releash_lib::test_support::integration::workflow::decode(
+            assert!(releashd::test_support::integration::workflow::decode(
                 "started",
                 &detail.to_string()
             )
@@ -609,7 +604,7 @@ pub(crate) mod canonical_runtime_owner_snapshot_tests {
                 &connection,
                 session_id,
                 &NodeFact::ArchiveRequested(
-                    releash_lib::test_support::integration::workflow::ArchiveRequestedFact {
+                    releashd::test_support::integration::workflow::ArchiveRequestedFact {
                         reason: "manual".into(),
                         archived_at: 0.0,
                     },
@@ -643,10 +638,10 @@ pub async fn test_読み込み待ち_同じruntimeの別処理が先に完了す
     let worker_pool = pool.clone();
     let worker = std::thread::spawn(move || {
         worker_pool.run_worker(
-            releash_lib::test_support::integration::transport::configure_busy_handler(
+            releashd::test_support::integration::transport::configure_busy_handler(
                 Connection::open_in_memory().unwrap(),
                 std::sync::Arc::new(
-                    releash_lib::test_support::integration::platform::RetryLimiter::new(),
+                    releashd::test_support::integration::platform::RetryLimiter::new(),
                 ),
             )
             .unwrap(),

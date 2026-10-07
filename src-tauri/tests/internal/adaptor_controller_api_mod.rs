@@ -4,25 +4,25 @@ pub(crate) mod test_support {
     use std::sync::Arc;
     use std::sync::Mutex;
 
-    use releash_lib::test_support::integration::workflow::AbortExecutionCommand;
-    use releash_lib::test_support::integration::workflow::ApprovalCommand;
-    use releash_lib::test_support::integration::workflow::ResolvedStartExecutionCommand;
-    use releash_lib::test_support::integration::workflow::RetryNodeCommand;
-    use releash_lib::test_support::integration::workflow::SubmitOutputArtifact;
-    use releash_lib::test_support::integration::workflow::SubmitOutputCommand;
-    use releash_lib::test_support::integration::workflow::WorkflowAbortExecutionGateway;
-    use releash_lib::test_support::integration::workflow::WorkflowControlPlaneCommit;
-    use releash_lib::test_support::integration::workflow::WorkflowControlPlaneGateway;
-    use releash_lib::test_support::integration::workflow::WorkflowDefinition;
-    use releash_lib::test_support::integration::workflow::WorkflowError;
-    use releash_lib::test_support::integration::workflow::WorkflowRuntimeShutdownGateway;
-    use releash_lib::test_support::integration::workflow::WorkflowRuntimeStateGateway;
-    use releash_lib::test_support::integration::workflow::WorkflowStartExecutionGateway;
+    use releashd::test_support::integration::workflow::AbortExecutionCommand;
+    use releashd::test_support::integration::workflow::ApprovalCommand;
+    use releashd::test_support::integration::workflow::ResolvedStartExecutionCommand;
+    use releashd::test_support::integration::workflow::RetryNodeCommand;
+    use releashd::test_support::integration::workflow::SubmitOutputArtifact;
+    use releashd::test_support::integration::workflow::SubmitOutputCommand;
+    use releashd::test_support::integration::workflow::WorkflowAbortExecutionGateway;
+    use releashd::test_support::integration::workflow::WorkflowControlPlaneCommit;
+    use releashd::test_support::integration::workflow::WorkflowControlPlaneGateway;
+    use releashd::test_support::integration::workflow::WorkflowDefinition;
+    use releashd::test_support::integration::workflow::WorkflowError;
+    use releashd::test_support::integration::workflow::WorkflowRuntimeShutdownGateway;
+    use releashd::test_support::integration::workflow::WorkflowRuntimeStateGateway;
+    use releashd::test_support::integration::workflow::WorkflowStartExecutionGateway;
 
     use axum::Router;
-    use releash_lib::test_support::integration::transport::build_router;
-    use releash_lib::test_support::integration::transport::ClientApiDeps;
-    use releash_lib::test_support::integration::workflow::WorkflowRuntimeUsecase;
+    use releashd::test_support::integration::transport::build_router;
+    use releashd::test_support::integration::transport::ClientApiDeps;
+    use releashd::test_support::integration::workflow::WorkflowRuntimeUsecase;
 
     #[derive(Default)]
     pub(crate) struct RecordedRuntimeCommands {
@@ -91,20 +91,20 @@ pub(crate) mod test_support {
 
     fn control_plane_execution_fixture(
         execution_id: &str,
-    ) -> releash_lib::test_support::integration::workflow::workflow_execution_ExecutionTree {
+    ) -> releashd::test_support::integration::workflow::workflow_execution_ExecutionTree {
         use std::collections::BTreeMap;
         use std::collections::BTreeSet;
 
-        use releash_lib::test_support::integration::workflow::workflow_execution_ExecutionTree as ExecutionTree;
-        use releash_lib::test_support::integration::workflow::ExecutionTreeRestore;
-        use releash_lib::test_support::integration::workflow::FanoutSpec;
-        use releash_lib::test_support::integration::workflow::NodeCompletion;
-        use releash_lib::test_support::integration::workflow::NodeCompletionSignal;
-        use releash_lib::test_support::integration::workflow::NodeDefinition as DomainNode;
-        use releash_lib::test_support::integration::workflow::NodeKind as DomainNodeKind;
-        use releash_lib::test_support::integration::workflow::SchemaDef;
-        use releash_lib::test_support::integration::workflow::SessionSpec;
-        use releash_lib::test_support::integration::workflow::{ExecutionParentRef, NodeKindName};
+        use releashd::test_support::integration::workflow::workflow_execution_ExecutionTree as ExecutionTree;
+        use releashd::test_support::integration::workflow::ExecutionTreeRestore;
+        use releashd::test_support::integration::workflow::FanoutSpec;
+        use releashd::test_support::integration::workflow::NodeCompletion;
+        use releashd::test_support::integration::workflow::NodeCompletionSignal;
+        use releashd::test_support::integration::workflow::NodeDefinition as DomainNode;
+        use releashd::test_support::integration::workflow::NodeKind as DomainNodeKind;
+        use releashd::test_support::integration::workflow::SchemaDef;
+        use releashd::test_support::integration::workflow::SessionSpec;
+        use releashd::test_support::integration::workflow::{ExecutionParentRef, NodeKindName};
 
         let workflow = WorkflowDefinition {
             name: "review-workflow".to_string(),
@@ -124,7 +124,7 @@ pub(crate) mod test_support {
                 DomainNode {
                     name: "command".into(),
                     kind: DomainNodeKind::Command(
-                        releash_lib::test_support::integration::workflow::CommandSpec {
+                        releashd::test_support::integration::workflow::CommandSpec {
                             command: "true".into(),
                             env: Default::default(),
                         },
@@ -135,10 +135,10 @@ pub(crate) mod test_support {
                     name: "fanout".to_string(),
                     kind: DomainNodeKind::Fanout(FanoutSpec {
                         children: vec![
-                            releash_lib::test_support::integration::workflow::ChildEntry::reference(
+                            releashd::test_support::integration::workflow::ChildEntry::reference(
                                 "review",
                             ),
-                            releash_lib::test_support::integration::workflow::ChildEntry::reference(
+                            releashd::test_support::integration::workflow::ChildEntry::reference(
                                 "command",
                             ),
                         ],
@@ -224,24 +224,24 @@ pub(crate) mod test_support {
     impl WorkflowControlPlaneGateway for RecordingRuntimeGateway {
         fn node_process_presence(
             &self,
-            _execution: &releash_lib::test_support::integration::workflow::workflow_execution_ExecutionTree,
+            _execution: &releashd::test_support::integration::workflow::workflow_execution_ExecutionTree,
             _id: &str,
         ) -> Result<
-            releash_lib::test_support::integration::workflow::NodeProcessPresence,
-            releash_lib::test_support::integration::workflow::WorkflowError,
+            releashd::test_support::integration::workflow::NodeProcessPresence,
+            releashd::test_support::integration::workflow::WorkflowError,
         > {
-            Ok(releash_lib::test_support::integration::workflow::NodeProcessPresence::ConfirmedAbsent)
+            Ok(releashd::test_support::integration::workflow::NodeProcessPresence::ConfirmedAbsent)
         }
         fn worktree_exists(
             &self,
             _path: &str,
-        ) -> Result<bool, releash_lib::test_support::integration::workflow::WorkflowError> {
+        ) -> Result<bool, releashd::test_support::integration::workflow::WorkflowError> {
             Ok(true)
         }
         async fn session_conversation_exists(
             &self,
             _session_id: &str,
-        ) -> Result<bool, releash_lib::test_support::integration::workflow::WorkflowError> {
+        ) -> Result<bool, releashd::test_support::integration::workflow::WorkflowError> {
             Ok(true)
         }
         async fn resume_session_process(
@@ -249,7 +249,7 @@ pub(crate) mod test_support {
             _execution_id: &str,
             _node_id: &str,
             _session_id: &str,
-        ) -> Result<(), releash_lib::test_support::integration::workflow::WorkflowError> {
+        ) -> Result<(), releashd::test_support::integration::workflow::WorkflowError> {
             Ok(())
         }
 
@@ -272,9 +272,7 @@ pub(crate) mod test_support {
             &self,
             execution_id: &str,
         ) -> Result<
-            Option<
-                releash_lib::test_support::integration::workflow::workflow_execution_ExecutionTree,
-            >,
+            Option<releashd::test_support::integration::workflow::workflow_execution_ExecutionTree>,
             WorkflowError,
         > {
             if let Some(error) = self.errors.lock().unwrap().approval.clone() {
@@ -310,12 +308,12 @@ pub(crate) mod test_support {
             &self,
             commit: WorkflowControlPlaneCommit,
         ) -> Result<
-            releash_lib::test_support::integration::workflow::RuntimeCommitSnapshot,
+            releashd::test_support::integration::workflow::RuntimeCommitSnapshot,
             WorkflowError,
         > {
             if let Some(command) = commit.workflow_events.iter().find_map(|event| {
                 match event {
-                releash_lib::test_support::integration::workflow::WorkflowEvent::ApprovalResolved {
+                releashd::test_support::integration::workflow::WorkflowEvent::ApprovalResolved {
                     execution_id,
                     node_execution_id,
                     node_name,
@@ -332,8 +330,9 @@ pub(crate) mod test_support {
             }) {
                 self.commands.lock().unwrap().approvals.push(command);
             }
-            let retry = commit.workflow_events.iter().find_map(|event| match event {
-                releash_lib::test_support::integration::workflow::WorkflowEvent::NodeRetryRequested {
+            let retry = commit.workflow_events.iter().find_map(|event| {
+                match event {
+                releashd::test_support::integration::workflow::WorkflowEvent::NodeRetryRequested {
                     execution_id,
                     node_execution_id,
                     ..
@@ -342,12 +341,13 @@ pub(crate) mod test_support {
                     node_execution_id: node_execution_id.clone(),
                 }),
                 _ => None,
+            }
             });
             if let Some(command) = retry {
                 self.commands.lock().unwrap().retries.push(command);
             }
             let submit = commit.workflow_events.iter().find_map(|event| match event {
-                releash_lib::test_support::integration::workflow::WorkflowEvent::NodeSubmitReceived {
+                releashd::test_support::integration::workflow::WorkflowEvent::NodeSubmitReceived {
                     execution_id,
                     node_execution_id,
                     ..
@@ -359,7 +359,7 @@ pub(crate) mod test_support {
                         .find(|node| node.id == *node_execution_id)
                         .map(|node| node.node_name.clone())?;
                     let artifact = commit.workflow_events.iter().find_map(|event| match event {
-                        releash_lib::test_support::integration::workflow::WorkflowEvent::ArtifactProduced {
+                        releashd::test_support::integration::workflow::WorkflowEvent::ArtifactProduced {
                             node_execution_id: artifact_node_execution_id,
                             contract: Some(contract),
                             value,
@@ -386,7 +386,7 @@ pub(crate) mod test_support {
             if let Some((command, _, _)) = submit {
                 self.commands.lock().unwrap().outputs.push(command);
             }
-            releash_lib::test_support::integration::workflow::RuntimeCommitSnapshot::from_execution(
+            releashd::test_support::integration::workflow::RuntimeCommitSnapshot::from_execution(
                 &commit.after,
             )
             .map_err(|error| WorkflowError::external(error.to_string()))
@@ -395,15 +395,15 @@ pub(crate) mod test_support {
         async fn finish_control_plane_commit(
             &self,
             _worktree_path: &str,
-            _snapshot: &releash_lib::test_support::integration::workflow::RuntimeCommitSnapshot,
-            _outcome: Option<releash_lib::test_support::integration::workflow::NodeOutcome>,
+            _snapshot: &releashd::test_support::integration::workflow::RuntimeCommitSnapshot,
+            _outcome: Option<releashd::test_support::integration::workflow::NodeOutcome>,
         ) -> Result<(), WorkflowError> {
             Ok(())
         }
     }
 
     #[async_trait::async_trait]
-    impl releash_lib::test_support::integration::workflow::ExecutionTreeProcessGateway
+    impl releashd::test_support::integration::workflow::ExecutionTreeProcessGateway
         for RecordingRuntimeGateway
     {
         async fn stop_execution_tree_processes(&self, _: &str) -> Result<(), WorkflowError> {
@@ -431,15 +431,15 @@ pub(crate) mod test_support {
         let gateway = Arc::new(RecordingRuntimeGateway::default());
         let runtime = Arc::new(WorkflowRuntimeUsecase::new(
             gateway.clone(),
-            Arc::new(releash_lib::test_support::integration::workflow::NoopArchiveRepository),
+            Arc::new(releashd::test_support::integration::workflow::NoopArchiveRepository),
         ));
         let router = build_router(
-            releash_lib::test_support::integration::transport::ClientTokens {
+            releashd::test_support::integration::transport::ClientTokens {
                 operator: Arc::<str>::from(terminal_token).into(),
                 hook: Arc::<str>::from("hook").into(),
             },
             client,
-            releash_lib::test_support::integration::daemon::default_timeout(),
+            releashd::test_support::integration::daemon::default_timeout(),
         );
         (router, runtime, gateway)
     }

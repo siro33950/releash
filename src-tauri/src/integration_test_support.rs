@@ -304,7 +304,6 @@ pub mod platform {
     pub use crate::infrastructure::lua::evaluator::MAX_TABLE_ELEMENTS;
     pub use crate::infrastructure::platform::path_aliases::alias_name_for_profile;
     pub use crate::infrastructure::platform::path_aliases::child_env_overrides_from;
-    pub use crate::infrastructure::platform::path_aliases::default_data_dir_for_profile;
     pub use crate::infrastructure::platform::path_aliases::ensure_alias_wrapper;
     pub use crate::infrastructure::platform::path_aliases::prepare_child_env;
     pub use crate::infrastructure::platform::path_aliases::BuildProfile;

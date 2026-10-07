@@ -1,9 +1,9 @@
-use releash_lib::test_support::integration::platform::initialize_background_work_for_acceptance;
-use releash_lib::test_support::integration::platform::BusinessFailure;
-use releash_lib::test_support::integration::platform::Failure;
-use releash_lib::test_support::integration::platform::FailureKey;
-use releash_lib::test_support::integration::platform::TerminalSurfaceRuntime;
-use releash_lib::test_support::integration::platform::WorkFailure;
+use releashd::test_support::integration::platform::initialize_background_work_for_acceptance;
+use releashd::test_support::integration::platform::BusinessFailure;
+use releashd::test_support::integration::platform::Failure;
+use releashd::test_support::integration::platform::FailureKey;
+use releashd::test_support::integration::platform::TerminalSurfaceRuntime;
+use releashd::test_support::integration::platform::WorkFailure;
 use std::sync::Arc;
 
 #[tokio::test]
@@ -17,7 +17,7 @@ pub async fn test_背景処理の配線_複数のcompositionで失敗状態を�
         TerminalSurfaceRuntime::new(second.clone(), directory.path().join("second"));
 
     // When
-    releash_lib::test_support::integration::platform::record_retry_failure(
+    releashd::test_support::integration::platform::record_retry_failure(
         &first.retrying,
         &FailureKey::new("terminal_checkpoint", "terminal"),
         WorkFailure {

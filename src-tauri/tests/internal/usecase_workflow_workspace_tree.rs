@@ -2,16 +2,16 @@ use std::sync::Arc;
 
 use crate::test_support_git::create_initial_commit;
 use crate::test_support_git::create_test_repo;
-use releash_lib::test_support::integration::platform::build_repository_usecase;
-use releash_lib::test_support::integration::platform::build_workflow_usecase_and_store;
-use releash_lib::test_support::integration::platform::Fetched;
-use releash_lib::test_support::integration::providers::ProviderKind;
-use releash_lib::test_support::integration::workflow::ConfiguredWorktreeGateway;
-use releash_lib::test_support::integration::workflow::SessionExecutionTreeRootFacts;
-use releash_lib::test_support::integration::workflow::WorkflowError;
-use releash_lib::test_support::integration::workflow::WorkflowUsecase;
-use releash_lib::test_support::integration::workspace::WorkspaceIdentity;
-use releash_lib::test_support::integration::workspace::WorkspaceTree;
+use releashd::test_support::integration::platform::build_repository_usecase;
+use releashd::test_support::integration::platform::build_workflow_usecase_and_store;
+use releashd::test_support::integration::platform::Fetched;
+use releashd::test_support::integration::providers::ProviderKind;
+use releashd::test_support::integration::workflow::ConfiguredWorktreeGateway;
+use releashd::test_support::integration::workflow::SessionExecutionTreeRootFacts;
+use releashd::test_support::integration::workflow::WorkflowError;
+use releashd::test_support::integration::workflow::WorkflowUsecase;
+use releashd::test_support::integration::workspace::WorkspaceIdentity;
+use releashd::test_support::integration::workspace::WorkspaceTree;
 
 #[tokio::test]
 pub async fn test_archive_restore認可_別名は受理し非管理対象と別worktreeは拒否する() {
@@ -36,7 +36,7 @@ pub async fn test_archive_restore認可_別名は受理し非管理対象と別w
         let path = path.to_str().unwrap();
         let facts =
             SessionExecutionTreeRootFacts::new(id, path, path, ProviderKind::Codex, None).unwrap();
-        releash_lib::test_support::integration::workflow::append_fact_batch_for_seed(
+        releashd::test_support::integration::workflow::append_fact_batch_for_seed(
             &store,
             &facts.into_facts(),
             1,
@@ -84,7 +84,7 @@ impl Trees {
 }
 
 #[async_trait::async_trait]
-impl releash_lib::test_support::integration::workspace::WorkspaceTreeRepository for Trees {
+impl releashd::test_support::integration::workspace::WorkspaceTreeRepository for Trees {
     async fn load_trees(
         &self,
         workspace_identities: &[WorkspaceIdentity],
@@ -98,11 +98,11 @@ impl releash_lib::test_support::integration::workspace::WorkspaceTreeRepository 
 
     async fn load_node_by_session_id(
         &self,
-        _: &releash_lib::test_support::integration::workspace::WorkspaceIdentity,
+        _: &releashd::test_support::integration::workspace::WorkspaceIdentity,
         _: &str,
     ) -> Result<
-        Option<releash_lib::test_support::integration::workspace::WorkspaceTreeNode>,
-        releash_lib::test_support::integration::platform::LocalEventQueryError,
+        Option<releashd::test_support::integration::workspace::WorkspaceTreeNode>,
+        releashd::test_support::integration::platform::LocalEventQueryError,
     > {
         Ok(None)
     }
@@ -112,8 +112,8 @@ impl releash_lib::test_support::integration::workspace::WorkspaceTreeRepository 
         _: &WorkspaceIdentity,
         _: &str,
     ) -> Result<
-        Option<releash_lib::test_support::integration::workspace::WorkspaceTreeNode>,
-        releash_lib::test_support::integration::platform::LocalEventQueryError,
+        Option<releashd::test_support::integration::workspace::WorkspaceTreeNode>,
+        releashd::test_support::integration::platform::LocalEventQueryError,
     > {
         Ok(None)
     }
@@ -217,11 +217,11 @@ pub async fn test_一覧の実行木_一覧から外れた木の保持を捨て�
 
 /// 実行中の session を 1 つ持つ workflow を、実在する worktree に作る。worktree の場所を返す。
 async fn seeded_workflow(
-    failures: Arc<releash_lib::test_support::integration::platform::FailureRecordStore>,
+    failures: Arc<releashd::test_support::integration::platform::FailureRecordStore>,
     execution_id: &str,
 ) -> (tempfile::TempDir, WorkflowUsecase, String) {
-    use releash_lib::test_support::integration::workflow::seed_workflow_session_facts;
-    use releash_lib::test_support::integration::workflow::WorkflowSessionFactSeed;
+    use releashd::test_support::integration::workflow::seed_workflow_session_facts;
+    use releashd::test_support::integration::workflow::WorkflowSessionFactSeed;
     let directory = tempfile::tempdir().unwrap();
     let (mut usecase, store) =
         build_workflow_usecase_and_store(directory.path().join("data"), None);
@@ -247,12 +247,12 @@ async fn seeded_workflow(
     )
     .await
     .unwrap();
-    releash_lib::test_support::integration::sessions::AgentSessionUsecase::new(Arc::new(
-        releash_lib::test_support::integration::sessions::LocalAgentSessionRepository::new(store),
+    releashd::test_support::integration::sessions::AgentSessionUsecase::new(Arc::new(
+        releashd::test_support::integration::sessions::LocalAgentSessionRepository::new(store),
     ))
     .observe_activity(
         "workflow-session",
-        releash_lib::test_support::integration::workflow::AgentSessionActivity::Working,
+        releashd::test_support::integration::workflow::AgentSessionActivity::Working,
         "observe-working",
     )
     .await
@@ -262,16 +262,16 @@ async fn seeded_workflow(
 
 #[tokio::test]
 pub async fn test_workspaceツリー_背景失敗の対象と理由を表示し成功後は解除する() {
-    use releash_lib::test_support::integration::platform::BusinessFailure;
-    use releash_lib::test_support::integration::platform::Failure;
-    use releash_lib::test_support::integration::platform::FailureKey;
-    use releash_lib::test_support::integration::platform::TechnicalFailureNature;
-    use releash_lib::test_support::integration::platform::WorkFailure;
+    use releashd::test_support::integration::platform::BusinessFailure;
+    use releashd::test_support::integration::platform::Failure;
+    use releashd::test_support::integration::platform::FailureKey;
+    use releashd::test_support::integration::platform::TechnicalFailureNature;
+    use releashd::test_support::integration::platform::WorkFailure;
 
     // Given
     let execution_id = "00000000-0000-4000-8000-000000001701";
     let failures =
-        Arc::new(releash_lib::test_support::integration::platform::FailureRecordStore::default());
+        Arc::new(releashd::test_support::integration::platform::FailureRecordStore::default());
     let (_directory, usecase, worktree) = seeded_workflow(failures.clone(), execution_id).await;
     let statuses = |tree: &WorkspaceTree| {
         let visible = tree.visible();

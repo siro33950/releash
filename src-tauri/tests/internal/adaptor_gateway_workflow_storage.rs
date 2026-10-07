@@ -1,22 +1,22 @@
-use releash_lib::test_support::integration::workflow::definition_FacetRefs as FacetRefs;
-use releash_lib::test_support::integration::workflow::delete_workflow;
-use releash_lib::test_support::integration::workflow::diagnose_workflow_file;
-use releash_lib::test_support::integration::workflow::list_workflows;
-use releash_lib::test_support::integration::workflow::list_workflows_with_facets;
-use releash_lib::test_support::integration::workflow::load_workflow;
-use releash_lib::test_support::integration::workflow::parse_workflow_source;
-use releash_lib::test_support::integration::workflow::resolve_and_validate_workflow_facets;
-use releash_lib::test_support::integration::workflow::resolve_workflow_path;
-use releash_lib::test_support::integration::workflow::save_workflow;
-use releash_lib::test_support::integration::workflow::save_workflow_source;
-use releash_lib::test_support::integration::workflow::workflow_files;
-use releash_lib::test_support::integration::workflow::NodeDefinition;
-use releash_lib::test_support::integration::workflow::NodeKind;
-use releash_lib::test_support::integration::workflow::SessionSpec;
-use releash_lib::test_support::integration::workflow::StorageError;
-use releash_lib::test_support::integration::workflow::WorkflowDefinition as WorkflowDefinitionYaml;
-use releash_lib::test_support::integration::workflow::WorkflowSourceFormat;
-use releash_lib::test_support::integration::workflow::DUPLICATE_NAME_DESCRIPTION;
+use releashd::test_support::integration::workflow::definition_FacetRefs as FacetRefs;
+use releashd::test_support::integration::workflow::delete_workflow;
+use releashd::test_support::integration::workflow::diagnose_workflow_file;
+use releashd::test_support::integration::workflow::list_workflows;
+use releashd::test_support::integration::workflow::list_workflows_with_facets;
+use releashd::test_support::integration::workflow::load_workflow;
+use releashd::test_support::integration::workflow::parse_workflow_source;
+use releashd::test_support::integration::workflow::resolve_and_validate_workflow_facets;
+use releashd::test_support::integration::workflow::resolve_workflow_path;
+use releashd::test_support::integration::workflow::save_workflow;
+use releashd::test_support::integration::workflow::save_workflow_source;
+use releashd::test_support::integration::workflow::workflow_files;
+use releashd::test_support::integration::workflow::NodeDefinition;
+use releashd::test_support::integration::workflow::NodeKind;
+use releashd::test_support::integration::workflow::SessionSpec;
+use releashd::test_support::integration::workflow::StorageError;
+use releashd::test_support::integration::workflow::WorkflowDefinition as WorkflowDefinitionYaml;
+use releashd::test_support::integration::workflow::WorkflowSourceFormat;
+use releashd::test_support::integration::workflow::DUPLICATE_NAME_DESCRIPTION;
 use std::fs;
 use std::path::Path;
 use tempfile::TempDir;
@@ -43,7 +43,7 @@ fn sample_workflow(name: &str, builtin: bool) -> WorkflowDefinitionYaml {
 }
 
 fn builtin_workflow_names() -> Vec<String> {
-    releash_lib::test_support::integration::workflow::list_builtin_workflows()
+    releashd::test_support::integration::workflow::list_builtin_workflows()
         .into_iter()
         .map(|summary| summary.name)
         .collect()
@@ -67,7 +67,7 @@ pub fn test_定義一覧_読めないファイルを失敗欄に残す() {
     let row = summaries.iter().find(|s| s.name == "unreadable").unwrap();
     assert!(matches!(
         row.failure.as_ref().unwrap().kind,
-        releash_lib::test_support::integration::platform::Failure::Technical(_)
+        releashd::test_support::integration::platform::Failure::Technical(_)
     ));
     assert!(row.description.is_empty());
 }
@@ -92,7 +92,7 @@ pub fn test_診断_置き場所を読めないと失敗を返す() {
     fs::write(&invalid, "file").unwrap();
     // When
     let result =
-        releash_lib::test_support::integration::workflow::diagnose_all(&invalid, directory.path());
+        releashd::test_support::integration::workflow::diagnose_all(&invalid, directory.path());
     // Then
     assert!(result.is_err());
 }
@@ -556,7 +556,7 @@ nodes:
         let parsed = parse_workflow_source(&yaml, dir);
         assert!(matches!(
             parsed.unwrap_err(),
-            StorageError::Validation(releash_lib::test_support::integration::workflow::ValidationError::InvalidArtifactReference { ref reference, .. })
+            StorageError::Validation(releashd::test_support::integration::workflow::ValidationError::InvalidArtifactReference { ref reference, .. })
                 if reference == expected_ref
         ));
 
@@ -565,7 +565,7 @@ nodes:
         let loaded = load_workflow(&file_path, dir);
         assert!(matches!(
             loaded.unwrap_err(),
-            StorageError::Validation(releash_lib::test_support::integration::workflow::ValidationError::InvalidArtifactReference { ref reference, .. })
+            StorageError::Validation(releashd::test_support::integration::workflow::ValidationError::InvalidArtifactReference { ref reference, .. })
                 if reference == expected_ref
         ));
     }
@@ -603,7 +603,7 @@ nodes:
         assert!(matches!(
             result.unwrap_err(),
             StorageError::Validation(
-                releash_lib::test_support::integration::workflow::ValidationError::InvalidArtifactReference { ref reference, .. }
+                releashd::test_support::integration::workflow::ValidationError::InvalidArtifactReference { ref reference, .. }
             ) if reference == "missing"
         ));
     }
@@ -955,12 +955,10 @@ pub fn test_定義一覧と診断_名前の集合が一致し同名の両形式�
     let mut valid = sample_workflow("valid-yaml", false);
     valid.nodes[0] = NodeDefinition {
         name: "main".into(),
-        kind: NodeKind::Command(
-            releash_lib::test_support::integration::workflow::CommandSpec {
-                command: "true".into(),
-                env: Default::default(),
-            },
-        ),
+        kind: NodeKind::Command(releashd::test_support::integration::workflow::CommandSpec {
+            command: "true".into(),
+            env: Default::default(),
+        }),
         ..Default::default()
     };
     fs::write(
@@ -987,7 +985,7 @@ pub fn test_定義一覧と診断_名前の集合が一致し同名の両形式�
     fs::create_dir(dir.join("unreadable.yml")).unwrap();
     fs::write(dir.join("duplicate.yml"), "[broken yaml").unwrap();
     fs::write(dir.join("duplicate.lua"), "invalid lua syntax").unwrap();
-    let builtin = releash_lib::test_support::integration::workflow::list_builtin_workflows()[0]
+    let builtin = releashd::test_support::integration::workflow::list_builtin_workflows()[0]
         .name
         .clone();
     valid.name = builtin.clone();
@@ -998,7 +996,7 @@ pub fn test_定義一覧と診断_名前の集合が一致し同名の両形式�
     .unwrap();
     // When
     let rows = list_workflows_with_facets(dir, dir).unwrap();
-    let report = releash_lib::test_support::integration::workflow::diagnose_all(dir, dir).unwrap();
+    let report = releashd::test_support::integration::workflow::diagnose_all(dir, dir).unwrap();
     // Then
     let listed: std::collections::BTreeSet<_> = rows.iter().map(|row| row.name.clone()).collect();
     let diagnosed: std::collections::BTreeSet<_> =
@@ -1014,8 +1012,8 @@ pub fn test_定義一覧と診断_名前の集合が一致し同名の両形式�
     assert_eq!(
         same[0].failure,
         Some(
-            releash_lib::test_support::integration::platform::WorkFailure::from_error(
-                &releash_lib::test_support::integration::workflow::WorkflowError::from(
+            releashd::test_support::integration::platform::WorkFailure::from_error(
+                &releashd::test_support::integration::workflow::WorkflowError::from(
                     StorageError::Io(fs::read_to_string(dir.join("same.yml")).unwrap_err())
                 )
             )
@@ -1023,7 +1021,7 @@ pub fn test_定義一覧と診断_名前の集合が一致し同名の両形式�
     );
     assert!(matches!(
         same[0].failure.as_ref().unwrap().kind,
-        releash_lib::test_support::integration::platform::Failure::Technical(_)
+        releashd::test_support::integration::platform::Failure::Technical(_)
     ));
     assert_eq!(report.workflow_summaries["valid-yaml"].error_count, 0);
     assert_eq!(
@@ -1062,13 +1060,13 @@ pub fn test_定義一覧_壊れた定義の失敗をvalidationとして残す() 
     let row = rows.iter().find(|row| row.name == "broken").unwrap();
     assert!(matches!(
         row.failure.as_ref().unwrap().kind,
-        releash_lib::test_support::integration::platform::Failure::Business(_)
+        releashd::test_support::integration::platform::Failure::Business(_)
     ));
     assert_eq!(
         row.failure,
         Some(
-            releash_lib::test_support::integration::platform::WorkFailure::from_error(
-                &releash_lib::test_support::integration::workflow::WorkflowError::Validation(
+            releashd::test_support::integration::platform::WorkFailure::from_error(
+                &releashd::test_support::integration::workflow::WorkflowError::Validation(
                     StorageError::Diagnostics(diagnosis.diagnostics).to_string()
                 )
             )

@@ -1,6 +1,6 @@
-use releash_lib::test_support::integration::transport::ClientCommandDispatch;
-use releash_lib::test_support::integration::wire;
-use releash_lib::test_support::integration::workspace::register_shared;
+use releashd::test_support::integration::transport::ClientCommandDispatch;
+use releashd::test_support::integration::wire;
+use releashd::test_support::integration::workspace::register_shared;
 
 #[tokio::test]
 pub async fn test_一覧更新dispatch_登録済みrepositoryの走査をやり直してから応答する() {
@@ -41,8 +41,8 @@ pub async fn test_一覧更新dispatch_登録済みrepositoryの走査をやり�
     repo.worktree("feature", &worktrees.path().join("feature"), None)
         .unwrap();
     let mut dispatch = ClientCommandDispatch::new(
-        releash_lib::test_support::integration::daemon::DaemonUsecase::test_with_repository(
-            releash_lib::test_support::integration::daemon::serving(),
+        releashd::test_support::integration::daemon::DaemonUsecase::test_with_repository(
+            releashd::test_support::integration::daemon::serving(),
         ),
     );
     register_shared(&mut dispatch, deps);

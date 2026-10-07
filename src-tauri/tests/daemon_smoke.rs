@@ -179,7 +179,7 @@ fn start(directory: &Path) -> (Daemon, Value) {
     start_with_parent(directory, false)
 }
 fn start_with_parent(directory: &Path, parent_pipe: bool) -> (Daemon, Value) {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_releash-backend"));
+    let mut command = Command::new(env!("CARGO_BIN_EXE_releashd"));
     command
         .arg("--internal-daemon")
         .arg(directory)
@@ -201,7 +201,10 @@ fn start_with_parent(directory: &Path, parent_pipe: bool) -> (Daemon, Value) {
     if parent_pipe {
         command.env("RELEASH_DAEMON_PARENT_PIPE", "1");
     }
-    let mut child = Daemon(command.spawn().unwrap());
+    wait_for_discovery(Daemon(command.spawn().unwrap()), directory)
+}
+
+fn wait_for_discovery(mut child: Daemon, directory: &Path) -> (Daemon, Value) {
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
         assert!(
@@ -249,6 +252,119 @@ async fn connect(discovery: &Value) -> (Socket, String) {
     assert!(info.capabilities.is_empty());
     assert_eq!(info.serving_status, rpc::ServingStatus::Serving);
     (Socket { client }, info.launch_id)
+}
+
+#[test]
+fn test_起動data_dir解決_desktopとworkerの共有入口は環境変数を使う() {
+    // Given
+    const ENV: &str = "RELEASH_TEST_DATA_DIR_RESOLVER";
+    if let Some(expected) = std::env::var_os(ENV) {
+        // When / Then
+        assert_eq!(
+            releashd::desktop_api::resolve_data_dir().unwrap(),
+            std::path::PathBuf::from(expected)
+        );
+        return;
+    }
+    let directory = tempfile::tempdir().unwrap();
+    // When
+    let output = Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "test_起動data_dir解決_desktopとworkerの共有入口は環境変数を使う",
+        ])
+        .env(ENV, directory.path())
+        .env("RELEASH_DATA_DIR", directory.path())
+        .output()
+        .unwrap();
+    // Then
+    assert!(output.status.success(), "{output:?}");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn test_daemon起動_data_dirの全解決経路で子プロセスへ解決済みpathを渡す() {
+    for mode in ["--data-dir", "--internal-daemon", "environment", "default"] {
+        // Given
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().canonicalize().unwrap();
+        let environment = root.join("environment");
+        let default_base = if cfg!(target_os = "macos") {
+            root.join("Library/Application Support")
+        } else {
+            root.join("data")
+        };
+        let resolved = match mode {
+            "default" => {
+                default_base.join(releash_sdk::data_dir::default_data_dir_name_for_profile(
+                    releash_sdk::data_dir::BuildProfile::current(),
+                ))
+            }
+            "environment" => environment.clone(),
+            _ => root.join("explicit"),
+        };
+        let mut command = Command::new(env!("CARGO_BIN_EXE_releashd"));
+        command
+            .env("HOME", &root)
+            .env("XDG_DATA_HOME", &default_base)
+            .env("XDG_CONFIG_HOME", root.join("config"))
+            .env("CLAUDE_CONFIG_DIR", root.join(".claude"))
+            .env("CODEX_HOME", root.join(".codex"))
+            .env("SHELL", "/bin/sh")
+            .env("RELEASH_DAEMON_LAUNCH_ID", uuid::Uuid::new_v4().to_string())
+            .env_remove("RELEASH_DAEMON_PARENT_PIPE")
+            .current_dir(&root)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit());
+        if mode == "default" {
+            command.env_remove("RELEASH_DATA_DIR");
+        } else {
+            command.env("RELEASH_DATA_DIR", &environment);
+        }
+        if matches!(mode, "--data-dir" | "--internal-daemon") {
+            command.arg(mode).arg(&resolved);
+        }
+        // When
+        let (mut daemon, discovery) =
+            wait_for_discovery(Daemon(command.spawn().unwrap()), &resolved);
+        let (mut socket, _) = connect(&discovery).await;
+        request(
+            &mut socket,
+            "data-dir",
+            wire::command_request::Command::GetOrSpawnTerminalSurface(
+                wire::GetOrSpawnTerminalSurfaceRequest {
+                    rows: Some(24),
+                    cols: Some(80),
+                    cwd: Some(root.to_string_lossy().into_owned()),
+                    owner: Some(wire::TerminalSurfaceOwnerV1 {
+                        variant: Some(wire::terminal_surface_owner_v1::Variant::Workspace(
+                            wire::TerminalSurfaceOwnerV1Workspace {
+                                workspace_path: Some(root.to_string_lossy().into_owned()),
+                            },
+                        )),
+                    }),
+                    startup_command: Some(
+                        "printf '%s' \"$RELEASH_DATA_DIR\" > child-data-dir".into(),
+                    ),
+                    ..Default::default()
+                },
+            ),
+        )
+        .await;
+        // Then
+        let expected = resolved.to_string_lossy();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while std::fs::read_to_string(root.join("child-data-dir"))
+            .ok()
+            .as_deref()
+            != Some(expected.as_ref())
+        {
+            assert!(Instant::now() < deadline, "{mode}: child data dir mismatch");
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        quit(&mut daemon, &mut socket, false).await;
+    }
 }
 async fn request(
     socket: &mut Socket,
@@ -304,11 +420,10 @@ async fn quit(daemon: &mut Daemon, socket: &mut Socket, restart: bool) {
 async fn test_headless単独起動_commandと永続化と再起動とexitを実processで確認する() {
     // Given
     let directory = tempfile::tempdir().unwrap();
-    let help =
-        Command::new(Path::new(env!("CARGO_BIN_EXE_releash-backend")).with_file_name("releash"))
-            .arg("--help")
-            .output()
-            .unwrap();
+    let help = Command::new(Path::new(env!("CARGO_BIN_EXE_releashd")).with_file_name("releash"))
+        .arg("--help")
+        .output()
+        .unwrap();
     assert!(help.status.success());
     assert!(!String::from_utf8(help.stdout).unwrap().contains("daemon"));
     let (mut daemon, discovery) = start(directory.path());
@@ -316,7 +431,7 @@ async fn test_headless単独起動_commandと永続化と再起動とexitを実p
         discovery["pid"].as_u64().unwrap(),
         u64::from(std::process::id())
     );
-    let duplicate = Command::new(env!("CARGO_BIN_EXE_releash-backend"))
+    let duplicate = Command::new(env!("CARGO_BIN_EXE_releashd"))
         .arg("--internal-daemon")
         .arg(directory.path())
         .env("HOME", directory.path())
@@ -359,12 +474,11 @@ async fn test_headless単独起動_commandと永続化と再起動とexitを実p
     )
     .await;
     assert_eq!(read_external_editor(&socket).await, "daemon-smoke");
-    let status =
-        Command::new(Path::new(env!("CARGO_BIN_EXE_releash-backend")).with_file_name("releash"))
-            .args(["workflow", "status", "550e8400-e29b-41d4-a716-446655440000"])
-            .env("RELEASH_DATA_DIR", directory.path())
-            .output()
-            .unwrap();
+    let status = Command::new(Path::new(env!("CARGO_BIN_EXE_releashd")).with_file_name("releash"))
+        .args(["workflow", "status", "550e8400-e29b-41d4-a716-446655440000"])
+        .env("RELEASH_DATA_DIR", directory.path())
+        .output()
+        .unwrap();
     assert_eq!(status.status.code(), Some(1));
     let alias = if cfg!(debug_assertions) {
         "releash-dev"
@@ -400,7 +514,7 @@ async fn test_headless単独起動_commandと永続化と再起動とexitを実p
         .contains("workflow"));
     let wrapper = std::fs::read_to_string(directory.path().join("bin").join(alias)).unwrap();
     assert!(wrapper.contains(
-        &Path::new(env!("CARGO_BIN_EXE_releash-backend"))
+        &Path::new(env!("CARGO_BIN_EXE_releashd"))
             .with_file_name("releash")
             .to_string_lossy()
             .into_owned()

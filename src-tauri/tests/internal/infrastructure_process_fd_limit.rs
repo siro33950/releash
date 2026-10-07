@@ -1,6 +1,6 @@
-use releash_lib::test_support::integration::process::current_limit;
-use releash_lib::test_support::integration::process::raise_open_file_limit;
-use releash_lib::test_support::integration::process::target_soft_limit;
+use releashd::test_support::integration::process::current_limit;
+use releashd::test_support::integration::process::raise_open_file_limit;
+use releashd::test_support::integration::process::target_soft_limit;
 
 const FD_LIMIT_TEST_CHILD: &str = "RELEASH_FD_LIMIT_TEST_CHILD";
 

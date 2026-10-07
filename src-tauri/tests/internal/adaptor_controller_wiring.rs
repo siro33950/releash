@@ -1,26 +1,26 @@
-use releash_lib::test_support::integration::persistence::LocalEventStore;
-use releash_lib::test_support::integration::persistence::LocalEventStoreConfig;
-use releash_lib::test_support::integration::platform::build_repository_usecase;
-use releash_lib::test_support::integration::platform::build_terminal_surface_application_for_tests;
-use releash_lib::test_support::integration::platform::build_workflow_runtime_usecase;
-use releash_lib::test_support::integration::platform::build_workflow_services_with_repository_worktrees;
-use releash_lib::test_support::integration::platform::compose_agent_sessions;
-use releash_lib::test_support::integration::platform::AgentSessionCompositionInput;
-use releash_lib::test_support::integration::platform::WorktreeExecutionArchiver;
-use releash_lib::test_support::integration::repository::WorktreeDeletionTarget;
-use releash_lib::test_support::integration::sessions::LocalProviderExecutableProbeGateway;
-use releash_lib::test_support::integration::settings::AppConfig;
-use releash_lib::test_support::integration::settings::ReleashConfig;
-use releash_lib::test_support::integration::workflow::RepositoryIsolatedWorktreeGateway;
-use releash_lib::test_support::integration::workflow::WorkflowNodeProcesses;
-use releash_lib::test_support::integration::workflow::WorkflowRuntimeCommandGatewayDeps;
-use releash_lib::test_support::integration::workflow::WorkflowRuntimeDependencies;
+use releashd::test_support::integration::persistence::LocalEventStore;
+use releashd::test_support::integration::persistence::LocalEventStoreConfig;
+use releashd::test_support::integration::platform::build_repository_usecase;
+use releashd::test_support::integration::platform::build_terminal_surface_application_for_tests;
+use releashd::test_support::integration::platform::build_workflow_runtime_usecase;
+use releashd::test_support::integration::platform::build_workflow_services_with_repository_worktrees;
+use releashd::test_support::integration::platform::compose_agent_sessions;
+use releashd::test_support::integration::platform::AgentSessionCompositionInput;
+use releashd::test_support::integration::platform::WorktreeExecutionArchiver;
+use releashd::test_support::integration::repository::WorktreeDeletionTarget;
+use releashd::test_support::integration::sessions::LocalProviderExecutableProbeGateway;
+use releashd::test_support::integration::settings::AppConfig;
+use releashd::test_support::integration::settings::ReleashConfig;
+use releashd::test_support::integration::workflow::RepositoryIsolatedWorktreeGateway;
+use releashd::test_support::integration::workflow::WorkflowNodeProcesses;
+use releashd::test_support::integration::workflow::WorkflowRuntimeCommandGatewayDeps;
+use releashd::test_support::integration::workflow::WorkflowRuntimeDependencies;
 use std::sync::Arc;
 
 #[tokio::test]
 pub async fn test_worktree削除一覧_本番runtime配線で受理した削除状態を処理終了まで共有する() {
     // Given
-    let retrying = releash_lib::test_support::integration::platform::test_retrying();
+    let retrying = releashd::test_support::integration::platform::test_retrying();
     let parent = tempfile::tempdir().unwrap();
     let root = parent.path().canonicalize().unwrap();
     let repo_path = root.join("repo");
@@ -34,20 +34,20 @@ pub async fn test_worktree削除一覧_本番runtime配線で受理した削除�
     let data_dir = root.join("data");
     let store = LocalEventStore::open(LocalEventStoreConfig::production(
         data_dir.clone(),
-        std::sync::Arc::new(releash_lib::test_support::integration::platform::RetryLimiter::new()),
+        std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
     ))
     .unwrap();
     let config = Arc::new(AppConfig::new(
         ReleashConfig::default(),
         data_dir.join("releash.toml"),
     ));
-    let publisher = releash_lib::test_support::integration::subscriptions::test_subscriptions();
+    let publisher = releashd::test_support::integration::subscriptions::test_subscriptions();
     let terminal = Arc::new(build_terminal_surface_application_for_tests());
     let sessions = compose_agent_sessions(AgentSessionCompositionInput {
         hook_token: std::sync::Arc::<str>::from("hook-token"),
-        launch_retention: releash_lib::test_support::integration::platform::run(
-            releash_lib::test_support::integration::platform::delays(
-                releash_lib::test_support::integration::platform::RETENTION,
+        launch_retention: releashd::test_support::integration::platform::run(
+            releashd::test_support::integration::platform::delays(
+                releashd::test_support::integration::platform::RETENTION,
             ),
         ),
         retrying: retrying.clone(),
@@ -67,7 +67,7 @@ pub async fn test_worktree削除一覧_本番runtime配線で受理した削除�
     .unwrap();
     let processes = Arc::new(WorkflowNodeProcesses::new(terminal));
     let (_, workspace_query) = build_workflow_services_with_repository_worktrees(
-        Arc::new(releash_lib::test_support::integration::platform::FailureRecordStore::default()),
+        Arc::new(releashd::test_support::integration::platform::FailureRecordStore::default()),
         data_dir,
         repository.clone(),
         config.clone(),
@@ -93,7 +93,7 @@ pub async fn test_worktree削除一覧_本番runtime配線で受理した削除�
             provider_availability: sessions.availability_reader,
             isolated_worktrees: Arc::new(RepositoryIsolatedWorktreeGateway),
         },
-        releash_lib::test_support::integration::daemon::serving(),
+        releashd::test_support::integration::daemon::serving(),
     )
     .unwrap();
     let rows = || {
@@ -121,7 +121,7 @@ pub async fn test_worktree削除一覧_本番runtime配線で受理した削除�
     // Then
     for git_registration_removed in [false, true] {
         if git_registration_removed {
-            releash_lib::test_support::integration::repository::remove_worktree(
+            releashd::test_support::integration::repository::remove_worktree(
                 repo_path,
                 &worktree.path,
                 false,
@@ -142,13 +142,13 @@ pub async fn test_worktree削除一覧_本番runtime配線で受理した削除�
 }
 pub(crate) mod tests {
 
-    use releash_lib::test_support::integration::persistence::LocalEventStore;
-    use releash_lib::test_support::integration::persistence::LocalEventStoreConfig;
-    use releash_lib::test_support::integration::platform::build_workflow_services_with_gateways;
-    use releash_lib::test_support::integration::platform::workflow_read;
+    use releashd::test_support::integration::persistence::LocalEventStore;
+    use releashd::test_support::integration::persistence::LocalEventStoreConfig;
+    use releashd::test_support::integration::platform::build_workflow_services_with_gateways;
+    use releashd::test_support::integration::platform::workflow_read;
 
-    use releash_lib::test_support::integration::workflow::NoopWorkflowExternalEditorGateway;
-    use releash_lib::test_support::integration::workflow::PassthroughManagedWorktreeGateway;
+    use releashd::test_support::integration::workflow::NoopWorkflowExternalEditorGateway;
+    use releashd::test_support::integration::workflow::PassthroughManagedWorktreeGateway;
     use std::sync::Arc;
 
     #[test]
@@ -158,9 +158,7 @@ pub(crate) mod tests {
         let workflows = tempfile::tempdir().unwrap();
         let _store = LocalEventStore::open(LocalEventStoreConfig::production(
             data.path().to_path_buf(),
-            std::sync::Arc::new(
-                releash_lib::test_support::integration::platform::RetryLimiter::new(),
-            ),
+            std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
         ))
         .unwrap();
         std::fs::write(workflows.path().join("configured.yml"), "name: [").unwrap();
@@ -173,7 +171,7 @@ pub(crate) mod tests {
         // When
         let report = read
             .diagnose_all(
-                releash_lib::test_support::integration::workflow::WorkflowDiagnosticsTarget::AppliedConfigDirectory,
+                releashd::test_support::integration::workflow::WorkflowDiagnosticsTarget::AppliedConfigDirectory,
             )
             .unwrap();
 
@@ -182,13 +180,13 @@ pub(crate) mod tests {
     }
 
     async fn seed_b006_execution(store: &Arc<LocalEventStore>, workspace: &str) {
-        use releash_lib::test_support::integration::workflow::ExecutionOrigin;
-        use releash_lib::test_support::integration::workflow::ExecutionStatus;
+        use releashd::test_support::integration::workflow::ExecutionOrigin;
+        use releashd::test_support::integration::workflow::ExecutionStatus;
 
         let execution_id = "00000000-0000-4000-8000-000000001491";
-        releash_lib::test_support::integration::workflow::seed_canonical_execution(
+        releashd::test_support::integration::workflow::seed_canonical_execution(
             store,
-            &releash_lib::test_support::integration::workflow::WorkflowExecutionSummary {
+            &releashd::test_support::integration::workflow::WorkflowExecutionSummary {
                 execution_id: execution_id.to_string(),
                 workflow_name: "B006 workflow".to_string(),
                 status: ExecutionStatus::Running,
@@ -213,10 +211,10 @@ pub(crate) mod tests {
         // authority through its read-only backend.
         let root = tempfile::tempdir().unwrap();
         let store = LocalEventStore::open(
-            releash_lib::test_support::integration::persistence::LocalEventStoreConfig::production(
+            releashd::test_support::integration::persistence::LocalEventStoreConfig::production(
                 root.path().to_path_buf(),
                 std::sync::Arc::new(
-                    releash_lib::test_support::integration::platform::RetryLimiter::new(),
+                    releashd::test_support::integration::platform::RetryLimiter::new(),
                 ),
             ),
         )
@@ -229,9 +227,7 @@ pub(crate) mod tests {
             .into_owned();
         seed_b006_execution(&store, &workspace).await;
         let (workflow, query) = build_workflow_services_with_gateways(
-            Arc::new(
-                releash_lib::test_support::integration::platform::FailureRecordStore::default(),
-            ),
+            Arc::new(releashd::test_support::integration::platform::FailureRecordStore::default()),
             root.path(),
             Arc::new(PassthroughManagedWorktreeGateway),
             Arc::new(NoopWorkflowExternalEditorGateway),

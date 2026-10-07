@@ -1,12 +1,12 @@
 pub(crate) mod tests {
 
-    use releash_lib::test_support::integration::platform::changes_diff_tree_entries;
-    use releash_lib::test_support::integration::platform::diff_tree_entries;
-    use releash_lib::test_support::integration::platform::staged_diff_tree_entries;
-    use releash_lib::test_support::integration::platform::FileDiffStatDto;
-    use releash_lib::test_support::integration::platform::FileStatusDto;
-    use releash_lib::test_support::integration::platform::RepositoryScanner;
-    use releash_lib::test_support::integration::repository::DefaultRepositoryScanner;
+    use releashd::test_support::integration::platform::changes_diff_tree_entries;
+    use releashd::test_support::integration::platform::diff_tree_entries;
+    use releashd::test_support::integration::platform::staged_diff_tree_entries;
+    use releashd::test_support::integration::platform::FileDiffStatDto;
+    use releashd::test_support::integration::platform::FileStatusDto;
+    use releashd::test_support::integration::platform::RepositoryScanner;
+    use releashd::test_support::integration::repository::DefaultRepositoryScanner;
     use std::sync::Arc;
 
     #[test]
@@ -28,26 +28,26 @@ pub(crate) mod tests {
         std::fs::write(dir.path().join("untracked.txt"), "new\n").unwrap();
 
         let repository =
-            Arc::new(releash_lib::test_support::integration::platform::build_repository_usecase());
-        let code = Arc::new(releash_lib::test_support::integration::platform::build_code_usecase());
+            Arc::new(releashd::test_support::integration::platform::build_repository_usecase());
+        let code = Arc::new(releashd::test_support::integration::platform::build_code_usecase());
         let scanner = DefaultRepositoryScanner::new(repository.clone(), code.clone());
         let repo_path = dir.path().to_str().unwrap();
 
-        releash_lib::test_support::integration::repository::reset_status_walk_count_for_tests();
+        releashd::test_support::integration::repository::reset_status_walk_count_for_tests();
         let snapshot = scanner.scan(repo_path).unwrap();
         assert_eq!(
-            releash_lib::test_support::integration::repository::status_walk_count_for_tests(),
+            releashd::test_support::integration::repository::status_walk_count_for_tests(),
             1
         );
 
         let expected_status: Vec<FileStatusDto> =
-            releash_lib::test_support::integration::repository::get_git_status(repo_path)
+            releashd::test_support::integration::repository::get_git_status(repo_path)
                 .unwrap()
                 .into_iter()
                 .map(Into::into)
                 .collect();
         let expected_diff_stats: Vec<FileDiffStatDto> =
-            releash_lib::test_support::integration::repository::get_status_diff_stats(repo_path)
+            releashd::test_support::integration::repository::get_status_diff_stats(repo_path)
                 .unwrap()
                 .into_iter()
                 .map(Into::into)
@@ -103,25 +103,23 @@ pub(crate) mod tests {
         }
 
         let repository =
-            Arc::new(releash_lib::test_support::integration::platform::build_repository_usecase());
-        let code = Arc::new(releash_lib::test_support::integration::platform::build_code_usecase());
+            Arc::new(releashd::test_support::integration::platform::build_repository_usecase());
+        let code = Arc::new(releashd::test_support::integration::platform::build_code_usecase());
         let scanner = Arc::new(DefaultRepositoryScanner::new(repository, code));
-        let state = releash_lib::test_support::integration::platform::WorktreeState::new(
+        let state = releashd::test_support::integration::platform::WorktreeState::new(
             dir.path().to_str().unwrap().to_string(),
             true,
             scanner,
-            releash_lib::test_support::integration::subscriptions::test_subscriptions(),
+            releashd::test_support::integration::subscriptions::test_subscriptions(),
             Arc::new(
-                releash_lib::test_support::integration::platform::TestRepositoryStateWorkerRuntime,
+                releashd::test_support::integration::platform::TestRepositoryStateWorkerRuntime,
             ),
-            releash_lib::test_support::integration::subscriptions::scan_driver(
+            releashd::test_support::integration::subscriptions::scan_driver(
                 std::time::Duration::ZERO,
             ),
         );
 
-        state.invalidate(
-            releash_lib::test_support::integration::platform::InvalidateReason::change(),
-        );
+        state.invalidate(releashd::test_support::integration::platform::InvalidateReason::change());
         let mut ready = false;
         for _ in 0..100 {
             let snapshot = state.snapshot_for_read();

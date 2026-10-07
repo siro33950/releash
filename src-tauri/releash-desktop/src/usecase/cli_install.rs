@@ -10,7 +10,7 @@ pub(crate) struct CliInstallUsecase(pub Arc<dyn CliInstallGateway>);
 impl CliInstallUsecase {
     pub async fn install(&self) -> Result<String, CliInstallError> {
         let gateway = self.0.clone();
-        releash_lib::desktop_api::spawn_blocking(move || gateway.install())
+        releashd::desktop_api::spawn_blocking(move || gateway.install())
             .await
             .map_err(|e| CliInstallError(e.to_string()))?
             .map_err(CliInstallError)

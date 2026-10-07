@@ -8,9 +8,9 @@ pub(crate) fn application_context<R: tauri::Runtime>() -> tauri::Context<R> {
 
 pub fn apply_desktop_settings<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
-    settings: releash_lib::desktop_api::DesktopSettingsDto,
+    settings: releashd::desktop_api::DesktopSettingsDto,
 ) {
-    use releash_lib::desktop_api::TelemetryPort;
+    use releashd::desktop_api::TelemetryPort;
     let preferences = infrastructure::platform::window_lifecycle::WindowPreferences {
         close_to_tray: settings.close_to_tray,
     };
@@ -25,14 +25,12 @@ pub fn apply_desktop_settings<R: tauri::Runtime>(
             ),
         );
     }
-    releash_lib::desktop_api::TelemetryGateway
-        .set_crash_reporting_enabled(settings.crash_reporting);
-    releash_lib::desktop_api::TelemetryGateway
-        .set_performance_enabled(settings.performance_telemetry);
+    releashd::desktop_api::TelemetryGateway.set_crash_reporting_enabled(settings.crash_reporting);
+    releashd::desktop_api::TelemetryGateway.set_performance_enabled(settings.performance_telemetry);
 }
 
 pub fn run() {
-    releash_lib::desktop_api::set_startup_origin(std::time::Instant::now());
+    releashd::desktop_api::set_startup_origin(std::time::Instant::now());
     let builder = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_fs::init())
@@ -40,7 +38,7 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build());
     let builder = builder.setup(|app| {
         infrastructure::platform::desktop_restart::wait_for_predecessor()?;
-        let data_dir = releash_lib::desktop_api::resolve_data_dir()?;
+        let data_dir = releashd::desktop_api::resolve_data_dir()?;
         let handle = app.handle().clone();
         let Some(lock) =
             infrastructure::platform::single_instance::acquire(&data_dir, move || {
@@ -56,17 +54,17 @@ pub fn run() {
             std::process::exit(0);
         };
         app.manage(lock);
-        if let Err(error) = releash_lib::desktop_api::init_local_log(
+        if let Err(error) = releashd::desktop_api::init_local_log(
             &data_dir,
-            releash_lib::desktop_api::LocalLogProcess::Gui,
+            releashd::desktop_api::LocalLogProcess::Gui,
         ) {
             eprintln!("{error}");
         }
-        let startup_config = releash_lib::desktop_api::read_config_if_exists(&data_dir.join("releash.toml"));
+        let startup_config = releashd::desktop_api::read_config_if_exists(&data_dir.join("releash.toml"));
         if let Err(reason) = &startup_config { log::error!("Startup preferences are unavailable; daemon initialization will report the failure: {reason}"); }
         let hidden = std::env::args().any(|arg| arg == "--hidden") && startup_config.as_ref().is_ok_and(|config| config.as_ref().is_some_and(|config| config.app.start_minimized));
         app.manage(usecase::cli_install::CliInstallUsecase(Arc::new(adaptor::gateway::cli_install::MacCliInstall)));
-        let executable = std::env::current_exe()?.with_file_name("releash-backend");
+        let executable = std::env::current_exe()?.with_file_name("releashd");
         let gateway = Arc::new(adaptor::gateway::daemon_supervision::DaemonProcessGateway::new(
             executable,
             data_dir,
@@ -128,12 +126,10 @@ pub fn run() {
 }
 
 pub fn record_window_ready() {
-    releash_lib::desktop_api::record_startup_from_origin(
-        releash_lib::desktop_api::Startup::FirstWindowReady,
+    releashd::desktop_api::record_startup_from_origin(
+        releashd::desktop_api::Startup::FirstWindowReady,
     );
-    releash_lib::desktop_api::record_startup_from_origin(
-        releash_lib::desktop_api::Startup::AppStartup,
-    );
+    releashd::desktop_api::record_startup_from_origin(releashd::desktop_api::Startup::AppStartup);
 }
 
 #[cfg(test)]

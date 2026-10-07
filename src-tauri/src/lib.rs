@@ -34,10 +34,7 @@ mod usecase;
 pub fn run_daemon(data_dir: Option<std::path::PathBuf>) -> i32 {
     infrastructure::process::parent_lifetime::watch_parent_pipe();
     let result = (|| -> Result<std::convert::Infallible, Box<dyn std::error::Error>> {
-        let data_dir = match data_dir {
-            Some(path) => path,
-            None => infrastructure::platform::app_data_dir::resolve_data_dir()?,
-        };
+        let data_dir = releash_sdk::data_dir::resolve_data_dir(data_dir)?;
         #[cfg(any(target_os = "macos", target_os = "linux"))]
         let provider_initial_search_path =
             infrastructure::process::search_path::capture_login_shell_path(
@@ -47,9 +44,7 @@ pub fn run_daemon(data_dir: Option<std::path::PathBuf>) -> i32 {
         if let Ok(search_path) = &provider_initial_search_path {
             std::env::set_var("PATH", search_path);
         }
-        infrastructure::platform::path_aliases::ensure_release_data_dir_env_for_resolved_path(
-            &data_dir,
-        );
+        std::env::set_var("RELEASH_DATA_DIR", &data_dir);
         if let Err(error) = infrastructure::local_log::init(
             &data_dir,
             infrastructure::local_log::LocalLogProcess::Daemon,

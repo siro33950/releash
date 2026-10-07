@@ -1,29 +1,29 @@
-use releash_lib::test_support::integration::persistence::LocalEventStore;
-use releash_lib::test_support::integration::persistence::LocalEventStoreConfig;
-use releash_lib::test_support::integration::workflow::execution_worktree_path;
-use releash_lib::test_support::integration::workflow::workspace_worktree_path_with;
-use releash_lib::test_support::integration::workflow::FactLogReadBackend;
-use releash_lib::test_support::integration::workflow::IsolatedWorktree;
-use releash_lib::test_support::integration::workflow::NodeFactMeta;
-use releash_lib::test_support::integration::workflow::StoredWorkspaceWorktreePathQuery;
-use releash_lib::test_support::integration::workflow::WorktreeContextReadError;
+use releashd::test_support::integration::persistence::LocalEventStore;
+use releashd::test_support::integration::persistence::LocalEventStoreConfig;
+use releashd::test_support::integration::workflow::execution_worktree_path;
+use releashd::test_support::integration::workflow::workspace_worktree_path_with;
+use releashd::test_support::integration::workflow::FactLogReadBackend;
+use releashd::test_support::integration::workflow::IsolatedWorktree;
+use releashd::test_support::integration::workflow::NodeFactMeta;
+use releashd::test_support::integration::workflow::StoredWorkspaceWorktreePathQuery;
+use releashd::test_support::integration::workflow::WorktreeContextReadError;
 
-use releash_lib::test_support::integration::workflow::ArtifactProducedFact;
-use releash_lib::test_support::integration::workflow::ExecutionOrigin;
-use releash_lib::test_support::integration::workflow::ExecutionParentRef;
-use releash_lib::test_support::integration::workflow::ExecutionTreeLaunch;
-use releash_lib::test_support::integration::workflow::NodeExecutionFailureKind;
-use releash_lib::test_support::integration::workflow::NodeFact;
-use releash_lib::test_support::integration::workflow::NodeKindName;
-use releash_lib::test_support::integration::workflow::SchemaDef;
-use releash_lib::test_support::integration::workflow::WorkflowDefinition;
+use releashd::test_support::integration::workflow::ArtifactProducedFact;
+use releashd::test_support::integration::workflow::ExecutionOrigin;
+use releashd::test_support::integration::workflow::ExecutionParentRef;
+use releashd::test_support::integration::workflow::ExecutionTreeLaunch;
+use releashd::test_support::integration::workflow::NodeExecutionFailureKind;
+use releashd::test_support::integration::workflow::NodeFact;
+use releashd::test_support::integration::workflow::NodeKindName;
+use releashd::test_support::integration::workflow::SchemaDef;
+use releashd::test_support::integration::workflow::WorkflowDefinition;
 
-use releash_lib::test_support::integration::workflow::RuntimeFailureObservedFact;
-use releash_lib::test_support::integration::workflow::SessionAttachedFact;
-use releash_lib::test_support::integration::workflow::StartedFact;
-use releash_lib::test_support::integration::workflow::StopReceivedFact;
-use releash_lib::test_support::integration::workflow::SubmitReceivedFact;
-use releash_lib::test_support::integration::workflow::TreeRootFact;
+use releashd::test_support::integration::workflow::RuntimeFailureObservedFact;
+use releashd::test_support::integration::workflow::SessionAttachedFact;
+use releashd::test_support::integration::workflow::StartedFact;
+use releashd::test_support::integration::workflow::StopReceivedFact;
+use releashd::test_support::integration::workflow::SubmitReceivedFact;
+use releashd::test_support::integration::workflow::TreeRootFact;
 
 use std::sync::Arc;
 
@@ -51,9 +51,7 @@ impl Fixture {
         let directory = tempfile::tempdir().unwrap();
         let store = LocalEventStore::open(LocalEventStoreConfig::production(
             directory.path().into(),
-            std::sync::Arc::new(
-                releash_lib::test_support::integration::platform::RetryLimiter::new(),
-            ),
+            std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
         ))
         .unwrap();
         let mut definition: WorkflowDefinition = serde_saphyr::from_str(&format!("name: context\ndescription: test\nnodes:\n  main: {{worktree: isolated, sequence: {{children: [child]}}}}\n  child: {{worktree: {}, session: {{provider: codex, facets: {{instruction: policy-confirmation}}}}}}", if isolated_child {"isolated"} else {"shared"})).unwrap();
@@ -89,7 +87,7 @@ impl Fixture {
             },
             attempt: 1,
         };
-        releash_lib::test_support::integration::workflow::append_single_fact(
+        releashd::test_support::integration::workflow::append_single_fact(
             &store,
             &root,
             &NodeFact::Started(StartedFact {
@@ -118,7 +116,7 @@ impl Fixture {
             kind: NodeKindName::Session,
             attempt: 2,
         };
-        releash_lib::test_support::integration::workflow::append_single_fact(
+        releashd::test_support::integration::workflow::append_single_fact(
             &store,
             &child,
             &NodeFact::Started(StartedFact {
@@ -145,8 +143,8 @@ impl Fixture {
         }
     }
 
-    fn read(&self) -> releash_lib::test_support::integration::workflow::WorkflowUsecase {
-        releash_lib::test_support::integration::platform::workflow_services(
+    fn read(&self) -> releashd::test_support::integration::workflow::WorkflowUsecase {
+        releashd::test_support::integration::platform::workflow_services(
             self.store.clone(),
             self.directory.path(),
             Some(self.directory.path().join("workflows")),
@@ -154,7 +152,7 @@ impl Fixture {
     }
 
     async fn append_child(&self, fact: NodeFact) {
-        releash_lib::test_support::integration::workflow::append_single_fact(
+        releashd::test_support::integration::workflow::append_single_fact(
             &self.store,
             &self.child,
             &fact,
@@ -179,7 +177,7 @@ pub async fn test_隔離読み取り_sessionの起動先を直近の隔離祖先
             IsolatedWorktree::for_attempt("/repo", &owner.node_execution_id, owner.attempt);
 
         // When
-        use releash_lib::test_support::integration::sessions::AgentSessionRepository;
+        use releashd::test_support::integration::sessions::AgentSessionRepository;
         fixture
             .append_child(NodeFact::SessionAttached(SessionAttachedFact {
                 session_id: "agent".into(),
@@ -189,7 +187,7 @@ pub async fn test_隔離読み取り_sessionの起動先を直近の隔離祖先
             }))
             .await;
         let repository =
-            releash_lib::test_support::integration::sessions::LocalAgentSessionRepository::new(
+            releashd::test_support::integration::sessions::LocalAgentSessionRepository::new(
                 fixture.store.clone(),
             );
         let context = repository.find("agent").await.unwrap().unwrap();
@@ -236,7 +234,7 @@ pub async fn test_隔離読み取り_実体なしでも実行中と失敗後とa
             .iter()
             .find(|node| node.id == fixture.child.node_execution_id)
             .unwrap();
-        let dto = releash_lib::test_support::integration::workflow::workflow_execution_to_view(
+        let dto = releashd::test_support::integration::workflow::workflow_execution_to_view(
             state.clone(),
         );
 
@@ -278,7 +276,7 @@ pub async fn test_隔離出力_再構築後もcontractなしsessionと合成子�
     let composite = read.get_output(TREE, "main").await.unwrap();
 
     // Then
-    let releash_lib::test_support::integration::workflow::WorkflowGetOutputResult::Submitted {
+    let releashd::test_support::integration::workflow::WorkflowGetOutputResult::Submitted {
         structured_output: child,
         ..
     } = child
@@ -289,7 +287,7 @@ pub async fn test_隔離出力_再構築後もcontractなしsessionと合成子�
         child,
         serde_json::json!({"worktree": {"branch": expected.branch, "path": expected.path}})
     );
-    let releash_lib::test_support::integration::workflow::WorkflowGetOutputResult::Submitted {
+    let releashd::test_support::integration::workflow::WorkflowGetOutputResult::Submitted {
         structured_output: composite,
         ..
     } = composite
@@ -355,7 +353,7 @@ pub async fn test_隔離出力_contractの提出情報を保ちworktreeを合成
     // When
     let output = fixture.read().get_output(TREE, "child").await.unwrap();
     // Then
-    let releash_lib::test_support::integration::workflow::WorkflowGetOutputResult::Submitted {
+    let releashd::test_support::integration::workflow::WorkflowGetOutputResult::Submitted {
         structured_output,
         contract,
         request_id,
@@ -382,7 +380,7 @@ pub async fn test_隔離出力_同名slotの開始順と提出順が異なって
         attempt: 1,
         ..fixture.child.clone()
     };
-    releash_lib::test_support::integration::workflow::append_single_fact(
+    releashd::test_support::integration::workflow::append_single_fact(
         &fixture.store,
         &second,
         &NodeFact::Started(StartedFact {
@@ -399,7 +397,7 @@ pub async fn test_隔離出力_同名slotの開始順と提出順が異なって
         (&second, 5, "second"),
         (&fixture.child, 6, "last"),
     ] {
-        releash_lib::test_support::integration::workflow::append_single_fact(
+        releashd::test_support::integration::workflow::append_single_fact(
             &fixture.store,
             meta,
             &NodeFact::ArtifactProduced(ArtifactProducedFact {
@@ -418,7 +416,7 @@ pub async fn test_隔離出力_同名slotの開始順と提出順が異なって
             IsolatedWorktree::for_attempt("/repo", &meta.node_execution_id, meta.attempt);
         assert_eq!(
             output,
-            releash_lib::test_support::integration::workflow::WorkflowGetOutputResult::Submitted {
+            releashd::test_support::integration::workflow::WorkflowGetOutputResult::Submitted {
                 contract: Some("result".into()),
                 structured_output: serde_json::json!({"summary": request, "worktree": {"branch": expected.branch, "path": expected.path}}),
                 request_id: Some(request.into()),
@@ -438,7 +436,7 @@ pub async fn test_隔離出力_contractなしslotも最後に提出した所有�
         attempt: 1,
         ..fixture.child.clone()
     };
-    releash_lib::test_support::integration::workflow::append_single_fact(
+    releashd::test_support::integration::workflow::append_single_fact(
         &fixture.store,
         &second,
         &NodeFact::Started(StartedFact {
@@ -451,7 +449,7 @@ pub async fn test_隔離出力_contractなしslotも最後に提出した所有�
     .await
     .unwrap();
     for (meta, timestamp) in [(&fixture.child, 4), (&second, 6)] {
-        releash_lib::test_support::integration::workflow::append_single_fact(
+        releashd::test_support::integration::workflow::append_single_fact(
             &fixture.store,
             meta,
             &NodeFact::SubmitReceived(SubmitReceivedFact {
@@ -461,7 +459,7 @@ pub async fn test_隔離出力_contractなしslotも最後に提出した所有�
         )
         .await
         .unwrap();
-        releash_lib::test_support::integration::workflow::append_single_fact(
+        releashd::test_support::integration::workflow::append_single_fact(
             &fixture.store,
             meta,
             &NodeFact::StopReceived(StopReceivedFact {
@@ -475,7 +473,7 @@ pub async fn test_隔離出力_contractなしslotも最後に提出した所有�
         // When
         let output = fixture.read().get_output(TREE, "child").await.unwrap();
         // Then
-        let releash_lib::test_support::integration::workflow::WorkflowGetOutputResult::Submitted {
+        let releashd::test_support::integration::workflow::WorkflowGetOutputResult::Submitted {
             structured_output,
             ..
         } = output
@@ -488,21 +486,19 @@ pub async fn test_隔離出力_contractなしslotも最後に提出した所有�
             structured_output,
             serde_json::json!({"worktree": {"branch": expected.branch, "path": expected.path}})
         );
-        let folded = releash_lib::test_support::integration::workflow::fold_tree_from(
-            &fixture.backend,
-            TREE,
-        )
-        .await
-        .unwrap()
-        .unwrap();
-        let records = releash_lib::test_support::integration::workflow::read_tree_records_from(
+        let folded =
+            releashd::test_support::integration::workflow::fold_tree_from(&fixture.backend, TREE)
+                .await
+                .unwrap()
+                .unwrap();
+        let records = releashd::test_support::integration::workflow::read_tree_records_from(
             &fixture.backend,
             TREE,
         )
         .await
         .unwrap();
         assert_eq!(
-            releash_lib::test_support::integration::workflow::derive_node_artifact(
+            releashd::test_support::integration::workflow::derive_node_artifact(
                 &folded, &records, "child"
             )
             .unwrap()
@@ -520,7 +516,7 @@ pub async fn test_隔離context_取得済みrootだけで隔離cwdを導出しro
         .backend
         .run_indexed(|connection| {
             Ok(
-                releash_lib::test_support::integration::persistence::first_row_of_tree(
+                releashd::test_support::integration::persistence::first_row_of_tree(
                     connection, TREE,
                 )
                 .unwrap()
@@ -529,11 +525,11 @@ pub async fn test_隔離context_取得済みrootだけで隔離cwdを導出しro
         })
         .await
         .unwrap();
-    let root = releash_lib::test_support::integration::workflow::read_tree_context(&row.detail)
+    let root = releashd::test_support::integration::workflow::read_tree_context(&row.detail)
         .unwrap()
         .unwrap();
     let root_meta =
-        releash_lib::test_support::integration::workflow::node_meta_from_row(&row).unwrap();
+        releashd::test_support::integration::workflow::node_meta_from_row(&row).unwrap();
     rusqlite::Connection::open(fixture.directory.path().join("local-event-store.sqlite3"))
         .unwrap()
         .execute(
@@ -558,7 +554,7 @@ pub async fn test_実効cwd_自身か直近の隔離祖先で確定したら上�
             .backend
             .run_indexed(|connection| {
                 Ok(
-                    releash_lib::test_support::integration::persistence::first_row_of_tree(
+                    releashd::test_support::integration::persistence::first_row_of_tree(
                         connection, TREE,
                     )
                     .unwrap()
@@ -568,11 +564,11 @@ pub async fn test_実効cwd_自身か直近の隔離祖先で確定したら上�
             .await
             .unwrap();
         let mut root =
-            releash_lib::test_support::integration::workflow::read_tree_context(&row.detail)
+            releashd::test_support::integration::workflow::read_tree_context(&row.detail)
                 .unwrap()
                 .unwrap();
         let mut root_meta =
-            releash_lib::test_support::integration::workflow::node_meta_from_row(&row).unwrap();
+            releashd::test_support::integration::workflow::node_meta_from_row(&row).unwrap();
         root_meta.node_name = "unread-root".into();
         root.definition["nodes"]["unread-root"] = serde_json::json!({"worktree": 123});
         let ancestor = NodeFactMeta {
@@ -580,7 +576,7 @@ pub async fn test_実効cwd_自身か直近の隔離祖先で確定したら上�
             parent_id: Some("missing-parent".into()),
             ..fixture.root.clone()
         };
-        releash_lib::test_support::integration::workflow::append_single_fact(
+        releashd::test_support::integration::workflow::append_single_fact(
             &fixture.store,
             &ancestor,
             &NodeFact::Started(StartedFact {
@@ -628,7 +624,7 @@ pub async fn test_実効cwd_祖先の欠落と循環と別木と不正定義はc
             .backend
             .run_indexed(|connection| {
                 Ok(
-                    releash_lib::test_support::integration::persistence::first_row_of_tree(
+                    releashd::test_support::integration::persistence::first_row_of_tree(
                         connection, TREE,
                     )
                     .unwrap()
@@ -638,11 +634,11 @@ pub async fn test_実効cwd_祖先の欠落と循環と別木と不正定義はc
             .await
             .unwrap();
         let mut root =
-            releash_lib::test_support::integration::workflow::read_tree_context(&row.detail)
+            releashd::test_support::integration::workflow::read_tree_context(&row.detail)
                 .unwrap()
                 .unwrap();
         let mut root_meta =
-            releash_lib::test_support::integration::workflow::node_meta_from_row(&row).unwrap();
+            releashd::test_support::integration::workflow::node_meta_from_row(&row).unwrap();
         let mut child = fixture.child;
         match invalid {
             "missing" => child.parent_id = Some("missing".into()),
@@ -668,7 +664,7 @@ pub async fn test_実効cwd_祖先sql読み取り障害はinternalへ伝わる()
         .backend
         .run_indexed(|connection| {
             Ok(
-                releash_lib::test_support::integration::persistence::first_row_of_tree(
+                releashd::test_support::integration::persistence::first_row_of_tree(
                     connection, TREE,
                 )
                 .unwrap()
@@ -677,11 +673,11 @@ pub async fn test_実効cwd_祖先sql読み取り障害はinternalへ伝わる()
         })
         .await
         .unwrap();
-    let root = releash_lib::test_support::integration::workflow::read_tree_context(&row.detail)
+    let root = releashd::test_support::integration::workflow::read_tree_context(&row.detail)
         .unwrap()
         .unwrap();
     let root_meta =
-        releash_lib::test_support::integration::workflow::node_meta_from_row(&row).unwrap();
+        releashd::test_support::integration::workflow::node_meta_from_row(&row).unwrap();
     let mut child = fixture.child;
     child.parent_id = Some("ancestor".into());
     rusqlite::Connection::open(fixture.directory.path().join("local-event-store.sqlite3"))
@@ -696,7 +692,7 @@ pub async fn test_実効cwd_祖先sql読み取り障害はinternalへ伝わる()
     assert!(matches!(
         error,
         WorktreeContextReadError::Read(
-            releash_lib::test_support::integration::platform::LocalEventQueryError::Internal { .. }
+            releashd::test_support::integration::platform::LocalEventQueryError::Internal { .. }
         )
     ));
 }
@@ -704,11 +700,11 @@ pub async fn test_実効cwd_祖先sql読み取り障害はinternalへ伝わる()
 #[tokio::test]
 pub async fn test_workspace解決_通常pathではstoreを構築せず隔離pathだけ保存事実を読む() {
     // Given
-    use releash_lib::test_support::integration::workspace::WorkspaceWorktreePathQuery;
+    use releashd::test_support::integration::workspace::WorkspaceWorktreePathQuery;
     let fixture = Fixture::new(true).await;
     let query = StoredWorkspaceWorktreePathQuery::new(
         fixture.directory.path().into(),
-        std::sync::Arc::new(releash_lib::test_support::integration::platform::RetryLimiter::new()),
+        std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
     );
     let isolated = IsolatedWorktree::for_attempt(
         "/repo",
@@ -723,7 +719,7 @@ pub async fn test_workspace解決_通常pathではstoreを構築せず隔離path
     let missing_store = fixture.directory.path().join("missing");
     let query = StoredWorkspaceWorktreePathQuery::new(
         missing_store.clone(),
-        std::sync::Arc::new(releash_lib::test_support::integration::platform::RetryLimiter::new()),
+        std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
     );
     assert_eq!(query.workspace_worktree_path(ROOT).await.unwrap(), ROOT);
     assert!(!missing_store.exists());
@@ -739,7 +735,7 @@ pub async fn test_workspace解決_通常pathではstoreを構築せず隔離path
 async fn workspace_worktree_path(
     backend: &FactLogReadBackend,
     path: &str,
-) -> Result<String, releash_lib::test_support::integration::workflow::WorkflowError> {
+) -> Result<String, releashd::test_support::integration::workflow::WorkflowError> {
     workspace_worktree_path_with(path, || Ok(backend.clone())).await
 }
 
@@ -751,7 +747,7 @@ pub async fn test_実効cwd_rootのretryで初回rootとidが変わってもwork
         .backend
         .run_indexed(|connection| {
             Ok(
-                releash_lib::test_support::integration::persistence::first_row_of_tree(
+                releashd::test_support::integration::persistence::first_row_of_tree(
                     connection, TREE,
                 )
                 .unwrap()
@@ -760,12 +756,12 @@ pub async fn test_実効cwd_rootのretryで初回rootとidが変わってもwork
         })
         .await
         .unwrap();
-    let mut root = releash_lib::test_support::integration::workflow::read_tree_context(&row.detail)
+    let mut root = releashd::test_support::integration::workflow::read_tree_context(&row.detail)
         .unwrap()
         .unwrap();
     root.definition["nodes"]["main"] = serde_json::json!({"session": {"provider": "codex"}});
     let mut root_meta =
-        releash_lib::test_support::integration::workflow::node_meta_from_row(&row).unwrap();
+        releashd::test_support::integration::workflow::node_meta_from_row(&row).unwrap();
     root_meta.kind = NodeKindName::Session;
     let current = NodeFactMeta {
         node_execution_id: "retried-root".into(),
@@ -782,8 +778,8 @@ pub async fn test_実効cwd_rootのretryで初回rootとidが変わってもwork
 
 #[tokio::test]
 pub async fn test_workspace所在地読取_実経路で失敗分類を保持する() {
-    use releash_lib::test_support::integration::persistence::ReadFailure;
-    use releash_lib::test_support::integration::transport::classified_error;
+    use releashd::test_support::integration::persistence::ReadFailure;
+    use releashd::test_support::integration::transport::classified_error;
     // Given
     let fixture = Fixture::new(false).await;
     let isolated = IsolatedWorktree::for_attempt("/repo", TREE, 1);
@@ -816,7 +812,7 @@ pub async fn test_workspace所在地読取_保存されたrootの破損をdata_l
         .unwrap_err();
     // Then
     assert_eq!(
-        releash_lib::test_support::integration::transport::classified_error(error).code,
+        releashd::test_support::integration::transport::classified_error(error).code,
         connectrpc::ErrorCode::DataLoss
     );
 }

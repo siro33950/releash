@@ -465,7 +465,7 @@ fn test_起動期限超過_最後の接続失敗の分類を保持する() {
     // Given
     let mut model = DaemonSupervision::new(0);
     let failure = Failure {
-        stage: FailureStage::Connection(releash_lib::desktop_api::TechnicalFailureNature::TimedOut),
+        stage: FailureStage::Connection(releashd::desktop_api::TechnicalFailureNature::TimedOut),
         reason: "State stream was silent".into(),
     };
     // When
@@ -483,7 +483,7 @@ fn test_接続監督_分類付きの失敗を保持し再接続で解消する()
     // Given
     let mut supervision = DaemonSupervision::new(0);
     let failure = Failure {
-        stage: FailureStage::Connection(releash_lib::desktop_api::TechnicalFailureNature::TimedOut),
+        stage: FailureStage::Connection(releashd::desktop_api::TechnicalFailureNature::TimedOut),
         reason: "State stream was silent".into(),
     };
     // When

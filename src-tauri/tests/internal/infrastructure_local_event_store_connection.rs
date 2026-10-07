@@ -1,6 +1,6 @@
-use releash_lib::test_support::integration::platform::Deadline;
-use releash_lib::test_support::integration::platform::OperationContext;
-use releash_lib::test_support::integration::transport::open_reader;
+use releashd::test_support::integration::platform::Deadline;
+use releashd::test_support::integration::platform::OperationContext;
+use releashd::test_support::integration::transport::open_reader;
 use rusqlite::Connection;
 use std::time::Duration;
 use std::time::Instant;
@@ -15,18 +15,17 @@ pub fn test_busy待ち_呼出期限より早い資源側の2秒で終了する()
         .unwrap();
     let reader = open_reader(
         &path,
-        std::sync::Arc::new(releash_lib::test_support::integration::platform::RetryLimiter::new()),
+        std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
     )
     .unwrap();
     blocker.execute_batch("BEGIN EXCLUSIVE").unwrap();
     let context = OperationContext::default()
         .with_deadline(Deadline::new(Instant::now() + Duration::from_secs(10)));
     let started = Instant::now();
-    let error =
-        releash_lib::test_support::integration::platform::sync_scope(context.clone(), || {
-            reader.query_row("SELECT n FROM value", [], |row| row.get::<_, i64>(0))
-        })
-        .unwrap_err();
+    let error = releashd::test_support::integration::platform::sync_scope(context.clone(), || {
+        reader.query_row("SELECT n FROM value", [], |row| row.get::<_, i64>(0))
+    })
+    .unwrap_err();
     assert_eq!(
         error.sqlite_error_code(),
         Some(rusqlite::ErrorCode::DatabaseBusy)

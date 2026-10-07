@@ -1,8 +1,8 @@
-use releash_lib::test_support::integration::platform::with_blocked_request;
-use releash_lib::test_support::integration::platform::BlockedRequest;
-use releash_lib::test_support::integration::platform::Failure;
-use releash_lib::test_support::integration::platform::TechnicalFailureNature;
-use releash_lib::test_support::integration::platform::WorkFailure;
+use releashd::test_support::integration::platform::with_blocked_request;
+use releashd::test_support::integration::platform::BlockedRequest;
+use releashd::test_support::integration::platform::Failure;
+use releashd::test_support::integration::platform::TechnicalFailureNature;
+use releashd::test_support::integration::platform::WorkFailure;
 use std::path::PathBuf;
 use std::sync::Arc;
 

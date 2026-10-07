@@ -1,13 +1,13 @@
 pub(crate) mod tests {
 
     use crate::test_support_git::*;
-    use releash_lib::test_support::integration::platform::RepositoryUsecase;
-    use releash_lib::test_support::integration::repository::resolve_file_watch_paths;
-    use releash_lib::test_support::integration::repository::resolve_worktree_git_dir;
+    use releashd::test_support::integration::platform::RepositoryUsecase;
+    use releashd::test_support::integration::repository::resolve_file_watch_paths;
+    use releashd::test_support::integration::repository::resolve_worktree_git_dir;
     use std::path::PathBuf;
 
     fn test_usecase() -> RepositoryUsecase {
-        releash_lib::test_support::integration::platform::build_repository_usecase()
+        releashd::test_support::integration::platform::build_repository_usecase()
     }
 
     fn create_worktree(repo: &git2::Repository) -> (String, PathBuf, tempfile::TempDir) {

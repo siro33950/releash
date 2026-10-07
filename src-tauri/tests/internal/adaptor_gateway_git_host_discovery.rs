@@ -1,5 +1,5 @@
-use releash_lib::test_support::integration::platform::get_origin_url;
-use releash_lib::test_support::integration::platform::is_github_repository;
+use releashd::test_support::integration::platform::get_origin_url;
+use releashd::test_support::integration::platform::is_github_repository;
 
 use crate::adaptor_gateway_repository_test_helpers::assert_stops_at_each_checkpoint;
 use crate::test_support_git::create_test_repo;
@@ -13,10 +13,10 @@ pub fn test_origin探索_各操作の停止をremote不在に変えない() {
     // Then
     assert_stops_at_each_checkpoint(|| {
         is_github_repository(path).map_err(|error| match error {
-            releash_lib::test_support::integration::platform::GitOperationError::Stopped(error) => error.into(),
-            releash_lib::test_support::integration::platform::GitOperationError::Git(error) => {
-                releash_lib::test_support::integration::platform::TechnicalFailure {
-                    nature: releash_lib::test_support::integration::platform::TechnicalFailureNature::Other,
+            releashd::test_support::integration::platform::GitOperationError::Stopped(error) => error.into(),
+            releashd::test_support::integration::platform::GitOperationError::Git(error) => {
+                releashd::test_support::integration::platform::TechnicalFailure {
+                    nature: releashd::test_support::integration::platform::TechnicalFailureNature::Other,
                     message: error.to_string(),
                 }
             }
@@ -26,10 +26,10 @@ pub fn test_origin探索_各操作の停止をremote不在に変えない() {
         .unwrap();
     assert_stops_at_each_checkpoint(|| {
         is_github_repository(path).map_err(|error| match error {
-            releash_lib::test_support::integration::platform::GitOperationError::Stopped(error) => error.into(),
-            releash_lib::test_support::integration::platform::GitOperationError::Git(error) => {
-                releash_lib::test_support::integration::platform::TechnicalFailure {
-                    nature: releash_lib::test_support::integration::platform::TechnicalFailureNature::Other,
+            releashd::test_support::integration::platform::GitOperationError::Stopped(error) => error.into(),
+            releashd::test_support::integration::platform::GitOperationError::Git(error) => {
+                releashd::test_support::integration::platform::TechnicalFailure {
+                    nature: releashd::test_support::integration::platform::TechnicalFailureNature::Other,
                     message: error.to_string(),
                 }
             }
@@ -115,8 +115,8 @@ pub fn test_git任意読取_get_origin_url_存在しないパスは不在を返�
 }
 pub(crate) mod tests {
 
-    use releash_lib::test_support::integration::platform::get_origin_url;
-    use releash_lib::test_support::integration::platform::is_github_repository;
+    use releashd::test_support::integration::platform::get_origin_url;
+    use releashd::test_support::integration::platform::is_github_repository;
 
     #[test]
     pub fn get_origin_url_no_remote() {

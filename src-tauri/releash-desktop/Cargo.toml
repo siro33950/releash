@@ -9,7 +9,7 @@ default-run = "releash-desktop"
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-releash-backend = { path = ".." }
+releashd = { path = ".." }
 connectrpc = { version = "=0.9.1", features = ["axum", "client"] }
 tauri = { version = "2.12", features = ["tray-icon", "image-png"] }
 tauri-plugin-opener = { version = "2" }
@@ -36,15 +36,15 @@ objc2-foundation = { version = "0.3", default-features = false, features = ["std
 objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSDragging", "NSPasteboard", "NSPasteboardItem", "NSView", "NSWindow", "NSResponder"] }
 
 [features]
-test-support = ["releash-backend/test-support"]
-vendored-openssl = ["releash-backend/vendored-openssl"]
+test-support = ["releashd/test-support"]
+vendored-openssl = ["releashd/vendored-openssl"]
 
 [dev-dependencies]
 releash-desktop = { path = ".", features = ["test-support"] }
 rusqlite = { version = "0.40", features = ["bundled", "hooks"] }
 axum = { version = "0.8", features = ["http2"] }
 git2 = "0.21"
-releash-backend = { path = "..", features = ["test-support"] }
+releashd = { path = "..", features = ["test-support"] }
 tauri = { version = "2.12", features = ["tray-icon", "image-png", "test"] }
 tokio = { version = "1", features = ["test-util"] }
 tempfile = "3"

@@ -1,20 +1,20 @@
-use releash_lib::test_support::integration::sessions::workflow_location;
+use releashd::test_support::integration::sessions::workflow_location;
 use std::sync::Arc;
 use std::sync::Mutex;
 
-use releash_lib::test_support::integration::persistence::LocalEventStore;
-use releash_lib::test_support::integration::persistence::LocalEventStoreConfig;
-use releash_lib::test_support::integration::providers::ProviderKind;
-use releash_lib::test_support::integration::sessions::AgentSessionInitialInstructionDeliveryOutcome;
-use releash_lib::test_support::integration::sessions::AgentSessionInitialInstructionUsecase;
-use releash_lib::test_support::integration::sessions::AgentSessionUsecase;
-use releash_lib::test_support::integration::sessions::LocalAgentSessionRepository;
-use releash_lib::test_support::integration::sessions::ProviderAgentTerminalGatewayError;
-use releash_lib::test_support::integration::sessions::ProviderAgentTerminalInputGateway;
-use releash_lib::test_support::integration::terminal::TerminalSurfaceOwner;
-use releash_lib::test_support::integration::workflow::seed_workflow_session_facts;
-use releash_lib::test_support::integration::workflow::WorkflowSessionFactSeed;
-use releash_lib::test_support::integration::workspace::WorkspaceIdentity;
+use releashd::test_support::integration::persistence::LocalEventStore;
+use releashd::test_support::integration::persistence::LocalEventStoreConfig;
+use releashd::test_support::integration::providers::ProviderKind;
+use releashd::test_support::integration::sessions::AgentSessionInitialInstructionDeliveryOutcome;
+use releashd::test_support::integration::sessions::AgentSessionInitialInstructionUsecase;
+use releashd::test_support::integration::sessions::AgentSessionUsecase;
+use releashd::test_support::integration::sessions::LocalAgentSessionRepository;
+use releashd::test_support::integration::sessions::ProviderAgentTerminalGatewayError;
+use releashd::test_support::integration::sessions::ProviderAgentTerminalInputGateway;
+use releashd::test_support::integration::terminal::TerminalSurfaceOwner;
+use releashd::test_support::integration::workflow::seed_workflow_session_facts;
+use releashd::test_support::integration::workflow::WorkflowSessionFactSeed;
+use releashd::test_support::integration::workspace::WorkspaceIdentity;
 
 /// workflow engine が所有する実行木を模して、session が attach 済みの
 /// node を持つ tree を node_events に seed する。
@@ -61,8 +61,9 @@ impl ProviderAgentTerminalInputGateway for FailingTerminalInput {
             .push((owner.clone(), input.to_string()));
         self.write_observed.notify_one();
         Err(ProviderAgentTerminalGatewayError::Technical(
-            releash_lib::test_support::integration::platform::TechnicalFailure {
-                nature: releash_lib::test_support::integration::platform::TechnicalFailureNature::Transient,
+            releashd::test_support::integration::platform::TechnicalFailure {
+                nature:
+                    releashd::test_support::integration::platform::TechnicalFailureNature::Transient,
                 message: "unavailable".into(),
             },
         ))
@@ -74,7 +75,7 @@ pub async fn test_agent_session_continuation_session操作lock解放後に送る
     let directory = tempfile::tempdir().unwrap();
     let store = LocalEventStore::open(LocalEventStoreConfig::production(
         directory.path().to_path_buf(),
-        std::sync::Arc::new(releash_lib::test_support::integration::platform::RetryLimiter::new()),
+        std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
     ))
     .unwrap();
     let sessions = Arc::new(AgentSessionUsecase::new(Arc::new(
@@ -152,8 +153,8 @@ impl ProviderAgentTerminalInputGateway for ContinuationTerminalInput {
     ) -> Result<(), ProviderAgentTerminalGatewayError> {
         if self.fail {
             return Err(ProviderAgentTerminalGatewayError::Technical(
-                releash_lib::test_support::integration::platform::TechnicalFailure {
-                    nature: releash_lib::test_support::integration::platform::TechnicalFailureNature::Transient,
+                releashd::test_support::integration::platform::TechnicalFailure {
+                    nature: releashd::test_support::integration::platform::TechnicalFailureNature::Transient,
                     message: "unavailable".into(),
                 },
             ));
@@ -168,16 +169,14 @@ impl ProviderAgentTerminalInputGateway for ContinuationTerminalInput {
 
 #[tokio::test]
 pub async fn test_delegate_続行指示は識別子ごとに一度だけ送り再送は受理済みとして書かない() {
-    use releash_lib::test_support::integration::sessions::AgentSessionInitialInstructionError;
-    use releash_lib::test_support::integration::sessions::AgentSessionInitialInstructionOutcome;
+    use releashd::test_support::integration::sessions::AgentSessionInitialInstructionError;
+    use releashd::test_support::integration::sessions::AgentSessionInitialInstructionOutcome;
     for fail in [false, true] {
         // Given
         let directory = tempfile::tempdir().unwrap();
         let store = LocalEventStore::open(LocalEventStoreConfig::production(
             directory.path().into(),
-            std::sync::Arc::new(
-                releash_lib::test_support::integration::platform::RetryLimiter::new(),
-            ),
+            std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
         ))
         .unwrap();
         let sessions = Arc::new(AgentSessionUsecase::new(Arc::new(
@@ -287,7 +286,7 @@ pub async fn test_terminal投入_継続指示は同じ末尾改行処理とpaste
     let directory = tempfile::tempdir().unwrap();
     let store = LocalEventStore::open(LocalEventStoreConfig::production(
         directory.path().into(),
-        std::sync::Arc::new(releash_lib::test_support::integration::platform::RetryLimiter::new()),
+        std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
     ))
     .unwrap();
     let sessions = Arc::new(AgentSessionUsecase::new(Arc::new(

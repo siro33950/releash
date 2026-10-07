@@ -1,24 +1,24 @@
-use releash_lib::test_support::integration::platform::Fetched;
-use releash_lib::test_support::integration::platform::GitHostError;
-use releash_lib::test_support::integration::platform::GitHostProvider;
-use releash_lib::test_support::integration::platform::GitHostUsecase;
-use releash_lib::test_support::integration::platform::IssueInfo;
-use releash_lib::test_support::integration::platform::PrInfo;
-use releash_lib::test_support::integration::platform::PrStatus;
-use releash_lib::test_support::integration::platform::RepoPathsUsecase;
-use releash_lib::test_support::integration::platform::RepositoryStateService;
-use releash_lib::test_support::integration::repository::Worktree;
-use releash_lib::test_support::integration::workspace::WorkspaceList;
-use releash_lib::test_support::integration::workspace::WorkspaceListUsecase;
-use releash_lib::test_support::integration::workspace::WorkspaceListWorktree;
+use releashd::test_support::integration::platform::Fetched;
+use releashd::test_support::integration::platform::GitHostError;
+use releashd::test_support::integration::platform::GitHostProvider;
+use releashd::test_support::integration::platform::GitHostUsecase;
+use releashd::test_support::integration::platform::IssueInfo;
+use releashd::test_support::integration::platform::PrInfo;
+use releashd::test_support::integration::platform::PrStatus;
+use releashd::test_support::integration::platform::RepoPathsUsecase;
+use releashd::test_support::integration::platform::RepositoryStateService;
+use releashd::test_support::integration::repository::Worktree;
+use releashd::test_support::integration::workspace::WorkspaceList;
+use releashd::test_support::integration::workspace::WorkspaceListUsecase;
+use releashd::test_support::integration::workspace::WorkspaceListWorktree;
 use std::sync::Arc;
 
 use crate::usecase_repository_state_test_helpers_runtime::CanonicalWorktreePathNormalizer;
-use releash_lib::test_support::integration::platform::NoopRepositoryStateWatcher;
-use releash_lib::test_support::integration::platform::TestRepositoryStateWorkerRuntime;
-use releash_lib::test_support::integration::repository::RepoPathsRepository;
-use releash_lib::test_support::integration::repository::RepositoryError;
-use releash_lib::test_support::integration::subscriptions::StateChangeSource;
+use releashd::test_support::integration::platform::NoopRepositoryStateWatcher;
+use releashd::test_support::integration::platform::TestRepositoryStateWorkerRuntime;
+use releashd::test_support::integration::repository::RepoPathsRepository;
+use releashd::test_support::integration::repository::RepositoryError;
+use releashd::test_support::integration::subscriptions::StateChangeSource;
 use std::collections::HashMap;
 use std::time::Duration;
 
@@ -50,7 +50,7 @@ impl GitHostProvider for PullRequests {
     async fn fetch_pr_status(&self, _: &str) -> Result<PrStatus, GitHostError> {
         if let Some(release) = &self.release {
             let release = release.clone();
-            releash_lib::test_support::integration::platform::spawn_blocking(move || {
+            releashd::test_support::integration::platform::spawn_blocking(move || {
                 release.lock().recv_timeout(Duration::from_secs(5))
             })
             .await
@@ -68,7 +68,7 @@ struct Fixture {
     usecase: WorkspaceListUsecase,
     repository_state: Arc<RepositoryStateService>,
     repositories: Arc<RepoPathsUsecase>,
-    subscriptions: releash_lib::test_support::integration::subscriptions::StateSubscriptionUsecase,
+    subscriptions: releashd::test_support::integration::subscriptions::StateSubscriptionUsecase,
     repo: git2::Repository,
     path: String,
     main_branch: String,
@@ -90,35 +90,35 @@ impl Fixture {
         let main_branch = repo.head().unwrap().shorthand().unwrap().to_string();
         let data_dir = tempfile::tempdir().unwrap();
         let subscriptions =
-            releash_lib::test_support::integration::subscriptions::test_subscriptions();
+            releashd::test_support::integration::subscriptions::test_subscriptions();
         let repository =
-            Arc::new(releash_lib::test_support::integration::platform::build_repository_usecase());
+            Arc::new(releashd::test_support::integration::platform::build_repository_usecase());
         let repositories = Arc::new(RepoPathsUsecase::new(
             Arc::new(Paths(parking_lot::RwLock::new(vec![path.clone()]))),
             subscriptions.clone(),
         ));
         let repository_state = Arc::new(RepositoryStateService::new(
             Arc::new(
-                releash_lib::test_support::integration::repository::RepositoryStateRepositoryGateway::new(
+                releashd::test_support::integration::repository::RepositoryStateRepositoryGateway::new(
                     repository.clone(),
                 ),
             ),
             Arc::new(
-                releash_lib::test_support::integration::repository::DefaultRepositoryScanner::new(
+                releashd::test_support::integration::repository::DefaultRepositoryScanner::new(
                     repository.clone(),
-                    Arc::new(releash_lib::test_support::integration::platform::build_code_usecase()),
+                    Arc::new(releashd::test_support::integration::platform::build_code_usecase()),
                 ),
             ),
             subscriptions.clone(),
             Arc::new(NoopRepositoryStateWatcher),
             Arc::new(TestRepositoryStateWorkerRuntime),
             Arc::new(CanonicalWorktreePathNormalizer),
-            releash_lib::test_support::integration::subscriptions::repository_driver(),
+            releashd::test_support::integration::subscriptions::repository_driver(),
         ));
         let workflows_dir = data_dir.path().join("workflows");
         std::fs::create_dir_all(&workflows_dir).unwrap();
         let workflow = Arc::new(
-            releash_lib::test_support::integration::platform::build_workflow_usecase(
+            releashd::test_support::integration::platform::build_workflow_usecase(
                 data_dir.path().join("data"),
                 Some(workflows_dir),
             ),
@@ -126,11 +126,11 @@ impl Fixture {
         let git_host = Arc::new(
             GitHostUsecase::new(
                 Arc::new(pull_requests),
-                Arc::new(releash_lib::test_support::integration::platform::LatestPrStatuses::default()),
-                Arc::new(releash_lib::test_support::integration::platform::InMemoryTtlCache::<
+                Arc::new(releashd::test_support::integration::platform::LatestPrStatuses::default()),
+                Arc::new(releashd::test_support::integration::platform::InMemoryTtlCache::<
                     Vec<IssueInfo>,
                 >::new(
-                    releash_lib::test_support::integration::platform::CacheTtl::EXTERNAL_INFORMATION
+                    releashd::test_support::integration::platform::CacheTtl::EXTERNAL_INFORMATION
                 )),
             )
             .with_state_publisher(subscriptions.clone()),
@@ -312,7 +312,7 @@ pub async fn test_手動更新_pr取得後に前の一覧へprを反映する() 
     fixture.watch_until(|rows| rows.len() == 1).await;
     fixture.add_worktree("feature");
     let mut changes =
-        releash_lib::test_support::integration::subscriptions::changes(&fixture.subscriptions);
+        releashd::test_support::integration::subscriptions::changes(&fixture.subscriptions);
 
     let refreshing = tokio::spawn({
         let usecase = fixture.usecase.clone();
@@ -394,17 +394,17 @@ pub async fn test_一覧の読取_収集処理の失敗を空の一覧に変え�
     // Then
     assert_eq!(
         error.nature,
-        releash_lib::test_support::integration::platform::TechnicalFailureNature::Other
+        releashd::test_support::integration::platform::TechnicalFailureNature::Other
     );
     assert!(error.message.contains("repository collection failed"));
 }
 
 #[tokio::test]
 pub async fn test_watch_paths_一覧とrootの読み取り失敗をrepositoryに対応させる() {
-    use releash_lib::test_support::integration::platform::RepositoryScanner;
-    use releash_lib::test_support::integration::platform::RepositorySnapshotParts;
-    use releash_lib::test_support::integration::platform::RepositoryStateError;
-    use releash_lib::test_support::integration::platform::RepositoryStateRepository;
+    use releashd::test_support::integration::platform::RepositoryScanner;
+    use releashd::test_support::integration::platform::RepositorySnapshotParts;
+    use releashd::test_support::integration::platform::RepositoryStateError;
+    use releashd::test_support::integration::platform::RepositoryStateRepository;
     struct Root(bool);
     impl RepositoryStateRepository for Root {
         fn main_repo_path(&self, path: &str) -> Result<String, RepositoryStateError> {
@@ -453,7 +453,7 @@ pub async fn test_watch_paths_一覧とrootの読み取り失敗をrepositoryに
             Arc::new(NoopRepositoryStateWatcher),
             Arc::new(TestRepositoryStateWorkerRuntime),
             Arc::new(CanonicalWorktreePathNormalizer),
-            releash_lib::test_support::integration::subscriptions::repository_driver(),
+            releashd::test_support::integration::subscriptions::repository_driver(),
         ));
         fixture.usecase.test_replace_repository_state(state.clone());
         if !root_failed {

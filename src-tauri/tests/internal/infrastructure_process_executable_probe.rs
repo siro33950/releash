@@ -6,8 +6,8 @@ pub(crate) mod tests {
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
 
-    use releash_lib::test_support::integration::process::resolve_executable;
-    use releash_lib::test_support::integration::process::ExecutableProbeResult;
+    use releashd::test_support::integration::process::resolve_executable;
+    use releashd::test_support::integration::process::ExecutableProbeResult;
 
     fn executable(path: &Path) {
         fs::write(path, "#!/bin/sh\nexit 0\n").unwrap();

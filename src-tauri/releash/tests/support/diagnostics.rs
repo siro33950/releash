@@ -9,10 +9,10 @@ pub fn backend_executable() -> std::path::PathBuf {
         .parent()
         .and_then(std::path::Path::parent)
         .unwrap()
-        .join(format!("releash-backend{}", std::env::consts::EXE_SUFFIX));
+        .join(format!("releashd{}", std::env::consts::EXE_SUFFIX));
     assert!(
         path.is_file(),
-        "{} is missing; run cargo build -p releash-backend --bin releash-backend first",
+        "{} is missing; run cargo build -p releashd --bin releashd first",
         path.display()
     );
     path
@@ -37,11 +37,10 @@ impl DiagnosticsHost {
         std::os::unix::fs::symlink(applied_directory, config.join("releash/workflows"))
             .map_err(|error| error.to_string())?;
         let child = Command::new(backend_executable())
-            .arg("--internal-daemon")
-            .arg(&data_dir)
             .env("HOME", &data_dir)
-            .env_remove("RELEASH_DATA_DIR")
-            .env("RELEASH_DAEMON_LAUNCH_ID", uuid::Uuid::new_v4().to_string())
+            .env("RELEASH_DATA_DIR", &data_dir)
+            .env_remove("RELEASH_DAEMON_LAUNCH_ID")
+            .env_remove("RELEASH_DAEMON_PARENT_PIPE")
             .env("SHELL", "/bin/sh")
             .env("XDG_CONFIG_HOME", data_dir.join("config"))
             .env("CLAUDE_CONFIG_DIR", data_dir.join(".claude"))

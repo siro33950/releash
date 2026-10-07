@@ -1,18 +1,18 @@
-use releash_lib::test_support::integration::fixtures::fixtures_adaptor_gateway_repository_state_event as event;
-use releash_lib::test_support::integration::fixtures::fixtures_adaptor_gateway_repository_state_state_with_subscriptions as state_with_subscriptions;
-use releash_lib::test_support::integration::platform::RepositorySnapshotParts;
-use releash_lib::test_support::integration::platform::RepositoryStateRepository;
-use releash_lib::test_support::integration::platform::RepositoryStateWorkerRuntime;
-use releash_lib::test_support::integration::repository::handle_file_events;
-use releash_lib::test_support::integration::repository::handle_git_events;
-use releash_lib::test_support::integration::repository::RepositoryStateRepositoryGateway;
+use releashd::test_support::integration::fixtures::fixtures_adaptor_gateway_repository_state_event as event;
+use releashd::test_support::integration::fixtures::fixtures_adaptor_gateway_repository_state_state_with_subscriptions as state_with_subscriptions;
+use releashd::test_support::integration::platform::RepositorySnapshotParts;
+use releashd::test_support::integration::platform::RepositoryStateRepository;
+use releashd::test_support::integration::platform::RepositoryStateWorkerRuntime;
+use releashd::test_support::integration::repository::handle_file_events;
+use releashd::test_support::integration::repository::handle_git_events;
+use releashd::test_support::integration::repository::RepositoryStateRepositoryGateway;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 
 #[test]
 pub fn watcher_callbacks_only_invalidate_until_worker_commit() {
-    let subscriptions = releash_lib::test_support::integration::subscriptions::test_subscriptions();
+    let subscriptions = releashd::test_support::integration::subscriptions::test_subscriptions();
     let mut changes = subscriptions.changes();
     let state = state_with_subscriptions(subscriptions);
     let dir = tempfile::TempDir::new().unwrap();
@@ -50,7 +50,7 @@ pub fn watcher_callbacks_only_invalidate_until_worker_commit() {
 
     assert_eq!(
         changes.try_recv().unwrap(),
-        releash_lib::test_support::integration::subscriptions::StateChangeSource::Repository(vec![
+        releashd::test_support::integration::subscriptions::StateChangeSource::Repository(vec![
             "/repo".into()
         ])
     );
@@ -66,7 +66,7 @@ pub fn test_worktree削除一覧_repositoryの別表記も同じrootへ解決す
     let alias = aliases.path().join("repository");
     std::os::unix::fs::symlink(dir.path(), &alias).unwrap();
     let gateway = RepositoryStateRepositoryGateway::new(Arc::new(
-        releash_lib::test_support::integration::platform::build_repository_usecase(),
+        releashd::test_support::integration::platform::build_repository_usecase(),
     ));
     // When
     let root = gateway.main_repo_path(alias.to_str().unwrap()).unwrap();
@@ -91,7 +91,7 @@ pub async fn test_workspace一覧_別表記の隔離worktreeを除外し削除�
     let root = real.join("repo");
     let repo = git2::Repository::init(&root).unwrap();
     crate::test_support_git::create_initial_commit(&repo);
-    let isolated = releash_lib::test_support::integration::workflow::IsolatedWorktree::for_attempt(
+    let isolated = releashd::test_support::integration::workflow::IsolatedWorktree::for_attempt(
         alias.join("repo").to_str().unwrap(),
         "node",
         1,
@@ -121,7 +121,7 @@ pub async fn test_workspace一覧_別表記の隔離worktreeを除外し削除�
         .unwrap();
     }
     let repository =
-        Arc::new(releash_lib::test_support::integration::platform::build_repository_usecase());
+        Arc::new(releashd::test_support::integration::platform::build_repository_usecase());
     let gateway = RepositoryStateRepositoryGateway::new(repository.clone());
     let operations = repository.worktree_operations();
     let canonical_worktree = ordinary
@@ -132,7 +132,7 @@ pub async fn test_workspace一覧_別表記の隔離worktreeを除外し削除�
     let mut deletion = operations.delete(&canonical_worktree).await.unwrap();
     deletion
         .accept(
-            releash_lib::test_support::integration::repository::WorktreeDeletionTarget {
+            releashd::test_support::integration::repository::WorktreeDeletionTarget {
                 repository_root: repository.get_main_repo_path(&canonical_worktree).unwrap(),
                 path: canonical_worktree.clone(),
                 branch: None,
@@ -171,7 +171,7 @@ pub async fn test_workspace一覧_別表記の隔離worktreeを除外し削除�
         assert!(operations.mutate(&canonical_worktree).is_err());
     }
     // Git 管理情報と実体が失われた後も同じ削除対象を読み出す。
-    releash_lib::test_support::integration::repository::remove_worktree(
+    releashd::test_support::integration::repository::remove_worktree(
         real.join("repo").to_str().unwrap(),
         &canonical_worktree,
         false,
@@ -201,7 +201,7 @@ pub fn test_workspace一覧_別表記で作成したworktreeの選択パスが�
     let repo_path = alias.join("repo");
     let repo_path = repo_path.to_str().unwrap();
     let repository =
-        Arc::new(releash_lib::test_support::integration::platform::build_repository_usecase());
+        Arc::new(releashd::test_support::integration::platform::build_repository_usecase());
     let gateway = RepositoryStateRepositoryGateway::new(repository.clone());
 
     // When
@@ -232,9 +232,9 @@ pub async fn test_repository走査の期限切れ_旧走査を回収して同じ
     let (dir, repo) = crate::test_support_git::create_test_repo();
     crate::test_support_git::create_initial_commit(&repo);
     let scanner = Arc::new(
-        releash_lib::test_support::integration::repository::DefaultRepositoryScanner::new(
-            Arc::new(releash_lib::test_support::integration::platform::build_repository_usecase()),
-            Arc::new(releash_lib::test_support::integration::platform::build_code_usecase()),
+        releashd::test_support::integration::repository::DefaultRepositoryScanner::new(
+            Arc::new(releashd::test_support::integration::platform::build_repository_usecase()),
+            Arc::new(releashd::test_support::integration::platform::build_code_usecase()),
         ),
     );
     let path = dir.path().to_str().unwrap().to_owned();
@@ -246,13 +246,11 @@ pub async fn test_repository走査の期限切れ_旧走査を回収して同じ
     crate::adaptor_gateway_shared_background_worker::assert_expired_releases(Box::pin(
         async move {
             let _scan = attempt_lock.lock().await;
-            releash_lib::test_support::integration::platform::RepositoryScanWorkerRuntime::new()
+            releashd::test_support::integration::platform::RepositoryScanWorkerRuntime::new()
                 .scan(attempt_scanner, attempt_path)
                 .await
                 .map_err(|error| {
-                    releash_lib::test_support::integration::platform::WorkFailure::from_error(
-                        &error,
-                    )
+                    releashd::test_support::integration::platform::WorkFailure::from_error(&error)
                 })?;
             Ok(())
         },
@@ -260,13 +258,13 @@ pub async fn test_repository走査の期限切れ_旧走査を回収して同じ
     .await;
     // Then
     assert!(scan_lock.try_lock().is_ok());
-    releash_lib::test_support::integration::platform::RepositoryScanWorkerRuntime::new()
+    releashd::test_support::integration::platform::RepositoryScanWorkerRuntime::new()
         .scan(scanner.clone(), path)
         .await
         .unwrap();
     let (other, repo) = crate::test_support_git::create_test_repo();
     crate::test_support_git::create_initial_commit(&repo);
-    releash_lib::test_support::integration::platform::RepositoryScanWorkerRuntime::new()
+    releashd::test_support::integration::platform::RepositoryScanWorkerRuntime::new()
         .scan(scanner, other.path().to_str().unwrap().into())
         .await
         .unwrap();

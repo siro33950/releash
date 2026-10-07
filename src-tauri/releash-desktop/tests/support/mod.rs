@@ -8,10 +8,10 @@ pub(super) fn backend_path(executable: &std::path::Path) -> std::path::PathBuf {
         .parent()
         .and_then(std::path::Path::parent)
         .expect("target profile directory")
-        .join(format!("releash-backend{}", std::env::consts::EXE_SUFFIX));
+        .join(format!("releashd{}", std::env::consts::EXE_SUFFIX));
     assert!(
         path.is_file(),
-        "{} is missing; run cargo build -p releash-backend --bin releash-backend first",
+        "{} is missing; run cargo build -p releashd --bin releashd first",
         path.display()
     );
     path

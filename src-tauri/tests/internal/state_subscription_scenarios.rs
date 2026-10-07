@@ -1,14 +1,14 @@
 use crate::state_subscription_reads::Fixture as StateReadsFixture;
 use futures_util::StreamExt;
-use releash_lib::test_support::integration::fixtures::fixtures_infrastructure_state_subscription_start_read as start_read;
-use releash_lib::test_support::integration::fixtures::fixtures_infrastructure_state_subscription_stop_read as stop_read;
-use releash_lib::test_support::integration::subscriptions::same;
-use releash_lib::test_support::integration::subscriptions::Event;
-use releash_lib::test_support::integration::subscriptions::StateChangeSource;
-use releash_lib::test_support::integration::subscriptions::StateSubscriptionEvent;
-use releash_lib::test_support::integration::subscriptions::StateValue;
-use releash_lib::test_support::integration::subscriptions::SubscriptionTarget;
-use releash_lib::test_support::integration::subscriptions::WatchRequirement;
+use releashd::test_support::integration::fixtures::fixtures_infrastructure_state_subscription_start_read as start_read;
+use releashd::test_support::integration::fixtures::fixtures_infrastructure_state_subscription_stop_read as stop_read;
+use releashd::test_support::integration::subscriptions::same;
+use releashd::test_support::integration::subscriptions::Event;
+use releashd::test_support::integration::subscriptions::StateChangeSource;
+use releashd::test_support::integration::subscriptions::StateSubscriptionEvent;
+use releashd::test_support::integration::subscriptions::StateValue;
+use releashd::test_support::integration::subscriptions::SubscriptionTarget;
+use releashd::test_support::integration::subscriptions::WatchRequirement;
 use std::sync::Arc;
 
 #[tokio::test]
@@ -17,13 +17,12 @@ pub async fn test_workspaces購読_最後の停止と切断で実際のgit監視
         // Given
         let fixture = StateReadsFixture::new();
         let repository = fixture.repository_state.clone();
-        let files = Arc::new(
-            releash_lib::test_support::integration::platform::SubscriptionFiles::default(),
-        );
+        let files =
+            Arc::new(releashd::test_support::integration::platform::SubscriptionFiles::default());
         let usecase = fixture.subscriptions.clone().with_reads(
             Arc::new(fixture.reads.clone()),
             Some(Arc::new(
-                releash_lib::test_support::integration::platform::WatcherUsecase::new(
+                releashd::test_support::integration::platform::WatcherUsecase::new(
                     Some(repository.clone()),
                     files.clone(),
                 ),
@@ -70,14 +69,11 @@ pub async fn test_review_threads購読_comment操作で再配信し最後の停�
     // Given
     let fixture = StateReadsFixture::new();
     let files =
-        Arc::new(releash_lib::test_support::integration::platform::SubscriptionFiles::default());
+        Arc::new(releashd::test_support::integration::platform::SubscriptionFiles::default());
     let usecase = fixture.subscriptions.clone().with_reads(
         Arc::new(fixture.reads.clone()),
         Some(Arc::new(
-            releash_lib::test_support::integration::platform::WatcherUsecase::new(
-                None,
-                files.clone(),
-            ),
+            releashd::test_support::integration::platform::WatcherUsecase::new(None, files.clone()),
         )),
         vec![],
         String::new(),
@@ -107,8 +103,8 @@ pub async fn test_review_threads購読_comment操作で再配信し最後の停�
         .create_thread(
             &fixture.reads.data_dir,
             "repository",
-            releash_lib::test_support::integration::platform::ReviewActor::human(),
-            releash_lib::test_support::integration::platform::ReviewTarget {
+            releashd::test_support::integration::platform::ReviewActor::human(),
+            releashd::test_support::integration::platform::ReviewTarget {
                 file_path: None,
                 line_number: None,
                 end_line: None,

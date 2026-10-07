@@ -1,16 +1,16 @@
 pub(crate) mod tests {
 
     use parking_lot::RwLock;
-    use releash_lib::test_support::integration::persistence::apply_canonical_runtime_owners;
-    use releash_lib::test_support::integration::persistence::build_startup_gc_request;
-    use releash_lib::test_support::integration::persistence::run_startup_gc;
-    use releash_lib::test_support::integration::persistence::CacheGcRecord;
-    use releash_lib::test_support::integration::persistence::CanonicalRuntimeOwners;
-    use releash_lib::test_support::integration::persistence::GcCategory;
-    use releash_lib::test_support::integration::persistence::StdGcFileSystem;
-    use releash_lib::test_support::integration::platform::AppDataPathObserver as StorePathObserver;
-    use releash_lib::test_support::integration::platform::AppDataPathOperation as StorePathOperation;
-    use releash_lib::test_support::integration::repository::SharedRepoPaths;
+    use releashd::test_support::integration::persistence::apply_canonical_runtime_owners;
+    use releashd::test_support::integration::persistence::build_startup_gc_request;
+    use releashd::test_support::integration::persistence::run_startup_gc;
+    use releashd::test_support::integration::persistence::CacheGcRecord;
+    use releashd::test_support::integration::persistence::CanonicalRuntimeOwners;
+    use releashd::test_support::integration::persistence::GcCategory;
+    use releashd::test_support::integration::persistence::StdGcFileSystem;
+    use releashd::test_support::integration::platform::AppDataPathObserver as StorePathObserver;
+    use releashd::test_support::integration::platform::AppDataPathOperation as StorePathOperation;
+    use releashd::test_support::integration::repository::SharedRepoPaths;
     use std::path::Path;
     use std::path::PathBuf;
     use std::sync::Arc;
@@ -168,11 +168,10 @@ pub(crate) mod tests {
             .and_then(|name| name.to_str())
             .expect("repo name");
         let live_workspace_key =
-            releash_lib::test_support::integration::platform::storage_key(live_name);
-        let live_review_key =
-            releash_lib::test_support::integration::platform::worktree_storage_key(
-                repo.path().to_string_lossy().as_ref(),
-            );
+            releashd::test_support::integration::platform::storage_key(live_name);
+        let live_review_key = releashd::test_support::integration::platform::worktree_storage_key(
+            repo.path().to_string_lossy().as_ref(),
+        );
         let workspace_state = root.join("workspace_state");
         let review_comments = root.join("review-comments");
         std::fs::create_dir_all(&workspace_state).expect("workspace state");

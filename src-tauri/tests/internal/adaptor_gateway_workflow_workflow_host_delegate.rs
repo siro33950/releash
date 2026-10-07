@@ -1,35 +1,35 @@
 use crate::adaptor_gateway_workflow_workflow_host_test_helpers::*;
-use releash_lib::test_support::integration::workflow::current_timestamp;
-use releash_lib::test_support::integration::workflow::DelegateContinuationGateway;
-use releash_lib::test_support::integration::workflow::ExecutionOrigin;
-use releash_lib::test_support::integration::workflow::HostDelegateContinuation;
-use releash_lib::test_support::integration::workflow::NodeExecutionStatus;
-use releash_lib::test_support::integration::workflow::NodeStart;
-use releash_lib::test_support::integration::workflow::RuntimeCommitSnapshot;
-use releash_lib::test_support::integration::workflow::TransitionOutcome;
-use releash_lib::test_support::integration::workflow::WorkflowControlPlaneCommit;
-use releash_lib::test_support::integration::workflow::WorkflowDefinition;
-use releash_lib::test_support::integration::workflow::WorkflowEvent;
-use releash_lib::test_support::integration::workflow::WorkflowRuntimeError;
-use releash_lib::test_support::integration::workflow::WorkflowRuntimeHost;
+use releashd::test_support::integration::workflow::current_timestamp;
+use releashd::test_support::integration::workflow::DelegateContinuationGateway;
+use releashd::test_support::integration::workflow::ExecutionOrigin;
+use releashd::test_support::integration::workflow::HostDelegateContinuation;
+use releashd::test_support::integration::workflow::NodeExecutionStatus;
+use releashd::test_support::integration::workflow::NodeStart;
+use releashd::test_support::integration::workflow::RuntimeCommitSnapshot;
+use releashd::test_support::integration::workflow::TransitionOutcome;
+use releashd::test_support::integration::workflow::WorkflowControlPlaneCommit;
+use releashd::test_support::integration::workflow::WorkflowDefinition;
+use releashd::test_support::integration::workflow::WorkflowEvent;
+use releashd::test_support::integration::workflow::WorkflowRuntimeError;
+use releashd::test_support::integration::workflow::WorkflowRuntimeHost;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use releash_lib::test_support::integration::workflow::workflow_execution_ExecutionTree as DomainExecutionTree;
-use releash_lib::test_support::integration::workflow::NodeFact;
-use releash_lib::test_support::integration::workflow::RuntimeNodeExecution;
-use releash_lib::test_support::integration::workflow::SubmitOutputArtifact;
-use releash_lib::test_support::integration::workflow::SubmitOutputCommand;
-use releash_lib::test_support::integration::workflow::WorkflowControlPlaneUsecase;
+use releashd::test_support::integration::workflow::workflow_execution_ExecutionTree as DomainExecutionTree;
+use releashd::test_support::integration::workflow::NodeFact;
+use releashd::test_support::integration::workflow::RuntimeNodeExecution;
+use releashd::test_support::integration::workflow::SubmitOutputArtifact;
+use releashd::test_support::integration::workflow::SubmitOutputCommand;
+use releashd::test_support::integration::workflow::WorkflowControlPlaneUsecase;
 use std::sync::atomic::Ordering;
 
 fn control(fixture: &Fixture, host: &WorkflowRuntimeHost) -> WorkflowControlPlaneUsecase {
-    let gateway = releash_lib::test_support::integration::workflow::WorkflowRuntimeCommandGateway::new_with_driver(
+    let gateway = releashd::test_support::integration::workflow::WorkflowRuntimeCommandGateway::new_with_driver(
         fixture.app.clone(),
         Arc::new(host.clone()),
     );
     WorkflowControlPlaneUsecase::new(
-        releash_lib::test_support::integration::platform::shared().clone(),
+        releashd::test_support::integration::platform::shared().clone(),
         Arc::new(gateway),
     )
 }
@@ -50,7 +50,7 @@ async fn submit(control: &WorkflowControlPlaneUsecase, id: &str, value: serde_js
 async fn stop(control: &WorkflowControlPlaneUsecase, tree: &str, node: &RuntimeNodeExecution) {
     control
         .record_provider_stop(
-            releash_lib::test_support::integration::providers::ProviderExecutionTreeStopCommand {
+            releashd::test_support::integration::providers::ProviderExecutionTreeStopCommand {
                 agent_session_id: node.session_id.clone().unwrap(),
                 tree_id: tree.into(),
                 node_execution_id: node.id.clone(),
@@ -130,7 +130,7 @@ pub async fn test_delegate_child実行中の親再開とchild再開をまたい�
             }
             control
                 .resume_session_node(
-                    releash_lib::test_support::integration::workflow::ResumeSessionNodeCommand {
+                    releashd::test_support::integration::workflow::ResumeSessionNodeCommand {
                         execution_id: tree.clone(),
                         node_execution_id: parent.id.clone(),
                     },
@@ -172,7 +172,7 @@ pub async fn test_delegate_child実行中の親再開とchild再開をまたい�
                 .store(true, Ordering::SeqCst);
             control
                 .resume_session_node(
-                    releash_lib::test_support::integration::workflow::ResumeSessionNodeCommand {
+                    releashd::test_support::integration::workflow::ResumeSessionNodeCommand {
                         execution_id: tree.clone(),
                         node_execution_id: child.id.clone(),
                     },
@@ -218,8 +218,8 @@ pub async fn test_delegate_child実行中の親再開とchild再開をまたい�
                 parent.worktree.as_ref().unwrap().path
             );
         }
-        let folded = releash_lib::test_support::integration::workflow::fold_tree_from(
-            &releash_lib::test_support::integration::workflow::FactLogReadBackend::Live(
+        let folded = releashd::test_support::integration::workflow::fold_tree_from(
+            &releashd::test_support::integration::workflow::FactLogReadBackend::Live(
                 fixture.store.clone(),
             ),
             &tree,
@@ -387,12 +387,10 @@ pub async fn test_delegate_注入を永続化して同じsessionへ戻しchild�
         }
         submit(&control, &parent.id, serde_json::json!({"passed": false})).await;
         stop(&control, &tree, &parent).await;
-        let records = releash_lib::test_support::integration::workflow::read_tree_records(
-            &fixture.store,
-            &tree,
-        )
-        .await
-        .unwrap();
+        let records =
+            releashd::test_support::integration::workflow::read_tree_records(&fixture.store, &tree)
+                .await
+                .unwrap();
         assert_eq!(
             records
                 .iter()
@@ -400,8 +398,8 @@ pub async fn test_delegate_注入を永続化して同じsessionへ戻しchild�
                 .count(),
             2
         );
-        let folded = releash_lib::test_support::integration::workflow::fold_tree_from(
-            &releash_lib::test_support::integration::workflow::FactLogReadBackend::Live(
+        let folded = releashd::test_support::integration::workflow::fold_tree_from(
+            &releashd::test_support::integration::workflow::FactLogReadBackend::Live(
                 fixture.store.clone(),
             ),
             &tree,
@@ -450,14 +448,14 @@ pub async fn test_delegate_結果注入の失敗は親をrunningに保ち注入�
     stop(&control, &tree, &child).await;
     // Then
     let records =
-        releash_lib::test_support::integration::workflow::read_tree_records(&fixture.store, &tree)
+        releashd::test_support::integration::workflow::read_tree_records(&fixture.store, &tree)
             .await
             .unwrap();
     assert!(!records
         .iter()
         .any(|record| matches!(record.fact, NodeFact::DelegateResultInjected(_))));
-    let folded = releash_lib::test_support::integration::workflow::fold_tree_from(
-        &releash_lib::test_support::integration::workflow::FactLogReadBackend::Live(
+    let folded = releashd::test_support::integration::workflow::fold_tree_from(
+        &releashd::test_support::integration::workflow::FactLogReadBackend::Live(
             fixture.store.clone(),
         ),
         &tree,
@@ -468,7 +466,7 @@ pub async fn test_delegate_結果注入の失敗は親をrunningに保ち注入�
     let failed = folded.aggregate.node_execution(&parent.id).unwrap();
     assert_eq!(failed.status, NodeExecutionStatus::Running);
     assert!(!failed.can_retry(
-        releash_lib::test_support::integration::workflow::NodeProcessPresence::ConfirmedAbsent
+        releashd::test_support::integration::workflow::NodeProcessPresence::ConfirmedAbsent
     ));
 }
 
@@ -512,7 +510,7 @@ pub async fn test_delegate_再起動後のresumeは完了childを再実行せず
             stop(&initial_control, &tree, &child).await;
             fixture.sessions.live_sessions.lock().unwrap().clear();
         } else {
-            releash_lib::test_support::integration::workflow::append_facts_for_events(
+            releashd::test_support::integration::workflow::append_facts_for_events(
                 &fixture.store,
                 &[WorkflowEvent::NodeStopReceived {
                     execution_id: tree.clone(),
@@ -537,12 +535,10 @@ pub async fn test_delegate_再起動後のresumeは完了childを再実行せず
             .await
             .unwrap();
         // Then
-        let records = releash_lib::test_support::integration::workflow::read_tree_records(
-            &fixture.store,
-            &tree,
-        )
-        .await
-        .unwrap();
+        let records =
+            releashd::test_support::integration::workflow::read_tree_records(&fixture.store, &tree)
+                .await
+                .unwrap();
         assert_eq!(
             records
                 .iter()
@@ -624,7 +620,7 @@ pub async fn test_delegate_送信成功後の注入済み事実保存失敗か�
         serde_json::json!({"passed": false}),
     )
     .await;
-    releash_lib::test_support::integration::workflow::append_facts_for_events(
+    releashd::test_support::integration::workflow::append_facts_for_events(
         &fixture.store,
         &[WorkflowEvent::NodeStopReceived {
             execution_id: tree.clone(),
@@ -634,8 +630,8 @@ pub async fn test_delegate_送信成功後の注入済み事実保存失敗か�
     )
     .await
     .unwrap();
-    let folded = releash_lib::test_support::integration::workflow::fold_tree_from(
-        &releash_lib::test_support::integration::workflow::FactLogReadBackend::Live(
+    let folded = releashd::test_support::integration::workflow::fold_tree_from(
+        &releashd::test_support::integration::workflow::FactLogReadBackend::Live(
             fixture.store.clone(),
         ),
         &tree,
@@ -657,13 +653,13 @@ pub async fn test_delegate_送信成功後の注入済み事実保存失敗か�
             &fixture.app,
             &tree,
             &injection,
-            releash_lib::test_support::integration::workflow::DelegateInjectionOrigin::Automatic,
+            releashd::test_support::integration::workflow::DelegateInjectionOrigin::Automatic,
         )
         .await
         .unwrap();
     assert_eq!(fixture.sessions.continuations.lock().unwrap().len(), 1);
     let records =
-        releash_lib::test_support::integration::workflow::read_tree_records(&fixture.store, &tree)
+        releashd::test_support::integration::workflow::read_tree_records(&fixture.store, &tree)
             .await
             .unwrap();
     assert!(!records
@@ -689,7 +685,7 @@ pub async fn test_delegate_送信成功後の注入済み事実保存失敗か�
 
     // Then
     let records =
-        releash_lib::test_support::integration::workflow::read_tree_records(&fixture.store, &tree)
+        releashd::test_support::integration::workflow::read_tree_records(&fixture.store, &tree)
             .await
             .unwrap();
     assert_eq!(
@@ -748,8 +744,8 @@ pub async fn test_delegate_共有worktreeでもresume時のprovider復元失敗�
         .await;
     // Then
     assert!(result.is_err());
-    let folded = releash_lib::test_support::integration::workflow::fold_tree_from(
-        &releash_lib::test_support::integration::workflow::FactLogReadBackend::Live(
+    let folded = releashd::test_support::integration::workflow::fold_tree_from(
+        &releashd::test_support::integration::workflow::FactLogReadBackend::Live(
             fixture.store.clone(),
         ),
         &tree,
@@ -760,7 +756,7 @@ pub async fn test_delegate_共有worktreeでもresume時のprovider復元失敗�
     let failed = folded.aggregate.node_execution(&parent.id).unwrap();
     assert_eq!(failed.status, NodeExecutionStatus::Running);
     assert!(!failed.can_retry(
-        releash_lib::test_support::integration::workflow::NodeProcessPresence::ConfirmedAbsent
+        releashd::test_support::integration::workflow::NodeProcessPresence::ConfirmedAbsent
     ));
     assert!(fixture.sessions.continuations.lock().unwrap().is_empty());
     assert_eq!(failed.attempt, parent.attempt);
@@ -823,7 +819,7 @@ pub async fn test_delegate_sequenceとfanoutのchildを提出から起動して�
         // Given
         let fixture = Fixture::new(0);
         let nodes = format!("  main: {{artifact: result, session: {{provider: codex, facets: {{instruction: policy-confirmation}}}}, completion: {{delegate: {{child: checks, when: child.judge.passed, max_iterations: 2}}}}}}\n  checks: {{{kind}: {{children: [judge]}}}}\n  judge: {{artifact: result, session: {{provider: codex, facets: {{instruction: policy-confirmation}}}}}}\nschemas:\n  result: {{type: object, properties: {{passed: {{type: boolean}}}}, required: [passed]}}");
-        let diagnosis = releash_lib::test_support::integration::workflow::diagnose_workflow_source(
+        let diagnosis = releashd::test_support::integration::workflow::diagnose_workflow_source(
             &format!("name: composite-delegate\ndescription: test\nnodes:\n{nodes}"),
             None,
         );
@@ -866,7 +862,7 @@ pub async fn test_delegate_sequenceとfanoutのchildを提出から起動して�
             assert_eq!(composite.attempt, round);
             assert_eq!(
                 composite.parent,
-                Some(releash_lib::test_support::integration::workflow::ExecutionParentRef::delegate_child(
+                Some(releashd::test_support::integration::workflow::ExecutionParentRef::delegate_child(
                     &parent.id
                 ))
             );
@@ -881,8 +877,8 @@ pub async fn test_delegate_sequenceとfanoutのchildを提出から起動して�
             submit(&control, &judge.id, serde_json::json!({"passed": passed})).await;
             stop(&control, &tree, &judge).await;
             // Then
-            let folded = releash_lib::test_support::integration::workflow::fold_tree_from(
-                &releash_lib::test_support::integration::workflow::FactLogReadBackend::Live(
+            let folded = releashd::test_support::integration::workflow::fold_tree_from(
+                &releashd::test_support::integration::workflow::FactLogReadBackend::Live(
                     fixture.store.clone(),
                 ),
                 &tree,
@@ -994,7 +990,7 @@ pub async fn test_delegate_未完了childを持つ再起動resumeは既存child�
     stop(&resumed_control, &tree, &child).await;
     assert_eq!(fixture.sessions.continuations.lock().unwrap().len(), 1);
     let records =
-        releash_lib::test_support::integration::workflow::read_tree_records(&fixture.store, &tree)
+        releashd::test_support::integration::workflow::read_tree_records(&fixture.store, &tree)
             .await
             .unwrap();
     assert_eq!(
@@ -1038,7 +1034,7 @@ pub async fn test_delegate_同じpendingを並行注入しても送信とcommit�
         .unwrap()
         .clone();
     submit(&control, &child.id, serde_json::json!({"passed": false})).await;
-    releash_lib::test_support::integration::workflow::append_facts_for_events(
+    releashd::test_support::integration::workflow::append_facts_for_events(
         &fixture.store,
         &[WorkflowEvent::NodeStopReceived {
             execution_id: tree.clone(),
@@ -1048,8 +1044,8 @@ pub async fn test_delegate_同じpendingを並行注入しても送信とcommit�
     )
     .await
     .unwrap();
-    let folded = releash_lib::test_support::integration::workflow::fold_tree_from(
-        &releash_lib::test_support::integration::workflow::FactLogReadBackend::Live(
+    let folded = releashd::test_support::integration::workflow::fold_tree_from(
+        &releashd::test_support::integration::workflow::FactLogReadBackend::Live(
             fixture.store.clone(),
         ),
         &tree,
@@ -1071,7 +1067,7 @@ pub async fn test_delegate_同じpendingを並行注入しても送信とcommit�
         &dependencies,
         &tree,
         &injection,
-        releash_lib::test_support::integration::workflow::DelegateInjectionOrigin::Automatic,
+        releashd::test_support::integration::workflow::DelegateInjectionOrigin::Automatic,
     );
     let second = async {
         fixture.sessions.continuation_entered.notified().await;
@@ -1079,7 +1075,7 @@ pub async fn test_delegate_同じpendingを並行注入しても送信とcommit�
             &dependencies,
             &tree,
             &injection,
-            releash_lib::test_support::integration::workflow::DelegateInjectionOrigin::Automatic,
+            releashd::test_support::integration::workflow::DelegateInjectionOrigin::Automatic,
         );
         tokio::pin!(second);
         assert!(
@@ -1101,7 +1097,7 @@ pub async fn test_delegate_同じpendingを並行注入しても送信とcommit�
     second.unwrap();
     assert_eq!(fixture.sessions.continuations.lock().unwrap().len(), 1);
     let records =
-        releash_lib::test_support::integration::workflow::read_tree_records(&fixture.store, &tree)
+        releashd::test_support::integration::workflow::read_tree_records(&fixture.store, &tree)
             .await
             .unwrap();
     assert_eq!(
@@ -1161,7 +1157,7 @@ pub async fn test_delegate_組み立てが欠けた入口は送信せずエラ�
     let fixture = Fixture::new(0);
     let mut host = fixture.host.clone();
     host.delegate_continuation = None;
-    let injection = releash_lib::test_support::integration::workflow::DelegateInjection {
+    let injection = releashd::test_support::integration::workflow::DelegateInjection {
         node_execution_id: "parent".into(),
         child_execution_id: "child".into(),
     };
@@ -1171,7 +1167,7 @@ pub async fn test_delegate_組み立てが欠けた入口は送信せずエラ�
             &fixture.app,
             "tree",
             &injection,
-            releash_lib::test_support::integration::workflow::DelegateInjectionOrigin::Automatic,
+            releashd::test_support::integration::workflow::DelegateInjectionOrigin::Automatic,
         )
         .await
         .unwrap_err();
@@ -1195,7 +1191,7 @@ pub async fn test_delegate_child待ち中の再submitは状態拒否となり保
         .clone();
     submit(&control, &parent.id, serde_json::json!({"passed": false})).await;
     let before =
-        releash_lib::test_support::integration::workflow::read_tree_records(&fixture.store, &tree)
+        releashd::test_support::integration::workflow::read_tree_records(&fixture.store, &tree)
             .await
             .unwrap();
     // When
@@ -1218,7 +1214,7 @@ pub async fn test_delegate_child待ち中の再submitは状態拒否となり保
         )
     );
     assert_eq!(
-        releash_lib::test_support::integration::workflow::read_tree_records(&fixture.store, &tree)
+        releashd::test_support::integration::workflow::read_tree_records(&fixture.store, &tree)
             .await
             .unwrap(),
         before
@@ -1284,7 +1280,7 @@ pub async fn test_delegate_childの新attemptへのresumeは親を待機させ�
     // When
     control
         .resume_session_node(
-            releash_lib::test_support::integration::workflow::ResumeSessionNodeCommand {
+            releashd::test_support::integration::workflow::ResumeSessionNodeCommand {
                 execution_id: tree.clone(),
                 node_execution_id: first.id.clone(),
             },
@@ -1306,13 +1302,15 @@ pub async fn test_delegate_childの新attemptへのresumeは親を待機させ�
     for child in [&first, &retry] {
         assert_eq!(
             child.parent,
-            Some(releash_lib::test_support::integration::workflow::ExecutionParentRef::delegate_child(
-                &parent.id
-            ))
+            Some(
+                releashd::test_support::integration::workflow::ExecutionParentRef::delegate_child(
+                    &parent.id
+                )
+            )
         );
     }
-    let folded = releash_lib::test_support::integration::workflow::fold_tree_from(
-        &releash_lib::test_support::integration::workflow::FactLogReadBackend::Live(
+    let folded = releashd::test_support::integration::workflow::fold_tree_from(
+        &releashd::test_support::integration::workflow::FactLogReadBackend::Live(
             fixture.store.clone(),
         ),
         &tree,
@@ -1334,7 +1332,7 @@ pub async fn test_delegate_childの新attemptへのresumeは親を待機させ�
     stop(&control, &tree, &retry).await;
     // Then
     let records =
-        releash_lib::test_support::integration::workflow::read_tree_records(&fixture.store, &tree)
+        releashd::test_support::integration::workflow::read_tree_records(&fixture.store, &tree)
             .await
             .unwrap();
     assert!(records
@@ -1346,8 +1344,8 @@ pub async fn test_delegate_childの新attemptへのresumeは親を待機させ�
         parent.session_id.clone().unwrap()
     );
     // When: Retry は delegate の発火上限を消費しない
-    let mut replayed = releash_lib::test_support::integration::workflow::fold_tree_from(
-        &releash_lib::test_support::integration::workflow::FactLogReadBackend::Live(
+    let mut replayed = releashd::test_support::integration::workflow::fold_tree_from(
+        &releashd::test_support::integration::workflow::FactLogReadBackend::Live(
             fixture.store.clone(),
         ),
         &tree,
@@ -1358,7 +1356,7 @@ pub async fn test_delegate_childの新attemptへのresumeは親を待機させ�
     .aggregate;
     replayed.record_node_completion_signal(
         &parent.id,
-        releash_lib::test_support::integration::workflow::NodeCompletionSignal::Submit,
+        releashd::test_support::integration::workflow::NodeCompletionSignal::Submit,
         current_timestamp(),
     );
     assert_eq!(
@@ -1384,9 +1382,7 @@ pub async fn test_delegate_childの新attemptへのresumeは親を待機させ�
     assert!(matches!(
         advance.advance,
         Some(
-            releash_lib::test_support::integration::workflow::ExecutionAdvanceDecision::StartNodes(
-                _
-            )
+            releashd::test_support::integration::workflow::ExecutionAdvanceDecision::StartNodes(_)
         )
     ));
     assert_eq!(replayed.node_execution("next-child").unwrap().attempt, 3);
@@ -1403,8 +1399,8 @@ pub async fn test_delegate_childの新attemptへのresumeは親を待機させ�
     // Then
     assert_eq!(second.attempt, 3);
     assert_ne!(second.id, retry.id);
-    let folded = releash_lib::test_support::integration::workflow::fold_tree_from(
-        &releash_lib::test_support::integration::workflow::FactLogReadBackend::Live(
+    let folded = releashd::test_support::integration::workflow::fold_tree_from(
+        &releashd::test_support::integration::workflow::FactLogReadBackend::Live(
             fixture.store.clone(),
         ),
         &tree,
@@ -1429,8 +1425,8 @@ pub async fn test_delegate_childの新attemptへのresumeは親を待機させ�
     submit(&control, &parent.id, serde_json::json!({"passed": false})).await;
     stop(&control, &tree, &parent).await;
     // Then
-    let folded = releash_lib::test_support::integration::workflow::fold_tree_from(
-        &releash_lib::test_support::integration::workflow::FactLogReadBackend::Live(
+    let folded = releashd::test_support::integration::workflow::fold_tree_from(
+        &releashd::test_support::integration::workflow::FactLogReadBackend::Live(
             fixture.store.clone(),
         ),
         &tree,
@@ -1495,8 +1491,8 @@ pub async fn test_delegate_artifactを省略したisolated_session_childのworkt
     let worktree = child.worktree.as_ref().unwrap();
     let expected =
         serde_json::json!({"worktree": {"branch": worktree.branch, "path": worktree.path}});
-    let folded = releash_lib::test_support::integration::workflow::fold_tree_from(
-        &releash_lib::test_support::integration::workflow::FactLogReadBackend::Live(
+    let folded = releashd::test_support::integration::workflow::fold_tree_from(
+        &releashd::test_support::integration::workflow::FactLogReadBackend::Live(
             fixture.store.clone(),
         ),
         &tree,
@@ -1604,7 +1600,7 @@ schemas:
         serde_json::json!({"passed": false, "task": "reviewed"}),
     )
     .await;
-    releash_lib::test_support::integration::workflow::append_facts_for_events(
+    releashd::test_support::integration::workflow::append_facts_for_events(
         &fixture.store,
         &[WorkflowEvent::NodeStopReceived {
             execution_id: tree.clone(),
@@ -1615,12 +1611,12 @@ schemas:
     .await
     .unwrap();
     let records =
-        releash_lib::test_support::integration::workflow::read_tree_records(&fixture.store, &tree)
+        releashd::test_support::integration::workflow::read_tree_records(&fixture.store, &tree)
             .await
             .unwrap();
-    let root = releash_lib::test_support::integration::workflow::decode(
-        releash_lib::test_support::integration::workflow::event_type(&records[0].fact),
-        &releash_lib::test_support::integration::workflow::encode_detail(&records[0].fact).unwrap(),
+    let root = releashd::test_support::integration::workflow::decode(
+        releashd::test_support::integration::workflow::event_type(&records[0].fact),
+        &releashd::test_support::integration::workflow::encode_detail(&records[0].fact).unwrap(),
     )
     .unwrap();
     let NodeFact::Started(started) = root else {
@@ -1787,12 +1783,10 @@ pub async fn test_delegate_false_childが親stopより先に完了しても再�
         stop(&resumed_control, &tree, &parent).await;
         stop(&resumed_control, &tree, &parent).await;
         // Then
-        let records = releash_lib::test_support::integration::workflow::read_tree_records(
-            &fixture.store,
-            &tree,
-        )
-        .await
-        .unwrap();
+        let records =
+            releashd::test_support::integration::workflow::read_tree_records(&fixture.store, &tree)
+                .await
+                .unwrap();
         assert_eq!(
             records
                 .iter()
@@ -1881,7 +1875,7 @@ pub async fn test_delegate_新attemptのresumeでも未注入結果を送り再�
         // When
         control
             .resume_session_node(
-                releash_lib::test_support::integration::workflow::ResumeSessionNodeCommand {
+                releashd::test_support::integration::workflow::ResumeSessionNodeCommand {
                     execution_id: tree.clone(),
                     node_execution_id: parent.id.clone(),
                 },
@@ -1912,8 +1906,8 @@ pub async fn test_delegate_新attemptのresumeでも未注入結果を送り再�
             fixture.sessions.initial_instructions.lock().unwrap().len(),
             3
         );
-        let folded = releash_lib::test_support::integration::workflow::fold_tree_from(
-            &releash_lib::test_support::integration::workflow::FactLogReadBackend::Live(
+        let folded = releashd::test_support::integration::workflow::fold_tree_from(
+            &releashd::test_support::integration::workflow::FactLogReadBackend::Live(
                 fixture.store.clone(),
             ),
             &tree,
@@ -1929,12 +1923,10 @@ pub async fn test_delegate_新attemptのresumeでも未注入結果を送り再�
         assert_eq!(replayed.artifact, next.artifact);
         assert_eq!(replayed.completion_signals, next.completion_signals);
         assert!(folded.aggregate.pending_delegate_injections().is_empty());
-        let records = releash_lib::test_support::integration::workflow::read_tree_records(
-            &fixture.store,
-            &tree,
-        )
-        .await
-        .unwrap();
+        let records =
+            releashd::test_support::integration::workflow::read_tree_records(&fixture.store, &tree)
+                .await
+                .unwrap();
         assert_eq!(
             records
                 .iter()
@@ -1994,7 +1986,7 @@ pub async fn test_delegate_結果注入が競合しても同じ回の他leafを�
     stop(&control, &tree, &node(&execution, "parent")).await;
     let child = node(&execution, "check");
     submit(&control, &child.id, serde_json::json!({"passed": false})).await;
-    releash_lib::test_support::integration::workflow::append_facts_for_events(
+    releashd::test_support::integration::workflow::append_facts_for_events(
         &fixture.store,
         &[WorkflowEvent::NodeStopReceived {
             execution_id: tree.clone(),
@@ -2027,7 +2019,7 @@ pub async fn test_delegate_結果注入が競合しても同じ回の他leafを�
         .start_nodes(&fixture.app, &tree, "/repo", starts);
     let interleave = async {
         fixture.sessions.continuation_entered.notified().await;
-        releash_lib::test_support::integration::workflow::append_facts_for_events(
+        releashd::test_support::integration::workflow::append_facts_for_events(
             &fixture.store,
             &[WorkflowEvent::CommandSpawned {
                 execution_id: tree.clone(),
@@ -2049,7 +2041,7 @@ pub async fn test_delegate_結果注入が競合しても同じ回の他leafを�
     result.unwrap();
     assert!(fixture.sessions.activated.lock().unwrap().contains(&other));
     let records =
-        releash_lib::test_support::integration::workflow::read_tree_records(&fixture.store, &tree)
+        releashd::test_support::integration::workflow::read_tree_records(&fixture.store, &tree)
             .await
             .unwrap();
     assert_eq!(
@@ -2111,7 +2103,7 @@ pub async fn test_delegate_child起動の失敗精算が競合しても提出は
     // Then
     result.unwrap();
     let records =
-        releash_lib::test_support::integration::workflow::read_tree_records(&fixture.store, &tree)
+        releashd::test_support::integration::workflow::read_tree_records(&fixture.store, &tree)
             .await
             .unwrap();
     assert!(records
@@ -2189,7 +2181,7 @@ pub async fn test_委任_保存の競合が続いてもabortを完了し注入�
         .unwrap()
         .clone();
     submit(&control, &child.id, serde_json::json!({"passed": false})).await;
-    releash_lib::test_support::integration::workflow::append_facts_for_events(
+    releashd::test_support::integration::workflow::append_facts_for_events(
         &fixture.store,
         &[WorkflowEvent::NodeStopReceived {
             execution_id: tree.clone(),
@@ -2199,8 +2191,8 @@ pub async fn test_委任_保存の競合が続いてもabortを完了し注入�
     )
     .await
     .unwrap();
-    let folded = releash_lib::test_support::integration::workflow::fold_tree_from(
-        &releash_lib::test_support::integration::workflow::FactLogReadBackend::Live(
+    let folded = releashd::test_support::integration::workflow::fold_tree_from(
+        &releashd::test_support::integration::workflow::FactLogReadBackend::Live(
             fixture.store.clone(),
         ),
         &tree,
@@ -2215,7 +2207,7 @@ pub async fn test_委任_保存の競合が続いてもabortを完了し注入�
 
     let mut host = fixture.host.clone();
     host.delegate_continuation = Some(Arc::new(
-        releash_lib::test_support::integration::workflow::DelegateContinuationUsecase {
+        releashd::test_support::integration::workflow::DelegateContinuationUsecase {
             retrying: host.queue.clone(),
             gateway: Arc::new(ConflictingContinuation {
                 inner: HostDelegateContinuation {
@@ -2230,11 +2222,11 @@ pub async fn test_委任_保存の競合が続いてもabortを完了し注入�
         &fixture.app,
         &tree,
         &injection,
-        releash_lib::test_support::integration::workflow::DelegateInjectionOrigin::Automatic,
+        releashd::test_support::integration::workflow::DelegateInjectionOrigin::Automatic,
     );
     let abort = async {
         loop {
-            if let Some(item) = releash_lib::test_support::integration::platform::shared_store()
+            if let Some(item) = releashd::test_support::integration::platform::shared_store()
                 .records(&parent.id)
                 .into_iter()
                 .find(|item| item.record.count >= 2)
@@ -2257,7 +2249,7 @@ pub async fn test_委任_保存の競合が続いてもabortを完了し注入�
     .await
     .unwrap();
     let records =
-        releash_lib::test_support::integration::workflow::read_tree_records(&fixture.store, &tree)
+        releashd::test_support::integration::workflow::read_tree_records(&fixture.store, &tree)
             .await
             .unwrap();
     let after = host
@@ -2301,7 +2293,7 @@ pub async fn test_delegate_resumeの注入失敗を返し親を失敗として�
         .unwrap()
         .clone();
     submit(&control, &child.id, serde_json::json!({"passed": false})).await;
-    releash_lib::test_support::integration::workflow::append_facts_for_events(
+    releashd::test_support::integration::workflow::append_facts_for_events(
         &fixture.store,
         &[WorkflowEvent::NodeStopReceived {
             execution_id: tree.clone(),
@@ -2340,7 +2332,7 @@ pub async fn test_delegate_resumeの注入失敗を返し親を失敗として�
     );
     assert!(after.pending_delegate_injection(&parent.id).is_some());
     let records =
-        releash_lib::test_support::integration::workflow::read_tree_records(&fixture.store, &tree)
+        releashd::test_support::integration::workflow::read_tree_records(&fixture.store, &tree)
             .await
             .unwrap();
     assert!(!records

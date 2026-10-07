@@ -1,12 +1,12 @@
-use releash_lib::test_support::integration::platform::checkout;
-use releash_lib::test_support::integration::platform::detect_default_branch;
-use releash_lib::test_support::integration::platform::get_branch_name_for_repo;
-use releash_lib::test_support::integration::platform::git_operation_run as run;
-use releash_lib::test_support::integration::platform::CancelAfter;
-use releash_lib::test_support::integration::platform::Deadline;
-use releash_lib::test_support::integration::platform::GitOperationError;
-use releash_lib::test_support::integration::platform::OperationContext;
-use releash_lib::test_support::integration::platform::OperationStopped;
+use releashd::test_support::integration::platform::checkout;
+use releashd::test_support::integration::platform::detect_default_branch;
+use releashd::test_support::integration::platform::get_branch_name_for_repo;
+use releashd::test_support::integration::platform::git_operation_run as run;
+use releashd::test_support::integration::platform::CancelAfter;
+use releashd::test_support::integration::platform::Deadline;
+use releashd::test_support::integration::platform::GitOperationError;
+use releashd::test_support::integration::platform::OperationContext;
+use releashd::test_support::integration::platform::OperationStopped;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -16,7 +16,7 @@ pub fn test_checkout_notifyで操作途中の取消を検出する() {
     struct CancelOnNotify {
         calls: AtomicUsize,
     }
-    impl releash_lib::test_support::integration::platform::Cancellation for CancelOnNotify {
+    impl releashd::test_support::integration::platform::Cancellation for CancelOnNotify {
         fn is_cancelled(&self) -> bool {
             self.calls.fetch_add(1, Ordering::SeqCst) > 0
         }
@@ -36,7 +36,7 @@ pub fn test_checkout_notifyで操作途中の取消を検出する() {
     let cancel = Arc::new(CancelOnNotify {
         calls: AtomicUsize::new(0),
     });
-    releash_lib::test_support::integration::platform::sync_scope(
+    releashd::test_support::integration::platform::sync_scope(
         OperationContext::new(None, cancel.clone()),
         || {
             let mut options = checkout();
@@ -75,7 +75,7 @@ pub fn test_既定ブランチ探索_停止地点0を未検出や空名へ変換
         }),
     );
     // When
-    let result = releash_lib::test_support::integration::platform::sync_scope(context, || {
+    let result = releashd::test_support::integration::platform::sync_scope(context, || {
         detect_default_branch(&repo)
     });
     // Then
@@ -97,7 +97,7 @@ pub fn test_既定ブランチ探索_停止地点1を未検出や空名へ変換
         }),
     );
     // When
-    let result = releash_lib::test_support::integration::platform::sync_scope(context, || {
+    let result = releashd::test_support::integration::platform::sync_scope(context, || {
         detect_default_branch(&repo)
     });
     // Then
@@ -119,7 +119,7 @@ pub fn test_既定ブランチ探索_停止地点2を未検出や空名へ変換
         }),
     );
     // When
-    let result = releash_lib::test_support::integration::platform::sync_scope(context, || {
+    let result = releashd::test_support::integration::platform::sync_scope(context, || {
         detect_default_branch(&repo)
     });
     // Then
@@ -141,7 +141,7 @@ pub fn test_既定ブランチ探索_停止地点3を未検出や空名へ変換
         }),
     );
     // When
-    let result = releash_lib::test_support::integration::platform::sync_scope(context, || {
+    let result = releashd::test_support::integration::platform::sync_scope(context, || {
         detect_default_branch(&repo)
     });
     // Then
@@ -163,7 +163,7 @@ pub fn test_既定ブランチ探索_停止地点4を未検出や空名へ変換
         }),
     );
     // When
-    let result = releash_lib::test_support::integration::platform::sync_scope(context, || {
+    let result = releashd::test_support::integration::platform::sync_scope(context, || {
         detect_default_branch(&repo)
     });
     // Then
@@ -181,7 +181,7 @@ pub fn test_既定ブランチ探索_期限切れを未検出や空名へ変換�
     let context =
         OperationContext::default().with_deadline(Deadline::new(std::time::Instant::now()));
     // When
-    let result = releash_lib::test_support::integration::platform::sync_scope(context, || {
+    let result = releashd::test_support::integration::platform::sync_scope(context, || {
         detect_default_branch(&repo)
     });
     // Then
@@ -203,7 +203,7 @@ pub fn test_ブランチ名探索_停止地点0を未検出や空名へ変換し
         }),
     );
     // When
-    let result = releash_lib::test_support::integration::platform::sync_scope(context, || {
+    let result = releashd::test_support::integration::platform::sync_scope(context, || {
         get_branch_name_for_repo(&repo)
     });
     // Then
@@ -225,7 +225,7 @@ pub fn test_ブランチ名探索_停止地点1を未検出や空名へ変換し
         }),
     );
     // When
-    let result = releash_lib::test_support::integration::platform::sync_scope(context, || {
+    let result = releashd::test_support::integration::platform::sync_scope(context, || {
         get_branch_name_for_repo(&repo)
     });
     // Then
@@ -243,7 +243,7 @@ pub fn test_ブランチ名探索_期限切れを未検出や空名へ変換し�
     let context =
         OperationContext::default().with_deadline(Deadline::new(std::time::Instant::now()));
     // When
-    let result = releash_lib::test_support::integration::platform::sync_scope(context, || {
+    let result = releashd::test_support::integration::platform::sync_scope(context, || {
         get_branch_name_for_repo(&repo)
     });
     // Then

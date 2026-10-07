@@ -1,27 +1,27 @@
 pub(crate) mod tests {
 
-    use releash_lib::test_support::integration::platform::CommitIdentity;
-    use releash_lib::test_support::integration::repository::LocalEventTransactionRepository;
+    use releashd::test_support::integration::platform::CommitIdentity;
+    use releashd::test_support::integration::repository::LocalEventTransactionRepository;
 
-    use releash_lib::test_support::integration::persistence::validate_current_schema;
-    use releash_lib::test_support::integration::persistence::validate_reader_snapshot;
-    use releash_lib::test_support::integration::persistence::DatabaseFileIdentity;
-    use releash_lib::test_support::integration::persistence::LocalEventReadStore;
-    use releash_lib::test_support::integration::persistence::LocalEventStore;
-    use releash_lib::test_support::integration::persistence::LocalEventStoreConfig;
-    use releash_lib::test_support::integration::persistence::StoreLayout;
-    use releash_lib::test_support::integration::persistence::STORE_NOT_READY;
-    use releash_lib::test_support::integration::platform::CommitBatchError;
-    use releash_lib::test_support::integration::platform::CommitOperationKind;
-    use releash_lib::test_support::integration::platform::CommitResolution;
-    use releash_lib::test_support::integration::platform::IdempotencyBinding;
-    use releash_lib::test_support::integration::platform::LocalAtomicBatch;
-    use releash_lib::test_support::integration::platform::LocalEventQuery;
-    use releash_lib::test_support::integration::platform::LocalEventQueryError;
-    use releash_lib::test_support::integration::platform::LocalEventQueryResult;
-    use releash_lib::test_support::integration::platform::SessionOperationFailureKind;
+    use releashd::test_support::integration::persistence::validate_current_schema;
+    use releashd::test_support::integration::persistence::validate_reader_snapshot;
+    use releashd::test_support::integration::persistence::DatabaseFileIdentity;
+    use releashd::test_support::integration::persistence::LocalEventReadStore;
+    use releashd::test_support::integration::persistence::LocalEventStore;
+    use releashd::test_support::integration::persistence::LocalEventStoreConfig;
+    use releashd::test_support::integration::persistence::StoreLayout;
+    use releashd::test_support::integration::persistence::STORE_NOT_READY;
+    use releashd::test_support::integration::platform::CommitBatchError;
+    use releashd::test_support::integration::platform::CommitOperationKind;
+    use releashd::test_support::integration::platform::CommitResolution;
+    use releashd::test_support::integration::platform::IdempotencyBinding;
+    use releashd::test_support::integration::platform::LocalAtomicBatch;
+    use releashd::test_support::integration::platform::LocalEventQuery;
+    use releashd::test_support::integration::platform::LocalEventQueryError;
+    use releashd::test_support::integration::platform::LocalEventQueryResult;
+    use releashd::test_support::integration::platform::SessionOperationFailureKind;
 
-    use releash_lib::test_support::integration::transport::open_writer;
+    use releashd::test_support::integration::transport::open_writer;
 
     #[test]
     pub fn unrelated_files_are_never_a_read_fallback_without_sqlite_authority() {
@@ -31,9 +31,7 @@ pub(crate) mod tests {
 
         let error = match LocalEventReadStore::open(
             root.path(),
-            std::sync::Arc::new(
-                releash_lib::test_support::integration::platform::RetryLimiter::new(),
-            ),
+            std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
         ) {
             Ok(_) => panic!("unrelated files must not become a cross-process read authority"),
             Err(error) => error,
@@ -47,9 +45,7 @@ pub(crate) mod tests {
         let root = tempfile::TempDir::new().expect("read-only app data");
         let writer = LocalEventStore::open(LocalEventStoreConfig::production(
             root.path().to_path_buf(),
-            std::sync::Arc::new(
-                releash_lib::test_support::integration::platform::RetryLimiter::new(),
-            ),
+            std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
         ))
         .expect("canonical writer");
         drop(writer);
@@ -57,9 +53,7 @@ pub(crate) mod tests {
         let database_path = StoreLayout::new(root.path()).database_path();
         let connection = open_writer(
             &database_path,
-            std::sync::Arc::new(
-                releash_lib::test_support::integration::platform::RetryLimiter::new(),
-            ),
+            std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
         )
         .expect("maintenance connection");
         connection
@@ -69,9 +63,7 @@ pub(crate) mod tests {
 
         let error = match LocalEventReadStore::open(
             root.path(),
-            std::sync::Arc::new(
-                releash_lib::test_support::integration::platform::RetryLimiter::new(),
-            ),
+            std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
         ) {
             Ok(_) => panic!("stale schema must not publish canonical session state"),
             Err(error) => error,
@@ -88,14 +80,14 @@ pub(crate) mod tests {
             .pragma_update(
                 None,
                 "application_id",
-                releash_lib::test_support::integration::persistence::APPLICATION_ID,
+                releashd::test_support::integration::persistence::APPLICATION_ID,
             )
             .unwrap();
         connection
             .pragma_update(
                 None,
                 "user_version",
-                releash_lib::test_support::integration::persistence::CURRENT_SCHEMA_VERSION,
+                releashd::test_support::integration::persistence::CURRENT_SCHEMA_VERSION,
             )
             .unwrap();
         connection
@@ -125,16 +117,12 @@ pub(crate) mod tests {
         let root = tempfile::TempDir::new().expect("read-only app data");
         let writer = LocalEventStore::open(LocalEventStoreConfig::production(
             root.path().to_path_buf(),
-            std::sync::Arc::new(
-                releash_lib::test_support::integration::platform::RetryLimiter::new(),
-            ),
+            std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
         ))
         .expect("canonical writer");
         let reader = LocalEventReadStore::open(
             root.path(),
-            std::sync::Arc::new(
-                releash_lib::test_support::integration::platform::RetryLimiter::new(),
-            ),
+            std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
         )
         .expect("concurrent canonical reader");
         let database_path = StoreLayout::new(root.path()).database_path();
@@ -156,9 +144,7 @@ pub(crate) mod tests {
             .expect("normal writer commit");
         let maintenance = open_writer(
             &database_path,
-            std::sync::Arc::new(
-                releash_lib::test_support::integration::platform::RetryLimiter::new(),
-            ),
+            std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
         )
         .expect("checkpoint connection");
         maintenance
@@ -184,16 +170,12 @@ pub(crate) mod tests {
         let root = tempfile::TempDir::new().expect("read-only app data");
         let writer = LocalEventStore::open(LocalEventStoreConfig::production(
             root.path().to_path_buf(),
-            std::sync::Arc::new(
-                releash_lib::test_support::integration::platform::RetryLimiter::new(),
-            ),
+            std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
         ))
         .expect("canonical writer");
         let reader = LocalEventReadStore::open(
             root.path(),
-            std::sync::Arc::new(
-                releash_lib::test_support::integration::platform::RetryLimiter::new(),
-            ),
+            std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
         )
         .expect("concurrent canonical reader");
 
@@ -229,7 +211,7 @@ pub(crate) mod tests {
             commit_error,
             CommitBatchError::StorageAccessRequired { failure }
                 if failure.kind == SessionOperationFailureKind::PersistFailure
-                    && failure.nature == releash_lib::test_support::integration::platform::TechnicalFailureNature::Other
+                    && failure.nature == releashd::test_support::integration::platform::TechnicalFailureNature::Other
         ));
         assert_eq!(
             writer
@@ -255,25 +237,19 @@ pub(crate) mod tests {
         let root = tempfile::TempDir::new().expect("read-only app data");
         let writer = LocalEventStore::open(LocalEventStoreConfig::production(
             root.path().to_path_buf(),
-            std::sync::Arc::new(
-                releash_lib::test_support::integration::platform::RetryLimiter::new(),
-            ),
+            std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
         ))
         .expect("canonical writer");
         drop(writer);
         let reader = LocalEventReadStore::open(
             root.path(),
-            std::sync::Arc::new(
-                releash_lib::test_support::integration::platform::RetryLimiter::new(),
-            ),
+            std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
         )
         .expect("canonical reader");
         let database_path = StoreLayout::new(root.path()).database_path();
         let maintenance = open_writer(
             &database_path,
-            std::sync::Arc::new(
-                releash_lib::test_support::integration::platform::RetryLimiter::new(),
-            ),
+            std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
         )
         .expect("maintenance connection");
         maintenance
@@ -298,25 +274,19 @@ pub(crate) mod tests {
         let root = tempfile::TempDir::new().expect("read-only app data");
         let writer = LocalEventStore::open(LocalEventStoreConfig::production(
             root.path().to_path_buf(),
-            std::sync::Arc::new(
-                releash_lib::test_support::integration::platform::RetryLimiter::new(),
-            ),
+            std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
         ))
         .expect("canonical writer");
         drop(writer);
         let reader = LocalEventReadStore::open(
             root.path(),
-            std::sync::Arc::new(
-                releash_lib::test_support::integration::platform::RetryLimiter::new(),
-            ),
+            std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
         )
         .expect("canonical reader");
         let database_path = StoreLayout::new(root.path()).database_path();
         let maintenance = open_writer(
             &database_path,
-            std::sync::Arc::new(
-                releash_lib::test_support::integration::platform::RetryLimiter::new(),
-            ),
+            std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
         )
         .expect("maintenance connection");
         maintenance
@@ -343,17 +313,13 @@ pub(crate) mod tests {
         let root = tempfile::TempDir::new().expect("read-only app data");
         let writer = LocalEventStore::open(LocalEventStoreConfig::production(
             root.path().to_path_buf(),
-            std::sync::Arc::new(
-                releash_lib::test_support::integration::platform::RetryLimiter::new(),
-            ),
+            std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
         ))
         .expect("canonical writer");
         drop(writer);
         let reader = LocalEventReadStore::open(
             root.path(),
-            std::sync::Arc::new(
-                releash_lib::test_support::integration::platform::RetryLimiter::new(),
-            ),
+            std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
         )
         .expect("canonical reader");
         let database_path = StoreLayout::new(root.path()).database_path();
@@ -361,9 +327,7 @@ pub(crate) mod tests {
         std::fs::rename(&database_path, &replaced_path).expect("retain replaced fixture");
         let replacement = LocalEventStore::open(LocalEventStoreConfig::production(
             root.path().to_path_buf(),
-            std::sync::Arc::new(
-                releash_lib::test_support::integration::platform::RetryLimiter::new(),
-            ),
+            std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
         ))
         .expect("replacement authority");
 

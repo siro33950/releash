@@ -1,8 +1,8 @@
 pub(crate) mod tests {
 
-    use releash_lib::test_support::integration::repository::ConfigSecretRepository;
-    use releash_lib::test_support::integration::settings::AppConfig;
-    use releash_lib::test_support::integration::settings::ReleashConfig;
+    use releashd::test_support::integration::repository::ConfigSecretRepository;
+    use releashd::test_support::integration::settings::AppConfig;
+    use releashd::test_support::integration::settings::ReleashConfig;
 
     use std::sync::Arc;
     use tempfile::TempDir;
@@ -13,7 +13,7 @@ pub(crate) mod tests {
         let mut config = ReleashConfig::default();
         config.notion.insert(
             "/repo".to_string(),
-            releash_lib::test_support::integration::settings::NotionRepoConfigModel {
+            releashd::test_support::integration::settings::NotionRepoConfigModel {
                 api_token: "token-12345678".to_string(),
                 database_id: "db".to_string(),
                 property_mapping: Default::default(),

@@ -1,27 +1,27 @@
-use releash_lib::test_support::integration::workflow::WorkflowExecutionProjectionRepository;
+use releashd::test_support::integration::workflow::WorkflowExecutionProjectionRepository;
 
-use releash_lib::test_support::integration::persistence::LocalEventStore;
-use releash_lib::test_support::integration::workflow::ExecutionTreeId;
-use releash_lib::test_support::integration::workflow::WorkflowError;
-use releash_lib::test_support::integration::workflow::WorkflowEventDraft;
-use releash_lib::test_support::integration::workflow::WorkflowExecutionProjectionLogRepository;
+use releashd::test_support::integration::persistence::LocalEventStore;
+use releashd::test_support::integration::workflow::ExecutionTreeId;
+use releashd::test_support::integration::workflow::WorkflowError;
+use releashd::test_support::integration::workflow::WorkflowEventDraft;
+use releashd::test_support::integration::workflow::WorkflowExecutionProjectionLogRepository;
 use std::sync::Arc;
 
-use releash_lib::test_support::integration::persistence::LocalEventStoreConfig;
-use releash_lib::test_support::integration::workflow::ExecutionOrigin;
-use releash_lib::test_support::integration::workflow::ExecutionParentRef;
-use releash_lib::test_support::integration::workflow::NodeKindName;
+use releashd::test_support::integration::persistence::LocalEventStoreConfig;
+use releashd::test_support::integration::workflow::ExecutionOrigin;
+use releashd::test_support::integration::workflow::ExecutionParentRef;
+use releashd::test_support::integration::workflow::NodeKindName;
 
-use releash_lib::test_support::integration::workflow::WorkflowDefinition;
-use releash_lib::test_support::integration::workflow::WorkflowDefinitionFileRepository;
-use releash_lib::test_support::integration::workflow::WorkflowDefinitionFileSourceGateway;
-use releash_lib::test_support::integration::workflow::WorkflowEvent;
-use releash_lib::test_support::integration::workflow::WorkflowEventLogRepository;
-use releash_lib::test_support::integration::workflow::WorkflowEventRepository;
-use releash_lib::test_support::integration::workflow::WorkflowFacetFileRepository;
-use releash_lib::test_support::integration::workflow::WorkflowGetOutputResult;
-use releash_lib::test_support::integration::workflow::WorkflowOutputUsecase;
-use releash_lib::test_support::integration::workflow::WorkflowQueryService;
+use releashd::test_support::integration::workflow::WorkflowDefinition;
+use releashd::test_support::integration::workflow::WorkflowDefinitionFileRepository;
+use releashd::test_support::integration::workflow::WorkflowDefinitionFileSourceGateway;
+use releashd::test_support::integration::workflow::WorkflowEvent;
+use releashd::test_support::integration::workflow::WorkflowEventLogRepository;
+use releashd::test_support::integration::workflow::WorkflowEventRepository;
+use releashd::test_support::integration::workflow::WorkflowFacetFileRepository;
+use releashd::test_support::integration::workflow::WorkflowGetOutputResult;
+use releashd::test_support::integration::workflow::WorkflowOutputUsecase;
+use releashd::test_support::integration::workflow::WorkflowQueryService;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 
@@ -40,8 +40,8 @@ impl WorkflowEventRepository for CountingEvents {
 
 #[tokio::test]
 pub async fn test_終端の隔離node出力_旧定義でも状態と同じ保存成果を一度の読取で返す() {
-    use releash_lib::test_support::integration::persistence::NewNodeEventRow;
-    use releash_lib::test_support::integration::workflow::ExecutionStatus;
+    use releashd::test_support::integration::persistence::NewNodeEventRow;
+    use releashd::test_support::integration::workflow::ExecutionStatus;
 
     for kind in ["sequence", "fanout"] {
         for (terminal, status) in [
@@ -54,7 +54,7 @@ pub async fn test_終端の隔離node出力_旧定義でも状態と同じ保存
                 let store = LocalEventStore::open(LocalEventStoreConfig::production(
                     directory.path().into(),
                     std::sync::Arc::new(
-                        releash_lib::test_support::integration::platform::RetryLimiter::new(),
+                        releashd::test_support::integration::platform::RetryLimiter::new(),
                     ),
                 ))
                 .unwrap();
@@ -78,7 +78,7 @@ pub async fn test_終端の隔離node出力_旧定義でも状態と同じ保存
                     root.as_object_mut().unwrap().remove("worktree");
                 }
                 assert!(
-                    releash_lib::test_support::integration::workflow::decode_started(
+                    releashd::test_support::integration::workflow::decode_started(
                         &root.to_string()
                     )
                     .is_err()
@@ -209,9 +209,7 @@ pub async fn test_隔離合成子の出力取得_保存されない成果を一�
         let directory = tempfile::TempDir::new().unwrap();
         let store = LocalEventStore::open(LocalEventStoreConfig::production(
             directory.path().into(),
-            std::sync::Arc::new(
-                releash_lib::test_support::integration::platform::RetryLimiter::new(),
-            ),
+            std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
         ))
         .unwrap();
         let id = "00000000-0000-4000-8000-000000001733";
@@ -224,7 +222,7 @@ pub async fn test_隔離合成子の出力取得_保存されない成果を一�
         } else {
             ExecutionParentRef::fanout_child("main-id", None, 0)
         };
-        releash_lib::test_support::integration::workflow::append_facts_for_events(
+        releashd::test_support::integration::workflow::append_facts_for_events(
             &store,
             &[
                 WorkflowEvent::ExecutionStarted {
@@ -286,16 +284,15 @@ pub async fn test_隔離合成子の出力取得_保存されない成果を一�
             WorkflowGetOutputResult::NotSubmitted
         );
         assert_eq!(events.reads.swap(0, Ordering::SeqCst), 1);
-        let records =
-            releash_lib::test_support::integration::workflow::read_tree_records(&store, id)
-                .await
-                .unwrap();
+        let records = releashd::test_support::integration::workflow::read_tree_records(&store, id)
+            .await
+            .unwrap();
         let leaf = records[1].meta.clone();
-        releash_lib::test_support::integration::workflow::append_single_fact(
+        releashd::test_support::integration::workflow::append_single_fact(
             &store,
             &leaf,
-            &releash_lib::test_support::integration::workflow::NodeFact::SubmitReceived(
-                releash_lib::test_support::integration::workflow::SubmitReceivedFact {
+            &releashd::test_support::integration::workflow::NodeFact::SubmitReceived(
+                releashd::test_support::integration::workflow::SubmitReceivedFact {
                     request_id: None,
                 },
             ),
@@ -303,11 +300,11 @@ pub async fn test_隔離合成子の出力取得_保存されない成果を一�
         )
         .await
         .unwrap();
-        releash_lib::test_support::integration::workflow::append_single_fact(
+        releashd::test_support::integration::workflow::append_single_fact(
             &store,
             &leaf,
-            &releash_lib::test_support::integration::workflow::NodeFact::StopReceived(
-                releash_lib::test_support::integration::workflow::StopReceivedFact {
+            &releashd::test_support::integration::workflow::NodeFact::StopReceived(
+                releashd::test_support::integration::workflow::StopReceivedFact {
                     result_summary: None,
                     token_usage: None,
                 },
@@ -316,20 +313,19 @@ pub async fn test_隔離合成子の出力取得_保存されない成果を一�
         )
         .await
         .unwrap();
-        let records =
-            releash_lib::test_support::integration::workflow::read_tree_records(&store, id)
-                .await
-                .unwrap();
+        let records = releashd::test_support::integration::workflow::read_tree_records(&store, id)
+            .await
+            .unwrap();
         assert!(!records.iter().any(|record| matches!(
             record.fact,
-            releash_lib::test_support::integration::workflow::NodeFact::ArtifactProduced(_)
+            releashd::test_support::integration::workflow::NodeFact::ArtifactProduced(_)
         )));
         let main_worktree =
-            releash_lib::test_support::integration::workflow::IsolatedWorktree::for_attempt(
+            releashd::test_support::integration::workflow::IsolatedWorktree::for_attempt(
                 "/repo", "main-id", 1,
             );
         let leaf_worktree =
-            releash_lib::test_support::integration::workflow::IsolatedWorktree::for_attempt(
+            releashd::test_support::integration::workflow::IsolatedWorktree::for_attempt(
                 "/repo", "work-id", 2,
             );
         assert_eq!(
@@ -354,12 +350,12 @@ pub async fn test_空の隔離fanout出力_保存事実を一度だけ読みstat
     let directory = tempfile::TempDir::new().unwrap();
     let store = LocalEventStore::open(LocalEventStoreConfig::production(
         directory.path().into(),
-        std::sync::Arc::new(releash_lib::test_support::integration::platform::RetryLimiter::new()),
+        std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
     ))
     .unwrap();
     let id = "00000000-0000-4000-8000-000000001733";
     let definition: WorkflowDefinition = serde_saphyr::from_str("name: test\ndescription: test\nnodes:\n  main: {worktree: isolated, fanout: {items: [], children: [work]}}\n  work: {session: {provider: codex}}").unwrap();
-    releash_lib::test_support::integration::workflow::append_facts_for_events(
+    releashd::test_support::integration::workflow::append_facts_for_events(
         &store,
         &[
             WorkflowEvent::ExecutionStarted {
@@ -409,17 +405,16 @@ pub async fn test_空の隔離fanout出力_保存事実を一度だけ読みstat
         .unwrap();
     // Then
     assert_eq!(events.reads.load(Ordering::SeqCst), 1);
-    let records = releash_lib::test_support::integration::workflow::read_tree_records(&store, id)
+    let records = releashd::test_support::integration::workflow::read_tree_records(&store, id)
         .await
         .unwrap();
-    let folded =
-        releash_lib::test_support::integration::workflow::fold_execution_tree(id, &records)
-            .unwrap()
-            .unwrap();
-    let read_model = releash_lib::test_support::integration::workflow::derive_read_model(&folded);
+    let folded = releashd::test_support::integration::workflow::fold_execution_tree(id, &records)
+        .unwrap()
+        .unwrap();
+    let read_model = releashd::test_support::integration::workflow::derive_read_model(&folded);
     assert_eq!(
         read_model.status,
-        releash_lib::test_support::integration::workflow::ExecutionStatus::Completed
+        releashd::test_support::integration::workflow::ExecutionStatus::Completed
     );
     let artifact = read_model.node_executions[0].artifact.as_ref().unwrap();
     assert_eq!(
@@ -439,16 +434,16 @@ pub async fn test_空の隔離fanout出力_保存事実を一度だけ読みstat
     );
     // Given: approval を宣言しない同じ空 Fanout に保存済み abort がある
     for fact in [
-        releash_lib::test_support::integration::workflow::NodeFact::AbortRequested(Default::default()),
-        releash_lib::test_support::integration::workflow::NodeFact::RuntimeFailureObserved(
-            releash_lib::test_support::integration::workflow::RuntimeFailureObservedFact {
+        releashd::test_support::integration::workflow::NodeFact::AbortRequested(Default::default()),
+        releashd::test_support::integration::workflow::NodeFact::RuntimeFailureObserved(
+            releashd::test_support::integration::workflow::RuntimeFailureObservedFact {
                 reason: "creation failed".into(),
                 failure_kind:
-                    releash_lib::test_support::integration::workflow::NodeExecutionFailureKind::InfrastructureCrash,
+                    releashd::test_support::integration::workflow::NodeExecutionFailureKind::InfrastructureCrash,
             },
         ),
     ] {
-        releash_lib::test_support::integration::workflow::append_single_fact(&store, &records[0].meta, &fact, 2000)
+        releashd::test_support::integration::workflow::append_single_fact(&store, &records[0].meta, &fact, 2000)
             .await
             .unwrap();
         events.reads.store(0, Ordering::SeqCst);
@@ -460,14 +455,14 @@ pub async fn test_空の隔離fanout出力_保存事実を一度だけ読みstat
             WorkflowGetOutputResult::NotSubmitted
         );
         assert_eq!(events.reads.load(Ordering::SeqCst), 1);
-        let records = releash_lib::test_support::integration::workflow::read_tree_records(&store, id).await.unwrap();
-        let folded = releash_lib::test_support::integration::workflow::fold_execution_tree(id, &records)
+        let records = releashd::test_support::integration::workflow::read_tree_records(&store, id).await.unwrap();
+        let folded = releashd::test_support::integration::workflow::fold_execution_tree(id, &records)
             .unwrap()
             .unwrap();
-        let read_model = releash_lib::test_support::integration::workflow::derive_read_model(&folded);
+        let read_model = releashd::test_support::integration::workflow::derive_read_model(&folded);
         assert_eq!(
             read_model.status,
-            releash_lib::test_support::integration::workflow::ExecutionStatus::Aborted
+            releashd::test_support::integration::workflow::ExecutionStatus::Aborted
         );
         assert!(read_model.node_executions[0].artifact.is_none());
     }
@@ -476,7 +471,7 @@ pub async fn test_空の隔離fanout出力_保存事実を一度だけ読みstat
 async fn without_tree_fold<T>(read: impl std::future::Future<Output = T>) -> T {
     let mut read = std::pin::pin!(read);
     std::future::poll_fn(|context| {
-        releash_lib::test_support::integration::workflow::without_tree_fold(|| {
+        releashd::test_support::integration::workflow::without_tree_fold(|| {
             read.as_mut().poll(context)
         })
     })
@@ -485,13 +480,13 @@ async fn without_tree_fold<T>(read: impl std::future::Future<Output = T>) -> T {
 
 #[tokio::test]
 pub async fn test_execution読取_実経路で失敗分類を保持する() {
-    use releash_lib::test_support::integration::persistence::ReadFailure;
-    use releash_lib::test_support::integration::transport::classified_error;
+    use releashd::test_support::integration::persistence::ReadFailure;
+    use releashd::test_support::integration::transport::classified_error;
     // Given
     let directory = tempfile::tempdir().unwrap();
     let store = LocalEventStore::open(LocalEventStoreConfig::production(
         directory.path().into(),
-        std::sync::Arc::new(releash_lib::test_support::integration::platform::RetryLimiter::new()),
+        std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
     ))
     .unwrap();
     let repository = WorkflowExecutionProjectionLogRepository::new(store.clone());

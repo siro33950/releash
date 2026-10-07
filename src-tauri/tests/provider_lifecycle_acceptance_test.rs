@@ -9,7 +9,7 @@ use agent_tui_fixture::{
     run_fixture, FixtureLifecycleCommand, FixtureLifecycleEmission, FixturePlan, FixtureRun,
     FixtureRunOptions,
 };
-use releash_lib::test_support::provider_lifecycle_acceptance::{
+use releashd::test_support::provider_lifecycle_acceptance::{
     AcceptanceFact, AcceptanceFactKind, AcceptanceLaunch, AcceptanceLedgerEventCounts,
     AcceptanceProvider, AcceptanceScope, ProviderLifecycleAcceptanceHost,
 };
@@ -90,7 +90,7 @@ fn install_cli_alias(data_dir: &Path, alias: &str) {
     let script = format!(
         "#!/bin/sh\nexec {} \"$@\"\n",
         shell_quote(
-            &Path::new(env!("CARGO_BIN_EXE_releash-backend"))
+            &Path::new(env!("CARGO_BIN_EXE_releashd"))
                 .with_file_name("releash")
                 .to_string_lossy()
         )

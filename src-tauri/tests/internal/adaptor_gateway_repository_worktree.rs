@@ -2,18 +2,18 @@ use crate::adaptor_gateway_repository_test_helpers::assert_stops_at_each_checkpo
 
 use git2::BranchType;
 use git2::Repository;
-use releash_lib::test_support::integration::platform::GitOperationError;
-use releash_lib::test_support::integration::platform::OperationContext;
-use releash_lib::test_support::integration::platform::OperationStopped;
-use releash_lib::test_support::integration::repository::create_worktree;
-use releash_lib::test_support::integration::repository::each_worktree;
-use releash_lib::test_support::integration::repository::find_main_repo_path;
-use releash_lib::test_support::integration::repository::list_worktrees;
-use releash_lib::test_support::integration::repository::path_to_worktree_identity;
-use releash_lib::test_support::integration::repository::prune_invalid_worktrees;
-use releash_lib::test_support::integration::repository::recorded_main_repo_path;
-use releash_lib::test_support::integration::repository::remove_worktree;
-use releash_lib::test_support::integration::repository::RepositoryError;
+use releashd::test_support::integration::platform::GitOperationError;
+use releashd::test_support::integration::platform::OperationContext;
+use releashd::test_support::integration::platform::OperationStopped;
+use releashd::test_support::integration::repository::create_worktree;
+use releashd::test_support::integration::repository::each_worktree;
+use releashd::test_support::integration::repository::find_main_repo_path;
+use releashd::test_support::integration::repository::list_worktrees;
+use releashd::test_support::integration::repository::path_to_worktree_identity;
+use releashd::test_support::integration::repository::prune_invalid_worktrees;
+use releashd::test_support::integration::repository::recorded_main_repo_path;
+use releashd::test_support::integration::repository::remove_worktree;
+use releashd::test_support::integration::repository::RepositoryError;
 use std::path::Path;
 
 #[cfg(unix)]
@@ -53,8 +53,8 @@ pub fn test_worktree識別パス_解決エラーを返す() {
 
 #[test]
 pub fn test_worktree列挙_途中の取り消しを欠損や成功に変えず返す() {
-    use releash_lib::test_support::integration::platform::OperationContext;
-    use releash_lib::test_support::integration::platform::OperationStopped;
+    use releashd::test_support::integration::platform::OperationContext;
+    use releashd::test_support::integration::platform::OperationStopped;
     use std::sync::Arc;
     // Given
     let (directory, repo) = crate::test_support_git::create_test_repo();
@@ -71,16 +71,16 @@ pub fn test_worktree列挙_途中の取り消しを欠損や成功に変えず�
     assert!(entries.next().unwrap().is_ok());
     let mut visited = 0;
     // When
-    let result = releash_lib::test_support::integration::platform::sync_scope(context, || {
+    let result = releashd::test_support::integration::platform::sync_scope(context, || {
         entries.try_for_each(|entry| {
             entry?;
             visited += 1;
-            Ok::<_, releash_lib::test_support::integration::platform::GitOperationError>(())
+            Ok::<_, releashd::test_support::integration::platform::GitOperationError>(())
         })
     });
     // Then
     assert!(
-        matches!(result, Err(releash_lib::test_support::integration::platform::GitOperationError::Stopped(error)) if error == OperationStopped::Cancelled)
+        matches!(result, Err(releashd::test_support::integration::platform::GitOperationError::Stopped(error)) if error == OperationStopped::Cancelled)
     );
     assert_eq!(visited, 0);
     assert!(entries.next().unwrap().is_ok());
@@ -88,7 +88,7 @@ pub fn test_worktree列挙_途中の取り消しを欠損や成功に変えず�
 
 #[test]
 pub fn test_worktree列挙_途中の期限切れを欠損や成功に変えず返す() {
-    use releash_lib::test_support::integration::platform::Deadline;
+    use releashd::test_support::integration::platform::Deadline;
 
     use std::time::Instant;
     // Given
@@ -105,16 +105,16 @@ pub fn test_worktree列挙_途中の期限切れを欠損や成功に変えず�
     assert!(entries.next().unwrap().is_ok());
     let mut visited = 0;
     // When
-    let result = releash_lib::test_support::integration::platform::sync_scope(context, || {
+    let result = releashd::test_support::integration::platform::sync_scope(context, || {
         entries.try_for_each(|entry| {
             entry?;
             visited += 1;
-            Ok::<_, releash_lib::test_support::integration::platform::GitOperationError>(())
+            Ok::<_, releashd::test_support::integration::platform::GitOperationError>(())
         })
     });
     // Then
     assert!(
-        matches!(result, Err(releash_lib::test_support::integration::platform::GitOperationError::Stopped(error)) if error == OperationStopped::Expired)
+        matches!(result, Err(releashd::test_support::integration::platform::GitOperationError::Stopped(error)) if error == OperationStopped::Expired)
     );
     assert_eq!(visited, 0);
     assert!(entries.next().unwrap().is_ok());
@@ -260,7 +260,7 @@ pub fn test_worktree一覧_baseがあってもコミットのないbranchを正�
     let (directory, repo) = crate::test_support_git::create_test_repo();
     crate::test_support_git::create_initial_commit(&repo);
     let base = repo.head().unwrap().shorthand().unwrap().to_string();
-    releash_lib::test_support::integration::repository::set_releash_base(
+    releashd::test_support::integration::repository::set_releash_base(
         directory.path().to_str().unwrap(),
         Some(&base),
     )
@@ -389,16 +389,16 @@ pub(crate) mod worktree_gateway_tests {
     use git2::Repository;
     use git2::WorktreeAddOptions;
     use git2::WorktreePruneOptions;
-    use releash_lib::test_support::integration::platform::detect_default_branch;
-    use releash_lib::test_support::integration::repository::create_worktree;
-    use releash_lib::test_support::integration::repository::find_main_repo_path;
-    use releash_lib::test_support::integration::repository::get_current_branch;
-    use releash_lib::test_support::integration::repository::get_main_repo_path;
-    use releash_lib::test_support::integration::repository::get_worktree_dirty_count;
-    use releash_lib::test_support::integration::repository::list_worktrees;
-    use releash_lib::test_support::integration::repository::recorded_main_repo_path;
-    use releash_lib::test_support::integration::repository::registered_worktree_paths;
-    use releash_lib::test_support::integration::repository::remove_worktree;
+    use releashd::test_support::integration::platform::detect_default_branch;
+    use releashd::test_support::integration::repository::create_worktree;
+    use releashd::test_support::integration::repository::find_main_repo_path;
+    use releashd::test_support::integration::repository::get_current_branch;
+    use releashd::test_support::integration::repository::get_main_repo_path;
+    use releashd::test_support::integration::repository::get_worktree_dirty_count;
+    use releashd::test_support::integration::repository::list_worktrees;
+    use releashd::test_support::integration::repository::recorded_main_repo_path;
+    use releashd::test_support::integration::repository::registered_worktree_paths;
+    use releashd::test_support::integration::repository::remove_worktree;
     use std::fs;
     use std::path::Path;
     use std::path::PathBuf;
@@ -730,7 +730,7 @@ pub(crate) mod worktree_gateway_tests {
 
         // When / Then
         assert!(!merged_of(&repo_dir, "feature-x"));
-        releash_lib::test_support::integration::repository::set_releash_base(
+        releashd::test_support::integration::repository::set_releash_base(
             repo_dir.to_str().unwrap(),
             Some("develop"),
         )

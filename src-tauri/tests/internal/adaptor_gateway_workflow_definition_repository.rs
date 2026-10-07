@@ -1,4 +1,4 @@
-use releash_lib::test_support::integration::workflow::WorkflowDefinitionRepository;
+use releashd::test_support::integration::workflow::WorkflowDefinitionRepository;
 #[cfg(unix)]
 #[test]
 pub fn test_workflow探索失敗_定義とsourceと形式をbuiltinへ変換しない() {
@@ -6,7 +6,7 @@ pub fn test_workflow探索失敗_定義とsourceと形式をbuiltinへ変換し�
     let dir = tempfile::tempdir().unwrap();
     let repository = WorkflowDefinitionFileRepository::new(dir.path(), dir.path());
     let gateway = WorkflowDefinitionFileSourceGateway::new(dir.path(), dir.path());
-    let name = releash_lib::test_support::integration::workflow::list_builtin_workflows()[0]
+    let name = releashd::test_support::integration::workflow::list_builtin_workflows()[0]
         .name
         .clone();
     let path = dir.path().join(format!("{name}.yml"));
@@ -31,16 +31,16 @@ pub fn test_workflow探索_定義がないと未設定を返す() {
     // Then
     assert!(definition.is_none());
 }
-use releash_lib::test_support::integration::workflow::definition_FacetRefs as FacetRefs;
-use releash_lib::test_support::integration::workflow::NodeDefinition;
-use releash_lib::test_support::integration::workflow::NodeKind;
-use releash_lib::test_support::integration::workflow::SessionSpec;
-use releash_lib::test_support::integration::workflow::WorkflowDefinition;
-use releash_lib::test_support::integration::workflow::WorkflowDefinitionFileRepository;
-use releash_lib::test_support::integration::workflow::WorkflowDefinitionFileSourceGateway;
-use releash_lib::test_support::integration::workflow::WorkflowDefinitionSourceGateway;
-use releash_lib::test_support::integration::workflow::WorkflowError;
-use releash_lib::test_support::integration::workflow::WorkflowSourceSaveError;
+use releashd::test_support::integration::workflow::definition_FacetRefs as FacetRefs;
+use releashd::test_support::integration::workflow::NodeDefinition;
+use releashd::test_support::integration::workflow::NodeKind;
+use releashd::test_support::integration::workflow::SessionSpec;
+use releashd::test_support::integration::workflow::WorkflowDefinition;
+use releashd::test_support::integration::workflow::WorkflowDefinitionFileRepository;
+use releashd::test_support::integration::workflow::WorkflowDefinitionFileSourceGateway;
+use releashd::test_support::integration::workflow::WorkflowDefinitionSourceGateway;
+use releashd::test_support::integration::workflow::WorkflowError;
+use releashd::test_support::integration::workflow::WorkflowSourceSaveError;
 use std::fs;
 
 use tempfile::TempDir;
@@ -189,7 +189,7 @@ pub fn source_gateway_rejects_builtin_name_collision() {
     let facets = TempDir::new().unwrap();
     seed_instruction_facet(&facets);
     let gateway = WorkflowDefinitionFileSourceGateway::new(workflows.path(), facets.path());
-    let builtin_name = releash_lib::test_support::integration::workflow::list_builtin_workflows()
+    let builtin_name = releashd::test_support::integration::workflow::list_builtin_workflows()
         .first()
         .expect("builtin workflow fixture must exist")
         .name
@@ -283,7 +283,7 @@ return r.workflow{
     );
     assert_eq!(
         gateway.source_format("lua-source").unwrap(),
-        releash_lib::test_support::integration::workflow::WorkflowSourceFormat::Lua
+        releashd::test_support::integration::workflow::WorkflowSourceFormat::Lua
     );
     let error = gateway
         .save_source(

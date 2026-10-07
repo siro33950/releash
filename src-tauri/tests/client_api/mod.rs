@@ -1,4 +1,4 @@
-use releash_lib::test_support::client_api_acceptance::*;
+use releashd::test_support::client_api_acceptance::*;
 use serde_json::{json, Value};
 use std::path::Path;
 use std::sync::Arc;

@@ -1,27 +1,27 @@
-use releash_lib::test_support::integration::subscriptions::notion_target;
-use releash_lib::test_support::integration::subscriptions::FakeDelivery;
-use releash_lib::test_support::integration::subscriptions::RecordingOutput;
-use releash_lib::test_support::integration::subscriptions::StateChangeSource;
-use releash_lib::test_support::integration::subscriptions::StateReadError;
-use releash_lib::test_support::integration::subscriptions::StateSubscriptionRead;
-use releash_lib::test_support::integration::subscriptions::StateSubscriptionUsecase;
-use releash_lib::test_support::integration::subscriptions::StateValue;
-use releash_lib::test_support::integration::subscriptions::SubscriptionTarget;
-use releash_lib::test_support::integration::subscriptions::WorkspaceStateReads;
+use releashd::test_support::integration::subscriptions::notion_target;
+use releashd::test_support::integration::subscriptions::FakeDelivery;
+use releashd::test_support::integration::subscriptions::RecordingOutput;
+use releashd::test_support::integration::subscriptions::StateChangeSource;
+use releashd::test_support::integration::subscriptions::StateReadError;
+use releashd::test_support::integration::subscriptions::StateSubscriptionRead;
+use releashd::test_support::integration::subscriptions::StateSubscriptionUsecase;
+use releashd::test_support::integration::subscriptions::StateValue;
+use releashd::test_support::integration::subscriptions::SubscriptionTarget;
+use releashd::test_support::integration::subscriptions::WorkspaceStateReads;
 use std::sync::Arc;
 
 #[derive(Default)]
 struct ReopeningNotionApi(std::sync::atomic::AtomicUsize);
 
 #[async_trait::async_trait]
-impl releash_lib::test_support::integration::platform::NotionApiGateway for ReopeningNotionApi {
+impl releashd::test_support::integration::platform::NotionApiGateway for ReopeningNotionApi {
     async fn query_tasks(
         &self,
-        _: &releash_lib::test_support::integration::settings::NotionRepoConfig,
-        _: &releash_lib::test_support::integration::platform::NotionTaskQuery,
+        _: &releashd::test_support::integration::settings::NotionRepoConfig,
+        _: &releashd::test_support::integration::platform::NotionTaskQuery,
     ) -> Result<
-        releash_lib::test_support::integration::platform::NotionTaskPage,
-        releash_lib::test_support::integration::platform::NotionError,
+        releashd::test_support::integration::platform::NotionTaskPage,
+        releashd::test_support::integration::platform::NotionError,
     > {
         Ok(reopening_page(
             self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst),
@@ -29,10 +29,10 @@ impl releash_lib::test_support::integration::platform::NotionApiGateway for Reop
     }
     async fn fetch_label_options(
         &self,
-        _: &releash_lib::test_support::integration::settings::NotionRepoConfig,
+        _: &releashd::test_support::integration::settings::NotionRepoConfig,
     ) -> Result<
-        Vec<releash_lib::test_support::integration::platform::NotionLabelOption>,
-        releash_lib::test_support::integration::platform::NotionError,
+        Vec<releashd::test_support::integration::platform::NotionLabelOption>,
+        releashd::test_support::integration::platform::NotionError,
     > {
         Ok(reopening_labels(
             self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst),
@@ -40,30 +40,28 @@ impl releash_lib::test_support::integration::platform::NotionApiGateway for Reop
     }
     async fn validate(
         &self,
-        _: &releash_lib::test_support::integration::settings::NotionRepoConfig,
+        _: &releashd::test_support::integration::settings::NotionRepoConfig,
     ) -> Result<
-        releash_lib::test_support::integration::platform::NotionValidationResult,
-        releash_lib::test_support::integration::platform::NotionError,
+        releashd::test_support::integration::platform::NotionValidationResult,
+        releashd::test_support::integration::platform::NotionError,
     > {
-        Ok(releash_lib::test_support::integration::platform::NotionValidationResult::not_configured())
+        Ok(releashd::test_support::integration::platform::NotionValidationResult::not_configured())
     }
 }
 
 fn reopening_page(
     sequence: usize,
-) -> releash_lib::test_support::integration::platform::NotionTaskPage {
-    releash_lib::test_support::integration::platform::NotionTaskPage {
-        tasks: vec![
-            releash_lib::test_support::integration::platform::NotionTask {
-                id: sequence.to_string(),
-                title: "Task".into(),
-                url: String::new(),
-                labels: Default::default(),
-                branch_name: String::new(),
-                created_at: String::new(),
-                last_edited_at: String::new(),
-            },
-        ],
+) -> releashd::test_support::integration::platform::NotionTaskPage {
+    releashd::test_support::integration::platform::NotionTaskPage {
+        tasks: vec![releashd::test_support::integration::platform::NotionTask {
+            id: sequence.to_string(),
+            title: "Task".into(),
+            url: String::new(),
+            labels: Default::default(),
+            branch_name: String::new(),
+            created_at: String::new(),
+            last_edited_at: String::new(),
+        }],
         has_more: false,
         next_cursor: None,
     }
@@ -71,9 +69,9 @@ fn reopening_page(
 
 fn reopening_labels(
     sequence: usize,
-) -> Vec<releash_lib::test_support::integration::platform::NotionLabelOption> {
+) -> Vec<releashd::test_support::integration::platform::NotionLabelOption> {
     vec![
-        releash_lib::test_support::integration::platform::NotionLabelOption {
+        releashd::test_support::integration::platform::NotionLabelOption {
             property_name: "Status".into(),
             property_type: "select".into(),
             options: vec![sequence.to_string()],
@@ -124,7 +122,7 @@ pub async fn test_notion購読_旧client終了中の新規開始は旧workerの�
     for target in targets {
         let mut fixture = crate::state_subscription_reads::Fixture::new();
         fixture.reads.notion = Arc::new(
-            releash_lib::test_support::integration::platform::NotionUsecase::new(
+            releashd::test_support::integration::platform::NotionUsecase::new(
                 fixture.config.clone(),
                 fixture.config.clone(),
                 Arc::new(ReopeningNotionApi::default()),
@@ -135,7 +133,7 @@ pub async fn test_notion購読_旧client終了中の新規開始は旧workerの�
             .notion
             .save_config(
                 "/repo".into(),
-                releash_lib::test_support::integration::settings::NotionRepoConfig {
+                releashd::test_support::integration::settings::NotionRepoConfig {
                     api_token: "token".into(),
                     database_id: "database".into(),
                     property_mapping: Default::default(),
@@ -151,7 +149,7 @@ pub async fn test_notion購読_旧client終了中の新規開始は旧workerの�
         let output = Arc::new(RecordingOutput::default());
         let subscriptions = StateSubscriptionUsecase::new_with_output(
             output.clone(),
-            releash_lib::test_support::integration::subscriptions::pending_read_driver(),
+            releashd::test_support::integration::subscriptions::pending_read_driver(),
         )
         .with_reads(reads.clone(), None, vec![], String::new());
         subscriptions.open_client("old".into()).unwrap();
@@ -231,25 +229,25 @@ pub async fn test_notion購読_旧client終了中の新規開始は旧workerの�
             SubscriptionTarget::NotionTasks(_) => (
                 StateValue::NotionTasks(Default::default()),
                 StateValue::NotionTasks(
-                    releash_lib::test_support::integration::platform::Fetched::ready(
-                        reopening_page(1),
-                    ),
+                    releashd::test_support::integration::platform::Fetched::ready(reopening_page(
+                        1,
+                    )),
                 ),
                 StateValue::NotionTasks(
-                    releash_lib::test_support::integration::platform::Fetched::ready(
-                        reopening_page(2),
-                    ),
+                    releashd::test_support::integration::platform::Fetched::ready(reopening_page(
+                        2,
+                    )),
                 ),
             ),
             SubscriptionTarget::NotionLabelOptions(_) => (
                 StateValue::NotionLabelOptions(Default::default()),
                 StateValue::NotionLabelOptions(
-                    releash_lib::test_support::integration::platform::Fetched::ready(
+                    releashd::test_support::integration::platform::Fetched::ready(
                         reopening_labels(1),
                     ),
                 ),
                 StateValue::NotionLabelOptions(
-                    releash_lib::test_support::integration::platform::Fetched::ready(
+                    releashd::test_support::integration::platform::Fetched::ready(
                         reopening_labels(2),
                     ),
                 ),

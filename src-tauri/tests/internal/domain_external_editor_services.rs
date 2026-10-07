@@ -1,6 +1,6 @@
 pub(crate) mod tests {
 
-    use releash_lib::test_support::integration::platform::scan_applications_in;
+    use releashd::test_support::integration::platform::scan_applications_in;
     use std::fs;
     use tempfile::TempDir;
 

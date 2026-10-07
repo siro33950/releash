@@ -1,7 +1,7 @@
 use futures_util::StreamExt;
 use releash_desktop::test_support::integration::desktop_client::*;
-use releash_lib::desktop_api::test_support::{to_rpc, StateChange, Unit};
-use releash_lib::desktop_api::{
+use releashd::desktop_api::test_support::{to_rpc, StateChange, Unit};
+use releashd::desktop_api::{
     rpc, to_wire, wire, ClientConnectionDto, RetryLimiter, TechnicalFailureNature,
 };
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -720,13 +720,13 @@ async fn error_server(
 
 #[tokio::test]
 async fn test_ネイティブ要求_停止とログイン項目の具体的な失敗理由を保持する() {
-    use releash_lib::desktop_api::test_support::command_error;
+    use releashd::desktop_api::test_support::command_error;
     // Given / When / Then
     for detail in [
-        wire::CommandError::from(releash_lib::desktop_api::test_support::AppError::new(
+        wire::CommandError::from(releashd::desktop_api::test_support::AppError::new(
             "設定を保存できません",
         )),
-        releash_lib::desktop_api::test_support::AppError::coded(
+        releashd::desktop_api::test_support::AppError::coded(
             "LOGIN_ITEM_SAVE_FAILED",
             "ログイン項目を保存できません",
             connectrpc::ErrorCode::Internal,

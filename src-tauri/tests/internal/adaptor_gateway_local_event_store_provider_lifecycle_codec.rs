@@ -1,46 +1,46 @@
-use releash_lib::test_support::integration::fixtures::fixtures_adaptor_gateway_local_event_store_provider_lifecycle_codec_scope as scope;
+use releashd::test_support::integration::fixtures::fixtures_adaptor_gateway_local_event_store_provider_lifecycle_codec_scope as scope;
 use std::sync::Arc;
 
-use releash_lib::test_support::integration::persistence::LocalEventStore;
-use releash_lib::test_support::integration::persistence::LocalEventStoreConfig;
-use releash_lib::test_support::integration::platform::CommitBatchError;
-use releash_lib::test_support::integration::platform::CommitBatchResult;
-use releash_lib::test_support::integration::platform::CommitIdentity;
-use releash_lib::test_support::integration::platform::CommitOperationKind;
-use releash_lib::test_support::integration::platform::ExpectedStreamHead;
-use releash_lib::test_support::integration::platform::IdempotencyBinding;
-use releash_lib::test_support::integration::platform::LoadStreamRequest;
-use releash_lib::test_support::integration::platform::LoadedDomainEvent;
-use releash_lib::test_support::integration::platform::LocalAtomicBatch;
-use releash_lib::test_support::integration::platform::LocalDomainEvent;
-use releash_lib::test_support::integration::platform::StreamId;
-use releash_lib::test_support::integration::platform::StreamVersion;
-use releash_lib::test_support::integration::platform::UncommittedDomainEvent;
-use releash_lib::test_support::integration::providers::ProviderKind;
-use releash_lib::test_support::integration::providers::ProviderLifecycleBinding;
-use releash_lib::test_support::integration::providers::ProviderLifecycleEvent;
-use releash_lib::test_support::integration::repository::LocalEventTransactionRepository;
+use releashd::test_support::integration::persistence::LocalEventStore;
+use releashd::test_support::integration::persistence::LocalEventStoreConfig;
+use releashd::test_support::integration::platform::CommitBatchError;
+use releashd::test_support::integration::platform::CommitBatchResult;
+use releashd::test_support::integration::platform::CommitIdentity;
+use releashd::test_support::integration::platform::CommitOperationKind;
+use releashd::test_support::integration::platform::ExpectedStreamHead;
+use releashd::test_support::integration::platform::IdempotencyBinding;
+use releashd::test_support::integration::platform::LoadStreamRequest;
+use releashd::test_support::integration::platform::LoadedDomainEvent;
+use releashd::test_support::integration::platform::LocalAtomicBatch;
+use releashd::test_support::integration::platform::LocalDomainEvent;
+use releashd::test_support::integration::platform::StreamId;
+use releashd::test_support::integration::platform::StreamVersion;
+use releashd::test_support::integration::platform::UncommittedDomainEvent;
+use releashd::test_support::integration::providers::ProviderKind;
+use releashd::test_support::integration::providers::ProviderLifecycleBinding;
+use releashd::test_support::integration::providers::ProviderLifecycleEvent;
+use releashd::test_support::integration::repository::LocalEventTransactionRepository;
 use tempfile::TempDir;
 
 #[tokio::test]
 pub async fn test_providerライフサイクルcodec_eventをcommit再生しstale_stream_headを拒否する() {
     let directory = TempDir::new().unwrap();
-    let clock = releash_lib::test_support::integration::persistence::FakeStoreClock::at(1_000);
-    let fault = Arc::new(releash_lib::test_support::integration::persistence::FaultInjector::new());
+    let clock = releashd::test_support::integration::persistence::FakeStoreClock::at(1_000);
+    let fault = Arc::new(releashd::test_support::integration::persistence::FaultInjector::new());
     let installation_id = "11111111-1111-4111-8111-111111111596";
     fault.set_initial_installation_id(installation_id);
     let store = LocalEventStore::open(LocalEventStoreConfig {
         retry_limiter: std::sync::Arc::new(
-            releash_lib::test_support::integration::platform::RetryLimiter::new(),
+            releashd::test_support::integration::platform::RetryLimiter::new(),
         ),
         app_data_root: directory.path().to_path_buf(),
         clock: Arc::new(clock),
         registry: Arc::new(
-            releash_lib::test_support::integration::persistence::EventCodecRegistry::new(),
+            releashd::test_support::integration::persistence::EventCodecRegistry::new(),
         ),
         fault,
         path_observer: Arc::new(
-            releash_lib::test_support::integration::platform::NoopAppDataPathObserver,
+            releashd::test_support::integration::platform::NoopAppDataPathObserver,
         ),
     })
     .unwrap();
