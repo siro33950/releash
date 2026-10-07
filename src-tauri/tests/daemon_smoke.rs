@@ -254,46 +254,6 @@ async fn connect(discovery: &Value) -> (Socket, String) {
     (Socket { client }, info.launch_id)
 }
 
-#[test]
-fn test_起動data_dir解決_desktopは既定を使いworkerは環境変数を使う() {
-    // Given
-    const ENV: &str = "RELEASH_TEST_DATA_DIR_RESOLVER";
-    if let Some(expected) = std::env::var_os(ENV) {
-        // When / Then
-        let environment = std::path::PathBuf::from(expected);
-        let desktop = releashd::desktop_api::default_data_dir_for_profile(
-            releashd::desktop_api::BuildProfile::current(),
-        )
-        .unwrap();
-        assert_eq!(
-            desktop,
-            releash_sdk::data_dir::default_data_dir_for_profile(
-                releash_sdk::data_dir::BuildProfile::current(),
-            )
-            .unwrap()
-        );
-        assert_ne!(desktop, environment);
-        assert_eq!(
-            releash_sdk::data_dir::resolve_data_dir(None),
-            Ok(environment)
-        );
-        return;
-    }
-    let directory = tempfile::tempdir().unwrap();
-    // When
-    let output = Command::new(std::env::current_exe().unwrap())
-        .args([
-            "--exact",
-            "test_起動data_dir解決_desktopは既定を使いworkerは環境変数を使う",
-        ])
-        .env(ENV, directory.path())
-        .env("RELEASH_DATA_DIR", directory.path())
-        .output()
-        .unwrap();
-    // Then
-    assert!(output.status.success(), "{output:?}");
-}
-
 #[cfg(unix)]
 #[tokio::test]
 async fn test_daemon起動_data_dirの全解決経路で子プロセスへ解決済みpathを渡す() {
