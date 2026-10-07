@@ -45,7 +45,12 @@ async fn test_接続_既存サーバのprotocolと同一性を確認し非互換
             Arc::new(RetryLimiter::new()),
             tokio::sync::watch::channel(None).0,
         ));
-        let usecase = DaemonConnectionUsecase::new(connection.clone(), connection.clone());
+        let usecase = DaemonConnectionUsecase::new(
+            connection.clone(),
+            connection.clone(),
+            releash_sdk::descriptor::protocol(),
+            env!("CARGO_PKG_VERSION").into(),
+        );
         // When
         let error = message(usecase.connect().await.unwrap_err());
         // Then
@@ -204,7 +209,12 @@ async fn test_起動失敗_接続先を再要求しても終了状態とstderr�
         Arc::new(RetryLimiter::new()),
         tokio::sync::watch::channel(None).0,
     ));
-    let connection = DaemonConnectionUsecase::new(gateway.clone(), gateway);
+    let connection = DaemonConnectionUsecase::new(
+        gateway.clone(),
+        gateway,
+        releash_sdk::descriptor::protocol(),
+        env!("CARGO_PKG_VERSION").into(),
+    );
     // When
     assert!(connection.connect().await.is_err());
     assert!(connection.endpoint().await.is_err());

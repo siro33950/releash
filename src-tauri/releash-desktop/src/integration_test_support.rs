@@ -1,5 +1,5 @@
 pub mod desktop {
-    pub use crate::adaptor::gateway::desktop_lifecycle::apply_desktop_settings;
+    pub use crate::adaptor::presenter::desktop_lifecycle::apply_desktop_settings;
     pub use crate::infrastructure::platform::window_lifecycle::NORMAL_WINDOW_LABEL;
     pub use crate::infrastructure::platform::window_lifecycle::STARTUP_FAILURE_WINDOW_LABEL;
 }
@@ -28,9 +28,7 @@ pub mod daemon_connection {
         DaemonConnectionState, DaemonEndpoint, DaemonService, DiscoveredDaemon,
     };
     pub use crate::usecase::daemon_connection::DaemonConnectionUsecase;
-    pub use crate::usecase::daemon_connection_query::{
-        DaemonConnectionQueryService, DesktopSettingsSubscription,
-    };
+    pub use crate::usecase::daemon_connection_query::DaemonConnectionQueryService;
 }
 
 pub mod settings_observer {

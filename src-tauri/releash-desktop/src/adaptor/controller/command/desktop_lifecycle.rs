@@ -40,23 +40,33 @@ fn get_desktop_connection_failure(
     connection.failure().map(daemon_connection::failure)
 }
 #[tauri::command]
-async fn start_daemon(
+async fn start_daemon<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
     connection: tauri::State<'_, Arc<DesktopLifecycleUsecase>>,
 ) -> Result<(), String> {
+    use tauri::Manager;
+    let presenter =
+        app.state::<crate::adaptor::presenter::desktop_lifecycle::TauriDesktopLifecycle<R>>();
     connection
         .start()
         .await
         .map_err(crate::adaptor::presenter::daemon_connection::message)?;
+    presenter.connected_window(connection.connected(false, presenter.failure_window(), true));
     Ok(())
 }
 #[tauri::command]
-async fn replace_daemon(
+async fn replace_daemon<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
     connection: tauri::State<'_, Arc<DesktopLifecycleUsecase>>,
 ) -> Result<(), String> {
+    use tauri::Manager;
+    let presenter =
+        app.state::<crate::adaptor::presenter::desktop_lifecycle::TauriDesktopLifecycle<R>>();
     connection
         .replace()
         .await
         .map_err(crate::adaptor::presenter::daemon_connection::message)?;
+    presenter.connected_window(connection.connected(false, presenter.failure_window(), true));
     Ok(())
 }
 #[tauri::command]

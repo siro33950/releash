@@ -6,3 +6,4 @@ pub(crate) mod retry {
         std::time::Duration::from_millis(20),
     );
 }
+pub(crate) mod log_failure;

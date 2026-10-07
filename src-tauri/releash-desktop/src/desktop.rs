@@ -44,19 +44,21 @@ pub fn run() {
         app.manage(usecase::cli_install::CliInstallUsecase(Arc::new(
             adaptor::gateway::cli_install::MacCliInstall,
         )));
-        let (settings_sources, settings_updates) = tokio::sync::watch::channel(None);
+        let (clients, client_updates) = tokio::sync::watch::channel(None);
         let connection = Arc::new(
             adaptor::gateway::daemon_connection::DaemonServiceGateway::new(
                 std::env::current_exe()?.with_file_name("releashd"),
                 data_dir,
                 Arc::new(crate::common::retry::RetryLimiter::new()),
-                settings_sources,
+                clients,
             ),
         );
         let connection_usecase =
             Arc::new(usecase::daemon_connection::DaemonConnectionUsecase::new(
                 connection.clone(),
                 connection.clone(),
+                releash_sdk::descriptor::protocol(),
+                env!("CARGO_PKG_VERSION").into(),
             ));
         app.manage(connection_usecase.clone());
         let login = Arc::new(usecase::login_item::LoginItemUsecase::new(
@@ -66,24 +68,26 @@ pub fn run() {
             )),
         ));
         app.manage(login.clone());
-        app.manage(Arc::new(
-            usecase::desktop_lifecycle::DesktopLifecycleUsecase::new(
-                connection_usecase,
-                login,
-                Arc::new(adaptor::gateway::desktop_lifecycle::TauriDesktopLifecycle(
-                    Arc::new(
-                        infrastructure::platform::desktop_runtime::DesktopRuntime::new(
-                            app.handle().clone(),
-                        ),
-                    ),
-                )),
-            ),
+        let lifecycle = Arc::new(usecase::desktop_lifecycle::DesktopLifecycleUsecase::new(
+            connection_usecase,
+            login,
         ));
+        app.manage(lifecycle.clone());
+        app.manage(crate::common::log_failure::LogFailure(lifecycle));
+        app.manage(
+            adaptor::presenter::desktop_lifecycle::TauriDesktopLifecycle(Arc::new(
+                infrastructure::platform::desktop_runtime::DesktopRuntime::new(
+                    app.handle().clone(),
+                ),
+            )),
+        );
         let observer_app = app.handle().clone();
         tauri::async_runtime::spawn(infrastructure::settings_observer::observe(
-            settings_updates,
-            move |settings| {
+            client_updates,
+            |client| client.settings_receiver(),
+            move |client, settings| {
                 adaptor::controller::desktop_lifecycle::settings_changed(&observer_app, settings);
+                client.mark_settings_applied();
             },
         ));
         app.manage(usecase::desktop_update::DesktopUpdateUsecase::new(

@@ -4,12 +4,16 @@ async fn test_設定観測_watchの通知で更新を渡し再接続した購読
     // Given
     let (sources, receiver) = tokio::sync::watch::channel(None);
     let (delivered, mut updates) = tokio::sync::mpsc::unbounded_channel();
-    let observer = tokio::spawn(observe(receiver, move |value| {
-        delivered.send(value).unwrap();
-    }));
+    let observer = tokio::spawn(observe(
+        receiver,
+        |source: &tokio::sync::watch::Receiver<Option<i32>>| source.clone(),
+        move |_, value| {
+            delivered.send(value).unwrap();
+        },
+    ));
     let (first, receiver) = tokio::sync::watch::channel(Some(1));
     // When / Then
-    sources.send_replace(Some(receiver));
+    sources.send_replace(Some(std::sync::Arc::new(receiver)));
     assert_eq!(
         tokio::time::timeout(std::time::Duration::from_secs(1), updates.recv())
             .await
@@ -24,7 +28,7 @@ async fn test_設定観測_watchの通知で更新を渡し再接続した購読
         Some(2)
     );
     let (second, receiver) = tokio::sync::watch::channel(Some(3));
-    sources.send_replace(Some(receiver));
+    sources.send_replace(Some(std::sync::Arc::new(receiver)));
     assert_eq!(
         tokio::time::timeout(std::time::Duration::from_secs(1), updates.recv())
             .await

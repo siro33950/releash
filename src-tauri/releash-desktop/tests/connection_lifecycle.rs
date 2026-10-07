@@ -203,3 +203,223 @@ async fn test_古いサーバ入れ替え_停止失敗では起動せず停止�
 }
 
 mod support;
+
+#[tokio::test]
+async fn test_初回適用待ち_起動計測を残しhidden接続待機中に開いた窓を通常窓へ置き換える() {
+    use futures_util::StreamExt;
+    use releash_desktop::test_support::integration::settings_observer::observe;
+    use releashd::desktop_api::test_support as telemetry;
+    // Given
+    let _guard = TEST_LOCK.lock().await;
+    let _telemetry = telemetry::lock_test_telemetry();
+    let _crash = telemetry::TEST_LOCK.lock().unwrap();
+    for hidden in [false, true] {
+        telemetry::reset_test_metrics();
+        releashd::desktop_api::set_startup_origin(std::time::Instant::now());
+        let directory = tempfile::tempdir().unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let discovery = LocalApiDiscovery {
+            port: listener.local_addr().unwrap().port(),
+            token: "settings-test".into(),
+            instance_id: "settings-test".into(),
+            pid: std::process::id(),
+            process_started_at: process_start_time(std::process::id()).unwrap(),
+        };
+        std::fs::write(
+            directory.path().join("client-api.json"),
+            serde_json::to_vec(&discovery).unwrap(),
+        )
+        .unwrap();
+        let info = prost::Message::encode_to_vec(&releash_sdk::wire::ServerInfo {
+            daemon_id: discovery.instance_id,
+            pid: discovery.pid,
+            process_started_at: discovery.process_started_at,
+            protocol: 1,
+            release: "settings-test".into(),
+            ..Default::default()
+        });
+        let frames: Vec<_> = [
+            releash_sdk::wire::state_subscription_event::Event::Ready(releash_sdk::wire::Unit {}),
+            releash_sdk::wire::state_subscription_event::Event::Snapshot(
+                releash_sdk::wire::StatePayload {
+                    value: Some(releash_sdk::wire::state_payload::Value::DesktopSettings(
+                        releash_sdk::wire::DesktopSettings {
+                            close_to_tray: Some(false),
+                            start_minimized: Some(true),
+                            crash_reporting: Some(false),
+                            performance_telemetry: Some(true),
+                            auto_launch: Some(true),
+                        },
+                    )),
+                },
+            ),
+        ]
+        .into_iter()
+        .map(|event| {
+            let payload =
+                prost::Message::encode_to_vec(&releash_sdk::wire::StateSubscriptionEvent {
+                    event: Some(event),
+                    ..Default::default()
+                });
+            let mut frame = vec![0];
+            frame.extend_from_slice(&(payload.len() as u32).to_be_bytes());
+            frame.extend_from_slice(&payload);
+            frame
+        })
+        .collect();
+        let router = axum::Router::new()
+            .route(
+                "/releash.client.v1.ClientService/GetServerInfo",
+                axum::routing::post(move || {
+                    let info = info.clone();
+                    async move { ([("content-type", "application/proto")], info) }
+                }),
+            )
+            .route(
+                "/releash.client.v1.ClientService/OpenStateStream",
+                axum::routing::post(move || {
+                    let frames = frames.clone();
+                    async move {
+                        let stream = futures_util::stream::iter(
+                            frames.into_iter().map(Ok::<_, std::convert::Infallible>),
+                        )
+                        .chain(futures_util::stream::pending());
+                        (
+                            [("content-type", "application/connect+proto")],
+                            axum::body::Body::from_stream(stream),
+                        )
+                    }
+                }),
+            )
+            .route(
+                "/releash.client.v1.ClientService/StartStateSubscription",
+                axum::routing::post(|| async {
+                    ([("content-type", "application/proto")], Vec::<u8>::new())
+                }),
+            );
+        let server = tokio::spawn(async move {
+            axum::serve(listener, router).await.unwrap();
+        });
+        let (app, mut updates) = host::desktop_connection_app_parts(
+            tauri::test::mock_builder(),
+            directory.path(),
+            std::path::Path::new("/missing/releashd"),
+        );
+        let handle = app.handle().clone();
+        let mut initialized = tokio::spawn(async move {
+            host::initialize_desktop(&handle, hidden).await;
+        });
+        let client = tokio::time::timeout(
+            Duration::from_secs(3),
+            updates.wait_for(|client| client.is_some()),
+        )
+        .await
+        .unwrap()
+        .unwrap()
+        .clone()
+        .unwrap();
+        // When / Then
+        assert!(
+            tokio::time::timeout(Duration::from_millis(30), &mut initialized)
+                .await
+                .is_err()
+        );
+        assert!(app.get_webview_window("main").is_none());
+        assert!(host::desktop_login_item_calls(app.handle()).is_empty());
+        if hidden {
+            host::show_desktop(app.handle()).unwrap();
+            assert!(app.get_webview_window("startup-failure").is_some());
+        }
+        let handle = app.handle().clone();
+        let observer = tokio::spawn(observe(
+            updates,
+            |client| client.settings_receiver(),
+            move |client, settings| {
+                host::apply_observed_desktop_settings(&handle, settings);
+                // テスト用の計測先を有効にし、ビルド時の OTLP 設定に依存させない。
+                telemetry::set_performance_configured(true);
+                telemetry::set_performance_enabled(settings.performance_telemetry);
+                client.mark_settings_applied();
+            },
+        ));
+        tokio::time::timeout(Duration::from_secs(3), &mut initialized)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            host::desktop_login_item_calls(app.handle())
+                .iter()
+                .filter(|call| **call == "register")
+                .count(),
+            1
+        );
+        let visible = Arc::new(AtomicBool::new(false));
+        let observed = visible.clone();
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        app.run_return(move |app, event| {
+            if matches!(event, tauri::RunEvent::MainEventsCleared) {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "通常窓への置き換えが完了しませんでした"
+                );
+                if let Some(main) = app.get_webview_window("main") {
+                    if !observed.swap(true, Ordering::SeqCst) {
+                        assert!(main.is_visible().unwrap());
+                        main.destroy().unwrap();
+                    }
+                }
+            }
+        });
+        assert!(visible.load(Ordering::SeqCst));
+        // Then
+        let records = telemetry::test_metric_records();
+        let operations: Vec<_> = records
+            .iter()
+            .flat_map(|record| &record.attributes)
+            .filter(|(key, _)| key == "releash.operation")
+            .map(|(_, value)| value.as_str())
+            .collect();
+        assert!(operations.contains(&"startup.app"));
+        assert!(operations.contains(&"startup.first_window_ready"));
+        if !hidden {
+            use releash_desktop::test_support::integration::daemon_connection::{
+                DaemonConnectionState, DaemonEndpoint, DaemonService, DaemonServiceGateway,
+                RetryLimiter,
+            };
+            let (clients, mut updates) = tokio::sync::watch::channel(None);
+            let gateway = Arc::new(DaemonServiceGateway::new(
+                "/missing/releashd".into(),
+                directory.path().into(),
+                Arc::new(RetryLimiter::new()),
+                clients,
+            ));
+            let endpoint = DaemonEndpoint {
+                url: format!("http://127.0.0.1:{}", discovery.port),
+                token: discovery.token,
+            };
+            let connecting = tokio::spawn(async move { gateway.connect(&endpoint).await });
+            tokio::time::timeout(
+                Duration::from_secs(3),
+                updates.wait_for(|client| client.is_some()),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+            // When / Then
+            tokio::time::pause();
+            tokio::time::advance(releash_sdk::daemon::timeout("min_connect_timeout_ms")).await;
+            assert_eq!(
+                connecting.await.unwrap(),
+                Err(DaemonConnectionState::InitialSettingsUnavailable {
+                    detail: Some("初回設定の適用が完了しませんでした".into()),
+                })
+            );
+            tokio::time::resume();
+        }
+        observer.abort();
+        drop(client);
+        server.abort();
+    }
+    telemetry::reset_test_metrics();
+    telemetry::reset_for_tests();
+}

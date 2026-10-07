@@ -1,4 +1,4 @@
-use super::daemon_connection_query::DesktopSettingsSubscription;
+use super::daemon_connection_query::DaemonConnectionQueryService;
 use crate::domain::daemon_connection::{
     DaemonConnection, DaemonConnectionState, DaemonEndpoint, DaemonService,
 };
@@ -7,35 +7,34 @@ use std::sync::Arc;
 
 pub struct DaemonConnectionUsecase {
     port: Arc<dyn DaemonService>,
-    query: Arc<dyn DesktopSettingsSubscription>,
+    query: Arc<dyn DaemonConnectionQueryService>,
+    protocol: u32,
+    release: String,
     state: parking_lot::Mutex<DaemonConnection>,
     connecting: tokio::sync::Mutex<()>,
 }
 impl DaemonConnectionUsecase {
-    pub fn new(port: Arc<dyn DaemonService>, query: Arc<dyn DesktopSettingsSubscription>) -> Self {
+    pub fn new(
+        port: Arc<dyn DaemonService>,
+        query: Arc<dyn DaemonConnectionQueryService>,
+        protocol: u32,
+        release: String,
+    ) -> Self {
         Self {
             port,
             query,
+            protocol,
+            release,
             state: parking_lot::Mutex::new(DaemonConnection::default()),
             connecting: tokio::sync::Mutex::new(()),
         }
     }
     pub fn failure(&self) -> Option<DaemonConnectionState> {
-        let state = self.state.lock().state().clone();
-        if matches!(
-            state,
-            DaemonConnectionState::Connected(_) | DaemonConnectionState::NotObserved
-        ) {
-            None
-        } else {
-            Some(state)
-        }
+        let state = self.state.lock();
+        state.is_failure().then(|| state.state().clone())
     }
     pub fn settings(&self) -> Option<DesktopSettingsDto> {
-        if matches!(
-            self.state.lock().state(),
-            DaemonConnectionState::Connected(_)
-        ) {
+        if self.state.lock().is_connected() {
             self.query.settings()
         } else {
             None
@@ -67,17 +66,13 @@ impl DaemonConnectionUsecase {
             };
             {
                 let mut state = self.state.lock();
-                if !state.assess(
-                    &server,
-                    releash_sdk::descriptor::protocol(),
-                    env!("CARGO_PKG_VERSION"),
-                ) {
+                if !state.assess(&server, self.protocol, &self.release) {
                     return Err(state.state().clone());
                 }
             }
             let changed = !self.state.lock().is_connected_to(&server.endpoint);
             if changed {
-                self.query.connect(&server.endpoint).await?;
+                self.port.connect(&server.endpoint).await?;
             }
             self.state.lock().connected(server.endpoint.clone());
             Ok((server.endpoint, changed))

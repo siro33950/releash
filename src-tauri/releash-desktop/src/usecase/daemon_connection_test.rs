@@ -21,7 +21,7 @@ fn endpoint(token: &str) -> DaemonEndpoint {
 fn server(token: &str) -> DiscoveredDaemon {
     DiscoveredDaemon {
         endpoint: endpoint(token),
-        protocol: releash_sdk::descriptor::protocol(),
+        protocol: 1,
         release: "server".into(),
     }
 }
@@ -30,6 +30,16 @@ impl DaemonService for FakeConnection {
         Box::pin(async {
             self.calls.lock().push("discover");
             Ok(self.server.lock().clone())
+        })
+    }
+    fn connect<'a>(&'a self, endpoint: &'a DaemonEndpoint) -> DaemonResult<'a, ()> {
+        Box::pin(async {
+            self.calls.lock().push("subscribe");
+            if let Some(error) = self.subscribe_error.lock().clone() {
+                return Err(error);
+            }
+            *self.subscribed.lock() = Some(endpoint.clone());
+            Ok(())
         })
     }
     fn start(&self) -> DaemonResult<'_, ()> {
@@ -54,18 +64,7 @@ impl DaemonService for FakeConnection {
         })
     }
 }
-impl DesktopSettingsSubscription for FakeConnection {
-    fn connect<'a>(&'a self, endpoint: &'a DaemonEndpoint) -> DaemonResult<'a, ()> {
-        Box::pin(async {
-            self.calls.lock().push("subscribe");
-            if let Some(error) = self.subscribe_error.lock().clone() {
-                return Err(error);
-            }
-            *self.subscribed.lock() = Some(endpoint.clone());
-            Ok(())
-        })
-    }
-}
+
 impl DaemonConnectionQueryService for FakeConnection {
     fn settings(&self) -> Option<DesktopSettingsDto> {
         None
@@ -76,7 +75,7 @@ impl DaemonConnectionQueryService for FakeConnection {
 async fn test_接続先要求_初回設定の拒否や期限切れでは成功せず再発見だけでは起動しない() {
     // Given
     let port = Arc::new(FakeConnection::default());
-    let usecase = DaemonConnectionUsecase::new(port.clone(), port.clone());
+    let usecase = DaemonConnectionUsecase::new(port.clone(), port.clone(), 1, "client".into());
     // When / Then
     assert!(usecase.failure().is_none());
     assert!(usecase.endpoint().await.is_err());
@@ -115,7 +114,7 @@ async fn test_接続_起動失敗を集約へ記録する() {
         stderr: "startup denied".into(),
     };
     *port.start_error.lock() = Some(error.clone());
-    let usecase = DaemonConnectionUsecase::new(port.clone(), port.clone());
+    let usecase = DaemonConnectionUsecase::new(port.clone(), port.clone(), 1, "client".into());
     // When / Then
     assert_eq!(usecase.connect().await.unwrap_err(), error);
     assert_eq!(usecase.failure(), Some(error));
@@ -126,7 +125,7 @@ async fn test_入れ替え_停止完了後に起動と初回設定受信へ進�
     // Given
     let port = Arc::new(FakeConnection::default());
     *port.server.lock() = Some(server("old"));
-    let usecase = DaemonConnectionUsecase::new(port.clone(), port.clone());
+    let usecase = DaemonConnectionUsecase::new(port.clone(), port.clone(), 1, "client".into());
     let error = DaemonConnectionState::TechnicalFailure("shutdown incomplete".into());
     *port.stop_error.lock() = Some(error.clone());
     // When / Then
@@ -151,8 +150,31 @@ async fn test_接続_互換でないサーバには購読しない() {
     let mut discovered = server("newer");
     discovered.protocol += 1;
     *port.server.lock() = Some(discovered);
-    let usecase = DaemonConnectionUsecase::new(port.clone(), port.clone());
+    let usecase = DaemonConnectionUsecase::new(port.clone(), port.clone(), 1, "client".into());
     // When / Then
     assert!(usecase.connect().await.is_err());
     assert_eq!(*port.calls.lock(), ["discover"]);
+}
+
+#[tokio::test]
+async fn test_接続_注入した画面のprotocolとreleaseで互換を判断する() {
+    // Given
+    let port = Arc::new(FakeConnection::default());
+    let mut discovered = server("same");
+    discovered.protocol = 2;
+    *port.server.lock() = Some(discovered);
+    let usecase =
+        DaemonConnectionUsecase::new(port.clone(), port.clone(), 2, "injected-client".into());
+    // When / Then
+    usecase.connect().await.unwrap();
+    assert_eq!(*port.subscribed.lock(), Some(endpoint("same")));
+    port.server.lock().as_mut().unwrap().protocol = 3;
+    assert_eq!(
+        usecase.connect().await.unwrap_err(),
+        DaemonConnectionState::Incompatible {
+            server_older: false,
+            server_release: "server".into(),
+            client_release: "injected-client".into(),
+        }
+    );
 }

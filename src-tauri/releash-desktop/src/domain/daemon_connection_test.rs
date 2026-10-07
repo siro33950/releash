@@ -1,22 +1,6 @@
 use super::*;
 
 #[test]
-fn test_接続後の窓_ログイン起動の設定と失敗窓からの復旧に従う() {
-    // Given
-    for (hidden, start_minimized, failure, expected) in [
-        (true, true, false, false),
-        (false, true, false, true),
-        (true, false, false, true),
-        (true, true, true, true),
-    ] {
-        // When
-        let show = DaemonConnection::show_after_connection(hidden, start_minimized, failure);
-        // Then
-        assert_eq!(show, expected);
-    }
-}
-
-#[test]
 fn test_起動失敗_未起動の観測で保持し次の起動か接続成功で消す() {
     // Given
     let failed = DaemonConnectionState::StartupFailed {
@@ -75,4 +59,37 @@ fn test_互換判定_非互換なら双方の版と古い側を保持する() {
         release: "different release".into(),
     };
     assert!(connection.assess(&server, 1, "client"));
+}
+
+#[test]
+fn test_接続状態_未観測と接続済み以外を失敗として答える() {
+    // Given
+    let mut connection = DaemonConnection::default();
+    // When / Then
+    assert!(!connection.is_failure());
+    assert!(!connection.is_connected());
+    for state in [
+        DaemonConnectionState::NotRunning,
+        DaemonConnectionState::Incompatible {
+            server_older: true,
+            server_release: "server".into(),
+            client_release: "client".into(),
+        },
+        DaemonConnectionState::StartupFailed {
+            status: None,
+            stderr: "failure".into(),
+        },
+        DaemonConnectionState::InitialSettingsUnavailable { detail: None },
+        DaemonConnectionState::TechnicalFailure("failure".into()),
+    ] {
+        connection.failed(state);
+        assert!(connection.is_failure());
+        assert!(!connection.is_connected());
+    }
+    connection.connected(DaemonEndpoint {
+        url: "localhost".into(),
+        token: "test".into(),
+    });
+    assert!(!connection.is_failure());
+    assert!(connection.is_connected());
 }

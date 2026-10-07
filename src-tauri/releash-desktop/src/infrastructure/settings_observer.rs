@@ -1,18 +1,20 @@
-pub async fn observe<T: Clone + Send + Sync + 'static>(
-    mut sources: tokio::sync::watch::Receiver<Option<tokio::sync::watch::Receiver<Option<T>>>>,
-    changed: impl Fn(T) + Send + Sync + 'static,
+pub async fn observe<C: Send + Sync + 'static, T: Clone + Send + Sync + 'static>(
+    mut sources: tokio::sync::watch::Receiver<Option<std::sync::Arc<C>>>,
+    settings: impl Fn(&C) -> tokio::sync::watch::Receiver<Option<T>> + Send + Sync + 'static,
+    changed: impl Fn(&C, T) + Send + Sync + 'static,
 ) {
     loop {
         let source = sources.borrow_and_update().clone();
-        let Some(mut source) = source else {
+        let Some(client) = source else {
             if sources.changed().await.is_err() {
                 return;
             }
             continue;
         };
+        let mut source = settings(&client);
         let initial = source.borrow_and_update().clone();
         if let Some(value) = initial {
-            changed(value);
+            changed(&client, value);
         }
         loop {
             tokio::select! {
@@ -26,7 +28,7 @@ pub async fn observe<T: Clone + Send + Sync + 'static>(
                         break;
                     }
                     let value = source.borrow_and_update().clone();
-                    if let Some(value) = value { changed(value); }
+                    if let Some(value) = value { changed(&client, value); }
                 }
             }
         }

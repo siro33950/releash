@@ -14,16 +14,21 @@ pub(crate) fn register<R: tauri::Runtime>(router: &mut CommandRouter<super::Invo
 pub(crate) mod client_tests;
 
 #[tauri::command]
-pub(crate) async fn get_client_endpoint(
+pub(crate) async fn get_client_endpoint<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
     connection: tauri::State<
         '_,
         std::sync::Arc<crate::usecase::desktop_lifecycle::DesktopLifecycleUsecase>,
     >,
 ) -> Result<releashd::desktop_api::ClientConnectionDto, String> {
-    let endpoint = connection
+    use tauri::Manager;
+    let presenter =
+        app.state::<crate::adaptor::presenter::desktop_lifecycle::TauriDesktopLifecycle<R>>();
+    let (endpoint, changed) = connection
         .endpoint()
         .await
         .map_err(crate::adaptor::presenter::daemon_connection::message)?;
+    presenter.connected_window(connection.connected(false, presenter.failure_window(), changed));
     Ok(releashd::desktop_api::ClientConnectionDto {
         url: endpoint.url,
         token: endpoint.token,

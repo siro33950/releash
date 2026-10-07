@@ -96,6 +96,7 @@ pub struct DesktopClient {
     client: Arc<rpc::ClientServiceClient<HttpClient>>,
     task: tokio::task::JoinHandle<()>,
     settings: parking_lot::Mutex<tokio::sync::watch::Receiver<Option<DesktopSettingsDto>>>,
+    settings_applied: tokio::sync::watch::Sender<bool>,
     rejected: tokio::sync::watch::Receiver<Option<TechnicalFailure>>,
     exit: Arc<parking_lot::Mutex<Option<TechnicalFailure>>>,
 }
@@ -135,6 +136,7 @@ impl DesktopClient {
             task,
             settings: parking_lot::Mutex::new(settings),
             rejected,
+            settings_applied: tokio::sync::watch::channel(false).0,
             exit,
         }
     }
@@ -155,6 +157,16 @@ impl DesktopClient {
                 Err(failure.clone().expect("waited for failure"))
             }
         }
+    }
+    pub fn mark_settings_applied(&self) {
+        self.settings_applied.send_replace(true);
+    }
+    pub async fn first_settings_applied(&self) {
+        let mut applied = self.settings_applied.subscribe();
+        applied
+            .wait_for(|applied| *applied)
+            .await
+            .expect("settings_applied sender is held by this client");
     }
     pub fn current_settings(&self) -> Option<DesktopSettingsDto> {
         *self.settings.lock().borrow()

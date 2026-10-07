@@ -143,8 +143,6 @@ fn show_window<R: tauri::Runtime>(
                 .map_err(|e| e.to_string())?;
             if install_drop {
                 crate::infrastructure::platform::native_drop::install(&window);
-            }
-            if install_drop {
                 record_window_ready();
             }
             window

@@ -3,9 +3,7 @@ use crate::common::retry::RetryLimiter;
 use crate::domain::daemon_connection::{
     DaemonConnectionState, DaemonEndpoint, DaemonResult, DaemonService, DiscoveredDaemon,
 };
-use crate::usecase::daemon_connection_query::{
-    DaemonConnectionQueryService, DesktopSettingsSubscription,
-};
+use crate::usecase::daemon_connection_query::DaemonConnectionQueryService;
 use releash_sdk::daemon;
 use releashd::desktop_api::{ClientConnectionDto, DesktopSettingsDto};
 use std::{path::PathBuf, sync::Arc};
@@ -14,31 +12,25 @@ pub struct DaemonServiceGateway {
     executable: PathBuf,
     data_dir: PathBuf,
     limiter: Arc<RetryLimiter>,
-    settings_sources: tokio::sync::watch::Sender<
-        Option<tokio::sync::watch::Receiver<Option<DesktopSettingsDto>>>,
-    >,
-    client: parking_lot::RwLock<Option<Arc<DesktopClient>>>,
+    client: tokio::sync::watch::Sender<Option<Arc<DesktopClient>>>,
 }
 impl DaemonServiceGateway {
     pub fn new(
         executable: PathBuf,
         data_dir: PathBuf,
         limiter: Arc<RetryLimiter>,
-        settings_sources: tokio::sync::watch::Sender<
-            Option<tokio::sync::watch::Receiver<Option<DesktopSettingsDto>>>,
-        >,
+        client: tokio::sync::watch::Sender<Option<Arc<DesktopClient>>>,
     ) -> Self {
         Self {
             executable,
             data_dir,
             limiter,
-            settings_sources,
-            client: parking_lot::RwLock::new(None),
+            client,
         }
     }
     pub fn client(&self) -> Result<Arc<DesktopClient>, String> {
         self.client
-            .read()
+            .borrow()
             .clone()
             .ok_or_else(|| "サーバに接続していません".into())
     }
@@ -92,16 +84,13 @@ impl DaemonService for DaemonServiceGateway {
                     .await
                     .map_err(daemon_failure)?;
             }
-            *self.client.write() = None;
-            self.settings_sources.send_replace(None);
+            self.client.send_replace(None);
             Ok(())
         })
     }
-}
-impl DesktopSettingsSubscription for DaemonServiceGateway {
     fn connect<'a>(&'a self, endpoint: &'a DaemonEndpoint) -> DaemonResult<'a, ()> {
         Box::pin(async move {
-            *self.client.write() = None;
+            self.client.send_replace(None);
             let connection = ClientConnectionDto {
                 url: endpoint.url.clone(),
                 token: endpoint.token.clone(),
@@ -122,9 +111,15 @@ impl DesktopSettingsSubscription for DaemonServiceGateway {
             .map_err(|e| DaemonConnectionState::InitialSettingsUnavailable {
                 detail: Some(e.message),
             })?;
-            self.settings_sources
-                .send_replace(Some(client.settings_receiver()));
-            *self.client.write() = Some(client);
+            self.client.send_replace(Some(client.clone()));
+            tokio::time::timeout(
+                daemon::timeout("min_connect_timeout_ms"),
+                client.first_settings_applied(),
+            )
+            .await
+            .map_err(|_| DaemonConnectionState::InitialSettingsUnavailable {
+                detail: Some("初回設定の適用が完了しませんでした".into()),
+            })?;
             Ok(())
         })
     }

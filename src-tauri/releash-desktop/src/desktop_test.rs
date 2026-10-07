@@ -1,4 +1,4 @@
-use crate::adaptor::gateway::desktop_lifecycle::apply_desktop_settings;
+use crate::adaptor::presenter::desktop_lifecycle::apply_desktop_settings;
 use crate::infrastructure::platform::desktop_runtime::record_window_ready;
 
 #[test]

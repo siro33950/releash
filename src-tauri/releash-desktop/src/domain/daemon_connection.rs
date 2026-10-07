@@ -78,12 +78,14 @@ impl DaemonConnection {
     pub fn is_connected_to(&self, endpoint: &DaemonEndpoint) -> bool {
         matches!(&self.state, DaemonConnectionState::Connected(current) if current == endpoint)
     }
-    pub fn show_after_connection(
-        hidden: bool,
-        start_minimized: bool,
-        failure_window: bool,
-    ) -> bool {
-        !hidden || !start_minimized || failure_window
+    pub fn is_failure(&self) -> bool {
+        !matches!(
+            self.state,
+            DaemonConnectionState::Connected(_) | DaemonConnectionState::NotObserved
+        )
+    }
+    pub fn is_connected(&self) -> bool {
+        matches!(self.state, DaemonConnectionState::Connected(_))
     }
 }
 
@@ -91,6 +93,7 @@ pub type DaemonResult<'a, T> =
     Pin<Box<dyn Future<Output = Result<T, DaemonConnectionState>> + Send + 'a>>;
 pub trait DaemonService: Send + Sync {
     fn discover(&self) -> DaemonResult<'_, Option<DiscoveredDaemon>>;
+    fn connect<'a>(&'a self, endpoint: &'a DaemonEndpoint) -> DaemonResult<'a, ()>;
     fn start(&self) -> DaemonResult<'_, ()>;
     fn stop(&self) -> DaemonResult<'_, ()>;
 }
