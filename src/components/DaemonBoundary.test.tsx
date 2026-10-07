@@ -63,7 +63,11 @@ it("古いサーバの版と入れ替え操作を表示し、Quitをシェルへ
 	state = "TRANSIENT_FAILURE";
 	vi.mocked(invoke).mockImplementation(async (command) =>
 		command === "get_desktop_connection_failure"
-			? { message: "サーバが古い（サーバ 1、画面 2）", serverOlder: true }
+			? {
+					message: "サーバが古い（サーバ 1、画面 2）",
+					serverOlder: true,
+					clientOlder: false,
+				}
 			: null,
 	);
 	render(<DaemonBoundary>workbench</DaemonBoundary>);
@@ -90,4 +94,31 @@ it("起動失敗は理由を表示する", async () => {
 	vi.mocked(invoke).mockRejectedValue(new Error("起動失敗"));
 	fireEvent.click(screen.getByRole("button", { name: "サーバを起動" }));
 	expect(await screen.findByRole("alert")).toHaveTextContent("起動失敗");
+});
+
+it("画面が古い失敗では文言とQuitだけを表示する", async () => {
+	state = "TRANSIENT_FAILURE";
+	vi.mocked(invoke).mockImplementation(async (command) =>
+		command === "get_desktop_connection_failure"
+			? {
+					message: "画面が古い（サーバ 2、画面 1）",
+					serverOlder: false,
+					clientOlder: true,
+				}
+			: null,
+	);
+	render(<DaemonBoundary>workbench</DaemonBoundary>);
+	expect(
+		await screen.findByText("画面が古い（サーバ 2、画面 1）"),
+	).toBeVisible();
+	expect(
+		screen.queryByRole("button", { name: "サーバを起動" }),
+	).not.toBeInTheDocument();
+	expect(
+		screen.queryByRole("button", { name: "サーバを停止して起動し直す" }),
+	).not.toBeInTheDocument();
+	fireEvent.click(screen.getByRole("button", { name: "Quit" }));
+	await waitFor(() => expect(invoke).toHaveBeenCalledWith("quit_desktop"));
+	expect(invoke).not.toHaveBeenCalledWith("start_daemon");
+	expect(invoke).not.toHaveBeenCalledWith("replace_daemon");
 });

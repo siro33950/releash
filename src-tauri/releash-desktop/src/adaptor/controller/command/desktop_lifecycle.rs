@@ -1,5 +1,6 @@
+use crate::adaptor::presenter::daemon_connection::{self, DesktopConnectionFailure};
 use crate::usecase::daemon_connection::DaemonConnectionUsecase;
-use crate::usecase::daemon_connection_query::ConnectionFailure;
+use crate::usecase::desktop_lifecycle::DesktopLifecycleUsecase;
 use std::sync::Arc;
 pub(crate) const COMMAND_NAMES: &[&str] = &[
     "get_desktop_connection_failure",
@@ -35,25 +36,27 @@ pub(crate) fn register<R: tauri::Runtime>(
 #[tauri::command]
 fn get_desktop_connection_failure(
     connection: tauri::State<'_, Arc<DaemonConnectionUsecase>>,
-) -> Option<ConnectionFailure> {
-    connection.failure()
+) -> Option<DesktopConnectionFailure> {
+    connection.failure().map(daemon_connection::failure)
 }
 #[tauri::command]
-async fn start_daemon<R: tauri::Runtime>(
-    app: tauri::AppHandle<R>,
-    connection: tauri::State<'_, Arc<DaemonConnectionUsecase>>,
+async fn start_daemon(
+    connection: tauri::State<'_, Arc<DesktopLifecycleUsecase>>,
 ) -> Result<(), String> {
-    connection.connect().await.map_err(|e| e.to_string())?;
-    super::super::desktop_lifecycle::connected(&app, false);
+    connection
+        .start()
+        .await
+        .map_err(crate::adaptor::presenter::daemon_connection::message)?;
     Ok(())
 }
 #[tauri::command]
-async fn replace_daemon<R: tauri::Runtime>(
-    app: tauri::AppHandle<R>,
-    connection: tauri::State<'_, Arc<DaemonConnectionUsecase>>,
+async fn replace_daemon(
+    connection: tauri::State<'_, Arc<DesktopLifecycleUsecase>>,
 ) -> Result<(), String> {
-    connection.replace().await.map_err(|e| e.to_string())?;
-    super::super::desktop_lifecycle::connected(&app, false);
+    connection
+        .replace()
+        .await
+        .map_err(crate::adaptor::presenter::daemon_connection::message)?;
     Ok(())
 }
 #[tauri::command]
@@ -62,20 +65,20 @@ pub(crate) fn quit_desktop<R: tauri::Runtime>(app: tauri::AppHandle<R>) {
 }
 #[tauri::command]
 async fn get_login_item_status(
-    login: tauri::State<'_, crate::usecase::login_item::LoginItemUsecase>,
+    login: tauri::State<'_, Arc<crate::usecase::login_item::LoginItemUsecase>>,
 ) -> Result<crate::usecase::login_item::LoginItemState, String> {
     login.status().await.map_err(|e| e.to_string())
 }
 #[tauri::command]
 async fn set_login_item_enabled(
-    login: tauri::State<'_, crate::usecase::login_item::LoginItemUsecase>,
+    login: tauri::State<'_, Arc<crate::usecase::login_item::LoginItemUsecase>>,
     enabled: bool,
 ) -> Result<crate::usecase::login_item::LoginItemState, String> {
     login.set_enabled(enabled).await.map_err(|e| e.to_string())
 }
 #[tauri::command]
 fn open_login_item_settings(
-    login: tauri::State<'_, crate::usecase::login_item::LoginItemUsecase>,
+    login: tauri::State<'_, Arc<crate::usecase::login_item::LoginItemUsecase>>,
 ) -> Result<(), String> {
     login.open_settings().map_err(|e| e.to_string())
 }

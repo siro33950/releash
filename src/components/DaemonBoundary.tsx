@@ -22,7 +22,7 @@ import { getErrorMessage } from "@/lib/errorMessage";
 
 const DaemonReadyContext = createContext(true);
 export const useDaemonReady = () => useContext(DaemonReadyContext);
-type Failure = { message: string; serverOlder: boolean };
+type Failure = { message: string; serverOlder: boolean; clientOlder: boolean };
 
 export function DaemonBoundary({ children }: { children: ReactNode }) {
 	const [connection, setConnection] = useState(getConnectionState);
@@ -122,7 +122,7 @@ export function DaemonBoundary({ children }: { children: ReactNode }) {
 							{failure?.message ?? "サーバへの接続を待っています。"}
 						</DialogDescription>
 						{error && <p role="alert">{error}</p>}
-						{connection === "TRANSIENT_FAILURE" && (
+						{connection === "TRANSIENT_FAILURE" && !failure?.clientOlder && (
 							<button
 								type="button"
 								disabled={busy}

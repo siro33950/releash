@@ -1,132 +1,140 @@
 use super::desktop_client::{self, DesktopClient};
-use crate::domain::daemon_connection::{ConnectionError, DaemonConnectionPort, DaemonEndpoint};
-use crate::usecase::daemon_connection_query::{ConnectionFailure, DaemonConnectionQueryService};
-use releash_sdk::{compatibility::Compatibility, daemon};
+use crate::common::retry::RetryLimiter;
+use crate::domain::daemon_connection::{
+    DaemonConnectionState, DaemonEndpoint, DaemonResult, DaemonService, DiscoveredDaemon,
+};
+use crate::usecase::daemon_connection_query::{
+    DaemonConnectionQueryService, DesktopSettingsSubscription,
+};
+use releash_sdk::daemon;
 use releashd::desktop_api::{ClientConnectionDto, DesktopSettingsDto};
 use std::{path::PathBuf, sync::Arc};
 
-pub struct DaemonConnection {
+pub struct DaemonServiceGateway {
     executable: PathBuf,
     data_dir: PathBuf,
-    client: parking_lot::RwLock<Option<(DaemonEndpoint, Arc<DesktopClient>)>>,
-    failure: parking_lot::RwLock<Option<ConnectionError>>,
+    limiter: Arc<RetryLimiter>,
+    settings_sources: tokio::sync::watch::Sender<
+        Option<tokio::sync::watch::Receiver<Option<DesktopSettingsDto>>>,
+    >,
+    client: parking_lot::RwLock<Option<Arc<DesktopClient>>>,
 }
-
-impl DaemonConnection {
-    pub fn new(executable: PathBuf, data_dir: PathBuf) -> Self {
+impl DaemonServiceGateway {
+    pub fn new(
+        executable: PathBuf,
+        data_dir: PathBuf,
+        limiter: Arc<RetryLimiter>,
+        settings_sources: tokio::sync::watch::Sender<
+            Option<tokio::sync::watch::Receiver<Option<DesktopSettingsDto>>>,
+        >,
+    ) -> Self {
         Self {
             executable,
             data_dir,
+            limiter,
+            settings_sources,
             client: parking_lot::RwLock::new(None),
-            failure: parking_lot::RwLock::new(None),
         }
     }
     pub fn client(&self) -> Result<Arc<DesktopClient>, String> {
         self.client
             .read()
-            .as_ref()
-            .map(|(_, client)| client.clone())
+            .clone()
             .ok_or_else(|| "サーバに接続していません".into())
     }
 }
-
-#[async_trait::async_trait]
-impl DaemonConnectionPort for DaemonConnection {
-    async fn discover(&self) -> Result<Option<DaemonEndpoint>, ConnectionError> {
-        let Some(discovery) =
-            daemon::running(&self.data_dir).map_err(|e| ConnectionError::from(e.to_string()))?
-        else {
-            return Ok(None);
-        };
-        let info = daemon::server_info(&discovery)
-            .await
-            .map_err(|e| ConnectionError::from(e.to_string()))?;
-        let compatibility =
-            Compatibility::assess(releash_sdk::descriptor::protocol(), info.protocol);
-        if compatibility != Compatibility::Compatible {
-            let server_older = compatibility == Compatibility::ServerOlder;
-            return Err(ConnectionError {
-                server_older,
-                message: format!(
-                    "{}（サーバ {}, 画面 {}）",
-                    if server_older {
-                        "サーバが古い"
-                    } else {
-                        "画面が古い"
-                    },
-                    info.release,
-                    env!("CARGO_PKG_VERSION")
-                ),
-            });
-        }
-        Ok(Some(DaemonEndpoint {
-            url: format!("http://127.0.0.1:{}", discovery.port),
-            token: discovery.token,
-        }))
-    }
-    async fn start(&self) -> Result<(), ConnectionError> {
-        let cwd = std::env::current_dir().map_err(|e| ConnectionError::from(e.to_string()))?;
-        daemon::start(&self.executable, &self.data_dir, &cwd)
-            .await
-            .map_err(|e| ConnectionError::from(e.to_string()))?;
-        Ok(())
-    }
-    async fn subscribe(&self, endpoint: &DaemonEndpoint) -> Result<(), ConnectionError> {
-        *self.client.write() = None;
-        let connection = ClientConnectionDto {
-            url: endpoint.url.clone(),
-            token: endpoint.token.clone(),
-        };
-        let client = Arc::new(DesktopClient::start(
-            desktop_client::client(&connection).map_err(ConnectionError::from)?,
-            desktop_client::stream_client(&connection).map_err(ConnectionError::from)?,
-            Arc::new(crate::common::retry::RetryLimiter::new()),
-        ));
-        tokio::time::timeout(
-            daemon::timeout("min_connect_timeout_ms"),
-            client.first_settings(),
-        )
-        .await
-        .map_err(|e| ConnectionError::from(e.to_string()))?
-        .map_err(|e| ConnectionError::from(e.message))?;
-        *self.client.write() = Some((endpoint.clone(), client));
-        Ok(())
-    }
-    fn subscribed_to(&self, endpoint: &DaemonEndpoint) -> bool {
-        self.client
-            .read()
-            .as_ref()
-            .is_some_and(|(current, _)| current == endpoint)
-    }
-    async fn stop(&self) -> Result<(), ConnectionError> {
-        if let Some(discovery) =
-            daemon::running(&self.data_dir).map_err(|e| ConnectionError::from(e.to_string()))?
-        {
-            daemon::stop(&self.data_dir, &discovery)
-                .await
-                .map_err(|e| ConnectionError::from(e.to_string()))?;
-        }
-        *self.client.write() = None;
-        Ok(())
-    }
-    fn record_failure(&self, failure: Option<ConnectionError>) {
-        *self.failure.write() = failure;
+fn daemon_failure(error: daemon::DaemonError) -> DaemonConnectionState {
+    match error {
+        daemon::DaemonError::Exited { status, stderr } => DaemonConnectionState::StartupFailed {
+            status: Some(status.to_string()),
+            stderr,
+        },
+        daemon::DaemonError::StartupTimeout { stderr } => DaemonConnectionState::StartupFailed {
+            status: None,
+            stderr,
+        },
+        error => DaemonConnectionState::TechnicalFailure(error.to_string()),
     }
 }
-impl DaemonConnectionQueryService for DaemonConnection {
-    fn failure(&self) -> Option<ConnectionFailure> {
-        self.failure
-            .read()
-            .as_ref()
-            .map(|failure| ConnectionFailure {
-                message: failure.message.clone(),
-                server_older: failure.server_older,
-            })
+impl DaemonService for DaemonServiceGateway {
+    fn discover(&self) -> DaemonResult<'_, Option<DiscoveredDaemon>> {
+        Box::pin(async move {
+            let Some(discovery) = daemon::running(&self.data_dir).map_err(daemon_failure)? else {
+                return Ok(None);
+            };
+            let info = daemon::server_info(&discovery)
+                .await
+                .map_err(daemon_failure)?;
+            Ok(Some(DiscoveredDaemon {
+                endpoint: DaemonEndpoint {
+                    url: format!("http://127.0.0.1:{}", discovery.port),
+                    token: discovery.token,
+                },
+                protocol: info.protocol,
+                release: info.release,
+            }))
+        })
     }
+    fn start(&self) -> DaemonResult<'_, ()> {
+        Box::pin(async move {
+            let cwd = std::env::current_dir()
+                .map_err(|e| DaemonConnectionState::TechnicalFailure(e.to_string()))?;
+            daemon::start(&self.executable, &self.data_dir, &cwd)
+                .await
+                .map_err(daemon_failure)?;
+            Ok(())
+        })
+    }
+    fn stop(&self) -> DaemonResult<'_, ()> {
+        Box::pin(async move {
+            if let Some(discovery) = daemon::running(&self.data_dir).map_err(daemon_failure)? {
+                daemon::stop(&self.data_dir, &discovery)
+                    .await
+                    .map_err(daemon_failure)?;
+            }
+            *self.client.write() = None;
+            self.settings_sources.send_replace(None);
+            Ok(())
+        })
+    }
+}
+impl DesktopSettingsSubscription for DaemonServiceGateway {
+    fn connect<'a>(&'a self, endpoint: &'a DaemonEndpoint) -> DaemonResult<'a, ()> {
+        Box::pin(async move {
+            *self.client.write() = None;
+            let connection = ClientConnectionDto {
+                url: endpoint.url.clone(),
+                token: endpoint.token.clone(),
+            };
+            let client = Arc::new(DesktopClient::start(
+                desktop_client::client(&connection)
+                    .map_err(DaemonConnectionState::TechnicalFailure)?,
+                desktop_client::stream_client(&connection)
+                    .map_err(DaemonConnectionState::TechnicalFailure)?,
+                self.limiter.clone(),
+            ));
+            tokio::time::timeout(
+                daemon::timeout("min_connect_timeout_ms"),
+                client.first_settings(),
+            )
+            .await
+            .map_err(|_| DaemonConnectionState::InitialSettingsUnavailable { detail: None })?
+            .map_err(|e| DaemonConnectionState::InitialSettingsUnavailable {
+                detail: Some(e.message),
+            })?;
+            self.settings_sources
+                .send_replace(Some(client.settings_receiver()));
+            *self.client.write() = Some(client);
+            Ok(())
+        })
+    }
+}
+impl DaemonConnectionQueryService for DaemonServiceGateway {
     fn settings(&self) -> Option<DesktopSettingsDto> {
         self.client().ok()?.current_settings()
     }
-    fn settings_update(&self) -> Option<DesktopSettingsDto> {
-        self.client().ok()?.settings_update()
-    }
 }
+
+#[cfg(test)]
+#[path = "daemon_connection_test.rs"]
+mod daemon_connection_tests;

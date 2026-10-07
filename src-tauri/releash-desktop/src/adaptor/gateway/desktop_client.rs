@@ -159,14 +159,8 @@ impl DesktopClient {
     pub fn current_settings(&self) -> Option<DesktopSettingsDto> {
         *self.settings.lock().borrow()
     }
-    /// 前回の観測以降に届いた desktop 設定の変更を取り出す。
-    pub fn settings_update(&self) -> Option<DesktopSettingsDto> {
-        let mut receiver = self.settings.lock();
-        if receiver.has_changed().unwrap_or(false) {
-            *receiver.borrow_and_update()
-        } else {
-            None
-        }
+    pub fn settings_receiver(&self) -> tokio::sync::watch::Receiver<Option<DesktopSettingsDto>> {
+        self.settings.lock().clone()
     }
     pub fn failure(&self) -> Option<TechnicalFailure> {
         self.exit.lock().clone()

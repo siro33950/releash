@@ -1,5 +1,5 @@
 use releash_desktop::test_support::integration::daemon_connection::{
-    DaemonConnection, DaemonConnectionUsecase,
+    failure, message, DaemonConnectionUsecase, DaemonServiceGateway, RetryLimiter,
 };
 use releash_sdk::discovery::{process_start_time, LocalApiDiscovery};
 use std::sync::Arc;
@@ -39,13 +39,15 @@ async fn test_接続_既存サーバのprotocolと同一性を確認し非互換
             }),
         );
         let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-        let connection = Arc::new(DaemonConnection::new(
+        let connection = Arc::new(DaemonServiceGateway::new(
             "/missing/releashd".into(),
             directory.path().into(),
+            Arc::new(RetryLimiter::new()),
+            tokio::sync::watch::channel(None).0,
         ));
         let usecase = DaemonConnectionUsecase::new(connection.clone(), connection.clone());
         // When
-        let error = usecase.connect().await.unwrap_err().to_string();
+        let error = message(usecase.connect().await.unwrap_err());
         // Then
         assert!(error.contains(expected), "{error}");
         assert!(error.contains("server-release"));
@@ -170,7 +172,7 @@ async fn test_初回設定失敗_server_infoが成功しても接続先を渡さ
             message.contains(if reject {
                 "settings denied"
             } else {
-                "deadline has elapsed"
+                "サーバの初回設定を受信できませんでした"
             }),
             "{message}"
         );
@@ -182,4 +184,41 @@ async fn test_初回設定失敗_server_infoが成功しても接続先を渡さ
         assert!(app.get_webview_window("main").is_none());
         server.abort();
     }
+}
+
+#[tokio::test]
+async fn test_起動失敗_接続先を再要求しても終了状態とstderrを表示する() {
+    use std::os::unix::fs::PermissionsExt;
+    // Given
+    let directory = tempfile::tempdir().unwrap();
+    let executable = directory.path().join("releashd");
+    std::fs::write(
+        &executable,
+        "#!/bin/sh\nprintf 'desktop-startup-marker\\n' >&2\nexit 7\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let gateway = Arc::new(DaemonServiceGateway::new(
+        executable,
+        directory.path().into(),
+        Arc::new(RetryLimiter::new()),
+        tokio::sync::watch::channel(None).0,
+    ));
+    let connection = DaemonConnectionUsecase::new(gateway.clone(), gateway);
+    // When
+    assert!(connection.connect().await.is_err());
+    assert!(connection.endpoint().await.is_err());
+    let presented = failure(connection.failure().unwrap());
+    // Then
+    assert!(
+        presented.message.contains("プロセスが終了しました"),
+        "{}",
+        presented.message
+    );
+    assert!(presented.message.contains('7'), "{}", presented.message);
+    assert!(
+        presented.message.contains("desktop-startup-marker"),
+        "{}",
+        presented.message
+    );
 }

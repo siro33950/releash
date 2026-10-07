@@ -6,29 +6,6 @@ pub(crate) fn application_context<R: tauri::Runtime>() -> tauri::Context<R> {
     tauri::generate_context!()
 }
 
-pub fn apply_desktop_settings<R: tauri::Runtime>(
-    app: &tauri::AppHandle<R>,
-    settings: releashd::desktop_api::DesktopSettingsDto,
-) {
-    use releashd::desktop_api::TelemetryPort;
-    let preferences = infrastructure::platform::window_lifecycle::WindowPreferences {
-        close_to_tray: settings.close_to_tray,
-    };
-    if let Some(state) =
-        app.try_state::<infrastructure::platform::window_lifecycle::WindowPreferencesState>()
-    {
-        *state.0.write() = preferences;
-    } else {
-        app.manage(
-            infrastructure::platform::window_lifecycle::WindowPreferencesState(
-                parking_lot::RwLock::new(preferences),
-            ),
-        );
-    }
-    releashd::desktop_api::TelemetryGateway.set_crash_reporting_enabled(settings.crash_reporting);
-    releashd::desktop_api::TelemetryGateway.set_performance_enabled(settings.performance_telemetry);
-}
-
 pub fn run() {
     releashd::desktop_api::set_startup_origin(std::time::Instant::now());
     let builder = tauri::Builder::default()
@@ -67,21 +44,47 @@ pub fn run() {
         app.manage(usecase::cli_install::CliInstallUsecase(Arc::new(
             adaptor::gateway::cli_install::MacCliInstall,
         )));
-        let connection = Arc::new(adaptor::gateway::daemon_connection::DaemonConnection::new(
-            std::env::current_exe()?.with_file_name("releashd"),
-            data_dir,
-        ));
+        let (settings_sources, settings_updates) = tokio::sync::watch::channel(None);
+        let connection = Arc::new(
+            adaptor::gateway::daemon_connection::DaemonServiceGateway::new(
+                std::env::current_exe()?.with_file_name("releashd"),
+                data_dir,
+                Arc::new(crate::common::retry::RetryLimiter::new()),
+                settings_sources,
+            ),
+        );
         let connection_usecase =
             Arc::new(usecase::daemon_connection::DaemonConnectionUsecase::new(
                 connection.clone(),
                 connection.clone(),
             ));
         app.manage(connection_usecase.clone());
-        app.manage(usecase::login_item::LoginItemUsecase::new(
+        let login = Arc::new(usecase::login_item::LoginItemUsecase::new(
             Arc::new(adaptor::gateway::login_item::MacLoginItem),
             Arc::new(adaptor::gateway::login_item::DaemonLoginPreference(
                 connection.clone(),
             )),
+        ));
+        app.manage(login.clone());
+        app.manage(Arc::new(
+            usecase::desktop_lifecycle::DesktopLifecycleUsecase::new(
+                connection_usecase,
+                login,
+                Arc::new(adaptor::gateway::desktop_lifecycle::TauriDesktopLifecycle(
+                    Arc::new(
+                        infrastructure::platform::desktop_runtime::DesktopRuntime::new(
+                            app.handle().clone(),
+                        ),
+                    ),
+                )),
+            ),
+        ));
+        let observer_app = app.handle().clone();
+        tauri::async_runtime::spawn(infrastructure::settings_observer::observe(
+            settings_updates,
+            move |settings| {
+                adaptor::controller::desktop_lifecycle::settings_changed(&observer_app, settings);
+            },
         ));
         app.manage(usecase::desktop_update::DesktopUpdateUsecase::new(
             Arc::new(adaptor::gateway::desktop_update::TauriUpdateGateway::new(
@@ -122,13 +125,6 @@ pub fn run() {
         .build(application_context())
         .expect("error while building tauri application")
         .run(adaptor::controller::desktop_lifecycle::handle_run_event);
-}
-
-pub fn record_window_ready() {
-    releashd::desktop_api::record_startup_from_origin(
-        releashd::desktop_api::Startup::FirstWindowReady,
-    );
-    releashd::desktop_api::record_startup_from_origin(releashd::desktop_api::Startup::AppStartup);
 }
 
 #[cfg(test)]

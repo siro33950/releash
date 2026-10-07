@@ -377,7 +377,16 @@ async fn test_desktop接続_discoveryとtauri経由で外部daemonの初回接�
         );
         wait_phase(failed.handle(), "failed").await;
         let status = releash_desktop::test_support::desktop_connection_status(failed.handle());
-        assert!(!status["reason"].as_str().unwrap().is_empty());
+        let reason = status["reason"].as_str().unwrap();
+        if executable == Path::new("/missing/releashd") {
+            assert!(reason.contains("No such file"), "{reason}");
+        } else {
+            assert!(reason.contains("プロセスが終了しました"), "{reason}");
+            assert!(
+                reason.contains("Local data initialization could not be verified safely."),
+                "{reason}"
+            );
+        }
     }
 }
 

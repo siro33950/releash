@@ -13,10 +13,13 @@ pub fn desktop_connection_app<R: tauri::Runtime>(
         CommandRouter::new(Box::new(|_| false));
     crate::adaptor::controller::command::client::register(&mut router);
     crate::adaptor::controller::command::desktop_lifecycle::register(&mut router);
+    let (settings_sources, settings_updates) = tokio::sync::watch::channel(None);
     let connection = Arc::new(
-        crate::adaptor::gateway::daemon_connection::DaemonConnection::new(
+        crate::adaptor::gateway::daemon_connection::DaemonServiceGateway::new(
             executable.into(),
             data_dir.into(),
+            Arc::new(crate::common::retry::RetryLimiter::new()),
+            settings_sources,
         ),
     );
     let preference = Arc::new(crate::adaptor::gateway::login_item::DaemonLoginPreference(
@@ -33,15 +36,41 @@ pub fn desktop_connection_app<R: tauri::Runtime>(
         let _ = connecting.connect().await;
     });
     let login = Arc::new(RecordingLoginItem::default());
-    builder
-        .manage(connection)
+    let login_usecase = Arc::new(crate::usecase::login_item::LoginItemUsecase::new(
+        login.clone(),
+        preference,
+    ));
+    let app = builder
+        .manage(connection.clone())
         .manage(login.clone())
-        .manage(crate::usecase::login_item::LoginItemUsecase::new(
-            login, preference,
-        ))
+        .manage(login_usecase.clone())
         .invoke_handler(move |invoke| router.handle(invoke))
         .build(crate::application_context())
-        .unwrap()
+        .unwrap();
+    app.manage(Arc::new(
+        crate::usecase::desktop_lifecycle::DesktopLifecycleUsecase::new(
+            connection,
+            login_usecase,
+            Arc::new(
+                crate::adaptor::gateway::desktop_lifecycle::TauriDesktopLifecycle(Arc::new(
+                    crate::infrastructure::platform::desktop_runtime::DesktopRuntime::new(
+                        app.handle().clone(),
+                    ),
+                )),
+            ),
+        ),
+    ));
+    let observer_app = app.handle().clone();
+    tauri::async_runtime::spawn(crate::infrastructure::settings_observer::observe(
+        settings_updates,
+        move |settings| {
+            crate::adaptor::controller::desktop_lifecycle::settings_changed(
+                &observer_app,
+                settings,
+            );
+        },
+    ));
+    app
 }
 
 #[derive(Default)]
@@ -93,7 +122,7 @@ pub async fn desktop_login_preference<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     requested: Option<bool>,
 ) -> bool {
-    let login = app.state::<crate::usecase::login_item::LoginItemUsecase>();
+    let login = app.state::<Arc<crate::usecase::login_item::LoginItemUsecase>>();
     if let Some(requested) = requested {
         login.set_enabled(requested).await.unwrap().requested
     } else {
@@ -107,7 +136,7 @@ pub async fn initialize_desktop_settings<R: tauri::Runtime>(app: &tauri::AppHand
         .state::<Arc<crate::usecase::daemon_connection::DaemonConnectionUsecase>>()
         .settings()
         .unwrap();
-    crate::desktop::apply_desktop_settings(app, settings);
+    crate::adaptor::gateway::desktop_lifecycle::apply_desktop_settings(app, settings);
 }
 
 pub fn desktop_window_preferences<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> bool {
@@ -129,10 +158,9 @@ pub fn wait_for_desktop_predecessor() -> Result<bool, String> {
 pub async fn desktop_client_endpoint<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
 ) -> ClientEndpoint {
-    let endpoint =
-        crate::adaptor::controller::command::client::get_client_endpoint(app.clone(), app.state())
-            .await
-            .unwrap();
+    let endpoint = crate::adaptor::controller::command::client::get_client_endpoint(app.state())
+        .await
+        .unwrap();
     ClientEndpoint {
         url: endpoint.url,
         token: endpoint.token,
@@ -184,7 +212,10 @@ pub fn desktop_connection_status<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
 ) -> serde_json::Value {
     let connection = app.state::<Arc<crate::usecase::daemon_connection::DaemonConnectionUsecase>>();
-    if let Some(failure) = connection.failure() {
+    if let Some(failure) = connection
+        .failure()
+        .map(crate::adaptor::presenter::daemon_connection::failure)
+    {
         serde_json::json!({"phase":"failed", "reason":failure.message})
     } else {
         serde_json::json!({"phase":if connection.settings().is_some() {"ready"} else {"starting"}})

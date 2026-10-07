@@ -1,14 +1,16 @@
 use super::*;
+use crate::domain::daemon_connection::{DaemonResult, DiscoveredDaemon};
+use crate::usecase::daemon_connection_query::DaemonConnectionQueryService;
 use parking_lot::Mutex;
 
 #[derive(Default)]
 struct FakeConnection {
     calls: Mutex<Vec<&'static str>>,
-    endpoint: Mutex<Option<DaemonEndpoint>>,
+    server: Mutex<Option<DiscoveredDaemon>>,
     subscribed: Mutex<Option<DaemonEndpoint>>,
-    failure: Mutex<Option<ConnectionError>>,
-    subscribe_error: Mutex<Option<String>>,
-    stop_error: Mutex<Option<String>>,
+    start_error: Mutex<Option<DaemonConnectionState>>,
+    subscribe_error: Mutex<Option<DaemonConnectionState>>,
+    stop_error: Mutex<Option<DaemonConnectionState>>,
 }
 fn endpoint(token: &str) -> DaemonEndpoint {
     DaemonEndpoint {
@@ -16,55 +18,56 @@ fn endpoint(token: &str) -> DaemonEndpoint {
         token: token.into(),
     }
 }
-#[async_trait::async_trait]
-impl DaemonConnectionPort for FakeConnection {
-    async fn discover(&self) -> Result<Option<DaemonEndpoint>, ConnectionError> {
-        self.calls.lock().push("discover");
-        Ok(self.endpoint.lock().clone())
+fn server(token: &str) -> DiscoveredDaemon {
+    DiscoveredDaemon {
+        endpoint: endpoint(token),
+        protocol: releash_sdk::descriptor::protocol(),
+        release: "server".into(),
     }
-    async fn start(&self) -> Result<(), ConnectionError> {
-        self.calls.lock().push("start");
-        *self.endpoint.lock() = Some(endpoint("new"));
-        Ok(())
+}
+impl DaemonService for FakeConnection {
+    fn discover(&self) -> DaemonResult<'_, Option<DiscoveredDaemon>> {
+        Box::pin(async {
+            self.calls.lock().push("discover");
+            Ok(self.server.lock().clone())
+        })
     }
-    async fn subscribe(&self, endpoint: &DaemonEndpoint) -> Result<(), ConnectionError> {
-        self.calls.lock().push("subscribe");
-        if let Some(error) = self.subscribe_error.lock().clone() {
-            return Err(error.into());
-        }
-        *self.subscribed.lock() = Some(endpoint.clone());
-        Ok(())
+    fn start(&self) -> DaemonResult<'_, ()> {
+        Box::pin(async {
+            self.calls.lock().push("start");
+            if let Some(error) = self.start_error.lock().clone() {
+                return Err(error);
+            }
+            *self.server.lock() = Some(server("new"));
+            Ok(())
+        })
     }
-    async fn stop(&self) -> Result<(), ConnectionError> {
-        self.calls.lock().push("stop");
-        if let Some(error) = self.stop_error.lock().clone() {
-            return Err(error.into());
-        }
-        *self.endpoint.lock() = None;
-        *self.subscribed.lock() = None;
-        Ok(())
+    fn stop(&self) -> DaemonResult<'_, ()> {
+        Box::pin(async {
+            self.calls.lock().push("stop");
+            if let Some(error) = self.stop_error.lock().clone() {
+                return Err(error);
+            }
+            *self.server.lock() = None;
+            *self.subscribed.lock() = None;
+            Ok(())
+        })
     }
-    fn subscribed_to(&self, target: &DaemonEndpoint) -> bool {
-        self.subscribed.lock().as_ref() == Some(target)
-    }
-    fn record_failure(&self, failure: Option<ConnectionError>) {
-        *self.failure.lock() = failure;
+}
+impl DesktopSettingsSubscription for FakeConnection {
+    fn connect<'a>(&'a self, endpoint: &'a DaemonEndpoint) -> DaemonResult<'a, ()> {
+        Box::pin(async {
+            self.calls.lock().push("subscribe");
+            if let Some(error) = self.subscribe_error.lock().clone() {
+                return Err(error);
+            }
+            *self.subscribed.lock() = Some(endpoint.clone());
+            Ok(())
+        })
     }
 }
 impl DaemonConnectionQueryService for FakeConnection {
-    fn failure(&self) -> Option<ConnectionFailure> {
-        self.failure
-            .lock()
-            .as_ref()
-            .map(|failure| ConnectionFailure {
-                message: failure.message.clone(),
-                server_older: failure.server_older,
-            })
-    }
     fn settings(&self) -> Option<DesktopSettingsDto> {
-        None
-    }
-    fn settings_update(&self) -> Option<DesktopSettingsDto> {
         None
     }
 }
@@ -75,13 +78,15 @@ async fn test_接続先要求_初回設定の拒否や期限切れでは成功�
     let port = Arc::new(FakeConnection::default());
     let usecase = DaemonConnectionUsecase::new(port.clone(), port.clone());
     // When / Then
+    assert!(usecase.failure().is_none());
     assert!(usecase.endpoint().await.is_err());
     assert_eq!(*port.calls.lock(), ["discover"]);
-    *port.endpoint.lock() = Some(endpoint("first"));
-    for error in ["subscription denied", "deadline has elapsed"] {
-        *port.subscribe_error.lock() = Some(error.into());
-        assert_eq!(usecase.endpoint().await.unwrap_err().message, error);
-        assert_eq!(usecase.failure().unwrap().message, error);
+    *port.server.lock() = Some(server("first"));
+    for detail in [Some("subscription denied".into()), None] {
+        let error = DaemonConnectionState::InitialSettingsUnavailable { detail };
+        *port.subscribe_error.lock() = Some(error.clone());
+        assert_eq!(usecase.endpoint().await.unwrap_err(), error);
+        assert_eq!(usecase.failure(), Some(error));
         assert!(port.subscribed.lock().is_none());
     }
     // When
@@ -93,7 +98,7 @@ async fn test_接続先要求_初回設定の拒否や期限切れでは成功�
     assert!(usecase.failure().is_none());
     assert!(!usecase.endpoint().await.unwrap().1);
     // When
-    *port.endpoint.lock() = Some(endpoint("external"));
+    *port.server.lock() = Some(server("external"));
     let (current, changed) = usecase.endpoint().await.unwrap();
     // Then
     assert!(changed);
@@ -101,21 +106,33 @@ async fn test_接続先要求_初回設定の拒否や期限切れでは成功�
     assert_eq!(*port.subscribed.lock(), Some(current));
     assert!(!port.calls.lock().contains(&"start"));
 }
-
+#[tokio::test]
+async fn test_接続_起動失敗を集約へ記録する() {
+    // Given
+    let port = Arc::new(FakeConnection::default());
+    let error = DaemonConnectionState::StartupFailed {
+        status: Some("exit status: 7".into()),
+        stderr: "startup denied".into(),
+    };
+    *port.start_error.lock() = Some(error.clone());
+    let usecase = DaemonConnectionUsecase::new(port.clone(), port.clone());
+    // When / Then
+    assert_eq!(usecase.connect().await.unwrap_err(), error);
+    assert_eq!(usecase.failure(), Some(error));
+    assert_eq!(*port.calls.lock(), ["discover", "start"]);
+}
 #[tokio::test]
 async fn test_入れ替え_停止完了後に起動と初回設定受信へ進み停止失敗時は進まない() {
     // Given
     let port = Arc::new(FakeConnection::default());
-    *port.endpoint.lock() = Some(endpoint("old"));
+    *port.server.lock() = Some(server("old"));
     let usecase = DaemonConnectionUsecase::new(port.clone(), port.clone());
-    *port.stop_error.lock() = Some("shutdown incomplete".into());
+    let error = DaemonConnectionState::TechnicalFailure("shutdown incomplete".into());
+    *port.stop_error.lock() = Some(error.clone());
     // When / Then
-    assert_eq!(
-        usecase.replace().await.unwrap_err().message,
-        "shutdown incomplete"
-    );
+    assert_eq!(usecase.replace().await.unwrap_err(), error);
     assert_eq!(*port.calls.lock(), ["stop"]);
-    assert_eq!(*port.endpoint.lock(), Some(endpoint("old")));
+    assert_eq!(*port.server.lock(), Some(server("old")));
     // When
     port.calls.lock().clear();
     *port.stop_error.lock() = None;
@@ -126,4 +143,16 @@ async fn test_入れ替え_停止完了後に起動と初回設定受信へ進�
         ["stop", "discover", "start", "discover", "subscribe"]
     );
     assert_eq!(*port.subscribed.lock(), Some(endpoint("new")));
+}
+#[tokio::test]
+async fn test_接続_互換でないサーバには購読しない() {
+    // Given
+    let port = Arc::new(FakeConnection::default());
+    let mut discovered = server("newer");
+    discovered.protocol += 1;
+    *port.server.lock() = Some(discovered);
+    let usecase = DaemonConnectionUsecase::new(port.clone(), port.clone());
+    // When / Then
+    assert!(usecase.connect().await.is_err());
+    assert_eq!(*port.calls.lock(), ["discover"]);
 }

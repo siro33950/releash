@@ -1,75 +1,105 @@
-use super::daemon_connection_query::{ConnectionFailure, DaemonConnectionQueryService};
-use crate::domain::daemon_connection::{ConnectionError, DaemonConnectionPort, DaemonEndpoint};
+use super::daemon_connection_query::DesktopSettingsSubscription;
+use crate::domain::daemon_connection::{
+    DaemonConnection, DaemonConnectionState, DaemonEndpoint, DaemonService,
+};
 use releashd::desktop_api::DesktopSettingsDto;
 use std::sync::Arc;
 
 pub struct DaemonConnectionUsecase {
-    port: Arc<dyn DaemonConnectionPort>,
-    query: Arc<dyn DaemonConnectionQueryService>,
+    port: Arc<dyn DaemonService>,
+    query: Arc<dyn DesktopSettingsSubscription>,
+    state: parking_lot::Mutex<DaemonConnection>,
     connecting: tokio::sync::Mutex<()>,
 }
-
 impl DaemonConnectionUsecase {
-    pub fn new(
-        port: Arc<dyn DaemonConnectionPort>,
-        query: Arc<dyn DaemonConnectionQueryService>,
-    ) -> Self {
+    pub fn new(port: Arc<dyn DaemonService>, query: Arc<dyn DesktopSettingsSubscription>) -> Self {
         Self {
             port,
             query,
+            state: parking_lot::Mutex::new(DaemonConnection::default()),
             connecting: tokio::sync::Mutex::new(()),
         }
     }
-    pub fn failure(&self) -> Option<ConnectionFailure> {
-        self.query.failure()
+    pub fn failure(&self) -> Option<DaemonConnectionState> {
+        let state = self.state.lock().state().clone();
+        if matches!(
+            state,
+            DaemonConnectionState::Connected(_) | DaemonConnectionState::NotObserved
+        ) {
+            None
+        } else {
+            Some(state)
+        }
     }
     pub fn settings(&self) -> Option<DesktopSettingsDto> {
-        self.query.settings()
+        if matches!(
+            self.state.lock().state(),
+            DaemonConnectionState::Connected(_)
+        ) {
+            self.query.settings()
+        } else {
+            None
+        }
     }
-    pub fn settings_update(&self) -> Option<DesktopSettingsDto> {
-        self.query.settings_update()
-    }
-    pub async fn connect(&self) -> Result<(), ConnectionError> {
+    pub async fn connect(&self) -> Result<(), DaemonConnectionState> {
         let _guard = self.connecting.lock().await;
         self.establish(true).await.map(|_| ())
     }
-    pub async fn endpoint(&self) -> Result<(DaemonEndpoint, bool), ConnectionError> {
+    pub async fn endpoint(&self) -> Result<(DaemonEndpoint, bool), DaemonConnectionState> {
         let _guard = self.connecting.lock().await;
         self.establish(false).await
     }
     async fn establish(
         &self,
         start_if_missing: bool,
-    ) -> Result<(DaemonEndpoint, bool), ConnectionError> {
+    ) -> Result<(DaemonEndpoint, bool), DaemonConnectionState> {
         let result = async {
-            let mut endpoint = self.port.discover().await?;
-            if endpoint.is_none() && start_if_missing {
+            let mut server = self.port.discover().await?;
+            if server.is_none() && start_if_missing {
+                self.state.lock().begin_start();
                 self.port.start().await?;
-                endpoint = self.port.discover().await?;
+                server = self.port.discover().await?;
             }
-            let endpoint = endpoint
-                .ok_or_else(|| ConnectionError::from("サーバは動いていません".to_string()))?;
-            let changed = !self.port.subscribed_to(&endpoint);
+            let Some(server) = server else {
+                let mut state = self.state.lock();
+                state.observe_not_running();
+                return Err(state.state().clone());
+            };
+            {
+                let mut state = self.state.lock();
+                if !state.assess(
+                    &server,
+                    releash_sdk::descriptor::protocol(),
+                    env!("CARGO_PKG_VERSION"),
+                ) {
+                    return Err(state.state().clone());
+                }
+            }
+            let changed = !self.state.lock().is_connected_to(&server.endpoint);
             if changed {
-                self.port.subscribe(&endpoint).await?;
+                self.query.connect(&server.endpoint).await?;
             }
-            Ok((endpoint, changed))
+            self.state.lock().connected(server.endpoint.clone());
+            Ok((server.endpoint, changed))
         }
         .await;
-        self.port.record_failure(result.as_ref().err().cloned());
+        if let Err(failure) = &result {
+            self.state.lock().failed(failure.clone());
+        }
         result
     }
-    pub async fn stop(&self) -> Result<(), ConnectionError> {
+    pub async fn stop(&self) -> Result<(), DaemonConnectionState> {
         let _guard = self.connecting.lock().await;
-        self.port.stop().await
+        self.port.stop().await?;
+        self.state.lock().observe_not_running();
+        Ok(())
     }
-    pub async fn replace(&self) -> Result<(), ConnectionError> {
+    pub async fn replace(&self) -> Result<(), DaemonConnectionState> {
         let _guard = self.connecting.lock().await;
         self.port.stop().await?;
         self.establish(true).await.map(|_| ())
     }
 }
-
 #[cfg(test)]
 #[path = "daemon_connection_test.rs"]
 mod daemon_connection_tests;
