@@ -538,7 +538,7 @@ jobs:
             fi
           done
 
-  client-lint:
+  sdk-lint:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     defaults:
@@ -558,14 +558,14 @@ jobs:
         if: steps.changes.outputs.rust == 'true'
         with:
           workspaces: src-tauri
-          shared-key: pr-client
+          shared-key: pr-sdk
           save-if: false
-      - run: cargo fmt --check -p releash-client
+      - run: cargo fmt --check -p releash-sdk
         if: ${{ !cancelled() && steps.changes.outputs.rust == 'true' && steps.setup.outcome == 'success' }}
-      - run: cargo clippy --locked -p releash-client -- -D warnings
+      - run: cargo clippy --locked -p releash-sdk -- -D warnings
         if: ${{ !cancelled() && steps.changes.outputs.rust == 'true' && steps.setup.outcome == 'success' }}
 
-  client-unit:
+  sdk-unit:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     defaults:
@@ -585,22 +585,22 @@ jobs:
         if: steps.changes.outputs.rust == 'true'
         with:
           workspaces: src-tauri
-          shared-key: pr-client
+          shared-key: pr-sdk
           save-if: false
-      - run: cargo test --locked --lib -p releash-client
+      - run: cargo test --locked --lib -p releash-sdk
         if: ${{ !cancelled() && steps.changes.outputs.rust == 'true' && steps.setup.outcome == 'success' }}
-      - run: cargo test --locked --doc -p releash-client
+      - run: cargo test --locked --doc -p releash-sdk
         if: ${{ !cancelled() && steps.changes.outputs.rust == 'true' && steps.setup.outcome == 'success' }}
 
-  client:
-    needs: [client-lint, client-unit]
+  sdk:
+    needs: [sdk-lint, sdk-unit]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - name: Verify client jobs
+      - name: Verify sdk jobs
         run: |
-          for result in '${{ needs.client-lint.result }}' '${{ needs.client-unit.result }}'; do
+          for result in '${{ needs.sdk-lint.result }}' '${{ needs.sdk-unit.result }}'; do
             if [ "$result" != "success" ] && [ "$result" != "skipped" ]; then
               exit 1
             fi

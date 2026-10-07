@@ -1,5 +1,5 @@
 use prost::Message;
-use releash_client::wire;
+use releash_sdk::wire;
 use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::process::{Command, Output};
@@ -61,8 +61,8 @@ impl Server {
         listener.set_nonblocking(true).unwrap();
         let port = listener.local_addr().unwrap().port();
         let pid = std::process::id();
-        let started = releash_client::discovery::process_start_time(pid).unwrap();
-        let discovery = releash_client::discovery::LocalApiDiscovery {
+        let started = releash_sdk::discovery::process_start_time(pid).unwrap();
+        let discovery = releash_sdk::discovery::LocalApiDiscovery {
             port,
             token: "operator".into(),
             instance_id: "fixture".into(),

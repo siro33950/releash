@@ -3,19 +3,19 @@ use prost_reflect::{DynamicMessage, FieldDescriptor, Kind, ReflectMessage, Value
 use serde_json::{Map, Value as Json};
 
 fn flag(options: DynamicMessage, name: &str) -> bool {
-    releash_client::descriptor::option(&options, name)
+    releash_sdk::descriptor::option(&options, name)
         .as_bool()
         .unwrap_or(false)
 }
 fn label(options: DynamicMessage, name: &str) -> String {
-    releash_client::descriptor::option(&options, name)
+    releash_sdk::descriptor::option(&options, name)
         .as_str()
         .unwrap_or_default()
         .to_string()
 }
 
 pub fn from_message<M: Message>(name: &str, value: &M) -> Result<Json, String> {
-    let descriptor = releash_client::descriptor::pool()
+    let descriptor = releash_sdk::descriptor::pool()
         .get_message_by_name(name)
         .ok_or_else(|| format!("Unknown message {name}"))?;
     let mut dynamic = DynamicMessage::new(descriptor);

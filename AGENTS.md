@@ -73,7 +73,7 @@ Releash は、特定の作業単位や特定の道具を主語にしない。コ
 ディレクトリの内訳はコードを見る。コードからは読み取りにくい点だけ挙げる。
 
 - **workflow 定義はリポジトリ直下の `workflows/`** に置く。`*.yml` と `facets/{instructions,policies,knowledge}/*.md`。builtin は `adaptor/gateway/workflow/builtin.rs` が `include_str!` でコンパイル時に取り込むため、定義を追加するときは builtin.rs 側の登録も要る。
-- **実行ファイルは3つある**。`releash-desktop` は desktop シェル、`releash-backend` は daemon と内部 background worker、`releash`（`src-tauri/releash/`）は独立 CLI。CLI は `releash-client` だけを共有依存とし、backend には依存しない。共有 crate は生成された proto 型・descriptor・Connect client、発見と同一性確認、protocol 互換性を提供する。
+- **実行ファイルは3つある**。`releash-desktop` は desktop シェル、`releash-backend` は daemon と内部 background worker、`releash`（`src-tauri/releash/`）は独立 CLI。CLI は `releash-sdk` だけを共有依存とし、backend には依存しない。共有 crate は生成された proto 型・descriptor・Connect client、発見と同一性確認、protocol 互換性を提供する。
 - **画面・CLI・hook は Connect の ClientService を使う**。契約は `proto/client.proto`、入口は `adaptor/controller/api/client*.rs`、処理は `adaptor/controller/client/`。Tauri コマンドは desktop 固有の操作だけを扱う。
 - **daemon は 127.0.0.1 のみに bind する**。`client-api.json` に port と client token を書き出す。CLI と画面はこのファイルだけを読む。
 
@@ -121,10 +121,10 @@ cargo test --locked --lib --bins -p releash
 cargo test --locked --doc -p releash
 cargo build --locked -p releash-backend --bin releash-backend -p releash --bin releash
 cargo test --locked --test '*' -p releash
-cargo fmt --check -p releash-client
-cargo clippy --locked -p releash-client -- -D warnings
-cargo test --locked --lib -p releash-client
-cargo test --locked --doc -p releash-client
+cargo fmt --check -p releash-sdk
+cargo clippy --locked -p releash-sdk -- -D warnings
+cargo test --locked --lib -p releash-sdk
+cargo test --locked --doc -p releash-sdk
 ```
 
 品質ゲート（プロジェクトルート。サーバ・シェル・フロントをまたぐ検査）:

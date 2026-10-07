@@ -1,1 +1,1 @@
-pub use releash_client::descriptor::*;
+pub use releash_sdk::descriptor::*;

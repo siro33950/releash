@@ -4,7 +4,7 @@ use crate::review::ReviewSubcommand as Review;
 use crate::workflow::WorkflowSubcommand as Workflow;
 use crate::{HookCommand, HookProvider, TopCommand};
 use connectrpc::{ConnectError, ErrorCode};
-use releash_client::{rpc, wire};
+use releash_sdk::{rpc, wire};
 use serde_json::{json, Value};
 use std::io::Read;
 use std::path::Path;

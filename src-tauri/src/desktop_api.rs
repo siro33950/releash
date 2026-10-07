@@ -73,8 +73,8 @@ pub mod test_support {
 
 pub fn read_local_api_discovery(
     data_dir: &std::path::Path,
-) -> Result<Option<LocalApiDiscovery>, releash_client::discovery::DiscoveryReadError> {
-    releash_client::discovery::read_optional(data_dir).map(|value| {
+) -> Result<Option<LocalApiDiscovery>, releash_sdk::discovery::DiscoveryReadError> {
+    releash_sdk::discovery::read_optional(data_dir).map(|value| {
         value.map(|value| LocalApiDiscovery {
             port: value.port,
             token: value.token,

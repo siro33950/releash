@@ -9,7 +9,7 @@
 
 use std::path::{Path, PathBuf};
 
-pub use releash_client::data_dir::BuildProfile;
+pub use releash_sdk::data_dir::BuildProfile;
 
 /// `BuildProfile` から CLI alias 名を決定する。
 pub fn alias_name_for_profile(profile: BuildProfile) -> &'static str {
@@ -79,7 +79,7 @@ impl PathAliases {
 /// 明示エラーを返す（spec [01]「alias は alias 名・実行 binary・データディレクトリの
 /// 三者を組として保持」境界が曖昧化するのを防ぐため）。
 pub fn default_data_dir_for_profile(profile: BuildProfile) -> Result<PathBuf, String> {
-    releash_client::data_dir::default_data_dir_for_profile(profile)
+    releash_sdk::data_dir::default_data_dir_for_profile(profile)
         .ok_or_else(|| "failed to resolve OS data directory (dirs::data_dir)".to_string())
 }
 

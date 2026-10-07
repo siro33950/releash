@@ -41,8 +41,8 @@ main `5f24cff2` で読んで確かめた挙動。パスは `src-tauri/src/` 起�
 
 ## Scope
 
-- クライアント側の共有 crate `releash-client` を作り、proto から生成するクライアント側のもの（prost の型、descriptor、Connect のクライアント）、発見ファイルの読み取りと同一性の確認、互換の判定（`Compatibility`）を置く。`releash-backend` はこの crate の型を使う。
-- CLI の crate `releash`（実行ファイル `releash`）を作り、`releash-client` にだけ依存させる。全コマンドと hook を Connect に移す。
+- クライアント側の共有 crate `releash-sdk` を作り、proto から生成するクライアント側のもの（prost の型、descriptor、Connect のクライアント）、発見ファイルの読み取りと同一性の確認、互換の判定（`Compatibility`）を置く。`releash-backend` はこの crate の型を使う。
+- CLI の crate `releash`（実行ファイル `releash`）を作り、`releash-sdk` にだけ依存させる。全コマンドと hook を Connect に移す。
 - `releash` で届く 3 つの経路（wrapper、`/usr/local/bin/releash`、`.app` の同梱と dev のビルド）を新しい CLI に向ける。
 - HTTP `/v1`（workflow と provider lifecycle の router、`require_bearer`、WebSocket subprotocol の対応、`local_ingress`）、master token と `local-api.json`、CLI のクライアント部分（`cli/`、`adaptor/gateway/local_api.rs` の HTTP クライアント、`infrastructure/local_api/client.rs` の HTTP クライアント）、`cli/file_direct.rs`、review のプロセス内組み立て、`render_long_help()` とそのテスト、CLI の `--json` のためだけにある serde の型を削除する。
 - 発見ファイルを `client-api.json` 1 つにし、画面側の接続先の読み取りと Tauri シェルの pid の読み取りを追従させる。
@@ -55,7 +55,7 @@ main `5f24cff2` で読んで確かめた挙動。パスは `src-tauri/src/` 起�
 ## Non-goals
 
 - 改名（`releashd`、#1903）。サーバの実行ファイルは `releash-backend` のまま。
-- 画面の監督の削除、Tauri シェルを `releash-client` へ直接切り替えること（シェルは `desktop_api` の再公開のまま動く）。
+- 画面の監督の削除、Tauri シェルを `releash-sdk` へ直接切り替えること（シェルは `desktop_api` の再公開のまま動く）。
 - CLI の `status`・`server start/stop` など（#1905）、CLI の配置の規則の domain 化（#1907）、ディレクトリ構成の見直し（#1854）。
 - hook の健全性の監視のサーバ側（読む側、env `RELEASH_PROVIDER_LIFECYCLE_HEALTH_FILE` の受け渡し、画面の表示）の削除（#1877）。ただし、本番の呼び出し元が無くなる unavailable の報告の経路は除く（この ISSUE で消す）。
 - review の `--author`／`--unread` の判定単位（#1775）の変更。

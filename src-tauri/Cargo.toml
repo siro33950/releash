@@ -1,5 +1,5 @@
 [workspace]
-members = ["releash-desktop", "releash-client", "releash"]
+members = ["releash-desktop", "releash-sdk", "releash"]
 resolver = "2"
 
 [workspace.package]
@@ -31,7 +31,7 @@ prost-build = "0.14.4"
 protoc-bin-vendored = "3"
 
 [dependencies]
-releash-client = { path = "releash-client" }
+releash-sdk = { path = "releash-sdk" }
 connectrpc = { version = "=0.9.1", features = ["axum", "client"] }
 buffa = { version = "0.9.2", features = ["json"] }
 open = "5"

@@ -1,5 +1,5 @@
 use prost::Message;
-use releash_client::wire;
+use releash_sdk::wire;
 use std::process::Command;
 use std::time::{Duration, Instant};
 
@@ -71,20 +71,19 @@ impl DiagnosticsHost {
         &self,
         directory: Option<&std::path::Path>,
     ) -> Result<serde_json::Value, String> {
-        let discovery =
-            releash_client::discovery::read(&self.data_dir).map_err(|e| e.to_string())?;
+        let discovery = releash_sdk::discovery::read(&self.data_dir).map_err(|e| e.to_string())?;
         let config = connectrpc::client::ClientConfig::new(
             format!("http://127.0.0.1:{}", discovery.port)
                 .parse()
                 .unwrap(),
         )
         .with_default_header("authorization", format!("Bearer {}", discovery.token));
-        let client = releash_client::rpc::ClientServiceClient::new(
+        let client = releash_sdk::rpc::ClientServiceClient::new(
             connectrpc::client::HttpClient::plaintext(),
             config,
         );
         let response = client
-            .diagnose_workflow_directory(releash_client::rpc::DiagnoseWorkflowDirectoryRequest {
+            .diagnose_workflow_directory(releash_sdk::rpc::DiagnoseWorkflowDirectoryRequest {
                 dir: directory.map(|d| d.to_string_lossy().into_owned()),
                 ..Default::default()
             })

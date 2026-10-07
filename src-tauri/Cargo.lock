@@ -4266,7 +4266,7 @@ dependencies = [
  "connectrpc",
  "prost",
  "prost-reflect",
- "releash-client",
+ "releash-sdk",
  "serde_json",
  "tempfile",
  "tokio",
@@ -4308,7 +4308,7 @@ dependencies = [
  "protoc-bin-vendored",
  "regex",
  "releash-backend",
- "releash-client",
+ "releash-sdk",
  "reqwest",
  "rusqlite",
  "serde",
@@ -4326,25 +4326,6 @@ dependencies = [
  "url",
  "uuid",
  "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "releash-client"
-version = "0.4.19"
-dependencies = [
- "buffa",
- "connectrpc",
- "connectrpc-build",
- "dirs",
- "prost",
- "prost-build",
- "prost-reflect",
- "protoc-bin-vendored",
- "serde",
- "serde_json",
- "sysinfo",
- "tempfile",
- "thiserror 2.0.21",
 ]
 
 [[package]]
@@ -4380,6 +4361,25 @@ dependencies = [
  "thiserror 2.0.21",
  "tokio",
  "uuid",
+]
+
+[[package]]
+name = "releash-sdk"
+version = "0.4.19"
+dependencies = [
+ "buffa",
+ "connectrpc",
+ "connectrpc-build",
+ "dirs",
+ "prost",
+ "prost-build",
+ "prost-reflect",
+ "protoc-bin-vendored",
+ "serde",
+ "serde_json",
+ "sysinfo",
+ "tempfile",
+ "thiserror 2.0.21",
 ]
 
 [[package]]

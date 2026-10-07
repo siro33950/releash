@@ -1,8 +1,8 @@
 use connectrpc::client::{ClientConfig, HttpClient};
 use connectrpc::{ConnectError, ErrorCode};
-use releash_client::compatibility::Compatibility;
-use releash_client::discovery::{lookup_process_start_time, read};
-use releash_client::{rpc, wire};
+use releash_sdk::compatibility::Compatibility;
+use releash_sdk::discovery::{lookup_process_start_time, read};
+use releash_sdk::{rpc, wire};
 use std::path::Path;
 use std::time::Duration;
 
@@ -42,7 +42,7 @@ pub async fn connect(data_dir: &Path, token: Option<String>) -> Result<Client, C
     let response = client.get_server_info(rpc::Unit::default()).await?;
     let info: wire::ServerInfo = to_wire(&response.into_owned())?;
     discovery.verify_server(&info)?;
-    match Compatibility::assess(releash_client::descriptor::protocol(), info.protocol) {
+    match Compatibility::assess(releash_sdk::descriptor::protocol(), info.protocol) {
         Compatibility::Compatible => Ok(client),
         compatibility => Err(ConnectError::new(
             ErrorCode::FailedPrecondition,

@@ -311,7 +311,7 @@ pub mod platform {
     pub use crate::infrastructure::platform::path_aliases::PathAlias;
     pub use crate::infrastructure::platform::path_aliases::PathAliases;
     pub use crate::infrastructure::terminal::checkpoint_journal::IncrementalCheckpointJournal;
-    pub use releash_client::data_dir::default_data_dir_name_for_profile;
+    pub use releash_sdk::data_dir::default_data_dir_name_for_profile;
 
     pub use crate::infrastructure::terminal::shell_integration::create_shell_integration_files;
     pub use crate::infrastructure::terminal::terminal_emulator::NativeTerminalCheckpoint;

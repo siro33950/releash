@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 use futures_util::StreamExt;
 use serde_json::Value;
 
-use releash_client::{rpc, wire};
+use releash_sdk::{rpc, wire};
 fn to_wire<T: prost::Message + Default>(
     value: &impl buffa::Message,
 ) -> Result<T, connectrpc::ConnectError> {

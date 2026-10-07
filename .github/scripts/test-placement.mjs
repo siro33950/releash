@@ -59,7 +59,7 @@ function placementErrors(path, source) {
   if (path.endsWith(".rs")) source = rustCode(source);
   const testFile = /(?:_test\.rs|\.(?:test|spec)\.[cm]?[jt]sx?)$/.test(path);
   const testAttribute = TEST_ATTRIBUTE.test(source);
-  const rustSource = /^(?:src-tauri\/src\/|src-tauri\/(?:releash-desktop|releash-client|releash)\/src\/)/.test(path);
+  const rustSource = /^(?:src-tauri\/src\/|src-tauri\/(?:releash-desktop|releash-sdk|releash)\/src\/)/.test(path);
   if (rustSource && /(?:^|\/)(?:test_helpers[^/]+|[^/]+_test_helpers)\.rs$/.test(path)) return [`${path}: テスト補助は test_helpers.rs にまとめてください`];
   const auxiliary = /(?:^|\/)test_support\//.test(path) || /(?:^|\/)test_helpers\.rs$/.test(path) || /^(?:tests\/(?:helpers|fixtures)\/|src-tauri\/(?:releash-desktop\/)?tests\/support\/|src\/test\/)/.test(path);
   if (auxiliary) return testFile || testAttribute ? [`${path}: 補助ファイルの置き場所にテストを置かないでください`] : [];
@@ -86,7 +86,7 @@ function placementErrors(path, source) {
 
 function integrationErrors(sources) {
   const errors = [];
-  for (const root of ["src-tauri", "src-tauri/releash-desktop", "src-tauri/releash-client", "src-tauri/releash"]) {
+  for (const root of ["src-tauri", "src-tauri/releash-desktop", "src-tauri/releash-sdk", "src-tauri/releash"]) {
     const directory = `${root}/tests/`;
     const manifest = sources.get(`${root}/Cargo.toml`) ?? "";
     const targets = [...manifest.matchAll(/^\[\[test\]\]\s*\n([\s\S]*?)(?=^\[|$(?![\s\S]))/gm)].map(match => match[1]);

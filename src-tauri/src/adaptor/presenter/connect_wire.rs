@@ -1,6 +1,6 @@
 use crate::adaptor::presenter::connect::{invalid_request, invalid_response};
 
-pub use releash_client::rpc;
+pub use releash_sdk::rpc;
 
 pub fn to_wire<T: prost::Message + Default>(
     value: &impl buffa::Message,

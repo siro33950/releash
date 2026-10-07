@@ -1,5 +1,5 @@
 mod support;
-use releash_client::wire;
+use releash_sdk::wire;
 use std::process::Command;
 
 #[test]
@@ -297,12 +297,12 @@ fn test_cli_発見したサーバへ接続できない場合はunavailableで終
     let port = listener.local_addr().unwrap().port();
     drop(listener);
     let pid = std::process::id();
-    let discovery = releash_client::discovery::LocalApiDiscovery {
+    let discovery = releash_sdk::discovery::LocalApiDiscovery {
         port,
         token: "operator".into(),
         instance_id: "fixture".into(),
         pid,
-        process_started_at: releash_client::discovery::process_start_time(pid).unwrap(),
+        process_started_at: releash_sdk::discovery::process_start_time(pid).unwrap(),
     };
     std::fs::write(
         directory.path().join("client-api.json"),
@@ -774,12 +774,12 @@ fn test_hook_到達不能と拒否と上限超過はstderrへ失敗を出しexit
         if failure == "unavailable" {
             let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
             let pid = std::process::id();
-            let discovery = releash_client::discovery::LocalApiDiscovery {
+            let discovery = releash_sdk::discovery::LocalApiDiscovery {
                 port: listener.local_addr().unwrap().port(),
                 token: "operator".into(),
                 instance_id: "fixture".into(),
                 pid,
-                process_started_at: releash_client::discovery::process_start_time(pid).unwrap(),
+                process_started_at: releash_sdk::discovery::process_start_time(pid).unwrap(),
             };
             std::fs::write(
                 missing.path().join("client-api.json"),

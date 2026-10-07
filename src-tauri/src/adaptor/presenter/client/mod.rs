@@ -35,7 +35,7 @@ use self::json::to_message;
 #[cfg(any(test, feature = "test-support"))]
 use serde_json::Value as Json;
 
-pub use releash_client::wire::*;
+pub use releash_sdk::wire::*;
 include!(concat!(env!("OUT_DIR"), "/client_commands.rs"));
 
 #[cfg(any(test, feature = "test-support"))]

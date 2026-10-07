@@ -1,7 +1,7 @@
 use crate::usecase::client_connection::{
     ClientConnectionDto, ClientConnectionError, ClientConnectionQueryService,
 };
-use releash_client::discovery::{lookup_process_start_time, ProcessStartTimeLookup};
+use releash_sdk::discovery::{lookup_process_start_time, ProcessStartTimeLookup};
 use std::path::PathBuf;
 
 pub struct ClientConnectionFileQuery(pub PathBuf);
@@ -17,7 +17,7 @@ impl ClientConnectionFileQuery {
         &self,
         lookup_process: impl FnOnce(u32) -> ProcessStartTimeLookup,
     ) -> Result<ClientConnectionDto, ClientConnectionError> {
-        let client = releash_client::discovery::read(&self.0)
+        let client = releash_sdk::discovery::read(&self.0)
             .map_err(|error| ClientConnectionError(error.to_string()))?;
         client
             .verify_process(lookup_process)

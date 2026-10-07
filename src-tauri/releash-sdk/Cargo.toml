@@ -1,5 +1,5 @@
 [package]
-name = "releash-client"
+name = "releash-sdk"
 version.workspace = true
 edition = "2021"
 license = "MIT OR Apache-2.0"
