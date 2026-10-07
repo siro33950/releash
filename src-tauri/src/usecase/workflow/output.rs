@@ -27,17 +27,6 @@ impl WorkflowOutputUsecase {
         Self { query, secrets }
     }
 
-    pub async fn validate_output(
-        &self,
-        execution_id: &str,
-        node_name: &str,
-        structured_output: Value,
-    ) -> Result<WorkflowValidateOutputResult, WorkflowError> {
-        let events = self.query.read_events(execution_id).await?;
-        let context = resolve_node_artifact_schema_from_drafts(&events, node_name, execution_id)?;
-        self.validate_with_context(context, structured_output)
-    }
-
     pub async fn validate_output_for_contract(
         &self,
         execution_id: &str,

@@ -954,6 +954,178 @@ export type WorkflowSection = {
 	approval_auto_approve: boolean;
 };
 
+export type NullableWorkflowExecutionView = {
+	value?: WorkflowExecutionView;
+};
+
+export type WorkflowExecutionView = {
+	id: string;
+	workflowName: string;
+	status: ExecutionStatusView;
+	currentNode: string | null;
+	worktreePath: string;
+	createdFrom: ExecutionOriginView;
+	startedAt: number;
+	updatedAt: number;
+	completedAt: number | null;
+	errorReason: string | null;
+	totalTokenUsage: TokenUsageView;
+	nodeExecutions: ListNodeExecutionView;
+	artifacts: ListArtifactView;
+	fanouts: ListFanoutView;
+	approvalTarget: ApprovalTargetView | null;
+};
+
+export type ExecutionStatusView = "running" | "completed" | "aborted";
+
+export type ExecutionOriginView = "desktop_ui" | "cli" | "agent" | "api";
+
+export type TokenUsageView = {
+	inputTokens: number;
+	outputTokens: number;
+};
+
+export type ListNodeExecutionView = Array<NodeExecutionView>;
+
+export type NodeExecutionView = {
+	canResumeSession: boolean;
+	processPresence: NodeProcessPresence;
+	worktree?: NodeWorktreeDto;
+	id: string;
+	executionId: string;
+	nodeName: string;
+	kind: NodeKindView;
+	attempt: number;
+	status: NodeExecutionStatusView;
+	submitReceived: boolean;
+	stopReceived: boolean;
+	waitingFor?: NodeCompletionSignalView;
+	canApprove: boolean;
+	canRetry: boolean;
+	hasArtifact: boolean;
+	sessionId?: string;
+	displayCommand?: string;
+	resultSummary?: string;
+	artifact?: ArtifactView;
+	tokenUsage?: TokenUsageView;
+	parent?: ExecutionParentRefView;
+	startedAt: number;
+	completedAt?: number;
+};
+
+export type NodeKindView = "command" | "session" | "fanout" | "sequence";
+
+export type NodeExecutionStatusView =
+	| "running"
+	| "waiting_approval"
+	| "succeeded"
+	| "aborted";
+
+export type NodeCompletionSignalView = "submit" | "stop";
+
+export type ArtifactView = {
+	nodeName: string;
+	contract?: string;
+	value: WorkflowValue;
+	producedAt: number;
+};
+
+export type ExecutionParentRefView = {
+	parentId: string;
+	itemIndex?: number;
+	childIndex?: number;
+};
+
+export type ListArtifactView = Array<ArtifactView>;
+
+export type ListFanoutView = Array<FanoutView>;
+
+export type FanoutView = {
+	parent: NodeExecutionView;
+	children: ListNodeExecutionView;
+	artifact?: ArtifactView;
+};
+
+export type ApprovalTargetView = {
+	nodeExecutionId: string;
+	nodeName: string;
+	sessionId?: string;
+};
+
+export type NullableWorkflowOutputView = {
+	value?: WorkflowOutputView;
+};
+
+export type WorkflowOutputView =
+	| ({ status: "submitted" } & WorkflowOutputViewSubmitted)
+	| { status: "not_submitted" };
+
+export type WorkflowOutputViewSubmitted = {
+	contract: string | null;
+	structured_output: WorkflowValue;
+	submitted_at?: number;
+	request_id?: string;
+	timestamp: number;
+};
+
+export type NullableListReviewThreadDto = {
+	value?: ListReviewThreadDto;
+};
+
+export type NullableReviewThreadDto = {
+	value?: ReviewThreadDto;
+};
+
+export type NullableListReviewHistoryEntryDto = {
+	value?: ListReviewHistoryEntryDto;
+};
+
+export type ListReviewHistoryEntryDto = {
+	items?: Array<ReviewHistoryEntryDto>;
+};
+
+export type ReviewHistoryEntryDto = {
+	threadCreated?: ReviewHistoryThreadCreatedDto;
+	commentAppended?: ReviewHistoryCommentAppendedDto;
+	threadResolved?: ReviewHistoryThreadResolvedDto;
+	threadDeleted?: ReviewHistoryThreadDeletedDto;
+};
+
+export type ReviewHistoryThreadCreatedDto = {
+	id?: string;
+	threadId?: string;
+	commentId?: string;
+	actor?: ReviewActorWireDto;
+	target?: ReviewTargetWireDto;
+	content?: string;
+	at?: number;
+};
+
+export type ReviewHistoryCommentAppendedDto = {
+	id?: string;
+	threadId?: string;
+	commentId?: string;
+	actor?: ReviewActorWireDto;
+	content?: string;
+	at?: number;
+};
+
+export type ReviewHistoryThreadResolvedDto = {
+	id?: string;
+	threadId?: string;
+	actor?: ReviewActorWireDto;
+	outcome?: string;
+	summary?: string;
+	at?: number;
+};
+
+export type ReviewHistoryThreadDeletedDto = {
+	id?: string;
+	threadId?: string;
+	actor?: ReviewActorWireDto;
+	at?: number;
+};
+
 export type ProviderHookHealthSnapshot = {
 	warnings: ListProviderHookHealthWarningResponse;
 	readErrors?: Array<string>;
@@ -969,6 +1141,31 @@ export type ProviderHookHealthWarningResponse = {
 };
 
 export type ProviderHookHealthProviderResponse = "claude" | "codex";
+
+export type InputResolveSessionReviewThreadRequest = {
+	sessionId: string;
+	threadId: string;
+	outcome: string;
+	summary: string;
+};
+
+export type InputAppendSessionReviewCommentRequest = {
+	sessionId: string;
+	threadId: string;
+	content: string;
+};
+
+export type InputCreateSessionReviewThreadRequest = {
+	sessionId: string;
+	filePath?: string;
+	lineNumber?: number;
+	endLine?: number;
+	content: string;
+};
+
+export type InputDiagnoseWorkflowDirectoryRequest = {
+	dir: string;
+};
 
 export type InputAbortWorkflowRequest = {
 	executionId: string;
@@ -1501,7 +1698,6 @@ export type InputApproveWorkflowNodeArgs = {
 };
 
 export type InputWorkflowSubmitOutputRequest = {
-	worktreePath: string;
 	nodeExecutionId: string;
 	artifact?: InputWorkflowSubmitArtifactInput | null;
 };
@@ -1535,23 +1731,26 @@ export type InputWorkflowValueList = Array<InputWorkflowValue>;
 
 export type InputWorkflowValueObject = { [key: string]: InputWorkflowValue };
 
-export type InputWorkflowValidateOutputRequest = {
-	worktreePath: string;
-	executionId: string;
-	nodeName: string;
-	structuredOutput: InputWorkflowValue;
-};
-
-export type InputWorkflowGetOutputRequest = {
-	worktreePath: string;
-	executionId: string;
-	nodeName: string;
-};
-
 export type InputRefreshWorkspacesRequest = Record<string, never>;
 
 export type InputFindRepositoryRootRequest = {
 	path: string;
+};
+
+export type ResolveSessionReviewThreadResponse = {
+	thread?: ReviewThreadDto;
+};
+
+export type AppendSessionReviewCommentResponse = {
+	thread?: ReviewThreadDto;
+};
+
+export type CreateSessionReviewThreadResponse = {
+	thread?: ReviewThreadDto;
+};
+
+export type DiagnoseWorkflowDirectoryResponse = {
+	report?: DiagnosticReport;
 };
 
 export type AgentSessionArchiveResponse = "archived" | "already_archived";
@@ -1655,28 +1854,11 @@ export type NotionPropertyInfoView = {
 	options: Liststring;
 };
 
-export type WorkflowValidateOutputResponse =
-	| { status: "valid" }
-	| ({ status: "invalid" } & WorkflowValidateOutputResponseInvalid);
-
-export type WorkflowValidateOutputResponseInvalid = {
-	reason: string;
-	details: string;
-};
-
-export type WorkflowGetOutputResponse =
-	| ({ status: "submitted" } & WorkflowGetOutputResponseSubmitted)
-	| { status: "not_submitted" };
-
-export type WorkflowGetOutputResponseSubmitted = {
-	contract: string | null;
-	structured_output: WorkflowValue;
-	submitted_at?: number;
-	request_id?: string;
-	timestamp: number;
-};
-
 export interface ClientCommandArgs {
+	resolve_session_review_thread: InputResolveSessionReviewThreadRequest;
+	append_session_review_comment: InputAppendSessionReviewCommentRequest;
+	create_session_review_thread: InputCreateSessionReviewThreadRequest;
+	diagnose_workflow_directory: InputDiagnoseWorkflowDirectoryRequest;
 	abort_workflow: InputAbortWorkflowRequest;
 	add_repo_path: InputAddRepoPathRequest;
 	append_review_comment: InputAppendReviewCommentRequest;
@@ -1752,13 +1934,23 @@ export interface ClientCommandArgs {
 	compute_hidden_ranges: InputComputeHiddenRangesRequest;
 	approve_workflow_node: InputApproveWorkflowNodeRequest;
 	workflow_submit_output: InputWorkflowSubmitOutputRequest;
-	workflow_validate_output: InputWorkflowValidateOutputRequest;
-	workflow_get_output: InputWorkflowGetOutputRequest;
 	refresh_workspaces: InputRefreshWorkspacesRequest;
 	find_repository_root: InputFindRepositoryRootRequest;
 }
 
 export interface ClientCommands {
+	resolve_session_review_thread(
+		args: ClientCommandArgs["resolve_session_review_thread"],
+	): Promise<ResolveSessionReviewThreadResponse>;
+	append_session_review_comment(
+		args: ClientCommandArgs["append_session_review_comment"],
+	): Promise<AppendSessionReviewCommentResponse>;
+	create_session_review_thread(
+		args: ClientCommandArgs["create_session_review_thread"],
+	): Promise<CreateSessionReviewThreadResponse>;
+	diagnose_workflow_directory(
+		args: ClientCommandArgs["diagnose_workflow_directory"],
+	): Promise<DiagnoseWorkflowDirectoryResponse>;
 	abort_workflow(args: ClientCommandArgs["abort_workflow"]): Promise<void>;
 	add_repo_path(args: ClientCommandArgs["add_repo_path"]): Promise<ResultBool>;
 	append_review_comment(
@@ -1958,12 +2150,6 @@ export interface ClientCommands {
 	workflow_submit_output(
 		args: ClientCommandArgs["workflow_submit_output"],
 	): Promise<void>;
-	workflow_validate_output(
-		args: ClientCommandArgs["workflow_validate_output"],
-	): Promise<WorkflowValidateOutputResponse>;
-	workflow_get_output(
-		args: ClientCommandArgs["workflow_get_output"],
-	): Promise<WorkflowGetOutputResponse>;
 	refresh_workspaces(
 		args: ClientCommandArgs["refresh_workspaces"],
 	): Promise<void>;

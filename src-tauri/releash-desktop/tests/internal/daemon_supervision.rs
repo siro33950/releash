@@ -42,7 +42,6 @@ async fn test_daemon接続_認証と検証が完了した呼び出しで接続�
             "/releash.client.v1.ClientService/GetServerInfo",
             axum::routing::post(|headers: axum::http::HeaderMap| async move {
                 assert_eq!(headers["authorization"], "Bearer client-token");
-                assert_eq!(headers["origin"], "tauri://localhost");
                 let info = wire::ServerInfo {
                     launch_id: "launch".into(),
                     release: env!("CARGO_PKG_VERSION").into(),

@@ -13,14 +13,16 @@ pub struct LocalProviderAgentLaunchGateway {
     data_dir: PathBuf,
     root: PathBuf,
     hook_cli_alias: String,
+    hook_token: std::sync::Arc<str>,
 }
 
 impl LocalProviderAgentLaunchGateway {
-    pub fn new(data_dir: PathBuf, hook_cli_alias: String) -> Self {
+    pub fn new(data_dir: PathBuf, hook_cli_alias: String, hook_token: std::sync::Arc<str>) -> Self {
         Self {
             root: data_dir.join("provider-launches"),
             data_dir,
             hook_cli_alias,
+            hook_token,
         }
     }
 
@@ -44,6 +46,7 @@ impl ProviderAgentLaunchGateway for LocalProviderAgentLaunchGateway {
             armed.binding_id(),
             armed.capability(),
             armed.scope().clone(),
+            self.hook_token.as_ref(),
         )
         .map_err(|_| ProviderAgentLaunchGatewayError::InvalidInput)?;
         let spec = ProviderLaunchSpec::for_provider(

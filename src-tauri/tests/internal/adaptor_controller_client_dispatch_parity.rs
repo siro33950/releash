@@ -237,7 +237,7 @@ fn mutation_repository() -> (tempfile::TempDir, String) {
 #[tokio::test]
 pub async fn test_計算と操作command_connectの実行結果とエラーがdispatchと一致する() {
     // Given
-    let (temp, path) = mutation_repository();
+    let (_temp, path) = mutation_repository();
     let repo = git2::Repository::open(&path).unwrap();
     let path = repo.workdir().unwrap().to_string_lossy().into_owned();
     let file = std::path::Path::new(&path).join("日本語 space.txt");
@@ -267,9 +267,6 @@ pub async fn test_計算と操作command_connectの実行結果とエラーがdi
         .unwrap();
     index.write().unwrap();
     std::fs::write(&file, "working tree\n").unwrap();
-    let worktree = temp.path().join("managed-worktree");
-    repo.worktree("managed-worktree", &worktree, None).unwrap();
-    let worktree = worktree.canonicalize().unwrap();
     let gateway = Arc::new(
         crate::adaptor_controller_api_mod::test_support::RecordingRuntimeGateway::default(),
     );
@@ -279,7 +276,7 @@ pub async fn test_計算と操作command_connectの実行結果とエラーがdi
             Arc::new(releash_lib::test_support::integration::workflow::NoopArchiveRepository),
         ),
     );
-    let (mut app, _data_dir, _store) = make_client_dependencies();
+    let (mut app, _, _store) = make_client_dependencies();
     app.client.workflow_runtime_usecase = Some(runtime.clone());
     app.client.review_comment_usecase = Some(Arc::new(
         releash_lib::test_support::integration::platform::build_review_comment_usecase(),
@@ -337,17 +334,7 @@ pub async fn test_計算と操作command_connectの実行結果とエラーがdi
         ),
         (
             "workflow_submit_output",
-            json!({"worktreePath":worktree,"nodeExecutionId":"missing-node","artifact":{"contract":"review-result","value":{"status":"approved"}}}),
-            false,
-        ),
-        (
-            "workflow_validate_output",
-            json!({"worktreePath":worktree,"executionId":execution,"nodeName":"review","structuredOutput":{"status":"approved"}}),
-            false,
-        ),
-        (
-            "workflow_get_output",
-            json!({"worktreePath":worktree,"executionId":execution,"nodeName":"review"}),
+            json!({"nodeExecutionId":"missing-node","artifact":{"contract":"review-result","value":{"status":"approved"}}}),
             false,
         ),
     ];
@@ -357,7 +344,7 @@ pub async fn test_計算と操作command_connectの実行結果とエラーがdi
             .map(|(name, _, _)| *name)
             .collect::<std::collections::HashSet<_>>()
             .len(),
-        6
+        4
     );
     // When / Then
     for (command, args, succeeds) in cases {

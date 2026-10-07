@@ -25,7 +25,7 @@ pub(crate) use hook_health::{
 pub(crate) use ingress::{
     ProviderExecutionTreeStopCommand, ProviderExecutionTreeStopTransaction,
     ProviderLifecycleIngressPort, ProviderLifecycleIngressUsecase,
-    ProviderLifecycleIngressUsecaseError, ProviderSessionStartTransaction,
+    ProviderLifecycleIngressUsecaseError, ProviderPayloadReceiver, ProviderSessionStartTransaction,
 };
 
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
@@ -434,3 +434,6 @@ fn scoped(
 #[cfg(test)]
 #[path = "mod_test.rs"]
 mod mod_tests;
+
+#[cfg(test)]
+mod test_helpers;

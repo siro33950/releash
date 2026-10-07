@@ -786,8 +786,12 @@ pub async fn test_workspace_tree読み出し_報告実例の後方辺fanout既�
         .await
         .unwrap()
         .unwrap();
-    let loaded_by_execution = repository
-        .load_node_by_node_execution_id(waiting_execution_id)
+    let loaded_by_execution =
+        releash_lib::test_support::integration::workspace::node_for_execution(
+            &*repository,
+            &workspace,
+            waiting_execution_id,
+        )
         .await
         .unwrap()
         .unwrap();
@@ -982,11 +986,14 @@ pub async fn test_ツリー読み出し_command形のsession成果物を含む�
                 .await
                 .unwrap()
                 .unwrap(),
-            repository
-                .load_node_by_node_execution_id(&node_execution_id)
-                .await
-                .unwrap()
-                .unwrap(),
+            releash_lib::test_support::integration::workspace::node_for_execution(
+                &*repository,
+                &workspace,
+                &node_execution_id,
+            )
+            .await
+            .unwrap()
+            .unwrap(),
         ));
     }
     let rows_after = futures_util::future::join_all(execution_ids.map(|execution_id| async {
@@ -1331,7 +1338,10 @@ pub async fn test_workspace_repository読取_実経路で失敗分類を保持�
         store.fail_next_read(failure);
         // When
         let error = repository
-            .load_node_by_node_execution_id("node")
+            .load_node(
+                &releash_lib::test_support::integration::workspace::WorkspaceIdentity::new("/repo"),
+                "node",
+            )
             .await
             .unwrap_err();
         // Then
@@ -1516,12 +1526,15 @@ async fn delegate_parent_status_from_store(
     assert!(restored.aggregate.delegate_waits_for_child(TREE));
     assert_eq!(restored.session_activities[CHILD], activity);
     let repository = SqliteWorkspaceTreeRepository::new(store);
-    repository
-        .load_node_by_node_execution_id(TREE)
-        .await
-        .unwrap()
-        .unwrap()
-        .status_classification
+    releash_lib::test_support::integration::workspace::node_for_execution(
+        &*repository,
+        &releash_lib::test_support::integration::workspace::WorkspaceIdentity::new("/repo"),
+        TREE,
+    )
+    .await
+    .unwrap()
+    .unwrap()
+    .status_classification
 }
 
 async fn standalone_session_store(

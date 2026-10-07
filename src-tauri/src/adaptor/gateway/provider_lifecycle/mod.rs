@@ -10,7 +10,8 @@ pub(crate) use event_repository_impl::LocalProviderLifecycleEventRepository;
 pub(crate) use hook_health_failure_query_impl::LocalProviderHookHealthFailureQuery;
 pub(crate) use hook_health_repository_impl::LocalProviderHookHealthRepository;
 pub(crate) use launch_spec::{ProviderLaunchContext, ProviderLaunchSpec};
-pub(crate) use payload::{parse_provider_payload, ProviderLifecycleGatewayError};
+pub(crate) use payload::parse_provider_payload;
+pub use payload::LocalProviderPayloadInterpreter;
 
 #[cfg(test)]
 #[path = "mod_test.rs"]

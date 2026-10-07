@@ -2,15 +2,15 @@ use std::sync::Arc;
 use subtle::ConstantTimeEq;
 
 #[derive(Clone)]
-pub struct ClientBearerToken(Arc<parking_lot::RwLock<Option<Arc<str>>>>);
+pub struct BearerToken(Arc<parking_lot::RwLock<Option<Arc<str>>>>);
 
-impl From<Arc<str>> for ClientBearerToken {
+impl From<Arc<str>> for BearerToken {
     fn from(token: Arc<str>) -> Self {
         Self(Arc::new(parking_lot::RwLock::new(Some(token))))
     }
 }
 
-impl ClientBearerToken {
+impl BearerToken {
     pub(crate) fn accepts(&self, candidate: &str) -> bool {
         self.0
             .read()

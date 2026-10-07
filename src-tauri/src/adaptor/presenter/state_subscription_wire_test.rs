@@ -1077,3 +1077,39 @@ fn test_notion購読配信_notionの取得の失敗に設定不足の印を付�
         assert_eq!(failure.config_missing, Some(false));
     }
 }
+
+#[test]
+fn test_購読payload_提出済みoutputの全フィールドを保持する() {
+    // Given
+    let output = crate::usecase::workflow::WorkflowGetOutputResult::Submitted {
+        contract: Some("review-result".into()),
+        structured_output: serde_json::json!("accepted"),
+        submitted_at: Some(123.5),
+        request_id: Some("request-1".into()),
+        timestamp: 124.5,
+    };
+    // When
+    let message = payload(&StateValue::WorkflowOutput(Some(output))).unwrap();
+    // Then
+    let Some(wire::state_payload::Value::WorkflowOutput(output)) = message.value else {
+        panic!("workflow output payload");
+    };
+    assert_eq!(
+        output.value.unwrap().variant,
+        Some(wire::workflow_output_view::Variant::Submitted(
+            wire::WorkflowOutputViewSubmitted {
+                contract: Some("review-result".into()),
+                structured_output: Some(wire::WorkflowValue {
+                    variant: Some(wire::workflow_value::Variant::StringValue(
+                        wire::ResultString {
+                            value: Some("accepted".into())
+                        }
+                    ))
+                }),
+                submitted_at: Some(123.5),
+                request_id: Some("request-1".into()),
+                timestamp: Some(124.5),
+            }
+        ))
+    );
+}

@@ -1297,3 +1297,123 @@ mod restored_memory_tests {
         }
     }
 }
+
+struct SignalIngress(
+    std::sync::Mutex<
+        std::collections::VecDeque<
+            Result<
+                (
+                    crate::domain::provider_lifecycle::ProviderLifecycleIngressResult,
+                    bool,
+                ),
+                crate::usecase::provider_lifecycle::ProviderLifecycleIngressUsecaseError,
+            >,
+        >,
+    >,
+);
+#[async_trait::async_trait]
+impl crate::usecase::provider_lifecycle::ProviderPayloadReceiver for SignalIngress {
+    async fn receive_payload(
+        &self,
+        _: &crate::domain::provider_lifecycle::ProviderLifecycleSlotId,
+        _: &str,
+        _: crate::usecase::provider_lifecycle::ingress::ProviderPayloadInput<'_>,
+    ) -> Result<
+        (
+            crate::domain::provider_lifecycle::ProviderLifecycleIngressResult,
+            bool,
+        ),
+        crate::usecase::provider_lifecycle::ProviderLifecycleIngressUsecaseError,
+    > {
+        self.0
+            .lock()
+            .unwrap()
+            .pop_front()
+            .expect("configured ingress result")
+    }
+}
+
+#[tokio::test]
+async fn test_hookのconnect入口_生payloadを解釈し上限と権限と結果を保持する() {
+    use crate::domain::provider_lifecycle::{
+        ProviderLifecycleIngressResult as Ingress, ProviderLifecycleRejection, ProviderPayloadError,
+    };
+    use crate::usecase::provider_lifecycle::ProviderLifecycleIngressUsecaseError as Error;
+    use base64::Engine;
+    use tower::ServiceExt;
+    let ingress = Arc::new(SignalIngress(std::sync::Mutex::new(
+        std::collections::VecDeque::from([
+            Ok((Ingress::Applied, true)),
+            Ok((Ingress::Duplicate, true)),
+            Ok((
+                Ingress::Rejected(ProviderLifecycleRejection::InvalidCapability),
+                true,
+            )),
+            Ok((Ingress::Ignored, false)),
+            Err(Error::Payload(ProviderPayloadError::InvalidPayload)),
+            Err(Error::Payload(ProviderPayloadError::UnsupportedEvent(
+                "unknown".into(),
+            ))),
+            Ok((Ingress::Duplicate, true)),
+        ]),
+    )));
+    let hook = crate::infrastructure::local_api::BearerToken::from(Arc::<str>::from("hook"));
+    let deps = crate::test_support::client_api_deps(Arc::new(dispatch()))
+        .with_provider_lifecycle(ingress.clone());
+    let app = router(
+        Some(deps),
+        crate::adaptor::controller::daemon::default_timeout(),
+    )
+    .layer(axum::middleware::from_fn_with_state(
+        super::super::auth::ClientTokens {
+            operator: Arc::<str>::from("operator").into(),
+            hook: hook.clone(),
+        },
+        super::super::auth::require_client,
+    ));
+    let payload = br#"{"hook_event_name":"SessionStart","session_id":"provider-session"}"#;
+    for (bytes, token, capability, expected) in [
+        (payload.to_vec(), "hook", "capability", "applied"),
+        (payload.to_vec(), "hook", "capability", "duplicate"),
+        (payload.to_vec(), "hook", "invalid", "rejected"),
+        (br#"{"hook_event_name":"SessionStart","session_id":"provider-session","agent_id":"subagent"}"#.to_vec(), "hook", "capability", "ignored"),
+        (b"{".to_vec(), "hook", "capability", "invalid_argument"),
+        (br#"{"hook_event_name":"unknown","session_id":"provider-session"}"#.to_vec(), "hook", "capability", "invalid_argument"),
+        ({ let mut bytes = payload.to_vec(); bytes.resize(65_536, b' '); bytes }, "hook", "capability", "duplicate"),
+        (vec![b' ';65_537], "hook", "capability", "invalid_argument"),
+        (payload.to_vec(), "operator", "capability", "permission_denied"),
+    ] {
+        let unsupported = bytes == br#"{"hook_event_name":"unknown","session_id":"provider-session"}"#;
+        let body = serde_json::json!({"provider":{"value":"claude"}, "slotId":"slot", "bindingId":"binding", "capability":capability, "agentSessionId":"session", "payload":base64::engine::general_purpose::STANDARD.encode(bytes)});
+        let response = app.clone().oneshot(axum::http::Request::post("/releash.client.v1.ClientService/ReceiveProviderSignal").header("content-type","application/json").header("connect-protocol-version","1").header("authorization",format!("Bearer {token}")).body(axum::body::Body::from(body.to_string())).unwrap()).await.unwrap();
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let result: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        if unsupported { assert_eq!(result["message"], "unsupported Provider lifecycle event: unknown"); }
+        assert!(result.get(expected).is_some() || result["code"] == expected, "{expected}: {result}");
+    }
+    assert!(ingress.0.lock().unwrap().is_empty());
+    for method in [
+        "UnknownMethod",
+        "WorkflowGetOutput",
+        "WorkflowValidateOutput",
+    ] {
+        for token in ["hook", "operator"] {
+            let response = app
+                .clone()
+                .oneshot(
+                    axum::http::Request::post(format!("/releash.client.v1.ClientService/{method}"))
+                        .header("authorization", format!("Bearer {token}"))
+                        .header("content-type", "application/json")
+                        .body(axum::body::Body::from("{}"))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            let result: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(result["code"], "unimplemented");
+        }
+    }
+}

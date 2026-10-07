@@ -13,6 +13,8 @@ pub struct ClientApiDeps {
     state_subscriptions: Option<StateSubscriptionDeps>,
     priority: super::client_priority::PriorityInterceptor,
     daemon: crate::usecase::daemon::DaemonUsecase,
+    provider_lifecycle:
+        Option<Arc<dyn crate::usecase::provider_lifecycle::ProviderPayloadReceiver>>,
 }
 
 #[derive(Clone)]
@@ -44,11 +46,19 @@ impl ClientApiDeps {
         Self {
             dispatch: dispatch.clone(),
             state_subscriptions: None,
+            provider_lifecycle: None,
             priority,
             daemon: dispatch.daemon.clone(),
         }
     }
 
+    pub fn with_provider_lifecycle(
+        mut self,
+        ingress: Arc<dyn crate::usecase::provider_lifecycle::ProviderPayloadReceiver>,
+    ) -> Self {
+        self.provider_lifecycle = Some(ingress);
+        self
+    }
     pub fn with_state_subscriptions(mut self, subscriptions: StateSubscriptionDeps) -> Self {
         self.state_subscriptions = Some(subscriptions);
         self

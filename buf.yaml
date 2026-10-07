@@ -1,0 +1,25 @@
+version: v2
+modules:
+  - path: proto
+lint:
+  use:
+    - STANDARD
+  ignore_only:
+    ENUM_VALUE_PREFIX:
+      - proto/client.proto
+    ENUM_VALUE_UPPER_SNAKE_CASE:
+      - proto/client.proto
+    RPC_RESPONSE_STANDARD_NAME:
+      - proto/client.proto
+    RPC_REQUEST_RESPONSE_UNIQUE:
+      - proto/client.proto
+    ENUM_ZERO_VALUE_SUFFIX:
+      - proto/client.proto
+    RPC_REQUEST_STANDARD_NAME:
+      - proto/client.proto
+    PACKAGE_DIRECTORY_MATCH:
+      - proto/client.proto
+      - proto/client_options.proto
+breaking:
+  use:
+    - WIRE_JSON

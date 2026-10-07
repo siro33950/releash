@@ -1,3 +1,4 @@
+#[cfg(not(test))]
 fn main() {
     generate_client_protocol();
     println!("cargo:rerun-if-env-changed=OTLP_ENDPOINT");
@@ -10,6 +11,7 @@ fn main() {
     }
 }
 
+#[cfg(not(test))]
 fn generate_client_protocol() {
     println!("cargo:rerun-if-changed=../proto/client.proto");
     println!("cargo:rerun-if-changed=../proto/client_options.proto");
@@ -97,6 +99,75 @@ fn generate_client_protocol() {
         .flat_map(|file| &file.service)
         .find(|service| service.name() == "ClientService")
         .expect("ClientService");
+    let pool = prost_reflect::DescriptorPool::decode(
+        std::fs::read(directory.join("client_descriptor.bin"))
+            .unwrap()
+            .as_slice(),
+    )
+    .expect("client descriptors with options");
+    let scope_extension = pool
+        .get_extension_by_name("releash.client.v1.scope")
+        .expect("scope option");
+    let reflected_service = pool
+        .get_service_by_name("releash.client.v1.ClientService")
+        .unwrap();
+    let scope_enum = pool
+        .get_enum_by_name("releash.client.v1.Scope")
+        .expect("Scope enum");
+    let unspecified = scope_enum
+        .get_value_by_name("SCOPE_UNSPECIFIED")
+        .expect("unspecified scope")
+        .number();
+    let mut scopes = String::from(
+        "pub(crate) fn method_scopes(method: &str) -> Option<&'static [crate::adaptor::presenter::client::Scope]> { match method {\n",
+    );
+    for method in reflected_service.methods() {
+        let value = method
+            .options()
+            .get_extension(&scope_extension)
+            .into_owned();
+        let prost_reflect::Value::List(values) = value else {
+            panic!("scope must be repeated");
+        };
+        let values: Vec<i32> = values
+            .into_iter()
+            .map(|value| match value {
+                prost_reflect::Value::EnumNumber(value) => value,
+                _ => panic!("invalid scope"),
+            })
+            .collect();
+        assert!(
+            valid_method_scopes(&values, unspecified, |value| scope_enum
+                .get_value(value)
+                .is_some()),
+            "{} must have nonempty, specified, unique scopes",
+            method.name()
+        );
+        let variants = values
+            .iter()
+            .map(|value| {
+                let name = scope_enum
+                    .get_value(*value)
+                    .unwrap()
+                    .name()
+                    .strip_prefix("SCOPE_")
+                    .unwrap()
+                    .to_ascii_lowercase();
+                let variant = name
+                    .split('_')
+                    .map(|part| {
+                        let mut chars = part.chars();
+                        chars.next().unwrap().to_uppercase().to_string() + chars.as_str()
+                    })
+                    .collect::<String>();
+                format!("crate::adaptor::presenter::client::Scope::{variant}")
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        scopes.push_str(&format!("{:?} => Some(&[{variants}]),\n", method.name()));
+    }
+    scopes.push_str("_ => None, } }\n");
+    std::fs::write(directory.join("client_scopes.rs"), scopes).expect("write method scopes");
     let mut handlers = String::from("impl rpc::ClientService for ClientApiDeps {\n");
     let mut calls = String::from("pub fn call(client: &rpc::ClientServiceClient<connectrpc::client::HttpClient>, command: wire::command_request::Command) -> futures_util::future::BoxFuture<'_ , Result<wire::command_result::Command, connectrpc::ConnectError>> { match command {\n");
     let commands = messages
@@ -139,4 +210,20 @@ fn generate_client_protocol() {
         .expect("generate Connect services");
     std::fs::write(directory.join("client_commands.rs"), code)
         .expect("write client command codecs");
+}
+
+pub(crate) fn valid_method_scopes(
+    values: &[i32],
+    unspecified: i32,
+    known_scope: impl Fn(i32) -> bool,
+) -> bool {
+    !values.is_empty()
+        && values
+            .iter()
+            .all(|value| *value != unspecified && known_scope(*value))
+        && values
+            .iter()
+            .collect::<std::collections::HashSet<_>>()
+            .len()
+            == values.len()
 }

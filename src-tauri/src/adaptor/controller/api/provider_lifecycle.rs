@@ -6,16 +6,14 @@ use axum::routing::post;
 use axum::{Json, Router};
 
 use crate::domain::provider_lifecycle::{
-    ProviderKind, ProviderLifecycleIngressResult, ProviderLifecycleScope, ProviderLifecycleSignal,
-    ProviderLifecycleSlotId, ProviderLifecycleUnavailableObservation,
-    ProviderLifecycleUnavailableReason,
+    ProviderLifecycleIngressResult, ProviderLifecycleSignal,
+    ProviderLifecycleUnavailableObservation, ProviderLifecycleUnavailableReason,
 };
 
 use super::error::ApiError;
 use crate::adaptor::controller::api::protocol::{
-    ProviderActivityRequest, ProviderLifecycleProvider, ProviderLifecycleReceiveRequest,
-    ProviderLifecycleSignalRequest, ProviderLifecycleUnavailableReasonRequest,
-    ProviderLifecycleUnavailableRequest,
+    ProviderActivityRequest, ProviderLifecycleReceiveRequest, ProviderLifecycleSignalRequest,
+    ProviderLifecycleUnavailableReasonRequest, ProviderLifecycleUnavailableRequest,
 };
 use crate::adaptor::presenter::provider_lifecycle_response::ProviderLifecycleReceiveResponse;
 #[derive(Clone)]
@@ -35,23 +33,15 @@ pub(crate) fn router(
         .with_state(ProviderLifecycleApiState { usecase })
 }
 
+use super::provider_signal::{ingress_context, record_ingress};
+
 async fn receive(
     State(state): State<ProviderLifecycleApiState>,
     payload: Result<Json<ProviderLifecycleReceiveRequest>, JsonRejection>,
 ) -> Result<Json<ProviderLifecycleReceiveResponse>, ApiError> {
-    crate::common::telemetry::observe_result_async(
-        receive_inner(state, payload),
-        |result, elapsed| {
-            if matches!(result, Ok((_, true))) {
-                crate::infrastructure::telemetry::metrics::record_terminal_launch(
-                    crate::infrastructure::telemetry::metrics::TerminalLaunch::HookIngress,
-                    elapsed,
-                );
-            }
-        },
-    )
-    .await
-    .map(|(result, _)| Json(result.into()))
+    crate::common::telemetry::observe_result_async(receive_inner(state, payload), record_ingress)
+        .await
+        .map(|(result, _)| Json(result.into()))
 }
 
 async fn receive_inner(
@@ -62,14 +52,12 @@ async fn receive_inner(
     let usecase = state
         .usecase
         .ok_or_else(ApiError::provider_lifecycle_unavailable)?;
-    let provider = match payload.provider {
-        ProviderLifecycleProvider::Claude => ProviderKind::Claude,
-        ProviderLifecycleProvider::Codex => ProviderKind::Codex,
-    };
-    let slot_id = ProviderLifecycleSlotId::new(&payload.slot_id)
-        .map_err(|error| ApiError::invalid_request(error.to_string()))?;
-    let scope = ProviderLifecycleScope::new(payload.agent_session_id)
-        .map_err(|error| ApiError::invalid_request(error.to_string()))?;
+    let (provider, slot_id, scope) = ingress_context(
+        payload.provider,
+        &payload.slot_id,
+        &payload.agent_session_id,
+    )
+    .map_err(|error| ApiError::invalid_request(error.to_string()))?;
     let is_session_started = matches!(
         &payload.signal,
         ProviderLifecycleSignalRequest::SessionStarted { .. }
@@ -147,14 +135,12 @@ async fn report_unavailable(
     let usecase = state
         .usecase
         .ok_or_else(ApiError::provider_lifecycle_unavailable)?;
-    let provider = match payload.provider {
-        ProviderLifecycleProvider::Claude => ProviderKind::Claude,
-        ProviderLifecycleProvider::Codex => ProviderKind::Codex,
-    };
-    let slot_id = ProviderLifecycleSlotId::new(&payload.slot_id)
-        .map_err(|error| ApiError::invalid_request(error.to_string()))?;
-    let scope = ProviderLifecycleScope::new(payload.agent_session_id)
-        .map_err(|error| ApiError::invalid_request(error.to_string()))?;
+    let (provider, slot_id, scope) = ingress_context(
+        payload.provider,
+        &payload.slot_id,
+        &payload.agent_session_id,
+    )
+    .map_err(|error| ApiError::invalid_request(error.to_string()))?;
     let reason = match payload.reason {
         ProviderLifecycleUnavailableReasonRequest::SessionStartDeadlineExceeded => {
             ProviderLifecycleUnavailableReason::SessionStartDeadlineExceeded

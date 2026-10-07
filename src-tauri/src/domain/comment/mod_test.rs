@@ -231,3 +231,36 @@ pub(crate) mod tests {
         assert_eq!(filtered[0].id, "other");
     }
 }
+
+#[test]
+fn test_review絞り込み値_正規の値だけ解釈する() {
+    // Given / When / Then
+    assert_eq!(
+        ReviewThreadState::parse("open").unwrap(),
+        ReviewThreadState::Open
+    );
+    assert_eq!(
+        ReviewThreadState::parse("resolved").unwrap(),
+        ReviewThreadState::Resolved
+    );
+    assert_eq!(AuthorScope::parse("self").unwrap(), AuthorScope::Mine);
+    assert_eq!(AuthorScope::parse("other").unwrap(), AuthorScope::Other);
+    assert!(ReviewThreadState::parse("OPEN").is_err());
+    assert!(AuthorScope::parse("human").is_err());
+    assert!(ReviewThreadFilter::parse_unread("true").unwrap());
+    assert!(!ReviewThreadFilter::parse_unread("false").unwrap());
+    assert!(ReviewThreadFilter::parse_unread("1").is_err());
+}
+
+#[test]
+fn test_review書き手_openなsessionだけ変更を許す() {
+    use crate::domain::agent_session::aggregates::AgentSessionLifecycle as L;
+    // Given / When / Then
+    assert!(ensure_session_can_review(L::Open, "session").is_ok());
+    for state in [L::Paused, L::Archived] {
+        assert!(matches!(
+            ensure_session_can_review(state, "session"),
+            Err(ReviewError::SessionNotOpen(_))
+        ));
+    }
+}

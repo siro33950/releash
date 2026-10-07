@@ -20,8 +20,7 @@ fn client_priority_level(path: &str) -> Option<&'static str> {
         | "RetryWorkspaceNode"
         | "ResumeWorkspaceSessionNode"
         | "WorkflowSubmitOutput"
-        | "WorkflowValidateOutput"
-        | "WorkflowGetOutput" => Some("workflow"),
+        | "ReceiveProviderSignal" => Some("workflow"),
         _ => Some("default"),
     }
 }
@@ -197,6 +196,22 @@ pub async fn compose(
         adaptor::controller::wiring::build_review_comment_usecase()
             .with_subscriptions(state_subscriptions.clone()),
     );
+    let session_review_usecase = Arc::new(usecase::comment::SessionReviewUsecase::new(
+        usecase::comment::ReviewContextUsecase::new(
+            Arc::new(
+                adaptor::gateway::agent_session::LocalAgentSessionRepository::new(
+                    local_event_store.clone(),
+                ),
+            ),
+            Arc::new(
+                adaptor::gateway::workflow::worktree_context::StoredWorkspaceWorktreePathQuery::new(
+                    data_dir.clone(),
+                    retry_limiter.clone(),
+                ),
+            ),
+        ),
+        review_comment_usecase.clone(),
+    ));
     let file_watchers = Arc::new(infrastructure::file_watcher::FileWatcherManager::default());
     let shared_repo_paths: adaptor::gateway::repository::repo_paths::SharedRepoPaths =
         Arc::new(parking_lot::RwLock::new(Vec::new()));
@@ -237,9 +252,12 @@ pub async fn compose(
             .to_string_lossy()
             .into_owned(),
     ];
+    let hook_token_value = Arc::<str>::from(infrastructure::local_api::generate_token());
+    let hook_token = infrastructure::local_api::BearerToken::from(hook_token_value.clone());
     let agent_sessions =
                 adaptor::controller::agent_session_wiring::compose_agent_sessions(
                     adaptor::controller::agent_session_wiring::AgentSessionCompositionInput {
+                        hook_token: hook_token_value,
                         retrying: retrying.clone(),
                         state_publisher: Some(state_subscriptions.clone()),
                         store: local_event_store.clone(),
@@ -484,6 +502,7 @@ pub async fn compose(
         info.identity.daemon_id,
         info.identity.pid,
         info.identity.process_started_at,
+        hook_token,
     )
     .map_err(|error| format!("local API の起動に失敗しました: {error}"))?;
     let mut client_dispatch =
@@ -511,6 +530,7 @@ pub async fn compose(
         agent_session_history_read_usecase: Some(agent_sessions.history_read),
         provider_hook_health_read_usecase: Some(agent_sessions.hook_health_read),
         review_comment_usecase: Some(review_comment_usecase),
+        session_review_usecase: Some(session_review_usecase.clone()),
         config_repository: Some(config_repository.clone()),
         app_config_usecase: Some(app_config_usecase.clone()),
         workflow_runtime_usecase: Some(workflow_runtime_usecase.clone()),
@@ -558,6 +578,7 @@ pub async fn compose(
                     workspace_state: dependencies.workspace_state_store.clone().unwrap(),
                     review: review_usecase_for_reads,
                     comments: review_comment_usecase_for_reads,
+                    session_comments: session_review_usecase,
                     data_dir: reads_data_dir,
                     review_comments_dir,
                     workflows_dir: workflows_dir.clone(),
@@ -596,9 +617,13 @@ pub async fn compose(
         Arc::new(workflow_query_usecase.read_usecase()),
         workflow_runtime_usecase.clone(),
         local_api_binding.bearer_token(),
-        local_api_binding.client_bearer_token(),
+        adaptor::controller::api::auth::ClientTokens {
+            operator: local_api_binding.client_bearer_token(),
+            hook: local_api_binding.hook_bearer_token(),
+        },
         Some(
             adaptor::controller::api::ClientApiDeps::new(client_dispatch.clone(), priority)
+                .with_provider_lifecycle(provider_lifecycle_ingress.clone())
                 .with_state_subscriptions(adaptor::controller::api::StateSubscriptionDeps::new(
                     state_subscriptions,
                     state_presenter,

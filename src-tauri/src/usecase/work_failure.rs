@@ -453,7 +453,8 @@ impl From<&crate::domain::comment::ReviewError> for Failure {
         match error {
             E::Technical(error) => Self::from(error),
             E::Io(_) | E::Serialize(_) => Self::Technical(TechnicalFailureNature::Other),
-            E::InvalidInput(_)
+            E::SessionNotOpen(_)
+            | E::InvalidInput(_)
             | E::NotFound(_)
             | E::AlreadyResolved(_)
             | E::PermissionDenied(_) => Self::Business(BusinessFailure::Other),

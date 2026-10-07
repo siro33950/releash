@@ -18,6 +18,8 @@ pub struct ClientDependencies {
         Option<std::sync::Arc<crate::usecase::agent_session::AgentSessionHistoryReadUsecase>>,
     pub(crate) provider_hook_health_read_usecase:
         Option<std::sync::Arc<crate::usecase::provider_lifecycle::ProviderHookHealthReadUsecase>>,
+    pub session_review_usecase:
+        Option<std::sync::Arc<crate::usecase::comment::SessionReviewUsecase>>,
     pub review_comment_usecase:
         Option<std::sync::Arc<crate::usecase::comment::ReviewCommentUsecase>>,
     pub config_repository: Option<std::sync::Arc<dyn crate::domain::app_config::ConfigRepository>>,

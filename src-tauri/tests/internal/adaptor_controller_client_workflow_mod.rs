@@ -71,7 +71,7 @@ pub(crate) mod tests {
         assert!(!handles_command("stop_workflow"));
         assert!(!handles_command("resume_workflow"));
         assert!(handles_command("workflow_submit_output"));
-        assert!(handles_command("workflow_get_output"));
+        assert!(handles_command("diagnose_workflow_directory"));
         assert!(!handles_command("get_git_status"));
     }
 

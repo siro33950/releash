@@ -1,15 +1,15 @@
+pub(crate) mod context;
+pub use context::ReviewContextUsecase;
+mod session;
+pub use session::SessionReviewUsecase;
 use std::path::Path;
 use std::sync::Arc;
-
-pub(crate) mod dto;
 
 use crate::domain::comment::{
     apply_filter, ensure_can_delete, ensure_thread_open, project_thread, project_threads,
     validate_content, validate_filter, validate_target, ReviewActor, ReviewError, ReviewEvent,
     ReviewHistoryEntry, ReviewTarget, ReviewThread, ReviewThreadFilter,
 };
-
-pub(crate) use dto::{ReviewHistoryEntryDto, ReviewThreadDto};
 
 pub type ReviewEventMutation<'a> =
     Box<dyn FnOnce(&[ReviewEvent]) -> Result<Vec<ReviewEvent>, ReviewError> + Send + 'a>;

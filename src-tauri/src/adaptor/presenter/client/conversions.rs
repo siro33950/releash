@@ -2501,19 +2501,15 @@ impl TryFrom<wire::ResultUint64> for u64 {
     }
 }
 
-impl TryFrom<crate::usecase::comment::dto::ReviewActorKindWireDto>
-    for wire::ReviewActorKindWireDto
-{
+impl TryFrom<crate::domain::comment::ReviewActorKind> for wire::ReviewActorKindWireDto {
     type Error = String;
-    fn try_from(
-        value: crate::usecase::comment::dto::ReviewActorKindWireDto,
-    ) -> Result<Self, String> {
+    fn try_from(value: crate::domain::comment::ReviewActorKind) -> Result<Self, String> {
         Ok(Self {
             value: Some(match value {
-                crate::usecase::comment::dto::ReviewActorKindWireDto::Human => {
+                crate::domain::comment::ReviewActorKind::Human => {
                     wire::review_actor_kind_wire_dto::Value::Human as i32
                 }
-                crate::usecase::comment::dto::ReviewActorKindWireDto::Agent => {
+                crate::domain::comment::ReviewActorKind::Agent => {
                     wire::review_actor_kind_wire_dto::Value::Agent as i32
                 }
             }),
@@ -2541,9 +2537,9 @@ impl TryFrom<&str> for wire::ReviewActorKindWireDto {
     }
 }
 
-impl TryFrom<crate::usecase::comment::dto::ReviewActorWireDto> for wire::ReviewActorWireDto {
+impl TryFrom<crate::domain::comment::ReviewActorDto> for wire::ReviewActorWireDto {
     type Error = String;
-    fn try_from(value: crate::usecase::comment::dto::ReviewActorWireDto) -> Result<Self, String> {
+    fn try_from(value: crate::domain::comment::ReviewActorDto) -> Result<Self, String> {
         Ok(Self {
             kind: Some(cv(value.kind)?),
             backend_id: value.backend_id.map(cv).transpose()?,
@@ -2567,9 +2563,9 @@ impl TryFrom<crate::usecase::code_dto::ReviewBinaryDto> for wire::ReviewBinaryDt
     }
 }
 
-impl TryFrom<crate::usecase::comment::dto::ReviewCommentDto> for wire::ReviewCommentDto {
+impl TryFrom<crate::domain::comment::ReviewComment> for wire::ReviewCommentDto {
     type Error = String;
-    fn try_from(value: crate::usecase::comment::dto::ReviewCommentDto) -> Result<Self, String> {
+    fn try_from(value: crate::domain::comment::ReviewComment) -> Result<Self, String> {
         Ok(Self {
             id: Some(cv(value.id)?),
             thread_id: Some(cv(value.thread_id)?),
@@ -2707,9 +2703,9 @@ impl TryFrom<&str> for wire::ReviewLimitReasonDto {
     }
 }
 
-impl TryFrom<crate::usecase::comment::dto::ReviewResolveInfoDto> for wire::ReviewResolveInfoDto {
+impl TryFrom<crate::domain::comment::ReviewResolveInfo> for wire::ReviewResolveInfoDto {
     type Error = String;
-    fn try_from(value: crate::usecase::comment::dto::ReviewResolveInfoDto) -> Result<Self, String> {
+    fn try_from(value: crate::domain::comment::ReviewResolveInfo) -> Result<Self, String> {
         Ok(Self {
             actor: Some(cv(value.actor)?),
             outcome: Some(cv(value.outcome)?),
@@ -2740,9 +2736,9 @@ impl TryFrom<crate::usecase::code_dto::ReviewSnapshotDto> for wire::ReviewSnapsh
     }
 }
 
-impl TryFrom<crate::usecase::comment::dto::ReviewTargetWireDto> for wire::ReviewTargetWireDto {
+impl TryFrom<crate::domain::comment::ReviewTarget> for wire::ReviewTargetWireDto {
     type Error = String;
-    fn try_from(value: crate::usecase::comment::dto::ReviewTargetWireDto) -> Result<Self, String> {
+    fn try_from(value: crate::domain::comment::ReviewTarget) -> Result<Self, String> {
         Ok(Self {
             file_path: value.file_path.map(cv).transpose()?,
             line_number: value.line_number.map(cv).transpose()?,
@@ -2810,9 +2806,9 @@ impl TryFrom<&str> for wire::ReviewTextSource {
     }
 }
 
-impl TryFrom<crate::usecase::comment::dto::ReviewThreadDto> for wire::ReviewThreadDto {
+impl TryFrom<crate::domain::comment::ReviewThread> for wire::ReviewThreadDto {
     type Error = String;
-    fn try_from(value: crate::usecase::comment::dto::ReviewThreadDto) -> Result<Self, String> {
+    fn try_from(value: crate::domain::comment::ReviewThread) -> Result<Self, String> {
         Ok(Self {
             id: Some(cv(value.id)?),
             worktree_name: Some(cv(value.worktree_name)?),
@@ -2829,15 +2825,15 @@ impl TryFrom<crate::usecase::comment::dto::ReviewThreadDto> for wire::ReviewThre
     }
 }
 
-impl TryFrom<crate::usecase::comment::dto::ReviewThreadStateDto> for wire::ReviewThreadStateDto {
+impl TryFrom<crate::domain::comment::ReviewThreadState> for wire::ReviewThreadStateDto {
     type Error = String;
-    fn try_from(value: crate::usecase::comment::dto::ReviewThreadStateDto) -> Result<Self, String> {
+    fn try_from(value: crate::domain::comment::ReviewThreadState) -> Result<Self, String> {
         Ok(Self {
             value: Some(match value {
-                crate::usecase::comment::dto::ReviewThreadStateDto::Open => {
+                crate::domain::comment::ReviewThreadState::Open => {
                     wire::review_thread_state_dto::Value::Open as i32
                 }
-                crate::usecase::comment::dto::ReviewThreadStateDto::Resolved => {
+                crate::domain::comment::ReviewThreadState::Resolved => {
                     wire::review_thread_state_dto::Value::Resolved as i32
                 }
             }),
@@ -2845,7 +2841,7 @@ impl TryFrom<crate::usecase::comment::dto::ReviewThreadStateDto> for wire::Revie
     }
 }
 
-impl TryFrom<wire::ReviewThreadStateDto> for crate::usecase::comment::dto::ReviewThreadStateDto {
+impl TryFrom<wire::ReviewThreadStateDto> for crate::domain::comment::ReviewThreadState {
     type Error = String;
     fn try_from(value: wire::ReviewThreadStateDto) -> Result<Self, String> {
         Ok(
@@ -3194,7 +3190,7 @@ impl TryFrom<crate::adaptor::presenter::workflow_wire::WorkflowExecutionView>
 }
 
 impl TryFrom<crate::adaptor::presenter::workflow_wire::WorkflowGetOutputResponse>
-    for wire::WorkflowGetOutputResponse
+    for wire::WorkflowOutputView
 {
     type Error = String;
     fn try_from(
@@ -3208,8 +3204,8 @@ impl TryFrom<crate::adaptor::presenter::workflow_wire::WorkflowGetOutputResponse
                     submitted_at,
                     request_id,
                     timestamp,
-                } => wire::workflow_get_output_response::Variant::Submitted(
-                    wire::WorkflowGetOutputResponseSubmitted {
+                } => wire::workflow_output_view::Variant::Submitted(
+                    wire::WorkflowOutputViewSubmitted {
                         contract: contract.map(cv).transpose()?,
                         structured_output: Some(cv(structured_output)?),
                         submitted_at: submitted_at.map(cv).transpose()?,
@@ -3218,7 +3214,7 @@ impl TryFrom<crate::adaptor::presenter::workflow_wire::WorkflowGetOutputResponse
                     },
                 ),
                 crate::adaptor::presenter::workflow_wire::WorkflowGetOutputResponse::NotSubmitted => {
-                    wire::workflow_get_output_response::Variant::NotSubmitted(wire::Unit {})
+                    wire::workflow_output_view::Variant::NotSubmitted(wire::Unit {})
                 }
             }),
         })
@@ -3344,32 +3340,6 @@ impl TryFrom<crate::usecase::workflow::dto::WorkflowSummaryDto> for wire::Workfl
             builtin: Some(cv(value.builtin)?),
             is_running: Some(cv(value.is_running)?),
             source_format: Some(cv(value.source_format)?),
-        })
-    }
-}
-
-impl TryFrom<crate::adaptor::presenter::workflow_wire::WorkflowValidateOutputResponse>
-    for wire::WorkflowValidateOutputResponse
-{
-    type Error = String;
-    fn try_from(
-        value: crate::adaptor::presenter::workflow_wire::WorkflowValidateOutputResponse,
-    ) -> Result<Self, String> {
-        Ok(Self {
-            variant: Some(match value {
-                crate::adaptor::presenter::workflow_wire::WorkflowValidateOutputResponse::Valid => {
-                    wire::workflow_validate_output_response::Variant::Valid(wire::Unit {})
-                }
-                crate::adaptor::presenter::workflow_wire::WorkflowValidateOutputResponse::Invalid {
-                    reason,
-                    details,
-                } => wire::workflow_validate_output_response::Variant::Invalid(
-                    wire::WorkflowValidateOutputResponseInvalid {
-                        reason: Some(cv(reason)?),
-                        details: Some(cv(details)?),
-                    },
-                ),
-            }),
         })
     }
 }
@@ -3926,3 +3896,43 @@ impl From<(String, crate::domain::workspace_tree::WorkspaceTreeNode)> for wire::
 #[cfg(test)]
 #[path = "conversions_test.rs"]
 mod conversions_tests;
+
+impl TryFrom<crate::usecase::workflow::diagnostic_dto::DiagnosticReport>
+    for wire::DiagnoseWorkflowDirectoryResponse
+{
+    type Error = String;
+    fn try_from(
+        value: crate::usecase::workflow::diagnostic_dto::DiagnosticReport,
+    ) -> Result<Self, String> {
+        Ok(Self {
+            report: Some(cv(value)?),
+        })
+    }
+}
+
+impl TryFrom<crate::domain::comment::ReviewThread> for wire::CreateSessionReviewThreadResponse {
+    type Error = String;
+    fn try_from(value: crate::domain::comment::ReviewThread) -> Result<Self, String> {
+        Ok(Self {
+            thread: Some(cv(value)?),
+        })
+    }
+}
+
+impl TryFrom<crate::domain::comment::ReviewThread> for wire::AppendSessionReviewCommentResponse {
+    type Error = String;
+    fn try_from(value: crate::domain::comment::ReviewThread) -> Result<Self, String> {
+        Ok(Self {
+            thread: Some(cv(value)?),
+        })
+    }
+}
+
+impl TryFrom<crate::domain::comment::ReviewThread> for wire::ResolveSessionReviewThreadResponse {
+    type Error = String;
+    fn try_from(value: crate::domain::comment::ReviewThread) -> Result<Self, String> {
+        Ok(Self {
+            thread: Some(cv(value)?),
+        })
+    }
+}

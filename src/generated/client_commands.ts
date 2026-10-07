@@ -13,6 +13,8 @@ import {
 	AddRepoPathRequestSchema,
 	AgentSessionArchiveResponseSchema,
 	AppendReviewCommentRequestSchema,
+	AppendSessionReviewCommentRequestSchema,
+	AppendSessionReviewCommentResponseSchema,
 	ApplicationQuitOutcomeDtoV1Schema,
 	ApproveWorkflowNodeRequestSchema,
 	ApproveWorkspaceNodeRequestSchema,
@@ -30,12 +32,16 @@ import {
 	ComputeVisibleMarkdownBlocksRequestSchema,
 	CreateAgentSessionRequestSchema,
 	CreateReviewThreadRequestSchema,
+	CreateSessionReviewThreadRequestSchema,
+	CreateSessionReviewThreadResponseSchema,
 	CreateWorktreeRequestSchema,
 	DeleteAgentSessionRequestSchema,
 	DeleteFacetRequestSchema,
 	DeleteNotionConfigRequestSchema,
 	DeleteReviewThreadRequestSchema,
 	DeleteWorkflowRequestSchema,
+	DiagnoseWorkflowDirectoryRequestSchema,
+	DiagnoseWorkflowDirectoryResponseSchema,
 	DuplicateFacetRequestSchema,
 	DuplicateWorkflowRequestSchema,
 	FetchIssuesRequestSchema,
@@ -77,6 +83,8 @@ import {
 	ResetProviderExecutableRequestSchema,
 	ResizeTerminalSurfaceRequestSchema,
 	ResolveReviewThreadRequestSchema,
+	ResolveSessionReviewThreadRequestSchema,
+	ResolveSessionReviewThreadResponseSchema,
 	RestoreAgentSessionRequestSchema,
 	RestoreWorkspaceWorkflowExecutionRequestSchema,
 	ResultBoolSchema,
@@ -103,11 +111,7 @@ import {
 	UpdateProviderExecutableRequestSchema,
 	UpdateWorkflowConfigRequestSchema,
 	ValidateNotionConfigRequestSchema,
-	WorkflowGetOutputRequestSchema,
-	WorkflowGetOutputResponseSchema,
 	WorkflowSubmitOutputRequestSchema,
-	WorkflowValidateOutputRequestSchema,
-	WorkflowValidateOutputResponseSchema,
 	WritePathsToTerminalSurfaceRequestSchema,
 	WriteTerminalSurfaceRequestSchema,
 } from "./client_pb";
@@ -116,6 +120,82 @@ import type { ClientCommandArgs, ClientCommandResults } from "./client_types";
 const decode = (schema: DescMessage, message: Message) =>
 	clientJson(schema, toJson(schema, message), false);
 const commands = {
+	resolve_session_review_thread: async (
+		client: Client<typeof ClientService>,
+		args: ClientCommandArgs["resolve_session_review_thread"],
+	) => {
+		const result = decode(
+			ResolveSessionReviewThreadResponseSchema,
+			await client.resolveSessionReviewThread(
+				fromJson(
+					ResolveSessionReviewThreadRequestSchema,
+					clientJson(
+						ResolveSessionReviewThreadRequestSchema,
+						JSON.parse(JSON.stringify(args ?? {})),
+						true,
+					),
+				),
+			),
+		);
+		return result;
+	},
+	append_session_review_comment: async (
+		client: Client<typeof ClientService>,
+		args: ClientCommandArgs["append_session_review_comment"],
+	) => {
+		const result = decode(
+			AppendSessionReviewCommentResponseSchema,
+			await client.appendSessionReviewComment(
+				fromJson(
+					AppendSessionReviewCommentRequestSchema,
+					clientJson(
+						AppendSessionReviewCommentRequestSchema,
+						JSON.parse(JSON.stringify(args ?? {})),
+						true,
+					),
+				),
+			),
+		);
+		return result;
+	},
+	create_session_review_thread: async (
+		client: Client<typeof ClientService>,
+		args: ClientCommandArgs["create_session_review_thread"],
+	) => {
+		const result = decode(
+			CreateSessionReviewThreadResponseSchema,
+			await client.createSessionReviewThread(
+				fromJson(
+					CreateSessionReviewThreadRequestSchema,
+					clientJson(
+						CreateSessionReviewThreadRequestSchema,
+						JSON.parse(JSON.stringify(args ?? {})),
+						true,
+					),
+				),
+			),
+		);
+		return result;
+	},
+	diagnose_workflow_directory: async (
+		client: Client<typeof ClientService>,
+		args: ClientCommandArgs["diagnose_workflow_directory"],
+	) => {
+		const result = decode(
+			DiagnoseWorkflowDirectoryResponseSchema,
+			await client.diagnoseWorkflowDirectory(
+				fromJson(
+					DiagnoseWorkflowDirectoryRequestSchema,
+					clientJson(
+						DiagnoseWorkflowDirectoryRequestSchema,
+						JSON.parse(JSON.stringify(args ?? {})),
+						true,
+					),
+				),
+			),
+		);
+		return result;
+	},
 	abort_workflow: async (
 		client: Client<typeof ClientService>,
 		args: ClientCommandArgs["abort_workflow"],
@@ -1533,44 +1613,6 @@ const commands = {
 					WorkflowSubmitOutputRequestSchema,
 					clientJson(
 						WorkflowSubmitOutputRequestSchema,
-						JSON.parse(JSON.stringify(args ?? {})),
-						true,
-					),
-				),
-			),
-		);
-		return result;
-	},
-	workflow_validate_output: async (
-		client: Client<typeof ClientService>,
-		args: ClientCommandArgs["workflow_validate_output"],
-	) => {
-		const result = decode(
-			WorkflowValidateOutputResponseSchema,
-			await client.workflowValidateOutput(
-				fromJson(
-					WorkflowValidateOutputRequestSchema,
-					clientJson(
-						WorkflowValidateOutputRequestSchema,
-						JSON.parse(JSON.stringify(args ?? {})),
-						true,
-					),
-				),
-			),
-		);
-		return result;
-	},
-	workflow_get_output: async (
-		client: Client<typeof ClientService>,
-		args: ClientCommandArgs["workflow_get_output"],
-	) => {
-		const result = decode(
-			WorkflowGetOutputResponseSchema,
-			await client.workflowGetOutput(
-				fromJson(
-					WorkflowGetOutputRequestSchema,
-					clientJson(
-						WorkflowGetOutputRequestSchema,
 						JSON.parse(JSON.stringify(args ?? {})),
 						true,
 					),

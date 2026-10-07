@@ -6,12 +6,12 @@ use clap::Subcommand;
 
 use super::common::{truncate, CliError};
 use crate::adaptor::controller::wiring::build_review_comment_usecase;
+use crate::adaptor::presenter::comment::{ReviewHistoryEntryDto, ReviewThreadDto};
 use crate::domain::comment::{
     AuthorScope, ReviewActor, ReviewError, ReviewHistoryEntry, ReviewTarget, ReviewThread,
     ReviewThreadFilter, ReviewThreadState,
 };
 use crate::usecase::agent_session::{AgentSessionItemDto, AgentSessionLifecycleDto};
-use crate::usecase::comment::{ReviewHistoryEntryDto, ReviewThreadDto};
 use crate::usecase::provider_dto::AgentSessionProviderDto;
 
 enum ReviewSessionContext {
@@ -273,6 +273,9 @@ fn parse_optional_unread(value: Option<String>) -> Result<Option<bool>, CliError
 
 fn review_error_to_cli_error(error: ReviewError) -> CliError {
     match error {
+        ReviewError::SessionNotOpen(id) => {
+            CliError::InvalidInput(format!("Session is not open: {id}"))
+        }
         ReviewError::Technical(error) => CliError::Other(error.to_string()),
         ReviewError::InvalidInput(msg) => CliError::InvalidInput(msg),
         ReviewError::NotFound(msg) => CliError::NotFound(msg),

@@ -109,13 +109,13 @@ async fn expect_state(
     stream: &mut StateStream,
     phase: &str,
     predicate: impl Fn(&wire::state_payload::Value) -> bool,
-) {
+) -> wire::state_payload::Value {
     let mut last = None;
     tokio::time::timeout(Duration::from_secs(10), async {
         loop {
             let value = stream.next().await.unwrap();
             if predicate(&value) {
-                return;
+                return value;
             }
             last = Some(value);
         }
@@ -237,8 +237,7 @@ async fn connect(discovery: &Value) -> (Socket, String) {
     .with_default_header(
         "authorization",
         format!("Bearer {}", discovery["token"].as_str().unwrap()),
-    )
-    .with_default_header("origin", "tauri://localhost");
+    );
     let client = rpc::ClientServiceClient::new(HttpClient::plaintext(), config);
     let info = client
         .get_server_info(rpc::Unit::default())
@@ -661,9 +660,41 @@ async fn test_daemon本番配線_状態を購読へ配信する() {
     };
     std::fs::write(
         workflows.join("push-smoke.yml"),
-        "name: push-smoke\ndescription: push smoke\nnodes:\n  main:\n    command: printf done\n    completion:\n      require: approval\n",
+        format!("name: push-smoke\ndescription: push smoke\nnodes:\n  main:\n    command: while [ ! -f '{}' ]; do sleep 0.01; done; printf done\n    completion:\n      require: approval\n", root.join("output-ready").to_str().unwrap().replace('\'', "'\\''")),
     )
     .unwrap();
+    let diagnosed = request(
+        &mut socket,
+        "diagnose-directory",
+        C::DiagnoseWorkflowDirectory(wire::DiagnoseWorkflowDirectoryRequest {
+            dir: Some(workflows.to_str().unwrap().into()),
+        }),
+    )
+    .await;
+    let wire::command_result::Command::DiagnoseWorkflowDirectory(diagnosed) = diagnosed else {
+        panic!("diagnostic report");
+    };
+    assert!(diagnosed.report.is_some());
+    for (dir, expected) in [
+        ("relative".into(), connectrpc::ErrorCode::InvalidArgument),
+        (
+            root.join("missing").to_str().unwrap().to_string(),
+            connectrpc::ErrorCode::NotFound,
+        ),
+    ] {
+        assert_eq!(
+            call(
+                &socket.client,
+                C::DiagnoseWorkflowDirectory(wire::DiagnoseWorkflowDirectoryRequest {
+                    dir: Some(dir)
+                })
+            )
+            .await
+            .unwrap_err()
+            .code,
+            expected
+        );
+    }
     let workflow_result = request(
         &mut socket,
         "workflow",
@@ -679,6 +710,143 @@ async fn test_daemon本番配線_状態を購読へ配信する() {
     };
     let execution_id = workflow.value.unwrap();
     expect_workspace(&mut states, "workflow start", |value| worktree_state(value, worktree).snapshot.as_ref().unwrap().nodes.as_ref().unwrap().items.iter().any(|item| matches!(&item.variant, Some(wire::workspace_tree_item::Variant::Node(node)) if node.id.as_deref() == Some(&execution_id) && node.title.as_deref() == Some("push-smoke")))).await;
+
+    let mut execution =
+        subscribe_state(&socket, "workflow-execution", vec![execution_id.clone()]).await;
+    expect_state(&mut execution, "execution by id", |value| matches!(value, wire::state_payload::Value::WorkflowExecution(snapshot) if snapshot.value.is_some())).await;
+    let mut output = subscribe_state(
+        &socket,
+        "workflow-output",
+        vec![execution_id.clone(), "main".into()],
+    )
+    .await;
+    expect_state(&mut output, "unsubmitted output", |value| matches!(value, wire::state_payload::Value::WorkflowOutput(snapshot) if snapshot.value.as_ref().is_some_and(|output| matches!(output.variant, Some(wire::workflow_output_view::Variant::NotSubmitted(_)))))).await;
+    std::fs::write(root.join("output-ready"), "ready").unwrap();
+    let mut missing = subscribe_state(
+        &socket,
+        "workflow-execution",
+        vec![uuid::Uuid::new_v4().to_string()],
+    )
+    .await;
+    expect_state(&mut missing, "missing execution", |value| matches!(value, wire::state_payload::Value::WorkflowExecution(snapshot) if snapshot.value.is_none())).await;
+    let missing_id = uuid::Uuid::new_v4().to_string();
+    let mut missing_output = subscribe_state(
+        &socket,
+        "workflow-output",
+        vec![missing_id.clone(), "main".into()],
+    )
+    .await;
+    expect_state(&mut missing_output, "missing output", |value| matches!(value, wire::state_payload::Value::WorkflowOutput(snapshot) if snapshot.value.is_none())).await;
+    let mut missing_session =
+        subscribe_state(&socket, "review-session-threads", vec![missing_id.clone()]).await;
+    expect_state(&mut missing_session, "missing session", |value| matches!(value, wire::state_payload::Value::ReviewSessionThreads(snapshot) if snapshot.value.is_none())).await;
+    let mut missing_thread = subscribe_state(
+        &socket,
+        "review-session-thread",
+        vec![selected_node_id.clone(), missing_id.clone()],
+    )
+    .await;
+    expect_state(&mut missing_thread, "missing thread", |value| matches!(value, wire::state_payload::Value::ReviewSessionThread(snapshot) if snapshot.value.is_none())).await;
+    let mut missing_history = subscribe_state(
+        &socket,
+        "review-session-thread-history",
+        vec![selected_node_id.clone(), missing_id],
+    )
+    .await;
+    expect_state(&mut missing_history, "missing history", |value| matches!(value, wire::state_payload::Value::ReviewSessionThreadHistory(snapshot) if snapshot.value.is_none())).await;
+    drop((
+        missing_output,
+        missing_session,
+        missing_thread,
+        missing_history,
+    ));
+    let mut session_threads = subscribe_state(
+        &socket,
+        "review-session-threads",
+        vec![
+            selected_node_id.clone(),
+            "state=open".into(),
+            "author=self".into(),
+        ],
+    )
+    .await;
+    expect_state(&mut session_threads, "empty session threads", |value| matches!(value, wire::state_payload::Value::ReviewSessionThreads(snapshot) if snapshot.value.as_ref().is_some_and(|list| list.items.is_empty()))).await;
+    let created = request(
+        &mut socket,
+        "session-comment",
+        C::CreateSessionReviewThread(wire::CreateSessionReviewThreadRequest {
+            session_id: Some(selected_node_id.clone()),
+            content: Some("session comment".into()),
+            ..Default::default()
+        }),
+    )
+    .await;
+    let wire::command_result::Command::CreateSessionReviewThread(created) = created else {
+        panic!("session thread");
+    };
+    let thread_id = created.thread.unwrap().id.unwrap();
+    expect_state(&mut session_threads, "session thread created", |value| matches!(value, wire::state_payload::Value::ReviewSessionThreads(snapshot) if snapshot.value.as_ref().is_some_and(|list| list.items.iter().any(|thread| thread.id.as_deref() == Some(&thread_id))))).await;
+    let mut worktree_threads = subscribe_state(
+        &socket,
+        "review-worktree-threads",
+        vec![
+            worktree.into(),
+            "state=open".into(),
+            format!("thread={thread_id}"),
+        ],
+    )
+    .await;
+    expect_state(&mut worktree_threads, "worktree threads share session store", |value| matches!(value, wire::state_payload::Value::ReviewThreads(list) if list.items.len() == 1 && list.items[0].id.as_deref() == Some(&thread_id))).await;
+    drop(worktree_threads);
+    let mut history = subscribe_state(
+        &socket,
+        "review-session-thread-history",
+        vec![selected_node_id.clone(), thread_id.clone()],
+    )
+    .await;
+    expect_state(&mut history, "created history", |value| matches!(value, wire::state_payload::Value::ReviewSessionThreadHistory(snapshot) if snapshot.value.as_ref().is_some_and(|list| list.items.len() == 1))).await;
+    request(
+        &mut socket,
+        "append-session-comment",
+        C::AppendSessionReviewComment(wire::AppendSessionReviewCommentRequest {
+            session_id: Some(selected_node_id.clone()),
+            thread_id: Some(thread_id.clone()),
+            content: Some("follow up".into()),
+        }),
+    )
+    .await;
+    expect_state(&mut history, "appended history", |value| matches!(value, wire::state_payload::Value::ReviewSessionThreadHistory(snapshot) if snapshot.value.as_ref().is_some_and(|list| list.items.len() == 2))).await;
+    request(
+        &mut socket,
+        "resolve-session-comment",
+        C::ResolveSessionReviewThread(wire::ResolveSessionReviewThreadRequest {
+            session_id: Some(selected_node_id.clone()),
+            thread_id: Some(thread_id.clone()),
+            outcome: Some("fixed".into()),
+            summary: Some("addressed".into()),
+        }),
+    )
+    .await;
+    expect_state(&mut session_threads, "resolved thread excluded", |value| matches!(value, wire::state_payload::Value::ReviewSessionThreads(snapshot) if snapshot.value.as_ref().is_some_and(|list| list.items.is_empty()))).await;
+    let mut thread = subscribe_state(
+        &socket,
+        "review-session-thread",
+        vec![selected_node_id.clone(), thread_id.clone()],
+    )
+    .await;
+    expect_state(&mut thread, "resolved thread by id", |value| matches!(value, wire::state_payload::Value::ReviewSessionThread(snapshot) if snapshot.value.as_ref().is_some_and(|thread| thread.state.as_ref().and_then(|state| state.value) == Some(wire::review_thread_state_dto::Value::Resolved as i32)))).await;
+    request(
+        &mut socket,
+        "delete-test-session-thread",
+        C::DeleteReviewThread(wire::DeleteReviewThreadRequest {
+            worktree_name: Some(worktree.into()),
+            thread_id: Some(thread_id),
+        }),
+    )
+    .await;
+    expect_state(&mut thread, "deleted thread", |value| matches!(value, wire::state_payload::Value::ReviewSessionThread(snapshot) if snapshot.value.is_none())).await;
+    expect_state(&mut history, "deleted thread history", |value| matches!(value, wire::state_payload::Value::ReviewSessionThreadHistory(snapshot) if snapshot.value.is_none())).await;
+    drop((execution, output, missing, session_threads, history, thread));
 
     // When / Then: review threads reach the subscription after a comment command
     let mut threads = subscribe_state(&socket, "review-threads", vec!["repository".into()]).await;
@@ -979,4 +1147,136 @@ async fn test_親ui終了_daemonとterminal子孫が一括停止なしで終了�
     let (mut restarted, discovery) = start(directory.path());
     let (mut socket, _) = connect(&discovery).await;
     quit(&mut restarted, &mut socket, false).await;
+}
+
+#[tokio::test]
+async fn test_connect提出_worktreeなしで待機中nodeにartifactを記録する() {
+    use std::os::unix::fs::PermissionsExt;
+    use wire::command_request::Command as C;
+    // Given
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path().canonicalize().unwrap();
+    let repo_path = root.join("repository");
+    let repository = git2::Repository::init(&repo_path).unwrap();
+    let signature = git2::Signature::now("daemon smoke", "smoke@example.test").unwrap();
+    let tree_id = repository.index().unwrap().write_tree().unwrap();
+    repository
+        .commit(
+            Some("HEAD"),
+            &signature,
+            &signature,
+            "initial",
+            &repository.find_tree(tree_id).unwrap(),
+            &[],
+        )
+        .unwrap();
+    let worktree = repo_path.to_str().unwrap();
+    let fixture = root.join("provider-fixture");
+    std::fs::write(&fixture, "#!/bin/sh\nif [ \"$1\" = --version ]; then echo 'claude 1.0.0'; exit; fi\nwhile :; do sleep 3600 & wait $!; done\n").unwrap();
+    std::fs::set_permissions(&fixture, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let (mut daemon, discovery) = start(&root);
+    let (mut socket, _) = connect(&discovery).await;
+    request(
+        &mut socket,
+        "repository",
+        C::AddRepoPath(wire::AddRepoPathRequest {
+            path: Some(worktree.into()),
+        }),
+    )
+    .await;
+    request(
+        &mut socket,
+        "provider",
+        C::UpdateProviderExecutable(wire::UpdateProviderExecutableRequest {
+            provider: Some("claude".into()),
+            executable: Some(fixture.to_str().unwrap().into()),
+        }),
+    )
+    .await;
+    let workflows = if cfg!(target_os = "macos") {
+        root.join("Library/Application Support/releash/workflows")
+    } else {
+        root.join("config/releash/workflows")
+    };
+    let instructions = workflows.join("instructions");
+    std::fs::create_dir_all(&instructions).unwrap();
+    std::fs::write(
+        instructions.join("submit-smoke.md"),
+        "Submit the result artifact.",
+    )
+    .unwrap();
+    std::fs::write(workflows.join("submit-smoke.yml"), "name: submit-smoke\ndescription: Connect artifact submission\nschemas:\n  result: {type: object, properties: {result: {type: string}}, required: [result]}\nnodes:\n  main:\n    session: {provider: claude, facets: {instruction: submit-smoke}}\n    artifact: result\n").unwrap();
+    let started = request(
+        &mut socket,
+        "workflow",
+        C::StartWorkflow(wire::StartWorkflowRequest {
+            workflow_name: Some("submit-smoke".into()),
+            worktree_path: Some(worktree.into()),
+            ..Default::default()
+        }),
+    )
+    .await;
+    let wire::command_result::Command::StartWorkflow(started) = started else {
+        panic!("workflow start");
+    };
+    let execution_id = started.value.unwrap();
+    let mut execution =
+        subscribe_state(&socket, "workflow-execution", vec![execution_id.clone()]).await;
+    let state = expect_state(&mut execution, "artifact waiting session", |value| matches!(value, wire::state_payload::Value::WorkflowExecution(snapshot) if snapshot.value.as_ref().is_some_and(|view| view.node_executions.as_ref().is_some_and(|nodes| nodes.items.iter().any(|node| node.session_id.is_some() && node.has_artifact == Some(false)))))).await;
+    let wire::state_payload::Value::WorkflowExecution(state) = state else {
+        unreachable!()
+    };
+    let node_id = state
+        .value
+        .unwrap()
+        .node_executions
+        .unwrap()
+        .items
+        .into_iter()
+        .find(|node| node.node_name.as_deref() == Some("main"))
+        .unwrap()
+        .id
+        .unwrap();
+    let value = wire::WorkflowValue {
+        variant: Some(wire::workflow_value::Variant::ObjectValue(
+            wire::WorkflowValueObject {
+                entries: [(
+                    "result".into(),
+                    wire::WorkflowValue {
+                        variant: Some(wire::workflow_value::Variant::StringValue(
+                            wire::ResultString {
+                                value: Some("accepted".into()),
+                            },
+                        )),
+                    },
+                )]
+                .into_iter()
+                .collect(),
+            },
+        )),
+    };
+    // When
+    request(
+        &mut socket,
+        "submit",
+        C::WorkflowSubmitOutput(wire::WorkflowSubmitOutputRequest {
+            node_execution_id: Some(node_id.clone()),
+            artifact: Some(wire::WorkflowSubmitArtifactInput {
+                contract: Some("result".into()),
+                value: Some(value.clone()),
+            }),
+        }),
+    )
+    .await;
+    // Then
+    expect_state(&mut execution, "artifact recorded on target node", |state| matches!(state, wire::state_payload::Value::WorkflowExecution(snapshot) if snapshot.value.as_ref().is_some_and(|view| view.node_executions.as_ref().is_some_and(|nodes| nodes.items.iter().any(|node| node.id.as_deref() == Some(&node_id) && node.has_artifact == Some(true) && node.artifact.as_ref().is_some_and(|artifact| artifact.contract.as_deref() == Some("result") && artifact.value.as_ref() == Some(&value))))))).await;
+    let mut output = subscribe_state(
+        &socket,
+        "workflow-output",
+        vec![execution_id, "main".into()],
+    )
+    .await;
+    expect_state(&mut output, "submitted output", |state| matches!(state, wire::state_payload::Value::WorkflowOutput(snapshot) if snapshot.value.as_ref().is_some_and(|output| matches!(&output.variant, Some(wire::workflow_output_view::Variant::Submitted(output)) if output.contract.as_deref() == Some("result") && output.structured_output.as_ref() == Some(&value))))).await;
+    drop((execution, output));
+    quit(&mut daemon, &mut socket, false).await;
 }

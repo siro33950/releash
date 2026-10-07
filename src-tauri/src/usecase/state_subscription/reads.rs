@@ -6,7 +6,7 @@ use crate::usecase::{
         AgentSessionHistoryReadUsecase, AgentSessionHistoryRequest, AgentSessionReadUsecase,
         ProviderAvailabilityUsecase,
     },
-    comment::{ReviewCommentUsecase, ReviewThreadDto},
+    comment::ReviewCommentUsecase,
     git_host::GitHostUsecase,
     provider_dto::AgentSessionProviderDto,
     repo_paths_usecase::RepoPathsUsecase,
@@ -172,6 +172,7 @@ pub struct WorkspaceStateReads {
     pub workspace_state: Arc<dyn WorkspaceStateRepository>,
     pub review: Arc<ReviewUsecase>,
     pub comments: Arc<ReviewCommentUsecase>,
+    pub session_comments: Arc<crate::usecase::comment::SessionReviewUsecase>,
     pub data_dir: PathBuf,
     pub review_comments_dir: PathBuf,
     pub workflows_dir: PathBuf,
@@ -186,6 +187,56 @@ impl WorkspaceStateReads {
     pub async fn read(&self, target: &SubscriptionTarget) -> Result<StateValue, StateReadError> {
         use SubscriptionTarget as T;
         match target {
+            T::WorkflowExecution(id) => {
+                return self
+                    .workflow
+                    .read_usecase()
+                    .get_execution_state(id)
+                    .await
+                    .map(StateValue::WorkflowExecution)
+                    .map_err(error)
+            }
+            T::WorkflowOutput(id, node) => {
+                return match self.workflow.get_output(id, node).await {
+                    Ok(output) => Ok(StateValue::WorkflowOutput(Some(output))),
+                    Err(crate::domain::workflow::WorkflowError::NotFound(_)) => {
+                        Ok(StateValue::WorkflowOutput(None))
+                    }
+                    Err(failure) => Err(error(failure)),
+                };
+            }
+            T::ReviewSessionThreads(id, filter) => {
+                return self
+                    .session_comments
+                    .list_session_threads(self.data_dir.clone(), id, filter.clone())
+                    .await
+                    .map(StateValue::ReviewSessionThreads)
+                    .map_err(error);
+            }
+            T::ReviewWorktreeThreads(path, filter) => {
+                return self
+                    .session_comments
+                    .list_worktree_threads(self.data_dir.clone(), path, filter.clone())
+                    .await
+                    .map(StateValue::ReviewThreads)
+                    .map_err(error);
+            }
+            T::ReviewSessionThread(id, thread) => {
+                return self
+                    .session_comments
+                    .get_thread(self.data_dir.clone(), id, thread.clone())
+                    .await
+                    .map(StateValue::ReviewSessionThread)
+                    .map_err(error);
+            }
+            T::ReviewSessionThreadHistory(id, thread) => {
+                return self
+                    .session_comments
+                    .history(self.data_dir.clone(), id, thread.clone())
+                    .await
+                    .map(StateValue::ReviewSessionThreadHistory)
+                    .map_err(error);
+            }
             T::AgentSession(id) => {
                 return self
                     .sessions
@@ -315,10 +366,7 @@ impl WorkspaceStateReads {
                         None,
                         crate::domain::comment::ReviewActor::human(),
                     )
-                    .map_err(error)?
-                    .into_iter()
-                    .map(ReviewThreadDto::from)
-                    .collect(),
+                    .map_err(error)?,
             ),
             T::Workflow(name) => {
                 StateValue::Workflow(self.workflow.get_workflow_dto(name).map_err(error)?)
@@ -375,7 +423,8 @@ impl WorkspaceStateReads {
             T::WorkflowConfig => {
                 StateValue::WorkflowConfig(self.app_config.get_workflow_config().map_err(error)?)
             }
-            T::Issues(_)
+            T::WorkflowExecution(_) | T::WorkflowOutput(..) | T::ReviewSessionThreads(..) | T::ReviewWorktreeThreads(..)
+            | T::ReviewSessionThread(..) | T::ReviewSessionThreadHistory(..) | T::Issues(_)
             | T::Terminal(_)
             | T::Workspaces
             | T::Workflows

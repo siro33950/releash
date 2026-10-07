@@ -83,7 +83,7 @@ impl ReviewActor {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum ReviewThreadState {
     Open,
     Resolved,
@@ -134,7 +134,7 @@ pub struct ReviewThread {
 /// 任意 author を指定するモードは contract で提供しない (List filter / unread 判定は
 /// session から解決した participant_key で完結するため、外部から任意 key を渡す経路を
 /// 露出しない)。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum AuthorScope {
     /// viewer と同一 participant (自分が作成した Thread)
     Mine,
@@ -142,7 +142,7 @@ pub enum AuthorScope {
     Other,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
 pub struct ReviewThreadFilter {
     /// Thread 対象の file path (完全一致)。
     pub file: Option<String>,
@@ -314,6 +314,7 @@ impl ReviewEvent {
 
 #[derive(Debug)]
 pub enum ReviewError {
+    SessionNotOpen(String),
     Technical(crate::domain::failure::TechnicalFailure),
     InvalidInput(String),
     NotFound(String),
@@ -327,6 +328,10 @@ impl fmt::Display for ReviewError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Technical(error) => std::fmt::Display::fmt(error, f),
+            Self::SessionNotOpen(id) => write!(
+                f,
+                "Session is not open and cannot be used as a review actor: {id}"
+            ),
             Self::InvalidInput(msg)
             | Self::NotFound(msg)
             | Self::AlreadyResolved(msg)
@@ -670,9 +675,74 @@ pub(crate) fn apply_filter(
         .collect()
 }
 
-#[cfg(test)]
-#[path = "mod_test.rs"]
-pub(crate) mod mod_tests;
+impl ReviewThreadState {
+    pub fn parse(value: &str) -> Result<Self, ReviewError> {
+        match value {
+            "open" => Ok(Self::Open),
+            "resolved" => Ok(Self::Resolved),
+            _ => Err(ReviewError::InvalidInput("Invalid review state".into())),
+        }
+    }
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Open => "open",
+            Self::Resolved => "resolved",
+        }
+    }
+}
+impl AuthorScope {
+    pub fn parse(value: &str) -> Result<Self, ReviewError> {
+        match value {
+            "self" => Ok(Self::Mine),
+            "other" => Ok(Self::Other),
+            _ => Err(ReviewError::InvalidInput("Invalid review author".into())),
+        }
+    }
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Mine => "self",
+            Self::Other => "other",
+        }
+    }
+}
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
+pub struct ReviewWorktreeFilter {
+    pub file: Option<String>,
+    pub state: Option<ReviewThreadState>,
+    pub thread_id: Vec<String>,
+}
+impl From<ReviewWorktreeFilter> for ReviewThreadFilter {
+    fn from(value: ReviewWorktreeFilter) -> Self {
+        Self {
+            file: value.file,
+            state: value.state,
+            thread_id: value.thread_id,
+            ..Default::default()
+        }
+    }
+}
+pub(crate) fn ensure_session_can_review(
+    lifecycle: crate::domain::agent_session::aggregates::AgentSessionLifecycle,
+    id: &str,
+) -> Result<(), ReviewError> {
+    if lifecycle == crate::domain::agent_session::aggregates::AgentSessionLifecycle::Open {
+        Ok(())
+    } else {
+        Err(ReviewError::SessionNotOpen(id.into()))
+    }
+}
+
+impl ReviewThreadFilter {
+    pub fn parse_unread(value: &str) -> Result<bool, ReviewError> {
+        value
+            .parse()
+            .map_err(|_| ReviewError::InvalidInput("Invalid review unread".into()))
+    }
+}
 
 #[cfg(any(test, feature = "test-support"))]
 pub(crate) mod test_helpers;
+
+#[cfg(test)]
+#[path = "mod_test.rs"]
+pub(crate) mod mod_tests;

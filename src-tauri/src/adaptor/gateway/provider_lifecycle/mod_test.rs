@@ -7,7 +7,7 @@ use crate::domain::workflow::AgentSessionActivity;
 
 #[test]
 fn test_provider信号変換_claude_payloadを正確なdomain_signalへ変換する() {
-    let session_start = parse_provider_payload(
+    let session_start = parse_signal(
         ProviderKind::Claude,
         "binding-1",
         scope(),
@@ -31,7 +31,7 @@ fn test_provider信号変換_claude_payloadを正確なdomain_signalへ変換す
         }
     );
 
-    let stop = parse_provider_payload(
+    let stop = parse_signal(
         ProviderKind::Claude,
         "binding-1",
         scope(),
@@ -56,7 +56,7 @@ fn test_provider信号変換_claude_payloadを正確なdomain_signalへ変換す
 
 #[test]
 fn test_provider信号変換_claude_subagent_payloadをroot_signalとして変換しない() {
-    let error = parse_provider_payload(
+    let interpretation = parse_provider_payload(
         ProviderKind::Claude,
         "binding-1",
         scope(),
@@ -69,11 +69,11 @@ fn test_provider信号変換_claude_subagent_payloadをroot_signalとして変�
             "agent_type":"Explore"
         }"#,
     )
-    .unwrap_err();
+    .unwrap();
 
     assert_eq!(
-        error.to_string(),
-        "Provider lifecycle payload belongs to a subagent"
+        interpretation,
+        crate::domain::provider_lifecycle::ProviderPayloadInterpretation::Subagent
     );
 }
 
@@ -102,7 +102,7 @@ fn test_provider信号変換_両providerの共通eventを同じ活動状態へ�
                 "tool_response": "secret output"
             });
 
-            let signal = parse_provider_payload(
+            let signal = parse_signal(
                 provider,
                 "binding-1",
                 scope(),
@@ -137,7 +137,7 @@ fn test_provider信号変換_質問系pre_tool_useを正規化して回答待ち
                 "tool_name": tool_name
             });
 
-            let signal = parse_provider_payload(
+            let signal = parse_signal(
                 provider,
                 "binding-1",
                 scope(),
@@ -158,7 +158,7 @@ fn test_provider信号変換_質問系pre_tool_useを正規化して回答待ち
 
 #[test]
 fn test_provider信号変換_tool名なしのpre_tool_useをworkingとして扱う() {
-    let signal = parse_provider_payload(
+    let signal = parse_signal(
         ProviderKind::Codex,
         "binding-1",
         scope(),
@@ -177,7 +177,7 @@ fn test_provider信号変換_tool名なしのpre_tool_useをworkingとして扱�
 
 #[test]
 fn test_provider信号変換_claudeの追加eventでもsubagentを除外する() {
-    let error = parse_provider_payload(
+    let result = parse_provider_payload(
         ProviderKind::Claude,
         "binding-1",
         scope(),
@@ -188,17 +188,17 @@ fn test_provider信号変換_claudeの追加eventでもsubagentを除外する()
             "agent_id":"agent-child-1"
         }"#,
     )
-    .unwrap_err();
+    .unwrap();
 
     assert_eq!(
-        error.to_string(),
-        "Provider lifecycle payload belongs to a subagent"
+        result,
+        crate::domain::provider_lifecycle::ProviderPayloadInterpretation::Subagent
     );
 }
 
 #[test]
 fn test_provider信号変換_claude_stop_failureを診断にしてstopへ変換しない() {
-    let signal = parse_provider_payload(
+    let signal = parse_signal(
         ProviderKind::Claude,
         "binding-1",
         scope(),
@@ -226,7 +226,7 @@ fn test_provider信号変換_claude_stop_failureを診断にしてstopへ変換�
 
 #[test]
 fn test_provider信号変換_codexのnullable_transcriptを変換し未知eventを拒否する() {
-    let session_start = parse_provider_payload(
+    let session_start = parse_signal(
         ProviderKind::Codex,
         "binding-1",
         scope(),
@@ -248,7 +248,7 @@ fn test_provider信号変換_codexのnullable_transcriptを変換し未知event�
         }
     );
 
-    let stop = parse_provider_payload(
+    let stop = parse_signal(
         ProviderKind::Codex,
         "binding-1",
         scope(),
@@ -270,7 +270,7 @@ fn test_provider信号変換_codexのnullable_transcriptを変換し未知event�
         }
     );
 
-    let unknown = parse_provider_payload(
+    let unknown = parse_signal(
         ProviderKind::Codex,
         "binding-1",
         scope(),
@@ -285,7 +285,7 @@ fn test_provider信号変換_codexのnullable_transcriptを変換し未知event�
 
 #[test]
 fn test_provider信号変換_不正または不完全なpayloadをraw_input非表示で拒否する() {
-    let malformed = parse_provider_payload(
+    let malformed = parse_signal(
         ProviderKind::Claude,
         "binding-1",
         scope(),
@@ -298,7 +298,7 @@ fn test_provider信号変換_不正または不完全なpayloadをraw_input非�
     );
     assert!(!malformed.to_string().contains("must-not-appear"));
 
-    let incomplete = parse_provider_payload(
+    let incomplete = parse_signal(
         ProviderKind::Claude,
         "binding-1",
         scope(),
@@ -418,12 +418,18 @@ fn test_provider起動設定_空の初回指示を拒否する() {
 #[test]
 fn test_provider起動設定_binding入力の欠落を拒否する() {
     assert_eq!(
-        ProviderLaunchContext::new(slot_id(), "", "capability-1", scope()).unwrap_err(),
+        ProviderLaunchContext::new(slot_id(), "", "capability-1", scope(), "hook-token")
+            .unwrap_err(),
         ProviderLaunchSpecError::EmptyField("binding_id")
     );
     assert_eq!(
-        ProviderLaunchContext::new(slot_id(), "binding-1", "", scope()).unwrap_err(),
+        ProviderLaunchContext::new(slot_id(), "binding-1", "", scope(), "hook-token").unwrap_err(),
         ProviderLaunchSpecError::EmptyField("capability")
+    );
+    assert_eq!(
+        ProviderLaunchContext::new(slot_id(), "binding-1", "capability-1", scope(), "")
+            .unwrap_err(),
+        ProviderLaunchSpecError::EmptyField("hook_token")
     );
     assert_eq!(
         ProviderLaunchSpec::for_provider(ProviderKind::Claude, context(), "releash", None)
@@ -440,4 +446,47 @@ fn test_provider起動設定_binding入力の欠落を拒否する() {
         .unwrap_err(),
         ProviderLaunchSpecError::UnsupportedCliAlias
     );
+}
+
+fn parse_signal(
+    provider: ProviderKind,
+    binding_id: &str,
+    scope: crate::domain::provider_lifecycle::ProviderLifecycleScope,
+    payload: &[u8],
+) -> Result<
+    crate::domain::provider_lifecycle::ProviderLifecycleSignal,
+    crate::domain::provider_lifecycle::ProviderPayloadError,
+> {
+    match parse_provider_payload(provider, binding_id, scope, payload)? {
+        crate::domain::provider_lifecycle::ProviderPayloadInterpretation::Signal(signal) => {
+            Ok(signal)
+        }
+        crate::domain::provider_lifecycle::ProviderPayloadInterpretation::Subagent => {
+            panic!("expected root signal")
+        }
+    }
+}
+
+#[test]
+fn test_provider起動設定_hook_tokenをagentの環境へ渡す() {
+    // Given
+    let token = "per-server-hook-token";
+    // When / Then
+    for provider in [ProviderKind::Claude, ProviderKind::Codex] {
+        let context =
+            ProviderLaunchContext::new(slot_id(), "binding", "capability", scope(), token).unwrap();
+        let spec = ProviderLaunchSpec::for_provider(
+            provider,
+            context,
+            "releash",
+            Some(std::path::Path::new("/plugin")),
+        )
+        .unwrap();
+        let process = spec
+            .terminal_process("/provider", ProviderSessionLaunch::New)
+            .unwrap();
+        assert!(process
+            .environment()
+            .contains(&("RELEASH_PROVIDER_LIFECYCLE_TOKEN".into(), token.into())));
+    }
 }

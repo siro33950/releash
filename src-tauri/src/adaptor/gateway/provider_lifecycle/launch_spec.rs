@@ -26,6 +26,7 @@ pub struct ProviderLaunchContext {
     slot_id: ProviderLifecycleSlotId,
     binding_id: String,
     capability: String,
+    hook_token: String,
     scope: ProviderLifecycleScope,
 }
 
@@ -35,6 +36,7 @@ impl ProviderLaunchContext {
         binding_id: impl Into<String>,
         capability: impl Into<String>,
         scope: ProviderLifecycleScope,
+        hook_token: &str,
     ) -> Result<Self, ProviderLaunchSpecError> {
         let binding_id = binding_id.into();
         let capability = capability.into();
@@ -44,10 +46,14 @@ impl ProviderLaunchContext {
         if capability.trim().is_empty() {
             return Err(ProviderLaunchSpecError::EmptyField("capability"));
         }
+        if hook_token.trim().is_empty() {
+            return Err(ProviderLaunchSpecError::EmptyField("hook_token"));
+        }
         Ok(Self {
             slot_id,
             binding_id,
             capability,
+            hook_token: hook_token.to_string(),
             scope,
         })
     }
@@ -91,6 +97,10 @@ impl ProviderLaunchSpec {
         let hook_command =
             |provider: &str| format!("{hook_cli_alias} hook receive --provider {provider}");
         let environment = vec![
+            (
+                "RELEASH_PROVIDER_LIFECYCLE_TOKEN".to_string(),
+                context.hook_token,
+            ),
             (
                 "RELEASH_PROVIDER_LIFECYCLE_SLOT_ID".to_string(),
                 context.slot_id.as_str().to_string(),

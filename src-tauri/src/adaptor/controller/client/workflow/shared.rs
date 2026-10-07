@@ -9,6 +9,36 @@ pub fn register_shared(
     deps: &crate::adaptor::controller::client::ClientDependencies,
 ) {
     {
+        let state = deps.app_state.clone();
+        router.register_domain(
+            &["diagnose_workflow_directory"],
+            Box::new(move |command| {
+                let state = state.clone();
+                Box::pin(async move {
+                    let wire::command_request::Command::DiagnoseWorkflowDirectory(args) = command
+                    else {
+                        return Err(invalid_request("Mismatched command"));
+                    };
+                    let result = async move {
+                        let state = state
+                            .ok_or_else(|| invalid_request("Command dependency unavailable"))?;
+                        outcome(
+                            diagnostics::diagnose_workflow_directory_shared(
+                                &state,
+                                convert(required(args.dir, "dir")?)?,
+                            )
+                            .await,
+                        )
+                    }
+                    .await?;
+                    Ok(wire::command_result::Command::DiagnoseWorkflowDirectory(
+                        result,
+                    ))
+                })
+            }),
+        );
+    }
+    {
         let runtime = deps.workflow_runtime_usecase.clone();
         router.register_domain(
             &["abort_workflow"],
@@ -339,57 +369,23 @@ pub fn register_shared(
             }),
         );
     }
+
     {
-        let state = deps.app_state.clone();
-        router.register_domain(
-            &["workflow_get_output"],
-            Box::new(move |command| {
-                let state = state.clone();
-                Box::pin(async move {
-                    let wire::command_request::Command::WorkflowGetOutput(args) = command else {
-                        return Err(invalid_request("Mismatched command"));
-                    };
-                    let result = async move {
-                        let state = state
-                            .ok_or_else(|| invalid_request("Command dependency unavailable"))?;
-                        outcome(
-                            output::workflow_get_output_shared(
-                                &state,
-                                convert(required(args.worktree_path, "worktreePath")?)?,
-                                convert(required(args.execution_id, "executionId")?)?,
-                                convert(required(args.node_name, "nodeName")?)?,
-                            )
-                            .await,
-                        )
-                    }
-                    .await?;
-                    Ok(wire::command_result::Command::WorkflowGetOutput(result))
-                })
-            }),
-        );
-    }
-    {
-        let state = deps.app_state.clone();
         let runtime = deps.workflow_runtime_usecase.clone();
         router.register_domain(
             &["workflow_submit_output"],
             Box::new(move |command| {
-                let state = state.clone();
                 let runtime = runtime.clone();
                 Box::pin(async move {
                     let wire::command_request::Command::WorkflowSubmitOutput(args) = command else {
                         return Err(invalid_request("Mismatched command"));
                     };
                     let result = async move {
-                        let state = state
-                            .ok_or_else(|| invalid_request("Command dependency unavailable"))?;
                         let runtime = runtime
                             .ok_or_else(|| invalid_request("Command dependency unavailable"))?;
                         outcome(
                             output::workflow_submit_output_shared(
-                                &state,
                                 &runtime,
-                                convert(required(args.worktree_path, "worktreePath")?)?,
                                 convert(required(args.node_execution_id, "nodeExecutionId")?)?,
                                 optional(args.artifact)?,
                             )
@@ -398,39 +394,6 @@ pub fn register_shared(
                     }
                     .await?;
                     Ok(wire::command_result::Command::WorkflowSubmitOutput(result))
-                })
-            }),
-        );
-    }
-    {
-        let state = deps.app_state.clone();
-        router.register_domain(
-            &["workflow_validate_output"],
-            Box::new(move |command| {
-                let state = state.clone();
-                Box::pin(async move {
-                    let wire::command_request::Command::WorkflowValidateOutput(args) = command
-                    else {
-                        return Err(invalid_request("Mismatched command"));
-                    };
-                    let result = async move {
-                        let state = state
-                            .ok_or_else(|| invalid_request("Command dependency unavailable"))?;
-                        outcome(
-                            output::workflow_validate_output_shared(
-                                &state,
-                                convert(required(args.worktree_path, "worktreePath")?)?,
-                                convert(required(args.execution_id, "executionId")?)?,
-                                convert(required(args.node_name, "nodeName")?)?,
-                                convert(required(args.structured_output, "structuredOutput")?)?,
-                            )
-                            .await,
-                        )
-                    }
-                    .await?;
-                    Ok(wire::command_result::Command::WorkflowValidateOutput(
-                        result,
-                    ))
                 })
             }),
         );

@@ -26,3 +26,5 @@ pub(crate) mod workflow_wire;
 pub(crate) mod terminal_subscription;
 
 pub(crate) mod client_calls;
+
+pub(crate) mod comment;

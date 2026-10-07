@@ -342,6 +342,7 @@ pub mod platform {
     pub use crate::test_support::EnvVarGuard;
     pub use crate::test_support::TEST_ENV_LOCK;
 
+    pub use crate::adaptor::presenter::comment::ReviewThreadDto;
     pub use crate::test_support::captured_warning_messages;
     pub use crate::test_support::install_capturing_logger;
     pub use crate::test_support::retry::record_retry_failure;
@@ -353,12 +354,13 @@ pub mod platform {
     pub use crate::usecase::application_lifecycle::test_helpers::FakeShutdown;
     pub use crate::usecase::application_lifecycle::test_helpers::STAGES;
     pub use crate::usecase::code_dto::ReviewFileViewDto;
-    pub use crate::usecase::comment::dto::ReviewThreadDto;
     pub use crate::usecase::comment::ReviewClock;
-    pub use crate::usecase::comment::ReviewCommentUsecase;
     pub use crate::usecase::comment::ReviewEventMutation;
     pub use crate::usecase::comment::ReviewEventStore;
     pub use crate::usecase::comment::ReviewIdGenerator;
+    pub use crate::usecase::comment::{
+        ReviewCommentUsecase, ReviewContextUsecase, SessionReviewUsecase,
+    };
     pub use crate::usecase::fetched::Fetched;
     pub use crate::usecase::git_host::git_host_usecase::GitHostUsecase;
     pub use crate::usecase::notion::error::NotionUsecaseError;
@@ -421,6 +423,9 @@ pub mod process {
     pub use crate::infrastructure::process::search_path::SearchPathSource;
 }
 pub mod providers {
+    pub use crate::adaptor::gateway::provider_lifecycle::LocalProviderPayloadInterpreter;
+    pub use crate::usecase::provider_lifecycle::ingress::ProviderPayloadInput;
+
     pub use crate::adaptor::gateway::provider_lifecycle::credential_gateway_impl::LocalProviderLifecycleCredentialGateway;
     pub use crate::adaptor::gateway::provider_lifecycle::event_repository_impl::LocalProviderLifecycleEventRepository;
     pub use crate::adaptor::gateway::provider_lifecycle::hook_health_failure_query_impl::LocalProviderHookHealthFailureQuery;
@@ -747,7 +752,7 @@ pub mod terminal {
 pub mod transport {
 
     pub use crate::acceptance_test_support::build_client_dependencies;
-    pub use crate::adaptor::controller::api::auth::require_client;
+    pub use crate::adaptor::controller::api::auth::{require_client, ClientTokens};
     pub use crate::adaptor::controller::api::build_router;
     pub use crate::adaptor::controller::api::client::ClientApiDeps;
 
@@ -793,7 +798,7 @@ pub mod transport {
     pub use crate::infrastructure::local_api::client::LocalApiDiscoveryReadError;
     pub use crate::infrastructure::local_api::client::LocalApiHttpClient;
     pub use crate::infrastructure::local_api::client::LocalApiTransportError;
-    pub use crate::infrastructure::local_api::client_token::ClientBearerToken;
+    pub use crate::infrastructure::local_api::client_token::BearerToken;
     pub use crate::infrastructure::local_api::discovery::local_api_discovery_path;
     pub use crate::infrastructure::local_api::discovery::lookup_process_start_time;
     pub use crate::infrastructure::local_api::discovery::process_start_time;
@@ -1133,6 +1138,25 @@ pub mod workflow {
     pub use crate::usecase::workflow::workspace_tree::WorkspaceNodeContentDto;
 }
 pub mod workspace {
+    pub async fn node_for_execution(
+        repository: &dyn crate::domain::workspace_tree::WorkspaceTreeRepository,
+        workspace: &crate::domain::workspace_tree::WorkspaceIdentity,
+        id: &str,
+    ) -> Result<
+        Option<crate::domain::workspace_tree::WorkspaceTreeNode>,
+        crate::domain::workflow::WorkflowError,
+    > {
+        let tree = repository
+            .load_trees(std::slice::from_ref(workspace))
+            .await
+            .remove(0)?;
+        Ok(tree
+            .nodes()
+            .iter()
+            .find(|node| node.node_execution_id.as_deref() == Some(id))
+            .cloned())
+    }
+
     pub use crate::adaptor::controller::client::workspace_tree::shared::register_shared;
     pub use crate::adaptor::gateway::workspace_tree::query_service::SqliteWorkspaceQueryService;
 

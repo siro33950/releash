@@ -141,7 +141,10 @@ impl ClientApiAcceptanceHost {
             Arc::new(workflow),
             Arc::new(runtime),
             binding.bearer_token(),
-            binding.client_bearer_token(),
+            crate::adaptor::controller::api::auth::ClientTokens {
+                operator: binding.client_bearer_token(),
+                hook: binding.hook_bearer_token(),
+            },
             Some(
                 ClientApiDeps::new(dispatch, priority).with_state_subscriptions(
                     crate::adaptor::controller::api::StateSubscriptionDeps::new(
@@ -204,7 +207,6 @@ pub fn connect_client(endpoint: &ClientEndpoint) -> NativeClient {
         HttpClient::plaintext(),
         ClientConfig::new(endpoint.url.parse().unwrap())
             .with_default_header("authorization", format!("Bearer {}", endpoint.token))
-            .with_default_header("origin", "tauri://localhost")
             .with_default_timeout(std::time::Duration::from_millis(timeout.into())),
     )
 }

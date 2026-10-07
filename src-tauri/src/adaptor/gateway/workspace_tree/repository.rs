@@ -552,29 +552,6 @@ impl WorkspaceTreeRepository for SqliteWorkspaceTreeRepository {
         }
         Ok(None)
     }
-
-    async fn load_node_by_node_execution_id(
-        &self,
-        node_execution_id: &str,
-    ) -> Result<Option<WorkspaceTreeNode>, LocalEventQueryError> {
-        let backend = self.fact_backend();
-        let Some(tree_id) = backend
-            .tree_id_for_node(node_execution_id)
-            .await
-            .map_err(fold_query_error)?
-        else {
-            return Ok(None);
-        };
-        let Some(execution) = self.folded_tree(&tree_id).await? else {
-            return Ok(None);
-        };
-        let (folded, record) = &*execution;
-        let workspace = folded.root.workspace_identity.clone();
-        Ok(self
-            .tree_nodes(&workspace, folded, record)?
-            .into_iter()
-            .find(|node| node.node_execution_id.as_deref() == Some(node_execution_id)))
-    }
 }
 
 fn ordered_roots(held: &BTreeMap<String, HeldTree>) -> Vec<(String, TreeRoot)> {

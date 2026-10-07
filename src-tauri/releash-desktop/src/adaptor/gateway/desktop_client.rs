@@ -77,8 +77,7 @@ fn config(endpoint: &ClientConnectionDto) -> Result<ClientConfig, String> {
             .parse()
             .map_err(|error| format!("Invalid client endpoint: {error}"))?,
     )
-    .with_default_header("authorization", format!("Bearer {}", endpoint.token))
-    .with_default_header("origin", "tauri://localhost"))
+    .with_default_header("authorization", format!("Bearer {}", endpoint.token)))
 }
 
 pub fn client(

@@ -52,6 +52,7 @@ pub enum AcceptanceUnavailableReason {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AcceptanceIngressResult {
     Applied,
+    Ignored,
     Duplicate,
     Rejected { reason: String },
 }
@@ -364,7 +365,10 @@ impl ProviderLifecycleAcceptanceHost {
             Arc::new(workflow),
             runtime,
             binding.bearer_token(),
-            binding.terminal_bearer_token(),
+            crate::adaptor::controller::api::auth::ClientTokens {
+                operator: binding.terminal_bearer_token().into(),
+                hook: binding.hook_bearer_token(),
+            },
             None,
             Some(usecase.clone()),
             (
@@ -422,6 +426,7 @@ impl ProviderLifecycleAcceptanceHost {
             armed.binding_id(),
             armed.capability(),
             armed.scope().clone(),
+            "hook-token",
         )
         .map_err(|error| error.to_string())?;
         let hook_cli_alias = crate::infrastructure::platform::path_aliases::alias_name_for_profile(
@@ -511,6 +516,7 @@ impl ProviderLifecycleAcceptanceHost {
         .await
         .map_err(|error| error.to_string())??;
         Ok(match response {
+            ProviderLifecycleReceiveResponse::Ignored => AcceptanceIngressResult::Ignored,
             ProviderLifecycleReceiveResponse::Applied => AcceptanceIngressResult::Applied,
             ProviderLifecycleReceiveResponse::Duplicate => AcceptanceIngressResult::Duplicate,
             ProviderLifecycleReceiveResponse::Rejected { reason } => {

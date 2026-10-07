@@ -169,9 +169,10 @@ pub(crate) mod tests {
         ));
         let result = fixture
             .usecase
-            .validate_output(
+            .validate_output_for_contract(
                 test_execution_id(),
                 "review",
+                "review-result",
                 serde_json::json!({"status":"ok","secret":"token-123"}),
             )
             .await
@@ -180,7 +181,12 @@ pub(crate) mod tests {
         assert_eq!(result, WorkflowValidateOutputResult::Valid);
         let invalid = fixture
             .usecase
-            .validate_output(test_execution_id(), "review", serde_json::json!({}))
+            .validate_output_for_contract(
+                test_execution_id(),
+                "review",
+                "review-result",
+                serde_json::json!({}),
+            )
             .await
             .unwrap();
         assert!(matches!(

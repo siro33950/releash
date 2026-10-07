@@ -7,6 +7,7 @@ pub(crate) use client::{ClientApiDeps, StateSubscriptionDeps};
 pub(crate) mod error;
 pub(crate) mod protocol;
 pub(crate) mod provider_lifecycle;
+mod provider_signal;
 
 pub(crate) mod workflow;
 
@@ -28,7 +29,7 @@ pub fn build_router(
     workflow: Arc<WorkflowReadUsecase>,
     runtime: Arc<WorkflowRuntimeUsecase>,
     token: Arc<str>,
-    terminal_token: impl Into<crate::infrastructure::local_api::ClientBearerToken>,
+    terminal_token: auth::ClientTokens,
     client: Option<ClientApiDeps>,
     provider_lifecycle: Option<
         Arc<dyn crate::usecase::provider_lifecycle::ProviderLifecycleIngressPort>,
@@ -50,7 +51,7 @@ pub fn build_router(
         })
         .with_state(state.clone());
     let terminal_router = client::router(client, default_timeout).layer(
-        middleware::from_fn_with_state(terminal_token.into(), auth::require_client),
+        middleware::from_fn_with_state(terminal_token, auth::require_client),
     );
     authenticated(
         application_router
