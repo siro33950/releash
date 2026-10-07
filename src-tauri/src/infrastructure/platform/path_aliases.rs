@@ -85,6 +85,7 @@ impl PathAliases {
                 format!("failed to resolve current executable path: {e}"),
             )
         })?;
+        let exe_path = exe_path.with_file_name("releash");
         let name = alias_name_for_profile(profile);
         Ok(Self {
             releash: PathAlias {

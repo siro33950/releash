@@ -73,9 +73,10 @@ Releash は、特定の作業単位や特定の道具を主語にしない。コ
 ディレクトリの内訳はコードを見る。コードからは読み取りにくい点だけ挙げる。
 
 - **workflow 定義はリポジトリ直下の `workflows/`** に置く。`*.yml` と `facets/{instructions,policies,knowledge}/*.md`。builtin は `adaptor/gateway/workflow/builtin.rs` が `include_str!` でコンパイル時に取り込むため、定義を追加するときは builtin.rs 側の登録も要る。
-- **実行ファイルは2つある**。`releash-desktop`（`src-tauri/releash-desktop/src/main.rs`、Tauri のシェル）は daemon を子プロセスとして起動・監視する。`releash-backend`（`src-tauri/src/bin/backend.rs`）は `--internal-daemon` で daemon、それ以外で CLI（`cli/`、`releash workflow|review|hook`）として動く。
-- **daemon の入口は2つあり、同じ usecase を共有する**。画面用は Connect の ClientService（契約は `proto/client.proto`、入口は `adaptor/controller/api/client*.rs`、コマンドごとの処理は `adaptor/controller/client/`）。CLI / hook 用は HTTP local API（`adaptor/controller/api/` の `workflow.rs` / `provider_lifecycle.rs`）。Tauri コマンド（`adaptor/controller/command/`）は desktop 固有の操作だけを扱う。
-- **daemon は 127.0.0.1 のみに bind する**。discovery file に port と token を書き出す。画面へ渡す client token は master token と分離する。
+- **実行ファイルは3つある**。`releash-desktop` は desktop シェル、`releash-backend` は daemon と内部 background worker、`releash`（`src-tauri/releash/`）は独立 CLI。CLI は `releash-client` だけを共有依存とし、backend には依存しない。共有 crate は生成された proto 型・descriptor・Connect client、発見と同一性確認、protocol 互換性を提供する。
+- **画面・CLI・hook は Connect の ClientService を使う**。契約は `proto/client.proto`、入口は `adaptor/controller/api/client*.rs`、処理は `adaptor/controller/client/`。Tauri コマンドは desktop 固有の操作だけを扱う。
+- **daemon は 127.0.0.1 のみに bind する**。`client-api.json` に port と client token を書き出す。CLI と画面はこのファイルだけを読む。
+
 - **永続化は event store**。`domain/local_event/` と `adaptor/gateway/local_event_store/`。事実を追記し、読み側で projection を導出する。full-recompute 経路を増やさない。
 
 ## ビルド・テスト・Lint
@@ -111,9 +112,22 @@ cargo fmt --check -p releash-desktop
 cargo clippy --locked -p releash-desktop -- -D warnings
 cargo test --locked --lib --bins -p releash-desktop
 cargo test --locked --doc -p releash-desktop
-cargo build --locked -p releash-backend --bin releash-backend
+cargo build --locked -p releash-backend --bin releash-backend -p releash --bin releash
 cargo test --locked --test '*' -p releash-desktop
 ```
+
+共有 crate / CLI（`src-tauri/`）:
+
+```bash
+cargo fmt --check -p releash-client -p releash
+cargo clippy --locked -p releash-client -p releash -- -D warnings
+cargo test --locked --lib --bins -p releash-client -p releash
+cargo test --locked --doc -p releash-client -p releash
+cargo build --locked -p releash-backend --bin releash-backend -p releash --bin releash
+cargo test --locked --test '*' -p releash
+```
+
+backend・シェルの統合テストも、事前に独立 CLI をビルドする。
 
 品質ゲート（プロジェクトルート。サーバ・シェル・フロントをまたぐ検査）:
 
@@ -202,7 +216,7 @@ Rust テストの配置、命名、レイヤー別の必須／柔軟、モック
 - 依存の advisory とライセンスは `cargo deny`（`src-tauri/deny.toml` の allow list）で検査する。新しいライセンスの依存を足すときは allow list への追記が要る。
 - CodeQL が javascript-typescript を PR と週次で解析する。
 - Tauri capability は `src-tauri/releash-desktop/capabilities/`。`startup-pre-admission` は permissions を空にし、main window は Rust の startup authority が Ready に達した後にだけ作る。permission を追加するときは対象 window を確認する。
-- local API の master token を renderer JS へ渡さない。hook の token はファイルに書かず、provider の agent を起動する env だけで渡す。terminal 用は別 token を使う。
+- hook の token はファイルに書かず、provider の agent を起動する env だけで渡す。terminal 用は別 token を使う。
 - Lua の評価環境は外部 I/O を持たず、メモリ量と命令数に上限がある。この上限を緩めない。
 - command テンプレートの `{{ }}` は shell quoting を行わない。信頼できない値を shell syntax へ直接連結しない。
 

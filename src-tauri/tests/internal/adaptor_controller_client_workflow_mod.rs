@@ -699,9 +699,6 @@ pub(crate) mod tests {
         let config_repository: Arc<
             dyn releash_lib::test_support::integration::repository::ConfigRepository,
         > = app_config.clone();
-        let config_secret_repository: Arc<
-            dyn releash_lib::test_support::integration::repository::ConfigSecretRepository,
-        > = app_config.clone();
         let repository_usecase =
             Arc::new(releash_lib::test_support::integration::platform::build_repository_usecase());
         let notion_usecase = Arc::new(
@@ -774,7 +771,6 @@ releash_lib::test_support::integration::subscriptions::repository_driver(),
                 data_dir.clone(),
                 repository_usecase.clone(),
                 config_repository.clone(),
-                config_secret_repository,
                 local_event_store.clone(),
                 Arc::new(
                     releash_lib::test_support::integration::workflow::WorkflowNodeProcesses::default(

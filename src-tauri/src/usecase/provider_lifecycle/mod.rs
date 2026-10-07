@@ -10,8 +10,7 @@ use crate::domain::provider_lifecycle::{
     ProviderLifecycleCredentialGateway, ProviderLifecycleEvent, ProviderLifecycleEventRepository,
     ProviderLifecycleIngressResult, ProviderLifecycleOutcome, ProviderLifecycleRejection,
     ProviderLifecycleRepositoryError, ProviderLifecycleScope, ProviderLifecycleSignal,
-    ProviderLifecycleSlot, ProviderLifecycleSlotId, ProviderLifecycleUnavailableObservation,
-    ScopedProviderLifecycleEvent,
+    ProviderLifecycleSlot, ProviderLifecycleSlotId, ScopedProviderLifecycleEvent,
 };
 
 pub(crate) mod hook_health;
@@ -24,8 +23,8 @@ pub(crate) use hook_health::{
 };
 pub(crate) use ingress::{
     ProviderExecutionTreeStopCommand, ProviderExecutionTreeStopTransaction,
-    ProviderLifecycleIngressPort, ProviderLifecycleIngressUsecase,
-    ProviderLifecycleIngressUsecaseError, ProviderPayloadReceiver, ProviderSessionStartTransaction,
+    ProviderLifecycleIngressUsecase, ProviderLifecycleIngressUsecaseError, ProviderPayloadReceiver,
+    ProviderSessionStartTransaction,
 };
 
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
@@ -199,30 +198,6 @@ impl ProviderLifecycleUsecase {
         drop(current);
         self.cleanup_empty_slot(slot_id, &live).map_err(E::from)?;
         Ok(result)
-    }
-
-    pub(crate) async fn report_unavailable(
-        &self,
-        slot_id: &ProviderLifecycleSlotId,
-        capability: &str,
-        observation: ProviderLifecycleUnavailableObservation,
-    ) -> Result<ProviderLifecycleIngressResult, ProviderLifecycleUsecaseError> {
-        let Some(live) = self.find_slot(slot_id)? else {
-            return Ok(ProviderLifecycleIngressResult::Rejected(
-                ProviderLifecycleRejection::BindingNotActive,
-            ));
-        };
-        let scope = observation.scope().clone();
-        let capability_hash = self.credentials.hash(capability);
-        let mut current = live.lock().await;
-        let mut candidate = current.clone();
-        let outcome = candidate.report_unavailable(&capability_hash, observation);
-        let result = self
-            .persist_outcome(&mut current, candidate, scope, outcome)
-            .await;
-        drop(current);
-        self.cleanup_empty_slot(slot_id, &live)?;
-        result
     }
 
     pub(crate) async fn release(

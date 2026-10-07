@@ -94,10 +94,6 @@ async fn test_desktop接続_discoveryとtauri経由で外部daemonの初回接�
                     let endpoint =
                         releash_desktop::test_support::desktop_client_endpoint(app.handle()).await;
                     let current = discovery(directory.path(), "client-api.json");
-                    assert_ne!(
-                        current["token"],
-                        discovery(directory.path(), "local-api.json")["token"]
-                    );
                     tokens.push(current["token"].clone());
                     serde_json::to_value(endpoint).unwrap()
                 }

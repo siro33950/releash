@@ -1,6 +1,5 @@
 pub(crate) mod agent_session;
 pub(crate) mod api_error;
-pub(crate) mod api_response;
 pub(crate) mod application_lifecycle_v1;
 pub(crate) mod client;
 pub(crate) mod code;
@@ -20,6 +19,7 @@ pub(crate) mod terminal_error;
 pub(crate) mod terminal_event_fault_relay;
 pub(crate) mod terminal_event_hub;
 pub(crate) mod workflow;
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) mod workflow_api;
 pub(crate) mod workflow_wire;
 

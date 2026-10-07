@@ -979,7 +979,7 @@ fn test_実行木の選択_選択先が木にあるかを木に添える() {
         // When
         let json = from_message(
             "releash.client.v1.WorkspaceTreeSelectionSnapshot",
-            &wire::WorkspaceTreeSelectionSnapshot::try_from((&tree, selected)).unwrap(),
+            &selection(&tree, selected).unwrap(),
         )
         .unwrap();
 
@@ -1005,7 +1005,7 @@ fn test_ブランチ状態_ブランチ名とworktreeの有無を並べる() {
     // When
     let json = from_message(
         "releash.client.v1.ListBranchStatus",
-        &wire::ListBranchStatus::try_from(branches.as_slice()).unwrap(),
+        &branch_status(branches.as_slice()),
     )
     .unwrap();
 

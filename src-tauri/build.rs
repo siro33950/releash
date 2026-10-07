@@ -17,12 +17,6 @@ fn generate_client_protocol() {
     println!("cargo:rerun-if-changed=../proto/client_options.proto");
     let directory = std::path::PathBuf::from(std::env::var("OUT_DIR").unwrap());
     let mut config = prost_build::Config::new();
-    for message in ["CommandRequest", "CommandResult"] {
-        config.message_attribute(
-            format!(".releash.client.v1.{message}"),
-            "#[cfg(any(test, feature = \"test-support\"))]",
-        );
-    }
     config.boxed(".releash.client.v1.Push.event.workflow_execution_changed");
     config.protoc_executable(protoc_bin_vendored::protoc_bin_path().expect("bundled protoc"));
     config.file_descriptor_set_path(directory.join("client_descriptor.bin"));
@@ -52,9 +46,9 @@ fn generate_client_protocol() {
         } else {
             "#[cfg(test)] "
         };
-        let mut decode = format!("{harness_only}impl {message} {{ {decode_test}pub(crate) fn into_value(self) -> Result<(&'static str, serde_json::Value), String> {{ match self.command.ok_or(\"Missing command\")? {{\n");
-        let mut encode = format!("{harness_only}impl {message} {{ {encode_test}pub(crate) fn from_value(name: &str, value: serde_json::Value) -> Result<Self, String> {{ Ok(Self {{ command: Some(match name {{\n");
-        let mut command_names = format!("impl {module}::Command {{ pub(crate) fn name(&self) -> &'static str {{ match self {{\n");
+        let mut decode = format!("{decode_test}pub(crate) trait {message}Decode {{ fn into_value(self) -> Result<(&'static str, serde_json::Value), String>; }} {decode_test}impl {message}Decode for {message} {{ fn into_value(self) -> Result<(&'static str, serde_json::Value), String> {{ match self.command.ok_or(\"Missing command\")? {{\n");
+        let mut encode = format!("{encode_test}pub(crate) trait {message}Encode {{ fn from_value(name: &str, value: serde_json::Value) -> Result<Self, String> where Self: Sized; }} {encode_test}impl {message}Encode for {message} {{ fn from_value(name: &str, value: serde_json::Value) -> Result<Self, String> {{ Ok(Self {{ command: Some(match name {{\n");
+        let mut command_names = format!("pub(crate) trait CommandName {{ fn name(&self) -> &'static str; }} impl CommandName for {module}::Command {{ fn name(&self) -> &'static str {{ match self {{\n");
         let mut names = String::from(
             "#[cfg(any(test, feature = \"test-support\"))] pub const COMMAND_NAMES: &[&str] = &[\n",
         );
@@ -198,16 +192,7 @@ fn generate_client_protocol() {
     std::fs::write(directory.join("client_service.rs"), handlers).expect("write service handlers");
     std::fs::write(directory.join("client_calls.rs"), calls).expect("write native calls");
     println!("cargo:rerun-if-changed=src/adaptor/controller/api/client_service.rs");
-    config
-        .compile_fds(descriptors)
-        .expect("generate client protocol");
-    connectrpc_build::Config::new()
-        .files(&["client.proto"])
-        .descriptor_set(directory.join("client_descriptor.bin"))
-        .out_dir(directory.join("connect"))
-        .include_file("mod.rs")
-        .compile()
-        .expect("generate Connect services");
+
     std::fs::write(directory.join("client_commands.rs"), code)
         .expect("write client command codecs");
 }

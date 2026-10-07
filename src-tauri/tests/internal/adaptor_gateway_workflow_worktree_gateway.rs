@@ -1,10 +1,10 @@
 use crate::test_support_git::add_and_commit;
 use crate::test_support_git::create_initial_commit;
 use releash_lib::test_support::integration::platform::OperationContext;
+use releash_lib::test_support::integration::workflow::ConfiguredWorktreeGateway;
 use releash_lib::test_support::integration::workflow::IsolatedWorktree;
 use releash_lib::test_support::integration::workflow::IsolatedWorktreeGateway;
 use releash_lib::test_support::integration::workflow::ManagedWorktreeGateway;
-use releash_lib::test_support::integration::workflow::RepoPathsManagedWorktreeGateway;
 use releash_lib::test_support::integration::workflow::RepositoryIsolatedWorktreeGateway;
 use releash_lib::test_support::integration::workflow::WorkflowError;
 use std::sync::Arc;
@@ -274,7 +274,7 @@ pub fn test_managed_worktree解決_各操作の停止で別repositoryへ進ま�
     // Given
     let (_directory, _repo, root) = repository();
     let (_second_directory, _second_repo, second_root) = repository();
-    let gateway = RepoPathsManagedWorktreeGateway::new(
+    let gateway = ConfiguredWorktreeGateway::new(
         Arc::new(releash_lib::test_support::integration::platform::build_repository_usecase()),
         vec![root.clone(), second_root],
     );

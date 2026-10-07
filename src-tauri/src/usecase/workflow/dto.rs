@@ -203,42 +203,6 @@ pub struct FacetSummaryDto {
     pub builtin: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ExecutionStatusDto {
-    Running,
-    Completed,
-    Aborted,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ExecutionOriginDto {
-    DesktopUi,
-    Cli,
-    Agent,
-    Api,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TokenUsageDto {
-    pub input_tokens: u64,
-    pub output_tokens: u64,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct WorkflowExecutionSummaryDto {
-    pub execution_id: String,
-    pub workflow_name: String,
-    pub status: ExecutionStatusDto,
-    pub worktree_path: String,
-    pub current_node: Option<String>,
-    pub created_from: ExecutionOriginDto,
-    pub started_at: f64,
-    pub updated_at: f64,
-    pub completed_at: Option<f64>,
-    pub error_reason: Option<String>,
-    pub total_token_usage: TokenUsageDto,
-}
-
 #[cfg(any(test, feature = "test-support"))]
 #[cfg(test)]
 pub fn workflow_to_dto(definition: &domain::WorkflowDefinition) -> WorkflowDto {
@@ -285,27 +249,6 @@ pub fn facet_summary_to_dto(summary: domain::FacetSummary) -> FacetSummaryDto {
         kind: summary.kind,
         description: summary.description,
         builtin: summary.builtin,
-    }
-}
-
-pub fn workflow_execution_summary_to_dto(
-    summary: domain::WorkflowExecutionSummary,
-) -> WorkflowExecutionSummaryDto {
-    WorkflowExecutionSummaryDto {
-        execution_id: summary.execution_id,
-        workflow_name: summary.workflow_name,
-        status: execution_status_to_dto(summary.status),
-        worktree_path: summary.worktree_path,
-        current_node: summary.current_node,
-        created_from: execution_origin_to_dto(summary.created_from),
-        started_at: summary.started_at,
-        updated_at: summary.updated_at,
-        completed_at: summary.completed_at,
-        error_reason: summary.error_reason,
-        total_token_usage: TokenUsageDto {
-            input_tokens: summary.total_token_usage.input_tokens,
-            output_tokens: summary.total_token_usage.output_tokens,
-        },
     }
 }
 
@@ -460,23 +403,6 @@ fn rule_to_dto(rule: &domain::Rule) -> RuleDto {
             on_exhausted: on_exhausted.clone(),
         },
         domain::Rule::Next(next) => RuleDto::Next { next: next.clone() },
-    }
-}
-
-fn execution_status_to_dto(status: domain::ExecutionStatus) -> ExecutionStatusDto {
-    match status {
-        domain::ExecutionStatus::Running => ExecutionStatusDto::Running,
-        domain::ExecutionStatus::Completed => ExecutionStatusDto::Completed,
-        domain::ExecutionStatus::Aborted => ExecutionStatusDto::Aborted,
-    }
-}
-
-fn execution_origin_to_dto(source: domain::ExecutionOrigin) -> ExecutionOriginDto {
-    match source {
-        domain::ExecutionOrigin::DesktopUi => ExecutionOriginDto::DesktopUi,
-        domain::ExecutionOrigin::Api => ExecutionOriginDto::Api,
-        domain::ExecutionOrigin::Cli => ExecutionOriginDto::Cli,
-        domain::ExecutionOrigin::Agent => ExecutionOriginDto::Agent,
     }
 }
 

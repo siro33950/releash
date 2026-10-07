@@ -1,7 +1,6 @@
 mod adaptor;
 #[cfg(feature = "test-support")]
 mod agent_session_tui_acceptance;
-pub mod cli;
 #[cfg(feature = "test-support")]
 mod client_api_acceptance;
 mod common;

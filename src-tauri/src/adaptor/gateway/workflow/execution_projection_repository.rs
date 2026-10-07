@@ -1,6 +1,5 @@
 use std::sync::Arc;
 
-use crate::adaptor::gateway::local_event_store::read_only::LocalEventReadStore;
 use crate::adaptor::gateway::local_event_store::LocalEventStore;
 use crate::adaptor::gateway::workflow::fact_log::{self, FactLogReadBackend};
 use crate::domain::workflow::services::fact_replay;
@@ -18,13 +17,6 @@ impl WorkflowExecutionProjectionLogRepository {
     pub fn new(store: Arc<LocalEventStore>) -> Self {
         Self {
             backend: FactLogReadBackend::Live(store),
-            processes: None,
-        }
-    }
-
-    pub(crate) fn new_read_only(store: Arc<LocalEventReadStore>) -> Self {
-        Self {
-            backend: FactLogReadBackend::ReadOnly(store),
             processes: None,
         }
     }

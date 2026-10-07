@@ -5,7 +5,8 @@
   "bundle": {
     "active": true,
     "externalBin": [
-      "binaries/releash-backend"
+      "binaries/releash-backend",
+      "binaries/releash"
     ]
   }
 }

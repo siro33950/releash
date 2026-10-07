@@ -6,7 +6,10 @@ fn main() {
         [mode, directory] if mode == "--internal-daemon" => {
             releash_lib::run_daemon(Some(directory.into()))
         }
-        _ => releash_lib::cli::run(),
+        _ => {
+            eprintln!("usage: releash-backend --internal-daemon [DATA_DIR]");
+            2
+        }
     };
     std::process::exit(code);
 }

@@ -145,12 +145,12 @@ impl Fixture {
         }
     }
 
-    fn read(&self) -> releash_lib::test_support::integration::workflow::WorkflowReadUsecase {
-        releash_lib::test_support::integration::platform::build_canonical_workflow_read_usecase(
+    fn read(&self) -> releash_lib::test_support::integration::workflow::WorkflowUsecase {
+        releash_lib::test_support::integration::platform::workflow_services(
+            self.store.clone(),
             self.directory.path(),
             Some(self.directory.path().join("workflows")),
         )
-        .unwrap()
     }
 
     async fn append_child(&self, fact: NodeFact) {
@@ -201,15 +201,6 @@ pub async fn test_隔離読み取り_sessionの起動先を直近の隔離祖先
         assert_eq!(context.session().worktree_path(), expected.path);
         assert_eq!(context.session().workspace().as_str(), ROOT);
         assert_eq!(workspace, ROOT);
-        assert_eq!(
-            releash_lib::test_support::integration::platform::build_workspace_worktree_path_usecase(
-                fixture.directory.path()
-            )
-            .workspace_worktree_path(&expected.path)
-            .await
-            .unwrap(),
-            ROOT
-        );
     }
 }
 
@@ -235,6 +226,7 @@ pub async fn test_隔離読み取り_実体なしでも実行中と失敗後とa
         // When
         let state = fixture
             .read()
+            .read_usecase()
             .get_execution_state(TREE)
             .await
             .unwrap()

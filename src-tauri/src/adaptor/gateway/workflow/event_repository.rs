@@ -1,10 +1,11 @@
+#[cfg(any(test, feature = "test-support"))]
+use crate::domain::workflow::WorkflowPageRequest;
 use std::sync::Arc;
 
 use crate::adaptor::gateway::local_event_store::node_events::{self, NodeEventRow};
-use crate::adaptor::gateway::local_event_store::read_only::LocalEventReadStore;
 use crate::adaptor::gateway::local_event_store::LocalEventStore;
 use crate::adaptor::gateway::workflow::fact_log::FactLogReadBackend;
-use crate::domain::workflow::{ExecutionTreeId, WorkflowError, WorkflowPageRequest};
+use crate::domain::workflow::{ExecutionTreeId, WorkflowError};
 use crate::usecase::workflow::ports::{WorkflowEventDraft, WorkflowEventRepository};
 
 /// 事実ログ（node_events）を実行イベント一覧として読む repository。
@@ -25,12 +26,6 @@ impl WorkflowEventLogRepository {
     pub fn with_store(store: Arc<LocalEventStore>) -> Self {
         Self {
             source: WorkflowEventReadSource::Canonical(FactLogReadBackend::Live(store)),
-        }
-    }
-
-    pub(crate) fn with_read_store(store: Arc<LocalEventReadStore>) -> Self {
-        Self {
-            source: WorkflowEventReadSource::Canonical(FactLogReadBackend::ReadOnly(store)),
         }
     }
 
@@ -58,6 +53,7 @@ impl WorkflowEventLogRepository {
         }
     }
 
+    #[cfg(any(test, feature = "test-support"))]
     async fn read_draft_page(
         &self,
         execution_id: &ExecutionTreeId,
@@ -124,6 +120,7 @@ impl WorkflowEventRepository for WorkflowEventLogRepository {
         self.read_drafts(execution_id).await
     }
 
+    #[cfg(any(test, feature = "test-support"))]
     async fn read_page(
         &self,
         execution_id: &ExecutionTreeId,

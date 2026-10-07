@@ -1,64 +1,9 @@
-use std::sync::Arc;
-
 use axum::extract::{Request, State};
-use axum::http::header::{AUTHORIZATION, UPGRADE};
+use axum::http::header::AUTHORIZATION;
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
-use subtle::ConstantTimeEq;
 
 use super::error::ApiError;
-use crate::adaptor::presenter::terminal::TERMINAL_WS_BEARER_SUBPROTOCOL_PREFIX;
-
-pub(super) async fn require_bearer(
-    State(accepted): State<Arc<str>>,
-    request: Request,
-    next: Next,
-) -> Response {
-    let header_authorized = request
-        .headers()
-        .get(AUTHORIZATION)
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.strip_prefix("Bearer "))
-        .is_some_and(|token| bool::from(token.as_bytes().ct_eq(accepted.as_bytes())));
-    // ブラウザのWebSocketはheaderを設定できないため、WS handshakeに限り
-    // Sec-WebSocket-Protocol経由のbearerも受理する（terminal streamが使用）
-    let subprotocol_authorized = is_websocket_handshake(&request)
-        && bearer_subprotocols(request.headers()).any(|candidate| {
-            bool::from(
-                candidate.as_bytes()[TERMINAL_WS_BEARER_SUBPROTOCOL_PREFIX.len()..]
-                    .ct_eq(accepted.as_bytes()),
-            )
-        });
-    let authorized = header_authorized || subprotocol_authorized;
-    if !authorized {
-        return ApiError::unauthorized().into_response();
-    }
-    next.run(request).await
-}
-
-fn bearer_subprotocols(headers: &axum::http::HeaderMap) -> impl Iterator<Item = &str> {
-    headers
-        .get(axum::http::header::SEC_WEBSOCKET_PROTOCOL)
-        .and_then(|value| value.to_str().ok())
-        .into_iter()
-        .flat_map(|value| value.split(','))
-        .map(str::trim)
-        .filter(|value| value.starts_with(TERMINAL_WS_BEARER_SUBPROTOCOL_PREFIX))
-}
-
-fn is_websocket_handshake(request: &Request) -> bool {
-    request
-        .headers()
-        .get(UPGRADE)
-        .and_then(|value| value.to_str().ok())
-        .is_some_and(|value| {
-            value
-                .split(',')
-                .map(str::trim)
-                .any(|candidate| candidate.eq_ignore_ascii_case("websocket"))
-        })
-}
-
 #[derive(Clone)]
 pub struct ClientTokens {
     pub operator: crate::infrastructure::local_api::BearerToken,

@@ -4,9 +4,7 @@ use crate::domain::workflow::value_objects::definition::WorkflowDefinition;
 use crate::domain::workflow::value_objects::execution::ExecutionOrigin;
 use crate::domain::workflow::value_objects::execution::ExecutionStatus;
 use crate::domain::workflow::value_objects::execution::ExecutionTree;
-use crate::domain::workflow::value_objects::execution_metadata::ExecutionStatusFilter;
 use crate::domain::workflow::value_objects::execution_metadata::WorkflowExecutionSummary;
-use crate::domain::workflow::value_objects::execution_metadata::WorkflowPageRequest;
 use crate::domain::workflow::value_objects::facet::FacetKind;
 use crate::usecase::workflow::ports::ExternalEditorGateway;
 use crate::usecase::workflow::ports::WorkflowDefinitionSourceGateway;
@@ -15,9 +13,7 @@ use crate::usecase::workflow::ports::WorkflowDiagnosticsTarget;
 use crate::usecase::workflow::query_service::WorkflowQueryService;
 use crate::usecase::workflow::test_helpers::FakeDefinitionRepository;
 use crate::usecase::workflow::test_helpers::NoopArchiveRepository;
-use crate::usecase::workflow::test_helpers::{
-    FakeEventRepository, FakeFacetRepository, FakeSecretSourceGateway,
-};
+use crate::usecase::workflow::test_helpers::{FakeEventRepository, FakeFacetRepository};
 use crate::usecase::workflow::WorkflowUsecase;
 
 use crate::domain::workflow::value_objects::ids::ExecutionTreeId;
@@ -283,7 +279,6 @@ impl Fixture {
             Arc::new(FakeManagedWorktreeGateway),
             editors.clone(),
             diagnostics.clone(),
-            Arc::new(FakeSecretSourceGateway),
             Arc::new(NoopArchiveRepository),
             workspace_nodes.clone(),
             workspace_query,
@@ -362,21 +357,6 @@ pub async fn workflow_read_facade_owns_active_aggregation_filtering_and_dto_proj
     assert!(!workflows[0].is_running);
     assert_eq!(workflows[1].name, "wf");
     assert!(workflows[1].is_running);
-
-    let active = read
-        .list_executions_filtered(
-            Some(ExecutionStatusFilter::Active),
-            Some("repo"),
-            WorkflowPageRequest::new(0, 10),
-        )
-        .await
-        .unwrap();
-    assert_eq!(active.len(), 1);
-    assert_eq!(
-        active[0].execution_id,
-        "00000000-0000-0000-0000-000000000001"
-    );
-    assert_eq!(active[0].worktree_path, "/canonical/repo");
 }
 
 #[test]

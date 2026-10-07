@@ -5,14 +5,7 @@ use std::time::{Duration, Instant};
 use futures_util::StreamExt;
 use serde_json::Value;
 
-pub mod wire {
-    include!(concat!(env!("OUT_DIR"), "/releash.client.v1.rs"));
-}
-
-mod generated {
-    include!(concat!(env!("OUT_DIR"), "/connect/mod.rs"));
-}
-use generated::releash::client::v1 as rpc;
+use releash_client::{rpc, wire};
 fn to_wire<T: prost::Message + Default>(
     value: &impl buffa::Message,
 ) -> Result<T, connectrpc::ConnectError> {
@@ -311,19 +304,16 @@ async fn quit(daemon: &mut Daemon, socket: &mut Socket, restart: bool) {
 async fn test_headless単独起動_commandと永続化と再起動とexitを実processで確認する() {
     // Given
     let directory = tempfile::tempdir().unwrap();
-    let help = Command::new(env!("CARGO_BIN_EXE_releash-backend"))
-        .arg("--help")
-        .output()
-        .unwrap();
+    let help =
+        Command::new(Path::new(env!("CARGO_BIN_EXE_releash-backend")).with_file_name("releash"))
+            .arg("--help")
+            .output()
+            .unwrap();
     assert!(help.status.success());
     assert!(!String::from_utf8(help.stdout).unwrap().contains("daemon"));
     let (mut daemon, discovery) = start(directory.path());
-    let master: Value =
-        serde_json::from_slice(&std::fs::read(directory.path().join("local-api.json")).unwrap())
-            .unwrap();
-    assert_ne!(master["token"], discovery["token"]);
     assert_ne!(
-        master["pid"].as_u64().unwrap(),
+        discovery["pid"].as_u64().unwrap(),
         u64::from(std::process::id())
     );
     let duplicate = Command::new(env!("CARGO_BIN_EXE_releash-backend"))
@@ -352,10 +342,10 @@ async fn test_headless単独起動_commandと永続化と再起動とexitを実p
     assert!(local_log.contains("daemon"));
     assert_eq!(
         serde_json::from_slice::<Value>(
-            &std::fs::read(directory.path().join("local-api.json")).unwrap()
+            &std::fs::read(directory.path().join("client-api.json")).unwrap()
         )
         .unwrap(),
-        master
+        discovery
     );
     let (mut socket, instance) = connect(&discovery).await;
     // When / Then
@@ -369,12 +359,13 @@ async fn test_headless単独起動_commandと永続化と再起動とexitを実p
     )
     .await;
     assert_eq!(read_external_editor(&socket).await, "daemon-smoke");
-    let status = Command::new(env!("CARGO_BIN_EXE_releash-backend"))
-        .args(["workflow", "status", "550e8400-e29b-41d4-a716-446655440000"])
-        .env("RELEASH_DATA_DIR", directory.path())
-        .output()
-        .unwrap();
-    assert_eq!(status.status.code(), Some(4));
+    let status =
+        Command::new(Path::new(env!("CARGO_BIN_EXE_releash-backend")).with_file_name("releash"))
+            .args(["workflow", "status", "550e8400-e29b-41d4-a716-446655440000"])
+            .env("RELEASH_DATA_DIR", directory.path())
+            .output()
+            .unwrap();
+    assert_eq!(status.status.code(), Some(1));
     let alias = if cfg!(debug_assertions) {
         "releash-dev"
     } else {
@@ -408,7 +399,12 @@ async fn test_headless単独起動_commandと永続化と再起動とexitを実p
         .unwrap()
         .contains("workflow"));
     let wrapper = std::fs::read_to_string(directory.path().join("bin").join(alias)).unwrap();
-    assert!(wrapper.contains(env!("CARGO_BIN_EXE_releash-backend")));
+    assert!(wrapper.contains(
+        &Path::new(env!("CARGO_BIN_EXE_releash-backend"))
+            .with_file_name("releash")
+            .to_string_lossy()
+            .into_owned()
+    ));
     let child_pid = std::fs::read_to_string(directory.path().join("child-pid"))
         .unwrap()
         .parse::<i32>()
@@ -419,7 +415,6 @@ async fn test_headless単独起動_commandと永続化と再起動とexitを実p
         -1,
         "terminal child survived coordinated shutdown"
     );
-    assert!(!directory.path().join("local-api.json").exists());
     assert!(!directory.path().join("client-api.json").exists());
     let (mut restarted, next_discovery) = start(directory.path());
     assert_ne!(discovery["instance_id"], next_discovery["instance_id"]);

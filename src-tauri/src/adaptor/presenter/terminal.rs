@@ -79,10 +79,6 @@ impl From<GetOrSpawnTerminalOutcome> for GetOrSpawnTerminalV1 {
     }
 }
 
-/// terminal WebSocket認証に使うsubprotocolのprefix。クライアントは
-/// `{prefix}{bearer_token}` を Sec-WebSocket-Protocol として送る。
-pub const TERMINAL_WS_BEARER_SUBPROTOCOL_PREFIX: &str = "releash-bearer.";
-
 #[derive(Clone, Debug, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum TerminalSurfaceStreamItemV1 {

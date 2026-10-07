@@ -6,39 +6,40 @@
 
 ### インストール
 
-- Releash の Settings を開き、Background の「Install CLI command」を選ぶと、`/usr/local/bin/releash` に同梱の `releash-backend` への symlink を設置します。起動時には設置しません。
+- Releash の Settings を開き、Background の「Install CLI command」を選ぶと、`/usr/local/bin/releash` に同梱の `releash` への symlink を設置します。起動時には設置しません。
   - 書き込み権限が無い場合は、管理者権限を求めるダイアログが出ます。
   - アプリが translocate された状態（ダウンロード直後の隔離状態など）で起動した場合は張りません。
   - `/usr/local/bin/releash` に symlink ではないファイルがある場合は上書きしません。
-- Releash が起動する terminal（Session の provider TUI、Terminal パネルの shell）では、`{data_dir}/bin` が `PATH` の先頭に入り、そこに置かれた `releash` wrapper が優先されます。wrapper は `RELEASH_DATA_DIR` が未設定のときだけアプリの data dir を設定してから、アプリ本体を実行します。
+- Releash が起動する terminal（Session の provider TUI、Terminal パネルの shell）では、`{data_dir}/bin` が `PATH` の先頭に入り、そこに置かれた `releash` wrapper が優先されます。wrapper は `RELEASH_DATA_DIR` が未設定のときだけアプリの data dir を設定してから、daemon の実行ファイルの隣にある CLI `releash` を実行します。
 - Command Node の `PATH` は異なります。[環境変数](#環境変数) を参照してください。
 
-### 起動の分岐
+### 実行
 
-- 引数なしの `releash`、または `releash --hidden` だけの場合は GUI が起動します。
-- それ以外の引数があると CLI として動き、GUI は起動しません。
+- `releash` は独立した CLI です。GUI や daemon を起動しません。引数なしの実行は、コマンドの指定が必要なため終了コード 2 になります。
+- コマンドと hook は `client-api.json` でサーバを見つけ、Connect で通信します。サーバは HTTP `/v1` を提供しません。
 - CLI の説明は `releash --help` と各サブコマンドの `--help` で表示します。`-h` は要約表示です。
 - `--version` はありません（指定すると引数エラーで終了コード 2）。
 
 ### data dir
 
-- data dir は `RELEASH_DATA_DIR` で指定します。未設定または空文字の場合は `~/Library/Application Support/com.releash.app` です。
+- data dir は global 引数 `--data-dir <PATH>`、`RELEASH_DATA_DIR`、ビルドの既定値の順で解決します。macOS の既定値は release では `~/Library/Application Support/com.releash.app`、dev では `~/Library/Application Support/com.releash.app.dev` です。
 - 時刻を表す値は、すべて UNIX epoch からの秒数（小数）です。
 
 ## コマンド一覧
 
 | コマンド | 内容 | アプリ起動 |
 |---|---|---|
+| `completion <shell>` | shell の補完スクリプトを出力する | 不要 |
 | [`workflow diagnostics`](#releash-workflow-diagnostics) | workflow 定義と Facet を診断する | 必須 |
-| [`workflow status`](#releash-workflow-status) | WorkflowExecution の現在状態を表示する | 不要 |
+| [`workflow status`](#releash-workflow-status) | WorkflowExecution の現在状態を表示する | 必須 |
 | [`workflow output submit`](#releash-workflow-output-submit) | NodeExecution の Artifact または完了を提出する | 必須 |
-| [`workflow output get`](#releash-workflow-output-get) | 提出済み Artifact を取得する | 不要 |
-| [`review list`](#releash-review-list) | Thread 一覧を表示する | 不要 |
-| [`review get`](#releash-review-get) | Thread 詳細を表示する | 不要 |
-| [`review create`](#releash-review-create) | 初回 Comment とともに Thread を作成する | 不要 |
-| [`review comment`](#releash-review-comment) | open Thread に Comment を追記する | 不要 |
-| [`review resolve`](#releash-review-resolve) | open Thread を resolve する | 不要 |
-| [`review history`](#releash-review-history) | Thread 履歴を表示する | 不要 |
+| [`workflow output get`](#releash-workflow-output-get) | 提出済み Artifact を取得する | 必須 |
+| [`review list`](#releash-review-list) | Thread 一覧を表示する | 必須 |
+| [`review get`](#releash-review-get) | Thread 詳細を表示する | 必須 |
+| [`review create`](#releash-review-create) | 初回 Comment とともに Thread を作成する | 必須 |
+| [`review comment`](#releash-review-comment) | open Thread に Comment を追記する | 必須 |
+| [`review resolve`](#releash-review-resolve) | open Thread を resolve する | 必須 |
+| [`review history`](#releash-review-history) | Thread 履歴を表示する | 必須 |
 
 結果は stdout に出ます。失敗時のメッセージは stderr に出ます。
 
@@ -70,7 +71,7 @@ releash workflow diagnostics [--dir <PATH>] [--json]
 | `facet_summaries` | `"<kind>/<key>"` → `{ "error_count", "info_count" }` |
 | `facet_usage` | Facet key → 参照元 `{ "workflow_name", "node_name", "slot" }` の配列 |
 
-終了コードは、severity `error` の診断が 1 件以上あれば 3、0 件なら 0 です。`--dir` が存在しない場合は 4 です。
+終了コードは、severity `error` の診断が 1 件以上あれば 3、0 件なら 0 です。`--dir` が存在しない場合はサーバの `not_found` で終了コード 1 です。
 
 ### `releash workflow status`
 
@@ -80,7 +81,7 @@ releash workflow status <EXECUTION_ID> [--json]
 
 | 引数 | 説明 |
 |---|---|
-| `<EXECUTION_ID>` | WorkflowExecution の id（UUID 形式。形式が不正なら終了コード 2） |
+| `<EXECUTION_ID>` | WorkflowExecution の id（UUID 形式。形式が不正ならサーバが拒否し、終了コード 1） |
 | `--json` | 現在状態を JSON で出力する |
 
 既定の出力:
@@ -113,7 +114,7 @@ output_tokens: <数>
 | `fanouts` | Fanout ごとの親 NodeExecution と child NodeExecution の一覧 |
 | `approvalTarget` | 承認待ちの NodeExecution、または `null` |
 
-execution が見つからない場合は終了コード 4 です。
+execution が見つからない場合は終了コード 1 です。
 
 ### `releash workflow output submit`
 
@@ -139,7 +140,7 @@ submitted: node_execution_id=<id> type=<contract>
 submitted: node_execution_id=<id>
 ```
 
-JSON の読み込みや parse に失敗した場合は終了コード 2 です。
+JSON の読み込みや parse に失敗した場合は終了コード 1 です。
 
 ### `releash workflow output get`
 
@@ -193,10 +194,10 @@ not_submitted: node=<node>
 
 ### review コマンド共通
 
-- review コマンドはアプリを経由せず、data dir を直接読み書きします。data dir が存在しない場合は終了コード 4 です。
+- review コマンドは Connect の ClientService を呼びます。サーバが起動していない、または発見ファイルが無い場合は `unavailable`、終了コード 1 です。
 - `--session-id` には AgentSession の id を渡します。Session が属する workspace の worktree を解決し、その worktree の Thread を対象にします。隔離 worktree で動く Session でも、対象は workspace 側の worktree です。
-- `--session-id` が空なら終了コード 2、Session が見つからなければ終了コード 4 です。
-- `create` / `comment` / `resolve` は、lifecycle が open の Session だけを受け付けます（それ以外は終了コード 2）。`list` / `get` / `history` は paused / archived の Session でも使えます。
+- `--session-id` が空なら終了コード 1、Session が見つからなければ終了コード 1 です。
+- `create` / `comment` / `resolve` は、lifecycle が open の Session だけを受け付けます（それ以外は終了コード 1）。`list` / `get` / `history` は paused / archived の Session でも使えます。
 - `--content`、`--outcome`、`--summary` は空白だけにできず、NUL を含められず、65,536 bytes までです。
 
 ### `releash review list`
@@ -208,7 +209,7 @@ releash review list [--session-id <SESSION_ID>] [--file <FILE>] [--state <STATE>
 
 | 引数 | 説明 |
 |---|---|
-| `--session-id <SESSION_ID>` | 対象 worktree を解決する Session。省略時は `RELEASH_WORKTREE_PATH` を使う。どちらも無ければ終了コード 2 |
+| `--session-id <SESSION_ID>` | 対象 worktree を解決する Session。省略時は `RELEASH_WORKTREE_PATH` を使う。どちらも無ければ終了コード 1 |
 | `--file <FILE>` | Thread 対象の file path（repo 相対、完全一致） |
 | `--state <STATE>` | `open` / `resolved` |
 | `--author <AUTHOR>` | `self`（作成者が `--session-id` の Session と同じ participant）/ `other`（それ以外）。`--session-id` が必須 |
@@ -247,7 +248,7 @@ comments:  <Comment 数>
 resolve:   <outcome> by <resolve した actor の表示名> (<summary>)
 ```
 
-`--json` は [Thread の JSON](#thread-の-json) です。Thread が見つからない場合は終了コード 4 です。
+`--json` は [Thread の JSON](#thread-の-json) です。Thread が見つからない場合は終了コード 1 です。
 
 ### `releash review create`
 
@@ -271,7 +272,7 @@ releash review create --session-id <SESSION_ID> --content <CONTENT> \
 releash review comment <THREAD_ID> --session-id <SESSION_ID> --content <CONTENT> [--json]
 ```
 
-open Thread に `--session-id` の Session の Agent として Comment を追記します。resolved の Thread には追記できません（終了コード 2）。出力は `review get` と同じ形式です。
+open Thread に `--session-id` の Session の Agent として Comment を追記します。resolved の Thread には追記できません（終了コード 1）。出力は `review get` と同じ形式です。
 
 ### `releash review resolve`
 
@@ -284,7 +285,7 @@ releash review resolve <THREAD_ID> --session-id <SESSION_ID> --outcome <OUTCOME>
 | `--outcome <OUTCOME>` | 解決状況を表す文字列（自由記述。例: `resolved`、`wontfix`、`duplicate`） |
 | `--summary <SUMMARY>` | 対応内容の要約 |
 
-`--session-id` の Session の Agent を resolve した actor として記録します。Thread の作成者以外の Session からも resolve できます。resolved の Thread は resolve できません（終了コード 2）。出力は `review get` と同じ形式です。
+`--session-id` の Session の Agent を resolve した actor として記録します。Thread の作成者以外の Session からも resolve できます。resolved の Thread は resolve できません（終了コード 1）。出力は `review get` と同じ形式です。
 
 ### `releash review history`
 
@@ -367,33 +368,30 @@ releash review history <THREAD_ID> --session-id <SESSION_ID> [--json]
 | `version` | Thread に適用された履歴の件数 |
 | `canResolve` | open なら `true` |
 
+## 補完
+
+`releash completion zsh`（bash / fish / powershell / elvish も対応）で補完スクリプトを stdout に出します。サーバの起動は不要です。
+
 ## 終了コード
 
 | コード | 意味 |
 |---|---|
-| 0 | 成功。`--help` の表示を含む |
-| 1 | その他の失敗。アプリ起動が必要な操作でアプリが起動していない、local API discovery file が不正または古い、local API の認証失敗、I/O や serialize の失敗など |
-| 2 | 引数や入力が不正。構文エラー、UUID 形式や空文字の検証、JSON の parse 失敗、review の入力検証、resolved の Thread や open でない Session による拒否 |
-| 3 | `workflow diagnostics` で severity `error` の診断が 1 件以上ある |
-| 4 | 対象が見つからない。WorkflowExecution、Thread、Session、data dir、`--dir` の directory |
+| 0 | 成功。help と completion の出力を含む |
+| 1 | コマンドの失敗。対象が無い、サーバによる拒否、接続・互換性・JSON 入力・I/O の失敗 |
+| 2 | clap による引数の構文エラー。必須・排他・引数どうしの関係を含む |
+| 3 | `workflow diagnostics` の結果に severity `error` の診断が1件以上ある |
 
-アプリの local API を経由するコマンドでは、local API が返した HTTP status を 404 → 4、400 / 409 / 422 → 2、401 とそれ以外 → 1 に変換します。
+失敗は stderr に出ます。`--json` の出力モードでは `{"error":{"code":"not_found","message":"…"}}` の形です。code は Connect の標準コード名です。`output submit --json` は入力の JSON を渡す引数です。
 
-stderr のメッセージは、終了コード 4 ではメッセージだけ、1 と 2 では `error: <message>` です。構文エラーは clap の形式で出ます。
+hook は結果によらず終了コード 0、stdout は `{}` です。失敗の説明は stderr に出ます。
 
-## アプリ未起動時の挙動
+## サーバ未起動時の挙動
 
-| コマンド | アプリ起動中 | アプリ未起動 |
-|---|---|---|
-| `workflow diagnostics` | local API 経由 | 終了コード 1（`この操作には Releash アプリの起動が必要です`） |
-| `workflow status` | local API 経由 | data dir の event store を直接読む |
-| `workflow output submit` | local API 経由 | 終了コード 1（`この操作には Releash アプリの起動が必要です`） |
-| `workflow output get` | local API 経由 | data dir の event store を直接読む |
-| `review` の全コマンド | data dir を直接読み書き | data dir を直接読み書き |
+workflow・review・hook は、data dir の `client-api.json` から接続し、`GetServerInfo` で同一性と protocol の互換性を確認します。release は互換性の判定に使いません。
 
-- 「アプリ未起動」と判定するのは、data dir に local API discovery file が無い場合です。アプリを正常に終了すると discovery file は削除されます。
-- discovery file が残っていて、それが指すプロセスが存在しない、別のインスタンスを指している、接続できない、といった場合は、event store を直接読まずに終了コード 1 で失敗します。アプリが異常終了した直後に起こります。
-- local API の認証に失敗した場合も、event store を直接読まずに終了コード 1 で失敗します。
+発見ファイルが無い、古い、壊れている、または接続できない場合は `unavailable` です。protocol が異なる場合は `failed_precondition` で、新しい方に合わせる更新案内を出します。コマンドは event store を直接読み書きしません。
+
+読み取りは購読の最初の snapshot または failure を受け取って閉じます。書き込みと診断は単発の RPC を使います。
 
 ## 環境変数
 

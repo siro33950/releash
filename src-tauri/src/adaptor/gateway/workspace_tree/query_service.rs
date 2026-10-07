@@ -1,7 +1,6 @@
 use std::sync::Arc;
 
 use super::SqliteWorkspaceTreeRepository;
-use crate::adaptor::gateway::local_event_store::read_only::LocalEventReadStore;
 use crate::domain::workflow::{
     ExecutionStatusFilter, ExecutionTreeLaunch, WorkflowError, WorkflowExecutionSummary,
     WorkflowPageRequest,
@@ -22,12 +21,6 @@ pub struct SqliteWorkspaceQueryService {
 impl SqliteWorkspaceQueryService {
     pub fn with_repository(repository: Arc<SqliteWorkspaceTreeRepository>) -> Arc<Self> {
         Arc::new(Self { repository })
-    }
-
-    pub(crate) fn new_read_only(store: Arc<LocalEventReadStore>) -> Arc<Self> {
-        Arc::new(Self {
-            repository: SqliteWorkspaceTreeRepository::new_read_only(store),
-        })
     }
 
     pub async fn execution_records(
@@ -61,7 +54,6 @@ impl SqliteWorkspaceQueryService {
             debug_assert_eq!(folded.root.launched_as, ExecutionTreeLaunch::Workflow);
             let keep = match status {
                 Some(ExecutionStatusFilter::Active) => !record.status.is_finished(),
-                Some(ExecutionStatusFilter::Terminal) => record.status.is_finished(),
                 None => true,
             };
             if keep {
@@ -115,6 +107,7 @@ impl WorkspaceQueryService for SqliteWorkspaceQueryService {
             .collect()
     }
 
+    #[cfg(any(test, feature = "test-support"))]
     async fn execution_summary(
         &self,
         execution_id: &str,

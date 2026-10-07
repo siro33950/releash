@@ -82,14 +82,6 @@ fn parse_observation(contents: &[u8]) -> Option<ProviderHookHealthFailureObserva
 
 fn map_marker_error(error: ProviderHookHealthMarkerError) -> ProviderHookHealthFailureQueryError {
     match error {
-        ProviderHookHealthMarkerError::Encode(error) => {
-            ProviderHookHealthFailureQueryError::Technical(
-                crate::domain::failure::TechnicalFailure {
-                    nature: crate::domain::failure::TechnicalFailureNature::Other,
-                    message: error.to_string(),
-                },
-            )
-        }
         ProviderHookHealthMarkerError::InvalidPath => ProviderHookHealthFailureQueryError::Corrupt,
         ProviderHookHealthMarkerError::Io(error) => {
             ProviderHookHealthFailureQueryError::Technical(error.into())

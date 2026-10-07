@@ -42,8 +42,7 @@ pub use crate::common::operation_context::{sleep, spawn_blocking, with_timeout};
 pub use crate::common::retry::{RetryBackoff, RetryLimiter};
 pub use crate::domain::failure::{TechnicalFailure, TechnicalFailureNature};
 pub use crate::infrastructure::local_api::{
-    lookup_process_start_time, process_start_time, read_local_api_discovery, LocalApiDiscovery,
-    ProcessStartTimeLookup,
+    lookup_process_start_time, process_start_time, LocalApiDiscovery, ProcessStartTimeLookup,
 };
 pub use crate::infrastructure::local_log::{init as init_local_log, LocalLogProcess};
 pub use crate::infrastructure::platform::app_data_dir::resolve_data_dir;
@@ -70,4 +69,18 @@ pub mod test_support {
         set_performance_enabled, test_metric_records,
     };
     pub use crate::infrastructure::telemetry::test_helpers::{install_test_exporter, TEST_LOCK};
+}
+
+pub fn read_local_api_discovery(
+    data_dir: &std::path::Path,
+) -> Result<Option<LocalApiDiscovery>, releash_client::discovery::DiscoveryReadError> {
+    releash_client::discovery::read_optional(data_dir).map(|value| {
+        value.map(|value| LocalApiDiscovery {
+            port: value.port,
+            token: value.token,
+            instance_id: value.instance_id,
+            pid: value.pid,
+            process_started_at: value.process_started_at,
+        })
+    })
 }

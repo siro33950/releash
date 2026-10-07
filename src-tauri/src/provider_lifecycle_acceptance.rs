@@ -2,18 +2,12 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
-use crate::adaptor::controller::api::protocol::{
-    ProviderLifecycleProvider, ProviderLifecycleUnavailableReasonRequest,
-    ProviderLifecycleUnavailableRequest,
-};
-use crate::adaptor::gateway::local_api::LocalApiClientGateway;
 use crate::adaptor::gateway::local_event_store::provider_lifecycle_codec::PROVIDER_LIFECYCLE_EVENT_TYPE;
 use crate::adaptor::gateway::local_event_store::{LocalEventStore, LocalEventStoreConfig};
 use crate::adaptor::gateway::provider_lifecycle::{
     LocalProviderLifecycleCredentialGateway, LocalProviderLifecycleEventRepository,
     ProviderLaunchContext, ProviderLaunchSpec,
 };
-use crate::adaptor::presenter::provider_lifecycle_response::ProviderLifecycleReceiveResponse;
 use crate::domain::local_event::{
     LoadStreamRequest, LoadedDomainEvent, LocalDomainEvent, LocalEventTransactionRepository,
     StreamId,
@@ -22,31 +16,12 @@ use crate::domain::provider_lifecycle::{
     ProviderKind, ProviderLifecycleEvent, ProviderLifecycleScope, ProviderLifecycleSlotId,
     ProviderLifecycleUnavailableReason,
 };
-use crate::domain::workflow::{WorkflowDefinition, WorkflowError};
 use crate::infrastructure::local_api::LocalApiServer;
 use crate::usecase::provider_lifecycle::ProviderLifecycleUsecase;
-use crate::usecase::workflow::command::{AbortExecutionCommand, ResolvedStartExecutionCommand};
-use crate::usecase::workflow::control_plane::{
-    WorkflowControlPlaneCommit, WorkflowControlPlaneGateway,
-};
-use crate::usecase::workflow::ports::{
-    WorkflowAbortExecutionGateway, WorkflowRuntimeShutdownGateway, WorkflowRuntimeStateGateway,
-    WorkflowStartExecutionGateway,
-};
-use crate::usecase::workflow::WorkflowRuntimeUsecase;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AcceptanceProvider {
     Claude,
     Codex,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AcceptanceUnavailableReason {
-    SessionStartDeadlineExceeded,
-    CodexHookDeliveryUnconfirmed,
-    ProviderHookConfigurationRejected,
-    LocalApiUnavailable,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -146,181 +121,10 @@ pub struct AcceptanceLedgerEventCounts {
 }
 
 pub struct ProviderLifecycleAcceptanceHost {
-    data_dir: PathBuf,
     store: Arc<LocalEventStore>,
     usecase: Arc<ProviderLifecycleUsecase>,
     server: Arc<LocalApiServer>,
     workflow_runtime_command_count: Arc<AtomicUsize>,
-}
-
-#[derive(Default)]
-pub(crate) struct AcceptanceWorkflowRuntimeGateway {
-    command_count: Arc<AtomicUsize>,
-}
-
-impl AcceptanceWorkflowRuntimeGateway {
-    fn record_command(&self) {
-        self.command_count.fetch_add(1, Ordering::SeqCst);
-    }
-}
-
-fn unavailable_workflow_runtime() -> WorkflowError {
-    WorkflowError::external("workflow runtime is not available in Provider lifecycle acceptance")
-}
-
-#[async_trait::async_trait]
-impl WorkflowStartExecutionGateway for AcceptanceWorkflowRuntimeGateway {
-    async fn resolve_start_execution_worktree(
-        &self,
-        _worktree_path: String,
-    ) -> Result<String, WorkflowError> {
-        Err(unavailable_workflow_runtime())
-    }
-
-    async fn resolve_start_execution_workflow(
-        &self,
-        _workflow_name: &str,
-    ) -> Result<WorkflowDefinition, WorkflowError> {
-        Err(unavailable_workflow_runtime())
-    }
-
-    async fn start_resolved_execution(
-        &self,
-        _command: ResolvedStartExecutionCommand,
-    ) -> Result<String, WorkflowError> {
-        self.record_command();
-        Err(unavailable_workflow_runtime())
-    }
-}
-
-#[async_trait::async_trait]
-impl WorkflowAbortExecutionGateway for AcceptanceWorkflowRuntimeGateway {
-    async fn abort_execution(&self, _command: AbortExecutionCommand) -> Result<(), WorkflowError> {
-        self.record_command();
-        Err(unavailable_workflow_runtime())
-    }
-}
-
-#[async_trait::async_trait]
-impl WorkflowControlPlaneGateway for AcceptanceWorkflowRuntimeGateway {
-    fn node_process_presence(
-        &self,
-        _execution: &crate::domain::workflow::entities::workflow_execution::ExecutionTree,
-        _id: &str,
-    ) -> Result<crate::domain::workflow::NodeProcessPresence, crate::domain::workflow::WorkflowError>
-    {
-        Ok(crate::domain::workflow::NodeProcessPresence::ConfirmedAbsent)
-    }
-    fn worktree_exists(&self, _path: &str) -> Result<bool, crate::domain::workflow::WorkflowError> {
-        Ok(true)
-    }
-    async fn session_conversation_exists(
-        &self,
-        _session_id: &str,
-    ) -> Result<bool, crate::domain::workflow::WorkflowError> {
-        Ok(true)
-    }
-    async fn resume_session_process(
-        &self,
-        _execution_id: &str,
-        _node_id: &str,
-        _session_id: &str,
-    ) -> Result<(), crate::domain::workflow::WorkflowError> {
-        Ok(())
-    }
-
-    fn current_timestamp(&self) -> f64 {
-        100.0
-    }
-
-    fn new_node_execution_id(&self) -> String {
-        "node-execution-test".to_string()
-    }
-
-    async fn resolve_workflow_execution_id(
-        &self,
-        _node_execution_id: &str,
-    ) -> Result<Option<String>, WorkflowError> {
-        self.record_command();
-        Err(unavailable_workflow_runtime())
-    }
-
-    async fn load_active_execution(
-        &self,
-        _execution_id: &str,
-    ) -> Result<
-        Option<crate::domain::workflow::entities::workflow_execution::ExecutionTree>,
-        WorkflowError,
-    > {
-        self.record_command();
-        Err(unavailable_workflow_runtime())
-    }
-
-    async fn register_started_execution_tree(&self, _tree_id: &str) -> Result<(), WorkflowError> {
-        self.record_command();
-        Err(unavailable_workflow_runtime())
-    }
-
-    async fn approval_persisted(
-        &self,
-        _execution_id: &str,
-        _node_name: &str,
-        _node_execution_id: Option<&str>,
-    ) -> Result<bool, WorkflowError> {
-        self.record_command();
-        Err(unavailable_workflow_runtime())
-    }
-
-    fn configured_secret_values(&self) -> Vec<String> {
-        Vec::new()
-    }
-
-    fn approval_auto_approve_enabled(&self) -> bool {
-        false
-    }
-
-    async fn commit_control_plane(
-        &self,
-        _commit: WorkflowControlPlaneCommit,
-    ) -> Result<crate::usecase::workflow::runtime_snapshot::RuntimeCommitSnapshot, WorkflowError>
-    {
-        self.record_command();
-        Err(unavailable_workflow_runtime())
-    }
-
-    async fn finish_control_plane_commit(
-        &self,
-        _worktree_path: &str,
-        _snapshot: &crate::usecase::workflow::runtime_snapshot::RuntimeCommitSnapshot,
-        _outcome: Option<crate::usecase::workflow::runtime_driver::NodeOutcome>,
-    ) -> Result<(), WorkflowError> {
-        Ok(())
-    }
-}
-
-#[async_trait::async_trait]
-impl crate::usecase::workflow::ports::ExecutionTreeProcessGateway
-    for AcceptanceWorkflowRuntimeGateway
-{
-    async fn stop_execution_tree_processes(&self, _: &str) -> Result<(), WorkflowError> {
-        unreachable!("process cleanup is not used by this fixture")
-    }
-}
-
-#[async_trait::async_trait]
-impl WorkflowRuntimeStateGateway for AcceptanceWorkflowRuntimeGateway {
-    #[cfg(test)]
-    async fn get_state_by_execution_id(
-        &self,
-        _execution_id: &str,
-    ) -> Result<Option<crate::domain::workflow::WorkflowRuntimeSnapshot>, WorkflowError> {
-        Ok(None)
-    }
-}
-
-#[async_trait::async_trait]
-impl WorkflowRuntimeShutdownGateway for AcceptanceWorkflowRuntimeGateway {
-    async fn shutdown_active_commands(&self) {}
 }
 
 impl ProviderLifecycleAcceptanceHost {
@@ -340,50 +144,50 @@ impl ProviderLifecycleAcceptanceHost {
             Arc::new(LocalProviderLifecycleCredentialGateway),
             events,
         ));
-        let binding = crate::infrastructure::local_api::test_binding(data_dir.to_path_buf())
-            .map_err(|error| error.to_string())?;
-        let workflow = crate::adaptor::controller::wiring::build_canonical_workflow_read_usecase(
-            data_dir, None,
-        )
-        .map_err(|error| error.to_string())?;
+        let (binding, daemon) =
+            crate::acceptance_test_support::client_binding(data_dir.to_path_buf())
+                .map_err(|error| error.to_string())?;
         let workflow_runtime_command_count = Arc::new(AtomicUsize::new(0));
-        let runtime = Arc::new(WorkflowRuntimeUsecase::new_with_worktree_operations(work.retrying.clone(),
-            Arc::new(AcceptanceWorkflowRuntimeGateway {
-                command_count: workflow_runtime_command_count.clone(),
-            }),
-            Arc::new(
-                crate::adaptor::gateway::workflow::ExecutionTreeArchiveFactRepository::new(
-                    store.clone(),
-                    data_dir,
-                ),
-            ),
-            Arc::new(crate::usecase::worktree_operation::WorktreeOperations::new(Arc::new(
-                crate::adaptor::gateway::repository::worktree_operation::FileWorktreeOperationLocks::new(data_dir),
-            ))),
-        ));
+        let mut dispatch = crate::adaptor::controller::client::ClientCommandDispatch::new(daemon);
+        for names in [
+            &["start_workflow"][..],
+            &["abort_workflow"][..],
+            &["approve_workflow_node"][..],
+            &["workflow_submit_output"][..],
+        ] {
+            let count = workflow_runtime_command_count.clone();
+            dispatch.register_domain(
+                names,
+                Box::new(move |_| {
+                    count.fetch_add(1, Ordering::SeqCst);
+                    Box::pin(async {
+                        Err(crate::adaptor::controller::client::invalid_request(
+                            "workflow runtime command invoked by provider lifecycle",
+                        ))
+                    })
+                }),
+            );
+        }
+        let client = crate::adaptor::controller::api::ClientApiDeps::new(
+            Arc::new(dispatch),
+            crate::adaptor::controller::daemon::client_priority_interceptor(),
+        )
+        .with_provider_lifecycle(Arc::new(AcceptancePayloadReceiver(usecase.clone())));
         let router = crate::adaptor::controller::api::build_router(
-            Arc::new(workflow),
-            runtime,
-            binding.bearer_token(),
             crate::adaptor::controller::api::auth::ClientTokens {
                 operator: binding.terminal_bearer_token().into(),
                 hook: binding.hook_bearer_token(),
             },
-            None,
-            Some(usecase.clone()),
-            (
-                crate::adaptor::controller::daemon::client_priority_interceptor().gate,
-                crate::adaptor::controller::daemon::default_timeout(),
-            ),
+            Some(client),
+            crate::adaptor::controller::daemon::default_timeout(),
         );
         let server = binding
             .start(router, &tokio::runtime::Handle::current())
             .inspect(|server| {
                 server.publish_discovery().unwrap();
             })
-            .unwrap();
+            .map_err(|error| error.to_string())?;
         Ok(Self {
-            data_dir: data_dir.to_path_buf(),
             store,
             usecase,
             server,
@@ -488,43 +292,6 @@ impl ProviderLifecycleAcceptanceHost {
             .collect())
     }
 
-    pub async fn report_unavailable(
-        &self,
-        launch: &AcceptanceLaunch,
-        reason: AcceptanceUnavailableReason,
-    ) -> Result<AcceptanceIngressResult, String> {
-        let data_dir = self.data_dir.clone();
-        let request = ProviderLifecycleUnavailableRequest {
-            slot_id: launch.slot_id.clone(),
-            binding_id: launch.binding_id.clone(),
-            capability: launch.capability.clone(),
-            provider: protocol_provider(launch.provider),
-            agent_session_id: launch.scope.agent_session_id.clone(),
-            reason: protocol_unavailable_reason(reason),
-        };
-        let response = tokio::task::spawn_blocking(move || {
-            let client = LocalApiClientGateway::discover(&data_dir)
-                .map_err(|error| error.to_string())?
-                .ok_or_else(|| "local API discovery is unavailable".to_string())?;
-            client
-                .post_json::<_, ProviderLifecycleReceiveResponse>(
-                    &["v1", "provider-lifecycle", "unavailable"],
-                    &request,
-                )
-                .map_err(|error| error.to_string())
-        })
-        .await
-        .map_err(|error| error.to_string())??;
-        Ok(match response {
-            ProviderLifecycleReceiveResponse::Ignored => AcceptanceIngressResult::Ignored,
-            ProviderLifecycleReceiveResponse::Applied => AcceptanceIngressResult::Applied,
-            ProviderLifecycleReceiveResponse::Duplicate => AcceptanceIngressResult::Duplicate,
-            ProviderLifecycleReceiveResponse::Rejected { reason } => {
-                AcceptanceIngressResult::Rejected { reason }
-            }
-        })
-    }
-
     pub async fn event_counts(
         &self,
         agent_session_id: &str,
@@ -612,32 +379,6 @@ fn acceptance_provider(provider: ProviderKind) -> AcceptanceProvider {
     }
 }
 
-fn protocol_provider(provider: AcceptanceProvider) -> ProviderLifecycleProvider {
-    match provider {
-        AcceptanceProvider::Claude => ProviderLifecycleProvider::Claude,
-        AcceptanceProvider::Codex => ProviderLifecycleProvider::Codex,
-    }
-}
-
-fn protocol_unavailable_reason(
-    reason: AcceptanceUnavailableReason,
-) -> ProviderLifecycleUnavailableReasonRequest {
-    match reason {
-        AcceptanceUnavailableReason::SessionStartDeadlineExceeded => {
-            ProviderLifecycleUnavailableReasonRequest::SessionStartDeadlineExceeded
-        }
-        AcceptanceUnavailableReason::CodexHookDeliveryUnconfirmed => {
-            ProviderLifecycleUnavailableReasonRequest::CodexHookDeliveryUnconfirmed
-        }
-        AcceptanceUnavailableReason::ProviderHookConfigurationRejected => {
-            ProviderLifecycleUnavailableReasonRequest::ProviderHookConfigurationRejected
-        }
-        AcceptanceUnavailableReason::LocalApiUnavailable => {
-            ProviderLifecycleUnavailableReasonRequest::LocalApiUnavailable
-        }
-    }
-}
-
 fn unavailable_reason(reason: ProviderLifecycleUnavailableReason) -> &'static str {
     match reason {
         ProviderLifecycleUnavailableReason::SessionStartDeadlineExceeded => {
@@ -706,6 +447,45 @@ fn acceptance_fact(event: ProviderLifecycleEvent) -> AcceptanceFactKind {
         },
         ProviderLifecycleEvent::BindingExpired { binding_id } => {
             AcceptanceFactKind::BindingExpired { binding_id }
+        }
+    }
+}
+
+struct AcceptancePayloadReceiver(Arc<ProviderLifecycleUsecase>);
+#[async_trait::async_trait]
+impl crate::usecase::provider_lifecycle::ProviderPayloadReceiver for AcceptancePayloadReceiver {
+    async fn receive_payload(
+        &self,
+        slot_id: &crate::domain::provider_lifecycle::ProviderLifecycleSlotId,
+        capability: &str,
+        input: crate::usecase::provider_lifecycle::ingress::ProviderPayloadInput<'_>,
+    ) -> Result<
+        (
+            crate::domain::provider_lifecycle::ProviderLifecycleIngressResult,
+            bool,
+        ),
+        crate::usecase::provider_lifecycle::ProviderLifecycleIngressUsecaseError,
+    > {
+        use crate::domain::provider_lifecycle::{
+            ProviderLifecycleIngressResult, ProviderPayloadInterpretation,
+            ProviderPayloadInterpreter,
+        };
+        use crate::usecase::provider_lifecycle::ProviderLifecycleIngressUsecaseError;
+        match crate::adaptor::gateway::provider_lifecycle::LocalProviderPayloadInterpreter
+            .interpret(input.provider, input.binding_id, input.scope, input.payload)
+            .map_err(ProviderLifecycleIngressUsecaseError::Payload)?
+        {
+            ProviderPayloadInterpretation::Subagent => {
+                Ok((ProviderLifecycleIngressResult::Ignored, false))
+            }
+            ProviderPayloadInterpretation::Signal(signal) => {
+                let started = signal.is_session_started();
+                self.0
+                    .receive(slot_id, capability, signal)
+                    .await
+                    .map(|result| (result, started))
+                    .map_err(Into::into)
+            }
         }
     }
 }

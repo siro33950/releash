@@ -1,4 +1,5 @@
 use super::launch_spec::ProviderLaunchSpecError;
+use super::payload::parse_provider_payload;
 use super::test_helpers::*;
 use super::*;
 use crate::domain::agent_session::{ProviderSessionLaunch, ProviderSessionLaunchError};

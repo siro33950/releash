@@ -39,7 +39,7 @@ pub(crate) fn install_cli() -> Result<String, String> {
         }
         let executable = std::env::current_exe()
             .map_err(|e| e.to_string())?
-            .with_file_name("releash-backend");
+            .with_file_name("releash");
         let status = install_cli_symlink(&executable, Path::new(CLI_LINK_PATH))?;
         Ok(format!("Releash CLI {status}"))
     }

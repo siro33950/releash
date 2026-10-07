@@ -5,7 +5,6 @@ use crate::adaptor::gateway::agent_session::{
     agent_session_from_fields, read_session_context, SessionContextReadError, SessionLocation,
 };
 use crate::adaptor::gateway::local_event_store::node_events::{self, NodeEventRow};
-use crate::adaptor::gateway::local_event_store::read_only::LocalEventReadStore;
 use crate::adaptor::gateway::local_event_store::store::LocalEventStore;
 use crate::adaptor::gateway::workflow::fact_log::{self, FactLogReadBackend};
 use crate::domain::agent_session::aggregates::AgentSession;
@@ -22,7 +21,6 @@ use crate::domain::workspace_tree::{
 #[derive(Clone)]
 enum WorkspaceSqliteBackend {
     Live(Arc<LocalEventStore>),
-    ReadOnly(Arc<LocalEventReadStore>),
 }
 
 /// 1 tree の fold 済みの結果と、そこから導出した metadata。
@@ -88,22 +86,9 @@ impl SqliteWorkspaceTreeRepository {
         })
     }
 
-    pub fn new_read_only(store: Arc<LocalEventReadStore>) -> Arc<Self> {
-        Arc::new(Self {
-            backend: WorkspaceSqliteBackend::ReadOnly(store),
-            processes: None,
-            fold_idle_limit: FOLD_IDLE_LIMIT,
-            held: Default::default(),
-            session_roots: Default::default(),
-        })
-    }
-
     pub(super) fn fact_backend(&self) -> FactLogReadBackend {
         match &self.backend {
             WorkspaceSqliteBackend::Live(store) => FactLogReadBackend::Live(Arc::clone(store)),
-            WorkspaceSqliteBackend::ReadOnly(store) => {
-                FactLogReadBackend::ReadOnly(Arc::clone(store))
-            }
         }
     }
 

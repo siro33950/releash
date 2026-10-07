@@ -37,7 +37,10 @@ fn install_fixture_executable(
         alternate_screen: true,
         emit_input_completion_marker: true,
         lifecycle_command: Some(FixtureLifecycleCommand {
-            executable: env!("CARGO_BIN_EXE_releash-backend").to_string(),
+            executable: std::path::Path::new(env!("CARGO_BIN_EXE_releash-backend"))
+                .with_file_name("releash")
+                .to_string_lossy()
+                .into_owned(),
             arguments: vec![
                 "hook".to_string(),
                 "receive".to_string(),
@@ -897,7 +900,7 @@ async fn test_atui_042_片側signalは再起動後も同じattemptへ復元さ�
             .await
             .unwrap_err();
         assert!(
-            duplicate_start.starts_with("HTTP 400:"),
+            duplicate_start.contains("failed_precondition"),
             "{duplicate_start}"
         );
         host_after.shutdown().await.unwrap();
@@ -942,7 +945,10 @@ async fn test_issue_1958_session起動木は完了済みnodeへのsubmitとretry
     // When
     let submit_error = host.submit(&session_id).await.unwrap_err();
     // Then
-    assert!(submit_error.starts_with("HTTP 400:"), "{submit_error}");
+    assert!(
+        submit_error.contains("failed_precondition"),
+        "{submit_error}"
+    );
     let before_retry = host.execution_direct(&session_id).await.unwrap().unwrap();
     assert_eq!(before_retry.node_executions.len(), 1);
     assert_eq!(
@@ -957,7 +963,7 @@ async fn test_issue_1958_session起動木は完了済みnodeへのsubmitとretry
 
     let local_api_error = host.retry(&session_id, &session_id).await.unwrap_err();
     assert!(
-        local_api_error.starts_with("HTTP 400:"),
+        local_api_error.contains("failed_precondition"),
         "{local_api_error}"
     );
     assert_eq!(

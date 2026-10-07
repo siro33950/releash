@@ -11,7 +11,7 @@ use releash_lib::test_support::integration::persistence::LocalEventStoreConfig;
 use releash_lib::test_support::integration::workflow::ExecutionOrigin;
 use releash_lib::test_support::integration::workflow::ExecutionParentRef;
 use releash_lib::test_support::integration::workflow::NodeKindName;
-use releash_lib::test_support::integration::workflow::SecretSourceGateway;
+
 use releash_lib::test_support::integration::workflow::WorkflowDefinition;
 use releash_lib::test_support::integration::workflow::WorkflowDefinitionFileRepository;
 use releash_lib::test_support::integration::workflow::WorkflowDefinitionFileSourceGateway;
@@ -35,14 +35,6 @@ impl WorkflowEventRepository for CountingEvents {
     async fn read(&self, id: &ExecutionTreeId) -> Result<Vec<WorkflowEventDraft>, WorkflowError> {
         self.reads.fetch_add(1, Ordering::SeqCst);
         self.repository.read(id).await
-    }
-}
-
-struct NoSecrets;
-
-impl SecretSourceGateway for NoSecrets {
-    fn configured_secret_values(&self) -> Result<Vec<String>, WorkflowError> {
-        panic!("output get does not read secrets")
     }
 }
 
@@ -152,22 +144,19 @@ pub async fn test_終端の隔離node出力_旧定義でも状態と同じ保存
                     repository: WorkflowEventLogRepository::with_store(store.clone()),
                     reads: AtomicUsize::new(0),
                 });
-                let usecase = WorkflowOutputUsecase::new(
-                    WorkflowQueryService::new(
-                        Arc::new(WorkflowDefinitionFileRepository::new(
-                            directory.path(),
-                            directory.path(),
-                        )),
-                        Arc::new(WorkflowDefinitionFileSourceGateway::new(
-                            directory.path(),
-                            directory.path(),
-                        )),
-                        Arc::new(WorkflowFacetFileRepository::new(directory.path())),
-                        events.clone(),
-                        projection.clone(),
-                    ),
-                    Arc::new(NoSecrets),
-                );
+                let usecase = WorkflowOutputUsecase::new(WorkflowQueryService::new(
+                    Arc::new(WorkflowDefinitionFileRepository::new(
+                        directory.path(),
+                        directory.path(),
+                    )),
+                    Arc::new(WorkflowDefinitionFileSourceGateway::new(
+                        directory.path(),
+                        directory.path(),
+                    )),
+                    Arc::new(WorkflowFacetFileRepository::new(directory.path())),
+                    events.clone(),
+                    projection.clone(),
+                ));
                 let state = projection
                     .get_execution(&ExecutionTreeId::new(id).unwrap())
                     .await
@@ -276,22 +265,19 @@ pub async fn test_隔離合成子の出力取得_保存されない成果を一�
             repository: WorkflowEventLogRepository::with_store(store.clone()),
             reads: AtomicUsize::new(0),
         });
-        let usecase = WorkflowOutputUsecase::new(
-            WorkflowQueryService::new(
-                Arc::new(WorkflowDefinitionFileRepository::new(
-                    directory.path(),
-                    directory.path(),
-                )),
-                Arc::new(WorkflowDefinitionFileSourceGateway::new(
-                    directory.path(),
-                    directory.path(),
-                )),
-                Arc::new(WorkflowFacetFileRepository::new(directory.path())),
-                events.clone(),
-                Arc::new(WorkflowExecutionProjectionLogRepository::new(store.clone())),
-            ),
-            Arc::new(NoSecrets),
-        );
+        let usecase = WorkflowOutputUsecase::new(WorkflowQueryService::new(
+            Arc::new(WorkflowDefinitionFileRepository::new(
+                directory.path(),
+                directory.path(),
+            )),
+            Arc::new(WorkflowDefinitionFileSourceGateway::new(
+                directory.path(),
+                directory.path(),
+            )),
+            Arc::new(WorkflowFacetFileRepository::new(directory.path())),
+            events.clone(),
+            Arc::new(WorkflowExecutionProjectionLogRepository::new(store.clone())),
+        ));
         // When / Then
         assert_eq!(
             without_tree_fold(usecase.get_output(id, "main"))
@@ -404,22 +390,19 @@ pub async fn test_空の隔離fanout出力_保存事実を一度だけ読みstat
         repository: WorkflowEventLogRepository::with_store(store.clone()),
         reads: AtomicUsize::new(0),
     });
-    let usecase = WorkflowOutputUsecase::new(
-        WorkflowQueryService::new(
-            Arc::new(WorkflowDefinitionFileRepository::new(
-                directory.path(),
-                directory.path(),
-            )),
-            Arc::new(WorkflowDefinitionFileSourceGateway::new(
-                directory.path(),
-                directory.path(),
-            )),
-            Arc::new(WorkflowFacetFileRepository::new(directory.path())),
-            events.clone(),
-            Arc::new(WorkflowExecutionProjectionLogRepository::new(store.clone())),
-        ),
-        Arc::new(NoSecrets),
-    );
+    let usecase = WorkflowOutputUsecase::new(WorkflowQueryService::new(
+        Arc::new(WorkflowDefinitionFileRepository::new(
+            directory.path(),
+            directory.path(),
+        )),
+        Arc::new(WorkflowDefinitionFileSourceGateway::new(
+            directory.path(),
+            directory.path(),
+        )),
+        Arc::new(WorkflowFacetFileRepository::new(directory.path())),
+        events.clone(),
+        Arc::new(WorkflowExecutionProjectionLogRepository::new(store.clone())),
+    ));
     // When
     let output = without_tree_fold(usecase.get_output(id, "main"))
         .await

@@ -10,12 +10,10 @@ use agent_tui_fixture::{
     FixtureRunOptions,
 };
 use releash_lib::test_support::provider_lifecycle_acceptance::{
-    AcceptanceFact, AcceptanceFactKind, AcceptanceIngressResult, AcceptanceLaunch,
-    AcceptanceLedgerEventCounts, AcceptanceProvider, AcceptanceScope, AcceptanceUnavailableReason,
-    ProviderLifecycleAcceptanceHost,
+    AcceptanceFact, AcceptanceFactKind, AcceptanceLaunch, AcceptanceLedgerEventCounts,
+    AcceptanceProvider, AcceptanceScope, ProviderLifecycleAcceptanceHost,
 };
 
-const CLI_PATH: &str = env!("CARGO_BIN_EXE_releash-backend");
 const TRANSCRIPT_BODY_MARKER: &str = "provider-conversation-body-must-not-be-persisted";
 
 fn provider_name(provider: AcceptanceProvider) -> &'static str {
@@ -89,7 +87,14 @@ fn install_cli_alias(data_dir: &Path, alias: &str) {
     let bin_directory = data_dir.join("bin");
     std::fs::create_dir_all(&bin_directory).expect("create acceptance alias directory");
     let wrapper = bin_directory.join(alias);
-    let script = format!("#!/bin/sh\nexec {} \"$@\"\n", shell_quote(CLI_PATH));
+    let script = format!(
+        "#!/bin/sh\nexec {} \"$@\"\n",
+        shell_quote(
+            &Path::new(env!("CARGO_BIN_EXE_releash-backend"))
+                .with_file_name("releash")
+                .to_string_lossy()
+        )
+    );
     std::fs::write(&wrapper, script).expect("write acceptance alias wrapper");
     #[cfg(unix)]
     {
@@ -205,21 +210,6 @@ fn session_count(facts: &[AcceptanceFact]) -> usize {
     facts
         .iter()
         .filter(|fact| matches!(fact.kind, AcceptanceFactKind::SessionAssociated { .. }))
-        .count()
-}
-
-fn unavailable_count(facts: &[AcceptanceFact], reason: &str) -> usize {
-    facts
-        .iter()
-        .filter(|fact| {
-            matches!(
-                &fact.kind,
-                AcceptanceFactKind::LifecycleUnavailable {
-                    reason: stored_reason,
-                    ..
-                } if stored_reason == reason
-            )
-        })
         .count()
 }
 
@@ -482,34 +472,12 @@ async fn test_providerライフサイクル受入_両providerがatui_020とatui_
                 None,
             ))],
         );
-        assert_eq!(
-            host.report_unavailable(
-                &missing_start,
-                AcceptanceUnavailableReason::SessionStartDeadlineExceeded,
-            )
-            .await
-            .unwrap(),
-            AcceptanceIngressResult::Applied,
-        );
-        assert_eq!(
-            host.report_unavailable(
-                &missing_start,
-                AcceptanceUnavailableReason::SessionStartDeadlineExceeded,
-            )
-            .await
-            .unwrap(),
-            AcceptanceIngressResult::Duplicate,
-        );
         let facts = host
             .facts(&missing_start_scope.agent_session_id)
             .await
             .unwrap();
         assert_eq!(session_count(&facts), 0);
         assert_eq!(stop_count(&facts), 0);
-        assert_eq!(
-            unavailable_count(&facts, "session_start_deadline_exceeded"),
-            1
-        );
 
         let missing_stop_scope = scope(provider, "missing-stop");
         let missing_stop = prepare(
@@ -820,7 +788,7 @@ async fn test_providerライフサイクル受入_両providerがatui_020とatui_
             None,
             before,
             &run,
-            "Releash アプリの起動が必要",
+            "unavailable",
         )
         .await;
 
@@ -899,8 +867,22 @@ async fn test_providerライフサイクル受入_stale_discoveryから古い接
         .await;
         let stale_target = TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let stale_port = stale_target.local_addr().unwrap().port();
+        stale_target.set_nonblocking(true).unwrap();
         let stale_request = std::thread::spawn(move || {
-            let (mut stream, _) = stale_target.accept().unwrap();
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+            let mut stream = loop {
+                match stale_target.accept() {
+                    Ok((stream, _)) => break stream,
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        if std::time::Instant::now() >= deadline {
+                            return String::new();
+                        }
+                        std::thread::sleep(std::time::Duration::from_millis(5));
+                    }
+                    Err(error) => panic!("{error}"),
+                }
+            };
+            stream.set_nonblocking(false).unwrap();
             stream
                 .set_read_timeout(Some(std::time::Duration::from_secs(2)))
                 .unwrap();
@@ -916,10 +898,12 @@ async fn test_providerライフサイクル受入_stale_discoveryから古い接
                 .unwrap();
             String::from_utf8_lossy(&request).into_owned()
         });
-        let discovery_path = data_dir.path().join("local-api.json");
+        let discovery_path = data_dir.path().join("client-api.json");
         let mut stale_discovery: serde_json::Value =
             serde_json::from_slice(&std::fs::read(&discovery_path).unwrap()).unwrap();
         stale_discovery["port"] = serde_json::json!(stale_port);
+        stale_discovery["process_started_at"] =
+            serde_json::json!(stale_discovery["process_started_at"].as_u64().unwrap() + 1);
         stale_discovery["token"] = serde_json::json!("stale-bearer-token");
         std::fs::write(
             &discovery_path,
@@ -945,13 +929,36 @@ async fn test_providerライフサイクル受入_stale_discoveryから古い接
             None,
             before,
             &run,
-            "別のインスタンスを指しているか、古くなっています",
+            "client discovery is stale",
         )
         .await;
         let stale_request = stale_request.join().unwrap();
+        assert!(stale_request.is_empty());
         assert!(!stale_request
             .to_ascii_lowercase()
             .contains("authorization:"));
         assert!(!stale_request.contains(&launch.capability));
     }
+}
+
+#[tokio::test]
+async fn test_providerライフサイクル受入_runtimeコマンドの呼び出しを観測する() {
+    let directory = tempfile::tempdir().unwrap();
+    let host = ProviderLifecycleAcceptanceHost::start(directory.path()).unwrap();
+    let discovery: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(directory.path().join("client-api.json")).unwrap())
+            .unwrap();
+    assert_eq!(host.workflow_runtime_command_count(), 0);
+    let response = reqwest::Client::new()
+        .post(format!(
+            "http://127.0.0.1:{}/releash.client.v1.ClientService/AbortWorkflow",
+            discovery["port"].as_u64().unwrap()
+        ))
+        .bearer_auth(discovery["token"].as_str().unwrap())
+        .json(&serde_json::json!({"executionId":"00000000-0000-0000-0000-000000000001"}))
+        .send()
+        .await
+        .unwrap();
+    assert!(!response.status().is_success());
+    assert_eq!(host.workflow_runtime_command_count(), 1);
 }

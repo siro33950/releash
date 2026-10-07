@@ -6,10 +6,6 @@ mod adaptor_controller_api_client;
 mod adaptor_controller_api_client_auth;
 #[path = "internal/adaptor_controller_api_mod.rs"]
 mod adaptor_controller_api_mod;
-#[path = "internal/adaptor_controller_api_provider_lifecycle_controller.rs"]
-mod adaptor_controller_api_provider_lifecycle_controller;
-#[path = "internal/adaptor_controller_api_workflow.rs"]
-mod adaptor_controller_api_workflow;
 #[path = "internal/adaptor_controller_app_data_composition.rs"]
 mod adaptor_controller_app_data_composition;
 #[path = "internal/adaptor_controller_client_app_config_commands.rs"]
@@ -62,8 +58,6 @@ mod adaptor_gateway_external_editor_launcher_impl;
 mod adaptor_gateway_git_host_discovery;
 #[path = "internal/adaptor_gateway_git_host_github.rs"]
 mod adaptor_gateway_git_host_github;
-#[path = "internal/adaptor_gateway_local_api.rs"]
-mod adaptor_gateway_local_api;
 #[path = "internal/adaptor_gateway_local_event_store_maintenance.rs"]
 mod adaptor_gateway_local_event_store_maintenance;
 #[path = "internal/adaptor_gateway_local_event_store_node_events.rs"]
@@ -186,24 +180,6 @@ mod adaptor_gateway_workspace_tree_repository;
 mod agent_session_tui_acceptance;
 #[path = "agent_tui_fixture.rs"]
 mod agent_tui_fixture;
-#[path = "internal/cli_api_client.rs"]
-mod cli_api_client;
-#[path = "internal/cli_common.rs"]
-mod cli_common;
-#[path = "internal/cli_common_test_support.rs"]
-mod cli_common_test_support;
-#[path = "internal/cli_diagnostics.rs"]
-mod cli_diagnostics;
-#[path = "internal/cli_hook.rs"]
-mod cli_hook;
-#[path = "internal/cli_output.rs"]
-mod cli_output;
-#[path = "internal/cli_review.rs"]
-mod cli_review;
-#[path = "internal/cli_test_helpers.rs"]
-mod cli_test_helpers;
-#[path = "internal/cli_workflow.rs"]
-mod cli_workflow;
 #[path = "internal/domain_external_editor_services.rs"]
 mod domain_external_editor_services;
 #[path = "internal/domain_workflow_entities_workflow_execution_mod.rs"]
@@ -214,8 +190,6 @@ mod domain_workspace_state_services;
 mod infrastructure_file_lock;
 #[path = "internal/infrastructure_file_watcher_mod.rs"]
 mod infrastructure_file_watcher_mod;
-#[path = "internal/infrastructure_local_api_client.rs"]
-mod infrastructure_local_api_client;
 #[path = "internal/infrastructure_local_api_discovery.rs"]
 mod infrastructure_local_api_discovery;
 #[path = "internal/infrastructure_local_api_server.rs"]
@@ -272,3 +246,6 @@ mod usecase_workflow_execution_archive;
 mod usecase_workflow_workspace_tree;
 #[path = "internal/usecase_workspace_tree_list.rs"]
 mod usecase_workspace_tree_list;
+
+#[path = "internal/adaptor_gateway_local_api.rs"]
+mod adaptor_gateway_local_api;

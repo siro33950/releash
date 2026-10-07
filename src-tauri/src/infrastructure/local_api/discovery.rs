@@ -2,61 +2,12 @@ use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
-use serde::{Deserialize, Serialize};
-use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System};
-
 #[cfg(unix)]
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 
-const LOCAL_API_DISCOVERY_FILE_NAME: &str = "local-api.json";
-
-pub fn local_api_discovery_path(data_dir: &Path) -> PathBuf {
-    data_dir.join(LOCAL_API_DISCOVERY_FILE_NAME)
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct LocalApiDiscovery {
-    pub port: u16,
-    pub token: String,
-    pub instance_id: String,
-    pub pid: u32,
-    pub process_started_at: u64,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ProcessStartTimeLookup {
-    pub process_list_available: bool,
-    pub start_time: Option<u64>,
-}
-
-pub fn process_start_time(pid: u32) -> Option<u64> {
-    lookup_process_start_time(pid)
-        .start_time
-        .filter(|start_time| *start_time != 0)
-}
-
-pub fn lookup_process_start_time(pid: u32) -> ProcessStartTimeLookup {
-    let pid = Pid::from_u32(pid);
-    let mut system = System::new();
-    system.refresh_processes_specifics(
-        ProcessesToUpdate::Some(&[pid]),
-        true,
-        ProcessRefreshKind::nothing(),
-    );
-    let start_time = system.process(pid).map(|process| process.start_time());
-    if start_time.is_some_and(|start_time| start_time != 0) {
-        return ProcessStartTimeLookup {
-            process_list_available: true,
-            start_time,
-        };
-    }
-
-    system.refresh_processes_specifics(ProcessesToUpdate::All, true, ProcessRefreshKind::nothing());
-    ProcessStartTimeLookup {
-        process_list_available: !system.processes().is_empty(),
-        start_time: system.process(pid).map(|process| process.start_time()),
-    }
-}
+pub use releash_client::discovery::{
+    lookup_process_start_time, process_start_time, LocalApiDiscovery, ProcessStartTimeLookup,
+};
 
 #[derive(Debug, Clone)]
 pub struct LocalApiDiscoveryFile {
@@ -65,11 +16,6 @@ pub struct LocalApiDiscoveryFile {
 }
 
 impl LocalApiDiscoveryFile {
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn create(data_dir: &Path, discovery: LocalApiDiscovery) -> io::Result<Self> {
-        Self::create_named(data_dir, LOCAL_API_DISCOVERY_FILE_NAME, discovery)
-    }
-
     #[cfg(any(test, feature = "test-support"))]
     pub fn create_client(data_dir: &Path, discovery: LocalApiDiscovery) -> io::Result<Self> {
         Self::create_named(data_dir, "client-api.json", discovery)

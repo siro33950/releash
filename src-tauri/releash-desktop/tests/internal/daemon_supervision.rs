@@ -23,20 +23,12 @@ async fn test_daemon接続_認証と検証が完了した呼び出しで接続�
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let discovery = LocalApiDiscovery {
         port: listener.local_addr().unwrap().port(),
-        token: "master-token".into(),
+        token: "client-token".into(),
         instance_id: "instance".into(),
         pid: std::process::id(),
         process_started_at: process_start_time(std::process::id()).unwrap(),
     };
-    LocalApiDiscoveryFile::create(directory.path(), discovery.clone()).unwrap();
-    LocalApiDiscoveryFile::create_client(
-        directory.path(),
-        LocalApiDiscovery {
-            token: "client-token".into(),
-            ..discovery
-        },
-    )
-    .unwrap();
+    LocalApiDiscoveryFile::create_client(directory.path(), discovery).unwrap();
     let router = axum::Router::new()
         .route(
             "/releash.client.v1.ClientService/GetServerInfo",
@@ -254,12 +246,11 @@ async fn test_初回設定待ち_購読開始失敗後も同じclientがprotoの
     let directory = tempfile::tempdir().unwrap();
     let discovery = LocalApiDiscovery {
         port,
-        token: "master-token".into(),
+        token: "client-token".into(),
         instance_id: "instance".into(),
         pid: std::process::id(),
         process_started_at: process_start_time(std::process::id()).unwrap(),
     };
-    LocalApiDiscoveryFile::create(directory.path(), discovery.clone()).unwrap();
     LocalApiDiscoveryFile::create_client(
         directory.path(),
         LocalApiDiscovery {

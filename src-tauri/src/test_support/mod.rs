@@ -121,7 +121,6 @@ pub mod client_api_acceptance {
         BranchGateway, BranchRepository, ClientApiAcceptanceHost, ClientEndpoint,
         ClientRecoveryAcceptanceHost, ClientRecoveryState, DiagnosticReport, DiagnosticSpan,
         DiagnosticStage, NativeClient, RepositoryError, Severity,
-        TERMINAL_WS_BEARER_SUBPROTOCOL_PREFIX,
     };
 }
 
@@ -130,7 +129,7 @@ pub mod provider_lifecycle_acceptance {
     pub use crate::provider_lifecycle_acceptance::{
         AcceptanceFact, AcceptanceFactKind, AcceptanceIngressResult, AcceptanceLaunch,
         AcceptanceLedgerEventCounts, AcceptanceProvider, AcceptanceScope,
-        AcceptanceUnavailableReason, ProviderLifecycleAcceptanceHost,
+        ProviderLifecycleAcceptanceHost,
     };
 }
 

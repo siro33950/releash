@@ -150,6 +150,7 @@ pub fn first_root_row_of_tree(
     rows.next().transpose()
 }
 
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) fn read_tree_page(
     connection: &Connection,
     tree_id: &str,

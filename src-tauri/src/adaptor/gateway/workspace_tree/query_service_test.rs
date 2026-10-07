@@ -215,7 +215,6 @@ fn test_workspace_query_結果不明と期限切れの分類を保持する() {
 
 #[test]
 fn test_workspace_query_store以外の失敗はmainと同じ変種を返す() {
-    use crate::adaptor::controller::api::error::ApiError;
     use crate::adaptor::presenter::connect::ConnectFailure;
     use crate::domain::local_event::{
         LocalEventQueryError, SafeOperationFailure, SessionOperationFailureKind,
@@ -235,7 +234,6 @@ fn test_workspace_query_store以外の失敗はmainと同じ変種を返す() {
         let error = query_error(error);
         assert!(matches!(error, WorkflowError::External(_)));
         assert_eq!(error.connect_code(), connectrpc::ErrorCode::Internal);
-        assert_eq!(ApiError::from(error).status.as_u16(), 500);
     }
 }
 

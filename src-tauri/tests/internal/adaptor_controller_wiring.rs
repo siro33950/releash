@@ -71,7 +71,6 @@ pub async fn test_worktree削除一覧_本番runtime配線で受理した削除�
         data_dir,
         repository.clone(),
         config.clone(),
-        config.clone(),
         store.clone(),
         processes.clone(),
     );
@@ -145,9 +144,9 @@ pub(crate) mod tests {
 
     use releash_lib::test_support::integration::persistence::LocalEventStore;
     use releash_lib::test_support::integration::persistence::LocalEventStoreConfig;
-    use releash_lib::test_support::integration::platform::build_canonical_workflow_read_usecase;
     use releash_lib::test_support::integration::platform::build_workflow_services_with_gateways;
-    use releash_lib::test_support::integration::workflow::EmptySecretSourceGateway;
+    use releash_lib::test_support::integration::platform::workflow_read;
+
     use releash_lib::test_support::integration::workflow::NoopWorkflowExternalEditorGateway;
     use releash_lib::test_support::integration::workflow::PassthroughManagedWorktreeGateway;
     use std::sync::Arc;
@@ -165,11 +164,11 @@ pub(crate) mod tests {
         ))
         .unwrap();
         std::fs::write(workflows.path().join("configured.yml"), "name: [").unwrap();
-        let read = build_canonical_workflow_read_usecase(
+        let read = workflow_read(
+            _store.clone(),
             data.path(),
             Some(workflows.path().to_path_buf()),
-        )
-        .unwrap();
+        );
 
         // When
         let report = read
@@ -242,41 +241,20 @@ pub(crate) mod tests {
             root.path(),
             Arc::new(PassthroughManagedWorktreeGateway),
             Arc::new(NoopWorkflowExternalEditorGateway),
-            Arc::new(EmptySecretSourceGateway),
             store.clone(),
             None,
             None,
         );
-        let standalone =
-            build_canonical_workflow_read_usecase(root.path(), Some(root.path().join("workflows")))
-                .unwrap();
-
-        // When
-        let page =
-            releash_lib::test_support::integration::workflow::WorkflowPageRequest::new(0, 10);
-        let direct_executions = query
-            .execution_summaries(None, None, Some(page))
-            .await
-            .unwrap()
-            .into_iter()
-            .map(
-                releash_lib::test_support::integration::workflow::workflow_execution_summary_to_dto,
-            )
-            .collect::<Vec<_>>();
-        let live_loopback_executions = workflow
-            .read_usecase()
-            .list_executions_filtered(None, None, page)
-            .await
-            .unwrap();
-        let standalone_executions = standalone
-            .list_executions_filtered(None, None, page)
-            .await
-            .unwrap();
         let tree = workflow.workspace_tree(&workspace).await.unwrap();
         // Then
-        assert_eq!(direct_executions.len(), 1);
         assert!(!tree.visible().roots().is_empty());
-        assert_eq!(live_loopback_executions, direct_executions);
-        assert_eq!(standalone_executions, direct_executions);
+        assert_eq!(
+            query
+                .execution_summaries(None, None, None)
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
     }
 }

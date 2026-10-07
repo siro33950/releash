@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-fn test_provider拒否応答_全理由のjsonを維持する() {
+fn test_provider拒否応答_全理由をconnectへ変換する() {
     // Given
     let cases = [
         (
@@ -44,12 +44,17 @@ fn test_provider拒否応答_全理由のjsonを維持する() {
     ];
     // When / Then
     for (reason, expected) in cases {
-        let response = ProviderLifecycleReceiveResponse::from(
+        let response = crate::adaptor::presenter::client::ReceiveProviderSignalResponse::from(
             ProviderLifecycleIngressResult::Rejected(reason),
         );
-        assert_eq!(
-            serde_json::to_value(response).unwrap(),
-            serde_json::json!({"status": "rejected", "reason": expected})
-        );
+        let Some(
+            crate::adaptor::presenter::client::receive_provider_signal_response::Result::Rejected(
+                rejected,
+            ),
+        ) = response.result
+        else {
+            panic!("expected rejection")
+        };
+        assert_eq!(rejected.reason, expected);
     }
 }

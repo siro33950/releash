@@ -1,8 +1,7 @@
 use crate::adaptor::gateway::workflow::fact_codec;
 use std::sync::Arc;
 
-use serde::de::DeserializeOwned;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 
 use crate::adaptor::controller::agent_session_wiring::{
     compose_agent_sessions, AgentSessionCompositionInput,
@@ -107,11 +106,6 @@ pub struct AcceptanceWorkflowExecution {
 }
 
 #[derive(Deserialize)]
-struct StartExecutionResponse {
-    execution_id: String,
-}
-
-#[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ExecutionResponse {
     id: String,
@@ -165,11 +159,6 @@ enum NodeExecutionStatusResponse {
     WaitingApproval,
     Succeeded,
     Aborted,
-}
-
-#[derive(Deserialize)]
-struct MutationResponse {
-    ok: bool,
 }
 
 struct AcceptanceWorkflowDefinitionResolver;
@@ -369,7 +358,7 @@ impl WorkflowDefinitionResolver for AcceptanceWorkflowDefinitionResolver {
 
 struct AcceptanceManagedWorktreeResolver;
 
-struct AcceptanceWorkspaceNodeActionResolver;
+struct AcceptanceWorkspaceNodeActionResolver(Arc<LocalEventStore>);
 
 #[async_trait::async_trait]
 impl WorkspaceNodeActionResolver for AcceptanceWorkspaceNodeActionResolver {
@@ -391,7 +380,13 @@ impl WorkspaceNodeActionResolver for AcceptanceWorkspaceNodeActionResolver {
         node_id: &str,
     ) -> Result<WorkspaceNodeRetryTarget, WorkflowError> {
         Ok(WorkspaceNodeRetryTarget {
-            execution_id: node_id.to_string(),
+            execution_id: crate::adaptor::gateway::workflow::fact_log::FactLogReadBackend::Live(
+                self.0.clone(),
+            )
+            .tree_id_for_node(node_id)
+            .await
+            .map_err(WorkflowError::from)?
+            .ok_or_else(|| WorkflowError::NotFound(node_id.to_string()))?,
             node_execution_id: node_id.to_string(),
         })
     }
@@ -403,7 +398,14 @@ impl WorkspaceNodeActionResolver for AcceptanceWorkspaceNodeActionResolver {
     ) -> Result<crate::usecase::workflow::command::ResumeSessionNodeCommand, WorkflowError> {
         Ok(
             crate::usecase::workflow::command::ResumeSessionNodeCommand {
-                execution_id: node_id.to_string(),
+                execution_id:
+                    crate::adaptor::gateway::workflow::fact_log::FactLogReadBackend::Live(
+                        self.0.clone(),
+                    )
+                    .tree_id_for_node(node_id)
+                    .await
+                    .map_err(WorkflowError::from)?
+                    .ok_or_else(|| WorkflowError::NotFound(node_id.to_string()))?,
                 node_execution_id: node_id.to_string(),
             },
         )
@@ -446,6 +448,7 @@ pub struct WorkflowControlPlaneAcceptanceHost {
     local_api: Arc<LocalApiServer>,
     local_api_base_url: String,
     local_api_token: String,
+    workflow_read: Arc<crate::usecase::workflow::WorkflowReadUsecase>,
 }
 
 impl WorkflowControlPlaneAcceptanceHost {
@@ -541,7 +544,7 @@ launch_retention: crate::adaptor::controller::agent_session_launch_retention::ru
             ),
         );
         let workspace_node_commands = Arc::new(WorkspaceNodeCommandUsecase::new(
-            Arc::new(AcceptanceWorkspaceNodeActionResolver),
+            Arc::new(AcceptanceWorkspaceNodeActionResolver(store.clone())),
             runtime.clone(),
             composition.rename.clone(),
         ));
@@ -552,31 +555,52 @@ launch_retention: crate::adaptor::controller::agent_session_launch_retention::ru
 
         let workflows_dir = config.data_dir.join("acceptance-workflows");
         std::fs::create_dir_all(&workflows_dir).map_err(|error| error.to_string())?;
-        let workflow_read = Arc::new(
-            crate::adaptor::controller::wiring::build_canonical_workflow_read_usecase(
-                config.data_dir.clone(),
-                Some(workflows_dir),
-            )
-            .map_err(|error| error.to_string())?,
-        );
-        let binding = crate::infrastructure::local_api::test_binding(config.data_dir.clone())
-            .map_err(|error| error.to_string())?;
+        let workflow_read = Arc::new(crate::acceptance_test_support::workflow_read(
+            store.clone(),
+            config.data_dir.clone(),
+            Some(workflows_dir),
+        ));
+        let (binding, daemon) =
+            crate::acceptance_test_support::client_binding(config.data_dir.clone())
+                .map_err(|error| error.to_string())?;
         let port = binding.port();
-        let token = binding.bearer_token();
+        let token = binding.client_bearer_token();
+        let mut dependencies =
+            crate::acceptance_test_support::build_client_dependencies(config.data_dir.clone());
+        dependencies.daemon = daemon;
+        dependencies.workflow_runtime_usecase = Some(runtime.clone());
+        dependencies.workspace_node_command_usecase = Some(workspace_node_commands.clone());
+        let mut dispatch = crate::adaptor::controller::client::ClientCommandDispatch::new(
+            dependencies.daemon.clone(),
+        );
+        dispatch.register_dependencies(&dependencies);
+        let presenter = terminal.presenter();
+        let state = terminal.subscriptions().with_reads(
+            Arc::new(AcceptanceWorkflowStateReads(workflow_read.clone())),
+            None,
+            vec![],
+            String::new(),
+        );
+        let subscriptions = terminal.terminal_subscriptions();
+        let client = crate::adaptor::controller::api::ClientApiDeps::new(
+            Arc::new(dispatch),
+            crate::adaptor::controller::daemon::client_priority_interceptor(),
+        )
+        .with_provider_lifecycle(composition.lifecycle_ingress.clone())
+        .with_state_subscriptions(
+            crate::adaptor::controller::api::StateSubscriptionDeps::new(
+                state,
+                presenter,
+                subscriptions,
+            ),
+        );
         let router = crate::adaptor::controller::api::build_router(
-            workflow_read,
-            runtime.clone(),
-            token.clone(),
             crate::adaptor::controller::api::auth::ClientTokens {
-                operator: binding.terminal_bearer_token().into(),
+                operator: token.clone(),
                 hook: binding.hook_bearer_token(),
             },
-            None,
-            Some(composition.lifecycle_ingress.clone()),
-            (
-                crate::adaptor::controller::daemon::client_priority_interceptor().gate,
-                crate::adaptor::controller::daemon::default_timeout(),
-            ),
+            Some(client),
+            crate::adaptor::controller::daemon::default_timeout(),
         );
         let local_api = binding
             .start(router, &tokio::runtime::Handle::current())
@@ -611,7 +635,8 @@ launch_retention: crate::adaptor::controller::agent_session_launch_retention::ru
             _runtime: runtime,
             local_api,
             local_api_base_url: format!("http://127.0.0.1:{port}"),
-            local_api_token: token.to_string(),
+            local_api_token: token.token().to_string(),
+            workflow_read,
         })
     }
 
@@ -711,32 +736,27 @@ launch_retention: crate::adaptor::controller::agent_session_launch_retention::ru
         worktree_path: &str,
         workflow_name: &str,
     ) -> Result<String, String> {
-        let response: StartExecutionResponse = self
-            .post(
-                "/v1/workflow/executions",
-                &serde_json::json!({
-                    "workflow_name": workflow_name,
-                    "worktree_path": worktree_path,
-                    "request": "acceptance initial instruction",
-                    "created_from": "api"
-                }),
-            )
-            .await?;
-        Ok(response.execution_id)
+        let value = self.call("start_workflow", serde_json::json!({"workflowName":workflow_name,"worktreePath":worktree_path,"request":"acceptance initial instruction","createdFrom":"api"})).await?;
+        serde_json::from_value(value).map_err(|error| error.to_string())
     }
 
     pub async fn execution(
         &self,
         execution_id: &str,
     ) -> Result<Option<AcceptanceWorkflowExecution>, String> {
-        let response = self
-            .get::<ExecutionResponse>(&format!("/v1/workflow/executions/{execution_id}"))
-            .await;
-        match response {
-            Ok(response) => Ok(Some(response.into())),
-            Err(error) if error.starts_with("HTTP 404:") => Ok(None),
-            Err(error) => Err(error),
+        let target = crate::usecase::state_subscription::SubscriptionTarget::WorkflowExecution(
+            execution_id.to_string(),
+        );
+        let value = crate::client_api_acceptance::read_state(&self.client(), &target.to_string())
+            .await
+            .map_err(|error| error.to_string())?;
+        let value = value["value"].clone();
+        if value.is_null() {
+            return Ok(None);
         }
+        serde_json::from_value::<ExecutionResponse>(value)
+            .map(|response| Some(response.into()))
+            .map_err(|error| error.to_string())
     }
 
     pub async fn recover_startup(&self) -> Result<(), String> {
@@ -749,8 +769,21 @@ launch_retention: crate::adaptor::controller::agent_session_launch_retention::ru
     }
 
     pub async fn workflow_log(&self, execution_id: &str) -> Result<Vec<serde_json::Value>, String> {
-        self.get(&format!("/v1/workflow/executions/{execution_id}/log"))
+        self.workflow_read
+            .get_execution_log_page(
+                execution_id,
+                crate::domain::workflow::WorkflowPageRequest::new(0, 100),
+            )
             .await
+            .map_err(|error| error.to_string())?
+            .into_iter()
+            .map(|event| {
+                serde_json::to_value(
+                    crate::adaptor::presenter::workflow_api::WorkflowEventResponse::from(event),
+                )
+                .map_err(|error| error.to_string())
+            })
+            .collect()
     }
 
     pub async fn execution_direct(
@@ -773,16 +806,12 @@ launch_retention: crate::adaptor::controller::agent_session_launch_retention::ru
     }
 
     pub async fn submit(&self, node_execution_id: &str) -> Result<(), String> {
-        let response: MutationResponse = self
-            .post(
-                &format!("/v1/workflow/node-executions/{node_execution_id}/submit"),
-                &serde_json::json!({}),
-            )
-            .await?;
-        response
-            .ok
-            .then_some(())
-            .ok_or_else(|| "Submit response was not successful".to_string())
+        self.call(
+            "workflow_submit_output",
+            serde_json::json!({"nodeExecutionId":node_execution_id,"artifact":null}),
+        )
+        .await
+        .map(|_| ())
     }
 
     pub async fn submit_artifact(
@@ -791,21 +820,7 @@ launch_retention: crate::adaptor::controller::agent_session_launch_retention::ru
         contract: &str,
         value: serde_json::Value,
     ) -> Result<(), String> {
-        let response: MutationResponse = self
-            .post(
-                &format!("/v1/workflow/node-executions/{node_execution_id}/submit"),
-                &serde_json::json!({
-                    "artifact": {
-                        "contract": contract,
-                        "value": value,
-                    },
-                }),
-            )
-            .await?;
-        response
-            .ok
-            .then_some(())
-            .ok_or_else(|| "Artifact Submit response was not successful".to_string())
+        self.call("workflow_submit_output",serde_json::json!({"nodeExecutionId":node_execution_id,"artifact":{"contract":contract,"value":value}})).await.map(|_| ())
     }
 
     pub async fn approve(
@@ -814,35 +829,22 @@ launch_retention: crate::adaptor::controller::agent_session_launch_retention::ru
         node_name: &str,
         node_execution_id: &str,
     ) -> Result<(), String> {
-        let response: MutationResponse = self
-            .post(
-                &format!("/v1/workflow/executions/{execution_id}/approve"),
-                &serde_json::json!({
-                    "node": node_name,
-                    "node_execution_id": node_execution_id,
-                    "comment": null,
-                }),
-            )
-            .await?;
-        response
-            .ok
-            .then_some(())
-            .ok_or_else(|| "Approval response was not successful".to_string())
+        self.call("approve_workflow_node",serde_json::json!({"args":{"executionId":execution_id,"nodeName":node_name,"nodeExecutionId":node_execution_id,"comment":null}})).await.map(|_| ())
     }
 
     pub async fn retry(&self, execution_id: &str, node_execution_id: &str) -> Result<(), String> {
-        let response: MutationResponse = self
-            .post(
-                &format!("/v1/workflow/executions/{execution_id}/retry"),
-                &serde_json::json!({
-                    "node_execution_id": node_execution_id,
-                }),
-            )
-            .await?;
-        response
-            .ok
-            .then_some(())
-            .ok_or_else(|| "Retry response was not successful".to_string())
+        let execution = self
+            .workflow_read
+            .get_execution_state(execution_id)
+            .await
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| "execution not found".to_string())?;
+        self.call(
+            "retry_workspace_node",
+            serde_json::json!({"worktreePath":execution.worktree_path,"nodeId":node_execution_id}),
+        )
+        .await
+        .map(|_| ())
     }
 
     pub async fn retry_workspace_node_from_tauri(
@@ -860,16 +862,12 @@ launch_retention: crate::adaptor::controller::agent_session_launch_retention::ru
     }
 
     pub async fn abort(&self, execution_id: &str) -> Result<(), String> {
-        let response: MutationResponse = self
-            .post(
-                &format!("/v1/workflow/executions/{execution_id}/abort"),
-                &serde_json::json!({}),
-            )
-            .await?;
-        response
-            .ok
-            .then_some(())
-            .ok_or_else(|| "Abort response was not successful".to_string())
+        self.call(
+            "abort_workflow",
+            serde_json::json!({"executionId":execution_id}),
+        )
+        .await
+        .map(|_| ())
     }
 
     pub async fn launch_manual_agent_session(
@@ -896,16 +894,25 @@ launch_retention: crate::adaptor::controller::agent_session_launch_retention::ru
     }
 
     pub async fn resume_session_node(&self, node_execution_id: &str) -> Result<(), String> {
-        let response: MutationResponse = self
-            .post(
-                &format!("/v1/workflow/node-executions/{node_execution_id}/resume"),
-                &serde_json::json!({}),
-            )
-            .await?;
-        response
-            .ok
-            .then_some(())
-            .ok_or_else(|| "Resume response was not successful".to_string())
+        let execution_id = crate::adaptor::gateway::workflow::fact_log::FactLogReadBackend::Live(
+            self.store.clone(),
+        )
+        .tree_id_for_node(node_execution_id)
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "node execution not found".to_string())?;
+        let execution = self
+            .workflow_read
+            .get_execution_state(&execution_id)
+            .await
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| "execution not found".to_string())?;
+        self.call(
+            "resume_workspace_session_node",
+            serde_json::json!({"worktreePath":execution.worktree_path,"nodeId":node_execution_id}),
+        )
+        .await
+        .map(|_| ())
     }
 
     pub async fn archive_agent_session(&self, agent_session_id: &str) -> Result<(), String> {
@@ -1038,46 +1045,20 @@ launch_retention: crate::adaptor::controller::agent_session_launch_retention::ru
             .count()
     }
 
-    async fn get<T: DeserializeOwned>(&self, path: &str) -> Result<T, String> {
-        self.request(reqwest::Method::GET, path, None).await
+    fn client(&self) -> crate::client_api_acceptance::NativeClient {
+        crate::client_api_acceptance::connect_client(
+            &crate::client_api_acceptance::ClientEndpoint {
+                url: self.local_api_base_url.clone(),
+                token: self.local_api_token.clone(),
+                launch_id: String::new(),
+            },
+        )
     }
 
-    async fn post<T: DeserializeOwned, B: Serialize + ?Sized>(
-        &self,
-        path: &str,
-        body: &B,
-    ) -> Result<T, String> {
-        let body = serde_json::to_value(body).map_err(|error| error.to_string())?;
-        self.request(reqwest::Method::POST, path, Some(body)).await
-    }
-
-    async fn request<T: DeserializeOwned>(
-        &self,
-        method: reqwest::Method,
-        path: &str,
-        body: Option<serde_json::Value>,
-    ) -> Result<T, String> {
-        let client = reqwest::Client::builder()
-            .no_proxy()
-            .build()
-            .map_err(|error| error.to_string())?;
-        let mut request = client
-            .request(method, format!("{}{path}", self.local_api_base_url))
-            .bearer_auth(&self.local_api_token);
-        if let Some(body) = body {
-            request = request.json(&body);
-        }
-        let response = request.send().await.map_err(|error| error.to_string())?;
-        let status = response.status();
-        let bytes = response.bytes().await.map_err(|error| error.to_string())?;
-        if !status.is_success() {
-            return Err(format!(
-                "HTTP {}: {}",
-                status.as_u16(),
-                String::from_utf8_lossy(&bytes)
-            ));
-        }
-        serde_json::from_slice(&bytes).map_err(|error| error.to_string())
+    async fn call(&self, name: &str, args: serde_json::Value) -> Result<serde_json::Value, String> {
+        crate::client_api_acceptance::request_client(&self.client(), name, args)
+            .await
+            .map_err(|error| error.to_string())
     }
 
     #[allow(deprecated)]
@@ -1100,6 +1081,7 @@ launch_retention: crate::adaptor::controller::agent_session_launch_retention::ru
             local_api,
             local_api_base_url: _,
             local_api_token: _,
+            workflow_read,
         } = self;
         _runtime.shutdown_active_commands().await;
         exit_observer_cancellation.cancel();
@@ -1124,6 +1106,7 @@ launch_retention: crate::adaptor::controller::agent_session_launch_retention::ru
             terminal,
             store,
             workspace_node_commands,
+            workflow_read,
         ));
         tokio::time::timeout(std::time::Duration::from_secs(10), async {
             loop {
@@ -1249,3 +1232,32 @@ impl From<NodeExecutionResponse> for AcceptanceNodeExecution {
 #[cfg(test)]
 #[path = "workflow_control_plane_acceptance_test.rs"]
 mod workflow_control_plane_acceptance_tests;
+
+struct AcceptanceWorkflowStateReads(Arc<crate::usecase::workflow::WorkflowReadUsecase>);
+#[async_trait::async_trait]
+impl crate::usecase::state_subscription::StateSubscriptionRead for AcceptanceWorkflowStateReads {
+    async fn read(
+        &self,
+        target: &crate::usecase::state_subscription::SubscriptionTarget,
+    ) -> Result<
+        crate::usecase::state_subscription::StateValue,
+        crate::usecase::state_subscription::StateReadError,
+    > {
+        use crate::usecase::state_subscription::{StateReadError, StateValue, SubscriptionTarget};
+        let result = match target {
+            SubscriptionTarget::WorkflowExecution(id) => self
+                .0
+                .get_execution_state(id)
+                .await
+                .map(StateValue::WorkflowExecution),
+            _ => Err(WorkflowError::NotFound("unknown target".into())),
+        };
+        result.map_err(|error| StateReadError {
+            message: error.to_string(),
+            source: error.into(),
+        })
+    }
+    fn repositories(&self) -> Vec<String> {
+        vec![]
+    }
+}

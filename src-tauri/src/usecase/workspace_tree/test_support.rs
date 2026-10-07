@@ -38,6 +38,7 @@ impl WorkspaceQueryService for TestWorkspaceQueryService {
         Ok(self.executions.clone())
     }
 
+    #[cfg(any(test, feature = "test-support"))]
     async fn execution_summary(
         &self,
         execution_id: &str,

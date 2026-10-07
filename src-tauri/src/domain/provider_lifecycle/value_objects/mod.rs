@@ -21,8 +21,6 @@ pub(crate) use provider_lifecycle_outcome::{ProviderLifecycleOutcome, ProviderLi
 pub(crate) use provider_lifecycle_scope::ProviderLifecycleScope;
 pub(crate) use provider_lifecycle_signal::{ProviderLifecycleSignal, ProviderLifecycleSignalKind};
 pub(crate) use provider_lifecycle_slot_id::ProviderLifecycleSlotId;
-pub(crate) use provider_lifecycle_unavailable::{
-    ProviderLifecycleUnavailableObservation, ProviderLifecycleUnavailableReason,
-};
+pub(crate) use provider_lifecycle_unavailable::ProviderLifecycleUnavailableReason;
 pub(crate) use scoped_provider_lifecycle_event::ScopedProviderLifecycleEvent;
 pub(crate) mod provider_lifecycle_ingress_result;

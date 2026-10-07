@@ -90,7 +90,7 @@ pub fn test_daemon終了_成功と各段階の失敗と停止で完了通知と�
             .lines()
             .filter_map(|line| line.strip_prefix("shutdown-stage:"))
             .collect();
-        for name in ["local-api.json", "client-api.json"] {
+        for name in ["client-api.json"] {
             assert!(
                 !directory.path().join(name).exists(),
                 "{scenario}: {name} remains"
@@ -329,7 +329,7 @@ pub async fn test_終了処理_どの段階が停止しても全体で15秒以�
         // Then
         assert_eq!(started.elapsed(), std::time::Duration::from_secs(15));
         assert_eq!(*gateway.calls.lock().unwrap(), STAGES[..=index]);
-        for name in ["local-api.json", "client-api.json"] {
+        for name in ["client-api.json"] {
             assert!(!directory.path().join(name).exists());
         }
     }
@@ -349,7 +349,7 @@ pub async fn test_終了処理_期限切れで別サーバの発見ファイル�
     original.publish_discovery().unwrap();
     let replacement = start();
     replacement.publish_discovery().unwrap();
-    let files = ["local-api.json", "client-api.json"].map(|name| directory.path().join(name));
+    let files = ["client-api.json"].map(|name| directory.path().join(name));
     let contents = files.each_ref().map(|path| std::fs::read(path).unwrap());
     let gateway = FakeShutdown {
         blocked: Some("commands"),

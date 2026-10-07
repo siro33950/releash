@@ -15,7 +15,6 @@ pub(crate) mod tests {
     use releash_lib::test_support::integration::platform::ReviewHistoryEntry;
     use releash_lib::test_support::integration::platform::ReviewIdGenerator;
     use releash_lib::test_support::integration::platform::ReviewTarget;
-    use releash_lib::test_support::integration::platform::ReviewThreadDto;
     use releash_lib::test_support::integration::platform::ReviewThreadFilter;
     use releash_lib::test_support::integration::platform::ReviewThreadState;
     use std::path::Path;
@@ -666,7 +665,14 @@ pub(crate) mod tests {
             .unwrap();
 
         assert_eq!(thread.author.kind, ReviewActorKind::Agent);
-        let json = serde_json::to_string(&ReviewThreadDto::from(&thread)).unwrap();
+        let wire = releash_lib::test_support::integration::wire::ReviewThreadDto::try_from(thread)
+            .unwrap();
+        let json = releash_lib::test_support::integration::wire::from_message(
+            "releash.client.v1.ReviewThreadDto",
+            &wire,
+        )
+        .unwrap()
+        .to_string();
         assert!(!json.contains("sessionId"));
         assert!(!json.contains("secret-session"));
     }

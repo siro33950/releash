@@ -122,6 +122,7 @@ pub mod persistence {
     pub use crate::usecase::app_data_gc::LiveWorktreeSet;
 }
 pub mod platform {
+    pub use crate::acceptance_test_support::{workflow_read, workflow_services};
     pub use crate::adaptor::controller::agent_session_launch_retention::run;
     pub use crate::adaptor::controller::agent_session_launch_retention::RETENTION;
     pub use crate::adaptor::controller::agent_session_wiring::compose_agent_sessions;
@@ -133,7 +134,6 @@ pub mod platform {
     pub use crate::adaptor::controller::state::AppState;
     pub use crate::adaptor::controller::terminal_surface_runtime::initialize_background_work_for_acceptance;
     pub use crate::adaptor::controller::terminal_surface_runtime::TerminalSurfaceRuntime;
-    pub use crate::adaptor::controller::wiring::build_canonical_workflow_read_usecase;
     pub use crate::adaptor::controller::wiring::build_code_usecase;
     pub use crate::adaptor::controller::wiring::build_git_host_usecase;
     pub use crate::adaptor::controller::wiring::build_repository_usecase;
@@ -145,7 +145,6 @@ pub mod platform {
     pub use crate::adaptor::controller::wiring::build_workflow_usecase;
     pub use crate::adaptor::controller::wiring::build_workflow_usecase_and_store;
     pub use crate::adaptor::controller::wiring::build_workspace_list_usecase;
-    pub use crate::adaptor::controller::wiring::build_workspace_worktree_path_usecase;
     pub use crate::adaptor::controller::wiring::wire_delegate_continuation;
     pub use crate::adaptor::controller::wiring::wire_workflow_startup;
     pub use crate::adaptor::controller::workflow_startup::recover;
@@ -175,7 +174,6 @@ pub mod platform {
     pub use crate::adaptor::gateway::notion::service_impl::send;
     pub use crate::adaptor::gateway::notion::service_impl::send_with_retry;
     pub use crate::adaptor::gateway::notion::service_impl::NotionApiGatewayImpl;
-    pub use crate::cli::common::cli_result_exit_code;
     pub use crate::common::test_helpers::CancelAfter;
     pub use crate::domain::failure::StorageFailureSource;
     pub use crate::domain::notion::value_objects::NotionTask;
@@ -197,28 +195,10 @@ pub mod platform {
     pub use crate::adaptor::gateway::workspace_state::repository_impl::storage_key;
     pub use crate::adaptor::gateway::workspace_state::repository_impl::WorkspaceStateStore;
 
-    pub use crate::adaptor::presenter::provider_lifecycle_response::ProviderLifecycleReceiveResponse;
     pub use crate::adaptor::presenter::state_subscription_wire::payload;
     pub use crate::adaptor::presenter::terminal_event_hub::TerminalSurfaceEventHub;
 
     pub use crate::agent_session_tui_acceptance::drain_and_close_store;
-    pub use crate::cli::common::cli_error_exit_code;
-    pub use crate::cli::common::cli_error_stderr;
-    pub use crate::cli::common::ensure_existing_data_dir;
-    pub use crate::cli::common::resolve_data_dir_from_env;
-    pub use crate::cli::common::CliError;
-    pub use crate::cli::common::CliSuccess;
-    pub use crate::cli::diagnostics::cmd_diagnostics;
-    pub use crate::cli::diagnostics::ensure_existing_target_dir;
-    pub use crate::cli::file_direct::execution_status;
-    pub use crate::cli::hook::receive_from;
-    pub use crate::cli::output::cmd_output_get;
-    pub use crate::cli::output::cmd_output_submit;
-    pub use crate::cli::test_helpers::execution_started_event;
-    pub use crate::cli::test_helpers::make_execution;
-    pub use crate::cli::test_helpers::root_node_started_event;
-    pub use crate::cli::test_helpers::test_uuid;
-    pub use crate::cli::HookProvider;
     pub use crate::common::operation_context::current;
     pub use crate::common::operation_context::ingress;
     pub use crate::common::operation_context::scope;
@@ -342,7 +322,6 @@ pub mod platform {
     pub use crate::test_support::EnvVarGuard;
     pub use crate::test_support::TEST_ENV_LOCK;
 
-    pub use crate::adaptor::presenter::comment::ReviewThreadDto;
     pub use crate::test_support::captured_warning_messages;
     pub use crate::test_support::install_capturing_logger;
     pub use crate::test_support::retry::record_retry_failure;
@@ -426,6 +405,7 @@ pub mod providers {
     pub use crate::adaptor::gateway::provider_lifecycle::LocalProviderPayloadInterpreter;
     pub use crate::usecase::provider_lifecycle::ingress::ProviderPayloadInput;
 
+    pub use crate::acceptance_test_support::write_hook_failure;
     pub use crate::adaptor::gateway::provider_lifecycle::credential_gateway_impl::LocalProviderLifecycleCredentialGateway;
     pub use crate::adaptor::gateway::provider_lifecycle::event_repository_impl::LocalProviderLifecycleEventRepository;
     pub use crate::adaptor::gateway::provider_lifecycle::hook_health_failure_query_impl::LocalProviderHookHealthFailureQuery;
@@ -449,10 +429,8 @@ pub mod providers {
     pub use crate::domain::provider_lifecycle::value_objects::provider_lifecycle_signal::ProviderLifecycleSignal;
     pub use crate::domain::provider_lifecycle::value_objects::provider_lifecycle_signal::ProviderLifecycleSignalKind;
     pub use crate::domain::provider_lifecycle::value_objects::provider_lifecycle_slot_id::ProviderLifecycleSlotId;
-    pub use crate::domain::provider_lifecycle::value_objects::provider_lifecycle_unavailable::ProviderLifecycleUnavailableObservation;
     pub use crate::domain::provider_lifecycle::value_objects::provider_lifecycle_unavailable::ProviderLifecycleUnavailableReason;
     pub use crate::domain::provider_lifecycle::value_objects::scoped_provider_lifecycle_event::ScopedProviderLifecycleEvent;
-    pub use crate::infrastructure::provider_lifecycle::health_marker::write_local_api_failure;
     pub use crate::usecase::provider_lifecycle::hook_health::ProviderHookHealthFailureObservation;
     pub use crate::usecase::provider_lifecycle::hook_health::ProviderHookHealthFailureQuery;
     pub use crate::usecase::provider_lifecycle::hook_health::ProviderHookHealthFailureQueryError;
@@ -460,7 +438,6 @@ pub mod providers {
     pub use crate::usecase::provider_lifecycle::hook_health::ProviderHookHealthUsecase;
     pub use crate::usecase::provider_lifecycle::ingress::ProviderExecutionTreeStopCommand;
     pub use crate::usecase::provider_lifecycle::ingress::ProviderExecutionTreeStopTransaction;
-    pub use crate::usecase::provider_lifecycle::ingress::ProviderLifecycleIngressPort;
     pub use crate::usecase::provider_lifecycle::ingress::ProviderLifecycleIngressUsecase;
     pub use crate::usecase::provider_lifecycle::ingress::ProviderLifecycleIngressUsecaseError;
     pub use crate::usecase::provider_lifecycle::ingress::ProviderSessionStartTransaction;
@@ -533,12 +510,6 @@ pub mod repository {
     pub use crate::domain::workspace_state::repository::WorkspaceStateRepository;
 }
 pub mod review {
-    pub use crate::cli::review::cmd_review;
-    pub use crate::cli::review::review_actor;
-    pub use crate::cli::review::review_actor_and_worktree;
-    pub use crate::cli::review::review_list_actor_and_worktree;
-    pub use crate::cli::review::review_worktree_from_session;
-    pub use crate::cli::review::ReviewSubcommand;
     pub use crate::domain::code::value_objects::review::ReviewBase;
     pub use crate::domain::code::value_objects::review::ReviewSection;
 }
@@ -756,16 +727,8 @@ pub mod transport {
     pub use crate::adaptor::controller::api::build_router;
     pub use crate::adaptor::controller::api::client::ClientApiDeps;
 
-    pub use crate::adaptor::controller::api::LocalIngress;
-
     pub use crate::adaptor::controller::api::client::router;
 
-    pub use crate::adaptor::controller::api::local_ingress;
-    pub use crate::adaptor::controller::api::local_priority_level;
-    pub use crate::adaptor::controller::api::protocol::ProviderActivityRequest;
-    pub use crate::adaptor::controller::api::protocol::ProviderLifecycleProvider;
-    pub use crate::adaptor::controller::api::protocol::ProviderLifecycleReceiveRequest;
-    pub use crate::adaptor::controller::api::protocol::ProviderLifecycleSignalRequest;
     pub use crate::adaptor::controller::client::dependencies::ClientDependencies;
     pub use crate::adaptor::controller::client::dispatch::invalid_request;
     pub use crate::adaptor::controller::client::dispatch::required;
@@ -773,8 +736,6 @@ pub mod transport {
     pub use crate::adaptor::controller::client::worktree_mutation::admit;
 
     pub use crate::adaptor::gateway::local_api::ClientConnectionFileQuery;
-    pub use crate::adaptor::gateway::local_api::LocalApiClientError;
-    pub use crate::adaptor::gateway::local_api::LocalApiClientGateway;
 
     pub use crate::adaptor::gateway::notion::service_impl::build_client;
     pub use crate::adaptor::presenter::client::from_value;
@@ -786,20 +747,10 @@ pub mod transport {
     pub use crate::adaptor::presenter::connect_wire::to_wire;
     pub use crate::adaptor::presenter::workflow_api::DiagnosticItemResponse;
     pub use crate::adaptor::presenter::workflow_api::DiagnosticReportResponse;
-    pub use crate::cli::api_client::api_error;
-    pub use crate::cli::api_client::mutation;
-    pub use crate::cli::api_client::read_with_fallback;
-    pub use crate::cli::api_client::read_without_fallback;
-    pub use crate::cli::api_client::ApiRequestError;
     pub use crate::client_api_acceptance::connect_client;
     pub use crate::client_api_acceptance::request_client;
     pub use crate::client_api_acceptance::ClientEndpoint;
-    pub use crate::infrastructure::local_api::client::read_local_api_discovery;
-    pub use crate::infrastructure::local_api::client::LocalApiDiscoveryReadError;
-    pub use crate::infrastructure::local_api::client::LocalApiHttpClient;
-    pub use crate::infrastructure::local_api::client::LocalApiTransportError;
     pub use crate::infrastructure::local_api::client_token::BearerToken;
-    pub use crate::infrastructure::local_api::discovery::local_api_discovery_path;
     pub use crate::infrastructure::local_api::discovery::lookup_process_start_time;
     pub use crate::infrastructure::local_api::discovery::process_start_time;
     pub use crate::infrastructure::local_api::discovery::LocalApiDiscovery;
@@ -937,8 +888,6 @@ pub mod workflow {
     pub use crate::adaptor::gateway::workflow::runtime_resolver::resolve_workflow_by_name;
     pub use crate::adaptor::gateway::workflow::runtime_resolver::AppConfigManagedWorktreeResolver;
     pub use crate::adaptor::gateway::workflow::secret_source::collect_configured_secret_values;
-    pub use crate::adaptor::gateway::workflow::secret_source_gateway::EmptySecretSourceGateway;
-    pub use crate::adaptor::gateway::workflow::secret_source_gateway::WorkflowSecretSourceConfigGateway;
     pub use crate::adaptor::gateway::workflow::span_map::YamlSpanMap;
     pub use crate::adaptor::gateway::workflow::startup_repository::HostWorkflowStartup;
     pub use crate::adaptor::gateway::workflow::startup_repository::StoredWorkflowStartupRepository;
@@ -973,6 +922,7 @@ pub mod workflow {
     pub use crate::adaptor::gateway::workflow::workflow_host::output_limit::TRUNCATION_MARKER;
     pub use crate::adaptor::gateway::workflow::workflow_host::prompt_rendering::render_parameter_references;
 
+    pub use crate::adaptor::gateway::workflow::test_helpers::ConfiguredWorktreeGateway;
     pub use crate::adaptor::gateway::workflow::workflow_host::runtime_session::broadcast_state;
     pub use crate::adaptor::gateway::workflow::workflow_host::ControlPlaneCommitCandidate;
     pub use crate::adaptor::gateway::workflow::workflow_host::WorkflowExecutionInsert;
@@ -985,10 +935,8 @@ pub mod workflow {
     pub use crate::adaptor::gateway::workflow::worktree_gateway::canonicalize_managed_worktree_path_inner;
     pub use crate::adaptor::gateway::workflow::worktree_gateway::normalize_worktree_filter_path;
     pub use crate::adaptor::gateway::workflow::worktree_gateway::PassthroughManagedWorktreeGateway;
-    pub use crate::adaptor::gateway::workflow::worktree_gateway::RepoPathsManagedWorktreeGateway;
     pub use crate::adaptor::gateway::workflow::worktree_gateway::RepositoryIsolatedWorktreeGateway;
     pub use crate::adaptor::presenter::workflow::workflow_execution_to_view;
-    pub use crate::cli::workflow::cmd_status;
     pub use crate::domain::workflow::entities::workflow_execution::delegate::DelegateInjection;
     pub use crate::domain::workflow::entities::workflow_execution::AppliedNodeCompletionHandshake;
     pub use crate::domain::workflow::entities::workflow_execution::ExecutionAdvanceDecision;
@@ -1003,7 +951,6 @@ pub mod workflow {
     pub use crate::domain::workflow::gateway::IsolatedWorktreeGateway;
     pub use crate::domain::workflow::gateway::ManagedWorktreeGateway;
     pub use crate::domain::workflow::gateway::NodeProcessReader;
-    pub use crate::domain::workflow::gateway::SecretSourceGateway;
     pub use crate::domain::workflow::repository::ExecutionTreeArchiveCandidate;
     pub use crate::domain::workflow::repository::ExecutionTreeArchiveRecord;
     pub use crate::domain::workflow::repository::ExecutionTreeArchiveRepository;
@@ -1102,7 +1049,6 @@ pub mod workflow {
     pub use crate::usecase::workflow::diagnostic_dto::DiagnosticSpan;
     pub use crate::usecase::workflow::diagnostic_dto::DiagnosticStage;
     pub use crate::usecase::workflow::diagnostic_dto::Severity;
-    pub use crate::usecase::workflow::dto::workflow_execution_summary_to_dto;
     pub use crate::usecase::workflow::WorkflowReadUsecase;
     pub use crate::usecase::workflow::WorkflowUsecase;
 
@@ -1179,6 +1125,13 @@ pub mod workspace {
 }
 
 pub mod wire {
+    pub use crate::adaptor::presenter::client::ReviewThreadDto;
+    pub fn from_message<M: prost::Message>(
+        name: &str,
+        message: &M,
+    ) -> Result<serde_json::Value, String> {
+        crate::adaptor::presenter::client::from_message(name, message)
+    }
     pub use crate::adaptor::presenter::client::command_error;
     pub use crate::adaptor::presenter::client::command_request;
     pub use crate::adaptor::presenter::client::command_result;

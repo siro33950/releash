@@ -20,6 +20,7 @@ pub trait WorkspaceQueryService: Send + Sync {
         page: Option<WorkflowPageRequest>,
     ) -> Result<Vec<WorkflowExecutionSummary>, WorkflowError>;
 
+    #[cfg(any(test, feature = "test-support"))]
     async fn execution_summary(
         &self,
         execution_id: &str,

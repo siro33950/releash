@@ -6,7 +6,7 @@ use releash_lib::test_support::integration::platform::build_repository_usecase;
 use releash_lib::test_support::integration::platform::build_workflow_usecase_and_store;
 use releash_lib::test_support::integration::platform::Fetched;
 use releash_lib::test_support::integration::providers::ProviderKind;
-use releash_lib::test_support::integration::workflow::RepoPathsManagedWorktreeGateway;
+use releash_lib::test_support::integration::workflow::ConfiguredWorktreeGateway;
 use releash_lib::test_support::integration::workflow::SessionExecutionTreeRootFacts;
 use releash_lib::test_support::integration::workflow::WorkflowError;
 use releash_lib::test_support::integration::workflow::WorkflowUsecase;
@@ -28,7 +28,7 @@ pub async fn test_archive_restore認可_別名は受理し非管理対象と別w
     let unmanaged_id = "agent-session-00000000000040008000000000000002";
     let (mut usecase, store) =
         build_workflow_usecase_and_store(directory.path().join("data"), None);
-    usecase.test_replace_managed_worktree_gateway(Arc::new(RepoPathsManagedWorktreeGateway::new(
+    usecase.test_replace_managed_worktree_gateway(Arc::new(ConfiguredWorktreeGateway::new(
         Arc::new(build_repository_usecase()),
         vec![repo_dir.path().to_str().unwrap().to_string()],
     )));

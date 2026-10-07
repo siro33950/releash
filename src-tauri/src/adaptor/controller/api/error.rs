@@ -19,7 +19,3 @@ impl IntoResponse for ApiError {
         (self.status, Json(self.body)).into_response()
     }
 }
-
-#[cfg(test)]
-#[path = "error_test.rs"]
-pub(crate) mod error_tests;

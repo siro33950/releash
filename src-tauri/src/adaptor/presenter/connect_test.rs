@@ -160,8 +160,7 @@ fn test_作業手順の失敗_storeに包んでも転送コードを保持する
 }
 
 #[test]
-fn test_mainでstoreだった経路_httpとconnectのコードを保持する() {
-    use crate::adaptor::controller::api::error::ApiError;
+fn test_mainでstoreだった経路_connectのコードを保持する() {
     use crate::domain::agent_session::repository::AgentSessionRepositoryError;
     use crate::domain::failure::TechnicalFailure;
     use crate::domain::local_event::{CommitBatchError, LocalEventQueryError};
@@ -213,7 +212,6 @@ fn test_mainでstoreだった経路_httpとconnectのコードを保持する() 
     for (error, code) in cases {
         assert!(matches!(error, WorkflowError::Store(_)));
         assert_eq!(error.connect_code(), code);
-        assert_eq!(ApiError::from(error).status, code.http_status());
     }
 
     let runtime = WorkflowRuntimeError::Store(
@@ -226,7 +224,7 @@ fn test_mainでstoreだった経路_httpとconnectのコードを保持する() 
     };
     let workflow = WorkflowError::Store(failure);
     assert_eq!(
-        ApiError::from(workflow).status,
+        workflow.connect_code().http_status(),
         ErrorCode::Aborted.http_status()
     );
 
@@ -238,7 +236,7 @@ fn test_mainでstoreだった経路_httpとconnectのコードを保持する() 
     );
     assert_eq!(ingress.connect_code(), ErrorCode::FailedPrecondition);
     assert_eq!(
-        ApiError::from(ingress).status,
+        ingress.connect_code().http_status(),
         ErrorCode::FailedPrecondition.http_status()
     );
 }

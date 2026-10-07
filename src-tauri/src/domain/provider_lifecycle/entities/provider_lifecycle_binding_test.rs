@@ -1,8 +1,7 @@
 use crate::domain::provider_lifecycle::{
     ProviderKind, ProviderLifecycleBinding, ProviderLifecycleEvent, ProviderLifecycleOutcome,
     ProviderLifecycleRejection, ProviderLifecycleReplayError, ProviderLifecycleScope,
-    ProviderLifecycleSignal, ProviderLifecycleSlotId, ProviderLifecycleUnavailableObservation,
-    ProviderLifecycleUnavailableReason,
+    ProviderLifecycleSignal, ProviderLifecycleSlotId, ProviderLifecycleUnavailableReason,
 };
 use crate::domain::workflow::AgentSessionActivity;
 
@@ -50,112 +49,6 @@ fn activity(provider: ProviderKind, activity: AgentSessionActivity) -> ProviderL
 
 fn slot_id() -> ProviderLifecycleSlotId {
     ProviderLifecycleSlotId::new("workflow-slot-1").unwrap()
-}
-
-fn unavailable(
-    provider: ProviderKind,
-    candidate_scope: ProviderLifecycleScope,
-) -> ProviderLifecycleUnavailableObservation {
-    ProviderLifecycleUnavailableObservation::new(
-        "binding-1",
-        provider,
-        candidate_scope,
-        ProviderLifecycleUnavailableReason::SessionStartDeadlineExceeded,
-    )
-    .unwrap()
-}
-
-#[test]
-fn test_providerライフサイクル利用不能_同一観測の再送は診断事実を重複させない() {
-    let mut binding = binding(ProviderKind::Codex);
-    let observation = unavailable(ProviderKind::Codex, scope("agent-session-1"));
-
-    assert!(matches!(
-        binding.mark_unavailable(observation.clone()),
-        ProviderLifecycleOutcome::Applied(_)
-    ));
-    assert_eq!(
-        binding.mark_unavailable(observation),
-        ProviderLifecycleOutcome::Duplicate
-    );
-}
-
-#[test]
-fn test_providerライフサイクル利用不能_異なる後続観測へ診断を更新する() {
-    let mut binding = binding(ProviderKind::Codex);
-    assert!(matches!(
-        binding.mark_unavailable(unavailable(ProviderKind::Codex, scope("agent-session-1"),)),
-        ProviderLifecycleOutcome::Applied(_)
-    ));
-    let updated = ProviderLifecycleUnavailableObservation::new(
-        "binding-1",
-        ProviderKind::Codex,
-        scope("agent-session-1"),
-        ProviderLifecycleUnavailableReason::LocalApiUnavailable,
-    )
-    .unwrap();
-
-    assert_eq!(
-        binding.mark_unavailable(updated),
-        ProviderLifecycleOutcome::Applied(vec![ProviderLifecycleEvent::LifecycleUnavailable {
-            binding_id: "binding-1".to_string(),
-            provider: ProviderKind::Codex,
-            scope: scope("agent-session-1"),
-            reason: ProviderLifecycleUnavailableReason::LocalApiUnavailable,
-        },])
-    );
-}
-
-#[test]
-fn test_providerライフサイクル利用不能_scope不一致と失効済みbindingを拒否する() {
-    let mut binding = binding(ProviderKind::Codex);
-    let wrong_scope = unavailable(ProviderKind::Codex, scope("other-agent-session"));
-
-    assert_eq!(
-        binding.mark_unavailable(wrong_scope),
-        ProviderLifecycleOutcome::Rejected(ProviderLifecycleRejection::ScopeMismatch)
-    );
-    assert!(matches!(
-        binding.expire(),
-        ProviderLifecycleOutcome::Applied(_)
-    ));
-    assert_eq!(
-        binding.mark_unavailable(unavailable(ProviderKind::Codex, scope("agent-session-1"),)),
-        ProviderLifecycleOutcome::Rejected(ProviderLifecycleRejection::BindingExpired)
-    );
-}
-
-#[test]
-fn test_providerライフサイクル利用不能_後続の正常session_startで回復する() {
-    let mut binding = binding(ProviderKind::Codex);
-    assert!(matches!(
-        binding.mark_unavailable(unavailable(ProviderKind::Codex, scope("agent-session-1"),)),
-        ProviderLifecycleOutcome::Applied(_)
-    ));
-
-    assert_eq!(
-        binding.observe(session_start(ProviderKind::Codex)),
-        ProviderLifecycleOutcome::Applied(vec![ProviderLifecycleEvent::SessionAssociated {
-            binding_id: "binding-1".to_string(),
-            provider_session_id: "provider-session-1".to_string(),
-            transcript_ref: Some("provider://transcript/1".to_string()),
-        }])
-    );
-    assert_eq!(binding.provider_session_id(), Some("provider-session-1"));
-}
-
-#[test]
-fn test_providerライフサイクル利用不能_session_start受理後の期限切れ報告を拒否する() {
-    let mut binding = binding(ProviderKind::Codex);
-    assert!(matches!(
-        binding.observe(session_start(ProviderKind::Codex)),
-        ProviderLifecycleOutcome::Applied(_)
-    ));
-
-    assert_eq!(
-        binding.mark_unavailable(unavailable(ProviderKind::Codex, scope("agent-session-1"),)),
-        ProviderLifecycleOutcome::Rejected(ProviderLifecycleRejection::SessionAlreadyAssociated)
-    );
 }
 
 #[test]
@@ -511,7 +404,7 @@ fn test_providerライフサイクル再生_durable_event列から同じbinding�
 }
 
 #[test]
-fn test_providerライフサイクル再生_利用不能後のsession関連付けで回復状態を復元する() {
+fn test_providerライフサイクル再生_利用不能の報告はbindingの復元対象として拒否する() {
     let events = vec![
         binding(ProviderKind::Codex).armed_event(&slot_id()),
         ProviderLifecycleEvent::LifecycleUnavailable {
@@ -527,9 +420,10 @@ fn test_providerライフサイクル再生_利用不能後のsession関連付�
         },
     ];
 
-    let restored = ProviderLifecycleBinding::rehydrate(events).unwrap();
-
-    assert_eq!(restored.provider_session_id(), Some("provider-session-1"));
+    assert_eq!(
+        ProviderLifecycleBinding::rehydrate(events),
+        Err(ProviderLifecycleReplayError::InvalidTransition)
+    );
 }
 
 #[test]

@@ -1,9 +1,7 @@
 mod failure;
 pub(crate) mod identity;
 pub(crate) use failure::{StartupFailure, StartupFailureKind};
-pub(crate) use identity::{
-    ConnectionObservation, DaemonIdentity, DiscoveryRejection, ProcessObservation,
-};
+pub(crate) use identity::DaemonIdentity;
 use std::collections::BTreeSet;
 
 #[derive(Debug, Clone, PartialEq, Eq)]

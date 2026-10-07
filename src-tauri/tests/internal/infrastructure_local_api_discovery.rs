@@ -41,7 +41,7 @@ pub fn test_local_api_discovery_所有fileを非公開権限で作成して削�
         pid: 42,
         process_started_at: 123,
     };
-    let file = LocalApiDiscoveryFile::create(directory.path(), discovery.clone()).unwrap();
+    let file = LocalApiDiscoveryFile::create_client(directory.path(), discovery.clone()).unwrap();
 
     let decoded: LocalApiDiscovery =
         serde_json::from_slice(&fs::read(file.path()).unwrap()).unwrap();
@@ -59,7 +59,7 @@ pub fn test_local_api_discovery_所有fileを非公開権限で作成して削�
 #[test]
 pub fn test_local_api_discovery_古いownerが新しいdiscoveryを削除しない() {
     let directory = tempfile::tempdir().unwrap();
-    let stale = LocalApiDiscoveryFile::create(
+    let stale = LocalApiDiscoveryFile::create_client(
         directory.path(),
         LocalApiDiscovery {
             port: 40001,
@@ -70,7 +70,7 @@ pub fn test_local_api_discovery_古いownerが新しいdiscoveryを削除しな�
         },
     )
     .unwrap();
-    let current = LocalApiDiscoveryFile::create(
+    let current = LocalApiDiscoveryFile::create_client(
         directory.path(),
         LocalApiDiscovery {
             port: 40002,

@@ -3,14 +3,17 @@
 //! Query services assemble read models from repository ports only. They do not
 //! call command usecases and they do not mutate workflow state.
 
+#[cfg(any(test, feature = "test-support"))]
+use crate::domain::workflow::WorkflowPageRequest;
 use std::sync::Arc;
 
-use serde_json::{Map, Value};
+#[cfg(any(test, feature = "test-support"))]
+use serde_json::Map;
+use serde_json::Value;
 
 use crate::domain::workflow::{
     ExecutionTree, ExecutionTreeId, FacetKind, FacetRepository, FacetSummary, WorkflowDefinition,
-    WorkflowDefinitionName, WorkflowDefinitionRepository, WorkflowError, WorkflowPageRequest,
-    WorkflowSummary,
+    WorkflowDefinitionName, WorkflowDefinitionRepository, WorkflowError, WorkflowSummary,
 };
 
 use super::event_draft;
@@ -19,6 +22,7 @@ use super::ports::{
     WorkflowExecutionProjectionRepository,
 };
 
+#[cfg(any(test, feature = "test-support"))]
 #[derive(Debug, Clone, PartialEq)]
 pub struct WorkflowEventView {
     pub event: String,
@@ -101,6 +105,7 @@ impl WorkflowQueryService {
         self.events.read(&execution_id).await
     }
 
+    #[cfg(any(test, feature = "test-support"))]
     pub async fn get_execution_log_page(
         &self,
         execution_id: &str,
@@ -169,6 +174,7 @@ impl WorkflowQueryService {
     }
 }
 
+#[cfg(any(test, feature = "test-support"))]
 fn event_draft_to_log_view(event: WorkflowEventDraft) -> WorkflowEventView {
     let mut object = match event.payload {
         Value::Object(object) => object,
@@ -192,6 +198,7 @@ fn event_draft_to_log_view(event: WorkflowEventDraft) -> WorkflowEventView {
     }
 }
 
+#[cfg(any(test, feature = "test-support"))]
 fn rename_seconds_field_to_ms(object: &mut Map<String, Value>, source: &str, target: &str) {
     let Some(value) = object.remove(source) else {
         return;
@@ -204,6 +211,7 @@ fn rename_seconds_field_to_ms(object: &mut Map<String, Value>, source: &str, tar
     }
 }
 
+#[cfg(any(test, feature = "test-support"))]
 fn seconds_to_ms(seconds: f64) -> f64 {
     seconds * 1000.0
 }

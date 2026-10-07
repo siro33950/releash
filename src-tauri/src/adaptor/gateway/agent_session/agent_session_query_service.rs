@@ -3,7 +3,6 @@ use std::sync::Arc;
 use super::session_facts::{
     locate_session, read_session_context, read_session_records, SessionLocation,
 };
-use crate::adaptor::gateway::local_event_store::read_only::LocalEventReadStore;
 use crate::adaptor::gateway::local_event_store::LocalEventStore;
 use crate::adaptor::gateway::workflow::fact_log::FactLogReadBackend;
 use crate::domain::agent_session::aggregates::{
@@ -28,12 +27,6 @@ impl LocalAgentSessionQueryService {
     pub fn new(store: Arc<LocalEventStore>) -> Self {
         Self {
             backend: FactLogReadBackend::Live(store),
-        }
-    }
-
-    pub fn new_read_only(store: Arc<LocalEventReadStore>) -> Self {
-        Self {
-            backend: FactLogReadBackend::ReadOnly(store),
         }
     }
 

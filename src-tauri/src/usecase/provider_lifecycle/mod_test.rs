@@ -13,8 +13,7 @@ mod provider_lifecycle_ingress_tests {
     use crate::domain::agent_session::repository::VersionedAgentSession;
     use crate::domain::provider_lifecycle::{
         ProviderKind, ProviderLifecycleIngressResult, ProviderLifecycleScope,
-        ProviderLifecycleSignal, ProviderLifecycleSlotId, ProviderLifecycleUnavailableObservation,
-        ProviderLifecycleUnavailableReason,
+        ProviderLifecycleSignal, ProviderLifecycleSlotId, ProviderLifecycleUnavailableReason,
     };
     use crate::domain::workflow::AgentSessionActivity;
     use crate::domain::workspace_tree::WorkspaceIdentity;
@@ -284,19 +283,6 @@ mod provider_lifecycle_ingress_tests {
                 Err(ProviderLifecycleIngressUsecaseError::Conflict)
             );
         }
-        let unavailable = ProviderLifecycleUnavailableObservation::new(
-            armed.binding_id(),
-            ProviderKind::Codex,
-            scope,
-            ProviderLifecycleUnavailableReason::LocalApiUnavailable,
-        )
-        .unwrap();
-        assert_eq!(
-            ingress
-                .report_unavailable(&slot, armed.capability(), unavailable)
-                .await,
-            Err(ProviderLifecycleIngressUsecaseError::Conflict)
-        );
         assert_eq!(*repository.stored.lock().unwrap(), before);
         assert!(transaction.commits.lock().unwrap().is_empty());
         assert!(health.stored.lock().unwrap().is_empty());
@@ -753,15 +739,13 @@ mod provider_lifecycle_ingress_tests {
             )
             .await
             .unwrap();
-        let unavailable = ProviderLifecycleUnavailableObservation::new(
-            armed.binding_id(),
-            ProviderKind::Codex,
-            scope.clone(),
-            ProviderLifecycleUnavailableReason::CodexHookDeliveryUnconfirmed,
-        )
-        .unwrap();
-        ingress
-            .report_unavailable(&slot_id, armed.capability(), unavailable)
+        health
+            .record_unavailable(
+                ProviderKind::Codex,
+                slot_id.as_str(),
+                ProviderLifecycleUnavailableReason::CodexHookDeliveryUnconfirmed,
+                "hook-delivery-unconfirmed",
+            )
             .await
             .unwrap();
         assert_eq!(health.warnings().await.unwrap().len(), 1);

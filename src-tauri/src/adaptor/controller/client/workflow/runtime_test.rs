@@ -1,5 +1,6 @@
 pub(crate) mod tests {
     use super::super::*;
+    use crate::adaptor::presenter::client::CommandRequestEncode;
 
     fn parse_approve_workflow_node_args(
         args: &serde_json::Value,

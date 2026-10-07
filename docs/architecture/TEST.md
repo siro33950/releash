@@ -60,7 +60,7 @@ mod terminal_surface_registry_tests;
 | `usecase/` | **必須** | 業務手順の正しさを担保 |
 | `adaptor/gateway/` | **必須** | 外部システムとの境界、モデル変換の検証 |
 | `adaptor/controller/command/` | 柔軟 | Tauri 依存で書きにくい場合は省略可 |
-| `adaptor/controller/api/` | 柔軟 | HTTP 依存で書きにくい場合は省略可 |
+| `adaptor/controller/api/` | 柔軟 | Connect 依存で書きにくい場合は省略可 |
 | `adaptor/presenter/` | 柔軟 | 表示整形のみ、必要に応じて |
 | `infrastructure/` | 柔軟 | 外部世界の都合をそのまま扱う層。判断も変換も持たないため、統合テストで検証 |
 | `common/` | 柔軟 | 横断的関心事の包み |

@@ -812,18 +812,8 @@ pub async fn test_workspace読取_未対応定義がabort済みでもcommand出�
             .await
             .unwrap();
         }
-        let read_store =
-            releash_lib::test_support::integration::persistence::LocalEventReadStore::open(
-                directory.path(),
-                std::sync::Arc::new(
-                    releash_lib::test_support::integration::platform::RetryLimiter::new(),
-                ),
-            )
-            .unwrap();
-        for repository in [
-            SqliteWorkspaceTreeRepository::new(store.clone()),
-            SqliteWorkspaceTreeRepository::new_read_only(read_store),
-        ] {
+        {
+            let repository = SqliteWorkspaceTreeRepository::new(store.clone());
             let command = releash_lib::test_support::integration::workspace::node_for_execution(
                 &*repository,
                 &releash_lib::test_support::integration::workspace::WorkspaceIdentity::new("/repo"),

@@ -1,8 +1,8 @@
+#[cfg(any(test, feature = "test-support"))]
+use crate::domain::workflow::WorkflowPageRequest;
 #[cfg(test)]
 use crate::domain::workflow::WorkflowRuntimeSnapshot;
-use crate::domain::workflow::{
-    ExecutionTree, ExecutionTreeId, WorkflowDefinition, WorkflowError, WorkflowPageRequest,
-};
+use crate::domain::workflow::{ExecutionTree, ExecutionTreeId, WorkflowDefinition, WorkflowError};
 
 use super::command::{AbortExecutionCommand, ResolvedStartExecutionCommand};
 
@@ -22,6 +22,7 @@ pub trait WorkflowEventRepository: Send + Sync {
         &self,
         execution_id: &ExecutionTreeId,
     ) -> Result<Vec<WorkflowEventDraft>, WorkflowError>;
+    #[cfg(any(test, feature = "test-support"))]
     async fn read_page(
         &self,
         execution_id: &ExecutionTreeId,

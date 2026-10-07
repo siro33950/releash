@@ -131,6 +131,34 @@ impl ManagedWorktreeResolver for AcceptanceManagedWorktreeResolver {
     }
 }
 
+fn start_provider_api(
+    data_dir: PathBuf,
+    ingress: Arc<crate::usecase::provider_lifecycle::ProviderLifecycleIngressUsecase>,
+) -> Result<Arc<LocalApiServer>, String> {
+    let (binding, daemon) = crate::acceptance_test_support::client_binding(data_dir)
+        .map_err(|error| error.to_string())?;
+    let client = crate::adaptor::controller::api::ClientApiDeps::new(
+        Arc::new(crate::adaptor::controller::client::ClientCommandDispatch::new(daemon)),
+        crate::adaptor::controller::daemon::client_priority_interceptor(),
+    )
+    .with_provider_lifecycle(ingress);
+    let router = crate::adaptor::controller::api::build_router(
+        crate::adaptor::controller::api::auth::ClientTokens {
+            operator: binding.terminal_bearer_token().into(),
+            hook: binding.hook_bearer_token(),
+        },
+        Some(client),
+        crate::adaptor::controller::daemon::default_timeout(),
+    );
+    let server = binding
+        .start(router, &tokio::runtime::Handle::current())
+        .map_err(|error| error.to_string())?;
+    server
+        .publish_discovery()
+        .map_err(|error| error.to_string())?;
+    Ok(server)
+}
+
 pub struct AgentSessionTuiAcceptanceHost {
     launch: Arc<AgentSessionLaunchUsecase>,
     client_api: Arc<LocalApiServer>,
@@ -144,7 +172,7 @@ pub struct AgentSessionTuiAcceptanceHost {
     local_api: std::sync::Mutex<Arc<LocalApiServer>>,
     local_api_data_dir: PathBuf,
     provider_lifecycle_ingress:
-        Arc<dyn crate::usecase::provider_lifecycle::ProviderLifecycleIngressPort>,
+        Arc<crate::usecase::provider_lifecycle::ProviderLifecycleIngressUsecase>,
     store: Arc<LocalEventStore>,
 }
 
@@ -207,23 +235,8 @@ launch_retention: crate::adaptor::controller::agent_session_launch_retention::ru
             subscriptions: subscriptions.clone(),
         })
         .map_err(|error| format!("Provider availability初期化失敗: {error:?}"))?;
-        let local_api_binding = crate::infrastructure::local_api::test_binding(data_dir.clone())
-            .map_err(|error| error.to_string())?;
-        let provider_lifecycle_ingress: Arc<
-            dyn crate::usecase::provider_lifecycle::ProviderLifecycleIngressPort,
-        > = composition.lifecycle_ingress.clone();
-        let local_api_router = crate::adaptor::controller::api::authenticated(
-            crate::adaptor::controller::api::provider_lifecycle::router(Some(
-                provider_lifecycle_ingress.clone(),
-            )),
-            local_api_binding.bearer_token(),
-        );
-        let local_api = local_api_binding
-            .start(local_api_router, &tokio::runtime::Handle::current())
-            .inspect(|server| {
-                server.publish_discovery().unwrap();
-            })
-            .unwrap();
+        let provider_lifecycle_ingress = composition.lifecycle_ingress.clone();
+        let local_api = start_provider_api(data_dir.clone(), provider_lifecycle_ingress.clone())?;
         let workflow_agent_sessions: Arc<dyn WorkflowAgentSessionPort> =
             Arc::new(ProviderWorkflowAgentSessionPort::new(
                 composition.launch.clone(),
@@ -326,24 +339,25 @@ launch_retention: crate::adaptor::controller::agent_session_launch_retention::ru
             vec![],
             String::new(),
         );
-        let client_router = crate::adaptor::controller::api::authenticated(
-            crate::adaptor::controller::api::client::router(
-                Some(
-                    crate::adaptor::controller::api::ClientApiDeps::new(
-                        dispatch,
-                        crate::adaptor::controller::daemon::client_priority_interceptor(),
-                    )
-                    .with_state_subscriptions(
-                        crate::adaptor::controller::api::StateSubscriptionDeps::new(
-                            subscriptions,
-                            terminal.presenter(),
-                            terminal.terminal_subscriptions(),
-                        ),
+        let client_router = crate::adaptor::controller::api::build_router(
+            crate::adaptor::controller::api::auth::ClientTokens {
+                operator: client_binding.client_bearer_token(),
+                hook: client_binding.hook_bearer_token(),
+            },
+            Some(
+                crate::adaptor::controller::api::ClientApiDeps::new(
+                    dispatch,
+                    crate::adaptor::controller::daemon::client_priority_interceptor(),
+                )
+                .with_state_subscriptions(
+                    crate::adaptor::controller::api::StateSubscriptionDeps::new(
+                        subscriptions,
+                        terminal.presenter(),
+                        terminal.terminal_subscriptions(),
                     ),
                 ),
-                crate::adaptor::controller::daemon::default_timeout(),
             ),
-            client_binding.terminal_bearer_token(),
+            crate::adaptor::controller::daemon::default_timeout(),
         );
         let client_api = client_binding
             .start(client_router, &tokio::runtime::Handle::current())
@@ -384,21 +398,10 @@ launch_retention: crate::adaptor::controller::agent_session_launch_retention::ru
     }
 
     pub fn restart_local_api(&self) -> Result<(), String> {
-        let binding =
-            crate::infrastructure::local_api::test_binding(self.local_api_data_dir.clone())
-                .map_err(|error| error.to_string())?;
-        let router = crate::adaptor::controller::api::authenticated(
-            crate::adaptor::controller::api::provider_lifecycle::router(Some(
-                self.provider_lifecycle_ingress.clone(),
-            )),
-            binding.bearer_token(),
-        );
-        let server = binding
-            .start(router, &tokio::runtime::Handle::current())
-            .inspect(|server| {
-                server.publish_discovery().unwrap();
-            })
-            .unwrap();
+        let server = start_provider_api(
+            self.local_api_data_dir.clone(),
+            self.provider_lifecycle_ingress.clone(),
+        )?;
         *self
             .local_api
             .lock()
@@ -477,7 +480,19 @@ launch_retention: crate::adaptor::controller::agent_session_launch_retention::ru
 
     pub async fn resume_session_node(&self, node_execution_id: &str) -> Result<(), String> {
         self.runtime
-            .resume_session_node_by_id(node_execution_id.to_string())
+            .resume_session_node(
+                crate::usecase::workflow::command::ResumeSessionNodeCommand {
+                    execution_id:
+                        crate::adaptor::gateway::workflow::fact_log::FactLogReadBackend::Live(
+                            self.store.clone(),
+                        )
+                        .tree_id_for_node(node_execution_id)
+                        .await
+                        .map_err(|error| error.to_string())?
+                        .ok_or_else(|| format!("Node execution not found: {node_execution_id}"))?,
+                    node_execution_id: node_execution_id.to_string(),
+                },
+            )
             .await
             .map_err(|error| error.to_string())
     }
