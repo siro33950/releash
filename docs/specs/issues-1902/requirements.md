@@ -50,7 +50,7 @@ main `5f24cff2` で読んで確かめた挙動。パスは `src-tauri/src/` 起�
 - hook の health ファイルの書き込みと消去をやめる。
 - HTTP `/v1` を通しているテストを Connect 経由に移す。
 - CI に CLI と共有 crate の job の組を足す。AGENTS.md、`docs/guide/cli.md`（と `docs/guide/workflow/` の該当箇所）を事実に合わせる。
-- `docs/architecture/` のうち HTTP に触れている箇所（CONTROLLER.md、PRESENTER.md、README.md、TEST.md）の更新と、TEST.md の配置の表への CLI と共有 crate の行の追加（表の行は利用者の了承が出てから含める）。
+- `docs/architecture/` のうち HTTP に触れている箇所（CONTROLLER.md、PRESENTER.md、README.md、TEST.md）の更新と、TEST.md の配置の表への CLI と共有 crate の行の追加（表の行は利用者の了承済み）。
 
 ## Non-goals
 
@@ -88,5 +88,5 @@ main `5f24cff2` で読んで確かめた挙動。パスは `src-tauri/src/` 起�
 
 # Assumptions
 
-- `docs/architecture/` のうち HTTP に触れている箇所（CONTROLLER.md、PRESENTER.md、README.md、TEST.md:63）の変更は、利用者が了承済み。文面は releash-e7 が決め、Design に書いた。TEST.md の配置の表への CLI と共有 crate の行の追加は、利用者の了承を待つ。了承が出たものだけを含める。
+- `docs/architecture/` のうち HTTP に触れている箇所（CONTROLLER.md、PRESENTER.md、README.md、TEST.md:63）の変更は、利用者が了承済み。文面は releash-e7 が決め、Design に書いた。TEST.md の配置の表への CLI と共有 crate の行の追加も、利用者が了承済み。
 - main の ruleset の必須のチェックへの新しい集約 job 名の追加は、merge の前に利用者が GitHub の設定で行う。

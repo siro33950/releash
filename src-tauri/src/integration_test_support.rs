@@ -305,13 +305,13 @@ pub mod platform {
     pub use crate::infrastructure::platform::path_aliases::alias_name_for_profile;
     pub use crate::infrastructure::platform::path_aliases::child_env_overrides_from;
     pub use crate::infrastructure::platform::path_aliases::default_data_dir_for_profile;
-    pub use crate::infrastructure::platform::path_aliases::default_data_dir_name_for_profile;
     pub use crate::infrastructure::platform::path_aliases::ensure_alias_wrapper;
     pub use crate::infrastructure::platform::path_aliases::prepare_child_env;
     pub use crate::infrastructure::platform::path_aliases::BuildProfile;
     pub use crate::infrastructure::platform::path_aliases::PathAlias;
     pub use crate::infrastructure::platform::path_aliases::PathAliases;
     pub use crate::infrastructure::terminal::checkpoint_journal::IncrementalCheckpointJournal;
+    pub use releash_client::data_dir::default_data_dir_name_for_profile;
 
     pub use crate::infrastructure::terminal::shell_integration::create_shell_integration_files;
     pub use crate::infrastructure::terminal::terminal_emulator::NativeTerminalCheckpoint;
@@ -745,8 +745,6 @@ pub mod transport {
     pub use crate::adaptor::presenter::connect_wire::rpc;
     pub use crate::adaptor::presenter::connect_wire::to_rpc;
     pub use crate::adaptor::presenter::connect_wire::to_wire;
-    pub use crate::adaptor::presenter::workflow_api::DiagnosticItemResponse;
-    pub use crate::adaptor::presenter::workflow_api::DiagnosticReportResponse;
     pub use crate::client_api_acceptance::connect_client;
     pub use crate::client_api_acceptance::request_client;
     pub use crate::client_api_acceptance::ClientEndpoint;
@@ -998,7 +996,6 @@ pub mod workflow {
     pub use crate::domain::workflow::value_objects::execution::Fanout;
     pub use crate::domain::workflow::value_objects::execution_metadata::ExecutionStatusFilter;
     pub use crate::domain::workflow::value_objects::execution_metadata::WorkflowExecutionSummary;
-    pub use crate::domain::workflow::value_objects::execution_metadata::WorkflowPageRequest;
     pub use crate::domain::workflow::value_objects::facet::FacetKind as facet_FacetKind;
 
     pub use crate::domain::workflow::value_objects::failure::NodeExecutionFailureKind;

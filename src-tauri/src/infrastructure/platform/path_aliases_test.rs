@@ -14,18 +14,6 @@ fn alias_name_for_profile_returns_releash_dev_for_development() {
 }
 
 #[test]
-fn default_data_dir_name_distinguishes_dev_and_production() {
-    assert_eq!(
-        default_data_dir_name_for_profile(BuildProfile::Production),
-        "com.releash.app"
-    );
-    assert_eq!(
-        default_data_dir_name_for_profile(BuildProfile::Development),
-        "com.releash.app.dev"
-    );
-}
-
-#[test]
 fn compose_path_with_alias_bin_prepends_to_head_when_path_set() {
     // alias bin dir は既存 PATH の**先頭**にあること。末尾だと既存 PATH 前方に
     // `releash` / `releash-dev` を含む別ディレクトリがあると wrapper が解決されず

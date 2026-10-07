@@ -1,8 +1,6 @@
 use std::sync::Arc;
 
-use crate::domain::workflow::{
-    ExecutionStatusFilter, WorkflowError, WorkflowExecutionSummary, WorkflowPageRequest,
-};
+use crate::domain::workflow::{ExecutionStatusFilter, WorkflowError, WorkflowExecutionSummary};
 use crate::domain::workspace_tree::WorkspaceIdentity;
 use crate::usecase::workflow::WorkspaceNodeDetailDto;
 
@@ -33,21 +31,8 @@ impl WorkspaceQueryService for TestWorkspaceQueryService {
         &self,
         _workspace_identity: Option<&WorkspaceIdentity>,
         _status: Option<ExecutionStatusFilter>,
-        _page: Option<WorkflowPageRequest>,
     ) -> Result<Vec<WorkflowExecutionSummary>, WorkflowError> {
         Ok(self.executions.clone())
-    }
-
-    #[cfg(any(test, feature = "test-support"))]
-    async fn execution_summary(
-        &self,
-        execution_id: &str,
-    ) -> Result<Option<WorkflowExecutionSummary>, WorkflowError> {
-        Ok(self
-            .executions
-            .iter()
-            .find(|execution| execution.execution_id == execution_id)
-            .cloned())
     }
 }
 

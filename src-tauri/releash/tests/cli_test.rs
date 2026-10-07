@@ -370,6 +370,10 @@ fn test_cli_review読取_sessionと隔離worktreeの対象と絞り込みをサ�
                 wire::state_payload::Value::ReviewSessionThread(wire::NullableReviewThreadDto {
                     value: Some(thread),
                 })
+            } else if mode == "worktree" {
+                wire::state_payload::Value::ReviewThreads(wire::ListReviewThreadDto {
+                    items: vec![thread],
+                })
             } else {
                 wire::state_payload::Value::ReviewSessionThreads(
                     wire::NullableListReviewThreadDto {

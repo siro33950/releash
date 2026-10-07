@@ -519,51 +519,6 @@ fn test_隔離定義_宣言の有無を問わずcontract直下のworktreeを拒�
 }
 
 #[test]
-fn test_診断itemは省略されたoptional_fieldをnoneとしてdeserializeする() {
-    // Given
-    let value = serde_json::json!({
-        "code": "X",
-        "severity": "error",
-        "stage": "parse_shape",
-        "message": "m"
-    });
-
-    // When
-    let item = serde_json::from_value::<
-        crate::adaptor::presenter::workflow_api::DiagnosticItemResponse,
-    >(value)
-    .unwrap();
-
-    // Then
-    assert!(item.span.is_none());
-    assert!(item.workflow_name.is_none());
-    assert!(item.node_name.is_none());
-    assert!(item.facet_key.is_none());
-    assert!(item.facet_kind.is_none());
-    assert!(item.field.is_none());
-}
-
-#[test]
-fn test_診断spanは省略されたsourceをnoneとしてdeserializeする() {
-    // Given
-    let value = serde_json::json!({
-        "start_line": 7,
-        "start_col": 5,
-        "end_line": 7,
-        "end_col": 6
-    });
-
-    // When
-    let span = serde_json::from_value::<
-        crate::adaptor::presenter::workflow_api::DiagnosticSpanResponse,
-    >(value)
-    .unwrap();
-
-    // Then
-    assert!(span.source.is_none());
-}
-
-#[test]
 fn workflow_source_diagnosticsは未知fieldとkeywordを拒否する() {
     let cases = [
         (

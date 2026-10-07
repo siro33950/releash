@@ -9,43 +9,13 @@
 
 use std::path::{Path, PathBuf};
 
-/// debug / release ビルド種別。
-///
-/// `cfg!(debug_assertions)` をテスト境界へ閉じ込めるための拡張点。
-/// pure helper (`alias_name_for_profile` / `default_data_dir_name_for_profile`) に
-/// 渡すことで、テストから dev / 本番 双方の分岐を同一バイナリで検証する。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BuildProfile {
-    /// 本番ビルド (release)。
-    Production,
-    /// dev ビルド (debug)。
-    Development,
-}
-
-impl BuildProfile {
-    /// 現在の cargo ビルド種別から `BuildProfile` を導出する。
-    pub fn current() -> Self {
-        if cfg!(debug_assertions) {
-            Self::Development
-        } else {
-            Self::Production
-        }
-    }
-}
+pub use releash_client::data_dir::BuildProfile;
 
 /// `BuildProfile` から CLI alias 名を決定する。
 pub fn alias_name_for_profile(profile: BuildProfile) -> &'static str {
     match profile {
         BuildProfile::Production => "releash",
         BuildProfile::Development => "releash-dev",
-    }
-}
-
-/// `BuildProfile` から既定の data dir 名（bundle identifier）を決定する。
-pub fn default_data_dir_name_for_profile(profile: BuildProfile) -> &'static str {
-    match profile {
-        BuildProfile::Production => "com.releash.app",
-        BuildProfile::Development => "com.releash.app.dev",
     }
 }
 
@@ -109,9 +79,8 @@ impl PathAliases {
 /// 明示エラーを返す（spec [01]「alias は alias 名・実行 binary・データディレクトリの
 /// 三者を組として保持」境界が曖昧化するのを防ぐため）。
 pub fn default_data_dir_for_profile(profile: BuildProfile) -> Result<PathBuf, String> {
-    let base = dirs::data_dir()
-        .ok_or_else(|| "failed to resolve OS data directory (dirs::data_dir)".to_string())?;
-    Ok(base.join(default_data_dir_name_for_profile(profile)))
+    releash_client::data_dir::default_data_dir_for_profile(profile)
+        .ok_or_else(|| "failed to resolve OS data directory (dirs::data_dir)".to_string())
 }
 
 /// `resolve_session_data_dir_env` の判定結果。

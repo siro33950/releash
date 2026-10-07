@@ -19,8 +19,6 @@ pub(crate) mod terminal_error;
 pub(crate) mod terminal_event_fault_relay;
 pub(crate) mod terminal_event_hub;
 pub(crate) mod workflow;
-#[cfg(any(test, feature = "test-support"))]
-pub(crate) mod workflow_api;
 pub(crate) mod workflow_wire;
 
 pub(crate) mod terminal_subscription;

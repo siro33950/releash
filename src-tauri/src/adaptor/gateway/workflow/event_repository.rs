@@ -1,5 +1,3 @@
-#[cfg(any(test, feature = "test-support"))]
-use crate::domain::workflow::WorkflowPageRequest;
 use std::sync::Arc;
 
 use crate::adaptor::gateway::local_event_store::node_events::{self, NodeEventRow};
@@ -52,38 +50,6 @@ impl WorkflowEventLogRepository {
             }
         }
     }
-
-    #[cfg(any(test, feature = "test-support"))]
-    async fn read_draft_page(
-        &self,
-        execution_id: &ExecutionTreeId,
-        page: WorkflowPageRequest,
-    ) -> Result<Vec<WorkflowEventDraft>, WorkflowError> {
-        match &self.source {
-            WorkflowEventReadSource::Canonical(backend) => {
-                let execution_id = execution_id.as_str().to_string();
-                let rows = backend
-                    .run_indexed(move |connection| {
-                        node_events::read_tree_page(
-                            connection,
-                            &execution_id,
-                            page.offset,
-                            page.limit,
-                        )
-                        .map_err(|error| {
-                            crate::adaptor::gateway::local_event_store::reader::storage_unavailable(
-                                &error,
-                            )
-                        })
-                    })
-                    .await
-                    .map_err(|error| {
-                        WorkflowError::from(super::fact_log::FactReadError::Query(error))
-                    })?;
-                rows.iter().map(row_to_draft).collect()
-            }
-        }
-    }
 }
 
 fn row_to_draft(row: &NodeEventRow) -> Result<WorkflowEventDraft, WorkflowError> {
@@ -118,14 +84,5 @@ impl WorkflowEventRepository for WorkflowEventLogRepository {
         execution_id: &ExecutionTreeId,
     ) -> Result<Vec<WorkflowEventDraft>, WorkflowError> {
         self.read_drafts(execution_id).await
-    }
-
-    #[cfg(any(test, feature = "test-support"))]
-    async fn read_page(
-        &self,
-        execution_id: &ExecutionTreeId,
-        page: WorkflowPageRequest,
-    ) -> Result<Vec<WorkflowEventDraft>, WorkflowError> {
-        self.read_draft_page(execution_id, page).await
     }
 }

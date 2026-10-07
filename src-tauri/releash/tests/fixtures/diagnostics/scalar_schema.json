@@ -1,0 +1,42 @@
+{
+  "facet_summaries": {},
+  "facet_usage": {},
+  "items": [
+    {
+      "code": "WFS002",
+      "message": "workflow shape error: error: line 5 column 5: properties.foo: scalar schema supports only 'string', got 'boolean'\n --> <input>:5:5\n  |\n3 | schemas:\n4 |   payload:\n5 |     type: object\n  |     ^ properties.foo: scalar schema supports only 'string', got 'boolean'\n6 |     properties:\n7 |       foo: boolean\n  |",
+      "severity": "error",
+      "span": {
+        "end_col": 6,
+        "end_line": 5,
+        "start_col": 5,
+        "start_line": 5
+      },
+      "stage": "parse_shape",
+      "workflow_name": "boolean-scalar-schema"
+    },
+    {
+      "code": "WFS002",
+      "message": "workflow shape error: error: line 5 column 5: properties.nested: properties.child: scalar schema supports only 'string', got 'result'\n --> <input>:5:5\n  |\n3 | schemas:\n4 |   payload:\n5 |     type: object\n  |     ^ properties.nested: properties.child: scalar schema supports only 'string', got 'result'\n6 |     properties:\n7 |       nested:\n  |",
+      "severity": "error",
+      "span": {
+        "end_col": 6,
+        "end_line": 5,
+        "start_col": 5,
+        "start_line": 5
+      },
+      "stage": "parse_shape",
+      "workflow_name": "nested-schema-reference"
+    }
+  ],
+  "workflow_summaries": {
+    "boolean-scalar-schema": {
+      "error_count": 1,
+      "info_count": 0
+    },
+    "nested-schema-reference": {
+      "error_count": 1,
+      "info_count": 0
+    }
+  }
+}

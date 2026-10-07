@@ -178,13 +178,7 @@ pub(crate) mod tests {
             .unwrap();
 
         // Then
-        assert!(serde_json::to_value(
-            releash_lib::test_support::integration::transport::DiagnosticReportResponse::from(
-                report
-            )
-        )
-        .unwrap()["workflow_summaries"]["configured"]
-            .is_object());
+        assert!(report.workflow_summaries.contains_key("configured"));
     }
 
     async fn seed_b006_execution(store: &Arc<LocalEventStore>, workspace: &str) {
@@ -249,11 +243,7 @@ pub(crate) mod tests {
         // Then
         assert!(!tree.visible().roots().is_empty());
         assert_eq!(
-            query
-                .execution_summaries(None, None, None)
-                .await
-                .unwrap()
-                .len(),
+            query.execution_summaries(None, None).await.unwrap().len(),
             1
         );
     }

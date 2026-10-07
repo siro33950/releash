@@ -150,22 +150,6 @@ pub fn first_root_row_of_tree(
     rows.next().transpose()
 }
 
-#[cfg(any(test, feature = "test-support"))]
-pub(crate) fn read_tree_page(
-    connection: &Connection,
-    tree_id: &str,
-    offset: usize,
-    limit: usize,
-) -> Result<Vec<NodeEventRow>, rusqlite::Error> {
-    let offset = i64::try_from(offset).unwrap_or(i64::MAX);
-    let limit = i64::try_from(limit).unwrap_or(i64::MAX);
-    let mut statement = connection.prepare(&format!(
-        "SELECT {ROW_COLUMNS} FROM node_events WHERE tree_id = ?1 ORDER BY seq LIMIT ?2 OFFSET ?3"
-    ))?;
-    let rows = statement.query_map(rusqlite::params![tree_id, limit, offset], row_from_sql)?;
-    rows.collect()
-}
-
 pub(crate) fn read_node(
     connection: &Connection,
     tree_id: &str,

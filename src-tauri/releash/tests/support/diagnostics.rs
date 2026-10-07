@@ -67,12 +67,6 @@ impl DiagnosticsHost {
             std::thread::sleep(Duration::from_millis(20));
         }
     }
-    pub async fn diagnose_via_ui_entry(
-        &self,
-        directory: &std::path::Path,
-    ) -> Result<serde_json::Value, String> {
-        self.diagnose(Some(directory)).await
-    }
     pub async fn diagnose(
         &self,
         directory: Option<&std::path::Path>,

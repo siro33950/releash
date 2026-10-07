@@ -15,8 +15,6 @@ mod workflow_control_plane_acceptance;
 #[cfg(feature = "test-support")]
 mod workflow_delegate_acceptance;
 #[cfg(feature = "test-support")]
-mod workflow_diagnostics_acceptance;
-#[cfg(feature = "test-support")]
 mod terminal_surface {
     pub use crate::adaptor::controller::terminal_surface_runtime::{
         initialize_background_work_for_acceptance, BackgroundWork, TerminalSurfaceEventFault,

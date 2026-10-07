@@ -38,9 +38,9 @@ pub use value_objects::{
     SessionExecutionTreeRootFacts, SessionNodeRenamedFact, SessionPermission, SessionSpec,
     StartedFact, StopReceivedFact, SubmitReceivedFact, SubmitRejectedFact, TimeoutKind, TokenUsage,
     TreeRootFact, WorkflowDefinition, WorkflowDefinitionName, WorkflowEvent, WorkflowExecutionId,
-    WorkflowExecutionSummary, WorkflowFacetContents, WorkflowPageRequest, WorkflowSourceFormat,
-    WorkflowSummary, WorkspaceWorktreePath, WorktreeInheritance, WorktreeInventoryEntry,
-    WorktreeMode, NODE_STATUS_COMPLETED,
+    WorkflowExecutionSummary, WorkflowFacetContents, WorkflowSourceFormat, WorkflowSummary,
+    WorkspaceWorktreePath, WorktreeInheritance, WorktreeInventoryEntry, WorktreeMode,
+    NODE_STATUS_COMPLETED,
 };
 
 #[cfg(any(test, feature = "test-support"))]

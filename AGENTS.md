@@ -107,6 +107,7 @@ cargo clippy --locked -p releash-backend -- -D warnings
 cargo clippy --locked -p releash-backend --features test-support -- -D warnings
 cargo test --locked --lib --bins -p releash-backend
 cargo test --locked --doc -p releash-backend
+cargo build --locked -p releash --bin releash
 cargo test --locked --test '*' -p releash-backend
 cargo fmt --check -p releash-desktop
 cargo clippy --locked -p releash-desktop -- -D warnings
@@ -114,20 +115,17 @@ cargo test --locked --lib --bins -p releash-desktop
 cargo test --locked --doc -p releash-desktop
 cargo build --locked -p releash-backend --bin releash-backend -p releash --bin releash
 cargo test --locked --test '*' -p releash-desktop
-```
-
-共有 crate / CLI（`src-tauri/`）:
-
-```bash
-cargo fmt --check -p releash-client -p releash
-cargo clippy --locked -p releash-client -p releash -- -D warnings
-cargo test --locked --lib --bins -p releash-client -p releash
-cargo test --locked --doc -p releash-client -p releash
+cargo fmt --check -p releash
+cargo clippy --locked -p releash -- -D warnings
+cargo test --locked --lib --bins -p releash
+cargo test --locked --doc -p releash
 cargo build --locked -p releash-backend --bin releash-backend -p releash --bin releash
 cargo test --locked --test '*' -p releash
+cargo fmt --check -p releash-client
+cargo clippy --locked -p releash-client -- -D warnings
+cargo test --locked --lib -p releash-client
+cargo test --locked --doc -p releash-client
 ```
-
-backend・シェルの統合テストも、事前に独立 CLI をビルドする。
 
 品質ゲート（プロジェクトルート。サーバ・シェル・フロントをまたぐ検査）:
 

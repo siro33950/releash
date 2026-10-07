@@ -158,11 +158,6 @@ pub mod workflow_delegate_acceptance {
 }
 
 #[cfg(feature = "test-support")]
-pub mod workflow_diagnostics_acceptance {
-    pub use crate::workflow_diagnostics_acceptance::WorkflowDiagnosticsAcceptanceHost;
-}
-
-#[cfg(feature = "test-support")]
 pub mod terminal_surface {
     pub use crate::terminal_surface::{
         initialize_background_work_for_acceptance, TerminalProcessLaunchV1,

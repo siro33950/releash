@@ -1,0 +1,26 @@
+{
+  "facet_summaries": {},
+  "facet_usage": {},
+  "items": [
+    {
+      "code": "WFS002",
+      "field": "schemas",
+      "message": "schemas.payload.properties.values の宣言が不正です: must start with an ASCII alphanumeric character and contain only ASCII alphanumeric characters, '-' or '_'",
+      "severity": "error",
+      "span": {
+        "end_col": 13,
+        "end_line": 7,
+        "start_col": 7,
+        "start_line": 7
+      },
+      "stage": "parse_shape",
+      "workflow_name": "invalid-nested-array-schema"
+    }
+  ],
+  "workflow_summaries": {
+    "invalid-nested-array-schema": {
+      "error_count": 1,
+      "info_count": 0
+    }
+  }
+}

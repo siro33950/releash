@@ -7,5 +7,6 @@ mod generated {
 }
 pub use generated::releash::client::v1 as rpc;
 pub mod compatibility;
+pub mod data_dir;
 pub mod descriptor;
 pub mod discovery;

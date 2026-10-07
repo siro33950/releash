@@ -253,7 +253,7 @@ async fn test_診断local_api_実http経由で指定directoryのreportを返す(
 }
 
 #[tokio::test]
-async fn test_診断_ui経路とcli経路が同じvalid_fixtureで同一reportを返す() {
+async fn test_診断_cli経路はvalid_fixtureで変更前と同じjsonを返す() {
     // Given
     let data_directory = tempfile::tempdir().unwrap();
     let applied_directory = tempfile::tempdir().unwrap();
@@ -266,22 +266,20 @@ async fn test_診断_ui経路とcli経路が同じvalid_fixtureで同一report�
     )
     .unwrap();
     // When
-    let ui_report = host
-        .diagnose_via_ui_entry(fixture_directory.path())
-        .await
-        .unwrap();
+    let expected: serde_json::Value =
+        serde_json::from_str(include_str!("fixtures/diagnostics/valid.json")).unwrap();
     let cli_output =
         run_diagnostics_cli(data_directory.path(), Some(fixture_directory.path()), true);
     let cli_report = json_stdout(&cli_output);
 
     // Then
     assert_eq!(cli_output.status.code(), Some(0));
-    assert_eq!(cli_report, ui_report);
+    assert_eq!(cli_report, expected);
     host.shutdown().await.unwrap();
 }
 
 #[tokio::test]
-async fn test_診断_ui経路とcli経路が同じinvalid_fixtureで同一reportを返す() {
+async fn test_診断_cli経路はinvalid_fixtureで変更前と同じjsonを返す() {
     // Given
     let data_directory = tempfile::tempdir().unwrap();
     let applied_directory = tempfile::tempdir().unwrap();
@@ -295,17 +293,15 @@ async fn test_診断_ui経路とcli経路が同じinvalid_fixtureで同一report
     .unwrap();
 
     // When
-    let ui_report = host
-        .diagnose_via_ui_entry(fixture_directory.path())
-        .await
-        .unwrap();
+    let expected: serde_json::Value =
+        serde_json::from_str(include_str!("fixtures/diagnostics/invalid.json")).unwrap();
     let cli_output =
         run_diagnostics_cli(data_directory.path(), Some(fixture_directory.path()), true);
     let cli_report = json_stdout(&cli_output);
 
     // Then
     assert_eq!(cli_output.status.code(), Some(3));
-    assert_eq!(cli_report, ui_report);
+    assert_eq!(cli_report, expected);
     let item = cli_report["items"]
         .as_array()
         .unwrap()
@@ -320,7 +316,7 @@ async fn test_診断_ui経路とcli経路が同じinvalid_fixtureで同一report
 }
 
 #[tokio::test]
-async fn test_診断_ui経路とcli経路がscalar_schema宣言のwfs002で同一reportを返す() {
+async fn test_診断_cli経路はscalar_schema宣言のwfs002で変更前と同じjsonを返す() {
     // Given
     let data_directory = tempfile::tempdir().unwrap();
     let applied_directory = tempfile::tempdir().unwrap();
@@ -333,17 +329,15 @@ async fn test_診断_ui経路とcli経路がscalar_schema宣言のwfs002で同�
     .unwrap();
 
     // When
-    let ui_report = host
-        .diagnose_via_ui_entry(fixture_directory.path())
-        .await
-        .unwrap();
+    let expected: serde_json::Value =
+        serde_json::from_str(include_str!("fixtures/diagnostics/scalar_schema.json")).unwrap();
     let cli_output =
         run_diagnostics_cli(data_directory.path(), Some(fixture_directory.path()), true);
     let cli_report = json_stdout(&cli_output);
 
     // Then
     assert_eq!(cli_output.status.code(), Some(3));
-    assert_eq!(cli_report, ui_report);
+    assert_eq!(cli_report, expected);
     let items = cli_report["items"].as_array().unwrap();
     for (workflow_name, message_fragment) in [
         (
@@ -370,7 +364,7 @@ async fn test_診断_ui経路とcli経路がscalar_schema宣言のwfs002で同�
 }
 
 #[tokio::test]
-async fn test_診断_ui経路とcli経路がnested_schema_validationのwfs002で同一reportを返す() {
+async fn test_診断_cli経路はnested_schema_validationのwfs002で変更前と同じjsonを返す() {
     // Given
     let data_directory = tempfile::tempdir().unwrap();
     let applied_directory = tempfile::tempdir().unwrap();
@@ -383,17 +377,15 @@ async fn test_診断_ui経路とcli経路がnested_schema_validationのwfs002で
     .unwrap();
 
     // When
-    let ui_report = host
-        .diagnose_via_ui_entry(fixture_directory.path())
-        .await
-        .unwrap();
+    let expected: serde_json::Value =
+        serde_json::from_str(include_str!("fixtures/diagnostics/nested_schema.json")).unwrap();
     let cli_output =
         run_diagnostics_cli(data_directory.path(), Some(fixture_directory.path()), true);
     let cli_report = json_stdout(&cli_output);
 
     // Then
     assert_eq!(cli_output.status.code(), Some(3));
-    assert_eq!(cli_report, ui_report);
+    assert_eq!(cli_report, expected);
     let item = cli_report["items"]
         .as_array()
         .unwrap()

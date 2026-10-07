@@ -19,12 +19,8 @@ impl ClientConnectionFileQuery {
     ) -> Result<ClientConnectionDto, ClientConnectionError> {
         let client = releash_client::discovery::read(&self.0)
             .map_err(|error| ClientConnectionError(error.to_string()))?;
-        let process = lookup_process(client.pid);
         client
-            .verify_process(|_| releash_client::discovery::ProcessStartTimeLookup {
-                process_list_available: process.process_list_available,
-                start_time: process.start_time,
-            })
+            .verify_process(lookup_process)
             .map_err(|error| ClientConnectionError(error.to_string()))?;
 
         Ok(ClientConnectionDto {

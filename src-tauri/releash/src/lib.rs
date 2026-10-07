@@ -61,17 +61,12 @@ fn data_dir(explicit: Option<PathBuf>) -> Result<PathBuf, connectrpc::ConnectErr
         })
         .map(Ok)
         .unwrap_or_else(|| {
-            dirs::data_dir()
-                .map(|path| {
-                    path.join(if cfg!(debug_assertions) {
-                        "com.releash.app.dev"
-                    } else {
-                        "com.releash.app"
-                    })
-                })
-                .ok_or_else(|| {
-                    connectrpc::ConnectError::unavailable("OS data directory is unavailable")
-                })
+            releash_client::data_dir::default_data_dir_for_profile(
+                releash_client::data_dir::BuildProfile::current(),
+            )
+            .ok_or_else(|| {
+                connectrpc::ConnectError::unavailable("OS data directory is unavailable")
+            })
         })
 }
 

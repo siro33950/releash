@@ -35,24 +35,36 @@ fn display<M: prost::Message>(name: &str, value: &M) -> Result<Value, ConnectErr
         .map_err(ConnectError::internal)
 }
 
-fn render(value: Value, json: bool, kind: &str) -> Result<String, ConnectError> {
+#[derive(Clone, Copy)]
+enum View {
+    Execution,
+    Threads,
+    Thread,
+    History,
+}
+
+fn json_text(value: &Value) -> Result<String, ConnectError> {
+    serde_json::to_string_pretty(value)
+        .map(|s| format!("{s}\n"))
+        .map_err(|e| ConnectError::internal(e.to_string()))
+}
+
+fn render(value: Value, json: bool, view: View) -> Result<String, ConnectError> {
     if json {
-        return serde_json::to_string_pretty(&value)
-            .map(|s| format!("{s}\n"))
-            .map_err(|e| ConnectError::internal(e.to_string()));
+        return json_text(&value);
     }
-    match kind {
-        "execution" => Ok(format!("execution_id:  {}\nworkflow:      {}\nstatus:        {}\ncurrent_node:  {}\nupdated_at:    {}\ninput_tokens:  {}\noutput_tokens: {}\n",
+    match view {
+        View::Execution => Ok(format!("execution_id:  {}\nworkflow:      {}\nstatus:        {}\ncurrent_node:  {}\nupdated_at:    {}\ninput_tokens:  {}\noutput_tokens: {}\n",
             text(&value["id"]), text(&value["workflowName"]), text(&value["status"]), text(&value["currentNode"]),
             value["updatedAt"], value["totalTokenUsage"]["inputTokens"], value["totalTokenUsage"]["outputTokens"])),
-        "threads" => {
+        View::Threads => {
             let items = value.as_array().ok_or_else(|| ConnectError::internal("Invalid threads response"))?;
             if items.is_empty() { return Ok("(no review threads)\n".into()); }
             let mut result = format!("{:<36}  {:<9}  {:<20}  UPDATED\n", "THREAD_ID", "STATE", "AUTHOR");
             for item in items { result.push_str(&format!("{:<36}  {:<9}  {:<20}  {}\n", text(&item["id"]), text(&item["state"]), text(&item["author"]["displayName"]), item["updatedAt"])); }
             Ok(result)
         }
-        "thread" => {
+        View::Thread => {
             let target = &value["target"];
             let mut location = target["filePath"].as_str().unwrap_or("(general)").to_owned();
             if let Some(line) = target["lineNumber"].as_u64() { location.push_str(&format!(":L{line}"));
@@ -62,12 +74,11 @@ fn render(value: Value, json: bool, kind: &str) -> Result<String, ConnectError> 
             if value["resolve"].is_object() { let r = &value["resolve"]; result.push_str(&format!("resolve:   {} by {} ({})\n", text(&r["outcome"]), text(&r["actor"]["displayName"]), text(&r["summary"]))); }
             Ok(result)
         }
-        "history" => {
+        View::History => {
             let entries = value.as_array().ok_or_else(|| ConnectError::internal("Invalid history response"))?;
             if entries.is_empty() { return Ok("(no review history)\n".into()); }
             Ok(entries.iter().map(|e| format!("{} {} by {}: {}\n", e["at"], text(&e["kind"]), text(&e["actor"]["displayName"]), e["content"].as_str().or_else(|| e["summary"].as_str()).unwrap_or(""))).collect())
         }
-        _ => serde_json::to_string_pretty(&value).map(|s| format!("{s}\n")).map_err(|e| ConnectError::internal(e.to_string())),
     }
 }
 fn text(value: &Value) -> &str {
@@ -96,7 +107,7 @@ pub async fn run(dir: &Path, command: TopCommand) -> Result<(String, i32), Conne
                 render(
                     display("WorkflowExecutionView", &absent(value.value)?)?,
                     json,
-                    "execution",
+                    View::Execution,
                 )?
             }
             Workflow::Diagnostics { dir, json } => {
@@ -137,7 +148,7 @@ pub async fn run(dir: &Path, command: TopCommand) -> Result<(String, i32), Conne
                     0
                 };
                 let output = if json {
-                    render(value, true, "diagnostics")?
+                    json_text(&value)?
                 } else {
                     diagnostics(&value)
                 };
@@ -163,7 +174,7 @@ pub async fn run(dir: &Path, command: TopCommand) -> Result<(String, i32), Conne
                     }
                 }
                 if json {
-                    render(value, true, "output")?
+                    json_text(&value)?
                 } else if value["status"] == "not_submitted" {
                     format!("not_submitted: node={node}\n")
                 } else {
@@ -181,10 +192,7 @@ pub async fn run(dir: &Path, command: TopCommand) -> Result<(String, i32), Conne
                             ));
                         }
                     }
-                    output.push_str(&format!(
-                        "artifact:\n{}",
-                        render(value["artifact"].clone(), true, "artifact")?
-                    ));
+                    output.push_str(&format!("artifact:\n{}", json_text(&value["artifact"])?));
                     output
                 }
             }
@@ -347,14 +355,17 @@ async fn review(client: &Client, command: Review) -> Result<String, ConnectError
             let mut args = vec![id];
             args.extend(review_filters(file, state, author, unread, thread_id));
             let payload = snapshot(client, target, args).await?;
-            let Some(wire::state_payload::Value::ReviewSessionThreads(value)) = payload.value
-            else {
-                return Err(ConnectError::internal("Invalid threads response"));
+            let threads = match payload.value {
+                Some(wire::state_payload::Value::ReviewSessionThreads(value)) => {
+                    absent(value.value)?
+                }
+                Some(wire::state_payload::Value::ReviewThreads(value)) => value,
+                _ => return Err(ConnectError::internal("Invalid threads response")),
             };
             render(
-                display("ListReviewThreadDto", &absent(value.value)?)?,
+                display("ListReviewThreadDto", &threads)?,
                 json,
-                "threads",
+                View::Threads,
             )
         }
         Review::Get {
@@ -370,7 +381,7 @@ async fn review(client: &Client, command: Review) -> Result<String, ConnectError
             render(
                 display("ReviewThreadDto", &absent(value.value)?)?,
                 json,
-                "thread",
+                View::Thread,
             )
         }
         Review::History {
@@ -393,7 +404,7 @@ async fn review(client: &Client, command: Review) -> Result<String, ConnectError
                 .into_iter()
                 .map(history_entry)
                 .collect::<Result<Vec<_>, _>>()?;
-            render(Value::Array(entries), json, "history")
+            render(Value::Array(entries), json, View::History)
         }
         Review::Create {
             session_id,
@@ -418,7 +429,7 @@ async fn review(client: &Client, command: Review) -> Result<String, ConnectError
             render(
                 display("ReviewThreadDto", &absent(value.thread)?)?,
                 json,
-                "thread",
+                View::Thread,
             )
         }
         Review::Comment {
@@ -440,7 +451,7 @@ async fn review(client: &Client, command: Review) -> Result<String, ConnectError
             render(
                 display("ReviewThreadDto", &absent(value.thread)?)?,
                 json,
-                "thread",
+                View::Thread,
             )
         }
         Review::Resolve {
@@ -464,7 +475,7 @@ async fn review(client: &Client, command: Review) -> Result<String, ConnectError
             render(
                 display("ReviewThreadDto", &absent(value.thread)?)?,
                 json,
-                "thread",
+                View::Thread,
             )
         }
     }

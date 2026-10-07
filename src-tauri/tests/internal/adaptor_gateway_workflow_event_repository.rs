@@ -4,7 +4,6 @@ pub(crate) mod tests {
     use releash_lib::test_support::integration::workflow::ExecutionTreeId;
     use releash_lib::test_support::integration::workflow::WorkflowEventLogRepository;
     use releash_lib::test_support::integration::workflow::WorkflowEventRepository;
-    use releash_lib::test_support::integration::workflow::WorkflowPageRequest;
 
     use tempfile::TempDir;
 
@@ -77,29 +76,11 @@ pub(crate) mod tests {
         let id = ExecutionTreeId::new("00000000-0000-4000-8000-000000000001").unwrap();
         let repository = WorkflowEventLogRepository::with_store(store.clone());
         for (failure, expected) in ReadFailure::cases() {
-            for paged in [false, true] {
-                store.fail_next_read(failure.clone());
-                // When
-                let result = if paged {
-                    repository
-                        .read_page(
-                            &id,
-                            WorkflowPageRequest {
-                                offset: 0,
-                                limit: 1,
-                            },
-                        )
-                        .await
-                } else {
-                    repository.read(&id).await
-                };
-                // Then
-                assert_eq!(
-                    classified_error(result.unwrap_err()).code,
-                    expected,
-                    "paged={paged}"
-                );
-            }
+            store.fail_next_read(failure.clone());
+            // When
+            let result = repository.read(&id).await;
+            // Then
+            assert_eq!(classified_error(result.unwrap_err()).code, expected);
         }
     }
 
@@ -195,22 +176,11 @@ pub(crate) mod tests {
 
         // When
         let records = repository.read(&id).await.unwrap();
-        let page = repository
-            .read_page(
-                &id,
-                WorkflowPageRequest {
-                    offset: 0,
-                    limit: 1,
-                },
-            )
-            .await
-            .unwrap();
 
         // Then
         assert_eq!(
             records[0].payload["root"]["definition"]["nodes"]["main"]["sequence"]["output"],
             "session"
         );
-        assert_eq!(page, records[..1]);
     }
 }

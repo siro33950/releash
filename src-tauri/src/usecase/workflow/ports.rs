@@ -1,5 +1,3 @@
-#[cfg(any(test, feature = "test-support"))]
-use crate::domain::workflow::WorkflowPageRequest;
 #[cfg(test)]
 use crate::domain::workflow::WorkflowRuntimeSnapshot;
 use crate::domain::workflow::{ExecutionTree, ExecutionTreeId, WorkflowDefinition, WorkflowError};
@@ -22,20 +20,6 @@ pub trait WorkflowEventRepository: Send + Sync {
         &self,
         execution_id: &ExecutionTreeId,
     ) -> Result<Vec<WorkflowEventDraft>, WorkflowError>;
-    #[cfg(any(test, feature = "test-support"))]
-    async fn read_page(
-        &self,
-        execution_id: &ExecutionTreeId,
-        page: WorkflowPageRequest,
-    ) -> Result<Vec<WorkflowEventDraft>, WorkflowError> {
-        self.read(execution_id).await.map(|events| {
-            events
-                .into_iter()
-                .skip(page.offset)
-                .take(page.limit)
-                .collect()
-        })
-    }
 }
 
 #[async_trait::async_trait]

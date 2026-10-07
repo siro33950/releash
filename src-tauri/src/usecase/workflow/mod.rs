@@ -36,8 +36,6 @@ use crate::domain::workflow::{
     FacetRepository, FacetSummary, ManagedWorktreeGateway, WorkflowDefinition,
     WorkflowDefinitionRepository, WorkflowError,
 };
-#[cfg(any(test, feature = "test-support"))]
-use crate::domain::workflow::{WorkflowExecutionSummary, WorkflowPageRequest};
 use crate::usecase::workflow::ports::{
     ExternalEditorGateway, WorkflowDefinitionSourceGateway, WorkflowDiagnosticsGateway,
     WorkflowDiagnosticsTarget, WorkflowSourceSaveError,
@@ -46,8 +44,6 @@ use crate::usecase::workflow::ports::{
 use definition::WorkflowDefinitionUsecase;
 use facet::WorkflowFacetUsecase;
 pub(crate) use output::WorkflowOutputUsecase;
-#[cfg(any(test, feature = "test-support"))]
-pub use query_service::WorkflowEventView;
 pub use query_service::WorkflowGetOutputResult;
 use query_service::WorkflowQueryService;
 pub use runtime_command::WorkflowRuntimeUsecase;
@@ -94,7 +90,7 @@ impl WorkflowReadUsecase {
     ) -> Result<Vec<dto::WorkflowSummaryDto>, WorkflowError> {
         let running_names = self
             .workspace_query
-            .execution_summaries(None, Some(ExecutionStatusFilter::Active), None)
+            .execution_summaries(None, Some(ExecutionStatusFilter::Active))
             .await?
             .into_iter()
             .map(|execution| execution.workflow_name)
@@ -105,28 +101,6 @@ impl WorkflowReadUsecase {
                 .map(dto::workflow_summary_to_dto)
                 .collect()
         })
-    }
-
-    #[cfg(any(test, feature = "test-support"))]
-    pub(crate) async fn get_execution(
-        &self,
-        execution_id: &str,
-    ) -> Result<Option<WorkflowExecutionSummary>, WorkflowError> {
-        self.workspace_query.execution_summary(execution_id).await
-    }
-
-    #[cfg(any(test, feature = "test-support"))]
-    pub(crate) async fn get_execution_log_page(
-        &self,
-        execution_id: &str,
-        page: WorkflowPageRequest,
-    ) -> Result<Vec<WorkflowEventView>, WorkflowError> {
-        if self.get_execution(execution_id).await?.is_none() {
-            return Err(WorkflowError::NotFound(format!(
-                "Workflow execution not found: {execution_id}"
-            )));
-        }
-        self.query.get_execution_log_page(execution_id, page).await
     }
 
     pub async fn get_execution_state(

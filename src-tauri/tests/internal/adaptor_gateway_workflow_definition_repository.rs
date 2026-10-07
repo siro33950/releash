@@ -246,28 +246,19 @@ nodes:
     let WorkflowSourceSaveError::Diagnostics(items) = error else {
         panic!("missing knowledge must remain a structured diagnostic");
     };
-    let items = serde_json::to_value(
-        items
-            .into_iter()
-            .map(releash_lib::test_support::integration::transport::DiagnosticItemResponse::from)
-            .collect::<Vec<_>>(),
-    )
-    .unwrap()
-    .as_array()
-    .unwrap()
-    .clone();
     let diagnostic = items
         .iter()
-        .find(|item| item["code"] == "FAC002")
+        .find(|item| item.code == "FAC002")
         .expect("missing knowledge FAC002");
-    assert_eq!(diagnostic["workflow_name"], "missing-knowledge");
-    assert_eq!(diagnostic["node_name"], "main");
-    assert_eq!(diagnostic["facet_key"], "missing-name");
-    assert_eq!(diagnostic["facet_kind"], "knowledge");
-    assert_eq!(diagnostic["field"], "knowledge");
-    assert!(diagnostic["message"]
-        .as_str()
-        .is_some_and(|message| message.contains("missing-name")));
+    assert_eq!(
+        diagnostic.workflow_name.as_deref(),
+        Some("missing-knowledge")
+    );
+    assert_eq!(diagnostic.node_name.as_deref(), Some("main"));
+    assert_eq!(diagnostic.facet_key.as_deref(), Some("missing-name"));
+    assert_eq!(diagnostic.facet_kind.as_deref(), Some("knowledge"));
+    assert_eq!(diagnostic.field.as_deref(), Some("knowledge"));
+    assert!(diagnostic.message.contains("missing-name"));
     assert!(!workflows.path().join("missing-knowledge.yml").exists());
 }
 

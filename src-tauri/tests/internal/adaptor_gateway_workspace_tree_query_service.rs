@@ -554,7 +554,7 @@ pub async fn launch区分が同じworktreeのworkflow一覧とsession一覧を�
     let query = service(&repository);
 
     let workflow_ids = query
-        .execution_summaries(Some(&WorkspaceIdentity::new("/repo")), None, None)
+        .execution_summaries(Some(&WorkspaceIdentity::new("/repo")), None)
         .await
         .unwrap()
         .into_iter()
@@ -991,16 +991,15 @@ pub async fn test_workflow単一取得_単独sessionをworkflow_summaryとして
     .unwrap();
     let query = service(&SqliteWorkspaceTreeRepository::new(store));
     // When / Then
-    assert!(query.execution_summary(session).await.unwrap().is_none());
-    assert_eq!(
-        query
-            .execution_summary(workflow)
-            .await
-            .unwrap()
-            .unwrap()
-            .execution_id,
-        workflow
-    );
+    let ids = query
+        .execution_summaries(None, None)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|execution| execution.execution_id)
+        .collect::<Vec<_>>();
+    assert!(!ids.iter().any(|id| id == session));
+    assert!(ids.iter().any(|id| id == workflow));
 }
 
 #[tokio::test]
@@ -1035,7 +1034,7 @@ pub async fn test_workspace読取_実経路で失敗分類を保持する() {
                     .unwrap()
                     .map(|_| ())
             } else {
-                query.execution_records(None, None, None).await.map(|_| ())
+                query.execution_records(None, None).await.map(|_| ())
             };
             // Then
             assert_eq!(classified_error(result.unwrap_err()).code, expected);

@@ -769,21 +769,27 @@ launch_retention: crate::adaptor::controller::agent_session_launch_retention::ru
     }
 
     pub async fn workflow_log(&self, execution_id: &str) -> Result<Vec<serde_json::Value>, String> {
-        self.workflow_read
-            .get_execution_log_page(
-                execution_id,
-                crate::domain::workflow::WorkflowPageRequest::new(0, 100),
+        use crate::usecase::workflow::ports::WorkflowEventRepository;
+        let execution_id = crate::domain::workflow::ExecutionTreeId::new(execution_id.to_string())
+            .map_err(|error| error.to_string())?;
+        Ok(
+            crate::adaptor::gateway::workflow::WorkflowEventLogRepository::with_store(
+                self.store.clone(),
             )
+            .read(&execution_id)
             .await
             .map_err(|error| error.to_string())?
             .into_iter()
             .map(|event| {
-                serde_json::to_value(
-                    crate::adaptor::presenter::workflow_api::WorkflowEventResponse::from(event),
-                )
-                .map_err(|error| error.to_string())
+                let mut object = match event.payload {
+                    serde_json::Value::Object(object) => object,
+                    other => serde_json::Map::from_iter([("payload".to_string(), other)]),
+                };
+                object.insert("event".to_string(), event.event_kind.into());
+                serde_json::Value::Object(object)
             })
-            .collect()
+            .collect(),
+        )
     }
 
     pub async fn execution_direct(
