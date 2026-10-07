@@ -2,17 +2,17 @@ use super::*;
 #[test]
 fn test_接続失敗表示_初回設定を受け取れない理由と古い側を画面へ渡す() {
     // Given / When / Then
-    let settings = failure(DaemonConnectionState::InitialSettingsUnavailable {
+    let settings = failure(DaemonConnectionFailure::InitialSettingsUnavailable {
         detail: Some("settings denied".into()),
     });
     assert!(settings
         .message
         .contains("サーバの初回設定を受信できませんでした"));
     assert!(settings.message.contains("settings denied"));
-    let timeout = failure(DaemonConnectionState::InitialSettingsUnavailable { detail: None });
+    let timeout = failure(DaemonConnectionFailure::InitialSettingsUnavailable { detail: None });
     assert_eq!(timeout.message, "サーバの初回設定を受信できませんでした");
     for server_older in [true, false] {
-        let value = failure(DaemonConnectionState::Incompatible {
+        let value = failure(DaemonConnectionFailure::Incompatible {
             server_older,
             server_release: "server".into(),
             client_release: "desktop".into(),

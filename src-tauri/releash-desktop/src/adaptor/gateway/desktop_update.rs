@@ -81,7 +81,7 @@ impl DesktopUpdateGateway for TauriUpdateGateway {
     }
 }
 #[async_trait::async_trait]
-impl crate::usecase::desktop_update::DesktopUpdateInstaller for TauriUpdateGateway {
+impl crate::domain::desktop_update::DesktopUpdateInstaller for TauriUpdateGateway {
     async fn download(&self) -> Result<(), String> {
         let update = self
             .update

@@ -1,7 +1,7 @@
 use super::desktop_client::{self, DesktopClient};
 use crate::common::retry::RetryLimiter;
 use crate::domain::daemon_connection::{
-    DaemonConnectionState, DaemonEndpoint, DaemonResult, DaemonService, DiscoveredDaemon,
+    DaemonConnectionFailure, DaemonEndpoint, DaemonResult, DaemonService, DiscoveredDaemon,
 };
 use crate::usecase::daemon_connection_query::DaemonConnectionQueryService;
 use releash_sdk::daemon;
@@ -12,6 +12,7 @@ pub struct DaemonServiceGateway {
     executable: PathBuf,
     data_dir: PathBuf,
     limiter: Arc<RetryLimiter>,
+    deadline: crate::common::deadline::Deadline,
     client: tokio::sync::watch::Sender<Option<Arc<DesktopClient>>>,
 }
 impl DaemonServiceGateway {
@@ -19,12 +20,14 @@ impl DaemonServiceGateway {
         executable: PathBuf,
         data_dir: PathBuf,
         limiter: Arc<RetryLimiter>,
+        deadline: crate::common::deadline::Deadline,
         client: tokio::sync::watch::Sender<Option<Arc<DesktopClient>>>,
     ) -> Self {
         Self {
             executable,
             data_dir,
             limiter,
+            deadline,
             client,
         }
     }
@@ -35,17 +38,17 @@ impl DaemonServiceGateway {
             .ok_or_else(|| "サーバに接続していません".into())
     }
 }
-fn daemon_failure(error: daemon::DaemonError) -> DaemonConnectionState {
+fn daemon_failure(error: daemon::DaemonError) -> DaemonConnectionFailure {
     match error {
-        daemon::DaemonError::Exited { status, stderr } => DaemonConnectionState::StartupFailed {
+        daemon::DaemonError::Exited { status, stderr } => DaemonConnectionFailure::StartupFailed {
             status: Some(status.to_string()),
             stderr,
         },
-        daemon::DaemonError::StartupTimeout { stderr } => DaemonConnectionState::StartupFailed {
+        daemon::DaemonError::StartupTimeout { stderr } => DaemonConnectionFailure::StartupFailed {
             status: None,
             stderr,
         },
-        error => DaemonConnectionState::TechnicalFailure(error.to_string()),
+        error => DaemonConnectionFailure::TechnicalFailure(error.to_string()),
     }
 }
 impl DaemonService for DaemonServiceGateway {
@@ -70,7 +73,7 @@ impl DaemonService for DaemonServiceGateway {
     fn start(&self) -> DaemonResult<'_, ()> {
         Box::pin(async move {
             let cwd = std::env::current_dir()
-                .map_err(|e| DaemonConnectionState::TechnicalFailure(e.to_string()))?;
+                .map_err(|e| DaemonConnectionFailure::TechnicalFailure(e.to_string()))?;
             daemon::start(&self.executable, &self.data_dir, &cwd)
                 .await
                 .map_err(daemon_failure)?;
@@ -97,34 +100,27 @@ impl DaemonService for DaemonServiceGateway {
             };
             let client = Arc::new(DesktopClient::start(
                 desktop_client::client(&connection)
-                    .map_err(DaemonConnectionState::TechnicalFailure)?,
+                    .map_err(DaemonConnectionFailure::TechnicalFailure)?,
                 desktop_client::stream_client(&connection)
-                    .map_err(DaemonConnectionState::TechnicalFailure)?,
+                    .map_err(DaemonConnectionFailure::TechnicalFailure)?,
                 self.limiter.clone(),
             ));
-            tokio::time::timeout(
-                daemon::timeout("min_connect_timeout_ms"),
-                client.first_settings(),
-            )
-            .await
-            .map_err(|_| DaemonConnectionState::InitialSettingsUnavailable { detail: None })?
-            .map_err(|e| DaemonConnectionState::InitialSettingsUnavailable {
-                detail: Some(e.message),
-            })?;
-            self.client.send_replace(Some(client.clone()));
-            tokio::time::timeout(
-                daemon::timeout("min_connect_timeout_ms"),
-                client.first_settings_applied(),
-            )
-            .await
-            .map_err(|_| DaemonConnectionState::InitialSettingsUnavailable {
-                detail: Some("初回設定の適用が完了しませんでした".into()),
-            })?;
+            self.deadline
+                .call(client.first_settings())
+                .await
+                .map_err(|_| DaemonConnectionFailure::InitialSettingsUnavailable { detail: None })?
+                .map_err(|e| DaemonConnectionFailure::InitialSettingsUnavailable {
+                    detail: Some(e.message),
+                })?;
+            self.client.send_replace(Some(client));
             Ok(())
         })
     }
 }
 impl DaemonConnectionQueryService for DaemonServiceGateway {
+    fn initial_settings(&self) -> Option<DesktopSettingsDto> {
+        self.client().ok()?.initial_settings()
+    }
     fn settings(&self) -> Option<DesktopSettingsDto> {
         self.client().ok()?.current_settings()
     }

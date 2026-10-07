@@ -205,7 +205,7 @@ async fn test_古いサーバ入れ替え_停止失敗では起動せず停止�
 mod support;
 
 #[tokio::test]
-async fn test_初回適用待ち_起動計測を残しhidden接続待機中に開いた窓を通常窓へ置き換える() {
+async fn test_初回設定適用_通知のobserverが無くても適用しhidden接続待機中の窓を置き換える() {
     use futures_util::StreamExt;
     use releash_desktop::test_support::integration::settings_observer::observe;
     use releashd::desktop_api::test_support as telemetry;
@@ -267,6 +267,31 @@ async fn test_初回適用待ち_起動計測を残しhidden接続待機中に�
             frame
         })
         .collect();
+        let release_settings = Arc::new(tokio::sync::Notify::new());
+        let release = release_settings.clone();
+        let release_change = Arc::new(tokio::sync::Notify::new());
+        let changed = release_change.clone();
+        let payload = prost::Message::encode_to_vec(&releash_sdk::wire::StateSubscriptionEvent {
+            event: Some(
+                releash_sdk::wire::state_subscription_event::Event::Snapshot(
+                    releash_sdk::wire::StatePayload {
+                        value: Some(releash_sdk::wire::state_payload::Value::DesktopSettings(
+                            releash_sdk::wire::DesktopSettings {
+                                close_to_tray: Some(true),
+                                start_minimized: Some(false),
+                                crash_reporting: Some(false),
+                                performance_telemetry: Some(true),
+                                auto_launch: Some(false),
+                            },
+                        )),
+                    },
+                ),
+            ),
+            ..Default::default()
+        });
+        let mut changed_frame = vec![0];
+        changed_frame.extend_from_slice(&(payload.len() as u32).to_be_bytes());
+        changed_frame.extend_from_slice(&payload);
         let router = axum::Router::new()
             .route(
                 "/releash.client.v1.ClientService/GetServerInfo",
@@ -279,10 +304,18 @@ async fn test_初回適用待ち_起動計測を残しhidden接続待機中に�
                 "/releash.client.v1.ClientService/OpenStateStream",
                 axum::routing::post(move || {
                     let frames = frames.clone();
+                    let release = release.clone();
+                    let changed = changed.clone();
+                    let changed_frame = changed_frame.clone();
                     async move {
-                        let stream = futures_util::stream::iter(
-                            frames.into_iter().map(Ok::<_, std::convert::Infallible>),
-                        )
+                        let stream = futures_util::stream::once(async move {
+                            release.notified().await;
+                            Ok::<_, std::convert::Infallible>(frames.concat())
+                        })
+                        .chain(futures_util::stream::once(async move {
+                            changed.notified().await;
+                            Ok::<_, std::convert::Infallible>(changed_frame)
+                        }))
                         .chain(futures_util::stream::pending());
                         (
                             [("content-type", "application/connect+proto")],
@@ -307,45 +340,73 @@ async fn test_初回適用待ち_起動計測を残しhidden接続待機中に�
         );
         let handle = app.handle().clone();
         let mut initialized = tokio::spawn(async move {
-            host::initialize_desktop(&handle, hidden).await;
+            host::initialize_desktop_with_settings_applied(&handle, hidden, || {
+                telemetry::set_performance_configured(true);
+                telemetry::set_performance_enabled(true);
+            })
+            .await;
         });
-        let client = tokio::time::timeout(
-            Duration::from_secs(3),
-            updates.wait_for(|client| client.is_some()),
-        )
-        .await
-        .unwrap()
-        .unwrap()
-        .clone()
-        .unwrap();
         // When / Then
         assert!(
             tokio::time::timeout(Duration::from_millis(30), &mut initialized)
                 .await
                 .is_err()
         );
+        assert!(updates.borrow().is_none());
         assert!(app.get_webview_window("main").is_none());
         assert!(host::desktop_login_item_calls(app.handle()).is_empty());
         if hidden {
             host::show_desktop(app.handle()).unwrap();
             assert!(app.get_webview_window("startup-failure").is_some());
         }
-        let handle = app.handle().clone();
-        let observer = tokio::spawn(observe(
-            updates,
-            |client| client.settings_receiver(),
-            move |client, settings| {
-                host::apply_observed_desktop_settings(&handle, settings);
-                // テスト用の計測先を有効にし、ビルド時の OTLP 設定に依存させない。
-                telemetry::set_performance_configured(true);
-                telemetry::set_performance_enabled(settings.performance_telemetry);
-                client.mark_settings_applied();
-            },
-        ));
+        release_settings.notify_one();
         tokio::time::timeout(Duration::from_secs(3), &mut initialized)
             .await
             .unwrap()
             .unwrap();
+        let client = updates.borrow_and_update().clone().unwrap();
+        assert!(!host::desktop_window_preferences(app.handle()));
+        assert_eq!(
+            host::desktop_login_item_calls(app.handle())
+                .iter()
+                .filter(|call| **call == "register")
+                .count(),
+            1
+        );
+        release_change.notify_one();
+        let mut settings = client.settings_receiver();
+        tokio::time::timeout(
+            Duration::from_secs(3),
+            settings.wait_for(|value| value.is_some_and(|settings| !settings.auto_launch)),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let handle = app.handle().clone();
+        let observer = tokio::spawn(observe(
+            updates,
+            |client| client.settings_receiver(),
+            move |_, settings| {
+                let handle = handle.clone();
+                async move {
+                    host::apply_observed_desktop_settings(&handle, settings).await;
+                }
+            },
+        ));
+        tokio::time::timeout(Duration::from_secs(3), async {
+            while !host::desktop_window_preferences(app.handle()) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(
+            host::desktop_login_item_calls(app.handle())
+                .iter()
+                .filter(|call| **call == "unregister")
+                .count(),
+            1
+        );
         assert_eq!(
             host::desktop_login_item_calls(app.handle())
                 .iter()
@@ -383,38 +444,27 @@ async fn test_初回適用待ち_起動計測を残しhidden接続待機中に�
         assert!(operations.contains(&"startup.first_window_ready"));
         if !hidden {
             use releash_desktop::test_support::integration::daemon_connection::{
-                DaemonConnectionState, DaemonEndpoint, DaemonService, DaemonServiceGateway,
-                RetryLimiter,
+                DaemonEndpoint, DaemonService, DaemonServiceGateway, RetryLimiter,
             };
             let (clients, mut updates) = tokio::sync::watch::channel(None);
             let gateway = Arc::new(DaemonServiceGateway::new(
                 "/missing/releashd".into(),
                 directory.path().into(),
                 Arc::new(RetryLimiter::new()),
+                releash_desktop::test_support::integration::daemon_connection::Deadline(
+                    releash_sdk::daemon::timeout("min_connect_timeout_ms"),
+                ),
                 clients,
             ));
             let endpoint = DaemonEndpoint {
                 url: format!("http://127.0.0.1:{}", discovery.port),
                 token: discovery.token,
             };
-            let connecting = tokio::spawn(async move { gateway.connect(&endpoint).await });
-            tokio::time::timeout(
-                Duration::from_secs(3),
-                updates.wait_for(|client| client.is_some()),
-            )
-            .await
-            .unwrap()
-            .unwrap();
             // When / Then
-            tokio::time::pause();
-            tokio::time::advance(releash_sdk::daemon::timeout("min_connect_timeout_ms")).await;
-            assert_eq!(
-                connecting.await.unwrap(),
-                Err(DaemonConnectionState::InitialSettingsUnavailable {
-                    detail: Some("初回設定の適用が完了しませんでした".into()),
-                })
-            );
-            tokio::time::resume();
+            release_settings.notify_one();
+            gateway.connect(&endpoint).await.unwrap();
+            assert!(gateway.client().is_ok());
+            assert!(updates.borrow_and_update().is_some());
         }
         observer.abort();
         drop(client);

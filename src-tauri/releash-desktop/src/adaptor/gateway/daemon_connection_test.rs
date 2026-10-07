@@ -10,7 +10,7 @@ fn test_起動結果_終了状態とstderrおよび確認期限切れを状態�
             status,
             stderr: "failure tail".into()
         }),
-        DaemonConnectionState::StartupFailed {
+        DaemonConnectionFailure::StartupFailed {
             status: Some(status.to_string()),
             stderr: "failure tail".into()
         }
@@ -19,7 +19,7 @@ fn test_起動結果_終了状態とstderrおよび確認期限切れを状態�
         daemon_failure(daemon::DaemonError::StartupTimeout {
             stderr: "waiting tail".into()
         }),
-        DaemonConnectionState::StartupFailed {
+        DaemonConnectionFailure::StartupFailed {
             status: None,
             stderr: "waiting tail".into()
         }
@@ -27,6 +27,6 @@ fn test_起動結果_終了状態とstderrおよび確認期限切れを状態�
     let error = std::io::Error::new(std::io::ErrorKind::NotFound, "missing executable");
     assert_eq!(
         daemon_failure(daemon::DaemonError::Io(error)),
-        DaemonConnectionState::TechnicalFailure("missing executable".into())
+        DaemonConnectionFailure::TechnicalFailure("missing executable".into())
     );
 }

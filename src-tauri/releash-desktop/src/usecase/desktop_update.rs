@@ -1,3 +1,4 @@
+use crate::domain::desktop_update::DesktopUpdateInstaller;
 use std::sync::Arc;
 
 #[derive(Clone, serde::Serialize)]
@@ -57,10 +58,3 @@ impl DesktopUpdateUsecase {
 #[cfg(test)]
 #[path = "desktop_update_test.rs"]
 mod desktop_update_tests;
-
-#[async_trait::async_trait]
-pub(crate) trait DesktopUpdateInstaller: Send + Sync {
-    async fn download(&self) -> Result<(), String>;
-    async fn install(&self) -> Result<(), String>;
-    fn restart(&self) -> Result<(), String>;
-}

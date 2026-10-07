@@ -50,6 +50,9 @@ pub fn run() {
                 std::env::current_exe()?.with_file_name("releashd"),
                 data_dir,
                 Arc::new(crate::common::retry::RetryLimiter::new()),
+                crate::common::deadline::Deadline(releash_sdk::daemon::timeout(
+                    "min_connect_timeout_ms",
+                )),
                 clients,
             ),
         );
@@ -72,6 +75,7 @@ pub fn run() {
             connection_usecase,
             login,
         ));
+        app.manage(crate::common::serial::Serial::default());
         app.manage(lifecycle.clone());
         app.manage(crate::common::log_failure::LogFailure(lifecycle));
         app.manage(
@@ -85,9 +89,11 @@ pub fn run() {
         tauri::async_runtime::spawn(infrastructure::settings_observer::observe(
             client_updates,
             |client| client.settings_receiver(),
-            move |client, settings| {
-                adaptor::controller::desktop_lifecycle::settings_changed(&observer_app, settings);
-                client.mark_settings_applied();
+            move |_, settings| {
+                let app = observer_app.clone();
+                async move {
+                    adaptor::controller::desktop_lifecycle::settings_changed(&app, settings).await;
+                }
             },
         ));
         app.manage(usecase::desktop_update::DesktopUpdateUsecase::new(

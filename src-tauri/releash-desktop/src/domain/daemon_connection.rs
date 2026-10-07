@@ -17,8 +17,13 @@ pub struct DiscoveredDaemon {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DaemonConnectionState {
     NotObserved,
-    NotRunning,
     Connected(DaemonEndpoint),
+    Failed(DaemonConnectionFailure),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DaemonConnectionFailure {
+    NotRunning,
     Incompatible {
         server_older: bool,
         server_release: String,
@@ -52,25 +57,28 @@ impl DaemonConnection {
         match Compatibility::assess(protocol, server.protocol) {
             Compatibility::Compatible => true,
             compatibility => {
-                self.state = DaemonConnectionState::Incompatible {
+                self.failed(DaemonConnectionFailure::Incompatible {
                     server_older: compatibility == Compatibility::ServerOlder,
                     server_release: server.release.clone(),
                     client_release: release.into(),
-                };
+                });
                 false
             }
         }
     }
     pub fn observe_not_running(&mut self) {
-        if !matches!(self.state, DaemonConnectionState::StartupFailed { .. }) {
-            self.state = DaemonConnectionState::NotRunning;
+        if !matches!(
+            self.state,
+            DaemonConnectionState::Failed(DaemonConnectionFailure::StartupFailed { .. })
+        ) {
+            self.failed(DaemonConnectionFailure::NotRunning);
         }
     }
     pub fn begin_start(&mut self) {
         self.state = DaemonConnectionState::NotObserved;
     }
-    pub fn failed(&mut self, failure: DaemonConnectionState) {
-        self.state = failure;
+    pub fn failed(&mut self, failure: DaemonConnectionFailure) {
+        self.state = DaemonConnectionState::Failed(failure);
     }
     pub fn connected(&mut self, endpoint: DaemonEndpoint) {
         self.state = DaemonConnectionState::Connected(endpoint);
@@ -78,11 +86,14 @@ impl DaemonConnection {
     pub fn is_connected_to(&self, endpoint: &DaemonEndpoint) -> bool {
         matches!(&self.state, DaemonConnectionState::Connected(current) if current == endpoint)
     }
+    pub fn failure(&self) -> Option<&DaemonConnectionFailure> {
+        match self.state() {
+            DaemonConnectionState::Failed(failure) => Some(failure),
+            _ => None,
+        }
+    }
     pub fn is_failure(&self) -> bool {
-        !matches!(
-            self.state,
-            DaemonConnectionState::Connected(_) | DaemonConnectionState::NotObserved
-        )
+        self.failure().is_some()
     }
     pub fn is_connected(&self) -> bool {
         matches!(self.state, DaemonConnectionState::Connected(_))
@@ -90,7 +101,7 @@ impl DaemonConnection {
 }
 
 pub type DaemonResult<'a, T> =
-    Pin<Box<dyn Future<Output = Result<T, DaemonConnectionState>> + Send + 'a>>;
+    Pin<Box<dyn Future<Output = Result<T, DaemonConnectionFailure>> + Send + 'a>>;
 pub trait DaemonService: Send + Sync {
     fn discover(&self) -> DaemonResult<'_, Option<DiscoveredDaemon>>;
     fn connect<'a>(&'a self, endpoint: &'a DaemonEndpoint) -> DaemonResult<'a, ()>;

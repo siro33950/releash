@@ -3,7 +3,7 @@ use super::*;
 #[test]
 fn test_起動失敗_未起動の観測で保持し次の起動か接続成功で消す() {
     // Given
-    let failed = DaemonConnectionState::StartupFailed {
+    let failed = DaemonConnectionFailure::StartupFailed {
         status: Some("exit status: 7".into()),
         stderr: "startup failure".into(),
     };
@@ -11,7 +11,10 @@ fn test_起動失敗_未起動の観測で保持し次の起動か接続成功�
     // When / Then
     connection.failed(failed.clone());
     connection.observe_not_running();
-    assert_eq!(connection.state(), &failed);
+    assert_eq!(
+        connection.state(),
+        &DaemonConnectionState::Failed(failed.clone())
+    );
     connection.begin_start();
     assert_eq!(connection.state(), &DaemonConnectionState::NotObserved);
     connection.failed(failed);
@@ -42,11 +45,11 @@ fn test_互換判定_非互換なら双方の版と古い側を保持する() {
         assert!(!connection.assess(&server, 1, "client"));
         assert_eq!(
             connection.state(),
-            &DaemonConnectionState::Incompatible {
+            &DaemonConnectionState::Failed(DaemonConnectionFailure::Incompatible {
                 server_older: expected,
                 server_release: "server".into(),
                 client_release: "client".into()
-            }
+            })
         );
     }
     let mut connection = DaemonConnection::default();
@@ -69,18 +72,18 @@ fn test_接続状態_未観測と接続済み以外を失敗として答える()
     assert!(!connection.is_failure());
     assert!(!connection.is_connected());
     for state in [
-        DaemonConnectionState::NotRunning,
-        DaemonConnectionState::Incompatible {
+        DaemonConnectionFailure::NotRunning,
+        DaemonConnectionFailure::Incompatible {
             server_older: true,
             server_release: "server".into(),
             client_release: "client".into(),
         },
-        DaemonConnectionState::StartupFailed {
+        DaemonConnectionFailure::StartupFailed {
             status: None,
             stderr: "failure".into(),
         },
-        DaemonConnectionState::InitialSettingsUnavailable { detail: None },
-        DaemonConnectionState::TechnicalFailure("failure".into()),
+        DaemonConnectionFailure::InitialSettingsUnavailable { detail: None },
+        DaemonConnectionFailure::TechnicalFailure("failure".into()),
     ] {
         connection.failed(state);
         assert!(connection.is_failure());
@@ -92,4 +95,38 @@ fn test_接続状態_未観測と接続済み以外を失敗として答える()
     });
     assert!(!connection.is_failure());
     assert!(connection.is_connected());
+}
+
+#[test]
+fn test_未起動の観測_接続済みと非互換と技術的失敗から動いていない状態へ遷移する() {
+    // Given
+    let endpoint = DaemonEndpoint {
+        url: "localhost".into(),
+        token: "test".into(),
+    };
+    let mut connection = DaemonConnection::default();
+    connection.connected(endpoint);
+    // When / Then
+    connection.observe_not_running();
+    assert_eq!(
+        connection.state(),
+        &DaemonConnectionState::Failed(DaemonConnectionFailure::NotRunning)
+    );
+    for failure in [
+        DaemonConnectionFailure::Incompatible {
+            server_older: true,
+            server_release: "server".into(),
+            client_release: "client".into(),
+        },
+        DaemonConnectionFailure::TechnicalFailure("disconnected".into()),
+    ] {
+        // Given
+        connection.failed(failure);
+        // When / Then
+        connection.observe_not_running();
+        assert_eq!(
+            connection.state(),
+            &DaemonConnectionState::Failed(DaemonConnectionFailure::NotRunning)
+        );
+    }
 }

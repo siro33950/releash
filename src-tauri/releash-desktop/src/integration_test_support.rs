@@ -23,9 +23,10 @@ pub mod login_item {
 pub mod daemon_connection {
     pub use crate::adaptor::gateway::daemon_connection::DaemonServiceGateway;
     pub use crate::adaptor::presenter::daemon_connection::{failure, message};
+    pub use crate::common::deadline::Deadline;
     pub use crate::common::retry::RetryLimiter;
     pub use crate::domain::daemon_connection::{
-        DaemonConnectionState, DaemonEndpoint, DaemonService, DiscoveredDaemon,
+        DaemonConnectionFailure, DaemonEndpoint, DaemonService, DiscoveredDaemon,
     };
     pub use crate::usecase::daemon_connection::DaemonConnectionUsecase;
     pub use crate::usecase::daemon_connection_query::DaemonConnectionQueryService;

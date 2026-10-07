@@ -96,7 +96,7 @@ pub struct DesktopClient {
     client: Arc<rpc::ClientServiceClient<HttpClient>>,
     task: tokio::task::JoinHandle<()>,
     settings: parking_lot::Mutex<tokio::sync::watch::Receiver<Option<DesktopSettingsDto>>>,
-    settings_applied: tokio::sync::watch::Sender<bool>,
+    initial_settings: std::sync::OnceLock<DesktopSettingsDto>,
     rejected: tokio::sync::watch::Receiver<Option<TechnicalFailure>>,
     exit: Arc<parking_lot::Mutex<Option<TechnicalFailure>>>,
 }
@@ -136,7 +136,7 @@ impl DesktopClient {
             task,
             settings: parking_lot::Mutex::new(settings),
             rejected,
-            settings_applied: tokio::sync::watch::channel(false).0,
+            initial_settings: std::sync::OnceLock::new(),
             exit,
         }
     }
@@ -144,7 +144,7 @@ impl DesktopClient {
     pub async fn first_settings(&self) -> Result<DesktopSettingsDto, TechnicalFailure> {
         let mut settings = self.settings.lock().clone();
         let mut rejected = self.rejected.clone();
-        tokio::select! {
+        let result = tokio::select! {
             biased;
             result = settings.wait_for(|settings| settings.is_some()) => match result {
                 Ok(settings) => Ok(settings.expect("waited for settings")),
@@ -156,17 +156,16 @@ impl DesktopClient {
             Ok(failure) = rejected.wait_for(|failure| failure.is_some()) => {
                 Err(failure.clone().expect("waited for failure"))
             }
-        }
+        };
+        result.map(|value| {
+            *self.initial_settings.get_or_init(|| {
+                *self.settings.lock() = settings;
+                value
+            })
+        })
     }
-    pub fn mark_settings_applied(&self) {
-        self.settings_applied.send_replace(true);
-    }
-    pub async fn first_settings_applied(&self) {
-        let mut applied = self.settings_applied.subscribe();
-        applied
-            .wait_for(|applied| *applied)
-            .await
-            .expect("settings_applied sender is held by this client");
+    pub fn initial_settings(&self) -> Option<DesktopSettingsDto> {
+        self.initial_settings.get().copied()
     }
     pub fn current_settings(&self) -> Option<DesktopSettingsDto> {
         *self.settings.lock().borrow()

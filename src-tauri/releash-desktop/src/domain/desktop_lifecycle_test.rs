@@ -29,3 +29,24 @@ fn test_表示する窓_接続の有無に従う() {
     assert_eq!(window(true), DesktopWindow::Normal);
     assert_eq!(window(false), DesktopWindow::ConnectionFailure);
 }
+
+#[test]
+fn test_接続待ち中の表示要求_hiddenでも接続後に表示し次の接続へ持ち越さない() {
+    // Given
+    let mut lifecycle = DesktopLifecycle::default();
+    // When / Then
+    assert_eq!(lifecycle.show(false), DesktopWindow::ConnectionFailure);
+    assert_eq!(
+        lifecycle.connected(true, true, false),
+        ConnectedWindow::Visible
+    );
+    assert_eq!(
+        lifecycle.connected(true, true, false),
+        ConnectedWindow::Hidden
+    );
+    assert_eq!(lifecycle.show(true), DesktopWindow::Normal);
+    assert_eq!(
+        lifecycle.connected(true, true, false),
+        ConnectedWindow::Hidden
+    );
+}

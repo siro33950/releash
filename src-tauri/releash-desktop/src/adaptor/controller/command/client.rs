@@ -22,15 +22,19 @@ pub(crate) async fn get_client_endpoint<R: tauri::Runtime>(
     >,
 ) -> Result<releashd::desktop_api::ClientConnectionDto, String> {
     use tauri::Manager;
-    let presenter =
-        app.state::<crate::adaptor::presenter::desktop_lifecycle::TauriDesktopLifecycle<R>>();
-    let (endpoint, changed) = connection
-        .endpoint()
+    app.state::<crate::common::serial::Serial>()
+        .call(async {
+            let presenter = app
+                .state::<crate::adaptor::presenter::desktop_lifecycle::TauriDesktopLifecycle<R>>();
+            let (endpoint, connected) = connection
+                .endpoint(presenter.failure_window())
+                .await
+                .map_err(crate::adaptor::presenter::daemon_connection::message)?;
+            super::super::desktop_lifecycle::connected(&app, connected);
+            Ok(releashd::desktop_api::ClientConnectionDto {
+                url: endpoint.url,
+                token: endpoint.token,
+            })
+        })
         .await
-        .map_err(crate::adaptor::presenter::daemon_connection::message)?;
-    presenter.connected_window(connection.connected(false, presenter.failure_window(), changed));
-    Ok(releashd::desktop_api::ClientConnectionDto {
-        url: endpoint.url,
-        token: endpoint.token,
-    })
 }

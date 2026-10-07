@@ -1,4 +1,4 @@
-use crate::domain::daemon_connection::DaemonConnectionState;
+use crate::domain::daemon_connection::DaemonConnectionFailure;
 
 #[derive(Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -7,14 +7,12 @@ pub struct DesktopConnectionFailure {
     pub server_older: bool,
     pub client_older: bool,
 }
-pub fn failure(state: DaemonConnectionState) -> DesktopConnectionFailure {
+pub fn failure(state: DaemonConnectionFailure) -> DesktopConnectionFailure {
     let mut server_older = false;
     let mut client_older = false;
     let message = match state {
-        DaemonConnectionState::NotObserved => "サーバへ接続中".into(),
-        DaemonConnectionState::NotRunning => "サーバは動いていません".into(),
-        DaemonConnectionState::Connected(_) => "サーバに接続しています".into(),
-        DaemonConnectionState::Incompatible {
+        DaemonConnectionFailure::NotRunning => "サーバは動いていません".into(),
+        DaemonConnectionFailure::Incompatible {
             server_older: older,
             server_release,
             client_release,
@@ -32,15 +30,15 @@ pub fn failure(state: DaemonConnectionState) -> DesktopConnectionFailure {
                 client_release
             )
         }
-        DaemonConnectionState::StartupFailed { status, stderr } => match status {
+        DaemonConnectionFailure::StartupFailed { status, stderr } => match status {
             Some(status) => format!("サーバのプロセスが終了しました ({status})\n{stderr}"),
             None => format!("サーバの起動を確認できませんでした\n{stderr}"),
         },
-        DaemonConnectionState::InitialSettingsUnavailable { detail } => match detail {
+        DaemonConnectionFailure::InitialSettingsUnavailable { detail } => match detail {
             Some(detail) => format!("サーバの初回設定を受信できませんでした\n{detail}"),
             None => "サーバの初回設定を受信できませんでした".into(),
         },
-        DaemonConnectionState::TechnicalFailure(message) => message,
+        DaemonConnectionFailure::TechnicalFailure(message) => message,
     };
     DesktopConnectionFailure {
         message,
@@ -48,7 +46,7 @@ pub fn failure(state: DaemonConnectionState) -> DesktopConnectionFailure {
         client_older,
     }
 }
-pub fn message(state: DaemonConnectionState) -> String {
+pub fn message(state: DaemonConnectionFailure) -> String {
     failure(state).message
 }
 #[cfg(test)]

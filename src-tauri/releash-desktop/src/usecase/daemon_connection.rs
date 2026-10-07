@@ -1,6 +1,6 @@
 use super::daemon_connection_query::DaemonConnectionQueryService;
 use crate::domain::daemon_connection::{
-    DaemonConnection, DaemonConnectionState, DaemonEndpoint, DaemonService,
+    DaemonConnection, DaemonConnectionFailure, DaemonEndpoint, DaemonService,
 };
 use releashd::desktop_api::DesktopSettingsDto;
 use std::sync::Arc;
@@ -29,9 +29,14 @@ impl DaemonConnectionUsecase {
             connecting: tokio::sync::Mutex::new(()),
         }
     }
-    pub fn failure(&self) -> Option<DaemonConnectionState> {
+    pub fn failure(&self) -> Option<DaemonConnectionFailure> {
         let state = self.state.lock();
-        state.is_failure().then(|| state.state().clone())
+        state
+            .is_failure()
+            .then(|| state.failure().expect("failure state").clone())
+    }
+    pub fn initial_settings(&self) -> Option<DesktopSettingsDto> {
+        self.query.initial_settings()
     }
     pub fn settings(&self) -> Option<DesktopSettingsDto> {
         if self.state.lock().is_connected() {
@@ -40,18 +45,18 @@ impl DaemonConnectionUsecase {
             None
         }
     }
-    pub async fn connect(&self) -> Result<(), DaemonConnectionState> {
+    pub async fn connect(&self) -> Result<bool, DaemonConnectionFailure> {
         let _guard = self.connecting.lock().await;
-        self.establish(true).await.map(|_| ())
+        self.establish(true).await.map(|(_, changed)| changed)
     }
-    pub async fn endpoint(&self) -> Result<(DaemonEndpoint, bool), DaemonConnectionState> {
+    pub async fn endpoint(&self) -> Result<(DaemonEndpoint, bool), DaemonConnectionFailure> {
         let _guard = self.connecting.lock().await;
         self.establish(false).await
     }
     async fn establish(
         &self,
         start_if_missing: bool,
-    ) -> Result<(DaemonEndpoint, bool), DaemonConnectionState> {
+    ) -> Result<(DaemonEndpoint, bool), DaemonConnectionFailure> {
         let result = async {
             let mut server = self.port.discover().await?;
             if server.is_none() && start_if_missing {
@@ -62,12 +67,12 @@ impl DaemonConnectionUsecase {
             let Some(server) = server else {
                 let mut state = self.state.lock();
                 state.observe_not_running();
-                return Err(state.state().clone());
+                return Err(state.failure().expect("observed failure").clone());
             };
             {
                 let mut state = self.state.lock();
                 if !state.assess(&server, self.protocol, &self.release) {
-                    return Err(state.state().clone());
+                    return Err(state.failure().expect("observed failure").clone());
                 }
             }
             let changed = !self.state.lock().is_connected_to(&server.endpoint);
@@ -83,16 +88,17 @@ impl DaemonConnectionUsecase {
         }
         result
     }
-    pub async fn stop(&self) -> Result<(), DaemonConnectionState> {
+    pub async fn stop(&self) -> Result<(), DaemonConnectionFailure> {
         let _guard = self.connecting.lock().await;
         self.port.stop().await?;
         self.state.lock().observe_not_running();
         Ok(())
     }
-    pub async fn replace(&self) -> Result<(), DaemonConnectionState> {
+    pub async fn replace(&self) -> Result<bool, DaemonConnectionFailure> {
         let _guard = self.connecting.lock().await;
         self.port.stop().await?;
-        self.establish(true).await.map(|_| ())
+        self.state.lock().observe_not_running();
+        self.establish(true).await.map(|(_, changed)| changed)
     }
 }
 #[cfg(test)]

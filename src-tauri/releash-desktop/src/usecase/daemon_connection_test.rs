@@ -8,9 +8,10 @@ struct FakeConnection {
     calls: Mutex<Vec<&'static str>>,
     server: Mutex<Option<DiscoveredDaemon>>,
     subscribed: Mutex<Option<DaemonEndpoint>>,
-    start_error: Mutex<Option<DaemonConnectionState>>,
-    subscribe_error: Mutex<Option<DaemonConnectionState>>,
-    stop_error: Mutex<Option<DaemonConnectionState>>,
+    start_error: Mutex<Option<DaemonConnectionFailure>>,
+    subscribe_error: Mutex<Option<DaemonConnectionFailure>>,
+    stop_error: Mutex<Option<DaemonConnectionFailure>>,
+    started_server: Mutex<Option<DiscoveredDaemon>>,
 }
 fn endpoint(token: &str) -> DaemonEndpoint {
     DaemonEndpoint {
@@ -48,7 +49,12 @@ impl DaemonService for FakeConnection {
             if let Some(error) = self.start_error.lock().clone() {
                 return Err(error);
             }
-            *self.server.lock() = Some(server("new"));
+            *self.server.lock() = Some(
+                self.started_server
+                    .lock()
+                    .clone()
+                    .unwrap_or_else(|| server("new")),
+            );
             Ok(())
         })
     }
@@ -66,6 +72,9 @@ impl DaemonService for FakeConnection {
 }
 
 impl DaemonConnectionQueryService for FakeConnection {
+    fn initial_settings(&self) -> Option<DesktopSettingsDto> {
+        self.settings()
+    }
     fn settings(&self) -> Option<DesktopSettingsDto> {
         None
     }
@@ -82,7 +91,7 @@ async fn test_接続先要求_初回設定の拒否や期限切れでは成功�
     assert_eq!(*port.calls.lock(), ["discover"]);
     *port.server.lock() = Some(server("first"));
     for detail in [Some("subscription denied".into()), None] {
-        let error = DaemonConnectionState::InitialSettingsUnavailable { detail };
+        let error = DaemonConnectionFailure::InitialSettingsUnavailable { detail };
         *port.subscribe_error.lock() = Some(error.clone());
         assert_eq!(usecase.endpoint().await.unwrap_err(), error);
         assert_eq!(usecase.failure(), Some(error));
@@ -109,7 +118,7 @@ async fn test_接続先要求_初回設定の拒否や期限切れでは成功�
 async fn test_接続_起動失敗を集約へ記録する() {
     // Given
     let port = Arc::new(FakeConnection::default());
-    let error = DaemonConnectionState::StartupFailed {
+    let error = DaemonConnectionFailure::StartupFailed {
         status: Some("exit status: 7".into()),
         stderr: "startup denied".into(),
     };
@@ -126,7 +135,7 @@ async fn test_入れ替え_停止完了後に起動と初回設定受信へ進�
     let port = Arc::new(FakeConnection::default());
     *port.server.lock() = Some(server("old"));
     let usecase = DaemonConnectionUsecase::new(port.clone(), port.clone(), 1, "client".into());
-    let error = DaemonConnectionState::TechnicalFailure("shutdown incomplete".into());
+    let error = DaemonConnectionFailure::TechnicalFailure("shutdown incomplete".into());
     *port.stop_error.lock() = Some(error.clone());
     // When / Then
     assert_eq!(usecase.replace().await.unwrap_err(), error);
@@ -171,10 +180,29 @@ async fn test_接続_注入した画面のprotocolとreleaseで互換を判断�
     port.server.lock().as_mut().unwrap().protocol = 3;
     assert_eq!(
         usecase.connect().await.unwrap_err(),
-        DaemonConnectionState::Incompatible {
+        DaemonConnectionFailure::Incompatible {
             server_older: false,
             server_release: "server".into(),
             client_release: "injected-client".into(),
         }
     );
+}
+
+#[tokio::test]
+async fn test_入れ替え_同じ接続先でも停止後に購読を張り直す() {
+    // Given
+    let port = Arc::new(FakeConnection::default());
+    *port.server.lock() = Some(server("same"));
+    *port.started_server.lock() = Some(server("same"));
+    let usecase = DaemonConnectionUsecase::new(port.clone(), port.clone(), 1, "client".into());
+    usecase.connect().await.unwrap();
+    port.calls.lock().clear();
+    // When
+    assert!(usecase.replace().await.unwrap());
+    // Then
+    assert_eq!(
+        *port.calls.lock(),
+        ["stop", "discover", "start", "discover", "subscribe"]
+    );
+    assert_eq!(*port.subscribed.lock(), Some(endpoint("same")));
 }

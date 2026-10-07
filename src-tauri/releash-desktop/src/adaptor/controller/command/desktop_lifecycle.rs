@@ -45,14 +45,18 @@ async fn start_daemon<R: tauri::Runtime>(
     connection: tauri::State<'_, Arc<DesktopLifecycleUsecase>>,
 ) -> Result<(), String> {
     use tauri::Manager;
-    let presenter =
-        app.state::<crate::adaptor::presenter::desktop_lifecycle::TauriDesktopLifecycle<R>>();
-    connection
-        .start()
+    app.state::<crate::common::serial::Serial>()
+        .call(async {
+            let presenter = app
+                .state::<crate::adaptor::presenter::desktop_lifecycle::TauriDesktopLifecycle<R>>();
+            let connected = connection
+                .initialize(None, presenter.failure_window())
+                .await
+                .map_err(crate::adaptor::presenter::daemon_connection::message)?;
+            super::super::desktop_lifecycle::connected(&app, connected);
+            Ok(())
+        })
         .await
-        .map_err(crate::adaptor::presenter::daemon_connection::message)?;
-    presenter.connected_window(connection.connected(false, presenter.failure_window(), true));
-    Ok(())
 }
 #[tauri::command]
 async fn replace_daemon<R: tauri::Runtime>(
@@ -60,14 +64,18 @@ async fn replace_daemon<R: tauri::Runtime>(
     connection: tauri::State<'_, Arc<DesktopLifecycleUsecase>>,
 ) -> Result<(), String> {
     use tauri::Manager;
-    let presenter =
-        app.state::<crate::adaptor::presenter::desktop_lifecycle::TauriDesktopLifecycle<R>>();
-    connection
-        .replace()
+    app.state::<crate::common::serial::Serial>()
+        .call(async {
+            let presenter = app
+                .state::<crate::adaptor::presenter::desktop_lifecycle::TauriDesktopLifecycle<R>>();
+            let connected = connection
+                .replace(presenter.failure_window())
+                .await
+                .map_err(crate::adaptor::presenter::daemon_connection::message)?;
+            super::super::desktop_lifecycle::connected(&app, connected);
+            Ok(())
+        })
         .await
-        .map_err(crate::adaptor::presenter::daemon_connection::message)?;
-    presenter.connected_window(connection.connected(false, presenter.failure_window(), true));
-    Ok(())
 }
 #[tauri::command]
 pub(crate) fn quit_desktop<R: tauri::Runtime>(app: tauri::AppHandle<R>) {

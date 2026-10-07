@@ -43,6 +43,9 @@ async fn test_接続_既存サーバのprotocolと同一性を確認し非互換
             "/missing/releashd".into(),
             directory.path().into(),
             Arc::new(RetryLimiter::new()),
+            releash_desktop::test_support::integration::daemon_connection::Deadline(
+                releash_sdk::daemon::timeout("min_connect_timeout_ms"),
+            ),
             tokio::sync::watch::channel(None).0,
         ));
         let usecase = DaemonConnectionUsecase::new(
@@ -150,6 +153,29 @@ async fn test_初回設定失敗_server_infoが成功しても接続先を渡さ
         let server = tokio::spawn(async move {
             axum::serve(listener, router).await.unwrap();
         });
+        let (clients, updates) = tokio::sync::watch::channel(None);
+        let gateway = DaemonServiceGateway::new(
+            "/missing/releashd".into(),
+            directory.path().into(),
+            Arc::new(RetryLimiter::new()),
+            releash_desktop::test_support::integration::daemon_connection::Deadline(
+                std::time::Duration::from_millis(100),
+            ),
+            clients,
+        );
+        use releash_desktop::test_support::integration::daemon_connection::{
+            DaemonEndpoint, DaemonService,
+        };
+        // When / Then
+        assert!(gateway
+            .connect(&DaemonEndpoint {
+                url: format!("http://127.0.0.1:{}", discovery.port),
+                token: discovery.token,
+            })
+            .await
+            .is_err());
+        assert!(gateway.client().is_err());
+        assert!(updates.borrow().is_none());
         let app = host::desktop_connection_app(
             tauri::test::mock_builder(),
             directory.path(),
@@ -207,6 +233,9 @@ async fn test_起動失敗_接続先を再要求しても終了状態とstderr�
         executable,
         directory.path().into(),
         Arc::new(RetryLimiter::new()),
+        releash_desktop::test_support::integration::daemon_connection::Deadline(
+            releash_sdk::daemon::timeout("min_connect_timeout_ms"),
+        ),
         tokio::sync::watch::channel(None).0,
     ));
     let connection = DaemonConnectionUsecase::new(

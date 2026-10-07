@@ -8,32 +8,44 @@ pub(crate) fn show<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<(), S
         .show(app.state::<Arc<DesktopLifecycleUsecase>>().show())
 }
 pub(crate) async fn initialize<R: tauri::Runtime>(app: &tauri::AppHandle<R>, hidden: bool) {
-    let presenter = app.state::<TauriDesktopLifecycle<R>>();
-    match app
-        .state::<Arc<DesktopLifecycleUsecase>>()
-        .initialize()
-        .await
-    {
-        Ok(()) => {
-            presenter.connected_window(app.state::<Arc<DesktopLifecycleUsecase>>().connected(
-                hidden,
-                presenter.failure_window(),
-                true,
-            ))
-        }
-        Err(error) => presenter.connection_failed(error),
-    }
+    app.state::<crate::common::serial::Serial>()
+        .call(async {
+            let presenter = app.state::<TauriDesktopLifecycle<R>>();
+            match app
+                .state::<Arc<DesktopLifecycleUsecase>>()
+                .initialize(Some(hidden), presenter.failure_window())
+                .await
+            {
+                Ok(value) => connected(app, value),
+                Err(error) => presenter.connection_failed(error),
+            }
+        })
+        .await;
 }
-pub(crate) fn settings_changed<R: tauri::Runtime>(
+pub(crate) fn connected<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    connected: crate::usecase::desktop_lifecycle::ConnectedDesktop,
+) {
+    app.state::<LogFailure<Arc<DesktopLifecycleUsecase>>>()
+        .record(&connected.restoration);
+    app.state::<TauriDesktopLifecycle<R>>().connected(connected);
+}
+
+pub(crate) async fn settings_changed<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     settings: releashd::desktop_api::DesktopSettingsDto,
 ) {
-    let applied = app
-        .state::<LogFailure<Arc<DesktopLifecycleUsecase>>>()
-        .call(|lifecycle| lifecycle.settings_changed(settings));
-    app.state::<TauriDesktopLifecycle<R>>()
-        .apply_settings(applied.unwrap_or(settings));
+    app.state::<crate::common::serial::Serial>()
+        .call(async {
+            let _ = app
+                .state::<LogFailure<Arc<DesktopLifecycleUsecase>>>()
+                .call(|lifecycle| lifecycle.settings_changed(settings));
+            app.state::<TauriDesktopLifecycle<R>>()
+                .apply_settings(settings);
+        })
+        .await;
 }
+
 pub(crate) fn confirm_stop(app: tauri::AppHandle) {
     tauri::async_runtime::spawn(async move {
         let presenter = app.state::<TauriDesktopLifecycle<tauri::Wry>>();
@@ -63,14 +75,14 @@ pub(crate) fn handle_run_event(app: &tauri::AppHandle, event: tauri::RunEvent) {
 
 async fn stop_after_confirmation<
     F: std::future::Future<
-        Output = Result<(), crate::domain::daemon_connection::DaemonConnectionState>,
+        Output = Result<(), crate::domain::daemon_connection::DaemonConnectionFailure>,
     >,
 >(
     confirmed: Result<bool, String>,
     stop: impl FnOnce() -> F,
-) -> Result<(), crate::domain::daemon_connection::DaemonConnectionState> {
+) -> Result<(), crate::domain::daemon_connection::DaemonConnectionFailure> {
     if confirmed
-        .map_err(crate::domain::daemon_connection::DaemonConnectionState::TechnicalFailure)?
+        .map_err(crate::domain::daemon_connection::DaemonConnectionFailure::TechnicalFailure)?
     {
         stop().await?;
     }

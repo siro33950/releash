@@ -1,5 +1,5 @@
 use crate::domain::{
-    daemon_connection::DaemonConnectionState,
+    daemon_connection::DaemonConnectionFailure,
     desktop_lifecycle::{ConnectedWindow, DesktopWindow},
 };
 use crate::infrastructure::platform::{
@@ -28,6 +28,12 @@ impl<R: tauri::Runtime> TauriDesktopLifecycle<R> {
         };
         self.0.show(label, install_drop)
     }
+    pub fn connected(&self, connected: crate::usecase::desktop_lifecycle::ConnectedDesktop) {
+        if let Some(settings) = connected.settings {
+            self.apply_settings(settings);
+        }
+        self.connected_window(connected.window);
+    }
     pub fn connected_window(&self, window: Option<ConnectedWindow>) {
         if let Some(window) = window {
             self.0.connected_window(
@@ -37,7 +43,7 @@ impl<R: tauri::Runtime> TauriDesktopLifecycle<R> {
             );
         }
     }
-    pub fn connection_failed(&self, failure: DaemonConnectionState) {
+    pub fn connection_failed(&self, failure: DaemonConnectionFailure) {
         self.0.connection_failed(
             super::daemon_connection::message(failure),
             STARTUP_FAILURE_WINDOW_LABEL,
@@ -51,7 +57,7 @@ impl<R: tauri::Runtime> TauriDesktopLifecycle<R> {
             );
         })
     }
-    pub fn stop_failed(&self, failure: DaemonConnectionState) {
+    pub fn stop_failed(&self, failure: DaemonConnectionFailure) {
         self.0.show_error(
             "サーバを停止できませんでした",
             super::daemon_connection::message(failure),
