@@ -334,34 +334,4 @@ pub(crate) mod tests {
             })
         );
     }
-
-    #[test]
-    fn execution_summary_dto_serializes_like_canonical_wire_shape() {
-        let summary = workflow_execution_summary_to_dto(domain::WorkflowExecutionSummary {
-            execution_id: "00000000-0000-4000-8000-000000000001".to_string(),
-            workflow_name: "wf".to_string(),
-            status: domain::ExecutionStatus::Running,
-            worktree_path: "/repo".to_string(),
-            current_node: None,
-            created_from: domain::ExecutionOrigin::DesktopUi,
-            started_at: 1.0,
-            updated_at: 2.0,
-            completed_at: None,
-            error_reason: None,
-            total_token_usage: domain::TokenUsage {
-                input_tokens: 13,
-                output_tokens: 8,
-            },
-        });
-
-        assert_eq!(summary.execution_id, "00000000-0000-4000-8000-000000000001");
-        assert_eq!(summary.workflow_name, "wf");
-        assert_eq!(summary.status, ExecutionStatusDto::Running);
-        assert_eq!(summary.worktree_path, "/repo");
-        assert_eq!(summary.created_from, ExecutionOriginDto::DesktopUi);
-        assert_eq!(summary.started_at, 1.0);
-        assert_eq!(summary.updated_at, 2.0);
-        assert_eq!(summary.total_token_usage.input_tokens, 13);
-        assert_eq!(summary.total_token_usage.output_tokens, 8);
-    }
 }

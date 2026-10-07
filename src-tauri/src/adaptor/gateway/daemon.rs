@@ -64,12 +64,18 @@ impl DaemonRepository for InMemoryDaemonRepository {
 
 #[cfg(any(test, feature = "test-support"))]
 pub fn serving() -> std::sync::Arc<InMemoryDaemonRepository> {
+    serving_with_identity(DaemonIdentity {
+        daemon_id: "test-daemon".into(),
+        pid: 1,
+        process_started_at: 1,
+    })
+}
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) fn serving_with_identity(
+    identity: DaemonIdentity,
+) -> std::sync::Arc<InMemoryDaemonRepository> {
     let repository = std::sync::Arc::new(InMemoryDaemonRepository::new(
-        DaemonIdentity {
-            daemon_id: "test-daemon".into(),
-            pid: 1,
-            process_started_at: 1,
-        },
+        identity,
         env!("CARGO_PKG_VERSION").into(),
         1,
     ));

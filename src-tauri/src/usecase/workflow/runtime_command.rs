@@ -105,24 +105,6 @@ impl WorkflowRuntimeUsecase {
         self.retry_node.execute(command).await
     }
 
-    pub async fn resume_session_node_by_id(
-        &self,
-        node_execution_id: String,
-    ) -> Result<(), WorkflowError> {
-        let execution_id = self
-            .runtime
-            .resolve_workflow_execution_id(&node_execution_id)
-            .await?
-            .ok_or_else(|| {
-                WorkflowError::NotFound(format!("Node execution not found: {node_execution_id}"))
-            })?;
-        self.resume_session_node(ResumeSessionNodeCommand {
-            execution_id,
-            node_execution_id,
-        })
-        .await
-    }
-
     pub async fn resume_session_node(
         &self,
         command: ResumeSessionNodeCommand,

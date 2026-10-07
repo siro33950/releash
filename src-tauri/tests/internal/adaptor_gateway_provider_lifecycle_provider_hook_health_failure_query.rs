@@ -18,7 +18,7 @@ pub async fn test_hook警告読取_正常な記録と破損を一緒に返す() 
             .join(agent)
             .join(launch)
             .join("hook-health.json");
-        releash_lib::test_support::integration::providers::write_local_api_failure(
+        releash_lib::test_support::integration::providers::write_hook_failure(
             directory.path(),
             &marker,
             provider,
@@ -56,7 +56,7 @@ pub async fn test_hook警告読取_件数上限までの正常な記録を変換
             .join(agent)
             .join(launch)
             .join("hook-health.json");
-        releash_lib::test_support::integration::providers::write_local_api_failure(
+        releash_lib::test_support::integration::providers::write_hook_failure(
             directory.path(),
             &marker,
             provider,
@@ -116,7 +116,7 @@ pub async fn test_hook警告読取_記録情報を読めない場合も他の警
         .path()
         .join("provider-launches/b/invalid/hook-health.json");
     for marker in [&healthy, &path] {
-        releash_lib::test_support::integration::providers::write_local_api_failure(
+        releash_lib::test_support::integration::providers::write_hook_failure(
             directory.path(),
             marker,
             "claude",
@@ -166,7 +166,7 @@ pub async fn test_hook警告読取_通常ファイルではない場合も他の
         .path()
         .join("provider-launches/b/invalid/hook-health.json");
     for marker in [&healthy, &path] {
-        releash_lib::test_support::integration::providers::write_local_api_failure(
+        releash_lib::test_support::integration::providers::write_hook_failure(
             directory.path(),
             marker,
             "claude",
@@ -202,7 +202,7 @@ pub async fn test_hook警告読取_サイズが大きすぎる場合も他の警
         .path()
         .join("provider-launches/b/invalid/hook-health.json");
     for marker in [&healthy, &path] {
-        releash_lib::test_support::integration::providers::write_local_api_failure(
+        releash_lib::test_support::integration::providers::write_hook_failure(
             directory.path(),
             marker,
             "claude",
@@ -237,7 +237,7 @@ pub async fn test_hook警告読取_中身を読めない場合も他の警告を
         .path()
         .join("provider-launches/b/invalid/hook-health.json");
     for marker in [&healthy, &path] {
-        releash_lib::test_support::integration::providers::write_local_api_failure(
+        releash_lib::test_support::integration::providers::write_hook_failure(
             directory.path(),
             marker,
             "claude",
@@ -279,7 +279,7 @@ pub async fn test_hook警告読取_解析できない場合も他の警告を返
         .path()
         .join("provider-launches/b/invalid/hook-health.json");
     for marker in [&healthy, &path] {
-        releash_lib::test_support::integration::providers::write_local_api_failure(
+        releash_lib::test_support::integration::providers::write_hook_failure(
             directory.path(),
             marker,
             "claude",
@@ -314,7 +314,7 @@ pub async fn test_hook警告読取_sessionを読めない場合も他の警告�
         .path()
         .join("provider-launches/b/invalid/hook-health.json");
     for marker in [&healthy, &path] {
-        releash_lib::test_support::integration::providers::write_local_api_failure(
+        releash_lib::test_support::integration::providers::write_hook_failure(
             directory.path(),
             marker,
             "claude",

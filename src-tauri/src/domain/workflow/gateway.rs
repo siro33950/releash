@@ -20,10 +20,6 @@ pub trait IsolatedWorktreeGateway: Send + Sync {
     ) -> Result<(), WorkflowError>;
 }
 
-pub trait SecretSourceGateway: Send + Sync {
-    fn configured_secret_values(&self) -> Result<Vec<String>, WorkflowError>;
-}
-
 pub trait NodeProcessReader: Send + Sync {
     fn presence(
         &self,

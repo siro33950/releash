@@ -1,4 +1,4 @@
-use std::path::{Component, Path};
+use std::path::Path;
 
 const MAX_MARKER_BYTES: u64 = 4 * 1024;
 
@@ -12,61 +12,6 @@ pub enum ProviderHookHealthMarkerError {
     InvalidPath,
     #[error("Provider Hook health marker is unavailable")]
     Io(#[from] std::io::Error),
-    #[error("{0}")]
-    Encode(serde_json::Error),
-}
-
-pub fn write_local_api_failure(
-    data_dir: &Path,
-    marker_path: &Path,
-    provider: &str,
-    launch_id: &str,
-) -> Result<(), ProviderHookHealthMarkerError> {
-    if !matches!(provider, "claude" | "codex") || launch_id.trim().is_empty() {
-        return Err(ProviderHookHealthMarkerError::InvalidPath);
-    }
-    validate_marker_path(data_dir, marker_path)?;
-    let parent = marker_path
-        .parent()
-        .ok_or(ProviderHookHealthMarkerError::InvalidPath)?;
-    std::fs::create_dir_all(parent).map_err(ProviderHookHealthMarkerError::Io)?;
-    let contents = serde_json::to_vec(&serde_json::json!({
-        "provider": provider,
-        "launchId": launch_id,
-        "reason": "local_api_unavailable",
-    }))
-    .map_err(ProviderHookHealthMarkerError::Encode)?;
-    std::fs::write(marker_path, contents).map_err(ProviderHookHealthMarkerError::Io)
-}
-
-pub(crate) fn clear_local_api_failure(
-    data_dir: &Path,
-    marker_path: &Path,
-) -> Result<(), ProviderHookHealthMarkerError> {
-    validate_marker_path(data_dir, marker_path)?;
-    match std::fs::remove_file(marker_path) {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(ProviderHookHealthMarkerError::Io(error)),
-    }
-}
-
-fn validate_marker_path(
-    data_dir: &Path,
-    marker_path: &Path,
-) -> Result<(), ProviderHookHealthMarkerError> {
-    let root = data_dir.join("provider-launches");
-    let relative = marker_path
-        .strip_prefix(&root)
-        .map_err(|_| ProviderHookHealthMarkerError::InvalidPath)?;
-    if marker_path.file_name().and_then(|value| value.to_str()) != Some("hook-health.json")
-        || relative
-            .components()
-            .any(|component| !matches!(component, Component::Normal(_)))
-    {
-        return Err(ProviderHookHealthMarkerError::InvalidPath);
-    }
-    Ok(())
 }
 
 pub(crate) fn read_local_api_failures(

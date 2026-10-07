@@ -1,7 +1,6 @@
 mod adaptor;
 #[cfg(feature = "test-support")]
 mod agent_session_tui_acceptance;
-pub mod cli;
 #[cfg(feature = "test-support")]
 mod client_api_acceptance;
 mod common;
@@ -15,8 +14,6 @@ mod terminal_subscription_acceptance;
 mod workflow_control_plane_acceptance;
 #[cfg(feature = "test-support")]
 mod workflow_delegate_acceptance;
-#[cfg(feature = "test-support")]
-mod workflow_diagnostics_acceptance;
 #[cfg(feature = "test-support")]
 mod terminal_surface {
     pub use crate::adaptor::controller::terminal_surface_runtime::{

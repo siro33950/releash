@@ -14,15 +14,13 @@ pub mod services;
 pub mod value_objects;
 
 pub use error::WorkflowError;
-pub use gateway::{
-    IsolatedWorktreeGateway, ManagedWorktreeGateway, NodeProcessReader, SecretSourceGateway,
-};
+pub use gateway::{IsolatedWorktreeGateway, ManagedWorktreeGateway, NodeProcessReader};
 pub use repository::{
     ExecutionTreeArchiveCandidate, ExecutionTreeArchiveRecord, ExecutionTreeArchiveRepository,
     ExecutionTreeArchiveSnapshot, ExecutionTreeArchiveTarget, FacetRepository,
     WorkflowDefinitionRepository,
 };
-pub use services::{contract, secret_masker, validation};
+pub use services::{contract, validation};
 pub use value_objects::{
     is_reserved_node_name, isolated_worktree_owner, AbortRequestedFact, AgentActivityObservedFact,
     AgentSessionActivity, ApprovalGrantedFact, ApprovalTarget, ArchiveRequestedFact, Artifact,
@@ -40,9 +38,9 @@ pub use value_objects::{
     SessionExecutionTreeRootFacts, SessionNodeRenamedFact, SessionPermission, SessionSpec,
     StartedFact, StopReceivedFact, SubmitReceivedFact, SubmitRejectedFact, TimeoutKind, TokenUsage,
     TreeRootFact, WorkflowDefinition, WorkflowDefinitionName, WorkflowEvent, WorkflowExecutionId,
-    WorkflowExecutionSummary, WorkflowFacetContents, WorkflowPageRequest, WorkflowSourceFormat,
-    WorkflowSummary, WorkspaceWorktreePath, WorktreeInheritance, WorktreeInventoryEntry,
-    WorktreeMode, NODE_STATUS_COMPLETED,
+    WorkflowExecutionSummary, WorkflowFacetContents, WorkflowSourceFormat, WorkflowSummary,
+    WorkspaceWorktreePath, WorktreeInheritance, WorktreeInventoryEntry, WorktreeMode,
+    NODE_STATUS_COMPLETED,
 };
 
 #[cfg(any(test, feature = "test-support"))]

@@ -1,10 +1,8 @@
 use std::sync::Arc;
 
 use super::SqliteWorkspaceTreeRepository;
-use crate::adaptor::gateway::local_event_store::read_only::LocalEventReadStore;
 use crate::domain::workflow::{
     ExecutionStatusFilter, ExecutionTreeLaunch, WorkflowError, WorkflowExecutionSummary,
-    WorkflowPageRequest,
 };
 use crate::domain::workspace_tree::{
     WorkspaceIdentity, WorkspaceNodeKind, WorkspaceTreeNode, WorkspaceTreeRepository,
@@ -24,17 +22,10 @@ impl SqliteWorkspaceQueryService {
         Arc::new(Self { repository })
     }
 
-    pub(crate) fn new_read_only(store: Arc<LocalEventReadStore>) -> Arc<Self> {
-        Arc::new(Self {
-            repository: SqliteWorkspaceTreeRepository::new_read_only(store),
-        })
-    }
-
     pub async fn execution_records(
         &self,
         workspace_identity: Option<&WorkspaceIdentity>,
         status: Option<ExecutionStatusFilter>,
-        page: Option<WorkflowPageRequest>,
     ) -> Result<Vec<crate::domain::local_event::WorkflowExecutionMetadataRecord>, WorkflowError>
     {
         let tree_roots = self.repository.tree_roots().await.map_err(|error| {
@@ -61,7 +52,6 @@ impl SqliteWorkspaceQueryService {
             debug_assert_eq!(folded.root.launched_as, ExecutionTreeLaunch::Workflow);
             let keep = match status {
                 Some(ExecutionStatusFilter::Active) => !record.status.is_finished(),
-                Some(ExecutionStatusFilter::Terminal) => record.status.is_finished(),
                 None => true,
             };
             if keep {
@@ -79,12 +69,7 @@ impl SqliteWorkspaceQueryService {
                 })
                 .then_with(|| left.execution_id.cmp(&right.execution_id))
         });
-        let (limit, offset) = sqlite_page_bounds(page);
-        Ok(records
-            .into_iter()
-            .skip(usize::try_from(offset).unwrap_or(0))
-            .take(usize::try_from(limit).unwrap_or(usize::MAX))
-            .collect())
+        Ok(records)
     }
 }
 
@@ -106,26 +91,12 @@ impl WorkspaceQueryService for SqliteWorkspaceQueryService {
         &self,
         workspace_identity: Option<&WorkspaceIdentity>,
         status: Option<ExecutionStatusFilter>,
-        page: Option<WorkflowPageRequest>,
     ) -> Result<Vec<WorkflowExecutionSummary>, WorkflowError> {
-        self.execution_records(workspace_identity, status, page)
+        self.execution_records(workspace_identity, status)
             .await?
             .into_iter()
             .map(execution_summary)
             .collect()
-    }
-
-    async fn execution_summary(
-        &self,
-        execution_id: &str,
-    ) -> Result<Option<WorkflowExecutionSummary>, WorkflowError> {
-        self.repository
-            .folded_tree(execution_id)
-            .await
-            .map_err(query_error)?
-            .filter(|execution| execution.0.root.launched_as == ExecutionTreeLaunch::Workflow)
-            .map(|execution| execution_summary(execution.1.clone()))
-            .transpose()
     }
 }
 
@@ -188,16 +159,6 @@ pub fn node_detail(node: WorkspaceTreeNode) -> WorkspaceNodeDetailDto {
         updated_at,
         content,
     }
-}
-
-fn sqlite_page_bounds(page: Option<WorkflowPageRequest>) -> (i64, i64) {
-    page.map(|page| {
-        (
-            i64::try_from(page.limit).unwrap_or(i64::MAX),
-            i64::try_from(page.offset).unwrap_or(0),
-        )
-    })
-    .unwrap_or((i64::MAX, 0))
 }
 
 pub fn execution_summary(

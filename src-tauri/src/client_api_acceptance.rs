@@ -1,16 +1,14 @@
+use crate::adaptor::presenter::client::{CommandRequestEncode, CommandResultDecode};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use crate::adaptor::controller::api::ClientApiDeps;
 use crate::adaptor::controller::client::ClientCommandDispatch;
 use crate::adaptor::controller::terminal_surface_runtime::TerminalSurfaceRuntime;
-use crate::adaptor::gateway::local_event_store::{LocalEventStore, LocalEventStoreConfig};
 use crate::infrastructure::local_api::LocalApiServer;
 use crate::usecase::repository_usecase::RepositoryUsecase;
-use crate::usecase::workflow::WorkflowRuntimeUsecase;
 
 pub use crate::adaptor::gateway::repository::branch::BranchGateway;
-pub use crate::adaptor::presenter::terminal::TERMINAL_WS_BEARER_SUBPROTOCOL_PREFIX;
 pub use crate::adaptor::presenter::workflow_wire::{
     DiagnosticReport, DiagnosticSpan, DiagnosticStage, Severity,
 };
@@ -27,7 +25,6 @@ pub struct ClientEndpoint {
 pub struct ClientApiAcceptanceHost {
     data_dir: PathBuf,
     server: Arc<LocalApiServer>,
-    pub master_subprotocol: String,
 }
 
 impl ClientApiAcceptanceHost {
@@ -93,31 +90,6 @@ impl ClientApiAcceptanceHost {
         let dispatch = Arc::new(dispatch);
         let binding =
             crate::infrastructure::local_api::test_binding(data_dir.to_path_buf()).unwrap();
-        let master_subprotocol = format!(
-            "{TERMINAL_WS_BEARER_SUBPROTOCOL_PREFIX}{}",
-            binding.bearer_token()
-        );
-        let store = LocalEventStore::open(LocalEventStoreConfig::production(
-            data_dir.to_path_buf(),
-            std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
-        ))
-        .unwrap();
-        let workflow = crate::adaptor::controller::wiring::build_canonical_workflow_read_usecase(
-            data_dir, None,
-        )
-        .unwrap();
-        let runtime = WorkflowRuntimeUsecase::new_with_worktree_operations(
-            work.retrying.clone(),
-            Arc::new(
-                crate::provider_lifecycle_acceptance::AcceptanceWorkflowRuntimeGateway::default(),
-            ),
-            Arc::new(
-                crate::adaptor::gateway::workflow::ExecutionTreeArchiveFactRepository::new(
-                    store, data_dir,
-                ),
-            ),
-            operations,
-        );
         let terminal = TerminalSurfaceRuntime::new(work.clone(), data_dir.to_path_buf());
         let output = Arc::new(
             crate::adaptor::presenter::terminal_subscription::TerminalSubscriptionPresenter::new(
@@ -136,11 +108,7 @@ impl ClientApiAcceptanceHost {
             );
 
         let priority = crate::adaptor::controller::daemon::client_priority_interceptor();
-        let local_gate = priority.gate.clone();
         let router = crate::adaptor::controller::api::build_router(
-            Arc::new(workflow),
-            Arc::new(runtime),
-            binding.bearer_token(),
             crate::adaptor::controller::api::auth::ClientTokens {
                 operator: binding.client_bearer_token(),
                 hook: binding.hook_bearer_token(),
@@ -154,11 +122,7 @@ impl ClientApiAcceptanceHost {
                     ),
                 ),
             ),
-            None,
-            (
-                local_gate,
-                crate::adaptor::controller::daemon::default_timeout(),
-            ),
+            crate::adaptor::controller::daemon::default_timeout(),
         );
         Self {
             data_dir: data_dir.to_path_buf(),
@@ -168,7 +132,6 @@ impl ClientApiAcceptanceHost {
                     server.publish_discovery().unwrap();
                 })
                 .unwrap(),
-            master_subprotocol,
         }
     }
 
@@ -423,6 +386,9 @@ pub async fn read_state(
     use crate::adaptor::presenter::{client as wire, connect_wire::to_wire};
     let payload: wire::StatePayload = to_wire(payload.as_ref())?;
     let value = match payload.value.unwrap() {
+        wire::state_payload::Value::WorkflowExecution(value) => {
+            wire::from_message("releash.client.v1.NullableWorkflowExecutionView", &value)
+        }
         wire::state_payload::Value::CurrentBranch(value) => {
             wire::from_message("releash.client.v1.ResultString", &value)
         }

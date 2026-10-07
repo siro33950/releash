@@ -1,12 +1,8 @@
 pub(crate) mod client_token;
 pub(crate) use client_token::BearerToken;
-pub(crate) mod client;
 pub(crate) mod discovery;
 pub(crate) mod server;
 
-pub use client::{read_local_api_discovery, LocalApiDiscoveryReadError};
-pub(crate) use client::{LocalApiHttpClient, LocalApiIdentityRequestError, LocalApiTransportError};
-pub(crate) use discovery::local_api_discovery_path;
 pub use discovery::{
     lookup_process_start_time, process_start_time, LocalApiDiscovery, LocalApiDiscoveryFile,
     ProcessStartTimeLookup,

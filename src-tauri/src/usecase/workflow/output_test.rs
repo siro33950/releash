@@ -1,14 +1,14 @@
-use crate::usecase::workflow::test_helpers::FakeSecretSourceGateway;
 pub(crate) mod tests {
     use super::super::*;
-    use super::*;
     use crate::domain::workflow::{
         ExecutionTree, ExecutionTreeId, FacetRefs, NodeDefinition, NodeKind, SchemaDef,
         SessionSpec, WorkflowDefinition, WorkflowDefinitionRepository, WorkflowSummary,
     };
+    use crate::usecase::workflow::ports::WorkflowEventDraft;
     use crate::usecase::workflow::ports::WorkflowExecutionProjectionRepository;
     use crate::usecase::workflow::test_support::NoopDefinitionSourceGateway;
     use std::collections::{BTreeMap, BTreeSet};
+    use std::sync::Arc;
 
     struct NoopDefinitionRepository;
 
@@ -73,7 +73,7 @@ pub(crate) mod tests {
                 events.clone(),
                 Arc::new(NoopExecutionProjectionRepository),
             );
-            let usecase = WorkflowOutputUsecase::new(query, Arc::new(FakeSecretSourceGateway));
+            let usecase = WorkflowOutputUsecase::new(query);
             Self { usecase, events }
         }
     }
@@ -157,68 +157,6 @@ pub(crate) mod tests {
 
     fn test_execution_id() -> &'static str {
         "00000000-0000-4000-8000-000000000301"
-    }
-
-    #[tokio::test]
-    async fn validate_output_resolves_contract_from_execution_started_and_masks_before_validation()
-    {
-        let fixture = Fixture::new();
-        fixture.events.seed(execution_started(
-            test_execution_id(),
-            definition_with_artifact_contract("review-result"),
-        ));
-        let result = fixture
-            .usecase
-            .validate_output_for_contract(
-                test_execution_id(),
-                "review",
-                "review-result",
-                serde_json::json!({"status":"ok","secret":"token-123"}),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(result, WorkflowValidateOutputResult::Valid);
-        let invalid = fixture
-            .usecase
-            .validate_output_for_contract(
-                test_execution_id(),
-                "review",
-                "review-result",
-                serde_json::json!({}),
-            )
-            .await
-            .unwrap();
-        assert!(matches!(
-            invalid,
-            WorkflowValidateOutputResult::Invalid { reason, .. } if reason == "schema_violation"
-        ));
-    }
-
-    #[tokio::test]
-    async fn validate_output_for_contract_rejects_a_mismatched_contract() {
-        let fixture = Fixture::new();
-        fixture.events.seed(execution_started(
-            test_execution_id(),
-            definition_with_artifact_contract("review-result"),
-        ));
-
-        let error = fixture
-            .usecase
-            .validate_output_for_contract(
-                test_execution_id(),
-                "review",
-                "different-result",
-                serde_json::json!({"status":"ok"}),
-            )
-            .await
-            .unwrap_err();
-
-        assert!(matches!(
-            error,
-            WorkflowError::Validation(message)
-                if message.contains("expects contract 'review-result'")
-        ));
     }
 
     #[tokio::test]

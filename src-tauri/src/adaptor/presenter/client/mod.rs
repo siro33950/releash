@@ -1,7 +1,9 @@
 mod conversions;
+pub(crate) use conversions::session_selection;
 pub(crate) mod descriptor;
 pub(crate) mod errors;
 mod workspace;
+pub(crate) use workspace::{branch_status, selection};
 pub(crate) fn value<T, U: TryFrom<T>>(value: T) -> Result<U, CommandFailure>
 where
     U::Error: std::fmt::Display,
@@ -25,7 +27,6 @@ where
 pub use errors::CommandFailure;
 #[cfg(any(test, feature = "test-support"))]
 mod json;
-mod workflow_values;
 
 #[cfg(any(test, feature = "test-support"))]
 pub(crate) use self::json::from_message;
@@ -34,7 +35,7 @@ use self::json::to_message;
 #[cfg(any(test, feature = "test-support"))]
 use serde_json::Value as Json;
 
-include!(concat!(env!("OUT_DIR"), "/releash.client.v1.rs"));
+pub use releash_sdk::wire::*;
 include!(concat!(env!("OUT_DIR"), "/client_commands.rs"));
 
 #[cfg(any(test, feature = "test-support"))]

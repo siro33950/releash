@@ -1,8 +1,7 @@
 use super::super::value_objects::{
     ProviderKind, ProviderLifecycleEvent, ProviderLifecycleOutcome, ProviderLifecycleRejection,
     ProviderLifecycleScope, ProviderLifecycleSignal, ProviderLifecycleSignalKind,
-    ProviderLifecycleSlotId, ProviderLifecycleUnavailableObservation,
-    ProviderLifecycleUnavailableReason,
+    ProviderLifecycleSlotId,
 };
 use super::super::ProviderLifecycleInputError;
 #[cfg(any(test, feature = "test-support"))]
@@ -15,7 +14,6 @@ pub struct ProviderLifecycleBinding {
     scope: ProviderLifecycleScope,
     provider_session_id: Option<String>,
     transcript_ref: Option<String>,
-    unavailable: Option<ProviderLifecycleUnavailableReason>,
     expired: bool,
 }
 
@@ -60,7 +58,6 @@ impl ProviderLifecycleBinding {
             scope,
             provider_session_id: None,
             transcript_ref: None,
-            unavailable: None,
             expired: false,
         })
     }
@@ -143,41 +140,6 @@ impl ProviderLifecycleBinding {
         }
     }
 
-    pub(crate) fn mark_unavailable(
-        &mut self,
-        observation: ProviderLifecycleUnavailableObservation,
-    ) -> ProviderLifecycleOutcome {
-        if self.expired {
-            return ProviderLifecycleOutcome::Rejected(ProviderLifecycleRejection::BindingExpired);
-        }
-        if observation.binding_id() != self.binding_id {
-            return ProviderLifecycleOutcome::Rejected(ProviderLifecycleRejection::BindingMismatch);
-        }
-        if observation.provider() != self.provider {
-            return ProviderLifecycleOutcome::Rejected(
-                ProviderLifecycleRejection::ProviderMismatch,
-            );
-        }
-        if observation.scope() != &self.scope {
-            return ProviderLifecycleOutcome::Rejected(ProviderLifecycleRejection::ScopeMismatch);
-        }
-        if self.provider_session_id.is_some() {
-            return ProviderLifecycleOutcome::Rejected(
-                ProviderLifecycleRejection::SessionAlreadyAssociated,
-            );
-        }
-        if self.unavailable == Some(observation.reason()) {
-            return ProviderLifecycleOutcome::Duplicate;
-        }
-        self.unavailable = Some(observation.reason());
-        ProviderLifecycleOutcome::Applied(vec![ProviderLifecycleEvent::LifecycleUnavailable {
-            binding_id: self.binding_id.clone(),
-            provider: self.provider,
-            scope: self.scope.clone(),
-            reason: observation.reason(),
-        }])
-    }
-
     fn associate_session(
         &mut self,
         provider_session_id: String,
@@ -191,7 +153,6 @@ impl ProviderLifecycleBinding {
             }
             Some(_) => {}
             None => {
-                self.unavailable = None;
                 self.provider_session_id = Some(provider_session_id.clone());
                 self.transcript_ref = transcript_ref.clone();
                 return ProviderLifecycleOutcome::Applied(vec![
@@ -368,17 +329,8 @@ impl ProviderLifecycleBinding {
                 .map_err(|_| ProviderLifecycleReplayError::InvalidTransition)?;
                 self.observe(signal)
             }
-            ProviderLifecycleEvent::LifecycleUnavailable {
-                binding_id,
-                provider,
-                scope,
-                reason,
-            } => {
-                let observation = ProviderLifecycleUnavailableObservation::new(
-                    binding_id, provider, scope, reason,
-                )
-                .map_err(|_| ProviderLifecycleReplayError::InvalidTransition)?;
-                self.mark_unavailable(observation)
+            ProviderLifecycleEvent::LifecycleUnavailable { .. } => {
+                return Err(ProviderLifecycleReplayError::InvalidTransition);
             }
             ProviderLifecycleEvent::BindingExpired { binding_id } => {
                 if binding_id != self.binding_id {

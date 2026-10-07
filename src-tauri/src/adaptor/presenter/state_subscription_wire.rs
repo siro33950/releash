@@ -18,7 +18,7 @@ pub fn payload(value: &StateValue) -> Result<wire::StatePayload, connectrpc::Con
                     .map_err(crate::adaptor::presenter::connect::command_error)?,
             ),
             StateValue::Selection(tree, selected) => wire::state_payload::Value::Selection(
-                crate::adaptor::presenter::client::value((tree, *selected))
+                crate::adaptor::presenter::client::selection(tree, *selected).map_err(|e| crate::adaptor::presenter::error::AppError::new(e).into())
                     .map_err(crate::adaptor::presenter::connect::command_error)?,
             ),
             StateValue::NodeDetail(value) => wire::state_payload::Value::NodeDetail(
@@ -46,7 +46,7 @@ pub fn payload(value: &StateValue) -> Result<wire::StatePayload, connectrpc::Con
                     .map_err(crate::adaptor::presenter::connect::command_error)?,
             ),
             StateValue::BranchStatus(value) => wire::state_payload::Value::BranchStatus(
-                crate::adaptor::presenter::client::value(value.as_slice())
+                Ok::<_, crate::adaptor::presenter::client::CommandFailure>(crate::adaptor::presenter::client::branch_status(value.as_slice()))
                     .map_err(crate::adaptor::presenter::connect::command_error)?,
             ),
             StateValue::CurrentBranch(value) => wire::state_payload::Value::CurrentBranch(

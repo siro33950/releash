@@ -196,31 +196,6 @@ impl crate::domain::workflow::IsolatedWorktreeGateway for RepositoryIsolatedWork
     }
 }
 
-#[derive(Clone)]
-pub struct RepoPathsManagedWorktreeGateway {
-    repository: Arc<RepositoryUsecase>,
-    repo_paths: Vec<String>,
-}
-
-impl RepoPathsManagedWorktreeGateway {
-    pub fn new(repository: Arc<RepositoryUsecase>, repo_paths: Vec<String>) -> Self {
-        Self {
-            repository,
-            repo_paths,
-        }
-    }
-}
-
-impl ManagedWorktreeGateway for RepoPathsManagedWorktreeGateway {
-    fn resolve(&self, worktree_path: &str) -> Result<String, WorkflowError> {
-        canonicalize_managed_worktree_path_inner(
-            &self.repository,
-            self.repo_paths.clone(),
-            worktree_path.to_string(),
-        )
-    }
-}
-
 #[cfg(any(test, feature = "test-support"))]
 #[derive(Clone)]
 pub struct PassthroughManagedWorktreeGateway;

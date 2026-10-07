@@ -6,12 +6,12 @@ use releash_lib::test_support::integration::settings::AppConfig;
 use releash_lib::test_support::integration::workflow::build_command_artifact;
 use releash_lib::test_support::integration::workflow::ApprovalCommand;
 use releash_lib::test_support::integration::workflow::NodeFact;
-use releash_lib::test_support::integration::workflow::SecretSourceGateway;
+
 use releash_lib::test_support::integration::workflow::SubmitOutputArtifact;
 use releash_lib::test_support::integration::workflow::SubmitOutputCommand;
 use releash_lib::test_support::integration::workflow::WorkflowControlPlaneUsecase;
 use releash_lib::test_support::integration::workflow::WorkflowRuntimeCommandGateway;
-use releash_lib::test_support::integration::workflow::WorkflowSecretSourceConfigGateway;
+
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -58,7 +58,7 @@ pub async fn test_workflowの秘匿_設定取得失敗でも表示とartifactと
         assert_eq!(display_command, "echo [REDACTED]");
         assert_eq!(artifact.test_value()["stdout"], "[REDACTED]");
         assert_eq!(artifact.test_value()["stderr"], "[REDACTED]");
-        assert!(WorkflowSecretSourceConfigGateway::new(config)
+        assert!(config
             .configured_secret_values()
             .unwrap()
             .contains(&token.to_string()));

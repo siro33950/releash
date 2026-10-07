@@ -365,32 +365,6 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
-    async fn get_execution_log_page_projects_only_the_requested_event_window() {
-        let fixture = Fixture::new();
-        for (event_kind, timestamp) in [("execution_started", 1.0), ("node_started", 2.0)] {
-            fixture
-                .events
-                .append(&WorkflowEventDraft {
-                    execution_id: test_execution_id().to_string(),
-                    event_kind: event_kind.to_string(),
-                    timestamp,
-                    payload: serde_json::json!({}),
-                })
-                .unwrap();
-        }
-
-        let events = fixture
-            .service
-            .get_execution_log_page(test_execution_id(), WorkflowPageRequest::new(1, 1))
-            .await
-            .unwrap();
-
-        assert_eq!(events.len(), 1);
-        assert_eq!(events[0].event, "node_started");
-        assert_eq!(events[0].timestamp_ms, 2000.0);
-    }
-
-    #[tokio::test]
     async fn get_output_returns_latest_submitted_snapshot_for_node() {
         let fixture = Fixture::new();
         fixture
@@ -538,79 +512,11 @@ pub(crate) mod tests {
             fixture.service.get_execution_state(id).await.unwrap(),
             Some(expected)
         );
-        assert_eq!(
-            fixture
-                .service
-                .get_execution_log_page(id, WorkflowPageRequest::new(0, 10))
-                .await
-                .unwrap()
-                .len(),
-            1
-        );
+        assert_eq!(fixture.service.read_events(id).await.unwrap().len(), 1);
         assert!(fixture
             .service
             .get_execution_state("agent-session-invalid")
             .await
             .is_err());
-    }
-
-    #[tokio::test]
-    async fn get_execution_log_projects_event_drafts_to_wire_timestamp_fields() {
-        let fixture = Fixture::new();
-        fixture
-            .events
-            .append(&WorkflowEventDraft {
-                execution_id: test_execution_id().to_string(),
-                event_kind: "execution_started".to_string(),
-                timestamp: 1.25,
-                payload: serde_json::json!({
-                    "workflow_name": "wf",
-                    "worktree_path": "/wt",
-                }),
-            })
-            .unwrap();
-
-        let events = fixture
-            .service
-            .get_execution_log_page(test_execution_id(), WorkflowPageRequest::new(0, 10))
-            .await
-            .unwrap();
-
-        assert_eq!(events.len(), 1);
-        assert_eq!(events[0].event, "execution_started");
-        assert_eq!(events[0].execution_id, test_execution_id());
-        assert_eq!(events[0].payload["workflow_name"], "wf");
-        assert_eq!(events[0].timestamp_ms, 1250.0);
-    }
-
-    #[tokio::test]
-    async fn get_execution_log_renames_submission_timestamp_to_millisecond_field() {
-        let fixture = Fixture::new();
-        fixture
-            .events
-            .append(&WorkflowEventDraft {
-                execution_id: test_execution_id().to_string(),
-                event_kind: "artifact_produced".to_string(),
-                timestamp: 4.0,
-                payload: serde_json::json!({
-                    "node_execution_id": format!("{}:review:1", test_execution_id()),
-                    "node_name": "review",
-                    "contract": "review-result",
-                    "value": {"status": "ok"},
-                    "submitted_at": 4.0,
-                    "request_id": "req-2",
-                }),
-            })
-            .unwrap();
-
-        let events = fixture
-            .service
-            .get_execution_log_page(test_execution_id(), WorkflowPageRequest::new(0, 10))
-            .await
-            .unwrap();
-
-        assert_eq!(events[0].payload["submittedAtMs"], 4000.0);
-        assert!(!events[0].payload.contains_key("submitted_at"));
-        assert_eq!(events[0].timestamp_ms, 4000.0);
     }
 }

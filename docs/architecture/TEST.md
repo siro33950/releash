@@ -27,15 +27,18 @@
 |---|---|---|---|
 | 単体（サーバ） | `src-tauri/src/` の `<impl>_test.rs` | `cargo test --lib --bins -p releash-backend`、`cargo test --doc -p releash-backend` | PR 層の単体ジョブ |
 | 単体（シェル） | `src-tauri/releash-desktop/src/` の `<impl>_test.rs` | `cargo test --lib --bins -p releash-desktop`、`cargo test --doc -p releash-desktop` | PR 層の単体ジョブ |
+| 単体（SDK） | `src-tauri/releash-sdk/src/` の `<impl>_test.rs` | `cargo test --lib -p releash-sdk`、`cargo test --doc -p releash-sdk` | PR 層の単体ジョブ |
+| 単体（CLI） | `src-tauri/releash/src/` の `<impl>_test.rs` | `cargo test --lib --bins -p releash`、`cargo test --doc -p releash` | PR 層の単体ジョブ |
 | 単体（フロント） | `src/` の `*.test.ts(x)` | `pnpm test` | PR 層の単体ジョブ |
 | 統合（サーバ） | `src-tauri/tests/` | `cargo test --test '*' -p releash-backend` | PR 層の統合ジョブ |
 | 統合（シェル） | `src-tauri/releash-desktop/tests/` | `cargo test --test '*' -p releash-desktop` | PR 層の統合ジョブ |
+| 統合（CLI） | `src-tauri/releash/tests/` | `cargo test --test '*' -p releash` | PR 層の統合ジョブ |
 | 統合（フロント） | `tests/integration/` | `pnpm test:integration` | PR 層の統合ジョブ |
 | 振る舞い | `tests/behavior/` | `pnpm test:behavior` | nightly 層 |
 
 手動で実行するテストはコミットしない。
 
-シェルの統合テストの前に、`src-tauri/` で `cargo build --locked -p releash-backend --bin releash-backend` を実行する。テストから cargo は呼ばない。
+統合テストの前に、`src-tauri/` で次を実行する。サーバは `cargo build --locked -p releash --bin releash`、シェルと CLI は `cargo build --locked -p releash-backend --bin releash-backend -p releash --bin releash`。テストから cargo は呼ばない。
 
 Rust の単体テストは、実装と同じディレクトリに `<impl>_test.rs` を置き、`<impl>.rs` の末尾で `#[path]` を指定して取り込む。ファイル名は `<impl>_test.rs`、テストモジュール名は `<impl>_tests` とする。
 
@@ -60,7 +63,7 @@ mod terminal_surface_registry_tests;
 | `usecase/` | **必須** | 業務手順の正しさを担保 |
 | `adaptor/gateway/` | **必須** | 外部システムとの境界、モデル変換の検証 |
 | `adaptor/controller/command/` | 柔軟 | Tauri 依存で書きにくい場合は省略可 |
-| `adaptor/controller/api/` | 柔軟 | HTTP 依存で書きにくい場合は省略可 |
+| `adaptor/controller/api/` | 柔軟 | Connect 依存で書きにくい場合は省略可 |
 | `adaptor/presenter/` | 柔軟 | 表示整形のみ、必要に応じて |
 | `infrastructure/` | 柔軟 | 外部世界の都合をそのまま扱う層。判断も変換も持たないため、統合テストで検証 |
 | `common/` | 柔軟 | 横断的関心事の包み |

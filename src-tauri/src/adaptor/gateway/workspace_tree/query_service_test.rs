@@ -155,15 +155,6 @@ fn test_workspace_query_error_corruptをcorrupt_stored_stateへ写像する() {
 }
 
 #[test]
-fn unrepresentable_page_offset_falls_back_to_the_first_record() {
-    assert_eq!(
-        sqlite_page_bounds(Some(WorkflowPageRequest::new(usize::MAX, usize::MAX))),
-        (i64::MAX, 0)
-    );
-    assert_eq!(sqlite_page_bounds(None), (i64::MAX, 0));
-}
-
-#[test]
 fn test_隔離node詳細_実行中と成果物なし終端でもbranchとpathを公開する() {
     // Given
     let expected = crate::domain::workflow::IsolatedWorktree::for_attempt("/repo", "isolated", 2);
@@ -215,7 +206,6 @@ fn test_workspace_query_結果不明と期限切れの分類を保持する() {
 
 #[test]
 fn test_workspace_query_store以外の失敗はmainと同じ変種を返す() {
-    use crate::adaptor::controller::api::error::ApiError;
     use crate::adaptor::presenter::connect::ConnectFailure;
     use crate::domain::local_event::{
         LocalEventQueryError, SafeOperationFailure, SessionOperationFailureKind,
@@ -235,7 +225,6 @@ fn test_workspace_query_store以外の失敗はmainと同じ変種を返す() {
         let error = query_error(error);
         assert!(matches!(error, WorkflowError::External(_)));
         assert_eq!(error.connect_code(), connectrpc::ErrorCode::Internal);
-        assert_eq!(ApiError::from(error).status.as_u16(), 500);
     }
 }
 

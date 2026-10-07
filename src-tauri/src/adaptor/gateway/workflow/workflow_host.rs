@@ -732,7 +732,6 @@ impl WorkflowRuntimeHost {
                     &worktree_path,
                 )),
                 Some(crate::domain::workflow::ExecutionStatusFilter::Active),
-                None,
             )
             .await
             .map_err(|error| WorkflowRuntimeError::SessionStore(error.to_string()))?;

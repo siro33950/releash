@@ -155,12 +155,10 @@ pub async fn test_クライアントrpc_期限切れで処理を止め要求枠�
     let data = tempfile::tempdir().unwrap();
     let router = crate::adaptor_controller_api_mod::test_support::test_router_with_optional_deps(
         data.path(),
-        "master",
         "client",
         Some(
             releash_lib::test_support::integration::transport::client_api_deps(Arc::new(dispatch)),
         ),
-        None,
     )
     .0;
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -296,10 +294,8 @@ pub async fn test_計算と操作command_connectの実行結果とエラーがdi
     app.dispatch = Some(dispatch.clone());
     let router = crate::adaptor_controller_api_mod::test_support::test_router_with_optional_deps(
         data.path(),
-        "master",
         "client",
         Some(releash_lib::test_support::integration::transport::client_api_deps(dispatch)),
-        None,
     )
     .0;
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -784,12 +780,10 @@ pub async fn test_workspace保存_connectがui追加fieldを受理し既存項�
     dispatch.register_dependencies(&deps);
     let router = crate::adaptor_controller_api_mod::test_support::test_router_with_optional_deps(
         data.path(),
-        "master",
         "client",
         Some(
             releash_lib::test_support::integration::transport::client_api_deps(Arc::new(dispatch)),
         ),
-        None,
     )
     .0;
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

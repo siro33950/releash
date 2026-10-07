@@ -3,7 +3,7 @@ use releash_lib::test_support::integration::sessions::MemoryHookHealthRepository
 use releash_lib::test_support::integration::subscriptions::SubscriptionTarget as T;
 
 use releash_lib::test_support::integration::subscriptions::Event;
-use releash_lib::test_support::integration::workflow::EmptySecretSourceGateway;
+
 use releash_lib::test_support::integration::workflow::NoopWorkflowExternalEditorGateway;
 use releash_lib::test_support::integration::workflow::PassthroughManagedWorktreeGateway;
 
@@ -736,7 +736,7 @@ pub async fn test_終了済み実行木の選択_初期購読でツリーを配�
     // Given
     use crate::adaptor_gateway_workflow_workflow_host_test_helpers::archive_fixture;
     use releash_lib::test_support::integration::subscriptions::Event;
-    use releash_lib::test_support::integration::workflow::EmptySecretSourceGateway;
+
     use releash_lib::test_support::integration::workflow::NoopWorkflowExternalEditorGateway;
     use releash_lib::test_support::integration::workflow::PassthroughManagedWorktreeGateway;
     let fixture = Fixture::new();
@@ -772,7 +772,6 @@ pub async fn test_終了済み実行木の選択_初期購読でツリーを配�
             archive.directory.path(),
             Arc::new(PassthroughManagedWorktreeGateway),
             Arc::new(NoopWorkflowExternalEditorGateway),
-            Arc::new(EmptySecretSourceGateway),
             archive.store.clone(),
             None,
             None,
@@ -856,7 +855,6 @@ pub async fn test_終了済み実行木のarchive_取り直しなしで空のツ
             archive.directory.path(),
             Arc::new(PassthroughManagedWorktreeGateway),
             Arc::new(NoopWorkflowExternalEditorGateway),
-            Arc::new(EmptySecretSourceGateway),
             archive.store.clone(),
             None,
             None,
@@ -950,7 +948,6 @@ pub async fn test_終了済み実行木のrestore_取り直しなしでツリー
             archive.directory.path(),
             Arc::new(PassthroughManagedWorktreeGateway),
             Arc::new(NoopWorkflowExternalEditorGateway),
-            Arc::new(EmptySecretSourceGateway),
             archive.store.clone(),
             None,
             None,

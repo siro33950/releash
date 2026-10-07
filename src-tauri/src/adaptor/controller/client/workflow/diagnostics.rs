@@ -15,13 +15,11 @@ pub(crate) async fn render_facet_preview_shared(
 
 pub(crate) async fn diagnose_workflow_directory_shared(
     state: &AppState,
-    dir: String,
+    dir: Option<String>,
 ) -> Result<crate::usecase::workflow::diagnostic_dto::DiagnosticReport, AppError> {
     let target =
-        crate::usecase::workflow::ports::WorkflowDiagnosticsTarget::from_optional_directory(Some(
-            dir,
-        ))
-        .map_err(AppError::from_failure)?;
+        crate::usecase::workflow::ports::WorkflowDiagnosticsTarget::from_optional_directory(dir)
+            .map_err(AppError::from_failure)?;
     let usecase = state.workflow_usecase.clone();
     crate::adaptor::controller::client::worktree_mutation::spawn_blocking(move || {
         usecase.diagnose_all(target).map_err(AppError::from_failure)

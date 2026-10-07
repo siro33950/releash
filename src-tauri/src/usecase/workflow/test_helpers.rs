@@ -202,16 +202,6 @@ impl WorkflowEventRepository for FakeEventRepository {
 }
 
 #[cfg(test)]
-pub struct FakeSecretSourceGateway;
-
-#[cfg(test)]
-impl SecretSourceGateway for FakeSecretSourceGateway {
-    fn configured_secret_values(&self) -> Result<Vec<String>, WorkflowError> {
-        Ok(vec!["token-123".to_string()])
-    }
-}
-
-#[cfg(test)]
 pub(crate) mod startup {
     use crate::domain::workflow::entities::workflow_execution::ExecutionTree;
     use crate::domain::workflow::repository::WorkflowStartupRecord;

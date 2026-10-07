@@ -1,4 +1,5 @@
 use crate::adaptor::presenter::client as wire;
+use crate::adaptor::presenter::client::CommandName;
 use std::{collections::HashMap, future::Future, pin::Pin, sync::Arc};
 
 pub(crate) type CommandHandler = Box<

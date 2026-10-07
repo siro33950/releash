@@ -49,7 +49,11 @@ pub(crate) fn register_shared(
                     let result = async move {
                         let launch = launch
                             .ok_or_else(|| invalid_request("Command dependency unavailable"))?;
-                        outcome(provider_tui::create_agent_session_shared(&launch, args).await)
+                        outcome(
+                            provider_tui::create_agent_session_shared(&launch, args)
+                                .await
+                                .map(wire::session_selection),
+                        )
                     }
                     .await?;
                     Ok(wire::command_result::Command::CreateAgentSession(result))
@@ -193,7 +197,8 @@ pub(crate) fn register_shared(
                                 convert(required(args.cols, "cols")?)?,
                                 convert(required(args.caller_request_id, "callerRequestId")?)?,
                             )
-                            .await,
+                            .await
+                            .map(wire::session_selection),
                         )
                     }
                     .await?;
@@ -221,7 +226,8 @@ pub(crate) fn register_shared(
                             provider_tui::resume_agent_session_history_candidate_shared(
                                 &launch, args,
                             )
-                            .await,
+                            .await
+                            .map(wire::session_selection),
                         )
                     }
                     .await?;

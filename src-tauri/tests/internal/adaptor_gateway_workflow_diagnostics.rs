@@ -1220,38 +1220,6 @@ pub(crate) mod tests {
         fs::write(facet_dir.join(format!("{key}.md")), content).unwrap();
     }
 
-    #[test]
-    pub fn test_診断reportはserializeとdeserializeをround_tripできる() {
-        // Given
-        let tmp = TempDir::new().unwrap();
-        fs::write(
-            tmp.path().join("round-trip.yml"),
-            r#"name: round-trip
-description: round trip
-nodes:
-  main:
-    command: printf ok
-"#,
-        )
-        .unwrap();
-
-        // When
-        let report = diagnose_all(tmp.path(), tmp.path()).unwrap();
-        let value = serde_json::to_value(
-            releash_lib::test_support::integration::transport::DiagnosticReportResponse::from(
-                report,
-            ),
-        )
-        .unwrap();
-        let decoded = serde_json::from_value::<
-            releash_lib::test_support::integration::transport::DiagnosticReportResponse,
-        >(value.clone())
-        .unwrap();
-
-        // Then
-        assert_eq!(serde_json::to_value(decoded).unwrap(), value);
-    }
-
     fn permission_yaml(permission: &str) -> String {
         format!(
             r#"name: permission

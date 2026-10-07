@@ -1,30 +1,6 @@
 use crate::domain::provider_lifecycle::{
     ProviderLifecycleIngressResult, ProviderLifecycleRejection,
 };
-use serde::{Deserialize, Serialize};
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(tag = "status", rename_all = "snake_case")]
-pub enum ProviderLifecycleReceiveResponse {
-    Applied,
-    Ignored,
-    Duplicate,
-    Rejected { reason: String },
-}
-
-impl From<ProviderLifecycleIngressResult> for ProviderLifecycleReceiveResponse {
-    fn from(result: ProviderLifecycleIngressResult) -> Self {
-        match result {
-            ProviderLifecycleIngressResult::Ignored => Self::Ignored,
-            ProviderLifecycleIngressResult::Applied => Self::Applied,
-            ProviderLifecycleIngressResult::Duplicate => Self::Duplicate,
-            ProviderLifecycleIngressResult::Rejected(reason) => Self::Rejected {
-                reason: rejection_reason(reason).into(),
-            },
-        }
-    }
-}
-
 pub(crate) fn rejection_reason(reason: ProviderLifecycleRejection) -> &'static str {
     match reason {
         ProviderLifecycleRejection::BindingNotActive => "binding_not_active",

@@ -33,7 +33,6 @@ pub(crate) mod schema;
 #[cfg(test)]
 mod schema_contract_tests;
 pub(crate) mod secret_source;
-pub(crate) mod secret_source_gateway;
 pub(crate) mod span_map;
 pub(crate) mod startup_repository;
 #[cfg(test)]
@@ -61,11 +60,7 @@ pub(crate) use runtime_command_gateway::{
     WorkflowRuntimeCommandGateway, WorkflowRuntimeCommandGatewayDeps,
 };
 #[cfg(any(test, feature = "test-support"))]
-pub(crate) use secret_source_gateway::EmptySecretSourceGateway;
-pub(crate) use secret_source_gateway::WorkflowSecretSourceConfigGateway;
-#[cfg(any(test, feature = "test-support"))]
 pub(crate) use worktree_gateway::PassthroughManagedWorktreeGateway;
-pub(crate) use worktree_gateway::RepoPathsManagedWorktreeGateway;
 pub(crate) use worktree_gateway::RepositoryManagedWorktreeGateway;
 
 pub(crate) use worktree_gateway::RepositoryIsolatedWorktreeGateway;

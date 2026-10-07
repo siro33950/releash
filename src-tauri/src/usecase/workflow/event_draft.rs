@@ -1,61 +1,9 @@
 use serde::Deserialize;
 use serde_json::Value;
-use std::collections::BTreeMap;
 
 use crate::domain::workflow::contract::{ArtifactSubmittedSnapshot, ContractLookupError};
-use crate::domain::workflow::services::contract_schema;
-use crate::domain::workflow::SchemaDef;
 
 use super::ports::WorkflowEventDraft;
-
-#[cfg(test)]
-pub(crate) fn resolve_node_artifact_contract_from_drafts(
-    events: &[WorkflowEventDraft],
-    node_name: &str,
-    execution_id: &str,
-) -> Result<String, ContractLookupError> {
-    let workflow = execution_started_workflow_from_drafts(events, execution_id)?;
-
-    lookup_node_artifact_contract(workflow.definition, node_name)
-        .map_err(
-            |details| ContractLookupError::InvalidExecutionStartedPayload {
-                details: format!("invalid payload for execution_started event: {details}"),
-            },
-        )?
-        .ok_or_else(|| ContractLookupError::NoArtifactContract {
-            workflow_name: workflow.name,
-            node: node_name.to_string(),
-        })
-}
-
-pub(crate) struct ArtifactSchemaContext {
-    pub contract: String,
-    pub schemas: BTreeMap<String, SchemaDef>,
-}
-
-pub(crate) fn resolve_node_artifact_schema_from_drafts(
-    events: &[WorkflowEventDraft],
-    node_name: &str,
-    execution_id: &str,
-) -> Result<ArtifactSchemaContext, ContractLookupError> {
-    let workflow = execution_started_workflow_from_drafts(events, execution_id)?;
-    let contract = lookup_node_artifact_contract(workflow.definition, node_name)
-        .map_err(
-            |details| ContractLookupError::InvalidExecutionStartedPayload {
-                details: format!("invalid payload for execution_started event: {details}"),
-            },
-        )?
-        .ok_or_else(|| ContractLookupError::NoArtifactContract {
-            workflow_name: workflow.name.clone(),
-            node: node_name.to_string(),
-        })?;
-    let schemas = schemas_from_workflow(workflow.definition).map_err(|details| {
-        ContractLookupError::InvalidExecutionStartedPayload {
-            details: format!("invalid payload for execution_started event: {details}"),
-        }
-    })?;
-    Ok(ArtifactSchemaContext { contract, schemas })
-}
 
 pub(crate) fn node_exists_in_drafts(
     events: &[WorkflowEventDraft],
@@ -94,7 +42,6 @@ pub(crate) fn node_is_isolated_in_drafts(
 }
 
 struct ExecutionStartedWorkflow<'a> {
-    name: String,
     definition: &'a Value,
 }
 
@@ -133,43 +80,11 @@ fn execution_started_workflow_from_payload(
         .get("root")
         .and_then(|root| root.get("definition"))
         .ok_or_else(|| "missing root definition".to_string())?;
-    let name = definition
+    definition
         .get("name")
         .and_then(Value::as_str)
-        .ok_or_else(|| "definition.name must be a string".to_string())?
-        .to_string();
-    Ok(ExecutionStartedWorkflow { name, definition })
-}
-
-fn schemas_from_workflow(workflow: &Value) -> Result<BTreeMap<String, SchemaDef>, String> {
-    let Some(schemas) = workflow.get("schemas") else {
-        return Ok(BTreeMap::new());
-    };
-    let schemas = schemas
-        .as_object()
-        .ok_or_else(|| "definition.schemas must be an object".to_string())?;
-    schemas
-        .iter()
-        .map(|(name, value)| {
-            contract_schema::schema_def_from_json(value)
-                .map(|schema| (name.clone(), schema))
-                .map_err(|reason| format!("schemas.{name}: {reason}"))
-        })
-        .collect()
-}
-
-fn lookup_node_artifact_contract(
-    workflow: &Value,
-    node_name: &str,
-) -> Result<Option<String>, String> {
-    let nodes = workflow
-        .get("nodes")
-        .and_then(Value::as_object)
-        .ok_or_else(|| "definition.nodes must be a map".to_string())?;
-    match nodes.get(node_name) {
-        Some(node) => artifact_contract_from_node(node),
-        None => Ok(None),
-    }
+        .ok_or_else(|| "definition.name must be a string".to_string())?;
+    Ok(ExecutionStartedWorkflow { definition })
 }
 
 fn workflow_contains_node(workflow: &Value, node_name: &str) -> Result<bool, String> {
@@ -178,15 +93,6 @@ fn workflow_contains_node(workflow: &Value, node_name: &str) -> Result<bool, Str
         .and_then(Value::as_object)
         .ok_or_else(|| "definition.nodes must be a map".to_string())?;
     Ok(nodes.contains_key(node_name))
-}
-
-fn artifact_contract_from_node(node: &Value) -> Result<Option<String>, String> {
-    match node.get("artifact") {
-        None | Some(Value::Null) => Ok(None),
-        Some(Value::String(value)) if value.trim().is_empty() => Ok(None),
-        Some(Value::String(value)) => Ok(Some(value.clone())),
-        Some(_) => Err("artifact must be a string".to_string()),
-    }
 }
 
 #[derive(Debug, Deserialize)]

@@ -2200,16 +2200,6 @@ pub async fn test_agent_session読取_未対応node定義があってもqueryと
         .await;
         let repository = new_repository(&store);
         let query = LocalAgentSessionQueryService::new(store.clone());
-        let read_store =
-            releash_lib::test_support::integration::persistence::LocalEventReadStore::open(
-                directory.path(),
-                std::sync::Arc::new(
-                    releash_lib::test_support::integration::platform::RetryLimiter::new(),
-                ),
-            )
-            .unwrap();
-        let read_query = LocalAgentSessionQueryService::new_read_only(read_store);
-
         // When
         let session = repository.find("tree-session").await.unwrap().unwrap();
         let activity = repository
@@ -2218,7 +2208,6 @@ pub async fn test_agent_session読取_未対応node定義があってもqueryと
             .unwrap()
             .unwrap();
         let item = query.get("tree-session").await.unwrap().unwrap();
-        let read_item = read_query.get("tree-session").await.unwrap().unwrap();
         let candidates = repository
             .list_open_for_provider_session_title()
             .await
@@ -2226,9 +2215,10 @@ pub async fn test_agent_session読取_未対応node定義があってもqueryと
 
         // Then
         assert_eq!(session.session().worktree_path(), "/repo");
+        assert_eq!(item.worktree_path, session.session().worktree_path());
+        assert_eq!(item.id, "tree-session");
         assert_eq!(session.session(), activity.session());
         assert_eq!(session.session().lifecycle(), AgentSessionLifecycle::Open);
-        assert_eq!(item, read_item);
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0].session(), session.session());
     }

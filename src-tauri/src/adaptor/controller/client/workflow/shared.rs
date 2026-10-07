@@ -23,11 +23,7 @@ pub fn register_shared(
                         let state = state
                             .ok_or_else(|| invalid_request("Command dependency unavailable"))?;
                         outcome(
-                            diagnostics::diagnose_workflow_directory_shared(
-                                &state,
-                                convert(required(args.dir, "dir")?)?,
-                            )
-                            .await,
+                            diagnostics::diagnose_workflow_directory_shared(&state, args.dir).await,
                         )
                     }
                     .await?;

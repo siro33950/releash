@@ -7,7 +7,7 @@
 1. **ドメインとインフラの分離** — ビジネスロジックを Tauri / git2 / file I/O から切り離す
 2. **ファイル分割の徹底** — 単一責務に従ったモジュール構造
 3. **再利用性の向上** — ドメイン層を CLI 等の別エントリポイントから利用可能にする
-4. **API層の分離** — Connect の ClientService / HTTP local API / Tauri コマンドを薄い入口に閉じ込める
+4. **API層の分離** — Connect の ClientService / Tauri コマンドを薄い入口に閉じ込める
 
 ## 部品の一覧
 
@@ -96,7 +96,7 @@ Main → 全ての層
 
 - [DOMAIN.md](./DOMAIN.md) — ドメイン層
 - [USECASE.md](./USECASE.md) — ユースケース層
-- [CONTROLLER.md](./CONTROLLER.md) — コントローラ層（Connect／local API／Tauriコマンド）
+- [CONTROLLER.md](./CONTROLLER.md) — コントローラ層（Connect／Tauri コマンド）
 - [PRESENTER.md](./PRESENTER.md) — プレゼンター層
 - [GATEWAY.md](./GATEWAY.md) — ゲートウェイ層
 - [INFRASTRUCTURE.md](./INFRASTRUCTURE.md) — インフラストラクチャ層

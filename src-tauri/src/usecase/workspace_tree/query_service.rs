@@ -1,6 +1,4 @@
-use crate::domain::workflow::{
-    ExecutionStatusFilter, WorkflowError, WorkflowExecutionSummary, WorkflowPageRequest,
-};
+use crate::domain::workflow::{ExecutionStatusFilter, WorkflowError, WorkflowExecutionSummary};
 use crate::domain::workspace_tree::WorkspaceIdentity;
 use crate::usecase::workflow::WorkspaceNodeDetailDto;
 
@@ -17,11 +15,5 @@ pub trait WorkspaceQueryService: Send + Sync {
         &self,
         workspace_identity: Option<&WorkspaceIdentity>,
         status: Option<ExecutionStatusFilter>,
-        page: Option<WorkflowPageRequest>,
     ) -> Result<Vec<WorkflowExecutionSummary>, WorkflowError>;
-
-    async fn execution_summary(
-        &self,
-        execution_id: &str,
-    ) -> Result<Option<WorkflowExecutionSummary>, WorkflowError>;
 }

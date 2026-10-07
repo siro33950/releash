@@ -147,32 +147,6 @@ impl From<CodeUsecaseError> for AppError {
     }
 }
 
-pub(crate) fn workflow_storage_message(failure: &crate::domain::failure::StorageFailure) -> String {
-    if let Some(message) = &failure.context {
-        return message.clone();
-    }
-    let label = match failure.connect_code() {
-        connectrpc::ErrorCode::Unavailable => "Temporary",
-        connectrpc::ErrorCode::Aborted => "RestartRequired",
-        connectrpc::ErrorCode::FailedPrecondition => "StateRequired",
-        connectrpc::ErrorCode::InvalidArgument => "InvalidInput",
-        connectrpc::ErrorCode::DeadlineExceeded => "Expired",
-        connectrpc::ErrorCode::NotFound => "Missing",
-        connectrpc::ErrorCode::AlreadyExists => "AlreadyPresent",
-        connectrpc::ErrorCode::PermissionDenied => "Permission",
-        connectrpc::ErrorCode::ResourceExhausted => "Capacity",
-        connectrpc::ErrorCode::Unimplemented => "Unsupported",
-        connectrpc::ErrorCode::Internal => "Internal",
-        connectrpc::ErrorCode::DataLoss => "Corrupt",
-        connectrpc::ErrorCode::Canceled => "Cancelled",
-        connectrpc::ErrorCode::Unknown => "Unknown",
-        connectrpc::ErrorCode::OutOfRange => "OutsideRange",
-        connectrpc::ErrorCode::Unauthenticated => "AuthenticationRequired",
-        _ => unreachable!("presenter emits a known status"),
-    };
-    format!("Store failure: {label}")
-}
-
 #[cfg(test)]
 #[path = "error_test.rs"]
 pub(crate) mod error_tests;

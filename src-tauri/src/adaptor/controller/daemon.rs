@@ -408,7 +408,6 @@ pub async fn compose(
             data_dir.clone(),
             repository_usecase.clone(),
             config_repository.clone(),
-            config_secret_repository.clone(),
             local_event_store.clone(),
             node_processes.clone(),
         );
@@ -488,7 +487,6 @@ pub async fn compose(
     )
     .await?;
 
-    let workflow_query_usecase = workflow_usecase.clone();
     let review_comments_dir = adaptor::gateway::comment::state_dir(&data_dir);
     adaptor::controller::wiring::spawn_startup_app_data_gc(
         app_data.clone(),
@@ -612,11 +610,7 @@ pub async fn compose(
     let client_dispatch = Arc::new(client_dispatch);
 
     let priority = client_priority_interceptor();
-    let local_gate = priority.gate.clone();
     let local_api_router = adaptor::controller::api::build_router(
-        Arc::new(workflow_query_usecase.read_usecase()),
-        workflow_runtime_usecase.clone(),
-        local_api_binding.bearer_token(),
         adaptor::controller::api::auth::ClientTokens {
             operator: local_api_binding.client_bearer_token(),
             hook: local_api_binding.hook_bearer_token(),
@@ -630,8 +624,7 @@ pub async fn compose(
                     terminal_subscriptions,
                 )),
         ),
-        Some(provider_lifecycle_ingress.clone()),
-        (local_gate, default_timeout()),
+        default_timeout(),
     );
     let local_api =
         local_api_binding.start(local_api_router, &tokio::runtime::Handle::current())?;

@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 struct Fixture {
-    host: ClientApiAcceptanceHost,
+    _host: ClientApiAcceptanceHost,
     url: String,
     token: Arc<str>,
     repo: tempfile::TempDir,
@@ -36,13 +36,9 @@ impl Fixture {
         git.set_head("refs/heads/ws-branch").unwrap();
         let host = ClientApiAcceptanceHost::start(data.path(), branch);
         let endpoint = host.endpoint();
-        assert_ne!(
-            format!("releash-bearer.{}", endpoint.token),
-            host.master_subprotocol
-        );
-        let token = Arc::from(endpoint.token);
+        let token = Arc::<str>::from(endpoint.token.clone());
         Self {
-            host,
+            _host: host,
             url: endpoint.url,
             token,
             repo,
@@ -100,34 +96,6 @@ async fn test_クライアントconnect_認証と相関を保つ() {
     .await;
     assert_eq!(response["request_id"], "one");
     assert_eq!(response["result"], "ws-branch");
-}
-
-#[tokio::test]
-async fn test_クライアント認証_wsで有効な非master_tokenはhttp入口で拒否する() {
-    // Given
-    let fixture = Fixture::new().await;
-    let mut url = url::Url::parse(&fixture.url).unwrap();
-    url.set_scheme("http").unwrap();
-    url.set_path("/v1/workflows");
-    let master = fixture
-        .host
-        .master_subprotocol
-        .strip_prefix(TERMINAL_WS_BEARER_SUBPROTOCOL_PREFIX)
-        .unwrap();
-    let client = reqwest::Client::new();
-    // When / Then
-    for (token, expected) in [
-        (fixture.token.as_ref(), reqwest::StatusCode::UNAUTHORIZED),
-        (master, reqwest::StatusCode::OK),
-    ] {
-        let response = client
-            .get(url.clone())
-            .bearer_auth(token)
-            .send()
-            .await
-            .unwrap();
-        assert_eq!(response.status(), expected);
-    }
 }
 
 #[tokio::test]

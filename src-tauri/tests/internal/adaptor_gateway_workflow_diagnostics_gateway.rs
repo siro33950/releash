@@ -7,45 +7,6 @@ pub(crate) mod tests {
     use tempfile::TempDir;
 
     #[test]
-    pub fn returns_existing_diagnostic_report_wire_shape() {
-        let workflows = TempDir::new().unwrap();
-        let facets = TempDir::new().unwrap();
-
-        let report = WorkflowDiagnosticsFileGateway::new(workflows.path(), facets.path())
-            .diagnose_all(WorkflowDiagnosticsTarget::AppliedConfigDirectory)
-            .unwrap();
-
-        assert!(serde_json::to_value(
-            releash_lib::test_support::integration::transport::DiagnosticReportResponse::from(
-                report.clone()
-            )
-        )
-        .unwrap()["items"]
-            .is_array());
-        assert!(serde_json::to_value(
-            releash_lib::test_support::integration::transport::DiagnosticReportResponse::from(
-                report.clone()
-            )
-        )
-        .unwrap()["workflow_summaries"]
-            .is_object());
-        assert!(serde_json::to_value(
-            releash_lib::test_support::integration::transport::DiagnosticReportResponse::from(
-                report.clone()
-            )
-        )
-        .unwrap()["facet_summaries"]
-            .is_object());
-        assert!(serde_json::to_value(
-            releash_lib::test_support::integration::transport::DiagnosticReportResponse::from(
-                report.clone()
-            )
-        )
-        .unwrap()["facet_usage"]
-            .is_object());
-    }
-
-    #[test]
     pub fn test_診断gateway_指定directoryを使う() {
         // Given
         let configured = TempDir::new().unwrap();
@@ -60,16 +21,10 @@ pub(crate) mod tests {
             .unwrap();
 
         // Then
-        assert!(serde_json::to_value(
-            releash_lib::test_support::integration::transport::DiagnosticReportResponse::from(
-                report.clone()
-            )
-        )
-        .unwrap()["items"]
-            .as_array()
-            .unwrap()
+        assert!(report
+            .items
             .iter()
-            .any(|item| { item["code"] == "WFS001" && item["workflow_name"] == "broken" }));
+            .any(|item| item.code == "WFS001" && item.workflow_name.as_deref() == Some("broken")));
     }
 
     #[test]
@@ -77,14 +32,9 @@ pub(crate) mod tests {
         // Given
         let workflows = TempDir::new().unwrap();
         let facets = TempDir::new().unwrap();
-        let expected = serde_json::to_value(
-            releash_lib::test_support::integration::transport::DiagnosticReportResponse::from(
-                releash_lib::test_support::integration::workflow::diagnose_all(
-                    workflows.path(),
-                    facets.path(),
-                )
-                .unwrap(),
-            ),
+        let expected = releash_lib::test_support::integration::workflow::diagnose_all(
+            workflows.path(),
+            facets.path(),
         )
         .unwrap();
 
@@ -94,15 +44,7 @@ pub(crate) mod tests {
             .unwrap();
 
         // Then
-        assert_eq!(
-            serde_json::to_value(
-                releash_lib::test_support::integration::transport::DiagnosticReportResponse::from(
-                    actual
-                )
-            )
-            .unwrap(),
-            expected
-        );
+        assert_eq!(actual, expected);
     }
 
     #[test]

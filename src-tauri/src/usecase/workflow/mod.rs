@@ -31,12 +31,10 @@ pub(crate) mod workspace_tree;
 
 pub mod diagnostic_dto;
 
-use serde_json::Value;
-
 use crate::domain::workflow::{
     ExecutionStatusFilter, ExecutionTree, ExecutionTreeArchiveRepository, FacetKind,
-    FacetRepository, FacetSummary, ManagedWorktreeGateway, SecretSourceGateway, WorkflowDefinition,
-    WorkflowDefinitionRepository, WorkflowError, WorkflowExecutionSummary, WorkflowPageRequest,
+    FacetRepository, FacetSummary, ManagedWorktreeGateway, WorkflowDefinition,
+    WorkflowDefinitionRepository, WorkflowError,
 };
 use crate::usecase::workflow::ports::{
     ExternalEditorGateway, WorkflowDefinitionSourceGateway, WorkflowDiagnosticsGateway,
@@ -46,9 +44,8 @@ use crate::usecase::workflow::ports::{
 use definition::WorkflowDefinitionUsecase;
 use facet::WorkflowFacetUsecase;
 pub(crate) use output::WorkflowOutputUsecase;
-pub use output::WorkflowValidateOutputResult;
+pub use query_service::WorkflowGetOutputResult;
 use query_service::WorkflowQueryService;
-pub use query_service::{WorkflowEventView, WorkflowGetOutputResult};
 pub use runtime_command::WorkflowRuntimeUsecase;
 pub(crate) use workspace_node_command::{
     ApproveWorkspaceNodeCommand, RenameWorkspaceSessionNodeCommand,
@@ -65,23 +62,17 @@ pub(crate) use workspace_tree::{
 pub struct WorkflowReadUsecase {
     query: WorkflowQueryService,
     workspace_query: std::sync::Arc<dyn crate::usecase::workspace_tree::WorkspaceQueryService>,
-    output: WorkflowOutputUsecase,
-    worktrees: std::sync::Arc<dyn ManagedWorktreeGateway>,
     diagnostics: std::sync::Arc<dyn WorkflowDiagnosticsGateway>,
 }
 
 impl WorkflowReadUsecase {
     pub(crate) fn new(
         query: WorkflowQueryService,
-        worktrees: std::sync::Arc<dyn ManagedWorktreeGateway>,
-        secrets: std::sync::Arc<dyn SecretSourceGateway>,
         workspace_query: std::sync::Arc<dyn crate::usecase::workspace_tree::WorkspaceQueryService>,
         diagnostics: std::sync::Arc<dyn WorkflowDiagnosticsGateway>,
     ) -> Self {
         Self {
-            output: WorkflowOutputUsecase::new(query.clone(), secrets),
             query,
-            worktrees,
             workspace_query,
             diagnostics,
         }
@@ -99,7 +90,7 @@ impl WorkflowReadUsecase {
     ) -> Result<Vec<dto::WorkflowSummaryDto>, WorkflowError> {
         let running_names = self
             .workspace_query
-            .execution_summaries(None, Some(ExecutionStatusFilter::Active), None)
+            .execution_summaries(None, Some(ExecutionStatusFilter::Active))
             .await?
             .into_iter()
             .map(|execution| execution.workflow_name)
@@ -112,73 +103,11 @@ impl WorkflowReadUsecase {
         })
     }
 
-    pub async fn list_executions_filtered(
-        &self,
-        status: Option<ExecutionStatusFilter>,
-        worktree_path: Option<&str>,
-        page: WorkflowPageRequest,
-    ) -> Result<Vec<dto::WorkflowExecutionSummaryDto>, WorkflowError> {
-        let worktree_path = worktree_path
-            .filter(|worktree_path| !worktree_path.is_empty())
-            .map(|worktree_path| self.worktrees.resolve(worktree_path))
-            .transpose()?
-            .map(crate::domain::workspace_tree::WorkspaceIdentity::new);
-        self.workspace_query
-            .execution_summaries(worktree_path.as_ref(), status, Some(page))
-            .await
-            .map(|executions| {
-                executions
-                    .into_iter()
-                    .map(dto::workflow_execution_summary_to_dto)
-                    .collect()
-            })
-    }
-
-    pub(crate) async fn get_execution(
-        &self,
-        execution_id: &str,
-    ) -> Result<Option<WorkflowExecutionSummary>, WorkflowError> {
-        self.workspace_query.execution_summary(execution_id).await
-    }
-
-    pub(crate) async fn get_execution_log_page(
-        &self,
-        execution_id: &str,
-        page: WorkflowPageRequest,
-    ) -> Result<Vec<WorkflowEventView>, WorkflowError> {
-        if self.get_execution(execution_id).await?.is_none() {
-            return Err(WorkflowError::NotFound(format!(
-                "Workflow execution not found: {execution_id}"
-            )));
-        }
-        self.query.get_execution_log_page(execution_id, page).await
-    }
-
     pub async fn get_execution_state(
         &self,
         execution_id: &str,
     ) -> Result<Option<ExecutionTree>, WorkflowError> {
         self.query.get_execution_state(execution_id).await
-    }
-
-    pub(crate) async fn validate_output_for_contract(
-        &self,
-        execution_id: &str,
-        node_name: &str,
-        contract: &str,
-        structured_output: Value,
-    ) -> Result<WorkflowValidateOutputResult, WorkflowError> {
-        self.output
-            .validate_output_for_contract(execution_id, node_name, contract, structured_output)
-            .await
-    }
-
-    pub async fn get_output(
-        &self,
-        execution_id: &str,
-        node_name: &str,
-    ) -> Result<WorkflowGetOutputResult, WorkflowError> {
-        self.output.get_output(execution_id, node_name).await
     }
 }
 
@@ -216,7 +145,6 @@ impl WorkflowUsecase {
         worktrees: std::sync::Arc<dyn ManagedWorktreeGateway>,
         editors: std::sync::Arc<dyn ExternalEditorGateway>,
         diagnostics: std::sync::Arc<dyn WorkflowDiagnosticsGateway>,
-        secrets: std::sync::Arc<dyn SecretSourceGateway>,
         execution_archives: std::sync::Arc<dyn ExecutionTreeArchiveRepository>,
         workspace_nodes: std::sync::Arc<dyn crate::domain::workspace_tree::WorkspaceTreeRepository>,
         workspace_query: std::sync::Arc<dyn crate::usecase::workspace_tree::WorkspaceQueryService>,
@@ -224,14 +152,8 @@ impl WorkflowUsecase {
     ) -> Self {
         let definition_commands = WorkflowDefinitionUsecase::new(definitions, definition_sources);
         let facet_commands = WorkflowFacetUsecase::new(facets.clone());
-        let output = WorkflowOutputUsecase::new(query.clone(), secrets);
-        let read = WorkflowReadUsecase {
-            query: query.clone(),
-            output: output.clone(),
-            worktrees: worktrees.clone(),
-            workspace_query: workspace_query.clone(),
-            diagnostics,
-        };
+        let output = WorkflowOutputUsecase::new(query.clone());
+        let read = WorkflowReadUsecase::new(query.clone(), workspace_query.clone(), diagnostics);
         Self {
             query,
             definition_commands,

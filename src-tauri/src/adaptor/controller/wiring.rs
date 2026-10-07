@@ -10,7 +10,6 @@
 
 use std::sync::Arc;
 
-use crate::adaptor::gateway::app_config::{read_config_if_exists, AppConfig, ReleashConfig};
 use crate::adaptor::gateway::code::branch_base::BranchBaseResolverGateway;
 use crate::adaptor::gateway::code::branch_diff::BranchDiffGateway;
 use crate::adaptor::gateway::code::diff_compute::DiffComputerGateway;
@@ -20,7 +19,6 @@ use crate::adaptor::gateway::comment::{
     FileReviewEventStore, SystemReviewClock, UuidReviewIdGenerator,
 };
 use crate::adaptor::gateway::git_host::{GitHubGitHostGateway, InMemoryTtlCache, LatestPrStatuses};
-use crate::adaptor::gateway::local_event_store::read_only::LocalEventReadStore;
 use crate::adaptor::gateway::local_event_store::LocalEventStore;
 #[cfg(any(test, feature = "test-support"))]
 use crate::adaptor::gateway::local_event_store::LocalEventStoreConfig;
@@ -29,25 +27,25 @@ use crate::adaptor::gateway::repository::git_config::GitConfigGateway;
 use crate::adaptor::gateway::repository::status::StatusGateway;
 use crate::adaptor::gateway::repository::util::RepoLocatorGateway;
 use crate::adaptor::gateway::repository::worktree::WorktreeGateway;
+#[cfg(any(test, feature = "test-support"))]
 use crate::adaptor::gateway::repository::worktree_terminal::NoopWorktreeTerminalGateway;
 #[cfg(any(test, feature = "test-support"))]
 use crate::adaptor::gateway::terminal_surface::runtime_gateway_impl::TerminalSurfaceRuntimeGateway;
+use crate::adaptor::gateway::workflow::{
+    ExecutionTreeArchiveFactRepository, RepositoryManagedWorktreeGateway,
+    WorkflowDefinitionFileRepository, WorkflowDefinitionFileSourceGateway,
+    WorkflowDiagnosticsFileGateway, WorkflowEventLogRepository,
+    WorkflowExecutionProjectionLogRepository, WorkflowExternalEditorGateway,
+    WorkflowFacetFileRepository, WorkflowRuntimeCommandGateway, WorkflowRuntimeCommandGatewayDeps,
+};
 #[cfg(any(test, feature = "test-support"))]
 use crate::adaptor::gateway::workflow::{
-    EmptySecretSourceGateway, NoopWorkflowExternalEditorGateway, PassthroughManagedWorktreeGateway,
+    NoopWorkflowExternalEditorGateway, PassthroughManagedWorktreeGateway,
 };
-use crate::adaptor::gateway::workflow::{
-    ExecutionTreeArchiveFactRepository, RepoPathsManagedWorktreeGateway,
-    RepositoryManagedWorktreeGateway, WorkflowDefinitionFileRepository,
-    WorkflowDefinitionFileSourceGateway, WorkflowDiagnosticsFileGateway,
-    WorkflowEventLogRepository, WorkflowExecutionProjectionLogRepository,
-    WorkflowExternalEditorGateway, WorkflowFacetFileRepository, WorkflowRuntimeCommandGateway,
-    WorkflowRuntimeCommandGatewayDeps, WorkflowSecretSourceConfigGateway,
-};
-use crate::domain::app_config::{ConfigRepository, ConfigSecretRepository};
+use crate::domain::app_config::ConfigRepository;
 use crate::domain::git_host::{CacheTtl, IssueInfo};
 use crate::domain::repository::WorktreeTerminalGateway;
-use crate::domain::workflow::{ManagedWorktreeGateway, SecretSourceGateway};
+use crate::domain::workflow::ManagedWorktreeGateway;
 use crate::usecase::code_query_service::CodeQueryService;
 use crate::usecase::code_usecase::CodeUsecase;
 use crate::usecase::comment::{
@@ -61,7 +59,7 @@ use crate::usecase::workflow::ports::ExternalEditorGateway;
 use crate::usecase::workflow::query_service::WorkflowQueryService;
 use crate::usecase::workflow::runtime_error::WorkflowRuntimeError;
 use crate::usecase::workflow::{
-    WorkflowReadUsecase, WorkflowRuntimeUsecase, WorkflowUsecase, WorkspaceNodeActionResolver,
+    WorkflowRuntimeUsecase, WorkflowUsecase, WorkspaceNodeActionResolver,
     WorkspaceNodeCommandUsecase,
 };
 use crate::usecase::workspace_tree::WorkspaceQueryService;
@@ -133,21 +131,6 @@ pub fn build_terminal_surface_application_for_tests() -> TerminalSurfaceApplicat
     )
 }
 
-pub(crate) fn build_canonical_agent_session_query(
-    data_dir: impl Into<std::path::PathBuf>,
-) -> Result<crate::adaptor::gateway::agent_session::LocalAgentSessionQueryService, String> {
-    let data_dir = data_dir.into();
-    let local_event_store = LocalEventReadStore::open(
-        &data_dir,
-        std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
-    )?;
-    Ok(
-        crate::adaptor::gateway::agent_session::LocalAgentSessionQueryService::new_read_only(
-            local_event_store,
-        ),
-    )
-}
-
 pub fn build_review_comment_usecase() -> ReviewCommentUsecase {
     let store: Arc<dyn ReviewEventStore> = Arc::new(FileReviewEventStore::default());
     let clock: Arc<dyn ReviewClock> = Arc::new(SystemReviewClock);
@@ -207,7 +190,6 @@ pub fn build_workflow_usecase_and_store(
         data_dir,
         Arc::new(PassthroughManagedWorktreeGateway),
         Arc::new(NoopWorkflowExternalEditorGateway),
-        Arc::new(EmptySecretSourceGateway),
         local_event_store.clone(),
         None,
         workflows_dir,
@@ -221,7 +203,6 @@ pub fn build_workflow_services_with_repository_worktrees(
     data_dir: impl Into<std::path::PathBuf>,
     repository_usecase: Arc<RepositoryUsecase>,
     app_config: Arc<dyn ConfigRepository>,
-    config_secrets: Arc<dyn ConfigSecretRepository>,
     local_event_store: Arc<LocalEventStore>,
     processes: Arc<dyn crate::domain::workflow::NodeProcessReader>,
 ) -> (
@@ -237,91 +218,10 @@ pub fn build_workflow_services_with_repository_worktrees(
             app_config.clone(),
         )),
         Arc::new(WorkflowExternalEditorGateway::new(app_config)),
-        Arc::new(WorkflowSecretSourceConfigGateway::new(config_secrets)),
         local_event_store,
         Some(processes),
         None,
     )
-}
-
-pub fn build_workspace_worktree_path_usecase(
-    data_dir: &std::path::Path,
-) -> crate::usecase::workspace_tree::WorkspaceWorktreePathUsecase {
-    crate::usecase::workspace_tree::WorkspaceWorktreePathUsecase::new(Arc::new(
-        crate::adaptor::gateway::workflow::worktree_context::StoredWorkspaceWorktreePathQuery::new(
-            data_dir.to_path_buf(),
-            std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
-        ),
-    ))
-}
-
-pub fn build_canonical_workflow_read_usecase(
-    data_dir: impl Into<std::path::PathBuf>,
-    workflows_dir: Option<std::path::PathBuf>,
-) -> Result<WorkflowReadUsecase, String> {
-    let data_dir = data_dir.into();
-    let local_event_store = LocalEventReadStore::open(
-        &data_dir,
-        std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
-    )?;
-    let repository_usecase = Arc::new(build_repository_usecase_with_worktree_terminals(Arc::new(
-        NoopWorktreeTerminalGateway,
-    ), Arc::new(crate::usecase::worktree_operation::WorktreeOperations::new(Arc::new(
-        crate::adaptor::gateway::repository::worktree_operation::FileWorktreeOperationLocks::new(&data_dir),
-    )))));
-    let workflows_dir =
-        workflows_dir.unwrap_or_else(WorkflowDefinitionFileRepository::default_workflows_dir);
-    let config_path = data_dir.join("releash.toml");
-    let config = read_config_if_exists(&config_path)?.unwrap_or_else(ReleashConfig::default);
-    let mut repo_paths = config.app.last_repo_paths.clone();
-    if !config.app.last_root_path.is_empty() && !repo_paths.contains(&config.app.last_root_path) {
-        repo_paths.push(config.app.last_root_path.clone());
-    }
-    let worktrees: Arc<dyn ManagedWorktreeGateway> = Arc::new(
-        RepoPathsManagedWorktreeGateway::new(repository_usecase, repo_paths),
-    );
-    let config_secrets: Arc<dyn ConfigSecretRepository> =
-        Arc::new(AppConfig::new(config, config_path));
-    let secrets: Arc<dyn SecretSourceGateway> =
-        Arc::new(WorkflowSecretSourceConfigGateway::new(config_secrets));
-
-    let definitions = Arc::new(WorkflowDefinitionFileRepository::new(
-        workflows_dir.clone(),
-        workflows_dir.clone(),
-    ));
-    let definition_sources = Arc::new(WorkflowDefinitionFileSourceGateway::new(
-        workflows_dir.clone(),
-        workflows_dir.clone(),
-    ));
-    let diagnostics = Arc::new(WorkflowDiagnosticsFileGateway::new(
-        workflows_dir.clone(),
-        workflows_dir.clone(),
-    ));
-    let facets = Arc::new(WorkflowFacetFileRepository::new(workflows_dir));
-    let events = Arc::new(WorkflowEventLogRepository::with_read_store(
-        local_event_store.clone(),
-    ));
-    let execution_projection = Arc::new(WorkflowExecutionProjectionLogRepository::new_read_only(
-        local_event_store.clone(),
-    ));
-    let query = WorkflowQueryService::new(
-        definitions,
-        definition_sources,
-        facets,
-        events,
-        execution_projection,
-    );
-    let workspace_query: Arc<dyn WorkspaceQueryService> =
-        crate::adaptor::gateway::workspace_tree::SqliteWorkspaceQueryService::new_read_only(
-            local_event_store,
-        );
-    Ok(WorkflowReadUsecase::new(
-        query,
-        worktrees,
-        secrets,
-        workspace_query,
-        diagnostics,
-    ))
 }
 
 /// gateway を呼び出し側から差し替えられる workflow composition。production 配線と
@@ -332,7 +232,6 @@ pub fn build_workflow_services_with_gateways(
     data_dir: impl Into<std::path::PathBuf>,
     worktrees: Arc<dyn ManagedWorktreeGateway>,
     editors: Arc<dyn ExternalEditorGateway>,
-    secrets: Arc<dyn SecretSourceGateway>,
     store: Arc<LocalEventStore>,
     processes: Option<Arc<dyn crate::domain::workflow::NodeProcessReader>>,
     workflows_dir: Option<std::path::PathBuf>,
@@ -386,7 +285,6 @@ pub fn build_workflow_services_with_gateways(
         worktrees.clone(),
         editors,
         diagnostics,
-        secrets,
         execution_archives.clone(),
         workspace_nodes,
         workspace_query.clone(),

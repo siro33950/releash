@@ -4,7 +4,7 @@ use axum::Router;
 use releash_lib::test_support::integration::transport::LocalApiServerError;
 
 #[tokio::test]
-pub async fn test_クライアントtoken_masterと分離しdiscoveryへ書き込まない() {
+pub async fn test_クライアントtoken_hookと分離しdiscoveryへ公開する() {
     // Given / When
     let directory = tempfile::tempdir().unwrap();
     let binding = releash_lib::test_support::integration::transport::test_binding(
@@ -12,17 +12,17 @@ pub async fn test_クライアントtoken_masterと分離しdiscoveryへ書き�
     )
     .unwrap();
     assert!(!binding.test_discovery_path().exists());
-    let master = binding.bearer_token();
+    let hook = binding.test_hook_token();
     let client = binding.terminal_bearer_token();
     let server = binding
         .start(Router::new(), &tokio::runtime::Handle::current())
         .unwrap();
     server.publish_discovery().unwrap();
-    let discovery = std::fs::read_to_string(directory.path().join("local-api.json")).unwrap();
+    let discovery = std::fs::read_to_string(directory.path().join("client-api.json")).unwrap();
     // Then
-    assert_ne!(client, master);
-    assert!(discovery.contains(master.as_ref()));
-    assert!(!discovery.contains(client.as_ref()));
+    assert_ne!(client, hook);
+    assert!(discovery.contains(client.as_ref()));
+    assert!(!discovery.contains(hook.as_ref()));
 }
 
 #[tokio::test]
@@ -42,19 +42,47 @@ pub async fn test_local_api_server起動_discovery作成失敗を専用errorで�
 }
 
 #[tokio::test]
-pub async fn test_クライアントdiscovery_作成失敗時はmasterの公開を取り消す() {
+pub async fn test_クライアントdiscovery_公開失敗時は認証tokenを失効する() {
     let directory = tempfile::tempdir().unwrap();
     // Given
     std::fs::create_dir(directory.path().join("client-api.json")).unwrap();
     // When / Then
-    let server = releash_lib::test_support::integration::transport::test_binding(
+    let binding = releash_lib::test_support::integration::transport::test_binding(
         directory.path().to_owned(),
     )
-    .unwrap()
-    .start(Router::new(), &tokio::runtime::Handle::current())
     .unwrap();
+    let client = binding.client_bearer_token();
+    let hook = binding.hook_bearer_token();
+    let client_token = binding.terminal_bearer_token();
+    let hook_token = binding.test_hook_token();
+    let server = binding
+        .start(Router::new(), &tokio::runtime::Handle::current())
+        .unwrap();
     assert!(server.publish_discovery().is_err());
-    assert!(!directory.path().join("local-api.json").exists());
+    use tower::ServiceExt;
+    let tokens = releash_lib::test_support::integration::transport::ClientTokens {
+        operator: client,
+        hook,
+    };
+    let router = axum::Router::new()
+        .route("/", axum::routing::post(|| async { "ok" }))
+        .layer(axum::middleware::from_fn_with_state(
+            tokens,
+            releash_lib::test_support::integration::transport::require_client,
+        ));
+    for token in [client_token, hook_token] {
+        let response = router
+            .clone()
+            .oneshot(
+                axum::http::Request::post("/")
+                    .header("authorization", format!("Bearer {token}"))
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), axum::http::StatusCode::UNAUTHORIZED);
+    }
 }
 
 #[tokio::test]
@@ -75,5 +103,4 @@ pub async fn test_local_api_server終了_停止を通知して所有discoveryを
     assert!(discovery_path.exists());
     server.shutdown_and_wait().await.unwrap();
     assert!(!discovery_path.exists());
-    assert!(!directory.path().join("client-api.json").exists());
 }

@@ -6,7 +6,7 @@ use crate::domain::agent_session::repository::{
 };
 use crate::domain::provider_lifecycle::{
     ProviderLifecycleIngressResult, ProviderLifecycleSignal, ProviderLifecycleSignalKind,
-    ProviderLifecycleSlotId, ProviderLifecycleUnavailableObservation, ScopedProviderLifecycleEvent,
+    ProviderLifecycleSlotId, ScopedProviderLifecycleEvent,
 };
 use crate::domain::workflow::AgentSessionActivity;
 use crate::usecase::agent_session::{AgentSessionUsecase, AgentSessionUsecaseError};
@@ -85,23 +85,6 @@ pub struct ProviderPayloadInput<'a> {
     pub binding_id: &'a str,
     pub scope: crate::domain::provider_lifecycle::ProviderLifecycleScope,
     pub payload: &'a [u8],
-}
-
-#[async_trait::async_trait]
-pub trait ProviderLifecycleIngressPort: Send + Sync {
-    async fn receive(
-        &self,
-        slot_id: &ProviderLifecycleSlotId,
-        capability: &str,
-        signal: ProviderLifecycleSignal,
-    ) -> Result<ProviderLifecycleIngressResult, ProviderLifecycleIngressUsecaseError>;
-
-    async fn report_unavailable(
-        &self,
-        slot_id: &ProviderLifecycleSlotId,
-        capability: &str,
-        observation: ProviderLifecycleUnavailableObservation,
-    ) -> Result<ProviderLifecycleIngressResult, ProviderLifecycleIngressUsecaseError>;
 }
 
 #[async_trait::async_trait]
@@ -313,39 +296,6 @@ impl ProviderLifecycleIngressUsecase {
         Ok(merge_activity_outcome(result, observation.outcome))
     }
 
-    pub(crate) async fn report_unavailable(
-        &self,
-        slot_id: &ProviderLifecycleSlotId,
-        capability: &str,
-        observation: ProviderLifecycleUnavailableObservation,
-    ) -> Result<ProviderLifecycleIngressResult, ProviderLifecycleIngressUsecaseError> {
-        let _mutation = self
-            .begin_session_mutation(observation.scope().agent_session_id())
-            .await?;
-        let provider = observation.provider();
-        let reason = observation.reason();
-        let binding_id = observation.binding_id().to_string();
-        let result = self
-            .lifecycle
-            .report_unavailable(slot_id, capability, observation)
-            .await
-            .map_err(map_lifecycle_error)?;
-        if matches!(
-            result,
-            ProviderLifecycleIngressResult::Applied | ProviderLifecycleIngressResult::Duplicate
-        ) {
-            let caller_request_id = format!(
-                "provider-hook-unavailable.{binding_id}.{}",
-                self.identities.issue()
-            );
-            self.hook_health
-                .record_unavailable(provider, slot_id.as_str(), reason, &caller_request_id)
-                .await
-                .map_err(map_hook_health_error)?;
-        }
-        Ok(result)
-    }
-
     async fn begin_session_mutation(
         &self,
         id: &str,
@@ -400,54 +350,6 @@ impl ProviderPayloadReceiver for ProviderLifecycleIngressUsecase {
                     .map(|result| (result, started))
             }
         }
-    }
-}
-
-#[async_trait::async_trait]
-impl ProviderLifecycleIngressPort for ProviderLifecycleIngressUsecase {
-    async fn receive(
-        &self,
-        slot_id: &ProviderLifecycleSlotId,
-        capability: &str,
-        signal: ProviderLifecycleSignal,
-    ) -> Result<ProviderLifecycleIngressResult, ProviderLifecycleIngressUsecaseError> {
-        ProviderLifecycleIngressUsecase::receive(self, slot_id, capability, signal).await
-    }
-
-    async fn report_unavailable(
-        &self,
-        slot_id: &ProviderLifecycleSlotId,
-        capability: &str,
-        observation: ProviderLifecycleUnavailableObservation,
-    ) -> Result<ProviderLifecycleIngressResult, ProviderLifecycleIngressUsecaseError> {
-        ProviderLifecycleIngressUsecase::report_unavailable(self, slot_id, capability, observation)
-            .await
-    }
-}
-
-#[cfg(any(test, feature = "test-support"))]
-#[async_trait::async_trait]
-impl ProviderLifecycleIngressPort for ProviderLifecycleUsecase {
-    async fn receive(
-        &self,
-        slot_id: &ProviderLifecycleSlotId,
-        capability: &str,
-        signal: ProviderLifecycleSignal,
-    ) -> Result<ProviderLifecycleIngressResult, ProviderLifecycleIngressUsecaseError> {
-        ProviderLifecycleUsecase::receive(self, slot_id, capability, signal)
-            .await
-            .map_err(map_lifecycle_error)
-    }
-
-    async fn report_unavailable(
-        &self,
-        slot_id: &ProviderLifecycleSlotId,
-        capability: &str,
-        observation: ProviderLifecycleUnavailableObservation,
-    ) -> Result<ProviderLifecycleIngressResult, ProviderLifecycleIngressUsecaseError> {
-        ProviderLifecycleUsecase::report_unavailable(self, slot_id, capability, observation)
-            .await
-            .map_err(map_lifecycle_error)
     }
 }
 

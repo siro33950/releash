@@ -2,8 +2,7 @@ use super::ProviderLifecycleBinding;
 use crate::domain::provider_lifecycle::{
     ProviderKind, ProviderLifecycleCapabilityHash, ProviderLifecycleEvent,
     ProviderLifecycleOutcome, ProviderLifecycleRejection, ProviderLifecycleScope,
-    ProviderLifecycleSignal, ProviderLifecycleSlotId, ProviderLifecycleUnavailableObservation,
-    ScopedProviderLifecycleEvent,
+    ProviderLifecycleSignal, ProviderLifecycleSlotId, ScopedProviderLifecycleEvent,
 };
 
 #[derive(Debug, Clone)]
@@ -65,27 +64,6 @@ impl ProviderLifecycleSlot {
             );
         }
         current.binding.observe(signal)
-    }
-
-    pub(crate) fn report_unavailable(
-        &mut self,
-        capability_hash: &ProviderLifecycleCapabilityHash,
-        observation: ProviderLifecycleUnavailableObservation,
-    ) -> ProviderLifecycleOutcome {
-        let Some(current) = self.current.as_mut() else {
-            return ProviderLifecycleOutcome::Rejected(
-                ProviderLifecycleRejection::BindingNotActive,
-            );
-        };
-        if current.binding.binding_id() != observation.binding_id() {
-            return ProviderLifecycleOutcome::Rejected(ProviderLifecycleRejection::BindingExpired);
-        }
-        if !current.capability_hash.matches(capability_hash) {
-            return ProviderLifecycleOutcome::Rejected(
-                ProviderLifecycleRejection::InvalidCapability,
-            );
-        }
-        current.binding.mark_unavailable(observation)
     }
 
     pub(crate) fn release(&mut self, binding_id: &str) -> ProviderLifecycleOutcome {

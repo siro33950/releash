@@ -5,7 +5,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use axum::Router;
-use axum::{http::StatusCode, routing::get};
 use tokio::sync::oneshot;
 
 use super::{LocalApiDiscovery, LocalApiDiscoveryFile, LocalApiServerError};
@@ -15,18 +14,15 @@ const LOCAL_API_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 pub struct LocalApiServerBinding {
     listener: std::net::TcpListener,
     port: u16,
-    token: Arc<str>,
     terminal_token: super::BearerToken,
     hook_token: super::BearerToken,
-    instance_id: String,
-    discovery: LocalApiDiscoveryFile,
     client_discovery: LocalApiDiscoveryFile,
 }
 
 impl LocalApiServerBinding {
     #[cfg(feature = "test-support")]
     pub fn test_discovery_path(&self) -> &std::path::Path {
-        self.discovery.path()
+        self.client_discovery.path()
     }
 
     pub(crate) fn bind(
@@ -54,21 +50,7 @@ impl LocalApiServerBinding {
             .set_nonblocking(true)
             .map_err(LocalApiServerError::Nonblocking)?;
 
-        let token = Arc::<str>::from(generate_token());
-        // rendererのclient / terminal共通token。masterとは別のdiscovery fileへ書き出す。
         let terminal_token = Arc::<str>::from(generate_token());
-        let discovery = LocalApiDiscoveryFile::prepare_named(
-            &data_dir,
-            "local-api.json",
-            LocalApiDiscovery {
-                port: address.port(),
-                token: token.to_string(),
-                instance_id: instance_id.clone(),
-                pid,
-                process_started_at,
-            },
-        );
-
         let client_discovery = LocalApiDiscoveryFile::prepare_named(
             &data_dir,
             "client-api.json",
@@ -84,17 +66,10 @@ impl LocalApiServerBinding {
         Ok(Self {
             listener,
             port: address.port(),
-            token,
             terminal_token: terminal_token.into(),
             hook_token,
-            instance_id,
-            discovery,
             client_discovery,
         })
-    }
-
-    pub fn bearer_token(&self) -> Arc<str> {
-        self.token.clone()
     }
 
     #[cfg(any(test, feature = "test-support"))]
@@ -127,8 +102,6 @@ impl LocalApiServerBinding {
         let Self {
             listener,
             port,
-            instance_id,
-            discovery,
             client_discovery,
             terminal_token,
             hook_token,
@@ -138,13 +111,8 @@ impl LocalApiServerBinding {
         let listener = tokio::net::TcpListener::from_std(listener)
             .map_err(LocalApiServerError::ListenerBind)?;
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
-        let discovery_for_task = discovery.clone();
         let client_discovery_for_task = client_discovery.clone();
         let task = runtime.spawn(async move {
-            let identity_path = format!("/.well-known/releash-local-api/{instance_id}");
-            let router = Router::new()
-                .route(&identity_path, get(|| async { StatusCode::NO_CONTENT }))
-                .merge(router);
             let result = axum::serve(listener, router)
                 .with_graceful_shutdown(async move {
                     let _ = shutdown_rx.await;
@@ -156,9 +124,6 @@ impl LocalApiServerBinding {
             if let Err(error) = client_discovery_for_task.remove_if_owned() {
                 log::warn!("failed to remove client discovery file: {error}");
             }
-            if let Err(error) = discovery_for_task.remove_if_owned() {
-                log::warn!("failed to remove local API discovery file: {error}");
-            }
         });
 
         log::info!("local API listening on 127.0.0.1:{port}");
@@ -167,7 +132,6 @@ impl LocalApiServerBinding {
             task: parking_lot::Mutex::new(Some(task)),
             terminal_token,
             hook_token,
-            discovery,
             client_discovery,
         }))
     }
@@ -178,16 +142,12 @@ pub struct LocalApiServer {
     hook_token: super::BearerToken,
     shutdown: parking_lot::Mutex<Option<oneshot::Sender<()>>>,
     task: parking_lot::Mutex<Option<tokio::task::JoinHandle<()>>>,
-    discovery: LocalApiDiscoveryFile,
     client_discovery: LocalApiDiscoveryFile,
 }
 
 impl LocalApiServer {
     pub fn publish_discovery(&self) -> Result<(), LocalApiServerError> {
-        let result = self
-            .discovery
-            .publish()
-            .and_then(|()| self.client_discovery.publish());
+        let result = self.client_discovery.publish();
         if let Err(error) = result {
             self.shutdown();
             return Err(LocalApiServerError::Discovery(error));
@@ -202,9 +162,6 @@ impl LocalApiServer {
         }
         if let Err(error) = self.client_discovery.remove_if_owned() {
             log::warn!("failed to remove client discovery file: {error}");
-        }
-        if let Err(error) = self.discovery.remove_if_owned() {
-            log::warn!("failed to remove local API discovery file: {error}");
         }
     }
 

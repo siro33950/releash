@@ -5,12 +5,11 @@
 
 use std::sync::Arc;
 
-use serde_json::{Map, Value};
+use serde_json::Value;
 
 use crate::domain::workflow::{
     ExecutionTree, ExecutionTreeId, FacetKind, FacetRepository, FacetSummary, WorkflowDefinition,
-    WorkflowDefinitionName, WorkflowDefinitionRepository, WorkflowError, WorkflowPageRequest,
-    WorkflowSummary,
+    WorkflowDefinitionName, WorkflowDefinitionRepository, WorkflowError, WorkflowSummary,
 };
 
 use super::event_draft;
@@ -18,14 +17,6 @@ use super::ports::{
     WorkflowDefinitionSourceGateway, WorkflowEventDraft, WorkflowEventRepository,
     WorkflowExecutionProjectionRepository,
 };
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct WorkflowEventView {
-    pub event: String,
-    pub execution_id: String,
-    pub timestamp_ms: f64,
-    pub payload: Map<String, Value>,
-}
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum WorkflowGetOutputResult {
@@ -101,21 +92,6 @@ impl WorkflowQueryService {
         self.events.read(&execution_id).await
     }
 
-    pub async fn get_execution_log_page(
-        &self,
-        execution_id: &str,
-        page: WorkflowPageRequest,
-    ) -> Result<Vec<WorkflowEventView>, WorkflowError> {
-        let execution_id = ExecutionTreeId::new(execution_id.to_string())?;
-        Ok(self
-            .events
-            .read_page(&execution_id, page)
-            .await?
-            .into_iter()
-            .map(event_draft_to_log_view)
-            .collect())
-    }
-
     pub(in crate::usecase::workflow) fn get_output_from_events(
         events: &[WorkflowEventDraft],
         node_name: &str,
@@ -167,45 +143,6 @@ impl WorkflowQueryService {
     ) -> Result<Vec<FacetSummary>, WorkflowError> {
         self.facets.list_summaries(kind)
     }
-}
-
-fn event_draft_to_log_view(event: WorkflowEventDraft) -> WorkflowEventView {
-    let mut object = match event.payload {
-        Value::Object(object) => object,
-        other => {
-            let mut object = Map::new();
-            object.insert("payload".to_string(), other);
-            object
-        }
-    };
-
-    rename_seconds_field_to_ms(&mut object, "requested_at", "requestedAtMs");
-    rename_seconds_field_to_ms(&mut object, "submitted_at", "submittedAtMs");
-    for key in ["event", "execution_id", "timestampMs"] {
-        object.remove(key);
-    }
-    WorkflowEventView {
-        event: event.event_kind,
-        execution_id: event.execution_id,
-        timestamp_ms: seconds_to_ms(event.timestamp),
-        payload: object,
-    }
-}
-
-fn rename_seconds_field_to_ms(object: &mut Map<String, Value>, source: &str, target: &str) {
-    let Some(value) = object.remove(source) else {
-        return;
-    };
-    if let Some(seconds) = value.as_f64() {
-        object.insert(
-            target.to_string(),
-            serde_json::json!(seconds_to_ms(seconds)),
-        );
-    }
-}
-
-fn seconds_to_ms(seconds: f64) -> f64 {
-    seconds * 1000.0
 }
 
 fn latest_artifact_produced_from_drafts(

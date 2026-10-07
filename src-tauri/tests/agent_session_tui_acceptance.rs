@@ -381,7 +381,10 @@ fn install_fixture_executable(
         input_lines,
         alternate_screen: true,
         lifecycle_command: Some(FixtureLifecycleCommand {
-            executable: env!("CARGO_BIN_EXE_releash-backend").to_string(),
+            executable: std::path::Path::new(env!("CARGO_BIN_EXE_releash-backend"))
+                .with_file_name("releash")
+                .to_string_lossy()
+                .into_owned(),
             arguments: vec![
                 "hook".to_string(),
                 "receive".to_string(),
@@ -1004,7 +1007,7 @@ async fn test_atui_030_subagentを無視し複数turnのstop後もagent_session�
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn test_atui_030_hook配送失敗をapp警告にしprocessを止めず後続成功で解除する() {
+async fn test_atui_030_hook配送失敗でもhealthを記録せずprocessと後続送信を維持する() {
     let root = tempfile::TempDir::new().unwrap();
     let workspace = root.path().join("worktree");
     std::fs::create_dir_all(&workspace).unwrap();
@@ -1054,12 +1057,11 @@ async fn test_atui_030_hook配送失敗をapp警告にしprocessを止めず後�
     let warnings = host.hook_warnings().unwrap();
     assert_eq!(
         warnings.len(),
-        1,
+        0,
         "hook health markers: {:?}",
         host.hook_health_marker_contents().unwrap()
     );
-    assert_eq!(warnings[0].provider, AcceptanceProvider::Claude);
-    assert_eq!(warnings[0].reason, "local_api_unavailable");
+    assert!(host.hook_health_marker_contents().unwrap().is_empty());
     assert_eq!(
         host.get(&session_id).await.unwrap().unwrap().lifecycle,
         AcceptanceAgentSessionLifecycle::Open

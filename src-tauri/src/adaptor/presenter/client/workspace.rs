@@ -31,32 +31,27 @@ impl TryFrom<&WorkspaceList> for wire::WorkspaceListSnapshot {
     }
 }
 
-/// 実行木と、選択している Node が画面に出す木にあるか。
-impl TryFrom<(&WorkspaceTree, bool)> for wire::WorkspaceTreeSelectionSnapshot {
-    type Error = String;
-    fn try_from((tree, selection_in_snapshot): (&WorkspaceTree, bool)) -> Result<Self, String> {
-        Ok(Self {
-            snapshot: Some(tree_snapshot(tree)?),
-            reconciliation: Some(wire::WorkspaceSelectionReconciliation {
-                selection_in_snapshot: Some(selection_in_snapshot),
-            }),
-        })
-    }
+pub(crate) fn selection(
+    tree: &WorkspaceTree,
+    selection_in_snapshot: bool,
+) -> Result<wire::WorkspaceTreeSelectionSnapshot, String> {
+    Ok(wire::WorkspaceTreeSelectionSnapshot {
+        snapshot: Some(tree_snapshot(tree)?),
+        reconciliation: Some(wire::WorkspaceSelectionReconciliation {
+            selection_in_snapshot: Some(selection_in_snapshot),
+        }),
+    })
 }
 
-/// ブランチと、その worktree があるか。
-impl TryFrom<&[(Branch, bool)]> for wire::ListBranchStatus {
-    type Error = String;
-    fn try_from(branches: &[(Branch, bool)]) -> Result<Self, String> {
-        Ok(Self {
-            items: branches
-                .iter()
-                .map(|(branch, has_worktree)| wire::BranchStatus {
-                    name: Some(branch.name.clone()),
-                    has_worktree: Some(*has_worktree),
-                })
-                .collect(),
-        })
+pub(crate) fn branch_status(branches: &[(Branch, bool)]) -> wire::ListBranchStatus {
+    wire::ListBranchStatus {
+        items: branches
+            .iter()
+            .map(|(branch, has_worktree)| wire::BranchStatus {
+                name: Some(branch.name.clone()),
+                has_worktree: Some(*has_worktree),
+            })
+            .collect(),
     }
 }
 

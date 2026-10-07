@@ -194,3 +194,34 @@ impl WorkflowAgentSessionPort for RecordingWorkflowAgentSessions {
         Ok(())
     }
 }
+
+#[derive(Clone)]
+pub struct ConfiguredWorktreeGateway {
+    repository: std::sync::Arc<crate::usecase::repository_usecase::RepositoryUsecase>,
+    repo_paths: Vec<String>,
+}
+
+impl ConfiguredWorktreeGateway {
+    pub fn new(
+        repository: std::sync::Arc<crate::usecase::repository_usecase::RepositoryUsecase>,
+        repo_paths: Vec<String>,
+    ) -> Self {
+        Self {
+            repository,
+            repo_paths,
+        }
+    }
+}
+
+impl crate::domain::workflow::ManagedWorktreeGateway for ConfiguredWorktreeGateway {
+    fn resolve(
+        &self,
+        worktree_path: &str,
+    ) -> Result<String, crate::domain::workflow::WorkflowError> {
+        super::worktree_gateway::canonicalize_managed_worktree_path_inner(
+            &self.repository,
+            self.repo_paths.clone(),
+            worktree_path.to_string(),
+        )
+    }
+}

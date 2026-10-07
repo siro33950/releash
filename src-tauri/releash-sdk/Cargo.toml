@@ -1,0 +1,24 @@
+[package]
+name = "releash-sdk"
+version.workspace = true
+edition = "2021"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+connectrpc = { version = "=0.9.1", features = ["client"] }
+buffa = { version = "0.9.2", features = ["json"] }
+prost = "0.14.4"
+prost-reflect = { version = "0.16.5", features = ["serde"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+dirs = "7"
+sysinfo = { version = "0.39", default-features = false, features = ["system"] }
+thiserror = "2"
+
+[build-dependencies]
+prost-build = "0.14.4"
+connectrpc-build = "=0.9.0"
+protoc-bin-vendored = "3"
+
+[dev-dependencies]
+tempfile = "3"

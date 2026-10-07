@@ -751,6 +751,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "clap_complete"
+version = "4.6.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "037e2a1a92236d0aff7e845093f64661d6df4c02c9fcc61a60e9e1d736fa392f"
+dependencies = [
+ "clap",
+]
+
+[[package]]
 name = "clap_derive"
 version = "4.6.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4248,6 +4257,23 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 
 [[package]]
+name = "releash"
+version = "0.4.19"
+dependencies = [
+ "buffa",
+ "clap",
+ "clap_complete",
+ "connectrpc",
+ "prost",
+ "prost-reflect",
+ "releash-sdk",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
 name = "releash-backend"
 version = "0.4.19"
 dependencies = [
@@ -4256,9 +4282,7 @@ dependencies = [
  "axum",
  "base64 0.23.1",
  "buffa",
- "clap",
  "connectrpc",
- "connectrpc-build",
  "dirs",
  "filetime",
  "fs2",
@@ -4284,6 +4308,7 @@ dependencies = [
  "protoc-bin-vendored",
  "regex",
  "releash-backend",
+ "releash-sdk",
  "reqwest",
  "rusqlite",
  "serde",
@@ -4336,6 +4361,25 @@ dependencies = [
  "thiserror 2.0.21",
  "tokio",
  "uuid",
+]
+
+[[package]]
+name = "releash-sdk"
+version = "0.4.19"
+dependencies = [
+ "buffa",
+ "connectrpc",
+ "connectrpc-build",
+ "dirs",
+ "prost",
+ "prost-build",
+ "prost-reflect",
+ "protoc-bin-vendored",
+ "serde",
+ "serde_json",
+ "sysinfo",
+ "tempfile",
+ "thiserror 2.0.21",
 ]
 
 [[package]]

@@ -28,9 +28,7 @@ pub use definition::{
 pub use execution::{
     ApprovalTarget, Artifact, ExecutionOrigin, ExecutionStatus, ExecutionTree, Fanout,
 };
-pub use execution_metadata::{
-    ExecutionStatusFilter, WorkflowExecutionSummary, WorkflowPageRequest,
-};
+pub use execution_metadata::{ExecutionStatusFilter, WorkflowExecutionSummary};
 pub use facet::{FacetContents, FacetKey, FacetKind, FacetSummary, WorkflowFacetContents};
 pub use failure::{
     FailureClassification, FailureDisposition, NodeExecutionFailureKind, TimeoutKind,

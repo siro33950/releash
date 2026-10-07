@@ -6,12 +6,11 @@
 - 外からのきっかけ（転送の要求、時刻・起動、OS の通知）を Usecase の引数に変えて Usecase を呼ぶことのみ。きっかけの種類で入口の部品を分けない。きっかけを生む駆動部（Web サーバ、タイマー、OS の通知）は infrastructure に置く
 - 業務ロジックを書かない（Usecase を呼ぶだけ。QueryService や Repository を controller から直接呼ばない）
 - **受理判定を controller で書かない**: 「この状態でこの操作を受理してよいか」の判断は domain の集約が答える（[DOMAIN.md](./DOMAIN.md) モデルが実行を担う）。controller が状態型を独自解釈してゲートを設けると、同じ判断が層をまたいで二重化し、domain 側の不変条件が効かなくなる
-- 3系統の入口を分離する：
+- 2系統の入口を分離する：
   - `controller/api/client*.rs` と `controller/client/` — Connect の ClientService。画面からの呼び出しと購読の入口。契約は `proto/client.proto`
-  - `controller/api/` の HTTP local API — CLI と hook の入口
   - `controller/command/` — Tauri コマンド（`#[tauri::command]`）。desktop 固有の操作（ウィンドウ、daemon の起動と監視、更新、接続先の受け渡し）だけの入口
 
-Connect と HTTP local API は同じ Usecase を呼ぶ。入口が増えても業務手順は複製しない。
+入口が増えても業務手順は複製しない。
 
 ## AppState（DI 受け皿）
 
@@ -33,13 +32,10 @@ Connect と HTTP local API は同じ Usecase を呼ぶ。入口が増えても�
 
 desktop 固有の操作だけを置く。サーバの業務操作や、Connect の呼び出し・購読の中継を Tauri コマンドに追加しない。ドメインごとに登録関数を用意し、`command/mod.rs` がそれらをまとめる。
 
-## local API
+## Connect の入口
 
-Connect と同じ Usecase を呼ぶ薄い入口であり、業務ロジックを持たない点も同じ。
-
-- ドメインごとに router を定義し、`api/mod.rs` で合成する
-- 認証は `api/mod.rs` が router 全体へまとめて掛ける。個々のハンドラに認証を書かない
-- リクエスト型は `api/protocol.rs` に置く。レスポンスへの変換（`ApiError` を含む）は presenter が行う（[PRESENTER.md](./PRESENTER.md)）
+- 認証と scope の判定は `api/mod.rs` が router 全体へまとめて掛ける。個々のハンドラに認証を書かない
+- レスポンスへの変換は presenter が行う（[PRESENTER.md](./PRESENTER.md)）
 
 ## 失敗
 

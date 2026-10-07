@@ -529,20 +529,26 @@ pub async fn test_workflow永続化_本番構成で起動から完了とabortま
         }
 
         // Then
-        let record = releash_lib::test_support::integration::workspace::WorkspaceQueryService::execution_summary(
+        let record = releash_lib::test_support::integration::workspace::WorkspaceQueryService::execution_summaries(
             query.as_ref(),
-            &execution_id,
+            None,
+            None,
         )
         .await
         .unwrap()
+        .into_iter()
+        .find(|execution| execution.execution_id == execution_id)
         .unwrap();
         assert_eq!(record.status, status);
-        let reloaded = releash_lib::test_support::integration::workspace::WorkspaceQueryService::execution_summary(
+        let reloaded = releash_lib::test_support::integration::workspace::WorkspaceQueryService::execution_summaries(
             query.as_ref(),
-            &execution_id,
+            None,
+            None,
         )
         .await
         .unwrap()
+        .into_iter()
+        .find(|execution| execution.execution_id == execution_id)
         .unwrap();
         assert_eq!(reloaded, record);
         assert!(!directory.path().join("workflow_executions").exists());

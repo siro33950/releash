@@ -1,10 +1,9 @@
 use std::sync::Arc;
 
 use crate::adaptor::gateway::local_event_store::node_events::{self, NodeEventRow};
-use crate::adaptor::gateway::local_event_store::read_only::LocalEventReadStore;
 use crate::adaptor::gateway::local_event_store::LocalEventStore;
 use crate::adaptor::gateway::workflow::fact_log::FactLogReadBackend;
-use crate::domain::workflow::{ExecutionTreeId, WorkflowError, WorkflowPageRequest};
+use crate::domain::workflow::{ExecutionTreeId, WorkflowError};
 use crate::usecase::workflow::ports::{WorkflowEventDraft, WorkflowEventRepository};
 
 /// 事実ログ（node_events）を実行イベント一覧として読む repository。
@@ -28,12 +27,6 @@ impl WorkflowEventLogRepository {
         }
     }
 
-    pub(crate) fn with_read_store(store: Arc<LocalEventReadStore>) -> Self {
-        Self {
-            source: WorkflowEventReadSource::Canonical(FactLogReadBackend::ReadOnly(store)),
-        }
-    }
-
     async fn read_drafts(
         &self,
         execution_id: &ExecutionTreeId,
@@ -44,37 +37,6 @@ impl WorkflowEventLogRepository {
                 let rows = backend
                     .run_indexed(move |connection| {
                         node_events::read_tree(connection, &execution_id).map_err(|error| {
-                            crate::adaptor::gateway::local_event_store::reader::storage_unavailable(
-                                &error,
-                            )
-                        })
-                    })
-                    .await
-                    .map_err(|error| {
-                        WorkflowError::from(super::fact_log::FactReadError::Query(error))
-                    })?;
-                rows.iter().map(row_to_draft).collect()
-            }
-        }
-    }
-
-    async fn read_draft_page(
-        &self,
-        execution_id: &ExecutionTreeId,
-        page: WorkflowPageRequest,
-    ) -> Result<Vec<WorkflowEventDraft>, WorkflowError> {
-        match &self.source {
-            WorkflowEventReadSource::Canonical(backend) => {
-                let execution_id = execution_id.as_str().to_string();
-                let rows = backend
-                    .run_indexed(move |connection| {
-                        node_events::read_tree_page(
-                            connection,
-                            &execution_id,
-                            page.offset,
-                            page.limit,
-                        )
-                        .map_err(|error| {
                             crate::adaptor::gateway::local_event_store::reader::storage_unavailable(
                                 &error,
                             )
@@ -122,13 +84,5 @@ impl WorkflowEventRepository for WorkflowEventLogRepository {
         execution_id: &ExecutionTreeId,
     ) -> Result<Vec<WorkflowEventDraft>, WorkflowError> {
         self.read_drafts(execution_id).await
-    }
-
-    async fn read_page(
-        &self,
-        execution_id: &ExecutionTreeId,
-        page: WorkflowPageRequest,
-    ) -> Result<Vec<WorkflowEventDraft>, WorkflowError> {
-        self.read_draft_page(execution_id, page).await
     }
 }

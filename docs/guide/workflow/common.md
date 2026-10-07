@@ -98,7 +98,7 @@ Diagnostic は定義の検査結果です。`error` の Diagnostic が一つで�
 ### 見る場所
 
 - Settings の「Automation」の一覧で、各行に error の件数（赤）と info の件数（青）が表示されます。詳細を開くと「Diagnostics」に1件ずつ並びます。
-- `releash workflow diagnostics --dir <ディレクトリ>` で、置く前の定義を検査できます。引数と終了コードは [`releash workflow diagnostics`](../cli.md#releash-workflow-diagnostics) を参照してください。
+- サーバ起動中に `releash workflow diagnostics --dir <ディレクトリ>` で、置く前の定義を検査できます。引数と終了コードは [`releash workflow diagnostics`](../cli.md#releash-workflow-diagnostics) を参照してください。
 
 例:
 

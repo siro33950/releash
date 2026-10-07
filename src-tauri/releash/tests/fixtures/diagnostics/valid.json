@@ -1,0 +1,24 @@
+{
+  "facet_summaries": {
+    "instruction/fixture-instruction": {
+      "error_count": 0,
+      "info_count": 0
+    }
+  },
+  "facet_usage": {
+    "instruction/fixture-instruction": [
+      {
+        "node_name": "main",
+        "slot": "instruction",
+        "workflow_name": "valid-fixture"
+      }
+    ]
+  },
+  "items": [],
+  "workflow_summaries": {
+    "valid-fixture": {
+      "error_count": 0,
+      "info_count": 0
+    }
+  }
+}

@@ -1,0 +1,27 @@
+{
+  "facet_summaries": {},
+  "facet_usage": {},
+  "items": [
+    {
+      "code": "WFS002",
+      "field": "permission",
+      "message": "invalid session permission 'unknown'; expected one of: manual, auto, bypass, read-only",
+      "node_name": "main",
+      "severity": "error",
+      "span": {
+        "end_col": 17,
+        "end_line": 7,
+        "start_col": 7,
+        "start_line": 7
+      },
+      "stage": "parse_shape",
+      "workflow_name": "invalid-fixture"
+    }
+  ],
+  "workflow_summaries": {
+    "invalid-fixture": {
+      "error_count": 1,
+      "info_count": 0
+    }
+  }
+}

@@ -22,8 +22,7 @@ pub(crate) use value_objects::{
     ProviderLifecycleCapabilityHash, ProviderLifecycleEvent, ProviderLifecycleIngressResult,
     ProviderLifecycleOutcome, ProviderLifecycleRejection, ProviderLifecycleScope,
     ProviderLifecycleSignal, ProviderLifecycleSignalKind, ProviderLifecycleSlotId,
-    ProviderLifecycleUnavailableObservation, ProviderLifecycleUnavailableReason,
-    ScopedProviderLifecycleEvent,
+    ProviderLifecycleUnavailableReason, ScopedProviderLifecycleEvent,
 };
 
 mod payload;

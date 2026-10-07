@@ -13,7 +13,6 @@ use crate::domain::workflow::value_objects::{
 pub enum ContractLookupError {
     ExecutionNotFound { execution_id: String },
     InvalidExecutionStartedPayload { details: String },
-    NoArtifactContract { workflow_name: String, node: String },
 }
 
 #[derive(Debug, Clone, PartialEq)]
