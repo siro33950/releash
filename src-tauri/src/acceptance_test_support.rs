@@ -25,6 +25,7 @@ pub fn build_client_dependencies(
         agent_session_history_read_usecase: None,
         provider_hook_health_read_usecase: None,
         review_comment_usecase: None,
+        session_review_usecase: None,
         config_repository: None,
         app_config_usecase: None,
         workflow_runtime_usecase: None,

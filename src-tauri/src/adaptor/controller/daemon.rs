@@ -193,11 +193,25 @@ pub async fn compose(
         );
 
     let review_comment_usecase = Arc::new(
-        adaptor::controller::wiring::build_review_comment_usecase(usecase::comment::ReviewContextUsecase::new(
-                Arc::new(adaptor::gateway::agent_session::LocalAgentSessionRepository::new(local_event_store.clone())),
-                Arc::new(adaptor::gateway::workflow::worktree_context::StoredWorkspaceWorktreePathQuery::new(data_dir.clone(), retry_limiter.clone())),
-            )).with_subscriptions(state_subscriptions.clone()),
+        adaptor::controller::wiring::build_review_comment_usecase()
+            .with_subscriptions(state_subscriptions.clone()),
     );
+    let session_review_usecase = Arc::new(usecase::comment::SessionReviewUsecase::new(
+        usecase::comment::ReviewContextUsecase::new(
+            Arc::new(
+                adaptor::gateway::agent_session::LocalAgentSessionRepository::new(
+                    local_event_store.clone(),
+                ),
+            ),
+            Arc::new(
+                adaptor::gateway::workflow::worktree_context::StoredWorkspaceWorktreePathQuery::new(
+                    data_dir.clone(),
+                    retry_limiter.clone(),
+                ),
+            ),
+        ),
+        review_comment_usecase.clone(),
+    ));
     let file_watchers = Arc::new(infrastructure::file_watcher::FileWatcherManager::default());
     let shared_repo_paths: adaptor::gateway::repository::repo_paths::SharedRepoPaths =
         Arc::new(parking_lot::RwLock::new(Vec::new()));
@@ -516,6 +530,7 @@ pub async fn compose(
         agent_session_history_read_usecase: Some(agent_sessions.history_read),
         provider_hook_health_read_usecase: Some(agent_sessions.hook_health_read),
         review_comment_usecase: Some(review_comment_usecase),
+        session_review_usecase: Some(session_review_usecase.clone()),
         config_repository: Some(config_repository.clone()),
         app_config_usecase: Some(app_config_usecase.clone()),
         workflow_runtime_usecase: Some(workflow_runtime_usecase.clone()),
@@ -563,6 +578,7 @@ pub async fn compose(
                     workspace_state: dependencies.workspace_state_store.clone().unwrap(),
                     review: review_usecase_for_reads,
                     comments: review_comment_usecase_for_reads,
+                    session_comments: session_review_usecase,
                     data_dir: reads_data_dir,
                     review_comments_dir,
                     workflows_dir: workflows_dir.clone(),

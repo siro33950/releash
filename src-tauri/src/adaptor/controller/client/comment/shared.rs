@@ -9,7 +9,7 @@ pub(crate) fn register_shared(
 ) {
     {
         let data_dir = deps.data_dir.clone();
-        let usecase = deps.review_comment_usecase.clone();
+        let usecase = deps.session_review_usecase.clone();
         router.register_domain(
             &["create_session_review_thread"],
             Box::new(move |command| {
@@ -49,7 +49,7 @@ pub(crate) fn register_shared(
     }
     {
         let data_dir = deps.data_dir.clone();
-        let usecase = deps.review_comment_usecase.clone();
+        let usecase = deps.session_review_usecase.clone();
         router.register_domain(
             &["append_session_review_comment"],
             Box::new(move |command| {
@@ -85,7 +85,7 @@ pub(crate) fn register_shared(
     }
     {
         let data_dir = deps.data_dir.clone();
-        let usecase = deps.review_comment_usecase.clone();
+        let usecase = deps.session_review_usecase.clone();
         router.register_domain(
             &["resolve_session_review_thread"],
             Box::new(move |command| {

@@ -34,9 +34,7 @@ fn parity_app_with_runtime(
     });
     app.client.workflow_runtime_usecase = Some(runtime);
     app.client.review_comment_usecase = Some(Arc::new(
-        releash_lib::test_support::integration::platform::build_review_comment_usecase(
-            releash_lib::test_support::integration::platform::build_review_context(&data_dir),
-        ),
+        releash_lib::test_support::integration::platform::build_review_comment_usecase(),
     ));
     app.client.workspace_state_store = Some(Arc::new(
         releash_lib::test_support::integration::platform::WorkspaceStateStore::new(data_dir),
@@ -278,12 +276,10 @@ pub async fn test_計算と操作command_connectの実行結果とエラーがdi
             Arc::new(releash_lib::test_support::integration::workflow::NoopArchiveRepository),
         ),
     );
-    let (mut app, data_dir, _store) = make_client_dependencies();
+    let (mut app, _, _store) = make_client_dependencies();
     app.client.workflow_runtime_usecase = Some(runtime.clone());
     app.client.review_comment_usecase = Some(Arc::new(
-        releash_lib::test_support::integration::platform::build_review_comment_usecase(
-            releash_lib::test_support::integration::platform::build_review_context(&data_dir),
-        ),
+        releash_lib::test_support::integration::platform::build_review_comment_usecase(),
     ));
     let config = app.client.config_repository.as_ref().unwrap();
     let mut settings = config.load().unwrap();

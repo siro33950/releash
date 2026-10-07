@@ -1,5 +1,7 @@
 pub(crate) mod context;
 pub use context::ReviewContextUsecase;
+mod session;
+pub use session::SessionReviewUsecase;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -36,7 +38,6 @@ pub trait ReviewIdGenerator: Send + Sync {
 }
 
 pub struct ReviewCommentUsecase {
-    context: ReviewContextUsecase,
     store: Arc<dyn ReviewEventStore>,
     clock: Arc<dyn ReviewClock>,
     id_generator: Arc<dyn ReviewIdGenerator>,
@@ -48,10 +49,8 @@ impl ReviewCommentUsecase {
         store: Arc<dyn ReviewEventStore>,
         clock: Arc<dyn ReviewClock>,
         id_generator: Arc<dyn ReviewIdGenerator>,
-        context: ReviewContextUsecase,
     ) -> Self {
         Self {
-            context,
             store,
             clock,
             id_generator,
@@ -59,21 +58,6 @@ impl ReviewCommentUsecase {
         }
     }
 
-    pub async fn session_context_for_read(
-        &self,
-        id: &str,
-    ) -> Result<Option<(String, ReviewActor)>, ReviewError> {
-        self.context.session_for_read(id).await
-    }
-    pub async fn required_session_context(
-        &self,
-        id: &str,
-    ) -> Result<(String, ReviewActor), ReviewError> {
-        self.context.session_for_write(id).await
-    }
-    pub async fn worktree_context(&self, path: &str) -> Result<(String, ReviewActor), ReviewError> {
-        self.context.worktree(path).await
-    }
     pub fn with_subscriptions(
         mut self,
         subscriptions: crate::usecase::state_subscription::StateSubscriptionUsecase,

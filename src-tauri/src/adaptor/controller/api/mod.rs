@@ -7,6 +7,7 @@ pub(crate) use client::{ClientApiDeps, StateSubscriptionDeps};
 pub(crate) mod error;
 pub(crate) mod protocol;
 pub(crate) mod provider_lifecycle;
+mod provider_signal;
 
 pub(crate) mod workflow;
 

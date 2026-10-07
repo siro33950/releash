@@ -80,49 +80,38 @@ pub(crate) async fn resolve_review_thread_shared(
 
 pub(crate) async fn create_session_review_thread_shared(
     data_dir: PathBuf,
-    usecase: &Arc<ReviewCommentUsecase>,
+    usecase: &Arc<crate::usecase::comment::SessionReviewUsecase>,
     session_id: String,
     target: ReviewTarget,
     content: String,
 ) -> Result<crate::domain::comment::ReviewThread, AppError> {
-    let (path, actor) = required_session_context(usecase, &session_id).await?;
-    create_review_thread_shared(data_dir, usecase, (path, actor), target, content).await
+    usecase
+        .create_thread(data_dir, &session_id, target, content)
+        .await
+        .map_err(AppError::from_failure)
 }
 pub(crate) async fn append_session_review_comment_shared(
     data_dir: PathBuf,
-    usecase: &Arc<ReviewCommentUsecase>,
+    usecase: &Arc<crate::usecase::comment::SessionReviewUsecase>,
     session_id: String,
     thread_id: String,
     content: String,
 ) -> Result<crate::domain::comment::ReviewThread, AppError> {
-    let (path, actor) = required_session_context(usecase, &session_id).await?;
-    append_review_comment_shared(data_dir, usecase, (path, actor), thread_id, content).await
+    usecase
+        .append_comment(data_dir, &session_id, thread_id, content)
+        .await
+        .map_err(AppError::from_failure)
 }
 pub(crate) async fn resolve_session_review_thread_shared(
     data_dir: PathBuf,
-    usecase: &Arc<ReviewCommentUsecase>,
+    usecase: &Arc<crate::usecase::comment::SessionReviewUsecase>,
     session_id: String,
     thread_id: String,
     outcome: String,
     summary: String,
 ) -> Result<crate::domain::comment::ReviewThread, AppError> {
-    let (path, actor) = required_session_context(usecase, &session_id).await?;
-    resolve_review_thread_shared(
-        data_dir,
-        usecase,
-        (path, actor),
-        thread_id,
-        outcome,
-        summary,
-    )
-    .await
-}
-async fn required_session_context(
-    usecase: &ReviewCommentUsecase,
-    id: &str,
-) -> Result<(String, ReviewActor), AppError> {
     usecase
-        .required_session_context(id)
+        .resolve_thread(data_dir, &session_id, thread_id, outcome, summary)
         .await
         .map_err(AppError::from_failure)
 }

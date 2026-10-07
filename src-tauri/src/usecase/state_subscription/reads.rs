@@ -172,6 +172,7 @@ pub struct WorkspaceStateReads {
     pub workspace_state: Arc<dyn WorkspaceStateRepository>,
     pub review: Arc<ReviewUsecase>,
     pub comments: Arc<ReviewCommentUsecase>,
+    pub session_comments: Arc<crate::usecase::comment::SessionReviewUsecase>,
     pub data_dir: PathBuf,
     pub review_comments_dir: PathBuf,
     pub workflows_dir: PathBuf,
@@ -205,87 +206,36 @@ impl WorkspaceStateReads {
                 };
             }
             T::ReviewSessionThreads(id, filter) => {
-                let context = self
-                    .comments
-                    .session_context_for_read(id)
+                return self
+                    .session_comments
+                    .list_session_threads(self.data_dir.clone(), id, filter.clone())
                     .await
-                    .map_err(error)?;
-                let comments = self.comments.clone();
-                let data_dir = self.data_dir.clone();
-                let filter = filter.clone();
-                return crate::common::operation_context::spawn_blocking(move || {
-                    let value = context
-                        .map(|(path, actor)| {
-                            comments.list_threads(&data_dir, &path, Some(filter), actor)
-                        })
-                        .transpose();
-                    value.map(StateValue::ReviewSessionThreads).map_err(error)
-                })
-                .await
-                .map_err(|failure| error(TechnicalFailure::from(failure)))?;
+                    .map(StateValue::ReviewSessionThreads)
+                    .map_err(error);
             }
             T::ReviewWorktreeThreads(path, filter) => {
-                let (path, actor) = self.comments.worktree_context(path).await.map_err(error)?;
-                let comments = self.comments.clone();
-                let data_dir = self.data_dir.clone();
-                let filter = filter.clone();
-                return crate::common::operation_context::spawn_blocking(move || {
-                    let value = comments.list_threads(&data_dir, &path, Some(filter.into()), actor);
-                    value.map(StateValue::ReviewThreads).map_err(error)
-                })
-                .await
-                .map_err(|failure| error(TechnicalFailure::from(failure)))?;
+                return self
+                    .session_comments
+                    .list_worktree_threads(self.data_dir.clone(), path, filter.clone())
+                    .await
+                    .map(StateValue::ReviewThreads)
+                    .map_err(error);
             }
             T::ReviewSessionThread(id, thread) => {
-                let context = self
-                    .comments
-                    .session_context_for_read(id)
+                return self
+                    .session_comments
+                    .get_thread(self.data_dir.clone(), id, thread.clone())
                     .await
-                    .map_err(error)?;
-                let comments = self.comments.clone();
-                let data_dir = self.data_dir.clone();
-                let thread = thread.clone();
-                return crate::common::operation_context::spawn_blocking(move || {
-                    let value = context
-                        .map(|(path, _)| comments.get_thread(&data_dir, &path, &thread))
-                        .transpose();
-                    match value {
-                        Ok(value) => Ok(StateValue::ReviewSessionThread(value)),
-                        Err(crate::domain::comment::ReviewError::NotFound(_)) => {
-                            Ok(StateValue::ReviewSessionThread(None))
-                        }
-                        Err(failure) => Err(error(failure)),
-                    }
-                })
-                .await
-                .map_err(|failure| error(TechnicalFailure::from(failure)))?;
+                    .map(StateValue::ReviewSessionThread)
+                    .map_err(error);
             }
             T::ReviewSessionThreadHistory(id, thread) => {
-                let context = self
-                    .comments
-                    .session_context_for_read(id)
+                return self
+                    .session_comments
+                    .history(self.data_dir.clone(), id, thread.clone())
                     .await
-                    .map_err(error)?;
-                let comments = self.comments.clone();
-                let data_dir = self.data_dir.clone();
-                let thread = thread.clone();
-                return crate::common::operation_context::spawn_blocking(move || {
-                    let value = context
-                        .map(|(path, _)| {
-                            comments.get_thread(&data_dir, &path, &thread)?;
-                            comments.history(&data_dir, &path, &thread)
-                        })
-                        .transpose();
-                    match value {
-                        Ok(value) => Ok(StateValue::ReviewSessionThreadHistory(value)),
-                        Err(crate::domain::comment::ReviewError::NotFound(_)) => {
-                            Ok(StateValue::ReviewSessionThreadHistory(None))
-                        }
-                        Err(failure) => Err(error(failure)),
-                    }
-                })
-                .await
-                .map_err(|failure| error(TechnicalFailure::from(failure)))?;
+                    .map(StateValue::ReviewSessionThreadHistory)
+                    .map_err(error);
             }
             T::AgentSession(id) => {
                 return self

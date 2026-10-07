@@ -137,6 +137,7 @@ pub mod platform {
     pub use crate::adaptor::controller::wiring::build_code_usecase;
     pub use crate::adaptor::controller::wiring::build_git_host_usecase;
     pub use crate::adaptor::controller::wiring::build_repository_usecase;
+    pub use crate::adaptor::controller::wiring::build_review_comment_usecase;
     pub use crate::adaptor::controller::wiring::build_terminal_surface_application_for_tests;
     pub use crate::adaptor::controller::wiring::build_workflow_runtime_usecase;
     pub use crate::adaptor::controller::wiring::build_workflow_services_with_gateways;
@@ -147,9 +148,6 @@ pub mod platform {
     pub use crate::adaptor::controller::wiring::build_workspace_worktree_path_usecase;
     pub use crate::adaptor::controller::wiring::wire_delegate_continuation;
     pub use crate::adaptor::controller::wiring::wire_workflow_startup;
-    pub use crate::adaptor::controller::wiring::{
-        build_review_comment_usecase, build_review_context,
-    };
     pub use crate::adaptor::controller::workflow_startup::recover;
     pub use crate::adaptor::gateway::application_lifecycle::DaemonShutdownGateway;
     pub use crate::adaptor::gateway::comment::acquire_worktree_file_lock;
@@ -357,10 +355,12 @@ pub mod platform {
     pub use crate::usecase::application_lifecycle::test_helpers::STAGES;
     pub use crate::usecase::code_dto::ReviewFileViewDto;
     pub use crate::usecase::comment::ReviewClock;
-    pub use crate::usecase::comment::ReviewCommentUsecase;
     pub use crate::usecase::comment::ReviewEventMutation;
     pub use crate::usecase::comment::ReviewEventStore;
     pub use crate::usecase::comment::ReviewIdGenerator;
+    pub use crate::usecase::comment::{
+        ReviewCommentUsecase, ReviewContextUsecase, SessionReviewUsecase,
+    };
     pub use crate::usecase::fetched::Fetched;
     pub use crate::usecase::git_host::git_host_usecase::GitHostUsecase;
     pub use crate::usecase::notion::error::NotionUsecaseError;

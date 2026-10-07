@@ -1299,15 +1299,25 @@ mod restored_memory_tests {
 }
 
 struct SignalIngress(
-    std::sync::Mutex<Vec<crate::domain::provider_lifecycle::ProviderLifecycleSignal>>,
+    std::sync::Mutex<
+        std::collections::VecDeque<
+            Result<
+                (
+                    crate::domain::provider_lifecycle::ProviderLifecycleIngressResult,
+                    bool,
+                ),
+                crate::usecase::provider_lifecycle::ProviderLifecycleIngressUsecaseError,
+            >,
+        >,
+    >,
 );
 #[async_trait::async_trait]
-impl crate::usecase::provider_lifecycle::ProviderLifecycleIngressPort for SignalIngress {
+impl crate::usecase::provider_lifecycle::ProviderPayloadReceiver for SignalIngress {
     async fn receive_payload(
         &self,
-        slot: &crate::domain::provider_lifecycle::ProviderLifecycleSlotId,
-        capability: &str,
-        input: crate::usecase::provider_lifecycle::ingress::ProviderPayloadInput<'_>,
+        _: &crate::domain::provider_lifecycle::ProviderLifecycleSlotId,
+        _: &str,
+        _: crate::usecase::provider_lifecycle::ingress::ProviderPayloadInput<'_>,
     ) -> Result<
         (
             crate::domain::provider_lifecycle::ProviderLifecycleIngressResult,
@@ -1315,69 +1325,38 @@ impl crate::usecase::provider_lifecycle::ProviderLifecycleIngressPort for Signal
         ),
         crate::usecase::provider_lifecycle::ProviderLifecycleIngressUsecaseError,
     > {
-        use crate::domain::provider_lifecycle::{
-            ProviderLifecycleIngressResult, ProviderPayloadInterpretation,
-            ProviderPayloadInterpreter,
-        };
-        match crate::adaptor::gateway::provider_lifecycle::LocalProviderPayloadInterpreter
-            .interpret(input.provider, input.binding_id, input.scope, input.payload)
-            .map_err(
-                crate::usecase::provider_lifecycle::ProviderLifecycleIngressUsecaseError::Payload,
-            )? {
-            ProviderPayloadInterpretation::Subagent => {
-                Ok((ProviderLifecycleIngressResult::Ignored, false))
-            }
-            ProviderPayloadInterpretation::Signal(signal) => {
-                let started = signal.is_session_started();
-                self.receive(slot, capability, signal)
-                    .await
-                    .map(|result| (result, started))
-            }
-        }
-    }
-
-    async fn receive(
-        &self,
-        _: &crate::domain::provider_lifecycle::ProviderLifecycleSlotId,
-        capability: &str,
-        signal: crate::domain::provider_lifecycle::ProviderLifecycleSignal,
-    ) -> Result<
-        crate::domain::provider_lifecycle::ProviderLifecycleIngressResult,
-        crate::usecase::provider_lifecycle::ProviderLifecycleIngressUsecaseError,
-    > {
-        use crate::domain::provider_lifecycle::ProviderLifecycleIngressResult as Result;
-        if capability != "capability" {
-            return Ok(Result::Rejected(
-                crate::domain::provider_lifecycle::ProviderLifecycleRejection::InvalidCapability,
-            ));
-        }
-        let mut signals = self.0.lock().unwrap();
-        let duplicate = signals.contains(&signal);
-        signals.push(signal);
-        Ok(if duplicate {
-            Result::Duplicate
-        } else {
-            Result::Applied
-        })
-    }
-    async fn report_unavailable(
-        &self,
-        _: &crate::domain::provider_lifecycle::ProviderLifecycleSlotId,
-        _: &str,
-        _: crate::domain::provider_lifecycle::ProviderLifecycleUnavailableObservation,
-    ) -> Result<
-        crate::domain::provider_lifecycle::ProviderLifecycleIngressResult,
-        crate::usecase::provider_lifecycle::ProviderLifecycleIngressUsecaseError,
-    > {
-        unreachable!()
+        self.0
+            .lock()
+            .unwrap()
+            .pop_front()
+            .expect("configured ingress result")
     }
 }
 
 #[tokio::test]
 async fn test_hookのconnect入口_生payloadを解釈し上限と権限と結果を保持する() {
+    use crate::domain::provider_lifecycle::{
+        ProviderLifecycleIngressResult as Ingress, ProviderLifecycleRejection, ProviderPayloadError,
+    };
+    use crate::usecase::provider_lifecycle::ProviderLifecycleIngressUsecaseError as Error;
     use base64::Engine;
     use tower::ServiceExt;
-    let ingress = Arc::new(SignalIngress(Default::default()));
+    let ingress = Arc::new(SignalIngress(std::sync::Mutex::new(
+        std::collections::VecDeque::from([
+            Ok((Ingress::Applied, true)),
+            Ok((Ingress::Duplicate, true)),
+            Ok((
+                Ingress::Rejected(ProviderLifecycleRejection::InvalidCapability),
+                true,
+            )),
+            Ok((Ingress::Ignored, false)),
+            Err(Error::Payload(ProviderPayloadError::InvalidPayload)),
+            Err(Error::Payload(ProviderPayloadError::UnsupportedEvent(
+                "unknown".into(),
+            ))),
+            Ok((Ingress::Duplicate, true)),
+        ]),
+    )));
     let hook = crate::infrastructure::local_api::BearerToken::from(Arc::<str>::from("hook"));
     let deps = crate::test_support::client_api_deps(Arc::new(dispatch()))
         .with_provider_lifecycle(ingress.clone());
@@ -1412,7 +1391,7 @@ async fn test_hookのconnect入口_生payloadを解釈し上限と権限と結�
         if unsupported { assert_eq!(result["message"], "unsupported Provider lifecycle event: unknown"); }
         assert!(result.get(expected).is_some() || result["code"] == expected, "{expected}: {result}");
     }
-    assert_eq!(ingress.0.lock().unwrap().len(), 3);
+    assert!(ingress.0.lock().unwrap().is_empty());
     for method in [
         "UnknownMethod",
         "WorkflowGetOutput",

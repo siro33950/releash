@@ -14,7 +14,7 @@ pub struct ClientApiDeps {
     priority: super::client_priority::PriorityInterceptor,
     daemon: crate::usecase::daemon::DaemonUsecase,
     provider_lifecycle:
-        Option<Arc<dyn crate::usecase::provider_lifecycle::ProviderLifecycleIngressPort>>,
+        Option<Arc<dyn crate::usecase::provider_lifecycle::ProviderPayloadReceiver>>,
 }
 
 #[derive(Clone)]
@@ -54,7 +54,7 @@ impl ClientApiDeps {
 
     pub fn with_provider_lifecycle(
         mut self,
-        ingress: Arc<dyn crate::usecase::provider_lifecycle::ProviderLifecycleIngressPort>,
+        ingress: Arc<dyn crate::usecase::provider_lifecycle::ProviderPayloadReceiver>,
     ) -> Self {
         self.provider_lifecycle = Some(ingress);
         self

@@ -2276,8 +2276,15 @@ pub async fn test_review文脈読取_書き込み側storeを保持したままse
         )
         .await
         .unwrap();
-    let context =
-        releash_lib::test_support::integration::platform::build_review_context(directory.path());
+    let context = releash_lib::test_support::integration::platform::ReviewContextUsecase::new(
+        Arc::new(new_repository(&store)),
+        Arc::new(
+            releash_lib::test_support::integration::workflow::StoredWorkspaceWorktreePathQuery::new(
+                directory.path().to_path_buf(),
+                Arc::new(releash_lib::test_support::integration::platform::RetryLimiter::new()),
+            ),
+        ),
+    );
     // When
     let resolved = context.session_for_read("agent-session-1").await.unwrap();
     let missing = context.session_for_read("missing").await.unwrap();

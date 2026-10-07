@@ -407,9 +407,7 @@ fn write_review_history(
 }
 
 pub async fn cmd_review(data_dir: &Path, command: ReviewSubcommand) -> Result<String, CliError> {
-    let usecase = build_review_comment_usecase(
-        crate::adaptor::controller::wiring::build_review_context(data_dir),
-    );
+    let usecase = build_review_comment_usecase();
     match command {
         ReviewSubcommand::List {
             session_id,

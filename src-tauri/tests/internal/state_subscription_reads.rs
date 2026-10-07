@@ -275,12 +275,12 @@ impl Fixture {
             "# fixture instruction\n",
         )
         .unwrap();
-        let workflow = Arc::new(
-            releash_lib::test_support::integration::platform::build_workflow_usecase(
+        let (workflow, local_event_store) =
+            releash_lib::test_support::integration::platform::build_workflow_usecase_and_store(
                 root.join("data"),
                 Some(workflows_dir.clone()),
-            ),
-        );
+            );
+        let workflow = Arc::new(workflow);
         let issues = Arc::new(Issues::default());
         *issues.values.lock() = vec![issue(1)];
         let git_host = Arc::new(
@@ -315,6 +315,16 @@ impl Fixture {
             .unwrap()
             .with_state_publisher(publisher.clone()),
         );
+        let comments = Arc::new(
+            releash_lib::test_support::integration::platform::build_review_comment_usecase()
+                .with_subscriptions(subscriptions.clone()),
+        );
+        let session_comments = Arc::new(releash_lib::test_support::integration::platform::SessionReviewUsecase::new(
+            releash_lib::test_support::integration::platform::ReviewContextUsecase::new(
+                Arc::new(releash_lib::test_support::integration::sessions::LocalAgentSessionRepository::new(local_event_store.clone())),
+                Arc::new(releash_lib::test_support::integration::workflow::StoredWorkspaceWorktreePathQuery::new(root.join("data"), Arc::new(releash_lib::test_support::integration::platform::RetryLimiter::new()))),
+            ), comments.clone(),
+        ));
         let reads = WorkspaceStateReads {
             repositories,
             repository,
@@ -337,9 +347,8 @@ impl Fixture {
                 repository_state.clone(),
                 Arc::new(releash_lib::test_support::integration::platform::build_code_usecase()),
             )),
-            comments: Arc::new(
-                releash_lib::test_support::integration::platform::build_review_comment_usecase(releash_lib::test_support::integration::platform::build_review_context(&root)).with_subscriptions(subscriptions.clone()),
-            ),
+            comments,
+            session_comments,
             data_dir: root.to_path_buf(),
             review_comments_dir: releash_lib::test_support::integration::platform::state_dir(&root),
             workflows_dir: workflows_dir.clone(),
