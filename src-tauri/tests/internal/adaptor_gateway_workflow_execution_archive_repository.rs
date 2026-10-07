@@ -1,18 +1,18 @@
-use releash_lib::test_support::integration::workflow::ExecutionTreeArchiveRepository;
+use releashd::test_support::integration::workflow::ExecutionTreeArchiveRepository;
 
-use releash_lib::test_support::integration::persistence::LocalEventStore;
-use releash_lib::test_support::integration::persistence::LocalEventStoreConfig;
-use releash_lib::test_support::integration::workflow::ExecutionTreeArchiveFactRepository;
-use releash_lib::test_support::integration::workflow::ExecutionTreeArchiveRecord;
-use releash_lib::test_support::integration::workflow::ExecutionTreeId;
-use releash_lib::test_support::integration::workflow::FactLogReadBackend;
-use releash_lib::test_support::integration::workflow::NodeFact;
-use releash_lib::test_support::integration::workflow::WorkflowError;
+use releashd::test_support::integration::persistence::LocalEventStore;
+use releashd::test_support::integration::persistence::LocalEventStoreConfig;
+use releashd::test_support::integration::workflow::ExecutionTreeArchiveFactRepository;
+use releashd::test_support::integration::workflow::ExecutionTreeArchiveRecord;
+use releashd::test_support::integration::workflow::ExecutionTreeId;
+use releashd::test_support::integration::workflow::FactLogReadBackend;
+use releashd::test_support::integration::workflow::NodeFact;
+use releashd::test_support::integration::workflow::WorkflowError;
 use std::sync::Arc;
 
-use releash_lib::test_support::integration::providers::ProviderKind;
-use releash_lib::test_support::integration::workflow::NodeFactMeta;
-use releash_lib::test_support::integration::workflow::SessionExecutionTreeRootFacts;
+use releashd::test_support::integration::providers::ProviderKind;
+use releashd::test_support::integration::workflow::NodeFactMeta;
+use releashd::test_support::integration::workflow::SessionExecutionTreeRootFacts;
 
 fn fixture() -> (
     tempfile::TempDir,
@@ -23,7 +23,7 @@ fn fixture() -> (
     let directory = tempfile::tempdir().unwrap();
     let store = LocalEventStore::open(LocalEventStoreConfig::production(
         directory.path().into(),
-        std::sync::Arc::new(releash_lib::test_support::integration::platform::RetryLimiter::new()),
+        std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
     ))
     .unwrap();
     let facts = SessionExecutionTreeRootFacts::new(
@@ -36,7 +36,7 @@ fn fixture() -> (
     .unwrap();
     let meta = facts.meta.clone();
     let facts = facts.into_facts();
-    releash_lib::test_support::integration::workflow::append_fact_batch_for_seed(
+    releashd::test_support::integration::workflow::append_fact_batch_for_seed(
         &store,
         &facts[..2],
         1,
@@ -60,7 +60,7 @@ pub async fn test_実行木archive_終了前は拒否して終了後の理由と
         .unwrap()
         .records
         .is_empty());
-    releash_lib::test_support::integration::workflow::append_single_fact(
+    releashd::test_support::integration::workflow::append_single_fact(
         &store,
         &meta,
         &NodeFact::AbortRequested(Default::default()),
@@ -105,7 +105,7 @@ pub async fn test_実行木restore_終了状態を保ちsessionはpausedにな�
     // Given
     let (_directory, store, repository, meta) = fixture();
     let id = ExecutionTreeId::new(meta.tree_id.clone()).unwrap();
-    releash_lib::test_support::integration::workflow::append_single_fact(
+    releashd::test_support::integration::workflow::append_single_fact(
         &store,
         &meta,
         &NodeFact::AbortRequested(Default::default()),
@@ -125,13 +125,13 @@ pub async fn test_実行木restore_終了状態を保ちsessionはpausedにな�
         .is_empty());
     assert_eq!(
         repository.target(&meta.tree_id).await.unwrap().status,
-        releash_lib::test_support::integration::workflow::ExecutionStatus::Aborted
+        releashd::test_support::integration::workflow::ExecutionStatus::Aborted
     );
     let records =
-        releash_lib::test_support::integration::workflow::read_tree_records(&store, &meta.tree_id)
+        releashd::test_support::integration::workflow::read_tree_records(&store, &meta.tree_id)
             .await
             .unwrap();
-    let session = releash_lib::test_support::integration::workflow::derive_session_facts(
+    let session = releashd::test_support::integration::workflow::derive_session_facts(
         &records,
         &meta.node_execution_id,
         "00000000-0000-4000-8000-000000000001",
@@ -153,7 +153,7 @@ pub async fn test_完了済み旧archive_元の時刻を保って移行し次回
         ("stop_received", 2000),
         ("archive_requested", 42000),
     ] {
-        let mut pending = releash_lib::test_support::integration::workflow::pending_single_fact(
+        let mut pending = releashd::test_support::integration::workflow::pending_single_fact(
             &meta,
             &NodeFact::AbortRequested(Default::default()),
             timestamp,
@@ -161,16 +161,13 @@ pub async fn test_完了済み旧archive_元の時刻を保って移行し次回
         .unwrap();
         pending.row.event_type = kind.into();
         pending.row.detail = "{}".into();
-        releash_lib::test_support::integration::workflow::append_pending_rows(
-            &store,
-            vec![pending],
-        )
-        .await
-        .unwrap();
+        releashd::test_support::integration::workflow::append_pending_rows(&store, vec![pending])
+            .await
+            .unwrap();
     }
     assert_eq!(
         repository.target(id.as_str()).await.unwrap().status,
-        releash_lib::test_support::integration::workflow::ExecutionStatus::Completed
+        releashd::test_support::integration::workflow::ExecutionStatus::Completed
     );
     assert_eq!(
         repository
@@ -198,7 +195,7 @@ pub async fn test_完了済み旧archive_元の時刻を保って移行し次回
         .unwrap()
         .is_empty());
     let facts =
-        releash_lib::test_support::integration::workflow::read_tree_records(&store, id.as_str())
+        releashd::test_support::integration::workflow::read_tree_records(&store, id.as_str())
             .await
             .unwrap();
     assert!(!facts
@@ -206,7 +203,7 @@ pub async fn test_完了済み旧archive_元の時刻を保って移行し次回
         .any(|record| matches!(record.fact, NodeFact::AbortRequested(_))));
     repository.archive(&id, 200.0, "manual").await.unwrap();
     assert_eq!(
-        releash_lib::test_support::integration::workflow::read_tree_records(&store, id.as_str())
+        releashd::test_support::integration::workflow::read_tree_records(&store, id.as_str())
             .await
             .unwrap(),
         facts
@@ -248,7 +245,7 @@ pub fn test_旧archive記録_理由と時刻を保って読み移行完了後だ
 pub async fn test_実行木restore_archiveされていない実行に終了事実を追加しない() {
     let (_directory, store, repository, meta) = fixture();
     let before =
-        releash_lib::test_support::integration::workflow::read_tree_records(&store, &meta.tree_id)
+        releashd::test_support::integration::workflow::read_tree_records(&store, &meta.tree_id)
             .await
             .unwrap();
     repository
@@ -256,7 +253,7 @@ pub async fn test_実行木restore_archiveされていない実行に終了事�
         .await
         .unwrap();
     assert_eq!(
-        releash_lib::test_support::integration::workflow::read_tree_records(&store, &meta.tree_id)
+        releashd::test_support::integration::workflow::read_tree_records(&store, &meta.tree_id)
             .await
             .unwrap(),
         before
@@ -323,7 +320,7 @@ pub async fn test_実行木archive対象_git削除と同じ実体のpathとworks
         let facts =
             SessionExecutionTreeRootFacts::new(id, workspace, path, ProviderKind::Codex, None)
                 .unwrap();
-        releash_lib::test_support::integration::workflow::append_fact_batch_for_seed(
+        releashd::test_support::integration::workflow::append_fact_batch_for_seed(
             &store,
             &facts.into_facts(),
             1,
@@ -368,7 +365,7 @@ pub async fn test_archive候補_履歴や定義をfoldせずページングしgc
             .into_facts()
             .iter()
             .map(|(meta, fact)| {
-                releash_lib::test_support::integration::workflow::pending_single_fact(meta, fact, 1)
+                releashd::test_support::integration::workflow::pending_single_fact(meta, fact, 1)
                     .unwrap()
             })
             .collect::<Vec<_>>();
@@ -376,7 +373,7 @@ pub async fn test_archive候補_履歴や定義をfoldせずページングしgc
             .row
             .detail
             .replace("\"definition\":{", "\"unreadableDefinition\":{");
-        let mut corrupt = releash_lib::test_support::integration::workflow::pending_single_fact(
+        let mut corrupt = releashd::test_support::integration::workflow::pending_single_fact(
             &meta,
             &NodeFact::AbortRequested(Default::default()),
             2,
@@ -385,11 +382,11 @@ pub async fn test_archive候補_履歴や定義をfoldせずページングしgc
         corrupt.row.event_type = "process_exited".into();
         corrupt.row.detail = "broken history".into();
         rows.push(corrupt);
-        releash_lib::test_support::integration::workflow::append_pending_rows(&store, rows)
+        releashd::test_support::integration::workflow::append_pending_rows(&store, rows)
             .await
             .unwrap();
     }
-    releash_lib::test_support::integration::workflow::append_single_fact(
+    releashd::test_support::integration::workflow::append_single_fact(
         &store,
         &meta,
         &NodeFact::AbortRequested(Default::default()),
@@ -446,7 +443,7 @@ pub async fn test_worktreearchive候補_対象外の壊れたpathを解決せず
             None,
         )
         .unwrap();
-        releash_lib::test_support::integration::workflow::append_fact_batch_for_seed(
+        releashd::test_support::integration::workflow::append_fact_batch_for_seed(
             &store,
             &facts.into_facts(),
             1,
@@ -473,7 +470,7 @@ pub async fn test_repository所属の記録_追記を繰り返さず再読込後
     // Given
     let (directory, store, repository, meta) = fixture();
     let before =
-        releash_lib::test_support::integration::workflow::read_tree_records(&store, &meta.tree_id)
+        releashd::test_support::integration::workflow::read_tree_records(&store, &meta.tree_id)
             .await
             .unwrap();
     // When
@@ -486,17 +483,15 @@ pub async fn test_repository所属の記録_追記を繰り返さず再読込後
         .await
         .unwrap();
     let reader = ExecutionTreeArchiveFactRepository::from_backend(FactLogReadBackend::ReadOnly(
-        releash_lib::test_support::integration::persistence::LocalEventReadStore::open(
+        releashd::test_support::integration::persistence::LocalEventReadStore::open(
             directory.path(),
-            std::sync::Arc::new(
-                releash_lib::test_support::integration::platform::RetryLimiter::new(),
-            ),
+            std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
         )
         .unwrap(),
     ));
     // Then
     let after =
-        releash_lib::test_support::integration::workflow::read_tree_records(&store, &meta.tree_id)
+        releashd::test_support::integration::workflow::read_tree_records(&store, &meta.tree_id)
             .await
             .unwrap();
     assert_eq!(&after[..before.len()], before);
@@ -538,7 +533,7 @@ pub async fn test_repository所属の記録_追記を繰り返さず再読込後
         .await
         .is_err());
     assert_eq!(
-        releash_lib::test_support::integration::workflow::read_tree_records(&store, &meta.tree_id)
+        releashd::test_support::integration::workflow::read_tree_records(&store, &meta.tree_id)
             .await
             .unwrap(),
         after
@@ -550,11 +545,9 @@ pub async fn test_repository所属の記録_読取専用では保存失敗を返
     // Given
     let (directory, _store, _repository, meta) = fixture();
     let reader = ExecutionTreeArchiveFactRepository::from_backend(FactLogReadBackend::ReadOnly(
-        releash_lib::test_support::integration::persistence::LocalEventReadStore::open(
+        releashd::test_support::integration::persistence::LocalEventReadStore::open(
             directory.path(),
-            std::sync::Arc::new(
-                releash_lib::test_support::integration::platform::RetryLimiter::new(),
-            ),
+            std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
         )
         .unwrap(),
     ));
@@ -575,7 +568,7 @@ pub async fn test_repository所属の記録_読取専用では保存失敗を返
 pub async fn test_repository所属の復元_フォルダ消失済みでも旧隔離worktreeの事実を参照する() {
     // Given
     let (_directory, store, repository, meta) = fixture();
-    let mut pending = releash_lib::test_support::integration::workflow::pending_single_fact(
+    let mut pending = releashd::test_support::integration::workflow::pending_single_fact(
         &meta,
         &NodeFact::AbortRequested(Default::default()),
         2,
@@ -590,7 +583,7 @@ pub async fn test_repository所属の復元_フォルダ消失済みでも旧隔
         "branch": "child"
     })
     .to_string();
-    releash_lib::test_support::integration::workflow::append_pending_rows(&store, vec![pending])
+    releashd::test_support::integration::workflow::append_pending_rows(&store, vec![pending])
         .await
         .unwrap();
     // When / Then
@@ -617,8 +610,8 @@ pub async fn test_repository所属の復元_フォルダ消失済みでも旧隔
 
 #[tokio::test]
 pub async fn test_archive読取_実経路で失敗分類を保持する() {
-    use releash_lib::test_support::integration::persistence::ReadFailure;
-    use releash_lib::test_support::integration::transport::classified_error;
+    use releashd::test_support::integration::persistence::ReadFailure;
+    use releashd::test_support::integration::transport::classified_error;
     // Given
     let (_directory, store, repository, meta) = fixture();
     let id = ExecutionTreeId::new(meta.tree_id.clone()).unwrap();
@@ -656,11 +649,11 @@ pub async fn test_archive読取_実経路で失敗分類を保持する() {
 
 #[tokio::test]
 pub async fn test_archive候補_repo補完の期限と取消を保持し次のpathへ進まない() {
-    use releash_lib::test_support::integration::platform::Cancellation;
-    use releash_lib::test_support::integration::platform::Deadline;
-    use releash_lib::test_support::integration::platform::OperationContext;
-    use releash_lib::test_support::integration::platform::OperationStopped;
-    use releash_lib::test_support::integration::transport::ConnectFailure;
+    use releashd::test_support::integration::platform::Cancellation;
+    use releashd::test_support::integration::platform::Deadline;
+    use releashd::test_support::integration::platform::OperationContext;
+    use releashd::test_support::integration::platform::OperationStopped;
+    use releashd::test_support::integration::transport::ConnectFailure;
     use std::sync::atomic::AtomicUsize;
     use std::sync::atomic::Ordering;
     use std::time::Duration;
@@ -677,7 +670,7 @@ pub async fn test_archive候補_repo補完の期限と取消を保持し次のpa
         let (_directory, store, repository, _) = fixture();
         let mut blockers = Vec::new();
         let mut releases = Vec::new();
-        for _ in 0..releash_lib::test_support::integration::persistence::READER_POOL_SIZE {
+        for _ in 0..releashd::test_support::integration::persistence::READER_POOL_SIZE {
             let store = store.clone();
             let (started, ready) = tokio::sync::oneshot::channel();
             let (release, wait) = std::sync::mpsc::channel();
@@ -708,7 +701,7 @@ pub async fn test_archive候補_repo補完の期限と取消を保持し次のpa
             cancellation.clone(),
         );
         // When
-        let error = releash_lib::test_support::integration::platform::scope(context, page)
+        let error = releashd::test_support::integration::platform::scope(context, page)
             .await
             .unwrap_err();
         // Then
@@ -722,7 +715,7 @@ pub async fn test_archive候補_repo補完の期限と取消を保持し次のpa
         );
         assert_eq!(
             error.connect_code(),
-            releash_lib::test_support::integration::platform::TechnicalFailure::from(expected)
+            releashd::test_support::integration::platform::TechnicalFailure::from(expected)
                 .connect_code()
         );
         assert_eq!(cancellation.0.load(Ordering::SeqCst), usize::from(!expire));

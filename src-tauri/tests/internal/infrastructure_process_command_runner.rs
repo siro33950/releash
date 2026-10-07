@@ -1,9 +1,9 @@
 pub(crate) mod tests {
 
-    use releash_lib::test_support::integration::process::display_cwd;
-    use releash_lib::test_support::integration::process::spawn_shell_command;
-    use releash_lib::test_support::integration::process::CommandRunnerError;
-    use releash_lib::test_support::integration::process::OutputLimit;
+    use releashd::test_support::integration::process::display_cwd;
+    use releashd::test_support::integration::process::spawn_shell_command;
+    use releashd::test_support::integration::process::CommandRunnerError;
+    use releashd::test_support::integration::process::OutputLimit;
     use tempfile::TempDir;
 
     const TEST_LABEL: &str = "workflow command";

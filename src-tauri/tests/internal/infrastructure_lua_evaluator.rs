@@ -1,18 +1,18 @@
 pub(crate) mod tests {
 
-    use releash_lib::test_support::integration::platform::evaluate;
-    use releash_lib::test_support::integration::platform::LuaData;
-    use releash_lib::test_support::integration::platform::LuaEvaluationRequest;
-    use releash_lib::test_support::integration::platform::LuaFailureKind;
-    use releash_lib::test_support::integration::platform::LuaHost;
-    use releash_lib::test_support::integration::platform::LuaHostError;
-    use releash_lib::test_support::integration::platform::LuaHostHandle;
-    use releash_lib::test_support::integration::platform::LuaLimits;
-    use releash_lib::test_support::integration::platform::LuaModule;
-    use releash_lib::test_support::integration::platform::LuaModuleValue;
-    use releash_lib::test_support::integration::platform::LuaSourceLocation;
-    use releash_lib::test_support::integration::platform::MAX_TABLE_DEPTH;
-    use releash_lib::test_support::integration::platform::MAX_TABLE_ELEMENTS;
+    use releashd::test_support::integration::platform::evaluate;
+    use releashd::test_support::integration::platform::LuaData;
+    use releashd::test_support::integration::platform::LuaEvaluationRequest;
+    use releashd::test_support::integration::platform::LuaFailureKind;
+    use releashd::test_support::integration::platform::LuaHost;
+    use releashd::test_support::integration::platform::LuaHostError;
+    use releashd::test_support::integration::platform::LuaHostHandle;
+    use releashd::test_support::integration::platform::LuaLimits;
+    use releashd::test_support::integration::platform::LuaModule;
+    use releashd::test_support::integration::platform::LuaModuleValue;
+    use releashd::test_support::integration::platform::LuaSourceLocation;
+    use releashd::test_support::integration::platform::MAX_TABLE_DEPTH;
+    use releashd::test_support::integration::platform::MAX_TABLE_ELEMENTS;
     use std::collections::BTreeMap;
     use std::fs;
     use std::path::Path;

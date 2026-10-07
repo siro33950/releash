@@ -183,7 +183,7 @@ fn test_監督状態_接続失敗の分類を画面用のstageへ写す() {
     // Given
     let mut supervision = DaemonSupervision::new(0);
     supervision.connection_failed(crate::domain::daemon_supervision::Failure {
-        stage: FailureStage::Connection(releash_lib::desktop_api::TechnicalFailureNature::TimedOut),
+        stage: FailureStage::Connection(releashd::desktop_api::TechnicalFailureNature::TimedOut),
         reason: "State stream was silent".into(),
     });
     // When

@@ -1,12 +1,12 @@
 use crate::test_support_git::add_and_commit;
 use crate::test_support_git::create_initial_commit;
-use releash_lib::test_support::integration::platform::OperationContext;
-use releash_lib::test_support::integration::workflow::ConfiguredWorktreeGateway;
-use releash_lib::test_support::integration::workflow::IsolatedWorktree;
-use releash_lib::test_support::integration::workflow::IsolatedWorktreeGateway;
-use releash_lib::test_support::integration::workflow::ManagedWorktreeGateway;
-use releash_lib::test_support::integration::workflow::RepositoryIsolatedWorktreeGateway;
-use releash_lib::test_support::integration::workflow::WorkflowError;
+use releashd::test_support::integration::platform::OperationContext;
+use releashd::test_support::integration::workflow::ConfiguredWorktreeGateway;
+use releashd::test_support::integration::workflow::IsolatedWorktree;
+use releashd::test_support::integration::workflow::IsolatedWorktreeGateway;
+use releashd::test_support::integration::workflow::ManagedWorktreeGateway;
+use releashd::test_support::integration::workflow::RepositoryIsolatedWorktreeGateway;
+use releashd::test_support::integration::workflow::WorkflowError;
 use std::sync::Arc;
 
 fn repository() -> (tempfile::TempDir, git2::Repository, String) {
@@ -222,9 +222,9 @@ pub fn test_隔離生成確認_同名登録でもpathまたはrepositoryが違�
 #[test]
 pub fn test_隔離worktree_全入口で期限切れと取り消しの分類を保持する() {
     use connectrpc::ErrorCode;
-    use releash_lib::test_support::integration::platform::Deadline;
-    use releash_lib::test_support::integration::platform::OperationContext;
-    use releash_lib::test_support::integration::transport::ConnectFailure;
+    use releashd::test_support::integration::platform::Deadline;
+    use releashd::test_support::integration::platform::OperationContext;
+    use releashd::test_support::integration::transport::ConnectFailure;
 
     use std::time::Instant;
     // Given
@@ -244,7 +244,7 @@ pub fn test_隔離worktree_全入口で期限切れと取り消しの分類を�
         ),
     ] {
         // When / Then
-        releash_lib::test_support::integration::platform::sync_scope(context, || {
+        releashd::test_support::integration::platform::sync_scope(context, || {
             assert_eq!(
                 gateway.repository_root(&root).unwrap_err().connect_code(),
                 expected
@@ -275,7 +275,7 @@ pub fn test_managed_worktree解決_各操作の停止で別repositoryへ進ま�
     let (_directory, _repo, root) = repository();
     let (_second_directory, _second_repo, second_root) = repository();
     let gateway = ConfiguredWorktreeGateway::new(
-        Arc::new(releash_lib::test_support::integration::platform::build_repository_usecase()),
+        Arc::new(releashd::test_support::integration::platform::build_repository_usecase()),
         vec![root.clone(), second_root],
     );
     // When / Then
@@ -284,7 +284,7 @@ pub fn test_managed_worktree解決_各操作の停止で別repositoryへ進ま�
 
 #[test]
 pub fn test_隔離生成確認_validateの停止を後続のパス検証エラーへ変えない() {
-    use releash_lib::test_support::integration::platform::Cancellation;
+    use releashd::test_support::integration::platform::Cancellation;
 
     use std::sync::atomic::AtomicUsize;
     use std::sync::atomic::Ordering;
@@ -307,7 +307,7 @@ pub fn test_隔離生成確認_validateの停止を後続のパス検証エラ�
         .into_owned();
     let cancellation = Arc::new(CancelAfterValidate(AtomicUsize::new(0)));
     // When
-    let result = releash_lib::test_support::integration::platform::sync_scope(
+    let result = releashd::test_support::integration::platform::sync_scope(
         OperationContext::new(None, cancellation.clone()),
         || gateway.is_created(&root, &worktree),
     );
@@ -315,8 +315,9 @@ pub fn test_隔離生成確認_validateの停止を後続のパス検証エラ�
     assert!(matches!(
         result,
         Err(WorkflowError::Technical(
-            releash_lib::test_support::integration::platform::TechnicalFailure {
-                nature: releash_lib::test_support::integration::platform::TechnicalFailureNature::Cancelled,
+            releashd::test_support::integration::platform::TechnicalFailure {
+                nature:
+                    releashd::test_support::integration::platform::TechnicalFailureNature::Cancelled,
                 ..
             }
         ))
@@ -325,11 +326,11 @@ pub fn test_隔離生成確認_validateの停止を後続のパス検証エラ�
 }
 pub(crate) mod tests {
 
-    use releash_lib::test_support::integration::platform::RepositoryUsecase;
-    use releash_lib::test_support::integration::workflow::canonicalize_managed_worktree_path_inner;
+    use releashd::test_support::integration::platform::RepositoryUsecase;
+    use releashd::test_support::integration::workflow::canonicalize_managed_worktree_path_inner;
 
     fn test_usecase() -> RepositoryUsecase {
-        releash_lib::test_support::integration::platform::build_repository_usecase()
+        releashd::test_support::integration::platform::build_repository_usecase()
     }
 
     #[test]

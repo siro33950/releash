@@ -1,7 +1,7 @@
 #![cfg(all(debug_assertions, unix))]
 
 use releash_desktop::test_support as host;
-use releash_lib::test_support::client_api_acceptance as client_api;
+use releashd::test_support::client_api_acceptance as client_api;
 use serde_json::{json, Value};
 use std::{
     path::Path,

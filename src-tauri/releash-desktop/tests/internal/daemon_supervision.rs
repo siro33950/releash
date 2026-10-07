@@ -2,8 +2,8 @@ use releash_desktop::test_support::integration::daemon_supervision::*;
 use releash_desktop::test_support::integration::daemon_supervision::{
     DaemonGateway, DaemonProcessPort,
 };
-use releash_lib::desktop_api::test_support::Unit;
-use releash_lib::desktop_api::{wire, RetryLimiter};
+use releashd::desktop_api::test_support::Unit;
+use releashd::desktop_api::{wire, RetryLimiter};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 use std::{path::PathBuf, sync::Arc};
@@ -15,8 +15,8 @@ fn gateway(data_dir: PathBuf) -> DaemonProcessGateway {
 #[tokio::test]
 async fn test_daemon接続_認証と検証が完了した呼び出しで接続情報を返す() {
     use prost::Message;
-    use releash_lib::desktop_api::test_support::LocalApiDiscoveryFile;
-    use releash_lib::desktop_api::{process_start_time, LocalApiDiscovery};
+    use releashd::desktop_api::test_support::LocalApiDiscoveryFile;
+    use releashd::desktop_api::{process_start_time, LocalApiDiscovery};
     // Given
     let directory = tempfile::tempdir().unwrap();
     let gateway = gateway(directory.path().into());
@@ -119,14 +119,14 @@ async fn test_初回設定待ち_購読開始失敗後も同じclientがprotoの
     use axum::response::IntoResponse;
     use futures_util::StreamExt;
     use prost::Message;
-    use releash_lib::desktop_api::test_support::LocalApiDiscoveryFile;
-    use releash_lib::desktop_api::{process_start_time, LocalApiDiscovery};
+    use releashd::desktop_api::test_support::LocalApiDiscoveryFile;
+    use releashd::desktop_api::{process_start_time, LocalApiDiscovery};
     use wire::state_subscription_event::Event;
 
     // Given
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
-    let endpoint = releash_lib::desktop_api::ClientConnectionDto {
+    let endpoint = releashd::desktop_api::ClientConnectionDto {
         url: format!("http://{}", listener.local_addr().unwrap()),
         token: "client".into(),
     };
@@ -294,7 +294,7 @@ async fn test_初回設定待ち_購読開始失敗後も同じclientがprotoの
 async fn test_初回設定待ち_生存失敗が確定したら分類を保って監督へ渡す() {
     // Given
     let gateway = gateway(PathBuf::new());
-    let endpoint = releash_lib::desktop_api::ClientConnectionDto {
+    let endpoint = releashd::desktop_api::ClientConnectionDto {
         url: "http://127.0.0.1:1".into(),
         token: "client".into(),
     };
@@ -332,7 +332,7 @@ async fn test_初回設定待ち_生存失敗が確定したら分類を保っ�
     // Then
     assert_eq!(
         failure.stage,
-        FailureStage::Connection(releash_lib::desktop_api::TechnicalFailureNature::Transient)
+        FailureStage::Connection(releashd::desktop_api::TechnicalFailureNature::Transient)
     );
     assert!(gateway.pending.lock().is_none());
 }

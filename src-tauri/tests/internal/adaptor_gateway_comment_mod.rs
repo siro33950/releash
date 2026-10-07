@@ -1,24 +1,24 @@
 pub(crate) mod tests {
 
-    use releash_lib::test_support::integration::platform::Deadline;
-    use releash_lib::test_support::integration::platform::OperationContext;
-    use releash_lib::test_support::integration::platform::OperationStopped;
+    use releashd::test_support::integration::platform::Deadline;
+    use releashd::test_support::integration::platform::OperationContext;
+    use releashd::test_support::integration::platform::OperationStopped;
 
-    use releash_lib::test_support::integration::platform::acquire_worktree_file_lock;
-    use releash_lib::test_support::integration::platform::lock_file;
-    use releash_lib::test_support::integration::platform::state_file;
-    use releash_lib::test_support::integration::platform::FileReviewEventStore;
-    use releash_lib::test_support::integration::platform::ReviewActor;
-    use releash_lib::test_support::integration::platform::ReviewError;
-    use releash_lib::test_support::integration::platform::ReviewTarget;
-    use releash_lib::test_support::integration::platform::SystemReviewClock;
-    use releash_lib::test_support::integration::platform::UuidReviewIdGenerator;
+    use releashd::test_support::integration::platform::acquire_worktree_file_lock;
+    use releashd::test_support::integration::platform::lock_file;
+    use releashd::test_support::integration::platform::state_file;
+    use releashd::test_support::integration::platform::FileReviewEventStore;
+    use releashd::test_support::integration::platform::ReviewActor;
+    use releashd::test_support::integration::platform::ReviewError;
+    use releashd::test_support::integration::platform::ReviewTarget;
+    use releashd::test_support::integration::platform::SystemReviewClock;
+    use releashd::test_support::integration::platform::UuidReviewIdGenerator;
     use std::time::Duration;
     use std::time::Instant;
 
-    use releash_lib::test_support::integration::platform::ReviewCommentUsecase;
-    use releash_lib::test_support::integration::platform::ReviewThreadState;
-    use releash_lib::test_support::integration::platform::MAX_REVIEW_TEXT_BYTES;
+    use releashd::test_support::integration::platform::ReviewCommentUsecase;
+    use releashd::test_support::integration::platform::ReviewThreadState;
+    use releashd::test_support::integration::platform::MAX_REVIEW_TEXT_BYTES;
     use std::sync::atomic::AtomicBool;
     use std::sync::atomic::Ordering;
     use std::sync::Arc;
@@ -286,9 +286,9 @@ pub(crate) mod tests {
 
     #[test]
     pub fn test_comment変更_in_process_lock待ちを期限と取消で終了する() {
-        use releash_lib::test_support::integration::platform::Deadline;
-        use releash_lib::test_support::integration::platform::OperationContext;
-        use releash_lib::test_support::integration::platform::OperationStopped;
+        use releashd::test_support::integration::platform::Deadline;
+        use releashd::test_support::integration::platform::OperationContext;
+        use releashd::test_support::integration::platform::OperationStopped;
         for expire in [false, true] {
             let dir = TempDir::new().unwrap();
             let store = Arc::new(FileReviewEventStore::default());
@@ -303,7 +303,7 @@ pub(crate) mod tests {
                 let store = store.clone();
                 let dir = dir.path();
                 let worker = scope.spawn(move || {
-                    releash_lib::test_support::integration::platform::sync_scope(context, || {
+                    releashd::test_support::integration::platform::sync_scope(context, || {
                         started.send(()).unwrap();
                         usecase(store).create_thread(
                             dir,
@@ -349,9 +349,8 @@ pub(crate) mod tests {
                         Arc::new(cancellation),
                     );
                     started.send(started_at).unwrap();
-                    let result = releash_lib::test_support::integration::platform::sync_scope(
-                        context,
-                        || {
+                    let result =
+                        releashd::test_support::integration::platform::sync_scope(context, || {
                             usecase(store).create_thread(
                                 path,
                                 "wt",
@@ -359,8 +358,7 @@ pub(crate) mod tests {
                                 target(),
                                 "Claim".into(),
                             )
-                        },
-                    );
+                        });
                     sent.send(result).unwrap();
                 });
                 // When / Then
@@ -398,7 +396,7 @@ pub(crate) mod tests {
             let (sent, received) = std::sync::mpsc::channel();
             let worker = std::thread::spawn(move || {
                 let result =
-                    releash_lib::test_support::integration::platform::sync_scope(context, || {
+                    releashd::test_support::integration::platform::sync_scope(context, || {
                         acquire_worktree_file_lock(&path, "wt").map(drop)
                     });
                 sent.send(result).unwrap();
@@ -412,8 +410,8 @@ pub(crate) mod tests {
             assert!(matches!(
                 result.unwrap(),
                 Err(ReviewError::Technical(
-                    releash_lib::test_support::integration::platform::TechnicalFailure {
-                        nature: releash_lib::test_support::integration::platform::TechnicalFailureNature::TimedOut,
+                    releashd::test_support::integration::platform::TechnicalFailure {
+                        nature: releashd::test_support::integration::platform::TechnicalFailureNature::TimedOut,
                         ..
                     }
                 ))

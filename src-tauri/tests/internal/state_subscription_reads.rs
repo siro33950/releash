@@ -1,40 +1,40 @@
 use crate::adaptor_gateway_workflow_workflow_host_test_helpers::archive_fixture;
-use releash_lib::test_support::integration::sessions::MemoryHookHealthRepository as MemoryHookHealth;
-use releash_lib::test_support::integration::subscriptions::SubscriptionTarget as T;
+use releashd::test_support::integration::sessions::MemoryHookHealthRepository as MemoryHookHealth;
+use releashd::test_support::integration::subscriptions::SubscriptionTarget as T;
 
-use releash_lib::test_support::integration::subscriptions::Event;
+use releashd::test_support::integration::subscriptions::Event;
 
-use releash_lib::test_support::integration::workflow::NoopWorkflowExternalEditorGateway;
-use releash_lib::test_support::integration::workflow::PassthroughManagedWorktreeGateway;
+use releashd::test_support::integration::workflow::NoopWorkflowExternalEditorGateway;
+use releashd::test_support::integration::workflow::PassthroughManagedWorktreeGateway;
 
-use releash_lib::test_support::integration::repository::FsWorktreePathNormalizer;
+use releashd::test_support::integration::repository::FsWorktreePathNormalizer;
 
-use releash_lib::test_support::integration::repository::NotifyRepositoryStateWatcher;
+use releashd::test_support::integration::repository::NotifyRepositoryStateWatcher;
 
-use releash_lib::test_support::integration::platform::InMemoryTtlCache;
-use releash_lib::test_support::integration::repository::DefaultRepositoryScanner;
-use releash_lib::test_support::integration::repository::RepoPathsGateway;
-use releash_lib::test_support::integration::settings::AppConfig;
-use releash_lib::test_support::integration::settings::ReleashConfig;
+use releashd::test_support::integration::platform::InMemoryTtlCache;
+use releashd::test_support::integration::repository::DefaultRepositoryScanner;
+use releashd::test_support::integration::repository::RepoPathsGateway;
+use releashd::test_support::integration::settings::AppConfig;
+use releashd::test_support::integration::settings::ReleashConfig;
 
-use releash_lib::test_support::integration::platform::CacheTtl;
-use releash_lib::test_support::integration::platform::GitHostError;
-use releash_lib::test_support::integration::platform::GitHostProvider;
-use releash_lib::test_support::integration::platform::IssueInfo;
-use releash_lib::test_support::integration::platform::PrStatus;
-use releash_lib::test_support::integration::repository::RepositoryStateRepositoryGateway;
-use releash_lib::test_support::integration::workflow::facet_FacetKind as FacetKind;
+use releashd::test_support::integration::platform::CacheTtl;
+use releashd::test_support::integration::platform::GitHostError;
+use releashd::test_support::integration::platform::GitHostProvider;
+use releashd::test_support::integration::platform::IssueInfo;
+use releashd::test_support::integration::platform::PrStatus;
+use releashd::test_support::integration::repository::RepositoryStateRepositoryGateway;
+use releashd::test_support::integration::workflow::facet_FacetKind as FacetKind;
 use std::sync::Arc;
 async fn start_read(
-    usecase: &releash_lib::test_support::integration::subscriptions::StateSubscriptionUsecase,
+    usecase: &releashd::test_support::integration::subscriptions::StateSubscriptionUsecase,
     client: &str,
     target: &str,
     cursor: Option<(&str, u64)>,
-) -> Result<(), releash_lib::test_support::integration::subscriptions::StateReadError> {
+) -> Result<(), releashd::test_support::integration::subscriptions::StateReadError> {
     let target =
-        releash_lib::test_support::integration::subscriptions::SubscriptionTarget::parse(target)
+        releashd::test_support::integration::subscriptions::SubscriptionTarget::parse(target)
             .map_err(
-                releash_lib::test_support::integration::subscriptions::StateReadError::from_error,
+                releashd::test_support::integration::subscriptions::StateReadError::from_error,
             )?;
     usecase
         .deps()
@@ -43,37 +43,37 @@ async fn start_read(
 }
 use futures_util::StreamExt;
 use parking_lot::Mutex;
-use releash_lib::test_support::integration::platform::AgentSessionProviderDto;
-use releash_lib::test_support::integration::platform::GitHostUsecase;
-use releash_lib::test_support::integration::platform::RepoPathsUsecase;
-use releash_lib::test_support::integration::platform::RepositoryStateService;
-use releash_lib::test_support::integration::sessions::AgentSessionGarbageCollectionOutcome;
-use releash_lib::test_support::integration::sessions::AgentSessionGarbageCollectionPort;
-use releash_lib::test_support::integration::sessions::AgentSessionHistoryCandidateDto;
-use releash_lib::test_support::integration::sessions::AgentSessionHistoryPageDto;
-use releash_lib::test_support::integration::sessions::AgentSessionHistoryQueryError;
-use releash_lib::test_support::integration::sessions::AgentSessionHistoryQueryService;
-use releash_lib::test_support::integration::sessions::AgentSessionHistoryReadUsecase;
-use releash_lib::test_support::integration::sessions::AgentSessionHistoryRequest;
-use releash_lib::test_support::integration::sessions::AgentSessionItemDto;
-use releash_lib::test_support::integration::sessions::AgentSessionLifecycleDto;
-use releash_lib::test_support::integration::sessions::AgentSessionLifecycleUsecaseError;
-use releash_lib::test_support::integration::sessions::AgentSessionOperationsDto;
-use releash_lib::test_support::integration::sessions::AgentSessionQueryError;
-use releash_lib::test_support::integration::sessions::AgentSessionQueryService;
-use releash_lib::test_support::integration::sessions::AgentSessionReadUsecase;
-use releash_lib::test_support::integration::sessions::AgentSessionTreeLocationDto;
-use releash_lib::test_support::integration::sessions::ProviderAvailabilityUsecase;
-use releash_lib::test_support::integration::subscriptions::StateChangeSource;
-use releash_lib::test_support::integration::subscriptions::StateReadFailure;
-use releash_lib::test_support::integration::subscriptions::StateSubscriptionEvent;
-use releash_lib::test_support::integration::subscriptions::StateSubscriptionRead;
-use releash_lib::test_support::integration::subscriptions::StateSubscriptionUsecase;
-use releash_lib::test_support::integration::subscriptions::StateValue;
-use releash_lib::test_support::integration::subscriptions::SubscriptionTarget;
-use releash_lib::test_support::integration::subscriptions::WorkspaceStateReads;
-use releash_lib::test_support::integration::workflow::WorkflowDiagnosticsTarget;
-use releash_lib::test_support::integration::workspace::WorkspaceListUsecase;
+use releashd::test_support::integration::platform::AgentSessionProviderDto;
+use releashd::test_support::integration::platform::GitHostUsecase;
+use releashd::test_support::integration::platform::RepoPathsUsecase;
+use releashd::test_support::integration::platform::RepositoryStateService;
+use releashd::test_support::integration::sessions::AgentSessionGarbageCollectionOutcome;
+use releashd::test_support::integration::sessions::AgentSessionGarbageCollectionPort;
+use releashd::test_support::integration::sessions::AgentSessionHistoryCandidateDto;
+use releashd::test_support::integration::sessions::AgentSessionHistoryPageDto;
+use releashd::test_support::integration::sessions::AgentSessionHistoryQueryError;
+use releashd::test_support::integration::sessions::AgentSessionHistoryQueryService;
+use releashd::test_support::integration::sessions::AgentSessionHistoryReadUsecase;
+use releashd::test_support::integration::sessions::AgentSessionHistoryRequest;
+use releashd::test_support::integration::sessions::AgentSessionItemDto;
+use releashd::test_support::integration::sessions::AgentSessionLifecycleDto;
+use releashd::test_support::integration::sessions::AgentSessionLifecycleUsecaseError;
+use releashd::test_support::integration::sessions::AgentSessionOperationsDto;
+use releashd::test_support::integration::sessions::AgentSessionQueryError;
+use releashd::test_support::integration::sessions::AgentSessionQueryService;
+use releashd::test_support::integration::sessions::AgentSessionReadUsecase;
+use releashd::test_support::integration::sessions::AgentSessionTreeLocationDto;
+use releashd::test_support::integration::sessions::ProviderAvailabilityUsecase;
+use releashd::test_support::integration::subscriptions::StateChangeSource;
+use releashd::test_support::integration::subscriptions::StateReadFailure;
+use releashd::test_support::integration::subscriptions::StateSubscriptionEvent;
+use releashd::test_support::integration::subscriptions::StateSubscriptionRead;
+use releashd::test_support::integration::subscriptions::StateSubscriptionUsecase;
+use releashd::test_support::integration::subscriptions::StateValue;
+use releashd::test_support::integration::subscriptions::SubscriptionTarget;
+use releashd::test_support::integration::subscriptions::WorkspaceStateReads;
+use releashd::test_support::integration::workflow::WorkflowDiagnosticsTarget;
+use releashd::test_support::integration::workspace::WorkspaceListUsecase;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
@@ -101,10 +101,10 @@ impl AgentSessionGarbageCollectionPort for Sessions {
         &self,
         _: &str,
     ) -> Result<
-        releash_lib::test_support::integration::sessions::ManagedPtyPresence,
+        releashd::test_support::integration::sessions::ManagedPtyPresence,
         AgentSessionLifecycleUsecaseError,
     > {
-        Ok(releash_lib::test_support::integration::sessions::ManagedPtyPresence::Live)
+        Ok(releashd::test_support::integration::sessions::ManagedPtyPresence::Live)
     }
     async fn reconcile_garbage_collection(
         &self,
@@ -165,7 +165,7 @@ fn issue(number: u64) -> IssueInfo {
         title: "issue".into(),
         state: "OPEN".into(),
         url: "https://example.test/issue".into(),
-        author: releash_lib::test_support::integration::platform::PrAuthor {
+        author: releashd::test_support::integration::platform::PrAuthor {
             login: "author".into(),
         },
         created_at: String::new(),
@@ -179,7 +179,7 @@ fn issue(number: u64) -> IssueInfo {
 
 struct NoHookHealthFailures;
 #[async_trait::async_trait]
-impl releash_lib::test_support::integration::providers::ProviderHookHealthFailureQuery
+impl releashd::test_support::integration::providers::ProviderHookHealthFailureQuery
     for NoHookHealthFailures
 {
     async fn list(
@@ -188,11 +188,11 @@ impl releash_lib::test_support::integration::providers::ProviderHookHealthFailur
     ) -> Result<
         Vec<
             Result<
-                releash_lib::test_support::integration::providers::ProviderHookHealthFailureObservation,
-                releash_lib::test_support::integration::providers::ProviderHookHealthFailureQueryError,
+                releashd::test_support::integration::providers::ProviderHookHealthFailureObservation,
+                releashd::test_support::integration::providers::ProviderHookHealthFailureQueryError,
             >,
         >,
-        releash_lib::test_support::integration::providers::ProviderHookHealthFailureQueryError,
+        releashd::test_support::integration::providers::ProviderHookHealthFailureQueryError,
     >{
         Ok(vec![])
     }
@@ -219,11 +219,11 @@ impl Fixture {
         git.branch("feature", &commit, false).unwrap();
         let subscriptions = StateSubscriptionUsecase::new(
             vec![path.clone()],
-            releash_lib::test_support::integration::subscriptions::read_driver(),
+            releashd::test_support::integration::subscriptions::read_driver(),
         );
         let publisher = subscriptions.clone();
         let repository = Arc::new(
-            releash_lib::test_support::integration::platform::build_repository_usecase()
+            releashd::test_support::integration::platform::build_repository_usecase()
                 .with_state_publisher(publisher.clone()),
         );
         let config = Arc::new(AppConfig::new(
@@ -241,21 +241,22 @@ impl Fixture {
             Arc::new(RepositoryStateRepositoryGateway::new(repository.clone())),
             Arc::new(DefaultRepositoryScanner::new(
                 repository.clone(),
-                Arc::new(releash_lib::test_support::integration::platform::build_code_usecase()),
+                Arc::new(releashd::test_support::integration::platform::build_code_usecase()),
             )),
             publisher.clone(),
             Arc::new(NotifyRepositoryStateWatcher::new(repository.clone())),
             Arc::new(
-                releash_lib::test_support::integration::platform::RepositoryScanWorkerRuntime::new(),
+                releashd::test_support::integration::platform::RepositoryScanWorkerRuntime::new(),
             ),
             Arc::new(FsWorktreePathNormalizer),
-            releash_lib::test_support::integration::platform::start(
-                releash_lib::test_support::integration::platform::test_retrying(),
+            releashd::test_support::integration::platform::start(
+                releashd::test_support::integration::platform::test_retrying(),
                 Arc::new(
-                    releash_lib::test_support::integration::platform::RepositoryScanWorkerRuntime::new(),
+                    releashd::test_support::integration::platform::RepositoryScanWorkerRuntime::new(
+                    ),
                 ),
-                releash_lib::test_support::integration::platform::delays(
-                    releash_lib::test_support::integration::platform::DEBOUNCE,
+                releashd::test_support::integration::platform::delays(
+                    releashd::test_support::integration::platform::DEBOUNCE,
                 ),
             ),
         ));
@@ -276,7 +277,7 @@ impl Fixture {
         )
         .unwrap();
         let (workflow, local_event_store) =
-            releash_lib::test_support::integration::platform::build_workflow_usecase_and_store(
+            releashd::test_support::integration::platform::build_workflow_usecase_and_store(
                 root.join("data"),
                 Some(workflows_dir.clone()),
             );
@@ -287,7 +288,7 @@ impl Fixture {
             GitHostUsecase::new(
                 issues.clone(),
                 Arc::new(
-                    releash_lib::test_support::integration::platform::LatestPrStatuses::default(),
+                    releashd::test_support::integration::platform::LatestPrStatuses::default(),
                 ),
                 Arc::new(InMemoryTtlCache::<Vec<IssueInfo>>::new(
                     CacheTtl::EXTERNAL_INFORMATION,
@@ -306,23 +307,23 @@ impl Fixture {
         let providers = Arc::new(
             ProviderAvailabilityUsecase::initialize(
                 Arc::new(
-                    releash_lib::test_support::integration::sessions::FakeProviderExecutableConfigRepository::default(),
+                    releashd::test_support::integration::sessions::FakeProviderExecutableConfigRepository::default(),
                 ),
                 Arc::new(
-                    releash_lib::test_support::integration::sessions::FakeProviderExecutableProbeGateway::default(),
+                    releashd::test_support::integration::sessions::FakeProviderExecutableProbeGateway::default(),
                 ),
             )
             .unwrap()
             .with_state_publisher(publisher.clone()),
         );
         let comments = Arc::new(
-            releash_lib::test_support::integration::platform::build_review_comment_usecase()
+            releashd::test_support::integration::platform::build_review_comment_usecase()
                 .with_subscriptions(subscriptions.clone()),
         );
-        let session_comments = Arc::new(releash_lib::test_support::integration::platform::SessionReviewUsecase::new(
-            releash_lib::test_support::integration::platform::ReviewContextUsecase::new(
-                Arc::new(releash_lib::test_support::integration::sessions::LocalAgentSessionRepository::new(local_event_store.clone())),
-                Arc::new(releash_lib::test_support::integration::workflow::StoredWorkspaceWorktreePathQuery::new(root.join("data"), Arc::new(releash_lib::test_support::integration::platform::RetryLimiter::new()))),
+        let session_comments = Arc::new(releashd::test_support::integration::platform::SessionReviewUsecase::new(
+            releashd::test_support::integration::platform::ReviewContextUsecase::new(
+                Arc::new(releashd::test_support::integration::sessions::LocalAgentSessionRepository::new(local_event_store.clone())),
+                Arc::new(releashd::test_support::integration::workflow::StoredWorkspaceWorktreePathQuery::new(root.join("data"), Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()))),
             ), comments.clone(),
         ));
         let reads = WorkspaceStateReads {
@@ -332,52 +333,52 @@ impl Fixture {
             workspaces,
             git_host,
             sessions: Arc::new(AgentSessionReadUsecase::new(
-                std::sync::Arc::new(releash_lib::test_support::integration::platform::RandomIdentityIssuer),
+                std::sync::Arc::new(releashd::test_support::integration::platform::RandomIdentityIssuer),
                 sessions.clone(),
                 sessions.clone(),
             )),
             history: Arc::new(AgentSessionHistoryReadUsecase::new(sessions.clone())),
             providers,
             workspace_state: Arc::new(
-                releash_lib::test_support::integration::platform::WorkspaceStateStore::new(
+                releashd::test_support::integration::platform::WorkspaceStateStore::new(
                     root.join("workspace"),
                 ),
             ),
-            review: Arc::new(releash_lib::test_support::integration::platform::ReviewUsecase::new(
+            review: Arc::new(releashd::test_support::integration::platform::ReviewUsecase::new(
                 repository_state.clone(),
-                Arc::new(releash_lib::test_support::integration::platform::build_code_usecase()),
+                Arc::new(releashd::test_support::integration::platform::build_code_usecase()),
             )),
             comments,
             session_comments,
             data_dir: root.to_path_buf(),
-            review_comments_dir: releash_lib::test_support::integration::platform::state_dir(&root),
+            review_comments_dir: releashd::test_support::integration::platform::state_dir(&root),
             workflows_dir: workflows_dir.clone(),
             app_config: Arc::new(
-                releash_lib::test_support::integration::settings::AppConfigUsecase::new(config.clone(), config.clone())
+                releashd::test_support::integration::settings::AppConfigUsecase::new(config.clone(), config.clone())
                     .with_state_publisher(publisher.clone()),
             ),
             notion: Arc::new(
-                releash_lib::test_support::integration::platform::NotionUsecase::new(
+                releashd::test_support::integration::platform::NotionUsecase::new(
                     config.clone(),
                     config.clone(),
-                    Arc::new(releash_lib::test_support::integration::platform::NotionApiGatewayImpl::new(
-                        std::sync::Arc::new(releash_lib::test_support::integration::platform::RetryLimiter::new()),
+                    Arc::new(releashd::test_support::integration::platform::NotionApiGatewayImpl::new(
+                        std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
                     )),
                 )
                 .with_state_publisher(publisher.clone()),
             ),
             editor_settings: Arc::new(
-                releash_lib::test_support::integration::platform::EditorSettingsConfigGateway::new(
+                releashd::test_support::integration::platform::EditorSettingsConfigGateway::new(
                     config.clone(),
                 ),
             ),
             editor_scanner: Arc::new(
-                releash_lib::test_support::integration::platform::MacInstalledEditorGateway,
+                releashd::test_support::integration::platform::MacInstalledEditorGateway,
             ),
             hook_health: Arc::new(
-                releash_lib::test_support::integration::providers::ProviderHookHealthReadUsecase::new(
+                releashd::test_support::integration::providers::ProviderHookHealthReadUsecase::new(
                     Arc::new(
-                        releash_lib::test_support::integration::providers::ProviderHookHealthUsecase::new(
+                        releashd::test_support::integration::providers::ProviderHookHealthUsecase::new(
                             Arc::new(MemoryHookHealth::default()),
                         )
                         .with_state_publisher(publisher.clone()),
@@ -419,11 +420,11 @@ pub async fn test_状態読取_全対象を対応するサービスへ引数付�
     r.repository
         .set_branch_base_override(p, "feature", Some(&branch))
         .unwrap();
-    let workspace: releash_lib::test_support::integration::platform::WorkspaceStateDto = serde_json::from_value(serde_json::json!({
+    let workspace: releashd::test_support::integration::platform::WorkspaceStateDto = serde_json::from_value(serde_json::json!({
         "version": 1, "tabs": {"editors": [], "activeEditorPath": null},
         "layout": {"centerTab": "agent", "activeView": "git", "leftNavCollapsed": true, "rightCollapsed": false, "rightBottomCollapsed": false}
     })).unwrap();
-    releash_lib::test_support::integration::platform::save_workspace_state(
+    releashd::test_support::integration::platform::save_workspace_state(
         r.workspace_state.as_ref(),
         None,
         "repo",
@@ -479,7 +480,7 @@ pub async fn test_状態読取_全対象を対応するサービスへ引数付�
         (
             T::Branches(p.clone(), Some("feature".into())),
             StateValue::Branches(vec![
-                releash_lib::test_support::integration::platform::BranchDto {
+                releashd::test_support::integration::platform::BranchDto {
                     name: branch.clone(),
                     is_remote: false,
                 },
@@ -500,7 +501,7 @@ pub async fn test_状態読取_全対象を対応するサービスへ引数付�
         (
             T::Issues(p.clone()),
             StateValue::Issues(
-                releash_lib::test_support::integration::platform::Fetched::ready(vec![issue(1)]),
+                releashd::test_support::integration::platform::Fetched::ready(vec![issue(1)]),
             ),
         ),
         (
@@ -541,7 +542,7 @@ pub async fn test_状態読取_全対象を対応するサービスへ引数付�
                     .list_facet_summaries(FacetKind::Instruction)
                     .unwrap()
                     .into_iter()
-                    .map(releash_lib::test_support::integration::workflow::facet_summary_to_dto)
+                    .map(releashd::test_support::integration::workflow::facet_summary_to_dto)
                     .collect(),
             ),
         ),
@@ -694,7 +695,7 @@ pub async fn test_issue手動更新_有効なcacheを無視し30秒前に同じ�
         .await
         .unwrap();
     assert!(
-        matches!(stream.next().await, Some(StateSubscriptionEvent::Item(_, releash_lib::test_support::integration::subscriptions::Event::Snapshot(_, value))) if releash_lib::test_support::integration::subscriptions::same(&value, StateValue::Issues(releash_lib::test_support::integration::platform::Fetched::ready(vec![issue(1)]))))
+        matches!(stream.next().await, Some(StateSubscriptionEvent::Item(_, releashd::test_support::integration::subscriptions::Event::Snapshot(_, value))) if releashd::test_support::integration::subscriptions::same(&value, StateValue::Issues(releashd::test_support::integration::platform::Fetched::ready(vec![issue(1)]))))
     );
     stream.next().await;
     *fixture.issues.values.lock() = vec![issue(2)];
@@ -710,7 +711,7 @@ pub async fn test_issue手動更新_有効なcacheを無視し30秒前に同じ�
         loop {
             if let Some(StateSubscriptionEvent::Item(
                 id,
-                releash_lib::test_support::integration::subscriptions::Event::Change(_, _, value),
+                releashd::test_support::integration::subscriptions::Event::Change(_, _, value),
             )) = stream.next().await
             {
                 assert_eq!(id, format!("client:{target}"));
@@ -721,10 +722,10 @@ pub async fn test_issue手動更新_有効なcacheを無視し30秒前に同じ�
     .await
     .unwrap();
     // Then
-    assert!(releash_lib::test_support::integration::subscriptions::same(
+    assert!(releashd::test_support::integration::subscriptions::same(
         &value,
         StateValue::Issues(
-            releash_lib::test_support::integration::platform::Fetched::ready(vec![issue(2)])
+            releashd::test_support::integration::platform::Fetched::ready(vec![issue(2)])
         )
     ));
     assert!(before.elapsed() < CacheTtl::EXTERNAL_INFORMATION.duration());
@@ -735,10 +736,10 @@ pub async fn test_issue手動更新_有効なcacheを無視し30秒前に同じ�
 pub async fn test_終了済み実行木の選択_初期購読でツリーを配信する() {
     // Given
     use crate::adaptor_gateway_workflow_workflow_host_test_helpers::archive_fixture;
-    use releash_lib::test_support::integration::subscriptions::Event;
+    use releashd::test_support::integration::subscriptions::Event;
 
-    use releash_lib::test_support::integration::workflow::NoopWorkflowExternalEditorGateway;
-    use releash_lib::test_support::integration::workflow::PassthroughManagedWorktreeGateway;
+    use releashd::test_support::integration::workflow::NoopWorkflowExternalEditorGateway;
+    use releashd::test_support::integration::workflow::PassthroughManagedWorktreeGateway;
     let fixture = Fixture::new();
     let mut archive = archive_fixture();
     let workflow = serde_saphyr::from_str("name: archive\ndescription: test\nnodes:\n  main: {session: {provider: codex, facets: {instruction: policy-confirmation}}}").unwrap();
@@ -749,14 +750,14 @@ pub async fn test_終了済み実行木の選択_初期購読でツリーを配�
             workflow,
             fixture.path.clone(),
             None,
-            releash_lib::test_support::integration::workflow::ExecutionOrigin::Cli,
+            releashd::test_support::integration::workflow::ExecutionOrigin::Cli,
         )
         .await
         .unwrap();
     archive
         .runtime
         .abort_execution(
-            releash_lib::test_support::integration::workflow::AbortExecutionCommand {
+            releashd::test_support::integration::workflow::AbortExecutionCommand {
                 execution_id: id.clone(),
                 expected_node_name: None,
             },
@@ -765,10 +766,8 @@ pub async fn test_終了済み実行木の選択_初期購読でツリーを配�
         .unwrap();
     let mut reads = fixture.reads.clone();
     reads.workflow = Arc::new(
-        releash_lib::test_support::integration::platform::build_workflow_services_with_gateways(
-            Arc::new(
-                releash_lib::test_support::integration::platform::FailureRecordStore::default(),
-            ),
+        releashd::test_support::integration::platform::build_workflow_services_with_gateways(
+            Arc::new(releashd::test_support::integration::platform::FailureRecordStore::default()),
             archive.directory.path(),
             Arc::new(PassthroughManagedWorktreeGateway),
             Arc::new(NoopWorkflowExternalEditorGateway),
@@ -795,15 +794,14 @@ pub async fn test_終了済み実行木の選択_初期購読でツリーを配�
     let Some(StateSubscriptionEvent::Item(_, Event::Snapshot(_, value))) = event else {
         panic!("initial snapshot")
     };
-    let Some(releash_lib::test_support::integration::wire::state_payload::Value::Selection(
-        initial,
-    )) = &match value.as_ref() {
-        releash_lib::test_support::integration::subscriptions::PublishedState::Value(value) => {
-            value
+    let Some(releashd::test_support::integration::wire::state_payload::Value::Selection(initial)) =
+        &match value.as_ref() {
+            releashd::test_support::integration::subscriptions::PublishedState::Value(value) => {
+                value
+            }
+            _ => panic!("selection"),
         }
-        _ => panic!("selection"),
-    }
-    .value
+        .value
     else {
         panic!("selection")
     };
@@ -832,14 +830,14 @@ pub async fn test_終了済み実行木のarchive_取り直しなしで空のツ
             workflow,
             fixture.path.clone(),
             None,
-            releash_lib::test_support::integration::workflow::ExecutionOrigin::Cli,
+            releashd::test_support::integration::workflow::ExecutionOrigin::Cli,
         )
         .await
         .unwrap();
     archive
         .runtime
         .abort_execution(
-            releash_lib::test_support::integration::workflow::AbortExecutionCommand {
+            releashd::test_support::integration::workflow::AbortExecutionCommand {
                 execution_id: id.clone(),
                 expected_node_name: None,
             },
@@ -848,10 +846,8 @@ pub async fn test_終了済み実行木のarchive_取り直しなしで空のツ
         .unwrap();
     let mut reads = fixture.reads.clone();
     reads.workflow = Arc::new(
-        releash_lib::test_support::integration::platform::build_workflow_services_with_gateways(
-            Arc::new(
-                releash_lib::test_support::integration::platform::FailureRecordStore::default(),
-            ),
+        releashd::test_support::integration::platform::build_workflow_services_with_gateways(
+            Arc::new(releashd::test_support::integration::platform::FailureRecordStore::default()),
             archive.directory.path(),
             Arc::new(PassthroughManagedWorktreeGateway),
             Arc::new(NoopWorkflowExternalEditorGateway),
@@ -888,15 +884,14 @@ pub async fn test_終了済み実行木のarchive_取り直しなしで空のツ
         panic!("changed tree")
     };
     assert_eq!(received, format!("client:{target}"));
-    let Some(releash_lib::test_support::integration::wire::state_payload::Value::Selection(
-        selection,
-    )) = &match value.as_ref() {
-        releash_lib::test_support::integration::subscriptions::PublishedState::Value(value) => {
-            value
+    let Some(releashd::test_support::integration::wire::state_payload::Value::Selection(selection)) =
+        &match value.as_ref() {
+            releashd::test_support::integration::subscriptions::PublishedState::Value(value) => {
+                value
+            }
+            _ => panic!("selection"),
         }
-        _ => panic!("selection"),
-    }
-    .value
+        .value
     else {
         panic!("selection")
     };
@@ -925,14 +920,14 @@ pub async fn test_終了済み実行木のrestore_取り直しなしでツリー
             workflow,
             fixture.path.clone(),
             None,
-            releash_lib::test_support::integration::workflow::ExecutionOrigin::Cli,
+            releashd::test_support::integration::workflow::ExecutionOrigin::Cli,
         )
         .await
         .unwrap();
     archive
         .runtime
         .abort_execution(
-            releash_lib::test_support::integration::workflow::AbortExecutionCommand {
+            releashd::test_support::integration::workflow::AbortExecutionCommand {
                 execution_id: id.clone(),
                 expected_node_name: None,
             },
@@ -941,10 +936,8 @@ pub async fn test_終了済み実行木のrestore_取り直しなしでツリー
         .unwrap();
     let mut reads = fixture.reads.clone();
     reads.workflow = Arc::new(
-        releash_lib::test_support::integration::platform::build_workflow_services_with_gateways(
-            Arc::new(
-                releash_lib::test_support::integration::platform::FailureRecordStore::default(),
-            ),
+        releashd::test_support::integration::platform::build_workflow_services_with_gateways(
+            Arc::new(releashd::test_support::integration::platform::FailureRecordStore::default()),
             archive.directory.path(),
             Arc::new(PassthroughManagedWorktreeGateway),
             Arc::new(NoopWorkflowExternalEditorGateway),
@@ -983,15 +976,14 @@ pub async fn test_終了済み実行木のrestore_取り直しなしでツリー
         panic!("changed tree")
     };
     assert_eq!(received, format!("client:{target}"));
-    let Some(releash_lib::test_support::integration::wire::state_payload::Value::Selection(
-        selection,
-    )) = &match value.as_ref() {
-        releash_lib::test_support::integration::subscriptions::PublishedState::Value(value) => {
-            value
+    let Some(releashd::test_support::integration::wire::state_payload::Value::Selection(selection)) =
+        &match value.as_ref() {
+            releashd::test_support::integration::subscriptions::PublishedState::Value(value) => {
+                value
+            }
+            _ => panic!("selection"),
         }
-        _ => panic!("selection"),
-    }
-    .value
+        .value
     else {
         panic!("selection")
     };
@@ -1039,7 +1031,7 @@ pub async fn test_agent_session購読_状態変更通知から再読取して同
         .await
         .unwrap();
     assert!(
-        matches!(stream.next().await, Some(StateSubscriptionEvent::Item(id, Event::Snapshot(_, value))) if id == format!("client:{target}") && releash_lib::test_support::integration::subscriptions::same(&value, StateValue::AgentSession(Some(item.clone()))))
+        matches!(stream.next().await, Some(StateSubscriptionEvent::Item(id, Event::Snapshot(_, value))) if id == format!("client:{target}") && releashd::test_support::integration::subscriptions::same(&value, StateValue::AgentSession(Some(item.clone()))))
     );
     stream.next().await;
     // When / Then
@@ -1067,7 +1059,7 @@ pub async fn test_agent_session購読_状態変更通知から再読取して同
             .await
             .unwrap();
         assert!(
-            matches!(event, Some(StateSubscriptionEvent::Item(id, Event::Change(_, releash_lib::test_support::integration::subscriptions::Delivery::Full, value))) if id == format!("client:{target}") && releash_lib::test_support::integration::subscriptions::same(&value, StateValue::AgentSession(next)))
+            matches!(event, Some(StateSubscriptionEvent::Item(id, Event::Change(_, releashd::test_support::integration::subscriptions::Delivery::Full, value))) if id == format!("client:{target}") && releashd::test_support::integration::subscriptions::same(&value, StateValue::AgentSession(next)))
         );
         assert_eq!(fixture.sessions.calls.lock().len(), before + 1);
         assert!(fixture
@@ -1081,9 +1073,9 @@ pub async fn test_agent_session購読_状態変更通知から再読取して同
 
 #[tokio::test]
 pub async fn test_状態読取_review対象をworktreeとcomment置き場から読み取る() {
-    use releash_lib::test_support::integration::platform::ReviewFileViewDto;
-    use releash_lib::test_support::integration::review::ReviewBase;
-    use releash_lib::test_support::integration::review::ReviewSection;
+    use releashd::test_support::integration::platform::ReviewFileViewDto;
+    use releashd::test_support::integration::review::ReviewBase;
+    use releashd::test_support::integration::review::ReviewSection;
 
     // Given
     let fixture = Fixture::new();
@@ -1122,7 +1114,7 @@ pub async fn test_状態読取_review対象をworktreeとcomment置き場から�
     assert_eq!(threads, StateValue::ReviewThreads(vec![]));
     assert_eq!(
         r.review_comments_dir(),
-        releash_lib::test_support::integration::platform::state_dir(&r.data_dir)
+        releashd::test_support::integration::platform::state_dir(&r.data_dir)
             .to_string_lossy()
             .into_owned()
     );
@@ -1161,9 +1153,9 @@ pub async fn test_issue手動更新失敗_最後の一覧と失敗を購読へ�
     // Then
     assert!(result.is_err());
     assert!(
-        matches!(event, StateSubscriptionEvent::Item(id, Event::Change(_, _, value)) if id == format!("client:{target}") && releash_lib::test_support::integration::subscriptions::same(&value, StateValue::Issues(releash_lib::test_support::integration::platform::Fetched {
+        matches!(event, StateSubscriptionEvent::Item(id, Event::Change(_, _, value)) if id == format!("client:{target}") && releashd::test_support::integration::subscriptions::same(&value, StateValue::Issues(releashd::test_support::integration::platform::Fetched {
             value: Some(vec![issue(1)]),
-            error: Some(releash_lib::test_support::integration::platform::WorkFailure::from_error(&GitHostError::External("issues offline".into()))),
+            error: Some(releashd::test_support::integration::platform::WorkFailure::from_error(&GitHostError::External("issues offline".into()))),
         })))
     );
 }
@@ -1202,6 +1194,6 @@ pub async fn test_issue手動更新失敗_回復時に新しい一覧を届け�
         .unwrap();
     // Then
     assert!(
-        matches!(event, StateSubscriptionEvent::Item(id, Event::Change(_, _, value)) if id == format!("client:{target}") && releash_lib::test_support::integration::subscriptions::same(&value, StateValue::Issues(releash_lib::test_support::integration::platform::Fetched::ready(vec![issue(2)]))))
+        matches!(event, StateSubscriptionEvent::Item(id, Event::Change(_, _, value)) if id == format!("client:{target}") && releashd::test_support::integration::subscriptions::same(&value, StateValue::Issues(releashd::test_support::integration::platform::Fetched::ready(vec![issue(2)]))))
     );
 }

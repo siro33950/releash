@@ -2,10 +2,10 @@ use crate::common::retry::RetryLimiter;
 use crate::domain::daemon_supervision::{verify_identity, Failure, FailureStage, StopIntent};
 use crate::domain::daemon_supervision::{DaemonExit, DaemonProcessPort};
 use crate::usecase::daemon_supervision::{DaemonConnection, DaemonGateway};
-use releash_lib::desktop_api::wire;
-use releash_lib::desktop_api::ClientConnectionQueryService;
-use releash_lib::desktop_api::DesktopSettingsDto;
-use releash_lib::desktop_api::TechnicalFailure;
+use releashd::desktop_api::wire;
+use releashd::desktop_api::ClientConnectionQueryService;
+use releashd::desktop_api::DesktopSettingsDto;
+use releashd::desktop_api::TechnicalFailure;
 use std::io::{BufRead, Read};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
@@ -25,7 +25,7 @@ struct Process {
 pub struct PendingConnection {
     pub client: Arc<super::desktop_client::DesktopClient>,
     pub hello: wire::ServerInfo,
-    pub endpoint: releash_lib::desktop_api::ClientConnectionDto,
+    pub endpoint: releashd::desktop_api::ClientConnectionDto,
 }
 
 pub struct DaemonProcessGateway {
@@ -72,11 +72,11 @@ impl DaemonProcessGateway {
         (
             super::desktop_client::DesktopClient,
             wire::ServerInfo,
-            releash_lib::desktop_api::ClientConnectionDto,
+            releashd::desktop_api::ClientConnectionDto,
         ),
         String,
     > {
-        let endpoint = releash_lib::desktop_api::ClientConnectionFileQuery(self.data_dir.clone())
+        let endpoint = releashd::desktop_api::ClientConnectionFileQuery(self.data_dir.clone())
             .read()
             .map_err(|error| error.to_string())?;
         let info = super::desktop_client::server_info(&endpoint).await?;
@@ -270,7 +270,7 @@ impl DaemonProcessPort for DaemonProcessGateway {
             || async { Ok(self.exited().await?.is_some() || self.process.lock().is_none()) },
             || {
                 if let Some(process) = self.process.lock().as_mut() {
-                    releash_lib::desktop_api::terminate_descendants(process.child.id());
+                    releashd::desktop_api::terminate_descendants(process.child.id());
                     process.child.kill().map_err(|e| e.to_string())?;
                 }
                 Ok(())
@@ -334,10 +334,12 @@ impl DaemonGateway for DaemonProcessGateway {
         if self.pending.lock().is_some() {
             return self.finish_pending().await;
         }
-        let discovery = releash_lib::desktop_api::read_local_api_discovery(&self.data_dir)
-            .map_err(|error| Failure {
-                stage: FailureStage::Initialization,
-                reason: format!("{error:?}"),
+        let discovery =
+            releashd::desktop_api::read_local_api_discovery(&self.data_dir).map_err(|error| {
+                Failure {
+                    stage: FailureStage::Initialization,
+                    reason: format!("{error:?}"),
+                }
             })?;
         let Some(discovery) = discovery else {
             return Ok(None);

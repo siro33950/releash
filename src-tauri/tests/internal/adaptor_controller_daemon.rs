@@ -1,9 +1,9 @@
-use releash_lib::test_support::integration::daemon::compose;
-use releash_lib::test_support::integration::daemon::migrate_legacy_execution_archives;
-use releash_lib::test_support::integration::daemon::shutdown_with_deadline;
-use releash_lib::test_support::integration::daemon::Daemon;
-use releash_lib::test_support::integration::platform::FakeShutdown;
-use releash_lib::test_support::integration::platform::STAGES;
+use releashd::test_support::integration::daemon::compose;
+use releashd::test_support::integration::daemon::migrate_legacy_execution_archives;
+use releashd::test_support::integration::daemon::shutdown_with_deadline;
+use releashd::test_support::integration::daemon::Daemon;
+use releashd::test_support::integration::platform::FakeShutdown;
+use releashd::test_support::integration::platform::STAGES;
 use std::sync::Arc;
 
 #[tokio::test]
@@ -11,12 +11,11 @@ pub async fn test_daemon終了_受信先が閉じた場合のエラーを維持�
     // Given
     let (sender, exit) = tokio::sync::mpsc::channel(1);
     drop(sender);
-    let shutdown =
-        Arc::new(releash_lib::test_support::integration::platform::FakeShutdown::default());
+    let shutdown = Arc::new(releashd::test_support::integration::platform::FakeShutdown::default());
     // When
     let directory = tempfile::tempdir().unwrap();
     let server =
-        releash_lib::test_support::integration::transport::test_binding(directory.path().into())
+        releashd::test_support::integration::transport::test_binding(directory.path().into())
             .unwrap()
             .start(axum::Router::new(), &tokio::runtime::Handle::current())
             .unwrap();
@@ -24,8 +23,8 @@ pub async fn test_daemon終了_受信先が閉じた場合のエラーを維持�
         shutdown.clone(),
         server,
         exit,
-        releash_lib::test_support::integration::daemon::DaemonUsecase::test_with_repository(
-            releash_lib::test_support::integration::daemon::serving(),
+        releashd::test_support::integration::daemon::DaemonUsecase::test_with_repository(
+            releashd::test_support::integration::daemon::serving(),
         ),
     )
     .wait()
@@ -146,11 +145,11 @@ pub fn test_daemon終了_subprocess() {
     log::set_logger(&Logger).unwrap();
     log::set_max_level(log::LevelFilter::Error);
     let scenario = std::env::var("RELEASH_SHUTDOWN_TEST_CASE").unwrap();
-    let mut shutdown = releash_lib::test_support::integration::platform::FakeShutdown {
+    let mut shutdown = releashd::test_support::integration::platform::FakeShutdown {
         delay: std::time::Duration::from_secs(2),
         ..Default::default()
     };
-    for stage in releash_lib::test_support::integration::platform::STAGES {
+    for stage in releashd::test_support::integration::platform::STAGES {
         if scenario == format!("fail:{stage}") {
             shutdown.failed = Some(stage);
         }
@@ -167,7 +166,7 @@ pub fn test_daemon終了_subprocess() {
         .unwrap();
     let error = runtime.block_on(async {
         let directory = std::path::PathBuf::from(std::env::var_os("RELEASH_SHUTDOWN_DATA_DIR").unwrap());
-        let server = releash_lib::test_support::integration::transport::test_binding(directory).unwrap()
+        let server = releashd::test_support::integration::transport::test_binding(directory).unwrap()
             .start(axum::Router::new(), &tokio::runtime::Handle::current()).unwrap();
         server.publish_discovery().unwrap();
         if scenario == "command:admission" || scenario.starts_with("terminal:block:") {
@@ -179,41 +178,41 @@ pub fn test_daemon終了_subprocess() {
                 _ => unreachable!(),
             };
             let fixture = crate::adaptor_gateway_workflow_workflow_host_test_helpers::Fixture::new(0);
-            let mut pty = releash_lib::test_support::integration::terminal::FakePtyGateway::new();
-            let owner = releash_lib::test_support::integration::terminal::TerminalSurfaceOwner::session(
-                releash_lib::test_support::integration::workspace::WorkspaceIdentity::new("/repo"), "session",
+            let mut pty = releashd::test_support::integration::terminal::FakePtyGateway::new();
+            let owner = releashd::test_support::integration::terminal::TerminalSurfaceOwner::session(
+                releashd::test_support::integration::workspace::WorkspaceIdentity::new("/repo"), "session",
             ).unwrap();
             pty.shutdown_surfaces.push(
-                releash_lib::test_support::integration::terminal::TerminalSurface::with_checkpoint(
+                releashd::test_support::integration::terminal::TerminalSurface::with_checkpoint(
                     1,
                     owner,
                     None,
-                    releash_lib::test_support::integration::terminal::TerminalSurfaceCheckpoint::empty(80, 24),
+                    releashd::test_support::integration::terminal::TerminalSurfaceCheckpoint::empty(80, 24),
                 ),
             );
             let (started, ready) = tokio::sync::oneshot::channel();
             let (_release, receiver) = std::sync::mpsc::channel();
             *pty.shutdown_gate.lock() = Some((blocked, started, receiver));
-            let hub = Arc::new(releash_lib::test_support::integration::platform::TerminalSurfaceEventHub::new());
-            let terminal = Arc::new(releash_lib::test_support::integration::terminal::TerminalSurfaceApplication::new(std::sync::Arc::new(releash_lib::test_support::integration::telemetry::TelemetryGateway),
+            let hub = Arc::new(releashd::test_support::integration::platform::TerminalSurfaceEventHub::new());
+            let terminal = Arc::new(releashd::test_support::integration::terminal::TerminalSurfaceApplication::new(std::sync::Arc::new(releashd::test_support::integration::telemetry::TelemetryGateway),
                 Arc::new(pty),
-                Arc::new(releash_lib::test_support::integration::terminal::TerminalSurfaceEventSourceGateway::new(hub.event_sender())),
+                Arc::new(releashd::test_support::integration::terminal::TerminalSurfaceEventSourceGateway::new(hub.event_sender())),
                 hub,
             ));
-            let shutdown = releash_lib::test_support::integration::platform::DaemonShutdownGateway {
-                workflow: Arc::new(releash_lib::test_support::integration::workflow::WorkflowRuntimeUsecase::new(Arc::new(
-                    releash_lib::test_support::integration::workflow::WorkflowRuntimeCommandGateway::new_with_driver(
+            let shutdown = releashd::test_support::integration::platform::DaemonShutdownGateway {
+                workflow: Arc::new(releashd::test_support::integration::workflow::WorkflowRuntimeUsecase::new(Arc::new(
+                    releashd::test_support::integration::workflow::WorkflowRuntimeCommandGateway::new_with_driver(
                         fixture.app.clone(), Arc::new(fixture.host.clone()),
                     ),
-                ), Arc::new(releash_lib::test_support::integration::workflow::ExecutionTreeArchiveFactRepository::from_backend(releash_lib::test_support::integration::workflow::FactLogReadBackend::Live(fixture.app.store.clone().unwrap()))))),
+                ), Arc::new(releashd::test_support::integration::workflow::ExecutionTreeArchiveFactRepository::from_backend(releashd::test_support::integration::workflow::FactLogReadBackend::Live(fixture.app.store.clone().unwrap()))))),
                 terminal,
                 server: server.clone(),
                 stop_observer: Arc::new(|| {}),
                 telemetry: parking_lot::Mutex::new(None),
             };
             let repository = fixture.daemon_repository();
-            let daemon = releash_lib::test_support::integration::daemon::DaemonUsecase::test_with_repository(repository.clone());
-            daemon.stop(releash_lib::test_support::integration::daemon::StopRequest::Exit { code: 23 }).await;
+            let daemon = releashd::test_support::integration::daemon::DaemonUsecase::test_with_repository(repository.clone());
+            daemon.stop(releashd::test_support::integration::daemon::StopRequest::Exit { code: 23 }).await;
             let _admission = if scenario == "command:admission" {
                 Some(repository.admission().await)
             } else { None };
@@ -227,7 +226,7 @@ pub fn test_daemon終了_subprocess() {
             }); }
             Daemon::test_new(Arc::new(shutdown), server, exit, daemon).wait().await
         } else {
-            Daemon::test_new(Arc::new(shutdown), server, exit, releash_lib::test_support::integration::daemon::DaemonUsecase::test_with_repository(releash_lib::test_support::integration::daemon::serving())).wait().await
+            Daemon::test_new(Arc::new(shutdown), server, exit, releashd::test_support::integration::daemon::DaemonUsecase::test_with_repository(releashd::test_support::integration::daemon::serving())).wait().await
         }
     }).unwrap_err();
     panic!("daemon wait returned: {error}");
@@ -238,8 +237,8 @@ pub async fn test_daemon起動のarchive移行結線_未終了対象をabortし�
 {
     use crate::adaptor_gateway_workflow_workflow_host_test_helpers::archive_fixture;
     use crate::adaptor_gateway_workflow_workflow_host_test_helpers::archive_workflow;
-    use releash_lib::test_support::integration::workflow::ExecutionStatus;
-    use releash_lib::test_support::integration::workflow::ExecutionTreeArchiveRepository;
+    use releashd::test_support::integration::workflow::ExecutionStatus;
+    use releashd::test_support::integration::workflow::ExecutionTreeArchiveRepository;
     // Given
     let fixture = archive_fixture();
     let id = archive_workflow(&fixture).await;
@@ -276,9 +275,9 @@ pub async fn test_daemon起動のarchive移行結線_未終了対象をabortし�
 #[tokio::test]
 pub async fn test_開始計測_組み立て失敗前に起点を記録する() {
     // Given
-    let _guard = releash_lib::test_support::integration::telemetry::lock_test_telemetry();
-    releash_lib::test_support::integration::telemetry::reset_test_metrics();
-    releash_lib::test_support::integration::telemetry::set_performance_configured(true);
+    let _guard = releashd::test_support::integration::telemetry::lock_test_telemetry();
+    releashd::test_support::integration::telemetry::reset_test_metrics();
+    releashd::test_support::integration::telemetry::set_performance_configured(true);
     let directory = tempfile::tempdir().unwrap();
     let invalid_data_dir = directory.path().join("file");
     std::fs::write(&invalid_data_dir, "not a directory").unwrap();
@@ -290,19 +289,19 @@ pub async fn test_開始計測_組み立て失敗前に起点を記録する() {
         Ok(std::ffi::OsString::new()),
     )
     .await;
-    releash_lib::test_support::integration::telemetry::record_first_repo_snapshot_ready();
-    releash_lib::test_support::integration::telemetry::record_first_repo_snapshot_ready();
+    releashd::test_support::integration::telemetry::record_first_repo_snapshot_ready();
+    releashd::test_support::integration::telemetry::record_first_repo_snapshot_ready();
 
     // Then
     assert!(result.is_err());
-    let records = releash_lib::test_support::integration::telemetry::test_metric_records();
+    let records = releashd::test_support::integration::telemetry::test_metric_records();
     let startup: Vec<_> = records
         .iter()
         .filter(|record| record.name == "releash.startup.duration_ms")
         .collect();
     assert_eq!(startup.len(), 1);
     assert!(startup[0].value >= 0.0);
-    releash_lib::test_support::integration::telemetry::reset_test_metrics();
+    releashd::test_support::integration::telemetry::reset_test_metrics();
 }
 
 #[tokio::test(start_paused = true)]
@@ -315,16 +314,15 @@ pub async fn test_終了処理_どの段階が停止しても全体で15秒以�
             ..Default::default()
         };
         let directory = tempfile::tempdir().unwrap();
-        let server = releash_lib::test_support::integration::transport::test_binding(
-            directory.path().into(),
-        )
-        .unwrap()
-        .start(axum::Router::new(), &tokio::runtime::Handle::current())
-        .unwrap();
+        let server =
+            releashd::test_support::integration::transport::test_binding(directory.path().into())
+                .unwrap()
+                .start(axum::Router::new(), &tokio::runtime::Handle::current())
+                .unwrap();
         server.publish_discovery().unwrap();
         let started = tokio::time::Instant::now();
         // When
-        releash_lib::test_support::integration::daemon::shutdown_with_deadline(&gateway, &server)
+        releashd::test_support::integration::daemon::shutdown_with_deadline(&gateway, &server)
             .await;
         // Then
         assert_eq!(started.elapsed(), std::time::Duration::from_secs(15));
@@ -340,7 +338,7 @@ pub async fn test_終了処理_期限切れで別サーバの発見ファイル�
     // Given
     let directory = tempfile::tempdir().unwrap();
     let start = || {
-        releash_lib::test_support::integration::transport::test_binding(directory.path().into())
+        releashd::test_support::integration::transport::test_binding(directory.path().into())
             .unwrap()
             .start(axum::Router::new(), &tokio::runtime::Handle::current())
             .unwrap()

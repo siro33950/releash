@@ -1,7 +1,7 @@
-use releash_lib::test_support::integration::platform::NativeTerminalCheckpoint;
-use releash_lib::test_support::integration::platform::NativeTerminalCheckpointRecord;
-use releash_lib::test_support::integration::platform::NativeTerminalEmulator;
-use releash_lib::test_support::integration::platform::TerminalCheckpointFileStore;
+use releashd::test_support::integration::platform::NativeTerminalCheckpoint;
+use releashd::test_support::integration::platform::NativeTerminalCheckpointRecord;
+use releashd::test_support::integration::platform::NativeTerminalEmulator;
+use releashd::test_support::integration::platform::TerminalCheckpointFileStore;
 use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
 

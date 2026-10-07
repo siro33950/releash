@@ -17,7 +17,7 @@ pub(crate) mod client_tests;
 #[serde(rename_all = "camelCase")]
 struct ClientEndpoint {
     #[serde(flatten)]
-    endpoint: releash_lib::desktop_api::ClientConnectionDto,
+    endpoint: releashd::desktop_api::ClientConnectionDto,
     launch_id: String,
 }
 

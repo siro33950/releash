@@ -1,4 +1,4 @@
-use releash_lib::test_support::integration::code::resolve_merge_base_commit;
+use releashd::test_support::integration::code::resolve_merge_base_commit;
 
 use crate::adaptor_gateway_repository_test_helpers::assert_stops_at_each_checkpoint;
 use crate::test_support_git::create_initial_commit;

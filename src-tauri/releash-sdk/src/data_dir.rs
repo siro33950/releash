@@ -36,6 +36,17 @@ pub fn default_data_dir_for_profile(profile: BuildProfile) -> Option<PathBuf> {
     dirs::data_dir().map(|base| base.join(default_data_dir_name_for_profile(profile)))
 }
 
+pub fn resolve_data_dir(explicit: Option<PathBuf>) -> Result<PathBuf, String> {
+    explicit
+        .or_else(|| {
+            std::env::var_os("RELEASH_DATA_DIR")
+                .filter(|value| !value.is_empty())
+                .map(PathBuf::from)
+        })
+        .or_else(|| default_data_dir_for_profile(BuildProfile::current()))
+        .ok_or_else(|| "OS data directory is unavailable".to_string())
+}
+
 #[cfg(test)]
 #[path = "data_dir_test.rs"]
 mod data_dir_tests;

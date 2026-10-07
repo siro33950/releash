@@ -13,7 +13,7 @@ impl DesktopHost for Host {
     fn has_failure_window(&self) -> bool {
         self.failure_window.load(Ordering::SeqCst)
     }
-    fn ready(&self, _: releash_lib::desktop_api::DesktopSettingsDto, first: bool, show: bool) {
+    fn ready(&self, _: releashd::desktop_api::DesktopSettingsDto, first: bool, show: bool) {
         self.failure_window.store(false, Ordering::SeqCst);
         self.events.lock().push(format!("ready:{first}:{show}"));
     }

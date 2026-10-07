@@ -2,8 +2,8 @@ use super::*;
 
 #[test]
 fn test_desktop観測_初回windowとappの起動時間を設定に従って記録する() {
-    use releash_lib::desktop_api::set_startup_origin;
-    use releash_lib::desktop_api::test_support as telemetry;
+    use releashd::desktop_api::set_startup_origin;
+    use releashd::desktop_api::test_support as telemetry;
     // Given
     let _guard = telemetry::lock_test_telemetry();
     telemetry::reset_test_metrics();
@@ -32,11 +32,11 @@ fn test_desktop観測_初回windowとappの起動時間を設定に従って記�
 use crate::infrastructure::platform::window_lifecycle::WindowPreferencesState;
 #[test]
 fn test_desktop設定_daemonの設定だけを保持して閉じる操作へ渡す() {
-    use releash_lib::desktop_api::DesktopSettingsDto;
+    use releashd::desktop_api::DesktopSettingsDto;
     use tauri::Manager;
     // Given
-    let _telemetry = releash_lib::desktop_api::test_support::lock_test_telemetry();
-    let _crash = releash_lib::desktop_api::test_support::TEST_LOCK
+    let _telemetry = releashd::desktop_api::test_support::lock_test_telemetry();
+    let _crash = releashd::desktop_api::test_support::TEST_LOCK
         .lock()
         .unwrap();
     let app = tauri::test::mock_builder()
@@ -63,10 +63,10 @@ fn test_desktop設定_daemonの設定だけを保持して閉じる操作へ渡�
 
 #[test]
 fn test_desktop設定_クラッシュ送信の無効化と再有効化を再起動なしで反映する() {
-    use releash_lib::desktop_api::test_support::{install_test_exporter, TEST_LOCK};
-    use releash_lib::desktop_api::DesktopSettingsDto;
+    use releashd::desktop_api::test_support::{install_test_exporter, TEST_LOCK};
+    use releashd::desktop_api::DesktopSettingsDto;
     // Given
-    let _telemetry = releash_lib::desktop_api::test_support::lock_test_telemetry();
+    let _telemetry = releashd::desktop_api::test_support::lock_test_telemetry();
     let _guard = TEST_LOCK.lock().unwrap();
     let (provider, exporter) = install_test_exporter(true, true);
     let app = tauri::test::mock_builder()
@@ -89,5 +89,5 @@ fn test_desktop設定_クラッシュ送信の無効化と再有効化を再起�
     assert!(std::panic::catch_unwind(|| panic!("enabled desktop panic")).is_err());
     provider.force_flush().unwrap();
     assert_eq!(exporter.get_emitted_logs().unwrap().len(), 1);
-    releash_lib::desktop_api::test_support::reset_for_tests();
+    releashd::desktop_api::test_support::reset_for_tests();
 }

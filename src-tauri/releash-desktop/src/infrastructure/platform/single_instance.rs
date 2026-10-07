@@ -16,12 +16,12 @@ pub fn acquire(
     match lock.try_lock_exclusive() {
         Ok(()) => {}
         Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-            let context = releash_lib::desktop_api::with_timeout(std::time::Duration::from_secs(1));
+            let context = releashd::desktop_api::with_timeout(std::time::Duration::from_secs(1));
             loop {
                 if UnixStream::connect(&socket).is_ok() {
                     return Ok(None);
                 }
-                if releash_lib::desktop_api::sleep(
+                if releashd::desktop_api::sleep(
                     &context,
                     crate::common::retry::DESKTOP_POLL.delay(1, 1.0),
                 )

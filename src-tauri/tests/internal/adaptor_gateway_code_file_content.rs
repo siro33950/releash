@@ -1,7 +1,7 @@
-use releash_lib::test_support::integration::code::binary_by_attributes;
-use releash_lib::test_support::integration::code::review_blob_at_branch_base;
-use releash_lib::test_support::integration::code::review_blob_at_ref;
-use releash_lib::test_support::integration::code::review_blob_staged;
+use releashd::test_support::integration::code::binary_by_attributes;
+use releashd::test_support::integration::code::review_blob_at_branch_base;
+use releashd::test_support::integration::code::review_blob_at_ref;
+use releashd::test_support::integration::code::review_blob_staged;
 
 use crate::adaptor_gateway_repository_test_helpers::assert_stops_at_each_checkpoint;
 use crate::test_support_git::create_initial_commit;
@@ -29,10 +29,10 @@ pub(crate) mod file_content_gateway_tests {
 
     use crate::test_support_git::*;
     use git2::Repository;
-    use releash_lib::test_support::integration::code::FileContentGateway;
-    use releash_lib::test_support::integration::repository::FileContentRepository;
-    use releash_lib::test_support::integration::repository::ReviewSideBytes;
-    use releash_lib::test_support::integration::repository::ReviewSideMetadata;
+    use releashd::test_support::integration::code::FileContentGateway;
+    use releashd::test_support::integration::repository::FileContentRepository;
+    use releashd::test_support::integration::repository::ReviewSideBytes;
+    use releashd::test_support::integration::repository::ReviewSideMetadata;
 
     /// macOS では TempDir::path() が /var/... を返すが workdir() は /private/var/... を返す。
     /// strip_prefix の不一致を防ぐため workdir() ベースでファイルパスを構築する。

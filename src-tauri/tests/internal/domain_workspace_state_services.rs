@@ -1,10 +1,10 @@
 pub(crate) mod tests {
 
-    use releash_lib::test_support::integration::platform::filter_missing_files;
-    use releash_lib::test_support::integration::platform::WorkspaceLayoutState;
-    use releash_lib::test_support::integration::platform::WorkspaceState;
-    use releash_lib::test_support::integration::platform::WorkspaceTabEntry;
-    use releash_lib::test_support::integration::platform::WorkspaceTabsState;
+    use releashd::test_support::integration::platform::filter_missing_files;
+    use releashd::test_support::integration::platform::WorkspaceLayoutState;
+    use releashd::test_support::integration::platform::WorkspaceState;
+    use releashd::test_support::integration::platform::WorkspaceTabEntry;
+    use releashd::test_support::integration::platform::WorkspaceTabsState;
 
     fn make_state() -> WorkspaceState {
         WorkspaceState {

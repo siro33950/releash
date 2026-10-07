@@ -1,44 +1,44 @@
-use releash_lib::test_support::integration::persistence::LocalEventReadStore;
-use releash_lib::test_support::integration::persistence::LocalEventStore;
-use releash_lib::test_support::integration::persistence::NewNodeEventRow;
-use releash_lib::test_support::integration::platform::LocalEventQueryError;
-use releash_lib::test_support::integration::workflow::append_fact_batch_for_seed;
-use releash_lib::test_support::integration::workflow::append_facts_for_events;
-use releash_lib::test_support::integration::workflow::append_pending_rows;
-use releash_lib::test_support::integration::workflow::append_single_fact;
-use releash_lib::test_support::integration::workflow::fold_tree_from;
-use releash_lib::test_support::integration::workflow::pending_single_fact;
-use releash_lib::test_support::integration::workflow::read_tree_records;
-use releash_lib::test_support::integration::workflow::read_tree_records_from;
-use releash_lib::test_support::integration::workflow::reconcile_tree_pass;
-use releash_lib::test_support::integration::workflow::resolve_unknown_append;
-use releash_lib::test_support::integration::workflow::ArtifactProducedFact;
-use releash_lib::test_support::integration::workflow::ExecutionTreeLaunch;
-use releash_lib::test_support::integration::workflow::FactLogReadBackend;
-use releash_lib::test_support::integration::workflow::FactReadError;
-use releash_lib::test_support::integration::workflow::NodeFact;
-use releash_lib::test_support::integration::workflow::NodeFactMeta;
-use releash_lib::test_support::integration::workflow::NodeKindName;
-use releash_lib::test_support::integration::workflow::PendingFactRow;
-use releash_lib::test_support::integration::workflow::ProcessExitedFact;
-use releash_lib::test_support::integration::workflow::SessionAttachedFact;
-use releash_lib::test_support::integration::workflow::StartedFact;
-use releash_lib::test_support::integration::workflow::StopReceivedFact;
-use releash_lib::test_support::integration::workflow::SubmitReceivedFact;
-use releash_lib::test_support::integration::workflow::TreeRootFact;
-use releash_lib::test_support::integration::workflow::WorkflowEvent;
+use releashd::test_support::integration::persistence::LocalEventReadStore;
+use releashd::test_support::integration::persistence::LocalEventStore;
+use releashd::test_support::integration::persistence::NewNodeEventRow;
+use releashd::test_support::integration::platform::LocalEventQueryError;
+use releashd::test_support::integration::workflow::append_fact_batch_for_seed;
+use releashd::test_support::integration::workflow::append_facts_for_events;
+use releashd::test_support::integration::workflow::append_pending_rows;
+use releashd::test_support::integration::workflow::append_single_fact;
+use releashd::test_support::integration::workflow::fold_tree_from;
+use releashd::test_support::integration::workflow::pending_single_fact;
+use releashd::test_support::integration::workflow::read_tree_records;
+use releashd::test_support::integration::workflow::read_tree_records_from;
+use releashd::test_support::integration::workflow::reconcile_tree_pass;
+use releashd::test_support::integration::workflow::resolve_unknown_append;
+use releashd::test_support::integration::workflow::ArtifactProducedFact;
+use releashd::test_support::integration::workflow::ExecutionTreeLaunch;
+use releashd::test_support::integration::workflow::FactLogReadBackend;
+use releashd::test_support::integration::workflow::FactReadError;
+use releashd::test_support::integration::workflow::NodeFact;
+use releashd::test_support::integration::workflow::NodeFactMeta;
+use releashd::test_support::integration::workflow::NodeKindName;
+use releashd::test_support::integration::workflow::PendingFactRow;
+use releashd::test_support::integration::workflow::ProcessExitedFact;
+use releashd::test_support::integration::workflow::SessionAttachedFact;
+use releashd::test_support::integration::workflow::StartedFact;
+use releashd::test_support::integration::workflow::StopReceivedFact;
+use releashd::test_support::integration::workflow::SubmitReceivedFact;
+use releashd::test_support::integration::workflow::TreeRootFact;
+use releashd::test_support::integration::workflow::WorkflowEvent;
 use std::sync::Arc;
 
-use releash_lib::test_support::integration::persistence::LocalEventStoreConfig;
-use releash_lib::test_support::integration::workflow::fold_execution_tree;
-use releash_lib::test_support::integration::workflow::ExecutionOrigin;
-use releash_lib::test_support::integration::workflow::ExecutionParentRef;
-use releash_lib::test_support::integration::workflow::NodeDefinition;
-use releash_lib::test_support::integration::workflow::RuntimeExecutionState;
-use releash_lib::test_support::integration::workflow::SessionExecutionTreeRootFacts;
-use releash_lib::test_support::integration::workflow::WorkflowDefinition;
+use releashd::test_support::integration::persistence::LocalEventStoreConfig;
+use releashd::test_support::integration::workflow::fold_execution_tree;
+use releashd::test_support::integration::workflow::ExecutionOrigin;
+use releashd::test_support::integration::workflow::ExecutionParentRef;
+use releashd::test_support::integration::workflow::NodeDefinition;
+use releashd::test_support::integration::workflow::RuntimeExecutionState;
+use releashd::test_support::integration::workflow::SessionExecutionTreeRootFacts;
+use releashd::test_support::integration::workflow::WorkflowDefinition;
 
-use releash_lib::test_support::integration::workflow::{node_started, started_event, TREE};
+use releashd::test_support::integration::workflow::{node_started, started_event, TREE};
 
 fn open_fd_count() -> usize {
     std::fs::read_dir("/dev/fd").unwrap().count()
@@ -150,9 +150,7 @@ pub(crate) mod fd_invariance_tests {
         let root = tempfile::TempDir::new().unwrap();
         let store = LocalEventStore::open(LocalEventStoreConfig::production(
             root.path().to_path_buf(),
-            std::sync::Arc::new(
-                releash_lib::test_support::integration::platform::RetryLimiter::new(),
-            ),
+            std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
         ))
         .unwrap();
         let stall = store.fault_injector().arm_node_event_append_stall();
@@ -194,9 +192,7 @@ pub(crate) mod fd_invariance_tests {
         let root = tempfile::TempDir::new().unwrap();
         let store = LocalEventStore::open(LocalEventStoreConfig::production(
             root.path().to_path_buf(),
-            std::sync::Arc::new(
-                releash_lib::test_support::integration::platform::RetryLimiter::new(),
-            ),
+            std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
         ))
         .unwrap();
         let stall = store.fault_injector().arm_node_event_append_stall();
@@ -256,9 +252,7 @@ pub(crate) mod fd_invariance_tests {
         let root = tempfile::TempDir::new().unwrap();
         let store = LocalEventStore::open(LocalEventStoreConfig::production(
             root.path().to_path_buf(),
-            std::sync::Arc::new(
-                releash_lib::test_support::integration::platform::RetryLimiter::new(),
-            ),
+            std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
         ))
         .unwrap();
         let warm_up_meta = test_fact_meta("fd-warm-up-tree", "fd-warm-up-node");
@@ -293,16 +287,16 @@ pub(crate) mod fd_invariance_tests {
 pub(crate) mod append_contract_tests {
 
     use super::*;
-    use releash_lib::test_support::integration::persistence::NORMAL_LANE_MAX_BYTES;
+    use releashd::test_support::integration::persistence::NORMAL_LANE_MAX_BYTES;
 
     pub(crate) async fn read_raw_rows(
         store: &Arc<LocalEventStore>,
         tree_id: &str,
-    ) -> Vec<releash_lib::test_support::integration::persistence::NodeEventRow> {
+    ) -> Vec<releashd::test_support::integration::persistence::NodeEventRow> {
         let tree_id = tree_id.to_string();
         store
             .submit_query(move |connection| {
-                releash_lib::test_support::integration::persistence::read_tree(connection, &tree_id)
+                releashd::test_support::integration::persistence::read_tree(connection, &tree_id)
                     .map_err(|_| LocalEventQueryError::InvalidRequest)
             })
             .await
@@ -315,9 +309,7 @@ pub(crate) mod append_contract_tests {
         let root = tempfile::TempDir::new().unwrap();
         let store = LocalEventStore::open(LocalEventStoreConfig::production(
             root.path().to_path_buf(),
-            std::sync::Arc::new(
-                releash_lib::test_support::integration::platform::RetryLimiter::new(),
-            ),
+            std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
         ))
         .unwrap();
         let meta = test_fact_meta("sync-context-tree", "sync-context-node");
@@ -340,9 +332,7 @@ pub(crate) mod append_contract_tests {
         let root = tempfile::TempDir::new().unwrap();
         let store = LocalEventStore::open(LocalEventStoreConfig::production(
             root.path().to_path_buf(),
-            std::sync::Arc::new(
-                releash_lib::test_support::integration::platform::RetryLimiter::new(),
-            ),
+            std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
         ))
         .unwrap();
         let meta = test_fact_meta("async-context-tree", "async-context-node");
@@ -365,9 +355,7 @@ pub(crate) mod append_contract_tests {
         let root = tempfile::TempDir::new().unwrap();
         let store = LocalEventStore::open(LocalEventStoreConfig::production(
             root.path().to_path_buf(),
-            std::sync::Arc::new(
-                releash_lib::test_support::integration::platform::RetryLimiter::new(),
-            ),
+            std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
         ))
         .unwrap();
         let meta = NodeFactMeta {
@@ -423,9 +411,7 @@ pub(crate) mod append_contract_tests {
         let root = tempfile::TempDir::new().unwrap();
         let store = LocalEventStore::open(LocalEventStoreConfig::production(
             root.path().to_path_buf(),
-            std::sync::Arc::new(
-                releash_lib::test_support::integration::platform::RetryLimiter::new(),
-            ),
+            std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
         ))
         .unwrap();
         store.close_write_queue_for_tests();
@@ -444,9 +430,9 @@ pub(crate) mod append_contract_tests {
         // Then: 失敗が握りつぶされず呼び出し元へ返り、行は記録されない
         assert_eq!(
             error,
-            releash_lib::test_support::integration::workflow::WorkflowError::Store(
-                releash_lib::test_support::integration::platform::StorageFailure::from(
-                    releash_lib::test_support::integration::platform::CommitBatchError::AppendOutcomeUnknown
+            releashd::test_support::integration::workflow::WorkflowError::Store(
+                releashd::test_support::integration::platform::StorageFailure::from(
+                    releashd::test_support::integration::platform::CommitBatchError::AppendOutcomeUnknown
                 )
                 .with_message("node fact append failed: node event write outcome is unknown")
             )
@@ -460,9 +446,7 @@ pub(crate) mod append_contract_tests {
         let root = tempfile::TempDir::new().unwrap();
         let store = LocalEventStore::open(LocalEventStoreConfig::production(
             root.path().to_path_buf(),
-            std::sync::Arc::new(
-                releash_lib::test_support::integration::platform::RetryLimiter::new(),
-            ),
+            std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
         ))
         .unwrap();
         let before_meta = test_fact_meta("partial-tree", "before-failure");
@@ -492,9 +476,9 @@ pub(crate) mod append_contract_tests {
         // Then: 容量拒否が返り、成功済みの1行だけが durable のまま残る
         assert_eq!(
             error,
-            releash_lib::test_support::integration::workflow::WorkflowError::Store(
-                releash_lib::test_support::integration::platform::StorageFailure::from(
-                    releash_lib::test_support::integration::platform::CommitBatchError::CapacityExceeded
+            releashd::test_support::integration::workflow::WorkflowError::Store(
+                releashd::test_support::integration::platform::StorageFailure::from(
+                    releashd::test_support::integration::platform::CommitBatchError::CapacityExceeded
                 )
                 .with_message("node fact append failed: batch capacity exceeded")
             )
@@ -508,24 +492,22 @@ pub(crate) mod append_contract_tests {
 
 pub(crate) mod reconciliation_tests {
     use super::*;
-    use releash_lib::test_support::integration::sessions::AgentSession;
-    use releash_lib::test_support::integration::sessions::AgentSessionRepository;
-    use releash_lib::test_support::integration::sessions::AgentSessionTreeLocation;
-    use releash_lib::test_support::integration::sessions::LocalAgentSessionRepository;
-    use releash_lib::test_support::integration::workflow::NodeExecutionStatus as RuntimeNodeExecutionStatus;
-    use releash_lib::test_support::integration::workflow::RuntimeExecutionState;
-    use releash_lib::test_support::integration::workspace::SqliteWorkspaceTreeRepository;
-    use releash_lib::test_support::integration::workspace::WorkspaceIdentity;
-    use releash_lib::test_support::integration::workspace::WorkspaceNodeStatusClassification;
-    use releash_lib::test_support::integration::workspace::WorkspaceTreeRepository;
+    use releashd::test_support::integration::sessions::AgentSession;
+    use releashd::test_support::integration::sessions::AgentSessionRepository;
+    use releashd::test_support::integration::sessions::AgentSessionTreeLocation;
+    use releashd::test_support::integration::sessions::LocalAgentSessionRepository;
+    use releashd::test_support::integration::workflow::NodeExecutionStatus as RuntimeNodeExecutionStatus;
+    use releashd::test_support::integration::workflow::RuntimeExecutionState;
+    use releashd::test_support::integration::workspace::SqliteWorkspaceTreeRepository;
+    use releashd::test_support::integration::workspace::WorkspaceIdentity;
+    use releashd::test_support::integration::workspace::WorkspaceNodeStatusClassification;
+    use releashd::test_support::integration::workspace::WorkspaceTreeRepository;
 
     fn open_store() -> (tempfile::TempDir, std::sync::Arc<LocalEventStore>) {
         let root = tempfile::TempDir::new().unwrap();
         let store = LocalEventStore::open(LocalEventStoreConfig::production(
             root.path().to_path_buf(),
-            std::sync::Arc::new(
-                releash_lib::test_support::integration::platform::RetryLimiter::new(),
-            ),
+            std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
         ))
         .unwrap();
         (root, store)
@@ -563,7 +545,7 @@ pub(crate) mod reconciliation_tests {
                     reason: "prepare failed".into(),
                     retry_count: None,
                     failure_kind:
-                        releash_lib::test_support::integration::workflow::NodeExecutionFailureKind::InfrastructureCrash,
+                        releashd::test_support::integration::workflow::NodeExecutionFailureKind::InfrastructureCrash,
                     timestamp: 2.0,
                 },
             ],
@@ -626,8 +608,8 @@ pub(crate) mod reconciliation_tests {
 
     #[tokio::test]
     pub async fn test_delegate復旧_提出だけ保存された木のchild開始を追記し再導出しない() {
-        use releash_lib::test_support::integration::workflow::ExecutionAdvanceDecision;
-        use releash_lib::test_support::integration::workflow::PendingAdvance;
+        use releashd::test_support::integration::workflow::ExecutionAdvanceDecision;
+        use releashd::test_support::integration::workflow::PendingAdvance;
         // Given
         let (_directory, store) = open_store();
         let definition: WorkflowDefinition = serde_saphyr::from_str("name: delegate\ndescription: test\nnodes:\n  main: {session: {provider: codex}, artifact: result, completion: {delegate: {child: verify, when: child.ok, max_iterations: 2}}}\n  verify: {command: check}\nschemas:\n  result: {type: object, properties: {}, required: []}").unwrap();
@@ -726,7 +708,7 @@ pub(crate) mod reconciliation_tests {
                     session_id,
                     WorkspaceIdentity::new("/repo"),
                     "/repo",
-                    releash_lib::test_support::integration::providers::ProviderKind::Codex,
+                    releashd::test_support::integration::providers::ProviderKind::Codex,
                     AgentSessionTreeLocation::session_tree_root(session_id).unwrap(),
                 )
                 .unwrap(),
@@ -766,7 +748,7 @@ pub(crate) mod reconciliation_tests {
                 .node_execution(session_id)
                 .unwrap()
                 .completion_signals,
-            releash_lib::test_support::integration::workflow::NodeCompletionSignalState::Pending
+            releashd::test_support::integration::workflow::NodeCompletionSignalState::Pending
         );
         assert!(!read_tree_records(&store, session_id)
             .await
@@ -833,7 +815,7 @@ pub(crate) mod reconciliation_tests {
         assert_eq!(records.len(), before + 1);
         let last = records.last().unwrap();
         assert_eq!(
-            releash_lib::test_support::integration::workflow::event_type(&last.fact),
+            releashd::test_support::integration::workflow::event_type(&last.fact),
             "started"
         );
         assert_eq!(last.meta.node_name, "run");
@@ -847,11 +829,11 @@ pub(crate) mod reconciliation_tests {
             .unwrap();
         assert_eq!(second.starts, outcome.starts);
         let started_rows =
-            |records: &[releash_lib::test_support::integration::workflow::NodeFactRecord]| {
+            |records: &[releashd::test_support::integration::workflow::NodeFactRecord]| {
                 records
                     .iter()
                     .filter(|record| {
-                        releash_lib::test_support::integration::workflow::event_type(&record.fact)
+                        releashd::test_support::integration::workflow::event_type(&record.fact)
                             == "started"
                     })
                     .count()
@@ -880,7 +862,7 @@ pub(crate) mod reconciliation_tests {
         assert!(third.starts.is_empty());
         let after_third = read_tree_records(&store, TREE).await.unwrap();
         assert_eq!(
-            releash_lib::test_support::integration::workflow::event_type(
+            releashd::test_support::integration::workflow::event_type(
                 &after_third.last().unwrap().fact
             ),
             "command_spawned"
@@ -929,8 +911,7 @@ pub(crate) mod reconciliation_tests {
         let started_count = before_second
             .iter()
             .filter(|record| {
-                releash_lib::test_support::integration::workflow::event_type(&record.fact)
-                    == "started"
+                releashd::test_support::integration::workflow::event_type(&record.fact) == "started"
             })
             .count();
         let mut new_id = test_id_source();
@@ -945,7 +926,7 @@ pub(crate) mod reconciliation_tests {
             after_second
                 .iter()
                 .filter(
-                    |record| releash_lib::test_support::integration::workflow::event_type(
+                    |record| releashd::test_support::integration::workflow::event_type(
                         &record.fact
                     ) == "started"
                 )
@@ -972,7 +953,7 @@ pub(crate) mod reconciliation_tests {
         assert!(third.starts.is_empty());
         let after_third = read_tree_records(&store, TREE).await.unwrap();
         assert_eq!(
-            releash_lib::test_support::integration::workflow::event_type(
+            releashd::test_support::integration::workflow::event_type(
                 &after_third.last().unwrap().fact
             ),
             "session_attached"
@@ -1024,7 +1005,7 @@ pub(crate) mod reconciliation_tests {
         assert!(outcome.starts.is_empty());
         let records = read_tree_records(&store, TREE).await.unwrap();
         assert_eq!(
-            releash_lib::test_support::integration::workflow::event_type(
+            releashd::test_support::integration::workflow::event_type(
                 &records.last().unwrap().fact
             ),
             "session_attached"
@@ -1056,7 +1037,7 @@ pub(crate) mod reconciliation_tests {
 pub(crate) mod round_trip_tests {
 
     use super::*;
-    use releash_lib::test_support::integration::workflow::NodeExecutionStatus as RuntimeNodeExecutionStatus;
+    use releashd::test_support::integration::workflow::NodeExecutionStatus as RuntimeNodeExecutionStatus;
 
     #[tokio::test]
     pub async fn test_session起動由来seedはrootとattachmentを同じdurable_batchで記録する() {
@@ -1064,9 +1045,7 @@ pub(crate) mod round_trip_tests {
         let root = tempfile::TempDir::new().unwrap();
         let store = LocalEventStore::open(LocalEventStoreConfig::production(
             root.path().to_path_buf(),
-            std::sync::Arc::new(
-                releash_lib::test_support::integration::platform::RetryLimiter::new(),
-            ),
+            std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
         ))
         .unwrap();
         let session_id = "agent-session-seed-atomic";
@@ -1074,7 +1053,7 @@ pub(crate) mod round_trip_tests {
             session_id,
             "workspace-1",
             "/repo/.worktrees/feature",
-            releash_lib::test_support::integration::providers::ProviderKind::Codex,
+            releashd::test_support::integration::providers::ProviderKind::Codex,
             None,
         )
         .unwrap()
@@ -1094,15 +1073,15 @@ pub(crate) mod round_trip_tests {
         let records = read_tree_records(&store, session_id).await.unwrap();
         assert_eq!(records.len(), 3);
         assert_eq!(
-            releash_lib::test_support::integration::workflow::event_type(&records[0].fact),
+            releashd::test_support::integration::workflow::event_type(&records[0].fact),
             "started"
         );
         assert_eq!(
-            releash_lib::test_support::integration::workflow::event_type(&records[1].fact),
+            releashd::test_support::integration::workflow::event_type(&records[1].fact),
             "session_attached"
         );
         assert_eq!(
-            releash_lib::test_support::integration::workflow::event_type(&records[2].fact),
+            releashd::test_support::integration::workflow::event_type(&records[2].fact),
             "standalone_session_node_completed"
         );
     }
@@ -1114,9 +1093,7 @@ pub(crate) mod round_trip_tests {
         let root = tempfile::TempDir::new().unwrap();
         let store = LocalEventStore::open(LocalEventStoreConfig::production(
             root.path().to_path_buf(),
-            std::sync::Arc::new(
-                releash_lib::test_support::integration::platform::RetryLimiter::new(),
-            ),
+            std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
         ))
         .unwrap();
 
@@ -1214,7 +1191,7 @@ pub(crate) mod round_trip_tests {
             Some(RuntimeNodeExecutionStatus::Succeeded)
         );
         assert!(tree.root.definition.is_some());
-        let NodeFact::Started(started) = releash_lib::test_support::integration::workflow::decode(
+        let NodeFact::Started(started) = releashd::test_support::integration::workflow::decode(
             "started",
             &super::append_contract_tests::read_raw_rows(&store, TREE).await[0].detail,
         )
@@ -1231,9 +1208,9 @@ pub(crate) mod round_trip_tests {
                 .and_then(|command| {
                     command
                         .env
-                        .get(&releash_lib::test_support::integration::workflow::EnvironmentVariableName::new("DOC").unwrap())
+                        .get(&releashd::test_support::integration::workflow::EnvironmentVariableName::new("DOC").unwrap())
                 })
-                .map(releash_lib::test_support::integration::workflow::InputParameterRef::as_string),
+                .map(releashd::test_support::integration::workflow::InputParameterRef::as_string),
             Some("document".to_string())
         );
         assert_eq!(
@@ -1246,7 +1223,7 @@ pub(crate) mod round_trip_tests {
         // Then: ログの event_type はすべて純粋事実の語彙
         for record in &records {
             assert!(matches!(
-                releash_lib::test_support::integration::workflow::event_type(&record.fact),
+                releashd::test_support::integration::workflow::event_type(&record.fact),
                 "started"
                     | "session_attached"
                     | "command_spawned"
@@ -1269,20 +1246,20 @@ pub(crate) mod round_trip_tests {
 
 #[tokio::test]
 pub async fn test_旧隔離事実の読取_状態導出と再起動復元からだけ除外する() {
-    use releash_lib::test_support::integration::platform::CanonicalRuntimeOwnerView;
-    use releash_lib::test_support::integration::platform::LocalEventQuery;
-    use releash_lib::test_support::integration::platform::LocalEventQueryResult;
-    use releash_lib::test_support::integration::repository::LocalEventTransactionRepository;
-    use releash_lib::test_support::integration::workflow::WorkflowExecutionProjectionRepository;
+    use releashd::test_support::integration::platform::CanonicalRuntimeOwnerView;
+    use releashd::test_support::integration::platform::LocalEventQuery;
+    use releashd::test_support::integration::platform::LocalEventQueryResult;
+    use releashd::test_support::integration::repository::LocalEventTransactionRepository;
+    use releashd::test_support::integration::workflow::WorkflowExecutionProjectionRepository;
     // Given
     let directory = tempfile::TempDir::new().unwrap();
     let config = LocalEventStoreConfig::production(
         directory.path().to_path_buf(),
-        std::sync::Arc::new(releash_lib::test_support::integration::platform::RetryLimiter::new()),
+        std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
     );
     let store = LocalEventStore::open(LocalEventStoreConfig::production(
         directory.path().to_path_buf(),
-        std::sync::Arc::new(releash_lib::test_support::integration::platform::RetryLimiter::new()),
+        std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
     ))
     .unwrap();
     append_facts_for_events(
@@ -1353,9 +1330,9 @@ pub async fn test_旧隔離事実の読取_状態導出と再起動復元から�
 
     // When
     let store = LocalEventStore::open(config).unwrap();
-    let readonly = releash_lib::test_support::integration::persistence::LocalEventReadStore::open(
+    let readonly = releashd::test_support::integration::persistence::LocalEventReadStore::open(
         directory.path(),
-        std::sync::Arc::new(releash_lib::test_support::integration::platform::RetryLimiter::new()),
+        std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
     )
     .unwrap();
     for backend in [
@@ -1370,20 +1347,19 @@ pub async fn test_旧隔離事実の読取_状態導出と再起動復元から�
         assert!(node.worktree.is_none());
         assert_eq!(tree.aggregate.state(), &RuntimeExecutionState::Running);
     }
-    use releash_lib::test_support::integration::sessions::AgentSessionRepository;
-    let session =
-        releash_lib::test_support::integration::sessions::LocalAgentSessionRepository::new(
-            store.clone(),
-        )
-        .find("legacy-session")
-        .await
-        .unwrap();
+    use releashd::test_support::integration::sessions::AgentSessionRepository;
+    let session = releashd::test_support::integration::sessions::LocalAgentSessionRepository::new(
+        store.clone(),
+    )
+    .find("legacy-session")
+    .await
+    .unwrap();
     assert!(session.is_some());
-    let status = releash_lib::test_support::integration::workflow::WorkflowExecutionProjectionLogRepository::new(store.clone())
-        .get_execution(&releash_lib::test_support::integration::workflow::ExecutionTreeId::new(TREE).unwrap()).await.unwrap().unwrap();
+    let status = releashd::test_support::integration::workflow::WorkflowExecutionProjectionLogRepository::new(store.clone())
+        .get_execution(&releashd::test_support::integration::workflow::ExecutionTreeId::new(TREE).unwrap()).await.unwrap().unwrap();
     assert_eq!(
         status.status,
-        releash_lib::test_support::integration::workflow::ExecutionStatus::Running
+        releashd::test_support::integration::workflow::ExecutionStatus::Running
     );
     let owners = store
         .query(LocalEventQuery::CanonicalRuntimeOwnerSnapshot { limit: 10 })
@@ -1403,7 +1379,7 @@ pub async fn test_旧隔離事実の読取_状態導出と再起動復元から�
     );
     let rows = FactLogReadBackend::Live(store)
         .run_indexed(|connection| {
-            releash_lib::test_support::integration::persistence::read_tree(connection, TREE)
+            releashd::test_support::integration::persistence::read_tree(connection, TREE)
                 .map_err(|_| LocalEventQueryError::InvalidRequest)
         })
         .await
@@ -1420,8 +1396,8 @@ pub(crate) mod terminal_fact_tests {
 
     use super::append_contract_tests::read_raw_rows;
     use super::*;
-    use releash_lib::test_support::integration::persistence::StoreLayout;
-    use releash_lib::test_support::integration::workflow::ExecutionStatus;
+    use releashd::test_support::integration::persistence::StoreLayout;
+    use releashd::test_support::integration::workflow::ExecutionStatus;
 
     #[tokio::test]
     pub async fn test_完了記録_終端行の保存失敗で完了信号も巻き戻り再試行で両方が残る() {
@@ -1429,9 +1405,7 @@ pub(crate) mod terminal_fact_tests {
         let dir = tempfile::tempdir().unwrap();
         let store = LocalEventStore::open(LocalEventStoreConfig::production(
             dir.path().into(),
-            std::sync::Arc::new(
-                releash_lib::test_support::integration::platform::RetryLimiter::new(),
-            ),
+            std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
         ))
         .unwrap();
         let mut started = started_event();
@@ -1477,9 +1451,7 @@ pub(crate) mod terminal_fact_tests {
         drop(store);
         let store = LocalEventStore::open(LocalEventStoreConfig::production(
             dir.path().into(),
-            std::sync::Arc::new(
-                releash_lib::test_support::integration::platform::RetryLimiter::new(),
-            ),
+            std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
         ))
         .unwrap();
 
@@ -1498,9 +1470,7 @@ pub(crate) mod terminal_fact_tests {
         drop(store);
         let store = LocalEventStore::open(LocalEventStoreConfig::production(
             dir.path().into(),
-            std::sync::Arc::new(
-                releash_lib::test_support::integration::platform::RetryLimiter::new(),
-            ),
+            std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
         ))
         .unwrap();
         let rows = read_raw_rows(&store, TREE).await;
@@ -1522,16 +1492,14 @@ pub(crate) mod terminal_fact_tests {
 
     #[tokio::test]
     pub async fn test_完了seed_完了事実を保存して再seedでも重複しない() {
-        use releash_lib::test_support::integration::workflow::seed_canonical_execution;
-        use releash_lib::test_support::integration::workflow::WorkflowExecutionSummary as WorkflowExecutionMetadata;
+        use releashd::test_support::integration::workflow::seed_canonical_execution;
+        use releashd::test_support::integration::workflow::WorkflowExecutionSummary as WorkflowExecutionMetadata;
 
         // Given
         let dir = tempfile::tempdir().unwrap();
         let store = LocalEventStore::open(LocalEventStoreConfig::production(
             dir.path().into(),
-            std::sync::Arc::new(
-                releash_lib::test_support::integration::platform::RetryLimiter::new(),
-            ),
+            std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
         ))
         .unwrap();
         let execution = WorkflowExecutionMetadata {
@@ -1579,9 +1547,7 @@ pub(crate) mod terminal_fact_tests {
         let dir = tempfile::tempdir().unwrap();
         let store = LocalEventStore::open(LocalEventStoreConfig::production(
             dir.path().into(),
-            std::sync::Arc::new(
-                releash_lib::test_support::integration::platform::RetryLimiter::new(),
-            ),
+            std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
         ))
         .unwrap();
         let mut started = started_event();
@@ -1625,11 +1591,10 @@ pub(crate) mod terminal_fact_tests {
             .unwrap();
         assert_eq!(
             expected.aggregate.node_execution("root").unwrap().status,
-            releash_lib::test_support::integration::workflow::NodeExecutionStatus::WaitingApproval
+            releashd::test_support::integration::workflow::NodeExecutionStatus::WaitingApproval
         );
         expected.aggregate.replay_aborted_at(4.0, None);
-        let expected =
-            releash_lib::test_support::integration::workflow::derive_read_model(&expected);
+        let expected = releashd::test_support::integration::workflow::derive_read_model(&expected);
         append_single_fact(
             &store,
             &root,
@@ -1639,14 +1604,11 @@ pub(crate) mod terminal_fact_tests {
         .await
         .unwrap();
         let before = read_raw_rows(&store, TREE).await;
-        let readonly =
-            releash_lib::test_support::integration::persistence::LocalEventReadStore::open(
-                dir.path(),
-                std::sync::Arc::new(
-                    releash_lib::test_support::integration::platform::RetryLimiter::new(),
-                ),
-            )
-            .unwrap();
+        let readonly = releashd::test_support::integration::persistence::LocalEventReadStore::open(
+            dir.path(),
+            std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
+        )
+        .unwrap();
 
         // When / Then
         for backend in [
@@ -1656,7 +1618,7 @@ pub(crate) mod terminal_fact_tests {
             let tree = fold_tree_from(&backend, TREE).await.unwrap().unwrap();
             assert!(tree.root.definition.is_some());
             assert_eq!(
-                releash_lib::test_support::integration::workflow::derive_read_model(&tree),
+                releashd::test_support::integration::workflow::derive_read_model(&tree),
                 expected
             );
         }
@@ -1719,9 +1681,7 @@ pub(crate) mod terminal_fact_tests {
         let dir = tempfile::tempdir().unwrap();
         let store = LocalEventStore::open(LocalEventStoreConfig::production(
             dir.path().into(),
-            std::sync::Arc::new(
-                releash_lib::test_support::integration::platform::RetryLimiter::new(),
-            ),
+            std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
         ))
         .unwrap();
         legacy_tree(&store, true).await;
@@ -1729,14 +1689,14 @@ pub(crate) mod terminal_fact_tests {
             rusqlite::Connection::open(StoreLayout::new(dir.path()).database_path()).unwrap();
         connection.execute_batch("CREATE TRIGGER fail_startup_abort BEFORE INSERT ON node_events WHEN NEW.event_type = 'abort_requested' BEGIN SELECT RAISE(ABORT, 'injected abort failure'); END;").unwrap();
         let repository =
-            releash_lib::test_support::integration::workflow::StoredWorkflowStartupRepository(
+            releashd::test_support::integration::workflow::StoredWorkflowStartupRepository(
                 store.clone(),
             );
         let before = read_raw_rows(&store, TREE).await;
         for _ in 0..2 {
             assert!(matches!(
-                releash_lib::test_support::integration::workflow::check_startup_definition(&repository, TREE).await,
-                Err(releash_lib::test_support::integration::workflow::WorkflowError::IncompatibleStoredEvent(reason)) if reason.contains("completion")
+                releashd::test_support::integration::workflow::check_startup_definition(&repository, TREE).await,
+                Err(releashd::test_support::integration::workflow::WorkflowError::IncompatibleStoredEvent(reason)) if reason.contains("completion")
             ));
             assert_eq!(read_raw_rows(&store, TREE).await, before);
         }
@@ -1749,7 +1709,7 @@ pub(crate) mod terminal_fact_tests {
             let store = LocalEventStore::open(LocalEventStoreConfig::production(
                 dir.path().into(),
                 std::sync::Arc::new(
-                    releash_lib::test_support::integration::platform::RetryLimiter::new(),
+                    releashd::test_support::integration::platform::RetryLimiter::new(),
                 ),
             ))
             .unwrap();
@@ -1757,14 +1717,14 @@ pub(crate) mod terminal_fact_tests {
             let backend = FactLogReadBackend::Live(store.clone());
             let before = read_raw_rows(&store, TREE).await;
             let repository =
-                releash_lib::test_support::integration::workflow::StoredWorkflowStartupRepository(
+                releashd::test_support::integration::workflow::StoredWorkflowStartupRepository(
                     store.clone(),
                 );
             for _ in 0..2 {
                 assert!(matches!(
-                    releash_lib::test_support::integration::workflow::check_startup_definition(&repository, TREE)
+                    releashd::test_support::integration::workflow::check_startup_definition(&repository, TREE)
                         .await,
-                    Err(releash_lib::test_support::integration::workflow::WorkflowError::IncompatibleStoredEvent(_))
+                    Err(releashd::test_support::integration::workflow::WorkflowError::IncompatibleStoredEvent(_))
                 ));
                 assert!(fold_tree_from(&backend, TREE).await.is_err());
                 assert_eq!(read_raw_rows(&store, TREE).await, before);
@@ -1778,9 +1738,7 @@ pub(crate) mod terminal_fact_tests {
         let dir = tempfile::tempdir().unwrap();
         let store = LocalEventStore::open(LocalEventStoreConfig::production(
             dir.path().into(),
-            std::sync::Arc::new(
-                releash_lib::test_support::integration::platform::RetryLimiter::new(),
-            ),
+            std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
         ))
         .unwrap();
         let meta = legacy_tree(&store, false).await;
@@ -1838,37 +1796,32 @@ pub(crate) mod terminal_fact_tests {
         // When
         let store = LocalEventStore::open(LocalEventStoreConfig::production(
             dir.path().into(),
-            std::sync::Arc::new(
-                releash_lib::test_support::integration::platform::RetryLimiter::new(),
-            ),
+            std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
         ))
         .unwrap();
-        let readonly =
-            releash_lib::test_support::integration::persistence::LocalEventReadStore::open(
-                dir.path(),
-                std::sync::Arc::new(
-                    releash_lib::test_support::integration::platform::RetryLimiter::new(),
-                ),
-            )
-            .unwrap();
+        let readonly = releashd::test_support::integration::persistence::LocalEventReadStore::open(
+            dir.path(),
+            std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
+        )
+        .unwrap();
         for backend in [
             FactLogReadBackend::Live(store.clone()),
             FactLogReadBackend::ReadOnly(readonly),
         ] {
             let tree = fold_tree_from(&backend, TREE).await.unwrap().unwrap();
-            let model = releash_lib::test_support::integration::workflow::derive_read_model(&tree);
+            let model = releashd::test_support::integration::workflow::derive_read_model(&tree);
 
             // Then
             assert_eq!(model.status, ExecutionStatus::Aborted);
             let node = &model.node_executions[0];
             assert_eq!(
                 node.status,
-                releash_lib::test_support::integration::workflow::NodeExecutionStatus::Aborted
+                releashd::test_support::integration::workflow::NodeExecutionStatus::Aborted
             );
             assert_eq!(
                 node.worktree,
                 Some(
-                    releash_lib::test_support::integration::workflow::IsolatedWorktree {
+                    releashd::test_support::integration::workflow::IsolatedWorktree {
                         path: "/old-isolated".into(),
                         branch: "old-branch".into(),
                     }
@@ -1895,7 +1848,7 @@ pub(crate) mod terminal_fact_tests {
             let store = LocalEventStore::open(LocalEventStoreConfig::production(
                 dir.path().into(),
                 std::sync::Arc::new(
-                    releash_lib::test_support::integration::platform::RetryLimiter::new(),
+                    releashd::test_support::integration::platform::RetryLimiter::new(),
                 ),
             ))
             .unwrap();
@@ -1905,10 +1858,10 @@ pub(crate) mod terminal_fact_tests {
                 .unwrap();
             let before = read_raw_rows(&store, TREE).await.len();
             let readonly =
-                releash_lib::test_support::integration::persistence::LocalEventReadStore::open(
+                releashd::test_support::integration::persistence::LocalEventReadStore::open(
                     dir.path(),
                     std::sync::Arc::new(
-                        releash_lib::test_support::integration::platform::RetryLimiter::new(),
+                        releashd::test_support::integration::platform::RetryLimiter::new(),
                     ),
                 )
                 .unwrap();
@@ -1943,9 +1896,7 @@ pub(crate) mod terminal_fact_tests {
         let dir = tempfile::tempdir().unwrap();
         let store = LocalEventStore::open(LocalEventStoreConfig::production(
             dir.path().into(),
-            std::sync::Arc::new(
-                releash_lib::test_support::integration::platform::RetryLimiter::new(),
-            ),
+            std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
         ))
         .unwrap();
         let mut events = vec![
@@ -1971,7 +1922,7 @@ pub(crate) mod terminal_fact_tests {
         );
         assert_eq!(
             folded.aggregate.node_execution("root").unwrap().status,
-            releash_lib::test_support::integration::workflow::NodeExecutionStatus::Succeeded
+            releashd::test_support::integration::workflow::NodeExecutionStatus::Succeeded
         );
     }
 }
@@ -1983,9 +1934,7 @@ pub async fn test_起動時前進_head競合を失敗と区別し最新記録か
         let directory = tempfile::tempdir().unwrap();
         let store = LocalEventStore::open(LocalEventStoreConfig::production(
             directory.path().into(),
-            std::sync::Arc::new(
-                releash_lib::test_support::integration::platform::RetryLimiter::new(),
-            ),
+            std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
         ))
         .unwrap();
         append_facts_for_events(
@@ -2036,7 +1985,7 @@ pub async fn test_起動時前進_head競合を失敗と区別し最新記録か
         // Then
         assert!(matches!(
             result,
-            Err(releash_lib::test_support::integration::workflow::WorkflowError::Conflict(_))
+            Err(releashd::test_support::integration::workflow::WorkflowError::Conflict(_))
         ));
         assert!(!read_tree_records(&store, TREE)
             .await
@@ -2065,7 +2014,7 @@ pub async fn test_起動時前進_旧形式の末尾行を含むheadで追記と
             let store = LocalEventStore::open(LocalEventStoreConfig::production(
                 directory.path().into(),
                 std::sync::Arc::new(
-                    releash_lib::test_support::integration::platform::RetryLimiter::new(),
+                    releashd::test_support::integration::platform::RetryLimiter::new(),
                 ),
             ))
             .unwrap();
@@ -2114,19 +2063,19 @@ pub async fn test_起動時前進_旧形式の末尾行を含むheadで追記と
 
 #[tokio::test]
 pub async fn test_追記結果確認_全行一致と競合と未保存を共通の判定で区別する() {
-    use releash_lib::test_support::integration::platform::CommitBatchError;
+    use releashd::test_support::integration::platform::CommitBatchError;
     // Given
     let dir = tempfile::tempdir().unwrap();
     let store = LocalEventStore::open(LocalEventStoreConfig::production(
         dir.path().into(),
-        std::sync::Arc::new(releash_lib::test_support::integration::platform::RetryLimiter::new()),
+        std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
     ))
     .unwrap();
     let root = SessionExecutionTreeRootFacts::new(
         "tree",
         "/repo",
         "/repo",
-        releash_lib::test_support::integration::providers::ProviderKind::Codex,
+        releashd::test_support::integration::providers::ProviderKind::Codex,
         None,
     )
     .unwrap();
@@ -2183,17 +2132,17 @@ pub async fn test_追記結果確認_全行一致と競合と未保存を共通�
 
 #[tokio::test]
 pub async fn test_fact読み出し_liveとread_onlyでsql失敗をdomainへ分類する() {
-    use releash_lib::test_support::integration::persistence::storage_unavailable;
+    use releashd::test_support::integration::persistence::storage_unavailable;
     // Given
     let directory = tempfile::tempdir().unwrap();
     let live = LocalEventStore::open(LocalEventStoreConfig::production(
         directory.path().into(),
-        std::sync::Arc::new(releash_lib::test_support::integration::platform::RetryLimiter::new()),
+        std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
     ))
     .unwrap();
     let read_only = LocalEventReadStore::open(
         directory.path(),
-        std::sync::Arc::new(releash_lib::test_support::integration::platform::RetryLimiter::new()),
+        std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
     )
     .unwrap();
     for backend in [
@@ -2227,12 +2176,11 @@ pub async fn test_fact読み出し_liveとread_onlyでsql失敗をdomainへ分�
                 _ => unreachable!(),
             });
             let fact = FactReadError::Query(error.clone());
-            let workflow =
-                releash_lib::test_support::integration::workflow::WorkflowError::from(fact);
+            let workflow = releashd::test_support::integration::workflow::WorkflowError::from(fact);
             // Then
             assert!(
-                matches!(workflow, releash_lib::test_support::integration::workflow::WorkflowError::Store(failure)
-                if matches!(&failure.source, releash_lib::test_support::integration::platform::StorageFailureSource::Query(value) if value == &error))
+                matches!(workflow, releashd::test_support::integration::workflow::WorkflowError::Store(failure)
+                if matches!(&failure.source, releashd::test_support::integration::platform::StorageFailureSource::Query(value) if value == &error))
             );
         }
     }
@@ -2244,7 +2192,7 @@ pub async fn test_reconciliation読取_復元不能な事実列はdata_lossに�
     let directory = tempfile::tempdir().unwrap();
     let store = LocalEventStore::open(LocalEventStoreConfig::production(
         directory.path().into(),
-        std::sync::Arc::new(releash_lib::test_support::integration::platform::RetryLimiter::new()),
+        std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
     ))
     .unwrap();
     append_single_fact(
@@ -2265,6 +2213,6 @@ pub async fn test_reconciliation読取_復元不能な事実列はdata_lossに�
 
     // Then
     assert!(
-        matches!(&error, releash_lib::test_support::integration::workflow::WorkflowError::CorruptStoredState(message) if message.contains("does not begin with a started fact"))
+        matches!(&error, releashd::test_support::integration::workflow::WorkflowError::CorruptStoredState(message) if message.contains("does not begin with a started fact"))
     );
 }

@@ -1,6 +1,6 @@
-use releash_lib::test_support::integration::repository::get_current_branch;
-use releash_lib::test_support::integration::repository::git_create_branch;
-use releash_lib::test_support::integration::repository::list_branches;
+use releashd::test_support::integration::repository::get_current_branch;
+use releashd::test_support::integration::repository::git_create_branch;
+use releashd::test_support::integration::repository::list_branches;
 
 use crate::adaptor_gateway_repository_test_helpers::assert_stops_at_each_checkpoint;
 use crate::test_support_git::create_initial_commit;
@@ -31,9 +31,9 @@ pub(crate) mod branch_gateway_tests {
 
     use git2::build::CheckoutBuilder;
     use git2::BranchType;
-    use releash_lib::test_support::integration::platform::detect_default_branch;
-    use releash_lib::test_support::integration::repository::get_current_branch;
-    use releash_lib::test_support::integration::repository::git_create_branch;
+    use releashd::test_support::integration::platform::detect_default_branch;
+    use releashd::test_support::integration::repository::get_current_branch;
+    use releashd::test_support::integration::repository::git_create_branch;
 
     use std::path::Path;
 

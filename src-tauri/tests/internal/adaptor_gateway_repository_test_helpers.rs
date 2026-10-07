@@ -1,13 +1,13 @@
 use connectrpc::ErrorCode;
-use releash_lib::test_support::integration::platform::Cancellation;
-use releash_lib::test_support::integration::platform::OperationContext;
+use releashd::test_support::integration::platform::Cancellation;
+use releashd::test_support::integration::platform::OperationContext;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 pub fn assert_stops_at_each_checkpoint<
     T,
-    E: releash_lib::test_support::integration::transport::ConnectFailure + std::fmt::Debug,
+    E: releashd::test_support::integration::transport::ConnectFailure + std::fmt::Debug,
 >(
     mut operation: impl FnMut() -> Result<T, E>,
 ) {
@@ -20,11 +20,9 @@ pub fn assert_stops_at_each_checkpoint<
             self.checks.fetch_add(1, Ordering::SeqCst) >= self.stop_at
         }
     }
-    let expired = releash_lib::test_support::integration::platform::sync_scope(
+    let expired = releashd::test_support::integration::platform::sync_scope(
         OperationContext::default().with_deadline(
-            releash_lib::test_support::integration::platform::Deadline::new(
-                std::time::Instant::now(),
-            ),
+            releashd::test_support::integration::platform::Deadline::new(std::time::Instant::now()),
         ),
         &mut operation,
     );
@@ -35,7 +33,7 @@ pub fn assert_stops_at_each_checkpoint<
         checks: AtomicUsize::new(0),
         stop_at: usize::MAX,
     });
-    releash_lib::test_support::integration::platform::sync_scope(
+    releashd::test_support::integration::platform::sync_scope(
         OperationContext::new(None, baseline.clone()),
         &mut operation,
     )
@@ -47,7 +45,7 @@ pub fn assert_stops_at_each_checkpoint<
             checks: AtomicUsize::new(0),
             stop_at,
         });
-        let result = releash_lib::test_support::integration::platform::sync_scope(
+        let result = releashd::test_support::integration::platform::sync_scope(
             OperationContext::new(None, cancellation.clone()),
             &mut operation,
         );

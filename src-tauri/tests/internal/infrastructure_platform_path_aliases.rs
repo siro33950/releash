@@ -1,12 +1,12 @@
 pub(crate) mod tests {
 
-    use releash_lib::test_support::integration::platform::alias_name_for_profile;
-    use releash_lib::test_support::integration::platform::child_env_overrides_from;
-    use releash_lib::test_support::integration::platform::ensure_alias_wrapper;
-    use releash_lib::test_support::integration::platform::prepare_child_env;
-    use releash_lib::test_support::integration::platform::BuildProfile;
-    use releash_lib::test_support::integration::platform::PathAlias;
-    use releash_lib::test_support::integration::platform::PathAliases;
+    use releashd::test_support::integration::platform::alias_name_for_profile;
+    use releashd::test_support::integration::platform::child_env_overrides_from;
+    use releashd::test_support::integration::platform::ensure_alias_wrapper;
+    use releashd::test_support::integration::platform::prepare_child_env;
+    use releashd::test_support::integration::platform::BuildProfile;
+    use releashd::test_support::integration::platform::PathAlias;
+    use releashd::test_support::integration::platform::PathAliases;
     use std::path::PathBuf;
 
     #[test]

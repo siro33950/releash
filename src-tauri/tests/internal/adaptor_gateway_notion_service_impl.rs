@@ -1,9 +1,9 @@
-use releash_lib::test_support::integration::platform::send;
-use releash_lib::test_support::integration::platform::send_with_retry;
-use releash_lib::test_support::integration::platform::Deadline;
-use releash_lib::test_support::integration::platform::NotionError;
-use releash_lib::test_support::integration::platform::OperationContext;
-use releash_lib::test_support::integration::transport::build_client;
+use releashd::test_support::integration::platform::send;
+use releashd::test_support::integration::platform::send_with_retry;
+use releashd::test_support::integration::platform::Deadline;
+use releashd::test_support::integration::platform::NotionError;
+use releashd::test_support::integration::platform::OperationContext;
+use releashd::test_support::integration::transport::build_client;
 use std::io::Read;
 use std::io::Write;
 use std::sync::Arc;
@@ -37,7 +37,7 @@ pub async fn test_notion再試行_429は二回で打ち切らず相手の指定�
         &build_client("token").unwrap(),
         &url,
         &serde_json::json!({}),
-        &releash_lib::test_support::integration::platform::RetryLimiter::deterministic(),
+        &releashd::test_support::integration::platform::RetryLimiter::deterministic(),
     )
     .await
     .unwrap();
@@ -67,7 +67,7 @@ pub async fn test_notion通信_応答body待ちを取り消せる() {
     });
     let context = OperationContext::new(None, Arc::new(token));
     // When
-    let result = releash_lib::test_support::integration::platform::scope(context, async {
+    let result = releashd::test_support::integration::platform::scope(context, async {
         send(build_client("token").unwrap().get(url)).await
     })
     .await;
@@ -75,14 +75,15 @@ pub async fn test_notion通信_応答body待ちを取り消せる() {
     assert!(matches!(
         result,
         Err(NotionError::Technical(
-            releash_lib::test_support::integration::platform::TechnicalFailure {
-                nature: releash_lib::test_support::integration::platform::TechnicalFailureNature::Cancelled,
+            releashd::test_support::integration::platform::TechnicalFailure {
+                nature:
+                    releashd::test_support::integration::platform::TechnicalFailureNature::Cancelled,
                 ..
             }
         ))
     ));
     assert_eq!(
-        releash_lib::test_support::integration::platform::spawn_blocking(move || server
+        releashd::test_support::integration::platform::spawn_blocking(move || server
             .join()
             .unwrap())
         .await
@@ -109,12 +110,12 @@ pub async fn test_notion再試行_retry_afterの待ちを取り消せる() {
     let context = OperationContext::new(None, Arc::new(token));
     let start = Instant::now();
     // When
-    let result = releash_lib::test_support::integration::platform::scope(context, async {
+    let result = releashd::test_support::integration::platform::scope(context, async {
         send_with_retry(
             &build_client("token").unwrap(),
             &url,
             &serde_json::json!({}),
-            &releash_lib::test_support::integration::platform::RetryLimiter::deterministic(),
+            &releashd::test_support::integration::platform::RetryLimiter::deterministic(),
         )
         .await
     })
@@ -123,8 +124,9 @@ pub async fn test_notion再試行_retry_afterの待ちを取り消せる() {
     assert!(matches!(
         result,
         Err(NotionError::Technical(
-            releash_lib::test_support::integration::platform::TechnicalFailure {
-                nature: releash_lib::test_support::integration::platform::TechnicalFailureNature::Cancelled,
+            releashd::test_support::integration::platform::TechnicalFailure {
+                nature:
+                    releashd::test_support::integration::platform::TechnicalFailureNature::Cancelled,
                 ..
             }
         ))
@@ -135,7 +137,7 @@ pub async fn test_notion再試行_retry_afterの待ちを取り消せる() {
 
 #[tokio::test]
 pub async fn test_notion通信_応答body待ちが引き継いだ期限で終わる() {
-    use releash_lib::test_support::integration::platform::Deadline;
+    use releashd::test_support::integration::platform::Deadline;
     // Given
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let url = format!("http://{}/", listener.local_addr().unwrap());
@@ -155,7 +157,7 @@ pub async fn test_notion通信_応答body待ちが引き継いだ期限で終わ
     let context = OperationContext::default()
         .with_deadline(Deadline::new(start + Duration::from_millis(500)));
     // When
-    let result = releash_lib::test_support::integration::platform::scope(context, async {
+    let result = releashd::test_support::integration::platform::scope(context, async {
         send(build_client("token").unwrap().get(url)).await
     })
     .await;
@@ -163,15 +165,16 @@ pub async fn test_notion通信_応答body待ちが引き継いだ期限で終わ
     assert!(matches!(
         result,
         Err(NotionError::Technical(
-            releash_lib::test_support::integration::platform::TechnicalFailure {
-                nature: releash_lib::test_support::integration::platform::TechnicalFailureNature::TimedOut,
+            releashd::test_support::integration::platform::TechnicalFailure {
+                nature:
+                    releashd::test_support::integration::platform::TechnicalFailureNature::TimedOut,
                 ..
             }
         ))
     ));
     assert!(start.elapsed() < Duration::from_secs(3));
     assert_eq!(
-        releash_lib::test_support::integration::platform::spawn_blocking(move || server
+        releashd::test_support::integration::platform::spawn_blocking(move || server
             .join()
             .unwrap())
         .await
@@ -199,12 +202,12 @@ pub async fn test_notion再試行_retry_after待ちが引き継いだ期限で�
     let context = OperationContext::default()
         .with_deadline(Deadline::new(start + Duration::from_millis(500)));
     // When
-    let result = releash_lib::test_support::integration::platform::scope(context, async {
+    let result = releashd::test_support::integration::platform::scope(context, async {
         send_with_retry(
             &build_client("token").unwrap(),
             &url,
             &serde_json::json!({}),
-            &releash_lib::test_support::integration::platform::RetryLimiter::deterministic(),
+            &releashd::test_support::integration::platform::RetryLimiter::deterministic(),
         )
         .await
     })
@@ -244,7 +247,7 @@ pub async fn test_notion資源期限_親が無期限でも長い期限でも十�
             Arc::new(tokio_util::sync::CancellationToken::new()),
         );
         // When
-        let result = releash_lib::test_support::integration::platform::scope(context, async {
+        let result = releashd::test_support::integration::platform::scope(context, async {
             send(
                 build_client("token")
                     .unwrap()
@@ -259,8 +262,8 @@ pub async fn test_notion資源期限_親が無期限でも長い期限でも十�
         assert!(matches!(
             result,
             Err(NotionError::Technical(
-                releash_lib::test_support::integration::platform::TechnicalFailure {
-                    nature: releash_lib::test_support::integration::platform::TechnicalFailureNature::TimedOut,
+                releashd::test_support::integration::platform::TechnicalFailure {
+                    nature: releashd::test_support::integration::platform::TechnicalFailureNature::TimedOut,
                     ..
                 }
             ))
@@ -268,7 +271,7 @@ pub async fn test_notion資源期限_親が無期限でも長い期限でも十�
         assert!(elapsed >= Duration::from_secs(10));
         assert!(elapsed < Duration::from_secs(15));
         assert_eq!(
-            releash_lib::test_support::integration::platform::spawn_blocking(move || server
+            releashd::test_support::integration::platform::spawn_blocking(move || server
                 .join()
                 .unwrap()
                 .unwrap())
@@ -306,7 +309,7 @@ pub async fn test_notion通信_429以外のhttp失敗はstatusと本文を保持
             &build_client("token").unwrap(),
             &url,
             &serde_json::json!({}),
-            &releash_lib::test_support::integration::platform::RetryLimiter::deterministic(),
+            &releashd::test_support::integration::platform::RetryLimiter::deterministic(),
         )
         .await;
         // Then
@@ -315,7 +318,7 @@ pub async fn test_notion通信_429以外のhttp失敗はstatusと本文を保持
         };
         assert!(message.contains(&format!("HTTP {status}")), "{message}");
         assert!(message.contains(&expected), "{message}");
-        use releash_lib::test_support::integration::transport::ConnectFailure;
+        use releashd::test_support::integration::transport::ConnectFailure;
         assert_eq!(
             NotionError::ApiError(message).connect_code(),
             connectrpc::ErrorCode::FailedPrecondition
@@ -329,7 +332,7 @@ pub async fn test_notion再試行_予算が尽きた429は待たずに返す() {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let url = format!("http://{}/", listener.local_addr().unwrap());
     let limiter =
-        Arc::new(releash_lib::test_support::integration::platform::RetryLimiter::deterministic());
+        Arc::new(releashd::test_support::integration::platform::RetryLimiter::deterministic());
     let budget = limiter.clone();
     let server = std::thread::spawn(move || {
         let (mut socket, _) = listener.accept().unwrap();
@@ -387,7 +390,7 @@ pub async fn test_notion再試行_retry_afterが無ければ一秒待つ() {
         &build_client("token").unwrap(),
         &url,
         &serde_json::json!({}),
-        &releash_lib::test_support::integration::platform::RetryLimiter::deterministic(),
+        &releashd::test_support::integration::platform::RetryLimiter::deterministic(),
     )
     .await
     .unwrap();

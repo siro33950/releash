@@ -1,32 +1,32 @@
 pub(crate) mod tests {
 
-    use releash_lib::test_support::integration::platform::AppState;
-    use releash_lib::test_support::integration::workflow::delete_facet_inner;
-    use releash_lib::test_support::integration::workflow::duplicate_facet_inner;
-    use releash_lib::test_support::integration::workflow::get_facet_inner;
-    use releash_lib::test_support::integration::workflow::list_facet_summaries_inner;
-    use releash_lib::test_support::integration::workflow::list_facets_inner;
-    use releash_lib::test_support::integration::workflow::open_facet_in_editor_inner;
-    use releash_lib::test_support::integration::workflow::register_shared;
-    use releash_lib::test_support::integration::workflow::save_facet_inner;
-    use releash_lib::test_support::integration::workflow::FacetKind;
-    use releash_lib::test_support::integration::workflow::WorkflowDefinition as WorkflowDefinitionYaml;
+    use releashd::test_support::integration::platform::AppState;
+    use releashd::test_support::integration::workflow::delete_facet_inner;
+    use releashd::test_support::integration::workflow::duplicate_facet_inner;
+    use releashd::test_support::integration::workflow::get_facet_inner;
+    use releashd::test_support::integration::workflow::list_facet_summaries_inner;
+    use releashd::test_support::integration::workflow::list_facets_inner;
+    use releashd::test_support::integration::workflow::open_facet_in_editor_inner;
+    use releashd::test_support::integration::workflow::register_shared;
+    use releashd::test_support::integration::workflow::save_facet_inner;
+    use releashd::test_support::integration::workflow::FacetKind;
+    use releashd::test_support::integration::workflow::WorkflowDefinition as WorkflowDefinitionYaml;
     use std::sync::Arc;
 
-    use releash_lib::test_support::integration::workflow::definition_FacetRefs as FacetRefs;
-    use releash_lib::test_support::integration::workflow::ExecutionOrigin;
-    use releash_lib::test_support::integration::workflow::NodeDefinition;
-    use releash_lib::test_support::integration::workflow::NodeKind;
-    use releash_lib::test_support::integration::workflow::NodeKindName;
-    use releash_lib::test_support::integration::workflow::SessionSpec;
-    use releash_lib::test_support::integration::workflow::WorkflowEvent;
+    use releashd::test_support::integration::workflow::definition_FacetRefs as FacetRefs;
+    use releashd::test_support::integration::workflow::ExecutionOrigin;
+    use releashd::test_support::integration::workflow::NodeDefinition;
+    use releashd::test_support::integration::workflow::NodeKind;
+    use releashd::test_support::integration::workflow::NodeKindName;
+    use releashd::test_support::integration::workflow::SessionSpec;
+    use releashd::test_support::integration::workflow::WorkflowEvent;
     use std::path::Path;
     use tempfile::TempDir;
 
     pub(crate) struct WorkflowTestDependencies {
-        pub(crate) client: releash_lib::test_support::integration::transport::ClientDependencies,
+        pub(crate) client: releashd::test_support::integration::transport::ClientDependencies,
         pub(crate) repository_state:
-            Arc<releash_lib::test_support::integration::platform::RepositoryStateService>,
+            Arc<releashd::test_support::integration::platform::RepositoryStateService>,
     }
 
     const REQUIRED_WORKSPACE_EXECUTION_COMMANDS: &[&str] = &[
@@ -42,21 +42,21 @@ pub(crate) mod tests {
         let (app, _data_dir, _store) = make_read_only_app();
         let deps = &app.client;
         let mut dispatch =
-            releash_lib::test_support::integration::transport::ClientCommandDispatch::new(
-                releash_lib::test_support::integration::daemon::DaemonUsecase::test_with_repository(
-                    releash_lib::test_support::integration::daemon::serving(),
+            releashd::test_support::integration::transport::ClientCommandDispatch::new(
+                releashd::test_support::integration::daemon::DaemonUsecase::test_with_repository(
+                    releashd::test_support::integration::daemon::serving(),
                 ),
             );
         register_shared(&mut dispatch, deps);
         let handles_command = |command| dispatch.contains(command);
 
         let mut workspace_dispatch =
-            releash_lib::test_support::integration::transport::ClientCommandDispatch::new(
-                releash_lib::test_support::integration::daemon::DaemonUsecase::test_with_repository(
-                    releash_lib::test_support::integration::daemon::serving(),
+            releashd::test_support::integration::transport::ClientCommandDispatch::new(
+                releashd::test_support::integration::daemon::DaemonUsecase::test_with_repository(
+                    releashd::test_support::integration::daemon::serving(),
                 ),
             );
-        releash_lib::test_support::integration::workspace::register_shared(
+        releashd::test_support::integration::workspace::register_shared(
             &mut workspace_dispatch,
             deps,
         );
@@ -326,25 +326,25 @@ pub(crate) mod tests {
         )
         .unwrap();
         let wf = make_test_workflow("source-wf");
-        releash_lib::test_support::integration::workflow::save_workflow(dir, &wf).unwrap();
+        releashd::test_support::integration::workflow::save_workflow(dir, &wf).unwrap();
 
         // Simulate duplicate logic
         let new_name = "copied-wf";
-        releash_lib::test_support::integration::workflow::validate_name(new_name).unwrap();
+        releashd::test_support::integration::workflow::validate_name(new_name).unwrap();
         assert!(!dir.join(format!("{new_name}.yml")).exists());
-        assert!(!releash_lib::test_support::integration::workflow::is_builtin_workflow(new_name));
+        assert!(!releashd::test_support::integration::workflow::is_builtin_workflow(new_name));
 
-        let mut copied = releash_lib::test_support::integration::workflow::load_workflow(
+        let mut copied = releashd::test_support::integration::workflow::load_workflow(
             &dir.join("source-wf.yml"),
             dir,
         )
         .unwrap();
         copied.name = new_name.to_string();
         copied.builtin = false;
-        releash_lib::test_support::integration::workflow::save_workflow(dir, &copied).unwrap();
+        releashd::test_support::integration::workflow::save_workflow(dir, &copied).unwrap();
 
         assert!(dir.join(format!("{new_name}.yml")).exists());
-        let loaded = releash_lib::test_support::integration::workflow::load_workflow(
+        let loaded = releashd::test_support::integration::workflow::load_workflow(
             &dir.join(format!("{new_name}.yml")),
             dir,
         )
@@ -358,7 +358,7 @@ pub(crate) mod tests {
         let tmp = TempDir::new().unwrap();
         let dir = tmp.path();
         let wf = make_test_workflow("existing-wf");
-        releash_lib::test_support::integration::workflow::save_workflow(dir, &wf).unwrap();
+        releashd::test_support::integration::workflow::save_workflow(dir, &wf).unwrap();
 
         // Act: Simulate the duplicate check from the command
         let new_name = "existing-wf";
@@ -378,7 +378,7 @@ pub(crate) mod tests {
         let tmp = TempDir::new().unwrap();
         let base_dir = tmp.path();
         let kind = FacetKind::Policy;
-        releash_lib::test_support::integration::workflow::save_facet(
+        releashd::test_support::integration::workflow::save_facet(
             kind,
             "source-facet",
             "# Source Policy\nContent here",
@@ -387,25 +387,25 @@ pub(crate) mod tests {
         .unwrap();
 
         let new_key = "copied-facet";
-        releash_lib::test_support::integration::workflow::validate_facet_key(new_key).unwrap();
+        releashd::test_support::integration::workflow::validate_facet_key(new_key).unwrap();
 
         let existing =
-            releash_lib::test_support::integration::workflow::list_facets(kind, base_dir).unwrap();
+            releashd::test_support::integration::workflow::list_facets(kind, base_dir).unwrap();
         assert!(!existing.contains(&new_key.to_string()));
 
-        let content = releash_lib::test_support::integration::workflow::load_facet(
+        let content = releashd::test_support::integration::workflow::load_facet(
             kind,
             "source-facet",
             base_dir,
         )
         .unwrap();
-        releash_lib::test_support::integration::workflow::save_facet(
+        releashd::test_support::integration::workflow::save_facet(
             kind, new_key, &content, base_dir,
         )
         .unwrap();
 
         let loaded =
-            releash_lib::test_support::integration::workflow::load_facet(kind, new_key, base_dir)
+            releashd::test_support::integration::workflow::load_facet(kind, new_key, base_dir)
                 .unwrap();
         assert_eq!(loaded, "# Source Policy\nContent here");
     }
@@ -415,13 +415,13 @@ pub(crate) mod tests {
         let tmp = TempDir::new().unwrap();
         let base_dir = tmp.path();
         let kind = FacetKind::Policy;
-        releash_lib::test_support::integration::workflow::save_facet(
+        releashd::test_support::integration::workflow::save_facet(
             kind, "my-facet", "content", base_dir,
         )
         .unwrap();
 
         let existing =
-            releash_lib::test_support::integration::workflow::list_facets(kind, base_dir).unwrap();
+            releashd::test_support::integration::workflow::list_facets(kind, base_dir).unwrap();
 
         // Act: Simulate the duplicate check from the command
         let new_key = "my-facet";
@@ -448,8 +448,8 @@ pub(crate) mod tests {
         // Create two workflows
         let wf_a = make_test_workflow("workflow-a");
         let wf_b = make_test_workflow("workflow-b");
-        releash_lib::test_support::integration::workflow::save_workflow(dir, &wf_a).unwrap();
-        releash_lib::test_support::integration::workflow::save_workflow(dir, &wf_b).unwrap();
+        releashd::test_support::integration::workflow::save_workflow(dir, &wf_a).unwrap();
+        releashd::test_support::integration::workflow::save_workflow(dir, &wf_b).unwrap();
 
         // Simulate renaming workflow-a to workflow-b (duplicate)
         let original_name = Some("workflow-a".to_string());
@@ -478,7 +478,7 @@ pub(crate) mod tests {
         let kind = FacetKind::Policy;
 
         // Create an existing facet
-        releash_lib::test_support::integration::workflow::save_facet(
+        releashd::test_support::integration::workflow::save_facet(
             kind,
             "existing-facet",
             "content",
@@ -488,7 +488,7 @@ pub(crate) mod tests {
 
         // Simulate is_new=true with duplicate key
         let existing =
-            releash_lib::test_support::integration::workflow::list_facets(kind, base_dir).unwrap();
+            releashd::test_support::integration::workflow::list_facets(kind, base_dir).unwrap();
 
         // Act: Simulate the is_new duplicate check from the command
         let is_new = true;
@@ -512,15 +512,14 @@ pub(crate) mod tests {
 
     #[test]
     pub fn duplicate_facet_rejects_builtin_key() {
-        let builtin_keys =
-            releash_lib::test_support::integration::workflow::list_builtin_facet_keys(
-                FacetKind::Policy,
-            );
+        let builtin_keys = releashd::test_support::integration::workflow::list_builtin_facet_keys(
+            FacetKind::Policy,
+        );
         if let Some(key) = builtin_keys.first() {
             // list_facets includes builtins, so duplicate to a builtin key would be caught
             // by the existing.contains(&new_key) check
             assert!(
-                releash_lib::test_support::integration::workflow::is_builtin_facet(
+                releashd::test_support::integration::workflow::is_builtin_facet(
                     FacetKind::Policy,
                     key
                 )
@@ -529,7 +528,7 @@ pub(crate) mod tests {
             // Verify list_facets returns builtin keys (which is used for duplicate check)
             let tmp = TempDir::new().unwrap();
             let base_dir = tmp.path();
-            let existing = releash_lib::test_support::integration::workflow::list_facets(
+            let existing = releashd::test_support::integration::workflow::list_facets(
                 FacetKind::Policy,
                 base_dir,
             )
@@ -554,7 +553,7 @@ pub(crate) mod tests {
         if (is_new || is_rename) && dir.join(format!("{}.yml", workflow.name)).exists() {
             return Err(format!("ワークフロー '{}' は既に存在します", workflow.name));
         }
-        releash_lib::test_support::integration::workflow::save_workflow(dir, workflow)
+        releashd::test_support::integration::workflow::save_workflow(dir, workflow)
             .map_err(|e| e.to_string())?;
         if let Some(orig) = original_name {
             if orig != workflow.name {
@@ -581,7 +580,7 @@ pub(crate) mod tests {
         .unwrap();
 
         let wf = make_test_workflow("my-wf");
-        releash_lib::test_support::integration::workflow::save_workflow(dir, &wf).unwrap();
+        releashd::test_support::integration::workflow::save_workflow(dir, &wf).unwrap();
 
         // Update same workflow (original_name = Some("my-wf"), name = "my-wf")
         let mut updated = make_test_workflow("my-wf");
@@ -592,7 +591,7 @@ pub(crate) mod tests {
             "Expected same-name update to succeed, got: {result:?}"
         );
 
-        let loaded = releash_lib::test_support::integration::workflow::load_workflow(
+        let loaded = releashd::test_support::integration::workflow::load_workflow(
             &dir.join("my-wf.yml"),
             dir,
         )
@@ -617,7 +616,7 @@ pub(crate) mod tests {
         let dir = tmp.path();
 
         let wf = make_test_workflow("dup-wf");
-        releash_lib::test_support::integration::workflow::save_workflow(dir, &wf).unwrap();
+        releashd::test_support::integration::workflow::save_workflow(dir, &wf).unwrap();
 
         let result = simulate_save_workflow(dir, &wf, None);
         assert!(result.is_err());
@@ -630,7 +629,7 @@ pub(crate) mod tests {
         let dir = tmp.path();
 
         let wf = make_test_workflow("old-name");
-        releash_lib::test_support::integration::workflow::save_workflow(dir, &wf).unwrap();
+        releashd::test_support::integration::workflow::save_workflow(dir, &wf).unwrap();
 
         let mut renamed = make_test_workflow("new-name");
         renamed.description = "renamed".to_string();
@@ -645,12 +644,12 @@ pub(crate) mod tests {
         let tmp = TempDir::new().unwrap();
         let dir = tmp.path();
 
-        releash_lib::test_support::integration::workflow::save_workflow(
+        releashd::test_support::integration::workflow::save_workflow(
             dir,
             &make_test_workflow("wf-a"),
         )
         .unwrap();
-        releash_lib::test_support::integration::workflow::save_workflow(
+        releashd::test_support::integration::workflow::save_workflow(
             dir,
             &make_test_workflow("wf-b"),
         )
@@ -671,117 +670,119 @@ pub(crate) mod tests {
     pub(crate) fn make_read_only_app() -> (
         WorkflowTestDependencies,
         std::path::PathBuf,
-        Arc<releash_lib::test_support::integration::persistence::LocalEventStore>,
+        Arc<releashd::test_support::integration::persistence::LocalEventStore>,
     ) {
         make_read_only_app_with_terminal(Arc::new(
-            releash_lib::test_support::integration::platform::build_terminal_surface_application_for_tests(),
+            releashd::test_support::integration::platform::build_terminal_surface_application_for_tests(),
         ))
     }
 
     pub(crate) fn make_read_only_app_with_terminal(
         terminal_surface: Arc<
-            releash_lib::test_support::integration::terminal::TerminalSurfaceApplication,
+            releashd::test_support::integration::terminal::TerminalSurfaceApplication,
         >,
     ) -> (
         WorkflowTestDependencies,
         std::path::PathBuf,
-        Arc<releash_lib::test_support::integration::persistence::LocalEventStore>,
+        Arc<releashd::test_support::integration::persistence::LocalEventStore>,
     ) {
         let data_dir =
             std::env::temp_dir().join(format!("releash-command-adapter-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&data_dir).unwrap();
         let app_config = Arc::new(
-            releash_lib::test_support::integration::settings::AppConfig::new(
-                releash_lib::test_support::integration::settings::ReleashConfig::default(),
+            releashd::test_support::integration::settings::AppConfig::new(
+                releashd::test_support::integration::settings::ReleashConfig::default(),
                 data_dir.join("config.toml"),
             ),
         );
         let config_repository: Arc<
-            dyn releash_lib::test_support::integration::repository::ConfigRepository,
+            dyn releashd::test_support::integration::repository::ConfigRepository,
         > = app_config.clone();
         let repository_usecase =
-            Arc::new(releash_lib::test_support::integration::platform::build_repository_usecase());
+            Arc::new(releashd::test_support::integration::platform::build_repository_usecase());
         let notion_usecase = Arc::new(
-            releash_lib::test_support::integration::platform::NotionUsecase::new(
+            releashd::test_support::integration::platform::NotionUsecase::new(
                 app_config.clone(),
                 app_config.clone(),
                 Arc::new(
-                    releash_lib::test_support::integration::platform::NotionApiGatewayImpl::new(
-                        releash_lib::test_support::integration::platform::shared_limiter(),
+                    releashd::test_support::integration::platform::NotionApiGatewayImpl::new(
+                        releashd::test_support::integration::platform::shared_limiter(),
                     ),
                 ),
             ),
         );
         let repo_paths_gateway =
-            releash_lib::test_support::integration::repository::RepoPathsGateway::new(
-                <releash_lib::test_support::integration::repository::SharedRepoPaths>::default(),
+            releashd::test_support::integration::repository::RepoPathsGateway::new(
+                <releashd::test_support::integration::repository::SharedRepoPaths>::default(),
                 config_repository.clone(),
             );
         let repo_paths_usecase = Arc::new(
-            releash_lib::test_support::integration::platform::RepoPathsUsecase::new(
+            releashd::test_support::integration::platform::RepoPathsUsecase::new(
                 Arc::new(repo_paths_gateway),
-                releash_lib::test_support::integration::subscriptions::test_subscriptions(),
+                releashd::test_support::integration::subscriptions::test_subscriptions(),
             ),
         );
         let code_usecase =
-            Arc::new(releash_lib::test_support::integration::platform::build_code_usecase());
+            Arc::new(releashd::test_support::integration::platform::build_code_usecase());
         let repository_scanner = Arc::new(
-            releash_lib::test_support::integration::repository::DefaultRepositoryScanner::new(
+            releashd::test_support::integration::repository::DefaultRepositoryScanner::new(
                 repository_usecase.clone(),
                 code_usecase.clone(),
             ),
         );
         let repository_state_repository = Arc::new(
-            releash_lib::test_support::integration::repository::RepositoryStateRepositoryGateway::new(
+            releashd::test_support::integration::repository::RepositoryStateRepositoryGateway::new(
                 repository_usecase.clone(),
             ),
         );
         let repository_state = Arc::new(
-            releash_lib::test_support::integration::platform::RepositoryStateService::new(
+            releashd::test_support::integration::platform::RepositoryStateService::new(
                 repository_state_repository,
                 repository_scanner,
-                releash_lib::test_support::integration::subscriptions::test_subscriptions(),
-                Arc::new(releash_lib::test_support::integration::platform::NoopRepositoryStateWatcher),
+                releashd::test_support::integration::subscriptions::test_subscriptions(),
+                Arc::new(releashd::test_support::integration::platform::NoopRepositoryStateWatcher),
                 Arc::new(
-                    releash_lib::test_support::integration::platform::TestRepositoryStateWorkerRuntime,
+                    releashd::test_support::integration::platform::TestRepositoryStateWorkerRuntime,
                 ),
                 Arc::new(
-                    releash_lib::test_support::integration::platform::IdentityWorktreePathNormalizer,
+                    releashd::test_support::integration::platform::IdentityWorktreePathNormalizer,
                 ),
-
-releash_lib::test_support::integration::subscriptions::repository_driver(),
-),
+                releashd::test_support::integration::subscriptions::repository_driver(),
+            ),
         );
         let review_usecase = Arc::new(
-            releash_lib::test_support::integration::platform::ReviewUsecase::new(
+            releashd::test_support::integration::platform::ReviewUsecase::new(
                 repository_state.clone(),
                 code_usecase.clone(),
             ),
         );
-        let local_event_store = releash_lib::test_support::integration::persistence::LocalEventStore::open(
-            releash_lib::test_support::integration::persistence::LocalEventStoreConfig::production(
-                data_dir.clone(),
-                std::sync::Arc::new(releash_lib::test_support::integration::platform::RetryLimiter::new()),
-            ),
-        )
-        .unwrap();
+        let local_event_store =
+            releashd::test_support::integration::persistence::LocalEventStore::open(
+                releashd::test_support::integration::persistence::LocalEventStoreConfig::production(
+                    data_dir.clone(),
+                    std::sync::Arc::new(
+                        releashd::test_support::integration::platform::RetryLimiter::new(),
+                    ),
+                ),
+            )
+            .unwrap();
         let (workflow_usecase, _) =
-            releash_lib::test_support::integration::platform::build_workflow_services_with_repository_worktrees(
-                Arc::new(releash_lib::test_support::integration::platform::FailureRecordStore::default()),
+            releashd::test_support::integration::platform::build_workflow_services_with_repository_worktrees(
+                Arc::new(releashd::test_support::integration::platform::FailureRecordStore::default()),
                 data_dir.clone(),
                 repository_usecase.clone(),
                 config_repository.clone(),
                 local_event_store.clone(),
                 Arc::new(
-                    releash_lib::test_support::integration::workflow::WorkflowNodeProcesses::default(
+                    releashd::test_support::integration::workflow::WorkflowNodeProcesses::default(
                     ),
                 ),
             );
         let workflow_usecase = Arc::new(workflow_usecase);
         let git_host_usecase =
-            Arc::new(releash_lib::test_support::integration::platform::build_git_host_usecase());
+            Arc::new(releashd::test_support::integration::platform::build_git_host_usecase());
         let workspace_list = Arc::new(
-            releash_lib::test_support::integration::platform::build_workspace_list_usecase(
+            releashd::test_support::integration::platform::build_workspace_list_usecase(
                 repo_paths_usecase.clone(),
                 repository_usecase.clone(),
                 repository_state.clone(),
@@ -800,23 +801,22 @@ releash_lib::test_support::integration::subscriptions::repository_driver(),
             terminal_surface,
             git_host_usecase,
         };
-        let mut client =
-            releash_lib::test_support::integration::transport::build_client_dependencies(
-                data_dir.clone(),
-            );
+        let mut client = releashd::test_support::integration::transport::build_client_dependencies(
+            data_dir.clone(),
+        );
         client.app_state = Some(app_state);
         client.config_repository = Some(config_repository.clone());
         client.app_config_usecase = Some(Arc::new(
-            releash_lib::test_support::integration::settings::AppConfigUsecase::new(
+            releashd::test_support::integration::settings::AppConfigUsecase::new(
                 config_repository,
                 app_config.clone(),
             ),
         ));
-        client.watcher = Arc::new(releash_lib::test_support::integration::platform::WatcherUsecase::new(
+        client.watcher = Arc::new(releashd::test_support::integration::platform::WatcherUsecase::new(
             Some(repository_state.clone()),
             Arc::new(
-                releash_lib::test_support::integration::repository::FileWatcherGateway::new(
-                    Arc::new(releash_lib::test_support::integration::platform::FileWatcherManager::default()),
+                releashd::test_support::integration::repository::FileWatcherGateway::new(
+                    Arc::new(releashd::test_support::integration::platform::FileWatcherManager::default()),
                 ),
             ),
         ));
@@ -836,7 +836,7 @@ releash_lib::test_support::integration::subscriptions::repository_driver(),
     fn make_read_only_app_with_managed_worktree() -> (
         WorkflowTestDependencies,
         std::path::PathBuf,
-        Arc<releash_lib::test_support::integration::persistence::LocalEventStore>,
+        Arc<releashd::test_support::integration::persistence::LocalEventStore>,
         String,
         TempDir,
         TempDir,
@@ -881,7 +881,7 @@ releash_lib::test_support::integration::subscriptions::repository_driver(),
         let (app, _data_dir, local_event_store, worktree_path, _r, _w) =
             make_read_only_app_with_managed_worktree();
         let execution_id = read_only_test_uuid(5);
-        releash_lib::test_support::integration::workflow::append_canonical_events(
+        releashd::test_support::integration::workflow::append_canonical_events(
             &local_event_store,
             &[
                 WorkflowEvent::ExecutionStarted {

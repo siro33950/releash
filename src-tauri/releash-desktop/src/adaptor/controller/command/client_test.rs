@@ -1,5 +1,5 @@
 use crate::adaptor::controller::command as commands;
-use releash_lib::desktop_api::test_support as wire;
+use releashd::desktop_api::test_support as wire;
 use std::sync::Arc;
 use tauri::Manager;
 #[test]

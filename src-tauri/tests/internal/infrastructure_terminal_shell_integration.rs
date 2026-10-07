@@ -1,6 +1,6 @@
 pub(crate) mod tests {
 
-    use releash_lib::test_support::integration::platform::create_shell_integration_files;
+    use releashd::test_support::integration::platform::create_shell_integration_files;
 
     #[test]
     pub fn test_create_shell_integration_files() {

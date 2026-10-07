@@ -1,30 +1,30 @@
-use releash_lib::test_support::integration::fixtures::fixtures_adaptor_gateway_terminal_surface_runtime_gateway_impl_insert_test_session as insert_test_session;
-use releash_lib::test_support::integration::fixtures::fixtures_usecase_terminal_surface_spawn_usecase_workspace_owner as workspace_owner;
-use releash_lib::test_support::integration::platform::TechnicalFailure;
+use releashd::test_support::integration::fixtures::fixtures_adaptor_gateway_terminal_surface_runtime_gateway_impl_insert_test_session as insert_test_session;
+use releashd::test_support::integration::fixtures::fixtures_usecase_terminal_surface_spawn_usecase_workspace_owner as workspace_owner;
+use releashd::test_support::integration::platform::TechnicalFailure;
 
 use parking_lot::Mutex;
-use releash_lib::test_support::integration::platform::IncrementalCheckpointJournal;
-use releash_lib::test_support::integration::platform::NativeTerminalCheckpoint;
-use releash_lib::test_support::integration::platform::NativeTerminalCheckpointRecord;
-use releash_lib::test_support::integration::platform::NativeTerminalEmulator;
-use releash_lib::test_support::integration::platform::TechnicalFailureNature;
-use releash_lib::test_support::integration::platform::TerminalCheckpointFileStore;
-use releash_lib::test_support::integration::terminal::attach_checkpoint;
-use releash_lib::test_support::integration::terminal::compact_runtime_checkpoint;
-use releash_lib::test_support::integration::terminal::remove_checkpoint_target;
-use releash_lib::test_support::integration::terminal::replace_checkpoint_flush;
-use releash_lib::test_support::integration::terminal::BackgroundCheckpointFixture;
-use releash_lib::test_support::integration::terminal::TerminalRuntimeSpawnRequest;
-use releash_lib::test_support::integration::terminal::TerminalSurface;
-use releash_lib::test_support::integration::terminal::TerminalSurfaceEventSink;
-use releash_lib::test_support::integration::terminal::TerminalSurfaceGateway;
-use releash_lib::test_support::integration::terminal::TerminalSurfaceGatewayError;
-use releash_lib::test_support::integration::terminal::TerminalSurfaceOutputEvent;
-use releash_lib::test_support::integration::terminal::TerminalSurfaceOwner;
-use releash_lib::test_support::integration::terminal::TerminalSurfaceRuntimeGatewayFor;
-use releash_lib::test_support::integration::terminal::CHECKPOINT_JOURNAL_COMPACTION_BYTES;
-use releash_lib::test_support::integration::terminal::TERMINAL_SURFACE_SCROLLBACK_ROWS;
-use releash_lib::test_support::integration::workspace::WorkspaceIdentity;
+use releashd::test_support::integration::platform::IncrementalCheckpointJournal;
+use releashd::test_support::integration::platform::NativeTerminalCheckpoint;
+use releashd::test_support::integration::platform::NativeTerminalCheckpointRecord;
+use releashd::test_support::integration::platform::NativeTerminalEmulator;
+use releashd::test_support::integration::platform::TechnicalFailureNature;
+use releashd::test_support::integration::platform::TerminalCheckpointFileStore;
+use releashd::test_support::integration::terminal::attach_checkpoint;
+use releashd::test_support::integration::terminal::compact_runtime_checkpoint;
+use releashd::test_support::integration::terminal::remove_checkpoint_target;
+use releashd::test_support::integration::terminal::replace_checkpoint_flush;
+use releashd::test_support::integration::terminal::BackgroundCheckpointFixture;
+use releashd::test_support::integration::terminal::TerminalRuntimeSpawnRequest;
+use releashd::test_support::integration::terminal::TerminalSurface;
+use releashd::test_support::integration::terminal::TerminalSurfaceEventSink;
+use releashd::test_support::integration::terminal::TerminalSurfaceGateway;
+use releashd::test_support::integration::terminal::TerminalSurfaceGatewayError;
+use releashd::test_support::integration::terminal::TerminalSurfaceOutputEvent;
+use releashd::test_support::integration::terminal::TerminalSurfaceOwner;
+use releashd::test_support::integration::terminal::TerminalSurfaceRuntimeGatewayFor;
+use releashd::test_support::integration::terminal::CHECKPOINT_JOURNAL_COMPACTION_BYTES;
+use releashd::test_support::integration::terminal::TERMINAL_SURFACE_SCROLLBACK_ROWS;
+use releashd::test_support::integration::workspace::WorkspaceIdentity;
 use std::sync::Arc;
 use std::sync::Condvar;
 use std::sync::Mutex as StdMutex;
@@ -59,10 +59,10 @@ pub fn test_ターミナル画面_再起動復元_復元点破損時は新規画
     std::fs::write(&checkpoint_path, b"{broken-checkpoint").unwrap();
     let gateway = TerminalSurfaceRuntimeGatewayFor::new(data_dir.path().to_path_buf());
 
-    let result = releash_lib::test_support::integration::terminal::get_or_spawn(
-        &releash_lib::test_support::integration::telemetry::TelemetryGateway,
+    let result = releashd::test_support::integration::terminal::get_or_spawn(
+        &releashd::test_support::integration::telemetry::TelemetryGateway,
         &gateway,
-        &releash_lib::test_support::integration::platform::TerminalSurfaceEventHub::new(),
+        &releashd::test_support::integration::platform::TerminalSurfaceEventHub::new(),
         24,
         80,
         Some("/repo".to_string()),
@@ -70,7 +70,7 @@ pub fn test_ターミナル画面_再起動復元_復元点破損時は新規画
         None,
     );
     if let Ok(outcome) = &result {
-        releash_lib::test_support::integration::terminal::kill_runtime_generation(
+        releashd::test_support::integration::terminal::kill_runtime_generation(
             &gateway,
             outcome.surface.runtime_generation.value(),
         )
@@ -301,8 +301,8 @@ pub async fn test_checkpoint背景保存_scheduler経由でも対象不存在を
 
 #[test]
 pub fn test_checkpoint一括保存_schedulerの技術的失敗を保持する() {
-    use releash_lib::test_support::integration::platform::TechnicalFailure;
-    use releash_lib::test_support::integration::platform::TechnicalFailureNature;
+    use releashd::test_support::integration::platform::TechnicalFailure;
+    use releashd::test_support::integration::platform::TechnicalFailureNature;
     // Given
     let directory = tempfile::tempdir().unwrap();
     for nature in [

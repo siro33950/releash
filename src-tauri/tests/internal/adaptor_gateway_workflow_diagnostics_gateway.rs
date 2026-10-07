@@ -1,9 +1,9 @@
 pub(crate) mod tests {
 
-    use releash_lib::test_support::integration::workflow::WorkflowDiagnosticsFileGateway;
-    use releash_lib::test_support::integration::workflow::WorkflowDiagnosticsGateway;
-    use releash_lib::test_support::integration::workflow::WorkflowDiagnosticsTarget;
-    use releash_lib::test_support::integration::workflow::WorkflowError;
+    use releashd::test_support::integration::workflow::WorkflowDiagnosticsFileGateway;
+    use releashd::test_support::integration::workflow::WorkflowDiagnosticsGateway;
+    use releashd::test_support::integration::workflow::WorkflowDiagnosticsTarget;
+    use releashd::test_support::integration::workflow::WorkflowError;
     use tempfile::TempDir;
 
     #[test]
@@ -32,7 +32,7 @@ pub(crate) mod tests {
         // Given
         let workflows = TempDir::new().unwrap();
         let facets = TempDir::new().unwrap();
-        let expected = releash_lib::test_support::integration::workflow::diagnose_all(
+        let expected = releashd::test_support::integration::workflow::diagnose_all(
             workflows.path(),
             facets.path(),
         )

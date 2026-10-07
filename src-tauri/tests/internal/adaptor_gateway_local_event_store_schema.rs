@@ -1,4 +1,4 @@
-use releash_lib::test_support::integration::persistence::table_columns;
+use releashd::test_support::integration::persistence::table_columns;
 
 use std::path::Path;
 use std::path::PathBuf;
@@ -6,18 +6,18 @@ use std::sync::Arc;
 
 use rusqlite::Connection;
 
-use releash_lib::test_support::integration::persistence::FaultInjector;
-use releash_lib::test_support::integration::persistence::LocalEventStore;
-use releash_lib::test_support::integration::persistence::LocalEventStoreConfig;
-use releash_lib::test_support::integration::persistence::LocalEventStoreOpenError;
-use releash_lib::test_support::integration::persistence::StoreLayout;
-use releash_lib::test_support::integration::persistence::CURRENT_SCHEMA_VERSION;
-use releash_lib::test_support::integration::transport::open_existing_writer;
+use releashd::test_support::integration::persistence::FaultInjector;
+use releashd::test_support::integration::persistence::LocalEventStore;
+use releashd::test_support::integration::persistence::LocalEventStoreConfig;
+use releashd::test_support::integration::persistence::LocalEventStoreOpenError;
+use releashd::test_support::integration::persistence::StoreLayout;
+use releashd::test_support::integration::persistence::CURRENT_SCHEMA_VERSION;
+use releashd::test_support::integration::transport::open_existing_writer;
 
 fn open_store(root: &Path) -> Arc<LocalEventStore> {
     LocalEventStore::open(LocalEventStoreConfig::production(
         root.to_path_buf(),
-        std::sync::Arc::new(releash_lib::test_support::integration::platform::RetryLimiter::new()),
+        std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
     ))
     .expect("file-backed local event store")
 }
@@ -233,7 +233,7 @@ fn create_supported_store(root: &Path, version: i64) {
     drop(open_store(root));
     let connection = open_existing_writer(
         &database_path(root),
-        std::sync::Arc::new(releash_lib::test_support::integration::platform::RetryLimiter::new()),
+        std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
     )
     .unwrap();
     restore_v7_schema(&connection);
@@ -282,7 +282,7 @@ pub fn test_schema_v7_v6からevent_type索引を追加してversionを更新す
     drop(open_store(root.path()));
     let connection = open_existing_writer(
         &database_path(root.path()),
-        std::sync::Arc::new(releash_lib::test_support::integration::platform::RetryLimiter::new()),
+        std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
     )
     .unwrap();
     connection
@@ -295,7 +295,7 @@ pub fn test_schema_v7_v6からevent_type索引を追加してversionを更新す
     drop(open_store(root.path()));
     let connection = open_existing_writer(
         &database_path(root.path()),
-        std::sync::Arc::new(releash_lib::test_support::integration::platform::RetryLimiter::new()),
+        std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
     )
     .unwrap();
 
@@ -320,9 +320,7 @@ pub fn test_schema_v5_supported_schema_v1からv4を開くと廃止schemaを削�
         drop(open_store(root.path()));
         let connection = open_existing_writer(
             &database_path(root.path()),
-            std::sync::Arc::new(
-                releash_lib::test_support::integration::platform::RetryLimiter::new(),
-            ),
+            std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
         )
         .unwrap();
         assert_retired_schema_absent(&connection);
@@ -342,9 +340,7 @@ pub fn test_schema_v5_supported_schema_v1からv4を開くと廃止schemaを削�
         drop(open_store(root.path()));
         let connection = open_existing_writer(
             &database_path(root.path()),
-            std::sync::Arc::new(
-                releash_lib::test_support::integration::platform::RetryLimiter::new(),
-            ),
+            std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
         )
         .unwrap();
         assert_retired_schema_absent(&connection);
@@ -359,7 +355,7 @@ pub fn test_schema_v5_移行commit前の失敗ではv4と廃止dataを原子的�
     fault.arm_schema_fail_before_commit();
     let mut config = LocalEventStoreConfig::production(
         root.path().to_path_buf(),
-        std::sync::Arc::new(releash_lib::test_support::integration::platform::RetryLimiter::new()),
+        std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
     );
     config.fault = fault;
 
@@ -370,7 +366,7 @@ pub fn test_schema_v5_移行commit前の失敗ではv4と廃止dataを原子的�
     assert_eq!(error, LocalEventStoreOpenError::SchemaEvolutionFailed);
     let connection = open_existing_writer(
         &database_path(root.path()),
-        std::sync::Arc::new(releash_lib::test_support::integration::platform::RetryLimiter::new()),
+        std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
     )
     .unwrap();
     let version: i64 = connection
@@ -404,12 +400,12 @@ pub fn test_schema_v5_移行commit前の失敗ではv4と廃止dataを原子的�
 
 #[tokio::test]
 pub async fn test_schema_v8_未完了の終了記録があってもsession作成と読み書きができる() {
-    use releash_lib::test_support::integration::providers::ProviderKind;
-    use releash_lib::test_support::integration::sessions::AgentSession;
-    use releash_lib::test_support::integration::sessions::AgentSessionRepository;
-    use releash_lib::test_support::integration::sessions::AgentSessionTreeLocation;
-    use releash_lib::test_support::integration::sessions::LocalAgentSessionRepository;
-    use releash_lib::test_support::integration::workspace::WorkspaceIdentity;
+    use releashd::test_support::integration::providers::ProviderKind;
+    use releashd::test_support::integration::sessions::AgentSession;
+    use releashd::test_support::integration::sessions::AgentSessionRepository;
+    use releashd::test_support::integration::sessions::AgentSessionTreeLocation;
+    use releashd::test_support::integration::sessions::LocalAgentSessionRepository;
+    use releashd::test_support::integration::workspace::WorkspaceIdentity;
 
     for phase in [
         "prepared",
@@ -440,9 +436,7 @@ pub async fn test_schema_v8_未完了の終了記録があってもsession作成
         drop(store);
         let connection = open_existing_writer(
             &database_path(directory.path()),
-            std::sync::Arc::new(
-                releash_lib::test_support::integration::platform::RetryLimiter::new(),
-            ),
+            std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
         )
         .unwrap();
         restore_v7_schema(&connection);
@@ -499,12 +493,10 @@ pub async fn test_schema_v8_未完了の終了記録があってもsession作成
         assert!(repository.find("new").await.unwrap().is_some());
         let connection = open_existing_writer(
             &database_path(directory.path()),
-            std::sync::Arc::new(
-                releash_lib::test_support::integration::platform::RetryLimiter::new(),
-            ),
+            std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
         )
         .unwrap();
-        releash_lib::test_support::integration::persistence::validate_current_schema(&connection)
+        releashd::test_support::integration::persistence::validate_current_schema(&connection)
             .unwrap();
         assert_eq!(
             connection
@@ -523,14 +515,14 @@ pub async fn test_schema_v8_未完了の終了記録があってもsession作成
             "shutdown_targets",
             "shutdown_recovery_snapshots",
         ] {
-            releash_lib::test_support::integration::persistence::require_schema_object_absent(
+            releashd::test_support::integration::persistence::require_schema_object_absent(
                 &connection,
                 "table",
                 table,
             )
             .unwrap();
         }
-        let columns = releash_lib::test_support::integration::persistence::table_columns(
+        let columns = releashd::test_support::integration::persistence::table_columns(
             &connection,
             "store_metadata",
         )
@@ -559,9 +551,7 @@ pub fn test_schema_v8_新規storeと再起動で用途を失ったmetadataを持
         drop(open_store(root.path()));
         let connection = open_existing_writer(
             &database_path(root.path()),
-            std::sync::Arc::new(
-                releash_lib::test_support::integration::platform::RetryLimiter::new(),
-            ),
+            std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
         )
         .unwrap();
         assert_eq!(
@@ -575,7 +565,7 @@ pub fn test_schema_v8_新規storeと再起動で用途を失ったmetadataを持
                 "health",
             ]
         );
-        releash_lib::test_support::integration::persistence::validate_current_schema(&connection)
+        releashd::test_support::integration::persistence::validate_current_schema(&connection)
             .unwrap();
     }
 }
@@ -587,7 +577,7 @@ pub fn test_schema_v8_移行失敗では旧metadataを残し再起動で必要�
     drop(open_store(root.path()));
     let connection = open_existing_writer(
         &database_path(root.path()),
-        std::sync::Arc::new(releash_lib::test_support::integration::platform::RetryLimiter::new()),
+        std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
     )
     .unwrap();
     restore_v7_schema(&connection);
@@ -602,7 +592,7 @@ pub fn test_schema_v8_移行失敗では旧metadataを残し再起動で必要�
     fault.arm_schema_fail_before_commit();
     let mut config = LocalEventStoreConfig::production(
         root.path().to_path_buf(),
-        std::sync::Arc::new(releash_lib::test_support::integration::platform::RetryLimiter::new()),
+        std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
     );
     config.fault = fault;
     // When
@@ -613,7 +603,7 @@ pub fn test_schema_v8_移行失敗では旧metadataを残し再起動で必要�
     // Then
     let connection = open_existing_writer(
         &database_path(root.path()),
-        std::sync::Arc::new(releash_lib::test_support::integration::platform::RetryLimiter::new()),
+        std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
     )
     .unwrap();
     assert_eq!(
@@ -623,7 +613,7 @@ pub fn test_schema_v8_移行失敗では旧metadataを残し再起動で必要�
         7
     );
     assert_eq!(metadata(&connection), before);
-    let columns = releash_lib::test_support::integration::persistence::table_columns(
+    let columns = releashd::test_support::integration::persistence::table_columns(
         &connection,
         "store_metadata",
     )
@@ -639,23 +629,22 @@ pub fn test_schema_v8_移行失敗では旧metadataを残し再起動で必要�
     drop(open_store(root.path()));
     let connection = open_existing_writer(
         &database_path(root.path()),
-        std::sync::Arc::new(releash_lib::test_support::integration::platform::RetryLimiter::new()),
+        std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
     )
     .unwrap();
     assert_eq!(metadata(&connection), before);
-    releash_lib::test_support::integration::persistence::validate_current_schema(&connection)
-        .unwrap();
+    releashd::test_support::integration::persistence::validate_current_schema(&connection).unwrap();
 }
 pub(crate) mod tests {
 
-    use releash_lib::test_support::integration::persistence::create_store_metadata;
-    use releash_lib::test_support::integration::persistence::evolve_schema;
-    use releash_lib::test_support::integration::persistence::initialize_schema;
-    use releash_lib::test_support::integration::persistence::require_foreign_key_integrity;
-    use releash_lib::test_support::integration::persistence::require_index;
-    use releash_lib::test_support::integration::persistence::validate_current_schema;
-    use releash_lib::test_support::integration::persistence::FaultInjector;
-    use releash_lib::test_support::integration::persistence::InitialStoreMetadata;
+    use releashd::test_support::integration::persistence::create_store_metadata;
+    use releashd::test_support::integration::persistence::evolve_schema;
+    use releashd::test_support::integration::persistence::initialize_schema;
+    use releashd::test_support::integration::persistence::require_foreign_key_integrity;
+    use releashd::test_support::integration::persistence::require_index;
+    use releashd::test_support::integration::persistence::validate_current_schema;
+    use releashd::test_support::integration::persistence::FaultInjector;
+    use releashd::test_support::integration::persistence::InitialStoreMetadata;
     use rusqlite::Connection;
 
     fn metadata() -> InitialStoreMetadata<'static> {

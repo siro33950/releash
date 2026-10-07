@@ -1,15 +1,15 @@
-use releash_lib::test_support::integration::platform::Deadline;
-use releash_lib::test_support::integration::platform::OperationContext;
-use releash_lib::test_support::integration::platform::OperationStopped;
-use releash_lib::test_support::integration::repository::ConfigRepository;
-use releash_lib::test_support::integration::repository::ConfigUpdate;
-use releash_lib::test_support::integration::settings::AppConfigDocument;
-use releash_lib::test_support::integration::settings::AppConfigError;
-use releash_lib::test_support::integration::transport::ConnectFailure;
-use releash_lib::test_support::integration::workflow::AppConfigManagedWorktreeResolver;
-use releash_lib::test_support::integration::workflow::ManagedWorktreeResolver;
-use releash_lib::test_support::integration::workflow::ManagedWorktreeResolverError;
-use releash_lib::test_support::integration::workflow::WorkflowRuntimeError;
+use releashd::test_support::integration::platform::Deadline;
+use releashd::test_support::integration::platform::OperationContext;
+use releashd::test_support::integration::platform::OperationStopped;
+use releashd::test_support::integration::repository::ConfigRepository;
+use releashd::test_support::integration::repository::ConfigUpdate;
+use releashd::test_support::integration::settings::AppConfigDocument;
+use releashd::test_support::integration::settings::AppConfigError;
+use releashd::test_support::integration::transport::ConnectFailure;
+use releashd::test_support::integration::workflow::AppConfigManagedWorktreeResolver;
+use releashd::test_support::integration::workflow::ManagedWorktreeResolver;
+use releashd::test_support::integration::workflow::ManagedWorktreeResolverError;
+use releashd::test_support::integration::workflow::WorkflowRuntimeError;
 use std::sync::Arc;
 
 struct Config(AppConfigDocument);
@@ -31,12 +31,12 @@ pub async fn test_managed_worktree非同期解決_期限と取消の分類をrun
     let (dir, repo) = crate::test_support_git::create_test_repo();
     crate::test_support_git::create_initial_commit(&repo);
     let root = dir.path().to_str().unwrap().to_string();
-    let mut config = releash_lib::test_support::integration::settings::config_to_domain(
-        &releash_lib::test_support::integration::settings::ReleashConfig::default(),
+    let mut config = releashd::test_support::integration::settings::config_to_domain(
+        &releashd::test_support::integration::settings::ReleashConfig::default(),
     );
     config.app.last_repo_paths = vec![root.clone()];
     let resolver = AppConfigManagedWorktreeResolver::new(
-        Arc::new(releash_lib::test_support::integration::platform::build_repository_usecase()),
+        Arc::new(releashd::test_support::integration::platform::build_repository_usecase()),
         Arc::new(Config(config)),
     );
     for expire in [false, true] {
@@ -49,7 +49,7 @@ pub async fn test_managed_worktree非同期解決_期限と取消の分類をrun
             Arc::new(token),
         );
         // When
-        let error = releash_lib::test_support::integration::platform::scope(
+        let error = releashd::test_support::integration::platform::scope(
             context,
             resolver.resolve(root.clone()),
         )
@@ -64,7 +64,7 @@ pub async fn test_managed_worktree非同期解決_期限と取消の分類をrun
         };
         assert_eq!(
             error.connect_code(),
-            releash_lib::test_support::integration::platform::TechnicalFailure::from(stopped)
+            releashd::test_support::integration::platform::TechnicalFailure::from(stopped)
                 .connect_code()
         );
         assert!(matches!(error, WorkflowRuntimeError::Technical(value) if value == stopped.into()));
@@ -81,11 +81,11 @@ pub(crate) mod tests {
 
     use tempfile::TempDir;
 
-    use releash_lib::test_support::integration::workflow::resolve_workflow_by_name;
-    use releash_lib::test_support::integration::workflow::CommandSpec;
-    use releash_lib::test_support::integration::workflow::NodeDefinition;
-    use releash_lib::test_support::integration::workflow::NodeKind;
-    use releash_lib::test_support::integration::workflow::WorkflowDefinition as WorkflowDefinitionYaml;
+    use releashd::test_support::integration::workflow::resolve_workflow_by_name;
+    use releashd::test_support::integration::workflow::CommandSpec;
+    use releashd::test_support::integration::workflow::NodeDefinition;
+    use releashd::test_support::integration::workflow::NodeKind;
+    use releashd::test_support::integration::workflow::WorkflowDefinition as WorkflowDefinitionYaml;
 
     fn workflow(name: &str) -> WorkflowDefinitionYaml {
         WorkflowDefinitionYaml {
@@ -106,7 +106,7 @@ pub(crate) mod tests {
     #[test]
     pub fn resolves_definition_name_when_filename_differs() {
         let tmp = TempDir::new().unwrap();
-        releash_lib::test_support::integration::workflow::save_workflow(
+        releashd::test_support::integration::workflow::save_workflow(
             tmp.path(),
             &workflow("declared-name"),
         )
@@ -125,7 +125,7 @@ pub(crate) mod tests {
     #[test]
     pub fn duplicate_definition_names_are_reported_as_diagnostic() {
         let tmp = TempDir::new().unwrap();
-        releash_lib::test_support::integration::workflow::save_workflow(
+        releashd::test_support::integration::workflow::save_workflow(
             tmp.path(),
             &workflow("duplicate-name"),
         )
@@ -167,7 +167,7 @@ return r.workflow{
     #[test]
     pub fn duplicate_name_across_yaml_and_lua_is_reported() {
         let tmp = TempDir::new().unwrap();
-        releash_lib::test_support::integration::workflow::save_workflow(
+        releashd::test_support::integration::workflow::save_workflow(
             tmp.path(),
             &workflow("duplicate-cross-format"),
         )

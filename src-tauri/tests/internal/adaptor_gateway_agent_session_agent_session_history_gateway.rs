@@ -1,20 +1,20 @@
-use releash_lib::test_support::integration::fixtures::fixtures_adaptor_gateway_agent_session_agent_session_history_query_service_metadata as metadata;
+use releashd::test_support::integration::fixtures::fixtures_adaptor_gateway_agent_session_agent_session_history_query_service_metadata as metadata;
 use std::fs;
 use std::sync::Arc;
 
-use releash_lib::test_support::integration::providers::ProviderKind;
-use releash_lib::test_support::integration::sessions::AgentSessionHistoryGateway;
-use releash_lib::test_support::integration::sessions::AgentSessionHistoryGatewayError;
-use releash_lib::test_support::integration::sessions::AgentSessionHistoryMetadata;
-use releash_lib::test_support::integration::sessions::AgentSessionHistoryQueryService;
-use releash_lib::test_support::integration::sessions::AgentSessionHistoryRequest;
-use releash_lib::test_support::integration::sessions::AgentSessionOwnershipQuery;
-use releash_lib::test_support::integration::sessions::LocalAgentSessionHistoryGateway;
-use releash_lib::test_support::integration::sessions::LocalAgentSessionHistoryQueryService;
-use releash_lib::test_support::integration::sessions::ProviderSessionTitleEntry;
-use releash_lib::test_support::integration::sessions::ProviderSessionTitleGateway;
-use releash_lib::test_support::integration::sessions::ProviderSessionTitleGatewayError;
-use releash_lib::test_support::integration::sessions::ProviderSessionTitleRequest;
+use releashd::test_support::integration::providers::ProviderKind;
+use releashd::test_support::integration::sessions::AgentSessionHistoryGateway;
+use releashd::test_support::integration::sessions::AgentSessionHistoryGatewayError;
+use releashd::test_support::integration::sessions::AgentSessionHistoryMetadata;
+use releashd::test_support::integration::sessions::AgentSessionHistoryQueryService;
+use releashd::test_support::integration::sessions::AgentSessionHistoryRequest;
+use releashd::test_support::integration::sessions::AgentSessionOwnershipQuery;
+use releashd::test_support::integration::sessions::LocalAgentSessionHistoryGateway;
+use releashd::test_support::integration::sessions::LocalAgentSessionHistoryQueryService;
+use releashd::test_support::integration::sessions::ProviderSessionTitleEntry;
+use releashd::test_support::integration::sessions::ProviderSessionTitleGateway;
+use releashd::test_support::integration::sessions::ProviderSessionTitleGatewayError;
+use releashd::test_support::integration::sessions::ProviderSessionTitleRequest;
 
 struct FixedMetadataHistoryGateway {
     inner: Arc<LocalAgentSessionHistoryGateway>,
@@ -523,9 +523,9 @@ pub async fn test_agent_session_history_gateway_claudeのタイトルが読め�
     assert_eq!(
         result,
         Err(AgentSessionHistoryGatewayError::Technical(
-            releash_lib::test_support::integration::platform::TechnicalFailure {
+            releashd::test_support::integration::platform::TechnicalFailure {
                 nature:
-                    releash_lib::test_support::integration::platform::TechnicalFailureNature::Other,
+                    releashd::test_support::integration::platform::TechnicalFailureNature::Other,
                 message: fs::File::open(project.join("claude-missing.jsonl"))
                     .unwrap_err()
                     .to_string()
@@ -575,9 +575,10 @@ pub async fn test_agent_session_history_query_claudeのタイトルが読めな�
     assert_eq!(
         result,
         Err(
-            releash_lib::test_support::integration::sessions::AgentSessionHistoryQueryError::Technical(
-                releash_lib::test_support::integration::platform::TechnicalFailure {
-                    nature: releash_lib::test_support::integration::platform::TechnicalFailureNature::Other,
+            releashd::test_support::integration::sessions::AgentSessionHistoryQueryError::Technical(
+                releashd::test_support::integration::platform::TechnicalFailure {
+                    nature:
+                        releashd::test_support::integration::platform::TechnicalFailureNature::Other,
                     message: fs::File::open(project.join("claude-missing.jsonl"))
                         .unwrap_err()
                         .to_string()
@@ -608,9 +609,9 @@ pub async fn test_agent_session_history_gateway_codexのdbが無いときタイ�
     assert_eq!(
         result,
         Err(AgentSessionHistoryGatewayError::Technical(
-            releash_lib::test_support::integration::platform::TechnicalFailure {
+            releashd::test_support::integration::platform::TechnicalFailure {
                 nature:
-                    releash_lib::test_support::integration::platform::TechnicalFailureNature::Other,
+                    releashd::test_support::integration::platform::TechnicalFailureNature::Other,
                 message: format!(
                     "{} not found",
                     directory.path().join("codex/state_5.sqlite").display()
@@ -650,9 +651,10 @@ pub async fn test_agent_session_history_query_codexのdbが無いときpageを�
     assert_eq!(
         result,
         Err(
-            releash_lib::test_support::integration::sessions::AgentSessionHistoryQueryError::Technical(
-                releash_lib::test_support::integration::platform::TechnicalFailure {
-                    nature: releash_lib::test_support::integration::platform::TechnicalFailureNature::Other,
+            releashd::test_support::integration::sessions::AgentSessionHistoryQueryError::Technical(
+                releashd::test_support::integration::platform::TechnicalFailure {
+                    nature:
+                        releashd::test_support::integration::platform::TechnicalFailureNature::Other,
                     message: format!(
                         "{} not found",
                         directory.path().join("codex/state_5.sqlite").display()
@@ -680,11 +682,11 @@ pub async fn test_agent_session_history_gateway_不正なタイトル要求だ�
 
     assert_eq!(
         empty_worktree,
-        Err(releash_lib::test_support::integration::sessions::AgentSessionHistoryGatewayError::InvalidRequest)
+        Err(releashd::test_support::integration::sessions::AgentSessionHistoryGatewayError::InvalidRequest)
     );
     assert_eq!(
         empty_id,
-        Err(releash_lib::test_support::integration::sessions::AgentSessionHistoryGatewayError::InvalidRequest)
+        Err(releashd::test_support::integration::sessions::AgentSessionHistoryGatewayError::InvalidRequest)
     );
 }
 
@@ -839,6 +841,6 @@ pub async fn test_agent_session_history_query_sqliteのbusyを一時的な失敗
         .await;
     // Then
     assert!(
-        matches!(result, Err(releash_lib::test_support::integration::sessions::AgentSessionHistoryQueryError::Technical(failure)) if failure.nature == releash_lib::test_support::integration::platform::TechnicalFailureNature::Transient)
+        matches!(result, Err(releashd::test_support::integration::sessions::AgentSessionHistoryQueryError::Technical(failure)) if failure.nature == releashd::test_support::integration::platform::TechnicalFailureNature::Transient)
     );
 }

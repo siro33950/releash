@@ -1,8 +1,8 @@
-use releash_lib::test_support::integration::platform::exclusive;
-use releash_lib::test_support::integration::platform::Deadline;
-use releash_lib::test_support::integration::platform::LockError;
-use releash_lib::test_support::integration::platform::OperationContext;
-use releash_lib::test_support::integration::platform::OperationStopped;
+use releashd::test_support::integration::platform::exclusive;
+use releashd::test_support::integration::platform::Deadline;
+use releashd::test_support::integration::platform::LockError;
+use releashd::test_support::integration::platform::OperationContext;
+use releashd::test_support::integration::platform::OperationStopped;
 use std::fs::File;
 use std::time::Duration;
 use std::time::Instant;
@@ -26,7 +26,7 @@ pub fn test_ファイルlock_期限と取り消しで待ちを終え取得済み
         }
         // When / Then
         assert!(
-            matches!(releash_lib::test_support::integration::platform::sync_scope(context, || exclusive(&waiter)), Err(LockError::Stopped(reason)) if reason == if expire { OperationStopped::Expired } else { OperationStopped::Cancelled })
+            matches!(releashd::test_support::integration::platform::sync_scope(context, || exclusive(&waiter)), Err(LockError::Stopped(reason)) if reason == if expire { OperationStopped::Expired } else { OperationStopped::Cancelled })
         );
         drop(holder);
         assert!(exclusive(&waiter).is_ok());

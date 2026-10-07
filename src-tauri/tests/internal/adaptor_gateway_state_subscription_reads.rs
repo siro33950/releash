@@ -1,11 +1,11 @@
 use connectrpc::ErrorCode;
-use releash_lib::test_support::integration::platform::scope;
-use releash_lib::test_support::integration::platform::Deadline;
-use releash_lib::test_support::integration::platform::OperationContext;
-use releash_lib::test_support::integration::platform::StateSubscriptionReads;
-use releash_lib::test_support::integration::subscriptions::StateSubscriptionRead;
-use releash_lib::test_support::integration::subscriptions::SubscriptionTarget;
-use releash_lib::test_support::integration::transport::ConnectFailure;
+use releashd::test_support::integration::platform::scope;
+use releashd::test_support::integration::platform::Deadline;
+use releashd::test_support::integration::platform::OperationContext;
+use releashd::test_support::integration::platform::StateSubscriptionReads;
+use releashd::test_support::integration::subscriptions::StateSubscriptionRead;
+use releashd::test_support::integration::subscriptions::SubscriptionTarget;
+use releashd::test_support::integration::transport::ConnectFailure;
 
 #[tokio::test]
 pub async fn test_購読読取の境界_同期queryへ期限を引き継ぐ() {
@@ -60,7 +60,7 @@ pub async fn test_notion購読読取_タスクの外部更新の後に未設定�
     let fixture = crate::state_subscription_reads::Fixture::new();
     let reads = StateSubscriptionReads(fixture.reads.clone());
     let target = SubscriptionTarget::NotionTasks(
-        releash_lib::test_support::integration::platform::NotionTaskListRequest {
+        releashd::test_support::integration::platform::NotionTaskListRequest {
             path: fixture.path.clone(),
             count: 20,
             title: None,
@@ -74,14 +74,13 @@ pub async fn test_notion購読読取_タスクの外部更新の後に未設定�
     reads.release_external(&target);
     let released = reads.read(&target).await;
     // Then
-    let releash_lib::test_support::integration::subscriptions::StateValue::NotionTasks(result) =
-        value
+    let releashd::test_support::integration::subscriptions::StateValue::NotionTasks(result) = value
     else {
         panic!("Notion state expected")
     };
     assert_eq!(
         result.error,
-        Some(releash_lib::test_support::integration::platform::NotionUsecaseError::ConfigNotFound)
+        Some(releashd::test_support::integration::platform::NotionUsecaseError::ConfigNotFound)
     );
     assert!(result.value.is_none());
     assert!(released.is_err());
@@ -100,15 +99,14 @@ pub async fn test_notion購読読取_ラベルの外部更新の後に未設定�
     reads.release_external(&target);
     let released = reads.read(&target).await;
     // Then
-    let releash_lib::test_support::integration::subscriptions::StateValue::NotionLabelOptions(
-        result,
-    ) = value
+    let releashd::test_support::integration::subscriptions::StateValue::NotionLabelOptions(result) =
+        value
     else {
         panic!("Notion state expected")
     };
     assert_eq!(
         result.error,
-        Some(releash_lib::test_support::integration::platform::NotionUsecaseError::ConfigNotFound)
+        Some(releashd::test_support::integration::platform::NotionUsecaseError::ConfigNotFound)
     );
     assert!(result.value.is_none());
     assert!(released.is_err());

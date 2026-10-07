@@ -1,11 +1,11 @@
 pub(crate) mod tests {
 
-    use releash_lib::test_support::integration::workflow::FacetRepository;
+    use releashd::test_support::integration::workflow::FacetRepository;
     use std::fs;
 
-    use releash_lib::test_support::integration::workflow::facet_FacetKind as FacetKind;
-    use releash_lib::test_support::integration::workflow::WorkflowError;
-    use releash_lib::test_support::integration::workflow::WorkflowFacetFileRepository;
+    use releashd::test_support::integration::workflow::facet_FacetKind as FacetKind;
+    use releashd::test_support::integration::workflow::WorkflowError;
+    use releashd::test_support::integration::workflow::WorkflowFacetFileRepository;
     use tempfile::TempDir;
 
     #[test]

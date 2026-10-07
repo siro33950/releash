@@ -1,6 +1,6 @@
-use releash_lib::test_support::integration::platform::FileWatcherManager;
-use releash_lib::test_support::integration::repository::FileWatchGateway;
-use releash_lib::test_support::integration::repository::FileWatcherGateway;
+use releashd::test_support::integration::platform::FileWatcherManager;
+use releashd::test_support::integration::repository::FileWatchGateway;
+use releashd::test_support::integration::repository::FileWatcherGateway;
 use std::sync::Arc;
 
 #[tokio::test]

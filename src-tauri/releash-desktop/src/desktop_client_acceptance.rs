@@ -1,5 +1,5 @@
 use crate::adaptor::controller::command::CommandRouter;
-use releash_lib::desktop_api::ClientEndpoint;
+use releashd::desktop_api::ClientEndpoint;
 use std::path::Path;
 use std::sync::Arc;
 use tauri::Manager;

@@ -1,4 +1,4 @@
-use releash_lib::test_support::integration::repository::get_repository_status_scan;
+use releashd::test_support::integration::repository::get_repository_status_scan;
 
 use crate::adaptor_gateway_repository_test_helpers::assert_stops_at_each_checkpoint;
 use crate::test_support_git::create_initial_commit;
@@ -18,11 +18,11 @@ pub(crate) mod status_gateway_tests {
     use super::*;
 
     use crate::test_support_git::*;
-    use releash_lib::test_support::integration::repository::get_git_status;
-    use releash_lib::test_support::integration::repository::get_repository_status_scan;
-    use releash_lib::test_support::integration::repository::get_status_diff_stats;
-    use releash_lib::test_support::integration::repository::reset_status_walk_count_for_tests;
-    use releash_lib::test_support::integration::repository::status_walk_count_for_tests;
+    use releashd::test_support::integration::repository::get_git_status;
+    use releashd::test_support::integration::repository::get_repository_status_scan;
+    use releashd::test_support::integration::repository::get_status_diff_stats;
+    use releashd::test_support::integration::repository::reset_status_walk_count_for_tests;
+    use releashd::test_support::integration::repository::status_walk_count_for_tests;
     use std::fs;
     use std::path::Path;
 
@@ -41,21 +41,22 @@ pub(crate) mod status_gateway_tests {
 
     #[test]
     pub fn first_repo_snapshot_records_only_first_successful_status_scan() {
-        let _guard = releash_lib::test_support::integration::telemetry::lock_test_telemetry();
-        releash_lib::test_support::integration::telemetry::reset_test_metrics();
-        releash_lib::test_support::integration::telemetry::set_performance_configured(true);
-        releash_lib::test_support::integration::telemetry::set_performance_enabled(true);
-        releash_lib::test_support::integration::telemetry::set_startup_origin(
+        let _guard = releashd::test_support::integration::telemetry::lock_test_telemetry();
+        releashd::test_support::integration::telemetry::reset_test_metrics();
+        releashd::test_support::integration::telemetry::set_performance_configured(true);
+        releashd::test_support::integration::telemetry::set_performance_enabled(true);
+        releashd::test_support::integration::telemetry::set_startup_origin(
             std::time::Instant::now() - std::time::Duration::from_millis(20),
         );
 
         let invalid = tempfile::TempDir::new().unwrap();
         assert!(get_repository_status_scan(invalid.path().to_str().unwrap()).is_err());
         assert!(
-            !releash_lib::test_support::integration::telemetry::first_repo_snapshot_recorded_for_tests()
+            !releashd::test_support::integration::telemetry::first_repo_snapshot_recorded_for_tests(
+            )
         );
         assert!(
-            releash_lib::test_support::integration::telemetry::test_metric_records()
+            releashd::test_support::integration::telemetry::test_metric_records()
                 .iter()
                 .all(|record| record.name != "releash.startup.duration_ms")
         );
@@ -66,7 +67,7 @@ pub(crate) mod status_gateway_tests {
         get_repository_status_scan(dir.path().to_str().unwrap()).unwrap();
 
         let startup_records: Vec<_> =
-            releash_lib::test_support::integration::telemetry::test_metric_records()
+            releashd::test_support::integration::telemetry::test_metric_records()
                 .into_iter()
                 .filter(|record| record.name == "releash.startup.duration_ms")
                 .collect();
@@ -75,7 +76,7 @@ pub(crate) mod status_gateway_tests {
         assert!(startup_records[0].attributes.iter().any(|(key, value)| {
             key == "releash.operation" && value == "startup.first_repo_snapshot_ready"
         }));
-        releash_lib::test_support::integration::telemetry::reset_test_metrics();
+        releashd::test_support::integration::telemetry::reset_test_metrics();
     }
 
     #[test]

@@ -1,4 +1,4 @@
-use releash_lib::test_support::integration::repository::resolve_branch_base;
+use releashd::test_support::integration::repository::resolve_branch_base;
 
 use crate::adaptor_gateway_repository_test_helpers::assert_stops_at_each_checkpoint;
 use crate::test_support_git::create_initial_commit;
@@ -13,6 +13,6 @@ pub fn test_base解決_各候補の停止で次候補へ進まない() {
     // When / Then
     assert_stops_at_each_checkpoint(|| {
         resolve_branch_base(&repo, Some(&config), "feature")
-            .map_err(releash_lib::test_support::integration::platform::TechnicalFailure::from)
+            .map_err(releashd::test_support::integration::platform::TechnicalFailure::from)
     });
 }

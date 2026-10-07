@@ -1,16 +1,16 @@
 use crate::adaptor_gateway_workflow_workflow_host_test_helpers::Fixture;
-use releash_lib::test_support::integration::process::CommandRunOutput;
-use releash_lib::test_support::integration::providers::ProviderExecutionTreeStopCommand;
-use releash_lib::test_support::integration::repository::ConfigSecretRepository;
-use releash_lib::test_support::integration::settings::AppConfig;
-use releash_lib::test_support::integration::workflow::build_command_artifact;
-use releash_lib::test_support::integration::workflow::ApprovalCommand;
-use releash_lib::test_support::integration::workflow::NodeFact;
+use releashd::test_support::integration::process::CommandRunOutput;
+use releashd::test_support::integration::providers::ProviderExecutionTreeStopCommand;
+use releashd::test_support::integration::repository::ConfigSecretRepository;
+use releashd::test_support::integration::settings::AppConfig;
+use releashd::test_support::integration::workflow::build_command_artifact;
+use releashd::test_support::integration::workflow::ApprovalCommand;
+use releashd::test_support::integration::workflow::NodeFact;
 
-use releash_lib::test_support::integration::workflow::SubmitOutputArtifact;
-use releash_lib::test_support::integration::workflow::SubmitOutputCommand;
-use releash_lib::test_support::integration::workflow::WorkflowControlPlaneUsecase;
-use releash_lib::test_support::integration::workflow::WorkflowRuntimeCommandGateway;
+use releashd::test_support::integration::workflow::SubmitOutputArtifact;
+use releashd::test_support::integration::workflow::SubmitOutputCommand;
+use releashd::test_support::integration::workflow::WorkflowControlPlaneUsecase;
+use releashd::test_support::integration::workflow::WorkflowRuntimeCommandGateway;
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -35,10 +35,10 @@ pub async fn test_workflowの秘匿_設定取得失敗でも表示とartifactと
 
         // When
         let secrets =
-            releash_lib::test_support::integration::workflow::collect_configured_secret_values(
+            releashd::test_support::integration::workflow::collect_configured_secret_values(
                 &fixture.app,
             );
-        let display_command = releash_lib::test_support::integration::workflow::mask_sensitive_text(
+        let display_command = releashd::test_support::integration::workflow::mask_sensitive_text(
             &format!("echo {token}"),
             &secrets,
         );
@@ -89,7 +89,7 @@ schemas:
             .find(|node| node.node_name == "main")
             .unwrap();
         let control = WorkflowControlPlaneUsecase::new(
-            releash_lib::test_support::integration::platform::shared().clone(),
+            releashd::test_support::integration::platform::shared().clone(),
             Arc::new(WorkflowRuntimeCommandGateway::new_with_driver(
                 fixture.app.clone(),
                 Arc::new(fixture.host.clone()),
@@ -130,7 +130,7 @@ schemas:
             .unwrap();
 
         // Then
-        let records = releash_lib::test_support::integration::workflow::read_tree_records(
+        let records = releashd::test_support::integration::workflow::read_tree_records(
             &fixture.store,
             &execution_id,
         )

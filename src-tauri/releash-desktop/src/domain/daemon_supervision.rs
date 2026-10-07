@@ -57,7 +57,7 @@ pub(crate) enum Phase {
 pub enum FailureStage {
     Spawn,
     Initialization,
-    Connection(releash_lib::desktop_api::TechnicalFailureNature),
+    Connection(releashd::desktop_api::TechnicalFailureNature),
     StartupTimeout,
     UnexpectedExit,
     Identity,

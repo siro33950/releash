@@ -1,21 +1,21 @@
-use releash_lib::test_support::integration::fixtures::repository_state_CountingScanner as CountingScanner;
-use releash_lib::test_support::integration::fixtures::repository_state_TestRepositoryStateRepository as TestRepositoryStateRepository;
-use releash_lib::test_support::integration::fixtures::repository_state_counting_service as counting_service;
+use releashd::test_support::integration::fixtures::repository_state_CountingScanner as CountingScanner;
+use releashd::test_support::integration::fixtures::repository_state_TestRepositoryStateRepository as TestRepositoryStateRepository;
+use releashd::test_support::integration::fixtures::repository_state_counting_service as counting_service;
 pub(crate) mod tests {
     fn test_service(scanner: Arc<EmptyScanner>) -> RepositoryStateService {
         RepositoryStateService::new(
             Arc::new(TestRepositoryStateRepository),
             scanner,
-            releash_lib::test_support::integration::subscriptions::test_subscriptions(),
+            releashd::test_support::integration::subscriptions::test_subscriptions(),
             Arc::new(NoopRepositoryStateWatcher),
             Arc::new(TestRepositoryStateWorkerRuntime),
             Arc::new(CanonicalWorktreePathNormalizer),
-            releash_lib::test_support::integration::subscriptions::repository_driver(),
+            releashd::test_support::integration::subscriptions::repository_driver(),
         )
     }
     fn test_service_with_notifier(
         scanner: Arc<EmptyScanner>,
-        subscriptions: releash_lib::test_support::integration::subscriptions::StateSubscriptionUsecase,
+        subscriptions: releashd::test_support::integration::subscriptions::StateSubscriptionUsecase,
     ) -> RepositoryStateService {
         RepositoryStateService::new(
             Arc::new(TestRepositoryStateRepository),
@@ -24,24 +24,24 @@ pub(crate) mod tests {
             Arc::new(NoopRepositoryStateWatcher),
             Arc::new(TestRepositoryStateWorkerRuntime),
             Arc::new(CanonicalWorktreePathNormalizer),
-            releash_lib::test_support::integration::subscriptions::repository_driver(),
+            releashd::test_support::integration::subscriptions::repository_driver(),
         )
     }
     use super::*;
-    use releash_lib::test_support::integration::fixtures::repository_state_EmptyScanner as EmptyScanner;
+    use releashd::test_support::integration::fixtures::repository_state_EmptyScanner as EmptyScanner;
 
-    use releash_lib::test_support::integration::platform::RepositoryStateError;
-    use releash_lib::test_support::integration::platform::RepositoryStateService;
-    use releash_lib::test_support::integration::platform::RepositoryStateWatcher;
-    use releash_lib::test_support::integration::platform::WorktreeState;
+    use releashd::test_support::integration::platform::RepositoryStateError;
+    use releashd::test_support::integration::platform::RepositoryStateService;
+    use releashd::test_support::integration::platform::RepositoryStateWatcher;
+    use releashd::test_support::integration::platform::WorktreeState;
     use std::sync::Arc;
 
     use crate::usecase_repository_state_test_helpers_runtime::CanonicalWorktreePathNormalizer;
-    use releash_lib::test_support::integration::platform::FileStatusDto;
-    use releash_lib::test_support::integration::platform::IdentityWorktreePathNormalizer;
-    use releash_lib::test_support::integration::platform::InvalidateReason;
-    use releash_lib::test_support::integration::platform::NoopRepositoryStateWatcher;
-    use releash_lib::test_support::integration::platform::TestRepositoryStateWorkerRuntime;
+    use releashd::test_support::integration::platform::FileStatusDto;
+    use releashd::test_support::integration::platform::IdentityWorktreePathNormalizer;
+    use releashd::test_support::integration::platform::InvalidateReason;
+    use releashd::test_support::integration::platform::NoopRepositoryStateWatcher;
+    use releashd::test_support::integration::platform::TestRepositoryStateWorkerRuntime;
     use std::sync::atomic::AtomicU64;
     use std::sync::atomic::Ordering;
     use std::time::Duration;
@@ -71,7 +71,7 @@ pub(crate) mod tests {
             &self,
             state: Arc<WorktreeState>,
         ) -> Result<
-            Box<dyn releash_lib::test_support::integration::platform::RepositoryStateWatchSession>,
+            Box<dyn releashd::test_support::integration::platform::RepositoryStateWatchSession>,
             RepositoryStateError,
         > {
             self.started_paths
@@ -85,7 +85,7 @@ pub(crate) mod tests {
         test_service(Arc::new(EmptyScanner))
     }
 
-    use releash_lib::test_support::integration::subscriptions::CapturingNotifier;
+    use releashd::test_support::integration::subscriptions::CapturingNotifier;
 
     #[tokio::test]
     pub async fn unmanaged_read_returns_ephemeral_snapshot_without_creating_worktree_or_watcher() {
@@ -278,23 +278,22 @@ pub(crate) mod tests {
         std::fs::write(dir.path().join("typechange").join("child.txt"), "child").unwrap();
 
         let path = dir.path().to_str().unwrap();
-        let status =
-            releash_lib::test_support::integration::repository::get_git_status(path).unwrap();
+        let status = releashd::test_support::integration::repository::get_git_status(path).unwrap();
         let scanner = Arc::new(CountingScanner::with_status(
             status.into_iter().map(Into::into).collect(),
         ));
         let service = RepositoryStateService::new(
             Arc::new(TestRepositoryStateRepository),
             scanner,
-            releash_lib::test_support::integration::subscriptions::test_subscriptions(),
+            releashd::test_support::integration::subscriptions::test_subscriptions(),
             Arc::new(NoopRepositoryStateWatcher),
             Arc::new(TestRepositoryStateWorkerRuntime),
             Arc::new(IdentityWorktreePathNormalizer),
-            releash_lib::test_support::integration::subscriptions::repository_driver(),
+            releashd::test_support::integration::subscriptions::repository_driver(),
         );
 
         let legacy =
-            releash_lib::test_support::integration::repository::get_worktree_dirty_count(path)
+            releashd::test_support::integration::repository::get_worktree_dirty_count(path)
                 .unwrap();
         let snapshot_count = service.get_snapshot(path).unwrap().status.len() as u32;
 
@@ -323,7 +322,7 @@ pub(crate) mod tests {
     pub async fn canonical_state_notifies_each_subscriber_path_alias() {
         let scanner = Arc::new(EmptyScanner);
         let subscriptions =
-            releash_lib::test_support::integration::subscriptions::test_subscriptions();
+            releashd::test_support::integration::subscriptions::test_subscriptions();
         let notifier = Arc::new(CapturingNotifier::repositories(&subscriptions));
         let service = test_service_with_notifier(scanner, subscriptions);
         let dir = tempfile::TempDir::new().unwrap();

@@ -1,4 +1,4 @@
-use releash_lib::test_support::terminal_subscription_acceptance::{
+use releashd::test_support::terminal_subscription_acceptance::{
     TerminalSubscription as TerminalSurfaceWireAttachment,
     TerminalSubscriptionHarness as TerminalSurfaceRuntime,
 };
@@ -8,7 +8,7 @@ mod agent_tui_fixture;
 use std::time::Duration;
 
 use agent_tui_fixture::{fixture_process_launch, fixture_process_shell_command, FixturePlan};
-use releash_lib::test_support::terminal_surface::{
+use releashd::test_support::terminal_surface::{
     TerminalProcessLaunchV1, TerminalSurfaceEventFault, TerminalSurfaceOwnerV1,
     TerminalSurfaceStreamItemV1, TerminalSurfaceV1,
 };
@@ -25,7 +25,7 @@ fn workspace_owner(path: &str) -> TerminalSurfaceOwnerV1 {
 #[tokio::test(flavor = "multi_thread")]
 async fn test_atui_030_provider_cliがterminal_surfaceのroot_processとして終了する() {
     let queue =
-        releash_lib::test_support::terminal_surface::initialize_background_work_for_acceptance();
+        releashd::test_support::terminal_surface::initialize_background_work_for_acceptance();
     let data_dir = tempfile::TempDir::new().unwrap();
     let cwd = tempfile::TempDir::new().unwrap();
     let path = cwd.path().to_string_lossy().into_owned();
@@ -281,7 +281,7 @@ fn reconstruct(surface: &TerminalSurfaceV1, events: &[(u64, String)]) -> Result<
 #[tokio::test(flavor = "multi_thread")]
 async fn test_atui_010_実ptyのproduction_attachが欠落重複逆転なく再接続する() {
     let queue =
-        releash_lib::test_support::terminal_surface::initialize_background_work_for_acceptance();
+        releashd::test_support::terminal_surface::initialize_background_work_for_acceptance();
     const FRAME_COUNT: usize = 20;
     const ATTACH_BOUNDARY: usize = FRAME_COUNT / 2;
     const DETACH_BOUNDARY: usize = 14;
@@ -408,7 +408,7 @@ async fn test_atui_010_実ptyのproduction_attachが欠落重複逆転なく再�
 #[tokio::test(flavor = "multi_thread")]
 async fn test_atui_010_実ptyのproduction_attachが注入された欠落重複逆転を判定する() {
     let queue =
-        releash_lib::test_support::terminal_surface::initialize_background_work_for_acceptance();
+        releashd::test_support::terminal_surface::initialize_background_work_for_acceptance();
     let data_dir = tempfile::TempDir::new().unwrap();
     let cwd = tempfile::TempDir::new().unwrap();
     let path = cwd.path().to_string_lossy().into_owned();
@@ -498,7 +498,7 @@ async fn test_atui_010_実ptyのproduction_attachが注入された欠落重複�
 #[tokio::test(flavor = "multi_thread")]
 async fn test_atui_011_terminal_checkpointが画面属性と終了後のbounded_scrollbackを復元する() {
     let queue =
-        releash_lib::test_support::terminal_surface::initialize_background_work_for_acceptance();
+        releashd::test_support::terminal_surface::initialize_background_work_for_acceptance();
     const FRAME_COUNT: usize = 550;
 
     let data_dir = tempfile::TempDir::new().unwrap();
@@ -639,7 +639,7 @@ async fn test_atui_011_terminal_checkpointが画面属性と終了後のbounded_
 #[tokio::test(flavor = "multi_thread")]
 async fn test_atui_011_複数terminal_surfaceの画面状態が混線しない() {
     let queue =
-        releash_lib::test_support::terminal_surface::initialize_background_work_for_acceptance();
+        releashd::test_support::terminal_surface::initialize_background_work_for_acceptance();
     let data_dir = tempfile::TempDir::new().unwrap();
     let cwd = tempfile::TempDir::new().unwrap();
     let path = cwd.path().to_string_lossy().into_owned();
@@ -721,7 +721,7 @@ async fn test_atui_011_複数terminal_surfaceの画面状態が混線しない()
 #[tokio::test(flavor = "multi_thread")]
 async fn test_atui_012_app再構築後は同一process扱いせず最終画面だけをcold_restoreする() {
     let queue =
-        releash_lib::test_support::terminal_surface::initialize_background_work_for_acceptance();
+        releashd::test_support::terminal_surface::initialize_background_work_for_acceptance();
     const FRAME_COUNT: usize = 550;
 
     let data_dir = tempfile::TempDir::new().unwrap();
@@ -833,7 +833,7 @@ async fn test_atui_012_app再構築後は同一process扱いせず最終画面�
 #[tokio::test(flavor = "multi_thread")]
 async fn test_atui_012_通常終了は実ptyを停止して出力drain後の最終画面をcold_restoreする() {
     let queue =
-        releash_lib::test_support::terminal_surface::initialize_background_work_for_acceptance();
+        releashd::test_support::terminal_surface::initialize_background_work_for_acceptance();
     let data_dir = tempfile::TempDir::new().unwrap();
     let cwd = tempfile::TempDir::new().unwrap();
     let path = cwd.path().to_string_lossy().into_owned();
@@ -912,7 +912,7 @@ async fn test_atui_012_通常終了は実ptyを停止して出力drain後の最�
 #[tokio::test(flavor = "multi_thread")]
 async fn test_atui_012_明示kill後はcheckpointを復元せず起動コマンドを再実行する() {
     let queue =
-        releash_lib::test_support::terminal_surface::initialize_background_work_for_acceptance();
+        releashd::test_support::terminal_surface::initialize_background_work_for_acceptance();
     let data_dir = tempfile::TempDir::new().unwrap();
     let cwd = tempfile::TempDir::new().unwrap();
     let path = cwd.path().to_string_lossy().into_owned();

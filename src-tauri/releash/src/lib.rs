@@ -51,25 +51,6 @@ enum HookProvider {
     Codex,
 }
 
-fn data_dir(explicit: Option<PathBuf>) -> Result<PathBuf, connectrpc::ConnectError> {
-    explicit
-        .or_else(|| {
-            std::env::var("RELEASH_DATA_DIR")
-                .ok()
-                .filter(|s| !s.is_empty())
-                .map(PathBuf::from)
-        })
-        .map(Ok)
-        .unwrap_or_else(|| {
-            releash_sdk::data_dir::default_data_dir_for_profile(
-                releash_sdk::data_dir::BuildProfile::current(),
-            )
-            .ok_or_else(|| {
-                connectrpc::ConnectError::unavailable("OS data directory is unavailable")
-            })
-        })
-}
-
 pub fn run() {
     let cli = match Cli::try_parse() {
         Ok(cli) => cli,
@@ -99,13 +80,15 @@ pub fn run() {
     }
     let json = commands::json_output(&cli.command);
     let hook = matches!(cli.command, TopCommand::Hook { .. });
-    let result = data_dir(cli.data_dir).and_then(|dir| {
-        tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .map_err(|error| connectrpc::ConnectError::internal(error.to_string()))?
-            .block_on(commands::run(&dir, cli.command))
-    });
+    let result = releash_sdk::data_dir::resolve_data_dir(cli.data_dir)
+        .map_err(connectrpc::ConnectError::unavailable)
+        .and_then(|dir| {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|error| connectrpc::ConnectError::internal(error.to_string()))?
+                .block_on(commands::run(&dir, cli.command))
+        });
     let code = match result {
         Ok((output, code)) => {
             print!("{output}");

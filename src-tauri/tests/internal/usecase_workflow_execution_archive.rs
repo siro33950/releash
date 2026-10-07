@@ -1,25 +1,25 @@
 use crate::adaptor_gateway_workflow_workflow_host_test_helpers::archive_fixture;
 use crate::adaptor_gateway_workflow_workflow_host_test_helpers::archive_fixture_with_resolver;
 use crate::adaptor_gateway_workflow_workflow_host_test_helpers::archive_workflow;
-use releash_lib::test_support::integration::subscriptions::StateChangeSource;
-use releash_lib::test_support::integration::workflow::ExecutionStatus;
-use releash_lib::test_support::integration::workflow::ExecutionTreeArchiveRepository;
-use releash_lib::test_support::integration::workflow::ManagedWorktreeResolver;
-use releash_lib::test_support::integration::workflow::ManagedWorktreeResolverError;
-use releash_lib::test_support::integration::workflow::NodeFact;
-use releash_lib::test_support::integration::workflow::SessionExecutionTreeRootFacts;
-use releash_lib::test_support::integration::workflow::WorkflowError;
+use releashd::test_support::integration::subscriptions::StateChangeSource;
+use releashd::test_support::integration::workflow::ExecutionStatus;
+use releashd::test_support::integration::workflow::ExecutionTreeArchiveRepository;
+use releashd::test_support::integration::workflow::ManagedWorktreeResolver;
+use releashd::test_support::integration::workflow::ManagedWorktreeResolverError;
+use releashd::test_support::integration::workflow::NodeFact;
+use releashd::test_support::integration::workflow::SessionExecutionTreeRootFacts;
+use releashd::test_support::integration::workflow::WorkflowError;
 use std::sync::Arc;
 
 #[tokio::test]
 pub async fn test_実行木archive_abortと自然完了の競合だけを終了状態の再読取で解消する() {
-    use releash_lib::test_support::integration::persistence::LocalEventStore;
+    use releashd::test_support::integration::persistence::LocalEventStore;
 
-    use releash_lib::test_support::integration::workflow::AbortExecutionCommand;
-    use releash_lib::test_support::integration::workflow::NodeFact;
-    use releash_lib::test_support::integration::workflow::WorkflowAbortExecutionGateway;
-    use releash_lib::test_support::integration::workflow::WorkflowAbortExecutionUsecase;
-    use releash_lib::test_support::integration::workflow::WorkflowError;
+    use releashd::test_support::integration::workflow::AbortExecutionCommand;
+    use releashd::test_support::integration::workflow::NodeFact;
+    use releashd::test_support::integration::workflow::WorkflowAbortExecutionGateway;
+    use releashd::test_support::integration::workflow::WorkflowAbortExecutionUsecase;
+    use releashd::test_support::integration::workflow::WorkflowError;
 
     struct CompletingAbort {
         store: Arc<LocalEventStore>,
@@ -33,7 +33,7 @@ pub async fn test_実行木archive_abortと自然完了の競合だけを終了�
             command: AbortExecutionCommand,
         ) -> Result<(), WorkflowError> {
             if self.complete {
-                let records = releash_lib::test_support::integration::workflow::read_tree_records(
+                let records = releashd::test_support::integration::workflow::read_tree_records(
                     &self.store,
                     &command.execution_id,
                 )
@@ -41,11 +41,10 @@ pub async fn test_実行木archive_abortと自然完了の競合だけを終了�
                 .unwrap();
                 let meta = &records[0].meta;
                 for kind in ["submit_received", "stop_received"] {
-                    releash_lib::test_support::integration::workflow::append_single_fact(
+                    releashd::test_support::integration::workflow::append_single_fact(
                         &self.store,
                         meta,
-                        &releash_lib::test_support::integration::workflow::decode(kind, "{}")
-                            .unwrap(),
+                        &releashd::test_support::integration::workflow::decode(kind, "{}").unwrap(),
                         2000,
                     )
                     .await
@@ -99,7 +98,7 @@ pub async fn test_実行木archive_abortと自然完了の競合だけを終了�
                 .unwrap();
             assert_eq!(archives.records.len(), usize::from(succeeds));
             assert!(
-                !releash_lib::test_support::integration::workflow::read_tree_records(
+                !releashd::test_support::integration::workflow::read_tree_records(
                     &fixture.store,
                     &id
                 )
@@ -114,9 +113,9 @@ pub async fn test_実行木archive_abortと自然完了の競合だけを終了�
 
 #[tokio::test]
 pub async fn test_実行木変更の受理_削除との競合と排他記録の保存不能を区別する() {
-    use releash_lib::test_support::integration::repository::FileWorktreeOperationLocks;
+    use releashd::test_support::integration::repository::FileWorktreeOperationLocks;
 
-    use releash_lib::test_support::integration::platform::WorktreeOperations;
+    use releashd::test_support::integration::platform::WorktreeOperations;
     // Given
     let mut fixture = archive_fixture();
     let directory = tempfile::tempdir().unwrap();
@@ -147,7 +146,7 @@ pub async fn test_実行木変更の受理_削除との競合と排他記録の�
 
 #[tokio::test]
 pub async fn test_実行木archive_同じworktreeのworkflowと複数sessionをすべて片付ける() {
-    use releash_lib::test_support::integration::workflow::SessionExecutionTreeRootFacts;
+    use releashd::test_support::integration::workflow::SessionExecutionTreeRootFacts;
     // Given
     let fixture = archive_fixture();
     let workflow = archive_workflow(&fixture).await;
@@ -160,11 +159,11 @@ pub async fn test_実行木archive_同じworktreeのworkflowと複数sessionを�
             id,
             "/missing/worktree",
             "/missing/worktree",
-            releash_lib::test_support::integration::providers::ProviderKind::Codex,
+            releashd::test_support::integration::providers::ProviderKind::Codex,
             None,
         )
         .unwrap();
-        releash_lib::test_support::integration::workflow::append_fact_batch_for_seed(
+        releashd::test_support::integration::workflow::append_fact_batch_for_seed(
             &fixture.store,
             &facts.into_facts(),
             1,
@@ -224,14 +223,14 @@ pub async fn test_実行木restore_所属worktreeが利用不可なら事実を�
         .await
         .unwrap();
     let before =
-        releash_lib::test_support::integration::workflow::read_tree_records(&fixture.store, &id)
+        releashd::test_support::integration::workflow::read_tree_records(&fixture.store, &id)
             .await
             .unwrap();
     // When
     assert!(fixture.runtime.restore_execution_tree(&id).await.is_err());
     // Then
     assert_eq!(
-        releash_lib::test_support::integration::workflow::read_tree_records(&fixture.store, &id)
+        releashd::test_support::integration::workflow::read_tree_records(&fixture.store, &id)
             .await
             .unwrap(),
         before
@@ -249,7 +248,7 @@ pub async fn test_旧sessionarchive移行_128件を越えて時刻と理由と�
             &id,
             "/workspace",
             "/gone",
-            releash_lib::test_support::integration::providers::ProviderKind::Codex,
+            releashd::test_support::integration::providers::ProviderKind::Codex,
             None,
         )
         .unwrap();
@@ -259,7 +258,7 @@ pub async fn test_旧sessionarchive移行_128件を越えて時刻と理由と�
             .iter()
             .take(2)
             .map(|(meta, fact)| {
-                releash_lib::test_support::integration::workflow::pending_single_fact(meta, fact, 1)
+                releashd::test_support::integration::workflow::pending_single_fact(meta, fact, 1)
                     .unwrap()
             })
             .collect();
@@ -267,10 +266,9 @@ pub async fn test_旧sessionarchive移行_128件を越えて時刻と理由と�
         if completed {
             for kind in ["submit_received", "stop_received"] {
                 rows.push(
-                    releash_lib::test_support::integration::workflow::pending_single_fact(
+                    releashd::test_support::integration::workflow::pending_single_fact(
                         &meta,
-                        &releash_lib::test_support::integration::workflow::decode(kind, "{}")
-                            .unwrap(),
+                        &releashd::test_support::integration::workflow::decode(kind, "{}").unwrap(),
                         2,
                     )
                     .unwrap(),
@@ -283,7 +281,7 @@ pub async fn test_旧sessionarchive移行_128件を越えて時刻と理由と�
         } else {
             "manual"
         };
-        let mut legacy = releash_lib::test_support::integration::workflow::pending_single_fact(
+        let mut legacy = releashd::test_support::integration::workflow::pending_single_fact(
             &meta,
             &NodeFact::AbortRequested(Default::default()),
             timestamp,
@@ -292,7 +290,7 @@ pub async fn test_旧sessionarchive移行_128件を越えて時刻と理由と�
         legacy.row.event_type = "archive_requested".into();
         legacy.row.detail = serde_json::json!({"reason": reason}).to_string();
         rows.push(legacy);
-        releash_lib::test_support::integration::workflow::append_pending_rows(&fixture.store, rows)
+        releashd::test_support::integration::workflow::append_pending_rows(&fixture.store, rows)
             .await
             .unwrap();
         expected.push((id, timestamp as f64 / 1000.0, reason, completed));
@@ -337,12 +335,10 @@ pub async fn test_旧sessionarchive移行_128件を越えて時刻と理由と�
                 ExecutionStatus::Aborted
             }
         );
-        let facts = releash_lib::test_support::integration::workflow::read_tree_records(
-            &fixture.store,
-            &id,
-        )
-        .await
-        .unwrap();
+        let facts =
+            releashd::test_support::integration::workflow::read_tree_records(&fixture.store, &id)
+                .await
+                .unwrap();
         assert_eq!(
             facts
                 .iter()
@@ -373,22 +369,22 @@ pub async fn test_旧sessionarchive移行_128件を越えて時刻と理由と�
 
 #[tokio::test]
 pub async fn test_終了済み実行木_archiveとrestore成功後だけ所属worktreeの購読を更新する() {
-    use releash_lib::test_support::integration::subscriptions::StateChangeSource;
+    use releashd::test_support::integration::subscriptions::StateChangeSource;
     // Given
     let mut fixture = archive_fixture();
     let id = archive_workflow(&fixture).await;
     fixture
         .runtime
         .abort_execution(
-            releash_lib::test_support::integration::workflow::AbortExecutionCommand {
+            releashd::test_support::integration::workflow::AbortExecutionCommand {
                 execution_id: id.clone(),
                 expected_node_name: None,
             },
         )
         .await
         .unwrap();
-    let publisher = releash_lib::test_support::integration::subscriptions::test_subscriptions();
-    let mut changes = releash_lib::test_support::integration::subscriptions::changes(&publisher);
+    let publisher = releashd::test_support::integration::subscriptions::test_subscriptions();
+    let mut changes = releashd::test_support::integration::subscriptions::changes(&publisher);
     fixture.runtime = fixture.runtime.with_state_publisher(publisher);
     // When / Then
     fixture
@@ -427,19 +423,19 @@ pub async fn test_実行木archiveとrestore_workspace識別子と異なるworkt
         id,
         "/workspace",
         "/missing/worktree",
-        releash_lib::test_support::integration::providers::ProviderKind::Codex,
+        releashd::test_support::integration::providers::ProviderKind::Codex,
         None,
     )
     .unwrap();
     let meta = facts.meta.clone();
-    releash_lib::test_support::integration::workflow::append_fact_batch_for_seed(
+    releashd::test_support::integration::workflow::append_fact_batch_for_seed(
         &fixture.store,
         &facts.into_facts(),
         1,
         id,
     )
     .unwrap();
-    releash_lib::test_support::integration::workflow::append_single_fact(
+    releashd::test_support::integration::workflow::append_single_fact(
         &fixture.store,
         &meta,
         &NodeFact::AbortRequested(Default::default()),
@@ -449,8 +445,8 @@ pub async fn test_実行木archiveとrestore_workspace識別子と異なるworkt
     .unwrap();
     let target = fixture.repository.target(id).await.unwrap();
     assert_ne!(target.workspace_identity, target.worktree_path);
-    let publisher = releash_lib::test_support::integration::subscriptions::test_subscriptions();
-    let mut changes = releash_lib::test_support::integration::subscriptions::changes(&publisher);
+    let publisher = releashd::test_support::integration::subscriptions::test_subscriptions();
+    let mut changes = releashd::test_support::integration::subscriptions::changes(&publisher);
     fixture.runtime = fixture.runtime.with_state_publisher(publisher);
     // When / Then
     fixture

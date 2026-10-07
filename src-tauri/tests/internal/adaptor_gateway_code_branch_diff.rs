@@ -1,4 +1,4 @@
-use releash_lib::test_support::integration::code::get_branch_diff_summary;
+use releashd::test_support::integration::code::get_branch_diff_summary;
 
 use crate::adaptor_gateway_repository_test_helpers::assert_stops_at_each_checkpoint;
 use crate::test_support_git::create_initial_commit;
@@ -21,7 +21,7 @@ pub(crate) mod branch_diff_gateway_tests {
     use crate::test_support_git::*;
     use git2::build::CheckoutBuilder;
     use git2::Repository;
-    use releash_lib::test_support::integration::code::get_branch_diff_summary;
+    use releashd::test_support::integration::code::get_branch_diff_summary;
 
     fn repo_path_str(repo: &Repository) -> String {
         repo.workdir().unwrap().to_str().unwrap().to_string()

@@ -1,21 +1,21 @@
-use releash_lib::test_support::integration::persistence::first_root_row_of_tree;
-use releash_lib::test_support::integration::persistence::first_row_for_tree_with_event_types;
-use releash_lib::test_support::integration::persistence::latest_root_rows_for_trees;
-use releash_lib::test_support::integration::persistence::read_tree_after;
-use releash_lib::test_support::integration::persistence::tree_heads;
+use releashd::test_support::integration::persistence::first_root_row_of_tree;
+use releashd::test_support::integration::persistence::first_row_for_tree_with_event_types;
+use releashd::test_support::integration::persistence::latest_root_rows_for_trees;
+use releashd::test_support::integration::persistence::read_tree_after;
+use releashd::test_support::integration::persistence::tree_heads;
 
 use rusqlite::Connection;
 
-use releash_lib::test_support::integration::persistence::append_node_event;
-use releash_lib::test_support::integration::persistence::delete_tree;
-use releash_lib::test_support::integration::persistence::initialize_schema;
-use releash_lib::test_support::integration::persistence::latest_row_for_node_with_event_types;
-use releash_lib::test_support::integration::persistence::list_tree_roots;
-use releash_lib::test_support::integration::persistence::read_tree;
-use releash_lib::test_support::integration::persistence::rows_for_event_types;
-use releash_lib::test_support::integration::persistence::FaultInjector;
-use releash_lib::test_support::integration::persistence::InitialStoreMetadata;
-use releash_lib::test_support::integration::persistence::NewNodeEventRow;
+use releashd::test_support::integration::persistence::append_node_event;
+use releashd::test_support::integration::persistence::delete_tree;
+use releashd::test_support::integration::persistence::initialize_schema;
+use releashd::test_support::integration::persistence::latest_row_for_node_with_event_types;
+use releashd::test_support::integration::persistence::list_tree_roots;
+use releashd::test_support::integration::persistence::read_tree;
+use releashd::test_support::integration::persistence::rows_for_event_types;
+use releashd::test_support::integration::persistence::FaultInjector;
+use releashd::test_support::integration::persistence::InitialStoreMetadata;
+use releashd::test_support::integration::persistence::NewNodeEventRow;
 
 fn connection() -> Connection {
     let connection = Connection::open_in_memory().unwrap();
@@ -66,7 +66,7 @@ pub fn test_tree先頭事実取得_種別ごとの索引で最初の終端だけ
         .execute_batch("DROP INDEX idx_node_events_tree_event_type")
         .unwrap();
     assert!(
-        !releash_lib::test_support::integration::persistence::evolve_schema(
+        !releashd::test_support::integration::persistence::evolve_schema(
             &connection,
             &FaultInjector::new(),
         )
@@ -85,7 +85,7 @@ pub fn test_tree先頭事実取得_種別ごとの索引で最初の終端だけ
 
     // When / Then
     let first =
-        releash_lib::test_support::integration::persistence::first_row_for_tree_with_event_types(
+        releashd::test_support::integration::persistence::first_row_for_tree_with_event_types(
             &connection,
             "tree",
             &["execution_completed", "abort_requested"],
@@ -296,10 +296,10 @@ pub(crate) mod list_tree_roots_tests {
 
 pub(crate) mod store_round_trip_tests {
     use super::*;
-    use releash_lib::test_support::integration::persistence::LocalEventStore;
-    use releash_lib::test_support::integration::persistence::LocalEventStoreConfig;
-    use releash_lib::test_support::integration::platform::CommitBatchError;
-    use releash_lib::test_support::integration::platform::LocalEventQueryError;
+    use releashd::test_support::integration::persistence::LocalEventStore;
+    use releashd::test_support::integration::persistence::LocalEventStoreConfig;
+    use releashd::test_support::integration::platform::CommitBatchError;
+    use releashd::test_support::integration::platform::LocalEventQueryError;
 
     #[tokio::test]
     pub async fn test_store事実追記_asyncで記録され結果が返る() {
@@ -307,9 +307,7 @@ pub(crate) mod store_round_trip_tests {
         let root = tempfile::TempDir::new().unwrap();
         let store = LocalEventStore::open(LocalEventStoreConfig::production(
             root.path().to_path_buf(),
-            std::sync::Arc::new(
-                releash_lib::test_support::integration::platform::RetryLimiter::new(),
-            ),
+            std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
         ))
         .unwrap();
 
@@ -341,9 +339,7 @@ pub(crate) mod store_round_trip_tests {
         let root = tempfile::TempDir::new().unwrap();
         let store = LocalEventStore::open(LocalEventStoreConfig::production(
             root.path().to_path_buf(),
-            std::sync::Arc::new(
-                releash_lib::test_support::integration::platform::RetryLimiter::new(),
-            ),
+            std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
         ))
         .unwrap();
 
@@ -372,9 +368,7 @@ pub(crate) mod store_round_trip_tests {
         let root = tempfile::TempDir::new().unwrap();
         let store = LocalEventStore::open(LocalEventStoreConfig::production(
             root.path().to_path_buf(),
-            std::sync::Arc::new(
-                releash_lib::test_support::integration::platform::RetryLimiter::new(),
-            ),
+            std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
         ))
         .unwrap();
         store.close_write_queue_for_tests();
@@ -395,9 +389,7 @@ pub(crate) mod store_round_trip_tests {
         let root = tempfile::TempDir::new().unwrap();
         let store = LocalEventStore::open(LocalEventStoreConfig::production(
             root.path().to_path_buf(),
-            std::sync::Arc::new(
-                releash_lib::test_support::integration::platform::RetryLimiter::new(),
-            ),
+            std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
         ))
         .unwrap();
         store.fault_injector().arm_drop_reply();
@@ -426,9 +418,7 @@ pub(crate) mod store_round_trip_tests {
         let root = tempfile::TempDir::new().unwrap();
         let store = LocalEventStore::open(LocalEventStoreConfig::production(
             root.path().to_path_buf(),
-            std::sync::Arc::new(
-                releash_lib::test_support::integration::platform::RetryLimiter::new(),
-            ),
+            std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
         ))
         .unwrap();
         let invalid = NewNodeEventRow {
@@ -450,7 +440,7 @@ pub(crate) mod store_round_trip_tests {
             .unwrap_err();
 
         // Then: SQLite 失敗が返り、失敗行は記録されていない
-        use releash_lib::test_support::integration::transport::ConnectFailure;
+        use releashd::test_support::integration::transport::ConnectFailure;
         assert!(matches!(error, CommitBatchError::StorageUnavailable { .. }));
         assert_eq!(error.connect_code(), connectrpc::ErrorCode::Internal);
         let rows = store
@@ -515,7 +505,7 @@ pub fn test_archive一括読取_複数chunkでも各treeの最新root事実だ�
     unrelated.event_type = "archive_requested".into();
     append_node_event(&connection, &unrelated, 4).unwrap();
     // When
-    let rows = releash_lib::test_support::integration::persistence::latest_root_rows_for_trees(
+    let rows = releashd::test_support::integration::persistence::latest_root_rows_for_trees(
         &connection,
         &ids,
         &["archive_requested", "restore_requested"],
@@ -554,8 +544,7 @@ pub fn test_tree先頭seq取得_全treeの最新seqを主キーだけで返す()
     delete_tree(&connection, "tree-b").unwrap();
 
     // When
-    let heads =
-        releash_lib::test_support::integration::persistence::tree_heads(&connection).unwrap();
+    let heads = releashd::test_support::integration::persistence::tree_heads(&connection).unwrap();
 
     // Then
     assert_eq!(
@@ -588,12 +577,9 @@ pub fn test_tree追記分取得_指定seqより後の事実だけを追記順に
     append_node_event(&connection, &row("other", "root", None), 1).unwrap();
 
     // When
-    let appended = releash_lib::test_support::integration::persistence::read_tree_after(
-        &connection,
-        "tree",
-        2,
-    )
-    .unwrap();
+    let appended =
+        releashd::test_support::integration::persistence::read_tree_after(&connection, "tree", 2)
+            .unwrap();
 
     // Then
     assert_eq!(
@@ -612,7 +598,7 @@ pub fn test_tree_root事実取得_親を持たない最初の事実だけを返�
     append_node_event(&connection, &row("tree", "root", None), 9).unwrap();
 
     // When
-    let root = releash_lib::test_support::integration::persistence::first_root_row_of_tree(
+    let root = releashd::test_support::integration::persistence::first_root_row_of_tree(
         &connection,
         "tree",
         "started",

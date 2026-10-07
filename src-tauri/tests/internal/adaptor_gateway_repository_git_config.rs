@@ -1,11 +1,11 @@
-use releash_lib::test_support::integration::repository::get_branch_base;
-use releash_lib::test_support::integration::repository::get_releash_base;
-use releash_lib::test_support::integration::repository::prune_stale_branch_bases;
-use releash_lib::test_support::integration::repository::resolve_base_commit_oid;
-use releash_lib::test_support::integration::repository::resolve_current_base_branch;
-use releash_lib::test_support::integration::repository::resolve_effective_base_branch;
-use releash_lib::test_support::integration::repository::set_branch_base_override;
-use releash_lib::test_support::integration::repository::set_releash_base;
+use releashd::test_support::integration::repository::get_branch_base;
+use releashd::test_support::integration::repository::get_releash_base;
+use releashd::test_support::integration::repository::prune_stale_branch_bases;
+use releashd::test_support::integration::repository::resolve_base_commit_oid;
+use releashd::test_support::integration::repository::resolve_current_base_branch;
+use releashd::test_support::integration::repository::resolve_effective_base_branch;
+use releashd::test_support::integration::repository::set_branch_base_override;
+use releashd::test_support::integration::repository::set_releash_base;
 
 use crate::adaptor_gateway_repository_test_helpers::assert_stops_at_each_checkpoint;
 use crate::test_support_git::create_initial_commit;
@@ -144,14 +144,14 @@ pub fn test_git任意読取_resolve_effective_base_branch_存在しないパス�
 pub(crate) mod git_config_gateway_tests {
     use super::*;
 
-    use releash_lib::test_support::integration::repository::get_branch_base;
-    use releash_lib::test_support::integration::repository::get_releash_base;
-    use releash_lib::test_support::integration::repository::prune_stale_branch_bases;
-    use releash_lib::test_support::integration::repository::resolve_branch_base;
-    use releash_lib::test_support::integration::repository::resolve_current_base_branch;
-    use releash_lib::test_support::integration::repository::resolve_effective_base_branch;
-    use releash_lib::test_support::integration::repository::set_branch_base_override;
-    use releash_lib::test_support::integration::repository::set_releash_base;
+    use releashd::test_support::integration::repository::get_branch_base;
+    use releashd::test_support::integration::repository::get_releash_base;
+    use releashd::test_support::integration::repository::prune_stale_branch_bases;
+    use releashd::test_support::integration::repository::resolve_branch_base;
+    use releashd::test_support::integration::repository::resolve_current_base_branch;
+    use releashd::test_support::integration::repository::resolve_effective_base_branch;
+    use releashd::test_support::integration::repository::set_branch_base_override;
+    use releashd::test_support::integration::repository::set_releash_base;
 
     #[test]
     pub fn test_ベース解決_per_branch() {

@@ -1,11 +1,11 @@
-use releash_lib::test_support::integration::platform::repository_impl_state_file as state_file;
-use releash_lib::test_support::integration::platform::WorkspaceLayoutState;
-use releash_lib::test_support::integration::platform::WorkspaceState;
-use releash_lib::test_support::integration::platform::WorkspaceStateError;
-use releash_lib::test_support::integration::platform::WorkspaceStateStore;
-use releash_lib::test_support::integration::platform::WorkspaceTabEntry;
-use releash_lib::test_support::integration::platform::WorkspaceTabsState;
-use releash_lib::test_support::integration::repository::WorkspaceStateRepository;
+use releashd::test_support::integration::platform::repository_impl_state_file as state_file;
+use releashd::test_support::integration::platform::WorkspaceLayoutState;
+use releashd::test_support::integration::platform::WorkspaceState;
+use releashd::test_support::integration::platform::WorkspaceStateError;
+use releashd::test_support::integration::platform::WorkspaceStateStore;
+use releashd::test_support::integration::platform::WorkspaceTabEntry;
+use releashd::test_support::integration::platform::WorkspaceTabsState;
+use releashd::test_support::integration::repository::WorkspaceStateRepository;
 use tempfile::TempDir;
 
 fn make_state() -> WorkspaceState {

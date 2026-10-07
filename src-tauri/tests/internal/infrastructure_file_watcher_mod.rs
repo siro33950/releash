@@ -1,6 +1,6 @@
 pub(crate) mod tests {
 
-    use releash_lib::test_support::integration::platform::FileWatcherManager;
+    use releashd::test_support::integration::platform::FileWatcherManager;
 
     #[test]
     pub fn stop_watching_removes_session_and_errors_on_unknown_id() {

@@ -1,11 +1,11 @@
-use releash_lib::test_support::integration::workflow::WorkflowControlPlaneGateway;
-use releash_lib::test_support::integration::workflow::WorkflowRuntimeCommandGateway;
+use releashd::test_support::integration::workflow::WorkflowControlPlaneGateway;
+use releashd::test_support::integration::workflow::WorkflowRuntimeCommandGateway;
 use std::sync::Arc;
 
 #[tokio::test]
 async fn test_承認記録読取_実経路で失敗分類を保持する() {
-    use releash_lib::test_support::integration::persistence::ReadFailure;
-    use releash_lib::test_support::integration::transport::classified_error;
+    use releashd::test_support::integration::persistence::ReadFailure;
+    use releashd::test_support::integration::transport::classified_error;
     // Given
     let fixture = crate::adaptor_gateway_workflow_workflow_host_test_helpers::Fixture::new(0);
     let gateway =
@@ -29,7 +29,7 @@ async fn test_承認記録読取_実経路で失敗分類を保持する() {
 
 #[tokio::test]
 async fn test_承認記録読取_保存された事実の破損をdata_lossとして返す() {
-    use releash_lib::test_support::integration::persistence::NewNodeEventRow;
+    use releashd::test_support::integration::persistence::NewNodeEventRow;
     // Given
     let fixture = crate::adaptor_gateway_workflow_workflow_host_test_helpers::Fixture::new(0);
     fixture
@@ -62,7 +62,7 @@ async fn test_承認記録読取_保存された事実の破損をdata_lossと�
         .unwrap_err();
     // Then
     assert_eq!(
-        releash_lib::test_support::integration::transport::classified_error(error).code,
+        releashd::test_support::integration::transport::classified_error(error).code,
         connectrpc::ErrorCode::DataLoss
     );
 }

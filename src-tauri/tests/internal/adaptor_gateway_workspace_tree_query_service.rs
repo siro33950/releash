@@ -1,28 +1,28 @@
-use releash_lib::test_support::integration::persistence::LocalEventStore;
-use releash_lib::test_support::integration::persistence::LocalEventStoreConfig;
-use releash_lib::test_support::integration::providers::ProviderKind;
-use releash_lib::test_support::integration::sessions::AgentSession;
-use releash_lib::test_support::integration::sessions::AgentSessionRecoveryResult;
-use releash_lib::test_support::integration::sessions::AgentSessionRepository;
-use releash_lib::test_support::integration::sessions::AgentSessionTreeLocation;
-use releash_lib::test_support::integration::sessions::AgentSessionUsecase;
-use releash_lib::test_support::integration::sessions::LocalAgentSessionRepository;
-use releash_lib::test_support::integration::workflow::seed_workflow_session_facts;
-use releash_lib::test_support::integration::workflow::AgentSessionActivity;
-use releash_lib::test_support::integration::workflow::ExecutionStatus;
-use releash_lib::test_support::integration::workflow::ExecutionTreeLaunch;
-use releash_lib::test_support::integration::workflow::NodeFact;
-use releash_lib::test_support::integration::workflow::StopReceivedFact;
-use releash_lib::test_support::integration::workflow::WorkflowSessionFactSeed;
-use releash_lib::test_support::integration::workflow::WorkspaceNodeContentDto;
-use releash_lib::test_support::integration::workspace::SqliteWorkspaceQueryService;
-use releash_lib::test_support::integration::workspace::SqliteWorkspaceTreeRepository;
-use releash_lib::test_support::integration::workspace::WorkspaceIdentity;
-use releash_lib::test_support::integration::workspace::WorkspaceNodeKind;
-use releash_lib::test_support::integration::workspace::WorkspaceQueryService;
-use releash_lib::test_support::integration::workspace::WorkspaceTree;
-use releash_lib::test_support::integration::workspace::WorkspaceTreeRepository;
-use releash_lib::test_support::integration::workspace::WorkspaceVisibleNode;
+use releashd::test_support::integration::persistence::LocalEventStore;
+use releashd::test_support::integration::persistence::LocalEventStoreConfig;
+use releashd::test_support::integration::providers::ProviderKind;
+use releashd::test_support::integration::sessions::AgentSession;
+use releashd::test_support::integration::sessions::AgentSessionRecoveryResult;
+use releashd::test_support::integration::sessions::AgentSessionRepository;
+use releashd::test_support::integration::sessions::AgentSessionTreeLocation;
+use releashd::test_support::integration::sessions::AgentSessionUsecase;
+use releashd::test_support::integration::sessions::LocalAgentSessionRepository;
+use releashd::test_support::integration::workflow::seed_workflow_session_facts;
+use releashd::test_support::integration::workflow::AgentSessionActivity;
+use releashd::test_support::integration::workflow::ExecutionStatus;
+use releashd::test_support::integration::workflow::ExecutionTreeLaunch;
+use releashd::test_support::integration::workflow::NodeFact;
+use releashd::test_support::integration::workflow::StopReceivedFact;
+use releashd::test_support::integration::workflow::WorkflowSessionFactSeed;
+use releashd::test_support::integration::workflow::WorkspaceNodeContentDto;
+use releashd::test_support::integration::workspace::SqliteWorkspaceQueryService;
+use releashd::test_support::integration::workspace::SqliteWorkspaceTreeRepository;
+use releashd::test_support::integration::workspace::WorkspaceIdentity;
+use releashd::test_support::integration::workspace::WorkspaceNodeKind;
+use releashd::test_support::integration::workspace::WorkspaceQueryService;
+use releashd::test_support::integration::workspace::WorkspaceTree;
+use releashd::test_support::integration::workspace::WorkspaceTreeRepository;
+use releashd::test_support::integration::workspace::WorkspaceVisibleNode;
 use std::sync::Arc;
 
 fn service(repository: &Arc<SqliteWorkspaceTreeRepository>) -> Arc<SqliteWorkspaceQueryService> {
@@ -119,7 +119,7 @@ pub async fn test_workspace_tree_query_記録済み活動状態を一覧と詳�
     let directory = tempfile::tempdir().unwrap();
     let store = LocalEventStore::open(LocalEventStoreConfig::production(
         directory.path().to_path_buf(),
-        std::sync::Arc::new(releash_lib::test_support::integration::platform::RetryLimiter::new()),
+        std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
     ))
     .unwrap();
     let sessions =
@@ -150,7 +150,7 @@ pub async fn test_workspace_tree_query_記録済み活動状態を一覧と詳�
 
     let reopened = LocalEventStore::open(LocalEventStoreConfig::production(
         directory.path().to_path_buf(),
-        std::sync::Arc::new(releash_lib::test_support::integration::platform::RetryLimiter::new()),
+        std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
     ))
     .unwrap();
     assert_working_session_projection(reopened).await;
@@ -162,7 +162,7 @@ pub async fn test_workspace_tree_query_活動未観測の単独sessionは完了n
     let directory = tempfile::tempdir().unwrap();
     let store = LocalEventStore::open(LocalEventStoreConfig::production(
         directory.path().to_path_buf(),
-        std::sync::Arc::new(releash_lib::test_support::integration::platform::RetryLimiter::new()),
+        std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
     ))
     .unwrap();
     let workspace = WorkspaceIdentity::new("workspace-initial-activity");
@@ -181,7 +181,7 @@ pub async fn test_workspace_tree_query_活動未観測の単独sessionは完了n
         .await
         .unwrap();
     let records =
-        releash_lib::test_support::integration::workflow::read_tree_records(&store, session_id)
+        releashd::test_support::integration::workflow::read_tree_records(&store, session_id)
             .await
             .unwrap();
     assert!(!records
@@ -211,7 +211,7 @@ pub async fn test_workspace_tree_query_resume直後の単独sessionは緑にな�
     let directory = tempfile::tempdir().unwrap();
     let store = LocalEventStore::open(LocalEventStoreConfig::production(
         directory.path().to_path_buf(),
-        std::sync::Arc::new(releash_lib::test_support::integration::platform::RetryLimiter::new()),
+        std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
     ))
     .unwrap();
     let workspace = WorkspaceIdentity::new("workspace-resumed-activity");
@@ -282,7 +282,7 @@ pub async fn test_workspace_tree_query_workflow子sessionの活動状態を一�
     let directory = tempfile::tempdir().unwrap();
     let store = LocalEventStore::open(LocalEventStoreConfig::production(
         directory.path().to_path_buf(),
-        std::sync::Arc::new(releash_lib::test_support::integration::platform::RetryLimiter::new()),
+        std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
     ))
     .unwrap();
     seed_workflow_session_facts(
@@ -317,7 +317,7 @@ pub async fn test_workspace_tree_query_workflow子sessionの活動状態を一�
 
     let reopened = LocalEventStore::open(LocalEventStoreConfig::production(
         directory.path().to_path_buf(),
-        std::sync::Arc::new(releash_lib::test_support::integration::platform::RetryLimiter::new()),
+        std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
     ))
     .unwrap();
     assert_workflow_child_activity_projection(reopened.clone(), "active").await;
@@ -341,7 +341,7 @@ pub async fn test_workspace_tree_query_活動終了と再開の反復を一覧�
     let directory = tempfile::tempdir().unwrap();
     let store = LocalEventStore::open(LocalEventStoreConfig::production(
         directory.path().to_path_buf(),
-        std::sync::Arc::new(releash_lib::test_support::integration::platform::RetryLimiter::new()),
+        std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
     ))
     .unwrap();
     let workspace = WorkspaceIdentity::new("workspace-activity-round-trip");
@@ -407,7 +407,7 @@ pub async fn test_workspace_tree_query_stop事実と後続活動を一覧と詳�
     let directory = tempfile::tempdir().unwrap();
     let store = LocalEventStore::open(LocalEventStoreConfig::production(
         directory.path().to_path_buf(),
-        std::sync::Arc::new(releash_lib::test_support::integration::platform::RetryLimiter::new()),
+        std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
     ))
     .unwrap();
     let workspace = WorkspaceIdentity::new("workspace-stop-activity-read");
@@ -433,16 +433,15 @@ pub async fn test_workspace_tree_query_stop事実と後続活動を一覧と詳�
         )
         .await
         .unwrap();
-    let meta =
-        releash_lib::test_support::integration::workflow::read_tree_records(&store, session_id)
-            .await
-            .unwrap()
-            .last()
-            .unwrap()
-            .meta
-            .clone();
+    let meta = releashd::test_support::integration::workflow::read_tree_records(&store, session_id)
+        .await
+        .unwrap()
+        .last()
+        .unwrap()
+        .meta
+        .clone();
     let append_stop = async |timestamp_ms| {
-        releash_lib::test_support::integration::workflow::append_single_fact(
+        releashd::test_support::integration::workflow::append_single_fact(
             &store,
             &meta,
             &NodeFact::StopReceived(StopReceivedFact {
@@ -478,7 +477,7 @@ pub async fn test_workspace_tree_query_stop事実と後続活動を一覧と詳�
     drop(store);
     let reopened = LocalEventStore::open(LocalEventStoreConfig::production(
         directory.path().to_path_buf(),
-        std::sync::Arc::new(releash_lib::test_support::integration::platform::RetryLimiter::new()),
+        std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
     ))
     .unwrap();
     assert_eq!(projected_classification(reopened.clone()).await, "idle");
@@ -497,7 +496,7 @@ pub async fn test_workspace_tree_query_stop事実と後続活動を一覧と詳�
             .unwrap();
         assert_eq!(projected_classification(reopened.clone()).await, "active");
         if index == 0 {
-            releash_lib::test_support::integration::workflow::append_single_fact(
+            releashd::test_support::integration::workflow::append_single_fact(
                 &reopened,
                 &meta,
                 &NodeFact::StopReceived(StopReceivedFact {
@@ -518,7 +517,7 @@ pub async fn launch区分が同じworktreeのworkflow一覧とsession一覧を�
     let directory = tempfile::tempdir().unwrap();
     let store = LocalEventStore::open(LocalEventStoreConfig::production(
         directory.path().to_path_buf(),
-        std::sync::Arc::new(releash_lib::test_support::integration::platform::RetryLimiter::new()),
+        std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
     ))
     .unwrap();
     seed_workflow_session_facts(
@@ -580,7 +579,7 @@ pub async fn test_workspace_tree_query_workspace同定子がworktreeと異なる
     let directory = tempfile::tempdir().unwrap();
     let store = LocalEventStore::open(LocalEventStoreConfig::production(
         directory.path().to_path_buf(),
-        std::sync::Arc::new(releash_lib::test_support::integration::platform::RetryLimiter::new()),
+        std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
     ))
     .unwrap();
     let workspace = WorkspaceIdentity::new("workspace-1");
@@ -623,7 +622,7 @@ pub async fn test_workspaceツリー投影_同じfoldのworkflow履歴と表示�
     let directory = tempfile::tempdir().unwrap();
     let store = LocalEventStore::open(LocalEventStoreConfig::production(
         directory.path().to_path_buf(),
-        std::sync::Arc::new(releash_lib::test_support::integration::platform::RetryLimiter::new()),
+        std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
     ))
     .unwrap();
     let execution_id = "00000000-0000-4000-8000-000000001662";
@@ -667,7 +666,7 @@ pub async fn test_workspaceツリー投影_単独agent_sessionのpublic_root表�
     let directory = tempfile::tempdir().unwrap();
     let store = LocalEventStore::open(LocalEventStoreConfig::production(
         directory.path().to_path_buf(),
-        std::sync::Arc::new(releash_lib::test_support::integration::platform::RetryLimiter::new()),
+        std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
     ))
     .unwrap();
     let workspace = WorkspaceIdentity::new("/repo");
@@ -708,7 +707,7 @@ pub async fn test_workspaceノード詳細_public_rootと子nodeの名前はnode
     let directory = tempfile::tempdir().unwrap();
     let store = LocalEventStore::open(LocalEventStoreConfig::production(
         directory.path().to_path_buf(),
-        std::sync::Arc::new(releash_lib::test_support::integration::platform::RetryLimiter::new()),
+        std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
     ))
     .unwrap();
     let workspace = WorkspaceIdentity::new("/repo");
@@ -736,7 +735,7 @@ pub async fn test_workspaceノード詳細_public_rootと子nodeの名前はnode
         .await
         .unwrap()
         .unwrap();
-    let child_node = releash_lib::test_support::integration::workspace::node_for_execution(
+    let child_node = releashd::test_support::integration::workspace::node_for_execution(
         &*repository,
         &workspace,
         child_execution_id,
@@ -771,19 +770,17 @@ pub async fn test_workspace読取_未対応定義がabort済みでもcommand出�
         let directory = tempfile::tempdir().unwrap();
         let store = LocalEventStore::open(LocalEventStoreConfig::production(
             directory.path().into(),
-            std::sync::Arc::new(
-                releash_lib::test_support::integration::platform::RetryLimiter::new(),
-            ),
+            std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
         ))
         .unwrap();
-        releash_lib::test_support::integration::workflow::seed_unavailable_definition(
+        releashd::test_support::integration::workflow::seed_unavailable_definition(
             &store,
             "00000000-0000-4000-8000-000000001744",
             "/repo",
             unavailable,
         )
         .await;
-        releash_lib::test_support::integration::workflow::seed_unavailable_definition(
+        releashd::test_support::integration::workflow::seed_unavailable_definition(
             &store,
             "00000000-0000-4000-8000-000000001745",
             "/other",
@@ -794,17 +791,17 @@ pub async fn test_workspace読取_未対応定義がabort済みでもcommand出�
             "00000000-0000-4000-8000-000000001744",
             "00000000-0000-4000-8000-000000001745",
         ] {
-            releash_lib::test_support::integration::workflow::append_single_fact(
+            releashd::test_support::integration::workflow::append_single_fact(
                 &store,
-                &releash_lib::test_support::integration::workflow::NodeFactMeta {
+                &releashd::test_support::integration::workflow::NodeFactMeta {
                     tree_id: tree.into(),
                     node_execution_id: tree.into(),
                     parent_id: None,
                     node_name: "main".into(),
-                    kind: releash_lib::test_support::integration::workflow::NodeKindName::Sequence,
+                    kind: releashd::test_support::integration::workflow::NodeKindName::Sequence,
                     attempt: 1,
                 },
-                &releash_lib::test_support::integration::workflow::NodeFact::AbortRequested(
+                &releashd::test_support::integration::workflow::NodeFact::AbortRequested(
                     Default::default(),
                 ),
                 10_000,
@@ -814,17 +811,17 @@ pub async fn test_workspace読取_未対応定義がabort済みでもcommand出�
         }
         {
             let repository = SqliteWorkspaceTreeRepository::new(store.clone());
-            let command = releash_lib::test_support::integration::workspace::node_for_execution(
+            let command = releashd::test_support::integration::workspace::node_for_execution(
                 &*repository,
-                &releash_lib::test_support::integration::workspace::WorkspaceIdentity::new("/repo"),
+                &releashd::test_support::integration::workspace::WorkspaceIdentity::new("/repo"),
                 "00000000-0000-4000-8000-000000001744-command",
             )
             .await
             .unwrap()
             .unwrap();
-            let session = releash_lib::test_support::integration::workspace::node_for_execution(
+            let session = releashd::test_support::integration::workspace::node_for_execution(
                 &*repository,
-                &releash_lib::test_support::integration::workspace::WorkspaceIdentity::new("/repo"),
+                &releashd::test_support::integration::workspace::WorkspaceIdentity::new("/repo"),
                 "00000000-0000-4000-8000-000000001744-session",
             )
             .await
@@ -873,7 +870,7 @@ pub async fn test_archive履歴_手動とworktree消失の事実の時刻と理�
     let directory = tempfile::tempdir().unwrap();
     let store = LocalEventStore::open(LocalEventStoreConfig::production(
         directory.path().into(),
-        std::sync::Arc::new(releash_lib::test_support::integration::platform::RetryLimiter::new()),
+        std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
     ))
     .unwrap();
     let repository = SqliteWorkspaceTreeRepository::new(store.clone());
@@ -926,14 +923,14 @@ async fn archive_aborted(
     archived_at: f64,
     reason: &str,
 ) {
-    use releash_lib::test_support::integration::workflow::ExecutionTreeArchiveFactRepository;
-    use releash_lib::test_support::integration::workflow::ExecutionTreeArchiveRepository;
+    use releashd::test_support::integration::workflow::ExecutionTreeArchiveFactRepository;
+    use releashd::test_support::integration::workflow::ExecutionTreeArchiveRepository;
     let root =
-        releash_lib::test_support::integration::workflow::read_tree_records(store, execution_id)
+        releashd::test_support::integration::workflow::read_tree_records(store, execution_id)
             .await
             .unwrap()
             .remove(0);
-    releash_lib::test_support::integration::workflow::append_single_fact(
+    releashd::test_support::integration::workflow::append_single_fact(
         store,
         &root.meta,
         &NodeFact::AbortRequested(Default::default()),
@@ -943,7 +940,7 @@ async fn archive_aborted(
     .unwrap();
     ExecutionTreeArchiveFactRepository::new(store.clone(), data_dir)
         .archive(
-            &releash_lib::test_support::integration::workflow::ExecutionTreeId::new(execution_id)
+            &releashd::test_support::integration::workflow::ExecutionTreeId::new(execution_id)
                 .unwrap(),
             archived_at,
             reason,
@@ -954,12 +951,12 @@ async fn archive_aborted(
 
 #[tokio::test]
 pub async fn test_workflow単一取得_単独sessionをworkflow_summaryとして返さない() {
-    use releash_lib::test_support::integration::workflow::SessionExecutionTreeRootFacts;
+    use releashd::test_support::integration::workflow::SessionExecutionTreeRootFacts;
     // Given
     let directory = tempfile::tempdir().unwrap();
     let store = LocalEventStore::open(LocalEventStoreConfig::production(
         directory.path().into(),
-        std::sync::Arc::new(releash_lib::test_support::integration::platform::RetryLimiter::new()),
+        std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
     ))
     .unwrap();
     let session = "00000000-0000-4000-8000-000000000991";
@@ -967,7 +964,7 @@ pub async fn test_workflow単一取得_単独sessionをworkflow_summaryとして
     let facts =
         SessionExecutionTreeRootFacts::new(session, "/repo", "/repo", ProviderKind::Codex, None)
             .unwrap();
-    releash_lib::test_support::integration::workflow::append_fact_batch_for_seed(
+    releashd::test_support::integration::workflow::append_fact_batch_for_seed(
         &store,
         &facts.into_facts(),
         1,
@@ -1004,13 +1001,13 @@ pub async fn test_workflow単一取得_単独sessionをworkflow_summaryとして
 
 #[tokio::test]
 pub async fn test_workspace読取_実経路で失敗分類を保持する() {
-    use releash_lib::test_support::integration::persistence::ReadFailure;
-    use releash_lib::test_support::integration::transport::classified_error;
+    use releashd::test_support::integration::persistence::ReadFailure;
+    use releashd::test_support::integration::transport::classified_error;
     // Given
     let directory = tempfile::tempdir().unwrap();
     let store = LocalEventStore::open(LocalEventStoreConfig::production(
         directory.path().into(),
-        std::sync::Arc::new(releash_lib::test_support::integration::platform::RetryLimiter::new()),
+        std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
     ))
     .unwrap();
     let repository = SqliteWorkspaceTreeRepository::new(store.clone());
@@ -1047,7 +1044,7 @@ pub async fn test_session選択_記録済みsessionとnodeのdtoを返し対象�
     let directory = tempfile::tempdir().unwrap();
     let store = LocalEventStore::open(LocalEventStoreConfig::production(
         directory.path().into(),
-        Arc::new(releash_lib::test_support::integration::platform::RetryLimiter::new()),
+        Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
     ))
     .unwrap();
     seed_workflow_session_facts(

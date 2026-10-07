@@ -42,7 +42,7 @@ pub(crate) mod tests {
                 .chain(["set_menu_items_enabled"])
                 .collect::<Vec<_>>()
         );
-        for command in releash_lib::desktop_api::test_support::COMMAND_NAMES {
+        for command in releashd::desktop_api::test_support::COMMAND_NAMES {
             assert_eq!(router.domain_route_index(command), None, "{command}");
         }
     }
@@ -62,7 +62,7 @@ pub(crate) mod tests {
     }
 
     pub(crate) fn registered_command_names() -> Vec<&'static str> {
-        releash_lib::desktop_api::test_support::COMMAND_NAMES
+        releashd::desktop_api::test_support::COMMAND_NAMES
             .iter()
             .copied()
             .chain(desktop_lifecycle::COMMAND_NAMES.iter().copied())

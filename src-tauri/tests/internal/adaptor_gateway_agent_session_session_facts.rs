@@ -1,19 +1,19 @@
 use connectrpc::ErrorCode;
-use releash_lib::test_support::integration::persistence::LocalEventStore;
-use releash_lib::test_support::integration::persistence::LocalEventStoreConfig;
-use releash_lib::test_support::integration::platform::LocalEventQueryError;
-use releash_lib::test_support::integration::sessions::locate_session;
-use releash_lib::test_support::integration::sessions::read_session_context;
-use releash_lib::test_support::integration::sessions::read_session_records;
-use releash_lib::test_support::integration::sessions::AgentSessionQueryError;
-use releash_lib::test_support::integration::sessions::AgentSessionRepositoryError;
-use releash_lib::test_support::integration::sessions::SessionContextReadError;
-use releash_lib::test_support::integration::sessions::SessionLocation;
-use releash_lib::test_support::integration::transport::ConnectFailure;
-use releash_lib::test_support::integration::workflow::seed_unavailable_definition;
-use releash_lib::test_support::integration::workflow::FactLogReadBackend;
-use releash_lib::test_support::integration::workflow::NodeFactMeta;
-use releash_lib::test_support::integration::workflow::NodeKindName;
+use releashd::test_support::integration::persistence::LocalEventStore;
+use releashd::test_support::integration::persistence::LocalEventStoreConfig;
+use releashd::test_support::integration::platform::LocalEventQueryError;
+use releashd::test_support::integration::sessions::locate_session;
+use releashd::test_support::integration::sessions::read_session_context;
+use releashd::test_support::integration::sessions::read_session_records;
+use releashd::test_support::integration::sessions::AgentSessionQueryError;
+use releashd::test_support::integration::sessions::AgentSessionRepositoryError;
+use releashd::test_support::integration::sessions::SessionContextReadError;
+use releashd::test_support::integration::sessions::SessionLocation;
+use releashd::test_support::integration::transport::ConnectFailure;
+use releashd::test_support::integration::workflow::seed_unavailable_definition;
+use releashd::test_support::integration::workflow::FactLogReadBackend;
+use releashd::test_support::integration::workflow::NodeFactMeta;
+use releashd::test_support::integration::workflow::NodeKindName;
 
 #[tokio::test]
 pub async fn test_session読取_親と自身の実行定義を解釈せず接続情報を取得できる() {
@@ -22,9 +22,7 @@ pub async fn test_session読取_親と自身の実行定義を解釈せず接続
         let directory = tempfile::tempdir().unwrap();
         let store = LocalEventStore::open(LocalEventStoreConfig::production(
             directory.path().into(),
-            std::sync::Arc::new(
-                releash_lib::test_support::integration::platform::RetryLimiter::new(),
-            ),
+            std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
         ))
         .unwrap();
         seed_unavailable_definition(&store, "tree", "/repo", unavailable).await;
@@ -41,7 +39,7 @@ pub async fn test_session読取_親と自身の実行定義を解釈せず接続
         // Then
         assert_eq!(
             context.provider,
-            releash_lib::test_support::integration::providers::ProviderKind::Codex
+            releashd::test_support::integration::providers::ProviderKind::Codex
         );
         assert_eq!(context.worktree_path, "/repo");
         assert!(records
@@ -49,7 +47,7 @@ pub async fn test_session読取_親と自身の実行定義を解釈せず接続
             .all(|record| record.meta.node_execution_id == "tree-session"));
         assert!(records.iter().all(|record| !matches!(
             record.fact,
-            releash_lib::test_support::integration::workflow::NodeFact::Started(_)
+            releashd::test_support::integration::workflow::NodeFact::Started(_)
         )));
         assert_eq!(records.len(), 1);
     }
@@ -61,7 +59,7 @@ pub async fn test_session読取_root欠落と対象provider欠落は接続情報
     let directory = tempfile::tempdir().unwrap();
     let store = LocalEventStore::open(LocalEventStoreConfig::production(
         directory.path().into(),
-        std::sync::Arc::new(releash_lib::test_support::integration::platform::RetryLimiter::new()),
+        std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
     ))
     .unwrap();
     let backend = FactLogReadBackend::Live(store.clone());
@@ -97,7 +95,7 @@ pub async fn test_session読取_sql障害とroot欠損を区別する() {
     let directory = tempfile::tempdir().unwrap();
     let store = LocalEventStore::open(LocalEventStoreConfig::production(
         directory.path().into(),
-        std::sync::Arc::new(releash_lib::test_support::integration::platform::RetryLimiter::new()),
+        std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
     ))
     .unwrap();
     let backend = FactLogReadBackend::Live(store);
@@ -128,26 +126,26 @@ pub async fn test_session読取_sql障害とroot欠損を区別する() {
     assert_eq!(repository_error.connect_code(), ErrorCode::Internal);
     assert!(
         matches!(repository_error, AgentSessionRepositoryError::Store(failure)
-        if failure.nature == releash_lib::test_support::integration::platform::TechnicalFailureNature::Other
-        && matches!(failure.source, releash_lib::test_support::integration::platform::StorageFailureSource::Query(LocalEventQueryError::Internal { .. })))
+        if failure.nature == releashd::test_support::integration::platform::TechnicalFailureNature::Other
+        && matches!(failure.source, releashd::test_support::integration::platform::StorageFailureSource::Query(LocalEventQueryError::Internal { .. })))
     );
     let query_error =
         AgentSessionQueryError::from(read_session_context(&backend, &location).await.unwrap_err());
     assert_eq!(query_error.connect_code(), ErrorCode::Internal);
     assert!(matches!(query_error, AgentSessionQueryError::Store(failure)
-        if failure.nature == releash_lib::test_support::integration::platform::TechnicalFailureNature::Other
-        && matches!(failure.source, releash_lib::test_support::integration::platform::StorageFailureSource::Query(LocalEventQueryError::Internal { .. }))));
+        if failure.nature == releashd::test_support::integration::platform::TechnicalFailureNature::Other
+        && matches!(failure.source, releashd::test_support::integration::platform::StorageFailureSource::Query(LocalEventQueryError::Internal { .. }))));
 }
 
 #[tokio::test]
 pub async fn test_session読取_子sessionにもrootのarchiveとrestoreを反映する() {
-    use releash_lib::test_support::integration::workflow::derive_session_facts;
-    use releash_lib::test_support::integration::workflow::NodeFact;
+    use releashd::test_support::integration::workflow::derive_session_facts;
+    use releashd::test_support::integration::workflow::NodeFact;
 
     let directory = tempfile::tempdir().unwrap();
     let store = LocalEventStore::open(LocalEventStoreConfig::production(
         directory.path().into(),
-        std::sync::Arc::new(releash_lib::test_support::integration::platform::RetryLimiter::new()),
+        std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
     ))
     .unwrap();
     seed_unavailable_definition(&store, "tree", "/repo", "unused").await;
@@ -166,14 +164,14 @@ pub async fn test_session読取_子sessionにもrootのarchiveとrestoreを反�
     };
     for fact in [
         NodeFact::ArchiveRequested(
-            releash_lib::test_support::integration::workflow::ArchiveRequestedFact {
+            releashd::test_support::integration::workflow::ArchiveRequestedFact {
                 reason: "manual".into(),
                 archived_at: 0.0,
             },
         ),
         NodeFact::RestoreRequested,
     ] {
-        releash_lib::test_support::integration::workflow::append_single_fact(
+        releashd::test_support::integration::workflow::append_single_fact(
             &store, &root, &fact, 100,
         )
         .await

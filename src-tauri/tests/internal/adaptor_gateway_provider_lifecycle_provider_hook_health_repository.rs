@@ -2,21 +2,21 @@ use std::sync::Arc;
 
 use tempfile::tempdir;
 
-use releash_lib::test_support::integration::persistence::LocalEventStore;
-use releash_lib::test_support::integration::persistence::LocalEventStoreConfig;
-use releash_lib::test_support::integration::providers::LocalProviderHookHealthRepository;
-use releash_lib::test_support::integration::providers::ProviderHookHealthOutcome;
-use releash_lib::test_support::integration::providers::ProviderHookHealthRepository;
-use releash_lib::test_support::integration::providers::ProviderKind;
-use releash_lib::test_support::integration::providers::ProviderLifecycleUnavailableReason;
-use releash_lib::test_support::integration::repository::LocalEventTransactionRepository;
+use releashd::test_support::integration::persistence::LocalEventStore;
+use releashd::test_support::integration::persistence::LocalEventStoreConfig;
+use releashd::test_support::integration::providers::LocalProviderHookHealthRepository;
+use releashd::test_support::integration::providers::ProviderHookHealthOutcome;
+use releashd::test_support::integration::providers::ProviderHookHealthRepository;
+use releashd::test_support::integration::providers::ProviderKind;
+use releashd::test_support::integration::providers::ProviderLifecycleUnavailableReason;
+use releashd::test_support::integration::repository::LocalEventTransactionRepository;
 
 #[tokio::test]
 pub async fn test_provider_hook_health_repository_warningと解除を再起動後も復元する() {
     let directory = tempdir().unwrap();
     let store = LocalEventStore::open(LocalEventStoreConfig::production(
         directory.path().to_path_buf(),
-        std::sync::Arc::new(releash_lib::test_support::integration::platform::RetryLimiter::new()),
+        std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
     ))
     .unwrap();
     let repository = LocalProviderHookHealthRepository::new(
@@ -41,7 +41,7 @@ pub async fn test_provider_hook_health_repository_warningと解除を再起動�
     drop(store);
     let restarted = LocalEventStore::open(LocalEventStoreConfig::production(
         directory.path().to_path_buf(),
-        std::sync::Arc::new(releash_lib::test_support::integration::platform::RetryLimiter::new()),
+        std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
     ))
     .unwrap();
     let repository = LocalProviderHookHealthRepository::new(
@@ -71,7 +71,7 @@ pub async fn test_provider_hook_health_repository_providerごとの状態を混�
     let directory = tempdir().unwrap();
     let store = LocalEventStore::open(LocalEventStoreConfig::production(
         directory.path().to_path_buf(),
-        std::sync::Arc::new(releash_lib::test_support::integration::platform::RetryLimiter::new()),
+        std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
     ))
     .unwrap();
     let repository = LocalProviderHookHealthRepository::new(
@@ -112,12 +112,12 @@ pub async fn test_provider_hook_health_repository_providerごとの状態を混�
 #[tokio::test]
 pub async fn test_hook保存_同一キーの異なる内容と古いrevisionの分類を区別する() {
     use connectrpc::ErrorCode;
-    use releash_lib::test_support::integration::transport::ConnectFailure;
+    use releashd::test_support::integration::transport::ConnectFailure;
     // Given
     let directory = tempdir().unwrap();
     let store = LocalEventStore::open(LocalEventStoreConfig::production(
         directory.path().into(),
-        std::sync::Arc::new(releash_lib::test_support::integration::platform::RetryLimiter::new()),
+        std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
     ))
     .unwrap();
     let repository =

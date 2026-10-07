@@ -1,24 +1,24 @@
-use releash_lib::test_support::integration::persistence::LocalEventStore;
-use releash_lib::test_support::integration::persistence::LocalEventStoreConfig;
-use releash_lib::test_support::integration::providers::ProviderKind;
-use releash_lib::test_support::integration::workflow::current_timestamp;
-use releash_lib::test_support::integration::workflow::ExecutionOrigin;
-use releash_lib::test_support::integration::workflow::IsolatedWorktree;
-use releash_lib::test_support::integration::workflow::IsolatedWorktreeGateway;
-use releash_lib::test_support::integration::workflow::ManagedWorktreeResolver;
-use releash_lib::test_support::integration::workflow::NodeExecutionStatus;
-use releash_lib::test_support::integration::workflow::NodeKindName;
-use releash_lib::test_support::integration::workflow::NodeSessionInfo;
-use releash_lib::test_support::integration::workflow::RuntimeCommitSnapshot;
-use releash_lib::test_support::integration::workflow::WorkflowAgentSessionPort;
-use releash_lib::test_support::integration::workflow::WorkflowDefaults;
-use releash_lib::test_support::integration::workflow::WorkflowDefinition;
-use releash_lib::test_support::integration::workflow::WorkflowEvent;
-use releash_lib::test_support::integration::workflow::WorkflowExecutionInsert;
-use releash_lib::test_support::integration::workflow::WorkflowRuntimeDependencies;
-use releash_lib::test_support::integration::workflow::WorkflowRuntimeError;
-use releash_lib::test_support::integration::workflow::WorkflowRuntimeHost;
-use releash_lib::test_support::integration::workflow::WorkflowSessionLaunchConfig;
+use releashd::test_support::integration::persistence::LocalEventStore;
+use releashd::test_support::integration::persistence::LocalEventStoreConfig;
+use releashd::test_support::integration::providers::ProviderKind;
+use releashd::test_support::integration::workflow::current_timestamp;
+use releashd::test_support::integration::workflow::ExecutionOrigin;
+use releashd::test_support::integration::workflow::IsolatedWorktree;
+use releashd::test_support::integration::workflow::IsolatedWorktreeGateway;
+use releashd::test_support::integration::workflow::ManagedWorktreeResolver;
+use releashd::test_support::integration::workflow::NodeExecutionStatus;
+use releashd::test_support::integration::workflow::NodeKindName;
+use releashd::test_support::integration::workflow::NodeSessionInfo;
+use releashd::test_support::integration::workflow::RuntimeCommitSnapshot;
+use releashd::test_support::integration::workflow::WorkflowAgentSessionPort;
+use releashd::test_support::integration::workflow::WorkflowDefaults;
+use releashd::test_support::integration::workflow::WorkflowDefinition;
+use releashd::test_support::integration::workflow::WorkflowEvent;
+use releashd::test_support::integration::workflow::WorkflowExecutionInsert;
+use releashd::test_support::integration::workflow::WorkflowRuntimeDependencies;
+use releashd::test_support::integration::workflow::WorkflowRuntimeError;
+use releashd::test_support::integration::workflow::WorkflowRuntimeHost;
+use releashd::test_support::integration::workflow::WorkflowSessionLaunchConfig;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
@@ -36,21 +36,21 @@ impl IsolatedWorktreeGateway for TestWorktrees {
     fn repository_root(
         &self,
         _path: &str,
-    ) -> Result<String, releash_lib::test_support::integration::workflow::WorkflowError> {
+    ) -> Result<String, releashd::test_support::integration::workflow::WorkflowError> {
         Ok("/repo".into())
     }
     fn is_created(
         &self,
         _parent: &str,
         _worktree: &IsolatedWorktree,
-    ) -> Result<bool, releash_lib::test_support::integration::workflow::WorkflowError> {
+    ) -> Result<bool, releashd::test_support::integration::workflow::WorkflowError> {
         Ok(false)
     }
     fn create(
         &self,
         parent: &str,
         worktree: &IsolatedWorktree,
-    ) -> Result<(), releash_lib::test_support::integration::workflow::WorkflowError> {
+    ) -> Result<(), releashd::test_support::integration::workflow::WorkflowError> {
         let barrier = self.creation_barrier.lock().unwrap().clone();
         if let Some(barrier) = barrier {
             barrier.wait();
@@ -66,9 +66,9 @@ impl IsolatedWorktreeGateway for TestWorktrees {
             })
             .is_ok()
         {
-            return Err(releash_lib::test_support::integration::workflow::WorkflowError::Store(
-                releash_lib::test_support::integration::platform::StorageFailure::from(
-                    releash_lib::test_support::integration::platform::CommitBatchError::TreeHeadConflict,
+            return Err(releashd::test_support::integration::workflow::WorkflowError::Store(
+                releashd::test_support::integration::platform::StorageFailure::from(
+                    releashd::test_support::integration::platform::CommitBatchError::TreeHeadConflict,
                 )
                 .with_message("creation failed"),
             ));
@@ -226,31 +226,27 @@ impl WorkflowAgentSessionPort for TestSessions {
     }
 }
 
-impl releash_lib::test_support::integration::sessions::ProviderAgentTerminalGateway
-    for TestSessions
-{
+impl releashd::test_support::integration::sessions::ProviderAgentTerminalGateway for TestSessions {
     fn spawn(
         &self,
-        _owner: releash_lib::test_support::integration::terminal::TerminalSurfaceOwner,
+        _owner: releashd::test_support::integration::terminal::TerminalSurfaceOwner,
         _path: &str,
-        _process: releash_lib::test_support::integration::terminal::TerminalProcessLaunch,
+        _process: releashd::test_support::integration::terminal::TerminalProcessLaunch,
         _rows: u16,
         _cols: u16,
-    ) -> Result<
-        (),
-        releash_lib::test_support::integration::sessions::ProviderAgentTerminalGatewayError,
-    > {
+    ) -> Result<(), releashd::test_support::integration::sessions::ProviderAgentTerminalGatewayError>
+    {
         panic!("test session launch uses WorkflowAgentSessionPort")
     }
     fn presence(
         &self,
-        owner: &releash_lib::test_support::integration::terminal::TerminalSurfaceOwner,
+        owner: &releashd::test_support::integration::terminal::TerminalSurfaceOwner,
     ) -> Result<
-        releash_lib::test_support::integration::sessions::ManagedPtyPresence,
-        releash_lib::test_support::integration::sessions::ProviderAgentTerminalGatewayError,
+        releashd::test_support::integration::sessions::ManagedPtyPresence,
+        releashd::test_support::integration::sessions::ProviderAgentTerminalGatewayError,
     > {
-        use releash_lib::test_support::integration::sessions::ManagedPtyPresence;
-        let releash_lib::test_support::integration::terminal::TerminalSurfaceOwner::Session {
+        use releashd::test_support::integration::sessions::ManagedPtyPresence;
+        let releashd::test_support::integration::terminal::TerminalSurfaceOwner::Session {
             session_id,
             ..
         } = owner
@@ -259,18 +255,16 @@ impl releash_lib::test_support::integration::sessions::ProviderAgentTerminalGate
         };
         if self.presence_error_session.lock().unwrap().as_deref() == Some(session_id.as_str()) {
             return Err(
-                releash_lib::test_support::integration::sessions::ProviderAgentTerminalGatewayError::Technical(
-                    releash_lib::test_support::integration::platform::TechnicalFailure {
-                        nature: releash_lib::test_support::integration::platform::TechnicalFailureNature::Transient,
+                releashd::test_support::integration::sessions::ProviderAgentTerminalGatewayError::Technical(
+                    releashd::test_support::integration::platform::TechnicalFailure {
+                        nature: releashd::test_support::integration::platform::TechnicalFailureNature::Transient,
                         message: "unavailable".into(),
                     },
                 ),
             );
         }
         if self.presence_unknown.load(Ordering::SeqCst) {
-            return Ok(
-                releash_lib::test_support::integration::sessions::ManagedPtyPresence::Unknown,
-            );
+            return Ok(releashd::test_support::integration::sessions::ManagedPtyPresence::Unknown);
         }
         Ok(if self.live_sessions.lock().unwrap().contains(session_id) {
             ManagedPtyPresence::Live
@@ -280,29 +274,25 @@ impl releash_lib::test_support::integration::sessions::ProviderAgentTerminalGate
     }
     fn stop_preserving_checkpoint(
         &self,
-        _owner: &releash_lib::test_support::integration::terminal::TerminalSurfaceOwner,
-    ) -> Result<
-        (),
-        releash_lib::test_support::integration::sessions::ProviderAgentTerminalGatewayError,
-    > {
+        _owner: &releashd::test_support::integration::terminal::TerminalSurfaceOwner,
+    ) -> Result<(), releashd::test_support::integration::sessions::ProviderAgentTerminalGatewayError>
+    {
         panic!("unexpected terminal stop")
     }
     fn delete(
         &self,
-        _owner: &releash_lib::test_support::integration::terminal::TerminalSurfaceOwner,
-    ) -> Result<
-        (),
-        releash_lib::test_support::integration::sessions::ProviderAgentTerminalGatewayError,
-    > {
+        _owner: &releashd::test_support::integration::terminal::TerminalSurfaceOwner,
+    ) -> Result<(), releashd::test_support::integration::sessions::ProviderAgentTerminalGatewayError>
+    {
         panic!("unexpected terminal deletion")
     }
     fn is_current_runtime_generation(
         &self,
-        _owner: &releash_lib::test_support::integration::terminal::TerminalSurfaceOwner,
+        _owner: &releashd::test_support::integration::terminal::TerminalSurfaceOwner,
         _generation: u64,
     ) -> Result<
         bool,
-        releash_lib::test_support::integration::sessions::ProviderAgentTerminalGatewayError,
+        releashd::test_support::integration::sessions::ProviderAgentTerminalGatewayError,
     > {
         panic!("unexpected generation lookup")
     }
@@ -320,16 +310,14 @@ pub(crate) struct Fixture {
 impl Fixture {
     pub(crate) fn daemon_repository(
         &self,
-    ) -> Arc<releash_lib::test_support::integration::daemon::InMemoryDaemonRepository> {
+    ) -> Arc<releashd::test_support::integration::daemon::InMemoryDaemonRepository> {
         self.host.test_daemon().clone()
     }
     pub(crate) fn new(failures: usize) -> Self {
         let directory = tempfile::tempdir().unwrap();
         let store = LocalEventStore::open(LocalEventStoreConfig::production(
             directory.path().into(),
-            std::sync::Arc::new(
-                releash_lib::test_support::integration::platform::RetryLimiter::new(),
-            ),
+            std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
         ))
         .unwrap();
         let app = crate::adaptor_gateway_workflow_workflow_host_test_helpers::dependencies(Some(
@@ -341,21 +329,21 @@ impl Fixture {
         });
         let sessions = Arc::new(TestSessions::default());
         let mut host = WorkflowRuntimeHost::with_runtime_ports(
-            releash_lib::test_support::integration::platform::shared().clone(),
+            releashd::test_support::integration::platform::shared().clone(),
             Arc::new(crate::adaptor_gateway_workflow_workflow_host::workflow_host_tests::UnusedWorkflowResolver),
             Arc::new(crate::adaptor_gateway_workflow_workflow_host::workflow_host_tests::AcceptingWorktreeResolver),
             workspace_query(store.clone()),
             sessions.clone(),
             worktrees.clone(),
-            releash_lib::test_support::integration::daemon::serving(),
+            releashd::test_support::integration::daemon::serving(),
         );
         let processes = Arc::new(
-            releash_lib::test_support::integration::workflow::WorkflowNodeProcesses::new(
+            releashd::test_support::integration::workflow::WorkflowNodeProcesses::new(
                 sessions.clone(),
             ),
         );
         host.node_processes = processes;
-        let host = releash_lib::test_support::integration::platform::wire_delegate_continuation(
+        let host = releashd::test_support::integration::platform::wire_delegate_continuation(
             app.clone(),
             host,
         );
@@ -400,7 +388,7 @@ impl Fixture {
         let repo = git2::Repository::init(&root).unwrap();
         crate::test_support_git::create_initial_commit(&repo);
         *fixture.host.test_isolated_worktrees_mut() = Arc::new(
-            releash_lib::test_support::integration::workflow::RepositoryIsolatedWorktreeGateway,
+            releashd::test_support::integration::workflow::RepositoryIsolatedWorktreeGateway,
         );
         (
             fixture,
@@ -447,16 +435,16 @@ impl Fixture {
 
     pub(crate) fn restarted_host(&self) -> WorkflowRuntimeHost {
         let mut host = WorkflowRuntimeHost::with_runtime_ports(
-            releash_lib::test_support::integration::platform::shared().clone(),
+            releashd::test_support::integration::platform::shared().clone(),
             Arc::new(crate::adaptor_gateway_workflow_workflow_host::workflow_host_tests::UnusedWorkflowResolver),
             Arc::new(crate::adaptor_gateway_workflow_workflow_host::workflow_host_tests::AcceptingWorktreeResolver),
             self.host.test_workspace_query().clone(),
             self.sessions.clone(),
             self.host.test_isolated_worktrees().clone(),
-            releash_lib::test_support::integration::daemon::serving(),
+            releashd::test_support::integration::daemon::serving(),
         );
         host.node_processes = self.host.node_processes.clone();
-        releash_lib::test_support::integration::platform::wire_delegate_continuation(
+        releashd::test_support::integration::platform::wire_delegate_continuation(
             self.app.clone(),
             host,
         )
@@ -465,8 +453,8 @@ impl Fixture {
     pub(crate) async fn command_artifact(&self, execution_id: &str) -> serde_json::Value {
         tokio::time::timeout(std::time::Duration::from_secs(10), async {
             loop {
-                let folded = releash_lib::test_support::integration::workflow::fold_tree_from(
-                    &releash_lib::test_support::integration::workflow::FactLogReadBackend::Live(
+                let folded = releashd::test_support::integration::workflow::fold_tree_from(
+                    &releashd::test_support::integration::workflow::FactLogReadBackend::Live(
                         self.store.clone(),
                     ),
                     execution_id,
@@ -516,17 +504,17 @@ pub(crate) async fn wait_startup_retries(host: &WorkflowRuntimeHost) {
 pub(crate) fn record_workflow_execution_broadcasts(
     app: &WorkflowRuntimeDependencies,
 ) -> tokio::sync::broadcast::Receiver<
-    releash_lib::test_support::integration::subscriptions::StateChangeSource,
+    releashd::test_support::integration::subscriptions::StateChangeSource,
 > {
-    releash_lib::test_support::integration::subscriptions::changes(&app.state_changes)
+    releashd::test_support::integration::subscriptions::changes(&app.state_changes)
 }
 
 pub(crate) fn take_workflow_execution_broadcasts(
     receiver: &mut tokio::sync::broadcast::Receiver<
-        releash_lib::test_support::integration::subscriptions::StateChangeSource,
+        releashd::test_support::integration::subscriptions::StateChangeSource,
     >,
-) -> Vec<releash_lib::test_support::integration::subscriptions::StateChangeSource> {
-    releash_lib::test_support::integration::subscriptions::take_changes(receiver)
+) -> Vec<releashd::test_support::integration::subscriptions::StateChangeSource> {
+    releashd::test_support::integration::subscriptions::take_changes(receiver)
 }
 
 pub(crate) fn workspace_query(store: Arc<LocalEventStore>) -> Arc<SqliteWorkspaceQueryService> {
@@ -538,22 +526,22 @@ pub(crate) fn dependencies(store: Option<Arc<LocalEventStore>>) -> WorkflowRunti
         store,
         config: None,
         secrets: None,
-        state_changes: releash_lib::test_support::integration::subscriptions::test_subscriptions(),
+        state_changes: releashd::test_support::integration::subscriptions::test_subscriptions(),
     }
 }
 
 use crate::adaptor_gateway_workflow_workflow_host::workflow_host_tests::AcceptingWorktreeResolver;
 use crate::adaptor_gateway_workflow_workflow_host::workflow_host_tests::UnusedWorkflowResolver;
-use releash_lib::test_support::integration::workflow::ExecutionTreeArchiveFactRepository;
-use releash_lib::test_support::integration::workflow::WorkflowRuntimeCommandGateway;
-use releash_lib::test_support::integration::workspace::SqliteWorkspaceQueryService;
-use releash_lib::test_support::integration::workspace::SqliteWorkspaceTreeRepository;
+use releashd::test_support::integration::workflow::ExecutionTreeArchiveFactRepository;
+use releashd::test_support::integration::workflow::WorkflowRuntimeCommandGateway;
+use releashd::test_support::integration::workspace::SqliteWorkspaceQueryService;
+use releashd::test_support::integration::workspace::SqliteWorkspaceTreeRepository;
 pub(crate) struct ArchiveFixture {
     pub(crate) directory: tempfile::TempDir,
     pub(crate) store: Arc<LocalEventStore>,
     pub(crate) repository: Arc<ExecutionTreeArchiveFactRepository>,
     pub(crate) host: Arc<WorkflowRuntimeHost>,
-    pub(crate) runtime: releash_lib::test_support::integration::workflow::WorkflowRuntimeUsecase,
+    pub(crate) runtime: releashd::test_support::integration::workflow::WorkflowRuntimeUsecase,
     pub(crate) app: WorkflowRuntimeDependencies,
     pub(crate) sessions: Arc<TestSessions>,
     pub(crate) trees: Arc<SqliteWorkspaceTreeRepository>,
@@ -562,8 +550,8 @@ pub(crate) struct ArchiveFixture {
 impl ArchiveFixture {
     /// worktree の画面に出る実行木の根の数。
     pub(crate) async fn visible_root_count(&self, worktree_path: &str) -> usize {
-        use releash_lib::test_support::integration::workspace::WorkspaceIdentity;
-        use releash_lib::test_support::integration::workspace::WorkspaceTreeRepository;
+        use releashd::test_support::integration::workspace::WorkspaceIdentity;
+        use releashd::test_support::integration::workspace::WorkspaceTreeRepository;
         self.trees
             .load_trees(&[WorkspaceIdentity::new(worktree_path)])
             .await
@@ -586,7 +574,7 @@ pub(crate) fn archive_fixture_with_resolver(
     let directory = tempfile::tempdir().unwrap();
     let store = LocalEventStore::open(LocalEventStoreConfig::production(
         directory.path().into(),
-        std::sync::Arc::new(releash_lib::test_support::integration::platform::RetryLimiter::new()),
+        std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
     ))
     .unwrap();
     let repository = Arc::new(ExecutionTreeArchiveFactRepository::new(
@@ -600,15 +588,15 @@ pub(crate) fn archive_fixture_with_resolver(
     ));
     let sessions = Arc::new(TestSessions::default());
     let host = Arc::new(WorkflowRuntimeHost::with_runtime_ports(
-        releash_lib::test_support::integration::platform::shared().clone(),
+        releashd::test_support::integration::platform::shared().clone(),
         Arc::new(UnusedWorkflowResolver),
         resolver,
         query,
         sessions.clone(),
         Arc::new(TestWorktrees::default()),
-        releash_lib::test_support::integration::daemon::serving(),
+        releashd::test_support::integration::daemon::serving(),
     ));
-    let runtime = releash_lib::test_support::integration::workflow::WorkflowRuntimeUsecase::new(
+    let runtime = releashd::test_support::integration::workflow::WorkflowRuntimeUsecase::new(
         Arc::new(WorkflowRuntimeCommandGateway::new_with_driver(
             app.clone(),
             host.clone(),
@@ -643,12 +631,12 @@ pub(crate) async fn reconcile_startup(
     host: &WorkflowRuntimeHost,
     app: &WorkflowRuntimeDependencies,
 ) -> Result<(), WorkflowRuntimeError> {
-    match releash_lib::test_support::integration::platform::wire_workflow_startup(
+    match releashd::test_support::integration::platform::wire_workflow_startup(
         app.clone(),
         Arc::new(host.clone()),
     ) {
-        Some(startup) => releash_lib::test_support::integration::platform::recover(
-            &releash_lib::test_support::integration::platform::test_retrying(),
+        Some(startup) => releashd::test_support::integration::platform::recover(
+            &releashd::test_support::integration::platform::test_retrying(),
             &startup,
         )
         .await

@@ -111,7 +111,7 @@ impl crate::domain::daemon_supervision::DesktopUpdateInstaller for TauriUpdateGa
             .lock()
             .take()
             .ok_or("No verified update has been downloaded.")?;
-        releash_lib::desktop_api::spawn_blocking(move || update.install(bytes))
+        releashd::desktop_api::spawn_blocking(move || update.install(bytes))
             .await
             .map_err(|e| e.to_string())?
     }

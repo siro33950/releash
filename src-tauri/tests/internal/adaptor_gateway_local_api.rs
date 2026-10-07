@@ -1,4 +1,4 @@
-use releash_lib::test_support::integration::transport::{
+use releashd::test_support::integration::transport::{
     process_start_time, ClientConnectionFileQuery, ClientConnectionQueryService, LocalApiDiscovery,
     LocalApiDiscoveryFile, ProcessStartTimeLookup,
 };
@@ -13,10 +13,11 @@ fn found_process(start_time: u64) -> ProcessStartTimeLookup {
 pub fn test_クライアント接続情報_公開入口のqueryserviceとして読み取れる() {
     // Given
     let directory = tempfile::tempdir().unwrap();
-    let query = releash_lib::test_support::integration::transport::ClientConnectionFileQuery(
+    let query = releashd::test_support::integration::transport::ClientConnectionFileQuery(
         directory.path().to_owned(),
     );
-    let service: &dyn releash_lib::test_support::integration::transport::ClientConnectionQueryService = &query;
+    let service: &dyn releashd::test_support::integration::transport::ClientConnectionQueryService =
+        &query;
     // When
     let result = service.read();
     // Then
@@ -28,11 +29,11 @@ pub fn test_クライアント接続情報_公開入口のqueryserviceとして�
 
 #[test]
 pub fn test_クライアント接続情報_再起動したinstanceとtokenを再読込する() {
-    use releash_lib::test_support::integration::transport::LocalApiDiscovery;
-    use releash_lib::test_support::integration::transport::LocalApiDiscoveryFile;
+    use releashd::test_support::integration::transport::LocalApiDiscovery;
+    use releashd::test_support::integration::transport::LocalApiDiscoveryFile;
     let directory = tempfile::tempdir().unwrap();
     // Given
-    let query = releash_lib::test_support::integration::transport::ClientConnectionFileQuery(
+    let query = releashd::test_support::integration::transport::ClientConnectionFileQuery(
         directory.path().to_owned(),
     );
     // When / Then

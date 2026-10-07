@@ -1,21 +1,21 @@
 pub(crate) mod tests {
 
-    use releash_lib::test_support::integration::persistence::LocalEventStore;
-    use releash_lib::test_support::integration::workflow::ExecutionTreeId;
-    use releash_lib::test_support::integration::workflow::WorkflowEventLogRepository;
-    use releash_lib::test_support::integration::workflow::WorkflowEventRepository;
+    use releashd::test_support::integration::persistence::LocalEventStore;
+    use releashd::test_support::integration::workflow::ExecutionTreeId;
+    use releashd::test_support::integration::workflow::WorkflowEventLogRepository;
+    use releashd::test_support::integration::workflow::WorkflowEventRepository;
 
     use tempfile::TempDir;
 
-    use releash_lib::test_support::integration::persistence::LocalEventStoreConfig;
-    use releash_lib::test_support::integration::workflow::ExecutionOrigin;
-    use releash_lib::test_support::integration::workflow::NodeCompletion;
-    use releash_lib::test_support::integration::workflow::NodeDefinition;
-    use releash_lib::test_support::integration::workflow::NodeKind;
-    use releash_lib::test_support::integration::workflow::NodeKindName;
-    use releash_lib::test_support::integration::workflow::SessionSpec;
-    use releash_lib::test_support::integration::workflow::WorkflowDefinition;
-    use releash_lib::test_support::integration::workflow::WorkflowEvent;
+    use releashd::test_support::integration::persistence::LocalEventStoreConfig;
+    use releashd::test_support::integration::workflow::ExecutionOrigin;
+    use releashd::test_support::integration::workflow::NodeCompletion;
+    use releashd::test_support::integration::workflow::NodeDefinition;
+    use releashd::test_support::integration::workflow::NodeKind;
+    use releashd::test_support::integration::workflow::NodeKindName;
+    use releashd::test_support::integration::workflow::SessionSpec;
+    use releashd::test_support::integration::workflow::WorkflowDefinition;
+    use releashd::test_support::integration::workflow::WorkflowEvent;
 
     fn definition() -> WorkflowDefinition {
         WorkflowDefinition {
@@ -62,15 +62,13 @@ pub(crate) mod tests {
 
     #[tokio::test]
     pub async fn test_実行履歴読取_readとread_pageで失敗分類を保持する() {
-        use releash_lib::test_support::integration::persistence::ReadFailure;
-        use releash_lib::test_support::integration::transport::classified_error;
+        use releashd::test_support::integration::persistence::ReadFailure;
+        use releashd::test_support::integration::transport::classified_error;
         // Given
         let directory = TempDir::new().unwrap();
         let store = LocalEventStore::open(LocalEventStoreConfig::production(
             directory.path().into(),
-            std::sync::Arc::new(
-                releash_lib::test_support::integration::platform::RetryLimiter::new(),
-            ),
+            std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
         ))
         .unwrap();
         let id = ExecutionTreeId::new("00000000-0000-4000-8000-000000000001").unwrap();
@@ -89,13 +87,11 @@ pub(crate) mod tests {
         let tmp = TempDir::new().unwrap();
         let store = LocalEventStore::open(LocalEventStoreConfig::production(
             tmp.path().to_path_buf(),
-            std::sync::Arc::new(
-                releash_lib::test_support::integration::platform::RetryLimiter::new(),
-            ),
+            std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
         ))
         .unwrap();
         let execution_id = ExecutionTreeId::new("00000000-0000-4000-8000-000000000001").unwrap();
-        releash_lib::test_support::integration::workflow::append_canonical_events(
+        releashd::test_support::integration::workflow::append_canonical_events(
             &store,
             &started_events(execution_id.as_str()),
         )
@@ -116,13 +112,11 @@ pub(crate) mod tests {
         let tmp = TempDir::new().unwrap();
         let store = LocalEventStore::open(LocalEventStoreConfig::production(
             tmp.path().to_path_buf(),
-            std::sync::Arc::new(
-                releash_lib::test_support::integration::platform::RetryLimiter::new(),
-            ),
+            std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
         ))
         .unwrap();
         let execution_id = ExecutionTreeId::new("00000000-0000-4000-8000-000000000002").unwrap();
-        releash_lib::test_support::integration::workflow::append_canonical_events(
+        releashd::test_support::integration::workflow::append_canonical_events(
             &store,
             &started_events(execution_id.as_str()),
         )
@@ -135,7 +129,7 @@ pub(crate) mod tests {
         assert_eq!(first.len(), 1);
         assert_eq!(first[0].event_kind, "started");
 
-        releash_lib::test_support::integration::workflow::append_canonical_events(
+        releashd::test_support::integration::workflow::append_canonical_events(
             &store,
             &[WorkflowEvent::ExecutionAborted {
                 execution_id: execution_id.to_string(),
@@ -159,13 +153,11 @@ pub(crate) mod tests {
         let directory = TempDir::new().unwrap();
         let store = LocalEventStore::open(LocalEventStoreConfig::production(
             directory.path().into(),
-            std::sync::Arc::new(
-                releash_lib::test_support::integration::platform::RetryLimiter::new(),
-            ),
+            std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
         ))
         .unwrap();
         let id = ExecutionTreeId::new("00000000-0000-4000-8000-000000001744").unwrap();
-        releash_lib::test_support::integration::workflow::seed_unavailable_definition(
+        releashd::test_support::integration::workflow::seed_unavailable_definition(
             &store,
             id.as_str(),
             "/repo",

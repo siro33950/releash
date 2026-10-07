@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 pub(crate) fn run() -> i32 {
-    let data_dir = match crate::infrastructure::platform::app_data_dir::resolve_data_dir() {
+    let data_dir = match releash_sdk::data_dir::resolve_data_dir(None) {
         Ok(path) => path,
         Err(error) => {
             eprintln!("background worker data directory: {error}");

@@ -2,7 +2,7 @@ use crate::domain::daemon_supervision::{DaemonExit, DaemonProcessPort, Failure, 
 use crate::usecase::daemon_supervision::{
     DaemonConnection, DaemonGateway, DaemonStatus, DaemonStatusOutput, DaemonSupervisionUsecase,
 };
-use releash_lib::desktop_api::{ClientConnectionDto, DesktopSettingsDto};
+use releashd::desktop_api::{ClientConnectionDto, DesktopSettingsDto};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 

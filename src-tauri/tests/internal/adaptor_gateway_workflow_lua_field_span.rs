@@ -1,5 +1,5 @@
-use releash_lib::test_support::integration::workflow::DiagnosticSpan;
-use releash_lib::test_support::integration::workflow::MAX_SPAN_SOURCE_BYTES;
+use releashd::test_support::integration::workflow::DiagnosticSpan;
+use releashd::test_support::integration::workflow::MAX_SPAN_SOURCE_BYTES;
 
 #[test]
 pub fn test_lua宣言位置_解析上限を超える定義もloadと一覧に成功する() {
@@ -19,8 +19,8 @@ return r.workflow{{ name = 'example', description = 'large definition', main = r
 
     // When
     let loaded =
-        releash_lib::test_support::integration::workflow::load_workflow(&path, tmp.path()).unwrap();
-    let summaries = releash_lib::test_support::integration::workflow::list_workflows_with_facets(
+        releashd::test_support::integration::workflow::load_workflow(&path, tmp.path()).unwrap();
+    let summaries = releashd::test_support::integration::workflow::list_workflows_with_facets(
         tmp.path(),
         tmp.path(),
     )
@@ -41,8 +41,8 @@ return r.workflow{{ name = 'example', description = 'large definition', main = r
 #[test]
 pub fn test_lua宣言位置_解析上限を超えるartifact宣言は呼び出し行で診断する() {
     // Given
-    use releash_lib::test_support::integration::workflow::DiagnosticStage;
-    use releash_lib::test_support::integration::workflow::Severity;
+    use releashd::test_support::integration::workflow::DiagnosticStage;
+    use releashd::test_support::integration::workflow::Severity;
     let tmp = tempfile::tempdir().unwrap();
     let source = format!(
         r#"local r = require('releash')
@@ -58,7 +58,7 @@ return r.workflow{{ name = 'example', description = 'example', main = main }}
     );
 
     // When
-    let diagnosis = releash_lib::test_support::integration::workflow::diagnose_lua_workflow_source(
+    let diagnosis = releashd::test_support::integration::workflow::diagnose_lua_workflow_source(
         "example.lua",
         &source,
         tmp.path(),

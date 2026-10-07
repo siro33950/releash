@@ -1,15 +1,15 @@
-use releash_lib::test_support::integration::fixtures::fixtures_adaptor_controller_api_client_dispatch as dispatch;
-use releash_lib::test_support::integration::wire::state_payload::Value;
+use releashd::test_support::integration::fixtures::fixtures_adaptor_controller_api_client_dispatch as dispatch;
+use releashd::test_support::integration::wire::state_payload::Value;
 
-use releash_lib::test_support::integration::subscriptions::StateSubscriptionUsecase;
-use releash_lib::test_support::integration::subscriptions::SubscriptionTarget;
-use releash_lib::test_support::integration::transport::router;
-use releash_lib::test_support::integration::transport::rpc;
-use releash_lib::test_support::integration::transport::to_rpc;
-use releash_lib::test_support::integration::transport::to_wire;
-use releash_lib::test_support::integration::transport::ClientCommandDispatch;
-use releash_lib::test_support::integration::wire;
-use releash_lib::test_support::integration::wire::state_subscription_event::Event;
+use releashd::test_support::integration::subscriptions::StateSubscriptionUsecase;
+use releashd::test_support::integration::subscriptions::SubscriptionTarget;
+use releashd::test_support::integration::transport::router;
+use releashd::test_support::integration::transport::rpc;
+use releashd::test_support::integration::transport::to_rpc;
+use releashd::test_support::integration::transport::to_wire;
+use releashd::test_support::integration::transport::ClientCommandDispatch;
+use releashd::test_support::integration::wire;
+use releashd::test_support::integration::wire::state_subscription_event::Event;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -26,17 +26,15 @@ async fn serve(
     tokio::task::JoinHandle<()>,
 ) {
     let router = router(
-        Some(
-            releash_lib::test_support::integration::transport::client_api_deps(Arc::new(dispatch)),
-        ),
-        releash_lib::test_support::integration::daemon::default_timeout(),
+        Some(releashd::test_support::integration::transport::client_api_deps(Arc::new(dispatch))),
+        releashd::test_support::integration::daemon::default_timeout(),
     )
     .layer(axum::middleware::from_fn_with_state(
-        releash_lib::test_support::integration::transport::ClientTokens {
+        releashd::test_support::integration::transport::ClientTokens {
             operator: Arc::<str>::from("client").into(),
             hook: Arc::<str>::from("hook").into(),
         },
-        releash_lib::test_support::integration::transport::require_client,
+        releashd::test_support::integration::transport::require_client,
     ));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let config = ClientConfig::new(
@@ -75,10 +73,7 @@ pub async fn test_connect_生成clientのunaryで結果と構造化エラーを�
                 let wire::command_request::Command::BuildDiffFileTree(args) = command else {
                     unreachable!()
                 };
-                releash_lib::test_support::integration::transport::required(
-                    args.entries,
-                    "entries",
-                )?;
+                releashd::test_support::integration::transport::required(args.entries, "entries")?;
                 Ok(wire::command_result::Command::BuildDiffFileTree(
                     Default::default(),
                 ))
@@ -226,12 +221,12 @@ pub async fn test_connect_変更前と同じ16mibまで要求を受理する() {
 pub async fn test_状態購読stream_全段の枠が埋まっていてもイベントを受け取り席を使わない() {
     // Given
     let subscriptions =
-        releash_lib::test_support::integration::subscriptions::StateSubscriptionUsecase::new(
+        releashd::test_support::integration::subscriptions::StateSubscriptionUsecase::new(
             vec![],
-            releash_lib::test_support::integration::subscriptions::read_driver(),
+            releashd::test_support::integration::subscriptions::read_driver(),
         );
     let deps =
-        releash_lib::test_support::integration::transport::client_api_deps(Arc::new(dispatch()))
+        releashd::test_support::integration::transport::client_api_deps(Arc::new(dispatch()))
             .with_state_subscriptions(subscriptions.deps());
     let _permits =
         ["interactive", "workflow", "default"].map(|level| deps.priority_limits().fill(level));
@@ -248,7 +243,7 @@ pub async fn test_状態購読stream_全段の枠が埋まっていてもイベ�
                 listener,
                 router(
                     Some(deps),
-                    releash_lib::test_support::integration::daemon::default_timeout(),
+                    releashd::test_support::integration::daemon::default_timeout(),
                 ),
             )
             .await
@@ -291,12 +286,12 @@ pub async fn test_状態購読stream_全段の枠が埋まっていてもイベ�
 pub async fn test_状態購読_購読idを入口で128バイトまで受け付ける() {
     // Given
     let subscriptions =
-        releash_lib::test_support::integration::subscriptions::StateSubscriptionUsecase::new(
+        releashd::test_support::integration::subscriptions::StateSubscriptionUsecase::new(
             vec![],
-            releash_lib::test_support::integration::subscriptions::read_driver(),
+            releashd::test_support::integration::subscriptions::read_driver(),
         );
     let deps =
-        releash_lib::test_support::integration::transport::client_api_deps(Arc::new(dispatch()))
+        releashd::test_support::integration::transport::client_api_deps(Arc::new(dispatch()))
             .with_state_subscriptions(subscriptions.deps());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let config = ClientConfig::new(
@@ -309,7 +304,7 @@ pub async fn test_状態購読_購読idを入口で128バイトまで受け付�
             listener,
             router(
                 Some(deps),
-                releash_lib::test_support::integration::daemon::default_timeout(),
+                releashd::test_support::integration::daemon::default_timeout(),
             ),
         )
         .await
@@ -354,16 +349,16 @@ pub async fn test_状態購読_購読idを入口で128バイトまで受け付�
 
 #[tokio::test]
 pub async fn test_状態購読_connectで初期状態と変更と再開を配信する() {
-    use releash_lib::test_support::integration::subscriptions::StateSubscriptionUsecase;
-    use releash_lib::test_support::integration::subscriptions::SubscriptionTarget;
+    use releashd::test_support::integration::subscriptions::StateSubscriptionUsecase;
+    use releashd::test_support::integration::subscriptions::SubscriptionTarget;
     use wire::state_subscription_event::Event;
     // Given
     let subscriptions = StateSubscriptionUsecase::new(
         vec!["/repo".into()],
-        releash_lib::test_support::integration::subscriptions::read_driver(),
+        releashd::test_support::integration::subscriptions::read_driver(),
     );
     let deps =
-        releash_lib::test_support::integration::transport::client_api_deps(Arc::new(dispatch()))
+        releashd::test_support::integration::transport::client_api_deps(Arc::new(dispatch()))
             .with_state_subscriptions(subscriptions.deps());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let config = ClientConfig::new(
@@ -376,7 +371,7 @@ pub async fn test_状態購読_connectで初期状態と変更と再開を配信
             listener,
             router(
                 Some(deps),
-                releash_lib::test_support::integration::daemon::default_timeout(),
+                releashd::test_support::integration::daemon::default_timeout(),
             ),
         )
         .await
@@ -445,7 +440,7 @@ pub async fn test_状態購読_connectで初期状態と変更と再開を配信
     assert!(matches!(bookmark.event, Some(Event::Bookmark(_))));
     subscriptions.test_set_repository_paths(vec!["/next".into()]);
     subscriptions.notify(
-        releash_lib::test_support::integration::subscriptions::StateChangeSource::Repositories,
+        releashd::test_support::integration::subscriptions::StateChangeSource::Repositories,
     );
     let changed: wire::StateSubscriptionEvent = to_wire(
         &stream
@@ -531,13 +526,12 @@ pub async fn test_単発rpc_client切断で処理が終了する() {
             })
         }),
     );
-    let deps =
-        releash_lib::test_support::integration::transport::client_api_deps(Arc::new(dispatch));
+    let deps = releashd::test_support::integration::transport::client_api_deps(Arc::new(dispatch));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let router = router(
         Some(deps.clone()),
-        releash_lib::test_support::integration::daemon::default_timeout(),
+        releashd::test_support::integration::daemon::default_timeout(),
     );
     let server = tokio::spawn(async move {
         axum::serve(listener, router).await.unwrap();
@@ -558,17 +552,17 @@ pub async fn test_単発rpc_client切断で処理が終了する() {
 
 #[tokio::test]
 pub async fn test_terminal購読_connectの後段配線と差分再開と流量停止中の応答を保証する() {
-    use releash_lib::test_support::integration::platform::TerminalSurfaceEventHub;
-    use releash_lib::test_support::integration::terminal::TerminalSurface;
-    use releash_lib::test_support::integration::terminal::TerminalSurfaceEventSink;
-    use releash_lib::test_support::integration::terminal::TerminalSurfaceOutputControl;
-    use releash_lib::test_support::integration::terminal::TerminalSurfaceOutputEvent;
+    use releashd::test_support::integration::platform::TerminalSurfaceEventHub;
+    use releashd::test_support::integration::terminal::TerminalSurface;
+    use releashd::test_support::integration::terminal::TerminalSurfaceEventSink;
+    use releashd::test_support::integration::terminal::TerminalSurfaceOutputControl;
+    use releashd::test_support::integration::terminal::TerminalSurfaceOutputEvent;
 
-    use releash_lib::test_support::integration::terminal::TerminalSurfaceOwner;
-    use releash_lib::test_support::integration::workspace::WorkspaceIdentity;
+    use releashd::test_support::integration::terminal::TerminalSurfaceOwner;
+    use releashd::test_support::integration::workspace::WorkspaceIdentity;
 
-    use releash_lib::test_support::integration::terminal::FakePtyGateway;
-    use releash_lib::test_support::integration::terminal::TerminalSurfaceApplication;
+    use releashd::test_support::integration::terminal::FakePtyGateway;
+    use releashd::test_support::integration::terminal::TerminalSurfaceApplication;
 
     use wire::state_payload::Value;
 
@@ -590,7 +584,7 @@ pub async fn test_terminal購読_connectの後段配線と差分再開と流量�
     let gateway = Arc::new(gateway);
     let hub = Arc::new(TerminalSurfaceEventHub::with_flags(256, true));
     hub.initialize(
-        releash_lib::test_support::integration::subscriptions::registration(
+        releashd::test_support::integration::subscriptions::registration(
             &first.session_key,
             "/first",
             None,
@@ -600,7 +594,7 @@ pub async fn test_terminal購読_connectの後段配線と差分再開と流量�
     )
     .unwrap();
     hub.initialize(
-        releash_lib::test_support::integration::subscriptions::registration(
+        releashd::test_support::integration::subscriptions::registration(
             &second.session_key,
             "/second",
             None,
@@ -610,9 +604,13 @@ pub async fn test_terminal購読_connectの後段配線と差分再開と流量�
     )
     .unwrap();
     let terminal = Arc::new(TerminalSurfaceApplication::new(
-        std::sync::Arc::new(releash_lib::test_support::integration::telemetry::TelemetryGateway),
+        std::sync::Arc::new(releashd::test_support::integration::telemetry::TelemetryGateway),
         gateway.clone(),
-        Arc::new(releash_lib::test_support::integration::terminal::TerminalSurfaceEventSourceGateway::new(hub.event_sender())),
+        Arc::new(
+            releashd::test_support::integration::terminal::TerminalSurfaceEventSourceGateway::new(
+                hub.event_sender(),
+            ),
+        ),
         hub.clone(),
     ));
     let (app, _, _) =
@@ -621,23 +619,22 @@ pub async fn test_terminal購読_connectの後段配線と差分再開と流量�
         );
     let mut dependencies = app.client;
     dependencies.workflow_runtime_usecase = Some(Arc::new(
-        releash_lib::test_support::integration::workflow::WorkflowRuntimeUsecase::new(
+        releashd::test_support::integration::workflow::WorkflowRuntimeUsecase::new(
             Arc::new(
                 crate::adaptor_controller_api_mod::test_support::RecordingRuntimeGateway::default(),
             ),
-            Arc::new(releash_lib::test_support::integration::workflow::NoopArchiveRepository),
+            Arc::new(releashd::test_support::integration::workflow::NoopArchiveRepository),
         ),
     ));
     let mut dispatch = dispatch();
     dispatch.register_dependencies(&dependencies);
     let subscriptions = StateSubscriptionUsecase::new(
         vec!["/repo".into()],
-        releash_lib::test_support::integration::subscriptions::read_driver(),
+        releashd::test_support::integration::subscriptions::read_driver(),
     );
     let subscriptions = subscriptions.with_terminal(terminal);
-    let deps =
-        releash_lib::test_support::integration::transport::client_api_deps(Arc::new(dispatch))
-            .with_state_subscriptions(subscriptions.deps());
+    let deps = releashd::test_support::integration::transport::client_api_deps(Arc::new(dispatch))
+        .with_state_subscriptions(subscriptions.deps());
     assert_eq!(*gateway.list_summaries_calls.lock(), 0);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let config = ClientConfig::new(
@@ -650,7 +647,7 @@ pub async fn test_terminal購読_connectの後段配線と差分再開と流量�
             listener,
             router(
                 Some(deps),
-                releash_lib::test_support::integration::daemon::default_timeout(),
+                releashd::test_support::integration::daemon::default_timeout(),
             ),
         )
         .await
@@ -873,20 +870,20 @@ pub async fn test_terminal購読_connectの後段配線と差分再開と流量�
 
 #[tokio::test]
 pub async fn test_notion購読_正規化した対象を共有し識別子ごとに値と失敗を届ける() {
-    use releash_lib::test_support::integration::subscriptions::{
+    use releashd::test_support::integration::subscriptions::{
         StateReadError, StateSubscriptionRead, StateValue,
     };
 
-    use releash_lib::test_support::integration::subscriptions::StateSubscriptionOutput;
+    use releashd::test_support::integration::subscriptions::StateSubscriptionOutput;
 
     struct Reads(AtomicUsize);
     #[async_trait::async_trait]
     impl StateSubscriptionRead for Reads {
         async fn read(&self, _: &SubscriptionTarget) -> Result<StateValue, StateReadError> {
             Ok(StateValue::NotionTasks(
-                releash_lib::test_support::integration::platform::Fetched {
+                releashd::test_support::integration::platform::Fetched {
                     value: Some(
-                        releash_lib::test_support::integration::platform::NotionTaskPage {
+                        releashd::test_support::integration::platform::NotionTaskPage {
                             tasks: vec![],
                             has_more: true,
                             next_cursor: None,
@@ -907,15 +904,15 @@ pub async fn test_notion購読_正規化した対象を共有し識別子ごと�
     // Given
     let reads = Arc::new(Reads(AtomicUsize::new(0)));
     let subscriptions =
-        releash_lib::test_support::integration::subscriptions::StateSubscriptionUsecase::new(
+        releashd::test_support::integration::subscriptions::StateSubscriptionUsecase::new(
             vec![],
-            releash_lib::test_support::integration::subscriptions::read_driver(),
+            releashd::test_support::integration::subscriptions::read_driver(),
         )
         .with_reads(reads.clone(), None, vec![], String::new());
     let presenter = Arc::new(subscriptions.test_presenter().unwrap().clone());
     let deps =
-        releash_lib::test_support::integration::transport::client_api_deps(Arc::new(dispatch()))
-            .with_state_subscriptions(releash_lib::test_support::integration::subscriptions::deps(
+        releashd::test_support::integration::transport::client_api_deps(Arc::new(dispatch()))
+            .with_state_subscriptions(releashd::test_support::integration::subscriptions::deps(
                 subscriptions.clone(),
                 presenter.clone(),
             ));
@@ -930,7 +927,7 @@ pub async fn test_notion購読_正規化した対象を共有し識別子ごと�
             listener,
             router(
                 Some(deps),
-                releash_lib::test_support::integration::daemon::default_timeout(),
+                releashd::test_support::integration::daemon::default_timeout(),
             ),
         )
         .await
@@ -1018,13 +1015,13 @@ pub async fn test_notion購読_正規化した対象を共有し識別子ごと�
     presenter
         .publish(
             &target,
-            StateValue::NotionTasks(releash_lib::test_support::integration::platform::Fetched {
-                value: Some(releash_lib::test_support::integration::platform::NotionTaskPage {
+            StateValue::NotionTasks(releashd::test_support::integration::platform::Fetched {
+                value: Some(releashd::test_support::integration::platform::NotionTaskPage {
                     tasks: vec![],
                     has_more: true,
                     next_cursor: None,
                 }),
-                error: Some(releash_lib::test_support::integration::platform::NotionUsecaseError::ConfigNotFound),
+                error: Some(releashd::test_support::integration::platform::NotionUsecaseError::ConfigNotFound),
             }),
             None,
         )
@@ -1062,14 +1059,13 @@ pub async fn test_notion購読_正規化した対象を共有し識別子ごと�
 #[tokio::test]
 pub async fn test_connect受付_停止後の新規streamを拒否し既存streamと重複停止を維持する() {
     // Given
-    let daemon =
-        releash_lib::test_support::integration::daemon::DaemonUsecase::test_with_repository(
-            releash_lib::test_support::integration::daemon::serving(),
-        );
+    let daemon = releashd::test_support::integration::daemon::DaemonUsecase::test_with_repository(
+        releashd::test_support::integration::daemon::serving(),
+    );
     let (sender, mut exit) = tokio::sync::mpsc::channel(1);
     let directory = tempfile::tempdir().unwrap();
     let mut dependencies =
-        releash_lib::test_support::integration::transport::build_client_dependencies(
+        releashd::test_support::integration::transport::build_client_dependencies(
             directory.path().into(),
         );
     dependencies.daemon = daemon.clone();
@@ -1077,13 +1073,12 @@ pub async fn test_connect受付_停止後の新規streamを拒否し既存stream
     let mut dispatch = ClientCommandDispatch::new(daemon.clone());
     dispatch.register_dependencies(&dependencies);
     let subscriptions =
-        releash_lib::test_support::integration::subscriptions::StateSubscriptionUsecase::new(
+        releashd::test_support::integration::subscriptions::StateSubscriptionUsecase::new(
             vec![],
-            releash_lib::test_support::integration::subscriptions::read_driver(),
+            releashd::test_support::integration::subscriptions::read_driver(),
         );
-    let deps =
-        releash_lib::test_support::integration::transport::client_api_deps(Arc::new(dispatch))
-            .with_state_subscriptions(subscriptions.deps());
+    let deps = releashd::test_support::integration::transport::client_api_deps(Arc::new(dispatch))
+        .with_state_subscriptions(subscriptions.deps());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let config = ClientConfig::new(
         format!("http://{}", listener.local_addr().unwrap())
@@ -1095,7 +1090,7 @@ pub async fn test_connect受付_停止後の新規streamを拒否し既存stream
             listener,
             router(
                 Some(deps),
-                releash_lib::test_support::integration::daemon::default_timeout(),
+                releashd::test_support::integration::daemon::default_timeout(),
             ),
         )
         .await
@@ -1178,7 +1173,7 @@ pub async fn test_connect受付_停止後の新規streamを拒否し既存stream
     assert_eq!(info.serving_status, rpc::ServingStatus::Stopping);
     subscriptions.test_set_repository_paths(vec!["/after-stop".into()]);
     subscriptions.notify(
-        releash_lib::test_support::integration::subscriptions::StateChangeSource::Repositories,
+        releashd::test_support::integration::subscriptions::StateChangeSource::Repositories,
     );
     let event = tokio::time::timeout(
         std::time::Duration::from_secs(2),

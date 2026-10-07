@@ -1,6 +1,6 @@
-use releash_lib::test_support::integration::platform::RepositoryStateError;
+use releashd::test_support::integration::platform::RepositoryStateError;
 
-use releash_lib::test_support::integration::platform::WorktreePathNormalizer;
+use releashd::test_support::integration::platform::WorktreePathNormalizer;
 
 use std::path::PathBuf;
 

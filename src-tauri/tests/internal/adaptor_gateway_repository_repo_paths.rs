@@ -1,11 +1,11 @@
 pub(crate) mod repo_paths_gateway_tests {
 
-    use releash_lib::test_support::integration::repository::ConfigRepository;
-    use releash_lib::test_support::integration::repository::RepoPathsGateway;
-    use releash_lib::test_support::integration::repository::RepoPathsRepository;
-    use releash_lib::test_support::integration::repository::SharedRepoPaths;
-    use releash_lib::test_support::integration::settings::AppConfig;
-    use releash_lib::test_support::integration::settings::ReleashConfig;
+    use releashd::test_support::integration::repository::ConfigRepository;
+    use releashd::test_support::integration::repository::RepoPathsGateway;
+    use releashd::test_support::integration::repository::RepoPathsRepository;
+    use releashd::test_support::integration::repository::SharedRepoPaths;
+    use releashd::test_support::integration::settings::AppConfig;
+    use releashd::test_support::integration::settings::ReleashConfig;
     use std::sync::Arc;
     use tempfile::TempDir;
 

@@ -1,14 +1,14 @@
 use connectrpc::ErrorCode;
-use releash_lib::test_support::integration::platform::EditorError;
-use releash_lib::test_support::integration::repository::ConfigRepository;
-use releash_lib::test_support::integration::repository::ConfigUpdate;
-use releash_lib::test_support::integration::settings::AppConfigDocument;
-use releash_lib::test_support::integration::settings::AppConfigError;
-use releash_lib::test_support::integration::transport::ConnectFailure;
-use releash_lib::test_support::integration::workflow::resolve_facet_editor_path;
-use releash_lib::test_support::integration::workflow::ExternalEditorGateway;
-use releash_lib::test_support::integration::workflow::WorkflowError;
-use releash_lib::test_support::integration::workflow::WorkflowExternalEditorGateway;
+use releashd::test_support::integration::platform::EditorError;
+use releashd::test_support::integration::repository::ConfigRepository;
+use releashd::test_support::integration::repository::ConfigUpdate;
+use releashd::test_support::integration::settings::AppConfigDocument;
+use releashd::test_support::integration::settings::AppConfigError;
+use releashd::test_support::integration::transport::ConnectFailure;
+use releashd::test_support::integration::workflow::resolve_facet_editor_path;
+use releashd::test_support::integration::workflow::ExternalEditorGateway;
+use releashd::test_support::integration::workflow::WorkflowError;
+use releashd::test_support::integration::workflow::WorkflowExternalEditorGateway;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -18,8 +18,8 @@ impl ConfigRepository for RemoveEditorTarget {
     fn load(&self) -> Result<AppConfigDocument, AppConfigError> {
         std::fs::remove_file(&self.0).unwrap();
         Ok(
-            releash_lib::test_support::integration::settings::config_to_domain(
-                &releash_lib::test_support::integration::settings::ReleashConfig::default(),
+            releashd::test_support::integration::settings::config_to_domain(
+                &releashd::test_support::integration::settings::ReleashConfig::default(),
             ),
         )
     }
@@ -39,8 +39,8 @@ pub fn test_エディタ起動失敗_workflowとfacetが元の分類を保持す
     for is_facet in [false, true] {
         let dir = tempfile::tempdir().unwrap();
         let path = if is_facet {
-            releash_lib::test_support::integration::workflow::save_facet(
-                releash_lib::test_support::integration::workflow::FacetKind::Instruction,
+            releashd::test_support::integration::workflow::save_facet(
+                releashd::test_support::integration::workflow::FacetKind::Instruction,
                 "custom",
                 "body",
                 dir.path(),
@@ -70,24 +70,24 @@ pub fn test_エディタ起動失敗_workflowとfacetが元の分類を保持す
             WorkflowError::Editor(EditorError::Launch(_))
         ));
         assert_eq!(error.connect_code(), ErrorCode::FailedPrecondition);
-        let direct = releash_lib::test_support::integration::transport::classified_error(
+        let direct = releashd::test_support::integration::transport::classified_error(
             EditorError::Launch("missing".into()),
         );
         assert_eq!(
-            releash_lib::test_support::integration::transport::classified_error(error).code,
+            releashd::test_support::integration::transport::classified_error(error).code,
             direct.code
         );
     }
 }
 pub(crate) mod tests {
 
-    use releash_lib::test_support::integration::workflow::definition_FacetRefs as FacetRefs;
-    use releash_lib::test_support::integration::workflow::resolve_facet_editor_path;
-    use releash_lib::test_support::integration::workflow::resolve_workflow_editor_path;
-    use releash_lib::test_support::integration::workflow::NodeDefinition;
-    use releash_lib::test_support::integration::workflow::NodeKind;
-    use releash_lib::test_support::integration::workflow::SessionSpec;
-    use releash_lib::test_support::integration::workflow::WorkflowDefinition as WorkflowDefinitionYaml;
+    use releashd::test_support::integration::workflow::definition_FacetRefs as FacetRefs;
+    use releashd::test_support::integration::workflow::resolve_facet_editor_path;
+    use releashd::test_support::integration::workflow::resolve_workflow_editor_path;
+    use releashd::test_support::integration::workflow::NodeDefinition;
+    use releashd::test_support::integration::workflow::NodeKind;
+    use releashd::test_support::integration::workflow::SessionSpec;
+    use releashd::test_support::integration::workflow::WorkflowDefinition as WorkflowDefinitionYaml;
     use tempfile::TempDir;
 
     #[test]
@@ -111,14 +111,14 @@ pub(crate) mod tests {
             }],
             entry: "main".to_string(),
         };
-        releash_lib::test_support::integration::workflow::save_workflow(tmp.path(), &workflow)
+        releashd::test_support::integration::workflow::save_workflow(tmp.path(), &workflow)
             .unwrap();
 
         let path = resolve_workflow_editor_path(tmp.path(), "custom").unwrap();
 
         assert_eq!(path.file_name().unwrap(), "custom.yml");
         if let Some(summary) =
-            releash_lib::test_support::integration::workflow::list_builtin_workflows().first()
+            releashd::test_support::integration::workflow::list_builtin_workflows().first()
         {
             assert!(resolve_workflow_editor_path(tmp.path(), &summary.name).is_err());
         }
@@ -137,8 +137,8 @@ pub(crate) mod tests {
     #[test]
     pub fn facet_editor_path_rejects_builtin_and_resolves_custom_file() {
         let tmp = TempDir::new().unwrap();
-        releash_lib::test_support::integration::workflow::save_facet(
-            releash_lib::test_support::integration::workflow::FacetKind::Instruction,
+        releashd::test_support::integration::workflow::save_facet(
+            releashd::test_support::integration::workflow::FacetKind::Instruction,
             "custom",
             "body",
             tmp.path(),
@@ -148,11 +148,10 @@ pub(crate) mod tests {
         let path = resolve_facet_editor_path(tmp.path(), "instructions", "custom").unwrap();
 
         assert_eq!(path.file_name().unwrap(), "custom.md");
-        if let Some(key) =
-            releash_lib::test_support::integration::workflow::list_builtin_facet_keys(
-                releash_lib::test_support::integration::workflow::FacetKind::Instruction,
-            )
-            .first()
+        if let Some(key) = releashd::test_support::integration::workflow::list_builtin_facet_keys(
+            releashd::test_support::integration::workflow::FacetKind::Instruction,
+        )
+        .first()
         {
             assert!(resolve_facet_editor_path(tmp.path(), "instructions", key).is_err());
         }

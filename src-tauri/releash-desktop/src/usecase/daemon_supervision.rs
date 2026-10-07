@@ -1,8 +1,8 @@
 use crate::domain::daemon_supervision::{
     DaemonSupervision, Failure, FailureStage, Phase, ShellOperation, StopIntent,
 };
-use releash_lib::desktop_api::DesktopSettingsDto;
-use releash_lib::desktop_api::{ClientConnectionDto, ClientConnectionError};
+use releashd::desktop_api::DesktopSettingsDto;
+use releashd::desktop_api::{ClientConnectionDto, ClientConnectionError};
 use std::sync::Arc;
 
 #[derive(Debug, thiserror::Error)]
@@ -402,16 +402,16 @@ fn snapshot(supervision: &DaemonSupervision) -> DaemonStatus {
         stage: supervision.failure().map(|f| match f.stage {
             FailureStage::Spawn => "spawn",
             FailureStage::Initialization => "backend_initialization",
-            FailureStage::Connection(
-                releash_lib::desktop_api::TechnicalFailureNature::Transient,
-            ) => "backend_connection_transient",
-            FailureStage::Connection(
-                releash_lib::desktop_api::TechnicalFailureNature::TimedOut,
-            ) => "backend_connection_timed_out",
-            FailureStage::Connection(
-                releash_lib::desktop_api::TechnicalFailureNature::Cancelled,
-            ) => "backend_connection_cancelled",
-            FailureStage::Connection(releash_lib::desktop_api::TechnicalFailureNature::Other) => {
+            FailureStage::Connection(releashd::desktop_api::TechnicalFailureNature::Transient) => {
+                "backend_connection_transient"
+            }
+            FailureStage::Connection(releashd::desktop_api::TechnicalFailureNature::TimedOut) => {
+                "backend_connection_timed_out"
+            }
+            FailureStage::Connection(releashd::desktop_api::TechnicalFailureNature::Cancelled) => {
+                "backend_connection_cancelled"
+            }
+            FailureStage::Connection(releashd::desktop_api::TechnicalFailureNature::Other) => {
                 "backend_connection_other"
             }
             FailureStage::StartupTimeout => "startup_timeout",

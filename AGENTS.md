@@ -68,12 +68,12 @@ Releash は、特定の作業単位や特定の道具を主語にしない。コ
 
 ## 構成で押さえる点
 
-`src-tauri/` は Cargo workspace。root package `releash-backend` と `releash-desktop/` のシェルで Cargo.lock と target を共有し、版は `[workspace.package]` から継承する。シェルがサーバを使う公開入口は `desktop_api`、テスト用区画は `test-support` feature でのみ有効になる。
+`src-tauri/` は Cargo workspace。root package `releashd` と `releash-desktop/` のシェルで Cargo.lock と target を共有し、版は `[workspace.package]` から継承する。シェルがサーバを使う公開入口は `desktop_api`、テスト用区画は `test-support` feature でのみ有効になる。
 
 ディレクトリの内訳はコードを見る。コードからは読み取りにくい点だけ挙げる。
 
 - **workflow 定義はリポジトリ直下の `workflows/`** に置く。`*.yml` と `facets/{instructions,policies,knowledge}/*.md`。builtin は `adaptor/gateway/workflow/builtin.rs` が `include_str!` でコンパイル時に取り込むため、定義を追加するときは builtin.rs 側の登録も要る。
-- **実行ファイルは3つある**。`releash-desktop` は desktop シェル、`releash-backend` は daemon と内部 background worker、`releash`（`src-tauri/releash/`）は独立 CLI。CLI は `releash-sdk` だけを共有依存とし、backend には依存しない。共有 crate は生成された proto 型・descriptor・Connect client、発見と同一性確認、protocol 互換性を提供する。
+- **実行ファイルは3つある**。`releash-desktop` は desktop シェル、`releashd` は daemon と内部 background worker、`releash`（`src-tauri/releash/`）は独立 CLI。CLI は `releash-sdk` だけを共有依存とし、backend には依存しない。共有 crate は生成された proto 型・descriptor・Connect client、発見と同一性確認、protocol 互換性を提供する。
 - **画面・CLI・hook は Connect の ClientService を使う**。契約は `proto/client.proto`、入口は `adaptor/controller/api/client*.rs`、処理は `adaptor/controller/client/`。Tauri コマンドは desktop 固有の操作だけを扱う。
 - **daemon は 127.0.0.1 のみに bind する**。`client-api.json` に port と client token を書き出す。CLI と画面はこのファイルだけを読む。
 
@@ -102,24 +102,24 @@ pnpm test:integration
 PR 層（`src-tauri/`。CI では `CARGO_PROFILE_DEV_DEBUG="0"`）:
 
 ```bash
-cargo fmt --check -p releash-backend
-cargo clippy --locked -p releash-backend -- -D warnings
-cargo clippy --locked -p releash-backend --features test-support -- -D warnings
-cargo test --locked --lib --bins -p releash-backend
-cargo test --locked --doc -p releash-backend
+cargo fmt --check -p releashd
+cargo clippy --locked -p releashd -- -D warnings
+cargo clippy --locked -p releashd --features test-support -- -D warnings
+cargo test --locked --lib --bins -p releashd
+cargo test --locked --doc -p releashd
 cargo build --locked -p releash --bin releash
-cargo test --locked --test '*' -p releash-backend
+cargo test --locked --test '*' -p releashd
 cargo fmt --check -p releash-desktop
 cargo clippy --locked -p releash-desktop -- -D warnings
 cargo test --locked --lib --bins -p releash-desktop
 cargo test --locked --doc -p releash-desktop
-cargo build --locked -p releash-backend --bin releash-backend -p releash --bin releash
+cargo build --locked -p releashd --bin releashd -p releash --bin releash
 cargo test --locked --test '*' -p releash-desktop
 cargo fmt --check -p releash
 cargo clippy --locked -p releash -- -D warnings
 cargo test --locked --lib --bins -p releash
 cargo test --locked --doc -p releash
-cargo build --locked -p releash-backend --bin releash-backend -p releash --bin releash
+cargo build --locked -p releashd --bin releashd -p releash --bin releash
 cargo test --locked --test '*' -p releash
 cargo fmt --check -p releash-sdk
 cargo clippy --locked -p releash-sdk -- -D warnings
@@ -164,7 +164,7 @@ Rust coverage は `llvm-tools-preview` と `cargo-llvm-cov` が必要。Linux �
 )
 ```
 
-サーバの Tauri 依存は、`src-tauri/` で `cargo tree -p releash-backend -i tauri -e normal,dev,build --target all --all-features` を実行して確認する。依存がないときの確認済みの結果は終了コード `101`、出力は ``error: package ID specification `tauri` did not match any packages``（続いて ``help: a package with a similar name exists: `ntapi` ``）。この終了コードは依存が見つからないことを示す。
+サーバの Tauri 依存は、`src-tauri/` で `cargo tree -p releashd -i tauri -e normal,dev,build --target all --all-features` を実行して確認する。依存がないときの確認済みの結果は終了コード `101`、出力は ``error: package ID specification `tauri` did not match any packages``（続いて ``help: a package with a similar name exists: `ntapi` ``）。この終了コードは依存が見つからないことを示す。
 
 ## テスト方針
 

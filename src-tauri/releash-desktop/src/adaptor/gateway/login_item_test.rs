@@ -33,7 +33,7 @@ fn test_登録結果_承認待ちだけを登録済みとして扱い他の失�
 
 #[test]
 fn test_登録希望変換_登録希望だけを書く() {
-    use releash_lib::desktop_api::wire;
+    use releashd::desktop_api::wire;
     // Given / When / Then
     for requested in [true, false] {
         let wire::command_request::Command::UpdateLoginItemPreference(request) =

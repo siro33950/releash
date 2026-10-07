@@ -1,18 +1,18 @@
-use releash_lib::test_support::integration::providers::ProviderKind;
-use releash_lib::test_support::integration::providers::ProviderLifecycleUsecase;
-use releash_lib::test_support::integration::sessions::hook_health_usecase;
-use releash_lib::test_support::integration::sessions::provider_runtime;
-use releash_lib::test_support::integration::sessions::started_execution_trees;
-use releash_lib::test_support::integration::sessions::AgentSessionLaunchUsecase;
-use releash_lib::test_support::integration::sessions::AgentSessionLaunchUsecaseError;
-use releash_lib::test_support::integration::sessions::AgentSessionUsecase;
-use releash_lib::test_support::integration::sessions::FixedAvailability;
-use releash_lib::test_support::integration::sessions::FixedHistory;
-use releash_lib::test_support::integration::sessions::RecordingLaunchGateway;
-use releash_lib::test_support::integration::sessions::RecordingLifecycleEvents;
-use releash_lib::test_support::integration::sessions::RecordingTerminal;
-use releash_lib::test_support::integration::sessions::WorkflowAgentSessionLaunchRequest;
-use releash_lib::test_support::integration::workspace::WorkspaceIdentity;
+use releashd::test_support::integration::providers::ProviderKind;
+use releashd::test_support::integration::providers::ProviderLifecycleUsecase;
+use releashd::test_support::integration::sessions::hook_health_usecase;
+use releashd::test_support::integration::sessions::provider_runtime;
+use releashd::test_support::integration::sessions::started_execution_trees;
+use releashd::test_support::integration::sessions::AgentSessionLaunchUsecase;
+use releashd::test_support::integration::sessions::AgentSessionLaunchUsecaseError;
+use releashd::test_support::integration::sessions::AgentSessionUsecase;
+use releashd::test_support::integration::sessions::FixedAvailability;
+use releashd::test_support::integration::sessions::FixedHistory;
+use releashd::test_support::integration::sessions::RecordingLaunchGateway;
+use releashd::test_support::integration::sessions::RecordingLifecycleEvents;
+use releashd::test_support::integration::sessions::RecordingTerminal;
+use releashd::test_support::integration::sessions::WorkflowAgentSessionLaunchRequest;
+use releashd::test_support::integration::workspace::WorkspaceIdentity;
 use std::sync::Arc;
 use std::sync::Mutex;
 
@@ -20,17 +20,15 @@ use std::sync::Mutex;
 pub async fn test_workflow起動保持_偽の期限通知だけでactivated記録を消す() {
     // Given
     let directory = tempfile::tempdir().unwrap();
-    let store = releash_lib::test_support::integration::persistence::LocalEventStore::open(
-        releash_lib::test_support::integration::persistence::LocalEventStoreConfig::production(
+    let store = releashd::test_support::integration::persistence::LocalEventStore::open(
+        releashd::test_support::integration::persistence::LocalEventStoreConfig::production(
             directory.path().to_path_buf(),
-            std::sync::Arc::new(
-                releash_lib::test_support::integration::platform::RetryLimiter::new(),
-            ),
+            std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
         ),
     )
     .unwrap();
     let sessions = Arc::new(AgentSessionUsecase::new(Arc::new(
-        releash_lib::test_support::integration::sessions::LocalAgentSessionRepository::new(
+        releashd::test_support::integration::sessions::LocalAgentSessionRepository::new(
             store.clone(),
         ),
     )));
@@ -38,7 +36,7 @@ pub async fn test_workflow起動保持_偽の期限通知だけでactivated記�
     let terminal = Arc::new(RecordingTerminal::default());
     let elapsed = Arc::new(tokio::sync::Notify::new());
     let armed = Arc::new(tokio::sync::Notify::new());
-    let activated = releash_lib::test_support::integration::platform::run(Arc::new({
+    let activated = releashd::test_support::integration::platform::run(Arc::new({
         let elapsed = elapsed.clone();
         let armed = armed.clone();
         move || {
@@ -50,11 +48,11 @@ pub async fn test_workflow起動保持_偽の期限通知だけでactivated記�
         }
     }));
     let usecase = AgentSessionLaunchUsecase::new(
-std::sync::Arc::new(releash_lib::test_support::integration::telemetry::TelemetryGateway),
+std::sync::Arc::new(releashd::test_support::integration::telemetry::TelemetryGateway),
 sessions,
 Arc::new(ProviderLifecycleUsecase::new(
             Arc::new(
-                releash_lib::test_support::integration::providers::LocalProviderLifecycleCredentialGateway,
+                releashd::test_support::integration::providers::LocalProviderLifecycleCredentialGateway,
             ),
             Arc::new(RecordingLifecycleEvents::default()),
         )),
@@ -69,7 +67,7 @@ provider_runtime(
 Arc::new(FixedHistory { entries: Vec::new() }),
 hook_health_usecase(),
 started_execution_trees(),
-activated, releash_lib::test_support::integration::workspace::TestWorkspaceTreeRepository::new(),);
+activated, releashd::test_support::integration::workspace::TestWorkspaceTreeRepository::new(),);
 
     let launched = usecase
         .prepare_workflow_node(WorkflowAgentSessionLaunchRequest {

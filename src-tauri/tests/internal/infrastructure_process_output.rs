@@ -1,9 +1,9 @@
-use releash_lib::test_support::integration::platform::scope;
-use releash_lib::test_support::integration::platform::Deadline;
-use releash_lib::test_support::integration::platform::OperationContext;
-use releash_lib::test_support::integration::platform::OperationStopped;
-use releash_lib::test_support::integration::process::output;
-use releash_lib::test_support::integration::process::ProcessError;
+use releashd::test_support::integration::platform::scope;
+use releashd::test_support::integration::platform::Deadline;
+use releashd::test_support::integration::platform::OperationContext;
+use releashd::test_support::integration::platform::OperationStopped;
+use releashd::test_support::integration::process::output;
+use releashd::test_support::integration::process::ProcessError;
 use std::io;
 use std::time::Duration;
 use std::time::Instant;
@@ -129,7 +129,7 @@ pub async fn test_プロセス実行_外側waitの期限と取消でも子孫を
         };
         // When
         let (result, _) = tokio::join!(
-            releash_lib::test_support::integration::platform::wait(&context, operation),
+            releashd::test_support::integration::platform::wait(&context, operation),
             async {
                 if cancelled {
                     tokio::time::sleep(Duration::from_millis(10)).await;
