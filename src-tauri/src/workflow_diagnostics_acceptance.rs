@@ -264,7 +264,10 @@ impl WorkflowDiagnosticsAcceptanceHost {
             workflow,
             runtime,
             token.clone(),
-            binding.terminal_bearer_token(),
+            crate::adaptor::controller::api::auth::ClientTokens {
+                operator: binding.terminal_bearer_token().into(),
+                hook: binding.hook_bearer_token(),
+            },
             None,
             None,
             (

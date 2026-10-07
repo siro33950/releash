@@ -452,7 +452,6 @@ impl From<&crate::domain::comment::ReviewError> for Failure {
         use crate::domain::comment::ReviewError as E;
         match error {
             E::Technical(error) => Self::from(error),
-            E::Store(error) => Self::from(error),
             E::Io(_) | E::Serialize(_) => Self::Technical(TechnicalFailureNature::Other),
             E::SessionNotOpen(_)
             | E::InvalidInput(_)

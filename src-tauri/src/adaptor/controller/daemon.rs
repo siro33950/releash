@@ -193,12 +193,10 @@ pub async fn compose(
         );
 
     let review_comment_usecase = Arc::new(
-        adaptor::controller::wiring::build_review_comment_usecase()
-            .with_subscriptions(state_subscriptions.clone())
-            .with_context(usecase::comment::ReviewContextUsecase::new(
+        adaptor::controller::wiring::build_review_comment_usecase(usecase::comment::ReviewContextUsecase::new(
                 Arc::new(adaptor::gateway::agent_session::LocalAgentSessionRepository::new(local_event_store.clone())),
                 Arc::new(adaptor::gateway::workflow::worktree_context::StoredWorkspaceWorktreePathQuery::new(data_dir.clone(), retry_limiter.clone())),
-            )),
+            )).with_subscriptions(state_subscriptions.clone()),
     );
     let file_watchers = Arc::new(infrastructure::file_watcher::FileWatcherManager::default());
     let shared_repo_paths: adaptor::gateway::repository::repo_paths::SharedRepoPaths =
@@ -605,14 +603,11 @@ pub async fn compose(
         local_api_binding.bearer_token(),
         adaptor::controller::api::auth::ClientTokens {
             operator: local_api_binding.client_bearer_token(),
-            hook: Some(local_api_binding.hook_bearer_token()),
+            hook: local_api_binding.hook_bearer_token(),
         },
         Some(
             adaptor::controller::api::ClientApiDeps::new(client_dispatch.clone(), priority)
-                .with_provider_lifecycle(
-                    provider_lifecycle_ingress.clone(),
-                    Arc::new(adaptor::gateway::provider_lifecycle::LocalProviderPayloadInterpreter),
-                )
+                .with_provider_lifecycle(provider_lifecycle_ingress.clone())
                 .with_state_subscriptions(adaptor::controller::api::StateSubscriptionDeps::new(
                     state_subscriptions,
                     state_presenter,

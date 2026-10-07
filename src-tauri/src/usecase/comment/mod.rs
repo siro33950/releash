@@ -1,5 +1,5 @@
 pub(crate) mod context;
-pub(crate) use context::{ReviewContextTarget, ReviewContextUsecase};
+pub use context::ReviewContextUsecase;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -36,7 +36,7 @@ pub trait ReviewIdGenerator: Send + Sync {
 }
 
 pub struct ReviewCommentUsecase {
-    context: Option<ReviewContextUsecase>,
+    context: ReviewContextUsecase,
     store: Arc<dyn ReviewEventStore>,
     clock: Arc<dyn ReviewClock>,
     id_generator: Arc<dyn ReviewIdGenerator>,
@@ -48,9 +48,10 @@ impl ReviewCommentUsecase {
         store: Arc<dyn ReviewEventStore>,
         clock: Arc<dyn ReviewClock>,
         id_generator: Arc<dyn ReviewIdGenerator>,
+        context: ReviewContextUsecase,
     ) -> Self {
         Self {
-            context: None,
+            context,
             store,
             clock,
             id_generator,
@@ -58,30 +59,20 @@ impl ReviewCommentUsecase {
         }
     }
 
-    pub fn with_context(mut self, context: ReviewContextUsecase) -> Self {
-        self.context = Some(context);
-        self
-    }
-    pub async fn resolve_context(
+    pub async fn session_context_for_read(
         &self,
-        target: ReviewContextTarget<'_>,
-        mutation: bool,
+        id: &str,
     ) -> Result<Option<(String, ReviewActor)>, ReviewError> {
-        let context = self.context.as_ref().ok_or_else(|| {
-            ReviewError::Technical(crate::domain::failure::TechnicalFailure {
-                nature: crate::domain::failure::TechnicalFailureNature::Other,
-                message: "Review context unavailable".into(),
-            })
-        })?;
-        context.resolve(target, mutation).await
+        self.context.session_for_read(id).await
     }
     pub async fn required_session_context(
         &self,
         id: &str,
     ) -> Result<(String, ReviewActor), ReviewError> {
-        self.resolve_context(ReviewContextTarget::Session(id), true)
-            .await?
-            .ok_or_else(|| ReviewError::NotFound(format!("Session not found: {id}")))
+        self.context.session_for_write(id).await
+    }
+    pub async fn worktree_context(&self, path: &str) -> Result<(String, ReviewActor), ReviewError> {
+        self.context.worktree(path).await
     }
     pub fn with_subscriptions(
         mut self,

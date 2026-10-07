@@ -129,7 +129,13 @@ mod restored_memory_tests {
     fn fixture() -> (Router, crate::infrastructure::local_api::BearerToken) {
         let token = crate::infrastructure::local_api::BearerToken::from(Arc::<str>::from("client"));
         let router = Router::new().route("/rpc", post(|| async { "ok" })).layer(
-            axum::middleware::from_fn_with_state(ClientTokens::from(token.clone()), require_client),
+            axum::middleware::from_fn_with_state(
+                ClientTokens {
+                    operator: token.clone(),
+                    hook: Arc::<str>::from("hook").into(),
+                },
+                require_client,
+            ),
         );
         (router, token)
     }
@@ -286,7 +292,7 @@ async fn test_scope認証_全methodの権限と未知methodとhook失効を区�
         .layer(axum::middleware::from_fn_with_state(
             ClientTokens {
                 operator,
-                hook: Some(hook.clone()),
+                hook: hook.clone(),
             },
             require_client,
         ));
@@ -336,4 +342,35 @@ async fn test_scope認証_全methodの権限と未知methodとhook失効を区�
         .unwrap();
     // Then
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[path = "../../../../build.rs"]
+mod build_script;
+
+#[test]
+fn test_rpcのscope定義_空と未指定と重複を拒否し有効な集合を受け付ける() {
+    use crate::adaptor::presenter::client::Scope;
+    // Given
+    let unspecified = Scope::Unspecified as i32;
+    let operator = Scope::Operator as i32;
+    let hook = Scope::Hook as i32;
+    // When / Then
+    for (scopes, valid) in [
+        (vec![], false),
+        (vec![unspecified], false),
+        (vec![operator, unspecified], false),
+        (vec![operator, operator], false),
+        (vec![operator], true),
+        (vec![hook], true),
+        (vec![operator, hook], true),
+        (vec![hook, operator], true),
+        (vec![i32::MAX], false),
+    ] {
+        assert_eq!(
+            build_script::valid_method_scopes(&scopes, unspecified, |value| Scope::try_from(value)
+                .is_ok()),
+            valid,
+            "{scopes:?}"
+        );
+    }
 }

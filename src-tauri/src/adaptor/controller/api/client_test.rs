@@ -1303,6 +1303,39 @@ struct SignalIngress(
 );
 #[async_trait::async_trait]
 impl crate::usecase::provider_lifecycle::ProviderLifecycleIngressPort for SignalIngress {
+    async fn receive_payload(
+        &self,
+        slot: &crate::domain::provider_lifecycle::ProviderLifecycleSlotId,
+        capability: &str,
+        input: crate::usecase::provider_lifecycle::ingress::ProviderPayloadInput<'_>,
+    ) -> Result<
+        (
+            crate::domain::provider_lifecycle::ProviderLifecycleIngressResult,
+            bool,
+        ),
+        crate::usecase::provider_lifecycle::ProviderLifecycleIngressUsecaseError,
+    > {
+        use crate::domain::provider_lifecycle::{
+            ProviderLifecycleIngressResult, ProviderPayloadInterpretation,
+            ProviderPayloadInterpreter,
+        };
+        match crate::adaptor::gateway::provider_lifecycle::LocalProviderPayloadInterpreter
+            .interpret(input.provider, input.binding_id, input.scope, input.payload)
+            .map_err(
+                crate::usecase::provider_lifecycle::ProviderLifecycleIngressUsecaseError::Payload,
+            )? {
+            ProviderPayloadInterpretation::Subagent => {
+                Ok((ProviderLifecycleIngressResult::Ignored, false))
+            }
+            ProviderPayloadInterpretation::Signal(signal) => {
+                let started = signal.is_session_started();
+                self.receive(slot, capability, signal)
+                    .await
+                    .map(|result| (result, started))
+            }
+        }
+    }
+
     async fn receive(
         &self,
         _: &crate::domain::provider_lifecycle::ProviderLifecycleSlotId,
@@ -1346,10 +1379,8 @@ async fn test_hookのconnect入口_生payloadを解釈し上限と権限と結�
     use tower::ServiceExt;
     let ingress = Arc::new(SignalIngress(Default::default()));
     let hook = crate::infrastructure::local_api::BearerToken::from(Arc::<str>::from("hook"));
-    let deps = crate::test_support::client_api_deps(Arc::new(dispatch())).with_provider_lifecycle(
-        ingress.clone(),
-        Arc::new(crate::adaptor::gateway::provider_lifecycle::LocalProviderPayloadInterpreter),
-    );
+    let deps = crate::test_support::client_api_deps(Arc::new(dispatch()))
+        .with_provider_lifecycle(ingress.clone());
     let app = router(
         Some(deps),
         crate::adaptor::controller::daemon::default_timeout(),
@@ -1357,7 +1388,7 @@ async fn test_hookのconnect入口_生payloadを解釈し上限と権限と結�
     .layer(axum::middleware::from_fn_with_state(
         super::super::auth::ClientTokens {
             operator: Arc::<str>::from("operator").into(),
-            hook: Some(hook.clone()),
+            hook: hook.clone(),
         },
         super::super::auth::require_client,
     ));
@@ -1368,14 +1399,17 @@ async fn test_hookのconnect入口_生payloadを解釈し上限と権限と結�
         (payload.to_vec(), "hook", "invalid", "rejected"),
         (br#"{"hook_event_name":"SessionStart","session_id":"provider-session","agent_id":"subagent"}"#.to_vec(), "hook", "capability", "ignored"),
         (b"{".to_vec(), "hook", "capability", "invalid_argument"),
+        (br#"{"hook_event_name":"unknown","session_id":"provider-session"}"#.to_vec(), "hook", "capability", "invalid_argument"),
         ({ let mut bytes = payload.to_vec(); bytes.resize(65_536, b' '); bytes }, "hook", "capability", "duplicate"),
         (vec![b' ';65_537], "hook", "capability", "invalid_argument"),
         (payload.to_vec(), "operator", "capability", "permission_denied"),
     ] {
+        let unsupported = bytes == br#"{"hook_event_name":"unknown","session_id":"provider-session"}"#;
         let body = serde_json::json!({"provider":{"value":"claude"}, "slotId":"slot", "bindingId":"binding", "capability":capability, "agentSessionId":"session", "payload":base64::engine::general_purpose::STANDARD.encode(bytes)});
         let response = app.clone().oneshot(axum::http::Request::post("/releash.client.v1.ClientService/ReceiveProviderSignal").header("content-type","application/json").header("connect-protocol-version","1").header("authorization",format!("Bearer {token}")).body(axum::body::Body::from(body.to_string())).unwrap()).await.unwrap();
         let bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let result: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        if unsupported { assert_eq!(result["message"], "unsupported Provider lifecycle event: unknown"); }
         assert!(result.get(expected).is_some() || result["code"] == expected, "{expected}: {result}");
     }
     assert_eq!(ingress.0.lock().unwrap().len(), 3);

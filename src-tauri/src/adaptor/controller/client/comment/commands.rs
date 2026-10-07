@@ -2,8 +2,7 @@ use crate::adaptor::presenter::error::AppError;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use crate::adaptor::presenter::comment::ReviewThreadDto;
-use crate::domain::comment::{ReviewActor, ReviewTarget};
+use crate::domain::comment::{ReviewActor, ReviewTarget, ReviewThread};
 use crate::infrastructure::platform::path_aliases::{alias_name_for_profile, BuildProfile};
 use crate::usecase::comment::ReviewCommentUsecase;
 
@@ -20,21 +19,15 @@ where
 pub(crate) async fn create_review_thread_shared(
     data_dir: PathBuf,
     usecase: &Arc<ReviewCommentUsecase>,
-    worktree_name: String,
+    context: (String, ReviewActor),
     target: ReviewTarget,
     content: String,
-) -> Result<ReviewThreadDto, AppError> {
+) -> Result<ReviewThread, AppError> {
+    let (worktree_name, actor) = context;
     let usecase = Arc::clone(usecase);
     let thread = blocking(move || {
         usecase
-            .create_thread(
-                &data_dir,
-                &worktree_name,
-                ReviewActor::human(),
-                target,
-                content,
-            )
-            .map(ReviewThreadDto::from)
+            .create_thread(&data_dir, &worktree_name, actor, target, content)
             .map_err(AppError::from_failure)
     })
     .await?;
@@ -44,21 +37,15 @@ pub(crate) async fn create_review_thread_shared(
 pub(crate) async fn append_review_comment_shared(
     data_dir: PathBuf,
     usecase: &Arc<ReviewCommentUsecase>,
-    worktree_name: String,
+    context: (String, ReviewActor),
     thread_id: String,
     content: String,
-) -> Result<ReviewThreadDto, AppError> {
+) -> Result<ReviewThread, AppError> {
+    let (worktree_name, actor) = context;
     let usecase = Arc::clone(usecase);
     let thread = blocking(move || {
         usecase
-            .append_comment(
-                &data_dir,
-                &worktree_name,
-                ReviewActor::human(),
-                &thread_id,
-                content,
-            )
-            .map(ReviewThreadDto::from)
+            .append_comment(&data_dir, &worktree_name, actor, &thread_id, content)
             .map_err(AppError::from_failure)
     })
     .await?;
@@ -68,23 +55,23 @@ pub(crate) async fn append_review_comment_shared(
 pub(crate) async fn resolve_review_thread_shared(
     data_dir: PathBuf,
     usecase: &Arc<ReviewCommentUsecase>,
-    worktree_name: String,
+    context: (String, ReviewActor),
     thread_id: String,
     outcome: String,
     summary: String,
-) -> Result<ReviewThreadDto, AppError> {
+) -> Result<ReviewThread, AppError> {
+    let (worktree_name, actor) = context;
     let usecase = Arc::clone(usecase);
     let thread = blocking(move || {
         usecase
             .resolve_thread(
                 &data_dir,
                 &worktree_name,
-                ReviewActor::human(),
+                actor,
                 &thread_id,
                 outcome,
                 summary,
             )
-            .map(ReviewThreadDto::from)
             .map_err(AppError::from_failure)
     })
     .await?;
@@ -99,13 +86,7 @@ pub(crate) async fn create_session_review_thread_shared(
     content: String,
 ) -> Result<crate::domain::comment::ReviewThread, AppError> {
     let (path, actor) = required_session_context(usecase, &session_id).await?;
-    let usecase = usecase.clone();
-    blocking(move || {
-        usecase
-            .create_thread(&data_dir, &path, actor, target, content)
-            .map_err(AppError::from_failure)
-    })
-    .await
+    create_review_thread_shared(data_dir, usecase, (path, actor), target, content).await
 }
 pub(crate) async fn append_session_review_comment_shared(
     data_dir: PathBuf,
@@ -115,13 +96,7 @@ pub(crate) async fn append_session_review_comment_shared(
     content: String,
 ) -> Result<crate::domain::comment::ReviewThread, AppError> {
     let (path, actor) = required_session_context(usecase, &session_id).await?;
-    let usecase = usecase.clone();
-    blocking(move || {
-        usecase
-            .append_comment(&data_dir, &path, actor, &thread_id, content)
-            .map_err(AppError::from_failure)
-    })
-    .await
+    append_review_comment_shared(data_dir, usecase, (path, actor), thread_id, content).await
 }
 pub(crate) async fn resolve_session_review_thread_shared(
     data_dir: PathBuf,
@@ -132,12 +107,14 @@ pub(crate) async fn resolve_session_review_thread_shared(
     summary: String,
 ) -> Result<crate::domain::comment::ReviewThread, AppError> {
     let (path, actor) = required_session_context(usecase, &session_id).await?;
-    let usecase = usecase.clone();
-    blocking(move || {
-        usecase
-            .resolve_thread(&data_dir, &path, actor, &thread_id, outcome, summary)
-            .map_err(AppError::from_failure)
-    })
+    resolve_review_thread_shared(
+        data_dir,
+        usecase,
+        (path, actor),
+        thread_id,
+        outcome,
+        summary,
+    )
     .await
 }
 async fn required_session_context(

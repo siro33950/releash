@@ -2262,3 +2262,36 @@ pub async fn test_agent_session_repository_所属repoの取得失敗では作成
             .is_empty()
     );
 }
+
+#[tokio::test]
+pub async fn test_review文脈読取_書き込み側storeを保持したままsessionを復元する() {
+    // Given
+    let directory = TempDir::new().unwrap();
+    let store = open_store(&directory);
+    let repository = new_repository(&store);
+    repository
+        .create(
+            standalone_session("agent-session-1", "/repo", ProviderKind::Codex),
+            "create-request-1",
+        )
+        .await
+        .unwrap();
+    let context =
+        releash_lib::test_support::integration::platform::build_review_context(directory.path());
+    // When
+    let resolved = context.session_for_read("agent-session-1").await.unwrap();
+    let missing = context.session_for_read("missing").await.unwrap();
+    // Then
+    assert_eq!(
+        resolved,
+        Some((
+            "/repo".into(),
+            releash_lib::test_support::integration::platform::ReviewActor::provider_agent(
+                "codex".into(),
+                Some("agent-session-1".into())
+            )
+        ))
+    );
+    assert!(missing.is_none());
+    assert!(repository.find("agent-session-1").await.unwrap().is_some());
+}

@@ -273,6 +273,21 @@ fn test_cli購読対象_絞り込みの正規順序とpathで使える軸を守�
     ] {
         assert!(SubscriptionTarget::from_parts("review-session-threads", &args).is_err());
     }
+    for filters in [
+        vec!["file="],
+        vec!["state=unknown"],
+        vec!["file=a", "file=b"],
+        vec!["state=open", "file=a"],
+        vec!["thread=b", "thread=a"],
+        vec!["thread=a", "thread=a"],
+    ] {
+        let mut args = vec!["/repo"];
+        args.extend(filters);
+        assert_eq!(
+            SubscriptionTarget::from_parts("review-worktree-threads", &args),
+            Err(SubscriptionError::InvalidId)
+        );
+    }
     for filter in ["author=self", "unread=false"] {
         assert!(
             SubscriptionTarget::from_parts("review-worktree-threads", &["/repo", filter]).is_err()

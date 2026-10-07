@@ -273,7 +273,6 @@ fn parse_optional_unread(value: Option<String>) -> Result<Option<bool>, CliError
 
 fn review_error_to_cli_error(error: ReviewError) -> CliError {
     match error {
-        ReviewError::Store(error) => CliError::Other(error.to_string()),
         ReviewError::SessionNotOpen(id) => {
             CliError::InvalidInput(format!("Session is not open: {id}"))
         }
@@ -408,7 +407,9 @@ fn write_review_history(
 }
 
 pub async fn cmd_review(data_dir: &Path, command: ReviewSubcommand) -> Result<String, CliError> {
-    let usecase = build_review_comment_usecase();
+    let usecase = build_review_comment_usecase(
+        crate::adaptor::controller::wiring::build_review_context(data_dir),
+    );
     match command {
         ReviewSubcommand::List {
             session_id,

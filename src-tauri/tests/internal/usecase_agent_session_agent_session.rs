@@ -1106,12 +1106,6 @@ pub async fn test_session選択_欠落はcorruptとしqueryの技術的性質を
         ) -> Result<Option<WorkspaceTreeNode>, LocalEventQueryError> {
             panic!("unexpected node read")
         }
-        async fn load_node_by_node_execution_id(
-            &self,
-            _: &str,
-        ) -> Result<Option<WorkspaceTreeNode>, LocalEventQueryError> {
-            panic!("unexpected node read")
-        }
         async fn load_node_by_session_id(
             &self,
             workspace: &WorkspaceIdentity,

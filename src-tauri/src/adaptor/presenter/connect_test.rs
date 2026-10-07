@@ -2587,12 +2587,11 @@ mod connect_mapping_tests {
                     F::FailedPrecondition,
                 ),
                 (
-                    crate::domain::comment::ReviewError::Store(
+                    crate::domain::comment::ReviewError::Technical(
                         crate::domain::failure::TechnicalFailure {
                             nature: crate::domain::failure::TechnicalFailureNature::Transient,
                             message: "reason".into(),
-                        }
-                        .into(),
+                        },
                     ),
                     F::Unavailable,
                 ),

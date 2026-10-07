@@ -567,7 +567,10 @@ launch_retention: crate::adaptor::controller::agent_session_launch_retention::ru
             workflow_read,
             runtime.clone(),
             token.clone(),
-            binding.terminal_bearer_token(),
+            crate::adaptor::controller::api::auth::ClientTokens {
+                operator: binding.terminal_bearer_token().into(),
+                hook: binding.hook_bearer_token(),
+            },
             None,
             Some(composition.lifecycle_ingress.clone()),
             (
@@ -937,21 +940,41 @@ launch_retention: crate::adaptor::controller::agent_session_launch_retention::ru
             crate::adaptor::gateway::workspace_tree::SqliteWorkspaceTreeRepository::new(
                 self.store.clone(),
             );
-        repository
-            .load_node_by_node_execution_id(node_execution_id)
+        let backend = crate::adaptor::gateway::workflow::fact_log::FactLogReadBackend::Live(
+            self.store.clone(),
+        );
+        let Some(tree_id) = backend
+            .tree_id_for_node(node_execution_id)
             .await
-            .map_err(|error| error.to_string())
-            .map(|node| {
-                node.map(|node| match node.status_classification {
-                    WorkspaceNodeStatusClassification::Active => {
-                        AcceptanceWorkspaceNodeStatus::Active
-                    }
-                    WorkspaceNodeStatusClassification::Attention => {
-                        AcceptanceWorkspaceNodeStatus::Attention
-                    }
-                    WorkspaceNodeStatusClassification::Idle => AcceptanceWorkspaceNodeStatus::Idle,
-                })
-            })
+            .map_err(|error| error.to_string())?
+        else {
+            return Ok(None);
+        };
+        let Some(tree) =
+            crate::adaptor::gateway::workflow::fact_log::fold_tree_from(&backend, &tree_id)
+                .await
+                .map_err(|error| error.to_string())?
+        else {
+            return Ok(None);
+        };
+        let workspace =
+            crate::domain::workspace_tree::WorkspaceIdentity::new(&tree.root.workspace_identity);
+        let tree = repository
+            .load_trees(&[workspace])
+            .await
+            .remove(0)
+            .map_err(|error| error.to_string())?;
+        Ok(tree
+            .nodes()
+            .iter()
+            .find(|node| node.node_execution_id.as_deref() == Some(node_execution_id))
+            .map(|node| match node.status_classification {
+                WorkspaceNodeStatusClassification::Active => AcceptanceWorkspaceNodeStatus::Active,
+                WorkspaceNodeStatusClassification::Attention => {
+                    AcceptanceWorkspaceNodeStatus::Attention
+                }
+                WorkspaceNodeStatusClassification::Idle => AcceptanceWorkspaceNodeStatus::Idle,
+            }))
     }
 
     pub async fn execution_fact_event_types(&self, tree_id: &str) -> Result<Vec<String>, String> {

@@ -161,7 +161,7 @@ AND HTTP `/v1` の入口は master token で今と同じに応答し、CLI の `
 ## B-025: AGENTS.md の記載
 
 WHEN AGENTS.md を読む
-THEN 「hook の token は hook のプロセスにしか渡さない」と書かれ、「local API の master token を renderer JS へ渡さない」は無い
+THEN 「local API の master token を renderer JS へ渡さない」と「hook の token はファイルに書かず、provider の agent を起動する env だけで渡す」が書かれている
 AND 「ビルド・テスト・Lint」に、CI と同じ `buf lint` と `buf breaking` のコマンドと、`buf skip breaking` ラベルを効かせる手順がある
 
 ## 要件IDとBehavior IDの対応表

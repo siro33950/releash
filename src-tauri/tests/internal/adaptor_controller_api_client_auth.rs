@@ -20,7 +20,7 @@ pub async fn test_リクエスト認証_server停止でoperatorとhook_tokenが�
         axum::middleware::from_fn_with_state(
             releash_lib::test_support::integration::transport::ClientTokens {
                 operator: binding.client_bearer_token(),
-                hook: Some(binding.hook_bearer_token()),
+                hook: binding.hook_bearer_token(),
             },
             require_client,
         ),

@@ -148,11 +148,22 @@ pub(crate) fn build_canonical_agent_session_query(
     )
 }
 
-pub fn build_review_comment_usecase() -> ReviewCommentUsecase {
+pub fn build_review_context(
+    data_dir: &std::path::Path,
+) -> crate::usecase::comment::ReviewContextUsecase {
+    crate::usecase::comment::ReviewContextUsecase::new(
+        Arc::new(crate::adaptor::gateway::agent_session::agent_session_repository::ReadOnlyAgentSessionRepository::new(data_dir.to_path_buf())),
+        Arc::new(crate::adaptor::gateway::workflow::worktree_context::StoredWorkspaceWorktreePathQuery::new(data_dir.to_path_buf(), Arc::new(crate::common::retry::RetryLimiter::new()))),
+    )
+}
+
+pub fn build_review_comment_usecase(
+    context: crate::usecase::comment::ReviewContextUsecase,
+) -> ReviewCommentUsecase {
     let store: Arc<dyn ReviewEventStore> = Arc::new(FileReviewEventStore::default());
     let clock: Arc<dyn ReviewClock> = Arc::new(SystemReviewClock);
     let id_generator: Arc<dyn ReviewIdGenerator> = Arc::new(UuidReviewIdGenerator);
-    ReviewCommentUsecase::new(store, clock, id_generator)
+    ReviewCommentUsecase::new(store, clock, id_generator, context)
 }
 
 pub fn build_workspace_list_usecase(

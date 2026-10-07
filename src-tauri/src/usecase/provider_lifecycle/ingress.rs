@@ -21,6 +21,7 @@ use super::{
 pub enum ProviderLifecycleIngressUsecaseError {
     Technical(crate::domain::failure::TechnicalFailure),
     Store(crate::domain::failure::StorageFailure),
+    Payload(crate::domain::provider_lifecycle::ProviderPayloadError),
     InvalidInput,
     Conflict,
     StorageUnavailable,
@@ -69,6 +70,7 @@ impl From<ProviderLifecycleUsecaseError> for ProviderLifecycleIngressUsecaseErro
 }
 
 pub struct ProviderLifecycleIngressUsecase {
+    pub(super) interpreter: Arc<dyn crate::domain::provider_lifecycle::ProviderPayloadInterpreter>,
     identities: Arc<dyn crate::domain::identity::IdentityIssuer>,
     lifecycle: Arc<ProviderLifecycleUsecase>,
     sessions: Arc<AgentSessionUsecase>,
@@ -96,27 +98,10 @@ pub trait ProviderLifecycleIngressPort: Send + Sync {
 
     async fn receive_payload(
         &self,
-        interpreter: &dyn crate::domain::provider_lifecycle::ProviderPayloadInterpreter,
         slot_id: &ProviderLifecycleSlotId,
         capability: &str,
         input: ProviderPayloadInput<'_>,
-    ) -> Result<(ProviderLifecycleIngressResult, bool), ProviderLifecycleIngressUsecaseError> {
-        use crate::domain::provider_lifecycle::ProviderPayloadInterpretation;
-        match interpreter
-            .interpret(input.provider, input.binding_id, input.scope, input.payload)
-            .map_err(|_| ProviderLifecycleIngressUsecaseError::InvalidInput)?
-        {
-            ProviderPayloadInterpretation::Subagent => {
-                Ok((ProviderLifecycleIngressResult::Ignored, false))
-            }
-            ProviderPayloadInterpretation::Signal(signal) => {
-                let started = signal.is_session_started();
-                self.receive(slot_id, capability, signal)
-                    .await
-                    .map(|result| (result, started))
-            }
-        }
-    }
+    ) -> Result<(ProviderLifecycleIngressResult, bool), ProviderLifecycleIngressUsecaseError>;
 
     async fn report_unavailable(
         &self,
@@ -128,15 +113,20 @@ pub trait ProviderLifecycleIngressPort: Send + Sync {
 
 impl ProviderLifecycleIngressUsecase {
     pub fn new(
+        interpreter: Arc<dyn crate::domain::provider_lifecycle::ProviderPayloadInterpreter>,
         identities: Arc<dyn crate::domain::identity::IdentityIssuer>,
         lifecycle: Arc<ProviderLifecycleUsecase>,
         sessions: Arc<AgentSessionUsecase>,
         hook_health: Arc<ProviderHookHealthUsecase>,
-        session_start_transaction: Arc<dyn ProviderSessionStartTransaction>,
-        execution_tree_stop_transaction: Arc<dyn ProviderExecutionTreeStopTransaction>,
+        transactions: (
+            Arc<dyn ProviderSessionStartTransaction>,
+            Arc<dyn ProviderExecutionTreeStopTransaction>,
+        ),
         subscriptions: StateSubscriptionUsecase,
     ) -> Self {
+        let (session_start_transaction, execution_tree_stop_transaction) = transactions;
         Self {
+            interpreter,
             identities,
             lifecycle,
             sessions,
@@ -385,6 +375,30 @@ fn merge_activity_outcome(
 
 #[async_trait::async_trait]
 impl ProviderLifecycleIngressPort for ProviderLifecycleIngressUsecase {
+    async fn receive_payload(
+        &self,
+        slot_id: &ProviderLifecycleSlotId,
+        capability: &str,
+        input: ProviderPayloadInput<'_>,
+    ) -> Result<(ProviderLifecycleIngressResult, bool), ProviderLifecycleIngressUsecaseError> {
+        use crate::domain::provider_lifecycle::ProviderPayloadInterpretation;
+        match self
+            .interpreter
+            .interpret(input.provider, input.binding_id, input.scope, input.payload)
+            .map_err(ProviderLifecycleIngressUsecaseError::Payload)?
+        {
+            ProviderPayloadInterpretation::Subagent => {
+                Ok((ProviderLifecycleIngressResult::Ignored, false))
+            }
+            ProviderPayloadInterpretation::Signal(signal) => {
+                let started = signal.is_session_started();
+                self.receive(slot_id, capability, signal)
+                    .await
+                    .map(|result| (result, started))
+            }
+        }
+    }
+
     async fn receive(
         &self,
         slot_id: &ProviderLifecycleSlotId,
@@ -405,8 +419,18 @@ impl ProviderLifecycleIngressPort for ProviderLifecycleIngressUsecase {
     }
 }
 
+#[cfg(any(test, feature = "test-support"))]
 #[async_trait::async_trait]
 impl ProviderLifecycleIngressPort for ProviderLifecycleUsecase {
+    async fn receive_payload(
+        &self,
+        _slot_id: &ProviderLifecycleSlotId,
+        _capability: &str,
+        _input: ProviderPayloadInput<'_>,
+    ) -> Result<(ProviderLifecycleIngressResult, bool), ProviderLifecycleIngressUsecaseError> {
+        unreachable!("legacy HTTP test adapter does not receive raw payloads")
+    }
+
     async fn receive(
         &self,
         slot_id: &ProviderLifecycleSlotId,
@@ -519,6 +543,7 @@ impl std::fmt::Display for ProviderLifecycleIngressUsecaseError {
         match self {
             Self::Technical(error) => error.fmt(f),
             Self::Store(error) => error.fmt(f),
+            Self::Payload(error) => error.fmt(f),
             Self::InvalidInput => f.write_str("Invalid provider lifecycle input"),
             Self::Conflict => f.write_str("Provider lifecycle conflict"),
             Self::StorageUnavailable => f.write_str("Provider lifecycle storage unavailable"),

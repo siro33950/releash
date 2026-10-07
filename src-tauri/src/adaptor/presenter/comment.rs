@@ -281,7 +281,7 @@ impl TryFrom<domain::ReviewHistoryEntry>
     fn try_from(value: domain::ReviewHistoryEntry) -> Result<Self, String> {
         use crate::adaptor::presenter::client as wire;
         use wire::review_history_entry_dto::Entry;
-        let actor = |actor| wire::ReviewActorWireDto::try_from(ReviewActorWireDto::from(&actor));
+        let actor = |actor| wire::ReviewActorWireDto::try_from(actor);
         Ok(Self {
             entry: Some(match value {
                 domain::ReviewHistoryEntry::ThreadCreated {
@@ -297,9 +297,7 @@ impl TryFrom<domain::ReviewHistoryEntry>
                     thread_id,
                     comment_id,
                     actor: Some(actor(author)?),
-                    target: Some(wire::ReviewTargetWireDto::try_from(
-                        ReviewTargetWireDto::from(&target),
-                    )?),
+                    target: Some(wire::ReviewTargetWireDto::try_from(target)?),
                     content,
                     at,
                 }),

@@ -1198,7 +1198,6 @@ pub async fn test_プロセス在否_実供給元の変化が読取と通知と�
     use releash_lib::test_support::integration::workflow::NodeProcessReader;
     use releash_lib::test_support::integration::workflow::WorkflowExecutionProjectionRepository;
     use releash_lib::test_support::integration::workspace::WorkspaceNodeStatusClassification;
-    use releash_lib::test_support::integration::workspace::WorkspaceTreeRepository;
     // Given
     for kind in [NodeKindName::Command, NodeKindName::Session] {
         let fixture = Fixture::new(0);
@@ -1321,11 +1320,16 @@ pub async fn test_プロセス在否_実供給元の変化が読取と通知と�
             assert_eq!(read.process_presence, expected);
             assert_eq!(read.can_retry(), retry);
             assert_eq!(read.can_resume_session(), resume);
-            let read = workspace
-                .load_node_by_node_execution_id(&node.id)
-                .await
-                .unwrap()
-                .unwrap();
+            let read = releash_lib::test_support::integration::workspace::node_for_execution(
+                &*workspace,
+                &releash_lib::test_support::integration::workspace::WorkspaceIdentity::new(
+                    &current.worktree_path,
+                ),
+                &node.id,
+            )
+            .await
+            .unwrap()
+            .unwrap();
             assert_eq!(read.process_presence, expected);
             assert_eq!(read.can_retry, retry);
             assert_eq!(read.can_resume_session, resume);

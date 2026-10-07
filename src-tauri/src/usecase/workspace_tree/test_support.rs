@@ -94,14 +94,4 @@ impl crate::domain::workspace_tree::WorkspaceTreeRepository for TestWorkspaceTre
     > {
         Ok(None)
     }
-    #[cfg(any(test, feature = "test-support"))]
-    async fn load_node_by_node_execution_id(
-        &self,
-        _: &str,
-    ) -> Result<
-        Option<crate::domain::workspace_tree::WorkspaceTreeNode>,
-        crate::domain::local_event::LocalEventQueryError,
-    > {
-        Ok(None)
-    }
 }

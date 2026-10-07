@@ -609,7 +609,10 @@ pub(crate) mod test_support {
             Arc::new(workflow),
             runtime.clone(),
             Arc::<str>::from(token),
-            Arc::<str>::from(terminal_token),
+            releash_lib::test_support::integration::transport::ClientTokens {
+                operator: Arc::<str>::from(terminal_token).into(),
+                hook: Arc::<str>::from("hook").into(),
+            },
             client,
             provider_lifecycle,
             (

@@ -62,20 +62,7 @@ fn is_websocket_handshake(request: &Request) -> bool {
 #[derive(Clone)]
 pub struct ClientTokens {
     pub operator: crate::infrastructure::local_api::BearerToken,
-    pub hook: Option<crate::infrastructure::local_api::BearerToken>,
-}
-impl From<crate::infrastructure::local_api::BearerToken> for ClientTokens {
-    fn from(operator: crate::infrastructure::local_api::BearerToken) -> Self {
-        Self {
-            operator,
-            hook: None,
-        }
-    }
-}
-impl From<Arc<str>> for ClientTokens {
-    fn from(operator: Arc<str>) -> Self {
-        crate::infrastructure::local_api::BearerToken::from(operator).into()
-    }
+    pub hook: crate::infrastructure::local_api::BearerToken,
 }
 include!(concat!(env!("OUT_DIR"), "/client_scopes.rs"));
 
@@ -144,13 +131,9 @@ pub async fn require_client(
             .and_then(|value| value.strip_prefix("Bearer "));
         let scope = candidate.and_then(|candidate| {
             if tokens.operator.accepts(candidate) {
-                Some(1)
-            } else if tokens
-                .hook
-                .as_ref()
-                .is_some_and(|token| token.accepts(candidate))
-            {
-                Some(2)
+                Some(crate::adaptor::presenter::client::Scope::Operator)
+            } else if tokens.hook.accepts(candidate) {
+                Some(crate::adaptor::presenter::client::Scope::Hook)
             } else {
                 None
             }

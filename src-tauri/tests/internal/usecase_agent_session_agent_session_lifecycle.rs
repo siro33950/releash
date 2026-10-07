@@ -781,12 +781,17 @@ async fn setup_activity_stop_exclusion_with_events(
         .await
         .unwrap();
     let ingress = ProviderLifecycleIngressUsecase::new(
+        std::sync::Arc::new(
+            releash_lib::test_support::integration::providers::LocalProviderPayloadInterpreter,
+        ),
         std::sync::Arc::new(releash_lib::test_support::integration::platform::RandomIdentityIssuer),
         context.provider_lifecycle.clone(),
         context.sessions.clone(),
         context.hook_health.clone(),
-        Arc::new(LocalAgentSessionRepository::new(context.store.clone())),
-        Arc::new(NoopProviderExecutionTreeStops),
+        (
+            Arc::new(LocalAgentSessionRepository::new(context.store.clone())),
+            Arc::new(NoopProviderExecutionTreeStops),
+        ),
         context.change_notifier.subscriptions.clone(),
     );
     let slot_id = ProviderLifecycleSlotId::new(format!("slot-activity-stop-{case_name}")).unwrap();
@@ -3531,12 +3536,6 @@ pub async fn test_session選択_restoreは欠落とrepositoryの失敗の性質�
         async fn load_node(
             &self,
             _: &WorkspaceIdentity,
-            _: &str,
-        ) -> Result<Option<WorkspaceTreeNode>, LocalEventQueryError> {
-            panic!("unexpected read")
-        }
-        async fn load_node_by_node_execution_id(
-            &self,
             _: &str,
         ) -> Result<Option<WorkspaceTreeNode>, LocalEventQueryError> {
             panic!("unexpected read")

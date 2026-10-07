@@ -659,7 +659,9 @@ pub(crate) mod tests {
         .await
         .unwrap();
 
-        let usecase = build_review_comment_usecase();
+        let usecase = build_review_comment_usecase(
+            releash_lib::test_support::integration::platform::build_review_context(tmp.path()),
+        );
         let threads = usecase
             .list_threads(tmp.path(), "/repo", None, ReviewActor::human())
             .unwrap();
@@ -716,7 +718,9 @@ pub(crate) mod tests {
         )
         .await
         .unwrap();
-        let usecase = build_review_comment_usecase();
+        let usecase = build_review_comment_usecase(
+            releash_lib::test_support::integration::platform::build_review_context(tmp.path()),
+        );
         let thread_id = usecase
             .list_threads(tmp.path(), "/repo", None, ReviewActor::human())
             .unwrap()[0]
@@ -880,17 +884,19 @@ pub(crate) mod tests {
             review_list_actor_and_worktree(tmp.path(), None, Some(&path), false)
                 .await
                 .unwrap();
-        let command_threads = build_review_comment_usecase()
-            .list_threads(
-                tmp.path(),
-                &workspace,
-                Some(ReviewThreadFilter {
-                    state: Some(ReviewThreadState::Open),
-                    ..Default::default()
-                }),
-                actor,
-            )
-            .unwrap();
+        let command_threads = build_review_comment_usecase(
+            releash_lib::test_support::integration::platform::build_review_context(tmp.path()),
+        )
+        .list_threads(
+            tmp.path(),
+            &workspace,
+            Some(ReviewThreadFilter {
+                state: Some(ReviewThreadState::Open),
+                ..Default::default()
+            }),
+            actor,
+        )
+        .unwrap();
         let session_output = cmd_review(
             tmp.path(),
             ReviewSubcommand::List {
@@ -934,19 +940,21 @@ pub async fn test_review_cli変更_別所有者のworktree削除中は拒否し�
     write_review_config(directory.path());
     let id = uuid::Uuid::new_v4().to_string();
     write_review_session(directory.path(), &id, Some("codex")).await;
-    let thread = build_review_comment_usecase()
-        .create_thread(
-            directory.path(),
-            "/repo",
-            ReviewActor::human(),
-            ReviewTarget {
-                file_path: None,
-                line_number: None,
-                end_line: None,
-            },
-            "before".into(),
-        )
-        .unwrap();
+    let thread = build_review_comment_usecase(
+        releash_lib::test_support::integration::platform::build_review_context(directory.path()),
+    )
+    .create_thread(
+        directory.path(),
+        "/repo",
+        ReviewActor::human(),
+        ReviewTarget {
+            file_path: None,
+            line_number: None,
+            end_line: None,
+        },
+        "before".into(),
+    )
+    .unwrap();
     let file =
         releash_lib::test_support::integration::platform::state_file(directory.path(), "/repo");
     let before = std::fs::read(&file).unwrap();

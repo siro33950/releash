@@ -338,7 +338,7 @@ impl Fixture {
                 Arc::new(releash_lib::test_support::integration::platform::build_code_usecase()),
             )),
             comments: Arc::new(
-                releash_lib::test_support::integration::platform::build_review_comment_usecase().with_subscriptions(subscriptions.clone()),
+                releash_lib::test_support::integration::platform::build_review_comment_usecase(releash_lib::test_support::integration::platform::build_review_context(&root)).with_subscriptions(subscriptions.clone()),
             ),
             data_dir: root.to_path_buf(),
             review_comments_dir: releash_lib::test_support::integration::platform::state_dir(&root),

@@ -22,10 +22,4 @@ pub trait WorkspaceTreeRepository: Send + Sync {
         workspace_identity: &WorkspaceIdentity,
         node_id: &str,
     ) -> Result<Option<WorkspaceTreeNode>, crate::domain::local_event::LocalEventQueryError>;
-
-    #[cfg(any(test, feature = "test-support"))]
-    async fn load_node_by_node_execution_id(
-        &self,
-        node_execution_id: &str,
-    ) -> Result<Option<WorkspaceTreeNode>, crate::domain::local_event::LocalEventQueryError>;
 }

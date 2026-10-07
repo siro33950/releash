@@ -117,16 +117,6 @@ impl releash_lib::test_support::integration::workspace::WorkspaceTreeRepository 
     > {
         Ok(None)
     }
-
-    async fn load_node_by_node_execution_id(
-        &self,
-        _: &str,
-    ) -> Result<
-        Option<releash_lib::test_support::integration::workspace::WorkspaceTreeNode>,
-        releash_lib::test_support::integration::platform::LocalEventQueryError,
-    > {
-        Ok(None)
-    }
 }
 
 #[tokio::test]

@@ -141,7 +141,10 @@ impl ClientApiAcceptanceHost {
             Arc::new(workflow),
             Arc::new(runtime),
             binding.bearer_token(),
-            binding.client_bearer_token(),
+            crate::adaptor::controller::api::auth::ClientTokens {
+                operator: binding.client_bearer_token(),
+                hook: binding.hook_bearer_token(),
+            },
             Some(
                 ClientApiDeps::new(dispatch, priority).with_state_subscriptions(
                     crate::adaptor::controller::api::StateSubscriptionDeps::new(

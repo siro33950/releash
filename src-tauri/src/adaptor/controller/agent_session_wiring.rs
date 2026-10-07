@@ -307,12 +307,14 @@ pub fn compose_agent_sessions(
     let execution_tree_stops = Arc::new(DeferredProviderExecutionTreeStopTransaction::new());
     let execution_tree_registrations = Arc::new(DeferredStartedExecutionTreeRegistrar::new());
     let lifecycle_ingress = Arc::new(ProviderLifecycleIngressUsecase::new(
+        std::sync::Arc::new(
+            crate::adaptor::gateway::provider_lifecycle::LocalProviderPayloadInterpreter,
+        ),
         std::sync::Arc::new(crate::adaptor::gateway::identity::RandomIdentityIssuer),
         provider_lifecycle.clone(),
         sessions.clone(),
         hook_health.clone(),
-        session_repository.clone(),
-        execution_tree_stops.clone(),
+        (session_repository.clone(), execution_tree_stops.clone()),
         input.subscriptions.clone(),
     ));
     let launch_gateway = Arc::new(LocalProviderAgentLaunchGateway::new(

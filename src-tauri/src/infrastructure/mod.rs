@@ -20,6 +20,3 @@ pub mod utils;
 pub(crate) mod file_lock;
 pub(crate) mod state_subscription;
 pub(crate) mod timer;
-
-#[cfg(test)]
-mod client_scope;

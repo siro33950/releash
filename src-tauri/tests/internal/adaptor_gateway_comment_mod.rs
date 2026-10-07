@@ -30,6 +30,9 @@ pub(crate) mod tests {
             store,
             Arc::new(SystemReviewClock),
             Arc::new(UuidReviewIdGenerator),
+            releash_lib::test_support::integration::platform::build_review_context(
+                std::path::Path::new("/unused"),
+            ),
         )
     }
 

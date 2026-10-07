@@ -736,11 +736,14 @@ pub async fn test_workspaceノード詳細_public_rootと子nodeの名前はnode
         .await
         .unwrap()
         .unwrap();
-    let child_node = repository
-        .load_node_by_node_execution_id(child_execution_id)
-        .await
-        .unwrap()
-        .unwrap();
+    let child_node = releash_lib::test_support::integration::workspace::node_for_execution(
+        &*repository,
+        &workspace,
+        child_execution_id,
+    )
+    .await
+    .unwrap()
+    .unwrap();
 
     // When
     let root_detail = query
@@ -821,16 +824,22 @@ pub async fn test_workspace読取_未対応定義がabort済みでもcommand出�
             SqliteWorkspaceTreeRepository::new(store.clone()),
             SqliteWorkspaceTreeRepository::new_read_only(read_store),
         ] {
-            let command = repository
-                .load_node_by_node_execution_id("00000000-0000-4000-8000-000000001744-command")
-                .await
-                .unwrap()
-                .unwrap();
-            let session = repository
-                .load_node_by_node_execution_id("00000000-0000-4000-8000-000000001744-session")
-                .await
-                .unwrap()
-                .unwrap();
+            let command = releash_lib::test_support::integration::workspace::node_for_execution(
+                &*repository,
+                &releash_lib::test_support::integration::workspace::WorkspaceIdentity::new("/repo"),
+                "00000000-0000-4000-8000-000000001744-command",
+            )
+            .await
+            .unwrap()
+            .unwrap();
+            let session = releash_lib::test_support::integration::workspace::node_for_execution(
+                &*repository,
+                &releash_lib::test_support::integration::workspace::WorkspaceIdentity::new("/repo"),
+                "00000000-0000-4000-8000-000000001744-session",
+            )
+            .await
+            .unwrap()
+            .unwrap();
             let query = service(&repository);
             let workspace = WorkspaceIdentity::new("/repo");
 

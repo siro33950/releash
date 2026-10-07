@@ -80,6 +80,9 @@ pub(crate) mod tests {
             Arc::new(FakeStore::default()),
             Arc::new(SequentialClock::default()),
             Arc::new(SequentialIds::default()),
+            releash_lib::test_support::integration::platform::build_review_context(
+                std::path::Path::new("/unused"),
+            ),
         )
     }
 

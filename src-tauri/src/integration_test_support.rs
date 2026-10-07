@@ -137,7 +137,6 @@ pub mod platform {
     pub use crate::adaptor::controller::wiring::build_code_usecase;
     pub use crate::adaptor::controller::wiring::build_git_host_usecase;
     pub use crate::adaptor::controller::wiring::build_repository_usecase;
-    pub use crate::adaptor::controller::wiring::build_review_comment_usecase;
     pub use crate::adaptor::controller::wiring::build_terminal_surface_application_for_tests;
     pub use crate::adaptor::controller::wiring::build_workflow_runtime_usecase;
     pub use crate::adaptor::controller::wiring::build_workflow_services_with_gateways;
@@ -148,6 +147,9 @@ pub mod platform {
     pub use crate::adaptor::controller::wiring::build_workspace_worktree_path_usecase;
     pub use crate::adaptor::controller::wiring::wire_delegate_continuation;
     pub use crate::adaptor::controller::wiring::wire_workflow_startup;
+    pub use crate::adaptor::controller::wiring::{
+        build_review_comment_usecase, build_review_context,
+    };
     pub use crate::adaptor::controller::workflow_startup::recover;
     pub use crate::adaptor::gateway::application_lifecycle::DaemonShutdownGateway;
     pub use crate::adaptor::gateway::comment::acquire_worktree_file_lock;
@@ -421,6 +423,9 @@ pub mod process {
     pub use crate::infrastructure::process::search_path::SearchPathSource;
 }
 pub mod providers {
+    pub use crate::adaptor::gateway::provider_lifecycle::LocalProviderPayloadInterpreter;
+    pub use crate::usecase::provider_lifecycle::ingress::ProviderPayloadInput;
+
     pub use crate::adaptor::gateway::provider_lifecycle::credential_gateway_impl::LocalProviderLifecycleCredentialGateway;
     pub use crate::adaptor::gateway::provider_lifecycle::event_repository_impl::LocalProviderLifecycleEventRepository;
     pub use crate::adaptor::gateway::provider_lifecycle::hook_health_failure_query_impl::LocalProviderHookHealthFailureQuery;
@@ -1133,6 +1138,25 @@ pub mod workflow {
     pub use crate::usecase::workflow::workspace_tree::WorkspaceNodeContentDto;
 }
 pub mod workspace {
+    pub async fn node_for_execution(
+        repository: &dyn crate::domain::workspace_tree::WorkspaceTreeRepository,
+        workspace: &crate::domain::workspace_tree::WorkspaceIdentity,
+        id: &str,
+    ) -> Result<
+        Option<crate::domain::workspace_tree::WorkspaceTreeNode>,
+        crate::domain::workflow::WorkflowError,
+    > {
+        let tree = repository
+            .load_trees(std::slice::from_ref(workspace))
+            .await
+            .remove(0)?;
+        Ok(tree
+            .nodes()
+            .iter()
+            .find(|node| node.node_execution_id.as_deref() == Some(id))
+            .cloned())
+    }
+
     pub use crate::adaptor::controller::client::workspace_tree::shared::register_shared;
     pub use crate::adaptor::gateway::workspace_tree::query_service::SqliteWorkspaceQueryService;
 

@@ -36,6 +36,15 @@ struct RecordingProviderLifecycleIngress {
 
 #[async_trait::async_trait]
 impl ProviderLifecycleIngressPort for RecordingProviderLifecycleIngress {
+    async fn receive_payload(
+        &self,
+        _: &ProviderLifecycleSlotId,
+        _: &str,
+        _: releash_lib::test_support::integration::providers::ProviderPayloadInput<'_>,
+    ) -> Result<(ProviderLifecycleIngressResult, bool), ProviderLifecycleIngressUsecaseError> {
+        unreachable!()
+    }
+
     async fn receive(
         &self,
         _slot_id: &ProviderLifecycleSlotId,

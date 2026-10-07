@@ -314,7 +314,6 @@ impl ReviewEvent {
 
 #[derive(Debug)]
 pub enum ReviewError {
-    Store(crate::domain::failure::StorageFailure),
     SessionNotOpen(String),
     Technical(crate::domain::failure::TechnicalFailure),
     InvalidInput(String),
@@ -329,7 +328,6 @@ impl fmt::Display for ReviewError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Technical(error) => std::fmt::Display::fmt(error, f),
-            Self::Store(error) => std::fmt::Display::fmt(error, f),
             Self::SessionNotOpen(id) => write!(
                 f,
                 "Session is not open and cannot be used as a review actor: {id}"
@@ -677,13 +675,6 @@ pub(crate) fn apply_filter(
         .collect()
 }
 
-#[cfg(test)]
-#[path = "mod_test.rs"]
-pub(crate) mod mod_tests;
-
-#[cfg(any(test, feature = "test-support"))]
-pub(crate) mod test_helpers;
-
 impl ReviewThreadState {
     pub fn parse(value: &str) -> Result<Self, ReviewError> {
         match value {
@@ -748,3 +739,10 @@ impl ReviewThreadFilter {
             .map_err(|_| ReviewError::InvalidInput("Invalid review unread".into()))
     }
 }
+
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) mod test_helpers;
+
+#[cfg(test)]
+#[path = "mod_test.rs"]
+pub(crate) mod mod_tests;

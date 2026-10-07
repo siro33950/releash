@@ -66,7 +66,7 @@ fn start_local_api_test_host_with_policy(
         ),
         runtime,
         binding.bearer_token(),
-        binding.terminal_bearer_token(),
+        releash_lib::test_support::integration::transport::ClientTokens { operator: binding.terminal_bearer_token().into(), hook: binding.hook_bearer_token() },
         None,
         None,
         (

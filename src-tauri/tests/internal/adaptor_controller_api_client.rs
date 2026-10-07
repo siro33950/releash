@@ -32,9 +32,10 @@ async fn serve(
         releash_lib::test_support::integration::daemon::default_timeout(),
     )
     .layer(axum::middleware::from_fn_with_state(
-        releash_lib::test_support::integration::transport::ClientTokens::from(Arc::<str>::from(
-            "client",
-        )),
+        releash_lib::test_support::integration::transport::ClientTokens {
+            operator: Arc::<str>::from("client").into(),
+            hook: Arc::<str>::from("hook").into(),
+        },
         releash_lib::test_support::integration::transport::require_client,
     ));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

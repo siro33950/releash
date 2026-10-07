@@ -193,9 +193,7 @@ struct Fixture {
 }
 
 #[derive(Default)]
-struct FakeWorkspaceTreeRepository {
-    nodes: Mutex<HashMap<String, crate::domain::workspace_tree::value_objects::WorkspaceTreeNode>>,
-}
+struct FakeWorkspaceTreeRepository;
 
 #[async_trait::async_trait]
 impl crate::domain::workspace_tree::repository::WorkspaceTreeRepository
@@ -237,17 +235,6 @@ impl crate::domain::workspace_tree::repository::WorkspaceTreeRepository
         crate::domain::local_event::query::LocalEventQueryError,
     > {
         Ok(None)
-    }
-
-    #[cfg(any(test, feature = "test-support"))]
-    async fn load_node_by_node_execution_id(
-        &self,
-        node_execution_id: &str,
-    ) -> Result<
-        Option<crate::domain::workspace_tree::value_objects::WorkspaceTreeNode>,
-        crate::domain::local_event::query::LocalEventQueryError,
-    > {
-        Ok(self.nodes.lock().unwrap().get(node_execution_id).cloned())
     }
 }
 

@@ -118,6 +118,9 @@ impl WorkflowDelegateAcceptanceHost {
             )),
         ));
         let ingress = ProviderLifecycleIngressUsecase::new(
+            std::sync::Arc::new(
+                crate::adaptor::gateway::provider_lifecycle::LocalProviderPayloadInterpreter,
+            ),
             std::sync::Arc::new(crate::adaptor::gateway::identity::RandomIdentityIssuer),
             lifecycle.clone(),
             Arc::new(AgentSessionUsecase::new(repository.clone())),
@@ -127,8 +130,7 @@ impl WorkflowDelegateAcceptanceHost {
                     store.installation_id().to_string(),
                 ),
             ))),
-            repository,
-            runtime,
+            (repository, runtime),
             dependencies.state_changes.clone(),
         );
         Self {

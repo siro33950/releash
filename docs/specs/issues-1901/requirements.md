@@ -10,6 +10,7 @@
   - scope の判定の場所: 本文は「`build.rs` の method 走査で生成 handler に判定を埋め込む。手書きの RPC は個別に付ける」。この開発では、token を照合する認証の middleware 1 か所で判定する（docs/architecture/CONTROLLER.md「認証は `api/mod.rs` が router 全体へまとめて掛ける」）。
   - hook の scope: 本文は「`hook`（`ReceiveProviderSignal` だけ）」。#1902 の流れ（発見 → `GetServerInfo` → 互換の判定 → 呼び出し）が hook にも当たるため、hook の token は `ReceiveProviderSignal` と `GetServerInfo` を呼べる。
   - review の一覧: 本文は「Session の ID を指定した review の一覧」。`--session-id` なしの一覧（`RELEASH_WORKTREE_PATH` の worktree）が builtin の workflow（`workflows/03_full-review.yml:312`、`04_review-fix-policy.yml:79`、`04_review-fix-policy-manual.yml:79`、`05_review-fix.yml:176`）と利用者の Lua で使われているため、worktree の path を指定した一覧も用意する。
+  - AGENTS.md の token の文: 本文は「local API の master token を renderer JS へ渡さない」を「hook の token は hook のプロセスにしか渡さない」に言い換えると指定している。master token は #1902 まで残るので元の文は残す。hook のプロセスは provider が hooks.json のコマンドとして起動する子プロセスで、ファイルに書かずに hook のプロセスにだけ値を渡す経路は無いため、hook の文は「ファイルに書かず、provider の agent を起動する env だけで渡す」とする。
 
 # Outcome
 
@@ -76,7 +77,7 @@ main `998a6e59` で読んで確かめた挙動。パスは `src-tauri/src/` 起�
 - R-014: Origin が付いた要求は、今と同じく allowlist と照合される。Origin が付いていない要求は Origin の検査を受けずに token と scope の検査に進み、応答に CORS の header は付かない。Rust の client は Origin を名乗らない。
 - R-015（互換性）: proto の変更は CI で `buf lint`（STANDARD）と `buf breaking`（WIRE_JSON、PR の base と比較）で検査される。この開発で足す RPC・message・enum は STANDARD の規則に従う。削除するフィールドと oneof の番号・名前は reserved にする。意図した非互換は PR の `buf skip breaking` ラベルで breaking の検査から外せる。
 - R-016（互換性）: 画面が使っている既存の購読（`review-threads` など）と RPC（`CreateReviewThread`・`AppendReviewComment`・`ResolveReviewThread` など）の引数・応答・振る舞いは変わらない。HTTP `/v1` と master token は今と同じに動き、CLI と hook の振る舞い（出力の形を含む）は変わらない。
-- R-017: AGENTS.md の「local API の master token を renderer JS へ渡さない」は「hook の token は hook のプロセスにしか渡さない」に変わり、「ビルド・テスト・Lint」に CI と同じ buf のコマンドと、`buf skip breaking` ラベルを効かせる手順が載る。
+- R-017: AGENTS.md のセキュリティには「local API の master token を renderer JS へ渡さない」が残り、「hook の token はファイルに書かず、provider の agent を起動する env だけで渡す」が加わる。「ビルド・テスト・Lint」に CI と同じ buf のコマンドと、`buf skip breaking` ラベルを効かせる手順が載る。
 
 # Assumptions
 

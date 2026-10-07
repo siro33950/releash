@@ -228,6 +228,130 @@ mod provider_lifecycle_ingress_tests {
         }
     }
 
+    use crate::usecase::provider_lifecycle::ingress::{
+        ProviderLifecycleIngressPort, ProviderPayloadInput,
+    };
+    struct PayloadInterpreter(
+        Result<
+            crate::domain::provider_lifecycle::ProviderPayloadInterpretation,
+            crate::domain::provider_lifecycle::ProviderPayloadError,
+        >,
+    );
+    impl crate::domain::provider_lifecycle::ProviderPayloadInterpreter for PayloadInterpreter {
+        fn interpret(
+            &self,
+            _: crate::domain::provider_lifecycle::ProviderKind,
+            _: &str,
+            _: crate::domain::provider_lifecycle::ProviderLifecycleScope,
+            _: &[u8],
+        ) -> Result<
+            crate::domain::provider_lifecycle::ProviderPayloadInterpretation,
+            crate::domain::provider_lifecycle::ProviderPayloadError,
+        > {
+            self.0.clone()
+        }
+    }
+    #[tokio::test]
+    async fn test_生payload受付_信号を既存入口へ渡しsubagentと解釈失敗は記録しない() {
+        use crate::domain::provider_lifecycle::{
+            ProviderKind, ProviderLifecycleScope, ProviderPayloadError,
+            ProviderPayloadInterpretation as Parsed,
+        };
+        // Given
+        let scope = ProviderLifecycleScope::new("session").unwrap();
+        let slot = ProviderLifecycleSlotId::new("slot").unwrap();
+        let session = AgentSession::create(
+            "session",
+            WorkspaceIdentity::new("/repo"),
+            "/repo",
+            ProviderKind::Claude,
+            session_location("session"),
+        )
+        .unwrap();
+        let sessions = Arc::new(MemoryAgentSessions {
+            stored: Mutex::new(VersionedAgentSession::restored(session, 1)),
+            fail_save: false,
+            fail_activity_save: false,
+            save_observed: None,
+        });
+        let lifecycle = Arc::new(ProviderLifecycleUsecase::new(
+            Arc::new(LocalProviderLifecycleCredentialGateway),
+            Arc::new(MemoryLifecycleEvents),
+        ));
+        let armed = lifecycle
+            .arm(slot.clone(), ProviderKind::Claude, scope.clone())
+            .await
+            .unwrap();
+        let signal = ProviderLifecycleSignal::session_started(
+            armed.binding_id(),
+            ProviderKind::Claude,
+            scope.clone(),
+            "provider-session",
+            None,
+        )
+        .unwrap();
+        let mut ingress = ProviderLifecycleIngressUsecase::new(
+            Arc::new(PayloadInterpreter(Ok(Parsed::Signal(signal.clone())))),
+            Arc::new(crate::usecase::test_helpers::TestIdentity),
+            lifecycle,
+            Arc::new(AgentSessionUsecase::new(sessions.clone())),
+            Arc::new(ProviderHookHealthUsecase::new(Arc::new(
+                MemoryHookHealth::default(),
+            ))),
+            (sessions.clone(), Arc::new(MemoryWorkflowStops::default())),
+            crate::test_support::state_subscription::test_subscriptions(),
+        );
+        let input = || ProviderPayloadInput {
+            provider: ProviderKind::Claude,
+            binding_id: "binding",
+            scope: scope.clone(),
+            payload: b"payload",
+        };
+        // When / Then
+        for expected in [
+            ProviderLifecycleIngressResult::Applied,
+            ProviderLifecycleIngressResult::Duplicate,
+        ] {
+            assert_eq!(
+                ingress
+                    .receive_payload(&slot, armed.capability(), input())
+                    .await
+                    .unwrap(),
+                (expected, true)
+            );
+        }
+        let revision = sessions.stored.lock().unwrap().revision();
+        ingress.interpreter = Arc::new(PayloadInterpreter(Ok(Parsed::Subagent)));
+        assert_eq!(
+            ingress
+                .receive_payload(&slot, armed.capability(), input())
+                .await
+                .unwrap(),
+            (ProviderLifecycleIngressResult::Ignored, false)
+        );
+        for failure in [
+            ProviderPayloadError::InvalidPayload,
+            ProviderPayloadError::UnsupportedEvent("unknown".into()),
+            ProviderPayloadError::InvalidSignal(
+                crate::domain::provider_lifecycle::ProviderLifecycleInputError::Empty("binding_id"),
+            ),
+        ] {
+            // When
+            ingress.interpreter = Arc::new(PayloadInterpreter(Err(failure.clone())));
+            let error = ingress
+                .receive_payload(&slot, armed.capability(), input())
+                .await
+                .unwrap_err();
+            // Then
+            assert_eq!(
+                error,
+                ProviderLifecycleIngressUsecaseError::Payload(failure.clone())
+            );
+            assert_eq!(error.to_string(), failure.to_string());
+        }
+        assert_eq!(sessions.stored.lock().unwrap().revision(), revision);
+    }
+
     #[tokio::test]
     async fn workflow_origin_stop_uses_the_atomic_provider_workflow_commit_boundary() {
         let mut session = AgentSession::create(
@@ -253,14 +377,16 @@ mod provider_lifecycle_ingress_tests {
         ));
         let notifier = Arc::new(RecordingChangeNotifier::default());
         let ingress = ProviderLifecycleIngressUsecase::new(
+            std::sync::Arc::new(
+                crate::adaptor::gateway::provider_lifecycle::LocalProviderPayloadInterpreter,
+            ),
             std::sync::Arc::new(crate::usecase::test_helpers::TestIdentity),
             lifecycle.clone(),
             Arc::new(AgentSessionUsecase::new(agent_repository.clone())),
             Arc::new(ProviderHookHealthUsecase::new(Arc::new(
                 MemoryHookHealth::default(),
             ))),
-            agent_repository.clone(),
-            transaction.clone(),
+            (agent_repository.clone(), transaction.clone()),
             notifier.subscriptions.clone(),
         );
         let slot_id = ProviderLifecycleSlotId::new("slot-workflow-stop").unwrap();
@@ -433,12 +559,14 @@ mod provider_lifecycle_ingress_tests {
             Arc::new(MemoryLifecycleEvents),
         ));
         let ingress = ProviderLifecycleIngressUsecase::new(
+            std::sync::Arc::new(
+                crate::adaptor::gateway::provider_lifecycle::LocalProviderPayloadInterpreter,
+            ),
             std::sync::Arc::new(crate::usecase::test_helpers::TestIdentity),
             lifecycle.clone(),
             Arc::new(AgentSessionUsecase::new(repository.clone())),
             Arc::new(ProviderHookHealthUsecase::new(health.clone())),
-            repository.clone(),
-            transaction.clone(),
+            (repository.clone(), transaction.clone()),
             crate::test_support::state_subscription::test_subscriptions(),
         );
         let slot = ProviderLifecycleSlotId::new("slot-deleting-hook").unwrap();
@@ -529,14 +657,16 @@ mod provider_lifecycle_ingress_tests {
         ));
         let notifier = Arc::new(RecordingChangeNotifier::default());
         let ingress = ProviderLifecycleIngressUsecase::new(
+            std::sync::Arc::new(
+                crate::adaptor::gateway::provider_lifecycle::LocalProviderPayloadInterpreter,
+            ),
             std::sync::Arc::new(crate::usecase::test_helpers::TestIdentity),
             lifecycle.clone(),
             Arc::new(AgentSessionUsecase::new(agent_repository.clone())),
             Arc::new(ProviderHookHealthUsecase::new(Arc::new(
                 MemoryHookHealth::default(),
             ))),
-            agent_repository.clone(),
-            transaction.clone(),
+            (agent_repository.clone(), transaction.clone()),
             notifier.subscriptions.clone(),
         );
         let slot_id = ProviderLifecycleSlotId::new(format!("slot-{agent_session_id}")).unwrap();
@@ -640,14 +770,19 @@ mod provider_lifecycle_ingress_tests {
         ));
         let notifier = Arc::new(RecordingChangeNotifier::default());
         let ingress = ProviderLifecycleIngressUsecase::new(
+            std::sync::Arc::new(
+                crate::adaptor::gateway::provider_lifecycle::LocalProviderPayloadInterpreter,
+            ),
             std::sync::Arc::new(crate::usecase::test_helpers::TestIdentity),
             lifecycle.clone(),
             Arc::new(AgentSessionUsecase::new(agent_repository.clone())),
             Arc::new(ProviderHookHealthUsecase::new(Arc::new(
                 MemoryHookHealth::default(),
             ))),
-            agent_repository.clone(),
-            Arc::new(MemoryWorkflowStops::default()),
+            (
+                agent_repository.clone(),
+                Arc::new(MemoryWorkflowStops::default()),
+            ),
             notifier.subscriptions.clone(),
         );
         let slot_id = ProviderLifecycleSlotId::new("slot-activity-save-failure").unwrap();
@@ -730,14 +865,16 @@ mod provider_lifecycle_ingress_tests {
         ));
         let notifier = Arc::new(RecordingChangeNotifier::default());
         let ingress = ProviderLifecycleIngressUsecase::new(
+            std::sync::Arc::new(
+                crate::adaptor::gateway::provider_lifecycle::LocalProviderPayloadInterpreter,
+            ),
             std::sync::Arc::new(crate::usecase::test_helpers::TestIdentity),
             lifecycle.clone(),
             Arc::new(AgentSessionUsecase::new(agent_repository.clone())),
             Arc::new(ProviderHookHealthUsecase::new(Arc::new(
                 MemoryHookHealth::default(),
             ))),
-            agent_repository.clone(),
-            transaction.clone(),
+            (agent_repository.clone(), transaction.clone()),
             notifier.subscriptions.clone(),
         );
         let slot_id = ProviderLifecycleSlotId::new("slot-stop-failure").unwrap();
@@ -834,14 +971,16 @@ mod provider_lifecycle_ingress_tests {
             Arc::new(MemoryLifecycleEvents),
         ));
         let ingress = ProviderLifecycleIngressUsecase::new(
+            std::sync::Arc::new(
+                crate::adaptor::gateway::provider_lifecycle::LocalProviderPayloadInterpreter,
+            ),
             std::sync::Arc::new(crate::usecase::test_helpers::TestIdentity),
             lifecycle.clone(),
             Arc::new(AgentSessionUsecase::new(agent_repository.clone())),
             Arc::new(ProviderHookHealthUsecase::new(Arc::new(
                 MemoryHookHealth::default(),
             ))),
-            agent_repository,
-            transaction.clone(),
+            (agent_repository, transaction.clone()),
             crate::test_support::state_subscription::test_subscriptions(),
         );
         let slot_id = ProviderLifecycleSlotId::new("slot-standalone-stop").unwrap();
@@ -916,12 +1055,17 @@ mod provider_lifecycle_ingress_tests {
             MemoryHookHealth::default(),
         )));
         let ingress = ProviderLifecycleIngressUsecase::new(
+            std::sync::Arc::new(
+                crate::adaptor::gateway::provider_lifecycle::LocalProviderPayloadInterpreter,
+            ),
             std::sync::Arc::new(crate::usecase::test_helpers::TestIdentity),
             lifecycle.clone(),
             sessions,
             health.clone(),
-            agent_repository.clone(),
-            Arc::new(MemoryWorkflowStops::default()),
+            (
+                agent_repository.clone(),
+                Arc::new(MemoryWorkflowStops::default()),
+            ),
             crate::test_support::state_subscription::test_subscriptions(),
         );
         let slot_id = ProviderLifecycleSlotId::new("slot-1").unwrap();
@@ -1002,12 +1146,14 @@ mod provider_lifecycle_ingress_tests {
             MemoryHookHealth::default(),
         )));
         let ingress = ProviderLifecycleIngressUsecase::new(
+            std::sync::Arc::new(
+                crate::adaptor::gateway::provider_lifecycle::LocalProviderPayloadInterpreter,
+            ),
             std::sync::Arc::new(crate::usecase::test_helpers::TestIdentity),
             lifecycle.clone(),
             sessions,
             health.clone(),
-            agent_repository,
-            Arc::new(MemoryWorkflowStops::default()),
+            (agent_repository, Arc::new(MemoryWorkflowStops::default())),
             crate::test_support::state_subscription::test_subscriptions(),
         );
         let slot_id = ProviderLifecycleSlotId::new("slot-failed-association").unwrap();
@@ -1084,14 +1230,16 @@ mod provider_lifecycle_ingress_tests {
             Arc::new(MemoryLifecycleEvents),
         ));
         let ingress = ProviderLifecycleIngressUsecase::new(
+            std::sync::Arc::new(
+                crate::adaptor::gateway::provider_lifecycle::LocalProviderPayloadInterpreter,
+            ),
             std::sync::Arc::new(crate::usecase::test_helpers::TestIdentity),
             lifecycle.clone(),
             sessions,
             Arc::new(ProviderHookHealthUsecase::new(Arc::new(
                 MemoryHookHealth::default(),
             ))),
-            agent_repository,
-            Arc::new(MemoryWorkflowStops::default()),
+            (agent_repository, Arc::new(MemoryWorkflowStops::default())),
             crate::test_support::state_subscription::test_subscriptions(),
         );
         let slot_id = ProviderLifecycleSlotId::new("slot-consistent").unwrap();
@@ -1166,12 +1314,14 @@ mod provider_lifecycle_ingress_tests {
             MemoryHookHealth::default(),
         )));
         let ingress = Arc::new(ProviderLifecycleIngressUsecase::new(
+            std::sync::Arc::new(
+                crate::adaptor::gateway::provider_lifecycle::LocalProviderPayloadInterpreter,
+            ),
             std::sync::Arc::new(crate::usecase::test_helpers::TestIdentity),
             lifecycle.clone(),
             sessions.clone(),
             health,
-            agent_repository,
-            Arc::new(MemoryWorkflowStops::default()),
+            (agent_repository, Arc::new(MemoryWorkflowStops::default())),
             crate::test_support::state_subscription::test_subscriptions(),
         ));
         let slot_id = ProviderLifecycleSlotId::new("slot-locked").unwrap();
@@ -1242,14 +1392,19 @@ mod provider_lifecycle_ingress_tests {
             Arc::new(MemoryLifecycleEvents),
         ));
         let ingress = Arc::new(ProviderLifecycleIngressUsecase::new(
+            std::sync::Arc::new(
+                crate::adaptor::gateway::provider_lifecycle::LocalProviderPayloadInterpreter,
+            ),
             std::sync::Arc::new(crate::usecase::test_helpers::TestIdentity),
             lifecycle.clone(),
             sessions.clone(),
             Arc::new(ProviderHookHealthUsecase::new(Arc::new(
                 MemoryHookHealth::default(),
             ))),
-            agent_repository.clone(),
-            Arc::new(MemoryWorkflowStops::default()),
+            (
+                agent_repository.clone(),
+                Arc::new(MemoryWorkflowStops::default()),
+            ),
             crate::test_support::state_subscription::test_subscriptions(),
         ));
         let slot_id = ProviderLifecycleSlotId::new("slot-activity-locked").unwrap();

@@ -3932,7 +3932,6 @@ pub async fn test_provider停止_完了済みworkflowと単独sessionはプロ�
 
     use releash_lib::test_support::integration::workspace::WorkspaceNodeStatus;
     use releash_lib::test_support::integration::workspace::WorkspaceNodeStatusClassification;
-    use releash_lib::test_support::integration::workspace::WorkspaceTreeRepository;
 
     async fn node_signals(
         store: &Arc<LocalEventStore>,
@@ -4070,11 +4069,16 @@ pub async fn test_provider停止_完了済みworkflowと単独sessionはプロ�
     Arc::get_mut(&mut repository).unwrap().processes = Some(Arc::new(LiveSessionProcess));
     let standalone_node_id = standalone_id.to_string();
     for node_id in [&fixture.first_node_execution_id, &standalone_node_id] {
-        let node = repository
-            .load_node_by_node_execution_id(node_id)
-            .await
-            .unwrap()
-            .unwrap();
+        let node = releash_lib::test_support::integration::workspace::node_for_execution(
+            &*repository,
+            &releash_lib::test_support::integration::workspace::WorkspaceIdentity::new(
+                EFFECT_WORKTREE_PATH,
+            ),
+            node_id,
+        )
+        .await
+        .unwrap()
+        .unwrap();
         assert_eq!(
             node.status_classification,
             WorkspaceNodeStatusClassification::Active
@@ -4116,11 +4120,16 @@ pub async fn test_provider停止_完了済みworkflowと単独sessionはプロ�
 
     // Then
     for node_id in [&fixture.first_node_execution_id, &standalone_node_id] {
-        let node = repository
-            .load_node_by_node_execution_id(node_id)
-            .await
-            .unwrap()
-            .unwrap();
+        let node = releash_lib::test_support::integration::workspace::node_for_execution(
+            &*repository,
+            &releash_lib::test_support::integration::workspace::WorkspaceIdentity::new(
+                EFFECT_WORKTREE_PATH,
+            ),
+            node_id,
+        )
+        .await
+        .unwrap()
+        .unwrap();
         assert_eq!(
             node.status_classification,
             WorkspaceNodeStatusClassification::Idle
@@ -4386,7 +4395,6 @@ pub(crate) mod workflow_host_tests {
     use releash_lib::test_support::integration::workflow::WorkflowDefinitionResolverError;
     use releash_lib::test_support::integration::workspace::WorkspaceIdentity;
     use releash_lib::test_support::integration::workspace::WorkspaceNodeStatusClassification;
-    use releash_lib::test_support::integration::workspace::WorkspaceTreeRepository;
 
     pub(crate) const EFFECT_WORKTREE_PATH: &str = "/repo/effect-test";
     const EFFECT_NODE_NAME: &str = "agent";
@@ -5982,8 +5990,14 @@ nodes:
                 folded.session_activities[session_id],
                 releash_lib::test_support::integration::workflow::AgentSessionActivity::AwaitingInstruction
             );
-            let workspace_node = SqliteWorkspaceTreeRepository::new(fixture.store.clone())
-                .load_node_by_node_execution_id(session_id)
+            let workspace_node =
+                releash_lib::test_support::integration::workspace::node_for_execution(
+                    &*SqliteWorkspaceTreeRepository::new(fixture.store.clone()),
+                    &releash_lib::test_support::integration::workspace::WorkspaceIdentity::new(
+                        EFFECT_WORKTREE_PATH,
+                    ),
+                    session_id,
+                )
                 .await
                 .unwrap()
                 .unwrap();
@@ -6029,12 +6043,17 @@ nodes:
                 releash_lib::test_support::integration::workflow::AgentSessionActivity::AwaitingInstruction
             );
             assert_eq!(
-                SqliteWorkspaceTreeRepository::new(fixture.store.clone())
-                    .load_node_by_node_execution_id(session_id)
-                    .await
-                    .unwrap()
-                    .unwrap()
-                    .status_classification,
+                releash_lib::test_support::integration::workspace::node_for_execution(
+                    &*SqliteWorkspaceTreeRepository::new(fixture.store.clone()),
+                    &releash_lib::test_support::integration::workspace::WorkspaceIdentity::new(
+                        EFFECT_WORKTREE_PATH
+                    ),
+                    session_id
+                )
+                .await
+                .unwrap()
+                .unwrap()
+                .status_classification,
                 WorkspaceNodeStatusClassification::Idle
             );
             assert!(

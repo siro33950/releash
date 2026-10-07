@@ -252,28 +252,6 @@ impl WorkflowUsecase {
         self.read.clone()
     }
 
-    #[cfg(any(test, feature = "test-support"))]
-    pub async fn get_execution(
-        &self,
-        execution_id: &str,
-    ) -> Result<Option<WorkflowExecutionSummary>, WorkflowError> {
-        self.workspace_query.execution_summary(execution_id).await
-    }
-
-    #[cfg(any(test, feature = "test-support"))]
-    pub async fn authorize_execution_summary(
-        &self,
-        execution_id: &str,
-    ) -> Result<Option<WorkflowExecutionSummary>, WorkflowError> {
-        let Some(summary) = self.get_execution(execution_id).await? else {
-            return Ok(None);
-        };
-        match self.resolve_worktree_path(&summary.worktree_path) {
-            Ok(_) => Ok(Some(summary)),
-            Err(_) => Ok(None),
-        }
-    }
-
     pub fn resolve_worktree_path(&self, worktree_path: &str) -> Result<String, WorkflowError> {
         self.worktrees.resolve(worktree_path)
     }

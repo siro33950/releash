@@ -140,7 +140,10 @@ pub(crate) fn register_shared(
                             commands::create_review_thread_shared(
                                 data_dir,
                                 &usecase,
-                                convert(required(args.worktree_name, "worktreeName")?)?,
+                                (
+                                    convert(required(args.worktree_name, "worktreeName")?)?,
+                                    crate::domain::comment::ReviewActor::human(),
+                                ),
                                 crate::domain::comment::ReviewTarget {
                                     file_path: optional(args.file_path)?,
                                     line_number: optional(args.line_number)?,
@@ -177,7 +180,10 @@ pub(crate) fn register_shared(
                             commands::append_review_comment_shared(
                                 data_dir,
                                 &usecase,
-                                convert(required(args.worktree_name, "worktreeName")?)?,
+                                (
+                                    convert(required(args.worktree_name, "worktreeName")?)?,
+                                    crate::domain::comment::ReviewActor::human(),
+                                ),
                                 convert(required(args.thread_id, "threadId")?)?,
                                 convert(required(args.content, "content")?)?,
                             )
@@ -210,7 +216,10 @@ pub(crate) fn register_shared(
                             commands::resolve_review_thread_shared(
                                 data_dir,
                                 &usecase,
-                                convert(required(args.worktree_name, "worktreeName")?)?,
+                                (
+                                    convert(required(args.worktree_name, "worktreeName")?)?,
+                                    crate::domain::comment::ReviewActor::human(),
+                                ),
                                 convert(required(args.thread_id, "threadId")?)?,
                                 convert(required(args.outcome, "outcome")?)?,
                                 convert(required(args.summary, "summary")?)?,
