@@ -71,7 +71,6 @@ pub fn run() {
             )),
         ));
         app.manage(login.clone());
-        app.manage(connection);
         let lifecycle = Arc::new(usecase::desktop_lifecycle::DesktopLifecycleUsecase::new(
             connection_usecase,
             login,

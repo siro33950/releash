@@ -17,12 +17,13 @@ pub(crate) mod client_tests;
 pub(crate) async fn get_client_endpoint<R: tauri::Runtime>(
     app: tauri::AppHandle<R>,
 ) -> Result<releashd::desktop_api::ClientConnectionDto, String> {
-    let endpoint =
-        super::super::desktop_lifecycle::connection(&app, |lifecycle, failure_window| {
-            Box::pin(lifecycle.endpoint(failure_window))
-        })
-        .await
-        .map_err(crate::adaptor::presenter::daemon_connection::message)?;
+    let endpoint = super::super::desktop_lifecycle::connection(
+        &app,
+        |lifecycle, failure_window| Box::pin(lifecycle.endpoint(failure_window)),
+        |_| {},
+    )
+    .await
+    .map_err(crate::adaptor::presenter::daemon_connection::message)?;
     Ok(releashd::desktop_api::ClientConnectionDto {
         url: endpoint.url,
         token: endpoint.token,

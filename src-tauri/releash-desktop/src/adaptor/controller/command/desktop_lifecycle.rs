@@ -40,28 +40,24 @@ fn get_desktop_connection_failure(
 }
 #[tauri::command]
 async fn start_daemon<R: tauri::Runtime>(app: tauri::AppHandle<R>) -> Result<(), String> {
-    super::super::desktop_lifecycle::connection(&app, |lifecycle, failure_window| {
-        Box::pin(async move {
-            lifecycle
-                .initialize(None, failure_window)
-                .await
-                .map(|connected| ((), connected))
-        })
-    })
+    super::super::desktop_lifecycle::connection(
+        &app,
+        |lifecycle, failure_window| Box::pin(lifecycle.initialize(None, failure_window)),
+        |_| {},
+    )
     .await
+    .map(|_| ())
     .map_err(daemon_connection::message)
 }
 #[tauri::command]
 async fn replace_daemon<R: tauri::Runtime>(app: tauri::AppHandle<R>) -> Result<(), String> {
-    super::super::desktop_lifecycle::connection(&app, |lifecycle, failure_window| {
-        Box::pin(async move {
-            lifecycle
-                .replace(failure_window)
-                .await
-                .map(|connected| ((), connected))
-        })
-    })
+    super::super::desktop_lifecycle::connection(
+        &app,
+        |lifecycle, failure_window| Box::pin(lifecycle.replace(failure_window)),
+        |_| {},
+    )
     .await
+    .map(|_| ())
     .map_err(daemon_connection::message)
 }
 #[tauri::command]

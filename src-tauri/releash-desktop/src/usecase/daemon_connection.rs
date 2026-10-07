@@ -33,6 +33,9 @@ impl DaemonConnectionUsecase {
         let state = self.state.lock();
         state.failure().cloned()
     }
+    pub fn is_connected_to(&self, endpoint: &DaemonEndpoint) -> bool {
+        self.state.lock().is_connected_to(endpoint)
+    }
     pub fn initial_settings(&self) -> Option<DesktopSettingsDto> {
         self.query.initial_settings()
     }
@@ -43,9 +46,9 @@ impl DaemonConnectionUsecase {
             None
         }
     }
-    pub async fn connect(&self) -> Result<bool, DaemonConnectionFailure> {
+    pub async fn connect(&self) -> Result<(DaemonEndpoint, bool), DaemonConnectionFailure> {
         let _guard = self.connecting.lock().await;
-        self.establish(true).await.map(|(_, changed)| changed)
+        self.establish(true).await
     }
     pub async fn endpoint(&self) -> Result<(DaemonEndpoint, bool), DaemonConnectionFailure> {
         let _guard = self.connecting.lock().await;
@@ -91,11 +94,11 @@ impl DaemonConnectionUsecase {
         self.state.lock().observe_not_running();
         Ok(())
     }
-    pub async fn replace(&self) -> Result<bool, DaemonConnectionFailure> {
+    pub async fn replace(&self) -> Result<(DaemonEndpoint, bool), DaemonConnectionFailure> {
         let _guard = self.connecting.lock().await;
         self.port.stop().await?;
         self.state.lock().observe_not_running();
-        self.establish(true).await.map(|(_, changed)| changed)
+        self.establish(true).await
     }
 }
 #[cfg(test)]

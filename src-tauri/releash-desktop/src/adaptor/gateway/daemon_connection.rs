@@ -99,6 +99,7 @@ impl DaemonService for DaemonServiceGateway {
                 token: endpoint.token.clone(),
             };
             let client = Arc::new(DesktopClient::start(
+                connection.clone(),
                 desktop_client::client(&connection)
                     .map_err(DaemonConnectionFailure::TechnicalFailure)?,
                 desktop_client::stream_client(&connection)

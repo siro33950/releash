@@ -93,9 +93,10 @@ pub fn stream_client(
 type DesktopSettingsDto = releashd::desktop_api::DesktopSettingsDto;
 
 pub struct DesktopClient {
+    endpoint: ClientConnectionDto,
     client: Arc<rpc::ClientServiceClient<HttpClient>>,
     task: tokio::task::JoinHandle<()>,
-    settings: parking_lot::Mutex<tokio::sync::watch::Receiver<Option<DesktopSettingsDto>>>,
+    settings: tokio::sync::watch::Receiver<Option<DesktopSettingsDto>>,
     initial_settings: std::sync::OnceLock<DesktopSettingsDto>,
     rejected: tokio::sync::watch::Receiver<Option<TechnicalFailure>>,
     exit: Arc<parking_lot::Mutex<Option<TechnicalFailure>>>,
@@ -111,6 +112,7 @@ const DESKTOP_SETTINGS_TARGET: &str = "desktop-settings";
 
 impl DesktopClient {
     pub fn start(
+        endpoint: ClientConnectionDto,
         client: rpc::ClientServiceClient<HttpClient>,
         stream_client: rpc::ClientServiceClient<HttpClient>,
         limiter: Arc<RetryLimiter>,
@@ -132,9 +134,10 @@ impl DesktopClient {
             *observed_exit.lock() = Some(result);
         });
         Self {
+            endpoint,
             client: Arc::new(client),
             task,
-            settings: parking_lot::Mutex::new(settings),
+            settings,
             rejected,
             initial_settings: std::sync::OnceLock::new(),
             exit,
@@ -142,7 +145,7 @@ impl DesktopClient {
     }
     /// 購読で最初に届いた desktop 設定を待つ。届く前に購読の開始が再接続の対象でない失敗で終わったら、その失敗を返す。
     pub async fn first_settings(&self) -> Result<DesktopSettingsDto, TechnicalFailure> {
-        let mut settings = self.settings.lock().clone();
+        let mut settings = self.settings.clone();
         let mut rejected = self.rejected.clone();
         let result = tokio::select! {
             biased;
@@ -159,14 +162,17 @@ impl DesktopClient {
         };
         result.map(|value| *self.initial_settings.get_or_init(|| value))
     }
+    pub fn endpoint(&self) -> &ClientConnectionDto {
+        &self.endpoint
+    }
     pub fn initial_settings(&self) -> Option<DesktopSettingsDto> {
         self.initial_settings.get().copied()
     }
     pub fn current_settings(&self) -> Option<DesktopSettingsDto> {
-        *self.settings.lock().borrow()
+        *self.settings.borrow()
     }
     pub fn settings_receiver(&self) -> tokio::sync::watch::Receiver<Option<DesktopSettingsDto>> {
-        self.settings.lock().clone()
+        self.settings.clone()
     }
     pub fn failure(&self) -> Option<TechnicalFailure> {
         self.exit.lock().clone()

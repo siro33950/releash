@@ -71,7 +71,6 @@ pub fn desktop_connection_app_parts<R: tauri::Runtime>(
     let preference = Arc::new(crate::adaptor::gateway::login_item::DaemonLoginPreference(
         connection.clone(),
     ));
-    let gateway = connection.clone();
     let connection = Arc::new(
         crate::usecase::daemon_connection::DaemonConnectionUsecase::new(
             connection.clone(),
@@ -86,7 +85,6 @@ pub fn desktop_connection_app_parts<R: tauri::Runtime>(
         preference,
     ));
     let app = builder
-        .manage(gateway)
         .manage(connection.clone())
         .manage(login.clone())
         .manage(login_usecase.clone())

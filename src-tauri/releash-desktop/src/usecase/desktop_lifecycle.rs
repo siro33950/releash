@@ -10,6 +10,7 @@ use releashd::desktop_api::DesktopSettingsDto;
 use std::sync::Arc;
 
 pub struct ConnectedDesktop {
+    pub endpoint: DaemonEndpoint,
     pub settings: Option<DesktopSettingsDto>,
     pub window: Option<ConnectedWindow>,
     pub restoration: Result<(), LoginItemError>,
@@ -33,30 +34,38 @@ impl DesktopLifecycleUsecase {
         hidden: Option<bool>,
         failure_window: bool,
     ) -> Result<ConnectedDesktop, DaemonConnectionFailure> {
-        let changed = self.connection.connect().await?;
-        Ok(self.connected(hidden.unwrap_or(false), failure_window, changed))
+        let (endpoint, changed) = self.connection.connect().await?;
+        Ok(self.connected(endpoint, hidden.unwrap_or(false), failure_window, changed))
     }
     pub async fn endpoint(
         &self,
         failure_window: bool,
-    ) -> Result<(DaemonEndpoint, ConnectedDesktop), DaemonConnectionFailure> {
+    ) -> Result<ConnectedDesktop, DaemonConnectionFailure> {
         let (endpoint, changed) = self.connection.endpoint().await?;
-        Ok((endpoint, self.connected(false, failure_window, changed)))
+        Ok(self.connected(endpoint, false, failure_window, changed))
     }
     pub async fn replace(
         &self,
         failure_window: bool,
     ) -> Result<ConnectedDesktop, DaemonConnectionFailure> {
-        let changed = self.connection.replace().await?;
-        Ok(self.connected(false, failure_window, changed))
+        let (endpoint, changed) = self.connection.replace().await?;
+        Ok(self.connected(endpoint, false, failure_window, changed))
     }
-    fn connected(&self, hidden: bool, failure_window: bool, changed: bool) -> ConnectedDesktop {
+    fn connected(
+        &self,
+        endpoint: DaemonEndpoint,
+        hidden: bool,
+        failure_window: bool,
+        changed: bool,
+    ) -> ConnectedDesktop {
         if changed {
             let settings = self.connection.initial_settings();
             ConnectedDesktop {
                 restoration: settings
-                    .map(|settings| self.settings_changed(settings))
+                    .and_then(|settings| self.settings_changed(&endpoint, settings))
+                    .map(|(_, restoration)| restoration)
                     .unwrap_or(Ok(())),
+                endpoint,
                 settings,
                 window: settings.map(|settings| {
                     self.window
@@ -66,6 +75,7 @@ impl DesktopLifecycleUsecase {
             }
         } else {
             ConnectedDesktop {
+                endpoint,
                 restoration: Ok(()),
                 settings: None,
                 window: if failure_window {
@@ -83,9 +93,15 @@ impl DesktopLifecycleUsecase {
         }
     }
 
-    pub fn settings_changed(&self, settings: DesktopSettingsDto) -> Result<(), LoginItemError> {
-        self.login.restore(settings.auto_launch)?;
-        Ok(())
+    pub fn settings_changed(
+        &self,
+        endpoint: &DaemonEndpoint,
+        settings: DesktopSettingsDto,
+    ) -> Option<(DesktopSettingsDto, Result<(), LoginItemError>)> {
+        if !self.connection.is_connected_to(endpoint) {
+            return None;
+        }
+        Some((settings, self.login.restore(settings.auto_launch)))
     }
     pub async fn stop(&self) -> Result<(), DaemonConnectionFailure> {
         self.connection.stop().await

@@ -202,7 +202,7 @@ async fn test_入れ替え_同じ接続先でも停止後に購読を張り直�
     usecase.connect().await.unwrap();
     port.calls.lock().clear();
     // When
-    assert!(usecase.replace().await.unwrap());
+    assert_eq!(usecase.replace().await.unwrap(), (endpoint("same"), true));
     // Then
     assert_eq!(
         *port.calls.lock(),

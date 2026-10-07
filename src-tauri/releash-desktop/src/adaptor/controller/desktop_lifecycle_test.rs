@@ -32,3 +32,38 @@ async fn test_停止確認_却下と確認失敗では停止せず承諾時だ�
         Err(failure)
     );
 }
+
+#[tokio::test]
+async fn test_接続失敗_失敗処理の完了まで後続接続の排他を保持する() {
+    use futures_util::FutureExt;
+    // Given
+    let (app, _) = crate::desktop_client_acceptance::desktop_connection_app_parts(
+        tauri::test::mock_builder(),
+        std::path::Path::new("/unused/data"),
+        std::path::Path::new("/missing/releashd"),
+    );
+    let failed = std::cell::Cell::new(false);
+    // When
+    let result = connection(
+        app.handle(),
+        |_, _| Box::pin(async { Err(DaemonConnectionFailure::NotRunning) }),
+        |error| {
+            assert_eq!(*error, DaemonConnectionFailure::NotRunning);
+            assert!(app
+                .state::<crate::common::serial::Serial>()
+                .call(async {})
+                .now_or_never()
+                .is_none());
+            failed.set(true);
+        },
+    )
+    .await;
+    // Then
+    assert_eq!(result, Err(DaemonConnectionFailure::NotRunning));
+    assert!(failed.get());
+    assert!(app
+        .state::<crate::common::serial::Serial>()
+        .call(async {})
+        .now_or_never()
+        .is_some());
+}

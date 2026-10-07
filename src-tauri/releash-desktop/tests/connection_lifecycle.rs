@@ -231,7 +231,7 @@ async fn test_初回設定適用_通知のobserverが無くても適用しhidden
         )
         .unwrap();
         let info = prost::Message::encode_to_vec(&releash_sdk::wire::ServerInfo {
-            daemon_id: discovery.instance_id,
+            daemon_id: discovery.instance_id.clone(),
             pid: discovery.pid,
             process_started_at: discovery.process_started_at,
             protocol: 1,
@@ -406,21 +406,21 @@ async fn test_初回設定適用_通知のobserverが無くても適用しhidden
         assert!(tokio::time::timeout(Duration::from_millis(30), &mut stale)
             .await
             .is_err());
-        use releash_desktop::test_support::integration::daemon_connection::DaemonService;
-        let gateway = app.state::<Arc<
-            releash_desktop::test_support::integration::daemon_connection::DaemonServiceGateway,
-        >>();
+        let mut replacement = discovery.clone();
+        replacement.token = "replacement".into();
+        std::fs::write(
+            directory.path().join("client-api.json"),
+            serde_json::to_vec(&replacement).unwrap(),
+        )
+        .unwrap();
         release_settings.notify_one();
         // When
-        gateway
-            .connect(
-                &releash_desktop::test_support::integration::daemon_connection::DaemonEndpoint {
-                    url: format!("http://127.0.0.1:{}", discovery.port),
-                    token: discovery.token.clone(),
-                },
-            )
-            .await
-            .unwrap();
+        app.state::<Arc<
+            releash_desktop::test_support::integration::daemon_connection::DaemonConnectionUsecase,
+        >>()
+        .endpoint()
+        .await
+        .unwrap();
         resume.send(()).unwrap();
         serialized.await.unwrap();
         stale.await.unwrap();
@@ -428,7 +428,6 @@ async fn test_初回設定適用_通知のobserverが無くても適用しhidden
         assert!(!host::desktop_window_preferences(app.handle()));
         assert!(!telemetry::crash_reporting_enabled());
         assert!(!host::desktop_login_item_calls(app.handle()).contains(&"unregister"));
-        drop(gateway);
         drop(client);
         let client = updates.borrow_and_update().clone().unwrap();
         release_change.send_replace(());
