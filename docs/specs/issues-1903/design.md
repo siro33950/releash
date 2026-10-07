@@ -6,7 +6,7 @@
 
 - crate・lib・bin の改名: `Cargo.toml` の package 名（`:9`）と bin 名（`:25`）を `releashd` にし、`[lib] name = "releash_lib"`（`:22`）の指定を外して lib 名を既定（`releashd`）にする。自分への dev-dependency（`:89`）、`releash-desktop/Cargo.toml:12,39,40,47` の依存と feature、`Cargo.lock` を追従させ、`releash_lib::` の参照（Tauri シェル、テスト）を `releashd::` にする。根拠: R-001「サーバの crate と実行ファイルの名前は `releashd` である」、B-001。ルート: root package の置き場所（`src-tauri/` 直下）は変えない。`_lib` を付けていた理由は Windows での名前の衝突（`Cargo.toml:19-21`）で、対応プラットフォームは macOS だけのため外す。
 - 引数なしの起動: `releashd` を引数なしで起動したとき foreground のサーバとして動かす（今は usage を出して exit 2。`src/bin/backend.rs:9-12`）。`--data-dir <DIR>` も受ける。根拠: R-002、R-003、B-002、B-003。ルート: `--internal-daemon [DATA_DIR]` と `--internal-background-worker` は画面と background worker のために残し、ヘルプに出さないのは今のまま。`--internal-daemon` の DATA_DIR は、次の data dir の規則の「明示指定」として渡す（規則を 2 つにしない）。
-- data dir の規則の共有: `--data-dir` ＞ `RELEASH_DATA_DIR` ＞ 既定 の規則を `releash-sdk/src/data_dir.rs` に置き、CLI と `releashd` が同じ関数を使う。根拠: R-003「CLI（`releash`）と同じ規則である」、B-003。ルート: CLI の `fn data_dir`（`releash/src/lib.rs:54-71`）は消す。サーバの既定だけの解決（`src/lib.rs:37-40` → `src/infrastructure/platform/app_data_dir.rs:5-7`）はこの関数に置き換える。
+- data dir の規則の共有: `--data-dir` ＞ `RELEASH_DATA_DIR` ＞ 既定 の規則を `releash-sdk/src/data_dir.rs` に置き、CLI と `releashd` が同じ関数を使う。根拠: R-003「CLI（`releash`）と同じ規則である」、B-003。ルート: CLI の `fn data_dir`（`releash/src/lib.rs:54-71`）は消す。サーバの既定だけの解決（`src/lib.rs:37-40` → `src/infrastructure/platform/app_data_dir.rs:5-7`）はこの関数に置き換える。background worker もこの関数で data dir を決める。daemon は子プロセスへ渡す `RELEASH_DATA_DIR` を解決した自分の data dir に揃え、別の Releash 由来の env を判別する規則（`src/infrastructure/platform/path_aliases.rs` の `known_alias_data_dirs`・`resolve_session_data_dir_env`・`ensure_release_data_dir_env_for_resolved_path`）はこれで置き換えて消す（子プロセスは自分を起動した daemon に届く必要があるため）。
 - background worker の起動先: `src/infrastructure/process/background_worker.rs:36,38` の `releash-backend` を `releashd` にする。根拠: R-001、R-006。ルート: 名前で隣（cargo の `deps/` の中では 2 つ上）を探す今の形を変えない。受け入れテストはテストバイナリの中で同じ処理を動かすため、`current_exe()` は使えない。
 - 画面の起動先: `releash-desktop/src/desktop.rs:69` の `releash-backend` を `releashd` にする。根拠: R-001、R-006、B-006。ルート: 画面が子プロセスとして起動する経路（`releash-desktop/src/adaptor/gateway/daemon_supervision.rs:163-173` の引数・env・pipe）は変えない。
 - 同梱: `scripts/build-desktop-backend.mjs:7,15,19` と `releash-desktop/tauri.conf.bundle.json:8` の `releash-backend` を `releashd` にする。根拠: R-001、B-001。ルート: 委任。
@@ -28,6 +28,7 @@
 
 - 画面が子プロセスとして起動する経路（`--internal-daemon`、stdin の EOF での終了、stdout の完了マーカー、`RELEASH_DAEMON_LAUNCH_ID`・`RELEASH_DAEMON_PARENT_PIPE`）。#1904 で消すため。
 - 多重起動の排他の仕組み（store の writer lock）。本文の方針どおり。
+- 画面（Tauri シェル）の data dir は、今と同じ既定だけで決め、`RELEASH_DATA_DIR` を見ない。R-006 のため。
 
 ## 未確定・リスク
 

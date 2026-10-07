@@ -45,7 +45,6 @@ pub use crate::infrastructure::local_api::{
     lookup_process_start_time, process_start_time, LocalApiDiscovery, ProcessStartTimeLookup,
 };
 pub use crate::infrastructure::local_log::{init as init_local_log, LocalLogProcess};
-pub use crate::infrastructure::platform::app_data_dir::resolve_data_dir;
 pub use crate::infrastructure::process::parent_lifetime::terminate_descendants;
 pub use crate::infrastructure::telemetry::init_telemetry;
 pub use crate::infrastructure::telemetry::metrics::{
@@ -56,6 +55,7 @@ pub use crate::usecase::client_connection::{
     ClientConnectionDto, ClientConnectionError, ClientConnectionQueryService,
 };
 pub use crate::usecase::telemetry::TelemetryPort;
+pub use releash_sdk::data_dir::{default_data_dir_for_profile, BuildProfile};
 #[cfg(feature = "test-support")]
 pub mod test_support {
     pub use crate::adaptor::presenter::client::{StateChange, Unit, COMMAND_NAMES};
