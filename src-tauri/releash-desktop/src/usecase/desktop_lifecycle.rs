@@ -51,27 +51,38 @@ impl DesktopLifecycleUsecase {
         Ok(self.connected(false, failure_window, changed))
     }
     fn connected(&self, hidden: bool, failure_window: bool, changed: bool) -> ConnectedDesktop {
-        let settings = if changed {
-            self.connection.initial_settings()
-        } else {
-            self.connection.settings()
-        };
-        let restoration = settings
-            .filter(|_| changed)
-            .map(|settings| self.settings_changed(settings))
-            .unwrap_or(Ok(()));
-        ConnectedDesktop {
-            restoration,
-            settings: settings.filter(|_| changed),
-            window: settings
-                .filter(|_| changed || failure_window)
-                .map(|settings| {
+        if changed {
+            let settings = self.connection.initial_settings();
+            ConnectedDesktop {
+                restoration: settings
+                    .map(|settings| self.settings_changed(settings))
+                    .unwrap_or(Ok(())),
+                settings,
+                window: settings.map(|settings| {
                     self.window
                         .lock()
                         .connected(hidden, settings.start_minimized, failure_window)
                 }),
+            }
+        } else {
+            ConnectedDesktop {
+                restoration: Ok(()),
+                settings: None,
+                window: if failure_window {
+                    self.connection.settings().map(|settings| {
+                        self.window.lock().connected(
+                            hidden,
+                            settings.start_minimized,
+                            failure_window,
+                        )
+                    })
+                } else {
+                    None
+                },
+            }
         }
     }
+
     pub fn settings_changed(&self, settings: DesktopSettingsDto) -> Result<(), LoginItemError> {
         self.login.restore(settings.auto_launch)?;
         Ok(())

@@ -1,6 +1,5 @@
 use crate::adaptor::presenter::daemon_connection::{self, DesktopConnectionFailure};
 use crate::usecase::daemon_connection::DaemonConnectionUsecase;
-use crate::usecase::desktop_lifecycle::DesktopLifecycleUsecase;
 use std::sync::Arc;
 pub(crate) const COMMAND_NAMES: &[&str] = &[
     "get_desktop_connection_failure",
@@ -40,42 +39,30 @@ fn get_desktop_connection_failure(
     connection.failure().map(daemon_connection::failure)
 }
 #[tauri::command]
-async fn start_daemon<R: tauri::Runtime>(
-    app: tauri::AppHandle<R>,
-    connection: tauri::State<'_, Arc<DesktopLifecycleUsecase>>,
-) -> Result<(), String> {
-    use tauri::Manager;
-    app.state::<crate::common::serial::Serial>()
-        .call(async {
-            let presenter = app
-                .state::<crate::adaptor::presenter::desktop_lifecycle::TauriDesktopLifecycle<R>>();
-            let connected = connection
-                .initialize(None, presenter.failure_window())
+async fn start_daemon<R: tauri::Runtime>(app: tauri::AppHandle<R>) -> Result<(), String> {
+    super::super::desktop_lifecycle::connection(&app, |lifecycle, failure_window| {
+        Box::pin(async move {
+            lifecycle
+                .initialize(None, failure_window)
                 .await
-                .map_err(crate::adaptor::presenter::daemon_connection::message)?;
-            super::super::desktop_lifecycle::connected(&app, connected);
-            Ok(())
+                .map(|connected| ((), connected))
         })
-        .await
+    })
+    .await
+    .map_err(daemon_connection::message)
 }
 #[tauri::command]
-async fn replace_daemon<R: tauri::Runtime>(
-    app: tauri::AppHandle<R>,
-    connection: tauri::State<'_, Arc<DesktopLifecycleUsecase>>,
-) -> Result<(), String> {
-    use tauri::Manager;
-    app.state::<crate::common::serial::Serial>()
-        .call(async {
-            let presenter = app
-                .state::<crate::adaptor::presenter::desktop_lifecycle::TauriDesktopLifecycle<R>>();
-            let connected = connection
-                .replace(presenter.failure_window())
+async fn replace_daemon<R: tauri::Runtime>(app: tauri::AppHandle<R>) -> Result<(), String> {
+    super::super::desktop_lifecycle::connection(&app, |lifecycle, failure_window| {
+        Box::pin(async move {
+            lifecycle
+                .replace(failure_window)
                 .await
-                .map_err(crate::adaptor::presenter::daemon_connection::message)?;
-            super::super::desktop_lifecycle::connected(&app, connected);
-            Ok(())
+                .map(|connected| ((), connected))
         })
-        .await
+    })
+    .await
+    .map_err(daemon_connection::message)
 }
 #[tauri::command]
 pub(crate) fn quit_desktop<R: tauri::Runtime>(app: tauri::AppHandle<R>) {

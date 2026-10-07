@@ -23,19 +23,22 @@ impl DesktopUpdateGateway for FakeUpdate {
 }
 #[async_trait::async_trait]
 impl DesktopUpdateInstaller for FakeUpdate {
-    async fn download(&self) -> Result<(), String> {
+    async fn download(&self) -> Result<(), DesktopUpdateFailure> {
         self.step("download")
+            .map_err(DesktopUpdateFailure::TechnicalFailure)
     }
-    async fn install(&self) -> Result<(), String> {
-        self.step("install")?;
+    async fn install(&self) -> Result<(), DesktopUpdateFailure> {
+        self.step("install")
+            .map_err(DesktopUpdateFailure::TechnicalFailure)?;
         if let Some((entered, resume)) = &self.install_wait {
             entered.notify_one();
             resume.notified().await;
         }
         Ok(())
     }
-    fn restart(&self) -> Result<(), String> {
+    fn restart(&self) -> Result<(), DesktopUpdateFailure> {
         self.step("restart")
+            .map_err(DesktopUpdateFailure::TechnicalFailure)
     }
 }
 #[tokio::test]
@@ -57,6 +60,11 @@ async fn test_画面更新_順に適用し失敗以降の操作を実行しな�
         // Then
         assert_eq!(result.is_ok(), fail.is_none());
         assert_eq!(*gateway.calls.lock(), expected);
+        if let Some(fail) = fail {
+            assert!(
+                matches!(result, Err(DesktopUpdateError::Installation(DesktopUpdateFailure::TechnicalFailure(detail))) if detail == fail)
+            );
+        }
     }
 }
 

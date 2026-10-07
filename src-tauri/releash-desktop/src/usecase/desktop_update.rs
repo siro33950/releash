@@ -1,4 +1,4 @@
-use crate::domain::desktop_update::DesktopUpdateInstaller;
+use crate::domain::desktop_update::{DesktopUpdateFailure, DesktopUpdateInstaller};
 use std::sync::Arc;
 
 #[derive(Clone, serde::Serialize)]
@@ -16,6 +16,8 @@ pub(crate) trait DesktopUpdateGateway: DesktopUpdateInstaller {
 pub(crate) enum DesktopUpdateError {
     #[error("{0}")]
     Operation(String),
+    #[error(transparent)]
+    Installation(#[from] DesktopUpdateFailure),
 }
 
 pub(crate) struct DesktopUpdateUsecase {
@@ -40,17 +42,9 @@ impl DesktopUpdateUsecase {
         let _guard = self.applying.try_lock().map_err(|_| {
             DesktopUpdateError::Operation("An update is already in progress.".into())
         })?;
-        self.gateway
-            .download()
-            .await
-            .map_err(DesktopUpdateError::Operation)?;
-        self.gateway
-            .install()
-            .await
-            .map_err(DesktopUpdateError::Operation)?;
-        self.gateway
-            .restart()
-            .map_err(DesktopUpdateError::Operation)?;
+        self.gateway.download().await?;
+        self.gateway.install().await?;
+        self.gateway.restart()?;
         Ok(())
     }
 }

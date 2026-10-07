@@ -33,5 +33,6 @@ pub mod daemon_connection {
 }
 
 pub mod settings_observer {
+    pub use crate::common::serial::Serial;
     pub use crate::infrastructure::settings_observer::observe;
 }

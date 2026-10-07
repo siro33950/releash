@@ -87,7 +87,11 @@ async fn test_接続先要求_初回設定の拒否や期限切れでは成功�
     let usecase = DaemonConnectionUsecase::new(port.clone(), port.clone(), 1, "client".into());
     // When / Then
     assert!(usecase.failure().is_none());
-    assert!(usecase.endpoint().await.is_err());
+    assert_eq!(
+        usecase.endpoint().await.unwrap_err(),
+        DaemonConnectionFailure::NotRunning
+    );
+    assert_eq!(usecase.failure(), Some(DaemonConnectionFailure::NotRunning));
     assert_eq!(*port.calls.lock(), ["discover"]);
     *port.server.lock() = Some(server("first"));
     for detail in [Some("subscription denied".into()), None] {
@@ -205,4 +209,26 @@ async fn test_入れ替え_同じ接続先でも停止後に購読を張り直�
         ["stop", "discover", "start", "discover", "subscribe"]
     );
     assert_eq!(*port.subscribed.lock(), Some(endpoint("same")));
+}
+
+#[tokio::test]
+async fn test_接続済みのサーバ消失と停止_動いていない状態にして自動起動しない() {
+    // Given
+    let port = Arc::new(FakeConnection::default());
+    *port.server.lock() = Some(server("connected"));
+    let usecase = DaemonConnectionUsecase::new(port.clone(), port.clone(), 1, "client".into());
+    usecase.connect().await.unwrap();
+    port.calls.lock().clear();
+    *port.server.lock() = None;
+    // When / Then
+    assert_eq!(
+        usecase.endpoint().await.unwrap_err(),
+        DaemonConnectionFailure::NotRunning
+    );
+    assert_eq!(usecase.failure(), Some(DaemonConnectionFailure::NotRunning));
+    assert_eq!(*port.calls.lock(), ["discover"]);
+    *port.server.lock() = Some(server("connected"));
+    usecase.connect().await.unwrap();
+    usecase.stop().await.unwrap();
+    assert_eq!(usecase.failure(), Some(DaemonConnectionFailure::NotRunning));
 }

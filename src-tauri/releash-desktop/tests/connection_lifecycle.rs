@@ -269,8 +269,7 @@ async fn test_初回設定適用_通知のobserverが無くても適用しhidden
         .collect();
         let release_settings = Arc::new(tokio::sync::Notify::new());
         let release = release_settings.clone();
-        let release_change = Arc::new(tokio::sync::Notify::new());
-        let changed = release_change.clone();
+        let (release_change, changed) = tokio::sync::watch::channel(());
         let payload = prost::Message::encode_to_vec(&releash_sdk::wire::StateSubscriptionEvent {
             event: Some(
                 releash_sdk::wire::state_subscription_event::Event::Snapshot(
@@ -305,7 +304,7 @@ async fn test_初回設定適用_通知のobserverが無くても適用しhidden
                 axum::routing::post(move || {
                     let frames = frames.clone();
                     let release = release.clone();
-                    let changed = changed.clone();
+                    let mut changed = changed.clone();
                     let changed_frame = changed_frame.clone();
                     async move {
                         let stream = futures_util::stream::once(async move {
@@ -313,7 +312,7 @@ async fn test_初回設定適用_通知のobserverが無くても適用しhidden
                             Ok::<_, std::convert::Infallible>(frames.concat())
                         })
                         .chain(futures_util::stream::once(async move {
-                            changed.notified().await;
+                            changed.changed().await.unwrap();
                             Ok::<_, std::convert::Infallible>(changed_frame)
                         }))
                         .chain(futures_util::stream::pending());
@@ -339,13 +338,9 @@ async fn test_初回設定適用_通知のobserverが無くても適用しhidden
             std::path::Path::new("/missing/releashd"),
         );
         let handle = app.handle().clone();
-        let mut initialized = tokio::spawn(async move {
-            host::initialize_desktop_with_settings_applied(&handle, hidden, || {
-                telemetry::set_performance_configured(true);
-                telemetry::set_performance_enabled(true);
-            })
-            .await;
-        });
+        let mut initialized = Box::pin(host::initialize_desktop_with_settings_applied(
+            &handle, hidden,
+        ));
         // When / Then
         assert!(
             tokio::time::timeout(Duration::from_millis(30), &mut initialized)
@@ -362,8 +357,8 @@ async fn test_初回設定適用_通知のobserverが無くても適用しhidden
         release_settings.notify_one();
         tokio::time::timeout(Duration::from_secs(3), &mut initialized)
             .await
-            .unwrap()
             .unwrap();
+        drop(initialized);
         let client = updates.borrow_and_update().clone().unwrap();
         assert!(!host::desktop_window_preferences(app.handle()));
         assert_eq!(
@@ -373,7 +368,70 @@ async fn test_初回設定適用_通知のobserverが無くても適用しhidden
                 .count(),
             1
         );
-        release_change.notify_one();
+        assert!(!telemetry::crash_reporting_enabled());
+        assert_eq!(
+            telemetry::performance_telemetry_active(),
+            telemetry::performance_telemetry_configured()
+        );
+        // Given
+        let (entered, entered_wait) = tokio::sync::oneshot::channel();
+        let (resume, resume_wait) = tokio::sync::oneshot::channel();
+        let handle = app.handle().clone();
+        let serialized = tokio::spawn(async move {
+            handle
+                .state::<releash_desktop::test_support::integration::settings_observer::Serial>()
+                .call(async {
+                    entered.send(()).unwrap();
+                    resume_wait.await.unwrap();
+                })
+                .await;
+        });
+        entered_wait.await.unwrap();
+        let handle = app.handle().clone();
+        let stale_client = client.clone();
+        let mut stale = tokio::spawn(async move {
+            host::apply_observed_desktop_settings(
+                &handle,
+                stale_client,
+                releashd::desktop_api::DesktopSettingsDto {
+                    close_to_tray: true,
+                    start_minimized: false,
+                    crash_reporting: true,
+                    performance_telemetry: false,
+                    auto_launch: false,
+                },
+            )
+            .await;
+        });
+        assert!(tokio::time::timeout(Duration::from_millis(30), &mut stale)
+            .await
+            .is_err());
+        use releash_desktop::test_support::integration::daemon_connection::DaemonService;
+        let gateway = app.state::<Arc<
+            releash_desktop::test_support::integration::daemon_connection::DaemonServiceGateway,
+        >>();
+        release_settings.notify_one();
+        // When
+        gateway
+            .connect(
+                &releash_desktop::test_support::integration::daemon_connection::DaemonEndpoint {
+                    url: format!("http://127.0.0.1:{}", discovery.port),
+                    token: discovery.token.clone(),
+                },
+            )
+            .await
+            .unwrap();
+        resume.send(()).unwrap();
+        serialized.await.unwrap();
+        stale.await.unwrap();
+        // Then
+        assert!(!host::desktop_window_preferences(app.handle()));
+        assert!(!telemetry::crash_reporting_enabled());
+        assert!(!host::desktop_login_item_calls(app.handle()).contains(&"unregister"));
+        drop(gateway);
+        drop(client);
+        let client = updates.borrow_and_update().clone().unwrap();
+        release_change.send_replace(());
         let mut settings = client.settings_receiver();
         tokio::time::timeout(
             Duration::from_secs(3),
@@ -385,11 +443,12 @@ async fn test_初回設定適用_通知のobserverが無くても適用しhidden
         let handle = app.handle().clone();
         let observer = tokio::spawn(observe(
             updates,
-            |client| client.settings_receiver(),
-            move |_, settings| {
+            |client| (client.settings_receiver(), client.initial_settings()),
+            move |client, settings| {
+                let client = client.clone();
                 let handle = handle.clone();
                 async move {
-                    host::apply_observed_desktop_settings(&handle, settings).await;
+                    host::apply_observed_desktop_settings(&handle, client, settings).await;
                 }
             },
         ));
@@ -440,8 +499,12 @@ async fn test_初回設定適用_通知のobserverが無くても適用しhidden
             .filter(|(key, _)| key == "releash.operation")
             .map(|(_, value)| value.as_str())
             .collect();
-        assert!(operations.contains(&"startup.app"));
-        assert!(operations.contains(&"startup.first_window_ready"));
+        if telemetry::performance_telemetry_configured() {
+            assert!(operations.contains(&"startup.app"));
+            assert!(operations.contains(&"startup.first_window_ready"));
+        } else {
+            assert!(operations.is_empty());
+        }
         if !hidden {
             use releash_desktop::test_support::integration::daemon_connection::{
                 DaemonEndpoint, DaemonService, DaemonServiceGateway, RetryLimiter,

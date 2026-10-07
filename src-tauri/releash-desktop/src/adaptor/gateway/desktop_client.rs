@@ -157,12 +157,7 @@ impl DesktopClient {
                 Err(failure.clone().expect("waited for failure"))
             }
         };
-        result.map(|value| {
-            *self.initial_settings.get_or_init(|| {
-                *self.settings.lock() = settings;
-                value
-            })
-        })
+        result.map(|value| *self.initial_settings.get_or_init(|| value))
     }
     pub fn initial_settings(&self) -> Option<DesktopSettingsDto> {
         self.initial_settings.get().copied()

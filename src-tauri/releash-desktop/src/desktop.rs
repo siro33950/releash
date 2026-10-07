@@ -71,6 +71,7 @@ pub fn run() {
             )),
         ));
         app.manage(login.clone());
+        app.manage(connection);
         let lifecycle = Arc::new(usecase::desktop_lifecycle::DesktopLifecycleUsecase::new(
             connection_usecase,
             login,
@@ -88,11 +89,15 @@ pub fn run() {
         let observer_app = app.handle().clone();
         tauri::async_runtime::spawn(infrastructure::settings_observer::observe(
             client_updates,
-            |client| client.settings_receiver(),
-            move |_, settings| {
+            |client| (client.settings_receiver(), client.initial_settings()),
+            move |client, settings| {
+                let client = client.clone();
                 let app = observer_app.clone();
                 async move {
-                    adaptor::controller::desktop_lifecycle::settings_changed(&app, settings).await;
+                    adaptor::controller::desktop_lifecycle::settings_changed(
+                        &app, client, settings,
+                    )
+                    .await;
                 }
             },
         ));

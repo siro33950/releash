@@ -29,6 +29,7 @@
 - 生存の判定は TS の `src/lib/client.ts` だけ。
 - desktop 設定とログイン項目は、シェルの `desktop_client.rs` の接続と購読から直接取る。
 - `get_client_endpoint` と `quit_desktop` は残す。`desktop_restart::restart` は残す。
+- 接続の操作（初期化・接続先の受け渡し・起動・入れ替え）と設定の変化の適用の直列化は、common の 1 つの入口（`Serial` の中で処理を呼び、結果を接続後の処理に渡す）で掛け、各入口はそれを呼ぶ。Tauri の async コマンドは `CommandRouter::handle` の先で spawn されるため、ルータの手前では処理の終わりまで直列化を保てない。
 - `StopDaemonRequest` は field を持たず、終了コードは 0。`RequestApplicationQuit` 系と `ServerInfo.launch_id` は reserved。
 
 ## 変えないもの

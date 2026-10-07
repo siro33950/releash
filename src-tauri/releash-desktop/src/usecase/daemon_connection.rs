@@ -31,9 +31,7 @@ impl DaemonConnectionUsecase {
     }
     pub fn failure(&self) -> Option<DaemonConnectionFailure> {
         let state = self.state.lock();
-        state
-            .is_failure()
-            .then(|| state.failure().expect("failure state").clone())
+        state.failure().cloned()
     }
     pub fn initial_settings(&self) -> Option<DesktopSettingsDto> {
         self.query.initial_settings()
@@ -66,13 +64,12 @@ impl DaemonConnectionUsecase {
             }
             let Some(server) = server else {
                 let mut state = self.state.lock();
-                state.observe_not_running();
-                return Err(state.failure().expect("observed failure").clone());
+                return Err(state.observe_not_running());
             };
             {
                 let mut state = self.state.lock();
-                if !state.assess(&server, self.protocol, &self.release) {
-                    return Err(state.failure().expect("observed failure").clone());
+                if let Some(failure) = state.assess(&server, self.protocol, &self.release) {
+                    return Err(failure);
                 }
             }
             let changed = !self.state.lock().is_connected_to(&server.endpoint);

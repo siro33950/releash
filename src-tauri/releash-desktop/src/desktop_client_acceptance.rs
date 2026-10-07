@@ -17,14 +17,16 @@ pub fn desktop_connection_app<R: tauri::Runtime>(
     tauri::async_runtime::spawn(observe_desktop_settings(handle, updates));
     let handle = app.handle().clone();
     tauri::async_runtime::spawn(async move {
-        handle
-            .state::<Serial>()
-            .call(async {
-                if let Ok(connected) = handle
+        crate::common::serial::run(
+            &handle,
+            async {
+                handle
                     .state::<Arc<DesktopLifecycleUsecase>>()
                     .initialize(None, false)
                     .await
-                {
+            },
+            |result| {
+                if let Ok(connected) = result {
                     handle
                         .state::<LogFailure<Arc<DesktopLifecycleUsecase>>>()
                         .record(&connected.restoration);
@@ -34,8 +36,9 @@ pub fn desktop_connection_app<R: tauri::Runtime>(
                             .apply_settings(settings);
                     }
                 }
-            })
-            .await;
+            },
+        )
+        .await;
     });
     app
 }
@@ -68,10 +71,11 @@ pub fn desktop_connection_app_parts<R: tauri::Runtime>(
     let preference = Arc::new(crate::adaptor::gateway::login_item::DaemonLoginPreference(
         connection.clone(),
     ));
+    let gateway = connection.clone();
     let connection = Arc::new(
         crate::usecase::daemon_connection::DaemonConnectionUsecase::new(
             connection.clone(),
-            connection,
+            connection.clone(),
             releash_sdk::descriptor::protocol(),
             env!("CARGO_PKG_VERSION").into(),
         ),
@@ -82,6 +86,7 @@ pub fn desktop_connection_app_parts<R: tauri::Runtime>(
         preference,
     ));
     let app = builder
+        .manage(gateway)
         .manage(connection.clone())
         .manage(login.clone())
         .manage(login_usecase.clone())
@@ -101,32 +106,16 @@ pub fn desktop_connection_app_parts<R: tauri::Runtime>(
 pub async fn initialize_desktop_with_settings_applied<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     hidden: bool,
-    settings_applied: impl FnOnce(),
 ) {
-    app.state::<Serial>()
-        .call(async {
-            let presenter = app.state::<TauriDesktopLifecycle<R>>();
-            let connected = app
-                .state::<Arc<DesktopLifecycleUsecase>>()
-                .initialize(Some(hidden), presenter.failure_window())
-                .await
-                .unwrap();
-            app.state::<LogFailure<Arc<DesktopLifecycleUsecase>>>()
-                .record(&connected.restoration);
-            if let Some(settings) = connected.settings {
-                presenter.apply_settings(settings);
-            }
-            settings_applied();
-            presenter.connected_window(connected.window);
-        })
-        .await;
+    crate::adaptor::controller::desktop_lifecycle::initialize(app, hidden).await;
 }
 
 pub async fn apply_observed_desktop_settings<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
+    client: Arc<crate::adaptor::gateway::desktop_client::DesktopClient>,
     settings: releashd::desktop_api::DesktopSettingsDto,
 ) {
-    crate::adaptor::controller::desktop_lifecycle::settings_changed(app, settings).await;
+    crate::adaptor::controller::desktop_lifecycle::settings_changed(app, client, settings).await;
 }
 pub fn show_desktop<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<(), String> {
     crate::adaptor::controller::desktop_lifecycle::show(app)
@@ -137,11 +126,12 @@ pub async fn observe_desktop_settings<R: tauri::Runtime>(
 ) {
     crate::infrastructure::settings_observer::observe(
         updates,
-        |client| client.settings_receiver(),
-        move |_, settings| {
+        |client| (client.settings_receiver(), client.initial_settings()),
+        move |client, settings| {
+            let client = client.clone();
             let app = app.clone();
             async move {
-                apply_observed_desktop_settings(&app, settings).await;
+                apply_observed_desktop_settings(&app, client, settings).await;
             }
         },
     )
@@ -233,10 +223,9 @@ pub fn wait_for_desktop_predecessor() -> Result<bool, String> {
 pub async fn desktop_client_endpoint<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
 ) -> ClientEndpoint {
-    let endpoint =
-        crate::adaptor::controller::command::client::get_client_endpoint(app.clone(), app.state())
-            .await
-            .unwrap();
+    let endpoint = crate::adaptor::controller::command::client::get_client_endpoint(app.clone())
+        .await
+        .unwrap();
     ClientEndpoint {
         url: endpoint.url,
         token: endpoint.token,
@@ -259,14 +248,19 @@ pub async fn apply_desktop_update<R: tauri::Runtime>(
     }
     #[async_trait::async_trait]
     impl crate::domain::desktop_update::DesktopUpdateInstaller for Installer {
-        async fn download(&self) -> Result<(), String> {
+        async fn download(
+            &self,
+        ) -> Result<(), crate::domain::desktop_update::DesktopUpdateFailure> {
             (self.0)("download")
+                .map_err(crate::domain::desktop_update::DesktopUpdateFailure::TechnicalFailure)
         }
-        async fn install(&self) -> Result<(), String> {
+        async fn install(&self) -> Result<(), crate::domain::desktop_update::DesktopUpdateFailure> {
             (self.0)("install")
+                .map_err(crate::domain::desktop_update::DesktopUpdateFailure::TechnicalFailure)
         }
-        fn restart(&self) -> Result<(), String> {
+        fn restart(&self) -> Result<(), crate::domain::desktop_update::DesktopUpdateFailure> {
             (self.0)("restart")
+                .map_err(crate::domain::desktop_update::DesktopUpdateFailure::TechnicalFailure)
         }
     }
     crate::usecase::desktop_update::DesktopUpdateUsecase::new(Arc::new(Installer(action)))

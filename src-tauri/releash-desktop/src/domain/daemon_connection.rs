@@ -53,27 +53,36 @@ impl DaemonConnection {
     pub fn state(&self) -> &DaemonConnectionState {
         &self.state
     }
-    pub fn assess(&mut self, server: &DiscoveredDaemon, protocol: u32, release: &str) -> bool {
+    pub fn assess(
+        &mut self,
+        server: &DiscoveredDaemon,
+        protocol: u32,
+        release: &str,
+    ) -> Option<DaemonConnectionFailure> {
         match Compatibility::assess(protocol, server.protocol) {
-            Compatibility::Compatible => true,
+            Compatibility::Compatible => None,
             compatibility => {
-                self.failed(DaemonConnectionFailure::Incompatible {
+                let failure = DaemonConnectionFailure::Incompatible {
                     server_older: compatibility == Compatibility::ServerOlder,
                     server_release: server.release.clone(),
                     client_release: release.into(),
-                });
-                false
+                };
+                self.failed(failure.clone());
+                Some(failure)
             }
         }
     }
-    pub fn observe_not_running(&mut self) {
-        if !matches!(
-            self.state,
-            DaemonConnectionState::Failed(DaemonConnectionFailure::StartupFailed { .. })
-        ) {
-            self.failed(DaemonConnectionFailure::NotRunning);
-        }
+    pub fn observe_not_running(&mut self) -> DaemonConnectionFailure {
+        let failure = match &self.state {
+            DaemonConnectionState::Failed(
+                failure @ DaemonConnectionFailure::StartupFailed { .. },
+            ) => failure.clone(),
+            _ => DaemonConnectionFailure::NotRunning,
+        };
+        self.failed(failure.clone());
+        failure
     }
+
     pub fn begin_start(&mut self) {
         self.state = DaemonConnectionState::NotObserved;
     }
@@ -91,9 +100,6 @@ impl DaemonConnection {
             DaemonConnectionState::Failed(failure) => Some(failure),
             _ => None,
         }
-    }
-    pub fn is_failure(&self) -> bool {
-        self.failure().is_some()
     }
     pub fn is_connected(&self) -> bool {
         matches!(self.state, DaemonConnectionState::Connected(_))

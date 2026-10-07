@@ -23,6 +23,11 @@ pub(crate) fn set_crash_reporting_enabled(enabled: bool) {
 }
 
 #[cfg(any(test, feature = "test-support"))]
+pub fn crash_reporting_enabled() -> bool {
+    CRASH_REPORTING_ENABLED.load(Ordering::Relaxed)
+}
+
+#[cfg(any(test, feature = "test-support"))]
 pub fn reset_for_tests() {
     CRASH_REPORTING_ENABLED.store(true, Ordering::Relaxed);
     OTLP_CONFIGURED.store(false, Ordering::Relaxed);

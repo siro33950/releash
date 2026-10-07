@@ -10,7 +10,7 @@ fn test_起動失敗_未起動の観測で保持し次の起動か接続成功�
     let mut connection = DaemonConnection::default();
     // When / Then
     connection.failed(failed.clone());
-    connection.observe_not_running();
+    assert_eq!(connection.observe_not_running(), failed);
     assert_eq!(
         connection.state(),
         &DaemonConnectionState::Failed(failed.clone())
@@ -42,7 +42,10 @@ fn test_互換判定_非互換なら双方の版と古い側を保持する() {
             release: "server".into(),
         };
         // When / Then
-        assert!(!connection.assess(&server, 1, "client"));
+        assert_eq!(
+            connection.assess(&server, 1, "client"),
+            connection.failure().cloned()
+        );
         assert_eq!(
             connection.state(),
             &DaemonConnectionState::Failed(DaemonConnectionFailure::Incompatible {
@@ -61,7 +64,7 @@ fn test_互換判定_非互換なら双方の版と古い側を保持する() {
         protocol: 1,
         release: "different release".into(),
     };
-    assert!(connection.assess(&server, 1, "client"));
+    assert_eq!(connection.assess(&server, 1, "client"), None);
 }
 
 #[test]
@@ -69,7 +72,7 @@ fn test_接続状態_未観測と接続済み以外を失敗として答える()
     // Given
     let mut connection = DaemonConnection::default();
     // When / Then
-    assert!(!connection.is_failure());
+    assert!(connection.failure().is_none());
     assert!(!connection.is_connected());
     for state in [
         DaemonConnectionFailure::NotRunning,
@@ -86,14 +89,14 @@ fn test_接続状態_未観測と接続済み以外を失敗として答える()
         DaemonConnectionFailure::TechnicalFailure("failure".into()),
     ] {
         connection.failed(state);
-        assert!(connection.is_failure());
+        assert!(connection.failure().is_some());
         assert!(!connection.is_connected());
     }
     connection.connected(DaemonEndpoint {
         url: "localhost".into(),
         token: "test".into(),
     });
-    assert!(!connection.is_failure());
+    assert!(connection.failure().is_none());
     assert!(connection.is_connected());
 }
 
@@ -107,7 +110,10 @@ fn test_未起動の観測_接続済みと非互換と技術的失敗から動�
     let mut connection = DaemonConnection::default();
     connection.connected(endpoint);
     // When / Then
-    connection.observe_not_running();
+    assert_eq!(
+        connection.observe_not_running(),
+        DaemonConnectionFailure::NotRunning
+    );
     assert_eq!(
         connection.state(),
         &DaemonConnectionState::Failed(DaemonConnectionFailure::NotRunning)
@@ -123,7 +129,10 @@ fn test_未起動の観測_接続済みと非互換と技術的失敗から動�
         // Given
         connection.failed(failure);
         // When / Then
-        connection.observe_not_running();
+        assert_eq!(
+            connection.observe_not_running(),
+            DaemonConnectionFailure::NotRunning
+        );
         assert_eq!(
             connection.state(),
             &DaemonConnectionState::Failed(DaemonConnectionFailure::NotRunning)
