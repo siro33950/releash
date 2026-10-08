@@ -52,6 +52,20 @@ fn test_cli_起動後も独立して稼働し重複起動せず再起動して�
     );
     assert!(success(run(root, &["server", "start"])).contains("already running"));
     assert_eq!(discovery::read(&root.join("data")).unwrap(), first);
+    let standalone = root.join("releash");
+    std::fs::copy(env!("CARGO_BIN_EXE_releash"), &standalone).unwrap();
+    assert_eq!(
+        success(
+            Command::new(standalone)
+                .arg("--data-dir")
+                .arg(root.join("data"))
+                .args(["server", "start"])
+                .output()
+                .unwrap()
+        ),
+        "server is already running\n"
+    );
+    assert_eq!(discovery::read(&root.join("data")).unwrap(), first);
     let status: serde_json::Value =
         serde_json::from_str(&success(run(root, &["status", "--json"]))).unwrap();
     assert_eq!(status["server"]["daemonId"], first.instance_id);
