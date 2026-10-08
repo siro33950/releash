@@ -1,6 +1,6 @@
 use crate::wire::ServerInfo;
 use serde::{Deserialize, Serialize};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -55,8 +55,12 @@ pub enum DiscoveryReadError {
     Decode(#[source] serde_json::Error),
 }
 
+pub fn discovery_file(data_dir: &Path) -> PathBuf {
+    data_dir.join("client-api.json")
+}
+
 pub fn read_optional(data_dir: &Path) -> Result<Option<LocalApiDiscovery>, DiscoveryReadError> {
-    let bytes = match std::fs::read(data_dir.join("client-api.json")) {
+    let bytes = match std::fs::read(discovery_file(data_dir)) {
         Ok(bytes) => bytes,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(DiscoveryReadError::Read(error)),

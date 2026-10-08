@@ -15,7 +15,7 @@
 
 ### 実行
 
-- `releash` は独立した CLI です。GUI や daemon を起動しません。引数なしの実行は、コマンドの指定が必要なため終了コード 2 になります。
+- `releash` は独立した CLI です。引数なしでは、サーバが動いていなければ同じディレクトリの `releashd` を起動します。symlink を辿った CLI の実体が `.app` の中にあり、data dir が画面の既定値と同じならそのアプリを開きます。`.app` の中でも data dir が画面の既定値と違う場合は、アプリを開かなかった理由と `releash status` と同じ状態表示を出します。`.app` の外では `releash status` と同じ状態表示を出します。
 - コマンドと hook は `client-api.json` でサーバを見つけ、Connect で通信します。サーバは HTTP `/v1` を提供しません。
 - CLI の説明は `releash --help` と各サブコマンドの `--help` で表示します。`-h` は要約表示です。
 - `--version` はありません（指定すると引数エラーで終了コード 2）。
@@ -27,8 +27,12 @@
 
 ## コマンド一覧
 
-| コマンド | 内容 | アプリ起動 |
+| コマンド | 内容 | サーバ起動 |
 |---|---|---|
+| [`status`](#releash-status) | サーバの状態と互換性を表示する | 不要 |
+| [`server start`](#releash-server-startstoprestart) | 未起動のサーバを起動する | 不要 |
+| [`server stop`](#releash-server-startstoprestart) | 動いているサーバを停止する | 必須 |
+| [`server restart`](#releash-server-startstoprestart) | サーバを同梱の版で起動し直す | 不要 |
 | `completion <shell>` | shell の補完スクリプトを出力する | 不要 |
 | [`workflow diagnostics`](#releash-workflow-diagnostics) | workflow 定義と Facet を診断する | 必須 |
 | [`workflow status`](#releash-workflow-status) | WorkflowExecution の現在状態を表示する | 必須 |
@@ -42,6 +46,30 @@
 | [`review history`](#releash-review-history) | Thread 履歴を表示する | 必須 |
 
 結果は stdout に出ます。失敗時のメッセージは stderr に出ます。
+
+### `releash status`
+
+```sh
+releash status [--json]
+```
+
+クライアントの release・protocol、data dir、サーバの稼働状態を表示します。稼働中は `GetServerInfo` の daemon_id・pid・起動時刻・release・protocol・capabilities・serving status、起動からの秒数、互換性の判定も表示します。未起動や古い発見ファイルの場合、または protocol に互換性が無い場合も終了コードは 0 です。壊れた発見ファイルや接続・照合の失敗は終了コード 1 です。
+
+`--json` の項目は `client`（release・protocol）、`data_dir`、`running`、`server`（ServerInfo の camelCase の項目）、`uptime_seconds`、`compatibility`（`compatible` / `server_older` / `client_older`）、`guidance`、`connection`（host・port）、`discovery_file`（token を持つ発見ファイルのパス）です。未起動時は `server`・`uptime_seconds`・`compatibility`・`guidance`・`connection` が null になります。token の値は出しません。項目を追加しても、既存項目の名前と意味は維持します。
+
+### `releash server start|stop|restart`
+
+```sh
+releash server start
+releash server stop
+releash server restart
+```
+
+`start` は CLI の実体と同じディレクトリの `releashd` を独立したプロセスとして起動し、発見ファイルによる起動確認後に終了します。稼働済みなら何もせず成功します。起動したプロセスが終了した場合は終了状態と stderr の末尾を表示し、終了コード 1 になります。
+
+`stop` は停止を要求し、プロセスの終了と発見ファイルの消失を確認します。proto の `shutdown_timeout_ms` までに確認できない場合、または未起動の場合は終了コード 1 です。
+
+`restart` は稼働中なら停止後に CLI と同梱のサーバを起動し、未起動なら起動だけを行います。出力でこの2つを区別します。サーバの起動・停止には画面と同じ SDK の処理を使います。
 
 ### `releash workflow diagnostics`
 
@@ -376,7 +404,7 @@ releash review history <THREAD_ID> --session-id <SESSION_ID> [--json]
 
 | コード | 意味 |
 |---|---|
-| 0 | 成功。help と completion の出力を含む |
+| 0 | 成功。help・completion、未起動や互換性の無いサーバの status 表示を含む |
 | 1 | コマンドの失敗。対象が無い、サーバによる拒否、接続・互換性・JSON 入力・I/O の失敗 |
 | 2 | clap による引数の構文エラー。必須・排他・引数どうしの関係を含む |
 | 3 | `workflow diagnostics` の結果に severity `error` の診断が1件以上ある |
@@ -389,9 +417,9 @@ hook は結果によらず終了コード 0、stdout は `{}` です。失敗の
 
 workflow・review・hook は、data dir の `client-api.json` から接続し、`GetServerInfo` で同一性と protocol の互換性を確認します。release は互換性の判定に使いません。
 
-発見ファイルが無い、古い、壊れている、または接続できない場合は `unavailable` です。protocol が異なる場合は `failed_precondition` で、新しい方に合わせる更新案内を出します。コマンドは event store を直接読み書きしません。
+発見ファイルが無い、古い、壊れている、または接続できない場合は `unavailable` です。protocol が異なる場合、workflow・review は `failed_precondition`、終了コード 1 です。サーバが古ければ `releash server restart` を、クライアントが古ければクライアントの更新を案内します。`status` も同じ案内を表示します。RPC が `unimplemented` を返す場合も `releash server restart` を案内します。コマンドは event store を直接読み書きしません。
 
-読み取りは購読の最初の snapshot または failure を受け取って閉じます。書き込みと診断は単発の RPC を使います。
+`status` の読み取りは接続と互換判定にも使う `GetServerInfo` の応答を使います。その他の読み取りは購読の最初の snapshot または failure を受け取って閉じます。書き込みと診断は単発の RPC を使います。
 
 ## 環境変数
 

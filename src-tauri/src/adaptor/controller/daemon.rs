@@ -115,7 +115,7 @@ pub async fn compose(
         env!("CARGO_PKG_VERSION").into(),
         protocol,
     ));
-    let daemon = usecase::daemon::DaemonUsecase(daemon_repository.clone());
+    let daemon = usecase::daemon::DaemonUsecase::new(daemon_repository.clone());
     let retry_limiter = Arc::new(crate::common::retry::RetryLimiter::new());
     let failure_store = Arc::new(adaptor::gateway::failure_records::FailureRecordStore::default());
     infrastructure::telemetry::metrics::set_startup_origin(std::time::Instant::now());
@@ -159,6 +159,7 @@ pub async fn compose(
                 Box::pin(infrastructure::timer::ticks_after(period, period))
             })),
         );
+    let daemon = daemon.with_state_publisher(state_subscriptions.clone());
     let failure_output: Arc<usecase::failure::FailureRecordingUsecase> =
         Arc::new(usecase::failure::FailureRecordingUsecase::new(
             failure_store.clone(),
@@ -546,6 +547,7 @@ pub async fn compose(
         Arc::new(
             adaptor::gateway::state_subscription_reads::StateSubscriptionReads(
                 usecase::state_subscription::WorkspaceStateReads {
+                    daemon: daemon.clone(),
                     repositories: dependencies
                         .app_state
                         .as_ref()

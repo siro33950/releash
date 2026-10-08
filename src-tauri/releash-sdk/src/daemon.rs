@@ -2,7 +2,7 @@ use crate::{descriptor, discovery, rpc, wire};
 use connectrpc::client::{ClientConfig, HttpClient};
 use discovery::LocalApiDiscovery;
 use std::io::{Read, Seek, SeekFrom};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
 
@@ -34,7 +34,7 @@ pub fn timeout(name: &str) -> Duration {
     )
 }
 
-pub fn client(discovery: &LocalApiDiscovery) -> rpc::ClientServiceClient<HttpClient> {
+pub fn client(discovery: &LocalApiDiscovery, token: &str) -> rpc::ClientServiceClient<HttpClient> {
     rpc::ClientServiceClient::new(
         HttpClient::plaintext(),
         ClientConfig::new(
@@ -42,13 +42,16 @@ pub fn client(discovery: &LocalApiDiscovery) -> rpc::ClientServiceClient<HttpCli
                 .parse()
                 .expect("loopback URL"),
         )
-        .with_default_header("authorization", format!("Bearer {}", discovery.token))
+        .with_default_header("authorization", format!("Bearer {token}"))
         .with_default_timeout(timeout("default_timeout_ms")),
     )
 }
 
-pub async fn server_info(discovery: &LocalApiDiscovery) -> Result<wire::ServerInfo, DaemonError> {
-    let response = client(discovery)
+pub async fn server_info(
+    discovery: &LocalApiDiscovery,
+    token: &str,
+) -> Result<wire::ServerInfo, DaemonError> {
+    let response = client(discovery, token)
         .get_server_info(rpc::Unit::default())
         .await?;
     let info = <wire::ServerInfo as prost::Message>::decode(
@@ -69,6 +72,14 @@ pub fn running(data_dir: &Path) -> Result<Option<LocalApiDiscovery>, DaemonError
     }
     discovery.verify_process(|_| process)?;
     Ok(Some(discovery))
+}
+
+pub fn current_executable() -> Result<PathBuf, std::io::Error> {
+    std::env::current_exe()?.canonicalize()
+}
+
+pub fn executable(current_executable: &Path) -> PathBuf {
+    current_executable.with_file_name("releashd")
 }
 
 pub async fn start(
@@ -126,8 +137,8 @@ pub async fn start(
 pub async fn stop(data_dir: &Path, discovery: &LocalApiDiscovery) -> Result<(), DaemonError> {
     tokio::time::timeout(timeout("shutdown_timeout_ms"), async {
         discovery.verify_process(discovery::lookup_process_start_time)?;
-        server_info(discovery).await?;
-        client(discovery)
+        server_info(discovery, &discovery.token).await?;
+        client(discovery, &discovery.token)
             .stop_daemon(rpc::StopDaemonRequest::default())
             .await?;
         loop {

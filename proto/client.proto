@@ -2741,6 +2741,7 @@ message StatePayload {
     NullableReviewThreadDto review_session_thread = 65;
     NullableListReviewHistoryEntryDto review_session_thread_history = 66;
     ProviderHookHealthSnapshot provider_hook_health = 57;
+    ServerInfo daemon_info = 67;
   }
 }
 message StateChange { bool delta = 1; StatePayload payload = 2; }
@@ -2783,12 +2784,12 @@ message NullableStartupWorktree {
 }
 
 enum ServingStatus {
-  SERVING_STATUS_UNSPECIFIED = 0;
-  SERVING_STATUS_STARTING = 1;
-  SERVING_STATUS_SERVING = 2;
-  SERVING_STATUS_STOPPING = 3;
-  SERVING_STATUS_STOPPED = 4;
-  SERVING_STATUS_FAILED = 5;
+  SERVING_STATUS_UNSPECIFIED = 0 [(json_enum_name) = "SERVING_STATUS_UNSPECIFIED"];
+  SERVING_STATUS_STARTING = 1 [(json_enum_name) = "SERVING_STATUS_STARTING"];
+  SERVING_STATUS_SERVING = 2 [(json_enum_name) = "SERVING_STATUS_SERVING"];
+  SERVING_STATUS_STOPPING = 3 [(json_enum_name) = "SERVING_STATUS_STOPPING"];
+  SERVING_STATUS_STOPPED = 4 [(json_enum_name) = "SERVING_STATUS_STOPPED"];
+  SERVING_STATUS_FAILED = 5 [(json_enum_name) = "SERVING_STATUS_FAILED"];
 }
 
 

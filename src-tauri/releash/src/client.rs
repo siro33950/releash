@@ -1,10 +1,9 @@
-use connectrpc::client::{ClientConfig, HttpClient};
+use connectrpc::client::HttpClient;
 use connectrpc::{ConnectError, ErrorCode};
 use releash_sdk::compatibility::Compatibility;
-use releash_sdk::discovery::{lookup_process_start_time, read};
+use releash_sdk::daemon;
 use releash_sdk::{rpc, wire};
 use std::path::Path;
-use std::time::Duration;
 
 pub type Client = rpc::ClientServiceClient<HttpClient>;
 
@@ -21,38 +20,22 @@ pub fn to_wire<T: prost::Message + Default>(
 }
 
 pub async fn connect(data_dir: &Path, token: Option<String>) -> Result<Client, ConnectError> {
-    let discovery = read(data_dir)?;
-    discovery.verify_process(lookup_process_start_time)?;
-    let config = ClientConfig::new(
-        format!("http://127.0.0.1:{}", discovery.port)
-            .parse()
-            .map_err(|error| {
-                ConnectError::unavailable(format!("Invalid client endpoint: {error}"))
-            })?,
-    )
-    .with_default_header(
-        "authorization",
-        format!(
-            "Bearer {}",
-            token.unwrap_or_else(|| discovery.token.clone())
-        ),
-    )
-    .with_default_timeout(Duration::from_secs(5));
-    let client = Client::new(HttpClient::plaintext(), config);
-    let response = client.get_server_info(rpc::Unit::default()).await?;
-    let info: wire::ServerInfo = to_wire(&response.into_owned())?;
-    discovery.verify_server(&info)?;
+    let discovery = match daemon::running(data_dir).map_err(daemon_error)? {
+        Some(discovery) => discovery,
+        None => return Err(ConnectError::unavailable("server is not running")),
+    };
+    let token = token.as_deref().unwrap_or(&discovery.token);
+    let client = daemon::client(&discovery, token);
+    let info = daemon::server_info(&discovery, token)
+        .await
+        .map_err(daemon_error)?;
     match Compatibility::assess(releash_sdk::descriptor::protocol(), info.protocol) {
         Compatibility::Compatible => Ok(client),
         compatibility => Err(ConnectError::new(
             ErrorCode::FailedPrecondition,
             format!(
                 "{} (client release {}, server release {})",
-                if compatibility == Compatibility::ServerOlder {
-                    "server is older"
-                } else {
-                    "client is older"
-                },
+                compatibility_guidance(compatibility),
                 env!("CARGO_PKG_VERSION"),
                 info.release
             ),
@@ -65,7 +48,7 @@ pub async fn snapshot(
     target: &str,
     args: Vec<String>,
 ) -> Result<wire::StatePayload, ConnectError> {
-    tokio::time::timeout(Duration::from_secs(5), async {
+    tokio::time::timeout(daemon::timeout("default_timeout_ms"), async {
         let client_id = uuid::Uuid::new_v4().to_string();
         let subscription_id = uuid::Uuid::new_v4().to_string();
         let mut stream = client
@@ -107,4 +90,31 @@ pub async fn snapshot(
     })
     .await
     .map_err(|_| ConnectError::unavailable("State subscription timed out"))?
+}
+
+pub fn compatibility_guidance(compatibility: Compatibility) -> &'static str {
+    match compatibility {
+        Compatibility::Compatible => "compatible",
+        Compatibility::ServerOlder => {
+            "server is older; run `releash server restart` to update the server"
+        }
+        Compatibility::ClientOlder => "client is older; update the Releash client",
+    }
+}
+
+pub fn daemon_error(error: daemon::DaemonError) -> ConnectError {
+    match error {
+        daemon::DaemonError::Connect(error) => error,
+        error => ConnectError::unavailable(error.to_string()),
+    }
+}
+
+pub fn error_guidance(mut error: ConnectError) -> ConnectError {
+    if error.code == ErrorCode::Unimplemented {
+        let message = error
+            .message
+            .get_or_insert_with(|| "RPC is unimplemented".into());
+        message.push_str("; run `releash server restart` to update the server");
+    }
+    error
 }

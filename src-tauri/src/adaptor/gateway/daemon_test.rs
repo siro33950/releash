@@ -4,7 +4,7 @@ async fn test_daemon保存_進行中commandを待たず停止を受理し後始�
     // Given
     let repository = serving();
     let admission = repository.admission().await;
-    let usecase = crate::usecase::daemon::DaemonUsecase(repository.clone());
+    let usecase = crate::usecase::daemon::DaemonUsecase::new(repository.clone());
     // When
     let accepted = tokio::time::timeout(
         std::time::Duration::from_secs(1),

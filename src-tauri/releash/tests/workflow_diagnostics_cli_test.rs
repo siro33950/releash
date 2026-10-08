@@ -169,7 +169,7 @@ fn test_診断cli_アプリ未起動時は既存commandと同じ失敗になる(
     assert_eq!(diagnostics.stderr, existing_command.stderr);
     assert_eq!(
         String::from_utf8(diagnostics.stderr).unwrap().trim(),
-        "error: unavailable: client discovery is unavailable"
+        "error: unavailable: server is not running"
     );
 }
 

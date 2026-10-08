@@ -1327,3 +1327,48 @@ async fn test_connect提出_worktreeなしで待機中nodeにartifactを記録�
     drop((execution, output));
     quit(&mut daemon, &mut socket).await;
 }
+
+#[tokio::test]
+async fn test_daemon状態購読_server_infoと一致し停止受理後にstoppingを配信する() {
+    // Given
+    let directory = tempfile::tempdir().unwrap();
+    let (mut daemon, discovery) = start(directory.path());
+    let (socket, _) = connect(&discovery).await;
+    let response = socket
+        .client
+        .get_server_info(rpc::Unit::default())
+        .await
+        .unwrap();
+    let info: wire::ServerInfo = to_wire(&response.into_owned()).unwrap();
+    let mut stream = subscribe_state(&socket, "daemon-info", vec![]).await;
+    // When / Then
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(5), stream.next())
+            .await
+            .unwrap()
+            .unwrap(),
+        wire::state_payload::Value::DaemonInfo(info.clone())
+    );
+    assert_eq!(info.serving_status, wire::ServingStatus::Serving as i32);
+    socket
+        .client
+        .stop_daemon(rpc::StopDaemonRequest::default())
+        .await
+        .unwrap();
+    let mut stopping = info;
+    stopping.serving_status = wire::ServingStatus::Stopping as i32;
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(5), stream.next())
+            .await
+            .unwrap()
+            .unwrap(),
+        wire::state_payload::Value::DaemonInfo(stopping)
+    );
+    drop(stream);
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while daemon.0.try_wait().unwrap().is_none() {
+        assert!(Instant::now() < deadline);
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(!directory.path().join("client-api.json").exists());
+}

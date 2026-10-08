@@ -217,6 +217,7 @@ export type StateValues = {
 	"releash-base": string | null;
 	"workflow-config": import("@/generated/client_types").WorkflowSection;
 	"provider-hook-health": import("@/generated/client_types").ProviderHookHealthSnapshot;
+	"daemon-info": import("@/generated/client_types").ServerInfo;
 };
 export type StateTarget<K extends keyof StateValues> =
 	| K

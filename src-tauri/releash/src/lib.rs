@@ -3,6 +3,7 @@ mod commands;
 pub mod json;
 mod output;
 mod review;
+mod server;
 mod workflow;
 
 use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
@@ -14,11 +15,19 @@ struct Cli {
     #[arg(long, global = true)]
     data_dir: Option<PathBuf>,
     #[command(subcommand)]
-    command: TopCommand,
+    command: Option<TopCommand>,
 }
 
 #[derive(Subcommand, Debug)]
 enum TopCommand {
+    Status {
+        #[arg(long)]
+        json: bool,
+    },
+    Server {
+        #[command(subcommand)]
+        command: server::ServerSubcommand,
+    },
     Workflow {
         #[command(subcommand)]
         command: workflow::WorkflowSubcommand,
@@ -69,7 +78,7 @@ pub fn run() {
             std::process::exit(error.exit_code());
         }
     };
-    if let TopCommand::Completion { shell } = cli.command {
+    if let Some(TopCommand::Completion { shell }) = cli.command {
         clap_complete::generate(
             shell,
             &mut Cli::command(),
@@ -78,8 +87,8 @@ pub fn run() {
         );
         return;
     }
-    let json = commands::json_output(&cli.command);
-    let hook = matches!(cli.command, TopCommand::Hook { .. });
+    let json = cli.command.as_ref().is_some_and(commands::json_output);
+    let hook = matches!(cli.command, Some(TopCommand::Hook { .. }));
     let result = releash_sdk::data_dir::resolve_data_dir(cli.data_dir)
         .map_err(connectrpc::ConnectError::unavailable)
         .and_then(|dir| {
@@ -87,9 +96,14 @@ pub fn run() {
                 .enable_all()
                 .build()
                 .map_err(|error| connectrpc::ConnectError::internal(error.to_string()))?
-                .block_on(commands::run(&dir, cli.command))
+                .block_on(async {
+                    match cli.command {
+                        Some(command) => commands::run(&dir, command).await,
+                        None => server::launch(&dir).await.map(|output| (output, 0)),
+                    }
+                })
         });
-    let code = match result {
+    let code = match result.map_err(client::error_guidance) {
         Ok((output, code)) => {
             print!("{output}");
             code

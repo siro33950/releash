@@ -929,7 +929,7 @@ async fn test_providerライフサイクル受入_stale_discoveryから古い接
             None,
             before,
             &run,
-            "client discovery is stale",
+            "server is not running",
         )
         .await;
         let stale_request = stale_request.join().unwrap();

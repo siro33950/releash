@@ -14,6 +14,7 @@ use crate::usecase::{
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum StateValue {
+    DaemonInfo(crate::domain::daemon::DaemonInfo),
     Terminal(crate::usecase::terminal_surface::application::TerminalSurfaceStreamItem),
     RepositoryPaths(Vec<String>),
     Workspaces(WorkspaceList),

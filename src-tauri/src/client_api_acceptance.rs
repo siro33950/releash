@@ -59,7 +59,7 @@ impl ClientApiAcceptanceHost {
             vec![],
             String::new(),
         );
-        let mut dispatch = ClientCommandDispatch::new(crate::usecase::daemon::DaemonUsecase(
+        let mut dispatch = ClientCommandDispatch::new(crate::usecase::daemon::DaemonUsecase::new(
             crate::adaptor::gateway::daemon::serving(),
         ));
         dispatch.register_domain(
@@ -208,7 +208,7 @@ impl ClientRecoveryAcceptanceHost {
     pub async fn start() -> Self {
         use crate::adaptor::presenter::client as wire;
         let state = Arc::new(std::sync::Mutex::new(ClientRecoveryState::default()));
-        let mut dispatch = ClientCommandDispatch::new(crate::usecase::daemon::DaemonUsecase(
+        let mut dispatch = ClientCommandDispatch::new(crate::usecase::daemon::DaemonUsecase::new(
             crate::adaptor::gateway::daemon::serving(),
         ));
         for names in [

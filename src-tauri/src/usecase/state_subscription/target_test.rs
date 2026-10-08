@@ -264,3 +264,13 @@ fn test_cli購読通知_実行は全worktreeでreviewは全comment通知で読�
         );
     }
 }
+
+#[test]
+fn test_daemon状態購読_daemon変化だけを受け取り外部watchを増やさない() {
+    // Given / When / Then
+    let target = SubscriptionTarget::DaemonInfo;
+    assert!(target.affected_by(&StateChangeSource::Daemon));
+    assert!(!target.affected_by(&StateChangeSource::AppConfig));
+    assert!(!SubscriptionTarget::Workspaces.affected_by(&StateChangeSource::Daemon));
+    assert!(target.watches(&[], &[], "", "", "").is_empty());
+}
