@@ -82,6 +82,18 @@ impl CliInstallation {
         }
     }
 }
+pub(crate) struct CliPaths {
+    pub target: PathBuf,
+    pub link: PathBuf,
+}
+impl CliPaths {
+    pub fn from_executable(executable: &Path) -> Self {
+        Self {
+            target: executable.with_file_name("releash"),
+            link: "/usr/local/bin/releash".into(),
+        }
+    }
+}
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum CliLink {
     Missing,
@@ -113,6 +125,10 @@ pub(crate) enum InstallationError {
     Location(CliInstallation),
     Occupied(PathBuf),
     Verification,
+    CreationFailed {
+        direct: Box<InstallationError>,
+        administrator: Box<InstallationError>,
+    },
     Technical(TechnicalFailure),
 }
 impl std::fmt::Display for InstallationError {
@@ -127,6 +143,13 @@ impl std::fmt::Display for InstallationError {
             Self::Verification => {
                 f.write_str("CLI installation did not create the expected symlink")
             }
+            Self::CreationFailed {
+                direct,
+                administrator,
+            } => write!(
+                f,
+                "direct install failed ({direct}); administrator install failed ({administrator})"
+            ),
             Self::Technical(error) => error.fmt(f),
         }
     }
@@ -136,12 +159,8 @@ pub(crate) trait InstallationService: Send + Sync {
     fn location(&self, executable: &Path) -> Result<InstallationLocation, InstallationError>;
     fn cli_link(&self, link: &Path) -> Result<CliLink, InstallationError>;
     fn create_cli_link(&self, target: &Path, link: &Path) -> Result<(), InstallationError>;
-    fn create_cli_link_as_admin(
-        &self,
-        target: &Path,
-        link: &Path,
-        direct_error: InstallationError,
-    ) -> Result<(), InstallationError>;
+    fn create_cli_link_as_admin(&self, target: &Path, link: &Path)
+        -> Result<(), InstallationError>;
 }
 #[cfg(test)]
 #[path = "mod_test.rs"]

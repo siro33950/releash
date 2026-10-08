@@ -1127,7 +1127,7 @@ async fn test_daemon状態payload_get_server_infoと同じ投影を使う() {
             identity,
             "test".into(),
             1,
-            crate::domain::installation::CliInstallation::ReadOnly,
+            Ok(crate::domain::installation::CliInstallation::ReadOnly),
         ),
     );
     let daemon = crate::usecase::daemon::DaemonUsecase::new(repository);

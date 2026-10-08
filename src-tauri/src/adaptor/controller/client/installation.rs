@@ -14,14 +14,15 @@ pub(crate) fn register_shared(router: &mut ClientCommandDispatch, deps: &ClientD
                 let wire::command_request::Command::InstallCli(_) = command else {
                     return Err(invalid_request("Mismatched command"));
                 };
-                let result = crate::common::operation_context::spawn_blocking(move || {
-                    usecase.install_cli(Path::new("/usr/local/bin/releash"))
-                })
-                .await
-                .map_err(|error| {
-                    AppError::from_failure(crate::domain::failure::TechnicalFailure::from(error))
-                })?
-                .map_err(present::failure)?;
+                let result =
+                    crate::common::operation_context::spawn_blocking(move || usecase.install_cli())
+                        .await
+                        .map_err(|error| {
+                            AppError::from_failure(crate::domain::failure::TechnicalFailure::from(
+                                error,
+                            ))
+                        })?
+                        .map_err(present::failure)?;
                 Ok(wire::command_result::Command::InstallCli(
                     present::installed(result),
                 ))

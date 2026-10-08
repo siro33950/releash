@@ -95,6 +95,19 @@ impl Daemon {
     }
 }
 
+fn compose_daemon_repository(
+    identity: domain::daemon::DaemonIdentity,
+    protocol: u32,
+    installation: &usecase::installation::InstallationUsecase,
+) -> Arc<adaptor::gateway::daemon::InMemoryDaemonRepository> {
+    Arc::new(adaptor::gateway::daemon::InMemoryDaemonRepository::new(
+        identity,
+        env!("CARGO_PKG_VERSION").into(),
+        protocol,
+        installation.cli_installation(),
+    ))
+}
+
 pub async fn compose(
     data_dir: PathBuf,
     #[cfg(any(target_os = "macos", target_os = "linux"))] provider_initial_search_path: Result<
@@ -113,15 +126,7 @@ pub async fn compose(
     let installation = Arc::new(usecase::installation::InstallationUsecase(Arc::new(
         adaptor::gateway::installation::LocalInstallationService,
     )));
-    let cli_installation = installation
-        .cli_installation()
-        .map_err(|error| error.to_string())?;
-    let daemon_repository = Arc::new(adaptor::gateway::daemon::InMemoryDaemonRepository::new(
-        identity,
-        env!("CARGO_PKG_VERSION").into(),
-        protocol,
-        cli_installation,
-    ));
+    let daemon_repository = compose_daemon_repository(identity, protocol, &installation);
     let daemon = usecase::daemon::DaemonUsecase::new(daemon_repository.clone());
     let retry_limiter = Arc::new(crate::common::retry::RetryLimiter::new());
     let failure_store = Arc::new(adaptor::gateway::failure_records::FailureRecordStore::default());

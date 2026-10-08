@@ -1216,5 +1216,7 @@ pub mod fixtures {
 }
 
 pub mod installation {
-    pub use crate::infrastructure::platform::installation::{cli_link, create_cli_link, read_only};
+    pub use crate::infrastructure::platform::installation::{
+        cli_link, create_cli_link, read_only, run_admin_command, CliLink,
+    };
 }

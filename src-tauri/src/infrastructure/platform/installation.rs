@@ -20,13 +20,19 @@ pub fn read_only(executable: &Path) -> Result<bool, std::io::Error> {
         Ok(unsafe { info.assume_init() }.f_flag & libc::ST_RDONLY != 0)
     }
 }
-pub fn cli_link(path: &Path) -> Result<Option<Option<PathBuf>>, std::io::Error> {
+#[derive(Debug, PartialEq, Eq)]
+pub enum CliLink {
+    Missing,
+    Other,
+    Symlink(PathBuf),
+}
+pub fn cli_link(path: &Path) -> Result<CliLink, std::io::Error> {
     match std::fs::symlink_metadata(path) {
         Ok(metadata) if metadata.file_type().is_symlink() => {
-            std::fs::read_link(path).map(|target| Some(Some(target)))
+            std::fs::read_link(path).map(CliLink::Symlink)
         }
-        Ok(_) => Ok(Some(None)),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Ok(_) => Ok(CliLink::Other),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(CliLink::Missing),
         Err(error) => Err(error),
     }
 }
@@ -62,10 +68,44 @@ fn run_admin_script(script: &str) -> Result<(), String> {
         "do shell script {} with administrator privileges",
         applescript_string(script)
     );
-    let status = std::process::Command::new("/usr/bin/osascript")
-        .args(["-e", &expression])
-        .status()
-        .map_err(|e| format!("failed to run osascript: {e}"))?;
+    let mut command = std::process::Command::new("/usr/bin/osascript");
+    command.args(["-e", &expression]);
+    run_admin_command(&mut command)
+}
+
+#[cfg(any(target_os = "macos", feature = "test-support"))]
+const ADMIN_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(10);
+
+#[cfg(any(target_os = "macos", feature = "test-support"))]
+pub fn run_admin_command(command: &mut std::process::Command) -> Result<(), String> {
+    let mut child = command
+        .spawn()
+        .map_err(|e| format!("failed to run administrator command: {e}"))?;
+    let status = loop {
+        let stopped = crate::common::operation_context::check().map_err(|e| e.to_string());
+        if let Err(error) = stopped {
+            child
+                .kill()
+                .map_err(|e| format!("{error}; failed to kill administrator command: {e}"))?;
+            child
+                .wait()
+                .map_err(|e| format!("{error}; failed to reap administrator command: {e}"))?;
+            return Err(error);
+        }
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) => std::thread::sleep(ADMIN_POLL_INTERVAL),
+            Err(error) => {
+                child
+                    .kill()
+                    .map_err(|e| format!("{error}; failed to kill administrator command: {e}"))?;
+                child
+                    .wait()
+                    .map_err(|e| format!("{error}; failed to reap administrator command: {e}"))?;
+                return Err(format!("failed to wait for administrator command: {error}"));
+            }
+        }
+    };
     if status.success() {
         Ok(())
     } else {

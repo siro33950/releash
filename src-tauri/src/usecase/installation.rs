@@ -1,5 +1,6 @@
 use crate::domain::installation::{
-    CliInstallation, CliPlacement, InstallationError, InstallationService, LoginRegistration,
+    CliInstallation, CliPaths, CliPlacement, InstallationError, InstallationService,
+    LoginRegistration,
 };
 use std::{
     path::{Path, PathBuf},
@@ -17,22 +18,26 @@ impl InstallationUsecase {
     ) -> Result<LoginRegistration, InstallationError> {
         Ok(self.0.location(executable)?.login_registration())
     }
-    pub fn install_cli(&self, link: &Path) -> Result<(CliPlacement, PathBuf), InstallationError> {
+    pub fn install_cli(&self) -> Result<(CliPlacement, PathBuf), InstallationError> {
         let executable = self.0.executable()?;
         self.0
             .location(&executable)?
             .cli_installation()
             .ensure_allowed()?;
-        let target = executable.with_file_name("releash");
-        let placement = self.0.cli_link(link)?.placement(&target, link)?;
+        let CliPaths { target, link } = CliPaths::from_executable(&executable);
+        let placement = self.0.cli_link(&link)?.placement(&target, &link)?;
         if placement == CliPlacement::Create {
-            if let Err(direct_error) = self.0.create_cli_link(&target, link) {
+            if let Err(direct_error) = self.0.create_cli_link(&target, &link) {
                 self.0
-                    .create_cli_link_as_admin(&target, link, direct_error)?;
+                    .create_cli_link_as_admin(&target, &link)
+                    .map_err(|administrator| InstallationError::CreationFailed {
+                        direct: Box::new(direct_error),
+                        administrator: Box::new(administrator),
+                    })?;
             }
-            self.0.cli_link(link)?.verify(&target)?;
+            self.0.cli_link(&link)?.verify(&target)?;
         }
-        Ok((placement, link.to_path_buf()))
+        Ok((placement, link))
     }
 }
 #[cfg(test)]

@@ -1165,7 +1165,8 @@ export type CliInstallationResult = {
 		| "allowed"
 		| "translocated"
 		| "readOnly"
-		| "development";
+		| "development"
+		| "undetermined";
 	reason?: string;
 };
 

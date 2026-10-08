@@ -10,17 +10,8 @@ impl LoginItemPort for MacLoginItem {
     async fn ensure_registration_allowed(&self) -> Result<(), String> {
         use releashd::desktop_api::wire;
         let executable = std::env::current_exe().map_err(|error| error.to_string())?;
-        let executable_path = executable
-            .to_str()
-            .ok_or("Desktop executable path is not UTF-8")?
-            .into();
-        let result = self
-            .0
-            .client()?
-            .request(wire::command_request::Command::CheckLoginRegistration(
-                wire::CheckLoginRegistrationRequest { executable_path },
-            ))
-            .await?;
+        let request = registration_request(&executable)?;
+        let result = self.0.client()?.request(request).await?;
         match result {
             wire::command_result::Command::CheckLoginRegistration(result) => {
                 registration_allowed(result)
@@ -93,6 +84,19 @@ impl crate::domain::login_item::LoginPreferencePort for DaemonLoginPreference {
             _ => Err("Unexpected login preference update result".into()),
         }
     }
+}
+
+fn registration_request(
+    executable: &std::path::Path,
+) -> Result<releashd::desktop_api::wire::command_request::Command, String> {
+    use releashd::desktop_api::wire;
+    let executable_path = executable
+        .to_str()
+        .ok_or("Desktop executable path is not UTF-8")?
+        .into();
+    Ok(wire::command_request::Command::CheckLoginRegistration(
+        wire::CheckLoginRegistrationRequest { executable_path },
+    ))
 }
 
 fn preference_request(requested: bool) -> releashd::desktop_api::wire::command_request::Command {

@@ -33,6 +33,12 @@ fn failure() -> InstallationError {
         message: "denied".into(),
     })
 }
+fn admin_failure() -> InstallationError {
+    InstallationError::Technical(crate::domain::failure::TechnicalFailure {
+        nature: crate::domain::failure::TechnicalFailureNature::Other,
+        message: "administrator denied".into(),
+    })
+}
 impl InstallationService for FakeInstallation {
     fn executable(&self) -> Result<PathBuf, InstallationError> {
         if self.failure_stage == Some("executable") {
@@ -67,15 +73,10 @@ impl InstallationService for FakeInstallation {
         *self.link.lock() = CliLink::Symlink(target.into());
         Ok(())
     }
-    fn create_cli_link_as_admin(
-        &self,
-        target: &Path,
-        _: &Path,
-        _: InstallationError,
-    ) -> Result<(), InstallationError> {
+    fn create_cli_link_as_admin(&self, target: &Path, _: &Path) -> Result<(), InstallationError> {
         self.calls.lock().push("admin");
         if self.admin_fails {
-            return Err(failure());
+            return Err(admin_failure());
         }
         if self.admin_verifies {
             *self.link.lock() = CliLink::Symlink(target.into());
@@ -104,9 +105,7 @@ fn test_cli設置_拒否時にはリンクの観測も変更もしない() {
         let usecase = InstallationUsecase(port.clone());
         // When
         let availability = usecase.cli_installation().unwrap();
-        let error = usecase
-            .install_cli(Path::new("/usr/local/bin/releash"))
-            .unwrap_err();
+        let error = usecase.install_cli().unwrap_err();
         // Then
         assert_eq!(error, InstallationError::Location(availability));
         assert_eq!(*port.calls.lock(), ["location", "location"]);
@@ -145,7 +144,7 @@ fn test_cli設置_既存状態と権限に従い設置後の指し先を検証�
             false,
             false,
             true,
-            Err(InstallationError::Occupied("/test/link".into())),
+            Err(InstallationError::Occupied("/usr/local/bin/releash".into())),
             vec!["location", "observe"],
         ),
         (
@@ -161,7 +160,10 @@ fn test_cli設置_既存状態と権限に従い設置後の指し先を検証�
             true,
             true,
             true,
-            Err(failure()),
+            Err(InstallationError::CreationFailed {
+                direct: Box::new(failure()),
+                administrator: Box::new(admin_failure()),
+            }),
             vec!["location", "observe", "direct", "admin"],
         ),
         (
@@ -182,11 +184,14 @@ fn test_cli設置_既存状態と権限に従い設置後の指し先を検証�
         });
         let usecase = InstallationUsecase(port.clone());
         // When
-        let result = usecase.install_cli(Path::new("/test/link"));
+        let result = usecase.install_cli();
         // Then
+        if let Err(InstallationError::CreationFailed { .. }) = &result {
+            assert_eq!(result.as_ref().unwrap_err().to_string(), "direct install failed (denied); administrator install failed (administrator denied)");
+        }
         assert_eq!(
             result.map(|(status, path)| {
-                assert_eq!(path, Path::new("/test/link"));
+                assert_eq!(path, Path::new("/usr/local/bin/releash"));
                 status
             }),
             expected
@@ -226,7 +231,7 @@ fn test_cli設置_観測失敗は変更前に返す() {
         });
         let usecase = InstallationUsecase(port.clone());
         // When / Then
-        assert_eq!(usecase.install_cli(Path::new("/test/link")), Err(failure()));
+        assert_eq!(usecase.install_cli(), Err(failure()));
         assert_eq!(*port.calls.lock(), calls);
     }
 }

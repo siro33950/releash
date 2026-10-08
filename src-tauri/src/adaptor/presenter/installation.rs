@@ -2,8 +2,19 @@ use super::client as wire;
 use crate::domain::installation::{
     CliInstallation, CliPlacement, InstallationError, LoginRegistration,
 };
-pub(crate) fn cli_installation(result: CliInstallation) -> wire::CliInstallationResult {
+pub(crate) fn cli_installation(
+    result: Result<CliInstallation, String>,
+) -> wire::CliInstallationResult {
     use wire::CliInstallationStatus as W;
+    let result = match result {
+        Ok(result) => result,
+        Err(reason) => {
+            return wire::CliInstallationResult {
+                status: W::Undetermined as i32,
+                reason,
+            }
+        }
+    };
     wire::CliInstallationResult {
         status: match result {
             CliInstallation::Allowed => W::Allowed,
@@ -38,7 +49,7 @@ impl super::connect::ConnectFailure for InstallationError {
     fn connect_code(&self) -> connectrpc::ErrorCode {
         match self {
             Self::Location(_) | Self::Occupied(_) => connectrpc::ErrorCode::FailedPrecondition,
-            Self::Verification => connectrpc::ErrorCode::Internal,
+            Self::Verification | Self::CreationFailed { .. } => connectrpc::ErrorCode::Internal,
             Self::Technical(error) => super::connect::ConnectFailure::connect_code(error),
         }
     }

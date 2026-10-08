@@ -103,3 +103,19 @@ fn test_cli配置_既存ファイルを保護して同じリンクだけを設�
     }
     assert!(CliLink::Symlink(target.into()).verify(target).is_ok());
 }
+
+#[test]
+fn test_cli配置_サーバの実行パスから指し先と設置先を求める() {
+    // Given
+    for executable in [
+        "/Applications/Releash.app/Contents/MacOS/releashd",
+        "/opt/releash/releashd",
+    ] {
+        // When
+        let paths = CliPaths::from_executable(Path::new(executable));
+        // Then
+        assert_eq!(paths.target.parent(), Path::new(executable).parent());
+        assert_eq!(paths.target.file_name().unwrap(), "releash");
+        assert_eq!(paths.link, Path::new("/usr/local/bin/releash"));
+    }
+}

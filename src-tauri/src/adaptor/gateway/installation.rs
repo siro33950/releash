@@ -38,32 +38,35 @@ impl InstallationService for LocalInstallationService {
         &self,
         target: &Path,
         link: &Path,
-        direct_error: InstallationError,
     ) -> Result<(), InstallationError> {
         #[cfg(target_os = "macos")]
         {
             installation::create_cli_link_as_admin(target, link).map_err(|message| {
                 technical(crate::domain::failure::TechnicalFailure {
                     nature: crate::domain::failure::TechnicalFailureNature::Other,
-                    message: format!("direct install failed ({direct_error}); administrator install failed ({message})"),
+                    message,
                 })
             })
         }
         #[cfg(not(target_os = "macos"))]
         {
             let _ = (target, link);
-            Err(direct_error)
+            Err(technical(crate::domain::failure::TechnicalFailure {
+                nature: crate::domain::failure::TechnicalFailureNature::Other,
+                message: "Administrator CLI installation requires macOS.".into(),
+            }))
         }
     }
 }
+
+fn decode_cli_link(value: installation::CliLink) -> CliLink {
+    match value {
+        installation::CliLink::Missing => CliLink::Missing,
+        installation::CliLink::Symlink(target) => CliLink::Symlink(target),
+        installation::CliLink::Other => CliLink::Other,
+    }
+}
+
 #[cfg(test)]
 #[path = "installation_test.rs"]
 mod installation_tests;
-
-fn decode_cli_link(value: Option<Option<PathBuf>>) -> CliLink {
-    match value {
-        None => CliLink::Missing,
-        Some(Some(target)) => CliLink::Symlink(target),
-        Some(None) => CliLink::Other,
-    }
-}

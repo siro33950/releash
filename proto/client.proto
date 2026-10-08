@@ -2901,4 +2901,5 @@ enum CliInstallationStatus {
   CLI_INSTALLATION_STATUS_TRANSLOCATED = 2 [(json_enum_name) = "translocated"];
   CLI_INSTALLATION_STATUS_READ_ONLY = 3 [(json_enum_name) = "readOnly"];
   CLI_INSTALLATION_STATUS_DEVELOPMENT = 4 [(json_enum_name) = "development"];
+  CLI_INSTALLATION_STATUS_UNDETERMINED = 5 [(json_enum_name) = "undetermined"];
 }
