@@ -49,15 +49,13 @@ impl DaemonConnectionQueryService for FakeConnection {
 
 #[derive(Default)]
 struct Login(Mutex<Vec<&'static str>>, Mutex<Option<String>>);
+#[async_trait::async_trait]
 impl LoginItemPort for Login {
     fn status(&self) -> Result<LoginItemStatus, String> {
         Ok(LoginItemStatus::NotRegistered)
     }
-    fn location(&self) -> Result<RegistrationLocation, String> {
-        Ok(RegistrationLocation {
-            translocated: false,
-            read_only: false,
-        })
+    async fn ensure_registration_allowed(&self) -> Result<(), String> {
+        Ok(())
     }
     fn register(&self) -> Result<(), String> {
         self.0.lock().push("register");
@@ -138,8 +136,9 @@ async fn test_接続後処理_初回設定を一度復元して窓の値を返�
     assert_eq!(replaced.settings, Some(settings));
     assert_eq!(replaced.endpoint, initial.endpoint);
     assert_eq!(*login.0.lock(), ["register", "register"]);
-    let SettingsChange::Apply { restoration, .. } =
-        lifecycle.settings_changed(DaemonSubscription(2), settings)
+    let SettingsChange::Apply { restoration, .. } = lifecycle
+        .settings_changed(DaemonSubscription(2), settings)
+        .await
     else {
         panic!("current subscription rejected")
     };
@@ -187,7 +186,9 @@ async fn test_設定変更_復元失敗を返し初回接続では窓と適用�
     let SettingsChange::Apply {
         settings: applied,
         restoration,
-    } = lifecycle.settings_changed(DaemonSubscription(1), settings)
+    } = lifecycle
+        .settings_changed(DaemonSubscription(1), settings)
+        .await
     else {
         panic!("current subscription rejected")
     };
@@ -225,7 +226,7 @@ async fn test_設定変更_未接続と旧接続の通知では復元も適用�
     let subscription = DaemonSubscription(1);
     // When / Then
     assert!(matches!(
-        lifecycle.settings_changed(subscription, settings),
+        lifecycle.settings_changed(subscription, settings).await,
         SettingsChange::Ignored
     ));
     assert!(login.0.lock().is_empty());
@@ -233,7 +234,7 @@ async fn test_設定変更_未接続と旧接続の通知では復元も適用�
     login.0.lock().clear();
     for stale in [DaemonSubscription(0), DaemonSubscription(2)] {
         assert!(matches!(
-            lifecycle.settings_changed(stale, settings),
+            lifecycle.settings_changed(stale, settings).await,
             SettingsChange::Ignored
         ));
         assert!(login.0.lock().is_empty());
@@ -241,7 +242,7 @@ async fn test_設定変更_未接続と旧接続の通知では復元も適用�
     let SettingsChange::Apply {
         settings: applied,
         restoration,
-    } = lifecycle.settings_changed(subscription, settings)
+    } = lifecycle.settings_changed(subscription, settings).await
     else {
         panic!("current subscription rejected")
     };
@@ -250,7 +251,7 @@ async fn test_設定変更_未接続と旧接続の通知では復元も適用�
     assert_eq!(*login.0.lock(), ["register"]);
     connection.stop().await.unwrap();
     assert!(matches!(
-        lifecycle.settings_changed(subscription, settings),
+        lifecycle.settings_changed(subscription, settings).await,
         SettingsChange::Ignored
     ));
     assert_eq!(*login.0.lock(), ["register"]);
@@ -295,14 +296,16 @@ async fn test_同じ接続先への再接続_旧購読の通知では初回設�
         ..settings
     };
     assert!(matches!(
-        lifecycle.settings_changed(old, stale),
+        lifecycle.settings_changed(old, stale).await,
         SettingsChange::Ignored
     ));
     assert!(login.0.lock().is_empty());
     let SettingsChange::Apply {
         settings: applied,
         restoration,
-    } = lifecycle.settings_changed(DaemonSubscription(*port.2.lock()), stale)
+    } = lifecycle
+        .settings_changed(DaemonSubscription(*port.2.lock()), stale)
+        .await
     else {
         panic!("current subscription rejected")
     };

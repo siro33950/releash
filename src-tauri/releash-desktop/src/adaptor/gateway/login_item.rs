@@ -1,19 +1,32 @@
-use crate::domain::login_item::{LoginItemPort, LoginItemStatus, RegistrationLocation};
+use crate::domain::login_item::{LoginItemPort, LoginItemStatus};
 use crate::infrastructure::platform::login_item;
 
-pub(crate) struct MacLoginItem;
+pub(crate) struct MacLoginItem(pub std::sync::Arc<super::daemon_connection::DaemonServiceGateway>);
+#[async_trait::async_trait]
 impl LoginItemPort for MacLoginItem {
     fn status(&self) -> Result<LoginItemStatus, String> {
         decode_status(login_item::status()?)
     }
-    fn location(&self) -> Result<RegistrationLocation, String> {
-        let (translocated, read_only) = login_item::registration_location(
-            &std::env::current_exe().map_err(|e| e.to_string())?,
-        )?;
-        Ok(RegistrationLocation {
-            translocated,
-            read_only,
-        })
+    async fn ensure_registration_allowed(&self) -> Result<(), String> {
+        use releashd::desktop_api::wire;
+        let executable = std::env::current_exe().map_err(|error| error.to_string())?;
+        let executable_path = executable
+            .to_str()
+            .ok_or("Desktop executable path is not UTF-8")?
+            .into();
+        let result = self
+            .0
+            .client()?
+            .request(wire::command_request::Command::CheckLoginRegistration(
+                wire::CheckLoginRegistrationRequest { executable_path },
+            ))
+            .await?;
+        match result {
+            wire::command_result::Command::CheckLoginRegistration(result) => {
+                registration_allowed(result)
+            }
+            _ => Err("Unexpected login registration result".into()),
+        }
     }
     fn register(&self) -> Result<(), String> {
         registration_result(login_item::set_registered(true), || self.status())
@@ -89,4 +102,15 @@ fn preference_request(requested: bool) -> releashd::desktop_api::wire::command_r
             requested: Some(requested),
         },
     )
+}
+
+fn registration_allowed(
+    result: releashd::desktop_api::wire::LoginRegistrationResult,
+) -> Result<(), String> {
+    use releashd::desktop_api::wire::LoginRegistrationStatus as S;
+    match S::try_from(result.status) {
+        Ok(S::Allowed) => Ok(()),
+        Ok(S::Translocated | S::ReadOnly) => Err(result.reason),
+        _ => Err("Unknown login registration status".into()),
+    }
 }

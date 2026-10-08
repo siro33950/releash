@@ -73,6 +73,7 @@ pub(crate) async fn settings_changed<R: tauri::Runtime>(
         async {
             app.state::<Arc<DesktopLifecycleUsecase>>()
                 .settings_changed(subscription, settings)
+                .await
         },
         |output| {
             if let SettingsChange::Apply {

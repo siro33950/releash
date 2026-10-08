@@ -6,12 +6,6 @@ pub use crate::desktop_client_acceptance::{
     initialize_desktop_with_settings_applied, show_desktop, spawn_desktop_successor,
     start_desktop_daemon, stop_desktop_daemon, wait_for_desktop_predecessor,
 };
-#[cfg(unix)]
-pub mod cli_install {
-    pub use crate::infrastructure::platform::cli_install::{
-        install_cli_symlink_with_runner, CliInstallStatus,
-    };
-}
 #[cfg(feature = "test-support")]
 #[path = "integration_test_support.rs"]
 pub mod integration;

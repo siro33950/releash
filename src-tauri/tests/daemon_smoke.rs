@@ -1340,6 +1340,53 @@ async fn test_daemon状態購読_server_infoと一致し停止受理後にstoppi
         .await
         .unwrap();
     let info: wire::ServerInfo = to_wire(&response.into_owned()).unwrap();
+    let eligibility = info.cli_installation.as_ref().unwrap();
+    assert_eq!(
+        eligibility.status,
+        wire::CliInstallationStatus::Development as i32
+    );
+    let error = socket
+        .client
+        .install_cli(rpc::InstallCliRequest::default())
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, connectrpc::ErrorCode::FailedPrecondition);
+    assert_eq!(error.message.as_deref(), Some(eligibility.reason.as_str()));
+    let gui = directory
+        .path()
+        .join("AppTranslocation/id/Releash.app/Contents/MacOS/releash-desktop");
+    std::fs::create_dir_all(gui.parent().unwrap()).unwrap();
+    std::fs::write(&gui, "").unwrap();
+    let response = socket
+        .client
+        .check_login_registration(rpc::CheckLoginRegistrationRequest {
+            executable_path: gui.to_str().unwrap().into(),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let registration: wire::LoginRegistrationResult = to_wire(&response.into_owned()).unwrap();
+    assert_eq!(
+        registration.status,
+        if cfg!(target_os = "macos") {
+            wire::LoginRegistrationStatus::Translocated
+        } else {
+            wire::LoginRegistrationStatus::Allowed
+        } as i32
+    );
+    let response = socket
+        .client
+        .check_login_registration(rpc::CheckLoginRegistrationRequest {
+            executable_path: std::env::current_exe().unwrap().to_str().unwrap().into(),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let registration: wire::LoginRegistrationResult = to_wire(&response.into_owned()).unwrap();
+    assert_eq!(
+        registration.status,
+        wire::LoginRegistrationStatus::Allowed as i32
+    );
     let mut stream = subscribe_state(&socket, "daemon-info", vec![]).await;
     // When / Then
     assert_eq!(

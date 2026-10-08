@@ -40,6 +40,7 @@ fn serving() -> std::sync::Arc<FakeDaemon> {
         },
         "test".into(),
         1,
+        crate::domain::installation::CliInstallation::Allowed,
     );
     daemon.serve();
     std::sync::Arc::new(FakeDaemon(parking_lot::Mutex::new(daemon)))

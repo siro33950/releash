@@ -21,7 +21,8 @@
 pub mod wire {
     pub use crate::adaptor::presenter::client::{
         command_error, command_request, command_result, state_payload, state_subscription_event,
-        CommandError, DesktopSettings, ServerInfo, StatePayload, StateSubscriptionEvent,
+        CheckLoginRegistrationRequest, CommandError, DesktopSettings, LoginRegistrationResult,
+        LoginRegistrationStatus, ServerInfo, StatePayload, StateSubscriptionEvent,
         StopDaemonRequest, StopDaemonResponse, UpdateLoginItemPreferenceRequest,
     };
 }

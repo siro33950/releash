@@ -19,3 +19,5 @@ pub(crate) use dependencies::ClientDependencies;
 pub(crate) use dispatch::{convert, invalid_request, optional, required, ClientCommandDispatch};
 
 pub(crate) mod worktree_mutation;
+
+pub(crate) mod installation;

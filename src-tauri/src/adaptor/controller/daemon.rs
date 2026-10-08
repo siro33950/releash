@@ -110,10 +110,17 @@ pub async fn compose(
             .ok_or("failed to resolve daemon process identity")?,
     };
     let protocol = adaptor::presenter::client::descriptor::protocol();
+    let installation = Arc::new(usecase::installation::InstallationUsecase(Arc::new(
+        adaptor::gateway::installation::LocalInstallationService,
+    )));
+    let cli_installation = installation
+        .cli_installation()
+        .map_err(|error| error.to_string())?;
     let daemon_repository = Arc::new(adaptor::gateway::daemon::InMemoryDaemonRepository::new(
         identity,
         env!("CARGO_PKG_VERSION").into(),
         protocol,
+        cli_installation,
     ));
     let daemon = usecase::daemon::DaemonUsecase::new(daemon_repository.clone());
     let retry_limiter = Arc::new(crate::common::retry::RetryLimiter::new());
@@ -518,6 +525,7 @@ pub async fn compose(
         .to_string_lossy()
         .into_owned();
     let dependencies = super::client::ClientDependencies {
+        installation_usecase: Some(installation),
         workspace_node_command_usecase: Some(workspace_node_command_usecase),
         app_state: Some(app_state),
         workspace_state_store: Some(workspace_state_store),

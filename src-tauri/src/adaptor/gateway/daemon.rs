@@ -7,9 +7,19 @@ pub struct InMemoryDaemonRepository {
     commands: tokio::sync::RwLock<()>,
 }
 impl InMemoryDaemonRepository {
-    pub(crate) fn new(identity: DaemonIdentity, release: String, protocol: u32) -> Self {
+    pub(crate) fn new(
+        identity: DaemonIdentity,
+        release: String,
+        protocol: u32,
+        cli_installation: crate::domain::installation::CliInstallation,
+    ) -> Self {
         Self {
-            daemon: parking_lot::Mutex::new(Daemon::new(identity, release, protocol)),
+            daemon: parking_lot::Mutex::new(Daemon::new(
+                identity,
+                release,
+                protocol,
+                cli_installation,
+            )),
             commands: tokio::sync::RwLock::new(()),
         }
     }
@@ -78,6 +88,7 @@ pub(crate) fn serving_with_identity(
         identity,
         env!("CARGO_PKG_VERSION").into(),
         1,
+        crate::domain::installation::CliInstallation::Allowed,
     ));
     repository.daemon.lock().serve();
     repository

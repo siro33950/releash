@@ -21,6 +21,7 @@ import {
 	ArchiveWorkspaceWorkflowExecutionRequestSchema,
 	BuildDiffFileTreeRequestSchema,
 	BuildReviewThreadHandoffRequestSchema,
+	CheckLoginRegistrationRequestSchema,
 	type ClientService,
 	CommandErrorSchema,
 	ComputeHiddenRangesFromContentRequestSchema,
@@ -55,6 +56,8 @@ import {
 	GitStageReviewGroupRequestSchema,
 	GitUnstageRequestSchema,
 	GitUnstageReviewGroupRequestSchema,
+	InstallCliRequestSchema,
+	InstallCliResponseSchema,
 	KillTerminalSurfaceRequestSchema,
 	ListDiffRangeDtoSchema,
 	ListDiffTreeNodeDtoSchema,
@@ -62,6 +65,7 @@ import {
 	ListInlineChunkDtoSchema,
 	ListSplitRowDtoSchema,
 	ListVisibleBlockDtoSchema,
+	LoginRegistrationResultSchema,
 	NotionValidationResultViewSchema,
 	NullablestringSchema,
 	OpenAgentSessionRequestSchema,
@@ -1062,6 +1066,44 @@ const commands = {
 					StopDaemonRequestSchema,
 					clientJson(
 						StopDaemonRequestSchema,
+						JSON.parse(JSON.stringify(args ?? {})),
+						true,
+					),
+				),
+			),
+		);
+		return result;
+	},
+	install_cli: async (
+		client: Client<typeof ClientService>,
+		args: ClientCommandArgs["install_cli"],
+	) => {
+		const result = decode(
+			InstallCliResponseSchema,
+			await client.installCli(
+				fromJson(
+					InstallCliRequestSchema,
+					clientJson(
+						InstallCliRequestSchema,
+						JSON.parse(JSON.stringify(args ?? {})),
+						true,
+					),
+				),
+			),
+		);
+		return result;
+	},
+	check_login_registration: async (
+		client: Client<typeof ClientService>,
+		args: ClientCommandArgs["check_login_registration"],
+	) => {
+		const result = decode(
+			LoginRegistrationResultSchema,
+			await client.checkLoginRegistration(
+				fromJson(
+					CheckLoginRegistrationRequestSchema,
+					clientJson(
+						CheckLoginRegistrationRequestSchema,
 						JSON.parse(JSON.stringify(args ?? {})),
 						true,
 					),

@@ -38,6 +38,7 @@ pub struct DaemonInfo {
     pub(crate) protocol: u32,
     pub(crate) capabilities: BTreeSet<String>,
     pub(crate) serving_status: ServingStatus,
+    pub(crate) cli_installation: crate::domain::installation::CliInstallation,
 }
 
 pub(crate) struct Daemon {
@@ -46,7 +47,12 @@ pub(crate) struct Daemon {
 }
 
 impl Daemon {
-    pub(crate) fn new(identity: DaemonIdentity, release: String, protocol: u32) -> Self {
+    pub(crate) fn new(
+        identity: DaemonIdentity,
+        release: String,
+        protocol: u32,
+        cli_installation: crate::domain::installation::CliInstallation,
+    ) -> Self {
         Self {
             info: DaemonInfo {
                 identity,
@@ -54,6 +60,7 @@ impl Daemon {
                 protocol,
                 capabilities: BTreeSet::new(),
                 serving_status: ServingStatus::Starting,
+                cli_installation,
             },
             exit_code: None,
         }

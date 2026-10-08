@@ -2,6 +2,7 @@ pub(crate) fn server_info(info: crate::domain::daemon::DaemonInfo) -> super::cli
     use super::client::ServingStatus as W;
     use crate::domain::daemon::ServingStatus as S;
     super::client::ServerInfo {
+        cli_installation: Some(super::installation::cli_installation(info.cli_installation)),
         release: info.release,
         daemon_id: info.identity.daemon_id,
         pid: info.identity.pid,

@@ -41,9 +41,6 @@ pub fn run() {
             eprintln!("{error}");
         }
         let hidden = std::env::args().any(|arg| arg == "--hidden");
-        app.manage(usecase::cli_install::CliInstallUsecase(Arc::new(
-            adaptor::gateway::cli_install::MacCliInstall,
-        )));
         let (clients, client_updates) = tokio::sync::watch::channel(None);
         let connection = Arc::new(
             adaptor::gateway::daemon_connection::DaemonServiceGateway::new(
@@ -65,7 +62,9 @@ pub fn run() {
             ));
         app.manage(connection_usecase.clone());
         let login = Arc::new(usecase::login_item::LoginItemUsecase::new(
-            Arc::new(adaptor::gateway::login_item::MacLoginItem),
+            Arc::new(adaptor::gateway::login_item::MacLoginItem(
+                connection.clone(),
+            )),
             Arc::new(adaptor::gateway::login_item::DaemonLoginPreference(
                 connection.clone(),
             )),

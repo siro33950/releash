@@ -22,22 +22,6 @@ pub(crate) enum RegistrationChange {
     None,
 }
 
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct RegistrationLocation {
-    pub translocated: bool,
-    pub read_only: bool,
-}
-impl RegistrationLocation {
-    pub fn ensure_registration_allowed(self) -> Result<(), String> {
-        if self.translocated {
-            return Err("Move Releash.app to Applications before enabling Launch at login.".into());
-        }
-        if self.read_only {
-            return Err("Releash.app is on a read-only volume. Move it to Applications before enabling Launch at login.".into());
-        }
-        Ok(())
-    }
-}
 impl LoginItemStatus {
     pub fn registration_change(self, requested: bool) -> RegistrationChange {
         if self.needs_registration(requested) {
@@ -64,9 +48,10 @@ pub(crate) trait LoginPreferencePort: Send + Sync {
     async fn save(&self, requested: bool) -> Result<(), String>;
 }
 
+#[async_trait::async_trait]
 pub(crate) trait LoginItemPort: Send + Sync {
     fn status(&self) -> Result<LoginItemStatus, String>;
-    fn location(&self) -> Result<RegistrationLocation, String>;
+    async fn ensure_registration_allowed(&self) -> Result<(), String>;
     fn register(&self) -> Result<(), String>;
     fn unregister(&self) -> Result<(), String>;
     fn open_settings(&self) -> Result<(), String>;

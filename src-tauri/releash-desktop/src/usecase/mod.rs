@@ -1,4 +1,3 @@
-pub(crate) mod cli_install;
 pub(crate) mod daemon_connection;
 pub(crate) mod daemon_connection_query;
 pub(crate) mod desktop_lifecycle;

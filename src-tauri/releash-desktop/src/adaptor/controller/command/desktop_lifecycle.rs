@@ -8,7 +8,6 @@ pub(crate) const COMMAND_NAMES: &[&str] = &[
     "quit_desktop",
     "get_login_item_status",
     "open_login_item_settings",
-    "install_cli",
     "set_login_item_enabled",
     "check_desktop_update",
     "install_desktop_update",
@@ -25,7 +24,6 @@ pub(crate) fn register<R: tauri::Runtime>(
             quit_desktop,
             get_login_item_status,
             open_login_item_settings,
-            install_cli,
             set_login_item_enabled,
             check_desktop_update,
             install_desktop_update
@@ -83,13 +81,6 @@ fn open_login_item_settings(
 ) -> Result<(), String> {
     login.open_settings().map_err(|e| e.to_string())
 }
-#[tauri::command]
-async fn install_cli(
-    installer: tauri::State<'_, crate::usecase::cli_install::CliInstallUsecase>,
-) -> Result<String, String> {
-    installer.install().await.map_err(|e| e.to_string())
-}
-
 #[tauri::command]
 async fn check_desktop_update(
     update: tauri::State<'_, crate::usecase::desktop_update::DesktopUpdateUsecase>,

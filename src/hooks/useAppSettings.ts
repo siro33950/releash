@@ -112,7 +112,11 @@ export function useBackgroundConfig() {
 	};
 	const installCli = async () => {
 		try {
-			setCliMessage(await invokeTauri<string>("install_cli"));
+			setCliMessage(null);
+			const result = await invoke("install_cli");
+			setCliMessage(
+				`Releash CLI ${result.status === "alreadyInstalled" ? "already installed" : "installed"} at ${result.path}`,
+			);
 			setError(null);
 		} catch (error) {
 			setError(getErrorMessage(error));

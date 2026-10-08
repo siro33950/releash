@@ -139,6 +139,10 @@ impl Server {
                             release: "server-fixture".into(),
                             capabilities: vec!["fixture-capability".into()],
                             serving_status: wire::ServingStatus::Serving as i32,
+                            cli_installation: Some(wire::CliInstallationResult {
+                                status: wire::CliInstallationStatus::Allowed as i32,
+                                reason: String::new(),
+                            }),
                         }
                         .encode_to_vec(),
                     )
