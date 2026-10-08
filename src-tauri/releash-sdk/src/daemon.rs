@@ -2,7 +2,7 @@ use crate::{descriptor, discovery, rpc, wire};
 use connectrpc::client::{ClientConfig, HttpClient};
 use discovery::LocalApiDiscovery;
 use std::io::{Read, Seek, SeekFrom};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
 
@@ -72,6 +72,12 @@ pub fn running(data_dir: &Path) -> Result<Option<LocalApiDiscovery>, DaemonError
     }
     discovery.verify_process(|_| process)?;
     Ok(Some(discovery))
+}
+
+pub fn executable() -> Result<PathBuf, std::io::Error> {
+    Ok(std::env::current_exe()?
+        .canonicalize()?
+        .with_file_name("releashd"))
 }
 
 pub async fn start(

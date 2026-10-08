@@ -22,17 +22,7 @@ pub fn to_wire<T: prost::Message + Default>(
 pub async fn connect(data_dir: &Path, token: Option<String>) -> Result<Client, ConnectError> {
     let discovery = match daemon::running(data_dir).map_err(daemon_error)? {
         Some(discovery) => discovery,
-        None => {
-            let exists = data_dir
-                .join("client-api.json")
-                .try_exists()
-                .map_err(|error| ConnectError::unavailable(error.to_string()))?;
-            return Err(ConnectError::unavailable(if exists {
-                "client discovery is stale"
-            } else {
-                "client discovery is unavailable"
-            }));
-        }
+        None => return Err(ConnectError::unavailable("server is not running")),
     };
     let token = token.as_deref().unwrap_or(&discovery.token);
     let client = daemon::client(&discovery, token);

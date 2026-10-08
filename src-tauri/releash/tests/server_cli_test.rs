@@ -28,7 +28,11 @@ fn success(output: Output) -> String {
 struct RunningServer(std::path::PathBuf);
 impl Drop for RunningServer {
     fn drop(&mut self) {
-        let _ = run(&self.0, &["server", "stop"]);
+        let _ = Command::new(env!("CARGO_BIN_EXE_releash"))
+            .arg("--data-dir")
+            .arg(&self.0)
+            .args(["server", "stop"])
+            .output();
     }
 }
 
@@ -37,7 +41,7 @@ fn test_cli_起動後も独立して稼働し重複起動せず再起動して�
     // Given
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
-    let _cleanup = RunningServer(root.into());
+    let _cleanup = RunningServer(root.join("data"));
     assert!(success(run(root, &["status", "--json"])).contains("\"running\": false"));
     // When / Then
     assert!(success(run(root, &["server", "start"])).contains("server started"));
@@ -110,11 +114,20 @@ fn test_cli_同梱サーバの起動失敗は終了状態とstderrを表示す�
 fn test_cli_app内の引数なし実行_symlink経由でも隣のサーバ起動後に実体のappを開く() {
     use std::os::unix::fs::{symlink, PermissionsExt};
     use std::time::{Duration, Instant};
-    for through_symlink in [false, true] {
+    for (through_symlink, custom_data_dir) in [(false, false), (true, false), (false, true)] {
         // Given
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().canonicalize().unwrap();
-        let _cleanup = RunningServer(root.clone());
+        let data_dir = if custom_data_dir {
+            root.join("data")
+        } else {
+            root.join("Library/Application Support").join(
+                releash_sdk::data_dir::default_data_dir_name_for_profile(
+                    releash_sdk::data_dir::BuildProfile::current(),
+                ),
+            )
+        };
+        let _cleanup = RunningServer(data_dir.clone());
         let app = root.join("Launch Target.app");
         let macos = app.join("Contents/MacOS");
         std::fs::create_dir_all(&macos).unwrap();
@@ -130,7 +143,7 @@ fn test_cli_app内の引数なし実行_symlink経由でも隣のサーバ起動
         std::fs::write(&daemon, "#!/bin/sh\nset -eu\nprintf '%s\\n' \"$0\" > \"${0%/*}/started-daemon\"\nexec \"${0%/*}/daemon-bin\" \"$@\"\n").unwrap();
         std::fs::set_permissions(&daemon, std::fs::Permissions::from_mode(0o700)).unwrap();
         let app_executable = macos.join("record-launch");
-        std::fs::write(&app_executable, "#!/bin/sh\nset -eu\ntest -s \"${0%/*}/started-daemon\"\n/bin/cp \"${0%/*}/../../../data/client-api.json\" \"${0%/*}/opened-discovery.json\"\nprintf '%s\\n' \"$0\" > \"${0%/*}/opened-executable.tmp\"\n/bin/mv \"${0%/*}/opened-executable.tmp\" \"${0%/*}/opened-executable\"\n").unwrap();
+        std::fs::write(&app_executable, "#!/bin/sh\nset -eu\ntest -s \"${0%/*}/started-daemon\"\n/bin/cp \"$(/bin/cat \"${0%/*}/discovery-path\")\" \"${0%/*}/opened-discovery.json\"\nprintf '%s\\n' \"$0\" > \"${0%/*}/opened-executable.tmp\"\n/bin/mv \"${0%/*}/opened-executable.tmp\" \"${0%/*}/opened-executable\"\n").unwrap();
         std::fs::set_permissions(&app_executable, std::fs::Permissions::from_mode(0o700)).unwrap();
         std::fs::write(app.join("Contents/Info.plist"), format!(r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -142,6 +155,11 @@ fn test_cli_app内の引数なし実行_symlink経由でも隣のサーバ起動
 <key>LSUIElement</key><true/>
 </dict></plist>
 "#, uuid::Uuid::new_v4().simple())).unwrap();
+        std::fs::write(
+            macos.join("discovery-path"),
+            discovery::discovery_file(&data_dir).to_str().unwrap(),
+        )
+        .unwrap();
         let invocation = if through_symlink {
             let link_directory = root.join("Link Location.app/Contents/MacOS");
             std::fs::create_dir_all(&link_directory).unwrap();
@@ -151,13 +169,19 @@ fn test_cli_app内の引数なし実行_symlink経由でも隣のサーバ起動
         } else {
             cli
         };
-        assert!(discovery::read_optional(&root.join("data"))
-            .unwrap()
-            .is_none());
+        assert!(discovery::read_optional(&data_dir).unwrap().is_none());
+        let invocation_data_dir = if through_symlink {
+            std::fs::create_dir_all(&data_dir).unwrap();
+            let alias = root.join("data-alias");
+            symlink(&data_dir, &alias).unwrap();
+            alias
+        } else {
+            data_dir.clone()
+        };
         // When
         let output = Command::new(invocation)
             .arg("--data-dir")
-            .arg(root.join("data"))
+            .arg(&invocation_data_dir)
             .env("HOME", &root)
             .env("XDG_CONFIG_HOME", root.join("config"))
             .env("CLAUDE_CONFIG_DIR", root.join("claude"))
@@ -167,7 +191,21 @@ fn test_cli_app内の引数なし実行_symlink経由でも隣のサーバ起動
             .output()
             .unwrap();
         // Then
-        assert!(success(output).is_empty());
+        let output = success(output);
+        if custom_data_dir {
+            assert!(output
+                .starts_with("app was not opened: data dir differs from the desktop default\n"));
+            assert!(output.contains("server: running"));
+            assert!(output.contains("compatibility: compatible"));
+            let observed = discovery::read(&data_dir).unwrap();
+            assert_eq!(
+                discovery::process_start_time(observed.pid),
+                Some(observed.process_started_at)
+            );
+            assert!(!macos.join("opened-executable").exists());
+            continue;
+        }
+        assert!(output.is_empty());
         let deadline = Instant::now() + Duration::from_secs(10);
         while !macos.join("opened-executable").exists() {
             assert!(
@@ -191,7 +229,7 @@ fn test_cli_app内の引数なし実行_symlink経由でも隣のサーバ起動
         let observed: discovery::LocalApiDiscovery =
             serde_json::from_slice(&std::fs::read(macos.join("opened-discovery.json")).unwrap())
                 .unwrap();
-        assert_eq!(observed, discovery::read(&root.join("data")).unwrap());
+        assert_eq!(observed, discovery::read(&data_dir).unwrap());
         assert_eq!(
             discovery::process_start_time(observed.pid),
             Some(observed.process_started_at)

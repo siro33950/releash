@@ -9,7 +9,7 @@
 - 版の案内: 互換の判定の結果から、サーバが古いときは `releash server restart` を、クライアントが古いときはクライアントの更新を案内する文言を作り、既存コマンドの `failed_precondition`（今の `client.rs:45-59`）と `status` の表示で同じものを使う。コマンドの呼び出しが `unimplemented` を返したときは、`releash server restart` を案内する。根拠: R-009、R-010、B-003、B-004、B-018〜B-020。ルート: 委任。
 - `status [--json]`: `running` と `server_info` の結果、`Compatibility::assess` の判定、CLI が解決した data dir（`releash/src/lib.rs:83`）から表示を作る。起動からの時間は `process_started_at` から CLI が計算する。`--json` には接続先（host と port）と発見ファイル（`client-api.json`）のパスを含め、token の値は含めない。根拠: R-001〜R-003、B-001〜B-005。ルート: サーバの情報は `GetServerInfo` の応答から作る（購読は使わない）。data dir、接続先、発見ファイルのパスは CLI が解決した data dir から導き、`ServerInfo` と `DaemonInfo` に項目を足さない。CLI の中に `DaemonInfo` の別の形を持たない。JSON の項目名は委任。
 - `server start|stop|restart`: `start` は `running` で動いているかを確かめ、動いていなければ `daemon::start`（`releash-sdk/src/daemon.rs:74-124`）で CLI の隣の `releashd` を起動する。`stop` は `running` で見つけたサーバに `daemon::stop`（`:126-145`）を使い、見つからなければ終了コード 1 にする。`restart` は、動いていれば `stop` の後に `start`、動いていなければ `start` だけを行い、出力でどちらだったかを分ける。根拠: R-004〜R-006、B-006〜B-013。ルート: 起動と停止の処理は `releash-sdk` の `daemon::start`・`daemon::stop` を使い、CLI に別の処理を書かない（#1904 の design で、トレイの停止・失敗の窓・CLI の `server stop` が同じ処理を使うと決まっている）。`restart` は stop の再利用ではなく、「終わった時点で今の版のサーバが動いている」ことの保証として定義する。
-- 引数なしの実行: サーバが動いていなければ `server start` と同じ処理で起動し、CLI の実行ファイルの実体が `.app` の中にあればその `.app` を開き、無ければ `status` と同じ表示を出す。根拠: R-007、B-014、B-015。ルート: 実体は `current_exe` を canonicalize して求める。判定は実行ファイルの位置だけで行い、OS やディスプレイの有無は見ない。`.app` を開く処理は macOS 固有のため SDK ではなく CLI に置き、`cfg(target_os = "macos")` で区切る。
+- 引数なしの実行: サーバが動いていなければ `server start` と同じ処理で起動し、CLI の実行ファイルの実体が `.app` の中にあり、CLI が解決した data dir が画面の既定の data dir と同じならその `.app` を開き、`.app` の中に無ければ `status` と同じ表示を出す。`.app` の中にあっても data dir が既定と違えば、開かなかった理由を 1 行出してから `status` と同じ表示を出す。根拠: R-007、B-014、B-015、B-024。ルート: 実体は `current_exe` を canonicalize して求める。`.app` の中にあるかは実行ファイルの位置で判定し、OS やディスプレイの有無は見ない。`.app` を開く処理は macOS 固有のため SDK ではなく CLI に置き、`cfg(target_os = "macos")` で区切る。
 - サーバの状態の購読: 購読の対象に `DaemonInfo` を足し、serving status が変わったときに購読している client へ配信する。payload は proto の `StatePayload` の oneof に足す。根拠: R-008、B-016、B-017。ルート: 購読の payload と `GetServerInfo` の応答は、どちらもサーバ側の同じ `DaemonInfo`（`usecase/daemon.rs` が repository から得る値）から作る。対象の名前と payload の message の形は委任。
 - CLI のガイド: `docs/guide/cli.md` の「実行」（`:16-21`）、「コマンド一覧」（`:28-44`）、「終了コード」（`:375-386`）、「サーバ未起動時の挙動」（`:388-394`）を、足したコマンド、引数なしの実行、版の案内、古い発見ファイルの扱いに合わせ、`status`・`server` の節を足す。根拠: R-013。ルート: 委任。
 
@@ -18,8 +18,9 @@
 - `status` の情報は `GetServerInfo` の応答から作り、購読は使わない。購読の対象 `DaemonInfo` はこの ISSUE で作るが、使うのは #1944 から。
 - 購読の payload と `GetServerInfo` の応答は、サーバ側の同じ `DaemonInfo` から作る。CLI の中に `DaemonInfo` の別の形を持たない。
 - data dir、接続先、発見ファイルのパスは CLI が解決した data dir から導く。`ServerInfo`・`DaemonInfo` に data dir を足さない。
-- 画面があるかの判定は、CLI の実行ファイルの実体（canonicalize した `current_exe`）が `.app` の中にあるかだけで行う。`.app` を開く処理は CLI に置き、`cfg(target_os = "macos")` で区切る。
+- 画面があるかの判定は、CLI の実行ファイルの実体（canonicalize した `current_exe`）が `.app` の中にあるかで行う。加えて、CLI が解決した data dir が、画面が使う既定の data dir（`releash_sdk::data_dir` の既定の解決、同じ build profile）と、canonicalize した上で一致するときだけ `.app` を開く。一致しないときは開かなかった理由（data dir が画面の既定と違う）を 1 行出し、黙って `status` だけを出さない。`.app` を開く処理は CLI に置き、`cfg(target_os = "macos")` で区切る。
 - `restart` は、動いていなければ起動だけを行って成功にする。
+- 実行ファイルの実体（canonicalize した `current_exe`）の隣の `releashd` のパスは、`releash-sdk` の daemon の 1 つの関数で求め、CLI（`releash/src/server.rs`）と画面（`releash-desktop/src/desktop.rs:50`）がそれを使う。関数はパスを返すだけで、存在確認や起動はしない。サーバの background worker（`src/infrastructure/process/background_worker.rs:25-38`）は releashd が自分自身を起動する別の操作として、この関数を使わない。
 - 起動・停止・発見・照合は `releash-sdk` の `daemon::{running, client, server_info, start, stop}` を CLI から順に呼び、SDK に CLI 専用の分岐を足さない。`daemon::client`・`daemon::server_info` は接続先と bearer token を分けて受け取り、hook は env の token を渡す。
 - CLI の期限は `default_timeout_ms` だけを使い、`daemon::timeout` で読む。
 

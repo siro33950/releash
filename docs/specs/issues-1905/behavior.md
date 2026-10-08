@@ -92,7 +92,7 @@ AND 終了コードは 0 である
 
 ## B-014: 引数なしの実行（画面がある）
 
-GIVEN CLI の実行ファイルの実体が `.app` の中にあり、同じ data dir でサーバが動いていない
+GIVEN CLI の実行ファイルの実体が `.app` の中にあり、CLI が解決した data dir が画面の既定の data dir と同じで、その data dir でサーバが動いていない
 WHEN `releash` を引数なしで実行する
 THEN 同じディレクトリの `releashd` がサーバとして起動し、その `.app` が開く
 
@@ -101,6 +101,13 @@ THEN 同じディレクトリの `releashd` がサーバとして起動し、そ
 GIVEN CLI の実行ファイルの実体が `.app` の中に無く、同じ data dir でサーバが動いていない
 WHEN `releash` を引数なしで実行する
 THEN 同じディレクトリの `releashd` がサーバとして起動し、`releash status` と同じ表示が出る
+
+## B-024: 引数なしの実行（data dir が画面の既定と違う）
+
+GIVEN CLI の実行ファイルの実体が `.app` の中にあり、CLI が解決した data dir が画面の既定の data dir と違い、その data dir でサーバが動いていない
+WHEN `releash` を引数なしで実行する
+THEN 同じディレクトリの `releashd` が、CLI が解決した data dir のサーバとして起動する
+AND `.app` は開かれず、data dir が画面の既定と違うために開かなかったことと、`releash status` と同じ表示が出る
 
 ## B-016: サーバの状態の購読
 
@@ -150,7 +157,7 @@ AND `releash status` は、サーバが動いていないと表示する
 | R-004 | B-006, B-007, B-008 |
 | R-005 | B-009, B-010, B-011 |
 | R-006 | B-012, B-013 |
-| R-007 | B-014, B-015 |
+| R-007 | B-014, B-015, B-024 |
 | R-008 | B-016, B-017 |
 | R-009 | B-003, B-004, B-018, B-019 |
 | R-010 | B-020 |

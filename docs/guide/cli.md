@@ -15,7 +15,7 @@
 
 ### 実行
 
-- `releash` は独立した CLI です。引数なしでは、サーバが動いていなければ同じディレクトリの `releashd` を起動します。symlink を辿った CLI の実体が `.app` の中にあればそのアプリを開き、それ以外では `releash status` と同じ状態表示を出します。
+- `releash` は独立した CLI です。引数なしでは、サーバが動いていなければ同じディレクトリの `releashd` を起動します。symlink を辿った CLI の実体が `.app` の中にあり、data dir が画面の既定値と同じならそのアプリを開きます。`.app` の中でも data dir が画面の既定値と違う場合は、アプリを開かなかった理由と `releash status` と同じ状態表示を出します。`.app` の外では `releash status` と同じ状態表示を出します。
 - コマンドと hook は `client-api.json` でサーバを見つけ、Connect で通信します。サーバは HTTP `/v1` を提供しません。
 - CLI の説明は `releash --help` と各サブコマンドの `--help` で表示します。`-h` は要約表示です。
 - `--version` はありません（指定すると引数エラーで終了コード 2）。

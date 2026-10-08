@@ -47,7 +47,7 @@ pub fn run() {
         let (clients, client_updates) = tokio::sync::watch::channel(None);
         let connection = Arc::new(
             adaptor::gateway::daemon_connection::DaemonServiceGateway::new(
-                std::env::current_exe()?.with_file_name("releashd"),
+                releash_sdk::daemon::executable()?,
                 data_dir,
                 Arc::new(crate::common::retry::RetryLimiter::new()),
                 crate::common::deadline::Deadline(releash_sdk::daemon::timeout(

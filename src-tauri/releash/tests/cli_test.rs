@@ -959,36 +959,38 @@ fn test_cli_古い発見ファイルではstatusが未起動で既存操作はun
         pid: std::process::id(),
         process_started_at: 1,
     };
-    std::fs::write(
-        dir.path().join("client-api.json"),
-        serde_json::to_vec(&discovery).unwrap(),
-    )
-    .unwrap();
-    for (args, code) in [
-        (vec!["status", "--json"], 0),
-        (vec!["review", "list", "--session-id", "id", "--json"], 1),
-    ] {
-        // When
-        let output = Command::new(env!("CARGO_BIN_EXE_releash"))
-            .arg("--data-dir")
-            .arg(dir.path())
-            .args(args)
-            .output()
+    for stale in [false, true] {
+        if stale {
+            std::fs::write(
+                dir.path().join("client-api.json"),
+                serde_json::to_vec(&discovery).unwrap(),
+            )
             .unwrap();
-        // Then
-        assert_eq!(output.status.code(), Some(code));
-        if code == 0 {
-            assert_eq!(
-                serde_json::from_slice::<serde_json::Value>(&output.stdout).unwrap()["running"],
-                false
-            );
-        } else {
-            let error: serde_json::Value = serde_json::from_slice(&output.stderr).unwrap();
-            assert_eq!(error["error"]["code"], "unavailable");
-            assert!(error["error"]["message"]
-                .as_str()
-                .unwrap()
-                .contains("client discovery is stale"));
+        }
+        for (args, code) in [
+            (vec!["status", "--json"], 0),
+            (vec!["review", "list", "--session-id", "id", "--json"], 1),
+            (vec!["workflow", "status", "id", "--json"], 1),
+        ] {
+            // When
+            let output = Command::new(env!("CARGO_BIN_EXE_releash"))
+                .arg("--data-dir")
+                .arg(dir.path())
+                .args(args)
+                .output()
+                .unwrap();
+            // Then
+            assert_eq!(output.status.code(), Some(code));
+            if code == 0 {
+                assert_eq!(
+                    serde_json::from_slice::<serde_json::Value>(&output.stdout).unwrap()["running"],
+                    false
+                );
+            } else {
+                let error: serde_json::Value = serde_json::from_slice(&output.stderr).unwrap();
+                assert_eq!(error["error"]["code"], "unavailable");
+                assert_eq!(error["error"]["message"], "server is not running");
+            }
         }
     }
 }

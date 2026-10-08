@@ -1,7 +1,7 @@
 use crate::client::{compatibility_guidance, daemon_error};
 use clap::Subcommand;
 use connectrpc::ConnectError;
-use releash_sdk::{compatibility::Compatibility, daemon, descriptor};
+use releash_sdk::{compatibility::Compatibility, daemon, data_dir, descriptor, discovery};
 use serde_json::json;
 use std::path::{Path, PathBuf};
 
@@ -14,51 +14,48 @@ pub(crate) enum ServerSubcommand {
 
 pub async fn status(dir: &Path, machine: bool) -> Result<String, ConnectError> {
     let discovery = daemon::running(dir).map_err(daemon_error)?;
-    let info = match &discovery {
-        Some(discovery) => Some(
-            daemon::server_info(discovery, &discovery.token)
+    struct RunningStatus {
+        info: releash_sdk::wire::ServerInfo,
+        compatibility: Compatibility,
+        uptime: u64,
+        server: serde_json::Value,
+    }
+    let running = match &discovery {
+        Some(discovery) => {
+            let info = daemon::server_info(discovery, &discovery.token)
                 .await
-                .map_err(daemon_error)?,
-        ),
-        None => None,
-    };
-    let compatibility = info
-        .as_ref()
-        .map(|info| Compatibility::assess(descriptor::protocol(), info.protocol));
-    let uptime = info
-        .as_ref()
-        .map(|info| {
-            std::time::SystemTime::now()
+                .map_err(daemon_error)?;
+            let compatibility = Compatibility::assess(descriptor::protocol(), info.protocol);
+            let uptime = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|now| now.as_secs().saturating_sub(info.process_started_at))
-                .map_err(|error| ConnectError::internal(error.to_string()))
-        })
-        .transpose()?;
-    let server = info
-        .as_ref()
-        .map(|info| {
-            crate::json::from_message("releash.client.v1.ServerInfo", info)
-                .map(|mut value| {
-                    value["protocol"] = json!(info.protocol);
-                    value
-                })
-                .map_err(ConnectError::internal)
-        })
-        .transpose()?;
+                .map_err(|error| ConnectError::internal(error.to_string()))?;
+            let mut server = crate::json::from_message("releash.client.v1.ServerInfo", &info)
+                .map_err(ConnectError::internal)?;
+            server["protocol"] = json!(info.protocol);
+            Some(RunningStatus {
+                info,
+                compatibility,
+                uptime,
+                server,
+            })
+        }
+        None => None,
+    };
     let value = json!({
         "client": {"release": env!("CARGO_PKG_VERSION"), "protocol": descriptor::protocol()},
         "data_dir": dir,
-        "running": info.is_some(),
-        "server": server,
-        "uptime_seconds": uptime,
-        "compatibility": compatibility.map(|c| match c {
+        "running": running.is_some(),
+        "server": running.as_ref().map(|s| &s.server),
+        "uptime_seconds": running.as_ref().map(|s| s.uptime),
+        "compatibility": running.as_ref().map(|s| match s.compatibility {
             Compatibility::Compatible => "compatible",
             Compatibility::ServerOlder => "server_older",
             Compatibility::ClientOlder => "client_older",
         }),
-        "guidance": compatibility.map(compatibility_guidance),
+        "guidance": running.as_ref().map(|s| compatibility_guidance(s.compatibility)),
         "connection": discovery.as_ref().map(|d| json!({"host": "127.0.0.1", "port": d.port})),
-        "discovery_file": dir.join("client-api.json"),
+        "discovery_file": discovery::discovery_file(dir),
     });
     if machine {
         return serde_json::to_string_pretty(&value)
@@ -70,20 +67,21 @@ pub async fn status(dir: &Path, machine: bool) -> Result<String, ConnectError> {
         env!("CARGO_PKG_VERSION"),
         descriptor::protocol(),
         dir.display(),
-        if info.is_some() {
+        if running.is_some() {
             "running"
         } else {
             "not running"
         },
     );
-    if let Some(info) = info {
+    if let Some(running) = running {
+        let info = running.info;
         output.push_str(&format!(
             "daemon_id: {}\npid: {}\nprocess_started_at: {}\nserver release: {}\nserver protocol: {}\ncapabilities: {}\nserving status: {}\nuptime seconds: {}\ncompatibility: {}\n",
             info.daemon_id, info.pid, info.process_started_at, info.release, info.protocol,
             info.capabilities.join(", "),
             releash_sdk::wire::ServingStatus::try_from(info.serving_status)
-                .map(|s| s.as_str_name()).unwrap_or("UNKNOWN"),
-            uptime.unwrap_or_default(), compatibility_guidance(compatibility.unwrap()),
+                .map_or("UNKNOWN", |s| s.as_str_name()),
+            running.uptime, compatibility_guidance(running.compatibility),
         ));
     }
     Ok(output)
@@ -99,7 +97,8 @@ async fn start(dir: &Path) -> Result<bool, ConnectError> {
     if daemon::running(dir).map_err(daemon_error)?.is_some() {
         return Ok(false);
     }
-    let executable = executable()?.with_file_name("releashd");
+    let executable =
+        daemon::executable().map_err(|error| ConnectError::unavailable(error.to_string()))?;
     let cwd =
         std::env::current_dir().map_err(|error| ConnectError::unavailable(error.to_string()))?;
     daemon::start(&executable, dir, &cwd)
@@ -149,12 +148,30 @@ fn app_bundle(executable: &Path) -> Option<&Path> {
 pub async fn launch(dir: &Path) -> Result<String, ConnectError> {
     start(dir).await?;
     let executable = executable()?;
-    if let Some(app) = app_bundle(&executable) {
-        open_app(app)?;
-        Ok(String::new())
-    } else {
-        status(dir, false).await
+    launch_started(dir, &executable, open_app).await
+}
+
+async fn launch_started(
+    dir: &Path,
+    executable: &Path,
+    open_app: impl FnOnce(&Path) -> Result<(), ConnectError>,
+) -> Result<String, ConnectError> {
+    if let Some(app) = app_bundle(executable) {
+        let resolved = dir
+            .canonicalize()
+            .map_err(|error| ConnectError::unavailable(error.to_string()))?;
+        let default = data_dir::default_data_dir_for_profile(data_dir::BuildProfile::current())
+            .and_then(|path| path.canonicalize().ok());
+        if default.as_ref() == Some(&resolved) {
+            open_app(app)?;
+            return Ok(String::new());
+        }
+        return Ok(format!(
+            "app was not opened: data dir differs from the desktop default\n{}",
+            status(dir, false).await?,
+        ));
     }
+    status(dir, false).await
 }
 
 #[cfg(target_os = "macos")]

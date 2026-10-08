@@ -59,7 +59,7 @@ main `ebc04d12` で読んで確かめた挙動。パスは `src-tauri/` 起点�
 - R-004: `releash server start` は、サーバが動いていなければ CLI と同じディレクトリの `releashd` を、CLI から独立したプロセスとして起動し、起動を確かめて終了コード 0 で終わる。すでに動いていれば何もせず終了コード 0 で終わる。起動できなかったときは、プロセスの終了と stderr の末尾を表示して終了コード 1 で終わる。
 - R-005: `releash server stop` は、サーバが動いていれば停止を要求し、プロセスの終了と発見ファイルの消失を確かめて終了コード 0 で終わる。待つ上限は proto の `shutdown_timeout_ms` で、上限までに確かめられなければ終了コード 1 で終わる。サーバが動いていなければ終了コード 1 で終わる。
 - R-006: `releash server restart` は、サーバが動いていれば停止してから起動し、動いていなければ起動だけを行う。どちらの場合も、終わった時点で CLI と同じディレクトリの `releashd` のサーバが動いている。出力は、停止してから起動したのか、動いていなかったので起動したのかを区別する。
-- R-007: `releash`（引数なし）は、サーバが動いていなければ R-004 と同じに起動する。CLI の実行ファイルの実体（symlink を辿った先）が `.app` の中にあれば、その `.app` を開く。`.app` の中に無ければ、`releash status` と同じ表示を出す。
+- R-007: `releash`（引数なし）は、サーバが動いていなければ R-004 と同じに起動する。CLI の実行ファイルの実体（symlink を辿った先）が `.app` の中にあり、CLI が解決した data dir が画面の使う既定の data dir と同じであれば、その `.app` を開く。`.app` の中に無ければ、`releash status` と同じ表示を出す。`.app` の中にあっても data dir が画面の既定と違うときは、`.app` を開かず、data dir が画面の既定と違うために開かなかったことと、`releash status` と同じ表示を出す。
 - R-008: サーバの状態（`DaemonInfo`）を購読の対象として配信する。購読の値と `GetServerInfo` の応答は、サーバの同じ `DaemonInfo` から作られ、同じ項目を持つ。serving status が変わると、購読している client に変わった値が届く。
 - R-009: CLI の workflow・review のコマンドは、サーバが古いと判定したとき、`releash server restart` で更新できることを案内する。クライアントが古いと判定したときは、クライアントの更新を案内する。どちらも `failed_precondition`、終了コード 1 のままである。`releash status` も、サーバが古いときは `releash server restart` を、クライアントが古いときはクライアントの更新を案内する。
 - R-010: CLI のコマンドの呼び出しにサーバが `unimplemented` を返したとき、CLI は `releash server restart` で更新できることを案内する。

@@ -26,14 +26,21 @@ async fn test_状態表示_未起動でも成功しtokenを出さない() {
     assert_eq!(value["client"]["release"], env!("CARGO_PKG_VERSION"));
     assert_eq!(value["client"]["protocol"], descriptor::protocol());
     assert_eq!(value["data_dir"], dir.path().to_str().unwrap());
-    assert!(value["server"].is_null());
-    assert!(value["connection"].is_null());
+    assert_eq!(value.get("server"), Some(&serde_json::Value::Null));
+    assert_eq!(value.get("connection"), Some(&serde_json::Value::Null));
+    assert_eq!(value.get("uptime_seconds"), Some(&serde_json::Value::Null));
+    assert_eq!(value.get("compatibility"), Some(&serde_json::Value::Null));
+    assert_eq!(value.get("guidance"), Some(&serde_json::Value::Null));
+    assert_eq!(
+        value["discovery_file"],
+        discovery::discovery_file(dir.path()).to_str().unwrap()
+    );
     assert!(!output.contains("token"));
     assert!(status(dir.path(), false)
         .await
         .unwrap()
         .contains("not running"));
-    assert!(!dir.path().join("client-api.json").exists());
+    assert!(!discovery::discovery_file(dir.path()).exists());
 }
 
 #[tokio::test]
@@ -47,5 +54,26 @@ async fn test_停止_未起動なら失敗する() {
             .unwrap_err()
             .code,
         connectrpc::ErrorCode::Unavailable
+    );
+}
+
+#[tokio::test]
+async fn test_引数なし起動_独自data_dirではアプリ起動を要求せず理由と状態を表示する() {
+    // Given
+    let dir = tempfile::tempdir().unwrap();
+    let executable = dir.path().join("Releash.app/Contents/MacOS/releash");
+    // When
+    let output = launch_started(dir.path(), &executable, |app| {
+        panic!("アプリ起動を要求してはいけない: {}", app.display());
+    })
+    .await
+    .unwrap();
+    // Then
+    assert_eq!(
+        output,
+        format!(
+            "app was not opened: data dir differs from the desktop default\n{}",
+            status(dir.path(), false).await.unwrap(),
+        ),
     );
 }

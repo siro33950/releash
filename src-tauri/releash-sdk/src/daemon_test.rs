@@ -13,3 +13,14 @@ fn test_起動診断_stderrの末尾だけを返し空ファイルも扱う() {
     std::fs::write(&log, []).unwrap();
     assert_eq!(stderr_tail(&log).unwrap(), "");
 }
+
+#[test]
+fn test_同梱サーバパス_実行ファイルの実体の隣を返す() {
+    // Given
+    let current = std::env::current_exe().unwrap().canonicalize().unwrap();
+    // When
+    let daemon = executable().unwrap();
+    // Then
+    assert_eq!(daemon.parent(), current.parent());
+    assert_eq!(daemon.file_name().unwrap(), "releashd");
+}
