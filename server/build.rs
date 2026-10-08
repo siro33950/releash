@@ -1,6 +1,12 @@
 #[cfg(not(test))]
 fn main() {
     generate_client_protocol();
+    println!("cargo:rerun-if-changed=../workflows/examples/full-cycle-development.yml");
+    std::fs::copy(
+        "../workflows/examples/full-cycle-development.yml",
+        std::path::Path::new(&std::env::var("OUT_DIR").unwrap()).join("full-cycle-development.yml"),
+    )
+    .expect("canonical workflow sample");
     println!("cargo:rerun-if-env-changed=OTLP_ENDPOINT");
     if std::env::var("OTLP_ENDPOINT").is_err() {
         println!("cargo:rustc-env=OTLP_ENDPOINT=");

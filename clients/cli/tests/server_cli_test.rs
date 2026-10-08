@@ -66,6 +66,11 @@ fn test_cli_起動後も独立して稼働し重複起動せず再起動して�
         "server is already running\n"
     );
     assert_eq!(discovery::read(&root.join("data")).unwrap(), first);
+    let discovery_path = root.join("data/client-api.json");
+    let mut legacy = serde_json::to_value(&first).unwrap();
+    legacy["instance_id"] = legacy.as_object_mut().unwrap().remove("daemon_id").unwrap();
+    legacy["process_started_at"] = serde_json::json!(first.process_started_at);
+    std::fs::write(&discovery_path, serde_json::to_vec(&legacy).unwrap()).unwrap();
     let status: serde_json::Value =
         serde_json::from_str(&success(run(root, &["status", "--json"]))).unwrap();
     assert_eq!(status["server"]["daemonId"], first.daemon_id);

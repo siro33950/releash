@@ -2112,8 +2112,7 @@ nodes:
     }
 
     fn canonical_example_path() -> std::path::PathBuf {
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../workflows/examples/full-cycle-development.yml")
+        std::path::Path::new(env!("OUT_DIR")).join("full-cycle-development.yml")
     }
 
     #[test]

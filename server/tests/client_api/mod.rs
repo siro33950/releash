@@ -1,6 +1,5 @@
 use releashd::test_support::client_api_acceptance::*;
 use serde_json::{json, Value};
-use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -217,7 +216,7 @@ async fn test_connect_defaultの枠と待ち行列を超える要求を拒否す
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn test_実クライアント復旧_無関係な完了後も確定済み設定と副作用を保持する() {
+async fn test_サーバ接続復旧_無関係な完了後も確定済み設定と副作用を保持する() {
     // Given
     let host = ClientRecoveryAcceptanceHost::start().await;
     // When
@@ -227,12 +226,6 @@ async fn test_実クライアント復旧_無関係な完了後も確定済み�
             "/tests/helpers/client-recovery.mjs"
         ))
         .args(&host.urls)
-        .current_dir(
-            Path::new(env!("CARGO_MANIFEST_DIR"))
-                .parent()
-                .unwrap()
-                .join("clients/desktop"),
-        )
         .kill_on_drop(true)
         .output();
     let output = tokio::time::timeout(Duration::from_secs(30), output)

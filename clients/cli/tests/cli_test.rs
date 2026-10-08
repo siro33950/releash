@@ -179,7 +179,9 @@ fn test_hook_互換でないサーバにはpayloadを送らずhealthを維持し
 fn test_cli_historyのjsonと人向け表示が内部型を出さず既存項目を保持する() {
     // Given
     let actor = wire::ReviewActorWireDto {
-        kind: Some("agent".try_into().unwrap()),
+        kind: Some(wire::ReviewActorKindWireDto {
+            value: Some(wire::review_actor_kind_wire_dto::Value::Agent as i32),
+        }),
         backend_id: Some("codex".into()),
         model: None,
         display_name: Some("codex".into()),
@@ -330,7 +332,9 @@ fn test_cli_発見したサーバへ接続できない場合はunavailableで終
 
 fn review_thread() -> (wire::ReviewThreadDto, serde_json::Value) {
     let actor = wire::ReviewActorWireDto {
-        kind: Some("agent".try_into().unwrap()),
+        kind: Some(wire::ReviewActorKindWireDto {
+            value: Some(wire::review_actor_kind_wire_dto::Value::Agent as i32),
+        }),
         backend_id: Some("codex".into()),
         model: Some("server-model".into()),
         display_name: Some("server-agent".into()),
@@ -345,7 +349,9 @@ fn review_thread() -> (wire::ReviewThreadDto, serde_json::Value) {
                 line_number: Some(3),
                 end_line: Some(5),
             }),
-            state: Some("open".try_into().unwrap()),
+            state: Some(wire::ReviewThreadStateDto {
+                value: Some(wire::review_thread_state_dto::Value::Open as i32),
+            }),
             comments: Some(wire::ListReviewCommentDto {
                 items: vec![wire::ReviewCommentDto {
                     id: Some("comment".into()),
@@ -585,7 +591,11 @@ fn test_cli_review変更_要求値を一度だけ送りサーバの書き手とj
 #[test]
 fn test_cli_workflow_status_三状態の既存jsonを表示する() {
     use prost::Message;
-    for status in ["running", "completed", "aborted"] {
+    for (status, value) in [
+        ("running", wire::execution_status_view::Value::Running),
+        ("completed", wire::execution_status_view::Value::Completed),
+        ("aborted", wire::execution_status_view::Value::Aborted),
+    ] {
         let server = support::Server::start_checked(
             wire::StatePayload {
                 value: Some(wire::state_payload::Value::WorkflowExecution(
@@ -593,10 +603,14 @@ fn test_cli_workflow_status_三状態の既存jsonを表示する() {
                         value: Some(wire::WorkflowExecutionView {
                             id: Some("execution".into()),
                             workflow_name: Some("fixture".into()),
-                            status: Some(status.try_into().unwrap()),
+                            status: Some(wire::ExecutionStatusView {
+                                value: Some(value as i32),
+                            }),
                             current_node: Some("main".into()),
                             worktree_path: Some("/workspace".into()),
-                            created_from: Some("cli".try_into().unwrap()),
+                            created_from: Some(wire::ExecutionOriginView {
+                                value: Some(wire::execution_origin_view::Value::Cli as i32),
+                            }),
                             started_at: Some(10.0),
                             updated_at: Some(11.0),
                             completed_at: if status == "running" {

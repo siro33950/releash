@@ -19,6 +19,7 @@ name = "clippy"
 [[plugin]]
 name = "biome"
 version = "2.5.15"
+prefix = "clients/desktop"
 
 [[plugin]]
 name = "ast-grep"

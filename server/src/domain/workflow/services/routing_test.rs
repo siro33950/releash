@@ -4,8 +4,8 @@ use super::*;
 fn test_review_scanの辺_正本サンプルの統合mapで既存の遷移先を維持する() {
     // Given
     let workflow: WorkflowDefinition = serde_saphyr::from_str(include_str!(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../workflows/examples/full-cycle-development.yml"
+        env!("OUT_DIR"),
+        "/full-cycle-development.yml"
     )))
     .unwrap();
     let sequence = workflow.node_by_name("review").unwrap().sequence().unwrap();
@@ -197,8 +197,8 @@ fn test_fanoutの辺_未知段と非objectとmap終端の診断messageを維持�
 fn test_正本サンプルのfanout集約後の辺_整合確認の判断で既存の遷移先を維持する() {
     // Given
     let workflow: WorkflowDefinition = serde_saphyr::from_str(include_str!(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../workflows/examples/full-cycle-development.yml"
+        env!("OUT_DIR"),
+        "/full-cycle-development.yml"
     )))
     .unwrap();
     let sequence = workflow

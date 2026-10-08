@@ -941,8 +941,8 @@ mod reference_path_test {
     fn test_正本サンプルのfanout配線_統合と整合確認と修正統合へ同じslot集合を渡す() {
         // Given
         let workflow: WorkflowDefinition = serde_saphyr::from_str(include_str!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../workflows/examples/full-cycle-development.yml"
+            env!("OUT_DIR"),
+            "/full-cycle-development.yml"
         )))
         .unwrap();
         let implementations = serde_json::json!({"0": {"verify_task": {"task_id": "one", "complete": true}}, "1": {"verify_task": {"task_id": "two", "complete": false}}});

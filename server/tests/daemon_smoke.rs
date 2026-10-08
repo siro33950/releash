@@ -5,8 +5,7 @@ use std::time::{Duration, Instant};
 use futures_util::StreamExt;
 use serde_json::Value;
 
-use releashd::test_support::connect::rpc;
-use releashd::test_support::wire;
+use releashd::test_support::integration::client_protocol::{rpc, wire};
 fn to_wire<T: prost::Message + Default>(
     value: &impl buffa::Message,
 ) -> Result<T, connectrpc::ConnectError> {
@@ -270,8 +269,8 @@ async fn test_daemon起動_data_dirの全解決経路で子プロセスへ解決
         };
         let resolved = match mode {
             "default" => default_base.join(
-                crate::infrastructure::platform::data_dir::default_data_dir_name_for_profile(
-                    crate::infrastructure::platform::data_dir::BuildProfile::current(),
+                releashd::test_support::integration::data_dir::default_data_dir_name_for_profile(
+                    releashd::test_support::integration::data_dir::BuildProfile::current(),
                 ),
             ),
             "environment" => environment.clone(),

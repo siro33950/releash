@@ -29,7 +29,29 @@ impl<'de> Deserialize<'de> for LocalApiDiscovery {
             .get_message_by_name("releash.client.v1.LocalApiDiscovery")
             .expect("discovery descriptor");
         let json = serde_json::Value::deserialize(deserializer)?;
+        for (field, json_name) in [
+            ("port", "port"),
+            ("token", "token"),
+            ("pid", "pid"),
+            ("process_started_at", "processStartedAt"),
+        ] {
+            if json
+                .get(field)
+                .or_else(|| json.get(json_name))
+                .is_none_or(serde_json::Value::is_null)
+            {
+                return Err(serde::de::Error::missing_field(field));
+            }
+        }
         let has_daemon = json.get("daemon_id").is_some() || json.get("daemonId").is_some();
+        let identity = if has_daemon {
+            json.get("daemon_id").or_else(|| json.get("daemonId"))
+        } else {
+            json.get("instance_id").or_else(|| json.get("instanceId"))
+        };
+        if identity.is_none_or(serde_json::Value::is_null) {
+            return Err(serde::de::Error::missing_field("daemon_id"));
+        }
         let daemon = descriptor.get_field_by_name("daemon_id").unwrap();
         let mut message = prost_reflect::DynamicMessage::deserialize(descriptor, json)
             .map_err(serde::de::Error::custom)?;

@@ -7,7 +7,12 @@ use std::sync::Arc;
 #[tokio::test]
 async fn test_接続_既存サーバのprotocolと同一性を確認し非互換なら版を返す() {
     // Given
-    for (protocol, expected) in [(0, "サーバが古い"), (2, "画面が古い")] {
+    for (protocol, expected, legacy) in [
+        (0, "サーバが古い", false),
+        (2, "画面が古い", false),
+        (0, "サーバが古い", true),
+        (2, "画面が古い", true),
+    ] {
         let directory = tempfile::tempdir().unwrap();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let discovery = LocalApiDiscovery {
@@ -18,9 +23,18 @@ async fn test_接続_既存サーバのprotocolと同一性を確認し非互換
             process_started_at: process_start_time(std::process::id()).unwrap(),
             ..Default::default()
         };
+        let mut discovery_json = serde_json::to_value(&discovery).unwrap();
+        if legacy {
+            discovery_json["instance_id"] = discovery_json
+                .as_object_mut()
+                .unwrap()
+                .remove("daemon_id")
+                .unwrap();
+            discovery_json["process_started_at"] = serde_json::json!(discovery.process_started_at);
+        }
         std::fs::write(
             directory.path().join("client-api.json"),
-            serde_json::to_vec(&discovery).unwrap(),
+            serde_json::to_vec(&discovery_json).unwrap(),
         )
         .unwrap();
         let info = releash::wire::ServerInfo {

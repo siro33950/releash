@@ -49,6 +49,12 @@ fn test_発見ファイル_サーバの同一性を確認する() {
 #[test]
 fn test_発見ファイル_不正なmetadataと取得不能なprocess情報を拒否する() {
     for field in ["port", "token", "daemon_id", "pid", "process_started_at"] {
+        let mut missing = serde_json::to_value(discovery()).unwrap();
+        missing.as_object_mut().unwrap().remove(field);
+        assert!(serde_json::from_value::<LocalApiDiscovery>(missing).is_err());
+        let mut null = serde_json::to_value(discovery()).unwrap();
+        null[field] = serde_json::Value::Null;
+        assert!(serde_json::from_value::<LocalApiDiscovery>(null).is_err());
         let mut value = serde_json::to_value(discovery()).unwrap();
         value[field] = if field == "token" || field == "daemon_id" {
             serde_json::json!(" ")

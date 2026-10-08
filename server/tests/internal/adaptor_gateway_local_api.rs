@@ -64,7 +64,7 @@ pub fn test_クライアント接続情報_停止済みとpid再利用と参照�
     let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
     listener.set_nonblocking(true).unwrap();
     let discovery = LocalApiDiscovery {
-        port: listener.local_addr().unwrap().port(),
+        port: listener.local_addr().unwrap().port().into(),
         token: "client-secret".into(),
         daemon_id: "instance".into(),
         pid: 42,

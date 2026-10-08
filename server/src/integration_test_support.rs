@@ -1226,3 +1226,7 @@ pub mod installation {
 pub mod data_dir {
     pub use crate::infrastructure::platform::data_dir::*;
 }
+
+pub mod client_protocol {
+    pub use crate::infrastructure::client_protocol::{rpc, wire};
+}

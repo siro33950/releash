@@ -15,10 +15,7 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build());
     let builder = builder.setup(|app| {
         infrastructure::platform::desktop_restart::wait_for_predecessor()?;
-        let data_dir = releashd::desktop_api::default_data_dir_for_profile(
-            releashd::desktop_api::BuildProfile::current(),
-        )
-        .ok_or("OS data directory is unavailable")?;
+        let data_dir = releash::data_dir::resolve_data_dir(None)?;
         let handle = app.handle().clone();
         let Some(lock) =
             infrastructure::platform::single_instance::acquire(&data_dir, move || {
