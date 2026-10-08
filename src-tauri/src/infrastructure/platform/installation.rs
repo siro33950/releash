@@ -84,24 +84,14 @@ pub fn run_admin_command(command: &mut std::process::Command) -> Result<(), Stri
     let status = loop {
         let stopped = crate::common::operation_context::check().map_err(|e| e.to_string());
         if let Err(error) = stopped {
-            child
-                .kill()
-                .map_err(|e| format!("{error}; failed to kill administrator command: {e}"))?;
-            child
-                .wait()
-                .map_err(|e| format!("{error}; failed to reap administrator command: {e}"))?;
+            terminate_admin_command(&mut child, &error)?;
             return Err(error);
         }
         match child.try_wait() {
             Ok(Some(status)) => break status,
             Ok(None) => std::thread::sleep(ADMIN_POLL_INTERVAL),
             Err(error) => {
-                child
-                    .kill()
-                    .map_err(|e| format!("{error}; failed to kill administrator command: {e}"))?;
-                child
-                    .wait()
-                    .map_err(|e| format!("{error}; failed to reap administrator command: {e}"))?;
+                terminate_admin_command(&mut child, &error.to_string())?;
                 return Err(format!("failed to wait for administrator command: {error}"));
             }
         }
@@ -111,6 +101,17 @@ pub fn run_admin_command(command: &mut std::process::Command) -> Result<(), Stri
     } else {
         Err(format!("osascript exited with status {status}"))
     }
+}
+
+#[cfg(any(target_os = "macos", feature = "test-support"))]
+fn terminate_admin_command(child: &mut std::process::Child, cause: &str) -> Result<(), String> {
+    child
+        .kill()
+        .map_err(|e| format!("{cause}; failed to kill administrator command: {e}"))?;
+    child
+        .wait()
+        .map_err(|e| format!("{cause}; failed to reap administrator command: {e}"))?;
+    Ok(())
 }
 
 #[cfg(target_os = "macos")]
