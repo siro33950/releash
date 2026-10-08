@@ -1,9 +1,6 @@
-pub struct LogFailure<T>(pub T);
-impl<T> LogFailure<T> {
-    pub fn record<V, E: std::fmt::Display>(&self, result: &Result<V, E>) {
-        if let Err(error) = result {
-            log::error!("{error}");
-        }
+pub fn record<V, E: std::fmt::Display>(result: &Result<V, E>) {
+    if let Err(error) = result {
+        log::error!("{error}");
     }
 }
 

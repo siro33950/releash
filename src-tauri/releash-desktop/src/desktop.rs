@@ -76,8 +76,7 @@ pub fn run() {
             login,
         ));
         app.manage(crate::common::serial::Serial::default());
-        app.manage(lifecycle.clone());
-        app.manage(crate::common::log_failure::LogFailure(lifecycle));
+        app.manage(lifecycle);
         app.manage(
             adaptor::presenter::desktop_lifecycle::TauriDesktopLifecycle(Arc::new(
                 infrastructure::platform::desktop_runtime::DesktopRuntime::new(

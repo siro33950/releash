@@ -1,4 +1,4 @@
-use crate::domain::daemon_connection::DaemonConnectionFailure;
+use crate::domain::daemon_connection::{DaemonConnectionFailure, DaemonEndpoint};
 
 #[derive(Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -7,6 +7,13 @@ pub struct DesktopConnectionFailure {
     pub server_older: bool,
     pub client_older: bool,
 }
+pub fn endpoint(endpoint: DaemonEndpoint) -> releashd::desktop_api::ClientConnectionDto {
+    releashd::desktop_api::ClientConnectionDto {
+        url: endpoint.url,
+        token: endpoint.token,
+    }
+}
+
 pub fn failure(state: DaemonConnectionFailure) -> DesktopConnectionFailure {
     let mut server_older = false;
     let mut client_older = false;

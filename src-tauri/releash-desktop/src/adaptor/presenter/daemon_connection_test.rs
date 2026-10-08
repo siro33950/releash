@@ -28,3 +28,17 @@ fn test_接続失敗表示_初回設定を受け取れない理由と古い側�
         assert!(value.message.contains("desktop"));
     }
 }
+
+#[test]
+fn test_接続先の返却_サーバの接続先を転送型へ変換する() {
+    // Given
+    let connection = DaemonEndpoint {
+        url: "http://127.0.0.1:1234".into(),
+        token: "client-token".into(),
+    };
+    // When
+    let value = endpoint(connection);
+    // Then
+    assert_eq!(value.url, "http://127.0.0.1:1234");
+    assert_eq!(value.token, "client-token");
+}

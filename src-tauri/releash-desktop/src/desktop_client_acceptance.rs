@@ -1,6 +1,6 @@
 use crate::adaptor::controller::command::CommandRouter;
 use crate::adaptor::presenter::desktop_lifecycle::TauriDesktopLifecycle;
-use crate::common::{log_failure::LogFailure, serial::Serial};
+use crate::common::{log_failure::record, serial::Serial};
 use crate::usecase::desktop_lifecycle::DesktopLifecycleUsecase;
 use releashd::desktop_api::ClientEndpoint;
 use std::path::Path;
@@ -27,9 +27,7 @@ pub fn desktop_connection_app<R: tauri::Runtime>(
             },
             |result| {
                 if let Ok(connected) = result {
-                    handle
-                        .state::<LogFailure<Arc<DesktopLifecycleUsecase>>>()
-                        .record(&connected.restoration);
+                    record(&connected.restoration);
                     if let Some(settings) = connected.settings {
                         handle
                             .state::<TauriDesktopLifecycle<R>>()
@@ -93,8 +91,7 @@ pub fn desktop_connection_app_parts<R: tauri::Runtime>(
         .unwrap();
     let lifecycle = Arc::new(DesktopLifecycleUsecase::new(connection, login_usecase));
     app.manage(Serial::default());
-    app.manage(lifecycle.clone());
-    app.manage(LogFailure(lifecycle));
+    app.manage(lifecycle);
     app.manage(TauriDesktopLifecycle(Arc::new(
         crate::infrastructure::platform::desktop_runtime::DesktopRuntime::new(app.handle().clone()),
     )));

@@ -15,13 +15,12 @@ fn test_復元失敗の記録_初回適用の結果と設定変更の入口の�
     // Given
     log::set_logger(&LOGGER).unwrap();
     log::set_max_level(log::LevelFilter::Error);
-    let wrapped = LogFailure(());
     // When
-    wrapped.record(&Err::<(), _>("initial restore failure marker"));
+    record(&Err::<(), _>("initial restore failure marker"));
     let restoration = Err::<(), _>("settings restore failure marker");
-    wrapped.record(&restoration);
+    record(&restoration);
     assert_eq!(restoration, Err("settings restore failure marker"));
-    wrapped.record(&Ok::<_, &str>("success marker"));
+    record(&Ok::<_, &str>("success marker"));
     // Then
     let logs = LOGGER.0.lock();
     assert_eq!(

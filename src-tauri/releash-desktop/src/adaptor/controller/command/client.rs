@@ -24,8 +24,7 @@ pub(crate) async fn get_client_endpoint<R: tauri::Runtime>(
     )
     .await
     .map_err(crate::adaptor::presenter::daemon_connection::message)?;
-    Ok(releashd::desktop_api::ClientConnectionDto {
-        url: endpoint.url,
-        token: endpoint.token,
-    })
+    Ok(crate::adaptor::presenter::daemon_connection::endpoint(
+        endpoint,
+    ))
 }

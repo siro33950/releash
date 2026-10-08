@@ -1,5 +1,5 @@
 use crate::adaptor::presenter::desktop_lifecycle::TauriDesktopLifecycle;
-use crate::common::log_failure::LogFailure;
+use crate::common::log_failure::record;
 use crate::usecase::desktop_lifecycle::{DesktopLifecycleUsecase, SettingsChange};
 use std::sync::Arc;
 use tauri::Manager;
@@ -59,8 +59,7 @@ pub(crate) fn connected<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     connected: crate::usecase::desktop_lifecycle::ConnectedDesktop,
 ) {
-    app.state::<LogFailure<Arc<DesktopLifecycleUsecase>>>()
-        .record(&connected.restoration);
+    record(&connected.restoration);
     app.state::<TauriDesktopLifecycle<R>>().connected(connected);
 }
 
@@ -81,8 +80,7 @@ pub(crate) async fn settings_changed<R: tauri::Runtime>(
                 restoration,
             } = output
             {
-                app.state::<LogFailure<Arc<DesktopLifecycleUsecase>>>()
-                    .record(&restoration);
+                record(&restoration);
                 app.state::<TauriDesktopLifecycle<R>>()
                     .apply_settings(settings);
             }
