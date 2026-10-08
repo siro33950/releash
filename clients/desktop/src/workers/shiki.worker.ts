@@ -25,40 +25,53 @@ async function getHighlighter(): Promise<HighlighterCore> {
 	return highlighterPromise;
 }
 
-const LANG_IMPORT_MAP = new Map<string, () => Promise<unknown>>([
-	["typescript", () => import("@shikijs/langs/typescript")],
-	["javascript", () => import("@shikijs/langs/javascript")],
-	["rust", () => import("@shikijs/langs/rust")],
-	["json", () => import("@shikijs/langs/json")],
-	["toml", () => import("@shikijs/langs/toml")],
-	["yaml", () => import("@shikijs/langs/yaml")],
-	["html", () => import("@shikijs/langs/html")],
-	["css", () => import("@shikijs/langs/css")],
-	["scss", () => import("@shikijs/langs/scss")],
-	["python", () => import("@shikijs/langs/python")],
-	["go", () => import("@shikijs/langs/go")],
-	["shell", () => import("@shikijs/langs/shellscript")],
-	["sql", () => import("@shikijs/langs/sql")],
-	["markdown", () => import("@shikijs/langs/markdown")],
-	["xml", () => import("@shikijs/langs/xml")],
-	["c", () => import("@shikijs/langs/c")],
-	["cpp", () => import("@shikijs/langs/cpp")],
-	["java", () => import("@shikijs/langs/java")],
-	["ruby", () => import("@shikijs/langs/ruby")],
-	["swift", () => import("@shikijs/langs/swift")],
-	["kotlin", () => import("@shikijs/langs/kotlin")],
-	["php", () => import("@shikijs/langs/php")],
-	["lua", () => import("@shikijs/langs/lua")],
-	["r", () => import("@shikijs/langs/r")],
-	["dart", () => import("@shikijs/langs/dart")],
+const LANG_IMPORT_MAP = {
+	typescript: () => import("@shikijs/langs/typescript"),
+	javascript: () => import("@shikijs/langs/javascript"),
+	rust: () => import("@shikijs/langs/rust"),
+	json: () => import("@shikijs/langs/json"),
+	toml: () => import("@shikijs/langs/toml"),
+	yaml: () => import("@shikijs/langs/yaml"),
+	html: () => import("@shikijs/langs/html"),
+	css: () => import("@shikijs/langs/css"),
+	scss: () => import("@shikijs/langs/scss"),
+	python: () => import("@shikijs/langs/python"),
+	go: () => import("@shikijs/langs/go"),
+	shell: () => import("@shikijs/langs/shellscript"),
+	sql: () => import("@shikijs/langs/sql"),
+	markdown: () => import("@shikijs/langs/markdown"),
+	xml: () => import("@shikijs/langs/xml"),
+	c: () => import("@shikijs/langs/c"),
+	cpp: () => import("@shikijs/langs/cpp"),
+	java: () => import("@shikijs/langs/java"),
+	ruby: () => import("@shikijs/langs/ruby"),
+	swift: () => import("@shikijs/langs/swift"),
+	kotlin: () => import("@shikijs/langs/kotlin"),
+	php: () => import("@shikijs/langs/php"),
+	lua: () => import("@shikijs/langs/lua"),
+	r: () => import("@shikijs/langs/r"),
+	dart: () => import("@shikijs/langs/dart"),
+} as const;
+
+type SupportedLanguage = keyof typeof LANG_IMPORT_MAP | "plaintext";
+
+const SUPPORTED_LANGUAGES = new Set<string>([
+	"plaintext",
+	...Object.keys(LANG_IMPORT_MAP),
 ]);
 
-const loadedLanguages = new Set<string>();
-const loadingLanguages = new Map<string, Promise<void>>();
+function toSupportedLanguage(input: string): SupportedLanguage {
+	return SUPPORTED_LANGUAGES.has(input)
+		? (input as SupportedLanguage)
+		: "plaintext";
+}
+
+const loadedLanguages = new Set<SupportedLanguage>();
+const loadingLanguages = new Map<SupportedLanguage, Promise<void>>();
 
 async function ensureLanguageLoaded(
 	hl: HighlighterCore,
-	language: string,
+	language: SupportedLanguage,
 ): Promise<boolean> {
 	if (language === "plaintext" || loadedLanguages.has(language)) return true;
 
@@ -73,8 +86,7 @@ async function ensureLanguageLoaded(
 		return loadedLanguages.has(language);
 	}
 
-	const importFn = LANG_IMPORT_MAP.get(language);
-	if (!importFn) return false;
+	const importFn = LANG_IMPORT_MAP[language];
 
 	const promise = (async () => {
 		const mod = await importFn();
@@ -111,7 +123,8 @@ export interface TokenizeResponse {
 }
 
 self.onmessage = async (e: MessageEvent<TokenizeRequest>) => {
-	const { id, code, language } = e.data;
+	const { id, code } = e.data;
+	const language = toSupportedLanguage(e.data.language);
 
 	if (code === "") {
 		self.postMessage({ id, lines: [] } satisfies TokenizeResponse);
