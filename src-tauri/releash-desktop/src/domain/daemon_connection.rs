@@ -7,6 +7,9 @@ pub struct DaemonEndpoint {
     pub token: String,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DaemonSubscription(pub u128);
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DiscoveredDaemon {
     pub endpoint: DaemonEndpoint,
@@ -17,7 +20,7 @@ pub struct DiscoveredDaemon {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DaemonConnectionState {
     NotObserved,
-    Connected(DaemonEndpoint),
+    Connected(DaemonEndpoint, DaemonSubscription),
     Failed(DaemonConnectionFailure),
 }
 
@@ -89,11 +92,14 @@ impl DaemonConnection {
     pub fn failed(&mut self, failure: DaemonConnectionFailure) {
         self.state = DaemonConnectionState::Failed(failure);
     }
-    pub fn connected(&mut self, endpoint: DaemonEndpoint) {
-        self.state = DaemonConnectionState::Connected(endpoint);
+    pub fn connected(&mut self, endpoint: DaemonEndpoint, subscription: DaemonSubscription) {
+        self.state = DaemonConnectionState::Connected(endpoint, subscription);
     }
     pub fn is_connected_to(&self, endpoint: &DaemonEndpoint) -> bool {
-        matches!(&self.state, DaemonConnectionState::Connected(current) if current == endpoint)
+        matches!(&self.state, DaemonConnectionState::Connected(current, _) if current == endpoint)
+    }
+    pub fn is_current_subscription(&self, subscription: DaemonSubscription) -> bool {
+        matches!(self.state, DaemonConnectionState::Connected(_, current) if current == subscription)
     }
     pub fn failure(&self) -> Option<&DaemonConnectionFailure> {
         match self.state() {
@@ -102,7 +108,7 @@ impl DaemonConnection {
         }
     }
     pub fn is_connected(&self) -> bool {
-        matches!(self.state, DaemonConnectionState::Connected(_))
+        matches!(self.state, DaemonConnectionState::Connected(_, _))
     }
 }
 
@@ -110,7 +116,7 @@ pub type DaemonResult<'a, T> =
     Pin<Box<dyn Future<Output = Result<T, DaemonConnectionFailure>> + Send + 'a>>;
 pub trait DaemonService: Send + Sync {
     fn discover(&self) -> DaemonResult<'_, Option<DiscoveredDaemon>>;
-    fn connect<'a>(&'a self, endpoint: &'a DaemonEndpoint) -> DaemonResult<'a, ()>;
+    fn connect<'a>(&'a self, endpoint: &'a DaemonEndpoint) -> DaemonResult<'a, DaemonSubscription>;
     fn start(&self) -> DaemonResult<'_, ()>;
     fn stop(&self) -> DaemonResult<'_, ()>;
 }

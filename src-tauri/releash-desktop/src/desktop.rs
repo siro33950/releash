@@ -90,11 +90,13 @@ pub fn run() {
             client_updates,
             |client| (client.settings_receiver(), client.initial_settings()),
             move |client, settings| {
-                let client = client.clone();
+                let subscription = client.subscription();
                 let app = observer_app.clone();
                 async move {
                     adaptor::controller::desktop_lifecycle::settings_changed(
-                        &app, client, settings,
+                        &app,
+                        subscription,
+                        settings,
                     )
                     .await;
                 }

@@ -1,7 +1,8 @@
 use super::desktop_client::{self, DesktopClient};
 use crate::common::retry::RetryLimiter;
 use crate::domain::daemon_connection::{
-    DaemonConnectionFailure, DaemonEndpoint, DaemonResult, DaemonService, DiscoveredDaemon,
+    DaemonConnectionFailure, DaemonEndpoint, DaemonResult, DaemonService, DaemonSubscription,
+    DiscoveredDaemon,
 };
 use crate::usecase::daemon_connection_query::DaemonConnectionQueryService;
 use releash_sdk::daemon;
@@ -91,15 +92,16 @@ impl DaemonService for DaemonServiceGateway {
             Ok(())
         })
     }
-    fn connect<'a>(&'a self, endpoint: &'a DaemonEndpoint) -> DaemonResult<'a, ()> {
+    fn connect<'a>(&'a self, endpoint: &'a DaemonEndpoint) -> DaemonResult<'a, DaemonSubscription> {
         Box::pin(async move {
             self.client.send_replace(None);
             let connection = ClientConnectionDto {
                 url: endpoint.url.clone(),
                 token: endpoint.token.clone(),
             };
+            let subscription = DaemonSubscription(uuid::Uuid::new_v4().as_u128());
             let client = Arc::new(DesktopClient::start(
-                connection.clone(),
+                subscription,
                 desktop_client::client(&connection)
                     .map_err(DaemonConnectionFailure::TechnicalFailure)?,
                 desktop_client::stream_client(&connection)
@@ -114,7 +116,7 @@ impl DaemonService for DaemonServiceGateway {
                     detail: Some(e.message),
                 })?;
             self.client.send_replace(Some(client));
-            Ok(())
+            Ok(subscription)
         })
     }
 }

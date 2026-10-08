@@ -113,7 +113,12 @@ pub async fn apply_observed_desktop_settings<R: tauri::Runtime>(
     client: Arc<crate::adaptor::gateway::desktop_client::DesktopClient>,
     settings: releashd::desktop_api::DesktopSettingsDto,
 ) {
-    crate::adaptor::controller::desktop_lifecycle::settings_changed(app, client, settings).await;
+    crate::adaptor::controller::desktop_lifecycle::settings_changed(
+        app,
+        client.subscription(),
+        settings,
+    )
+    .await;
 }
 pub fn show_desktop<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<(), String> {
     crate::adaptor::controller::desktop_lifecycle::show(app)

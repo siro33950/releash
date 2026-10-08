@@ -1,4 +1,5 @@
 use crate::common::retry::{RetryBackoff, RetryLimiter};
+use crate::domain::daemon_connection::DaemonSubscription;
 use connectrpc::client::{ClientConfig, HttpClient};
 use futures_util::future::BoxFuture;
 use releashd::desktop_api::descriptor;
@@ -93,7 +94,7 @@ pub fn stream_client(
 type DesktopSettingsDto = releashd::desktop_api::DesktopSettingsDto;
 
 pub struct DesktopClient {
-    endpoint: ClientConnectionDto,
+    subscription: DaemonSubscription,
     client: Arc<rpc::ClientServiceClient<HttpClient>>,
     task: tokio::task::JoinHandle<()>,
     settings: tokio::sync::watch::Receiver<Option<DesktopSettingsDto>>,
@@ -112,7 +113,7 @@ const DESKTOP_SETTINGS_TARGET: &str = "desktop-settings";
 
 impl DesktopClient {
     pub fn start(
-        endpoint: ClientConnectionDto,
+        subscription: DaemonSubscription,
         client: rpc::ClientServiceClient<HttpClient>,
         stream_client: rpc::ClientServiceClient<HttpClient>,
         limiter: Arc<RetryLimiter>,
@@ -134,7 +135,7 @@ impl DesktopClient {
             *observed_exit.lock() = Some(result);
         });
         Self {
-            endpoint,
+            subscription,
             client: Arc::new(client),
             task,
             settings,
@@ -162,8 +163,8 @@ impl DesktopClient {
         };
         result.map(|value| *self.initial_settings.get_or_init(|| value))
     }
-    pub fn endpoint(&self) -> &ClientConnectionDto {
-        &self.endpoint
+    pub fn subscription(&self) -> DaemonSubscription {
+        self.subscription
     }
     pub fn initial_settings(&self) -> Option<DesktopSettingsDto> {
         self.initial_settings.get().copied()

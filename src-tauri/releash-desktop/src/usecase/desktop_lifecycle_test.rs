@@ -3,7 +3,11 @@ use crate::domain::{daemon_connection::*, login_item::*};
 use crate::usecase::daemon_connection_query::DaemonConnectionQueryService;
 use parking_lot::Mutex;
 
-struct FakeConnection(Mutex<DesktopSettingsDto>, Mutex<Vec<&'static str>>);
+struct FakeConnection(
+    Mutex<DesktopSettingsDto>,
+    Mutex<Vec<&'static str>>,
+    Mutex<u128>,
+);
 impl DaemonService for FakeConnection {
     fn discover(&self) -> DaemonResult<'_, Option<DiscoveredDaemon>> {
         Box::pin(async {
@@ -17,8 +21,12 @@ impl DaemonService for FakeConnection {
             }))
         })
     }
-    fn connect<'a>(&'a self, _: &'a DaemonEndpoint) -> DaemonResult<'a, ()> {
-        Box::pin(async { Ok(()) })
+    fn connect<'a>(&'a self, _: &'a DaemonEndpoint) -> DaemonResult<'a, DaemonSubscription> {
+        Box::pin(async {
+            let mut number = self.2.lock();
+            *number += 1;
+            Ok(DaemonSubscription(*number))
+        })
     }
     fn start(&self) -> DaemonResult<'_, ()> {
         Box::pin(async { Ok(()) })
@@ -84,7 +92,11 @@ async fn test_接続後処理_初回設定を一度復元して窓の値を返�
         performance_telemetry: false,
         auto_launch: true,
     };
-    let port = Arc::new(FakeConnection(Mutex::new(settings), Mutex::new(Vec::new())));
+    let port = Arc::new(FakeConnection(
+        Mutex::new(settings),
+        Mutex::new(Vec::new()),
+        Mutex::new(0),
+    ));
     let connection = Arc::new(DaemonConnectionUsecase::new(
         port.clone(),
         port.clone(),
@@ -126,11 +138,12 @@ async fn test_接続後処理_初回設定を一度復元して窓の値を返�
     assert_eq!(replaced.settings, Some(settings));
     assert_eq!(replaced.endpoint, initial.endpoint);
     assert_eq!(*login.0.lock(), ["register", "register"]);
-    lifecycle
-        .settings_changed(&initial.endpoint, settings)
-        .unwrap()
-        .1
-        .unwrap();
+    let SettingsChange::Apply { restoration, .. } =
+        lifecycle.settings_changed(DaemonSubscription(2), settings)
+    else {
+        panic!("current subscription rejected")
+    };
+    restoration.unwrap();
     assert_eq!(*login.0.lock(), ["register", "register", "register"]);
     lifecycle.stop().await.unwrap();
     assert_eq!(*port.1.lock(), ["stop", "stop"]);
@@ -145,7 +158,11 @@ async fn test_設定変更_復元失敗を返し初回接続では窓と適用�
         performance_telemetry: false,
         auto_launch: true,
     };
-    let port = Arc::new(FakeConnection(Mutex::new(settings), Mutex::new(Vec::new())));
+    let port = Arc::new(FakeConnection(
+        Mutex::new(settings),
+        Mutex::new(Vec::new()),
+        Mutex::new(0),
+    ));
     let connection = Arc::new(DaemonConnectionUsecase::new(
         port.clone(),
         port,
@@ -167,15 +184,15 @@ async fn test_設定変更_復元失敗を返し初回接続では窓と適用�
         "registration denied"
     );
     assert_eq!(connected.window, Some(ConnectedWindow::Visible));
-    assert_eq!(
-        lifecycle
-            .settings_changed(&connected.endpoint, settings)
-            .unwrap()
-            .1
-            .unwrap_err()
-            .to_string(),
-        "registration denied"
-    );
+    let SettingsChange::Apply {
+        settings: applied,
+        restoration,
+    } = lifecycle.settings_changed(DaemonSubscription(1), settings)
+    else {
+        panic!("current subscription rejected")
+    };
+    assert_eq!(applied, settings);
+    assert_eq!(restoration.unwrap_err().to_string(), "registration denied");
     assert_eq!(*login.0.lock(), ["register", "register"]);
 }
 
@@ -189,7 +206,11 @@ async fn test_設定変更_未接続と旧接続の通知では復元も適用�
         performance_telemetry: false,
         auto_launch: true,
     };
-    let port = Arc::new(FakeConnection(Mutex::new(settings), Mutex::new(Vec::new())));
+    let port = Arc::new(FakeConnection(
+        Mutex::new(settings),
+        Mutex::new(Vec::new()),
+        Mutex::new(0),
+    ));
     let connection = Arc::new(DaemonConnectionUsecase::new(
         port.clone(),
         port,
@@ -201,35 +222,91 @@ async fn test_設定変更_未接続と旧接続の通知では復元も適用�
         connection.clone(),
         Arc::new(LoginItemUsecase::new(login.clone(), login.clone())),
     );
-    let endpoint = DaemonEndpoint {
-        url: "localhost".into(),
-        token: "test".into(),
-    };
+    let subscription = DaemonSubscription(1);
     // When / Then
-    assert!(lifecycle.settings_changed(&endpoint, settings).is_none());
+    assert!(matches!(
+        lifecycle.settings_changed(subscription, settings),
+        SettingsChange::Ignored
+    ));
     assert!(login.0.lock().is_empty());
-    let initial = lifecycle.initialize(None, false).await.unwrap();
+    lifecycle.initialize(None, false).await.unwrap();
     login.0.lock().clear();
-    for stale in [
-        DaemonEndpoint {
-            token: "old".into(),
-            ..endpoint.clone()
-        },
-        DaemonEndpoint {
-            url: "other".into(),
-            ..endpoint.clone()
-        },
-    ] {
-        assert!(lifecycle.settings_changed(&stale, settings).is_none());
+    for stale in [DaemonSubscription(0), DaemonSubscription(2)] {
+        assert!(matches!(
+            lifecycle.settings_changed(stale, settings),
+            SettingsChange::Ignored
+        ));
         assert!(login.0.lock().is_empty());
     }
-    let (applied, restoration) = lifecycle
-        .settings_changed(&initial.endpoint, settings)
-        .unwrap();
+    let SettingsChange::Apply {
+        settings: applied,
+        restoration,
+    } = lifecycle.settings_changed(subscription, settings)
+    else {
+        panic!("current subscription rejected")
+    };
     assert_eq!(applied, settings);
     assert!(restoration.is_ok());
     assert_eq!(*login.0.lock(), ["register"]);
     connection.stop().await.unwrap();
-    assert!(lifecycle.settings_changed(&endpoint, settings).is_none());
+    assert!(matches!(
+        lifecycle.settings_changed(subscription, settings),
+        SettingsChange::Ignored
+    ));
+    assert_eq!(*login.0.lock(), ["register"]);
+}
+
+#[tokio::test]
+async fn test_同じ接続先への再接続_旧購読の通知では初回設定を上書きしない() {
+    // Given
+    let settings = DesktopSettingsDto {
+        close_to_tray: false,
+        start_minimized: false,
+        crash_reporting: false,
+        performance_telemetry: false,
+        auto_launch: false,
+    };
+    let port = Arc::new(FakeConnection(
+        Mutex::new(settings),
+        Mutex::new(Vec::new()),
+        Mutex::new(0),
+    ));
+    let connection = Arc::new(DaemonConnectionUsecase::new(
+        port.clone(),
+        port.clone(),
+        1,
+        "client".into(),
+    ));
+    let login = Arc::new(Login::default());
+    let lifecycle = DesktopLifecycleUsecase::new(
+        connection,
+        Arc::new(LoginItemUsecase::new(login.clone(), login.clone())),
+    );
+    let initial = lifecycle.initialize(None, false).await.unwrap();
+    let old = DaemonSubscription(*port.2.lock());
+    // When
+    let reconnected = lifecycle.replace(false).await.unwrap();
+    // Then
+    assert_eq!(reconnected.endpoint, initial.endpoint);
+    assert_eq!(reconnected.settings, Some(settings));
+    let stale = DesktopSettingsDto {
+        auto_launch: true,
+        close_to_tray: true,
+        ..settings
+    };
+    assert!(matches!(
+        lifecycle.settings_changed(old, stale),
+        SettingsChange::Ignored
+    ));
+    assert!(login.0.lock().is_empty());
+    let SettingsChange::Apply {
+        settings: applied,
+        restoration,
+    } = lifecycle.settings_changed(DaemonSubscription(*port.2.lock()), stale)
+    else {
+        panic!("current subscription rejected")
+    };
+    assert_eq!(applied, stale);
+    restoration.unwrap();
     assert_eq!(*login.0.lock(), ["register"]);
 }

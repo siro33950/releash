@@ -1,6 +1,6 @@
 use super::daemon_connection_query::DaemonConnectionQueryService;
 use crate::domain::daemon_connection::{
-    DaemonConnection, DaemonConnectionFailure, DaemonEndpoint, DaemonService,
+    DaemonConnection, DaemonConnectionFailure, DaemonEndpoint, DaemonService, DaemonSubscription,
 };
 use releashd::desktop_api::DesktopSettingsDto;
 use std::sync::Arc;
@@ -33,8 +33,8 @@ impl DaemonConnectionUsecase {
         let state = self.state.lock();
         state.failure().cloned()
     }
-    pub fn is_connected_to(&self, endpoint: &DaemonEndpoint) -> bool {
-        self.state.lock().is_connected_to(endpoint)
+    pub fn is_current_subscription(&self, subscription: DaemonSubscription) -> bool {
+        self.state.lock().is_current_subscription(subscription)
     }
     pub fn initial_settings(&self) -> Option<DesktopSettingsDto> {
         self.query.initial_settings()
@@ -77,9 +77,11 @@ impl DaemonConnectionUsecase {
             }
             let changed = !self.state.lock().is_connected_to(&server.endpoint);
             if changed {
-                self.port.connect(&server.endpoint).await?;
+                let subscription = self.port.connect(&server.endpoint).await?;
+                self.state
+                    .lock()
+                    .connected(server.endpoint.clone(), subscription);
             }
-            self.state.lock().connected(server.endpoint.clone());
             Ok((server.endpoint, changed))
         }
         .await;

@@ -1,5 +1,5 @@
 use super::*;
-use crate::domain::daemon_connection::{DaemonResult, DiscoveredDaemon};
+use crate::domain::daemon_connection::{DaemonResult, DaemonSubscription, DiscoveredDaemon};
 use crate::usecase::daemon_connection_query::DaemonConnectionQueryService;
 use parking_lot::Mutex;
 
@@ -7,7 +7,9 @@ use parking_lot::Mutex;
 struct FakeConnection {
     calls: Mutex<Vec<&'static str>>,
     server: Mutex<Option<DiscoveredDaemon>>,
+    discover_error: Mutex<Option<DaemonConnectionFailure>>,
     subscribed: Mutex<Option<DaemonEndpoint>>,
+    subscription_number: Mutex<u128>,
     start_error: Mutex<Option<DaemonConnectionFailure>>,
     subscribe_error: Mutex<Option<DaemonConnectionFailure>>,
     stop_error: Mutex<Option<DaemonConnectionFailure>>,
@@ -30,17 +32,22 @@ impl DaemonService for FakeConnection {
     fn discover(&self) -> DaemonResult<'_, Option<DiscoveredDaemon>> {
         Box::pin(async {
             self.calls.lock().push("discover");
+            if let Some(error) = self.discover_error.lock().clone() {
+                return Err(error);
+            }
             Ok(self.server.lock().clone())
         })
     }
-    fn connect<'a>(&'a self, endpoint: &'a DaemonEndpoint) -> DaemonResult<'a, ()> {
+    fn connect<'a>(&'a self, endpoint: &'a DaemonEndpoint) -> DaemonResult<'a, DaemonSubscription> {
         Box::pin(async {
             self.calls.lock().push("subscribe");
             if let Some(error) = self.subscribe_error.lock().clone() {
                 return Err(error);
             }
             *self.subscribed.lock() = Some(endpoint.clone());
-            Ok(())
+            let mut number = self.subscription_number.lock();
+            *number += 1;
+            Ok(DaemonSubscription(*number))
         })
     }
     fn start(&self) -> DaemonResult<'_, ()> {
@@ -231,4 +238,39 @@ async fn test_接続済みのサーバ消失と停止_動いていない状態�
     usecase.connect().await.unwrap();
     usecase.stop().await.unwrap();
     assert_eq!(usecase.failure(), Some(DaemonConnectionFailure::NotRunning));
+}
+
+#[tokio::test]
+async fn test_再発見失敗後の同じサーバへの再接続_旧購読を拒否し再要求では購読を維持する() {
+    // Given
+    let port = Arc::new(FakeConnection::default());
+    *port.server.lock() = Some(server("same"));
+    let usecase = DaemonConnectionUsecase::new(port.clone(), port.clone(), 1, "client".into());
+    usecase.endpoint().await.unwrap();
+    let old = DaemonSubscription(*port.subscription_number.lock());
+    assert!(usecase.is_current_subscription(old));
+    // When
+    *port.discover_error.lock() = Some(DaemonConnectionFailure::TechnicalFailure(
+        "discovery failed".into(),
+    ));
+    assert!(usecase.endpoint().await.is_err());
+    assert!(!usecase.is_current_subscription(old));
+    *port.discover_error.lock() = None;
+    let (endpoint, changed) = usecase.endpoint().await.unwrap();
+    let current = DaemonSubscription(*port.subscription_number.lock());
+    // Then
+    assert_eq!(endpoint, server("same").endpoint);
+    assert!(changed);
+    assert!(!usecase.is_current_subscription(old));
+    assert!(usecase.is_current_subscription(current));
+    assert!(!usecase.endpoint().await.unwrap().1);
+    assert!(usecase.is_current_subscription(current));
+    assert_eq!(
+        port.calls
+            .lock()
+            .iter()
+            .filter(|call| **call == "subscribe")
+            .count(),
+        2
+    );
 }

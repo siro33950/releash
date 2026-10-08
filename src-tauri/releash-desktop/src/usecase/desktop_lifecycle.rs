@@ -3,7 +3,7 @@ use super::{
     login_item::{LoginItemError, LoginItemUsecase},
 };
 use crate::domain::{
-    daemon_connection::{DaemonConnectionFailure, DaemonEndpoint},
+    daemon_connection::{DaemonConnectionFailure, DaemonEndpoint, DaemonSubscription},
     desktop_lifecycle::{ConnectedWindow, DesktopLifecycle, DesktopWindow},
 };
 use releashd::desktop_api::DesktopSettingsDto;
@@ -14,6 +14,14 @@ pub struct ConnectedDesktop {
     pub settings: Option<DesktopSettingsDto>,
     pub window: Option<ConnectedWindow>,
     pub restoration: Result<(), LoginItemError>,
+}
+
+pub enum SettingsChange {
+    Ignored,
+    Apply {
+        settings: DesktopSettingsDto,
+        restoration: Result<(), LoginItemError>,
+    },
 }
 
 pub struct DesktopLifecycleUsecase {
@@ -62,8 +70,7 @@ impl DesktopLifecycleUsecase {
             let settings = self.connection.initial_settings();
             ConnectedDesktop {
                 restoration: settings
-                    .and_then(|settings| self.settings_changed(&endpoint, settings))
-                    .map(|(_, restoration)| restoration)
+                    .map(|settings| self.login.restore(settings.auto_launch))
                     .unwrap_or(Ok(())),
                 endpoint,
                 settings,
@@ -95,13 +102,16 @@ impl DesktopLifecycleUsecase {
 
     pub fn settings_changed(
         &self,
-        endpoint: &DaemonEndpoint,
+        subscription: DaemonSubscription,
         settings: DesktopSettingsDto,
-    ) -> Option<(DesktopSettingsDto, Result<(), LoginItemError>)> {
-        if !self.connection.is_connected_to(endpoint) {
-            return None;
+    ) -> SettingsChange {
+        if !self.connection.is_current_subscription(subscription) {
+            return SettingsChange::Ignored;
         }
-        Some((settings, self.login.restore(settings.auto_launch)))
+        SettingsChange::Apply {
+            settings,
+            restoration: self.login.restore(settings.auto_launch),
+        }
     }
     pub async fn stop(&self) -> Result<(), DaemonConnectionFailure> {
         self.connection.stop().await

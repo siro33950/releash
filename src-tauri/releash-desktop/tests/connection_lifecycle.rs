@@ -213,7 +213,7 @@ async fn test_初回設定適用_通知のobserverが無くても適用しhidden
     let _guard = TEST_LOCK.lock().await;
     let _telemetry = telemetry::lock_test_telemetry();
     let _crash = telemetry::TEST_LOCK.lock().unwrap();
-    for hidden in [false, true] {
+    for (hidden, same_endpoint) in [(false, false), (true, false), (false, true), (true, true)] {
         telemetry::reset_test_metrics();
         releashd::desktop_api::set_startup_origin(std::time::Instant::now());
         let directory = tempfile::tempdir().unwrap();
@@ -407,7 +407,17 @@ async fn test_初回設定適用_通知のobserverが無くても適用しhidden
             .await
             .is_err());
         let mut replacement = discovery.clone();
-        replacement.token = "replacement".into();
+        if same_endpoint {
+            std::fs::write(
+                directory.path().join("client-api.json"),
+                b"invalid discovery",
+            )
+            .unwrap();
+            assert!(app.state::<Arc<releash_desktop::test_support::integration::daemon_connection::DaemonConnectionUsecase>>()
+                .endpoint().await.is_err());
+        } else {
+            replacement.token = "replacement".into();
+        }
         std::fs::write(
             directory.path().join("client-api.json"),
             serde_json::to_vec(&replacement).unwrap(),
@@ -428,8 +438,10 @@ async fn test_初回設定適用_通知のobserverが無くても適用しhidden
         assert!(!host::desktop_window_preferences(app.handle()));
         assert!(!telemetry::crash_reporting_enabled());
         assert!(!host::desktop_login_item_calls(app.handle()).contains(&"unregister"));
+        let old_subscription = client.subscription();
         drop(client);
         let client = updates.borrow_and_update().clone().unwrap();
+        assert_ne!(client.subscription(), old_subscription);
         release_change.send_replace(());
         let mut settings = client.settings_receiver();
         tokio::time::timeout(

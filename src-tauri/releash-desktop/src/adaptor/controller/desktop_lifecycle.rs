@@ -1,6 +1,6 @@
 use crate::adaptor::presenter::desktop_lifecycle::TauriDesktopLifecycle;
 use crate::common::log_failure::LogFailure;
-use crate::usecase::desktop_lifecycle::DesktopLifecycleUsecase;
+use crate::usecase::desktop_lifecycle::{DesktopLifecycleUsecase, SettingsChange};
 use std::sync::Arc;
 use tauri::Manager;
 pub(crate) fn show<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<(), String> {
@@ -66,24 +66,23 @@ pub(crate) fn connected<R: tauri::Runtime>(
 
 pub(crate) async fn settings_changed<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
-    client: Arc<crate::adaptor::gateway::desktop_client::DesktopClient>,
+    subscription: crate::domain::daemon_connection::DaemonSubscription,
     settings: releashd::desktop_api::DesktopSettingsDto,
 ) {
-    let endpoint = crate::domain::daemon_connection::DaemonEndpoint {
-        url: client.endpoint().url.clone(),
-        token: client.endpoint().token.clone(),
-    };
     crate::common::serial::run(
         app,
         async {
             app.state::<Arc<DesktopLifecycleUsecase>>()
-                .settings_changed(&endpoint, settings)
+                .settings_changed(subscription, settings)
         },
         |output| {
-            if let Some((settings, restoration)) = output {
-                let _ = app
-                    .state::<LogFailure<Arc<DesktopLifecycleUsecase>>>()
-                    .call(|_| restoration);
+            if let SettingsChange::Apply {
+                settings,
+                restoration,
+            } = output
+            {
+                app.state::<LogFailure<Arc<DesktopLifecycleUsecase>>>()
+                    .record(&restoration);
                 app.state::<TauriDesktopLifecycle<R>>()
                     .apply_settings(settings);
             }

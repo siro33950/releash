@@ -9,7 +9,7 @@ use std::{sync::Arc, time::Duration};
 
 fn start(endpoint: &ClientConnectionDto) -> DesktopClient {
     DesktopClient::start(
-        endpoint.clone(),
+        releash_desktop::test_support::integration::daemon_connection::DaemonSubscription(1),
         client(endpoint).unwrap(),
         stream_client(endpoint).unwrap(),
         Arc::new(RetryLimiter::deterministic()),
@@ -184,8 +184,10 @@ async fn test_設定受信_生存確認と同じstreamで受け取る() {
     .await
     .unwrap();
     // Then
-    assert_eq!(client.endpoint().url, endpoint.url);
-    assert_eq!(client.endpoint().token, endpoint.token);
+    assert_eq!(
+        client.subscription(),
+        releash_desktop::test_support::integration::daemon_connection::DaemonSubscription(1)
+    );
     assert!(received.close_to_tray);
     assert_eq!(opens.load(Ordering::SeqCst), 1);
     assert_eq!(starts.load(Ordering::SeqCst), 1);

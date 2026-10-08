@@ -26,7 +26,8 @@ pub mod daemon_connection {
     pub use crate::common::deadline::Deadline;
     pub use crate::common::retry::RetryLimiter;
     pub use crate::domain::daemon_connection::{
-        DaemonConnectionFailure, DaemonEndpoint, DaemonService, DiscoveredDaemon,
+        DaemonConnectionFailure, DaemonEndpoint, DaemonService, DaemonSubscription,
+        DiscoveredDaemon,
     };
     pub use crate::usecase::daemon_connection::DaemonConnectionUsecase;
     pub use crate::usecase::daemon_connection_query::DaemonConnectionQueryService;
