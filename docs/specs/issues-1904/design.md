@@ -25,6 +25,7 @@
 - サーバの detached の起動は `releash-sdk` の 1 つの処理にし、画面の起動時・画面の「起動」の操作・失敗の窓の入れ替え・#1905 の CLI が同じものを使う。stderr は data dir の `logs/` のファイルへ起動ごとに上書きで redirect し、stdin・stdout は閉じる。
 - 隣の `releashd` は `current_exe().with_file_name("releashd")` で探す。
 - 画面の「サーバを停止」はトレイの 1 か所。失敗の窓の「停止して起動し直す」は同じ停止の処理の別の入口。
+- サーバ側の停止で terminal の出力 drain を待つ処理（`adaptor/gateway/terminal_surface/runtime_gateway_impl.rs` の `wait_for_output_drain`）は 2 秒を上限にする。drain は PTY の EOF で完了するが、shell の background job が PTY を掴んだままだと Linux では EOF が来ず、停止が `shutdown_timeout_ms` の 15 秒まで塞がる（main では親 EOF 経路の子孫終了がこれを隠していた。CI の `tests/daemon_smoke.rs` の「stdin を閉じても動き続ける」で露見）。上限を過ぎたら警告を記録して停止を続ける。
 - 停止の完了を待つ処理（`StopDaemon` を呼び、プロセスの終了と発見ファイルの消失を待つ。上限は #1908 の `shutdown_timeout_ms`）は `releash-sdk` の 1 つの処理にし、トレイの「サーバを停止」・失敗の窓の「停止して起動し直す」・#1905 の CLI `server stop` が同じものを使う。
 - 生存の判定は TS の `src/lib/client.ts` だけ。
 - desktop 設定とログイン項目は、シェルの `desktop_client.rs` の接続と購読から直接取る。
