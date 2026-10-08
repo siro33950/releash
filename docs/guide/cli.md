@@ -6,9 +6,11 @@
 
 ### インストール
 
-- Releash の Settings を開き、Background の「Install CLI command」を選ぶと、`/usr/local/bin/releash` に同梱の `releash` への symlink を設置します。起動時には設置しません。
+- Releash の Settings を開き、Background の「Install CLI command」を選ぶと、`/usr/local/bin/releash` に、接続先サーバの実行ファイルの隣にある `releash` への symlink を設置します。起動時には設置しません。
   - 書き込み権限が無い場合は、管理者権限を求めるダイアログが出ます。
-  - アプリが translocate された状態（ダウンロード直後の隔離状態など）で起動した場合は張りません。
+  - サーバが translocation された場所、読み取り専用ボリューム（DMG など）、development ビルドのいずれかで動いている場合、設置は失敗し、設定画面に理由を表示します。
+  - translocation された場所や読み取り専用ボリュームから起動した場合は、Releash.app を Applications に移動してから設置してください。
+  - development ビルドでは設置できません。release ビルドの Releash.app から設置してください。
   - `/usr/local/bin/releash` に symlink ではないファイルがある場合は上書きしません。
 - Releash が起動する terminal（Session の provider TUI、Terminal パネルの shell）では、`{data_dir}/bin` が `PATH` の先頭に入り、そこに置かれた `releash` wrapper が優先されます。wrapper は `RELEASH_DATA_DIR` が未設定のときだけアプリの data dir を設定してから、daemon の実行ファイルの隣にある CLI `releash` を実行します。
 - Command Node の `PATH` は異なります。[環境変数](#環境変数) を参照してください。

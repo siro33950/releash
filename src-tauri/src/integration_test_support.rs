@@ -1214,3 +1214,9 @@ pub mod fixtures {
     pub use crate::usecase::test_helpers::start_read as fixtures_infrastructure_state_subscription_start_read;
     pub use crate::usecase::test_helpers::stop_read as fixtures_infrastructure_state_subscription_stop_read;
 }
+
+pub mod installation {
+    pub use crate::infrastructure::platform::installation::{
+        cli_link, create_cli_link, read_only, run_admin_command, CliLink,
+    };
+}

@@ -27,23 +27,8 @@ fn test_ログイン項目_承認待ちは無効で登録喪失だけを復旧�
 }
 
 #[test]
-fn test_登録規則_一時配置とread_onlyを拒否し解除の可否を決める() {
+fn test_登録規則_承認待ちの解除と登録後の状態を確認する() {
     // Given / When / Then
-    for (translocated, read_only, allowed) in [
-        (true, false, false),
-        (false, true, false),
-        (false, false, true),
-    ] {
-        assert_eq!(
-            RegistrationLocation {
-                translocated,
-                read_only
-            }
-            .ensure_registration_allowed()
-            .is_ok(),
-            allowed
-        );
-    }
     assert_eq!(
         LoginItemStatus::RequiresApproval.registration_change(false),
         RegistrationChange::Unregister

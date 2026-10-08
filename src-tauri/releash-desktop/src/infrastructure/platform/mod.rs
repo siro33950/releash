@@ -1,4 +1,3 @@
-pub(crate) mod cli_install;
 pub(crate) mod desktop_restart;
 pub(crate) mod desktop_runtime;
 pub(crate) mod login_item;

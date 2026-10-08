@@ -182,6 +182,10 @@ async fn test_scope認証_全methodの権限と未知methodとhook失効を区�
     // When / Then
     for (method, token, status) in [
         ("GetServerInfo", "hook", StatusCode::NO_CONTENT),
+        ("InstallCli", "operator", StatusCode::NO_CONTENT),
+        ("CheckLoginRegistration", "operator", StatusCode::NO_CONTENT),
+        ("InstallCli", "hook", StatusCode::FORBIDDEN),
+        ("CheckLoginRegistration", "hook", StatusCode::FORBIDDEN),
         ("ReceiveProviderSignal", "hook", StatusCode::NO_CONTENT),
         ("StartStateSubscription", "hook", StatusCode::FORBIDDEN),
         ("OpenStateStream", "hook", StatusCode::FORBIDDEN),

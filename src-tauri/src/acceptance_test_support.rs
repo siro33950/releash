@@ -15,6 +15,9 @@ pub fn build_client_dependencies(
     data_dir: std::path::PathBuf,
 ) -> crate::adaptor::controller::client::ClientDependencies {
     crate::adaptor::controller::client::ClientDependencies {
+        installation_usecase: Some(Arc::new(crate::usecase::installation::InstallationUsecase(
+            Arc::new(crate::adaptor::gateway::installation::LocalInstallationService),
+        ))),
         workspace_node_command_usecase: None,
         app_state: None,
         workspace_state_store: None,

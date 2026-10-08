@@ -43,23 +43,29 @@ impl DesktopLifecycleUsecase {
         failure_window: bool,
     ) -> Result<ConnectedDesktop, DaemonConnectionFailure> {
         let (endpoint, changed) = self.connection.connect().await?;
-        Ok(self.connected(endpoint, hidden.unwrap_or(false), failure_window, changed))
+        Ok(self
+            .connected(endpoint, hidden.unwrap_or(false), failure_window, changed)
+            .await)
     }
     pub async fn endpoint(
         &self,
         failure_window: bool,
     ) -> Result<ConnectedDesktop, DaemonConnectionFailure> {
         let (endpoint, changed) = self.connection.endpoint().await?;
-        Ok(self.connected(endpoint, false, failure_window, changed))
+        Ok(self
+            .connected(endpoint, false, failure_window, changed)
+            .await)
     }
     pub async fn replace(
         &self,
         failure_window: bool,
     ) -> Result<ConnectedDesktop, DaemonConnectionFailure> {
         let (endpoint, changed) = self.connection.replace().await?;
-        Ok(self.connected(endpoint, false, failure_window, changed))
+        Ok(self
+            .connected(endpoint, false, failure_window, changed)
+            .await)
     }
-    fn connected(
+    async fn connected(
         &self,
         endpoint: DaemonEndpoint,
         hidden: bool,
@@ -69,9 +75,10 @@ impl DesktopLifecycleUsecase {
         if changed {
             let settings = self.connection.initial_settings();
             ConnectedDesktop {
-                restoration: settings
-                    .map(|settings| self.login.restore(settings.auto_launch))
-                    .unwrap_or(Ok(())),
+                restoration: match settings {
+                    Some(settings) => self.login.restore(settings.auto_launch).await,
+                    None => Ok(()),
+                },
                 endpoint,
                 settings,
                 window: settings.map(|settings| {
@@ -100,7 +107,7 @@ impl DesktopLifecycleUsecase {
         }
     }
 
-    pub fn settings_changed(
+    pub async fn settings_changed(
         &self,
         subscription: DaemonSubscription,
         settings: DesktopSettingsDto,
@@ -110,7 +117,7 @@ impl DesktopLifecycleUsecase {
         }
         SettingsChange::Apply {
             settings,
-            restoration: self.login.restore(settings.auto_launch),
+            restoration: self.login.restore(settings.auto_launch).await,
         }
     }
     pub async fn stop(&self) -> Result<(), DaemonConnectionFailure> {

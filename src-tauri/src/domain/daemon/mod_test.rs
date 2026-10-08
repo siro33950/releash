@@ -9,6 +9,7 @@ mod daemon_tests {
             },
             "release".into(),
             1,
+            Ok(crate::domain::installation::CliInstallation::Allowed),
         )
     }
     #[test]

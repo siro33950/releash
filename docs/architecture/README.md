@@ -71,7 +71,7 @@ Main → 全ての層
 - Submit / Stop / Approval / ArtifactはWorkflowが所有する。
 - Provider lifecycleとProvider availabilityは別の境界である。
 
-## ドメイン一覧（16個）
+## ドメイン一覧（17個）
 
 | ドメイン | 含まれる責務 |
 |---|---|
@@ -79,6 +79,7 @@ Main → 全ての層
 | `repository` | branch、commit、log、worktree、status、repo_paths、git_config |
 | `workflow` | 定義、実行木、Artifact、Contract、facet、completion と承認、Diagnostic |
 | `local_event` | 永続 local event store の語彙。store identity、atomic batch、state mutation、query、transaction port |
+| `installation` | 実行ファイルの配置条件、CLI の設置、ログイン項目の登録可否 |
 | `daemon` | サーバ自身。identity、版と capability、serving status、受付可否、停止要求の受理、発見した記録と到達したサーバの同一性の判定 |
 | `workspace_tree` | Workspace / Session の bounded な query 集約。canonical な execution / node / session record から復元する |
 | `comment` | diff_comment_store、diff_comment_sender |

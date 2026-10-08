@@ -213,15 +213,16 @@ it("CLI設置は読み込み時に行わず明示操作だけで実行し失敗�
 	});
 	const { result } = renderHook(() => useBackgroundConfig());
 	await waitFor(() => expect(result.current.loading).toBe(false));
-	expect(invokeTauri).not.toHaveBeenCalledWith("install_cli");
-	vi.mocked(invokeTauri).mockRejectedValueOnce(
+	expect(invokeClient).not.toHaveBeenCalledWith("install_cli");
+	vi.mocked(invokeClient).mockRejectedValueOnce(
 		new Error("authorization denied"),
 	);
 	await act(() => result.current.installCli());
 	expect(result.current.error).toBe("authorization denied");
-	vi.mocked(invokeTauri).mockResolvedValueOnce(
-		"Installed /usr/local/bin/releash",
-	);
+	vi.mocked(invokeClient).mockResolvedValueOnce({
+		status: "installed",
+		path: "/usr/local/bin/releash",
+	} as never);
 	await act(() => result.current.installCli());
 	expect(result.current.cliMessage).toContain("/usr/local/bin/releash");
 });
@@ -253,5 +254,50 @@ it("承認待ちの間に別項目を保存してもログイン登録の希望�
 	expect(invokeTauri).not.toHaveBeenCalledWith(
 		"set_login_item_enabled",
 		expect.anything(),
+	);
+});
+
+it.each(["installed", "alreadyInstalled"] as const)(
+	"CLI の設置結果 %s をサーバから受け取り表示する",
+	async (status) => {
+		states.publish("desktop-settings", desktopSettings);
+		vi.mocked(invokeTauri).mockResolvedValue({
+			enabled: false,
+			requiresApproval: false,
+			reason: null,
+		});
+		vi.mocked(invokeClient).mockResolvedValue({
+			status,
+			path: "/usr/local/bin/releash",
+		} as never);
+		const { result } = renderHook(() => useBackgroundConfig());
+		await act(() => result.current.installCli());
+		expect(invokeClient).toHaveBeenCalledWith("install_cli");
+		expect(result.current.cliMessage).toBe(
+			`Releash CLI ${status === "installed" ? "installed" : "already installed"} at /usr/local/bin/releash`,
+		);
+	},
+);
+
+it("CLI の配置拒否をエラーとして表示し以前の成功表示を消す", async () => {
+	states.publish("desktop-settings", desktopSettings);
+	vi.mocked(invokeTauri).mockResolvedValue({
+		enabled: false,
+		requiresApproval: false,
+		reason: null,
+	});
+	vi.mocked(invokeClient).mockResolvedValueOnce({
+		status: "installed",
+		path: "/usr/local/bin/releash",
+	} as never);
+	const { result } = renderHook(() => useBackgroundConfig());
+	await act(() => result.current.installCli());
+	vi.mocked(invokeClient).mockRejectedValueOnce(
+		new Error("Move Releash.app to Applications before installing the CLI."),
+	);
+	await act(() => result.current.installCli());
+	expect(result.current.cliMessage).toBeNull();
+	expect(result.current.error).toBe(
+		"Move Releash.app to Applications before installing the CLI.",
 	);
 });

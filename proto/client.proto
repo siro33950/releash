@@ -129,6 +129,8 @@ message CommandRequest {
     ReportMountedXtermCountRequest report_mounted_xterm_count = 111;
     ReportUsageEventRequest report_usage_event = 112;
     StopDaemonRequest stop_daemon = 193;
+    InstallCliRequest install_cli = 194;
+    CheckLoginRegistrationRequest check_login_registration = 195;
     ResetProviderExecutableRequest reset_provider_executable = 114;
     ResizeTerminalSurfaceRequest resize_terminal_surface = 115;
     ResolveReviewThreadRequest resolve_review_thread = 117;
@@ -292,6 +294,8 @@ message CommandResult {
     Unit report_mounted_xterm_count = 111;
     Unit report_usage_event = 112;
     StopDaemonResponse stop_daemon = 193;
+    InstallCliResponse install_cli = 194;
+    LoginRegistrationResult check_login_registration = 195;
     Unit reset_provider_executable = 114;
     Unit resize_terminal_surface = 115;
     ReviewThreadDto resolve_review_thread = 117;
@@ -2572,6 +2576,8 @@ service ClientService {
   rpc AppendSessionReviewComment(AppendSessionReviewCommentRequest) returns (AppendSessionReviewCommentResponse) { option (scope) = SCOPE_OPERATOR; }
   rpc ResolveSessionReviewThread(ResolveSessionReviewThreadRequest) returns (ResolveSessionReviewThreadResponse) { option (scope) = SCOPE_OPERATOR; }
   rpc ReceiveProviderSignal(ReceiveProviderSignalRequest) returns (ReceiveProviderSignalResponse) { option (scope) = SCOPE_HOOK; }
+  rpc InstallCli(InstallCliRequest) returns (InstallCliResponse) { option (scope) = SCOPE_OPERATOR; }
+  rpc CheckLoginRegistration(CheckLoginRegistrationRequest) returns (LoginRegistrationResult) { option (scope) = SCOPE_OPERATOR; }
   rpc GetServerInfo(Unit) returns (ServerInfo) { option (scope) = SCOPE_OPERATOR; option (scope) = SCOPE_HOOK; }
 }
 
@@ -2589,6 +2595,7 @@ message ServerInfo {
   uint32 protocol = 8;
   repeated string capabilities = 9;
   ServingStatus serving_status = 10;
+  CliInstallationResult cli_installation = 11;
 
 }
 
@@ -2860,3 +2867,39 @@ message ReceiveProviderSignalRejected { string reason = 1; }
 
 message StopDaemonRequest {}
 message StopDaemonResponse { option (json_unit) = true; }
+
+message InstallCliRequest {}
+message InstallCliResponse {
+  CliInstallStatus status = 1 [(json_required) = true];
+  string path = 2 [(json_required) = true];
+}
+enum CliInstallStatus {
+  CLI_INSTALL_STATUS_UNSPECIFIED = 0 [(json_enum_name) = "unspecified"];
+  CLI_INSTALL_STATUS_INSTALLED = 1 [(json_enum_name) = "installed"];
+  CLI_INSTALL_STATUS_ALREADY_INSTALLED = 2 [(json_enum_name) = "alreadyInstalled"];
+}
+message CheckLoginRegistrationRequest {
+  string executable_path = 1 [json_name = "executable_path"];
+}
+message LoginRegistrationResult {
+  LoginRegistrationStatus status = 1;
+  string reason = 2;
+}
+enum LoginRegistrationStatus {
+  LOGIN_REGISTRATION_STATUS_UNSPECIFIED = 0 [(json_enum_name) = "unspecified"];
+  LOGIN_REGISTRATION_STATUS_ALLOWED = 1 [(json_enum_name) = "allowed"];
+  LOGIN_REGISTRATION_STATUS_TRANSLOCATED = 2 [(json_enum_name) = "translocated"];
+  LOGIN_REGISTRATION_STATUS_READ_ONLY = 3 [(json_enum_name) = "readOnly"];
+}
+message CliInstallationResult {
+  CliInstallationStatus status = 1;
+  string reason = 2;
+}
+enum CliInstallationStatus {
+  CLI_INSTALLATION_STATUS_UNSPECIFIED = 0 [(json_enum_name) = "unspecified"];
+  CLI_INSTALLATION_STATUS_ALLOWED = 1 [(json_enum_name) = "allowed"];
+  CLI_INSTALLATION_STATUS_TRANSLOCATED = 2 [(json_enum_name) = "translocated"];
+  CLI_INSTALLATION_STATUS_READ_ONLY = 3 [(json_enum_name) = "readOnly"];
+  CLI_INSTALLATION_STATUS_DEVELOPMENT = 4 [(json_enum_name) = "development"];
+  CLI_INSTALLATION_STATUS_UNDETERMINED = 5 [(json_enum_name) = "undetermined"];
+}

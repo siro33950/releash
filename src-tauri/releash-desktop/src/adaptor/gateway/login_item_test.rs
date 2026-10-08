@@ -44,3 +44,51 @@ fn test_登録希望変換_登録希望だけを書く() {
         assert_eq!(request.requested, Some(requested));
     }
 }
+
+#[test]
+fn test_登録可否_サーバの拒否理由と未知の状態を保持する() {
+    use releashd::desktop_api::wire::{LoginRegistrationResult, LoginRegistrationStatus as S};
+    // Given / When / Then
+    assert!(registration_allowed(LoginRegistrationResult {
+        status: S::Allowed as i32,
+        reason: String::new()
+    })
+    .is_ok());
+    for status in [S::Translocated, S::ReadOnly] {
+        assert_eq!(
+            registration_allowed(LoginRegistrationResult {
+                status: status as i32,
+                reason: "Move Releash.app".into()
+            }),
+            Err("Move Releash.app".into())
+        );
+    }
+    for status in [S::Unspecified as i32, 100] {
+        assert!(registration_allowed(LoginRegistrationResult {
+            status,
+            reason: String::new()
+        })
+        .is_err());
+    }
+}
+
+#[test]
+fn test_登録判定要求_画面の実行パスを保持し非utf8を拒否する() {
+    use releashd::desktop_api::wire;
+    use std::os::unix::ffi::OsStringExt;
+    // Given
+    let executable = std::env::current_exe().unwrap();
+    let invalid = std::path::PathBuf::from(std::ffi::OsString::from_vec(vec![b'/', 0xff]));
+    // When
+    let wire::command_request::Command::CheckLoginRegistration(request) =
+        registration_request(&executable).unwrap()
+    else {
+        panic!("registration request");
+    };
+    // Then
+    assert_eq!(request.executable_path, executable.to_str().unwrap());
+    assert_eq!(
+        registration_request(&invalid).unwrap_err(),
+        "Desktop executable path is not UTF-8"
+    );
+}

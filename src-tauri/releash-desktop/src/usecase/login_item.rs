@@ -40,13 +40,14 @@ impl LoginItemUsecase {
             reason: self.registration_error.lock().clone(),
         })
     }
-    pub fn restore(&self, requested: bool) -> Result<(), LoginItemError> {
-        self.change_registration(requested)
+    pub async fn restore(&self, requested: bool) -> Result<(), LoginItemError> {
+        let _guard = self.saving.lock().await;
+        self.change_registration(requested).await
     }
     pub async fn set_enabled(&self, enabled: bool) -> Result<LoginItemState, LoginItemError> {
         let _guard = self.saving.lock().await;
         self.preference.load().await.map_err(LoginItemError)?;
-        self.change_registration(enabled)?;
+        self.change_registration(enabled).await?;
         let requested = self
             .port
             .status()
@@ -59,13 +60,13 @@ impl LoginItemUsecase {
             .map_err(LoginItemError)?;
         self.status().await
     }
-    fn change_registration(&self, enabled: bool) -> Result<(), LoginItemError> {
+    async fn change_registration(&self, enabled: bool) -> Result<(), LoginItemError> {
         let status = self.port.status().map_err(LoginItemError)?;
         let result = match status.registration_change(enabled) {
             RegistrationChange::Register => self
                 .port
-                .location()
-                .and_then(|location| location.ensure_registration_allowed())
+                .ensure_registration_allowed()
+                .await
                 .and_then(|()| self.port.register()),
             RegistrationChange::Unregister => self.port.unregister(),
             RegistrationChange::None => Ok(()),

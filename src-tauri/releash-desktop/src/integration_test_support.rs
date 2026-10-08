@@ -16,10 +16,6 @@ pub mod single_instance {
     pub use crate::infrastructure::platform::single_instance::acquire;
 }
 
-pub mod login_item {
-    pub use crate::infrastructure::platform::login_item::registration_location;
-}
-
 pub mod daemon_connection {
     pub use crate::adaptor::gateway::daemon_connection::DaemonServiceGateway;
     pub use crate::adaptor::presenter::daemon_connection::{failure, message};

@@ -29,6 +29,7 @@ pub struct ClientDependencies {
     pub(crate) editor_launcher: Arc<dyn crate::domain::external_editor::EditorLauncherGateway>,
     pub watcher: Arc<crate::usecase::watcher::WatcherUsecase>,
     pub(crate) data_dir: Result<std::path::PathBuf, crate::adaptor::presenter::error::AppError>,
+    pub(crate) installation_usecase: Option<Arc<crate::usecase::installation::InstallationUsecase>>,
     pub daemon: crate::usecase::daemon::DaemonUsecase,
     pub process_port: tokio::sync::mpsc::Sender<i32>,
 }

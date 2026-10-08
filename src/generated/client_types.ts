@@ -1156,6 +1156,18 @@ export type ServerInfo = {
 		| "SERVING_STATUS_STOPPING"
 		| "SERVING_STATUS_STOPPED"
 		| "SERVING_STATUS_FAILED";
+	cliInstallation?: CliInstallationResult;
+};
+
+export type CliInstallationResult = {
+	status?:
+		| "unspecified"
+		| "allowed"
+		| "translocated"
+		| "readOnly"
+		| "development"
+		| "undetermined";
+	reason?: string;
 };
 
 export type InputResolveSessionReviewThreadRequest = {
@@ -1460,6 +1472,12 @@ export type InputReportUsageEventRequest = {
 };
 
 export type InputStopDaemonRequest = Record<string, never>;
+
+export type InputInstallCliRequest = Record<string, never>;
+
+export type InputCheckLoginRegistrationRequest = {
+	executable_path?: string;
+};
 
 export type InputResetProviderExecutableRequest = {
 	provider: string;
@@ -1815,6 +1833,16 @@ export type GetOrSpawnTerminalV1 = {
 	session_key: string;
 };
 
+export type InstallCliResponse = {
+	status: "unspecified" | "installed" | "alreadyInstalled";
+	path: string;
+};
+
+export type LoginRegistrationResult = {
+	status?: "unspecified" | "allowed" | "translocated" | "readOnly";
+	reason?: string;
+};
+
 export type SaveWorkflowSourceResultDto =
 	| SaveWorkflowSuccess
 	| SaveWorkflowDiagnostics;
@@ -1901,6 +1929,8 @@ export interface ClientCommandArgs {
 	report_mounted_xterm_count: InputReportMountedXtermCountRequest;
 	report_usage_event: InputReportUsageEventRequest;
 	stop_daemon: InputStopDaemonRequest;
+	install_cli: InputInstallCliRequest;
+	check_login_registration: InputCheckLoginRegistrationRequest;
 	reset_provider_executable: InputResetProviderExecutableRequest;
 	resize_terminal_surface: InputResizeTerminalSurfaceRequest;
 	resolve_review_thread: InputResolveReviewThreadRequest;
@@ -2063,6 +2093,12 @@ export interface ClientCommands {
 		args: ClientCommandArgs["report_usage_event"],
 	): Promise<void>;
 	stop_daemon(args: ClientCommandArgs["stop_daemon"]): Promise<void>;
+	install_cli(
+		args: ClientCommandArgs["install_cli"],
+	): Promise<InstallCliResponse>;
+	check_login_registration(
+		args: ClientCommandArgs["check_login_registration"],
+	): Promise<LoginRegistrationResult>;
 	reset_provider_executable(
 		args: ClientCommandArgs["reset_provider_executable"],
 	): Promise<void>;

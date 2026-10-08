@@ -1117,9 +1117,29 @@ fn test_購読payload_提出済みoutputの全フィールドを保持する() {
 #[tokio::test]
 async fn test_daemon状態payload_get_server_infoと同じ投影を使う() {
     // Given
-    let repository = crate::adaptor::gateway::daemon::serving();
+    let identity = crate::domain::daemon::DaemonIdentity {
+        daemon_id: "installation".into(),
+        pid: 1,
+        process_started_at: 1,
+    };
+    let repository = std::sync::Arc::new(
+        crate::adaptor::gateway::daemon::InMemoryDaemonRepository::new(
+            identity,
+            "test".into(),
+            1,
+            Ok(crate::domain::installation::CliInstallation::ReadOnly),
+        ),
+    );
     let daemon = crate::usecase::daemon::DaemonUsecase::new(repository);
     let info = daemon.info().await;
+    let result = crate::adaptor::presenter::daemon::server_info(info.clone())
+        .cli_installation
+        .unwrap();
+    assert_eq!(result.status, wire::CliInstallationStatus::ReadOnly as i32);
+    assert_eq!(
+        result.reason,
+        crate::domain::installation::CliInstallation::ReadOnly.reason()
+    );
     // When
     let value = payload(&StateValue::DaemonInfo(info.clone())).unwrap();
     // Then

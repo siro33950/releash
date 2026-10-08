@@ -20,6 +20,7 @@ struct FakeLogin {
     calls: parking_lot::Mutex<Vec<&'static str>>,
     error: Option<(&'static str, String)>,
 }
+#[async_trait::async_trait]
 impl LoginItemPort for FakeLogin {
     fn status(&self) -> Result<LoginItemStatus, String> {
         if let Some(("status", error)) = &self.error {
@@ -27,11 +28,11 @@ impl LoginItemPort for FakeLogin {
         }
         Ok(*self.status.lock())
     }
-    fn location(&self) -> Result<crate::domain::login_item::RegistrationLocation, String> {
-        Ok(crate::domain::login_item::RegistrationLocation {
-            translocated: false,
-            read_only: false,
-        })
+    async fn ensure_registration_allowed(&self) -> Result<(), String> {
+        if let Some(("location", error)) = &self.error {
+            return Err(error.clone());
+        }
+        Ok(())
     }
     fn register(&self) -> Result<(), String> {
         self.calls.lock().push("register");
@@ -67,7 +68,7 @@ async fn test_ログイン項目_承認待ちでも起動し設定への導線�
     });
     let service = service(port.clone());
     // When
-    service.restore(true).unwrap();
+    service.restore(true).await.unwrap();
     let status = service.status().await.unwrap();
     service.open_settings().unwrap();
     // Then
@@ -86,7 +87,10 @@ async fn test_ログイン項目_失われた登録を復旧し無効化後の�
     let preference = Arc::new(Preference(std::sync::atomic::AtomicBool::new(true)));
     let service = LoginItemUsecase::new(port.clone(), preference.clone());
     // When
-    service.restore(preference.load().await.unwrap()).unwrap();
+    service
+        .restore(preference.load().await.unwrap())
+        .await
+        .unwrap();
     let status = service.status().await.unwrap();
     // Then
     assert!(status.enabled);
@@ -95,7 +99,7 @@ async fn test_ログイン項目_失われた登録を復旧し無効化後の�
     assert_eq!(*port.calls.lock(), ["register"]);
     // When
     service.set_enabled(false).await.unwrap();
-    service.restore(false).unwrap();
+    service.restore(false).await.unwrap();
     // Then
     assert!(!service.status().await.unwrap().enabled);
     assert_eq!(*port.calls.lock(), ["register", "unregister"]);
@@ -109,7 +113,7 @@ async fn test_ログイン項目_登録失敗理由を保持して表示する()
         error: Some(("register", "read-only volume".into())),
     }));
     // When
-    let error = service.restore(true).unwrap_err();
+    let error = service.restore(true).await.unwrap_err();
     // Then
     assert_eq!(error.0, "read-only volume");
     assert_eq!(
@@ -128,7 +132,7 @@ async fn test_ログイン項目_状態取得失敗では登録変更を実行�
     });
     let service = service(port.clone());
     // When
-    let restore = service.restore(true).unwrap_err();
+    let restore = service.restore(true).await.unwrap_err();
     let disable = service.set_enabled(false).await.unwrap_err();
     // Then
     assert_eq!(restore.0, "status unavailable");
@@ -240,8 +244,35 @@ async fn test_設定購読_サーバの登録希望がfalseなら既存の登録
     });
     let service = service(port.clone());
     // When
-    service.restore(false).unwrap();
+    service.restore(false).await.unwrap();
     // Then
     assert_eq!(*port.calls.lock(), ["unregister"]);
     assert!(!service.status().await.unwrap().enabled);
+}
+
+#[tokio::test]
+async fn test_ログイン項目_サーバの配置拒否を保存と復元で表示し登録しない() {
+    for reason in [
+        "translocated: Move Releash.app to Applications",
+        "read-only: Move Releash.app to Applications",
+        "server unavailable",
+    ] {
+        // Given
+        let port = Arc::new(FakeLogin {
+            status: parking_lot::Mutex::new(LoginItemStatus::NotRegistered),
+            calls: Default::default(),
+            error: Some(("location", reason.into())),
+        });
+        let preference = Arc::new(Preference::default());
+        let service = LoginItemUsecase::new(port.clone(), preference.clone());
+        // When / Then
+        assert_eq!(service.restore(true).await.unwrap_err().0, reason);
+        assert_eq!(service.set_enabled(true).await.unwrap_err().0, reason);
+        assert!(port.calls.lock().is_empty());
+        assert!(!preference.load().await.unwrap());
+        assert_eq!(
+            service.status().await.unwrap().reason.as_deref(),
+            Some(reason)
+        );
+    }
 }

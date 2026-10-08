@@ -56,6 +56,7 @@ impl ClientCommandDispatch {
         super::external_editor::register_shared(self, deps);
         super::telemetry::register_shared(self, deps);
         super::application_lifecycle::register_shared(self, deps);
+        super::installation::register_shared(self, deps);
     }
     #[cfg(any(test, feature = "test-support"))]
     pub fn with_worktree_mutations(

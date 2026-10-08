@@ -57,23 +57,3 @@ pub(crate) fn set_registered(_: bool) -> Result<(), String> {
 pub(crate) fn open_settings() -> Result<(), String> {
     Err("Login items require macOS.".into())
 }
-
-pub fn registration_location(executable: &std::path::Path) -> Result<(bool, bool), String> {
-    let translocated = executable
-        .components()
-        .any(|part| part.as_os_str() == "AppTranslocation");
-    #[cfg(target_os = "macos")]
-    let read_only = {
-        use std::os::unix::ffi::OsStrExt;
-        let path =
-            std::ffi::CString::new(executable.as_os_str().as_bytes()).map_err(|e| e.to_string())?;
-        let mut info = std::mem::MaybeUninit::<libc::statfs>::uninit();
-        if unsafe { libc::statfs(path.as_ptr(), info.as_mut_ptr()) } != 0 {
-            return Err(std::io::Error::last_os_error().to_string());
-        }
-        unsafe { info.assume_init() }.f_flags & libc::MNT_RDONLY as u32 != 0
-    };
-    #[cfg(not(target_os = "macos"))]
-    let read_only = false;
-    Ok((translocated, read_only))
-}

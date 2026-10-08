@@ -95,6 +95,19 @@ impl Daemon {
     }
 }
 
+fn compose_daemon_repository(
+    identity: domain::daemon::DaemonIdentity,
+    protocol: u32,
+    installation: &usecase::installation::InstallationUsecase,
+) -> Arc<adaptor::gateway::daemon::InMemoryDaemonRepository> {
+    Arc::new(adaptor::gateway::daemon::InMemoryDaemonRepository::new(
+        identity,
+        env!("CARGO_PKG_VERSION").into(),
+        protocol,
+        installation.cli_installation(),
+    ))
+}
+
 pub async fn compose(
     data_dir: PathBuf,
     #[cfg(any(target_os = "macos", target_os = "linux"))] provider_initial_search_path: Result<
@@ -110,11 +123,10 @@ pub async fn compose(
             .ok_or("failed to resolve daemon process identity")?,
     };
     let protocol = adaptor::presenter::client::descriptor::protocol();
-    let daemon_repository = Arc::new(adaptor::gateway::daemon::InMemoryDaemonRepository::new(
-        identity,
-        env!("CARGO_PKG_VERSION").into(),
-        protocol,
-    ));
+    let installation = Arc::new(usecase::installation::InstallationUsecase(Arc::new(
+        adaptor::gateway::installation::LocalInstallationService,
+    )));
+    let daemon_repository = compose_daemon_repository(identity, protocol, &installation);
     let daemon = usecase::daemon::DaemonUsecase::new(daemon_repository.clone());
     let retry_limiter = Arc::new(crate::common::retry::RetryLimiter::new());
     let failure_store = Arc::new(adaptor::gateway::failure_records::FailureRecordStore::default());
@@ -518,6 +530,7 @@ pub async fn compose(
         .to_string_lossy()
         .into_owned();
     let dependencies = super::client::ClientDependencies {
+        installation_usecase: Some(installation),
         workspace_node_command_usecase: Some(workspace_node_command_usecase),
         app_state: Some(app_state),
         workspace_state_store: Some(workspace_state_store),

@@ -1813,3 +1813,26 @@ it("作成した Session の識別子と公開 Node ID を操作の結果とし�
 	).resolves.toEqual({ agentSessionId: "session-1", nodeId: "session-node-1" });
 	expect(create).toHaveBeenCalledOnce();
 });
+
+it("CLI 設置 RPC の結果と配置拒否の理由を生成 adapter が変換する", async () => {
+	const reason = "Move Releash.app to Applications before installing the CLI.";
+	let refused = false;
+	connectFixture({
+		installCli: () => {
+			if (refused)
+				throw new ConnectError(reason, Code.FailedPrecondition, undefined, [
+					{
+						desc: CommandErrorSchema,
+						value: { variant: { case: "message", value: { value: reason } } },
+					},
+				]);
+			return { status: 1, path: "/usr/local/bin/releash" };
+		},
+	});
+	await expect(invokeClient("install_cli")).resolves.toEqual({
+		status: "installed",
+		path: "/usr/local/bin/releash",
+	});
+	refused = true;
+	await expect(invokeClient("install_cli")).rejects.toBe(reason);
+});

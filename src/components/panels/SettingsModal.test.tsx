@@ -519,21 +519,36 @@ describe("SettingsModal", () => {
 	});
 
 	it("明示したCLI設置ボタンの操作後に設置結果を表示する", async () => {
-		const message = "Installed /usr/local/bin/releash";
-		const delegate = vi.mocked(invokeTauri).getMockImplementation();
-		vi.mocked(invokeTauri).mockImplementation(async (command, args, options) =>
-			command === "install_cli" ? message : delegate?.(command, args, options),
-		);
+		const { invokeClient } = await import("@/lib/client");
+		const message = "Releash CLI installed at /usr/local/bin/releash";
+		vi.mocked(invokeClient).mockResolvedValue({
+			status: "installed",
+			path: "/usr/local/bin/releash",
+		} as never);
 		const user = userEvent.setup();
 		render(<SettingsModal {...defaultProps} />);
 		await user.click(screen.getByText("Background"));
 		expect(screen.queryByRole("status")).not.toBeInTheDocument();
-		expect(invokeTauri).not.toHaveBeenCalledWith("install_cli");
+		expect(invokeClient).not.toHaveBeenCalledWith("install_cli");
 		await user.click(
 			screen.getByRole("button", { name: "Install CLI command" }),
 		);
-		expect(invokeTauri).toHaveBeenCalledWith("install_cli");
+		expect(invokeClient).toHaveBeenCalledWith("install_cli");
 		expect(await screen.findByRole("status")).toHaveTextContent(message);
+	});
+	it("CLI の配置拒否を設定画面の alert に表示する", async () => {
+		const { invokeClient } = await import("@/lib/client");
+		const reason =
+			"Move Releash.app to Applications before installing the CLI.";
+		vi.mocked(invokeClient).mockRejectedValueOnce(reason);
+		const user = userEvent.setup();
+		render(<SettingsModal {...defaultProps} />);
+		await user.click(screen.getByText("Background"));
+		await user.click(
+			screen.getByRole("button", { name: "Install CLI command" }),
+		);
+		expect(await screen.findByRole("alert")).toHaveTextContent(reason);
+		expect(screen.queryByRole("status")).not.toBeInTheDocument();
 	});
 
 	it("購読の失敗を各設定に表示し回復した値で置き換える", async () => {

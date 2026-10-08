@@ -143,6 +143,7 @@ struct RecordingLoginItem {
     registered: std::sync::atomic::AtomicBool,
     calls: parking_lot::Mutex<Vec<&'static str>>,
 }
+#[async_trait::async_trait]
 impl crate::domain::login_item::LoginItemPort for RecordingLoginItem {
     fn status(&self) -> Result<crate::domain::login_item::LoginItemStatus, String> {
         self.calls.lock().push("status");
@@ -154,11 +155,8 @@ impl crate::domain::login_item::LoginItemPort for RecordingLoginItem {
             },
         )
     }
-    fn location(&self) -> Result<crate::domain::login_item::RegistrationLocation, String> {
-        Ok(crate::domain::login_item::RegistrationLocation {
-            translocated: false,
-            read_only: false,
-        })
+    async fn ensure_registration_allowed(&self) -> Result<(), String> {
+        Ok(())
     }
     fn register(&self) -> Result<(), String> {
         self.calls.lock().push("register");
