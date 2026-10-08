@@ -74,9 +74,13 @@ jobs:
         with:
           node-version: 24
           cache: pnpm
-      - run: pnpm install --frozen-lockfile
-      - run: pnpm exec playwright install --with-deps chromium
-      - run: pnpm test:behavior
+          cache-dependency-path: clients/desktop/pnpm-lock.yaml
+      - working-directory: clients/desktop
+        run: pnpm install --frozen-lockfile
+      - working-directory: clients/desktop
+        run: pnpm exec playwright install --with-deps chromium
+      - working-directory: clients/desktop
+        run: pnpm test:behavior
 
   coverage:
     needs: check
@@ -114,14 +118,17 @@ jobs:
         with:
           node-version: 24
           cache: pnpm
-      - run: pnpm install --frozen-lockfile
-      - run: pnpm exec vitest run --coverage
+          cache-dependency-path: clients/desktop/pnpm-lock.yaml
+      - working-directory: clients/desktop
+        run: pnpm install --frozen-lockfile
+      - working-directory: clients/desktop
+        run: pnpm exec vitest run --coverage
       - uses: codecov/codecov-action@v7
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           override_branch: main
           override_commit: ${{ steps.checkout.outputs.commit }}
-          files: coverage/coverage-final.json
+          files: clients/desktop/coverage/coverage-final.json
           flags: typescript
           fail_ci_if_error: true
       - name: Install Rust toolchain
@@ -130,7 +137,7 @@ jobs:
           rustup component add llvm-tools-preview
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: src-tauri
+          workspaces: .
           shared-key: coverage
           save-if: false
       - uses: taiki-e/install-action@cargo-llvm-cov
@@ -141,13 +148,13 @@ jobs:
           cargo llvm-cov --no-report --locked
           cargo llvm-cov --no-report --locked -p releash-desktop
           cargo llvm-cov report --workspace --codecov --output-path rust-codecov.json
-        working-directory: src-tauri
+        working-directory: .
       - uses: codecov/codecov-action@v7
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           override_branch: main
           override_commit: ${{ steps.checkout.outputs.commit }}
-          files: src-tauri/rust-codecov.json
+          files: rust-codecov.json
           flags: rust
           fail_ci_if_error: true
 
@@ -167,7 +174,7 @@ jobs:
           RELEASE_SHA: ${{ needs.check.outputs.sha }}
         with:
           script: |
-            const { version } = require('./package.json');
+            const { version } = require('./clients/desktop/package.json');
             if (!/^\d+\.\d+\.\d+$/.test(version)) throw new Error('Expected an X.Y.Z version');
             const date = new Date().toISOString().slice(0, 10).replaceAll('-', '');
             const tags = await github.paginate(github.rest.repos.listTags, {
@@ -194,8 +201,10 @@ jobs:
         with:
           node-version: 24
           cache: pnpm
+          cache-dependency-path: clients/desktop/pnpm-lock.yaml
 
-      - run: pnpm install --frozen-lockfile
+      - working-directory: clients/desktop
+        run: pnpm install --frozen-lockfile
 
       - name: Install Rust toolchain
         run: |
@@ -204,7 +213,7 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: src-tauri
+          workspaces: .
           shared-key: macos-universal
           save-if: false
 
@@ -233,8 +242,9 @@ jobs:
         with:
           uploadUpdaterJson: true
           releaseId: ${{ steps.create.outputs.release-id }}
+          projectPath: clients/desktop
           tauriScript: pnpm tauri
-          args: --target universal-apple-darwin --config src-tauri/releash-desktop/tauri.conf.bundle.json -- --features vendored-openssl
+          args: --target universal-apple-darwin --config tauri.conf.bundle.json -- --features vendored-openssl
 
       - name: Publish nightly
         uses: actions/github-script@v9

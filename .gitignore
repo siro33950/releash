@@ -39,16 +39,16 @@ yarn-debug.log*
 yarn-error.log*
 
 # Tauri
-src-tauri/target/
-src-tauri/releash-desktop/WixTools/
-src-tauri/releash-desktop/icons/generated/
-src-tauri/releash-desktop/generated/
-src-tauri/releash-desktop/gen/schemas/
+target/
+clients/desktop/WixTools/
+clients/desktop/icons/generated/
+clients/desktop/generated/
+clients/desktop/gen/schemas/
 
 # Rust
 *.rs.bk
 Cargo.lock
-!src-tauri/Cargo.lock
+!Cargo.lock
 
 # Debug
 debug/
@@ -57,7 +57,7 @@ debug/
 # Test coverage
 coverage/
 .nyc_output/
-src-tauri/rust-codecov.json
+rust-codecov.json
 .qlty/
 
 # Playwright
@@ -74,4 +74,4 @@ performance-results/
 *.tfvars
 !*.tfvars.example
 
-src-tauri/releash-desktop/binaries/
+clients/desktop/binaries/

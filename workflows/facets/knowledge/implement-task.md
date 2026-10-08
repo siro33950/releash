@@ -12,7 +12,7 @@ Task群は確認済みSpecの実装内容を完全に表し、Specにない要�
     {
       "task_id": "T-001",
       "requirements": ["R-001", "R-003"],
-      "files": ["src-tauri/src/usecase/..."],
+      "files": ["server/src/usecase/..."],
       "outputs": [
         "rejectionを処理するusecase",
         "正常系・異常系テスト"

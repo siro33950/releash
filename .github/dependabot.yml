@@ -1,7 +1,7 @@
 version: 2
 updates:
   - package-ecosystem: cargo
-    directory: /src-tauri
+    directory: /
     schedule:
       interval: weekly
     labels:
@@ -10,7 +10,7 @@ updates:
     open-pull-requests-limit: 10
 
   - package-ecosystem: npm
-    directory: /
+    directory: /clients/desktop
     schedule:
       interval: weekly
     labels:

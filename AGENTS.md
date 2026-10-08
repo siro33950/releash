@@ -40,7 +40,7 @@ Releash は、特定の作業単位や特定の道具を主語にしない。コ
 - **全てのアプリケーションロジックはサーバ（daemon）に置く。例外なし。**
 - client は、画面（frontend）と Tauri のシェルである。Tauri のシェルは Rust で書かれていても client であり、ロジックを置かない。
 - client に許すのは、表示とレイアウト制御、ユーザー入力の受付とフォーム状態管理、サーバの呼び出しと購読（接続、受け取り、つなぎ直し）、受け取ったデータの表示用フォーマット（日付表示形式の変換等）だけ。
-- サーバとの通信（呼び出し、購読、受け取り、つなぎ直し）は画面側の React（`src/lib/client.ts`）が直接行う。Tauri のシェルは通信を中継しない。Tauri のシェルが持つのは、ウィンドウ、daemon の起動と監視、更新、接続先の受け渡しなど desktop 固有の操作だけ。
+- サーバとの通信（呼び出し、購読、受け取り、つなぎ直し）は画面側の React（`clients/desktop/src/lib/client.ts`）が直接行う。Tauri のシェルは通信を中継しない。Tauri のシェルが持つのは、ウィンドウ、daemon の起動と監視、更新、接続先の受け渡しなど desktop 固有の操作だけ。
 - サーバに置くのは、ビジネスロジック全般、データ変換・加工・計算、バリデーション、外部リソースアクセス（ファイル、Git、ネットワーク等）。
 - 新しい振る舞いはサーバの usecase / query service の背後に実装し、client からは proto で定義した呼び出しと購読で使う。
 - workflow、session、artifact、terminal、review、persistence のロジックを client に追加しない。
@@ -49,12 +49,13 @@ Releash は、特定の作業単位や特定の道具を主語にしない。コ
 ### 通信の原則
 
 - サーバは状態を配信し、client は購読する。client からサーバへの単発の呼び出しは、状態を変える操作と、client の入力に対する計算だけ。
+- client とサーバの間の期限・再試行の値は proto の service option に置き、両側がそこから読む。同じやり取りの両側が同じ期限で動くためである。シェルの中だけの待ちなど、片側だけの待ちは対象外。
 
 ### 状態の所有者を明確にする
 
 - workflow runtime、workflow artifact、agent session state、review comment、terminal state、persistence の所有者を明確にする。
 - full-retention 設計を避ける。summary、page、id-based operation、delta で足りる場合に、session body、artifact、stream、workflow state 全体を clone / store / recompute / resend しない。
-- read model は、Tauri、local API、将来の daemon / native client が同じ backend-owned state を読める形にする。
+- read model は、Tauri、Connect の ClientService、将来の daemon / native client が同じ backend-owned state を読める形にする。
 - frontend state は UI に必要な状態の mirror に留め、domain behavior の source of truth にしない。
 
 ## 技術スタック
@@ -68,12 +69,12 @@ Releash は、特定の作業単位や特定の道具を主語にしない。コ
 
 ## 構成で押さえる点
 
-`src-tauri/` は Cargo workspace。root package `releashd` と `releash-desktop/` のシェルで Cargo.lock と target を共有し、版は `[workspace.package]` から継承する。シェルがサーバを使う公開入口は `desktop_api`、テスト用区画は `test-support` feature でのみ有効になる。
+リポジトリ直下は package を持たない Cargo workspace である。member はサーバ `server/`、CLI `clients/cli/`、desktop `clients/desktop/`。Cargo.lock と target を共有し、版は `[workspace.package]` から継承する。desktop の Rust は `clients/desktop/src-native/`、画面は `clients/desktop/src/` に置く。シェルがサーバを使う公開入口は `desktop_api`、テスト用区画は `test-support` feature でのみ有効になる。
 
 ディレクトリの内訳はコードを見る。コードからは読み取りにくい点だけ挙げる。
 
 - **workflow 定義はリポジトリ直下の `workflows/`** に置く。`*.yml` と `facets/{instructions,policies,knowledge}/*.md`。builtin は `adaptor/gateway/workflow/builtin.rs` が `include_str!` でコンパイル時に取り込むため、定義を追加するときは builtin.rs 側の登録も要る。
-- **実行ファイルは3つある**。`releash-desktop` は desktop シェル、`releashd` は daemon と内部 background worker、`releash`（`src-tauri/releash/`）は独立 CLI。CLI は `releash-sdk` だけを共有依存とし、backend には依存しない。共有 crate は生成された proto 型・descriptor・Connect client、発見と同一性確認、protocol 互換性を提供する。
+- **実行ファイルは3つある**。`releash-desktop` は desktop シェル、`releashd` は daemon と内部 background worker、`releash`（`clients/cli/`）は独立 CLI。CLI は backend に依存しない。サーバと CLI は `proto/` からそれぞれ型・descriptor・Connect 定義を生成する。発見と同一性確認、protocol 互換性、サーバの起動・停止は CLI の lib が提供し、desktop はこの lib に依存する。
 - **画面・CLI・hook は Connect の ClientService を使う**。契約は `proto/client.proto`、入口は `adaptor/controller/api/client*.rs`、処理は `adaptor/controller/client/`。Tauri コマンドは desktop 固有の操作だけを扱う。
 - **daemon は 127.0.0.1 のみに bind する**。`client-api.json` に port と client token を書き出す。CLI と画面はこのファイルだけを読む。
 
@@ -90,7 +91,7 @@ CI と同じコマンドを使う。PR・main push の検証は `.github/workflo
 - 実行できないチェックは理由と未検証範囲を報告し、成功扱いにしない。
 - lint が失敗した場合は、今回の変更に起因する問題を対象ファイルに限定して修正する。既存の問題は別途報告し、`pnpm lint:fix` による一括修正で範囲外の変更を混ぜない。
 
-PR 層（プロジェクトルート）:
+PR 層（`clients/desktop/`）:
 
 ```bash
 pnpm exec biome ci .
@@ -99,7 +100,7 @@ pnpm build
 pnpm test:integration
 ```
 
-PR 層（`src-tauri/`。CI では `CARGO_PROFILE_DEV_DEBUG="0"`）:
+PR 層（プロジェクトルート。CI では `CARGO_PROFILE_DEV_DEBUG="0"`）:
 
 ```bash
 cargo fmt --check -p releashd
@@ -121,10 +122,6 @@ cargo test --locked --lib --bins -p releash
 cargo test --locked --doc -p releash
 cargo build --locked -p releashd --bin releashd -p releash --bin releash
 cargo test --locked --test '*' -p releash
-cargo fmt --check -p releash-sdk
-cargo clippy --locked -p releash-sdk -- -D warnings
-cargo test --locked --lib -p releash-sdk
-cargo test --locked --doc -p releash-sdk
 ```
 
 品質ゲート（プロジェクトルート。サーバ・シェル・フロントをまたぐ検査）:
@@ -135,13 +132,12 @@ buf breaking --against '.git#branch=main,subdir=proto'
 node .github/scripts/test-placement.mjs
 ast-grep test
 qlty check --no-progress --all
-cd src-tauri
 cargo deny --locked check
 ```
 
 buf は CI と同じ 1.47.2 を使う。意図した非互換に `buf skip breaking` ラベルを効かせるには、ラベルを付けてから次の commit を push するか、PR を閉じて開き直す。
 
-nightly 層（プロジェクトルート）:
+nightly 層（`clients/desktop/`）:
 
 ```bash
 pnpm test:behavior
@@ -156,7 +152,6 @@ Rust coverage は `llvm-tools-preview` と `cargo-llvm-cov` が必要。Linux �
   export LLVM_PROFILE_FILE_NAME="releash-%m%c.profraw"
   export RUST_TEST_THREADS="2"
   python3 .github/scripts/coverage.test.py
-  cd src-tauri
   cargo llvm-cov clean --workspace
   cargo llvm-cov --no-report --locked
   cargo llvm-cov --no-report --locked -p releash-desktop
@@ -164,7 +159,7 @@ Rust coverage は `llvm-tools-preview` と `cargo-llvm-cov` が必要。Linux �
 )
 ```
 
-サーバの Tauri 依存は、`src-tauri/` で `cargo tree -p releashd -i tauri -e normal,dev,build --target all --all-features` を実行して確認する。依存がないときの確認済みの結果は終了コード `101`、出力は ``error: package ID specification `tauri` did not match any packages``（続いて ``help: a package with a similar name exists: `ntapi` ``）。この終了コードは依存が見つからないことを示す。
+サーバの Tauri 依存は、プロジェクトルートで `cargo tree -p releashd -i tauri -e normal,dev,build --target all --all-features` を実行して確認する。依存がないときの確認済みの結果は終了コード `101`、出力は ``error: package ID specification `tauri` did not match any packages``（続いて ``help: a package with a similar name exists: `ntapi` ``）。この終了コードは依存が見つからないことを示す。
 
 ## テスト方針
 
@@ -173,7 +168,7 @@ Rust テストの配置、命名、レイヤー別の必須／柔軟、モック
 フロントエンド:
 
 - テストは対象ファイルの隣に `*.test.tsx` / `*.test.ts` として置く。
-- `@tauri-apps/api` の `core` / `event`、xterm、`plugin-dialog` / `plugin-updater` / `plugin-process` は `src/test/setup.ts` で mock 済み。個別ファイルで重ねて mock しない。
+- `@tauri-apps/api` の `core` / `event`、xterm、`plugin-dialog` / `plugin-updater` / `plugin-process` は `clients/desktop/src/test/setup.ts` で mock 済み。個別ファイルで重ねて mock しない。
 - `react-resizable-panels` は jsdom で動作しないため、使うテストごとに `vi.mock` する。
 - 外部プロセスはテストで実行しない。
 - utility は入出力と edge case、hook は状態遷移と副作用、component は user interaction と conditional rendering をテストする。
@@ -182,7 +177,7 @@ Rust テストの配置、命名、レイヤー別の必須／柔軟、モック
 
 ### フロントエンド
 
-- インデントは tab。import 整理を含め Biome に従う。Biome の対象は `src/**`、`*.json`、`vite.config.ts`（`tests/` は対象外）。
+- インデントは tab。import 整理を含め Biome に従う。Biome の対象は `clients/desktop/src/**`、`*.json`、`clients/desktop/vite.config.ts`（`tests/` は対象外）。
 - UI component は shadcn/ui と Radix UI をベースにする。styling は TailwindCSS。
 - React component は interface-oriented に保つ。domain decision を hook、reducer、view helper に埋め込まない。
 
@@ -207,13 +202,13 @@ Rust テストの配置、命名、レイヤー別の必須／柔軟、モック
 2. PR 層の検証一式がすべて成功したら、tauri-action で署名・公証済みの macOS universal ビルドを作り、prerelease を公開する。`coverage` は関門に含めない。署名・公証、updater の署名、telemetry の値は 1Password から取得する。
 3. nightly のタグは `v{X.Y.Z}-nightly.{YYYYMMDD}.{N}`（UTC のビルド日、日ごとに 1 から採番）。リポジトリとアプリの版は `X.Y.Z` のまま。nightly の Release は直近 14 件を残す。nightly は GitHub Release から手動で取得する。
 4. `Stable` を `workflow_dispatch` で起動し、`nightly` に公開済み nightly のタグを指定する。その commit からビルド・署名・公証をやり直し、`vX.Y.Z` を stable の latest Release として公開する。`vX.Y.Z` タグは 1Password の `releash-stable-release`（Contents / Workflows write の fine-grained PAT）で作る。`GITHUB_TOKEN` は workflow ファイルがブランチ先端と異なる commit にタグを作れないため。`latest.json` により既存の Tauri updater で更新できる。
-5. stable 公開後、main の版の patch を 1 つ上げ、`package.json`、`src-tauri/releash-desktop/tauri.conf.json`、`src-tauri/Cargo.toml`、`src-tauri/Cargo.lock` を揃える PR を作る。別の上げ幅が必要なら、`Bump Version` を `workflow_dispatch`（patch / minor / major）で実行して版更新 PR を作る。
+5. stable 公開後、main の版の patch を 1 つ上げ、`clients/desktop/package.json`、`clients/desktop/tauri.conf.json`、`Cargo.toml`、`Cargo.lock` を揃える PR を作る。別の上げ幅が必要なら、`Bump Version` を `workflow_dispatch`（patch / minor / major）で実行して版更新 PR を作る。
 
 ## セキュリティ
 
-- 依存の advisory とライセンスは `cargo deny`（`src-tauri/deny.toml` の allow list）で検査する。新しいライセンスの依存を足すときは allow list への追記が要る。
+- 依存の advisory とライセンスは `cargo deny`（`deny.toml` の allow list）で検査する。新しいライセンスの依存を足すときは allow list への追記が要る。
 - CodeQL が javascript-typescript を PR と週次で解析する。
-- Tauri capability は `src-tauri/releash-desktop/capabilities/`。`startup-pre-admission` は permissions を空にし、main window は Rust の startup authority が Ready に達した後にだけ作る。permission を追加するときは対象 window を確認する。
+- Tauri capability は `clients/desktop/capabilities/`。`startup-pre-admission` は permissions を空にし、main window は Rust の startup authority が Ready に達した後にだけ作る。permission を追加するときは対象 window を確認する。
 - hook の token はファイルに書かず、provider の agent を起動する env だけで渡す。terminal 用は別 token を使う。
 - Lua の評価環境は外部 I/O を持たず、メモリ量と命令数に上限がある。この上限を緩めない。
 - command テンプレートの `{{ }}` は shell quoting を行わない。信頼できない値を shell syntax へ直接連結しない。
@@ -233,6 +228,6 @@ Releash を変更するときは、次を確認する。
 - 変更した state の source of truth は明確か。
 - ドメインの規則（判断・計算・分類・検証・遷移）を domain が所有しているか。状態を持つ概念は集約が、持たない概念は値オブジェクトとドメインサービスが表現しているか。同じ概念が二つの場所で表現されていないか。domain の型と規則は実行経路にあるか。
 - full-retention / full-recompute 経路を増やしていないか。
-- 同じ backend-owned state を Tauri、local API、将来の client surface で再利用できるか。
+- 同じ backend-owned state を Tauri、Connect の ClientService、将来の client surface で再利用できるか。
 - artifact が workflow の判断材料として扱われているか。
 - `docs/glossary/DOMAIN.md` の使用禁止語を持ち込んでいないか。

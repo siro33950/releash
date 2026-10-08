@@ -63,7 +63,7 @@ jobs:
         with:
           github-token: ${{ steps.secrets.outputs.STABLE_RELEASE_TOKEN }}
           script: |
-            const { version } = require('./package.json');
+            const { version } = require('./clients/desktop/package.json');
             if (!/^\d+\.\d+\.\d+$/.test(version)) throw new Error('Expected an X.Y.Z version');
             if (!process.env.NIGHTLY_TAG.startsWith(`v${version}-nightly.`)) throw new Error('Nightly tag and repository version differ');
             const tag = `v${version}`;
@@ -113,8 +113,10 @@ jobs:
         with:
           node-version: 24
           cache: pnpm
+          cache-dependency-path: clients/desktop/pnpm-lock.yaml
 
-      - run: pnpm install --frozen-lockfile
+      - working-directory: clients/desktop
+        run: pnpm install --frozen-lockfile
 
       - name: Install Rust toolchain
         run: |
@@ -123,7 +125,7 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: src-tauri
+          workspaces: .
           shared-key: macos-universal
           save-if: false
 
@@ -152,8 +154,9 @@ jobs:
         with:
           uploadUpdaterJson: true
           releaseId: ${{ needs.create-release.outputs.release-id }}
+          projectPath: clients/desktop
           tauriScript: pnpm tauri
-          args: --target universal-apple-darwin --config src-tauri/releash-desktop/tauri.conf.bundle.json -- --features vendored-openssl
+          args: --target universal-apple-darwin --config tauri.conf.bundle.json -- --features vendored-openssl
 
   publish:
     needs: [create-release, build]
@@ -192,27 +195,27 @@ jobs:
 
       - name: Calculate next patch version
         run: |
-          CURRENT=$(jq -r '.version' src-tauri/releash-desktop/tauri.conf.json)
+          CURRENT=$(jq -r '.version' clients/desktop/tauri.conf.json)
           [[ "$CURRENT" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
           IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT"
           echo "VERSION=${MAJOR}.${MINOR}.$((PATCH + 1))" >> "$GITHUB_ENV"
 
       - name: Bump version in files
         run: |
-          jq --tab --arg v "$VERSION" '.version = $v' package.json > tmp.json && mv tmp.json package.json
-          jq --arg v "$VERSION" '.version = $v' src-tauri/releash-desktop/tauri.conf.json > tmp.json && mv tmp.json src-tauri/releash-desktop/tauri.conf.json
-          sed -i "s/^version = \".*\"/version = \"$VERSION\"/" src-tauri/Cargo.toml
-          sed -i -E '/^name = "releash-(backend|desktop)"$/{n;s/^version = ".*"/version = "'"$VERSION"'"/}' src-tauri/Cargo.lock
+          jq --tab --arg v "$VERSION" '.version = $v' clients/desktop/package.json > tmp.json && mv tmp.json clients/desktop/package.json
+          jq --arg v "$VERSION" '.version = $v' clients/desktop/tauri.conf.json > tmp.json && mv tmp.json clients/desktop/tauri.conf.json
+          sed -i "s/^version = \".*\"/version = \"$VERSION\"/" Cargo.toml
+          sed -i -E '/^name = "(releashd|releash|releash-desktop)"$/{n;s/^version = ".*"/version = "'"$VERSION"'"/}' Cargo.lock
 
       - name: Create PR
         uses: peter-evans/create-pull-request@v8
         with:
           base: main
           add-paths: |
-            package.json
-            src-tauri/releash-desktop/tauri.conf.json
-            src-tauri/Cargo.toml
-            src-tauri/Cargo.lock
+            clients/desktop/package.json
+            clients/desktop/tauri.conf.json
+            Cargo.toml
+            Cargo.lock
           commit-message: "release: v${{ env.VERSION }}"
           branch: release/v${{ env.VERSION }}
           title: "release: v${{ env.VERSION }}"

@@ -6,7 +6,7 @@ exclude_patterns = [
     "**/dist/**",
     "**/coverage/**",
     "**/*.min.js",
-    "src-tauri/resources/**",
+    "server/resources/**",
 ]
 
 [[source]]
@@ -19,6 +19,7 @@ name = "clippy"
 [[plugin]]
 name = "biome"
 version = "2.5.15"
+prefix = "clients/desktop"
 
 [[plugin]]
 name = "ast-grep"

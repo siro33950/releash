@@ -1,0 +1,643 @@
+use super::*;
+use serde_json::{json, Value};
+
+fn execution(nodes: &str) -> ExecutionTree {
+    ExecutionTree::restore_runtime(ExecutionTreeRestore {
+        id: "execution".into(),
+        workflow: serde_saphyr::from_str(&format!(
+            "name: isolated\ndescription: test\nnodes:\n{nodes}"
+        ))
+        .unwrap(),
+        worktree_path: "/repo-root-worktrees/development".into(),
+        repository_root: Some("/repo-root".into()),
+        ..Default::default()
+    })
+}
+
+fn ids() -> impl FnMut() -> String {
+    let mut count = 0;
+    move || {
+        count += 1;
+        format!("node-{count}")
+    }
+}
+
+fn leaves(advance: AppliedAdvance) -> Vec<NodeStart> {
+    match advance.decision {
+        ExecutionAdvanceDecision::StartNodes(leaves) => leaves,
+        other => panic!("expected starts: {other:?}"),
+    }
+}
+
+fn complete(
+    execution: &mut ExecutionTree,
+    start: &NodeStart,
+    artifact: Option<Value>,
+    ids: &mut dyn FnMut() -> String,
+) -> AppliedAdvance {
+    let leaf = expect_leaf(start);
+    if artifact.is_some() {
+        assert_eq!(
+            execution.record_pending_result(
+                &leaf.node_execution_id,
+                None,
+                artifact,
+                None,
+                None,
+                2.0
+            ),
+            TransitionOutcome::Applied
+        );
+    }
+    if leaf.kind == LeafKind::Session {
+        for signal in [NodeCompletionSignal::Submit, NodeCompletionSignal::Stop] {
+            assert_eq!(
+                execution.record_node_completion_signal(&leaf.node_execution_id, signal, 3.0),
+                TransitionOutcome::Applied
+            );
+        }
+        let completed = execution
+            .apply_node_completion_handshake(&leaf.node_execution_id, ids, 3.0)
+            .unwrap();
+        AppliedAdvance {
+            decision: completed.advance.unwrap(),
+            events: completed.events,
+        }
+    } else {
+        execution
+            .complete_leaf_and_advance(&leaf.node_execution_id, ids, 3.0)
+            .unwrap()
+    }
+}
+
+#[test]
+fn test_隔離実行_sequence準備完了後だけchildを始めsharedと省略は親を継承する() {
+    // Given
+    let mut execution = execution("  main: {worktree: isolated, sequence: {children: [first, second]}}\n  first: {session: {provider: codex}}\n  second: {worktree: shared, command: 'true'}");
+    let mut ids = ids();
+
+    // When
+    let root = leaves(execution.start_root(&mut ids, 1.0).unwrap()).remove(0);
+    let path = execution
+        .execution_worktree_path(root.node_execution_id())
+        .unwrap()
+        .to_string();
+
+    // Then
+    assert_eq!(execution.node_executions.len(), 1);
+    assert_eq!(
+        execution.parent_worktree_path(root.node_execution_id()),
+        Some("/repo-root-worktrees/development")
+    );
+    assert!(path.starts_with("/repo-root-worktrees/.releash-isolated/"));
+    let first = leaves(
+        execution
+            .start_prepared_composite(root.node_execution_id(), &mut ids, 1.0)
+            .unwrap(),
+    )
+    .remove(0);
+    assert_eq!(
+        execution.execution_worktree_path(first.node_execution_id()),
+        Some(path.as_str())
+    );
+    assert!(execution
+        .node_execution(first.node_execution_id())
+        .unwrap()
+        .worktree
+        .is_none());
+    let second = leaves(complete(&mut execution, &first, None, &mut ids)).remove(0);
+    assert_eq!(
+        execution.execution_worktree_path(second.node_execution_id()),
+        Some(path.as_str())
+    );
+    complete(&mut execution, &second, Some(json!({"ok": true})), &mut ids);
+    let artifact = execution
+        .node_execution(root.node_execution_id())
+        .unwrap()
+        .artifact
+        .as_ref()
+        .unwrap();
+    assert_eq!(artifact["worktree"]["path"], path);
+    assert_eq!(artifact["second"]["ok"], true);
+    assert!(artifact.get("first").is_none());
+}
+
+#[test]
+fn test_隔離実行_fanout本体は単一環境を共有し隔離childはslotごとの環境を持つ() {
+    // Given
+    for isolated_children in [false, true] {
+        let child_mode = if isolated_children {
+            "isolated"
+        } else {
+            "shared"
+        };
+        let mut execution = execution(&format!("  main: {{worktree: isolated, fanout: {{children: [one, two]}}}}\n  one: {{worktree: {child_mode}, session: {{provider: codex}}}}\n  two: {{worktree: {child_mode}, session: {{provider: codex}}}}"));
+        let mut ids = ids();
+        let root = leaves(execution.start_root(&mut ids, 1.0).unwrap()).remove(0);
+        let root_path = execution
+            .execution_worktree_path(root.node_execution_id())
+            .unwrap()
+            .to_string();
+
+        // When
+        let slots = leaves(
+            execution
+                .start_prepared_composite(root.node_execution_id(), &mut ids, 1.0)
+                .unwrap(),
+        );
+
+        // Then
+        assert_eq!(slots.len(), 2);
+        let paths = slots
+            .iter()
+            .map(|slot| {
+                execution
+                    .execution_worktree_path(slot.node_execution_id())
+                    .unwrap()
+                    .to_string()
+            })
+            .collect::<Vec<_>>();
+        if isolated_children {
+            assert_ne!(paths[0], paths[1]);
+        } else {
+            assert_eq!(paths, vec![root_path.clone(); 2]);
+        }
+        for slot in &slots {
+            assert_eq!(
+                execution.parent_worktree_path(slot.node_execution_id()),
+                Some(root_path.as_str())
+            );
+            complete(&mut execution, slot, None, &mut ids);
+        }
+        let artifact = execution
+            .node_execution(root.node_execution_id())
+            .unwrap()
+            .artifact
+            .as_ref()
+            .unwrap();
+        assert_eq!(artifact["worktree"]["path"], root_path);
+        for slot in slots {
+            let value = &artifact[slot.node_name()];
+            if isolated_children {
+                assert!(value["worktree"]["path"].is_string());
+            } else {
+                assert!(value.is_null());
+            }
+        }
+    }
+}
+
+#[test]
+fn test_隔離実行_隔離sessionの成果を配線し後続はrootで実行する() {
+    // Given
+    let mut execution = execution("  main:\n    sequence:\n      children:\n        - part\n        - report: {inputs: {path: part.work.worktree.path, branch: part.work.worktree.branch}}\n  part: {sequence: {children: [work]}}\n  work: {worktree: isolated, session: {provider: codex}}\n  report: {input: [path, branch], command: 'true', env: {PATH_VALUE: path, BRANCH: branch}}");
+    let mut ids = ids();
+    let work = leaves(execution.start_root(&mut ids, 1.0).unwrap()).remove(0);
+    let worktree = execution
+        .node_execution(work.node_execution_id())
+        .unwrap()
+        .worktree
+        .clone()
+        .unwrap();
+
+    // When
+    let report = leaves(complete(&mut execution, &work, None, &mut ids)).remove(0);
+
+    // Then
+    assert_eq!(
+        expect_leaf(&report).bindings,
+        vec![
+            ("path".into(), json!(worktree.path)),
+            ("branch".into(), json!(worktree.branch))
+        ]
+    );
+    let command = execution
+        .workflow
+        .as_ref()
+        .unwrap()
+        .node_by_name("report")
+        .unwrap()
+        .command_spec()
+        .unwrap();
+    let environment = workflow_reference::resolve_command_environment(
+        &command.env,
+        &expect_leaf(&report).bindings,
+    )
+    .unwrap();
+    assert!(environment.contains(&("BRANCH".into(), worktree.branch.clone())));
+    assert_eq!(
+        execution.execution_worktree_path(report.node_execution_id()),
+        Some("/repo-root-worktrees/development")
+    );
+    assert_eq!(
+        execution
+            .node_execution(work.node_execution_id())
+            .unwrap()
+            .artifact,
+        Some(json!({"worktree": {"path": worktree.path, "branch": worktree.branch}}))
+    );
+}
+
+#[test]
+fn test_隔離実行_自動retryは異なる識別子とattemptでworktreeを導出する() {
+    // Given
+    let mut execution = execution("  main: {sequence: {children: [work]}}\n  work: {worktree: isolated, session: {provider: codex}}");
+    let mut ids = ids();
+    let first = leaves(execution.start_root(&mut ids, 1.0).unwrap()).remove(0);
+    let previous = execution
+        .node_execution(first.node_execution_id())
+        .unwrap()
+        .worktree
+        .clone()
+        .unwrap();
+
+    // When
+    let retry = NodeStart::Leaf(
+        execution
+            .restart_node_attempt_at(first.node_execution_id(), ids(), 2.0)
+            .unwrap()
+            .leaf,
+    );
+
+    // Then
+    let node = execution.node_execution(retry.node_execution_id()).unwrap();
+    assert_eq!(node.attempt, 2);
+    assert_ne!(node.id, first.node_execution_id());
+    assert_ne!(node.worktree.as_ref().unwrap().path, previous.path);
+    assert!(node.worktree.as_ref().unwrap().branch.ends_with("-a2"));
+    assert_eq!(
+        execution
+            .node_execution(first.node_execution_id())
+            .unwrap()
+            .worktree
+            .as_ref(),
+        Some(&previous)
+    );
+}
+
+#[test]
+fn test_隔離実行_items展開された同じsequenceのslotを独立させる() {
+    // Given
+    let mut execution = execution("  main: {fanout: {items: [x, y], children: [group]}}\n  group: {worktree: isolated, sequence: {children: [work]}}\n  work: {session: {provider: codex}}");
+    let mut ids = ids();
+
+    // When
+    let groups = leaves(execution.start_root(&mut ids, 1.0).unwrap());
+
+    // Then
+    assert_eq!(groups.len(), 2);
+    let paths = groups
+        .iter()
+        .map(|group| {
+            execution
+                .execution_worktree_path(group.node_execution_id())
+                .unwrap()
+                .to_string()
+        })
+        .collect::<Vec<_>>();
+    assert_ne!(paths[0], paths[1]);
+    for (index, group) in groups.iter().enumerate() {
+        let work = leaves(
+            execution
+                .start_prepared_composite(group.node_execution_id(), &mut ids, 2.0)
+                .unwrap(),
+        )
+        .remove(0);
+        assert_eq!(
+            execution.execution_worktree_path(work.node_execution_id()),
+            Some(paths[index].as_str())
+        );
+        complete(&mut execution, &work, None, &mut ids);
+    }
+    let artifact = execution.node_executions[0].artifact.as_ref().unwrap();
+    assert_eq!(artifact["0"]["worktree"]["path"], paths[0]);
+    assert_eq!(artifact["1"]["worktree"]["path"], paths[1]);
+}
+
+#[test]
+fn test_隔離実行_contractの成果にworktreeを追加して保持する() {
+    // Given
+    for kind in ["command: 'true'", "session: {provider: codex}"] {
+        let mut execution = execution(&format!("  main: {{worktree: isolated, {kind}}}"));
+        let mut ids = ids();
+        let leaf = leaves(execution.start_root(&mut ids, 1.0).unwrap()).remove(0);
+        let expected = execution
+            .node_execution(leaf.node_execution_id())
+            .unwrap()
+            .worktree
+            .clone()
+            .unwrap();
+
+        // When
+        complete(
+            &mut execution,
+            &leaf,
+            Some(json!({"summary": "done", "ok": true})),
+            &mut ids,
+        );
+
+        // Then
+        assert_eq!(
+            execution
+                .node_execution(leaf.node_execution_id())
+                .unwrap()
+                .artifact,
+            Some(
+                json!({"summary": "done", "ok": true, "worktree": {"path": expected.path, "branch": expected.branch}})
+            )
+        );
+    }
+}
+
+#[test]
+fn test_隔離実行_repository_rootがない開始記録を拒否する() {
+    // Given
+    let mut execution = execution("  main: {worktree: isolated, command: 'true'}");
+    execution.runtime.repository_root = None;
+
+    // When / Then
+    assert!(execution.start_root(&mut ids(), 1.0).is_err());
+    assert_eq!(
+        execution.begin_node_attempt(
+            "main".into(),
+            NodeKindName::Command,
+            1,
+            None,
+            "node".into(),
+            1.0
+        ),
+        Err(TransitionRejection::MissingRepositoryRoot)
+    );
+    assert!(execution.node_executions.is_empty());
+}
+
+#[test]
+fn test_隔離実行_正本のfix_allはfix_and_verifyをslotごとに隔離し修正と検証が継承する() {
+    // Given
+    let workflow = serde_saphyr::from_str(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../workflows/examples/full-cycle-development.yml"
+    )))
+    .unwrap();
+    let mut execution = ExecutionTree::restore_runtime(ExecutionTreeRestore {
+        id: "canonical-fix-execution".into(),
+        workflow,
+        worktree_path: "/repo".into(),
+        repository_root: Some("/repo".into()),
+        ..Default::default()
+    });
+    assert!(execution
+        .workflow
+        .as_ref()
+        .unwrap()
+        .node_by_name("fix_and_verify")
+        .unwrap()
+        .is_isolated());
+    execution
+        .replay_node_started("main", "main", NodeKindName::Sequence, 1, None, 1.0)
+        .unwrap();
+    execution
+        .replay_node_started(
+            "fix-round",
+            "fix_round",
+            NodeKindName::Sequence,
+            1,
+            Some(ExecutionParentRef::sequence_child("main")),
+            2.0,
+        )
+        .unwrap();
+    execution
+        .replay_node_started(
+            "plan",
+            "create_fix_plan",
+            NodeKindName::Session,
+            1,
+            Some(ExecutionParentRef::sequence_child("fix-round")),
+            3.0,
+        )
+        .unwrap();
+    let plan = execution.leaf_start_for("plan").unwrap();
+    let tasks = (1..=2)
+        .map(|index| {
+            json!({
+                "task_id": format!("task-{index}"),
+                "thread_id": format!("thread-{index}"),
+                "target_files": [],
+                "implementation_steps": [],
+                "acceptance_criteria": [],
+                "non_goals": [],
+                "source_policy": "policy"
+            })
+        })
+        .collect::<Vec<_>>();
+    let mut ids = ids();
+
+    // When
+    let slots = leaves(complete(
+        &mut execution,
+        &NodeStart::Leaf(plan),
+        Some(json!({"tasks": tasks, "summary": "two fixes"})),
+        &mut ids,
+    ));
+
+    // Then
+    assert_eq!(slots.len(), 2);
+    let worktrees = slots
+        .iter()
+        .map(|slot| {
+            assert_eq!(slot.node_name(), "fix_and_verify");
+            let node = execution.node_execution(slot.node_execution_id()).unwrap();
+            let parent = node.parent.as_ref().unwrap();
+            assert_eq!(
+                execution
+                    .node_execution(&parent.parent_id)
+                    .unwrap()
+                    .node_name,
+                "fix_all"
+            );
+            assert!(parent.fanout_slot().is_some());
+            assert_eq!(execution.parent_worktree_path(&node.id), Some("/repo"));
+            node.worktree.clone().unwrap()
+        })
+        .collect::<Vec<_>>();
+    assert_ne!(worktrees[0].path, worktrees[1].path);
+    assert_ne!(worktrees[0].branch, worktrees[1].branch);
+    for (slot, worktree) in slots.iter().zip(worktrees) {
+        let fixes = leaves(
+            execution
+                .start_prepared_composite(slot.node_execution_id(), &mut ids, 4.0)
+                .unwrap(),
+        );
+        assert_eq!(fixes.len(), 1);
+        assert_eq!(fixes[0].node_name(), "fix_task");
+        assert_eq!(
+            execution.execution_worktree_path(fixes[0].node_execution_id()),
+            Some(worktree.path.as_str())
+        );
+        let verifies = leaves(complete(&mut execution, &fixes[0], None, &mut ids));
+        assert_eq!(verifies.len(), 1);
+        assert_eq!(verifies[0].node_name(), "verify_fix");
+        assert_eq!(
+            execution.execution_worktree_path(verifies[0].node_execution_id()),
+            Some(worktree.path.as_str())
+        );
+    }
+}
+
+#[test]
+fn test_起動契約_隔離合成子は準備要求だけを返し葉runtimeとして起動できない() {
+    for kind in ["sequence", "fanout"] {
+        // Given
+        let mut execution = execution(&format!("  main: {{worktree: isolated, {kind}: {{children: [work]}}}}\n  work: {{command: 'true'}}"));
+        let mut ids = ids();
+        // When
+        let starts = leaves(execution.start_root(&mut ids, 1.0).unwrap());
+        // Then
+        let [NodeStart::PrepareComposite(composite)] = starts.as_slice() else {
+            panic!("composite must require preparation");
+        };
+        assert!(execution
+            .leaf_start_for(&composite.node_execution_id)
+            .is_err());
+        let prepared = execution
+            .start_prepared_composite(&composite.node_execution_id, &mut ids, 2.0)
+            .unwrap();
+        let children = leaves(prepared);
+        let [NodeStart::Leaf(leaf)] = children.as_slice() else {
+            panic!("command must have a leaf runtime");
+        };
+        assert_eq!(leaf.kind, LeafKind::Command);
+        assert_eq!(leaf.node_name, "work");
+    }
+}
+
+#[test]
+fn test_worktree準備判定_実行中と導出で完了済みの合成子を許可しabort後を拒否する() {
+    // Given
+    let mut execution = execution("  main: {worktree: isolated, fanout: {items: [], children: [work]}}\n  work: {command: true}");
+    let mut ids = ids();
+    let root = leaves(execution.start_root(&mut ids, 1.0).unwrap()).remove(0);
+    let id = root.node_execution_id();
+    // When / Then
+    assert!(execution.can_prepare_node_worktree(id));
+    let mut aborted = execution.clone();
+    aborted.transition_aborted();
+    assert!(!aborted.can_prepare_node_worktree(id));
+    execution
+        .start_prepared_composite(id, &mut ids, 2.0)
+        .unwrap();
+    assert_eq!(
+        execution.node_execution(id).unwrap().status,
+        RuntimeNodeExecutionStatus::Succeeded
+    );
+    assert!(execution.can_prepare_node_worktree(id));
+    assert!(!execution.can_prepare_node_worktree("missing"));
+}
+
+#[test]
+fn test_合成子再入_成功済みの祖先から未実行の後続へ一度だけ前進する() {
+    // Given
+    let mut execution = execution("  main: {sequence: {children: [group, next]}}\n  group: {sequence: {children: [inner]}}\n  inner: {worktree: isolated, fanout: {items: [], children: [work]}}\n  work: {command: 'true'}\n  next: {command: 'true'}");
+    let mut ids = ids();
+    let inner = leaves(execution.start_root(&mut ids, 1.0).unwrap()).remove(0);
+    let group = execution
+        .node_execution(inner.node_execution_id())
+        .unwrap()
+        .parent
+        .as_ref()
+        .unwrap()
+        .parent_id
+        .clone();
+    for id in [inner.node_execution_id(), group.as_str()] {
+        assert_eq!(
+            execution.complete_node_execution(id, None, None, 2.0),
+            TransitionOutcome::Applied
+        );
+    }
+
+    // When
+    let applied = execution
+        .start_prepared_composite(inner.node_execution_id(), &mut ids, 3.0)
+        .unwrap();
+
+    // Then
+    assert!(!applied.events.is_empty());
+    let starts = leaves(applied);
+    assert_eq!(starts.len(), 1);
+    assert_eq!(starts[0].node_name(), "next");
+    let count = execution.node_executions.len();
+    let repeated = execution
+        .start_prepared_composite(inner.node_execution_id(), &mut ids, 4.0)
+        .unwrap();
+    assert!(matches!(
+        repeated.decision,
+        ExecutionAdvanceDecision::Persist
+    ));
+    assert!(repeated.events.is_empty());
+    assert_eq!(execution.node_executions.len(), count);
+}
+
+#[test]
+fn test_合成子再入_成功済みdelegate子は未注入の結果だけ返す() {
+    // Given
+    let mut execution = execution("  main:\n    session: {provider: codex}\n    artifact: result\n    completion:\n      delegate: {child: group, when: child.work.ok, max_iterations: 2}\n  group: {worktree: isolated, sequence: {children: [work]}}\n  work: {command: 'true'}");
+    let mut ids = ids();
+    let parent = leaves(execution.start_root(&mut ids, 1.0).unwrap()).remove(0);
+    let parent_id = parent.node_execution_id();
+    execution.attach_node_session(parent_id, "session".into(), 1.0);
+    execution.record_node_completion_signal(parent_id, NodeCompletionSignal::Submit, 2.0);
+    execution.apply_submitted_output(
+        "main".into(),
+        parent_id,
+        1,
+        Some("session".into()),
+        "result".into(),
+        json!({}),
+        None,
+        2.0,
+    );
+    execution.record_node_completion_signal(parent_id, NodeCompletionSignal::Stop, 2.0);
+    let advance = execution
+        .apply_node_completion_handshake(parent_id, &mut ids, 2.0)
+        .unwrap();
+    let Some(ExecutionAdvanceDecision::StartNodes(starts)) = advance.advance else {
+        panic!("delegate child must start");
+    };
+    let child_id = starts[0].node_execution_id();
+    let work = leaves(
+        execution
+            .start_prepared_composite(child_id, &mut ids, 2.0)
+            .unwrap(),
+    )
+    .remove(0);
+    complete(&mut execution, &work, Some(json!({"ok": false})), &mut ids);
+    assert_eq!(
+        execution.node_execution(child_id).unwrap().status,
+        RuntimeNodeExecutionStatus::Succeeded
+    );
+    let count = execution.node_executions.len();
+
+    // When
+    let applied = execution
+        .start_prepared_composite(child_id, &mut ids, 4.0)
+        .unwrap();
+
+    // Then
+    assert!(applied.events.is_empty());
+    let starts = leaves(applied);
+    let [NodeStart::InjectDelegate(injection)] = starts.as_slice() else {
+        panic!("pending result must be injected");
+    };
+    assert_eq!(injection.node_execution_id, parent_id);
+    assert_eq!(injection.child_execution_id, child_id);
+    execution.record_delegate_injected(injection, 4.0);
+    let repeated = execution
+        .start_prepared_composite(child_id, &mut ids, 5.0)
+        .unwrap();
+    assert!(matches!(
+        repeated.decision,
+        ExecutionAdvanceDecision::Persist
+    ));
+    assert!(repeated.events.is_empty());
+    assert_eq!(execution.node_executions.len(), count);
+}

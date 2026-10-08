@@ -3,12 +3,12 @@ language: Rust
 severity: warning
 message: 外部の資源を使うテストは Rust の tests/ に移してください
 files:
-  - src-tauri/src/**/*_test.rs
-  - src-tauri/src/**/test_helpers*.rs
-  - src-tauri/src/**/test_support/**/*.rs
-  - src-tauri/releash-desktop/src/**/*_test.rs
-  - src-tauri/releash-desktop/src/**/test_helpers*.rs
-  - src-tauri/releash-desktop/src/**/test_support/**/*.rs
+  - server/src/**/*_test.rs
+  - server/src/**/test_helpers*.rs
+  - server/src/**/test_support/**/*.rs
+  - clients/desktop/src-native/**/*_test.rs
+  - clients/desktop/src-native/**/test_helpers*.rs
+  - clients/desktop/src-native/**/test_support/**/*.rs
 rule:
   any:
     - all:
