@@ -41,7 +41,9 @@ pub fn build_client_dependencies(
             ),
         )),
         data_dir: Ok(data_dir),
-        daemon: crate::usecase::daemon::DaemonUsecase(crate::adaptor::gateway::daemon::serving()),
+        daemon: crate::usecase::daemon::DaemonUsecase::new(
+            crate::adaptor::gateway::daemon::serving(),
+        ),
         process_port: tokio::sync::mpsc::channel(1).0,
     }
 }
@@ -109,7 +111,7 @@ pub fn client_binding(
         started,
         std::sync::Arc::<str>::from("hook-token").into(),
     )?;
-    let daemon = crate::usecase::daemon::DaemonUsecase(
+    let daemon = crate::usecase::daemon::DaemonUsecase::new(
         crate::adaptor::gateway::daemon::serving_with_identity(
             crate::domain::daemon::DaemonIdentity {
                 daemon_id: id,

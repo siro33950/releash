@@ -11,6 +11,7 @@ use std::path::Path;
 
 pub fn json_output(command: &TopCommand) -> bool {
     match command {
+        TopCommand::Status { json } => *json,
         TopCommand::Workflow { command } => match command {
             Workflow::Status { json, .. } | Workflow::Diagnostics { json, .. } => *json,
             Workflow::Output {
@@ -94,6 +95,15 @@ pub async fn run(dir: &Path, command: TopCommand) -> Result<(String, i32), Conne
     } = command
     {
         return hook(dir, provider).await.map(|()| (String::new(), 0));
+    }
+    match command {
+        TopCommand::Status { json } => {
+            return crate::server::status(dir, json).await.map(|s| (s, 0))
+        }
+        TopCommand::Server { command } => {
+            return crate::server::run(dir, command).await.map(|s| (s, 0))
+        }
+        _ => {}
     }
     let client = connect(dir, None).await?;
     let output = match command {

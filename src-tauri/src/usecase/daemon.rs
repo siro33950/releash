@@ -3,30 +3,59 @@ use crate::domain::daemon::{
 };
 use std::sync::Arc;
 #[derive(Clone)]
-pub struct DaemonUsecase(pub(crate) Arc<dyn DaemonRepository>);
+pub struct DaemonUsecase {
+    repository: Arc<dyn DaemonRepository>,
+    subscriptions: Option<crate::usecase::state_subscription::StateSubscriptionUsecase>,
+}
 impl DaemonUsecase {
+    pub(crate) fn new(repository: Arc<dyn DaemonRepository>) -> Self {
+        Self {
+            repository,
+            subscriptions: None,
+        }
+    }
+    pub(crate) fn with_state_publisher(
+        mut self,
+        subscriptions: crate::usecase::state_subscription::StateSubscriptionUsecase,
+    ) -> Self {
+        self.subscriptions = Some(subscriptions);
+        self
+    }
+    fn notify(&self) {
+        if let Some(subscriptions) = &self.subscriptions {
+            subscriptions.notify(crate::usecase::state_subscription::StateChangeSource::Daemon);
+        }
+    }
+
     #[cfg(feature = "test-support")]
     pub fn test_with_repository(repository: Arc<dyn DaemonRepository>) -> Self {
-        Self(repository)
+        Self::new(repository)
     }
 
     pub(crate) async fn info(&self) -> DaemonInfo {
-        self.0.info().await
+        self.repository.info().await
     }
     pub async fn admits(&self, request: DaemonRequest) -> bool {
-        self.0.admits(request).await
+        self.repository.admits(request).await
     }
     pub(crate) async fn serve(&self) {
-        self.0.serve().await;
+        self.repository.serve().await;
+        self.notify();
     }
     pub(crate) async fn fail(&self, failure: StartupFailure) {
-        self.0.fail(failure).await;
+        self.repository.fail(failure).await;
+        self.notify();
     }
     pub async fn stop(&self, request: StopRequest) -> StopAcceptance {
-        self.0.stop(request).await
+        let acceptance = self.repository.stop(request).await;
+        if matches!(acceptance, StopAcceptance::Started { .. }) {
+            self.notify();
+        }
+        acceptance
     }
     pub(crate) async fn stopped(&self) {
-        self.0.stopped().await;
+        self.repository.stopped().await;
+        self.notify();
     }
 }
 #[cfg(test)]

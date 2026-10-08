@@ -161,6 +161,7 @@ where
 
 #[derive(Clone)]
 pub struct WorkspaceStateReads {
+    pub daemon: crate::usecase::daemon::DaemonUsecase,
     pub repositories: Arc<RepoPathsUsecase>,
     pub repository: Arc<RepositoryUsecase>,
     pub workflow: Arc<WorkflowUsecase>,
@@ -187,6 +188,7 @@ impl WorkspaceStateReads {
     pub async fn read(&self, target: &SubscriptionTarget) -> Result<StateValue, StateReadError> {
         use SubscriptionTarget as T;
         match target {
+            T::DaemonInfo => return Ok(StateValue::DaemonInfo(self.daemon.info().await)),
             T::WorkflowExecution(id) => {
                 return self
                     .workflow
@@ -423,7 +425,7 @@ impl WorkspaceStateReads {
             T::WorkflowConfig => {
                 StateValue::WorkflowConfig(self.app_config.get_workflow_config().map_err(error)?)
             }
-            T::WorkflowExecution(_) | T::WorkflowOutput(..) | T::ReviewSessionThreads(..) | T::ReviewWorktreeThreads(..)
+            T::DaemonInfo | T::WorkflowExecution(_) | T::WorkflowOutput(..) | T::ReviewSessionThreads(..) | T::ReviewWorktreeThreads(..)
             | T::ReviewSessionThread(..) | T::ReviewSessionThreadHistory(..) | T::Issues(_)
             | T::Terminal(_)
             | T::Workspaces

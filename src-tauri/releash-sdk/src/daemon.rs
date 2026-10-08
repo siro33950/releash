@@ -34,7 +34,7 @@ pub fn timeout(name: &str) -> Duration {
     )
 }
 
-pub fn client(discovery: &LocalApiDiscovery) -> rpc::ClientServiceClient<HttpClient> {
+pub fn client(discovery: &LocalApiDiscovery, token: &str) -> rpc::ClientServiceClient<HttpClient> {
     rpc::ClientServiceClient::new(
         HttpClient::plaintext(),
         ClientConfig::new(
@@ -42,13 +42,16 @@ pub fn client(discovery: &LocalApiDiscovery) -> rpc::ClientServiceClient<HttpCli
                 .parse()
                 .expect("loopback URL"),
         )
-        .with_default_header("authorization", format!("Bearer {}", discovery.token))
+        .with_default_header("authorization", format!("Bearer {token}"))
         .with_default_timeout(timeout("default_timeout_ms")),
     )
 }
 
-pub async fn server_info(discovery: &LocalApiDiscovery) -> Result<wire::ServerInfo, DaemonError> {
-    let response = client(discovery)
+pub async fn server_info(
+    discovery: &LocalApiDiscovery,
+    token: &str,
+) -> Result<wire::ServerInfo, DaemonError> {
+    let response = client(discovery, token)
         .get_server_info(rpc::Unit::default())
         .await?;
     let info = <wire::ServerInfo as prost::Message>::decode(
@@ -126,8 +129,8 @@ pub async fn start(
 pub async fn stop(data_dir: &Path, discovery: &LocalApiDiscovery) -> Result<(), DaemonError> {
     tokio::time::timeout(timeout("shutdown_timeout_ms"), async {
         discovery.verify_process(discovery::lookup_process_start_time)?;
-        server_info(discovery).await?;
-        client(discovery)
+        server_info(discovery, &discovery.token).await?;
+        client(discovery, &discovery.token)
             .stop_daemon(rpc::StopDaemonRequest::default())
             .await?;
         loop {

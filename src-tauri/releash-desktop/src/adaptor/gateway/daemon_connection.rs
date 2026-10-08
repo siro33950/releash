@@ -58,7 +58,7 @@ impl DaemonService for DaemonServiceGateway {
             let Some(discovery) = daemon::running(&self.data_dir).map_err(daemon_failure)? else {
                 return Ok(None);
             };
-            let info = daemon::server_info(&discovery)
+            let info = daemon::server_info(&discovery, &discovery.token)
                 .await
                 .map_err(daemon_failure)?;
             Ok(Some(DiscoveredDaemon {

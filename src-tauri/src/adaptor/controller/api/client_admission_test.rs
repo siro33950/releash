@@ -2,7 +2,8 @@ use super::*;
 #[tokio::test]
 async fn test_connect受付_停止後は情報と停止以外を同じ分類で拒否する() {
     // Given
-    let daemon = crate::usecase::daemon::DaemonUsecase(crate::adaptor::gateway::daemon::serving());
+    let daemon =
+        crate::usecase::daemon::DaemonUsecase::new(crate::adaptor::gateway::daemon::serving());
     let admission = DaemonAdmission(daemon.clone());
     let paths = [
         "GetServerInfo",

@@ -31,6 +31,7 @@ impl SubscriptionTarget {
             return Err(SubscriptionError::InvalidId);
         }
         let target = match (name, args) {
+            ("daemon-info", []) => Ok(Self::DaemonInfo),
             ("terminal", [path]) => {
                 crate::domain::terminal_surface::TerminalSurfaceOwner::workspace(
                     crate::domain::workspace_tree::WorkspaceIdentity::new(*path),
@@ -127,6 +128,7 @@ impl SubscriptionTarget {
 impl SubscriptionTarget {
     pub fn parts(&self) -> (&'static str, Vec<String>) {
         match self {
+            Self::DaemonInfo => ("daemon-info", vec![]),
             Self::Terminal(owner) => (
                 "terminal",
                 match owner {

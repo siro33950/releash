@@ -33,28 +33,32 @@ impl Server {
                 wire::StateReadFailure {
                     code,
                     message: message.into(),
-                    ..Default::default()
                 },
             )),
         )
     }
     fn start_event(protocol: u32, event: Option<wire::state_subscription_event::Event>) -> Self {
-        Self::start_configured(protocol, event, None)
+        Self::start_configured(protocol, event, None, "operator")
     }
     pub fn start_checked(payload: wire::StatePayload, handler: Handler) -> Self {
         Self::start_configured(
             1,
             Some(wire::state_subscription_event::Event::Snapshot(payload)),
             Some(handler),
+            "operator",
         )
     }
     pub fn start_unary(handler: Handler) -> Self {
-        Self::start_configured(1, None, Some(handler))
+        Self::start_configured(1, None, Some(handler), "operator")
+    }
+    pub fn start_hook() -> Self {
+        Self::start_configured(1, None, None, "hook-token")
     }
     fn start_configured(
         protocol: u32,
         event: Option<wire::state_subscription_event::Event>,
         handler: Option<Handler>,
+        token: &'static str,
     ) -> Self {
         let directory = tempfile::tempdir().unwrap();
         let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
@@ -122,7 +126,7 @@ impl Server {
                 requests.push(header.lines().next().unwrap().to_owned());
                 assert!(header
                     .to_ascii_lowercase()
-                    .contains("authorization: bearer operator"));
+                    .contains(&format!("authorization: bearer {token}")));
                 let mut status = 200;
                 let (content_type, response) = if header.contains("/GetServerInfo ") {
                     (
@@ -133,7 +137,8 @@ impl Server {
                             process_started_at: started,
                             protocol,
                             release: "server-fixture".into(),
-                            ..Default::default()
+                            capabilities: vec!["fixture-capability".into()],
+                            serving_status: wire::ServingStatus::Serving as i32,
                         }
                         .encode_to_vec(),
                     )

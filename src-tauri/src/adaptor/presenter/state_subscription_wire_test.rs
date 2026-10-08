@@ -1113,3 +1113,20 @@ fn test_購読payload_提出済みoutputの全フィールドを保持する() {
         ))
     );
 }
+
+#[tokio::test]
+async fn test_daemon状態payload_get_server_infoと同じ投影を使う() {
+    // Given
+    let repository = crate::adaptor::gateway::daemon::serving();
+    let daemon = crate::usecase::daemon::DaemonUsecase::new(repository);
+    let info = daemon.info().await;
+    // When
+    let value = payload(&StateValue::DaemonInfo(info.clone())).unwrap();
+    // Then
+    assert_eq!(
+        value.value,
+        Some(wire::state_payload::Value::DaemonInfo(
+            crate::adaptor::presenter::daemon::server_info(info)
+        ))
+    );
+}

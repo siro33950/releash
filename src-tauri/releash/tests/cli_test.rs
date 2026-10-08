@@ -20,6 +20,10 @@ fn test_cli_サーバが古い場合は操作を呼ばずfailed_preconditionを�
     assert!(error["error"]["message"]
         .as_str()
         .unwrap()
+        .contains("releash server restart"));
+    assert!(error["error"]["message"]
+        .as_str()
+        .unwrap()
         .contains("server-fixture"));
     assert!(error["error"]["message"]
         .as_str()
@@ -232,10 +236,10 @@ fn test_cli_historyのjsonと人向け表示が内部型を出さず既存項目
 fn test_hook_不透明なpayloadとenvのscopeをconnectに渡す() {
     use std::io::Write;
     use std::process::Stdio;
-    let server = support::Server::start(1, wire::StatePayload::default());
+    let server = support::Server::start_hook();
     let mut child = server
         .command(&["hook", "receive", "--provider", "claude"])
-        .env("RELEASH_PROVIDER_LIFECYCLE_TOKEN", "operator")
+        .env("RELEASH_PROVIDER_LIFECYCLE_TOKEN", "hook-token")
         .env("RELEASH_PROVIDER_LIFECYCLE_SLOT_ID", "slot")
         .env("RELEASH_PROVIDER_LIFECYCLE_BINDING_ID", "binding")
         .env("RELEASH_PROVIDER_LIFECYCLE_CAPABILITY", "capability")
@@ -837,5 +841,239 @@ fn test_hook_到達不能と拒否と上限超過はstderrへ失敗を出しexit
             server.finish().len(),
             if failure == "rejected" { 2 } else { 0 }
         );
+    }
+}
+
+#[test]
+fn test_cli_status_互換性に関わらずserver_infoと接続先を出しtokenを隠す() {
+    for (protocol, compatibility, guidance) in [
+        (1, "compatible", "compatible"),
+        (0, "server_older", "releash server restart"),
+        (2, "client_older", "update the Releash client"),
+    ] {
+        // Given
+        let server = support::Server::start(protocol, wire::StatePayload::default());
+        // When
+        let output = server.run(&["status", "--json"]);
+        // Then
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(value["running"], true);
+        assert_eq!(value["server"]["daemonId"], "fixture");
+        assert_eq!(value["server"]["release"], "server-fixture");
+        assert_eq!(value["server"]["pid"], std::process::id());
+        assert_eq!(value["server"]["protocol"], serde_json::json!(protocol));
+        assert_eq!(
+            value["server"]["capabilities"],
+            serde_json::json!(["fixture-capability"])
+        );
+        assert_eq!(value["compatibility"], compatibility);
+        assert!(value["guidance"].as_str().unwrap().contains(guidance));
+        assert_eq!(value["connection"]["host"], "127.0.0.1");
+        assert!(value["connection"]["port"].as_u64().unwrap() > 0);
+        assert!(value["uptime_seconds"].is_u64());
+        assert!(value["discovery_file"]
+            .as_str()
+            .unwrap()
+            .ends_with("/client-api.json"));
+        assert!(!String::from_utf8(output.stdout)
+            .unwrap()
+            .contains("operator"));
+        assert_eq!(server.finish().len(), 1);
+    }
+}
+
+#[test]
+fn test_cli_クライアントが古い場合は更新を案内する() {
+    // Given
+    let server = support::Server::start(2, wire::StatePayload::default());
+    // When
+    let output = server.run(&["review", "list", "--session-id", "id", "--json"]);
+    // Then
+    assert_eq!(output.status.code(), Some(1));
+    let error: serde_json::Value = serde_json::from_slice(&output.stderr).unwrap();
+    assert_eq!(error["error"]["code"], "failed_precondition");
+    assert!(error["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("update the Releash client"));
+    assert_eq!(server.finish().len(), 1);
+}
+
+#[test]
+fn test_cli_unimplementedと購読失敗で再起動を案内する() {
+    // Given
+    for subscribed in [false, true] {
+        let server = if subscribed {
+            support::Server::start_failure(12, "not implemented")
+        } else {
+            support::Server::start_unary(Box::new(|_, _| {
+                (
+                    501,
+                    br#"{"code":"unimplemented","message":"not implemented"}"#.to_vec(),
+                )
+            }))
+        };
+        let args = if subscribed {
+            vec!["workflow", "status", "id", "--json"]
+        } else {
+            vec![
+                "review",
+                "resolve",
+                "thread",
+                "--session-id",
+                "id",
+                "--outcome",
+                "fixed",
+                "--summary",
+                "fixed",
+                "--json",
+            ]
+        };
+        // When
+        let output = server.run(&args);
+        // Then
+        assert_eq!(output.status.code(), Some(1));
+        let error: serde_json::Value = serde_json::from_slice(&output.stderr).unwrap();
+        assert_eq!(error["error"]["code"], "unimplemented");
+        assert!(error["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("releash server restart"));
+        assert_eq!(server.finish().len(), if subscribed { 3 } else { 2 });
+    }
+}
+
+#[test]
+fn test_cli_古い発見ファイルではstatusが未起動で既存操作はunavailableになる() {
+    // Given
+    let dir = tempfile::tempdir().unwrap();
+    let discovery = releash_sdk::discovery::LocalApiDiscovery {
+        port: 1,
+        token: "secret".into(),
+        instance_id: "old".into(),
+        pid: std::process::id(),
+        process_started_at: 1,
+    };
+    std::fs::write(
+        dir.path().join("client-api.json"),
+        serde_json::to_vec(&discovery).unwrap(),
+    )
+    .unwrap();
+    for (args, code) in [
+        (vec!["status", "--json"], 0),
+        (vec!["review", "list", "--session-id", "id", "--json"], 1),
+    ] {
+        // When
+        let output = Command::new(env!("CARGO_BIN_EXE_releash"))
+            .arg("--data-dir")
+            .arg(dir.path())
+            .args(args)
+            .output()
+            .unwrap();
+        // Then
+        assert_eq!(output.status.code(), Some(code));
+        if code == 0 {
+            assert_eq!(
+                serde_json::from_slice::<serde_json::Value>(&output.stdout).unwrap()["running"],
+                false
+            );
+        } else {
+            let error: serde_json::Value = serde_json::from_slice(&output.stderr).unwrap();
+            assert_eq!(error["error"]["code"], "unavailable");
+            assert!(error["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("client discovery is stale"));
+        }
+    }
+}
+
+#[test]
+fn test_cli_停止を確認できなければshutdown期限で失敗する() {
+    // Given
+    let server = support::Server::start_unary(Box::new(|path, _| {
+        assert!(path.contains("/StopDaemon "));
+        (200, Vec::new())
+    }));
+    let started = std::time::Instant::now();
+    // When
+    let output = server.run(&["server", "stop"]);
+    // Then
+    assert_eq!(output.status.code(), Some(1));
+    assert!(started.elapsed() >= releash_sdk::daemon::timeout("shutdown_timeout_ms"));
+    assert!(String::from_utf8(output.stderr)
+        .unwrap()
+        .contains("停止を確認できません"));
+    assert_eq!(server.finish().len(), 2);
+}
+
+#[test]
+fn test_cli_status_人向け表示でもサーバ情報と両方向の更新案内を表示する() {
+    for (protocol, guidance) in [
+        (1, "compatible"),
+        (
+            0,
+            "server is older; run `releash server restart` to update the server",
+        ),
+        (2, "client is older; update the Releash client"),
+    ] {
+        // Given
+        let server = support::Server::start(protocol, wire::StatePayload::default());
+        let mut command = server.command(&["status"]);
+        let data_dir = std::path::PathBuf::from(command.get_args().nth(1).unwrap());
+        let discovery = releash_sdk::discovery::read(&data_dir).unwrap();
+        let before = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        // When
+        let output = command.output().unwrap();
+        let after = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        // Then
+        assert_eq!(
+            output.status.code(),
+            Some(0),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(output.stderr.is_empty());
+        let text = String::from_utf8(output.stdout).unwrap();
+        for line in [
+            format!("client release: {}", env!("CARGO_PKG_VERSION")),
+            format!("client protocol: {}", releash_sdk::descriptor::protocol()),
+            format!("data dir: {}", data_dir.display()),
+            "server: running".into(),
+            format!("daemon_id: {}", discovery.instance_id),
+            format!("pid: {}", discovery.pid),
+            format!("process_started_at: {}", discovery.process_started_at),
+            "server release: server-fixture".into(),
+            format!("server protocol: {protocol}"),
+            "capabilities: fixture-capability".into(),
+            "serving status: SERVING_STATUS_SERVING".into(),
+            format!("compatibility: {guidance}"),
+        ] {
+            assert!(
+                text.lines().any(|actual| actual == line),
+                "missing {line:?}: {text}"
+            );
+        }
+        let uptime: u64 = text
+            .lines()
+            .find_map(|line| line.strip_prefix("uptime seconds: "))
+            .expect("uptime must be displayed")
+            .parse()
+            .unwrap();
+        assert!((before.saturating_sub(discovery.process_started_at)
+            ..=after.saturating_sub(discovery.process_started_at))
+            .contains(&uptime));
+        assert_eq!(server.finish().len(), 1);
     }
 }

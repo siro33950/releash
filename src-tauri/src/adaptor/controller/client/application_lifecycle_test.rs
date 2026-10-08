@@ -3,7 +3,8 @@ use super::stop_daemon_shared;
 #[tokio::test]
 async fn test_サーバ停止_コード0を一度だけ通知し重複を受理する() {
     // Given
-    let daemon = crate::usecase::daemon::DaemonUsecase(crate::adaptor::gateway::daemon::serving());
+    let daemon =
+        crate::usecase::daemon::DaemonUsecase::new(crate::adaptor::gateway::daemon::serving());
     let (sender, mut receiver) = tokio::sync::mpsc::channel(1);
     // When
     stop_daemon_shared(&daemon, &sender).await.unwrap();
@@ -17,7 +18,8 @@ async fn test_サーバ停止_コード0を一度だけ通知し重複を受理�
 #[tokio::test]
 async fn test_サーバ停止_受信先がなければ失敗を返す() {
     // Given
-    let daemon = crate::usecase::daemon::DaemonUsecase(crate::adaptor::gateway::daemon::serving());
+    let daemon =
+        crate::usecase::daemon::DaemonUsecase::new(crate::adaptor::gateway::daemon::serving());
     let (sender, receiver) = tokio::sync::mpsc::channel(1);
     drop(receiver);
     // When / Then
@@ -29,7 +31,7 @@ async fn test_サーバ停止_command同期中も停止を受理する() {
     // Given
     let repository = crate::adaptor::gateway::daemon::serving();
     let admission = repository.admission().await;
-    let daemon = crate::usecase::daemon::DaemonUsecase(repository.clone());
+    let daemon = crate::usecase::daemon::DaemonUsecase::new(repository.clone());
     let (sender, mut receiver) = tokio::sync::mpsc::channel(1);
     // When
     tokio::time::timeout(

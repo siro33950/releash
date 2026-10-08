@@ -4,7 +4,7 @@ use crate::domain::daemon::{ServingStatus, StartupFailureKind};
 async fn test_daemon操作_同じ集約を読み取り遷移させる() {
     // Given
     let repository = serving();
-    let usecase = DaemonUsecase(repository);
+    let usecase = DaemonUsecase::new(repository);
     // When / Then
     assert!(usecase.admits(DaemonRequest::Operation).await);
     assert_eq!(
@@ -64,4 +64,27 @@ impl crate::domain::daemon::DaemonRepository for FakeDaemon {
     async fn stopped(&self) {
         self.0.lock().stopped();
     }
+}
+
+#[tokio::test]
+async fn test_daemon状態配信_停止受理で通知し重複要求では通知しない() {
+    // Given
+    let subscriptions = crate::test_support::state_subscription::test_subscriptions();
+    let mut changes = subscriptions.changes();
+    let usecase = DaemonUsecase::new(serving()).with_state_publisher(subscriptions);
+    // When
+    usecase.stop(StopRequest::Exit { code: 0 }).await;
+    // Then
+    assert_eq!(
+        changes.try_recv().unwrap(),
+        crate::usecase::state_subscription::StateChangeSource::Daemon
+    );
+    assert_eq!(usecase.info().await.serving_status, ServingStatus::Stopping);
+    usecase.stop(StopRequest::Exit { code: 0 }).await;
+    assert!(changes.try_recv().is_err());
+    usecase.stopped().await;
+    assert_eq!(
+        changes.try_recv().unwrap(),
+        crate::usecase::state_subscription::StateChangeSource::Daemon
+    );
 }

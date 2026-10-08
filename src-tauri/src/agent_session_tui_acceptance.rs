@@ -316,7 +316,7 @@ launch_retention: crate::adaptor::controller::agent_session_launch_retention::ru
         dependencies.provider_availability_usecase =
             Some(composition.provider_availability.clone());
         let mut dispatch = crate::adaptor::controller::client::ClientCommandDispatch::new(
-            crate::usecase::daemon::DaemonUsecase(crate::adaptor::gateway::daemon::serving()),
+            crate::usecase::daemon::DaemonUsecase::new(crate::adaptor::gateway::daemon::serving()),
         );
         dispatch.register_dependencies(&dependencies);
         let dispatch = Arc::new(dispatch);

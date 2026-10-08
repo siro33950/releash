@@ -1142,6 +1142,22 @@ export type ProviderHookHealthWarningResponse = {
 
 export type ProviderHookHealthProviderResponse = "claude" | "codex";
 
+export type ServerInfo = {
+	release?: string;
+	daemonId?: string;
+	pid?: number;
+	processStartedAt?: number;
+	protocol?: number;
+	capabilities?: Array<string>;
+	servingStatus?:
+		| "SERVING_STATUS_UNSPECIFIED"
+		| "SERVING_STATUS_STARTING"
+		| "SERVING_STATUS_SERVING"
+		| "SERVING_STATUS_STOPPING"
+		| "SERVING_STATUS_STOPPED"
+		| "SERVING_STATUS_FAILED";
+};
+
 export type InputResolveSessionReviewThreadRequest = {
 	sessionId: string;
 	threadId: string;

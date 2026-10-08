@@ -307,3 +307,15 @@ fn test_cli購読対象_絞り込みの正規順序とpathで使える軸を守�
         );
     }
 }
+
+#[test]
+fn test_daemon状態購読_引数なしの対象を往復し余計な引数を拒否する() {
+    // Given / When / Then
+    let target = SubscriptionTarget::from_parts("daemon-info", &[]).unwrap();
+    assert_eq!(target, SubscriptionTarget::DaemonInfo);
+    assert_eq!(
+        SubscriptionTarget::parse(&target.to_string()).unwrap(),
+        target
+    );
+    assert!(SubscriptionTarget::from_parts("daemon-info", &["unexpected"]).is_err());
+}

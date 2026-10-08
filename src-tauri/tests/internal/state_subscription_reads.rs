@@ -327,6 +327,9 @@ impl Fixture {
             ), comments.clone(),
         ));
         let reads = WorkspaceStateReads {
+            daemon: releashd::test_support::integration::daemon::DaemonUsecase::test_with_repository(
+                releashd::test_support::integration::daemon::serving(),
+            ),
             repositories,
             repository,
             workflow,

@@ -3,6 +3,7 @@ use crate::domain::workflow::FacetKind;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum SubscriptionTarget {
+    DaemonInfo,
     Terminal(crate::domain::terminal_surface::TerminalSurfaceOwner),
     RepositoryPaths,
     Workspaces,
@@ -121,6 +122,7 @@ mod target_tests;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum StateChangeSource {
+    Daemon,
     Repositories,
     Repository(Vec<String>),
     Worktree(String),
@@ -141,6 +143,7 @@ impl SubscriptionTarget {
     pub fn affected_by(&self, change: &StateChangeSource) -> bool {
         use StateChangeSource as C;
         match change {
+            C::Daemon => matches!(self, Self::DaemonInfo),
             C::Repositories => matches!(self, Self::RepositoryPaths | Self::Workspaces),
             C::Repository(paths) => match self {
                 Self::Workspaces => true,
