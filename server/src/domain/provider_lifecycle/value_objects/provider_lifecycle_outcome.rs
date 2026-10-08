@@ -15,14 +15,6 @@ pub enum ProviderLifecycleRejection {
     ProviderMismatch,
     ScopeMismatch,
     BindingExpired,
-    #[cfg_attr(
-        not(any(test, feature = "test-support")),
-        expect(
-            dead_code,
-            reason = "Retained rejection reason for the presenter contract"
-        )
-    )]
-    SessionAlreadyAssociated,
     SessionNotAssociated,
     ProviderSessionMismatch,
     TranscriptMismatch,

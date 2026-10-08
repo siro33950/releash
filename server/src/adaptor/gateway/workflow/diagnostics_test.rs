@@ -382,8 +382,8 @@ fn test_述語の回帰_builtinと正本サンプルの全18辺は単一参照�
         .map(|summary| builtin::builtin_workflow_source(&summary.name).unwrap())
         .collect();
     sources.push(include_str!(concat!(
-        env!("OUT_DIR"),
-        "/full-cycle-development.yml"
+        env!("CARGO_MANIFEST_DIR"),
+        "/../workflows/examples/full-cycle-development.yml"
     )));
     for source in sources {
         let diagnosis = diagnose_workflow_source(source, None);
@@ -461,7 +461,10 @@ fn test_completion移行_builtin8本と正本サンプルが診断なしで既�
         ),
     ] {
         let source = if name == "full-cycle-development" {
-            include_str!(concat!(env!("OUT_DIR"), "/full-cycle-development.yml"))
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../workflows/examples/full-cycle-development.yml"
+            ))
         } else {
             builtin::builtin_workflow_source(name).unwrap()
         };
@@ -1525,7 +1528,10 @@ mod delegate_diagnostics_tests {
     #[test]
     fn test_delegate正本サンプル_itemsの要素contractを実装sessionのtaskと照合する() {
         // Given
-        let source = include_str!(concat!(env!("OUT_DIR"), "/full-cycle-development.yml"));
+        let source = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../workflows/examples/full-cycle-development.yml"
+        ));
         assert!(diagnose_workflow_source(source, None)
             .diagnostics
             .is_empty());

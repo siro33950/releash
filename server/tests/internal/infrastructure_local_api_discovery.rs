@@ -1,4 +1,3 @@
-use releashd::test_support::integration::transport::{read, read_optional, DiscoveryReadError};
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 
@@ -45,9 +44,11 @@ pub fn test_local_api_discovery_所有fileを非公開権限で作成して削�
     };
     let file = LocalApiDiscoveryFile::create_client(directory.path(), discovery.clone()).unwrap();
 
-    let decoded: LocalApiDiscovery =
+    let decoded: serde_json::Value =
         serde_json::from_slice(&fs::read(file.path()).unwrap()).unwrap();
-    assert_eq!(decoded, discovery);
+    assert_eq!(decoded, serde_json::to_value(discovery).unwrap());
+    assert_eq!(decoded["daemon_id"], "instance-1");
+    assert!(decoded.get("instance_id").is_none());
     #[cfg(unix)]
     assert_eq!(
         fs::metadata(file.path()).unwrap().permissions().mode() & 0o777,
@@ -92,37 +93,32 @@ pub fn test_local_api_discovery_古いownerが新しいdiscoveryを削除しな�
 }
 
 #[test]
-pub fn test_発見ファイル_欠損と破損をunavailableにする() {
+pub fn test_local_api_discovery_旧形式に書き換えられた所有fileも削除する() {
+    // Given
     let directory = tempfile::tempdir().unwrap();
-    assert!(read_optional(directory.path()).unwrap().is_none());
-    assert_eq!(
-        read(directory.path()).unwrap_err().code,
-        connectrpc::ErrorCode::Unavailable
-    );
-    std::fs::write(directory.path().join("client-api.json"), b"invalid json").unwrap();
-    assert!(matches!(
-        read_optional(directory.path()),
-        Err(DiscoveryReadError::Decode(_))
-    ));
-    assert_eq!(
-        read(directory.path()).unwrap_err().code,
-        connectrpc::ErrorCode::Unavailable
-    );
-    std::fs::write(
-        directory.path().join("client-api.json"),
-        serde_json::to_vec(&discovery()).unwrap(),
-    )
-    .unwrap();
-    assert_eq!(read(directory.path()).unwrap(), discovery());
-}
-
-fn discovery() -> LocalApiDiscovery {
-    LocalApiDiscovery {
-        port: 1234,
-        token: "operator".into(),
-        daemon_id: "daemon".into(),
+    let discovery = LocalApiDiscovery {
+        port: 43123,
+        token: "secret-token".into(),
+        daemon_id: "instance-1".into(),
         pid: 42,
-        process_started_at: 100,
+        process_started_at: 123,
         ..Default::default()
-    }
+    };
+    let file = LocalApiDiscoveryFile::create_client(directory.path(), discovery).unwrap();
+    let mut legacy = serde_json::json!({
+        "port": 43123,
+        "token": "secret-token",
+        "instance_id": "another-instance",
+        "pid": 42,
+        "process_started_at": 123,
+    });
+    fs::write(file.path(), serde_json::to_vec(&legacy).unwrap()).unwrap();
+    file.remove_if_owned().unwrap();
+    assert!(file.path().exists());
+    legacy["instance_id"] = serde_json::json!("instance-1");
+    fs::write(file.path(), serde_json::to_vec(&legacy).unwrap()).unwrap();
+    // When
+    file.remove_if_owned().unwrap();
+    // Then
+    assert!(!file.path().exists());
 }

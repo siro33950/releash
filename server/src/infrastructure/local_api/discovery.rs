@@ -8,8 +8,7 @@ use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 #[path = "discovery_record.rs"]
 mod discovery_record;
 pub use discovery_record::{
-    lookup_process_start_time, process_start_time, read, read_optional, DiscoveryReadError,
-    LocalApiDiscovery, ProcessStartTimeLookup,
+    lookup_process_start_time, process_start_time, LocalApiDiscovery, ProcessStartTimeLookup,
 };
 
 #[derive(Debug, Clone)]
@@ -75,13 +74,21 @@ impl LocalApiDiscoveryFile {
 
     pub fn remove_if_owned(&self) -> io::Result<()> {
         let current = match fs::read(&self.path) {
-            Ok(bytes) => serde_json::from_slice::<LocalApiDiscovery>(&bytes).ok(),
+            Ok(bytes) => serde_json::from_slice::<serde_json::Value>(&bytes).ok(),
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
             Err(error) => return Err(error),
         };
+        let expected = serde_json::to_value(&self.discovery).map_err(io::Error::other)?;
+        let legacy = serde_json::json!({
+            "port": self.discovery.port,
+            "token": self.discovery.token,
+            "instance_id": self.discovery.daemon_id,
+            "pid": self.discovery.pid,
+            "process_started_at": self.discovery.process_started_at,
+        });
         if current
             .as_ref()
-            .is_some_and(|value| value != &self.discovery)
+            .is_some_and(|value| value != &expected && value != &legacy)
         {
             return Ok(());
         }

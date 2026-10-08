@@ -15,7 +15,8 @@ use releashd::test_support::integration::workflow::WorkflowDefinition;
 #[test]
 pub fn test_正本サンプル_fanout内の隔離sessionがdelegateを発火して成果をmergeへ渡す() {
     // Given
-    let source_path = std::path::Path::new(env!("OUT_DIR")).join("full-cycle-development.yml");
+    let source_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../workflows/examples/full-cycle-development.yml");
     let source = std::fs::read_to_string(source_path).unwrap();
     let workflow: WorkflowDefinition = serde_saphyr::from_str(&source).unwrap();
     let mut execution = ExecutionTree::restore_runtime(ExecutionTreeRestore {

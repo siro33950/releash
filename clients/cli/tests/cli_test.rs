@@ -976,8 +976,12 @@ fn test_cli_古い発見ファイルではstatusが未起動で既存操作はun
         process_started_at: 1,
         ..Default::default()
     };
-    for stale in [false, true] {
-        if stale {
+    for pid in [None, Some(std::process::id()), Some(u32::MAX)] {
+        if let Some(pid) = pid {
+            let discovery = releash::discovery::LocalApiDiscovery {
+                pid,
+                ..discovery.clone()
+            };
             std::fs::write(
                 dir.path().join("client-api.json"),
                 serde_json::to_vec(&discovery).unwrap(),
@@ -1094,5 +1098,54 @@ fn test_cli_status_人向け表示でもサーバ情報と両方向の更新案�
             ..=after.saturating_sub(discovery.process_started_at))
             .contains(&uptime));
         assert_eq!(server.finish().len(), 1);
+    }
+}
+
+#[test]
+fn test_cli_開始時刻の欠落と既定値は未起動ではなく不正な発見ファイルとして拒否する() {
+    // Given
+    let directory = tempfile::tempdir().unwrap();
+    let discovery = releash::discovery::LocalApiDiscovery {
+        port: 1,
+        token: "secret".into(),
+        daemon_id: "daemon".into(),
+        pid: std::process::id(),
+        process_started_at: releash::discovery::process_start_time(std::process::id()).unwrap(),
+        ..Default::default()
+    };
+    for started_at in [None, Some(serde_json::json!(0))] {
+        let mut json = serde_json::to_value(&discovery).unwrap();
+        match started_at {
+            Some(value) => json["process_started_at"] = value,
+            None => {
+                json.as_object_mut().unwrap().remove("process_started_at");
+            }
+        }
+        std::fs::write(
+            directory.path().join("client-api.json"),
+            serde_json::to_vec(&json).unwrap(),
+        )
+        .unwrap();
+        // When
+        let error = releash::daemon::running(directory.path()).unwrap_err();
+        let output = Command::new(env!("CARGO_BIN_EXE_releash"))
+            .arg("--data-dir")
+            .arg(directory.path())
+            .args(["status", "--json"])
+            .output()
+            .unwrap();
+        // Then
+        let releash::daemon::DaemonError::Connect(error) = error else {
+            panic!("invalid discovery must return unavailable")
+        };
+        assert_eq!(error.code, connectrpc::ErrorCode::Unavailable);
+        assert_eq!(
+            error.message.as_deref(),
+            Some("client discovery is invalid")
+        );
+        assert_eq!(output.status.code(), Some(1));
+        let error: serde_json::Value = serde_json::from_slice(&output.stderr).unwrap();
+        assert_eq!(error["error"]["code"], "unavailable");
+        assert_eq!(error["error"]["message"], "client discovery is invalid");
     }
 }

@@ -92,29 +92,3 @@ fn test_desktop設定_クラッシュ送信の無効化と再有効化を再起�
     assert_eq!(exporter.get_emitted_logs().unwrap().len(), 1);
     releashd::desktop_api::test_support::reset_for_tests();
 }
-
-#[test]
-fn test_desktop起動data_dir_環境変数指定と未指定をcliと同じ処理で選ぶ() {
-    use releash::data_dir::{default_data_dir_for_profile, resolve_data_dir, BuildProfile};
-    struct RestoreEnv(Option<std::ffi::OsString>);
-    impl Drop for RestoreEnv {
-        fn drop(&mut self) {
-            match &self.0 {
-                Some(value) => std::env::set_var("RELEASH_DATA_DIR", value),
-                None => std::env::remove_var("RELEASH_DATA_DIR"),
-            }
-        }
-    }
-    // Given
-    let _restore = RestoreEnv(std::env::var_os("RELEASH_DATA_DIR"));
-    let directory = std::path::PathBuf::from("desktop-startup-data");
-    // When / Then
-    std::env::set_var("RELEASH_DATA_DIR", &directory);
-    assert_eq!(resolve_data_dir(None), Ok(directory));
-    std::env::remove_var("RELEASH_DATA_DIR");
-    assert_eq!(
-        resolve_data_dir(None),
-        default_data_dir_for_profile(BuildProfile::current())
-            .ok_or_else(|| "OS data directory is unavailable".to_string())
-    );
-}

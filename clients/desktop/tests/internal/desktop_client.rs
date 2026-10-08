@@ -1,13 +1,12 @@
 use futures_util::StreamExt;
+use releash_desktop::test_support::integration::daemon_connection::DaemonEndpoint;
 use releash_desktop::test_support::integration::desktop_client::*;
 use releashd::desktop_api::test_support::{to_rpc, Unit};
-use releashd::desktop_api::{
-    rpc, to_wire, wire, ClientConnectionDto, RetryLimiter, TechnicalFailureNature,
-};
+use releashd::desktop_api::{rpc, to_wire, wire, RetryLimiter, TechnicalFailureNature};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::{sync::Arc, time::Duration};
 
-fn start(endpoint: &ClientConnectionDto) -> DesktopClient {
+fn start(endpoint: &DaemonEndpoint) -> DesktopClient {
     DesktopClient::start(
         releash_desktop::test_support::integration::daemon_connection::DaemonSubscription(1),
         client(endpoint).unwrap(),
@@ -38,13 +37,13 @@ async fn stream_server(
     mut frames: Vec<Vec<u8>>,
     hold: bool,
 ) -> (
-    ClientConnectionDto,
+    DaemonEndpoint,
     tokio::task::JoinHandle<()>,
     Arc<AtomicUsize>,
     Arc<AtomicUsize>,
 ) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let endpoint = ClientConnectionDto {
+    let endpoint = DaemonEndpoint {
         url: format!("http://{}", listener.local_addr().unwrap()),
         token: "client".into(),
     };
@@ -106,7 +105,7 @@ async fn stream_server(
 async fn test_単発呼び出し_期限指定が無ければprotoの既定期限で切れる() {
     // Given
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let endpoint = ClientConnectionDto {
+    let endpoint = DaemonEndpoint {
         url: format!("http://{}", listener.local_addr().unwrap()),
         token: "client".into(),
     };
@@ -199,13 +198,13 @@ async fn subscription_error_server(
     code: connectrpc::ErrorCode,
     status: axum::http::StatusCode,
 ) -> (
-    ClientConnectionDto,
+    DaemonEndpoint,
     tokio::task::JoinHandle<()>,
     Arc<AtomicUsize>,
     Arc<AtomicUsize>,
 ) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let endpoint = ClientConnectionDto {
+    let endpoint = DaemonEndpoint {
         url: format!("http://{}", listener.local_addr().unwrap()),
         token: "client".into(),
     };
@@ -298,7 +297,7 @@ async fn test_購読開始_再接続対象外の失敗を初回の設定の失�
 async fn error_server(
     error: connectrpc::ConnectError,
 ) -> (
-    ClientConnectionDto,
+    DaemonEndpoint,
     tokio::task::JoinHandle<()>,
     Arc<AtomicUsize>,
 ) {
@@ -310,7 +309,7 @@ async fn error_server(
         async move { (axum::http::StatusCode::TOO_MANY_REQUESTS, axum::Json(error)) }
     }));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let endpoint = ClientConnectionDto {
+    let endpoint = DaemonEndpoint {
         url: format!("http://{}", listener.local_addr().unwrap()),
         token: "client".into(),
     };

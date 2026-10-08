@@ -899,11 +899,18 @@ async fn test_providerライフサイクル受入_stale_discoveryから古い接
             String::from_utf8_lossy(&request).into_owned()
         });
         let discovery_path = data_dir.path().join("client-api.json");
-        let mut stale_discovery: releashd::test_support::integration::transport::LocalApiDiscovery =
+        let mut stale_discovery: serde_json::Value =
             serde_json::from_slice(&std::fs::read(&discovery_path).unwrap()).unwrap();
-        stale_discovery.port = stale_port.into();
-        stale_discovery.process_started_at += 1;
-        stale_discovery.token = "stale-bearer-token".into();
+        stale_discovery["port"] = serde_json::json!(stale_port);
+        stale_discovery["process_started_at"] = serde_json::json!(
+            stale_discovery["process_started_at"]
+                .as_str()
+                .unwrap()
+                .parse::<u64>()
+                .unwrap()
+                + 1
+        );
+        stale_discovery["token"] = serde_json::json!("stale-bearer-token");
         std::fs::write(
             &discovery_path,
             serde_json::to_vec(&stale_discovery).unwrap(),

@@ -2,7 +2,7 @@ use super::*;
 #[test]
 fn test_購読開始_重複したreadyで開始要求が増えない() {
     // Given
-    let client = client(&ClientConnectionDto {
+    let client = client(&DaemonEndpoint {
         url: "http://127.0.0.1:1".into(),
         token: "client".into(),
     })

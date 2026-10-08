@@ -6,7 +6,7 @@ use crate::domain::daemon_connection::{
 };
 use crate::usecase::daemon_connection_query::DaemonConnectionQueryService;
 use releash::daemon;
-use releashd::desktop_api::{ClientConnectionDto, DesktopSettingsDto};
+use releashd::desktop_api::DesktopSettingsDto;
 use std::{path::PathBuf, sync::Arc};
 
 pub struct DaemonServiceGateway {
@@ -95,16 +95,12 @@ impl DaemonService for DaemonServiceGateway {
     fn connect<'a>(&'a self, endpoint: &'a DaemonEndpoint) -> DaemonResult<'a, DaemonSubscription> {
         Box::pin(async move {
             self.client.send_replace(None);
-            let connection = ClientConnectionDto {
-                url: endpoint.url.clone(),
-                token: endpoint.token.clone(),
-            };
             let subscription = DaemonSubscription(uuid::Uuid::new_v4().as_u128());
             let client = Arc::new(DesktopClient::start(
                 subscription,
-                desktop_client::client(&connection)
+                desktop_client::client(endpoint)
                     .map_err(DaemonConnectionFailure::TechnicalFailure)?,
-                desktop_client::stream_client(&connection)
+                desktop_client::stream_client(endpoint)
                     .map_err(DaemonConnectionFailure::TechnicalFailure)?,
                 self.limiter.clone(),
             ));

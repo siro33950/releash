@@ -1,9 +1,8 @@
 use crate::common::retry::{RetryBackoff, RetryLimiter};
-use crate::domain::daemon_connection::DaemonSubscription;
+use crate::domain::daemon_connection::{DaemonEndpoint, DaemonSubscription};
 use connectrpc::client::{ClientConfig, HttpClient};
 use futures_util::future::BoxFuture;
 use releashd::desktop_api::descriptor;
-use releashd::desktop_api::ClientConnectionDto;
 use releashd::desktop_api::{call, rpc, to_wire, wire};
 use releashd::desktop_api::{TechnicalFailure, TechnicalFailureNature};
 use std::sync::{Arc, LazyLock};
@@ -63,7 +62,7 @@ pub static POLICY: LazyLock<ConnectionPolicy> = LazyLock::new(|| {
     }
 });
 
-fn config(endpoint: &ClientConnectionDto) -> Result<ClientConfig, String> {
+fn config(endpoint: &DaemonEndpoint) -> Result<ClientConfig, String> {
     Ok(ClientConfig::new(
         endpoint
             .url
@@ -73,9 +72,7 @@ fn config(endpoint: &ClientConnectionDto) -> Result<ClientConfig, String> {
     .with_default_header("authorization", format!("Bearer {}", endpoint.token)))
 }
 
-pub fn client(
-    endpoint: &ClientConnectionDto,
-) -> Result<rpc::ClientServiceClient<HttpClient>, String> {
+pub fn client(endpoint: &DaemonEndpoint) -> Result<rpc::ClientServiceClient<HttpClient>, String> {
     Ok(rpc::ClientServiceClient::new(
         HttpClient::plaintext(),
         config(endpoint)?.with_default_timeout(POLICY.default_timeout),
@@ -83,7 +80,7 @@ pub fn client(
 }
 
 pub fn stream_client(
-    endpoint: &ClientConnectionDto,
+    endpoint: &DaemonEndpoint,
 ) -> Result<rpc::ClientServiceClient<HttpClient>, String> {
     Ok(rpc::ClientServiceClient::new(
         HttpClient::plaintext(),

@@ -26,10 +26,6 @@ fn test_provider拒否応答_全理由をconnectへ変換する() {
             "binding_expired",
         ),
         (
-            ProviderLifecycleRejection::SessionAlreadyAssociated,
-            "session_already_associated",
-        ),
-        (
             ProviderLifecycleRejection::SessionNotAssociated,
             "session_not_associated",
         ),

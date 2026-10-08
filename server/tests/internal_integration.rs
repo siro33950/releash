@@ -246,6 +246,3 @@ mod usecase_workflow_execution_archive;
 mod usecase_workflow_workspace_tree;
 #[path = "internal/usecase_workspace_tree_list.rs"]
 mod usecase_workspace_tree_list;
-
-#[path = "internal/adaptor_gateway_local_api.rs"]
-mod adaptor_gateway_local_api;

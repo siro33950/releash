@@ -9,7 +9,6 @@ pub(crate) fn rejection_reason(reason: ProviderLifecycleRejection) -> &'static s
         ProviderLifecycleRejection::ProviderMismatch => "provider_mismatch",
         ProviderLifecycleRejection::ScopeMismatch => "scope_mismatch",
         ProviderLifecycleRejection::BindingExpired => "binding_expired",
-        ProviderLifecycleRejection::SessionAlreadyAssociated => "session_already_associated",
         ProviderLifecycleRejection::SessionNotAssociated => "session_not_associated",
         ProviderLifecycleRejection::ProviderSessionMismatch => "provider_session_mismatch",
         ProviderLifecycleRejection::TranscriptMismatch => "transcript_mismatch",

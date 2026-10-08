@@ -734,8 +734,6 @@ pub mod transport {
     pub use crate::adaptor::controller::client::dispatch::ClientCommandDispatch;
     pub use crate::adaptor::controller::client::worktree_mutation::admit;
 
-    pub use crate::adaptor::gateway::local_api::ClientConnectionFileQuery;
-
     pub use crate::adaptor::gateway::notion::service_impl::build_client;
     pub use crate::adaptor::presenter::client::from_value;
     pub use crate::adaptor::presenter::connect::classified_error;
@@ -750,11 +748,9 @@ pub mod transport {
     pub use crate::infrastructure::local_api::client_token::BearerToken;
     pub use crate::infrastructure::local_api::discovery::lookup_process_start_time;
     pub use crate::infrastructure::local_api::discovery::process_start_time;
+    pub use crate::infrastructure::local_api::discovery::LocalApiDiscovery;
     pub use crate::infrastructure::local_api::discovery::LocalApiDiscoveryFile;
     pub use crate::infrastructure::local_api::discovery::ProcessStartTimeLookup;
-    pub use crate::infrastructure::local_api::discovery::{
-        read, read_optional, DiscoveryReadError, LocalApiDiscovery,
-    };
     pub use crate::infrastructure::local_api::server::test_binding;
     pub use crate::infrastructure::local_api::server::LocalApiServer;
     pub use crate::infrastructure::local_api::LocalApiServerError;
@@ -765,7 +761,6 @@ pub mod transport {
     pub use crate::infrastructure::local_event_store_connection::open_writer;
 
     pub use crate::test_support::client_api_deps;
-    pub use crate::usecase::client_connection::ClientConnectionQueryService;
 }
 pub mod workflow {
     pub use crate::adaptor::controller::client::workflow::delete_facet_inner;

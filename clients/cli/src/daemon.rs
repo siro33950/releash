@@ -66,11 +66,17 @@ pub fn running(data_dir: &Path) -> Result<Option<LocalApiDiscovery>, DaemonError
     let Some(discovery) = discovery::read_optional(data_dir)? else {
         return Ok(None);
     };
-    let process = discovery::lookup_process_start_time(discovery.pid);
-    if process.process_list_available && process.start_time != Some(discovery.process_started_at) {
+    let mut stale = false;
+    let verification = discovery.verify_process(|pid| {
+        let process = discovery::lookup_process_start_time(pid);
+        stale = process.process_list_available
+            && process.start_time != Some(discovery.process_started_at);
+        process
+    });
+    if stale {
         return Ok(None);
     }
-    discovery.verify_process(|_| process)?;
+    verification?;
     Ok(Some(discovery))
 }
 

@@ -1,9 +1,3 @@
-//! 発見ファイルの読み取りエラーは、戻り値から扱います。
-//!
-//! ```compile_fail,E0432
-//! use releashd::desktop_api::LocalApiDiscoveryReadError;
-//! ```
-//!
 //! テスト専用の生成型は、`test-support` の区画から利用します。
 //!
 //! ```compile_fail,E0432
@@ -32,7 +26,6 @@ pub mod descriptor {
     pub use crate::adaptor::presenter::client::descriptor::{option, pool};
 }
 pub use crate::adaptor::gateway::app_config::read_config_if_exists;
-pub use crate::adaptor::gateway::local_api::ClientConnectionFileQuery;
 pub use crate::adaptor::gateway::telemetry::TelemetryGateway;
 #[cfg(feature = "test-support")]
 pub use crate::client_api_acceptance::ClientEndpoint;
@@ -49,9 +42,6 @@ pub use crate::infrastructure::telemetry::metrics::{
 };
 pub use crate::infrastructure::telemetry::{init_telemetry, TelemetryGuard};
 pub use crate::usecase::app_config::query_service::DesktopSettingsDto;
-pub use crate::usecase::client_connection::{
-    ClientConnectionDto, ClientConnectionError, ClientConnectionQueryService,
-};
 pub use crate::usecase::telemetry::TelemetryPort;
 #[cfg(feature = "test-support")]
 pub mod test_support {
@@ -71,13 +61,4 @@ pub mod test_support {
         config::configured(config::endpoint(), config::license_key())
     }
     pub use crate::infrastructure::telemetry::test_helpers::{install_test_exporter, TEST_LOCK};
-}
-
-pub fn read_local_api_discovery(
-    data_dir: &std::path::Path,
-) -> Result<
-    Option<LocalApiDiscovery>,
-    crate::infrastructure::local_api::discovery::DiscoveryReadError,
-> {
-    crate::infrastructure::local_api::discovery::read_optional(data_dir)
 }

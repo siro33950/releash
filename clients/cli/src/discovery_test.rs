@@ -74,23 +74,38 @@ fn test_発見ファイル_欠損と破損をunavailableにする() {
 #[test]
 fn test_発見ファイル_不正なmetadataと取得不能なprocess情報を拒否する() {
     for field in ["port", "token", "daemon_id", "pid", "process_started_at"] {
-        let mut missing = serde_json::to_value(discovery()).unwrap();
-        missing.as_object_mut().unwrap().remove(field);
-        assert!(serde_json::from_value::<LocalApiDiscovery>(missing).is_err());
-        let mut null = serde_json::to_value(discovery()).unwrap();
-        null[field] = serde_json::Value::Null;
-        assert!(serde_json::from_value::<LocalApiDiscovery>(null).is_err());
-        let mut value = serde_json::to_value(discovery()).unwrap();
-        value[field] = if field == "token" || field == "daemon_id" {
-            serde_json::json!(" ")
-        } else {
-            serde_json::json!(0)
-        };
-        let file: LocalApiDiscovery = serde_json::from_value(value).unwrap();
-        let error = file
-            .verify_process(|_| panic!("invalid metadata must not query processes"))
-            .unwrap_err();
-        assert_eq!(error.code, connectrpc::ErrorCode::Unavailable);
+        for value in [
+            None,
+            Some(serde_json::Value::Null),
+            Some(if field == "token" || field == "daemon_id" {
+                serde_json::json!(" ")
+            } else {
+                serde_json::json!(0)
+            }),
+        ] {
+            let directory = tempfile::tempdir().unwrap();
+            let mut json = serde_json::to_value(discovery()).unwrap();
+            match value {
+                Some(value) => json[field] = value,
+                None => {
+                    json.as_object_mut().unwrap().remove(field);
+                }
+            }
+            std::fs::write(
+                discovery_file(directory.path()),
+                serde_json::to_vec(&json).unwrap(),
+            )
+            .unwrap();
+            let file = read(directory.path()).unwrap();
+            let error = file
+                .verify_process(|_| panic!("invalid metadata must not query processes"))
+                .unwrap_err();
+            assert_eq!(error.code, connectrpc::ErrorCode::Unavailable);
+            assert_eq!(
+                error.message.as_deref(),
+                Some("client discovery is invalid")
+            );
+        }
     }
     assert_eq!(
         discovery()
@@ -148,5 +163,24 @@ fn test_発見ファイル_範囲外のportを拒否する() {
             .unwrap_err()
             .code,
         connectrpc::ErrorCode::Unavailable
+    );
+}
+
+#[test]
+fn test_発見ファイル_直列化で省略した既定値を読み戻せる() {
+    // Given
+    let file = LocalApiDiscovery::default();
+    // When
+    let json = serde_json::to_value(&file).unwrap();
+    let decoded: LocalApiDiscovery = serde_json::from_value(json).unwrap();
+    // Then
+    assert_eq!(decoded, file);
+    let error = decoded
+        .verify_process(|_| panic!("invalid metadata must not query processes"))
+        .unwrap_err();
+    assert_eq!(error.code, connectrpc::ErrorCode::Unavailable);
+    assert_eq!(
+        error.message.as_deref(),
+        Some("client discovery is invalid")
     );
 }

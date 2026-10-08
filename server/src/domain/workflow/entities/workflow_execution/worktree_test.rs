@@ -375,8 +375,8 @@ fn test_隔離実行_repository_rootがない開始記録を拒否する() {
 fn test_隔離実行_正本のfix_allはfix_and_verifyをslotごとに隔離し修正と検証が継承する() {
     // Given
     let workflow = serde_saphyr::from_str(include_str!(concat!(
-        env!("OUT_DIR"),
-        "/full-cycle-development.yml"
+        env!("CARGO_MANIFEST_DIR"),
+        "/../workflows/examples/full-cycle-development.yml"
     )))
     .unwrap();
     let mut execution = ExecutionTree::restore_runtime(ExecutionTreeRestore {

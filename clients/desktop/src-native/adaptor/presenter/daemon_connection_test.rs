@@ -41,4 +41,8 @@ fn test_接続先の返却_サーバの接続先を転送型へ変換する() {
     // Then
     assert_eq!(value.url, "http://127.0.0.1:1234");
     assert_eq!(value.token, "client-token");
+    assert_eq!(
+        serde_json::to_value(value).unwrap(),
+        serde_json::json!({"url": "http://127.0.0.1:1234", "token": "client-token"})
+    );
 }
