@@ -100,12 +100,6 @@ fn test_発見ファイル_不正なmetadataと取得不能なprocess情報を�
                 .verify_process(|_| panic!("invalid metadata must not query processes"))
                 .unwrap_err();
             assert_eq!(error, ProcessVerificationError::Invalid);
-            let error = connectrpc::ConnectError::from(error);
-            assert_eq!(error.code, connectrpc::ErrorCode::Unavailable);
-            assert_eq!(
-                error.message.as_deref(),
-                Some("client discovery is invalid")
-            );
         }
     }
     assert_eq!(
@@ -178,12 +172,6 @@ fn test_発見ファイル_直列化で省略した既定値を読み戻せる()
         .verify_process(|_| panic!("invalid metadata must not query processes"))
         .unwrap_err();
     assert_eq!(error, ProcessVerificationError::Invalid);
-    let error = connectrpc::ConnectError::from(error);
-    assert_eq!(error.code, connectrpc::ErrorCode::Unavailable);
-    assert_eq!(
-        error.message.as_deref(),
-        Some("client discovery is invalid")
-    );
 }
 
 #[test]

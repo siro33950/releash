@@ -74,12 +74,11 @@ impl LocalApiDiscoveryFile {
 
     pub fn remove_if_owned(&self) -> io::Result<()> {
         let current = match fs::read(&self.path) {
-            Ok(bytes) => serde_json::from_slice::<serde_json::Value>(&bytes).ok(),
+            Ok(bytes) => discovery_record::decode(&bytes),
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
             Err(error) => return Err(error),
         };
-        let expected = serde_json::to_value(&self.discovery).map_err(io::Error::other)?;
-        if current.as_ref() != Some(&expected) {
+        if current.is_some_and(|value| value != self.discovery) {
             return Ok(());
         }
         match fs::remove_file(&self.path) {

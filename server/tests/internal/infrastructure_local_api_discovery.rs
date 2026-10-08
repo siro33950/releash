@@ -93,16 +93,19 @@ pub fn test_local_api_discovery_古いownerが新しいdiscoveryを削除しな�
 }
 
 #[test]
-pub fn test_local_api_discovery_破損したfileを削除しない() {
-    // Given
-    let directory = tempfile::tempdir().unwrap();
-    let file = LocalApiDiscoveryFile::create_client(directory.path(), LocalApiDiscovery::default())
-        .unwrap();
-    fs::write(file.path(), b"invalid json").unwrap();
+pub fn test_local_api_discovery_破損したfileを削除する() {
+    for content in [&b"invalid json"[..], b"[]"] {
+        // Given
+        let directory = tempfile::tempdir().unwrap();
+        let file =
+            LocalApiDiscoveryFile::create_client(directory.path(), LocalApiDiscovery::default())
+                .unwrap();
+        fs::write(file.path(), content).unwrap();
 
-    // When
-    file.remove_if_owned().unwrap();
+        // When
+        file.remove_if_owned().unwrap();
 
-    // Then
-    assert_eq!(fs::read(file.path()).unwrap(), b"invalid json");
+        // Then
+        assert!(!file.path().exists());
+    }
 }

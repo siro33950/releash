@@ -3,13 +3,24 @@ use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System};
 
 pub use crate::infrastructure::client_protocol::wire::LocalApiDiscovery;
 
+fn descriptor() -> prost_reflect::MessageDescriptor {
+    crate::infrastructure::client_protocol::descriptor::pool()
+        .get_message_by_name("releash.client.v1.LocalApiDiscovery")
+        .expect("discovery descriptor")
+}
+
+pub(super) fn decode(bytes: &[u8]) -> Option<LocalApiDiscovery> {
+    let mut deserializer = serde_json::Deserializer::from_slice(bytes);
+    let message =
+        prost_reflect::DynamicMessage::deserialize(descriptor(), &mut deserializer).ok()?;
+    deserializer.end().ok()?;
+    message.transcode_to().ok()
+}
+
 impl Serialize for LocalApiDiscovery {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let descriptor = crate::infrastructure::client_protocol::descriptor::pool()
-            .get_message_by_name("releash.client.v1.LocalApiDiscovery")
-            .expect("discovery descriptor");
         let message = prost_reflect::DynamicMessage::decode(
-            descriptor,
+            descriptor(),
             prost::Message::encode_to_vec(self).as_slice(),
         )
         .map_err(serde::ser::Error::custom)?;
