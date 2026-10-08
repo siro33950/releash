@@ -20,7 +20,7 @@
 - data dir、接続先、発見ファイルのパスは CLI が解決した data dir から導く。`ServerInfo`・`DaemonInfo` に data dir を足さない。
 - 画面があるかの判定は、CLI の実行ファイルの実体（canonicalize した `current_exe`）が `.app` の中にあるかで行う。加えて、CLI が解決した data dir が、画面が使う既定の data dir（`releash_sdk::data_dir` の既定の解決、同じ build profile）と、canonicalize した上で一致するときだけ `.app` を開く。一致しないときは開かなかった理由（data dir が画面の既定と違う）を 1 行出し、黙って `status` だけを出さない。`.app` を開く処理は CLI に置き、`cfg(target_os = "macos")` で区切る。
 - `restart` は、動いていなければ起動だけを行って成功にする。
-- 実行ファイルの実体（canonicalize した `current_exe`）の隣の `releashd` のパスは、`releash-sdk` の daemon の 1 つの関数で求め、CLI（`releash/src/server.rs`）と画面（`releash-desktop/src/desktop.rs:50`）がそれを使う。関数はパスを返すだけで、存在確認や起動はしない。サーバの background worker（`src/infrastructure/process/background_worker.rs:25-38`）は releashd が自分自身を起動する別の操作として、この関数を使わない。
+- 実行ファイルの実体（canonicalize した `current_exe`）の隣の `releashd` のパスは、`releash-sdk` の daemon の 1 つの関数で求め、CLI（`releash/src/server.rs`）と画面（`releash-desktop/src/desktop.rs:50`）がそれを使う。関数はパスを返すだけで、存在確認や起動はしない。実行ファイルの実体（canonicalize した `current_exe`）も `releash-sdk` の daemon の 1 つの関数で求め、隣の `releashd` のパスと CLI の `.app` の判定は、どちらもその結果を使う。サーバの background worker（`src/infrastructure/process/background_worker.rs:25-38`）は releashd が自分自身を起動する別の操作として、この関数を使わない。
 - 起動・停止・発見・照合は `releash-sdk` の `daemon::{running, client, server_info, start, stop}` を CLI から順に呼び、SDK に CLI 専用の分岐を足さない。`daemon::client`・`daemon::server_info` は接続先と bearer token を分けて受け取り、hook は env の token を渡す。
 - CLI の期限は `default_timeout_ms` だけを使い、`daemon::timeout` で読む。
 

@@ -3,7 +3,7 @@ use clap::Subcommand;
 use connectrpc::ConnectError;
 use releash_sdk::{compatibility::Compatibility, daemon, data_dir, descriptor, discovery};
 use serde_json::json;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 #[derive(Subcommand, Debug)]
 pub(crate) enum ServerSubcommand {
@@ -87,18 +87,11 @@ pub async fn status(dir: &Path, machine: bool) -> Result<String, ConnectError> {
     Ok(output)
 }
 
-fn executable() -> Result<PathBuf, ConnectError> {
-    std::env::current_exe()
-        .and_then(std::fs::canonicalize)
-        .map_err(|error| ConnectError::unavailable(error.to_string()))
-}
-
-async fn start(dir: &Path) -> Result<bool, ConnectError> {
+async fn start(dir: &Path, current_executable: &Path) -> Result<bool, ConnectError> {
     if daemon::running(dir).map_err(daemon_error)?.is_some() {
         return Ok(false);
     }
-    let executable =
-        daemon::executable().map_err(|error| ConnectError::unavailable(error.to_string()))?;
+    let executable = daemon::executable(current_executable);
     let cwd =
         std::env::current_dir().map_err(|error| ConnectError::unavailable(error.to_string()))?;
     daemon::start(&executable, dir, &cwd)
@@ -109,12 +102,16 @@ async fn start(dir: &Path) -> Result<bool, ConnectError> {
 
 pub async fn run(dir: &Path, command: ServerSubcommand) -> Result<String, ConnectError> {
     match command {
-        ServerSubcommand::Start => Ok(if start(dir).await? {
-            "server started\n"
-        } else {
-            "server is already running\n"
+        ServerSubcommand::Start => {
+            let executable = daemon::current_executable()
+                .map_err(|error| ConnectError::unavailable(error.to_string()))?;
+            Ok(if start(dir, &executable).await? {
+                "server started\n"
+            } else {
+                "server is already running\n"
+            }
+            .into())
         }
-        .into()),
         ServerSubcommand::Stop => {
             let discovery = daemon::running(dir)
                 .map_err(daemon_error)?
@@ -127,7 +124,9 @@ pub async fn run(dir: &Path, command: ServerSubcommand) -> Result<String, Connec
             if let Some(discovery) = &discovery {
                 daemon::stop(dir, discovery).await.map_err(daemon_error)?;
             }
-            start(dir).await?;
+            let executable = daemon::current_executable()
+                .map_err(|error| ConnectError::unavailable(error.to_string()))?;
+            start(dir, &executable).await?;
             Ok(if discovery.is_some() {
                 "server stopped and started\n"
             } else {
@@ -146,8 +145,9 @@ fn app_bundle(executable: &Path) -> Option<&Path> {
 }
 
 pub async fn launch(dir: &Path) -> Result<String, ConnectError> {
-    start(dir).await?;
-    let executable = executable()?;
+    let executable = daemon::current_executable()
+        .map_err(|error| ConnectError::unavailable(error.to_string()))?;
+    start(dir, &executable).await?;
     launch_started(dir, &executable, open_app).await
 }
 

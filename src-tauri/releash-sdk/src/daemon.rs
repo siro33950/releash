@@ -74,10 +74,12 @@ pub fn running(data_dir: &Path) -> Result<Option<LocalApiDiscovery>, DaemonError
     Ok(Some(discovery))
 }
 
-pub fn executable() -> Result<PathBuf, std::io::Error> {
-    Ok(std::env::current_exe()?
-        .canonicalize()?
-        .with_file_name("releashd"))
+pub fn current_executable() -> Result<PathBuf, std::io::Error> {
+    std::env::current_exe()?.canonicalize()
+}
+
+pub fn executable(current_executable: &Path) -> PathBuf {
+    current_executable.with_file_name("releashd")
 }
 
 pub async fn start(
