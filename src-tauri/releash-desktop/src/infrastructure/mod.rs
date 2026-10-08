@@ -1,2 +1,2 @@
-pub(crate) mod desktop_channel;
 pub(crate) mod platform;
+pub(crate) mod settings_observer;

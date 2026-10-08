@@ -17,9 +17,8 @@ globalThis.fetch = async (input, init) => {
 };
 globalThis.window = Object.assign(new EventTarget(), {
     __TAURI_INTERNALS__: { invoke: async (command) => {
-        if (command === "validate_daemon_connection") return;
         assert.equal(command, "get_client_endpoint");
-        return { url, token: "acceptance", launchId: "" };
+        return { url, token: "acceptance" };
     } },
 });
 const bundle = await build({

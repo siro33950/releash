@@ -41,15 +41,7 @@ impl LoginItemUsecase {
         })
     }
     pub fn restore(&self, requested: bool) -> Result<(), LoginItemError> {
-        if self
-            .port
-            .status()
-            .map_err(LoginItemError)?
-            .needs_registration(requested)
-        {
-            self.change_registration(true)?;
-        }
-        Ok(())
+        self.change_registration(requested)
     }
     pub async fn set_enabled(&self, enabled: bool) -> Result<LoginItemState, LoginItemError> {
         let _guard = self.saving.lock().await;

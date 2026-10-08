@@ -1,3 +1,4 @@
+use crate::domain::desktop_update::{DesktopUpdateFailure, DesktopUpdateInstaller};
 use crate::usecase::desktop_update::{DesktopUpdateGateway, UpdateInfo};
 use std::sync::Arc;
 use tauri::Emitter;
@@ -81,13 +82,11 @@ impl DesktopUpdateGateway for TauriUpdateGateway {
     }
 }
 #[async_trait::async_trait]
-impl crate::domain::daemon_supervision::DesktopUpdateInstaller for TauriUpdateGateway {
-    async fn download(&self) -> Result<(), String> {
-        let update = self
-            .update
-            .lock()
-            .clone()
-            .ok_or("No update is available.")?;
+impl DesktopUpdateInstaller for TauriUpdateGateway {
+    async fn download(&self) -> Result<(), DesktopUpdateFailure> {
+        let update = self.update.lock().clone().ok_or_else(|| {
+            DesktopUpdateFailure::TechnicalFailure("No update is available.".into())
+        })?;
         let downloaded = std::sync::atomic::AtomicU64::new(0);
         let runtime = self.runtime.clone();
         let bytes = update
@@ -101,22 +100,24 @@ impl crate::domain::daemon_supervision::DesktopUpdateInstaller for TauriUpdateGa
                         );
                 }
             }))
-            .await?;
+            .await
+            .map_err(DesktopUpdateFailure::TechnicalFailure)?;
         *self.downloaded.lock() = Some((update, bytes));
         Ok(())
     }
-    async fn install(&self) -> Result<(), String> {
-        let (update, bytes) = self
-            .downloaded
-            .lock()
-            .take()
-            .ok_or("No verified update has been downloaded.")?;
+    async fn install(&self) -> Result<(), DesktopUpdateFailure> {
+        let (update, bytes) = self.downloaded.lock().take().ok_or_else(|| {
+            DesktopUpdateFailure::TechnicalFailure("No verified update has been downloaded.".into())
+        })?;
         releashd::desktop_api::spawn_blocking(move || update.install(bytes))
             .await
-            .map_err(|e| e.to_string())?
+            .map_err(|e| DesktopUpdateFailure::TechnicalFailure(e.to_string()))?
+            .map_err(DesktopUpdateFailure::TechnicalFailure)
     }
-    fn restart(&self) -> Result<(), String> {
-        self.runtime.restart()
+    fn restart(&self) -> Result<(), DesktopUpdateFailure> {
+        self.runtime
+            .restart()
+            .map_err(DesktopUpdateFailure::TechnicalFailure)
     }
 }
 

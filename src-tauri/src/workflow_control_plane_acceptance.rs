@@ -1056,7 +1056,6 @@ launch_retention: crate::adaptor::controller::agent_session_launch_retention::ru
             &crate::client_api_acceptance::ClientEndpoint {
                 url: self.local_api_base_url.clone(),
                 token: self.local_api_token.clone(),
-                launch_id: String::new(),
             },
         )
     }

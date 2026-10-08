@@ -32,7 +32,6 @@ pub mod test_support;
 mod usecase;
 
 pub fn run_daemon(data_dir: Option<std::path::PathBuf>) -> i32 {
-    infrastructure::process::parent_lifetime::watch_parent_pipe();
     let result = (|| -> Result<std::convert::Infallible, Box<dyn std::error::Error>> {
         let data_dir = releash_sdk::data_dir::resolve_data_dir(data_dir)?;
         #[cfg(any(target_os = "macos", target_os = "linux"))]

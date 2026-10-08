@@ -5,7 +5,7 @@ impl DaemonAdmission {
     async fn admit(&self, path: &str) -> Result<(), connectrpc::ConnectError> {
         let request = match path.rsplit('/').next().unwrap_or_default() {
             "GetServerInfo" => DaemonRequest::Status,
-            "RequestApplicationQuit" => DaemonRequest::Stop,
+            "StopDaemon" => DaemonRequest::Stop,
             _ => DaemonRequest::Operation,
         };
         if self.0.admits(request).await {

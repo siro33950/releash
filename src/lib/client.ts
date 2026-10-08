@@ -26,7 +26,7 @@ export {
 	invokeClient,
 } from "@/generated/client_commands";
 
-type Endpoint = { url: string; token: string; launchId: string };
+type Endpoint = { url: string; token: string };
 type Session = {
 	client: Client<typeof ClientService>;
 };
@@ -106,15 +106,8 @@ async function open(abort: AbortController): Promise<Session> {
 				},
 			}),
 		);
-		const info = await Promise.race([
-			client.getServerInfo({}, { signal: abort.signal }),
-			expired,
-		]);
 		await Promise.race([
-			invoke("validate_daemon_connection", {
-				launchId: info.launchId,
-				release: info.release,
-			}),
+			client.getServerInfo({}, { signal: abort.signal }),
 			expired,
 		]);
 		abort.signal.throwIfAborted();
@@ -122,6 +115,10 @@ async function open(abort: AbortController): Promise<Session> {
 	} finally {
 		clearTimeout(timeout);
 	}
+}
+
+export function reconnectClient() {
+	connect();
 }
 
 function connect() {

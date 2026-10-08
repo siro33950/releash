@@ -53,7 +53,7 @@ fn registration_result(
 }
 
 pub(crate) struct DaemonLoginPreference(
-    pub std::sync::Arc<super::daemon_supervision::DaemonProcessGateway>,
+    pub std::sync::Arc<super::daemon_connection::DaemonServiceGateway>,
 );
 impl DaemonLoginPreference {
     async fn request(

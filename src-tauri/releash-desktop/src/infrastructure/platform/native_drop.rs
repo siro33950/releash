@@ -7,7 +7,7 @@ pub struct NativeFileDrop {
     pub position: (f64, f64),
 }
 
-pub fn install(window: &WebviewWindow) {
+pub fn install<R: tauri::Runtime>(window: &WebviewWindow<R>) {
     #[cfg(target_os = "macos")]
     macos::install(window);
 
@@ -27,15 +27,19 @@ mod macos {
     use std::sync::OnceLock;
     use tauri::{Emitter, Manager, WebviewWindow};
 
-    static APP_HANDLE: OnceLock<tauri::AppHandle> = OnceLock::new();
+    type EmitDrop = Box<dyn Fn(NativeFileDrop) + Send + Sync>;
+    static EMIT_DROP: OnceLock<EmitDrop> = OnceLock::new();
 
     type PerformDragFn =
         unsafe extern "C-unwind" fn(*const AnyObject, Sel, *const AnyObject) -> bool;
 
     static ORIGINAL_PERFORM_DRAG: OnceLock<PerformDragFn> = OnceLock::new();
 
-    pub fn install(window: &WebviewWindow) {
-        let _ = APP_HANDLE.set(window.app_handle().clone());
+    pub fn install<R: tauri::Runtime>(window: &WebviewWindow<R>) {
+        let handle = window.app_handle().clone();
+        let _ = EMIT_DROP.set(Box::new(move |drop| {
+            let _ = handle.emit("native-file-drop", drop);
+        }));
 
         window
             .with_webview(|webview| unsafe {
@@ -62,9 +66,9 @@ mod macos {
         cmd: Sel,
         sender: *const AnyObject,
     ) -> bool {
-        if let Some(app_handle) = APP_HANDLE.get() {
+        if let Some(emit) = EMIT_DROP.get() {
             if let Some(drop) = extract_drop_info(this, sender) {
-                let _ = app_handle.emit("native-file-drop", drop);
+                emit(drop);
                 // 外部ファイルドロップ: 元のIMPを呼ばない
                 // （呼ぶとWKWebViewがファイルURLにナビゲートしてしまう）
                 return true;

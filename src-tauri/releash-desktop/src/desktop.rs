@@ -6,29 +6,6 @@ pub(crate) fn application_context<R: tauri::Runtime>() -> tauri::Context<R> {
     tauri::generate_context!()
 }
 
-pub fn apply_desktop_settings<R: tauri::Runtime>(
-    app: &tauri::AppHandle<R>,
-    settings: releashd::desktop_api::DesktopSettingsDto,
-) {
-    use releashd::desktop_api::TelemetryPort;
-    let preferences = infrastructure::platform::window_lifecycle::WindowPreferences {
-        close_to_tray: settings.close_to_tray,
-    };
-    if let Some(state) =
-        app.try_state::<infrastructure::platform::window_lifecycle::WindowPreferencesState>()
-    {
-        *state.0.write() = preferences;
-    } else {
-        app.manage(
-            infrastructure::platform::window_lifecycle::WindowPreferencesState(
-                parking_lot::RwLock::new(preferences),
-            ),
-        );
-    }
-    releashd::desktop_api::TelemetryGateway.set_crash_reporting_enabled(settings.crash_reporting);
-    releashd::desktop_api::TelemetryGateway.set_performance_enabled(settings.performance_telemetry);
-}
-
 pub fn run() {
     releashd::desktop_api::set_startup_origin(std::time::Instant::now());
     let builder = tauri::Builder::default()
@@ -63,30 +40,71 @@ pub fn run() {
         ) {
             eprintln!("{error}");
         }
-        let startup_config = releashd::desktop_api::read_config_if_exists(&data_dir.join("releash.toml"));
-        if let Err(reason) = &startup_config { log::error!("Startup preferences are unavailable; daemon initialization will report the failure: {reason}"); }
-        let hidden = std::env::args().any(|arg| arg == "--hidden") && startup_config.as_ref().is_ok_and(|config| config.as_ref().is_some_and(|config| config.app.start_minimized));
-        app.manage(usecase::cli_install::CliInstallUsecase(Arc::new(adaptor::gateway::cli_install::MacCliInstall)));
-        let executable = std::env::current_exe()?.with_file_name("releashd");
-        let gateway = Arc::new(adaptor::gateway::daemon_supervision::DaemonProcessGateway::new(
-            executable,
-            data_dir,
-            Arc::new(crate::common::retry::RetryLimiter::new()),
+        let hidden = std::env::args().any(|arg| arg == "--hidden");
+        app.manage(usecase::cli_install::CliInstallUsecase(Arc::new(
+            adaptor::gateway::cli_install::MacCliInstall,
+        )));
+        let (clients, client_updates) = tokio::sync::watch::channel(None);
+        let connection = Arc::new(
+            adaptor::gateway::daemon_connection::DaemonServiceGateway::new(
+                std::env::current_exe()?.with_file_name("releashd"),
+                data_dir,
+                Arc::new(crate::common::retry::RetryLimiter::new()),
+                crate::common::deadline::Deadline(releash_sdk::daemon::timeout(
+                    "min_connect_timeout_ms",
+                )),
+                clients,
+            ),
+        );
+        let connection_usecase =
+            Arc::new(usecase::daemon_connection::DaemonConnectionUsecase::new(
+                connection.clone(),
+                connection.clone(),
+                releash_sdk::descriptor::protocol(),
+                env!("CARGO_PKG_VERSION").into(),
+            ));
+        app.manage(connection_usecase.clone());
+        let login = Arc::new(usecase::login_item::LoginItemUsecase::new(
+            Arc::new(adaptor::gateway::login_item::MacLoginItem),
+            Arc::new(adaptor::gateway::login_item::DaemonLoginPreference(
+                connection.clone(),
+            )),
         ));
-        let login = usecase::login_item::LoginItemUsecase::new(Arc::new(adaptor::gateway::login_item::MacLoginItem), Arc::new(adaptor::gateway::login_item::DaemonLoginPreference(gateway.clone())));
-        if let Ok(Some(config)) = &startup_config { if let Err(error) = login.restore(config.app.auto_launch) { log::error!("{error}"); } }
-        app.manage(login);
-        let status_presenter = Arc::new(adaptor::presenter::daemon_status::DaemonStatusPresenter::new());
-        let supervisor = tauri::async_runtime::block_on(async {
-            usecase::daemon_supervision::DaemonSupervisionUsecase::start(gateway, status_presenter.clone())
-        });
-        app.manage(status_presenter);
-        app.manage(supervisor.clone());
+        app.manage(login.clone());
+        let lifecycle = Arc::new(usecase::desktop_lifecycle::DesktopLifecycleUsecase::new(
+            connection_usecase,
+            login,
+        ));
+        app.manage(crate::common::serial::Serial::default());
+        app.manage(lifecycle);
+        app.manage(
+            adaptor::presenter::desktop_lifecycle::TauriDesktopLifecycle(Arc::new(
+                infrastructure::platform::desktop_runtime::DesktopRuntime::new(
+                    app.handle().clone(),
+                ),
+            )),
+        );
+        let observer_app = app.handle().clone();
+        tauri::async_runtime::spawn(infrastructure::settings_observer::observe(
+            client_updates,
+            |client| (client.settings_receiver(), client.initial_settings()),
+            move |client, settings| {
+                let subscription = client.subscription();
+                let app = observer_app.clone();
+                async move {
+                    adaptor::controller::desktop_lifecycle::settings_changed(
+                        &app,
+                        subscription,
+                        settings,
+                    )
+                    .await;
+                }
+            },
+        ));
         app.manage(usecase::desktop_update::DesktopUpdateUsecase::new(
             Arc::new(adaptor::gateway::desktop_update::TauriUpdateGateway::new(
                 app.handle().clone(),
             )),
-            supervisor.clone(),
         ));
         app.manage(
             infrastructure::platform::window_lifecycle::WindowPreferencesState(
@@ -98,41 +116,30 @@ pub fn run() {
             ),
         );
         infrastructure::platform::menu::setup_menu(app)?;
-        infrastructure::platform::tray::setup_tray(app, |app| {
-            adaptor::controller::desktop_lifecycle::request_quit(
-                &app.state::<Arc<usecase::daemon_supervision::DaemonSupervisionUsecase>>(),
-            );
-        }, |app| {
-            if let Err(error) = adaptor::controller::desktop_lifecycle::show(&app) { log::error!("{error}"); }
-        })?;
-        let native_quit = supervisor.clone();
+        infrastructure::platform::tray::setup_tray(
+            app,
+            |app| adaptor::controller::desktop_lifecycle::quit(&app, 0),
+            |app| {
+                if let Err(error) = adaptor::controller::desktop_lifecycle::show(&app) {
+                    log::error!("{error}");
+                }
+            },
+            adaptor::controller::desktop_lifecycle::confirm_stop,
+        )?;
+        let handle = app.handle().clone();
         infrastructure::platform::native_termination::install(move || {
-            adaptor::controller::desktop_lifecycle::request_quit(&native_quit);
+            adaptor::controller::desktop_lifecycle::quit(&handle, 0)
         })?;
-        let quit = supervisor.clone();
-        app.manage(Arc::new(
-            adaptor::controller::application_lifecycle::ApplicationQuitIngress::new(
-                move |intent| {
-                    if let Err(error) = quit.stop(intent) {
-                        log::error!("{error}");
-                    }
-                },
-            ),
-        ));
-        adaptor::controller::desktop_lifecycle::observe(app.handle().clone(), supervisor, hidden);
+        let handle = app.handle().clone();
+        tauri::async_runtime::spawn(async move {
+            adaptor::controller::desktop_lifecycle::initialize(&handle, hidden).await;
+        });
         Ok(())
     });
     adaptor::controller::command::register_all(builder)
         .build(application_context())
         .expect("error while building tauri application")
         .run(adaptor::controller::desktop_lifecycle::handle_run_event);
-}
-
-pub fn record_window_ready() {
-    releashd::desktop_api::record_startup_from_origin(
-        releashd::desktop_api::Startup::FirstWindowReady,
-    );
-    releashd::desktop_api::record_startup_from_origin(releashd::desktop_api::Startup::AppStartup);
 }
 
 #[cfg(test)]

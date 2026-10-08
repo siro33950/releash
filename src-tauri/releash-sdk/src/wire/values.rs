@@ -1774,3 +1774,9 @@ impl TryFrom<wire::WorkflowValue> for Value {
         })
     }
 }
+
+impl From<()> for wire::StopDaemonResponse {
+    fn from(_: ()) -> Self {
+        Self {}
+    }
+}

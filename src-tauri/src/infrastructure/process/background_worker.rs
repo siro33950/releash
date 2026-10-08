@@ -44,10 +44,7 @@ impl BackgroundWorker {
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
             .kill_on_drop(true);
-        let mut child = {
-            let _spawn = super::parent_lifetime::spawn_guard();
-            command.spawn()?
-        };
+        let mut child = command.spawn()?;
         let stdin = child.stdin.take().expect("worker stdin");
         let stdout = child.stdout.take().expect("worker stdout");
         let child = Arc::new(std::sync::Mutex::new(child));

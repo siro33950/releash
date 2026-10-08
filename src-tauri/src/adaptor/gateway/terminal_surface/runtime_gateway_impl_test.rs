@@ -1231,3 +1231,15 @@ impl portable_pty::ChildKiller for FailingKiller {
         Box::new(Self(self.0))
     }
 }
+
+#[test]
+fn test_出力drain待ち_ptyが閉じないときは上限で戻る() {
+    // Given
+    let output_drained = Arc::new((Mutex::new(false), parking_lot::Condvar::new()));
+    let started = Instant::now();
+    // When
+    let drained = wait_for_output_drain(&output_drained);
+    // Then
+    assert!(!drained);
+    assert!(started.elapsed() >= OUTPUT_DRAIN_TIMEOUT);
+}

@@ -3,6 +3,8 @@ package releash.client.v1;
 import "client_options.proto";
 
 message CommandRequest {
+  reserved 113;
+  reserved "request_application_quit";
   reserved 180, 181;
   reserved "workflow_validate_output", "workflow_get_output";
   reserved 104, 132, 133, 138, 139;
@@ -126,7 +128,7 @@ message CommandRequest {
     ReportFrontendErrorRequest report_frontend_error = 110;
     ReportMountedXtermCountRequest report_mounted_xterm_count = 111;
     ReportUsageEventRequest report_usage_event = 112;
-    RequestApplicationQuitRequest request_application_quit = 113;
+    StopDaemonRequest stop_daemon = 193;
     ResetProviderExecutableRequest reset_provider_executable = 114;
     ResizeTerminalSurfaceRequest resize_terminal_surface = 115;
     ResolveReviewThreadRequest resolve_review_thread = 117;
@@ -164,6 +166,8 @@ message CommandRequest {
 }
 
 message CommandResult {
+  reserved 113;
+  reserved "request_application_quit";
   reserved 180, 181;
   reserved "workflow_validate_output", "workflow_get_output";
   reserved 104, 132, 133, 138, 139;
@@ -287,7 +291,7 @@ message CommandResult {
     Unit report_frontend_error = 110;
     Unit report_mounted_xterm_count = 111;
     Unit report_usage_event = 112;
-    ApplicationQuitOutcomeDtoV1 request_application_quit = 113;
+    StopDaemonResponse stop_daemon = 193;
     Unit reset_provider_executable = 114;
     Unit resize_terminal_surface = 115;
     ReviewThreadDto resolve_review_thread = 117;
@@ -863,21 +867,11 @@ message NullableAgentSessionItemDto {
   optional AgentSessionItemDto value = 1 [json_name = "value", (json_nullable) = true];
 }
 
-message ApplicationQuitIntentDtoV1 {
-  option (json_tag) = "type";
-  oneof variant {
-    ApplicationQuitIntentDtoV1Exit exit = 1 [json_name = "exit"];
-    ApplicationQuitIntentDtoV1Restart restart = 2 [json_name = "restart"];
-  }
-}
 
-message ApplicationQuitIntentDtoV1Exit {
-  optional int32 code = 1 [json_name = "code", (json_required) = true];
-}
 
-message ApplicationQuitIntentDtoV1Restart {
-  optional int32 code = 1 [json_name = "code", (json_required) = true];
-}
+
+
+
 
 message Nullablestring {
   option (json_wrapper) = "value";
@@ -1991,22 +1985,11 @@ message ReportUsageEventRequest {
   optional string name = 1 [json_name = "name", (json_required) = true];
 }
 
-message ApplicationQuitRequestDtoV1 {
-  reserved 1;
-  optional ApplicationQuitIntentDtoV1 intent = 2 [json_name = "intent", (json_required) = true];
-}
 
-message RequestApplicationQuitRequest {
-  optional ApplicationQuitRequestDtoV1 request = 1 [json_name = "request", (json_required) = true];
-}
 
-message ApplicationQuitOutcomeDtoV1 {
-  option (json_tag) = "type";
-  reserved 2, 3, 4;
-  oneof variant {
-    Unit accepted = 1 [json_name = "accepted"];
-  }
-}
+
+
+
 
 message ResetProviderExecutableRequest {
   optional string provider = 1 [json_name = "provider", (json_required) = true];
@@ -2554,7 +2537,7 @@ service ClientService {
   rpc ReportFrontendError(ReportFrontendErrorRequest) returns (Unit) { option (scope) = SCOPE_OPERATOR; }
   rpc ReportMountedXtermCount(ReportMountedXtermCountRequest) returns (Unit) { option (scope) = SCOPE_OPERATOR; }
   rpc ReportUsageEvent(ReportUsageEventRequest) returns (Unit) { option (scope) = SCOPE_OPERATOR; }
-  rpc RequestApplicationQuit(RequestApplicationQuitRequest) returns (ApplicationQuitOutcomeDtoV1) { option (scope) = SCOPE_OPERATOR; }
+  rpc StopDaemon(StopDaemonRequest) returns (StopDaemonResponse) { option (scope) = SCOPE_OPERATOR; }
   rpc ResetProviderExecutable(ResetProviderExecutableRequest) returns (Unit) { option (scope) = SCOPE_OPERATOR; }
   rpc ResizeTerminalSurface(ResizeTerminalSurfaceRequest) returns (Unit) { option (scope) = SCOPE_OPERATOR; }
   rpc ResolveReviewThread(ResolveReviewThreadRequest) returns (ReviewThreadDto) { option (scope) = SCOPE_OPERATOR; }
@@ -2595,7 +2578,8 @@ service ClientService {
 message ServerInfo {
   reserved 1;
   reserved "instance_id";
-  string launch_id = 2;
+  reserved 2;
+  reserved "launch_id";
   string release = 3;
   reserved 4;
   reserved "desktop_settings";
@@ -2872,3 +2856,6 @@ message ReceiveProviderSignalResponse {
   }
 }
 message ReceiveProviderSignalRejected { string reason = 1; }
+
+message StopDaemonRequest {}
+message StopDaemonResponse { option (json_unit) = true; }

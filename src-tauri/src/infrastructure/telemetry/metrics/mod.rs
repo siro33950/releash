@@ -188,7 +188,7 @@ pub fn set_startup_origin(origin: Instant) {
     reset_first_repo_snapshot_recorded();
 }
 
-pub(crate) fn is_performance_active() -> bool {
+pub fn is_performance_active() -> bool {
     load_performance_configured() && load_performance_enabled()
 }
 

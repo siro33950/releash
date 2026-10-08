@@ -1,5 +1,5 @@
 use super::*;
-use crate::domain::daemon_supervision::DesktopUpdateInstaller;
+use crate::domain::desktop_update::DesktopUpdateInstaller;
 #[derive(Default)]
 struct Runtime {
     failure: Option<&'static str>,
@@ -59,7 +59,7 @@ async fn test_更新gateway_検証済みdownloadとinstallとrestartの結果を
     assert_eq!(gateway.check().await.unwrap().unwrap().version, "next");
     assert_eq!(
         gateway.install().await.unwrap_err(),
-        "No verified update has been downloaded."
+        DesktopUpdateFailure::TechnicalFailure("No verified update has been downloaded.".into())
     );
     // When
     gateway.download().await.unwrap();
@@ -97,6 +97,9 @@ async fn test_更新gateway_各境界の失敗理由を握り潰さず伝える(
         }
         .await;
         // Then
-        assert_eq!(result.unwrap_err(), format!("{failure} failed"));
+        assert_eq!(
+            result.unwrap_err(),
+            DesktopUpdateFailure::TechnicalFailure(format!("{failure} failed"))
+        );
     }
 }

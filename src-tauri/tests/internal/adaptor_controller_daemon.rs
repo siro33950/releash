@@ -80,11 +80,6 @@ pub fn test_daemon終了_成功と各段階の失敗と停止で完了通知と�
             Some(23),
             "{scenario}: {stdout}\n{stderr}"
         );
-        assert_eq!(
-            stdout.matches("releash-shutdown-complete").count(),
-            1,
-            "{scenario}: {stdout}"
-        );
         let called: Vec<_> = stdout
             .lines()
             .filter_map(|line| line.strip_prefix("shutdown-stage:"))

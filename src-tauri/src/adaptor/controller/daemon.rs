@@ -91,7 +91,6 @@ impl Daemon {
         self.exit.close();
         shutdown_with_deadline(self.shutdown.as_ref(), &self.server).await;
         self.daemon.stopped().await;
-        println!("releash-shutdown-complete");
         std::process::exit(code)
     }
 }

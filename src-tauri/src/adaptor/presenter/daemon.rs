@@ -1,11 +1,7 @@
-pub(crate) fn server_info(
-    info: crate::domain::daemon::DaemonInfo,
-    launch_id: String,
-) -> super::client::ServerInfo {
+pub(crate) fn server_info(info: crate::domain::daemon::DaemonInfo) -> super::client::ServerInfo {
     use super::client::ServingStatus as W;
     use crate::domain::daemon::ServingStatus as S;
     super::client::ServerInfo {
-        launch_id,
         release: info.release,
         daemon_id: info.identity.daemon_id,
         pid: info.identity.pid,

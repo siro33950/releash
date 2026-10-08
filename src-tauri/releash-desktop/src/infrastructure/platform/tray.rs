@@ -19,6 +19,7 @@ pub(crate) fn mark_quit_requested() {
 
 pub mod ids {
     pub const SHOW_WINDOW: &str = "tray-show-window";
+    pub const STOP_DAEMON: &str = "tray-stop-daemon";
     pub const QUIT: &str = "tray-quit";
 }
 
@@ -28,6 +29,7 @@ pub fn setup_tray(
     app: &App,
     on_quit_requested: impl Fn(tauri::AppHandle) + Send + Sync + 'static,
     on_show: impl Fn(tauri::AppHandle) + Send + Sync + 'static,
+    on_stop: impl Fn(tauri::AppHandle) + Send + Sync + 'static,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let handle = app.handle();
     let on_show: QuitHandler = Arc::new(on_show);
@@ -37,9 +39,11 @@ pub fn setup_tray(
     let show_window = MenuItemBuilder::with_id(ids::SHOW_WINDOW, "Show Releash").build(handle)?;
     let quit = MenuItemBuilder::with_id(ids::QUIT, "Quit").build(handle)?;
 
+    let stop = MenuItemBuilder::with_id(ids::STOP_DAEMON, "サーバを停止").build(handle)?;
     let menu = MenuBuilder::new(handle)
         .item(&show_window)
         .separator()
+        .item(&stop)
         .item(&quit)
         .build()?;
 
@@ -55,6 +59,7 @@ pub fn setup_tray(
                 event.id().as_ref(),
                 || menu_show(app.clone()),
                 || on_quit_requested(app.clone()),
+                || on_stop(app.clone()),
             );
         })
         .on_tray_icon_event(move |tray, event| {
@@ -67,10 +72,16 @@ pub fn setup_tray(
     Ok(())
 }
 
-pub(crate) fn dispatch_menu_event(id: &str, show: impl FnOnce(), quit: impl FnOnce()) {
+pub(crate) fn dispatch_menu_event(
+    id: &str,
+    show: impl FnOnce(),
+    quit: impl FnOnce(),
+    stop: impl FnOnce(),
+) {
     match id {
         ids::SHOW_WINDOW => show(),
         ids::QUIT => quit(),
+        ids::STOP_DAEMON => stop(),
         _ => {}
     }
 }

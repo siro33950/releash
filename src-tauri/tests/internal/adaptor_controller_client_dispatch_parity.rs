@@ -168,7 +168,6 @@ pub async fn test_クライアントrpc_期限切れで処理を止め要求枠�
         &releashd::test_support::integration::transport::ClientEndpoint {
             url: format!("http://{address}"),
             token: "client".into(),
-            launch_id: String::new(),
         },
     );
     for _ in 0..64 {
@@ -305,7 +304,6 @@ pub async fn test_計算と操作command_connectの実行結果とエラーがdi
         &releashd::test_support::integration::transport::ClientEndpoint {
             url: format!("http://{address}"),
             token: "client".into(),
-            launch_id: String::new(),
         },
     );
 
@@ -789,7 +787,6 @@ pub async fn test_workspace保存_connectがui追加fieldを受理し既存項�
         &releashd::test_support::integration::transport::ClientEndpoint {
             url: format!("http://{address}"),
             token: "client".into(),
-            launch_id: String::new(),
         },
     );
     // Then

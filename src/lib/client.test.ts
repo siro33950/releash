@@ -125,7 +125,6 @@ it("CONNECTING中の単発呼び出しはREADYまで待ってから送る", asyn
 	release({
 		url: "http://127.0.0.1:9829",
 		token: "client-token",
-		launchId: "launch",
 	});
 	await expect(Promise.all([first, second])).resolves.toEqual([true, true]);
 	expect(getConnectionState()).toBe("READY");
@@ -156,7 +155,7 @@ it("接続先の取得が20秒を超えると失敗し次の単発呼び出し�
 	}
 });
 
-it.each(["GetServerInfo", "validate_daemon_connection"])(
+it.each(["GetServerInfo"])(
 	"%sの応答が20秒ない場合は接続の確立を失敗させる",
 	async (step) => {
 		const { getConnectionState } = await import("./client");
@@ -170,14 +169,6 @@ it.each(["GetServerInfo", "validate_daemon_connection"])(
 					requestUrl(input).endsWith("/GetServerInfo")
 						? new Promise(() => {})
 						: original(input, init),
-				);
-			} else {
-				const original = vi.mocked(invoke).getMockImplementation();
-				if (!original) throw new Error("Missing IPC fixture");
-				vi.mocked(invoke).mockImplementation((command, args) =>
-					command === "validate_daemon_connection"
-						? new Promise(() => {})
-						: original(command, args),
 				);
 			}
 			const pending = invokeClient("add_repo_path", { path: "/repo" }).catch(
@@ -223,7 +214,6 @@ it("失効した接続先取得が後から完了しても現在の接続を変�
 		releaseFirst({
 			url: "http://127.0.0.1:9829",
 			token: "old-token",
-			launchId: "old",
 		});
 		await vi.advanceTimersByTimeAsync(0);
 		expect(getConnectionState()).toBe("READY");

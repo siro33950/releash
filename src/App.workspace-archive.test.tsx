@@ -33,6 +33,9 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock("@/lib/client", async (importOriginal) => ({
 	...(await importOriginal<typeof import("@/lib/client")>()),
+	getConnectionState: vi.fn().mockReturnValue("READY"),
+	onConnectionStateChange: vi.fn().mockReturnValue(() => {}),
+	getClient: vi.fn().mockResolvedValue({}),
 	invokeClient: mocks.invoke,
 	subscribeState: (...args: Parameters<typeof states.subscribeState>) =>
 		states.subscribeState(...args),
@@ -238,13 +241,7 @@ beforeEach(() => {
 	mocks.postArchiveSnapshot = fallbackSnapshot;
 	mocks.reconciliationFailuresRemaining = 0;
 	mocks.workspaceSelectionInvalidated = null;
-	vi.mocked(invoke).mockImplementation(async (command, args) => {
-		if (command === "subscribe_daemon_status") {
-			(
-				args as { channel: { onmessage?: (value: unknown) => void } }
-			).channel.onmessage?.({ phase: "ready" });
-			return;
-		}
+	vi.mocked(invoke).mockImplementation(async () => {
 		return { type: "ready" };
 	});
 	mocks.invoke.mockImplementation((command: string) => {

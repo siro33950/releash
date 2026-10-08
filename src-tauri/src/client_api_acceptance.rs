@@ -19,7 +19,6 @@ pub use crate::domain::repository::{Branch, BranchRepository, RepositoryError};
 pub struct ClientEndpoint {
     pub url: String,
     pub token: String,
-    pub launch_id: String,
 }
 
 pub struct ClientApiAcceptanceHost {
@@ -142,7 +141,6 @@ impl ClientApiAcceptanceHost {
         ClientEndpoint {
             url: format!("http://127.0.0.1:{}", discovery["port"]),
             token: discovery["token"].as_str().unwrap().to_owned(),
-            launch_id: String::new(),
         }
     }
 }

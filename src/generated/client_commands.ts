@@ -15,7 +15,6 @@ import {
 	AppendReviewCommentRequestSchema,
 	AppendSessionReviewCommentRequestSchema,
 	AppendSessionReviewCommentResponseSchema,
-	ApplicationQuitOutcomeDtoV1Schema,
 	ApproveWorkflowNodeRequestSchema,
 	ApproveWorkspaceNodeRequestSchema,
 	ArchiveAgentSessionRequestSchema,
@@ -79,7 +78,6 @@ import {
 	ReportFrontendErrorRequestSchema,
 	ReportMountedXtermCountRequestSchema,
 	ReportUsageEventRequestSchema,
-	RequestApplicationQuitRequestSchema,
 	ResetProviderExecutableRequestSchema,
 	ResizeTerminalSurfaceRequestSchema,
 	ResolveReviewThreadRequestSchema,
@@ -102,6 +100,8 @@ import {
 	SetBranchBaseRequestSchema,
 	SetReleashBaseRequestSchema,
 	StartWorkflowRequestSchema,
+	StopDaemonRequestSchema,
+	StopDaemonResponseSchema,
 	UnitSchema,
 	UpdateAppSettingsRequestSchema,
 	UpdateCrashReportingRequestSchema,
@@ -1051,17 +1051,17 @@ const commands = {
 		);
 		return result;
 	},
-	request_application_quit: async (
+	stop_daemon: async (
 		client: Client<typeof ClientService>,
-		args: ClientCommandArgs["request_application_quit"],
+		args: ClientCommandArgs["stop_daemon"],
 	) => {
 		const result = decode(
-			ApplicationQuitOutcomeDtoV1Schema,
-			await client.requestApplicationQuit(
+			StopDaemonResponseSchema,
+			await client.stopDaemon(
 				fromJson(
-					RequestApplicationQuitRequestSchema,
+					StopDaemonRequestSchema,
 					clientJson(
-						RequestApplicationQuitRequestSchema,
+						StopDaemonRequestSchema,
 						JSON.parse(JSON.stringify(args ?? {})),
 						true,
 					),

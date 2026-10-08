@@ -326,7 +326,6 @@ launch_retention: crate::adaptor::controller::agent_session_launch_retention::ru
         let client_endpoint = crate::client_api_acceptance::ClientEndpoint {
             url: format!("http://127.0.0.1:{}", client_binding.port()),
             token: client_binding.terminal_bearer_token().to_string(),
-            launch_id: String::new(),
         };
         let subscriptions = subscriptions.with_reads(
             Arc::new(AcceptanceSessionReads {

@@ -13,24 +13,18 @@ pub(crate) fn register<R: tauri::Runtime>(router: &mut CommandRouter<super::Invo
 #[path = "client_test.rs"]
 pub(crate) mod client_tests;
 
-#[derive(serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-struct ClientEndpoint {
-    #[serde(flatten)]
-    endpoint: releashd::desktop_api::ClientConnectionDto,
-    launch_id: String,
-}
-
 #[tauri::command]
-async fn get_client_endpoint(
-    supervisor: tauri::State<
-        '_,
-        std::sync::Arc<crate::usecase::daemon_supervision::DaemonSupervisionUsecase>,
-    >,
-) -> Result<ClientEndpoint, String> {
-    let connection = supervisor.attach().await.map_err(String::from)?;
-    Ok(ClientEndpoint {
-        endpoint: connection.endpoint,
-        launch_id: connection.launch_id,
-    })
+pub(crate) async fn get_client_endpoint<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+) -> Result<releashd::desktop_api::ClientConnectionDto, String> {
+    let endpoint = super::super::desktop_lifecycle::connection(
+        &app,
+        |lifecycle, failure_window| Box::pin(lifecycle.endpoint(failure_window)),
+        |_| {},
+    )
+    .await
+    .map_err(crate::adaptor::presenter::daemon_connection::message)?;
+    Ok(crate::adaptor::presenter::daemon_connection::endpoint(
+        endpoint,
+    ))
 }

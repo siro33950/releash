@@ -36,9 +36,7 @@ pub async fn output(
         .stderr(Stdio::piped())
         .kill_on_drop(true);
     child_process::configure_process_group(&mut command);
-    let spawn_guard = crate::infrastructure::process::parent_lifetime::spawn_guard();
     let mut child = command.spawn().map_err(ProcessError::Io)?;
-    drop(spawn_guard);
     let mut group = ProcessGroupGuard(child.id());
     let mut stdin = child.stdin.take().expect("piped stdin");
     let mut stdout = child.stdout.take().expect("piped stdout");

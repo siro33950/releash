@@ -2,7 +2,7 @@ use parking_lot::{Condvar, Mutex};
 use std::collections::HashMap;
 use std::sync::mpsc;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use crate::domain::terminal_surface::entities::{
     TerminalSurface, TerminalSurfaceInputIngressError, TerminalSurfaceInputIngressRegistry,
@@ -548,12 +548,18 @@ fn spawn_output_reader(mut output: NativePtyOutput, context: TerminalOutputReade
     });
 }
 
-fn wait_for_output_drain(output_drained: &Arc<(Mutex<bool>, Condvar)>) {
+const OUTPUT_DRAIN_TIMEOUT: Duration = Duration::from_secs(2);
+
+fn wait_for_output_drain(output_drained: &Arc<(Mutex<bool>, Condvar)>) -> bool {
     let (drained, changed) = &**output_drained;
     let mut drained = drained.lock();
+    let deadline = Instant::now() + OUTPUT_DRAIN_TIMEOUT;
     while !*drained {
-        changed.wait(&mut drained);
+        if changed.wait_until(&mut drained, deadline).timed_out() {
+            break;
+        }
     }
+    *drained
 }
 
 impl TerminalSurfaceRuntimeGatewayFor {
@@ -1218,7 +1224,11 @@ impl TerminalSurfaceGateway for TerminalSurfaceRuntimeGatewayFor {
                     runtime_generation
                 ))
             })?;
-        wait_for_output_drain(&output_drained);
+        if !wait_for_output_drain(&output_drained) {
+            log::warn!(
+                "PTY {runtime_generation} output drain timed out; the PTY is still held open"
+            );
+        }
         Ok(())
     }
 

@@ -242,7 +242,6 @@ impl NativePtySystem {
         }
 
         let child = {
-            let _spawn = crate::infrastructure::process::parent_lifetime::spawn_guard();
             pair.slave
                 .spawn_command(command)
                 .map_err(|error| NativePtyError::external(error, "Failed to spawn shell"))?

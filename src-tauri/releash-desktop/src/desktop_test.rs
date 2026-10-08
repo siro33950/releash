@@ -1,4 +1,5 @@
-use super::*;
+use crate::adaptor::presenter::desktop_lifecycle::apply_desktop_settings;
+use crate::infrastructure::platform::desktop_runtime::record_window_ready;
 
 #[test]
 fn test_desktop観測_初回windowとappの起動時間を設定に従って記録する() {

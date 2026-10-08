@@ -4292,6 +4292,7 @@ dependencies = [
  "parking_lot",
  "prost",
  "releash-desktop",
+ "releash-sdk",
  "releashd",
  "rusqlite",
  "serde",
@@ -4316,6 +4317,7 @@ dependencies = [
  "connectrpc",
  "connectrpc-build",
  "dirs",
+ "libc",
  "prost",
  "prost-build",
  "prost-reflect",
@@ -4325,6 +4327,7 @@ dependencies = [
  "sysinfo",
  "tempfile",
  "thiserror 2.0.21",
+ "tokio",
 ]
 
 [[package]]
