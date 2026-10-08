@@ -37,9 +37,13 @@ jobs:
         with:
           node-version: 24
           cache: pnpm
-      - run: pnpm install --frozen-lockfile
-      - run: pnpm exec biome ci .
-      - run: pnpm build
+          cache-dependency-path: clients/desktop/pnpm-lock.yaml
+      - working-directory: clients/desktop
+        run: pnpm install --frozen-lockfile
+      - working-directory: clients/desktop
+        run: pnpm exec biome ci .
+      - working-directory: clients/desktop
+        run: pnpm build
 
   frontend-unit:
     runs-on: ubuntu-latest
@@ -55,8 +59,11 @@ jobs:
         with:
           node-version: 24
           cache: pnpm
-      - run: pnpm install --frozen-lockfile
-      - run: pnpm test
+          cache-dependency-path: clients/desktop/pnpm-lock.yaml
+      - working-directory: clients/desktop
+        run: pnpm install --frozen-lockfile
+      - working-directory: clients/desktop
+        run: pnpm test
 
   frontend-integration:
     runs-on: ubuntu-latest
@@ -72,15 +79,19 @@ jobs:
         with:
           node-version: 24
           cache: pnpm
-      - run: pnpm install --frozen-lockfile
-      - run: pnpm exec playwright install --with-deps chromium
+          cache-dependency-path: clients/desktop/pnpm-lock.yaml
+      - working-directory: clients/desktop
+        run: pnpm install --frozen-lockfile
+      - working-directory: clients/desktop
+        run: pnpm exec playwright install --with-deps chromium
       - id: test
+        working-directory: clients/desktop
         run: pnpm test:integration
       - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: playwright-report
-          path: playwright-report/
+          path: clients/desktop/playwright-report/
           retention-days: 7
       - name: Add PR comment with test results
         if: ${{ !cancelled() && github.event_name == 'pull_request' }}
@@ -148,7 +159,7 @@ jobs:
     timeout-minutes: 30
     defaults:
       run:
-        working-directory: src-tauri
+        working-directory: .
     steps:
       - uses: actions/checkout@v7
         with:
@@ -184,7 +195,7 @@ jobs:
         id: setup
         if: steps.changes.outputs.rust == 'true'
         with:
-          workspaces: src-tauri
+          workspaces: .
           shared-key: pr-server
           save-if: false
       - run: cargo fmt --check -p releashd
@@ -199,7 +210,7 @@ jobs:
     timeout-minutes: 30
     defaults:
       run:
-        working-directory: src-tauri
+        working-directory: .
     steps:
       - uses: actions/checkout@v7
         with:
@@ -213,7 +224,7 @@ jobs:
         id: setup
         if: steps.changes.outputs.rust == 'true'
         with:
-          workspaces: src-tauri
+          workspaces: .
           shared-key: pr-server
           save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
       - run: cargo test --locked --lib --bins -p releashd
@@ -226,7 +237,7 @@ jobs:
     timeout-minutes: 30
     defaults:
       run:
-        working-directory: src-tauri
+        working-directory: .
     steps:
       - uses: actions/checkout@v7
         with:
@@ -242,9 +253,10 @@ jobs:
         with:
           node-version: 24
           cache: pnpm
+          cache-dependency-path: clients/desktop/pnpm-lock.yaml
       - name: Install Node dependencies for client acceptance tests
         if: steps.changes.outputs.rust == 'true'
-        working-directory: .
+        working-directory: clients/desktop
         run: pnpm install --frozen-lockfile
       - name: Install Rust toolchain
         if: steps.changes.outputs.rust == 'true'
@@ -253,7 +265,7 @@ jobs:
         id: setup
         if: steps.changes.outputs.rust == 'true'
         with:
-          workspaces: src-tauri
+          workspaces: .
           shared-key: pr-server
           save-if: false
       - run: cargo build --locked -p releash --bin releash
@@ -286,7 +298,7 @@ jobs:
     timeout-minutes: 30
     defaults:
       run:
-        working-directory: src-tauri
+        working-directory: .
     steps:
       - uses: actions/checkout@v7
         with:
@@ -316,7 +328,7 @@ jobs:
         id: setup
         if: steps.changes.outputs.rust == 'true'
         with:
-          workspaces: src-tauri
+          workspaces: .
           shared-key: pr-shell
           save-if: false
       - run: cargo fmt --check -p releash-desktop
@@ -329,7 +341,7 @@ jobs:
     timeout-minutes: 30
     defaults:
       run:
-        working-directory: src-tauri
+        working-directory: .
     steps:
       - uses: actions/checkout@v7
         with:
@@ -359,7 +371,7 @@ jobs:
         id: setup
         if: steps.changes.outputs.rust == 'true'
         with:
-          workspaces: src-tauri
+          workspaces: .
           shared-key: pr-shell
           save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
       - run: cargo test --locked --lib --bins -p releash-desktop
@@ -372,7 +384,7 @@ jobs:
     timeout-minutes: 30
     defaults:
       run:
-        working-directory: src-tauri
+        working-directory: .
     steps:
       - uses: actions/checkout@v7
         with:
@@ -404,9 +416,10 @@ jobs:
         with:
           node-version: 24
           cache: pnpm
+          cache-dependency-path: clients/desktop/pnpm-lock.yaml
       - name: Install Node dependencies for client acceptance tests
         if: steps.changes.outputs.rust == 'true'
-        working-directory: .
+        working-directory: clients/desktop
         run: pnpm install --frozen-lockfile
       - name: Install Rust toolchain
         if: steps.changes.outputs.rust == 'true'
@@ -415,7 +428,7 @@ jobs:
         id: setup
         if: steps.changes.outputs.rust == 'true'
         with:
-          workspaces: src-tauri
+          workspaces: .
           shared-key: pr-shell
           save-if: false
       - run: cargo build --locked -p releashd --bin releashd -p releash --bin releash
@@ -448,7 +461,7 @@ jobs:
     timeout-minutes: 30
     defaults:
       run:
-        working-directory: src-tauri
+        working-directory: .
     steps:
       - uses: actions/checkout@v7
         with:
@@ -462,7 +475,7 @@ jobs:
         id: setup
         if: steps.changes.outputs.rust == 'true'
         with:
-          workspaces: src-tauri
+          workspaces: .
           shared-key: pr-cli
           save-if: false
       - run: cargo fmt --check -p releash
@@ -475,7 +488,7 @@ jobs:
     timeout-minutes: 30
     defaults:
       run:
-        working-directory: src-tauri
+        working-directory: .
     steps:
       - uses: actions/checkout@v7
         with:
@@ -489,7 +502,7 @@ jobs:
         id: setup
         if: steps.changes.outputs.rust == 'true'
         with:
-          workspaces: src-tauri
+          workspaces: .
           shared-key: pr-cli
           save-if: false
       - run: cargo test --locked --lib --bins -p releash
@@ -502,7 +515,7 @@ jobs:
     timeout-minutes: 30
     defaults:
       run:
-        working-directory: src-tauri
+        working-directory: .
     steps:
       - uses: actions/checkout@v7
         with:
@@ -516,7 +529,7 @@ jobs:
         id: setup
         if: steps.changes.outputs.rust == 'true'
         with:
-          workspaces: src-tauri
+          workspaces: .
           shared-key: pr-cli
           save-if: false
       - run: cargo build --locked -p releashd --bin releashd -p releash --bin releash
@@ -533,74 +546,6 @@ jobs:
       - name: Verify cli jobs
         run: |
           for result in '${{ needs.cli-lint.result }}' '${{ needs.cli-unit.result }}' '${{ needs.cli-integration.result }}'; do
-            if [ "$result" != "success" ] && [ "$result" != "skipped" ]; then
-              exit 1
-            fi
-          done
-
-  sdk-lint:
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    defaults:
-      run:
-        working-directory: src-tauri
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          ref: ${{ inputs.ref || github.sha }}
-          fetch-depth: 0
-      - *rust-changes
-      - name: Install Rust toolchain
-        if: steps.changes.outputs.rust == 'true'
-        run: rustup toolchain install
-      - uses: Swatinem/rust-cache@v2
-        id: setup
-        if: steps.changes.outputs.rust == 'true'
-        with:
-          workspaces: src-tauri
-          shared-key: pr-sdk
-          save-if: false
-      - run: cargo fmt --check -p releash-sdk
-        if: ${{ !cancelled() && steps.changes.outputs.rust == 'true' && steps.setup.outcome == 'success' }}
-      - run: cargo clippy --locked -p releash-sdk -- -D warnings
-        if: ${{ !cancelled() && steps.changes.outputs.rust == 'true' && steps.setup.outcome == 'success' }}
-
-  sdk-unit:
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    defaults:
-      run:
-        working-directory: src-tauri
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          ref: ${{ inputs.ref || github.sha }}
-          fetch-depth: 0
-      - *rust-changes
-      - name: Install Rust toolchain
-        if: steps.changes.outputs.rust == 'true'
-        run: rustup toolchain install
-      - uses: Swatinem/rust-cache@v2
-        id: setup
-        if: steps.changes.outputs.rust == 'true'
-        with:
-          workspaces: src-tauri
-          shared-key: pr-sdk
-          save-if: false
-      - run: cargo test --locked --lib -p releash-sdk
-        if: ${{ !cancelled() && steps.changes.outputs.rust == 'true' && steps.setup.outcome == 'success' }}
-      - run: cargo test --locked --doc -p releash-sdk
-        if: ${{ !cancelled() && steps.changes.outputs.rust == 'true' && steps.setup.outcome == 'success' }}
-
-  sdk:
-    needs: [sdk-lint, sdk-unit]
-    if: always()
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - name: Verify sdk jobs
-        run: |
-          for result in '${{ needs.sdk-lint.result }}' '${{ needs.sdk-unit.result }}'; do
             if [ "$result" != "success" ] && [ "$result" != "skipped" ]; then
               exit 1
             fi
@@ -637,4 +582,4 @@ jobs:
       - run: ast-grep test
       - run: qlty check --no-progress --all
       - run: cargo deny --locked check
-        working-directory: src-tauri
+        working-directory: .

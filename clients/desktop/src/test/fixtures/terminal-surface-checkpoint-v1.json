@@ -1,0 +1,15 @@
+{
+	"initial_cols": 20,
+	"initial_rows": 6,
+	"resized_cols": 24,
+	"resized_rows": 8,
+	"sequence": 17,
+	"before_resize": "primary-日本語\r\n\u001b[1;32mPRIMARY-GREEN\u001b[0m\r\n",
+	"after_resize": "\u001b[?1049h\u001b[2J\u001b[HALT-SCREEN\r\nWIDE:\u001b[4m日本語🙂\u001b[0m\r\nNARROW:\u001b[4mABCD\u001b[0m\r\n\u001b[1;31mRED-BOLD\u001b[0m\u001b[5;9H",
+	"checkpoint": {
+		"replay": "\u001bc\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\u001b[H\u001b[2Jprimary-日本語 \u001b[9b\r\n\u001b[1;32mPRIMARY-GREEN\u001b[0m \u001b[10b\r\n\u001b[3;1H\u001b[0m\u001b7\u001b[0m\u001b[?1047h\u001b[1;1HALT-SCREEN \u001b[13b\r\nWIDE:\u001b[4m日本語🙂\u001b[24m \u001b[10b\r\nNARROW:\u001b[4mABCD\u001b[24m \u001b[12b\r\n\u001b[1;31mRED-BOLD\u001b[0m \u001b[15b\r\n\u001b[5;9H\u001b[0m",
+		"sequence": 17,
+		"cols": 24,
+		"rows": 8
+	}
+}

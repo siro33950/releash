@@ -51,3 +51,9 @@ enum Scope {
   SCOPE_HOOK = 2;
 }
 extend google.protobuf.MethodOptions { repeated Scope scope = 51040; }
+
+extend google.protobuf.FileOptions {
+  optional string data_dir_name = 51050;
+  optional string development_data_dir_suffix = 51051;
+  optional string data_dir_env = 51052;
+}

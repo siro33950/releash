@@ -1,0 +1,9 @@
+{
+	"build": {
+		"beforeBuildCommand": "pnpm build && node scripts/build-desktop-backend.mjs"
+	},
+	"bundle": {
+		"active": true,
+		"externalBin": ["binaries/releashd", "binaries/releash"]
+	}
+}

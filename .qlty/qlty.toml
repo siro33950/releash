@@ -6,7 +6,7 @@ exclude_patterns = [
     "**/dist/**",
     "**/coverage/**",
     "**/*.min.js",
-    "src-tauri/resources/**",
+    "server/resources/**",
 ]
 
 [[source]]

@@ -1,0 +1,64 @@
+{
+	"$schema": "https://schema.tauri.app/config/2",
+	"productName": "Releash",
+	"version": "0.4.19",
+	"identifier": "com.releash.app",
+	"build": {
+		"beforeDevCommand": "node scripts/build-desktop-backend.mjs --dev && pnpm dev",
+		"devUrl": "http://localhost:1420",
+		"beforeBuildCommand": "pnpm build",
+		"frontendDist": "dist"
+	},
+	"app": {
+		"windows": [
+			{
+				"label": "main",
+				"create": false,
+				"title": "Releash",
+				"width": 1440,
+				"height": 900,
+				"dragDropEnabled": false,
+				"titleBarStyle": "Overlay",
+				"hiddenTitle": true,
+				"trafficLightPosition": {
+					"x": 10,
+					"y": 19
+				}
+			}
+		],
+		"security": {
+			"csp": "default-src 'self'; script-src 'self' 'wasm-unsafe-eval' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self' ws: wss: http: https:; worker-src 'self' blob:"
+		}
+	},
+	"plugins": {
+		"updater": {
+			"pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDUxQTE4MjkwQzExQUREQ0IKUldUTDNSckJrSUtoVVo2RjRLUFJNMVhLVC9WTWZqa1Vhamo4NlFNcXYyd3ZZUXJVbWtQM2x5YVoK",
+			"endpoints": [
+				"https://github.com/siro33950/releash/releases/latest/download/latest.json"
+			]
+		},
+		"fs": {
+			"requireLiteralLeadingDot": false
+		}
+	},
+	"bundle": {
+		"active": true,
+		"targets": "all",
+		"createUpdaterArtifacts": true,
+		"resources": [],
+		"icon": [
+			"icons/32x32.png",
+			"icons/128x128.png",
+			"icons/128x128@2x.png",
+			"icons/icon.icns",
+			"icons/icon.ico"
+		],
+		"macOS": {
+			"files": {
+				"Library/LaunchAgents/com.releash.app.plist": "launchagents/com.releash.app.plist",
+				"Resources/Assets.car": "icons/Assets.car"
+			},
+			"minimumSystemVersion": "13.0"
+		}
+	}
+}

@@ -2,6 +2,19 @@ syntax = "proto3";
 package releash.client.v1;
 import "client_options.proto";
 
+option (data_dir_name) = "com.releash.app";
+option (development_data_dir_suffix) = ".dev";
+option (data_dir_env) = "RELEASH_DATA_DIR";
+
+message LocalApiDiscovery {
+  uint32 port = 1;
+  string token = 2;
+  string daemon_id = 3;
+  uint32 pid = 4;
+  uint64 process_started_at = 5;
+  string instance_id = 6 [deprecated = true];
+}
+
 message CommandRequest {
   reserved 113;
   reserved "request_application_quit";

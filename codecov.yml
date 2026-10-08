@@ -23,10 +23,10 @@ comment:
 flags:
   rust:
     paths:
-      - src-tauri/src/
-      - src-tauri/releash-desktop/src/
+      - server/src/
+      - clients/desktop/src-native/
     carryforward: true
   typescript:
     paths:
-      - src/
+      - clients/desktop/src/
     carryforward: true
