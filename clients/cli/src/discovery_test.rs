@@ -18,9 +18,8 @@ fn test_発見ファイル_プロセス不在と再利用を拒否する() {
                 process_list_available: true,
                 start_time: time
             })
-            .unwrap_err()
-            .code,
-            connectrpc::ErrorCode::Unavailable
+            .unwrap_err(),
+            ProcessVerificationError::Stale
         );
     }
     file.verify_process(|_| ProcessStartTimeLookup {
@@ -100,6 +99,8 @@ fn test_発見ファイル_不正なmetadataと取得不能なprocess情報を�
             let error = file
                 .verify_process(|_| panic!("invalid metadata must not query processes"))
                 .unwrap_err();
+            assert_eq!(error, ProcessVerificationError::Invalid);
+            let error = connectrpc::ConnectError::from(error);
             assert_eq!(error.code, connectrpc::ErrorCode::Unavailable);
             assert_eq!(
                 error.message.as_deref(),
@@ -113,9 +114,8 @@ fn test_発見ファイル_不正なmetadataと取得不能なprocess情報を�
                 process_list_available: false,
                 start_time: None
             })
-            .unwrap_err()
-            .code,
-        connectrpc::ErrorCode::Unavailable
+            .unwrap_err(),
+        ProcessVerificationError::ProcessInformationUnavailable
     );
 }
 
@@ -160,9 +160,8 @@ fn test_発見ファイル_範囲外のportを拒否する() {
     file.port = u16::MAX as u32 + 1;
     assert_eq!(
         file.verify_process(|_| panic!("invalid port must not query processes"))
-            .unwrap_err()
-            .code,
-        connectrpc::ErrorCode::Unavailable
+            .unwrap_err(),
+        ProcessVerificationError::Invalid
     );
 }
 
@@ -178,9 +177,30 @@ fn test_発見ファイル_直列化で省略した既定値を読み戻せる()
     let error = decoded
         .verify_process(|_| panic!("invalid metadata must not query processes"))
         .unwrap_err();
+    assert_eq!(error, ProcessVerificationError::Invalid);
+    let error = connectrpc::ConnectError::from(error);
     assert_eq!(error.code, connectrpc::ErrorCode::Unavailable);
     assert_eq!(
         error.message.as_deref(),
         Some("client discovery is invalid")
     );
+}
+
+#[test]
+fn test_発見ファイル_検証失敗をunavailableへ変換する() {
+    // Given
+    for error in [
+        ProcessVerificationError::Invalid,
+        ProcessVerificationError::ProcessInformationUnavailable,
+        ProcessVerificationError::Stale,
+    ] {
+        // When
+        let converted = connectrpc::ConnectError::from(error);
+        // Then
+        assert_eq!(converted.code, connectrpc::ErrorCode::Unavailable);
+        assert_eq!(
+            converted.message.as_deref(),
+            Some(error.to_string().as_str())
+        );
+    }
 }

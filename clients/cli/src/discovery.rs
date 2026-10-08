@@ -87,6 +87,22 @@ pub enum DiscoveryReadError {
     Decode(#[source] serde_json::Error),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum ProcessVerificationError {
+    #[error("client discovery is invalid")]
+    Invalid,
+    #[error("process information is unavailable")]
+    ProcessInformationUnavailable,
+    #[error("client discovery is stale")]
+    Stale,
+}
+
+impl From<ProcessVerificationError> for connectrpc::ConnectError {
+    fn from(error: ProcessVerificationError) -> Self {
+        unavailable(error.to_string())
+    }
+}
+
 pub fn discovery_file(data_dir: &Path) -> PathBuf {
     data_dir.join("client-api.json")
 }
@@ -112,21 +128,21 @@ impl LocalApiDiscovery {
     pub fn verify_process(
         &self,
         lookup: impl FnOnce(u32) -> ProcessStartTimeLookup,
-    ) -> Result<(), connectrpc::ConnectError> {
+    ) -> Result<(), ProcessVerificationError> {
         if (self.port == 0 || self.port > u16::MAX as u32)
             || self.token.trim().is_empty()
             || self.daemon_id.trim().is_empty()
             || self.pid == 0
             || self.process_started_at == 0
         {
-            return Err(unavailable("client discovery is invalid"));
+            return Err(ProcessVerificationError::Invalid);
         }
         let process = lookup(self.pid);
         if !process.process_list_available {
-            return Err(unavailable("process information is unavailable"));
+            return Err(ProcessVerificationError::ProcessInformationUnavailable);
         }
         if process.start_time != Some(self.process_started_at) {
-            return Err(unavailable("client discovery is stale"));
+            return Err(ProcessVerificationError::Stale);
         }
         Ok(())
     }

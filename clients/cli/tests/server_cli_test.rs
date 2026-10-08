@@ -81,6 +81,7 @@ fn test_cli_起動後も独立して稼働し重複起動せず再起動して�
     );
     assert_eq!(status["server"]["servingStatus"], "SERVING_STATUS_SERVING");
     assert!(!status.to_string().contains(&first.token));
+    std::fs::write(&discovery_path, serde_json::to_vec(&first).unwrap()).unwrap();
     assert!(success(run(root, &["server", "restart"])).contains("stopped and started"));
     let second = discovery::read(&root.join("data")).unwrap();
     assert_ne!(second.daemon_id, first.daemon_id);

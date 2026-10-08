@@ -79,17 +79,7 @@ impl LocalApiDiscoveryFile {
             Err(error) => return Err(error),
         };
         let expected = serde_json::to_value(&self.discovery).map_err(io::Error::other)?;
-        let legacy = serde_json::json!({
-            "port": self.discovery.port,
-            "token": self.discovery.token,
-            "instance_id": self.discovery.daemon_id,
-            "pid": self.discovery.pid,
-            "process_started_at": self.discovery.process_started_at,
-        });
-        if current
-            .as_ref()
-            .is_some_and(|value| value != &expected && value != &legacy)
-        {
+        if current.as_ref() != Some(&expected) {
             return Ok(());
         }
         match fs::remove_file(&self.path) {

@@ -66,17 +66,11 @@ pub fn running(data_dir: &Path) -> Result<Option<LocalApiDiscovery>, DaemonError
     let Some(discovery) = discovery::read_optional(data_dir)? else {
         return Ok(None);
     };
-    let mut stale = false;
-    let verification = discovery.verify_process(|pid| {
-        let process = discovery::lookup_process_start_time(pid);
-        stale = process.process_list_available
-            && process.start_time != Some(discovery.process_started_at);
-        process
-    });
-    if stale {
-        return Ok(None);
+    match discovery.verify_process(discovery::lookup_process_start_time) {
+        Ok(()) => {}
+        Err(discovery::ProcessVerificationError::Stale) => return Ok(None),
+        Err(error) => return Err(connectrpc::ConnectError::from(error).into()),
     }
-    verification?;
     Ok(Some(discovery))
 }
 
@@ -142,7 +136,9 @@ pub async fn start(
 
 pub async fn stop(data_dir: &Path, discovery: &LocalApiDiscovery) -> Result<(), DaemonError> {
     tokio::time::timeout(timeout("shutdown_timeout_ms"), async {
-        discovery.verify_process(discovery::lookup_process_start_time)?;
+        discovery
+            .verify_process(discovery::lookup_process_start_time)
+            .map_err(connectrpc::ConnectError::from)?;
         server_info(discovery, &discovery.token).await?;
         client(discovery, &discovery.token)
             .stop_daemon(rpc::StopDaemonRequest::default())

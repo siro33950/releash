@@ -93,32 +93,16 @@ pub fn test_local_api_discovery_古いownerが新しいdiscoveryを削除しな�
 }
 
 #[test]
-pub fn test_local_api_discovery_旧形式に書き換えられた所有fileも削除する() {
+pub fn test_local_api_discovery_破損したfileを削除しない() {
     // Given
     let directory = tempfile::tempdir().unwrap();
-    let discovery = LocalApiDiscovery {
-        port: 43123,
-        token: "secret-token".into(),
-        daemon_id: "instance-1".into(),
-        pid: 42,
-        process_started_at: 123,
-        ..Default::default()
-    };
-    let file = LocalApiDiscoveryFile::create_client(directory.path(), discovery).unwrap();
-    let mut legacy = serde_json::json!({
-        "port": 43123,
-        "token": "secret-token",
-        "instance_id": "another-instance",
-        "pid": 42,
-        "process_started_at": 123,
-    });
-    fs::write(file.path(), serde_json::to_vec(&legacy).unwrap()).unwrap();
-    file.remove_if_owned().unwrap();
-    assert!(file.path().exists());
-    legacy["instance_id"] = serde_json::json!("instance-1");
-    fs::write(file.path(), serde_json::to_vec(&legacy).unwrap()).unwrap();
+    let file = LocalApiDiscoveryFile::create_client(directory.path(), LocalApiDiscovery::default())
+        .unwrap();
+    fs::write(file.path(), b"invalid json").unwrap();
+
     // When
     file.remove_if_owned().unwrap();
+
     // Then
-    assert!(!file.path().exists());
+    assert_eq!(fs::read(file.path()).unwrap(), b"invalid json");
 }
