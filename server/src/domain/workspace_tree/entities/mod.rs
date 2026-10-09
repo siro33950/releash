@@ -578,18 +578,7 @@ impl WorkspaceTree {
     }
 
     fn aggregate_status_classifications(&mut self) {
-        let mut by_parent = BTreeMap::<String, Vec<usize>>::new();
-        for (index, node) in self.nodes.iter().enumerate() {
-            if !node.is_internal_rule_record() && !node.is_retry_history {
-                if let Some(parent) = &node.parent_id {
-                    by_parent.entry(parent.clone()).or_default().push(index);
-                }
-            }
-        }
-        let mut visit_state = vec![0_u8; self.nodes.len()];
-        for index in 0..self.nodes.len() {
-            aggregate_status_classification(index, &mut self.nodes, &by_parent, &mut visit_state);
-        }
+        aggregate_node_status_classifications(&mut self.nodes);
     }
 
     fn recompute_retry_histories(&mut self) {
@@ -999,6 +988,21 @@ pub(super) fn workflow_status(status: ExecutionStatus) -> WorkspaceNodeStatus {
         ExecutionStatus::Running => WorkspaceNodeStatus::Running,
         ExecutionStatus::Completed => WorkspaceNodeStatus::Completed,
         ExecutionStatus::Aborted => WorkspaceNodeStatus::Aborted,
+    }
+}
+
+pub(crate) fn aggregate_node_status_classifications(nodes: &mut [WorkspaceTreeNode]) {
+    let mut by_parent = BTreeMap::<String, Vec<usize>>::new();
+    for (index, node) in nodes.iter().enumerate() {
+        if !node.is_internal_rule_record() && !node.is_retry_history {
+            if let Some(parent) = &node.parent_id {
+                by_parent.entry(parent.clone()).or_default().push(index);
+            }
+        }
+    }
+    let mut visit_state = vec![0_u8; nodes.len()];
+    for index in 0..nodes.len() {
+        aggregate_status_classification(index, nodes, &by_parent, &mut visit_state);
     }
 }
 

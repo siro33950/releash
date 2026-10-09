@@ -1900,8 +1900,42 @@ message ListWorktreeEntryDto {
   repeated WorktreeEntryDto items = 1;
 }
 
+message PaneLayout {
+  oneof node {
+    Pane pane = 1;
+    PaneSplit split = 2;
+  }
+}
+message Pane {
+  string id = 1;
+  repeated PaneTab tabs = 2;
+  optional string active_tab = 3;
+}
+message PaneSplit {
+  string id = 1;
+  SplitAxis axis = 2;
+  double ratio = 3;
+  PaneLayout first = 4;
+  PaneLayout second = 5;
+}
+message PaneTab {
+  string id = 1;
+  PaneTabKind kind = 2;
+}
+enum PaneTabKind {
+  PANE_TAB_KIND_UNSPECIFIED = 0;
+  PANE_TAB_KIND_TERMINAL = 1;
+  PANE_TAB_KIND_WORKFLOW = 2;
+  PANE_TAB_KIND_FILE = 3;
+}
+enum SplitAxis {
+  SPLIT_AXIS_UNSPECIFIED = 0;
+  SPLIT_AXIS_HORIZONTAL = 1;
+  SPLIT_AXIS_VERTICAL = 2;
+}
+
 message WorkspaceStateDto {
-  optional string pane_layout_json = 4;
+  PaneLayout pane_layout = 4;
   optional uint32 version = 1 [json_name = "version", (json_required) = true, (json_literal) = "1"];
   optional WorkspaceTabsStateDto tabs = 2 [json_name = "tabs", (json_required) = true];
   optional WorkspaceLayoutStateDto layout = 3 [json_name = "layout", (json_required) = true];
@@ -2721,6 +2755,8 @@ message ListWorkspaceRepositoryList {
 }
 
 message IssuesSnapshot {
+  repeated string labels = 3;
+  repeated string milestones = 4;
   optional ListIssueInfoDto issues = 1;
   optional string read_error = 2;
 }

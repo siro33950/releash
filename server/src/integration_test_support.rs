@@ -735,7 +735,7 @@ pub mod transport {
     pub use crate::adaptor::controller::client::dispatch::invalid_request;
     pub use crate::adaptor::controller::client::dispatch::required;
     pub use crate::adaptor::controller::client::dispatch::ClientCommandDispatch;
-    pub use crate::adaptor::controller::client::worktree_mutation::admit;
+    pub use crate::adaptor::controller::client::worktree_mutation::{admit, scope};
 
     pub use crate::adaptor::gateway::notion::service_impl::build_client;
     pub use crate::adaptor::presenter::client::from_value;
@@ -1145,7 +1145,6 @@ pub mod wire {
     pub use crate::adaptor::presenter::client::CommandRequest;
     pub use crate::adaptor::presenter::client::CommandResult;
     pub use crate::adaptor::presenter::client::CreateReviewThreadRequest;
-    pub use crate::adaptor::presenter::client::CreateWorktreeRequest;
     pub use crate::adaptor::presenter::client::DeleteReviewThreadRequest;
     pub use crate::adaptor::presenter::client::FetchIssuesRequest;
     pub use crate::adaptor::presenter::client::GetOrSpawnTerminalSurfaceRequest;
@@ -1176,6 +1175,7 @@ pub mod wire {
     pub use crate::adaptor::presenter::client::WritePathsToTerminalSurfaceRequest;
     pub use crate::adaptor::presenter::client::WriteTerminalSurfaceRequest;
     pub use crate::adaptor::presenter::client::COMMAND_NAMES;
+    pub use crate::adaptor::presenter::client::{CreateWorktreeRequest, CreateWorktreesRequest};
 }
 
 pub mod fixtures {

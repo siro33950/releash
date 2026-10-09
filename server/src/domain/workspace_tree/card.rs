@@ -1,80 +1,72 @@
-use super::{WorkspaceNodeKind, WorkspaceNodeStatusClassification, WorkspaceTree};
-use crate::domain::provider_lifecycle::ProviderKind;
-use crate::domain::workflow::ExecutionTreeLaunch;
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct WorktreeExecutionSummary {
-    pub id: String,
-    pub title: String,
-    pub is_workflow: bool,
-    pub provider: Option<ProviderKind>,
-    pub status: WorkspaceNodeStatusClassification,
-    pub node_count: usize,
-    pub session_states: Vec<WorkspaceNodeStatusClassification>,
-}
-
+use super::{
+    WorkspaceExecution, WorkspaceNodeKind, WorkspaceNodeStatusClassification, WorkspaceTree,
+    WorkspaceTreeNode,
+};
 impl WorkspaceTree {
-    pub fn card_executions(&self) -> Vec<WorktreeExecutionSummary> {
-        let mut summaries = self
-            .executions()
-            .iter()
-            .filter(|execution| execution.archive.is_none())
-            .filter_map(|execution| {
-                let root = self.nodes().iter().find(|node| {
-                    node.kind == WorkspaceNodeKind::Workflow
-                        && node.execution_id.as_deref() == Some(execution.execution_id.as_str())
-                })?;
-                let nodes = self
-                    .nodes()
-                    .iter()
-                    .filter(|node| {
-                        node.execution_id.as_deref() == Some(execution.execution_id.as_str())
-                            && !node.is_retry_history
-                            && node.is_leaf()
-                    })
-                    .collect::<Vec<_>>();
-                let is_workflow = execution.launched_as == ExecutionTreeLaunch::Workflow;
-                Some(WorktreeExecutionSummary {
-                    id: execution.execution_id.clone(),
-                    title: if is_workflow {
-                        execution.workflow_name.clone()
-                    } else {
-                        nodes.first().map_or_else(
-                            || execution.workflow_name.clone(),
-                            |node| node.title.clone(),
-                        )
-                    },
-                    is_workflow,
-                    provider: execution.session.as_ref().map(|session| session.provider()),
-                    status: root.status_classification,
-                    node_count: nodes.len(),
-                    session_states: nodes
-                        .into_iter()
-                        .filter(|node| node.kind == WorkspaceNodeKind::WorkflowSession)
-                        .map(|node| node.status_classification)
-                        .collect(),
-                })
-            })
-            .collect::<Vec<_>>();
-        summaries.sort_by_key(|summary| summary.is_workflow);
-        summaries
-    }
-
-    pub fn card_status(&self) -> Option<WorkspaceNodeStatusClassification> {
+    pub(crate) fn active_execution_roots(
+        &self,
+    ) -> impl Iterator<Item = (&WorkspaceExecution, &WorkspaceTreeNode)> {
         self.executions()
             .iter()
             .filter(|execution| execution.archive.is_none())
             .filter_map(|execution| {
-                self.nodes().iter().find(|node| {
-                    node.kind == WorkspaceNodeKind::Workflow
-                        && node.execution_id.as_deref() == Some(execution.execution_id.as_str())
-                })
+                ExecutionNodes::new(&execution.execution_id, self.nodes())
+                    .map(|nodes| (execution, nodes.root))
             })
-            .map(|node| node.status_classification)
+    }
+    pub fn card_status(&self) -> Option<WorkspaceNodeStatusClassification> {
+        self.active_execution_roots()
+            .map(|(_, root)| root.status_classification)
             .reduce(WorkspaceNodeStatusClassification::most_severe)
     }
 }
 
-#[cfg(test)]
-#[path = "card_test.rs"]
-mod card_tests;
+pub(crate) struct ExecutionNodes<'a> {
+    pub root: &'a WorkspaceTreeNode,
+    pub leaves: Vec<&'a WorkspaceTreeNode>,
+}
+impl<'a> ExecutionNodes<'a> {
+    pub fn new(execution: &str, nodes: &'a [WorkspaceTreeNode]) -> Option<Self> {
+        let root = nodes.iter().find(|node| {
+            node.kind == WorkspaceNodeKind::Workflow
+                && node.execution_id.as_deref() == Some(execution)
+        })?;
+        let leaves = nodes
+            .iter()
+            .filter(|node| {
+                node.execution_id.as_deref() == Some(execution)
+                    && !node.is_retry_history
+                    && node.is_leaf()
+            })
+            .collect();
+        Some(Self { root, leaves })
+    }
+    pub fn is_workflow(launch: crate::domain::workflow::ExecutionTreeLaunch) -> bool {
+        launch == crate::domain::workflow::ExecutionTreeLaunch::Workflow
+    }
+    pub fn node_count(&self) -> usize {
+        self.leaves.len()
+    }
+}
+pub(crate) fn observe_node_failures(
+    nodes: &mut [WorkspaceTreeNode],
+    failures: &dyn crate::domain::failure::FailureRecordRepository,
+) {
+    for node in nodes.iter_mut() {
+        for target in [
+            Some(node.id.as_str()),
+            node.node_execution_id.as_deref(),
+            node.execution_id.as_deref(),
+        ]
+        .into_iter()
+        .flatten()
+        .map(str::to_owned)
+        .collect::<Vec<_>>()
+        {
+            for message in failures.attention_messages(&target) {
+                node.observe_background_failure(&message);
+            }
+        }
+    }
+    super::entities::aggregate_node_status_classifications(nodes);
+}

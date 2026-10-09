@@ -2,19 +2,19 @@ use crate::adaptor::presenter::error::AppError;
 use std::sync::Arc;
 
 use crate::adaptor::gateway::workspace_state::WorkspaceStateStore;
-use crate::usecase::workspace_state::dto::WorkspaceStateDto;
+use crate::domain::workspace_state::WorkspaceState;
 
 pub(crate) fn save_workspace_state_shared(
     store: &Arc<WorkspaceStateStore>,
     publisher: Option<&crate::usecase::state_subscription::StateSubscriptionUsecase>,
     worktree_name: String,
-    state: WorkspaceStateDto,
+    state: WorkspaceState,
 ) -> Result<(), AppError> {
     crate::usecase::workspace_state::usecase::save_workspace_state(
         store.as_ref(),
         publisher,
         &worktree_name,
-        state.into(),
+        state,
     )
     .map_err(AppError::from_failure)
 }

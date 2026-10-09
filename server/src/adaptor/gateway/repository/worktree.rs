@@ -354,12 +354,10 @@ pub fn create_worktree(
 
     let names = git_operation::run(|| repo.worktrees())?;
     let names = git_operation::run(|| names.iter().collect::<Result<Vec<_>, _>>())?;
-    let mut unique_name = wt_name.to_string();
-    let mut suffix = 1;
-    while names.iter().flatten().any(|name| *name == unique_name) {
-        unique_name = format!("{wt_name}{suffix}");
-        suffix += 1;
-    }
+    let unique_name = crate::domain::repository::value_objects::worktree_path::unique_worktree_name(
+        wt_name,
+        &names.iter().flatten().copied().collect::<Vec<_>>(),
+    );
 
     let reference = if create_branch {
         let base = base_branch.unwrap_or("HEAD");

@@ -21,6 +21,16 @@ fn test_issue絞り込み_labelとmilestoneを同時に満たすものを選ぶ(
         body: "".into(),
         milestone: Some(Milestone { title: "v1".into() }),
     };
+    let mut other = issue.clone();
+    other.labels.push(IssueLabel {
+        name: "feature".into(),
+        color: "blue".into(),
+    });
+    other.milestone = Some(Milestone { title: "v2".into() });
+    let options = IssueOptions::from_issues(&[other, issue.clone(), issue.clone()]);
+    assert_eq!(options.labels, ["bug", "feature"]);
+    assert_eq!(options.milestones, ["v1", "v2"]);
+    assert_eq!(IssueOptions::from_issues(&[]), IssueOptions::default());
     // When / Then
     assert!(IssueFilter::default().matches(&issue));
     assert!(IssueFilter {

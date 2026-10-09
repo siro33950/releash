@@ -52,3 +52,32 @@ impl IssueFilter {
 #[cfg(test)]
 #[path = "issue_test.rs"]
 mod issue_tests;
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct IssueOptions {
+    pub labels: Vec<String>,
+    pub milestones: Vec<String>,
+}
+impl IssueOptions {
+    pub fn from_issues(issues: &[IssueInfo]) -> Self {
+        Self {
+            labels: issues
+                .iter()
+                .flat_map(|issue| issue.labels.iter().map(|label| label.name.clone()))
+                .collect::<std::collections::BTreeSet<_>>()
+                .into_iter()
+                .collect(),
+            milestones: issues
+                .iter()
+                .filter_map(|issue| {
+                    issue
+                        .milestone
+                        .as_ref()
+                        .map(|milestone| milestone.title.clone())
+                })
+                .collect::<std::collections::BTreeSet<_>>()
+                .into_iter()
+                .collect(),
+        }
+    }
+}

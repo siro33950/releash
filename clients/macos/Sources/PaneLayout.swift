@@ -1,9 +1,9 @@
 import Foundation
 
-struct PaneTab: Codable, Equatable, Identifiable {
+struct PaneTab: Equatable, Identifiable {
   var id: String = UUID().uuidString
   var kind: Kind
-  enum Kind: String, Codable, CaseIterable {
+  enum Kind: String, CaseIterable {
     case terminal, workflow, file
     var title: String {
       switch self {
@@ -15,55 +15,79 @@ struct PaneTab: Codable, Equatable, Identifiable {
   }
 }
 
-indirect enum PaneLayout: Codable, Equatable {
+indirect enum PaneLayout: Equatable {
   case pane(id: String, tabs: [PaneTab], active: String?)
   case split(id: String, axis: Axis, ratio: Double, first: PaneLayout, second: PaneLayout)
-  enum Axis: String, Codable { case horizontal, vertical }
+  enum Axis: String { case horizontal, vertical }
   enum Edge: String, CaseIterable { case left, right, top, bottom }
-  private enum Keys: String, CodingKey {
-    case kind, id, tabs, axis, ratio, first, second
-    case active = "active_tab"
-  }
-
   static func empty() -> Self { .pane(id: UUID().uuidString, tabs: [], active: nil) }
   var id: String {
     switch self {
     case .pane(let id, _, _), .split(let id, _, _, _, _): id
     }
   }
-  init(from decoder: Decoder) throws {
-    let values = try decoder.container(keyedBy: Keys.self)
-    let id = try values.decode(String.self, forKey: .id)
-    switch try values.decode(String.self, forKey: .kind) {
-    case "pane":
-      self = .pane(
-        id: id, tabs: try values.decode([PaneTab].self, forKey: .tabs),
-        active: try values.decodeIfPresent(String.self, forKey: .active))
-    case "split":
+  init(_ value: Releash_Client_V1_PaneLayout) throws {
+    switch value.node {
+    case .pane(let pane):
+      let tabs = try pane.tabs.map { tab -> PaneTab in
+        let kind: PaneTab.Kind
+        switch tab.kind {
+        case .terminal: kind = .terminal
+        case .workflow: kind = .workflow
+        case .file: kind = .file
+        default: throw CLIFailure(message: "Unknown pane tab kind")
+        }
+        return PaneTab(id: tab.id, kind: kind)
+      }
+      self = .pane(id: pane.id, tabs: tabs, active: pane.hasActiveTab ? pane.activeTab : nil)
+    case .split(let split):
+      let axis: Axis
+      switch split.axis {
+      case .horizontal: axis = .horizontal
+      case .vertical: axis = .vertical
+      default: throw CLIFailure(message: "Unknown split axis")
+      }
+      guard split.hasFirst, split.hasSecond else { throw CLIFailure(message: "Missing split pane") }
       self = .split(
-        id: id, axis: try values.decode(Axis.self, forKey: .axis),
-        ratio: try values.decode(Double.self, forKey: .ratio),
-        first: try values.decode(Self.self, forKey: .first),
-        second: try values.decode(Self.self, forKey: .second))
-    default:
-      throw DecodingError.dataCorruptedError(
-        forKey: .kind, in: values, debugDescription: "Unknown pane kind")
+        id: split.id, axis: axis, ratio: split.ratio,
+        first: try Self(split.first), second: try Self(split.second))
+    case nil: throw CLIFailure(message: "Missing pane node")
     }
   }
-  func encode(to encoder: Encoder) throws {
-    var values = encoder.container(keyedBy: Keys.self)
-    try values.encode(id, forKey: .id)
+  var message: Releash_Client_V1_PaneLayout {
+    var result = Releash_Client_V1_PaneLayout()
     switch self {
-    case .pane(_, let tabs, let active):
-      try values.encode("pane", forKey: .kind)
-      try values.encode(tabs, forKey: .tabs)
-      try values.encodeIfPresent(active, forKey: .active)
-    case .split(_, let axis, let ratio, let first, let second):
-      try values.encode("split", forKey: .kind)
-      try values.encode(axis, forKey: .axis)
-      try values.encode(ratio, forKey: .ratio)
-      try values.encode(first, forKey: .first)
-      try values.encode(second, forKey: .second)
+    case .pane(let id, let tabs, let active):
+      var pane = Releash_Client_V1_Pane()
+      pane.id = id
+      pane.tabs = tabs.map { tab in
+        var value = Releash_Client_V1_PaneTab()
+        value.id = tab.id
+        switch tab.kind {
+        case .terminal: value.kind = .terminal
+        case .workflow: value.kind = .workflow
+        case .file: value.kind = .file
+        }
+        return value
+      }
+      if let active { pane.activeTab = active }
+      result.pane = pane
+    case .split(let id, let axis, let ratio, let first, let second):
+      var split = Releash_Client_V1_PaneSplit()
+      split.id = id
+      split.axis = axis == .horizontal ? .horizontal : .vertical
+      split.ratio = ratio
+      split.first = first.message
+      split.second = second.message
+      result.split = split
+    }
+    return result
+  }
+  func containsPane(_ target: String) -> Bool {
+    switch self {
+    case .pane(let id, _, _): id == target
+    case .split(_, _, _, let first, let second):
+      first.containsPane(target) || second.containsPane(target)
     }
   }
   func tab(_ id: String) -> PaneTab? {
@@ -120,7 +144,7 @@ indirect enum PaneLayout: Codable, Equatable {
     }
   }
   mutating func move(_ tabID: String, to pane: String, edge: Edge? = nil) {
-    guard let tab = tab(tabID) else { return }
+    guard containsPane(pane), let tab = tab(tabID) else { return }
     close(tabID)
     editPane(pane) { current in
       guard case .pane(let id, var tabs, _) = current else { return current }

@@ -24,9 +24,13 @@ fn test_pane配置_復元するタブと分割を検証する() {
             axis: SplitAxis::Horizontal,
             ratio,
             first: Box::new(pane.clone()),
-            second: Box::new(pane.clone()),
+            second: Box::new(PaneLayout::Pane {
+                id: "other".into(),
+                tabs: vec![],
+                active_tab: None,
+            }),
         };
-        assert!(split.validate().is_err());
+        assert_eq!(split.validate().is_ok(), ratio == 0.5);
     }
 }
 

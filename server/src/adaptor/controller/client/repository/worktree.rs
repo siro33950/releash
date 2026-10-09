@@ -43,11 +43,8 @@ pub(crate) fn parse_launch(
     Ok(match launch {
         None => L::None,
         Some(Launch::Session(session)) => L::Session {
-            provider: match session.provider.as_str() {
-                "claude" => crate::domain::provider_lifecycle::ProviderKind::Claude,
-                "codex" => crate::domain::provider_lifecycle::ProviderKind::Codex,
-                _ => return Err(invalid_request("Unknown provider")),
-            },
+            provider: crate::adaptor::controller::client::parse_provider(&session.provider)
+                .ok_or_else(|| invalid_request("Unknown provider"))?,
             rows: u16::try_from(session.rows)
                 .ok()
                 .filter(|n| *n > 0)

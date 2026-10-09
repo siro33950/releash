@@ -81,12 +81,24 @@ impl GitHostUsecase {
         &self,
         repo_path: &str,
         filter: &crate::domain::git_host::IssueFilter,
-    ) -> crate::usecase::fetched::Fetched<Vec<IssueInfo>> {
-        let mut result = self.get_cached_issues(repo_path).await;
-        if let Some(issues) = &mut result.value {
-            issues.retain(|issue| filter.matches(issue));
+    ) -> crate::usecase::fetched::Fetched<IssueListing> {
+        let result = self.get_cached_issues(repo_path).await;
+        crate::usecase::fetched::Fetched {
+            error: result.error,
+            value: result.value.map(|issues| {
+                let options =
+                    crate::domain::git_host::value_objects::issue::IssueOptions::from_issues(
+                        &issues,
+                    );
+                IssueListing {
+                    issues: issues
+                        .into_iter()
+                        .filter(|issue| filter.matches(issue))
+                        .collect(),
+                    options,
+                }
+            }),
         }
-        result
     }
 
     pub(crate) async fn get_cached_issues(
@@ -111,3 +123,16 @@ impl GitHostUsecase {
 #[cfg(test)]
 #[path = "git_host_usecase_test.rs"]
 mod git_host_usecase_tests;
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct IssueListing {
+    pub issues: Vec<IssueInfo>,
+    pub options: crate::domain::git_host::value_objects::issue::IssueOptions,
+}
+impl From<Vec<IssueInfo>> for IssueListing {
+    fn from(issues: Vec<IssueInfo>) -> Self {
+        let options =
+            crate::domain::git_host::value_objects::issue::IssueOptions::from_issues(&issues);
+        Self { issues, options }
+    }
+}

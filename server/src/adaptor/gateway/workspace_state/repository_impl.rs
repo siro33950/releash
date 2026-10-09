@@ -78,7 +78,7 @@ impl WorkspaceStateRepository for WorkspaceStateStore {
         let Some(state) = self.read_state(worktree_name)? else {
             return Ok(None);
         };
-        let state = WorkspaceState::from(state);
+        let state = state.into_domain();
         let state = filter_missing_files(state, worktree_root);
 
         self.entries
@@ -106,7 +106,7 @@ impl WorkspaceStateRepository for WorkspaceStateStore {
                 None => return Ok(()),
             }
         };
-        let json = serde_json::to_string_pretty(&WorkspaceStateDto::from(state))
+        let json = serde_json::to_string_pretty(&StoredWorkspaceState::from_domain(state))
             .map_err(|e| WorkspaceStateError::Message(format!("Failed to serialize: {e}")))?;
         std::fs::write(&file_path, json)
             .map_err(|e| WorkspaceStateError::Message(format!("Failed to write: {e}")))?;
@@ -134,7 +134,7 @@ impl WorkspaceStateStore {
     fn read_state(
         &self,
         worktree_name: &str,
-    ) -> Result<Option<WorkspaceStateDto>, WorkspaceStateError> {
+    ) -> Result<Option<StoredWorkspaceState>, WorkspaceStateError> {
         let data = match std::fs::read_to_string(state_file(&self.app_data_dir, worktree_name)) {
             Ok(data) => data,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -150,7 +150,7 @@ impl WorkspaceStateStore {
             }
             Err(error) => return Err(WorkspaceStateError::Message(error.to_string())),
         };
-        serde_json::from_str::<WorkspaceStateDto>(&data)
+        serde_json::from_str::<StoredWorkspaceState>(&data)
             .map(Some)
             .map_err(|error| WorkspaceStateError::Message(error.to_string()))
     }
@@ -160,3 +160,196 @@ impl WorkspaceStateStore {
         self.entries.read().get(worktree_name).cloned()
     }
 }
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct StoredWorkspaceState {
+    #[serde(flatten)]
+    state: WorkspaceStateDto,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    panes: Option<StoredPaneLayout>,
+}
+impl StoredWorkspaceState {
+    fn from_domain(mut state: WorkspaceState) -> Self {
+        let panes = state.panes.take().map(Into::into);
+        Self {
+            state: state.into(),
+            panes,
+        }
+    }
+    fn into_domain(self) -> WorkspaceState {
+        let mut state: WorkspaceState = self.state.into();
+        state.panes = self.panes.map(Into::into);
+        state
+    }
+}
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum StoredPaneLayout {
+    Pane {
+        id: String,
+        tabs: Vec<StoredPaneTab>,
+        active_tab: Option<String>,
+    },
+    Split {
+        id: String,
+        axis: StoredSplitAxis,
+        ratio: f64,
+        first: Box<StoredPaneLayout>,
+        second: Box<StoredPaneLayout>,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+struct StoredPaneTab {
+    pub id: String,
+    pub kind: StoredPaneTabKind,
+}
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum StoredPaneTabKind {
+    Terminal,
+    Workflow,
+    File,
+}
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum StoredSplitAxis {
+    Horizontal,
+    Vertical,
+}
+
+impl From<crate::domain::workspace_state::value_objects::pane_layout::PaneLayout>
+    for StoredPaneLayout
+{
+    fn from(value: crate::domain::workspace_state::value_objects::pane_layout::PaneLayout) -> Self {
+        use crate::domain::workspace_state::value_objects::pane_layout::PaneLayout;
+        match value {
+            PaneLayout::Pane {
+                id,
+                tabs,
+                active_tab,
+            } => Self::Pane {
+                id,
+                tabs: tabs.into_iter().map(Into::into).collect(),
+                active_tab,
+            },
+            PaneLayout::Split {
+                id,
+                axis,
+                ratio,
+                first,
+                second,
+            } => Self::Split {
+                id,
+                axis: axis.into(),
+                ratio,
+                first: Box::new((*first).into()),
+                second: Box::new((*second).into()),
+            },
+        }
+    }
+}
+impl From<StoredPaneLayout>
+    for crate::domain::workspace_state::value_objects::pane_layout::PaneLayout
+{
+    fn from(value: StoredPaneLayout) -> Self {
+        match value {
+            StoredPaneLayout::Pane {
+                id,
+                tabs,
+                active_tab,
+            } => Self::Pane {
+                id,
+                tabs: tabs.into_iter().map(Into::into).collect(),
+                active_tab,
+            },
+            StoredPaneLayout::Split {
+                id,
+                axis,
+                ratio,
+                first,
+                second,
+            } => Self::Split {
+                id,
+                axis: axis.into(),
+                ratio,
+                first: Box::new((*first).into()),
+                second: Box::new((*second).into()),
+            },
+        }
+    }
+}
+impl From<crate::domain::workspace_state::value_objects::pane_layout::PaneTab> for StoredPaneTab {
+    fn from(value: crate::domain::workspace_state::value_objects::pane_layout::PaneTab) -> Self {
+        Self {
+            id: value.id,
+            kind: value.kind.into(),
+        }
+    }
+}
+impl From<StoredPaneTab> for crate::domain::workspace_state::value_objects::pane_layout::PaneTab {
+    fn from(value: StoredPaneTab) -> Self {
+        Self {
+            id: value.id,
+            kind: value.kind.into(),
+        }
+    }
+}
+impl From<crate::domain::workspace_state::value_objects::pane_layout::PaneTabKind>
+    for StoredPaneTabKind
+{
+    fn from(
+        value: crate::domain::workspace_state::value_objects::pane_layout::PaneTabKind,
+    ) -> Self {
+        match value {
+            crate::domain::workspace_state::value_objects::pane_layout::PaneTabKind::Terminal => {
+                Self::Terminal
+            }
+            crate::domain::workspace_state::value_objects::pane_layout::PaneTabKind::Workflow => {
+                Self::Workflow
+            }
+            crate::domain::workspace_state::value_objects::pane_layout::PaneTabKind::File => {
+                Self::File
+            }
+        }
+    }
+}
+impl From<StoredPaneTabKind>
+    for crate::domain::workspace_state::value_objects::pane_layout::PaneTabKind
+{
+    fn from(value: StoredPaneTabKind) -> Self {
+        match value {
+            StoredPaneTabKind::Terminal => Self::Terminal,
+            StoredPaneTabKind::Workflow => Self::Workflow,
+            StoredPaneTabKind::File => Self::File,
+        }
+    }
+}
+impl From<crate::domain::workspace_state::value_objects::pane_layout::SplitAxis>
+    for StoredSplitAxis
+{
+    fn from(value: crate::domain::workspace_state::value_objects::pane_layout::SplitAxis) -> Self {
+        match value {
+            crate::domain::workspace_state::value_objects::pane_layout::SplitAxis::Horizontal => {
+                Self::Horizontal
+            }
+            crate::domain::workspace_state::value_objects::pane_layout::SplitAxis::Vertical => {
+                Self::Vertical
+            }
+        }
+    }
+}
+impl From<StoredSplitAxis>
+    for crate::domain::workspace_state::value_objects::pane_layout::SplitAxis
+{
+    fn from(value: StoredSplitAxis) -> Self {
+        match value {
+            StoredSplitAxis::Horizontal => Self::Horizontal,
+            StoredSplitAxis::Vertical => Self::Vertical,
+        }
+    }
+}
+
+#[cfg(test)]
+#[path = "repository_impl_test.rs"]
+mod repository_impl_tests;

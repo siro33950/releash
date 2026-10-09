@@ -61,3 +61,11 @@ pub(crate) mod tests {
         );
     }
 }
+
+#[test]
+fn test_worktree名_既存名と重ならない最初の名前を選ぶ() {
+    use super::unique_worktree_name;
+    assert_eq!(unique_worktree_name("a", &[]), "a");
+    assert_eq!(unique_worktree_name("a", &["a"]), "a1");
+    assert_eq!(unique_worktree_name("a", &["a", "a1"]), "a2");
+}

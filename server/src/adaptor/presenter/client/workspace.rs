@@ -111,11 +111,11 @@ fn branch(row: &WorkspaceListWorktree) -> wire::WorkspaceBranch {
         tracking_error: row.tracking.error.as_ref().map(ToString::to_string),
         removal_requires_force: row.worktree.removal_requires_force(row.dirty_count.value),
         pr_state: row.pull_request.as_ref().map(|pr| {
-            match (pr.state, pr.draft) {
-                (crate::domain::git_host::PrState::Open, true) => "draft",
-                (crate::domain::git_host::PrState::Open, false) => "open",
-                (crate::domain::git_host::PrState::Merged, _) => "merged",
-                (crate::domain::git_host::PrState::Closed, _) => "closed",
+            match pr.classification() {
+                crate::domain::git_host::value_objects::pr::PrClassification::Draft => "draft",
+                crate::domain::git_host::value_objects::pr::PrClassification::Open => "open",
+                crate::domain::git_host::value_objects::pr::PrClassification::Merged => "merged",
+                crate::domain::git_host::value_objects::pr::PrClassification::Closed => "closed",
             }
             .to_owned()
         }),
@@ -149,13 +149,11 @@ fn worktree(row: &WorkspaceListWorktree) -> Result<wire::WorkspaceWorktreeList, 
             .and_then(WorkspaceTree::card_status)
             .map(|status| status.as_public_str().to_owned()),
         executions: row
-            .tree
-            .value
+            .executions
             .iter()
-            .flat_map(WorkspaceTree::card_executions)
             .map(|summary| wire::WorktreeExecutionSummary {
-                id: summary.id,
-                title: summary.title,
+                id: summary.id.clone(),
+                title: summary.title.clone(),
                 is_workflow: summary.is_workflow,
                 provider: summary.provider.map(|provider| {
                     match provider {
@@ -168,7 +166,7 @@ fn worktree(row: &WorkspaceListWorktree) -> Result<wire::WorkspaceWorktreeList, 
                 node_count: summary.node_count as u64,
                 session_states: summary
                     .session_states
-                    .into_iter()
+                    .iter()
                     .map(|state| state.as_public_str().to_owned())
                     .collect(),
             })

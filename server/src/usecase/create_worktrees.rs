@@ -25,11 +25,6 @@ pub enum LaunchAfterCreation {
 
 #[async_trait::async_trait]
 pub trait WorktreeLaunch: Send + Sync {
-    fn begin_creation(
-        &self,
-        repo: &str,
-        branch: &str,
-    ) -> Result<Vec<crate::usecase::worktree_operation::WorktreeMutationGuard>, UsecaseError>;
     async fn launch(&self, path: &str, launch: &LaunchAfterCreation) -> Result<(), UsecaseError>;
 }
 
@@ -46,22 +41,10 @@ impl WorktreeSessionLaunch for Arc<AgentSessionLaunchUsecase> {
 }
 #[async_trait::async_trait]
 pub trait WorktreeWorkflowLaunch: Send + Sync {
-    fn begin_creation(
-        &self,
-        repo: &str,
-        branch: &str,
-    ) -> Result<Vec<crate::usecase::worktree_operation::WorktreeMutationGuard>, UsecaseError>;
     async fn launch_workflow(&self, command: StartExecutionCommand) -> Result<(), UsecaseError>;
 }
 #[async_trait::async_trait]
 impl WorktreeWorkflowLaunch for WorkflowRuntimeUsecase {
-    fn begin_creation(
-        &self,
-        repo: &str,
-        branch: &str,
-    ) -> Result<Vec<crate::usecase::worktree_operation::WorktreeMutationGuard>, UsecaseError> {
-        Ok(self.begin_worktree_creation_mutation(repo, branch)?)
-    }
     async fn launch_workflow(&self, command: StartExecutionCommand) -> Result<(), UsecaseError> {
         self.start_execution(command).await?;
         Ok(())
@@ -76,13 +59,6 @@ pub struct WorktreeLauncher<S = Arc<AgentSessionLaunchUsecase>, W = WorkflowRunt
 impl<S: WorktreeSessionLaunch, W: WorktreeWorkflowLaunch> WorktreeLaunch
     for WorktreeLauncher<S, W>
 {
-    fn begin_creation(
-        &self,
-        repo: &str,
-        branch: &str,
-    ) -> Result<Vec<crate::usecase::worktree_operation::WorktreeMutationGuard>, UsecaseError> {
-        self.workflows.begin_creation(repo, branch)
-    }
     async fn launch(&self, path: &str, launch: &LaunchAfterCreation) -> Result<(), UsecaseError> {
         match launch {
             LaunchAfterCreation::None => {}
@@ -121,6 +97,7 @@ impl<S: WorktreeSessionLaunch, W: WorktreeWorkflowLaunch> WorktreeLaunch
 pub async fn create_worktrees(
     repository: Arc<RepositoryUsecase>,
     launcher: &dyn WorktreeLaunch,
+    creation: &dyn WorktreeCreation,
     repo_path: String,
     branches: Vec<String>,
     base_branch: Option<String>,
@@ -129,7 +106,7 @@ pub async fn create_worktrees(
     crate::domain::repository::validate_worktree_branches(&branches)?;
     let mut paths = Vec::with_capacity(branches.len());
     for branch in branches {
-        let guards = launcher.begin_creation(&repo_path, &branch)?;
+        let guards = creation.begin_creation(&repo_path, &branch)?;
         let repository = repository.clone();
         let repo_path = repo_path.clone();
         let base_branch = base_branch.clone();
@@ -153,3 +130,59 @@ pub async fn create_worktrees(
 #[cfg(test)]
 #[path = "create_worktrees_test.rs"]
 mod create_worktrees_tests;
+
+pub trait WorktreeCreation: Send + Sync {
+    fn begin_creation(
+        &self,
+        repo: &str,
+        branch: &str,
+    ) -> Result<Vec<crate::usecase::worktree_operation::WorktreeMutationGuard>, UsecaseError>;
+}
+impl WorktreeCreation for WorkflowRuntimeUsecase {
+    fn begin_creation(
+        &self,
+        repo: &str,
+        branch: &str,
+    ) -> Result<Vec<crate::usecase::worktree_operation::WorktreeMutationGuard>, UsecaseError> {
+        Ok(self.begin_worktree_creation_mutation(repo, branch)?)
+    }
+}
+pub struct CreateWorktreesUsecase {
+    repository: Arc<RepositoryUsecase>,
+    launcher: WorktreeLauncher,
+    creation: Arc<WorkflowRuntimeUsecase>,
+}
+impl CreateWorktreesUsecase {
+    pub fn new(
+        repository: Arc<RepositoryUsecase>,
+        sessions: Arc<AgentSessionLaunchUsecase>,
+        workflows: Arc<WorkflowRuntimeUsecase>,
+    ) -> Self {
+        Self {
+            repository,
+            launcher: WorktreeLauncher {
+                sessions,
+                workflows: workflows.clone(),
+            },
+            creation: workflows,
+        }
+    }
+    pub async fn execute(
+        &self,
+        repo: String,
+        branches: Vec<String>,
+        base: Option<String>,
+        launch: LaunchAfterCreation,
+    ) -> Result<Vec<String>, UsecaseError> {
+        create_worktrees(
+            self.repository.clone(),
+            &self.launcher,
+            self.creation.as_ref(),
+            repo,
+            branches,
+            base,
+            launch,
+        )
+        .await
+    }
+}

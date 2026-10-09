@@ -126,3 +126,94 @@ pub async fn test_worktree削除中_変更対象を共通境界で拒否して�
     )
     .is_ok());
 }
+
+#[tokio::test]
+pub async fn test_複数作成admission_後方の削除で拒否し先行guardを解放する() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = LocalEventStore::open(LocalEventStoreConfig::production(
+        directory.path().into(),
+        Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
+    ))
+    .unwrap();
+    let runtime = WorkflowRuntimeUsecase::new(
+        Arc::new(RecordingRuntimeGateway::default()),
+        Arc::new(ExecutionTreeArchiveFactRepository::new(
+            store,
+            directory.path(),
+        )),
+    );
+    let deletion = runtime
+        .begin_worktree_deletion("/repo-worktrees/b")
+        .await
+        .unwrap();
+    let command = wire::command_request::Command::CreateWorktrees(wire::CreateWorktreesRequest {
+        repo_path: "/repo".into(),
+        branches: vec!["a".into(), "b".into()],
+        ..Default::default()
+    });
+    assert!(admit(Some(&runtime), &command).is_err());
+    for path in ["/repo", "/repo-worktrees/a"] {
+        let guard = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            runtime.begin_worktree_deletion(path),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        drop(guard);
+    }
+    drop(deletion);
+    assert!(admit(Some(&runtime), &command).is_ok());
+}
+
+#[tokio::test]
+pub async fn test_複数作成admission_全対象の削除を待たせ成功と失敗で解放する() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = LocalEventStore::open(LocalEventStoreConfig::production(
+        directory.path().into(),
+        Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
+    ))
+    .unwrap();
+    let runtime = WorkflowRuntimeUsecase::new(
+        Arc::new(RecordingRuntimeGateway::default()),
+        Arc::new(ExecutionTreeArchiveFactRepository::new(
+            store,
+            directory.path(),
+        )),
+    );
+    let command = wire::command_request::Command::CreateWorktrees(wire::CreateWorktreesRequest {
+        repo_path: "/repo".into(),
+        branches: vec!["a".into(), "b".into()],
+        ..Default::default()
+    });
+    for success in [true, false] {
+        let guards = admit(Some(&runtime), &command).unwrap();
+        assert_eq!(guards.len(), 3);
+        let mut deletions = ["/repo", "/repo-worktrees/a", "/repo-worktrees/b"]
+            .map(|path| Box::pin(runtime.begin_worktree_deletion(path)));
+        for deletion in &mut deletions {
+            assert!(
+                tokio::time::timeout(std::time::Duration::from_millis(10), deletion.as_mut())
+                    .await
+                    .is_err()
+            );
+        }
+        let result: Result<(), &str> =
+            releashd::test_support::integration::transport::scope(guards, async {
+                if success {
+                    Ok(())
+                } else {
+                    Err("creation failed")
+                }
+            })
+            .await;
+        for deletion in deletions {
+            let guard = tokio::time::timeout(std::time::Duration::from_secs(1), deletion)
+                .await
+                .unwrap()
+                .unwrap();
+            drop(guard);
+        }
+        assert_eq!(result.is_ok(), success);
+    }
+}

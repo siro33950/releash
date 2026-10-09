@@ -21,4 +21,4 @@ pub use value_objects::{
 };
 pub(crate) use visible::WorkspaceVisibleNode;
 
-mod card;
+pub(crate) mod card;
