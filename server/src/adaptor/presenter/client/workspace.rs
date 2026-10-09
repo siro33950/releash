@@ -156,7 +156,7 @@ fn worktree(row: &WorkspaceListWorktree) -> Result<wire::WorkspaceWorktreeList, 
             .flat_map(WorkspaceTree::card_executions)
             .map(|(execution, nodes)| wire::WorktreeExecutionSummary {
                 id: execution.execution_id.clone(),
-                title: nodes.title_node(execution.launched_as).title.clone(),
+                title: nodes.root.public_title().to_owned(),
                 is_workflow: crate::domain::workspace_tree::card::ExecutionNodes::is_workflow(
                     execution.launched_as,
                 ),
@@ -171,7 +171,7 @@ fn worktree(row: &WorkspaceListWorktree) -> Result<wire::WorkspaceWorktreeList, 
                         }
                         .to_owned()
                     }),
-                status: nodes.root.status_classification.as_public_str().to_owned(),
+                status: nodes.root.public_status().as_public_str().to_owned(),
                 node_count: nodes.node_count() as u64,
                 session_states: nodes
                     .session_states()

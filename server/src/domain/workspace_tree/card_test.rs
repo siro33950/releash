@@ -76,10 +76,7 @@ fn test_カード集計_実行木単位で過去の試行と構造nodeとarchive
     // Then
     assert_eq!(summaries.len(), 1);
     assert_eq!(summaries[0].1.node_count(), 3);
-    assert_eq!(
-        summaries[0].1.title_node(summaries[0].0.launched_as).title,
-        "review"
-    );
+    assert_eq!(summaries[0].1.root.public_title(), "review");
     assert_eq!(
         summaries[0].1.session_states().collect::<Vec<_>>(),
         [
@@ -88,7 +85,7 @@ fn test_カード集計_実行木単位で過去の試行と構造nodeとarchive
         ]
     );
     assert_eq!(
-        summaries[0].1.root.status_classification,
+        summaries[0].1.root.public_status(),
         WorkspaceNodeStatusClassification::Attention
     );
     assert_eq!(
@@ -207,25 +204,168 @@ fn test_カード集計_session行を先に並べ人の番を集約する() {
     assert_eq!(rows.len(), 2);
     assert_eq!(rows[0].0.execution_id, session);
     assert!(!ExecutionNodes::is_workflow(rows[0].0.launched_as));
-    assert_eq!(
-        rows[0].1.title_node(rows[0].0.launched_as).title,
-        "作業session"
-    );
+    assert_eq!(rows[0].1.root.public_title(), "作業session");
     assert_eq!(
         rows[0].0.session.as_ref().map(|session| session.provider()),
         Some(crate::domain::provider_lifecycle::ProviderKind::Codex)
     );
     assert_eq!(
-        rows[0].1.root.status_classification,
+        rows[0].1.root.public_status(),
         WorkspaceNodeStatusClassification::Active
     );
     assert_eq!(
-        rows[1].1.root.status_classification,
+        rows[1].1.root.public_status(),
         WorkspaceNodeStatusClassification::Attention
     );
     assert!(ExecutionNodes::is_workflow(rows[1].0.launched_as));
     assert_eq!(
         tree.card_status(),
         Some(WorkspaceNodeStatusClassification::Attention)
+    );
+}
+
+#[test]
+fn test_カード集計_入力待ちの単独sessionは行も集約もidleになる() {
+    // Given
+    let id = "00000000-0000-4000-8000-000000001204";
+    let mut tree = WorkspaceTree::empty("/repo");
+    WorkspaceTreeProjector::project(
+        &mut tree,
+        [
+            WorkspaceStructureFact::WorkflowStarted {
+                execution_id: id.into(),
+                workflow_name: "session".into(),
+                worktree_path: "/repo".into(),
+                dynamic_fanout_names: Default::default(),
+                timestamp: 1.0,
+            },
+            WorkspaceStructureFact::NodeStarted {
+                execution_id: id.into(),
+                node_execution_id: id.into(),
+                node_name: "session".into(),
+                kind: NodeKindName::Session,
+                attempt: 1,
+                parent: None,
+                timestamp: 2.0,
+            },
+            WorkspaceStructureFact::NodeCompleted {
+                execution_id: id.into(),
+                node_execution_id: id.into(),
+                timestamp: 3.0,
+            },
+            WorkspaceStructureFact::NodeAgentBound {
+                execution_id: id.into(),
+                node_execution_id: id.into(),
+                session_id: "agent".into(),
+                timestamp: 2.0,
+            },
+            WorkspaceStructureFact::NodeActivityProjected {
+                execution_id: id.into(),
+                node_execution_id: id.into(),
+                activity: crate::domain::workflow::AgentSessionActivity::AwaitingInstruction,
+            },
+        ],
+    )
+    .unwrap();
+    tree.record_executions(vec![WorkspaceExecution {
+        execution_id: id.into(),
+        launched_as: ExecutionTreeLaunch::Session,
+        worktree_path: "/repo".into(),
+        workflow_name: "session".into(),
+        status: ExecutionStatus::Running,
+        updated_at: 3.0,
+        archive: None,
+        session: None,
+    }]);
+    // When
+    let rows = tree.card_executions();
+    // Then
+    assert_eq!(rows.len(), 1);
+    assert_eq!(
+        rows[0].1.root.owner().status_classification,
+        WorkspaceNodeStatusClassification::Active
+    );
+    assert_eq!(
+        rows[0].1.root.public_status(),
+        WorkspaceNodeStatusClassification::Idle
+    );
+    assert_eq!(
+        tree.card_status(),
+        Some(WorkspaceNodeStatusClassification::Idle)
+    );
+}
+
+#[test]
+fn test_カード集計_子のないworkflowもownerの状態で行と集約に含める() {
+    // Given
+    let id = "00000000-0000-4000-8000-000000001204";
+    let mut tree = WorkspaceTree::empty("/repo");
+    WorkspaceTreeProjector::project(
+        &mut tree,
+        [WorkspaceStructureFact::WorkflowStarted {
+            execution_id: id.into(),
+            workflow_name: "review".into(),
+            worktree_path: "/repo".into(),
+            dynamic_fanout_names: Default::default(),
+            timestamp: 1.0,
+        }],
+    )
+    .unwrap();
+    tree.record_executions(vec![WorkspaceExecution {
+        execution_id: id.into(),
+        launched_as: ExecutionTreeLaunch::Workflow,
+        worktree_path: "/repo".into(),
+        workflow_name: "review".into(),
+        status: ExecutionStatus::Running,
+        updated_at: 1.0,
+        archive: None,
+        session: None,
+    }]);
+    // When
+    let rows = tree.card_executions();
+    // Then
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].1.root.public_title(), "review");
+    assert_eq!(
+        rows[0].1.root.public_status(),
+        rows[0].1.root.owner().status_classification
+    );
+    assert_eq!(
+        tree.card_status(),
+        Some(WorkspaceNodeStatusClassification::Active)
+    );
+    drop(rows);
+    WorkspaceTreeProjector::project(
+        &mut tree,
+        [
+            WorkspaceStructureFact::NodeStarted {
+                execution_id: id.into(),
+                node_execution_id: "child".into(),
+                node_name: "child".into(),
+                kind: NodeKindName::Command,
+                attempt: 1,
+                parent: None,
+                timestamp: 2.0,
+            },
+            WorkspaceStructureFact::NodeCompleted {
+                execution_id: id.into(),
+                node_execution_id: "child".into(),
+                timestamp: 3.0,
+            },
+        ],
+    )
+    .unwrap();
+    let rows = tree.card_executions();
+    assert_eq!(
+        rows[0].1.root.node().status_classification,
+        WorkspaceNodeStatusClassification::Idle
+    );
+    assert_eq!(
+        rows[0].1.root.public_status(),
+        WorkspaceNodeStatusClassification::Active
+    );
+    assert_eq!(
+        tree.card_status(),
+        Some(WorkspaceNodeStatusClassification::Active)
     );
 }

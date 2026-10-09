@@ -5,11 +5,13 @@ struct CLIStatus: Decodable, Sendable {
   let running: Bool
   let compatibility: String?
   let guidance: String?
+  let startupGuidance: String?
   let discoveryFile: String
   private enum CodingKeys: String, CodingKey {
     case running
     case compatibility
     case guidance
+    case startupGuidance = "startup_guidance"
     case discoveryFile = "discovery_file"
   }
 }
@@ -17,6 +19,14 @@ struct CLIStatus: Decodable, Sendable {
 struct CLIFailure: Error, LocalizedError, Sendable {
   let message: String
   var errorDescription: String? { message }
+}
+
+private struct CLIErrorOutput: Decodable {
+  struct Failure: Decodable {
+    let message: String
+    let guidance: String?
+  }
+  let error: Failure
 }
 
 struct CLI: Sendable {
@@ -42,24 +52,34 @@ struct CLI: Sendable {
   }
 
   func discover(startIfMissing: Bool) async throws -> Releash_Client_V1_LocalApiDiscovery {
-    var status = try JSONDecoder().decode(
-      CLIStatus.self, from: await run(executable, ["status", "--json"]))
-    if !status.running && startIfMissing {
-      _ = try await run(executable, ["server", "start"])
-      status = try JSONDecoder().decode(
+    var category = "サーバを発見できません"
+    do {
+      var status = try JSONDecoder().decode(
         CLIStatus.self, from: await run(executable, ["status", "--json"]))
+      if !status.running && startIfMissing {
+        category = "サーバを起動できません"
+        _ = try await run(executable, ["server", "start"])
+        category = "サーバを発見できません"
+        status = try JSONDecoder().decode(
+          CLIStatus.self, from: await run(executable, ["status", "--json"]))
+      }
+      guard status.running else {
+        throw CLIFailure(message: status.startupGuidance ?? "")
+      }
+      guard status.compatibility == "compatible" else {
+        category = "サーバと互換性がありません"
+        throw CLIFailure(
+          message: [status.compatibility, status.guidance].compactMap { $0 }.joined(separator: "\n"))
+      }
+      let data = try Data(contentsOf: URL(fileURLWithPath: status.discoveryFile))
+      return try Releash_Client_V1_LocalApiDiscovery(jsonUTF8Data: data)
+    } catch {
+      let message = error.localizedDescription
+      let output = try? JSONDecoder().decode(CLIErrorOutput.self, from: Data(message.utf8))
+      let detail = output.map {
+        [$0.error.message, $0.error.guidance].compactMap { $0 }.joined(separator: "\n")
+      } ?? message
+      throw CLIFailure(message: "\(category)\n\(detail)")
     }
-    guard status.running else {
-      throw CLIFailure(
-        message: status.guidance ?? "Server not found. Run releash server start, then retry.")
-    }
-    guard status.compatibility == "compatible" else {
-      throw CLIFailure(
-        message:
-          "\(status.compatibility ?? "Compatibility unavailable")\n\(status.guidance ?? "Run releash status --json.")"
-      )
-    }
-    let data = try Data(contentsOf: URL(fileURLWithPath: status.discoveryFile))
-    return try Releash_Client_V1_LocalApiDiscovery(jsonUTF8Data: data)
   }
 }

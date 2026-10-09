@@ -31,6 +31,7 @@ async fn test_状態表示_未起動でも成功しtokenを出さない() {
     assert_eq!(value.get("uptime_seconds"), Some(&serde_json::Value::Null));
     assert_eq!(value.get("compatibility"), Some(&serde_json::Value::Null));
     assert_eq!(value.get("guidance"), Some(&serde_json::Value::Null));
+    assert_eq!(value["startup_guidance"], startup_guidance());
     assert_eq!(
         value["discovery_file"],
         discovery::discovery_file(dir.path()).to_str().unwrap()
@@ -76,4 +77,18 @@ async fn test_引数なし起動_独自data_dirではアプリ起動を要求せ
             status(dir.path(), false).await.unwrap(),
         ),
     );
+}
+
+#[tokio::test]
+async fn test_起動失敗_理由と起動案内を機械可読で返す() {
+    // Given
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(discovery::discovery_file(dir.path()), "invalid json").unwrap();
+    // When
+    let error = run(dir.path(), ServerSubcommand::Start).await.unwrap_err();
+    let output = start_failure(&error);
+    // Then
+    assert_eq!(output["error"]["code"], error.code.as_str());
+    assert_eq!(output["error"]["message"], error.message.unwrap());
+    assert_eq!(output["error"]["guidance"], startup_guidance());
 }
