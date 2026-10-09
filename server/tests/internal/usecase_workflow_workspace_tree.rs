@@ -373,19 +373,19 @@ pub async fn test_実行木一覧保持_query失敗では直前の結果を残�
     .await
     .unwrap();
     let paths = vec!["/repo".into()];
-    let before = usecase.retained_execution_summaries(&paths).await.remove(0);
-    assert_eq!(before.value.as_ref().unwrap().len(), 1);
+    let before = usecase.retained_workspace_trees(&paths).await.remove(0);
+    assert_eq!(before.value.as_ref().unwrap().card_executions().len(), 1);
     store.fail_next_read(ReadFailure::Sqlite(rusqlite::ffi::SQLITE_IOERR));
-    let failed = usecase.retained_execution_summaries(&paths).await.remove(0);
+    let failed = usecase.retained_workspace_trees(&paths).await.remove(0);
     assert_eq!(failed.value, before.value);
     assert!(failed.error.is_some());
     assert_eq!(
-        usecase.retained_execution_summaries(&paths).await.remove(0),
+        usecase.retained_workspace_trees(&paths).await.remove(0),
         before
     );
-    usecase.retained_execution_summaries(&[]).await;
+    usecase.retained_workspace_trees(&[]).await;
     store.fail_next_read(ReadFailure::Sqlite(rusqlite::ffi::SQLITE_IOERR));
-    let forgotten = usecase.retained_execution_summaries(&paths).await.remove(0);
+    let forgotten = usecase.retained_workspace_trees(&paths).await.remove(0);
     assert!(forgotten.value.is_none());
     assert!(forgotten.error.is_some());
 }

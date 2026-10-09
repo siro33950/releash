@@ -23,7 +23,6 @@ pub struct WorkspaceListRepository {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct WorkspaceListWorktree {
-    pub executions: Vec<super::query_service::WorktreeExecutionSummary>,
     pub tracking: Fetched<Option<crate::domain::repository::BranchTracking>>,
     pub worktree: Worktree,
     pub deleting: bool,
@@ -31,6 +30,7 @@ pub struct WorkspaceListWorktree {
     /// PR の状態を合わせた merge 済み。
     pub merged: bool,
     pub pull_request: Option<PrInfo>,
+    pub state_pull_request: Option<PrInfo>,
     pub pull_request_loaded: bool,
     pub tree: Fetched<WorkspaceTree>,
     pub pull_request_error: Option<crate::domain::failure::WorkFailure>,
@@ -95,26 +95,7 @@ impl WorkspaceListUsecase {
             .workflow
             .retained_workspace_trees(&worktree_paths)
             .await;
-        let summaries = self
-            .workflow
-            .retained_execution_summaries(&worktree_paths)
-            .await;
-        let summaries = worktree_paths
-            .into_iter()
-            .zip(summaries)
-            .collect::<std::collections::HashMap<_, _>>();
-        let mut list = compose(repositories, trees);
-        for repository in &mut list.repositories {
-            for row in repository.worktrees.value.iter_mut().flatten() {
-                if let Some(summary) = summaries.get(&row.worktree.path) {
-                    row.executions = summary.value.clone().unwrap_or_default();
-                    if row.tree.error.is_none() {
-                        row.tree.error = summary.error.clone();
-                    }
-                }
-            }
-        }
-        Ok(list)
+        Ok(compose(repositories, trees))
     }
 
     fn repository_values(&self) -> Vec<RepositoryValues> {
@@ -239,7 +220,6 @@ fn compose(
                                 .map(|values| {
                                     let branch = values.worktree.branch.as_str();
                                     WorkspaceListWorktree {
-                                        executions: vec![],
                                         tracking: values.tracking,
                                         merged: pull_requests.value.as_ref().map_or(
                                             values.worktree.is_merged,
@@ -250,10 +230,14 @@ fn compose(
                                                 )
                                             },
                                         ),
-                                        pull_request: pull_requests
+                                        state_pull_request: pull_requests
                                             .value
                                             .as_ref()
                                             .and_then(|prs| prs.for_branch(branch).cloned()),
+                                        pull_request: pull_requests
+                                            .value
+                                            .as_ref()
+                                            .and_then(|prs| prs.open_for_branch(branch).cloned()),
                                         pull_request_loaded: pull_requests.loaded(),
                                         pull_request_error: pull_requests.error.clone(),
                                         tree: trees.next().unwrap_or_default(),

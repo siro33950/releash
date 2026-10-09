@@ -533,7 +533,14 @@ mod driver_tests {
                             has_more: false,
                         },
                     ),
-                    _ => StateValue::Issues(crate::usecase::fetched::Fetched::ready(vec![].into())),
+                    _ => StateValue::Issues(crate::usecase::fetched::Fetched::ready(
+                        crate::usecase::git_host::git_host_usecase::IssueListing {
+                            issues: vec![],
+                            options:
+                                crate::domain::git_host::value_objects::issue::IssueOptions::default(
+                                ),
+                        },
+                    )),
                 })
             }
             fn repositories(&self) -> Vec<String> {
@@ -1082,29 +1089,32 @@ mod driver_tests {
                     crate::usecase::state_subscription::SubscriptionTarget::Issues(_)
                 ) {
                     return StateValue::Issues(Fetched::ready(
-                        vec![crate::domain::git_host::IssueInfo {
-                            number: self.issues.load(Ordering::SeqCst),
-                            title: "issue".into(),
-                            state: "open".into(),
-                            url: String::new(),
-                            author: crate::domain::git_host::PrAuthor {
-                                login: "author".into(),
-                            },
-                            created_at: String::new(),
-                            updated_at: String::new(),
-                            labels: vec![],
-                            assignees: vec![],
-                            body: String::new(),
-                            milestone: None,
-                        }]
-                        .into(),
+                        crate::usecase::git_host::git_host_usecase::IssueListing {
+                            options:
+                                crate::domain::git_host::value_objects::issue::IssueOptions::default(
+                                ),
+                            issues: vec![crate::domain::git_host::IssueInfo {
+                                number: self.issues.load(Ordering::SeqCst),
+                                title: "issue".into(),
+                                state: "open".into(),
+                                url: String::new(),
+                                author: crate::domain::git_host::PrAuthor {
+                                    login: "author".into(),
+                                },
+                                created_at: String::new(),
+                                updated_at: String::new(),
+                                labels: vec![],
+                                assignees: vec![],
+                                body: String::new(),
+                                milestone: None,
+                            }],
+                        },
                     ));
                 }
                 StateValue::Workspaces(WorkspaceList {
                     repositories: vec![WorkspaceListRepository {
                         path: "/repo".into(),
                         worktrees: Fetched::ready(vec![WorkspaceListWorktree {
-                            executions: vec![],
                             tracking: Fetched::ready(None),
                             worktree: crate::domain::repository::Worktree {
                                 name: "main".into(),
@@ -1119,6 +1129,7 @@ mod driver_tests {
                             pull_request_error: None,
                             pull_request_loaded: true,
                             merged: false,
+                            state_pull_request: None,
                             pull_request: Some(crate::domain::git_host::PrInfo {
                                 number: self.prs.load(Ordering::SeqCst),
                                 url: String::new(),

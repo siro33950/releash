@@ -75,49 +75,6 @@ impl SqliteWorkspaceQueryService {
 
 #[async_trait::async_trait]
 impl WorkspaceQueryService for SqliteWorkspaceQueryService {
-    async fn worktree_executions(
-        &self,
-        workspace: &WorkspaceIdentity,
-        failures: &dyn crate::domain::failure::FailureRecordRepository,
-    ) -> Result<
-        Vec<crate::usecase::workspace_tree::query_service::WorktreeExecutionSummary>,
-        WorkflowError,
-    > {
-        let folded = self
-            .repository
-            .folded_workspace_trees(workspace.as_str())
-            .await
-            .map_err(query_error)?;
-        let mut rows = Vec::new();
-        for execution in folded {
-            let (folded, record) = &*execution;
-            if folded.aggregate.archive_record().is_some() {
-                continue;
-            }
-            let mut nodes = self
-                .repository
-                .tree_nodes(workspace.as_str(), folded, record)
-                .map_err(query_error)?;
-            crate::domain::workspace_tree::card::observe_node_failures(&mut nodes, failures);
-            let provider = self
-                .repository
-                .execution_session_fields(folded)
-                .await
-                .map_err(query_error)?
-                .map(|(_, fields)| fields.provider);
-            if let Some(row) = super::execution_summary::execution_summary(
-                &record.execution_id,
-                &record.workflow_name,
-                folded.root.launched_as,
-                provider,
-                &nodes,
-            ) {
-                rows.push(row);
-            }
-        }
-        rows.sort_by_key(|row| row.is_workflow);
-        Ok(rows)
-    }
     async fn node_detail(
         &self,
         workspace_identity: &WorkspaceIdentity,

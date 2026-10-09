@@ -6,7 +6,6 @@ use crate::domain::workspace_state::services::filter_missing_files;
 use crate::domain::workspace_state::{
     WorkspaceState, WorkspaceStateError, WorkspaceStateRepository,
 };
-use crate::usecase::workspace_state::dto::WorkspaceStateDto;
 
 pub struct WorkspaceStateStore {
     app_data_dir: PathBuf,
@@ -78,7 +77,7 @@ impl WorkspaceStateRepository for WorkspaceStateStore {
         let Some(state) = self.read_state(worktree_name)? else {
             return Ok(None);
         };
-        let state = state.into_domain();
+        let state: WorkspaceState = state.into();
         let state = filter_missing_files(state, worktree_root);
 
         self.entries
@@ -106,7 +105,7 @@ impl WorkspaceStateRepository for WorkspaceStateStore {
                 None => return Ok(()),
             }
         };
-        let json = serde_json::to_string_pretty(&StoredWorkspaceState::from_domain(state))
+        let json = serde_json::to_string_pretty(&StoredWorkspaceState::from(state))
             .map_err(|e| WorkspaceStateError::Message(format!("Failed to serialize: {e}")))?;
         std::fs::write(&file_path, json)
             .map_err(|e| WorkspaceStateError::Message(format!("Failed to write: {e}")))?;
@@ -161,27 +160,132 @@ impl WorkspaceStateStore {
     }
 }
 
+use crate::domain::workspace_state::value_objects::{
+    workspace_tabs_state::WorkspaceTabEntry, WorkspaceLayoutState, WorkspaceTabsState,
+};
+
 #[derive(serde::Serialize, serde::Deserialize)]
 struct StoredWorkspaceState {
-    #[serde(flatten)]
-    state: WorkspaceStateDto,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     panes: Option<StoredPaneLayout>,
+    version: u32,
+    tabs: StoredWorkspaceTabsState,
+    layout: StoredWorkspaceLayoutState,
 }
-impl StoredWorkspaceState {
-    fn from_domain(mut state: WorkspaceState) -> Self {
-        let panes = state.panes.take().map(Into::into);
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct StoredWorkspaceTabEntry {
+    path: String,
+    name: String,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct StoredWorkspaceTabsState {
+    editors: Vec<StoredWorkspaceTabEntry>,
+    active_editor_path: Option<String>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct StoredWorkspaceLayoutState {
+    center_tab: String,
+    active_view: String,
+    left_nav_collapsed: bool,
+    right_collapsed: bool,
+    right_bottom_collapsed: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    right_bottom_active_tab: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    selected_diff_file: Option<String>,
+}
+
+impl From<WorkspaceState> for StoredWorkspaceState {
+    fn from(state: WorkspaceState) -> Self {
         Self {
-            state: state.into(),
-            panes,
+            panes: state.panes.map(Into::into),
+            version: state.version,
+            tabs: state.tabs.into(),
+            layout: state.layout.into(),
         }
     }
-    fn into_domain(self) -> WorkspaceState {
-        let mut state: WorkspaceState = self.state.into();
-        state.panes = self.panes.map(Into::into);
-        state
+}
+
+impl From<StoredWorkspaceState> for WorkspaceState {
+    fn from(dto: StoredWorkspaceState) -> Self {
+        Self {
+            panes: dto.panes.map(Into::into),
+            version: dto.version,
+            tabs: dto.tabs.into(),
+            layout: dto.layout.into(),
+        }
     }
 }
+
+impl From<WorkspaceTabsState> for StoredWorkspaceTabsState {
+    fn from(tabs: WorkspaceTabsState) -> Self {
+        Self {
+            editors: tabs.editors.into_iter().map(Into::into).collect(),
+            active_editor_path: tabs.active_editor_path,
+        }
+    }
+}
+
+impl From<StoredWorkspaceTabsState> for WorkspaceTabsState {
+    fn from(dto: StoredWorkspaceTabsState) -> Self {
+        Self {
+            editors: dto.editors.into_iter().map(Into::into).collect(),
+            active_editor_path: dto.active_editor_path,
+        }
+    }
+}
+
+impl From<WorkspaceTabEntry> for StoredWorkspaceTabEntry {
+    fn from(entry: WorkspaceTabEntry) -> Self {
+        Self {
+            path: entry.path,
+            name: entry.name,
+        }
+    }
+}
+
+impl From<StoredWorkspaceTabEntry> for WorkspaceTabEntry {
+    fn from(dto: StoredWorkspaceTabEntry) -> Self {
+        Self {
+            path: dto.path,
+            name: dto.name,
+        }
+    }
+}
+
+impl From<WorkspaceLayoutState> for StoredWorkspaceLayoutState {
+    fn from(layout: WorkspaceLayoutState) -> Self {
+        Self {
+            center_tab: layout.center_tab,
+            active_view: layout.active_view,
+            left_nav_collapsed: layout.left_nav_collapsed,
+            right_collapsed: layout.right_collapsed,
+            right_bottom_collapsed: layout.right_bottom_collapsed,
+            right_bottom_active_tab: layout.right_bottom_active_tab,
+            selected_diff_file: layout.selected_diff_file,
+        }
+    }
+}
+
+impl From<StoredWorkspaceLayoutState> for WorkspaceLayoutState {
+    fn from(dto: StoredWorkspaceLayoutState) -> Self {
+        Self {
+            center_tab: dto.center_tab,
+            active_view: dto.active_view,
+            left_nav_collapsed: dto.left_nav_collapsed,
+            right_collapsed: dto.right_collapsed,
+            right_bottom_collapsed: dto.right_bottom_collapsed,
+            right_bottom_active_tab: dto.right_bottom_active_tab,
+            selected_diff_file: dto.selected_diff_file,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 enum StoredPaneLayout {

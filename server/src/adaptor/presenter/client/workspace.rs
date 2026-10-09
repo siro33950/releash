@@ -110,7 +110,8 @@ fn branch(row: &WorkspaceListWorktree) -> wire::WorkspaceBranch {
             .map(|tracking| tracking.behind as u64),
         tracking_error: row.tracking.error.as_ref().map(ToString::to_string),
         removal_requires_force: row.worktree.removal_requires_force(row.dirty_count.value),
-        pr_state: row.pull_request.as_ref().map(|pr| {
+        pr_state_number: row.state_pull_request.as_ref().map(|pr| pr.number),
+        pr_state: row.state_pull_request.as_ref().map(|pr| {
             match pr.classification() {
                 crate::domain::git_host::value_objects::pr::PrClassification::Draft => "draft",
                 crate::domain::git_host::value_objects::pr::PrClassification::Open => "open",
@@ -149,24 +150,31 @@ fn worktree(row: &WorkspaceListWorktree) -> Result<wire::WorkspaceWorktreeList, 
             .and_then(WorkspaceTree::card_status)
             .map(|status| status.as_public_str().to_owned()),
         executions: row
-            .executions
+            .tree
+            .value
             .iter()
-            .map(|summary| wire::WorktreeExecutionSummary {
-                id: summary.id.clone(),
-                title: summary.title.clone(),
-                is_workflow: summary.is_workflow,
-                provider: summary.provider.map(|provider| {
-                    match provider {
-                        ProviderKind::Claude => "claude",
-                        ProviderKind::Codex => "codex",
-                    }
-                    .to_owned()
-                }),
-                status: summary.status.as_public_str().to_owned(),
-                node_count: summary.node_count as u64,
-                session_states: summary
-                    .session_states
-                    .iter()
+            .flat_map(WorkspaceTree::card_executions)
+            .map(|(execution, nodes)| wire::WorktreeExecutionSummary {
+                id: execution.execution_id.clone(),
+                title: nodes.title_node(execution.launched_as).title.clone(),
+                is_workflow: crate::domain::workspace_tree::card::ExecutionNodes::is_workflow(
+                    execution.launched_as,
+                ),
+                provider: execution
+                    .session
+                    .as_ref()
+                    .map(|session| session.provider())
+                    .map(|provider| {
+                        match provider {
+                            ProviderKind::Claude => "claude",
+                            ProviderKind::Codex => "codex",
+                        }
+                        .to_owned()
+                    }),
+                status: nodes.root.status_classification.as_public_str().to_owned(),
+                node_count: nodes.node_count() as u64,
+                session_states: nodes
+                    .session_states()
                     .map(|state| state.as_public_str().to_owned())
                     .collect(),
             })

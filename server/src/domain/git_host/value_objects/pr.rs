@@ -22,9 +22,12 @@ pub struct PrStatus {
 }
 
 impl PrStatus {
+    pub fn open_for_branch(&self, branch: &str) -> Option<&PrInfo> {
+        self.open_prs.get(branch)
+    }
+
     pub fn for_branch(&self, branch: &str) -> Option<&PrInfo> {
-        self.open_prs
-            .get(branch)
+        self.open_for_branch(branch)
             .or_else(|| self.completed_prs.get(branch))
     }
 

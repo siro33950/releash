@@ -1816,12 +1816,12 @@ impl TryFrom<crate::usecase::workflow::WorkspaceCommandResultDto>
     }
 }
 
-impl TryFrom<crate::usecase::workspace_state::dto::WorkspaceLayoutStateDto>
+impl TryFrom<crate::domain::workspace_state::value_objects::WorkspaceLayoutState>
     for wire::WorkspaceLayoutStateDto
 {
     type Error = String;
     fn try_from(
-        value: crate::usecase::workspace_state::dto::WorkspaceLayoutStateDto,
+        value: crate::domain::workspace_state::value_objects::WorkspaceLayoutState,
     ) -> Result<Self, String> {
         Ok(Self {
             center_tab: Some(cv(value.center_tab)?),
@@ -1838,7 +1838,7 @@ impl TryFrom<crate::usecase::workspace_state::dto::WorkspaceLayoutStateDto>
 }
 
 impl TryFrom<wire::WorkspaceLayoutStateDto>
-    for crate::usecase::workspace_state::dto::WorkspaceLayoutStateDto
+    for crate::domain::workspace_state::value_objects::WorkspaceLayoutState
 {
     type Error = String;
     fn try_from(value: wire::WorkspaceLayoutStateDto) -> Result<Self, String> {
@@ -1942,13 +1942,11 @@ impl TryFrom<crate::usecase::workflow::WorkspaceSessionNodeContentDto>
     }
 }
 
-impl TryFrom<crate::usecase::workspace_state::dto::WorkspaceStateDto> for wire::WorkspaceStateDto {
+impl TryFrom<crate::domain::workspace_state::WorkspaceState> for wire::WorkspaceStateDto {
     type Error = String;
-    fn try_from(
-        value: crate::usecase::workspace_state::dto::WorkspaceStateDto,
-    ) -> Result<Self, String> {
+    fn try_from(value: crate::domain::workspace_state::WorkspaceState) -> Result<Self, String> {
         Ok(Self {
-            pane_layout: None,
+            pane_layout: value.panes.map(cv).transpose()?,
             version: Some(cv(value.version)?),
             tabs: Some(cv(value.tabs)?),
             layout: Some(cv(value.layout)?),
@@ -1956,13 +1954,14 @@ impl TryFrom<crate::usecase::workspace_state::dto::WorkspaceStateDto> for wire::
     }
 }
 
-impl TryFrom<wire::WorkspaceStateDto> for crate::usecase::workspace_state::dto::WorkspaceStateDto {
+impl TryFrom<wire::WorkspaceStateDto> for crate::domain::workspace_state::WorkspaceState {
     type Error = String;
     fn try_from(value: wire::WorkspaceStateDto) -> Result<Self, String> {
         if value.version != Some(1) {
             return Err("Expected workspace state version 1".into());
         }
         Ok(Self {
+            panes: value.pane_layout.map(cv).transpose()?,
             version: cv(req(value.version, "version")?)?,
             tabs: cv(req(value.tabs, "tabs")?)?,
             layout: cv(req(value.layout, "layout")?)?,
@@ -1970,12 +1969,12 @@ impl TryFrom<wire::WorkspaceStateDto> for crate::usecase::workspace_state::dto::
     }
 }
 
-impl TryFrom<crate::usecase::workspace_state::dto::WorkspaceTabEntryDto>
+impl TryFrom<crate::domain::workspace_state::value_objects::workspace_tabs_state::WorkspaceTabEntry>
     for wire::WorkspaceTabEntryDto
 {
     type Error = String;
     fn try_from(
-        value: crate::usecase::workspace_state::dto::WorkspaceTabEntryDto,
+        value: crate::domain::workspace_state::value_objects::workspace_tabs_state::WorkspaceTabEntry,
     ) -> Result<Self, String> {
         Ok(Self {
             path: Some(cv(value.path)?),
@@ -1985,7 +1984,7 @@ impl TryFrom<crate::usecase::workspace_state::dto::WorkspaceTabEntryDto>
 }
 
 impl TryFrom<wire::WorkspaceTabEntryDto>
-    for crate::usecase::workspace_state::dto::WorkspaceTabEntryDto
+    for crate::domain::workspace_state::value_objects::workspace_tabs_state::WorkspaceTabEntry
 {
     type Error = String;
     fn try_from(value: wire::WorkspaceTabEntryDto) -> Result<Self, String> {
@@ -1996,12 +1995,12 @@ impl TryFrom<wire::WorkspaceTabEntryDto>
     }
 }
 
-impl TryFrom<crate::usecase::workspace_state::dto::WorkspaceTabsStateDto>
+impl TryFrom<crate::domain::workspace_state::value_objects::WorkspaceTabsState>
     for wire::WorkspaceTabsStateDto
 {
     type Error = String;
     fn try_from(
-        value: crate::usecase::workspace_state::dto::WorkspaceTabsStateDto,
+        value: crate::domain::workspace_state::value_objects::WorkspaceTabsState,
     ) -> Result<Self, String> {
         Ok(Self {
             editors: Some(cv(value.editors)?),
@@ -2011,7 +2010,7 @@ impl TryFrom<crate::usecase::workspace_state::dto::WorkspaceTabsStateDto>
 }
 
 impl TryFrom<wire::WorkspaceTabsStateDto>
-    for crate::usecase::workspace_state::dto::WorkspaceTabsStateDto
+    for crate::domain::workspace_state::value_objects::WorkspaceTabsState
 {
     type Error = String;
     fn try_from(value: wire::WorkspaceTabsStateDto) -> Result<Self, String> {
@@ -2195,26 +2194,5 @@ impl TryFrom<wire::PaneLayout>
                 second: Box::new(cv(*req(split.second, "second pane")?)?),
             },
         })
-    }
-}
-
-impl TryFrom<crate::domain::workspace_state::WorkspaceState> for wire::WorkspaceStateDto {
-    type Error = String;
-    fn try_from(mut value: crate::domain::workspace_state::WorkspaceState) -> Result<Self, String> {
-        let panes = value.panes.take();
-        let mut message: Self =
-            cv(crate::usecase::workspace_state::dto::WorkspaceStateDto::from(value))?;
-        message.pane_layout = panes.map(cv).transpose()?;
-        Ok(message)
-    }
-}
-impl TryFrom<wire::WorkspaceStateDto> for crate::domain::workspace_state::WorkspaceState {
-    type Error = String;
-    fn try_from(mut value: wire::WorkspaceStateDto) -> Result<Self, String> {
-        let panes = value.pane_layout.take();
-        let legacy: crate::usecase::workspace_state::dto::WorkspaceStateDto = cv(value)?;
-        let mut state: Self = legacy.into();
-        state.panes = panes.map(cv).transpose()?;
-        Ok(state)
     }
 }

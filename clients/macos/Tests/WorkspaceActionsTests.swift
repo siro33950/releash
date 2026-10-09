@@ -31,6 +31,41 @@ final class WorkspaceActionsTests: XCTestCase {
     await model.stop()
   }
 
+  @MainActor func testCardReceivesGitMergedAndCompletedPRWithoutOpenPR() async throws {
+    let http = TestHTTPClient()
+    var repository = Releash_Client_V1_WorkspaceRepositoryList()
+    repository.path = "/repo"
+    var merged = Releash_Client_V1_WorkspaceBranch()
+    merged.name = "merged-in-git"
+    merged.worktreePath = "/repo/merged"
+    merged.isMerged = true
+    merged.hasPr_p = false
+    var completed = Releash_Client_V1_WorkspaceBranch()
+    completed.name = "completed-pr"
+    completed.worktreePath = "/repo/completed"
+    completed.hasPr_p = false
+    completed.prState = "closed"
+    completed.prStateNumber = 42
+    repository.branches.items = [merged, completed]
+    http.state.withLock { $0.repositories = [repository] }
+    let model = try await testModel(http)
+    try await eventually { model.repositories.first?.branches.items.count == 2 }
+    let received = try XCTUnwrap(model.repositories.first)
+    let mergedCard = WorktreeCard(
+      model: model, repository: received, branch: received.branches.items[0])
+    XCTAssertTrue(mergedCard.branch.isMerged)
+    XCTAssertFalse(mergedCard.branch.hasUpstream)
+    XCTAssertFalse(mergedCard.branch.hasPrState)
+    let completedCard = WorktreeCard(
+      model: model, repository: received, branch: received.branches.items[1])
+    XCTAssertEqual(completedCard.branch.prState, "closed")
+    XCTAssertEqual(completedCard.branch.prStateNumber, 42)
+    XCTAssertFalse(completedCard.branch.hasPr_p)
+    XCTAssertFalse(completedCard.branch.hasPrNumber)
+    XCTAssertFalse(completedCard.branch.hasPrURL)
+    await model.stop()
+  }
+
   @MainActor func testCardLaunchesDeletionConfirmationAndRowsUseWorktree() async throws {
     let http = TestHTTPClient()
     let model = try await testModel(http)

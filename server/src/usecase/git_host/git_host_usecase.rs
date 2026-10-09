@@ -129,10 +129,3 @@ pub struct IssueListing {
     pub issues: Vec<IssueInfo>,
     pub options: crate::domain::git_host::value_objects::issue::IssueOptions,
 }
-impl From<Vec<IssueInfo>> for IssueListing {
-    fn from(issues: Vec<IssueInfo>) -> Self {
-        let options =
-            crate::domain::git_host::value_objects::issue::IssueOptions::from_issues(&issues);
-        Self { issues, options }
-    }
-}
