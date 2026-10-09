@@ -118,7 +118,7 @@ fn test_cli_同梱サーバの起動失敗は終了状態とstderrを表示す�
     let output = Command::new(cli)
         .arg("--data-dir")
         .arg(dir.path().join("data"))
-        .args(["server", "start"])
+        .args(["server", "start", "--json"])
         .output()
         .unwrap();
     // Then

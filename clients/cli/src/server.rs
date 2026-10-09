@@ -7,7 +7,10 @@ use std::path::Path;
 
 #[derive(Subcommand, Debug)]
 pub(crate) enum ServerSubcommand {
-    Start,
+    Start {
+        #[arg(long)]
+        json: bool,
+    },
     Stop,
     Restart,
 }
@@ -107,7 +110,7 @@ async fn start(dir: &Path) -> Result<bool, ConnectError> {
 
 pub async fn run(dir: &Path, command: ServerSubcommand) -> Result<String, ConnectError> {
     match command {
-        ServerSubcommand::Start => Ok(if start(dir).await? {
+        ServerSubcommand::Start { .. } => Ok(if start(dir).await? {
             "server started\n"
         } else {
             "server is already running\n"

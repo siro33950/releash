@@ -192,7 +192,7 @@ extension AppModelTests {
         executable: URL(fileURLWithPath: "/test/releash"),
         run: { _, args in
           calls.withLock { $0.append(args.joined(separator: " ")) }
-          if args == ["server", "start"] {
+          if args == ["server", "start", "--json"] {
             if fail.withLock({ $0 }) {
               throw CLIFailure(
                 message: #"{"error":{"message":"Cannot start server","guidance":"CLI startup guidance"}}"#)
@@ -215,7 +215,7 @@ extension AppModelTests {
     XCTAssertNil(model.connectionFailure)
     XCTAssertEqual(
       calls.withLock { $0 },
-      ["status --json", "server start", "status --json", "server start", "status --json"])
+      ["status --json", "server start --json", "status --json", "server start --json", "status --json"])
     await model.stop()
   }
 }
@@ -233,6 +233,23 @@ extension AppModelTests {
       }))
       await model.start()
       XCTAssertEqual(model.connectionFailure, expected)
+      XCTAssertFalse(model.connected)
+      await model.stop()
+    }
+  }
+
+  @MainActor func testMissingStartupGuidanceReportsInvalidCLIOutput() async {
+    for status in [
+      #"{"running":false,"discovery_file":"unused","startup_guidance":null}"#,
+      #"{"running":false,"discovery_file":"unused"}"#,
+    ] {
+      let model = AppModel(cli: CLI(executable: URL(fileURLWithPath: "/test/releash"), run: { _, _ in
+        Data(status.utf8)
+      }))
+      await model.start()
+      XCTAssertEqual(
+        model.connectionFailure,
+        "サーバを発見できません\nCLI の status --json 出力に startup_guidance がありません\n\(status)")
       XCTAssertFalse(model.connected)
       await model.stop()
     }

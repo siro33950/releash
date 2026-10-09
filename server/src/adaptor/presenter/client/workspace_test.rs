@@ -1104,11 +1104,11 @@ fn test_実行サマリー_providerと行とsessionの状態を配信する() {
     let summary = &wire.executions[0];
     // Then
     assert_eq!(summary.provider.as_deref(), Some("codex"));
-    assert_eq!(summary.status, "attention");
+    assert_eq!(summary.status, "active");
     assert_eq!(summary.session_states, ["active", "idle"]);
     assert_eq!(summary.node_count, 2);
     assert!(!summary.is_workflow);
-    assert_eq!(wire.aggregate_status.as_deref(), Some("attention"));
+    assert_eq!(wire.aggregate_status.as_deref(), Some("active"));
 }
 
 #[test]

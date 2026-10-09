@@ -85,7 +85,9 @@ async fn test_起動失敗_理由と起動案内を機械可読で返す() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(discovery::discovery_file(dir.path()), "invalid json").unwrap();
     // When
-    let error = run(dir.path(), ServerSubcommand::Start).await.unwrap_err();
+    let error = run(dir.path(), ServerSubcommand::Start { json: true })
+        .await
+        .unwrap_err();
     let output = start_failure(&error);
     // Then
     assert_eq!(output["error"]["code"], error.code.as_str());
