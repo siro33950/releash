@@ -146,12 +146,6 @@ fn start_output(started: bool, machine: bool) -> String {
     .into()
 }
 
-pub(crate) fn start_failure(error: &ConnectError, guidance: &str) -> serde_json::Value {
-    let mut value = crate::error_json(error);
-    value["error"]["guidance"] = json!(guidance);
-    value
-}
-
 fn app_bundle(executable: &Path) -> Option<&Path> {
     executable
         .ancestors()

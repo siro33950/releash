@@ -1,5 +1,43 @@
 use super::*;
 
+#[tokio::test]
+async fn test_起動失敗_jsonと平文で理由と起動案内を返す() {
+    // Given
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(discovery::discovery_file(dir.path()), "invalid json").unwrap();
+    for json in [true, false] {
+        let command = TopCommand::Server {
+            command: server::ServerSubcommand::Start { json },
+        };
+        let (machine, guidance) = commands::output_options(&command);
+        // When
+        let error = commands::run(dir.path(), command).await.unwrap_err();
+        let output = failure_output(&error, machine, guidance);
+        // Then
+        if json {
+            let value: serde_json::Value = serde_json::from_str(&output).unwrap();
+            assert_eq!(
+                value,
+                serde_json::json!({"error": {
+                    "code": error.code.as_str(),
+                    "message": error.message.as_deref().unwrap(),
+                    "guidance": client::startup_guidance(),
+                }}),
+            );
+        } else {
+            assert_eq!(
+                output,
+                format!(
+                    "error: {}: {}\n{}\n",
+                    error.code.as_str(),
+                    error.message.as_deref().unwrap(),
+                    client::startup_guidance(),
+                ),
+            );
+        }
+    }
+}
+
 #[test]
 fn test_失敗出力_messageなしではjsonと平文の既存の代替値を保つ() {
     // Given
