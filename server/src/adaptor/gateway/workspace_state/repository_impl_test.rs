@@ -20,3 +20,32 @@ fn test_pane形式_既存jsonと全種類と分割軸をdomainとの往復で保
         );
     }
 }
+
+#[test]
+fn test_workspace保存形式_panesのない旧jsonと現在のjsonを直接往復する() {
+    // Given
+    let legacy = serde_json::json!({
+        "version": 1, "tabs": {"editors": [{"path":"file", "name":"File"}], "activeEditorPath":"file"},
+        "layout": {"centerTab":"agent", "activeView":"git", "leftNavCollapsed":true, "rightCollapsed":false, "rightBottomCollapsed":false}
+    });
+    for panes in [
+        None,
+        Some(serde_json::json!({"kind":"pane", "id":"root", "tabs":[], "active_tab":null})),
+    ] {
+        let mut json = legacy.clone();
+        if let Some(panes) = &panes {
+            json["panes"] = panes.clone();
+        }
+        // When
+        let stored: StoredWorkspaceState = serde_json::from_value(json.clone()).unwrap();
+        let domain: WorkspaceState = stored.into();
+        // Then
+        assert_eq!(domain.panes.is_some(), panes.is_some());
+        assert_eq!(domain.tabs.editors[0].path, "file");
+        assert!(domain.layout.left_nav_collapsed);
+        assert_eq!(
+            serde_json::to_value(StoredWorkspaceState::from(domain)).unwrap(),
+            json
+        );
+    }
+}

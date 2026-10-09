@@ -67,6 +67,7 @@ fn test_pr選択_closedはmerge扱いせずopenを優先する() {
     };
     assert!(!status.branch_is_merged("branch", false));
     assert_eq!(status.for_branch("branch"), Some(&closed));
+    assert_eq!(status.open_for_branch("branch"), None);
     let open = PrInfo {
         number: 2,
         url: "open".into(),
@@ -74,6 +75,7 @@ fn test_pr選択_closedはmerge扱いせずopenを優先する() {
         draft: false,
     };
     status.open_prs.insert("branch".into(), open.clone());
+    assert_eq!(status.open_for_branch("branch"), Some(&open));
     assert_eq!(status.for_branch("branch"), Some(&open));
     status.completed_prs.get_mut("branch").unwrap().state = PrState::Merged;
     assert_eq!(status.for_branch("branch"), Some(&open));

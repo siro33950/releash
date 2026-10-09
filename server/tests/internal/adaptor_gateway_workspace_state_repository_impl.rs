@@ -292,16 +292,15 @@ pub fn test_worktree表示状態_絶対pathの旧保存を読み新しい保存�
 
 #[test]
 fn test_pane保存_異なるworktreeの分割と全タブを新storeで復元する() {
-    use releashd::test_support::integration::platform::WorkspaceStateDto;
     // Given
     let dir = TempDir::new().unwrap();
     let store = WorkspaceStateStore::new(dir.path().into());
     let mut expected = Vec::new();
     for (name, axis, ratio) in [("/repo/a", "horizontal", 0.3), ("/repo/b", "vertical", 0.7)] {
-        let mut dto = WorkspaceStateDto::from(make_state());
-        dto.tabs.editors.clear();
-        dto.tabs.active_editor_path = None;
-        let mut json = serde_json::to_value(dto).unwrap();
+        let mut json = serde_json::json!({
+            "version": 1, "tabs": {"editors": [], "activeEditorPath": null},
+            "layout": {"centerTab": "agent", "activeView": "git", "leftNavCollapsed": false, "rightCollapsed": false, "rightBottomCollapsed": false}
+        });
         json["panes"] = serde_json::json!({
             "kind":"split", "id":"root", "axis":axis, "ratio":ratio,
             "first":{"kind":"pane", "id":"a", "tabs":[{"id":"terminal", "kind":"terminal"}], "active_tab":"terminal"},

@@ -109,11 +109,23 @@ fn test_pane転送_分割と全タブを往復して欠落と未知の種類を�
         let message = wire::PaneLayout::try_from(layout.clone()).unwrap();
         assert_eq!(PaneLayout::try_from(message).unwrap(), layout);
     }
-    let legacy: crate::usecase::workspace_state::dto::WorkspaceStateDto = serde_json::from_value(serde_json::json!({
-        "version": 1, "tabs": {"editors": [], "activeEditorPath": null},
-        "layout": {"centerTab": "agent", "activeView": "session", "leftNavCollapsed": false, "rightCollapsed": true, "rightBottomCollapsed": true}
-    })).unwrap();
-    let mut state: crate::domain::workspace_state::WorkspaceState = legacy.into();
+    let mut state = crate::domain::workspace_state::WorkspaceState {
+        version: 1,
+        panes: None,
+        tabs: crate::domain::workspace_state::value_objects::WorkspaceTabsState {
+            editors: vec![],
+            active_editor_path: None,
+        },
+        layout: crate::domain::workspace_state::value_objects::WorkspaceLayoutState {
+            center_tab: "agent".into(),
+            active_view: "git".into(),
+            left_nav_collapsed: true,
+            right_collapsed: false,
+            right_bottom_collapsed: false,
+            right_bottom_active_tab: None,
+            selected_diff_file: None,
+        },
+    };
     state.panes = Some(pane.clone());
     let message = wire::WorkspaceStateDto::try_from(state.clone()).unwrap();
     assert!(message.pane_layout.is_some());

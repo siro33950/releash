@@ -1014,7 +1014,7 @@ pub async fn test_workspace読取_実経路で失敗分類を保持する() {
     let query = service(&repository);
     let workspace = WorkspaceIdentity::new("/repo");
     for (failure, expected) in ReadFailure::cases() {
-        for mode in 0..3 {
+        for mode in 0..2 {
             let expected = if mode != 0
                 && matches!(failure, ReadFailure::Sqlite(rusqlite::ffi::SQLITE_IOERR))
             {
@@ -1030,15 +1030,6 @@ pub async fn test_workspace読取_実経路で失敗分類を保持する() {
                     .await
                     .pop()
                     .unwrap()
-                    .map(|_| ())
-            } else if mode == 2 {
-                query
-                    .worktree_executions(
-                        &workspace,
-                        &releashd::test_support::integration::platform::FailureRecordStore::default(
-                        ),
-                    )
-                    .await
                     .map(|_| ())
             } else {
                 query.execution_records(None, None).await.map(|_| ())
@@ -1100,125 +1091,4 @@ pub async fn test_session選択_記録済みsessionとnodeのdtoを返し対象�
         .await
         .unwrap()
         .is_none());
-}
-
-#[tokio::test]
-pub async fn test_実行木一覧query_事実からproviderと状態と背景失敗とarchiveを反映する() {
-    use releashd::test_support::integration::platform::{
-        BusinessFailure, Failure, FailureKey, FailureRecordStore, WorkFailure,
-    };
-    let directory = tempfile::tempdir().unwrap();
-    let store = LocalEventStore::open(LocalEventStoreConfig::production(
-        directory.path().into(),
-        Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
-    ))
-    .unwrap();
-    let workspace = WorkspaceIdentity::new("/repo");
-    let session_id = "standalone-query-session";
-    let sessions =
-        AgentSessionUsecase::new(Arc::new(LocalAgentSessionRepository::new(store.clone())));
-    sessions
-        .create(
-            session_id,
-            workspace.clone(),
-            "/repo",
-            ProviderKind::Codex,
-            AgentSessionTreeLocation::session_tree_root(session_id).unwrap(),
-            "create-query-session",
-        )
-        .await
-        .unwrap();
-    sessions
-        .observe_activity(
-            session_id,
-            AgentSessionActivity::Working,
-            "working-query-session",
-        )
-        .await
-        .unwrap();
-    let workflow_id = "00000000-0000-4000-8000-000000001206";
-    seed_workflow_session_facts(
-        &store,
-        WorkflowSessionFactSeed {
-            workflow_name: "review",
-            request: "test",
-            worktree_path: "/repo",
-            provider: ProviderKind::Claude,
-            workflow_execution_id: workflow_id,
-            node_execution_id: "query-node",
-            session_id: "query-workflow-session",
-            initial_instruction_admitted: true,
-        },
-    )
-    .await
-    .unwrap();
-    sessions
-        .observe_activity(
-            "query-workflow-session",
-            AgentSessionActivity::Working,
-            "working-query-workflow",
-        )
-        .await
-        .unwrap();
-    let query = service(&SqliteWorkspaceTreeRepository::new(store.clone()));
-    let failures = FailureRecordStore::default();
-    let before = query
-        .worktree_executions(&workspace, &failures)
-        .await
-        .unwrap();
-    assert_eq!(before.len(), 2);
-    assert!(!before[0].is_workflow);
-    assert_eq!(before[0].provider, Some(ProviderKind::Codex));
-    assert_eq!(before[0].status.as_public_str(), "active");
-    assert_eq!(
-        before[0]
-            .session_states
-            .iter()
-            .map(|state| state.as_public_str())
-            .collect::<Vec<_>>(),
-        ["active"]
-    );
-    assert!(before[1].is_workflow);
-    assert_eq!(before[1].node_count, 1);
-    assert_eq!(
-        before[1]
-            .session_states
-            .iter()
-            .map(|state| state.as_public_str())
-            .collect::<Vec<_>>(),
-        ["active"]
-    );
-    let key = FailureKey::new("query-background", "query-node");
-    failures.observe(
-        &key,
-        WorkFailure {
-            kind: Failure::Business(BusinessFailure::Other),
-            message: "repair required".into(),
-        },
-    );
-    let failed = query
-        .worktree_executions(&workspace, &failures)
-        .await
-        .unwrap();
-    assert_eq!(failed[1].status.as_public_str(), "attention");
-    assert_eq!(failed[1].session_states[0].as_public_str(), "attention");
-    failures.resolve(&key);
-    assert_eq!(
-        query
-            .worktree_executions(&workspace, &failures)
-            .await
-            .unwrap(),
-        before
-    );
-    assert!(query
-        .worktree_executions(&WorkspaceIdentity::new("/other"), &failures)
-        .await
-        .unwrap()
-        .is_empty());
-    archive_aborted(&store, directory.path(), workflow_id, 3.0, "manual").await;
-    let archived = query
-        .worktree_executions(&workspace, &failures)
-        .await
-        .unwrap();
-    assert_eq!(archived, before[..1]);
 }

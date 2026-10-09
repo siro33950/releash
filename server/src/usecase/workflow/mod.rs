@@ -132,16 +132,6 @@ pub struct WorkflowUsecase {
             >,
         >,
     >,
-    retained_execution_summaries: std::sync::Arc<
-        parking_lot::Mutex<
-            std::collections::HashMap<
-                String,
-                crate::usecase::fetched::Fetched<
-                    Vec<crate::usecase::workspace_tree::query_service::WorktreeExecutionSummary>,
-                >,
-            >,
-        >,
-    >,
     read: WorkflowReadUsecase,
 }
 
@@ -176,7 +166,6 @@ impl WorkflowUsecase {
             workspace_query,
             failures,
             retained_trees: Default::default(),
-            retained_execution_summaries: Default::default(),
             read,
         }
     }

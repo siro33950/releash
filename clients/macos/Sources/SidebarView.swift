@@ -69,6 +69,10 @@ struct WorktreeCard: View {
           if let worktree, worktree.hasAggregateStatus { status(worktree.aggregateStatus) }
           if branch.isMainWorktree { Image(systemName: "house") }
           Text(branch.name).fontWeight(.medium)
+          if branch.isMerged {
+            Image(systemName: "checkmark.circle").foregroundStyle(.secondary)
+              .accessibilityLabel("Merged").help("Merged")
+          }
           Spacer()
           if branch.isDeleting {
             ProgressView().controlSize(.small)
@@ -84,7 +88,7 @@ struct WorktreeCard: View {
           }
           if branch.hasPrState {
             Image(systemName: prIcon(branch.prState)).help(
-              "PR #\(branch.prNumber): \(branch.prState)")
+              "PR #\(branch.prStateNumber): \(branch.prState)")
           }
         }.foregroundStyle(.secondary)
       }
