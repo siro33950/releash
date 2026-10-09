@@ -250,7 +250,7 @@ pub async fn test_一覧の読み取り_走査後にworktreeと変更の数と�
     assert_eq!(rows[1].dirty_count.value, Some(0));
     for row in rows {
         assert!(!row.deleting);
-        assert!(row.pull_request.is_none());
+        assert!(row.open_pull_request.is_none());
         assert!(row.tree.error.is_none());
         assert!(row.tree.value.as_ref().unwrap().nodes().is_empty());
     }
@@ -292,7 +292,7 @@ pub async fn test_手動更新_走査済みの値を保持しpr取得完了ま�
     // Then
     assert_eq!(rows(&scanned).len(), 2);
     assert_eq!(rows(&scanned)[1].worktree.branch, "feature");
-    assert!(rows(&scanned)[1].pull_request.is_none());
+    assert!(rows(&scanned)[1].open_pull_request.is_none());
 }
 
 #[tokio::test]
@@ -338,7 +338,7 @@ pub async fn test_手動更新_pr取得後に前の一覧へprを反映する() 
     let list = fixture.usecase.read().await.unwrap();
     // Then
     assert_eq!(
-        rows(&list)[1].pull_request,
+        rows(&list)[1].open_pull_request,
         Some(PrInfo {
             number: 42,
             url: "https://example.test/pull/42".into(),

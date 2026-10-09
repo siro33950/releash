@@ -661,7 +661,7 @@ fn worktree_row(path: &str, branch: &str, tree: Fetched<WorkspaceTree>) -> Works
         deleting: false,
         dirty_count: Fetched::ready(0),
         merged: false,
-        pull_request: None,
+        open_pull_request: None,
         state_pull_request: None,
         pull_request_error: None,
         pull_request_loaded: true,
@@ -688,13 +688,13 @@ fn test_workspaces一覧_持ち主の値と取得の状態を画面が読む名�
             error: Some(failure("nodes failed")),
         },
     );
-    main.pull_request = Some(PrInfo {
+    main.open_pull_request = Some(PrInfo {
         number: 7,
         url: "https://example.com/pr/7".into(),
         state: crate::domain::git_host::PrState::Open,
         draft: false,
     });
-    main.state_pull_request = main.pull_request.clone();
+    main.state_pull_request = main.open_pull_request.clone();
     let mut feature = worktree_row(
         "/repo-worktrees/feature",
         "feature",
@@ -1046,7 +1046,7 @@ fn test_pr状態の転送_初回失敗と取得後の失敗を区別する() {
     initial.pull_request_loaded = false;
     initial.pull_request_error = Some(failure("PR denied"));
     let mut retained = worktree_row("/repo-worktrees/feature", "feature", Fetched::default());
-    retained.pull_request = Some(PrInfo {
+    retained.open_pull_request = Some(PrInfo {
         number: 42,
         url: "https://example.test/pull/42".into(),
         state: crate::domain::git_host::PrState::Open,

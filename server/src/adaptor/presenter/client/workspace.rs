@@ -130,9 +130,9 @@ fn branch(row: &WorkspaceListWorktree) -> wire::WorkspaceBranch {
         is_merged: Some(row.merged),
         has_pr: row
             .pull_request_loaded
-            .then_some(row.pull_request.is_some()),
-        pr_number: row.pull_request.as_ref().map(|pr| pr.number),
-        pr_url: row.pull_request.as_ref().map(|pr| pr.url.clone()),
+            .then_some(row.open_pull_request.is_some()),
+        pr_number: row.open_pull_request.as_ref().map(|pr| pr.number),
+        pr_url: row.open_pull_request.as_ref().map(|pr| pr.url.clone()),
     }
 }
 
