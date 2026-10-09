@@ -54,17 +54,21 @@ struct CLI: Sendable {
   func discover(startIfMissing: Bool) async throws -> Releash_Client_V1_LocalApiDiscovery {
     var category = "サーバを発見できません"
     do {
-      var status = try JSONDecoder().decode(
-        CLIStatus.self, from: await run(executable, ["status", "--json"]))
+      var statusOutput = try await run(executable, ["status", "--json"])
+      var status = try JSONDecoder().decode(CLIStatus.self, from: statusOutput)
       if !status.running && startIfMissing {
         category = "サーバを起動できません"
-        _ = try await run(executable, ["server", "start"])
+        _ = try await run(executable, ["server", "start", "--json"])
         category = "サーバを発見できません"
-        status = try JSONDecoder().decode(
-          CLIStatus.self, from: await run(executable, ["status", "--json"]))
+        statusOutput = try await run(executable, ["status", "--json"])
+        status = try JSONDecoder().decode(CLIStatus.self, from: statusOutput)
       }
       guard status.running else {
-        throw CLIFailure(message: status.startupGuidance ?? "")
+        guard let guidance = status.startupGuidance else {
+          throw CLIFailure(
+            message: "CLI の status --json 出力に startup_guidance がありません\n\(String(decoding: statusOutput, as: UTF8.self))")
+        }
+        throw CLIFailure(message: guidance)
       }
       guard status.compatibility == "compatible" else {
         category = "サーバと互換性がありません"

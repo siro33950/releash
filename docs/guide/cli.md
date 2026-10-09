@@ -61,17 +61,19 @@ releash status [--json]
 
 `--json` には `startup_guidance` も含まれます。
 未起動時は起動と再試行の案内文、稼働中は null です。
-`server start` が失敗すると、標準エラーに JSON の `error`（`code`、`message`、`guidance`）を返します。
 
 ### `releash server start|stop|restart`
 
 ```sh
-releash server start
+releash server start [--json]
 releash server stop
 releash server restart
 ```
 
 `start` は CLI の実体と同じディレクトリの `releashd` を独立したプロセスとして起動し、発見ファイルによる起動確認後に終了します。稼働済みなら何もせず成功します。起動したプロセスが終了した場合は終了状態と stderr の末尾を表示し、終了コード 1 になります。
+
+`start` の失敗時は、`--json` がある場合だけ、標準エラーに JSON の `error`（`code`、`message`、`guidance`）を返します。
+`--json` が無い場合は、`error: code: message` に続けて起動と再試行の案内文を別の行に表示します。
 
 `stop` は停止を要求し、プロセスの終了と発見ファイルの消失を確認します。proto の `shutdown_timeout_ms` までに確認できない場合、または未起動の場合は終了コード 1 です。
 

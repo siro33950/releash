@@ -11,7 +11,10 @@ use std::path::Path;
 
 pub fn json_output(command: &TopCommand) -> bool {
     match command {
-        TopCommand::Status { json } => *json,
+        TopCommand::Status { json }
+        | TopCommand::Server {
+            command: crate::server::ServerSubcommand::Start { json },
+        } => *json,
         TopCommand::Workflow { command } => match command {
             Workflow::Status { json, .. } | Workflow::Diagnostics { json, .. } => *json,
             Workflow::Output {

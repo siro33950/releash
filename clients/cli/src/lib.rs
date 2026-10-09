@@ -105,7 +105,7 @@ pub fn run() {
     let server_start = matches!(
         cli.command,
         Some(TopCommand::Server {
-            command: server::ServerSubcommand::Start
+            command: server::ServerSubcommand::Start { .. }
         })
     );
     let hook = matches!(cli.command, Some(TopCommand::Hook { .. }));
@@ -129,7 +129,7 @@ pub fn run() {
             code
         }
         Err(error) => {
-            if server_start {
+            if json && server_start {
                 eprintln!("{}", server::start_failure(&error));
             } else if json {
                 eprintln!(
@@ -142,6 +142,9 @@ pub fn run() {
                     error.code.as_str(),
                     error.message.as_deref().unwrap_or("Request failed")
                 );
+                if server_start {
+                    eprintln!("{}", client::startup_guidance());
+                }
             }
             1
         }

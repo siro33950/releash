@@ -40,7 +40,7 @@ final class CLITests: XCTestCase {
       executable: URL(fileURLWithPath: "/bundled/releash"),
       run: { _, args in
         let count = await calls.record(args)
-        if args == ["server", "start"] { return Data() }
+        if args == ["server", "start", "--json"] { return Data() }
         return try JSONSerialization.data(withJSONObject: [
           "running": count > 1, "compatibility": "compatible", "discovery_file": file.path,
         ])
@@ -48,7 +48,7 @@ final class CLITests: XCTestCase {
     let discovery = try await cli.discover(startIfMissing: true)
     XCTAssertEqual(discovery.token, "operator")
     let recorded = await calls.values
-    XCTAssertEqual(recorded, [["status", "--json"], ["server", "start"], ["status", "--json"]])
+    XCTAssertEqual(recorded, [["status", "--json"], ["server", "start", "--json"], ["status", "--json"]])
   }
   func testRecoveryDoesNotStartServer() async {
     let calls = Calls()

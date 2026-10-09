@@ -27,24 +27,36 @@ impl WorkspaceTree {
     pub fn card_executions(&self) -> Vec<(&WorkspaceExecution, ExecutionNodes<'_>)> {
         let mut executions = self
             .active_execution_roots()
-            .map(|(execution, root)| (execution, ExecutionNodes::with_root(root, self.nodes())))
+            .map(|(execution, root)| {
+                (
+                    execution,
+                    ExecutionNodes::with_root(root, self.nodes(), execution.launched_as),
+                )
+            })
             .collect::<Vec<_>>();
-        executions.sort_by_key(|(execution, _)| ExecutionNodes::is_workflow(execution.launched_as));
+        executions.sort_by_key(|(_, nodes)| nodes.is_workflow());
         executions
     }
     pub fn card_status(&self) -> Option<WorkspaceNodeStatusClassification> {
         self.active_execution_roots()
-            .map(|(_, root)| root.public_status())
+            .map(|(execution, root)| {
+                ExecutionNodes::node_for(root, execution.launched_as).status_classification
+            })
             .reduce(WorkspaceNodeStatusClassification::most_severe)
     }
 }
 
 pub struct ExecutionNodes<'a> {
-    pub root: WorkspacePublicRoot<'a>,
+    root: WorkspacePublicRoot<'a>,
     pub leaves: Vec<&'a WorkspaceTreeNode>,
+    launch: crate::domain::workflow::ExecutionTreeLaunch,
 }
 impl<'a> ExecutionNodes<'a> {
-    fn with_root(root: WorkspacePublicRoot<'a>, nodes: &'a [WorkspaceTreeNode]) -> Self {
+    fn with_root(
+        root: WorkspacePublicRoot<'a>,
+        nodes: &'a [WorkspaceTreeNode],
+        launch: crate::domain::workflow::ExecutionTreeLaunch,
+    ) -> Self {
         let leaves = nodes
             .iter()
             .filter(|node| {
@@ -53,10 +65,26 @@ impl<'a> ExecutionNodes<'a> {
                     && node.is_leaf()
             })
             .collect();
-        Self { root, leaves }
+        Self {
+            root,
+            leaves,
+            launch,
+        }
     }
-    pub fn is_workflow(launch: crate::domain::workflow::ExecutionTreeLaunch) -> bool {
-        launch == crate::domain::workflow::ExecutionTreeLaunch::Workflow
+    pub fn is_workflow(&self) -> bool {
+        self.launch == crate::domain::workflow::ExecutionTreeLaunch::Workflow
+    }
+    fn node_for(
+        root: WorkspacePublicRoot<'a>,
+        launch: crate::domain::workflow::ExecutionTreeLaunch,
+    ) -> &'a WorkspaceTreeNode {
+        match launch {
+            crate::domain::workflow::ExecutionTreeLaunch::Session => root.node(),
+            crate::domain::workflow::ExecutionTreeLaunch::Workflow => root.owner(),
+        }
+    }
+    pub fn node(&self) -> &'a WorkspaceTreeNode {
+        Self::node_for(self.root, self.launch)
     }
     pub fn session_states(&self) -> impl Iterator<Item = WorkspaceNodeStatusClassification> + '_ {
         self.leaves

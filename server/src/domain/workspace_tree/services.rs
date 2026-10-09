@@ -58,14 +58,6 @@ impl<'a> WorkspacePublicRoot<'a> {
         Self::from_owner(nodes, owner).unwrap_or(Self { owner, node: owner })
     }
 
-    pub fn public_status(&self) -> super::WorkspaceNodeStatusClassification {
-        if self.node.is_standalone_session_root() {
-            self.node.status_classification
-        } else {
-            self.owner.status_classification
-        }
-    }
-
     fn from_owner(nodes: &'a [WorkspaceTreeNode], owner: &'a WorkspaceTreeNode) -> Option<Self> {
         owner.execution_id.as_ref()?;
         let node = nodes

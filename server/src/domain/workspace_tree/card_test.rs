@@ -1,4 +1,3 @@
-use super::*;
 use crate::domain::workflow::ExecutionTreeLaunch;
 use crate::domain::workflow::{ExecutionStatus, NodeKindName};
 use crate::domain::workspace_tree::{
@@ -76,7 +75,7 @@ fn test_カード集計_実行木単位で過去の試行と構造nodeとarchive
     // Then
     assert_eq!(summaries.len(), 1);
     assert_eq!(summaries[0].1.node_count(), 3);
-    assert_eq!(summaries[0].1.root.public_title(), "review");
+    assert_eq!(summaries[0].1.node().title.as_str(), "review");
     assert_eq!(
         summaries[0].1.session_states().collect::<Vec<_>>(),
         [
@@ -85,7 +84,7 @@ fn test_カード集計_実行木単位で過去の試行と構造nodeとarchive
         ]
     );
     assert_eq!(
-        summaries[0].1.root.public_status(),
+        summaries[0].1.node().status_classification,
         WorkspaceNodeStatusClassification::Attention
     );
     assert_eq!(
@@ -203,21 +202,21 @@ fn test_カード集計_session行を先に並べ人の番を集約する() {
     // Then
     assert_eq!(rows.len(), 2);
     assert_eq!(rows[0].0.execution_id, session);
-    assert!(!ExecutionNodes::is_workflow(rows[0].0.launched_as));
-    assert_eq!(rows[0].1.root.public_title(), "作業session");
+    assert!(!rows[0].1.is_workflow());
+    assert_eq!(rows[0].1.node().title.as_str(), "作業session");
     assert_eq!(
         rows[0].0.session.as_ref().map(|session| session.provider()),
         Some(crate::domain::provider_lifecycle::ProviderKind::Codex)
     );
     assert_eq!(
-        rows[0].1.root.public_status(),
+        rows[0].1.node().status_classification,
         WorkspaceNodeStatusClassification::Active
     );
     assert_eq!(
-        rows[1].1.root.public_status(),
+        rows[1].1.node().status_classification,
         WorkspaceNodeStatusClassification::Attention
     );
-    assert!(ExecutionNodes::is_workflow(rows[1].0.launched_as));
+    assert!(rows[1].1.is_workflow());
     assert_eq!(
         tree.card_status(),
         Some(WorkspaceNodeStatusClassification::Attention)
@@ -225,7 +224,7 @@ fn test_カード集計_session行を先に並べ人の番を集約する() {
 }
 
 #[test]
-fn test_カード集計_入力待ちの単独sessionは行も集約もidleになる() {
+fn test_カード集計_launched_asで種別と題名と状態を揃える() {
     // Given
     let id = "00000000-0000-4000-8000-000000001204";
     let mut tree = WorkspaceTree::empty("/repo");
@@ -247,6 +246,12 @@ fn test_カード集計_入力待ちの単独sessionは行も集約もidleにな
                 attempt: 1,
                 parent: None,
                 timestamp: 2.0,
+            },
+            WorkspaceStructureFact::NodeSessionDisplayNameProjected {
+                execution_id: id.into(),
+                node_execution_id: id.into(),
+                manual_name: Some("作業session".into()),
+                provider_session_title: None,
             },
             WorkspaceStructureFact::NodeCompleted {
                 execution_id: id.into(),
@@ -277,22 +282,35 @@ fn test_カード集計_入力待ちの単独sessionは行も集約もidleにな
         archive: None,
         session: None,
     }]);
-    // When
-    let rows = tree.card_executions();
-    // Then
-    assert_eq!(rows.len(), 1);
-    assert_eq!(
-        rows[0].1.root.owner().status_classification,
-        WorkspaceNodeStatusClassification::Active
-    );
-    assert_eq!(
-        rows[0].1.root.public_status(),
-        WorkspaceNodeStatusClassification::Idle
-    );
-    assert_eq!(
-        tree.card_status(),
-        Some(WorkspaceNodeStatusClassification::Idle)
-    );
+    // When / Then
+    for (launch, is_workflow, title, status) in [
+        (
+            ExecutionTreeLaunch::Session,
+            false,
+            "作業session",
+            WorkspaceNodeStatusClassification::Idle,
+        ),
+        (
+            ExecutionTreeLaunch::Workflow,
+            true,
+            "session",
+            WorkspaceNodeStatusClassification::Active,
+        ),
+    ] {
+        let mut executions = tree.executions().to_vec();
+        executions[0].launched_as = launch;
+        tree.record_executions(executions);
+        let rows = tree.card_executions();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].1.is_workflow(), is_workflow);
+        assert_eq!(rows[0].1.node().title, title);
+        assert_eq!(rows[0].1.node().status_classification, status);
+        assert_eq!(tree.card_status(), Some(status));
+        assert_eq!(
+            rows[0].1.root.owner().status_classification,
+            WorkspaceNodeStatusClassification::Active
+        );
+    }
 }
 
 #[test]
@@ -325,9 +343,9 @@ fn test_カード集計_子のないworkflowもownerの状態で行と集約に�
     let rows = tree.card_executions();
     // Then
     assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0].1.root.public_title(), "review");
+    assert_eq!(rows[0].1.node().title.as_str(), "review");
     assert_eq!(
-        rows[0].1.root.public_status(),
+        rows[0].1.node().status_classification,
         rows[0].1.root.owner().status_classification
     );
     assert_eq!(
@@ -361,7 +379,7 @@ fn test_カード集計_子のないworkflowもownerの状態で行と集約に�
         WorkspaceNodeStatusClassification::Idle
     );
     assert_eq!(
-        rows[0].1.root.public_status(),
+        rows[0].1.node().status_classification,
         WorkspaceNodeStatusClassification::Active
     );
     assert_eq!(
