@@ -127,6 +127,15 @@ fn test_cli_同梱サーバの起動失敗は終了状態とstderrを表示す�
     assert!(error.contains("7"));
     assert!(error.contains("startup failure"));
     assert!(error.contains("終了"));
+    let value: serde_json::Value = serde_json::from_str(&error).unwrap();
+    assert!(value["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("startup failure"));
+    assert!(value["error"]["guidance"]
+        .as_str()
+        .unwrap()
+        .contains("releash server start"));
 }
 
 #[cfg(target_os = "macos")]

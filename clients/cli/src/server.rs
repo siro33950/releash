@@ -1,4 +1,4 @@
-use crate::client::{compatibility_guidance, daemon_error};
+use crate::client::{compatibility_guidance, daemon_error, startup_guidance};
 use crate::{compatibility::Compatibility, daemon, data_dir, descriptor, discovery};
 use clap::Subcommand;
 use connectrpc::ConnectError;
@@ -54,6 +54,7 @@ pub async fn status(dir: &Path, machine: bool) -> Result<String, ConnectError> {
             Compatibility::ClientOlder => "client_older",
         }),
         "guidance": running.as_ref().map(|s| compatibility_guidance(s.compatibility)),
+        "startup_guidance": running.is_none().then(startup_guidance),
         "connection": discovery.as_ref().map(|d| json!({"host": "127.0.0.1", "port": d.port})),
         "discovery_file": discovery::discovery_file(dir),
     });
@@ -133,6 +134,14 @@ pub async fn run(dir: &Path, command: ServerSubcommand) -> Result<String, Connec
             .into())
         }
     }
+}
+
+pub(crate) fn start_failure(error: &ConnectError) -> serde_json::Value {
+    json!({"error": {
+        "code": error.code.as_str(),
+        "message": error.message.clone().unwrap_or_else(|| error.to_string()),
+        "guidance": startup_guidance(),
+    }})
 }
 
 fn app_bundle(executable: &Path) -> Option<&Path> {

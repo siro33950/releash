@@ -57,7 +57,7 @@ final class CLITests: XCTestCase {
       run: { _, args in
         _ = await calls.record(args)
         return Data(
-          #"{"running":false,"discovery_file":"/missing","guidance":"CLI guidance"}"#.utf8)
+          #"{"running":false,"discovery_file":"/missing","startup_guidance":"CLI guidance"}"#.utf8)
       })
     do {
       _ = try await cli.discover(startIfMissing: false)

@@ -195,7 +195,7 @@ extension AppModelTests {
           if args == ["server", "start"] {
             if fail.withLock({ $0 }) {
               throw CLIFailure(
-                message: "Cannot start server. Run releash server start, then retry.")
+                message: #"{"error":{"message":"Cannot start server","guidance":"CLI startup guidance"}}"#)
             }
             started.withLock { $0 = true }
             return Data()
@@ -207,7 +207,7 @@ extension AppModelTests {
         }), httpClient: http)
     await model.start()
     XCTAssertEqual(
-      model.connectionFailure, "Cannot start server. Run releash server start, then retry.")
+      model.connectionFailure, "サーバを起動できません\nCannot start server\nCLI startup guidance")
     XCTAssertFalse(model.connected)
     fail.withLock { $0 = false }
     await model.start()
@@ -216,6 +216,34 @@ extension AppModelTests {
     XCTAssertEqual(
       calls.withLock { $0 },
       ["status --json", "server start", "status --json", "server start", "status --json"])
+    await model.stop()
+  }
+}
+
+extension AppModelTests {
+  @MainActor func testDiscoveryAndCompatibilityFailuresPreserveCategoryAndCLIGuidance() async {
+    for (status, expected) in [
+      (#"{"running":false,"discovery_file":"unused","startup_guidance":"CLI startup guidance"}"#,
+       "サーバを発見できません\nCLI startup guidance"),
+      (#"{"running":true,"discovery_file":"unused","compatibility":"server_older","guidance":"CLI compatibility guidance"}"#,
+       "サーバと互換性がありません\nserver_older\nCLI compatibility guidance")
+    ] {
+      let model = AppModel(cli: CLI(executable: URL(fileURLWithPath: "/test/releash"), run: { _, _ in
+        Data(status.utf8)
+      }))
+      await model.start()
+      XCTAssertEqual(model.connectionFailure, expected)
+      XCTAssertFalse(model.connected)
+      await model.stop()
+    }
+  }
+
+  @MainActor func testStatusCommandFailurePreservesCategoryAndStderr() async {
+    let model = AppModel(cli: CLI(executable: URL(fileURLWithPath: "/test/releash"), run: { _, _ in
+      throw CLIFailure(message: "status stderr")
+    }))
+    await model.start()
+    XCTAssertEqual(model.connectionFailure, "サーバを発見できません\nstatus stderr")
     await model.stop()
   }
 }

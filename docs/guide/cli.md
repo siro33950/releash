@@ -59,6 +59,10 @@ releash status [--json]
 
 `--json` の項目は `client`（release・protocol）、`data_dir`、`running`、`server`（ServerInfo の camelCase の項目）、`uptime_seconds`、`compatibility`（`compatible` / `server_older` / `client_older`）、`guidance`、`connection`（host・port）、`discovery_file`（token を持つ発見ファイルのパス）です。未起動時は `server`・`uptime_seconds`・`compatibility`・`guidance`・`connection` が null になります。token の値は出しません。項目を追加しても、既存項目の名前と意味は維持します。
 
+`--json` には `startup_guidance` も含まれます。
+未起動時は起動と再試行の案内文、稼働中は null です。
+`server start` が失敗すると、標準エラーに JSON の `error`（`code`、`message`、`guidance`）を返します。
+
 ### `releash server start|stop|restart`
 
 ```sh

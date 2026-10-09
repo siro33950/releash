@@ -102,6 +102,12 @@ pub fn run() {
         return;
     }
     let json = cli.command.as_ref().is_some_and(commands::json_output);
+    let server_start = matches!(
+        cli.command,
+        Some(TopCommand::Server {
+            command: server::ServerSubcommand::Start
+        })
+    );
     let hook = matches!(cli.command, Some(TopCommand::Hook { .. }));
     let result = crate::data_dir::resolve_data_dir(cli.data_dir)
         .map_err(connectrpc::ConnectError::unavailable)
@@ -123,7 +129,9 @@ pub fn run() {
             code
         }
         Err(error) => {
-            if json {
+            if server_start {
+                eprintln!("{}", server::start_failure(&error));
+            } else if json {
                 eprintln!(
                     "{}",
                     serde_json::json!({"error": {"code": error.code.as_str(), "message": error.message.clone().unwrap_or_else(|| error.to_string())}})
