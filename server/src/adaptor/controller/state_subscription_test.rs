@@ -533,7 +533,7 @@ mod driver_tests {
                             has_more: false,
                         },
                     ),
-                    _ => StateValue::Issues(crate::usecase::fetched::Fetched::ready(vec![])),
+                    _ => StateValue::Issues(crate::usecase::fetched::Fetched::ready(vec![].into())),
                 })
             }
             fn repositories(&self) -> Vec<String> {
@@ -1081,8 +1081,8 @@ mod driver_tests {
                     target,
                     crate::usecase::state_subscription::SubscriptionTarget::Issues(_)
                 ) {
-                    return StateValue::Issues(Fetched::ready(vec![
-                        crate::domain::git_host::IssueInfo {
+                    return StateValue::Issues(Fetched::ready(
+                        vec![crate::domain::git_host::IssueInfo {
                             number: self.issues.load(Ordering::SeqCst),
                             title: "issue".into(),
                             state: "open".into(),
@@ -1096,13 +1096,15 @@ mod driver_tests {
                             assignees: vec![],
                             body: String::new(),
                             milestone: None,
-                        },
-                    ]));
+                        }]
+                        .into(),
+                    ));
                 }
                 StateValue::Workspaces(WorkspaceList {
                     repositories: vec![WorkspaceListRepository {
                         path: "/repo".into(),
                         worktrees: Fetched::ready(vec![WorkspaceListWorktree {
+                            executions: vec![],
                             tracking: Fetched::ready(None),
                             worktree: crate::domain::repository::Worktree {
                                 name: "main".into(),

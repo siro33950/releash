@@ -70,3 +70,70 @@ fn test_review転送_解決済みthreadの全項目を既存のjsonの形で保�
         })
     );
 }
+
+#[test]
+fn test_pane転送_分割と全タブを往復して欠落と未知の種類を拒否する() {
+    use crate::domain::workspace_state::value_objects::pane_layout::{
+        PaneLayout, PaneTab, PaneTabKind, SplitAxis,
+    };
+    let pane = PaneLayout::Pane {
+        id: "a".into(),
+        tabs: vec![
+            PaneTab {
+                id: "terminal".into(),
+                kind: PaneTabKind::Terminal,
+            },
+            PaneTab {
+                id: "workflow".into(),
+                kind: PaneTabKind::Workflow,
+            },
+            PaneTab {
+                id: "file".into(),
+                kind: PaneTabKind::File,
+            },
+        ],
+        active_tab: Some("file".into()),
+    };
+    for axis in [SplitAxis::Horizontal, SplitAxis::Vertical] {
+        let layout = PaneLayout::Split {
+            id: "split".into(),
+            axis,
+            ratio: 0.7,
+            first: Box::new(pane.clone()),
+            second: Box::new(PaneLayout::Pane {
+                id: "b".into(),
+                tabs: vec![],
+                active_tab: None,
+            }),
+        };
+        let message = wire::PaneLayout::try_from(layout.clone()).unwrap();
+        assert_eq!(PaneLayout::try_from(message).unwrap(), layout);
+    }
+    let legacy: crate::usecase::workspace_state::dto::WorkspaceStateDto = serde_json::from_value(serde_json::json!({
+        "version": 1, "tabs": {"editors": [], "activeEditorPath": null},
+        "layout": {"centerTab": "agent", "activeView": "session", "leftNavCollapsed": false, "rightCollapsed": true, "rightBottomCollapsed": true}
+    })).unwrap();
+    let mut state: crate::domain::workspace_state::WorkspaceState = legacy.into();
+    state.panes = Some(pane.clone());
+    let message = wire::WorkspaceStateDto::try_from(state.clone()).unwrap();
+    assert!(message.pane_layout.is_some());
+    assert_eq!(
+        crate::domain::workspace_state::WorkspaceState::try_from(message).unwrap(),
+        state
+    );
+    assert!(PaneLayout::try_from(wire::PaneLayout::default()).is_err());
+    let mut message = wire::PaneLayout::try_from(pane).unwrap();
+    if let Some(wire::pane_layout::Node::Pane(pane)) = &mut message.node {
+        pane.tabs[0].kind = 999;
+    }
+    assert!(PaneLayout::try_from(message).is_err());
+    for axis in [0, 999, wire::SplitAxis::Horizontal as i32] {
+        assert!(PaneLayout::try_from(wire::PaneLayout {
+            node: Some(wire::pane_layout::Node::Split(Box::new(wire::PaneSplit {
+                axis,
+                ..Default::default()
+            })))
+        })
+        .is_err());
+    }
+}

@@ -13,7 +13,9 @@ final class TestHTTPClient: HTTPClientInterface {
     var subscriptions: [Releash_Client_V1_StartStateSubscriptionRequest] = []
     var repositories: [Releash_Client_V1_WorkspaceRepositoryList] = []
     var layouts: [String: Releash_Client_V1_WorkspaceStateDto] = [:]
+    var collapsed: [String: Bool] = [:]
     var failedMethod: String?
+    var failedSubscriptionTargets: [String: Int] = [:]
     var pendingCreation: (@Sendable (HTTPResponse) -> Void)?
     var deferCreation = false
   }
@@ -31,6 +33,14 @@ final class TestHTTPClient: HTTPClientInterface {
       let method = request.url.lastPathComponent
       let failed = state.withLock { state in
         state.requests.append(request)
+        if method == "StartStateSubscription",
+          let subscription = try? Releash_Client_V1_StartStateSubscriptionRequest(
+            serializedBytes: request.message ?? Data()),
+          state.failedSubscriptionTargets[subscription.target, default: 0] > 0
+        {
+          state.failedSubscriptionTargets[subscription.target, default: 0] -= 1
+          return true
+        }
         return state.failedMethod == method
       }
       if failed {
@@ -49,6 +59,9 @@ final class TestHTTPClient: HTTPClientInterface {
           var payload = Releash_Client_V1_StatePayload()
           if subscription.target == "workspaces" {
             payload.workspaces.repositories.items = state.repositories
+          } else if subscription.target == "repository-group-state" {
+            payload.repositoryGroupState.collapsed =
+              state.collapsed[subscription.args[0], default: false]
           } else if subscription.target == "workspace-state" {
             var nullable = Releash_Client_V1_NullableWorkspaceStateDto()
             if let layout = state.layouts[subscription.args[0]] { nullable.value = layout }
@@ -60,6 +73,10 @@ final class TestHTTPClient: HTTPClientInterface {
         event.subscriptionID = subscription.subscriptionID
         event.snapshot = payload
         if let stream { try Self.send(event, on: stream) }
+      } else if method == "SaveRepositoryGroupState" {
+        let save = try Releash_Client_V1_SaveRepositoryGroupStateRequest(
+          serializedBytes: request.message ?? Data())
+        state.withLock { $0.collapsed[save.repositoryPath] = save.collapsed }
       } else if method == "SaveWorkspaceState" {
         let save = try Releash_Client_V1_SaveWorkspaceStateRequest(
           serializedBytes: request.message ?? Data())
@@ -82,7 +99,7 @@ final class TestHTTPClient: HTTPClientInterface {
       state.streams.append(responseCallbacks)
     }
     return RequestCallbacks(
-      cancel: { responseCallbacks.receiveClose(.canceled, [:], nil) },
+      cancel: { Task { responseCallbacks.receiveClose(.canceled, [:], nil) } },
       sendData: { _ in
         responseCallbacks.receiveResponseHeaders(["content-type": ["application/connect+proto"]])
         var event = Releash_Client_V1_StateSubscriptionEvent()

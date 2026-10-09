@@ -336,3 +336,29 @@ impl WorkspaceNodeActionResolver for WorkflowUsecase {
         Ok(WorkspaceSessionNodeRenameTarget { agent_session_id })
     }
 }
+
+impl super::WorkflowUsecase {
+    pub async fn retained_execution_summaries(
+        &self,
+        paths: &[String],
+    ) -> Vec<Fetched<Vec<crate::usecase::workspace_tree::query_service::WorktreeExecutionSummary>>>
+    {
+        self.retained_execution_summaries
+            .lock()
+            .retain(|path, _| paths.contains(path));
+        let mut results = Vec::with_capacity(paths.len());
+        for path in paths {
+            let result = self
+                .workspace_query
+                .worktree_executions(&WorkspaceIdentity::new(path), self.failures.as_ref())
+                .await;
+            let mut retained = self.retained_execution_summaries.lock();
+            let entry = retained.entry(path.clone()).or_default();
+            entry.record(
+                result.map_err(|error| crate::domain::failure::WorkFailure::from_error(&error)),
+            );
+            results.push(entry.clone());
+        }
+        results
+    }
+}

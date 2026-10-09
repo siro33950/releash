@@ -301,12 +301,16 @@ fn test_pane保存_異なるworktreeの分割と全タブを新storeで復元す
         let mut dto = WorkspaceStateDto::from(make_state());
         dto.tabs.editors.clear();
         dto.tabs.active_editor_path = None;
-        dto.panes = Some(serde_json::from_value(serde_json::json!({
+        let mut json = serde_json::to_value(dto).unwrap();
+        json["panes"] = serde_json::json!({
             "kind":"split", "id":"root", "axis":axis, "ratio":ratio,
             "first":{"kind":"pane", "id":"a", "tabs":[{"id":"terminal", "kind":"terminal"}], "active_tab":"terminal"},
             "second":{"kind":"pane", "id":"b", "tabs":[{"id":"workflow", "kind":"workflow"},{"id":"file", "kind":"file"}], "active_tab":"file"}
-        })).unwrap());
-        let state: WorkspaceState = dto.into();
+        });
+        let file = state_file(dir.path(), name);
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, serde_json::to_vec(&json).unwrap()).unwrap();
+        let state = store.load(name, "/repo").unwrap().unwrap();
         state.panes.as_ref().unwrap().validate().unwrap();
         store.set(name, state.clone());
         store.save(name).unwrap();
@@ -316,12 +320,6 @@ fn test_pane保存_異なるworktreeの分割と全タブを新storeで復元す
     let restarted = WorkspaceStateStore::new(dir.path().into());
     // Then
     for (name, state) in expected {
-        assert_eq!(
-            restarted
-                .load(name, "/repo")
-                .unwrap()
-                .map(WorkspaceStateDto::from),
-            Some(WorkspaceStateDto::from(state))
-        );
+        assert_eq!(restarted.load(name, "/repo").unwrap(), Some(state));
     }
 }

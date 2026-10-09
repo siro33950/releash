@@ -1,6 +1,6 @@
 use crate::domain::workspace_state::value_objects::{WorkspaceLayoutState, WorkspaceTabsState};
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct WorkspaceState {
     pub panes: Option<crate::domain::workspace_state::value_objects::pane_layout::PaneLayout>,
     pub version: u32,

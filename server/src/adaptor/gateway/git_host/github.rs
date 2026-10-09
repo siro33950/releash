@@ -96,15 +96,7 @@ impl GitHostProvider for GitHubGitHostGateway {
             return Ok(PrStatus::default());
         }
 
-        let open_prs = detect_prs(self.runner.as_ref(), repo_path, "open", PrState::Open).await?;
-        let merged = detect_prs(self.runner.as_ref(), repo_path, "merged", PrState::Merged).await?;
-        let mut completed_prs =
-            detect_prs(self.runner.as_ref(), repo_path, "closed", PrState::Closed).await?;
-        completed_prs.extend(merged);
-        Ok(PrStatus {
-            open_prs,
-            completed_prs,
-        })
+        self.fetch_github_prs(repo_path).await
     }
 
     async fn list_issues(&self, repo_path: &str) -> Result<Vec<IssueInfo>, GitHostError> {
@@ -128,6 +120,20 @@ impl GitHostProvider for GitHubGitHostGateway {
         )
         .await;
         parse_gh_issue_list_output(&output?)
+    }
+}
+
+impl GitHubGitHostGateway {
+    async fn fetch_github_prs(&self, repo_path: &str) -> Result<PrStatus, GitHostError> {
+        let open_prs = detect_prs(self.runner.as_ref(), repo_path, "open", PrState::Open).await?;
+        let merged = detect_prs(self.runner.as_ref(), repo_path, "merged", PrState::Merged).await?;
+        let mut completed_prs =
+            detect_prs(self.runner.as_ref(), repo_path, "closed", PrState::Closed).await?;
+        completed_prs.extend(merged);
+        Ok(PrStatus {
+            open_prs,
+            completed_prs,
+        })
     }
 }
 

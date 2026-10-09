@@ -6,6 +6,8 @@ struct CreateWorktreeView: View {
   @Environment(\.dismiss) private var dismiss
   @State private var source = "branch"
   @State private var issues: [Releash_Client_V1_IssueInfoDto] = []
+  @State private var labels: [String] = []
+  @State private var milestones: [String] = []
   @State private var allIssues: [Releash_Client_V1_IssueInfoDto] = []
   @State private var tasks: [Releash_Client_V1_NotionTaskView] = []
   @State private var branches: [Releash_Client_V1_BranchStatus] = []
@@ -29,16 +31,11 @@ struct CreateWorktreeView: View {
         HStack {
           Picker("Label", selection: $label) {
             Text("すべて").tag("")
-            ForEach(
-              Array(Set(allIssues.flatMap { $0.labels.items.map(\.name) })).sorted(), id: \.self
-            ) { Text($0).tag($0) }
+            ForEach(labels, id: \.self) { Text($0).tag($0) }
           }
           Picker("Milestone", selection: $milestone) {
             Text("すべて").tag("")
-            ForEach(
-              Array(Set(allIssues.filter(\.hasMilestone).map { $0.milestone.title })).sorted(),
-              id: \.self
-            ) { Text($0).tag($0) }
+            ForEach(milestones, id: \.self) { Text($0).tag($0) }
           }
         }
         List(issues, id: \.number) { issue in
@@ -66,17 +63,14 @@ struct CreateWorktreeView: View {
       if form.launch == "session" {
         Picker("Provider", selection: $form.provider) {
           ForEach(model.providers, id: \.value) { provider in
-            Text(provider.value == .claude ? "Claude" : "Codex").tag(
-              provider.value == .claude ? "claude" : "codex")
+            Text(provider.displayName).tag(
+              provider.wireName)
           }
         }
       }
       if form.launch == "workflow" {
-        Picker("Workflow", selection: $form.workflow) {
-          Text("選択してください").tag("")
-          ForEach(model.workflows, id: \.name) { Text($0.name).tag($0.name) }
-        }
-        TextField("依頼文", text: $form.requestText, axis: .vertical)
+        WorkflowLaunchFields(
+          workflows: model.workflows, workflow: $form.workflow, requestText: $form.requestText)
       }
       HStack {
         Button("キャンセル") { dismiss() }
@@ -114,6 +108,8 @@ struct CreateWorktreeView: View {
   private func load() {
     issues = []
     allIssues = []
+    labels = []
+    milestones = []
     tasks = []
     branches = []
     form.selected = WorktreeSelection()
@@ -126,6 +122,8 @@ struct CreateWorktreeView: View {
     }
     model.subscribe("issues", [form.repository]) { payload in
       if case .issues(let value) = payload.value {
+        labels = value.labels
+        milestones = value.milestones
         allIssues = value.issues.items
         if label.isEmpty && milestone.isEmpty { issues = value.issues.items }
         if value.hasReadError { readFailure = value.readError }

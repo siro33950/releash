@@ -649,6 +649,7 @@ fn test_過去attempt_子のないsessionとcommandも通常行と同じkindを�
 
 fn worktree_row(path: &str, branch: &str, tree: Fetched<WorkspaceTree>) -> WorkspaceListWorktree {
     WorkspaceListWorktree {
+        executions: vec![],
         tracking: Fetched::ready(None),
         worktree: Worktree {
             name: branch.to_string(),
@@ -1065,4 +1066,32 @@ fn test_pr状態の転送_初回失敗と取得後の失敗を区別する() {
         Some("https://example.test/pull/42")
     );
     assert_eq!(retained.pull_request_error.as_deref(), Some("PR denied"));
+}
+
+#[test]
+fn test_実行サマリー_providerと行とsessionの状態を配信する() {
+    let mut row = worktree_row(
+        "/repo",
+        "main",
+        Fetched::ready(WorkspaceTree::empty("/repo")),
+    );
+    row.executions = vec![
+        crate::usecase::workspace_tree::query_service::WorktreeExecutionSummary {
+            id: "session".into(),
+            title: "Title".into(),
+            is_workflow: false,
+            provider: Some(ProviderKind::Codex),
+            status: WorkspaceNodeStatusClassification::Attention,
+            node_count: 2,
+            session_states: vec![
+                WorkspaceNodeStatusClassification::Active,
+                WorkspaceNodeStatusClassification::Idle,
+            ],
+        },
+    ];
+    let wire = worktree(&row).unwrap();
+    let summary = &wire.executions[0];
+    assert_eq!(summary.provider.as_deref(), Some("codex"));
+    assert_eq!(summary.status, "attention");
+    assert_eq!(summary.session_states, ["active", "idle"]);
 }

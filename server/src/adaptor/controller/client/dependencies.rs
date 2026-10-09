@@ -1,6 +1,8 @@
 use std::sync::Arc;
 
 pub struct ClientDependencies {
+    pub(crate) create_worktrees_usecase:
+        Option<Arc<crate::usecase::create_worktrees::CreateWorktreesUsecase>>,
     pub(crate) workspace_node_command_usecase:
         Option<std::sync::Arc<crate::usecase::workflow::WorkspaceNodeCommandUsecase>>,
     pub app_state: Option<crate::adaptor::controller::state::AppState>,

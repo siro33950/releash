@@ -35,7 +35,7 @@ final class PaneLayoutTests: XCTestCase {
         XCTAssertEqual(destination, .pane(id: pane, tabs: [tabs[0], tab], active: tab.id))
         XCTAssertEqual(source, .pane(id: moved.id, tabs: [], active: nil))
         XCTAssertEqual(split.tab(tab.id)?.kind, kind)
-        let restored = try JSONDecoder().decode(PaneLayout.self, from: JSONEncoder().encode(split))
+        let restored = try PaneLayout(split.message)
         XCTAssertEqual(restored, split)
         split.close(tab.id)
         XCTAssertNil(split.tab(tab.id))
@@ -52,7 +52,7 @@ final class PaneLayoutTests: XCTestCase {
     layout.move(tab.id, to: pane, edge: .right)
     let split = layout.id
     layout.resize(split, ratio: 0.7)
-    let restored = try JSONDecoder().decode(PaneLayout.self, from: JSONEncoder().encode(layout))
+    let restored = try PaneLayout(layout.message)
     guard case .split(_, _, let ratio, _, _) = restored else { return XCTFail("Missing split") }
     XCTAssertEqual(ratio, 0.7)
     for value in [0, 1, Double.nan] { layout.resize(split, ratio: value) }
@@ -63,6 +63,16 @@ final class PaneLayoutTests: XCTestCase {
     let before = layout
     layout.move("missing", to: layout.id, edge: .left)
     XCTAssertEqual(layout, before)
+  }
+  func testMissingDestinationLeavesExistingTabUntouched() {
+    var layout = PaneLayout.empty()
+    layout.open(.terminal, in: layout.id)
+    guard case .pane(_, let tabs, _) = layout else { return XCTFail("Missing pane") }
+    let before = layout
+    for edge in [nil, PaneLayout.Edge.left, .right, .top, .bottom] {
+      layout.move(tabs[0].id, to: "missing", edge: edge)
+      XCTAssertEqual(layout, before)
+    }
   }
   func testActiveTabChangesWhenClosed() {
     var layout = PaneLayout.empty()

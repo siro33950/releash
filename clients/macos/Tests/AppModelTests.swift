@@ -1,5 +1,7 @@
 import Connect
+import Foundation
 import SwiftProtobuf
+import Synchronization
 import XCTest
 
 @testable import Releash
@@ -12,8 +14,7 @@ final class AppModelTests: XCTestCase {
     model.layout.open(.terminal, in: pane)
     let input = model.layout
     var state = Releash_Client_V1_NullableWorkspaceStateDto()
-    state.value.paneLayoutJson = String(
-      decoding: try JSONEncoder().encode(PaneLayout.empty()), as: UTF8.self)
+    state.value.paneLayout = PaneLayout.empty().message
     model.pendingSaves["/repo/worktree"] = 2
     model.receiveWorkspaceState(state, path: "/repo/worktree")
     XCTAssertEqual(model.layout, input)
@@ -30,8 +31,7 @@ final class AppModelTests: XCTestCase {
     model.selectedWorktree = "/repo/current"
     let input = model.layout
     var state = Releash_Client_V1_NullableWorkspaceStateDto()
-    state.value.paneLayoutJson = String(
-      decoding: try JSONEncoder().encode(PaneLayout.empty()), as: UTF8.self)
+    state.value.paneLayout = PaneLayout.empty().message
     model.receiveWorkspaceState(state, path: "/repo/previous")
     XCTAssertEqual(model.layout, input)
     XCTAssertFalse(model.layoutLoaded)
@@ -69,7 +69,7 @@ extension AppModelTests {
       let save = try Releash_Client_V1_SaveWorkspaceStateRequest(
         serializedBytes: request.message ?? Data())
       XCTAssertEqual(
-        try JSONDecoder().decode(PaneLayout.self, from: Data(save.state.paneLayoutJson.utf8)),
+        try PaneLayout(save.state.paneLayout),
         layouts[save.worktreeName])
     }
     for path in ["/repo/a", "/repo/b"] {
@@ -98,6 +98,124 @@ extension AppModelTests {
         && model.failure?.contains("SaveWorkspaceState failed") == true
     }
     XCTAssertNil(http.state.withLock { $0.layouts["/repo/a"] })
+    try await eventually {
+      if case .pane(_, let tabs, let active) = model.layout { return tabs.isEmpty && active == nil }
+      return false
+    }
+    await model.stop()
+  }
+}
+
+extension AppModelTests {
+  @MainActor func testFailedSubscriptionCanBeRegisteredAgain() async throws {
+    let http = TestHTTPClient()
+    let model = try await testModel(http)
+    try await eventually { http.requests("StartStateSubscription").count >= 3 }
+    http.state.withLock { $0.failedMethod = "StartStateSubscription" }
+    model.subscribe("repository-group-state", ["/retry"]) { _ in }
+    try await eventually { model.failure?.contains("StartStateSubscription failed") == true }
+    let count = http.requests("StartStateSubscription").count
+    http.state.withLock { $0.failedMethod = nil }
+    model.subscribe("repository-group-state", ["/retry"]) { _ in }
+    try await eventually { http.requests("StartStateSubscription").count == count + 1 }
+    let request = try Releash_Client_V1_StartStateSubscriptionRequest(
+      serializedBytes: http.requests("StartStateSubscription").last!.message!)
+    XCTAssertEqual(request.args, ["/retry"])
+    await model.stop()
+  }
+  @MainActor func testRemovedRepositoryStopsSubscriptionAndClearsCollapsed() async throws {
+    let http = TestHTTPClient()
+    var repository = Releash_Client_V1_WorkspaceRepositoryList()
+    repository.path = "/repo"
+    http.state.withLock {
+      $0.repositories = [repository]
+      $0.collapsed["/repo"] = true
+    }
+    let model = try await testModel(http)
+    try await eventually { model.collapsed["/repo"] == true }
+    let subscriptions = http.state.withLock { $0.subscriptions }
+    let group = try XCTUnwrap(subscriptions.first { $0.target == "repository-group-state" })
+    let workspaces = try XCTUnwrap(subscriptions.first { $0.target == "workspaces" })
+    var event = Releash_Client_V1_StateSubscriptionEvent()
+    event.subscriptionID = workspaces.subscriptionID
+    event.snapshot.workspaces.repositories = .init()
+    try TestHTTPClient.send(event, on: http.state.withLock { $0.streams.last! })
+    try await eventually {
+      model.repositories.isEmpty && model.collapsed["/repo"] == nil
+        && !http.requests("StopStateSubscription").isEmpty
+    }
+    let stop = try Releash_Client_V1_StopStateSubscriptionRequest(
+      serializedBytes: http.requests("StopStateSubscription").last!.message!)
+    XCTAssertEqual(stop.subscriptionID, group.subscriptionID)
+    await model.stop()
+  }
+  @MainActor func testCollapsedSavesOneRepositoryAndRestoresOnNewClient() async throws {
+    let http = TestHTTPClient()
+    http.state.withLock { storage in
+      storage.repositories = ["/a", "/b"].map { path in
+        var repo = Releash_Client_V1_WorkspaceRepositoryList()
+        repo.path = path
+        return repo
+      }
+    }
+    let model = try await testModel(http)
+    try await eventually { model.collapsed["/a"] == false && model.collapsed["/b"] == false }
+    model.setCollapsed("/a", true)
+    try await eventually { http.state.withLock { $0.collapsed["/a"] == true } }
+    let save = try Releash_Client_V1_SaveRepositoryGroupStateRequest(
+      serializedBytes: http.requests("SaveRepositoryGroupState")[0].message!)
+    XCTAssertEqual(save.repositoryPath, "/a")
+    XCTAssertTrue(save.collapsed)
+    XCTAssertNil(http.state.withLock { $0.collapsed["/b"] })
+    await model.stop()
+    let restarted = try await testModel(http)
+    try await eventually { restarted.collapsed["/a"] == true && restarted.collapsed["/b"] == false }
+    await restarted.stop()
+  }
+  @MainActor func testStartFailureKeepsCLIGuidanceAndRetryDiscoversAndStartsAgain() async throws {
+    let http = TestHTTPClient()
+    let initial = try await testModel(http)
+    await initial.stop()
+    http.state.withLock {
+      $0.requests.removeAll()
+      $0.streams.removeAll()
+      $0.subscriptions.removeAll()
+    }
+    let calls = Mutex<[String]>([])
+    let fail = Mutex(true)
+    let started = Mutex(false)
+    let status = try JSONSerialization.data(withJSONObject: [
+      "running": true, "compatibility": "compatible", "discovery_file": http.discoveryFile.path,
+    ])
+    let model = AppModel(
+      cli: CLI(
+        executable: URL(fileURLWithPath: "/test/releash"),
+        run: { _, args in
+          calls.withLock { $0.append(args.joined(separator: " ")) }
+          if args == ["server", "start"] {
+            if fail.withLock({ $0 }) {
+              throw CLIFailure(
+                message: "Cannot start server. Run releash server start, then retry.")
+            }
+            started.withLock { $0 = true }
+            return Data()
+          }
+          if started.withLock({ $0 }) {
+            return status
+          }
+          return Data(#"{"running":false,"discovery_file":"unused"}"#.utf8)
+        }), httpClient: http)
+    await model.start()
+    XCTAssertEqual(
+      model.connectionFailure, "Cannot start server. Run releash server start, then retry.")
+    XCTAssertFalse(model.connected)
+    fail.withLock { $0 = false }
+    await model.start()
+    try await eventually { model.connected && !http.requests("StartStateSubscription").isEmpty }
+    XCTAssertNil(model.connectionFailure)
+    XCTAssertEqual(
+      calls.withLock { $0 },
+      ["status --json", "server start", "status --json", "server start", "status --json"])
     await model.stop()
   }
 }

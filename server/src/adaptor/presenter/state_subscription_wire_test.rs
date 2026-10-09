@@ -434,8 +434,8 @@ fn test_購読payload_全種類を旧wire型とフィールドへ変換する() 
             }),
         ),
         (
-            StateValue::Issues(crate::usecase::fetched::Fetched::ready(vec![
-                crate::domain::git_host::IssueInfo {
+            StateValue::Issues(crate::usecase::fetched::Fetched::ready(
+                vec![crate::domain::git_host::IssueInfo {
                     number: 13,
                     title: "Fix".into(),
                     state: "OPEN".into(),
@@ -456,9 +456,12 @@ fn test_購読payload_全種類を旧wire型とフィールドへ変換する() 
                     milestone: Some(crate::domain::git_host::Milestone {
                         title: "next".into(),
                     }),
-                },
-            ])),
+                }]
+                .into(),
+            )),
             W::Issues(wire::IssuesSnapshot {
+                labels: vec!["bug".into()],
+                milestones: vec!["next".into()],
                 read_error: None,
                 issues: Some(wire::ListIssueInfoDto {
                     items: vec![wire::IssueInfoDto {
@@ -524,26 +527,28 @@ fn test_購読payload_全種類を旧wire型とフィールドへ変換する() 
             }),
         ),
         (
-            StateValue::WorkspaceState(Some(WorkspaceStateDto {
-                panes: None,
-                version: 1,
-                tabs: WorkspaceTabsStateDto {
-                    editors: vec![],
-                    active_editor_path: Some("/file".into()),
-                },
-                layout: WorkspaceLayoutStateDto {
-                    center_tab: "agent".into(),
-                    active_view: "git".into(),
-                    left_nav_collapsed: true,
-                    right_collapsed: false,
-                    right_bottom_collapsed: true,
-                    right_bottom_active_tab: None,
-                    selected_diff_file: None,
-                },
-            })),
+            StateValue::WorkspaceState(Some(
+                WorkspaceStateDto {
+                    version: 1,
+                    tabs: WorkspaceTabsStateDto {
+                        editors: vec![],
+                        active_editor_path: Some("/file".into()),
+                    },
+                    layout: WorkspaceLayoutStateDto {
+                        center_tab: "agent".into(),
+                        active_view: "git".into(),
+                        left_nav_collapsed: true,
+                        right_collapsed: false,
+                        right_bottom_collapsed: true,
+                        right_bottom_active_tab: None,
+                        selected_diff_file: None,
+                    },
+                }
+                .into(),
+            )),
             W::WorkspaceState(wire::NullableWorkspaceStateDto {
                 value: Some(wire::WorkspaceStateDto {
-                    pane_layout_json: None,
+                    pane_layout: None,
                     version: Some(1),
                     tabs: Some(wire::WorkspaceTabsStateDto {
                         editors: Some(wire::ListWorkspaceTabEntryDto { items: vec![] }),

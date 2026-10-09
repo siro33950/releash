@@ -8,7 +8,6 @@ use crate::usecase::{
         dto::{FacetSummaryDto, WorkflowDto, WorkflowSummaryDto},
         WorkspaceNodeDetailDto,
     },
-    workspace_state::dto::WorkspaceStateDto,
     workspace_tree::WorkspaceList,
 };
 
@@ -30,7 +29,9 @@ pub enum StateValue {
     /// ブランチと、その worktree があるか。
     BranchStatus(Vec<(crate::domain::repository::Branch, bool)>),
     CurrentBranch(String),
-    Issues(crate::usecase::fetched::Fetched<Vec<crate::domain::git_host::IssueInfo>>),
+    Issues(
+        crate::usecase::fetched::Fetched<crate::usecase::git_host::git_host_usecase::IssueListing>,
+    ),
     NotionTasks(
         crate::usecase::fetched::Fetched<
             crate::domain::notion::NotionTaskPage,
@@ -45,7 +46,7 @@ pub enum StateValue {
     ),
     Worktrees(Vec<WorktreeEntryDto>),
     StartupRepository(Option<crate::usecase::repository_dto::StartupWorktree>),
-    WorkspaceState(Option<WorkspaceStateDto>),
+    WorkspaceState(Option<crate::domain::workspace_state::WorkspaceState>),
     ReviewSnapshot(ReviewSnapshotDto),
     ReviewFileView(ReviewFileViewDto),
     ReviewThreads(Vec<crate::domain::comment::ReviewThread>),

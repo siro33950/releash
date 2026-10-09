@@ -276,3 +276,43 @@ mod cancellation_contract {
         assert!(issue_cache.stored_values().is_empty());
     }
 }
+
+#[tokio::test]
+async fn test_pr取得_状態ごとに百件を取得しclosedよりmergedを優先する() {
+    struct Runner(parking_lot::Mutex<Vec<Vec<String>>>);
+    #[async_trait::async_trait]
+    impl GhCommandRunner for Runner {
+        async fn output(&self, args: &[&str], repo: &str) -> GhCommandOutput {
+            assert_eq!(repo, "/repo");
+            self.0
+                .lock()
+                .push(args.iter().map(|arg| arg.to_string()).collect());
+            GhCommandOutput::Success(if args[3] == "open" {
+                "[]".into()
+            } else {
+                r#"[{"headRefName":"same","number":1,"url":"url","isDraft":false}]"#.into()
+            })
+        }
+    }
+    let runner = Arc::new(Runner(Default::default()));
+    let gateway = GitHubGitHostGateway::with_runner(runner.clone());
+    let status = gateway.fetch_github_prs("/repo").await.unwrap();
+    assert_eq!(
+        *runner.0.lock(),
+        ["open", "merged", "closed"].map(|state| vec![
+            "pr",
+            "list",
+            "--state",
+            state,
+            "--json",
+            "headRefName,number,url,isDraft",
+            "--limit",
+            "100"
+        ]
+        .into_iter()
+        .map(str::to_owned)
+        .collect::<Vec<_>>())
+    );
+    assert_eq!(status.completed_prs["same"].state, PrState::Merged);
+    assert!(status.branch_is_merged("same", false));
+}

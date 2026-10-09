@@ -41,3 +41,21 @@ impl PrStatus {
 #[cfg(test)]
 #[path = "pr_test.rs"]
 mod pr_tests;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PrClassification {
+    Open,
+    Draft,
+    Merged,
+    Closed,
+}
+impl PrInfo {
+    pub fn classification(&self) -> PrClassification {
+        match self.state {
+            PrState::Open if self.draft => PrClassification::Draft,
+            PrState::Open => PrClassification::Open,
+            PrState::Merged => PrClassification::Merged,
+            PrState::Closed => PrClassification::Closed,
+        }
+    }
+}

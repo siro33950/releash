@@ -1948,12 +1948,7 @@ impl TryFrom<crate::usecase::workspace_state::dto::WorkspaceStateDto> for wire::
         value: crate::usecase::workspace_state::dto::WorkspaceStateDto,
     ) -> Result<Self, String> {
         Ok(Self {
-            pane_layout_json: value
-                .panes
-                .as_ref()
-                .map(serde_json::to_string)
-                .transpose()
-                .map_err(|error| error.to_string())?,
+            pane_layout: None,
             version: Some(cv(value.version)?),
             tabs: Some(cv(value.tabs)?),
             layout: Some(cv(value.layout)?),
@@ -1968,12 +1963,6 @@ impl TryFrom<wire::WorkspaceStateDto> for crate::usecase::workspace_state::dto::
             return Err("Expected workspace state version 1".into());
         }
         Ok(Self {
-            panes: value
-                .pane_layout_json
-                .as_deref()
-                .map(serde_json::from_str::<crate::usecase::workspace_state::dto::PaneLayoutDto>)
-                .transpose()
-                .map_err(|error| error.to_string())?,
             version: cv(req(value.version, "version")?)?,
             tabs: cv(req(value.tabs, "tabs")?)?,
             layout: cv(req(value.layout, "layout")?)?,
@@ -2112,5 +2101,120 @@ impl TryFrom<crate::domain::comment::ReviewThread> for wire::ResolveSessionRevie
         Ok(Self {
             thread: Some(cv(value)?),
         })
+    }
+}
+
+impl TryFrom<crate::domain::workspace_state::value_objects::pane_layout::PaneLayout>
+    for wire::PaneLayout
+{
+    type Error = String;
+    fn try_from(
+        value: crate::domain::workspace_state::value_objects::pane_layout::PaneLayout,
+    ) -> Result<Self, String> {
+        use crate::domain::workspace_state::value_objects::pane_layout::{
+            PaneLayout, PaneTabKind, SplitAxis,
+        };
+        Ok(Self {
+            node: Some(match value {
+                PaneLayout::Pane {
+                    id,
+                    tabs,
+                    active_tab,
+                } => wire::pane_layout::Node::Pane(wire::Pane {
+                    id,
+                    active_tab,
+                    tabs: tabs
+                        .into_iter()
+                        .map(|tab| wire::PaneTab {
+                            id: tab.id,
+                            kind: match tab.kind {
+                                PaneTabKind::Terminal => wire::PaneTabKind::Terminal,
+                                PaneTabKind::Workflow => wire::PaneTabKind::Workflow,
+                                PaneTabKind::File => wire::PaneTabKind::File,
+                            } as i32,
+                        })
+                        .collect(),
+                }),
+                PaneLayout::Split {
+                    id,
+                    axis,
+                    ratio,
+                    first,
+                    second,
+                } => wire::pane_layout::Node::Split(Box::new(wire::PaneSplit {
+                    id,
+                    ratio,
+                    axis: match axis {
+                        SplitAxis::Horizontal => wire::SplitAxis::Horizontal,
+                        SplitAxis::Vertical => wire::SplitAxis::Vertical,
+                    } as i32,
+                    first: Some(Box::new(cv(*first)?)),
+                    second: Some(Box::new(cv(*second)?)),
+                })),
+            }),
+        })
+    }
+}
+impl TryFrom<wire::PaneLayout>
+    for crate::domain::workspace_state::value_objects::pane_layout::PaneLayout
+{
+    type Error = String;
+    fn try_from(value: wire::PaneLayout) -> Result<Self, String> {
+        use crate::domain::workspace_state::value_objects::pane_layout::{
+            PaneTab, PaneTabKind, SplitAxis,
+        };
+        Ok(match req(value.node, "pane node")? {
+            wire::pane_layout::Node::Pane(pane) => Self::Pane {
+                id: pane.id,
+                active_tab: pane.active_tab,
+                tabs: pane
+                    .tabs
+                    .into_iter()
+                    .map(|tab| {
+                        Ok(PaneTab {
+                            id: tab.id,
+                            kind: match wire::PaneTabKind::try_from(tab.kind) {
+                                Ok(wire::PaneTabKind::Terminal) => PaneTabKind::Terminal,
+                                Ok(wire::PaneTabKind::Workflow) => PaneTabKind::Workflow,
+                                Ok(wire::PaneTabKind::File) => PaneTabKind::File,
+                                _ => return Err("Unknown pane tab kind".to_owned()),
+                            },
+                        })
+                    })
+                    .collect::<Result<_, String>>()?,
+            },
+            wire::pane_layout::Node::Split(split) => Self::Split {
+                id: split.id,
+                ratio: split.ratio,
+                axis: match wire::SplitAxis::try_from(split.axis) {
+                    Ok(wire::SplitAxis::Horizontal) => SplitAxis::Horizontal,
+                    Ok(wire::SplitAxis::Vertical) => SplitAxis::Vertical,
+                    _ => return Err("Unknown split axis".into()),
+                },
+                first: Box::new(cv(*req(split.first, "first pane")?)?),
+                second: Box::new(cv(*req(split.second, "second pane")?)?),
+            },
+        })
+    }
+}
+
+impl TryFrom<crate::domain::workspace_state::WorkspaceState> for wire::WorkspaceStateDto {
+    type Error = String;
+    fn try_from(mut value: crate::domain::workspace_state::WorkspaceState) -> Result<Self, String> {
+        let panes = value.panes.take();
+        let mut message: Self =
+            cv(crate::usecase::workspace_state::dto::WorkspaceStateDto::from(value))?;
+        message.pane_layout = panes.map(cv).transpose()?;
+        Ok(message)
+    }
+}
+impl TryFrom<wire::WorkspaceStateDto> for crate::domain::workspace_state::WorkspaceState {
+    type Error = String;
+    fn try_from(mut value: wire::WorkspaceStateDto) -> Result<Self, String> {
+        let panes = value.pane_layout.take();
+        let legacy: crate::usecase::workspace_state::dto::WorkspaceStateDto = cv(value)?;
+        let mut state: Self = legacy.into();
+        state.panes = panes.map(cv).transpose()?;
+        Ok(state)
     }
 }

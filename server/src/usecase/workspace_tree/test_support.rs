@@ -19,6 +19,16 @@ impl TestWorkspaceQueryService {
 
 #[async_trait::async_trait]
 impl WorkspaceQueryService for TestWorkspaceQueryService {
+    async fn worktree_executions(
+        &self,
+        _workspace: &WorkspaceIdentity,
+        _failures: &dyn crate::domain::failure::FailureRecordRepository,
+    ) -> Result<
+        Vec<crate::usecase::workspace_tree::query_service::WorktreeExecutionSummary>,
+        WorkflowError,
+    > {
+        Ok(vec![])
+    }
     async fn node_detail(
         &self,
         _workspace_identity: &WorkspaceIdentity,

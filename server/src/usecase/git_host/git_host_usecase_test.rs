@@ -390,6 +390,7 @@ async fn test_issue絞り込み_キャッシュを変えず条件に一致する
         result
             .value
             .unwrap()
+            .issues
             .iter()
             .map(|issue| issue.number)
             .collect::<Vec<_>>(),

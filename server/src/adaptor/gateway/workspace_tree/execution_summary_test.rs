@@ -1,8 +1,10 @@
 use super::*;
+use crate::domain::workflow::ExecutionTreeLaunch;
 use crate::domain::workflow::{ExecutionStatus, NodeKindName};
 use crate::domain::workspace_tree::{
     WorkspaceExecution, WorkspaceStructureFact, WorkspaceTreeProjector,
 };
+use crate::domain::workspace_tree::{WorkspaceNodeStatusClassification, WorkspaceTree};
 
 #[test]
 fn test_カード集計_実行木単位で過去の試行と構造nodeとarchiveを除く() {
@@ -68,15 +70,26 @@ fn test_カード集計_実行木単位で過去の試行と構造nodeとarchive
         ],
     )
     .unwrap();
+    tree.observe_background_failure("s2", "needs attention");
     // When
-    let summaries = tree.card_executions();
+    let summaries = worktree_executions(&tree);
     // Then
     assert_eq!(summaries.len(), 1);
     assert_eq!(summaries[0].node_count, 3);
-    assert_eq!(summaries[0].session_states.len(), 2);
+    assert_eq!(
+        summaries[0].session_states,
+        [
+            WorkspaceNodeStatusClassification::Attention,
+            WorkspaceNodeStatusClassification::Active
+        ]
+    );
+    assert_eq!(
+        summaries[0].status,
+        WorkspaceNodeStatusClassification::Attention
+    );
     assert_eq!(
         tree.card_status(),
-        Some(WorkspaceNodeStatusClassification::Active)
+        Some(WorkspaceNodeStatusClassification::Attention)
     );
     assert_eq!(WorkspaceTree::empty("/repo").card_status(), None);
 }
@@ -112,7 +125,7 @@ fn test_カード集計_archive済みの実行木は行にも状態にも含め�
         session: None,
     }]);
     // When / Then
-    assert!(tree.card_executions().is_empty());
+    assert!(worktree_executions(&tree).is_empty());
     assert_eq!(tree.card_status(), None);
 }
 
@@ -176,20 +189,49 @@ fn test_カード集計_session行を先に並べ人の番を集約する() {
             status: ExecutionStatus::Running,
             updated_at: 2.0,
             archive: None,
-            session: None,
+            session: Some(crate::domain::agent_session::aggregates::AgentSession::create(
+                session, crate::domain::workspace_tree::WorkspaceIdentity::new("/repo"), "/repo",
+                crate::domain::provider_lifecycle::ProviderKind::Codex,
+                crate::domain::agent_session::aggregates::AgentSessionTreeLocation::session_tree_root(session).unwrap(),
+            ).unwrap()),
         },
     ]);
     tree.observe_background_failure(workflow, "failed");
     // When
-    let rows = tree.card_executions();
+    let rows = worktree_executions(&tree);
     // Then
     assert_eq!(rows.len(), 2);
     assert_eq!(rows[0].id, session);
     assert!(!rows[0].is_workflow);
     assert_eq!(rows[0].title, "作業session");
+    assert_eq!(
+        rows[0].provider,
+        Some(crate::domain::provider_lifecycle::ProviderKind::Codex)
+    );
+    assert_eq!(rows[0].status, WorkspaceNodeStatusClassification::Active);
+    assert_eq!(rows[1].status, WorkspaceNodeStatusClassification::Attention);
     assert!(rows[1].is_workflow);
     assert_eq!(
         tree.card_status(),
         Some(WorkspaceNodeStatusClassification::Attention)
     );
+}
+
+fn worktree_executions(tree: &WorkspaceTree) -> Vec<WorktreeExecutionSummary> {
+    let mut rows = tree
+        .executions()
+        .iter()
+        .filter(|execution| execution.archive.is_none())
+        .filter_map(|execution| {
+            execution_summary(
+                &execution.execution_id,
+                &execution.workflow_name,
+                execution.launched_as,
+                execution.session.as_ref().map(|session| session.provider()),
+                tree.nodes(),
+            )
+        })
+        .collect::<Vec<_>>();
+    rows.sort_by_key(|row| row.is_workflow);
+    rows
 }

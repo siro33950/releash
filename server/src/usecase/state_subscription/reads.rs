@@ -264,7 +264,11 @@ impl WorkspaceStateReads {
                 ));
             }
             T::Issues(p) => {
-                return Ok(StateValue::Issues(self.git_host.get_cached_issues(p).await))
+                return Ok(StateValue::Issues(
+                    self.git_host
+                        .get_filtered_issues(p, &Default::default())
+                        .await,
+                ))
             }
             T::Workspaces => {
                 return Ok(StateValue::Workspaces(
@@ -352,8 +356,7 @@ impl WorkspaceStateReads {
                     name,
                     path,
                 )
-                .map_err(error)?
-                .map(Into::into),
+                .map_err(error)?,
             ),
             T::ReviewSnapshot(path, base) => StateValue::ReviewSnapshot(
                 self.review

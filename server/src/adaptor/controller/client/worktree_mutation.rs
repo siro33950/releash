@@ -61,18 +61,15 @@ pub fn admit(
                 runtime.ok_or_else(|| invalid_request("Command dependency unavailable"))?;
             crate::domain::repository::validate_worktree_branches(&a.branches)
                 .map_err(|error| invalid_request(error.to_string()))?;
-            let mut guards = vec![runtime
-                .begin_worktree_mutation(&a.repo_path)
-                .map_err(mutation_error)?];
+            let mut guards = Vec::new();
             for branch in &a.branches {
-                guards.push(
-                    runtime
-                        .begin_worktree_mutation(&crate::domain::repository::worktree_path(
-                            &a.repo_path,
-                            branch,
-                        ))
-                        .map_err(mutation_error)?,
-                );
+                let mut branch_guards = runtime
+                    .begin_worktree_creation_mutation(&a.repo_path, branch)
+                    .map_err(mutation_error)?;
+                if !guards.is_empty() {
+                    branch_guards.remove(0);
+                }
+                guards.extend(branch_guards);
             }
             return Ok(guards);
         }

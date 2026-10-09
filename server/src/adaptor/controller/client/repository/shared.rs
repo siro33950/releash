@@ -10,38 +10,22 @@ pub(crate) fn register_shared(
     deps: &crate::adaptor::controller::client::ClientDependencies,
 ) {
     {
-        let state = deps.app_state.clone();
-        let sessions = deps.agent_session_launch_usecase.clone();
-        let workflows = deps.workflow_runtime_usecase.clone();
+        let usecase = deps.create_worktrees_usecase.clone();
         router.register_domain(
             &["create_worktrees"],
             Box::new(move |command| {
-                let state = state.clone();
-                let sessions = sessions.clone();
-                let workflows = workflows.clone();
+                let usecase = usecase.clone();
                 Box::pin(async move {
                     let wire::command_request::Command::CreateWorktrees(args) = command else {
                         return Err(invalid_request("Mismatched command"));
                     };
-                    let state =
-                        state.ok_or_else(|| invalid_request("Command dependency unavailable"))?;
-                    let launcher = crate::usecase::create_worktrees::WorktreeLauncher {
-                        sessions: sessions
-                            .ok_or_else(|| invalid_request("Command dependency unavailable"))?,
-                        workflows: workflows
-                            .ok_or_else(|| invalid_request("Command dependency unavailable"))?,
-                    };
+                    let usecase =
+                        usecase.ok_or_else(|| invalid_request("Command dependency unavailable"))?;
                     let launch = worktree::parse_launch(args.launch)?;
-                    let paths = crate::usecase::create_worktrees::create_worktrees(
-                        state.repository_usecase.clone(),
-                        &launcher,
-                        args.repo_path,
-                        args.branches,
-                        args.base_branch,
-                        launch,
-                    )
-                    .await
-                    .map_err(AppError::from)?;
+                    let paths = usecase
+                        .execute(args.repo_path, args.branches, args.base_branch, launch)
+                        .await
+                        .map_err(AppError::from)?;
                     Ok(wire::command_result::Command::CreateWorktrees(value(
                         paths,
                     )?))

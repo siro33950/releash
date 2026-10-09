@@ -504,7 +504,9 @@ pub async fn test_状態読取_全対象を対応するサービスへ引数付�
         (
             T::Issues(p.clone()),
             StateValue::Issues(
-                releashd::test_support::integration::platform::Fetched::ready(vec![issue(1)]),
+                releashd::test_support::integration::platform::Fetched::ready(
+                    vec![issue(1)].into(),
+                ),
             ),
         ),
         (
@@ -517,7 +519,7 @@ pub async fn test_状態読取_全対象を対応するサービスへ引数付�
         ),
         (
             T::WorkspaceState("repo".into(), p.clone()),
-            StateValue::WorkspaceState(Some(workspace)),
+            StateValue::WorkspaceState(Some(workspace.into())),
         ),
         (
             T::Workflows,
@@ -698,7 +700,7 @@ pub async fn test_issue手動更新_有効なcacheを無視し30秒前に同じ�
         .await
         .unwrap();
     assert!(
-        matches!(stream.next().await, Some(StateSubscriptionEvent::Item(_, releashd::test_support::integration::subscriptions::Event::Snapshot(_, value))) if releashd::test_support::integration::subscriptions::same(&value, StateValue::Issues(releashd::test_support::integration::platform::Fetched::ready(vec![issue(1)]))))
+        matches!(stream.next().await, Some(StateSubscriptionEvent::Item(_, releashd::test_support::integration::subscriptions::Event::Snapshot(_, value))) if releashd::test_support::integration::subscriptions::same(&value, StateValue::Issues(releashd::test_support::integration::platform::Fetched::ready(vec![issue(1)].into()))))
     );
     stream.next().await;
     *fixture.issues.values.lock() = vec![issue(2)];
@@ -728,7 +730,7 @@ pub async fn test_issue手動更新_有効なcacheを無視し30秒前に同じ�
     assert!(releashd::test_support::integration::subscriptions::same(
         &value,
         StateValue::Issues(
-            releashd::test_support::integration::platform::Fetched::ready(vec![issue(2)])
+            releashd::test_support::integration::platform::Fetched::ready(vec![issue(2)].into())
         )
     ));
     assert!(before.elapsed() < CacheTtl::EXTERNAL_INFORMATION.duration());
@@ -1157,7 +1159,7 @@ pub async fn test_issue手動更新失敗_最後の一覧と失敗を購読へ�
     assert!(result.is_err());
     assert!(
         matches!(event, StateSubscriptionEvent::Item(id, Event::Change(_, _, value)) if id == format!("client:{target}") && releashd::test_support::integration::subscriptions::same(&value, StateValue::Issues(releashd::test_support::integration::platform::Fetched {
-            value: Some(vec![issue(1)]),
+            value: Some(vec![issue(1)].into()),
             error: Some(releashd::test_support::integration::platform::WorkFailure::from_error(&GitHostError::External("issues offline".into()))),
         })))
     );
@@ -1197,6 +1199,6 @@ pub async fn test_issue手動更新失敗_回復時に新しい一覧を届け�
         .unwrap();
     // Then
     assert!(
-        matches!(event, StateSubscriptionEvent::Item(id, Event::Change(_, _, value)) if id == format!("client:{target}") && releashd::test_support::integration::subscriptions::same(&value, StateValue::Issues(releashd::test_support::integration::platform::Fetched::ready(vec![issue(2)]))))
+        matches!(event, StateSubscriptionEvent::Item(id, Event::Change(_, _, value)) if id == format!("client:{target}") && releashd::test_support::integration::subscriptions::same(&value, StateValue::Issues(releashd::test_support::integration::platform::Fetched::ready(vec![issue(2)].into()))))
     );
 }

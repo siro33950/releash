@@ -123,7 +123,7 @@ struct WorktreeCard: View {
     .contextMenu {
       Menu("Sessionを追加") {
         ForEach(model.providers, id: \.value) { provider in
-          Button(provider.value == .claude ? "Claude" : "Codex") { addSession(provider) }
+          Button(provider.displayName) { addSession(provider) }
         }
       }
       Button("Workflowを追加") { launchingWorkflow = true }
@@ -156,7 +156,7 @@ struct WorktreeCard: View {
   func addSession(_ provider: Releash_Client_V1_AgentSessionProviderDto) {
     guard let client = model.client else { return }
     var request = Releash_Client_V1_CreateAgentSessionRequest()
-    request.provider = provider.value == .claude ? "claude" : "codex"
+    request.provider = provider.wireName
     request.workspaceIdentity = branch.worktreePath
     request.worktreePath = branch.worktreePath
     request.rows = UIStyle.terminalRows
@@ -186,11 +186,8 @@ struct WorkflowLaunchView: View {
   @State private var requestText = ""
   var body: some View {
     Form {
-      Picker("Workflow", selection: $workflow) {
-        Text("選択してください").tag("")
-        ForEach(model.workflows, id: \.name) { Text($0.name).tag($0.name) }
-      }
-      TextField("依頼文", text: $requestText, axis: .vertical)
+      WorkflowLaunchFields(
+        workflows: model.workflows, workflow: $workflow, requestText: $requestText)
       HStack {
         Button("キャンセル") { dismiss() }
         Button("起動") {

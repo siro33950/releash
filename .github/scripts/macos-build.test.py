@@ -47,6 +47,16 @@ class MacOSBuildTest(unittest.TestCase):
                 )
                 self.assertEqual(result.returncode, 0 if ignored else 1)
 
+    def test_protocol_generation_precedes_source_validation(self):
+        project = (MACOS / "project.yml").read_text()
+        self.assertRegex(project, r"options:\n  preGenCommand: ./Scripts/generate.sh")
+        ci = (ROOT / ".github/workflows/ci.yml").read_text()
+        self.assertIn("swift run --package-path BuildTools xcodegen generate", ci)
+        self.assertIn("- path: Generated", project)
+        self.assertIn("path: Generated/client-descriptor.bin\n        buildPhase: resources", project)
+        self.assertIn("sources: Tests", project)
+        self.assertIn("- target: Releash", project)
+
     def test_tools_and_app_share_exact_dependency_versions(self):
         manifest = (MACOS / "BuildTools/Package.swift").read_text()
         tools = {

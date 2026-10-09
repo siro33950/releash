@@ -36,3 +36,13 @@ pub fn validate_worktree_branches(
     }
     Ok(())
 }
+
+pub fn unique_worktree_name(base: &str, existing: &[&str]) -> String {
+    let mut name = base.to_owned();
+    let mut suffix = 1;
+    while existing.contains(&name.as_str()) {
+        name = format!("{base}{suffix}");
+        suffix += 1;
+    }
+    name
+}

@@ -23,6 +23,7 @@ import SwiftProtobuf
   @ObservationIgnored private var heartbeatTask: Task<Void, Never>?
   @ObservationIgnored private var callbacks: [String: (Releash_Client_V1_StatePayload) -> Void] =
     [:]
+  @ObservationIgnored private var desiredTargets: [String: (String, [String])] = [:]
   @ObservationIgnored private var targets: [String: (String, [String])] = [:]
   @ObservationIgnored private var clientID: String?
   @ObservationIgnored private var subscriptionIDs = StateSubscriptionIDs()
@@ -61,9 +62,15 @@ import SwiftProtobuf
       connectionFailure = nil
       subscribe("workspaces") { [weak self] payload in
         guard case .workspaces(let value) = payload.value else { return }
-        self?.repositories = value.repositories.items
+        guard let self else { return }
+        let paths = Set(value.repositories.items.map(\.path))
+        for repo in repositories where !paths.contains(repo.path) {
+          unsubscribe("repository-group-state", [repo.path])
+          collapsed.removeValue(forKey: repo.path)
+        }
+        repositories = value.repositories.items
         for repo in value.repositories.items {
-          self?.subscribe("repository-group-state", [repo.path]) { [weak self] payload in
+          self.subscribe("repository-group-state", [repo.path]) { [weak self] payload in
             if case .repositoryGroupState(let group) = payload.value {
               self?.collapsed[repo.path] = group.collapsed
             }
@@ -89,18 +96,23 @@ import SwiftProtobuf
         httpClient: httpClient,
         config: ProtocolClientConfig(host: host, codec: ProtoCodec(), timeout: policy.timeout)))
   }
+  private func subscriptionKey(_ target: String, _ args: [String]) -> String {
+    ([target] + args).map { "\($0.utf8.count):\($0)" }.joined()
+  }
   func subscribe(
     _ target: String, _ args: [String] = [],
     onValue: @escaping (Releash_Client_V1_StatePayload) -> Void
   ) {
-    let key = ([target] + args).map { "\($0.utf8.count):\($0)" }.joined()
+    let key = subscriptionKey(target, args)
+    desiredTargets[key] = (target, args)
     callbacks[key] = onValue
     guard targets[key] == nil else { return }
     targets[key] = (target, args)
     if let clientID { perform { try await self.register(key, clientID: clientID) } }
   }
   func unsubscribe(_ target: String, _ args: [String] = []) {
-    let key = ([target] + args).map { "\($0.utf8.count):\($0)" }.joined()
+    let key = subscriptionKey(target, args)
+    desiredTargets.removeValue(forKey: key)
     targets.removeValue(forKey: key)
     callbacks.removeValue(forKey: key)
     guard let id = subscriptionIDs.remove(key), let client, clientID != nil else { return }
@@ -114,21 +126,30 @@ import SwiftProtobuf
   private func register(_ key: String, clientID: String) async throws {
     guard let client, let (target, args) = targets[key] else { return }
     let reservation = subscriptionIDs.reserve(key)
-    if let previous = reservation.previous {
-      var stop = Releash_Client_V1_StopStateSubscriptionRequest()
-      stop.subscriptionID = previous
-      _ = try await client.stopStateSubscription(request: stop, headers: headers).result.get()
+    do {
+      if let previous = reservation.previous {
+        var stop = Releash_Client_V1_StopStateSubscriptionRequest()
+        stop.subscriptionID = previous
+        _ = try await client.stopStateSubscription(request: stop, headers: headers).result.get()
+      }
+      guard self.clientID == clientID, targets[key] != nil,
+        subscriptionIDs.key(for: reservation.id) == key
+      else { return }
+      var request = Releash_Client_V1_StartStateSubscriptionRequest()
+      request.clientID = clientID
+      request.target = target
+      request.args = args
+      request.subscriptionID = reservation.id
+      _ = try await client.startStateSubscription(request: request, headers: headers).result.get()
+    } catch {
+      if subscriptionIDs.key(for: reservation.id) == key {
+        targets.removeValue(forKey: key)
+        _ = subscriptionIDs.remove(key)
+      }
+      throw error
     }
-    guard self.clientID == clientID, targets[key] != nil,
-      subscriptionIDs.key(for: reservation.id) == key
-    else { return }
-    var request = Releash_Client_V1_StartStateSubscriptionRequest()
-    request.clientID = clientID
-    request.target = target
-    request.args = args
-    request.subscriptionID = reservation.id
-    _ = try await client.startStateSubscription(request: request, headers: headers).result.get()
   }
+
   private func recoverStream() async {
     guard let policy else { return }
     var attempt = 0
@@ -168,6 +189,7 @@ import SwiftProtobuf
             if case .ready = event.event, event.subscriptionID.isEmpty {
               clientID = id
               subscriptionIDs.reset()
+              targets = desiredTargets
               connected = true
               reconnecting = false
               for key in targets.keys.sorted() { try await register(key, clientID: id) }
@@ -225,13 +247,15 @@ import SwiftProtobuf
     layoutLoaded = true
     if value.hasValue {
       workspaceState = value.value
-      if value.value.hasPaneLayoutJson {
+      if value.value.hasPaneLayout {
         do {
-          layout = try JSONDecoder().decode(
-            PaneLayout.self, from: Data(value.value.paneLayoutJson.utf8))
+          layout = try PaneLayout(value.value.paneLayout)
         } catch { failure = failureMessage(error) }
+      } else {
+        layout = .empty()
       }
     } else {
+      layout = .empty()
       workspaceState = Releash_Client_V1_WorkspaceStateDto()
       workspaceState.version = 1
       workspaceState.tabs.editors = Releash_Client_V1_ListWorkspaceTabEntryDto()
@@ -245,33 +269,31 @@ import SwiftProtobuf
   func editLayout(_ edit: (inout PaneLayout) -> Void) {
     guard layoutLoaded, let path = selectedWorktree, let client else { return }
     edit(&layout)
-    do {
-      var state = workspaceState
-      state.paneLayoutJson = String(decoding: try JSONEncoder().encode(layout), as: UTF8.self)
-      workspaceState = state
-      var request = Releash_Client_V1_SaveWorkspaceStateRequest()
-      request.worktreeName = path
-      request.state = state
-      let prior = saves[path]
-      pendingSaves[path, default: 0] += 1
-      saves[path] = Task {
-        await prior?.value
-        do {
-          _ = try await client.saveWorkspaceState(request: request, headers: headers).result.get()
-        } catch { failure = failureMessage(error) }
-        pendingSaves[path, default: 0] -= 1
-        if pendingSaves[path] == 0 {
-          pendingSaves.removeValue(forKey: path)
-          saves.removeValue(forKey: path)
-          if let clientID {
-            let key = (["workspace-state", path, path]).map { "\($0.utf8.count):\($0)" }.joined()
-            do { try await register(key, clientID: clientID) } catch {
-              failure = failureMessage(error)
-            }
+    var state = workspaceState
+    state.paneLayout = layout.message
+    workspaceState = state
+    var request = Releash_Client_V1_SaveWorkspaceStateRequest()
+    request.worktreeName = path
+    request.state = state
+    let prior = saves[path]
+    pendingSaves[path, default: 0] += 1
+    saves[path] = Task {
+      await prior?.value
+      do {
+        _ = try await client.saveWorkspaceState(request: request, headers: headers).result.get()
+      } catch { failure = failureMessage(error) }
+      pendingSaves[path, default: 0] -= 1
+      if pendingSaves[path] == 0 {
+        pendingSaves.removeValue(forKey: path)
+        saves.removeValue(forKey: path)
+        if let clientID {
+          let key = subscriptionKey("workspace-state", [path, path])
+          do { try await register(key, clientID: clientID) } catch {
+            failure = failureMessage(error)
           }
         }
       }
-    } catch { failure = failureMessage(error) }
+    }
   }
   func setCollapsed(_ path: String, _ value: Bool) {
     guard let client else { return }
