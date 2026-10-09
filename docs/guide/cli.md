@@ -72,6 +72,10 @@ releash server restart
 
 `start` は CLI の実体と同じディレクトリの `releashd` を独立したプロセスとして起動し、発見ファイルによる起動確認後に終了します。稼働済みなら何もせず成功します。起動したプロセスが終了した場合は終了状態と stderr の末尾を表示し、終了コード 1 になります。
 
+`start --json` の成功時は、標準出力に `started` だけを持つ JSON を返します。
+起動した場合は `{"started":true}`、すでに稼働していた場合は `{"started":false}` です。
+`--json` が無い場合は、起動すると `server started`、稼働済みなら `server is already running` を表示します。
+
 `start` の失敗時は、`--json` がある場合だけ、標準エラーに JSON の `error`（`code`、`message`、`guidance`）を返します。
 `--json` が無い場合は、`error: code: message` に続けて起動と再試行の案内文を別の行に表示します。
 

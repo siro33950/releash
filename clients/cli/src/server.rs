@@ -110,12 +110,7 @@ async fn start(dir: &Path) -> Result<bool, ConnectError> {
 
 pub async fn run(dir: &Path, command: ServerSubcommand) -> Result<String, ConnectError> {
     match command {
-        ServerSubcommand::Start { .. } => Ok(if start(dir).await? {
-            "server started\n"
-        } else {
-            "server is already running\n"
-        }
-        .into()),
+        ServerSubcommand::Start { json } => Ok(start_output(start(dir).await?, json)),
         ServerSubcommand::Stop => {
             let discovery = daemon::running(dir)
                 .map_err(daemon_error)?
@@ -139,12 +134,22 @@ pub async fn run(dir: &Path, command: ServerSubcommand) -> Result<String, Connec
     }
 }
 
-pub(crate) fn start_failure(error: &ConnectError) -> serde_json::Value {
-    json!({"error": {
-        "code": error.code.as_str(),
-        "message": error.message.clone().unwrap_or_else(|| error.to_string()),
-        "guidance": startup_guidance(),
-    }})
+fn start_output(started: bool, machine: bool) -> String {
+    if machine {
+        return format!("{}\n", json!({"started": started}));
+    }
+    if started {
+        "server started\n"
+    } else {
+        "server is already running\n"
+    }
+    .into()
+}
+
+pub(crate) fn start_failure(error: &ConnectError, guidance: &str) -> serde_json::Value {
+    let mut value = crate::error_json(error);
+    value["error"]["guidance"] = json!(guidance);
+    value
 }
 
 fn app_bundle(executable: &Path) -> Option<&Path> {

@@ -1,6 +1,20 @@
 use super::*;
 
 #[test]
+fn test_起動成功_jsonは起動の有無を返し平文は維持する() {
+    // Given / When / Then
+    for (started, human) in [
+        (true, "server started\n"),
+        (false, "server is already running\n"),
+    ] {
+        let machine: serde_json::Value =
+            serde_json::from_str(&start_output(started, true)).unwrap();
+        assert_eq!(machine, json!({"started": started}));
+        assert_eq!(start_output(started, false), human);
+    }
+}
+
+#[test]
 fn test_画面判定_実行ファイルの祖先にあるappを選ぶ() {
     // Given / When / Then
     assert_eq!(
@@ -88,7 +102,7 @@ async fn test_起動失敗_理由と起動案内を機械可読で返す() {
     let error = run(dir.path(), ServerSubcommand::Start { json: true })
         .await
         .unwrap_err();
-    let output = start_failure(&error);
+    let output = start_failure(&error, startup_guidance());
     // Then
     assert_eq!(output["error"]["code"], error.code.as_str());
     assert_eq!(output["error"]["message"], error.message.unwrap());
