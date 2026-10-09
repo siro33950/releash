@@ -47,6 +47,7 @@ impl SubscriptionTarget {
                 .map(Self::Terminal)
                 .map_err(|_| SubscriptionError::InvalidId)
             }
+            ("repository-group-state", [path]) => Ok(Self::RepositoryGroupState((*path).into())),
             ("repository-paths", []) => Ok(Self::RepositoryPaths),
             ("workspaces", []) => Ok(Self::Workspaces),
             ("selection", [path, id]) => Ok(Self::Selection((*path).into(), (*id).into())),
@@ -65,9 +66,29 @@ impl SubscriptionTarget {
                 Ok(Self::Branches((*path).into(), Some((*excluded).into())))
             }
             ("branch-base", [path, name]) => Ok(Self::BranchBase((*path).into(), (*name).into())),
+            ("available-branches", [path]) => Ok(Self::AvailableBranches((*path).into())),
             ("branch-status", [path]) => Ok(Self::BranchStatus((*path).into())),
             ("current-branch", [path]) => Ok(Self::CurrentBranch((*path).into())),
             ("issues", [path]) => Ok(Self::Issues((*path).into())),
+            ("issues", [path, filters @ ..]) => {
+                let mut filter = crate::domain::git_host::IssueFilter::default();
+                for value in filters {
+                    match value.split_once('=') {
+                        Some(("label", value)) if !value.is_empty() => {
+                            filter.labels.push(value.into())
+                        }
+                        Some(("milestone", value))
+                            if !value.is_empty() && filter.milestone.is_none() =>
+                        {
+                            filter.milestone = Some(value.into())
+                        }
+                        _ => return Err(SubscriptionError::InvalidId),
+                    }
+                }
+                filter.labels.sort();
+                filter.labels.dedup();
+                Ok(Self::FilteredIssues((*path).into(), filter))
+            }
             ("notion-label-options", [path]) => Ok(Self::NotionLabelOptions((*path).into())),
             ("notion-tasks", [path, count, filters @ ..]) => {
                 parse_notion_tasks(path, count, filters)
@@ -141,6 +162,7 @@ impl SubscriptionTarget {
                     } => vec![workspace.as_str().into(), session_id.clone()],
                 },
             ),
+            Self::RepositoryGroupState(path) => ("repository-group-state", vec![path.clone()]),
             Self::RepositoryPaths => ("repository-paths", vec![]),
             Self::Workspaces => ("workspaces", vec![]),
             Self::Selection(p, id) => ("selection", vec![p.clone(), id.clone()]),
@@ -157,9 +179,21 @@ impl SubscriptionTarget {
                     .collect(),
             ),
             Self::BranchBase(p, n) => ("branch-base", vec![p.clone(), n.clone()]),
+            Self::AvailableBranches(p) => ("available-branches", vec![p.clone()]),
             Self::BranchStatus(p) => ("branch-status", vec![p.clone()]),
             Self::CurrentBranch(p) => ("current-branch", vec![p.clone()]),
             Self::Issues(p) => ("issues", vec![p.clone()]),
+            Self::FilteredIssues(p, filter) => {
+                let mut args = vec![p.clone()];
+                args.extend(filter.labels.iter().map(|label| format!("label={label}")));
+                args.extend(
+                    filter
+                        .milestone
+                        .iter()
+                        .map(|milestone| format!("milestone={milestone}")),
+                );
+                ("issues", args)
+            }
             Self::NotionLabelOptions(p) => ("notion-label-options", vec![p.clone()]),
             Self::NotionTasks(request) => format_notion_tasks(request),
             Self::Worktrees(p) => ("worktrees", vec![p.clone()]),

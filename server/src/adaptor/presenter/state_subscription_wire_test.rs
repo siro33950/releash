@@ -525,6 +525,7 @@ fn test_購読payload_全種類を旧wire型とフィールドへ変換する() 
         ),
         (
             StateValue::WorkspaceState(Some(WorkspaceStateDto {
+                panes: None,
                 version: 1,
                 tabs: WorkspaceTabsStateDto {
                     editors: vec![],
@@ -542,6 +543,7 @@ fn test_購読payload_全種類を旧wire型とフィールドへ変換する() 
             })),
             W::WorkspaceState(wire::NullableWorkspaceStateDto {
                 value: Some(wire::WorkspaceStateDto {
+                    pane_layout_json: None,
                     version: Some(1),
                     tabs: Some(wire::WorkspaceTabsStateDto {
                         editors: Some(wire::ListWorkspaceTabEntryDto { items: vec![] }),

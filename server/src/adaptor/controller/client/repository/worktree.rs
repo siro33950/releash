@@ -30,3 +30,49 @@ pub(crate) async fn remove_worktree_shared(
         .await
         .map_err(AppError::from)
 }
+
+pub(crate) fn parse_launch(
+    launch: Option<crate::adaptor::presenter::client::create_worktrees_request::Launch>,
+) -> Result<
+    crate::usecase::create_worktrees::LaunchAfterCreation,
+    crate::adaptor::presenter::client::CommandFailure,
+> {
+    use crate::adaptor::controller::client::invalid_request;
+    use crate::adaptor::presenter::client::create_worktrees_request::Launch;
+    use crate::usecase::create_worktrees::LaunchAfterCreation as L;
+    Ok(match launch {
+        None => L::None,
+        Some(Launch::Session(session)) => L::Session {
+            provider: match session.provider.as_str() {
+                "claude" => crate::domain::provider_lifecycle::ProviderKind::Claude,
+                "codex" => crate::domain::provider_lifecycle::ProviderKind::Codex,
+                _ => return Err(invalid_request("Unknown provider")),
+            },
+            rows: u16::try_from(session.rows)
+                .ok()
+                .filter(|n| *n > 0)
+                .ok_or_else(|| invalid_request("Invalid rows"))?,
+            cols: u16::try_from(session.cols)
+                .ok()
+                .filter(|n| *n > 0)
+                .ok_or_else(|| invalid_request("Invalid cols"))?,
+            request_id: if session.request_id.trim().is_empty() {
+                return Err(invalid_request("Missing request id"));
+            } else {
+                session.request_id
+            },
+        },
+        Some(Launch::Workflow(workflow)) => L::Workflow {
+            name: if workflow.name.trim().is_empty() {
+                return Err(invalid_request("Missing workflow name"));
+            } else {
+                workflow.name
+            },
+            request: workflow.request,
+        },
+    })
+}
+
+#[cfg(test)]
+#[path = "worktree_test.rs"]
+mod worktree_tests;

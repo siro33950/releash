@@ -77,9 +77,24 @@ pub(crate) fn sample_pr_status() -> PrStatus {
             PrInfo {
                 number: 42,
                 url: "https://github.com/owner/repo/pull/42".to_string(),
+                state: crate::domain::git_host::PrState::Open,
+                draft: false,
             },
         )]),
-        merged_branches: vec!["feat/done".to_string()],
+        completed_prs: vec!["feat/done".to_string()]
+            .into_iter()
+            .map(|name: String| {
+                (
+                    name,
+                    PrInfo {
+                        number: 1,
+                        url: "merged-url".into(),
+                        state: crate::domain::git_host::PrState::Merged,
+                        draft: false,
+                    },
+                )
+            })
+            .collect(),
     }
 }
 

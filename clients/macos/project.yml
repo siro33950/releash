@@ -1,0 +1,60 @@
+name: Releash
+options:
+  deploymentTarget:
+    macOS: '15.0'
+packages:
+  Connect:
+    url: https://github.com/connectrpc/connect-swift
+    exactVersion: 1.0.0
+  SwiftProtobuf:
+    url: https://github.com/apple/swift-protobuf
+    exactVersion: 1.38.1
+settings:
+  base:
+    SWIFT_VERSION: '6.0'
+    MARKETING_VERSION: '0.4.19'
+    CURRENT_PROJECT_VERSION: '1'
+    ENABLE_USER_SCRIPT_SANDBOXING: NO
+    CODE_SIGN_STYLE: Automatic
+    GENERATE_INFOPLIST_FILE: YES
+    INFOPLIST_KEY_NSAppTransportSecurity_NSAllowsLocalNetworking: YES
+    INFOPLIST_KEY_NSAppTransportSecurity_NSAllowsArbitraryLoads: YES
+    MACOSX_DEPLOYMENT_TARGET: '15.0'
+targets:
+  Releash:
+    type: application
+    platform: macOS
+    sources:
+      - Sources
+      - path: Generated
+        excludes: [client-descriptor.bin]
+      - path: Generated/client-descriptor.bin
+        buildPhase: resources
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.releash.macos
+        INFOPLIST_FILE: Info.plist
+        GENERATE_INFOPLIST_FILE: NO
+    dependencies:
+      - package: Connect
+      - package: SwiftProtobuf
+    preBuildScripts:
+      - name: Generate protocol
+        script: '"${SRCROOT}/Scripts/generate.sh"'
+        basedOnDependencyAnalysis: false
+      - name: Bundle server and CLI
+        script: '"${SRCROOT}/Scripts/bundle-helpers.sh"'
+        basedOnDependencyAnalysis: false
+  ReleashTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources: Tests
+    dependencies:
+      - target: Releash
+schemes:
+  Releash:
+    build:
+      targets:
+        Releash: all
+    test:
+      targets: [ReleashTests]

@@ -28,7 +28,16 @@ fn state_dir(app_data_dir: &Path) -> PathBuf {
     app_data_dir.join("workspace_state")
 }
 
+pub(crate) const ABSOLUTE_STATE_KEY_PREFIX: &str = "worktree-";
+
 pub fn storage_key(worktree_name: &str) -> String {
+    if std::path::Path::new(worktree_name).is_absolute() {
+        use sha2::Digest;
+        return format!(
+            "{ABSOLUTE_STATE_KEY_PREFIX}{}",
+            hex::encode(sha2::Sha256::digest(worktree_name.as_bytes()))
+        );
+    }
     worktree_name.replace(['/', '\\'], "_")
 }
 
@@ -38,6 +47,29 @@ pub fn state_file(app_data_dir: &Path, worktree_name: &str) -> PathBuf {
 }
 
 impl WorkspaceStateRepository for WorkspaceStateStore {
+    fn load_repository_group(&self, path: &str) -> Result<bool, WorkspaceStateError> {
+        let file = self.repository_group_file(path);
+        let bytes = match std::fs::read(file) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+            Err(error) => return Err(WorkspaceStateError::Message(error.to_string())),
+        };
+        serde_json::from_slice(&bytes)
+            .map_err(|error| WorkspaceStateError::Message(error.to_string()))
+    }
+    fn save_repository_group(
+        &self,
+        path: &str,
+        collapsed: bool,
+    ) -> Result<(), WorkspaceStateError> {
+        let _guard = self.file_lock.lock();
+        let file = self.repository_group_file(path);
+        std::fs::create_dir_all(file.parent().expect("group state directory"))
+            .map_err(|error| WorkspaceStateError::Message(error.to_string()))?;
+        std::fs::write(file, if collapsed { "true" } else { "false" })
+            .map_err(|error| WorkspaceStateError::Message(error.to_string()))
+    }
+
     fn load(
         &self,
         worktree_name: &str,
@@ -89,13 +121,33 @@ impl WorkspaceStateRepository for WorkspaceStateStore {
 }
 
 impl WorkspaceStateStore {
+    fn repository_group_file(&self, path: &str) -> PathBuf {
+        use sha2::Digest;
+        let key = hex::encode(sha2::Sha256::digest(
+            crate::domain::repository::normalize_repo_path(path).as_bytes(),
+        ));
+        self.app_data_dir
+            .join("repository_group_state")
+            .join(format!("{key}.json"))
+    }
+
     fn read_state(
         &self,
         worktree_name: &str,
     ) -> Result<Option<WorkspaceStateDto>, WorkspaceStateError> {
         let data = match std::fs::read_to_string(state_file(&self.app_data_dir, worktree_name)) {
             Ok(data) => data,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                if !std::path::Path::new(worktree_name).is_absolute() {
+                    return Ok(None);
+                }
+                let legacy = worktree_name.replace(['/', '\\'], "_");
+                match std::fs::read_to_string(state_file(&self.app_data_dir, &legacy)) {
+                    Ok(data) => data,
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+                    Err(error) => return Err(WorkspaceStateError::Message(error.to_string())),
+                }
+            }
             Err(error) => return Err(WorkspaceStateError::Message(error.to_string())),
         };
         serde_json::from_str::<WorkspaceStateDto>(&data)

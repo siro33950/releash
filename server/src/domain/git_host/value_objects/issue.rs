@@ -28,3 +28,27 @@ pub struct IssueInfo {
     pub body: String,
     pub milestone: Option<Milestone>,
 }
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
+pub struct IssueFilter {
+    pub labels: Vec<String>,
+    pub milestone: Option<String>,
+}
+
+impl IssueFilter {
+    pub fn matches(&self, issue: &IssueInfo) -> bool {
+        self.labels
+            .iter()
+            .all(|wanted| issue.labels.iter().any(|label| &label.name == wanted))
+            && self.milestone.as_ref().is_none_or(|wanted| {
+                issue
+                    .milestone
+                    .as_ref()
+                    .is_some_and(|milestone| &milestone.title == wanted)
+            })
+    }
+}
+
+#[cfg(test)]
+#[path = "issue_test.rs"]
+mod issue_tests;

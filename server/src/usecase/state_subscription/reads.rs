@@ -258,6 +258,11 @@ impl WorkspaceStateReads {
                     .map(StateValue::SessionHistory)
                     .map_err(error)
             }
+            T::FilteredIssues(p, filter) => {
+                return Ok(StateValue::Issues(
+                    self.git_host.get_filtered_issues(p, filter).await,
+                ));
+            }
             T::Issues(p) => {
                 return Ok(StateValue::Issues(self.git_host.get_cached_issues(p).await))
             }
@@ -419,6 +424,13 @@ impl WorkspaceStateReads {
                     .collect(),
                 },
             ),
+            T::AvailableBranches(path) => StateValue::BranchStatus(
+                self.repository.list_branches_with_worktree(path).map_err(error)?.into_iter()
+                    .filter(|(branch, has_worktree)| branch.can_create_worktree(*has_worktree)).collect()
+            ),
+            T::RepositoryGroupState(path) => StateValue::RepositoryGroupState(
+                crate::usecase::workspace_state::usecase::load_repository_group_state(self.workspace_state.as_ref(), path).map_err(error)?
+            ),
             T::ReleashBase(p) => {
                 StateValue::ReleashBase(self.repository.get_releash_base(p).map_err(error)?)
             }
@@ -426,7 +438,7 @@ impl WorkspaceStateReads {
                 StateValue::WorkflowConfig(self.app_config.get_workflow_config().map_err(error)?)
             }
             T::DaemonInfo | T::WorkflowExecution(_) | T::WorkflowOutput(..) | T::ReviewSessionThreads(..) | T::ReviewWorktreeThreads(..)
-            | T::ReviewSessionThread(..) | T::ReviewSessionThreadHistory(..) | T::Issues(_)
+            | T::ReviewSessionThread(..) | T::ReviewSessionThreadHistory(..) | T::Issues(_) | T::FilteredIssues(..)
             | T::Terminal(_)
             | T::Workspaces
             | T::Workflows
@@ -447,7 +459,9 @@ impl WorkspaceStateReads {
         target: &SubscriptionTarget,
     ) -> Result<(), StateReadError> {
         match target {
-            SubscriptionTarget::Issues(path) => self.refresh_issues(path).await?,
+            SubscriptionTarget::Issues(path) | SubscriptionTarget::FilteredIssues(path, _) => {
+                self.refresh_issues(path).await?
+            }
             SubscriptionTarget::NotionTasks(request) => self.notion.refresh_tasks(request).await,
             SubscriptionTarget::NotionLabelOptions(path) => {
                 self.notion.refresh_label_options(path).await

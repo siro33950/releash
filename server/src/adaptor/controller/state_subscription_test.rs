@@ -1103,6 +1103,7 @@ mod driver_tests {
                     repositories: vec![WorkspaceListRepository {
                         path: "/repo".into(),
                         worktrees: Fetched::ready(vec![WorkspaceListWorktree {
+                            tracking: Fetched::ready(None),
                             worktree: crate::domain::repository::Worktree {
                                 name: "main".into(),
                                 path: "/repo".into(),
@@ -1119,6 +1120,8 @@ mod driver_tests {
                             pull_request: Some(crate::domain::git_host::PrInfo {
                                 number: self.prs.load(Ordering::SeqCst),
                                 url: String::new(),
+                                state: crate::domain::git_host::PrState::Open,
+                                draft: false,
                             }),
                             tree: Fetched::default(),
                         }]),
@@ -3674,4 +3677,41 @@ mod terminal_composition {
             StateReadFailure::TerminalSubscriptionEnded
         ));
     }
+}
+
+#[test]
+fn test_issue絞り込み対象_条件を正規化し同じrepositoryの変更を受ける() {
+    // Given / When
+    let target = SubscriptionTarget::from_parts(
+        "issues",
+        &[
+            "/repo",
+            "label=z",
+            "milestone=release",
+            "label=a",
+            "label=z",
+        ],
+    )
+    .unwrap();
+    let expected = SubscriptionTarget::FilteredIssues(
+        "/repo".into(),
+        crate::domain::git_host::IssueFilter {
+            labels: vec!["a".into(), "z".into()],
+            milestone: Some("release".into()),
+        },
+    );
+    // Then
+    assert_eq!(target, expected);
+    assert_eq!(
+        SubscriptionTarget::parse(&target.to_string()).unwrap(),
+        target
+    );
+    assert!(target.affected_by(&StateChangeSource::Issues("/repo".into())));
+    assert!(!target.affected_by(&StateChangeSource::Issues("/other".into())));
+    for bad in ["label=", "state=open", "milestone="] {
+        assert!(SubscriptionTarget::from_parts("issues", &["/repo", bad]).is_err());
+    }
+    assert!(
+        SubscriptionTarget::from_parts("issues", &["/repo", "milestone=a", "milestone=b"]).is_err()
+    );
 }

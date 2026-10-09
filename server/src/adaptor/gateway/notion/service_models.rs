@@ -1,5 +1,5 @@
 use crate::domain::app_config::value_objects::NotionPropertyMapping;
-use crate::domain::notion::services::notion_task_title_branch_name;
+use crate::domain::notion::services::notion_task_branch_name;
 use crate::domain::notion::{NotionError, NotionPropertyInfo, NotionTask, NotionTaskQuery};
 
 pub(crate) fn build_notion_filter(
@@ -233,11 +233,7 @@ pub(crate) fn parse_query_response(
                 .map(extract_property_value)
                 .unwrap_or_default()
         };
-        let branch_name = if branch_name.is_empty() {
-            notion_task_title_branch_name(&title)
-        } else {
-            branch_name
-        };
+        let branch_name = notion_task_branch_name(&branch_name, &id);
 
         tasks.push(NotionTask {
             id,

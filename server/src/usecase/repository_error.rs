@@ -9,6 +9,8 @@ use crate::domain::repository::RepositoryError;
 #[derive(Debug, thiserror::Error)]
 pub enum UsecaseError {
     #[error(transparent)]
+    Session(#[from] crate::usecase::agent_session::AgentSessionLaunchUsecaseError),
+    #[error(transparent)]
     Workflow(#[from] crate::domain::workflow::WorkflowError),
     #[error(transparent)]
     Repository(#[from] RepositoryError),

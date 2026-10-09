@@ -34,16 +34,22 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn branch_to_dir_replaces_slashes() {
-        assert_eq!(branch_to_dir("feat/issues/1302"), "feat-issues-1302");
-        assert_eq!(branch_to_dir("main"), "main");
+    fn test_worktreeパス_階層とハイフンを区別する() {
+        assert_eq!(
+            worktree_path("/repo", "feature/a"),
+            "/repo-worktrees/feature/a"
+        );
+        assert_eq!(
+            worktree_path("/repo", "feature-a"),
+            "/repo-worktrees/feature-a"
+        );
     }
 
     #[test]
     fn worktree_path_combines_derived_dir_and_branch_dir() {
         assert_eq!(
             worktree_path("/home/user/projects/my-repo", "feat/issues/1302"),
-            "/home/user/projects/my-repo-worktrees/feat-issues-1302"
+            "/home/user/projects/my-repo-worktrees/feat/issues/1302"
         );
     }
 
@@ -51,7 +57,7 @@ pub(crate) mod tests {
     fn worktree_path_preserves_unc_prefix() {
         assert_eq!(
             worktree_path(r"\\server\share\my-repo", "feat/issues/1302"),
-            "//server/share/my-repo-worktrees/feat-issues-1302"
+            "//server/share/my-repo-worktrees/feat/issues/1302"
         );
     }
 }

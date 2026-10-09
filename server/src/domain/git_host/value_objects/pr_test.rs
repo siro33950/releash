@@ -9,9 +9,24 @@ fn test_マージ状態_gitの判定を保持しopenなprがない場合だけpr
             PrInfo {
                 number: 1,
                 url: "url".into(),
+                state: crate::domain::git_host::PrState::Open,
+                draft: false,
             },
         )]),
-        merged_branches: vec!["merged".into(), "open".into()],
+        completed_prs: vec!["merged".into(), "open".into()]
+            .into_iter()
+            .map(|name: String| {
+                (
+                    name,
+                    PrInfo {
+                        number: 1,
+                        url: "merged-url".into(),
+                        state: crate::domain::git_host::PrState::Merged,
+                        draft: false,
+                    },
+                )
+            })
+            .collect(),
     };
     // When / Then
     assert!(status.branch_is_merged("merged", false));

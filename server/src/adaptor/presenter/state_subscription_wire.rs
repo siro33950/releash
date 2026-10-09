@@ -7,6 +7,7 @@ use crate::usecase::state_subscription::StateValue;
 pub fn payload(value: &StateValue) -> Result<wire::StatePayload, connectrpc::ConnectError> {
     Ok(wire::StatePayload {
         value: Some(match value {
+            StateValue::RepositoryGroupState(collapsed) => wire::state_payload::Value::RepositoryGroupState(wire::RepositoryGroupState { collapsed: *collapsed }),
             StateValue::DaemonInfo(info) => wire::state_payload::Value::DaemonInfo(
                 crate::adaptor::presenter::daemon::server_info(info.clone()),
             ),

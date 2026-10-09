@@ -13,18 +13,26 @@ pub fn worktree_dir(repo_path: &str) -> String {
     normalize_repo_path(&format!("{parent}/{repo_name}-worktrees"))
 }
 
-pub fn branch_to_dir(branch: &str) -> String {
-    branch.replace('/', "-")
-}
-
 pub fn worktree_path(repo_path: &str, branch: &str) -> String {
-    normalize_repo_path(&format!(
-        "{}/{}",
-        worktree_dir(repo_path),
-        branch_to_dir(branch)
-    ))
+    normalize_repo_path(&format!("{}/{branch}", worktree_dir(repo_path)))
 }
 
 #[cfg(test)]
 #[path = "worktree_path_test.rs"]
 mod worktree_path_tests;
+
+pub fn validate_worktree_branches(
+    branches: &[String],
+) -> Result<(), crate::domain::repository::RepositoryError> {
+    let mut unique = std::collections::HashSet::new();
+    if branches.is_empty()
+        || branches
+            .iter()
+            .any(|branch| branch.trim().is_empty() || !unique.insert(branch))
+    {
+        return Err(crate::domain::repository::RepositoryError::rule(
+            "Select distinct non-empty branches",
+        ));
+    }
+    Ok(())
+}

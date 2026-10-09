@@ -649,6 +649,7 @@ fn test_過去attempt_子のないsessionとcommandも通常行と同じkindを�
 
 fn worktree_row(path: &str, branch: &str, tree: Fetched<WorkspaceTree>) -> WorkspaceListWorktree {
     WorkspaceListWorktree {
+        tracking: Fetched::ready(None),
         worktree: Worktree {
             name: branch.to_string(),
             path: path.to_string(),
@@ -689,6 +690,8 @@ fn test_workspaces一覧_持ち主の値と取得の状態を画面が読む名�
     main.pull_request = Some(PrInfo {
         number: 7,
         url: "https://example.com/pr/7".into(),
+        state: crate::domain::git_host::PrState::Open,
+        draft: false,
     });
     let mut feature = worktree_row(
         "/repo-worktrees/feature",
@@ -747,6 +750,8 @@ fn test_workspaces一覧_持ち主の値と取得の状態を画面が読む名�
                             "is_merged": false,
                             "has_pr": true,
                             "pr_number": 7,
+                            "prState": "open",
+                            "removalRequiresForce": false,
                             "pr_url": "https://example.com/pr/7"
                         },
                         {
@@ -758,6 +763,7 @@ fn test_workspaces一覧_持ち主の値と取得の状態を画面が読む名�
                             "is_merged": true,
                             "has_pr": false,
                             "pr_number": null,
+                            "removalRequiresForce": true,
                             "pr_url": null
                         }
                     ],
@@ -770,13 +776,15 @@ fn test_workspaces一覧_持ち主の値と取得の状態を画面が読む名�
                                 "error": "nodes failed"
                             },
                             "snapshot": null,
-                            "workflowHistory": []
+                            "workflowHistory": [],
+                            "executions": []
                         },
                         {
                             "path": "/repo-worktrees/feature",
                             "status": {"state": "empty", "loaded": true, "error": null},
                             "snapshot": {"nodes": [], "archivedSessions": []},
-                            "workflowHistory": []
+                            "workflowHistory": [],
+                            "executions": []
                         }
                     ]
                 },
@@ -1038,6 +1046,8 @@ fn test_pr状態の転送_初回失敗と取得後の失敗を区別する() {
     retained.pull_request = Some(PrInfo {
         number: 42,
         url: "https://example.test/pull/42".into(),
+        state: crate::domain::git_host::PrState::Open,
+        draft: false,
     });
     retained.pull_request_error = Some(failure("PR denied"));
     // When

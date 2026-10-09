@@ -12,7 +12,7 @@ pub use crate::adaptor::gateway::repository::branch::BranchGateway;
 pub use crate::adaptor::presenter::workflow_wire::{
     DiagnosticReport, DiagnosticSpan, DiagnosticStage, Severity,
 };
-pub use crate::domain::repository::{Branch, BranchRepository, RepositoryError};
+pub use crate::domain::repository::{Branch, BranchRepository, BranchTracking, RepositoryError};
 
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]

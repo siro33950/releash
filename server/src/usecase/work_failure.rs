@@ -26,6 +26,7 @@ impl From<&crate::usecase::repository_error::UsecaseError> for Failure {
         use crate::usecase::repository_error::UsecaseError as E;
         match error {
             E::Workflow(error) => Failure::from(error),
+            E::Session(error) => Failure::from(error),
             E::Repository(error) => Failure::from(error),
             E::Rule(_) => Failure::Business(BusinessFailure::Other),
         }
@@ -495,3 +496,18 @@ impl From<&crate::domain::agent_session::ProviderExecutableProbeGatewayError> fo
 #[cfg(test)]
 #[path = "work_failure_test.rs"]
 mod work_failure_tests;
+
+impl From<&crate::usecase::agent_session::AgentSessionLaunchUsecaseError> for Failure {
+    fn from(error: &crate::usecase::agent_session::AgentSessionLaunchUsecaseError) -> Self {
+        use crate::usecase::agent_session::AgentSessionLaunchUsecaseError as E;
+        match error {
+            E::Technical(error) => Failure::from(error),
+            E::Store(error) | E::Conflict(error) => Failure::from(error),
+            E::Launch(error) => Failure::from(error),
+            E::Terminal(error) => Failure::from(error),
+            E::ProviderUnavailable | E::InvalidInput => Failure::Business(BusinessFailure::Other),
+            E::StorageUnavailable => Failure::Technical(TechnicalFailureNature::Transient),
+            E::Corrupt => Failure::Technical(TechnicalFailureNature::Other),
+        }
+    }
+}

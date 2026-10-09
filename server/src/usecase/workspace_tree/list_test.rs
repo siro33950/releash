@@ -15,6 +15,7 @@ fn worktree(path: &str, branch: &str, is_merged: bool) -> Worktree {
 
 fn values(path: &str, branch: &str, is_merged: bool) -> WorktreeValues {
     WorktreeValues {
+        tracking: Fetched::ready(None),
         worktree: worktree(path, branch, is_merged),
         deleting: false,
         dirty_count: Fetched::ready(0),
@@ -53,9 +54,24 @@ fn test_一覧の合成_prの状態でpr情報とmerge済みを決める() {
                 PrInfo {
                     number: 42,
                     url: "https://example.test/pull/42".into(),
+                    state: crate::domain::git_host::PrState::Open,
+                    draft: false,
                 },
             )]),
-            merged_branches: vec!["open".into(), "merged".into()],
+            completed_prs: vec!["open".into(), "merged".into()]
+                .into_iter()
+                .map(|name: String| {
+                    (
+                        name,
+                        PrInfo {
+                            number: 1,
+                            url: "merged-url".into(),
+                            state: crate::domain::git_host::PrState::Merged,
+                            draft: false,
+                        },
+                    )
+                })
+                .collect(),
         }),
     }];
 
@@ -69,11 +85,16 @@ fn test_一覧の合成_prの状態でpr情報とmerge済みを決める() {
         Some(PrInfo {
             number: 42,
             url: "https://example.test/pull/42".into(),
+            state: crate::domain::git_host::PrState::Open,
+            draft: false,
         })
     );
     assert!(!rows[0].merged);
     assert!(rows[1].merged);
-    assert_eq!(rows[1].pull_request, None);
+    assert_eq!(
+        rows[1].pull_request.as_ref().unwrap().state,
+        crate::domain::git_host::PrState::Merged
+    );
     assert!(rows[2].merged);
 }
 

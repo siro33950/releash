@@ -78,6 +78,36 @@ pub fn git_create_branch(repo_path: &str, branch_name: &str) -> Result<(), Repos
 pub struct BranchGateway;
 
 impl BranchRepository for BranchGateway {
+    fn tracking(
+        &self,
+        repo_path: &str,
+        branch: &str,
+    ) -> Result<Option<crate::domain::repository::BranchTracking>, RepositoryError> {
+        let repo = git_operation::run(|| client::discover(repo_path))?;
+        let Some(local) = git_operation::optional(git_operation::run(|| {
+            repo.find_branch(branch, BranchType::Local)
+        }))?
+        else {
+            return Ok(None);
+        };
+        let Some(upstream) = git_operation::optional(git_operation::run(|| local.upstream()))?
+        else {
+            return Ok(None);
+        };
+        let local_oid = git_operation::run(|| local.get().peel_to_commit())?.id();
+        let upstream_oid = git_operation::run(|| upstream.get().peel_to_commit())?.id();
+        let (ahead, behind) =
+            git_operation::run(|| repo.graph_ahead_behind(local_oid, upstream_oid))?;
+        let upstream = git_operation::run(|| upstream.name())?
+            .ok_or_else(|| RepositoryError::rule("upstream name is not UTF-8"))?
+            .to_owned();
+        Ok(Some(crate::domain::repository::BranchTracking {
+            upstream,
+            ahead,
+            behind,
+        }))
+    }
+
     fn list(&self, repo_path: &str) -> Result<Vec<Branch>, RepositoryError> {
         list_branches(repo_path)
     }

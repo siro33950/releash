@@ -15,13 +15,16 @@ pub enum SubscriptionTarget {
     Branches(String, Option<String>),
     BranchBase(String, String),
     BranchStatus(String),
+    AvailableBranches(String),
     CurrentBranch(String),
     Issues(String),
+    FilteredIssues(String, crate::domain::git_host::IssueFilter),
     NotionTasks(crate::usecase::notion::usecase::NotionTaskListRequest),
     NotionLabelOptions(String),
     Worktrees(String),
     StartupRepository,
     WorkspaceState(String, String),
+    RepositoryGroupState(String),
     ReviewSnapshot(String, ReviewBase),
     ReviewFileView(String, String, ReviewSection, ReviewBase),
     ReviewThreads(String),
@@ -70,6 +73,7 @@ impl SubscriptionTarget {
             Self::Branches(path, _)
             | Self::BranchBase(path, _)
             | Self::BranchStatus(path)
+            | Self::AvailableBranches(path)
             | Self::CurrentBranch(path)
             | Self::Worktrees(path)
             | Self::ReviewSnapshot(path, _)
@@ -110,6 +114,7 @@ impl SubscriptionTarget {
             self,
             Self::Workspaces
                 | Self::Issues(_)
+                | Self::FilteredIssues(..)
                 | Self::NotionTasks(..)
                 | Self::NotionLabelOptions(_)
         )
@@ -128,6 +133,7 @@ pub enum StateChangeSource {
     Worktree(String),
     WorkspaceList,
     WorkspaceState(String),
+    RepositoryGroupState(String),
     Providers,
     Issues(String),
     ProviderHistory,
@@ -143,6 +149,9 @@ impl SubscriptionTarget {
     pub fn affected_by(&self, change: &StateChangeSource) -> bool {
         use StateChangeSource as C;
         match change {
+            C::RepositoryGroupState(path) => {
+                matches!(self, Self::RepositoryGroupState(p) if p == path)
+            }
             C::Daemon => matches!(self, Self::DaemonInfo),
             C::Repositories => matches!(self, Self::RepositoryPaths | Self::Workspaces),
             C::Repository(paths) => match self {
@@ -150,6 +159,7 @@ impl SubscriptionTarget {
                 Self::Branches(p, _)
                 | Self::BranchBase(p, _)
                 | Self::BranchStatus(p)
+                | Self::AvailableBranches(p)
                 | Self::CurrentBranch(p)
                 | Self::Worktrees(p)
                 | Self::ReviewSnapshot(p, _)
@@ -172,7 +182,9 @@ impl SubscriptionTarget {
             C::WorkspaceState(name) => matches!(self, Self::WorkspaceState(n, _) if n == name),
             C::ProviderHistory => matches!(self, Self::SessionHistory(_, _)),
             C::Providers => matches!(self, Self::Providers | Self::ProviderAvailability),
-            C::Issues(path) => matches!(self, Self::Issues(p) if p == path),
+            C::Issues(path) => {
+                matches!(self, Self::Issues(p) | Self::FilteredIssues(p, _) if p == path)
+            }
             C::ReviewComments(worktree) => {
                 matches!(
                     self,

@@ -836,6 +836,7 @@ pub async fn test_生成要求_必須fieldと非有限数をusecase実行前に�
         Command::SaveWorkspaceState(wire::SaveWorkspaceStateRequest {
             worktree_name: Some("workspace".into()),
             state: Some(wire::WorkspaceStateDto {
+                pane_layout_json: None,
                 version: Some(2),
                 ..Default::default()
             }),

@@ -77,6 +77,18 @@ impl GitHostUsecase {
         result
     }
 
+    pub(crate) async fn get_filtered_issues(
+        &self,
+        repo_path: &str,
+        filter: &crate::domain::git_host::IssueFilter,
+    ) -> crate::usecase::fetched::Fetched<Vec<IssueInfo>> {
+        let mut result = self.get_cached_issues(repo_path).await;
+        if let Some(issues) = &mut result.value {
+            issues.retain(|issue| filter.matches(issue));
+        }
+        result
+    }
+
     pub(crate) async fn get_cached_issues(
         &self,
         repo_path: &str,

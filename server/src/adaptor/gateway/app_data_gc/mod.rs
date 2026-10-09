@@ -324,6 +324,8 @@ fn workspace_state_keys(name: &str, path: &str, normalized: &str) -> Vec<String>
         crate::adaptor::gateway::workspace_state::repository_impl::storage_key(name),
         crate::adaptor::gateway::workspace_state::repository_impl::storage_key(path),
         crate::adaptor::gateway::workspace_state::repository_impl::storage_key(normalized),
+        path.replace(['/', '\\'], "_"),
+        normalized.replace(['/', '\\'], "_"),
     ];
     if let Some(file_name) = Path::new(normalized)
         .file_name()
@@ -339,6 +341,10 @@ fn workspace_state_keys(name: &str, path: &str, normalized: &str) -> Vec<String>
 fn workspace_state_key_prefixes(path: &str) -> HashSet<String> {
     let normalized = normalize_path(path);
     [
+        crate::adaptor::gateway::workspace_state::repository_impl::ABSOLUTE_STATE_KEY_PREFIX
+            .to_string(),
+        path.replace(['/', '\\'], "_"),
+        normalized.replace(['/', '\\'], "_"),
         crate::adaptor::gateway::workspace_state::repository_impl::storage_key(path),
         crate::adaptor::gateway::workspace_state::repository_impl::storage_key(&normalized),
     ]
