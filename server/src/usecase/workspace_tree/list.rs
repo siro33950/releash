@@ -29,7 +29,7 @@ pub struct WorkspaceListWorktree {
     pub dirty_count: Fetched<usize>,
     /// PR の状態を合わせた merge 済み。
     pub merged: bool,
-    pub pull_request: Option<PrInfo>,
+    pub open_pull_request: Option<PrInfo>,
     pub state_pull_request: Option<PrInfo>,
     pub pull_request_loaded: bool,
     pub tree: Fetched<WorkspaceTree>,
@@ -234,7 +234,7 @@ fn compose(
                                             .value
                                             .as_ref()
                                             .and_then(|prs| prs.for_branch(branch).cloned()),
-                                        pull_request: pull_requests
+                                        open_pull_request: pull_requests
                                             .value
                                             .as_ref()
                                             .and_then(|prs| prs.open_for_branch(branch).cloned()),

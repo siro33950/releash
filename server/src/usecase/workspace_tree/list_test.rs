@@ -81,7 +81,7 @@ fn test_一覧の合成_prの状態でpr情報とmerge済みを決める() {
     // Then
     let rows = list.repositories[0].worktrees.value.as_ref().unwrap();
     assert_eq!(
-        rows[0].pull_request,
+        rows[0].open_pull_request,
         Some(PrInfo {
             number: 42,
             url: "https://example.test/pull/42".into(),
@@ -117,7 +117,7 @@ fn test_一覧の合成_prが未取得ならworktreeのmerge済みをそのま�
     let rows = list.repositories[0].worktrees.value.as_ref().unwrap();
     assert!(!rows[0].merged);
     assert!(rows[1].merged);
-    assert!(rows.iter().all(|row| row.pull_request.is_none()));
+    assert!(rows.iter().all(|row| row.open_pull_request.is_none()));
 }
 
 #[test]
@@ -244,7 +244,7 @@ fn test_一覧の合成_完了済みprとopenのprを別々に保持する() {
         );
         // Then
         let row = &list.repositories[0].worktrees.value.as_ref().unwrap()[0];
-        assert_eq!(row.pull_request, None);
+        assert_eq!(row.open_pull_request, None);
         assert_eq!(row.state_pull_request, Some(completed));
     }
 }

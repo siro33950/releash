@@ -1130,7 +1130,7 @@ mod driver_tests {
                             pull_request_loaded: true,
                             merged: false,
                             state_pull_request: None,
-                            pull_request: Some(crate::domain::git_host::PrInfo {
+                            open_pull_request: Some(crate::domain::git_host::PrInfo {
                                 number: self.prs.load(Ordering::SeqCst),
                                 url: String::new(),
                                 state: crate::domain::git_host::PrState::Open,
