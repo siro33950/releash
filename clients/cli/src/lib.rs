@@ -146,10 +146,10 @@ fn error_json(error: &connectrpc::ConnectError) -> serde_json::Value {
 
 fn failure_output(error: &connectrpc::ConnectError, json: bool, guidance: Option<&str>) -> String {
     if json {
-        let value = match guidance {
-            Some(guidance) => server::start_failure(error, guidance),
-            None => error_json(error),
-        };
+        let mut value = error_json(error);
+        if let Some(guidance) = guidance {
+            value["error"]["guidance"] = serde_json::json!(guidance);
+        }
         return format!("{value}\n");
     }
     let mut output = format!(
