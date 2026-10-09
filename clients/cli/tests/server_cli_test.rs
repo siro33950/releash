@@ -95,6 +95,13 @@ fn test_cli_起動後も独立して稼働し重複起動せず再起動して�
         discovery::process_start_time(second.pid),
         Some(second.process_started_at)
     );
+    for started in [true, false] {
+        let output = run(root, &["server", "start", "--json"]);
+        assert!(output.stderr.is_empty());
+        let value: serde_json::Value = serde_json::from_str(&success(output)).unwrap();
+        assert_eq!(value, serde_json::json!({"started": started}));
+    }
+    success(run(root, &["server", "stop"]));
     assert_eq!(run(root, &["server", "stop"]).status.code(), Some(1));
     assert!(success(run(root, &["server", "restart"])).contains("was not running; started"));
     success(run(root, &["server", "stop"]));
