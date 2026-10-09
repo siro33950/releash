@@ -18,7 +18,7 @@ fn test_worktree作成をdtoへ合成する() {
         .unwrap();
     // Then
     assert_eq!(entry.branch, "feat/issues/1302");
-    assert_eq!(entry.path, "/r-worktrees/feat-issues-1302");
+    assert_eq!(entry.path, "/r-worktrees/feat/issues/1302");
 
     // base 指定時は usecase が releash-base を設定する（旧 gateway 内蔵処理の引き上げ）。
     assert_eq!(
@@ -198,7 +198,7 @@ fn test_worktree作成はunc_repo_pathから意味保存でpathを導出する()
         .create_worktree(r"\\server\share\repo", "feat/issues/1302", true, None)
         .unwrap();
 
-    assert_eq!(entry.path, "//server/share/repo-worktrees/feat-issues-1302");
+    assert_eq!(entry.path, "//server/share/repo-worktrees/feat/issues/1302");
 }
 
 #[test]

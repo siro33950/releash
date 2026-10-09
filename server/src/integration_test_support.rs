@@ -238,6 +238,7 @@ pub mod platform {
     pub use crate::domain::git_host::value_objects::issue::IssueInfo;
     pub use crate::domain::git_host::value_objects::issue::PrAuthor;
     pub use crate::domain::git_host::value_objects::pr::PrInfo;
+    pub use crate::domain::git_host::value_objects::pr::PrState;
     pub use crate::domain::git_host::value_objects::pr::PrStatus;
     pub use crate::domain::local_event::batch::CommitBatchError;
     pub use crate::domain::local_event::batch::CommitBatchResult;
@@ -443,6 +444,8 @@ pub mod providers {
     pub use crate::usecase::provider_lifecycle::ProviderLifecycleUsecase;
 }
 pub mod repository {
+    pub use crate::adaptor::gateway::repository::branch::BranchGateway;
+    pub use crate::domain::repository::{BranchRepository, BranchTracking};
 
     pub use crate::adaptor::gateway::repository::branch::get_current_branch;
     pub use crate::adaptor::gateway::repository::branch::git_create_branch;

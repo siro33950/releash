@@ -17,6 +17,7 @@ pub enum StateValue {
     DaemonInfo(crate::domain::daemon::DaemonInfo),
     Terminal(crate::usecase::terminal_surface::application::TerminalSurfaceStreamItem),
     RepositoryPaths(Vec<String>),
+    RepositoryGroupState(bool),
     Workspaces(WorkspaceList),
     /// 実行木と、選択している Node が画面に出す木にあるか。
     Selection(crate::domain::workspace_tree::WorkspaceTree, bool),

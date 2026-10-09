@@ -354,3 +354,48 @@ async fn test_pr状態の取り直し_違う失敗なら記録して通知する
         vec![crate::usecase::state_subscription::StateChangeSource::WorkspaceList]
     );
 }
+
+#[tokio::test]
+async fn test_issue絞り込み_キャッシュを変えず条件に一致するissueと読取失敗を返す() {
+    // Given
+    let mut issue = sample_issue(1);
+    issue
+        .labels
+        .push(crate::domain::git_host::value_objects::issue::IssueLabel {
+            name: "bug".into(),
+            color: "fff".into(),
+        });
+    issue.milestone = Some(crate::domain::git_host::value_objects::issue::Milestone {
+        title: "release".into(),
+    });
+    let cache = Arc::new(FakeIssueCache::with_lookup(Some(vec![
+        issue,
+        sample_issue(2),
+    ])));
+    cache.record("/repo", Err(GitHostError::External("offline".into())));
+    let provider = Arc::new(FakeProvider::empty());
+    let uc = usecase_with(
+        provider.clone(),
+        Arc::new(FakePrCache::default()),
+        cache.clone(),
+    );
+    let filter = crate::domain::git_host::IssueFilter {
+        labels: vec!["bug".into()],
+        milestone: Some("release".into()),
+    };
+    // When
+    let result = uc.get_filtered_issues("/repo", &filter).await;
+    // Then
+    assert_eq!(
+        result
+            .value
+            .unwrap()
+            .iter()
+            .map(|issue| issue.number)
+            .collect::<Vec<_>>(),
+        [1]
+    );
+    assert!(result.error.is_some());
+    assert_eq!(cache.result("/repo").value.unwrap().len(), 2);
+    assert_eq!(provider.issue_fetch_count(), 0);
+}

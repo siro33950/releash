@@ -163,6 +163,10 @@ struct PausedBranch {
 }
 
 impl BranchRepository for PausedBranch {
+    fn tracking(&self, _: &str, _: &str) -> Result<Option<BranchTracking>, RepositoryError> {
+        Ok(None)
+    }
+
     fn current(&self, repo_path: &str) -> Result<String, RepositoryError> {
         self.started.notify_one();
         self.resume

@@ -1948,6 +1948,12 @@ impl TryFrom<crate::usecase::workspace_state::dto::WorkspaceStateDto> for wire::
         value: crate::usecase::workspace_state::dto::WorkspaceStateDto,
     ) -> Result<Self, String> {
         Ok(Self {
+            pane_layout_json: value
+                .panes
+                .as_ref()
+                .map(serde_json::to_string)
+                .transpose()
+                .map_err(|error| error.to_string())?,
             version: Some(cv(value.version)?),
             tabs: Some(cv(value.tabs)?),
             layout: Some(cv(value.layout)?),
@@ -1962,6 +1968,12 @@ impl TryFrom<wire::WorkspaceStateDto> for crate::usecase::workspace_state::dto::
             return Err("Expected workspace state version 1".into());
         }
         Ok(Self {
+            panes: value
+                .pane_layout_json
+                .as_deref()
+                .map(serde_json::from_str::<crate::usecase::workspace_state::dto::PaneLayoutDto>)
+                .transpose()
+                .map_err(|error| error.to_string())?,
             version: cv(req(value.version, "version")?)?,
             tabs: cv(req(value.tabs, "tabs")?)?,
             layout: cv(req(value.layout, "layout")?)?,

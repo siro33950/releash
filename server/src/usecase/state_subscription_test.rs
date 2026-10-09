@@ -1165,6 +1165,7 @@ async fn test_監視失敗_別購読で検出してもworkspacesの要素へ届�
             WorkspaceListRepository {
                 path: "/failed".into(),
                 worktrees: Fetched::ready(vec![WorkspaceListWorktree {
+                    tracking: Fetched::ready(None),
                     worktree: crate::domain::repository::Worktree::being_deleted(
                         "/failed/linked",
                         "branch".into(),

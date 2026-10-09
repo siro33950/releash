@@ -36,6 +36,8 @@ use crate::domain::repository::{RepositoryError, RepositoryStatusScan, Worktree}
 use crate::usecase::repository_usecase::*;
 use parking_lot::Mutex;
 
+pub type WorktreeCreation = (String, String, bool, Option<String>);
+
 /// 委譲・順序・変換を検証するための記録付き手書き fake。
 /// 1 つの構造体で repository ドメインの全 trait を実装する。
 #[derive(Default)]
@@ -47,6 +49,7 @@ pub struct FakeRepo {
     pub dirty: u32,
     pub branch_base: Option<String>,
     pub fail_create_worktree: bool,
+    pub worktree_creations: Mutex<Vec<WorktreeCreation>>,
     pub fail_remove_worktree: bool,
     pub fail_cleanup: bool,
     pub remove_started: tokio::sync::Notify,
@@ -105,6 +108,14 @@ impl WorktreeExecutionArchiver for FakeRepo {
 }
 
 impl BranchRepository for FakeRepo {
+    fn tracking(
+        &self,
+        _: &str,
+        _: &str,
+    ) -> Result<Option<crate::domain::repository::BranchTracking>, RepositoryError> {
+        Ok(None)
+    }
+
     fn list(&self, _repo_path: &str) -> Result<Vec<Branch>, RepositoryError> {
         Ok(self.branches.clone())
     }
@@ -156,9 +167,15 @@ impl WorktreeRepository for FakeRepo {
         _repo_path: &str,
         worktree_path: &str,
         branch: &str,
-        _create_branch: bool,
-        _base_branch: Option<&str>,
+        create_branch: bool,
+        base_branch: Option<&str>,
     ) -> Result<Worktree, RepositoryError> {
+        self.worktree_creations.lock().push((
+            worktree_path.into(),
+            branch.into(),
+            create_branch,
+            base_branch.map(Into::into),
+        ));
         if self.fail_create_worktree {
             return Err(RepositoryError::External("boom".to_string()));
         }

@@ -109,6 +109,8 @@ message CommandRequest {
     CreateAgentSessionRequest create_agent_session = 26;
     CreateReviewThreadRequest create_review_thread = 27;
     CreateWorktreeRequest create_worktree = 28;
+    CreateWorktreesRequest create_worktrees = 204;
+    SaveRepositoryGroupStateRequest save_repository_group_state = 205;
     DeleteAgentSessionRequest delete_agent_session = 29;
     DeleteFacetRequest delete_facet = 31;
     DeleteNotionConfigRequest delete_notion_config = 32;
@@ -274,6 +276,8 @@ message CommandResult {
     SessionSelection create_agent_session = 26;
     ReviewThreadDto create_review_thread = 27;
     ResultString create_worktree = 28;
+    Liststring create_worktrees = 204;
+    Unit save_repository_group_state = 205;
     Unit delete_agent_session = 29;
     Unit delete_facet = 31;
     Unit delete_notion_config = 32;
@@ -626,6 +630,32 @@ message CreateReviewThreadRequest {
   optional string content = 5 [json_name = "content", (json_required) = true];
 }
 
+message SaveRepositoryGroupStateRequest {
+  string repository_path = 1;
+  bool collapsed = 2;
+}
+message RepositoryGroupState {
+  bool collapsed = 1;
+}
+message CreateWorktreesRequest {
+  string repo_path = 1;
+  repeated string branches = 2;
+  optional string base_branch = 3;
+  oneof launch {
+    WorktreeSessionLaunch session = 4;
+    WorktreeWorkflowLaunch workflow = 5;
+  }
+}
+message WorktreeSessionLaunch {
+  string provider = 1;
+  uint32 rows = 2;
+  uint32 cols = 3;
+  string request_id = 4;
+}
+message WorktreeWorkflowLaunch {
+  string name = 1;
+  optional string request = 2;
+}
 message CreateWorktreeRequest {
   optional string repo_path = 1 [json_name = "repoPath", (json_required) = true];
   optional string branch = 2 [json_name = "branch", (json_required) = true];
@@ -1871,6 +1901,7 @@ message ListWorktreeEntryDto {
 }
 
 message WorkspaceStateDto {
+  optional string pane_layout_json = 4;
   optional uint32 version = 1 [json_name = "version", (json_required) = true, (json_literal) = "1"];
   optional WorkspaceTabsStateDto tabs = 2 [json_name = "tabs", (json_required) = true];
   optional WorkspaceLayoutStateDto layout = 3 [json_name = "layout", (json_required) = true];
@@ -2523,6 +2554,8 @@ service ClientService {
   rpc ComputeVisibleMarkdownBlocks(ComputeVisibleMarkdownBlocksRequest) returns (ListVisibleBlockDto) { option (scope) = SCOPE_OPERATOR; }
   rpc CreateAgentSession(CreateAgentSessionRequest) returns (SessionSelection) { option (scope) = SCOPE_OPERATOR; }
   rpc CreateReviewThread(CreateReviewThreadRequest) returns (ReviewThreadDto) { option (scope) = SCOPE_OPERATOR; }
+  rpc SaveRepositoryGroupState(SaveRepositoryGroupStateRequest) returns (Unit) { option (scope) = SCOPE_OPERATOR; }
+  rpc CreateWorktrees(CreateWorktreesRequest) returns (Liststring) { option (scope) = SCOPE_OPERATOR; }
   rpc CreateWorktree(CreateWorktreeRequest) returns (ResultString) { option (scope) = SCOPE_OPERATOR; }
   rpc DeleteAgentSession(DeleteAgentSessionRequest) returns (Unit) { option (scope) = SCOPE_OPERATOR; }
   rpc DeleteFacet(DeleteFacetRequest) returns (Unit) { option (scope) = SCOPE_OPERATOR; }
@@ -2622,6 +2655,12 @@ message WorkspaceListStatus {
   optional string error = 2 [json_name = "error", (json_nullable) = true];
 }
 message WorkspaceBranch {
+  optional bool removal_requires_force = 13;
+  optional string pr_state = 14;
+  optional string upstream = 15;
+  optional uint64 ahead = 16;
+  optional uint64 behind = 17;
+  optional string tracking_error = 18;
   reserved 1;
   reserved "branch";
   optional string name = 5 [json_name = "name", (json_required) = true];
@@ -2636,7 +2675,18 @@ message WorkspaceBranch {
   optional uint64 pr_number = 3 [json_name = "pr_number", (json_nullable) = true];
   optional string pr_url = 4 [json_name = "pr_url", (json_nullable) = true];
 }
+message WorktreeExecutionSummary {
+  string id = 1;
+  string title = 2;
+  bool is_workflow = 3;
+  optional string provider = 4;
+  string status = 5;
+  uint64 node_count = 6;
+  repeated string session_states = 7;
+}
 message WorkspaceWorktreeList {
+  optional string aggregate_status = 5;
+  repeated WorktreeExecutionSummary executions = 6;
   optional string path = 1 [json_name = "path", (json_required) = true];
   optional WorkspaceListStatus status = 2 [json_name = "status", (json_required) = true];
   optional WorkspaceTreeSnapshot snapshot = 3 [json_name = "snapshot", (json_nullable) = true];
@@ -2721,6 +2771,7 @@ message StatePayload {
 
     TerminalEvent terminal = 19;
     Liststring repository_paths = 1;
+    RepositoryGroupState repository_group_state = 68;
     WorkspaceListSnapshot workspaces = 2;
     WorkspaceTreeSelectionSnapshot selection = 3;
     NullableWorkspaceNodeDetailDto node_detail = 4;

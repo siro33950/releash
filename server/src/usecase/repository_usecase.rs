@@ -113,6 +113,14 @@ impl RepositoryUsecase {
 
     // ── branch（読み取り） ──
 
+    pub fn branch_tracking(
+        &self,
+        repo_path: &str,
+        branch: &str,
+    ) -> Result<Option<crate::domain::repository::BranchTracking>, UsecaseError> {
+        Ok(self.branch.tracking(repo_path, branch)?)
+    }
+
     pub fn list_branches(&self, repo_path: &str) -> Result<Vec<Branch>, UsecaseError> {
         Ok(self.branch.list(repo_path)?)
     }

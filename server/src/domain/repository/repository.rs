@@ -13,6 +13,11 @@ use super::error::RepositoryError;
 
 /// ブランチの参照・作成。
 pub trait BranchRepository: Send + Sync {
+    fn tracking(
+        &self,
+        repo_path: &str,
+        branch: &str,
+    ) -> Result<Option<super::BranchTracking>, RepositoryError>;
     fn list(&self, repo_path: &str) -> Result<Vec<Branch>, RepositoryError>;
     fn current(&self, repo_path: &str) -> Result<String, RepositoryError>;
     fn create(&self, repo_path: &str, branch_name: &str) -> Result<(), RepositoryError>;

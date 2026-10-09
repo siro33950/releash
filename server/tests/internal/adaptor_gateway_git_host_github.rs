@@ -172,7 +172,20 @@ pub(crate) mod tests {
             "--state",
             "open",
             "--json",
-            "headRefName,number,url",
+            "headRefName,number,url,isDraft",
+            "--limit",
+            "100",
+        ]
+    }
+
+    fn closed_pr_list_args() -> Vec<&'static str> {
+        vec![
+            "pr",
+            "list",
+            "--state",
+            "closed",
+            "--json",
+            "headRefName,number,url,isDraft",
             "--limit",
             "100",
         ]
@@ -185,7 +198,7 @@ pub(crate) mod tests {
             "--state",
             "merged",
             "--json",
-            "headRefName",
+            "headRefName,number,url,isDraft",
             "--limit",
             "100",
         ]
@@ -249,8 +262,8 @@ pub(crate) mod tests {
                 )
                 .with_output(
                     &merged_pr_list_args(),
-                    GhCommandOutput::Success(r#"[{"headRefName":"feat/done"}]"#.to_string()),
-                ),
+                    GhCommandOutput::Success(r#"[{"headRefName":"feat/done","number":43,"url":"merged-url","isDraft":false}]"#.to_string()),
+                ).with_output(&closed_pr_list_args(), GhCommandOutput::Success(r#"[{"headRefName":"feat/closed","number":44,"url":"closed-url","isDraft":false}]"#.to_string())),
         );
 
         let status = GitHubGitHostGateway::with_runner(runner.clone())
@@ -264,7 +277,9 @@ pub(crate) mod tests {
             status.open_prs["feat/login"].url,
             "https://github.com/owner/repo/pull/42"
         );
-        assert_eq!(status.merged_branches, vec!["feat/done"]);
+        assert!(status.branch_is_merged("feat/done", false));
+        assert!(!status.branch_is_merged("feat/closed", false));
+        assert_eq!(status.for_branch("feat/closed").unwrap().number, 44);
         assert_eq!(
             runner.output_calls(),
             vec![
@@ -275,6 +290,10 @@ pub(crate) mod tests {
                 FakeOutputCall {
                     args: args_key(&merged_pr_list_args()),
                     repo_path: dir.path().to_string_lossy().to_string(),
+                },
+                FakeOutputCall {
+                    args: args_key(&closed_pr_list_args()),
+                    repo_path: dir.path().to_string_lossy().to_string()
                 },
             ]
         );

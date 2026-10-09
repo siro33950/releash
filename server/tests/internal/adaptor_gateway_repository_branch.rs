@@ -157,3 +157,48 @@ pub(crate) mod branch_gateway_tests {
         assert_eq!(result, Some("develop".to_string()));
     }
 }
+
+#[test]
+pub fn test_upstream_無いbranchとaheadとbehindを区別する() {
+    use releashd::test_support::integration::repository::{BranchGateway, BranchRepository};
+    // Given
+    let (dir, repo) = create_test_repo();
+    let oid = create_initial_commit(&repo);
+    let name = repo.head().unwrap().shorthand().unwrap().to_owned();
+    let path = dir.path().to_str().unwrap();
+    let gateway = BranchGateway;
+    // When / Then
+    assert_eq!(gateway.tracking(path, &name).unwrap(), None);
+    repo.remote("origin", "https://example.test/repo.git")
+        .unwrap();
+    repo.reference("refs/remotes/origin/main", oid, true, "upstream")
+        .unwrap();
+    repo.find_branch(&name, git2::BranchType::Local)
+        .unwrap()
+        .set_upstream(Some("origin/main"))
+        .unwrap();
+    let tracking = gateway.tracking(path, &name).unwrap().unwrap();
+    assert_eq!((tracking.ahead, tracking.behind), (0, 0));
+    let parent = repo.find_commit(oid).unwrap();
+    let tree = parent.tree().unwrap();
+    let signature = git2::Signature::now("test", "test@example.test").unwrap();
+    let ahead = repo
+        .commit(
+            Some("HEAD"),
+            &signature,
+            &signature,
+            "ahead",
+            &tree,
+            &[&parent],
+        )
+        .unwrap();
+    assert_eq!(gateway.tracking(path, &name).unwrap().unwrap().ahead, 1);
+    let remote = repo
+        .commit(None, &signature, &signature, "behind", &tree, &[&parent])
+        .unwrap();
+    repo.reference("refs/remotes/origin/main", remote, true, "remote")
+        .unwrap();
+    let tracking = gateway.tracking(path, &name).unwrap().unwrap();
+    assert_eq!((tracking.ahead, tracking.behind), (1, 1));
+    assert_ne!(ahead, remote);
+}

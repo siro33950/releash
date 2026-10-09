@@ -1,6 +1,12 @@
 use crate::domain::workspace_state::{WorkspaceState, WorkspaceStateError};
 
 pub trait WorkspaceStateRepository: Send + Sync {
+    fn load_repository_group(&self, repository_path: &str) -> Result<bool, WorkspaceStateError>;
+    fn save_repository_group(
+        &self,
+        repository_path: &str,
+        collapsed: bool,
+    ) -> Result<(), WorkspaceStateError>;
     fn load(
         &self,
         worktree_name: &str,

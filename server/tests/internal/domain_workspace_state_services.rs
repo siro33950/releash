@@ -8,6 +8,7 @@ pub(crate) mod tests {
 
     fn make_state() -> WorkspaceState {
         WorkspaceState {
+            panes: None,
             version: 1,
             tabs: WorkspaceTabsState {
                 editors: vec![

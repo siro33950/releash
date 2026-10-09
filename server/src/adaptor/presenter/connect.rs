@@ -65,6 +65,7 @@ impl ConnectFailure for crate::usecase::repository_error::UsecaseError {
     fn connect_code(&self) -> connectrpc::ErrorCode {
         match self {
             Self::Workflow(error) => error.connect_code(),
+            Self::Session(error) => error.connect_code(),
             Self::Repository(error) => error.connect_code(),
             Self::Rule(_) => connectrpc::ErrorCode::FailedPrecondition,
         }

@@ -90,6 +90,35 @@ fn repository(
 
 fn branch(row: &WorkspaceListWorktree) -> wire::WorkspaceBranch {
     wire::WorkspaceBranch {
+        upstream: row
+            .tracking
+            .value
+            .as_ref()
+            .and_then(|tracking| tracking.as_ref())
+            .map(|tracking| tracking.upstream.clone()),
+        ahead: row
+            .tracking
+            .value
+            .as_ref()
+            .and_then(|tracking| tracking.as_ref())
+            .map(|tracking| tracking.ahead as u64),
+        behind: row
+            .tracking
+            .value
+            .as_ref()
+            .and_then(|tracking| tracking.as_ref())
+            .map(|tracking| tracking.behind as u64),
+        tracking_error: row.tracking.error.as_ref().map(ToString::to_string),
+        removal_requires_force: row.worktree.removal_requires_force(row.dirty_count.value),
+        pr_state: row.pull_request.as_ref().map(|pr| {
+            match (pr.state, pr.draft) {
+                (crate::domain::git_host::PrState::Open, true) => "draft",
+                (crate::domain::git_host::PrState::Open, false) => "open",
+                (crate::domain::git_host::PrState::Merged, _) => "merged",
+                (crate::domain::git_host::PrState::Closed, _) => "closed",
+            }
+            .to_owned()
+        }),
         name: Some(row.worktree.branch.clone()),
         is_main_worktree: Some(row.worktree.is_main),
         is_deleting: Some(row.deleting),
@@ -113,6 +142,37 @@ fn worktree(row: &WorkspaceListWorktree) -> Result<wire::WorkspaceWorktreeList, 
         .and_then(|snapshot| snapshot.nodes.as_ref())
         .is_none_or(|nodes| nodes.items.is_empty());
     Ok(wire::WorkspaceWorktreeList {
+        aggregate_status: row
+            .tree
+            .value
+            .as_ref()
+            .and_then(WorkspaceTree::card_status)
+            .map(|status| status.as_public_str().to_owned()),
+        executions: row
+            .tree
+            .value
+            .iter()
+            .flat_map(WorkspaceTree::card_executions)
+            .map(|summary| wire::WorktreeExecutionSummary {
+                id: summary.id,
+                title: summary.title,
+                is_workflow: summary.is_workflow,
+                provider: summary.provider.map(|provider| {
+                    match provider {
+                        ProviderKind::Claude => "claude",
+                        ProviderKind::Codex => "codex",
+                    }
+                    .to_owned()
+                }),
+                status: summary.status.as_public_str().to_owned(),
+                node_count: summary.node_count as u64,
+                session_states: summary
+                    .session_states
+                    .into_iter()
+                    .map(|state| state.as_public_str().to_owned())
+                    .collect(),
+            })
+            .collect(),
         path: Some(row.worktree.path.clone()),
         status: Some(status(&row.tree, empty)),
         workflow_history: Some(wire::ListWorkspaceWorkflowHistoryItem {

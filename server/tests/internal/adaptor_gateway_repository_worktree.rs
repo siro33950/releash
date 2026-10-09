@@ -891,7 +891,7 @@ pub(crate) mod worktree_gateway_tests {
         )
         .unwrap();
 
-        let wt_path2 = _parent.path().join("other").join("wt-occupy");
+        let wt_path2 = wt_path1;
         let result = create_worktree(
             repo_dir.to_str().unwrap(),
             wt_path2.to_str().unwrap(),
@@ -974,5 +974,59 @@ pub(crate) mod worktree_gateway_tests {
             false,
         );
         assert!(result.is_err());
+    }
+    #[test]
+    fn test_worktree作成_階層とハイフンと同じ末尾を別々に作成する() {
+        // Given
+        let (parent, repo_dir, repo) = create_test_repo_with_parent();
+        create_initial_commit(&repo);
+        let legacy = parent.path().join("legacy-path");
+        create_worktree(
+            repo_dir.to_str().unwrap(),
+            legacy.to_str().unwrap(),
+            "legacy",
+            true,
+            None,
+        )
+        .unwrap();
+        // When
+        let mut created = Vec::new();
+        for branch in ["feature/a", "feature-a", "bugfix/a", "other/a"] {
+            let path = format!("{}-worktrees/{branch}", repo_dir.display());
+            created.push(
+                create_worktree(repo_dir.to_str().unwrap(), &path, branch, true, None).unwrap(),
+            );
+        }
+        // Then
+        for (entry, branch) in created
+            .iter()
+            .zip(["feature/a", "feature-a", "bugfix/a", "other/a"])
+        {
+            assert_eq!(
+                entry.path,
+                format!(
+                    "{}-worktrees/{branch}",
+                    repo_dir.canonicalize().unwrap().display()
+                )
+            );
+            assert_eq!(
+                Repository::open(&entry.path)
+                    .unwrap()
+                    .head()
+                    .unwrap()
+                    .shorthand()
+                    .unwrap(),
+                branch
+            );
+            assert_eq!(
+                repo.find_worktree(&entry.name).unwrap().path(),
+                Path::new(&entry.path)
+            );
+        }
+        assert_eq!(repo.worktrees().unwrap().len(), 5);
+        assert!(list_worktrees(repo_dir.to_str().unwrap())
+            .unwrap()
+            .iter()
+            .any(|entry| entry.path == legacy.canonicalize().unwrap().to_str().unwrap()));
     }
 }
