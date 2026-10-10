@@ -57,12 +57,38 @@ impl<'a> ExecutionNodes<'a> {
         nodes: &'a [WorkspaceTreeNode],
         launch: crate::domain::workflow::ExecutionTreeLaunch,
     ) -> Self {
+        let current = nodes
+            .iter()
+            .filter(|node| node.execution_id == root.owner().execution_id)
+            .filter(|node| {
+                !node.is_retry_history
+                    && !nodes.iter().any(|candidate| {
+                        candidate.execution_id == node.execution_id
+                            && candidate.node_name == node.node_name
+                            && candidate.execution_parent == node.execution_parent
+                            && candidate.attempt > node.attempt
+                    })
+            })
+            .map(|node| node.id.as_str())
+            .collect::<std::collections::HashSet<_>>();
         let leaves = nodes
             .iter()
             .filter(|node| {
-                node.execution_id == root.owner().execution_id
-                    && !node.is_retry_history
-                    && node.is_leaf()
+                node.execution_id == root.owner().execution_id && node.is_leaf() && {
+                    let mut ancestor = Some(*node);
+                    while let Some(ancestor_node) = ancestor {
+                        if !current.contains(ancestor_node.id.as_str())
+                            && (ancestor_node.id == node.id || !ancestor_node.is_leaf())
+                        {
+                            break;
+                        }
+                        ancestor = ancestor_node
+                            .parent_id
+                            .as_ref()
+                            .and_then(|parent| nodes.iter().find(|node| &node.id == parent));
+                    }
+                    ancestor.is_none()
+                }
             })
             .collect();
         Self {

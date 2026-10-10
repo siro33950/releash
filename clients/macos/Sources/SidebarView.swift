@@ -124,6 +124,8 @@ struct WorktreeCard: View {
         ? Color.accentColor.opacity(0.12) : Color(nsColor: .controlBackgroundColor),
       in: UIStyle.cardShape
     )
+    .contentShape(UIStyle.cardShape)
+    .onTapGesture { select() }
     .contextMenu {
       Menu("Sessionを追加") {
         ForEach(model.providers, id: \.value) { provider in
@@ -178,6 +180,7 @@ struct WorktreeCard: View {
     request.force = branch.removalRequiresForce
     model.perform {
       _ = try await client.removeWorktree(request: request, headers: model.headers).result.get()
+      model.deselectWorktree(request.worktreePath)
     }
   }
 }

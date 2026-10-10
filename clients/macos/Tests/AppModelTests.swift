@@ -7,6 +7,32 @@ import XCTest
 @testable import Releash
 
 final class AppModelTests: XCTestCase {
+  @MainActor func testDeletingSelectedWorktreeClearsLayoutWithoutChangingAnotherSelection() {
+    let model = AppModel()
+    model.selectedWorktree = "/repo/current"
+    model.layoutLoaded = true
+    model.layout.open(.terminal, in: model.layout.id)
+    let layout = model.layout
+    model.deselectWorktree("/repo/previous")
+    XCTAssertEqual(model.selectedWorktree, "/repo/current")
+    XCTAssertEqual(model.layout, layout)
+    model.deselectWorktree("/repo/current")
+    XCTAssertNil(model.selectedWorktree)
+    XCTAssertFalse(model.layoutLoaded)
+    guard case .pane(_, let tabs, let active) = model.layout else { return XCTFail("Missing empty pane") }
+    XCTAssertTrue(tabs.isEmpty)
+    XCTAssertNil(active)
+  }
+  @MainActor func testReselectingCurrentWorktreeKeepsLoadedLayout() {
+    let model = AppModel()
+    model.selectedWorktree = "/repo/current"
+    model.layoutLoaded = true
+    model.layout.open(.terminal, in: model.layout.id)
+    let layout = model.layout
+    model.selectWorktree("/repo/current")
+    XCTAssertTrue(model.layoutLoaded)
+    XCTAssertEqual(model.layout, layout)
+  }
   @MainActor func testPendingLayoutInputSurvivesOlderServerEchoUntilSaveFinishes() throws {
     let model = AppModel()
     model.selectedWorktree = "/repo/worktree"
@@ -39,6 +65,29 @@ final class AppModelTests: XCTestCase {
 }
 
 extension AppModelTests {
+  @MainActor func testServerCommandErrorDetailsRemainVisible() async throws {
+    let model = AppModel()
+    var message = Releash_Client_V1_CommandError()
+    message.message.value = "revspec 'missing-base' not found"
+    var coded = Releash_Client_V1_CommandError()
+    coded.coded.code = "WORKTREE_LOCKED"
+    coded.coded.message = "Worktree is locked"
+    for (detail, expected) in [(message, message.message.value), (coded, coded.coded.message)] {
+      let error = ConnectError(
+        code: .internalError, message: "Command failed",
+        details: [.init(type: Releash_Client_V1_CommandError.protoMessageName,
+                        payload: try detail.serializedData())])
+      model.perform { throw error }
+      try await eventually { model.failure == expected }
+    }
+    let malformed = ConnectError(
+      code: .internalError, message: "Fallback reason",
+      details: [.init(type: Releash_Client_V1_CommandError.protoMessageName,
+                      payload: Data([0xff]))])
+    model.perform { throw malformed }
+    try await eventually { model.failure == "Fallback reason" }
+  }
+
   @MainActor func testLocalFailureAndConnectFailureWithoutMessageRemainVisible() async throws {
     let model = AppModel()
     model.perform { throw CLIFailure(message: "local failure") }

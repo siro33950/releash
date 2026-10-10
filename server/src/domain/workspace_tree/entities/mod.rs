@@ -303,6 +303,7 @@ impl WorkspaceTree {
             node_execution_id: None,
             node_name: None,
             attempt: None,
+            execution_parent: None,
             retry_predecessor_id: None,
             past_attempt_ids: Vec::new(),
             is_retry_history: false,
@@ -345,6 +346,7 @@ impl WorkspaceTree {
                 node_execution_id: None,
                 node_name: None,
                 attempt: None,
+                execution_parent: None,
                 retry_predecessor_id: None,
                 past_attempt_ids: Vec::new(),
                 is_retry_history: false,
@@ -388,7 +390,7 @@ impl WorkspaceTree {
             .map(|node| node.id.clone())
             .ok_or_else(|| WorkspaceTreeError::MissingWorkflow(execution_id.clone()))?;
 
-        let (parent_id, semantic_key) = if let Some(parent) = parent {
+        let (parent_id, semantic_key) = if let Some(parent) = &parent {
             // 実行木の親（合成子インスタンス）の tree node へぶら下げる。
             let parent_node = self
                 .nodes
@@ -482,6 +484,7 @@ impl WorkspaceTree {
             node_execution_id: Some(node_execution_id),
             node_name: Some(node_name),
             attempt: Some(attempt),
+            execution_parent: parent,
             retry_predecessor_id: None,
             past_attempt_ids: Vec::new(),
             is_retry_history: false,

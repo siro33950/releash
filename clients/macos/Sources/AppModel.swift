@@ -9,6 +9,7 @@ import SwiftProtobuf
   var collapsed: [String: Bool] = [:]
   var selectedWorktree: String?
   var layout: PaneLayout = .empty()
+  var paneInteraction = PaneInteraction()
   var failure: String?
   var connectionFailure: String?
   var connected = false
@@ -223,24 +224,42 @@ import SwiftProtobuf
     }
   }
   private func failureMessage(_ error: Error) -> String {
-    if let error = error as? ConnectError, let message = error.message { return message }
+    if let error = error as? ConnectError {
+      let detail: Releash_Client_V1_CommandError? = error.unpackedDetails().first
+      switch detail?.variant {
+      case .message(let message) where !message.value.isEmpty: return message.value
+      case .coded(let coded): return coded.message.isEmpty ? coded.code : coded.message
+      default: break
+      }
+      if let message = error.message { return message }
+    }
     return error.localizedDescription
   }
   func perform(_ operation: @escaping @MainActor () async throws -> Void) {
     Task { do { try await operation() } catch { failure = failureMessage(error) } }
   }
   func selectWorktree(_ path: String) {
+    guard selectedWorktree != path || !layoutLoaded else { return }
     if let selectedWorktree {
       unsubscribe("workspace-state", [selectedWorktree, selectedWorktree])
     }
     selectedWorktree = path
     layoutLoaded = false
     layout = .empty()
+    paneInteraction = PaneInteraction()
     subscribe("workspace-state", [path, path]) { [weak self] payload in
       guard let self, case .workspaceState(let value) = payload.value, selectedWorktree == path
       else { return }
       receiveWorkspaceState(value, path: path)
     }
+  }
+  func deselectWorktree(_ path: String) {
+    guard selectedWorktree == path else { return }
+    unsubscribe("workspace-state", [path, path])
+    selectedWorktree = nil
+    layoutLoaded = false
+    layout = .empty()
+    paneInteraction = PaneInteraction()
   }
   func receiveWorkspaceState(_ value: Releash_Client_V1_NullableWorkspaceStateDto, path: String) {
     guard selectedWorktree == path, pendingSaves[path, default: 0] == 0 else { return }
@@ -253,9 +272,11 @@ import SwiftProtobuf
         } catch { failure = failureMessage(error) }
       } else {
         layout = .empty()
+    paneInteraction = PaneInteraction()
       }
     } else {
       layout = .empty()
+    paneInteraction = PaneInteraction()
       workspaceState = Releash_Client_V1_WorkspaceStateDto()
       workspaceState.version = 1
       workspaceState.tabs.editors = Releash_Client_V1_ListWorkspaceTabEntryDto()
@@ -268,7 +289,9 @@ import SwiftProtobuf
   }
   func editLayout(_ edit: (inout PaneLayout) -> Void) {
     guard layoutLoaded, let path = selectedWorktree, let client else { return }
+    let previous = layout
     edit(&layout)
+    guard layout != previous else { return }
     var state = workspaceState
     state.paneLayout = layout.message
     workspaceState = state
