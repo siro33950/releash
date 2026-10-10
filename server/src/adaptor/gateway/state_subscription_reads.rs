@@ -22,6 +22,7 @@ impl StateSubscriptionRead for StateSubscriptionReads {
                 | T::ReviewSessionThread(..)
                 | T::ReviewSessionThreadHistory(..)
                 | T::Issues(_)
+                | T::FilteredIssues(..)
                 | T::Workspaces
                 | T::Workflows
                 | T::AgentSession(_)

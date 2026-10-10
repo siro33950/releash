@@ -23,22 +23,12 @@ pub(crate) fn notion_branch_name(
     with_prefix("notion-task".to_string(), prefix)
 }
 
-pub(crate) fn notion_task_title_branch_name(title: &str) -> String {
-    let mut slug = String::new();
-    let mut previous_was_separator = false;
-
-    for ch in title.to_lowercase().chars() {
-        if ch.is_ascii_lowercase() || ch.is_ascii_digit() {
-            slug.push(ch);
-            previous_was_separator = false;
-        } else if !previous_was_separator {
-            slug.push('-');
-            previous_was_separator = true;
-        }
+pub(crate) fn notion_task_branch_name(branch_name_property: &str, task_id: &str) -> String {
+    if branch_name_property.is_empty() {
+        format!("feat/{task_id}")
+    } else {
+        branch_name_property.to_string()
     }
-
-    let slug = slug.trim_matches('-').chars().take(40).collect::<String>();
-    format!("feat/{slug}")
 }
 
 fn sanitize_branch_name_property(value: &str) -> String {

@@ -3,11 +3,36 @@ use crate::adaptor::controller::client::ClientCommandDispatch;
 use crate::adaptor::controller::client::{convert, optional, required};
 use crate::adaptor::controller::client::{invalid_request, outcome};
 use crate::adaptor::presenter::client as wire;
+use crate::adaptor::presenter::client::value;
 
 pub(crate) fn register_shared(
     router: &mut ClientCommandDispatch,
     deps: &crate::adaptor::controller::client::ClientDependencies,
 ) {
+    {
+        let usecase = deps.create_worktrees_usecase.clone();
+        router.register_domain(
+            &["create_worktrees"],
+            Box::new(move |command| {
+                let usecase = usecase.clone();
+                Box::pin(async move {
+                    let wire::command_request::Command::CreateWorktrees(args) = command else {
+                        return Err(invalid_request("Mismatched command"));
+                    };
+                    let usecase =
+                        usecase.ok_or_else(|| invalid_request("Command dependency unavailable"))?;
+                    let launch = worktree::parse_launch(args.launch)?;
+                    let paths = usecase
+                        .execute(args.repo_path, args.branches, args.base_branch, launch)
+                        .await
+                        .map_err(AppError::from)?;
+                    Ok(wire::command_result::Command::CreateWorktrees(value(
+                        paths,
+                    )?))
+                })
+            }),
+        );
+    }
     {
         let state = deps.app_state.clone();
         router.register_domain(

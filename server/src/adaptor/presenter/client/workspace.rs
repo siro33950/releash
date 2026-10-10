@@ -90,6 +90,36 @@ fn repository(
 
 fn branch(row: &WorkspaceListWorktree) -> wire::WorkspaceBranch {
     wire::WorkspaceBranch {
+        upstream: row
+            .tracking
+            .value
+            .as_ref()
+            .and_then(|tracking| tracking.as_ref())
+            .map(|tracking| tracking.upstream.clone()),
+        ahead: row
+            .tracking
+            .value
+            .as_ref()
+            .and_then(|tracking| tracking.as_ref())
+            .map(|tracking| tracking.ahead as u64),
+        behind: row
+            .tracking
+            .value
+            .as_ref()
+            .and_then(|tracking| tracking.as_ref())
+            .map(|tracking| tracking.behind as u64),
+        tracking_error: row.tracking.error.as_ref().map(ToString::to_string),
+        removal_requires_force: row.worktree.removal_requires_force(row.dirty_count.value),
+        pr_state_number: row.state_pull_request.as_ref().map(|pr| pr.number),
+        pr_state: row.state_pull_request.as_ref().map(|pr| {
+            match pr.classification() {
+                crate::domain::git_host::value_objects::pr::PrClassification::Draft => "draft",
+                crate::domain::git_host::value_objects::pr::PrClassification::Open => "open",
+                crate::domain::git_host::value_objects::pr::PrClassification::Merged => "merged",
+                crate::domain::git_host::value_objects::pr::PrClassification::Closed => "closed",
+            }
+            .to_owned()
+        }),
         name: Some(row.worktree.branch.clone()),
         is_main_worktree: Some(row.worktree.is_main),
         is_deleting: Some(row.deleting),
@@ -100,9 +130,9 @@ fn branch(row: &WorkspaceListWorktree) -> wire::WorkspaceBranch {
         is_merged: Some(row.merged),
         has_pr: row
             .pull_request_loaded
-            .then_some(row.pull_request.is_some()),
-        pr_number: row.pull_request.as_ref().map(|pr| pr.number),
-        pr_url: row.pull_request.as_ref().map(|pr| pr.url.clone()),
+            .then_some(row.open_pull_request.is_some()),
+        pr_number: row.open_pull_request.as_ref().map(|pr| pr.number),
+        pr_url: row.open_pull_request.as_ref().map(|pr| pr.url.clone()),
     }
 }
 
@@ -113,6 +143,44 @@ fn worktree(row: &WorkspaceListWorktree) -> Result<wire::WorkspaceWorktreeList, 
         .and_then(|snapshot| snapshot.nodes.as_ref())
         .is_none_or(|nodes| nodes.items.is_empty());
     Ok(wire::WorkspaceWorktreeList {
+        aggregate_status: row
+            .tree
+            .value
+            .as_ref()
+            .and_then(WorkspaceTree::card_status)
+            .map(|status| status.as_public_str().to_owned()),
+        executions: row
+            .tree
+            .value
+            .iter()
+            .flat_map(WorkspaceTree::card_executions)
+            .map(|(execution, nodes)| wire::WorktreeExecutionSummary {
+                id: execution.execution_id.clone(),
+                title: nodes.node().title.clone(),
+                is_workflow: nodes.is_workflow(),
+                provider: execution
+                    .session
+                    .as_ref()
+                    .map(|session| session.provider())
+                    .map(|provider| {
+                        match provider {
+                            ProviderKind::Claude => "claude",
+                            ProviderKind::Codex => "codex",
+                        }
+                        .to_owned()
+                    }),
+                status: nodes
+                    .node()
+                    .status_classification
+                    .as_public_str()
+                    .to_owned(),
+                node_count: nodes.node_count() as u64,
+                session_states: nodes
+                    .session_states()
+                    .map(|state| state.as_public_str().to_owned())
+                    .collect(),
+            })
+            .collect(),
         path: Some(row.worktree.path.clone()),
         status: Some(status(&row.tree, empty)),
         workflow_history: Some(wire::ListWorkspaceWorkflowHistoryItem {

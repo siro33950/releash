@@ -347,6 +347,18 @@ pub fn create_worktree(
     // 壊れた worktree エントリを事前に掃除
     prune_invalid_worktrees(&repo)?;
 
+    let wt_name = wt_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or_else(|| RepositoryError::rule("invalid worktree path"))?;
+
+    let names = git_operation::run(|| repo.worktrees())?;
+    let names = git_operation::run(|| names.iter().collect::<Result<Vec<_>, _>>())?;
+    let unique_name = crate::domain::repository::value_objects::worktree_path::unique_worktree_name(
+        wt_name,
+        &names.iter().flatten().copied().collect::<Vec<_>>(),
+    );
+
     let reference = if create_branch {
         let base = base_branch.unwrap_or("HEAD");
         let obj = git_operation::run(|| repo.revparse_single(base))?;
@@ -355,11 +367,6 @@ pub fn create_worktree(
     } else {
         git_operation::run(|| repo.find_branch(branch, BranchType::Local))?.into_reference()
     };
-
-    let wt_name = wt_path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .ok_or_else(|| RepositoryError::rule("invalid worktree path"))?;
 
     if let Some(parent) = wt_path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| {
@@ -370,7 +377,7 @@ pub fn create_worktree(
     let mut opts = WorktreeAddOptions::new();
     opts.reference(Some(&reference));
 
-    if let Err(e) = git_operation::run(|| repo.worktree(wt_name, wt_path, Some(&opts))) {
+    if let Err(e) = git_operation::run(|| repo.worktree(&unique_name, wt_path, Some(&opts))) {
         if let git_operation::GitOperationError::Stopped(stopped) = e {
             return Err(stopped.into());
         }
@@ -384,7 +391,7 @@ pub fn create_worktree(
     }
 
     Ok(Worktree {
-        name: wt_name.to_string(),
+        name: unique_name,
         path: path_to_worktree_identity(wt_path)?,
         branch: branch.to_string(),
         is_main: false,

@@ -79,27 +79,20 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn derives_fallback_branch_from_task_title() {
-        assert_eq!(
-            notion_task_title_branch_name("Move Notion branch rules"),
-            "feat/move-notion-branch-rules"
-        );
-        assert_eq!(
-            notion_task_title_branch_name("BUG: Fix Login!"),
-            "feat/bug-fix-login"
-        );
-        assert_eq!(notion_task_title_branch_name("ログイン"), "feat/");
-    }
+    fn test_taskのbranch名_未指定ならtask_idを使う() {
+        // Given
+        let first = "abcdef12-3456-7890-abcd-ef1234567890";
+        let second = "abcdef12-3456-7890-abcd-ef1234567891";
 
-    #[test]
-    fn title_fallback_collapses_separators_and_truncates_slug() {
-        assert_eq!(
-            notion_task_title_branch_name("fix -- login///bug"),
-            "feat/fix-login-bug"
+        // When / Then
+        assert_eq!(notion_task_branch_name("", first), format!("feat/{first}"));
+        assert_ne!(
+            notion_task_branch_name("", first),
+            notion_task_branch_name("", second)
         );
         assert_eq!(
-            notion_task_title_branch_name("abcdefghijklmnopqrstuvwxyz1234567890-extra"),
-            "feat/abcdefghijklmnopqrstuvwxyz1234567890-ext"
+            notion_task_branch_name("fix login bug", first),
+            "fix login bug"
         );
     }
 }

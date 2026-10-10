@@ -102,6 +102,10 @@ pub fn compatibility_guidance(compatibility: Compatibility) -> &'static str {
     }
 }
 
+pub fn startup_guidance() -> &'static str {
+    "Run `releash server start`, then retry. If startup fails, check the error and the server log in the data directory."
+}
+
 pub fn daemon_error(error: daemon::DaemonError) -> ConnectError {
     match error {
         daemon::DaemonError::Connect(error) => error,

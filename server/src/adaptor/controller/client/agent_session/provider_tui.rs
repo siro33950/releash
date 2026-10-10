@@ -124,13 +124,11 @@ fn parse_provider(
     value: &str,
     operation: ProviderParseOperation,
 ) -> Result<ProviderKind, AppError> {
-    match value {
-        "claude" => Ok(ProviderKind::Claude),
-        "codex" => Ok(ProviderKind::Codex),
-        _ => Err(provider_tui_coded_error(
-            ProviderTuiCodedError::AgentSessionInvalidProvider(operation),
-        )),
-    }
+    crate::adaptor::controller::client::parse_provider(value).ok_or_else(|| {
+        provider_tui_coded_error(ProviderTuiCodedError::AgentSessionInvalidProvider(
+            operation,
+        ))
+    })
 }
 
 pub(crate) async fn open_agent_session_shared(

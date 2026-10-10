@@ -15,6 +15,7 @@ fn worktree(path: &str, branch: &str, is_merged: bool) -> Worktree {
 
 fn values(path: &str, branch: &str, is_merged: bool) -> WorktreeValues {
     WorktreeValues {
+        tracking: Fetched::ready(None),
         worktree: worktree(path, branch, is_merged),
         deleting: false,
         dirty_count: Fetched::ready(0),
@@ -53,9 +54,24 @@ fn test_一覧の合成_prの状態でpr情報とmerge済みを決める() {
                 PrInfo {
                     number: 42,
                     url: "https://example.test/pull/42".into(),
+                    state: crate::domain::git_host::PrState::Open,
+                    draft: false,
                 },
             )]),
-            merged_branches: vec!["open".into(), "merged".into()],
+            completed_prs: vec!["open".into(), "merged".into()]
+                .into_iter()
+                .map(|name: String| {
+                    (
+                        name,
+                        PrInfo {
+                            number: 1,
+                            url: "merged-url".into(),
+                            state: crate::domain::git_host::PrState::Merged,
+                            draft: false,
+                        },
+                    )
+                })
+                .collect(),
         }),
     }];
 
@@ -65,15 +81,20 @@ fn test_一覧の合成_prの状態でpr情報とmerge済みを決める() {
     // Then
     let rows = list.repositories[0].worktrees.value.as_ref().unwrap();
     assert_eq!(
-        rows[0].pull_request,
+        rows[0].open_pull_request,
         Some(PrInfo {
             number: 42,
             url: "https://example.test/pull/42".into(),
+            state: crate::domain::git_host::PrState::Open,
+            draft: false,
         })
     );
     assert!(!rows[0].merged);
     assert!(rows[1].merged);
-    assert_eq!(rows[1].pull_request, None);
+    assert_eq!(
+        rows[1].state_pull_request.as_ref().unwrap().state,
+        crate::domain::git_host::PrState::Merged
+    );
     assert!(rows[2].merged);
 }
 
@@ -96,7 +117,7 @@ fn test_一覧の合成_prが未取得ならworktreeのmerge済みをそのま�
     let rows = list.repositories[0].worktrees.value.as_ref().unwrap();
     assert!(!rows[0].merged);
     assert!(rows[1].merged);
-    assert!(rows.iter().all(|row| row.pull_request.is_none()));
+    assert!(rows.iter().all(|row| row.open_pull_request.is_none()));
 }
 
 #[test]
@@ -195,4 +216,35 @@ fn test_一覧の合成_未コミット数とprの読取失敗を未設定と区
             .map(|failure| failure.message.as_str()),
         Some("PR failed")
     );
+}
+
+#[test]
+fn test_一覧の合成_完了済みprとopenのprを別々に保持する() {
+    // Given
+    for state in [
+        crate::domain::git_host::PrState::Merged,
+        crate::domain::git_host::PrState::Closed,
+    ] {
+        let completed = PrInfo {
+            number: 42,
+            url: "https://example.test/42".into(),
+            state,
+            draft: false,
+        };
+        let list = compose(
+            vec![RepositoryValues {
+                path: "/repo".into(),
+                worktrees: Fetched::ready(vec![values("/repo", "feature", false)]),
+                pull_requests: Fetched::ready(PrStatus {
+                    open_prs: Default::default(),
+                    completed_prs: [("feature".into(), completed.clone())].into(),
+                }),
+            }],
+            vec![Fetched::default()],
+        );
+        // Then
+        let row = &list.repositories[0].worktrees.value.as_ref().unwrap()[0];
+        assert_eq!(row.open_pull_request, None);
+        assert_eq!(row.state_pull_request, Some(completed));
+    }
 }

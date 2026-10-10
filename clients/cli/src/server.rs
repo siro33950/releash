@@ -1,4 +1,4 @@
-use crate::client::{compatibility_guidance, daemon_error};
+use crate::client::{compatibility_guidance, daemon_error, startup_guidance};
 use crate::{compatibility::Compatibility, daemon, data_dir, descriptor, discovery};
 use clap::Subcommand;
 use connectrpc::ConnectError;
@@ -7,7 +7,10 @@ use std::path::Path;
 
 #[derive(Subcommand, Debug)]
 pub(crate) enum ServerSubcommand {
-    Start,
+    Start {
+        #[arg(long)]
+        json: bool,
+    },
     Stop,
     Restart,
 }
@@ -54,6 +57,7 @@ pub async fn status(dir: &Path, machine: bool) -> Result<String, ConnectError> {
             Compatibility::ClientOlder => "client_older",
         }),
         "guidance": running.as_ref().map(|s| compatibility_guidance(s.compatibility)),
+        "startup_guidance": running.is_none().then(startup_guidance),
         "connection": discovery.as_ref().map(|d| json!({"host": "127.0.0.1", "port": d.port})),
         "discovery_file": discovery::discovery_file(dir),
     });
@@ -106,12 +110,7 @@ async fn start(dir: &Path) -> Result<bool, ConnectError> {
 
 pub async fn run(dir: &Path, command: ServerSubcommand) -> Result<String, ConnectError> {
     match command {
-        ServerSubcommand::Start => Ok(if start(dir).await? {
-            "server started\n"
-        } else {
-            "server is already running\n"
-        }
-        .into()),
+        ServerSubcommand::Start { json } => Ok(start_output(start(dir).await?, json)),
         ServerSubcommand::Stop => {
             let discovery = daemon::running(dir)
                 .map_err(daemon_error)?
@@ -133,6 +132,18 @@ pub async fn run(dir: &Path, command: ServerSubcommand) -> Result<String, Connec
             .into())
         }
     }
+}
+
+fn start_output(started: bool, machine: bool) -> String {
+    if machine {
+        return format!("{}\n", json!({"started": started}));
+    }
+    if started {
+        "server started\n"
+    } else {
+        "server is already running\n"
+    }
+    .into()
 }
 
 fn app_bundle(executable: &Path) -> Option<&Path> {

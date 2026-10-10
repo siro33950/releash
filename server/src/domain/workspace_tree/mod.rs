@@ -20,3 +20,5 @@ pub use value_objects::{
     WorkspaceNodeStatusClassification, WorkspaceStructureFact, WorkspaceTreeNode,
 };
 pub(crate) use visible::WorkspaceVisibleNode;
+
+pub(crate) mod card;

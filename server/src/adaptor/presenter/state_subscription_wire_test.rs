@@ -191,6 +191,10 @@ fn test_購読事象_対象の定期印の旧転送形式を保つ() {
 
 #[test]
 fn test_購読payload_全種類を旧wire型とフィールドへ変換する() {
+    use crate::domain::workspace_state::{
+        value_objects::{WorkspaceLayoutState, WorkspaceTabsState},
+        WorkspaceState,
+    };
     use crate::usecase::agent_session::{
         AgentSessionHistoryCandidateDto, AgentSessionHistoryPageDto, AgentSessionItemDto,
         AgentSessionLifecycleDto, AgentSessionOperationsDto, AgentSessionTreeLocationDto,
@@ -201,9 +205,6 @@ fn test_購読payload_全種類を旧wire型とフィールドへ変換する() 
     use crate::usecase::workflow::{
         WorkspaceNodeCapabilitiesDto, WorkspaceNodeContentDto, WorkspaceNodeDetailDto,
         WorkspaceSessionNodeContentDto,
-    };
-    use crate::usecase::workspace_state::dto::{
-        WorkspaceLayoutStateDto, WorkspaceStateDto, WorkspaceTabsStateDto,
     };
     use crate::usecase::workspace_tree::WorkspaceList;
     use wire::state_payload::Value as W;
@@ -434,31 +435,39 @@ fn test_購読payload_全種類を旧wire型とフィールドへ変換する() 
             }),
         ),
         (
-            StateValue::Issues(crate::usecase::fetched::Fetched::ready(vec![
-                crate::domain::git_host::IssueInfo {
-                    number: 13,
-                    title: "Fix".into(),
-                    state: "OPEN".into(),
-                    url: "https://example.test/13".into(),
-                    author: crate::domain::git_host::PrAuthor {
-                        login: "author".into(),
+            StateValue::Issues(crate::usecase::fetched::Fetched::ready(
+                crate::usecase::git_host::git_host_usecase::IssueListing {
+                    options: crate::domain::git_host::value_objects::issue::IssueOptions {
+                        labels: vec!["bug".into()],
+                        milestones: vec!["next".into()],
                     },
-                    created_at: "created".into(),
-                    updated_at: "updated".into(),
-                    labels: vec![crate::domain::git_host::IssueLabel {
-                        name: "bug".into(),
-                        color: "red".into(),
+                    issues: vec![crate::domain::git_host::IssueInfo {
+                        number: 13,
+                        title: "Fix".into(),
+                        state: "OPEN".into(),
+                        url: "https://example.test/13".into(),
+                        author: crate::domain::git_host::PrAuthor {
+                            login: "author".into(),
+                        },
+                        created_at: "created".into(),
+                        updated_at: "updated".into(),
+                        labels: vec![crate::domain::git_host::IssueLabel {
+                            name: "bug".into(),
+                            color: "red".into(),
+                        }],
+                        assignees: vec![crate::domain::git_host::PrAuthor {
+                            login: "assignee".into(),
+                        }],
+                        body: "body".into(),
+                        milestone: Some(crate::domain::git_host::Milestone {
+                            title: "next".into(),
+                        }),
                     }],
-                    assignees: vec![crate::domain::git_host::PrAuthor {
-                        login: "assignee".into(),
-                    }],
-                    body: "body".into(),
-                    milestone: Some(crate::domain::git_host::Milestone {
-                        title: "next".into(),
-                    }),
                 },
-            ])),
+            )),
             W::Issues(wire::IssuesSnapshot {
+                labels: vec!["bug".into()],
+                milestones: vec!["next".into()],
                 read_error: None,
                 issues: Some(wire::ListIssueInfoDto {
                     items: vec![wire::IssueInfoDto {
@@ -524,13 +533,14 @@ fn test_購読payload_全種類を旧wire型とフィールドへ変換する() 
             }),
         ),
         (
-            StateValue::WorkspaceState(Some(WorkspaceStateDto {
+            StateValue::WorkspaceState(Some(WorkspaceState {
+                panes: None,
                 version: 1,
-                tabs: WorkspaceTabsStateDto {
+                tabs: WorkspaceTabsState {
                     editors: vec![],
                     active_editor_path: Some("/file".into()),
                 },
-                layout: WorkspaceLayoutStateDto {
+                layout: WorkspaceLayoutState {
                     center_tab: "agent".into(),
                     active_view: "git".into(),
                     left_nav_collapsed: true,
@@ -542,6 +552,7 @@ fn test_購読payload_全種類を旧wire型とフィールドへ変換する() 
             })),
             W::WorkspaceState(wire::NullableWorkspaceStateDto {
                 value: Some(wire::WorkspaceStateDto {
+                    pane_layout: None,
                     version: Some(1),
                     tabs: Some(wire::WorkspaceTabsStateDto {
                         editors: Some(wire::ListWorkspaceTabEntryDto { items: vec![] }),

@@ -10,6 +10,7 @@ use tempfile::TempDir;
 
 fn make_state() -> WorkspaceState {
     WorkspaceState {
+        panes: None,
         version: 1,
         tabs: WorkspaceTabsState {
             editors: vec![
@@ -193,4 +194,131 @@ pub fn test_表示状態保存_壊れた保存ファイルを変更せず拒む(
     // Then
     assert!(result.is_err());
     assert_eq!(std::fs::read_to_string(path).unwrap(), "broken");
+}
+
+#[test]
+pub fn test_repositoryグループ_独立して保存し新しいstoreで復元する() {
+    // Given
+    let directory = tempfile::tempdir().unwrap();
+    let store = WorkspaceStateStore::new(directory.path().into());
+    // When
+    store.save_repository_group("/a/repo", true).unwrap();
+    store.save_repository_group("/b/repo", false).unwrap();
+    let restored = WorkspaceStateStore::new(directory.path().into());
+    // Then
+    assert!(restored.load_repository_group("/a/repo").unwrap());
+    assert!(!restored.load_repository_group("/b/repo").unwrap());
+    assert!(!restored.load_repository_group("/missing").unwrap());
+}
+
+#[test]
+pub fn test_repository折りたたみ_壊れた保存値を既定値で隠さない() {
+    // Given
+    let dir = TempDir::new().unwrap();
+    let store = WorkspaceStateStore::new(dir.path().to_path_buf());
+    store.save_repository_group("/repo", true).unwrap();
+    let file = std::fs::read_dir(dir.path().join("repository_group_state"))
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    std::fs::write(file, "broken").unwrap();
+    // When / Then
+    assert!(store.load_repository_group("/repo").is_err());
+}
+
+#[test]
+pub fn test_worktree表示状態_絶対pathの区切りとunderscoreが衝突しない() {
+    // Given
+    let dir = TempDir::new().unwrap();
+    let store = WorkspaceStateStore::new(dir.path().to_path_buf());
+    let mut one = make_state();
+    one.layout.left_nav_collapsed = true;
+    let two = make_state();
+    // When
+    store.set("/repo/a/b", one);
+    store.save("/repo/a/b").unwrap();
+    store.set("/repo/a_b", two);
+    store.save("/repo/a_b").unwrap();
+    let restored = WorkspaceStateStore::new(dir.path().to_path_buf());
+    // Then
+    assert_ne!(
+        state_file(dir.path(), "/repo/a/b"),
+        state_file(dir.path(), "/repo/a_b")
+    );
+    assert!(
+        restored
+            .load("/repo/a/b", "/repo/a/b")
+            .unwrap()
+            .unwrap()
+            .layout
+            .left_nav_collapsed
+    );
+    assert!(
+        !restored
+            .load("/repo/a_b", "/repo/a_b")
+            .unwrap()
+            .unwrap()
+            .layout
+            .left_nav_collapsed
+    );
+}
+
+#[test]
+pub fn test_worktree表示状態_絶対pathの旧保存を読み新しい保存を優先する() {
+    // Given
+    let dir = TempDir::new().unwrap();
+    let store = WorkspaceStateStore::new(dir.path().to_path_buf());
+    store.set("_repo_wt", make_state());
+    store.save("_repo_wt").unwrap();
+    // When / Then
+    assert!(store.load("/repo/wt", "/repo/wt").unwrap().is_some());
+    let mut next = make_state();
+    next.layout.left_nav_collapsed = true;
+    store.set("/repo/wt", next);
+    store.save("/repo/wt").unwrap();
+    assert!(
+        store
+            .load("/repo/wt", "/repo/wt")
+            .unwrap()
+            .unwrap()
+            .layout
+            .left_nav_collapsed
+    );
+    std::fs::write(state_file(dir.path(), "/repo/wt"), "broken").unwrap();
+    assert!(store.load("/repo/wt", "/repo/wt").is_err());
+}
+
+#[test]
+fn test_pane保存_異なるworktreeの分割と全タブを新storeで復元する() {
+    // Given
+    let dir = TempDir::new().unwrap();
+    let store = WorkspaceStateStore::new(dir.path().into());
+    let mut expected = Vec::new();
+    for (name, axis, ratio) in [("/repo/a", "horizontal", 0.3), ("/repo/b", "vertical", 0.7)] {
+        let mut json = serde_json::json!({
+            "version": 1, "tabs": {"editors": [], "activeEditorPath": null},
+            "layout": {"centerTab": "agent", "activeView": "git", "leftNavCollapsed": false, "rightCollapsed": false, "rightBottomCollapsed": false}
+        });
+        json["panes"] = serde_json::json!({
+            "kind":"split", "id":"root", "axis":axis, "ratio":ratio,
+            "first":{"kind":"pane", "id":"a", "tabs":[{"id":"terminal", "kind":"terminal"}], "active_tab":"terminal"},
+            "second":{"kind":"pane", "id":"b", "tabs":[{"id":"workflow", "kind":"workflow"},{"id":"file", "kind":"file"}], "active_tab":"file"}
+        });
+        let file = state_file(dir.path(), name);
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, serde_json::to_vec(&json).unwrap()).unwrap();
+        let state = store.load(name, "/repo").unwrap().unwrap();
+        state.panes.as_ref().unwrap().validate().unwrap();
+        store.set(name, state.clone());
+        store.save(name).unwrap();
+        expected.push((name, state));
+    }
+    // When
+    let restarted = WorkspaceStateStore::new(dir.path().into());
+    // Then
+    for (name, state) in expected {
+        assert_eq!(restarted.load(name, "/repo").unwrap(), Some(state));
+    }
 }

@@ -816,8 +816,18 @@ pub async fn test_workspace保存_connectがui追加fieldを受理し既存項�
         .load("workspace", worktree.to_str().unwrap())
         .unwrap()
         .unwrap();
-    let restored = releashd::test_support::integration::platform::WorkspaceStateDto::from(restored);
-    assert_eq!(serde_json::to_value(restored).unwrap(), expected);
+    let restored = wire::WorkspaceStateDto::try_from(restored).unwrap();
+    let mut restored =
+        wire::from_message("releash.client.v1.WorkspaceStateDto", &restored).unwrap();
+    restored["layout"]
+        .as_object_mut()
+        .unwrap()
+        .remove("reviewCollapsed");
+    restored["layout"]
+        .as_object_mut()
+        .unwrap()
+        .remove("diffOnlyMode");
+    assert_eq!(restored, expected);
     let persisted: Value = serde_json::from_slice(
         &std::fs::read(data.path().join("workspace_state/workspace.json")).unwrap(),
     )
@@ -836,6 +846,7 @@ pub async fn test_生成要求_必須fieldと非有限数をusecase実行前に�
         Command::SaveWorkspaceState(wire::SaveWorkspaceStateRequest {
             worktree_name: Some("workspace".into()),
             state: Some(wire::WorkspaceStateDto {
+                pane_layout: None,
                 version: Some(2),
                 ..Default::default()
             }),

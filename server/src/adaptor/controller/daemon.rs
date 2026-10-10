@@ -529,7 +529,14 @@ pub async fn compose(
         .join("provider-launches")
         .to_string_lossy()
         .into_owned();
+    let create_worktrees_usecase =
+        Arc::new(usecase::create_worktrees::CreateWorktreesUsecase::new(
+            app_state.repository_usecase.clone(),
+            agent_session_launch.clone(),
+            workflow_runtime_usecase.clone(),
+        ));
     let dependencies = super::client::ClientDependencies {
+        create_worktrees_usecase: Some(create_worktrees_usecase),
         installation_usecase: Some(installation),
         workspace_node_command_usecase: Some(workspace_node_command_usecase),
         app_state: Some(app_state),

@@ -1014,16 +1014,17 @@ pub async fn test_workspace読取_実経路で失敗分類を保持する() {
     let query = service(&repository);
     let workspace = WorkspaceIdentity::new("/repo");
     for (failure, expected) in ReadFailure::cases() {
-        for tree in [false, true] {
-            let expected =
-                if tree && matches!(failure, ReadFailure::Sqlite(rusqlite::ffi::SQLITE_IOERR)) {
-                    connectrpc::ErrorCode::Internal
-                } else {
-                    expected
-                };
+        for mode in 0..2 {
+            let expected = if mode != 0
+                && matches!(failure, ReadFailure::Sqlite(rusqlite::ffi::SQLITE_IOERR))
+            {
+                connectrpc::ErrorCode::Internal
+            } else {
+                expected
+            };
             store.fail_next_read(failure.clone());
             // When
-            let result = if tree {
+            let result = if mode == 1 {
                 repository
                     .load_trees(std::slice::from_ref(&workspace))
                     .await

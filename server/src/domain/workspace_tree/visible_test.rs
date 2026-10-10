@@ -31,6 +31,7 @@ fn node(id: &str, parent_id: Option<&str>, kind: WorkspaceNodeKind) -> Workspace
         node_execution_id: leaf_or_branch.then(|| format!("{id}-exec")),
         node_name: leaf_or_branch.then(|| id.to_string()),
         attempt: leaf_or_branch.then_some(1),
+        execution_parent: None,
         retry_predecessor_id: None,
         past_attempt_ids: Vec::new(),
         is_retry_history: false,

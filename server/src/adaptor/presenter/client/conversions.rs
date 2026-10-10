@@ -1816,12 +1816,12 @@ impl TryFrom<crate::usecase::workflow::WorkspaceCommandResultDto>
     }
 }
 
-impl TryFrom<crate::usecase::workspace_state::dto::WorkspaceLayoutStateDto>
+impl TryFrom<crate::domain::workspace_state::value_objects::WorkspaceLayoutState>
     for wire::WorkspaceLayoutStateDto
 {
     type Error = String;
     fn try_from(
-        value: crate::usecase::workspace_state::dto::WorkspaceLayoutStateDto,
+        value: crate::domain::workspace_state::value_objects::WorkspaceLayoutState,
     ) -> Result<Self, String> {
         Ok(Self {
             center_tab: Some(cv(value.center_tab)?),
@@ -1838,7 +1838,7 @@ impl TryFrom<crate::usecase::workspace_state::dto::WorkspaceLayoutStateDto>
 }
 
 impl TryFrom<wire::WorkspaceLayoutStateDto>
-    for crate::usecase::workspace_state::dto::WorkspaceLayoutStateDto
+    for crate::domain::workspace_state::value_objects::WorkspaceLayoutState
 {
     type Error = String;
     fn try_from(value: wire::WorkspaceLayoutStateDto) -> Result<Self, String> {
@@ -1942,12 +1942,11 @@ impl TryFrom<crate::usecase::workflow::WorkspaceSessionNodeContentDto>
     }
 }
 
-impl TryFrom<crate::usecase::workspace_state::dto::WorkspaceStateDto> for wire::WorkspaceStateDto {
+impl TryFrom<crate::domain::workspace_state::WorkspaceState> for wire::WorkspaceStateDto {
     type Error = String;
-    fn try_from(
-        value: crate::usecase::workspace_state::dto::WorkspaceStateDto,
-    ) -> Result<Self, String> {
+    fn try_from(value: crate::domain::workspace_state::WorkspaceState) -> Result<Self, String> {
         Ok(Self {
+            pane_layout: value.panes.map(cv).transpose()?,
             version: Some(cv(value.version)?),
             tabs: Some(cv(value.tabs)?),
             layout: Some(cv(value.layout)?),
@@ -1955,13 +1954,14 @@ impl TryFrom<crate::usecase::workspace_state::dto::WorkspaceStateDto> for wire::
     }
 }
 
-impl TryFrom<wire::WorkspaceStateDto> for crate::usecase::workspace_state::dto::WorkspaceStateDto {
+impl TryFrom<wire::WorkspaceStateDto> for crate::domain::workspace_state::WorkspaceState {
     type Error = String;
     fn try_from(value: wire::WorkspaceStateDto) -> Result<Self, String> {
         if value.version != Some(1) {
             return Err("Expected workspace state version 1".into());
         }
         Ok(Self {
+            panes: value.pane_layout.map(cv).transpose()?,
             version: cv(req(value.version, "version")?)?,
             tabs: cv(req(value.tabs, "tabs")?)?,
             layout: cv(req(value.layout, "layout")?)?,
@@ -1969,12 +1969,12 @@ impl TryFrom<wire::WorkspaceStateDto> for crate::usecase::workspace_state::dto::
     }
 }
 
-impl TryFrom<crate::usecase::workspace_state::dto::WorkspaceTabEntryDto>
+impl TryFrom<crate::domain::workspace_state::value_objects::workspace_tabs_state::WorkspaceTabEntry>
     for wire::WorkspaceTabEntryDto
 {
     type Error = String;
     fn try_from(
-        value: crate::usecase::workspace_state::dto::WorkspaceTabEntryDto,
+        value: crate::domain::workspace_state::value_objects::workspace_tabs_state::WorkspaceTabEntry,
     ) -> Result<Self, String> {
         Ok(Self {
             path: Some(cv(value.path)?),
@@ -1984,7 +1984,7 @@ impl TryFrom<crate::usecase::workspace_state::dto::WorkspaceTabEntryDto>
 }
 
 impl TryFrom<wire::WorkspaceTabEntryDto>
-    for crate::usecase::workspace_state::dto::WorkspaceTabEntryDto
+    for crate::domain::workspace_state::value_objects::workspace_tabs_state::WorkspaceTabEntry
 {
     type Error = String;
     fn try_from(value: wire::WorkspaceTabEntryDto) -> Result<Self, String> {
@@ -1995,12 +1995,12 @@ impl TryFrom<wire::WorkspaceTabEntryDto>
     }
 }
 
-impl TryFrom<crate::usecase::workspace_state::dto::WorkspaceTabsStateDto>
+impl TryFrom<crate::domain::workspace_state::value_objects::WorkspaceTabsState>
     for wire::WorkspaceTabsStateDto
 {
     type Error = String;
     fn try_from(
-        value: crate::usecase::workspace_state::dto::WorkspaceTabsStateDto,
+        value: crate::domain::workspace_state::value_objects::WorkspaceTabsState,
     ) -> Result<Self, String> {
         Ok(Self {
             editors: Some(cv(value.editors)?),
@@ -2010,7 +2010,7 @@ impl TryFrom<crate::usecase::workspace_state::dto::WorkspaceTabsStateDto>
 }
 
 impl TryFrom<wire::WorkspaceTabsStateDto>
-    for crate::usecase::workspace_state::dto::WorkspaceTabsStateDto
+    for crate::domain::workspace_state::value_objects::WorkspaceTabsState
 {
     type Error = String;
     fn try_from(value: wire::WorkspaceTabsStateDto) -> Result<Self, String> {
@@ -2099,6 +2099,100 @@ impl TryFrom<crate::domain::comment::ReviewThread> for wire::ResolveSessionRevie
     fn try_from(value: crate::domain::comment::ReviewThread) -> Result<Self, String> {
         Ok(Self {
             thread: Some(cv(value)?),
+        })
+    }
+}
+
+impl TryFrom<crate::domain::workspace_state::value_objects::pane_layout::PaneLayout>
+    for wire::PaneLayout
+{
+    type Error = String;
+    fn try_from(
+        value: crate::domain::workspace_state::value_objects::pane_layout::PaneLayout,
+    ) -> Result<Self, String> {
+        use crate::domain::workspace_state::value_objects::pane_layout::{
+            PaneLayout, PaneTabKind, SplitAxis,
+        };
+        Ok(Self {
+            node: Some(match value {
+                PaneLayout::Pane {
+                    id,
+                    tabs,
+                    active_tab,
+                } => wire::pane_layout::Node::Pane(wire::Pane {
+                    id,
+                    active_tab,
+                    tabs: tabs
+                        .into_iter()
+                        .map(|tab| wire::PaneTab {
+                            id: tab.id,
+                            kind: match tab.kind {
+                                PaneTabKind::Terminal => wire::PaneTabKind::Terminal,
+                                PaneTabKind::Workflow => wire::PaneTabKind::Workflow,
+                                PaneTabKind::File => wire::PaneTabKind::File,
+                            } as i32,
+                        })
+                        .collect(),
+                }),
+                PaneLayout::Split {
+                    id,
+                    axis,
+                    ratio,
+                    first,
+                    second,
+                } => wire::pane_layout::Node::Split(Box::new(wire::PaneSplit {
+                    id,
+                    ratio,
+                    axis: match axis {
+                        SplitAxis::Horizontal => wire::SplitAxis::Horizontal,
+                        SplitAxis::Vertical => wire::SplitAxis::Vertical,
+                    } as i32,
+                    first: Some(Box::new(cv(*first)?)),
+                    second: Some(Box::new(cv(*second)?)),
+                })),
+            }),
+        })
+    }
+}
+impl TryFrom<wire::PaneLayout>
+    for crate::domain::workspace_state::value_objects::pane_layout::PaneLayout
+{
+    type Error = String;
+    fn try_from(value: wire::PaneLayout) -> Result<Self, String> {
+        use crate::domain::workspace_state::value_objects::pane_layout::{
+            PaneTab, PaneTabKind, SplitAxis,
+        };
+        Ok(match req(value.node, "pane node")? {
+            wire::pane_layout::Node::Pane(pane) => Self::Pane {
+                id: pane.id,
+                active_tab: pane.active_tab,
+                tabs: pane
+                    .tabs
+                    .into_iter()
+                    .map(|tab| {
+                        Ok(PaneTab {
+                            id: tab.id,
+                            kind: match wire::PaneTabKind::try_from(tab.kind) {
+                                Ok(wire::PaneTabKind::Terminal) => PaneTabKind::Terminal,
+                                Ok(wire::PaneTabKind::Workflow) => PaneTabKind::Workflow,
+                                Ok(wire::PaneTabKind::File) => PaneTabKind::File,
+                                _ => return Err("Unknown pane tab kind".to_owned()),
+                            },
+                        })
+                    })
+                    .collect::<Result<_, String>>()?,
+            },
+            wire::pane_layout::Node::Split(split) => Self::Split {
+                id: split.id,
+                ratio: split.ratio,
+                axis: match wire::SplitAxis::try_from(split.axis) {
+                    Ok(wire::SplitAxis::Horizontal) => SplitAxis::Horizontal,
+                    Ok(wire::SplitAxis::Vertical) => SplitAxis::Vertical,
+                    _ => return Err("Unknown split axis".into()),
+                },
+                first: Box::new(cv(*req(split.first, "first pane")?)?),
+                second: Box::new(cv(*req(split.second, "second pane")?)?),
+            },
         })
     }
 }

@@ -1149,3 +1149,48 @@ fn test_cli_開始時刻の欠落と既定値は未起動ではなく不正な�
         assert_eq!(error["error"]["message"], "client discovery is invalid");
     }
 }
+
+#[test]
+fn test_cli_起動失敗はjson指定時だけ機械可読で案内を返す() {
+    // Given
+    let directory = tempfile::tempdir().unwrap();
+    std::fs::write(
+        releash::discovery::discovery_file(directory.path()),
+        "invalid json",
+    )
+    .unwrap();
+    let run = |json: bool| {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_releash"));
+        command.args(["server", "start", "--data-dir"]);
+        command.arg(directory.path());
+        if json {
+            command.arg("--json");
+        }
+        command.output().unwrap()
+    };
+    // When
+    let machine = run(true);
+    let human = run(false);
+    // Then
+    assert_eq!(machine.status.code(), Some(1));
+    assert_eq!(human.status.code(), Some(1));
+    assert!(machine.stdout.is_empty());
+    assert!(human.stdout.is_empty());
+    let value: serde_json::Value = serde_json::from_slice(&machine.stderr).unwrap();
+    let error = &value["error"];
+    assert_eq!(error["code"], "unavailable");
+    assert!(error["message"].as_str().unwrap().contains("discovery"));
+    assert_eq!(
+        error["guidance"],
+        "Run `releash server start`, then retry. If startup fails, check the error and the server log in the data directory."
+    );
+    assert_eq!(
+        String::from_utf8(human.stderr).unwrap(),
+        format!(
+            "error: {}: {}\n{}\n",
+            error["code"].as_str().unwrap(),
+            error["message"].as_str().unwrap(),
+            error["guidance"].as_str().unwrap(),
+        )
+    );
+}

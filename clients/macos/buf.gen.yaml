@@ -1,0 +1,10 @@
+version: v2
+plugins:
+  - local: [swift, run, --package-path, clients/macos/BuildTools, --skip-build, protoc-gen-swift]
+    out: clients/macos/Generated
+    opt: Visibility=Public
+  - local: [swift, run, --package-path, clients/macos/BuildTools, --skip-build, protoc-gen-connect-swift]
+    out: clients/macos/Generated
+    opt:
+      - GenerateAsyncMethods=true
+      - Visibility=Public

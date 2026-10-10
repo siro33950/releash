@@ -101,7 +101,11 @@ pub fn run() {
         );
         return;
     }
-    let json = cli.command.as_ref().is_some_and(commands::json_output);
+    let (json, guidance) = cli
+        .command
+        .as_ref()
+        .map(commands::output_options)
+        .unwrap_or((false, None));
     let hook = matches!(cli.command, Some(TopCommand::Hook { .. }));
     let result = crate::data_dir::resolve_data_dir(cli.data_dir)
         .map_err(connectrpc::ConnectError::unavailable)
@@ -123,18 +127,7 @@ pub fn run() {
             code
         }
         Err(error) => {
-            if json {
-                eprintln!(
-                    "{}",
-                    serde_json::json!({"error": {"code": error.code.as_str(), "message": error.message.clone().unwrap_or_else(|| error.to_string())}})
-                );
-            } else {
-                eprintln!(
-                    "error: {}: {}",
-                    error.code.as_str(),
-                    error.message.as_deref().unwrap_or("Request failed")
-                );
-            }
+            eprint!("{}", failure_output(&error, json, guidance));
             1
         }
     };
@@ -143,3 +136,34 @@ pub fn run() {
     }
     std::process::exit(if hook { 0 } else { code });
 }
+
+fn error_json(error: &connectrpc::ConnectError) -> serde_json::Value {
+    serde_json::json!({"error": {
+        "code": error.code.as_str(),
+        "message": error.message.clone().unwrap_or_else(|| error.to_string()),
+    }})
+}
+
+fn failure_output(error: &connectrpc::ConnectError, json: bool, guidance: Option<&str>) -> String {
+    if json {
+        let mut value = error_json(error);
+        if let Some(guidance) = guidance {
+            value["error"]["guidance"] = serde_json::json!(guidance);
+        }
+        return format!("{value}\n");
+    }
+    let mut output = format!(
+        "error: {}: {}\n",
+        error.code.as_str(),
+        error.message.as_deref().unwrap_or("Request failed")
+    );
+    if let Some(guidance) = guidance {
+        output.push_str(guidance);
+        output.push('\n');
+    }
+    output
+}
+
+#[cfg(test)]
+#[path = "lib_test.rs"]
+mod lib_tests;

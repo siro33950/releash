@@ -23,12 +23,14 @@ pub struct WorkspaceListRepository {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct WorkspaceListWorktree {
+    pub tracking: Fetched<Option<crate::domain::repository::BranchTracking>>,
     pub worktree: Worktree,
     pub deleting: bool,
     pub dirty_count: Fetched<usize>,
     /// PR の状態を合わせた merge 済み。
     pub merged: bool,
-    pub pull_request: Option<PrInfo>,
+    pub open_pull_request: Option<PrInfo>,
+    pub state_pull_request: Option<PrInfo>,
     pub pull_request_loaded: bool,
     pub tree: Fetched<WorkspaceTree>,
     pub pull_request_error: Option<crate::domain::failure::WorkFailure>,
@@ -42,6 +44,7 @@ struct RepositoryValues {
 }
 
 struct WorktreeValues {
+    tracking: Fetched<Option<crate::domain::repository::BranchTracking>>,
     worktree: Worktree,
     deleting: bool,
     dirty_count: Fetched<usize>,
@@ -108,6 +111,18 @@ impl WorkspaceListUsecase {
                             .with_deleting_worktrees(&root, worktrees)
                             .into_iter()
                             .map(|(worktree, deleting)| WorktreeValues {
+                                tracking: match self
+                                    .repository
+                                    .branch_tracking(&path, &worktree.branch)
+                                {
+                                    Ok(value) => Fetched::ready(value),
+                                    Err(error) => Fetched {
+                                        value: None,
+                                        error: Some(
+                                            crate::domain::failure::WorkFailure::from_error(&error),
+                                        ),
+                                    },
+                                },
                                 dirty_count: self.repository_state.dirty_count(&worktree.path),
                                 worktree,
                                 deleting,
@@ -205,6 +220,7 @@ fn compose(
                                 .map(|values| {
                                     let branch = values.worktree.branch.as_str();
                                     WorkspaceListWorktree {
+                                        tracking: values.tracking,
                                         merged: pull_requests.value.as_ref().map_or(
                                             values.worktree.is_merged,
                                             |prs| {
@@ -214,10 +230,14 @@ fn compose(
                                                 )
                                             },
                                         ),
-                                        pull_request: pull_requests
+                                        state_pull_request: pull_requests
                                             .value
                                             .as_ref()
-                                            .and_then(|prs| prs.open_prs.get(branch).cloned()),
+                                            .and_then(|prs| prs.for_branch(branch).cloned()),
+                                        open_pull_request: pull_requests
+                                            .value
+                                            .as_ref()
+                                            .and_then(|prs| prs.open_for_branch(branch).cloned()),
                                         pull_request_loaded: pull_requests.loaded(),
                                         pull_request_error: pull_requests.error.clone(),
                                         tree: trees.next().unwrap_or_default(),

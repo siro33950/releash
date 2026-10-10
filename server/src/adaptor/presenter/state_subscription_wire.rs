@@ -7,6 +7,7 @@ use crate::usecase::state_subscription::StateValue;
 pub fn payload(value: &StateValue) -> Result<wire::StatePayload, connectrpc::ConnectError> {
     Ok(wire::StatePayload {
         value: Some(match value {
+            StateValue::RepositoryGroupState(collapsed) => wire::state_payload::Value::RepositoryGroupState(wire::RepositoryGroupState { collapsed: *collapsed }),
             StateValue::DaemonInfo(info) => wire::state_payload::Value::DaemonInfo(
                 crate::adaptor::presenter::daemon::server_info(info.clone()),
             ),
@@ -57,8 +58,10 @@ pub fn payload(value: &StateValue) -> Result<wire::StatePayload, connectrpc::Con
                     .map_err(crate::adaptor::presenter::connect::command_error)?,
             ),
             StateValue::Issues(value) => wire::state_payload::Value::Issues(wire::IssuesSnapshot {
+                labels: value.value.as_ref().map(|list| list.options.labels.clone()).unwrap_or_default(),
+                milestones: value.value.as_ref().map(|list| list.options.milestones.clone()).unwrap_or_default(),
                 issues: value.value.as_ref().map(|issues| crate::adaptor::presenter::client::value(
-                    issues.iter().cloned().map(crate::usecase::git_host::IssueInfoDto::from).collect::<Vec<_>>()
+                    issues.issues.iter().cloned().map(crate::usecase::git_host::IssueInfoDto::from).collect::<Vec<_>>()
                 )).transpose().map_err(crate::adaptor::presenter::connect::command_error)?,
                 read_error: value.error.as_ref().map(ToString::to_string),
             }),

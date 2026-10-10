@@ -56,6 +56,23 @@ pub fn admit(
         C::WritePathsToTerminalSurface(a) => terminal_workspace(a.owner.as_ref()),
         C::ResizeTerminalSurface(a) => terminal_workspace(a.owner.as_ref()),
         C::KillTerminalSurface(a) => terminal_workspace(a.owner.as_ref()),
+        C::CreateWorktrees(a) => {
+            let runtime =
+                runtime.ok_or_else(|| invalid_request("Command dependency unavailable"))?;
+            crate::domain::repository::validate_worktree_branches(&a.branches)
+                .map_err(|error| invalid_request(error.to_string()))?;
+            let mut guards = Vec::new();
+            for branch in &a.branches {
+                let mut branch_guards = runtime
+                    .begin_worktree_creation_mutation(&a.repo_path, branch)
+                    .map_err(mutation_error)?;
+                if !guards.is_empty() {
+                    branch_guards.remove(0);
+                }
+                guards.extend(branch_guards);
+            }
+            return Ok(guards);
+        }
         C::CreateWorktree(a) => {
             let runtime =
                 runtime.ok_or_else(|| invalid_request("Command dependency unavailable"))?;

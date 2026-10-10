@@ -235,9 +235,10 @@ pub mod platform {
     pub use crate::domain::git_host::git_host::GitHostError;
     pub use crate::domain::git_host::git_host::GitHostProvider;
     pub use crate::domain::git_host::value_objects::cache::CacheTtl;
-    pub use crate::domain::git_host::value_objects::issue::IssueInfo;
     pub use crate::domain::git_host::value_objects::issue::PrAuthor;
+    pub use crate::domain::git_host::value_objects::issue::{IssueInfo, IssueOptions};
     pub use crate::domain::git_host::value_objects::pr::PrInfo;
+    pub use crate::domain::git_host::value_objects::pr::PrState;
     pub use crate::domain::git_host::value_objects::pr::PrStatus;
     pub use crate::domain::local_event::batch::CommitBatchError;
     pub use crate::domain::local_event::batch::CommitBatchResult;
@@ -311,6 +312,7 @@ pub mod platform {
     pub use crate::infrastructure::platform::path_aliases::PathAlias;
     pub use crate::infrastructure::platform::path_aliases::PathAliases;
     pub use crate::infrastructure::terminal::checkpoint_journal::IncrementalCheckpointJournal;
+    pub use crate::usecase::git_host::git_host_usecase::IssueListing;
 
     pub use crate::infrastructure::terminal::shell_integration::create_shell_integration_files;
     pub use crate::infrastructure::terminal::terminal_emulator::NativeTerminalCheckpoint;
@@ -371,7 +373,6 @@ pub mod platform {
     pub use crate::usecase::test_helpers::watcher::SubscriptionFiles;
     pub use crate::usecase::watcher::UsecaseError as watcher_UsecaseError;
     pub use crate::usecase::watcher::WatcherUsecase;
-    pub use crate::usecase::workspace_state::dto::WorkspaceStateDto;
     pub use crate::usecase::workspace_state::usecase::save_workspace_state;
 
     pub use crate::usecase::worktree_operation::WorktreeMutationGuard;
@@ -443,6 +444,8 @@ pub mod providers {
     pub use crate::usecase::provider_lifecycle::ProviderLifecycleUsecase;
 }
 pub mod repository {
+    pub use crate::adaptor::gateway::repository::branch::BranchGateway;
+    pub use crate::domain::repository::{BranchRepository, BranchTracking};
 
     pub use crate::adaptor::gateway::repository::branch::get_current_branch;
     pub use crate::adaptor::gateway::repository::branch::git_create_branch;
@@ -732,7 +735,7 @@ pub mod transport {
     pub use crate::adaptor::controller::client::dispatch::invalid_request;
     pub use crate::adaptor::controller::client::dispatch::required;
     pub use crate::adaptor::controller::client::dispatch::ClientCommandDispatch;
-    pub use crate::adaptor::controller::client::worktree_mutation::admit;
+    pub use crate::adaptor::controller::client::worktree_mutation::{admit, scope};
 
     pub use crate::adaptor::gateway::notion::service_impl::build_client;
     pub use crate::adaptor::presenter::client::from_value;
@@ -1142,7 +1145,6 @@ pub mod wire {
     pub use crate::adaptor::presenter::client::CommandRequest;
     pub use crate::adaptor::presenter::client::CommandResult;
     pub use crate::adaptor::presenter::client::CreateReviewThreadRequest;
-    pub use crate::adaptor::presenter::client::CreateWorktreeRequest;
     pub use crate::adaptor::presenter::client::DeleteReviewThreadRequest;
     pub use crate::adaptor::presenter::client::FetchIssuesRequest;
     pub use crate::adaptor::presenter::client::GetOrSpawnTerminalSurfaceRequest;
@@ -1173,6 +1175,7 @@ pub mod wire {
     pub use crate::adaptor::presenter::client::WritePathsToTerminalSurfaceRequest;
     pub use crate::adaptor::presenter::client::WriteTerminalSurfaceRequest;
     pub use crate::adaptor::presenter::client::COMMAND_NAMES;
+    pub use crate::adaptor::presenter::client::{CreateWorktreeRequest, CreateWorktreesRequest};
 }
 
 pub mod fixtures {

@@ -5,7 +5,8 @@ use std::time::Duration;
 use serde::Deserialize;
 
 use crate::domain::git_host::{
-    GitHostError, GitHostProvider, IssueInfo, IssueLabel, Milestone, PrAuthor, PrInfo, PrStatus,
+    GitHostError, GitHostProvider, IssueInfo, IssueLabel, Milestone, PrAuthor, PrInfo, PrState,
+    PrStatus,
 };
 
 use super::discovery::is_github_repository;
@@ -95,10 +96,7 @@ impl GitHostProvider for GitHubGitHostGateway {
             return Ok(PrStatus::default());
         }
 
-        Ok(PrStatus {
-            open_prs: detect_open_prs(self.runner.as_ref(), repo_path).await?,
-            merged_branches: detect_merged_prs(self.runner.as_ref(), repo_path).await?,
-        })
+        self.fetch_github_prs(repo_path).await
     }
 
     async fn list_issues(&self, repo_path: &str) -> Result<Vec<IssueInfo>, GitHostError> {
@@ -125,9 +123,25 @@ impl GitHostProvider for GitHubGitHostGateway {
     }
 }
 
-async fn detect_open_prs(
+impl GitHubGitHostGateway {
+    async fn fetch_github_prs(&self, repo_path: &str) -> Result<PrStatus, GitHostError> {
+        let open_prs = detect_prs(self.runner.as_ref(), repo_path, "open", PrState::Open).await?;
+        let merged = detect_prs(self.runner.as_ref(), repo_path, "merged", PrState::Merged).await?;
+        let mut completed_prs =
+            detect_prs(self.runner.as_ref(), repo_path, "closed", PrState::Closed).await?;
+        completed_prs.extend(merged);
+        Ok(PrStatus {
+            open_prs,
+            completed_prs,
+        })
+    }
+}
+
+async fn detect_prs(
     runner: &dyn GhCommandRunner,
     repo_path: &str,
+    state: &str,
+    pr_state: PrState,
 ) -> Result<HashMap<String, PrInfo>, GitHostError> {
     let output = run_gh_with_timeout(
         runner,
@@ -135,38 +149,16 @@ async fn detect_open_prs(
             "pr",
             "list",
             "--state",
-            "open",
+            state,
             "--json",
-            "headRefName,number,url",
+            "headRefName,number,url,isDraft",
             "--limit",
             "100",
         ],
         repo_path,
     )
-    .await;
-    parse_gh_pr_list_output(&output?)
-}
-
-async fn detect_merged_prs(
-    runner: &dyn GhCommandRunner,
-    repo_path: &str,
-) -> Result<Vec<String>, GitHostError> {
-    let output = run_gh_with_timeout(
-        runner,
-        &[
-            "pr",
-            "list",
-            "--state",
-            "merged",
-            "--json",
-            "headRefName",
-            "--limit",
-            "100",
-        ],
-        repo_path,
-    )
-    .await;
-    parse_gh_merged_pr_output(&output?)
+    .await?;
+    parse_gh_pr_list_output(&output, pr_state)
 }
 
 async fn run_gh_with_timeout(
@@ -203,7 +195,10 @@ fn parse_gh_pr_items(json_str: &str) -> Result<Vec<serde_json::Value>, GitHostEr
         .map_err(|error| GitHostError::External(format!("gh pr list output is invalid: {error}")))
 }
 
-fn parse_gh_pr_list_output(json_str: &str) -> Result<HashMap<String, PrInfo>, GitHostError> {
+fn parse_gh_pr_list_output(
+    json_str: &str,
+    state: PrState,
+) -> Result<HashMap<String, PrInfo>, GitHostError> {
     let mut map = HashMap::new();
     for item in parse_gh_pr_items(json_str)? {
         let head_ref = item.get("headRefName").and_then(|v| v.as_str());
@@ -215,19 +210,16 @@ fn parse_gh_pr_list_output(json_str: &str) -> Result<HashMap<String, PrInfo>, Gi
                 PrInfo {
                     number: num,
                     url: u.to_string(),
+                    state,
+                    draft: item
+                        .get("isDraft")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false),
                 },
             );
         }
     }
     Ok(map)
-}
-
-fn parse_gh_merged_pr_output(json_str: &str) -> Result<Vec<String>, GitHostError> {
-    Ok(parse_gh_pr_items(json_str)?
-        .iter()
-        .filter_map(|item| item.get("headRefName").and_then(|v| v.as_str()))
-        .map(|s| s.to_string())
-        .collect())
 }
 
 fn parse_gh_issue_list_output(json_str: &str) -> Result<Vec<IssueInfo>, GitHostError> {

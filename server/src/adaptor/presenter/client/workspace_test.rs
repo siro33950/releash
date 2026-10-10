@@ -30,6 +30,7 @@ fn node() -> WorkspaceTreeNode {
         node_execution_id: None,
         node_name: None,
         attempt: Some(1),
+        execution_parent: None,
         retry_predecessor_id: None,
         past_attempt_ids: Vec::new(),
         is_retry_history: false,
@@ -649,6 +650,7 @@ fn test_過去attempt_子のないsessionとcommandも通常行と同じkindを�
 
 fn worktree_row(path: &str, branch: &str, tree: Fetched<WorkspaceTree>) -> WorkspaceListWorktree {
     WorkspaceListWorktree {
+        tracking: Fetched::ready(None),
         worktree: Worktree {
             name: branch.to_string(),
             path: path.to_string(),
@@ -660,7 +662,8 @@ fn worktree_row(path: &str, branch: &str, tree: Fetched<WorkspaceTree>) -> Works
         deleting: false,
         dirty_count: Fetched::ready(0),
         merged: false,
-        pull_request: None,
+        open_pull_request: None,
+        state_pull_request: None,
         pull_request_error: None,
         pull_request_loaded: true,
         tree,
@@ -686,10 +689,13 @@ fn test_workspaces一覧_持ち主の値と取得の状態を画面が読む名�
             error: Some(failure("nodes failed")),
         },
     );
-    main.pull_request = Some(PrInfo {
+    main.open_pull_request = Some(PrInfo {
         number: 7,
         url: "https://example.com/pr/7".into(),
+        state: crate::domain::git_host::PrState::Open,
+        draft: false,
     });
+    main.state_pull_request = main.open_pull_request.clone();
     let mut feature = worktree_row(
         "/repo-worktrees/feature",
         "feature",
@@ -747,6 +753,9 @@ fn test_workspaces一覧_持ち主の値と取得の状態を画面が読む名�
                             "is_merged": false,
                             "has_pr": true,
                             "pr_number": 7,
+                            "prState": "open",
+                            "prStateNumber": 7,
+                            "removalRequiresForce": false,
                             "pr_url": "https://example.com/pr/7"
                         },
                         {
@@ -758,6 +767,7 @@ fn test_workspaces一覧_持ち主の値と取得の状態を画面が読む名�
                             "is_merged": true,
                             "has_pr": false,
                             "pr_number": null,
+                            "removalRequiresForce": true,
                             "pr_url": null
                         }
                     ],
@@ -770,13 +780,15 @@ fn test_workspaces一覧_持ち主の値と取得の状態を画面が読む名�
                                 "error": "nodes failed"
                             },
                             "snapshot": null,
-                            "workflowHistory": []
+                            "workflowHistory": [],
+                            "executions": []
                         },
                         {
                             "path": "/repo-worktrees/feature",
                             "status": {"state": "empty", "loaded": true, "error": null},
                             "snapshot": {"nodes": [], "archivedSessions": []},
-                            "workflowHistory": []
+                            "workflowHistory": [],
+                            "executions": []
                         }
                     ]
                 },
@@ -1035,9 +1047,11 @@ fn test_pr状態の転送_初回失敗と取得後の失敗を区別する() {
     initial.pull_request_loaded = false;
     initial.pull_request_error = Some(failure("PR denied"));
     let mut retained = worktree_row("/repo-worktrees/feature", "feature", Fetched::default());
-    retained.pull_request = Some(PrInfo {
+    retained.open_pull_request = Some(PrInfo {
         number: 42,
         url: "https://example.test/pull/42".into(),
+        state: crate::domain::git_host::PrState::Open,
+        draft: false,
     });
     retained.pull_request_error = Some(failure("PR denied"));
     // When
@@ -1055,4 +1069,68 @@ fn test_pr状態の転送_初回失敗と取得後の失敗を区別する() {
         Some("https://example.test/pull/42")
     );
     assert_eq!(retained.pull_request_error.as_deref(), Some("PR denied"));
+}
+
+#[test]
+fn test_実行サマリー_providerと行とsessionの状態を配信する() {
+    // Given
+    let execution = session_execution("session", "session");
+    let mut root = tree_owner("session");
+    root.background_failure = true;
+    let mut active = child_node(
+        "active",
+        "session",
+        "session",
+        WorkspaceNodeKind::WorkflowSession,
+        "Active",
+    );
+    active.activity = Some(crate::domain::workflow::AgentSessionActivity::Working);
+    active.session_id = Some("active-session".into());
+    let mut idle = child_node(
+        "idle",
+        "session",
+        "session",
+        WorkspaceNodeKind::WorkflowSession,
+        "Idle",
+    );
+    idle.sibling_order = 1;
+    idle.session_id = Some("idle-session".into());
+    idle.activity = Some(crate::domain::workflow::AgentSessionActivity::AwaitingInstruction);
+    idle.status = WorkspaceNodeStatus::Completed;
+    let mut tree = WorkspaceTree::restore("/repo", vec![root, active, idle]).unwrap();
+    tree.record_executions(vec![execution]);
+    let row = worktree_row("/repo", "main", Fetched::ready(tree));
+    // When
+    let wire = worktree(&row).unwrap();
+    let summary = &wire.executions[0];
+    // Then
+    assert_eq!(summary.provider.as_deref(), Some("codex"));
+    assert_eq!(summary.status, "active");
+    assert_eq!(summary.session_states, ["active", "idle"]);
+    assert_eq!(summary.node_count, 2);
+    assert!(!summary.is_workflow);
+    assert_eq!(wire.aggregate_status.as_deref(), Some("active"));
+}
+
+#[test]
+fn test_pr状態の転送_完了済みprは既存のopen用フィールドに含めない() {
+    use crate::domain::git_host::PrState;
+    // Given
+    for (state, expected) in [(PrState::Merged, "merged"), (PrState::Closed, "closed")] {
+        let mut row = worktree_row("/repo", "feature", Fetched::default());
+        row.state_pull_request = Some(PrInfo {
+            number: 42,
+            url: "https://example.test/42".into(),
+            state,
+            draft: false,
+        });
+        // When
+        let branch = branch(&row);
+        // Then
+        assert_eq!(branch.has_pr, Some(false));
+        assert_eq!(branch.pr_number, None);
+        assert_eq!(branch.pr_url, None);
+        assert_eq!(branch.pr_state.as_deref(), Some(expected));
+        assert_eq!(branch.pr_state_number, Some(42));
+    }
 }

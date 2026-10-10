@@ -41,3 +41,5 @@ mod work_failure;
 pub(crate) mod test_helpers;
 
 pub(crate) mod installation;
+
+pub(crate) mod create_worktrees;

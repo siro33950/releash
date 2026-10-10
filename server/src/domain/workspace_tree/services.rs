@@ -54,6 +54,10 @@ impl<'a> WorkspacePublicRoot<'a> {
         }
     }
 
+    pub(crate) fn for_owner(nodes: &'a [WorkspaceTreeNode], owner: &'a WorkspaceTreeNode) -> Self {
+        Self::from_owner(nodes, owner).unwrap_or(Self { owner, node: owner })
+    }
+
     fn from_owner(nodes: &'a [WorkspaceTreeNode], owner: &'a WorkspaceTreeNode) -> Option<Self> {
         owner.execution_id.as_ref()?;
         let node = nodes

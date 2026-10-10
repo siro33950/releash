@@ -7,7 +7,7 @@ fn parse_open_prs_valid_json() {
             {"headRefName":"fix/typo","number":7,"url":"https://github.com/owner/repo/pull/7"}
         ]"#;
 
-    let map = parse_gh_pr_list_output(json).unwrap();
+    let map = parse_gh_pr_list_output(json, PrState::Open).unwrap();
 
     assert_eq!(map.len(), 2);
     let pr = map.get("feat/login").unwrap();
@@ -17,44 +17,35 @@ fn parse_open_prs_valid_json() {
 
 #[test]
 fn parse_open_prs_empty_array() {
-    let map = parse_gh_pr_list_output("[]").unwrap();
+    let map = parse_gh_pr_list_output("[]", PrState::Open).unwrap();
 
     assert!(map.is_empty());
 }
 
 #[test]
 fn parse_open_prs_invalid_json() {
-    assert!(parse_gh_pr_list_output("not json").is_err());
+    assert!(parse_gh_pr_list_output("not json", PrState::Open).is_err());
 }
 
 #[test]
 fn parse_open_prs_missing_fields() {
     let json = r#"[{"headRefName":"feat/x"}]"#;
 
-    let map = parse_gh_pr_list_output(json).unwrap();
+    let map = parse_gh_pr_list_output(json, PrState::Open).unwrap();
 
     assert!(map.is_empty());
 }
 
 #[test]
-fn parse_merged_prs_valid() {
-    let json = r#"[{"headRefName":"feat/a"},{"headRefName":"feat/b"}]"#;
-
-    let branches = parse_gh_merged_pr_output(json).unwrap();
-
-    assert_eq!(branches, vec!["feat/a", "feat/b"]);
-}
-
-#[test]
-fn parse_merged_prs_empty() {
-    let branches = parse_gh_merged_pr_output("[]").unwrap();
-
-    assert!(branches.is_empty());
-}
-
-#[test]
-fn parse_merged_prs_invalid() {
-    assert!(parse_gh_merged_pr_output("invalid").is_err());
+fn test_pr状態_draftと完了状態を保持する() {
+    // Given
+    let json = r#"[{"headRefName":"feat","number":1,"url":"url","isDraft":true}]"#;
+    // When / Then
+    for state in [PrState::Open, PrState::Merged, PrState::Closed] {
+        let parsed = parse_gh_pr_list_output(json, state).unwrap();
+        assert_eq!(parsed["feat"].state, state);
+        assert!(parsed["feat"].draft);
+    }
 }
 
 #[test]
@@ -284,4 +275,44 @@ mod cancellation_contract {
         assert!(pr_cache.stored_values().is_empty());
         assert!(issue_cache.stored_values().is_empty());
     }
+}
+
+#[tokio::test]
+async fn test_pr取得_状態ごとに百件を取得しclosedよりmergedを優先する() {
+    struct Runner(parking_lot::Mutex<Vec<Vec<String>>>);
+    #[async_trait::async_trait]
+    impl GhCommandRunner for Runner {
+        async fn output(&self, args: &[&str], repo: &str) -> GhCommandOutput {
+            assert_eq!(repo, "/repo");
+            self.0
+                .lock()
+                .push(args.iter().map(|arg| arg.to_string()).collect());
+            GhCommandOutput::Success(if args[3] == "open" {
+                "[]".into()
+            } else {
+                r#"[{"headRefName":"same","number":1,"url":"url","isDraft":false}]"#.into()
+            })
+        }
+    }
+    let runner = Arc::new(Runner(Default::default()));
+    let gateway = GitHubGitHostGateway::with_runner(runner.clone());
+    let status = gateway.fetch_github_prs("/repo").await.unwrap();
+    assert_eq!(
+        *runner.0.lock(),
+        ["open", "merged", "closed"].map(|state| vec![
+            "pr",
+            "list",
+            "--state",
+            state,
+            "--json",
+            "headRefName,number,url,isDraft",
+            "--limit",
+            "100"
+        ]
+        .into_iter()
+        .map(str::to_owned)
+        .collect::<Vec<_>>())
+    );
+    assert_eq!(status.completed_prs["same"].state, PrState::Merged);
+    assert!(status.branch_is_merged("same", false));
 }
