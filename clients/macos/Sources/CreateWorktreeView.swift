@@ -43,16 +43,19 @@ struct CreateWorktreeView: View {
             "#\(issue.number) \(issue.title)", id: .issue(issue.number),
             branch: issue.defaultBranchName)
         }
+        .frame(height: UIStyle.selectionListHeight)
       } else if source == "notion" {
         List(tasks, id: \.id) { task in
           selectionRow(task.title, id: .task(task.id), branch: task.branchName)
         }
+        .frame(height: UIStyle.selectionListHeight)
       }
       DisclosureGroup("Advanced") {
         TextField("新しいbranch名", text: $form.branch).disabled(!form.selected.isEmpty)
         List(branches, id: \.name) { item in
           selectionRow(item.name, id: .branch(item.name), branch: item.name)
         }
+        .frame(height: UIStyle.selectionListHeight)
       }
       if let readFailure { Text(readFailure).foregroundStyle(.secondary) }
       Picker("作成後に起動する", selection: $form.launch) {
@@ -88,8 +91,9 @@ struct CreateWorktreeView: View {
       load()
     }
     .onChange(of: source) { _, _ in
-      form.selected = WorktreeSelection()
+      unsubscribe(form.repository)
       form.branch = ""
+      load()
     }
     .onChange(of: label) { _, _ in filterIssues() }
     .onChange(of: milestone) { _, _ in filterIssues() }
@@ -120,19 +124,22 @@ struct CreateWorktreeView: View {
     model.subscribe("available-branches", [form.repository]) { payload in
       if case .branchStatus(let value) = payload.value { branches = value.items }
     }
-    model.subscribe("issues", [form.repository]) { payload in
-      if case .issues(let value) = payload.value {
-        labels = value.labels
-        milestones = value.milestones
-        allIssues = value.issues.items
-        if label.isEmpty && milestone.isEmpty { issues = value.issues.items }
-        if value.hasReadError { readFailure = value.readError }
+    if source == "issue" {
+      model.subscribe("issues", [form.repository]) { payload in
+        if case .issues(let value) = payload.value {
+          labels = value.labels
+          milestones = value.milestones
+          allIssues = value.issues.items
+          if label.isEmpty && milestone.isEmpty { issues = value.issues.items }
+          if value.hasReadError { readFailure = value.readError }
+        }
       }
-    }
-    model.subscribe("notion-tasks", [form.repository, "100"]) { payload in
-      if case .notionTasks(let value) = payload.value {
-        tasks = value.page.tasks.items
-        if value.hasReadError { readFailure = value.readError.message }
+    } else if source == "notion" {
+      model.subscribe("notion-tasks", [form.repository, "100"]) { payload in
+        if case .notionTasks(let value) = payload.value {
+          tasks = value.page.tasks.items
+          if value.hasReadError { readFailure = value.readError.message }
+        }
       }
     }
   }

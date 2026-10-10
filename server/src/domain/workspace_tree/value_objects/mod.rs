@@ -111,6 +111,7 @@ pub struct WorkspaceTreeNode {
     pub node_execution_id: Option<String>,
     pub node_name: Option<String>,
     pub attempt: Option<u32>,
+    pub execution_parent: Option<ExecutionParentRef>,
     pub retry_predecessor_id: Option<String>,
     pub past_attempt_ids: Vec<String>,
     pub is_retry_history: bool,

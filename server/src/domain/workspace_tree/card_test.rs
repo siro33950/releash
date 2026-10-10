@@ -387,3 +387,96 @@ fn test_カード集計_子のないworkflowもownerの状態で行と集約に�
         Some(WorkspaceNodeStatusClassification::Active)
     );
 }
+
+#[test]
+fn test_カード集計_ループの過去試行とその子を除きfanoutの別項目を残す() {
+    use crate::domain::workflow::ExecutionParentRef;
+    // Given
+    let id = "00000000-0000-4000-8000-000000001204";
+    let mut tree = WorkspaceTree::empty("/repo");
+    let mut facts = vec![WorkspaceStructureFact::WorkflowStarted {
+        execution_id: id.into(),
+        workflow_name: "review".into(),
+        worktree_path: "/repo".into(),
+        dynamic_fanout_names: Default::default(),
+        timestamp: 1.0,
+    }];
+    for (execution, name, kind, attempt, parent) in [
+        ("s1", "session", NodeKindName::Session, 1, None),
+        ("s2", "session", NodeKindName::Session, 2, None),
+        (
+            "delegated",
+            "delegated",
+            NodeKindName::Session,
+            1,
+            Some(ExecutionParentRef::delegate_child("s1")),
+        ),
+        ("c1", "command", NodeKindName::Command, 1, None),
+        ("c2", "command", NodeKindName::Command, 2, None),
+        ("f1", "fanout", NodeKindName::Fanout, 1, None),
+        (
+            "old",
+            "child",
+            NodeKindName::Session,
+            1,
+            Some(ExecutionParentRef::fanout_child("f1", Some(0), 0)),
+        ),
+        ("f2", "fanout", NodeKindName::Fanout, 2, None),
+        (
+            "item0",
+            "child",
+            NodeKindName::Session,
+            1,
+            Some(ExecutionParentRef::fanout_child("f2", Some(0), 0)),
+        ),
+        (
+            "item1",
+            "child",
+            NodeKindName::Session,
+            2,
+            Some(ExecutionParentRef::fanout_child("f2", Some(1), 0)),
+        ),
+        (
+            "item0-retry",
+            "child",
+            NodeKindName::Session,
+            2,
+            Some(ExecutionParentRef::fanout_child("f2", Some(0), 0)),
+        ),
+    ] {
+        facts.push(WorkspaceStructureFact::NodeStarted {
+            execution_id: id.into(),
+            node_execution_id: execution.into(),
+            node_name: name.into(),
+            kind,
+            attempt,
+            parent,
+            timestamp: 2.0,
+        });
+    }
+    WorkspaceTreeProjector::project(&mut tree, facts).unwrap();
+    tree.record_executions(vec![WorkspaceExecution {
+        execution_id: id.into(),
+        launched_as: ExecutionTreeLaunch::Workflow,
+        worktree_path: "/repo".into(),
+        workflow_name: "review".into(),
+        status: ExecutionStatus::Running,
+        updated_at: 2.0,
+        archive: None,
+        session: None,
+    }]);
+    // When
+    let rows = tree.card_executions();
+    // Then
+    assert_eq!(rows[0].1.node_count(), 5);
+    assert_eq!(rows[0].1.session_states().count(), 4);
+    assert_eq!(
+        rows[0]
+            .1
+            .leaves
+            .iter()
+            .map(|node| node.node_execution_id.as_deref().unwrap())
+            .collect::<Vec<_>>(),
+        ["s2", "delegated", "c2", "item1", "item0-retry"]
+    );
+}
