@@ -11,6 +11,10 @@ pub(crate) mod tests {
             ownership.as_str(),
             "provider-session-ownership:codex:ownership-digest"
         );
+        assert!(StreamId::parse("workspace-state:abc").is_ok());
+        assert!(StreamId::parse("repository-group:abc").is_ok());
+        assert!(StreamId::parse("workspace-state:").is_err());
+        assert!(StreamId::parse("repository-group:").is_err());
         assert!(StreamId::parse("agent-session:").is_err());
         assert!(StreamId::parse("other:x").is_err());
         assert!(StreamId::parse("agent-session:a b").is_err());

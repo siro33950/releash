@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -127,9 +126,8 @@ impl GitHubGitHostGateway {
     async fn fetch_github_prs(&self, repo_path: &str) -> Result<PrStatus, GitHostError> {
         let open_prs = detect_prs(self.runner.as_ref(), repo_path, "open", PrState::Open).await?;
         let merged = detect_prs(self.runner.as_ref(), repo_path, "merged", PrState::Merged).await?;
-        let mut completed_prs =
-            detect_prs(self.runner.as_ref(), repo_path, "closed", PrState::Closed).await?;
-        completed_prs.extend(merged);
+        let closed = detect_prs(self.runner.as_ref(), repo_path, "closed", PrState::Closed).await?;
+        let completed_prs = merged.into_iter().chain(closed).collect();
         Ok(PrStatus {
             open_prs,
             completed_prs,
@@ -142,7 +140,7 @@ async fn detect_prs(
     repo_path: &str,
     state: &str,
     pr_state: PrState,
-) -> Result<HashMap<String, PrInfo>, GitHostError> {
+) -> Result<Vec<(String, PrInfo)>, GitHostError> {
     let output = run_gh_with_timeout(
         runner,
         &[
@@ -198,14 +196,14 @@ fn parse_gh_pr_items(json_str: &str) -> Result<Vec<serde_json::Value>, GitHostEr
 fn parse_gh_pr_list_output(
     json_str: &str,
     state: PrState,
-) -> Result<HashMap<String, PrInfo>, GitHostError> {
-    let mut map = HashMap::new();
+) -> Result<Vec<(String, PrInfo)>, GitHostError> {
+    let mut map = Vec::new();
     for item in parse_gh_pr_items(json_str)? {
         let head_ref = item.get("headRefName").and_then(|v| v.as_str());
         let number = item.get("number").and_then(|v| v.as_u64());
         let url = item.get("url").and_then(|v| v.as_str());
         if let (Some(branch), Some(num), Some(u)) = (head_ref, number, url) {
-            map.insert(
+            map.push((
                 branch.to_string(),
                 PrInfo {
                     number: num,
@@ -216,7 +214,7 @@ fn parse_gh_pr_list_output(
                         .and_then(|v| v.as_bool())
                         .unwrap_or(false),
                 },
-            );
+            ));
         }
     }
     Ok(map)

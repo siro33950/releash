@@ -97,7 +97,6 @@ impl<S: WorktreeSessionLaunch, W: WorktreeWorkflowLaunch> WorktreeLaunch
 pub async fn create_worktrees(
     repository: Arc<RepositoryUsecase>,
     launcher: &dyn WorktreeLaunch,
-    creation: &dyn WorktreeCreation,
     repo_path: String,
     branches: Vec<String>,
     base_branch: Option<String>,
@@ -106,12 +105,10 @@ pub async fn create_worktrees(
     crate::domain::repository::validate_worktree_branches(&branches)?;
     let mut paths = Vec::with_capacity(branches.len());
     for branch in branches {
-        let guards = creation.begin_creation(&repo_path, &branch)?;
         let repository = repository.clone();
         let repo_path = repo_path.clone();
         let base_branch = base_branch.clone();
         let path = crate::common::operation_context::spawn_blocking(move || {
-            let _guards = guards;
             let existing = repository.list_branches_with_worktree(&repo_path)?;
             let create_branch =
                 crate::domain::repository::Branch::needs_creation(&branch, &existing);
@@ -131,26 +128,9 @@ pub async fn create_worktrees(
 #[path = "create_worktrees_test.rs"]
 mod create_worktrees_tests;
 
-pub trait WorktreeCreation: Send + Sync {
-    fn begin_creation(
-        &self,
-        repo: &str,
-        branch: &str,
-    ) -> Result<Vec<crate::usecase::worktree_operation::WorktreeMutationGuard>, UsecaseError>;
-}
-impl WorktreeCreation for WorkflowRuntimeUsecase {
-    fn begin_creation(
-        &self,
-        repo: &str,
-        branch: &str,
-    ) -> Result<Vec<crate::usecase::worktree_operation::WorktreeMutationGuard>, UsecaseError> {
-        Ok(self.begin_worktree_creation_mutation(repo, branch)?)
-    }
-}
 pub struct CreateWorktreesUsecase {
     repository: Arc<RepositoryUsecase>,
     launcher: WorktreeLauncher,
-    creation: Arc<WorkflowRuntimeUsecase>,
 }
 impl CreateWorktreesUsecase {
     pub fn new(
@@ -162,9 +142,8 @@ impl CreateWorktreesUsecase {
             repository,
             launcher: WorktreeLauncher {
                 sessions,
-                workflows: workflows.clone(),
+                workflows,
             },
-            creation: workflows,
         }
     }
     pub async fn execute(
@@ -177,7 +156,6 @@ impl CreateWorktreesUsecase {
         create_worktrees(
             self.repository.clone(),
             &self.launcher,
-            self.creation.as_ref(),
             repo,
             branches,
             base,

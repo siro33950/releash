@@ -536,9 +536,7 @@ mod driver_tests {
                     _ => StateValue::Issues(crate::usecase::fetched::Fetched::ready(
                         crate::usecase::git_host::git_host_usecase::IssueListing {
                             issues: vec![],
-                            options:
-                                crate::domain::git_host::value_objects::issue::IssueOptions::default(
-                                ),
+                            options: crate::domain::git_host::IssueOptions::from_issues(&[]),
                         },
                     )),
                 })
@@ -1090,9 +1088,7 @@ mod driver_tests {
                 ) {
                     return StateValue::Issues(Fetched::ready(
                         crate::usecase::git_host::git_host_usecase::IssueListing {
-                            options:
-                                crate::domain::git_host::value_objects::issue::IssueOptions::default(
-                                ),
+                            options: crate::domain::git_host::IssueOptions::from_issues(&[]),
                             issues: vec![crate::domain::git_host::IssueInfo {
                                 number: self.issues.load(Ordering::SeqCst),
                                 title: "issue".into(),

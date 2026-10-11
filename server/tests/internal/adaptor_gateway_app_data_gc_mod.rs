@@ -172,7 +172,7 @@ pub(crate) mod tests {
         let live_review_key = releashd::test_support::integration::platform::worktree_storage_key(
             repo.path().to_string_lossy().as_ref(),
         );
-        let workspace_state = root.join("workspace_state");
+        let workspace_state = root.join("workspace_state.migrated");
         let review_comments = root.join("review-comments");
         std::fs::create_dir_all(&workspace_state).expect("workspace state");
         std::fs::create_dir_all(&review_comments).expect("review comments");
@@ -272,7 +272,7 @@ pub(crate) mod tests {
         let app_data = tempfile::tempdir().unwrap();
         let parent = tempfile::tempdir().unwrap();
         let repo = parent.path().canonicalize().unwrap().join("repo");
-        let directory = app_data.path().join("workspace_state");
+        let directory = app_data.path().join("workspace_state.migrated");
         std::fs::create_dir_all(&directory).unwrap();
         let key =
             releashd::test_support::integration::platform::storage_key(repo.to_str().unwrap());

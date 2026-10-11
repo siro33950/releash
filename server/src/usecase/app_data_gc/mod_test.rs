@@ -201,3 +201,133 @@ mod execution_tree_gc_tests {
         assert_eq!(trees.pages.lock().unwrap().len(), calls);
     }
 }
+mod workspace_state_gc_tests {
+    use super::super::*;
+    use crate::domain::local_event::StreamVersion;
+    use crate::domain::workspace_state::WorkspaceStateError;
+    use std::sync::Mutex;
+
+    struct States {
+        fail_inventory: bool,
+        fail_invalidation: bool,
+        invalidated: Mutex<Vec<String>>,
+    }
+    impl WorkspaceStateGc for States {
+        fn states(&self) -> Result<Vec<(String, StreamVersion)>, WorkspaceStateError> {
+            if self.fail_inventory {
+                return Err(WorkspaceStateError::Message("inventory failed".into()));
+            }
+            Ok(["live", "active", "newly-active", "removed"]
+                .into_iter()
+                .map(|key| (key.into(), StreamVersion::new(1).unwrap()))
+                .collect())
+        }
+        fn invalidate(
+            &self,
+            key: &str,
+            expected: StreamVersion,
+        ) -> Result<bool, WorkspaceStateError> {
+            assert_eq!(expected, StreamVersion::new(1).unwrap());
+            self.invalidated.lock().unwrap().push(key.into());
+            if self.fail_invalidation {
+                Err(WorkspaceStateError::Message("write failed".into()))
+            } else {
+                Ok(true)
+            }
+        }
+    }
+    fn worktrees(keys: &[&str]) -> LiveWorktreeSet {
+        LiveWorktreeSet::from_worktrees(keys.iter().map(|key| LiveWorktree {
+            path: (*key).into(),
+            workspace_state_keys: vec![(*key).into()],
+            review_comment_keys: vec![],
+        }))
+    }
+    fn plan(unresolved: bool, initial_complete: bool) -> StartupGcPlan {
+        plan_startup_gc(StartupGcRequest {
+            app_data_dir: PathBuf::from("/app-data"),
+            live_worktrees: Some(LiveWorktreeResolution::new(
+                worktrees(&["live"]),
+                if unresolved {
+                    vec!["/missing".into()]
+                } else {
+                    vec![]
+                },
+                HashSet::new(),
+            )),
+            workspace_state_records: vec![],
+            review_comment_records: vec![],
+            checkpoint_paths: vec![],
+            cache_records: vec![],
+            legacy_comment_paths: vec![],
+            runtime_protection: if initial_complete {
+                RuntimeProtection::complete(worktrees(&["active"]))
+            } else {
+                RuntimeProtection::incomplete()
+            },
+            now_secs: 0.0,
+            retention: RetentionPolicy::default(),
+        })
+    }
+    #[test]
+    fn test_ui状態gc_現存と両時点の実行中を守り削除済みだけ無効化する() {
+        // Given
+        let states = States {
+            fail_inventory: false,
+            fail_invalidation: false,
+            invalidated: Mutex::default(),
+        };
+        let runtime = RuntimeProtection::complete(worktrees(&["newly-active"]));
+        let mut report = GcReport::default();
+        // When
+        sweep_workspace_states(&plan(false, true), &runtime, &states, &mut report);
+        // Then
+        assert_eq!(*states.invalidated.lock().unwrap(), ["removed"]);
+        assert_eq!(report.categories[&GcCategory::DeletedWorkspace].deleted, 1);
+        assert_eq!(report.errors, 0);
+    }
+    #[test]
+    fn test_ui状態gc_未解決と不完全な保護は処理せず読取と無効化の失敗を報告する() {
+        for (
+            unresolved,
+            initial_complete,
+            sweep_complete,
+            fail_inventory,
+            fail_invalidation,
+            errors,
+            attempted,
+        ) in [
+            (true, true, true, false, false, 0, false),
+            (false, false, true, false, false, 0, false),
+            (false, true, false, false, false, 0, false),
+            (false, true, true, true, false, 1, false),
+            (false, true, true, false, true, 1, true),
+        ] {
+            // Given
+            let states = States {
+                fail_inventory,
+                fail_invalidation,
+                invalidated: Mutex::default(),
+            };
+            let runtime = if sweep_complete {
+                RuntimeProtection::complete(worktrees(&["newly-active"]))
+            } else {
+                RuntimeProtection::incomplete()
+            };
+            let mut report = GcReport::default();
+            // When
+            sweep_workspace_states(
+                &plan(unresolved, initial_complete),
+                &runtime,
+                &states,
+                &mut report,
+            );
+            // Then
+            assert_eq!(report.errors, errors);
+            assert_eq!(!states.invalidated.lock().unwrap().is_empty(), attempted);
+            assert!(!report
+                .categories
+                .contains_key(&GcCategory::DeletedWorkspace));
+        }
+    }
+}

@@ -343,3 +343,106 @@ private func testLayout(_ kind: PaneTab.Kind) -> PaneLayout {
   let tab = PaneTab(kind: kind)
   return .pane(id: "test-pane", tabs: [tab], active: tab.id)
 }
+
+extension AppModelTests {
+  @MainActor func testSerialSavesIgnoreOldEchoAndRestoreLastOfPendingEdits() async throws {
+    let http = TestHTTPClient()
+    let model = try await testModel(http)
+    let path = "/repo/a"
+    model.selectWorktree(path)
+    try await eventually { model.layoutLoaded }
+    let subscription = try XCTUnwrap(http.state.withLock {
+      $0.subscriptions.last { $0.target == "workspace-state" }
+    })
+    http.state.withLock { $0.deferSave = true }
+    model.editLayout { $0 = testLayout(.terminal) }
+    try await eventually { http.state.withLock { $0.pendingSave != nil } }
+    model.editLayout { $0 = testLayout(.file) }
+    model.editLayout { $0 = testLayout(.workflow) }
+    let last = model.layout
+    XCTAssertEqual(http.requests("SaveWorkspaceState").count, 1)
+    XCTAssertEqual(model.pendingSaves[path], 3)
+    let oldLayout = PaneLayout.empty()
+    var receivedEcho = false
+    let echoSubscriber = model.subscribe("workspace-state", [path, path]) { payload in
+      receivedEcho = payload.workspaceState.hasValue
+        && payload.workspaceState.value.paneLayout == oldLayout.message
+    }
+    var echo = Releash_Client_V1_StateSubscriptionEvent()
+    echo.subscriptionID = subscription.subscriptionID
+    echo.snapshot.workspaceState.value.paneLayout = oldLayout.message
+    try TestHTTPClient.send(echo, on: http.state.withLock { $0.streams.last! })
+    try await eventually { receivedEcho }
+    XCTAssertEqual(model.pendingSaves[path], 3)
+    XCTAssertEqual(model.layout, last)
+    model.unsubscribe(echoSubscriber)
+    let release = try XCTUnwrap(http.state.withLock { state in
+      let callback = state.pendingSave
+      state.pendingSave = nil
+      state.deferSave = false
+      return callback
+    })
+    release(HTTPResponse(code: .ok, headers: ["content-type": ["application/proto"]], message: Data(), trailers: [:], error: nil, tracingInfo: .init(httpStatus: 200)))
+    try await eventually { model.pendingSaves[path] == nil }
+    let saves = try http.requests("SaveWorkspaceState").map {
+      try Releash_Client_V1_SaveWorkspaceStateRequest(serializedBytes: $0.message!)
+    }
+    XCTAssertEqual(saves.count, 3)
+    for (request, kind) in zip(saves, [PaneTab.Kind.terminal, .file, .workflow]) {
+      guard case .pane(_, let tabs, _) = try PaneLayout(request.state.paneLayout) else {
+        return XCTFail("Saved pane missing")
+      }
+      XCTAssertEqual(tabs.first?.kind, kind)
+    }
+    XCTAssertEqual(try PaneLayout(saves.last!.state.paneLayout), last)
+    model.selectWorktree("/repo/b")
+    try await eventually { model.layoutLoaded }
+    model.selectWorktree(path)
+    try await eventually { model.layoutLoaded && model.layout == last }
+    await model.stop()
+    let restarted = try await testModel(http)
+    restarted.selectWorktree(path)
+    try await eventually { restarted.layoutLoaded && restarted.layout == last }
+    await restarted.stop()
+  }
+
+  @MainActor func testSharedSubscriptionDeliversCacheAndStopsOnlyLastSubscriber() async throws {
+    let http = TestHTTPClient()
+    let model = try await testModel(http)
+    try await eventually { http.requests("StartStateSubscription").count >= 3 }
+    let initial = http.requests("StartStateSubscription").count
+    var first: [Bool] = []
+    var second: [Bool] = []
+    let one = model.subscribe("repository-group-state", ["/shared"]) {
+      first.append($0.repositoryGroupState.collapsed)
+    }
+    try await eventually { first == [false] }
+    let two = model.subscribe("repository-group-state", ["/shared"]) {
+      second.append($0.repositoryGroupState.collapsed)
+    }
+    XCTAssertEqual(second, [false])
+    XCTAssertEqual(http.requests("StartStateSubscription").count, initial + 1)
+    let subscription = try XCTUnwrap(http.state.withLock { $0.subscriptions.last })
+    var event = Releash_Client_V1_StateSubscriptionEvent()
+    event.subscriptionID = subscription.subscriptionID
+    event.change.payload.repositoryGroupState.collapsed = true
+    try TestHTTPClient.send(event, on: http.state.withLock { $0.streams.last! })
+    try await eventually { first == [false, true] && second == [false, true] }
+    model.unsubscribe(one)
+    XCTAssertTrue(http.requests("StopStateSubscription").isEmpty)
+    event.change.payload.repositoryGroupState.collapsed = false
+    try TestHTTPClient.send(event, on: http.state.withLock { $0.streams.last! })
+    try await eventually { second == [false, true, false] }
+    XCTAssertEqual(first, [false, true])
+    model.unsubscribe(two)
+    try await eventually { http.requests("StopStateSubscription").count == 1 }
+    var third: [Bool] = []
+    let three = model.subscribe("repository-group-state", ["/shared"]) {
+      third.append($0.repositoryGroupState.collapsed)
+    }
+    XCTAssertTrue(third.isEmpty)
+    try await eventually { third == [false] }
+    model.unsubscribe(three)
+    await model.stop()
+  }
+}

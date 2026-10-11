@@ -186,7 +186,7 @@ fn collect_workspace_state_records(
     app_data_dir: &Path,
     file_system: &dyn GcFileSystem,
 ) -> Vec<WorkspaceStateGcRecord> {
-    let directory = app_data_dir.join("workspace_state");
+    let directory = app_data_dir.join("workspace_state.migrated");
     read_directory_or_empty(file_system, &directory)
         .into_iter()
         .filter_map(|path| {

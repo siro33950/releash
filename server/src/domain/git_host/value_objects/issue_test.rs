@@ -21,16 +21,6 @@ fn test_issue絞り込み_labelとmilestoneを同時に満たすものを選ぶ(
         body: "".into(),
         milestone: Some(Milestone { title: "v1".into() }),
     };
-    let mut other = issue.clone();
-    other.labels.push(IssueLabel {
-        name: "feature".into(),
-        color: "blue".into(),
-    });
-    other.milestone = Some(Milestone { title: "v2".into() });
-    let options = IssueOptions::from_issues(&[other, issue.clone(), issue.clone()]);
-    assert_eq!(options.labels, ["bug", "feature"]);
-    assert_eq!(options.milestones, ["v1", "v2"]);
-    assert_eq!(IssueOptions::from_issues(&[]), IssueOptions::default());
     // When / Then
     assert!(IssueFilter::default().matches(&issue));
     assert!(IssueFilter {
@@ -53,4 +43,40 @@ fn test_issue絞り込み_labelとmilestoneを同時に満たすものを選ぶ(
         milestone: None
     }
     .matches(&issue));
+}
+
+#[test]
+fn test_issue選択肢_未絞り込みの全件から重複を除き辞書順に並べる() {
+    // Given
+    let issue = |number, labels: &[&str], milestone: &str| IssueInfo {
+        number,
+        title: "issue".into(),
+        state: "OPEN".into(),
+        url: "url".into(),
+        author: PrAuthor {
+            login: "author".into(),
+        },
+        created_at: "created".into(),
+        updated_at: "updated".into(),
+        labels: labels
+            .iter()
+            .map(|label| IssueLabel {
+                name: (*label).into(),
+                color: "color".into(),
+            })
+            .collect(),
+        assignees: vec![],
+        body: String::new(),
+        milestone: Some(Milestone {
+            title: milestone.into(),
+        }),
+    };
+    let first = issue(1, &["z", "a", "a"], "later");
+    let other = issue(2, &["b", "z"], "earlier");
+    // When
+    let options = IssueOptions::from_issues(&[first, other, issue(3, &["a"], "later")]);
+    // Then
+    assert_eq!(options.labels, ["a", "b", "z"]);
+    assert_eq!(options.milestones, ["earlier", "later"]);
+    assert_eq!(IssueOptions::from_issues(&[]), IssueOptions::default());
 }

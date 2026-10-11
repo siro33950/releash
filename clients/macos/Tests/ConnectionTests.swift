@@ -90,12 +90,12 @@ extension ConnectionTests {
       let http = TestHTTPClient()
       let model = try await testModel(http)
       model.selectWorktree("/repo/a")
-      model.subscribe("removed", ["/old"]) { _ in }
+      let removed = model.subscribe("removed", ["/old"]) { _ in }
       try await eventually {
         model.layoutLoaded
           && http.state.withLock { $0.subscriptions.contains { $0.target == "removed" } }
       }
-      model.unsubscribe("removed", ["/old"])
+      model.unsubscribe(removed)
       let removedCount = http.state.withLock {
         $0.subscriptions.filter { $0.target == "removed" }.count
       }

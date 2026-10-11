@@ -74,6 +74,7 @@ impl ProductionAppDataComposition {
         shared_repo_paths: SharedRepoPaths,
         repository: Arc<dyn LocalEventTransactionRepository>,
         execution_trees: Arc<dyn crate::usecase::app_data_gc::ExecutionTreeGc>,
+        workspace_states: Arc<dyn crate::usecase::app_data_gc::WorkspaceStateGc>,
     ) -> Result<GcReport, String> {
         let file_system = StdGcFileSystem::with_observer(self.observer.clone());
         let inventory_file_system = file_system.clone();
@@ -117,6 +118,7 @@ impl ProductionAppDataComposition {
                 plan,
                 revalidated_runtime_protection,
                 &file_system,
+                Some(workspace_states.as_ref()),
             );
             report.errors += archive_errors;
             report

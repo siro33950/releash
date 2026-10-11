@@ -8,9 +8,6 @@ pub fn save_workspace_state(
     worktree_name: &str,
     state: WorkspaceState,
 ) -> Result<(), WorkspaceStateError> {
-    if let Some(panes) = &state.panes {
-        panes.validate()?;
-    }
     repository.check_readable(worktree_name)?;
     repository.set(worktree_name, state);
     repository.save(worktree_name)?;
@@ -58,4 +55,12 @@ pub fn load_repository_group_state(
     path: &str,
 ) -> Result<bool, WorkspaceStateError> {
     repository.load_repository_group(path)
+}
+
+pub fn migrate_workspace_states(
+    repository: &dyn WorkspaceStateRepository,
+    repositories: &[String],
+    worktrees: &[String],
+) -> Result<(), WorkspaceStateError> {
+    repository.migrate_legacy(repositories, worktrees)
 }

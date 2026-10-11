@@ -137,13 +137,7 @@ fn worktree(row: &WorkspaceListWorktree) -> Result<wire::WorkspaceWorktreeList, 
                     .session
                     .as_ref()
                     .map(|session| session.provider())
-                    .map(|provider| {
-                        match provider {
-                            ProviderKind::Claude => "claude",
-                            ProviderKind::Codex => "codex",
-                        }
-                        .to_owned()
-                    }),
+                    .map(wire::AgentSessionProviderDto::from),
                 status: nodes
                     .node()
                     .status_classification

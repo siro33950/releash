@@ -35,6 +35,7 @@ import {
 	CreateSessionReviewThreadRequestSchema,
 	CreateSessionReviewThreadResponseSchema,
 	CreateWorktreeRequestSchema,
+	CreateWorktreesRequestSchema,
 	DeleteAgentSessionRequestSchema,
 	DeleteFacetRequestSchema,
 	DeleteNotionConfigRequestSchema,
@@ -64,6 +65,7 @@ import {
 	ListHiddenRangeDtoSchema,
 	ListInlineChunkDtoSchema,
 	ListSplitRowDtoSchema,
+	ListstringSchema,
 	ListVisibleBlockDtoSchema,
 	LoginRegistrationResultSchema,
 	NotionValidationResultViewSchema,
@@ -97,6 +99,7 @@ import {
 	ReviewThreadDtoSchema,
 	SaveFacetRequestSchema,
 	SaveNotionConfigRequestSchema,
+	SaveRepositoryGroupStateRequestSchema,
 	SaveWorkflowSourceRequestSchema,
 	SaveWorkflowSourceResultDtoSchema,
 	SaveWorkspaceStateRequestSchema,
@@ -477,6 +480,44 @@ const commands = {
 					CreateWorktreeRequestSchema,
 					clientJson(
 						CreateWorktreeRequestSchema,
+						JSON.parse(JSON.stringify(args ?? {})),
+						true,
+					),
+				),
+			),
+		);
+		return result;
+	},
+	create_worktrees: async (
+		client: Client<typeof ClientService>,
+		args: ClientCommandArgs["create_worktrees"],
+	) => {
+		const result = decode(
+			ListstringSchema,
+			await client.createWorktrees(
+				fromJson(
+					CreateWorktreesRequestSchema,
+					clientJson(
+						CreateWorktreesRequestSchema,
+						JSON.parse(JSON.stringify(args ?? {})),
+						true,
+					),
+				),
+			),
+		);
+		return result;
+	},
+	save_repository_group_state: async (
+		client: Client<typeof ClientService>,
+		args: ClientCommandArgs["save_repository_group_state"],
+	) => {
+		const result = decode(
+			UnitSchema,
+			await client.saveRepositoryGroupState(
+				fromJson(
+					SaveRepositoryGroupStateRequestSchema,
+					clientJson(
+						SaveRepositoryGroupStateRequestSchema,
 						JSON.parse(JSON.stringify(args ?? {})),
 						true,
 					),

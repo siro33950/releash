@@ -416,6 +416,111 @@ pub(crate) mod worktree_gateway_tests {
         (parent, repo_dir, repo)
     }
 
+    #[test]
+    fn test_作成競合_管理名と親消失を再試行し失敗時だけ新規branchを戻す() {
+        use releashd::test_support::integration::repository::create_worktree_with_hook;
+        // Given
+        for mode in ["name", "parent", "path", "exhausted"] {
+            let (parent, repo_dir, repo) = create_test_repo_with_parent();
+            create_initial_commit(&repo);
+            let path = parent.path().join("main-repo-worktrees/feature/a");
+            let mut attempts = 0;
+            let mut names = Vec::new();
+            // When
+            let result = create_worktree_with_hook(
+                repo_dir.to_str().unwrap(),
+                path.to_str().unwrap(),
+                "feature/a",
+                true,
+                None,
+                |repository, name, target| {
+                    attempts += 1;
+                    names.push(name.to_string());
+                    assert!(repository
+                        .find_branch("feature/a", BranchType::Local)
+                        .is_ok());
+                    match mode {
+                        "name" if attempts == 1 => {
+                            fs::create_dir_all(repository.path().join("worktrees").join(name))
+                                .unwrap()
+                        }
+                        "parent" if attempts == 1 => {
+                            fs::remove_dir(target.parent().unwrap()).unwrap()
+                        }
+                        "path" => fs::create_dir_all(target).unwrap(),
+                        "exhausted" => {
+                            fs::create_dir_all(repository.path().join("worktrees").join(name))
+                                .unwrap()
+                        }
+                        _ => {}
+                    }
+                },
+            );
+            // Then
+            match mode {
+                "name" | "parent" => {
+                    assert!(result.is_ok(), "{mode}: {result:?}");
+                    assert_eq!(attempts, 2);
+                    assert_ne!(names[0], names[1]);
+                    assert!(Repository::open(&path).is_ok());
+                    assert!(repo.find_branch("feature/a", BranchType::Local).is_ok());
+                }
+                "path" | "exhausted" => {
+                    assert!(result.is_err());
+                    assert_eq!(attempts, if mode == "path" { 1 } else { 3 });
+                    assert!(
+                        repo.find_branch("feature/a", BranchType::Local).is_err(),
+                        "{mode}: {result:?}"
+                    );
+                }
+                _ => unreachable!(),
+            }
+        }
+    }
+
+    #[test]
+    fn test_削除後_空の中間階層だけ除去しrootと兄弟を保持する() {
+        // Given
+        let (parent, repo_dir, repo) = create_test_repo_with_parent();
+        create_initial_commit(&repo);
+        let root = parent.path().join("main-repo-worktrees");
+        let first = root.join("feature/a");
+        let sibling = root.join("feature/b");
+        for (branch, path) in [("feature/a", &first), ("feature/b", &sibling)] {
+            create_worktree(
+                repo_dir.to_str().unwrap(),
+                path.to_str().unwrap(),
+                branch,
+                true,
+                None,
+            )
+            .unwrap();
+        }
+        // When
+        remove_worktree(repo_dir.to_str().unwrap(), first.to_str().unwrap(), false).unwrap();
+        // Then
+        assert!(sibling.exists());
+        assert!(root.join("feature").exists());
+        remove_worktree(repo_dir.to_str().unwrap(), sibling.to_str().unwrap(), false).unwrap();
+        assert!(!root.join("feature").exists());
+        assert!(root.exists());
+        for branch in ["feature/a", "feature/b"] {
+            repo.find_branch(branch, BranchType::Local)
+                .unwrap()
+                .delete()
+                .unwrap();
+        }
+        create_worktree(
+            repo_dir.to_str().unwrap(),
+            root.join("feature").to_str().unwrap(),
+            "feature",
+            true,
+            None,
+        )
+        .unwrap();
+        assert!(Repository::open(root.join("feature")).is_ok());
+    }
+
     fn create_worktree_helper(
         repo: &Repository,
         parent_dir: &Path,

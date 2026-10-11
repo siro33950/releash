@@ -154,8 +154,7 @@ struct WorktreeCard: View {
                     .foregroundStyle(UIStyle.statusColor(execution.status))
                     .accessibilityLabel("Session, \(execution.status)")
                   Text(
-                    model.providers.first { $0.wireName == execution.provider }?.displayName
-                      ?? execution.provider
+                    execution.provider.displayName
                   )
                   .fontWeight(.medium)
                   Text(execution.title).lineLimit(1)

@@ -4,7 +4,7 @@ use super::*;
 fn test_マージ状態_gitの判定を保持しopenなprがない場合だけprの判定を反映する() {
     // Given
     let status = PrStatus {
-        open_prs: HashMap::from([(
+        open_prs: Vec::from([(
             "open".into(),
             PrInfo {
                 number: 1,
@@ -62,7 +62,7 @@ fn test_pr選択_closedはmerge扱いせずopenを優先する() {
         draft: false,
     };
     let mut status = PrStatus {
-        completed_prs: HashMap::from([("branch".into(), closed.clone())]),
+        completed_prs: Vec::from([("branch".into(), closed.clone())]),
         ..Default::default()
     };
     assert!(!status.branch_is_merged("branch", false));
@@ -74,9 +74,49 @@ fn test_pr選択_closedはmerge扱いせずopenを優先する() {
         state: PrState::Open,
         draft: false,
     };
-    status.open_prs.insert("branch".into(), open.clone());
+    status.open_prs.push(("branch".into(), open.clone()));
     assert_eq!(status.open_for_branch("branch"), Some(&open));
     assert_eq!(status.for_branch("branch"), Some(&open));
-    status.completed_prs.get_mut("branch").unwrap().state = PrState::Merged;
+    status
+        .completed_prs
+        .iter_mut()
+        .find(|(name, _)| name == "branch")
+        .unwrap()
+        .1
+        .state = PrState::Merged;
     assert_eq!(status.for_branch("branch"), Some(&open));
+}
+
+#[test]
+fn test_pr選択_同状態の最後を選びopenとmergedとclosedの優先順位を守る() {
+    // Given
+    let pr = |number, state| PrInfo {
+        number,
+        state,
+        url: "url".into(),
+        draft: false,
+    };
+    let mut status = PrStatus {
+        open_prs: vec![
+            ("branch".into(), pr(1, PrState::Open)),
+            ("branch".into(), pr(2, PrState::Open)),
+        ],
+        completed_prs: vec![
+            ("branch".into(), pr(3, PrState::Merged)),
+            ("branch".into(), pr(4, PrState::Merged)),
+            ("branch".into(), pr(5, PrState::Closed)),
+            ("branch".into(), pr(6, PrState::Closed)),
+        ],
+    };
+    // When / Then
+    assert_eq!(status.for_branch("branch").unwrap().number, 2);
+    assert!(!status.branch_is_merged("branch", false));
+    status.open_prs.clear();
+    assert_eq!(status.for_branch("branch").unwrap().number, 4);
+    assert!(status.branch_is_merged("branch", false));
+    status
+        .completed_prs
+        .retain(|(_, pr)| pr.state == PrState::Closed);
+    assert_eq!(status.for_branch("branch").unwrap().number, 6);
+    assert!(!status.branch_is_merged("branch", false));
 }

@@ -39,6 +39,10 @@ export type TerminalExit = {
 
 export type Liststring = Array<string>;
 
+export type RepositoryGroupState = {
+	collapsed?: boolean;
+};
+
 export type WorkspaceListSnapshot = {
 	status: WorkspaceListStatus;
 	repositories: ListWorkspaceRepositoryList;
@@ -62,6 +66,9 @@ export type WorkspaceRepositoryList = {
 export type ListWorkspaceBranch = Array<WorkspaceBranch>;
 
 export type WorkspaceBranch = {
+	removalRequiresForce?: boolean;
+	prState?: string;
+	prStateNumber?: number;
 	name: string;
 	is_main_worktree: boolean;
 	is_deleting: boolean;
@@ -78,11 +85,24 @@ export type WorkspaceBranch = {
 export type ListWorkspaceWorktreeList = Array<WorkspaceWorktreeList>;
 
 export type WorkspaceWorktreeList = {
+	executions?: Array<WorktreeExecutionSummary>;
 	path: string;
 	status: WorkspaceListStatus;
 	snapshot: WorkspaceTreeSnapshot | null;
 	workflowHistory: ListWorkspaceWorkflowHistoryItem;
 };
+
+export type WorktreeExecutionSummary = {
+	id?: string;
+	title?: string;
+	isWorkflow?: boolean;
+	provider?: AgentSessionProviderDto;
+	status?: string;
+	nodeCount?: number;
+	sessionStates?: Array<string>;
+};
+
+export type AgentSessionProviderDto = "claude" | "codex";
 
 export type WorkspaceTreeSnapshot = {
 	nodes: ListWorkspaceTreeItem;
@@ -182,8 +202,6 @@ export type AgentSessionItemDto = {
 	lastExitAbnormal: boolean;
 	terminalPresence?: string;
 };
-
-export type AgentSessionProviderDto = "claude" | "codex";
 
 export type AgentSessionTreeLocationDto = {
 	treeId: string;
@@ -310,6 +328,8 @@ export type BranchStatus = {
 export type ResultString = string;
 
 export type IssuesSnapshot = {
+	labels?: Array<string>;
+	milestones?: Array<string>;
 	issues?: ListIssueInfoDto;
 	readError?: string;
 };
@@ -413,9 +433,34 @@ export type StartupWorktree = {
 export type NullableWorkspaceStateDto = WorkspaceStateDto | null;
 
 export type WorkspaceStateDto = {
+	paneLayout?: PaneLayout;
 	version: 1;
 	tabs: WorkspaceTabsStateDto;
 	layout: WorkspaceLayoutStateDto;
+};
+
+export type PaneLayout = {
+	pane?: Pane;
+	split?: PaneSplit;
+};
+
+export type Pane = {
+	id?: string;
+	tabs?: Array<PaneTab>;
+	activeTab?: string;
+};
+
+export type PaneTab = {
+	id?: string;
+	kind?: "terminal" | "workflow" | "file" | "session";
+};
+
+export type PaneSplit = {
+	id?: string;
+	axis?: "horizontal" | "vertical";
+	ratio?: number;
+	first?: PaneLayout;
+	second?: PaneLayout;
 };
 
 export type WorkspaceTabsStateDto = {
@@ -1283,6 +1328,31 @@ export type InputCreateWorktreeRequest = {
 	baseBranch?: string | null;
 };
 
+export type InputCreateWorktreesRequest = {
+	repoPath?: string;
+	branches?: Array<string>;
+	baseBranch?: string;
+	session?: InputWorktreeSessionLaunch;
+	workflow?: InputWorktreeWorkflowLaunch;
+};
+
+export type InputWorktreeSessionLaunch = {
+	provider?: string;
+	rows?: number;
+	cols?: number;
+	requestId?: string;
+};
+
+export type InputWorktreeWorkflowLaunch = {
+	name?: string;
+	request?: string;
+};
+
+export type InputSaveRepositoryGroupStateRequest = {
+	repositoryPath?: string;
+	collapsed?: boolean;
+};
+
 export type InputDeleteAgentSessionRequest = {
 	agentSessionId: string;
 	callerRequestId: string;
@@ -1567,9 +1637,34 @@ export type InputSaveWorkspaceStateRequest = {
 };
 
 export type InputWorkspaceStateDto = {
+	paneLayout?: InputPaneLayout;
 	version: 1;
 	tabs: InputWorkspaceTabsStateDto;
 	layout: InputWorkspaceLayoutStateDto;
+};
+
+export type InputPaneLayout = {
+	pane?: InputPane;
+	split?: InputPaneSplit;
+};
+
+export type InputPane = {
+	id?: string;
+	tabs?: Array<InputPaneTab>;
+	activeTab?: string;
+};
+
+export type InputPaneTab = {
+	id?: string;
+	kind?: "terminal" | "workflow" | "file" | "session";
+};
+
+export type InputPaneSplit = {
+	id?: string;
+	axis?: "horizontal" | "vertical";
+	ratio?: number;
+	first?: InputPaneLayout;
+	second?: InputPaneLayout;
 };
 
 export type InputWorkspaceTabsStateDto = {
@@ -1898,6 +1993,8 @@ export interface ClientCommandArgs {
 	create_agent_session: InputCreateAgentSessionRequest;
 	create_review_thread: InputCreateReviewThreadRequest;
 	create_worktree: InputCreateWorktreeRequest;
+	create_worktrees: InputCreateWorktreesRequest;
+	save_repository_group_state: InputSaveRepositoryGroupStateRequest;
 	delete_agent_session: InputDeleteAgentSessionRequest;
 	delete_facet: InputDeleteFacetRequest;
 	delete_notion_config: InputDeleteNotionConfigRequest;
@@ -2018,6 +2115,12 @@ export interface ClientCommands {
 	create_worktree(
 		args: ClientCommandArgs["create_worktree"],
 	): Promise<ResultString>;
+	create_worktrees(
+		args: ClientCommandArgs["create_worktrees"],
+	): Promise<Liststring>;
+	save_repository_group_state(
+		args: ClientCommandArgs["save_repository_group_state"],
+	): Promise<void>;
 	delete_agent_session(
 		args: ClientCommandArgs["delete_agent_session"],
 	): Promise<void>;

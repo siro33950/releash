@@ -27,7 +27,6 @@ async fn test_複数作成_各worktreeの作成後に同じ起動を適用する
     let paths = create_worktrees(
         repo,
         &launcher,
-        &Launcher::default(),
         "/r".into(),
         vec!["a".into(), "b".into()],
         Some("main".into()),
@@ -56,7 +55,6 @@ async fn test_複数作成_作成または起動の失敗を返して後続を�
         assert!(create_worktrees(
             repo,
             &launcher,
-            &Launcher::default(),
             "/r".into(),
             vec!["a".into(), "b".into()],
             None,
@@ -89,7 +87,6 @@ async fn test_複数作成_空と重複の入力では作成も起動もしな�
         assert!(create_worktrees(
             repo,
             &launcher,
-            &Launcher::default(),
             "/r".into(),
             branches,
             None,
@@ -150,7 +147,6 @@ async fn test_複数作成_実launcherが新規と既存の起動引数を渡す
         let paths = create_worktrees(
             Arc::new(usecase(fake.clone())),
             &launcher,
-            &Launcher::default(),
             "/r".into(),
             vec!["new".into(), "existing".into()],
             Some("main".into()),
@@ -206,15 +202,5 @@ async fn test_複数作成_実launcherが新規と既存の起動引数を渡す
                 LaunchAfterCreation::None => unreachable!(),
             }
         }
-    }
-}
-
-impl WorktreeCreation for Launcher {
-    fn begin_creation(
-        &self,
-        _: &str,
-        _: &str,
-    ) -> Result<Vec<crate::usecase::worktree_operation::WorktreeMutationGuard>, UsecaseError> {
-        Ok(Vec::new())
     }
 }

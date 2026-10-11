@@ -6,5 +6,6 @@ pub mod value_objects;
 pub use git_host::{CachedResult, GitHostError, GitHostProvider, IssueCache, PrStatusCache};
 pub use services::issue_branch_name;
 pub use value_objects::{
-    CacheTtl, IssueFilter, IssueInfo, IssueLabel, Milestone, PrAuthor, PrInfo, PrState, PrStatus,
+    CacheTtl, IssueFilter, IssueInfo, IssueLabel, IssueOptions, Milestone, PrAuthor, PrInfo,
+    PrState, PrStatus,
 };

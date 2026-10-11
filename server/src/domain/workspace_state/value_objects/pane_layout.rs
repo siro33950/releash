@@ -1,7 +1,10 @@
 use std::collections::HashSet;
 
 #[derive(Clone, Debug, PartialEq)]
-pub enum PaneLayout {
+pub struct PaneLayout(PaneLayoutNode);
+
+#[derive(Clone, Debug, PartialEq)]
+enum PaneLayoutNode {
     Pane {
         id: String,
         tabs: Vec<PaneTab>,
@@ -34,20 +37,90 @@ pub enum SplitAxis {
     Vertical,
 }
 
+pub enum PaneLayoutView<'a> {
+    Pane {
+        id: &'a str,
+        tabs: &'a [PaneTab],
+        active_tab: Option<&'a str>,
+    },
+    Split {
+        id: &'a str,
+        axis: &'a SplitAxis,
+        ratio: f64,
+        first: &'a PaneLayout,
+        second: &'a PaneLayout,
+    },
+}
+
 impl PaneLayout {
-    pub fn validate(&self) -> Result<(), crate::domain::workspace_state::WorkspaceStateError> {
+    pub fn pane(
+        id: String,
+        tabs: Vec<PaneTab>,
+        active_tab: Option<String>,
+    ) -> Result<Self, crate::domain::workspace_state::WorkspaceStateError> {
+        Self::checked(PaneLayoutNode::Pane {
+            id,
+            tabs,
+            active_tab,
+        })
+    }
+    pub fn split(
+        id: String,
+        axis: SplitAxis,
+        ratio: f64,
+        first: Self,
+        second: Self,
+    ) -> Result<Self, crate::domain::workspace_state::WorkspaceStateError> {
+        Self::checked(PaneLayoutNode::Split {
+            id,
+            axis,
+            ratio,
+            first: Box::new(first),
+            second: Box::new(second),
+        })
+    }
+    pub fn view(&self) -> PaneLayoutView<'_> {
+        match &self.0 {
+            PaneLayoutNode::Pane {
+                id,
+                tabs,
+                active_tab,
+            } => PaneLayoutView::Pane {
+                id,
+                tabs,
+                active_tab: active_tab.as_deref(),
+            },
+            PaneLayoutNode::Split {
+                id,
+                axis,
+                ratio,
+                first,
+                second,
+            } => PaneLayoutView::Split {
+                id,
+                axis,
+                ratio: *ratio,
+                first,
+                second,
+            },
+        }
+    }
+    fn checked(
+        node: PaneLayoutNode,
+    ) -> Result<Self, crate::domain::workspace_state::WorkspaceStateError> {
+        let layout = Self(node);
         fn visit(layout: &PaneLayout, ids: &mut HashSet<String>, depth: usize) -> bool {
             if depth > 32 {
                 return false;
             }
-            let id = match layout {
-                PaneLayout::Pane { id, .. } | PaneLayout::Split { id, .. } => id,
+            let id = match &layout.0 {
+                PaneLayoutNode::Pane { id, .. } | PaneLayoutNode::Split { id, .. } => id,
             };
             if id.trim().is_empty() || !ids.insert(id.clone()) {
                 return false;
             }
-            match layout {
-                PaneLayout::Pane {
+            match &layout.0 {
+                PaneLayoutNode::Pane {
                     tabs, active_tab, ..
                 } => {
                     tabs.iter()
@@ -56,7 +129,7 @@ impl PaneLayout {
                             .as_ref()
                             .is_none_or(|active| tabs.iter().any(|tab| &tab.id == active))
                 }
-                PaneLayout::Split {
+                PaneLayoutNode::Split {
                     ratio,
                     first,
                     second,
@@ -70,8 +143,8 @@ impl PaneLayout {
                 }
             }
         }
-        if visit(self, &mut HashSet::new(), 0) {
-            Ok(())
+        if visit(&layout, &mut HashSet::new(), 0) {
+            Ok(layout)
         } else {
             Err(
                 crate::domain::workspace_state::WorkspaceStateError::Message(

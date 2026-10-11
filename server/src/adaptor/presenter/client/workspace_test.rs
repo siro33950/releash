@@ -1103,7 +1103,13 @@ fn test_実行サマリー_providerと行とsessionの状態を配信する() {
     let wire = worktree(&row).unwrap();
     let summary = &wire.executions[0];
     // Then
-    assert_eq!(summary.provider.as_deref(), Some("codex"));
+    assert_eq!(
+        summary
+            .provider
+            .as_ref()
+            .and_then(|provider| provider.value),
+        Some(wire::agent_session_provider_dto::Value::Codex as i32)
+    );
     assert_eq!(summary.status, "active");
     assert_eq!(summary.session_states, ["active", "idle"]);
     assert_eq!(summary.node_count, 2);
@@ -1130,5 +1136,45 @@ fn test_pr状態の転送_完了済みprは既存のopen用フィールドに含
         assert_eq!(branch.pr_url, None);
         assert_eq!(branch.pr_state.as_deref(), Some(expected));
         assert_eq!(branch.pr_state_number, Some(42));
+    }
+}
+
+#[test]
+fn test_sessionカード_providerを正しいenumで配信する() {
+    // Given
+    for (provider, expected) in [
+        (
+            ProviderKind::Claude,
+            wire::agent_session_provider_dto::Value::Claude,
+        ),
+        (
+            ProviderKind::Codex,
+            wire::agent_session_provider_dto::Value::Codex,
+        ),
+    ] {
+        let mut execution = session_execution("session", "session");
+        execution.session = Some(
+            AgentSession::create(
+                "session",
+                WorkspaceIdentity::new("/repo"),
+                "/repo",
+                provider,
+                AgentSessionTreeLocation::session_tree_root("session").unwrap(),
+            )
+            .unwrap(),
+        );
+        let mut tree = WorkspaceTree::restore("/repo", vec![tree_owner("session")]).unwrap();
+        tree.record_executions(vec![execution]);
+        let row = worktree_row("/repo", "main", Fetched::ready(tree));
+        // When
+        let card = worktree(&row).unwrap();
+        // Then
+        assert_eq!(
+            card.executions[0]
+                .provider
+                .as_ref()
+                .and_then(|provider| provider.value),
+            Some(expected as i32)
+        );
     }
 }

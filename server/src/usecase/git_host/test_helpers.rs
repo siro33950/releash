@@ -1,6 +1,5 @@
 use crate::domain::git_host::PrInfo;
 use crate::domain::git_host::{GitHostError, IssueCache, IssueInfo, PrStatus, PrStatusCache};
-use std::collections::HashMap;
 use std::sync::{
     atomic::{AtomicUsize, Ordering},
     Mutex,
@@ -72,7 +71,7 @@ impl IssueCache for FakeIssueCache {
 
 pub(crate) fn sample_pr_status() -> PrStatus {
     PrStatus {
-        open_prs: HashMap::from([(
+        open_prs: Vec::from([(
             "feat/test".to_string(),
             PrInfo {
                 number: 42,

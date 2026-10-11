@@ -1924,15 +1924,15 @@ message PaneTab {
 }
 enum PaneTabKind {
   PANE_TAB_KIND_UNSPECIFIED = 0;
-  PANE_TAB_KIND_TERMINAL = 1;
-  PANE_TAB_KIND_WORKFLOW = 2;
-  PANE_TAB_KIND_FILE = 3;
-  PANE_TAB_KIND_SESSION = 4;
+  PANE_TAB_KIND_TERMINAL = 1 [(json_enum_name) = "terminal"];
+  PANE_TAB_KIND_WORKFLOW = 2 [(json_enum_name) = "workflow"];
+  PANE_TAB_KIND_FILE = 3 [(json_enum_name) = "file"];
+  PANE_TAB_KIND_SESSION = 4 [(json_enum_name) = "session"];
 }
 enum SplitAxis {
   SPLIT_AXIS_UNSPECIFIED = 0;
-  SPLIT_AXIS_HORIZONTAL = 1;
-  SPLIT_AXIS_VERTICAL = 2;
+  SPLIT_AXIS_HORIZONTAL = 1 [(json_enum_name) = "horizontal"];
+  SPLIT_AXIS_VERTICAL = 2 [(json_enum_name) = "vertical"];
 }
 
 message WorkspaceStateDto {
@@ -2711,7 +2711,7 @@ message WorktreeExecutionSummary {
   string id = 1;
   string title = 2;
   bool is_workflow = 3;
-  optional string provider = 4;
+  optional AgentSessionProviderDto provider = 4;
   string status = 5;
   uint64 node_count = 6;
   repeated string session_states = 7;

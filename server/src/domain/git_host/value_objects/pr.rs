@@ -1,5 +1,3 @@
-use std::collections::HashMap;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PrState {
     Open,
@@ -17,27 +15,40 @@ pub struct PrInfo {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PrStatus {
-    pub open_prs: HashMap<String, PrInfo>,
-    pub completed_prs: HashMap<String, PrInfo>,
+    pub open_prs: Vec<(String, PrInfo)>,
+    pub completed_prs: Vec<(String, PrInfo)>,
 }
 
 impl PrStatus {
     pub fn open_for_branch(&self, branch: &str) -> Option<&PrInfo> {
-        self.open_prs.get(branch)
+        self.open_prs
+            .iter()
+            .rev()
+            .find(|(name, _)| name == branch)
+            .map(|(_, pr)| pr)
     }
 
     pub fn for_branch(&self, branch: &str) -> Option<&PrInfo> {
-        self.open_for_branch(branch)
-            .or_else(|| self.completed_prs.get(branch))
+        self.open_for_branch(branch).or_else(|| {
+            [PrState::Merged, PrState::Closed]
+                .into_iter()
+                .find_map(|state| {
+                    self.completed_prs
+                        .iter()
+                        .rev()
+                        .find(|(name, pr)| name == branch && pr.state == state)
+                        .map(|(_, pr)| pr)
+                })
+        })
     }
 
     pub fn branch_is_merged(&self, branch: &str, merged_in_git: bool) -> bool {
         merged_in_git
-            || (!self.open_prs.contains_key(branch)
+            || (self.open_for_branch(branch).is_none()
                 && self
                     .completed_prs
-                    .get(branch)
-                    .is_some_and(|pr| pr.state == PrState::Merged))
+                    .iter()
+                    .any(|(name, pr)| name == branch && pr.state == PrState::Merged))
     }
 }
 

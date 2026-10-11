@@ -23,6 +23,20 @@ impl WorkflowRuntimeUsecase {
         ])
     }
 
+    pub(crate) fn begin_worktrees_creation_mutation(
+        &self,
+        repo: &str,
+        branches: &[String],
+    ) -> Result<Vec<crate::usecase::worktree_operation::WorktreeMutationGuard>, WorkflowError> {
+        let mut guards = vec![self.begin_worktree_mutation(repo)?];
+        for branch in branches {
+            guards.push(self.begin_worktree_mutation(
+                &crate::domain::repository::worktree_path(repo, branch),
+            )?);
+        }
+        Ok(guards)
+    }
+
     pub(crate) fn begin_workspace_state_mutation(
         &self,
         name: &str,
@@ -226,7 +240,11 @@ impl crate::usecase::repository_usecase::WorktreeExecutionArchiver for WorkflowR
             .and_then(|name| name.to_str())
             .ok_or_else(|| WorkflowError::validation("worktree path has no name"))?;
         self.worktree_operations
-            .delete_many(&[identity.clone(), format!("workspace-state:{name}")])
+            .delete_many(&[
+                identity.clone(),
+                format!("workspace-state:{identity}"),
+                format!("workspace-state:{name}"),
+            ])
             .await
             .map_err(map_worktree_operation_error)
     }

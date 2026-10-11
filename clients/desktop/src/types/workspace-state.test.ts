@@ -1,23 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildWorkspaceState, worktreeNameFromPath } from "./workspace-state";
-
-describe("worktreeNameFromPath", () => {
-	it("通常パスから末尾のディレクトリ名を返す", () => {
-		expect(worktreeNameFromPath("/path/to/repo")).toBe("repo");
-	});
-
-	it("ルートパスでは空文字を返す（pop結果）", () => {
-		expect(worktreeNameFromPath("/")).toBe("");
-	});
-
-	it("スラッシュなしのパスをそのまま返す", () => {
-		expect(worktreeNameFromPath("repo")).toBe("repo");
-	});
-
-	it("深いネストのパスから末尾を返す", () => {
-		expect(worktreeNameFromPath("/home/user/projects/my-app")).toBe("my-app");
-	});
-});
+import { buildWorkspaceState } from "./workspace-state";
 
 describe("buildWorkspaceState", () => {
 	it("全フィールドが正しくマッピングされる", () => {

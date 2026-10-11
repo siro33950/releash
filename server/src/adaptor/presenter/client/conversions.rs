@@ -2103,29 +2103,29 @@ impl TryFrom<crate::domain::comment::ReviewThread> for wire::ResolveSessionRevie
     }
 }
 
-impl TryFrom<crate::domain::workspace_state::value_objects::pane_layout::PaneLayout>
+impl TryFrom<&crate::domain::workspace_state::value_objects::pane_layout::PaneLayout>
     for wire::PaneLayout
 {
     type Error = String;
     fn try_from(
-        value: crate::domain::workspace_state::value_objects::pane_layout::PaneLayout,
+        value: &crate::domain::workspace_state::value_objects::pane_layout::PaneLayout,
     ) -> Result<Self, String> {
         use crate::domain::workspace_state::value_objects::pane_layout::{
-            PaneLayout, PaneTabKind, SplitAxis,
+            PaneLayoutView, PaneTabKind, SplitAxis,
         };
         Ok(Self {
-            node: Some(match value {
-                PaneLayout::Pane {
+            node: Some(match value.view() {
+                PaneLayoutView::Pane {
                     id,
                     tabs,
                     active_tab,
                 } => wire::pane_layout::Node::Pane(wire::Pane {
-                    id,
-                    active_tab,
+                    id: id.into(),
+                    active_tab: active_tab.map(str::to_owned),
                     tabs: tabs
-                        .into_iter()
+                        .iter()
                         .map(|tab| wire::PaneTab {
-                            id: tab.id,
+                            id: tab.id.clone(),
                             kind: match tab.kind {
                                 PaneTabKind::Terminal => wire::PaneTabKind::Terminal,
                                 PaneTabKind::Workflow => wire::PaneTabKind::Workflow,
@@ -2135,24 +2135,34 @@ impl TryFrom<crate::domain::workspace_state::value_objects::pane_layout::PaneLay
                         })
                         .collect(),
                 }),
-                PaneLayout::Split {
+                PaneLayoutView::Split {
                     id,
                     axis,
                     ratio,
                     first,
                     second,
                 } => wire::pane_layout::Node::Split(Box::new(wire::PaneSplit {
-                    id,
+                    id: id.into(),
                     ratio,
                     axis: match axis {
                         SplitAxis::Horizontal => wire::SplitAxis::Horizontal,
                         SplitAxis::Vertical => wire::SplitAxis::Vertical,
                     } as i32,
-                    first: Some(Box::new(cv(*first)?)),
-                    second: Some(Box::new(cv(*second)?)),
+                    first: Some(Box::new(wire::PaneLayout::try_from(first)?)),
+                    second: Some(Box::new(wire::PaneLayout::try_from(second)?)),
                 })),
             }),
         })
+    }
+}
+impl TryFrom<crate::domain::workspace_state::value_objects::pane_layout::PaneLayout>
+    for wire::PaneLayout
+{
+    type Error = String;
+    fn try_from(
+        value: crate::domain::workspace_state::value_objects::pane_layout::PaneLayout,
+    ) -> Result<Self, String> {
+        Self::try_from(&value)
     }
 }
 impl TryFrom<wire::PaneLayout>
@@ -2163,12 +2173,10 @@ impl TryFrom<wire::PaneLayout>
         use crate::domain::workspace_state::value_objects::pane_layout::{
             PaneTab, PaneTabKind, SplitAxis,
         };
-        Ok(match req(value.node, "pane node")? {
-            wire::pane_layout::Node::Pane(pane) => Self::Pane {
-                id: pane.id,
-                active_tab: pane.active_tab,
-                tabs: pane
-                    .tabs
+        match req(value.node, "pane node")? {
+            wire::pane_layout::Node::Pane(pane) => Self::pane(
+                pane.id,
+                pane.tabs
                     .into_iter()
                     .map(|tab| {
                         Ok(PaneTab {
@@ -2183,18 +2191,33 @@ impl TryFrom<wire::PaneLayout>
                         })
                     })
                     .collect::<Result<_, String>>()?,
-            },
-            wire::pane_layout::Node::Split(split) => Self::Split {
-                id: split.id,
-                ratio: split.ratio,
-                axis: match wire::SplitAxis::try_from(split.axis) {
+                pane.active_tab,
+            )
+            .map_err(|error| error.to_string()),
+            wire::pane_layout::Node::Split(split) => Self::split(
+                split.id,
+                match wire::SplitAxis::try_from(split.axis) {
                     Ok(wire::SplitAxis::Horizontal) => SplitAxis::Horizontal,
                     Ok(wire::SplitAxis::Vertical) => SplitAxis::Vertical,
                     _ => return Err("Unknown split axis".into()),
                 },
-                first: Box::new(cv(*req(split.first, "first pane")?)?),
-                second: Box::new(cv(*req(split.second, "second pane")?)?),
-            },
-        })
+                split.ratio,
+                cv(*req(split.first, "first pane")?)?,
+                cv(*req(split.second, "second pane")?)?,
+            )
+            .map_err(|error| error.to_string()),
+        }
+    }
+}
+
+impl From<crate::domain::provider_lifecycle::ProviderKind> for wire::AgentSessionProviderDto {
+    fn from(provider: crate::domain::provider_lifecycle::ProviderKind) -> Self {
+        use crate::domain::provider_lifecycle::ProviderKind;
+        Self {
+            value: Some(match provider {
+                ProviderKind::Claude => wire::agent_session_provider_dto::Value::Claude,
+                ProviderKind::Codex => wire::agent_session_provider_dto::Value::Codex,
+            } as i32),
+        }
     }
 }

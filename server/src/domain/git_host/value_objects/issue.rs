@@ -49,15 +49,12 @@ impl IssueFilter {
     }
 }
 
-#[cfg(test)]
-#[path = "issue_test.rs"]
-mod issue_tests;
-
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct IssueOptions {
     pub labels: Vec<String>,
     pub milestones: Vec<String>,
 }
+
 impl IssueOptions {
     pub fn from_issues(issues: &[IssueInfo]) -> Self {
         Self {
@@ -81,3 +78,7 @@ impl IssueOptions {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "issue_test.rs"]
+mod issue_tests;

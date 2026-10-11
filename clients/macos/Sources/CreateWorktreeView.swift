@@ -15,6 +15,8 @@ struct CreateWorktreeView: View {
   @State private var milestone = ""
   @State private var readFailure: String?
   @State private var issueArgs: [String] = []
+  @State private var subscriptions: [UUID] = []
+  @State private var filteredSubscription: UUID?
   var body: some View {
     VStack(spacing: 0) {
       HStack {
@@ -135,11 +137,11 @@ struct CreateWorktreeView: View {
     milestone = ""
     readFailure = nil
     guard !form.repository.isEmpty else { return }
-    model.subscribe("available-branches", [form.repository]) { payload in
+    subscriptions.append(model.subscribe("available-branches", [form.repository]) { payload in
       if case .branchStatus(let value) = payload.value { branches = value.items }
-    }
+    })
     if source == "issue" {
-      model.subscribe("issues", [form.repository]) { payload in
+      subscriptions.append(model.subscribe("issues", [form.repository]) { payload in
         if case .issues(let value) = payload.value {
           labels = value.labels
           milestones = value.milestones
@@ -147,18 +149,19 @@ struct CreateWorktreeView: View {
           if label.isEmpty && milestone.isEmpty { issues = value.issues.items }
           if value.hasReadError { readFailure = value.readError }
         }
-      }
+      })
     } else if source == "notion" {
-      model.subscribe("notion-tasks", [form.repository, "100"]) { payload in
+      subscriptions.append(model.subscribe("notion-tasks", [form.repository, "100"]) { payload in
         if case .notionTasks(let value) = payload.value {
           tasks = value.page.tasks.items
           if value.hasReadError { readFailure = value.readError.message }
         }
-      }
+      })
     }
   }
   private func filterIssues() {
-    if !issueArgs.isEmpty { model.unsubscribe("issues", issueArgs) }
+    if let id = filteredSubscription { model.unsubscribe(id) }
+    filteredSubscription = nil
     if label.isEmpty && milestone.isEmpty {
       issueArgs = []
       issues = allIssues
@@ -167,7 +170,7 @@ struct CreateWorktreeView: View {
     issueArgs = [form.repository]
     if !label.isEmpty { issueArgs.append("label=\(label)") }
     if !milestone.isEmpty { issueArgs.append("milestone=\(milestone)") }
-    model.subscribe("issues", issueArgs) { payload in
+    filteredSubscription = model.subscribe("issues", issueArgs) { payload in
       if case .issues(let value) = payload.value {
         issues = value.issues.items
         if value.hasReadError { readFailure = value.readError }
@@ -175,14 +178,11 @@ struct CreateWorktreeView: View {
     }
   }
   private func unsubscribe(_ path: String) {
-    guard !path.isEmpty else { return }
-    model.unsubscribe("available-branches", [path])
-    model.unsubscribe("issues", [path])
-    model.unsubscribe("notion-tasks", [path, "100"])
-    if !issueArgs.isEmpty {
-      model.unsubscribe("issues", issueArgs)
-      issueArgs = []
-    }
+    for id in subscriptions { model.unsubscribe(id) }
+    subscriptions = []
+    if let id = filteredSubscription { model.unsubscribe(id) }
+    filteredSubscription = nil
+    issueArgs = []
   }
 }
 

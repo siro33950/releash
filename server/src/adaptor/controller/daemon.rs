@@ -228,7 +228,10 @@ pub async fn compose(
     let shared_repo_paths: adaptor::gateway::repository::repo_paths::SharedRepoPaths =
         Arc::new(parking_lot::RwLock::new(Vec::new()));
     let workspace_state_store = Arc::new(
-        adaptor::gateway::workspace_state::WorkspaceStateStore::new(data_dir.clone()),
+        adaptor::gateway::workspace_state::WorkspaceStateStore::with_store(
+            data_dir.clone(),
+            local_event_store.clone(),
+        ),
     );
 
     let config_path = data_dir.join("releash.toml");
@@ -363,6 +366,13 @@ pub async fn compose(
     ));
 
     repo_paths_usecase.initialize_from_cwd(&repository_usecase)?;
+    let repositories = shared_repo_paths.read().clone();
+    migrate_legacy_workspace_states(
+        &data_dir,
+        &workspace_state_store,
+        &repositories,
+        &repository_usecase,
+    );
 
     let code_usecase = Arc::new(adaptor::controller::wiring::build_code_usecase());
     let git_host_usecase = Arc::new(
@@ -505,6 +515,7 @@ pub async fn compose(
         shared_repo_paths.clone(),
         projected_local_event_repository.clone(),
         workflow_runtime_usecase.clone(),
+        workspace_state_store.clone(),
     );
     let info = daemon.info().await;
     let local_api_binding = infrastructure::local_api::LocalApiServerBinding::bind(
@@ -676,6 +687,38 @@ pub async fn compose(
         exit: exit_receiver,
         daemon,
     })
+}
+
+pub fn migrate_legacy_workspace_states(
+    data_dir: &std::path::Path,
+    store: &adaptor::gateway::workspace_state::WorkspaceStateStore,
+    repositories: &[String],
+    repository: &usecase::repository_usecase::RepositoryUsecase,
+) {
+    let migrate = || -> Result<(), String> {
+        let mut worktrees = Vec::new();
+        if data_dir
+            .join("workspace_state")
+            .try_exists()
+            .map_err(|error| error.to_string())?
+        {
+            for path in repositories {
+                match repository.list_worktrees(path) {
+                    Ok(items) => worktrees.extend(items.into_iter().map(|worktree| worktree.path)),
+                    Err(error) => {
+                        log::warn!("Workspace state migration deferred for unresolved repository {path}: {error}");
+                        worktrees.clear();
+                        break;
+                    }
+                }
+            }
+        }
+        usecase::workspace_state::usecase::migrate_workspace_states(store, repositories, &worktrees)
+            .map_err(|error| error.to_string())
+    };
+    if let Err(error) = migrate() {
+        log::warn!("UI state migration deferred; daemon startup continues: {error}");
+    }
 }
 
 pub async fn migrate_legacy_execution_archives(

@@ -18,6 +18,8 @@ final class TestHTTPClient: HTTPClientInterface {
     var failedSubscriptionTargets: [String: Int] = [:]
     var pendingCreation: (@Sendable (HTTPResponse) -> Void)?
     var deferCreation = false
+    var deferSave = false
+    var pendingSave: (@Sendable (HTTPResponse) -> Void)?
   }
   let state = Mutex(State())
   let discoveryFile = FileManager.default.temporaryDirectory.appendingPathComponent(
@@ -81,6 +83,10 @@ final class TestHTTPClient: HTTPClientInterface {
         let save = try Releash_Client_V1_SaveWorkspaceStateRequest(
           serializedBytes: request.message ?? Data())
         state.withLock { $0.layouts[save.worktreeName] = save.state }
+        if state.withLock({ $0.deferSave }) {
+          state.withLock { $0.pendingSave = onResponse }
+          return Cancelable(cancel: {})
+        }
       }
       onResponse(
         HTTPResponse(

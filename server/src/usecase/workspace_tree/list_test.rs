@@ -1,6 +1,5 @@
 use super::*;
 use crate::domain::git_host::{PrInfo, PrStatus};
-use std::collections::HashMap;
 
 fn worktree(path: &str, branch: &str, is_merged: bool) -> Worktree {
     Worktree {
@@ -48,7 +47,7 @@ fn test_一覧の合成_prの状態でpr情報とmerge済みを決める() {
             values("/a/git", "git-merged", true),
         ]),
         pull_requests: Fetched::ready(PrStatus {
-            open_prs: HashMap::from([(
+            open_prs: Vec::from([(
                 "open".into(),
                 PrInfo {
                     number: 42,

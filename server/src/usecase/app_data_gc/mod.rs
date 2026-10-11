@@ -10,6 +10,70 @@ use crate::domain::local_event::{
     LocalEventTransactionRepository,
 };
 
+pub trait WorkspaceStateGc: Send + Sync {
+    fn states(
+        &self,
+    ) -> Result<
+        Vec<(String, crate::domain::local_event::StreamVersion)>,
+        crate::domain::workspace_state::WorkspaceStateError,
+    >;
+    fn invalidate(
+        &self,
+        key: &str,
+        expected: crate::domain::local_event::StreamVersion,
+    ) -> Result<bool, crate::domain::workspace_state::WorkspaceStateError>;
+}
+
+pub(crate) fn sweep_workspace_states(
+    plan: &StartupGcPlan,
+    runtime: &RuntimeProtection,
+    states: &dyn WorkspaceStateGc,
+    report: &mut GcReport,
+) {
+    let request = &plan.request;
+    let Some(live) = request.live_worktrees.as_ref() else {
+        return;
+    };
+    if live.has_unresolved_repos()
+        || !request
+            .runtime_protection
+            .workspace_keyed_protection_complete
+        || !runtime.workspace_keyed_protection_complete
+    {
+        return;
+    }
+    let inventory = match states.states() {
+        Ok(states) => states,
+        Err(error) => {
+            report.record_error();
+            log::warn!("UI state GC inventory failed; states retained: {error}");
+            return;
+        }
+    };
+    for (key, expected) in inventory {
+        if live.contains_workspace_state_key(&key)
+            || request
+                .runtime_protection
+                .protected_worktrees
+                .contains_workspace_state_key(&key)
+            || runtime
+                .protected_worktrees
+                .contains_workspace_state_key(&key)
+            || live.workspace_state_key_may_be_unresolved(&key)
+        {
+            continue;
+        }
+        match states.invalidate(&key, expected) {
+            Ok(true) => report.record_deleted(GcCategory::DeletedWorkspace, 0),
+            Ok(false) => {}
+            Err(error) => {
+                report.record_error();
+                log::warn!("UI state GC retained {key}: {error}");
+            }
+        }
+    }
+}
+
 #[async_trait::async_trait]
 pub trait ExecutionTreeGc: Send + Sync {
     async fn execution_trees(
@@ -460,13 +524,26 @@ pub(crate) fn sweep_startup_gc(
     plan: StartupGcPlan,
     revalidated_runtime_protection: RuntimeProtection,
     file_system: &dyn GcFileSystem,
+    workspace_states: Option<&dyn WorkspaceStateGc>,
 ) -> GcReport {
-    let report = sweep(
+    let mut report = GcReport::default();
+    if let Some(states) = workspace_states {
+        sweep_workspace_states(&plan, &revalidated_runtime_protection, states, &mut report);
+    }
+    let file_report = sweep(
         plan.deletions,
         &plan.request,
         &revalidated_runtime_protection,
         file_system,
     );
+    report.errors += file_report.errors;
+    report.total_files += file_report.total_files;
+    report.total_bytes += file_report.total_bytes;
+    for (category, stat) in file_report.categories {
+        let entry = report.categories.entry(category).or_default();
+        entry.deleted += stat.deleted;
+        entry.reclaimed_bytes += stat.reclaimed_bytes;
+    }
     log::info!("{}", report.log_summary());
     report
 }
@@ -475,7 +552,7 @@ pub(crate) fn sweep_startup_gc(
 pub fn run_startup_gc(request: StartupGcRequest, file_system: &dyn GcFileSystem) -> GcReport {
     let revalidated_runtime_protection = request.runtime_protection.clone();
     let plan = plan_startup_gc(request);
-    sweep_startup_gc(plan, revalidated_runtime_protection, file_system)
+    sweep_startup_gc(plan, revalidated_runtime_protection, file_system, None)
 }
 
 fn collect_workspace_keyed_deletions(request: &StartupGcRequest, plan: &mut DeletionPlan) {

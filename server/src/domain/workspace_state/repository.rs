@@ -1,6 +1,11 @@
 use crate::domain::workspace_state::{WorkspaceState, WorkspaceStateError};
 
 pub trait WorkspaceStateRepository: Send + Sync {
+    fn migrate_legacy(
+        &self,
+        repositories: &[String],
+        worktrees: &[String],
+    ) -> Result<(), WorkspaceStateError>;
     fn load_repository_group(&self, repository_path: &str) -> Result<bool, WorkspaceStateError>;
     fn save_repository_group(
         &self,

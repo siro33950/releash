@@ -10,7 +10,11 @@ fn parse_open_prs_valid_json() {
     let map = parse_gh_pr_list_output(json, PrState::Open).unwrap();
 
     assert_eq!(map.len(), 2);
-    let pr = map.get("feat/login").unwrap();
+    let pr = &map
+        .iter()
+        .find(|(branch, _)| branch == "feat/login")
+        .unwrap()
+        .1;
     assert_eq!(pr.number, 42);
     assert_eq!(pr.url, "https://github.com/owner/repo/pull/42");
 }
@@ -43,8 +47,8 @@ fn test_pr状態_draftと完了状態を保持する() {
     // When / Then
     for state in [PrState::Open, PrState::Merged, PrState::Closed] {
         let parsed = parse_gh_pr_list_output(json, state).unwrap();
-        assert_eq!(parsed["feat"].state, state);
-        assert!(parsed["feat"].draft);
+        assert_eq!(parsed[0].1.state, state);
+        assert!(parsed[0].1.draft);
     }
 }
 
@@ -278,7 +282,7 @@ mod cancellation_contract {
 }
 
 #[tokio::test]
-async fn test_pr取得_状態ごとに百件を取得しclosedよりmergedを優先する() {
+async fn test_pr取得_状態ごとに百件を取得し全件を順序どおり渡す() {
     struct Runner(parking_lot::Mutex<Vec<Vec<String>>>);
     #[async_trait::async_trait]
     impl GhCommandRunner for Runner {
@@ -313,6 +317,23 @@ async fn test_pr取得_状態ごとに百件を取得しclosedよりmergedを優
         .map(str::to_owned)
         .collect::<Vec<_>>())
     );
-    assert_eq!(status.completed_prs["same"].state, PrState::Merged);
-    assert!(status.branch_is_merged("same", false));
+    assert_eq!(
+        status
+            .completed_prs
+            .iter()
+            .map(|(_, pr)| pr.state)
+            .collect::<Vec<_>>(),
+        [PrState::Merged, PrState::Closed]
+    );
+}
+
+#[test]
+fn test_pr解析_同じbranchの同状態prを取得順のまま残す() {
+    // Given / When
+    let parsed = parse_gh_pr_list_output(r#"[{"headRefName":"same","number":1,"url":"first"},{"headRefName":"same","number":2,"url":"last"}]"#, PrState::Open).unwrap();
+    // Then
+    assert_eq!(
+        parsed.iter().map(|(_, pr)| pr.number).collect::<Vec<_>>(),
+        [1, 2]
+    );
 }

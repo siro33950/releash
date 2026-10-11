@@ -437,10 +437,6 @@ fn test_購読payload_全種類を旧wire型とフィールドへ変換する() 
         (
             StateValue::Issues(crate::usecase::fetched::Fetched::ready(
                 crate::usecase::git_host::git_host_usecase::IssueListing {
-                    options: crate::domain::git_host::value_objects::issue::IssueOptions {
-                        labels: vec!["bug".into()],
-                        milestones: vec!["next".into()],
-                    },
                     issues: vec![crate::domain::git_host::IssueInfo {
                         number: 13,
                         title: "Fix".into(),
@@ -463,6 +459,30 @@ fn test_購読payload_全種類を旧wire型とフィールドへ変換する() 
                             title: "next".into(),
                         }),
                     }],
+                    options: crate::domain::git_host::IssueOptions::from_issues(&[
+                        crate::domain::git_host::IssueInfo {
+                            number: 13,
+                            title: "Fix".into(),
+                            state: "OPEN".into(),
+                            url: "https://example.test/13".into(),
+                            author: crate::domain::git_host::PrAuthor {
+                                login: "author".into(),
+                            },
+                            created_at: "created".into(),
+                            updated_at: "updated".into(),
+                            labels: vec![crate::domain::git_host::IssueLabel {
+                                name: "bug".into(),
+                                color: "red".into(),
+                            }],
+                            assignees: vec![crate::domain::git_host::PrAuthor {
+                                login: "assignee".into(),
+                            }],
+                            body: "body".into(),
+                            milestone: Some(crate::domain::git_host::Milestone {
+                                title: "next".into(),
+                            }),
+                        },
+                    ]),
                 },
             )),
             W::Issues(wire::IssuesSnapshot {

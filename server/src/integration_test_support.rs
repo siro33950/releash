@@ -27,6 +27,7 @@ pub mod daemon {
     pub use crate::adaptor::controller::daemon::compose;
     pub use crate::adaptor::controller::daemon::default_timeout;
     pub use crate::adaptor::controller::daemon::migrate_legacy_execution_archives;
+    pub use crate::adaptor::controller::daemon::migrate_legacy_workspace_states;
     pub use crate::adaptor::controller::daemon::shutdown_with_deadline;
     pub use crate::adaptor::controller::daemon::Daemon;
     pub use crate::adaptor::gateway::daemon::serving;
@@ -120,6 +121,7 @@ pub mod persistence {
     pub use crate::usecase::app_data_gc::LiveWorktree;
     pub use crate::usecase::app_data_gc::LiveWorktreeResolution;
     pub use crate::usecase::app_data_gc::LiveWorktreeSet;
+    pub use crate::usecase::app_data_gc::WorkspaceStateGc;
 }
 pub mod platform {
     pub use crate::acceptance_test_support::{workflow_read, workflow_services};
@@ -235,11 +237,12 @@ pub mod platform {
     pub use crate::domain::git_host::git_host::GitHostError;
     pub use crate::domain::git_host::git_host::GitHostProvider;
     pub use crate::domain::git_host::value_objects::cache::CacheTtl;
+    pub use crate::domain::git_host::value_objects::issue::IssueInfo;
     pub use crate::domain::git_host::value_objects::issue::PrAuthor;
-    pub use crate::domain::git_host::value_objects::issue::{IssueInfo, IssueOptions};
     pub use crate::domain::git_host::value_objects::pr::PrInfo;
     pub use crate::domain::git_host::value_objects::pr::PrState;
     pub use crate::domain::git_host::value_objects::pr::PrStatus;
+    pub use crate::domain::git_host::IssueOptions;
     pub use crate::domain::local_event::batch::CommitBatchError;
     pub use crate::domain::local_event::batch::CommitBatchResult;
     pub use crate::domain::local_event::batch::CommitOperationKind;
@@ -271,6 +274,9 @@ pub mod platform {
     pub use crate::domain::workspace_state::entities::workspace_state::WorkspaceState;
     pub use crate::domain::workspace_state::error::WorkspaceStateError;
     pub use crate::domain::workspace_state::services::filter_missing_files;
+    pub use crate::domain::workspace_state::value_objects::pane_layout::{
+        PaneLayout, PaneTab, PaneTabKind, SplitAxis,
+    };
     pub use crate::domain::workspace_state::value_objects::workspace_layout_state::WorkspaceLayoutState;
     pub use crate::domain::workspace_state::value_objects::workspace_tabs_state::WorkspaceTabEntry;
     pub use crate::domain::workspace_state::value_objects::workspace_tabs_state::WorkspaceTabsState;
@@ -476,6 +482,7 @@ pub mod repository {
     pub use crate::adaptor::gateway::repository::watch::resolve_file_watch_paths;
     pub use crate::adaptor::gateway::repository::watch::resolve_worktree_git_dir;
     pub use crate::adaptor::gateway::repository::worktree::create_worktree;
+    pub use crate::adaptor::gateway::repository::worktree::create_worktree_with_hook;
     pub use crate::adaptor::gateway::repository::worktree::each_worktree;
     pub use crate::adaptor::gateway::repository::worktree::find_main_repo_path;
     pub use crate::adaptor::gateway::repository::worktree::get_main_repo_path;

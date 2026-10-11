@@ -22,8 +22,13 @@ import SwiftProtobuf
   @ObservationIgnored private var policy: TransportPolicy?
   @ObservationIgnored private var streamTask: Task<Void, Never>?
   @ObservationIgnored private var heartbeatTask: Task<Void, Never>?
-  @ObservationIgnored private var callbacks: [String: (Releash_Client_V1_StatePayload) -> Void] =
+  @ObservationIgnored private var callbacks: [String: [UUID: (Releash_Client_V1_StatePayload) -> Void]] =
     [:]
+  @ObservationIgnored private var subscriberKeys: [UUID: String] = [:]
+  @ObservationIgnored private var lastPayloads: [String: Releash_Client_V1_StatePayload] = [:]
+  @ObservationIgnored private var groupSubscriptions: [String: UUID] = [:]
+  @ObservationIgnored private var rootSubscriptions: [UUID] = []
+  @ObservationIgnored private var workspaceSubscription: UUID?
   @ObservationIgnored private var desiredTargets: [String: (String, [String])] = [:]
   @ObservationIgnored private var targets: [String: (String, [String])] = [:]
   @ObservationIgnored private var clientID: String?
@@ -61,29 +66,31 @@ import SwiftProtobuf
       policy = try TransportPolicy()
       try await connect(startIfMissing: true)
       connectionFailure = nil
-      subscribe("workspaces") { [weak self] payload in
+      for id in rootSubscriptions { unsubscribe(id) }
+      rootSubscriptions = []
+      rootSubscriptions.append(subscribe("workspaces") { [weak self] payload in
         guard case .workspaces(let value) = payload.value else { return }
         guard let self else { return }
         let paths = Set(value.repositories.items.map(\.path))
         for repo in repositories where !paths.contains(repo.path) {
-          unsubscribe("repository-group-state", [repo.path])
+          if let id = groupSubscriptions.removeValue(forKey: repo.path) { unsubscribe(id) }
           collapsed.removeValue(forKey: repo.path)
         }
         repositories = value.repositories.items
-        for repo in value.repositories.items {
-          self.subscribe("repository-group-state", [repo.path]) { [weak self] payload in
+        for repo in value.repositories.items where groupSubscriptions[repo.path] == nil {
+          groupSubscriptions[repo.path] = self.subscribe("repository-group-state", [repo.path]) { [weak self] payload in
             if case .repositoryGroupState(let group) = payload.value {
               self?.collapsed[repo.path] = group.collapsed
             }
           }
         }
-      }
-      subscribe("workflows") { [weak self] payload in
+      })
+      rootSubscriptions.append(subscribe("workflows") { [weak self] payload in
         if case .workflows(let list) = payload.value { self?.workflows = list.items }
-      }
-      subscribe("providers") { [weak self] payload in
+      })
+      rootSubscriptions.append(subscribe("providers") { [weak self] payload in
         if case .providers(let list) = payload.value { self?.providers = list.items }
-      }
+      })
       streamTask = Task { await recoverStream() }
     } catch { connectionFailure = failureMessage(error) }
   }
@@ -100,22 +107,30 @@ import SwiftProtobuf
   private func subscriptionKey(_ target: String, _ args: [String]) -> String {
     ([target] + args).map { "\($0.utf8.count):\($0)" }.joined()
   }
-  func subscribe(
+  @discardableResult func subscribe(
     _ target: String, _ args: [String] = [],
     onValue: @escaping (Releash_Client_V1_StatePayload) -> Void
-  ) {
+  ) -> UUID {
     let key = subscriptionKey(target, args)
+    let id = UUID()
+    subscriberKeys[id] = key
+    callbacks[key, default: [:]][id] = onValue
     desiredTargets[key] = (target, args)
-    callbacks[key] = onValue
-    guard targets[key] == nil else { return }
-    targets[key] = (target, args)
-    if let clientID { perform { try await self.register(key, clientID: clientID) } }
+    if let payload = lastPayloads[key] { onValue(payload) }
+    if targets[key] == nil {
+      targets[key] = (target, args)
+      if let clientID { perform { try await self.register(key, clientID: clientID) } }
+    }
+    return id
   }
-  func unsubscribe(_ target: String, _ args: [String] = []) {
-    let key = subscriptionKey(target, args)
+  func unsubscribe(_ subscriber: UUID) {
+    guard let key = subscriberKeys.removeValue(forKey: subscriber) else { return }
+    callbacks[key]?.removeValue(forKey: subscriber)
+    guard callbacks[key]?.isEmpty == true else { return }
     desiredTargets.removeValue(forKey: key)
     targets.removeValue(forKey: key)
     callbacks.removeValue(forKey: key)
+    lastPayloads.removeValue(forKey: key)
     guard let id = subscriptionIDs.remove(key), let client, clientID != nil else { return }
     var request = Releash_Client_V1_StopStateSubscriptionRequest()
     request.subscriptionID = id
@@ -123,6 +138,10 @@ import SwiftProtobuf
       _ = try await client.stopStateSubscription(request: request, headers: self.headers).result
         .get()
     }
+  }
+  private func receive(_ payload: Releash_Client_V1_StatePayload, key: String) {
+    lastPayloads[key] = payload
+    for callback in callbacks[key]?.values ?? [:].values { callback(payload) }
   }
   private func register(_ key: String, clientID: String) async throws {
     guard let client, let (target, args) = targets[key] else { return }
@@ -196,11 +215,11 @@ import SwiftProtobuf
               for key in targets.keys.sorted() { try await register(key, clientID: id) }
             } else if case .snapshot(let payload) = event.event {
               if let key = subscriptionIDs.key(for: event.subscriptionID) {
-                callbacks[key]?(payload)
+                receive(payload, key: key)
               }
             } else if case .change(let change) = event.event {
               if let key = subscriptionIDs.key(for: event.subscriptionID) {
-                callbacks[key]?(change.payload)
+                receive(change.payload, key: key)
               }
             } else if case .failure(let error) = event.event {
               failure = error.message
@@ -240,14 +259,12 @@ import SwiftProtobuf
   }
   func selectWorktree(_ path: String) {
     guard selectedWorktree != path || !layoutLoaded else { return }
-    if let selectedWorktree {
-      unsubscribe("workspace-state", [selectedWorktree, selectedWorktree])
-    }
+    if let id = workspaceSubscription { unsubscribe(id) }
     selectedWorktree = path
     layoutLoaded = false
     layout = .empty()
 
-    subscribe("workspace-state", [path, path]) { [weak self] payload in
+    workspaceSubscription = subscribe("workspace-state", [path, path]) { [weak self] payload in
       guard let self, case .workspaceState(let value) = payload.value, selectedWorktree == path
       else { return }
       receiveWorkspaceState(value, path: path)
@@ -255,7 +272,8 @@ import SwiftProtobuf
   }
   func deselectWorktree(_ path: String) {
     guard selectedWorktree == path else { return }
-    unsubscribe("workspace-state", [path, path])
+    if let id = workspaceSubscription { unsubscribe(id) }
+    workspaceSubscription = nil
     selectedWorktree = nil
     layoutLoaded = false
     layout = .empty()

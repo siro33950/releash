@@ -8,6 +8,21 @@ struct Store {
     calls: Mutex<Vec<String>>,
 }
 impl WorkspaceStateRepository for Store {
+    fn migrate_legacy(
+        &self,
+        repositories: &[String],
+        worktrees: &[String],
+    ) -> Result<(), WorkspaceStateError> {
+        self.calls
+            .lock()
+            .push(format!("migration:{repositories:?}:{worktrees:?}"));
+        if self.fail {
+            Err(WorkspaceStateError::Message("failed".into()))
+        } else {
+            Ok(())
+        }
+    }
+
     fn load_repository_group(&self, _: &str) -> Result<bool, WorkspaceStateError> {
         Ok(false)
     }
@@ -162,30 +177,54 @@ fn test_表示状態保存_不正なpane配置は保存前に拒否する() {
         readable: true,
         calls: Default::default(),
     };
-    let state = WorkspaceState {
-        panes: Some(
-            crate::domain::workspace_state::value_objects::pane_layout::PaneLayout::Pane {
-                id: "pane".into(),
-                tabs: vec![],
-                active_tab: Some("missing".into()),
+    // When
+    let result = crate::domain::workspace_state::value_objects::pane_layout::PaneLayout::pane(
+        "pane".into(),
+        vec![],
+        Some("missing".into()),
+    )
+    .map(|panes| {
+        save_workspace_state(
+            &store,
+            None,
+            "wt",
+            WorkspaceState {
+                panes: Some(panes),
+                version: 1,
+                tabs: WorkspaceTabsState {
+                    editors: vec![],
+                    active_editor_path: None,
+                },
+                layout: WorkspaceLayoutState {
+                    center_tab: "editor".into(),
+                    active_view: "git".into(),
+                    left_nav_collapsed: false,
+                    right_collapsed: false,
+                    right_bottom_collapsed: false,
+                    right_bottom_active_tab: None,
+                    selected_diff_file: None,
+                },
             },
-        ),
-        version: 1,
-        tabs: WorkspaceTabsState {
-            editors: vec![],
-            active_editor_path: None,
-        },
-        layout: WorkspaceLayoutState {
-            center_tab: "editor".into(),
-            active_view: "git".into(),
-            left_nav_collapsed: false,
-            right_collapsed: false,
-            right_bottom_collapsed: false,
-            right_bottom_active_tab: None,
-            selected_diff_file: None,
-        },
-    };
-    // When / Then
-    assert!(save_workspace_state(&store, None, "wt", state).is_err());
+        )
+    });
+    // Then
+    assert!(result.is_err());
     assert!(store.calls.lock().is_empty());
+}
+
+#[test]
+fn test_旧表示状態の移行_登録repositoryとworktreeを渡し失敗を返す() {
+    for fail in [false, true] {
+        // Given
+        let store = Store {
+            fail,
+            readable: true,
+            calls: Default::default(),
+        };
+        // When
+        let result = migrate_workspace_states(&store, &["/repo".into()], &["/repo/a".into()]);
+        // Then
+        assert_eq!(result.is_err(), fail);
+        assert_eq!(*store.calls.lock(), ["migration:[\"/repo\"]:[\"/repo/a\"]"]);
+    }
 }

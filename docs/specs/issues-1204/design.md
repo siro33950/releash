@@ -22,7 +22,8 @@
 - worktree の path: branch 名の `/` を `-` に置き換えず、ディレクトリの階層のまま path にする。git の worktree の名前も重ならないように付ける。根拠: R-031「別の branch の worktree は別の path に作られる」。ルート: 「固定するルート」10
 - PR の状態: サーバが PR を open・draft・merged・closed の状態つきで取り、worktree の一覧で配信する。merged の判定は今の規則（git で merge 済み、または merged の PR があり open の PR が無い）のまま、取った PR から行う。根拠: R-018「PR のアイコンは PR の状態（open・draft・merged・closed）を区別する」、R-035「開発開始時点より狭くならない」。ルート: 「固定するルート」6
 - 削除に強制が要るか: サーバの domain が worktree ごとに判定し、worktree の一覧で配信する。根拠: R-020「削除に強制が要るかはサーバが判定して worktree の一覧で配信し」。ルート: 「固定するルート」7
-- 保存する UI 状態: worktree ごとの分割とタブ群の項目と、repository のグループ単位の保存先と折りたたみの項目をサーバに加える。根拠: R-011「折りたたみはグループ単位でサーバに保存され」、R-024。ルート: 「固定するルート」2
+- 保存する UI 状態: worktree ごとの分割とタブ群の項目と、repository のグループ単位の保存先と折りたたみの項目をサーバに加える。根拠: R-011「折りたたみはグループ単位でサーバに保存され」、R-024。ルート: 「固定するルート」2、11
+- React の画面の UI 状態のキー: React の画面が UI 状態の保存と購読に渡すキーを、path の最後の要素から絶対 path に変える。名前のキーで保存された UI 状態は、event store への取り込みのときに、path の最後の要素が 1 つだけ一致する worktree の絶対 path のキーとして取り込む。根拠: R-038、R-039。ルート: 「固定するルート」11
 
 ## 固定するルート
 1. 基盤
@@ -76,6 +77,13 @@
    - git は、ある branch 名が別の branch 名の親の階層になる組み合わせ（`feature` と `feature/a`）を作らせない。ref をディレクトリの階層で持つためである。そのため、branch 名の階層をそのまま path にすれば、別の branch が同じ path になることは無い。
    - 既に作られている worktree の path は変えない。path は git から読む。
    - git の worktree の名前（`$GIT_DIR/worktrees/<名前>`）も重ならないようにする。path の最後の要素だけを名前にすると、`feature/a` と `bugfix/a` が同じ名前 `a` になる。`git worktree add` と同じく、名前が既にあれば番号を付けるなどして重ならない名前を付ける。名前の付け方の細部は実装に任せる（`repo.worktree` に渡す名前。`server/src/adaptor/gateway/repository/worktree.rs:359-373`）。
+
+11. UI 状態の保存
+   - worktree ごとの UI 状態と、repository グループの折りたたみの変更を、local_event_store に事実として追記する。読むときは、event store から最新の状態を導出する。
+   - 既にある JSON（`workspace_state/` の下と `repository_group_state/` の下）は、起動時に一度だけ event store に取り込み、取り込んだ後は使わない。取り込みの作りは `migrate_legacy_execution_archives`（`server/src/adaptor/controller/daemon.rs:681-692`）と同じ形にそろえる。
+   - 名前のキーの JSON は、登録されている repository の worktree のうち path の最後の要素がその名前と 1 つだけ一致するものの絶対 path のキーとして取り込む。一致が 0 件または 2 件以上なら取り込まない。
+   - React の画面は、`clients/desktop/src/hooks/useWorkspaceStateCache.ts` の保存（`save_workspace_state` の worktreeName）と購読の args の先頭に、絶対 path（rootPath）を渡す。`worktreeNameFromPath` が使われなくなれば消す。
+   - proto、購読の形、画面の振る舞いは変えない。
 
 ## 変えないもの
 - React の画面: 削除の確認の出し分けを React が自分で判定する処理（`clients/desktop/src/components/workspace/DeleteWorktreeDialog.tsx:86-111`）は、撤去（[16] #1765）まで今のまま残す。

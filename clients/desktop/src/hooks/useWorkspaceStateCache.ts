@@ -1,10 +1,7 @@
 import { useCallback, useEffect, useRef } from "react";
 import { invokeClient as invoke, subscribeState } from "@/lib/client";
 import { logClientError } from "@/lib/clientErrorNotice";
-import {
-	type WorkspaceState,
-	worktreeNameFromPath,
-} from "@/types/workspace-state";
+import type { WorkspaceState } from "@/types/workspace-state";
 
 export interface UseWorkspaceStateCacheReturn {
 	getState: (rootPath: string) => WorkspaceState | undefined;
@@ -33,7 +30,7 @@ export function useWorkspaceStateCache(): UseWorkspaceStateCacheReturn {
 		const state = cacheRef.current.get(rootPath);
 		if (!state) return;
 		invoke("save_workspace_state", {
-			worktreeName: worktreeNameFromPath(rootPath),
+			worktreeName: rootPath,
 			state,
 		})
 			.then(() => {
@@ -55,7 +52,7 @@ export function useWorkspaceStateCache(): UseWorkspaceStateCacheReturn {
 			const release = subscribeState(
 				{
 					kind: "workspace-state",
-					args: [worktreeNameFromPath(rootPath), rootPath],
+					args: [rootPath, rootPath],
 				},
 				(state) => {
 					if (!dirtyRef.current.has(rootPath)) {

@@ -26,7 +26,7 @@ fn parity_app_with_runtime(
             Arc::new(gateway),
             Arc::new(
                 releashd::test_support::integration::workflow::ExecutionTreeArchiveFactRepository::new(
-                    store,
+                    store.clone(),
                     data_dir.clone(),
                 ),
             ),
@@ -37,7 +37,9 @@ fn parity_app_with_runtime(
         releashd::test_support::integration::platform::build_review_comment_usecase(),
     ));
     app.client.workspace_state_store = Some(Arc::new(
-        releashd::test_support::integration::platform::WorkspaceStateStore::new(data_dir),
+        releashd::test_support::integration::platform::WorkspaceStateStore::with_store(
+            data_dir, store,
+        ),
     ));
     use releashd::test_support::integration::sessions::FakeProviderExecutableConfigRepository;
     use releashd::test_support::integration::sessions::FakeProviderExecutableProbeGateway;
@@ -779,9 +781,15 @@ pub async fn test_workspace保存_connectがui追加fieldを受理し既存項�
     .0;
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
+    let (shutdown_sender, shutdown_receiver) = tokio::sync::oneshot::channel();
     let server = tokio::spawn(async move {
         // When
-        axum::serve(listener, router).await.unwrap();
+        axum::serve(listener, router)
+            .with_graceful_shutdown(async move {
+                let _ = shutdown_receiver.await;
+            })
+            .await
+            .unwrap();
     });
     let client = releashd::test_support::integration::transport::connect_client(
         &releashd::test_support::integration::transport::ClientEndpoint {
@@ -800,7 +808,10 @@ pub async fn test_workspace保存_connectがui追加fieldを受理し既存項�
         .unwrap(),
         Value::Null
     );
-    server.abort();
+    drop(client);
+    shutdown_sender.send(()).unwrap();
+    server.await.unwrap();
+    drop(deps);
     let restarted = WorkspaceStateStore::new(data.path().to_owned());
     let mut expected = state;
     expected["layout"]
@@ -816,6 +827,13 @@ pub async fn test_workspace保存_connectがui追加fieldを受理し既存項�
         .load("workspace", worktree.to_str().unwrap())
         .unwrap()
         .unwrap();
+    use releashd::test_support::integration::persistence::EventCodecRegistry;
+    use releashd::test_support::integration::platform::LocalDomainEvent;
+    let encoded = EventCodecRegistry::new()
+        .encode(&LocalDomainEvent::WorkspaceStateChanged(Box::new(
+            restored.clone(),
+        )))
+        .unwrap();
     let restored = wire::WorkspaceStateDto::try_from(restored).unwrap();
     let mut restored =
         wire::from_message("releash.client.v1.WorkspaceStateDto", &restored).unwrap();
@@ -828,11 +846,10 @@ pub async fn test_workspace保存_connectがui追加fieldを受理し既存項�
         .unwrap()
         .remove("diffOnlyMode");
     assert_eq!(restored, expected);
-    let persisted: Value = serde_json::from_slice(
-        &std::fs::read(data.path().join("workspace_state/workspace.json")).unwrap(),
-    )
-    .unwrap();
-    assert_eq!(persisted, expected);
+    let connection =
+        rusqlite::Connection::open(data.path().join("local-event-store.sqlite3")).unwrap();
+    let persisted: Vec<u8> = connection.query_row("SELECT payload FROM events WHERE event_type = 'workspace.state_changed' ORDER BY global_sequence DESC LIMIT 1", [], |row| row.get(0)).unwrap();
+    assert_eq!(persisted, encoded.payload);
 }
 
 #[tokio::test]

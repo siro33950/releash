@@ -20,7 +20,6 @@ use releashd::test_support::integration::platform::TestRepositoryStateWorkerRunt
 use releashd::test_support::integration::repository::RepoPathsRepository;
 use releashd::test_support::integration::repository::RepositoryError;
 use releashd::test_support::integration::subscriptions::StateChangeSource;
-use std::collections::HashMap;
 use std::time::Duration;
 
 #[derive(Default)]
@@ -262,7 +261,7 @@ pub async fn test_手動更新_走査済みの値を保持しpr取得完了ま�
     let (release, blocked) = std::sync::mpsc::channel();
     let fixture = Fixture::new(PullRequests {
         status: PrStatus {
-            open_prs: HashMap::from([(
+            open_prs: Vec::from([(
                 "feature".into(),
                 PrInfo {
                     number: 42,
@@ -301,7 +300,7 @@ pub async fn test_手動更新_pr取得後に前の一覧へprを反映する() 
     let (release, blocked) = std::sync::mpsc::channel();
     let fixture = Fixture::new(PullRequests {
         status: PrStatus {
-            open_prs: HashMap::from([(
+            open_prs: Vec::from([(
                 "feature".into(),
                 PrInfo {
                     number: 42,

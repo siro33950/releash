@@ -1229,3 +1229,66 @@ pub async fn test_issue手動更新失敗_回復時に新しい一覧を届け�
         matches!(event, StateSubscriptionEvent::Item(id, Event::Change(_, _, value)) if id == format!("client:{target}") && releashd::test_support::integration::subscriptions::same(&value, StateValue::Issues(releashd::test_support::integration::platform::Fetched::ready(releashd::test_support::integration::platform::IssueListing { options: releashd::test_support::integration::platform::IssueOptions::from_issues(&[issue(2)]), issues: vec![issue(2)] }))))
     );
 }
+
+#[tokio::test]
+pub async fn test_workspace購読の値_reactが配置を省略して保存した後もswiftの配置を含む() {
+    use releashd::test_support::integration::platform::{
+        save_workspace_state, PaneLayout, PaneTab, PaneTabKind, WorkspaceLayoutState,
+        WorkspaceState, WorkspaceTabsState,
+    };
+    // Given
+    let fixture = Fixture::new();
+    let reads = &fixture.reads;
+    let key = &fixture.path;
+    let panes = PaneLayout::pane(
+        "pane".into(),
+        vec![PaneTab {
+            id: "workflow".into(),
+            kind: PaneTabKind::Workflow,
+        }],
+        Some("workflow".into()),
+    )
+    .unwrap();
+    let state = WorkspaceState {
+        panes: Some(panes),
+        version: 1,
+        tabs: WorkspaceTabsState {
+            editors: vec![],
+            active_editor_path: None,
+        },
+        layout: WorkspaceLayoutState {
+            center_tab: "agent".into(),
+            active_view: "git".into(),
+            left_nav_collapsed: false,
+            right_collapsed: false,
+            right_bottom_collapsed: false,
+            right_bottom_active_tab: None,
+            selected_diff_file: None,
+        },
+    };
+    save_workspace_state(
+        reads.workspace_state.as_ref(),
+        Some(&fixture.subscriptions),
+        key,
+        state.clone(),
+    )
+    .unwrap();
+    let mut react = state.clone();
+    react.panes = None;
+    react.layout.left_nav_collapsed = true;
+    // When
+    save_workspace_state(
+        reads.workspace_state.as_ref(),
+        Some(&fixture.subscriptions),
+        key,
+        react.clone(),
+    )
+    .unwrap();
+    let actual = reads
+        .read(&T::WorkspaceState(key.clone(), key.clone()))
+        .await
+        .unwrap();
+    // Then
+    react.panes = state.panes;
+    assert_eq!(actual, StateValue::WorkspaceState(Some(react.into())));
+}

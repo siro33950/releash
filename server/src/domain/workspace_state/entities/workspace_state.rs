@@ -7,3 +7,16 @@ pub struct WorkspaceState {
     pub tabs: WorkspaceTabsState,
     pub layout: WorkspaceLayoutState,
 }
+
+impl WorkspaceState {
+    pub fn preserve_omitted_panes(mut self, previous: Option<Self>) -> Self {
+        if self.panes.is_none() {
+            self.panes = previous.and_then(|state| state.panes);
+        }
+        self
+    }
+}
+
+#[cfg(test)]
+#[path = "workspace_state_test.rs"]
+mod workspace_state_tests;

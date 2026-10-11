@@ -106,6 +106,15 @@ impl EventCodecRegistry {
         registry.register(Arc::new(
             crate::adaptor::gateway::local_event_store::provider_session_ownership_codec::ProviderSessionOwnershipEventCodec,
         ));
+        registry.register(Arc::new(
+            crate::adaptor::gateway::workspace_state::facts::UIStateCodec { group: false },
+        ));
+        registry.register(Arc::new(
+            crate::adaptor::gateway::workspace_state::facts::UIStateCodec { group: true },
+        ));
+        registry.register(Arc::new(
+            crate::adaptor::gateway::workspace_state::facts::WorkspaceStateInvalidationCodec,
+        ));
         registry
     }
 
@@ -131,6 +140,11 @@ impl EventCodecRegistry {
                     }
                     LocalDomainEvent::ProviderLifecycle(_) => "provider-lifecycle".to_string(),
                     LocalDomainEvent::ProviderHookHealth(_) => "provider-hook-health".to_string(),
+                    LocalDomainEvent::WorkspaceStateInvalidated => {
+                        "workspace-state-invalidated".to_string()
+                    }
+                    LocalDomainEvent::WorkspaceStateChanged(_) => "workspace-state".to_string(),
+                    LocalDomainEvent::RepositoryGroupChanged(_) => "repository-group".to_string(),
                 },
             })?;
         let value = codec.encode(event)?;

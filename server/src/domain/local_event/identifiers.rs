@@ -33,7 +33,7 @@ impl fmt::Display for IdentityError {
             }
             Self::InvalidStreamNamespace => write!(
                 f,
-                "stream id must be agent-session:<id>, provider-lifecycle:<agent-session-id>, workflow:<id>, provider-session-ownership:<provider>:<digest>, or application"
+                "stream id must be agent-session:<id>, provider-lifecycle:<agent-session-id>, workflow:<id>, provider-session-ownership:<provider>:<digest>, workspace-state:<id>, repository-group:<id>, or application"
             ),
             Self::OutOfRange { value } => write!(f, "sequence value {value} is out of range"),
         }
@@ -71,6 +71,8 @@ impl StreamId {
                 raw.strip_prefix(PROVIDER_LIFECYCLE_PREFIX).or_else(|| {
                     raw.strip_prefix(WORKFLOW_PREFIX)
                         .or_else(|| raw.strip_prefix(PROVIDER_SESSION_OWNERSHIP_PREFIX))
+                        .or_else(|| raw.strip_prefix("workspace-state:"))
+                        .or_else(|| raw.strip_prefix("repository-group:"))
                 })
             });
             let Some(suffix) = suffix else {

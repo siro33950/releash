@@ -313,7 +313,7 @@ pub(crate) mod tests {
         let review_key =
             releashd::test_support::integration::platform::worktree_storage_key(worktree_path);
         let workspace_state = app_data_dir
-            .join("workspace_state")
+            .join("workspace_state.migrated")
             .join(format!("{workspace_key}.json"));
         let review_comments = app_data_dir
             .join("review-comments")
@@ -338,6 +338,29 @@ pub(crate) mod tests {
             .to_string_lossy()
             .into_owned()]));
         (live_repo, repo_paths)
+    }
+
+    fn ui_state() -> releashd::test_support::integration::platform::WorkspaceState {
+        use releashd::test_support::integration::platform::{
+            PaneLayout, WorkspaceLayoutState, WorkspaceState, WorkspaceTabsState,
+        };
+        WorkspaceState {
+            panes: Some(PaneLayout::pane("old-pane".into(), vec![], None).unwrap()),
+            version: 1,
+            tabs: WorkspaceTabsState {
+                editors: vec![],
+                active_editor_path: None,
+            },
+            layout: WorkspaceLayoutState {
+                center_tab: "agent".into(),
+                active_view: "git".into(),
+                left_nav_collapsed: false,
+                right_collapsed: false,
+                right_bottom_collapsed: false,
+                right_bottom_active_tab: None,
+                selected_diff_file: None,
+            },
+        }
     }
 
     async fn assert_facts_appended_at_sweep_boundary_are_protected(
@@ -369,12 +392,30 @@ pub(crate) mod tests {
             .expect("recorded operations")
             .clear();
 
+        use releashd::test_support::integration::repository::WorkspaceStateRepository;
+        let states = Arc::new(
+            releashd::test_support::integration::platform::WorkspaceStateStore::with_store(
+                app_data.path().into(),
+                repository.inner.clone(),
+            ),
+        );
+        states.set(protected_worktree, ui_state());
+        states.save(protected_worktree).unwrap();
         let report = composition
-            .run_startup_gc_pass(repo_paths, repository.clone(), Arc::new(NoExecutionTrees))
+            .run_startup_gc_pass(
+                repo_paths,
+                repository.clone(),
+                Arc::new(NoExecutionTrees),
+                states.clone(),
+            )
             .await
             .expect("run startup GC");
 
         assert_eq!(report.errors, 0);
+        assert_eq!(
+            states.load(protected_worktree, protected_worktree).unwrap(),
+            Some(ui_state())
+        );
         assert!(
             workspace_state.exists(),
             "active canonical owner committed after planning must retain workspace_state"
@@ -467,7 +508,17 @@ pub(crate) mod tests {
         let (_live_repo, repo_paths) = live_repo_paths();
 
         let report = composition
-            .run_startup_gc_pass(repo_paths, repository.clone(), Arc::new(NoExecutionTrees))
+            .run_startup_gc_pass(
+                repo_paths,
+                repository.clone(),
+                Arc::new(NoExecutionTrees),
+                Arc::new(
+                    releashd::test_support::integration::platform::WorkspaceStateStore::with_store(
+                        app_data.path().into(),
+                        repository.inner.clone(),
+                    ),
+                ),
+            )
             .await
             .expect("run startup GC");
 
@@ -528,7 +579,17 @@ pub(crate) mod tests {
             .clear();
 
         let report = composition
-            .run_startup_gc_pass(repo_paths, repository.clone(), Arc::new(NoExecutionTrees))
+            .run_startup_gc_pass(
+                repo_paths,
+                repository.clone(),
+                Arc::new(NoExecutionTrees),
+                Arc::new(
+                    releashd::test_support::integration::platform::WorkspaceStateStore::with_store(
+                        app_data.path().into(),
+                        repository.inner.clone(),
+                    ),
+                ),
+            )
             .await
             .expect("run startup GC");
 
@@ -574,7 +635,17 @@ pub(crate) mod tests {
             .clear();
 
         let report = composition
-            .run_startup_gc_pass(repo_paths, repository.clone(), Arc::new(NoExecutionTrees))
+            .run_startup_gc_pass(
+                repo_paths,
+                repository.clone(),
+                Arc::new(NoExecutionTrees),
+                Arc::new(
+                    releashd::test_support::integration::platform::WorkspaceStateStore::with_store(
+                        app_data.path().into(),
+                        repository.inner.clone(),
+                    ),
+                ),
+            )
             .await
             .expect("run startup GC");
 
@@ -595,6 +666,121 @@ pub(crate) mod tests {
             0,
             "initial wrong-shape canonical snapshot must prevent workspace planning"
         );
+    }
+    #[tokio::test]
+    pub async fn test_ui状態のgc_未解決時は保護し削除後は無効化して同じpathに復元しない() {
+        use releashd::test_support::integration::platform::WorkspaceStateStore;
+        use releashd::test_support::integration::repository::WorkspaceStateRepository;
+        // Given
+        let data = tempfile::tempdir().unwrap();
+        let composition = ProductionAppDataComposition::with_observer(
+            data.path().into(),
+            Arc::new(RecordingObserver::default()),
+        );
+        let events = composition.open_local_event_store().unwrap();
+        let states = Arc::new(WorkspaceStateStore::with_store(
+            data.path().into(),
+            events.clone(),
+        ));
+        let (repo_dir, repo) = crate::test_support_git::create_test_repo();
+        crate::test_support_git::create_initial_commit(&repo);
+        let main = repo_dir
+            .path()
+            .canonicalize()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        let removed = repo_dir.path().join("removed");
+        repo.worktree("removed", &removed, None).unwrap();
+        let key = removed
+            .canonicalize()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        let state = ui_state();
+        for path in [&main, &key] {
+            states.set(path, state.clone());
+            states.save(path).unwrap();
+        }
+        let migrated = data.path().join("workspace_state.migrated");
+        let legacy = data.path().join("workspace_state");
+        std::fs::create_dir_all(&migrated).unwrap();
+        std::fs::create_dir_all(&legacy).unwrap();
+        let imported = migrated.join(format!(
+            "{}.json",
+            releashd::test_support::integration::platform::storage_key(&key)
+        ));
+        std::fs::write(&imported, "{}").unwrap();
+        let unimported = legacy.join("unknown.json");
+        std::fs::write(&unimported, "broken").unwrap();
+        std::fs::remove_dir_all(&removed).unwrap();
+        repo.find_worktree("removed").unwrap().prune(None).unwrap();
+        let unresolved = repo_dir
+            .path()
+            .join("missing")
+            .to_string_lossy()
+            .into_owned();
+        // When
+        let report = composition
+            .run_startup_gc_pass(
+                Arc::new(RwLock::new(vec![main.clone(), unresolved])),
+                events.clone(),
+                Arc::new(NoExecutionTrees),
+                states.clone(),
+            )
+            .await
+            .unwrap();
+        // Then
+        assert_eq!(report.errors, 0);
+        assert!(states.load(&key, &key).unwrap().is_some());
+        assert!(imported.exists());
+        // When
+        let report = composition
+            .run_startup_gc_pass(
+                Arc::new(RwLock::new(vec![main.clone()])),
+                events.clone(),
+                Arc::new(NoExecutionTrees),
+                states.clone(),
+            )
+            .await
+            .unwrap();
+        // Then
+        assert_eq!(report.errors, 0);
+        assert!(states.load(&key, &key).unwrap().is_none());
+        assert_eq!(states.load(&main, &main).unwrap(), Some(state));
+        assert!(!imported.exists());
+        assert_eq!(std::fs::read_to_string(&unimported).unwrap(), "broken");
+        let reference = repo.find_reference("refs/heads/removed").unwrap();
+        let mut options = git2::WorktreeAddOptions::new();
+        options.reference(Some(&reference));
+        repo.worktree("removed", &removed, Some(&options)).unwrap();
+        assert!(states.load(&key, &key).unwrap().is_none());
+        let connection =
+            rusqlite::Connection::open(data.path().join("local-event-store.sqlite3")).unwrap();
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT count(*) FROM events WHERE event_type = 'workspace.state_invalidated'",
+                    [],
+                    |row| row.get::<_, i64>(0)
+                )
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT count(*) FROM events WHERE event_type = 'workspace.state_changed'",
+                    [],
+                    |row| row.get::<_, i64>(0)
+                )
+                .unwrap(),
+            2
+        );
+        drop(states);
+        drop(events);
+        let restarted = WorkspaceStateStore::new(data.path().into());
+        assert!(restarted.load(&key, &key).unwrap().is_none());
     }
 }
 
@@ -647,6 +833,12 @@ pub async fn test_startup_gc結線_消失候補の未終了実行木をabortし�
                 .into_owned()])),
             fixture.store.clone(),
             Arc::new(fixture.runtime),
+            Arc::new(
+                releashd::test_support::integration::platform::WorkspaceStateStore::with_store(
+                    fixture.directory.path().into(),
+                    fixture.store.clone(),
+                ),
+            ),
         )
         .await
         .unwrap();

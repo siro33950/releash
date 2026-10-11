@@ -272,9 +272,9 @@ pub(crate) mod tests {
             .unwrap();
 
         assert_eq!(status.open_prs.len(), 1);
-        assert_eq!(status.open_prs["feat/login"].number, 42);
+        assert_eq!(status.open_for_branch("feat/login").unwrap().number, 42);
         assert_eq!(
-            status.open_prs["feat/login"].url,
+            status.open_for_branch("feat/login").unwrap().url,
             "https://github.com/owner/repo/pull/42"
         );
         assert!(status.branch_is_merged("feat/done", false));

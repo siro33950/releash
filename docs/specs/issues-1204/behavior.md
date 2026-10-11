@@ -265,9 +265,10 @@ AND 両方を選んで送信すると、task ごとに別の branch で worktree
 
 ## B-050: `/` の有無だけが違う branch 名
 
-GIVEN Worktree 作成ダイアログで、新しい branch 名 `feature/a` と `feature-a` を両方選んだ
-WHEN 利用者が送信する
-THEN `<repo>-worktrees/feature/a` と `<repo>-worktrees/feature-a` の別々の path に worktree が 2 つ作られる
+GIVEN repository に branch `feature/a` の worktree が `<repo>-worktrees/feature/a` にある
+WHEN 利用者が Worktree 作成ダイアログで、新しい branch 名 `feature-a` を入れて送信する
+THEN `<repo>-worktrees/feature-a` に worktree が作られる
+AND `<repo>-worktrees/feature/a` の worktree はそのまま残る
 
 ## B-037: Issue の絞り込み
 
@@ -350,6 +351,19 @@ GIVEN worktree を 1 つも選んでいない
 WHEN メインの画面を表示する
 THEN 中央には「Worktreeを選択」と、サイドバーから worktree を選ぶよう促す案内文が表示される
 
+## B-055: 最後の要素が同じ worktree の UI 状態
+
+GIVEN 同じ repository に `<repo>-worktrees/feature/a` と `<repo>-worktrees/bugfix/a` の worktree がある
+WHEN 利用者が React の画面で 2 つの worktree に別々のタブを開き、それぞれを選び直す
+THEN それぞれの worktree に、その worktree で開いたタブが表示される
+
+## B-056: 名前で保存された UI 状態の引き継ぎ
+
+GIVEN React の画面が、path の最後の要素を名前として UI 状態を保存している
+WHEN サーバが起動する
+THEN 登録されている repository の worktree のうち、path の最後の要素がその名前と一致するものが 1 つだけなら、その worktree を選ぶとその UI 状態が表示される
+AND 一致する worktree が 0 件または 2 件以上なら、その UI 状態はどの worktree にも表示されない
+
 ## 要件IDとBehavior IDの対応表
 | Requirement ID | Behavior ID |
 | --- | --- |
@@ -390,3 +404,5 @@ THEN 中央には「Worktreeを選択」と、サイドバーから worktree を
 | R-034 | B-045 |
 | R-036 | B-051 |
 | R-037 | B-054 |
+| R-038 | B-055 |
+| R-039 | B-056 |

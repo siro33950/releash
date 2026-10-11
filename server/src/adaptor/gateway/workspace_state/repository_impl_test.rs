@@ -10,9 +10,8 @@ fn test_pane形式_既存jsonと全種類と分割軸をdomainとの往復で保
         // When
         let dto: StoredPaneLayout = serde_json::from_str(&json).unwrap();
         let domain: crate::domain::workspace_state::value_objects::pane_layout::PaneLayout =
-            dto.clone().into();
+            dto.clone().try_into().unwrap();
         // Then
-        assert!(domain.validate().is_ok());
         assert_eq!(StoredPaneLayout::from(domain), dto);
         assert_eq!(
             serde_json::to_value(dto).unwrap(),
@@ -38,13 +37,13 @@ fn test_workspace保存形式_panesのない旧jsonと現在のjsonを直接往�
         }
         // When
         let stored: StoredWorkspaceState = serde_json::from_value(json.clone()).unwrap();
-        let domain: WorkspaceState = stored.into();
+        let domain: WorkspaceState = stored.try_into().unwrap();
         // Then
         assert_eq!(domain.panes.is_some(), panes.is_some());
         assert_eq!(domain.tabs.editors[0].path, "file");
         assert!(domain.layout.left_nav_collapsed);
         assert_eq!(
-            serde_json::to_value(StoredWorkspaceState::from(domain)).unwrap(),
+            serde_json::to_value(StoredWorkspaceState::from(&domain)).unwrap(),
             json
         );
     }

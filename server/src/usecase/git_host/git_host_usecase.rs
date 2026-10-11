@@ -85,18 +85,12 @@ impl GitHostUsecase {
         let result = self.get_cached_issues(repo_path).await;
         crate::usecase::fetched::Fetched {
             error: result.error,
-            value: result.value.map(|issues| {
-                let options =
-                    crate::domain::git_host::value_objects::issue::IssueOptions::from_issues(
-                        &issues,
-                    );
-                IssueListing {
-                    issues: issues
-                        .into_iter()
-                        .filter(|issue| filter.matches(issue))
-                        .collect(),
-                    options,
-                }
+            value: result.value.map(|issues| IssueListing {
+                options: crate::domain::git_host::IssueOptions::from_issues(&issues),
+                issues: issues
+                    .into_iter()
+                    .filter(|issue| filter.matches(issue))
+                    .collect(),
             }),
         }
     }
@@ -127,5 +121,5 @@ mod git_host_usecase_tests;
 #[derive(Debug, Clone, PartialEq)]
 pub struct IssueListing {
     pub issues: Vec<IssueInfo>,
-    pub options: crate::domain::git_host::value_objects::issue::IssueOptions,
+    pub options: crate::domain::git_host::IssueOptions,
 }

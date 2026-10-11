@@ -33,3 +33,19 @@ pub fn filter_missing_files(mut state: WorkspaceState, worktree_root: &str) -> W
 
     state
 }
+
+pub fn legacy_worktree_path<'a>(name: &str, paths: &'a [String]) -> Option<&'a str> {
+    let mut matches = paths
+        .iter()
+        .filter(|path| Path::new(path).file_name().is_some_and(|part| part == name));
+    let first = matches.next()?;
+    if matches.next().is_some() {
+        None
+    } else {
+        Some(first)
+    }
+}
+
+#[cfg(test)]
+#[path = "services_test.rs"]
+mod services_tests;

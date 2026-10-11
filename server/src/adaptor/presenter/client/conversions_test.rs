@@ -76,9 +76,9 @@ fn test_pane転送_分割と全タブを往復して欠落と未知の種類を�
     use crate::domain::workspace_state::value_objects::pane_layout::{
         PaneLayout, PaneTab, PaneTabKind, SplitAxis,
     };
-    let pane = PaneLayout::Pane {
-        id: "a".into(),
-        tabs: vec![
+    let pane = PaneLayout::pane(
+        "a".into(),
+        vec![
             PaneTab {
                 id: "terminal".into(),
                 kind: PaneTabKind::Terminal,
@@ -96,20 +96,18 @@ fn test_pane転送_分割と全タブを往復して欠落と未知の種類を�
                 kind: PaneTabKind::Session,
             },
         ],
-        active_tab: Some("file".into()),
-    };
+        Some("file".into()),
+    )
+    .unwrap();
     for axis in [SplitAxis::Horizontal, SplitAxis::Vertical] {
-        let layout = PaneLayout::Split {
-            id: "split".into(),
+        let layout = PaneLayout::split(
+            "split".into(),
             axis,
-            ratio: 0.7,
-            first: Box::new(pane.clone()),
-            second: Box::new(PaneLayout::Pane {
-                id: "b".into(),
-                tabs: vec![],
-                active_tab: None,
-            }),
-        };
+            0.7,
+            pane.clone(),
+            PaneLayout::pane("b".into(), vec![], None).unwrap(),
+        )
+        .unwrap();
         let message = wire::PaneLayout::try_from(layout.clone()).unwrap();
         assert_eq!(PaneLayout::try_from(message).unwrap(), layout);
     }

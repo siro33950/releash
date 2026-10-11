@@ -1,7 +1,11 @@
 use parking_lot::RwLock;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, OnceLock};
 
+use super::facts;
+use crate::adaptor::gateway::local_event_store::{LocalEventStore, LocalEventStoreConfig};
+use crate::domain::local_event::LocalDomainEvent;
 use crate::domain::workspace_state::services::filter_missing_files;
 use crate::domain::workspace_state::{
     WorkspaceState, WorkspaceStateError, WorkspaceStateRepository,
@@ -9,52 +13,116 @@ use crate::domain::workspace_state::{
 
 pub struct WorkspaceStateStore {
     app_data_dir: PathBuf,
+    store: OnceLock<Arc<LocalEventStore>>,
     entries: RwLock<HashMap<String, WorkspaceState>>,
     file_lock: parking_lot::Mutex<()>,
 }
 
 impl WorkspaceStateStore {
+    #[cfg(any(test, feature = "test-support"))]
     pub fn new(app_data_dir: PathBuf) -> Self {
         Self {
             app_data_dir,
+            store: OnceLock::new(),
             entries: RwLock::new(HashMap::new()),
             file_lock: parking_lot::Mutex::new(()),
         }
     }
+
+    pub fn with_store(app_data_dir: PathBuf, store: Arc<LocalEventStore>) -> Self {
+        Self {
+            app_data_dir,
+            store: OnceLock::from(store),
+            entries: RwLock::new(HashMap::new()),
+            file_lock: parking_lot::Mutex::new(()),
+        }
+    }
+
+    fn event_store(&self) -> Result<&Arc<LocalEventStore>, WorkspaceStateError> {
+        if let Some(store) = self.store.get() {
+            return Ok(store);
+        }
+        let store = LocalEventStore::open(LocalEventStoreConfig::production(
+            self.app_data_dir.clone(),
+            Arc::new(crate::common::retry::RetryLimiter::default()),
+        ))
+        .map_err(facts::error)?;
+        self.store
+            .set(store)
+            .map_err(|_| facts::error("UI state store was initialized concurrently"))?;
+        Ok(self.store.get().expect("initialized event store"))
+    }
+
+    fn read_state(&self, key: &str) -> Result<Option<WorkspaceState>, WorkspaceStateError> {
+        let (_, event) = facts::run(facts::latest(
+            self.event_store()?,
+            &facts::stream(key, false),
+        ))?;
+        match event {
+            Some(LocalDomainEvent::WorkspaceStateChanged(state)) => Ok(Some(*state)),
+            None | Some(LocalDomainEvent::WorkspaceStateInvalidated) => Ok(None),
+            _ => Err(facts::error("Unexpected workspace state event")),
+        }
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn get(&self, key: &str) -> Option<WorkspaceState> {
+        self.entries.read().get(key).cloned()
+    }
 }
 
+#[cfg(any(test, feature = "test-support"))]
 fn state_dir(app_data_dir: &Path) -> PathBuf {
     app_data_dir.join("workspace_state")
 }
-
 pub(crate) const ABSOLUTE_STATE_KEY_PREFIX: &str = "worktree-";
-
-pub fn storage_key(worktree_name: &str) -> String {
-    if std::path::Path::new(worktree_name).is_absolute() {
+pub fn storage_key(key: &str) -> String {
+    if Path::new(key).is_absolute() {
         use sha2::Digest;
-        return format!(
+        format!(
             "{ABSOLUTE_STATE_KEY_PREFIX}{}",
-            hex::encode(sha2::Sha256::digest(worktree_name.as_bytes()))
-        );
+            hex::encode(sha2::Sha256::digest(key.as_bytes()))
+        )
+    } else {
+        key.replace(['/', '\\'], "_")
     }
-    worktree_name.replace(['/', '\\'], "_")
 }
-
-pub fn state_file(app_data_dir: &Path, worktree_name: &str) -> PathBuf {
-    let safe_name = storage_key(worktree_name);
-    state_dir(app_data_dir).join(format!("{safe_name}.json"))
+#[cfg(any(test, feature = "test-support"))]
+pub fn state_file(app_data_dir: &Path, key: &str) -> PathBuf {
+    state_dir(app_data_dir).join(format!("{}.json", storage_key(key)))
+}
+pub(super) fn repository_group_key(path: &str) -> String {
+    use sha2::Digest;
+    hex::encode(sha2::Sha256::digest(
+        crate::domain::repository::normalize_repo_path(path).as_bytes(),
+    ))
 }
 
 impl WorkspaceStateRepository for WorkspaceStateStore {
+    fn migrate_legacy(
+        &self,
+        repositories: &[String],
+        worktrees: &[String],
+    ) -> Result<(), WorkspaceStateError> {
+        let _guard = self.file_lock.lock();
+        super::legacy_import::migrate(
+            &self.app_data_dir,
+            self.event_store()?,
+            repositories,
+            worktrees,
+        )
+    }
     fn load_repository_group(&self, path: &str) -> Result<bool, WorkspaceStateError> {
-        let file = self.repository_group_file(path);
-        let bytes = match std::fs::read(file) {
-            Ok(bytes) => bytes,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
-            Err(error) => return Err(WorkspaceStateError::Message(error.to_string())),
-        };
-        serde_json::from_slice(&bytes)
-            .map_err(|error| WorkspaceStateError::Message(error.to_string()))
+        let _guard = self.file_lock.lock();
+        let (_, event) = facts::run(facts::latest(
+            self.event_store()?,
+            &facts::stream(path, true),
+        ))?;
+        match event {
+            Some(LocalDomainEvent::RepositoryGroupChanged(collapsed)) => Ok(collapsed),
+            None => Ok(false),
+            _ => Err(facts::error("Unexpected repository group event")),
+        }
     }
     fn save_repository_group(
         &self,
@@ -62,101 +130,80 @@ impl WorkspaceStateRepository for WorkspaceStateStore {
         collapsed: bool,
     ) -> Result<(), WorkspaceStateError> {
         let _guard = self.file_lock.lock();
-        let file = self.repository_group_file(path);
-        std::fs::create_dir_all(file.parent().expect("group state directory"))
-            .map_err(|error| WorkspaceStateError::Message(error.to_string()))?;
-        std::fs::write(file, if collapsed { "true" } else { "false" })
-            .map_err(|error| WorkspaceStateError::Message(error.to_string()))
+        facts::run(facts::append(
+            self.event_store()?,
+            facts::stream(path, true),
+            LocalDomainEvent::RepositoryGroupChanged(collapsed),
+        ))
     }
-
-    fn load(
-        &self,
-        worktree_name: &str,
-        worktree_root: &str,
-    ) -> Result<Option<WorkspaceState>, crate::domain::workspace_state::WorkspaceStateError> {
-        let Some(state) = self.read_state(worktree_name)? else {
+    fn load(&self, key: &str, root: &str) -> Result<Option<WorkspaceState>, WorkspaceStateError> {
+        let _guard = self.file_lock.lock();
+        let Some(state) = self.read_state(key)? else {
             return Ok(None);
         };
-        let state: WorkspaceState = state.into();
-        let state = filter_missing_files(state, worktree_root);
-
-        self.entries
-            .write()
-            .insert(worktree_name.to_string(), state.clone());
-        Ok(Some(state))
+        Ok(Some(filter_missing_files(state, root)))
     }
-
-    fn check_readable(&self, worktree_name: &str) -> Result<(), WorkspaceStateError> {
-        self.read_state(worktree_name).map(|_| ())
-    }
-
-    fn save(&self, worktree_name: &str) -> Result<(), WorkspaceStateError> {
+    fn check_readable(&self, key: &str) -> Result<(), WorkspaceStateError> {
         let _guard = self.file_lock.lock();
-
-        let dir = state_dir(&self.app_data_dir);
-        std::fs::create_dir_all(&dir)
-            .map_err(|e| WorkspaceStateError::Message(format!("Failed to create dir: {e}")))?;
-
-        let file_path = state_file(&self.app_data_dir, worktree_name);
-        let state = {
-            let entries = self.entries.read();
-            match entries.get(worktree_name) {
-                Some(s) => s.clone(),
-                None => return Ok(()),
-            }
+        self.read_state(key).map(|_| ())
+    }
+    fn save(&self, key: &str) -> Result<(), WorkspaceStateError> {
+        let _guard = self.file_lock.lock();
+        let mut entries = self.entries.write();
+        let Some(state) = entries.get(key).cloned() else {
+            return Ok(());
         };
-        let json = serde_json::to_string_pretty(&StoredWorkspaceState::from(state))
-            .map_err(|e| WorkspaceStateError::Message(format!("Failed to serialize: {e}")))?;
-        std::fs::write(&file_path, json)
-            .map_err(|e| WorkspaceStateError::Message(format!("Failed to write: {e}")))?;
+        let state = state.preserve_omitted_panes(self.read_state(key)?);
+        facts::run(facts::append(
+            self.event_store()?,
+            facts::stream(key, false),
+            LocalDomainEvent::WorkspaceStateChanged(Box::new(state)),
+        ))?;
+        entries.remove(key);
         Ok(())
     }
-
-    fn set(&self, worktree_name: &str, state: WorkspaceState) {
-        self.entries
-            .write()
-            .insert(worktree_name.to_string(), state);
+    fn set(&self, key: &str, state: WorkspaceState) {
+        self.entries.write().insert(key.into(), state);
     }
 }
 
-impl WorkspaceStateStore {
-    fn repository_group_file(&self, path: &str) -> PathBuf {
-        use sha2::Digest;
-        let key = hex::encode(sha2::Sha256::digest(
-            crate::domain::repository::normalize_repo_path(path).as_bytes(),
-        ));
-        self.app_data_dir
-            .join("repository_group_state")
-            .join(format!("{key}.json"))
-    }
-
-    fn read_state(
+impl crate::usecase::app_data_gc::WorkspaceStateGc for WorkspaceStateStore {
+    fn states(
         &self,
-        worktree_name: &str,
-    ) -> Result<Option<StoredWorkspaceState>, WorkspaceStateError> {
-        let data = match std::fs::read_to_string(state_file(&self.app_data_dir, worktree_name)) {
-            Ok(data) => data,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                if !std::path::Path::new(worktree_name).is_absolute() {
-                    return Ok(None);
-                }
-                let legacy = worktree_name.replace(['/', '\\'], "_");
-                match std::fs::read_to_string(state_file(&self.app_data_dir, &legacy)) {
-                    Ok(data) => data,
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-                    Err(error) => return Err(WorkspaceStateError::Message(error.to_string())),
-                }
-            }
-            Err(error) => return Err(WorkspaceStateError::Message(error.to_string())),
-        };
-        serde_json::from_str::<StoredWorkspaceState>(&data)
-            .map(Some)
-            .map_err(|error| WorkspaceStateError::Message(error.to_string()))
+    ) -> Result<Vec<(String, crate::domain::local_event::StreamVersion)>, WorkspaceStateError> {
+        facts::run(async {
+            self.event_store()?.submit_query(|connection| {
+                let mut statement = connection.prepare("SELECT stream_id, stream_sequence FROM events e WHERE stream_id LIKE 'workspace-state:%' AND event_type = 'workspace.state_changed' AND NOT EXISTS (SELECT 1 FROM events next WHERE next.stream_id = e.stream_id AND next.stream_sequence > e.stream_sequence)").map_err(|error| crate::adaptor::gateway::local_event_store::reader::storage_unavailable(&error))?;
+                let rows = statement.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))).map_err(|error| crate::adaptor::gateway::local_event_store::reader::storage_unavailable(&error))?;
+                rows.collect::<Result<Vec<_>, _>>().map_err(|error| crate::adaptor::gateway::local_event_store::reader::storage_unavailable(&error))
+            }).await.map_err(facts::error)?.into_iter().map(|(stream, version)| {
+                let hash = stream.strip_prefix("workspace-state:").ok_or_else(|| facts::error("Unexpected workspace state stream"))?;
+                Ok((format!("{ABSOLUTE_STATE_KEY_PREFIX}{hash}"), crate::domain::local_event::StreamVersion::new(version).map_err(facts::error)?))
+            }).collect()
+        })
     }
-
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn get(&self, worktree_name: &str) -> Option<WorkspaceState> {
-        self.entries.read().get(worktree_name).cloned()
+    fn invalidate(
+        &self,
+        key: &str,
+        expected: crate::domain::local_event::StreamVersion,
+    ) -> Result<bool, WorkspaceStateError> {
+        let _guard = self.file_lock.lock();
+        let hash = key
+            .strip_prefix(ABSOLUTE_STATE_KEY_PREFIX)
+            .ok_or_else(|| facts::error("Unexpected workspace state key"))?;
+        let stream =
+            crate::domain::local_event::StreamId::parse(&format!("workspace-state:{hash}"))
+                .map_err(facts::error)?;
+        let (head, event) = facts::run(facts::latest(self.event_store()?, &stream))?;
+        if head != expected || !matches!(event, Some(LocalDomainEvent::WorkspaceStateChanged(_))) {
+            return Ok(false);
+        }
+        facts::run(facts::append(
+            self.event_store()?,
+            stream,
+            LocalDomainEvent::WorkspaceStateInvalidated,
+        ))?;
+        Ok(true)
     }
 }
 
@@ -165,7 +212,7 @@ use crate::domain::workspace_state::value_objects::{
 };
 
 #[derive(serde::Serialize, serde::Deserialize)]
-struct StoredWorkspaceState {
+pub(crate) struct StoredWorkspaceState {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     panes: Option<StoredPaneLayout>,
     version: u32,
@@ -200,25 +247,26 @@ struct StoredWorkspaceLayoutState {
     selected_diff_file: Option<String>,
 }
 
-impl From<WorkspaceState> for StoredWorkspaceState {
-    fn from(state: WorkspaceState) -> Self {
+impl From<&WorkspaceState> for StoredWorkspaceState {
+    fn from(state: &WorkspaceState) -> Self {
         Self {
-            panes: state.panes.map(Into::into),
+            panes: state.panes.as_ref().map(Into::into),
             version: state.version,
-            tabs: state.tabs.into(),
-            layout: state.layout.into(),
+            tabs: state.tabs.clone().into(),
+            layout: state.layout.clone().into(),
         }
     }
 }
 
-impl From<StoredWorkspaceState> for WorkspaceState {
-    fn from(dto: StoredWorkspaceState) -> Self {
-        Self {
-            panes: dto.panes.map(Into::into),
+impl TryFrom<StoredWorkspaceState> for WorkspaceState {
+    type Error = WorkspaceStateError;
+    fn try_from(dto: StoredWorkspaceState) -> Result<Self, Self::Error> {
+        Ok(Self {
+            panes: dto.panes.map(TryInto::try_into).transpose()?,
             version: dto.version,
             tabs: dto.tabs.into(),
             layout: dto.layout.into(),
-        }
+        })
     }
 }
 
@@ -323,64 +371,70 @@ enum StoredSplitAxis {
     Vertical,
 }
 
-impl From<crate::domain::workspace_state::value_objects::pane_layout::PaneLayout>
+impl From<&crate::domain::workspace_state::value_objects::pane_layout::PaneLayout>
     for StoredPaneLayout
 {
-    fn from(value: crate::domain::workspace_state::value_objects::pane_layout::PaneLayout) -> Self {
-        use crate::domain::workspace_state::value_objects::pane_layout::PaneLayout;
-        match value {
-            PaneLayout::Pane {
+    fn from(
+        value: &crate::domain::workspace_state::value_objects::pane_layout::PaneLayout,
+    ) -> Self {
+        use crate::domain::workspace_state::value_objects::pane_layout::PaneLayoutView;
+        match value.view() {
+            PaneLayoutView::Pane {
                 id,
                 tabs,
                 active_tab,
             } => Self::Pane {
-                id,
-                tabs: tabs.into_iter().map(Into::into).collect(),
-                active_tab,
+                id: id.into(),
+                tabs: tabs.iter().cloned().map(Into::into).collect(),
+                active_tab: active_tab.map(str::to_owned),
             },
-            PaneLayout::Split {
+            PaneLayoutView::Split {
                 id,
                 axis,
                 ratio,
                 first,
                 second,
             } => Self::Split {
-                id,
-                axis: axis.into(),
+                id: id.into(),
+                axis: axis.clone().into(),
                 ratio,
-                first: Box::new((*first).into()),
-                second: Box::new((*second).into()),
+                first: Box::new(first.into()),
+                second: Box::new(second.into()),
             },
         }
     }
 }
-impl From<StoredPaneLayout>
+impl From<crate::domain::workspace_state::value_objects::pane_layout::PaneLayout>
+    for StoredPaneLayout
+{
+    fn from(value: crate::domain::workspace_state::value_objects::pane_layout::PaneLayout) -> Self {
+        Self::from(&value)
+    }
+}
+impl TryFrom<StoredPaneLayout>
     for crate::domain::workspace_state::value_objects::pane_layout::PaneLayout
 {
-    fn from(value: StoredPaneLayout) -> Self {
+    type Error = WorkspaceStateError;
+    fn try_from(value: StoredPaneLayout) -> Result<Self, Self::Error> {
         match value {
             StoredPaneLayout::Pane {
                 id,
                 tabs,
                 active_tab,
-            } => Self::Pane {
-                id,
-                tabs: tabs.into_iter().map(Into::into).collect(),
-                active_tab,
-            },
+            } => Self::pane(id, tabs.into_iter().map(Into::into).collect(), active_tab),
             StoredPaneLayout::Split {
                 id,
                 axis,
                 ratio,
                 first,
                 second,
-            } => Self::Split {
+            } => Self::split(
                 id,
-                axis: axis.into(),
+                axis.into(),
                 ratio,
-                first: Box::new((*first).into()),
-                second: Box::new((*second).into()),
-            },
+                (*first).try_into()?,
+                (*second).try_into()?,
+            ),
         }
     }
 }

@@ -368,10 +368,15 @@ async fn test_issue絞り込み_キャッシュを変えず条件に一致する
     issue.milestone = Some(crate::domain::git_host::value_objects::issue::Milestone {
         title: "release".into(),
     });
-    let cache = Arc::new(FakeIssueCache::with_lookup(Some(vec![
-        issue,
-        sample_issue(2),
-    ])));
+    let mut excluded = sample_issue(2);
+    excluded.labels.push(crate::domain::git_host::IssueLabel {
+        name: "feature".into(),
+        color: "fff".into(),
+    });
+    excluded.milestone = Some(crate::domain::git_host::Milestone {
+        title: "next".into(),
+    });
+    let cache = Arc::new(FakeIssueCache::with_lookup(Some(vec![issue, excluded])));
     cache.record("/repo", Err(GitHostError::External("offline".into())));
     let provider = Arc::new(FakeProvider::empty());
     let uc = usecase_with(
@@ -386,16 +391,17 @@ async fn test_issue絞り込み_キャッシュを変えず条件に一致する
     // When
     let result = uc.get_filtered_issues("/repo", &filter).await;
     // Then
+    let listing = result.value.unwrap();
     assert_eq!(
-        result
-            .value
-            .unwrap()
+        listing
             .issues
             .iter()
             .map(|issue| issue.number)
             .collect::<Vec<_>>(),
         [1]
     );
+    assert_eq!(listing.options.labels, ["bug", "feature"]);
+    assert_eq!(listing.options.milestones, ["next", "release"]);
     assert!(result.error.is_some());
     assert_eq!(cache.result("/repo").value.unwrap().len(), 2);
     assert_eq!(provider.issue_fetch_count(), 0);
