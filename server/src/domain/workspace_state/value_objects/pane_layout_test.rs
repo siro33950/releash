@@ -60,6 +60,10 @@ fn test_pane配置_異なるidの分割比率と全種類のタブを復元で�
                     id: "file".into(),
                     kind: PaneTabKind::File,
                 },
+                PaneTab {
+                    id: "session".into(),
+                    kind: PaneTabKind::Session,
+                },
             ],
             active_tab: Some("file".into()),
         }),

@@ -9,7 +9,7 @@ import SwiftProtobuf
   var collapsed: [String: Bool] = [:]
   var selectedWorktree: String?
   var layout: PaneLayout = .empty()
-  var paneInteraction = PaneInteraction()
+  var panes = PaneWorkspace()
   var failure: String?
   var connectionFailure: String?
   var connected = false
@@ -246,7 +246,7 @@ import SwiftProtobuf
     selectedWorktree = path
     layoutLoaded = false
     layout = .empty()
-    paneInteraction = PaneInteraction()
+
     subscribe("workspace-state", [path, path]) { [weak self] payload in
       guard let self, case .workspaceState(let value) = payload.value, selectedWorktree == path
       else { return }
@@ -259,11 +259,10 @@ import SwiftProtobuf
     selectedWorktree = nil
     layoutLoaded = false
     layout = .empty()
-    paneInteraction = PaneInteraction()
+
   }
   func receiveWorkspaceState(_ value: Releash_Client_V1_NullableWorkspaceStateDto, path: String) {
     guard selectedWorktree == path, pendingSaves[path, default: 0] == 0 else { return }
-    layoutLoaded = true
     if value.hasValue {
       workspaceState = value.value
       if value.value.hasPaneLayout {
@@ -272,11 +271,11 @@ import SwiftProtobuf
         } catch { failure = failureMessage(error) }
       } else {
         layout = .empty()
-    paneInteraction = PaneInteraction()
+
       }
     } else {
       layout = .empty()
-    paneInteraction = PaneInteraction()
+
       workspaceState = Releash_Client_V1_WorkspaceStateDto()
       workspaceState.version = 1
       workspaceState.tabs.editors = Releash_Client_V1_ListWorkspaceTabEntryDto()
@@ -286,6 +285,13 @@ import SwiftProtobuf
       workspaceState.layout.rightCollapsed = true
       workspaceState.layout.rightBottomCollapsed = true
     }
+    do {
+      if (try? panes.layout()) != layout { try panes.restore(layout) }
+    } catch {
+      failure = failureMessage(error)
+      return
+    }
+    layoutLoaded = true
   }
   func editLayout(_ edit: (inout PaneLayout) -> Void) {
     guard layoutLoaded, let path = selectedWorktree, let client else { return }

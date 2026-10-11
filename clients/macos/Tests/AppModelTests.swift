@@ -11,7 +11,7 @@ final class AppModelTests: XCTestCase {
     let model = AppModel()
     model.selectedWorktree = "/repo/current"
     model.layoutLoaded = true
-    model.layout.open(.terminal, in: model.layout.id)
+    model.layout = testLayout(.terminal)
     let layout = model.layout
     model.deselectWorktree("/repo/previous")
     XCTAssertEqual(model.selectedWorktree, "/repo/current")
@@ -19,7 +19,9 @@ final class AppModelTests: XCTestCase {
     model.deselectWorktree("/repo/current")
     XCTAssertNil(model.selectedWorktree)
     XCTAssertFalse(model.layoutLoaded)
-    guard case .pane(_, let tabs, let active) = model.layout else { return XCTFail("Missing empty pane") }
+    guard case .pane(_, let tabs, let active) = model.layout else {
+      return XCTFail("Missing empty pane")
+    }
     XCTAssertTrue(tabs.isEmpty)
     XCTAssertNil(active)
   }
@@ -27,7 +29,7 @@ final class AppModelTests: XCTestCase {
     let model = AppModel()
     model.selectedWorktree = "/repo/current"
     model.layoutLoaded = true
-    model.layout.open(.terminal, in: model.layout.id)
+    model.layout = testLayout(.terminal)
     let layout = model.layout
     model.selectWorktree("/repo/current")
     XCTAssertTrue(model.layoutLoaded)
@@ -36,8 +38,7 @@ final class AppModelTests: XCTestCase {
   @MainActor func testPendingLayoutInputSurvivesOlderServerEchoUntilSaveFinishes() throws {
     let model = AppModel()
     model.selectedWorktree = "/repo/worktree"
-    let pane = model.layout.id
-    model.layout.open(.terminal, in: pane)
+    model.layout = testLayout(.terminal)
     let input = model.layout
     var state = Releash_Client_V1_NullableWorkspaceStateDto()
     state.value.paneLayout = PaneLayout.empty().message
@@ -75,15 +76,21 @@ extension AppModelTests {
     for (detail, expected) in [(message, message.message.value), (coded, coded.coded.message)] {
       let error = ConnectError(
         code: .internalError, message: "Command failed",
-        details: [.init(type: Releash_Client_V1_CommandError.protoMessageName,
-                        payload: try detail.serializedData())])
+        details: [
+          .init(
+            type: Releash_Client_V1_CommandError.protoMessageName,
+            payload: try detail.serializedData())
+        ])
       model.perform { throw error }
       try await eventually { model.failure == expected }
     }
     let malformed = ConnectError(
       code: .internalError, message: "Fallback reason",
-      details: [.init(type: Releash_Client_V1_CommandError.protoMessageName,
-                      payload: Data([0xff]))])
+      details: [
+        .init(
+          type: Releash_Client_V1_CommandError.protoMessageName,
+          payload: Data([0xff]))
+      ])
     model.perform { throw malformed }
     try await eventually { model.failure == "Fallback reason" }
   }
@@ -101,13 +108,15 @@ extension AppModelTests {
     let http = TestHTTPClient()
     let model = try await testModel(http)
     var layouts: [String: PaneLayout] = [:]
-    for (path, edge) in [("/repo/a", PaneLayout.Edge.right), ("/repo/b", .bottom)] {
+    for (path, axis) in [("/repo/a", PaneLayout.Axis.horizontal), ("/repo/b", .vertical)] {
       model.selectWorktree(path)
       try await eventually { model.layoutLoaded }
-      let pane = model.layout.id
+      let tabs = PaneTab.Kind.allCases.map { PaneTab(kind: $0) }
       model.editLayout { layout in
-        for kind in PaneTab.Kind.allCases { layout.open(kind, in: pane) }
-        if case .pane(_, let tabs, _) = layout { layout.move(tabs[0].id, to: pane, edge: edge) }
+        layout = .split(
+          id: "split", axis: axis, ratio: 0.5,
+          first: .pane(id: "left", tabs: Array(tabs.dropFirst()), active: tabs.last!.id),
+          second: .pane(id: "right", tabs: [tabs[0]], active: tabs[0].id))
       }
       layouts[path] = model.layout
       try await eventually { model.pendingSaves[path] == nil }
@@ -140,8 +149,7 @@ extension AppModelTests {
     model.selectWorktree("/repo/a")
     try await eventually { model.layoutLoaded }
     http.state.withLock { $0.failedMethod = "SaveWorkspaceState" }
-    let pane = model.layout.id
-    model.editLayout { $0.open(.file, in: pane) }
+    model.editLayout { $0 = testLayout(.file) }
     try await eventually {
       model.pendingSaves["/repo/a"] == nil
         && model.failure?.contains("SaveWorkspaceState failed") == true
@@ -244,7 +252,8 @@ extension AppModelTests {
           if args == ["server", "start", "--json"] {
             if fail.withLock({ $0 }) {
               throw CLIFailure(
-                message: #"{"error":{"message":"Cannot start server","guidance":"CLI startup guidance"}}"#)
+                message:
+                  #"{"error":{"message":"Cannot start server","guidance":"CLI startup guidance"}}"#)
             }
             started.withLock { $0 = true }
             return Data()
@@ -264,7 +273,10 @@ extension AppModelTests {
     XCTAssertNil(model.connectionFailure)
     XCTAssertEqual(
       calls.withLock { $0 },
-      ["status --json", "server start --json", "status --json", "server start --json", "status --json"])
+      [
+        "status --json", "server start --json", "status --json", "server start --json",
+        "status --json",
+      ])
     await model.stop()
   }
 }
@@ -272,14 +284,21 @@ extension AppModelTests {
 extension AppModelTests {
   @MainActor func testDiscoveryAndCompatibilityFailuresPreserveCategoryAndCLIGuidance() async {
     for (status, expected) in [
-      (#"{"running":false,"discovery_file":"unused","startup_guidance":"CLI startup guidance"}"#,
-       "サーバを発見できません\nCLI startup guidance"),
-      (#"{"running":true,"discovery_file":"unused","compatibility":"server_older","guidance":"CLI compatibility guidance"}"#,
-       "サーバと互換性がありません\nserver_older\nCLI compatibility guidance")
+      (
+        #"{"running":false,"discovery_file":"unused","startup_guidance":"CLI startup guidance"}"#,
+        "サーバを発見できません\nCLI startup guidance"
+      ),
+      (
+        #"{"running":true,"discovery_file":"unused","compatibility":"server_older","guidance":"CLI compatibility guidance"}"#,
+        "サーバと互換性がありません\nserver_older\nCLI compatibility guidance"
+      ),
     ] {
-      let model = AppModel(cli: CLI(executable: URL(fileURLWithPath: "/test/releash"), run: { _, _ in
-        Data(status.utf8)
-      }))
+      let model = AppModel(
+        cli: CLI(
+          executable: URL(fileURLWithPath: "/test/releash"),
+          run: { _, _ in
+            Data(status.utf8)
+          }))
       await model.start()
       XCTAssertEqual(model.connectionFailure, expected)
       XCTAssertFalse(model.connected)
@@ -292,9 +311,12 @@ extension AppModelTests {
       #"{"running":false,"discovery_file":"unused","startup_guidance":null}"#,
       #"{"running":false,"discovery_file":"unused"}"#,
     ] {
-      let model = AppModel(cli: CLI(executable: URL(fileURLWithPath: "/test/releash"), run: { _, _ in
-        Data(status.utf8)
-      }))
+      let model = AppModel(
+        cli: CLI(
+          executable: URL(fileURLWithPath: "/test/releash"),
+          run: { _, _ in
+            Data(status.utf8)
+          }))
       await model.start()
       XCTAssertEqual(
         model.connectionFailure,
@@ -305,11 +327,19 @@ extension AppModelTests {
   }
 
   @MainActor func testStatusCommandFailurePreservesCategoryAndStderr() async {
-    let model = AppModel(cli: CLI(executable: URL(fileURLWithPath: "/test/releash"), run: { _, _ in
-      throw CLIFailure(message: "status stderr")
-    }))
+    let model = AppModel(
+      cli: CLI(
+        executable: URL(fileURLWithPath: "/test/releash"),
+        run: { _, _ in
+          throw CLIFailure(message: "status stderr")
+        }))
     await model.start()
     XCTAssertEqual(model.connectionFailure, "サーバを発見できません\nstatus stderr")
     await model.stop()
   }
+}
+
+private func testLayout(_ kind: PaneTab.Kind) -> PaneLayout {
+  let tab = PaneTab(kind: kind)
+  return .pane(id: "test-pane", tabs: [tab], active: tab.id)
 }

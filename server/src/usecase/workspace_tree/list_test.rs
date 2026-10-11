@@ -15,7 +15,6 @@ fn worktree(path: &str, branch: &str, is_merged: bool) -> Worktree {
 
 fn values(path: &str, branch: &str, is_merged: bool) -> WorktreeValues {
     WorktreeValues {
-        tracking: Fetched::ready(None),
         worktree: worktree(path, branch, is_merged),
         deleting: false,
         dirty_count: Fetched::ready(0),

@@ -26,6 +26,7 @@ pub enum PaneTabKind {
     Terminal,
     Workflow,
     File,
+    Session,
 }
 #[derive(Clone, Debug, PartialEq)]
 pub enum SplitAxis {

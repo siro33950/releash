@@ -17,8 +17,7 @@ final class ConnectionTests: XCTestCase {
     model.refresh()
     try await eventually { !http.requests("RefreshWorkspaces").isEmpty }
     let previousIDs = http.state.withLock { $0.subscriptions.map(\.subscriptionID) }
-    var updated = PaneLayout.empty()
-    updated.open(.workflow, in: updated.id)
+    let updated = connectionLayout(.workflow)
     var state = Releash_Client_V1_WorkspaceStateDto()
     state.paneLayout = updated.message
     repository.status.error = "read failed while disconnected"
@@ -62,14 +61,9 @@ extension ConnectionTests {
       let model = try await testModel(http)
       model.selectWorktree("/repo/a")
       try await eventually { model.layoutLoaded }
-      model.editLayout { $0.open(.terminal, in: $0.id) }
+      model.editLayout { $0 = connectionLayout(.terminal) }
       try await eventually { model.pendingSaves["/repo/a"] == nil }
-      XCTAssertNotNil(
-        model.layout.tab(
-          {
-            if case .pane(_, let tabs, _) = model.layout { return tabs[0].id }
-            return ""
-          }()))
+      XCTAssertEqual(model.layout.tabs.map(\.kind), [.terminal])
       let stream = http.state.withLock { storage in
         storage.layouts["/repo/a"] = hasState ? Releash_Client_V1_WorkspaceStateDto() : nil
         return storage.streams.last!
@@ -105,8 +99,7 @@ extension ConnectionTests {
       let removedCount = http.state.withLock {
         $0.subscriptions.filter { $0.target == "removed" }.count
       }
-      var updated = PaneLayout.empty()
-      updated.open(.workflow, in: updated.id)
+      let updated = connectionLayout(.workflow)
       var state = Releash_Client_V1_WorkspaceStateDto()
       state.paneLayout = updated.message
       var repository = Releash_Client_V1_WorkspaceRepositoryList()
@@ -141,4 +134,9 @@ extension ConnectionTests {
       await model.stop()
     }
   }
+}
+
+private func connectionLayout(_ kind: PaneTab.Kind) -> PaneLayout {
+  let tab = PaneTab(kind: kind)
+  return .pane(id: "connection-pane", tabs: [tab], active: tab.id)
 }

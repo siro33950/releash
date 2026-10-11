@@ -87,15 +87,10 @@ fn test_カード集計_実行木単位で過去の試行と構造nodeとarchive
         summaries[0].1.node().status_classification,
         WorkspaceNodeStatusClassification::Attention
     );
-    assert_eq!(
-        tree.card_status(),
-        Some(WorkspaceNodeStatusClassification::Attention)
-    );
-    assert_eq!(WorkspaceTree::empty("/repo").card_status(), None);
 }
 
 #[test]
-fn test_カード集計_archive済みの実行木は行にも状態にも含めない() {
+fn test_カード集計_archive済みの実行木は行に含めない() {
     // Given
     let id = "00000000-0000-4000-8000-000000001204";
     let mut tree = WorkspaceTree::empty("/repo");
@@ -126,11 +121,10 @@ fn test_カード集計_archive済みの実行木は行にも状態にも含め�
     }]);
     // When / Then
     assert!(tree.card_executions().is_empty());
-    assert_eq!(tree.card_status(), None);
 }
 
 #[test]
-fn test_カード集計_session行を先に並べ人の番を集約する() {
+fn test_カード集計_session行を先に並べる() {
     // Given
     let workflow = "00000000-0000-4000-8000-000000001205";
     let session = "00000000-0000-4000-8000-000000001206";
@@ -217,10 +211,6 @@ fn test_カード集計_session行を先に並べ人の番を集約する() {
         WorkspaceNodeStatusClassification::Attention
     );
     assert!(rows[1].1.is_workflow());
-    assert_eq!(
-        tree.card_status(),
-        Some(WorkspaceNodeStatusClassification::Attention)
-    );
 }
 
 #[test]
@@ -305,7 +295,6 @@ fn test_カード集計_launched_asで種別と題名と状態を揃える() {
         assert_eq!(rows[0].1.is_workflow(), is_workflow);
         assert_eq!(rows[0].1.node().title, title);
         assert_eq!(rows[0].1.node().status_classification, status);
-        assert_eq!(tree.card_status(), Some(status));
         assert_eq!(
             rows[0].1.root.owner().status_classification,
             WorkspaceNodeStatusClassification::Active
@@ -314,7 +303,7 @@ fn test_カード集計_launched_asで種別と題名と状態を揃える() {
 }
 
 #[test]
-fn test_カード集計_子のないworkflowもownerの状態で行と集約に含める() {
+fn test_カード集計_子のないworkflowもownerの状態で行に含める() {
     // Given
     let id = "00000000-0000-4000-8000-000000001204";
     let mut tree = WorkspaceTree::empty("/repo");
@@ -348,10 +337,6 @@ fn test_カード集計_子のないworkflowもownerの状態で行と集約に�
         rows[0].1.node().status_classification,
         rows[0].1.root.owner().status_classification
     );
-    assert_eq!(
-        tree.card_status(),
-        Some(WorkspaceNodeStatusClassification::Active)
-    );
     drop(rows);
     WorkspaceTreeProjector::project(
         &mut tree,
@@ -381,10 +366,6 @@ fn test_カード集計_子のないworkflowもownerの状態で行と集約に�
     assert_eq!(
         rows[0].1.node().status_classification,
         WorkspaceNodeStatusClassification::Active
-    );
-    assert_eq!(
-        tree.card_status(),
-        Some(WorkspaceNodeStatusClassification::Active)
     );
 }
 

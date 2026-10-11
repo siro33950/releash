@@ -15,7 +15,7 @@ impl<'a> WorkspacePublicRoot<'a> {
         nodes
             .iter()
             .filter(|node| node.kind == WorkspaceNodeKind::Workflow)
-            .filter_map(|owner| Self::from_owner(nodes, owner))
+            .filter_map(|owner| Self::from_owner(nodes.iter(), owner))
             .collect()
     }
 
@@ -54,14 +54,19 @@ impl<'a> WorkspacePublicRoot<'a> {
         }
     }
 
-    pub(crate) fn for_owner(nodes: &'a [WorkspaceTreeNode], owner: &'a WorkspaceTreeNode) -> Self {
+    pub(crate) fn for_owner(
+        nodes: impl Iterator<Item = &'a WorkspaceTreeNode>,
+        owner: &'a WorkspaceTreeNode,
+    ) -> Self {
         Self::from_owner(nodes, owner).unwrap_or(Self { owner, node: owner })
     }
 
-    fn from_owner(nodes: &'a [WorkspaceTreeNode], owner: &'a WorkspaceTreeNode) -> Option<Self> {
+    fn from_owner(
+        nodes: impl Iterator<Item = &'a WorkspaceTreeNode>,
+        owner: &'a WorkspaceTreeNode,
+    ) -> Option<Self> {
         owner.execution_id.as_ref()?;
         let node = nodes
-            .iter()
             .filter(|node| {
                 node.parent_id.as_deref() == Some(owner.id.as_str())
                     && !node.is_internal_rule_record()

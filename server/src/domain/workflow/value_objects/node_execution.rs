@@ -25,13 +25,13 @@ pub enum NodeCompletionSignal {
 ///
 /// 親は sequence / fanout / delegate を宣言した Session の実行インスタンスを node_execution_id で
 /// 直接指す。ループで同名 node のインスタンスが複数並ぶ実行木でも一意に決まる。
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ExecutionParentRef {
     pub parent_id: String,
     relation: ExecutionParentRelation,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 enum ExecutionParentRelation {
     Sequence,
     Fanout(FanoutSlot),
@@ -84,7 +84,7 @@ impl ExecutionParentRef {
 }
 
 /// fanout 展開の座標（宣言順上の位置）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FanoutSlot {
     #[serde(skip_serializing_if = "Option::is_none", default)]

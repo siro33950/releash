@@ -16,76 +16,90 @@ struct CreateWorktreeView: View {
   @State private var readFailure: String?
   @State private var issueArgs: [String] = []
   var body: some View {
-    Form {
-      Picker("Repository", selection: $form.repository) {
-        Text("選択してください").tag("")
-        ForEach(model.repositories, id: \.path) { Text($0.path).tag($0.path) }
-      }
-      TextField("base branch", text: $form.baseBranch)
-      Picker("作成元", selection: $source) {
-        Text("Branch").tag("branch")
-        Text("GitHub Issue").tag("issue")
-        Text("Notion task").tag("notion")
-      }.pickerStyle(.segmented)
-      if source == "issue" {
-        HStack {
-          Picker("Label", selection: $label) {
-            Text("すべて").tag("")
-            ForEach(labels, id: \.self) { Text($0).tag($0) }
-          }
-          Picker("Milestone", selection: $milestone) {
-            Text("すべて").tag("")
-            ForEach(milestones, id: \.self) { Text($0).tag($0) }
-          }
-        }
-        List(issues, id: \.number) { issue in
-          selectionRow(
-            "#\(issue.number) \(issue.title)", id: .issue(issue.number),
-            branch: issue.defaultBranchName)
-        }
-        .frame(height: UIStyle.selectionListHeight)
-      } else if source == "notion" {
-        List(tasks, id: \.id) { task in
-          selectionRow(task.title, id: .task(task.id), branch: task.branchName)
-        }
-        .frame(height: UIStyle.selectionListHeight)
-      }
-      DisclosureGroup("Advanced") {
-        TextField("新しいbranch名", text: $form.branch).disabled(!form.selected.isEmpty)
-        List(branches, id: \.name) { item in
-          selectionRow(item.name, id: .branch(item.name), branch: item.name)
-        }
-        .frame(height: UIStyle.selectionListHeight)
-      }
-      if let readFailure { Text(readFailure).foregroundStyle(.secondary) }
-      Picker("作成後に起動する", selection: $form.launch) {
-        Text("起動しない").tag("none")
-        Text("Session").tag("session")
-        Text("Workflow").tag("workflow")
-      }
-      if form.launch == "session" {
-        Picker("Provider", selection: $form.provider) {
-          ForEach(model.providers, id: \.value) { provider in
-            Text(provider.displayName).tag(
-              provider.wireName)
-          }
-        }
-      }
-      if form.launch == "workflow" {
-        WorkflowLaunchFields(
-          workflows: model.workflows, workflow: $form.workflow, requestText: $form.requestText)
-      }
+    VStack(spacing: 0) {
       HStack {
-        Button("キャンセル") { dismiss() }
+        Text("新しいWorktree").font(.headline)
         Spacer()
+      }.padding(UIStyle.padding)
+      Divider()
+      Form {
+        Section {
+          Picker("Repository", selection: $form.repository) {
+            Text("選択してください").tag("")
+            ForEach(model.repositories, id: \.path) { Text($0.path).tag($0.path) }
+          }
+          TextField("base branch", text: $form.baseBranch)
+        }
+        Section("作成元") {
+          Picker("作成元", selection: $source) {
+            Text("Branch").tag("branch")
+            Text("GitHub Issue").tag("issue")
+            Text("Notion task").tag("notion")
+          }.pickerStyle(.segmented).labelsHidden()
+          if source == "issue" {
+            HStack {
+              Picker("Label", selection: $label) {
+                Text("すべて").tag("")
+                ForEach(labels, id: \.self) { Text($0).tag($0) }
+              }
+              Picker("Milestone", selection: $milestone) {
+                Text("すべて").tag("")
+                ForEach(milestones, id: \.self) { Text($0).tag($0) }
+              }
+            }
+            List(issues, id: \.number) { issue in
+              selectionRow(
+                "#\(issue.number) \(issue.title)", id: .issue(issue.number),
+                branch: issue.defaultBranchName)
+            }
+            .frame(height: UIStyle.selectionListHeight)
+          } else if source == "notion" {
+            List(tasks, id: \.id) { task in
+              selectionRow(task.title, id: .task(task.id), branch: task.branchName)
+            }
+            .frame(height: UIStyle.selectionListHeight)
+          }
+          DisclosureGroup("Advanced") {
+            TextField("新しいbranch名", text: $form.branch).disabled(!form.selected.isEmpty)
+            List(branches, id: \.name) { item in
+              selectionRow(item.name, id: .branch(item.name), branch: item.name)
+            }
+            .frame(height: UIStyle.selectionListHeight)
+          }
+          if let readFailure { Text(readFailure).foregroundStyle(.secondary) }
+        }
+        Section("作成後に起動する") {
+          Picker("作成後に起動する", selection: $form.launch) {
+            Text("起動しない").tag("none")
+            Text("Session").tag("session")
+            Text("Workflow").tag("workflow")
+          }.pickerStyle(.segmented).labelsHidden()
+          if form.launch == "session" {
+            Picker("Provider", selection: $form.provider) {
+              ForEach(model.providers, id: \.value) { provider in
+                Text(provider.displayName).tag(
+                  provider.wireName)
+              }
+            }
+          }
+          if form.launch == "workflow" {
+            WorkflowLaunchFields(
+              workflows: model.workflows, workflow: $form.workflow, requestText: $form.requestText)
+          }
+        }
+      }.formStyle(.grouped)
+      Divider()
+      HStack {
+        Spacer()
+        Button("キャンセル") { dismiss() }.keyboardShortcut(.cancelAction)
         Button("作成") {
           form.submit(model: model) { dismiss() }
         }
+        .keyboardShortcut(.defaultAction)
         .disabled(!form.canSubmit)
-      }
+      }.padding(UIStyle.padding)
     }
-    .padding(UIStyle.padding)
-    .frame(minWidth: UIStyle.sidebarWidth * 2)
+    .frame(width: UIStyle.createDialogWidth, height: UIStyle.createDialogHeight)
     .onChange(of: form.repository) { old, _ in
       unsubscribe(old)
       load()

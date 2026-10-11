@@ -1115,7 +1115,6 @@ mod driver_tests {
                     repositories: vec![WorkspaceListRepository {
                         path: "/repo".into(),
                         worktrees: Fetched::ready(vec![WorkspaceListWorktree {
-                            tracking: Fetched::ready(None),
                             worktree: crate::domain::repository::Worktree {
                                 name: "main".into(),
                                 path: "/repo".into(),

@@ -5,6 +5,27 @@ import XCTest
 @testable import Releash
 
 final class WorkspaceActionsTests: XCTestCase {
+  @MainActor func testFailedLaunchDoesNotOpenTabs() async throws {
+    let http = TestHTTPClient()
+    let model = try await testModel(http)
+    let pane = try XCTUnwrap(model.panes.controller.allPaneIds.first)
+    let launch = PaneLaunchView(model: model, pane: pane, path: "/repo/a", kind: .session)
+    for method in ["CreateAgentSession", "StartWorkflow"] {
+      http.state.withLock { $0.failedMethod = method }
+      do {
+        if method == "CreateAgentSession" {
+          try await launch.startSession("codex")
+        } else {
+          try await launch.startWorkflow(name: "review", requestText: "check")
+        }
+        XCTFail("Expected launch failure")
+      } catch {
+        XCTAssertTrue(model.panes.controller.allTabIds.isEmpty)
+      }
+    }
+    await model.stop()
+  }
+
   @MainActor func testRepositoryActionsAndReadAndOperationFailures() async throws {
     let http = TestHTTPClient()
     var repository = Releash_Client_V1_WorkspaceRepositoryList()
@@ -54,7 +75,6 @@ final class WorkspaceActionsTests: XCTestCase {
     let mergedCard = WorktreeCard(
       model: model, repository: received, branch: received.branches.items[0])
     XCTAssertTrue(mergedCard.branch.isMerged)
-    XCTAssertFalse(mergedCard.branch.hasUpstream)
     XCTAssertFalse(mergedCard.branch.hasPrState)
     let completedCard = WorktreeCard(
       model: model, repository: received, branch: received.branches.items[1])
@@ -107,14 +127,21 @@ final class WorkspaceActionsTests: XCTestCase {
       let card = WorktreeCard(model: model, repository: repository, branch: branch)
       XCTAssertEqual(card.worktree?.executions.first?.isWorkflow, isWorkflow)
       model.selectWorktree("/repo/b")
-      card.select()
+      model.selectWorktree(branch.worktreePath)
       XCTAssertEqual(model.selectedWorktree, "/repo/a")
     }
     var provider = Releash_Client_V1_AgentSessionProviderDto()
     provider.value = .codex
-    WorktreeCard(model: model, repository: repository, branch: branch).addSession(provider)
-    WorkflowLaunchView(model: model, path: branch.worktreePath).launch(
-      name: "review", requestText: "check changes")
+    try await eventually { model.layoutLoaded }
+    let pane = try XCTUnwrap(model.panes.controller.allPaneIds.first)
+    let launch = PaneLaunchView(model: model, pane: pane, path: branch.worktreePath, kind: .session)
+    try await launch.startSession(provider.wireName)
+    try await launch.startWorkflow(name: "review", requestText: "check changes")
+    XCTAssertEqual(try model.panes.layout().tabs.map(\.kind), [.session, .workflow])
+    model.panes.closeCurrentTab()
+    model.panes.closeCurrentTab()
+    XCTAssertTrue(http.requests("DeleteAgentSession").isEmpty)
+    XCTAssertTrue(http.requests("AbortWorkflow").isEmpty)
     try await eventually {
       !http.requests("CreateAgentSession").isEmpty && !http.requests("StartWorkflow").isEmpty
     }

@@ -445,7 +445,7 @@ pub mod providers {
 }
 pub mod repository {
     pub use crate::adaptor::gateway::repository::branch::BranchGateway;
-    pub use crate::domain::repository::{BranchRepository, BranchTracking};
+    pub use crate::domain::repository::BranchRepository;
 
     pub use crate::adaptor::gateway::repository::branch::get_current_branch;
     pub use crate::adaptor::gateway::repository::branch::git_create_branch;

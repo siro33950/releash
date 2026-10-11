@@ -91,6 +91,10 @@ fn test_pane転送_分割と全タブを往復して欠落と未知の種類を�
                 id: "file".into(),
                 kind: PaneTabKind::File,
             },
+            PaneTab {
+                id: "session".into(),
+                kind: PaneTabKind::Session,
+            },
         ],
         active_tab: Some("file".into()),
     };

@@ -9,7 +9,7 @@
 - `AGENTS.md`「通信の原則」: サーバは状態を配信し、client は購読する。client からの単発の呼び出しは、状態を変える操作と、client の入力に対する計算だけに使う。
 - #1204 は分割しない。
 - この開発で人と決めた内容のうち ISSUE 本文と食い違うもの（worktree の表示名、作成の非同期化と cancel・retry・進行中の行、pin、agent 行の最後のメッセージと経過、右の切替面、Issue・Notion のリンク）は、ISSUE 本文を書き換えず、この文書と behavior.md・design.md を正とする。
-- 後続の ISSUE が扱うもの: E2E による確認は [02] #2012、右の切替面は [05]、agent 行・workflow 行からタブを開く操作は [09] と [04]、フッターの中身は [13] #1944、repository の削除は [10] #1763、React の画面の撤去は [16] #1765。
+- 後続の ISSUE が扱うもの: E2E による確認は [02] #2012、右の切替面の中身は後続の ISSUE（ファイルは [05] #1760）、agent 行・workflow 行からタブを開く操作は [09] と [04]、フッターの中身は [13] #1944、repository の削除は [10] #1763、React の画面の撤去は [16] #1765。
 
 # Outcome
 
@@ -66,10 +66,11 @@ worktree の削除:
 Scope:
 - `clients/macos/` の SwiftUI クライアント（プロジェクト、同梱、生成、発見と起動、接続、失敗の画面、接続の回復、UI の決まりの定数）
 - サイドバー（repository のグループ、worktree カード、引き継ぐ操作と表示）
+- 右の切替面の枠、開閉、切り替え
 - 中央（pane ごとのタブ列と分割、「開く」メニュー、配置の保存と復元）
 - フッターの枠
 - Worktree 作成ダイアログと、作成から起動までを 1 つにした操作
-- 上記に必要なサーバと proto の追加（worktree カードの値、ahead・behind・upstream、PR の状態、削除に強制が要るかの判定、Issue の絞り込み、UI 状態の項目）
+- 上記に必要なサーバと proto の追加（worktree カードの値、PR の状態、削除に強制が要るかの判定、Issue の絞り込み、UI 状態の項目）
 - PR の CI の macOS の job
 
 Non-goals:
@@ -79,8 +80,8 @@ Non-goals:
 - agent 行の最後のメッセージと経過時間
 - worktree の表示名（作成ダイアログの欄、サーバへの保存）
 - Issue と Notion の task へのリンクの保存
-- 右の切替面（[05]）
-- タブの中身（Terminal・Workflow 管理・ファイル。後続の ISSUE）
+- 右の切替面の中身（ファイルは [05] #1760）
+- タブの中身（Session・Terminal・Workflow 管理・ファイル。Session は #1205、Workflow 管理は #1762 など後続の ISSUE）
 - agent 行・workflow 行からタブを開く操作（[09]、[04]）
 - フッターの中身（[13] #1944）
 - repository の削除（[10] #1763）
@@ -105,25 +106,27 @@ Non-goals:
 - R-010: PR の CI に macOS の job があり、Swift のビルドと単体テストを実行する。Swift のビルドと単体テストは手元で成功する。
 
 サイドバー:
-- R-011: サイドバーは worktree を repository ごとのグループに分けて表示し、グループを折りたためる。折りたたみはグループ単位でサーバに保存され、Swift.app を起動し直しても復元される。
+- R-011: サイドバーは worktree を repository ごとのグループに分けて表示し、グループを折りたためる。折りたたみはグループ単位でサーバに保存され、Swift.app を起動し直しても復元される。グループの見出しには、repository の名前と worktree の件数を表示する。
 - R-012: サイドバーは、各 repository の既存の worktree を 1 worktree につき 1 枚のカードで表示する。作成中や作成に失敗した worktree の行は無い。main の worktree とそれ以外を区別して表示する。
-- R-013: カードのタイトルは、その worktree の branch 名である。
+- R-013: カードの左上に、main は Home、それ以外は branch のアイコンと、その worktree の branch 名を表示する。それ以外の情報は下の行にまとめ、名前の開始位置までインデントする。
 - R-014: カードは、その worktree に属する archive されていない実行木を 1 つずつ行で表示する。Session 単体の実行木は agent 行、Workflow の実行木は workflow 行になる。agent 行を先に、workflow 行を後に並べる。同じ種別の中の順序は定めない。
-- R-015: agent 行は、状態記号（3 値）、agent のアイコン、名前を表示する。
-- R-016: workflow 行は「workflow 名 · N nodes」と、Session の Node ごとの四角を表示する。N は起動済みの Session と Command の Node の数で、Sequence と Fanout の Node、過去の試行は数えない。四角は起動済みの Session の Node 1 つにつき 1 つで、その Node の状態の 3 値の色で塗る。過去の試行は数えず、灰色の四角は無い。
-- R-017: カードは worktree の集約状態を状態記号で表示する。集約状態は、archive されていない実行木が 1 つ以上あるときだけ値を持ち、それらの状態のうち最も重いもの（黄、青、緑の順に重い）である。実行木が 1 つも無いカードは状態記号を表示しない。
-- R-018: カードの 2 行目は、ahead と behind、PR のアイコンを表示し、branch 名を表示しない。ahead と behind は upstream があるときだけ表示する。出すものが無いとき（upstream も PR も無いとき）は、2 行目を表示しない。PR のアイコンは PR の状態（open・draft・merged・closed）を区別する。
+- R-015: agent 行は、既存の Bot アイコン、provider の表示名、実行のタイトルを並べて表示する。アイコンを状態の 3 値の色で塗り、別の状態の丸は表示しない。アイコンと名前の開始位置は workflow 行とそろえる。
+- R-016: workflow 行は、既存の Waypoints アイコンを実行木の状態色で表示する。続けて「workflow 名 · N nodes」と、Session の Node ごとの四角を表示する。N は起動済みの Session と Command の Node の数で、Sequence と Fanout の Node、過去の試行は数えない。四角は workflow 行から一段インデントして表示する。起動済みの Session の Node 1 つにつき 1 つで、その Node の状態の 3 値の色で塗る。過去の試行は数えず、灰色の四角は無い。workflow 行の文字は副次的な色で表示する。
+- R-017: worktree 名の左には集約状態の丸を表示しない。agent 行はアイコンの色で状態を示し、workflow 行は四角を表示する。
+- R-018: カードの詳細行は PR のアイコンを表示し、branch 名と ahead・behind は表示しない。PR が無いときは PR のアイコンの行を表示しない。PR のアイコンは PR の状態（open・draft・merged・closed）を区別する。merge 済みと判定された branch には、PR のアイコンとは別に merge 済みの印を表示する。
 - R-035: PR のアイコンと merged の判定が出る branch の範囲は、開発開始時点より狭くならない。
-- R-019: サイドバーで次の操作と表示ができる。repository の追加、一覧の再読み込み、読み込みの失敗の表示、変更の件数、「Changes unavailable」と「PR unavailable」の表示、既存の worktree への Session と Workflow の追加（Workflow は依頼文の入力を含む）。
+- R-019: サイドバーの上端に「Workspaces」の見出しを置き、その右に repository の追加、一覧の再読み込み、worktree の作成のボタンを置く。サイドバーには、読み込みの失敗、変更の件数、「Changes unavailable」と「PR unavailable」を表示する。変更の件数は 1 件以上のときだけ表示する。
 - R-020: サイドバーから worktree を削除できる。削除に強制が要るかはサーバが判定して worktree の一覧で配信し、Swift.app はその値に従って、強制を求める確認とそうでない確認を出し分ける。削除中の worktree は削除中と表示される。
 - R-021: agent 行と workflow 行をクリックすると、その行の worktree のカードを選んだときと同じく、その worktree のタブ群が中央に表示される。
 
 中央とフッター:
 - R-022: 中央は pane ごとにタブ列を持つ。タブのドラッグで、pane を左右・上下に分割でき、タブを別の pane へ移せる。タブを閉じられる。
-- R-023: タブ列の「+」は「開く」メニューを出し、Terminal・Workflow 管理・ファイルを選べる。選ぶと、その種類のタブが中身の無い仮の表示で開く。開く・閉じる・移す・分割する・保存と復元は、3 つの種類のどれでもできる。
+- R-023: タブ列の「+」は「開く」メニューを出し、Session・Workflow・Terminal・Workflow 管理・ファイルを選べる。メニューは Session、Workflow、区切り線、Terminal、Workflow 管理、ファイルの順に並べる。Session は provider、Workflow は定義と依頼文を入力し、選択中の worktree で既存 API によって開始する。成功すると Session タブまたは Workflow 管理タブを開く。Terminal・Workflow 管理・ファイルは選ぶとタブを開く。タブの中身は仮の表示とし、全種類で閉じる・移す・分割する・保存と復元ができる。カードの右クリックメニューには削除だけを残す。
 - R-024: 分割とタブ群は worktree ごとにサーバへ保存され、その worktree を選び直したときと Swift.app を起動し直したときに復元される。
-- R-025: タブ列と分割は外部のライブラリを使わずに作る。取り込むコードは MIT のものだけで、ライセンスの表記を付ける。GPL のコードは写さない。
+- R-025: タブ列と分割には外部ライブラリを使ってよい。取り込むコードは MIT、Apache、BSD、ISC のものに限り、ライセンスの表記を付ける。GPL のコードは写さない。
 - R-026: 画面の下にフッターの枠がある。
+- R-036: 画面右端に切替面の枠を置く。上端のアイコンは mock と同じくファイル・Source Control・Thread・タスクの順とし、右上のボタンで開閉できる。閉じると、開閉のボタンだけを置いた固定幅の列になる。各面の中身は仮の表示とし、その面の見出しだけを表示する。開いている右カラムと左カラムは境界のドラッグで幅を変更でき、境界にポインタを重ねると左右方向のリサイズカーソルになる。
+- R-037: worktree を選んでいないとき、中央には「Worktreeを選択」と、サイドバーから worktree を選ぶよう促す案内文を表示する。
 
 Worktree の作成:
 - R-027: Worktree 作成ダイアログで、Repository と base branch を入れ、branch 名は Advanced で入れる。ダイアログに表示名の欄は無い。

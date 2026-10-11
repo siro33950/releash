@@ -90,25 +90,6 @@ fn repository(
 
 fn branch(row: &WorkspaceListWorktree) -> wire::WorkspaceBranch {
     wire::WorkspaceBranch {
-        upstream: row
-            .tracking
-            .value
-            .as_ref()
-            .and_then(|tracking| tracking.as_ref())
-            .map(|tracking| tracking.upstream.clone()),
-        ahead: row
-            .tracking
-            .value
-            .as_ref()
-            .and_then(|tracking| tracking.as_ref())
-            .map(|tracking| tracking.ahead as u64),
-        behind: row
-            .tracking
-            .value
-            .as_ref()
-            .and_then(|tracking| tracking.as_ref())
-            .map(|tracking| tracking.behind as u64),
-        tracking_error: row.tracking.error.as_ref().map(ToString::to_string),
         removal_requires_force: row.worktree.removal_requires_force(row.dirty_count.value),
         pr_state_number: row.state_pull_request.as_ref().map(|pr| pr.number),
         pr_state: row.state_pull_request.as_ref().map(|pr| {
@@ -143,12 +124,6 @@ fn worktree(row: &WorkspaceListWorktree) -> Result<wire::WorkspaceWorktreeList, 
         .and_then(|snapshot| snapshot.nodes.as_ref())
         .is_none_or(|nodes| nodes.items.is_empty());
     Ok(wire::WorkspaceWorktreeList {
-        aggregate_status: row
-            .tree
-            .value
-            .as_ref()
-            .and_then(WorkspaceTree::card_status)
-            .map(|status| status.as_public_str().to_owned()),
         executions: row
             .tree
             .value

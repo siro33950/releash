@@ -7,40 +7,69 @@ struct SidebarView: View {
     repository.status.hasError ? repository.status.error : nil
   }
   var body: some View {
-    VStack(alignment: .leading, spacing: UIStyle.spacing) {
+    VStack(spacing: 0) {
+      Color.clear.frame(height: UIStyle.tabBarHeight)
+      Divider()
       HStack {
-        Button(action: model.addRepository) {
-          Label("Repositoryを追加", systemImage: "folder.badge.plus")
-        }.labelStyle(.iconOnly)
-        Button(action: model.refresh) { Label("再読み込み", systemImage: "arrow.clockwise") }.labelStyle(
-          .iconOnly)
+        Text("Workspaces").font(.callout).foregroundStyle(.secondary)
         Spacer()
+        Button(action: model.addRepository) {
+          Image(systemName: "folder.badge.plus")
+        }.help("Repositoryを追加").accessibilityLabel("Repositoryを追加")
+        Button(action: model.refresh) {
+          Image(systemName: "arrow.clockwise")
+        }.help("再読み込み").accessibilityLabel("再読み込み")
         Button {
           creating = true
         } label: {
-          Label("Worktreeを作成", systemImage: "plus")
-        }.labelStyle(.iconOnly)
+          Image(systemName: "plus")
+        }.help("Worktreeを作成").accessibilityLabel("Worktreeを作成")
       }
-      ScrollView {
+      .buttonStyle(.borderless)
+      .padding(UIStyle.padding)
+      List {
         ForEach(model.repositories, id: \.path) { repository in
-          DisclosureGroup(
+          Section(
             isExpanded: Binding(
               get: { !(model.collapsed[repository.path] ?? false) },
-              set: { model.setCollapsed(repository.path, !$0) })
+              set: { model.setCollapsed(repository.path, !$0) }
+            )
           ) {
             if let error = repositoryFailure(repository) {
               Text(error).foregroundStyle(.secondary)
             }
             ForEach(repository.branches.items, id: \.worktreePath) { branch in
-              WorktreeCard(model: model, repository: repository, branch: branch)
+              Button {
+                model.selectWorktree(branch.worktreePath)
+              } label: {
+                WorktreeCard(model: model, repository: repository, branch: branch)
+                  .frame(maxWidth: .infinity, alignment: .leading)
+                  .padding(.horizontal, UIStyle.rowSpacing)
+                  .background(
+                    model.selectedWorktree == branch.worktreePath
+                      ? UIStyle.sidebarSelection : .clear,
+                    in: RoundedRectangle(cornerRadius: UIStyle.spacing))
+              }
+              .buttonStyle(.plain)
+              .foregroundStyle(.primary)
+              .accessibilityAddTraits(
+                model.selectedWorktree == branch.worktreePath ? .isSelected : [])
             }
-          } label: {
-            Text(URL(fileURLWithPath: repository.path).lastPathComponent)
+          } header: {
+            HStack(spacing: UIStyle.rowSpacing) {
+              Text(URL(fileURLWithPath: repository.path).lastPathComponent)
+              Text(repository.branches.items.count, format: .number)
+                .foregroundStyle(.secondary)
+            }
+            .selectionDisabled()
           }
         }
       }
-    }.padding(UIStyle.padding)
+      .listStyle(.sidebar)
+      .scrollContentBackground(.hidden)
+    }
   }
+
 }
 
 struct WorktreeCard: View {
@@ -48,7 +77,6 @@ struct WorktreeCard: View {
   let repository: Releash_Client_V1_WorkspaceRepositoryList
   let branch: Releash_Client_V1_WorkspaceBranch
   @State private var deleting = false
-  @State private var launchingWorkflow = false
   var worktree: Releash_Client_V1_WorkspaceWorktreeList? {
     repository.worktrees.items.first { $0.path == branch.worktreePath }
   }
@@ -59,80 +87,90 @@ struct WorktreeCard: View {
   var canRemove: Bool {
     !branch.isMainWorktree && !branch.isDeleting && branch.hasRemovalRequiresForce
   }
-  func select() { model.selectWorktree(branch.worktreePath) }
   var body: some View {
-    VStack(alignment: .leading, spacing: UIStyle.spacing) {
-      Button {
-        select()
-      } label: {
-        HStack {
-          if let worktree, worktree.hasAggregateStatus { status(worktree.aggregateStatus) }
-          if branch.isMainWorktree { Image(systemName: "house") }
-          Text(branch.name).fontWeight(.medium)
-          if branch.isMerged {
-            Image(systemName: "checkmark.circle").foregroundStyle(.secondary)
-              .accessibilityLabel("Merged").help("Merged")
-          }
-          Spacer()
-          if branch.isDeleting {
-            ProgressView().controlSize(.small)
-            Text("削除中")
+    VStack(alignment: .leading, spacing: UIStyle.rowSpacing) {
+      HStack(spacing: UIStyle.rowSpacing) {
+        Image(systemName: branch.isMainWorktree ? "house" : "arrow.triangle.branch")
+          .frame(width: UIStyle.cardIconWidth)
+        Text(branch.name).fontWeight(.medium)
+      }
+      VStack(alignment: .leading, spacing: UIStyle.rowSpacing) {
+        if branch.isMerged || (branch.hasDirtyCount && branch.dirtyCount > 0) || branch.isDeleting {
+          HStack {
+            if branch.isMerged {
+              Image(systemName: "checkmark.circle").foregroundStyle(.secondary)
+                .accessibilityLabel("Merged").help("Merged")
+            }
+            if branch.hasDirtyCount && branch.dirtyCount > 0 {
+              Text("\(branch.dirtyCount) changes").font(.caption).foregroundStyle(.secondary)
+            }
+            if branch.isDeleting {
+              ProgressView().controlSize(.small)
+              Text("削除中")
+            }
           }
         }
-      }.buttonStyle(.plain)
-      if branch.hasUpstream || branch.hasPrState {
-        HStack {
-          if branch.hasUpstream {
-            Label("\(branch.ahead)", systemImage: "arrow.up")
-            Label("\(branch.behind)", systemImage: "arrow.down")
-          }
-          if branch.hasPrState {
-            Image(systemName: prIcon(branch.prState)).help(
-              "PR #\(branch.prStateNumber): \(branch.prState)")
-          }
-        }.foregroundStyle(.secondary)
-      }
-      if branch.hasDirtyCount { Text("\(branch.dirtyCount) changes").foregroundStyle(.secondary) }
-      if branch.hasDirtyCountError { Text("Changes unavailable").help(branch.dirtyCountError) }
-      if branch.hasPullRequestError { Text("PR unavailable").help(branch.pullRequestError) }
-      if let worktree {
-        if worktree.status.hasError { Text(worktree.status.error).foregroundStyle(.secondary) }
-        ForEach(worktree.executions, id: \.id) { execution in
-          Button {
-            select()
-          } label: {
-            HStack(spacing: UIStyle.spacing) {
+        if branch.hasPrState {
+          Image(systemName: prIcon(branch.prState))
+            .foregroundStyle(.secondary)
+            .help("PR #\(branch.prStateNumber): \(branch.prState)")
+        }
+        if branch.hasDirtyCountError { Text("Changes unavailable").help(branch.dirtyCountError) }
+        if branch.hasPullRequestError { Text("PR unavailable").help(branch.pullRequestError) }
+        if let worktree {
+          if worktree.status.hasError { Text(worktree.status.error).foregroundStyle(.secondary) }
+          ForEach(worktree.executions, id: \.id) { execution in
+            VStack(alignment: .leading, spacing: UIStyle.rowSpacing) {
               if execution.isWorkflow {
-                Text("\(execution.title) · \(execution.nodeCount) nodes")
-                ForEach(Array(execution.sessionStates.enumerated()), id: \.offset) { _, state in
-                  Rectangle().fill(UIStyle.statusColor(state)).frame(
-                    width: UIStyle.statusSize, height: UIStyle.statusSize)
+                HStack(spacing: UIStyle.rowSpacing) {
+                  Image("WorkflowWaypoints")
+                    .resizable()
+                    .renderingMode(.template)
+                    .scaledToFit()
+                    .frame(width: UIStyle.cardIconWidth, height: UIStyle.cardIconWidth)
+                    .foregroundStyle(UIStyle.statusColor(execution.status))
+                    .accessibilityLabel("Workflow, \(execution.status)")
+                  Text("\(execution.title) · \(execution.nodeCount) nodes")
                 }
+                .foregroundStyle(.secondary)
+                LazyVGrid(
+                  columns: [
+                    GridItem(.adaptive(minimum: UIStyle.statusSize), spacing: UIStyle.statusSpacing)
+                  ], alignment: .leading, spacing: UIStyle.statusSpacing
+                ) {
+                  ForEach(Array(execution.sessionStates.enumerated()), id: \.offset) { _, state in
+                    Rectangle().fill(UIStyle.statusColor(state)).frame(
+                      width: UIStyle.statusSize, height: UIStyle.statusSize)
+                  }
+                }
+                .padding(.leading, UIStyle.cardIconWidth + UIStyle.rowSpacing)
               } else {
-                status(execution.status)
-                Image(systemName: execution.provider == "claude" ? "sparkle" : "terminal")
-                Text(execution.title)
+                HStack(spacing: UIStyle.rowSpacing) {
+                  Image("SessionBot")
+                    .resizable()
+                    .renderingMode(.template)
+                    .scaledToFit()
+                    .frame(width: UIStyle.cardIconWidth, height: UIStyle.cardIconWidth)
+                    .foregroundStyle(UIStyle.statusColor(execution.status))
+                    .accessibilityLabel("Session, \(execution.status)")
+                  Text(
+                    model.providers.first { $0.wireName == execution.provider }?.displayName
+                      ?? execution.provider
+                  )
+                  .fontWeight(.medium)
+                  Text(execution.title).lineLimit(1)
+                }
               }
             }
-          }.buttonStyle(.plain)
+          }
         }
       }
+      .padding(.leading, UIStyle.cardIconWidth + UIStyle.rowSpacing)
     }
-    .padding(UIStyle.padding)
-    .background(
-      model.selectedWorktree == branch.worktreePath
-        ? Color.accentColor.opacity(0.12) : Color(nsColor: .controlBackgroundColor),
-      in: UIStyle.cardShape
-    )
-    .contentShape(UIStyle.cardShape)
-    .onTapGesture { select() }
+    .font(.callout)
+    .padding(.vertical, UIStyle.rowSpacing)
+    .contentShape(Rectangle())
     .contextMenu {
-      Menu("Sessionを追加") {
-        ForEach(model.providers, id: \.value) { provider in
-          Button(provider.displayName) { addSession(provider) }
-        }
-      }
-      Button("Workflowを追加") { launchingWorkflow = true }
       Button("削除", role: .destructive) { deleting = true }
         .disabled(!canRemove)
     }
@@ -142,34 +180,14 @@ struct WorktreeCard: View {
     ) {
       Button(removalButtonTitle, role: .destructive) { remove() }
     }
-    .sheet(isPresented: $launchingWorkflow) {
-      WorkflowLaunchView(model: model, path: branch.worktreePath)
-    }
   }
-  private func status(_ value: String) -> some View {
-    Circle().fill(UIStyle.statusColor(value)).frame(
-      width: UIStyle.statusSize, height: UIStyle.statusSize
-    ).accessibilityLabel(value)
-  }
+
   private func prIcon(_ value: String) -> String {
     switch value {
     case "open": "arrow.triangle.pull"
     case "draft": "ellipsis.circle"
     case "merged": "arrow.triangle.merge"
     default: "xmark.circle"
-    }
-  }
-  func addSession(_ provider: Releash_Client_V1_AgentSessionProviderDto) {
-    guard let client = model.client else { return }
-    var request = Releash_Client_V1_CreateAgentSessionRequest()
-    request.provider = provider.wireName
-    request.workspaceIdentity = branch.worktreePath
-    request.worktreePath = branch.worktreePath
-    request.rows = UIStyle.terminalRows
-    request.cols = UIStyle.terminalColumns
-    request.callerRequestID = UUID().uuidString
-    model.perform {
-      _ = try await client.createAgentSession(request: request, headers: model.headers).result.get()
     }
   }
   func remove() {
@@ -181,37 +199,6 @@ struct WorktreeCard: View {
     model.perform {
       _ = try await client.removeWorktree(request: request, headers: model.headers).result.get()
       model.deselectWorktree(request.worktreePath)
-    }
-  }
-}
-
-struct WorkflowLaunchView: View {
-  @Bindable var model: AppModel
-  let path: String
-  @Environment(\.dismiss) private var dismiss
-  @State private var workflow = ""
-  @State private var requestText = ""
-  var body: some View {
-    Form {
-      WorkflowLaunchFields(
-        workflows: model.workflows, workflow: $workflow, requestText: $requestText)
-      HStack {
-        Button("キャンセル") { dismiss() }
-        Button("起動") {
-          launch(name: workflow, requestText: requestText)
-          dismiss()
-        }.disabled(workflow.isEmpty)
-      }
-    }.padding(UIStyle.padding)
-  }
-  func launch(name: String, requestText: String) {
-    guard let client = model.client else { return }
-    var request = Releash_Client_V1_StartWorkflowRequest()
-    request.workflowName = name
-    request.worktreePath = path
-    request.request = requestText
-    model.perform {
-      _ = try await client.startWorkflow(request: request, headers: model.headers).result.get()
     }
   }
 }

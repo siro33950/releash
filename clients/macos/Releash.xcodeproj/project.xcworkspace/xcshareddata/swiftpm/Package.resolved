@@ -1,6 +1,13 @@
 {
-  "originHash" : "1d123965f239176b256c87dbfe0812aedeba7a81b83c35cd22886c54643459a5",
   "pins" : [
+    {
+      "identity" : "bonsplit",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/siro33950/bonsplit",
+      "state" : {
+        "revision" : "088c284ecdd51721da83e2ae121a97d25881cc38"
+      }
+    },
     {
       "identity" : "connect-swift",
       "kind" : "remoteSourceControl",
@@ -74,5 +81,5 @@
       }
     }
   ],
-  "version" : 3
+  "version" : 2
 }

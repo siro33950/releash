@@ -1,3 +1,6 @@
+use std::collections::{HashMap, HashSet};
+
+use super::latest_attempts::{AttemptScope, LatestAttempts};
 use super::{
     WorkspaceExecution, WorkspaceNodeKind, WorkspaceNodeStatusClassification, WorkspacePublicRoot,
     WorkspaceTree, WorkspaceTreeNode,
@@ -6,43 +9,124 @@ impl WorkspaceTree {
     pub(crate) fn active_execution_roots(
         &self,
     ) -> impl Iterator<Item = (&WorkspaceExecution, WorkspacePublicRoot<'_>)> {
+        let mut roots = HashMap::new();
+        let mut children = HashMap::<&str, Vec<&WorkspaceTreeNode>>::new();
+        for node in self.nodes() {
+            if node.kind == WorkspaceNodeKind::Workflow {
+                if let Some(execution) = node.execution_id.as_deref() {
+                    roots.entry(execution).or_insert(node);
+                }
+            }
+            if let Some(parent) = node.parent_id.as_deref() {
+                children.entry(parent).or_default().push(node);
+            }
+        }
         self.executions()
             .iter()
             .filter(|execution| execution.archive.is_none())
-            .filter_map(|execution| {
-                self.nodes()
-                    .iter()
-                    .find(|node| {
-                        node.kind == WorkspaceNodeKind::Workflow
-                            && node.execution_id.as_deref() == Some(execution.execution_id.as_str())
-                    })
-                    .map(|root| {
-                        (
-                            execution,
-                            WorkspacePublicRoot::for_owner(self.nodes(), root),
-                        )
-                    })
+            .filter_map(move |execution| {
+                let root = roots.get(execution.execution_id.as_str())?;
+                Some((
+                    execution,
+                    WorkspacePublicRoot::for_owner(
+                        children
+                            .get(root.id.as_str())
+                            .into_iter()
+                            .flat_map(|nodes| nodes.iter().copied()),
+                        root,
+                    ),
+                ))
             })
     }
+
     pub fn card_executions(&self) -> Vec<(&WorkspaceExecution, ExecutionNodes<'_>)> {
+        let mut leaves = self.current_execution_leaves();
         let mut executions = self
             .active_execution_roots()
             .map(|(execution, root)| {
                 (
                     execution,
-                    ExecutionNodes::with_root(root, self.nodes(), execution.launched_as),
+                    ExecutionNodes {
+                        root,
+                        leaves: leaves
+                            .remove(execution.execution_id.as_str())
+                            .unwrap_or_default(),
+                        launch: execution.launched_as,
+                    },
                 )
             })
             .collect::<Vec<_>>();
         executions.sort_by_key(|(_, nodes)| nodes.is_workflow());
         executions
     }
-    pub fn card_status(&self) -> Option<WorkspaceNodeStatusClassification> {
-        self.active_execution_roots()
-            .map(|(execution, root)| {
-                ExecutionNodes::node_for(root, execution.launched_as).status_classification
-            })
-            .reduce(WorkspaceNodeStatusClassification::most_severe)
+    fn current_execution_leaves(&self) -> HashMap<&str, Vec<&WorkspaceTreeNode>> {
+        let nodes = self.nodes();
+        let latest = LatestAttempts::new(nodes.iter().filter_map(|node| {
+            Some((
+                AttemptScope {
+                    execution: node.execution_id.as_deref()?,
+                    name: node.node_name.as_deref()?,
+                    parent: node.execution_parent.as_ref(),
+                },
+                node.attempt?,
+            ))
+        }));
+        let by_id = nodes
+            .iter()
+            .map(|node| (node.id.as_str(), node))
+            .collect::<HashMap<_, _>>();
+        let mut children = HashMap::<&str, Vec<&WorkspaceTreeNode>>::new();
+        let mut pending = Vec::new();
+        for node in nodes {
+            if let Some(parent) = node
+                .parent_id
+                .as_deref()
+                .filter(|id| by_id.contains_key(id))
+            {
+                children.entry(parent).or_default().push(node);
+            } else {
+                pending.push(node);
+            }
+        }
+        let mut visible = HashSet::new();
+        let mut visited = HashSet::new();
+        while let Some(node) = pending.pop() {
+            if !visited.insert(node.id.as_str()) {
+                continue;
+            }
+            let current = !node.is_retry_history
+                && match (
+                    node.execution_id.as_deref(),
+                    node.node_name.as_deref(),
+                    node.attempt,
+                ) {
+                    (Some(execution), Some(name), Some(attempt)) => latest.contains(
+                        AttemptScope {
+                            execution,
+                            name,
+                            parent: node.execution_parent.as_ref(),
+                        },
+                        attempt,
+                    ),
+                    _ => true,
+                };
+            if current && node.is_leaf() {
+                visible.insert(node.id.as_str());
+            }
+            if current || node.is_leaf() {
+                pending.extend(children.remove(node.id.as_str()).unwrap_or_default());
+            }
+        }
+        let mut leaves = HashMap::<&str, Vec<&WorkspaceTreeNode>>::new();
+        for node in nodes
+            .iter()
+            .filter(|node| visible.contains(node.id.as_str()))
+        {
+            if let Some(execution) = node.execution_id.as_deref() {
+                leaves.entry(execution).or_default().push(node);
+            }
+        }
+        leaves
     }
 }
 
@@ -52,51 +136,6 @@ pub struct ExecutionNodes<'a> {
     launch: crate::domain::workflow::ExecutionTreeLaunch,
 }
 impl<'a> ExecutionNodes<'a> {
-    fn with_root(
-        root: WorkspacePublicRoot<'a>,
-        nodes: &'a [WorkspaceTreeNode],
-        launch: crate::domain::workflow::ExecutionTreeLaunch,
-    ) -> Self {
-        let current = nodes
-            .iter()
-            .filter(|node| node.execution_id == root.owner().execution_id)
-            .filter(|node| {
-                !node.is_retry_history
-                    && !nodes.iter().any(|candidate| {
-                        candidate.execution_id == node.execution_id
-                            && candidate.node_name == node.node_name
-                            && candidate.execution_parent == node.execution_parent
-                            && candidate.attempt > node.attempt
-                    })
-            })
-            .map(|node| node.id.as_str())
-            .collect::<std::collections::HashSet<_>>();
-        let leaves = nodes
-            .iter()
-            .filter(|node| {
-                node.execution_id == root.owner().execution_id && node.is_leaf() && {
-                    let mut ancestor = Some(*node);
-                    while let Some(ancestor_node) = ancestor {
-                        if !current.contains(ancestor_node.id.as_str())
-                            && (ancestor_node.id == node.id || !ancestor_node.is_leaf())
-                        {
-                            break;
-                        }
-                        ancestor = ancestor_node
-                            .parent_id
-                            .as_ref()
-                            .and_then(|parent| nodes.iter().find(|node| &node.id == parent));
-                    }
-                    ancestor.is_none()
-                }
-            })
-            .collect();
-        Self {
-            root,
-            leaves,
-            launch,
-        }
-    }
     pub fn is_workflow(&self) -> bool {
         self.launch == crate::domain::workflow::ExecutionTreeLaunch::Workflow
     }

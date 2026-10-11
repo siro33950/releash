@@ -2130,6 +2130,7 @@ impl TryFrom<crate::domain::workspace_state::value_objects::pane_layout::PaneLay
                                 PaneTabKind::Terminal => wire::PaneTabKind::Terminal,
                                 PaneTabKind::Workflow => wire::PaneTabKind::Workflow,
                                 PaneTabKind::File => wire::PaneTabKind::File,
+                                PaneTabKind::Session => wire::PaneTabKind::Session,
                             } as i32,
                         })
                         .collect(),
@@ -2176,6 +2177,7 @@ impl TryFrom<wire::PaneLayout>
                                 Ok(wire::PaneTabKind::Terminal) => PaneTabKind::Terminal,
                                 Ok(wire::PaneTabKind::Workflow) => PaneTabKind::Workflow,
                                 Ok(wire::PaneTabKind::File) => PaneTabKind::File,
+                                Ok(wire::PaneTabKind::Session) => PaneTabKind::Session,
                                 _ => return Err("Unknown pane tab kind".to_owned()),
                             },
                         })

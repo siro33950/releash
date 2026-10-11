@@ -5,7 +5,7 @@ fn test_pane形式_既存jsonと全種類と分割軸をdomainとの往復で保
     // Given
     for axis in ["horizontal", "vertical"] {
         let json = format!(
-            r#"{{"kind":"split","id":"root","axis":"{axis}","ratio":0.7,"first":{{"kind":"pane","id":"a","tabs":[{{"id":"terminal","kind":"terminal"}}],"active_tab":"terminal"}},"second":{{"kind":"pane","id":"b","tabs":[{{"id":"workflow","kind":"workflow"}},{{"id":"file","kind":"file"}}],"active_tab":"file"}}}}"#
+            r#"{{"kind":"split","id":"root","axis":"{axis}","ratio":0.7,"first":{{"kind":"pane","id":"a","tabs":[{{"id":"terminal","kind":"terminal"}}],"active_tab":"terminal"}},"second":{{"kind":"pane","id":"b","tabs":[{{"id":"workflow","kind":"workflow"}},{{"id":"file","kind":"file"}},{{"id":"session","kind":"session"}}],"active_tab":"file"}}}}"#
         );
         // When
         let dto: StoredPaneLayout = serde_json::from_str(&json).unwrap();

@@ -7,9 +7,7 @@ pub mod gateway;
 pub mod repository;
 pub mod value_objects;
 
-pub use entities::{
-    Branch, BranchTracking, FileDiffStat, FileStatus, RepositoryStatusScan, Worktree,
-};
+pub use entities::{Branch, FileDiffStat, FileStatus, RepositoryStatusScan, Worktree};
 pub use error::RepositoryError;
 pub use gateway::WorktreeTerminalGateway;
 pub use repository::{

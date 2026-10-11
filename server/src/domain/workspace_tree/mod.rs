@@ -4,6 +4,7 @@
 //! has no dedicated persistence or CAS lifecycle.
 
 pub(crate) mod entities;
+mod latest_attempts;
 mod projection;
 pub(crate) mod repository;
 pub(crate) mod services;

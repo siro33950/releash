@@ -108,14 +108,6 @@ impl WorktreeExecutionArchiver for FakeRepo {
 }
 
 impl BranchRepository for FakeRepo {
-    fn tracking(
-        &self,
-        _: &str,
-        _: &str,
-    ) -> Result<Option<crate::domain::repository::BranchTracking>, RepositoryError> {
-        Ok(None)
-    }
-
     fn list(&self, _repo_path: &str) -> Result<Vec<Branch>, RepositoryError> {
         Ok(self.branches.clone())
     }

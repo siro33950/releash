@@ -650,7 +650,6 @@ fn test_過去attempt_子のないsessionとcommandも通常行と同じkindを�
 
 fn worktree_row(path: &str, branch: &str, tree: Fetched<WorkspaceTree>) -> WorkspaceListWorktree {
     WorkspaceListWorktree {
-        tracking: Fetched::ready(None),
         worktree: Worktree {
             name: branch.to_string(),
             path: path.to_string(),
@@ -1109,7 +1108,6 @@ fn test_実行サマリー_providerと行とsessionの状態を配信する() {
     assert_eq!(summary.session_states, ["active", "idle"]);
     assert_eq!(summary.node_count, 2);
     assert!(!summary.is_workflow);
-    assert_eq!(wire.aggregate_status.as_deref(), Some("active"));
 }
 
 #[test]

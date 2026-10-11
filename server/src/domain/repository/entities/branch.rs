@@ -38,10 +38,3 @@ impl Branch {
 #[cfg(test)]
 #[path = "branch_test.rs"]
 pub(crate) mod branch_tests;
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BranchTracking {
-    pub upstream: String,
-    pub ahead: usize,
-    pub behind: usize,
-}

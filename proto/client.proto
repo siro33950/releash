@@ -1927,6 +1927,7 @@ enum PaneTabKind {
   PANE_TAB_KIND_TERMINAL = 1;
   PANE_TAB_KIND_WORKFLOW = 2;
   PANE_TAB_KIND_FILE = 3;
+  PANE_TAB_KIND_SESSION = 4;
 }
 enum SplitAxis {
   SPLIT_AXIS_UNSPECIFIED = 0;
@@ -2692,10 +2693,6 @@ message WorkspaceBranch {
   optional bool removal_requires_force = 13;
   optional string pr_state = 14;
   optional uint64 pr_state_number = 19;
-  optional string upstream = 15;
-  optional uint64 ahead = 16;
-  optional uint64 behind = 17;
-  optional string tracking_error = 18;
   reserved 1;
   reserved "branch";
   optional string name = 5 [json_name = "name", (json_required) = true];
@@ -2720,7 +2717,6 @@ message WorktreeExecutionSummary {
   repeated string session_states = 7;
 }
 message WorkspaceWorktreeList {
-  optional string aggregate_status = 5;
   repeated WorktreeExecutionSummary executions = 6;
   optional string path = 1 [json_name = "path", (json_required) = true];
   optional WorkspaceListStatus status = 2 [json_name = "status", (json_required) = true];

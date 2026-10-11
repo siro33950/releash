@@ -76,19 +76,21 @@ THEN macOS の job が Swift のビルドと単体テストを実行する
 GIVEN 2 つの repository が登録されている
 WHEN 利用者が一方のグループを折りたたみ、Swift.app を起動し直す
 THEN 折りたたんだグループは折りたたまれたまま、もう一方は開いたまま表示される
+AND 各グループの見出しには、repository の名前と worktree の件数が表示される
 
 ## B-013: worktree のカード
 
 GIVEN repository に main とそれ以外の worktree がある
 WHEN サイドバーを表示する
 THEN worktree 1 つにつき 1 枚のカードが表示される
-AND main の worktree はそれ以外と区別して表示される
+AND 左上のアイコンは main が Home、それ以外が branch である
 
 ## B-014: カードのタイトル
 
 GIVEN branch `feat/login` の worktree がある
 WHEN サイドバーを表示する
-THEN そのカードのタイトルは `feat/login` である
+THEN そのカードの左上には branch のアイコンと `feat/login` が並ぶ
+AND それ以外の情報は下の行で名前の開始位置までインデントされる
 
 ## B-015: 実行木の行と並び
 
@@ -101,44 +103,43 @@ AND archive された実行木の行は表示されない
 
 GIVEN worktree に Session 単体の実行木がある
 WHEN サイドバーを表示する
-THEN agent 行は、その Session の状態の記号、agent のアイコン、名前を表示する
+THEN agent 行は、既存の Bot アイコン、provider の表示名、実行のタイトルを並べて表示する
+AND Bot アイコンの色は Session の状態を表し、別の状態の丸は表示されない
+AND アイコンと名前の開始位置は workflow 行とそろう
 
 ## B-017: workflow 行
 
 GIVEN worktree に Workflow の実行木があり、起動済みの Session の Node が 2 つ、Command の Node が 1 つ、Sequence の Node が 1 つ、Session の Node の過去の試行が 1 つある
 WHEN サイドバーを表示する
-THEN workflow 行は「<workflow 名> · 3 nodes」を表示する
+THEN workflow 行は既存の Waypoints アイコンを実行木の状態色で表示し、続けて「<workflow 名> · 3 nodes」を表示する
 AND 四角は 2 つで、それぞれの Session の Node の状態の色で塗られる
+AND 四角の列は workflow 行から一段インデントされる
+AND workflow 行の文字は副次的な色で表示される
 
-## B-018: worktree の集約状態
+## B-018: worktree 名の左に状態の丸を出さない
 
 GIVEN worktree に、状態が黄の実行木と緑の実行木がある
 WHEN サイドバーを表示する
-THEN カードの状態記号は黄である
+THEN worktree 名の左に集約状態の丸は表示されない
+AND agent 行のアイコンと workflow 行の四角はそれぞれの状態の色で表示される
 
 ## B-019: 実行木の無いカード
 
 GIVEN worktree に archive されていない実行木が無い
 WHEN サイドバーを表示する
-THEN カードは状態記号を表示しない
+THEN カードは Home または branch のアイコンと名前を表示し、状態記号を表示しない
 
-## B-020: ahead・behind と PR の表示
+## B-020: PR の表示
 
 GIVEN worktree の branch に upstream があり、upstream より 2 commit 進み 1 commit 遅れていて、その branch の draft の PR がある
 WHEN サイドバーを表示する
-THEN カードの 2 行目は ahead 2 と behind 1、draft を表す PR のアイコンを表示し、branch 名を表示しない
+THEN カードのインデントした詳細行は draft を表す PR のアイコンを表示し、branch 名と ahead・behind は表示しない
 
-## B-021: upstream の無い branch
+## B-047: PR の無いカード
 
-GIVEN worktree の branch に upstream が無い
+GIVEN worktree の branch に PR が無い
 WHEN サイドバーを表示する
-THEN カードの 2 行目は ahead と behind を表示しない
-
-## B-047: 2 行目に出すものが無いカード
-
-GIVEN worktree の branch に upstream が無く、その branch の PR も無い
-WHEN サイドバーを表示する
-THEN カードは 2 行目を表示しない
+THEN カードは PR のアイコンの行を表示しない
 
 ## B-022: PR の状態の区別
 
@@ -146,19 +147,29 @@ GIVEN open・draft・merged・closed の PR をそれぞれ持つ branch の wor
 WHEN サイドバーを表示する
 THEN 各カードの PR のアイコンは、4 つの状態を互いに区別できる
 
+## B-053: merge 済みの印
+
+GIVEN merge 済みと判定された branch の worktree がある
+WHEN サイドバーを表示する
+THEN そのカードには、PR のアイコンとは別に merge 済みの印が表示される
+
 ## B-023: 引き継ぐ操作と表示
 
 GIVEN サイドバーを表示している
-WHEN 利用者が repository を追加する、または一覧を再読み込みする
+WHEN 利用者が上端の「Workspaces」の見出しの右にあるボタンで repository を追加する、または一覧を再読み込みする
 THEN 一覧に反映される
 AND 一覧の読み込みに失敗した repository には失敗が表示される
-AND 各カードには変更の件数が表示され、変更の件数または PR を取れないときは「Changes unavailable」または「PR unavailable」が表示される
+AND 変更が 1 件以上あるカードには変更の件数が表示され、変更が 0 件のカードには件数が表示されない
+AND 変更の件数または PR を取れないときは「Changes unavailable」または「PR unavailable」が表示される
 
 ## B-024: 既存の worktree への追加
 
-GIVEN worktree のカードがある
-WHEN 利用者がそのカードから Session を追加する、または依頼文を入れて Workflow を追加する
-THEN その worktree で Session または Workflow が起動し、カードに行が加わる
+GIVEN worktree を選択し、pane のタブ列を表示している
+WHEN 利用者が「+」から Session を選んで provider を指定する、または Workflow を選んで定義と依頼文を入力して開始する
+THEN 選択中の worktree で既存 API によって実行を開始する
+AND 成功後に操作した pane へ Session タブまたは Workflow 管理タブを開く
+AND 失敗したときは理由を表示し、タブを追加しない
+AND カードの右クリックメニューには削除だけがある
 
 ## B-025: 強制の要らない削除
 
@@ -197,12 +208,13 @@ AND 利用者はタブを閉じられる
 
 GIVEN pane のタブ列がある
 WHEN 利用者が「+」を押す
-THEN Terminal・Workflow 管理・ファイルを選べるメニューが出る
-AND どれかを選ぶと、その種類のタブが中身の無い仮の表示で開く
+THEN Session、Workflow、区切り線、Terminal、Workflow 管理、ファイルの順に並んだメニューが出る
+AND Session と Workflow は開始の入力画面を開く
+AND Terminal・Workflow 管理・ファイルは、その種類のタブを中身の無い仮の表示で開く
 
 ## B-031: 配置の保存と復元
 
-GIVEN worktree A で pane を分割し、Terminal・Workflow 管理・ファイルのタブを開いた
+GIVEN worktree A で pane を分割し、Session・Terminal・Workflow 管理・ファイルのタブを開いた
 WHEN 利用者が別の worktree を選んでから A を選び直す、または Swift.app を起動し直して A を選ぶ
 THEN A の分割とタブ群が、開いていたときと同じ配置で表示される
 
@@ -210,8 +222,7 @@ THEN A の分割とタブ群が、開いていたときと同じ配置で表示�
 
 GIVEN Swift.app の依存とソース
 WHEN タブ列と分割の実装を確かめる
-THEN 外部のライブラリに依存していない
-AND 取り込んだコードは MIT のものだけで、ライセンスの表記がある
+THEN 取り込んだコードのライセンスは MIT、Apache、BSD、ISC のいずれかで、ライセンスの表記がある
 
 ## B-033: フッターの枠
 
@@ -323,6 +334,22 @@ GIVEN 開発開始時点の Releash で、PR のアイコンまたは merged の
 WHEN 同じ repository と PR の状態で、Swift.app のサイドバーを表示する
 THEN その worktree のカードにも、PR のアイコンまたは merged の判定が出る
 
+## B-051: 右の切替面
+
+GIVEN 右の切替面を表示している
+WHEN 利用者が上端のファイル・Source Control・Thread・タスクのアイコンを選ぶ
+THEN 対応する面の仮の表示（その面の見出しだけ）へ切り替わる
+AND 右上のボタンで閉じると、開閉のボタンだけを置いた固定幅の列になる
+AND 再度開くと直前の面を表示する
+AND 開いている右カラムと左カラムは境界のドラッグで幅を変更できる
+AND 境界にポインタを重ねると左右方向のリサイズカーソルになる
+
+## B-054: worktree を選んでいないときの中央
+
+GIVEN worktree を 1 つも選んでいない
+WHEN メインの画面を表示する
+THEN 中央には「Worktreeを選択」と、サイドバーから worktree を選ぶよう促す案内文が表示される
+
 ## 要件IDとBehavior IDの対応表
 | Requirement ID | Behavior ID |
 | --- | --- |
@@ -343,13 +370,13 @@ THEN その worktree のカードにも、PR のアイコンまたは merged の
 | R-015 | B-016 |
 | R-016 | B-017 |
 | R-017 | B-018, B-019 |
-| R-018 | B-020, B-021, B-022, B-047 |
+| R-018 | B-020, B-022, B-047, B-053 |
 | R-035 | B-046 |
-| R-019 | B-023, B-024 |
+| R-019 | B-023 |
 | R-020 | B-025, B-026 |
 | R-021 | B-027 |
 | R-022 | B-028, B-029 |
-| R-023 | B-030 |
+| R-023 | B-024, B-030 |
 | R-024 | B-031 |
 | R-025 | B-032 |
 | R-026 | B-033 |
@@ -361,3 +388,5 @@ THEN その worktree のカードにも、PR のアイコンまたは merged の
 | R-032 | B-040, B-042 |
 | R-033 | B-043, B-044 |
 | R-034 | B-045 |
+| R-036 | B-051 |
+| R-037 | B-054 |

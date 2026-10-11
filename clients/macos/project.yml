@@ -4,6 +4,9 @@ options:
   deploymentTarget:
     macOS: '15.0'
 packages:
+  Bonsplit:
+    url: https://github.com/siro33950/bonsplit
+    revision: 088c284ecdd51721da83e2ae121a97d25881cc38
   Connect:
     url: https://github.com/connectrpc/connect-swift
     exactVersion: 1.0.0
@@ -25,6 +28,10 @@ targets:
     platform: macOS
     sources:
       - Sources
+      - path: Resources/Lucide-LICENSE
+        buildPhase: resources
+      - path: Resources/Bonsplit-LICENSE
+        buildPhase: resources
       - path: Generated
         excludes: [client-descriptor.bin]
       - path: Generated/client-descriptor.bin
@@ -35,6 +42,7 @@ targets:
         INFOPLIST_FILE: Info.plist
         GENERATE_INFOPLIST_FILE: NO
     dependencies:
+      - package: Bonsplit
       - package: Connect
       - package: SwiftProtobuf
     preBuildScripts:

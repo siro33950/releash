@@ -314,6 +314,7 @@ enum StoredPaneTabKind {
     Terminal,
     Workflow,
     File,
+    Session,
 }
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -415,6 +416,9 @@ impl From<crate::domain::workspace_state::value_objects::pane_layout::PaneTabKin
             crate::domain::workspace_state::value_objects::pane_layout::PaneTabKind::File => {
                 Self::File
             }
+            crate::domain::workspace_state::value_objects::pane_layout::PaneTabKind::Session => {
+                Self::Session
+            }
         }
     }
 }
@@ -426,6 +430,7 @@ impl From<StoredPaneTabKind>
             StoredPaneTabKind::Terminal => Self::Terminal,
             StoredPaneTabKind::Workflow => Self::Workflow,
             StoredPaneTabKind::File => Self::File,
+            StoredPaneTabKind::Session => Self::Session,
         }
     }
 }
