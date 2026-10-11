@@ -242,7 +242,7 @@ import SwiftProtobuf
       attempt += 1
     }
   }
-  private func failureMessage(_ error: Error) -> String {
+  func failureMessage(_ error: Error) -> String {
     if let error = error as? ConnectError {
       let detail: Releash_Client_V1_CommandError? = error.unpackedDetails().first
       switch detail?.variant {

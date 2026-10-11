@@ -15,6 +15,7 @@ final class TestHTTPClient: HTTPClientInterface {
     var layouts: [String: Releash_Client_V1_WorkspaceStateDto] = [:]
     var collapsed: [String: Bool] = [:]
     var failedMethod: String?
+    var failureDetail: ConnectError.Detail?
     var failedSubscriptionTargets: [String: Int] = [:]
     var pendingCreation: (@Sendable (HTTPResponse) -> Void)?
     var deferCreation = false
@@ -46,7 +47,10 @@ final class TestHTTPClient: HTTPClientInterface {
         return state.failedMethod == method
       }
       if failed {
-        onResponse(Self.failure("\(method) failed"))
+        let detail = state.withLock { $0.failureDetail }
+        onResponse(HTTPResponse(
+          code: .internalError, headers: [:], message: nil, trailers: [:],
+          error: ConnectError(code: .internalError, message: "\(method) failed", details: detail.map { [$0] } ?? []), tracingInfo: nil))
         return Cancelable(cancel: {})
       }
       if method == "CreateWorktrees", state.withLock({ $0.deferCreation }) {

@@ -396,7 +396,7 @@ pub(crate) fn spawn_startup_app_data_gc(
     shared_repo_paths: crate::adaptor::gateway::repository::repo_paths::SharedRepoPaths,
     repository: Arc<dyn crate::domain::local_event::LocalEventTransactionRepository>,
     execution_trees: Arc<dyn crate::usecase::app_data_gc::ExecutionTreeGc>,
-    workspace_states: Arc<dyn crate::usecase::app_data_gc::WorkspaceStateGc>,
+    workspace_states: Arc<dyn crate::domain::workspace_state::WorkspaceStateRepository>,
 ) {
     tokio::spawn(async move {
         if let Err(error) = composition

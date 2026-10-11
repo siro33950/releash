@@ -357,12 +357,10 @@ pub async fn test_終了処理_期限切れで別サーバの発見ファイル�
     );
 }
 
-#[test]
-pub fn test_旧ui状態の起動時移行_repositoryの不在とjson破損で正常なrepositoryを妨げない() {
+#[tokio::test]
+pub async fn test_旧ui状態の起動時移行_repositoryの不在とjson破損で正常なrepositoryを妨げない() {
     use releashd::test_support::integration::daemon::migrate_legacy_workspace_states;
-    use releashd::test_support::integration::platform::{
-        build_repository_usecase, WorkspaceStateStore,
-    };
+    use releashd::test_support::integration::platform::build_repository_usecase;
     use releashd::test_support::integration::repository::WorkspaceStateRepository;
     // Given
     let data = tempfile::tempdir().unwrap();
@@ -404,7 +402,8 @@ pub fn test_旧ui状態の起動時移行_repositoryの不在とjson破損で正
     )
     .unwrap();
     let repository = build_repository_usecase();
-    let store = WorkspaceStateStore::new(data.path().into());
+    let store =
+        releashd::test_support::integration::platform::workspace_state_store(data.path().into());
     let unresolved = repos
         .path()
         .join("unmounted/healthy")
@@ -416,12 +415,13 @@ pub fn test_旧ui状態の起動時移行_repositoryの不在とjson破損で正
         &store,
         &[healthy.clone(), broken.clone(), unresolved.clone()],
         &repository,
-    );
+    )
+    .await;
     // Then
     assert!(repository.list_worktrees(&healthy).is_ok());
     assert!(repository.list_worktrees(&unresolved).is_err());
-    assert!(store.load(&healthy, &healthy).unwrap().is_none());
-    assert!(store.load_repository_group(&healthy).unwrap());
+    assert!(store.load(&healthy, &healthy).await.unwrap().is_none());
+    assert!(store.load_repository_group(&healthy).await.unwrap());
     assert!(legacy.join("healthy.json").exists());
     assert_eq!(
         std::fs::read_to_string(legacy.join("broken.json")).unwrap(),
@@ -433,18 +433,20 @@ pub fn test_旧ui状態の起動時移行_repositoryの不在とjson破損で正
         &store,
         &[healthy.clone(), broken.clone()],
         &repository,
-    );
+    )
+    .await;
     // Then
     assert!(
         store
             .load(&healthy, &healthy)
+            .await
             .unwrap()
             .unwrap()
             .layout
             .left_nav_collapsed
     );
     assert!(repository.list_worktrees(&healthy).is_ok());
-    assert!(store.load(&broken, &broken).unwrap().is_none());
+    assert!(store.load(&broken, &broken).await.unwrap().is_none());
     assert_eq!(
         std::fs::read_to_string(legacy.join("broken.json")).unwrap(),
         "broken"

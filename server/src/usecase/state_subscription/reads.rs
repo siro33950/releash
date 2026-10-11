@@ -270,6 +270,27 @@ impl WorkspaceStateReads {
                         .await,
                 ))
             }
+            T::WorkspaceState(name, path) => {
+                return Ok(StateValue::WorkspaceState(
+                    crate::usecase::workspace_state::usecase::load_workspace_state(
+                        self.workspace_state.as_ref(),
+                        name,
+                        path,
+                    )
+                    .await
+                    .map_err(error)?,
+                ));
+            }
+            T::RepositoryGroupState(path) => {
+                return Ok(StateValue::RepositoryGroupState(
+                    crate::usecase::workspace_state::usecase::load_repository_group_state(
+                        self.workspace_state.as_ref(),
+                        path,
+                    )
+                    .await
+                    .map_err(error)?,
+                ));
+            }
             T::Workspaces => {
                 return Ok(StateValue::Workspaces(
                     self.workspaces.read().await.map_err(error)?,
@@ -350,14 +371,6 @@ impl WorkspaceStateReads {
                 StateValue::Worktrees(self.repository.list_worktrees(p).map_err(error)?)
             }
             T::StartupRepository => StateValue::StartupRepository(self.repository.startup_worktree().map_err(error)?),
-            T::WorkspaceState(name, path) => StateValue::WorkspaceState(
-                crate::usecase::workspace_state::usecase::load_workspace_state(
-                    self.workspace_state.as_ref(),
-                    name,
-                    path,
-                )
-                .map_err(error)?,
-            ),
             T::ReviewSnapshot(path, base) => StateValue::ReviewSnapshot(
                 self.review
                     .get_review_snapshot(path, base.as_str())
@@ -431,9 +444,6 @@ impl WorkspaceStateReads {
                 self.repository.list_branches_with_worktree(path).map_err(error)?.into_iter()
                     .filter(|(branch, has_worktree)| branch.can_create_worktree(*has_worktree)).collect()
             ),
-            T::RepositoryGroupState(path) => StateValue::RepositoryGroupState(
-                crate::usecase::workspace_state::usecase::load_repository_group_state(self.workspace_state.as_ref(), path).map_err(error)?
-            ),
             T::ReleashBase(p) => {
                 StateValue::ReleashBase(self.repository.get_releash_base(p).map_err(error)?)
             }
@@ -449,7 +459,7 @@ impl WorkspaceStateReads {
             | T::SessionHistory(_, _)
             | T::Selection(_, _)
             | T::NodeDetail(_, _)
-            | T::ProviderHookHealth => {
+            | T::ProviderHookHealth | T::WorkspaceState(..) | T::RepositoryGroupState(_) => {
                 unreachable!("async reads handled above")
             }
         })

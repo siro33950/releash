@@ -758,7 +758,6 @@ async fn invoke_dispatch(
 pub async fn test_workspace保存_connectがui追加fieldを受理し既存項目を再起動後に復元する() {
     // Given
 
-    use releashd::test_support::integration::platform::WorkspaceStateStore;
     let data = tempfile::tempdir().unwrap();
     let worktree = data.path().join("worktree");
     std::fs::create_dir_all(worktree.join("src")).unwrap();
@@ -766,7 +765,11 @@ pub async fn test_workspace保存_connectがui追加fieldを受理し既存項�
     let state = json!({"version":1,"tabs":{"editors":[{"path":"src/main.rs","name":"main.rs"}],"activeEditorPath":"src/main.rs"},"layout":{"centerTab":"editor","activeView":"git","leftNavCollapsed":true,"rightCollapsed":true,"rightBottomCollapsed":false,"rightBottomActiveTab":"terminal","selectedDiffFile":"src/main.rs","reviewCollapsed":true,"diffOnlyMode":true}});
     let (app, _) = parity_app();
     let mut deps = app.client;
-    deps.workspace_state_store = Some(Arc::new(WorkspaceStateStore::new(data.path().to_owned())));
+    deps.workspace_state_store = Some(Arc::new(
+        releashd::test_support::integration::platform::workspace_state_store(
+            data.path().to_owned(),
+        ),
+    ));
     let mut dispatch = ClientCommandDispatch::new(
         releashd::test_support::integration::daemon::DaemonUsecase::test_with_repository(
             releashd::test_support::integration::daemon::serving(),
@@ -812,7 +815,9 @@ pub async fn test_workspace保存_connectがui追加fieldを受理し既存項�
     shutdown_sender.send(()).unwrap();
     server.await.unwrap();
     drop(deps);
-    let restarted = WorkspaceStateStore::new(data.path().to_owned());
+    let restarted = releashd::test_support::integration::platform::workspace_state_store(
+        data.path().to_owned(),
+    );
     let mut expected = state;
     expected["layout"]
         .as_object_mut()
@@ -825,6 +830,7 @@ pub async fn test_workspace保存_connectがui追加fieldを受理し既存項�
     use releashd::test_support::integration::repository::WorkspaceStateRepository;
     let restored = restarted
         .load("workspace", worktree.to_str().unwrap())
+        .await
         .unwrap()
         .unwrap();
     use releashd::test_support::integration::persistence::EventCodecRegistry;

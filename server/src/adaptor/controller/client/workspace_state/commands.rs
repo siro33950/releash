@@ -4,7 +4,7 @@ use std::sync::Arc;
 use crate::adaptor::gateway::workspace_state::WorkspaceStateStore;
 use crate::domain::workspace_state::WorkspaceState;
 
-pub(crate) fn save_workspace_state_shared(
+pub(crate) async fn save_workspace_state_shared(
     store: &Arc<WorkspaceStateStore>,
     publisher: Option<&crate::usecase::state_subscription::StateSubscriptionUsecase>,
     worktree_name: String,
@@ -16,5 +16,6 @@ pub(crate) fn save_workspace_state_shared(
         &worktree_name,
         state,
     )
+    .await
     .map_err(AppError::from_failure)
 }

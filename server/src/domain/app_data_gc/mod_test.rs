@@ -2,6 +2,23 @@ pub(crate) mod tests {
     use super::super::*;
 
     #[test]
+    fn test_ui状態のgc判定_現存と両時点の保護と未解決と不足した前提は保持する() {
+        // Given / When / Then
+        assert!(workspace_state_removable(false, false, false, false, true));
+        for (live, scan, sweep, unresolved, complete) in [
+            (true, false, false, false, true),
+            (false, true, false, false, true),
+            (false, false, true, false, true),
+            (false, false, false, true, true),
+            (false, false, false, false, false),
+        ] {
+            assert!(!workspace_state_removable(
+                live, scan, sweep, unresolved, complete
+            ));
+        }
+    }
+
+    #[test]
     fn test_旧実行木の所属repo_標準worktree配置から対象だけを特定する() {
         // Given
         let repositories = vec!["/repos/a".to_string(), "/repos/b".to_string()];

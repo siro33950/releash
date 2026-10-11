@@ -124,6 +124,20 @@ pub(crate) fn worktree_removed(
         }
 }
 
+pub fn workspace_state_removable(
+    live: bool,
+    protected_at_scan: bool,
+    protected_at_sweep: bool,
+    possibly_unresolved: bool,
+    prerequisites_complete: bool,
+) -> bool {
+    prerequisites_complete
+        && !live
+        && !protected_at_scan
+        && !protected_at_sweep
+        && !possibly_unresolved
+}
+
 #[cfg(test)]
 #[path = "mod_test.rs"]
 pub(crate) mod mod_tests;

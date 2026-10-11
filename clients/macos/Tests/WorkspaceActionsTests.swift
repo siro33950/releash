@@ -1,3 +1,4 @@
+import Connect
 import SwiftProtobuf
 import SwiftUI
 import XCTest
@@ -5,6 +6,25 @@ import XCTest
 @testable import Releash
 
 final class WorkspaceActionsTests: XCTestCase {
+  @MainActor func testLaunchFailureDisplaysServerReasonWithoutOpeningTabs() async throws {
+    let http = TestHTTPClient()
+    let model = try await testModel(http)
+    let pane = try XCTUnwrap(model.panes.controller.allPaneIds.first)
+    var detail = Releash_Client_V1_CommandError()
+    detail.message.value = "開始できない理由"
+    let packed = ConnectError.Detail(type: Releash_Client_V1_CommandError.protoMessageName, payload: try detail.serializedData())
+    for (kind, method) in [(PaneOpenMenu.LaunchKind.session, "CreateAgentSession"), (.workflow, "StartWorkflow")] {
+      let launch = PaneLaunchView(model: model, pane: pane, path: "/repo/a", kind: kind)
+      for serverDetail in [nil, packed] {
+        http.state.withLock { $0.failedMethod = method; $0.failureDetail = serverDetail }
+        let failure = await launch.start(provider: "codex", workflow: "review", requestText: "check")
+        XCTAssertEqual(failure, serverDetail == nil ? "\(method) failed" : "開始できない理由")
+        XCTAssertTrue(model.panes.controller.allTabIds.isEmpty)
+      }
+    }
+    await model.stop()
+  }
+
   @MainActor func testFailedLaunchDoesNotOpenTabs() async throws {
     let http = TestHTTPClient()
     let model = try await testModel(http)

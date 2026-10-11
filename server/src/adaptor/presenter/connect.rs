@@ -82,6 +82,7 @@ impl ConnectFailure for crate::domain::workspace_state::error::WorkspaceStateErr
     fn connect_code(&self) -> connectrpc::ErrorCode {
         match self {
             Self::Message(_) => connectrpc::ErrorCode::Internal,
+            Self::VersionConflict => connectrpc::ErrorCode::Aborted,
         }
     }
 }

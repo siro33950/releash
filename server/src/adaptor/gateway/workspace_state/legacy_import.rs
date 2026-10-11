@@ -3,132 +3,167 @@ use super::{
     repository_impl::{repository_group_key, storage_key, StoredWorkspaceState},
 };
 use crate::adaptor::gateway::local_event_store::LocalEventStore;
-use crate::domain::local_event::LocalDomainEvent;
+use crate::domain::local_event::{LocalDomainEvent, StreamId};
 use crate::domain::workspace_state::{WorkspaceState, WorkspaceStateError};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-pub(super) fn migrate(
+pub(super) async fn migrate(
     app_data_dir: &Path,
     store: &Arc<LocalEventStore>,
     repositories: &[String],
     worktrees: &[String],
 ) -> Result<(), WorkspaceStateError> {
-    let mut failure = None;
-    for (directory, group) in [("workspace_state", false), ("repository_group_state", true)] {
-        if let Err(error) = migrate_directory(
-            app_data_dir,
-            store,
-            repositories,
-            worktrees,
-            directory,
-            group,
-        ) {
-            log::warn!("UI state migration retained legacy data under {directory}: {error}");
-            failure = Some(error);
-        }
-    }
-    failure.map_or(Ok(()), Err)
+    let worktree_result = migrate_worktrees(app_data_dir, store, worktrees).await;
+    let group_result = migrate_groups(app_data_dir, store, repositories).await;
+    worktree_result.and(group_result)
 }
-
-fn migrate_directory(
+async fn migrate_worktrees(
     app_data_dir: &Path,
     store: &Arc<LocalEventStore>,
-    repositories: &[String],
     worktrees: &[String],
-    directory: &str,
-    group: bool,
 ) -> Result<(), WorkspaceStateError> {
-    let directory = app_data_dir.join(directory);
-    let files = match std::fs::read_dir(&directory) {
-        Ok(files) => files,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(error) => return Err(facts::error(error)),
-    };
-    let mut files = files
-        .map(|entry| entry.map(|entry| entry.path()))
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(facts::error)?;
+    let directory = app_data_dir.join("workspace_state");
+    let candidates = worktrees
+        .iter()
+        .map(|path| (path.clone(), storage_key(path)))
+        .collect::<Vec<_>>();
+    let mut files = files(&directory)?;
     files.sort_by_key(|file| {
         !file.file_stem().is_some_and(|stem| {
-            worktrees
+            candidates
                 .iter()
-                .any(|path| storage_key(path) == stem.to_string_lossy())
+                .any(|(_, key)| key == &stem.to_string_lossy())
         })
     });
     let mut failure = None;
     for file in files {
-        if file.extension().is_none_or(|ext| ext != "json") {
-            continue;
-        }
         let Some(name) = file.file_stem().and_then(|name| name.to_str()) else {
             continue;
         };
-        let key = if group {
-            repositories
-                .iter()
-                .find(|path| repository_group_key(path) == name)
-                .map(String::as_str)
-        } else {
-            worktrees
-                .iter()
-                .find(|path| storage_key(path) == name)
-                .map(String::as_str)
-                .or_else(|| {
-                    crate::domain::workspace_state::services::legacy_worktree_path(name, worktrees)
-                })
-                .or_else(|| {
-                    if worktrees
-                        .iter()
-                        .any(|path| Path::new(path).file_name().is_some_and(|part| part == name))
-                    {
-                        return None;
-                    }
-                    let mut paths = worktrees
-                        .iter()
-                        .filter(|path| path.replace(['/', '\\'], "_") == name);
-                    let first = paths.next()?;
-                    paths.next().is_none().then_some(first.as_str())
-                })
-        };
-        let Some(key) = key else {
+        let Some(key) =
+            crate::domain::workspace_state::services::legacy_state_path(name, &candidates)
+        else {
             continue;
         };
-        let result = (|| {
-            let stream = facts::stream(key, group);
-            if facts::run(facts::latest(store, &stream))?.1.is_none() {
-                let bytes = std::fs::read(&file).map_err(facts::error)?;
-                let event = if group {
-                    LocalDomainEvent::RepositoryGroupChanged(
-                        serde_json::from_slice(&bytes).map_err(facts::error)?,
-                    )
-                } else {
-                    let stored: StoredWorkspaceState =
-                        serde_json::from_slice(&bytes).map_err(facts::error)?;
-                    let state: WorkspaceState = stored.try_into()?;
-                    LocalDomainEvent::WorkspaceStateChanged(Box::new(state))
-                };
-                facts::run(facts::append(store, stream, event))?;
+        let result = async {
+            let stream = facts::workspace_stream(key);
+            let (head, event) = store
+                .latest_workspace_event(stream.clone())
+                .await
+                .map_err(facts::error)?;
+            if event.is_none() {
+                let stored: StoredWorkspaceState =
+                    serde_json::from_slice(&std::fs::read(&file).map_err(facts::error)?)
+                        .map_err(facts::error)?;
+                let state: WorkspaceState = stored.try_into()?;
+                facts::append(
+                    store,
+                    stream,
+                    LocalDomainEvent::WorkspaceStateChanged(Box::new(state)),
+                    head,
+                )
+                .await?;
             }
-            let migrated = directory.with_extension("migrated");
-            std::fs::create_dir_all(&migrated).map_err(facts::error)?;
-            let target = migrated.join(file.file_name().expect("directory entry"));
-            if !target.try_exists().map_err(facts::error)? {
-                std::fs::rename(&file, target).map_err(facts::error)?;
-            }
-            Ok::<_, WorkspaceStateError>(())
-        })();
-        if let Err(error) = result {
-            log::warn!("UI state migration retained {}: {error}", file.display());
-            failure = Some(error);
+            move_migrated(&directory, &file)
         }
+        .await;
+        retain_failure(&file, result, &mut failure);
     }
-    if std::fs::read_dir(&directory)
-        .map_err(facts::error)?
-        .next()
-        .is_none()
-    {
-        std::fs::remove_dir(&directory).map_err(facts::error)?;
-    }
+    finish_directory(&directory)?;
     failure.map_or(Ok(()), Err)
+}
+async fn migrate_groups(
+    app_data_dir: &Path,
+    store: &Arc<LocalEventStore>,
+    repositories: &[String],
+) -> Result<(), WorkspaceStateError> {
+    let directory = app_data_dir.join("repository_group_state");
+    let mut failure = None;
+    for file in files(&directory)? {
+        let Some(name) = file.file_stem().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        let Some(key) = repositories
+            .iter()
+            .find(|path| repository_group_key(path) == name)
+        else {
+            continue;
+        };
+        let result = import_group(store, facts::repository_group_stream(key), &file)
+            .await
+            .and_then(|()| move_migrated(&directory, &file));
+        retain_failure(&file, result, &mut failure);
+    }
+    finish_directory(&directory)?;
+    failure.map_or(Ok(()), Err)
+}
+async fn import_group(
+    store: &Arc<LocalEventStore>,
+    stream: StreamId,
+    file: &Path,
+) -> Result<(), WorkspaceStateError> {
+    let (head, event) = store
+        .latest_workspace_event(stream.clone())
+        .await
+        .map_err(facts::error)?;
+    if event.is_none() {
+        let collapsed = serde_json::from_slice(&std::fs::read(file).map_err(facts::error)?)
+            .map_err(facts::error)?;
+        facts::append(
+            store,
+            stream,
+            LocalDomainEvent::RepositoryGroupChanged(collapsed),
+            head,
+        )
+        .await?;
+    }
+    Ok(())
+}
+fn files(directory: &Path) -> Result<Vec<PathBuf>, WorkspaceStateError> {
+    let entries = match std::fs::read_dir(directory) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(vec![]),
+        Err(error) => return Err(facts::error(error)),
+    };
+    Ok(entries
+        .map(|entry| entry.map(|entry| entry.path()))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(facts::error)?
+        .into_iter()
+        .filter(|file| file.extension().is_some_and(|ext| ext == "json"))
+        .collect())
+}
+fn move_migrated(directory: &Path, file: &Path) -> Result<(), WorkspaceStateError> {
+    let migrated = directory.with_extension("migrated");
+    std::fs::create_dir_all(&migrated).map_err(facts::error)?;
+    let target = migrated.join(file.file_name().expect("directory entry"));
+    if target.try_exists().map_err(facts::error)? {
+        std::fs::remove_file(file).map_err(facts::error)
+    } else {
+        std::fs::rename(file, target).map_err(facts::error)
+    }
+}
+fn finish_directory(directory: &Path) -> Result<(), WorkspaceStateError> {
+    match std::fs::read_dir(directory) {
+        Ok(mut entries) => {
+            if entries.next().is_none() {
+                std::fs::remove_dir(directory).map_err(facts::error)
+            } else {
+                Ok(())
+            }
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(facts::error(error)),
+    }
+}
+fn retain_failure(
+    file: &Path,
+    result: Result<(), WorkspaceStateError>,
+    failure: &mut Option<WorkspaceStateError>,
+) {
+    if let Err(error) = result {
+        log::warn!("UI state migration retained {}: {error}", file.display());
+        *failure = Some(error);
+    }
 }

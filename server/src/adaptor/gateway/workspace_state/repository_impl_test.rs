@@ -12,7 +12,7 @@ fn test_pane形式_既存jsonと全種類と分割軸をdomainとの往復で保
         let domain: crate::domain::workspace_state::value_objects::pane_layout::PaneLayout =
             dto.clone().try_into().unwrap();
         // Then
-        assert_eq!(StoredPaneLayout::from(domain), dto);
+        assert_eq!(StoredPaneLayout::from(&domain), dto);
         assert_eq!(
             serde_json::to_value(dto).unwrap(),
             serde_json::from_str::<serde_json::Value>(&json).unwrap()

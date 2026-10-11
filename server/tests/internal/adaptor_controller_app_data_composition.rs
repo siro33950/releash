@@ -399,8 +399,15 @@ pub(crate) mod tests {
                 repository.inner.clone(),
             ),
         );
-        states.set(protected_worktree, ui_state());
-        states.save(protected_worktree).unwrap();
+        let pending_state = ui_state();
+        releashd::test_support::integration::platform::save_workspace_state(
+            states.as_ref(),
+            None,
+            protected_worktree,
+            pending_state,
+        )
+        .await
+        .unwrap();
         let report = composition
             .run_startup_gc_pass(
                 repo_paths,
@@ -413,7 +420,10 @@ pub(crate) mod tests {
 
         assert_eq!(report.errors, 0);
         assert_eq!(
-            states.load(protected_worktree, protected_worktree).unwrap(),
+            states
+                .load(protected_worktree, protected_worktree)
+                .await
+                .unwrap(),
             Some(ui_state())
         );
         assert!(
@@ -699,8 +709,15 @@ pub(crate) mod tests {
             .into_owned();
         let state = ui_state();
         for path in [&main, &key] {
-            states.set(path, state.clone());
-            states.save(path).unwrap();
+            let pending_state = state.clone();
+            releashd::test_support::integration::platform::save_workspace_state(
+                states.as_ref(),
+                None,
+                path,
+                pending_state,
+            )
+            .await
+            .unwrap();
         }
         let migrated = data.path().join("workspace_state.migrated");
         let legacy = data.path().join("workspace_state");
@@ -732,7 +749,7 @@ pub(crate) mod tests {
             .unwrap();
         // Then
         assert_eq!(report.errors, 0);
-        assert!(states.load(&key, &key).unwrap().is_some());
+        assert!(states.load(&key, &key).await.unwrap().is_some());
         assert!(imported.exists());
         // When
         let report = composition
@@ -746,15 +763,15 @@ pub(crate) mod tests {
             .unwrap();
         // Then
         assert_eq!(report.errors, 0);
-        assert!(states.load(&key, &key).unwrap().is_none());
-        assert_eq!(states.load(&main, &main).unwrap(), Some(state));
+        assert!(states.load(&key, &key).await.unwrap().is_none());
+        assert_eq!(states.load(&main, &main).await.unwrap(), Some(state));
         assert!(!imported.exists());
         assert_eq!(std::fs::read_to_string(&unimported).unwrap(), "broken");
         let reference = repo.find_reference("refs/heads/removed").unwrap();
         let mut options = git2::WorktreeAddOptions::new();
         options.reference(Some(&reference));
         repo.worktree("removed", &removed, Some(&options)).unwrap();
-        assert!(states.load(&key, &key).unwrap().is_none());
+        assert!(states.load(&key, &key).await.unwrap().is_none());
         let connection =
             rusqlite::Connection::open(data.path().join("local-event-store.sqlite3")).unwrap();
         assert_eq!(
@@ -779,8 +796,10 @@ pub(crate) mod tests {
         );
         drop(states);
         drop(events);
-        let restarted = WorkspaceStateStore::new(data.path().into());
-        assert!(restarted.load(&key, &key).unwrap().is_none());
+        let restarted = releashd::test_support::integration::platform::workspace_state_store(
+            data.path().into(),
+        );
+        assert!(restarted.load(&key, &key).await.unwrap().is_none());
     }
 }
 

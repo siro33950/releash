@@ -102,18 +102,18 @@ struct CreateWorktreeView: View {
       }.padding(UIStyle.padding)
     }
     .frame(width: UIStyle.createDialogWidth, height: UIStyle.createDialogHeight)
-    .onChange(of: form.repository) { old, _ in
-      unsubscribe(old)
+    .onChange(of: form.repository) { _, _ in
+      unsubscribe()
       load()
     }
     .onChange(of: source) { _, _ in
-      unsubscribe(form.repository)
+      unsubscribe()
       form.branch = ""
       load()
     }
     .onChange(of: label) { _, _ in filterIssues() }
     .onChange(of: milestone) { _, _ in filterIssues() }
-    .onDisappear { unsubscribe(form.repository) }
+    .onDisappear { unsubscribe() }
   }
   private func selectionRow(_ title: String, id: WorktreeSelection.Key, branch: String) -> some View
   {
@@ -177,7 +177,7 @@ struct CreateWorktreeView: View {
       }
     }
   }
-  private func unsubscribe(_ path: String) {
+  private func unsubscribe() {
     for id in subscriptions { model.unsubscribe(id) }
     subscriptions = []
     if let id = filteredSubscription { model.unsubscribe(id) }

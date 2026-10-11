@@ -27,6 +27,7 @@ pub trait Cancellation: Send + Sync {
 pub struct OperationContext {
     deadline: Option<Deadline>,
     cancellation: Option<Arc<dyn Cancellation>>,
+    retained: Option<Arc<dyn Send + Sync>>,
 }
 
 impl OperationContext {
@@ -34,6 +35,7 @@ impl OperationContext {
         Self {
             deadline,
             cancellation: Some(cancellation),
+            retained: None,
         }
     }
     pub fn with_deadline(&self, deadline: Deadline) -> Self {
@@ -43,7 +45,12 @@ impl OperationContext {
                     .map_or(deadline, |parent| parent.minimum(deadline)),
             ),
             cancellation: self.cancellation.clone(),
+            retained: self.retained.clone(),
         }
+    }
+    pub fn retaining(mut self, resource: Arc<dyn Send + Sync>) -> Self {
+        self.retained = Some(resource);
+        self
     }
     pub fn remaining(&self, now: Instant) -> Option<Duration> {
         self.deadline.map(|deadline| deadline.remaining(now))

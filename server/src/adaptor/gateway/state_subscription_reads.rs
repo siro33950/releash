@@ -30,6 +30,8 @@ impl StateSubscriptionRead for StateSubscriptionReads {
                 | T::Selection(..)
                 | T::NodeDetail(..)
                 | T::ProviderHookHealth
+                | T::WorkspaceState(..)
+                | T::RepositoryGroupState(_)
         ) {
             return self.0.read(target).await;
         }

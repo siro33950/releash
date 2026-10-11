@@ -49,6 +49,9 @@ pub struct FakeRepo {
     pub dirty: u32,
     pub branch_base: Option<String>,
     pub fail_create_worktree: bool,
+    pub create_started: tokio::sync::Notify,
+    pub create_continue: Option<Mutex<std::sync::mpsc::Receiver<()>>>,
+    pub fail_list_worktrees: bool,
     pub worktree_creations: Mutex<Vec<WorktreeCreation>>,
     pub fail_remove_worktree: bool,
     pub fail_cleanup: bool,
@@ -152,6 +155,9 @@ impl WorktreeRepository for FakeRepo {
         self.listed_worktree_paths
             .lock()
             .push(repo_path.to_string());
+        if self.fail_list_worktrees {
+            return Err(RepositoryError::rule("worktrees unavailable"));
+        }
         Ok(self.worktrees.clone())
     }
     fn create(
@@ -168,6 +174,10 @@ impl WorktreeRepository for FakeRepo {
             create_branch,
             base_branch.map(Into::into),
         ));
+        self.create_started.notify_one();
+        if let Some(receiver) = &self.create_continue {
+            receiver.lock().recv().unwrap();
+        }
         if self.fail_create_worktree {
             return Err(RepositoryError::External("boom".to_string()));
         }

@@ -74,16 +74,26 @@ impl ProductionAppDataComposition {
         shared_repo_paths: SharedRepoPaths,
         repository: Arc<dyn LocalEventTransactionRepository>,
         execution_trees: Arc<dyn crate::usecase::app_data_gc::ExecutionTreeGc>,
-        workspace_states: Arc<dyn crate::usecase::app_data_gc::WorkspaceStateGc>,
+        workspace_states: Arc<dyn crate::domain::workspace_state::WorkspaceStateRepository>,
     ) -> Result<GcReport, String> {
         let file_system = StdGcFileSystem::with_observer(self.observer.clone());
         let inventory_file_system = file_system.clone();
         let app_data_dir = self.app_data_dir.clone();
-        let inventory = crate::common::operation_context::spawn_blocking(move || {
-            build_startup_gc_request(app_data_dir, shared_repo_paths, &inventory_file_system)
-        })
-        .await
-        .map_err(|error| format!("app data gc inventory task failed: {error}"))?;
+        let (workspace_inventory, inventory) = crate::usecase::app_data_gc::inventory_startup_gc(
+            workspace_states.as_ref(),
+            async move {
+                crate::common::operation_context::spawn_blocking(move || {
+                    build_startup_gc_request(
+                        app_data_dir,
+                        shared_repo_paths,
+                        &inventory_file_system,
+                    )
+                })
+                .await
+                .map_err(|error| format!("app data gc inventory task failed: {error}"))
+            },
+        )
+        .await?;
         let mut request = inventory;
         let archive_errors = crate::usecase::app_data_gc::archive_removed_execution_trees(
             request.live_worktrees.as_ref(),
@@ -113,14 +123,29 @@ impl ProductionAppDataComposition {
                 }
             };
 
+        let mut workspace_report = GcReport::default();
+        crate::usecase::app_data_gc::sweep_workspace_states(
+            &plan,
+            &revalidated_runtime_protection,
+            workspace_states.as_ref(),
+            workspace_inventory,
+            &mut workspace_report,
+        )
+        .await;
         crate::common::operation_context::spawn_blocking(move || {
             let mut report = crate::usecase::app_data_gc::sweep_startup_gc(
                 plan,
                 revalidated_runtime_protection,
                 &file_system,
-                Some(workspace_states.as_ref()),
             );
-            report.errors += archive_errors;
+            report.errors += archive_errors + workspace_report.errors;
+            report.total_files += workspace_report.total_files;
+            report.total_bytes += workspace_report.total_bytes;
+            for (category, stat) in workspace_report.categories {
+                let entry = report.categories.entry(category).or_default();
+                entry.deleted += stat.deleted;
+                entry.reclaimed_bytes += stat.reclaimed_bytes;
+            }
             report
         })
         .await

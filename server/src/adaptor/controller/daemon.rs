@@ -372,7 +372,8 @@ pub async fn compose(
         &workspace_state_store,
         &repositories,
         &repository_usecase,
-    );
+    )
+    .await;
 
     let code_usecase = Arc::new(adaptor::controller::wiring::build_code_usecase());
     let git_host_usecase = Arc::new(
@@ -689,36 +690,30 @@ pub async fn compose(
     })
 }
 
-pub fn migrate_legacy_workspace_states(
-    data_dir: &std::path::Path,
+pub async fn migrate_legacy_workspace_states(
+    _data_dir: &std::path::Path,
     store: &adaptor::gateway::workspace_state::WorkspaceStateStore,
     repositories: &[String],
     repository: &usecase::repository_usecase::RepositoryUsecase,
 ) {
-    let migrate = || -> Result<(), String> {
-        let mut worktrees = Vec::new();
-        if data_dir
-            .join("workspace_state")
-            .try_exists()
-            .map_err(|error| error.to_string())?
-        {
-            for path in repositories {
-                match repository.list_worktrees(path) {
-                    Ok(items) => worktrees.extend(items.into_iter().map(|worktree| worktree.path)),
-                    Err(error) => {
-                        log::warn!("Workspace state migration deferred for unresolved repository {path}: {error}");
-                        worktrees.clear();
-                        break;
-                    }
-                }
+    crate::common::telemetry::observe_result_async(
+        usecase::workspace_state::usecase::migrate_workspace_states(
+            store,
+            repositories,
+            repository,
+        ),
+        |result, _| {
+            for (path, error) in &result.unresolved_repositories {
+                log::warn!(
+                    "Workspace state migration deferred for unresolved repository {path}: {error}"
+                );
             }
-        }
-        usecase::workspace_state::usecase::migrate_workspace_states(store, repositories, &worktrees)
-            .map_err(|error| error.to_string())
-    };
-    if let Err(error) = migrate() {
-        log::warn!("UI state migration deferred; daemon startup continues: {error}");
-    }
+            if let Err(error) = &result.migration {
+                log::warn!("UI state migration deferred; daemon startup continues: {error}");
+            }
+        },
+    )
+    .await;
 }
 
 pub async fn migrate_legacy_execution_archives(

@@ -211,18 +211,64 @@ mod workspace_state_gc_tests {
         fail_inventory: bool,
         fail_invalidation: bool,
         invalidated: Mutex<Vec<String>>,
+        added: Mutex<Vec<String>>,
     }
-    impl WorkspaceStateGc for States {
-        fn states(&self) -> Result<Vec<(String, StreamVersion)>, WorkspaceStateError> {
+    #[async_trait::async_trait]
+    impl crate::domain::workspace_state::WorkspaceStateRepository for States {
+        async fn migrate_legacy(
+            &self,
+            _: &[String],
+            _: &[String],
+        ) -> Result<(), WorkspaceStateError> {
+            unreachable!()
+        }
+        async fn load_repository_group(&self, _: &str) -> Result<bool, WorkspaceStateError> {
+            unreachable!()
+        }
+        async fn save_repository_group(&self, _: &str, _: bool) -> Result<(), WorkspaceStateError> {
+            unreachable!()
+        }
+        async fn load(
+            &self,
+            _: &str,
+            _: &str,
+        ) -> Result<Option<crate::domain::workspace_state::WorkspaceState>, WorkspaceStateError>
+        {
+            unreachable!()
+        }
+        async fn read(
+            &self,
+            _: &str,
+        ) -> Result<
+            (
+                StreamVersion,
+                Option<crate::domain::workspace_state::WorkspaceState>,
+            ),
+            WorkspaceStateError,
+        > {
+            unreachable!()
+        }
+        async fn save(
+            &self,
+            _: &str,
+            _: crate::domain::workspace_state::WorkspaceState,
+            _: StreamVersion,
+        ) -> Result<(), WorkspaceStateError> {
+            unreachable!()
+        }
+
+        async fn states(&self) -> Result<Vec<(String, StreamVersion)>, WorkspaceStateError> {
             if self.fail_inventory {
                 return Err(WorkspaceStateError::Message("inventory failed".into()));
             }
             Ok(["live", "active", "newly-active", "removed"]
                 .into_iter()
-                .map(|key| (key.into(), StreamVersion::new(1).unwrap()))
+                .map(String::from)
+                .chain(self.added.lock().unwrap().clone())
+                .map(|key| (key, StreamVersion::new(1).unwrap()))
                 .collect())
         }
-        fn invalidate(
+        async fn invalidate(
             &self,
             key: &str,
             expected: StreamVersion,
@@ -269,25 +315,70 @@ mod workspace_state_gc_tests {
             retention: RetentionPolicy::default(),
         })
     }
-    #[test]
-    fn test_ui状態gc_現存と両時点の実行中を守り削除済みだけ無効化する() {
+    #[tokio::test]
+    async fn test_ui状態gc_候補読取後に作成されたworktreeの状態は無効化しない() {
+        use crate::domain::workspace_state::WorkspaceStateRepository;
         // Given
         let states = States {
             fail_inventory: false,
             fail_invalidation: false,
             invalidated: Mutex::default(),
+            added: Mutex::default(),
+        };
+        let (inventory, request) = inventory_startup_gc(&states, async {
+            states.added.lock().unwrap().push("new-worktree".into());
+            Ok(plan(false, true).request)
+        })
+        .await
+        .unwrap();
+        let runtime = RuntimeProtection::complete(worktrees(&["newly-active"]));
+        let mut report = GcReport::default();
+        // When
+        sweep_workspace_states(
+            &plan_startup_gc(request),
+            &runtime,
+            &states,
+            inventory,
+            &mut report,
+        )
+        .await;
+        // Then
+        assert!(states
+            .states()
+            .await
+            .unwrap()
+            .iter()
+            .any(|(key, _)| key == "new-worktree"));
+        assert_eq!(*states.invalidated.lock().unwrap(), ["removed"]);
+    }
+
+    #[tokio::test]
+    async fn test_ui状態gc_現存と両時点の実行中を守り削除済みだけ無効化する() {
+        // Given
+        let states = States {
+            fail_inventory: false,
+            fail_invalidation: false,
+            invalidated: Mutex::default(),
+            added: Mutex::default(),
         };
         let runtime = RuntimeProtection::complete(worktrees(&["newly-active"]));
         let mut report = GcReport::default();
         // When
-        sweep_workspace_states(&plan(false, true), &runtime, &states, &mut report);
+        sweep_workspace_states(
+            &plan(false, true),
+            &runtime,
+            &states,
+            crate::domain::workspace_state::WorkspaceStateRepository::states(&states).await,
+            &mut report,
+        )
+        .await;
         // Then
         assert_eq!(*states.invalidated.lock().unwrap(), ["removed"]);
         assert_eq!(report.categories[&GcCategory::DeletedWorkspace].deleted, 1);
         assert_eq!(report.errors, 0);
     }
-    #[test]
-    fn test_ui状態gc_未解決と不完全な保護は処理せず読取と無効化の失敗を報告する() {
+    #[tokio::test]
+    async fn test_ui状態gc_未解決と不完全な保護は処理せず読取と無効化の失敗を報告する() {
         for (
             unresolved,
             initial_complete,
@@ -308,6 +399,7 @@ mod workspace_state_gc_tests {
                 fail_inventory,
                 fail_invalidation,
                 invalidated: Mutex::default(),
+                added: Mutex::default(),
             };
             let runtime = if sweep_complete {
                 RuntimeProtection::complete(worktrees(&["newly-active"]))
@@ -316,12 +408,19 @@ mod workspace_state_gc_tests {
             };
             let mut report = GcReport::default();
             // When
+            let (inventory, request) = inventory_startup_gc(&states, async {
+                Ok(plan(unresolved, initial_complete).request)
+            })
+            .await
+            .unwrap();
             sweep_workspace_states(
-                &plan(unresolved, initial_complete),
+                &plan_startup_gc(request),
                 &runtime,
                 &states,
+                inventory,
                 &mut report,
-            );
+            )
+            .await;
             // Then
             assert_eq!(report.errors, errors);
             assert_eq!(!states.invalidated.lock().unwrap().is_empty(), attempted);

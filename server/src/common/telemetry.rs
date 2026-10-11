@@ -38,10 +38,10 @@ pub(crate) fn observe_result<T, E>(
     result
 }
 
-pub(crate) async fn observe_result_async<T, E>(
-    operation: impl std::future::Future<Output = Result<T, E>>,
-    record: impl FnOnce(&Result<T, E>, Duration),
-) -> Result<T, E> {
+pub(crate) async fn observe_result_async<T>(
+    operation: impl std::future::Future<Output = T>,
+    record: impl FnOnce(&T, Duration),
+) -> T {
     let started = Instant::now();
     let result = operation.await;
     record(&result, started.elapsed());

@@ -107,13 +107,13 @@ impl EventCodecRegistry {
             crate::adaptor::gateway::local_event_store::provider_session_ownership_codec::ProviderSessionOwnershipEventCodec,
         ));
         registry.register(Arc::new(
-            crate::adaptor::gateway::workspace_state::facts::UIStateCodec { group: false },
+            crate::adaptor::gateway::local_event_store::workspace_state_codec::WorkspaceStateCodec,
         ));
         registry.register(Arc::new(
-            crate::adaptor::gateway::workspace_state::facts::UIStateCodec { group: true },
+            crate::adaptor::gateway::local_event_store::workspace_state_codec::RepositoryGroupCodec,
         ));
         registry.register(Arc::new(
-            crate::adaptor::gateway::workspace_state::facts::WorkspaceStateInvalidationCodec,
+            crate::adaptor::gateway::local_event_store::workspace_state_codec::WorkspaceStateInvalidationCodec,
         ));
         registry
     }

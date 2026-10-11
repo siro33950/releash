@@ -469,6 +469,9 @@ impl From<&crate::domain::workspace_state::WorkspaceStateError> for Failure {
             crate::domain::workspace_state::WorkspaceStateError::Message(_) => {
                 Self::Technical(TechnicalFailureNature::Other)
             }
+            crate::domain::workspace_state::WorkspaceStateError::VersionConflict => {
+                Self::Business(BusinessFailure::VersionConflict)
+            }
         }
     }
 }

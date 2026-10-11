@@ -121,9 +121,21 @@ pub mod persistence {
     pub use crate::usecase::app_data_gc::LiveWorktree;
     pub use crate::usecase::app_data_gc::LiveWorktreeResolution;
     pub use crate::usecase::app_data_gc::LiveWorktreeSet;
-    pub use crate::usecase::app_data_gc::WorkspaceStateGc;
 }
 pub mod platform {
+    pub fn workspace_state_store(
+        path: std::path::PathBuf,
+    ) -> crate::adaptor::gateway::workspace_state::WorkspaceStateStore {
+        let store = crate::adaptor::gateway::local_event_store::LocalEventStore::open(
+            crate::adaptor::gateway::local_event_store::LocalEventStoreConfig::production(
+                path.clone(),
+                std::sync::Arc::new(crate::common::retry::RetryLimiter::default()),
+            ),
+        )
+        .unwrap();
+        crate::adaptor::gateway::workspace_state::WorkspaceStateStore::with_store(path, store)
+    }
+
     pub use crate::acceptance_test_support::{workflow_read, workflow_services};
     pub use crate::adaptor::controller::agent_session_launch_retention::run;
     pub use crate::adaptor::controller::agent_session_launch_retention::RETENTION;
@@ -379,7 +391,9 @@ pub mod platform {
     pub use crate::usecase::test_helpers::watcher::SubscriptionFiles;
     pub use crate::usecase::watcher::UsecaseError as watcher_UsecaseError;
     pub use crate::usecase::watcher::WatcherUsecase;
-    pub use crate::usecase::workspace_state::usecase::save_workspace_state;
+    pub use crate::usecase::workspace_state::usecase::{
+        save_repository_group_state, save_workspace_state,
+    };
 
     pub use crate::usecase::worktree_operation::WorktreeMutationGuard;
     pub use crate::usecase::worktree_operation::WorktreeOperations;

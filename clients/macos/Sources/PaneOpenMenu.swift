@@ -71,17 +71,8 @@ struct PaneLaunchView: View {
           starting = true
           failure = nil
           Task {
-            do {
-              if kind == .session {
-                try await startSession(provider)
-              } else {
-                try await startWorkflow(name: workflow, requestText: requestText)
-              }
-              dismiss()
-            } catch {
-              failure = error.localizedDescription
-              starting = false
-            }
+            failure = await start(provider: provider, workflow: workflow, requestText: requestText)
+            if failure == nil { dismiss() } else { starting = false }
           }
         }
         .disabled(starting || (kind == .session ? provider.isEmpty : workflow.isEmpty))
@@ -91,6 +82,17 @@ struct PaneLaunchView: View {
     .padding(UIStyle.padding)
     .frame(width: UIStyle.createDialogWidth)
     .interactiveDismissDisabled(starting)
+  }
+
+  func start(provider: String, workflow: String, requestText: String) async -> String? {
+    do {
+      if kind == .session {
+        try await startSession(provider)
+      } else {
+        try await startWorkflow(name: workflow, requestText: requestText)
+      }
+      return nil
+    } catch { return model.failureMessage(error) }
   }
 
   func startSession(_ provider: String) async throws {

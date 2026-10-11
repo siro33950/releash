@@ -167,3 +167,11 @@ fn test_読み取り失敗_中の技術的性質とnotion通信失敗の分類�
         Failure::Technical(TechnicalFailureNature::Transient)
     );
 }
+
+#[test]
+fn test_ui状態の失敗_版競合を業務失敗として保持する() {
+    assert_eq!(
+        Failure::from(&crate::domain::workspace_state::WorkspaceStateError::VersionConflict),
+        Failure::Business(BusinessFailure::VersionConflict)
+    );
+}

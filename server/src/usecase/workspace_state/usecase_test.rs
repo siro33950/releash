@@ -7,8 +7,9 @@ struct Store {
     readable: bool,
     calls: Mutex<Vec<String>>,
 }
+#[async_trait::async_trait]
 impl WorkspaceStateRepository for Store {
-    fn migrate_legacy(
+    async fn migrate_legacy(
         &self,
         repositories: &[String],
         worktrees: &[String],
@@ -23,10 +24,10 @@ impl WorkspaceStateRepository for Store {
         }
     }
 
-    fn load_repository_group(&self, _: &str) -> Result<bool, WorkspaceStateError> {
+    async fn load_repository_group(&self, _: &str) -> Result<bool, WorkspaceStateError> {
         Ok(false)
     }
-    fn save_repository_group(
+    async fn save_repository_group(
         &self,
         path: &str,
         collapsed: bool,
@@ -39,20 +40,34 @@ impl WorkspaceStateRepository for Store {
         }
     }
 
-    fn check_readable(&self, _: &str) -> Result<(), WorkspaceStateError> {
+    async fn read(
+        &self,
+        _: &str,
+    ) -> Result<
+        (
+            crate::domain::local_event::StreamVersion,
+            Option<WorkspaceState>,
+        ),
+        WorkspaceStateError,
+    > {
         if self.readable {
-            Ok(())
+            Ok((
+                crate::domain::local_event::StreamVersion::new(0).unwrap(),
+                None,
+            ))
         } else {
             Err(WorkspaceStateError::Message("unreadable".into()))
         }
     }
-    fn load(&self, _: &str, _: &str) -> Result<Option<WorkspaceState>, WorkspaceStateError> {
+    async fn load(&self, _: &str, _: &str) -> Result<Option<WorkspaceState>, WorkspaceStateError> {
         unreachable!()
     }
-    fn set(&self, name: &str, _: WorkspaceState) {
-        self.calls.lock().push(format!("set:{name}"));
-    }
-    fn save(&self, name: &str) -> Result<(), WorkspaceStateError> {
+    async fn save(
+        &self,
+        name: &str,
+        _: WorkspaceState,
+        _: crate::domain::local_event::StreamVersion,
+    ) -> Result<(), WorkspaceStateError> {
         self.calls.lock().push(format!("save:{name}"));
         if self.fail {
             Err(WorkspaceStateError::Message("failed".into()))
@@ -60,10 +75,22 @@ impl WorkspaceStateRepository for Store {
             Ok(())
         }
     }
+    async fn states(
+        &self,
+    ) -> Result<Vec<(String, crate::domain::local_event::StreamVersion)>, WorkspaceStateError> {
+        unreachable!()
+    }
+    async fn invalidate(
+        &self,
+        _: &str,
+        _: crate::domain::local_event::StreamVersion,
+    ) -> Result<bool, WorkspaceStateError> {
+        unreachable!()
+    }
 }
 
-#[test]
-fn test_表示状態保存_保存成功後だけ対象名を通知する() {
+#[tokio::test]
+async fn test_表示状態保存_保存成功後だけ対象名を通知する() {
     for fail in [false, true] {
         // Given
         let store = Store {
@@ -91,9 +118,9 @@ fn test_表示状態保存_保存成功後だけ対象名を通知する() {
             },
         };
         // When
-        let result = save_workspace_state(&store, Some(&publisher), "worktree", state);
+        let result = save_workspace_state(&store, Some(&publisher), "worktree", state).await;
         // Then
-        assert_eq!(*store.calls.lock(), ["set:worktree", "save:worktree"]);
+        assert_eq!(*store.calls.lock(), ["save:worktree"]);
         assert_eq!(result.is_err(), fail);
         if fail {
             assert!(changes.try_recv().is_err());
@@ -108,8 +135,8 @@ fn test_表示状態保存_保存成功後だけ対象名を通知する() {
     }
 }
 
-#[test]
-fn test_表示状態保存_読取失敗ならsetとsaveを呼ばない() {
+#[tokio::test]
+async fn test_表示状態保存_読取失敗ならsetとsaveを呼ばない() {
     // Given
     let store = Store {
         fail: false,
@@ -134,14 +161,14 @@ fn test_表示状態保存_読取失敗ならsetとsaveを呼ばない() {
         },
     };
     // When
-    let result = save_workspace_state(&store, None, "wt", state);
+    let result = save_workspace_state(&store, None, "wt", state).await;
     // Then
     assert!(result.is_err());
     assert!(store.calls.lock().is_empty());
 }
 
-#[test]
-fn test_repository折りたたみ保存_成功したgroupだけ通知する() {
+#[tokio::test]
+async fn test_repository折りたたみ保存_成功したgroupだけ通知する() {
     for fail in [false, true] {
         // Given
         let store = Store {
@@ -152,7 +179,7 @@ fn test_repository折りたたみ保存_成功したgroupだけ通知する() {
         let publisher = crate::test_support::state_subscription::test_subscriptions();
         let mut changes = crate::test_support::state_subscription::changes(&publisher);
         // When
-        let result = save_repository_group_state(&store, Some(&publisher), "/repo", true);
+        let result = save_repository_group_state(&store, Some(&publisher), "/repo", true).await;
         // Then
         assert_eq!(result.is_err(), fail);
         assert_eq!(*store.calls.lock(), ["group:/repo:true"]);
@@ -169,8 +196,8 @@ fn test_repository折りたたみ保存_成功したgroupだけ通知する() {
     }
 }
 
-#[test]
-fn test_表示状態保存_不正なpane配置は保存前に拒否する() {
+#[tokio::test]
+async fn test_表示状態保存_不正なpane配置は保存前に拒否する() {
     // Given
     let store = Store {
         fail: false,
@@ -212,19 +239,53 @@ fn test_表示状態保存_不正なpane配置は保存前に拒否する() {
     assert!(store.calls.lock().is_empty());
 }
 
-#[test]
-fn test_旧表示状態の移行_登録repositoryとworktreeを渡し失敗を返す() {
+#[tokio::test]
+async fn test_旧表示状態の移行_登録repositoryを列挙し未解決なら名前の解決を見送る() {
     for fail in [false, true] {
-        // Given
-        let store = Store {
-            fail,
-            readable: true,
-            calls: Default::default(),
-        };
-        // When
-        let result = migrate_workspace_states(&store, &["/repo".into()], &["/repo/a".into()]);
-        // Then
-        assert_eq!(result.is_err(), fail);
-        assert_eq!(*store.calls.lock(), ["migration:[\"/repo\"]:[\"/repo/a\"]"]);
+        for unresolved in [false, true] {
+            // Given
+            let store = Store {
+                fail,
+                readable: true,
+                calls: Default::default(),
+            };
+            let fake = std::sync::Arc::new(crate::usecase::test_helpers::FakeRepo {
+                fail_list_worktrees: unresolved,
+                worktrees: vec![crate::domain::repository::Worktree {
+                    name: "a".into(),
+                    path: "/repo/a".into(),
+                    branch: "a".into(),
+                    is_main: false,
+                    is_locked: false,
+                    is_merged: false,
+                }],
+                ..Default::default()
+            });
+            let repository = crate::usecase::test_helpers::usecase(fake.clone());
+            // When
+            let result = migrate_workspace_states(&store, &["/repo".into()], &repository).await;
+            // Then
+            assert_eq!(result.migration.is_err(), fail);
+            assert_eq!(
+                result.unresolved_repositories.len(),
+                usize::from(unresolved)
+            );
+            if unresolved {
+                assert_eq!(result.unresolved_repositories[0].0, "/repo");
+                assert_eq!(
+                    result.unresolved_repositories[0].1.to_string(),
+                    "worktrees unavailable"
+                );
+            }
+            assert_eq!(*fake.listed_worktree_paths.lock(), ["/repo"]);
+            assert_eq!(
+                *store.calls.lock(),
+                [if unresolved {
+                    "migration:[\"/repo\"]:[]"
+                } else {
+                    "migration:[\"/repo\"]:[\"/repo/a\"]"
+                }]
+            );
+        }
     }
 }

@@ -1,4 +1,10 @@
 use super::*;
+use crate::adaptor::gateway::local_event_store::canonical_cbor::CborValue;
+use crate::adaptor::gateway::local_event_store::envelope::{
+    DecodedStoredEvent, EventCodecRegistry, LocalEventPayloadCodec,
+};
+use crate::adaptor::gateway::workspace_state::repository_impl::StoredWorkspaceState;
+use crate::domain::local_event::LocalDomainEvent;
 
 #[test]
 fn test_ui状態の事実_保存形式をcodec経由で往復し未知の版と破損を拒む() {
@@ -18,6 +24,28 @@ fn test_ui状態の事実_保存形式をcodec経由で往復し未知の版と�
         // When
         let encoded = registry.encode(&event).unwrap();
         // Then
+        let legacy_payload = match &event {
+            LocalDomainEvent::WorkspaceStateChanged(state) => CborValue::Text(
+                serde_json::to_string(&StoredWorkspaceState::from(state.as_ref())).unwrap(),
+            ),
+            LocalDomainEvent::RepositoryGroupChanged(collapsed) => {
+                CborValue::Text(collapsed.to_string())
+            }
+            LocalDomainEvent::WorkspaceStateInvalidated => CborValue::Null,
+            _ => unreachable!(),
+        };
+        let legacy_bytes =
+            crate::adaptor::gateway::local_event_store::canonical_cbor::encode_canonical(
+                &legacy_payload,
+            )
+            .unwrap();
+        assert_eq!(encoded.payload, legacy_bytes);
+        assert_eq!(
+            registry
+                .decode(&encoded.event_type, 1, &legacy_bytes)
+                .unwrap(),
+            DecodedStoredEvent::Known(Box::new(event.clone()))
+        );
         assert_eq!(
             registry
                 .decode(
@@ -26,7 +54,7 @@ fn test_ui状態の事実_保存形式をcodec経由で往復し未知の版と�
                     &encoded.payload
                 )
                 .unwrap(),
-            DecodedStoredEvent::Known(Box::new(event))
+            DecodedStoredEvent::Known(Box::new(event.clone()))
         );
         assert_eq!(
             registry
@@ -41,7 +69,7 @@ fn test_ui状態の事実_保存形式をcodec経由で往復し未知の版と�
 #[test]
 fn test_ui状態の事実_不正な配置と別種の事実を受理しない() {
     // Given
-    let codec = UIStateCodec { group: false };
+    let codec = WorkspaceStateCodec;
     let raw = CborValue::Text(serde_json::json!({
         "version": 1, "tabs": {"editors": [], "activeEditorPath": null},
         "layout": {"centerTab": "agent", "activeView": "git", "leftNavCollapsed": false, "rightCollapsed": false, "rightBottomCollapsed": false},
@@ -52,7 +80,7 @@ fn test_ui状態の事実_不正な配置と別種の事実を受理しない() 
     assert!(codec
         .encode(&LocalDomainEvent::RepositoryGroupChanged(true))
         .is_err());
-    assert!(UIStateCodec { group: true }.decode(1, &raw).is_err());
+    assert!(RepositoryGroupCodec.decode(1, &raw).is_err());
 }
 
 #[test]

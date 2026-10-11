@@ -29,6 +29,7 @@ pub(crate) fn register_shared(
                         &args.repository_path,
                         args.collapsed,
                     )
+                    .await
                     .map_err(crate::adaptor::presenter::error::AppError::from_failure)?;
                     Ok(wire::command_result::Command::SaveRepositoryGroupState(
                         wire::Unit {},
@@ -52,12 +53,15 @@ pub(crate) fn register_shared(
                     let result = async move {
                         let store = store
                             .ok_or_else(|| invalid_request("Command dependency unavailable"))?;
-                        outcome(commands::save_workspace_state_shared(
-                            &store,
-                            publisher.as_ref(),
-                            convert(required(args.worktree_name, "worktreeName")?)?,
-                            convert(required(args.state, "state")?)?,
-                        ))
+                        outcome(
+                            commands::save_workspace_state_shared(
+                                &store,
+                                publisher.as_ref(),
+                                convert(required(args.worktree_name, "worktreeName")?)?,
+                                convert(required(args.state, "state")?)?,
+                            )
+                            .await,
+                        )
                     }
                     .await?;
                     Ok(wire::command_result::Command::SaveWorkspaceState(result))

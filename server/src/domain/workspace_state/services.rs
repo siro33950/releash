@@ -34,16 +34,24 @@ pub fn filter_missing_files(mut state: WorkspaceState, worktree_root: &str) -> W
     state
 }
 
-pub fn legacy_worktree_path<'a>(name: &str, paths: &'a [String]) -> Option<&'a str> {
-    let mut matches = paths
-        .iter()
-        .filter(|path| Path::new(path).file_name().is_some_and(|part| part == name));
-    let first = matches.next()?;
-    if matches.next().is_some() {
-        None
-    } else {
-        Some(first)
+pub fn migration_worktree_paths(inventories: Vec<Option<Vec<String>>>) -> Vec<String> {
+    inventories
+        .into_iter()
+        .collect::<Option<Vec<_>>>()
+        .map(|items| items.into_iter().flatten().collect())
+        .unwrap_or_default()
+}
+
+pub fn legacy_state_path<'a>(name: &str, candidates: &'a [(String, String)]) -> Option<&'a str> {
+    if let Some((path, _)) = candidates.iter().find(|(_, key)| key == name) {
+        return Some(path);
     }
+    let mut matches = candidates.iter().filter(|(path, _)| {
+        Path::new(path).file_name().is_some_and(|part| part == name)
+            || path.replace(['/', '\\'], "_") == name
+    });
+    let (first, _) = matches.next()?;
+    matches.next().is_none().then_some(first.as_str())
 }
 
 #[cfg(test)]

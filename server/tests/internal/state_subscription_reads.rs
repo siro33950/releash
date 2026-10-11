@@ -343,7 +343,7 @@ impl Fixture {
             history: Arc::new(AgentSessionHistoryReadUsecase::new(sessions.clone())),
             providers,
             workspace_state: Arc::new(
-                releashd::test_support::integration::platform::WorkspaceStateStore::new(
+                releashd::test_support::integration::platform::workspace_state_store(
                     root.join("workspace"),
                 ),
             ),
@@ -446,6 +446,7 @@ pub async fn test_状態読取_全対象を対応するサービスへ引数付�
         "repo",
         workspace.clone(),
     )
+    .await
     .unwrap();
     r.workspaces.refresh().await;
     let (tree, selected) = r
@@ -1272,6 +1273,7 @@ pub async fn test_workspace購読の値_reactが配置を省略して保存し�
         key,
         state.clone(),
     )
+    .await
     .unwrap();
     let mut react = state.clone();
     react.panes = None;
@@ -1283,6 +1285,7 @@ pub async fn test_workspace購読の値_reactが配置を省略して保存し�
         key,
         react.clone(),
     )
+    .await
     .unwrap();
     let actual = reads
         .read(&T::WorkspaceState(key.clone(), key.clone()))
