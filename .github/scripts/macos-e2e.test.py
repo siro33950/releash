@@ -1,7 +1,5 @@
 import argparse
 import importlib.util
-import io
-import tarfile
 import threading
 import json
 from pathlib import Path
@@ -15,9 +13,9 @@ e2e = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(e2e)
 
 
-class EvidenceTests(unittest.TestCase):
+class E2ETests(unittest.TestCase):
     def setUp(self):
-        directory = tempfile.TemporaryDirectory(prefix='evidence-unit-')
+        directory = tempfile.TemporaryDirectory(prefix='e2e-unit-')
         self.addCleanup(directory.cleanup)
         patcher = patch.object(e2e, 'LOCK', Path(directory.name) / 'e2e.lock')
         patcher.start()
@@ -51,89 +49,6 @@ class EvidenceTests(unittest.TestCase):
                     e2e.build_fixture(root)
             self.assertFalse((root / 'clients/macos/.build/agent-tui-fixture.json').exists())
 
-    def test_results_preserve_pass_failure_and_skip(self):
-        cases = [{'nodeType': 'Test Case', 'name': name, 'result': result}
-                 for name, result in [('a', 'Passed'), ('b', 'Failed'), ('c', 'Skipped')]]
-        self.assertEqual(e2e.test_results({'testNodes': [{'nodeType': 'Test Suite', 'children': cases}]}), cases)
-        with self.assertRaises(ValueError):
-            e2e.test_results({'testNodes': []})
-
-    def test_evidence_contains_exact_source_and_individual_results(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            source = root / 'clients/macos/UITests/WorkbenchTests.swift'
-            source.parent.mkdir(parents=True)
-            source.write_text('func testExample() { XCTAssertTrue(false) }\n')
-            cases = [{'name': name, 'result': result, 'sourceLocation': {'filePath': str(source), 'lineNumber': 1}}
-                     for name, result in [('testOne', 'Passed'), ('testTwo', 'Failed')]]
-            body = e2e.evidence_body('abc123', cases, root)
-            self.assertIn('Commit: `abc123`', body)
-            self.assertIn('| `testTwo` | Failed |', body)
-            self.assertEqual(body.count(source.read_text()), 1)
-            cases[0]['sourceLocation']['filePath'] = '/outside.swift'
-            with self.assertRaises(ValueError):
-                e2e.evidence_body('abc123', cases, root)
-
-    def test_xcresult_without_source_location_resolves_method_in_commit_source(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            source = root / 'clients/macos/UITests/WorkbenchTests.swift'
-            source.parent.mkdir(parents=True)
-            source.write_text('final class WorkbenchTests: XCTestCase { func testExample() {} }')
-            result = {'name': 'testExample()', 'nodeIdentifier': 'WorkbenchTests/testExample()', 'result': 'Passed'}
-            body = e2e.evidence_body('abc123', [result], root)
-            self.assertIn(source.read_text(), body)
-            result['nodeIdentifier'] = 'WorkbenchTests/testMissing()'
-            with self.assertRaises(ValueError):
-                e2e.evidence_body('abc123', [result], root)
-
-    def test_missing_pr_does_not_build_or_comment(self):
-        args = argparse.Namespace(verify_production=False, evidence=True, test=[])
-        with patch.object(e2e, 'output', side_effect=['branch', subprocess.CalledProcessError(1, ['gh'])]), patch.object(e2e, 'execute') as execute, patch.object(e2e, 'run') as run:
-            with self.assertRaises(subprocess.CalledProcessError):
-                e2e.main(args)
-            execute.assert_not_called()
-            run.assert_not_called()
-
-    def test_evidence_posts_one_comment_even_when_test_fails(self):
-        archive_bytes = io.BytesIO()
-        with tarfile.open(fileobj=archive_bytes, mode='w') as archive:
-            source = b'func testExample() {}\n'
-            info = tarfile.TarInfo('clients/macos/UITests/WorkbenchTests.swift')
-            info.size = len(source)
-            archive.addfile(info, io.BytesIO(source))
-        posted = []
-
-        def execute(root, tests, result, require_production):
-            self.assertEqual(tests, ['ReleashUITests/WorkbenchTests/testExample'])
-            self.assertEqual((root / 'clients/macos/UITests/WorkbenchTests.swift').read_bytes(), source)
-            return 65
-
-        def output(command, root):
-            if command[:2] == ['git', 'symbolic-ref']:
-                return 'branch'
-            if command[:3] == ['gh', 'pr', 'view']:
-                return '{"number": 42}'
-            if command[:2] == ['git', 'rev-parse']:
-                return 'abc123'
-            return json.dumps({'testNodes': [{
-                'nodeType': 'Test Case', 'name': 'testExample', 'result': 'Failed',
-                'sourceLocation': {'filePath': str(root / 'clients/macos/UITests/WorkbenchTests.swift'), 'lineNumber': 1},
-            }]})
-
-        def run(command, root):
-            if command[:3] == ['gh', 'pr', 'comment']:
-                self.assertEqual(command[3], '42')
-                posted.append(Path(command[-1]).read_text())
-
-        with patch.object(e2e, 'output', side_effect=output), patch.object(e2e.subprocess, 'check_output', return_value=archive_bytes.getvalue()) as archive, patch.object(e2e, 'execute', side_effect=execute), patch.object(e2e, 'run', side_effect=run):
-            status = e2e.main(argparse.Namespace(verify_production=False, evidence=True, test=['ReleashUITests/WorkbenchTests/testExample']))
-        self.assertEqual(status, 65)
-        self.assertEqual(len(posted), 1)
-        self.assertIn('Failed', posted[0])
-        self.assertIn('abc123', posted[0])
-        self.assertEqual(archive.call_args.args[0], ['git', 'archive', 'abc123'])
-
     def test_second_execution_waits_for_first_execution(self):
         first_entered = threading.Event()
         second_entered = threading.Event()
@@ -151,8 +66,8 @@ class EvidenceTests(unittest.TestCase):
             return 0
 
         with patch.object(e2e, 'execute', side_effect=execute):
-            first = threading.Thread(target=lambda: outcomes.append(e2e.main(argparse.Namespace(verify_production=False, evidence=False, test=['first']))))
-            second = threading.Thread(target=lambda: outcomes.append(e2e.main(argparse.Namespace(verify_production=False, evidence=False, test=['second']))))
+            first = threading.Thread(target=lambda: outcomes.append(e2e.main(argparse.Namespace(verify_production=False, test=['first']))))
+            second = threading.Thread(target=lambda: outcomes.append(e2e.main(argparse.Namespace(verify_production=False, test=['second']))))
             first.start()
             try:
                 self.assertTrue(first_entered.wait(5))

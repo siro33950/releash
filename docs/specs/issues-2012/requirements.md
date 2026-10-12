@@ -3,9 +3,7 @@
 - 入力: https://github.com/siro33950/releash/issues/2012
 - テストと CI の方針の正本は、マイルストーン #78（https://github.com/siro33950/releash/milestone/78 ）の説明文の「テストと CI の方針」である。
   - 回帰の E2E は、機能ごとに主たる動作だけを確かめる。リポジトリに入る XCUITest は回帰の E2E だけである。
-  - 画面から操作できる機能を足す・変える・直す PR は、手元で確認し、証跡を PR に貼る。
-  - 証跡は 1 つのコマンドで作って貼り、同時に 1 つしか回さない。
-  - CI で回帰の E2E を回すのは #1766 からである。それまでは、画面の機能を足す・変える PR で、手元で回帰の E2E を全部回し、結果を証跡に載せる。
+  - CI で回帰の E2E を回すのは #1766 からである。それまでは、画面の機能を足す・変える PR で、手元で回帰の E2E を全部回す。
 - テストの種類・置き場所・実行の正本は `docs/architecture/TEST.md` である。Nx の `test` target は単体と統合を、`e2e` target は振る舞いを実行する。
 - 依存する #1204（器）と #2037（Nx の target）は main に入っている（#2037 は PR #2047、merge commit `b1c16576`）。
 - XCUITest の制約:
@@ -13,7 +11,7 @@
   - `XCUIApplication.launch()` は、bundle ID で対象のアプリを特定する。同じ bundle ID のアプリが動いていれば、終了させてから起動する。
 - macOS のプライバシーの許可（TCC）は、アプリの署名の designated requirement で、同じアプリかどうかを判断する。ad-hoc 署名のアプリは designated requirement が cdhash になり、ビルドのたびに変わるので、ビルドのたびに別のアプリとして許可を求められる。Apple の DTS は、日々の開発には Apple Development の証明書で署名するよう勧めている（https://developer.apple.com/forums/thread/776479 ）。
 - ISSUE 本文との食い違い（利用者の決定）:
-  - 録画に関わるものはすべて作らない。test plan で録画を残す設定、`.xcresult` からの録画の取り出し、録画の圧縮、PR への動画の添付が対象である。証跡に載せるのは、commit の ID、回したテストのソース、成否だけである。
+  - 証跡を残す仕組みはすべて作らない。PR へ証跡を載せる target、録画を残す設定、`.xcresult` からの録画の取り出し、録画の圧縮、PR への動画の添付が対象である。
   - ISSUE の「最初に確かめること」（録画が残ること、録画の大きさ、添付の上限を超えた場合の扱い）は、録画を作らないので行わない。
   - ISSUE は TEST.md の「種類の表」に単体（macOS）と振る舞い（macOS）の行を足すとしている。しかし TEST.md の「種類」の表で対象を分けているのは「振る舞い（desktop）」だけである。そこで、「種類」の表には振る舞い（macOS）だけを足し、「配置と実行」の表に単体（macOS）と振る舞い（macOS）を足す。
 
@@ -21,11 +19,10 @@
 
 対象者は、Releash のネイティブ UI（SwiftUI クライアント）を開発する人と agent である。
 
-今は、macOS のアプリの機能を、ユーザと同じ操作で確かめる手段がない。テストのターゲットは単体だけで、隔離した環境でアプリを起動する仕組みも、証跡を PR に貼る仕組みもない。このため、マイルストーン #78 の [03] 以降の ISSUE は、方針どおりに回帰の E2E を足すことも、証跡を PR に貼ることもできない。
+今は、macOS のアプリの機能を、ユーザと同じ操作で確かめる手段がない。テストのターゲットは単体だけで、隔離した環境でアプリを起動する仕組みもない。このため、マイルストーン #78 の [03] 以降の ISSUE は、方針どおりに回帰の E2E を足すことができない。
 
 変更後は、開発者が次のことをできる。
 - 回帰の E2E を 1 つのコマンドで全部回す。本番の Releash が動いている Mac でも回せる。
-- 今の commit で回したテストのソースと成否を、1 つのコマンドで今のブランチの PR に載せる。
 
 あわせて、器（#1204）の主たる動作に回帰の E2E が付く。
 
@@ -36,7 +33,7 @@
 macOS のアプリのテスト:
 - テストのターゲットは単体の `ReleashTests` だけである。scheme の test もこれだけを回す（`clients/macos/project.yml:63`、`:74-75`）。UI テストのターゲットと test plan は無い。
 - bundle ID は `com.releash.macos` の一つだけで、Debug と Release で同じである（`clients/macos/project.yml:56`）。desktop は開発版を `com.releash.app.dev` にして本番と分けている（`clients/desktop/tauri.conf.dev.json:4`）。
-- macos の Nx target は `generate`、`helpers`、`build`、`test`、`dev` で、`e2e` と証跡の target は無い（`clients/macos/project.json`）。`dev` は `RELEASH_DATA_DIR` を外して Debug のアプリを開く（`clients/macos/project.json:122`）。
+- macos の Nx target は `generate`、`helpers`、`build`、`test`、`dev` で、`e2e` の target は無い（`clients/macos/project.json`）。`dev` は `RELEASH_DATA_DIR` を外して Debug のアプリを開く（`clients/macos/project.json:122`）。
 
 サーバの起動と隔離:
 - アプリは、同梱した `Contents/Helpers/releash` でサーバを探し、居なければ `server start` で起動する（`clients/macos/Sources/AppModel.swift:60-68`、`clients/macos/Sources/CLI.swift:53-63`）。CLI は、アプリの環境変数を変えずに起動する（`clients/macos/Sources/CLI.swift:37-45`）。
@@ -52,7 +49,7 @@ CI と文書:
 - PR の CI の `macos-checks` job は、macOS の runner で `./nx run macos:test` を実行する（`.github/workflows/ci.yml:105-134`）。E2E を回す job は無い。
 - nightly は、ubuntu の runner で `./nx run-many -t e2e coverage --parallel=1` を実行する（`.github/workflows/nightly.yml:99`）。
 - `docs/architecture/TEST.md` の「種類」の表（`:12`）と「配置と実行」の表（`:37`）に、macOS の行は無い。
-- `AGENTS.md` の「ビルド・テスト・Lint」に、`macos:e2e`、証跡の target、証跡の決まりは無い。
+- `AGENTS.md` の「ビルド・テスト・Lint」に、`macos:e2e` は無い。
 
 # Scope / Non-goals
 
@@ -60,13 +57,12 @@ Scope:
 - macOS のアプリの XCUITest のターゲットと、回帰の E2E を全部回す `macos:e2e` target
 - E2E の隔離（データディレクトリ、bundle ID）と、テストごとに状態を用意する仕組み
 - provider の代わりの TUI の専用の実行ファイル化と、それを使う形へのサーバの統合テスト 6 本の変更
-- 証跡の target `macos:e2e-evidence`
 - 器（#1204）の回帰の E2E 4 本
 - nightly の `run-many` の対象から macos の `e2e` を外すこと
 - `docs/architecture/TEST.md` と `AGENTS.md` の追記
 
 Non-goals:
-- 録画に関わるもの（test plan で録画を残す設定、`.xcresult` からの録画の取り出し、録画の圧縮、PR への動画の添付）
+- 証跡を残す仕組み（PR へ証跡を載せる target、録画を残す設定、`.xcresult` からの録画の取り出し、録画の圧縮、PR への動画の添付）
 - ISSUE の「最初に確かめること」（録画の実測と、添付の上限を超えた場合の扱いの決定）
 - CI で回帰の E2E を回すこと（#1766 で扱う）
 - 器以外の機能の回帰の E2E（[03] 以降の各 ISSUE で扱う）
@@ -83,13 +79,10 @@ Non-goals:
 - R-008: 回帰の E2E（器）: サイドバーに、repository ごとに worktree のカードが表示される。
 - R-009: 回帰の E2E（器）: 中央を 2 つの pane に分割し、タブを別の pane へ移せる。
 - R-010: 回帰の E2E（器）: 作成ダイアログの 1 回の操作で、worktree が作られ、指定したものが起動する。
-- R-011: `./nx run macos:e2e-evidence` は、今の commit をビルドし、指定したテストを回し、今のブランチの PR にコメントを 1 つ載せる。コメントには、commit の ID、回したテストのソース、各テストの成否が入る。テストが落ちた場合も、落ちたことをコメントに載せる。
-- R-012: `macos:e2e-evidence` は、回帰の E2E を全部回した結果をコメントに載せることもできる。
-- R-013: `macos:e2e-evidence` は、同じ Mac で同時に 1 つしか回らない。実行中に後から呼んだほうは、先の実行が終わるまで待ってから回る。
-- R-014: 今のブランチに PR が無いとき、`macos:e2e-evidence` は失敗で終わり、コメントを載せない。
+- R-013: `macos:e2e` は、同じ Mac で同時に 1 つしか回らない。実行中に後から呼んだほうは、先の実行が終わるまで待ってから回る。
 - R-015: nightly の `nx run-many -t e2e coverage` は、macos の `e2e` を実行しない。
 - R-016: `docs/architecture/TEST.md` の「種類」の表に振る舞い（macOS）の行が、「配置と実行」の表に単体（macOS）と振る舞い（macOS）の行がある。
-- R-017: `AGENTS.md` の「ビルド・テスト・Lint」に、`macos:e2e` と `macos:e2e-evidence` の呼び方と、マイルストーン #78 の「テストと CI の方針」に沿った証跡の決まりが書かれている。
+- R-017: `AGENTS.md` の「ビルド・テスト・Lint」に、`macos:e2e` の呼び方が書かれている。
 - R-018: E2E を繰り返し実行しても、macOS は、E2E のためにビルドしたアプリへのアクセスの許可を、ビルドのたびに求め直さない。
 
 # Assumptions

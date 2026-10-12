@@ -123,7 +123,7 @@ nightly のリリース前検証では全プロジェクトを対象にする。
 |---|---|
 | server、cli | `lint`、`test`、`build` |
 | desktop | `lint`、`test`、`build`、`e2e`、`dev`、`tauri` |
-| macos | `generate`、`helpers`、`build`、`test`、`e2e`、`e2e-evidence`、`dev` |
+| macos | `generate`、`helpers`、`build`、`test`、`e2e`、`dev` |
 | workspace | `lint`、`coverage` |
 
 `test` は各テスト target を集約する。
@@ -131,25 +131,20 @@ server と cli の `test` は `test-unit`（単体・doc）と `test-integration
 desktop の `lint` は `rust-lint` と `frontend-lint` を集約する。
 バイナリの build 依存は Rust の統合テストにだけ置く。
 macOS の CI は `macos:test` でアプリのビルドとテストを行い、`macos:build` を重ねて実行しない。
-macOS の回帰の E2E と PR への証跡は、次のコマンドで実行する。
+macOS の回帰の E2E は、次のコマンドで実行する。
 画面がロックされておらず、アプリを前面に出せる Mac が必要である。
 
 ```bash
 ./nx run macos:e2e
-./nx run macos:e2e-evidence
-./nx run macos:e2e-evidence --test=ReleashUITests/WorkbenchTests/testServerStartsAndConnects
+./nx run macos:e2e --test=ReleashUITests/WorkbenchTests/testServerStartsAndConnects
 ```
 
 回帰の E2E は機能ごとの主たる動作だけを確かめ、リポジトリに入る XCUITest は回帰の E2E だけにする。
 不具合の再発防止はサーバの受け入れテストか Swift の単体テストに足し、回帰の E2E は足さない。
-画面から操作できる機能を足す・変える・直す PR は手元で確認し、証跡を PR に載せる。
-証跡コマンドは HEAD のソースをビルドし、今のブランチの PR に commit ID、回したテストのソース、各テストの成否をコメントとして載せる。
-未コミットの変更は証跡に含まれない。
 `--test` を省略すると回帰の E2E を全部回す。複数指定には `--test` を繰り返す。
 本番との共存確認では、本番のアプリとサーバを起動した状態で `--verify-production` を付ける。実行前の PID と起動時刻を、E2E の実行中とテスト環境の終了処理後に照合する。本番が起動していなければ失敗する。
-録画は扱わない。
-同じ Mac の E2E と証跡コマンドは排他で実行し、後から呼んだコマンドは待つ。
-CI で回帰の E2E を回すのは #1766 からであり、それまでは画面の機能を足す・変える PR で手元で全件を回し、結果を証跡に載せる。
+同じ Mac の E2E は排他で実行し、後から呼んだコマンドは待つ。
+CI で回帰の E2E を回すのは #1766 からであり、それまでは画面の機能を足す・変える PR で手元で全件を回す。
 
 `macos:helpers` は対象 CPU 向けのバイナリを直接作り、通常の server・cli build は先行させない。
 Cargo、pnpm、SwiftPM のキャッシュは GitHub Actions で再利用する。Nx のローカルキャッシュは runner 間で共有しない。

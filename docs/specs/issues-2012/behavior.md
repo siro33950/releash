@@ -84,38 +84,11 @@ WHEN 「作成」を押す
 THEN 新しい worktree のカードがサイドバーに表示される
 AND 指定したものが、その worktree で起動している
 
-## B-014: 証跡を PR に載せる
+## B-017: E2E は同時に 1 つだけ回る
 
-GIVEN 今のブランチに PR がある
-WHEN 開発者がテストを指定して `./nx run macos:e2e-evidence` を実行する
-THEN 今の commit でビルドされたアプリに対して、指定したテストが実行される
-AND 今のブランチの PR に、commit の ID、回したテストのソース、各テストの成否を含むコメントが 1 つ載る
-
-## B-015: 落ちたテストも証跡に載る
-
-GIVEN 今のブランチに PR があり、指定したテストの一つが落ちる
-WHEN 開発者が `./nx run macos:e2e-evidence` を実行する
-THEN PR のコメントに、そのテストが落ちたことが載る
-
-## B-016: 回帰の E2E を全部回した結果を証跡に載せる
-
-GIVEN 今のブランチに PR がある
-WHEN 開発者が、回帰の E2E を全部回す指定で `./nx run macos:e2e-evidence` を実行する
-THEN 回帰の E2E がすべて実行される
-AND PR のコメントに、commit の ID、回したテストのソース、各テストの成否が載る
-
-## B-017: 証跡は同時に 1 つだけ回る
-
-GIVEN 同じ Mac で `macos:e2e-evidence` が実行中である
-WHEN 開発者が `./nx run macos:e2e-evidence` をもう一度実行する
+GIVEN 同じ Mac で `macos:e2e` が実行中である
+WHEN 開発者が `./nx run macos:e2e` をもう一度実行する
 THEN 後から呼んだほうのテストは、先の実行が終わってから始まる
-
-## B-018: PR が無いときの証跡
-
-GIVEN 今のブランチに PR が無い
-WHEN 開発者が `./nx run macos:e2e-evidence` を実行する
-THEN 失敗で終わる
-AND どの PR にもコメントは載らない
 
 ## B-019: nightly は macos の e2e を回さない
 
@@ -130,12 +103,11 @@ WHEN 「種類」の表と「配置と実行」の表を見る
 THEN 「種類」の表に振る舞い（macOS）の行がある
 AND 「配置と実行」の表に、単体（macOS）と振る舞い（macOS）の行があり、それぞれの置き場所、実行、CI が書かれている
 
-## B-021: AGENTS.md の E2E と証跡
+## B-021: AGENTS.md の E2E
 
 GIVEN 開発者が `AGENTS.md` の「ビルド・テスト・Lint」を読む
-WHEN macOS の E2E と証跡の扱いを探す
-THEN `macos:e2e` と `macos:e2e-evidence` の呼び方が書かれている
-AND 証跡の決まりが、マイルストーン #78 の「テストと CI の方針」と同じ内容で書かれている
+WHEN macOS の E2E の扱いを探す
+THEN `macos:e2e` の呼び方が書かれている
 
 ## B-022: E2E のビルドを繰り返しても許可を求め直さない
 
@@ -157,10 +129,7 @@ AND ビルドしたアプリの designated requirement は、cdhash ではなく
 | R-008 | B-011 |
 | R-009 | B-012 |
 | R-010 | B-013 |
-| R-011 | B-014, B-015 |
-| R-012 | B-016 |
 | R-013 | B-017 |
-| R-014 | B-018 |
 | R-015 | B-019 |
 | R-016 | B-020 |
 | R-017 | B-021 |

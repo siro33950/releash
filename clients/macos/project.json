@@ -143,14 +143,6 @@
       ],
       "cache": false
     },
-    "e2e-evidence": {
-      "executor": "nx:run-commands",
-      "options": {
-        "command": "python3 .github/scripts/macos-e2e.py --evidence",
-        "cwd": "."
-      },
-      "cache": false
-    },
     "test-fixture-build": {
       "executor": "nx:run-commands",
       "options": {
