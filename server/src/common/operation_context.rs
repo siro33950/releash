@@ -28,6 +28,7 @@ pub struct OperationContext {
     deadline: Option<Deadline>,
     cancellation: Option<Arc<dyn Cancellation>>,
     retained: Option<Arc<dyn Send + Sync>>,
+    deadline_failure: Arc<std::sync::Mutex<Option<crate::domain::failure::WorkFailure>>>,
 }
 
 impl OperationContext {
@@ -36,6 +37,7 @@ impl OperationContext {
             deadline,
             cancellation: Some(cancellation),
             retained: None,
+            deadline_failure: Default::default(),
         }
     }
     pub fn with_deadline(&self, deadline: Deadline) -> Self {
@@ -46,7 +48,17 @@ impl OperationContext {
             ),
             cancellation: self.cancellation.clone(),
             retained: self.retained.clone(),
+            deadline_failure: self.deadline_failure.clone(),
         }
+    }
+    pub fn retain_deadline_failure(&self, failure: Option<crate::domain::failure::WorkFailure>) {
+        *self.deadline_failure.lock().expect("deadline failure") = failure;
+    }
+    pub fn deadline_failure(&self) -> Option<crate::domain::failure::WorkFailure> {
+        self.deadline_failure
+            .lock()
+            .expect("deadline failure")
+            .clone()
     }
     pub fn retaining(mut self, resource: Arc<dyn Send + Sync>) -> Self {
         self.retained = Some(resource);
@@ -167,16 +179,30 @@ pub fn sleep(context: &OperationContext, duration: Duration) -> Result<(), Opera
     }
 }
 
+#[cfg(any(test, feature = "test-support"))]
 pub async fn ingress<T>(
     deadline: Option<Instant>,
     operation: impl Future<Output = T>,
 ) -> Result<T, OperationStopped> {
+    ingress_result(deadline, async { Ok(operation.await) }, |_, stopped| {
+        stopped
+    })
+    .await
+}
+
+pub async fn ingress_result<T, E>(
+    deadline: Option<Instant>,
+    operation: impl Future<Output = Result<T, E>>,
+    stopped: impl FnOnce(&OperationContext, OperationStopped) -> E,
+) -> Result<T, E> {
     let cancellation = tokio_util::sync::CancellationToken::new();
     let _cancel_on_drop = cancellation.clone().drop_guard();
     let context = OperationContext::new(deadline.map(Deadline::new), Arc::new(cancellation));
     let result = scope(context.clone(), operation).await;
-    context.check(Instant::now())?;
-    Ok(result)
+    match context.check(Instant::now()) {
+        Ok(()) => result,
+        Err(error) => Err(stopped(&context, error)),
+    }
 }
 
 impl Cancellation for tokio_util::sync::CancellationToken {

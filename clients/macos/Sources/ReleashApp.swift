@@ -97,7 +97,7 @@ struct RootView: View {
             .overlay(alignment: .trailing) {
               Rectangle().fill(Color(nsColor: .separatorColor))
                 .background(Color(nsColor: .controlBackgroundColor))
-                .frame(width: 1)
+                .frame(width: UIStyle.dividerWidth)
                 .offset(x: -rightPanelWidth).allowsHitTesting(false)
             }
           }
@@ -105,7 +105,7 @@ struct RootView: View {
           .overlay(alignment: .leading) {
             Rectangle().fill(Color(nsColor: .separatorColor))
               .background(Color(nsColor: .controlBackgroundColor))
-              .frame(width: 1)
+              .frame(width: UIStyle.dividerWidth)
               .offset(x: sidebarWidth).allowsHitTesting(false)
           }
           .onGeometryChange(for: CGFloat.self) { $0.size.width } action: {

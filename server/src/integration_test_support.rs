@@ -225,6 +225,7 @@ pub mod platform {
     pub use crate::common::operation_context::sync_scope;
     pub use crate::common::operation_context::wait;
     pub use crate::common::priority::PriorityGate;
+    pub use crate::common::retry::conflicts;
     pub use crate::common::retry::AttemptProgress;
     pub use crate::common::retry::RetryLimiter;
     pub use crate::domain::comment::AuthorScope;
@@ -292,6 +293,7 @@ pub mod platform {
     pub use crate::domain::workspace_state::value_objects::workspace_layout_state::WorkspaceLayoutState;
     pub use crate::domain::workspace_state::value_objects::workspace_tabs_state::WorkspaceTabEntry;
     pub use crate::domain::workspace_state::value_objects::workspace_tabs_state::WorkspaceTabsState;
+    pub use crate::domain::workspace_state::WorkspaceStateKey;
     pub use crate::infrastructure::app_data_path::AppDataPathObserver;
     pub use crate::infrastructure::app_data_path::AppDataPathOperation;
     pub use crate::infrastructure::app_data_path::NoopAppDataPathObserver;
@@ -341,6 +343,7 @@ pub mod platform {
     pub use crate::test_support::EnvVarGuard;
     pub use crate::test_support::TEST_ENV_LOCK;
 
+    pub use crate::test_support::captured_error_messages;
     pub use crate::test_support::captured_warning_messages;
     pub use crate::test_support::install_capturing_logger;
     pub use crate::test_support::retry::record_retry_failure;

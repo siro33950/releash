@@ -1,10 +1,17 @@
+use super::*;
 pub(crate) mod tests {
     use super::super::*;
 
     #[test]
     fn test_ui状態のgc判定_現存と両時点の保護と未解決と不足した前提は保持する() {
         // Given / When / Then
-        assert!(workspace_state_removable(false, false, false, false, true));
+        assert!(workspace_state_removable(WorkspaceStateRetention {
+            live: false,
+            protected_at_scan: false,
+            protected_at_sweep: false,
+            possibly_unresolved: false,
+            prerequisites_complete: true
+        }));
         for (live, scan, sweep, unresolved, complete) in [
             (true, false, false, false, true),
             (false, true, false, false, true),
@@ -12,9 +19,13 @@ pub(crate) mod tests {
             (false, false, false, true, true),
             (false, false, false, false, false),
         ] {
-            assert!(!workspace_state_removable(
-                live, scan, sweep, unresolved, complete
-            ));
+            assert!(!workspace_state_removable(WorkspaceStateRetention {
+                live,
+                protected_at_scan: scan,
+                protected_at_sweep: sweep,
+                possibly_unresolved: unresolved,
+                prerequisites_complete: complete
+            }));
         }
     }
 
@@ -92,4 +103,55 @@ pub(crate) mod tests {
         );
         assert!(report.log_summary().contains("reclaimed_bytes=15"));
     }
+}
+
+#[test]
+fn test_gc報告の合算_片側と共通のカテゴリを足し上限で飽和する() {
+    // Given
+    let mut first = GcReport::default();
+    first.record_deleted(GcCategory::DeletedWorkspace, 10);
+    first.record_deleted(GcCategory::RegenerableCache, 20);
+    first.errors = u64::MAX;
+    let mut second = GcReport::default();
+    second.record_deleted(GcCategory::DeletedWorkspace, 30);
+    second.record_deleted(GcCategory::LegacyComments, 40);
+    second.record_error();
+    // When
+    first.merge(second);
+    // Then
+    assert_eq!(first.total_files, 4);
+    assert_eq!(first.total_bytes, 100);
+    assert_eq!(first.errors, u64::MAX);
+    assert_eq!(
+        first.categories[&GcCategory::DeletedWorkspace],
+        CategoryStat {
+            deleted: 2,
+            reclaimed_bytes: 40
+        }
+    );
+    assert_eq!(first.categories[&GcCategory::RegenerableCache].deleted, 1);
+    assert_eq!(first.categories[&GcCategory::LegacyComments].deleted, 1);
+    let mut saturated = GcReport {
+        total_files: u64::MAX,
+        total_bytes: u64::MAX,
+        errors: u64::MAX,
+        ..Default::default()
+    };
+    saturated.categories.insert(
+        GcCategory::DeletedWorkspace,
+        CategoryStat {
+            deleted: u64::MAX,
+            reclaimed_bytes: u64::MAX,
+        },
+    );
+    saturated.merge(first);
+    assert_eq!(saturated.total_files, u64::MAX);
+    assert_eq!(saturated.total_bytes, u64::MAX);
+    assert_eq!(
+        saturated.categories[&GcCategory::DeletedWorkspace],
+        CategoryStat {
+            deleted: u64::MAX,
+            reclaimed_bytes: u64::MAX
+        }
+    );
 }

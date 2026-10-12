@@ -1417,3 +1417,155 @@ async fn test_hookのconnect入口_生payloadを解釈し上限と権限と結�
         }
     }
 }
+
+mod workspace_deadline_tests {
+    use super::*;
+    use crate::domain::local_event::StreamVersion;
+    use crate::domain::workspace_state::{
+        WorkspaceState, WorkspaceStateError, WorkspaceStateKey, WorkspaceStateRepository,
+    };
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct ConflictingStates {
+        saves: AtomicUsize,
+    }
+    fn state() -> WorkspaceState {
+        use crate::domain::workspace_state::value_objects::{
+            WorkspaceLayoutState, WorkspaceTabsState,
+        };
+        WorkspaceState {
+            version: 1,
+            panes: None,
+            tabs: WorkspaceTabsState {
+                editors: vec![],
+                active_editor_path: None,
+            },
+            layout: WorkspaceLayoutState {
+                center_tab: "editor".into(),
+                active_view: "git".into(),
+                left_nav_collapsed: false,
+                right_collapsed: false,
+                right_bottom_collapsed: false,
+                right_bottom_active_tab: None,
+                selected_diff_file: None,
+            },
+        }
+    }
+    #[async_trait::async_trait]
+    impl WorkspaceStateRepository for ConflictingStates {
+        async fn migrate_legacy(
+            &self,
+            _: &[String],
+            _: &[String],
+        ) -> Result<(), WorkspaceStateError> {
+            unreachable!()
+        }
+        async fn load(
+            &self,
+            _: &str,
+            _: &str,
+        ) -> Result<Option<WorkspaceState>, WorkspaceStateError> {
+            unreachable!()
+        }
+        async fn load_repository_group(&self, _: &str) -> Result<bool, WorkspaceStateError> {
+            unreachable!()
+        }
+        async fn read_repository_group(
+            &self,
+            _: &str,
+        ) -> Result<(StreamVersion, bool), WorkspaceStateError> {
+            Ok((StreamVersion::new(0).unwrap(), false))
+        }
+        async fn read(
+            &self,
+            _: &str,
+        ) -> Result<(StreamVersion, Option<WorkspaceState>), WorkspaceStateError> {
+            Ok((StreamVersion::new(0).unwrap(), None))
+        }
+        async fn save(
+            &self,
+            _: &str,
+            _: WorkspaceState,
+            _: StreamVersion,
+        ) -> Result<(), WorkspaceStateError> {
+            self.saves.fetch_add(1, Ordering::SeqCst);
+            Err(WorkspaceStateError::VersionConflict)
+        }
+        async fn save_repository_group(
+            &self,
+            _: &str,
+            _: bool,
+            _: StreamVersion,
+        ) -> Result<(), WorkspaceStateError> {
+            self.saves.fetch_add(1, Ordering::SeqCst);
+            Err(WorkspaceStateError::VersionConflict)
+        }
+        async fn states(
+            &self,
+        ) -> Result<Vec<(WorkspaceStateKey, StreamVersion)>, WorkspaceStateError> {
+            unreachable!()
+        }
+        async fn invalidate(
+            &self,
+            _: &WorkspaceStateKey,
+            _: StreamVersion,
+        ) -> Result<bool, WorkspaceStateError> {
+            unreachable!()
+        }
+    }
+
+    #[tokio::test]
+    async fn test_ui状態保存入口_両方の保存の期限到達で競合を保持し再試行を止める() {
+        for group in [false, true] {
+            // Given
+            let runtime = Arc::new(crate::usecase::workflow::WorkflowRuntimeUsecase::new(
+                Arc::new(crate::usecase::workflow::runtime_command::runtime_command_tests::tests::FakeRuntimeGateway::default()),
+                Arc::new(crate::usecase::workflow::NoopArchiveRepository),
+            ));
+            let mut dispatch = dispatch();
+            let store = Arc::new(ConflictingStates {
+                saves: AtomicUsize::new(0),
+            });
+            let mut dependencies = crate::acceptance_test_support::build_client_dependencies(
+                std::path::PathBuf::from("/unused"),
+            );
+            dependencies.workspace_state_store = Some(store.clone());
+            dependencies.workflow_runtime_usecase = Some(runtime);
+            dispatch.register_dependencies(&dependencies);
+            let deps = crate::test_support::client_api_deps(Arc::new(dispatch));
+            let command = if group {
+                wire::command_request::Command::SaveRepositoryGroupState(
+                    wire::SaveRepositoryGroupStateRequest {
+                        repository_path: "/repo".into(),
+                        collapsed: true,
+                    },
+                )
+            } else {
+                wire::command_request::Command::SaveWorkspaceState(
+                    wire::SaveWorkspaceStateRequest {
+                        worktree_name: Some("/repo/wt".into()),
+                        state: Some(state().try_into().unwrap()),
+                    },
+                )
+            };
+            // When
+            let error = deps
+                .execute(
+                    Some(std::time::Instant::now() + std::time::Duration::from_secs(1)),
+                    command,
+                )
+                .await
+                .unwrap_err();
+            // Then
+            assert_eq!(error.code, connectrpc::ErrorCode::Aborted);
+            assert!(error
+                .message
+                .as_deref()
+                .unwrap()
+                .contains("Workspace state version conflict"));
+            let completed_saves = store.saves.load(Ordering::SeqCst);
+            tokio::task::yield_now().await;
+            assert_eq!(store.saves.load(Ordering::SeqCst), completed_saves);
+        }
+    }
+}

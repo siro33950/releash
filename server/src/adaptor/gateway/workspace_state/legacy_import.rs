@@ -1,8 +1,10 @@
 use super::{
     facts,
-    repository_impl::{repository_group_key, storage_key, StoredWorkspaceState},
+    repository_impl::{repository_group_key, storage_key},
 };
-use crate::adaptor::gateway::local_event_store::LocalEventStore;
+use crate::adaptor::gateway::local_event_store::{
+    workspace_state_codec::StoredWorkspaceState, LocalEventStore,
+};
 use crate::domain::local_event::{LocalDomainEvent, StreamId};
 use crate::domain::workspace_state::{WorkspaceState, WorkspaceStateError};
 use std::path::{Path, PathBuf};
@@ -48,8 +50,7 @@ async fn migrate_worktrees(
         };
         let result = async {
             let stream = facts::workspace_stream(key);
-            let (head, event) = store
-                .latest_workspace_event(stream.clone())
+            let (head, event) = facts::latest(store, stream.clone())
                 .await
                 .map_err(facts::error)?;
             if event.is_none() {
@@ -103,8 +104,7 @@ async fn import_group(
     stream: StreamId,
     file: &Path,
 ) -> Result<(), WorkspaceStateError> {
-    let (head, event) = store
-        .latest_workspace_event(stream.clone())
+    let (head, event) = facts::latest(store, stream.clone())
         .await
         .map_err(facts::error)?;
     if event.is_none() {

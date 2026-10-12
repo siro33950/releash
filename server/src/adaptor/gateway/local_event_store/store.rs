@@ -5,7 +5,6 @@
 //! every rusqlite call. The async trait methods only validate, encode, and
 //! exchange messages with those threads.
 
-use crate::domain::local_event::{LocalDomainEvent, StreamId, StreamVersion};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -939,23 +938,6 @@ impl LocalEventStore {
         CommitBatchError::Corrupt {
             correlation_id: correlation,
         }
-    }
-
-    pub async fn latest_workspace_event(
-        &self,
-        stream: StreamId,
-    ) -> Result<(StreamVersion, Option<LocalDomainEvent>), LocalEventQueryError> {
-        let context = self.query_context.clone();
-        self.submit_query(move |connection| {
-            super::workspace_state_reader::latest(connection, &context, &stream)
-        })
-        .await
-    }
-    pub async fn workspace_state_heads(
-        &self,
-    ) -> Result<Vec<(String, StreamVersion)>, LocalEventQueryError> {
-        self.submit_query(super::workspace_state_reader::states)
-            .await
     }
 
     pub async fn submit_query<T, F>(&self, run: F) -> Result<T, LocalEventQueryError>

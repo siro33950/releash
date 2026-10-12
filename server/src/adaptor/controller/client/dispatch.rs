@@ -125,7 +125,10 @@ impl ClientCommandDispatch {
                 .map_err(|error| {
                     wire::CommandFailure::from(
                         crate::adaptor::presenter::error::AppError::from_failure(
-                            crate::domain::failure::TechnicalFailure::from(error),
+                            crate::adaptor::gateway::shared::operation_context::stopped_failure(
+                                &crate::common::operation_context::current(),
+                                error,
+                            ),
                         ),
                     )
                 })?,

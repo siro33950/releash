@@ -879,3 +879,79 @@ pub async fn test_startup_gc結線_消失候補の未終了実行木をabortし�
         "worktree_removed"
     );
 }
+
+#[tokio::test]
+async fn test_起動時gc入口_後続ページの失敗にも先行処理の警告を記録する() {
+    use releashd::test_support::integration::persistence::ExecutionTreeGc;
+    use releashd::test_support::integration::platform::{
+        captured_warning_messages, install_capturing_logger, RetryLimiter, WorkspaceStateStore,
+    };
+    use releashd::test_support::integration::workflow::{
+        ExecutionTreeArchiveCandidate, WorkflowError,
+    };
+    struct PartialTrees {
+        repository: String,
+    }
+    #[async_trait::async_trait]
+    impl ExecutionTreeGc for PartialTrees {
+        async fn execution_trees(
+            &self,
+            after: Option<&str>,
+        ) -> Result<Vec<ExecutionTreeArchiveCandidate>, WorkflowError> {
+            if after.is_some() {
+                return Err(WorkflowError::external("gc-next-page-failed"));
+            }
+            Ok(["gc-owner-failed", "gc-archive-failed"]
+                .map(|id| ExecutionTreeArchiveCandidate {
+                    execution_id: id.into(),
+                    worktree_path: format!("{}/gone", self.repository),
+                    workspace_identity: format!("{}/gone", self.repository),
+                    repository_root: Some(self.repository.clone()),
+                })
+                .into())
+        }
+        async fn record_repository_root(&self, id: &str, _: &str) -> Result<(), WorkflowError> {
+            if id == "gc-owner-failed" {
+                Err(WorkflowError::external("gc-owner-reason"))
+            } else {
+                Ok(())
+            }
+        }
+        async fn archive_removed_tree(&self, _: &str) -> Result<(), WorkflowError> {
+            Err(WorkflowError::external("gc-archive-reason"))
+        }
+    }
+    // Given
+    install_capturing_logger();
+    let data = tempfile::tempdir().unwrap();
+    let (repository, git) = crate::test_support_git::create_test_repo();
+    crate::test_support_git::create_initial_commit(&git);
+    let root = repository.path().to_string_lossy().into_owned();
+    let composition =
+        ProductionAppDataComposition::new(data.path().into(), Arc::new(RetryLimiter::new()));
+    let events = composition.open_local_event_store().unwrap();
+    let states = Arc::new(WorkspaceStateStore::with_store(
+        data.path().into(),
+        events.clone(),
+    ));
+    // When
+    let failure = composition
+        .run_startup_gc_pass(
+            Arc::new(parking_lot::RwLock::new(vec![root.clone()])),
+            events,
+            Arc::new(PartialTrees { repository: root }),
+            states,
+        )
+        .await
+        .unwrap_err();
+    // Then
+    assert!(failure.message.contains("gc-next-page-failed"));
+    assert_eq!(failure.report.errors, 2);
+    let warnings = captured_warning_messages();
+    assert!(warnings.iter().any(|message| message
+        .contains("execution tree GC failed to record repository for gc-owner-failed")
+        && message.contains("gc-owner-reason")));
+    assert!(warnings.iter().any(|message| message
+        .contains("execution tree GC failed to archive gc-archive-failed")
+        && message.contains("gc-archive-reason")));
+}

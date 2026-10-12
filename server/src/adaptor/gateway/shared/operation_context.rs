@@ -75,3 +75,17 @@ impl From<tokio::task::JoinError> for crate::domain::failure::TechnicalFailure {
         }
     }
 }
+
+pub(crate) fn stopped_failure(
+    context: &crate::common::operation_context::OperationContext,
+    stopped: OperationStopped,
+) -> crate::domain::failure::WorkFailure {
+    if stopped == OperationStopped::Expired {
+        if let Some(failure) = context.deadline_failure() {
+            return failure;
+        }
+    }
+    crate::domain::failure::WorkFailure::from(crate::domain::failure::TechnicalFailure::from(
+        stopped,
+    ))
+}

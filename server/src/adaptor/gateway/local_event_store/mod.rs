@@ -18,7 +18,6 @@ pub(crate) mod reader;
 pub(crate) mod schema;
 pub(crate) mod store;
 pub(crate) mod workspace_state_codec;
-mod workspace_state_reader;
 pub(crate) mod writer;
 
 pub(crate) use store::{LocalEventStore, LocalEventStoreConfig};

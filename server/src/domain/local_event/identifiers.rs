@@ -12,6 +12,8 @@ const AGENT_SESSION_PREFIX: &str = "agent-session:";
 const PROVIDER_LIFECYCLE_PREFIX: &str = "provider-lifecycle:";
 const WORKFLOW_PREFIX: &str = "workflow:";
 const PROVIDER_SESSION_OWNERSHIP_PREFIX: &str = "provider-session-ownership:";
+pub const WORKSPACE_STATE_PREFIX: &str = "workspace-state:";
+pub const REPOSITORY_GROUP_PREFIX: &str = "repository-group:";
 const APPLICATION_STREAM: &str = "application";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -33,7 +35,7 @@ impl fmt::Display for IdentityError {
             }
             Self::InvalidStreamNamespace => write!(
                 f,
-                "stream id must be agent-session:<id>, provider-lifecycle:<agent-session-id>, workflow:<id>, provider-session-ownership:<provider>:<digest>, workspace-state:<id>, repository-group:<id>, or application"
+                "stream id must be agent-session:<id>, provider-lifecycle:<agent-session-id>, workflow:<id>, provider-session-ownership:<provider>:<digest>, {}<id>, {}<id>, or application", WORKSPACE_STATE_PREFIX, REPOSITORY_GROUP_PREFIX
             ),
             Self::OutOfRange { value } => write!(f, "sequence value {value} is out of range"),
         }
@@ -71,8 +73,8 @@ impl StreamId {
                 raw.strip_prefix(PROVIDER_LIFECYCLE_PREFIX).or_else(|| {
                     raw.strip_prefix(WORKFLOW_PREFIX)
                         .or_else(|| raw.strip_prefix(PROVIDER_SESSION_OWNERSHIP_PREFIX))
-                        .or_else(|| raw.strip_prefix("workspace-state:"))
-                        .or_else(|| raw.strip_prefix("repository-group:"))
+                        .or_else(|| raw.strip_prefix(WORKSPACE_STATE_PREFIX))
+                        .or_else(|| raw.strip_prefix(REPOSITORY_GROUP_PREFIX))
                 })
             });
             let Some(suffix) = suffix else {

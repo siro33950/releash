@@ -8,17 +8,9 @@ pub async fn save_workspace_state(
     worktree_name: &str,
     state: WorkspaceState,
 ) -> Result<(), WorkspaceStateError> {
-    loop {
-        let (version, previous) = repository.read(worktree_name).await?;
-        let next = state.clone().preserve_omitted_panes(previous);
-        match repository.save(worktree_name, next, version).await {
-            Err(WorkspaceStateError::VersionConflict) => continue,
-            result => {
-                result?;
-                break;
-            }
-        }
-    }
+    let (version, previous) = repository.read(worktree_name).await?;
+    let next = state.preserve_omitted_panes(previous);
+    repository.save(worktree_name, next, version).await?;
     if let Some(publisher) = publisher {
         publisher.notify(
             crate::usecase::state_subscription::StateChangeSource::WorkspaceState(
@@ -47,15 +39,10 @@ pub async fn save_repository_group_state(
     path: &str,
     collapsed: bool,
 ) -> Result<(), WorkspaceStateError> {
-    loop {
-        match repository.save_repository_group(path, collapsed).await {
-            Err(WorkspaceStateError::VersionConflict) => continue,
-            result => {
-                result?;
-                break;
-            }
-        }
-    }
+    let (version, _) = repository.read_repository_group(path).await?;
+    repository
+        .save_repository_group(path, collapsed, version)
+        .await?;
     if let Some(publisher) = publisher {
         publisher.notify(
             crate::usecase::state_subscription::StateChangeSource::RepositoryGroupState(

@@ -11,10 +11,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use crate::adaptor::gateway::app_data_gc::{
-    apply_canonical_runtime_owners, build_startup_gc_request, canonical_runtime_protection,
-    StdGcFileSystem,
-};
+use crate::adaptor::gateway::app_data_gc::{log_gc_report, StartupInventory, StdGcFileSystem};
 use crate::adaptor::gateway::local_event_store::{LocalEventStore, LocalEventStoreConfig};
 use crate::adaptor::gateway::repository::repo_paths::SharedRepoPaths;
 use crate::domain::app_data_gc::GcReport;
@@ -64,91 +61,35 @@ impl ProductionAppDataComposition {
     }
 
     /// Execute the exact production GC/retention pass.
-    ///
-    /// Inventory and sweeping remain on blocking workers.  Failure to load
-    /// canonical runtime owners leaves workspace-keyed protection incomplete,
-    /// so those deletions fail closed while independent cache/comment/process
-    /// retention can still run.
     pub async fn run_startup_gc_pass(
         &self,
         shared_repo_paths: SharedRepoPaths,
         repository: Arc<dyn LocalEventTransactionRepository>,
         execution_trees: Arc<dyn crate::usecase::app_data_gc::ExecutionTreeGc>,
         workspace_states: Arc<dyn crate::domain::workspace_state::WorkspaceStateRepository>,
-    ) -> Result<GcReport, String> {
+    ) -> Result<GcReport, crate::usecase::app_data_gc::StartupGcFailure> {
         let file_system = StdGcFileSystem::with_observer(self.observer.clone());
-        let inventory_file_system = file_system.clone();
-        let app_data_dir = self.app_data_dir.clone();
-        let (workspace_inventory, inventory) = crate::usecase::app_data_gc::inventory_startup_gc(
-            workspace_states.as_ref(),
-            async move {
-                crate::common::operation_context::spawn_blocking(move || {
-                    build_startup_gc_request(
-                        app_data_dir,
-                        shared_repo_paths,
-                        &inventory_file_system,
-                    )
-                })
-                .await
-                .map_err(|error| format!("app data gc inventory task failed: {error}"))
+        let inventory = StartupInventory {
+            app_data_dir: self.app_data_dir.clone(),
+            shared_repo_paths,
+            file_system: file_system.clone(),
+        };
+        crate::common::telemetry::observe_result_async(
+            crate::usecase::app_data_gc::execute_startup_gc(
+                &inventory,
+                repository,
+                execution_trees.as_ref(),
+                workspace_states.as_ref(),
+                Arc::new(file_system),
+            ),
+            |result, _| match result {
+                Ok(report) => {
+                    log_gc_report(report);
+                    log::info!("{}", report.log_summary());
+                }
+                Err(failure) => log_gc_report(&failure.report),
             },
         )
-        .await?;
-        let mut request = inventory;
-        let archive_errors = crate::usecase::app_data_gc::archive_removed_execution_trees(
-            request.live_worktrees.as_ref(),
-            execution_trees.as_ref(),
-        )
         .await
-        .map_err(|error| format!("execution tree GC failed: {error}"))?;
-
-        match crate::usecase::app_data_gc::load_canonical_runtime_owners(repository.clone()).await {
-            Ok(owners) => apply_canonical_runtime_owners(&mut request, owners),
-            Err(error) => {
-                log::warn!(
-                    "app data gc retained workspace-keyed data because canonical protection failed: {error}"
-                );
-            }
-        }
-
-        let plan = crate::usecase::app_data_gc::plan_startup_gc(request);
-        let revalidated_runtime_protection =
-            match crate::usecase::app_data_gc::load_canonical_runtime_owners(repository).await {
-                Ok(owners) => canonical_runtime_protection(owners),
-                Err(error) => {
-                    log::warn!(
-                        "app data gc retained workspace-keyed candidates because sweep-boundary canonical revalidation failed: {error}"
-                    );
-                    crate::usecase::app_data_gc::RuntimeProtection::incomplete()
-                }
-            };
-
-        let mut workspace_report = GcReport::default();
-        crate::usecase::app_data_gc::sweep_workspace_states(
-            &plan,
-            &revalidated_runtime_protection,
-            workspace_states.as_ref(),
-            workspace_inventory,
-            &mut workspace_report,
-        )
-        .await;
-        crate::common::operation_context::spawn_blocking(move || {
-            let mut report = crate::usecase::app_data_gc::sweep_startup_gc(
-                plan,
-                revalidated_runtime_protection,
-                &file_system,
-            );
-            report.errors += archive_errors + workspace_report.errors;
-            report.total_files += workspace_report.total_files;
-            report.total_bytes += workspace_report.total_bytes;
-            for (category, stat) in workspace_report.categories {
-                let entry = report.categories.entry(category).or_default();
-                entry.deleted += stat.deleted;
-                entry.reclaimed_bytes += stat.reclaimed_bytes;
-            }
-            report
-        })
-        .await
-        .map_err(|error| format!("app data gc sweep task failed: {error}"))
     }
 }

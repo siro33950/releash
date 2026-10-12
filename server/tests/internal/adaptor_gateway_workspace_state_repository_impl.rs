@@ -262,8 +262,22 @@ pub async fn test_repositoryグループ_独立して保存し新しいstoreで�
         directory.path().into(),
     );
     // When
-    store.save_repository_group("/a/repo", true).await.unwrap();
-    store.save_repository_group("/b/repo", false).await.unwrap();
+    store
+        .save_repository_group(
+            "/a/repo",
+            true,
+            store.read_repository_group("/a/repo").await.unwrap().0,
+        )
+        .await
+        .unwrap();
+    store
+        .save_repository_group(
+            "/b/repo",
+            false,
+            store.read_repository_group("/b/repo").await.unwrap().0,
+        )
+        .await
+        .unwrap();
     drop(store);
     let restored = releashd::test_support::integration::platform::workspace_state_store(
         directory.path().into(),
@@ -281,7 +295,14 @@ pub async fn test_repository折りたたみ_壊れた保存値を既定値で隠
     let store = releashd::test_support::integration::platform::workspace_state_store(
         dir.path().to_path_buf(),
     );
-    store.save_repository_group("/repo", true).await.unwrap();
+    store
+        .save_repository_group(
+            "/repo",
+            true,
+            store.read_repository_group("/repo").await.unwrap().0,
+        )
+        .await
+        .unwrap();
     corrupt_latest_event(dir.path());
     // When / Then
     assert!(store.load_repository_group("/repo").await.is_err());
@@ -352,7 +373,7 @@ pub async fn test_worktree表示状態_絶対pathの旧保存を読み新しい�
     let store = releashd::test_support::integration::platform::workspace_state_store(
         dir.path().to_path_buf(),
     );
-    write_legacy_state(dir.path(), "_repo_wt", &legacy_state());
+    write_legacy_state(dir.path(), "/repo/wt", &legacy_state());
     store
         .migrate_legacy(&[], &["/repo/wt".into()])
         .await
@@ -565,7 +586,14 @@ async fn test_旧repositoryグループ_取り込んだ折りたたみを再起�
         .migrate_legacy(&["/repo/a".into(), "/repo/b".into()], &[])
         .await
         .unwrap();
-    store.save_repository_group("/repo/a", false).await.unwrap();
+    store
+        .save_repository_group(
+            "/repo/a",
+            false,
+            store.read_repository_group("/repo/a").await.unwrap().0,
+        )
+        .await
+        .unwrap();
     drop(store);
     let store =
         releashd::test_support::integration::platform::workspace_state_store(dir.path().into());
@@ -807,7 +835,10 @@ async fn test_ui状態の無効化_走査後に更新された状態を消さず
     let inventory = store.states().await.unwrap();
     assert_eq!(inventory.len(), 1);
     let (key, version) = &inventory[0];
-    assert_eq!(key, &storage_key(path));
+    assert_eq!(
+        key,
+        &releashd::test_support::integration::platform::WorkspaceStateKey::from(storage_key(path))
+    );
     let mut next = make_state();
     next.layout.left_nav_collapsed = true;
     let pending_state = next;
@@ -830,7 +861,13 @@ async fn test_ui状態の無効化_走査後に更新された状態を消さず
             .layout
             .left_nav_collapsed
     );
-    assert!(store.invalidate("unexpected", *version).await.is_err());
+    assert!(store
+        .invalidate(
+            &releashd::test_support::integration::platform::WorkspaceStateKey::from("unexpected"),
+            *version
+        )
+        .await
+        .is_err());
     assert_eq!(event_count(directory.path()), 2);
 }
 
@@ -963,22 +1000,34 @@ async fn test_ui状態の並行保存_版競合を再読取し直前のpanesと�
         let first_panes = panes.clone();
         let first = tokio::spawn(async move {
             if group {
-                save_repository_group_state(first_store.as_ref(), None, "/repo", true).await
+                retry_workspace_conflicts(|| {
+                    save_repository_group_state(first_store.as_ref(), None, "/repo", true)
+                })
+                .await
             } else {
                 let mut state = make_state();
                 state.panes = Some(first_panes);
-                save_workspace_state(first_store.as_ref(), None, "/repo/wt", state).await
+                retry_workspace_conflicts(|| {
+                    save_workspace_state(first_store.as_ref(), None, "/repo/wt", state.clone())
+                })
+                .await
             }
         });
         wait_for_ui_writes(events.as_ref(), 1).await;
         let second_store = store.clone();
         let second = tokio::spawn(async move {
             if group {
-                save_repository_group_state(second_store.as_ref(), None, "/repo", false).await
+                retry_workspace_conflicts(|| {
+                    save_repository_group_state(second_store.as_ref(), None, "/repo", false)
+                })
+                .await
             } else {
                 let mut state = make_state();
                 state.layout.left_nav_collapsed = true;
-                save_workspace_state(second_store.as_ref(), None, "/repo/wt", state).await
+                retry_workspace_conflicts(|| {
+                    save_workspace_state(second_store.as_ref(), None, "/repo/wt", state.clone())
+                })
+                .await
             }
         });
         wait_for_ui_writes(events.as_ref(), 2).await;
@@ -1053,4 +1102,143 @@ async fn test_ui状態保存_handler破棄後も受理済みjobが完了する�
     );
     assert!(store.read("/repo/wt").await.unwrap().1.is_some());
     assert!(operations.mutate("/repo/wt").is_ok());
+}
+
+async fn retry_workspace_conflicts<T>(
+    operation: impl FnMut() -> T,
+) -> Result<(), releashd::test_support::integration::platform::WorkspaceStateError>
+where
+    T: std::future::Future<
+        Output = Result<(), releashd::test_support::integration::platform::WorkspaceStateError>,
+    >,
+{
+    use releashd::test_support::integration::platform::{conflicts, WorkspaceStateError};
+    conflicts(
+        || WorkspaceStateError::VersionConflict,
+        |error| matches!(error, WorkspaceStateError::VersionConflict),
+        operation,
+    )
+    .await
+}
+
+#[tokio::test]
+async fn test_ui状態読取_最新の未知の版と種類を未保存でなく非互換として返す() {
+    for group in [false, true] {
+        for unknown_version in [false, true] {
+            // Given
+            let dir = TempDir::new().unwrap();
+            let store = releashd::test_support::integration::platform::workspace_state_store(
+                dir.path().into(),
+            );
+            if group {
+                store
+                    .save_repository_group(
+                        "/repo",
+                        true,
+                        store.read_repository_group("/repo").await.unwrap().0,
+                    )
+                    .await
+                    .unwrap();
+            } else {
+                let (version, _) = store.read("/repo/wt").await.unwrap();
+                store.save("/repo/wt", make_state(), version).await.unwrap();
+            }
+            let connection = event_connection(dir.path());
+            if unknown_version {
+                connection
+                    .execute("UPDATE events SET payload_version = 999", [])
+                    .unwrap();
+            } else {
+                connection
+                    .execute("UPDATE events SET event_type = 'unknown.event'", [])
+                    .unwrap();
+            }
+            // When / Then
+            let error = if group {
+                store.load_repository_group("/repo").await.unwrap_err()
+            } else {
+                let error = store.read("/repo/wt").await.unwrap_err();
+                assert!(error.to_string().contains("incompatible stored event"));
+                store.load("/repo/wt", "/repo/wt").await.unwrap_err()
+            };
+            assert!(error.to_string().contains("incompatible stored event"));
+        }
+    }
+}
+
+#[tokio::test]
+async fn test_ui状態読取_hash破損はstreamとcorrelationをログに残す() {
+    use releashd::test_support::integration::platform::{
+        captured_error_messages, install_capturing_logger,
+    };
+    // Given
+    install_capturing_logger();
+    let dir = TempDir::new().unwrap();
+    let store =
+        releashd::test_support::integration::platform::workspace_state_store(dir.path().into());
+    let path = format!("/repo/{}", uuid::Uuid::new_v4());
+    let (version, _) = store.read(&path).await.unwrap();
+    store.save(&path, make_state(), version).await.unwrap();
+    corrupt_latest_event(dir.path());
+    let stream: String = event_connection(dir.path())
+        .query_row("SELECT stream_id FROM events", [], |row| row.get(0))
+        .unwrap();
+    // When
+    let error = store.read(&path).await.unwrap_err().to_string();
+    // Then
+    assert!(error.contains("store corrupt"));
+    let correlation = error
+        .split("correlation_id=")
+        .nth(1)
+        .unwrap()
+        .trim_end_matches(')');
+    assert!(captured_error_messages()
+        .iter()
+        .any(|message| message.contains(&stream)
+            && message.contains(correlation)
+            && message.contains("sequence=1")
+            && message.contains("workspace.state_changed")
+            && message.contains("hash mismatch")));
+}
+
+#[tokio::test]
+async fn test_repositoryグループ保存_読み取った版の後に更新があれば競合する() {
+    // Given
+    let dir = TempDir::new().unwrap();
+    let store =
+        releashd::test_support::integration::platform::workspace_state_store(dir.path().into());
+    let (version, _) = store.read_repository_group("/repo").await.unwrap();
+    store
+        .save_repository_group("/repo", true, version)
+        .await
+        .unwrap();
+    // When
+    let result = store.save_repository_group("/repo", false, version).await;
+    // Then
+    assert!(matches!(
+        result,
+        Err(releashd::test_support::integration::platform::WorkspaceStateError::VersionConflict)
+    ));
+    assert!(store.load_repository_group("/repo").await.unwrap());
+    assert_eq!(event_count(dir.path()), 1);
+}
+
+#[tokio::test]
+async fn test_ui状態保存_同じ値の連続保存も毎回事実を追記する() {
+    // Given
+    let dir = TempDir::new().unwrap();
+    let store =
+        releashd::test_support::integration::platform::workspace_state_store(dir.path().into());
+    let state = make_state();
+    // When
+    for _ in 0..2 {
+        let version = store.read("/repo/wt").await.unwrap().0;
+        store
+            .save("/repo/wt", state.clone(), version)
+            .await
+            .unwrap();
+    }
+    // Then
+    assert_eq!(event_count(dir.path()), 2);
+    assert_eq!(store.read("/repo/wt").await.unwrap().1, Some(state));
 }

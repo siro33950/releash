@@ -2,21 +2,11 @@ use std::path::Path;
 
 use crate::domain::workspace_state::WorkspaceState;
 
-fn path_exists(worktree_root: &str, path: &str) -> bool {
-    let path = Path::new(path);
-    let full_path = if path.is_absolute() {
-        path.to_path_buf()
-    } else {
-        Path::new(worktree_root).join(path)
-    };
-    full_path.exists()
-}
-
-pub fn filter_missing_files(mut state: WorkspaceState, worktree_root: &str) -> WorkspaceState {
-    state
-        .tabs
-        .editors
-        .retain(|tab| path_exists(worktree_root, &tab.path));
+pub fn filter_missing_files(
+    mut state: WorkspaceState,
+    exists: impl Fn(&str) -> bool,
+) -> WorkspaceState {
+    state.tabs.editors.retain(|tab| exists(&tab.path));
 
     if let Some(ref active) = state.tabs.active_editor_path {
         let still_exists = state.tabs.editors.iter().any(|e| e.path == *active);
@@ -26,7 +16,7 @@ pub fn filter_missing_files(mut state: WorkspaceState, worktree_root: &str) -> W
     }
 
     if let Some(ref diff_file) = state.layout.selected_diff_file {
-        if !path_exists(worktree_root, diff_file) {
+        if !exists(diff_file) {
             state.layout.selected_diff_file = None;
         }
     }
@@ -46,10 +36,9 @@ pub fn legacy_state_path<'a>(name: &str, candidates: &'a [(String, String)]) -> 
     if let Some((path, _)) = candidates.iter().find(|(_, key)| key == name) {
         return Some(path);
     }
-    let mut matches = candidates.iter().filter(|(path, _)| {
-        Path::new(path).file_name().is_some_and(|part| part == name)
-            || path.replace(['/', '\\'], "_") == name
-    });
+    let mut matches = candidates
+        .iter()
+        .filter(|(path, _)| Path::new(path).file_name().is_some_and(|part| part == name));
     let (first, _) = matches.next()?;
     matches.next().is_none().then_some(first.as_str())
 }

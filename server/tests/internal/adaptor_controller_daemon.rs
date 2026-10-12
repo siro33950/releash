@@ -411,7 +411,6 @@ pub async fn test_旧ui状態の起動時移行_repositoryの不在とjson破損
         .into_owned();
     // When
     migrate_legacy_workspace_states(
-        data.path(),
         &store,
         &[healthy.clone(), broken.clone(), unresolved.clone()],
         &repository,
@@ -428,13 +427,7 @@ pub async fn test_旧ui状態の起動時移行_repositoryの不在とjson破損
         "broken"
     );
     // When
-    migrate_legacy_workspace_states(
-        data.path(),
-        &store,
-        &[healthy.clone(), broken.clone()],
-        &repository,
-    )
-    .await;
+    migrate_legacy_workspace_states(&store, &[healthy.clone(), broken.clone()], &repository).await;
     // Then
     assert!(
         store

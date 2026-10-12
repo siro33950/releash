@@ -61,10 +61,18 @@ pub fn storage_unavailable(error: &rusqlite::Error) -> LocalEventQueryError {
     }
 }
 
-fn corrupt(context: &str) -> LocalEventQueryError {
+pub(crate) fn corrupt(context: &str) -> LocalEventQueryError {
     let correlation = correlation_id();
     log::error!("local event store corrupt read [{correlation}]: {context}");
     LocalEventQueryError::Corrupt {
+        correlation_id: correlation,
+    }
+}
+
+pub(crate) fn incompatible(context: &str) -> LocalEventQueryError {
+    let correlation = correlation_id();
+    log::error!("local event store incompatible read [{correlation}]: {context}");
+    LocalEventQueryError::IncompatibleStoredEvent {
         correlation_id: correlation,
     }
 }
@@ -101,6 +109,31 @@ pub fn run_query(
     query: &LocalEventQuery,
 ) -> Result<LocalEventQueryResult, LocalEventQueryError> {
     match query {
+        LocalEventQuery::StreamHead { stream_id } => Ok(LocalEventQueryResult::StreamHead(
+            stream_head(connection, stream_id)?,
+        )),
+        LocalEventQuery::StreamHeads {
+            namespace,
+            event_type,
+        } => {
+            let mut statement = connection.prepare("SELECT e.stream_id, e.stream_sequence FROM stream_heads h JOIN events e ON e.stream_id = h.stream_id AND e.stream_sequence = h.head WHERE e.stream_id LIKE ?1 AND e.event_type = ?2").map_err(|error| storage_unavailable(&error))?;
+            let rows = statement
+                .query_map(params![format!("{namespace}%"), event_type], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+                })
+                .map_err(|error| storage_unavailable(&error))?;
+            let heads = rows
+                .map(|row| {
+                    let (stream, version) = row.map_err(|error| storage_unavailable(&error))?;
+                    Ok((
+                        crate::domain::local_event::StreamId::parse(&stream)
+                            .map_err(|_| corrupt("stream id"))?,
+                        StreamVersion::new(version).map_err(|_| corrupt("stream head"))?,
+                    ))
+                })
+                .collect::<Result<Vec<_>, LocalEventQueryError>>()?;
+            Ok(LocalEventQueryResult::StreamHeads(heads))
+        }
         LocalEventQuery::SessionProjectionByIdentity { session_id } => {
             Ok(LocalEventQueryResult::SessionProjectionByIdentity(
                 session_projection_by_identity(connection, session_id)?,
@@ -114,6 +147,22 @@ pub fn run_query(
     }
 }
 
+fn stream_head(
+    connection: &Connection,
+    stream: &crate::domain::local_event::StreamId,
+) -> Result<StreamVersion, LocalEventQueryError> {
+    let head: Option<i64> = connection
+        .query_row(
+            "SELECT head FROM stream_heads WHERE stream_id = ?1",
+            [stream.as_str()],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|error| storage_unavailable(&error))?;
+    StreamVersion::new(head.unwrap_or(0))
+        .map_err(|error| corrupt(&format!("stream={} head: {error}", stream.as_str())))
+}
+
 pub fn load_stream_page(
     connection: &Connection,
     context: &QueryContext,
@@ -124,20 +173,12 @@ pub fn load_stream_page(
     }
     let limit = request.limit.min(MAX_STREAM_PAGE);
     let after = request.after.map(|sequence| sequence.value()).unwrap_or(0);
-    let head: Option<i64> = connection
-        .query_row(
-            "SELECT head FROM stream_heads WHERE stream_id = ?1",
-            params![request.stream_id.as_str()],
-            |row| row.get(0),
-        )
-        .optional()
-        .map_err(|error| storage_unavailable(&error))?;
-    let head = StreamVersion::new(head.unwrap_or(0)).map_err(|_| corrupt("stream head"))?;
+    let head = stream_head(connection, &request.stream_id)?;
 
     let mut statement = connection
         .prepare(
             "SELECT event_id, commit_id, stream_sequence, global_sequence, event_type,
-                    payload_version, occurred_at, payload
+                    payload_version, occurred_at, payload, payload_sha256
              FROM events
              WHERE stream_id = ?1 AND stream_sequence > ?2
              ORDER BY stream_sequence
@@ -157,6 +198,7 @@ pub fn load_stream_page(
                     row.get::<_, i64>(5)?,
                     row.get::<_, String>(6)?,
                     row.get::<_, Vec<u8>>(7)?,
+                    row.get::<_, Vec<u8>>(8)?,
                 ))
             },
         )
@@ -174,17 +216,21 @@ pub fn load_stream_page(
             payload_version,
             occurred_at,
             payload,
+            hash,
         ) = row.map_err(|error| storage_unavailable(&error))?;
         if !events.is_empty() && bytes + payload.len() > STREAM_PAGE_MAX_BYTES {
             break;
         }
         bytes += payload.len();
+        let diagnostic = format!("stream={} sequence={stream_sequence} event_type={event_type} payload_version={payload_version}", request.stream_id.as_str());
+        use sha2::Digest;
+        if sha2::Sha256::digest(&payload).as_slice() != hash {
+            return Err(corrupt(&format!("{diagnostic}: payload hash mismatch")));
+        }
         let decoded = context
             .registry
             .decode(&event_type, payload_version, &payload)
-            .map_err(|_| LocalEventQueryError::IncompatibleStoredEvent {
-                correlation_id: correlation_id(),
-            })?;
+            .map_err(|error| incompatible(&format!("{diagnostic}: {error}")))?;
         let event = match decoded {
             DecodedStoredEvent::Known(event) => LoadedDomainEvent::Known(event),
             DecodedStoredEvent::Unknown => LoadedDomainEvent::Unknown {

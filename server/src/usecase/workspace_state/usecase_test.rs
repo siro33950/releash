@@ -1,10 +1,14 @@
 use super::*;
 use crate::domain::workspace_state::value_objects::{WorkspaceLayoutState, WorkspaceTabsState};
+use crate::domain::workspace_state::WorkspaceStateKey;
 use parking_lot::Mutex;
 
 struct Store {
     fail: bool,
     readable: bool,
+    conflict: bool,
+    previous: Option<WorkspaceState>,
+    saved: Mutex<Vec<WorkspaceState>>,
     calls: Mutex<Vec<String>>,
 }
 #[async_trait::async_trait]
@@ -27,12 +31,25 @@ impl WorkspaceStateRepository for Store {
     async fn load_repository_group(&self, _: &str) -> Result<bool, WorkspaceStateError> {
         Ok(false)
     }
+    async fn read_repository_group(
+        &self,
+        _: &str,
+    ) -> Result<(crate::domain::local_event::StreamVersion, bool), WorkspaceStateError> {
+        Ok((
+            crate::domain::local_event::StreamVersion::new(0).unwrap(),
+            false,
+        ))
+    }
     async fn save_repository_group(
         &self,
         path: &str,
         collapsed: bool,
+        _: crate::domain::local_event::StreamVersion,
     ) -> Result<(), WorkspaceStateError> {
         self.calls.lock().push(format!("group:{path}:{collapsed}"));
+        if self.conflict {
+            return Err(WorkspaceStateError::VersionConflict);
+        }
         if self.fail {
             Err(WorkspaceStateError::Message("failed".into()))
         } else {
@@ -53,7 +70,7 @@ impl WorkspaceStateRepository for Store {
         if self.readable {
             Ok((
                 crate::domain::local_event::StreamVersion::new(0).unwrap(),
-                None,
+                self.previous.clone(),
             ))
         } else {
             Err(WorkspaceStateError::Message("unreadable".into()))
@@ -65,10 +82,14 @@ impl WorkspaceStateRepository for Store {
     async fn save(
         &self,
         name: &str,
-        _: WorkspaceState,
+        state: WorkspaceState,
         _: crate::domain::local_event::StreamVersion,
     ) -> Result<(), WorkspaceStateError> {
         self.calls.lock().push(format!("save:{name}"));
+        self.saved.lock().push(state);
+        if self.conflict {
+            return Err(WorkspaceStateError::VersionConflict);
+        }
         if self.fail {
             Err(WorkspaceStateError::Message("failed".into()))
         } else {
@@ -77,12 +98,15 @@ impl WorkspaceStateRepository for Store {
     }
     async fn states(
         &self,
-    ) -> Result<Vec<(String, crate::domain::local_event::StreamVersion)>, WorkspaceStateError> {
+    ) -> Result<
+        Vec<(WorkspaceStateKey, crate::domain::local_event::StreamVersion)>,
+        WorkspaceStateError,
+    > {
         unreachable!()
     }
     async fn invalidate(
         &self,
-        _: &str,
+        _: &WorkspaceStateKey,
         _: crate::domain::local_event::StreamVersion,
     ) -> Result<bool, WorkspaceStateError> {
         unreachable!()
@@ -96,6 +120,9 @@ async fn test_表示状態保存_保存成功後だけ対象名を通知する()
         let store = Store {
             fail,
             readable: true,
+            conflict: false,
+            previous: None,
+            saved: Default::default(),
             calls: Default::default(),
         };
         let publisher = crate::test_support::state_subscription::test_subscriptions();
@@ -141,6 +168,9 @@ async fn test_表示状態保存_読取失敗ならsetとsaveを呼ばない() {
     let store = Store {
         fail: false,
         readable: false,
+        conflict: false,
+        previous: None,
+        saved: Default::default(),
         calls: Default::default(),
     };
     let state = WorkspaceState {
@@ -174,6 +204,9 @@ async fn test_repository折りたたみ保存_成功したgroupだけ通知す�
         let store = Store {
             fail,
             readable: true,
+            conflict: false,
+            previous: None,
+            saved: Default::default(),
             calls: Default::default(),
         };
         let publisher = crate::test_support::state_subscription::test_subscriptions();
@@ -202,6 +235,9 @@ async fn test_表示状態保存_不正なpane配置は保存前に拒否する(
     let store = Store {
         fail: false,
         readable: true,
+        conflict: false,
+        previous: None,
+        saved: Default::default(),
         calls: Default::default(),
     };
     // When
@@ -247,6 +283,9 @@ async fn test_旧表示状態の移行_登録repositoryを列挙し未解決な�
             let store = Store {
                 fail,
                 readable: true,
+                conflict: false,
+                previous: None,
+                saved: Default::default(),
                 calls: Default::default(),
             };
             let fake = std::sync::Arc::new(crate::usecase::test_helpers::FakeRepo {
@@ -288,4 +327,78 @@ async fn test_旧表示状態の移行_登録repositoryを列挙し未解決な�
             );
         }
     }
+}
+
+fn state_with_panes() -> WorkspaceState {
+    WorkspaceState {
+        panes: Some(
+            crate::domain::workspace_state::value_objects::pane_layout::PaneLayout::pane(
+                "previous".into(),
+                vec![],
+                None,
+            )
+            .unwrap(),
+        ),
+        version: 1,
+        tabs: WorkspaceTabsState {
+            editors: vec![],
+            active_editor_path: None,
+        },
+        layout: WorkspaceLayoutState {
+            center_tab: "editor".into(),
+            active_view: "git".into(),
+            left_nav_collapsed: false,
+            right_collapsed: false,
+            right_bottom_collapsed: false,
+            right_bottom_active_tab: None,
+            selected_diff_file: None,
+        },
+    }
+}
+#[tokio::test]
+async fn test_表示状態保存_最新の配置を保持し版競合を一度で返す() {
+    for conflict in [false, true] {
+        // Given
+        let previous = state_with_panes();
+        let store = Store {
+            fail: false,
+            readable: true,
+            conflict,
+            previous: Some(previous.clone()),
+            saved: Default::default(),
+            calls: Default::default(),
+        };
+        let mut next = previous.clone();
+        next.panes = None;
+        next.layout.left_nav_collapsed = true;
+        // When
+        let result = save_workspace_state(&store, None, "wt", next).await;
+        // Then
+        assert_eq!(
+            matches!(result, Err(WorkspaceStateError::VersionConflict)),
+            conflict
+        );
+        assert_eq!(store.calls.lock().as_slice(), ["save:wt"]);
+        let saved = store.saved.lock();
+        assert_eq!(saved.len(), 1);
+        assert_eq!(saved[0].panes, previous.panes);
+        assert!(saved[0].layout.left_nav_collapsed);
+    }
+}
+#[tokio::test]
+async fn test_repositoryグループ保存_版競合を一度で返す() {
+    // Given
+    let store = Store {
+        fail: false,
+        readable: true,
+        conflict: true,
+        previous: None,
+        saved: Default::default(),
+        calls: Default::default(),
+    };
+    // When
+    let result = save_repository_group_state(&store, None, "/repo", true).await;
+    // Then
+    assert!(matches!(result, Err(WorkspaceStateError::VersionConflict)));
+    assert_eq!(store.calls.lock().as_slice(), ["group:/repo:true"]);
 }

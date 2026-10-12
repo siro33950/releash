@@ -1685,7 +1685,8 @@ async fn assert_legacy_linked_worktree_gc(remove_directory: bool, remove_before_
     assert_eq!(
         archive_removed_execution_trees(resolution().as_ref(), &fixture.runtime)
             .await
-            .unwrap(),
+            .unwrap()
+            .errors,
         0
     );
     assert_eq!(

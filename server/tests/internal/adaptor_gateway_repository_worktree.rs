@@ -1042,6 +1042,29 @@ pub(crate) mod worktree_gateway_tests {
     }
 
     #[test]
+    pub fn test_worktree削除_変更件数が取れない場合も強制なしで削除せず内容を残す() {
+        // Given
+        let (parent, repo_dir, repo) = create_test_repo_with_parent();
+        create_initial_commit(&repo);
+        let wt_path =
+            create_worktree_helper(&repo, parent.path(), "wt-unavailable", "feat-unavailable");
+        fs::write(wt_path.join("dirty.txt"), "uncommitted").unwrap();
+        let wt_repo = git2::Repository::open(&wt_path).unwrap();
+        fs::write(wt_repo.path().join("index"), "broken index").unwrap();
+        assert!(get_worktree_dirty_count(wt_path.to_str().unwrap()).is_err());
+        // When
+        let result = remove_worktree(repo_dir.to_str().unwrap(), wt_path.to_str().unwrap(), false);
+        // Then
+        assert!(result.is_err());
+        assert!(wt_path.exists());
+        assert_eq!(
+            fs::read_to_string(wt_path.join("dirty.txt")).unwrap(),
+            "uncommitted"
+        );
+        assert!(repo.find_worktree("wt-unavailable").is_ok());
+    }
+
+    #[test]
     pub fn test_worktree削除_dirty_force() {
         let (_parent, repo_dir, repo) = create_test_repo_with_parent();
         create_initial_commit(&repo);

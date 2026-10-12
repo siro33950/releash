@@ -5,3 +5,6 @@ pub use workspace_layout_state::WorkspaceLayoutState;
 pub use workspace_tabs_state::WorkspaceTabsState;
 
 pub mod pane_layout;
+
+pub(crate) mod workspace_state_key;
+pub use workspace_state_key::WorkspaceStateKey;

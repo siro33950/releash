@@ -42,7 +42,7 @@ pub(crate) mod tests {
         std::fs::create_dir_all(worktree.join("src")).unwrap();
         std::fs::write(worktree.join("src/lib.rs"), "// lib").unwrap();
 
-        let state = filter_missing_files(make_state(), worktree.to_str().unwrap());
+        let state = filter_missing_files(make_state(), |path| worktree.join(path).exists());
 
         assert_eq!(state.tabs.editors.len(), 1);
         assert_eq!(state.tabs.active_editor_path.as_deref(), Some("src/lib.rs"));

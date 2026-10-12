@@ -239,3 +239,114 @@ async fn test_非同期の待ち_呼出期限と取消で打ち切る() {
         Err(OperationStopped::Cancelled)
     );
 }
+
+#[tokio::test]
+async fn test_版競合の再試行_期限まで競合したら競合を返し取消済みなら呼ばない() {
+    use crate::common::operation_context::{self, Deadline, OperationContext};
+    use crate::domain::workspace_state::WorkspaceStateError;
+    // Given
+    let context = OperationContext::default().with_deadline(Deadline::new(
+        std::time::Instant::now() + Duration::from_millis(50),
+    ));
+    let calls = std::sync::atomic::AtomicUsize::new(0);
+    // When
+    let result = operation_context::scope(
+        context,
+        conflicts(
+            || WorkspaceStateError::VersionConflict,
+            |error| matches!(error, WorkspaceStateError::VersionConflict),
+            || async {
+                calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Err::<(), _>(WorkspaceStateError::VersionConflict)
+            },
+        ),
+    )
+    .await;
+    // Then
+    assert!(matches!(result, Err(WorkspaceStateError::VersionConflict)));
+    let completed_calls = calls.load(std::sync::atomic::Ordering::SeqCst);
+    tokio::task::yield_now().await;
+    assert_eq!(
+        calls.load(std::sync::atomic::Ordering::SeqCst),
+        completed_calls
+    );
+    let cancellation = std::sync::Arc::new(tokio_util::sync::CancellationToken::new());
+    cancellation.cancel();
+    let context = OperationContext::new(None, cancellation);
+    let result = operation_context::scope(
+        context,
+        conflicts(
+            || WorkspaceStateError::VersionConflict,
+            |error| matches!(error, WorkspaceStateError::VersionConflict),
+            || async {
+                assert!(
+                    operation_context::check().is_ok(),
+                    "cancelled operation was called"
+                );
+                Ok::<(), WorkspaceStateError>(())
+            },
+        ),
+    )
+    .await;
+    assert!(matches!(result, Err(WorkspaceStateError::VersionConflict)));
+}
+
+#[tokio::test]
+async fn test_版競合の再試行_次の結果で進行を制御して成功後は失敗を保持しない() {
+    use crate::domain::workspace_state::WorkspaceStateError;
+    // Given
+    let context = operation_context::OperationContext::default();
+    let attempts = std::sync::atomic::AtomicUsize::new(0);
+    // When
+    let result = operation_context::scope(
+        context.clone(),
+        conflicts(
+            || WorkspaceStateError::VersionConflict,
+            |error| matches!(error, WorkspaceStateError::VersionConflict),
+            || async {
+                if attempts.fetch_add(1, std::sync::atomic::Ordering::SeqCst) < 2 {
+                    Err(WorkspaceStateError::VersionConflict)
+                } else {
+                    Ok(())
+                }
+            },
+        ),
+    )
+    .await;
+    // Then
+    result.unwrap();
+    assert_eq!(attempts.load(std::sync::atomic::Ordering::SeqCst), 3);
+    assert!(context.deadline_failure().is_none());
+}
+
+#[tokio::test]
+async fn test_版競合の再試行_再読取の期限切れも最後の競合を保持する() {
+    use crate::domain::workspace_state::WorkspaceStateError;
+    // Given
+    let context = operation_context::with_timeout(Duration::from_millis(50));
+    let attempts = std::sync::atomic::AtomicUsize::new(0);
+    // When
+    let result = operation_context::scope(
+        context,
+        conflicts(
+            || WorkspaceStateError::VersionConflict,
+            |error| matches!(error, WorkspaceStateError::VersionConflict),
+            || async {
+                if attempts.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+                    Err::<(), _>(WorkspaceStateError::VersionConflict)
+                } else {
+                    let error = operation_context::wait(
+                        &operation_context::current(),
+                        std::future::pending::<()>(),
+                    )
+                    .await
+                    .unwrap_err();
+                    Err(WorkspaceStateError::Message(error.to_string()))
+                }
+            },
+        ),
+    )
+    .await;
+    // Then
+    assert!(matches!(result, Err(WorkspaceStateError::VersionConflict)));
+}

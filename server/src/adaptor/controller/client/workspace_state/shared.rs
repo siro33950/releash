@@ -23,14 +23,13 @@ pub(crate) fn register_shared(
                     };
                     let store =
                         store.ok_or_else(|| invalid_request("Command dependency unavailable"))?;
-                    crate::usecase::workspace_state::usecase::save_repository_group_state(
+                    commands::save_repository_group_state_shared(
                         store.as_ref(),
                         publisher.as_ref(),
                         &args.repository_path,
                         args.collapsed,
                     )
-                    .await
-                    .map_err(crate::adaptor::presenter::error::AppError::from_failure)?;
+                    .await?;
                     Ok(wire::command_result::Command::SaveRepositoryGroupState(
                         wire::Unit {},
                     ))
@@ -55,7 +54,7 @@ pub(crate) fn register_shared(
                             .ok_or_else(|| invalid_request("Command dependency unavailable"))?;
                         outcome(
                             commands::save_workspace_state_shared(
-                                &store,
+                                store.as_ref(),
                                 publisher.as_ref(),
                                 convert(required(args.worktree_name, "worktreeName")?)?,
                                 convert(required(args.state, "state")?)?,

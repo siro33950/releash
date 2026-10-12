@@ -10,6 +10,7 @@ enum UIStyle {
   static let cardIconWidth: CGFloat = 14
   static let sidebarWidth: CGFloat = 280
   static let rightPanelMinimumWidth: CGFloat = 200
+  static let dividerWidth: CGFloat = 1
   static let dividerCursorWidth: CGFloat = 8
   static let sidebarMaximumWidth: CGFloat = 400
   static let createDialogWidth: CGFloat = 560

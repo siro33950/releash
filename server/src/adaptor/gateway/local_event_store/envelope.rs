@@ -143,8 +143,16 @@ impl EventCodecRegistry {
                     LocalDomainEvent::WorkspaceStateInvalidated => {
                         "workspace-state-invalidated".to_string()
                     }
-                    LocalDomainEvent::WorkspaceStateChanged(_) => "workspace-state".to_string(),
-                    LocalDomainEvent::RepositoryGroupChanged(_) => "repository-group".to_string(),
+                    LocalDomainEvent::WorkspaceStateChanged(_) => {
+                        crate::domain::local_event::identifiers::WORKSPACE_STATE_PREFIX
+                            .trim_end_matches(':')
+                            .to_string()
+                    }
+                    LocalDomainEvent::RepositoryGroupChanged(_) => {
+                        crate::domain::local_event::identifiers::REPOSITORY_GROUP_PREFIX
+                            .trim_end_matches(':')
+                            .to_string()
+                    }
                 },
             })?;
         let value = codec.encode(event)?;

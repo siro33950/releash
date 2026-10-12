@@ -367,13 +367,8 @@ pub async fn compose(
 
     repo_paths_usecase.initialize_from_cwd(&repository_usecase)?;
     let repositories = shared_repo_paths.read().clone();
-    migrate_legacy_workspace_states(
-        &data_dir,
-        &workspace_state_store,
-        &repositories,
-        &repository_usecase,
-    )
-    .await;
+    migrate_legacy_workspace_states(&workspace_state_store, &repositories, &repository_usecase)
+        .await;
 
     let code_usecase = Arc::new(adaptor::controller::wiring::build_code_usecase());
     let git_host_usecase = Arc::new(
@@ -691,7 +686,6 @@ pub async fn compose(
 }
 
 pub async fn migrate_legacy_workspace_states(
-    _data_dir: &std::path::Path,
     store: &adaptor::gateway::workspace_state::WorkspaceStateStore,
     repositories: &[String],
     repository: &usecase::repository_usecase::RepositoryUsecase,

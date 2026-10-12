@@ -3,7 +3,6 @@ import SwiftUI
 struct RightPanelView: View {
   @Binding var expanded: Bool
   @State private var selected = Panel.files
-  var didAppear: ((Self) -> Void)?
   enum Panel: String, CaseIterable, Identifiable {
     case files, sourceControl, threads, tasks
     var id: Self { self }
@@ -68,7 +67,6 @@ struct RightPanelView: View {
       idealWidth: expanded ? UIStyle.sidebarWidth : UIStyle.collapsedPanelWidth,
       maxWidth: expanded ? UIStyle.sidebarMaximumWidth : UIStyle.collapsedPanelWidth
     )
-    .onAppear { didAppear?(self) }
     .frame(maxHeight: .infinity)
     .background(Color(nsColor: .controlBackgroundColor))
   }

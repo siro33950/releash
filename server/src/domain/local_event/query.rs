@@ -5,8 +5,19 @@ use std::fmt;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LocalEventQuery {
-    SessionProjectionByIdentity { session_id: String },
-    CanonicalRuntimeOwnerSnapshot { limit: usize },
+    StreamHead {
+        stream_id: super::StreamId,
+    },
+    StreamHeads {
+        namespace: String,
+        event_type: String,
+    },
+    SessionProjectionByIdentity {
+        session_id: String,
+    },
+    CanonicalRuntimeOwnerSnapshot {
+        limit: usize,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -27,6 +38,8 @@ pub enum CanonicalRuntimeOwnerView {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum LocalEventQueryResult {
+    StreamHead(super::StreamVersion),
+    StreamHeads(Vec<(super::StreamId, super::StreamVersion)>),
     SessionProjectionByIdentity(Option<SessionProjectionView>),
     CanonicalRuntimeOwnerSnapshot(Vec<CanonicalRuntimeOwnerView>),
 }
