@@ -51,6 +51,7 @@ struct SidebarView: View {
                       ? UIStyle.sidebarSelection : .clear,
                     in: RoundedRectangle(cornerRadius: UIStyle.spacing))
               }
+              .accessibilityIdentifier("worktree:\(branch.name)")
               .buttonStyle(.plain)
               .foregroundStyle(.primary)
               .accessibilityAddTraits(
@@ -59,6 +60,7 @@ struct SidebarView: View {
           } header: {
             HStack(spacing: UIStyle.rowSpacing) {
               Text(URL(fileURLWithPath: repository.path).lastPathComponent)
+                .accessibilityIdentifier("repository:\(repository.path)")
               Text(repository.branches.items.count, format: .number)
                 .foregroundStyle(.secondary)
             }

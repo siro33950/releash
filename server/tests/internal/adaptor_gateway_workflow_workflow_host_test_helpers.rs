@@ -329,6 +329,7 @@ impl Fixture {
         });
         let sessions = Arc::new(TestSessions::default());
         let mut host = WorkflowRuntimeHost::with_runtime_ports(
+            directory.path().join("workflows"),
             releashd::test_support::integration::platform::shared().clone(),
             Arc::new(crate::adaptor_gateway_workflow_workflow_host::workflow_host_tests::UnusedWorkflowResolver),
             Arc::new(crate::adaptor_gateway_workflow_workflow_host::workflow_host_tests::AcceptingWorktreeResolver),
@@ -435,6 +436,7 @@ impl Fixture {
 
     pub(crate) fn restarted_host(&self) -> WorkflowRuntimeHost {
         let mut host = WorkflowRuntimeHost::with_runtime_ports(
+            self._directory.path().join("workflows"),
             releashd::test_support::integration::platform::shared().clone(),
             Arc::new(crate::adaptor_gateway_workflow_workflow_host::workflow_host_tests::UnusedWorkflowResolver),
             Arc::new(crate::adaptor_gateway_workflow_workflow_host::workflow_host_tests::AcceptingWorktreeResolver),
@@ -588,6 +590,7 @@ pub(crate) fn archive_fixture_with_resolver(
     ));
     let sessions = Arc::new(TestSessions::default());
     let host = Arc::new(WorkflowRuntimeHost::with_runtime_ports(
+        directory.path().join("workflows"),
         releashd::test_support::integration::platform::shared().clone(),
         Arc::new(UnusedWorkflowResolver),
         resolver,

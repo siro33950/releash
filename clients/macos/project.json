@@ -90,6 +90,7 @@
       "options": {
         "commands": [
           "python3 ../../.github/scripts/macos-build.test.py",
+          "python3 ../../.github/scripts/macos-e2e.test.py",
           "swift run --package-path BuildTools xcodegen generate",
           "xcodebuild -resolvePackageDependencies -project Releash.xcodeproj -scheme Releash -clonedSourcePackagesDirPath .build/SourcePackages -onlyUsePackageVersionsFromResolvedFile",
           "xcodebuild -project Releash.xcodeproj -scheme Releash -configuration {args.configuration} -destination platform=macOS -derivedDataPath .build/DerivedData -clonedSourcePackagesDirPath .build/SourcePackages -disableAutomaticPackageResolution CODE_SIGNING_ALLOWED=NO test"
@@ -126,6 +127,29 @@
       },
       "dependsOn": [
         "build"
+      ],
+      "cache": false
+    },
+    "e2e": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "python3 .github/scripts/macos-e2e.py",
+        "cwd": "."
+      },
+      "dependsOn": [
+        "generate",
+        "helpers",
+        "test-fixture-build"
+      ],
+      "cache": false
+    },
+    "test-fixture-build": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "python3 .github/scripts/macos-e2e.py --build-fixture"
+      },
+      "outputs": [
+        "{workspaceRoot}/clients/macos/.build/agent-tui-fixture.json"
       ],
       "cache": false
     }

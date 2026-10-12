@@ -205,6 +205,7 @@ pub fn build_workflow_services_with_repository_worktrees(
     app_config: Arc<dyn ConfigRepository>,
     local_event_store: Arc<LocalEventStore>,
     processes: Arc<dyn crate::domain::workflow::NodeProcessReader>,
+    workflows_dir: std::path::PathBuf,
 ) -> (
     WorkflowUsecase,
     Arc<dyn crate::usecase::workspace_tree::WorkspaceQueryService>,
@@ -217,10 +218,13 @@ pub fn build_workflow_services_with_repository_worktrees(
             repository_usecase,
             app_config.clone(),
         )),
-        Arc::new(WorkflowExternalEditorGateway::new(app_config)),
+        Arc::new(WorkflowExternalEditorGateway::new(
+            app_config,
+            workflows_dir.clone(),
+        )),
         local_event_store,
         Some(processes),
-        None,
+        Some(workflows_dir),
     )
 }
 
@@ -298,6 +302,7 @@ pub fn build_workflow_runtime_usecase(
     app: crate::adaptor::gateway::workflow::workflow_host::WorkflowRuntimeDependencies,
     deps: WorkflowRuntimeCommandGatewayDeps,
     daemon: Arc<crate::adaptor::gateway::daemon::InMemoryDaemonRepository>,
+    workflows_dir: std::path::PathBuf,
 ) -> Result<
     (
         WorkflowRuntimeUsecase,
@@ -311,8 +316,9 @@ pub fn build_workflow_runtime_usecase(
     };
     let operations = deps.repository_usecase.worktree_operations();
     let mut driver = WorkflowRuntimeHost::new_canonical(
+        workflows_dir.clone(),
         retrying.clone(),
-        Arc::new(DefaultWorkflowDefinitionResolver),
+        Arc::new(DefaultWorkflowDefinitionResolver::new(workflows_dir)),
         Arc::new(AppConfigManagedWorktreeResolver::new(
             deps.repository_usecase,
             deps.app_config,

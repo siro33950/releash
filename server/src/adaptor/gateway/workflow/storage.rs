@@ -559,7 +559,7 @@ pub fn delete_workflow(dir: &Path, name: &str) -> Result<(), StorageError> {
     // load 失敗（Err）の場合も「builtin として存在し得る」とみなし、安全側に倒して
     // 保護する（誤削除防止 / load 失敗の解決は別経路の責務）。
     if matches!(
-        builtin::load_builtin_workflow_resolved(name),
+        builtin::load_builtin_workflow_resolved(name, dir),
         Ok(Some(_)) | Err(_)
     ) {
         return Err(StorageError::BuiltinProtected {

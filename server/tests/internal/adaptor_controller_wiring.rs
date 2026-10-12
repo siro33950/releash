@@ -73,6 +73,7 @@ pub async fn test_worktree削除一覧_本番runtime配線で受理した削除�
         config.clone(),
         store.clone(),
         processes.clone(),
+        root.join("workflows"),
     );
     let (runtime, _) = build_workflow_runtime_usecase(
         retrying.clone(),
@@ -94,6 +95,7 @@ pub async fn test_worktree削除一覧_本番runtime配線で受理した削除�
             isolated_worktrees: Arc::new(RepositoryIsolatedWorktreeGateway),
         },
         releashd::test_support::integration::daemon::serving(),
+        root.join("workflows"),
     )
     .unwrap();
     let rows = || {
@@ -243,4 +245,161 @@ pub(crate) mod tests {
             1
         );
     }
+}
+
+#[tokio::test]
+async fn test_workflow開始_本番runtime配線で隔離したfacet本文をsession初期指示に渡す() {
+    // Given
+    let retrying = releashd::test_support::integration::platform::test_retrying();
+    let parent = tempfile::tempdir().unwrap();
+    let root = parent.path().canonicalize().unwrap();
+    let repo_path = root.join("repo");
+    let repo_path = repo_path.to_str().unwrap();
+    let repo = git2::Repository::init(repo_path).unwrap();
+    crate::test_support_git::create_initial_commit(&repo);
+    let repository = Arc::new(build_repository_usecase());
+    let worktree = repository
+        .create_worktree(repo_path, "feature", true, None)
+        .unwrap();
+    let data_dir = root.join("data");
+    let store = LocalEventStore::open(LocalEventStoreConfig::production(
+        data_dir.clone(),
+        std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
+    ))
+    .unwrap();
+    let workflows_dir = root.join("workflows");
+    let facet_key = "isolated-runtime-facet-2012";
+    let instruction = "instruction from isolated workflow directory";
+    std::fs::create_dir_all(workflows_dir.join("instructions")).unwrap();
+    std::fs::write(
+        workflows_dir
+            .join("instructions")
+            .join(format!("{facet_key}.md")),
+        instruction,
+    )
+    .unwrap();
+    std::fs::write(workflows_dir.join("isolated-runtime.yml"), format!(
+        "name: isolated-runtime\ndescription: isolated runtime fixture\nnodes:\n  main:\n    session:\n      provider: claude\n      facets:\n        instruction: {facet_key}\n"
+    )).unwrap();
+    let captured = root.join("initial-instruction");
+    let executable = root.join("claude-fixture");
+    let command = crate::agent_tui_fixture::fixture_process_shell_command(
+        &crate::agent_tui_fixture::FixturePlan::new("isolated-runtime", vec![]),
+    );
+    std::fs::write(&executable, format!(
+        "#!/bin/sh\nif [ \"$1\" = --version ]; then echo fixture; exit 0; fi\nfor argument do instruction=$argument; done\nprintf '%s' \"$instruction\" > '{}'\nexec env {command}\n",
+        captured.to_str().unwrap().replace('\'', "'\"'\"'")
+    )).unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let mut configuration = ReleashConfig::default();
+    configuration.agents.claude.cli_path = Some(executable.to_string_lossy().into_owned());
+    configuration.app.last_repo_paths = vec![repo_path.to_owned()];
+    let config = Arc::new(AppConfig::new(configuration, data_dir.join("releash.toml")));
+    let publisher = releashd::test_support::integration::subscriptions::test_subscriptions();
+    let terminal = releashd::test_support::integration::platform::build_terminal_surface_application_with_data_dir(data_dir.clone());
+    let sessions = compose_agent_sessions(AgentSessionCompositionInput {
+        hook_token: std::sync::Arc::<str>::from("hook-token"),
+        launch_retention: releashd::test_support::integration::platform::run(
+            releashd::test_support::integration::platform::delays(
+                releashd::test_support::integration::platform::RETENTION,
+            ),
+        ),
+        retrying: retrying.clone(),
+        state_publisher: None,
+        store: store.clone(),
+        data_dir: data_dir.clone(),
+        provider_executable_config: config.clone(),
+        provider_executable_probe: Arc::new(LocalProviderExecutableProbeGateway::with_search_path(
+            None,
+        )),
+        claude_config_dir: root.join("claude"),
+        codex_home: root.join("codex"),
+        cli_binary: "releash".into(),
+        terminal: terminal.clone(),
+        subscriptions: publisher.clone(),
+    })
+    .unwrap();
+    let processes = Arc::new(WorkflowNodeProcesses::new(terminal));
+    let (_, workspace_query) = build_workflow_services_with_repository_worktrees(
+        Arc::new(releashd::test_support::integration::platform::FailureRecordStore::default()),
+        data_dir,
+        repository.clone(),
+        config.clone(),
+        store.clone(),
+        processes.clone(),
+        workflows_dir.clone(),
+    );
+    let (runtime, _) = build_workflow_runtime_usecase(
+        retrying.clone(),
+        WorkflowRuntimeDependencies {
+            store: Some(store),
+            config: Some(config.clone()),
+            secrets: Some(config.clone()),
+            state_changes: publisher.clone(),
+        },
+        WorkflowRuntimeCommandGatewayDeps {
+            node_processes: processes,
+            repository_usecase: repository.clone(),
+            app_config: config,
+            workspace_query: workspace_query.clone(),
+            agent_session_launch: sessions.launch.clone(),
+            agent_session_initial_instruction: sessions.initial_instruction.clone(),
+            agent_session_lifecycle: sessions.lifecycle.clone(),
+            provider_availability: sessions.availability_reader.clone(),
+            isolated_worktrees: Arc::new(RepositoryIsolatedWorktreeGateway),
+        },
+        releashd::test_support::integration::daemon::serving(),
+        workflows_dir.clone(),
+    )
+    .unwrap();
+    let runtime = Arc::new(runtime);
+    releashd::test_support::integration::platform::bind_agent_session_runtime(
+        &sessions,
+        runtime.clone(),
+    );
+
+    // When
+    let execution_id = runtime
+        .start_execution(
+            releashd::test_support::integration::workflow::StartExecutionCommand {
+                workflow_name: "isolated-runtime".into(),
+                worktree_path: worktree.path.clone(),
+                request: None,
+                created_from:
+                    releashd::test_support::integration::workflow::ExecutionOrigin::DesktopUi,
+            },
+        )
+        .await
+        .unwrap();
+    let received = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            match std::fs::read_to_string(&captured) {
+                Ok(value) if !value.is_empty() => break value,
+                Ok(_) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => panic!("read initial instruction: {error}"),
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+    let summaries = workspace_query
+        .execution_summaries(None, None)
+        .await
+        .unwrap();
+    runtime
+        .abort_execution(
+            releashd::test_support::integration::workflow::AbortExecutionCommand {
+                execution_id,
+                expected_node_name: None,
+            },
+        )
+        .await
+        .unwrap();
+
+    // Then
+    let received = received
+        .unwrap_or_else(|error| panic!("initial instruction: {error}; executions: {summaries:?}"));
+    assert_eq!(received.split_once("\n\n").unwrap().0, instruction);
 }

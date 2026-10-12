@@ -96,7 +96,7 @@ jobs:
           save-if: false
       - working-directory: clients/desktop
         run: pnpm exec playwright install --with-deps chromium
-      - run: ./nx run-many -t e2e coverage --parallel=1 --outputStyle=static
+      - run: ./nx run-many -t e2e coverage --exclude=macos --parallel=1 --outputStyle=static
       - uses: codecov/codecov-action@v7
         with:
           token: ${{ secrets.CODECOV_TOKEN }}

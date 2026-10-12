@@ -13,6 +13,11 @@ edition = "2021"
 name = "releashd"
 path = "src/bin/backend.rs"
 
+[[bin]]
+name = "releash-agent-tui-fixture"
+path = "src/bin/agent_tui_fixture.rs"
+required-features = ["test-support"]
+
 [build-dependencies]
 prost-reflect = "0.16.5"
 prost-build = "0.14.4"

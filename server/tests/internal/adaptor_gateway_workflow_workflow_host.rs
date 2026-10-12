@@ -446,6 +446,47 @@ pub async fn test_起動時recovery_回復が先に起動したsessionへの古�
 }
 
 #[tokio::test]
+pub async fn test_workflow起動_構築時に渡した保存先のfacetをsessionへ渡す() {
+    // Given
+    let fixture = crate::adaptor_gateway_workflow_workflow_host_test_helpers::Fixture::new(0);
+    let workflows_dir = fixture._directory.path().join("workflows");
+    std::fs::create_dir_all(workflows_dir.join("instructions")).unwrap();
+    std::fs::write(
+        workflows_dir.join("instructions/isolated-host.md"),
+        "isolated host instruction",
+    )
+    .unwrap();
+    let workflow = serde_saphyr::from_str(
+        "name: isolated-host\ndescription: test\nnodes:\n  main: {session: {provider: codex, facets: {instruction: isolated-host}}}",
+    )
+    .unwrap();
+
+    // When
+    fixture
+        .host
+        .start_resolved_workflow(
+            &fixture.app,
+            workflow,
+            "/repo".into(),
+            None,
+            ExecutionOrigin::Cli,
+        )
+        .await
+        .unwrap();
+
+    // Then
+    let instructions = fixture.sessions.initial_instructions.lock().unwrap();
+    assert_eq!(instructions.len(), 1);
+    assert_eq!(
+        instructions[0]
+            .split_once("\n\n## 完了時の必須アクション")
+            .unwrap()
+            .0,
+        "isolated host instruction"
+    );
+}
+
+#[tokio::test]
 pub async fn test_workflow永続化_本番構成で起動から完了とabortまで状態ファイルを作らない() {
     for status in [ExecutionStatus::Completed, ExecutionStatus::Aborted] {
         // Given
@@ -462,6 +503,7 @@ pub async fn test_workflow永続化_本番構成で起動から完了とabortま
             SqliteWorkspaceTreeRepository::new(store.clone()),
         );
         let host = Arc::new(WorkflowRuntimeHost::with_runtime_ports(
+            directory.path().join("workflows"),
             releashd::test_support::integration::platform::shared().clone(),
             Arc::new(UnusedWorkflowResolver),
             Arc::new(AcceptingWorktreeResolver),
@@ -4478,6 +4520,7 @@ pub(crate) mod workflow_host_tests {
                     Some(store.clone()),
                 );
                 let host = Arc::new(WorkflowRuntimeHost::with_runtime_ports(
+                    directory.path().join("workflows"),
                     releashd::test_support::integration::platform::shared().clone(),
                     Arc::new(UnusedWorkflowResolver),
                     Arc::new(AcceptingWorktreeResolver),
@@ -4930,6 +4973,7 @@ pub(crate) mod workflow_host_tests {
             store.clone(),
         ));
         let host = WorkflowRuntimeHost::with_runtime_ports(
+            directory.path().join("workflows"),
             releashd::test_support::integration::platform::shared().clone(),
             Arc::new(UnusedWorkflowResolver),
             Arc::new(AcceptingWorktreeResolver),
@@ -5024,6 +5068,7 @@ nodes:
             store.clone(),
         ));
         let host = WorkflowRuntimeHost::with_runtime_ports(
+            directory.path().join("workflows"),
             releashd::test_support::integration::platform::shared().clone(),
             Arc::new(UnusedWorkflowResolver),
             Arc::new(AcceptingWorktreeResolver),
@@ -5570,6 +5615,7 @@ nodes:
                 Some(store.clone()),
             );
             let host = Arc::new(WorkflowRuntimeHost::with_runtime_ports(
+                directory.path().join("workflows"),
                 releashd::test_support::integration::platform::shared().clone(),
                 Arc::new(UnusedWorkflowResolver),
                 Arc::new(AcceptingWorktreeResolver),
@@ -5669,6 +5715,7 @@ nodes:
             );
             let calls = Arc::new(std::sync::Mutex::new(Vec::new()));
             let host = Arc::new(WorkflowRuntimeHost::with_runtime_ports(
+                directory.path().join("workflows"),
                 releashd::test_support::integration::platform::shared().clone(),
                 Arc::new(UnusedWorkflowResolver),
                 Arc::new(AcceptingWorktreeResolver),
@@ -6009,6 +6056,7 @@ nodes:
             );
 
             let restarted = WorkflowRuntimeHost::with_runtime_ports(
+                fixture._directory.path().join("workflows"),
                 releashd::test_support::integration::platform::shared().clone(),
                 Arc::new(UnusedWorkflowResolver),
                 Arc::new(UnusedWorktreeResolver),
@@ -6134,6 +6182,7 @@ nodes:
                 confirmation_count: std::sync::atomic::AtomicUsize::new(0),
             });
             let host = Arc::new(WorkflowRuntimeHost::with_runtime_ports(
+                directory.path().join("workflows"),
                 releashd::test_support::integration::platform::shared().clone(),
                 Arc::new(UnusedWorkflowResolver),
                 Arc::new(AcceptingWorktreeResolver),
@@ -6357,6 +6406,7 @@ nodes:
                 .await
                 .unwrap();
             let host = Arc::new(WorkflowRuntimeHost::with_runtime_ports(
+                directory.path().join("workflows"),
                 releashd::test_support::integration::platform::shared().clone(),
                 Arc::new(UnusedWorkflowResolver),
                 Arc::new(AcceptingWorktreeResolver),
@@ -6881,6 +6931,7 @@ nodes:
                 Some(store.clone()),
             );
             let host = WorkflowRuntimeHost::with_runtime_ports(
+                directory.path().join("workflows"),
                 releashd::test_support::integration::platform::shared().clone(),
                 Arc::new(UnusedWorkflowResolver),
                 Arc::new(UnusedWorktreeResolver),
@@ -7082,6 +7133,7 @@ nodes:
                 Some(store.clone()),
             );
             let host = WorkflowRuntimeHost::with_runtime_ports(
+                directory.path().join("workflows"),
                 releashd::test_support::integration::platform::shared().clone(),
                 Arc::new(UnusedWorkflowResolver),
                 Arc::new(UnusedWorktreeResolver),
@@ -7178,6 +7230,7 @@ nodes:
                 Some(store.clone()),
             );
             let host = WorkflowRuntimeHost::with_runtime_ports(
+                directory.path().join("workflows"),
                 releashd::test_support::integration::platform::shared().clone(),
                 Arc::new(UnusedWorkflowResolver),
                 Arc::new(UnusedWorktreeResolver),

@@ -777,6 +777,7 @@ pub(crate) mod tests {
                     releashd::test_support::integration::workflow::WorkflowNodeProcesses::default(
                     ),
                 ),
+                data_dir.join("workflows"),
             );
         let workflow_usecase = Arc::new(workflow_usecase);
         let git_host_usecase =

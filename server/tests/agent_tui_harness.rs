@@ -262,3 +262,28 @@ fn test_atui_000_malformed_lifecycle_payload_is_observable_without_terminal_pars
     }
     assert!(!run.terminal_output.contains("not-valid-json"));
 }
+
+#[test]
+fn test_tui専用実行ファイル_版の問い合わせと計画必須を扱う() {
+    // Given
+    let executable = env!("CARGO_BIN_EXE_releash-agent-tui-fixture");
+    // When
+    let version = std::process::Command::new(executable)
+        .arg("--version")
+        .env_remove("RELEASH_AGENT_TUI_FIXTURE_PLAN")
+        .output()
+        .unwrap();
+    let missing_plan = std::process::Command::new(executable)
+        .env_remove("RELEASH_AGENT_TUI_FIXTURE_PLAN")
+        .output()
+        .unwrap();
+    // Then
+    assert!(version.status.success());
+    assert!(String::from_utf8(version.stdout)
+        .unwrap()
+        .contains("releash-agent-tui-fixture"));
+    assert!(!missing_plan.status.success());
+    assert!(String::from_utf8(missing_plan.stderr)
+        .unwrap()
+        .contains("fixture plan is required"));
+}

@@ -19,6 +19,7 @@ settings:
     CURRENT_PROJECT_VERSION: '1'
     ENABLE_USER_SCRIPT_SANDBOXING: NO
     CODE_SIGN_STYLE: Automatic
+    DEVELOPMENT_TEAM: T6QN7PY57N
     GENERATE_INFOPLIST_FILE: YES
     MACOSX_DEPLOYMENT_TARGET: '15.0'
 targets:
@@ -53,9 +54,13 @@ targets:
         attributes: [CodeSignOnCopy]
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.releash.macos
         INFOPLIST_FILE: Info.plist
         GENERATE_INFOPLIST_FILE: NO
+      configs:
+        Debug:
+          PRODUCT_BUNDLE_IDENTIFIER: com.releash.macos.dev
+        Release:
+          PRODUCT_BUNDLE_IDENTIFIER: com.releash.macos
     dependencies:
       - package: Bonsplit
       - package: Connect
@@ -63,9 +68,27 @@ targets:
   ReleashTests:
     type: bundle.unit-test
     platform: macOS
-    sources: Tests
+    sources:
+      - Tests
+      - UITests/Fixture.swift
     dependencies:
       - target: Releash
+  ReleashUITests:
+    type: bundle.ui-testing
+    platform: macOS
+    sources:
+      - UITests
+      - path: Generated
+        excludes: [client-descriptor.bin]
+    dependencies:
+      - target: Releash
+      - package: Connect
+      - package: SwiftProtobuf
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.releash.macos.uitests
+        ENABLE_APP_SANDBOX: NO
+        CODE_SIGN_ENTITLEMENTS: UITests/ReleashUITests.entitlements
 schemes:
   Releash:
     build:
@@ -73,3 +96,12 @@ schemes:
         Releash: all
     test:
       targets: [ReleashTests]
+  ReleashE2E:
+    build:
+      targets:
+        Releash: all
+        ReleashUITests: [test]
+    test:
+      targets: [ReleashUITests]
+      environmentVariables:
+        RELEASH_E2E_ROOT: $(SRCROOT)/../..

@@ -77,6 +77,7 @@ impl WorkflowDelegateAcceptanceHost {
         );
         let sessions = Arc::new(AcceptanceSessions::default());
         let host = WorkflowRuntimeHost::with_runtime_ports(
+            data_dir.join("acceptance-workflows"),
             work.retrying.clone(),
             Arc::new(UnusedWorkflowResolver),
             Arc::new(AcceptanceWorktrees),

@@ -140,7 +140,7 @@ impl WorkflowDefinitionRepository for WorkflowDefinitionFileRepository {
                 .map_err(|e| WorkflowError::external(e.to_string()))
                 .and_then(|workflow| mapper::schema_workflow_to_domain(workflow).map(Some)),
             Err(storage::StorageError::NotFound { .. }) => {
-                builtin::load_builtin_workflow_resolved(file_stem)
+                builtin::load_builtin_workflow_resolved(file_stem, &self.facets_base_dir)
                     .map_err(|e| WorkflowError::external(e.to_string()))?
                     .map(mapper::schema_workflow_to_domain)
                     .transpose()

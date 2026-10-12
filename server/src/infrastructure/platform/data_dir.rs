@@ -66,6 +66,13 @@ pub fn resolve_data_dir(explicit: Option<PathBuf>) -> Result<PathBuf, String> {
         .ok_or_else(|| "OS data directory is unavailable".to_string())
 }
 
+pub fn resolve_workflows_dir(default: PathBuf) -> PathBuf {
+    std::env::var_os("RELEASH_WORKFLOWS_DIR")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or(default)
+}
+
 #[cfg(test)]
 #[path = "data_dir_test.rs"]
 mod data_dir_tests;

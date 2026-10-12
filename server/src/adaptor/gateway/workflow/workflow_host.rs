@@ -90,6 +90,7 @@ pub fn current_timestamp() -> f64 {
 /// 記録から取得した Workflow 集約と usecase の駆動手順を外界へ接続する gateway host。
 #[derive(Clone)]
 pub struct WorkflowRuntimeHost {
+    facets_base_dir: std::path::PathBuf,
     pub queue: std::sync::Arc<crate::usecase::retry::Retrying>,
     workflow_start_locks: Arc<Mutex<HashMap<String, Weak<Mutex<()>>>>>,
     commit_locks: Arc<Mutex<HashMap<String, Weak<Mutex<()>>>>>,
@@ -451,6 +452,7 @@ impl WorkflowRuntimeHost {
 
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new_canonical(
+        workflows_dir: std::path::PathBuf,
         queue: std::sync::Arc<crate::usecase::retry::Retrying>,
         workflow_resolver: Arc<dyn WorkflowDefinitionResolver>,
         worktree_resolver: Arc<dyn ManagedWorktreeResolver>,
@@ -463,6 +465,7 @@ impl WorkflowRuntimeHost {
         daemon: Arc<crate::adaptor::gateway::daemon::InMemoryDaemonRepository>,
     ) -> Self {
         Self::with_runtime_ports(
+            workflows_dir,
             queue,
             workflow_resolver,
             worktree_resolver,
@@ -478,7 +481,9 @@ impl WorkflowRuntimeHost {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn with_runtime_ports(
+        workflows_dir: std::path::PathBuf,
         queue: std::sync::Arc<crate::usecase::retry::Retrying>,
         workflow_resolver: Arc<dyn WorkflowDefinitionResolver>,
         worktree_resolver: Arc<dyn ManagedWorktreeResolver>,
@@ -492,6 +497,7 @@ impl WorkflowRuntimeHost {
             workflow_start_locks: Arc::new(Mutex::new(HashMap::new())),
             commit_locks: Arc::new(Mutex::new(HashMap::new())),
             execution_facet_contents: Arc::new(Mutex::new(HashMap::new())),
+            facets_base_dir: workflows_dir,
             runtime_activation_locks: Arc::new(Mutex::new(HashMap::new())),
             startup_retries: Arc::new(Mutex::new(HashMap::new())),
             node_processes: Arc::new(Default::default()),
@@ -568,11 +574,12 @@ impl WorkflowRuntimeHost {
     }
 
     fn resolve_facet_contents_for_workflow(
+        &self,
         workflow: &WorkflowDefinition,
     ) -> Result<WorkflowFacetContents, WorkflowRuntimeError> {
         crate::adaptor::gateway::workflow::storage::resolve_and_validate_workflow_facets(
             workflow,
-            &crate::adaptor::gateway::workflow::facet::facets_base_dir(),
+            &self.facets_base_dir,
         )
         .map_err(|e| WorkflowRuntimeError::InvalidWorkflow(e.to_string()))
     }
@@ -591,7 +598,7 @@ impl WorkflowRuntimeHost {
         {
             return Ok(contents);
         }
-        let contents = Self::resolve_facet_contents_for_workflow(workflow)?;
+        let contents = self.resolve_facet_contents_for_workflow(workflow)?;
         self.execution_facet_contents
             .lock()
             .await
@@ -721,7 +728,7 @@ impl WorkflowRuntimeHost {
         // 1) workflow 構造の事前検証（空 nodes などの実行不能形状の拒否）。
         workflow_runtime_start_guard::validate_workflow_shape(&workflow)?;
         self.ensure_workflow_providers_available(&workflow)?;
-        let facet_contents = Self::resolve_facet_contents_for_workflow(&workflow)?;
+        let facet_contents = self.resolve_facet_contents_for_workflow(&workflow)?;
 
         let start_lock = self.workflow_start_lock(&worktree_path).await;
         let start_guard = start_lock.lock().await;

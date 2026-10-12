@@ -9,7 +9,15 @@ use crate::usecase::workflow::runtime_resolver::{
     WorkflowDefinitionResolverError,
 };
 
-pub(crate) struct DefaultWorkflowDefinitionResolver;
+pub struct DefaultWorkflowDefinitionResolver {
+    workflows_dir: std::path::PathBuf,
+}
+
+impl DefaultWorkflowDefinitionResolver {
+    pub fn new(workflows_dir: std::path::PathBuf) -> Self {
+        Self { workflows_dir }
+    }
+}
 
 #[async_trait::async_trait]
 impl WorkflowDefinitionResolver for DefaultWorkflowDefinitionResolver {
@@ -18,10 +26,9 @@ impl WorkflowDefinitionResolver for DefaultWorkflowDefinitionResolver {
         workflow_name: &str,
     ) -> Result<WorkflowDefinitionYaml, WorkflowDefinitionResolverError> {
         let workflow_name = workflow_name.to_string();
+        let dir = self.workflows_dir.clone();
         crate::common::operation_context::spawn_blocking(move || {
-            let dir = crate::adaptor::gateway::workflow::storage::workflows_dir();
-            let facets_base = crate::adaptor::gateway::workflow::facet::facets_base_dir();
-            resolve_workflow_by_name(&dir, &facets_base, &workflow_name)
+            resolve_workflow_by_name(&dir, &dir, &workflow_name)
         })
         .await
         .map_err(|e| {
@@ -82,6 +89,7 @@ pub fn resolve_workflow_by_name(
     for summary in crate::adaptor::gateway::workflow::builtin::list_builtin_workflows() {
         match crate::adaptor::gateway::workflow::builtin::load_builtin_workflow_resolved(
             &summary.name,
+            facets_base_dir,
         ) {
             Ok(Some(workflow)) if workflow.name == workflow_name => {
                 matches.push((format!("builtin:{}", summary.name), workflow));
