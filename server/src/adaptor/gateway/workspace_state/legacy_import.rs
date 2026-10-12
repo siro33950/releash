@@ -52,11 +52,12 @@ async fn migrate_worktrees(
             let stream = facts::workspace_stream(key);
             let (head, event) = facts::latest(store, stream.clone())
                 .await
-                .map_err(facts::error)?;
+                .map_err(WorkspaceStateError::from)?;
             if event.is_none() {
-                let stored: StoredWorkspaceState =
-                    serde_json::from_slice(&std::fs::read(&file).map_err(facts::error)?)
-                        .map_err(facts::error)?;
+                let stored: StoredWorkspaceState = serde_json::from_slice(
+                    &std::fs::read(&file).map_err(WorkspaceStateError::from)?,
+                )
+                .map_err(WorkspaceStateError::from)?;
                 let state: WorkspaceState = stored.try_into()?;
                 facts::append(
                     store,
@@ -106,10 +107,11 @@ async fn import_group(
 ) -> Result<(), WorkspaceStateError> {
     let (head, event) = facts::latest(store, stream.clone())
         .await
-        .map_err(facts::error)?;
+        .map_err(WorkspaceStateError::from)?;
     if event.is_none() {
-        let collapsed = serde_json::from_slice(&std::fs::read(file).map_err(facts::error)?)
-            .map_err(facts::error)?;
+        let collapsed =
+            serde_json::from_slice(&std::fs::read(file).map_err(WorkspaceStateError::from)?)
+                .map_err(WorkspaceStateError::from)?;
         facts::append(
             store,
             stream,
@@ -124,37 +126,37 @@ fn files(directory: &Path) -> Result<Vec<PathBuf>, WorkspaceStateError> {
     let entries = match std::fs::read_dir(directory) {
         Ok(entries) => entries,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(vec![]),
-        Err(error) => return Err(facts::error(error)),
+        Err(error) => return Err(WorkspaceStateError::from(error)),
     };
     Ok(entries
         .map(|entry| entry.map(|entry| entry.path()))
         .collect::<Result<Vec<_>, _>>()
-        .map_err(facts::error)?
+        .map_err(WorkspaceStateError::from)?
         .into_iter()
         .filter(|file| file.extension().is_some_and(|ext| ext == "json"))
         .collect())
 }
 fn move_migrated(directory: &Path, file: &Path) -> Result<(), WorkspaceStateError> {
     let migrated = directory.with_extension("migrated");
-    std::fs::create_dir_all(&migrated).map_err(facts::error)?;
+    std::fs::create_dir_all(&migrated).map_err(WorkspaceStateError::from)?;
     let target = migrated.join(file.file_name().expect("directory entry"));
-    if target.try_exists().map_err(facts::error)? {
-        std::fs::remove_file(file).map_err(facts::error)
+    if target.try_exists().map_err(WorkspaceStateError::from)? {
+        std::fs::remove_file(file).map_err(WorkspaceStateError::from)
     } else {
-        std::fs::rename(file, target).map_err(facts::error)
+        std::fs::rename(file, target).map_err(WorkspaceStateError::from)
     }
 }
 fn finish_directory(directory: &Path) -> Result<(), WorkspaceStateError> {
     match std::fs::read_dir(directory) {
         Ok(mut entries) => {
             if entries.next().is_none() {
-                std::fs::remove_dir(directory).map_err(facts::error)
+                std::fs::remove_dir(directory).map_err(WorkspaceStateError::from)
             } else {
                 Ok(())
             }
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(facts::error(error)),
+        Err(error) => Err(WorkspaceStateError::from(error)),
     }
 }
 fn retain_failure(

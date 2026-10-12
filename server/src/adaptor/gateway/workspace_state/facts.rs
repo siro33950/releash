@@ -1,4 +1,5 @@
 use crate::adaptor::gateway::local_event_store::LocalEventStore;
+use crate::adaptor::gateway::shared::workspace_state::unexpected;
 use crate::domain::local_event::*;
 use crate::domain::workspace_state::WorkspaceStateError;
 use sha2::{Digest, Sha256};
@@ -23,17 +24,6 @@ fn hashed_stream(namespace: &str, key: &str) -> StreamId {
     ))
     .expect("hashed UI state identity")
 }
-pub(crate) fn error(value: impl std::fmt::Display) -> WorkspaceStateError {
-    WorkspaceStateError::Message(value.to_string())
-}
-
-pub(crate) fn query_error(value: LocalEventQueryError) -> WorkspaceStateError {
-    match value {
-        LocalEventQueryError::Technical(error) => WorkspaceStateError::Technical(error),
-        error => self::error(error),
-    }
-}
-
 pub(crate) async fn append(
     store: &Arc<LocalEventStore>,
     stream: StreamId,
@@ -46,14 +36,14 @@ pub(crate) async fn append(
         event,
         occurred_at_ms: std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map_err(error)?
+            .map_err(unexpected)?
             .as_millis() as i64,
     }];
     let payload = store
         .canonical_event_batch_identity_v1(&events)
-        .map_err(error)?;
+        .map_err(unexpected)?;
     let batch = LocalAtomicBatch {
-        commit_id: CommitIdentity::parse(&identity).map_err(error)?,
+        commit_id: CommitIdentity::parse(&identity).map_err(unexpected)?,
         idempotency: IdempotencyBinding {
             installation_id: store.installation_id().into(),
             operation_kind: CommitOperationKind::UserMutation,
@@ -71,11 +61,7 @@ pub(crate) async fn append(
         .commit_batch(batch)
         .await
         .map(|_| ())
-        .map_err(|failure| match failure {
-            CommitBatchError::StreamHeadConflict { .. } => WorkspaceStateError::VersionConflict,
-            CommitBatchError::Technical(error) => WorkspaceStateError::Technical(error),
-            failure => error(failure),
-        })
+        .map_err(WorkspaceStateError::from)
 }
 
 pub(crate) async fn latest(

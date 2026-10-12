@@ -466,8 +466,8 @@ impl From<&crate::domain::comment::ReviewError> for Failure {
 impl From<&crate::domain::workspace_state::WorkspaceStateError> for Failure {
     fn from(error: &crate::domain::workspace_state::WorkspaceStateError) -> Self {
         match error {
-            crate::domain::workspace_state::WorkspaceStateError::Message(_) => {
-                Self::Technical(TechnicalFailureNature::Other)
+            crate::domain::workspace_state::WorkspaceStateError::InvalidLayout => {
+                Self::Business(BusinessFailure::Other)
             }
             crate::domain::workspace_state::WorkspaceStateError::VersionConflict => {
                 Self::Business(BusinessFailure::VersionConflict)

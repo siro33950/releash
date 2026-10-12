@@ -282,7 +282,12 @@ mod workspace_state_gc_tests {
             self.scanned
                 .store(true, std::sync::atomic::Ordering::SeqCst);
             if self.fail_inventory {
-                return Err(WorkspaceStateError::Message("inventory failed".into()));
+                return Err(WorkspaceStateError::Technical(
+                    crate::domain::failure::TechnicalFailure {
+                        nature: crate::domain::failure::TechnicalFailureNature::Other,
+                        message: "inventory failed".into(),
+                    },
+                ));
             }
             Ok(["live", "active", "newly-active", "removed"]
                 .into_iter()
@@ -304,7 +309,12 @@ mod workspace_state_gc_tests {
             assert_eq!(expected, StreamVersion::new(1).unwrap());
             self.invalidated.lock().unwrap().push(key.clone());
             if self.fail_invalidation {
-                Err(WorkspaceStateError::Message("write failed".into()))
+                Err(WorkspaceStateError::Technical(
+                    crate::domain::failure::TechnicalFailure {
+                        nature: crate::domain::failure::TechnicalFailureNature::Other,
+                        message: "write failed".into(),
+                    },
+                ))
             } else {
                 Ok(true)
             }
@@ -752,7 +762,7 @@ mod workspace_state_gc_tests {
         assert_eq!(result.report.total_files, 1);
         assert_eq!(result.report.total_bytes, 10);
         assert!(
-            matches!(result.notices.as_slice(), [GcNotice::ArchiveFailed { .. }, GcNotice::WorkspaceInventoryFailed(WorkspaceStateError::Message(message))] if message == "inventory failed")
+            matches!(result.notices.as_slice(), [GcNotice::ArchiveFailed { .. }, GcNotice::WorkspaceInventoryFailed(WorkspaceStateError::Technical(error))] if error.message == "inventory failed")
         );
         assert!(states.invalidated.lock().unwrap().is_empty());
         assert_eq!(

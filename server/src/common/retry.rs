@@ -28,10 +28,6 @@ impl RetryBackoff {
         }
     }
 
-    pub fn maximum_delay(self, failure_count: u64) -> Duration {
-        self.delay(failure_count, 1.0 + JITTER_SPREAD)
-    }
-
     pub fn delay(self, failure_count: u64, jitter: f64) -> Duration {
         assert!(jitter.is_finite() && jitter >= 0.0);
         let exponent = failure_count.saturating_sub(1).min(i32::MAX as u64) as i32;

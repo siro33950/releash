@@ -51,13 +51,21 @@ fn test_ui状態保存失敗_版競合の通信本文と既存の表示detailを
             "Operation cancelled",
         ),
         (
-            WorkspaceStateError::Message("write failed".into()),
-            connectrpc::ErrorCode::Internal,
+            WorkspaceStateError::InvalidLayout,
+            connectrpc::ErrorCode::InvalidArgument,
             "Command failed",
-            "write failed",
+            "Invalid pane layout",
         ),
     ] {
         // Given
+        if matches!(source, WorkspaceStateError::InvalidLayout) {
+            assert_eq!(
+                crate::usecase::failure::Failure::from(&source),
+                crate::usecase::failure::Failure::Business(
+                    crate::usecase::failure::BusinessFailure::Other
+                )
+            );
+        }
         let error = crate::adaptor::presenter::error::AppError::from(source);
         // When
         let wire: CommandFailure = error.into();

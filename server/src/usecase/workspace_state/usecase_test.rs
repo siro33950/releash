@@ -3,7 +3,10 @@ use crate::domain::workspace_state::value_objects::{WorkspaceLayoutState, Worksp
 use crate::domain::workspace_state::WorkspaceStateKey;
 use parking_lot::Mutex;
 
+#[derive(Default)]
 struct Store {
+    conflict_returned: tokio::sync::Notify,
+    save_failure: Option<crate::domain::failure::TechnicalFailure>,
     fail: bool,
     readable: bool,
     conflict: bool,
@@ -17,12 +20,16 @@ struct Store {
 impl Store {
     fn should_conflict(&self) -> bool {
         let mut remaining = self.conflicts_remaining.lock();
-        if *remaining > 0 {
+        let conflict = if *remaining > 0 {
             *remaining -= 1;
             true
         } else {
             self.conflict
+        };
+        if conflict {
+            self.conflict_returned.notify_one();
         }
+        conflict
     }
 }
 #[async_trait::async_trait]
@@ -36,7 +43,12 @@ impl WorkspaceStateRepository for Store {
             .lock()
             .push(format!("migration:{repositories:?}:{worktrees:?}"));
         if self.fail {
-            Err(WorkspaceStateError::Message("failed".into()))
+            Err(WorkspaceStateError::Technical(
+                crate::domain::failure::TechnicalFailure {
+                    nature: crate::domain::failure::TechnicalFailureNature::Other,
+                    message: "failed".into(),
+                },
+            ))
         } else {
             Ok(())
         }
@@ -49,6 +61,7 @@ impl WorkspaceStateRepository for Store {
         &self,
         _: &str,
     ) -> Result<(crate::domain::local_event::StreamVersion, bool), WorkspaceStateError> {
+        crate::common::operation_context::check()?;
         let read = self.reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         Ok((
             crate::domain::local_event::StreamVersion::new(read as i64).unwrap(),
@@ -69,8 +82,16 @@ impl WorkspaceStateRepository for Store {
         if self.should_conflict() {
             return Err(WorkspaceStateError::VersionConflict);
         }
+        if let Some(failure) = &self.save_failure {
+            return Err(WorkspaceStateError::Technical(failure.clone()));
+        }
         if self.fail {
-            Err(WorkspaceStateError::Message("failed".into()))
+            Err(WorkspaceStateError::Technical(
+                crate::domain::failure::TechnicalFailure {
+                    nature: crate::domain::failure::TechnicalFailureNature::Other,
+                    message: "failed".into(),
+                },
+            ))
         } else {
             Ok(())
         }
@@ -86,6 +107,7 @@ impl WorkspaceStateRepository for Store {
         ),
         WorkspaceStateError,
     > {
+        crate::common::operation_context::check()?;
         if self.readable {
             Ok((
                 crate::domain::local_event::StreamVersion::new(
@@ -101,7 +123,12 @@ impl WorkspaceStateRepository for Store {
                 },
             ))
         } else {
-            Err(WorkspaceStateError::Message("unreadable".into()))
+            Err(WorkspaceStateError::Technical(
+                crate::domain::failure::TechnicalFailure {
+                    nature: crate::domain::failure::TechnicalFailureNature::Other,
+                    message: "unreadable".into(),
+                },
+            ))
         }
     }
     async fn load(&self, _: &str, _: &str) -> Result<Option<WorkspaceState>, WorkspaceStateError> {
@@ -122,8 +149,16 @@ impl WorkspaceStateRepository for Store {
         if self.should_conflict() {
             return Err(WorkspaceStateError::VersionConflict);
         }
+        if let Some(failure) = &self.save_failure {
+            return Err(WorkspaceStateError::Technical(failure.clone()));
+        }
         if self.fail {
-            Err(WorkspaceStateError::Message("failed".into()))
+            Err(WorkspaceStateError::Technical(
+                crate::domain::failure::TechnicalFailure {
+                    nature: crate::domain::failure::TechnicalFailureNature::Other,
+                    message: "failed".into(),
+                },
+            ))
         } else {
             Ok(())
         }
@@ -155,6 +190,8 @@ async fn test_表示状態保存_保存成功後だけ対象名を通知する()
             conflict: false,
             conflicts_remaining: Default::default(),
             reads: Default::default(),
+            conflict_returned: Default::default(),
+            save_failure: None,
             retry_previous: None,
             previous: None,
             saved: Default::default(),
@@ -206,6 +243,8 @@ async fn test_表示状態保存_読取失敗ならsetとsaveを呼ばない() {
         conflict: false,
         conflicts_remaining: Default::default(),
         reads: Default::default(),
+        conflict_returned: Default::default(),
+        save_failure: None,
         retry_previous: None,
         previous: None,
         saved: Default::default(),
@@ -245,6 +284,8 @@ async fn test_repository折りたたみ保存_成功したgroupだけ通知す�
             conflict: false,
             conflicts_remaining: Default::default(),
             reads: Default::default(),
+            conflict_returned: Default::default(),
+            save_failure: None,
             retry_previous: None,
             previous: None,
             saved: Default::default(),
@@ -279,6 +320,8 @@ async fn test_表示状態保存_不正なpane配置は保存前に拒否する(
         conflict: false,
         conflicts_remaining: Default::default(),
         reads: Default::default(),
+        conflict_returned: Default::default(),
+        save_failure: None,
         retry_previous: None,
         previous: None,
         saved: Default::default(),
@@ -330,6 +373,8 @@ async fn test_旧表示状態の移行_登録repositoryを列挙し未解決な�
                 conflict: false,
                 conflicts_remaining: Default::default(),
                 reads: Default::default(),
+                conflict_returned: Default::default(),
+                save_failure: None,
                 retry_previous: None,
                 previous: None,
                 saved: Default::default(),
@@ -403,65 +448,98 @@ fn state_with_panes() -> WorkspaceState {
     }
 }
 #[tokio::test]
-async fn test_表示状態保存_最新の配置を保持し待ちが期限を越える版競合を返す() {
-    for conflict in [false, true] {
-        // Given
-        let previous = state_with_panes();
-        let store = Store {
-            fail: false,
-            readable: true,
-            conflict,
-            conflicts_remaining: Default::default(),
-            reads: Default::default(),
-            retry_previous: None,
-            previous: Some(previous.clone()),
-            saved: Default::default(),
-            calls: Default::default(),
-        };
-        let mut next = previous.clone();
-        next.panes = None;
-        next.layout.left_nav_collapsed = true;
-        // When
-        let result = crate::common::operation_context::scope(
-            crate::common::operation_context::with_timeout(std::time::Duration::from_millis(10)),
-            save_workspace_state(&store, None, "wt", next),
-        )
-        .await;
-        // Then
-        assert_eq!(
-            matches!(result, Err(WorkspaceStateError::VersionConflict)),
-            conflict
-        );
-        assert_eq!(store.calls.lock().as_slice(), ["save:wt"]);
-        let saved = store.saved.lock();
-        assert_eq!(saved.len(), 1);
-        assert_eq!(saved[0].panes, previous.panes);
-        assert!(saved[0].layout.left_nav_collapsed);
-    }
-}
-#[tokio::test]
-async fn test_repositoryグループ保存_待ちが期限を越える版競合を返す() {
+async fn test_表示状態保存_最新の配置を保持し競合待ちの取消で版競合を返し通知しない() {
     // Given
+    let previous = state_with_panes();
     let store = Store {
-        fail: false,
         readable: true,
         conflict: true,
-        conflicts_remaining: Default::default(),
-        reads: Default::default(),
-        retry_previous: None,
-        previous: None,
-        saved: Default::default(),
-        calls: Default::default(),
+        previous: Some(previous.clone()),
+        ..Default::default()
     };
+    let publisher = crate::test_support::state_subscription::test_subscriptions();
+    let mut changes = crate::test_support::state_subscription::changes(&publisher);
+    let cancellation = std::sync::Arc::new(tokio_util::sync::CancellationToken::new());
+    let mut next = previous.clone();
+    next.panes = None;
+    next.layout.left_nav_collapsed = true;
     // When
-    let result = crate::common::operation_context::scope(
-        crate::common::operation_context::with_timeout(std::time::Duration::from_millis(10)),
-        save_repository_group_state(&store, None, "/repo", true),
-    )
-    .await;
+    let (result, ()) = tokio::join!(
+        crate::common::operation_context::scope(
+            crate::common::operation_context::OperationContext::new(None, cancellation.clone()),
+            save_workspace_state(&store, Some(&publisher), "wt", next),
+        ),
+        async {
+            store.conflict_returned.notified().await;
+            cancellation.cancel();
+        }
+    );
     // Then
     assert!(matches!(result, Err(WorkspaceStateError::VersionConflict)));
+    assert!(changes.try_recv().is_err());
+    assert_eq!(store.calls.lock().as_slice(), ["save:wt"]);
+    let saved = store.saved.lock();
+    assert_eq!(saved.len(), 1);
+    assert_eq!(saved[0].panes, previous.panes);
+    assert!(saved[0].layout.left_nav_collapsed);
+}
+
+#[tokio::test]
+async fn test_repositoryグループ保存_競合待ちの取消で版競合を返し通知しない() {
+    // Given
+    let store = Store {
+        readable: true,
+        conflict: true,
+        ..Default::default()
+    };
+    let publisher = crate::test_support::state_subscription::test_subscriptions();
+    let mut changes = crate::test_support::state_subscription::changes(&publisher);
+    let cancellation = std::sync::Arc::new(tokio_util::sync::CancellationToken::new());
+    // When
+    let (result, ()) = tokio::join!(
+        crate::common::operation_context::scope(
+            crate::common::operation_context::OperationContext::new(None, cancellation.clone()),
+            save_repository_group_state(&store, Some(&publisher), "/repo", true),
+        ),
+        async {
+            store.conflict_returned.notified().await;
+            cancellation.cancel();
+        }
+    );
+    // Then
+    assert!(matches!(result, Err(WorkspaceStateError::VersionConflict)));
+    assert!(changes.try_recv().is_err());
     assert_eq!(store.calls.lock().as_slice(), ["group:/repo:true"]);
+}
+
+#[tokio::test]
+async fn test_ui状態保存_競合後の技術的な期限切れをそのまま返し通知しない() {
+    for group in [false, true] {
+        // Given
+        let failure = crate::domain::failure::TechnicalFailure {
+            nature: crate::domain::failure::TechnicalFailureNature::TimedOut,
+            message: "save timed out".into(),
+        };
+        let store = Store {
+            readable: true,
+            conflicts_remaining: Mutex::new(1),
+            save_failure: Some(failure.clone()),
+            ..Default::default()
+        };
+        let publisher = crate::test_support::state_subscription::test_subscriptions();
+        let mut changes = crate::test_support::state_subscription::changes(&publisher);
+        // When
+        let result = if group {
+            save_repository_group_state(&store, Some(&publisher), "/repo", true).await
+        } else {
+            save_workspace_state(&store, Some(&publisher), "/repo/wt", state_with_panes()).await
+        };
+        // Then
+        assert!(matches!(result, Err(WorkspaceStateError::Technical(actual)) if actual == failure));
+        assert_eq!(store.reads.load(std::sync::atomic::Ordering::SeqCst), 2);
+        assert_eq!(store.calls.lock().len(), 2);
+        assert!(changes.try_recv().is_err());
+    }
 }
 
 #[tokio::test]
@@ -484,6 +562,8 @@ async fn test_ui状態保存_両方の保存が版競合後に読み直し成功
             conflict: false,
             conflicts_remaining: Mutex::new(1),
             reads: Default::default(),
+            conflict_returned: Default::default(),
+            save_failure: None,
             retry_previous: Some(latest.clone()),
             previous: Some(previous),
             saved: Default::default(),
@@ -529,6 +609,8 @@ async fn test_ui状態保存_取消済みなら両方とも読み書きしない
             conflict: false,
             conflicts_remaining: Default::default(),
             reads: Default::default(),
+            conflict_returned: Default::default(),
+            save_failure: None,
             retry_previous: None,
             previous: None,
             saved: Default::default(),
@@ -553,39 +635,4 @@ async fn test_ui状態保存_取消済みなら両方とも読み書きしない
         assert_eq!(store.reads.load(std::sync::atomic::Ordering::SeqCst), 0);
         assert!(store.calls.lock().is_empty());
     }
-}
-
-#[tokio::test]
-async fn test_ui状態保存_最初の期限切れと競合待ちの取消の種別を保持する() {
-    use crate::common::operation_context::{self, Deadline, OperationContext};
-    use crate::domain::failure::TechnicalFailureNature;
-    // Given
-    let expired =
-        OperationContext::default().with_deadline(Deadline::new(std::time::Instant::now()));
-    // When
-    let result = operation_context::scope(
-        expired,
-        save_with_retry(|| async { panic!("expired operation called") }),
-    )
-    .await;
-    // Then
-    assert!(
-        matches!(result, Err(WorkspaceStateError::Technical(error)) if error.nature == TechnicalFailureNature::TimedOut)
-    );
-    // Given
-    let cancellation = std::sync::Arc::new(tokio_util::sync::CancellationToken::new());
-    let context = OperationContext::new(None, cancellation.clone());
-    // When
-    let result = operation_context::scope(
-        context,
-        save_with_retry(|| async {
-            cancellation.cancel();
-            Err(WorkspaceStateError::VersionConflict)
-        }),
-    )
-    .await;
-    // Then
-    assert!(
-        matches!(result, Err(WorkspaceStateError::Technical(error)) if error.nature == TechnicalFailureNature::Cancelled)
-    );
 }

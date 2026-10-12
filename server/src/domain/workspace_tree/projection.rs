@@ -1,5 +1,3 @@
-use super::latest_attempts::{AttemptScope, LatestAttempts};
-
 fn command_result_from_value(
     value: &serde_json::Value,
 ) -> Option<crate::domain::workspace_tree::WorkspaceCommandResult> {
@@ -162,16 +160,6 @@ pub fn runtime_snapshot_nodes(
     });
     let mut tree = WorkspaceTree::empty(workspace_identity);
     WorkspaceTreeProjector::project(&mut tree, facts).map_err(|error| error.to_string())?;
-    let latest = LatestAttempts::new(node_executions.iter().map(|node| {
-        (
-            AttemptScope {
-                execution: &node.execution_id,
-                name: &node.node_name,
-                parent: node.parent.as_ref(),
-            },
-            node.attempt,
-        )
-    }));
     for runtime in node_executions
         .iter()
         .filter(|runtime| runtime.execution_id == execution_id)
@@ -188,14 +176,9 @@ pub fn runtime_snapshot_nodes(
             .unwrap_or_default();
         node.can_retry = execution_active
             && runtime.can_retry(node.process_presence)
-            && latest.contains(
-                AttemptScope {
-                    execution: &runtime.execution_id,
-                    name: &runtime.node_name,
-                    parent: runtime.parent.as_ref(),
-                },
-                runtime.attempt,
-            );
+            && node_executions.iter().all(|candidate| {
+                !same_retry_target(runtime, candidate) || candidate.attempt <= runtime.attempt
+            });
         node.worktree = runtime.worktree.clone();
         node.can_resume_session = runtime.can_resume_session(node.process_presence);
     }
@@ -206,6 +189,13 @@ pub fn runtime_snapshot_nodes(
         .filter(|node| node.execution_id.as_deref() == Some(execution_id))
         .cloned()
         .collect())
+}
+
+fn same_retry_target(
+    left: &crate::domain::workflow::entities::workflow_execution::RuntimeNodeExecution,
+    right: &crate::domain::workflow::entities::workflow_execution::RuntimeNodeExecution,
+) -> bool {
+    left.node_name == right.node_name && left.parent == right.parent
 }
 
 #[cfg(test)]

@@ -194,10 +194,9 @@ fn collect_workspace_state_records(
             {
                 return None;
             }
-            let key =
-                crate::adaptor::gateway::workspace_state::repository_impl::state_key_from_filename(
-                    path.file_stem().and_then(|stem| stem.to_str())?.to_string(),
-                );
+            let key = crate::domain::workspace_state::WorkspaceStateKey::from_storage(
+                path.file_stem().and_then(|stem| stem.to_str())?.to_string(),
+            );
             Some(WorkspaceStateGcRecord { path, key })
         })
         .collect()
@@ -337,7 +336,7 @@ fn workspace_state_keys(name: &str, path: &str, normalized: &str) -> Vec<Workspa
         );
     }
     keys.into_iter()
-        .map(crate::adaptor::gateway::workspace_state::repository_impl::state_key_from_filename)
+        .map(crate::domain::workspace_state::WorkspaceStateKey::from_storage)
         .collect()
 }
 

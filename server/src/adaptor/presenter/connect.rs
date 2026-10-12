@@ -81,7 +81,7 @@ impl ConnectFailure for crate::domain::application_lifecycle::ApplicationLifecyc
 impl ConnectFailure for crate::domain::workspace_state::error::WorkspaceStateError {
     fn connect_code(&self) -> connectrpc::ErrorCode {
         match self {
-            Self::Message(_) => connectrpc::ErrorCode::Internal,
+            Self::InvalidLayout => connectrpc::ErrorCode::InvalidArgument,
             Self::VersionConflict => connectrpc::ErrorCode::Aborted,
             Self::Technical(error) => error.connect_code(),
         }

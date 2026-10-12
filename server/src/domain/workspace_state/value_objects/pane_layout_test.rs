@@ -20,7 +20,10 @@ fn test_pane配置_復元するタブと分割を検証する() {
     )
     .unwrap();
     // When / Then
-    assert!(PaneLayout::pane("pane".into(), vec![], Some("missing".into())).is_err());
+    assert!(matches!(
+        PaneLayout::pane("pane".into(), vec![], Some("missing".into())),
+        Err(crate::domain::workspace_state::WorkspaceStateError::InvalidLayout)
+    ));
     for ratio in [0.0, 1.0, -0.1, f64::NAN, f64::INFINITY, 0.5] {
         assert_eq!(
             PaneLayout::split(

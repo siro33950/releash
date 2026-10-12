@@ -2758,10 +2758,8 @@ mod connect_mapping_tests {
             // Given
             let cases = [
                 (
-                    crate::domain::workspace_state::error::WorkspaceStateError::Message(
-                        "io".into(),
-                    ),
-                    F::Internal,
+                    crate::domain::workspace_state::error::WorkspaceStateError::InvalidLayout,
+                    F::InvalidArgument,
                 ),
                 (
                     crate::domain::workspace_state::error::WorkspaceStateError::VersionConflict,

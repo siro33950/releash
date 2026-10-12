@@ -146,11 +146,7 @@ impl PaneLayout {
         if visit(&layout, &mut HashSet::new(), 0) {
             Ok(layout)
         } else {
-            Err(
-                crate::domain::workspace_state::WorkspaceStateError::Message(
-                    "Invalid pane layout".into(),
-                ),
-            )
+            Err(crate::domain::workspace_state::WorkspaceStateError::InvalidLayout)
         }
     }
 }
