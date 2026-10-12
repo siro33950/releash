@@ -10,7 +10,7 @@ final class WorkbenchTests: XCTestCase {
     app.launchEnvironment = fixture.environment
   }
 
-  override func tearDownWithError() throws {
+  @MainActor override func tearDown() async throws {
     app?.terminate()
     try fixture?.cleanUp()
     app = nil
