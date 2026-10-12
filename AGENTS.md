@@ -126,7 +126,8 @@ nightly のリリース前検証では全プロジェクトを対象にする。
 | workspace | `lint`、`coverage` |
 
 `test` は各テスト target を集約する。
-server と cli は `test-unit`（単体・doc）と `test-integration`、desktop は `rust-lint`、`rust-test-unit`、`rust-test-integration`、`frontend-lint`、`frontend-test-unit`、`frontend-test-integration` に分ける。
+server と cli の `test` は `test-unit`（単体・doc）と `test-integration`、desktop の `test` は `rust-test-unit`、`rust-test-integration`、`frontend-test-unit`、`frontend-test-integration` を集約する。
+desktop の `lint` は `rust-lint` と `frontend-lint` を集約する。
 バイナリの build 依存は Rust の統合テストにだけ置く。
 macOS の CI は `macos:test` でアプリのビルドとテストを行い、`macos:build` を重ねて実行しない。
 `macos:helpers` は対象 CPU 向けのバイナリを直接作り、通常の server・cli build は先行させない。
