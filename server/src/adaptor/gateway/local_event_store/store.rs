@@ -904,10 +904,12 @@ impl LocalEventStore {
     {
         let (reply, receiver) = oneshot::channel();
         let fault = Arc::clone(&self.fault);
+        let context = crate::common::operation_context::current();
         let job = WriteJob {
             critical,
             bytes,
             run: Box::new(move |connection| {
+                let _context = context;
                 let result = run(connection);
                 if !fault.take_drop_reply() {
                     let _ = reply.send(result);

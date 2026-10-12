@@ -533,7 +533,12 @@ mod driver_tests {
                             has_more: false,
                         },
                     ),
-                    _ => StateValue::Issues(crate::usecase::fetched::Fetched::ready(vec![])),
+                    _ => StateValue::Issues(crate::usecase::fetched::Fetched::ready(
+                        crate::usecase::git_host::git_host_usecase::IssueListing {
+                            issues: vec![],
+                            options: crate::domain::git_host::IssueOptions::from_issues(&[]),
+                        },
+                    )),
                 })
             }
             fn repositories(&self) -> Vec<String> {
@@ -1081,23 +1086,26 @@ mod driver_tests {
                     target,
                     crate::usecase::state_subscription::SubscriptionTarget::Issues(_)
                 ) {
-                    return StateValue::Issues(Fetched::ready(vec![
-                        crate::domain::git_host::IssueInfo {
-                            number: self.issues.load(Ordering::SeqCst),
-                            title: "issue".into(),
-                            state: "open".into(),
-                            url: String::new(),
-                            author: crate::domain::git_host::PrAuthor {
-                                login: "author".into(),
-                            },
-                            created_at: String::new(),
-                            updated_at: String::new(),
-                            labels: vec![],
-                            assignees: vec![],
-                            body: String::new(),
-                            milestone: None,
+                    return StateValue::Issues(Fetched::ready(
+                        crate::usecase::git_host::git_host_usecase::IssueListing {
+                            options: crate::domain::git_host::IssueOptions::from_issues(&[]),
+                            issues: vec![crate::domain::git_host::IssueInfo {
+                                number: self.issues.load(Ordering::SeqCst),
+                                title: "issue".into(),
+                                state: "open".into(),
+                                url: String::new(),
+                                author: crate::domain::git_host::PrAuthor {
+                                    login: "author".into(),
+                                },
+                                created_at: String::new(),
+                                updated_at: String::new(),
+                                labels: vec![],
+                                assignees: vec![],
+                                body: String::new(),
+                                milestone: None,
+                            }],
                         },
-                    ]));
+                    ));
                 }
                 StateValue::Workspaces(WorkspaceList {
                     repositories: vec![WorkspaceListRepository {
@@ -1116,9 +1124,12 @@ mod driver_tests {
                             pull_request_error: None,
                             pull_request_loaded: true,
                             merged: false,
-                            pull_request: Some(crate::domain::git_host::PrInfo {
+                            state_pull_request: None,
+                            open_pull_request: Some(crate::domain::git_host::PrInfo {
                                 number: self.prs.load(Ordering::SeqCst),
                                 url: String::new(),
+                                state: crate::domain::git_host::PrState::Open,
+                                draft: false,
                             }),
                             tree: Fetched::default(),
                         }]),
@@ -3674,4 +3685,41 @@ mod terminal_composition {
             StateReadFailure::TerminalSubscriptionEnded
         ));
     }
+}
+
+#[test]
+fn test_issue絞り込み対象_条件を正規化し同じrepositoryの変更を受ける() {
+    // Given / When
+    let target = SubscriptionTarget::from_parts(
+        "issues",
+        &[
+            "/repo",
+            "label=z",
+            "milestone=release",
+            "label=a",
+            "label=z",
+        ],
+    )
+    .unwrap();
+    let expected = SubscriptionTarget::FilteredIssues(
+        "/repo".into(),
+        crate::domain::git_host::IssueFilter {
+            labels: vec!["a".into(), "z".into()],
+            milestone: Some("release".into()),
+        },
+    );
+    // Then
+    assert_eq!(target, expected);
+    assert_eq!(
+        SubscriptionTarget::parse(&target.to_string()).unwrap(),
+        target
+    );
+    assert!(target.affected_by(&StateChangeSource::Issues("/repo".into())));
+    assert!(!target.affected_by(&StateChangeSource::Issues("/other".into())));
+    for bad in ["label=", "state=open", "milestone="] {
+        assert!(SubscriptionTarget::from_parts("issues", &["/repo", bad]).is_err());
+    }
+    assert!(
+        SubscriptionTarget::from_parts("issues", &["/repo", "milestone=a", "milestone=b"]).is_err()
+    );
 }

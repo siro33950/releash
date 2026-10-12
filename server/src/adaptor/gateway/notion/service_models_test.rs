@@ -172,7 +172,7 @@ pub(crate) mod tests {
         assert_eq!(tasks.len(), 1);
         assert_eq!(tasks[0].id, "page-1");
         assert_eq!(tasks[0].title, "Task 1");
-        assert_eq!(tasks[0].branch_name, "feat/task-1");
+        assert_eq!(tasks[0].branch_name, "feat/page-1");
         assert!(tasks[0].labels.is_empty());
     }
 
@@ -251,8 +251,9 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn test_query_response_parse_branch未設定ならtitle由来fallbackを返す() {
-        let json = serde_json::json!({
+    fn test_query_response_parse_同名の日本語taskでもidごとにbranchを返す() {
+        // Given
+        let mut json = serde_json::json!({
             "results": [{
                 "id": "page-3",
                 "url": "https://notion.so/page-3",
@@ -261,7 +262,7 @@ pub(crate) mod tests {
                 "properties": {
                     "Name": {
                         "type": "title",
-                        "title": [{ "plain_text": "Move Notion branch rules" }]
+                        "title": [{ "plain_text": "ログイン" }]
                     }
                 }
             }]
@@ -272,10 +273,18 @@ pub(crate) mod tests {
             branch_name: "Branch".to_string(),
             branch_prefix: String::new(),
         };
+        let mut second = json["results"][0].clone();
+        second["id"] = serde_json::json!("page-5");
+        json["results"].as_array_mut().unwrap().push(second);
 
+        // When
         let tasks = parse_query_response(&json, &mapping).unwrap();
 
-        assert_eq!(tasks[0].branch_name, "feat/move-notion-branch-rules");
+        // Then
+        assert_eq!(tasks.len(), 2);
+        assert_eq!(tasks[0].title, tasks[1].title);
+        assert_eq!(tasks[0].branch_name, "feat/page-3");
+        assert_eq!(tasks[1].branch_name, "feat/page-5");
     }
 
     #[test]

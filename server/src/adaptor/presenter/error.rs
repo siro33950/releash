@@ -96,6 +96,18 @@ impl AppError {
     }
 }
 
+impl From<crate::domain::workspace_state::WorkspaceStateError> for AppError {
+    fn from(error: crate::domain::workspace_state::WorkspaceStateError) -> Self {
+        let cause = matches!(
+            error,
+            crate::domain::workspace_state::WorkspaceStateError::VersionConflict
+                | crate::domain::workspace_state::WorkspaceStateError::Technical(_)
+        )
+        .then(|| error.to_string());
+        Self::from_failure(error).with_cause(cause)
+    }
+}
+
 impl Serialize for AppError {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where

@@ -341,13 +341,36 @@ pub fn create_worktree(
     create_branch: bool,
     base_branch: Option<&str>,
 ) -> Result<Worktree, RepositoryError> {
+    create_worktree_with_before_add(
+        repo_path,
+        worktree_path,
+        branch,
+        create_branch,
+        base_branch,
+        |_, _, _| {},
+    )
+}
+
+fn create_worktree_with_before_add(
+    repo_path: &str,
+    worktree_path: &str,
+    branch: &str,
+    create_branch: bool,
+    base_branch: Option<&str>,
+    mut before_add: impl FnMut(&Repository, &str, &Path),
+) -> Result<Worktree, RepositoryError> {
     let repo = git_operation::run(|| client::open(repo_path))?;
     let wt_path = Path::new(worktree_path);
 
     // 壊れた worktree エントリを事前に掃除
     prune_invalid_worktrees(&repo)?;
 
-    let reference = if create_branch {
+    let wt_name = wt_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or_else(|| RepositoryError::rule("invalid worktree path"))?;
+
+    let mut reference = if create_branch {
         let base = base_branch.unwrap_or("HEAD");
         let obj = git_operation::run(|| repo.revparse_single(base))?;
         let commit = git_operation::run(|| obj.peel_to_commit())?;
@@ -356,35 +379,58 @@ pub fn create_worktree(
         git_operation::run(|| repo.find_branch(branch, BranchType::Local))?.into_reference()
     };
 
-    let wt_name = wt_path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .ok_or_else(|| RepositoryError::rule("invalid worktree path"))?;
-
-    if let Some(parent) = wt_path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| {
-            RepositoryError::rule(format!("failed to create parent directory: {e}"))
-        })?;
-    }
-
     let mut opts = WorktreeAddOptions::new();
     opts.reference(Some(&reference));
-
-    if let Err(e) = git_operation::run(|| repo.worktree(wt_name, wt_path, Some(&opts))) {
-        if let git_operation::GitOperationError::Stopped(stopped) = e {
-            return Err(stopped.into());
+    let mut unique_name = String::new();
+    // libgit2 が列挙しない作成途中の管理名も次の候補から除く。
+    let mut failed_names = Vec::new();
+    let result = (|| {
+        for attempt in 0..3 {
+            let names = git_operation::run(|| repo.worktrees())?;
+            let names = git_operation::run(|| names.iter().collect::<Result<Vec<_>, _>>())?;
+            unique_name =
+                crate::domain::repository::value_objects::worktree_path::unique_worktree_name(
+                    wt_name,
+                    &names
+                        .iter()
+                        .flatten()
+                        .copied()
+                        .chain(failed_names.iter().map(String::as_str))
+                        .collect::<Vec<_>>(),
+                );
+            if let Some(parent) = wt_path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            before_add(&repo, &unique_name, wt_path);
+            match git_operation::run(|| repo.worktree(&unique_name, wt_path, Some(&opts))) {
+                Ok(_) => return Ok(()),
+                Err(error) => {
+                    let retryable = !wt_path.exists()
+                        && (repo.path().join("worktrees").join(&unique_name).exists()
+                            || wt_path.parent().is_some_and(|parent| !parent.exists()));
+                    if attempt == 2 || !retryable || matches!(error, GitOperationError::Stopped(_))
+                    {
+                        return Err(RepositoryError::from(error));
+                    }
+                    failed_names.push(unique_name.clone());
+                }
+            }
+        }
+        unreachable!()
+    })();
+    if let Err(error) = result {
+        if matches!(error, RepositoryError::Technical(_)) {
+            return Err(error);
         }
         if create_branch {
-            git_operation::optional(
-                git_operation::run(|| repo.find_branch(branch, BranchType::Local))
-                    .and_then(|mut b| git_operation::run(|| b.delete())),
-            )?;
+            // 不完全な管理エントリを branch.delete が使用中と誤認するため、新規 reference を直接戻す。
+            git_operation::run(|| reference.delete())?;
         }
-        return Err(e.into());
+        return Err(error);
     }
 
     Ok(Worktree {
-        name: wt_name.to_string(),
+        name: unique_name,
         path: path_to_worktree_identity(wt_path)?,
         branch: branch.to_string(),
         is_main: false,
@@ -467,6 +513,32 @@ pub fn remove_worktree(
         })?;
     }
 
+    let root = PathBuf::from(crate::domain::repository::worktree_dir(repo_path));
+    let root = match root.canonicalize() {
+        Ok(root) => Some(root),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => return Err(error.into()),
+    };
+    if let Some(root) = root {
+        let mut parent = target_path.parent();
+        while let Some(directory) =
+            parent.filter(|directory| *directory != root && directory.starts_with(&root))
+        {
+            match std::fs::remove_dir(directory) {
+                Ok(()) => parent = directory.parent(),
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        std::io::ErrorKind::DirectoryNotEmpty | std::io::ErrorKind::NotFound
+                    ) =>
+                {
+                    break
+                }
+                Err(error) => return Err(error.into()),
+            }
+        }
+    }
+
     // 対応ブランチの releash-base 後始末は usecase が wt_branch を使って行う。
     Ok(wt_branch)
 }
@@ -511,6 +583,25 @@ impl WorktreeRepository for WorktreeGateway {
     ) -> Result<Option<String>, RepositoryError> {
         remove_worktree(repo_path, worktree_path, force)
     }
+}
+
+#[cfg(feature = "test-support")]
+pub fn create_worktree_with_hook(
+    repo_path: &str,
+    worktree_path: &str,
+    branch: &str,
+    create_branch: bool,
+    base_branch: Option<&str>,
+    before_add: impl FnMut(&Repository, &str, &Path),
+) -> Result<Worktree, RepositoryError> {
+    create_worktree_with_before_add(
+        repo_path,
+        worktree_path,
+        branch,
+        create_branch,
+        base_branch,
+        before_add,
+    )
 }
 
 #[cfg(test)]

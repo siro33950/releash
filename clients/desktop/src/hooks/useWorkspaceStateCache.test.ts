@@ -73,6 +73,40 @@ describe("useWorkspaceStateCache", () => {
 		}
 	});
 
+	it("同じ末尾名のworktreeを絶対pathで保存・購読し独立して復元する", async () => {
+		const paths = ["/repo-worktrees/feature/a", "/repo-worktrees/bugfix/a"];
+		const values = [
+			makeState(),
+			makeState({ tabs: { editors: [], activeEditorPath: null } }),
+		];
+		const { result } = renderHook(() => useWorkspaceStateCache());
+		const received = paths.map(() => vi.fn());
+		await act(async () => {
+			for (const [index, path] of paths.entries()) {
+				result.current.updateState(path, values[index]);
+				result.current.flushState(path);
+			}
+		});
+		for (const [index, path] of paths.entries()) {
+			expect(mockInvoke).toHaveBeenCalledWith("save_workspace_state", {
+				worktreeName: path,
+				state: values[index],
+			});
+			states.publish(
+				{ kind: "workspace-state", args: [path, path] },
+				values[index],
+			);
+		}
+		await act(async () => {
+			for (const [index, path] of paths.entries())
+				result.current.loadState(path, received[index], vi.fn());
+		});
+		for (const [index, path] of paths.entries()) {
+			expect(received[index]).toHaveBeenLastCalledWith(values[index]);
+			expect(result.current.getState(path)).toEqual(values[index]);
+		}
+	});
+
 	it("getState returns undefined for unknown path", () => {
 		const { result } = renderHook(() => useWorkspaceStateCache());
 		expect(result.current.getState("/unknown")).toBeUndefined();
@@ -114,7 +148,7 @@ describe("useWorkspaceStateCache", () => {
 		// Only one save call after debounce
 		expect(mockInvoke).toHaveBeenCalledTimes(1);
 		expect(mockInvoke).toHaveBeenCalledWith("save_workspace_state", {
-			worktreeName: "repo",
+			worktreeName: "/repo",
 			state: state2,
 		});
 	});
@@ -134,7 +168,7 @@ describe("useWorkspaceStateCache", () => {
 
 		expect(mockInvoke).toHaveBeenCalledTimes(1);
 		expect(mockInvoke).toHaveBeenCalledWith("save_workspace_state", {
-			worktreeName: "repo",
+			worktreeName: "/repo",
 			state,
 		});
 
@@ -165,7 +199,7 @@ describe("useWorkspaceStateCache", () => {
 		});
 		expect(mockInvoke).toHaveBeenCalledTimes(2);
 		expect(mockInvoke).toHaveBeenLastCalledWith("save_workspace_state", {
-			worktreeName: "repo",
+			worktreeName: "/repo",
 			state,
 		});
 		await act(async () => resolveSave());
@@ -209,7 +243,7 @@ describe("useWorkspaceStateCache", () => {
 		await act(async () => result.current.flushState("/repo"));
 		expect(mockInvoke).toHaveBeenCalledTimes(3);
 		expect(mockInvoke).toHaveBeenLastCalledWith("save_workspace_state", {
-			worktreeName: "repo",
+			worktreeName: "/repo",
 			state: latest,
 		});
 		unmount();
@@ -218,7 +252,10 @@ describe("useWorkspaceStateCache", () => {
 
 	it("loadState subscribes and caches current and changed values", async () => {
 		const state = makeState();
-		states.publish({ kind: "workspace-state", args: ["repo", "/repo"] }, state);
+		states.publish(
+			{ kind: "workspace-state", args: ["/repo", "/repo"] },
+			state,
+		);
 
 		const { result } = renderHook(() => useWorkspaceStateCache());
 
@@ -236,14 +273,14 @@ describe("useWorkspaceStateCache", () => {
 		expect(loaded).toEqual(state);
 		expect(result.current.getState("/repo")).toEqual(state);
 		expect(states.subscribeState).toHaveBeenCalledWith(
-			{ kind: "workspace-state", args: ["repo", "/repo"] },
+			{ kind: "workspace-state", args: ["/repo", "/repo"] },
 			expect.any(Function),
 			expect.any(Function),
 		);
 		const next = makeState({ tabs: { editors: [], activeEditorPath: null } });
 		act(() =>
 			states.publish(
-				{ kind: "workspace-state", args: ["repo", "/repo"] },
+				{ kind: "workspace-state", args: ["/repo", "/repo"] },
 				next,
 			),
 		);
@@ -252,7 +289,7 @@ describe("useWorkspaceStateCache", () => {
 	});
 
 	it("loadState returns undefined when backend returns null", async () => {
-		states.publish({ kind: "workspace-state", args: ["repo", "/repo"] }, null);
+		states.publish({ kind: "workspace-state", args: ["/repo", "/repo"] }, null);
 
 		const { result } = renderHook(() => useWorkspaceStateCache());
 
@@ -276,7 +313,7 @@ describe("useWorkspaceStateCache", () => {
 		const failed = vi.fn();
 		result.current.loadState("/repo", received, failed);
 		states.fail(
-			{ kind: "workspace-state", args: ["repo", "/repo"] },
+			{ kind: "workspace-state", args: ["/repo", "/repo"] },
 			new Error("offline"),
 		);
 		expect(failed).toHaveBeenCalledWith(new Error("offline"));
@@ -301,7 +338,7 @@ describe("useWorkspaceStateCache", () => {
 		expect(result.current.stateReady).toBe(false);
 		await act(async () =>
 			states.fail(
-				{ kind: "workspace-state", args: ["repo", "/repo"] },
+				{ kind: "workspace-state", args: ["/repo", "/repo"] },
 				new Error("offline"),
 			),
 		);
@@ -309,7 +346,7 @@ describe("useWorkspaceStateCache", () => {
 		expect(result.current.stateError).toBe("offline");
 		await act(async () =>
 			states.publish(
-				{ kind: "workspace-state", args: ["repo", "/repo"] },
+				{ kind: "workspace-state", args: ["/repo", "/repo"] },
 				makeState(),
 			),
 		);
@@ -332,7 +369,7 @@ describe("useWorkspaceStateCache", () => {
 		);
 		await act(async () =>
 			states.fail(
-				{ kind: "workspace-state", args: ["repo", "/repo"] },
+				{ kind: "workspace-state", args: ["/repo", "/repo"] },
 				new Error("offline"),
 			),
 		);
@@ -340,7 +377,7 @@ describe("useWorkspaceStateCache", () => {
 		expect(result.current.stateError).toBe("offline");
 		await act(async () =>
 			states.publish(
-				{ kind: "workspace-state", args: ["repo", "/repo"] },
+				{ kind: "workspace-state", args: ["/repo", "/repo"] },
 				null,
 			),
 		);

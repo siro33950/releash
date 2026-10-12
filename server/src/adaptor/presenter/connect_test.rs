@@ -2756,10 +2756,16 @@ mod connect_mapping_tests {
             use crate::adaptor::presenter::connect::ConnectFailure;
             use connectrpc::ErrorCode as F;
             // Given
-            let cases = [(
-                crate::domain::workspace_state::error::WorkspaceStateError::Message("io".into()),
-                F::Internal,
-            )];
+            let cases = [
+                (
+                    crate::domain::workspace_state::error::WorkspaceStateError::InvalidLayout,
+                    F::InvalidArgument,
+                ),
+                (
+                    crate::domain::workspace_state::error::WorkspaceStateError::VersionConflict,
+                    F::Aborted,
+                ),
+            ];
             for (error, expected) in cases {
                 // When / Then
                 assert_eq!(error.connect_code(), expected, "{error:?}");

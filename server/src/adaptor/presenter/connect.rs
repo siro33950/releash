@@ -65,6 +65,7 @@ impl ConnectFailure for crate::usecase::repository_error::UsecaseError {
     fn connect_code(&self) -> connectrpc::ErrorCode {
         match self {
             Self::Workflow(error) => error.connect_code(),
+            Self::Session(error) => error.connect_code(),
             Self::Repository(error) => error.connect_code(),
             Self::Rule(_) => connectrpc::ErrorCode::FailedPrecondition,
         }
@@ -80,7 +81,9 @@ impl ConnectFailure for crate::domain::application_lifecycle::ApplicationLifecyc
 impl ConnectFailure for crate::domain::workspace_state::error::WorkspaceStateError {
     fn connect_code(&self) -> connectrpc::ErrorCode {
         match self {
-            Self::Message(_) => connectrpc::ErrorCode::Internal,
+            Self::InvalidLayout => connectrpc::ErrorCode::InvalidArgument,
+            Self::VersionConflict => connectrpc::ErrorCode::Aborted,
+            Self::Technical(error) => error.connect_code(),
         }
     }
 }

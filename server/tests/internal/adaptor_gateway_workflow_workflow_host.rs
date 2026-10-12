@@ -622,17 +622,16 @@ pub async fn test_実行木archive_gcはrepository_rootのない旧実行木も�
         .unwrap()
         .insert(id.into());
     let resolution = |unreadable: &str| {
-        LiveWorktreeResolution::new(
-            LiveWorktreeSet::default(),
-            vec![unreadable.into()],
-            Default::default(),
-        )
-        .with_repository_paths(vec!["/repos/a".into(), "/repos/b".into()])
+        LiveWorktreeResolution::new(LiveWorktreeSet::default(), vec![unreadable.into()])
+            .with_repository_paths(vec!["/repos/a".into(), "/repos/b".into()])
     };
     // When / Then
-    archive_removed_execution_trees(Some(&resolution("/repos/a")), &fixture.runtime)
-        .await
-        .unwrap();
+    assert!(
+        archive_removed_execution_trees(Some(&resolution("/repos/a")), &fixture.runtime)
+            .await
+            .stopped
+            .is_none()
+    );
     assert!(fixture
         .repository
         .archive_snapshot_for(&[id.into()])
@@ -644,9 +643,12 @@ pub async fn test_実行木archive_gcはrepository_rootのない旧実行木も�
         fixture.repository.target(id).await.unwrap().status,
         ExecutionStatus::Running
     );
-    archive_removed_execution_trees(Some(&resolution("/repos/b")), &fixture.runtime)
-        .await
-        .unwrap();
+    assert!(
+        archive_removed_execution_trees(Some(&resolution("/repos/b")), &fixture.runtime)
+            .await
+            .stopped
+            .is_none()
+    );
     assert_eq!(
         fixture.repository.target(id).await.unwrap().status,
         ExecutionStatus::Aborted
@@ -860,24 +862,25 @@ pub async fn test_実行木archive_gcはgit登録の消失だけで判定する(
             review_comment_keys: Vec::new(),
         }]),
         Vec::new(),
-        Default::default(),
     );
     // When / Then: directory is absent but Git registration is authoritative.
-    archive_removed_execution_trees(Some(&live), &fixture.runtime)
-        .await
-        .unwrap();
+    assert!(
+        archive_removed_execution_trees(Some(&live), &fixture.runtime)
+            .await
+            .stopped
+            .is_none()
+    );
     assert_eq!(
         fixture.repository.target(&id).await.unwrap().status,
         ExecutionStatus::Running
     );
-    let unknown = LiveWorktreeResolution::new(
-        LiveWorktreeSet::default(),
-        vec!["/repo".into()],
-        Default::default(),
+    let unknown = LiveWorktreeResolution::new(LiveWorktreeSet::default(), vec!["/repo".into()]);
+    assert!(
+        archive_removed_execution_trees(Some(&unknown), &fixture.runtime)
+            .await
+            .stopped
+            .is_none()
     );
-    archive_removed_execution_trees(Some(&unknown), &fixture.runtime)
-        .await
-        .unwrap();
     assert_eq!(
         fixture.repository.target(&id).await.unwrap().status,
         ExecutionStatus::Running
@@ -885,11 +888,13 @@ pub async fn test_実行木archive_gcはgit登録の消失だけで判定する(
     let removed = LiveWorktreeResolution::new(
         LiveWorktreeSet::default(),
         vec!["/unrelated-unreadable-repo".into()],
-        Default::default(),
     );
-    archive_removed_execution_trees(Some(&removed), &fixture.runtime)
-        .await
-        .unwrap();
+    assert!(
+        archive_removed_execution_trees(Some(&removed), &fixture.runtime)
+            .await
+            .stopped
+            .is_none()
+    );
     assert_eq!(
         fixture.repository.target(&id).await.unwrap().status,
         ExecutionStatus::Aborted
@@ -1301,9 +1306,12 @@ pub async fn test_実行木archive_gcは単独sessionの所属repoだけの読�
         };
 
         // When / Then: Git registration protects the tree even without its folder.
-        archive_removed_execution_trees(resolution().as_ref(), &fixture.runtime)
-            .await
-            .unwrap();
+        assert!(
+            archive_removed_execution_trees(resolution().as_ref(), &fixture.runtime)
+                .await
+                .stopped
+                .is_none()
+        );
         assert_eq!(
             fixture.repository.target(id).await.unwrap().status,
             ExecutionStatus::Running
@@ -1314,9 +1322,12 @@ pub async fn test_実行木archive_gcは単独sessionの所属repoだけの読�
         let git_dir = repo.path().to_path_buf();
         let hidden_git = root.join("hidden-git");
         std::fs::rename(&git_dir, &hidden_git).unwrap();
-        archive_removed_execution_trees(resolution().as_ref(), &fixture.runtime)
-            .await
-            .unwrap();
+        assert!(
+            archive_removed_execution_trees(resolution().as_ref(), &fixture.runtime)
+                .await
+                .stopped
+                .is_none()
+        );
         assert_eq!(
             fixture.repository.target(id).await.unwrap().status,
             ExecutionStatus::Running
@@ -1331,9 +1342,12 @@ pub async fn test_実行木archive_gcは単独sessionの所属repoだけの読�
         std::fs::rename(&hidden_git, &git_dir).unwrap();
 
         // When
-        archive_removed_execution_trees(resolution().as_ref(), &fixture.runtime)
-            .await
-            .unwrap();
+        assert!(
+            archive_removed_execution_trees(resolution().as_ref(), &fixture.runtime)
+                .await
+                .stopped
+                .is_none()
+        );
 
         // Then
         assert_eq!(
@@ -1639,9 +1653,12 @@ async fn assert_legacy_linked_worktree_gc(remove_directory: bool, remove_before_
     if remove_before_gc {
         std::fs::remove_dir_all(&path).unwrap();
     }
-    archive_removed_execution_trees(resolution().as_ref(), &fixture.runtime)
-        .await
-        .unwrap();
+    assert!(
+        archive_removed_execution_trees(resolution().as_ref(), &fixture.runtime)
+            .await
+            .stopped
+            .is_none()
+    );
     assert!(fixture
         .repository
         .archive_snapshot_for(&[id.into()])
@@ -1674,9 +1691,12 @@ async fn assert_legacy_linked_worktree_gc(remove_directory: bool, remove_before_
     let git_dir = root.join(".git");
     let hidden = root.join("hidden-git");
     std::fs::rename(&git_dir, &hidden).unwrap();
-    archive_removed_execution_trees(resolution().as_ref(), &fixture.runtime)
-        .await
-        .unwrap();
+    assert!(
+        archive_removed_execution_trees(resolution().as_ref(), &fixture.runtime)
+            .await
+            .stopped
+            .is_none()
+    );
     assert_eq!(
         fixture.repository.target(id).await.unwrap().status,
         ExecutionStatus::Running
@@ -1685,7 +1705,8 @@ async fn assert_legacy_linked_worktree_gc(remove_directory: bool, remove_before_
     assert_eq!(
         archive_removed_execution_trees(resolution().as_ref(), &fixture.runtime)
             .await
-            .unwrap(),
+            .report
+            .errors,
         0
     );
     assert_eq!(

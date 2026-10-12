@@ -26,7 +26,7 @@ fn parity_app_with_runtime(
             Arc::new(gateway),
             Arc::new(
                 releashd::test_support::integration::workflow::ExecutionTreeArchiveFactRepository::new(
-                    store,
+                    store.clone(),
                     data_dir.clone(),
                 ),
             ),
@@ -37,7 +37,9 @@ fn parity_app_with_runtime(
         releashd::test_support::integration::platform::build_review_comment_usecase(),
     ));
     app.client.workspace_state_store = Some(Arc::new(
-        releashd::test_support::integration::platform::WorkspaceStateStore::new(data_dir),
+        releashd::test_support::integration::platform::WorkspaceStateStore::with_store(
+            data_dir, store,
+        ),
     ));
     use releashd::test_support::integration::sessions::FakeProviderExecutableConfigRepository;
     use releashd::test_support::integration::sessions::FakeProviderExecutableProbeGateway;
@@ -756,7 +758,6 @@ async fn invoke_dispatch(
 pub async fn test_workspace保存_connectがui追加fieldを受理し既存項目を再起動後に復元する() {
     // Given
 
-    use releashd::test_support::integration::platform::WorkspaceStateStore;
     let data = tempfile::tempdir().unwrap();
     let worktree = data.path().join("worktree");
     std::fs::create_dir_all(worktree.join("src")).unwrap();
@@ -764,7 +765,11 @@ pub async fn test_workspace保存_connectがui追加fieldを受理し既存項�
     let state = json!({"version":1,"tabs":{"editors":[{"path":"src/main.rs","name":"main.rs"}],"activeEditorPath":"src/main.rs"},"layout":{"centerTab":"editor","activeView":"git","leftNavCollapsed":true,"rightCollapsed":true,"rightBottomCollapsed":false,"rightBottomActiveTab":"terminal","selectedDiffFile":"src/main.rs","reviewCollapsed":true,"diffOnlyMode":true}});
     let (app, _) = parity_app();
     let mut deps = app.client;
-    deps.workspace_state_store = Some(Arc::new(WorkspaceStateStore::new(data.path().to_owned())));
+    deps.workspace_state_store = Some(Arc::new(
+        releashd::test_support::integration::platform::workspace_state_store(
+            data.path().to_owned(),
+        ),
+    ));
     let mut dispatch = ClientCommandDispatch::new(
         releashd::test_support::integration::daemon::DaemonUsecase::test_with_repository(
             releashd::test_support::integration::daemon::serving(),
@@ -779,9 +784,15 @@ pub async fn test_workspace保存_connectがui追加fieldを受理し既存項�
     .0;
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
+    let (shutdown_sender, shutdown_receiver) = tokio::sync::oneshot::channel();
     let server = tokio::spawn(async move {
         // When
-        axum::serve(listener, router).await.unwrap();
+        axum::serve(listener, router)
+            .with_graceful_shutdown(async move {
+                let _ = shutdown_receiver.await;
+            })
+            .await
+            .unwrap();
     });
     let client = releashd::test_support::integration::transport::connect_client(
         &releashd::test_support::integration::transport::ClientEndpoint {
@@ -800,8 +811,13 @@ pub async fn test_workspace保存_connectがui追加fieldを受理し既存項�
         .unwrap(),
         Value::Null
     );
-    server.abort();
-    let restarted = WorkspaceStateStore::new(data.path().to_owned());
+    drop(client);
+    shutdown_sender.send(()).unwrap();
+    server.await.unwrap();
+    drop(deps);
+    let restarted = releashd::test_support::integration::platform::workspace_state_store(
+        data.path().to_owned(),
+    );
     let mut expected = state;
     expected["layout"]
         .as_object_mut()
@@ -814,15 +830,32 @@ pub async fn test_workspace保存_connectがui追加fieldを受理し既存項�
     use releashd::test_support::integration::repository::WorkspaceStateRepository;
     let restored = restarted
         .load("workspace", worktree.to_str().unwrap())
+        .await
         .unwrap()
         .unwrap();
-    let restored = releashd::test_support::integration::platform::WorkspaceStateDto::from(restored);
-    assert_eq!(serde_json::to_value(restored).unwrap(), expected);
-    let persisted: Value = serde_json::from_slice(
-        &std::fs::read(data.path().join("workspace_state/workspace.json")).unwrap(),
-    )
-    .unwrap();
-    assert_eq!(persisted, expected);
+    use releashd::test_support::integration::persistence::EventCodecRegistry;
+    use releashd::test_support::integration::platform::LocalDomainEvent;
+    let encoded = EventCodecRegistry::new()
+        .encode(&LocalDomainEvent::WorkspaceStateChanged(Box::new(
+            restored.clone(),
+        )))
+        .unwrap();
+    let restored = wire::WorkspaceStateDto::try_from(restored).unwrap();
+    let mut restored =
+        wire::from_message("releash.client.v1.WorkspaceStateDto", &restored).unwrap();
+    restored["layout"]
+        .as_object_mut()
+        .unwrap()
+        .remove("reviewCollapsed");
+    restored["layout"]
+        .as_object_mut()
+        .unwrap()
+        .remove("diffOnlyMode");
+    assert_eq!(restored, expected);
+    let connection =
+        rusqlite::Connection::open(data.path().join("local-event-store.sqlite3")).unwrap();
+    let persisted: Vec<u8> = connection.query_row("SELECT payload FROM events WHERE event_type = 'workspace.state_changed' ORDER BY global_sequence DESC LIMIT 1", [], |row| row.get(0)).unwrap();
+    assert_eq!(persisted, encoded.payload);
 }
 
 #[tokio::test]
@@ -836,6 +869,7 @@ pub async fn test_生成要求_必須fieldと非有限数をusecase実行前に�
         Command::SaveWorkspaceState(wire::SaveWorkspaceStateRequest {
             worktree_name: Some("workspace".into()),
             state: Some(wire::WorkspaceStateDto {
+                pane_layout: None,
                 version: Some(2),
                 ..Default::default()
             }),

@@ -22,6 +22,7 @@ impl StateSubscriptionRead for StateSubscriptionReads {
                 | T::ReviewSessionThread(..)
                 | T::ReviewSessionThreadHistory(..)
                 | T::Issues(_)
+                | T::FilteredIssues(..)
                 | T::Workspaces
                 | T::Workflows
                 | T::AgentSession(_)
@@ -29,6 +30,8 @@ impl StateSubscriptionRead for StateSubscriptionReads {
                 | T::Selection(..)
                 | T::NodeDetail(..)
                 | T::ProviderHookHealth
+                | T::WorkspaceState(..)
+                | T::RepositoryGroupState(_)
         ) {
             return self.0.read(target).await;
         }

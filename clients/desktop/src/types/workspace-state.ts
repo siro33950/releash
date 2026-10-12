@@ -1,7 +1,3 @@
-export function worktreeNameFromPath(rootPath: string): string {
-	return rootPath.split("/").pop() ?? rootPath;
-}
-
 export interface WorkspaceState {
 	version: 1;
 	tabs: {

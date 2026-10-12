@@ -9,3 +9,5 @@ pub(crate) mod git_operation;
 pub(crate) mod sqlite_failure;
 
 pub(crate) mod storage_failure;
+
+pub(crate) mod workspace_state;

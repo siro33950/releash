@@ -1,110 +1,198 @@
-use parking_lot::RwLock;
-use std::collections::HashMap;
-use std::path::{Path, PathBuf};
-
+use super::facts;
+use crate::adaptor::gateway::local_event_store::LocalEventStore;
+use crate::adaptor::gateway::shared::workspace_state::unexpected;
+use crate::domain::local_event::{LocalDomainEvent, StreamId, StreamVersion};
 use crate::domain::workspace_state::services::filter_missing_files;
 use crate::domain::workspace_state::{
-    WorkspaceState, WorkspaceStateError, WorkspaceStateRepository,
+    WorkspaceState, WorkspaceStateError, WorkspaceStateKey, WorkspaceStateRepository,
 };
-use crate::usecase::workspace_state::dto::WorkspaceStateDto;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 pub struct WorkspaceStateStore {
     app_data_dir: PathBuf,
-    entries: RwLock<HashMap<String, WorkspaceState>>,
-    file_lock: parking_lot::Mutex<()>,
+    store: Arc<LocalEventStore>,
 }
-
 impl WorkspaceStateStore {
-    pub fn new(app_data_dir: PathBuf) -> Self {
+    pub fn with_store(app_data_dir: PathBuf, store: Arc<LocalEventStore>) -> Self {
         Self {
             app_data_dir,
-            entries: RwLock::new(HashMap::new()),
-            file_lock: parking_lot::Mutex::new(()),
+            store,
         }
     }
 }
-
+#[cfg(any(test, feature = "test-support"))]
 fn state_dir(app_data_dir: &Path) -> PathBuf {
     app_data_dir.join("workspace_state")
 }
-
-pub fn storage_key(worktree_name: &str) -> String {
-    worktree_name.replace(['/', '\\'], "_")
+pub(crate) const ABSOLUTE_STATE_KEY_PREFIX: &str = "worktree-";
+pub(crate) fn state_key_from_hash(hash: &str) -> WorkspaceStateKey {
+    WorkspaceStateKey::from_storage(format!("{ABSOLUTE_STATE_KEY_PREFIX}{hash}"))
+}
+pub fn storage_key(key: &str) -> String {
+    if Path::new(key).is_absolute() {
+        use sha2::Digest;
+        state_key_from_hash(&hex::encode(sha2::Sha256::digest(key.as_bytes())))
+            .storage_value()
+            .to_owned()
+    } else {
+        key.replace(['/', '\\'], "_")
+    }
+}
+#[cfg(any(test, feature = "test-support"))]
+pub fn state_file(app_data_dir: &Path, key: &str) -> PathBuf {
+    state_dir(app_data_dir).join(format!("{}.json", storage_key(key)))
+}
+pub(super) fn repository_group_key(path: &str) -> String {
+    use sha2::Digest;
+    hex::encode(sha2::Sha256::digest(
+        crate::domain::repository::normalize_repo_path(path).as_bytes(),
+    ))
 }
 
-pub fn state_file(app_data_dir: &Path, worktree_name: &str) -> PathBuf {
-    let safe_name = storage_key(worktree_name);
-    state_dir(app_data_dir).join(format!("{safe_name}.json"))
-}
-
+#[async_trait::async_trait]
 impl WorkspaceStateRepository for WorkspaceStateStore {
-    fn load(
+    async fn migrate_legacy(
         &self,
-        worktree_name: &str,
-        worktree_root: &str,
-    ) -> Result<Option<WorkspaceState>, crate::domain::workspace_state::WorkspaceStateError> {
-        let Some(state) = self.read_state(worktree_name)? else {
+        repositories: &[String],
+        worktrees: &[String],
+    ) -> Result<(), WorkspaceStateError> {
+        super::legacy_import::migrate(&self.app_data_dir, &self.store, repositories, worktrees)
+            .await
+    }
+    async fn load_repository_group(&self, path: &str) -> Result<bool, WorkspaceStateError> {
+        Ok(self.read_repository_group(path).await?.1)
+    }
+    async fn read_repository_group(
+        &self,
+        path: &str,
+    ) -> Result<(StreamVersion, bool), WorkspaceStateError> {
+        let (head, event) = facts::latest(&self.store, facts::repository_group_stream(path))
+            .await
+            .map_err(WorkspaceStateError::from)?;
+        let collapsed = match event {
+            Some(LocalDomainEvent::RepositoryGroupChanged(collapsed)) => collapsed,
+            None => false,
+            _ => return Err(unexpected("Unexpected repository group event")),
+        };
+        Ok((head, collapsed))
+    }
+    async fn save_repository_group(
+        &self,
+        path: &str,
+        collapsed: bool,
+        expected: StreamVersion,
+    ) -> Result<(), WorkspaceStateError> {
+        let stream = facts::repository_group_stream(path);
+        facts::append(
+            &self.store,
+            stream,
+            LocalDomainEvent::RepositoryGroupChanged(collapsed),
+            expected,
+        )
+        .await
+    }
+
+    async fn load(
+        &self,
+        key: &str,
+        root: &str,
+    ) -> Result<Option<WorkspaceState>, WorkspaceStateError> {
+        let Some(state) = self.read(key).await?.1 else {
             return Ok(None);
         };
-        let state = WorkspaceState::from(state);
-        let state = filter_missing_files(state, worktree_root);
-
-        self.entries
-            .write()
-            .insert(worktree_name.to_string(), state.clone());
-        Ok(Some(state))
+        let root = root.to_owned();
+        crate::common::operation_context::spawn_blocking(move || {
+            filter_missing_files(state, |path| {
+                let path = Path::new(path);
+                if path.is_absolute() {
+                    path.exists()
+                } else {
+                    Path::new(&root).join(path).exists()
+                }
+            })
+        })
+        .await
+        .map(Some)
+        .map_err(WorkspaceStateError::from)
     }
-
-    fn check_readable(&self, worktree_name: &str) -> Result<(), WorkspaceStateError> {
-        self.read_state(worktree_name).map(|_| ())
-    }
-
-    fn save(&self, worktree_name: &str) -> Result<(), WorkspaceStateError> {
-        let _guard = self.file_lock.lock();
-
-        let dir = state_dir(&self.app_data_dir);
-        std::fs::create_dir_all(&dir)
-            .map_err(|e| WorkspaceStateError::Message(format!("Failed to create dir: {e}")))?;
-
-        let file_path = state_file(&self.app_data_dir, worktree_name);
-        let state = {
-            let entries = self.entries.read();
-            match entries.get(worktree_name) {
-                Some(s) => s.clone(),
-                None => return Ok(()),
-            }
-        };
-        let json = serde_json::to_string_pretty(&WorkspaceStateDto::from(state))
-            .map_err(|e| WorkspaceStateError::Message(format!("Failed to serialize: {e}")))?;
-        std::fs::write(&file_path, json)
-            .map_err(|e| WorkspaceStateError::Message(format!("Failed to write: {e}")))?;
-        Ok(())
-    }
-
-    fn set(&self, worktree_name: &str, state: WorkspaceState) {
-        self.entries
-            .write()
-            .insert(worktree_name.to_string(), state);
-    }
-}
-
-impl WorkspaceStateStore {
-    fn read_state(
+    async fn read(
         &self,
-        worktree_name: &str,
-    ) -> Result<Option<WorkspaceStateDto>, WorkspaceStateError> {
-        let data = match std::fs::read_to_string(state_file(&self.app_data_dir, worktree_name)) {
-            Ok(data) => data,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(error) => return Err(WorkspaceStateError::Message(error.to_string())),
+        key: &str,
+    ) -> Result<(StreamVersion, Option<WorkspaceState>), WorkspaceStateError> {
+        let (head, event) = facts::latest(&self.store, facts::workspace_stream(key))
+            .await
+            .map_err(WorkspaceStateError::from)?;
+        let state = match event {
+            Some(LocalDomainEvent::WorkspaceStateChanged(state)) => Some(*state),
+            None | Some(LocalDomainEvent::WorkspaceStateInvalidated) => None,
+            _ => return Err(unexpected("Unexpected workspace state event")),
         };
-        serde_json::from_str::<WorkspaceStateDto>(&data)
-            .map(Some)
-            .map_err(|error| WorkspaceStateError::Message(error.to_string()))
+        Ok((head, state))
     }
-
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn get(&self, worktree_name: &str) -> Option<WorkspaceState> {
-        self.entries.read().get(worktree_name).cloned()
+    async fn save(
+        &self,
+        key: &str,
+        state: WorkspaceState,
+        expected: StreamVersion,
+    ) -> Result<(), WorkspaceStateError> {
+        facts::append(
+            &self.store,
+            facts::workspace_stream(key),
+            LocalDomainEvent::WorkspaceStateChanged(Box::new(state)),
+            expected,
+        )
+        .await
+    }
+    async fn states(&self) -> Result<Vec<(WorkspaceStateKey, StreamVersion)>, WorkspaceStateError> {
+        use crate::domain::local_event::{
+            LocalEventQuery, LocalEventQueryResult, LocalEventTransactionRepository,
+        };
+        let result = self.store.query(LocalEventQuery::StreamHeads {
+            namespace: crate::domain::local_event::identifiers::WORKSPACE_STATE_PREFIX.into(),
+            event_type: crate::adaptor::gateway::local_event_store::workspace_state_codec::WORKSPACE_STATE_CHANGED.into(),
+        }).await.map_err(WorkspaceStateError::from)?;
+        let LocalEventQueryResult::StreamHeads(heads) = result else {
+            return Err(unexpected("Unexpected stream heads result"));
+        };
+        heads
+            .into_iter()
+            .map(|(stream, version)| {
+                let hash = stream
+                    .as_str()
+                    .strip_prefix(crate::domain::local_event::identifiers::WORKSPACE_STATE_PREFIX)
+                    .ok_or_else(|| unexpected("Unexpected workspace state stream"))?;
+                Ok((state_key_from_hash(hash), version))
+            })
+            .collect()
+    }
+    async fn invalidate(
+        &self,
+        key: &WorkspaceStateKey,
+        expected: StreamVersion,
+    ) -> Result<bool, WorkspaceStateError> {
+        let hash = key
+            .storage_value()
+            .strip_prefix(ABSOLUTE_STATE_KEY_PREFIX)
+            .ok_or_else(|| unexpected("Unexpected workspace state key"))?;
+        let stream = StreamId::parse(&format!(
+            "{}{hash}",
+            crate::domain::local_event::identifiers::WORKSPACE_STATE_PREFIX
+        ))
+        .map_err(unexpected)?;
+        let (head, event) = facts::latest(&self.store, stream.clone())
+            .await
+            .map_err(WorkspaceStateError::from)?;
+        if head != expected || !matches!(event, Some(LocalDomainEvent::WorkspaceStateChanged(_))) {
+            return Ok(false);
+        }
+        facts::append(
+            &self.store,
+            stream,
+            LocalDomainEvent::WorkspaceStateInvalidated,
+            head,
+        )
+        .await?;
+        Ok(true)
     }
 }

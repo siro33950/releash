@@ -416,6 +416,111 @@ pub(crate) mod worktree_gateway_tests {
         (parent, repo_dir, repo)
     }
 
+    #[test]
+    fn test_作成競合_管理名と親消失を再試行し失敗時だけ新規branchを戻す() {
+        use releashd::test_support::integration::repository::create_worktree_with_hook;
+        // Given
+        for mode in ["name", "parent", "path", "exhausted"] {
+            let (parent, repo_dir, repo) = create_test_repo_with_parent();
+            create_initial_commit(&repo);
+            let path = parent.path().join("main-repo-worktrees/feature/a");
+            let mut attempts = 0;
+            let mut names = Vec::new();
+            // When
+            let result = create_worktree_with_hook(
+                repo_dir.to_str().unwrap(),
+                path.to_str().unwrap(),
+                "feature/a",
+                true,
+                None,
+                |repository, name, target| {
+                    attempts += 1;
+                    names.push(name.to_string());
+                    assert!(repository
+                        .find_branch("feature/a", BranchType::Local)
+                        .is_ok());
+                    match mode {
+                        "name" if attempts == 1 => {
+                            fs::create_dir_all(repository.path().join("worktrees").join(name))
+                                .unwrap()
+                        }
+                        "parent" if attempts == 1 => {
+                            fs::remove_dir(target.parent().unwrap()).unwrap()
+                        }
+                        "path" => fs::create_dir_all(target).unwrap(),
+                        "exhausted" => {
+                            fs::create_dir_all(repository.path().join("worktrees").join(name))
+                                .unwrap()
+                        }
+                        _ => {}
+                    }
+                },
+            );
+            // Then
+            match mode {
+                "name" | "parent" => {
+                    assert!(result.is_ok(), "{mode}: {result:?}");
+                    assert_eq!(attempts, 2);
+                    assert_ne!(names[0], names[1]);
+                    assert!(Repository::open(&path).is_ok());
+                    assert!(repo.find_branch("feature/a", BranchType::Local).is_ok());
+                }
+                "path" | "exhausted" => {
+                    assert!(result.is_err());
+                    assert_eq!(attempts, if mode == "path" { 1 } else { 3 });
+                    assert!(
+                        repo.find_branch("feature/a", BranchType::Local).is_err(),
+                        "{mode}: {result:?}"
+                    );
+                }
+                _ => unreachable!(),
+            }
+        }
+    }
+
+    #[test]
+    fn test_削除後_空の中間階層だけ除去しrootと兄弟を保持する() {
+        // Given
+        let (parent, repo_dir, repo) = create_test_repo_with_parent();
+        create_initial_commit(&repo);
+        let root = parent.path().join("main-repo-worktrees");
+        let first = root.join("feature/a");
+        let sibling = root.join("feature/b");
+        for (branch, path) in [("feature/a", &first), ("feature/b", &sibling)] {
+            create_worktree(
+                repo_dir.to_str().unwrap(),
+                path.to_str().unwrap(),
+                branch,
+                true,
+                None,
+            )
+            .unwrap();
+        }
+        // When
+        remove_worktree(repo_dir.to_str().unwrap(), first.to_str().unwrap(), false).unwrap();
+        // Then
+        assert!(sibling.exists());
+        assert!(root.join("feature").exists());
+        remove_worktree(repo_dir.to_str().unwrap(), sibling.to_str().unwrap(), false).unwrap();
+        assert!(!root.join("feature").exists());
+        assert!(root.exists());
+        for branch in ["feature/a", "feature/b"] {
+            repo.find_branch(branch, BranchType::Local)
+                .unwrap()
+                .delete()
+                .unwrap();
+        }
+        create_worktree(
+            repo_dir.to_str().unwrap(),
+            root.join("feature").to_str().unwrap(),
+            "feature",
+            true,
+            None,
+        )
+        .unwrap();
+        assert!(Repository::open(root.join("feature")).is_ok());
+    }
+
     fn create_worktree_helper(
         repo: &Repository,
         parent_dir: &Path,
@@ -891,7 +996,7 @@ pub(crate) mod worktree_gateway_tests {
         )
         .unwrap();
 
-        let wt_path2 = _parent.path().join("other").join("wt-occupy");
+        let wt_path2 = wt_path1;
         let result = create_worktree(
             repo_dir.to_str().unwrap(),
             wt_path2.to_str().unwrap(),
@@ -937,6 +1042,29 @@ pub(crate) mod worktree_gateway_tests {
     }
 
     #[test]
+    pub fn test_worktree削除_変更件数が取れない場合も強制なしで削除せず内容を残す() {
+        // Given
+        let (parent, repo_dir, repo) = create_test_repo_with_parent();
+        create_initial_commit(&repo);
+        let wt_path =
+            create_worktree_helper(&repo, parent.path(), "wt-unavailable", "feat-unavailable");
+        fs::write(wt_path.join("dirty.txt"), "uncommitted").unwrap();
+        let wt_repo = git2::Repository::open(&wt_path).unwrap();
+        fs::write(wt_repo.path().join("index"), "broken index").unwrap();
+        assert!(get_worktree_dirty_count(wt_path.to_str().unwrap()).is_err());
+        // When
+        let result = remove_worktree(repo_dir.to_str().unwrap(), wt_path.to_str().unwrap(), false);
+        // Then
+        assert!(result.is_err());
+        assert!(wt_path.exists());
+        assert_eq!(
+            fs::read_to_string(wt_path.join("dirty.txt")).unwrap(),
+            "uncommitted"
+        );
+        assert!(repo.find_worktree("wt-unavailable").is_ok());
+    }
+
+    #[test]
     pub fn test_worktree削除_dirty_force() {
         let (_parent, repo_dir, repo) = create_test_repo_with_parent();
         create_initial_commit(&repo);
@@ -974,5 +1102,59 @@ pub(crate) mod worktree_gateway_tests {
             false,
         );
         assert!(result.is_err());
+    }
+    #[test]
+    fn test_worktree作成_階層とハイフンと同じ末尾を別々に作成する() {
+        // Given
+        let (parent, repo_dir, repo) = create_test_repo_with_parent();
+        create_initial_commit(&repo);
+        let legacy = parent.path().join("legacy-path");
+        create_worktree(
+            repo_dir.to_str().unwrap(),
+            legacy.to_str().unwrap(),
+            "legacy",
+            true,
+            None,
+        )
+        .unwrap();
+        // When
+        let mut created = Vec::new();
+        for branch in ["feature/a", "feature-a", "bugfix/a", "other/a"] {
+            let path = format!("{}-worktrees/{branch}", repo_dir.display());
+            created.push(
+                create_worktree(repo_dir.to_str().unwrap(), &path, branch, true, None).unwrap(),
+            );
+        }
+        // Then
+        for (entry, branch) in created
+            .iter()
+            .zip(["feature/a", "feature-a", "bugfix/a", "other/a"])
+        {
+            assert_eq!(
+                entry.path,
+                format!(
+                    "{}-worktrees/{branch}",
+                    repo_dir.canonicalize().unwrap().display()
+                )
+            );
+            assert_eq!(
+                Repository::open(&entry.path)
+                    .unwrap()
+                    .head()
+                    .unwrap()
+                    .shorthand()
+                    .unwrap(),
+                branch
+            );
+            assert_eq!(
+                repo.find_worktree(&entry.name).unwrap().path(),
+                Path::new(&entry.path)
+            );
+        }
+        assert_eq!(repo.worktrees().unwrap().len(), 5);
+        assert!(list_worktrees(repo_dir.to_str().unwrap())
+            .unwrap()
+            .iter()
+            .any(|entry| entry.path == legacy.canonicalize().unwrap().to_str().unwrap()));
     }
 }

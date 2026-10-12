@@ -21,3 +21,13 @@ pub(crate) use dispatch::{convert, invalid_request, optional, required, ClientCo
 pub(crate) mod worktree_mutation;
 
 pub(crate) mod installation;
+
+pub(crate) fn parse_provider(
+    value: &str,
+) -> Option<crate::domain::provider_lifecycle::ProviderKind> {
+    match value {
+        "claude" => Some(crate::domain::provider_lifecycle::ProviderKind::Claude),
+        "codex" => Some(crate::domain::provider_lifecycle::ProviderKind::Codex),
+        _ => None,
+    }
+}

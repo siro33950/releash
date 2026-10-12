@@ -4,6 +4,7 @@ use releashd::test_support::integration::platform::GitHostProvider;
 use releashd::test_support::integration::platform::GitHostUsecase;
 use releashd::test_support::integration::platform::IssueInfo;
 use releashd::test_support::integration::platform::PrInfo;
+use releashd::test_support::integration::platform::PrState;
 use releashd::test_support::integration::platform::PrStatus;
 use releashd::test_support::integration::platform::RepoPathsUsecase;
 use releashd::test_support::integration::platform::RepositoryStateService;
@@ -19,7 +20,6 @@ use releashd::test_support::integration::platform::TestRepositoryStateWorkerRunt
 use releashd::test_support::integration::repository::RepoPathsRepository;
 use releashd::test_support::integration::repository::RepositoryError;
 use releashd::test_support::integration::subscriptions::StateChangeSource;
-use std::collections::HashMap;
 use std::time::Duration;
 
 #[derive(Default)]
@@ -249,7 +249,7 @@ pub async fn test_一覧の読み取り_走査後にworktreeと変更の数と�
     assert_eq!(rows[1].dirty_count.value, Some(0));
     for row in rows {
         assert!(!row.deleting);
-        assert!(row.pull_request.is_none());
+        assert!(row.open_pull_request.is_none());
         assert!(row.tree.error.is_none());
         assert!(row.tree.value.as_ref().unwrap().nodes().is_empty());
     }
@@ -261,14 +261,16 @@ pub async fn test_手動更新_走査済みの値を保持しpr取得完了ま�
     let (release, blocked) = std::sync::mpsc::channel();
     let fixture = Fixture::new(PullRequests {
         status: PrStatus {
-            open_prs: HashMap::from([(
+            open_prs: Vec::from([(
                 "feature".into(),
                 PrInfo {
                     number: 42,
                     url: "https://example.test/pull/42".into(),
+                    state: PrState::Open,
+                    draft: false,
                 },
             )]),
-            merged_branches: Vec::new(),
+            completed_prs: Default::default(),
         },
         release: Some(Arc::new(parking_lot::Mutex::new(blocked))),
     });
@@ -289,7 +291,7 @@ pub async fn test_手動更新_走査済みの値を保持しpr取得完了ま�
     // Then
     assert_eq!(rows(&scanned).len(), 2);
     assert_eq!(rows(&scanned)[1].worktree.branch, "feature");
-    assert!(rows(&scanned)[1].pull_request.is_none());
+    assert!(rows(&scanned)[1].open_pull_request.is_none());
 }
 
 #[tokio::test]
@@ -298,14 +300,16 @@ pub async fn test_手動更新_pr取得後に前の一覧へprを反映する() 
     let (release, blocked) = std::sync::mpsc::channel();
     let fixture = Fixture::new(PullRequests {
         status: PrStatus {
-            open_prs: HashMap::from([(
+            open_prs: Vec::from([(
                 "feature".into(),
                 PrInfo {
                     number: 42,
                     url: "https://example.test/pull/42".into(),
+                    state: PrState::Open,
+                    draft: false,
                 },
             )]),
-            merged_branches: Vec::new(),
+            completed_prs: Default::default(),
         },
         release: Some(Arc::new(parking_lot::Mutex::new(blocked))),
     });
@@ -333,10 +337,12 @@ pub async fn test_手動更新_pr取得後に前の一覧へprを反映する() 
     let list = fixture.usecase.read().await.unwrap();
     // Then
     assert_eq!(
-        rows(&list)[1].pull_request,
+        rows(&list)[1].open_pull_request,
         Some(PrInfo {
             number: 42,
             url: "https://example.test/pull/42".into(),
+            state: PrState::Open,
+            draft: false,
         })
     );
 }

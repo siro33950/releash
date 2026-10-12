@@ -95,6 +95,13 @@ fn test_cli_起動後も独立して稼働し重複起動せず再起動して�
         discovery::process_start_time(second.pid),
         Some(second.process_started_at)
     );
+    for started in [true, false] {
+        let output = run(root, &["server", "start", "--json"]);
+        assert!(output.stderr.is_empty());
+        let value: serde_json::Value = serde_json::from_str(&success(output)).unwrap();
+        assert_eq!(value, serde_json::json!({"started": started}));
+    }
+    success(run(root, &["server", "stop"]));
     assert_eq!(run(root, &["server", "stop"]).status.code(), Some(1));
     assert!(success(run(root, &["server", "restart"])).contains("was not running; started"));
     success(run(root, &["server", "stop"]));
@@ -118,7 +125,7 @@ fn test_cli_同梱サーバの起動失敗は終了状態とstderrを表示す�
     let output = Command::new(cli)
         .arg("--data-dir")
         .arg(dir.path().join("data"))
-        .args(["server", "start"])
+        .args(["server", "start", "--json"])
         .output()
         .unwrap();
     // Then
@@ -127,6 +134,15 @@ fn test_cli_同梱サーバの起動失敗は終了状態とstderrを表示す�
     assert!(error.contains("7"));
     assert!(error.contains("startup failure"));
     assert!(error.contains("終了"));
+    let value: serde_json::Value = serde_json::from_str(&error).unwrap();
+    assert!(value["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("startup failure"));
+    assert!(value["error"]["guidance"]
+        .as_str()
+        .unwrap()
+        .contains("releash server start"));
 }
 
 #[cfg(target_os = "macos")]

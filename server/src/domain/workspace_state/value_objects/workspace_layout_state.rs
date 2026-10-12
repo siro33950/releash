@@ -1,4 +1,4 @@
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct WorkspaceLayoutState {
     pub center_tab: String,
     pub active_view: String,

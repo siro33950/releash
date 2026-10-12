@@ -27,6 +27,7 @@ fn node() -> WorkspaceTreeNode {
         node_execution_id: None,
         node_name: None,
         attempt: Some(1),
+        execution_parent: None,
         retry_predecessor_id: None,
         past_attempt_ids: Vec::new(),
         is_retry_history: false,

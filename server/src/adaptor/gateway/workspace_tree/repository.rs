@@ -289,7 +289,7 @@ impl SqliteWorkspaceTreeRepository {
         }
     }
 
-    fn tree_nodes(
+    pub(super) fn tree_nodes(
         &self,
         workspace: &str,
         folded: &FoldedTree,
@@ -365,6 +365,24 @@ impl SqliteWorkspaceTreeRepository {
         &self,
         folded: &FoldedTree,
     ) -> Result<Option<AgentSession>, LocalEventQueryError> {
+        let Some((session_id, fields)) = self.execution_session_fields(folded).await? else {
+            return Ok(None);
+        };
+        agent_session_from_fields(&session_id, fields)
+            .map(Some)
+            .map_err(|error| invariant_query_error(format!("{error:?}")))
+    }
+
+    pub(super) async fn execution_session_fields(
+        &self,
+        folded: &FoldedTree,
+    ) -> Result<
+        Option<(
+            String,
+            crate::domain::agent_session::services::DerivedAgentSessionFields,
+        )>,
+        LocalEventQueryError,
+    > {
         if folded.root.launched_as != ExecutionTreeLaunch::Session {
             return Ok(None);
         }
@@ -384,9 +402,7 @@ impl SqliteWorkspaceTreeRepository {
             &session.session_id,
         )
         .map_err(|error| invariant_query_error(format!("{error:?}")))?;
-        agent_session_from_fields(&session.session_id, fields)
-            .map(Some)
-            .map_err(|error| invariant_query_error(format!("{error:?}")))
+        Ok(Some((session.session_id.clone(), fields)))
     }
 
     async fn session_root(

@@ -26,6 +26,14 @@ impl Worktree {
         }
     }
 
+    pub fn removal_requires_force(&self, dirty_count: Option<usize>) -> Option<bool> {
+        if self.is_locked {
+            Some(true)
+        } else {
+            dirty_count.map(|count| count > 0)
+        }
+    }
+
     pub fn authorize_removal(
         &self,
         force: bool,

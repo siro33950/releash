@@ -1,6 +1,20 @@
 use super::*;
 
 #[test]
+fn test_起動成功_jsonは起動の有無を返し平文は維持する() {
+    // Given / When / Then
+    for (started, human) in [
+        (true, "server started\n"),
+        (false, "server is already running\n"),
+    ] {
+        let machine: serde_json::Value =
+            serde_json::from_str(&start_output(started, true)).unwrap();
+        assert_eq!(machine, json!({"started": started}));
+        assert_eq!(start_output(started, false), human);
+    }
+}
+
+#[test]
 fn test_画面判定_実行ファイルの祖先にあるappを選ぶ() {
     // Given / When / Then
     assert_eq!(
@@ -31,6 +45,7 @@ async fn test_状態表示_未起動でも成功しtokenを出さない() {
     assert_eq!(value.get("uptime_seconds"), Some(&serde_json::Value::Null));
     assert_eq!(value.get("compatibility"), Some(&serde_json::Value::Null));
     assert_eq!(value.get("guidance"), Some(&serde_json::Value::Null));
+    assert_eq!(value["startup_guidance"], startup_guidance());
     assert_eq!(
         value["discovery_file"],
         discovery::discovery_file(dir.path()).to_str().unwrap()

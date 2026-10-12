@@ -20,6 +20,7 @@ fn node(kind: WorkspaceNodeKind, status: WorkspaceNodeStatus) -> WorkspaceTreeNo
         node_execution_id: Some("node-execution".into()),
         node_name: Some("node".into()),
         attempt: Some(1),
+        execution_parent: None,
         retry_predecessor_id: None,
         past_attempt_ids: Vec::new(),
         is_retry_history: false,

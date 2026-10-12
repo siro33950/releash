@@ -27,6 +27,7 @@ pub mod daemon {
     pub use crate::adaptor::controller::daemon::compose;
     pub use crate::adaptor::controller::daemon::default_timeout;
     pub use crate::adaptor::controller::daemon::migrate_legacy_execution_archives;
+    pub use crate::adaptor::controller::daemon::migrate_legacy_workspace_states;
     pub use crate::adaptor::controller::daemon::shutdown_with_deadline;
     pub use crate::adaptor::controller::daemon::Daemon;
     pub use crate::adaptor::gateway::daemon::serving;
@@ -113,15 +114,28 @@ pub mod persistence {
     pub use crate::adaptor::gateway::local_event_store::writer::NORMAL_LANE_MAX_REQUESTS;
     pub use crate::domain::app_data_gc::GcCategory;
     pub use crate::usecase::app_data_gc::archive_removed_execution_trees;
-    pub use crate::usecase::app_data_gc::run_startup_gc;
     pub use crate::usecase::app_data_gc::CacheGcRecord;
     pub use crate::usecase::app_data_gc::CanonicalRuntimeOwners;
     pub use crate::usecase::app_data_gc::ExecutionTreeGc;
     pub use crate::usecase::app_data_gc::LiveWorktree;
     pub use crate::usecase::app_data_gc::LiveWorktreeResolution;
     pub use crate::usecase::app_data_gc::LiveWorktreeSet;
+    pub use crate::usecase::app_data_gc::{run_startup_gc, GcStopCause};
 }
 pub mod platform {
+    pub fn workspace_state_store(
+        path: std::path::PathBuf,
+    ) -> crate::adaptor::gateway::workspace_state::WorkspaceStateStore {
+        let store = crate::adaptor::gateway::local_event_store::LocalEventStore::open(
+            crate::adaptor::gateway::local_event_store::LocalEventStoreConfig::production(
+                path.clone(),
+                std::sync::Arc::new(crate::common::retry::RetryLimiter::default()),
+            ),
+        )
+        .unwrap();
+        crate::adaptor::gateway::workspace_state::WorkspaceStateStore::with_store(path, store)
+    }
+
     pub use crate::acceptance_test_support::{workflow_read, workflow_services};
     pub use crate::adaptor::controller::agent_session_launch_retention::run;
     pub use crate::adaptor::controller::agent_session_launch_retention::RETENTION;
@@ -238,7 +252,9 @@ pub mod platform {
     pub use crate::domain::git_host::value_objects::issue::IssueInfo;
     pub use crate::domain::git_host::value_objects::issue::PrAuthor;
     pub use crate::domain::git_host::value_objects::pr::PrInfo;
+    pub use crate::domain::git_host::value_objects::pr::PrState;
     pub use crate::domain::git_host::value_objects::pr::PrStatus;
+    pub use crate::domain::git_host::IssueOptions;
     pub use crate::domain::local_event::batch::CommitBatchError;
     pub use crate::domain::local_event::batch::CommitBatchResult;
     pub use crate::domain::local_event::batch::CommitOperationKind;
@@ -270,9 +286,13 @@ pub mod platform {
     pub use crate::domain::workspace_state::entities::workspace_state::WorkspaceState;
     pub use crate::domain::workspace_state::error::WorkspaceStateError;
     pub use crate::domain::workspace_state::services::filter_missing_files;
+    pub use crate::domain::workspace_state::value_objects::pane_layout::{
+        PaneLayout, PaneTab, PaneTabKind, SplitAxis,
+    };
     pub use crate::domain::workspace_state::value_objects::workspace_layout_state::WorkspaceLayoutState;
     pub use crate::domain::workspace_state::value_objects::workspace_tabs_state::WorkspaceTabEntry;
     pub use crate::domain::workspace_state::value_objects::workspace_tabs_state::WorkspaceTabsState;
+    pub use crate::domain::workspace_state::WorkspaceStateKey;
     pub use crate::infrastructure::app_data_path::AppDataPathObserver;
     pub use crate::infrastructure::app_data_path::AppDataPathOperation;
     pub use crate::infrastructure::app_data_path::NoopAppDataPathObserver;
@@ -311,6 +331,7 @@ pub mod platform {
     pub use crate::infrastructure::platform::path_aliases::PathAlias;
     pub use crate::infrastructure::platform::path_aliases::PathAliases;
     pub use crate::infrastructure::terminal::checkpoint_journal::IncrementalCheckpointJournal;
+    pub use crate::usecase::git_host::git_host_usecase::IssueListing;
 
     pub use crate::infrastructure::terminal::shell_integration::create_shell_integration_files;
     pub use crate::infrastructure::terminal::terminal_emulator::NativeTerminalCheckpoint;
@@ -321,6 +342,7 @@ pub mod platform {
     pub use crate::test_support::EnvVarGuard;
     pub use crate::test_support::TEST_ENV_LOCK;
 
+    pub use crate::test_support::captured_error_messages;
     pub use crate::test_support::captured_warning_messages;
     pub use crate::test_support::install_capturing_logger;
     pub use crate::test_support::retry::record_retry_failure;
@@ -371,8 +393,9 @@ pub mod platform {
     pub use crate::usecase::test_helpers::watcher::SubscriptionFiles;
     pub use crate::usecase::watcher::UsecaseError as watcher_UsecaseError;
     pub use crate::usecase::watcher::WatcherUsecase;
-    pub use crate::usecase::workspace_state::dto::WorkspaceStateDto;
-    pub use crate::usecase::workspace_state::usecase::save_workspace_state;
+    pub use crate::usecase::workspace_state::usecase::{
+        save_repository_group_state, save_workspace_state,
+    };
 
     pub use crate::usecase::worktree_operation::WorktreeMutationGuard;
     pub use crate::usecase::worktree_operation::WorktreeOperations;
@@ -443,6 +466,8 @@ pub mod providers {
     pub use crate::usecase::provider_lifecycle::ProviderLifecycleUsecase;
 }
 pub mod repository {
+    pub use crate::adaptor::gateway::repository::branch::BranchGateway;
+    pub use crate::domain::repository::BranchRepository;
 
     pub use crate::adaptor::gateway::repository::branch::get_current_branch;
     pub use crate::adaptor::gateway::repository::branch::git_create_branch;
@@ -473,6 +498,7 @@ pub mod repository {
     pub use crate::adaptor::gateway::repository::watch::resolve_file_watch_paths;
     pub use crate::adaptor::gateway::repository::watch::resolve_worktree_git_dir;
     pub use crate::adaptor::gateway::repository::worktree::create_worktree;
+    pub use crate::adaptor::gateway::repository::worktree::create_worktree_with_hook;
     pub use crate::adaptor::gateway::repository::worktree::each_worktree;
     pub use crate::adaptor::gateway::repository::worktree::find_main_repo_path;
     pub use crate::adaptor::gateway::repository::worktree::get_main_repo_path;
@@ -732,7 +758,7 @@ pub mod transport {
     pub use crate::adaptor::controller::client::dispatch::invalid_request;
     pub use crate::adaptor::controller::client::dispatch::required;
     pub use crate::adaptor::controller::client::dispatch::ClientCommandDispatch;
-    pub use crate::adaptor::controller::client::worktree_mutation::admit;
+    pub use crate::adaptor::controller::client::worktree_mutation::{admit, scope};
 
     pub use crate::adaptor::gateway::notion::service_impl::build_client;
     pub use crate::adaptor::presenter::client::from_value;
@@ -1142,7 +1168,6 @@ pub mod wire {
     pub use crate::adaptor::presenter::client::CommandRequest;
     pub use crate::adaptor::presenter::client::CommandResult;
     pub use crate::adaptor::presenter::client::CreateReviewThreadRequest;
-    pub use crate::adaptor::presenter::client::CreateWorktreeRequest;
     pub use crate::adaptor::presenter::client::DeleteReviewThreadRequest;
     pub use crate::adaptor::presenter::client::FetchIssuesRequest;
     pub use crate::adaptor::presenter::client::GetOrSpawnTerminalSurfaceRequest;
@@ -1173,6 +1198,7 @@ pub mod wire {
     pub use crate::adaptor::presenter::client::WritePathsToTerminalSurfaceRequest;
     pub use crate::adaptor::presenter::client::WriteTerminalSurfaceRequest;
     pub use crate::adaptor::presenter::client::COMMAND_NAMES;
+    pub use crate::adaptor::presenter::client::{CreateWorktreeRequest, CreateWorktreesRequest};
 }
 
 pub mod fixtures {

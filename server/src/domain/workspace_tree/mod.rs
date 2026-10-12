@@ -4,6 +4,7 @@
 //! has no dedicated persistence or CAS lifecycle.
 
 pub(crate) mod entities;
+mod latest_attempts;
 mod projection;
 pub(crate) mod repository;
 pub(crate) mod services;
@@ -20,3 +21,5 @@ pub use value_objects::{
     WorkspaceNodeStatusClassification, WorkspaceStructureFact, WorkspaceTreeNode,
 };
 pub(crate) use visible::WorkspaceVisibleNode;
+
+pub(crate) mod card;

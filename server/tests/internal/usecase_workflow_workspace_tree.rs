@@ -348,3 +348,44 @@ pub async fn test_実行木の選択_選択先が画面に出す木にあるか�
     assert_eq!(tree, missing_tree);
     assert_eq!(tree.visible().roots()[0].id(), execution_id);
 }
+
+#[tokio::test]
+pub async fn test_実行木一覧保持_query失敗では直前の結果を残し対象外は捨てる() {
+    use releashd::test_support::integration::persistence::ReadFailure;
+    use releashd::test_support::integration::workflow::{
+        seed_workflow_session_facts, WorkflowSessionFactSeed,
+    };
+    let directory = tempfile::tempdir().unwrap();
+    let (usecase, store) = build_workflow_usecase_and_store(directory.path().join("data"), None);
+    seed_workflow_session_facts(
+        &store,
+        WorkflowSessionFactSeed {
+            workflow_name: "review",
+            request: "test",
+            worktree_path: "/repo",
+            provider: ProviderKind::Codex,
+            workflow_execution_id: "00000000-0000-4000-8000-000000001207",
+            node_execution_id: "retain-node",
+            session_id: "retain-session",
+            initial_instruction_admitted: true,
+        },
+    )
+    .await
+    .unwrap();
+    let paths = vec!["/repo".into()];
+    let before = usecase.retained_workspace_trees(&paths).await.remove(0);
+    assert_eq!(before.value.as_ref().unwrap().card_executions().len(), 1);
+    store.fail_next_read(ReadFailure::Sqlite(rusqlite::ffi::SQLITE_IOERR));
+    let failed = usecase.retained_workspace_trees(&paths).await.remove(0);
+    assert_eq!(failed.value, before.value);
+    assert!(failed.error.is_some());
+    assert_eq!(
+        usecase.retained_workspace_trees(&paths).await.remove(0),
+        before
+    );
+    usecase.retained_workspace_trees(&[]).await;
+    store.fail_next_read(ReadFailure::Sqlite(rusqlite::ffi::SQLITE_IOERR));
+    let forgotten = usecase.retained_workspace_trees(&paths).await.remove(0);
+    assert!(forgotten.value.is_none());
+    assert!(forgotten.error.is_some());
+}

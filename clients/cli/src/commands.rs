@@ -9,8 +9,11 @@ use serde_json::{json, Value};
 use std::io::Read;
 use std::path::Path;
 
-pub fn json_output(command: &TopCommand) -> bool {
-    match command {
+pub fn output_options(command: &TopCommand) -> (bool, Option<&'static str>) {
+    let json = match command {
+        TopCommand::Server {
+            command: crate::server::ServerSubcommand::Start { json },
+        } => return (*json, Some(crate::client::startup_guidance())),
         TopCommand::Status { json } => *json,
         TopCommand::Workflow { command } => match command {
             Workflow::Status { json, .. } | Workflow::Diagnostics { json, .. } => *json,
@@ -28,7 +31,8 @@ pub fn json_output(command: &TopCommand) -> bool {
             | Review::History { json, .. } => *json,
         },
         _ => false,
-    }
+    };
+    (json, None)
 }
 
 fn display<M: prost::Message>(name: &str, value: &M) -> Result<Value, ConnectError> {

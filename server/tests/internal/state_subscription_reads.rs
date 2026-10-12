@@ -343,7 +343,7 @@ impl Fixture {
             history: Arc::new(AgentSessionHistoryReadUsecase::new(sessions.clone())),
             providers,
             workspace_state: Arc::new(
-                releashd::test_support::integration::platform::WorkspaceStateStore::new(
+                releashd::test_support::integration::platform::workspace_state_store(
                     root.join("workspace"),
                 ),
             ),
@@ -423,16 +423,30 @@ pub async fn test_状態読取_全対象を対応するサービスへ引数付�
     r.repository
         .set_branch_base_override(p, "feature", Some(&branch))
         .unwrap();
-    let workspace: releashd::test_support::integration::platform::WorkspaceStateDto = serde_json::from_value(serde_json::json!({
-        "version": 1, "tabs": {"editors": [], "activeEditorPath": null},
-        "layout": {"centerTab": "agent", "activeView": "git", "leftNavCollapsed": true, "rightCollapsed": false, "rightBottomCollapsed": false}
-    })).unwrap();
+    let workspace = releashd::test_support::integration::platform::WorkspaceState {
+        version: 1,
+        panes: None,
+        tabs: releashd::test_support::integration::platform::WorkspaceTabsState {
+            editors: vec![],
+            active_editor_path: None,
+        },
+        layout: releashd::test_support::integration::platform::WorkspaceLayoutState {
+            center_tab: "agent".into(),
+            active_view: "git".into(),
+            left_nav_collapsed: true,
+            right_collapsed: false,
+            right_bottom_collapsed: false,
+            right_bottom_active_tab: None,
+            selected_diff_file: None,
+        },
+    };
     releashd::test_support::integration::platform::save_workspace_state(
         r.workspace_state.as_ref(),
         None,
         "repo",
-        workspace.clone().into(),
+        workspace.clone(),
     )
+    .await
     .unwrap();
     r.workspaces.refresh().await;
     let (tree, selected) = r
@@ -504,7 +518,15 @@ pub async fn test_状態読取_全対象を対応するサービスへ引数付�
         (
             T::Issues(p.clone()),
             StateValue::Issues(
-                releashd::test_support::integration::platform::Fetched::ready(vec![issue(1)]),
+                releashd::test_support::integration::platform::Fetched::ready(
+                    releashd::test_support::integration::platform::IssueListing {
+                        options:
+                            releashd::test_support::integration::platform::IssueOptions::from_issues(
+                                &[issue(1)],
+                            ),
+                        issues: vec![issue(1)],
+                    },
+                ),
             ),
         ),
         (
@@ -517,7 +539,7 @@ pub async fn test_状態読取_全対象を対応するサービスへ引数付�
         ),
         (
             T::WorkspaceState("repo".into(), p.clone()),
-            StateValue::WorkspaceState(Some(workspace)),
+            StateValue::WorkspaceState(Some(workspace.into())),
         ),
         (
             T::Workflows,
@@ -698,7 +720,7 @@ pub async fn test_issue手動更新_有効なcacheを無視し30秒前に同じ�
         .await
         .unwrap();
     assert!(
-        matches!(stream.next().await, Some(StateSubscriptionEvent::Item(_, releashd::test_support::integration::subscriptions::Event::Snapshot(_, value))) if releashd::test_support::integration::subscriptions::same(&value, StateValue::Issues(releashd::test_support::integration::platform::Fetched::ready(vec![issue(1)]))))
+        matches!(stream.next().await, Some(StateSubscriptionEvent::Item(_, releashd::test_support::integration::subscriptions::Event::Snapshot(_, value))) if releashd::test_support::integration::subscriptions::same(&value, StateValue::Issues(releashd::test_support::integration::platform::Fetched::ready(releashd::test_support::integration::platform::IssueListing { options: releashd::test_support::integration::platform::IssueOptions::from_issues(&[issue(1)]), issues: vec![issue(1)] }))))
     );
     stream.next().await;
     *fixture.issues.values.lock() = vec![issue(2)];
@@ -728,7 +750,15 @@ pub async fn test_issue手動更新_有効なcacheを無視し30秒前に同じ�
     assert!(releashd::test_support::integration::subscriptions::same(
         &value,
         StateValue::Issues(
-            releashd::test_support::integration::platform::Fetched::ready(vec![issue(2)])
+            releashd::test_support::integration::platform::Fetched::ready(
+                releashd::test_support::integration::platform::IssueListing {
+                    options:
+                        releashd::test_support::integration::platform::IssueOptions::from_issues(&[
+                            issue(2)
+                        ]),
+                    issues: vec![issue(2)]
+                }
+            )
         )
     ));
     assert!(before.elapsed() < CacheTtl::EXTERNAL_INFORMATION.duration());
@@ -1157,7 +1187,7 @@ pub async fn test_issue手動更新失敗_最後の一覧と失敗を購読へ�
     assert!(result.is_err());
     assert!(
         matches!(event, StateSubscriptionEvent::Item(id, Event::Change(_, _, value)) if id == format!("client:{target}") && releashd::test_support::integration::subscriptions::same(&value, StateValue::Issues(releashd::test_support::integration::platform::Fetched {
-            value: Some(vec![issue(1)]),
+            value: Some(releashd::test_support::integration::platform::IssueListing { options: releashd::test_support::integration::platform::IssueOptions::from_issues(&[issue(1)]), issues: vec![issue(1)] }),
             error: Some(releashd::test_support::integration::platform::WorkFailure::from_error(&GitHostError::External("issues offline".into()))),
         })))
     );
@@ -1197,6 +1227,71 @@ pub async fn test_issue手動更新失敗_回復時に新しい一覧を届け�
         .unwrap();
     // Then
     assert!(
-        matches!(event, StateSubscriptionEvent::Item(id, Event::Change(_, _, value)) if id == format!("client:{target}") && releashd::test_support::integration::subscriptions::same(&value, StateValue::Issues(releashd::test_support::integration::platform::Fetched::ready(vec![issue(2)]))))
+        matches!(event, StateSubscriptionEvent::Item(id, Event::Change(_, _, value)) if id == format!("client:{target}") && releashd::test_support::integration::subscriptions::same(&value, StateValue::Issues(releashd::test_support::integration::platform::Fetched::ready(releashd::test_support::integration::platform::IssueListing { options: releashd::test_support::integration::platform::IssueOptions::from_issues(&[issue(2)]), issues: vec![issue(2)] }))))
     );
+}
+
+#[tokio::test]
+pub async fn test_workspace購読の値_reactが配置を省略して保存した後もswiftの配置を含む() {
+    use releashd::test_support::integration::platform::{
+        save_workspace_state, PaneLayout, PaneTab, PaneTabKind, WorkspaceLayoutState,
+        WorkspaceState, WorkspaceTabsState,
+    };
+    // Given
+    let fixture = Fixture::new();
+    let reads = &fixture.reads;
+    let key = &fixture.path;
+    let panes = PaneLayout::pane(
+        "pane".into(),
+        vec![PaneTab {
+            id: "workflow".into(),
+            kind: PaneTabKind::Workflow,
+        }],
+        Some("workflow".into()),
+    )
+    .unwrap();
+    let state = WorkspaceState {
+        panes: Some(panes),
+        version: 1,
+        tabs: WorkspaceTabsState {
+            editors: vec![],
+            active_editor_path: None,
+        },
+        layout: WorkspaceLayoutState {
+            center_tab: "agent".into(),
+            active_view: "git".into(),
+            left_nav_collapsed: false,
+            right_collapsed: false,
+            right_bottom_collapsed: false,
+            right_bottom_active_tab: None,
+            selected_diff_file: None,
+        },
+    };
+    save_workspace_state(
+        reads.workspace_state.as_ref(),
+        Some(&fixture.subscriptions),
+        key,
+        state.clone(),
+    )
+    .await
+    .unwrap();
+    let mut react = state.clone();
+    react.panes = None;
+    react.layout.left_nav_collapsed = true;
+    // When
+    save_workspace_state(
+        reads.workspace_state.as_ref(),
+        Some(&fixture.subscriptions),
+        key,
+        react.clone(),
+    )
+    .await
+    .unwrap();
+    let actual = reads
+        .read(&T::WorkspaceState(key.clone(), key.clone()))
+        .await
+        .unwrap();
+    // Then
+    react.panes = state.panes;
+    assert_eq!(actual, StateValue::WorkspaceState(Some(react.into())));
 }

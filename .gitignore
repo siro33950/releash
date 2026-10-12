@@ -75,3 +75,16 @@ performance-results/
 !*.tfvars.example
 
 clients/desktop/binaries/
+
+clients/macos/*.xcodeproj/*
+!clients/macos/Releash.xcodeproj/project.xcworkspace/
+clients/macos/Releash.xcodeproj/project.xcworkspace/*
+!clients/macos/Releash.xcodeproj/project.xcworkspace/xcshareddata/
+clients/macos/Releash.xcodeproj/project.xcworkspace/xcshareddata/*
+!clients/macos/Releash.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/
+clients/macos/Releash.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/*
+!clients/macos/Releash.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved
+clients/macos/.build/
+clients/macos/BuildTools/.build/
+
+clients/macos/Generated/

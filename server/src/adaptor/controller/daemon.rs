@@ -228,7 +228,10 @@ pub async fn compose(
     let shared_repo_paths: adaptor::gateway::repository::repo_paths::SharedRepoPaths =
         Arc::new(parking_lot::RwLock::new(Vec::new()));
     let workspace_state_store = Arc::new(
-        adaptor::gateway::workspace_state::WorkspaceStateStore::new(data_dir.clone()),
+        adaptor::gateway::workspace_state::WorkspaceStateStore::with_store(
+            data_dir.clone(),
+            local_event_store.clone(),
+        ),
     );
 
     let config_path = data_dir.join("releash.toml");
@@ -363,6 +366,9 @@ pub async fn compose(
     ));
 
     repo_paths_usecase.initialize_from_cwd(&repository_usecase)?;
+    let repositories = shared_repo_paths.read().clone();
+    migrate_legacy_workspace_states(&workspace_state_store, &repositories, &repository_usecase)
+        .await;
 
     let code_usecase = Arc::new(adaptor::controller::wiring::build_code_usecase());
     let git_host_usecase = Arc::new(
@@ -505,6 +511,7 @@ pub async fn compose(
         shared_repo_paths.clone(),
         projected_local_event_repository.clone(),
         workflow_runtime_usecase.clone(),
+        workspace_state_store.clone(),
     );
     let info = daemon.info().await;
     let local_api_binding = infrastructure::local_api::LocalApiServerBinding::bind(
@@ -529,7 +536,14 @@ pub async fn compose(
         .join("provider-launches")
         .to_string_lossy()
         .into_owned();
+    let create_worktrees_usecase =
+        Arc::new(usecase::create_worktrees::CreateWorktreesUsecase::new(
+            app_state.repository_usecase.clone(),
+            agent_session_launch.clone(),
+            workflow_runtime_usecase.clone(),
+        ));
     let dependencies = super::client::ClientDependencies {
+        create_worktrees_usecase: Some(create_worktrees_usecase),
         installation_usecase: Some(installation),
         workspace_node_command_usecase: Some(workspace_node_command_usecase),
         app_state: Some(app_state),
@@ -669,6 +683,31 @@ pub async fn compose(
         exit: exit_receiver,
         daemon,
     })
+}
+
+pub async fn migrate_legacy_workspace_states(
+    store: &adaptor::gateway::workspace_state::WorkspaceStateStore,
+    repositories: &[String],
+    repository: &usecase::repository_usecase::RepositoryUsecase,
+) {
+    crate::common::telemetry::observe_result_async(
+        usecase::workspace_state::usecase::migrate_workspace_states(
+            store,
+            repositories,
+            repository,
+        ),
+        |result, _| {
+            for (path, error) in &result.unresolved_repositories {
+                log::warn!(
+                    "Workspace state migration deferred for unresolved repository {path}: {error}"
+                );
+            }
+            if let Err(error) = &result.migration {
+                log::warn!("UI state migration deferred; daemon startup continues: {error}");
+            }
+        },
+    )
+    .await;
 }
 
 pub async fn migrate_legacy_execution_archives(

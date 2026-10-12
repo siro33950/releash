@@ -14,7 +14,9 @@ pub use repository::{
     BranchRepository, GitConfigRepository, RepoLocator, RepoPathsRepository, StatusRepository,
     WorktreeRepository,
 };
-pub use value_objects::{normalize_repo_path, worktree_dir, worktree_path, BaseAncestry};
+pub use value_objects::{
+    normalize_repo_path, validate_worktree_branches, worktree_dir, worktree_path, BaseAncestry,
+};
 
 pub(crate) mod file_watcher;
 

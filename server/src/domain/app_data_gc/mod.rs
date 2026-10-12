@@ -51,6 +51,17 @@ pub struct GcReport {
 }
 
 impl GcReport {
+    pub fn merge(&mut self, other: Self) {
+        self.errors = self.errors.saturating_add(other.errors);
+        self.total_files = self.total_files.saturating_add(other.total_files);
+        self.total_bytes = self.total_bytes.saturating_add(other.total_bytes);
+        for (category, stat) in other.categories {
+            let entry = self.categories.entry(category).or_default();
+            entry.deleted = entry.deleted.saturating_add(stat.deleted);
+            entry.reclaimed_bytes = entry.reclaimed_bytes.saturating_add(stat.reclaimed_bytes);
+        }
+    }
+
     pub(crate) fn record_deleted(&mut self, category: GcCategory, reclaimed_bytes: u64) {
         let stat = self.categories.entry(category).or_default();
         stat.deleted = stat.deleted.saturating_add(1);
@@ -124,6 +135,27 @@ pub(crate) fn worktree_removed(
         }
 }
 
+pub struct WorkspaceStateRetention {
+    pub live: bool,
+    pub protected_at_scan: bool,
+    pub protected_at_sweep: bool,
+    pub prerequisites_complete: bool,
+}
+
+pub fn workspace_state_removable(input: WorkspaceStateRetention) -> bool {
+    input.prerequisites_complete
+        && !input.live
+        && !input.protected_at_scan
+        && !input.protected_at_sweep
+}
+
 #[cfg(test)]
 #[path = "mod_test.rs"]
 pub(crate) mod mod_tests;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GcSkipReason {
+    LiveWorktreesUnavailable,
+    RuntimeProtectionIncomplete,
+    RepositoryWorktreesUnavailable,
+}

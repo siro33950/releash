@@ -12,6 +12,35 @@ pub(crate) fn register_shared(
         let store = deps.workspace_state_store.clone();
         let publisher = router.publisher.clone();
         router.register_domain(
+            &["save_repository_group_state"],
+            Box::new(move |command| {
+                let store = store.clone();
+                let publisher = publisher.clone();
+                Box::pin(async move {
+                    let wire::command_request::Command::SaveRepositoryGroupState(args) = command
+                    else {
+                        return Err(invalid_request("Mismatched command"));
+                    };
+                    let store =
+                        store.ok_or_else(|| invalid_request("Command dependency unavailable"))?;
+                    commands::save_repository_group_state_shared(
+                        store.as_ref(),
+                        publisher.as_ref(),
+                        &args.repository_path,
+                        args.collapsed,
+                    )
+                    .await?;
+                    Ok(wire::command_result::Command::SaveRepositoryGroupState(
+                        wire::Unit {},
+                    ))
+                })
+            }),
+        );
+    }
+    {
+        let store = deps.workspace_state_store.clone();
+        let publisher = router.publisher.clone();
+        router.register_domain(
             &["save_workspace_state"],
             Box::new(move |command| {
                 let store = store.clone();
@@ -23,12 +52,15 @@ pub(crate) fn register_shared(
                     let result = async move {
                         let store = store
                             .ok_or_else(|| invalid_request("Command dependency unavailable"))?;
-                        outcome(commands::save_workspace_state_shared(
-                            &store,
-                            publisher.as_ref(),
-                            convert(required(args.worktree_name, "worktreeName")?)?,
-                            convert(required(args.state, "state")?)?,
-                        ))
+                        outcome(
+                            commands::save_workspace_state_shared(
+                                store.as_ref(),
+                                publisher.as_ref(),
+                                convert(required(args.worktree_name, "worktreeName")?)?,
+                                convert(required(args.state, "state")?)?,
+                            )
+                            .await,
+                        )
                     }
                     .await?;
                     Ok(wire::command_result::Command::SaveWorkspaceState(result))

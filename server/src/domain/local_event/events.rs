@@ -19,6 +19,9 @@ pub enum LocalDomainEvent {
     ProviderSessionOwnership(ProviderSessionOwnershipEvent),
     ProviderLifecycle(ProviderLifecycleEvent),
     ProviderHookHealth(ProviderHookHealthEvent),
+    WorkspaceStateInvalidated,
+    WorkspaceStateChanged(Box<crate::domain::workspace_state::WorkspaceState>),
+    RepositoryGroupChanged(bool),
 }
 
 /// One event a batch wants to append to a stream, before commit assigns

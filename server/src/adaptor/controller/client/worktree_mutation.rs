@@ -3,17 +3,15 @@ use crate::adaptor::presenter::client as wire;
 use crate::usecase::workflow::WorkflowRuntimeUsecase;
 use crate::usecase::worktree_operation::WorktreeMutationGuard;
 
-tokio::task_local! {
-    static MUTATION_GUARDS: std::sync::Arc<Vec<WorktreeMutationGuard>>;
-}
-
 pub async fn scope<T>(
     guards: Vec<WorktreeMutationGuard>,
     future: impl std::future::Future<Output = T>,
 ) -> T {
-    MUTATION_GUARDS
-        .scope(std::sync::Arc::new(guards), future)
-        .await
+    crate::common::operation_context::scope(
+        crate::common::operation_context::current().retaining(std::sync::Arc::new(guards)),
+        future,
+    )
+    .await
 }
 
 pub fn spawn_blocking<F, T>(operation: F) -> tokio::task::JoinHandle<T>
@@ -21,11 +19,7 @@ where
     F: FnOnce() -> T + Send + 'static,
     T: Send + 'static,
 {
-    let guards = MUTATION_GUARDS.try_with(std::sync::Arc::clone).ok();
-    crate::common::operation_context::spawn_blocking(move || {
-        let _guards = guards;
-        operation()
-    })
+    crate::common::operation_context::spawn_blocking(operation)
 }
 
 pub fn admit(
@@ -56,6 +50,15 @@ pub fn admit(
         C::WritePathsToTerminalSurface(a) => terminal_workspace(a.owner.as_ref()),
         C::ResizeTerminalSurface(a) => terminal_workspace(a.owner.as_ref()),
         C::KillTerminalSurface(a) => terminal_workspace(a.owner.as_ref()),
+        C::CreateWorktrees(a) => {
+            let runtime =
+                runtime.ok_or_else(|| invalid_request("Command dependency unavailable"))?;
+            crate::domain::repository::validate_worktree_branches(&a.branches)
+                .map_err(|error| invalid_request(error.to_string()))?;
+            return runtime
+                .begin_worktrees_creation_mutation(&a.repo_path, &a.branches)
+                .map_err(mutation_error);
+        }
         C::CreateWorktree(a) => {
             let runtime =
                 runtime.ok_or_else(|| invalid_request("Command dependency unavailable"))?;

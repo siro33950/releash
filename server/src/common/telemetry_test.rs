@@ -35,3 +35,21 @@ async fn test_非同期計測_完了結果を一度だけ観測する() {
     assert_eq!(result, Err("failure"));
     assert_eq!(count, 1);
 }
+
+#[tokio::test]
+async fn test_診断の包み_未解決の理由と処理失敗を一緒に観測し結果を保持する() {
+    // Given
+    let outcome = (
+        vec![("/repo", "worktrees unavailable")],
+        Err::<(), _>("migration failed"),
+    );
+    let mut observed = None;
+    // When
+    let result = observe_result_async(async { outcome.clone() }, |result, _| {
+        observed = Some(result.clone());
+    })
+    .await;
+    // Then
+    assert_eq!(result, outcome);
+    assert_eq!(observed, Some(outcome));
+}

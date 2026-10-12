@@ -23,6 +23,47 @@ permissions:
   pull-requests: write
 
 jobs:
+  macos-native:
+    runs-on: xcode-27
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+      - name: Read Xcode version
+        id: xcode
+        run: echo "version=$(cat clients/macos/.xcode-version)" >> "$GITHUB_OUTPUT"
+      - name: Check native build configuration
+        run: python3 .github/scripts/macos-build.test.py
+      - uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: ${{ steps.xcode.outputs.version }}
+      - name: Install Rust toolchain
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - uses: bufbuild/buf-action@v1
+        with:
+          version: 1.47.2
+          setup_only: true
+      - uses: actions/cache@v6
+        with:
+          path: clients/macos/BuildTools/.build
+          key: macos-native-build-tools-${{ runner.os }}-${{ runner.arch }}-${{ steps.xcode.outputs.version }}-${{ hashFiles('clients/macos/BuildTools/Package.resolved') }}
+      - uses: actions/cache@v6
+        with:
+          path: clients/macos/.build/SourcePackages
+          key: macos-native-packages-${{ runner.os }}-${{ runner.arch }}-${{ steps.xcode.outputs.version }}-${{ hashFiles('clients/macos/Releash.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}
+      - name: Resolve native build tools
+        run: swift package --package-path clients/macos/BuildTools resolve
+      - name: Generate native project
+        working-directory: clients/macos
+        run: swift run --package-path BuildTools xcodegen generate
+      - name: Resolve native client dependencies
+        working-directory: clients/macos
+        run: xcodebuild -resolvePackageDependencies -project Releash.xcodeproj -scheme Releash -clonedSourcePackagesDirPath .build/SourcePackages -onlyUsePackageVersionsFromResolvedFile
+      - name: Build and test native client
+        working-directory: clients/macos
+        run: xcodebuild -project Releash.xcodeproj -scheme Releash -destination 'platform=macOS' -clonedSourcePackagesDirPath .build/SourcePackages -disableAutomaticPackageResolution CODE_SIGNING_ALLOWED=NO test
   frontend-lint:
     runs-on: ubuntu-latest
     timeout-minutes: 20
