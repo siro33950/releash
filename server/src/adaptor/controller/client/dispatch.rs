@@ -126,7 +126,6 @@ impl ClientCommandDispatch {
                     wire::CommandFailure::from(
                         crate::adaptor::presenter::error::AppError::from_failure(
                             crate::adaptor::gateway::shared::operation_context::stopped_failure(
-                                &crate::common::operation_context::current(),
                                 error,
                             ),
                         ),

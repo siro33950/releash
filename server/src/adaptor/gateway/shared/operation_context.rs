@@ -14,6 +14,11 @@ impl From<OperationStopped> for crate::domain::failure::TechnicalFailure {
         }
     }
 }
+impl From<OperationStopped> for crate::domain::workspace_state::WorkspaceStateError {
+    fn from(error: OperationStopped) -> Self {
+        Self::Technical(error.into())
+    }
+}
 impl From<OperationStopped> for crate::domain::code::CodeError {
     fn from(error: OperationStopped) -> Self {
         Self::Technical(error.into())
@@ -76,15 +81,7 @@ impl From<tokio::task::JoinError> for crate::domain::failure::TechnicalFailure {
     }
 }
 
-pub(crate) fn stopped_failure(
-    context: &crate::common::operation_context::OperationContext,
-    stopped: OperationStopped,
-) -> crate::domain::failure::WorkFailure {
-    if stopped == OperationStopped::Expired {
-        if let Some(failure) = context.deadline_failure() {
-            return failure;
-        }
-    }
+pub(crate) fn stopped_failure(stopped: OperationStopped) -> crate::domain::failure::WorkFailure {
     crate::domain::failure::WorkFailure::from(crate::domain::failure::TechnicalFailure::from(
         stopped,
     ))

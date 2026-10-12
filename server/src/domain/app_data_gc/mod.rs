@@ -48,7 +48,6 @@ pub struct GcReport {
     pub(crate) total_files: u64,
     pub(crate) total_bytes: u64,
     pub errors: u64,
-    pub notices: Vec<GcNotice>,
 }
 
 impl GcReport {
@@ -61,7 +60,6 @@ impl GcReport {
             entry.deleted = entry.deleted.saturating_add(stat.deleted);
             entry.reclaimed_bytes = entry.reclaimed_bytes.saturating_add(stat.reclaimed_bytes);
         }
-        self.notices.extend(other.notices);
     }
 
     pub(crate) fn record_deleted(&mut self, category: GcCategory, reclaimed_bytes: u64) {
@@ -141,7 +139,6 @@ pub struct WorkspaceStateRetention {
     pub live: bool,
     pub protected_at_scan: bool,
     pub protected_at_sweep: bool,
-    pub possibly_unresolved: bool,
     pub prerequisites_complete: bool,
 }
 
@@ -150,7 +147,6 @@ pub fn workspace_state_removable(input: WorkspaceStateRetention) -> bool {
         && !input.live
         && !input.protected_at_scan
         && !input.protected_at_sweep
-        && !input.possibly_unresolved
 }
 
 #[cfg(test)]
@@ -162,35 +158,4 @@ pub enum GcSkipReason {
     LiveWorktreesUnavailable,
     RuntimeProtectionIncomplete,
     RepositoryWorktreesUnavailable,
-}
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum GcNotice {
-    WorkspaceInventoryFailed(String),
-    WorkspaceInvalidationFailed {
-        key: crate::domain::workspace_state::WorkspaceStateKey,
-        error: String,
-    },
-    RepositoryRecordFailed {
-        execution_id: String,
-        error: String,
-    },
-    ArchiveFailed {
-        execution_id: String,
-        error: String,
-    },
-    CanonicalProtectionFailed {
-        revalidation: bool,
-        error: String,
-    },
-    CheckpointRetained(std::path::PathBuf),
-    RulesSkipped(GcSkipReason),
-    OutsideAppData(std::path::PathBuf),
-    MeasureFailed {
-        path: std::path::PathBuf,
-        error: String,
-    },
-    RemoveFailed {
-        path: std::path::PathBuf,
-        error: String,
-    },
 }

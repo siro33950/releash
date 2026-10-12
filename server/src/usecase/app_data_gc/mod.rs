@@ -5,50 +5,27 @@ use std::io;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
-use crate::domain::app_data_gc::{
-    is_expired, GcCategory, GcNotice, GcReport, GcSkipReason, RetentionPolicy,
-};
+use crate::domain::app_data_gc::{is_expired, GcCategory, GcReport, GcSkipReason, RetentionPolicy};
 use crate::domain::local_event::{
     CanonicalRuntimeOwnerView, LocalEventQuery, LocalEventQueryResult,
     LocalEventTransactionRepository,
 };
 
-pub(crate) async fn inventory_startup_gc(
-    states: &dyn crate::domain::workspace_state::WorkspaceStateRepository,
-    live_inventory: impl std::future::Future<Output = Result<StartupGcRequest, String>>,
-) -> Result<
-    (
-        Result<
-            Vec<(WorkspaceStateKey, crate::domain::local_event::StreamVersion)>,
-            crate::domain::workspace_state::WorkspaceStateError,
-        >,
-        StartupGcRequest,
-    ),
-    String,
-> {
-    let workspace_inventory = states.states().await;
-    let request = live_inventory.await?;
-    Ok((workspace_inventory, request))
-}
-
 pub(crate) async fn sweep_workspace_states(
     plan: &StartupGcPlan,
     runtime: &RuntimeProtection,
     states: &dyn crate::domain::workspace_state::WorkspaceStateRepository,
-    inventory: Result<
-        Vec<(WorkspaceStateKey, crate::domain::local_event::StreamVersion)>,
-        crate::domain::workspace_state::WorkspaceStateError,
-    >,
-    report: &mut GcReport,
+    inventory: WorkspaceStateCandidates,
+    report: &mut GcResult,
 ) {
     let request = &plan.request;
     let inventory = match inventory {
-        Ok(states) => states,
-        Err(error) => {
-            report.record_error();
+        WorkspaceStateCandidates::Available(states) => states,
+        WorkspaceStateCandidates::Failed(error) => {
+            report.report.record_error();
             report
                 .notices
-                .push(GcNotice::WorkspaceInventoryFailed(error.to_string()));
+                .push(GcNotice::WorkspaceInventoryFailed(error));
             return;
         }
     };
@@ -57,14 +34,15 @@ pub(crate) async fn sweep_workspace_states(
             continue;
         }
         match states.invalidate(&key, expected).await {
-            Ok(true) => report.record_deleted(GcCategory::DeletedWorkspace, 0),
+            Ok(true) => report
+                .report
+                .record_deleted(GcCategory::DeletedWorkspace, 0),
             Ok(false) => {}
             Err(error) => {
-                report.record_error();
-                report.notices.push(GcNotice::WorkspaceInvalidationFailed {
-                    key,
-                    error: error.to_string(),
-                });
+                report.report.record_error();
+                report
+                    .notices
+                    .push(GcNotice::WorkspaceInvalidationFailed { key, error });
             }
         }
     }
@@ -93,20 +71,18 @@ pub trait ExecutionTreeGc: Send + Sync {
 pub async fn archive_removed_execution_trees(
     resolution: Option<&LiveWorktreeResolution>,
     trees: &dyn ExecutionTreeGc,
-) -> Result<GcReport, StartupGcFailure> {
+) -> GcResult {
     let Some(resolution) = resolution else {
-        return Ok(GcReport::default());
+        return GcResult::default();
     };
-    let mut report = GcReport::default();
+    let mut report = GcResult::default();
     let mut after = None;
     loop {
         let page = match trees.execution_trees(after.as_deref()).await {
             Ok(page) => page,
             Err(error) => {
-                return Err(StartupGcFailure {
-                    report,
-                    message: format!("execution tree GC failed: {error}"),
-                })
+                report.stopped = Some(GcStopCause::ExecutionTrees(error));
+                return report;
             }
         };
         let Some(last) = page.last() else { break };
@@ -132,10 +108,10 @@ pub async fn archive_removed_execution_trees(
                 });
             if let Some(root) = &repository_root {
                 if let Err(error) = trees.record_repository_root(&tree.execution_id, root).await {
-                    report.record_error();
+                    report.report.record_error();
                     report.notices.push(GcNotice::RepositoryRecordFailed {
                         execution_id: tree.execution_id.clone(),
-                        error: error.to_string(),
+                        error,
                     });
                     continue;
                 }
@@ -147,16 +123,16 @@ pub async fn archive_removed_execution_trees(
                 &resolution.unresolved_repo_paths,
             ) {
                 if let Err(error) = trees.archive_removed_tree(&tree.execution_id).await {
-                    report.record_error();
+                    report.report.record_error();
                     report.notices.push(GcNotice::ArchiveFailed {
                         execution_id: tree.execution_id.clone(),
-                        error: error.to_string(),
+                        error,
                     });
                 }
             }
         }
     }
-    Ok(report)
+    report
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -273,15 +249,10 @@ pub struct LiveWorktreeResolution {
     unresolved_repo_paths: Vec<String>,
     repository_paths: Vec<String>,
     worktree_repositories: HashMap<String, String>,
-    unresolved_workspace_state_keys: HashSet<WorkspaceStateKey>,
 }
 
 impl LiveWorktreeResolution {
-    pub fn new(
-        live_worktrees: LiveWorktreeSet,
-        unresolved_repo_paths: Vec<String>,
-        unresolved_workspace_state_keys: HashSet<WorkspaceStateKey>,
-    ) -> Self {
+    pub fn new(live_worktrees: LiveWorktreeSet, unresolved_repo_paths: Vec<String>) -> Self {
         Self {
             repository_paths: Vec::new(),
             worktree_repositories: HashMap::new(),
@@ -290,7 +261,6 @@ impl LiveWorktreeResolution {
                 .into_iter()
                 .map(|path| worktree_path_key(&path))
                 .collect(),
-            unresolved_workspace_state_keys,
         }
     }
 
@@ -313,10 +283,6 @@ impl LiveWorktreeResolution {
 
     fn contains_review_comment_key(&self, key: &str) -> bool {
         self.live_worktrees.contains_review_comment_key(key)
-    }
-
-    fn workspace_state_key_may_be_unresolved(&self, key: &WorkspaceStateKey) -> bool {
-        self.unresolved_workspace_state_keys.contains(key)
     }
 
     fn has_unresolved_repos(&self) -> bool {
@@ -434,7 +400,7 @@ impl DeletionPlan {
 pub(crate) struct StartupGcPlan {
     request: StartupGcRequest,
     deletions: DeletionPlan,
-    report: GcReport,
+    report: GcResult,
 }
 
 /// Reads the canonical SQLite projection inventory only. No legacy
@@ -489,7 +455,7 @@ fn apply_runtime_owner(owner: CanonicalRuntimeOwnerView, owners: &mut CanonicalR
 pub(crate) fn plan_startup_gc(request: StartupGcRequest) -> StartupGcPlan {
     let mut plan = DeletionPlan::new(request.app_data_dir.clone());
 
-    let mut report = GcReport::default();
+    let mut report = GcResult::default();
     collect_workspace_keyed_deletions(&request, &mut plan, &mut report);
     for record in &request.cache_records {
         if is_expired(
@@ -528,7 +494,7 @@ pub(crate) fn sweep_startup_gc(
     plan: StartupGcPlan,
     revalidated_runtime_protection: RuntimeProtection,
     file_system: &dyn GcFileSystem,
-) -> GcReport {
+) -> GcResult {
     let mut report = plan.report;
     let file_report = sweep(
         plan.deletions,
@@ -541,7 +507,7 @@ pub(crate) fn sweep_startup_gc(
 }
 
 #[cfg(any(test, feature = "test-support"))]
-pub fn run_startup_gc(request: StartupGcRequest, file_system: &dyn GcFileSystem) -> GcReport {
+pub fn run_startup_gc(request: StartupGcRequest, file_system: &dyn GcFileSystem) -> GcResult {
     let revalidated_runtime_protection = request.runtime_protection.clone();
     let plan = plan_startup_gc(request);
     sweep_startup_gc(plan, revalidated_runtime_protection, file_system)
@@ -565,7 +531,6 @@ fn can_remove_workspace_state(
             protected_at_sweep: runtime
                 .protected_worktrees
                 .contains_workspace_state_key(key),
-            possibly_unresolved: live.workspace_state_key_may_be_unresolved(key),
             prerequisites_complete: !live.has_unresolved_repos()
                 && request
                     .runtime_protection
@@ -578,7 +543,7 @@ fn can_remove_workspace_state(
 fn collect_workspace_keyed_deletions(
     request: &StartupGcRequest,
     plan: &mut DeletionPlan,
-    report: &mut GcReport,
+    report: &mut GcResult,
 ) {
     let Some(live_worktrees) = request.live_worktrees.as_ref() else {
         report.notices.push(GcNotice::RulesSkipped(
@@ -633,8 +598,8 @@ fn sweep(
     request: &StartupGcRequest,
     revalidated_runtime_protection: &RuntimeProtection,
     file_system: &dyn GcFileSystem,
-) -> GcReport {
-    let mut report = GcReport::default();
+) -> GcResult {
+    let mut report = GcResult::default();
     while let Some(candidate) = plan.candidates.pop_front() {
         if !candidate_is_contained(&plan.app_data_dir, &candidate.path) {
             report
@@ -651,19 +616,21 @@ fn sweep(
             Err(error) => {
                 report.notices.push(GcNotice::MeasureFailed {
                     path: candidate.path.clone(),
-                    error: error.to_string(),
+                    error,
                 });
                 0
             }
         };
         match file_system.remove_path(&candidate.path) {
-            Ok(true) => report.record_deleted(candidate.category, reclaimed_bytes),
+            Ok(true) => report
+                .report
+                .record_deleted(candidate.category, reclaimed_bytes),
             Ok(false) => {}
             Err(error) => {
-                report.record_error();
+                report.report.record_error();
                 report.notices.push(GcNotice::RemoveFailed {
                     path: candidate.path.clone(),
-                    error: error.to_string(),
+                    error,
                 });
             }
         }
@@ -722,17 +689,86 @@ pub trait StartupGcInventory: Send + Sync {
     fn runtime_protection(&self, owners: CanonicalRuntimeOwners) -> RuntimeProtection;
 }
 
-#[derive(Debug)]
-pub struct StartupGcFailure {
+#[derive(Debug, Default)]
+pub struct GcResult {
     pub report: GcReport,
-    pub message: String,
+    pub notices: Vec<GcNotice>,
+    pub stopped: Option<GcStopCause>,
 }
-impl std::fmt::Display for StartupGcFailure {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.message.fmt(formatter)
+
+impl GcResult {
+    fn merge(&mut self, other: Self) {
+        self.report.merge(other.report);
+        self.notices.extend(other.notices);
     }
 }
-impl std::error::Error for StartupGcFailure {}
+
+#[derive(Debug)]
+pub enum GcStopCause {
+    Inventory(String),
+    ExecutionTrees(crate::domain::workflow::WorkflowError),
+    Sweep(crate::domain::failure::TechnicalFailure),
+}
+
+pub(crate) enum WorkspaceStateCandidates {
+    Available(Vec<(WorkspaceStateKey, crate::domain::local_event::StreamVersion)>),
+    Failed(crate::domain::workspace_state::WorkspaceStateError),
+}
+
+impl
+    From<
+        Result<
+            Vec<(WorkspaceStateKey, crate::domain::local_event::StreamVersion)>,
+            crate::domain::workspace_state::WorkspaceStateError,
+        >,
+    > for WorkspaceStateCandidates
+{
+    fn from(
+        value: Result<
+            Vec<(WorkspaceStateKey, crate::domain::local_event::StreamVersion)>,
+            crate::domain::workspace_state::WorkspaceStateError,
+        >,
+    ) -> Self {
+        match value {
+            Ok(states) => Self::Available(states),
+            Err(error) => Self::Failed(error),
+        }
+    }
+}
+
+#[derive(Debug)]
+pub enum GcNotice {
+    WorkspaceInventoryFailed(crate::domain::workspace_state::WorkspaceStateError),
+    WorkspaceInvalidationFailed {
+        key: crate::domain::workspace_state::WorkspaceStateKey,
+        error: crate::domain::workspace_state::WorkspaceStateError,
+    },
+    RepositoryRecordFailed {
+        execution_id: String,
+        error: crate::domain::workflow::WorkflowError,
+    },
+    ArchiveFailed {
+        execution_id: String,
+        error: crate::domain::workflow::WorkflowError,
+    },
+    CanonicalProtectionFailed {
+        error: String,
+    },
+    CanonicalRevalidationFailed {
+        error: String,
+    },
+    CheckpointRetained(std::path::PathBuf),
+    RulesSkipped(GcSkipReason),
+    OutsideAppData(std::path::PathBuf),
+    MeasureFailed {
+        path: std::path::PathBuf,
+        error: GcFileSystemError,
+    },
+    RemoveFailed {
+        path: std::path::PathBuf,
+        error: GcFileSystemError,
+    },
+}
 
 pub async fn execute_startup_gc(
     inventory: &dyn StartupGcInventory,
@@ -740,48 +776,46 @@ pub async fn execute_startup_gc(
     trees: &dyn ExecutionTreeGc,
     states: &dyn crate::domain::workspace_state::WorkspaceStateRepository,
     file_system: Arc<dyn GcFileSystem>,
-) -> Result<GcReport, StartupGcFailure> {
-    let (workspace_inventory, mut request) = inventory_startup_gc(states, inventory.inventory())
-        .await
-        .map_err(|message| StartupGcFailure {
-            report: GcReport::default(),
-            message,
-        })?;
-    let mut report =
-        archive_removed_execution_trees(request.live_worktrees.as_ref(), trees).await?;
+) -> GcResult {
+    let workspace_inventory = WorkspaceStateCandidates::from(states.states().await);
+    let mut request = match inventory.inventory().await {
+        Ok(request) => request,
+        Err(error) => {
+            return GcResult {
+                stopped: Some(GcStopCause::Inventory(error)),
+                ..Default::default()
+            }
+        }
+    };
+    let mut report = archive_removed_execution_trees(request.live_worktrees.as_ref(), trees).await;
+    if report.stopped.is_some() {
+        return report;
+    }
     match load_canonical_runtime_owners(repository.clone()).await {
         Ok(owners) => request.runtime_protection = inventory.runtime_protection(owners),
-        Err(error) => report.notices.push(GcNotice::CanonicalProtectionFailed {
-            revalidation: false,
-            error,
-        }),
+        Err(error) => report
+            .notices
+            .push(GcNotice::CanonicalProtectionFailed { error }),
     }
     let mut plan = plan_startup_gc(request);
     let runtime = match load_canonical_runtime_owners(repository).await {
         Ok(owners) => inventory.runtime_protection(owners),
         Err(error) => {
-            report.notices.push(GcNotice::CanonicalProtectionFailed {
-                revalidation: true,
-                error,
-            });
+            report
+                .notices
+                .push(GcNotice::CanonicalRevalidationFailed { error });
             RuntimeProtection::incomplete()
         }
     };
     report.merge(std::mem::take(&mut plan.report));
     sweep_workspace_states(&plan, &runtime, states, workspace_inventory, &mut report).await;
-    let files = match crate::common::operation_context::spawn_blocking(move || {
+    match crate::common::operation_context::spawn_blocking(move || {
         sweep_startup_gc(plan, runtime, file_system.as_ref())
     })
     .await
     {
-        Ok(files) => files,
-        Err(error) => {
-            return Err(StartupGcFailure {
-                report,
-                message: format!("app data gc sweep task failed: {error}"),
-            })
-        }
-    };
-    report.merge(files);
-    Ok(report)
+        Ok(files) => report.merge(files),
+        Err(error) => report.stopped = Some(GcStopCause::Sweep(error.into())),
+    }
+    report
 }

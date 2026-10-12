@@ -114,9 +114,9 @@ pub async fn ingress<T>(
     deadline: Option<std::time::Instant>,
     operation: impl std::future::Future<Output = Result<T, connectrpc::ConnectError>>,
 ) -> Result<T, connectrpc::ConnectError> {
-    crate::common::operation_context::ingress_result(deadline, operation, |context, error| {
+    crate::common::operation_context::ingress_result(deadline, operation, |_, error| {
         crate::adaptor::presenter::connect::classified_error(
-            crate::adaptor::gateway::shared::operation_context::stopped_failure(context, error),
+            crate::adaptor::gateway::shared::operation_context::stopped_failure(error),
         )
     })
     .await

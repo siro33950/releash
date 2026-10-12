@@ -28,6 +28,10 @@ impl RetryBackoff {
         }
     }
 
+    pub fn maximum_delay(self, failure_count: u64) -> Duration {
+        self.delay(failure_count, 1.0 + JITTER_SPREAD)
+    }
+
     pub fn delay(self, failure_count: u64, jitter: f64) -> Duration {
         assert!(jitter.is_finite() && jitter >= 0.0);
         let exponent = failure_count.saturating_sub(1).min(i32::MAX as u64) as i32;
@@ -250,61 +254,3 @@ pub async fn bounded<T, E>(
 #[cfg(test)]
 #[path = "retry_test.rs"]
 mod retry_tests;
-
-pub async fn conflicts<T, E, F, Fut>(
-    conflict: impl Fn() -> E,
-    is_conflict: impl Fn(&E) -> bool,
-    mut operation: F,
-) -> Result<T, E>
-where
-    E: std::fmt::Display,
-    F: FnMut() -> Fut,
-    Fut: Future<Output = Result<T, E>>,
-{
-    let limiter = RetryLimiter::new();
-    let context = operation_context::current();
-    context.retain_deadline_failure(None);
-    let attempted = std::sync::atomic::AtomicBool::new(false);
-    let result = attempts(
-        RetryBackoff::CONFLICT,
-        &limiter,
-        |error| {
-            if !is_conflict(error) {
-                return None;
-            }
-            if attempted.load(std::sync::atomic::Ordering::Relaxed) {
-                context.retain_deadline_failure(Some(crate::domain::failure::WorkFailure {
-                    kind: crate::domain::failure::Failure::Business(
-                        crate::domain::failure::BusinessFailure::VersionConflict,
-                    ),
-                    message: error.to_string(),
-                }));
-            }
-            Some(AttemptProgress::Reload)
-        },
-        |_| {
-            let stopped = operation_context::check().is_err();
-            attempted.store(!stopped, std::sync::atomic::Ordering::Relaxed);
-            let expired = conflict();
-            let future = if stopped { None } else { Some(operation()) };
-            async move {
-                match future {
-                    Some(future) => future.await,
-                    None => Err(expired),
-                }
-            }
-        },
-    )
-    .await;
-    if result.is_err()
-        && context.check(std::time::Instant::now())
-            == Err(operation_context::OperationStopped::Expired)
-        && context.deadline_failure().is_some()
-    {
-        return Err(conflict());
-    }
-    if !result.as_ref().is_err_and(is_conflict) {
-        context.retain_deadline_failure(None);
-    }
-    result
-}

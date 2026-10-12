@@ -415,10 +415,10 @@ pub(crate) mod tests {
                 Arc::new(NoExecutionTrees),
                 states.clone(),
             )
-            .await
-            .expect("run startup GC");
+            .await;
 
-        assert_eq!(report.errors, 0);
+        assert!(report.stopped.is_none());
+        assert_eq!(report.report.errors, 0);
         assert_eq!(
             states
                 .load(protected_worktree, protected_worktree)
@@ -529,10 +529,10 @@ pub(crate) mod tests {
                     ),
                 ),
             )
-            .await
-            .expect("run startup GC");
+            .await;
 
-        assert_eq!(report.errors, 0);
+        assert!(report.stopped.is_none());
+        assert_eq!(report.report.errors, 0);
         assert!(workspace_state.exists());
         assert!(review_comments.exists());
         assert!(
@@ -600,10 +600,10 @@ pub(crate) mod tests {
                     ),
                 ),
             )
-            .await
-            .expect("run startup GC");
+            .await;
 
-        assert_eq!(report.errors, 0);
+        assert!(report.stopped.is_none());
+        assert_eq!(report.report.errors, 0);
         assert!(workspace_state.exists());
         assert!(review_comments.exists());
         assert_eq!(repository.paged_owner_query_calls(), 0);
@@ -656,10 +656,10 @@ pub(crate) mod tests {
                     ),
                 ),
             )
-            .await
-            .expect("run startup GC");
+            .await;
 
-        assert_eq!(report.errors, 0);
+        assert!(report.stopped.is_none());
+        assert_eq!(report.report.errors, 0);
         assert!(workspace_state.exists());
         assert!(review_comments.exists());
         assert!(
@@ -745,10 +745,10 @@ pub(crate) mod tests {
                 Arc::new(NoExecutionTrees),
                 states.clone(),
             )
-            .await
-            .unwrap();
+            .await;
         // Then
-        assert_eq!(report.errors, 0);
+        assert!(report.stopped.is_none());
+        assert_eq!(report.report.errors, 0);
         assert!(states.load(&key, &key).await.unwrap().is_some());
         assert!(imported.exists());
         // When
@@ -759,10 +759,10 @@ pub(crate) mod tests {
                 Arc::new(NoExecutionTrees),
                 states.clone(),
             )
-            .await
-            .unwrap();
+            .await;
         // Then
-        assert_eq!(report.errors, 0);
+        assert!(report.stopped.is_none());
+        assert_eq!(report.report.errors, 0);
         assert!(states.load(&key, &key).await.unwrap().is_none());
         assert_eq!(states.load(&main, &main).await.unwrap(), Some(state));
         assert!(!imported.exists());
@@ -859,10 +859,10 @@ pub async fn test_startup_gc結線_消失候補の未終了実行木をabortし�
                 ),
             ),
         )
-        .await
-        .unwrap();
+        .await;
     // Then
-    assert_eq!(report.errors, 0);
+    assert!(report.stopped.is_none());
+    assert_eq!(report.report.errors, 0);
     assert!(path.exists());
     assert_eq!(
         fixture.repository.target(id).await.unwrap().status,
@@ -942,10 +942,11 @@ async fn test_起動時gc入口_後続ページの失敗にも先行処理の警
             Arc::new(PartialTrees { repository: root }),
             states,
         )
-        .await
-        .unwrap_err();
+        .await;
     // Then
-    assert!(failure.message.contains("gc-next-page-failed"));
+    assert!(
+        matches!(&failure.stopped, Some(releashd::test_support::integration::persistence::GcStopCause::ExecutionTrees(WorkflowError::External(error))) if error == "gc-next-page-failed")
+    );
     assert_eq!(failure.report.errors, 2);
     let warnings = captured_warning_messages();
     assert!(warnings.iter().any(|message| message

@@ -113,7 +113,7 @@ pub(crate) mod tests {
                 build_startup_gc_request(root.to_path_buf(), repos.clone(), &file_system);
             apply_canonical_runtime_owners(&mut request, CanonicalRuntimeOwners::default());
             let report = run_startup_gc(request, &file_system);
-            assert_eq!(report.errors, 0);
+            assert_eq!(report.report.errors, 0);
         }
 
         assert!(
@@ -218,7 +218,10 @@ pub(crate) mod tests {
         assert!(live_review.exists());
         assert!(!stale_workspace.exists());
         assert!(!stale_review.exists());
-        assert_eq!(report.categories[&GcCategory::DeletedWorkspace].deleted, 2);
+        assert_eq!(
+            report.report.categories[&GcCategory::DeletedWorkspace].deleted,
+            2
+        );
     }
 
     #[test]
@@ -261,8 +264,14 @@ pub(crate) mod tests {
             assert!(!root.join(name).exists());
         }
         assert!(current_review.exists());
-        assert_eq!(report.categories[&GcCategory::RegenerableCache].deleted, 1);
-        assert_eq!(report.categories[&GcCategory::LegacyComments].deleted, 3);
+        assert_eq!(
+            report.report.categories[&GcCategory::RegenerableCache].deleted,
+            1
+        );
+        assert_eq!(
+            report.report.categories[&GcCategory::LegacyComments].deleted,
+            3
+        );
     }
 
     #[test]

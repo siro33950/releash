@@ -27,6 +27,13 @@ pub(crate) fn error(value: impl std::fmt::Display) -> WorkspaceStateError {
     WorkspaceStateError::Message(value.to_string())
 }
 
+pub(crate) fn query_error(value: LocalEventQueryError) -> WorkspaceStateError {
+    match value {
+        LocalEventQueryError::Technical(error) => WorkspaceStateError::Technical(error),
+        error => self::error(error),
+    }
+}
+
 pub(crate) async fn append(
     store: &Arc<LocalEventStore>,
     stream: StreamId,
@@ -66,6 +73,7 @@ pub(crate) async fn append(
         .map(|_| ())
         .map_err(|failure| match failure {
             CommitBatchError::StreamHeadConflict { .. } => WorkspaceStateError::VersionConflict,
+            CommitBatchError::Technical(error) => WorkspaceStateError::Technical(error),
             failure => error(failure),
         })
 }

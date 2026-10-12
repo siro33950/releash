@@ -14,9 +14,9 @@ use std::sync::Arc;
 use crate::adaptor::gateway::app_data_gc::{log_gc_report, StartupInventory, StdGcFileSystem};
 use crate::adaptor::gateway::local_event_store::{LocalEventStore, LocalEventStoreConfig};
 use crate::adaptor::gateway::repository::repo_paths::SharedRepoPaths;
-use crate::domain::app_data_gc::GcReport;
 use crate::domain::local_event::LocalEventTransactionRepository;
 use crate::infrastructure::app_data_path::{AppDataPathObserver, NoopAppDataPathObserver};
+use crate::usecase::app_data_gc::{GcResult, GcStopCause};
 
 #[derive(Clone)]
 pub struct ProductionAppDataComposition {
@@ -67,7 +67,7 @@ impl ProductionAppDataComposition {
         repository: Arc<dyn LocalEventTransactionRepository>,
         execution_trees: Arc<dyn crate::usecase::app_data_gc::ExecutionTreeGc>,
         workspace_states: Arc<dyn crate::domain::workspace_state::WorkspaceStateRepository>,
-    ) -> Result<GcReport, crate::usecase::app_data_gc::StartupGcFailure> {
+    ) -> GcResult {
         let file_system = StdGcFileSystem::with_observer(self.observer.clone());
         let inventory = StartupInventory {
             app_data_dir: self.app_data_dir.clone(),
@@ -82,12 +82,18 @@ impl ProductionAppDataComposition {
                 workspace_states.as_ref(),
                 Arc::new(file_system),
             ),
-            |result, _| match result {
-                Ok(report) => {
-                    log_gc_report(report);
-                    log::info!("{}", report.log_summary());
+            |result, _| {
+                log_gc_report(result);
+                match &result.stopped {
+                    None => log::info!("{}", result.report.log_summary()),
+                    Some(GcStopCause::Inventory(error)) => log::error!("{error}"),
+                    Some(GcStopCause::ExecutionTrees(error)) => {
+                        log::error!("execution tree GC failed: {error}")
+                    }
+                    Some(GcStopCause::Sweep(error)) => {
+                        log::error!("app data gc sweep task failed: {error}")
+                    }
                 }
-                Err(failure) => log_gc_report(&failure.report),
             },
         )
         .await

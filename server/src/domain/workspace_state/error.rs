@@ -2,6 +2,7 @@
 pub enum WorkspaceStateError {
     Message(String),
     VersionConflict,
+    Technical(crate::domain::failure::TechnicalFailure),
 }
 
 impl std::fmt::Display for WorkspaceStateError {
@@ -9,6 +10,7 @@ impl std::fmt::Display for WorkspaceStateError {
         match self {
             Self::Message(msg) => f.write_str(msg),
             Self::VersionConflict => f.write_str("Workspace state version conflict"),
+            Self::Technical(error) => error.fmt(f),
         }
     }
 }

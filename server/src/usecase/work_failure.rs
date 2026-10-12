@@ -472,6 +472,9 @@ impl From<&crate::domain::workspace_state::WorkspaceStateError> for Failure {
             crate::domain::workspace_state::WorkspaceStateError::VersionConflict => {
                 Self::Business(BusinessFailure::VersionConflict)
             }
+            crate::domain::workspace_state::WorkspaceStateError::Technical(error) => {
+                Self::from(error)
+            }
         }
     }
 }

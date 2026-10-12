@@ -175,3 +175,20 @@ fn test_ui状態の失敗_版競合を業務失敗として保持する() {
         Failure::Business(BusinessFailure::VersionConflict)
     );
 }
+
+#[test]
+fn test_ui状態の技術的失敗_停止の種別を保持する() {
+    for nature in [
+        TechnicalFailureNature::TimedOut,
+        TechnicalFailureNature::Cancelled,
+    ] {
+        // Given
+        let error =
+            crate::domain::workspace_state::WorkspaceStateError::Technical(TechnicalFailure {
+                nature,
+                message: "stopped".into(),
+            });
+        // When / Then
+        assert_eq!(Failure::from(&error), Failure::Technical(nature));
+    }
+}

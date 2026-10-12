@@ -1426,8 +1426,48 @@ mod workspace_deadline_tests {
     };
     use std::sync::atomic::{AtomicUsize, Ordering};
 
+    #[derive(Clone, Copy, Default)]
+    enum PendingAfterConflict {
+        #[default]
+        None,
+        Read,
+        Save,
+    }
+    #[derive(Default)]
     struct ConflictingStates {
         saves: AtomicUsize,
+        reads: AtomicUsize,
+        pending: PendingAfterConflict,
+        started: tokio::sync::Notify,
+        stopped: std::sync::atomic::AtomicBool,
+    }
+    impl ConflictingStates {
+        async fn wait(&self) {
+            struct Stop<'a>(&'a std::sync::atomic::AtomicBool);
+            impl Drop for Stop<'_> {
+                fn drop(&mut self) {
+                    self.0.store(true, Ordering::SeqCst);
+                }
+            }
+            let _stop = Stop(&self.stopped);
+            self.started.notify_one();
+            std::future::pending::<()>().await;
+        }
+        async fn read(&self) {
+            if self.reads.fetch_add(1, Ordering::SeqCst) > 0
+                && matches!(self.pending, PendingAfterConflict::Read)
+            {
+                self.wait().await;
+            }
+        }
+        async fn save(&self) -> Result<(), WorkspaceStateError> {
+            if self.saves.fetch_add(1, Ordering::SeqCst) > 0
+                && matches!(self.pending, PendingAfterConflict::Save)
+            {
+                self.wait().await;
+            }
+            Err(WorkspaceStateError::VersionConflict)
+        }
     }
     fn state() -> WorkspaceState {
         use crate::domain::workspace_state::value_objects::{
@@ -1474,12 +1514,14 @@ mod workspace_deadline_tests {
             &self,
             _: &str,
         ) -> Result<(StreamVersion, bool), WorkspaceStateError> {
+            self.read().await;
             Ok((StreamVersion::new(0).unwrap(), false))
         }
         async fn read(
             &self,
             _: &str,
         ) -> Result<(StreamVersion, Option<WorkspaceState>), WorkspaceStateError> {
+            self.read().await;
             Ok((StreamVersion::new(0).unwrap(), None))
         }
         async fn save(
@@ -1488,8 +1530,7 @@ mod workspace_deadline_tests {
             _: WorkspaceState,
             _: StreamVersion,
         ) -> Result<(), WorkspaceStateError> {
-            self.saves.fetch_add(1, Ordering::SeqCst);
-            Err(WorkspaceStateError::VersionConflict)
+            self.save().await
         }
         async fn save_repository_group(
             &self,
@@ -1497,8 +1538,7 @@ mod workspace_deadline_tests {
             _: bool,
             _: StreamVersion,
         ) -> Result<(), WorkspaceStateError> {
-            self.saves.fetch_add(1, Ordering::SeqCst);
-            Err(WorkspaceStateError::VersionConflict)
+            self.save().await
         }
         async fn states(
             &self,
@@ -1525,6 +1565,7 @@ mod workspace_deadline_tests {
             let mut dispatch = dispatch();
             let store = Arc::new(ConflictingStates {
                 saves: AtomicUsize::new(0),
+                ..Default::default()
             });
             let mut dependencies = crate::acceptance_test_support::build_client_dependencies(
                 std::path::PathBuf::from("/unused"),
@@ -1558,14 +1599,83 @@ mod workspace_deadline_tests {
                 .unwrap_err();
             // Then
             assert_eq!(error.code, connectrpc::ErrorCode::Aborted);
-            assert!(error
-                .message
-                .as_deref()
-                .unwrap()
-                .contains("Workspace state version conflict"));
+            assert!(
+                error
+                    .message
+                    .as_deref()
+                    .unwrap()
+                    .contains("Workspace state version conflict"),
+                "{error:?}"
+            );
             let completed_saves = store.saves.load(Ordering::SeqCst);
             tokio::task::yield_now().await;
             assert_eq!(store.saves.load(Ordering::SeqCst), completed_saves);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_ui状態保存入口_競合後の再読取と再保存が待たされても期限前に競合を返す() {
+        for group in [false, true] {
+            for pending in [PendingAfterConflict::Read, PendingAfterConflict::Save] {
+                // Given
+                let runtime = Arc::new(crate::usecase::workflow::WorkflowRuntimeUsecase::new(
+                    Arc::new(crate::usecase::workflow::runtime_command::runtime_command_tests::tests::FakeRuntimeGateway::default()),
+                    Arc::new(crate::usecase::workflow::NoopArchiveRepository),
+                ));
+                let store = Arc::new(ConflictingStates {
+                    pending,
+                    ..Default::default()
+                });
+                let mut dispatch = dispatch();
+                let mut dependencies = crate::acceptance_test_support::build_client_dependencies(
+                    std::path::PathBuf::from("/unused"),
+                );
+                dependencies.workspace_state_store = Some(store.clone());
+                dependencies.workflow_runtime_usecase = Some(runtime);
+                dispatch.register_dependencies(&dependencies);
+                let deps = crate::test_support::client_api_deps(Arc::new(dispatch));
+                let command = if group {
+                    wire::command_request::Command::SaveRepositoryGroupState(
+                        wire::SaveRepositoryGroupStateRequest {
+                            repository_path: "/repo".into(),
+                            collapsed: true,
+                        },
+                    )
+                } else {
+                    wire::command_request::Command::SaveWorkspaceState(
+                        wire::SaveWorkspaceStateRequest {
+                            worktree_name: Some("/repo/wt".into()),
+                            state: Some(state().try_into().unwrap()),
+                        },
+                    )
+                };
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+                let operation =
+                    tokio::spawn(async move { deps.execute(Some(deadline), command).await });
+                // When
+                tokio::time::timeout(std::time::Duration::from_secs(1), store.started.notified())
+                    .await
+                    .unwrap();
+                assert!(!store.stopped.load(Ordering::SeqCst));
+                assert_eq!(store.reads.load(Ordering::SeqCst), 2);
+                assert_eq!(
+                    store.saves.load(Ordering::SeqCst),
+                    if matches!(pending, PendingAfterConflict::Read) {
+                        1
+                    } else {
+                        2
+                    }
+                );
+                let error = operation.await.unwrap().unwrap_err();
+                // Then
+                assert!(std::time::Instant::now() < deadline);
+                assert!(store.stopped.load(Ordering::SeqCst));
+                assert_eq!(error.code, connectrpc::ErrorCode::Aborted, "{error:?}");
+                assert_eq!(
+                    error.message.as_deref(),
+                    Some("Workspace state version conflict")
+                );
+            }
         }
     }
 }

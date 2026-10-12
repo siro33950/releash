@@ -114,13 +114,13 @@ pub mod persistence {
     pub use crate::adaptor::gateway::local_event_store::writer::NORMAL_LANE_MAX_REQUESTS;
     pub use crate::domain::app_data_gc::GcCategory;
     pub use crate::usecase::app_data_gc::archive_removed_execution_trees;
-    pub use crate::usecase::app_data_gc::run_startup_gc;
     pub use crate::usecase::app_data_gc::CacheGcRecord;
     pub use crate::usecase::app_data_gc::CanonicalRuntimeOwners;
     pub use crate::usecase::app_data_gc::ExecutionTreeGc;
     pub use crate::usecase::app_data_gc::LiveWorktree;
     pub use crate::usecase::app_data_gc::LiveWorktreeResolution;
     pub use crate::usecase::app_data_gc::LiveWorktreeSet;
+    pub use crate::usecase::app_data_gc::{run_startup_gc, GcStopCause};
 }
 pub mod platform {
     pub fn workspace_state_store(
@@ -225,7 +225,6 @@ pub mod platform {
     pub use crate::common::operation_context::sync_scope;
     pub use crate::common::operation_context::wait;
     pub use crate::common::priority::PriorityGate;
-    pub use crate::common::retry::conflicts;
     pub use crate::common::retry::AttemptProgress;
     pub use crate::common::retry::RetryLimiter;
     pub use crate::domain::comment::AuthorScope;

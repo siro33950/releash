@@ -25,13 +25,21 @@ fn state_dir(app_data_dir: &Path) -> PathBuf {
     app_data_dir.join("workspace_state")
 }
 pub(crate) const ABSOLUTE_STATE_KEY_PREFIX: &str = "worktree-";
+pub(crate) fn state_key_from_hash(hash: &str) -> WorkspaceStateKey {
+    WorkspaceStateKey::from_storage(format!("{ABSOLUTE_STATE_KEY_PREFIX}{hash}"))
+}
+pub(crate) fn state_key_from_filename(value: String) -> WorkspaceStateKey {
+    match value.strip_prefix(ABSOLUTE_STATE_KEY_PREFIX) {
+        Some(hash) => state_key_from_hash(hash),
+        None => WorkspaceStateKey::from_storage(value),
+    }
+}
 pub fn storage_key(key: &str) -> String {
     if Path::new(key).is_absolute() {
         use sha2::Digest;
-        format!(
-            "{ABSOLUTE_STATE_KEY_PREFIX}{}",
-            hex::encode(sha2::Sha256::digest(key.as_bytes()))
-        )
+        state_key_from_hash(&hex::encode(sha2::Sha256::digest(key.as_bytes())))
+            .storage_value()
+            .to_owned()
     } else {
         key.replace(['/', '\\'], "_")
     }
@@ -66,7 +74,7 @@ impl WorkspaceStateRepository for WorkspaceStateStore {
     ) -> Result<(StreamVersion, bool), WorkspaceStateError> {
         let (head, event) = facts::latest(&self.store, facts::repository_group_stream(path))
             .await
-            .map_err(facts::error)?;
+            .map_err(facts::query_error)?;
         let collapsed = match event {
             Some(LocalDomainEvent::RepositoryGroupChanged(collapsed)) => collapsed,
             None => false,
@@ -119,7 +127,7 @@ impl WorkspaceStateRepository for WorkspaceStateStore {
     ) -> Result<(StreamVersion, Option<WorkspaceState>), WorkspaceStateError> {
         let (head, event) = facts::latest(&self.store, facts::workspace_stream(key))
             .await
-            .map_err(facts::error)?;
+            .map_err(facts::query_error)?;
         let state = match event {
             Some(LocalDomainEvent::WorkspaceStateChanged(state)) => Some(*state),
             None | Some(LocalDomainEvent::WorkspaceStateInvalidated) => None,
@@ -148,7 +156,7 @@ impl WorkspaceStateRepository for WorkspaceStateStore {
         let result = self.store.query(LocalEventQuery::StreamHeads {
             namespace: crate::domain::local_event::identifiers::WORKSPACE_STATE_PREFIX.into(),
             event_type: crate::adaptor::gateway::local_event_store::workspace_state_codec::WORKSPACE_STATE_CHANGED.into(),
-        }).await.map_err(facts::error)?;
+        }).await.map_err(facts::query_error)?;
         let LocalEventQueryResult::StreamHeads(heads) = result else {
             return Err(facts::error("Unexpected stream heads result"));
         };
@@ -159,10 +167,7 @@ impl WorkspaceStateRepository for WorkspaceStateStore {
                     .as_str()
                     .strip_prefix(crate::domain::local_event::identifiers::WORKSPACE_STATE_PREFIX)
                     .ok_or_else(|| facts::error("Unexpected workspace state stream"))?;
-                Ok((
-                    WorkspaceStateKey::from_storage(format!("{ABSOLUTE_STATE_KEY_PREFIX}{hash}")),
-                    version,
-                ))
+                Ok((state_key_from_hash(hash), version))
             })
             .collect()
     }
@@ -182,7 +187,7 @@ impl WorkspaceStateRepository for WorkspaceStateStore {
         .map_err(facts::error)?;
         let (head, event) = facts::latest(&self.store, stream.clone())
             .await
-            .map_err(facts::error)?;
+            .map_err(facts::query_error)?;
         if head != expected || !matches!(event, Some(LocalDomainEvent::WorkspaceStateChanged(_))) {
             return Ok(false);
         }
@@ -194,16 +199,5 @@ impl WorkspaceStateRepository for WorkspaceStateStore {
         )
         .await?;
         Ok(true)
-    }
-}
-
-impl From<String> for WorkspaceStateKey {
-    fn from(value: String) -> Self {
-        Self::from_storage(value)
-    }
-}
-impl From<&str> for WorkspaceStateKey {
-    fn from(value: &str) -> Self {
-        Self::from_storage(value.into())
     }
 }

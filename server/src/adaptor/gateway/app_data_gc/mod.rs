@@ -1,5 +1,5 @@
 use crate::domain::workspace_state::WorkspaceStateKey;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::UNIX_EPOCH;
@@ -174,7 +174,6 @@ fn resolve_live_worktrees(shared_repo_paths: SharedRepoPaths) -> Option<LiveWork
         LiveWorktreeResolution::new(
             LiveWorktreeSet::from_worktrees(live_worktrees),
             unresolved_repo_paths,
-            HashSet::new(),
         )
         .with_repository_paths(repo_paths)
         .with_worktree_repositories(worktree_repositories),
@@ -195,9 +194,10 @@ fn collect_workspace_state_records(
             {
                 return None;
             }
-            let key = WorkspaceStateKey::from_storage(
-                path.file_stem().and_then(|stem| stem.to_str())?.to_string(),
-            );
+            let key =
+                crate::adaptor::gateway::workspace_state::repository_impl::state_key_from_filename(
+                    path.file_stem().and_then(|stem| stem.to_str())?.to_string(),
+                );
             Some(WorkspaceStateGcRecord { path, key })
         })
         .collect()
@@ -337,7 +337,7 @@ fn workspace_state_keys(name: &str, path: &str, normalized: &str) -> Vec<Workspa
         );
     }
     keys.into_iter()
-        .map(WorkspaceStateKey::from_storage)
+        .map(crate::adaptor::gateway::workspace_state::repository_impl::state_key_from_filename)
         .collect()
 }
 
@@ -385,16 +385,17 @@ impl crate::usecase::app_data_gc::StartupGcInventory for StartupInventory {
     }
 }
 
-pub(crate) fn log_gc_report(report: &crate::domain::app_data_gc::GcReport) {
-    use crate::domain::app_data_gc::{GcNotice, GcSkipReason};
+pub(crate) fn log_gc_report(report: &crate::usecase::app_data_gc::GcResult) {
+    use crate::domain::app_data_gc::GcSkipReason;
+    use crate::usecase::app_data_gc::GcNotice;
     for notice in &report.notices {
         match notice {
             GcNotice::WorkspaceInventoryFailed(error) => log::warn!("UI state GC inventory failed; states retained: {error}"),
             GcNotice::WorkspaceInvalidationFailed { key, error } => log::warn!("UI state GC retained {}: {error}", key.storage_value()),
             GcNotice::RepositoryRecordFailed { execution_id, error } => log::warn!("execution tree GC failed to record repository for {execution_id}: {error}"),
             GcNotice::ArchiveFailed { execution_id, error } => log::warn!("execution tree GC failed to archive {execution_id}: {error}"),
-            GcNotice::CanonicalProtectionFailed { revalidation: false, error } => log::warn!("app data gc retained workspace-keyed data because canonical protection failed: {error}"),
-            GcNotice::CanonicalProtectionFailed { revalidation: true, error } => log::warn!("app data gc retained workspace-keyed candidates because sweep-boundary canonical revalidation failed: {error}"),
+            GcNotice::CanonicalProtectionFailed { error } => log::warn!("app data gc retained workspace-keyed data because canonical protection failed: {error}"),
+            GcNotice::CanonicalRevalidationFailed { error } => log::warn!("app data gc retained workspace-keyed candidates because sweep-boundary canonical revalidation failed: {error}"),
             GcNotice::CheckpointRetained(path) => log::info!("app data gc retained checkpoint root {} because its worktree mapping is not verified", path.display()),
             GcNotice::RulesSkipped(reason) => match reason {
                 GcSkipReason::LiveWorktreesUnavailable => log::info!("app data gc skipped workspace-dependent rules because live worktrees were unavailable"),

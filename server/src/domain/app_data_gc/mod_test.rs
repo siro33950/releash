@@ -3,27 +3,24 @@ pub(crate) mod tests {
     use super::super::*;
 
     #[test]
-    fn test_ui状態のgc判定_現存と両時点の保護と未解決と不足した前提は保持する() {
+    fn test_ui状態のgc判定_現存と両時点の保護と不足した前提は保持する() {
         // Given / When / Then
         assert!(workspace_state_removable(WorkspaceStateRetention {
             live: false,
             protected_at_scan: false,
             protected_at_sweep: false,
-            possibly_unresolved: false,
             prerequisites_complete: true
         }));
-        for (live, scan, sweep, unresolved, complete) in [
-            (true, false, false, false, true),
-            (false, true, false, false, true),
-            (false, false, true, false, true),
-            (false, false, false, true, true),
-            (false, false, false, false, false),
+        for (live, scan, sweep, complete) in [
+            (true, false, false, true),
+            (false, true, false, true),
+            (false, false, true, true),
+            (false, false, false, false),
         ] {
             assert!(!workspace_state_removable(WorkspaceStateRetention {
                 live,
                 protected_at_scan: scan,
                 protected_at_sweep: sweep,
-                possibly_unresolved: unresolved,
                 prerequisites_complete: complete
             }));
         }

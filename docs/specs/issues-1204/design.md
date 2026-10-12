@@ -77,6 +77,7 @@
    - git は、ある branch 名が別の branch 名の親の階層になる組み合わせ（`feature` と `feature/a`）を作らせない。ref をディレクトリの階層で持つためである。そのため、branch 名の階層をそのまま path にすれば、別の branch が同じ path になることは無い。
    - 既に作られている worktree の path は変えない。path は git から読む。
    - git の worktree の名前（`$GIT_DIR/worktrees/<名前>`）も重ならないようにする。path の最後の要素だけを名前にすると、`feature/a` と `bugfix/a` が同じ名前 `a` になる。`git worktree add` と同じく、名前が既にあれば番号を付けるなどして重ならない名前を付ける。名前の付け方の細部は実装に任せる（`repo.worktree` に渡す名前。`server/src/adaptor/gateway/repository/worktree.rs:359-373`）。
+   - worktree を削除した後、`<repo>-worktrees` より下で空になった親ディレクトリを下から順に消す。空でなければそこで止め、`<repo>-worktrees` 自体とそれより上は消さない。空の親が残ると、その名前の branch の worktree を後で作れなくなるためである。作成の途中で親が消えた場合は、親を作り直してやり直す。
 
 11. UI 状態の保存
    - worktree ごとの UI 状態と、repository グループの折りたたみの変更を、local_event_store に事実として追記する。読むときは、event store から最新の状態を導出する。

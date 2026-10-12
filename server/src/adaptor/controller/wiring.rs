@@ -399,16 +399,13 @@ pub(crate) fn spawn_startup_app_data_gc(
     workspace_states: Arc<dyn crate::domain::workspace_state::WorkspaceStateRepository>,
 ) {
     tokio::spawn(async move {
-        if let Err(error) = composition
+        composition
             .run_startup_gc_pass(
                 shared_repo_paths,
                 repository,
                 execution_trees,
                 workspace_states,
             )
-            .await
-        {
-            log::error!("{error}");
-        }
+            .await;
     });
 }

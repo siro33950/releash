@@ -28,7 +28,6 @@ pub struct OperationContext {
     deadline: Option<Deadline>,
     cancellation: Option<Arc<dyn Cancellation>>,
     retained: Option<Arc<dyn Send + Sync>>,
-    deadline_failure: Arc<std::sync::Mutex<Option<crate::domain::failure::WorkFailure>>>,
 }
 
 impl OperationContext {
@@ -37,7 +36,6 @@ impl OperationContext {
             deadline,
             cancellation: Some(cancellation),
             retained: None,
-            deadline_failure: Default::default(),
         }
     }
     pub fn with_deadline(&self, deadline: Deadline) -> Self {
@@ -48,17 +46,7 @@ impl OperationContext {
             ),
             cancellation: self.cancellation.clone(),
             retained: self.retained.clone(),
-            deadline_failure: self.deadline_failure.clone(),
         }
-    }
-    pub fn retain_deadline_failure(&self, failure: Option<crate::domain::failure::WorkFailure>) {
-        *self.deadline_failure.lock().expect("deadline failure") = failure;
-    }
-    pub fn deadline_failure(&self) -> Option<crate::domain::failure::WorkFailure> {
-        self.deadline_failure
-            .lock()
-            .expect("deadline failure")
-            .clone()
     }
     pub fn retaining(mut self, resource: Arc<dyn Send + Sync>) -> Self {
         self.retained = Some(resource);

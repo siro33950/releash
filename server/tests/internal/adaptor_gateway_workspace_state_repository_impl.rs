@@ -837,7 +837,9 @@ async fn test_ui状態の無効化_走査後に更新された状態を消さず
     let (key, version) = &inventory[0];
     assert_eq!(
         key,
-        &releashd::test_support::integration::platform::WorkspaceStateKey::from(storage_key(path))
+        &releashd::test_support::integration::platform::WorkspaceStateKey::for_test(storage_key(
+            path
+        ))
     );
     let mut next = make_state();
     next.layout.left_nav_collapsed = true;
@@ -863,7 +865,9 @@ async fn test_ui状態の無効化_走査後に更新された状態を消さず
     );
     assert!(store
         .invalidate(
-            &releashd::test_support::integration::platform::WorkspaceStateKey::from("unexpected"),
+            &releashd::test_support::integration::platform::WorkspaceStateKey::for_test(
+                "unexpected"
+            ),
             *version
         )
         .await
@@ -1000,34 +1004,22 @@ async fn test_ui状態の並行保存_版競合を再読取し直前のpanesと�
         let first_panes = panes.clone();
         let first = tokio::spawn(async move {
             if group {
-                retry_workspace_conflicts(|| {
-                    save_repository_group_state(first_store.as_ref(), None, "/repo", true)
-                })
-                .await
+                save_repository_group_state(first_store.as_ref(), None, "/repo", true).await
             } else {
                 let mut state = make_state();
                 state.panes = Some(first_panes);
-                retry_workspace_conflicts(|| {
-                    save_workspace_state(first_store.as_ref(), None, "/repo/wt", state.clone())
-                })
-                .await
+                save_workspace_state(first_store.as_ref(), None, "/repo/wt", state.clone()).await
             }
         });
         wait_for_ui_writes(events.as_ref(), 1).await;
         let second_store = store.clone();
         let second = tokio::spawn(async move {
             if group {
-                retry_workspace_conflicts(|| {
-                    save_repository_group_state(second_store.as_ref(), None, "/repo", false)
-                })
-                .await
+                save_repository_group_state(second_store.as_ref(), None, "/repo", false).await
             } else {
                 let mut state = make_state();
                 state.layout.left_nav_collapsed = true;
-                retry_workspace_conflicts(|| {
-                    save_workspace_state(second_store.as_ref(), None, "/repo/wt", state.clone())
-                })
-                .await
+                save_workspace_state(second_store.as_ref(), None, "/repo/wt", state.clone()).await
             }
         });
         wait_for_ui_writes(events.as_ref(), 2).await;
@@ -1102,23 +1094,6 @@ async fn test_ui状態保存_handler破棄後も受理済みjobが完了する�
     );
     assert!(store.read("/repo/wt").await.unwrap().1.is_some());
     assert!(operations.mutate("/repo/wt").is_ok());
-}
-
-async fn retry_workspace_conflicts<T>(
-    operation: impl FnMut() -> T,
-) -> Result<(), releashd::test_support::integration::platform::WorkspaceStateError>
-where
-    T: std::future::Future<
-        Output = Result<(), releashd::test_support::integration::platform::WorkspaceStateError>,
-    >,
-{
-    use releashd::test_support::integration::platform::{conflicts, WorkspaceStateError};
-    conflicts(
-        || WorkspaceStateError::VersionConflict,
-        |error| matches!(error, WorkspaceStateError::VersionConflict),
-        operation,
-    )
-    .await
 }
 
 #[tokio::test]
@@ -1241,4 +1216,114 @@ async fn test_ui状態保存_同じ値の連続保存も毎回事実を追記す
     // Then
     assert_eq!(event_count(dir.path()), 2);
     assert_eq!(store.read("/repo/wt").await.unwrap().1, Some(state));
+}
+
+#[tokio::test]
+async fn test_表示状態load_相対pathとroot外の絶対pathで消失したタブだけ除く() {
+    // Given
+    let directory = TempDir::new().unwrap();
+    let root = directory.path().join("worktree");
+    let outside = directory.path().join("outside");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::create_dir_all(&outside).unwrap();
+    let paths = [
+        root.join("kept"),
+        root.join("removed"),
+        outside.join("kept"),
+        outside.join("removed"),
+    ];
+    for path in &paths {
+        std::fs::write(path, "file").unwrap();
+    }
+    let entries = [
+        "kept".into(),
+        "removed".into(),
+        paths[2].to_string_lossy().into_owned(),
+        paths[3].to_string_lossy().into_owned(),
+    ];
+    let mut state = make_state();
+    state.tabs.editors = entries
+        .iter()
+        .map(|path| WorkspaceTabEntry {
+            path: path.clone(),
+            name: path.clone(),
+        })
+        .collect();
+    state.tabs.active_editor_path = Some(entries[0].clone());
+    let store = releashd::test_support::integration::platform::workspace_state_store(
+        directory.path().into(),
+    );
+    store
+        .save(
+            "worktree",
+            state,
+            releashd::test_support::integration::platform::StreamVersion::new(0).unwrap(),
+        )
+        .await
+        .unwrap();
+    std::fs::remove_file(&paths[1]).unwrap();
+    std::fs::remove_file(&paths[3]).unwrap();
+    // When
+    let loaded = store
+        .load("worktree", root.to_str().unwrap())
+        .await
+        .unwrap()
+        .unwrap();
+    // Then
+    assert_eq!(
+        loaded
+            .tabs
+            .editors
+            .iter()
+            .map(|entry| entry.path.as_str())
+            .collect::<Vec<_>>(),
+        [entries[0].as_str(), entries[2].as_str()]
+    );
+}
+
+#[tokio::test]
+async fn test_ui状態gateway_両方の読取と保存で停止の種別を保持する() {
+    use releashd::test_support::integration::platform::{
+        scope, Deadline, OperationContext, StreamVersion, TechnicalFailureNature,
+        WorkspaceStateError,
+    };
+    use std::sync::Arc;
+    // Given
+    let directory = TempDir::new().unwrap();
+    let store = releashd::test_support::integration::platform::workspace_state_store(
+        directory.path().into(),
+    );
+    for cancelled in [false, true] {
+        for operation in 0..4 {
+            let token = Arc::new(tokio_util::sync::CancellationToken::new());
+            let deadline = if cancelled {
+                token.cancel();
+                None
+            } else {
+                Some(Deadline::new(std::time::Instant::now()))
+            };
+            // When
+            let result = scope(OperationContext::new(deadline, token), async {
+                match operation {
+                    0 => store.read("/repo/wt").await.map(|_| ()),
+                    1 => store.read_repository_group("/repo").await.map(|_| ()),
+                    2 => {
+                        store
+                            .save("/repo/wt", make_state(), StreamVersion::new(0).unwrap())
+                            .await
+                    }
+                    _ => {
+                        store
+                            .save_repository_group("/repo", true, StreamVersion::new(0).unwrap())
+                            .await
+                    }
+                }
+            })
+            .await;
+            // Then
+            assert!(
+                matches!(result, Err(WorkspaceStateError::Technical(error)) if error.nature == if cancelled { TechnicalFailureNature::Cancelled } else { TechnicalFailureNature::TimedOut })
+            );
+        }
+    }
 }

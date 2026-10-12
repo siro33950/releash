@@ -8,25 +8,14 @@ pub(crate) async fn save_workspace_state_shared(
     worktree_name: String,
     state: WorkspaceState,
 ) -> Result<(), AppError> {
-    crate::common::retry::conflicts(
-        || crate::domain::workspace_state::WorkspaceStateError::VersionConflict,
-        |error| {
-            matches!(
-                error,
-                crate::domain::workspace_state::WorkspaceStateError::VersionConflict
-            )
-        },
-        || {
-            crate::usecase::workspace_state::usecase::save_workspace_state(
-                store,
-                publisher,
-                &worktree_name,
-                state.clone(),
-            )
-        },
+    crate::usecase::workspace_state::usecase::save_workspace_state(
+        store,
+        publisher,
+        &worktree_name,
+        state,
     )
     .await
-    .map_err(AppError::from_failure)
+    .map_err(AppError::from)
 }
 
 pub(crate) async fn save_repository_group_state_shared(
@@ -35,20 +24,9 @@ pub(crate) async fn save_repository_group_state_shared(
     path: &str,
     collapsed: bool,
 ) -> Result<(), AppError> {
-    crate::common::retry::conflicts(
-        || crate::domain::workspace_state::WorkspaceStateError::VersionConflict,
-        |error| {
-            matches!(
-                error,
-                crate::domain::workspace_state::WorkspaceStateError::VersionConflict
-            )
-        },
-        || {
-            crate::usecase::workspace_state::usecase::save_repository_group_state(
-                store, publisher, path, collapsed,
-            )
-        },
+    crate::usecase::workspace_state::usecase::save_repository_group_state(
+        store, publisher, path, collapsed,
     )
     .await
-    .map_err(AppError::from_failure)
+    .map_err(AppError::from)
 }
