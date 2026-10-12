@@ -41,6 +41,9 @@ jobs:
           ref: ${{ inputs.ref }}
           fetch-depth: 0
       - uses: jdx/mise-action@v3
+      - name: Prepare protocol comparison baseline
+        if: inputs.group == 'quality'
+        run: git branch --force main origin/main
       - name: Install Rust toolchain
         if: inputs.group != 'frontend'
         run: rustup toolchain install

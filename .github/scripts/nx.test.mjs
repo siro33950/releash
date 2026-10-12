@@ -1,11 +1,39 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 
 const require = createRequire(new URL("../../.nx/installation/package.json", import.meta.url));
 const { parse } = require("yaml");
+
+test("protocol baseline preparation works with a detached CI checkout and no local main", () => {
+  const directory = mkdtempSync(join(tmpdir(), "releash-ci-baseline-"));
+  const git = (...args) => execFileSync("git", args, { cwd: directory, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+  try {
+    git("init", "--initial-branch=feature");
+    git("config", "user.name", "CI test");
+    git("config", "user.email", "ci@example.invalid");
+    writeFileSync(join(directory, "schema"), "baseline");
+    git("add", ".");
+    git("-c", "commit.gpgsign=false", "commit", "-m", "baseline");
+    const baseline = git("rev-parse", "HEAD");
+    git("update-ref", "refs/remotes/origin/main", baseline);
+    writeFileSync(join(directory, "schema"), "changed");
+    git("-c", "commit.gpgsign=false", "commit", "-am", "change");
+    const head = git("rev-parse", "HEAD");
+    git("checkout", "--detach");
+    const workflow = parse(readFileSync(".github/workflows/ci-checks.yml", "utf8"));
+    const prepare = workflow.jobs.check.steps.find(step => step.name === "Prepare protocol comparison baseline");
+    execFileSync("bash", ["-e", "-c", prepare.run], { cwd: directory, stdio: "pipe" });
+    assert.equal(git("rev-parse", "main"), baseline);
+    assert.equal(git("rev-parse", "HEAD"), head);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
 
 function graph(file, ...args) {
   return JSON.parse(execFileSync(process.execPath, [
