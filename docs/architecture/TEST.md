@@ -10,6 +10,7 @@ Nx の `test` target は単体と統合を、`e2e` target は振る舞いを実�
 | 単体 | 単一の仕組みで完結すること |
 | 統合 | 2つ以上の仕組み（サーバ/DB、フロント/サーバ、サーバ/OS）の関連 |
 | 振る舞い（desktop） | 本物のサーバ・DB・OS を含む構成に対し、ユーザと同様の操作をして確かめる妥当性 |
+| 振る舞い（macOS） | 本物のサーバ・DB・OS を含む構成に対し、XCUITest でユーザと同様の操作をして確かめる妥当性 |
 
 ## 書かないテスト
 
@@ -35,11 +36,13 @@ Nx の `test` target は単体と統合を、`e2e` target は振る舞いを実�
 | 統合（CLI） | `clients/cli/tests/` | `cargo test --test '*' -p releash` | PR 層の `test` target |
 | 統合（desktop 画面） | `clients/desktop/tests/integration/` | `pnpm test:integration` | PR 層の `test` target |
 | 振る舞い（desktop） | `clients/desktop/tests/behavior/` | `pnpm test:behavior` | nightly 層 |
+| 単体（macOS） | `clients/macos/Tests/` | `./nx run macos:test` | PR 層 |
+| 振る舞い（macOS） | `clients/macos/UITests/` | `./nx run macos:e2e` | #1766 で追加。それまでは画面の機能を足す・変える PR で手元で全件実行 |
 
 手動で実行するテストはコミットしない。
 
 統合テストに必要なバイナリは、各 `test` target の `dependsOn` で先にビルドする。
-サーバのテストは `cli:build`、シェルと CLI のテストは `server:build` と `cli:build` に依存する。
+サーバのテストは `server:test-fixture-build` と `cli:build`、シェルと CLI のテストは `server:build` と `cli:build` に依存する。
 個別のテストを直接実行する場合も、対応する build target を先に実行する。
 テストから cargo は呼ばない。
 

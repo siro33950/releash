@@ -74,13 +74,24 @@
             "cli"
           ],
           "params": "ignore"
-        }
+        },
+        "test-fixture-build"
       ],
       "inputs": [
         "default",
         "rust",
         "{workspaceRoot}/clients/desktop/**/*",
         "{workspaceRoot}/clients/cli/**/*"
+      ],
+      "cache": false
+    },
+    "test-fixture-build": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "python3 .github/scripts/macos-e2e.py --build-fixture"
+      },
+      "outputs": [
+        "{workspaceRoot}/clients/macos/.build/agent-tui-fixture.json"
       ],
       "cache": false
     }

@@ -30,6 +30,7 @@ struct CreateWorktreeView: View {
             Text("選択してください").tag("")
             ForEach(model.repositories, id: \.path) { Text($0.path).tag($0.path) }
           }
+          .accessibilityIdentifier("repository-picker")
           TextField("base branch", text: $form.baseBranch)
         }
         Section("作成元") {
@@ -63,6 +64,7 @@ struct CreateWorktreeView: View {
           }
           DisclosureGroup("Advanced") {
             TextField("新しいbranch名", text: $form.branch).disabled(!form.selected.isEmpty)
+              .accessibilityIdentifier("new-branch-field")
             List(branches, id: \.name) { item in
               selectionRow(item.name, id: .branch(item.name), branch: item.name)
             }
@@ -83,6 +85,7 @@ struct CreateWorktreeView: View {
                   provider.wireName)
               }
             }
+            .accessibilityIdentifier("provider-picker")
           }
           if form.launch == "workflow" {
             WorkflowLaunchFields(
