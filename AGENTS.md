@@ -113,7 +113,8 @@ Nx Cloud は使わない。
 ./nx run macos:build
 ```
 
-PR と main push の CI は `nx affected -t lint test build` で変更の影響を受けるプロジェクトを検証する。
+PR と main push の CI は `nx show projects --affected` で変更の影響を受けるプロジェクトを判定し、検証の種類ごとに別の job から Nx を呼ぶ。
+フロント、server、シェル、CLI、品質検査の必須チェックは、それぞれの検証結果を集約する。
 macos は macOS runner、それ以外は Linux runner で実行する。
 nightly のリリース前検証では全プロジェクトを対象にする。
 
@@ -124,7 +125,12 @@ nightly のリリース前検証では全プロジェクトを対象にする。
 | macos | `generate`、`helpers`、`build`、`test`、`dev` |
 | workspace | `lint`、`coverage` |
 
-`test` は単体、doc、統合テストを実行し、必要なバイナリを `dependsOn` で先にビルドする。
+`test` は各テスト target を集約する。
+server と cli は `test-unit`（単体・doc）と `test-integration`、desktop は `rust-lint`、`rust-test-unit`、`rust-test-integration`、`frontend-lint`、`frontend-test-unit`、`frontend-test-integration` に分ける。
+バイナリの build 依存は Rust の統合テストにだけ置く。
+macOS の CI は `macos:test` でアプリのビルドとテストを行い、`macos:build` を重ねて実行しない。
+`macos:helpers` は対象 CPU 向けのバイナリを直接作り、通常の server・cli build は先行させない。
+Cargo、pnpm、SwiftPM のキャッシュは GitHub Actions で再利用する。Nx のローカルキャッシュは runner 間で共有しない。
 `workspace:lint` は buf、テスト配置、ast-grep、Qlty、cargo-deny を検査する。
 意図した proto の非互換には PR の `buf skip breaking` ラベルを使い、ラベルを付けた後に次の commit を push するか、PR を閉じて開き直す。
 

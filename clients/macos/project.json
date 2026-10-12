@@ -36,16 +36,6 @@
         "cwd": ".",
         "parallel": false
       },
-      "dependsOn": [
-        {
-          "target": "build",
-          "projects": [
-            "server",
-            "cli"
-          ],
-          "params": "ignore"
-        }
-      ],
       "inputs": [
         "default",
         "^default",

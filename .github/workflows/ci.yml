@@ -24,9 +24,12 @@ permissions:
   actions: read
 
 jobs:
-  affected:
+  plan:
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 10
+    outputs:
+      projects: ${{ steps.affected.outputs.projects }}
+      ref: ${{ steps.affected.outputs.ref }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -34,42 +37,82 @@ jobs:
           fetch-depth: 0
       - uses: jdx/mise-action@v3
       - uses: nrwl/nx-set-shas@v4
-      - name: Install Rust toolchain
-        run: rustup toolchain install
-      - uses: Swatinem/rust-cache@v2
-      - name: Install Tauri dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libgtk-3-dev libsoup-3.0-dev libjavascriptcoregtk-4.1-dev
-      - run: pnpm --dir clients/desktop install --frozen-lockfile
-      - run: pnpm --dir clients/desktop exec playwright install --with-deps chromium
-      - name: Run affected checks
+      - run: ./nx --version
+      - id: affected
         env:
-          BUF_SKIP_BREAKING: ${{ contains(github.event.pull_request.labels.*.name, 'buf skip breaking') }}
+          VALIDATION_REF: ${{ inputs.ref }}
         run: |
-          if [ -n "${{ inputs.ref }}" ]; then
-            NX_BASE=$(git hash-object -t tree /dev/null)
-            export NX_BASE
-            export NX_HEAD=${{ inputs.ref }}
+          if [ -n "$VALIDATION_REF" ]; then
+            projects=$(./nx show projects --json)
+          else
+            projects=$(./nx show projects --affected --json)
           fi
-          ./nx affected -t lint test build --exclude=macos --outputStyle=static
-      - uses: actions/upload-artifact@v7
-        if: always()
-        with:
-          name: playwright-report
-          path: clients/desktop/playwright-report/
-          retention-days: 7
+          projects=$(node -e 'process.stdout.write(JSON.stringify(JSON.parse(process.argv[1])))' "$projects")
+          echo "projects=$projects" >> "$GITHUB_OUTPUT"
+          echo "ref=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+  frontend-checks:
+    needs: plan
+    if: contains(fromJSON(needs.plan.outputs.projects), 'desktop')
+    uses: ./.github/workflows/ci-checks.yml
+    with:
+      ref: ${{ needs.plan.outputs.ref }}
+      group: frontend
+      project: desktop
+      targets: '["frontend-lint", "build", "frontend-test-unit", "frontend-test-integration"]'
+
+  server-checks:
+    needs: plan
+    if: contains(fromJSON(needs.plan.outputs.projects), 'server')
+    uses: ./.github/workflows/ci-checks.yml
+    with:
+      ref: ${{ needs.plan.outputs.ref }}
+      group: server
+      project: server
+      targets: '["lint", "test-unit", "test-integration"]'
+
+  shell-checks:
+    needs: plan
+    if: contains(fromJSON(needs.plan.outputs.projects), 'desktop')
+    uses: ./.github/workflows/ci-checks.yml
+    with:
+      ref: ${{ needs.plan.outputs.ref }}
+      group: shell
+      project: desktop
+      targets: '["rust-lint", "rust-test-unit", "rust-test-integration"]'
+
+  cli-checks:
+    needs: plan
+    if: contains(fromJSON(needs.plan.outputs.projects), 'cli')
+    uses: ./.github/workflows/ci-checks.yml
+    with:
+      ref: ${{ needs.plan.outputs.ref }}
+      group: cli
+      project: cli
+      targets: '["lint", "test-unit", "test-integration"]'
+
+  quality-checks:
+    needs: plan
+    if: contains(fromJSON(needs.plan.outputs.projects), 'workspace')
+    uses: ./.github/workflows/ci-checks.yml
+    with:
+      ref: ${{ needs.plan.outputs.ref }}
+      group: quality
+      project: workspace
+      targets: '["lint"]'
+      skip-breaking: ${{ contains(github.event.pull_request.labels.*.name, 'buf skip breaking') }}
 
   macos-native:
+    needs: plan
+    if: contains(fromJSON(needs.plan.outputs.projects), 'macos')
     runs-on: xcode-27
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7
         with:
-          ref: ${{ inputs.ref || github.sha }}
+          ref: ${{ needs.plan.outputs.ref }}
           fetch-depth: 0
       - uses: jdx/mise-action@v3
-      - uses: nrwl/nx-set-shas@v4
       - name: Read Xcode version
         id: xcode
         run: echo "version=$(cat clients/macos/.xcode-version)" >> "$GITHUB_OUTPUT"
@@ -87,26 +130,100 @@ jobs:
         with:
           path: clients/macos/.build/SourcePackages
           key: macos-native-packages-${{ runner.os }}-${{ runner.arch }}-${{ steps.xcode.outputs.version }}-${{ hashFiles('clients/macos/Releash.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}
-      - name: Run affected native checks
-        run: |
-          if [ -n "${{ inputs.ref }}" ]; then
-            NX_BASE=$(git hash-object -t tree /dev/null)
-            export NX_BASE
-            export NX_HEAD=${{ inputs.ref }}
-          fi
-          ./nx affected -t lint test build --exclude=server,cli,desktop,workspace --parallel=1 --outputStyle=static
+      - name: Build and test native client
+        run: ./nx run macos:test --parallel=2 --outputStyle=static
 
-  # 既存 ruleset の必須 check 名を維持する。
-  required:
-    name: ${{ matrix.check }}
-    needs: [affected, macos-native]
+  frontend:
+    needs: [plan, frontend-checks]
     if: always()
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        check: [frontend, server, shell, cli, quality]
+    timeout-minutes: 5
     steps:
-      - run: test "$AFFECTED" = success && test "$MACOS" = success
+      - name: Verify frontend checks
         env:
-          AFFECTED: ${{ needs.affected.result }}
-          MACOS: ${{ needs.macos-native.result }}
+          PLAN_RESULT: ${{ needs.plan.result }}
+          CHECK_RESULT: ${{ needs.frontend-checks.result }}
+          EXPECTED: ${{ contains(fromJSON(needs.plan.outputs.projects || '[]'), 'desktop') }}
+        run: |
+          test "$PLAN_RESULT" = success
+          if [ "$EXPECTED" = true ]; then
+            test "$CHECK_RESULT" = success
+          else
+            test "$CHECK_RESULT" = skipped
+          fi
+
+  server:
+    needs: [plan, server-checks]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Verify server checks
+        env:
+          PLAN_RESULT: ${{ needs.plan.result }}
+          CHECK_RESULT: ${{ needs.server-checks.result }}
+          EXPECTED: ${{ contains(fromJSON(needs.plan.outputs.projects || '[]'), 'server') }}
+        run: |
+          test "$PLAN_RESULT" = success
+          if [ "$EXPECTED" = true ]; then
+            test "$CHECK_RESULT" = success
+          else
+            test "$CHECK_RESULT" = skipped
+          fi
+
+  shell:
+    needs: [plan, shell-checks]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Verify shell checks
+        env:
+          PLAN_RESULT: ${{ needs.plan.result }}
+          CHECK_RESULT: ${{ needs.shell-checks.result }}
+          EXPECTED: ${{ contains(fromJSON(needs.plan.outputs.projects || '[]'), 'desktop') }}
+        run: |
+          test "$PLAN_RESULT" = success
+          if [ "$EXPECTED" = true ]; then
+            test "$CHECK_RESULT" = success
+          else
+            test "$CHECK_RESULT" = skipped
+          fi
+
+  cli:
+    needs: [plan, cli-checks]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Verify cli checks
+        env:
+          PLAN_RESULT: ${{ needs.plan.result }}
+          CHECK_RESULT: ${{ needs.cli-checks.result }}
+          EXPECTED: ${{ contains(fromJSON(needs.plan.outputs.projects || '[]'), 'cli') }}
+        run: |
+          test "$PLAN_RESULT" = success
+          if [ "$EXPECTED" = true ]; then
+            test "$CHECK_RESULT" = success
+          else
+            test "$CHECK_RESULT" = skipped
+          fi
+
+  quality:
+    needs: [plan, quality-checks]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Verify quality checks
+        env:
+          PLAN_RESULT: ${{ needs.plan.result }}
+          CHECK_RESULT: ${{ needs.quality-checks.result }}
+          EXPECTED: ${{ contains(fromJSON(needs.plan.outputs.projects || '[]'), 'workspace') }}
+        run: |
+          test "$PLAN_RESULT" = success
+          if [ "$EXPECTED" = true ]; then
+            test "$CHECK_RESULT" = success
+          else
+            test "$CHECK_RESULT" = skipped
+          fi

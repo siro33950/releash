@@ -3,46 +3,19 @@
 	"implicitDependencies": ["server", "cli"],
 	"targets": {
 		"lint": {
-			"executor": "nx:run-commands",
-			"options": {
-				"commands": [
-					"cargo fmt --check -p releash-desktop",
-					"cargo clippy --locked -p releash-desktop -- -D warnings",
-					"pnpm --dir clients/desktop exec biome ci ."
-				],
-				"cwd": ".",
-				"parallel": false
-			}
+			"executor": "nx:noop",
+			"dependsOn": ["rust-lint", "frontend-lint"],
+			"cache": false
 		},
 		"test": {
-			"executor": "nx:run-commands",
-			"options": {
-				"commands": [
-					"cargo test --locked --lib --bins -p releash-desktop",
-					"cargo test --locked --doc -p releash-desktop",
-					"cargo test --locked --test '*' -p releash-desktop",
-					"pnpm --dir clients/desktop test",
-					"pnpm --dir clients/desktop test:integration"
-				],
-				"cwd": ".",
-				"parallel": false
-			},
+			"executor": "nx:noop",
 			"dependsOn": [
-				{
-					"target": "build",
-					"projects": ["server"],
-					"params": "ignore"
-				},
-				{
-					"target": "build",
-					"projects": ["cli"],
-					"params": "ignore"
-				}
+				"rust-test-unit",
+				"rust-test-integration",
+				"frontend-test-unit",
+				"frontend-test-integration"
 			],
-			"outputs": [
-				"{projectRoot}/playwright-report",
-				"{projectRoot}/test-results"
-			]
+			"cache": false
 		},
 		"build": {
 			"executor": "nx:run-commands",
@@ -52,7 +25,8 @@
 				"parallel": false
 			},
 			"outputs": ["{projectRoot}/dist"],
-			"cache": true
+			"cache": true,
+			"inputs": ["frontend"]
 		},
 		"e2e": {
 			"executor": "nx:run-commands",
@@ -85,6 +59,88 @@
 				"command": "pnpm tauri",
 				"cwd": "clients/desktop"
 			}
+		},
+		"rust-lint": {
+			"executor": "nx:run-commands",
+			"options": {
+				"commands": [
+					"cargo fmt --check -p releash-desktop",
+					"cargo clippy --locked -p releash-desktop -- -D warnings"
+				],
+				"cwd": ".",
+				"parallel": false
+			},
+			"inputs": ["default", "^default", "rust"],
+			"cache": false
+		},
+		"frontend-lint": {
+			"executor": "nx:run-commands",
+			"options": {
+				"commands": ["pnpm --dir clients/desktop exec biome ci ."],
+				"cwd": ".",
+				"parallel": false
+			},
+			"inputs": ["frontend"],
+			"cache": true
+		},
+		"rust-test-unit": {
+			"executor": "nx:run-commands",
+			"options": {
+				"commands": [
+					"cargo test --locked --lib --bins -p releash-desktop",
+					"cargo test --locked --doc -p releash-desktop"
+				],
+				"cwd": ".",
+				"parallel": false
+			},
+			"inputs": ["default", "^default", "rust"],
+			"cache": false
+		},
+		"rust-test-integration": {
+			"executor": "nx:run-commands",
+			"options": {
+				"commands": ["cargo test --locked --test '*' -p releash-desktop"],
+				"cwd": ".",
+				"parallel": false
+			},
+			"dependsOn": [
+				{
+					"target": "build",
+					"projects": ["server"],
+					"params": "ignore"
+				},
+				{
+					"target": "build",
+					"projects": ["cli"],
+					"params": "ignore"
+				}
+			],
+			"inputs": ["default", "^default", "rust"],
+			"cache": false
+		},
+		"frontend-test-unit": {
+			"executor": "nx:run-commands",
+			"options": {
+				"commands": ["pnpm --dir clients/desktop test"],
+				"cwd": ".",
+				"parallel": false
+			},
+			"inputs": ["frontend"],
+			"cache": true
+		},
+		"frontend-test-integration": {
+			"executor": "nx:run-commands",
+			"options": {
+				"commands": ["pnpm --dir clients/desktop test:integration"],
+				"cwd": ".",
+				"parallel": false
+			},
+			"inputs": ["frontend"],
+			"cache": false,
+			"outputs": [
+				"{projectRoot}/playwright-report",
+				"{projectRoot}/test-results"
+			]
 		}
 	}
 }

@@ -14,25 +14,12 @@
       }
     },
     "test": {
-      "executor": "nx:run-commands",
-      "options": {
-        "commands": [
-          "cargo test --locked --lib --bins -p releashd",
-          "cargo test --locked --doc -p releashd",
-          "cargo test --locked --test '*' -p releashd"
-        ],
-        "cwd": ".",
-        "parallel": false
-      },
+      "executor": "nx:noop",
       "dependsOn": [
-        {
-          "target": "build",
-          "projects": [
-            "cli"
-          ],
-          "params": "ignore"
-        }
+        "test-unit",
+        "test-integration"
       ],
+      "cache": false,
       "inputs": [
         "default",
         "rust",
@@ -52,6 +39,50 @@
       "outputs": [
         "{workspaceRoot}/target/debug/releashd"
       ]
+    },
+    "test-unit": {
+      "executor": "nx:run-commands",
+      "options": {
+        "commands": [
+          "cargo test --locked --lib --bins -p releashd",
+          "cargo test --locked --doc -p releashd"
+        ],
+        "cwd": ".",
+        "parallel": false
+      },
+      "inputs": [
+        "default",
+        "rust",
+        "{workspaceRoot}/clients/desktop/**/*",
+        "{workspaceRoot}/clients/cli/**/*"
+      ],
+      "cache": false
+    },
+    "test-integration": {
+      "executor": "nx:run-commands",
+      "options": {
+        "commands": [
+          "cargo test --locked --test '*' -p releashd"
+        ],
+        "cwd": ".",
+        "parallel": false
+      },
+      "dependsOn": [
+        {
+          "target": "build",
+          "projects": [
+            "cli"
+          ],
+          "params": "ignore"
+        }
+      ],
+      "inputs": [
+        "default",
+        "rust",
+        "{workspaceRoot}/clients/desktop/**/*",
+        "{workspaceRoot}/clients/cli/**/*"
+      ],
+      "cache": false
     }
   }
 }

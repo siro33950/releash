@@ -64,6 +64,20 @@
       {
         "env": "CARGO_TARGET_DIR"
       }
+    ],
+    "frontend": [
+      "{workspaceRoot}/clients/desktop/**/*",
+      "!{workspaceRoot}/clients/desktop/src-native/**/*",
+      "sharedGlobals",
+      {
+        "env": "CI"
+      },
+      {
+        "runtime": "node --version"
+      },
+      {
+        "runtime": "pnpm --version"
+      }
     ]
   },
   "release": {
