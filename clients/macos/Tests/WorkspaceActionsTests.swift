@@ -128,8 +128,6 @@ final class WorkspaceActionsTests: XCTestCase {
       XCTAssertEqual(removal.worktreePath, "/repo/a")
       XCTAssertEqual(removal.force, force)
     }
-    branch.clearRemovalRequiresForce()
-    XCTAssertFalse(WorktreeCard(model: model, repository: repository, branch: branch).canRemove)
     branch.removalRequiresForce = false
     branch.isMainWorktree = true
     XCTAssertFalse(WorktreeCard(model: model, repository: repository, branch: branch).canRemove)
@@ -178,6 +176,47 @@ final class WorkspaceActionsTests: XCTestCase {
     XCTAssertEqual(workflow.workflowName, "review")
     XCTAssertEqual(workflow.worktreePath, "/repo/a")
     XCTAssertEqual(workflow.request, "check changes")
+    await model.stop()
+  }
+
+  @MainActor func testUnknownRemovalRequirementUsesNormalConfirmationAndPreservesWorktreeOnFailure() async throws {
+    let http = TestHTTPClient()
+    var repository = Releash_Client_V1_WorkspaceRepositoryList()
+    repository.path = "/repo"
+    var branch = Releash_Client_V1_WorkspaceBranch()
+    branch.worktreePath = "/repo/a"
+    branch.dirtyCountError = "status unavailable"
+    repository.branches.items = [branch]
+    var detail = Releash_Client_V1_CommandError()
+    detail.message.value = "worktree has 1 uncommitted change(s). Use force to remove."
+    let packed = ConnectError.Detail(
+      type: Releash_Client_V1_CommandError.protoMessageName, payload: try detail.serializedData())
+    http.state.withLock {
+      $0.repositories = [repository]
+      $0.failedMethod = "RemoveWorktree"
+      $0.failureDetail = packed
+    }
+    let model = try await testModel(http)
+    try await eventually { model.repositories.first?.branches.items.count == 1 }
+    model.selectWorktree(branch.worktreePath)
+    try await eventually { model.layoutLoaded }
+    let received = try XCTUnwrap(model.repositories.first)
+    let card = WorktreeCard(model: model, repository: received, branch: received.branches.items[0])
+    XCTAssertFalse(card.branch.hasRemovalRequiresForce)
+    XCTAssertTrue(card.canRemove)
+    XCTAssertEqual(card.removalTitle, "Worktreeを削除しますか？")
+    XCTAssertEqual(card.removalButtonTitle, "削除")
+
+    card.remove()
+
+    try await eventually { model.failure == detail.message.value }
+    let removal = try Releash_Client_V1_RemoveWorktreeRequest(
+      serializedBytes: XCTUnwrap(http.requests("RemoveWorktree").last?.message))
+    XCTAssertEqual(removal.repoPath, repository.path)
+    XCTAssertEqual(removal.worktreePath, branch.worktreePath)
+    XCTAssertFalse(removal.force)
+    XCTAssertEqual(model.repositories.first?.branches.items.map(\.worktreePath), [branch.worktreePath])
+    XCTAssertEqual(model.selectedWorktree, branch.worktreePath)
     await model.stop()
   }
 

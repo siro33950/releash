@@ -1,6 +1,8 @@
+import AppKit
 import Connect
 import Foundation
 import SwiftProtobuf
+import SwiftUI
 import Synchronization
 import XCTest
 
@@ -14,6 +16,7 @@ final class TestHTTPClient: HTTPClientInterface {
     var repositories: [Releash_Client_V1_WorkspaceRepositoryList] = []
     var layouts: [String: Releash_Client_V1_WorkspaceStateDto] = [:]
     var collapsed: [String: Bool] = [:]
+    var issues: [[String]: Releash_Client_V1_IssuesSnapshot] = [:]
     var failedMethod: String?
     var failureDetail: ConnectError.Detail?
     var failedSubscriptionTargets: [String: Int] = [:]
@@ -72,6 +75,8 @@ final class TestHTTPClient: HTTPClientInterface {
             var nullable = Releash_Client_V1_NullableWorkspaceStateDto()
             if let layout = state.layouts[subscription.args[0]] { nullable.value = layout }
             payload.workspaceState = nullable
+          } else if subscription.target == "issues" {
+            payload.issues = state.issues[subscription.args] ?? .init()
           }
           return (payload, state.streams.last)
         }
@@ -138,6 +143,22 @@ final class TestHTTPClient: HTTPClientInterface {
   }
   func requests(_ method: String) -> [HTTPRequest<Data?>] {
     state.withLock { $0.requests.filter { $0.url.lastPathComponent == method } }
+  }
+}
+
+@MainActor final class TestWindow<Content: View> {
+  let window: NSWindow
+  let view: NSHostingView<Content>
+
+  init(_ content: Content, size: NSSize = NSSize(width: 1200, height: 900)) {
+    view = NSHostingView(rootView: content)
+    window = NSWindow(
+      contentRect: NSRect(origin: .zero, size: size),
+      styleMask: [.titled, .resizable], backing: .buffered, defer: false)
+    window.isReleasedWhenClosed = false
+    window.contentView = view
+    window.makeKeyAndOrderFront(nil)
+    view.layoutSubtreeIfNeeded()
   }
 }
 

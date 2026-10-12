@@ -2,6 +2,7 @@ import SwiftUI
 
 struct CreateWorktreeView: View {
   @Bindable var model: AppModel
+  var didAppear: ((Self) -> Void)?
   @State private var form = CreateWorktreeForm()
   @Environment(\.dismiss) private var dismiss
   @State private var source = "branch"
@@ -102,6 +103,7 @@ struct CreateWorktreeView: View {
       }.padding(UIStyle.padding)
     }
     .frame(width: UIStyle.createDialogWidth, height: UIStyle.createDialogHeight)
+    .onAppear { didAppear?(self) }
     .onChange(of: form.repository) { _, _ in
       unsubscribe()
       load()

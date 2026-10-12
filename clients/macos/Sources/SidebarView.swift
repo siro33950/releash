@@ -3,6 +3,7 @@ import SwiftUI
 struct SidebarView: View {
   @Bindable var model: AppModel
   @Binding var creating: Bool
+  var cardDidAppear: ((WorktreeCard) -> Void)?
   func repositoryFailure(_ repository: Releash_Client_V1_WorkspaceRepositoryList) -> String? {
     repository.status.hasError ? repository.status.error : nil
   }
@@ -42,7 +43,7 @@ struct SidebarView: View {
               Button {
                 model.selectWorktree(branch.worktreePath)
               } label: {
-                WorktreeCard(model: model, repository: repository, branch: branch)
+                WorktreeCard(model: model, repository: repository, branch: branch, didAppear: cardDidAppear)
                   .frame(maxWidth: .infinity, alignment: .leading)
                   .padding(.horizontal, UIStyle.rowSpacing)
                   .background(
@@ -76,6 +77,7 @@ struct WorktreeCard: View {
   @Bindable var model: AppModel
   let repository: Releash_Client_V1_WorkspaceRepositoryList
   let branch: Releash_Client_V1_WorkspaceBranch
+  var didAppear: ((Self) -> Void)?
   @State private var deleting = false
   var worktree: Releash_Client_V1_WorkspaceWorktreeList? {
     repository.worktrees.items.first { $0.path == branch.worktreePath }
@@ -85,7 +87,7 @@ struct WorktreeCard: View {
   }
   var removalButtonTitle: String { branch.removalRequiresForce ? "強制削除" : "削除" }
   var canRemove: Bool {
-    !branch.isMainWorktree && !branch.isDeleting && branch.hasRemovalRequiresForce
+    !branch.isMainWorktree && !branch.isDeleting
   }
   var body: some View {
     VStack(alignment: .leading, spacing: UIStyle.rowSpacing) {
@@ -179,6 +181,7 @@ struct WorktreeCard: View {
     ) {
       Button(removalButtonTitle, role: .destructive) { remove() }
     }
+    .onAppear { didAppear?(self) }
   }
 
   private func prIcon(_ value: String) -> String {

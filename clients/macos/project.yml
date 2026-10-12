@@ -4,6 +4,9 @@ options:
   deploymentTarget:
     macOS: '15.0'
 packages:
+  ViewInspector:
+    url: https://github.com/nalexn/ViewInspector
+    revision: 2dacb6e514be19379c605a5a11564d0f3fea89d9
   Bonsplit:
     url: https://github.com/siro33950/bonsplit
     revision: 088c284ecdd51721da83e2ae121a97d25881cc38
@@ -58,6 +61,7 @@ targets:
     sources: Tests
     dependencies:
       - target: Releash
+      - package: ViewInspector
 schemes:
   Releash:
     build:

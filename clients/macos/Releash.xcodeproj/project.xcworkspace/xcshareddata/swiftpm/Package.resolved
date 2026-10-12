@@ -1,4 +1,5 @@
 {
+  "originHash" : "511e4a43a71c551da53f6c0696ff7e20e68e6a592cbc72adb2b9edec529b3fc2",
   "pins" : [
     {
       "identity" : "bonsplit",
@@ -79,7 +80,15 @@
         "revision" : "025bcb1165deab2e20d4eaba79967ce73013f496",
         "version" : "1.2.1"
       }
+    },
+    {
+      "identity" : "viewinspector",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/nalexn/ViewInspector",
+      "state" : {
+        "revision" : "2dacb6e514be19379c605a5a11564d0f3fea89d9"
+      }
     }
   ],
-  "version" : 2
+  "version" : 3
 }
