@@ -1,0 +1,9 @@
+[tools]
+node = "24.21.0"
+pnpm = "10.34.6"
+buf = "1.47.2"
+ast-grep = "0.40.0"
+"aqua:EmbarkStudios/cargo-deny" = "0.20.2"
+"github:qltysh/qlty" = "0.653.0"
+"aqua:taiki-e/cargo-llvm-cov" = "0.9.1"
+1password-cli = "2.38.1"

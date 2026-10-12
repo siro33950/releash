@@ -1,8 +1,11 @@
 import json
+import importlib.util
 from pathlib import Path
 import re
 import subprocess
+import tempfile
 import unittest
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -12,22 +15,33 @@ APP_LOCK = f"{PROJECT}/project.xcworkspace/xcshareddata/swiftpm/Package.resolved
 
 
 class MacOSBuildTest(unittest.TestCase):
-    def test_helper_profiles_expand_with_system_bash(self):
-        script = (MACOS / "Scripts/bundle-helpers.sh").read_text()
-        setup = script[script.index("profile=debug") : script.index("for arch in")]
-        for configuration, expected in [
-            ("Debug", "debug\n--profile\ndev\n"),
-            ("Release", "release\n--profile\nrelease\n"),
+    def test_helpers_build_requested_architectures_and_profile(self):
+        spec = importlib.util.spec_from_file_location("helpers", ROOT / ".github/scripts/macos-helpers.py")
+        helpers = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(helpers)
+        for configuration, profile, cargo_profile, architectures in [
+            ("Debug", "debug", "dev", ["arm64"]),
+            ("Release", "release", "release", ["arm64", "x86_64"]),
         ]:
-            with self.subTest(configuration=configuration):
-                result = subprocess.run(
-                    ["/bin/bash", "-uc", setup + '\nprintf "%s\\n" "$profile" "${cargo_flags[@]}"'],
-                    env={"CONFIGURATION": configuration},
-                    capture_output=True,
-                    text=True,
-                )
-                self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertEqual(result.stdout, expected)
+            with self.subTest(configuration=configuration), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                target_dir = root / "custom target"
+                with patch.object(helpers, "ROOT", root), patch.object(
+                    helpers.subprocess, "check_output", return_value=json.dumps({"target_directory": str(target_dir)})
+                ), patch.object(helpers.subprocess, "run") as run:
+                    helpers.build_helpers(configuration, architectures)
+                calls = [call.args[0] for call in run.call_args_list]
+                targets = [helpers.TARGETS[arch] for arch in architectures]
+                self.assertEqual(len(calls), len(targets) + 2)
+                for call, target in zip(calls, targets):
+                    self.assertEqual(call, ["cargo", "build", "--locked", "--profile", cargo_profile,
+                                           "--target", target, "-p", "releashd", "--bin", "releashd",
+                                           "-p", "releash", "--bin", "releash"])
+                for call, helper in zip(calls[len(targets):], ["releashd", "releash"]):
+                    self.assertEqual(call, ["lipo", "-create", *[
+                        str(target_dir / target / profile / helper) for target in targets
+                    ], "-output", str(root / "clients/macos/.build/Helpers" / configuration / helper)])
+                self.assertTrue(all(call.kwargs["check"] for call in run.call_args_list))
 
     def test_only_app_lockfile_is_not_ignored(self):
         for path, ignored in [
@@ -49,13 +63,25 @@ class MacOSBuildTest(unittest.TestCase):
 
     def test_protocol_generation_precedes_source_validation(self):
         project = (MACOS / "project.yml").read_text()
-        self.assertRegex(project, r"options:\n  preGenCommand: ./Scripts/generate.sh")
-        ci = (ROOT / ".github/workflows/ci.yml").read_text()
-        self.assertIn("swift run --package-path BuildTools xcodegen generate", ci)
+        targets = json.loads((MACOS / "project.json").read_text())["targets"]
+        for target in ["build", "test"]:
+            self.assertIn("generate", targets[target]["dependsOn"])
+            self.assertIn("helpers", targets[target]["dependsOn"])
+            commands = targets[target]["options"]["commands"]
+            self.assertFalse(targets[target]["options"]["forwardAllArgs"])
+            self.assertLess(commands.index("swift run --package-path BuildTools xcodegen generate"),
+                            next(i for i, command in enumerate(commands) if command.startswith("xcodebuild ")))
         self.assertIn("- path: Generated", project)
         self.assertIn("path: Generated/client-descriptor.bin\n        buildPhase: resources", project)
         self.assertIn("sources: Tests", project)
         self.assertIn("- target: Releash", project)
+
+    def test_helpers_are_copied_and_signed_by_xcode(self):
+        project = (MACOS / "project.yml").read_text()
+        for helper in ["releashd", "releash"]:
+            self.assertIn(f"path: .build/Helpers/$(CONFIGURATION)/{helper}\n        optional: true", project)
+        self.assertEqual(project.count("subpath: Contents/Helpers"), 2)
+        self.assertEqual(project.count("attributes: [CodeSignOnCopy]"), 2)
 
     def test_tools_and_app_share_exact_dependency_versions(self):
         manifest = (MACOS / "BuildTools/Package.swift").read_text()

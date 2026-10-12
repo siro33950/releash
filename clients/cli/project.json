@@ -1,0 +1,91 @@
+{
+  "name": "cli",
+  "targets": {
+    "lint": {
+      "executor": "nx:run-commands",
+      "options": {
+        "commands": [
+          "cargo fmt --check -p releash",
+          "cargo clippy --locked -p releash -- -D warnings"
+        ],
+        "cwd": ".",
+        "parallel": false
+      }
+    },
+    "test": {
+      "executor": "nx:noop",
+      "dependsOn": [
+        "test-unit",
+        "test-integration"
+      ],
+      "cache": false,
+      "inputs": [
+        "default",
+        "rust",
+        "{workspaceRoot}/server/**/*"
+      ]
+    },
+    "build": {
+      "executor": "nx:run-commands",
+      "options": {
+        "commands": [
+          "cargo build --locked -p releash --bin releash"
+        ],
+        "cwd": ".",
+        "parallel": false
+      },
+      "outputs": [
+        "{workspaceRoot}/target/debug/releash"
+      ]
+    },
+    "test-unit": {
+      "executor": "nx:run-commands",
+      "options": {
+        "commands": [
+          "cargo test --locked --lib --bins -p releash",
+          "cargo test --locked --doc -p releash"
+        ],
+        "cwd": ".",
+        "parallel": false
+      },
+      "inputs": [
+        "default",
+        "rust",
+        "{workspaceRoot}/server/**/*"
+      ],
+      "cache": false
+    },
+    "test-integration": {
+      "executor": "nx:run-commands",
+      "options": {
+        "commands": [
+          "cargo test --locked --test '*' -p releash"
+        ],
+        "cwd": ".",
+        "parallel": false
+      },
+      "dependsOn": [
+        {
+          "target": "build",
+          "projects": [
+            "server"
+          ],
+          "params": "ignore"
+        },
+        {
+          "target": "build",
+          "projects": [
+            "cli"
+          ],
+          "params": "ignore"
+        }
+      ],
+      "inputs": [
+        "default",
+        "rust",
+        "{workspaceRoot}/server/**/*"
+      ],
+      "cache": false
+    }
+  }
+}

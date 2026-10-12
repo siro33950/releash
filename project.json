@@ -1,0 +1,58 @@
+{
+  "name": "workspace",
+  "targets": {
+    "lint": {
+      "executor": "nx:run-commands",
+      "options": {
+        "commands": [
+          "node --test .github/scripts/*.test.mjs",
+          "buf lint",
+          "if [ \"${BUF_SKIP_BREAKING:-false}\" != true ]; then buf breaking --against \".git#branch=main,subdir=proto\"; fi",
+          "node .github/scripts/test-placement.mjs",
+          "ast-grep test",
+          "ast-grep scan",
+          "qlty check --no-progress --all",
+          "cargo deny --locked check"
+        ],
+        "cwd": ".",
+        "parallel": false
+      },
+      "inputs": [
+        "{workspaceRoot}/**/*",
+        "sharedGlobals",
+        {
+          "env": "BUF_SKIP_BREAKING"
+        }
+      ]
+    },
+    "coverage": {
+      "executor": "nx:run-commands",
+      "options": {
+        "commands": [
+          "pnpm --dir clients/desktop exec vitest run --coverage",
+          "python3 .github/scripts/coverage.test.py",
+          "cargo llvm-cov clean --workspace",
+          "cargo llvm-cov --no-report --locked",
+          "cargo llvm-cov --no-report --locked -p releash-desktop",
+          "cargo llvm-cov report --workspace --codecov --output-path rust-codecov.json"
+        ],
+        "cwd": ".",
+        "parallel": false,
+        "env": {
+          "RUSTFLAGS": "-C llvm-args=-runtime-counter-relocation",
+          "LLVM_PROFILE_FILE_NAME": "releash-%m%c.profraw",
+          "RUST_TEST_THREADS": "2"
+        }
+      },
+      "inputs": [
+        "{workspaceRoot}/**/*",
+        "sharedGlobals"
+      ],
+      "outputs": [
+        "{workspaceRoot}/clients/desktop/coverage",
+        "{workspaceRoot}/rust-codecov.json"
+      ],
+      "cache": false
+    }
+  }
+}

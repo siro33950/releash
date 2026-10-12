@@ -46,22 +46,26 @@ jobs:
       - uses: actions/checkout@v7
         with:
           ref: ${{ needs.resolve.outputs.sha }}
+          fetch-depth: 0
+      - uses: jdx/mise-action@v3
       # GITHUB_TOKEN は workflow ファイルがブランチ先端と異なる commit へタグを作れないため、workflows 権限を持つ token を使う
       - id: secrets
-        uses: 1password/load-secrets-action@70062d7a876d3eb6334754fa26efd2fbd90c32f2 # v5
+        run: node .github/scripts/load-secrets.mjs
         env:
           OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
           STABLE_RELEASE_TOKEN: op://releash/releash-stable-release/token
+      - uses: actions/checkout@v7
         with:
-          version: "2.38.1"
-          export-env: false
-      - id: create
+          ref: ${{ needs.resolve.outputs.sha }}
+          fetch-depth: 0
+          token: ${{ env.STABLE_RELEASE_TOKEN }}
+      - id: version
         uses: actions/github-script@v9
         env:
           RELEASE_SHA: ${{ needs.resolve.outputs.sha }}
           NIGHTLY_TAG: ${{ inputs.nightly }}
         with:
-          github-token: ${{ steps.secrets.outputs.STABLE_RELEASE_TOKEN }}
+          github-token: ${{ env.STABLE_RELEASE_TOKEN }}
           script: |
             const { version } = require('./clients/desktop/package.json');
             if (!/^\d+\.\d+\.\d+$/.test(version)) throw new Error('Expected an X.Y.Z version');
@@ -79,18 +83,37 @@ jobs:
             });
             const existing = releases.find(release => release.tag_name === tag);
             if (existing && (!commit || !existing.draft || existing.prerelease)) throw new Error('Expected an unpublished stable release at the selected commit');
-            if (!commit) {
-              await github.rest.git.createRef({
-                ...context.repo, ref: `refs/tags/${tag}`, sha: process.env.RELEASE_SHA,
-              });
-            }
-            if (existing) {
-              core.setOutput('release-id', existing.id);
+            core.setOutput('version', version);
+            core.setOutput('tag', tag);
+            core.setOutput('tag-exists', Boolean(commit));
+            core.setOutput('release-id', existing?.id || '');
+      - name: Create tag and release notes with Nx
+        env:
+          RELEASE_VERSION: ${{ steps.version.outputs.version }}
+          RELEASE_TAG: ${{ steps.version.outputs.tag }}
+          TAG_EXISTS: ${{ steps.version.outputs.tag-exists }}
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          ./nx release changelog "$RELEASE_VERSION" --replace-existing-contents --git-tag="$([ "$TAG_EXISTS" = true ] && echo false || echo true)" --git-push --git-push-args="refs/tags/$RELEASE_TAG"
+      - id: create
+        uses: actions/github-script@v9
+        env:
+          RELEASE_TAG: ${{ steps.version.outputs.tag }}
+          RELEASE_ID: ${{ steps.version.outputs.release-id }}
+          RELEASE_SHA: ${{ needs.resolve.outputs.sha }}
+        with:
+          github-token: ${{ env.STABLE_RELEASE_TOKEN }}
+          script: |
+            if (process.env.RELEASE_ID) {
+              core.setOutput('release-id', process.env.RELEASE_ID);
               return;
             }
+            const { readFileSync } = require('node:fs');
             const { data } = await github.rest.repos.createRelease({
-              ...context.repo, tag_name: tag, target_commitish: process.env.RELEASE_SHA,
-              name: tag, draft: true, prerelease: false, make_latest: 'false', generate_release_notes: true,
+              ...context.repo, tag_name: process.env.RELEASE_TAG, target_commitish: process.env.RELEASE_SHA,
+              name: process.env.RELEASE_TAG, body: readFileSync('.nx/release-notes.md', 'utf8'),
+              draft: true, prerelease: false, make_latest: 'false',
             });
             core.setOutput('release-id', data.id);
 
@@ -105,15 +128,7 @@ jobs:
         with:
           ref: ${{ needs.create-release.outputs.sha }}
 
-      - uses: pnpm/action-setup@v6
-        with:
-          version: 10
-
-      - uses: actions/setup-node@v7
-        with:
-          node-version: 24
-          cache: pnpm
-          cache-dependency-path: clients/desktop/pnpm-lock.yaml
+      - uses: jdx/mise-action@v3
 
       - working-directory: clients/desktop
         run: pnpm install --frozen-lockfile
@@ -129,7 +144,7 @@ jobs:
           shared-key: macos-universal
           save-if: false
 
-      - uses: 1password/load-secrets-action@70062d7a876d3eb6334754fa26efd2fbd90c32f2 # v5
+      - run: node .github/scripts/load-secrets.mjs
         env:
           OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
           APPLE_CERTIFICATE: op://releash/apple-signing/certificate
@@ -142,9 +157,6 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: op://releash/tauri-updater/password
           OTLP_ENDPOINT: op://releash/new-relic/otlp-endpoint
           NEW_RELIC_LICENSE_KEY: op://releash/new-relic/license-key
-        with:
-          version: "2.38.1"
-          export-env: true
 
       - uses: tauri-apps/tauri-action@v1
         env:
@@ -155,7 +167,7 @@ jobs:
           uploadUpdaterJson: true
           releaseId: ${{ needs.create-release.outputs.release-id }}
           projectPath: clients/desktop
-          tauriScript: pnpm tauri
+          tauriScript: ../../nx run desktop:tauri --
           args: --target universal-apple-darwin --config tauri.conf.bundle.json -- --features vendored-openssl
 
   publish:
@@ -193,19 +205,17 @@ jobs:
         with:
           ref: main
 
-      - name: Calculate next patch version
+      - uses: jdx/mise-action@v3
+      - name: Bump version with Nx
+        env:
+          BUMP: patch
         run: |
-          CURRENT=$(jq -r '.version' clients/desktop/tauri.conf.json)
-          [[ "$CURRENT" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
-          IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT"
-          echo "VERSION=${MAJOR}.${MINOR}.$((PATCH + 1))" >> "$GITHUB_ENV"
-
-      - name: Bump version in files
-        run: |
-          jq --tab --arg v "$VERSION" '.version = $v' clients/desktop/package.json > tmp.json && mv tmp.json clients/desktop/package.json
+          ./nx release version "$BUMP"
+          VERSION=$(node -p "require('./clients/desktop/package.json').version")
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
           jq --arg v "$VERSION" '.version = $v' clients/desktop/tauri.conf.json > tmp.json && mv tmp.json clients/desktop/tauri.conf.json
           sed -i "s/^version = \".*\"/version = \"$VERSION\"/" Cargo.toml
-          sed -i -E '/^name = "(releashd|releash|releash-desktop)"$/{n;s/^version = ".*"/version = "'"$VERSION"'"/}' Cargo.lock
+          sed -i -E '/^name = "(releashd|releash|releash-desktop)"$/{n;s/^version = ".*"/version = "'"$VERSION"'"/;}' Cargo.lock
 
       - name: Create PR
         uses: peter-evans/create-pull-request@v8

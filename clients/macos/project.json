@@ -1,0 +1,133 @@
+{
+  "name": "macos",
+  "implicitDependencies": [
+    "server",
+    "cli"
+  ],
+  "targets": {
+    "generate": {
+      "executor": "nx:run-commands",
+      "options": {
+        "commands": [
+          "swift build --package-path clients/macos/BuildTools --product protoc-gen-swift",
+          "swift build --package-path clients/macos/BuildTools --product protoc-gen-connect-swift",
+          "buf generate --template clients/macos/buf.gen.yaml",
+          "buf build -o clients/macos/Generated/client-descriptor.bin --as-file-descriptor-set"
+        ],
+        "cwd": ".",
+        "parallel": false
+      },
+      "inputs": [
+        "default",
+        "{workspaceRoot}/proto/**/*",
+        "sharedGlobals"
+      ],
+      "outputs": [
+        "{projectRoot}/Generated"
+      ],
+      "cache": false
+    },
+    "helpers": {
+      "executor": "nx:run-commands",
+      "options": {
+        "commands": [
+          "python3 .github/scripts/macos-helpers.py {args.configuration}"
+        ],
+        "cwd": ".",
+        "parallel": false
+      },
+      "inputs": [
+        "default",
+        "^default",
+        "rust",
+        "{workspaceRoot}/.github/scripts/macos-helpers.py"
+      ],
+      "outputs": [
+        "{projectRoot}/.build/Helpers"
+      ],
+      "cache": false,
+      "defaultConfiguration": "debug",
+      "configurations": {
+        "debug": {
+          "configuration": "Debug"
+        },
+        "release": {
+          "configuration": "Release"
+        }
+      }
+    },
+    "build": {
+      "executor": "nx:run-commands",
+      "options": {
+        "commands": [
+          "swift run --package-path BuildTools xcodegen generate",
+          "xcodebuild -resolvePackageDependencies -project Releash.xcodeproj -scheme Releash -clonedSourcePackagesDirPath .build/SourcePackages -onlyUsePackageVersionsFromResolvedFile",
+          "xcodebuild -project Releash.xcodeproj -scheme Releash -configuration {args.configuration} -destination platform=macOS -derivedDataPath .build/DerivedData -clonedSourcePackagesDirPath .build/SourcePackages -disableAutomaticPackageResolution CODE_SIGNING_ALLOWED=NO build"
+        ],
+        "cwd": "clients/macos",
+        "parallel": false,
+        "forwardAllArgs": false
+      },
+      "dependsOn": [
+        "generate",
+        "helpers"
+      ],
+      "outputs": [
+        "{projectRoot}/.build/DerivedData"
+      ],
+      "defaultConfiguration": "debug",
+      "configurations": {
+        "debug": {
+          "configuration": "Debug"
+        },
+        "release": {
+          "configuration": "Release"
+        }
+      }
+    },
+    "test": {
+      "executor": "nx:run-commands",
+      "options": {
+        "commands": [
+          "python3 ../../.github/scripts/macos-build.test.py",
+          "swift run --package-path BuildTools xcodegen generate",
+          "xcodebuild -resolvePackageDependencies -project Releash.xcodeproj -scheme Releash -clonedSourcePackagesDirPath .build/SourcePackages -onlyUsePackageVersionsFromResolvedFile",
+          "xcodebuild -project Releash.xcodeproj -scheme Releash -configuration {args.configuration} -destination platform=macOS -derivedDataPath .build/DerivedData -clonedSourcePackagesDirPath .build/SourcePackages -disableAutomaticPackageResolution CODE_SIGNING_ALLOWED=NO test"
+        ],
+        "cwd": "clients/macos",
+        "parallel": false,
+        "forwardAllArgs": false
+      },
+      "dependsOn": [
+        "generate",
+        "helpers"
+      ],
+      "outputs": [
+        "{projectRoot}/.build/DerivedData"
+      ],
+      "defaultConfiguration": "debug",
+      "configurations": {
+        "debug": {
+          "configuration": "Debug"
+        },
+        "release": {
+          "configuration": "Release"
+        }
+      }
+    },
+    "dev": {
+      "executor": "nx:run-commands",
+      "options": {
+        "commands": [
+          "env -u RELEASH_DATA_DIR open clients/macos/.build/DerivedData/Build/Products/Debug/Releash.app"
+        ],
+        "cwd": ".",
+        "parallel": false
+      },
+      "dependsOn": [
+        "build"
+      ],
+      "cache": false
+    }
+  }
+}

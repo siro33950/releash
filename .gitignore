@@ -88,3 +88,12 @@ clients/macos/.build/
 clients/macos/BuildTools/.build/
 
 clients/macos/Generated/
+
+.nx/installation
+.nx/cache
+.nx/workspace-data
+.nx/self-healing
+.nx/migrate-runs
+.nx/polygraph
+.nx/release-notes.md
+**/__pycache__/

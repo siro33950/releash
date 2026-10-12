@@ -1,0 +1,94 @@
+name: CI checks
+
+on:
+  workflow_call:
+    inputs:
+      affected:
+        required: true
+        type: boolean
+      ref:
+        required: true
+        type: string
+      group:
+        required: true
+        type: string
+      project:
+        required: true
+        type: string
+      targets:
+        required: true
+        type: string
+      skip-breaking:
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+env:
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  NX_DAEMON: "false"
+
+jobs:
+  check:
+    name: ${{ matrix.target }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        target: ${{ fromJSON(inputs.targets) }}
+    steps:
+      - uses: actions/checkout@v7
+        if: inputs.affected
+        with:
+          ref: ${{ inputs.ref }}
+          fetch-depth: 0
+      - uses: jdx/mise-action@v3
+        if: inputs.affected
+      - name: Prepare protocol comparison baseline
+        if: ${{ inputs.affected && (inputs.group == 'quality') }}
+        run: git branch --force main origin/main
+      - name: Install Rust toolchain
+        if: ${{ inputs.affected && (inputs.group != 'frontend') }}
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+        if: ${{ inputs.affected && (contains(fromJSON('["server", "shell", "cli"]'), inputs.group)) }}
+        with:
+          shared-key: pr-${{ inputs.group }}
+          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && contains(matrix.target, 'test-unit') }}
+      - name: Install Tauri dependencies
+        if: ${{ inputs.affected && (inputs.group == 'shell') }}
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libgtk-3-dev libsoup-3.0-dev libjavascriptcoregtk-4.1-dev
+      - name: Locate pnpm store
+        if: ${{ inputs.affected && (inputs.group == 'frontend' || (contains(fromJSON('["server", "shell"]'), inputs.group) && contains(matrix.target, 'test-integration'))) }}
+        id: pnpm
+        run: echo "store=$(pnpm --dir clients/desktop store path)" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@v6
+        if: ${{ inputs.affected && (steps.pnpm.outcome == 'success') }}
+        with:
+          path: ${{ steps.pnpm.outputs.store }}
+          key: pnpm-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('mise.toml', 'clients/desktop/pnpm-lock.yaml') }}
+      - name: Install frontend dependencies
+        if: ${{ inputs.affected && (steps.pnpm.outcome == 'success') }}
+        run: pnpm --dir clients/desktop install --frozen-lockfile
+      - name: Install browser
+        if: ${{ inputs.affected && (matrix.target == 'frontend-test-integration') }}
+        run: pnpm --dir clients/desktop exec playwright install --with-deps chromium
+      - name: Run check
+        if: inputs.affected
+        env:
+          NX_PROJECT: ${{ inputs.project }}
+          NX_TARGET: ${{ matrix.target }}
+          BUF_SKIP_BREAKING: ${{ inputs.skip-breaking }}
+        run: ./nx run "$NX_PROJECT:$NX_TARGET" --parallel=1 --outputStyle=static
+      - uses: actions/upload-artifact@v7
+        if: ${{ inputs.affected && (always() && matrix.target == 'frontend-test-integration') }}
+        with:
+          name: playwright-report
+          path: |
+            clients/desktop/playwright-report/
+            clients/desktop/test-results/
+          retention-days: 7

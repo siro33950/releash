@@ -1,0 +1,88 @@
+{
+  "name": "server",
+  "targets": {
+    "lint": {
+      "executor": "nx:run-commands",
+      "options": {
+        "commands": [
+          "cargo fmt --check -p releashd",
+          "cargo clippy --locked -p releashd -- -D warnings",
+          "cargo clippy --locked -p releashd --features test-support -- -D warnings"
+        ],
+        "cwd": ".",
+        "parallel": false
+      }
+    },
+    "test": {
+      "executor": "nx:noop",
+      "dependsOn": [
+        "test-unit",
+        "test-integration"
+      ],
+      "cache": false,
+      "inputs": [
+        "default",
+        "rust",
+        "{workspaceRoot}/clients/desktop/**/*",
+        "{workspaceRoot}/clients/cli/**/*"
+      ]
+    },
+    "build": {
+      "executor": "nx:run-commands",
+      "options": {
+        "commands": [
+          "cargo build --locked -p releashd --bin releashd"
+        ],
+        "cwd": ".",
+        "parallel": false
+      },
+      "outputs": [
+        "{workspaceRoot}/target/debug/releashd"
+      ]
+    },
+    "test-unit": {
+      "executor": "nx:run-commands",
+      "options": {
+        "commands": [
+          "cargo test --locked --lib --bins -p releashd",
+          "cargo test --locked --doc -p releashd"
+        ],
+        "cwd": ".",
+        "parallel": false
+      },
+      "inputs": [
+        "default",
+        "rust",
+        "{workspaceRoot}/clients/desktop/**/*",
+        "{workspaceRoot}/clients/cli/**/*"
+      ],
+      "cache": false
+    },
+    "test-integration": {
+      "executor": "nx:run-commands",
+      "options": {
+        "commands": [
+          "cargo test --locked --test '*' -p releashd"
+        ],
+        "cwd": ".",
+        "parallel": false
+      },
+      "dependsOn": [
+        {
+          "target": "build",
+          "projects": [
+            "cli"
+          ],
+          "params": "ignore"
+        }
+      ],
+      "inputs": [
+        "default",
+        "rust",
+        "{workspaceRoot}/clients/desktop/**/*",
+        "{workspaceRoot}/clients/cli/**/*"
+      ],
+      "cache": false
+    }
+  }
+}

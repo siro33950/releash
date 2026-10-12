@@ -1,0 +1,116 @@
+{
+  "installation": {
+    "version": "23.3.0",
+    "plugins": {
+      "@nx/js": "23.3.0"
+    }
+  },
+  "$schema": "./.nx/installation/node_modules/nx/schemas/nx-schema.json",
+  "targetDefaults": {
+    "lint": {
+      "inputs": [
+        "default",
+        "^default",
+        "rust"
+      ],
+      "cache": false
+    },
+    "test": {
+      "inputs": [
+        "default",
+        "^default",
+        "rust"
+      ],
+      "cache": false
+    },
+    "build": {
+      "inputs": [
+        "default",
+        "^default",
+        "rust"
+      ],
+      "cache": false
+    }
+  },
+  "neverConnectToCloud": true,
+  "defaultBase": "main",
+  "namedInputs": {
+    "sharedGlobals": [
+      "{workspaceRoot}/mise.toml",
+      "{workspaceRoot}/nx.json",
+      "{workspaceRoot}/.nx/nxw.js",
+      "{workspaceRoot}/.github/workflows/**/*",
+      {
+        "runtime": "node -p \"process.platform + process.arch\""
+      }
+    ],
+    "default": [
+      "{projectRoot}/**/*",
+      "sharedGlobals"
+    ],
+    "rust": [
+      "{workspaceRoot}/Cargo.toml",
+      "{workspaceRoot}/Cargo.lock",
+      "{workspaceRoot}/rust-toolchain.toml",
+      "{workspaceRoot}/.cargo/**/*",
+      "{workspaceRoot}/proto/**/*",
+      "{workspaceRoot}/workflows/**/*",
+      {
+        "env": "CARGO_PROFILE_DEV_DEBUG"
+      },
+      {
+        "env": "RUSTFLAGS"
+      },
+      {
+        "env": "CARGO_TARGET_DIR"
+      }
+    ],
+    "frontend": [
+      "{workspaceRoot}/clients/desktop/**/*",
+      "!{workspaceRoot}/clients/desktop/src-native/**/*",
+      "sharedGlobals",
+      {
+        "env": "CI"
+      },
+      {
+        "runtime": "node --version"
+      },
+      {
+        "runtime": "pnpm --version"
+      }
+    ]
+  },
+  "release": {
+    "projects": [
+      "desktop"
+    ],
+    "projectsRelationship": "fixed",
+    "version": {
+      "currentVersionResolver": "disk",
+      "updateDependents": "never",
+      "versionActionsOptions": {
+        "skipLockFileUpdate": true
+      },
+      "git": {
+        "commit": false,
+        "tag": false,
+        "stageChanges": false
+      }
+    },
+    "changelog": {
+      "workspaceChangelog": {
+        "createRelease": false,
+        "file": ".nx/release-notes.md"
+      },
+      "projectChangelogs": false,
+      "git": {
+        "commit": false,
+        "tag": false,
+        "stageChanges": false
+      }
+    },
+    "releaseTag": {
+      "pattern": "v{version}"
+    }
+  }
+}
