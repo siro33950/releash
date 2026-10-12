@@ -114,7 +114,8 @@ Nx Cloud は使わない。
 ```
 
 PR と main push の CI は `nx show projects --affected` で変更の影響を受けるプロジェクトを判定し、検証の種類ごとに別の job から Nx を呼ぶ。
-フロント、server、シェル、CLI、品質検査の必須チェックは、それぞれの検証結果を集約する。
+必須チェックは `plan`、各 `*-checks / <target>`、`macos-checks` を直接指定する。
+対象外の Linux 検証も同じチェック名を作り、実行ステップを省略する。変更判定の失敗は必須の `plan` で止める。
 macos は macOS runner、それ以外は Linux runner で実行する。
 nightly のリリース前検証では全プロジェクトを対象にする。
 

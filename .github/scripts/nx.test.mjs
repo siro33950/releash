@@ -85,7 +85,7 @@ test("CI lanes cover the aggregate checks without sharing a runner or building m
   for (const group of ["frontend", "server", "shell", "cli", "quality"]) {
     const lane = jobs[`${group}-checks`];
     for (const target of JSON.parse(lane.with.targets)) selected.add(`${lane.with.project}:${target}`);
-    assert.deepEqual(jobs[group].needs, ["plan", `${group}-checks`]);
+    assert.equal(lane.needs, "plan");
   }
   const { tasks } = graph("proto/client.proto", "--exclude=macos");
   for (const [id, task] of Object.entries(tasks)) {
@@ -94,29 +94,42 @@ test("CI lanes cover the aggregate checks without sharing a runner or building m
         ["server:build", "cli:build"].includes(id)) continue;
     assert.ok(selected.has(id), `${id} missing from CI`);
   }
-  const native = jobs["macos-native"].steps.find(step => step.name === "Build and test native client");
+  const native = jobs["macos-checks"].steps.find(step => step.name === "Build and test native client");
   assert.match(native.run, /nx run macos:test/);
   assert.doesNotMatch(native.run, /macos:build/);
 });
 
-test("required checks reject failures, cancellations, and unexpected skips", () => {
+test("unaffected projects retain their check names without executing validation", () => {
   const { jobs } = parse(readFileSync(".github/workflows/ci.yml", "utf8"));
+  const checks = parse(readFileSync(".github/workflows/ci-checks.yml", "utf8"));
+  assert.equal(checks.on.workflow_call.inputs.affected.type, "boolean");
+  assert.equal(checks.on.workflow_call.inputs.affected.required, true);
+  assert.equal(checks.jobs.check.if, undefined);
+  assert.equal(checks.jobs.check.name, "${{ matrix.target }}");
   for (const group of ["frontend", "server", "shell", "cli", "quality"]) {
-    const script = jobs[group].steps[0].run;
-    for (const plan of ["success", "failure", "cancelled", "skipped"]) {
-      for (const result of ["success", "failure", "cancelled", "skipped"]) {
-        for (const expected of ["true", "false"]) {
-          const pass = plan === "success" && result === (expected === "true" ? "success" : "skipped");
-          let succeeded = true;
-          try {
-            execFileSync("bash", ["-e", "-c", script], {
-              env: { ...process.env, PLAN_RESULT: plan, CHECK_RESULT: result, EXPECTED: expected },
-              stdio: "pipe",
-            });
-          } catch { succeeded = false; }
-          assert.equal(succeeded, pass, `${group}: plan=${plan} check=${result} expected=${expected}`);
-        }
-      }
-    }
+    const lane = jobs[`${group}-checks`];
+    assert.equal(lane.if, undefined, "expand matrix checks even when unaffected");
+    assert.equal(lane.needs, "plan", "a failed plan must prevent validation");
+    assert.equal(lane.with.affected,
+      `\${{ contains(fromJSON(needs.plan.outputs.projects), '${lane.with.project}') }}`);
+  }
+  for (const step of checks.jobs.check.steps) {
+    assert.match(step.if, /^(?:\$\{\{ )?inputs\.affected(?:$| &&)/,
+      `${step.name || step.uses} must not execute for unaffected projects`);
+  }
+  assert.equal(jobs["macos-checks"].needs, "plan");
+});
+
+test("changes inside every project select the workspace quality checks", () => {
+  for (const file of ["server/src/lib.rs", "server/Cargo.toml", "clients/cli/src/lib.rs",
+    "clients/desktop/src/App.tsx", "clients/macos/project.yml"]) {
+    const projects = JSON.parse(execFileSync(process.execPath, [
+      ".nx/nxw.js", "show", "projects", "--affected", `--files=${file}`, "--json",
+    ], {
+      encoding: "utf8",
+      env: { ...process.env, NX_DAEMON: "false" },
+    }));
+    assert.ok(projects.includes("workspace"), `${file} must select the quality job`);
+    assert.ok(graph(file).tasks["workspace:lint"], `${file} must select the quality target`);
   }
 });

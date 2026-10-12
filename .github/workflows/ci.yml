@@ -36,7 +36,7 @@ jobs:
           ref: ${{ inputs.ref || github.sha }}
           fetch-depth: 0
       - uses: jdx/mise-action@v3
-      - uses: nrwl/nx-set-shas@v4
+      - uses: nrwl/nx-set-shas@v5
       - run: ./nx --version
       - id: affected
         env:
@@ -53,9 +53,9 @@ jobs:
 
   frontend-checks:
     needs: plan
-    if: contains(fromJSON(needs.plan.outputs.projects), 'desktop')
     uses: ./.github/workflows/ci-checks.yml
     with:
+      affected: ${{ contains(fromJSON(needs.plan.outputs.projects), 'desktop') }}
       ref: ${{ needs.plan.outputs.ref }}
       group: frontend
       project: desktop
@@ -63,9 +63,9 @@ jobs:
 
   server-checks:
     needs: plan
-    if: contains(fromJSON(needs.plan.outputs.projects), 'server')
     uses: ./.github/workflows/ci-checks.yml
     with:
+      affected: ${{ contains(fromJSON(needs.plan.outputs.projects), 'server') }}
       ref: ${{ needs.plan.outputs.ref }}
       group: server
       project: server
@@ -73,9 +73,9 @@ jobs:
 
   shell-checks:
     needs: plan
-    if: contains(fromJSON(needs.plan.outputs.projects), 'desktop')
     uses: ./.github/workflows/ci-checks.yml
     with:
+      affected: ${{ contains(fromJSON(needs.plan.outputs.projects), 'desktop') }}
       ref: ${{ needs.plan.outputs.ref }}
       group: shell
       project: desktop
@@ -83,9 +83,9 @@ jobs:
 
   cli-checks:
     needs: plan
-    if: contains(fromJSON(needs.plan.outputs.projects), 'cli')
     uses: ./.github/workflows/ci-checks.yml
     with:
+      affected: ${{ contains(fromJSON(needs.plan.outputs.projects), 'cli') }}
       ref: ${{ needs.plan.outputs.ref }}
       group: cli
       project: cli
@@ -93,16 +93,16 @@ jobs:
 
   quality-checks:
     needs: plan
-    if: contains(fromJSON(needs.plan.outputs.projects), 'workspace')
     uses: ./.github/workflows/ci-checks.yml
     with:
+      affected: ${{ contains(fromJSON(needs.plan.outputs.projects), 'workspace') }}
       ref: ${{ needs.plan.outputs.ref }}
       group: quality
       project: workspace
       targets: '["lint"]'
       skip-breaking: ${{ contains(github.event.pull_request.labels.*.name, 'buf skip breaking') }}
 
-  macos-native:
+  macos-checks:
     needs: plan
     if: contains(fromJSON(needs.plan.outputs.projects), 'macos')
     runs-on: xcode-27
@@ -132,98 +132,3 @@ jobs:
           key: macos-native-packages-${{ runner.os }}-${{ runner.arch }}-${{ steps.xcode.outputs.version }}-${{ hashFiles('clients/macos/Releash.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}
       - name: Build and test native client
         run: ./nx run macos:test --parallel=2 --outputStyle=static
-
-  frontend:
-    needs: [plan, frontend-checks]
-    if: always()
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - name: Verify frontend checks
-        env:
-          PLAN_RESULT: ${{ needs.plan.result }}
-          CHECK_RESULT: ${{ needs.frontend-checks.result }}
-          EXPECTED: ${{ contains(fromJSON(needs.plan.outputs.projects || '[]'), 'desktop') }}
-        run: |
-          test "$PLAN_RESULT" = success
-          if [ "$EXPECTED" = true ]; then
-            test "$CHECK_RESULT" = success
-          else
-            test "$CHECK_RESULT" = skipped
-          fi
-
-  server:
-    needs: [plan, server-checks]
-    if: always()
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - name: Verify server checks
-        env:
-          PLAN_RESULT: ${{ needs.plan.result }}
-          CHECK_RESULT: ${{ needs.server-checks.result }}
-          EXPECTED: ${{ contains(fromJSON(needs.plan.outputs.projects || '[]'), 'server') }}
-        run: |
-          test "$PLAN_RESULT" = success
-          if [ "$EXPECTED" = true ]; then
-            test "$CHECK_RESULT" = success
-          else
-            test "$CHECK_RESULT" = skipped
-          fi
-
-  shell:
-    needs: [plan, shell-checks]
-    if: always()
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - name: Verify shell checks
-        env:
-          PLAN_RESULT: ${{ needs.plan.result }}
-          CHECK_RESULT: ${{ needs.shell-checks.result }}
-          EXPECTED: ${{ contains(fromJSON(needs.plan.outputs.projects || '[]'), 'desktop') }}
-        run: |
-          test "$PLAN_RESULT" = success
-          if [ "$EXPECTED" = true ]; then
-            test "$CHECK_RESULT" = success
-          else
-            test "$CHECK_RESULT" = skipped
-          fi
-
-  cli:
-    needs: [plan, cli-checks]
-    if: always()
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - name: Verify cli checks
-        env:
-          PLAN_RESULT: ${{ needs.plan.result }}
-          CHECK_RESULT: ${{ needs.cli-checks.result }}
-          EXPECTED: ${{ contains(fromJSON(needs.plan.outputs.projects || '[]'), 'cli') }}
-        run: |
-          test "$PLAN_RESULT" = success
-          if [ "$EXPECTED" = true ]; then
-            test "$CHECK_RESULT" = success
-          else
-            test "$CHECK_RESULT" = skipped
-          fi
-
-  quality:
-    needs: [plan, quality-checks]
-    if: always()
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - name: Verify quality checks
-        env:
-          PLAN_RESULT: ${{ needs.plan.result }}
-          CHECK_RESULT: ${{ needs.quality-checks.result }}
-          EXPECTED: ${{ contains(fromJSON(needs.plan.outputs.projects || '[]'), 'workspace') }}
-        run: |
-          test "$PLAN_RESULT" = success
-          if [ "$EXPECTED" = true ]; then
-            test "$CHECK_RESULT" = success
-          else
-            test "$CHECK_RESULT" = skipped
-          fi
