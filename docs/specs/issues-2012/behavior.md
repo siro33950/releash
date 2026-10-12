@@ -137,6 +137,13 @@ WHEN macOS の E2E と証跡の扱いを探す
 THEN `macos:e2e` と `macos:e2e-evidence` の呼び方が書かれている
 AND 証跡の決まりが、マイルストーン #78 の「テストと CI の方針」と同じ内容で書かれている
 
+## B-022: E2E のビルドを繰り返しても許可を求め直さない
+
+GIVEN E2E のためにビルドしたアプリに、macOS のアクセスの許可を一度与えている
+WHEN 開発者がソースを変えずに、もう一度 `./nx run macos:e2e` を実行して E2E のアプリをビルドし直す
+THEN macOS は、そのアプリに同じアクセスの許可を求め直さない
+AND ビルドしたアプリの designated requirement は、cdhash ではなく、bundle ID と署名の証明書に基づく
+
 ## 要件IDとBehavior IDの対応表
 | Requirement ID | Behavior ID |
 | --- | --- |
@@ -157,3 +164,4 @@ AND 証跡の決まりが、マイルストーン #78 の「テストと CI の�
 | R-015 | B-019 |
 | R-016 | B-020 |
 | R-017 | B-021 |
+| R-018 | B-022 |

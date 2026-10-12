@@ -14,6 +14,7 @@
 - nightly: `.github/workflows/nightly.yml` の `nx run-many -t e2e coverage` から macos の `e2e` を外す。根拠: R-015。ルート: 委任
 - TEST.md: 「種類」の表に振る舞い（macOS）を、「配置と実行」の表に単体（macOS）と振る舞い（macOS）を足す。根拠: R-016。ルート: 「固定するルート」4
 - AGENTS.md: 「ビルド・テスト・Lint」に `macos:e2e` と `macos:e2e-evidence` の呼び方と、証跡の決まりを足す。根拠: R-017。ルート: 委任
+- E2E のビルドの署名: E2E のビルドを ad-hoc 署名から、Apple Development の証明書による署名に変える。根拠: R-018「ビルドのたびに求め直さない」、B-022「designated requirement は、cdhash ではなく、bundle ID と署名の証明書に基づく」。ルート: 「固定するルート」5
 
 ## 固定するルート
 1. bundle ID
@@ -30,6 +31,10 @@
 4. TEST.md
    - 「種類」の表は、対象を分けているのが「振る舞い（desktop）」だけなので、「振る舞い（macOS）」だけを足す。
    - 「配置と実行」の表は、行を対象ごとに分けているので、「単体（macOS）」と「振る舞い（macOS）」を足す。
+5. E2E のビルドの署名
+   - ad-hoc 署名（`CODE_SIGN_IDENTITY=-`）をやめ、チーム `T6QN7PY57N` の Apple Development の証明書で署名する。
+   - `clients/macos/project.yml` は `CODE_SIGN_STYLE: Automatic` なので、`DEVELOPMENT_TEAM` に `T6QN7PY57N` を指定する。
+   - 理由: Apple の DTS が日々の開発に勧める方法である（https://developer.apple.com/forums/thread/776479 ）。証明書に基づく designated requirement は、ビルドし直しても変わらない。
 
 ## 変えないもの
 - Release の bundle ID は `com.releash.macos` のままにする。配布するアプリの ID を変えないため。

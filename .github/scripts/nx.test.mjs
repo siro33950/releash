@@ -53,7 +53,7 @@ test("protocol changes select all clients and build integration prerequisites", 
   }
   assert.ok(tasks["workspace:lint"]);
   assert.ok(Object.values(tasks).every(task => task.target.project !== "macos"));
-  assert.deepEqual(dependencies["server:test-integration"].sort(), ["cli:build", "server:test-fixture-build"]);
+  assert.deepEqual(dependencies["server:test-integration"].sort(), ["cli:build"]);
   assert.deepEqual(dependencies["cli:test-integration"].sort(), ["cli:build", "server:build"]);
   assert.deepEqual(dependencies["desktop:rust-test-integration"].sort(), ["cli:build", "server:build"]);
   for (const target of ["server:test-unit", "cli:test-unit", "desktop:rust-test-unit",
@@ -91,7 +91,7 @@ test("CI lanes cover the aggregate checks without sharing a runner or building m
   for (const [id, task] of Object.entries(tasks)) {
     const project = JSON.parse(readFileSync(`${task.projectRoot}/project.json`, "utf8"));
     if (project.targets[task.target.target].executor === "nx:noop" ||
-        ["server:build", "server:test-fixture-build", "cli:build"].includes(id)) continue;
+        ["server:build", "cli:build"].includes(id)) continue;
     assert.ok(selected.has(id), `${id} missing from CI`);
   }
   const native = jobs["macos-checks"].steps.find(step => step.name === "Build and test native client");

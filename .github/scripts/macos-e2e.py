@@ -12,7 +12,7 @@ import tarfile
 import tempfile
 
 ROOT = Path(__file__).resolve().parents[2]
-LOCK = Path('/tmp') / f'releash-macos-e2e-{os.getuid()}.lock'
+LOCK = Path(tempfile.gettempdir()) / f'releash-macos-e2e-{os.getuid()}.lock'
 
 
 def run(command, root, **kwargs):
@@ -164,7 +164,7 @@ def main(args):
             with tarfile.open(fileobj=io.BytesIO(archive)) as tar:
                 tar.extractall(root, filter='data')
             run(['./nx', 'run-many', '-t', 'generate', 'helpers', '-p', 'macos', '--parallel=2'], root)
-            run(['./nx', 'run', 'server:test-fixture-build'], root)
+            run(['./nx', 'run', 'macos:test-fixture-build'], root)
             result = Path(directory) / 'Tests.xcresult'
             status = execute(root, args.test, result, args.verify_production)
             report = json.loads(output(['xcrun', 'xcresulttool', 'get', 'test-results', 'tests',

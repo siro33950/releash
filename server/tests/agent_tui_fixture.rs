@@ -4,10 +4,7 @@
 )]
 
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
-#[path = "../src/bin/agent_tui_fixture/runtime.rs"]
-mod runtime;
-pub use runtime::*;
-use runtime::{FIXTURE_PLAN_ENV, LIFECYCLE_COMMAND_RESULT_PREFIX};
+pub use releashd::test_support::agent_tui_fixture::*;
 use std::io::{ErrorKind, Read, Write};
 use std::net::TcpListener;
 use std::thread;

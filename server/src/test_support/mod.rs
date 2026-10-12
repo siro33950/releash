@@ -1,3 +1,6 @@
+#[cfg(feature = "test-support")]
+pub mod agent_tui_fixture;
+
 use std::ffi::{OsStr, OsString};
 use std::path::Path;
 

@@ -6,32 +6,6 @@ final class WorkbenchTests: XCTestCase {
 
   @MainActor override func setUp() async throws {
     fixture = try Fixture()
-    if name.contains("testRepositoriesContainWorktreeCards") {
-      try fixture.process(fixture.cli, ["server", "start"])
-      let (client, headers) = try fixture.client()
-      var definition = Releash_Client_V1_SaveWorkflowSourceRequest()
-      definition.source = """
-        name: e2e-running
-        description: E2E fixture
-        nodes:
-          main:
-            session:
-              provider: claude
-              facets:
-                policy: coding
-        """
-      let saved = try await client.saveWorkflowSource(request: definition, headers: headers).result.get()
-      guard case .success = saved.variant else {
-        throw NSError(domain: "E2E", code: 3, userInfo: [NSLocalizedDescriptionKey: String(describing: saved.variant)])
-      }
-      _ = try await fixture.repository("first-repository", worktrees: ["feature-one"],
-        workflows: ["e2e-running"], threads: ["worktree card context"])
-      _ = try await fixture.repository("second-repository", worktrees: ["feature-two"])
-    } else if name.contains("testSplitAndMoveTab") {
-      _ = try await fixture.repository("pane-repository")
-    } else if name.contains("testCreateWorktreeAndStartSession") {
-      _ = try await fixture.repository("creation-repository")
-    }
     app = XCUIApplication()
     app.launchEnvironment = fixture.environment
   }
@@ -54,7 +28,25 @@ final class WorkbenchTests: XCTestCase {
     XCTAssertTrue(try fixture.running())
   }
 
-  @MainActor func testRepositoriesContainWorktreeCards() throws {
+  @MainActor func testRepositoriesContainWorktreeCards() async throws {
+    try await fixture.startServer()
+    let (client, headers) = try fixture.client()
+    var definition = Releash_Client_V1_SaveWorkflowSourceRequest()
+    definition.source = """
+      name: e2e-running
+      description: E2E fixture
+      nodes:
+        main:
+          command: sleep 3600
+      """
+    let saved = try await client.saveWorkflowSource(request: definition, headers: headers).result.get()
+    guard case .success = saved.variant else {
+      throw NSError(domain: "E2E", code: 3, userInfo: [NSLocalizedDescriptionKey: String(describing: saved.variant)])
+    }
+    _ = try await fixture.repository("first-repository", worktrees: ["feature-one"],
+      workflows: ["e2e-running"], threads: ["worktree card context"])
+    _ = try await fixture.repository("second-repository", worktrees: ["feature-two"])
+
     let first = fixture.directory.appendingPathComponent("first-repository")
     let second = fixture.directory.appendingPathComponent("second-repository")
     launch()
@@ -77,7 +69,9 @@ final class WorkbenchTests: XCTestCase {
     XCTAssertEqual(XCTWaiter.wait(for: [execution], timeout: 30), .completed, app.debugDescription)
   }
 
-  @MainActor func testSplitAndMoveTab() throws {
+  @MainActor func testSplitAndMoveTab() async throws {
+    try await fixture.startServer()
+    _ = try await fixture.repository("pane-repository")
     launch()
     app.buttons.matching(identifier: "worktree:main").firstMatch.click()
     let open = app.menuButtons["開く"].firstMatch
@@ -111,6 +105,8 @@ final class WorkbenchTests: XCTestCase {
   }
 
   @MainActor func testCreateWorktreeAndStartSession() async throws {
+    try await fixture.startServer()
+    _ = try await fixture.repository("creation-repository")
     let repository = fixture.directory.appendingPathComponent("creation-repository")
     launch()
     app.buttons["Worktreeを作成"].click()

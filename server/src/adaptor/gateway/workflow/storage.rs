@@ -130,6 +130,11 @@ impl Serialize for StorageError {
 pub const DUPLICATE_NAME_DESCRIPTION: &str = "Duplicate workflow definition";
 
 pub fn workflows_dir() -> PathBuf {
+    if let Some(directory) =
+        std::env::var_os("RELEASH_WORKFLOWS_DIR").filter(|value| !value.is_empty())
+    {
+        return PathBuf::from(directory);
+    }
     dirs::config_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join("releash")

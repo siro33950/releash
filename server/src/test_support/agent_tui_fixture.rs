@@ -1,8 +1,3 @@
-#![allow(
-    dead_code,
-    reason = "shared support is compiled independently by multiple integration test targets"
-)]
-
 use serde::{Deserialize, Serialize};
 use std::{
     env,
@@ -13,9 +8,8 @@ use std::{
     time::Duration,
 };
 
-pub(crate) const FIXTURE_PLAN_ENV: &str = "RELEASH_AGENT_TUI_FIXTURE_PLAN";
-pub(crate) const LIFECYCLE_COMMAND_RESULT_PREFIX: &str =
-    "releash-fixture-lifecycle-command-result:";
+pub const FIXTURE_PLAN_ENV: &str = "RELEASH_AGENT_TUI_FIXTURE_PLAN";
+pub const LIFECYCLE_COMMAND_RESULT_PREFIX: &str = "releash-fixture-lifecycle-command-result:";
 const SESSION_START_INPUT_PREFIX: &str = "releash-fixture-session-start:";
 const RAW_HOOK_INPUT_PREFIX: &str = "releash-fixture-hook-json:";
 const BRACKETED_PASTE_START: &str = "\x1b[200~";
@@ -103,7 +97,7 @@ pub struct FixturePlan {
     pub report_terminal_size: bool,
     #[serde(default)]
     pub emit_input_completion_marker: bool,
-    pub(crate) lifecycle_endpoint: String,
+    pub lifecycle_endpoint: String,
     pub lifecycle_command: Option<FixtureLifecycleCommand>,
     pub lifecycle: Vec<FixtureLifecycleEmission>,
     pub exit_code: u8,

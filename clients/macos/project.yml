@@ -67,7 +67,9 @@ targets:
   ReleashTests:
     type: bundle.unit-test
     platform: macOS
-    sources: Tests
+    sources:
+      - Tests
+      - UITests/Fixture.swift
     dependencies:
       - target: Releash
   ReleashUITests:

@@ -73,7 +73,9 @@ class MacOSBuildTest(unittest.TestCase):
                             next(i for i, command in enumerate(commands) if command.startswith("xcodebuild ")))
         self.assertIn("- path: Generated", project)
         self.assertIn("path: Generated/client-descriptor.bin\n        buildPhase: resources", project)
-        self.assertIn("sources: Tests", project)
+        unit = project.split("  ReleashTests:", 1)[1].split("  ReleashUITests:", 1)[0]
+        self.assertIn("      - Tests", unit)
+        self.assertIn("      - UITests/Fixture.swift", unit)
         self.assertIn("- target: Releash", project)
 
     def test_helpers_are_copied_and_signed_by_xcode(self):

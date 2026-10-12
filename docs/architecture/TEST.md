@@ -42,7 +42,7 @@ Nx の `test` target は単体と統合を、`e2e` target は振る舞いを実�
 手動で実行するテストはコミットしない。
 
 統合テストに必要なバイナリは、各 `test` target の `dependsOn` で先にビルドする。
-サーバのテストは `server:test-fixture-build` と `cli:build`、シェルと CLI のテストは `server:build` と `cli:build` に依存する。
+サーバのテストは `cli:build`、シェルと CLI のテストは `server:build` と `cli:build` に依存する。
 個別のテストを直接実行する場合も、対応する build target を先に実行する。
 テストから cargo は呼ばない。
 

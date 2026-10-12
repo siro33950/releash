@@ -1,12 +1,16 @@
 import Connect
 import Foundation
 import XCTest
+#if canImport(Releash)
+import Releash
+#endif
 
 final class Fixture: Sendable {
   let root: URL
   let directory: URL
   let data: URL
   let cli: URL
+  let providerExecutable: String
   let environment: [String: String]
 
   init() throws {
@@ -22,7 +26,8 @@ final class Fixture: Sendable {
     guard let executable = manifest["executable"] else {
       throw NSError(domain: "E2E", code: 2, userInfo: [NSLocalizedDescriptionKey: "Missing TUI fixture executable path"])
     }
-    let fixture = URL(fileURLWithPath: executable)
+    providerExecutable = URL(fileURLWithPath: executable).path
+    let fixture = URL(fileURLWithPath: providerExecutable)
     guard FileManager.default.isExecutableFile(atPath: fixture.path) else {
       throw NSError(domain: "E2E", code: 2, userInfo: [NSLocalizedDescriptionKey: "Missing TUI fixture"])
     }
@@ -32,12 +37,13 @@ final class Fixture: Sendable {
     ]
     environment = [
       "RELEASH_DATA_DIR": data.path,
+      "RELEASH_WORKFLOWS_DIR": data.appendingPathComponent("workflows").path,
       "RELEASH_AGENT_TUI_FIXTURE_PLAN": String(decoding: try JSONSerialization.data(withJSONObject: plan), as: UTF8.self),
     ]
     try FileManager.default.createDirectory(at: data, withIntermediateDirectories: true)
     let encoder = JSONEncoder()
     encoder.outputFormatting = .withoutEscapingSlashes
-    let quoted = String(decoding: try encoder.encode(fixture.path), as: UTF8.self)
+    let quoted = String(decoding: try encoder.encode(providerExecutable), as: UTF8.self)
     try "[agents.claude]\ncli_path = \(quoted)\n[agents.codex]\ncli_path = \(quoted)\n".write(
       to: data.appendingPathComponent("releash.toml"), atomically: true, encoding: .utf8)
   }
@@ -76,16 +82,41 @@ final class Fixture: Sendable {
       ["authorization": ["Bearer \(token)"]])
   }
 
+  func startServer() async throws {
+    try process(cli, ["server", "start"])
+    try await waitForState(target: "provider-availability") { payload in
+      guard case .providerAvailability(let availability) = payload.value else { return false }
+      try Self.verifyProviders(availability, executable: self.providerExecutable)
+      return true
+    }
+  }
+
+  static func verifyProviders(_ availability: Releash_Client_V1_ProviderAvailabilitySnapshotResponse,
+    executable: String) throws
+  {
+    for provider in ["claude", "codex"] {
+      guard let item = availability.providers.items.first(where: { $0.provider == provider }),
+        item.hasResolvedExecutable, item.resolvedExecutable == executable
+      else {
+        throw NSError(domain: "E2E", code: 4, userInfo: [
+          NSLocalizedDescriptionKey: "Provider \(provider) did not resolve to \(executable)"
+        ])
+      }
+    }
+  }
+
   func repository(_ name: String, worktrees: [String] = [], workflows: [String] = [], threads: [String] = []) async throws -> URL {
+    guard try running() else {
+      throw NSError(domain: "E2E", code: 4, userInfo: [NSLocalizedDescriptionKey: "Start the server before preparing a repository"])
+    }
     let repository = directory.appendingPathComponent(name)
     try FileManager.default.createDirectory(at: repository, withIntermediateDirectories: true)
     let git = URL(fileURLWithPath: "/usr/bin/git")
     try process(git, ["init", "-b", "main"], at: repository)
-    try process(git, ["-c", "user.name=E2E", "-c", "user.email=e2e@example.invalid", "commit", "--allow-empty", "-m", "initial"], at: repository)
+    try process(git, ["-c", "user.name=E2E", "-c", "user.email=e2e@example.invalid", "-c", "commit.gpgsign=false", "commit", "--allow-empty", "-m", "initial"], at: repository)
     for branch in worktrees {
       try process(git, ["worktree", "add", "-b", branch, directory.appendingPathComponent("\(name)-\(branch)").path], at: repository)
     }
-    try process(cli, ["server", "start"])
     let (client, headers) = try client()
     var add = Releash_Client_V1_AddRepoPathRequest()
     add.path = repository.path
@@ -94,7 +125,11 @@ final class Fixture: Sendable {
       var request = Releash_Client_V1_StartWorkflowRequest()
       request.workflowName = name
       request.worktreePath = repository.path
-      _ = try await client.startWorkflow(request: request, headers: headers).result.get()
+      let execution = try await client.startWorkflow(request: request, headers: headers).result.get()
+      try await waitForState(target: "workspaces") { payload in
+        guard case .workspaces(let workspaces) = payload.value else { return false }
+        return Self.hasRunningWorkflow(workspaces, repository: repository.path, executionID: execution.value)
+      }
     }
     for content in threads {
       var request = Releash_Client_V1_CreateReviewThreadRequest()
@@ -108,12 +143,39 @@ final class Fixture: Sendable {
   func waitForLiveSession(repository: URL, branch: String,
     provider: Releash_Client_V1_AgentSessionProviderDto.Value) async throws
   {
+    try await waitForState(target: "workspaces") { payload in
+      guard case .workspaces(let workspaces) = payload.value,
+          let repo = workspaces.repositories.items.first(where: { $0.path == repository.path }),
+          let created = repo.branches.items.first(where: { $0.name == branch }),
+          let worktree = repo.worktrees.items.first(where: { $0.path == created.worktreePath }),
+          worktree.executions.count == 1,
+          let execution = worktree.executions.first,
+          !execution.isWorkflow, execution.provider.value == provider,
+          worktree.snapshot.nodes.items.count == 1,
+          case .node(let node) = worktree.snapshot.nodes.items.first?.variant,
+          node.processPresence.value == .live
+        else { return false }
+      return true
+    }
+  }
+
+  static func hasRunningWorkflow(_ workspaces: Releash_Client_V1_WorkspaceListSnapshot,
+    repository: String, executionID: String) -> Bool
+  {
+    guard let repo = workspaces.repositories.items.first(where: { $0.path == repository }),
+      let main = repo.branches.items.first(where: { $0.isMainWorktree }),
+      let worktree = repo.worktrees.items.first(where: { $0.path == main.worktreePath })
+    else { return false }
+    return worktree.executions.contains { $0.id == executionID && $0.isWorkflow && $0.status == "active" }
+  }
+
+  func waitForState(target: String,
+    matches: (Releash_Client_V1_StatePayload) throws -> Bool) async throws
+  {
     let (client, headers) = try client()
     let stream = client.openStateStream(headers: headers)
-    let timeout = Task {
-      try await Task.sleep(for: .seconds(30))
-      stream.cancel()
-    }
+    let timeout = DispatchWorkItem { stream.cancel() }
+    DispatchQueue.global().asyncAfter(deadline: .now() + 30, execute: timeout)
     defer {
       timeout.cancel()
       stream.cancel()
@@ -130,7 +192,7 @@ final class Fixture: Sendable {
           var subscription = Releash_Client_V1_StartStateSubscriptionRequest()
           subscription.clientID = clientID
           subscription.subscriptionID = subscriptionID
-          subscription.target = "workspaces"
+          subscription.target = target
           _ = try await client.startStateSubscription(request: subscription, headers: headers).result.get()
         }
         let payload: Releash_Client_V1_StatePayload
@@ -141,31 +203,29 @@ final class Fixture: Sendable {
           throw NSError(domain: "E2E", code: 4, userInfo: [NSLocalizedDescriptionKey: error.message])
         default: continue
         }
-        guard event.subscriptionID == subscriptionID,
-          case .workspaces(let workspaces) = payload.value,
-          let repo = workspaces.repositories.items.first(where: { $0.path == repository.path }),
-          let created = repo.branches.items.first(where: { $0.name == branch }),
-          let worktree = repo.worktrees.items.first(where: { $0.path == created.worktreePath }),
-          worktree.executions.count == 1,
-          let execution = worktree.executions.first,
-          !execution.isWorkflow, execution.provider.value == provider,
-          worktree.snapshot.nodes.items.count == 1,
-          case .node(let node) = worktree.snapshot.nodes.items.first?.variant,
-          node.processPresence.value == .live
-        else { continue }
-        return
+        if event.subscriptionID == subscriptionID, try matches(payload) { return }
       case .complete(_, let error, _):
         if let error { throw error }
       case .headers: break
       }
     }
     throw NSError(domain: "E2E", code: 4, userInfo: [
-      NSLocalizedDescriptionKey: "No live \(provider) Session observed in \(repository.path) / \(branch)"
+      NSLocalizedDescriptionKey: "Expected state was not observed for \(target) within 30 seconds"
     ])
   }
 
   func cleanUp() throws {
-    if try running() { try process(cli, ["server", "stop"]) }
-    try FileManager.default.removeItem(at: directory)
+    try Self.cleanUp(stop: {
+      if try running() { try process(cli, ["server", "stop"]) }
+    }, remove: {
+      try FileManager.default.removeItem(at: directory)
+    })
+  }
+
+  static func cleanUp(stop: () throws -> Void, remove: () throws -> Void) throws {
+    let stopped = Result { try stop() }
+    let removed = Result { try remove() }
+    try stopped.get()
+    try removed.get()
   }
 }

@@ -11,6 +11,7 @@
 - XCUITest の制約:
   - 対象のアプリを前面に出す必要があり、画面がロックされた状態では動かない（https://developer.apple.com/forums/thread/840965 ）。同じ Mac で同時に複数は回せない。
   - `XCUIApplication.launch()` は、bundle ID で対象のアプリを特定する。同じ bundle ID のアプリが動いていれば、終了させてから起動する。
+- macOS のプライバシーの許可（TCC）は、アプリの署名の designated requirement で、同じアプリかどうかを判断する。ad-hoc 署名のアプリは designated requirement が cdhash になり、ビルドのたびに変わるので、ビルドのたびに別のアプリとして許可を求められる。Apple の DTS は、日々の開発には Apple Development の証明書で署名するよう勧めている（https://developer.apple.com/forums/thread/776479 ）。
 - ISSUE 本文との食い違い（利用者の決定）:
   - 録画に関わるものはすべて作らない。test plan で録画を残す設定、`.xcresult` からの録画の取り出し、録画の圧縮、PR への動画の添付が対象である。証跡に載せるのは、commit の ID、回したテストのソース、成否だけである。
   - ISSUE の「最初に確かめること」（録画が残ること、録画の大きさ、添付の上限を超えた場合の扱い）は、録画を作らないので行わない。
@@ -89,6 +90,7 @@ Non-goals:
 - R-015: nightly の `nx run-many -t e2e coverage` は、macos の `e2e` を実行しない。
 - R-016: `docs/architecture/TEST.md` の「種類」の表に振る舞い（macOS）の行が、「配置と実行」の表に単体（macOS）と振る舞い（macOS）の行がある。
 - R-017: `AGENTS.md` の「ビルド・テスト・Lint」に、`macos:e2e` と `macos:e2e-evidence` の呼び方と、マイルストーン #78 の「テストと CI の方針」に沿った証跡の決まりが書かれている。
+- R-018: E2E を繰り返し実行しても、macOS は、E2E のためにビルドしたアプリへのアクセスの許可を、ビルドのたびに求め直さない。
 
 # Assumptions
 
