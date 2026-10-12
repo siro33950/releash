@@ -1,6 +1,5 @@
 name: Releash
 options:
-  preGenCommand: ./Scripts/generate.sh
   deploymentTarget:
     macOS: '15.0'
 packages:
@@ -36,6 +35,22 @@ targets:
         excludes: [client-descriptor.bin]
       - path: Generated/client-descriptor.bin
         buildPhase: resources
+      - path: .build/Helpers/$(CONFIGURATION)/releashd
+        optional: true
+        type: file
+        buildPhase:
+          copyFiles:
+            destination: wrapper
+            subpath: Contents/Helpers
+        attributes: [CodeSignOnCopy]
+      - path: .build/Helpers/$(CONFIGURATION)/releash
+        optional: true
+        type: file
+        buildPhase:
+          copyFiles:
+            destination: wrapper
+            subpath: Contents/Helpers
+        attributes: [CodeSignOnCopy]
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.releash.macos
@@ -45,13 +60,6 @@ targets:
       - package: Bonsplit
       - package: Connect
       - package: SwiftProtobuf
-    preBuildScripts:
-      - name: Generate protocol
-        script: '"${SRCROOT}/Scripts/generate.sh"'
-        basedOnDependencyAnalysis: false
-      - name: Bundle server and CLI
-        script: '"${SRCROOT}/Scripts/bundle-helpers.sh"'
-        basedOnDependencyAnalysis: false
   ReleashTests:
     type: bundle.unit-test
     platform: macOS

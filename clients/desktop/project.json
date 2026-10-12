@@ -1,0 +1,90 @@
+{
+	"name": "desktop",
+	"implicitDependencies": ["server", "cli"],
+	"targets": {
+		"lint": {
+			"executor": "nx:run-commands",
+			"options": {
+				"commands": [
+					"cargo fmt --check -p releash-desktop",
+					"cargo clippy --locked -p releash-desktop -- -D warnings",
+					"pnpm --dir clients/desktop exec biome ci ."
+				],
+				"cwd": ".",
+				"parallel": false
+			}
+		},
+		"test": {
+			"executor": "nx:run-commands",
+			"options": {
+				"commands": [
+					"cargo test --locked --lib --bins -p releash-desktop",
+					"cargo test --locked --doc -p releash-desktop",
+					"cargo test --locked --test '*' -p releash-desktop",
+					"pnpm --dir clients/desktop test",
+					"pnpm --dir clients/desktop test:integration"
+				],
+				"cwd": ".",
+				"parallel": false
+			},
+			"dependsOn": [
+				{
+					"target": "build",
+					"projects": ["server"],
+					"params": "ignore"
+				},
+				{
+					"target": "build",
+					"projects": ["cli"],
+					"params": "ignore"
+				}
+			],
+			"outputs": [
+				"{projectRoot}/playwright-report",
+				"{projectRoot}/test-results"
+			]
+		},
+		"build": {
+			"executor": "nx:run-commands",
+			"options": {
+				"commands": ["pnpm build"],
+				"cwd": "clients/desktop",
+				"parallel": false
+			},
+			"outputs": ["{projectRoot}/dist"],
+			"cache": true
+		},
+		"e2e": {
+			"executor": "nx:run-commands",
+			"options": {
+				"commands": ["pnpm test:behavior"],
+				"cwd": "clients/desktop",
+				"parallel": false
+			},
+			"cache": false,
+			"inputs": ["default", "^default", "rust"],
+			"outputs": [
+				"{projectRoot}/playwright-report",
+				"{projectRoot}/test-results"
+			]
+		},
+		"dev": {
+			"executor": "nx:run-commands",
+			"options": {
+				"commands": ["pnpm tauri:dev"],
+				"cwd": "clients/desktop",
+				"parallel": false
+			},
+			"cache": false,
+			"continuous": true
+		},
+		"tauri": {
+			"executor": "nx:run-commands",
+			"cache": false,
+			"options": {
+				"command": "pnpm tauri",
+				"cwd": "clients/desktop"
+			}
+		}
+	}
+}

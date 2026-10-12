@@ -53,51 +53,22 @@ jobs:
     if: needs.check.outputs.run == 'true'
     permissions:
       contents: read
-      pull-requests: write
+      actions: read
     uses: ./.github/workflows/ci.yml
     with:
       ref: ${{ needs.check.outputs.sha }}
-
-  behavior:
-    needs: check
-    if: needs.check.outputs.run == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          ref: ${{ needs.check.outputs.sha }}
-      - uses: pnpm/action-setup@v6
-        with:
-          version: 10
-      - uses: actions/setup-node@v7
-        with:
-          node-version: 24
-          cache: pnpm
-          cache-dependency-path: clients/desktop/pnpm-lock.yaml
-      - working-directory: clients/desktop
-        run: pnpm install --frozen-lockfile
-      - working-directory: clients/desktop
-        run: pnpm exec playwright install --with-deps chromium
-      - working-directory: clients/desktop
-        run: pnpm test:behavior
 
   coverage:
     needs: check
     if: needs.check.outputs.run == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 45
-    env:
-      RUSTFLAGS: -C llvm-args=-runtime-counter-relocation
-      # 親子で初期化済み profile を共有し、子の起動直後の強制終了でも破損させない。
-      LLVM_PROFILE_FILE_NAME: releash-%m%c.profraw
-      # 1並列では子テストの行出力が変わるため、計測負荷を抑える最小の2並列にする。
-      RUST_TEST_THREADS: "2"
+    timeout-minutes: 75
     steps:
       - uses: actions/checkout@v7
         id: checkout
         with:
-          ref: main
+          ref: ${{ needs.check.outputs.sha }}
+          fetch-depth: 0
       - id: apt-key
         run: echo "key=apt-$ImageOS-$ImageVersion" >> "$GITHUB_OUTPUT"
       - uses: actions/cache@v6
@@ -111,26 +82,9 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libgtk-3-dev libsoup-3.0-dev libjavascriptcoregtk-4.1-dev -o Dir::Cache::Archives="$HOME/apt-archives"
           sudo chown -R "$USER" ~/apt-archives
-      - uses: pnpm/action-setup@v6
-        with:
-          version: 10
-      - uses: actions/setup-node@v7
-        with:
-          node-version: 24
-          cache: pnpm
-          cache-dependency-path: clients/desktop/pnpm-lock.yaml
+      - uses: jdx/mise-action@v3
       - working-directory: clients/desktop
         run: pnpm install --frozen-lockfile
-      - working-directory: clients/desktop
-        run: pnpm exec vitest run --coverage
-      - uses: codecov/codecov-action@v7
-        with:
-          token: ${{ secrets.CODECOV_TOKEN }}
-          override_branch: main
-          override_commit: ${{ steps.checkout.outputs.commit }}
-          files: clients/desktop/coverage/coverage-final.json
-          flags: typescript
-          fail_ci_if_error: true
       - name: Install Rust toolchain
         run: |
           rustup toolchain install
@@ -140,15 +94,17 @@ jobs:
           workspaces: .
           shared-key: coverage
           save-if: false
-      - uses: taiki-e/install-action@cargo-llvm-cov
-      - name: Coverage process termination regression test
-        run: python3 .github/scripts/coverage.test.py
-      - run: |
-          cargo llvm-cov clean --workspace
-          cargo llvm-cov --no-report --locked
-          cargo llvm-cov --no-report --locked -p releash-desktop
-          cargo llvm-cov report --workspace --codecov --output-path rust-codecov.json
-        working-directory: .
+      - working-directory: clients/desktop
+        run: pnpm exec playwright install --with-deps chromium
+      - run: ./nx run-many -t e2e coverage --parallel=1 --outputStyle=static
+      - uses: codecov/codecov-action@v7
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          override_branch: main
+          override_commit: ${{ steps.checkout.outputs.commit }}
+          files: clients/desktop/coverage/coverage-final.json
+          flags: typescript
+          fail_ci_if_error: true
       - uses: codecov/codecov-action@v7
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
@@ -168,7 +124,9 @@ jobs:
       - uses: actions/checkout@v7
         with:
           ref: ${{ needs.check.outputs.sha }}
-      - id: create
+          fetch-depth: 0
+      - uses: jdx/mise-action@v3
+      - id: version
         uses: actions/github-script@v9
         env:
           RELEASE_SHA: ${{ needs.check.outputs.sha }}
@@ -184,24 +142,30 @@ jobs:
               .filter(match => match?.[1] === date).map(match => Number(match[2]));
             const number = numbers.reduce((max, n) => Math.max(max, n), 0) + 1;
             const tag = `v${version}-nightly.${date}.${number}`;
-            await github.rest.git.createRef({
-              ...context.repo, ref: `refs/tags/${tag}`, sha: process.env.RELEASE_SHA,
-            });
+            core.setOutput('version', tag.slice(1));
+            core.setOutput('tag', tag);
+      - name: Create tag and release notes with Nx
+        env:
+          RELEASE_VERSION: ${{ steps.version.outputs.version }}
+          RELEASE_TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          ./nx release changelog "$RELEASE_VERSION" --replace-existing-contents --git-tag --git-push --git-push-args="refs/tags/$RELEASE_TAG"
+      - id: create
+        uses: actions/github-script@v9
+        env:
+          RELEASE_TAG: ${{ steps.version.outputs.tag }}
+          RELEASE_SHA: ${{ needs.check.outputs.sha }}
+        with:
+          script: |
+            const { readFileSync } = require('node:fs');
             const { data } = await github.rest.repos.createRelease({
-              ...context.repo, tag_name: tag, target_commitish: process.env.RELEASE_SHA,
-              name: tag, draft: true, prerelease: true, make_latest: 'false', generate_release_notes: true,
+              ...context.repo, tag_name: process.env.RELEASE_TAG, target_commitish: process.env.RELEASE_SHA,
+              name: process.env.RELEASE_TAG, body: readFileSync('.nx/release-notes.md', 'utf8'),
+              draft: true, prerelease: true, make_latest: 'false',
             });
             core.setOutput('release-id', data.id);
-
-      - uses: pnpm/action-setup@v6
-        with:
-          version: 10
-
-      - uses: actions/setup-node@v7
-        with:
-          node-version: 24
-          cache: pnpm
-          cache-dependency-path: clients/desktop/pnpm-lock.yaml
 
       - working-directory: clients/desktop
         run: pnpm install --frozen-lockfile
@@ -217,7 +181,7 @@ jobs:
           shared-key: macos-universal
           save-if: false
 
-      - uses: 1password/load-secrets-action@70062d7a876d3eb6334754fa26efd2fbd90c32f2 # v5
+      - run: node .github/scripts/load-secrets.mjs
         env:
           OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
           APPLE_CERTIFICATE: op://releash/apple-signing/certificate
@@ -230,9 +194,6 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: op://releash/tauri-updater/password
           OTLP_ENDPOINT: op://releash/new-relic/otlp-endpoint
           NEW_RELIC_LICENSE_KEY: op://releash/new-relic/license-key
-        with:
-          version: "2.38.1"
-          export-env: true
 
       - uses: tauri-apps/tauri-action@v1
         env:
@@ -243,7 +204,7 @@ jobs:
           uploadUpdaterJson: true
           releaseId: ${{ steps.create.outputs.release-id }}
           projectPath: clients/desktop
-          tauriScript: pnpm tauri
+          tauriScript: ../../nx run desktop:tauri --
           args: --target universal-apple-darwin --config tauri.conf.bundle.json -- --features vendored-openssl
 
       - name: Publish nightly

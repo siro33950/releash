@@ -91,73 +91,77 @@ CI と同じコマンドを使う。PR・main push の検証は `.github/workflo
 - 実行できないチェックは理由と未検証範囲を報告し、成功扱いにしない。
 - lint が失敗した場合は、今回の変更に起因する問題を対象ファイルに限定して修正する。既存の問題は別途報告し、`pnpm lint:fix` による一括修正で範囲外の変更を混ぜない。
 
-PR 層（`clients/desktop/`）:
+ツールはリポジトリ直下の `mise.toml` から導入する。
+Rust は `rust-toolchain.toml`、Xcode は `clients/macos/.xcode-version`、XcodeGen と protoc plugin は `clients/macos/BuildTools` の SwiftPM に従う。
 
 ```bash
-pnpm exec biome ci .
-pnpm test
-pnpm build
-pnpm test:integration
+mise trust
+mise install
+rustup toolchain install
+mise exec -- pnpm --dir clients/desktop install --frozen-lockfile
+mise exec -- pnpm --dir clients/desktop exec playwright install chromium
 ```
 
-PR 層（プロジェクトルート。CI では `CARGO_PROFILE_DEV_DEBUG="0"`）:
+以下のコマンドはリポジトリ直下で実行する。
+シェルで mise を有効にしていない場合は、先頭に `mise exec --` を付ける。
+`./nx` は `nx.json` に固定した Nx を `.nx/installation` に導入して呼び出す。
+Nx Cloud は使わない。
 
 ```bash
-cargo fmt --check -p releashd
-cargo clippy --locked -p releashd -- -D warnings
-cargo clippy --locked -p releashd --features test-support -- -D warnings
-cargo test --locked --lib --bins -p releashd
-cargo test --locked --doc -p releashd
-cargo build --locked -p releash --bin releash
-cargo test --locked --test '*' -p releashd
-cargo fmt --check -p releash-desktop
-cargo clippy --locked -p releash-desktop -- -D warnings
-cargo test --locked --lib --bins -p releash-desktop
-cargo test --locked --doc -p releash-desktop
-cargo build --locked -p releashd --bin releashd -p releash --bin releash
-cargo test --locked --test '*' -p releash-desktop
-cargo fmt --check -p releash
-cargo clippy --locked -p releash -- -D warnings
-cargo test --locked --lib --bins -p releash
-cargo test --locked --doc -p releash
-cargo build --locked -p releashd --bin releashd -p releash --bin releash
-cargo test --locked --test '*' -p releash
+./nx run-many -t lint test build --exclude=macos
+./nx run macos:test
+./nx run macos:build
 ```
 
-品質ゲート（プロジェクトルート。サーバ・シェル・フロントをまたぐ検査）:
+PR と main push の CI は `nx affected -t lint test build` で変更の影響を受けるプロジェクトを検証する。
+macos は macOS runner、それ以外は Linux runner で実行する。
+nightly のリリース前検証では全プロジェクトを対象にする。
+
+| プロジェクト | target |
+|---|---|
+| server、cli | `lint`、`test`、`build` |
+| desktop | `lint`、`test`、`build`、`e2e`、`dev`、`tauri` |
+| macos | `generate`、`helpers`、`build`、`test`、`dev` |
+| workspace | `lint`、`coverage` |
+
+`test` は単体、doc、統合テストを実行し、必要なバイナリを `dependsOn` で先にビルドする。
+`workspace:lint` は buf、テスト配置、ast-grep、Qlty、cargo-deny を検査する。
+意図した proto の非互換には PR の `buf skip breaking` ラベルを使い、ラベルを付けた後に次の commit を push するか、PR を閉じて開き直す。
+
+開発用アプリは次の入口から起動する。
 
 ```bash
-buf lint
-buf breaking --against '.git#branch=main,subdir=proto'
-node .github/scripts/test-placement.mjs
-ast-grep test
-qlty check --no-progress --all
-cargo deny --locked check
+./nx run desktop:dev
+./nx run macos:dev
 ```
 
-buf は CI と同じ 1.47.2 を使う。意図した非互換に `buf skip breaking` ラベルを効かせるには、ラベルを付けてから次の commit を push するか、PR を閉じて開き直す。
-
-nightly 層（`clients/desktop/`）:
+`macos:dev` は Debug ビルド後に `RELEASH_DATA_DIR` を外してアプリを開く。
+Xcode で ⌘R する前にも、protocol と helper を生成しておく。
 
 ```bash
-pnpm test:behavior
-pnpm exec vitest run --coverage
+./nx run macos:generate
+./nx run macos:helpers
 ```
 
-Rust coverage は `llvm-tools-preview` と `cargo-llvm-cov` が必要。Linux で強制終了する子プロセスの profile を保持し、短い RPC deadline を使うテストの負荷干渉を避けるため、coverage 計測だけに環境変数を適用する（プロジェクトルート）:
+Release 用の helper とアプリは `./nx run macos:build -c release` でビルドする。
+初回は `rustup target add aarch64-apple-darwin x86_64-apple-darwin` が必要になる。
+helper は configuration ごとの `.build/Helpers/` に出力し、Xcode が Copy Files で組み込んで署名する。
+
+振る舞いテストとカバレッジは nightly で実行する。
+Rust coverage に必要な component を導入してから呼ぶ。
 
 ```bash
-(
-  export RUSTFLAGS="-C llvm-args=-runtime-counter-relocation"
-  export LLVM_PROFILE_FILE_NAME="releash-%m%c.profraw"
-  export RUST_TEST_THREADS="2"
-  python3 .github/scripts/coverage.test.py
-  cargo llvm-cov clean --workspace
-  cargo llvm-cov --no-report --locked
-  cargo llvm-cov --no-report --locked -p releash-desktop
-  cargo llvm-cov report --workspace --codecov --output-path rust-codecov.json
-)
+rustup component add llvm-tools-preview
+./nx run-many -t e2e coverage --parallel=1
 ```
+
+`workspace:coverage` は vitest と cargo-llvm-cov のカバレッジを生成する。
+子プロセス強制終了時の profile 保持と負荷干渉を避ける設定は、この target 内だけに適用する。
+
+版上げは `./nx release version patch`（`minor`、`major` も可）を使う。
+Nx は desktop の `package.json` を更新し、bump workflow が `tauri.conf.json` と Cargo workspace の版を同期する。
+`@monodon/rust` の version actions は `version.workspace = true` に対応していないため、Rust の版同期は workflow に残す。
+タグとリリースノートは `nx release changelog`、draft Release の作成と成果物が揃った後の公開は GitHub API で行う。
 
 サーバの Tauri 依存は、プロジェクトルートで `cargo tree -p releashd -i tauri -e normal,dev,build --target all --all-features` を実行して確認する。依存がないときの確認済みの結果は終了コード `101`、出力は ``error: package ID specification `tauri` did not match any packages``（続いて ``help: a package with a similar name exists: `ntapi` ``）。この終了コードは依存が見つからないことを示す。
 

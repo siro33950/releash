@@ -22,25 +22,17 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Calculate new version
+      - uses: jdx/mise-action@v3
+      - name: Bump version with Nx
+        env:
+          BUMP: ${{ inputs.bump }}
         run: |
-          CURRENT=$(jq -r '.version' clients/desktop/tauri.conf.json)
-          IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT"
-          case "${{ inputs.bump }}" in
-            major) MAJOR=$((MAJOR + 1)); MINOR=0; PATCH=0 ;;
-            minor) MINOR=$((MINOR + 1)); PATCH=0 ;;
-            patch) PATCH=$((PATCH + 1)) ;;
-          esac
-          VERSION="${MAJOR}.${MINOR}.${PATCH}"
+          ./nx release version "$BUMP"
+          VERSION=$(node -p "require('./clients/desktop/package.json').version")
           echo "VERSION=$VERSION" >> "$GITHUB_ENV"
-          echo "Bumping $CURRENT → $VERSION (${{ inputs.bump }})"
-
-      - name: Bump version in files
-        run: |
-          jq --tab --arg v "$VERSION" '.version = $v' clients/desktop/package.json > tmp.json && mv tmp.json clients/desktop/package.json
           jq --arg v "$VERSION" '.version = $v' clients/desktop/tauri.conf.json > tmp.json && mv tmp.json clients/desktop/tauri.conf.json
           sed -i "s/^version = \".*\"/version = \"$VERSION\"/" Cargo.toml
-          sed -i -E '/^name = "(releashd|releash|releash-desktop)"$/{n;s/^version = ".*"/version = "'"$VERSION"'"/}' Cargo.lock
+          sed -i -E '/^name = "(releashd|releash|releash-desktop)"$/{n;s/^version = ".*"/version = "'"$VERSION"'"/;}' Cargo.lock
 
       - name: Create PR
         uses: peter-evans/create-pull-request@v8
