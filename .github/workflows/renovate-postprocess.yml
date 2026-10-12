@@ -49,6 +49,8 @@ jobs:
             echo 'nx=true' >> "$GITHUB_OUTPUT"
           fi
       - uses: jdx/mise-action@v3
+        with:
+          cache: false
       - name: Read Xcode version
         if: steps.changes.outputs.swift == 'true'
         id: xcode
@@ -155,6 +157,7 @@ jobs:
           fi
       - uses: jdx/mise-action@v3
         with:
+          cache: false
           install_args: 1password-cli
       - name: Load App credentials
         run: node .github/scripts/load-secrets.mjs

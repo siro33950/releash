@@ -57,6 +57,14 @@ test("Swift dependencies group both managers by package name independently", () 
   }
 });
 
+test("all Swift manager updates require manual merge while other managers retain automerge", () => {
+  const rule = config.packageRules.find(rule =>
+    rule.matchManagers?.includes("xcodegen") && rule.matchManagers.includes("swift") &&
+    !rule.matchPackageNames);
+  assert.deepEqual(rule, { matchManagers: ["xcodegen", "swift"], automerge: false });
+  assert.equal(config.automerge, true);
+});
+
 test("Nx extraction updates both installation versions together and separates major upgrades without automerging", () => {
   const manager = config.customManagers[0];
   assert.equal(manager.datasourceTemplate, "npm");
@@ -113,12 +121,20 @@ test("postprocessing isolates dependency execution from App credentials and push
   assert.equal(pushSteps[credentials]["working-directory"], undefined);
   const mise = pushSteps.findIndex(step => step.uses === "jdx/mise-action@v3");
   assert.ok(mise >= 0 && mise < credentials);
-  assert.deepEqual(pushSteps[mise].with, { install_args: "1password-cli" });
+  assert.deepEqual(pushSteps[mise].with, { cache: false, install_args: "1password-cli" });
   assert.equal(pushSteps[mise]["working-directory"], undefined);
   const token = pushSteps.findIndex(step => step.uses === "actions/create-github-app-token@v3");
   assert.ok(token > credentials);
   assert.ok(steps.filter(step => step.uses === "actions/checkout@v7").every(step => step.with["persist-credentials"] === false));
   assert.equal(pushSteps.find(step => step.name === "Push postprocessing").env.GH_TOKEN, "${{ steps.app-token.outputs.token }}");
+});
+
+test("postprocessing never reads or writes mise caches across either job", () => {
+  for (const job of Object.values(workflow.jobs)) {
+    const miseSteps = job.steps.filter(step => step.uses?.startsWith("jdx/mise-action@"));
+    assert.equal(miseSteps.length, 1);
+    assert.equal(miseSteps[0].with.cache, false);
+  }
 });
 
 test("postprocessing selects Swift, Nx, both, or neither from the PR diff", () => {

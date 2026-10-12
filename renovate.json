@@ -19,6 +19,10 @@
   ],
   "packageRules": [
     {
+      "matchManagers": ["xcodegen", "swift"],
+      "automerge": false
+    },
+    {
       "matchManagers": ["rust-toolchain"],
       "rangeStrategy": "pin"
     },

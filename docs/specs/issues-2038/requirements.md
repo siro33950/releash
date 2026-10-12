@@ -33,7 +33,7 @@
     今の Dependabot は間隔が weekly、同時に開く PR の上限が cargo 10、npm 10、github-actions 5 である。
     この開発では Renovate の既定に任せ、指定しない。
   - 自動 merge: 本文は触れていない。
-    この開発では、Nx 以外の PR を自動で merge し、Nx の PR は人が merge する。
+    この開発では、Nx と Swift（`xcodegen` と `swift` の manager）以外の PR を自動で merge し、Nx と Swift の PR は人が merge する。
 
 # Outcome
 
@@ -95,7 +95,7 @@ Dependabot は版の更新 PR を出さない。
 - R-008: 後処理が PR に push した commit で、CI が起動する。
 - R-009: 後処理が commit を足した PR についても、Renovate は新しい版への更新と conflict の解消を続ける。
 - R-010: Renovate の PR には、`dependencies` のラベルが 1 つだけ指定される。
-- R-011: Nx 以外の Renovate の PR は、必須チェックが通ると自動で merge される。Nx の PR は自動で merge されない。
+- R-011: Nx と Swift 以外の Renovate の PR は、必須チェックが通ると自動で merge される。Nx と Swift の PR は自動で merge されない。
 - R-012: 脆弱性を直す PR を、Renovate が予定を待たずに出す。
 - R-013: Dependabot が版の更新 PR を出さない。
 

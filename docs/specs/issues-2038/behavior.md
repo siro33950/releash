@@ -60,15 +60,15 @@ GIVEN Renovate が更新 PR を出す
 WHEN Renovate が PR に付けるラベルを決める
 THEN 指定されるラベルは `dependencies` だけである
 
-## B-011: Nx 以外の PR の自動 merge
+## B-011: Nx と Swift 以外の PR の自動 merge
 
-GIVEN Nx 以外の依存を上げる Renovate の PR が開いている
+GIVEN Nx と Swift（`project.yml` または `Package.swift`）以外の依存を上げる Renovate の PR が開いている
 WHEN その PR の必須チェックがすべて通る
 THEN PR は自動で merge される
 
-## B-012: Nx の PR は自動 merge しない
+## B-012: Nx と Swift の PR は自動 merge しない
 
-GIVEN Nx を上げる Renovate の PR が開いている
+GIVEN Nx、または `project.yml` か `Package.swift` の依存を上げる Renovate の PR が開いている
 WHEN その PR の必須チェックがすべて通る
 THEN PR は自動で merge されず、開いたまま残る
 
