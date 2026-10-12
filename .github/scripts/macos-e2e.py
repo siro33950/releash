@@ -142,7 +142,7 @@ def execute(root, tests, result, require_production=False):
     command = [*base, '-configuration', 'Debug', '-destination', 'platform=macOS',
                '-derivedDataPath', '.build/E2EDerivedData', '-disableAutomaticPackageResolution',
                '-parallel-testing-enabled', 'NO', '-resultBundlePath', str(result),
-               'CODE_SIGNING_ALLOWED=YES', 'CODE_SIGN_IDENTITY=-', 'test']
+               'CODE_SIGNING_ALLOWED=YES', 'test']
     command.extend(f'-only-testing:{test}' for test in tests)
     return monitored_test(command, macos, require_production)
 

@@ -4,6 +4,7 @@
 - XCUITest のターゲット: `clients/macos/project.yml` に UI テストのターゲットを足し、回帰の E2E を置く。根拠: R-001「リポジトリにある回帰の E2E を全部実行し」。ルート: 委任
 - `macos:e2e` target: `clients/macos/project.json` に、UI テストのターゲットを実行する `e2e` target を足し、`generate` と `helpers` に依存させる。根拠: R-001「実行の前に `macos:generate` と `macos:helpers` が実行される」。ルート: 委任
 - E2E の隔離: テストごとに一時的なデータディレクトリを作り、`launchEnvironment` の `RELEASH_DATA_DIR` でアプリに渡す。テストの後に、そのデータディレクトリのサーバを止める。根拠: R-002「テストごとに隔離したデータディレクトリを使い、本番と同じ…経路でサーバに接続する」。ルート: 委任
+- E2E の隔離（workflow 定義と Facet）: workflow 定義と Facet のディレクトリ（既定はデータディレクトリの外の `~/Library/Application Support/releash/workflows`）も、テストごとの一時ディレクトリに分ける。根拠: R-002「本番のデータディレクトリと、そこを使うサーバには読み書きしない」。ルート: 委任
 - bundle ID: `clients/macos/project.yml` の `PRODUCT_BUNDLE_IDENTIFIER` を build configuration ごとに分ける。根拠: R-004、R-003「本番のアプリとサーバは終了しない」。ルート: 「固定するルート」1
 - 状態を用意する仕組み: 回帰の E2E が、テストの始まりに repository、worktree、実行中の workflow、Thread を用意できるようにする。根拠: R-005。ルート: 委任
 - provider の代わりの TUI の実行ファイル: `server/tests/agent_tui_fixture.rs` の TUI の部分を、`test-support` feature 付きでだけビルドされる bin にする。根拠: R-006「`test-support` feature を付けたビルドでだけ作られる専用の実行ファイル」。ルート: 「固定するルート」2

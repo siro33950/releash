@@ -190,3 +190,33 @@ return r.workflow{
         assert!(error.to_string().contains("WFS006"));
     }
 }
+
+use releashd::test_support::integration::workflow::{
+    DefaultWorkflowDefinitionResolver, WorkflowDefinitionResolver,
+};
+
+#[tokio::test]
+async fn test_workflow定義解決_注入された保存先から定義とfacetを読む() {
+    // Given
+    let directory = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(directory.path().join("instructions")).unwrap();
+    std::fs::write(
+        directory.path().join("instructions/isolated.md"),
+        "isolated instruction",
+    )
+    .unwrap();
+    std::fs::write(
+        directory.path().join("isolated-resolver-test.yml"),
+        "name: isolated-resolver-test\ndescription: isolated fixture\nnodes:\n  main:\n    session:\n      provider: claude\n      facets:\n        instruction: isolated\n",
+    )
+    .unwrap();
+    let resolver = DefaultWorkflowDefinitionResolver {
+        workflows_dir: directory.path().to_owned(),
+    };
+
+    // When
+    let definition = resolver.resolve("isolated-resolver-test").await.unwrap();
+
+    // Then
+    assert_eq!(definition.name, "isolated-resolver-test");
+}

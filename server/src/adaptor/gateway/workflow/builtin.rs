@@ -2,7 +2,7 @@ use std::fmt;
 
 use super::diagnostics;
 use super::domain_mapping::workflow_definition_to_domain;
-use super::facet::{self, FacetError, FacetKind};
+use super::facet::{FacetError, FacetKind};
 use super::schema::{Summary, WorkflowDefinitionYaml};
 use super::storage;
 use crate::domain::workflow::validation::{self, ValidationError};
@@ -149,6 +149,7 @@ impl std::error::Error for BuiltinError {}
 /// load 失敗とは区別する。
 pub fn load_builtin_workflow_resolved(
     name: &str,
+    base_facets_dir: &std::path::Path,
 ) -> Result<Option<WorkflowDefinitionYaml>, BuiltinError> {
     let Some(entry) = BUILTINS
         .iter()
@@ -175,8 +176,7 @@ pub fn load_builtin_workflow_resolved(
             source: err,
         }
     })?;
-    let base_dir = facet::facets_base_dir();
-    if let Err(err) = storage::resolve_and_validate_workflow_facets(&wf, &base_dir) {
+    if let Err(err) = storage::resolve_and_validate_workflow_facets(&wf, base_facets_dir) {
         return Err(match err {
             storage::StorageError::FacetResolution(source) => BuiltinError::FacetResolution {
                 filename: entry.filename,

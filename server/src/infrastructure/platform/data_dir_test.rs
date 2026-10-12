@@ -40,3 +40,21 @@ fn default_data_dir_name_distinguishes_dev_and_production() {
         "com.releash.app.dev"
     );
 }
+
+#[test]
+fn test_workflow保存先_指定されたディレクトリを使い空指定は既定へ戻る() {
+    // Given
+    let _lock = crate::test_support::TEST_ENV_LOCK.lock();
+    let expected = PathBuf::from("default/workflows");
+    let _empty = crate::test_support::EnvVarGuard::set_value("RELEASH_WORKFLOWS_DIR", "");
+    // When / Then
+    assert_eq!(resolve_workflows_dir(expected.clone()), expected);
+    let _directory =
+        crate::test_support::EnvVarGuard::set_value("RELEASH_WORKFLOWS_DIR", "/isolated/workflows");
+    assert_eq!(
+        resolve_workflows_dir(expected.clone()),
+        PathBuf::from("/isolated/workflows")
+    );
+    std::env::remove_var("RELEASH_WORKFLOWS_DIR");
+    assert_eq!(resolve_workflows_dir(expected.clone()), expected);
+}

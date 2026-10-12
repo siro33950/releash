@@ -141,6 +141,15 @@ pub mod platform {
     pub use crate::adaptor::controller::agent_session_launch_retention::RETENTION;
     pub use crate::adaptor::controller::agent_session_wiring::compose_agent_sessions;
     pub use crate::adaptor::controller::agent_session_wiring::AgentSessionCompositionInput;
+
+    pub fn bind_agent_session_runtime(
+        sessions: &crate::adaptor::controller::agent_session_wiring::AgentSessionComposition,
+        runtime: std::sync::Arc<crate::usecase::workflow::WorkflowRuntimeUsecase>,
+    ) {
+        sessions.execution_tree_stops.bind(runtime.clone());
+        sessions.execution_tree_registrations.bind(runtime);
+    }
+
     pub use crate::adaptor::controller::app_data_composition::ProductionAppDataComposition;
     pub use crate::adaptor::controller::repository_scan::start;
     pub use crate::adaptor::controller::repository_scan::RepositoryScanWorkerRuntime;
@@ -148,6 +157,15 @@ pub mod platform {
     pub use crate::adaptor::controller::state::AppState;
     pub use crate::adaptor::controller::terminal_surface_runtime::initialize_background_work_for_acceptance;
     pub use crate::adaptor::controller::terminal_surface_runtime::TerminalSurfaceRuntime;
+
+    pub fn build_terminal_surface_application_with_data_dir(
+        data_dir: std::path::PathBuf,
+    ) -> std::sync::Arc<crate::usecase::terminal_surface::application::TerminalSurfaceApplication>
+    {
+        TerminalSurfaceRuntime::new(initialize_background_work_for_acceptance(), data_dir)
+            .application()
+    }
+
     pub use crate::adaptor::controller::wiring::build_code_usecase;
     pub use crate::adaptor::controller::wiring::build_git_host_usecase;
     pub use crate::adaptor::controller::wiring::build_repository_usecase;
@@ -907,6 +925,7 @@ pub mod workflow {
     pub use crate::adaptor::gateway::workflow::runtime_command_gateway::WorkflowRuntimeCommandGatewayDeps;
     pub use crate::adaptor::gateway::workflow::runtime_resolver::resolve_workflow_by_name;
     pub use crate::adaptor::gateway::workflow::runtime_resolver::AppConfigManagedWorktreeResolver;
+    pub use crate::adaptor::gateway::workflow::runtime_resolver::DefaultWorkflowDefinitionResolver;
     pub use crate::adaptor::gateway::workflow::secret_source::collect_configured_secret_values;
     pub use crate::adaptor::gateway::workflow::span_map::YamlSpanMap;
     pub use crate::adaptor::gateway::workflow::startup_repository::HostWorkflowStartup;

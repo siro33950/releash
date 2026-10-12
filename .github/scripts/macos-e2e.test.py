@@ -174,6 +174,8 @@ class EvidenceTests(unittest.TestCase):
             command = run.call_args.args[0]
             self.assertIn('-only-testing:ReleashUITests/WorkbenchTests/testExample', command)
             self.assertEqual(command[command.index('-parallel-testing-enabled') + 1], 'NO')
+            self.assertIn('CODE_SIGNING_ALLOWED=YES', command)
+            self.assertFalse(any(argument.startswith('CODE_SIGN_IDENTITY=') for argument in command))
 
     def test_production_monitor_requires_both_app_and_server(self):
         with patch.object(e2e, 'production_processes', return_value={(10, ('start',)): 'app'}), patch.object(e2e.subprocess, 'Popen') as popen:

@@ -410,8 +410,9 @@ pub async fn compose(
         repository_state.clone(),
         code_usecase.clone(),
     ));
-    let workflows_dir =
-        adaptor::gateway::workflow::WorkflowDefinitionFileRepository::default_workflows_dir();
+    let workflows_dir = infrastructure::platform::data_dir::resolve_workflows_dir(
+        adaptor::gateway::workflow::WorkflowDefinitionFileRepository::default_workflows_dir(),
+    );
     if let Err(error) = adaptor::gateway::workflow::lua::generate_editor_support(&workflows_dir) {
         log::warn!("Lua editor support generation failed at startup: {error}");
     }
@@ -428,6 +429,7 @@ pub async fn compose(
             config_repository.clone(),
             local_event_store.clone(),
             node_processes.clone(),
+            workflows_dir.clone(),
         );
     let workflow_usecase = Arc::new(workflow_usecase);
 
@@ -484,6 +486,7 @@ pub async fn compose(
                 ),
             },
             daemon_repository.clone(),
+            workflows_dir.clone(),
         )
         .map_err(|error| format!("workflow recovery admission failed: {error}"))?;
     let workflow_runtime_usecase = Arc::new(workflow_runtime_usecase);

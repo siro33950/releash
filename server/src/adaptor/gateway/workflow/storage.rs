@@ -130,11 +130,6 @@ impl Serialize for StorageError {
 pub const DUPLICATE_NAME_DESCRIPTION: &str = "Duplicate workflow definition";
 
 pub fn workflows_dir() -> PathBuf {
-    if let Some(directory) =
-        std::env::var_os("RELEASH_WORKFLOWS_DIR").filter(|value| !value.is_empty())
-    {
-        return PathBuf::from(directory);
-    }
     dirs::config_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join("releash")
@@ -564,7 +559,7 @@ pub fn delete_workflow(dir: &Path, name: &str) -> Result<(), StorageError> {
     // load 失敗（Err）の場合も「builtin として存在し得る」とみなし、安全側に倒して
     // 保護する（誤削除防止 / load 失敗の解決は別経路の責務）。
     if matches!(
-        builtin::load_builtin_workflow_resolved(name),
+        builtin::load_builtin_workflow_resolved(name, dir),
         Ok(Some(_)) | Err(_)
     ) {
         return Err(StorageError::BuiltinProtected {

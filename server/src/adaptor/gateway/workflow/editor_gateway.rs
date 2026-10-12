@@ -30,11 +30,11 @@ impl ExternalEditorGateway for NoopWorkflowExternalEditorGateway {
 }
 
 impl WorkflowExternalEditorGateway {
-    pub(crate) fn new(config: Arc<dyn ConfigRepository>) -> Self {
+    pub(crate) fn new(config: Arc<dyn ConfigRepository>, workflows_dir: PathBuf) -> Self {
         Self {
             config,
-            workflows_dir: storage::workflows_dir(),
-            facets_base_dir: facet::facets_base_dir(),
+            facets_base_dir: workflows_dir.clone(),
+            workflows_dir,
         }
     }
 }

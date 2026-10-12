@@ -1764,7 +1764,7 @@ pub fn load_workflows_in_scope(
         // ビルトインワークフロー
         for summary in builtin::list_builtin_workflows() {
             if !seen.contains(&summary.name) {
-                match builtin::load_builtin_workflow_resolved(&summary.name) {
+                match builtin::load_builtin_workflow_resolved(&summary.name, facets_base_dir) {
                     Ok(Some(wf)) => results.push((summary.name, Ok((wf, Vec::new())))),
                     Ok(None) => results.push((
                         summary.name.clone(),
