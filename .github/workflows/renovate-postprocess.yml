@@ -111,6 +111,7 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha }}
           path: pr
+          fetch-depth: 0
           persist-credentials: false
       - uses: actions/download-artifact@v8
         with:
@@ -125,17 +126,36 @@ jobs:
         run: |
           actual=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER" --jq '[.state, .user.login, .head.sha, .head.ref, .head.repo.full_name] | @tsv')
           expected=$(printf 'open\trenovate[bot]\t%s\t%s\t%s' "$PR_HEAD_SHA" "$PR_BRANCH" "$GITHUB_REPOSITORY")
-          [ "$actual" = "$expected" ]
+          if [ "$actual" != "$expected" ]; then
+            printf 'PR state mismatch: actual=%s expected=%s\n' "$actual" "$expected"
+            exit 1
+          fi
       - name: Apply postprocessing patch
         working-directory: pr
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
           test -f "$RUNNER_TEMP/postprocess/postprocess.patch"
           if [ -s "$RUNNER_TEMP/postprocess/postprocess.patch" ]; then
+            files=$(git diff --name-only "$BASE_SHA"...HEAD)
+            if printf '%s\n' "$files" | grep -qxE 'clients/macos/(project[.]yml|BuildTools/Package[.]swift)' &&
+               ! printf '%s\n' "$files" | grep -qx 'nx.json'; then
+              git apply --numstat -z "$RUNNER_TEMP/postprocess/postprocess.patch" > "$RUNNER_TEMP/patch-paths"
+              git apply --reverse --numstat -z "$RUNNER_TEMP/postprocess/postprocess.patch" >> "$RUNNER_TEMP/patch-paths"
+              while IFS= read -r -d '' entry; do
+                path=${entry#*$'\t'}
+                path=${path#*$'\t'}
+                case "$path" in
+                  clients/macos/BuildTools/Package.resolved|clients/macos/Releash.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved) ;;
+                  *) printf 'Unexpected Swift postprocessing path: %s\n' "$path"; exit 1 ;;
+                esac
+              done < "$RUNNER_TEMP/patch-paths"
+            fi
             git apply --index "$RUNNER_TEMP/postprocess/postprocess.patch"
           fi
-      - uses: 1password/install-cli-action@v4
+      - uses: jdx/mise-action@v3
         with:
-          version: 2.38.1
+          install_args: 1password-cli
       - name: Load App credentials
         run: node .github/scripts/load-secrets.mjs
         env:

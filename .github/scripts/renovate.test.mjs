@@ -96,11 +96,12 @@ test("postprocessing isolates dependency execution from App credentials and push
   assert.notEqual(workflow.jobs.push["runs-on"], workflow.jobs.postprocess["runs-on"]);
   for (const step of pushSteps) {
     assert.doesNotMatch(step.run ?? "", /(?:^|[\s/])(?:nx|pnpm|npm|npx|swift|xcodebuild)(?:\s|$)/);
-    assert.doesNotMatch(step.uses ?? "", /mise-action/);
+    assert.doesNotMatch(step.uses ?? "", /1password\/install-cli-action/);
   }
   assert.equal(pushSteps[0].with.ref, "${{ github.event.pull_request.base.sha }}");
   assert.equal(pushSteps[1].with.ref, "${{ github.event.pull_request.head.sha }}");
   assert.equal(pushSteps[1].with.path, "pr");
+  assert.equal(pushSteps[1].with["fetch-depth"], 0);
   const upload = postprocessSteps.find(step => step.uses === "actions/upload-artifact@v7");
   const download = pushSteps.find(step => step.uses === "actions/download-artifact@v8");
   assert.equal(upload.with.name, download.with.name);
@@ -110,6 +111,10 @@ test("postprocessing isolates dependency execution from App credentials and push
   assert.ok(credentials > apply);
   assert.equal(pushSteps[credentials].run, "node .github/scripts/load-secrets.mjs");
   assert.equal(pushSteps[credentials]["working-directory"], undefined);
+  const mise = pushSteps.findIndex(step => step.uses === "jdx/mise-action@v3");
+  assert.ok(mise >= 0 && mise < credentials);
+  assert.deepEqual(pushSteps[mise].with, { install_args: "1password-cli" });
+  assert.equal(pushSteps[mise]["working-directory"], undefined);
   const token = pushSteps.findIndex(step => step.uses === "actions/create-github-app-token@v3");
   assert.ok(token > credentials);
   assert.ok(steps.filter(step => step.uses === "actions/checkout@v7").every(step => step.with["persist-credentials"] === false));
@@ -229,9 +234,15 @@ test("push stops when the PR is stale, closed, foreign, or the API fails", () =>
       write("gh", '#!/bin/sh\n[ "$RESPONSE" != error ] || exit 1\nprintf "%s\\n" "$RESPONSE"\n');
       const env = { RESPONSE: response, PR_HEAD_SHA: "head-sha", PR_BRANCH: "renovate/nx", GITHUB_REPOSITORY: "owner/repo" };
       if (response === expected.join("\t")) {
-        execute("Verify PR head", env);
+        assert.equal(execute("Verify PR head", env).toString(), "");
       } else {
-        assert.throws(() => execute("Verify PR head", env));
+        assert.throws(() => execute("Verify PR head", { ...env, GH_TOKEN: "secret-token" }), error => {
+          assert.equal(error.status, 1);
+          assert.equal(error.stdout.toString(), response === "error" ? "" :
+            `PR state mismatch: actual=${response} expected=${expected.join("\t")}\n`);
+          assert.doesNotMatch(error.stdout.toString() + error.stderr.toString(), /secret-token/);
+          return true;
+        });
       }
     });
   }
@@ -263,6 +274,11 @@ test("patch application preserves additions, changes, deletions and binary data 
     write("deleted.txt", "delete me\n");
     write("binary.dat", Buffer.from([0, 1, 2]));
     git("add", "--all");
+    git("-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "base");
+    const base = git("rev-parse", "HEAD").toString().trim();
+    write("nx.json", "{}\n");
+    git("add", "nx.json");
+    git("-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "Nx update");
     write("changed.txt", "after\n");
     rmSync(join(directory, "deleted.txt"));
     write("binary.dat", Buffer.from([0, 3, 4]));
@@ -273,7 +289,7 @@ test("patch application preserves additions, changes, deletions and binary data 
     write("binary.dat", Buffer.from([0, 1, 2]));
     git("add", "changed.txt", "deleted.txt", "binary.dat");
     write("postprocess/postprocess.patch", patch);
-    execute("Apply postprocessing patch", { RUNNER_TEMP: directory });
+    execute("Apply postprocessing patch", { RUNNER_TEMP: directory, BASE_SHA: base });
     assert.equal(git("show", ":changed.txt").toString(), "after\n");
     assert.equal(git("show", ":added.txt").toString(), "new file\n");
     assert.equal(existsSync(join(directory, "deleted.txt")), false);
@@ -284,13 +300,98 @@ test("patch application preserves additions, changes, deletions and binary data 
 test("patch application accepts no changes but rejects invalid and escaping patches", () => {
   for (const patch of [null, "", "invalid patch", "diff --git a/.git/config b/.git/config\nnew file mode 100644\n--- /dev/null\n+++ b/.git/config\n@@ -0,0 +1 @@\n+malicious\n"]) {
     fixture(({ directory, write, execute }) => {
-      execFileSync("git", ["init"], { cwd: directory, stdio: "pipe" });
+      const git = (...args) => execFileSync("git", args, { cwd: directory, stdio: "pipe" });
+      git("init");
+      write("clients/macos/project.yml", "before\n");
+      git("add", "clients/macos/project.yml");
+      git("-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "base");
+      const base = git("rev-parse", "HEAD").toString().trim();
+      write("clients/macos/project.yml", "after\n");
+      git("add", "clients/macos/project.yml");
+      git("-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "Swift update");
+      const gitConfig = readFileSync(join(directory, ".git/config"), "utf8");
+      const env = { RUNNER_TEMP: directory, BASE_SHA: base };
       if (patch !== null) write("postprocess/postprocess.patch", patch);
       if (patch === "") {
-        execute("Apply postprocessing patch", { RUNNER_TEMP: directory });
+        execute("Apply postprocessing patch", env);
       } else {
-        assert.throws(() => execute("Apply postprocessing patch", { RUNNER_TEMP: directory }));
+        assert.throws(() => execute("Apply postprocessing patch", env), error => {
+          if (patch === null) assert.equal(error.status, 1);
+          else if (patch === "invalid patch") assert.match(error.stderr.toString(), /error: No valid patches in input/);
+          else {
+            assert.equal(error.status, 1);
+            assert.equal(error.stdout.toString(), "Unexpected Swift postprocessing path: .git/config\n");
+            assert.equal(error.stderr.toString(), "");
+          }
+          return true;
+        });
       }
+      assert.equal(git("diff", "--cached").toString(), "");
+      assert.equal(readFileSync(join(directory, ".git/config"), "utf8"), gitConfig);
     });
+  }
+});
+
+test("Swift-only patches accept both lockfiles and reject other paths before applying; Nx allows migration paths", () => {
+  const lockfiles = [
+    "clients/macos/BuildTools/Package.resolved",
+    "clients/macos/Releash.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved",
+  ];
+  for (const manifest of ["clients/macos/project.yml", "clients/macos/BuildTools/Package.swift"]) {
+    for (const nx of [false, true]) {
+      for (const change of ["lockfiles", "addition", "modification", "deletion", "rename-in", "rename-out", "unusual-path"]) {
+        fixture(({ directory, write, execute }) => {
+          const git = (...args) => execFileSync("git", args, { cwd: directory, stdio: "pipe" });
+          const commit = () => {
+            git("add", "--all");
+            git("-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "fixture");
+          };
+          git("init");
+          write(manifest, "before\n");
+          const forbidden = ".github/scripts/unexpected.mjs";
+          write(forbidden, "before\n");
+          write(lockfiles[0], "before\n");
+          commit();
+          const base = git("rev-parse", "HEAD").toString().trim();
+          write(manifest, "after\n");
+          if (nx) write("nx.json", "{}\n");
+          commit();
+          const addition = path => `diff --git a/${path} b/${path}\nnew file mode 100644\n--- /dev/null\n+++ b/${path}\n@@ -0,0 +1 @@\n+new file\n`;
+          let patch;
+          if (change === "rename-in" || change === "rename-out") {
+            const [from, to] = change === "rename-in" ? [forbidden, lockfiles[1]] : [lockfiles[0], "unexpected.txt"];
+            patch = `diff --git a/${from} b/${to}\nsimilarity index 100%\nrename from ${from}\nrename to ${to}\n`;
+          } else if (change === "addition") {
+            patch = addition("unexpected.txt");
+          } else if (change === "unusual-path") {
+            patch = addition('"unexpected\\tpath\\nfile"');
+          } else {
+            const path = change === "lockfiles" ? lockfiles[0] : forbidden;
+            if (change === "deletion") rmSync(join(directory, path));
+            else write(path, "after\n");
+            patch = git("diff", "--binary").toString();
+            write(path, "before\n");
+            git("add", path);
+          }
+          if (change === "lockfiles") patch += addition(lockfiles[1]);
+          else patch = addition(lockfiles[1]) + patch;
+          write("postprocess/postprocess.patch", patch);
+          const env = { RUNNER_TEMP: directory, BASE_SHA: base };
+          if (nx || change === "lockfiles") {
+            execute("Apply postprocessing patch", env);
+            assert.notEqual(git("diff", "--cached", "--name-only").toString(), "");
+          } else {
+            assert.throws(() => execute("Apply postprocessing patch", env), error => {
+              assert.equal(error.status, 1);
+              assert.match(error.stdout.toString(), /Unexpected Swift postprocessing path:/);
+              return true;
+            });
+            assert.equal(git("diff", "--cached").toString(), "");
+            assert.equal(git("diff").toString(), "");
+            assert.equal(existsSync(join(directory, lockfiles[1])), false);
+          }
+        });
+      }
+    }
   }
 });
