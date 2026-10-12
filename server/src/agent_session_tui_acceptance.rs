@@ -251,6 +251,7 @@ launch_retention: crate::adaptor::controller::agent_session_launch_retention::ru
                 ),
             );
         let mut driver = WorkflowRuntimeHost::new_canonical(
+            data_dir.join("acceptance-workflows"),
             work.retrying.clone(),
             Arc::new(AcceptanceUnusedWorkflowDefinitionResolver),
             Arc::new(AcceptanceManagedWorktreeResolver),

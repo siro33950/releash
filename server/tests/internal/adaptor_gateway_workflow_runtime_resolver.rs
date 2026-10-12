@@ -210,9 +210,7 @@ async fn test_workflow定義解決_注入された保存先から定義とfacet�
         "name: isolated-resolver-test\ndescription: isolated fixture\nnodes:\n  main:\n    session:\n      provider: claude\n      facets:\n        instruction: isolated\n",
     )
     .unwrap();
-    let resolver = DefaultWorkflowDefinitionResolver {
-        workflows_dir: directory.path().to_owned(),
-    };
+    let resolver = DefaultWorkflowDefinitionResolver::new(directory.path().to_owned());
 
     // When
     let definition = resolver.resolve("isolated-resolver-test").await.unwrap();

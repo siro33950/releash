@@ -7,14 +7,6 @@ use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-/// ファセットの読み込みベースディレクトリ。
-///
-/// [02] 境界: storage / builtin / driver の caller 全てがここを参照することで、
-/// builtin → storage の循環依存を生まず、facet 側を単一の owner にする。
-pub fn facets_base_dir() -> PathBuf {
-    storage::workflows_dir()
-}
-
 /// workflow source directory から authoring layout の Facet base を解決する。
 /// `<dir>/facets` が directory ならそれを使い、無ければ従来 layout の `<dir>` を使う。
 pub(crate) fn resolve_facets_base_dir(workflow_source_dir: &Path) -> PathBuf {

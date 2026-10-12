@@ -90,7 +90,7 @@ pub fn current_timestamp() -> f64 {
 /// 記録から取得した Workflow 集約と usecase の駆動手順を外界へ接続する gateway host。
 #[derive(Clone)]
 pub struct WorkflowRuntimeHost {
-    pub(crate) facets_base_dir: std::path::PathBuf,
+    facets_base_dir: std::path::PathBuf,
     pub queue: std::sync::Arc<crate::usecase::retry::Retrying>,
     workflow_start_locks: Arc<Mutex<HashMap<String, Weak<Mutex<()>>>>>,
     commit_locks: Arc<Mutex<HashMap<String, Weak<Mutex<()>>>>>,
@@ -452,6 +452,7 @@ impl WorkflowRuntimeHost {
 
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new_canonical(
+        workflows_dir: std::path::PathBuf,
         queue: std::sync::Arc<crate::usecase::retry::Retrying>,
         workflow_resolver: Arc<dyn WorkflowDefinitionResolver>,
         worktree_resolver: Arc<dyn ManagedWorktreeResolver>,
@@ -464,6 +465,7 @@ impl WorkflowRuntimeHost {
         daemon: Arc<crate::adaptor::gateway::daemon::InMemoryDaemonRepository>,
     ) -> Self {
         Self::with_runtime_ports(
+            workflows_dir,
             queue,
             workflow_resolver,
             worktree_resolver,
@@ -479,7 +481,9 @@ impl WorkflowRuntimeHost {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn with_runtime_ports(
+        workflows_dir: std::path::PathBuf,
         queue: std::sync::Arc<crate::usecase::retry::Retrying>,
         workflow_resolver: Arc<dyn WorkflowDefinitionResolver>,
         worktree_resolver: Arc<dyn ManagedWorktreeResolver>,
@@ -493,7 +497,7 @@ impl WorkflowRuntimeHost {
             workflow_start_locks: Arc::new(Mutex::new(HashMap::new())),
             commit_locks: Arc::new(Mutex::new(HashMap::new())),
             execution_facet_contents: Arc::new(Mutex::new(HashMap::new())),
-            facets_base_dir: super::facet::facets_base_dir(),
+            facets_base_dir: workflows_dir,
             runtime_activation_locks: Arc::new(Mutex::new(HashMap::new())),
             startup_retries: Arc::new(Mutex::new(HashMap::new())),
             node_processes: Arc::new(Default::default()),

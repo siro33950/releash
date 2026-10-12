@@ -495,7 +495,9 @@ launch_retention: crate::adaptor::controller::agent_session_launch_retention::ru
                 ),
             );
 
+        let workflows_dir = config.data_dir.join("acceptance-workflows");
         let mut driver = WorkflowRuntimeHost::new_canonical(
+            workflows_dir.clone(),
             work.retrying.clone(),
             Arc::new(AcceptanceWorkflowDefinitionResolver),
             Arc::new(AcceptanceManagedWorktreeResolver),
@@ -553,7 +555,6 @@ launch_retention: crate::adaptor::controller::agent_session_launch_retention::ru
             .execution_tree_registrations
             .bind(runtime.clone());
 
-        let workflows_dir = config.data_dir.join("acceptance-workflows");
         std::fs::create_dir_all(&workflows_dir).map_err(|error| error.to_string())?;
         let workflow_read = Arc::new(crate::acceptance_test_support::workflow_read(
             store.clone(),

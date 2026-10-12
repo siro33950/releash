@@ -10,7 +10,13 @@ use crate::usecase::workflow::runtime_resolver::{
 };
 
 pub struct DefaultWorkflowDefinitionResolver {
-    pub workflows_dir: std::path::PathBuf,
+    workflows_dir: std::path::PathBuf,
+}
+
+impl DefaultWorkflowDefinitionResolver {
+    pub fn new(workflows_dir: std::path::PathBuf) -> Self {
+        Self { workflows_dir }
+    }
 }
 
 #[async_trait::async_trait]

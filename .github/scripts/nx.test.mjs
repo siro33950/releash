@@ -53,7 +53,7 @@ test("protocol changes select all clients and build integration prerequisites", 
   }
   assert.ok(tasks["workspace:lint"]);
   assert.ok(Object.values(tasks).every(task => task.target.project !== "macos"));
-  assert.deepEqual(dependencies["server:test-integration"].sort(), ["cli:build"]);
+  assert.deepEqual(dependencies["server:test-integration"], ["cli:build"]);
   assert.deepEqual(dependencies["cli:test-integration"].sort(), ["cli:build", "server:build"]);
   assert.deepEqual(dependencies["desktop:rust-test-integration"].sort(), ["cli:build", "server:build"]);
   for (const target of ["server:test-unit", "cli:test-unit", "desktop:rust-test-unit",

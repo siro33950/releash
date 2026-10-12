@@ -141,7 +141,7 @@ impl std::error::Error for BuiltinError {}
 /// 解決済み facet 本文は gateway 側 read model として検証し、Workflow definition には
 /// facet ref だけを残す。
 ///
-/// `base_facets_dir` には builtin 用に `facets_base_dir()` を渡せば、user-side で
+/// `base_facets_dir` には構築時に決めた保存先を渡せば、user-side で
 /// 上書きされた facet も拾える。fallback として builtin 同梱本文が `facet::load_facet`
 /// 内で参照されるため、builtin workflow の facet 参照は必ず解決される。
 ///

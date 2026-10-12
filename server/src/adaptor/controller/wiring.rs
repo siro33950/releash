@@ -316,10 +316,9 @@ pub fn build_workflow_runtime_usecase(
     };
     let operations = deps.repository_usecase.worktree_operations();
     let mut driver = WorkflowRuntimeHost::new_canonical(
+        workflows_dir.clone(),
         retrying.clone(),
-        Arc::new(DefaultWorkflowDefinitionResolver {
-            workflows_dir: workflows_dir.clone(),
-        }),
+        Arc::new(DefaultWorkflowDefinitionResolver::new(workflows_dir)),
         Arc::new(AppConfigManagedWorktreeResolver::new(
             deps.repository_usecase,
             deps.app_config,
@@ -332,7 +331,6 @@ pub fn build_workflow_runtime_usecase(
         deps.isolated_worktrees,
         daemon,
     );
-    driver.facets_base_dir = workflows_dir;
     driver.node_processes = deps.node_processes;
     let driver = wire_delegate_continuation(app.clone(), driver);
     let archives = Arc::new(ExecutionTreeArchiveFactRepository::from_backend(
