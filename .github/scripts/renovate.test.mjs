@@ -10,7 +10,9 @@ const require = createRequire(new URL("../../.nx/installation/package.json", imp
 const { parse } = require("yaml");
 const config = JSON.parse(readFileSync("renovate.json", "utf8"));
 const workflow = parse(readFileSync(".github/workflows/renovate-postprocess.yml", "utf8"));
-const steps = workflow.jobs.postprocess.steps;
+const postprocessSteps = workflow.jobs.postprocess.steps;
+const pushSteps = workflow.jobs.push.steps;
+const steps = [...postprocessSteps, ...pushSteps];
 
 function fixture(run) {
   const directory = mkdtempSync(join(tmpdir(), "releash-renovate-"));
@@ -78,20 +80,40 @@ test("Nx extraction updates both installation versions together and separates ma
   assert.equal(rule.automerge, false);
 });
 
-test("postprocessing uses base credentials, same-repository Renovate events, and an App token for push", () => {
+test("postprocessing isolates dependency execution from App credentials and push", () => {
+  assert.deepEqual(Object.keys(workflow.jobs), ["postprocess", "push"]);
   assert.ok(workflow.on.pull_request_target);
   assert.match(workflow.jobs.postprocess.if, /pull_request.user.login == 'renovate\[bot\]'/);
   assert.match(workflow.jobs.postprocess.if, /github.actor == 'renovate\[bot\]'/);
   assert.match(workflow.jobs.postprocess.if, /head.repo.full_name == github.repository/);
-  assert.equal(steps[0].with.ref, "${{ github.event.pull_request.base.sha }}");
-  const credentials = steps.findIndex(step => step.name === "Load App credentials");
-  assert.match(steps[credentials].run, /load-secrets.mjs/);
-  const token = steps.findIndex(step => step.uses === "actions/create-github-app-token@v3");
+  assert.deepEqual(workflow.jobs.postprocess.permissions, { contents: "read" });
+  assert.doesNotMatch(JSON.stringify(postprocessSteps), /secrets[.]|op:\/\/|create-github-app-token|load-secrets[.]mjs/);
+  assert.equal(postprocessSteps[0].with.ref, "${{ github.event.pull_request.head.sha }}");
+  assert.ok(postprocessSteps.some(step => step.uses === "jdx/mise-action@v3"));
+  assert.equal(postprocessSteps.find(step => step.name === "Migrate Nx").if, "steps.changes.outputs.nx == 'true'");
+  assert.equal(postprocessSteps.find(step => step.name === "Resolve Swift packages").if, "steps.changes.outputs.swift == 'true'");
+  assert.equal(workflow.jobs.push.needs, "postprocess");
+  assert.notEqual(workflow.jobs.push["runs-on"], workflow.jobs.postprocess["runs-on"]);
+  for (const step of pushSteps) {
+    assert.doesNotMatch(step.run ?? "", /(?:^|[\s/])(?:nx|pnpm|npm|npx|swift|xcodebuild)(?:\s|$)/);
+    assert.doesNotMatch(step.uses ?? "", /mise-action/);
+  }
+  assert.equal(pushSteps[0].with.ref, "${{ github.event.pull_request.base.sha }}");
+  assert.equal(pushSteps[1].with.ref, "${{ github.event.pull_request.head.sha }}");
+  assert.equal(pushSteps[1].with.path, "pr");
+  const upload = postprocessSteps.find(step => step.uses === "actions/upload-artifact@v7");
+  const download = pushSteps.find(step => step.uses === "actions/download-artifact@v8");
+  assert.equal(upload.with.name, download.with.name);
+  const apply = pushSteps.findIndex(step => step.name === "Apply postprocessing patch");
+  assert.equal(pushSteps[apply]["working-directory"], "pr");
+  const credentials = pushSteps.findIndex(step => step.name === "Load App credentials");
+  assert.ok(credentials > apply);
+  assert.equal(pushSteps[credentials].run, "node .github/scripts/load-secrets.mjs");
+  assert.equal(pushSteps[credentials]["working-directory"], undefined);
+  const token = pushSteps.findIndex(step => step.uses === "actions/create-github-app-token@v3");
   assert.ok(token > credentials);
-  const head = steps.findIndex(step => step.with?.ref === "${{ github.event.pull_request.head.sha }}");
-  assert.ok(head > steps.findIndex(step => step.name === "Clear App credentials"));
   assert.ok(steps.filter(step => step.uses === "actions/checkout@v7").every(step => step.with["persist-credentials"] === false));
-  assert.equal(steps.find(step => step.name === "Push postprocessing").env.GH_TOKEN, "${{ steps.app-token.outputs.token }}");
+  assert.equal(pushSteps.find(step => step.name === "Push postprocessing").env.GH_TOKEN, "${{ steps.app-token.outputs.token }}");
 });
 
 test("postprocessing selects Swift, Nx, both, or neither from the PR diff", () => {
@@ -148,10 +170,11 @@ test("Nx migrates from the base installation, keeps PR config, installs dependen
     fixture(({ directory, write, execute }) => {
       write("nx.json", JSON.stringify({ installation: { version: "24.0.0", plugins: { "@nx/js": "24.0.0" } }, other: "PR setting" }));
       write("migrations.json", '{"migrations":["old migration"]}');
-      write("git", '#!/bin/sh\nprintf \'{"installation":{"version":"23.3.0","plugins":{"@nx/js":"23.3.0"}}}\\n\'\n');
+      write("git", '#!/bin/sh\necho "$*" >> base-reads\nprintf \'{"installation":{"version":"23.3.0","plugins":{"@nx/js":"23.3.0"}}}\\n\'\n');
       write("nx", `#!/bin/sh\necho "nx $*" >> calls\nif [ "$2" != --run-migrations ]; then\n  node -e 'const fs = require("node:fs"); const x = require("./nx.json"); if (x.installation.version !== "23.3.0" || x.installation.plugins["@nx/js"] !== "23.3.0" || x.other !== "PR setting") process.exit(1); x.installation.version = "24.0.0"; x.installation.plugins["@nx/js"] = "24.0.0"; fs.writeFileSync("nx.json", JSON.stringify(x));'\n  ${migrations ? "echo '{}' > migrations.json" : ":"}\nfi\n`);
       write("pnpm", '#!/bin/sh\necho "pnpm $*" >> calls\n');
       execute("Migrate Nx");
+      assert.equal(readFileSync(join(directory, "base-reads"), "utf8"), "show base:nx.json\n");
       assert.equal(readFileSync(join(directory, "calls"), "utf8"),
         "nx migrate 24.0.0 --interactive=false\npnpm --dir clients/desktop install --no-frozen-lockfile\n" +
         (migrations ? "nx migrate --run-migrations --interactive=false\n" : ""));
@@ -187,12 +210,87 @@ test("postprocessing pushes all generated files only when there are changes and 
       const calls = readFileSync(join(directory, "calls"), "utf8");
       assert.match(calls, /git add --all/);
       if (changed) {
+        assert.match(calls, /git -c core.hooksPath=\/dev\/null commit -m/);
         assert.match(calls, /git config user.email 1\+app\[bot\]@users.noreply.github.com/);
         assert.match(calls, /gh auth setup-git\ngit push origin HEAD:refs\/heads\/renovate\/nx/);
       } else {
-        assert.doesNotMatch(calls, /git commit|git push|gh auth/);
+        assert.doesNotMatch(calls, /commit -m|git push|gh auth/);
       }
       assert.doesNotMatch(calls, /--force/);
+    });
+  }
+});
+
+test("push stops when the PR is stale, closed, foreign, or the API fails", () => {
+  const expected = ["open", "renovate[bot]", "head-sha", "renovate/nx", "owner/repo"];
+  const responses = [expected, ...expected.map((_, index) => expected.map((value, i) => i === index ? "different" : value))];
+  for (const response of [...responses.map(fields => fields.join("\t")), "error"]) {
+    fixture(({ write, execute }) => {
+      write("gh", '#!/bin/sh\n[ "$RESPONSE" != error ] || exit 1\nprintf "%s\\n" "$RESPONSE"\n');
+      const env = { RESPONSE: response, PR_HEAD_SHA: "head-sha", PR_BRANCH: "renovate/nx", GITHUB_REPOSITORY: "owner/repo" };
+      if (response === expected.join("\t")) {
+        execute("Verify PR head", env);
+      } else {
+        assert.throws(() => execute("Verify PR head", env));
+      }
+    });
+  }
+  const verify = pushSteps.find(step => step.name === "Verify PR head");
+  assert.match(verify.run, /\[\.state, \.user.login, \.head.sha, \.head.ref, \.head.repo.full_name\]/);
+  assert.ok(pushSteps.indexOf(verify) < pushSteps.findIndex(step => step.name === "Apply postprocessing patch"));
+});
+
+test("patch export includes staged binary changes and fails on git errors", () => {
+  for (const fail of [false, true]) {
+    fixture(({ directory, write, execute }) => {
+      write("git", '#!/bin/sh\necho "$*" >> calls\n[ "$FAIL" = false ] || exit 1\nif [ "$1" = diff ]; then printf "%s\\n" "binary patch"; fi\n');
+      if (fail) {
+        assert.throws(() => execute("Export postprocessing patch", { RUNNER_TEMP: directory, FAIL: "true" }));
+      } else {
+        execute("Export postprocessing patch", { RUNNER_TEMP: directory, FAIL: "false" });
+        assert.equal(readFileSync(join(directory, "calls"), "utf8"), "add --all\ndiff --cached --binary HEAD\n");
+        assert.equal(readFileSync(join(directory, "postprocess.patch"), "utf8"), "binary patch\n");
+      }
+    });
+  }
+});
+
+test("patch application preserves additions, changes, deletions and binary data in the index", () => {
+  fixture(({ directory, write, execute }) => {
+    const git = (...args) => execFileSync("git", args, { cwd: directory, stdio: "pipe" });
+    git("init");
+    write("changed.txt", "before\n");
+    write("deleted.txt", "delete me\n");
+    write("binary.dat", Buffer.from([0, 1, 2]));
+    git("add", "--all");
+    write("changed.txt", "after\n");
+    rmSync(join(directory, "deleted.txt"));
+    write("binary.dat", Buffer.from([0, 3, 4]));
+    const patch = git("diff", "--binary").toString() +
+      "diff --git a/added.txt b/added.txt\nnew file mode 100644\n--- /dev/null\n+++ b/added.txt\n@@ -0,0 +1 @@\n+new file\n";
+    write("changed.txt", "before\n");
+    write("deleted.txt", "delete me\n");
+    write("binary.dat", Buffer.from([0, 1, 2]));
+    git("add", "changed.txt", "deleted.txt", "binary.dat");
+    write("postprocess/postprocess.patch", patch);
+    execute("Apply postprocessing patch", { RUNNER_TEMP: directory });
+    assert.equal(git("show", ":changed.txt").toString(), "after\n");
+    assert.equal(git("show", ":added.txt").toString(), "new file\n");
+    assert.equal(existsSync(join(directory, "deleted.txt")), false);
+    assert.deepEqual(git("show", ":binary.dat"), Buffer.from([0, 3, 4]));
+  });
+});
+
+test("patch application accepts no changes but rejects invalid and escaping patches", () => {
+  for (const patch of [null, "", "invalid patch", "diff --git a/.git/config b/.git/config\nnew file mode 100644\n--- /dev/null\n+++ b/.git/config\n@@ -0,0 +1 @@\n+malicious\n"]) {
+    fixture(({ directory, write, execute }) => {
+      execFileSync("git", ["init"], { cwd: directory, stdio: "pipe" });
+      if (patch !== null) write("postprocess/postprocess.patch", patch);
+      if (patch === "") {
+        execute("Apply postprocessing patch", { RUNNER_TEMP: directory });
+      } else {
+        assert.throws(() => execute("Apply postprocessing patch", { RUNNER_TEMP: directory }));
+      }
     });
   }
 });

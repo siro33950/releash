@@ -28,38 +28,9 @@ jobs:
       github.event.pull_request.head.repo.full_name == github.repository
     runs-on: xcode-27
     timeout-minutes: 30
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v7
-        with:
-          ref: ${{ github.event.pull_request.base.sha }}
-          persist-credentials: false
-      - uses: jdx/mise-action@v3
-      - name: Load App credentials
-        run: node .github/scripts/load-secrets.mjs
-        env:
-          OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
-          POSTPROCESS_APP_CLIENT_ID: op://releash/releash-dependency-updates/client-id
-          POSTPROCESS_APP_PRIVATE_KEY: op://releash/releash-dependency-updates/private-key
-      - id: app-token
-        uses: actions/create-github-app-token@v3
-        with:
-          client-id: ${{ env.POSTPROCESS_APP_CLIENT_ID }}
-          private-key: ${{ env.POSTPROCESS_APP_PRIVATE_KEY }}
-          permission-contents: write
-      - name: Clear App credentials
-        run: |
-          echo 'POSTPROCESS_APP_CLIENT_ID=' >> "$GITHUB_ENV"
-          echo 'POSTPROCESS_APP_PRIVATE_KEY=' >> "$GITHUB_ENV"
-      - name: Get App identity
-        id: identity
-        env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
-          APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
-        run: |
-          bot="${APP_SLUG}[bot]"
-          id=$(gh api "/users/$bot" --jq .id)
-          echo "name=$bot" >> "$GITHUB_OUTPUT"
-          echo "email=$id+$bot@users.noreply.github.com" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@v7
         with:
           ref: ${{ github.event.pull_request.head.sha }}
@@ -91,10 +62,22 @@ jobs:
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
-          version=$(node -p 'require("./nx.json").installation.version')
-          previous=$(git show "$BASE_SHA:nx.json" | node -e 'let s=""; process.stdin.on("data", d => s += d); process.stdin.on("end", () => console.log(JSON.parse(s).installation.version));')
-          if [ "$version" != "$previous" ]; then
-            node -e 'const fs = require("node:fs"); const {execFileSync} = require("node:child_process"); const file = JSON.parse(fs.readFileSync("nx.json")); file.installation = JSON.parse(execFileSync("git", ["show", process.env.BASE_SHA + ":nx.json"], {encoding: "utf8"})).installation; fs.writeFileSync("nx.json", JSON.stringify(file, null, 2) + "\n");'
+          version=$(node <<'NODE'
+          const fs = require("node:fs");
+          const { execFileSync } = require("node:child_process");
+          const file = JSON.parse(fs.readFileSync("nx.json", "utf8"));
+          const installation = JSON.parse(execFileSync("git", ["show", `${process.env.BASE_SHA}:nx.json`], {
+            encoding: "utf8",
+          })).installation;
+          const version = file.installation.version;
+          if (version !== installation.version) {
+            file.installation = installation;
+            fs.writeFileSync("nx.json", JSON.stringify(file, null, 2) + "\n");
+            console.log(version);
+          }
+          NODE
+          )
+          if [ -n "$version" ]; then
             rm -f migrations.json
             ./nx migrate "$version" --interactive=false
             pnpm --dir clients/desktop install --no-frozen-lockfile
@@ -105,7 +88,82 @@ jobs:
       - name: Resolve Swift packages
         if: steps.changes.outputs.swift == 'true'
         run: ./nx run macos:resolve-dependencies
+      - name: Export postprocessing patch
+        run: |
+          git add --all
+          git diff --cached --binary HEAD > "$RUNNER_TEMP/postprocess.patch"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: renovate-postprocess
+          path: ${{ runner.temp }}/postprocess.patch
+          if-no-files-found: error
+
+  push:
+    needs: postprocess
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          persist-credentials: false
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          path: pr
+          persist-credentials: false
+      - uses: actions/download-artifact@v8
+        with:
+          name: renovate-postprocess
+          path: ${{ runner.temp }}/postprocess
+      - name: Verify PR head
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_BRANCH: ${{ github.event.pull_request.head.ref }}
+        run: |
+          actual=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER" --jq '[.state, .user.login, .head.sha, .head.ref, .head.repo.full_name] | @tsv')
+          expected=$(printf 'open\trenovate[bot]\t%s\t%s\t%s' "$PR_HEAD_SHA" "$PR_BRANCH" "$GITHUB_REPOSITORY")
+          [ "$actual" = "$expected" ]
+      - name: Apply postprocessing patch
+        working-directory: pr
+        run: |
+          test -f "$RUNNER_TEMP/postprocess/postprocess.patch"
+          if [ -s "$RUNNER_TEMP/postprocess/postprocess.patch" ]; then
+            git apply --index "$RUNNER_TEMP/postprocess/postprocess.patch"
+          fi
+      - uses: 1password/install-cli-action@v4
+        with:
+          version: 2.38.1
+      - name: Load App credentials
+        run: node .github/scripts/load-secrets.mjs
+        env:
+          OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+          POSTPROCESS_APP_CLIENT_ID: op://releash/releash-dependency-updates/client-id
+          POSTPROCESS_APP_PRIVATE_KEY: op://releash/releash-dependency-updates/private-key
+      - id: app-token
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ env.POSTPROCESS_APP_CLIENT_ID }}
+          private-key: ${{ env.POSTPROCESS_APP_PRIVATE_KEY }}
+          permission-contents: write
+      - name: Clear App credentials
+        run: |
+          echo 'POSTPROCESS_APP_CLIENT_ID=' >> "$GITHUB_ENV"
+          echo 'POSTPROCESS_APP_PRIVATE_KEY=' >> "$GITHUB_ENV"
+      - name: Get App identity
+        id: identity
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
+        run: |
+          bot="${APP_SLUG}[bot]"
+          id=$(gh api "/users/$bot" --jq .id)
+          echo "name=$bot" >> "$GITHUB_OUTPUT"
+          echo "email=$id+$bot@users.noreply.github.com" >> "$GITHUB_OUTPUT"
       - name: Push postprocessing
+        working-directory: pr
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           BOT_NAME: ${{ steps.identity.outputs.name }}
@@ -116,7 +174,7 @@ jobs:
           if ! git diff --cached --quiet; then
             git config user.name "$BOT_NAME"
             git config user.email "$BOT_EMAIL"
-            git commit -m 'chore(deps): 依存更新後の生成結果を同期'
+            git -c core.hooksPath=/dev/null commit -m 'chore(deps): 依存更新後の生成結果を同期'
             gh auth setup-git
             git push origin "HEAD:refs/heads/$PR_BRANCH"
           fi
