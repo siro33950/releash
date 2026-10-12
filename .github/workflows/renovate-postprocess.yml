@@ -1,0 +1,203 @@
+name: Renovate postprocess
+
+on:
+  pull_request_target:
+    branches: [main]
+    types: [opened, synchronize, reopened]
+    paths:
+      - clients/macos/project.yml
+      - clients/macos/BuildTools/Package.swift
+      - nx.json
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: renovate-postprocess-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+env:
+  NX_DAEMON: "false"
+
+jobs:
+  postprocess:
+    if: >-
+      github.event.pull_request.user.login == 'renovate[bot]' &&
+      github.actor == 'renovate[bot]' &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: xcode-27
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Select postprocessing
+        id: changes
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          files=$(git diff --name-only "$BASE_SHA"...HEAD)
+          if printf '%s\n' "$files" | grep -qxE 'clients/macos/(project[.]yml|BuildTools/Package[.]swift)'; then
+            echo 'swift=true' >> "$GITHUB_OUTPUT"
+          fi
+          if printf '%s\n' "$files" | grep -qx 'nx.json'; then
+            echo 'nx=true' >> "$GITHUB_OUTPUT"
+          fi
+      - uses: jdx/mise-action@v3
+        with:
+          cache: false
+      - name: Read Xcode version
+        if: steps.changes.outputs.swift == 'true'
+        id: xcode
+        run: echo "version=$(cat clients/macos/.xcode-version)" >> "$GITHUB_OUTPUT"
+      - uses: maxim-lobanov/setup-xcode@v1
+        if: steps.changes.outputs.swift == 'true'
+        with:
+          xcode-version: ${{ steps.xcode.outputs.version }}
+      - name: Migrate Nx
+        if: steps.changes.outputs.nx == 'true'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          version=$(node <<'NODE'
+          const fs = require("node:fs");
+          const { execFileSync } = require("node:child_process");
+          const file = JSON.parse(fs.readFileSync("nx.json", "utf8"));
+          const installation = JSON.parse(execFileSync("git", ["show", `${process.env.BASE_SHA}:nx.json`], {
+            encoding: "utf8",
+          })).installation;
+          const version = file.installation.version;
+          if (version !== installation.version) {
+            file.installation = installation;
+            fs.writeFileSync("nx.json", JSON.stringify(file, null, 2) + "\n");
+            console.log(version);
+          }
+          NODE
+          )
+          if [ -n "$version" ]; then
+            rm -f migrations.json
+            ./nx migrate "$version" --interactive=false
+            pnpm --dir clients/desktop install --no-frozen-lockfile
+            if [ -f migrations.json ]; then
+              ./nx migrate --run-migrations --interactive=false
+            fi
+          fi
+      - name: Resolve Swift packages
+        if: steps.changes.outputs.swift == 'true'
+        run: ./nx run macos:resolve-dependencies
+      - name: Export postprocessing patch
+        run: |
+          git add --all
+          git diff --cached --binary HEAD > "$RUNNER_TEMP/postprocess.patch"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: renovate-postprocess
+          path: ${{ runner.temp }}/postprocess.patch
+          if-no-files-found: error
+
+  push:
+    needs: postprocess
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          persist-credentials: false
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          path: pr
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/download-artifact@v8
+        with:
+          name: renovate-postprocess
+          path: ${{ runner.temp }}/postprocess
+      - name: Verify PR head
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_BRANCH: ${{ github.event.pull_request.head.ref }}
+        run: |
+          actual=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER" --jq '[.state, .user.login, .head.sha, .head.ref, .head.repo.full_name] | @tsv')
+          expected=$(printf 'open\trenovate[bot]\t%s\t%s\t%s' "$PR_HEAD_SHA" "$PR_BRANCH" "$GITHUB_REPOSITORY")
+          if [ "$actual" != "$expected" ]; then
+            printf 'PR state mismatch: actual=%s expected=%s\n' "$actual" "$expected"
+            exit 1
+          fi
+      - name: Apply postprocessing patch
+        working-directory: pr
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          test -f "$RUNNER_TEMP/postprocess/postprocess.patch"
+          if [ -s "$RUNNER_TEMP/postprocess/postprocess.patch" ]; then
+            files=$(git diff --name-only "$BASE_SHA"...HEAD)
+            if printf '%s\n' "$files" | grep -qxE 'clients/macos/(project[.]yml|BuildTools/Package[.]swift)' &&
+               ! printf '%s\n' "$files" | grep -qx 'nx.json'; then
+              git apply --numstat -z "$RUNNER_TEMP/postprocess/postprocess.patch" > "$RUNNER_TEMP/patch-paths"
+              git apply --reverse --numstat -z "$RUNNER_TEMP/postprocess/postprocess.patch" >> "$RUNNER_TEMP/patch-paths"
+              while IFS= read -r -d '' entry; do
+                path=${entry#*$'\t'}
+                path=${path#*$'\t'}
+                case "$path" in
+                  clients/macos/BuildTools/Package.resolved|clients/macos/Releash.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved) ;;
+                  *) printf 'Unexpected Swift postprocessing path: %s\n' "$path"; exit 1 ;;
+                esac
+              done < "$RUNNER_TEMP/patch-paths"
+            fi
+            git apply --index "$RUNNER_TEMP/postprocess/postprocess.patch"
+          fi
+      - uses: jdx/mise-action@v3
+        with:
+          cache: false
+          install_args: 1password-cli
+      - name: Load App credentials
+        run: node .github/scripts/load-secrets.mjs
+        env:
+          OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+          POSTPROCESS_APP_CLIENT_ID: op://releash/releash-dependency-updates/client-id
+          POSTPROCESS_APP_PRIVATE_KEY: op://releash/releash-dependency-updates/private-key
+      - id: app-token
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ env.POSTPROCESS_APP_CLIENT_ID }}
+          private-key: ${{ env.POSTPROCESS_APP_PRIVATE_KEY }}
+          permission-contents: write
+      - name: Clear App credentials
+        run: |
+          echo 'POSTPROCESS_APP_CLIENT_ID=' >> "$GITHUB_ENV"
+          echo 'POSTPROCESS_APP_PRIVATE_KEY=' >> "$GITHUB_ENV"
+      - name: Get App identity
+        id: identity
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
+        run: |
+          bot="${APP_SLUG}[bot]"
+          id=$(gh api "/users/$bot" --jq .id)
+          echo "name=$bot" >> "$GITHUB_OUTPUT"
+          echo "email=$id+$bot@users.noreply.github.com" >> "$GITHUB_OUTPUT"
+      - name: Push postprocessing
+        working-directory: pr
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          BOT_NAME: ${{ steps.identity.outputs.name }}
+          BOT_EMAIL: ${{ steps.identity.outputs.email }}
+          PR_BRANCH: ${{ github.event.pull_request.head.ref }}
+        run: |
+          git add --all
+          if ! git diff --cached --quiet; then
+            git config user.name "$BOT_NAME"
+            git config user.email "$BOT_EMAIL"
+            git -c core.hooksPath=/dev/null commit -m 'chore(deps): 依存更新後の生成結果を同期'
+            gh auth setup-git
+            git push origin "HEAD:refs/heads/$PR_BRANCH"
+          fi

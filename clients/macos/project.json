@@ -152,6 +152,23 @@
         "{workspaceRoot}/clients/macos/.build/agent-tui-fixture.json"
       ],
       "cache": false
+    },
+    "resolve-dependencies": {
+      "executor": "nx:run-commands",
+      "dependsOn": [
+        "generate"
+      ],
+      "options": {
+        "commands": [
+          "swift package --package-path BuildTools resolve",
+          "swift run --package-path BuildTools xcodegen generate",
+          "xcodebuild -resolvePackageDependencies -project Releash.xcodeproj -scheme Releash -clonedSourcePackagesDirPath .build/SourcePackages"
+        ],
+        "cwd": "clients/macos",
+        "parallel": false,
+        "forwardAllArgs": false
+      },
+      "cache": false
     }
   }
 }

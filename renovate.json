@@ -1,0 +1,46 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended"],
+  "labels": ["dependencies"],
+  "automerge": true,
+  "automergeType": "pr",
+  "gitIgnoredAuthors": ["/^\\d+\\+releash-dependency-updates\\[bot\\]@users\\.noreply\\.github\\.com$/"],
+  "customManagers": [
+    {
+      "customType": "regex",
+      "managerFilePatterns": ["/^nx\\.json$/"],
+      "matchStrings": [
+        "\"installation\"\\s*:\\s*\\{\\s*\"version\"\\s*:\\s*\"(?<currentValue>[^\"]+)\"",
+        "\"(?<depName>@nx/js)\"\\s*:\\s*\"(?<currentValue>[^\"]+)\""
+      ],
+      "depNameTemplate": "{{#if depName}}{{{depName}}}{{else}}nx{{/if}}",
+      "datasourceTemplate": "npm"
+    }
+  ],
+  "packageRules": [
+    {
+      "matchManagers": ["xcodegen", "swift"],
+      "automerge": false
+    },
+    {
+      "matchManagers": ["rust-toolchain"],
+      "rangeStrategy": "pin"
+    },
+    {
+      "matchManagers": ["xcodegen", "swift"],
+      "matchPackageNames": ["apple/swift-protobuf"],
+      "groupName": "swift-protobuf"
+    },
+    {
+      "matchManagers": ["xcodegen", "swift"],
+      "matchPackageNames": ["connectrpc/connect-swift"],
+      "groupName": "connect-swift"
+    },
+    {
+      "matchPackageNames": ["nx", "@nx/js"],
+      "groupName": "Nx",
+      "separateMultipleMajor": true,
+      "automerge": false
+    }
+  ]
+}

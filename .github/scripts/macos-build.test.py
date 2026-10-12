@@ -106,7 +106,7 @@ class MacOSBuildTest(unittest.TestCase):
             )
         }
         self.assertEqual(set(tools), {"xcodegen", "swift-protobuf", "connect-swift"})
-        self.assertEqual(app_versions, {"swift-protobuf": "1.38.1", "connect-swift": "1.0.0"})
+        self.assertEqual(set(app_versions), {"swift-protobuf", "connect-swift"})
         for identity, version in tools.items():
             with self.subTest(identity=identity):
                 self.assertEqual(tool_pins[identity]["version"], version)
@@ -114,6 +114,19 @@ class MacOSBuildTest(unittest.TestCase):
             with self.subTest(identity=identity):
                 self.assertEqual(tools[identity], version)
                 self.assertEqual(app_pins[identity], tool_pins[identity])
+
+    def test_dependency_resolution_updates_both_locks_before_generating_the_project(self):
+        target = json.loads((MACOS / "project.json").read_text())["targets"]["resolve-dependencies"]
+        self.assertFalse(target["cache"])
+        self.assertFalse(target["options"]["parallel"])
+        self.assertIn("generate", target["dependsOn"])
+        self.assertEqual(target["options"]["cwd"], "clients/macos")
+        commands = target["options"]["commands"]
+        self.assertEqual(commands[0], "swift package --package-path BuildTools resolve")
+        self.assertEqual(commands[1], "swift run --package-path BuildTools xcodegen generate")
+        self.assertTrue(commands[2].startswith("xcodebuild -resolvePackageDependencies"))
+        self.assertNotIn("-onlyUsePackageVersionsFromResolvedFile", commands[2])
+        self.assertNotIn("-disableAutomaticPackageResolution", commands[2])
 
 
 if __name__ == "__main__":
