@@ -45,6 +45,7 @@ struct SidebarView: View {
                 WorktreeCard(model: model, repository: repository, branch: branch)
                   .frame(maxWidth: .infinity, alignment: .leading)
                   .padding(.horizontal, UIStyle.rowSpacing)
+                  .contentShape(Rectangle())
                   .background(
                     model.selectedWorktree == branch.worktreePath
                       ? UIStyle.sidebarSelection : .clear,
