@@ -15,6 +15,7 @@ use crate::usecase::terminal_surface::spawn_usecase::GetOrSpawnTerminalOutcome;
 
 #[derive(Clone)]
 pub struct TerminalSurfaceApplication {
+    config: Arc<dyn crate::domain::app_config::ConfigRepository>,
     performance: Arc<dyn crate::usecase::telemetry::PerformanceOutput>,
     gateway: Arc<dyn TerminalSurfaceGateway + Send + Sync>,
     event_source: Arc<dyn TerminalSurfaceEventSource>,
@@ -53,6 +54,11 @@ pub(crate) enum OwnedTerminalSummaryLookup {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TerminalSurfaceStreamItem {
+    Status {
+        session_key: String,
+        state: crate::domain::terminal_surface::TerminalShellState,
+        sequence: u64,
+    },
     Snapshot(TerminalSurfaceSnapshotDto),
     Output {
         session_key: String,
@@ -66,6 +72,7 @@ pub enum TerminalSurfaceStreamItem {
         sequence: u64,
     },
     Exit {
+        state: crate::domain::terminal_surface::TerminalShellState,
         session_key: String,
         exit_code: Option<i32>,
         sequence: u64,
@@ -74,6 +81,7 @@ pub enum TerminalSurfaceStreamItem {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TerminalSurfaceSnapshotDto {
+    pub shell_state: Option<crate::domain::terminal_surface::TerminalShellState>,
     pub session_key: String,
     pub replay: String,
     pub sequence: u64,
@@ -87,6 +95,7 @@ pub struct TerminalSurfaceSnapshotDto {
 impl From<TerminalSurface> for TerminalSurfaceSnapshotDto {
     fn from(surface: TerminalSurface) -> Self {
         Self {
+            shell_state: None,
             session_key: surface.session_key,
             replay: surface.checkpoint.replay,
             sequence: surface.checkpoint.sequence,
@@ -109,8 +118,10 @@ impl TerminalSurfaceApplication {
         gateway: Arc<dyn TerminalSurfaceGateway + Send + Sync>,
         event_source: Arc<dyn TerminalSurfaceEventSource>,
         output: Arc<dyn TerminalSurfaceOutputControl>,
+        config: Arc<dyn crate::domain::app_config::ConfigRepository>,
     ) -> Self {
         Self {
+            config,
             performance,
             gateway,
             output,
@@ -254,6 +265,13 @@ impl TerminalSurfaceApplication {
         }
     }
 
+    pub(crate) fn shell_state(
+        &self,
+        generation: u64,
+    ) -> Option<crate::domain::terminal_surface::TerminalShellState> {
+        self.gateway.shell_state(generation)
+    }
+
     pub(crate) fn get_summary(
         &self,
         owner: &TerminalSurfaceOwner,
@@ -284,10 +302,9 @@ impl TerminalSurfaceApplication {
         cwd: Option<String>,
         owner: TerminalSurfaceOwner,
         label: Option<String>,
-        startup_command: Option<String>,
     ) -> Result<GetOrSpawnTerminalOutcome, UsecaseError> {
         let _admission = self.admit_mutation()?;
-        super::spawn_usecase::get_or_spawn_with_startup(
+        super::spawn_usecase::get_or_spawn_with_config(
             self.performance.as_ref(),
             self.gateway.as_ref(),
             self.output.as_ref(),
@@ -296,7 +313,7 @@ impl TerminalSurfaceApplication {
             cwd,
             owner,
             label,
-            startup_command,
+            self.config.as_ref(),
         )
     }
 

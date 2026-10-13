@@ -317,13 +317,13 @@ impl AgentSession {
         tree_location: AgentSessionTreeLocation,
     ) -> Result<Self, AgentSessionCreationError> {
         let id = id.into();
-        if id.trim().is_empty() {
+        if id.trim().is_empty() || id.contains('\0') {
             return Err(AgentSessionCreationError::Identity);
         }
         tree_location
             .validate_agent_session_identity(&id)
             .map_err(|_| AgentSessionCreationError::SessionTreeRootIdentityMismatch)?;
-        if workspace.as_str().trim().is_empty() {
+        if workspace.as_str().trim().is_empty() || workspace.as_str().contains('\0') {
             return Err(AgentSessionCreationError::Workspace);
         }
         let worktree_path = worktree_path.into();

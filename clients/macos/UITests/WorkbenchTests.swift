@@ -80,19 +80,20 @@ final class WorkbenchTests: XCTestCase {
     app.menuItems["Terminal"].click()
     open.click()
     app.menuItems["ファイル"].click()
-    let tab = app.buttons["Terminal"].firstMatch
+    let tab = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Terminal ")).firstMatch
     XCTAssertTrue(tab.waitForExistence(timeout: 10))
+    let terminalTitle = tab.label
     let edge = open.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 5))
     tab.click()
     tab.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
       .press(forDuration: 0.5, thenDragTo: edge)
     XCTAssertTrue(app.menuButtons.matching(identifier: "開く").element(boundBy: 1).waitForExistence(timeout: 10), app.debugDescription)
-    let moved = app.scrollViews.buttons["Terminal"].firstMatch
+    let moved = app.scrollViews.buttons[terminalTitle].firstMatch
     let retained = app.scrollViews.buttons["ファイル"].firstMatch
-    let destination = app.scrollViews.containing(.button, identifier: "Terminal")
+    let destination = app.scrollViews.containing(.button, identifier: terminalTitle)
       .containing(.button, identifier: "ファイル").firstMatch
     XCTAssertFalse(destination.exists)
-    let source = app.scrollViews.containing(.button, identifier: "Terminal")
+    let source = app.scrollViews.containing(.button, identifier: terminalTitle)
       .menuButtons["開く"].firstMatch
     source.click()
     app.menuItems["Workflow 管理"].click()
@@ -132,5 +133,34 @@ final class WorkbenchTests: XCTestCase {
     XCTAssertEqual(XCTWaiter.wait(for: [started], timeout: 30), .completed, app.debugDescription)
     XCTAssertTrue(card.label.contains("Session,"), card.label)
     try await fixture.waitForLiveSession(repository: repository, branch: "created-branch", provider: .claude)
+  }
+}
+
+
+extension WorkbenchTests {
+  @MainActor func testTerminalShowsCommandOutput() async throws {
+    try await fixture.startServer()
+    _ = try await fixture.repository("terminal-repository")
+    launch()
+    let worktree = app.buttons.matching(identifier: "worktree:main").firstMatch
+    guard worktree.waitForExistence(timeout: 30) else { XCTFail("Worktreeが表示されません"); return }
+    worktree.click()
+    let open = app.menuButtons["開く"].firstMatch
+    let ready = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == true AND enabled == true"), object: open)
+    guard await XCTWaiter.fulfillment(of: [ready], timeout: 30) == .completed else { XCTFail("開くメニューが有効になりません"); return }
+    open.click()
+    let item = app.menuItems["Terminal"]
+    guard item.waitForExistence(timeout: 10), item.isHittable else { XCTFail("Terminalメニューを選択できません"); return }
+    item.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).click()
+    let tab = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Terminal ")).firstMatch
+    guard tab.waitForExistence(timeout: 30) else { XCTFail("Terminalタブが作られません"); return }
+    tab.click()
+    let terminals = app.textViews.matching(NSPredicate(format: "identifier BEGINSWITH %@", "terminal:"))
+    let terminal = terminals.firstMatch
+    guard terminal.waitForExistence(timeout: 30), terminals.count == 1 else { XCTFail("作成したタブの端末ビューを取得できません"); return }
+    terminal.click()
+    terminal.typeText("printf 'releash-%s\\n' terminal-output\n")
+    let output = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value CONTAINS %@", "releash-terminal-output"), object: terminal)
+    XCTAssertEqual(XCTWaiter.wait(for: [output], timeout: 30), .completed, app.debugDescription)
   }
 }

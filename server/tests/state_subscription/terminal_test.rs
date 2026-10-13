@@ -17,6 +17,7 @@ async fn test_terminal購読の実配線でsnapshotと出力を届ける() {
     let runtime = TerminalSubscriptionHarness::new(
         initialize_background_work_for_acceptance(),
         data.path().to_path_buf(),
+        releashd::test_support::terminal_config(""),
     );
     runtime
         .get_or_spawn_with_process(

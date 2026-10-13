@@ -12,9 +12,16 @@ pub async fn test_背景処理の配線_複数のcompositionで失敗状態を�
     let first = initialize_background_work_for_acceptance();
     let second = initialize_background_work_for_acceptance();
     let directory = tempfile::tempdir().unwrap();
-    let _first_runtime = TerminalSurfaceRuntime::new(first.clone(), directory.path().join("first"));
-    let _second_runtime =
-        TerminalSurfaceRuntime::new(second.clone(), directory.path().join("second"));
+    let _first_runtime = TerminalSurfaceRuntime::new(
+        first.clone(),
+        directory.path().join("first"),
+        releashd::test_support::terminal_config(""),
+    );
+    let _second_runtime = TerminalSurfaceRuntime::new(
+        second.clone(),
+        directory.path().join("second"),
+        releashd::test_support::terminal_config(""),
+    );
 
     // When
     releashd::test_support::integration::platform::record_retry_failure(

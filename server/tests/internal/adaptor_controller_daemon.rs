@@ -189,10 +189,12 @@ pub fn test_daemon終了_subprocess() {
             let (_release, receiver) = std::sync::mpsc::channel();
             *pty.shutdown_gate.lock() = Some((blocked, started, receiver));
             let hub = Arc::new(releashd::test_support::integration::platform::TerminalSurfaceEventHub::new());
-            let terminal = Arc::new(releashd::test_support::integration::terminal::TerminalSurfaceApplication::new(std::sync::Arc::new(releashd::test_support::integration::telemetry::TelemetryGateway),
+            let terminal = Arc::new(releashd::test_support::integration::terminal::TerminalSurfaceApplication::new(
+                std::sync::Arc::new(releashd::test_support::integration::telemetry::TelemetryGateway),
                 Arc::new(pty),
                 Arc::new(releashd::test_support::integration::terminal::TerminalSurfaceEventSourceGateway::new(hub.event_sender())),
                 hub,
+                releashd::test_support::terminal_config(""),
             ));
             let shutdown = releashd::test_support::integration::platform::DaemonShutdownGateway {
                 workflow: Arc::new(releashd::test_support::integration::workflow::WorkflowRuntimeUsecase::new(Arc::new(

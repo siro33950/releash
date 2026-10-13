@@ -69,6 +69,10 @@ async fn test_agent_session_exit_observer_frontendなしでexitをusecaseへ渡�
     let task = tokio::spawn(super::run_agent_session_exit_observer(stream, usecase));
 
     hub.publish(TerminalSurfaceOutputEvent::Exit {
+        state: crate::domain::terminal_surface::TerminalShellState {
+            cwd: None,
+            has_foreground_process: false,
+        },
         session_key: "agent-surface".to_string(),
         runtime_generation: 3,
         exit_code: Some(0),
@@ -104,6 +108,10 @@ async fn test_終了処理_observer停止後のterminal終了をsessionへ記録
     // When
     stream.cancellation.cancel();
     hub.publish(TerminalSurfaceOutputEvent::Exit {
+        state: crate::domain::terminal_surface::TerminalShellState {
+            cwd: None,
+            has_foreground_process: false,
+        },
         session_key: "agent-surface".into(),
         runtime_generation: 3,
         exit_code: Some(0),

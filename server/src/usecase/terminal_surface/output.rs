@@ -4,14 +4,18 @@ use crate::usecase::terminal_surface::error::UsecaseError;
 
 pub struct TerminalRegistration {
     pub session_key: String,
-    pub workspace_path: String,
-    pub session_id: Option<String>,
+    pub owner: crate::domain::terminal_surface::TerminalSurfaceOwner,
     pub runtime_generation: u64,
     pub latest_sequence: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TerminalSurfaceOutputEvent {
+    Status {
+        session_key: String,
+        state: crate::domain::terminal_surface::TerminalShellState,
+        sequence: u64,
+    },
     Output {
         session_key: String,
         data: Arc<str>,
@@ -24,6 +28,7 @@ pub enum TerminalSurfaceOutputEvent {
         sequence: u64,
     },
     Exit {
+        state: crate::domain::terminal_surface::TerminalShellState,
         session_key: String,
         runtime_generation: u64,
         exit_code: Option<i32>,
@@ -34,7 +39,8 @@ pub enum TerminalSurfaceOutputEvent {
 impl TerminalSurfaceOutputEvent {
     pub fn session_key(&self) -> &str {
         match self {
-            Self::Output { session_key, .. }
+            Self::Status { session_key, .. }
+            | Self::Output { session_key, .. }
             | Self::Resize { session_key, .. }
             | Self::Exit { session_key, .. } => session_key,
         }

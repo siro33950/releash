@@ -89,7 +89,11 @@ impl ClientApiAcceptanceHost {
         let dispatch = Arc::new(dispatch);
         let binding =
             crate::infrastructure::local_api::test_binding(data_dir.to_path_buf()).unwrap();
-        let terminal = TerminalSurfaceRuntime::new(work.clone(), data_dir.to_path_buf());
+        let terminal = TerminalSurfaceRuntime::new(
+            work.clone(),
+            data_dir.to_path_buf(),
+            crate::test_support::terminal_config(""),
+        );
         let output = Arc::new(
             crate::adaptor::presenter::terminal_subscription::TerminalSubscriptionPresenter::new(
                 &state_presenter,

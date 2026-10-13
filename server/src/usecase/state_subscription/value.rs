@@ -66,6 +66,7 @@ pub enum StateValue {
     ProviderAvailability(crate::usecase::agent_session::ProviderAvailabilitySnapshotDto),
     ExternalEditor(crate::usecase::external_editor::dto::ExternalEditorState),
     ReleashBase(Option<String>),
+    TerminalStartupCommand(String),
     WorkflowConfig(crate::usecase::app_config::query_service::WorkflowConfigDto),
     ProviderHookHealth(crate::usecase::provider_lifecycle::ProviderHookHealthReadResult),
 }

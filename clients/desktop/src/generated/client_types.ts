@@ -5,6 +5,7 @@ export type TerminalEvent = {
 	output?: TerminalOutput;
 	resize?: TerminalResize;
 	exit?: TerminalExit;
+	status?: TerminalStatus;
 };
 
 export type TerminalSnapshot = {
@@ -16,6 +17,14 @@ export type TerminalSnapshot = {
 	isExited?: boolean;
 	exitCode?: number;
 	processedReportUnits?: number;
+	status?: TerminalStatus;
+};
+
+export type TerminalStatus = {
+	sessionKey?: string;
+	cwd?: string;
+	hasForegroundProcess?: boolean;
+	sequence?: number;
 };
 
 export type TerminalOutput = {
@@ -1421,12 +1430,14 @@ export type InputGetOrSpawnTerminalSurfaceRequest = {
 	cwd?: string | null;
 	owner: InputTerminalSurfaceOwnerV1;
 	label?: string | null;
-	startupCommand?: string | null;
 };
 
 export type InputTerminalSurfaceOwnerV1 =
 	| ({ kind: "workspace" } & InputTerminalSurfaceOwnerV1Workspace)
-	| ({ kind: "session" } & InputTerminalSurfaceOwnerV1Session);
+	| ({ kind: "session" } & InputTerminalSurfaceOwnerV1Session)
+	| ({
+			kind: "workspace_terminal";
+	  } & InputTerminalSurfaceOwnerV1WorkspaceTerminal);
 
 export type InputTerminalSurfaceOwnerV1Workspace = {
 	workspacePath: string;
@@ -1435,6 +1446,11 @@ export type InputTerminalSurfaceOwnerV1Workspace = {
 export type InputTerminalSurfaceOwnerV1Session = {
 	workspacePath: string;
 	sessionId: string;
+};
+
+export type InputTerminalSurfaceOwnerV1WorkspaceTerminal = {
+	workspacePath: string;
+	terminalId: string;
 };
 
 export type InputGitCreateBranchRequest = {
@@ -1749,6 +1765,10 @@ export type InputWorkflowSection = {
 	approval_auto_approve?: boolean;
 };
 
+export type InputUpdateTerminalStartupCommandRequest = {
+	command: string;
+};
+
 export type InputValidateNotionConfigRequest = {
 	apiToken: string;
 	databaseId: string;
@@ -2050,6 +2070,7 @@ export interface ClientCommandArgs {
 	update_performance_telemetry: InputUpdatePerformanceTelemetryRequest;
 	update_provider_executable: InputUpdateProviderExecutableRequest;
 	update_workflow_config: InputUpdateWorkflowConfigRequest;
+	update_terminal_startup_command: InputUpdateTerminalStartupCommandRequest;
 	validate_notion_config: InputValidateNotionConfigRequest;
 	write_paths_to_terminal_surface: InputWritePathsToTerminalSurfaceRequest;
 	write_terminal_surface: InputWriteTerminalSurfaceRequest;
@@ -2261,6 +2282,9 @@ export interface ClientCommands {
 	): Promise<void>;
 	update_workflow_config(
 		args: ClientCommandArgs["update_workflow_config"],
+	): Promise<void>;
+	update_terminal_startup_command(
+		args: ClientCommandArgs["update_terminal_startup_command"],
 	): Promise<void>;
 	validate_notion_config(
 		args: ClientCommandArgs["validate_notion_config"],

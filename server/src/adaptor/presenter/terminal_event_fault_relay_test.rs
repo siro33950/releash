@@ -47,7 +47,8 @@ fn test_ターミナル画面fault中継_次イベントの欠落重複逆転を
         .unwrap()
         .iter()
         .map(|event| match event {
-            TerminalSurfaceOutputEvent::Output { sequence, .. }
+            TerminalSurfaceOutputEvent::Status { sequence, .. }
+            | TerminalSurfaceOutputEvent::Output { sequence, .. }
             | TerminalSurfaceOutputEvent::Resize { sequence, .. }
             | TerminalSurfaceOutputEvent::Exit { sequence, .. } => *sequence,
         })
@@ -72,4 +73,54 @@ fn test_ターミナル画面fault中継_削除はfault指定によらず中継�
 
     // Then
     assert_eq!(*recorded.removed.lock().unwrap(), vec![1; 3]);
+}
+
+#[test]
+fn test_ターミナル画面fault中継_statusが出力へのfaultを消費しない() {
+    let recorded = Arc::new(RecordingEventSink::default());
+    let (sink, faults) = fault_injecting_event_sink(recorded.clone());
+    for fault in [
+        TerminalSurfaceEventFault::DropNext,
+        TerminalSurfaceEventFault::DuplicateNext,
+        TerminalSurfaceEventFault::ReverseNextTwo,
+    ] {
+        faults.arm(fault);
+        sink.publish(TerminalSurfaceOutputEvent::Status {
+            session_key: "surface".into(),
+            state: crate::domain::terminal_surface::TerminalShellState {
+                cwd: None,
+                has_foreground_process: false,
+            },
+            sequence: 0,
+        });
+        sink.publish(output(1));
+        sink.publish(TerminalSurfaceOutputEvent::Status {
+            session_key: "surface".into(),
+            state: crate::domain::terminal_surface::TerminalShellState {
+                cwd: None,
+                has_foreground_process: true,
+            },
+            sequence: 1,
+        });
+        sink.publish(output(2));
+    }
+    let events = recorded.events.lock().unwrap();
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(event, TerminalSurfaceOutputEvent::Status { .. }))
+            .count(),
+        6
+    );
+    let outputs: Vec<_> = events
+        .iter()
+        .filter_map(|event| {
+            if let TerminalSurfaceOutputEvent::Output { sequence, .. } = event {
+                Some(*sequence)
+            } else {
+                None
+            }
+        })
+        .collect();
+    assert_eq!(outputs, [2, 1, 1, 2, 2, 1]);
 }

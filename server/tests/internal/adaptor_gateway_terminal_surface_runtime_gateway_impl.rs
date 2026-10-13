@@ -363,19 +363,16 @@ impl TerminalSurfaceEventSink for CapturedTerminalOutput {
             } => {
                 self.resizes.lock().unwrap().push((cols, rows, sequence));
             }
-            TerminalSurfaceOutputEvent::Output { .. } | TerminalSurfaceOutputEvent::Exit { .. } => {
-            }
+            TerminalSurfaceOutputEvent::Status { .. }
+            | TerminalSurfaceOutputEvent::Output { .. }
+            | TerminalSurfaceOutputEvent::Exit { .. } => {}
         }
     }
 }
 
 impl TerminalSurfaceEventSink for BlockingSessionSink {
     fn publish(&self, event: TerminalSurfaceOutputEvent) {
-        let session_key = match event {
-            TerminalSurfaceOutputEvent::Output { session_key, .. }
-            | TerminalSurfaceOutputEvent::Resize { session_key, .. }
-            | TerminalSurfaceOutputEvent::Exit { session_key, .. } => session_key,
-        };
+        let session_key = event.session_key();
         if session_key != self.blocked_session_key {
             return;
         }

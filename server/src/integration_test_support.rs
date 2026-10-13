@@ -162,8 +162,12 @@ pub mod platform {
         data_dir: std::path::PathBuf,
     ) -> std::sync::Arc<crate::usecase::terminal_surface::application::TerminalSurfaceApplication>
     {
-        TerminalSurfaceRuntime::new(initialize_background_work_for_acceptance(), data_dir)
-            .application()
+        TerminalSurfaceRuntime::new(
+            initialize_background_work_for_acceptance(),
+            data_dir,
+            crate::test_support::terminal_config(""),
+        )
+        .application()
     }
 
     pub use crate::adaptor::controller::wiring::build_code_usecase;

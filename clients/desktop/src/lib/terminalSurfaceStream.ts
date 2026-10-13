@@ -19,6 +19,13 @@ export interface TerminalSnapshotSurface {
 
 export type TerminalSurfaceStreamItem =
 	| {
+			type: "status";
+			session_key: string;
+			cwd: string | null;
+			has_foreground_process: boolean;
+			sequence: number;
+	  }
+	| {
 			type: "snapshot";
 			surface: TerminalSnapshotSurface;
 	  }

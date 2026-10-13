@@ -298,6 +298,7 @@ impl From<&crate::usecase::terminal_surface::error::UsecaseError> for Failure {
     fn from(error: &crate::usecase::terminal_surface::error::UsecaseError) -> Self {
         use crate::usecase::terminal_surface::error::UsecaseError as E;
         match error {
+            E::AppConfig(error) => Self::from(error),
             E::Technical(error) => Self::from(error),
             E::NotFound(_) | E::InvalidOperation(_) | E::StaleAttachment | E::OwnerConflict => {
                 Self::Business(BusinessFailure::Other)

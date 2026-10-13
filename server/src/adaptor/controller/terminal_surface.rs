@@ -73,14 +73,13 @@ pub(crate) fn get_or_spawn_terminal_surface_shared(
     cwd: Option<String>,
     owner: TerminalSurfaceOwnerV1,
     label: Option<String>,
-    startup_command: Option<String>,
 ) -> Result<GetOrSpawnTerminalV1, TerminalCommandError> {
     let owner = owner
         .try_into()
         .map_err(|cause| invalid_owner_error(TerminalCommandOperation::Initialize, cause))?;
     state
         .terminal_surface
-        .get_or_spawn(rows, cols, cwd, owner, label, startup_command)
+        .get_or_spawn(rows, cols, cwd, owner, label)
         .map(Into::into)
         .map_err(|error| {
             TerminalCommandError::from_usecase(error, TerminalCommandOperation::Initialize)

@@ -11,6 +11,15 @@ use crate::usecase::terminal_surface::error::UsecaseError;
 
 fn map_terminal_error(error: UsecaseError) -> ProviderAgentTerminalGatewayError {
     match error {
+        UsecaseError::AppConfig(
+            crate::domain::app_config::AppConfigError::Repository(message)
+            | crate::domain::app_config::AppConfigError::InvalidInput(message),
+        ) => {
+            ProviderAgentTerminalGatewayError::Technical(crate::domain::failure::TechnicalFailure {
+                nature: crate::domain::failure::TechnicalFailureNature::Other,
+                message,
+            })
+        }
         UsecaseError::OwnerConflict => ProviderAgentTerminalGatewayError::OwnerConflict,
         UsecaseError::NotFound(message) => ProviderAgentTerminalGatewayError::NotFound(message),
         UsecaseError::InvalidOperation(message) => {

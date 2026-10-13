@@ -52,6 +52,12 @@ fn test_terminal失敗_全変種から技術的な失敗だけを参照する() 
     use crate::domain::failure::{TechnicalFailure, TechnicalFailureNature};
     // Given / When / Then
     for error in [
+        E::AppConfig(crate::domain::app_config::AppConfigError::Repository(
+            "config".into(),
+        )),
+        E::AppConfig(crate::domain::app_config::AppConfigError::InvalidInput(
+            "config".into(),
+        )),
         E::NotFound("missing".into()),
         E::InvalidOperation("invalid".into()),
         E::OwnerConflict,

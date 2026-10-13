@@ -13,3 +13,6 @@ pub use terminal_surface_registry::{
 pub use terminal_surface_runtime_lifecycle::{
     TerminalSurfaceMutationRejected, TerminalSurfaceRuntimeLifecycle,
 };
+
+mod terminal_shell_status;
+pub use terminal_shell_status::TerminalShellStatus;

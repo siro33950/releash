@@ -319,3 +319,58 @@ fn test_daemon状態購読_引数なしの対象を往復し余計な引数を�
     );
     assert!(SubscriptionTarget::from_parts("daemon-info", &["unexpected"]).is_err());
 }
+
+#[test]
+fn test_terminal購読_タブ用所有者をsessionと区別して往復する() {
+    // Given
+    let target =
+        SubscriptionTarget::from_parts("workspace-terminal", &["/作業:repo", "tab:first"]).unwrap();
+    // When / Then
+    assert_eq!(
+        SubscriptionTarget::parse(&target.to_string()),
+        Ok(target.clone())
+    );
+    assert_ne!(
+        target,
+        SubscriptionTarget::from_parts("terminal", &["/作業:repo", "tab:first"]).unwrap()
+    );
+    assert!(SubscriptionTarget::from_parts("workspace-terminal", &["/repo", " "]).is_err());
+    assert_eq!(
+        SubscriptionTarget::parse("terminal-startup-command"),
+        Ok(SubscriptionTarget::TerminalStartupCommand)
+    );
+}
+
+#[test]
+fn test_terminal購読対象_三種の持ち主の名前と引数が往復する() {
+    use crate::domain::terminal_surface::TerminalSurfaceOwner;
+    use crate::domain::workspace_tree::WorkspaceIdentity;
+    // Given
+    let workspace = WorkspaceIdentity::new("/作業:repo");
+    let owners = [
+        (
+            TerminalSurfaceOwner::workspace(workspace.clone()).unwrap(),
+            "terminal",
+            vec!["/作業:repo"],
+        ),
+        (
+            TerminalSurfaceOwner::session(workspace.clone(), "session").unwrap(),
+            "terminal",
+            vec!["/作業:repo", "session"],
+        ),
+        (
+            TerminalSurfaceOwner::workspace_terminal(workspace, "tab").unwrap(),
+            "workspace-terminal",
+            vec!["/作業:repo", "tab"],
+        ),
+    ];
+    // When / Then
+    for (owner, name, args) in owners {
+        let target = SubscriptionTarget::Terminal(owner);
+        assert_eq!(
+            target.parts(),
+            (name, args.iter().map(|arg| (*arg).into()).collect())
+        );
+        assert_eq!(SubscriptionTarget::from_parts(name, &args), Ok(target));
+    }
+}

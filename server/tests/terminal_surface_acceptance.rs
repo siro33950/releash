@@ -30,7 +30,11 @@ async fn test_atui_030_provider_cliがterminal_surfaceのroot_processとして�
     let cwd = tempfile::TempDir::new().unwrap();
     let path = cwd.path().to_string_lossy().into_owned();
     let owner = session_owner(&path, "agent-session-root-process");
-    let runtime = TerminalSurfaceRuntime::new(queue.clone(), data_dir.path().to_path_buf());
+    let runtime = TerminalSurfaceRuntime::new(
+        queue.clone(),
+        data_dir.path().to_path_buf(),
+        releashd::test_support::terminal_config(""),
+    );
     let fixture = FixturePlan {
         input_lines: 1,
         alternate_screen: true,
@@ -291,7 +295,11 @@ async fn test_atui_010_実ptyのproduction_attachが欠落重複逆転なく再�
     let cwd = tempfile::TempDir::new().unwrap();
     let path = cwd.path().to_string_lossy().into_owned();
     let owner = workspace_owner(&path);
-    let runtime = TerminalSurfaceRuntime::new(queue.clone(), data_dir.path().to_path_buf());
+    let runtime = TerminalSurfaceRuntime::new(
+        queue.clone(),
+        data_dir.path().to_path_buf(),
+        releashd::test_support::terminal_config(""),
+    );
     let spawned = runtime
         .get_or_spawn(
             24,
@@ -416,6 +424,7 @@ async fn test_atui_010_実ptyのproduction_attachが注入された欠落重複�
     let (runtime, faults) = TerminalSurfaceRuntime::new_with_data_dir_and_event_faults(
         queue.clone(),
         data_dir.path().to_path_buf(),
+        releashd::test_support::terminal_config(""),
     );
     runtime
         .get_or_spawn(24, 240, Some(path), owner.clone(), None)
@@ -505,7 +514,11 @@ async fn test_atui_011_terminal_checkpointが画面属性と終了後のbounded_
     let cwd = tempfile::TempDir::new().unwrap();
     let path = cwd.path().to_string_lossy().into_owned();
     let owner = workspace_owner(&path);
-    let runtime = TerminalSurfaceRuntime::new(queue.clone(), data_dir.path().to_path_buf());
+    let runtime = TerminalSurfaceRuntime::new(
+        queue.clone(),
+        data_dir.path().to_path_buf(),
+        releashd::test_support::terminal_config(""),
+    );
     runtime
         .get_or_spawn(
             24,
@@ -645,7 +658,11 @@ async fn test_atui_011_複数terminal_surfaceの画面状態が混線しない()
     let path = cwd.path().to_string_lossy().into_owned();
     let first_owner = session_owner(&path, "first");
     let second_owner = session_owner(&path, "second");
-    let runtime = TerminalSurfaceRuntime::new(queue.clone(), data_dir.path().to_path_buf());
+    let runtime = TerminalSurfaceRuntime::new(
+        queue.clone(),
+        data_dir.path().to_path_buf(),
+        releashd::test_support::terminal_config(""),
+    );
 
     for (owner, label) in [
         (first_owner.clone(), "terminal-surface-first"),
@@ -737,15 +754,18 @@ async fn test_atui_012_app再構築後は同一process扱いせず最終画面�
         shell_quote(&first_pid_path.to_string_lossy())
     );
 
-    let first_runtime = TerminalSurfaceRuntime::new(queue.clone(), data_dir.path().to_path_buf());
+    let first_runtime = TerminalSurfaceRuntime::new(
+        queue.clone(),
+        data_dir.path().to_path_buf(),
+        releashd::test_support::terminal_config(&startup_command),
+    );
     let first = first_runtime
-        .get_or_spawn_with_startup(
+        .get_or_spawn(
             24,
             100,
             Some(path.clone()),
             owner.clone(),
             Some("ATUI-012 fixture".to_string()),
-            Some(startup_command.clone()),
         )
         .expect("spawn first product PTY");
     assert_eq!(wait_file_content(&startup_count_path).await, "x");
@@ -781,15 +801,18 @@ async fn test_atui_012_app再構築後は同一process扱いせず最終画面�
     #[cfg(unix)]
     wait_process_exit(&first_pid).await;
 
-    let second_runtime = TerminalSurfaceRuntime::new(queue.clone(), data_dir.path().to_path_buf());
+    let second_runtime = TerminalSurfaceRuntime::new(
+        queue.clone(),
+        data_dir.path().to_path_buf(),
+        releashd::test_support::terminal_config(&startup_command),
+    );
     let restored = second_runtime
-        .get_or_spawn_with_startup(
+        .get_or_spawn(
             24,
             100,
             Some(path),
             owner.clone(),
             Some("ATUI-012 fixture".to_string()),
-            Some(startup_command),
         )
         .expect("cold restore into new PTY");
     assert_eq!(restored.session_key, first.session_key);
@@ -838,7 +861,11 @@ async fn test_atui_012_通常終了は実ptyを停止して出力drain後の最�
     let cwd = tempfile::TempDir::new().unwrap();
     let path = cwd.path().to_string_lossy().into_owned();
     let owner = session_owner(&path, "shutdown-drain");
-    let first_runtime = TerminalSurfaceRuntime::new(queue.clone(), data_dir.path().to_path_buf());
+    let first_runtime = TerminalSurfaceRuntime::new(
+        queue.clone(),
+        data_dir.path().to_path_buf(),
+        releashd::test_support::terminal_config(""),
+    );
     first_runtime
         .get_or_spawn(
             24,
@@ -898,7 +925,11 @@ async fn test_atui_012_通常終了は実ptyを停止して出力drain後の最�
         .is_err());
     drop(first_runtime);
 
-    let second_runtime = TerminalSurfaceRuntime::new(queue.clone(), data_dir.path().to_path_buf());
+    let second_runtime = TerminalSurfaceRuntime::new(
+        queue.clone(),
+        data_dir.path().to_path_buf(),
+        releashd::test_support::terminal_config(""),
+    );
     second_runtime
         .get_or_spawn(24, 120, Some(path), owner.clone(), None)
         .expect("cold restore final drained screen");
@@ -922,17 +953,14 @@ async fn test_atui_012_明示kill後はcheckpointを復元せず起動コマン�
         "printf x >> {}",
         shell_quote(&startup_count.to_string_lossy())
     );
-    let runtime = TerminalSurfaceRuntime::new(queue.clone(), data_dir.path().to_path_buf());
+    let runtime = TerminalSurfaceRuntime::new(
+        queue.clone(),
+        data_dir.path().to_path_buf(),
+        releashd::test_support::terminal_config(&startup_command),
+    );
 
     runtime
-        .get_or_spawn_with_startup(
-            24,
-            80,
-            Some(path.clone()),
-            owner.clone(),
-            None,
-            Some(startup_command.clone()),
-        )
+        .get_or_spawn(24, 80, Some(path.clone()), owner.clone(), None)
         .expect("spawn first explicit-kill PTY");
     wait_file_content_equals(&startup_count, "x").await;
 
@@ -940,16 +968,185 @@ async fn test_atui_012_明示kill後はcheckpointを復元せず起動コマン�
         .kill(owner.clone())
         .expect("stop, drain, delete checkpoint");
     runtime
-        .get_or_spawn_with_startup(
-            24,
-            80,
-            Some(path),
-            owner.clone(),
-            None,
-            Some(startup_command),
-        )
+        .get_or_spawn(24, 80, Some(path), owner.clone(), None)
         .expect("regenerate after explicit kill");
 
     wait_file_content_equals(&startup_count, "xx").await;
     runtime.kill(owner).expect("kill regenerated PTY");
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[tokio::test(flavor = "multi_thread")]
+async fn test_terminalタブ_別shellへ接続しcwdと前面処理を配信する() {
+    // Given
+    let queue =
+        releashd::test_support::terminal_surface::initialize_background_work_for_acceptance();
+    let data = tempfile::tempdir().unwrap();
+    let worktree = tempfile::tempdir().unwrap();
+    let directory = worktree.path().join("moved");
+    std::fs::create_dir(&directory).unwrap();
+    let path = worktree.path().to_string_lossy().into_owned();
+    let owner = |id: &str| TerminalSurfaceOwnerV1::WorkspaceTerminal {
+        workspace_path: path.clone(),
+        terminal_id: id.into(),
+    };
+    let first = owner("first");
+    let second = owner("second");
+    let runtime = TerminalSurfaceRuntime::new(
+        queue,
+        data.path().into(),
+        releashd::test_support::terminal_config(""),
+    );
+    let spawn = runtime
+        .get_or_spawn(24, 80, Some(path.clone()), first.clone(), None)
+        .unwrap();
+    let other = runtime
+        .get_or_spawn(24, 80, Some(path.clone()), second.clone(), None)
+        .unwrap();
+    assert_ne!(spawn.session_key, other.session_key);
+    let mut stream = runtime
+        .subscribe("tab-first".into(), first.clone())
+        .await
+        .unwrap();
+    // When
+    runtime
+        .write(
+            first.clone(),
+            &format!(
+                "printf '%s' \"$$\" > shell-pid; cd {}; echo unique-first\r",
+                shell_quote(directory.to_str().unwrap())
+            ),
+        )
+        .unwrap();
+    receive_until(&mut stream, "unique-first").await;
+    let actual = directory.canonicalize().unwrap();
+    wait_shell_state(&mut stream, Some(actual.to_str().unwrap()), false).await;
+    let reported = format!("{}/", actual.display());
+    runtime
+        .write(
+            first.clone(),
+            &format!(
+                "printf '\\033]7;%s\\007' {}\r",
+                shell_quote(&format!("file://localhost{reported}"))
+            ),
+        )
+        .unwrap();
+    wait_shell_state(&mut stream, Some(&reported), false).await;
+    runtime
+        .write(
+            first.clone(),
+            &format!(
+                "cd {}; echo moved-again\r",
+                shell_quote(worktree.path().to_str().unwrap())
+            ),
+        )
+        .unwrap();
+    receive_until(&mut stream, "moved-again").await;
+    let moved_again = worktree
+        .path()
+        .canonicalize()
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
+    wait_shell_state(&mut stream, Some(&moved_again), false).await;
+    runtime.write(first.clone(), "set +m; sleep 30\r").unwrap();
+    wait_shell_state(&mut stream, Some(&moved_again), true).await;
+    runtime.write(first.clone(), "\x03").unwrap();
+    wait_shell_state(&mut stream, Some(&moved_again), false).await;
+    runtime.write(first.clone(), "set -m\r").unwrap();
+    // Then
+    assert!(!runtime
+        .get(second.clone())
+        .unwrap()
+        .terminal_surface
+        .replay
+        .contains("unique-first"));
+    assert_eq!(
+        runtime
+            .get_or_spawn(24, 80, Some(path.clone()), first.clone(), None)
+            .unwrap()
+            .session_key,
+        spawn.session_key
+    );
+    // When
+    runtime.write(first.clone(), "sleep 30\r").unwrap();
+    wait_shell_state(&mut stream, Some(&moved_again), true).await;
+    runtime.write(first.clone(), "\x03").unwrap();
+    wait_shell_state(&mut stream, Some(&moved_again), false).await;
+    let pid = wait_file_content(&worktree.path().join("shell-pid")).await;
+    let foreground_pid = worktree.path().join("foreground-pid");
+    let command = format!(
+        "printf '%s' \"$$\" > {}; exec sleep 30",
+        shell_quote(foreground_pid.to_str().unwrap())
+    );
+    runtime
+        .write(first.clone(), &format!("sh -c {}\r", shell_quote(&command)))
+        .unwrap();
+    wait_shell_state(&mut stream, Some(&moved_again), true).await;
+    let foreground_pid = wait_file_content(&foreground_pid).await;
+    runtime.kill(first).unwrap();
+    // Then
+    wait_process_exit(&pid).await;
+    wait_process_exit(&foreground_pid).await;
+    assert!(!runtime.get(second.clone()).unwrap().is_exited);
+    runtime.kill(second).unwrap();
+    let replaced = owner("exec");
+    runtime
+        .get_or_spawn(24, 80, Some(path.clone()), replaced.clone(), None)
+        .unwrap();
+    let mut stream = runtime
+        .subscribe("tab-exec".into(), replaced.clone())
+        .await
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            match stream.next().await.unwrap() {
+                TerminalSurfaceStreamItemV1::Snapshot { surface }
+                    if !surface_text(&surface).trim().is_empty() =>
+                {
+                    break
+                }
+                TerminalSurfaceStreamItemV1::Output { data, .. } if !data.is_empty() => break,
+                _ => {}
+            }
+        }
+    })
+    .await
+    .expect("shell initial output before exec");
+    runtime.write(replaced.clone(), "exec sleep 30\r").unwrap();
+    let path = worktree.path().canonicalize().unwrap();
+    wait_shell_state(&mut stream, Some(path.to_str().unwrap()), true).await;
+    runtime.kill(replaced).unwrap();
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+async fn wait_shell_state(
+    stream: &mut TerminalSurfaceWireAttachment,
+    cwd: Option<&str>,
+    busy: bool,
+) {
+    let mut last = None;
+    let mut output = String::new();
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let state = match stream.next().await.unwrap() {
+                TerminalSurfaceStreamItemV1::Snapshot { surface } => surface.shell_state,
+                TerminalSurfaceStreamItemV1::Status { state, .. } => Some(state),
+                TerminalSurfaceStreamItemV1::Output { data, .. } => { output = data.to_string(); None },
+                _ => None,
+            };
+            if state.is_some() {
+                last = state.clone();
+            }
+            if state.is_some_and(|state| {
+                state.cwd.as_deref() == cwd && state.has_foreground_process == busy
+            }) {
+                return;
+            }
+        }
+    })
+    .await
+    .unwrap_or_else(|error| {
+        panic!("shell state subscription cwd={cwd:?} busy={busy}, last={last:?}, output={output:?}: {error}")
+    });
 }

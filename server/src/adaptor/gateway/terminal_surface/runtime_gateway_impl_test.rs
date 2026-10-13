@@ -433,6 +433,8 @@ fn journal_output_context(
         }),
     };
     let context = TerminalOutputReaderContext {
+        shell_observation: Default::default(),
+        osc7: Default::default(),
         event_sink: None,
         event_order: Arc::new(TerminalSurfaceEventOrder::default()),
         registry,
@@ -837,6 +839,7 @@ async fn assert_terminal_recreation(drain_exit: bool) {
         gateway.clone(),
         Arc::new(crate::adaptor::gateway::terminal_surface::event_source::TerminalSurfaceEventSourceGateway::new(hub.event_sender())),
         hub.clone(),
+        crate::test_support::terminal_config(""),
     ));
     let subscriptions = StateSubscriptionUsecase::new(
         vec![],
@@ -869,6 +872,10 @@ async fn assert_terminal_recreation(drain_exit: bool) {
     assert_eq!(&*old_written.lock(), b"old");
     // When
     hub.publish(TerminalSurfaceOutputEvent::Exit {
+        state: crate::domain::terminal_surface::TerminalShellState {
+            cwd: None,
+            has_foreground_process: false,
+        },
         session_key: key.clone(),
         runtime_generation: 1,
         exit_code: Some(7),
@@ -1105,8 +1112,11 @@ async fn test_terminal対象なし_購読開始とsnapshot読取と配信でnot_
     let hub = Arc::new(TerminalSurfaceEventHub::with_flags(256, true));
     let gateway = Arc::new(TerminalSurfaceRuntimeGatewayFor::default());
     let terminal = Arc::new(TerminalSurfaceApplication::new(
-        Arc::new(crate::adaptor::gateway::telemetry::TelemetryGateway), gateway,
-        Arc::new(crate::adaptor::gateway::terminal_surface::event_source::TerminalSurfaceEventSourceGateway::new(hub.event_sender())), hub,
+        Arc::new(crate::adaptor::gateway::telemetry::TelemetryGateway),
+        gateway,
+        Arc::new(crate::adaptor::gateway::terminal_surface::event_source::TerminalSurfaceEventSourceGateway::new(hub.event_sender())),
+        hub,
+        crate::test_support::terminal_config(""),
     ));
     let subscriptions = StateSubscriptionUsecase::new(
         vec![],
@@ -1194,7 +1204,8 @@ impl TerminalSurfaceEventSink for SummarySink {
 impl TerminalSurfaceEventSink for BlockingFirstEventSink {
     fn publish(&self, event: TerminalSurfaceOutputEvent) {
         let sequence = match event {
-            TerminalSurfaceOutputEvent::Output { sequence, .. }
+            TerminalSurfaceOutputEvent::Status { sequence, .. }
+            | TerminalSurfaceOutputEvent::Output { sequence, .. }
             | TerminalSurfaceOutputEvent::Resize { sequence, .. }
             | TerminalSurfaceOutputEvent::Exit { sequence, .. } => sequence,
         };
@@ -1242,4 +1253,157 @@ fn test_出力drain待ち_ptyが閉じないときは上限で戻る() {
     // Then
     assert!(!drained);
     assert!(started.elapsed() >= OUTPUT_DRAIN_TIMEOUT);
+}
+
+fn observe_test_shell(gateway: &TerminalSurfaceRuntimeGatewayFor, cwd: &str) {
+    let (state, order) = {
+        let runtimes = gateway.runtimes.lock();
+        let runtime = &runtimes[&1];
+        (
+            runtime.shell_observation.clone(),
+            runtime.event_order.clone(),
+        )
+    };
+    publish_shell_observation(
+        crate::infrastructure::terminal::native_pty::NativeShellObservation {
+            osc7_cwd: Some(cwd.into()),
+            osc7_updated: true,
+            process_cwd: "/process".into(),
+            shell_group: 10,
+            foreground_group: 11,
+            initial_program: "zsh".into(),
+            current_program: "zsh".into(),
+            child_groups: vec![],
+        },
+        &state,
+        &gateway.registry,
+        &order,
+        gateway.event_sink.as_deref(),
+        1,
+    );
+}
+
+fn shell_gateway() -> (TerminalSurfaceRuntimeGatewayFor, Arc<RecordingEventSink>) {
+    let sink = Arc::new(RecordingEventSink::default());
+    let gateway = TerminalSurfaceRuntimeGatewayFor::new_with_event_sink(
+        Arc::new(|_| {}),
+        std::path::PathBuf::new(),
+        sink.clone(),
+        false,
+    );
+    insert_test_session(&gateway, 1, "shell", Some("/repo"), None);
+    (gateway, sink)
+}
+
+#[test]
+fn test_shell観測_生値をdomain状態へ変換して配信する() {
+    // Given
+    let (gateway, sink) = shell_gateway();
+    // When
+    observe_test_shell(&gateway, "/osc7");
+    // Then
+    assert!(
+        matches!(sink.events.lock().unwrap().as_slice(), [TerminalSurfaceOutputEvent::Status { session_key, state, sequence: 1 }] if session_key == "shell" && state.cwd.as_deref() == Some("/osc7") && state.has_foreground_process)
+    );
+}
+
+#[test]
+fn test_shell観測_同じ状態は再配信しない() {
+    // Given
+    let (gateway, sink) = shell_gateway();
+    observe_test_shell(&gateway, "/osc7");
+    // When
+    observe_test_shell(&gateway, "/osc7");
+    // Then
+    assert_eq!(sink.events.lock().unwrap().len(), 1);
+}
+
+#[test]
+fn test_shell観測_終了済みterminalには配信しない() {
+    // Given
+    let (gateway, sink) = shell_gateway();
+    gateway.registry.lock().mark_exited(1, Some(0)).unwrap();
+    gateway.runtimes.lock()[&1]
+        .shell_observation
+        .lock()
+        .mark_exited();
+    // When
+    observe_test_shell(&gateway, "/osc7");
+    // Then
+    assert!(sink.events.lock().unwrap().is_empty());
+    assert_eq!(
+        gateway.shell_state(1),
+        Some(crate::domain::terminal_surface::TerminalShellState {
+            cwd: None,
+            has_foreground_process: false
+        })
+    );
+}
+
+#[test]
+fn test_shell状態の読み取り_観測せず最後の状態を返す() {
+    // Given
+    let (gateway, _) = shell_gateway();
+    assert_eq!(gateway.shell_state(1), None);
+    observe_test_shell(&gateway, "/first");
+    observe_test_shell(&gateway, "/last");
+    // When / Then
+    assert_eq!(
+        gateway.shell_state(1),
+        Some(crate::domain::terminal_surface::TerminalShellState {
+            cwd: Some("/last".into()),
+            has_foreground_process: true
+        })
+    );
+    assert_eq!(gateway.shell_state(99), None);
+}
+
+#[test]
+fn test_shell終了_前面処理ありの観測を更新し終了後の観測は反映しない() {
+    // Given
+    let (gateway, sink) = shell_gateway();
+    observe_test_shell(&gateway, "/last");
+    assert!(gateway.shell_state(1).unwrap().has_foreground_process);
+    let context = {
+        let runtimes = gateway.runtimes.lock();
+        let runtime = &runtimes[&1];
+        TerminalOutputReaderContext {
+            event_sink: gateway.event_sink.clone(),
+            event_order: runtime.event_order.clone(),
+            registry: gateway.registry.clone(),
+            runtime_generation: 1,
+            terminal_surface: runtime.terminal_surface.clone(),
+            checkpoint_scheduler: None,
+            session_key: runtime.session_key.clone(),
+            output_drained: runtime.output_drained.clone(),
+            checkpoint_journal: None,
+            journal_enabled: false,
+            first_provider_byte_started_at: Instant::now(),
+            osc7: runtime.native_pty.osc7.clone(),
+            shell_observation: runtime.shell_observation.clone(),
+        }
+    };
+    // When
+    publish_terminal_exit(&context, Some(0));
+    observe_test_shell(&gateway, "/ignored");
+    // Then
+    assert!(gateway.snapshot(1).unwrap().process_state.is_exited());
+    assert_eq!(
+        gateway.shell_state(1),
+        Some(crate::domain::terminal_surface::TerminalShellState {
+            cwd: Some("/last".into()),
+            has_foreground_process: false,
+        })
+    );
+    assert!(matches!(
+        sink.events.lock().unwrap().as_slice(),
+        [
+            TerminalSurfaceOutputEvent::Status { .. },
+            TerminalSurfaceOutputEvent::Exit {
+                exit_code: Some(0),
+                state,
+                ..
+            }
+        ] if state.cwd.as_deref() == Some("/last") && !state.has_foreground_process
+    ));
 }

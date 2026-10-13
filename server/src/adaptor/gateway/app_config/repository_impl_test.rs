@@ -180,3 +180,15 @@ fn test_workflow設定の読み取り_ロック破損を失敗として返す() 
     // Then
     assert!(matches!(result, Err(AppConfigError::Repository(_))));
 }
+
+#[test]
+fn test_terminal起動設定の読み取り_保存モデルから値を返す() {
+    // Given
+    let mut config = ReleashConfig::default();
+    config.app.terminal_startup_command = "echo startup".into();
+    let gateway = AppConfig::new(config, std::path::PathBuf::new());
+    // When
+    let command = crate::usecase::app_config::query_service::TerminalStartupCommandQueryService::terminal_startup_command(&gateway).unwrap();
+    // Then
+    assert_eq!(command, "echo startup");
+}

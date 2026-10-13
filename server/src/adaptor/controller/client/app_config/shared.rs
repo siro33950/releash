@@ -148,4 +148,35 @@ pub fn register_shared(
             }),
         );
     }
+    {
+        let state = deps.app_config_usecase.clone();
+        router.register_domain(
+            &["update_terminal_startup_command"],
+            Box::new(move |command| {
+                let state = state.clone();
+                Box::pin(async move {
+                    let wire::command_request::Command::UpdateTerminalStartupCommand(args) =
+                        command
+                    else {
+                        return Err(invalid_request("Mismatched command"));
+                    };
+                    let result = async move {
+                        let state = state
+                            .ok_or_else(|| invalid_request("Command dependency unavailable"))?;
+                        outcome(
+                            commands::update_terminal_startup_command_shared(
+                                &state,
+                                convert(required(args.command, "command")?)?,
+                            )
+                            .await,
+                        )
+                    }
+                    .await?;
+                    Ok(wire::command_result::Command::UpdateTerminalStartupCommand(
+                        result,
+                    ))
+                })
+            }),
+        );
+    }
 }

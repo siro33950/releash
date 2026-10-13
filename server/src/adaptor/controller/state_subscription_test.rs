@@ -1837,6 +1837,7 @@ mod driver_tests {
             gateway.clone(),
             Arc::new(crate::adaptor::gateway::terminal_surface::event_source::TerminalSurfaceEventSourceGateway::new(hub.event_sender())),
             hub.clone(),
+            crate::test_support::terminal_config(""),
         ),
     );
             let subscriptions = StateSubscriptionUsecase::new(
@@ -1961,6 +1962,7 @@ mod driver_tests {
             gateway.clone(),
             Arc::new(crate::adaptor::gateway::terminal_surface::event_source::TerminalSurfaceEventSourceGateway::new(hub.event_sender())),
             hub,
+            crate::test_support::terminal_config(""),
         ),
     );
             let subscriptions = StateSubscriptionUsecase::new(
@@ -2043,11 +2045,12 @@ mod driver_tests {
                     release: std::sync::Mutex::new(blocked),
                 });
                 let terminal = Arc::new(crate::usecase::terminal_surface::application::TerminalSurfaceApplication::new(
-            Arc::new(crate::adaptor::gateway::telemetry::TelemetryGateway),
-            Arc::new(gateway),
-            Arc::new(crate::adaptor::gateway::terminal_surface::event_source::TerminalSurfaceEventSourceGateway::new(hub.event_sender())),
-            output,
-        ));
+                    Arc::new(crate::adaptor::gateway::telemetry::TelemetryGateway),
+                    Arc::new(gateway),
+                    Arc::new(crate::adaptor::gateway::terminal_surface::event_source::TerminalSurfaceEventSourceGateway::new(hub.event_sender())),
+                    output,
+                    crate::test_support::terminal_config(""),
+                ));
                 let subscriptions = StateSubscriptionUsecase::new(
                     vec![],
                     crate::test_support::state_subscription::read_driver(),
@@ -2173,6 +2176,10 @@ mod driver_tests {
                 sequence: 1,
             });
             hub.publish(TerminalSurfaceOutputEvent::Exit {
+                state: crate::domain::terminal_surface::TerminalShellState {
+                    cwd: None,
+                    has_foreground_process: false,
+                },
                 session_key: surface.session_key.clone(),
                 runtime_generation: 1,
                 exit_code: Some(7),
@@ -2204,6 +2211,10 @@ mod driver_tests {
                 (
                     1,
                     TerminalSurfaceStreamItem::Exit {
+                        state: crate::domain::terminal_surface::TerminalShellState {
+                            cwd: None,
+                            has_foreground_process: false,
+                        },
                         session_key: surface.session_key.clone(),
                         exit_code: Some(7),
                         sequence: 1,
@@ -2264,6 +2275,10 @@ mod driver_tests {
                 sequence: 0,
             });
             hub.publish(TerminalSurfaceOutputEvent::Exit {
+                state: crate::domain::terminal_surface::TerminalShellState {
+                    cwd: None,
+                    has_foreground_process: false,
+                },
                 session_key: surface.session_key.clone(),
                 runtime_generation: 1,
                 exit_code: Some(7),
@@ -2429,6 +2444,10 @@ mod driver_tests {
                     sequence: 1,
                 });
                 hub.publish(TerminalSurfaceOutputEvent::Exit {
+                    state: crate::domain::terminal_surface::TerminalShellState {
+                        cwd: None,
+                        has_foreground_process: false,
+                    },
                     session_key: surface.session_key.clone(),
                     runtime_generation: generation,
                     exit_code: Some(0),
@@ -2676,11 +2695,12 @@ mod driver_tests {
             gateway.surface = Some(surface.clone());
             let gateway = Arc::new(gateway);
             let terminal = Arc::new(crate::usecase::terminal_surface::application::TerminalSurfaceApplication::new(
-        Arc::new(crate::adaptor::gateway::telemetry::TelemetryGateway),
-        gateway.clone(),
-        Arc::new(crate::adaptor::gateway::terminal_surface::event_source::TerminalSurfaceEventSourceGateway::new(hub.event_sender())),
-        hub,
-    ));
+                Arc::new(crate::adaptor::gateway::telemetry::TelemetryGateway),
+                gateway.clone(),
+                Arc::new(crate::adaptor::gateway::terminal_surface::event_source::TerminalSurfaceEventSourceGateway::new(hub.event_sender())),
+                hub,
+                crate::test_support::terminal_config(""),
+            ));
             let subscriptions = subscriptions.with_terminal(terminal);
             let target = SubscriptionTarget::Terminal(surface.owner.clone());
             let stream = subscriptions.open("client".into()).unwrap();
@@ -3545,10 +3565,12 @@ mod terminal_composition {
         let (entered, stopping) = std::sync::mpsc::channel();
         let (release, released) = std::sync::mpsc::channel();
         let terminal = Arc::new(TerminalSurfaceApplication::new(
-        Arc::new(crate::usecase::test_helpers::NoopPerformance), gateway,
-        Arc::new(crate::adaptor::gateway::terminal_surface::event_source::TerminalSurfaceEventSourceGateway::new(hub.event_sender())),
-        Arc::new(BlockingOutput { hub: hub.clone(), entered, release: Mutex::new(released) }),
-    ));
+            Arc::new(crate::usecase::test_helpers::NoopPerformance),
+            gateway,
+            Arc::new(crate::adaptor::gateway::terminal_surface::event_source::TerminalSurfaceEventSourceGateway::new(hub.event_sender())),
+            Arc::new(BlockingOutput { hub: hub.clone(), entered, release: Mutex::new(released) }),
+            crate::test_support::terminal_config(""),
+        ));
         let output = Arc::new(FakeOutput::default());
         *output.pending.lock() = Some(6000);
         let usecase = TerminalSubscriptionUsecase::new(

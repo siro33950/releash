@@ -93,7 +93,7 @@ def execute(root, tests, result, require_production=False):
             '-clonedSourcePackagesDirPath', '.build/SourcePackages']
     run([*base, '-resolvePackageDependencies', '-onlyUsePackageVersionsFromResolvedFile'], macos)
     command = [*base, '-configuration', 'Debug', '-destination', 'platform=macOS',
-               '-derivedDataPath', '.build/E2EDerivedData', '-disableAutomaticPackageResolution',
+               '-derivedDataPath', '.build/E2EDerivedData', '-disableAutomaticPackageResolution', '-skipPackagePluginValidation',
                '-parallel-testing-enabled', 'NO', '-test-timeouts-enabled', 'YES',
                '-default-test-execution-time-allowance', '60',
                '-maximum-test-execution-time-allowance', '60', '-resultBundlePath', str(result),

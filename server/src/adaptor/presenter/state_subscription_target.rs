@@ -32,6 +32,14 @@ impl SubscriptionTarget {
         }
         let target = match (name, args) {
             ("daemon-info", []) => Ok(Self::DaemonInfo),
+            ("workspace-terminal", [path, id]) => {
+                crate::domain::terminal_surface::TerminalSurfaceOwner::workspace_terminal(
+                    crate::domain::workspace_tree::WorkspaceIdentity::new(*path),
+                    *id,
+                )
+                .map(Self::Terminal)
+                .map_err(|_| SubscriptionError::InvalidId)
+            }
             ("terminal", [path]) => {
                 crate::domain::terminal_surface::TerminalSurfaceOwner::workspace(
                     crate::domain::workspace_tree::WorkspaceIdentity::new(*path),
@@ -138,6 +146,7 @@ impl SubscriptionTarget {
             ("provider-availability", []) => Ok(Self::ProviderAvailability),
             ("external-editor", []) => Ok(Self::ExternalEditor),
             ("releash-base", [path]) => Ok(Self::ReleashBase((*path).into())),
+            ("terminal-startup-command", []) => Ok(Self::TerminalStartupCommand),
             ("workflow-config", []) => Ok(Self::WorkflowConfig),
             ("provider-hook-health", []) => Ok(Self::ProviderHookHealth),
             _ => Err(SubscriptionError::UnknownTarget),
@@ -150,18 +159,25 @@ impl SubscriptionTarget {
     pub fn parts(&self) -> (&'static str, Vec<String>) {
         match self {
             Self::DaemonInfo => ("daemon-info", vec![]),
-            Self::Terminal(owner) => (
-                "terminal",
-                match owner {
-                    crate::domain::terminal_surface::TerminalSurfaceOwner::Workspace {
-                        workspace,
-                    } => vec![workspace.as_str().into()],
-                    crate::domain::terminal_surface::TerminalSurfaceOwner::Session {
-                        workspace,
-                        session_id,
-                    } => vec![workspace.as_str().into(), session_id.clone()],
-                },
-            ),
+            Self::Terminal(owner) => match owner {
+                crate::domain::terminal_surface::TerminalSurfaceOwner::Workspace { workspace } => {
+                    ("terminal", vec![workspace.as_str().into()])
+                }
+                crate::domain::terminal_surface::TerminalSurfaceOwner::WorkspaceTerminal {
+                    workspace,
+                    terminal_id,
+                } => (
+                    "workspace-terminal",
+                    vec![workspace.as_str().into(), terminal_id.clone()],
+                ),
+                crate::domain::terminal_surface::TerminalSurfaceOwner::Session {
+                    workspace,
+                    session_id,
+                } => (
+                    "terminal",
+                    vec![workspace.as_str().into(), session_id.clone()],
+                ),
+            },
             Self::RepositoryGroupState(path) => ("repository-group-state", vec![path.clone()]),
             Self::RepositoryPaths => ("repository-paths", vec![]),
             Self::Workspaces => ("workspaces", vec![]),
@@ -239,6 +255,7 @@ impl SubscriptionTarget {
             Self::ProviderAvailability => ("provider-availability", vec![]),
             Self::ExternalEditor => ("external-editor", vec![]),
             Self::ReleashBase(p) => ("releash-base", vec![p.clone()]),
+            Self::TerminalStartupCommand => ("terminal-startup-command", vec![]),
             Self::WorkflowConfig => ("workflow-config", vec![]),
             Self::ProviderHookHealth => ("provider-hook-health", vec![]),
         }

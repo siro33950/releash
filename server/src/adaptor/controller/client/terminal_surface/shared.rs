@@ -29,7 +29,6 @@ pub(crate) fn register_shared(
                             optional(args.cwd)?,
                             convert(required(args.owner, "owner")?)?,
                             optional(args.label)?,
-                            optional(args.startup_command)?,
                         ))
                     }
                     .await?;

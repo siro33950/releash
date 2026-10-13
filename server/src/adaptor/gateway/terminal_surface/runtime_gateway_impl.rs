@@ -37,6 +37,8 @@ use crate::usecase::failure::WorkFailure;
 
 pub(crate) struct AttachedTerminalRuntime {
     pub(super) native_pty: NativePtyRuntime,
+    pub(super) shell_observation:
+        Arc<Mutex<crate::domain::terminal_surface::entities::TerminalShellStatus>>,
     pub(super) output: Option<NativePtyOutput>,
     pub(super) event_order: Arc<TerminalSurfaceEventOrder>,
     pub(super) terminal_surface: Arc<Mutex<NativeTerminalEmulator>>,
@@ -363,6 +365,8 @@ struct TerminalOutputReaderContext {
     checkpoint_journal: Option<Arc<Mutex<IncrementalCheckpointJournal>>>,
     journal_enabled: bool,
     first_provider_byte_started_at: Instant,
+    osc7: crate::infrastructure::terminal::shell_observation::SharedOsc7Directory,
+    shell_observation: Arc<Mutex<crate::domain::terminal_surface::entities::TerminalShellStatus>>,
 }
 
 enum TerminalOutputCommand {
@@ -419,10 +423,11 @@ fn publish_terminal_exit(context: &TerminalOutputReaderContext, exit_code: Optio
     context
         .event_order
         .advance_and_publish(context.event_sink.as_deref(), || {
-            let sequence = {
+            let (sequence, state) = {
                 let terminal_surface = context.terminal_surface.lock();
                 let mut registry = context.registry.lock();
                 let sequence = registry.mark_exited(context.runtime_generation, exit_code)?;
+                let state = context.shell_observation.lock().mark_exited();
                 if context.checkpoint_scheduler.is_none() {
                     let checkpoint = terminal_surface.snapshot(sequence);
                     registry.apply_checkpoint(
@@ -430,7 +435,7 @@ fn publish_terminal_exit(context: &TerminalOutputReaderContext, exit_code: Optio
                         into_domain_checkpoint(checkpoint),
                     );
                 }
-                sequence
+                (sequence, state)
             };
             if let Some(checkpoint_scheduler) = &context.checkpoint_scheduler {
                 if let Some(journal) = &context.checkpoint_journal {
@@ -448,6 +453,7 @@ fn publish_terminal_exit(context: &TerminalOutputReaderContext, exit_code: Optio
             Some((
                 sequence,
                 TerminalSurfaceOutputEvent::Exit {
+                    state,
                     session_key: context.session_key.clone(),
                     runtime_generation: context.runtime_generation,
                     exit_code,
@@ -507,6 +513,7 @@ fn run_output_processor(
 
 fn spawn_output_reader(mut output: NativePtyOutput, context: TerminalOutputReaderContext) {
     let (sender, receiver) = mpsc::sync_channel(OUTPUT_READER_QUEUE_CAPACITY);
+    let osc7 = context.osc7.clone();
     let first_provider_byte_started_at = context.first_provider_byte_started_at;
     let event_sink = context.event_sink.clone();
     let session_key = context.session_key.clone();
@@ -529,6 +536,7 @@ fn spawn_output_reader(mut output: NativePtyOutput, context: TerminalOutputReade
                             first_provider_byte_started_at.elapsed(),
                         );
                     }
+                    osc7.lock().feed(&buf[..n]);
                     if let Some(filtered) = process_pty_output(&buf[..n], &mut pending) {
                         if sender
                             .send(TerminalOutputCommand::Data { data: filtered })
@@ -545,6 +553,42 @@ fn spawn_output_reader(mut output: NativePtyOutput, context: TerminalOutputReade
 
         let exit_code = output.wait().ok().flatten();
         let _ = sender.send(TerminalOutputCommand::Exit(exit_code));
+    });
+}
+
+fn publish_shell_observation(
+    observation: crate::infrastructure::terminal::native_pty::NativeShellObservation,
+    state: &Mutex<crate::domain::terminal_surface::entities::TerminalShellStatus>,
+    registry: &Mutex<TerminalSurfaceRegistry>,
+    order: &TerminalSurfaceEventOrder,
+    sink: Option<&dyn TerminalSurfaceEventSink>,
+    generation: u64,
+) {
+    order.advance_and_publish(sink, || {
+        let registry = registry.lock();
+        let surface = registry.get(generation)?;
+        let foreground =
+            crate::domain::terminal_surface::TerminalShellState::has_foreground_process(
+                observation.shell_group,
+                observation.foreground_group,
+                &observation.initial_program,
+                &observation.current_program,
+                &observation.child_groups,
+            );
+        let state = state.lock().observe(
+            observation.osc7_cwd,
+            observation.osc7_updated,
+            observation.process_cwd,
+            foreground,
+        )?;
+        Some((
+            (),
+            TerminalSurfaceOutputEvent::Status {
+                session_key: surface.session_key.clone(),
+                state,
+                sequence: surface.latest_sequence(),
+            },
+        ))
     });
 }
 
@@ -693,6 +737,17 @@ impl TerminalSurfaceRepository for TerminalSurfaceRuntimeGatewayFor {
 }
 
 impl TerminalSurfaceGateway for TerminalSurfaceRuntimeGatewayFor {
+    fn shell_state(
+        &self,
+        generation: u64,
+    ) -> Option<crate::domain::terminal_surface::TerminalShellState> {
+        self.runtimes
+            .lock()
+            .get(&generation)?
+            .shell_observation
+            .lock()
+            .latest()
+    }
     fn next_runtime_generation(&self) -> u64 {
         self.registry.lock().next_runtime_generation()
     }
@@ -853,6 +908,7 @@ impl TerminalSurfaceGateway for TerminalSurfaceRuntimeGatewayFor {
         });
         let runtime = AttachedTerminalRuntime {
             native_pty: backend_session.runtime,
+            shell_observation: Default::default(),
             output: Some(backend_session.output),
             event_order: Arc::new(TerminalSurfaceEventOrder::default()),
             terminal_surface,
@@ -905,6 +961,8 @@ impl TerminalSurfaceGateway for TerminalSurfaceRuntimeGatewayFor {
             session_key,
             output_drained,
             checkpoint_journal,
+            native,
+            shell_observation,
         ) = {
             let mut runtimes = self.runtimes.lock();
             let runtime = runtimes.get_mut(&runtime_generation).ok_or_else(|| {
@@ -927,8 +985,35 @@ impl TerminalSurfaceGateway for TerminalSurfaceRuntimeGatewayFor {
                 runtime.session_key.clone(),
                 Arc::clone(&runtime.output_drained),
                 runtime.checkpoint_journal.clone(),
+                runtime.native_pty.clone(),
+                runtime.shell_observation.clone(),
             )
         };
+        let osc7 = native.osc7.clone();
+        let observed_shell = Arc::clone(&shell_observation);
+        let active_registry = self.registry.clone();
+        let registry = self.registry.clone();
+        let order = event_order.clone();
+        let sink = self.event_sink.clone();
+        crate::infrastructure::terminal::shell_observer::spawn(
+            native,
+            move || {
+                active_registry
+                    .lock()
+                    .get(runtime_generation)
+                    .is_some_and(|surface| !surface.process_state.is_exited())
+            },
+            move |observation| {
+                publish_shell_observation(
+                    observation,
+                    &observed_shell,
+                    &registry,
+                    &order,
+                    sink.as_deref(),
+                    runtime_generation,
+                )
+            },
+        );
         spawn_output_reader(
             output,
             TerminalOutputReaderContext {
@@ -942,6 +1027,8 @@ impl TerminalSurfaceGateway for TerminalSurfaceRuntimeGatewayFor {
                 output_drained,
                 checkpoint_journal,
                 journal_enabled: self.journal_enabled,
+                osc7,
+                shell_observation,
                 first_provider_byte_started_at: Instant::now(),
             },
         );

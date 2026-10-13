@@ -8,7 +8,7 @@ import { useSettings } from "./useSettings";
 const states = stateSubscriptions();
 vi.mock("@/lib/client", async (importOriginal) => ({
 	...(await importOriginal<typeof import("@/lib/client")>()),
-	invokeClient: vi.fn(),
+	invokeClient: vi.fn().mockResolvedValue(undefined),
 	subscribeState: (...args: Parameters<typeof states.subscribeState>) =>
 		states.subscribeState(...args),
 }));
@@ -248,5 +248,21 @@ describe("useSettings", () => {
 		expect(invoke).not.toHaveBeenCalledWith("update_performance_telemetry", {
 			enabled: true,
 		});
+	});
+});
+
+describe("Terminalのサーバ設定", () => {
+	it("localStorageの起動コマンドを引き継がない", () => {
+		localStorage.setItem(
+			"releash-settings",
+			JSON.stringify({ terminalStartupCommand: "old" }),
+		);
+		const { result } = renderHook(() => useSettings());
+		expect(result.current.settings).not.toHaveProperty(
+			"terminalStartupCommand",
+		);
+		expect(
+			JSON.parse(localStorage.getItem("releash-settings") ?? "{}"),
+		).not.toHaveProperty("terminalStartupCommand");
 	});
 });

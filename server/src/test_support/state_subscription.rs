@@ -22,8 +22,17 @@ pub fn registration(
 ) -> crate::usecase::terminal_surface::output::TerminalRegistration {
     crate::usecase::terminal_surface::output::TerminalRegistration {
         session_key: session_key.into(),
-        workspace_path: workspace_path.into(),
-        session_id: session_id.map(str::to_owned),
+        owner: match session_id {
+            Some(id) => crate::domain::terminal_surface::TerminalSurfaceOwner::session(
+                crate::domain::workspace_tree::WorkspaceIdentity::new(workspace_path),
+                id,
+            )
+            .unwrap(),
+            None => crate::domain::terminal_surface::TerminalSurfaceOwner::workspace(
+                crate::domain::workspace_tree::WorkspaceIdentity::new(workspace_path),
+            )
+            .unwrap(),
+        },
         runtime_generation,
         latest_sequence,
     }
@@ -399,6 +408,7 @@ pub(crate) fn terminal_application_with_gateway(
         gateway,
         Arc::new(crate::adaptor::gateway::terminal_surface::event_source::TerminalSurfaceEventSourceGateway::new(hub.event_sender())),
         hub,
+        crate::test_support::terminal_config(""),
     ))
 }
 

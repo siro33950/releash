@@ -119,6 +119,8 @@ jobs:
       - uses: maxim-lobanov/setup-xcode@v1
         with:
           xcode-version: ${{ steps.xcode.outputs.version }}
+      - name: Install Metal Toolchain
+        run: xcodebuild -downloadComponent MetalToolchain
       - name: Install Rust toolchain
         run: rustup toolchain install
       - uses: Swatinem/rust-cache@v2

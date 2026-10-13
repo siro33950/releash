@@ -19,7 +19,14 @@ fn output_event(sequence: u64, data: &str) -> TerminalSurfaceOutputEvent {
 #[test]
 fn test_ターミナル状態接続_接続前の登録だけを再生し世代による削除を届ける() {
     struct RecordingStateSink {
-        initialized: std::sync::Mutex<Vec<(String, String, Option<String>, u64, u64)>>,
+        initialized: std::sync::Mutex<
+            Vec<(
+                String,
+                crate::domain::terminal_surface::TerminalSurfaceOwner,
+                u64,
+                u64,
+            )>,
+        >,
         removed: std::sync::Mutex<Vec<(String, u64)>>,
     }
     impl TerminalSurfaceStateSink for RecordingStateSink {
@@ -29,8 +36,7 @@ fn test_ターミナル状態接続_接続前の登録だけを再生し世代�
         ) -> Result<(), crate::usecase::terminal_surface::error::UsecaseError> {
             self.initialized.lock().unwrap().push((
                 registration.session_key.clone(),
-                registration.workspace_path.clone(),
-                registration.session_id.clone(),
+                registration.owner.clone(),
                 registration.runtime_generation,
                 registration.latest_sequence,
             ));
@@ -81,7 +87,16 @@ fn test_ターミナル状態接続_接続前の登録だけを再生し世代�
     // Then
     assert_eq!(
         *sink.initialized.lock().unwrap(),
-        vec![("session".into(), "/repo".into(), Some("agent".into()), 2, 7)]
+        vec![(
+            "session".into(),
+            crate::domain::terminal_surface::TerminalSurfaceOwner::session(
+                crate::domain::workspace_tree::WorkspaceIdentity::new("/repo"),
+                "agent"
+            )
+            .unwrap(),
+            2,
+            7
+        )]
     );
     assert_eq!(*sink.removed.lock().unwrap(), vec![("session".into(), 2)]);
 }
@@ -154,6 +169,10 @@ fn test_global_broadcastへはexitだけが流れoutputやresizeは流れない(
     ));
 
     hub.publish(TerminalSurfaceOutputEvent::Exit {
+        state: crate::domain::terminal_surface::TerminalShellState {
+            cwd: None,
+            has_foreground_process: false,
+        },
         session_key: "session".to_string(),
         runtime_generation: 1,
         exit_code: Some(0),
@@ -408,6 +427,10 @@ fn test_terminal経路_現在と同じ番号の旧世代終了を届け最新削
         })
         .unwrap();
     hub.publish(TerminalSurfaceOutputEvent::Exit {
+        state: crate::domain::terminal_surface::TerminalShellState {
+            cwd: None,
+            has_foreground_process: false,
+        },
         session_key: "session".into(),
         runtime_generation: 1,
         sequence: 0,

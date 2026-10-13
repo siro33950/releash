@@ -91,6 +91,7 @@ function publishDefaults({ provider = true, desktop = true } = {}) {
 		{ name: "develop", is_remote: false },
 	]);
 	states.publish("workflow-config", { approval_auto_approve: false });
+	states.publish("terminal-startup-command", "");
 	if (provider) states.publish("provider-availability", providerSnapshot);
 	states.publish("external-editor", { selected: "", editors: [] });
 	if (desktop) states.publish("desktop-settings", desktopSettings);
@@ -151,6 +152,40 @@ describe("SettingsModal", () => {
 					return Promise.resolve(null as never);
 			}
 		});
+	});
+
+	it("起動コマンドは開いた後の購読を反映しサーバへ保存する", async () => {
+		const { invokeClient: invoke } = await import("@/lib/client");
+		const view = render(<SettingsModal {...defaultProps} />);
+		fireEvent.click(within(screen.getByRole("navigation")).getByText("Agent"));
+		const field = screen.getByLabelText("Workspace terminal startup command");
+		act(() => states.publish("terminal-startup-command", "server command"));
+		await waitFor(() => expect(field).toHaveValue("server command"));
+		fireEvent.change(field, { target: { value: "new command" } });
+		await userEvent.click(screen.getByRole("button", { name: "Save" }));
+		expect(invoke).toHaveBeenCalledWith("update_terminal_startup_command", {
+			command: "new command",
+		});
+		act(() => states.publish("terminal-startup-command", "new command"));
+		view.rerender(<SettingsModal {...defaultProps} open={false} />);
+		view.rerender(<SettingsModal {...defaultProps} open={true} />);
+		await waitFor(() =>
+			expect(
+				screen.getByLabelText("Workspace terminal startup command"),
+			).toHaveValue("new command"),
+		);
+	});
+
+	it("起動コマンドの保存失敗を表示して編集内容を保つ", async () => {
+		const { invokeClient: invoke } = await import("@/lib/client");
+		vi.mocked(invoke).mockRejectedValueOnce(new Error("command save failed"));
+		render(<SettingsModal {...defaultProps} />);
+		fireEvent.click(within(screen.getByRole("navigation")).getByText("Agent"));
+		const field = screen.getByLabelText("Workspace terminal startup command");
+		fireEvent.change(field, { target: { value: "keep draft" } });
+		await userEvent.click(screen.getByRole("button", { name: "Save" }));
+		expect(await screen.findByText("command save failed")).toBeInTheDocument();
+		expect(field).toHaveValue("keep draft");
 	});
 
 	const defaultSettings: AppSettings = { ...DEFAULT_SETTINGS };

@@ -39,8 +39,12 @@ pub use crate::adaptor::presenter::terminal_event_fault_relay::TerminalSurfaceEv
 pub use crate::adaptor::presenter::terminal_event_fault_relay::TerminalSurfaceEventFaultController;
 
 impl TerminalSurfaceRuntime {
-    pub fn new(work: Arc<BackgroundWork>, data_dir: PathBuf) -> Self {
-        Self::compose(work, data_dir)
+    pub fn new(
+        work: Arc<BackgroundWork>,
+        data_dir: PathBuf,
+        config: Arc<dyn crate::domain::app_config::ConfigRepository>,
+    ) -> Self {
+        Self::compose(work, data_dir, config)
     }
 
     #[doc(hidden)]
@@ -48,6 +52,7 @@ impl TerminalSurfaceRuntime {
     pub fn new_with_data_dir_and_event_faults(
         work: Arc<BackgroundWork>,
         data_dir: PathBuf,
+        config: Arc<dyn crate::domain::app_config::ConfigRepository>,
     ) -> (Self, TerminalSurfaceEventFaultController) {
         let event_hub =
             Arc::new(crate::adaptor::presenter::terminal_event_hub::TerminalSurfaceEventHub::new());
@@ -57,16 +62,20 @@ impl TerminalSurfaceRuntime {
                 event_target,
             );
         (
-            Self::compose_with_event_transport(work, data_dir, event_hub, event_sink),
+            Self::compose_with_event_transport(work, data_dir, event_hub, event_sink, config),
             faults,
         )
     }
 
-    fn compose(work: Arc<BackgroundWork>, data_dir: PathBuf) -> Self {
+    fn compose(
+        work: Arc<BackgroundWork>,
+        data_dir: PathBuf,
+        config: Arc<dyn crate::domain::app_config::ConfigRepository>,
+    ) -> Self {
         let event_hub =
             Arc::new(crate::adaptor::presenter::terminal_event_hub::TerminalSurfaceEventHub::new());
         let event_sink: Arc<dyn TerminalSurfaceEventSink> = event_hub.clone();
-        Self::compose_with_event_transport(work, data_dir, event_hub, event_sink)
+        Self::compose_with_event_transport(work, data_dir, event_hub, event_sink, config)
     }
 
     fn compose_with_event_transport(
@@ -74,6 +83,7 @@ impl TerminalSurfaceRuntime {
         data_dir: PathBuf,
         event_hub: Arc<crate::adaptor::presenter::terminal_event_hub::TerminalSurfaceEventHub>,
         event_sink: Arc<dyn TerminalSurfaceEventSink>,
+        config: Arc<dyn crate::domain::app_config::ConfigRepository>,
     ) -> Self {
         let journal_enabled = true;
         let (dirty, dirty_receiver) = super::terminal_checkpoint::dirty_channel();
@@ -88,6 +98,7 @@ impl TerminalSurfaceRuntime {
                 gateway,
                 Arc::new(crate::adaptor::gateway::terminal_surface::event_source::TerminalSurfaceEventSourceGateway::new(event_hub.event_sender())),
                 event_hub,
+                config,
             ),
         );
         let terminal = application.clone();
@@ -121,24 +132,7 @@ impl TerminalSurfaceRuntime {
         label: Option<String>,
     ) -> Result<GetOrSpawnTerminalV1, String> {
         self.application
-            .get_or_spawn(rows, cols, cwd, owner.try_into()?, label, None)
-            .map(Into::into)
-            .map_err(|error| error.to_string())
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    #[cfg(feature = "test-support")]
-    pub fn get_or_spawn_with_startup(
-        &self,
-        rows: u16,
-        cols: u16,
-        cwd: Option<String>,
-        owner: TerminalSurfaceOwnerV1,
-        label: Option<String>,
-        startup_command: Option<String>,
-    ) -> Result<GetOrSpawnTerminalV1, String> {
-        self.application
-            .get_or_spawn(rows, cols, cwd, owner.try_into()?, label, startup_command)
+            .get_or_spawn(rows, cols, cwd, owner.try_into()?, label)
             .map(Into::into)
             .map_err(|error| error.to_string())
     }

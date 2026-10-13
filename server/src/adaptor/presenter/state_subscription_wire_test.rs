@@ -836,6 +836,7 @@ fn test_terminal購読payload_四種類の転送値を保つ() {
         (
             Item::Snapshot(
                 crate::usecase::terminal_surface::application::TerminalSurfaceSnapshotDto {
+                    shell_state: None,
                     session_key: "terminal".into(),
                     replay: "history".into(),
                     sequence: 7,
@@ -847,6 +848,7 @@ fn test_terminal購読payload_四種類の転送値を保つ() {
                 },
             ),
             wire::terminal_event::Item::Snapshot(wire::TerminalSnapshot {
+                status: None,
                 session_key: "terminal".into(),
                 processed_report_units:
                     crate::infrastructure::terminal::output_flow_control::OUTPUT_REPORT_UNITS as u32,
@@ -886,11 +888,21 @@ fn test_terminal購読payload_四種類の転送値を保つ() {
         ),
         (
             Item::Exit {
+                state: crate::domain::terminal_surface::TerminalShellState {
+                    cwd: Some("/last".into()),
+                    has_foreground_process: false,
+                },
                 session_key: "terminal".into(),
                 exit_code: Some(42),
                 sequence: 10,
             },
             wire::terminal_event::Item::Exit(wire::TerminalExit {
+                status: Some(wire::TerminalStatus {
+                    session_key: "terminal".into(),
+                    cwd: Some("/last".into()),
+                    has_foreground_process: false,
+                    sequence: 10,
+                }),
                 session_key: "terminal".into(),
                 exit_code: Some(42),
                 sequence: 10,

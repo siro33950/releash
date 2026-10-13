@@ -185,7 +185,11 @@ impl AgentSessionTuiAcceptanceHost {
             std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
         ))
         .map_err(|error| error.to_string())?;
-        let terminal = TerminalSurfaceRuntime::new(work.clone(), config.data_dir.clone());
+        let terminal = TerminalSurfaceRuntime::new(
+            work.clone(),
+            config.data_dir.clone(),
+            crate::test_support::terminal_config(""),
+        );
         let data_dir = config.data_dir.clone();
         let subscriptions = terminal.subscriptions();
         let composition = compose_agent_sessions(AgentSessionCompositionInput {

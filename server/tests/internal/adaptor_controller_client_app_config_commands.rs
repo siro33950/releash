@@ -12,7 +12,11 @@ pub async fn test_workflow設定_転送入力をcontrollerで保存し購読用�
         ReleashConfig::default(),
         dir.path().join("config.toml"),
     ));
-    let usecase = Arc::new(AppConfigUsecase::new(config.clone(), config));
+    let usecase = Arc::new(AppConfigUsecase::new(
+        config.clone(),
+        config.clone(),
+        config,
+    ));
     let input = releashd::test_support::integration::settings::WorkflowConfigInput::try_from(
         releashd::test_support::integration::wire::WorkflowSection {
             approval_auto_approve: Some(true),

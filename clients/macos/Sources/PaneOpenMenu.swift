@@ -21,6 +21,7 @@ struct PaneOpenMenu: View {
       Image(systemName: "plus")
     }
     .menuStyle(.borderlessButton)
+    .disabled(!model.layoutLoaded)
     .menuIndicator(.hidden)
     .fixedSize()
     .padding(.horizontal, UIStyle.spacing)

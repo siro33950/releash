@@ -182,6 +182,19 @@ pub async fn compose(
     let projected_local_event_repository: Arc<
         dyn domain::local_event::LocalEventTransactionRepository,
     > = local_event_store.clone();
+    let config_path = data_dir.join("releash.toml");
+    let config = load_or_create_config(&config_path)
+        .map_err(|e| format!("設定ファイルの読み込みに失敗: {e}"))?;
+    let telemetry = infrastructure::telemetry::init_telemetry(
+        config.telemetry.crash_reporting,
+        config.telemetry.performance_telemetry,
+    );
+
+    let app_config = Arc::new(AppConfig::new(config, config_path));
+    let config_repository: Arc<dyn ConfigRepository> = app_config.clone();
+    let config_secret_repository: Arc<dyn ConfigSecretRepository> = app_config.clone();
+    let notion_config_repository: Arc<dyn NotionConfigRepository> = app_config.clone();
+
     let terminal_surface_runtime = terminal_surface::TerminalSurfaceRuntime::new(
         Arc::new(terminal_surface::BackgroundWork::new(
             retrying.clone(),
@@ -189,6 +202,7 @@ pub async fn compose(
             tokio::runtime::Handle::current(),
         )),
         data_dir.clone(),
+        config_repository.clone(),
     );
     let terminal_surface = terminal_surface_runtime.application();
     let terminal_presenter = Arc::new(
@@ -234,18 +248,6 @@ pub async fn compose(
         ),
     );
 
-    let config_path = data_dir.join("releash.toml");
-    let config = load_or_create_config(&config_path)
-        .map_err(|e| format!("設定ファイルの読み込みに失敗: {e}"))?;
-    let telemetry = infrastructure::telemetry::init_telemetry(
-        config.telemetry.crash_reporting,
-        config.telemetry.performance_telemetry,
-    );
-
-    let app_config = Arc::new(AppConfig::new(config, config_path));
-    let config_repository: Arc<dyn ConfigRepository> = app_config.clone();
-    let config_secret_repository: Arc<dyn ConfigSecretRepository> = app_config.clone();
-    let notion_config_repository: Arc<dyn NotionConfigRepository> = app_config.clone();
     let notion_api_gateway: Arc<dyn domain::notion::NotionApiGateway> = Arc::new(
         adaptor::gateway::notion::NotionApiGatewayImpl::new(retry_limiter.clone()),
     );
@@ -532,8 +534,12 @@ pub async fn compose(
     let review_usecase_for_reads = app_state.review_usecase.clone();
     let review_comment_usecase_for_reads = review_comment_usecase.clone();
     let app_config_usecase = Arc::new(
-        usecase::app_config::AppConfigUsecase::new(config_repository.clone(), app_config.clone())
-            .with_state_publisher(state_subscriptions.clone()),
+        usecase::app_config::AppConfigUsecase::new(
+            config_repository.clone(),
+            app_config.clone(),
+            app_config.clone(),
+        )
+        .with_state_publisher(state_subscriptions.clone()),
     );
     let hook_health_markers = data_dir
         .join("provider-launches")

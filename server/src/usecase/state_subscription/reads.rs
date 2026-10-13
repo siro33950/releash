@@ -447,6 +447,7 @@ impl WorkspaceStateReads {
             T::ReleashBase(p) => {
                 StateValue::ReleashBase(self.repository.get_releash_base(p).map_err(error)?)
             }
+            T::TerminalStartupCommand => StateValue::TerminalStartupCommand(self.app_config.terminal_startup_command().map_err(error)?),
             T::WorkflowConfig => {
                 StateValue::WorkflowConfig(self.app_config.get_workflow_config().map_err(error)?)
             }

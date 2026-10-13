@@ -196,3 +196,38 @@ fn test_pty外部失敗_io以外はotherと元のメッセージを保持する(
     assert_eq!(failure.kind, std::io::ErrorKind::Other);
     assert_eq!(failure.message, format!("PTY operation: {message}"));
 }
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[test]
+fn test_shell観測_起動時の実行ファイル取得失敗から再取得で回復する() {
+    struct CurrentGroup;
+    impl NativePtyResizer for CurrentGroup {
+        fn foreground_group(&self) -> Result<i32, super::NativePtyError> {
+            Ok(unsafe { libc::getpgrp() })
+        }
+        fn resize(&mut self, _: u16, _: u16) -> Result<(), super::NativePtyError> {
+            Ok(())
+        }
+    }
+    let mut runtime = NativePtyRuntime::new(
+        Box::new(Vec::<u8>::new()),
+        Box::new(NoopKiller),
+        Box::new(CurrentGroup),
+    );
+    runtime.pid = Some(std::process::id());
+    assert!(runtime.initial_program.lock().is_none());
+    let current = super::super::shell_observation::process_executable(std::process::id()).unwrap();
+    runtime.launcher_program = Some(current.clone());
+    *runtime.initial_program.lock() = Some("not-executed-shell".into());
+    assert!(matches!(runtime.observe_shell(), Ok(None)));
+    runtime.launcher_program = None;
+    *runtime.initial_program.lock() = None;
+    let observation = runtime.observe_shell().unwrap().unwrap();
+    assert_eq!(observation.initial_program, observation.current_program);
+    assert_eq!(
+        runtime.initial_program.lock().as_ref(),
+        Some(&observation.current_program)
+    );
+    assert!(runtime.observe_shell().is_ok());
+    assert!(runtime.kill().is_ok());
+}

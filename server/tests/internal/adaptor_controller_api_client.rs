@@ -612,6 +612,7 @@ pub async fn test_terminal購読_connectの後段配線と差分再開と流量�
             ),
         ),
         hub.clone(),
+        releashd::test_support::terminal_config(""),
     ));
     let (app, _, _) =
         crate::adaptor_controller_client_workflow_mod::tests::make_read_only_app_with_terminal(

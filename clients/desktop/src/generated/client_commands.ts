@@ -116,6 +116,7 @@ import {
 	UpdateLoginItemPreferenceRequestSchema,
 	UpdatePerformanceTelemetryRequestSchema,
 	UpdateProviderExecutableRequestSchema,
+	UpdateTerminalStartupCommandRequestSchema,
 	UpdateWorkflowConfigRequestSchema,
 	ValidateNotionConfigRequestSchema,
 	WorkflowSubmitOutputRequestSchema,
@@ -1563,6 +1564,25 @@ const commands = {
 					UpdateWorkflowConfigRequestSchema,
 					clientJson(
 						UpdateWorkflowConfigRequestSchema,
+						JSON.parse(JSON.stringify(args ?? {})),
+						true,
+					),
+				),
+			),
+		);
+		return result;
+	},
+	update_terminal_startup_command: async (
+		client: Client<typeof ClientService>,
+		args: ClientCommandArgs["update_terminal_startup_command"],
+	) => {
+		const result = decode(
+			UnitSchema,
+			await client.updateTerminalStartupCommand(
+				fromJson(
+					UpdateTerminalStartupCommandRequestSchema,
+					clientJson(
+						UpdateTerminalStartupCommandRequestSchema,
 						JSON.parse(JSON.stringify(args ?? {})),
 						true,
 					),

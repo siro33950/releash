@@ -112,13 +112,6 @@ export function useSettings() {
 		[],
 	);
 
-	const updateTerminalStartupCommand = useCallback(
-		(terminalStartupCommand: string) => {
-			setSettings((prev) => ({ ...prev, terminalStartupCommand }));
-		},
-		[],
-	);
-
 	const prevCrashReporting = useRef(settings.enableCrashReporting);
 
 	const updateSettings = useCallback((next: AppSettingsUpdate) => {
@@ -143,7 +136,6 @@ export function useSettings() {
 		updateDefaultDiffBase,
 		updateDefaultDiffMode,
 		updateDefaultDiffOnlyMode,
-		updateTerminalStartupCommand,
 		updateSettings,
 	};
 }

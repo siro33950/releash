@@ -95,6 +95,7 @@ indirect enum PaneLayout: Equatable {
   }
   var tabs: [PaneTab] {
     if case .pane(_, let tabs, _) = self { return tabs }
+    if case .split(_, _, _, let first, let second) = self { return first.tabs + second.tabs }
     return []
   }
 }

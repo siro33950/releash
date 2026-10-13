@@ -24,19 +24,27 @@ pub trait WorkflowConfigQueryService: Send + Sync {
     ) -> Result<WorkflowConfigDto, crate::domain::app_config::AppConfigError>;
 }
 
+pub trait TerminalStartupCommandQueryService: Send + Sync {
+    fn terminal_startup_command(&self)
+        -> Result<String, crate::domain::app_config::AppConfigError>;
+}
+
 pub struct AppConfigQueryService {
     repository: Arc<dyn ConfigRepository>,
     workflow: Arc<dyn WorkflowConfigQueryService>,
+    terminal: Arc<dyn TerminalStartupCommandQueryService>,
 }
 
 impl AppConfigQueryService {
     pub(crate) fn new(
         repository: Arc<dyn ConfigRepository>,
         workflow: Arc<dyn WorkflowConfigQueryService>,
+        terminal: Arc<dyn TerminalStartupCommandQueryService>,
     ) -> Self {
         Self {
             repository,
             workflow,
+            terminal,
         }
     }
 
@@ -49,6 +57,10 @@ impl AppConfigQueryService {
             performance_telemetry: config.telemetry.performance_telemetry,
             auto_launch: config.app.auto_launch,
         })
+    }
+
+    pub fn terminal_startup_command(&self) -> Result<String, UsecaseError> {
+        Ok(self.terminal.terminal_startup_command()?)
     }
 
     pub fn get_workflow_config(&self) -> Result<WorkflowConfigDto, UsecaseError> {

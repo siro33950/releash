@@ -357,7 +357,7 @@ impl Fixture {
             review_comments_dir: releashd::test_support::integration::platform::state_dir(&root),
             workflows_dir: workflows_dir.clone(),
             app_config: Arc::new(
-                releashd::test_support::integration::settings::AppConfigUsecase::new(config.clone(), config.clone())
+                releashd::test_support::integration::settings::AppConfigUsecase::new(config.clone(), config.clone(), config.clone())
                     .with_state_publisher(publisher.clone()),
             ),
             notion: Arc::new(

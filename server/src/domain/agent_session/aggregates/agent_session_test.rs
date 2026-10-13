@@ -242,6 +242,38 @@ fn test_agent_session生成_空のworkspaceを拒否する() {
 }
 
 #[test]
+fn test_agent_session生成_nullを含むidentityを拒否する() {
+    // Given / When
+    let error = AgentSession::create(
+        "bad\0id",
+        WorkspaceIdentity::new("/repo"),
+        "/repo/.worktrees/feature",
+        ProviderKind::Claude,
+        standalone_location("agent-session-1"),
+    )
+    .unwrap_err();
+
+    // Then
+    assert_eq!(error, AgentSessionCreationError::Identity);
+}
+
+#[test]
+fn test_agent_session生成_nullを含むworkspaceを拒否する() {
+    // Given / When
+    let error = AgentSession::create(
+        "agent-session-1",
+        WorkspaceIdentity::new("/repo\0/path"),
+        "/repo/.worktrees/feature",
+        ProviderKind::Claude,
+        standalone_location("agent-session-1"),
+    )
+    .unwrap_err();
+
+    // Then
+    assert_eq!(error, AgentSessionCreationError::Workspace);
+}
+
+#[test]
 fn test_agent_session生成_空のworktreeを拒否する() {
     let error = AgentSession::create(
         "agent-session-1",

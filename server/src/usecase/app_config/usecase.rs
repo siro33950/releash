@@ -23,8 +23,9 @@ impl AppConfigUsecase {
     pub fn new(
         repository: Arc<dyn ConfigRepository>,
         workflow_query: Arc<dyn WorkflowConfigQueryService>,
+        terminal_query: Arc<dyn super::query_service::TerminalStartupCommandQueryService>,
     ) -> Self {
-        let query = AppConfigQueryService::new(repository.clone(), workflow_query);
+        let query = AppConfigQueryService::new(repository.clone(), workflow_query, terminal_query);
         Self {
             repository,
             query,
@@ -50,6 +51,14 @@ impl AppConfigUsecase {
         &self,
     ) -> Result<super::query_service::WorkflowConfigDto, UsecaseError> {
         self.query.get_workflow_config()
+    }
+
+    pub fn terminal_startup_command(&self) -> Result<String, UsecaseError> {
+        self.query.terminal_startup_command()
+    }
+
+    pub fn update_terminal_startup_command(&self, command: String) -> Result<(), UsecaseError> {
+        self.update(move |config| config.app.update_terminal_startup_command(command))
     }
 
     fn update(

@@ -114,6 +114,54 @@ function useWorkflowSettings(open: boolean) {
 	};
 }
 
+function useTerminalSettings(open: boolean) {
+	const subscription = useStateSubscriptionResult(
+		open ? "terminal-startup-command" : null,
+	);
+	const [config, setConfig] = useState("");
+	const [draft, setDraft] = useState("");
+	const isDirty = draft !== config;
+	const dirty = useRef(isDirty);
+	dirty.current = isDirty;
+	const [saving, setSaving] = useState(false);
+	const [error, setError] = useState<string | null>(null);
+
+	const loaded = subscription.value;
+	useEffect(() => {
+		if (loaded === undefined || dirty.current) return;
+		setConfig(loaded);
+		setDraft(loaded);
+	}, [loaded]);
+	useEffect(() => {
+		if (!open) setDraft(config);
+	}, [open, config]);
+
+	const save = useCallback(async () => {
+		setSaving(true);
+		setError(null);
+		try {
+			await invoke("update_terminal_startup_command", { command: draft });
+			setError(null);
+			setConfig(draft);
+		} catch (e) {
+			setError(getErrorMessage(e));
+			throw e;
+		} finally {
+			setSaving(false);
+		}
+	}, [draft]);
+
+	return {
+		draft,
+		setDraft,
+		isDirty,
+		loading: open && loaded === undefined,
+		saving,
+		error: error ?? subscription.error,
+		save,
+	};
+}
+
 type SettingsSection =
 	| "appearance"
 	| "editor"
@@ -584,13 +632,11 @@ function RepositoriesSection({
 }
 
 function AgentSection({
-	draft,
-	updateDraft,
+	terminal,
 	workflow,
 	providerAvailability,
 }: {
-	draft: AppSettingsUpdate;
-	updateDraft: (updater: (d: AppSettingsUpdate) => AppSettingsUpdate) => void;
+	terminal: ReturnType<typeof useTerminalSettings>;
 	workflow: ReturnType<typeof useWorkflowSettings>;
 	providerAvailability: ReturnType<typeof useProviderAvailabilitySettings>;
 }) {
@@ -635,13 +681,9 @@ function AgentSection({
 				</label>
 				<textarea
 					id="terminal-startup-cmd"
-					value={draft.terminalStartupCommand}
-					onChange={(e) =>
-						updateDraft((d) => ({
-							...d,
-							terminalStartupCommand: e.target.value,
-						}))
-					}
+					value={terminal.draft}
+					disabled={terminal.loading || terminal.saving}
+					onChange={(e) => terminal.setDraft(e.target.value)}
 					placeholder="e.g. nvm use 18 && clear"
 					rows={3}
 					className="w-full bg-muted border border-border rounded px-2 py-1.5 text-xs font-mono focus:outline-none focus:ring-1 focus:ring-primary resize-none"
@@ -649,6 +691,11 @@ function AgentSection({
 				<p className="text-[10px] text-muted-foreground">
 					Optional setup command for Workspace terminals.
 				</p>
+				{terminal.error && (
+					<p role="alert" className="text-xs text-destructive">
+						{terminal.error}
+					</p>
+				)}
 			</div>
 		</div>
 	);
@@ -962,6 +1009,7 @@ export function SettingsModal({
 	const externalEditor = useExternalEditorConfig(open);
 	const automation = useAutomation(open);
 	const workflow = useWorkflowSettings(open);
+	const terminal = useTerminalSettings(open);
 	const providerAvailability = useProviderAvailabilitySettings(open);
 
 	if (open !== state.prevOpen) {
@@ -984,6 +1032,7 @@ export function SettingsModal({
 	const { isDirty: notionIsDirty, save: notionSave } = notion;
 	const { isDirty: editorIsDirty, save: editorSave } = externalEditor;
 	const { isDirty: workflowIsDirty, save: workflowSave } = workflow;
+	const { isDirty: terminalIsDirty, save: terminalSave } = terminal;
 	const {
 		isDirty: providerAvailabilityIsDirty,
 		save: providerAvailabilitySave,
@@ -1008,6 +1057,9 @@ export function SettingsModal({
 			}
 			if (editorIsDirty) {
 				await editorSave();
+			}
+			if (terminalIsDirty) {
+				await terminalSave();
 			}
 			if (workflowIsDirty) {
 				await workflowSave();
@@ -1049,6 +1101,8 @@ export function SettingsModal({
 		editorSave,
 		workflowIsDirty,
 		workflowSave,
+		terminalIsDirty,
+		terminalSave,
 		providerAvailabilityIsDirty,
 		providerAvailabilitySave,
 	]);
@@ -1060,6 +1114,7 @@ export function SettingsModal({
 		notionIsDirty ||
 		editorIsDirty ||
 		workflowIsDirty ||
+		terminalIsDirty ||
 		providerAvailabilityIsDirty;
 
 	const sectionContent = (() => {
@@ -1109,8 +1164,7 @@ export function SettingsModal({
 			case "agent":
 				return (
 					<AgentSection
-						draft={draft}
-						updateDraft={updateDraft}
+						terminal={terminal}
 						workflow={workflow}
 						providerAvailability={providerAvailability}
 					/>

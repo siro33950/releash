@@ -1,5 +1,6 @@
 use super::*;
 use crate::adaptor::presenter::state_subscription::StateSubscriptionEvent;
+use crate::domain::terminal_surface::value_objects::terminal_surface_owner::TerminalSurfaceOwnerError;
 use crate::test_support::state_subscription::WakeFlag;
 use futures_util::{Stream, StreamExt};
 
@@ -8,26 +9,43 @@ fn test_terminal登録_nulを含む識別子を失敗として返す() {
     // Given
     let presenter = TerminalSubscriptionPresenter::new(&StateSubscriptionPresenter::new());
 
+    let initialize = |owner: Result<_, TerminalSurfaceOwnerError>| {
+        owner.map(|owner| {
+            presenter.initialize(&TerminalRegistration {
+                session_key: "session".into(),
+                owner,
+                runtime_generation: 1,
+                latest_sequence: 0,
+            })
+        })
+    };
+
     // When
-    let path = presenter.initialize(&crate::test_support::state_subscription::registration(
-        "session", "/re\0po", None, 1, 0,
-    ));
-    let session = presenter.initialize(&crate::test_support::state_subscription::registration(
-        "session",
-        "/repo",
-        Some("ses\0sion"),
-        1,
-        0,
-    ));
+    let path = initialize(
+        crate::domain::terminal_surface::TerminalSurfaceOwner::workspace(
+            crate::domain::workspace_tree::WorkspaceIdentity::new("/re\0po"),
+        ),
+    );
+    let session = initialize(
+        crate::domain::terminal_surface::TerminalSurfaceOwner::session(
+            crate::domain::workspace_tree::WorkspaceIdentity::new("/repo"),
+            "ses\0sion",
+        ),
+    );
 
     // Then
-    assert!(path.is_err());
-    assert!(session.is_err());
-    assert!(!presenter.test_runtime().inspect(|state| state.registered(
-        &SubscriptionTarget::from_parts("terminal", &["/repo"])
-            .unwrap()
-            .to_string()
-    )));
+    assert!(matches!(
+        path,
+        Err(TerminalSurfaceOwnerError::WorkspacePath)
+    ));
+    assert!(matches!(session, Err(TerminalSurfaceOwnerError::SessionId)));
+    assert!(!presenter.test_runtime().inspect(|state| {
+        state.registered(
+            &SubscriptionTarget::from_parts("terminal", &["/repo"])
+                .unwrap()
+                .to_string(),
+        )
+    }));
 }
 
 #[tokio::test]
@@ -91,6 +109,10 @@ async fn test_古いterminal寸法_初回の復元要求だけ待機者へ通知
         presenter.as_ref(),
         &crate::test_support::state_subscription::registration("session", "/repo", None, 1, 2),
         TerminalSurfaceOutputEvent::Exit {
+            state: crate::domain::terminal_surface::TerminalShellState {
+                cwd: None,
+                has_foreground_process: false,
+            },
             session_key: "session".into(),
             runtime_generation: 1,
             exit_code: Some(0),
