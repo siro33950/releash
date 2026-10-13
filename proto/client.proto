@@ -2891,7 +2891,7 @@ message StatePayload {
     DirectorySnapshot directory = 72;
     FileTabView file_tab = 73;
     FileThreadsSnapshot file_threads = 74;
-    ProviderUsageSnapshot provider_usage = 69;
+    ProviderUsageSnapshot provider_usage = 70;
   }
 }
 message FileThreadsSnapshot {
