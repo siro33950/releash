@@ -94,7 +94,9 @@ def execute(root, tests, result, require_production=False):
     run([*base, '-resolvePackageDependencies', '-onlyUsePackageVersionsFromResolvedFile'], macos)
     command = [*base, '-configuration', 'Debug', '-destination', 'platform=macOS',
                '-derivedDataPath', '.build/E2EDerivedData', '-disableAutomaticPackageResolution',
-               '-parallel-testing-enabled', 'NO', '-resultBundlePath', str(result),
+               '-parallel-testing-enabled', 'NO', '-test-timeouts-enabled', 'YES',
+               '-default-test-execution-time-allowance', '120',
+               '-maximum-test-execution-time-allowance', '300', '-resultBundlePath', str(result),
                'CODE_SIGNING_ALLOWED=YES', 'test']
     command.extend(f'-only-testing:{test}' for test in tests)
     return monitored_test(command, macos, require_production)
