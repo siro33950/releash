@@ -381,7 +381,7 @@ impl ReviewUsecase {
         path: &str,
         base: &str,
     ) -> Result<super::code_dto::FileTabViewDto, CodeUsecaseError> {
-        use super::code_dto::{FileHunkStateDto, FileTabViewDto};
+        use super::code_dto::FileTabViewDto;
         let base = ReviewBase::parse(base)?;
         let relative_path = resolve_review_target(worktree_path, path)?;
         let file_path = self.code.file_target(worktree_path, &relative_path)?;
@@ -438,10 +438,7 @@ impl ReviewUsecase {
                 modified_source.metadata,
             ),
             initial_mode,
-            additions: 0,
-            deletions: 0,
             patch: String::new(),
-            hunk_states: Vec::new(),
         };
         if ReviewPresentation::classify(&relative_path, false, &original_bytes, &modified_bytes)
             == ReviewPresentation::Image
@@ -476,45 +473,6 @@ impl ReviewUsecase {
             ReviewSection::Changes,
         )?;
         let display_hunks: Vec<_> = hunks.hunks.iter().map(hunk_dto_to_domain).collect();
-        if base == ReviewBase::Head {
-            let index_bytes = self
-                .code
-                .read_review_source_bytes(&file_path, ReviewContentSource::Staged)?;
-            let index = if crate::domain::code::value_objects::review::review_bytes_are_binary(
-                &index_bytes,
-            ) {
-                None
-            } else {
-                Some(decode_side_text(&index_bytes)?)
-            };
-            let staged_hunks = if let Some(index) = &index {
-                self.code
-                    .compute_diff_hunks(&original, index, Some(&relative_path))?
-                    .hunks
-                    .iter()
-                    .map(hunk_dto_to_domain)
-                    .collect::<Vec<_>>()
-            } else {
-                Vec::new()
-            };
-            let states = crate::domain::code::services::file_hunk::hunk_stage_states(
-                index.as_deref(),
-                &modified,
-                &staged_hunks,
-                &display_hunks,
-            );
-            dto.hunk_states = hunks
-                .hunks
-                .iter()
-                .zip(states)
-                .map(|(hunk, is_staged)| FileHunkStateDto {
-                    hunk_id: hunk.hunk_id.clone(),
-                    is_staged,
-                })
-                .collect();
-        }
-        (dto.additions, dto.deletions) =
-            crate::domain::code::services::file_hunk::line_counts(&display_hunks);
         dto.patch = crate::domain::code::services::file_hunk::patch(
             &relative_path,
             &display_hunks,
@@ -538,76 +496,6 @@ impl ReviewUsecase {
         Ok(dto)
     }
 
-    async fn apply_file_tab_hunk(
-        &self,
-        worktree: &str,
-        path: &str,
-        base: &str,
-        hunk_id: &str,
-        stage: bool,
-    ) -> Result<(), CodeUsecaseError> {
-        use crate::domain::code::services::file_hunk;
-        file_hunk::ensure_hunk_comparison(ReviewBase::parse(base)?)?;
-        let view = self.get_file_tab_view(worktree, path, base)?;
-        let ReviewFileViewDto::TextDiff(view) = view.view else {
-            return Err(CodeError::Rule("file hunk requires text".into()).into());
-        };
-        let hunks: Vec<_> = view.hunks.iter().map(hunk_dto_to_domain).collect();
-        let selected = file_hunk::select_hunk(&hunks, hunk_id)?;
-        let file = self.code.file_target(worktree, &view.path)?;
-        let index_bytes = self
-            .code
-            .read_review_source_bytes(&file, ReviewContentSource::Staged)?;
-        let index = decode_side_text(&index_bytes)?;
-        let staged = self
-            .code
-            .compute_diff_hunks(&view.original, &index, Some(&view.path))?;
-        let staged_hunks: Vec<_> = staged.hunks.iter().map(hunk_dto_to_domain).collect();
-        let target = crate::domain::code::services::file_hunk::index_after_hunk(
-            &view.original,
-            &index,
-            &view.modified,
-            &staged_hunks,
-            selected,
-            stage,
-        )?;
-        let changes = self
-            .code
-            .compute_diff_hunks(&index, &target, Some(&view.path))?;
-        let head = self.code.select_review_side_source(
-            &file,
-            ReviewBlobSide::Original,
-            ReviewSection::FileTab,
-            ReviewBase::Head,
-        )?;
-        let working = self.code.select_review_side_source(
-            &file,
-            ReviewBlobSide::Modified,
-            ReviewSection::FileTab,
-            ReviewBase::Head,
-        )?;
-        let patch = file_hunk::index_patch(
-            &view.path,
-            &changes
-                .hunks
-                .iter()
-                .map(hunk_dto_to_domain)
-                .collect::<Vec<_>>(),
-            &index,
-            &target,
-            file_hunk::FilePresence {
-                head: !head.metadata.is_missing(),
-                index: !matches!(index_bytes, ReviewSideBytes::Missing),
-                working: !working.metadata.is_missing(),
-            },
-            stage,
-        );
-        if !patch.is_empty() {
-            self.code.git_stage_hunk(worktree, &patch).await?;
-        }
-        Ok(())
-    }
-
     pub async fn git_stage_review_group(
         &self,
         worktree_path: &str,
@@ -617,11 +505,6 @@ impl ReviewUsecase {
         group_id: &str,
     ) -> Result<(), CodeUsecaseError> {
         let section = ReviewSection::parse(section)?;
-        if section == ReviewSection::FileTab {
-            return self
-                .apply_file_tab_hunk(worktree_path, path, base, group_id, true)
-                .await;
-        }
         let snapshot = self.snapshot(worktree_path)?;
         let patch = self.generate_review_group_patch(
             worktree_path,
@@ -643,11 +526,6 @@ impl ReviewUsecase {
         group_id: &str,
     ) -> Result<(), CodeUsecaseError> {
         let section = ReviewSection::parse(section)?;
-        if section == ReviewSection::FileTab {
-            return self
-                .apply_file_tab_hunk(worktree_path, path, base, group_id, false)
-                .await;
-        }
         let snapshot = self.snapshot(worktree_path)?;
         let patch = self.generate_review_group_patch(
             worktree_path,

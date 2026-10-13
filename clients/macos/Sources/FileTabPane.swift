@@ -71,25 +71,34 @@ struct FileTabPane: View {
   var toolbar: some View {
     HStack(spacing: 4) {
       Text(path).accessibilityIdentifier("file-path").lineLimit(1).truncationMode(.middle).layoutPriority(-1).help(path)
-      Picker("表示", selection: Binding(get: { mode }, set: { setPresentation(mode: $0) })) {
-        Text("File").tag("file")
-        Text("Diff").tag("diff")
-      }.labelsHidden().fixedSize().accessibilityIdentifier("file-mode")
+      Spacer(minLength: 8)
+      if draft.selection != nil { Button("Thread作成", action: startThread).fixedSize().accessibilityIdentifier("file-create-thread") }
       if mode == "diff" {
-        Picker("比較", selection: Binding(get: { base }, set: { setPresentation(base: $0) })) {
-          Text("HEAD 比較").tag("head")
-          Text("base 比較").tag("branch-base")
-        }.labelsHidden().fixedSize().accessibilityIdentifier("file-base")
-        Text("+\(value?.additions ?? 0) −\(value?.deletions ?? 0)").fixedSize().accessibilityIdentifier("file-stats")
-        Picker("並べ方", selection: settings.$style) {
-          Text("上下").tag("unified")
-          Text("左右").tag("split")
-        }.labelsHidden().fixedSize().accessibilityIdentifier("file-style")
-        Toggle(settings.full ? "全文" : "変更箇所のみ", isOn: settings.$full).fixedSize().accessibilityIdentifier("file-full")
+        IconChoice(selection: Binding(get: { base }, set: { setPresentation(base: $0) }), options: [
+          ("head", "HEAD と比較", "circle.and.line.horizontal"), ("branch-base", "base と比較", "arrow.triangle.branch"),
+        ]).accessibilityIdentifier("file-base")
+        IconChoice(selection: settings.$style, options: [
+          ("unified", "上下に並べる", "rectangle.split.1x2"), ("split", "左右に並べる", "rectangle.split.2x1"),
+        ]).accessibilityIdentifier("file-style")
+        Toggle(isOn: settings.$full) { Label("全文", systemImage: "rectangle.expand.vertical") }
+          .toggleStyle(IconToggleStyle()).labelStyle(.iconOnly).frame(width: UIStyle.iconButtonWidth, height: UIStyle.iconButtonHeight).fixedSize().help("全文").accessibilityIdentifier("file-full")
       }
-      Text("Thread \(threads.unresolvedCount)").fixedSize().accessibilityIdentifier("file-thread-count")
-      Button("外部エディタで開く", action: openInEditor).fixedSize().accessibilityIdentifier("file-open-editor")
-    }.controlSize(.small).padding(8).frame(height: 44)
+      Toggle(isOn: Binding(get: { mode == "diff" }, set: { setPresentation(mode: $0 ? "diff" : "file") })) { Label("Diff", systemImage: "plus.forwardslash.minus") }
+        .toggleStyle(IconToggleStyle()).labelStyle(.iconOnly).frame(width: UIStyle.iconButtonWidth, height: UIStyle.iconButtonHeight).fixedSize().help("Diff 表示").accessibilityIdentifier("file-mode")
+      Button(action: openInEditor) {
+        Label("外部エディタで開く", systemImage: "arrow.up.forward.app").frame(maxWidth: .infinity, maxHeight: .infinity)
+      }
+      .labelStyle(.iconOnly).buttonStyle(.accessoryBar).frame(width: UIStyle.iconButtonWidth, height: UIStyle.iconButtonHeight).help("外部エディタで開く").fixedSize().accessibilityIdentifier("file-open-editor")
+    }.padding(8).frame(height: 44)
+  }
+  /// アプリのアクセントカラーを、外観に合わせて解決した 16 進の文字列にする。viewer の行選択と Thread の範囲の印が使う
+  static func accentHex(_ colorScheme: ColorScheme) -> String {
+    var hex = "#007AFF"
+    NSAppearance(named: colorScheme == .dark ? .darkAqua : .aqua)?.performAsCurrentDrawingAppearance {
+      guard let color = NSColor.controlAccentColor.usingColorSpace(.sRGB) else { return }
+      hex = String(format: "#%02X%02X%02X", Int((color.redComponent * 255).rounded()), Int((color.greenComponent * 255).rounded()), Int((color.blueComponent * 255).rounded()))
+    }
+    return hex
   }
   func subscribe() {
     if let subscription { model.unsubscribe(subscription) }
@@ -130,46 +139,24 @@ struct FileTabPane: View {
   }
   func bridgePayload(_ text: Releash_Client_V1_ReviewTextDiffDto, _ value: Releash_Client_V1_FileTabView, colorScheme: ColorScheme) -> [String: Any] {
     ["path": path, "version": String(text.version), "original": text.original, "modified": text.modified,
-     "patch": value.patch, "deleted": text.source.value == .deleted, "mode": mode, "base": base, "style": settings.style, "full": settings.full, "dark": colorScheme == .dark,
-     "hunks": text.hunks.items.map { hunk -> [String: Any] in
-       var result: [String: Any] = ["hunkId": hunk.hunkID, "oldStart": hunk.oldStart, "oldLines": hunk.oldLines,
-                                   "newStart": hunk.newStart, "newLines": hunk.newLines]
-       if let state = value.hunkStates.first(where: { $0.hunkID == hunk.hunkID }) { result["isStaged"] = state.isStaged }
-       return result
-     },
+     "patch": value.patch, "deleted": text.source.value == .deleted, "mode": mode, "base": base, "style": settings.style, "full": settings.full, "dark": colorScheme == .dark, "accent": Self.accentHex(colorScheme),
      "threads": threads.threads.items.compactMap { thread -> [String: Any]? in
        guard thread.target.hasLineNumber else { return nil }
        var annotation: [String: Any] = ["id": thread.id, "line": thread.target.lineNumber, "resolved": thread.state.value == .resolved,
                "canResolve": thread.canResolve,
                "comments": thread.comments.items.map { ["author": $0.author.displayName, "content": $0.content] }]
+       if thread.target.hasEndLine { annotation["endLine"] = thread.target.endLine }
        if thread.target.hasSide { annotation["side"] = thread.target.side.value == .deletions ? "deletions" : "additions" }
+       if thread.target.hasEndSide { annotation["endSide"] = thread.target.endSide.value == .deletions ? "deletions" : "additions" }
        return annotation
      }]
   }
   func action(_ message: [String: Any], onReplyAccepted: @escaping () -> Void = {}) {
     guard let kind = message["kind"] as? String, let client = model.client else { return }
-    if kind == "create" {
-      draft.line = (message["line"] as? NSNumber)?.uint32Value
-      draft.endLine = (message["endLine"] as? NSNumber)?.uint32Value
-      draft.side = (message["side"] as? String).flatMap { $0 == "deletions" ? .deletions : $0 == "additions" ? .additions : nil }
-      draft.endSide = (message["endSide"] as? String).flatMap { $0 == "deletions" ? .deletions : $0 == "additions" ? .additions : nil }
-      draft.content = ""
-      return
-    }
+    if kind == "select" { draft.selection = FileLineSelection(message); return }
     guard let id = message["id"] as? String else { return }
     model.perform {
       switch kind {
-      case "stage", "unstage":
-        var input = Releash_Client_V1_ReviewGroupActionInput()
-        input.worktreePath = worktree; input.path = path; input.base = base
-        input.section = "file-tab"; input.groupID = id
-        if kind == "stage" {
-          var request = Releash_Client_V1_GitStageReviewGroupRequest(); request.input = input
-          _ = try await client.gitStageReviewGroup(request: request, headers: model.headers).result.get()
-        } else {
-          var request = Releash_Client_V1_GitUnstageReviewGroupRequest(); request.input = input
-          _ = try await client.gitUnstageReviewGroup(request: request, headers: model.headers).result.get()
-        }
       case "reply":
         var request = Releash_Client_V1_AppendReviewCommentRequest()
         request.worktreeName = worktree; request.threadID = id; request.content = message["content"] as? String ?? ""
@@ -182,6 +169,12 @@ struct FileTabPane: View {
       default: break
       }
     }
+  }
+  func startThread() {
+    guard let selection = draft.selection else { return }
+    draft.line = selection.line; draft.endLine = selection.endLine
+    draft.side = selection.side; draft.endSide = selection.endSide
+    draft.content = ""
   }
   func createThread() {
     guard let client = model.client, let line = draft.line else { return }
@@ -203,7 +196,24 @@ struct FileDisplaySettings: DynamicProperty {
   @AppStorage("diffFull") var full = false
 }
 
+struct FileLineSelection: Equatable {
+  var line: UInt32
+  var endLine: UInt32
+  var side: Releash_Client_V1_ReviewLineSideDto.Value?
+  var endSide: Releash_Client_V1_ReviewLineSideDto.Value?
+  init?(_ message: [String: Any]) {
+    guard let line = (message["line"] as? NSNumber)?.uint32Value else { return nil }
+    self.line = line
+    endLine = (message["endLine"] as? NSNumber)?.uint32Value ?? line
+    let side = { (value: Any?) -> Releash_Client_V1_ReviewLineSideDto.Value? in
+      switch value as? String { case "deletions": .deletions; case "additions": .additions; default: nil }
+    }
+    self.side = side(message["side"]); endSide = side(message["endSide"])
+  }
+}
+
 @Observable @MainActor final class FileThreadDraft {
+  var selection: FileLineSelection?
   var line: UInt32?
   var endLine: UInt32?
   var side: Releash_Client_V1_ReviewLineSideDto.Value?
@@ -221,6 +231,8 @@ struct FileWebView: NSViewRepresentable {
     let handler = context.coordinator
     configuration.userContentController.add(handler, contentWorld: handler.world, name: "fileViewer")
     let web = WKWebView(frame: .zero, configuration: configuration)
+    // 既定では WKWebView がページを描くまで白を塗る。切って、描くまでは後ろの面の色を見せる
+    web.setValue(false, forKey: "drawsBackground")
     handler.web = web
     web.navigationDelegate = handler
     do {
@@ -272,5 +284,24 @@ struct FileWebView: NSViewRepresentable {
     func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, decisionHandler: @escaping @MainActor @Sendable (WKNavigationActionPolicy) -> Void) {
       decisionHandler(navigationAction.request.url?.isFileURL == true ? .allow : .cancel)
     }
+  }
+}
+
+/// アイコンだけの択一。選んだ項目は IconToggleStyle の on と同じ色で出る
+struct IconChoice<Value: Hashable>: View {
+  @Binding var selection: Value
+  let options: [(value: Value, title: String, symbol: String)]
+  var body: some View {
+    HStack(spacing: 0) {
+      ForEach(options, id: \.value) { option in
+        Toggle(isOn: Binding(get: { selection == option.value }, set: { if $0 { selection = option.value } })) {
+          Label(option.title, systemImage: option.symbol)
+        }
+        .toggleStyle(IconToggleStyle()).labelStyle(.iconOnly)
+        .frame(width: UIStyle.iconButtonWidth, height: UIStyle.iconButtonHeight)
+        .help(option.title).accessibilityLabel(option.title)
+      }
+    }
+    .accessibilityElement(children: .contain)
   }
 }

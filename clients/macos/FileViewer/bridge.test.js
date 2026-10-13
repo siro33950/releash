@@ -11,6 +11,7 @@ class Element {
   append(...children) { this.children.push(...children); }
   replaceChildren(...children) { this.children = children; }
   setAttribute(name, value) { this.attributes[name] = value; }
+  addEventListener() {}
 }
 
 async function bridge() {
@@ -45,14 +46,13 @@ async function bridge() {
     window, document: { getElementById: (id) => elements[id], createElement: (name) => new Element(name) },
     TextEncoder, TextDecoder, console,
   });
-  return { window, messages, instances, renderer: () => instances.at(-1) };
+  return { window, messages, instances, elements, renderer: () => instances.at(-1) };
 }
 
 const payload = () => ({
   path: 'file.rs', version: '1', original: 'a\nb\nc\n', modified: 'a\nc\n',
   patch: '--- a/file.rs\n+++ b/file.rs\n@@ -1,3 +1,2 @@\n a\n-b\n c\n',
-  mode: 'diff', base: 'head', style: 'split', full: false, dark: false, deleted: false,
-  hunks: [{ hunkId: 'h1', oldStart: 1, oldLines: 3, newStart: 1, newLines: 2, isStaged: false }],
+  mode: 'diff', base: 'head', style: 'split', full: false, dark: false, deleted: false, accent: '#112233',
   threads: [],
 });
 const plain = (value) => JSON.parse(JSON.stringify(value));
@@ -64,37 +64,41 @@ test('display choices and system theme reach the renderer, including File and Di
   for (const [style, full, dark] of [['unified', true, true], ['split', false, false]]) {
     ui.window.releashRender({ ...next, style, full, dark });
     assert.equal(ui.renderer().options.diffStyle, style);
+    assert.deepEqual(plain(ui.renderer().options.theme), { dark: 'dark-plus', light: 'light-plus' });
     assert.equal(ui.renderer().options.expandUnchanged, full);
     assert.equal(ui.renderer().options.themeType, dark ? 'dark' : 'light');
     assert.equal(ui.renderer().input.fileDiff.deletionLines.join(''), next.original);
   }
   assert.equal(ui.renderer().input.fileContainer.tagName, 'diffs-container');
   const diff = ui.renderer();
-  ui.window.releashRender({ ...next, mode: 'file' });
+  ui.window.releashRender({ ...next, mode: 'file', threads: [{ id: 't', line: 2, comments: [] }] });
   assert.equal(diff.cleaned, true);
   assert.equal(ui.renderer().input.file.contents, next.modified);
-  assert.equal(ui.renderer().options.enableGutterUtility, false);
-  assert.equal(ui.renderer().input.lineAnnotations.length, 0);
+  assert.equal(ui.renderer().input.lineAnnotations[0].lineNumber, 2);
   ui.window.releashRender(next);
   assert.equal(ui.renderer().input.fileDiff.deletionLines.join(''), next.original);
 });
 
-test('creating a thread preserves the selected side and line, then restores it in the annotation', async () => {
+test('selecting lines reports the normalized range and clears when the selection or the file changes', async () => {
   const ui = await bridge();
   const next = payload();
   ui.window.releashRender(next);
   for (const side of ['deletions', 'additions']) {
-    const controls = ui.renderer().options.renderGutterUtility(() => ({ side, lineNumber: 2 }));
-    controls.children.at(-1).onclick();
-    assert.deepEqual(plain(ui.messages.at(-1)), { kind: 'create', line: 2, endLine: 2, side, endSide: side });
+    ui.renderer().options.onLineSelected({ start: 2, end: 2, side, endSide: side });
+    assert.deepEqual(plain(ui.messages.at(-1)), { kind: 'select', line: 2, endLine: 2, side, endSide: side });
     ui.window.releashRender({ ...next, threads: [{ id: side, line: 2, side, comments: [] }] });
     const annotation = ui.renderer().input.lineAnnotations[0];
     assert.equal(annotation.side, side);
     assert.equal(annotation.lineNumber, 2);
   }
   ui.renderer().options.onLineSelected({ start: 4, end: 2, side: 'deletions', endSide: 'additions' });
-  ui.renderer().options.renderGutterUtility(() => ({ side: 'deletions', lineNumber: 4 })).children.at(-1).onclick();
-  assert.deepEqual(plain(ui.messages.at(-1)), { kind: 'create', line: 2, endLine: 4, side: 'additions', endSide: 'deletions' });
+  assert.deepEqual(plain(ui.messages.at(-1)), { kind: 'select', line: 2, endLine: 4, side: 'additions', endSide: 'deletions' });
+  ui.renderer().options.onLineSelected(null);
+  assert.deepEqual(plain(ui.messages.at(-1)), { kind: 'select' });
+  ui.renderer().options.onLineSelected({ start: 1, end: 1 });
+  assert.deepEqual(plain(ui.messages.at(-1)), { kind: 'select', line: 1, endLine: 1 });
+  ui.window.releashRender({ ...next, modified: 'changed\n' });
+  assert.deepEqual(plain(ui.messages.at(-1)), { kind: 'select' });
 });
 
 test('threads show comments, collapse resolved threads and send reply and resolve actions', async () => {
@@ -105,7 +109,8 @@ test('threads show comments, collapse resolved threads and send reply and resolv
   const render = ui.renderer().options.renderAnnotation;
   const open = render({ metadata: thread });
   assert.equal(open.open, true);
-  assert.equal(open.children[1].textContent, 'human: selected deleted line');
+  assert.equal(open.children[0].textContent, 'human');
+  assert.equal(open.children[1].textContent, 'selected deleted line');
   const input = open.children.find((element) => element.attributes['aria-label'] === 'Threadへの返信');
   input.value = 'reply body';
   open.children.find((element) => element.textContent === '返信').onclick();
@@ -113,42 +118,29 @@ test('threads show comments, collapse resolved threads and send reply and resolv
   const replied = { ...thread, comments: [...thread.comments, { author: 'human', content: 'reply body' }] };
   ui.window.releashRender({ ...payload(), threads: [replied] });
   const refreshed = render(ui.renderer().input.lineAnnotations[0]);
-  assert.equal(refreshed.children[2].textContent, 'human: reply body');
+  assert.equal(refreshed.children[2].textContent, 'reply body');
   open.children.find((element) => element.textContent === '解決').onclick();
   assert.deepEqual(plain(ui.messages.at(-1)), { kind: 'resolve', id: 't1' });
   ui.window.releashRender({ ...payload(), threads: [{ ...thread, resolved: true }] });
   const resolved = render(ui.renderer().input.lineAnnotations[0]);
   assert.equal(resolved.open, false);
-  assert.equal(resolved.children[0].textContent, '解決済み Thread');
+  assert.equal(resolved.children[0].textContent, 'human（解決済み）');
   assert.equal(resolved.children.length, 2);
   assert.equal(render({ metadata: { ...thread, canResolve: false } }).children.some((e) => e.textContent === '解決'), false);
 });
 
-test('HEAD gutter sends stage and unstage for the hovered hunk, while base comparison hides the action', async () => {
-  const ui = await bridge();
-  const next = payload();
-  for (const staged of [false, true]) {
-    ui.window.releashRender({ ...next, hunks: [{ ...next.hunks[0], isStaged: staged }] });
-    const controls = ui.renderer().options.renderGutterUtility(() => ({ side: 'deletions', lineNumber: 2 }));
-    controls.children[0].onclick();
-    assert.deepEqual(plain(ui.messages.at(-1)), { kind: staged ? 'unstage' : 'stage', id: 'h1' });
-  }
-  ui.window.releashRender({ ...next, base: 'branch-base', hunks: [{ ...next.hunks[0], isStaged: undefined }] });
-  assert.equal(ui.renderer().options.renderGutterUtility(() => null).children.length, 1);
-  assert.equal(ui.renderer().input.lineAnnotations.length, 0);
-});
-
-
-test('changing comparisons recreates gutter controls in both directions', async () => {
+test('changing comparisons recreates the renderer and clears the selection', async () => {
   const ui = await bridge();
   for (const base of ['head', 'branch-base', 'head']) {
     const previous = ui.renderer();
+    if (previous) previous.options.onLineSelected({ start: 1, end: 1 });
     ui.window.releashRender({ ...payload(), base });
     if (previous) {
       assert.equal(previous.cleaned, true);
       assert.notEqual(ui.renderer(), previous);
+      assert.deepEqual(plain(ui.messages.at(-1)), { kind: 'select' });
     }
-    assert.equal(ui.renderer().options.renderGutterUtility(() => null).children.length, base === 'head' ? 2 : 1);
+    assert.equal(ui.renderer().options.renderGutterUtility, undefined);
   }
 });
 
@@ -190,4 +182,25 @@ test('accepting a reply preserves text edited while the request was pending', as
   assert.equal(input.value, 'new draft');
   ui.window.releashRender({ ...payload(), threads: [{ ...thread }] });
   assert.equal(annotation().children.find((child) => child.tagName === 'textarea').value, 'new draft');
+});
+
+test('thread ranges and line selection use the accent color from the app', async () => {
+  const ui = await bridge();
+  const next = payload();
+  ui.window.releashRender({ ...next, threads: [{ id: 'a', line: 2, endLine: 3, side: 'additions', comments: [] }, { id: 'd', line: 5, side: 'deletions', resolved: true, comments: [] }] });
+  const css = ui.renderer().options.unsafeCSS;
+  assert.equal(ui.renderer().input.lineAnnotations[0].lineNumber, 3);
+  assert.equal(ui.renderer().input.lineAnnotations[1].lineNumber, 5);
+  for (const line of [2, 3]) {
+    assert.ok(css.includes(`[data-unified] [data-line="${line}"]:not([data-line-type=change-deletion])`), css);
+    assert.ok(css.includes(`[data-additions] [data-line="${line}"]`), css);
+  }
+  assert.ok(!css.includes('[data-line="4"]'), css);
+  assert.ok(css.includes('[data-unified] [data-line-type=change-deletion][data-line="5"]'), css);
+  assert.ok(css.includes('[data-unified] [data-alt-line="5"]'), css);
+  assert.ok(css.includes('[data-deletions] [data-line="5"]'), css);
+  assert.equal(css.split('color-mix').length, 2, css);
+  ui.window.releashRender({ ...next, mode: 'file', threads: [{ id: 'f', line: 7, endLine: 9, comments: [] }] });
+  assert.equal(ui.renderer().input.lineAnnotations[0].lineNumber, 9);
+  assert.equal(ui.renderer().options.unsafeCSS, ':host{--diffs-bg-selection-override:#112233;--diffs-bg-selection-number-override:#112233}\n[data-line="7"],[data-line="8"],[data-line="9"]{box-shadow:inset 3px 0 #112233;background-color:color-mix(in srgb,var(--diffs-bg) 85%,#112233);}');
 });

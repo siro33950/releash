@@ -15,14 +15,14 @@ final class FileTabPaneTests: XCTestCase {
   }
 
   @MainActor func testToolbarShowsModeSpecificItemsAndFitsDefaultPaneWidthWithLongPath() async throws {
-    let common = ["file-path", "file-mode", "file-thread-count", "file-open-editor"]
-    let diffOnly = ["file-base", "file-stats", "file-style", "file-full"]
+    let common = ["file-path", "file-mode", "file-open-editor"]
+    let diffOnly = ["file-base", "file-style", "file-full"]
     for mode in ["file", "diff"] {
       let model = AppModel()
       let original = try pane(model)
       original.setPresentation(mode: mode)
       let path = String(repeating: "long-directory/", count: 30) + "file.rs"
-      var value = Releash_Client_V1_FileTabView(); value.additions = 12; value.deletions = 34
+      let value = Releash_Client_V1_FileTabView()
       let view = FileTabPane(model: model, tabID: original.tabID, path: path, worktree: "/repo", value: value)
       let width = UIStyle.windowWidth - 2 * UIStyle.windowPadding - 2 * UIStyle.sidebarWidth - 2 * UIStyle.dividerWidth
       let host = NSHostingView(rootView: view.toolbar)
@@ -121,6 +121,7 @@ final class FileTabPaneTests: XCTestCase {
     for side in [Releash_Client_V1_ReviewLineSideDto.Value.deletions, .additions] {
       var thread = Releash_Client_V1_ReviewThreadDto()
       thread.id = "thread"; thread.target.lineNumber = 2; thread.target.side.value = side
+      thread.target.endLine = 3; thread.target.endSide.value = side
       thread.canResolve = true
       thread.comments.items = [.with { $0.author.displayName = "human"; $0.content = "body" }]
       var threads = Releash_Client_V1_FileThreadsSnapshot(); threads.threads.items = [thread]
@@ -134,6 +135,9 @@ final class FileTabPaneTests: XCTestCase {
         let annotations = try XCTUnwrap(payload["threads"] as? [[String: Any]])
         XCTAssertEqual(annotations[0]["side"] as? String, side == .deletions ? "deletions" : "additions")
         XCTAssertEqual(annotations[0]["line"] as? UInt32, 2)
+        XCTAssertEqual(annotations[0]["endLine"] as? UInt32, 3)
+        XCTAssertNotNil((payload["accent"] as? String)?.wholeMatch(of: /#[0-9A-F]{6}/))
+        XCTAssertEqual(annotations[0]["endSide"] as? String, side == .deletions ? "deletions" : "additions")
         XCTAssertEqual(annotations[0]["resolved"] as? Bool, resolved)
         XCTAssertEqual(annotations[0]["canResolve"] as? Bool, true)
         XCTAssertEqual((annotations[0]["comments"] as? [[String: String]])?.first?["content"], "body")
@@ -149,16 +153,16 @@ final class FileTabPaneTests: XCTestCase {
     var acceptedReplies = 0
     view.action(["kind": "reply", "id": "thread", "content": "reply body"]) { acceptedReplies += 1 }
     view.action(["kind": "resolve", "id": "thread"])
-    view.action(["kind": "stage", "id": "hunk"])
-    view.action(["kind": "unstage", "id": "hunk"])
-    view.action(["kind": "create", "line": NSNumber(value: 2), "endLine": NSNumber(value: 3), "side": "deletions", "endSide": "deletions"])
+    view.action(["kind": "select", "line": NSNumber(value: 2), "endLine": NSNumber(value: 3), "side": "deletions", "endSide": "deletions"])
+    XCTAssertNil(view.draft.line)
+    XCTAssertEqual(view.draft.selection?.endLine, 3)
+    view.startThread()
     XCTAssertEqual(view.draft.line, 2)
     XCTAssertEqual(view.draft.side, .deletions)
     view.draft.content = "selected line"
     view.createThread()
     try await eventually { http.requests("CreateReviewThread").count == 1 && http.requests("ResolveReviewThread").count == 1
-      && http.requests("AppendReviewComment").count == 1 && http.requests("OpenInEditor").count == 1
-      && http.requests("GitStageReviewGroup").count == 1 && http.requests("GitUnstageReviewGroup").count == 1 && acceptedReplies == 1 }
+      && http.requests("AppendReviewComment").count == 1 && http.requests("OpenInEditor").count == 1 && acceptedReplies == 1 }
     let open = try Releash_Client_V1_OpenInEditorRequest(serializedBytes: XCTUnwrap(http.requests("OpenInEditor").first?.message))
     XCTAssertEqual(open.filePath, "/repo/src/file.rs")
     XCTAssertEqual(acceptedReplies, 1)
@@ -166,22 +170,20 @@ final class FileTabPaneTests: XCTestCase {
     XCTAssertEqual(reply.worktreeName, "/repo"); XCTAssertEqual(reply.threadID, "thread"); XCTAssertEqual(reply.content, "reply body")
     let resolve = try Releash_Client_V1_ResolveReviewThreadRequest(serializedBytes: XCTUnwrap(http.requests("ResolveReviewThread").first?.message))
     XCTAssertEqual(resolve.threadID, "thread"); XCTAssertEqual(resolve.worktreeName, "/repo"); XCTAssertEqual(resolve.outcome, "resolved")
-    let stage = try Releash_Client_V1_GitStageReviewGroupRequest(serializedBytes: XCTUnwrap(http.requests("GitStageReviewGroup").first?.message))
-    let unstage = try Releash_Client_V1_GitUnstageReviewGroupRequest(serializedBytes: XCTUnwrap(http.requests("GitUnstageReviewGroup").first?.message))
-    XCTAssertEqual(stage.input, unstage.input)
-    XCTAssertEqual(stage.input.worktreePath, "/repo"); XCTAssertEqual(stage.input.path, "src/file.rs")
-    XCTAssertEqual(stage.input.section, "file-tab"); XCTAssertEqual(stage.input.base, "head"); XCTAssertEqual(stage.input.groupID, "hunk")
     let create = try Releash_Client_V1_CreateReviewThreadRequest(serializedBytes: XCTUnwrap(http.requests("CreateReviewThread").first?.message))
     XCTAssertEqual(create.worktreeName, "/repo"); XCTAssertEqual(create.filePath, "src/file.rs")
     XCTAssertEqual(create.lineNumber, 2); XCTAssertEqual(create.endLine, 3); XCTAssertEqual(create.content, "selected line")
     XCTAssertEqual(create.side.value, .deletions); XCTAssertEqual(create.endSide.value, .deletions)
     XCTAssertNil(view.draft.line)
-    view.action(["kind": "create", "line": NSNumber(value: 4), "endLine": NSNumber(value: 4), "side": "additions", "endSide": "additions"])
+    view.action(["kind": "select", "line": NSNumber(value: 4), "endLine": NSNumber(value: 4), "side": "additions", "endSide": "additions"])
+    view.startThread()
     XCTAssertEqual(view.draft.side, .additions)
     XCTAssertEqual(view.draft.content, "")
     view.draft.content = "added line"
     view.createThread()
     try await eventually { http.requests("CreateReviewThread").count == 2 && view.draft.line == nil }
+    view.action(["kind": "select"])
+    XCTAssertNil(view.draft.selection)
     let added = try Releash_Client_V1_CreateReviewThreadRequest(serializedBytes: XCTUnwrap(http.requests("CreateReviewThread").last?.message))
     XCTAssertEqual(added.side.value, .additions); XCTAssertEqual(added.lineNumber, 4)
     http.state.withLock { $0.failedMethod = "AppendReviewComment" }

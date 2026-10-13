@@ -1236,6 +1236,7 @@ export type DirectorySnapshot = {
 	entries?: Array<DirectoryEntry>;
 	removed?: Array<string>;
 	delta?: boolean;
+	order?: Array<string>;
 };
 
 export type DirectoryEntry = {
@@ -1249,15 +1250,7 @@ export type DirectoryEntry = {
 export type FileTabView = {
 	view?: ReviewFileViewDto;
 	initialMode?: string;
-	additions?: number;
-	deletions?: number;
-	hunkStates?: Array<FileHunkState>;
 	patch?: string;
-};
-
-export type FileHunkState = {
-	hunkId?: string;
-	isStaged?: boolean;
 };
 
 export type FileThreadsSnapshot = {

@@ -287,15 +287,5 @@ mod code_dto_tests;
 pub struct FileTabViewDto {
     pub view: ReviewFileViewDto,
     pub initial_mode: crate::domain::code::value_objects::review::FileMode,
-    pub additions: u32,
-    pub deletions: u32,
-    pub hunk_states: Vec<FileHunkStateDto>,
     pub patch: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct FileHunkStateDto {
-    pub hunk_id: String,
-    pub is_staged: bool,
 }

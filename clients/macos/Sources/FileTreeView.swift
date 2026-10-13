@@ -9,7 +9,9 @@ struct FileTreeView: NSViewRepresentable {
   func makeNSView(context: Context) -> NSScrollView {
     let scroll = NSScrollView()
     scroll.hasVerticalScroller = true
+    scroll.drawsBackground = false
     let outline = NSOutlineView()
+    outline.backgroundColor = .clear
     let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("file"))
     outline.addTableColumn(column)
     outline.outlineTableColumn = column
@@ -18,7 +20,7 @@ struct FileTreeView: NSViewRepresentable {
     outline.dataSource = context.coordinator
     outline.delegate = context.coordinator
     outline.target = context.coordinator
-    outline.action = #selector(Coordinator.openFile)
+    outline.action = #selector(Coordinator.clickRow)
     outline.setAccessibilityIdentifier("file-tree")
     scroll.documentView = outline
     context.coordinator.outline = outline
@@ -138,10 +140,11 @@ struct FileTreeView: NSViewRepresentable {
       default: .labelColor
       }
     }
-    @objc func openFile() {
-      guard let outline, outline.clickedRow >= 0,
-        let item = outline.item(atRow: outline.clickedRow) as? Item, !item.entry.directory else { return }
-      model.openFile(item.entry.path)
+    @objc func clickRow() {
+      guard let outline, outline.clickedRow >= 0, let item = outline.item(atRow: outline.clickedRow) as? Item else { return }
+      if !item.entry.directory { model.openFile(item.entry.path) }
+      else if outline.isItemExpanded(item) { outline.collapseItem(item) }
+      else { outline.expandItem(item) }
     }
   }
 }

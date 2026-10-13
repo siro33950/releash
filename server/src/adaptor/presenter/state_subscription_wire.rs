@@ -98,8 +98,7 @@ pub fn payload(value: &StateValue) -> Result<wire::StatePayload, connectrpc::Con
             StateValue::FileTab(value) => wire::state_payload::Value::FileTab(wire::FileTabView {
                 view: Some(crate::adaptor::presenter::client::value(value.view.clone()).map_err(crate::adaptor::presenter::connect::command_error)?),
                 patch: value.patch.clone(),
-                initial_mode: value.initial_mode.as_str().into(), additions: value.additions, deletions: value.deletions,
-                hunk_states: value.hunk_states.iter().map(|hunk| wire::FileHunkState { hunk_id: hunk.hunk_id.clone(), is_staged: hunk.is_staged }).collect(),
+                initial_mode: value.initial_mode.as_str().into(),
             }),
             StateValue::ReviewSnapshot(value) => wire::state_payload::Value::ReviewSnapshot(
                 crate::adaptor::presenter::client::value(value.clone())

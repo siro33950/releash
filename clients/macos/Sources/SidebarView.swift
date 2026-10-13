@@ -25,7 +25,8 @@ struct SidebarView: View {
           Image(systemName: "plus")
         }.help("Worktreeを作成").accessibilityLabel("Worktreeを作成")
       }
-      .buttonStyle(.borderless)
+      .buttonStyle(.accessoryBar)
+      .frame(height: UIStyle.iconButtonHeight)
       .padding(UIStyle.padding)
       List {
         ForEach(model.repositories, id: \.path) { repository in
@@ -53,7 +54,7 @@ struct SidebarView: View {
               }
               .accessibilityIdentifier("worktree:\(branch.name)")
               .buttonStyle(.plain)
-              .foregroundStyle(.primary)
+              .foregroundStyle(model.selectedWorktree == branch.worktreePath ? UIStyle.sidebarSelectionText : .primary)
               .accessibilityAddTraits(
                 model.selectedWorktree == branch.worktreePath ? .isSelected : [])
             }

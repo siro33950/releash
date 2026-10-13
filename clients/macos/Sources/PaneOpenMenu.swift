@@ -14,15 +14,17 @@ struct PaneOpenMenu: View {
       Button("Session", systemImage: "sparkle") { launch = .session }
       Button("Workflow", systemImage: "play") { launch = .workflow }
       Divider()
-      ForEach([PaneTab.Kind.terminal, .workflow, .file], id: \.self) { kind in
+      ForEach([PaneTab.Kind.terminal, .workflow], id: \.self) { kind in
         Button(kind.title, systemImage: kind.icon) { model.panes.open(kind, in: pane) }
       }
     } label: {
       Image(systemName: "plus")
     }
-    .menuStyle(.borderlessButton)
+    .menuStyle(.button)
+    .buttonStyle(.accessoryBar)
     .disabled(!model.layoutLoaded)
     .menuIndicator(.hidden)
+    .frame(width: UIStyle.iconButtonWidth, height: UIStyle.iconButtonHeight)
     .fixedSize()
     .padding(.horizontal, UIStyle.spacing)
     .help("開く")

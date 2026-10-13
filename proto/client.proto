@@ -2909,16 +2909,10 @@ message DirectorySnapshot {
   bool delta = 3;
   repeated string order = 4;
 }
-message FileHunkState {
-  string hunk_id = 1;
-  bool is_staged = 2;
-}
 message FileTabView {
   ReviewFileViewDto view = 1;
   string initial_mode = 2;
-  uint32 additions = 3;
-  uint32 deletions = 4;
-  repeated FileHunkState hunk_states = 5;
+  reserved 3, 4, 5;
   string patch = 6;
 }
 message StateChange { bool delta = 1; StatePayload payload = 2; }

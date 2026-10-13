@@ -50,7 +50,6 @@ THEN 作業ツリーのファイルの内容が File 表示で出る
 GIVEN 開くときの比較で変更のあるファイルがある
 WHEN 利用者がそのファイルをファイルタブで開く
 THEN 差分が Diff 表示で出る
-AND 帯に追加行数と削除行数が出る
 
 ## B-009: File 表示への切替
 
@@ -92,14 +91,14 @@ THEN 変更の無い範囲が開いて出る
 
 GIVEN 変更があり、未解決の Thread が付いたファイルが、ファイルタブに Diff 表示で開いている
 WHEN 利用者が帯を見る
-THEN ファイルの path、比較の選択、追加行数と削除行数、File / Diff、上下 / 左右、変更箇所のみ / 全文、未解決の Thread の件数、「外部エディタで開く」が、横にスクロールせずに見える
+THEN ファイルの path、比較の選択、File / Diff、上下 / 左右、変更箇所のみ / 全文、「外部エディタで開く」が、横にスクロールせずに見える
 
 ## B-040: File 表示の帯の項目
 
 GIVEN ファイルがファイルタブに File 表示で開いている
 WHEN 利用者が帯を見る
-THEN ファイルの path、File / Diff、未解決の Thread の件数、「外部エディタで開く」が、横にスクロールせずに見える
-AND 比較の選択、追加行数と削除行数、上下 / 左右、変更箇所のみ / 全文は出ない
+THEN ファイルの path、File / Diff、「外部エディタで開く」が、横にスクロールせずに見える
+AND 比較の選択、上下 / 左右、変更箇所のみ / 全文は出ない
 
 ## B-015: 外部エディタで開く
 
@@ -120,31 +119,12 @@ GIVEN ファイルがファイルタブで開いている
 WHEN システムの明暗の設定が変わる
 THEN ファイルタブの中の明暗が、システムの設定に合う
 
-## B-018: HEAD 比較の hunk の stage
-
-GIVEN HEAD 比較の Diff 表示に、stage していない hunk がある
-WHEN 利用者がその hunk の stage の操作を行う
-THEN その hunk が stage される
-AND その hunk に stage 済みであることが出る
-
-## B-019: HEAD 比較の hunk の unstage
-
-GIVEN HEAD 比較の Diff 表示に、stage 済みの hunk がある
-WHEN 利用者がその hunk の unstage の操作を行う
-THEN その hunk が unstage される
-AND その hunk に stage していないことが出る
-
-## B-020: base 比較では stage を出さない
-
-GIVEN 変更のあるファイルがファイルタブで開いている
-WHEN 利用者が帯で base 比較を選ぶ
-THEN hunk の stage 状態と、stage / unstage の操作が出ない
-
 ## B-021: 行の間の Thread
 
 GIVEN ファイルの行に、未解決の Thread と解決済みの Thread が付いている
-WHEN 利用者がそのファイルを Diff 表示で開く
-THEN それぞれの Thread が、付いた行の間に出る
+WHEN 利用者がそのファイルを File 表示か Diff 表示で開く
+THEN それぞれの Thread が、付いた範囲の最後の行の下に出る
+AND Thread が付いた範囲の行に印が付く
 AND 未解決の Thread は開いて出る
 AND 解決済みの Thread は畳んで出る
 
@@ -159,18 +139,17 @@ THEN 返信がその Thread に足されて出る
 GIVEN 行の間に未解決の Thread が出ている
 WHEN 利用者がその Thread を解決する
 THEN その Thread が解決済みになり、畳んで出る
-AND 帯の未解決の Thread の件数が 1 減る
 
 ## B-024: Thread の作成
 
 GIVEN ファイルが Diff 表示で開いている
-WHEN 利用者がマウスで行を選び、本文を書いて Thread を作る
+WHEN 利用者がマウスで行を選び、帯の「Thread作成」を押して本文を書き、Thread を作る
 THEN 選んだ行に Thread が付き、行の間に出る
 
 ## B-025: 開いているファイルの変化の反映
 
 GIVEN ファイルがファイルタブで開いている
-WHEN そのファイルの内容、stage 状態、Thread のどれかが、ファイルタブの外で変わる
+WHEN そのファイルの内容と Thread のどちらかが、ファイルタブの外で変わる
 THEN 利用者の操作なしに、変わった内容がファイルタブに出る
 
 ## B-026: 画像の差分

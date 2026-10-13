@@ -91,12 +91,10 @@ final class WorkbenchTests: XCTestCase {
     XCTAssertTrue(before.waitForExistence(timeout: 10), app.debugDescription)
     let mode = app.descendants(matching: .any).matching(identifier: "file-mode").firstMatch
     mode.click()
-    app.menuItems["File"].click()
     XCTAssertTrue(after.waitForExistence(timeout: 10), app.debugDescription)
     let removed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: before)
     XCTAssertEqual(XCTWaiter.wait(for: [removed], timeout: 10), .completed, app.debugDescription)
     mode.click()
-    app.menuItems["Diff"].click()
     XCTAssertTrue(before.waitForExistence(timeout: 10), app.debugDescription)
 
   }

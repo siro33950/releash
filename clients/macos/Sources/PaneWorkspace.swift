@@ -16,6 +16,7 @@ import SwiftUI
     for id in controller.allTabIds { controller.closeTab(id) }
     controller.delegate = self
     controller.configuration.appearance.showSplitButtons = false
+    controller.configuration.contentViewLifecycle = .keepAllAlive
     controller.configuration.appearance.selectedTabIndicatorColor = UIStyle.tabSelection
   }
 

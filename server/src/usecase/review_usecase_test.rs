@@ -2005,7 +2005,7 @@ mod tests {
     }
 
     #[test]
-    fn test_ファイルタブ_変更なしはfileでbase比較にstage単位を付けない() {
+    fn test_ファイルタブ_変更なしはfileで開きchange_groupを付けない() {
         // Given
         let code = Arc::new(
             FakeReviewCode::new()
@@ -2035,165 +2035,10 @@ mod tests {
             view.initial_mode,
             crate::domain::code::value_objects::review::FileMode::File
         );
-        assert!(view.hunk_states.is_empty());
         let ReviewFileViewDto::TextDiff(text) = view.view else {
             panic!("expected text");
         };
         assert!(text.change_groups.is_empty());
-    }
-    #[tokio::test]
-    async fn test_ファイルhunk操作_非テキストを拒否しindexを変更しない() {
-        // Given
-        let code = Arc::new(FakeReviewCode::new().with_source_bytes(
-            "/repo/file",
-            ReviewContentSource::WorkingTree,
-            ReviewSideBytes::Present(vec![0]),
-        ));
-        let usecase = ReviewUsecase::new_with_ports(
-            Arc::new(FakeSnapshotProvider::new(vec![repository_snapshot(
-                1, false,
-            )])),
-            code.clone(),
-        );
-        // When
-        let error = usecase
-            .apply_file_tab_hunk("/repo", "file", "head", "hunk", true)
-            .await
-            .unwrap_err();
-        // Then
-        assert!(
-            matches!(error, CodeUsecaseError::Code(CodeError::Rule(message)) if message == "file hunk requires text")
-        );
-        assert!(code.patches.lock().unwrap().is_empty());
-    }
-
-    #[tokio::test]
-    async fn test_ファイルhunk操作_base比較と古いhunkを拒否しindexを変更しない() {
-        for base in ["branch-base", "head"] {
-            // Given
-            let code = Arc::new(
-                FakeReviewCode::new()
-                    .with_source_bytes(
-                        "/repo/file",
-                        ReviewContentSource::Head,
-                        present_text("old\n"),
-                    )
-                    .with_source_bytes(
-                        "/repo/file",
-                        ReviewContentSource::Staged,
-                        present_text("old\n"),
-                    )
-                    .with_source_bytes(
-                        "/repo/file",
-                        ReviewContentSource::WorkingTree,
-                        present_text("new\n"),
-                    ),
-            );
-            let usecase = ReviewUsecase::new_with_ports(
-                Arc::new(FakeSnapshotProvider::new(vec![repository_snapshot(
-                    1, false,
-                )])),
-                code.clone(),
-            );
-            // When
-            let error = usecase
-                .apply_file_tab_hunk("/repo", "file", base, "obsolete", true)
-                .await
-                .unwrap_err();
-            // Then
-            match error {
-                CodeUsecaseError::Code(CodeError::Rule(message)) if base == "branch-base" => {
-                    assert!(message.contains("unavailable for branch-base"));
-                }
-                CodeUsecaseError::Code(CodeError::StaleReviewGroupTarget { group_id })
-                    if base == "head" =>
-                {
-                    assert_eq!(group_id, "obsolete");
-                }
-                other => panic!("unexpected error: {other:?}"),
-            }
-            assert!(code.patches.lock().unwrap().is_empty());
-        }
-    }
-
-    #[tokio::test]
-    async fn test_ファイルhunk操作_追加のstageとunstageでindexの有無を更新する() {
-        for stage in [true, false] {
-            // Given
-            let added = DiffHunksResultDto {
-                hunks: vec![HunkDto {
-                    index: 0,
-                    hunk_id: String::new(),
-                    old_start: 0,
-                    old_lines: 0,
-                    new_start: 1,
-                    new_lines: 1,
-                    lines: vec!["+new".into()],
-                }],
-                change_groups: Vec::new(),
-            };
-            let removed = DiffHunksResultDto {
-                hunks: vec![HunkDto {
-                    index: 0,
-                    hunk_id: String::new(),
-                    old_start: 1,
-                    old_lines: 1,
-                    new_start: 0,
-                    new_lines: 0,
-                    lines: vec!["-new".into()],
-                }],
-                change_groups: Vec::new(),
-            };
-            let code = Arc::new(
-                FakeReviewCode::new()
-                    .with_source_bytes(
-                        "/repo/file",
-                        ReviewContentSource::WorkingTree,
-                        present_text("new\n"),
-                    )
-                    .with_source_bytes(
-                        "/repo/file",
-                        ReviewContentSource::Staged,
-                        if stage {
-                            ReviewSideBytes::Missing
-                        } else {
-                            present_text("new\n")
-                        },
-                    )
-                    .with_diff_result(
-                        "",
-                        "",
-                        DiffHunksResultDto {
-                            hunks: Vec::new(),
-                            change_groups: Vec::new(),
-                        },
-                    )
-                    .with_diff_result("", "new\n", added)
-                    .with_diff_result("new\n", "", removed),
-            );
-            let usecase = ReviewUsecase::new_with_ports(
-                Arc::new(FakeSnapshotProvider::new(vec![
-                    repository_snapshot(1, false),
-                    repository_snapshot(1, false),
-                ])),
-                code.clone(),
-            );
-            let view = usecase.get_file_tab_view("/repo", "file", "head").unwrap();
-            let id = view.hunk_states[0].hunk_id.clone();
-            // When
-            usecase
-                .apply_file_tab_hunk("/repo", "file", "head", &id, stage)
-                .await
-                .unwrap();
-            // Then
-            let patches = code.patches.lock().unwrap();
-            assert_eq!(patches.len(), 1);
-            if stage {
-                assert!(patches[0].starts_with("--- /dev/null\n"));
-            } else {
-                assert!(patches[0].contains("+++ /dev/null\n"));
-            }
-        }
     }
     #[test]
     fn test_ファイルタブ_indexが非テキストでもheadと作業ツリーの差分を返す() {
@@ -2238,10 +2083,7 @@ mod tests {
                 view.initial_mode,
                 crate::domain::code::value_objects::review::FileMode::Diff
             );
-            assert_eq!((view.additions, view.deletions), (1, 1));
             assert!(view.patch.contains("-old\n+new\n"));
-            assert_eq!(view.hunk_states.len(), 1);
-            assert!(!view.hunk_states[0].is_staged);
             let ReviewFileViewDto::TextDiff(text) = view.view else {
                 panic!("text diff")
             };
@@ -2284,7 +2126,6 @@ mod tests {
                 .unwrap();
             // Then
             assert_eq!(view.initial_mode.as_str(), mode);
-            assert!(view.hunk_states.is_empty());
             let ReviewFileViewDto::Image(image) = view.view else {
                 panic!("image")
             };
@@ -2332,7 +2173,6 @@ mod tests {
                 .unwrap();
             // Then
             assert!(view.patch.is_empty());
-            assert!(view.hunk_states.is_empty());
             let ReviewFileViewDto::Binary(binary) = view.view else {
                 panic!("binary")
             };
