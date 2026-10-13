@@ -165,6 +165,7 @@ impl SubscriptionTarget {
             ("releash-base", [path]) => Ok(Self::ReleashBase((*path).into())),
             ("terminal-startup-command", []) => Ok(Self::TerminalStartupCommand),
             ("workflow-config", []) => Ok(Self::WorkflowConfig),
+            ("provider-usage", []) => Ok(Self::ProviderUsage),
             ("provider-hook-health", []) => Ok(Self::ProviderHookHealth),
             _ => Err(SubscriptionError::UnknownTarget),
         }?;
@@ -280,6 +281,7 @@ impl SubscriptionTarget {
             Self::ReleashBase(p) => ("releash-base", vec![p.clone()]),
             Self::TerminalStartupCommand => ("terminal-startup-command", vec![]),
             Self::WorkflowConfig => ("workflow-config", vec![]),
+            Self::ProviderUsage => ("provider-usage", vec![]),
             Self::ProviderHookHealth => ("provider-hook-health", vec![]),
         }
     }

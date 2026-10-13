@@ -1307,6 +1307,27 @@ mod provider_lifecycle_usecase_tests {
     }
 
     #[tokio::test]
+    async fn test_providerライフサイクルusecase_session一覧のロック破損をcorruptで返す() {
+        // Given
+        let (usecase, _, _) = usecase();
+        {
+            let _telemetry = crate::test_support::lock_crash_telemetry();
+            assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let _guard = usecase.slots.lock().unwrap();
+                panic!("poison fixture");
+            }))
+            .is_err());
+        }
+        // When
+        let error = usecase
+            .provider_sessions(ProviderKind::Codex)
+            .await
+            .unwrap_err();
+        // Then
+        assert_eq!(error, ProviderLifecycleUsecaseError::Corrupt);
+    }
+
+    #[tokio::test]
     async fn test_providerライフサイクルusecase_永続化失敗時は直前bindingをcurrentに保つ() {
         let (usecase, events, _) = usecase();
         let slot = slot_id("slot-1");

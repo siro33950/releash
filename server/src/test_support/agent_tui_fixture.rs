@@ -159,6 +159,32 @@ pub fn run_process() {
     let plan_json = env::var(FIXTURE_PLAN_ENV).expect("Agent TUI fixture plan is required");
     let plan: FixturePlan = serde_json::from_str(&plan_json).expect("parse Agent TUI fixture plan");
 
+    if let Ok(payload) = env::var("RELEASH_AGENT_TUI_FIXTURE_STATUSLINE") {
+        let args: Vec<_> = env::args().collect();
+        let settings = args
+            .windows(2)
+            .find(|args| args[0] == "--settings")
+            .map(|args| {
+                serde_json::from_str::<serde_json::Value>(&args[1]).expect("statusLine settings")
+            })
+            .expect("injected statusLine settings");
+        let command = settings["statusLine"]["command"]
+            .as_str()
+            .expect("statusLine command");
+        let parts: Vec<String> = command
+            .split_ascii_whitespace()
+            .map(str::to_string)
+            .collect();
+        let command = FixtureLifecycleCommand {
+            executable: parts[0].clone(),
+            arguments: parts[1..].to_vec(),
+            environment: Vec::new(),
+        };
+        let output =
+            execute_fixture_command(&command, &FixtureLifecyclePayload::Raw { value: payload });
+        print!("{}", String::from_utf8_lossy(&output.stdout));
+    }
+
     if plan.alternate_screen {
         print!("\x1b[?1049h");
     }
@@ -270,7 +296,10 @@ fn send_fixture_payload(endpoint: &str, payload: &FixtureLifecyclePayload) {
     stream.flush().expect("flush lifecycle fixture payload");
 }
 
-fn run_lifecycle_command(command: &FixtureLifecycleCommand, payload: &FixtureLifecyclePayload) {
+fn execute_fixture_command(
+    command: &FixtureLifecycleCommand,
+    payload: &FixtureLifecyclePayload,
+) -> std::process::Output {
     let mut child = Command::new(&command.executable)
         .args(&command.arguments)
         .envs(command.environment.iter().map(|(key, value)| (key, value)))
@@ -301,6 +330,11 @@ fn run_lifecycle_command(command: &FixtureLifecycleCommand, payload: &FixtureLif
         output.status.code(),
         String::from_utf8_lossy(&output.stderr)
     );
+    output
+}
+
+fn run_lifecycle_command(command: &FixtureLifecycleCommand, payload: &FixtureLifecyclePayload) {
+    let output = execute_fixture_command(command, payload);
     serde_json::from_slice::<serde_json::Value>(&output.stdout)
         .expect("product lifecycle command stdout must be valid JSON");
     let result = FixtureLifecycleCommandResult {

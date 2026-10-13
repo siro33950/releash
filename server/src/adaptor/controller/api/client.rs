@@ -13,6 +13,7 @@ pub struct ClientApiDeps {
     state_subscriptions: Option<StateSubscriptionDeps>,
     priority: super::client_priority::PriorityInterceptor,
     daemon: crate::usecase::daemon::DaemonUsecase,
+    provider_usage: Option<Arc<crate::usecase::provider_usage::ProviderUsageUsecase>>,
     provider_lifecycle:
         Option<Arc<dyn crate::usecase::provider_lifecycle::ProviderPayloadReceiver>>,
 }
@@ -47,9 +48,18 @@ impl ClientApiDeps {
             dispatch: dispatch.clone(),
             state_subscriptions: None,
             provider_lifecycle: None,
+            provider_usage: None,
             priority,
             daemon: dispatch.daemon.clone(),
         }
+    }
+
+    pub fn with_provider_usage(
+        mut self,
+        usage: Arc<crate::usecase::provider_usage::ProviderUsageUsecase>,
+    ) -> Self {
+        self.provider_usage = Some(usage);
+        self
     }
 
     pub fn with_provider_lifecycle(

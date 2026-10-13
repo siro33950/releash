@@ -1313,6 +1313,19 @@ struct SignalIngress(
 );
 #[async_trait::async_trait]
 impl crate::usecase::provider_lifecycle::ProviderPayloadReceiver for SignalIngress {
+    async fn receive_usage(
+        &self,
+        _: &crate::domain::provider_lifecycle::ProviderLifecycleSlotId,
+        _: &str,
+        _: &str,
+        _: &crate::domain::provider_lifecycle::ProviderLifecycleScope,
+        _: &[u8],
+    ) -> Result<
+        crate::domain::provider_lifecycle::ProviderLifecycleIngressResult,
+        crate::usecase::provider_lifecycle::ProviderLifecycleIngressUsecaseError,
+    > {
+        unreachable!()
+    }
     async fn receive_payload(
         &self,
         _: &crate::domain::provider_lifecycle::ProviderLifecycleSlotId,
@@ -1416,4 +1429,42 @@ async fn test_hookのconnect入口_生payloadを解釈し上限と権限と結�
             assert_eq!(result["code"], "unimplemented");
         }
     }
+}
+
+#[tokio::test]
+async fn test_session開始通知_適用の応答を要求期限内に返す() {
+    use crate::domain::provider_lifecycle::ProviderLifecycleIngressResult;
+    use tower::ServiceExt;
+    // Given
+    let receiver = Arc::new(SignalIngress(std::sync::Mutex::new(
+        std::collections::VecDeque::from([Ok((ProviderLifecycleIngressResult::Applied, true))]),
+    )));
+    let deps = crate::test_support::client_api_deps(Arc::new(dispatch()))
+        .with_provider_lifecycle(receiver);
+    let app = router(
+        Some(deps),
+        crate::adaptor::controller::daemon::default_timeout(),
+    );
+    let request = serde_json::json!({"provider":{"value":"codex"}, "slotId":"slot", "bindingId":"binding", "capability":"capability", "agentSessionId":"session", "payload":"e30="});
+    // When
+    let response = tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        app.oneshot(
+            axum::http::Request::post("/releash.client.v1.ClientService/ReceiveProviderSignal")
+                .header("content-type", "application/json")
+                .header("connect-protocol-version", "1")
+                .header("connect-timeout-ms", "100")
+                .body(axum::body::Body::from(request.to_string()))
+                .unwrap(),
+        ),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    // Then
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let result: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert!(result.get("applied").is_some(), "{result}");
 }

@@ -43,3 +43,13 @@ pub(super) fn record_ingress<E>(
         );
     }
 }
+
+const PROVIDER_PAYLOAD_LIMIT: usize = 65_536;
+pub(super) fn validate_payload(payload: &[u8]) -> Result<(), connectrpc::ConnectError> {
+    if payload.len() > PROVIDER_PAYLOAD_LIMIT {
+        return Err(crate::adaptor::presenter::connect::invalid_request(
+            format!("Provider payload exceeds {PROVIDER_PAYLOAD_LIMIT} bytes"),
+        ));
+    }
+    Ok(())
+}

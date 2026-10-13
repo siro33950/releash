@@ -38,7 +38,7 @@ impl Server {
         )
     }
     fn start_event(protocol: u32, event: Option<wire::state_subscription_event::Event>) -> Self {
-        Self::start_configured(protocol, event, None, "operator")
+        Self::start_configured(protocol, event, None, "operator", "0.0.0")
     }
     pub fn start_checked(payload: wire::StatePayload, handler: Handler) -> Self {
         Self::start_configured(
@@ -46,19 +46,24 @@ impl Server {
             Some(wire::state_subscription_event::Event::Snapshot(payload)),
             Some(handler),
             "operator",
+            "0.0.0",
         )
     }
     pub fn start_unary(handler: Handler) -> Self {
-        Self::start_configured(1, None, Some(handler), "operator")
+        Self::start_configured(1, None, Some(handler), "operator", "0.0.0")
     }
     pub fn start_hook() -> Self {
-        Self::start_configured(1, None, None, "hook-token")
+        Self::start_configured(1, None, None, "hook-token", "0.0.0")
+    }
+    pub fn start_with_release(protocol: u32, release: &'static str) -> Self {
+        Self::start_configured(protocol, None, None, "operator", release)
     }
     fn start_configured(
         protocol: u32,
         event: Option<wire::state_subscription_event::Event>,
         handler: Option<Handler>,
         token: &'static str,
+        release: &'static str,
     ) -> Self {
         let directory = tempfile::tempdir().unwrap();
         let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
@@ -137,7 +142,7 @@ impl Server {
                             pid,
                             process_started_at: started,
                             protocol,
-                            release: "server-fixture".into(),
+                            release: release.into(),
                             capabilities: vec!["fixture-capability".into()],
                             serving_status: wire::ServingStatus::Serving as i32,
                             cli_installation: Some(wire::CliInstallationResult {
@@ -206,6 +211,9 @@ impl Server {
             task,
             stop,
         }
+    }
+    pub fn directory(&self) -> &std::path::Path {
+        self.directory.path()
     }
     pub fn command(&self, arguments: &[&str]) -> Command {
         let mut command = Command::new(env!("CARGO_BIN_EXE_releash"));

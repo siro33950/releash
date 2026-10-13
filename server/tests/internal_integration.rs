@@ -248,3 +248,8 @@ mod usecase_workflow_execution_archive;
 mod usecase_workflow_workspace_tree;
 #[path = "internal/usecase_workspace_tree_list.rs"]
 mod usecase_workspace_tree_list;
+
+#[path = "internal/adaptor_gateway_agent_session_provider_usage.rs"]
+mod adaptor_gateway_agent_session_provider_usage;
+#[path = "internal/infrastructure_reverse_lines.rs"]
+mod infrastructure_reverse_lines;

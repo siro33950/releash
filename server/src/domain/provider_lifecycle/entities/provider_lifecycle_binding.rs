@@ -62,7 +62,6 @@ impl ProviderLifecycleBinding {
         })
     }
 
-    #[cfg(any(test, feature = "test-support"))]
     pub fn provider_session_id(&self) -> Option<&str> {
         self.provider_session_id.as_deref()
     }

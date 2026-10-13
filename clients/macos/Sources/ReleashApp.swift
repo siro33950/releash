@@ -125,7 +125,7 @@ struct RootView: View {
           }
           .pointerStyle(hoveringDivider ? .columnResize : nil)
           Divider()
-          Color(nsColor: .controlBackgroundColor).frame(height: UIStyle.footerHeight)
+          FooterView(model: model)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .sheet(isPresented: $creating) { CreateWorktreeView(model: model) }

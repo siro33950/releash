@@ -71,7 +71,7 @@ Main → 全ての層
 - Submit / Stop / Approval / ArtifactはWorkflowが所有する。
 - Provider lifecycleとProvider availabilityは別の境界である。
 
-## ドメイン一覧（17個）
+## ドメイン一覧（18個）
 
 | ドメイン | 含まれる責務 |
 |---|---|
@@ -88,6 +88,7 @@ Main → 全ての層
 | `app_config` | アプリ設定、secret、Notion 設定の永続化境界 |
 | `workspace_state` | ワークスペース状態保存 |
 | `app_data_gc` | アプリケーションデータの GC 対象分類（削除済み workspace、再生成可能キャッシュ等） |
+| `provider_usage` | provider の使用率・窓・plan、Codex の記録の観測と最新値の保存 |
 | `provider_lifecycle` | Provider session、transcript参照、StopとAgentSession / NodeExecution attemptの関連付け |
 | `git_host` | GitHub PR/Issue |
 | `notion` | Notion API |

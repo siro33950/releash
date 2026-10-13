@@ -175,6 +175,7 @@ impl ProviderLifecycleEventRepository for MemoryLifecycleEvents {
 
 #[derive(Default)]
 pub(super) struct MemoryHookHealth {
+    pub(super) fail_saves: std::sync::atomic::AtomicUsize,
     pub(super) stored: Mutex<std::collections::HashMap<ProviderKind, VersionedProviderHookHealth>>,
 }
 
@@ -200,6 +201,17 @@ impl ProviderHookHealthRepository for MemoryHookHealth {
         mut health: VersionedProviderHookHealth,
         _caller_request_id: &str,
     ) -> Result<VersionedProviderHookHealth, ProviderHookHealthRepositoryError> {
+        if self
+            .fail_saves
+            .try_update(
+                std::sync::atomic::Ordering::Relaxed,
+                std::sync::atomic::Ordering::Relaxed,
+                |remaining| remaining.checked_sub(1),
+            )
+            .is_ok()
+        {
+            return Err(ProviderHookHealthRepositoryError::StorageUnavailable);
+        }
         let revision =
             health.revision() + health.health_mut().take_uncommitted_events().len() as u64;
         let saved = VersionedProviderHookHealth::restored(health.into_health(), revision);

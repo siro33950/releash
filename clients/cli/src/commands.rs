@@ -94,6 +94,24 @@ fn absent<T>(value: Option<T>) -> Result<T, ConnectError> {
 }
 
 pub async fn run(dir: &Path, command: TopCommand) -> Result<(String, i32), ConnectError> {
+    if matches!(
+        &command,
+        TopCommand::Hook {
+            command: HookCommand::Statusline
+        }
+    ) {
+        return crate::statusline::run(dir).map(|output| (output, 0));
+    }
+    if matches!(
+        &command,
+        TopCommand::Hook {
+            command: HookCommand::ForwardUsage
+        }
+    ) {
+        return crate::statusline::forward_usage(dir)
+            .await
+            .map(|output| (output, 0));
+    }
     if let TopCommand::Hook {
         command: HookCommand::Receive { provider },
     } = command
@@ -514,13 +532,15 @@ fn history_entry(entry: wire::ReviewHistoryEntryDto) -> Result<Value, ConnectErr
     })
 }
 
+pub(crate) const PROVIDER_PAYLOAD_LIMIT: usize = 65_536;
+
 pub(crate) fn read_payload(reader: impl Read) -> Result<Vec<u8>, ConnectError> {
     let mut payload = Vec::new();
     reader
-        .take(65_537)
+        .take((PROVIDER_PAYLOAD_LIMIT + 1) as u64)
         .read_to_end(&mut payload)
         .map_err(|e| ConnectError::internal(e.to_string()))?;
-    if payload.len() > 65_536 {
+    if payload.len() > PROVIDER_PAYLOAD_LIMIT {
         return Err(ConnectError::new(
             ErrorCode::InvalidArgument,
             "Provider payload exceeds 65536 bytes",

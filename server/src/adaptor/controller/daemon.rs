@@ -257,17 +257,15 @@ pub async fn compose(
     > = app_config.clone();
     let provider_history_home =
         dirs::home_dir().unwrap_or_else(|| data_dir.join("provider-history-unavailable"));
+    let claude_config_dir = std::env::var_os("CLAUDE_CONFIG_DIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| provider_history_home.join(".claude"));
+    let codex_home = std::env::var_os("CODEX_HOME")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| provider_history_home.join(".codex"));
     let history_paths = vec![
-        std::env::var_os("CLAUDE_CONFIG_DIR")
-            .map(std::path::PathBuf::from)
-            .unwrap_or_else(|| provider_history_home.join(".claude"))
-            .to_string_lossy()
-            .into_owned(),
-        std::env::var_os("CODEX_HOME")
-            .map(std::path::PathBuf::from)
-            .unwrap_or_else(|| provider_history_home.join(".codex"))
-            .to_string_lossy()
-            .into_owned(),
+        claude_config_dir.to_string_lossy().into_owned(),
+        codex_home.to_string_lossy().into_owned(),
     ];
     let hook_token_value = Arc::<str>::from(infrastructure::local_api::generate_token());
     let hook_token = infrastructure::local_api::BearerToken::from(hook_token_value.clone());
@@ -288,12 +286,8 @@ pub async fn compose(
                             #[cfg(not(any(target_os = "macos", target_os = "linux")))]
                             adaptor::gateway::agent_session::LocalProviderExecutableProbeGateway::new(),
                         ),
-                        claude_config_dir: std::env::var_os("CLAUDE_CONFIG_DIR")
-                            .map(std::path::PathBuf::from)
-                            .unwrap_or_else(|| provider_history_home.join(".claude")),
-                        codex_home: std::env::var_os("CODEX_HOME")
-                            .map(std::path::PathBuf::from)
-                            .unwrap_or_else(|| provider_history_home.join(".codex")),
+                        claude_config_dir,
+                        codex_home,
                         cli_binary: infrastructure::platform::path_aliases::alias_name_for_profile(
                             infrastructure::platform::path_aliases::BuildProfile::current(),
                         )
@@ -304,6 +298,14 @@ pub async fn compose(
                     },
                 )
                 .map_err(|error| format!("Provider availability初期化失敗: {error:?}"))?;
+    let provider_usage = agent_sessions.usage.clone();
+    tokio::spawn(adaptor::controller::provider_usage::run(
+        provider_usage.clone(),
+        agent_sessions.provider_lifecycle.clone(),
+        Box::pin(infrastructure::timer::ticks(
+            std::time::Duration::from_secs(2),
+        )),
+    ));
     let agent_session_launch = agent_sessions.launch.clone();
 
     let agent_session_initial_instruction = agent_sessions.initial_instruction.clone();
@@ -584,6 +586,7 @@ pub async fn compose(
             adaptor::gateway::state_subscription_reads::StateSubscriptionReads(
                 usecase::state_subscription::WorkspaceStateReads {
                     daemon: daemon.clone(),
+                    usage: provider_usage.clone(),
                     repositories: dependencies
                         .app_state
                         .as_ref()
@@ -655,6 +658,7 @@ pub async fn compose(
         Some(
             adaptor::controller::api::ClientApiDeps::new(client_dispatch.clone(), priority)
                 .with_provider_lifecycle(provider_lifecycle_ingress.clone())
+                .with_provider_usage(provider_usage.clone())
                 .with_state_subscriptions(adaptor::controller::api::StateSubscriptionDeps::new(
                     state_subscriptions,
                     state_presenter,

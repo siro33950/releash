@@ -314,8 +314,14 @@ fn test_provider信号変換_不正または不完全なpayloadをraw_input非�
 
 #[test]
 fn test_provider起動設定_codexはprocess_configを使いhook_trustを要求する() {
-    let spec =
-        ProviderLaunchSpec::for_provider(ProviderKind::Codex, context(), "releash", None).unwrap();
+    let spec = ProviderLaunchSpec::for_provider(
+        ProviderKind::Codex,
+        context(),
+        "releash",
+        None,
+        serde_json::Value::Null,
+    )
+    .unwrap();
 
     assert_eq!(
         spec.arguments(),
@@ -344,8 +350,14 @@ fn test_provider起動設定_codexはprocess_configを使いhook_trustを要求�
 
 #[test]
 fn test_provider起動設定_codexのnewとresumeをstructured_root_processへ変換する() {
-    let spec =
-        ProviderLaunchSpec::for_provider(ProviderKind::Codex, context(), "releash", None).unwrap();
+    let spec = ProviderLaunchSpec::for_provider(
+        ProviderKind::Codex,
+        context(),
+        "releash",
+        None,
+        serde_json::Value::Null,
+    )
+    .unwrap();
 
     let new = spec
         .terminal_process("/opt/bin/codex", ProviderSessionLaunch::New)
@@ -383,8 +395,14 @@ fn test_provider起動設定_codexのnewとresumeをstructured_root_processへ�
 
 #[test]
 fn test_provider起動設定_codexの初回指示を起動時promptとして渡す() {
-    let spec =
-        ProviderLaunchSpec::for_provider(ProviderKind::Codex, context(), "releash", None).unwrap();
+    let spec = ProviderLaunchSpec::for_provider(
+        ProviderKind::Codex,
+        context(),
+        "releash",
+        None,
+        serde_json::Value::Null,
+    )
+    .unwrap();
 
     let process = spec
         .terminal_process(
@@ -433,8 +451,14 @@ fn test_provider起動設定_binding入力の欠落を拒否する() {
         ProviderLaunchSpecError::EmptyField("hook_token")
     );
     assert_eq!(
-        ProviderLaunchSpec::for_provider(ProviderKind::Claude, context(), "releash", None)
-            .unwrap_err(),
+        ProviderLaunchSpec::for_provider(
+            ProviderKind::Claude,
+            context(),
+            "releash",
+            None,
+            serde_json::Value::Null
+        )
+        .unwrap_err(),
         ProviderLaunchSpecError::ClaudePluginDirectoryRequired
     );
     assert_eq!(
@@ -443,6 +467,7 @@ fn test_provider起動設定_binding入力の欠落を拒否する() {
             context(),
             "user-controlled-command",
             None,
+            serde_json::Value::Null
         )
         .unwrap_err(),
         ProviderLaunchSpecError::UnsupportedCliAlias
@@ -481,6 +506,7 @@ fn test_provider起動設定_hook_tokenをagentの環境へ渡す() {
             context,
             "releash",
             Some(std::path::Path::new("/plugin")),
+            serde_json::Value::Null,
         )
         .unwrap();
         let process = spec
@@ -490,4 +516,27 @@ fn test_provider起動設定_hook_tokenをagentの環境へ渡す() {
             .environment()
             .contains(&("RELEASH_PROVIDER_LIFECYCLE_TOKEN".into(), token.into())));
     }
+}
+
+#[test]
+fn test_provider起動_statuslineを注入して元のcommandとpaddingを引き継ぐ() {
+    // Given
+    let spec = ProviderLaunchSpec::for_provider(
+        ProviderKind::Claude,
+        context(),
+        "releash",
+        Some(std::path::Path::new("/plugin")),
+        serde_json::json!({"type":"command","command":"printf '%s' custom","padding":2}),
+    )
+    .unwrap();
+    // Then
+    let args = spec.arguments();
+    let index = args.iter().position(|arg| arg == "--settings").unwrap();
+    let value: serde_json::Value = serde_json::from_str(&args[index + 1]).unwrap();
+    assert_eq!(value["statusLine"]["command"], "releash hook statusline");
+    assert_eq!(value["statusLine"]["padding"], 2);
+    assert!(spec.environment().contains(&(
+        "RELEASH_CLAUDE_STATUSLINE".into(),
+        "printf '%s' custom".into()
+    )));
 }

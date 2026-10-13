@@ -1,3 +1,4 @@
+use crate::domain::provider_usage::UsageError;
 use std::sync::Arc;
 
 use crate::domain::agent_session::aggregates::AgentSessionMutationOutcome;
@@ -78,6 +79,7 @@ pub struct ProviderLifecycleIngressUsecase {
     session_start_transaction: Arc<dyn ProviderSessionStartTransaction>,
     execution_tree_stop_transaction: Arc<dyn ProviderExecutionTreeStopTransaction>,
     subscriptions: StateSubscriptionUsecase,
+    usage: Option<Arc<crate::usecase::provider_usage::ProviderUsageUsecase>>,
 }
 
 pub struct ProviderPayloadInput<'a> {
@@ -89,6 +91,14 @@ pub struct ProviderPayloadInput<'a> {
 
 #[async_trait::async_trait]
 pub trait ProviderPayloadReceiver: Send + Sync {
+    async fn receive_usage(
+        &self,
+        slot: &ProviderLifecycleSlotId,
+        capability: &str,
+        binding: &str,
+        scope: &crate::domain::provider_lifecycle::ProviderLifecycleScope,
+        payload: &[u8],
+    ) -> Result<ProviderLifecycleIngressResult, ProviderLifecycleIngressUsecaseError>;
     async fn receive_payload(
         &self,
         slot_id: &ProviderLifecycleSlotId,
@@ -120,7 +130,16 @@ impl ProviderLifecycleIngressUsecase {
             session_start_transaction,
             execution_tree_stop_transaction,
             subscriptions,
+            usage: None,
         }
+    }
+
+    pub(crate) fn with_usage(
+        mut self,
+        usage: Arc<crate::usecase::provider_usage::ProviderUsageUsecase>,
+    ) -> Self {
+        self.usage = Some(usage);
+        self
     }
 
     pub async fn receive(
@@ -328,6 +347,39 @@ fn merge_activity_outcome(
 
 #[async_trait::async_trait]
 impl ProviderPayloadReceiver for ProviderLifecycleIngressUsecase {
+    async fn receive_usage(
+        &self,
+        slot: &ProviderLifecycleSlotId,
+        capability: &str,
+        binding: &str,
+        scope: &crate::domain::provider_lifecycle::ProviderLifecycleScope,
+        payload: &[u8],
+    ) -> Result<ProviderLifecycleIngressResult, ProviderLifecycleIngressUsecaseError> {
+        let authorization = self
+            .lifecycle
+            .authorize_usage(
+                slot,
+                capability,
+                binding,
+                crate::domain::provider_lifecycle::ProviderKind::Claude,
+                scope,
+            )
+            .await
+            .map_err(ProviderLifecycleIngressUsecaseError::from)?;
+        if let Err(reason) = authorization {
+            return Ok(ProviderLifecycleIngressResult::Rejected(reason));
+        }
+        let usage = self
+            .usage
+            .as_ref()
+            .ok_or(ProviderLifecycleIngressUsecaseError::StorageUnavailable)?;
+        usage.receive_claude(payload).map_err(|error| match error {
+            UsageError::Invalid => ProviderLifecycleIngressUsecaseError::InvalidInput,
+            UsageError::Technical(error) => ProviderLifecycleIngressUsecaseError::Technical(error),
+        })?;
+        Ok(ProviderLifecycleIngressResult::Applied)
+    }
+
     async fn receive_payload(
         &self,
         slot_id: &ProviderLifecycleSlotId,
@@ -345,9 +397,28 @@ impl ProviderPayloadReceiver for ProviderLifecycleIngressUsecase {
             }
             ProviderPayloadInterpretation::Signal(signal) => {
                 let started = signal.is_session_started();
-                self.receive(slot_id, capability, signal)
-                    .await
-                    .map(|result| (result, started))
+                let codex_session = match signal.clone().into_kind() {
+                    ProviderLifecycleSignalKind::SessionStarted {
+                        provider_session_id,
+                        ..
+                    } if input.provider
+                        == crate::domain::provider_lifecycle::ProviderKind::Codex =>
+                    {
+                        Some(provider_session_id)
+                    }
+                    _ => None,
+                };
+                let result = self.receive(slot_id, capability, signal).await?;
+                if matches!(
+                    result,
+                    ProviderLifecycleIngressResult::Applied
+                        | ProviderLifecycleIngressResult::Duplicate
+                ) {
+                    if let (Some(usage), Some(id)) = (&self.usage, codex_session) {
+                        usage.start_codex_session(&id);
+                    }
+                }
+                Ok((result, started))
             }
         }
     }

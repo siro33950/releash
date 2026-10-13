@@ -90,13 +90,14 @@ impl ProviderLaunchSpec {
         context: ProviderLaunchContext,
         hook_cli_alias: &str,
         claude_plugin_directory: Option<&Path>,
+        mut status_line: serde_json::Value,
     ) -> Result<Self, ProviderLaunchSpecError> {
         if !matches!(hook_cli_alias, "releash" | "releash-dev") {
             return Err(ProviderLaunchSpecError::UnsupportedCliAlias);
         }
         let hook_command =
             |provider: &str| format!("{hook_cli_alias} hook receive --provider {provider}");
-        let environment = vec![
+        let mut environment = vec![
             (
                 "RELEASH_PROVIDER_LIFECYCLE_TOKEN".to_string(),
                 context.hook_token,
@@ -124,11 +125,24 @@ impl ProviderLaunchSpec {
                 let plugin_directory = claude_plugin_directory
                     .filter(|path| !path.as_os_str().is_empty())
                     .ok_or(ProviderLaunchSpecError::ClaudePluginDirectoryRequired)?;
+                if let Some(command) = status_line
+                    .get("command")
+                    .and_then(serde_json::Value::as_str)
+                {
+                    environment.push(("RELEASH_CLAUDE_STATUSLINE".into(), command.into()));
+                }
+                if !status_line.is_object() {
+                    status_line = serde_json::json!({});
+                }
+                status_line["type"] = "command".into();
+                status_line["command"] = format!("{hook_cli_alias} hook statusline").into();
                 Ok(Self {
                     provider,
                     arguments: vec![
                         "--plugin-dir".to_string(),
                         plugin_directory.to_string_lossy().into_owned(),
+                        "--settings".to_string(),
+                        serde_json::json!({"statusLine": status_line}).to_string(),
                     ],
                     environment,
                     files: claude_plugin_files(&hook_command("claude")),

@@ -46,11 +46,17 @@ pub fn test_provider起動設定_development_profileでは両providerにreleash_
         context(),
         "releash-dev",
         Some(plugin_directory.path()),
+        serde_json::Value::Null,
     )
     .unwrap();
-    let codex =
-        ProviderLaunchSpec::for_provider(ProviderKind::Codex, context(), "releash-dev", None)
-            .unwrap();
+    let codex = ProviderLaunchSpec::for_provider(
+        ProviderKind::Codex,
+        context(),
+        "releash-dev",
+        None,
+        serde_json::Value::Null,
+    )
+    .unwrap();
 
     let claude_hooks = claude
         .files()
@@ -79,6 +85,7 @@ pub fn test_provider起動設定_claudeはsession_pluginを使いuser_settings�
         context(),
         "releash",
         Some(&plugin_directory),
+        serde_json::Value::Null,
     )
     .unwrap();
 
@@ -87,9 +94,10 @@ pub fn test_provider起動設定_claudeはsession_pluginを使いuser_settings�
         &[
             "--plugin-dir".to_string(),
             plugin_directory.to_string_lossy().into_owned(),
+            "--settings".to_string(),
+            serde_json::json!({"statusLine":{"type":"command","command":"releash hook statusline"}}).to_string(),
         ]
     );
-    assert!(!spec.arguments().iter().any(|value| value == "--settings"));
     assert_eq!(fs::read(&settings_path).unwrap(), original);
     assert!(!spec.requires_hook_trust());
 
@@ -137,6 +145,7 @@ pub fn test_provider起動設定_claudeのnewとresumeをstructured_root_process
         context(),
         "releash",
         Some(directory.path()),
+        serde_json::Value::Null,
     )
     .unwrap();
 
@@ -149,6 +158,8 @@ pub fn test_provider起動設定_claudeのnewとresumeをstructured_root_process
         &[
             "--plugin-dir".to_string(),
             directory.path().to_string_lossy().into_owned(),
+            "--settings".to_string(),
+            serde_json::json!({"statusLine":{"type":"command","command":"releash hook statusline"}}).to_string(),
         ]
     );
     assert_eq!(new.environment(), spec.environment());
@@ -164,6 +175,8 @@ pub fn test_provider起動設定_claudeのnewとresumeをstructured_root_process
         &[
             "--plugin-dir".to_string(),
             directory.path().to_string_lossy().into_owned(),
+            "--settings".to_string(),
+            serde_json::json!({"statusLine":{"type":"command","command":"releash hook statusline"}}).to_string(),
             "--resume".to_string(),
             "claude-session-1".to_string(),
         ]
@@ -178,6 +191,7 @@ pub fn test_provider起動設定_claudeの初回指示を起動時promptとし�
         context(),
         "releash",
         Some(directory.path()),
+        serde_json::Value::Null,
     )
     .unwrap();
 
@@ -252,6 +266,7 @@ pub fn test_provider起動設定_permissionの4値をprovider別引数列へ写�
             context(),
             "releash",
             (provider == ProviderKind::Claude).then_some(plugin_directory.path()),
+            serde_json::Value::Null,
         )
         .unwrap();
         let launch = ProviderSessionLaunch::new_with_initial_instruction("complete-action")
@@ -286,6 +301,7 @@ pub fn test_provider起動設定_permission省略時は権限引数なしでmode
             context(),
             "releash",
             (provider == ProviderKind::Claude).then_some(plugin_directory.path()),
+            serde_json::Value::Null,
         )
         .unwrap();
         let launch = ProviderSessionLaunch::new_with_initial_instruction("complete-action")
@@ -322,6 +338,7 @@ pub fn test_provider起動設定_launch_contextをchild_environmentだけに保�
             context(),
             "releash",
             (provider == ProviderKind::Claude).then_some(plugin_directory.path()),
+            serde_json::Value::Null,
         )
         .unwrap();
         assert_eq!(

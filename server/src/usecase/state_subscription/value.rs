@@ -71,5 +71,6 @@ pub enum StateValue {
     ReleashBase(Option<String>),
     TerminalStartupCommand(String),
     WorkflowConfig(crate::usecase::app_config::query_service::WorkflowConfigDto),
+    ProviderUsage(Vec<crate::usecase::provider_usage::ProviderUsageDto>),
     ProviderHookHealth(crate::usecase::provider_lifecycle::ProviderHookHealthReadResult),
 }

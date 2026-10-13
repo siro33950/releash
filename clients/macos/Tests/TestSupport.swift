@@ -13,6 +13,9 @@ final class TestHTTPClient: HTTPClientInterface {
     var subscriptions: [Releash_Client_V1_StartStateSubscriptionRequest] = []
     var repositories: [Releash_Client_V1_WorkspaceRepositoryList] = []
     var layouts: [String: Releash_Client_V1_WorkspaceStateDto] = [:]
+    var providerUsage = Releash_Client_V1_ProviderUsageSnapshot()
+    var hookHealth = Releash_Client_V1_ProviderHookHealthSnapshot()
+    var daemonInfo = Releash_Client_V1_ServerInfo()
     var collapsed: [String: Bool] = [:]
     var terminalReplay = ""
     var failedMethod: String?
@@ -73,6 +76,12 @@ final class TestHTTPClient: HTTPClientInterface {
             payload.terminal.snapshot.status.hasForegroundProcess_p = false
           } else if subscription.target == "workspaces" {
             payload.workspaces.repositories.items = state.repositories
+          } else if subscription.target == "provider-usage" {
+            payload.providerUsage = state.providerUsage
+          } else if subscription.target == "provider-hook-health" {
+            payload.providerHookHealth = state.hookHealth
+          } else if subscription.target == "daemon-info" {
+            payload.daemonInfo = state.daemonInfo
           } else if subscription.target == "repository-group-state" {
             payload.repositoryGroupState.collapsed =
               state.collapsed[subscription.args[0], default: false]
@@ -165,7 +174,7 @@ final class TestHTTPClient: HTTPClientInterface {
       .utf8
   ).write(to: http.discoveryFile)
   let status = try JSONSerialization.data(withJSONObject: [
-    "running": true, "compatibility": "compatible", "discovery_file": http.discoveryFile.path,
+    "running": true, "compatibility": "compatible", "release_compatibility": "compatible", "discovery_file": http.discoveryFile.path,
   ])
   let model = AppModel(
     cli: CLI(

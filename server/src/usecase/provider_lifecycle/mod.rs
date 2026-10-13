@@ -73,6 +73,47 @@ impl ProviderLifecycleUsecase {
         }
     }
 
+    pub(crate) async fn authorize_usage(
+        &self,
+        slot: &ProviderLifecycleSlotId,
+        capability: &str,
+        binding: &str,
+        provider: ProviderKind,
+        scope: &ProviderLifecycleScope,
+    ) -> Result<
+        Result<(), crate::domain::provider_lifecycle::ProviderLifecycleRejection>,
+        ProviderLifecycleUsecaseError,
+    > {
+        let Some(live) = self.find_slot(slot)? else {
+            return Ok(Err(
+                crate::domain::provider_lifecycle::ProviderLifecycleRejection::BindingNotActive,
+            ));
+        };
+        let current = live.lock().await;
+        Ok(current.authorize_usage(&self.credentials.hash(capability), binding, provider, scope))
+    }
+    pub(crate) async fn provider_sessions(
+        &self,
+        provider: ProviderKind,
+    ) -> Result<Vec<String>, ProviderLifecycleUsecaseError> {
+        let slots = self
+            .slots
+            .lock()
+            .map_err(|_| ProviderLifecycleUsecaseError::Corrupt)?
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        let mut ids = Vec::new();
+        for slot in slots {
+            if let Some(id) = slot.lock().await.current_provider_session(provider) {
+                ids.push(id.to_string());
+            }
+        }
+        ids.sort();
+        ids.dedup();
+        Ok(ids)
+    }
+
     pub async fn arm(
         &self,
         slot_id: ProviderLifecycleSlotId,

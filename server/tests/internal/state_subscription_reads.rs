@@ -378,6 +378,13 @@ impl Fixture {
             editor_scanner: Arc::new(
                 releashd::test_support::integration::platform::MacInstalledEditorGateway,
             ),
+            usage: {
+                use releashd::test_support::integration::provider_usage::*;
+                let model = Arc::new(ProviderUsageReadModel::default());
+                Arc::new(ProviderUsageUsecase::new(Arc::new(LocalProviderUsageSource {
+                    claude_account: root.join(".claude.json"), codex_home: root.join(".codex"),
+                }), model.clone(), model, Arc::new(releashd::test_support::integration::provider_usage::CodexUsageObservationStore::default()), Arc::new(SystemProviderUsageClock), publisher.clone()))
+            },
             hook_health: Arc::new(
                 releashd::test_support::integration::providers::ProviderHookHealthReadUsecase::new(
                     Arc::new(

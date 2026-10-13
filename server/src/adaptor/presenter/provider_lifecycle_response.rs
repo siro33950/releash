@@ -40,3 +40,17 @@ impl From<ProviderLifecycleIngressResult>
         }
     }
 }
+
+pub(crate) fn usage_result(
+    result: Result<
+        ProviderLifecycleIngressResult,
+        crate::usecase::provider_lifecycle::ProviderLifecycleIngressUsecaseError,
+    >,
+) -> Result<(), connectrpc::ConnectError> {
+    match result.map_err(crate::adaptor::presenter::connect::classified_error)? {
+        ProviderLifecycleIngressResult::Rejected(reason) => Err(
+            crate::adaptor::presenter::connect::invalid_request(rejection_reason(reason)),
+        ),
+        _ => Ok(()),
+    }
+}

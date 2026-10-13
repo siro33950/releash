@@ -24,7 +24,7 @@ fn test_cli_サーバが古い場合は操作を呼ばずfailed_preconditionを�
     assert!(error["error"]["message"]
         .as_str()
         .unwrap()
-        .contains("server-fixture"));
+        .contains("0.0.0"));
     assert!(error["error"]["message"]
         .as_str()
         .unwrap()
@@ -882,7 +882,7 @@ fn test_cli_status_互換性に関わらずserver_infoと接続先を出しtoken
         let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
         assert_eq!(value["running"], true);
         assert_eq!(value["server"]["daemonId"], "fixture");
-        assert_eq!(value["server"]["release"], "server-fixture");
+        assert_eq!(value["server"]["release"], "0.0.0");
         assert_eq!(value["server"]["pid"], std::process::id());
         assert_eq!(value["server"]["protocol"], serde_json::json!(protocol));
         assert_eq!(
@@ -890,6 +890,7 @@ fn test_cli_status_互換性に関わらずserver_infoと接続先を出しtoken
             serde_json::json!(["fixture-capability"])
         );
         assert_eq!(value["compatibility"], compatibility);
+        assert_eq!(value["release_compatibility"], "server_older");
         assert!(value["guidance"].as_str().unwrap().contains(guidance));
         assert_eq!(value["connection"]["host"], "127.0.0.1");
         assert!(value["connection"]["port"].as_u64().unwrap() > 0);
@@ -1079,7 +1080,7 @@ fn test_cli_status_人向け表示でもサーバ情報と両方向の更新案�
             format!("daemon_id: {}", discovery.daemon_id),
             format!("pid: {}", discovery.pid),
             format!("process_started_at: {}", discovery.process_started_at),
-            "server release: server-fixture".into(),
+            "server release: 0.0.0".into(),
             format!("server protocol: {protocol}"),
             "capabilities: fixture-capability".into(),
             "serving status: SERVING_STATUS_SERVING".into(),
@@ -1195,4 +1196,251 @@ fn test_cli_起動失敗はjson指定時だけ機械可読で案内を返す() {
             error["guidance"].as_str().unwrap(),
         )
     );
+}
+
+#[test]
+fn test_cli_statusline_同じstdinを転送し転送失敗でも利用者のstdoutを変更しない() {
+    use prost::Message;
+    use std::io::Write;
+    use std::process::Stdio;
+    use std::sync::{Arc, Mutex};
+    for transfer_fails in [false, true] {
+        // Given
+        let recorded = Arc::new(Mutex::new(Vec::new()));
+        let received = recorded.clone();
+        let (sent, completed) = std::sync::mpsc::channel();
+        let server = support::Server::start_unary(Box::new(move |method, body| {
+            assert!(method.contains("/ReceiveProviderUsage "));
+            let request = wire::ReceiveProviderUsageRequest::decode(body).unwrap();
+            assert_eq!(request.slot_id, "slot");
+            assert_eq!(request.binding_id, "binding");
+            assert_eq!(request.capability, "capability");
+            assert_eq!(request.agent_session_id, "session");
+            *received.lock().unwrap() = request.payload;
+            sent.send(()).unwrap();
+            if transfer_fails {
+                (
+                    503,
+                    br#"{"code":"unavailable","message":"usage failed"}"#.to_vec(),
+                )
+            } else {
+                (200, Vec::new())
+            }
+        }));
+        let payload = br#"{"rate_limits":{"five_hour":{"used_percentage":78,"resets_at":123}}}"#;
+        // When
+        let mut child = server
+            .command(&["hook", "statusline"])
+            .env("RELEASH_PROVIDER_LIFECYCLE_TOKEN", "operator")
+            .env("RELEASH_PROVIDER_LIFECYCLE_SLOT_ID", "slot")
+            .env("RELEASH_PROVIDER_LIFECYCLE_BINDING_ID", "binding")
+            .env("RELEASH_PROVIDER_LIFECYCLE_CAPABILITY", "capability")
+            .env("RELEASH_PROVIDER_LIFECYCLE_AGENT_SESSION_ID", "session")
+            .env("RELEASH_CLAUDE_STATUSLINE", "cat")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        child.stdin.take().unwrap().write_all(payload).unwrap();
+        let output = child.wait_with_output().unwrap();
+        // Then
+        assert!(output.status.success());
+        assert_eq!(output.stdout, payload);
+        completed
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap();
+        assert_eq!(*recorded.lock().unwrap(), payload);
+        assert!(output.stderr.is_empty());
+        if transfer_fails {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            loop {
+                let log =
+                    std::fs::read_to_string(server.directory().join("logs/provider-usage.stderr"))
+                        .unwrap();
+                if log.contains("usage failed") {
+                    break;
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "transfer failure was not reported: {log}"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+        }
+        server.finish();
+    }
+}
+
+#[test]
+fn test_cli_statusline_応答しないサーバでも利用者の表示を返し短時間で終了する() {
+    use prost::Message;
+    use std::io::Write;
+    use std::process::Stdio;
+    use std::time::{Duration, Instant};
+    // Given
+    let (received, pending) = std::sync::mpsc::channel();
+    let (release, released) = std::sync::mpsc::channel();
+    let server = support::Server::start_unary(Box::new(move |method, body| {
+        assert!(method.contains("/ReceiveProviderUsage "));
+        let request = wire::ReceiveProviderUsageRequest::decode(body).unwrap();
+        assert_eq!(request.slot_id, "slot");
+        assert_eq!(request.binding_id, "binding");
+        assert_eq!(request.capability, "capability");
+        assert_eq!(request.agent_session_id, "session");
+        assert_eq!(request.payload, b"{}");
+        received.send(()).unwrap();
+        released.recv_timeout(Duration::from_secs(10)).unwrap();
+        (200, Vec::new())
+    }));
+    let limit = Duration::from_secs(2);
+    assert!(limit.as_millis() * 10 < releash::daemon::timeout("default_timeout_ms").as_millis());
+    // When
+    let start = Instant::now();
+    let mut child = server
+        .command(&["hook", "statusline"])
+        .env("RELEASH_PROVIDER_LIFECYCLE_TOKEN", "operator")
+        .env("RELEASH_PROVIDER_LIFECYCLE_SLOT_ID", "slot")
+        .env("RELEASH_PROVIDER_LIFECYCLE_BINDING_ID", "binding")
+        .env("RELEASH_PROVIDER_LIFECYCLE_CAPABILITY", "capability")
+        .env("RELEASH_PROVIDER_LIFECYCLE_AGENT_SESSION_ID", "session")
+        .env("RELEASH_CLAUDE_STATUSLINE", "cat")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child.stdin.take().unwrap().write_all(b"{}").unwrap();
+    while child.try_wait().unwrap().is_none() && start.elapsed() < limit {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let exited = child.try_wait().unwrap().is_some();
+    if !exited {
+        child.kill().unwrap();
+    }
+    let output = child.wait_with_output().unwrap();
+    // Then
+    assert!(exited, "statusLine waited for provider usage transfer");
+    assert!(start.elapsed() < limit);
+    assert!(output.status.success());
+    assert_eq!(output.stdout, b"{}");
+    assert!(output.stderr.is_empty());
+    pending.recv_timeout(Duration::from_secs(5)).unwrap();
+    release.send(()).unwrap();
+    server.finish();
+}
+
+#[test]
+fn test_cli_status_版を解析できなくてもサーバ情報とprotocolの案内を返す() {
+    for (protocol, compatibility, guidance) in [
+        (1, "compatible", "compatible"),
+        (0, "server_older", "releash server restart"),
+        (2, "client_older", "update the Releash client"),
+    ] {
+        for json in [false, true] {
+            // Given
+            let server = support::Server::start_with_release(protocol, "server-fixture");
+            // When
+            let output = server.run(if json {
+                &["status", "--json"]
+            } else {
+                &["status"]
+            });
+            // Then
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            if json {
+                let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+                assert_eq!(value["server"]["release"], "server-fixture");
+                assert_eq!(value["compatibility"], compatibility);
+                assert!(value["guidance"].as_str().unwrap().contains(guidance));
+                assert_eq!(value["connection"]["host"], "127.0.0.1");
+                assert!(value["connection"]["port"].as_u64().unwrap() > 0);
+                assert!(value["release_compatibility"].is_null());
+            } else {
+                let text = String::from_utf8(output.stdout).unwrap();
+                assert!(text.contains("server release: server-fixture"));
+                assert!(text.contains(&format!("server protocol: {protocol}")));
+                assert!(text.contains(guidance));
+            }
+            server.finish();
+        }
+    }
+}
+
+#[test]
+fn test_cli_statusline_転送上限を超える入力全体を利用者のコマンドへ渡す() {
+    use std::io::Write;
+    use std::process::Stdio;
+    // Given
+    let directory = tempfile::tempdir().unwrap();
+    let payload =
+        serde_json::to_vec(&serde_json::json!({"workspace":{"added_dirs":["x".repeat(70_000)]}}))
+            .unwrap();
+    assert!(payload.len() > 65_536);
+    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_releash"))
+        .arg("--data-dir")
+        .arg(directory.path())
+        .args(["hook", "statusline"])
+        .env("RELEASH_CLAUDE_STATUSLINE", "cat")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    // When
+    let mut stdin = child.stdin.take().unwrap();
+    let written = payload.clone();
+    let writer = std::thread::spawn(move || stdin.write_all(&written));
+    let output = child.wait_with_output().unwrap();
+    writer.join().unwrap().unwrap();
+    // Then
+    assert!(output.status.success());
+    assert_eq!(output.stdout, payload);
+    assert!(String::from_utf8(output.stderr)
+        .unwrap()
+        .contains("Provider payload exceeds 65536 bytes"));
+    let mut forward = std::process::Command::new(env!("CARGO_BIN_EXE_releash"))
+        .arg("--data-dir")
+        .arg(directory.path())
+        .args(["hook", "forward-usage"])
+        .stdin(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut input = forward.stdin.take().unwrap();
+    let writer = std::thread::spawn(move || input.write_all(&payload[..65_537]));
+    let output = forward.wait_with_output().unwrap();
+    writer.join().unwrap().unwrap();
+    assert!(String::from_utf8(output.stderr)
+        .unwrap()
+        .contains("Provider payload exceeds 65536 bytes"));
+}
+
+#[test]
+fn test_cli_statusline_転送開始で上限超過ログを切り詰める() {
+    use std::io::Write;
+    use std::process::Stdio;
+    // Given
+    let server = support::Server::start_unary(Box::new(|_, _| (200, Vec::new())));
+    let log = server.directory().join("logs/provider-usage.stderr");
+    std::fs::create_dir_all(log.parent().unwrap()).unwrap();
+    std::fs::write(&log, vec![b'x'; 65537]).unwrap();
+    // When
+    let mut child = server
+        .command(&["hook", "statusline"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child.stdin.take().unwrap().write_all(b"{}").unwrap();
+    let output = child.wait_with_output().unwrap();
+    // Then
+    assert!(output.status.success());
+    assert!(std::fs::metadata(&log).unwrap().len() <= 65536);
+    server.finish();
 }

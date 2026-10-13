@@ -2696,6 +2696,7 @@ service ClientService {
   rpc CreateSessionReviewThread(CreateSessionReviewThreadRequest) returns (CreateSessionReviewThreadResponse) { option (scope) = SCOPE_OPERATOR; }
   rpc AppendSessionReviewComment(AppendSessionReviewCommentRequest) returns (AppendSessionReviewCommentResponse) { option (scope) = SCOPE_OPERATOR; }
   rpc ResolveSessionReviewThread(ResolveSessionReviewThreadRequest) returns (ResolveSessionReviewThreadResponse) { option (scope) = SCOPE_OPERATOR; }
+  rpc ReceiveProviderUsage(ReceiveProviderUsageRequest) returns (Unit) { option (scope) = SCOPE_HOOK; }
   rpc ReceiveProviderSignal(ReceiveProviderSignalRequest) returns (ReceiveProviderSignalResponse) { option (scope) = SCOPE_HOOK; }
   rpc InstallCli(InstallCliRequest) returns (InstallCliResponse) { option (scope) = SCOPE_OPERATOR; }
   rpc CheckLoginRegistration(CheckLoginRegistrationRequest) returns (LoginRegistrationResult) { option (scope) = SCOPE_OPERATOR; }
@@ -2890,6 +2891,7 @@ message StatePayload {
     DirectorySnapshot directory = 72;
     FileTabView file_tab = 73;
     FileThreadsSnapshot file_threads = 74;
+    ProviderUsageSnapshot provider_usage = 70;
   }
 }
 message FileThreadsSnapshot {
@@ -3067,3 +3069,23 @@ enum CliInstallationStatus {
   CLI_INSTALLATION_STATUS_DEVELOPMENT = 4 [(json_enum_name) = "development"];
   CLI_INSTALLATION_STATUS_UNDETERMINED = 5 [(json_enum_name) = "undetermined"];
 }
+
+message ReceiveProviderUsageRequest {
+  bytes payload = 1;
+  string slot_id = 2;
+  string binding_id = 3;
+  string capability = 4;
+  string agent_session_id = 5;
+}
+message ProviderUsageWindow {
+  double used_percent = 1;
+  uint64 window_minutes = 2;
+  uint64 resets_at = 3;
+  bool warning = 4;
+}
+message ProviderUsageEntry {
+  string provider = 1;
+  repeated ProviderUsageWindow windows = 2;
+  optional string plan = 3;
+}
+message ProviderUsageSnapshot { repeated ProviderUsageEntry items = 1; }

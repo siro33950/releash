@@ -29,6 +29,7 @@ impl StateSubscriptionRead for StateSubscriptionReads {
                 | T::SessionHistory(..)
                 | T::Selection(..)
                 | T::NodeDetail(..)
+                | T::ProviderUsage
                 | T::ProviderHookHealth
                 | T::WorkspaceState(..)
                 | T::RepositoryGroupState(_)

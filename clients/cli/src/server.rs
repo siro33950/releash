@@ -21,6 +21,7 @@ pub async fn status(dir: &Path, machine: bool) -> Result<String, ConnectError> {
         info: crate::wire::ServerInfo,
         compatibility: Compatibility,
         uptime: u64,
+        release_compatibility: Option<Compatibility>,
         server: serde_json::Value,
     }
     let running = match &discovery {
@@ -29,6 +30,8 @@ pub async fn status(dir: &Path, machine: bool) -> Result<String, ConnectError> {
                 .await
                 .map_err(daemon_error)?;
             let compatibility = Compatibility::assess(descriptor::protocol(), info.protocol);
+            let release_compatibility =
+                Compatibility::assess_release(env!("CARGO_PKG_VERSION"), &info.release).ok();
             let uptime = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|now| now.as_secs().saturating_sub(info.process_started_at))
@@ -39,6 +42,7 @@ pub async fn status(dir: &Path, machine: bool) -> Result<String, ConnectError> {
             Some(RunningStatus {
                 info,
                 compatibility,
+                release_compatibility,
                 uptime,
                 server,
             })
@@ -51,11 +55,8 @@ pub async fn status(dir: &Path, machine: bool) -> Result<String, ConnectError> {
         "running": running.is_some(),
         "server": running.as_ref().map(|s| &s.server),
         "uptime_seconds": running.as_ref().map(|s| s.uptime),
-        "compatibility": running.as_ref().map(|s| match s.compatibility {
-            Compatibility::Compatible => "compatible",
-            Compatibility::ServerOlder => "server_older",
-            Compatibility::ClientOlder => "client_older",
-        }),
+        "compatibility": running.as_ref().map(|s| s.compatibility.as_str()),
+        "release_compatibility": running.as_ref().and_then(|s| s.release_compatibility.map(Compatibility::as_str)),
         "guidance": running.as_ref().map(|s| compatibility_guidance(s.compatibility)),
         "startup_guidance": running.is_none().then(startup_guidance),
         "connection": discovery.as_ref().map(|d| json!({"host": "127.0.0.1", "port": d.port})),
