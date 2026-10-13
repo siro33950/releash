@@ -98,9 +98,9 @@ fn test_pane転送_分割と全タブを往復して欠落と未知の種類を�
             PaneTab {
                 id: "file".into(),
                 kind: PaneTabKind::File,
-                file_path: None,
-                file_mode: None,
-                file_base: None,
+                file_path: Some("src/file.rs".into()),
+                file_mode: Some(crate::domain::code::value_objects::review::FileMode::Diff),
+                file_base: Some(crate::domain::code::ReviewBase::BranchBase),
             },
             PaneTab {
                 id: "session".into(),

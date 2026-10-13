@@ -5,6 +5,7 @@ import vm from 'node:vm';
 import { build } from 'esbuild';
 
 class Element {
+  constructor(tagName) { this.tagName = tagName; }
   children = [];
   attributes = {};
   append(...children) { this.children.push(...children); }
@@ -41,7 +42,7 @@ async function bridge() {
     bundle: true, write: false, format: 'iife',
   });
   vm.runInNewContext(compiled.outputFiles[0].text, {
-    window, document: { getElementById: (id) => elements[id], createElement: () => new Element() },
+    window, document: { getElementById: (id) => elements[id], createElement: (name) => new Element(name) },
     TextEncoder, TextDecoder, console,
   });
   return { window, messages, instances, renderer: () => instances.at(-1) };
@@ -67,6 +68,7 @@ test('display choices and system theme reach the renderer, including File and Di
     assert.equal(ui.renderer().options.themeType, dark ? 'dark' : 'light');
     assert.equal(ui.renderer().input.fileDiff.deletionLines.join(''), next.original);
   }
+  assert.equal(ui.renderer().input.fileContainer.tagName, 'diffs-container');
   const diff = ui.renderer();
   ui.window.releashRender({ ...next, mode: 'file' });
   assert.equal(diff.cleaned, true);
@@ -107,8 +109,8 @@ test('threads show comments, collapse resolved threads and send reply and resolv
   const input = open.children.find((element) => element.attributes['aria-label'] === 'Threadへの返信');
   input.value = 'reply body';
   open.children.find((element) => element.textContent === '返信').onclick();
-  assert.deepEqual(plain(ui.messages.at(-1)), { kind: 'reply', id: 't1', content: 'reply body' });
-  const replied = { ...thread, comments: [...thread.comments, { author: 'human', content: input.value }] };
+  assert.deepEqual(plain(ui.messages.at(-1)), { kind: 'reply', id: 't1', content: 'reply body', requestID: 1 });
+  const replied = { ...thread, comments: [...thread.comments, { author: 'human', content: 'reply body' }] };
   ui.window.releashRender({ ...payload(), threads: [replied] });
   const refreshed = render(ui.renderer().input.lineAnnotations[0]);
   assert.equal(refreshed.children[2].textContent, 'human: reply body');
@@ -134,4 +136,58 @@ test('HEAD gutter sends stage and unstage for the hovered hunk, while base compa
   ui.window.releashRender({ ...next, base: 'branch-base', hunks: [{ ...next.hunks[0], isStaged: undefined }] });
   assert.equal(ui.renderer().options.renderGutterUtility(() => null).children.length, 1);
   assert.equal(ui.renderer().input.lineAnnotations.length, 0);
+});
+
+
+test('changing comparisons recreates gutter controls in both directions', async () => {
+  const ui = await bridge();
+  for (const base of ['head', 'branch-base', 'head']) {
+    const previous = ui.renderer();
+    ui.window.releashRender({ ...payload(), base });
+    if (previous) {
+      assert.equal(previous.cleaned, true);
+      assert.notEqual(ui.renderer(), previous);
+    }
+    assert.equal(ui.renderer().options.renderGutterUtility(() => null).children.length, base === 'head' ? 2 : 1);
+  }
+});
+
+test('reply drafts survive subscription updates and failed sends, and clear only after acceptance', async () => {
+  const ui = await bridge();
+  const thread = { id: 't1', line: 2, comments: [], resolved: false };
+  const render = () => ui.renderer().options.renderAnnotation(ui.renderer().input.lineAnnotations[0]);
+  const input = (element) => element.children.find((child) => child.attributes['aria-label'] === 'Threadへの返信');
+  ui.window.releashRender({ ...payload(), threads: [thread] });
+  const original = input(render());
+  original.value = 'unsent reply';
+  original.oninput();
+  ui.window.releashRender({ ...payload(), threads: [{ ...thread }] });
+  const refreshed = render();
+  assert.equal(input(refreshed).value, 'unsent reply');
+  refreshed.children.find((child) => child.textContent === '返信').onclick();
+  const request = ui.messages.at(-1);
+  ui.window.releashRender({ ...payload(), threads: [{ ...thread }] });
+  assert.equal(input(render()).value, 'unsent reply');
+  ui.window.releashReplyAccepted(request.id, request.requestID);
+  assert.equal(input(render()).value, '');
+  ui.window.releashRender({ ...payload(), threads: [{ ...thread }] });
+  assert.equal(input(render()).value, '');
+});
+
+
+test('accepting a reply preserves text edited while the request was pending', async () => {
+  const ui = await bridge();
+  const thread = { id: 't1', line: 2, comments: [], resolved: false };
+  ui.window.releashRender({ ...payload(), threads: [thread] });
+  const annotation = () => ui.renderer().options.renderAnnotation(ui.renderer().input.lineAnnotations[0]);
+  const element = annotation();
+  const input = element.children.find((child) => child.tagName === 'textarea');
+  input.value = 'sent'; input.oninput();
+  element.children.find((child) => child.textContent === '返信').onclick();
+  const request = ui.messages.at(-1);
+  input.value = 'new draft'; input.oninput();
+  ui.window.releashReplyAccepted(request.id, request.requestID);
+  assert.equal(input.value, 'new draft');
+  ui.window.releashRender({ ...payload(), threads: [{ ...thread }] });
+  assert.equal(annotation().children.find((child) => child.tagName === 'textarea').value, 'new draft');
 });

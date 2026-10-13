@@ -2,6 +2,37 @@
 
 use crate::domain::code::CodeError;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FileMode {
+    File,
+    Diff,
+}
+
+impl FileMode {
+    pub fn for_change(changed: bool) -> Self {
+        if changed {
+            Self::Diff
+        } else {
+            Self::File
+        }
+    }
+
+    pub fn parse(value: &str) -> Result<Self, CodeError> {
+        match value {
+            "file" => Ok(Self::File),
+            "diff" => Ok(Self::Diff),
+            other => Err(CodeError::Rule(format!("invalid file mode: {other}"))),
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::File => "file",
+            Self::Diff => "diff",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ReviewBase {
     Head,
@@ -116,12 +147,8 @@ impl ReviewPresentation {
     pub fn initial_file_mode(
         original: &super::super::ReviewSideBytes,
         modified: &super::super::ReviewSideBytes,
-    ) -> &'static str {
-        if original == modified {
-            "file"
-        } else {
-            "diff"
-        }
+    ) -> FileMode {
+        FileMode::for_change(original != modified)
     }
 
     pub fn classify(

@@ -158,6 +158,7 @@ import SwiftProtobuf
       for path in delta.removed { entries.removeValue(forKey: path) }
       for entry in delta.entries { entries[entry.path] = entry }
       snapshot.entries = Array(entries.values)
+      snapshot.order = delta.order
       snapshot.removed = []
       snapshot.delta = false
       cached.directory = snapshot

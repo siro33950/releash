@@ -31,6 +31,7 @@ mod tests {
 
     struct FakeReviewCode {
         calls: Mutex<Vec<String>>,
+        reads: Mutex<Vec<String>>,
         patches: Mutex<Vec<String>>,
         branch_summary: BranchDiffSummaryDto,
         source_metadata: HashMap<(String, &'static str), ReviewSideMetadata>,
@@ -53,6 +54,7 @@ mod tests {
             let deletions = changed_files.iter().map(|file| file.stats.deletions).sum();
             Self {
                 calls: Mutex::new(Vec::new()),
+                reads: Mutex::new(Vec::new()),
                 patches: Mutex::new(Vec::new()),
                 branch_summary: BranchDiffSummaryDto {
                     base_branch: "main".to_string(),
@@ -255,6 +257,7 @@ mod tests {
             file_path: &str,
             source: ReviewContentSource,
         ) -> Result<ReviewSideBytes, CodeUsecaseError> {
+            self.reads.lock().unwrap().push(file_path.into());
             let key = (file_path.to_string(), review_source_key(source));
             {
                 let mut sequences = self.source_byte_sequences.lock().unwrap();
@@ -272,6 +275,25 @@ mod tests {
                 .get(&key)
                 .cloned()
                 .unwrap_or(ReviewSideBytes::Missing))
+        }
+
+        fn review_working_tree_matches_base(
+            &self,
+            file_path: &str,
+            base: ReviewBase,
+        ) -> Result<bool, CodeUsecaseError> {
+            self.calls.lock().unwrap().push(format!("matches:{base:?}"));
+            let original =
+                ReviewContentSource::select(ReviewBlobSide::Original, ReviewSection::FileTab, base);
+            Ok(self.metadata_for(file_path, original)
+                == self.metadata_for(file_path, ReviewContentSource::WorkingTree)
+                && self
+                    .source_bytes
+                    .get(&(file_path.into(), review_source_key(original)))
+                    == self.source_bytes.get(&(
+                        file_path.into(),
+                        review_source_key(ReviewContentSource::WorkingTree),
+                    )))
         }
 
         fn review_binary_by_attributes(&self, file_path: &str) -> Result<bool, CodeUsecaseError> {
@@ -1969,7 +1991,10 @@ mod tests {
             .get_file_tab_view("/repo", "file.rs", "head")
             .unwrap();
         // Then
-        assert_eq!(view.initial_mode, "diff");
+        assert_eq!(
+            view.initial_mode,
+            crate::domain::code::value_objects::review::FileMode::Diff
+        );
         let ReviewFileViewDto::TextDiff(text) = view.view else {
             panic!("expected text");
         };
@@ -2005,7 +2030,10 @@ mod tests {
             .get_file_tab_view("/repo", "file.rs", "branch-base")
             .unwrap();
         // Then
-        assert_eq!(view.initial_mode, "file");
+        assert_eq!(
+            view.initial_mode,
+            crate::domain::code::value_objects::review::FileMode::File
+        );
         assert!(view.hunk_states.is_empty());
         let ReviewFileViewDto::TextDiff(text) = view.view else {
             panic!("expected text");
@@ -2179,7 +2207,10 @@ mod tests {
                 .get_file_tab_view("/repo", "file.rs", "head")
                 .unwrap();
             // Then
-            assert_eq!(view.initial_mode, "diff");
+            assert_eq!(
+                view.initial_mode,
+                crate::domain::code::value_objects::review::FileMode::Diff
+            );
             assert_eq!((view.additions, view.deletions), (1, 1));
             assert!(view.patch.contains("-old\n+new\n"));
             assert_eq!(view.hunk_states.len(), 1);
@@ -2225,7 +2256,7 @@ mod tests {
                 .get_file_tab_view("/repo", "image.png", "head")
                 .unwrap();
             // Then
-            assert_eq!(view.initial_mode, mode);
+            assert_eq!(view.initial_mode.as_str(), mode);
             assert!(view.hunk_states.is_empty());
             let ReviewFileViewDto::Image(image) = view.view else {
                 panic!("image")
@@ -2280,6 +2311,106 @@ mod tests {
             };
             assert_eq!(binary.original_size, Some(1));
             assert_eq!(binary.modified_size, Some(size));
+        }
+    }
+    #[test]
+    fn test_ファイルタブ_属性バイナリは本文を読まずmetadataのサイズを返す() {
+        // Given
+        let code = Arc::new(
+            FakeReviewCode::new()
+                .with_source_metadata(
+                    "/repo/file.bin",
+                    ReviewContentSource::Head,
+                    present_metadata(123),
+                )
+                .with_source_metadata(
+                    "/repo/file.bin",
+                    ReviewContentSource::WorkingTree,
+                    present_metadata(456),
+                )
+                .with_binary_attribute("/repo/file.bin", true),
+        );
+        let usecase = ReviewUsecase::new_with_ports(
+            Arc::new(FakeSnapshotProvider::new(vec![
+                snapshot_with_single_status(1, "file.bin", "none", "modified"),
+            ])),
+            code.clone(),
+        );
+        // When
+        let view = usecase
+            .get_file_tab_view("/repo", "file.bin", "head")
+            .unwrap();
+        // Then
+        assert_eq!(
+            view.initial_mode,
+            crate::domain::code::value_objects::review::FileMode::Diff
+        );
+        let ReviewFileViewDto::Binary(binary) = view.view else {
+            panic!("binary view")
+        };
+        assert_eq!(binary.original_size, Some(123));
+        assert_eq!(binary.modified_size, Some(456));
+        assert!(code.reads.lock().unwrap().is_empty());
+    }
+    #[test]
+    fn test_属性バイナリ初期表示_選択した比較の一致だけで決め本文を取得しない() {
+        for (base, original_source, original, modified, expected) in [
+            (
+                "head",
+                ReviewContentSource::Head,
+                b"AAA".to_vec(),
+                b"AAA".to_vec(),
+                crate::domain::code::value_objects::review::FileMode::File,
+            ),
+            (
+                "branch-base",
+                ReviewContentSource::BranchBaseTip,
+                b"BBB".to_vec(),
+                b"AAA".to_vec(),
+                crate::domain::code::value_objects::review::FileMode::Diff,
+            ),
+        ] {
+            // Given
+            let code = Arc::new(
+                FakeReviewCode::new()
+                    .with_source_bytes(
+                        "/repo/file.bin",
+                        original_source,
+                        ReviewSideBytes::Present(original),
+                    )
+                    .with_source_bytes(
+                        "/repo/file.bin",
+                        ReviewContentSource::WorkingTree,
+                        ReviewSideBytes::Present(modified),
+                    )
+                    .with_source_bytes(
+                        "/repo/file.bin",
+                        ReviewContentSource::Staged,
+                        ReviewSideBytes::Present(b"BBB".to_vec()),
+                    )
+                    .with_binary_attribute("/repo/file.bin", true),
+            );
+            let usecase = ReviewUsecase::new_with_ports(
+                Arc::new(FakeSnapshotProvider::new(vec![
+                    snapshot_with_single_status(1, "file.bin", "modified", "modified"),
+                ])),
+                code.clone(),
+            );
+            // When
+            let view = usecase
+                .get_file_tab_view("/repo", "file.bin", base)
+                .unwrap();
+            // Then
+            assert_eq!(view.initial_mode, expected);
+            let ReviewFileViewDto::Binary(binary) = view.view else {
+                panic!("binary");
+            };
+            assert_eq!(binary.original_size, Some(3));
+            assert_eq!(binary.modified_size, Some(3));
+            assert!(code.reads.lock().unwrap().is_empty());
+            assert!(code
+                .calls()
+                .contains(&format!("matches:{:?}", ReviewBase::parse(base).unwrap())));
         }
     }
 }

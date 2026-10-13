@@ -232,9 +232,10 @@ fn test_ディレクトリ差分_変更と削除だけを送る() {
         path: "new".into(),
         ..old.clone()
     };
-    let value = |entries| {
+    let value = |entries: Vec<DirectoryEntry>| {
         PublishedState::from(StatePayload {
             value: Some(Value::Directory(DirectorySnapshot {
+                order: entries.iter().map(|entry| entry.path.clone()).collect(),
                 entries,
                 removed: Vec::new(),
                 delta: false,
@@ -252,6 +253,7 @@ fn test_ディレクトリ差分_変更と削除だけを送る() {
         panic!("expected directory");
     };
     assert!(delta.delta);
+    assert_eq!(delta.order, vec!["same", "new"]);
     assert_eq!(delta.entries, vec![new]);
     assert_eq!(delta.removed, vec!["old"]);
 }

@@ -1,4 +1,5 @@
 import AppKit
+import ApplicationServices
 import Bonsplit
 import SwiftUI
 import XCTest
@@ -11,6 +12,63 @@ final class FileTabPaneTests: XCTestCase {
     model.panes.openFile("src/file.rs", base: "head")
     return FileTabPane(model: model, tabID: try XCTUnwrap(model.panes.controller.allTabIds.first),
       path: "src/file.rs", worktree: "/repo", value: value)
+  }
+
+  @MainActor func testToolbarShowsModeSpecificItemsAndFitsDefaultPaneWidthWithLongPath() async throws {
+    let common = ["file-path", "file-mode", "file-thread-count", "file-open-editor"]
+    let diffOnly = ["file-base", "file-stats", "file-style", "file-full"]
+    for mode in ["file", "diff"] {
+      let model = AppModel()
+      let original = try pane(model)
+      original.setPresentation(mode: mode)
+      let path = String(repeating: "long-directory/", count: 30) + "file.rs"
+      var value = Releash_Client_V1_FileTabView(); value.additions = 12; value.deletions = 34
+      let view = FileTabPane(model: model, tabID: original.tabID, path: path, worktree: "/repo", value: value)
+      let width = UIStyle.windowWidth - 2 * UIStyle.windowPadding - 2 * UIStyle.sidebarWidth - 2 * UIStyle.dividerWidth
+      let host = NSHostingView(rootView: view.toolbar)
+      host.sizingOptions = []
+      let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: width, height: 44), styleMask: [.borderless], backing: .buffered, defer: false)
+      window.isReleasedWhenClosed = false
+      window.contentView = host
+      window.orderFront(nil)
+      defer { window.close() }
+      host.layoutSubtreeIfNeeded()
+      window.displayIfNeeded()
+      let requestResult = await Task.detached {
+        let application = AXUIElementCreateApplication(ProcessInfo.processInfo.processIdentifier)
+        var windows: CFTypeRef?
+        return AXUIElementCopyAttributeValue(application, kAXWindowsAttribute as CFString, &windows).rawValue
+      }.value
+      XCTAssertEqual(requestResult, AXError.success.rawValue)
+      var elements: [String: AnyObject] = [:]
+      var visited = Set<ObjectIdentifier>()
+      var scrollAreas = 0
+      func collect(_ value: Any) {
+        let element = value as AnyObject
+        guard visited.insert(ObjectIdentifier(element)).inserted else { return }
+        if let id = element.accessibilityIdentifier?() { elements[id] = element }
+        if element.accessibilityRole?() == .scrollArea { scrollAreas += 1 }
+        for child in element.accessibilityChildren?() ?? [] { collect(child) }
+      }
+      try await eventually {
+        elements.removeAll(); visited.removeAll(); scrollAreas = 0; collect(host)
+        return common.allSatisfy { elements[$0] != nil }
+      }
+      XCTAssertEqual(scrollAreas, 0)
+      XCTAssertEqual(Set(elements.keys).intersection(Set(common + diffOnly)), Set(common + (mode == "diff" ? diffOnly : [])))
+      XCTAssertLessThanOrEqual(host.bounds.width, width)
+      let visible = window.convertToScreen(host.bounds).insetBy(dx: -1, dy: -1)
+      for id in common + (mode == "diff" ? diffOnly : []) {
+        let element = try XCTUnwrap(elements[id], id)
+        let frame = try XCTUnwrap(element.accessibilityFrame?())
+        XCTAssertGreaterThan(frame.width, 0, id)
+        XCTAssertGreaterThan(frame.height, 0, id)
+        XCTAssertTrue(visible.contains(frame), "\(mode): \(id) \(frame) outside \(visible)")
+      }
+      let fullPathWidth = NSAttributedString(string: path, attributes: [.font: NSFont.systemFont(ofSize: NSFont.systemFontSize)]).size().width
+      let pathElement = try XCTUnwrap(elements["file-path"])
+      XCTAssertLessThan(try XCTUnwrap(pathElement.accessibilityFrame?()).width, fullPathWidth)
+    }
   }
 
   @MainActor func testDisplaySettingsReachAllTabsAndSurviveNewAppState() async throws {
@@ -88,7 +146,8 @@ final class FileTabPaneTests: XCTestCase {
     let model = try await testModel(http)
     let view = try pane(model)
     view.openInEditor()
-    view.action(["kind": "reply", "id": "thread", "content": "reply body"])
+    var acceptedReplies = 0
+    view.action(["kind": "reply", "id": "thread", "content": "reply body"]) { acceptedReplies += 1 }
     view.action(["kind": "resolve", "id": "thread"])
     view.action(["kind": "stage", "id": "hunk"])
     view.action(["kind": "unstage", "id": "hunk"])
@@ -99,9 +158,10 @@ final class FileTabPaneTests: XCTestCase {
     view.createThread()
     try await eventually { http.requests("CreateReviewThread").count == 1 && http.requests("ResolveReviewThread").count == 1
       && http.requests("AppendReviewComment").count == 1 && http.requests("OpenInEditor").count == 1
-      && http.requests("GitStageReviewGroup").count == 1 && http.requests("GitUnstageReviewGroup").count == 1 }
+      && http.requests("GitStageReviewGroup").count == 1 && http.requests("GitUnstageReviewGroup").count == 1 && acceptedReplies == 1 }
     let open = try Releash_Client_V1_OpenInEditorRequest(serializedBytes: XCTUnwrap(http.requests("OpenInEditor").first?.message))
     XCTAssertEqual(open.filePath, "/repo/src/file.rs")
+    XCTAssertEqual(acceptedReplies, 1)
     let reply = try Releash_Client_V1_AppendReviewCommentRequest(serializedBytes: XCTUnwrap(http.requests("AppendReviewComment").first?.message))
     XCTAssertEqual(reply.worktreeName, "/repo"); XCTAssertEqual(reply.threadID, "thread"); XCTAssertEqual(reply.content, "reply body")
     let resolve = try Releash_Client_V1_ResolveReviewThreadRequest(serializedBytes: XCTUnwrap(http.requests("ResolveReviewThread").first?.message))
@@ -125,9 +185,10 @@ final class FileTabPaneTests: XCTestCase {
     let added = try Releash_Client_V1_CreateReviewThreadRequest(serializedBytes: XCTUnwrap(http.requests("CreateReviewThread").last?.message))
     XCTAssertEqual(added.side.value, .additions); XCTAssertEqual(added.lineNumber, 4)
     http.state.withLock { $0.failedMethod = "AppendReviewComment" }
-    view.action(["kind": "reply", "id": "thread", "content": "failure"])
+    view.action(["kind": "reply", "id": "thread", "content": "failure"]) { acceptedReplies += 1 }
     try await eventually { model.failure != nil }
     XCTAssertTrue(try XCTUnwrap(model.failure).contains("AppendReviewComment failed"))
+    XCTAssertEqual(acceptedReplies, 1)
     await model.stop()
   }
 

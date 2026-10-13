@@ -1,3 +1,4 @@
+use crate::domain::code::value_objects::review::{FileMode, ReviewBase};
 use std::collections::HashSet;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -24,8 +25,8 @@ pub struct PaneTab {
     pub id: String,
     pub kind: PaneTabKind,
     pub file_path: Option<String>,
-    pub file_mode: Option<String>,
-    pub file_base: Option<String>,
+    pub file_mode: Option<FileMode>,
+    pub file_base: Option<ReviewBase>,
 }
 #[derive(Clone, Debug, PartialEq)]
 pub enum PaneTabKind {
@@ -129,14 +130,6 @@ impl PaneLayout {
                     tabs.iter().all(|tab| {
                         !tab.id.trim().is_empty()
                             && ids.insert(tab.id.clone())
-                            && tab
-                                .file_mode
-                                .as_deref()
-                                .is_none_or(|mode| matches!(mode, "file" | "diff"))
-                            && tab
-                                .file_base
-                                .as_deref()
-                                .is_none_or(|base| matches!(base, "head" | "branch-base"))
                             && tab
                                 .file_path
                                 .as_deref()

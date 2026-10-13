@@ -461,16 +461,19 @@ extension AppModelTests {
     var snapshot = Releash_Client_V1_StateSubscriptionEvent()
     snapshot.subscriptionID = subscription.subscriptionID
     snapshot.snapshot.directory.entries = [entry("old"), entry("same")]
+    snapshot.snapshot.directory.order = ["old", "same"]
     try TestHTTPClient.send(snapshot, on: http.state.withLock { $0.streams.last! })
     var delta = Releash_Client_V1_StateSubscriptionEvent()
     delta.subscriptionID = subscription.subscriptionID
     delta.change.payload.directory.delta = true
     delta.change.payload.directory.entries = [entry("new")]
     delta.change.payload.directory.removed = ["old"]
+    delta.change.payload.directory.order = ["same", "new"]
     try TestHTTPClient.send(delta, on: http.state.withLock { $0.streams.last! })
     try await eventually { received }
     var mirror = Releash_Client_V1_DirectorySnapshot()
     let second = model.subscribe("directory", ["/repo", "."]) { payload in mirror = payload.directory }
+    XCTAssertEqual(mirror.order, ["same", "new"])
     XCTAssertFalse(mirror.delta)
     XCTAssertEqual(Set(mirror.entries.map(\.path)), ["same", "new"])
     model.unsubscribe(first); model.unsubscribe(second)

@@ -385,7 +385,7 @@ impl WorkspaceStateReads {
             ),
             T::FileThreads(path, file) => {
                 let threads = self.comments.list_threads(&self.data_dir, path, Some(crate::domain::comment::ReviewThreadFilter { file: Some(file.clone()), ..Default::default() }), crate::domain::comment::ReviewActor::human()).map_err(error)?;
-                let count = threads.iter().filter(|thread| thread.state == crate::domain::comment::ReviewThreadState::Open).count() as u32;
+                let count = crate::domain::comment::unresolved_thread_count(&threads);
                 StateValue::FileThreads(threads, count)
             }
             T::ReviewThreads(name) => StateValue::ReviewThreads(

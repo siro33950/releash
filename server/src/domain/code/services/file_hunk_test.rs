@@ -141,3 +141,105 @@ fn test_ファイルhunkのstage状態_indexが非テキストならテキスト
     // When / Then
     assert_eq!(hunk_stage_states(None, "new\n", &[], &[hunk]), vec![false]);
 }
+
+#[test]
+fn test_hunk受付_headのテキストの存在するhunkだけを受け付ける() {
+    // Given
+    let hunks = [hunk(1, 1, &["-old", "+new"])];
+    // When / Then
+    assert!(ensure_hunk_comparison(crate::domain::code::ReviewBase::Head).is_ok());
+    assert!(ensure_hunk_comparison(crate::domain::code::ReviewBase::BranchBase).is_err());
+    assert!(select_hunk(Some(&hunks), "hunk").is_ok());
+    assert!(matches!(
+        select_hunk(Some(&hunks), "gone"),
+        Err(CodeError::StaleReviewGroupTarget { .. })
+    ));
+    assert!(matches!(select_hunk(None, "hunk"), Err(CodeError::Rule(_))));
+}
+
+#[test]
+fn test_index用patch_追加削除変更のヘッダーと行数を保持する() {
+    // Given / When / Then
+    for (head, index, working, stage, before, after, lines, old_header, new_header, counts) in [
+        (
+            false,
+            false,
+            true,
+            true,
+            "",
+            "new\n",
+            vec!["+new"],
+            "--- /dev/null",
+            "+++ \"b/file\"",
+            (1, 0),
+        ),
+        (
+            false,
+            true,
+            true,
+            false,
+            "new\n",
+            "",
+            vec!["-new"],
+            "--- \"a/file\"",
+            "+++ /dev/null",
+            (0, 1),
+        ),
+        (
+            true,
+            true,
+            false,
+            true,
+            "old\n",
+            "",
+            vec!["-old"],
+            "--- \"a/file\"",
+            "+++ /dev/null",
+            (0, 1),
+        ),
+        (
+            true,
+            false,
+            false,
+            false,
+            "",
+            "old\n",
+            vec!["+old"],
+            "--- /dev/null",
+            "+++ \"b/file\"",
+            (1, 0),
+        ),
+        (
+            true,
+            true,
+            true,
+            true,
+            "old\n",
+            "new\n",
+            vec!["-old", "+new"],
+            "--- \"a/file\"",
+            "+++ \"b/file\"",
+            (1, 1),
+        ),
+    ] {
+        let hunks = [hunk(
+            if before.is_empty() { 0 } else { 1 },
+            if after.is_empty() { 0 } else { 1 },
+            &lines,
+        )];
+        let patch = index_patch(
+            "file",
+            &hunks,
+            before,
+            after,
+            FilePresence {
+                head,
+                index,
+                working,
+            },
+            stage,
+        );
+        assert!(patch.starts_with(&format!("{old_header}\n{new_header}\n")));
+        assert_eq!(line_counts(&hunks), counts);
+    }
+}

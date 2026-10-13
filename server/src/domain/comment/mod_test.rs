@@ -192,6 +192,33 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn test_未解決件数_解決済みを除き解決後もthreadを保持する() {
+        // Given
+        let mut events = vec![
+            created("one", ReviewActor::human(), Some("file"), 1.0),
+            created("two", ReviewActor::human(), Some("file"), 2.0),
+            created("done", ReviewActor::human(), Some("file"), 3.0),
+        ];
+        let resolve = |id: &str| ReviewEvent::ThreadResolved {
+            event_id: format!("resolve-{id}"),
+            thread_id: id.into(),
+            actor: ReviewActor::human(),
+            outcome: "resolved".into(),
+            summary: "done".into(),
+            at: 4.0,
+        };
+        events.push(resolve("done"));
+        let before = project_threads("wt", &events);
+        // When
+        events.push(resolve("one"));
+        let after = project_threads("wt", &events);
+        // Then
+        assert_eq!(unresolved_thread_count(&before), 2);
+        assert_eq!(unresolved_thread_count(&after), 1);
+        assert_eq!(before.len(), after.len());
+    }
+
+    #[test]
     fn filter_combines_axes_and_unread_ignores_resolve() {
         let viewer = agent("codex", "gpt-5");
         let other = ReviewActor::human();

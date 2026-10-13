@@ -2,6 +2,73 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::domain::code::{CodeError, Hunk};
 
+pub fn ensure_hunk_comparison(base: crate::domain::code::ReviewBase) -> Result<(), CodeError> {
+    if base != crate::domain::code::ReviewBase::Head {
+        return Err(CodeError::Rule(
+            "file hunk actions are unavailable for branch-base".into(),
+        ));
+    }
+    Ok(())
+}
+
+pub fn select_hunk<'a>(hunks: Option<&'a [Hunk]>, id: &str) -> Result<&'a Hunk, CodeError> {
+    hunks
+        .ok_or_else(|| CodeError::Rule("file hunk requires text".into()))?
+        .iter()
+        .find(|hunk| hunk.hunk_id == id)
+        .ok_or_else(|| CodeError::StaleReviewGroupTarget {
+            group_id: id.into(),
+        })
+}
+
+pub fn line_counts(hunks: &[Hunk]) -> (u32, u32) {
+    let mut additions = 0;
+    let mut deletions = 0;
+    for line in hunks.iter().flat_map(|hunk| &hunk.lines) {
+        match line.as_bytes().first() {
+            Some(b'+') => additions += 1,
+            Some(b'-') => deletions += 1,
+            _ => {}
+        }
+    }
+    (additions, deletions)
+}
+
+pub struct FilePresence {
+    pub head: bool,
+    pub index: bool,
+    pub working: bool,
+}
+
+pub fn index_patch(
+    path: &str,
+    hunks: &[Hunk],
+    index: &str,
+    target: &str,
+    presence: FilePresence,
+    stage: bool,
+) -> String {
+    let mut patch = patch(path, hunks, index, target);
+    if !presence.index && !patch.is_empty() {
+        if let Some((_, rest)) = patch.split_once('\n') {
+            patch = format!("--- /dev/null\n{rest}");
+        }
+    }
+    if target.is_empty()
+        && !patch.is_empty()
+        && ((stage && !presence.working) || (!stage && !presence.head))
+    {
+        let mut lines = patch.lines();
+        if let (Some(original), Some(_)) = (lines.next(), lines.next()) {
+            patch = format!(
+                "{original}\n+++ /dev/null\n{}\n",
+                lines.collect::<Vec<_>>().join("\n")
+            );
+        }
+    }
+    patch
+}
+
 #[derive(Clone, PartialEq)]
 struct Edit {
     start: usize,

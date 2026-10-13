@@ -20,14 +20,23 @@ fn test_直下一覧_git状態と除外を含みgitを隠す() {
             worktree_status: "modified".into(),
         },
     ];
-    let entries = DirectoryQueryGateway
-        .entries(root.to_str().unwrap(), ".", &statuses)
+    let (app, _, _) = crate::adaptor_controller_client_workflow_mod::tests::make_read_only_app();
+    let entries = app
+        .client
+        .app_state
+        .as_ref()
+        .unwrap()
+        .code_usecase
+        .directory_entries(root.to_str().unwrap(), ".", &statuses)
         .unwrap();
     // Then
     assert!(!entries.iter().any(|entry| entry.name == ".git"));
     let directory = entries.iter().find(|entry| entry.path == "src").unwrap();
     assert!(directory.directory);
-    assert_eq!(directory.status, "modified");
+    assert_eq!(
+        directory.status,
+        releashd::test_support::integration::code::GitStatus::Modified
+    );
     assert!(
         entries
             .iter()
@@ -37,7 +46,7 @@ fn test_直下一覧_git状態と除外を含みgitを隠す() {
     );
     assert!(!entries.iter().any(|entry| entry.path == "src/file.rs"));
     let children = DirectoryQueryGateway
-        .entries(root.to_str().unwrap(), "src", &statuses)
+        .entries(root.to_str().unwrap(), "src")
         .unwrap();
     assert_eq!(children[0].path, "src/file.rs");
 }
@@ -53,7 +62,7 @@ fn test_対象検証_親への移動と外向きsymlinkを拒否する() {
     // When / Then
     for path in ["..", ".git", "link"] {
         assert!(DirectoryQueryGateway
-            .entries(root.to_str().unwrap(), path, &[])
+            .entries(root.to_str().unwrap(), path)
             .is_err());
     }
     assert!(DirectoryQueryGateway

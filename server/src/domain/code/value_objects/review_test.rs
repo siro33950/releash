@@ -169,17 +169,33 @@ fn test_初期表示_同じ内容はfileで追加と変更はdiffになる() {
     let after = ReviewSideBytes::Present(b"after".to_vec());
     assert_eq!(
         ReviewPresentation::initial_file_mode(&before, &before),
-        "file"
+        super::FileMode::File
     );
     assert_eq!(
         ReviewPresentation::initial_file_mode(&before, &after),
-        "diff"
+        super::FileMode::Diff
     );
     assert_eq!(
         ReviewPresentation::initial_file_mode(
             &ReviewSideBytes::Missing,
             &ReviewSideBytes::Present(Vec::new())
         ),
-        "diff"
+        super::FileMode::Diff
     );
+}
+
+#[test]
+fn test_表示選択_既知の値を型に変換し未知の値を拒否する() {
+    // Given / When / Then
+    for mode in [super::FileMode::File, super::FileMode::Diff] {
+        assert_eq!(super::FileMode::parse(mode.as_str()).unwrap(), mode);
+    }
+    assert!(super::FileMode::parse("unknown").is_err());
+}
+
+#[test]
+fn test_属性バイナリの初期表示_比較の変更有無を表示選択にする() {
+    // Given / When / Then
+    assert_eq!(super::FileMode::for_change(false), super::FileMode::File);
+    assert_eq!(super::FileMode::for_change(true), super::FileMode::Diff);
 }

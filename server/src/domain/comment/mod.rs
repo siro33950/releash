@@ -761,3 +761,10 @@ pub(crate) mod test_helpers;
 #[cfg(test)]
 #[path = "mod_test.rs"]
 pub(crate) mod mod_tests;
+
+pub fn unresolved_thread_count(threads: &[ReviewThread]) -> u32 {
+    threads
+        .iter()
+        .filter(|thread| thread.state == ReviewThreadState::Open)
+        .count() as u32
+}

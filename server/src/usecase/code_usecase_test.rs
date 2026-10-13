@@ -98,6 +98,13 @@ impl FileContentRepository for RecordingFileContent {
         self.record(format!("bytes:working-tree:{f}"));
         Ok(ReviewSideBytes::Present(b"working".to_vec()))
     }
+    fn review_working_tree_matches_ref(
+        &self,
+        _file_path: &str,
+        _git_ref: &str,
+    ) -> Result<bool, CodeError> {
+        Ok(false)
+    }
     fn review_binary_by_attributes(&self, _f: &str) -> Result<bool, CodeError> {
         Ok(false)
     }
@@ -265,7 +272,6 @@ impl crate::usecase::directory_query::DirectoryQuery for EmptyDirectory {
         &self,
         _: &str,
         _: &str,
-        _: &[crate::usecase::repository_dto::FileStatusDto],
     ) -> Result<Vec<crate::usecase::directory_query::DirectoryEntryDto>, CodeUsecaseError> {
         Ok(Vec::new())
     }

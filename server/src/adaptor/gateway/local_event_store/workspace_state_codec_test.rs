@@ -11,7 +11,7 @@ fn test_ui状態の事実_保存形式をcodec経由で往復し未知の版と�
     let stored: StoredWorkspaceState = serde_json::from_value(serde_json::json!({
         "version": 1, "tabs": {"editors": [], "activeEditorPath": null},
         "layout": {"centerTab": "agent", "activeView": "git", "leftNavCollapsed": true, "rightCollapsed": false, "rightBottomCollapsed": false},
-        "panes": {"kind": "pane", "id": "pane", "tabs": [{"id": "session", "kind": "session"}], "active_tab": "session"}
+        "panes": {"kind": "pane", "id": "pane", "tabs": [{"id": "session", "kind": "session"}, {"id":"file", "kind":"file", "file_path":"src/file.rs", "file_mode":"diff", "file_base":"branch-base"}], "active_tab": "session"}
     })).unwrap();
     let registry = EventCodecRegistry::new();
     for event in [
@@ -138,6 +138,22 @@ fn test_workspace保存形式_panesのない旧jsonと現在のjsonを直接往�
         assert_eq!(
             serde_json::to_value(StoredWorkspaceState::from(&domain)).unwrap(),
             json
+        );
+    }
+}
+
+#[test]
+fn test_保存タブ_未知の表示と比較を拒否する() {
+    // Given / When / Then
+    for (mode, base) in [("unknown", "head"), ("diff", "unknown")] {
+        let stored: StoredPaneLayout = serde_json::from_value(serde_json::json!({
+            "kind": "pane", "id": "pane", "tabs": [{"id":"file", "kind":"file", "file_path":"file.rs", "file_mode":mode, "file_base":base}]
+        })).unwrap();
+        assert!(
+            crate::domain::workspace_state::value_objects::pane_layout::PaneLayout::try_from(
+                stored
+            )
+            .is_err()
         );
     }
 }

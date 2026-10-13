@@ -204,7 +204,7 @@ pub fn review_working_tree_bytes(file_path: &str) -> Result<ReviewSideBytes, Cod
 
 fn regular_working_tree_metadata(file_path: &str) -> Result<Option<std::fs::Metadata>, CodeError> {
     match std::fs::symlink_metadata(file_path) {
-        Ok(metadata) if metadata.file_type().is_symlink() => Ok(None),
+        Ok(metadata) if !metadata.is_file() => Ok(None),
         Ok(metadata) => Ok(Some(metadata)),
         Err(e) if e.kind() == ErrorKind::NotFound => Ok(None),
         Err(e) => Err(CodeError::from(e)),
@@ -277,6 +277,35 @@ impl FileContentRepository for FileContentGateway {
     }
     fn review_working_tree_bytes(&self, file_path: &str) -> Result<ReviewSideBytes, CodeError> {
         review_working_tree_bytes(file_path)
+    }
+    fn review_working_tree_matches_ref(
+        &self,
+        file_path: &str,
+        git_ref: &str,
+    ) -> Result<bool, CodeError> {
+        let path = Path::new(file_path);
+        let repo = discover_repo(path)?;
+        let relative = open_relative(path, &repo)?;
+        let original = match git_operation::run(|| repo.revparse_single(git_ref)) {
+            Ok(object) => {
+                let tree = git_operation::run(|| object.peel_to_tree())?;
+                match git_operation::run(|| tree.get_path(relative)) {
+                    Ok(entry) => Some(entry.id()),
+                    Err(error) if error.code() == git2::ErrorCode::NotFound => None,
+                    Err(error) => return Err(error.into()),
+                }
+            }
+            Err(error) if is_missing_head_ref(&error, git_ref) => None,
+            Err(error) => return Err(error.into()),
+        };
+        let working = if regular_working_tree_metadata(file_path)?.is_some() {
+            Some(git_operation::run(|| {
+                git2::Oid::hash_file(git2::ObjectType::Blob, path)
+            })?)
+        } else {
+            None
+        };
+        Ok(original == working)
     }
     fn review_binary_by_attributes(&self, file_path: &str) -> Result<bool, CodeError> {
         binary_by_attributes(file_path)

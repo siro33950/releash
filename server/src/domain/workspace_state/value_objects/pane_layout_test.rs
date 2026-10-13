@@ -147,10 +147,10 @@ fn test_ファイルタブ_選択とpathを保持し不正な表示値を拒否�
     // Given
     let mut file = tab("file", PaneTabKind::File);
     file.file_path = Some("src/file.rs".into());
-    file.file_mode = Some("diff".into());
-    file.file_base = Some("head".into());
+    file.file_mode = Some(crate::domain::code::value_objects::review::FileMode::Diff);
+    file.file_base = Some(crate::domain::code::ReviewBase::Head);
     // When / Then
     assert!(PaneLayout::pane("pane".into(), vec![file.clone()], Some("file".into())).is_ok());
-    file.file_mode = Some("unknown".into());
+    file.kind = PaneTabKind::Terminal;
     assert!(PaneLayout::pane("pane".into(), vec![file], None).is_err());
 }

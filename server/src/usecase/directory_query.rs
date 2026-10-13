@@ -6,7 +6,7 @@ pub struct DirectoryEntryDto {
     pub name: String,
     pub directory: bool,
     pub ignored: bool,
-    pub status: String,
+    pub status: crate::domain::code::services::directory::GitStatus,
 }
 
 pub trait DirectoryQuery: Send + Sync {
@@ -15,6 +15,5 @@ pub trait DirectoryQuery: Send + Sync {
         &self,
         worktree: &str,
         directory: &str,
-        statuses: &[super::repository_dto::FileStatusDto],
     ) -> Result<Vec<DirectoryEntryDto>, CodeUsecaseError>;
 }

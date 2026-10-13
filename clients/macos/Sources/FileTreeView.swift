@@ -69,10 +69,8 @@ struct FileTreeView: NSViewRepresentable {
         items[entry.path] = item
         if !current.contains(where: { $0 === item }) { current.append(item) }
       }
-      children[directory] = current.sorted {
-        if $0.entry.directory != $1.entry.directory { return $0.entry.directory }
-        return $0.entry.name < $1.entry.name
-      }
+      let byPath = Dictionary(uniqueKeysWithValues: current.map { ($0.entry.path, $0) })
+      children[directory] = value.order.compactMap { byPath[$0] }
       applying = true
       defer { applying = false }
       if directory == "." { outline?.reloadData() }

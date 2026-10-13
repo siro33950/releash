@@ -85,13 +85,20 @@ pub fn payload(value: &StateValue) -> Result<wire::StatePayload, connectrpc::Con
                     .map_err(crate::adaptor::presenter::connect::command_error)?,
             ),
             StateValue::Directory(entries) => wire::state_payload::Value::Directory(wire::DirectorySnapshot {
-                entries: entries.iter().map(|entry| wire::DirectoryEntry { path: entry.path.clone(), name: entry.name.clone(), directory: entry.directory, ignored: entry.ignored, status: entry.status.clone() }).collect(),
-                removed: Vec::new(), delta: false,
+                entries: entries.iter().map(|entry| wire::DirectoryEntry { path: entry.path.clone(), name: entry.name.clone(), directory: entry.directory, ignored: entry.ignored, status: match entry.status {
+                    crate::domain::code::services::directory::GitStatus::None => "none",
+                    crate::domain::code::services::directory::GitStatus::New => "new",
+                    crate::domain::code::services::directory::GitStatus::Modified => "modified",
+                    crate::domain::code::services::directory::GitStatus::Renamed => "renamed",
+                    crate::domain::code::services::directory::GitStatus::Deleted => "deleted",
+                    crate::domain::code::services::directory::GitStatus::Conflicted => "conflicted",
+                }.into() }).collect(),
+                removed: Vec::new(), delta: false, order: entries.iter().map(|entry| entry.path.clone()).collect(),
             }),
             StateValue::FileTab(value) => wire::state_payload::Value::FileTab(wire::FileTabView {
                 view: Some(crate::adaptor::presenter::client::value(value.view.clone()).map_err(crate::adaptor::presenter::connect::command_error)?),
                 patch: value.patch.clone(),
-                initial_mode: value.initial_mode.clone(), additions: value.additions, deletions: value.deletions,
+                initial_mode: value.initial_mode.as_str().into(), additions: value.additions, deletions: value.deletions,
                 hunk_states: value.hunk_states.iter().map(|hunk| wire::FileHunkState { hunk_id: hunk.hunk_id.clone(), is_staged: hunk.is_staged }).collect(),
             }),
             StateValue::ReviewSnapshot(value) => wire::state_payload::Value::ReviewSnapshot(

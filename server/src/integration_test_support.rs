@@ -1,5 +1,6 @@
 pub mod code {
     pub use crate::adaptor::gateway::code::directory::DirectoryQueryGateway;
+    pub use crate::domain::code::services::directory::GitStatus;
     pub use crate::usecase::directory_query::DirectoryQuery;
 
     pub use crate::adaptor::gateway::code::branch_diff::get_branch_diff_summary;

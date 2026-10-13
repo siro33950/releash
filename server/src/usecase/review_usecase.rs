@@ -94,6 +94,11 @@ trait ReviewCodePort: Send + Sync {
     ) -> Result<ReviewSideBytes, CodeUsecaseError>;
 
     fn review_binary_by_attributes(&self, file_path: &str) -> Result<bool, CodeUsecaseError>;
+    fn review_working_tree_matches_base(
+        &self,
+        file_path: &str,
+        base: ReviewBase,
+    ) -> Result<bool, CodeUsecaseError>;
 
     fn compute_diff_hunks(
         &self,
@@ -153,6 +158,14 @@ impl ReviewCodePort for CodeUsecase {
         source: ReviewContentSource,
     ) -> Result<ReviewSideBytes, CodeUsecaseError> {
         CodeUsecase::read_review_source_bytes(self, file_path, source)
+    }
+
+    fn review_working_tree_matches_base(
+        &self,
+        file_path: &str,
+        base: ReviewBase,
+    ) -> Result<bool, CodeUsecaseError> {
+        CodeUsecase::review_working_tree_matches_base(self, file_path, base)
     }
 
     fn review_binary_by_attributes(&self, file_path: &str) -> Result<bool, CodeUsecaseError> {
@@ -388,6 +401,46 @@ impl ReviewUsecase {
         if original_source.metadata.is_missing() && modified_source.metadata.is_missing() {
             return Err(CodeError::Rule(format!("file target not found: {relative_path}")).into());
         }
+        let binary_attribute =
+            if crate::domain::code::value_objects::review::ReviewBlobContentType::image_from_path(
+                &relative_path,
+            )
+            .is_none()
+            {
+                self.code.review_binary_by_attributes(&file_path)?
+            } else {
+                false
+            };
+        if ReviewPresentation::classify(
+            &relative_path,
+            binary_attribute,
+            &ReviewSideBytes::Missing,
+            &ReviewSideBytes::Missing,
+        ) == ReviewPresentation::Binary
+        {
+            let changed = !self
+                .code
+                .review_working_tree_matches_base(&file_path, base)?;
+            return Ok(FileTabViewDto {
+                view: binary_view(
+                    ReviewBlobViewContext {
+                        relative_path: &relative_path,
+                        file_path: &file_path,
+                        version: snapshot.version,
+                    },
+                    snapshot.flags.stale,
+                    original_source.metadata,
+                    modified_source.metadata,
+                ),
+                initial_mode: crate::domain::code::value_objects::review::FileMode::for_change(
+                    changed,
+                ),
+                additions: 0,
+                deletions: 0,
+                patch: String::new(),
+                hunk_states: Vec::new(),
+            });
+        }
         let original_bytes = self
             .code
             .read_review_source_bytes(&file_path, original_source.source)?;
@@ -406,8 +459,7 @@ impl ReviewUsecase {
                 original_source.metadata,
                 modified_source.metadata,
             ),
-            initial_mode: ReviewPresentation::initial_file_mode(&original_bytes, &modified_bytes)
-                .into(),
+            initial_mode: ReviewPresentation::initial_file_mode(&original_bytes, &modified_bytes),
             additions: 0,
             deletions: 0,
             patch: String::new(),
@@ -430,7 +482,7 @@ impl ReviewUsecase {
         }
         if ReviewPresentation::classify(
             &relative_path,
-            self.code.review_binary_by_attributes(&file_path)?,
+            binary_attribute,
             &original_bytes,
             &modified_bytes,
         ) == ReviewPresentation::Binary
@@ -445,6 +497,7 @@ impl ReviewUsecase {
             Some(&relative_path),
             ReviewSection::Changes,
         )?;
+        let display_hunks: Vec<_> = hunks.hunks.iter().map(hunk_dto_to_domain).collect();
         if base == ReviewBase::Head {
             let index_bytes = self
                 .code
@@ -466,7 +519,6 @@ impl ReviewUsecase {
             } else {
                 Vec::new()
             };
-            let display_hunks: Vec<_> = hunks.hunks.iter().map(hunk_dto_to_domain).collect();
             let states = crate::domain::code::services::file_hunk::hunk_stage_states(
                 index.as_deref(),
                 &modified,
@@ -483,25 +535,11 @@ impl ReviewUsecase {
                 })
                 .collect();
         }
-        for hunk in &hunks.hunks {
-            dto.additions += hunk
-                .lines
-                .iter()
-                .filter(|line| line.starts_with('+'))
-                .count() as u32;
-            dto.deletions += hunk
-                .lines
-                .iter()
-                .filter(|line| line.starts_with('-'))
-                .count() as u32;
-        }
+        (dto.additions, dto.deletions) =
+            crate::domain::code::services::file_hunk::line_counts(&display_hunks);
         dto.patch = crate::domain::code::services::file_hunk::patch(
             &relative_path,
-            &hunks
-                .hunks
-                .iter()
-                .map(hunk_dto_to_domain)
-                .collect::<Vec<_>>(),
+            &display_hunks,
             &original,
             &modified,
         );
@@ -530,23 +568,22 @@ impl ReviewUsecase {
         hunk_id: &str,
         stage: bool,
     ) -> Result<(), CodeUsecaseError> {
-        if ReviewBase::parse(base)? != ReviewBase::Head {
-            return Err(CodeError::Rule(
-                "file hunk actions are unavailable for branch-base".into(),
-            )
-            .into());
-        }
+        use crate::domain::code::services::file_hunk;
+        file_hunk::ensure_hunk_comparison(ReviewBase::parse(base)?)?;
         let view = self.get_file_tab_view(worktree, path, base)?;
-        let ReviewFileViewDto::TextDiff(view) = view.view else {
-            return Err(CodeError::Rule("file hunk requires text".into()).into());
+        let hunks = match &view.view {
+            ReviewFileViewDto::TextDiff(text) => Some(
+                text.hunks
+                    .iter()
+                    .map(hunk_dto_to_domain)
+                    .collect::<Vec<_>>(),
+            ),
+            _ => None,
         };
-        let selected = view
-            .hunks
-            .iter()
-            .find(|h| h.hunk_id == hunk_id)
-            .ok_or_else(|| CodeError::StaleReviewGroupTarget {
-                group_id: hunk_id.into(),
-            })?;
+        let selected = file_hunk::select_hunk(hunks.as_deref(), hunk_id)?;
+        let ReviewFileViewDto::TextDiff(view) = view.view else {
+            unreachable!()
+        };
         let file = self.code.file_target(worktree, &view.path)?;
         let index_bytes = self
             .code
@@ -561,13 +598,25 @@ impl ReviewUsecase {
             &index,
             &view.modified,
             &staged_hunks,
-            &hunk_dto_to_domain(selected),
+            selected,
             stage,
         )?;
         let changes = self
             .code
             .compute_diff_hunks(&index, &target, Some(&view.path))?;
-        let mut patch = crate::domain::code::services::file_hunk::patch(
+        let head = self.code.select_review_side_source(
+            &file,
+            ReviewBlobSide::Original,
+            ReviewSection::FileTab,
+            ReviewBase::Head,
+        )?;
+        let working = self.code.select_review_side_source(
+            &file,
+            ReviewBlobSide::Modified,
+            ReviewSection::FileTab,
+            ReviewBase::Head,
+        )?;
+        let patch = file_hunk::index_patch(
             &view.path,
             &changes
                 .hunks
@@ -576,25 +625,13 @@ impl ReviewUsecase {
                 .collect::<Vec<_>>(),
             &index,
             &target,
+            file_hunk::FilePresence {
+                head: !head.metadata.is_missing(),
+                index: !matches!(index_bytes, ReviewSideBytes::Missing),
+                working: !working.metadata.is_missing(),
+            },
+            stage,
         );
-        if matches!(index_bytes, ReviewSideBytes::Missing) && !patch.is_empty() {
-            if let Some((_, rest)) = patch.split_once('\n') {
-                patch = format!("--- /dev/null\n{rest}");
-            }
-        }
-        if target.is_empty()
-            && !patch.is_empty()
-            && ((stage && view.source == ReviewTextSource::Deleted)
-                || (!stage && view.source == ReviewTextSource::Added))
-        {
-            let mut lines = patch.lines();
-            if let (Some(original), Some(_)) = (lines.next(), lines.next()) {
-                patch = format!(
-                    "{original}\n+++ /dev/null\n{}\n",
-                    lines.collect::<Vec<_>>().join("\n")
-                );
-            }
-        }
         if !patch.is_empty() {
             self.code.git_stage_hunk(worktree, &patch).await?;
         }
@@ -609,7 +646,8 @@ impl ReviewUsecase {
         base: &str,
         group_id: &str,
     ) -> Result<(), CodeUsecaseError> {
-        if section == "file-tab" {
+        let section = ReviewSection::parse(section)?;
+        if section == ReviewSection::FileTab {
             return self
                 .apply_file_tab_hunk(worktree_path, path, base, group_id, true)
                 .await;
@@ -618,7 +656,7 @@ impl ReviewUsecase {
         let patch = self.generate_review_group_patch(
             worktree_path,
             path,
-            section,
+            section.as_str(),
             base,
             group_id,
             snapshot.as_ref(),
@@ -634,7 +672,8 @@ impl ReviewUsecase {
         base: &str,
         group_id: &str,
     ) -> Result<(), CodeUsecaseError> {
-        if section == "file-tab" {
+        let section = ReviewSection::parse(section)?;
+        if section == ReviewSection::FileTab {
             return self
                 .apply_file_tab_hunk(worktree_path, path, base, group_id, false)
                 .await;
@@ -643,7 +682,7 @@ impl ReviewUsecase {
         let patch = self.generate_review_group_patch(
             worktree_path,
             path,
-            section,
+            section.as_str(),
             base,
             group_id,
             snapshot.as_ref(),

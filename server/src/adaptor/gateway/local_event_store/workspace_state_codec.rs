@@ -341,7 +341,13 @@ impl TryFrom<StoredPaneLayout>
                 id,
                 tabs,
                 active_tab,
-            } => Self::pane(id, tabs.into_iter().map(Into::into).collect(), active_tab),
+            } => Self::pane(
+                id,
+                tabs.into_iter()
+                    .map(TryInto::try_into)
+                    .collect::<Result<_, _>>()?,
+                active_tab,
+            ),
             StoredPaneLayout::Split {
                 id,
                 axis,
@@ -364,20 +370,33 @@ impl From<crate::domain::workspace_state::value_objects::pane_layout::PaneTab> f
             id: value.id,
             kind: value.kind.into(),
             file_path: value.file_path,
-            file_mode: value.file_mode,
-            file_base: value.file_base,
+            file_mode: value.file_mode.map(|mode| mode.as_str().into()),
+            file_base: value.file_base.map(|base| base.as_str().into()),
         }
     }
 }
-impl From<StoredPaneTab> for crate::domain::workspace_state::value_objects::pane_layout::PaneTab {
-    fn from(value: StoredPaneTab) -> Self {
-        Self {
+impl TryFrom<StoredPaneTab>
+    for crate::domain::workspace_state::value_objects::pane_layout::PaneTab
+{
+    type Error = WorkspaceStateError;
+    fn try_from(value: StoredPaneTab) -> Result<Self, Self::Error> {
+        Ok(Self {
             id: value.id,
             kind: value.kind.into(),
             file_path: value.file_path,
-            file_mode: value.file_mode,
-            file_base: value.file_base,
-        }
+            file_mode: value
+                .file_mode
+                .as_deref()
+                .map(crate::domain::code::value_objects::review::FileMode::parse)
+                .transpose()
+                .map_err(|_| WorkspaceStateError::InvalidLayout)?,
+            file_base: value
+                .file_base
+                .as_deref()
+                .map(crate::domain::code::ReviewBase::parse)
+                .transpose()
+                .map_err(|_| WorkspaceStateError::InvalidLayout)?,
+        })
     }
 }
 impl From<crate::domain::workspace_state::value_objects::pane_layout::PaneTabKind>

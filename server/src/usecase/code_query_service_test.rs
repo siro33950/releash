@@ -57,6 +57,13 @@ mod code_query_service_tests {
         ) -> Result<ReviewSideBytes, CodeError> {
             Ok(ReviewSideBytes::Present(b"working".to_vec()))
         }
+        fn review_working_tree_matches_ref(
+            &self,
+            file_path: &str,
+            git_ref: &str,
+        ) -> Result<bool, CodeError> {
+            Ok(file_path == git_ref)
+        }
         fn review_binary_by_attributes(&self, _file_path: &str) -> Result<bool, CodeError> {
             Ok(false)
         }
@@ -124,6 +131,22 @@ mod code_query_service_tests {
             Arc::new(FakeBranchDiff),
             Arc::new(FakeBranchBase),
         )
+    }
+
+    #[test]
+    fn test_内容同一性_headとbaseの先端を比較元へ渡す() {
+        // Given
+        let service = service();
+        // When / Then
+        assert!(service
+            .review_working_tree_matches_base("HEAD", crate::domain::code::ReviewBase::Head)
+            .unwrap());
+        assert!(service
+            .review_working_tree_matches_base("main", crate::domain::code::ReviewBase::BranchBase)
+            .unwrap());
+        assert!(!service
+            .review_working_tree_matches_base("HEAD", crate::domain::code::ReviewBase::BranchBase)
+            .unwrap());
     }
 
     #[test]

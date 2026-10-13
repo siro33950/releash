@@ -21,32 +21,12 @@ struct FileTabPane: View {
 
   var body: some View {
     VStack(spacing: 0) {
-      ScrollView(.horizontal) {
-        HStack {
-          Text(path).lineLimit(1).help(path)
-          Picker("比較", selection: Binding(get: { base }, set: { setPresentation(base: $0) })) {
-            Text("HEAD 比較").tag("head")
-            Text("base 比較").tag("branch-base")
-          }.labelsHidden()
-          Text("+\(value?.additions ?? 0) −\(value?.deletions ?? 0)")
-          Picker("表示", selection: Binding(get: { mode }, set: { setPresentation(mode: $0) })) {
-            Text("File").tag("file")
-            Text("Diff").tag("diff")
-          }.labelsHidden().accessibilityIdentifier("file-mode")
-          Picker("並べ方", selection: settings.$style) {
-            Text("上下").tag("unified")
-            Text("左右").tag("split")
-          }.labelsHidden()
-          Toggle(settings.full ? "全文" : "変更箇所のみ", isOn: settings.$full)
-          Text("Thread \(threads.unresolvedCount)")
-          Button("外部エディタで開く", action: openInEditor)
-        }.padding(8)
-      }.frame(height: 44)
+      toolbar
       Divider()
       if let value, let view = value.view.variant {
         switch view {
         case .textDiff(let text):
-          FileWebView(payload: bridgePayload(text, value, colorScheme: colorScheme), model: model, onAction: action)
+          FileWebView(payload: bridgePayload(text, value, colorScheme: colorScheme), model: model, onAction: { message, accepted in action(message, onReplyAccepted: accepted) })
             .accessibilityIdentifier("file-content")
         case .image(let image):
           ScrollView([.horizontal, .vertical]) {
@@ -87,6 +67,29 @@ struct FileTabPane: View {
         }
       }.padding()
     }
+  }
+  var toolbar: some View {
+    HStack(spacing: 4) {
+      Text(path).accessibilityIdentifier("file-path").lineLimit(1).truncationMode(.middle).layoutPriority(-1).help(path)
+      Picker("表示", selection: Binding(get: { mode }, set: { setPresentation(mode: $0) })) {
+        Text("File").tag("file")
+        Text("Diff").tag("diff")
+      }.labelsHidden().fixedSize().accessibilityIdentifier("file-mode")
+      if mode == "diff" {
+        Picker("比較", selection: Binding(get: { base }, set: { setPresentation(base: $0) })) {
+          Text("HEAD 比較").tag("head")
+          Text("base 比較").tag("branch-base")
+        }.labelsHidden().fixedSize().accessibilityIdentifier("file-base")
+        Text("+\(value?.additions ?? 0) −\(value?.deletions ?? 0)").fixedSize().accessibilityIdentifier("file-stats")
+        Picker("並べ方", selection: settings.$style) {
+          Text("上下").tag("unified")
+          Text("左右").tag("split")
+        }.labelsHidden().fixedSize().accessibilityIdentifier("file-style")
+        Toggle(settings.full ? "全文" : "変更箇所のみ", isOn: settings.$full).fixedSize().accessibilityIdentifier("file-full")
+      }
+      Text("Thread \(threads.unresolvedCount)").fixedSize().accessibilityIdentifier("file-thread-count")
+      Button("外部エディタで開く", action: openInEditor).fixedSize().accessibilityIdentifier("file-open-editor")
+    }.controlSize(.small).padding(8).frame(height: 44)
   }
   func subscribe() {
     if let subscription { model.unsubscribe(subscription) }
@@ -143,7 +146,7 @@ struct FileTabPane: View {
        return annotation
      }]
   }
-  func action(_ message: [String: Any]) {
+  func action(_ message: [String: Any], onReplyAccepted: @escaping () -> Void = {}) {
     guard let kind = message["kind"] as? String, let client = model.client else { return }
     if kind == "create" {
       draft.line = (message["line"] as? NSNumber)?.uint32Value
@@ -171,6 +174,7 @@ struct FileTabPane: View {
         var request = Releash_Client_V1_AppendReviewCommentRequest()
         request.worktreeName = worktree; request.threadID = id; request.content = message["content"] as? String ?? ""
         _ = try await client.appendReviewComment(request: request, headers: model.headers).result.get()
+        onReplyAccepted()
       case "resolve":
         var request = Releash_Client_V1_ResolveReviewThreadRequest()
         request.worktreeName = worktree; request.threadID = id; request.outcome = "resolved"; request.summary = "ファイルタブで解決"
@@ -210,7 +214,7 @@ struct FileDisplaySettings: DynamicProperty {
 struct FileWebView: NSViewRepresentable {
   let payload: [String: Any]
   let model: AppModel
-  let onAction: ([String: Any]) -> Void
+  let onAction: ([String: Any], @escaping () -> Void) -> Void
   func makeCoordinator() -> Coordinator { Coordinator(model: model, onAction: onAction) }
   func makeNSView(context: Context) -> WKWebView {
     let configuration = WKWebViewConfiguration()
@@ -243,14 +247,21 @@ struct FileWebView: NSViewRepresentable {
     weak var web: WKWebView?
     var payload: [String: Any] = [:]
     var ready = false
-    var onAction: ([String: Any]) -> Void
-    init(model: AppModel, onAction: @escaping ([String: Any]) -> Void) {
+    var onAction: ([String: Any], @escaping () -> Void) -> Void
+    init(model: AppModel, onAction: @escaping ([String: Any], @escaping () -> Void) -> Void) {
       self.model = model; self.onAction = onAction
     }
     func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
       guard let value = message.body as? [String: Any] else { return }
       if value["kind"] as? String == "ready" { ready = true; render() }
-      else { onAction(value) }
+      else {
+        onAction(value) { [weak self] in
+          guard let self, let id = value["id"] as? String, let requestID = value["requestID"] as? NSNumber else { return }
+          web?.callAsyncJavaScript("window.releashReplyAccepted(id, requestID)", arguments: ["id": id, "requestID": requestID], in: nil, in: world) { [weak self] result in
+            if case .failure(let error) = result { self?.model.failure = error.localizedDescription }
+          }
+        }
+      }
     }
     func render() {
       guard ready, !payload.isEmpty else { return }

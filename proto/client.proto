@@ -2907,6 +2907,7 @@ message DirectorySnapshot {
   repeated DirectoryEntry entries = 1;
   repeated string removed = 2;
   bool delta = 3;
+  repeated string order = 4;
 }
 message FileHunkState {
   string hunk_id = 1;

@@ -61,7 +61,23 @@ impl CodeUsecase {
         directory: &str,
         statuses: &[super::repository_dto::FileStatusDto],
     ) -> Result<Vec<super::directory_query::DirectoryEntryDto>, CodeUsecaseError> {
-        self.directory.entries(worktree, directory, statuses)
+        use crate::domain::code::services::directory::{entry_order, entry_status, GitStatus};
+        let statuses = statuses
+            .iter()
+            .map(|entry| {
+                Ok((
+                    entry.path.as_str(),
+                    GitStatus::parse(&entry.index_status)?,
+                    GitStatus::parse(&entry.worktree_status)?,
+                ))
+            })
+            .collect::<Result<Vec<_>, crate::domain::code::CodeError>>()?;
+        let mut entries = self.directory.entries(worktree, directory)?;
+        for entry in &mut entries {
+            entry.status = entry_status(&entry.path, entry.directory, statuses.iter().copied());
+        }
+        entries.sort_by(|a, b| entry_order(a.directory, &a.name, b.directory, &b.name));
+        Ok(entries)
     }
 
     // ── staging（書き込み = 差分 Approve） ──
@@ -163,6 +179,14 @@ impl CodeUsecase {
             ReviewContentSource::Staged => self.query.review_staged_bytes(file_path),
             ReviewContentSource::WorkingTree => self.query.review_working_tree_bytes(file_path),
         }
+    }
+
+    pub(super) fn review_working_tree_matches_base(
+        &self,
+        file_path: &str,
+        base: ReviewBase,
+    ) -> Result<bool, CodeUsecaseError> {
+        self.query.review_working_tree_matches_base(file_path, base)
     }
 
     pub(super) fn review_binary_by_attributes(

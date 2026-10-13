@@ -2161,8 +2161,8 @@ impl TryFrom<&crate::domain::workspace_state::value_objects::pane_layout::PaneLa
                         .map(|tab| wire::PaneTab {
                             id: tab.id.clone(),
                             file_path: tab.file_path.clone(),
-                            file_mode: tab.file_mode.clone(),
-                            file_base: tab.file_base.clone(),
+                            file_mode: tab.file_mode.map(|mode| mode.as_str().into()),
+                            file_base: tab.file_base.map(|base| base.as_str().into()),
                             kind: match tab.kind {
                                 PaneTabKind::Terminal => wire::PaneTabKind::Terminal,
                                 PaneTabKind::Workflow => wire::PaneTabKind::Workflow,
@@ -2219,8 +2219,18 @@ impl TryFrom<wire::PaneLayout>
                         Ok(PaneTab {
                             id: tab.id,
                             file_path: tab.file_path,
-                            file_mode: tab.file_mode,
-                            file_base: tab.file_base,
+                            file_mode: tab
+                                .file_mode
+                                .as_deref()
+                                .map(crate::domain::code::value_objects::review::FileMode::parse)
+                                .transpose()
+                                .map_err(|error| error.to_string())?,
+                            file_base: tab
+                                .file_base
+                                .as_deref()
+                                .map(crate::domain::code::ReviewBase::parse)
+                                .transpose()
+                                .map_err(|error| error.to_string())?,
                             kind: match wire::PaneTabKind::try_from(tab.kind) {
                                 Ok(wire::PaneTabKind::Terminal) => PaneTabKind::Terminal,
                                 Ok(wire::PaneTabKind::Workflow) => PaneTabKind::Workflow,

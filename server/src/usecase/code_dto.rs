@@ -283,11 +283,10 @@ pub enum ReviewLimitReasonDto {
 #[path = "code_dto_test.rs"]
 mod code_dto_tests;
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, PartialEq)]
 pub struct FileTabViewDto {
     pub view: ReviewFileViewDto,
-    pub initial_mode: String,
+    pub initial_mode: crate::domain::code::value_objects::review::FileMode,
     pub additions: u32,
     pub deletions: u32,
     pub hunk_states: Vec<FileHunkStateDto>,

@@ -11,6 +11,15 @@ let mode;
 let payload;
 let selected;
 let diffMetadata;
+const replies = new Map();
+const replyInputs = new Map();
+let replyVersion = 0;
+window.releashReplyAccepted = (id, version) => {
+  if (replies.get(id)?.version !== version) return;
+  replies.delete(id);
+  const input = replyInputs.get(id);
+  if (input) input.value = '';
+};
 const send = (action) => window.webkit.messageHandlers.fileViewer.postMessage(action);
 const button = (label, action) => {
   const element = document.createElement('button');
@@ -37,7 +46,14 @@ function annotation({ metadata: thread }) {
   if (!thread.resolved) {
     const input = document.createElement('textarea');
     input.setAttribute('aria-label', 'Threadへの返信');
-    element.append(input, button('返信', () => send({ kind: 'reply', id: thread.id, content: input.value })));
+    input.value = replies.get(thread.id)?.content ?? '';
+    replyInputs.set(thread.id, input);
+    input.oninput = () => replies.set(thread.id, { content: input.value, version: ++replyVersion });
+    element.append(input, button('返信', () => {
+      if (replies.get(thread.id)?.content !== input.value) input.oninput();
+      const draft = replies.get(thread.id);
+      send({ kind: 'reply', id: thread.id, content: draft.content, requestID: draft.version });
+    }));
     if (thread.canResolve) element.append(button('解決', () => send({ kind: 'resolve', id: thread.id })));
   }
   return element;
@@ -74,6 +90,7 @@ window.releashRender = (next) => {
     renderer?.setSelectedLines(null);
     diffMetadata = undefined;
   }
+  const baseChanged = payload?.base !== next.base;
   payload = next;
   const options = {
     themeType: next.dark ? 'dark' : 'light',
@@ -87,10 +104,10 @@ window.releashRender = (next) => {
     renderGutterUtility: next.mode === 'diff' ? (getHovered) => gutter(getHovered) : undefined,
   };
   const type = renderType(next);
-  if (mode !== type) {
+  if (mode !== type || baseChanged) {
     renderer?.cleanUp();
     selected = undefined;
-    container = document.createElement('div');
+    container = document.createElement('diffs-container');
     container.id = 'file';
     content.replaceChildren(container);
     renderer = type === 'diff' ? new VirtualizedFileDiff(options, virtualizer) : new VirtualizedFile(options, virtualizer);

@@ -34,12 +34,7 @@ impl SubscriptionTarget {
             let Some(file) = args.get(1) else {
                 return Err(SubscriptionError::InvalidId);
             };
-            if std::path::Path::new(file).components().any(|part| {
-                !matches!(
-                    part,
-                    std::path::Component::Normal(_) | std::path::Component::CurDir
-                ) || part.as_os_str() == ".git"
-            }) {
+            if !crate::domain::code::services::directory::worktree_path_is_visible(file) {
                 return Err(SubscriptionError::InvalidId);
             }
         }

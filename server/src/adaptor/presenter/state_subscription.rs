@@ -369,6 +369,7 @@ fn directory_delta(
                     .map(|entry| entry.path.clone())
                     .collect(),
                 delta: true,
+                order: current.order.clone(),
             })),
         }
         .into(),
