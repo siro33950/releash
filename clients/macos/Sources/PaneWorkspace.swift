@@ -138,8 +138,6 @@ import SwiftUI
     return false
   }
 
-  func tab(_ id: TabID) -> PaneTab? { tabs[id.id.uuidString] }
-
   func openFile(_ path: String, base: String) {
     guard let pane = controller.focusedPaneId ?? controller.allPaneIds.first else { return }
     if let existing = controller.tabs(inPane: pane).first(where: { tabs[$0.id.id.uuidString]?.filePath == path }) {
