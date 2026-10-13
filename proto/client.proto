@@ -404,10 +404,21 @@ message ReviewActorKindWireDto {
   optional Value value = 1 [json_name = "value", (json_required) = true];
 }
 
+message ReviewLineSideDto {
+  option (json_wrapper) = "value";
+  enum Value {
+    additions = 0 [(json_enum_name) = "additions"];
+    deletions = 1 [(json_enum_name) = "deletions"];
+  }
+  optional Value value = 1 [json_name = "value", (json_required) = true];
+}
+
 message ReviewTargetWireDto {
   optional string file_path = 1 [json_name = "filePath", (json_nullable) = true];
   optional uint32 line_number = 2 [json_name = "lineNumber", (json_nullable) = true];
   optional uint32 end_line = 3 [json_name = "endLine", (json_nullable) = true];
+  optional ReviewLineSideDto side = 4 [json_name = "side"];
+  optional ReviewLineSideDto end_side = 5 [json_name = "endSide"];
 }
 
 message ReviewThreadStateDto {
@@ -636,6 +647,8 @@ message CreateReviewThreadRequest {
   optional uint32 line_number = 3 [json_name = "lineNumber", (json_nullable) = true];
   optional uint32 end_line = 4 [json_name = "endLine", (json_nullable) = true];
   optional string content = 5 [json_name = "content", (json_required) = true];
+  optional ReviewLineSideDto side = 6 [json_name = "side"];
+  optional ReviewLineSideDto end_side = 7 [json_name = "endSide"];
 }
 
 message SaveRepositoryGroupStateRequest {
@@ -1930,6 +1943,9 @@ message PaneSplit {
 message PaneTab {
   string id = 1;
   PaneTabKind kind = 2;
+  optional string file_path = 3;
+  optional string file_mode = 4;
+  optional string file_base = 5;
 }
 enum PaneTabKind {
   PANE_TAB_KIND_UNSPECIFIED = 0;
@@ -2871,7 +2887,38 @@ message StatePayload {
     NullableListReviewHistoryEntryDto review_session_thread_history = 66;
     ProviderHookHealthSnapshot provider_hook_health = 57;
     ServerInfo daemon_info = 67;
+    DirectorySnapshot directory = 72;
+    FileTabView file_tab = 73;
+    FileThreadsSnapshot file_threads = 74;
   }
+}
+message FileThreadsSnapshot {
+  ListReviewThreadDto threads = 1;
+  uint32 unresolved_count = 2;
+}
+message DirectoryEntry {
+  string path = 1;
+  string name = 2;
+  bool directory = 3;
+  bool ignored = 4;
+  string status = 5;
+}
+message DirectorySnapshot {
+  repeated DirectoryEntry entries = 1;
+  repeated string removed = 2;
+  bool delta = 3;
+}
+message FileHunkState {
+  string hunk_id = 1;
+  bool is_staged = 2;
+}
+message FileTabView {
+  ReviewFileViewDto view = 1;
+  string initial_mode = 2;
+  uint32 additions = 3;
+  uint32 deletions = 4;
+  repeated FileHunkState hunk_states = 5;
+  string patch = 6;
 }
 message StateChange { bool delta = 1; StatePayload payload = 2; }
 message StateSubscriptionEvent {

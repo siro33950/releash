@@ -282,3 +282,21 @@ pub enum ReviewLimitReasonDto {
 #[cfg(test)]
 #[path = "code_dto_test.rs"]
 mod code_dto_tests;
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileTabViewDto {
+    pub view: ReviewFileViewDto,
+    pub initial_mode: String,
+    pub additions: u32,
+    pub deletions: u32,
+    pub hunk_states: Vec<FileHunkStateDto>,
+    pub patch: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileHunkStateDto {
+    pub hunk_id: String,
+    pub is_staged: bool,
+}

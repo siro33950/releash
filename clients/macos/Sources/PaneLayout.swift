@@ -3,6 +3,10 @@ import Foundation
 struct PaneTab: Equatable, Identifiable {
   var id: String = UUID().uuidString
   var kind: Kind
+  var filePath: String?
+  var fileMode: String?
+  var fileBase: String?
+  var title: String { filePath.map { URL(fileURLWithPath: $0).lastPathComponent } ?? kind.title }
   enum Kind: String, CaseIterable {
     case terminal, workflow, file, session
     var icon: String {
@@ -46,7 +50,10 @@ indirect enum PaneLayout: Equatable {
         case .session: kind = .session
         default: throw CLIFailure(message: "Unknown pane tab kind")
         }
-        return PaneTab(id: tab.id, kind: kind)
+        return PaneTab(id: tab.id, kind: kind,
+          filePath: tab.hasFilePath ? tab.filePath : nil,
+          fileMode: tab.hasFileMode ? tab.fileMode : nil,
+          fileBase: tab.hasFileBase ? tab.fileBase : nil)
       }
       self = .pane(id: pane.id, tabs: tabs, active: pane.hasActiveTab ? pane.activeTab : nil)
     case .split(let split):
@@ -72,6 +79,9 @@ indirect enum PaneLayout: Equatable {
       pane.tabs = tabs.map { tab in
         var value = Releash_Client_V1_PaneTab()
         value.id = tab.id
+        if let path = tab.filePath { value.filePath = path }
+        if let mode = tab.fileMode { value.fileMode = mode }
+        if let base = tab.fileBase { value.fileBase = base }
         switch tab.kind {
         case .terminal: value.kind = .terminal
         case .workflow: value.kind = .workflow

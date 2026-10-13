@@ -31,6 +31,9 @@ targets:
     platform: macOS
     sources:
       - Sources
+      - path: .build/FileViewer
+        type: folder
+        buildPhase: resources
       - path: Resources/Lucide-LICENSE
         buildPhase: resources
       - path: Resources/SwiftTerm-LICENSE

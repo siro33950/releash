@@ -85,7 +85,7 @@ struct RootView: View {
               }
               .frame(maxWidth: .infinity, maxHeight: .infinity)
               .layoutPriority(1)
-              RightPanelView(expanded: $rightPanelExpanded)
+              RightPanelView(expanded: $rightPanelExpanded, model: model)
                 .onGeometryChange(for: CGFloat.self) {
                   $0.size.width
                 } action: {

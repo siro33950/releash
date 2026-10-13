@@ -23,15 +23,10 @@ use super::code_query_service::CodeQueryService;
 pub struct CodeUsecase {
     staging: Arc<dyn StagingRepository>,
     query: CodeQueryService,
+    directory: Arc<dyn super::directory_query::DirectoryQuery>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum ReviewContentSource {
-    BranchBase,
-    Head,
-    Staged,
-    WorkingTree,
-}
+pub(super) use crate::domain::code::value_objects::review::ReviewContentSource;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct SelectedReviewSide {
@@ -40,8 +35,33 @@ pub(super) struct SelectedReviewSide {
 }
 
 impl CodeUsecase {
-    pub fn new(staging: Arc<dyn StagingRepository>, query: CodeQueryService) -> Self {
-        Self { staging, query }
+    pub fn new(
+        staging: Arc<dyn StagingRepository>,
+        query: CodeQueryService,
+        directory: Arc<dyn super::directory_query::DirectoryQuery>,
+    ) -> Self {
+        Self {
+            staging,
+            query,
+            directory,
+        }
+    }
+
+    pub(super) fn file_target(
+        &self,
+        worktree: &str,
+        file: &str,
+    ) -> Result<String, CodeUsecaseError> {
+        self.directory.file_target(worktree, file)
+    }
+
+    pub fn directory_entries(
+        &self,
+        worktree: &str,
+        directory: &str,
+        statuses: &[super::repository_dto::FileStatusDto],
+    ) -> Result<Vec<super::directory_query::DirectoryEntryDto>, CodeUsecaseError> {
+        self.directory.entries(worktree, directory, statuses)
     }
 
     // ── staging（書き込み = 差分 Approve） ──
@@ -95,29 +115,7 @@ impl CodeUsecase {
         section: ReviewSection,
         base: ReviewBase,
     ) -> Result<SelectedReviewSide, CodeUsecaseError> {
-        if base.is_branch_base() {
-            let source = match side {
-                ReviewBlobSide::Original => ReviewContentSource::BranchBase,
-                ReviewBlobSide::Modified => ReviewContentSource::WorkingTree,
-            };
-            return self.select_review_source(file_path, source);
-        }
-        if section.is_staged() {
-            let source = match side {
-                ReviewBlobSide::Original => ReviewContentSource::Head,
-                ReviewBlobSide::Modified => ReviewContentSource::Staged,
-            };
-            return self.select_review_source(file_path, source);
-        }
-
-        match side {
-            ReviewBlobSide::Original => {
-                self.select_review_source(file_path, ReviewContentSource::Staged)
-            }
-            ReviewBlobSide::Modified => {
-                self.select_review_source(file_path, ReviewContentSource::WorkingTree)
-            }
-        }
+        self.select_review_source(file_path, ReviewContentSource::select(side, section, base))
     }
 
     fn select_review_source(
@@ -140,6 +138,9 @@ impl CodeUsecase {
             ReviewContentSource::BranchBase => {
                 self.query.review_file_metadata_at_branch_base(file_path)
             }
+            ReviewContentSource::BranchBaseTip => self
+                .query
+                .review_file_metadata_at_branch_base_tip(file_path),
             ReviewContentSource::Head => self.query.review_file_metadata_at_ref(file_path, "HEAD"),
             ReviewContentSource::Staged => self.query.review_staged_metadata(file_path),
             ReviewContentSource::WorkingTree => self.query.review_working_tree_metadata(file_path),
@@ -154,6 +155,9 @@ impl CodeUsecase {
         match source {
             ReviewContentSource::BranchBase => {
                 self.query.review_file_bytes_at_branch_base(file_path)
+            }
+            ReviewContentSource::BranchBaseTip => {
+                self.query.review_file_bytes_at_branch_base_tip(file_path)
             }
             ReviewContentSource::Head => self.query.review_file_bytes_at_ref(file_path, "HEAD"),
             ReviewContentSource::Staged => self.query.review_staged_bytes(file_path),

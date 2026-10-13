@@ -1,4 +1,6 @@
 pub mod code {
+    pub use crate::adaptor::gateway::code::directory::DirectoryQueryGateway;
+    pub use crate::usecase::directory_query::DirectoryQuery;
 
     pub use crate::adaptor::gateway::code::branch_diff::get_branch_diff_summary;
     pub use crate::adaptor::gateway::code::diff_compute::diff_buffers;
@@ -255,10 +257,10 @@ pub mod platform {
     pub use crate::domain::comment::ReviewError;
     pub use crate::domain::comment::ReviewEvent;
     pub use crate::domain::comment::ReviewHistoryEntry;
-    pub use crate::domain::comment::ReviewTarget;
     pub use crate::domain::comment::ReviewThreadFilter;
     pub use crate::domain::comment::ReviewThreadState;
     pub use crate::domain::comment::MAX_REVIEW_TEXT_BYTES;
+    pub use crate::domain::comment::{ReviewLineSide, ReviewTarget};
     pub use crate::domain::external_editor::gateway::EditorError;
     pub use crate::domain::external_editor::services::scan_applications_in;
     pub use crate::domain::failure::BusinessFailure;

@@ -121,6 +121,26 @@ impl CodeQueryService {
             .review_file_bytes_at_branch_base(file_path, base_oid.as_deref())?)
     }
 
+    pub fn review_file_metadata_at_branch_base_tip(
+        &self,
+        file_path: &str,
+    ) -> Result<ReviewSideMetadata, CodeUsecaseError> {
+        let base_oid = self.resolve_base_commit_oid_for(file_path)?;
+        Ok(self
+            .file_content
+            .review_file_metadata_at_ref(file_path, base_oid.as_deref().unwrap_or("HEAD"))?)
+    }
+
+    pub fn review_file_bytes_at_branch_base_tip(
+        &self,
+        file_path: &str,
+    ) -> Result<ReviewSideBytes, CodeUsecaseError> {
+        let base_oid = self.resolve_base_commit_oid_for(file_path)?;
+        Ok(self
+            .file_content
+            .review_file_bytes_at_ref(file_path, base_oid.as_deref().unwrap_or("HEAD"))?)
+    }
+
     pub fn review_staged_metadata(
         &self,
         file_path: &str,

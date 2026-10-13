@@ -103,7 +103,7 @@ fn discover_repo(path: &std::path::Path) -> Result<git2::Repository, RepositoryE
         Ok(repo) => Ok(repo),
         Err(error @ git_operation::GitOperationError::Stopped(_)) => Err(error.into()),
         Err(_) if !path.exists() => {
-            if let Some(parent) = path.parent() {
+            if let Some(parent) = path.ancestors().skip(1).find(|parent| parent.is_dir()) {
                 Ok(git_operation::run(|| client::discover(parent))?)
             } else {
                 Ok(git_operation::run(|| client::discover(path))?)

@@ -112,7 +112,11 @@ fn build_code_usecase_with_gateways() -> CodeUsecase {
         Arc::new(BranchDiffGateway),
         Arc::new(BranchBaseResolverGateway::new(Arc::new(GitConfigGateway))),
     );
-    CodeUsecase::new(Arc::new(StagingGateway), query)
+    CodeUsecase::new(
+        Arc::new(StagingGateway),
+        query,
+        Arc::new(crate::adaptor::gateway::code::directory::DirectoryQueryGateway),
+    )
 }
 
 pub fn build_code_usecase() -> CodeUsecase {

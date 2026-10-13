@@ -148,7 +148,21 @@ import SwiftProtobuf
     }
   }
   private func receive(_ payload: Releash_Client_V1_StatePayload, key: String) {
-    if case .terminal = payload.value {} else { lastPayloads[key] = payload }
+    var cached = payload
+    if case .directory(let delta) = payload.value, delta.delta {
+      guard case .directory(var snapshot) = lastPayloads[key]?.value else {
+        failure = "ディレクトリの初期状態を受信していません"
+        return
+      }
+      var entries = Dictionary(uniqueKeysWithValues: snapshot.entries.map { ($0.path, $0) })
+      for path in delta.removed { entries.removeValue(forKey: path) }
+      for entry in delta.entries { entries[entry.path] = entry }
+      snapshot.entries = Array(entries.values)
+      snapshot.removed = []
+      snapshot.delta = false
+      cached.directory = snapshot
+    }
+    if case .terminal = payload.value {} else { lastPayloads[key] = cached }
     for callback in callbacks[key]?.values ?? [:].values { callback(payload) }
   }
   private func register(_ key: String, clientID: String) async throws {
@@ -411,6 +425,17 @@ import SwiftProtobuf
     } catch { failure = failureMessage(error); return false }
   }
 
+  func openFile(_ path: String) {
+    let base = UserDefaults.standard.string(forKey: "diffBase") ?? "head"
+    panes.openFile(path, base: base)
+    savePaneLayout()
+  }
+  func savePaneLayout() {
+    do {
+      let value = try panes.layout()
+      editLayout { $0 = value }
+    } catch { failure = failureMessage(error) }
+  }
   func setCollapsed(_ path: String, _ value: Bool) {
     guard let client else { return }
     var request = Releash_Client_V1_SaveRepositoryGroupStateRequest()

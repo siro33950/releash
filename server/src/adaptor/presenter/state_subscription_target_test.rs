@@ -374,3 +374,17 @@ fn test_terminal購読対象_三種の持ち主の名前と引数が往復する
         assert_eq!(SubscriptionTarget::from_parts(name, &args), Ok(target));
     }
 }
+
+#[test]
+fn test_ファイル購読_境界外の相対pathを受け付けない() {
+    // Given / When / Then
+    for target in ["directory", "file-tab", "file-threads"] {
+        for path in ["../file", "/outside", ".git/config"] {
+            let mut args = vec!["/repo", path];
+            if target == "file-tab" {
+                args.push("head");
+            }
+            assert!(SubscriptionTarget::from_parts(target, &args).is_err());
+        }
+    }
+}

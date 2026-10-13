@@ -210,3 +210,48 @@ async fn test_購読失敗_つなぎ直した購読へ保持済みのfailure事�
         Some(crate::adaptor::presenter::client::state_subscription_event::Event::Failure(_))
     ));
 }
+
+#[test]
+fn test_ディレクトリ差分_変更と削除だけを送る() {
+    use crate::adaptor::presenter::client::{
+        state_payload::Value, DirectoryEntry, DirectorySnapshot, StatePayload,
+    };
+    // Given
+    let old = DirectoryEntry {
+        path: "old".into(),
+        name: "old".into(),
+        directory: false,
+        ignored: false,
+        status: "none".into(),
+    };
+    let same = DirectoryEntry {
+        path: "same".into(),
+        ..old.clone()
+    };
+    let new = DirectoryEntry {
+        path: "new".into(),
+        ..old.clone()
+    };
+    let value = |entries| {
+        PublishedState::from(StatePayload {
+            value: Some(Value::Directory(DirectorySnapshot {
+                entries,
+                removed: Vec::new(),
+                delta: false,
+            })),
+        })
+    };
+    let previous = value(vec![old, same.clone()]);
+    // When
+    let delta = directory_delta(Some(&previous), &value(vec![same, new.clone()])).unwrap();
+    // Then
+    let PublishedState::Value(delta) = delta else {
+        panic!("expected value");
+    };
+    let Some(Value::Directory(delta)) = delta.value else {
+        panic!("expected directory");
+    };
+    assert!(delta.delta);
+    assert_eq!(delta.entries, vec![new]);
+    assert_eq!(delta.removed, vec!["old"]);
+}

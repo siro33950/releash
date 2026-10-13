@@ -40,6 +40,8 @@ pub(crate) mod tests {
             file_path: file_path.map(str::to_string),
             line_number: Some(1),
             end_line: None,
+            side: None,
+            end_side: None,
         }
     }
 
@@ -263,4 +265,41 @@ fn test_review書き手_openなsessionだけ変更を許す() {
             Err(ReviewError::SessionNotOpen(_))
         ));
     }
+}
+
+#[test]
+fn test_行の側_行とファイルを必須にして終端の側も検証する() {
+    // Given
+    let mut target = ReviewTarget {
+        file_path: Some("file.rs".into()),
+        line_number: Some(2),
+        end_line: Some(3),
+        side: Some(ReviewLineSide::Deletions),
+        end_side: Some(ReviewLineSide::Additions),
+    };
+    // When / Then
+    validate_target(&target).unwrap();
+    target.side = None;
+    assert!(matches!(
+        validate_target(&target),
+        Err(ReviewError::InvalidInput(_))
+    ));
+    target.side = Some(ReviewLineSide::Deletions);
+    target.end_line = None;
+    assert!(matches!(
+        validate_target(&target),
+        Err(ReviewError::InvalidInput(_))
+    ));
+    target.end_side = None;
+    target.file_path = None;
+    assert!(matches!(
+        validate_target(&target),
+        Err(ReviewError::InvalidInput(_))
+    ));
+    target.file_path = Some("file.rs".into());
+    target.line_number = None;
+    assert!(matches!(
+        validate_target(&target),
+        Err(ReviewError::InvalidInput(_))
+    ));
 }

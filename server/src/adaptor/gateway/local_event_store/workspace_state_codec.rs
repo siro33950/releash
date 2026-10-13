@@ -276,6 +276,12 @@ enum StoredPaneLayout {
 struct StoredPaneTab {
     pub id: String,
     pub kind: StoredPaneTabKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file_mode: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file_base: Option<String>,
 }
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -357,6 +363,9 @@ impl From<crate::domain::workspace_state::value_objects::pane_layout::PaneTab> f
         Self {
             id: value.id,
             kind: value.kind.into(),
+            file_path: value.file_path,
+            file_mode: value.file_mode,
+            file_base: value.file_base,
         }
     }
 }
@@ -365,6 +374,9 @@ impl From<StoredPaneTab> for crate::domain::workspace_state::value_objects::pane
         Self {
             id: value.id,
             kind: value.kind.into(),
+            file_path: value.file_path,
+            file_mode: value.file_mode,
+            file_base: value.file_base,
         }
     }
 }

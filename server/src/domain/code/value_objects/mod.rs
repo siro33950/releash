@@ -20,6 +20,4 @@ pub use markdown_diff::{
     DiffRange, DiffRangeKind, DiffSide, InlineChunk, InlineChunkKind, SplitRow, SplitRowKind,
 };
 pub use range::{HiddenRange, VisibleBlock};
-pub use review::{
-    ReviewBase, ReviewBlobContentType, ReviewLimitReason, ReviewSection, ReviewThresholds,
-};
+pub use review::{ReviewBase, ReviewLimitReason, ReviewSection, ReviewThresholds};

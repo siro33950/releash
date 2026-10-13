@@ -445,4 +445,51 @@ extension AppModelTests {
     model.unsubscribe(three)
     await model.stop()
   }
+  @MainActor func testLateDirectorySubscriberReceivesFullMirrorAfterDelta() async throws {
+    let http = TestHTTPClient()
+    let model = try await testModel(http)
+    var received = false
+    let first = model.subscribe("directory", ["/repo", "."]) { payload in
+      if case .directory(let value) = payload.value, value.delta { received = true }
+    }
+    try await eventually { http.state.withLock { $0.subscriptions.contains(where: { $0.target == "directory" }) } }
+    let subscription = try XCTUnwrap(http.state.withLock { $0.subscriptions.first(where: { $0.target == "directory" }) })
+    func entry(_ path: String) -> Releash_Client_V1_DirectoryEntry {
+      var value = Releash_Client_V1_DirectoryEntry(); value.path = path; value.name = path
+      return value
+    }
+    var snapshot = Releash_Client_V1_StateSubscriptionEvent()
+    snapshot.subscriptionID = subscription.subscriptionID
+    snapshot.snapshot.directory.entries = [entry("old"), entry("same")]
+    try TestHTTPClient.send(snapshot, on: http.state.withLock { $0.streams.last! })
+    var delta = Releash_Client_V1_StateSubscriptionEvent()
+    delta.subscriptionID = subscription.subscriptionID
+    delta.change.payload.directory.delta = true
+    delta.change.payload.directory.entries = [entry("new")]
+    delta.change.payload.directory.removed = ["old"]
+    try TestHTTPClient.send(delta, on: http.state.withLock { $0.streams.last! })
+    try await eventually { received }
+    var mirror = Releash_Client_V1_DirectorySnapshot()
+    let second = model.subscribe("directory", ["/repo", "."]) { payload in mirror = payload.directory }
+    XCTAssertFalse(mirror.delta)
+    XCTAssertEqual(Set(mirror.entries.map(\.path)), ["same", "new"])
+    model.unsubscribe(first); model.unsubscribe(second)
+    await model.stop()
+  }
+
+  @MainActor func testDirectoryDeltaWithoutSnapshotReportsFailure() async throws {
+    let http = TestHTTPClient()
+    let model = try await testModel(http)
+    let id = model.subscribe("directory", ["/repo", "."]) { _ in }
+    try await eventually { http.state.withLock { $0.subscriptions.contains(where: { $0.target == "directory" }) } }
+    let subscription = try XCTUnwrap(http.state.withLock { $0.subscriptions.first(where: { $0.target == "directory" }) })
+    var delta = Releash_Client_V1_StateSubscriptionEvent()
+    delta.subscriptionID = subscription.subscriptionID
+    delta.change.payload.directory.delta = true
+    try TestHTTPClient.send(delta, on: http.state.withLock { $0.streams.last! })
+    try await eventually { model.failure == "ディレクトリの初期状態を受信していません" }
+    model.unsubscribe(id)
+    await model.stop()
+  }
+
 }

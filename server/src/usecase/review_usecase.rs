@@ -11,9 +11,11 @@ use crate::domain::code::services::hunk::{
     assign_stable_group_ids_for_side, assign_stable_hunk_ids_for_side, StableGroupIdSide,
 };
 use crate::domain::code::{
-    ChangeGroup, CodeError, DiffFileEntry, Hunk, ReviewBase, ReviewBlobContentType, ReviewBlobSide,
-    ReviewLimitReason, ReviewSection, ReviewSideBytes, ReviewSideMetadata, ReviewThresholds,
+    ChangeGroup, CodeError, DiffFileEntry, Hunk, ReviewBase, ReviewBlobSide, ReviewLimitReason,
+    ReviewSection, ReviewSideBytes, ReviewSideMetadata, ReviewThresholds,
 };
+
+use crate::domain::code::value_objects::review::ReviewPresentation;
 
 use super::code_dto::{
     BranchDiffSummaryDto, ChangeGroupDto, DiffHunksResultDto, DiffTreeNodeDto, HunkDto,
@@ -61,6 +63,14 @@ struct ReviewBlobViewContext<'a> {
 #[async_trait::async_trait]
 
 trait ReviewCodePort: Send + Sync {
+    fn file_target(&self, worktree: &str, file: &str) -> Result<String, CodeUsecaseError>;
+    fn directory_entries(
+        &self,
+        worktree: &str,
+        directory: &str,
+        statuses: &[FileStatusDto],
+    ) -> Result<Vec<super::directory_query::DirectoryEntryDto>, CodeUsecaseError>;
+
     fn get_branch_diff_summary(
         &self,
         repo_path: &str,
@@ -102,6 +112,19 @@ trait ReviewCodePort: Send + Sync {
 #[async_trait::async_trait]
 
 impl ReviewCodePort for CodeUsecase {
+    fn file_target(&self, worktree: &str, file: &str) -> Result<String, CodeUsecaseError> {
+        CodeUsecase::file_target(self, worktree, file)
+    }
+
+    fn directory_entries(
+        &self,
+        worktree: &str,
+        directory: &str,
+        statuses: &[FileStatusDto],
+    ) -> Result<Vec<super::directory_query::DirectoryEntryDto>, CodeUsecaseError> {
+        CodeUsecase::directory_entries(self, worktree, directory, statuses)
+    }
+
     fn get_branch_diff_summary(
         &self,
         repo_path: &str,
@@ -185,6 +208,16 @@ impl ReviewUsecase {
         }
     }
 
+    pub fn directory_entries(
+        &self,
+        worktree: &str,
+        directory: &str,
+    ) -> Result<Vec<super::directory_query::DirectoryEntryDto>, CodeUsecaseError> {
+        let snapshot = self.snapshot(worktree)?;
+        self.code
+            .directory_entries(worktree, directory, &snapshot.status)
+    }
+
     pub fn get_review_snapshot(
         &self,
         worktree_path: &str,
@@ -256,7 +289,13 @@ impl ReviewUsecase {
             ));
         }
 
-        if ReviewBlobContentType::image_from_path(&relative_path).is_some() {
+        if ReviewPresentation::classify(
+            &relative_path,
+            false,
+            &ReviewSideBytes::Missing,
+            &ReviewSideBytes::Missing,
+        ) == ReviewPresentation::Image
+        {
             let mime = review_blob_mime_for_path(&relative_path);
             return Ok(ReviewFileViewDto::Image(ReviewImageDto {
                 version,
@@ -269,7 +308,14 @@ impl ReviewUsecase {
             }));
         }
 
-        if self.code.review_binary_by_attributes(&file_path)? {
+        let binary_attribute = self.code.review_binary_by_attributes(&file_path)?;
+        if ReviewPresentation::classify(
+            &relative_path,
+            binary_attribute,
+            &ReviewSideBytes::Missing,
+            &ReviewSideBytes::Missing,
+        ) == ReviewPresentation::Binary
+        {
             return Ok(binary_view(
                 blob_context,
                 stale,
@@ -285,7 +331,13 @@ impl ReviewUsecase {
             .code
             .read_review_source_bytes(&file_path, modified_source.source)?;
 
-        if side_bytes_look_binary(&original_bytes) || side_bytes_look_binary(&modified_bytes) {
+        if ReviewPresentation::classify(
+            &relative_path,
+            binary_attribute,
+            &original_bytes,
+            &modified_bytes,
+        ) == ReviewPresentation::Binary
+        {
             return Ok(binary_view(
                 blob_context,
                 stale,
@@ -310,6 +362,245 @@ impl ReviewUsecase {
         )
     }
 
+    pub fn get_file_tab_view(
+        &self,
+        worktree_path: &str,
+        path: &str,
+        base: &str,
+    ) -> Result<super::code_dto::FileTabViewDto, CodeUsecaseError> {
+        use super::code_dto::{FileHunkStateDto, FileTabViewDto};
+        let base = ReviewBase::parse(base)?;
+        let relative_path = resolve_review_target(worktree_path, path)?;
+        let file_path = self.code.file_target(worktree_path, &relative_path)?;
+        let snapshot = self.snapshot(worktree_path)?;
+        let original_source = self.code.select_review_side_source(
+            &file_path,
+            ReviewBlobSide::Original,
+            ReviewSection::FileTab,
+            base,
+        )?;
+        let modified_source = self.code.select_review_side_source(
+            &file_path,
+            ReviewBlobSide::Modified,
+            ReviewSection::FileTab,
+            base,
+        )?;
+        if original_source.metadata.is_missing() && modified_source.metadata.is_missing() {
+            return Err(CodeError::Rule(format!("file target not found: {relative_path}")).into());
+        }
+        let original_bytes = self
+            .code
+            .read_review_source_bytes(&file_path, original_source.source)?;
+        let modified_bytes = self
+            .code
+            .read_review_source_bytes(&file_path, modified_source.source)?;
+        let context = ReviewBlobViewContext {
+            relative_path: &relative_path,
+            file_path: &file_path,
+            version: snapshot.version,
+        };
+        let mut dto = FileTabViewDto {
+            view: binary_view(
+                context,
+                snapshot.flags.stale,
+                original_source.metadata,
+                modified_source.metadata,
+            ),
+            initial_mode: ReviewPresentation::initial_file_mode(&original_bytes, &modified_bytes)
+                .into(),
+            additions: 0,
+            deletions: 0,
+            patch: String::new(),
+            hunk_states: Vec::new(),
+        };
+        if ReviewPresentation::classify(&relative_path, false, &original_bytes, &modified_bytes)
+            == ReviewPresentation::Image
+        {
+            let mime = review_blob_mime_for_path(&relative_path);
+            dto.view = ReviewFileViewDto::Image(ReviewImageDto {
+                version: snapshot.version,
+                stale: snapshot.flags.stale,
+                file_id: relative_path.clone(),
+                path: relative_path,
+                original_url: side_data_url(&original_bytes, mime),
+                modified_url: side_data_url(&modified_bytes, mime),
+                mime: mime.into(),
+            });
+            return Ok(dto);
+        }
+        if ReviewPresentation::classify(
+            &relative_path,
+            self.code.review_binary_by_attributes(&file_path)?,
+            &original_bytes,
+            &modified_bytes,
+        ) == ReviewPresentation::Binary
+        {
+            return Ok(dto);
+        }
+        let original = decode_side_text(&original_bytes)?;
+        let modified = decode_side_text(&modified_bytes)?;
+        let hunks = self.compute_review_diff_hunks(
+            &original,
+            &modified,
+            Some(&relative_path),
+            ReviewSection::Changes,
+        )?;
+        if base == ReviewBase::Head {
+            let index_bytes = self
+                .code
+                .read_review_source_bytes(&file_path, ReviewContentSource::Staged)?;
+            let index = if crate::domain::code::value_objects::review::review_bytes_are_binary(
+                &index_bytes,
+            ) {
+                None
+            } else {
+                Some(decode_side_text(&index_bytes)?)
+            };
+            let staged_hunks = if let Some(index) = &index {
+                self.code
+                    .compute_diff_hunks(&original, index, Some(&relative_path))?
+                    .hunks
+                    .iter()
+                    .map(hunk_dto_to_domain)
+                    .collect::<Vec<_>>()
+            } else {
+                Vec::new()
+            };
+            let display_hunks: Vec<_> = hunks.hunks.iter().map(hunk_dto_to_domain).collect();
+            let states = crate::domain::code::services::file_hunk::hunk_stage_states(
+                index.as_deref(),
+                &modified,
+                &staged_hunks,
+                &display_hunks,
+            );
+            dto.hunk_states = hunks
+                .hunks
+                .iter()
+                .zip(states)
+                .map(|(hunk, is_staged)| FileHunkStateDto {
+                    hunk_id: hunk.hunk_id.clone(),
+                    is_staged,
+                })
+                .collect();
+        }
+        for hunk in &hunks.hunks {
+            dto.additions += hunk
+                .lines
+                .iter()
+                .filter(|line| line.starts_with('+'))
+                .count() as u32;
+            dto.deletions += hunk
+                .lines
+                .iter()
+                .filter(|line| line.starts_with('-'))
+                .count() as u32;
+        }
+        dto.patch = crate::domain::code::services::file_hunk::patch(
+            &relative_path,
+            &hunks
+                .hunks
+                .iter()
+                .map(hunk_dto_to_domain)
+                .collect::<Vec<_>>(),
+            &original,
+            &modified,
+        );
+        let total_lines = line_count(&original).max(line_count(&modified)) as u32;
+        dto.view = ReviewFileViewDto::TextDiff(ReviewTextDiffDto {
+            version: snapshot.version,
+            stale: snapshot.flags.stale,
+            file_id: relative_path.clone(),
+            path: relative_path,
+            source: text_source(&original_bytes, &modified_bytes),
+            original,
+            modified,
+            hunks: hunks.hunks,
+            change_groups: Vec::new(),
+            limited: false,
+            total_lines,
+        });
+        Ok(dto)
+    }
+
+    async fn apply_file_tab_hunk(
+        &self,
+        worktree: &str,
+        path: &str,
+        base: &str,
+        hunk_id: &str,
+        stage: bool,
+    ) -> Result<(), CodeUsecaseError> {
+        if ReviewBase::parse(base)? != ReviewBase::Head {
+            return Err(CodeError::Rule(
+                "file hunk actions are unavailable for branch-base".into(),
+            )
+            .into());
+        }
+        let view = self.get_file_tab_view(worktree, path, base)?;
+        let ReviewFileViewDto::TextDiff(view) = view.view else {
+            return Err(CodeError::Rule("file hunk requires text".into()).into());
+        };
+        let selected = view
+            .hunks
+            .iter()
+            .find(|h| h.hunk_id == hunk_id)
+            .ok_or_else(|| CodeError::StaleReviewGroupTarget {
+                group_id: hunk_id.into(),
+            })?;
+        let file = self.code.file_target(worktree, &view.path)?;
+        let index_bytes = self
+            .code
+            .read_review_source_bytes(&file, ReviewContentSource::Staged)?;
+        let index = decode_side_text(&index_bytes)?;
+        let staged = self
+            .code
+            .compute_diff_hunks(&view.original, &index, Some(&view.path))?;
+        let staged_hunks: Vec<_> = staged.hunks.iter().map(hunk_dto_to_domain).collect();
+        let target = crate::domain::code::services::file_hunk::index_after_hunk(
+            &view.original,
+            &index,
+            &view.modified,
+            &staged_hunks,
+            &hunk_dto_to_domain(selected),
+            stage,
+        )?;
+        let changes = self
+            .code
+            .compute_diff_hunks(&index, &target, Some(&view.path))?;
+        let mut patch = crate::domain::code::services::file_hunk::patch(
+            &view.path,
+            &changes
+                .hunks
+                .iter()
+                .map(hunk_dto_to_domain)
+                .collect::<Vec<_>>(),
+            &index,
+            &target,
+        );
+        if matches!(index_bytes, ReviewSideBytes::Missing) && !patch.is_empty() {
+            if let Some((_, rest)) = patch.split_once('\n') {
+                patch = format!("--- /dev/null\n{rest}");
+            }
+        }
+        if target.is_empty()
+            && !patch.is_empty()
+            && ((stage && view.source == ReviewTextSource::Deleted)
+                || (!stage && view.source == ReviewTextSource::Added))
+        {
+            let mut lines = patch.lines();
+            if let (Some(original), Some(_)) = (lines.next(), lines.next()) {
+                patch = format!(
+                    "{original}\n+++ /dev/null\n{}\n",
+                    lines.collect::<Vec<_>>().join("\n")
+                );
+            }
+        }
+        if !patch.is_empty() {
+            self.code.git_stage_hunk(worktree, &patch).await?;
+        }
+        Ok(())
+    }
+
     pub async fn git_stage_review_group(
         &self,
         worktree_path: &str,
@@ -318,6 +609,11 @@ impl ReviewUsecase {
         base: &str,
         group_id: &str,
     ) -> Result<(), CodeUsecaseError> {
+        if section == "file-tab" {
+            return self
+                .apply_file_tab_hunk(worktree_path, path, base, group_id, true)
+                .await;
+        }
         let snapshot = self.snapshot(worktree_path)?;
         let patch = self.generate_review_group_patch(
             worktree_path,
@@ -338,6 +634,11 @@ impl ReviewUsecase {
         base: &str,
         group_id: &str,
     ) -> Result<(), CodeUsecaseError> {
+        if section == "file-tab" {
+            return self
+                .apply_file_tab_hunk(worktree_path, path, base, group_id, false)
+                .await;
+        }
         let snapshot = self.snapshot(worktree_path)?;
         let patch = self.generate_review_group_patch(
             worktree_path,
@@ -791,25 +1092,22 @@ fn review_snapshot_contains_target(
     section: ReviewSection,
     base: ReviewBase,
 ) -> bool {
-    if base.is_branch_base() {
-        return !section.is_staged()
-            && snapshot
-                .files
-                .iter()
-                .any(|entry| review_file_entry_matches(entry, relative_path));
-    }
-
-    if section.is_staged() {
-        return snapshot
+    crate::domain::code::value_objects::review::review_target_is_available(
+        section,
+        base,
+        snapshot
+            .files
+            .iter()
+            .any(|entry| review_file_entry_matches(entry, relative_path)),
+        snapshot
             .staged_files
             .iter()
-            .any(|entry| entry.path == relative_path);
-    }
-
-    snapshot
-        .changed_files
-        .iter()
-        .any(|entry| entry.path == relative_path)
+            .any(|entry| entry.path == relative_path),
+        snapshot
+            .changed_files
+            .iter()
+            .any(|entry| entry.path == relative_path),
+    )
 }
 
 fn review_file_entry_matches(entry: &ReviewFileEntryDto, relative_path: &str) -> bool {
@@ -874,15 +1172,6 @@ fn decode_side_text(bytes: &ReviewSideBytes) -> Result<String, CodeUsecaseError>
             .map_err(CodeError::from)?
             .to_string()),
         ReviewSideBytes::Missing => Ok(String::new()),
-    }
-}
-
-fn side_bytes_look_binary(bytes: &ReviewSideBytes) -> bool {
-    match bytes {
-        ReviewSideBytes::Present(bytes) => {
-            looks_binary(bytes) || std::str::from_utf8(bytes).is_err()
-        }
-        ReviewSideBytes::Missing => false,
     }
 }
 
@@ -1040,10 +1329,6 @@ fn limit_reason_to_dto(reason: ReviewLimitReason) -> ReviewLimitReasonDto {
     }
 }
 
-fn looks_binary(bytes: &[u8]) -> bool {
-    bytes.iter().take(8192).any(|byte| *byte == 0)
-}
-
 fn review_blob_mime_for_path(path: &str) -> &'static str {
     match path
         .rsplit('.')
@@ -1071,3 +1356,14 @@ fn repository_state_error(error: RepositoryStateError) -> CodeUsecaseError {
 #[cfg(test)]
 #[path = "review_usecase_test.rs"]
 mod review_usecase_tests;
+
+fn side_data_url(bytes: &ReviewSideBytes, mime: &str) -> Option<String> {
+    use base64::Engine;
+    match bytes {
+        ReviewSideBytes::Present(bytes) => Some(format!(
+            "data:{mime};base64,{}",
+            base64::engine::general_purpose::STANDARD.encode(bytes)
+        )),
+        ReviewSideBytes::Missing => None,
+    }
+}

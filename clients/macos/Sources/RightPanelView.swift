@@ -2,6 +2,7 @@ import SwiftUI
 
 struct RightPanelView: View {
   @Binding var expanded: Bool
+  var model: AppModel
   @State private var selected = Panel.files
   enum Panel: String, CaseIterable, Identifiable {
     case files, sourceControl, threads, tasks
@@ -60,7 +61,9 @@ struct RightPanelView: View {
           .padding(UIStyle.padding)
           .accessibilityIdentifier("right-panel-title")
       }
-      Spacer(minLength: 0)
+      if expanded, selected == .files, let path = model.selectedWorktree {
+        FileTreeView(model: model, worktree: path).id(path)
+      } else { Spacer(minLength: 0) }
     }
     .frame(
       minWidth: expanded ? UIStyle.rightPanelMinimumWidth : UIStyle.collapsedPanelWidth,

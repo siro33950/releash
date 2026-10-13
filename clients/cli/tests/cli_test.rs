@@ -348,6 +348,8 @@ fn review_thread() -> (wire::ReviewThreadDto, serde_json::Value) {
                 file_path: Some("src/main.rs".into()),
                 line_number: Some(3),
                 end_line: Some(5),
+                side: None,
+                end_side: None,
             }),
             state: Some(wire::ReviewThreadStateDto {
                 value: Some(wire::review_thread_state_dto::Value::Open as i32),

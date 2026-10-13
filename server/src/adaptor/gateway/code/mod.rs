@@ -54,3 +54,5 @@ pub fn resolve_merge_base_commit<'a>(
 
 #[cfg(any(test, feature = "test-support"))]
 pub(crate) mod test_helpers;
+
+pub(crate) mod directory;

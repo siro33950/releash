@@ -313,3 +313,23 @@ pub(crate) mod git_config_gateway_tests {
         assert!(config.get_string("branch.stale.releash-base").is_err());
     }
 }
+
+#[test]
+fn test_git設定_親ディレクトリごと削除されたファイルでもbaseを解決する() {
+    // Given
+    let (_dir, repo) = create_test_repo();
+    create_initial_commit(&repo);
+    let root = repo.workdir().unwrap();
+    let base = repo.head().unwrap().shorthand().unwrap().to_owned();
+    set_releash_base(root.to_str().unwrap(), Some(&base)).unwrap();
+    let deleted = root.join("deleted/parent/file.png");
+    // When / Then
+    assert_eq!(
+        resolve_current_base_branch(deleted.to_str().unwrap()).unwrap(),
+        Some(base.clone())
+    );
+    assert_eq!(
+        resolve_base_commit_oid(deleted.to_str().unwrap(), &base).unwrap(),
+        Some(repo.head().unwrap().target().unwrap().to_string())
+    );
+}

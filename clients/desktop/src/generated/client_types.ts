@@ -44,6 +44,7 @@ export type TerminalExit = {
 	sessionKey?: string;
 	exitCode?: number;
 	sequence?: number;
+	status?: TerminalStatus;
 };
 
 export type Liststring = Array<string>;
@@ -462,6 +463,9 @@ export type Pane = {
 export type PaneTab = {
 	id?: string;
 	kind?: "terminal" | "workflow" | "file" | "session";
+	filePath?: string;
+	fileMode?: string;
+	fileBase?: string;
 };
 
 export type PaneSplit = {
@@ -687,7 +691,11 @@ export type ReviewTargetWireDto = {
 	filePath: string | null;
 	lineNumber: number | null;
 	endLine: number | null;
+	side?: ReviewLineSideDto;
+	endSide?: ReviewLineSideDto;
 };
+
+export type ReviewLineSideDto = "additions" | "deletions";
 
 export type ReviewThreadStateDto = "open" | "resolved";
 
@@ -1224,6 +1232,39 @@ export type CliInstallationResult = {
 	reason?: string;
 };
 
+export type DirectorySnapshot = {
+	entries?: Array<DirectoryEntry>;
+	removed?: Array<string>;
+	delta?: boolean;
+};
+
+export type DirectoryEntry = {
+	path?: string;
+	name?: string;
+	directory?: boolean;
+	ignored?: boolean;
+	status?: string;
+};
+
+export type FileTabView = {
+	view?: ReviewFileViewDto;
+	initialMode?: string;
+	additions?: number;
+	deletions?: number;
+	hunkStates?: Array<FileHunkState>;
+	patch?: string;
+};
+
+export type FileHunkState = {
+	hunkId?: string;
+	isStaged?: boolean;
+};
+
+export type FileThreadsSnapshot = {
+	threads?: ListReviewThreadDto;
+	unresolvedCount?: number;
+};
+
 export type InputResolveSessionReviewThreadRequest = {
 	sessionId: string;
 	threadId: string;
@@ -1328,7 +1369,11 @@ export type InputCreateReviewThreadRequest = {
 	lineNumber?: number | null;
 	endLine?: number | null;
 	content: string;
+	side?: InputReviewLineSideDto;
+	endSide?: InputReviewLineSideDto;
 };
+
+export type InputReviewLineSideDto = "additions" | "deletions";
 
 export type InputCreateWorktreeRequest = {
 	repoPath: string;
@@ -1673,6 +1718,9 @@ export type InputPane = {
 export type InputPaneTab = {
 	id?: string;
 	kind?: "terminal" | "workflow" | "file" | "session";
+	filePath?: string;
+	fileMode?: string;
+	fileBase?: string;
 };
 
 export type InputPaneSplit = {

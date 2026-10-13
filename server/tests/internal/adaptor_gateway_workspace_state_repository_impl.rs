@@ -419,7 +419,7 @@ async fn test_pane保存_異なるworktreeの分割と全タブを新storeで復
         json["panes"] = serde_json::json!({
             "kind":"split", "id":"root", "axis":axis, "ratio":ratio,
             "first":{"kind":"pane", "id":"a", "tabs":[{"id":"terminal", "kind":"terminal"}], "active_tab":"terminal"},
-            "second":{"kind":"pane", "id":"b", "tabs":[{"id":"workflow", "kind":"workflow"},{"id":"file", "kind":"file"}], "active_tab":"file"}
+            "second":{"kind":"pane", "id":"b", "tabs":[{"id":"workflow", "kind":"workflow"},{"id":"file", "kind":"file", "file_path":"src/file.rs", "file_mode":"diff", "file_base":"branch-base"}], "active_tab":"file"}
         });
         let file = state_file(dir.path(), name);
         std::fs::create_dir_all(file.parent().unwrap()).unwrap();
@@ -713,6 +713,9 @@ async fn test_配置の交互保存_reactの省略後もswiftの分割とタブ�
             vec![PaneTab {
                 id: "terminal".into(),
                 kind: PaneTabKind::Terminal,
+                file_path: None,
+                file_mode: None,
+                file_base: None,
             }],
             Some("terminal".into()),
         )
@@ -723,14 +726,23 @@ async fn test_配置の交互保存_reactの省略後もswiftの分割とタブ�
                 PaneTab {
                     id: "workflow".into(),
                     kind: PaneTabKind::Workflow,
+                    file_path: None,
+                    file_mode: None,
+                    file_base: None,
                 },
                 PaneTab {
                     id: "file".into(),
                     kind: PaneTabKind::File,
+                    file_path: None,
+                    file_mode: None,
+                    file_base: None,
                 },
                 PaneTab {
                     id: "session".into(),
                     kind: PaneTabKind::Session,
+                    file_path: None,
+                    file_mode: None,
+                    file_base: None,
                 },
             ],
             Some("file".into()),

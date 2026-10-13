@@ -30,6 +30,19 @@ impl SubscriptionTarget {
         {
             return Err(SubscriptionError::InvalidId);
         }
+        if matches!(name, "directory" | "file-tab" | "file-threads") {
+            let Some(file) = args.get(1) else {
+                return Err(SubscriptionError::InvalidId);
+            };
+            if std::path::Path::new(file).components().any(|part| {
+                !matches!(
+                    part,
+                    std::path::Component::Normal(_) | std::path::Component::CurDir
+                ) || part.as_os_str() == ".git"
+            }) {
+                return Err(SubscriptionError::InvalidId);
+            }
+        }
         let target = match (name, args) {
             ("daemon-info", []) => Ok(Self::DaemonInfo),
             ("workspace-terminal", [path, id]) => {
@@ -106,6 +119,14 @@ impl SubscriptionTarget {
             ("workspace-state", [name, path]) => {
                 Ok(Self::WorkspaceState((*name).into(), (*path).into()))
             }
+            ("directory", [path, directory]) => {
+                Ok(Self::Directory((*path).into(), (*directory).into()))
+            }
+            ("file-tab", [path, file, base]) => Ok(Self::FileTab(
+                (*path).into(),
+                (*file).into(),
+                ReviewBase::parse(base).map_err(|_| SubscriptionError::InvalidId)?,
+            )),
             ("review-snapshot", [path, base]) => Ok(Self::ReviewSnapshot(
                 (*path).into(),
                 ReviewBase::parse(base).map_err(|_| SubscriptionError::InvalidId)?,
@@ -116,6 +137,7 @@ impl SubscriptionTarget {
                 ReviewSection::parse(section).map_err(|_| SubscriptionError::InvalidId)?,
                 ReviewBase::parse(base).map_err(|_| SubscriptionError::InvalidId)?,
             )),
+            ("file-threads", [path, file]) => Ok(Self::FileThreads((*path).into(), (*file).into())),
             ("review-threads", [name]) => Ok(Self::ReviewThreads((*name).into())),
             ("workflow-execution", [id]) => Ok(Self::WorkflowExecution((*id).into())),
             ("workflow-output", [id, node]) => {
@@ -215,6 +237,11 @@ impl SubscriptionTarget {
             Self::Worktrees(p) => ("worktrees", vec![p.clone()]),
             Self::StartupRepository => ("startup-repository", vec![]),
             Self::WorkspaceState(n, p) => ("workspace-state", vec![n.clone(), p.clone()]),
+            Self::Directory(p, directory) => ("directory", vec![p.clone(), directory.clone()]),
+            Self::FileTab(p, file, base) => (
+                "file-tab",
+                vec![p.clone(), file.clone(), base.as_str().into()],
+            ),
             Self::ReviewSnapshot(p, base) => {
                 ("review-snapshot", vec![p.clone(), base.as_str().into()])
             }
@@ -227,6 +254,7 @@ impl SubscriptionTarget {
                     base.as_str().into(),
                 ],
             ),
+            Self::FileThreads(p, file) => ("file-threads", vec![p.clone(), file.clone()]),
             Self::ReviewThreads(name) => ("review-threads", vec![name.clone()]),
             Self::WorkflowExecution(id) => ("workflow-execution", vec![id.clone()]),
             Self::WorkflowOutput(id, node) => ("workflow-output", vec![id.clone(), node.clone()]),

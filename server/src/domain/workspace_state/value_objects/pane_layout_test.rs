@@ -4,6 +4,9 @@ fn tab(id: &str, kind: PaneTabKind) -> PaneTab {
     PaneTab {
         id: id.into(),
         kind,
+        file_path: None,
+        file_mode: None,
+        file_base: None,
     }
 }
 fn pane(id: &str) -> PaneLayout {
@@ -137,4 +140,17 @@ fn test_pane配置_深さ32まで受け付け33を拒む() {
         pane("leaf33")
     )
     .is_err());
+}
+
+#[test]
+fn test_ファイルタブ_選択とpathを保持し不正な表示値を拒否する() {
+    // Given
+    let mut file = tab("file", PaneTabKind::File);
+    file.file_path = Some("src/file.rs".into());
+    file.file_mode = Some("diff".into());
+    file.file_base = Some("head".into());
+    // When / Then
+    assert!(PaneLayout::pane("pane".into(), vec![file.clone()], Some("file".into())).is_ok());
+    file.file_mode = Some("unknown".into());
+    assert!(PaneLayout::pane("pane".into(), vec![file], None).is_err());
 }

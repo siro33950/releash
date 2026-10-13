@@ -61,6 +61,25 @@ final class PaneWorkspaceTests: XCTestCase {
     XCTAssertThrowsError(try workspace.restore(malformed))
     XCTAssertEqual(try workspace.layout(), before)
   }
+  @MainActor func testFileTabsReuseFocusedPaneAndPersistPresentation() throws {
+    let workspace = PaneWorkspace()
+    try workspace.restore(.empty())
+    workspace.openFile("src/file.swift", base: "head")
+    let first = try XCTUnwrap(workspace.controller.allTabIds.first)
+    workspace.setFilePresentation(first, mode: "file", base: "branch-base")
+    workspace.openFile("src/file.swift", base: "head")
+    XCTAssertEqual(workspace.controller.allTabIds.count, 1)
+    let restored = PaneWorkspace()
+    try restored.restore(PaneLayout(workspace.layout().message))
+    XCTAssertEqual(restored.tab(try XCTUnwrap(restored.controller.allTabIds.first))?.filePath, "src/file.swift")
+    XCTAssertEqual(restored.tab(try XCTUnwrap(restored.controller.allTabIds.first))?.fileMode, "file")
+    XCTAssertEqual(restored.tab(try XCTUnwrap(restored.controller.allTabIds.first))?.fileBase, "branch-base")
+    let second = try XCTUnwrap(workspace.controller.splitPane(workspace.controller.allPaneIds[0], orientation: .vertical))
+    workspace.controller.focusPane(second)
+    workspace.openFile("src/file.swift", base: "head")
+    XCTAssertEqual(workspace.controller.allTabIds.count, 2)
+  }
+
 }
 
 extension PaneWorkspaceTests {

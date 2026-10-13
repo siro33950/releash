@@ -23,6 +23,9 @@ enum PaneLayoutNode {
 pub struct PaneTab {
     pub id: String,
     pub kind: PaneTabKind,
+    pub file_path: Option<String>,
+    pub file_mode: Option<String>,
+    pub file_base: Option<String>,
 }
 #[derive(Clone, Debug, PartialEq)]
 pub enum PaneTabKind {
@@ -123,11 +126,28 @@ impl PaneLayout {
                 PaneLayoutNode::Pane {
                     tabs, active_tab, ..
                 } => {
-                    tabs.iter()
-                        .all(|tab| !tab.id.trim().is_empty() && ids.insert(tab.id.clone()))
-                        && active_tab
-                            .as_ref()
-                            .is_none_or(|active| tabs.iter().any(|tab| &tab.id == active))
+                    tabs.iter().all(|tab| {
+                        !tab.id.trim().is_empty()
+                            && ids.insert(tab.id.clone())
+                            && tab
+                                .file_mode
+                                .as_deref()
+                                .is_none_or(|mode| matches!(mode, "file" | "diff"))
+                            && tab
+                                .file_base
+                                .as_deref()
+                                .is_none_or(|base| matches!(base, "head" | "branch-base"))
+                            && tab
+                                .file_path
+                                .as_deref()
+                                .is_none_or(|path| !path.trim().is_empty() && !path.contains('\0'))
+                            && (tab.kind == PaneTabKind::File
+                                || (tab.file_path.is_none()
+                                    && tab.file_mode.is_none()
+                                    && tab.file_base.is_none()))
+                    }) && active_tab
+                        .as_ref()
+                        .is_none_or(|active| tabs.iter().any(|tab| &tab.id == active))
                 }
                 PaneLayoutNode::Split {
                     ratio,

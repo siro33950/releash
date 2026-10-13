@@ -31,6 +31,7 @@ mod tests {
 
     struct FakeReviewCode {
         calls: Mutex<Vec<String>>,
+        patches: Mutex<Vec<String>>,
         branch_summary: BranchDiffSummaryDto,
         source_metadata: HashMap<(String, &'static str), ReviewSideMetadata>,
         source_bytes: HashMap<(String, &'static str), ReviewSideBytes>,
@@ -52,6 +53,7 @@ mod tests {
             let deletions = changed_files.iter().map(|file| file.stats.deletions).sum();
             Self {
                 calls: Mutex::new(Vec::new()),
+                patches: Mutex::new(Vec::new()),
                 branch_summary: BranchDiffSummaryDto {
                     base_branch: "main".to_string(),
                     changed_files,
@@ -187,6 +189,20 @@ mod tests {
     #[async_trait::async_trait]
 
     impl ReviewCodePort for FakeReviewCode {
+        fn file_target(&self, worktree: &str, file: &str) -> Result<String, CodeUsecaseError> {
+            Ok(format!("{worktree}/{file}"))
+        }
+
+        fn directory_entries(
+            &self,
+            _: &str,
+            _: &str,
+            _: &[FileStatusDto],
+        ) -> Result<Vec<crate::usecase::directory_query::DirectoryEntryDto>, CodeUsecaseError>
+        {
+            Ok(Vec::new())
+        }
+
         fn get_branch_diff_summary(
             &self,
             repo_path: &str,
@@ -330,8 +346,9 @@ mod tests {
         async fn git_stage_hunk(
             &self,
             repo_path: &str,
-            _patch: &str,
+            patch: &str,
         ) -> Result<(), CodeUsecaseError> {
+            self.patches.lock().unwrap().push(patch.to_owned());
             self.calls
                 .lock()
                 .unwrap()
@@ -448,27 +465,13 @@ mod tests {
         section: ReviewSection,
         base: ReviewBase,
     ) -> ReviewContentSource {
-        if base.is_branch_base() {
-            return match side {
-                ReviewBlobSide::Original => ReviewContentSource::BranchBase,
-                ReviewBlobSide::Modified => ReviewContentSource::WorkingTree,
-            };
-        }
-        if section.is_staged() {
-            return match side {
-                ReviewBlobSide::Original => ReviewContentSource::Head,
-                ReviewBlobSide::Modified => ReviewContentSource::Staged,
-            };
-        }
-        match side {
-            ReviewBlobSide::Original => ReviewContentSource::Staged,
-            ReviewBlobSide::Modified => ReviewContentSource::WorkingTree,
-        }
+        ReviewContentSource::select(side, section, base)
     }
 
     fn review_source_key(source: ReviewContentSource) -> &'static str {
         match source {
             ReviewContentSource::BranchBase => "branch-base",
+            ReviewContentSource::BranchBaseTip => "branch-base-tip",
             ReviewContentSource::Head => "head",
             ReviewContentSource::Staged => "staged",
             ReviewContentSource::WorkingTree => "working-tree",
@@ -1930,6 +1933,353 @@ mod tests {
                 code.calls().is_empty(),
                 "{action} should stop before patch generation and index mutation"
             );
+        }
+    }
+    #[test]
+    fn test_ファイルタブ_変更一覧外の大きい全文と差分を上限なしで返す() {
+        // Given
+        let content = "long line\n".repeat(120_000);
+        let code = Arc::new(
+            FakeReviewCode::new()
+                .with_source_bytes(
+                    "/repo/file.rs",
+                    ReviewContentSource::Head,
+                    present_text("old\n"),
+                )
+                .with_source_bytes(
+                    "/repo/file.rs",
+                    ReviewContentSource::Staged,
+                    present_text("old\n"),
+                )
+                .with_source_bytes(
+                    "/repo/file.rs",
+                    ReviewContentSource::WorkingTree,
+                    present_text(&content),
+                )
+                .with_hunk_count("file.rs", 301),
+        );
+        let usecase = ReviewUsecase::new_with_ports(
+            Arc::new(FakeSnapshotProvider::new(vec![repository_snapshot(
+                1, false,
+            )])),
+            code,
+        );
+        // When
+        let view = usecase
+            .get_file_tab_view("/repo", "file.rs", "head")
+            .unwrap();
+        // Then
+        assert_eq!(view.initial_mode, "diff");
+        let ReviewFileViewDto::TextDiff(text) = view.view else {
+            panic!("expected text");
+        };
+        assert_eq!(text.modified, content);
+        assert_eq!(text.hunks.len(), 301);
+        assert!(!text.limited);
+    }
+
+    #[test]
+    fn test_ファイルタブ_変更なしはfileでbase比較にstage単位を付けない() {
+        // Given
+        let code = Arc::new(
+            FakeReviewCode::new()
+                .with_source_bytes(
+                    "/repo/file.rs",
+                    ReviewContentSource::BranchBaseTip,
+                    present_text("same\n"),
+                )
+                .with_source_bytes(
+                    "/repo/file.rs",
+                    ReviewContentSource::WorkingTree,
+                    present_text("same\n"),
+                ),
+        );
+        let usecase = ReviewUsecase::new_with_ports(
+            Arc::new(FakeSnapshotProvider::new(vec![repository_snapshot(
+                1, false,
+            )])),
+            code,
+        );
+        // When
+        let view = usecase
+            .get_file_tab_view("/repo", "file.rs", "branch-base")
+            .unwrap();
+        // Then
+        assert_eq!(view.initial_mode, "file");
+        assert!(view.hunk_states.is_empty());
+        let ReviewFileViewDto::TextDiff(text) = view.view else {
+            panic!("expected text");
+        };
+        assert!(text.change_groups.is_empty());
+    }
+    #[tokio::test]
+    async fn test_ファイルhunk操作_base比較と古いhunkを拒否しindexを変更しない() {
+        for base in ["branch-base", "head"] {
+            // Given
+            let code = Arc::new(
+                FakeReviewCode::new()
+                    .with_source_bytes(
+                        "/repo/file",
+                        ReviewContentSource::Head,
+                        present_text("old\n"),
+                    )
+                    .with_source_bytes(
+                        "/repo/file",
+                        ReviewContentSource::Staged,
+                        present_text("old\n"),
+                    )
+                    .with_source_bytes(
+                        "/repo/file",
+                        ReviewContentSource::WorkingTree,
+                        present_text("new\n"),
+                    ),
+            );
+            let usecase = ReviewUsecase::new_with_ports(
+                Arc::new(FakeSnapshotProvider::new(vec![repository_snapshot(
+                    1, false,
+                )])),
+                code.clone(),
+            );
+            // When
+            let error = usecase
+                .apply_file_tab_hunk("/repo", "file", base, "obsolete", true)
+                .await
+                .unwrap_err();
+            // Then
+            match error {
+                CodeUsecaseError::Code(CodeError::Rule(message)) if base == "branch-base" => {
+                    assert!(message.contains("unavailable for branch-base"));
+                }
+                CodeUsecaseError::Code(CodeError::StaleReviewGroupTarget { group_id })
+                    if base == "head" =>
+                {
+                    assert_eq!(group_id, "obsolete");
+                }
+                other => panic!("unexpected error: {other:?}"),
+            }
+            assert!(code.patches.lock().unwrap().is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn test_ファイルhunk操作_追加のstageとunstageでindexの有無を更新する() {
+        for stage in [true, false] {
+            // Given
+            let added = DiffHunksResultDto {
+                hunks: vec![HunkDto {
+                    index: 0,
+                    hunk_id: String::new(),
+                    old_start: 0,
+                    old_lines: 0,
+                    new_start: 1,
+                    new_lines: 1,
+                    lines: vec!["+new".into()],
+                }],
+                change_groups: Vec::new(),
+            };
+            let removed = DiffHunksResultDto {
+                hunks: vec![HunkDto {
+                    index: 0,
+                    hunk_id: String::new(),
+                    old_start: 1,
+                    old_lines: 1,
+                    new_start: 0,
+                    new_lines: 0,
+                    lines: vec!["-new".into()],
+                }],
+                change_groups: Vec::new(),
+            };
+            let code = Arc::new(
+                FakeReviewCode::new()
+                    .with_source_bytes(
+                        "/repo/file",
+                        ReviewContentSource::WorkingTree,
+                        present_text("new\n"),
+                    )
+                    .with_source_bytes(
+                        "/repo/file",
+                        ReviewContentSource::Staged,
+                        if stage {
+                            ReviewSideBytes::Missing
+                        } else {
+                            present_text("new\n")
+                        },
+                    )
+                    .with_diff_result(
+                        "",
+                        "",
+                        DiffHunksResultDto {
+                            hunks: Vec::new(),
+                            change_groups: Vec::new(),
+                        },
+                    )
+                    .with_diff_result("", "new\n", added)
+                    .with_diff_result("new\n", "", removed),
+            );
+            let usecase = ReviewUsecase::new_with_ports(
+                Arc::new(FakeSnapshotProvider::new(vec![
+                    repository_snapshot(1, false),
+                    repository_snapshot(1, false),
+                ])),
+                code.clone(),
+            );
+            let view = usecase.get_file_tab_view("/repo", "file", "head").unwrap();
+            let id = view.hunk_states[0].hunk_id.clone();
+            // When
+            usecase
+                .apply_file_tab_hunk("/repo", "file", "head", &id, stage)
+                .await
+                .unwrap();
+            // Then
+            let patches = code.patches.lock().unwrap();
+            assert_eq!(patches.len(), 1);
+            if stage {
+                assert!(patches[0].starts_with("--- /dev/null\n"));
+            } else {
+                assert!(patches[0].contains("+++ /dev/null\n"));
+            }
+        }
+    }
+    #[test]
+    fn test_ファイルタブ_indexが非テキストでもheadと作業ツリーの差分を返す() {
+        // Given
+        let result = DiffHunksResultDto {
+            hunks: vec![HunkDto {
+                index: 0,
+                hunk_id: String::new(),
+                old_start: 1,
+                old_lines: 1,
+                new_start: 1,
+                new_lines: 1,
+                lines: vec!["-old".into(), "+new".into()],
+            }],
+            change_groups: Vec::new(),
+        };
+        for index in [vec![0xff], vec![0]] {
+            let code = FakeReviewCode::new()
+                .with_source_bytes(
+                    "/repo/file.rs",
+                    ReviewContentSource::Head,
+                    present_text("old\n"),
+                )
+                .with_source_bytes(
+                    "/repo/file.rs",
+                    ReviewContentSource::WorkingTree,
+                    present_text("new\n"),
+                )
+                .with_source_bytes(
+                    "/repo/file.rs",
+                    ReviewContentSource::Staged,
+                    ReviewSideBytes::Present(index),
+                )
+                .with_diff_result("old\n", "new\n", result.clone());
+            let usecase = usecase_with_code(vec![repository_snapshot(1, false)], code);
+            // When
+            let view = usecase
+                .get_file_tab_view("/repo", "file.rs", "head")
+                .unwrap();
+            // Then
+            assert_eq!(view.initial_mode, "diff");
+            assert_eq!((view.additions, view.deletions), (1, 1));
+            assert!(view.patch.contains("-old\n+new\n"));
+            assert_eq!(view.hunk_states.len(), 1);
+            assert!(!view.hunk_states[0].is_staged);
+            let ReviewFileViewDto::TextDiff(text) = view.view else {
+                panic!("text diff")
+            };
+            assert_eq!(text.original, "old\n");
+            assert_eq!(text.modified, "new\n");
+        }
+    }
+
+    #[test]
+    fn test_ファイルタブ_画像の変更追加削除と変更なしで存在する側だけを返す() {
+        for (original, modified, mode) in [
+            (Some(vec![1, 2, 3]), Some(vec![4, 5, 6]), "diff"),
+            (None, Some(vec![4, 5, 6]), "diff"),
+            (Some(vec![1, 2, 3]), None, "diff"),
+            (Some(vec![1, 2, 3]), Some(vec![1, 2, 3]), "file"),
+        ] {
+            // Given
+            let code = FakeReviewCode::new()
+                .with_source_bytes(
+                    "/repo/image.png",
+                    ReviewContentSource::Head,
+                    original
+                        .clone()
+                        .map(ReviewSideBytes::Present)
+                        .unwrap_or(ReviewSideBytes::Missing),
+                )
+                .with_source_bytes(
+                    "/repo/image.png",
+                    ReviewContentSource::WorkingTree,
+                    modified
+                        .clone()
+                        .map(ReviewSideBytes::Present)
+                        .unwrap_or(ReviewSideBytes::Missing),
+                )
+                .with_binary_attribute("/repo/image.png", true);
+            let usecase = usecase_with_code(vec![repository_snapshot(1, false)], code);
+            // When
+            let view = usecase
+                .get_file_tab_view("/repo", "image.png", "head")
+                .unwrap();
+            // Then
+            assert_eq!(view.initial_mode, mode);
+            assert!(view.hunk_states.is_empty());
+            let ReviewFileViewDto::Image(image) = view.view else {
+                panic!("image")
+            };
+            assert_eq!(image.mime, "image/png");
+            assert_eq!(
+                image.original_url,
+                original.map(|_| "data:image/png;base64,AQID".into())
+            );
+            assert_eq!(
+                image.modified_url,
+                modified.map(|b| if b[0] == 1 {
+                    "data:image/png;base64,AQID".into()
+                } else {
+                    "data:image/png;base64,BAUG".into()
+                })
+            );
+        }
+    }
+
+    #[test]
+    fn test_ファイルタブ_バイナリ属性とバイト列の分類で本文を返さずサイズを返す() {
+        for (bytes, attribute) in [
+            (vec![0xff, 1, 2], false),
+            (vec![b'a', 0, b'b'], false),
+            (b"text".to_vec(), true),
+        ] {
+            // Given
+            let size = bytes.len() as u64;
+            let code = FakeReviewCode::new()
+                .with_source_bytes(
+                    "/repo/file.bin",
+                    ReviewContentSource::Head,
+                    ReviewSideBytes::Present(if attribute { vec![b'a'] } else { vec![0xff] }),
+                )
+                .with_source_bytes(
+                    "/repo/file.bin",
+                    ReviewContentSource::WorkingTree,
+                    ReviewSideBytes::Present(bytes),
+                )
+                .with_binary_attribute("/repo/file.bin", attribute);
+            let usecase = usecase_with_code(vec![repository_snapshot(1, false)], code);
+            // When
+            let view = usecase
+                .get_file_tab_view("/repo", "file.bin", "head")
+                .unwrap();
+            // Then
+            assert!(view.patch.is_empty());
+            assert!(view.hunk_states.is_empty());
+            let ReviewFileViewDto::Binary(binary) = view.view else {
+                panic!("binary")
+            };
+            assert_eq!(binary.original_size, Some(1));
+            assert_eq!(binary.modified_size, Some(size));
         }
     }
 }

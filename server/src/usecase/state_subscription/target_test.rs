@@ -274,3 +274,29 @@ fn test_daemon状態購読_daemon変化だけを受け取り外部watchを増や
     assert!(!SubscriptionTarget::Workspaces.affected_by(&StateChangeSource::Daemon));
     assert!(target.watches(&[], &[], "", "", "").is_empty());
 }
+
+#[test]
+fn test_ファイルタブと木_対応するファイルとgitの変化を購読する() {
+    // Given
+    let targets = [
+        SubscriptionTarget::Directory("/repo".into(), "src".into()),
+        SubscriptionTarget::FileTab("/repo".into(), "src/file.rs".into(), ReviewBase::Head),
+    ];
+    // When / Then
+    for target in targets {
+        assert!(target.affected_by(&StateChangeSource::Worktree("/repo".into())));
+        assert!(target.affected_by(&StateChangeSource::Repository(vec!["/repo".into()])));
+        assert!(!target.affected_by(&StateChangeSource::Worktree("/other".into())));
+        assert_eq!(target.watches(&[], &[], "", "", "").len(), 2);
+    }
+}
+
+#[test]
+fn test_ファイルthread購読_該当worktreeのcomment変更だけを受ける() {
+    // Given
+    let target = SubscriptionTarget::FileThreads("/repo".into(), "file.rs".into());
+    // When / Then
+    assert!(target.affected_by(&StateChangeSource::ReviewComments(Some("/repo".into()))));
+    assert!(target.affected_by(&StateChangeSource::ReviewComments(None)));
+    assert!(!target.affected_by(&StateChangeSource::ReviewComments(Some("/other".into()))));
+}

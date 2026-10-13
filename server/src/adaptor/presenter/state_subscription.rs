@@ -255,14 +255,17 @@ impl StateSubscriptionOutput for StateSubscriptionPresenter {
         error: StateReadError,
     ) -> Result<(), SubscriptionError> {
         let snapshot = PublishedState::from(error);
+        let delivery = if matches!(target, SubscriptionTarget::Directory(..)) {
+            Delivery::Delta
+        } else {
+            Delivery::Full
+        };
         let target = target.to_string();
         self.update(|state| {
             if state.registered(&target) {
                 state.publish(&target, snapshot, None)
             } else {
-                state
-                    .register(target, snapshot, Delivery::Full)
-                    .map(|_| true)
+                state.register(target, snapshot, delivery).map(|_| true)
             }
         })
     }
@@ -272,6 +275,11 @@ impl StateSubscriptionOutput for StateSubscriptionPresenter {
         target: &SubscriptionTarget,
         snapshot: StateValue,
     ) -> Result<(), SubscriptionError> {
+        let delivery = if matches!(target, SubscriptionTarget::Directory(..)) {
+            Delivery::Delta
+        } else {
+            Delivery::Full
+        };
         let target = target.to_string();
         let snapshot = crate::adaptor::presenter::state_subscription_wire::payload(&snapshot)
             .map(PublishedState::from)
@@ -280,9 +288,7 @@ impl StateSubscriptionOutput for StateSubscriptionPresenter {
             if state.registered(&target) {
                 state.publish(&target, snapshot, None)
             } else {
-                state
-                    .register(target, snapshot, Delivery::Full)
-                    .map(|_| true)
+                state.register(target, snapshot, delivery).map(|_| true)
             }
         })
     }
@@ -305,10 +311,66 @@ impl StateSubscriptionOutput for StateSubscriptionPresenter {
             })
             .transpose()
             .map_err(|_| SubscriptionError::EncodingFailed)?;
-        self.update(|state| state.publish(&target, snapshot, delta))
+        self.update(|state| {
+            let delta = directory_delta(state.snapshot(&target), &snapshot).or(delta);
+            state.publish(&target, snapshot, delta)
+        })
     }
 }
 
 #[cfg(test)]
 #[path = "state_subscription_test.rs"]
 pub(crate) mod state_subscription_tests;
+
+fn directory_delta(
+    previous: Option<&PublishedState>,
+    current: &PublishedState,
+) -> Option<PublishedState> {
+    use crate::adaptor::presenter::client::{
+        state_payload::Value, DirectorySnapshot, StatePayload,
+    };
+    let (Some(PublishedState::Value(previous)), PublishedState::Value(current)) =
+        (previous, current)
+    else {
+        return None;
+    };
+    let (Some(Value::Directory(previous)), Some(Value::Directory(current))) =
+        (&previous.value, &current.value)
+    else {
+        return None;
+    };
+    let before: std::collections::HashMap<_, _> = previous
+        .entries
+        .iter()
+        .map(|entry| (entry.path.as_str(), entry))
+        .collect();
+    let paths: std::collections::HashSet<_> = current
+        .entries
+        .iter()
+        .map(|entry| entry.path.as_str())
+        .collect();
+    Some(
+        StatePayload {
+            value: Some(Value::Directory(DirectorySnapshot {
+                entries: current
+                    .entries
+                    .iter()
+                    .filter(|entry| {
+                        before
+                            .get(entry.path.as_str())
+                            .is_none_or(|old| *old != *entry)
+                    })
+                    .cloned()
+                    .collect(),
+                removed: previous
+                    .entries
+                    .iter()
+                    .filter(|entry| !paths.contains(entry.path.as_str()))
+                    .map(|entry| entry.path.clone())
+                    .collect(),
+                delta: true,
+            })),
+        }
+        .into(),
+    )
+}

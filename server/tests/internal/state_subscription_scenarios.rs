@@ -108,6 +108,8 @@ pub async fn test_review_threads購読_comment操作で再配信し最後の停�
                 file_path: None,
                 line_number: None,
                 end_line: None,
+                side: None,
+                end_side: None,
             },
             "subscription comment".into(),
         )
@@ -119,4 +121,57 @@ pub async fn test_review_threads購読_comment操作で再配信し最後の停�
     assert!(usecase.test_watches().is_empty());
     assert_eq!(usecase.test_worker_count(), 0);
     assert!(files.active.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+pub async fn test_ファイルthread購読_作成した行の側を変更配信と再購読で保持する() {
+    use releashd::test_support::integration::platform::{
+        ReviewActor, ReviewLineSide, ReviewTarget,
+    };
+    // Given
+    let fixture = StateReadsFixture::new();
+    let usecase = fixture.subscriptions.clone().with_reads(
+        Arc::new(fixture.reads.clone()),
+        None,
+        vec![],
+        String::new(),
+    );
+    let mut stream = Box::pin(usecase.open("client".into()).unwrap());
+    stream.next().await;
+    let target = SubscriptionTarget::FileThreads("repository".into(), "file.rs".into()).to_string();
+    start_read(&usecase, "client", &target, None).await.unwrap();
+    assert!(
+        matches!(stream.next().await, Some(StateSubscriptionEvent::Item(_, Event::Snapshot(_, value))) if same(&value, StateValue::FileThreads(vec![], 0)))
+    );
+    stream.next().await;
+    // When
+    let thread = fixture
+        .reads
+        .comments
+        .create_thread(
+            &fixture.reads.data_dir,
+            "repository",
+            ReviewActor::human(),
+            ReviewTarget {
+                file_path: Some("file.rs".into()),
+                line_number: Some(2),
+                end_line: Some(2),
+                side: Some(ReviewLineSide::Deletions),
+                end_side: Some(ReviewLineSide::Deletions),
+            },
+            "deleted b".into(),
+        )
+        .unwrap();
+    // Then
+    assert!(
+        matches!(stream.next().await, Some(StateSubscriptionEvent::Item(_, Event::Change(_, _, value))) if same(&value, StateValue::FileThreads(vec![thread.clone().into()], 1)))
+    );
+    stop_read(&usecase, "client", &target).await.unwrap();
+    // When
+    start_read(&usecase, "client", &target, None).await.unwrap();
+    // Then
+    assert!(
+        matches!(stream.next().await, Some(StateSubscriptionEvent::Item(_, Event::Snapshot(_, value))) if same(&value, StateValue::FileThreads(vec![thread.into()], 1)))
+    );
+    stop_read(&usecase, "client", &target).await.unwrap();
 }

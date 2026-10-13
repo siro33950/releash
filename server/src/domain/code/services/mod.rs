@@ -11,3 +11,7 @@ pub mod diff_tree;
 pub mod hunk;
 pub mod language;
 pub mod markdown_diff;
+
+pub mod directory;
+
+pub mod file_hunk;

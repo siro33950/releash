@@ -70,7 +70,8 @@
       },
       "dependsOn": [
         "generate",
-        "helpers"
+        "helpers",
+        "file-viewer"
       ],
       "outputs": [
         "{projectRoot}/.build/DerivedData"
@@ -101,7 +102,8 @@
       },
       "dependsOn": [
         "generate",
-        "helpers"
+        "helpers",
+        "file-viewer"
       ],
       "outputs": [
         "{projectRoot}/.build/DerivedData"
@@ -139,7 +141,8 @@
       "dependsOn": [
         "generate",
         "helpers",
-        "test-fixture-build"
+        "test-fixture-build",
+        "file-viewer"
       ],
       "cache": false
     },
@@ -169,6 +172,25 @@
         "forwardAllArgs": false
       },
       "cache": false
+    },
+    "file-viewer": {
+      "executor": "nx:run-commands",
+      "options": {
+        "commands": [
+          "pnpm install --frozen-lockfile",
+          "pnpm test",
+          "pnpm build"
+        ],
+        "cwd": "clients/macos/FileViewer",
+        "parallel": false
+      },
+      "outputs": [
+        "{projectRoot}/.build/FileViewer"
+      ],
+      "inputs": [
+        "{projectRoot}/FileViewer/**/*",
+        "sharedGlobals"
+      ]
     }
   }
 }

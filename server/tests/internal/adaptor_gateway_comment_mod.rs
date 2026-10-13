@@ -38,6 +38,8 @@ pub(crate) mod tests {
             file_path: None,
             line_number: None,
             end_line: None,
+            side: None,
+            end_side: None,
         }
     }
 
@@ -498,26 +500,36 @@ pub(crate) mod tests {
                 file_path: Some(absolute_path.to_string()),
                 line_number: Some(1),
                 end_line: None,
+                side: None,
+                end_side: None,
             },
             ReviewTarget {
                 file_path: Some("src\\main.rs".to_string()),
                 line_number: Some(1),
                 end_line: None,
+                side: None,
+                end_side: None,
             },
             ReviewTarget {
                 file_path: Some("src/main.rs\0".to_string()),
                 line_number: Some(1),
                 end_line: None,
+                side: None,
+                end_side: None,
             },
             ReviewTarget {
                 file_path: Some("src/main.rs".to_string()),
                 line_number: Some(0),
                 end_line: None,
+                side: None,
+                end_side: None,
             },
             ReviewTarget {
                 file_path: Some("src/main.rs".to_string()),
                 line_number: Some(5),
                 end_line: Some(4),
+                side: None,
+                end_side: None,
             },
         ];
 

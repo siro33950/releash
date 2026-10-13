@@ -961,6 +961,7 @@ pub async fn test_一般設定保存_必須入力の欠落ではどの設定も�
 }
 
 struct ClientTestDependencies {
+    data_dir: std::path::PathBuf,
     client: releashd::test_support::integration::transport::ClientDependencies,
     dispatch: Option<Arc<ClientCommandDispatch>>,
 }
@@ -973,10 +974,192 @@ fn make_client_dependencies() -> (
         crate::adaptor_controller_client_workflow_mod::tests::make_read_only_app();
     (
         ClientTestDependencies {
+            data_dir: data_dir.clone(),
             client: dependencies.client,
             dispatch: None,
         },
         data_dir,
         store,
     )
+}
+
+#[tokio::test]
+pub async fn test_ファイルタブhunk_実indexへstageとunstageし他の変更と作業ツリーを保持する() {
+    use releashd::test_support::integration::platform::ReviewFileViewDto;
+    for kind in ["modified", "added", "deleted"] {
+        // Given
+        let (_temp, path) = mutation_repository();
+        let (app, dispatch) = parity_app();
+        let state = app.client.app_state.as_ref().unwrap();
+        let repo = git2::Repository::open(&path).unwrap();
+        let file = "日本語 space.txt";
+        let original = if kind == "modified" {
+            (1..=20)
+                .map(|line| format!("line {line}\n"))
+                .collect::<String>()
+        } else if kind == "deleted" {
+            "old\n".into()
+        } else {
+            String::new()
+        };
+        if kind != "added" {
+            std::fs::write(std::path::Path::new(&path).join(file), &original).unwrap();
+            state
+                .code_usecase
+                .git_stage(&path, vec![file.into()])
+                .unwrap();
+            let tree_id = repo.index().unwrap().write_tree().unwrap();
+            let signature = git2::Signature::now("test", "test@example.com").unwrap();
+            repo.commit(
+                Some("HEAD"),
+                &signature,
+                &signature,
+                "file",
+                &repo.find_tree(tree_id).unwrap(),
+                &[&repo.head().unwrap().peel_to_commit().unwrap()],
+            )
+            .unwrap();
+        }
+        let retained = if kind == "modified" {
+            original.replace("line 2\n", "first staged\n")
+        } else {
+            original.clone()
+        };
+        if kind == "modified" {
+            std::fs::write(std::path::Path::new(&path).join(file), &retained).unwrap();
+            state
+                .code_usecase
+                .git_stage(&path, vec![file.into()])
+                .unwrap();
+        }
+        let working = if kind == "modified" {
+            retained.replace("line 18\n", "last change\n")
+        } else if kind == "added" {
+            "new\n".into()
+        } else {
+            String::new()
+        };
+        if kind == "deleted" {
+            std::fs::remove_file(std::path::Path::new(&path).join(file)).unwrap();
+        } else {
+            std::fs::write(std::path::Path::new(&path).join(file), &working).unwrap();
+        }
+        std::fs::write(
+            std::path::Path::new(&path).join("other.txt"),
+            "other staged\n",
+        )
+        .unwrap();
+        state
+            .code_usecase
+            .git_stage(&path, vec!["other.txt".into()])
+            .unwrap();
+        let index_content = |name: &str| {
+            let mut index = repo.index().unwrap();
+            index.read(true).unwrap();
+            index
+                .get_path(std::path::Path::new(name), 0)
+                .map(|entry| repo.find_blob(entry.id).unwrap().content().to_vec())
+        };
+        let before = state
+            .review_usecase
+            .get_file_tab_view(&path, file, "head")
+            .unwrap();
+        let ReviewFileViewDto::TextDiff(text) = before.view else {
+            panic!("text")
+        };
+        let selected = text.hunks.last().unwrap().hunk_id.clone();
+        assert!(!before.hunk_states.last().unwrap().is_staged);
+        if kind == "modified" {
+            assert!(before.hunk_states[0].is_staged);
+        }
+        let input = json!({"worktreePath":path,"path":file,"section":"file-tab","base":"head","groupId":selected});
+        // When
+        assert_parity(
+            &dispatch,
+            "git_stage_review_group",
+            json!({"input":input}),
+            Ok(Value::Null),
+        )
+        .await;
+        // Then
+        assert_eq!(
+            index_content(file),
+            (kind != "deleted").then(|| working.as_bytes().to_vec())
+        );
+        let staged = state
+            .review_usecase
+            .get_file_tab_view(&path, file, "head")
+            .unwrap();
+        assert!(staged.hunk_states.iter().all(|h| h.is_staged));
+        // When
+        assert_parity(
+            &dispatch,
+            "git_unstage_review_group",
+            json!({"input":input}),
+            Ok(Value::Null),
+        )
+        .await;
+        // Then
+        assert_eq!(
+            index_content(file),
+            (kind != "added").then(|| retained.as_bytes().to_vec())
+        );
+        assert_eq!(index_content("other.txt"), Some(b"other staged\n".to_vec()));
+        let refreshed = state
+            .review_usecase
+            .get_file_tab_view(&path, file, "head")
+            .unwrap();
+        assert!(!refreshed.hunk_states.last().unwrap().is_staged);
+        if kind == "modified" {
+            assert!(refreshed.hunk_states[0].is_staged);
+        }
+        let disk = std::path::Path::new(&path).join(file);
+        assert_eq!(disk.exists(), kind != "deleted");
+        if kind != "deleted" {
+            assert_eq!(std::fs::read_to_string(disk).unwrap(), working);
+        }
+    }
+}
+
+#[tokio::test]
+pub async fn test_行threadの側_protoと保存復元で前後の側を保持する() {
+    for side in ["deletions", "additions"] {
+        // Given
+        let (app, dispatch) = parity_app();
+        let args = json!({"worktreeName":"repository","filePath":"file.rs","lineNumber":2,"endLine":3,
+            "side":side,"endSide":side,"content":"selected line"});
+        // When
+        let request = wire::command_request_from_value("create_review_thread", args).unwrap();
+        let response = dispatch.dispatch(request.command.unwrap()).await.unwrap();
+        let result =
+            releashd::test_support::integration::transport::from_value(wire::CommandResult {
+                command: Some(response),
+            })
+            .unwrap();
+        // Then
+        assert_eq!(result["target"]["side"], side);
+        assert_eq!(result["target"]["endSide"], side);
+        let threads = app
+            .client
+            .review_comment_usecase
+            .as_ref()
+            .unwrap()
+            .list_threads(
+                &app.data_dir,
+                "repository",
+                None,
+                releashd::test_support::integration::platform::ReviewActor::human(),
+            )
+            .unwrap();
+        let target = wire::ReviewThreadDto::try_from(threads[0].clone())
+            .unwrap()
+            .target
+            .unwrap();
+        assert_eq!(
+            target.side.unwrap().value,
+            Some(if side == "deletions" { 1 } else { 0 })
+        );
+        assert_eq!(target.line_number, Some(2));
+        assert_eq!(target.end_line, Some(3));
+    }
 }

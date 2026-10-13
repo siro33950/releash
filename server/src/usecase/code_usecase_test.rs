@@ -150,7 +150,7 @@ fn usecase(staging: Arc<RecordingStaging>) -> CodeUsecase {
         Arc::new(StubBranchDiff),
         Arc::new(StubBranchBase),
     );
-    CodeUsecase::new(staging, query)
+    CodeUsecase::new(staging, query, Arc::new(EmptyDirectory))
 }
 
 fn usecase_with_file_content(file_content: Arc<dyn FileContentRepository>) -> CodeUsecase {
@@ -165,6 +165,7 @@ fn usecase_with_file_content(file_content: Arc<dyn FileContentRepository>) -> Co
             calls: Mutex::new(Vec::new()),
         }),
         query,
+        Arc::new(EmptyDirectory),
     )
 }
 
@@ -252,4 +253,20 @@ async fn review_side_source_mapping_uses_production_metadata_and_bytes_methods()
     }
 
     assert_eq!(file_content.calls(), expected_calls);
+}
+
+struct EmptyDirectory;
+impl crate::usecase::directory_query::DirectoryQuery for EmptyDirectory {
+    fn file_target(&self, worktree: &str, file: &str) -> Result<String, CodeUsecaseError> {
+        Ok(format!("{worktree}/{file}"))
+    }
+
+    fn entries(
+        &self,
+        _: &str,
+        _: &str,
+        _: &[crate::usecase::repository_dto::FileStatusDto],
+    ) -> Result<Vec<crate::usecase::directory_query::DirectoryEntryDto>, CodeUsecaseError> {
+        Ok(Vec::new())
+    }
 }

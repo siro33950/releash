@@ -25,6 +25,9 @@ pub enum SubscriptionTarget {
     StartupRepository,
     WorkspaceState(String, String),
     RepositoryGroupState(String),
+    Directory(String, String),
+    FileTab(String, String, ReviewBase),
+    FileThreads(String, String),
     ReviewSnapshot(String, ReviewBase),
     ReviewFileView(String, String, ReviewSection, ReviewBase),
     ReviewThreads(String),
@@ -66,6 +69,26 @@ impl SubscriptionTarget {
         hook_health_markers: &str,
     ) -> Vec<WatchRequirement> {
         match self {
+            Self::Directory(path, directory) => vec![
+                WatchRequirement::Git(path.clone()),
+                WatchRequirement::Files(
+                    std::path::Path::new(path)
+                        .join(directory)
+                        .to_string_lossy()
+                        .into_owned(),
+                    StateChangeSource::Worktree(path.clone()),
+                ),
+            ],
+            Self::FileTab(path, file, _) => vec![
+                WatchRequirement::Git(path.clone()),
+                WatchRequirement::Files(
+                    std::path::Path::new(path)
+                        .join(file)
+                        .to_string_lossy()
+                        .into_owned(),
+                    StateChangeSource::Worktree(path.clone()),
+                ),
+            ],
             Self::Workspaces => repositories
                 .iter()
                 .cloned()
@@ -85,7 +108,8 @@ impl SubscriptionTarget {
                 .cloned()
                 .map(|path| WatchRequirement::Files(path, StateChangeSource::ProviderHistory))
                 .collect(),
-            Self::ReviewThreads(_)
+            Self::FileThreads(..)
+            | Self::ReviewThreads(_)
             | Self::ReviewSessionThreads(..)
             | Self::ReviewWorktreeThreads(..)
             | Self::ReviewSessionThread(..)
@@ -163,6 +187,8 @@ impl SubscriptionTarget {
                 | Self::AvailableBranches(p)
                 | Self::CurrentBranch(p)
                 | Self::Worktrees(p)
+                | Self::Directory(p, _)
+                | Self::FileTab(p, _, _)
                 | Self::ReviewSnapshot(p, _)
                 | Self::ReviewFileView(p, _, _, _)
                 | Self::ReleashBase(p) => paths.contains(p),
@@ -174,9 +200,11 @@ impl SubscriptionTarget {
                 | Self::Workflows
                 | Self::WorkflowExecution(_)
                 | Self::WorkflowOutput(..) => true,
-                Self::Selection(p, _) | Self::NodeDetail(p, _) | Self::SessionHistory(p, _) => {
-                    p == path
-                }
+                Self::Directory(p, _)
+                | Self::FileTab(p, _, _)
+                | Self::Selection(p, _)
+                | Self::NodeDetail(p, _)
+                | Self::SessionHistory(p, _) => p == path,
                 _ => false,
             },
             C::WorkspaceList => matches!(self, Self::Workspaces),
@@ -187,13 +215,15 @@ impl SubscriptionTarget {
                 matches!(self, Self::Issues(p) | Self::FilteredIssues(p, _) if p == path)
             }
             C::ReviewComments(worktree) => {
-                matches!(
-                    self,
-                    Self::ReviewSessionThreads(..)
-                        | Self::ReviewWorktreeThreads(..)
-                        | Self::ReviewSessionThread(..)
-                        | Self::ReviewSessionThreadHistory(..)
-                ) || matches!(self, Self::ReviewThreads(name) if worktree.as_ref().is_none_or(|w| w == name))
+                matches!(self, Self::FileThreads(path, _) if worktree.as_ref().is_none_or(|p| p == path))
+                    || matches!(
+                        self,
+                        Self::ReviewSessionThreads(..)
+                            | Self::ReviewWorktreeThreads(..)
+                            | Self::ReviewSessionThread(..)
+                            | Self::ReviewSessionThreadHistory(..)
+                    )
+                    || matches!(self, Self::ReviewThreads(name) if worktree.as_ref().is_none_or(|w| w == name))
             }
             C::WorkflowDefinitions => matches!(
                 self,

@@ -34,6 +34,8 @@ fn test_review転送_解決済みthreadの全項目を既存のjsonの形で保�
             file_path: Some("src/main.rs".into()),
             line_number: Some(3),
             end_line: Some(5),
+            side: None,
+            end_side: None,
         },
         state: ReviewThreadState::Resolved,
         comments: vec![ReviewComment {
@@ -82,18 +84,30 @@ fn test_pane転送_分割と全タブを往復して欠落と未知の種類を�
             PaneTab {
                 id: "terminal".into(),
                 kind: PaneTabKind::Terminal,
+                file_path: None,
+                file_mode: None,
+                file_base: None,
             },
             PaneTab {
                 id: "workflow".into(),
                 kind: PaneTabKind::Workflow,
+                file_path: None,
+                file_mode: None,
+                file_base: None,
             },
             PaneTab {
                 id: "file".into(),
                 kind: PaneTabKind::File,
+                file_path: None,
+                file_mode: None,
+                file_base: None,
             },
             PaneTab {
                 id: "session".into(),
                 kind: PaneTabKind::Session,
+                file_path: None,
+                file_mode: None,
+                file_base: None,
             },
         ],
         Some("file".into()),
@@ -149,5 +163,18 @@ fn test_pane転送_分割と全タブを往復して欠落と未知の種類を�
             })))
         })
         .is_err());
+    }
+}
+
+#[test]
+fn test_行の側_proto変換で前後を保持し不明な値を拒否する() {
+    use crate::domain::comment::ReviewLineSide;
+    // Given / When / Then
+    for side in [ReviewLineSide::Additions, ReviewLineSide::Deletions] {
+        let wire = wire::ReviewLineSideDto::try_from(side).unwrap();
+        assert_eq!(ReviewLineSide::try_from(wire).unwrap(), side);
+    }
+    for value in [None, Some(99)] {
+        assert!(ReviewLineSide::try_from(wire::ReviewLineSideDto { value }).is_err());
     }
 }

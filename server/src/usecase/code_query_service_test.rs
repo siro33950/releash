@@ -221,4 +221,22 @@ mod code_query_service_tests {
         let s = service();
         assert_eq!(s.get_language_from_path("main.rs"), "rust");
     }
+    #[test]
+    fn test_ファイルタブbase比較_merge_base経路を使わずbaseの先端を読む() {
+        // Given
+        let service = service();
+        // When / Then
+        assert_eq!(
+            service
+                .review_file_bytes_at_branch_base_tip("file.rs")
+                .unwrap(),
+            ReviewSideBytes::Present(b"file.rs@main".to_vec())
+        );
+        assert_eq!(
+            service
+                .review_file_metadata_at_branch_base_tip("file.rs")
+                .unwrap(),
+            ReviewSideMetadata::Present { size_bytes: 4 }
+        );
+    }
 }
