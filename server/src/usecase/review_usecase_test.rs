@@ -277,14 +277,15 @@ mod tests {
                 .unwrap_or(ReviewSideBytes::Missing))
         }
 
-        fn review_working_tree_matches_base(
+        fn review_working_tree_matches_source(
             &self,
             file_path: &str,
-            base: ReviewBase,
+            original: ReviewContentSource,
         ) -> Result<bool, CodeUsecaseError> {
-            self.calls.lock().unwrap().push(format!("matches:{base:?}"));
-            let original =
-                ReviewContentSource::select(ReviewBlobSide::Original, ReviewSection::FileTab, base);
+            self.calls
+                .lock()
+                .unwrap()
+                .push(format!("matches:{original:?}"));
             Ok(self.metadata_for(file_path, original)
                 == self.metadata_for(file_path, ReviewContentSource::WorkingTree)
                 && self
@@ -2041,6 +2042,32 @@ mod tests {
         assert!(text.change_groups.is_empty());
     }
     #[tokio::test]
+    async fn test_ファイルhunk操作_非テキストを拒否しindexを変更しない() {
+        // Given
+        let code = Arc::new(FakeReviewCode::new().with_source_bytes(
+            "/repo/file",
+            ReviewContentSource::WorkingTree,
+            ReviewSideBytes::Present(vec![0]),
+        ));
+        let usecase = ReviewUsecase::new_with_ports(
+            Arc::new(FakeSnapshotProvider::new(vec![repository_snapshot(
+                1, false,
+            )])),
+            code.clone(),
+        );
+        // When
+        let error = usecase
+            .apply_file_tab_hunk("/repo", "file", "head", "hunk", true)
+            .await
+            .unwrap_err();
+        // Then
+        assert!(
+            matches!(error, CodeUsecaseError::Code(CodeError::Rule(message)) if message == "file hunk requires text")
+        );
+        assert!(code.patches.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
     async fn test_ファイルhunk操作_base比較と古いhunkを拒否しindexを変更しない() {
         for base in ["branch-base", "head"] {
             // Given
@@ -2410,7 +2437,7 @@ mod tests {
             assert!(code.reads.lock().unwrap().is_empty());
             assert!(code
                 .calls()
-                .contains(&format!("matches:{:?}", ReviewBase::parse(base).unwrap())));
+                .contains(&format!("matches:{original_source:?}")));
         }
     }
 }

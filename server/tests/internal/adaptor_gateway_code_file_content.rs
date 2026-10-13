@@ -100,6 +100,20 @@ pub(crate) mod file_content_gateway_tests {
     }
 
     #[test]
+    fn test_内容同一性_初回commit前のhead欠損は作業ツリーとの不一致を返す() {
+        // Given
+        let (_dir, repo) = create_test_repo();
+        let file = workdir_file(&repo, "new.bin");
+        std::fs::write(&file, "new").unwrap();
+        // When
+        let matches = FileContentGateway
+            .review_working_tree_matches_ref(&file, "HEAD")
+            .unwrap();
+        // Then
+        assert!(!matches);
+    }
+
+    #[test]
     pub fn review_metadata_at_ref_missing_blob_returns_missing() {
         let (_dir, repo) = create_test_repo();
         create_initial_commit(&repo);

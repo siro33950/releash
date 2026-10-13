@@ -169,16 +169,23 @@ impl CodeQueryService {
         Ok(self.file_content.review_working_tree_bytes(file_path)?)
     }
 
-    pub fn review_working_tree_matches_base(
+    pub fn review_working_tree_matches_source(
         &self,
         file_path: &str,
-        base: crate::domain::code::ReviewBase,
+        source: crate::domain::code::value_objects::review::ReviewContentSource,
     ) -> Result<bool, CodeUsecaseError> {
-        let git_ref = match base {
-            crate::domain::code::ReviewBase::Head => "HEAD".to_owned(),
-            crate::domain::code::ReviewBase::BranchBase => self
+        use crate::domain::code::value_objects::review::ReviewContentSource;
+        let git_ref = match source {
+            ReviewContentSource::Head => "HEAD".to_owned(),
+            ReviewContentSource::BranchBaseTip => self
                 .resolve_base_commit_oid_for(file_path)?
                 .unwrap_or_else(|| "HEAD".into()),
+            _ => {
+                return Err(crate::domain::code::CodeError::Rule(
+                    "file comparison requires HEAD or branch base tip".into(),
+                )
+                .into())
+            }
         };
         Ok(self
             .file_content

@@ -94,10 +94,10 @@ trait ReviewCodePort: Send + Sync {
     ) -> Result<ReviewSideBytes, CodeUsecaseError>;
 
     fn review_binary_by_attributes(&self, file_path: &str) -> Result<bool, CodeUsecaseError>;
-    fn review_working_tree_matches_base(
+    fn review_working_tree_matches_source(
         &self,
         file_path: &str,
-        base: ReviewBase,
+        source: ReviewContentSource,
     ) -> Result<bool, CodeUsecaseError>;
 
     fn compute_diff_hunks(
@@ -160,12 +160,12 @@ impl ReviewCodePort for CodeUsecase {
         CodeUsecase::read_review_source_bytes(self, file_path, source)
     }
 
-    fn review_working_tree_matches_base(
+    fn review_working_tree_matches_source(
         &self,
         file_path: &str,
-        base: ReviewBase,
+        source: ReviewContentSource,
     ) -> Result<bool, CodeUsecaseError> {
-        CodeUsecase::review_working_tree_matches_base(self, file_path, base)
+        CodeUsecase::review_working_tree_matches_source(self, file_path, source)
     }
 
     fn review_binary_by_attributes(&self, file_path: &str) -> Result<bool, CodeUsecaseError> {
@@ -411,42 +411,20 @@ impl ReviewUsecase {
             } else {
                 false
             };
-        if ReviewPresentation::classify(
-            &relative_path,
-            binary_attribute,
-            &ReviewSideBytes::Missing,
-            &ReviewSideBytes::Missing,
-        ) == ReviewPresentation::Binary
-        {
-            let changed = !self
-                .code
-                .review_working_tree_matches_base(&file_path, base)?;
-            return Ok(FileTabViewDto {
-                view: binary_view(
-                    ReviewBlobViewContext {
-                        relative_path: &relative_path,
-                        file_path: &file_path,
-                        version: snapshot.version,
-                    },
-                    snapshot.flags.stale,
-                    original_source.metadata,
-                    modified_source.metadata,
-                ),
-                initial_mode: crate::domain::code::value_objects::review::FileMode::for_change(
-                    changed,
-                ),
-                additions: 0,
-                deletions: 0,
-                patch: String::new(),
-                hunk_states: Vec::new(),
-            });
-        }
-        let original_bytes = self
-            .code
-            .read_review_source_bytes(&file_path, original_source.source)?;
-        let modified_bytes = self
-            .code
-            .read_review_source_bytes(&file_path, modified_source.source)?;
+        let initial_mode = ReviewPresentation::initial_file_mode(
+            self.code
+                .review_working_tree_matches_source(&file_path, original_source.source)?,
+        );
+        let (original_bytes, modified_bytes) = if binary_attribute {
+            (ReviewSideBytes::Missing, ReviewSideBytes::Missing)
+        } else {
+            (
+                self.code
+                    .read_review_source_bytes(&file_path, original_source.source)?,
+                self.code
+                    .read_review_source_bytes(&file_path, modified_source.source)?,
+            )
+        };
         let context = ReviewBlobViewContext {
             relative_path: &relative_path,
             file_path: &file_path,
@@ -459,7 +437,7 @@ impl ReviewUsecase {
                 original_source.metadata,
                 modified_source.metadata,
             ),
-            initial_mode: ReviewPresentation::initial_file_mode(&original_bytes, &modified_bytes),
+            initial_mode,
             additions: 0,
             deletions: 0,
             patch: String::new(),
@@ -571,19 +549,11 @@ impl ReviewUsecase {
         use crate::domain::code::services::file_hunk;
         file_hunk::ensure_hunk_comparison(ReviewBase::parse(base)?)?;
         let view = self.get_file_tab_view(worktree, path, base)?;
-        let hunks = match &view.view {
-            ReviewFileViewDto::TextDiff(text) => Some(
-                text.hunks
-                    .iter()
-                    .map(hunk_dto_to_domain)
-                    .collect::<Vec<_>>(),
-            ),
-            _ => None,
-        };
-        let selected = file_hunk::select_hunk(hunks.as_deref(), hunk_id)?;
         let ReviewFileViewDto::TextDiff(view) = view.view else {
-            unreachable!()
+            return Err(CodeError::Rule("file hunk requires text".into()).into());
         };
+        let hunks: Vec<_> = view.hunks.iter().map(hunk_dto_to_domain).collect();
+        let selected = file_hunk::select_hunk(&hunks, hunk_id)?;
         let file = self.code.file_target(worktree, &view.path)?;
         let index_bytes = self
             .code

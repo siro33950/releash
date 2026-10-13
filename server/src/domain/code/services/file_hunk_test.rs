@@ -149,12 +149,11 @@ fn test_hunk受付_headのテキストの存在するhunkだけを受け付け�
     // When / Then
     assert!(ensure_hunk_comparison(crate::domain::code::ReviewBase::Head).is_ok());
     assert!(ensure_hunk_comparison(crate::domain::code::ReviewBase::BranchBase).is_err());
-    assert!(select_hunk(Some(&hunks), "hunk").is_ok());
+    assert!(select_hunk(&hunks, "hunk").is_ok());
     assert!(matches!(
-        select_hunk(Some(&hunks), "gone"),
+        select_hunk(&hunks, "gone"),
         Err(CodeError::StaleReviewGroupTarget { .. })
     ));
-    assert!(matches!(select_hunk(None, "hunk"), Err(CodeError::Rule(_))));
 }
 
 #[test]

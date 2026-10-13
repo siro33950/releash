@@ -72,10 +72,18 @@ impl CodeUsecase {
                 ))
             })
             .collect::<Result<Vec<_>, crate::domain::code::CodeError>>()?;
-        let mut entries = self.directory.entries(worktree, directory)?;
-        for entry in &mut entries {
-            entry.status = entry_status(&entry.path, entry.directory, statuses.iter().copied());
-        }
+        let mut entries: Vec<_> = self
+            .directory
+            .entries(worktree, directory)?
+            .into_iter()
+            .map(|entry| super::directory_query::DirectoryEntryDto {
+                status: entry_status(&entry.path, entry.directory, statuses.iter().copied()),
+                path: entry.path,
+                name: entry.name,
+                directory: entry.directory,
+                ignored: entry.ignored,
+            })
+            .collect();
         entries.sort_by(|a, b| entry_order(a.directory, &a.name, b.directory, &b.name));
         Ok(entries)
     }
@@ -181,12 +189,13 @@ impl CodeUsecase {
         }
     }
 
-    pub(super) fn review_working_tree_matches_base(
+    pub(super) fn review_working_tree_matches_source(
         &self,
         file_path: &str,
-        base: ReviewBase,
+        source: ReviewContentSource,
     ) -> Result<bool, CodeUsecaseError> {
-        self.query.review_working_tree_matches_base(file_path, base)
+        self.query
+            .review_working_tree_matches_source(file_path, source)
     }
 
     pub(super) fn review_binary_by_attributes(

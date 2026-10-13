@@ -139,14 +139,41 @@ mod code_query_service_tests {
         let service = service();
         // When / Then
         assert!(service
-            .review_working_tree_matches_base("HEAD", crate::domain::code::ReviewBase::Head)
+            .review_working_tree_matches_source(
+                "HEAD",
+                crate::domain::code::value_objects::review::ReviewContentSource::Head
+            )
             .unwrap());
         assert!(service
-            .review_working_tree_matches_base("main", crate::domain::code::ReviewBase::BranchBase)
+            .review_working_tree_matches_source(
+                "main",
+                crate::domain::code::value_objects::review::ReviewContentSource::BranchBaseTip
+            )
             .unwrap());
         assert!(!service
-            .review_working_tree_matches_base("HEAD", crate::domain::code::ReviewBase::BranchBase)
+            .review_working_tree_matches_source(
+                "HEAD",
+                crate::domain::code::value_objects::review::ReviewContentSource::BranchBaseTip
+            )
             .unwrap());
+    }
+
+    #[test]
+    fn test_内容同一性_ファイルタブの比較元以外を拒否する() {
+        use crate::domain::code::value_objects::review::ReviewContentSource;
+        // Given
+        let service = service();
+        // When / Then
+        for source in [
+            ReviewContentSource::BranchBase,
+            ReviewContentSource::Staged,
+            ReviewContentSource::WorkingTree,
+        ] {
+            assert!(matches!(
+                service.review_working_tree_matches_source("file", source),
+                Err(CodeUsecaseError::Code(CodeError::Rule(_)))
+            ));
+        }
     }
 
     #[test]

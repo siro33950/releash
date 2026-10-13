@@ -136,6 +136,13 @@ pub struct ReviewThread {
     pub can_resolve: bool,
 }
 
+pub fn unresolved_thread_count(threads: &[ReviewThread]) -> u32 {
+    threads
+        .iter()
+        .filter(|thread| thread.state == ReviewThreadState::Open)
+        .count() as u32
+}
+
 /// `ReviewThreadFilter.author` の値。spec issues-1022 design.md List contract:
 /// 「自分が作成した Thread」/「自分以外が作成した Thread」を表す。
 ///
@@ -761,10 +768,3 @@ pub(crate) mod test_helpers;
 #[cfg(test)]
 #[path = "mod_test.rs"]
 pub(crate) mod mod_tests;
-
-pub fn unresolved_thread_count(threads: &[ReviewThread]) -> u32 {
-    threads
-        .iter()
-        .filter(|thread| thread.state == ReviewThreadState::Open)
-        .count() as u32
-}

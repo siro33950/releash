@@ -161,25 +161,14 @@ fn test_表示分類_画像と属性でのbinaryをdomainが決める() {
 }
 
 #[test]
-fn test_初期表示_同じ内容はfileで追加と変更はdiffになる() {
-    use super::ReviewPresentation;
-    use crate::domain::code::ReviewSideBytes;
+fn test_初期表示_選択した比較元との一致でfileとdiffを決める() {
     // Given / When / Then
-    let before = ReviewSideBytes::Present(b"before".to_vec());
-    let after = ReviewSideBytes::Present(b"after".to_vec());
     assert_eq!(
-        ReviewPresentation::initial_file_mode(&before, &before),
+        super::ReviewPresentation::initial_file_mode(true),
         super::FileMode::File
     );
     assert_eq!(
-        ReviewPresentation::initial_file_mode(&before, &after),
-        super::FileMode::Diff
-    );
-    assert_eq!(
-        ReviewPresentation::initial_file_mode(
-            &ReviewSideBytes::Missing,
-            &ReviewSideBytes::Present(Vec::new())
-        ),
+        super::ReviewPresentation::initial_file_mode(false),
         super::FileMode::Diff
     );
 }

@@ -272,7 +272,7 @@ impl crate::usecase::directory_query::DirectoryQuery for EmptyDirectory {
         &self,
         _: &str,
         _: &str,
-    ) -> Result<Vec<crate::usecase::directory_query::DirectoryEntryDto>, CodeUsecaseError> {
+    ) -> Result<Vec<crate::usecase::directory_query::DirectoryEntry>, CodeUsecaseError> {
         Ok(Vec::new())
     }
 }

@@ -144,11 +144,8 @@ pub enum ReviewPresentation {
 }
 
 impl ReviewPresentation {
-    pub fn initial_file_mode(
-        original: &super::super::ReviewSideBytes,
-        modified: &super::super::ReviewSideBytes,
-    ) -> FileMode {
-        FileMode::for_change(original != modified)
+    pub fn initial_file_mode(matches: bool) -> FileMode {
+        FileMode::for_change(!matches)
     }
 
     pub fn classify(

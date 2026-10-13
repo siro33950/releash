@@ -11,9 +11,8 @@ pub fn ensure_hunk_comparison(base: crate::domain::code::ReviewBase) -> Result<(
     Ok(())
 }
 
-pub fn select_hunk<'a>(hunks: Option<&'a [Hunk]>, id: &str) -> Result<&'a Hunk, CodeError> {
+pub fn select_hunk<'a>(hunks: &'a [Hunk], id: &str) -> Result<&'a Hunk, CodeError> {
     hunks
-        .ok_or_else(|| CodeError::Rule("file hunk requires text".into()))?
         .iter()
         .find(|hunk| hunk.hunk_id == id)
         .ok_or_else(|| CodeError::StaleReviewGroupTarget {
