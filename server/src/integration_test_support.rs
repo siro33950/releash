@@ -1280,10 +1280,11 @@ pub mod client_protocol {
 
 pub mod provider_usage {
     pub fn payload_receiver(
+        usage: std::sync::Arc<crate::usecase::provider_usage::ProviderUsageUsecase>,
         lifecycle: std::sync::Arc<crate::usecase::provider_lifecycle::ProviderLifecycleUsecase>,
     ) -> std::sync::Arc<dyn crate::usecase::provider_lifecycle::ProviderPayloadReceiver> {
         std::sync::Arc::new(
-            crate::provider_lifecycle_acceptance::AcceptancePayloadReceiver(lifecycle),
+            crate::provider_lifecycle_acceptance::AcceptancePayloadReceiver(lifecycle, Some(usage)),
         )
     }
 
@@ -1305,7 +1306,8 @@ pub mod provider_usage {
     }
 
     pub use crate::adaptor::gateway::agent_session::provider_usage::{
-        LocalProviderUsageSource, ProviderUsageReadModel, SystemProviderUsageClock,
+        CodexUsageObservationStore, LocalProviderUsageSource, ProviderUsageReadModel,
+        SystemProviderUsageClock,
     };
     pub use crate::usecase::provider_usage::{
         ProviderUsageDto, ProviderUsageQueryService, ProviderUsageUsecase, UsageWindowDto,

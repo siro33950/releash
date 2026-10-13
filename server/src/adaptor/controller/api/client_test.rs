@@ -1313,14 +1313,17 @@ struct SignalIngress(
 );
 #[async_trait::async_trait]
 impl crate::usecase::provider_lifecycle::ProviderPayloadReceiver for SignalIngress {
-    async fn authorize_usage(
+    async fn receive_usage(
         &self,
         _: &crate::domain::provider_lifecycle::ProviderLifecycleSlotId,
         _: &str,
         _: &str,
         _: &crate::domain::provider_lifecycle::ProviderLifecycleScope,
-    ) -> Result<bool, crate::usecase::provider_lifecycle::ProviderLifecycleIngressUsecaseError>
-    {
+        _: &[u8],
+    ) -> Result<
+        crate::domain::provider_lifecycle::ProviderLifecycleIngressResult,
+        crate::usecase::provider_lifecycle::ProviderLifecycleIngressUsecaseError,
+    > {
         unreachable!()
     }
     async fn receive_payload(

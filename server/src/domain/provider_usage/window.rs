@@ -6,13 +6,6 @@ pub struct UsageWindow {
     resets_at: u64,
 }
 impl UsageWindow {
-    pub fn five_hour(used_percent: f64, resets_at: u64) -> Result<Self, UsageError> {
-        Self::new(used_percent, 300, resets_at)
-    }
-    pub fn seven_day(used_percent: f64, resets_at: u64) -> Result<Self, UsageError> {
-        Self::new(used_percent, 10080, resets_at)
-    }
-
     pub fn new(used_percent: f64, window_minutes: u64, resets_at: u64) -> Result<Self, UsageError> {
         if !used_percent.is_finite()
             || !(0.0..=100.0).contains(&used_percent)

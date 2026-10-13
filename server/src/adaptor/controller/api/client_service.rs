@@ -112,14 +112,11 @@ async fn receive_provider_usage<'a>(
 ) -> connectrpc::ServiceResult<impl connectrpc::Encodable<rpc::Unit> + Send + use<'a>> {
     let request: wire::ReceiveProviderUsageRequest = to_wire(&request.to_owned_message())?;
     super::provider_signal::validate_payload(&request.payload)?;
-    let usage = self.provider_usage.as_ref().ok_or_else(|| crate::adaptor::presenter::connect::classified_error(crate::adaptor::presenter::error::AppError::unavailable("Provider usage unavailable")))?;
     let (_, slot, scope) = super::provider_signal::ingress_context(crate::domain::provider_lifecycle::ProviderKind::Claude, &request.slot_id, &request.agent_session_id).map_err(|error| crate::adaptor::presenter::connect::invalid_request(error.to_string()))?;
     let lifecycle = self.provider_lifecycle.as_ref().ok_or_else(|| crate::adaptor::presenter::connect::classified_error(crate::adaptor::presenter::error::AppError::unavailable("Provider lifecycle unavailable")))?;
     ingress(ctx.deadline(), async {
-        if !lifecycle.authorize_usage(&slot, &request.capability, &request.binding_id, &scope).await.map_err(crate::adaptor::presenter::connect::classified_error)? {
-            return Err(crate::adaptor::presenter::connect::invalid_request("Invalid provider usage credentials"));
-        }
-        usage.receive_claude(&request.payload).map_err(crate::adaptor::presenter::connect::classified_error)
+        let result = lifecycle.receive_usage(&slot, &request.capability, &request.binding_id, &scope, &request.payload).await;
+        crate::adaptor::presenter::provider_lifecycle_response::usage_result(result)
     }).await?;
     connectrpc::Response::ok(rpc::Unit::default())
 }

@@ -1,4 +1,5 @@
 import AppKit
+import ApplicationServices
 import SwiftUI
 import XCTest
 
@@ -8,7 +9,7 @@ import XCTest
   let window: NSWindow
   let existingWindows: Set<ObjectIdentifier>
 
-  init(_ model: AppModel) {
+  init(_ model: AppModel) async {
     existingWindows = Set(NSApp.windows.map(ObjectIdentifier.init))
     window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1600, height: 80),
       styleMask: [.titled], backing: .buffered, defer: false)
@@ -17,6 +18,12 @@ import XCTest
     window.center()
     NSApp.activate()
     window.makeKeyAndOrderFront(nil)
+    let result = await Task.detached {
+      let application = AXUIElementCreateApplication(ProcessInfo.processInfo.processIdentifier)
+      var windows: CFTypeRef?
+      return AXUIElementCopyAttributeValue(application, kAXWindowsAttribute as CFString, &windows)
+    }.value
+    XCTAssertEqual(result, .success)
   }
 
   func close() {
@@ -71,7 +78,7 @@ final class FooterViewTests: XCTestCase {
     for plan in ["test-plan", nil] as [String?] {
       let model = AppModel()
       model.providerUsage = [usage(plan: plan)]
-      let footer = FooterHarness(model)
+      let footer = await FooterHarness(model)
       defer { footer.close() }
       try await eventually { footer.provider("claude") != nil }
       XCTAssertTrue(try XCTUnwrap(footer.provider("claude")).accessibilityPerformPress?() == true)
@@ -87,7 +94,7 @@ final class FooterViewTests: XCTestCase {
     warning.provider.value = .codex
     warning.reason = "codex hook warning"
     model.hookHealth.warnings.items = [warning]
-    let footer = FooterHarness(model)
+    let footer = await FooterHarness(model)
     defer { footer.close() }
     try await eventually { footer.provider("codex") != nil }
     XCTAssertNil(footer.provider("claude"))
@@ -98,7 +105,7 @@ final class FooterViewTests: XCTestCase {
   }
 
   @MainActor func testProvidersWithoutUsageOrHookWarningsAreHidden() async throws {
-    let footer = FooterHarness(AppModel())
+    let footer = await FooterHarness(AppModel())
     defer { footer.close() }
     await Task.yield()
     XCTAssertNil(footer.provider("claude"))
@@ -110,7 +117,7 @@ final class FooterViewTests: XCTestCase {
       let model = AppModel()
       if read { model.hookHealth.readErrors = ["read failure"] }
       if subscription { model.hookSubscriptionFailure = "subscription failure" }
-      let footer = FooterHarness(model)
+      let footer = await FooterHarness(model)
       defer { footer.close() }
       try await eventually {
         footer.elements().contains { $0.accessibilityLabel?() == "hookの状態を確認できません" }
@@ -129,7 +136,7 @@ final class FooterViewTests: XCTestCase {
       let model = AppModel()
       model.daemonInfo = .init()
       model.releaseCompatibility = compatibility
-      let footer = FooterHarness(model)
+      let footer = await FooterHarness(model)
       defer { footer.close() }
       try await eventually { footer.texts().contains(guidance) }
 

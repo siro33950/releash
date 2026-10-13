@@ -61,10 +61,15 @@ fn spawn_transfer(dir: &Path, payload: &[u8]) -> std::io::Result<()> {
 }
 
 pub(crate) async fn forward_usage(dir: &Path) -> Result<String, ConnectError> {
-    let result = transfer_usage(dir).await;
+    record_transfer_result(dir, transfer_usage(dir).await)
+}
+
+fn record_transfer_result(
+    dir: &Path,
+    result: Result<String, ConnectError>,
+) -> Result<String, ConnectError> {
     if let Err(error) = &result {
-        bounded_usage_log(dir, Some(&format!("Provider usage: {error}\n")))
-            .map_err(|error| ConnectError::internal(error.to_string()))?;
+        let _ = bounded_usage_log(dir, Some(&format!("Provider usage: {error}\n")));
     }
     result
 }

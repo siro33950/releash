@@ -1231,6 +1231,7 @@ async fn test_使用率受信_hook権限とpayload上限を守り購読のread_m
         }),
         model.clone(),
         model,
+        Arc::new(releashd::test_support::integration::provider_usage::CodexUsageObservationStore::default()),
         Arc::new(releashd::test_support::integration::provider_usage::SystemProviderUsageClock),
         releashd::test_support::integration::subscriptions::test_subscriptions(),
     ));
@@ -1270,7 +1271,10 @@ async fn test_使用率受信_hook権限とpayload上限を守り購読のread_m
         releashd::test_support::integration::transport::client_api_deps(Arc::new(dispatch()))
             .with_provider_usage(usage.clone())
             .with_provider_lifecycle(
-                releashd::test_support::integration::provider_usage::payload_receiver(lifecycle),
+                releashd::test_support::integration::provider_usage::payload_receiver(
+                    usage.clone(),
+                    lifecycle,
+                ),
             );
     let app = router(
         Some(deps),

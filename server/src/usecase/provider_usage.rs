@@ -1,7 +1,7 @@
 use crate::domain::provider_lifecycle::ProviderKind;
 use crate::domain::provider_usage::{
-    CodexUsageObservation, ProviderUsageClock, ProviderUsageRepository, ProviderUsageSource,
-    UsageError,
+    CodexUsageObservation, CodexUsageObservationRepository, ProviderUsageClock,
+    ProviderUsageRepository, ProviderUsageSource, UsageError,
 };
 use crate::usecase::state_subscription::{StateChangeSource, StateSubscriptionUsecase};
 use std::sync::Arc;
@@ -25,6 +25,7 @@ pub struct ProviderUsageUsecase {
     source: Arc<dyn ProviderUsageSource>,
     query: Arc<dyn ProviderUsageQueryService>,
     repository: Arc<dyn ProviderUsageRepository>,
+    observations: Arc<dyn CodexUsageObservationRepository>,
     clock: Arc<dyn ProviderUsageClock>,
     subscriptions: StateSubscriptionUsecase,
 }
@@ -33,6 +34,7 @@ impl ProviderUsageUsecase {
         source: Arc<dyn ProviderUsageSource>,
         query: Arc<dyn ProviderUsageQueryService>,
         repository: Arc<dyn ProviderUsageRepository>,
+        observations: Arc<dyn CodexUsageObservationRepository>,
         clock: Arc<dyn ProviderUsageClock>,
         subscriptions: StateSubscriptionUsecase,
     ) -> Self {
@@ -40,6 +42,7 @@ impl ProviderUsageUsecase {
             source,
             query,
             repository,
+            observations,
             clock,
             subscriptions,
         }
@@ -55,18 +58,16 @@ impl ProviderUsageUsecase {
         Ok(())
     }
     pub fn start_codex_session(&self, session: &str) {
-        self.repository
+        self.observations
             .start_observation(CodexUsageObservation::new(session, self.clock.now()));
     }
     pub async fn poll_active_codex(
         &self,
         lifecycle: &crate::usecase::provider_lifecycle::ProviderLifecycleUsecase,
-    ) -> Result<Vec<UsageError>, UsageError> {
+    ) -> Result<Vec<UsageError>, crate::usecase::provider_lifecycle::ProviderLifecycleUsecaseError>
+    {
         let poll_started_at = self.clock.now();
-        let ids = lifecycle
-            .provider_sessions(ProviderKind::Codex)
-            .await
-            .map_err(UsageError::Technical)?;
+        let ids = lifecycle.provider_sessions(ProviderKind::Codex).await?;
         Ok(self.poll_codex(&ids, poll_started_at).await)
     }
     pub async fn poll_codex(
@@ -74,7 +75,7 @@ impl ProviderUsageUsecase {
         ids: &[String],
         poll_started_at: std::time::SystemTime,
     ) -> Vec<UsageError> {
-        self.repository.retain_observations(ids, poll_started_at);
+        self.observations.retain_observations(ids, poll_started_at);
         let mut failures = Vec::new();
         for id in ids {
             if let Err(error) = self.observe_codex(id).await {
@@ -84,11 +85,11 @@ impl ProviderUsageUsecase {
         failures
     }
     pub async fn observe_codex(&self, session: &str) -> Result<(), UsageError> {
-        if !self.repository.has_observation(session) {
+        if !self.observations.has_observation(session) {
             return Ok(());
         }
         if let Some(record) = self.source.codex(session).await? {
-            if self.repository.accept_record(session, &record) {
+            if self.observations.accept_record(session, &record) {
                 self.repository.replace(record.usage);
                 self.subscriptions.notify(StateChangeSource::ProviderUsage);
             }

@@ -70,8 +70,10 @@ impl ProviderUsageRepository for Projection {
     fn replace(&self, usage: ProviderUsage) {
         *self.0.lock().unwrap() = vec![usage];
     }
+}
+impl crate::domain::provider_usage::CodexUsageObservationRepository for Projection {
     fn start_observation(&self, o: CodexUsageObservation) {
-        self.1.lock().unwrap().insert(o.session.clone(), o);
+        self.1.lock().unwrap().entry(o.session.clone()).or_insert(o);
     }
     fn has_observation(&self, id: &str) -> bool {
         self.1.lock().unwrap().contains_key(id)
@@ -113,6 +115,7 @@ async fn test_使用率_変更を通知し同じrolloutの再読では上書き�
         source.clone(),
         model.clone(),
         model.clone(),
+        model.clone(),
         Arc::new(Clock),
         subscriptions,
     );
@@ -149,6 +152,7 @@ fn test_使用率_claudeの未取得と不正入力では通知も状態変更�
     let usecase = ProviderUsageUsecase::new(
         source.clone(),
         model.clone(),
+        model.clone(),
         model,
         Arc::new(Clock),
         subscriptions,
@@ -179,6 +183,7 @@ async fn test_使用率_開始境界前を除外し同じミリ秒の新しい�
     let mut changes = subscriptions.changes();
     let usecase = ProviderUsageUsecase::new(
         source.clone(),
+        model.clone(),
         model.clone(),
         model,
         Arc::new(Clock),
@@ -217,6 +222,7 @@ async fn test_使用率_一つのcodex読取失敗でも別のsessionの使用�
     let model = Arc::new(Projection::default());
     let usecase = ProviderUsageUsecase::new(
         source,
+        model.clone(),
         model.clone(),
         model,
         Arc::new(Clock),

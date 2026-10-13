@@ -172,7 +172,7 @@ impl ProviderLifecycleAcceptanceHost {
             Arc::new(dispatch),
             crate::adaptor::controller::daemon::client_priority_interceptor(),
         )
-        .with_provider_lifecycle(Arc::new(AcceptancePayloadReceiver(usecase.clone())));
+        .with_provider_lifecycle(Arc::new(AcceptancePayloadReceiver(usecase.clone(), None)));
         let router = crate::adaptor::controller::api::build_router(
             crate::adaptor::controller::api::auth::ClientTokens {
                 operator: binding.terminal_bearer_token().into(),
@@ -452,18 +452,25 @@ fn acceptance_fact(event: ProviderLifecycleEvent) -> AcceptanceFactKind {
     }
 }
 
-pub(crate) struct AcceptancePayloadReceiver(pub(crate) Arc<ProviderLifecycleUsecase>);
+pub(crate) struct AcceptancePayloadReceiver(
+    pub(crate) Arc<ProviderLifecycleUsecase>,
+    pub(crate) Option<Arc<crate::usecase::provider_usage::ProviderUsageUsecase>>,
+);
 #[async_trait::async_trait]
 impl crate::usecase::provider_lifecycle::ProviderPayloadReceiver for AcceptancePayloadReceiver {
-    async fn authorize_usage(
+    async fn receive_usage(
         &self,
         slot: &crate::domain::provider_lifecycle::ProviderLifecycleSlotId,
         capability: &str,
         binding: &str,
         scope: &crate::domain::provider_lifecycle::ProviderLifecycleScope,
-    ) -> Result<bool, crate::usecase::provider_lifecycle::ProviderLifecycleIngressUsecaseError>
-    {
-        self.0
+        payload: &[u8],
+    ) -> Result<
+        crate::domain::provider_lifecycle::ProviderLifecycleIngressResult,
+        crate::usecase::provider_lifecycle::ProviderLifecycleIngressUsecaseError,
+    > {
+        let authorization = self
+            .0
             .authorize_usage(
                 slot,
                 capability,
@@ -472,7 +479,19 @@ impl crate::usecase::provider_lifecycle::ProviderPayloadReceiver for AcceptanceP
                 scope,
             )
             .await
-            .map_err(Into::into)
+            .map_err(
+                crate::usecase::provider_lifecycle::ProviderLifecycleIngressUsecaseError::from,
+            )?;
+        if let Err(reason) = authorization {
+            return Ok(
+                crate::domain::provider_lifecycle::ProviderLifecycleIngressResult::Rejected(reason),
+            );
+        }
+        self.1.as_ref().ok_or(crate::usecase::provider_lifecycle::ProviderLifecycleIngressUsecaseError::StorageUnavailable)?.receive_claude(payload).map_err(|error| match error {
+            crate::domain::provider_usage::UsageError::Invalid => crate::usecase::provider_lifecycle::ProviderLifecycleIngressUsecaseError::InvalidInput,
+            crate::domain::provider_usage::UsageError::Technical(error) => crate::usecase::provider_lifecycle::ProviderLifecycleIngressUsecaseError::Technical(error),
+        })?;
+        Ok(crate::domain::provider_lifecycle::ProviderLifecycleIngressResult::Applied)
     }
 
     async fn receive_payload(

@@ -4,8 +4,8 @@ fn test_使用率_claudeの窓とplanを導く() {
     // Given / When
     let usage = ProviderUsage::claude(
         vec![
-            UsageWindow::five_hour(20.0, 123).unwrap(),
-            UsageWindow::seven_day(90.0, 123).unwrap(),
+            UsageWindow::new(20.0, 300, 123).unwrap(),
+            UsageWindow::new(90.0, 10080, 123).unwrap(),
         ],
         Some("claude_max"),
         Some("20x"),

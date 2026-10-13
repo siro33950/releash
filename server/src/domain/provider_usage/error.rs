@@ -1,7 +1,7 @@
 #[derive(Debug)]
 pub enum UsageError {
     Invalid,
-    Technical(crate::domain::failure::StorageFailure),
+    Technical(crate::domain::failure::TechnicalFailure),
 }
 impl std::fmt::Display for UsageError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -14,10 +14,6 @@ impl std::fmt::Display for UsageError {
 impl std::error::Error for UsageError {}
 impl From<crate::domain::failure::TechnicalFailure> for UsageError {
     fn from(error: crate::domain::failure::TechnicalFailure) -> Self {
-        Self::Technical(crate::domain::failure::StorageFailure {
-            nature: error.nature,
-            source: crate::domain::failure::StorageFailureSource::Technical(error),
-            context: None,
-        })
+        Self::Technical(error)
     }
 }

@@ -260,13 +260,12 @@ pub async fn compose(
     let claude_config_dir = std::env::var_os("CLAUDE_CONFIG_DIR")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| provider_history_home.join(".claude"));
+    let codex_home = std::env::var_os("CODEX_HOME")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| provider_history_home.join(".codex"));
     let history_paths = vec![
-        claude_config_dir.clone().to_string_lossy().into_owned(),
-        std::env::var_os("CODEX_HOME")
-            .map(std::path::PathBuf::from)
-            .unwrap_or_else(|| provider_history_home.join(".codex"))
-            .to_string_lossy()
-            .into_owned(),
+        claude_config_dir.to_string_lossy().into_owned(),
+        codex_home.to_string_lossy().into_owned(),
     ];
     let hook_token_value = Arc::<str>::from(infrastructure::local_api::generate_token());
     let hook_token = infrastructure::local_api::BearerToken::from(hook_token_value.clone());
@@ -288,9 +287,7 @@ pub async fn compose(
                             adaptor::gateway::agent_session::LocalProviderExecutableProbeGateway::new(),
                         ),
                         claude_config_dir: claude_config_dir.clone(),
-                        codex_home: std::env::var_os("CODEX_HOME")
-                            .map(std::path::PathBuf::from)
-                            .unwrap_or_else(|| provider_history_home.join(".codex")),
+                        codex_home,
                         cli_binary: infrastructure::platform::path_aliases::alias_name_for_profile(
                             infrastructure::platform::path_aliases::BuildProfile::current(),
                         )

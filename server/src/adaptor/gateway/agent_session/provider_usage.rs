@@ -1,13 +1,29 @@
 use crate::domain::provider_lifecycle::ProviderKind;
 use crate::domain::provider_usage::{
-    CodexUsageObservation, CodexUsageRecord, ProviderUsage, ProviderUsageClock,
-    ProviderUsageRepository, ProviderUsageSource, UsageError, UsageWindow,
+    CodexUsageObservation, CodexUsageObservationRepository, CodexUsageRecord, ProviderUsage,
+    ProviderUsageClock, ProviderUsageRepository, ProviderUsageSource, UsageError, UsageWindow,
 };
 use crate::usecase::provider_usage::{ProviderUsageDto, ProviderUsageQueryService, UsageWindowDto};
 use std::path::PathBuf;
 #[derive(Default)]
 pub struct ProviderUsageReadModel {
-    values: parking_lot::RwLock<Vec<ProviderUsage>>,
+    values: parking_lot::RwLock<Vec<UsageRow>>,
+}
+#[derive(Clone)]
+struct UsageRow {
+    provider: ProviderKind,
+    windows: Vec<WindowRow>,
+    plan: Option<String>,
+}
+#[derive(Clone)]
+struct WindowRow {
+    used_percent: f64,
+    window_minutes: u64,
+    resets_at: u64,
+    warning: bool,
+}
+#[derive(Default)]
+pub struct CodexUsageObservationStore {
     observations: parking_lot::RwLock<std::collections::HashMap<String, CodexUsageObservation>>,
 }
 impl ProviderUsageQueryService for ProviderUsageReadModel {
@@ -21,10 +37,10 @@ impl ProviderUsageQueryService for ProviderUsageReadModel {
                     .windows
                     .iter()
                     .map(|window| UsageWindowDto {
-                        used_percent: window.used_percent(),
-                        window_minutes: window.window_minutes(),
-                        resets_at: window.resets_at(),
-                        warning: window.warning(),
+                        used_percent: window.used_percent,
+                        window_minutes: window.window_minutes,
+                        resets_at: window.resets_at,
+                        warning: window.warning,
                     })
                     .collect(),
                 plan: usage.plan.clone(),
@@ -34,6 +50,20 @@ impl ProviderUsageQueryService for ProviderUsageReadModel {
 }
 impl ProviderUsageRepository for ProviderUsageReadModel {
     fn replace(&self, usage: ProviderUsage) {
+        let usage = UsageRow {
+            provider: usage.provider,
+            windows: usage
+                .windows
+                .iter()
+                .map(|window| WindowRow {
+                    used_percent: window.used_percent(),
+                    window_minutes: window.window_minutes(),
+                    resets_at: window.resets_at(),
+                    warning: window.warning(),
+                })
+                .collect(),
+            plan: usage.plan,
+        };
         let mut values = self.values.write();
         if let Some(value) = values
             .iter_mut()
@@ -44,10 +74,13 @@ impl ProviderUsageRepository for ProviderUsageReadModel {
             values.push(usage);
         }
     }
+}
+impl CodexUsageObservationRepository for CodexUsageObservationStore {
     fn start_observation(&self, observation: CodexUsageObservation) {
         self.observations
             .write()
-            .insert(observation.session.clone(), observation);
+            .entry(observation.session.clone())
+            .or_insert(observation);
     }
     fn has_observation(&self, session: &str) -> bool {
         self.observations.read().contains_key(session)
@@ -85,16 +118,9 @@ impl ProviderUsageSource for LocalProviderUsageSource {
             return Ok(None);
         };
         let mut windows = Vec::new();
-        for (key, make_window) in [
-            (
-                "five_hour",
-                UsageWindow::five_hour as fn(f64, u64) -> Result<UsageWindow, UsageError>,
-            ),
-            ("seven_day", UsageWindow::seven_day),
-        ] {
+        for (key, minutes) in [("five_hour", 300), ("seven_day", 10080)] {
             if let Some(value) = limits.get(key).filter(|value| !value.is_null()) {
-                let (percent, reset) = window_values(value, "used_percentage")?;
-                windows.push(make_window(percent, reset)?);
+                windows.push(window(value, "used_percentage", minutes)?);
             }
         }
         if windows.is_empty() {
@@ -121,9 +147,7 @@ impl ProviderUsageSource for LocalProviderUsageSource {
         let session = session.to_string();
         crate::common::operation_context::spawn_blocking(move || read_codex(&home, &session))
             .await
-            .map_err(|error| {
-                UsageError::from(crate::domain::failure::TechnicalFailure::from(error))
-            })?
+            .map_err(technical)?
     }
 }
 
@@ -156,7 +180,7 @@ pub(crate) fn read_codex(
         &database,
         rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
     )
-    .map_err(|error| UsageError::from(crate::domain::failure::TechnicalFailure::from(error)))?;
+    .map_err(technical)?;
     let path: Option<String> = connection
         .query_row(
             "SELECT rollout_path FROM threads WHERE id = ?1",
@@ -164,17 +188,12 @@ pub(crate) fn read_codex(
             |row| row.get(0),
         )
         .optional()
-        .map_err(|error| UsageError::from(crate::domain::failure::TechnicalFailure::from(error)))?;
+        .map_err(technical)?;
     let Some(path) = path else { return Ok(None) };
     let mut lines =
         crate::infrastructure::reverse_lines::ReverseLines::open(std::path::Path::new(&path))
-            .map_err(|error| {
-                UsageError::from(crate::domain::failure::TechnicalFailure::from(error))
-            })?;
-    while let Some(line) = lines
-        .read_previous()
-        .map_err(|error| UsageError::from(crate::domain::failure::TechnicalFailure::from(error)))?
-    {
+            .map_err(technical)?;
+    while let Some(line) = lines.read_previous().map_err(technical)? {
         if line.iter().all(u8::is_ascii_whitespace) {
             continue;
         }
@@ -204,10 +223,7 @@ pub(crate) fn read_codex(
         let Some(limits) = payload.rate_limits else {
             return Ok(None);
         };
-        let timestamp = parse_timestamp(
-            &connection,
-            event.timestamp.as_deref().ok_or(UsageError::Invalid)?,
-        )?;
+        let timestamp = parse_timestamp(event.timestamp.as_deref().ok_or(UsageError::Invalid)?)?;
         let mut windows = Vec::new();
         for key in ["primary", "secondary"] {
             if let Some(value) = limits.get(key).filter(|value| !value.is_null()) {
@@ -241,51 +257,21 @@ pub(crate) fn read_codex(
     Ok(None)
 }
 
-fn parse_timestamp(
-    connection: &rusqlite::Connection,
-    value: &str,
-) -> Result<std::time::SystemTime, UsageError> {
-    let (whole, nanos) = if let Some((prefix, suffix)) = value.split_once('.') {
-        let digits = suffix.bytes().take_while(u8::is_ascii_digit).count();
-        if digits == 0 || digits > 9 {
-            return Err(UsageError::Invalid);
-        }
-        let fraction = suffix[..digits]
-            .parse::<u32>()
-            .map_err(|_| UsageError::Invalid)?;
-        (
-            format!("{prefix}{}", &suffix[digits..]),
-            fraction * 10u32.pow(9 - digits as u32),
-        )
-    } else {
-        (value.to_string(), 0)
-    };
-    let bytes = whole.as_bytes();
-    if bytes.len() < 20
-        || bytes[..19]
-            .iter()
-            .enumerate()
-            .any(|(index, byte)| match index {
-                4 | 7 => *byte != b'-',
-                10 => *byte != b'T',
-                13 | 16 => *byte != b':',
-                _ => !byte.is_ascii_digit(),
-            })
-        || !(whole.ends_with('Z')
-            || bytes
-                .get(19)
-                .is_some_and(|byte| matches!(byte, b'+' | b'-')))
-    {
-        return Err(UsageError::Invalid);
-    }
-    let seconds: Option<i64> = connection
-        .query_row("SELECT unixepoch(?1)", [&whole], |row| row.get(0))
-        .map_err(|error| UsageError::from(crate::domain::failure::TechnicalFailure::from(error)))?;
-    let seconds = seconds
-        .filter(|seconds| *seconds >= 0)
-        .ok_or(UsageError::Invalid)?;
+fn technical<E>(error: E) -> UsageError
+where
+    crate::domain::failure::TechnicalFailure: From<E>,
+{
+    UsageError::from(crate::domain::failure::TechnicalFailure::from(error))
+}
+
+fn parse_timestamp(value: &str) -> Result<std::time::SystemTime, UsageError> {
+    let timestamp = chrono::DateTime::parse_from_rfc3339(value).map_err(|_| UsageError::Invalid)?;
+    let seconds = u64::try_from(timestamp.timestamp()).map_err(|_| UsageError::Invalid)?;
     std::time::UNIX_EPOCH
-        .checked_add(std::time::Duration::new(seconds as u64, nanos))
+        .checked_add(std::time::Duration::new(
+            seconds,
+            timestamp.timestamp_subsec_nanos(),
+        ))
         .ok_or(UsageError::Invalid)
 }
 

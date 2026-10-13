@@ -10,7 +10,7 @@ pub use clock::ProviderUsageClock;
 pub use error::UsageError;
 pub use observation::CodexUsageObservation;
 pub use record::CodexUsageRecord;
-pub use repository::ProviderUsageRepository;
+pub use repository::{CodexUsageObservationRepository, ProviderUsageRepository};
 pub use source::ProviderUsageSource;
 pub use usage::ProviderUsage;
 pub use window::UsageWindow;

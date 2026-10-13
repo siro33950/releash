@@ -324,6 +324,7 @@ pub fn compose_agent_sessions(
         ),
         usage_model.clone(),
         usage_model,
+        Arc::new(crate::adaptor::gateway::agent_session::provider_usage::CodexUsageObservationStore::default()),
         Arc::new(crate::adaptor::gateway::agent_session::provider_usage::SystemProviderUsageClock),
         input.subscriptions.clone(),
     ));

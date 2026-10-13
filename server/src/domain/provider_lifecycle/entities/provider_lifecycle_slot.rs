@@ -52,6 +52,17 @@ impl ProviderLifecycleSlot {
         provider: ProviderKind,
         scope: &ProviderLifecycleScope,
     ) -> Result<(), ProviderLifecycleRejection> {
+        let current = self.authorized_binding(hash, binding_id)?;
+        if current.binding.provider() != provider || current.binding.scope() != scope {
+            return Err(ProviderLifecycleRejection::BindingNotActive);
+        }
+        Ok(())
+    }
+    fn authorized_binding(
+        &self,
+        hash: &ProviderLifecycleCapabilityHash,
+        binding_id: &str,
+    ) -> Result<&ActiveBinding, ProviderLifecycleRejection> {
         let current = self
             .current
             .as_ref()
@@ -62,29 +73,17 @@ impl ProviderLifecycleSlot {
         if !current.capability_hash.matches(hash) {
             return Err(ProviderLifecycleRejection::InvalidCapability);
         }
-        if current.binding.provider() != provider || current.binding.scope() != scope {
-            return Err(ProviderLifecycleRejection::BindingNotActive);
-        }
-        Ok(())
+        Ok(current)
     }
     pub(crate) fn receive(
         &mut self,
         capability_hash: &ProviderLifecycleCapabilityHash,
         signal: ProviderLifecycleSignal,
     ) -> ProviderLifecycleOutcome {
-        let Some(current) = self.current.as_mut() else {
-            return ProviderLifecycleOutcome::Rejected(
-                ProviderLifecycleRejection::BindingNotActive,
-            );
-        };
-        if current.binding.binding_id() != signal.binding_id() {
-            return ProviderLifecycleOutcome::Rejected(ProviderLifecycleRejection::BindingExpired);
+        if let Err(reason) = self.authorized_binding(capability_hash, signal.binding_id()) {
+            return ProviderLifecycleOutcome::Rejected(reason);
         }
-        if !current.capability_hash.matches(capability_hash) {
-            return ProviderLifecycleOutcome::Rejected(
-                ProviderLifecycleRejection::InvalidCapability,
-            );
-        }
+        let current = self.current.as_mut().expect("authorized binding");
         current.binding.observe(signal)
     }
 

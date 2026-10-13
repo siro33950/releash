@@ -1,3 +1,4 @@
+use crate::domain::provider_usage::UsageError;
 use std::sync::Arc;
 
 use crate::domain::agent_session::aggregates::AgentSessionMutationOutcome;
@@ -90,13 +91,14 @@ pub struct ProviderPayloadInput<'a> {
 
 #[async_trait::async_trait]
 pub trait ProviderPayloadReceiver: Send + Sync {
-    async fn authorize_usage(
+    async fn receive_usage(
         &self,
         slot: &ProviderLifecycleSlotId,
         capability: &str,
         binding: &str,
         scope: &crate::domain::provider_lifecycle::ProviderLifecycleScope,
-    ) -> Result<bool, ProviderLifecycleIngressUsecaseError>;
+        payload: &[u8],
+    ) -> Result<ProviderLifecycleIngressResult, ProviderLifecycleIngressUsecaseError>;
     async fn receive_payload(
         &self,
         slot_id: &ProviderLifecycleSlotId,
@@ -345,14 +347,16 @@ fn merge_activity_outcome(
 
 #[async_trait::async_trait]
 impl ProviderPayloadReceiver for ProviderLifecycleIngressUsecase {
-    async fn authorize_usage(
+    async fn receive_usage(
         &self,
         slot: &ProviderLifecycleSlotId,
         capability: &str,
         binding: &str,
         scope: &crate::domain::provider_lifecycle::ProviderLifecycleScope,
-    ) -> Result<bool, ProviderLifecycleIngressUsecaseError> {
-        self.lifecycle
+        payload: &[u8],
+    ) -> Result<ProviderLifecycleIngressResult, ProviderLifecycleIngressUsecaseError> {
+        let authorization = self
+            .lifecycle
             .authorize_usage(
                 slot,
                 capability,
@@ -361,7 +365,19 @@ impl ProviderPayloadReceiver for ProviderLifecycleIngressUsecase {
                 scope,
             )
             .await
-            .map_err(Into::into)
+            .map_err(ProviderLifecycleIngressUsecaseError::from)?;
+        if let Err(reason) = authorization {
+            return Ok(ProviderLifecycleIngressResult::Rejected(reason));
+        }
+        let usage = self
+            .usage
+            .as_ref()
+            .ok_or(ProviderLifecycleIngressUsecaseError::StorageUnavailable)?;
+        usage.receive_claude(payload).map_err(|error| match error {
+            UsageError::Invalid => ProviderLifecycleIngressUsecaseError::InvalidInput,
+            UsageError::Technical(error) => ProviderLifecycleIngressUsecaseError::Technical(error),
+        })?;
+        Ok(ProviderLifecycleIngressResult::Applied)
     }
 
     async fn receive_payload(
@@ -393,7 +409,11 @@ impl ProviderPayloadReceiver for ProviderLifecycleIngressUsecase {
                     _ => None,
                 };
                 let result = self.receive(slot_id, capability, signal).await?;
-                if result == ProviderLifecycleIngressResult::Applied {
+                if matches!(
+                    result,
+                    ProviderLifecycleIngressResult::Applied
+                        | ProviderLifecycleIngressResult::Duplicate
+                ) {
                     if let (Some(usage), Some(id)) = (&self.usage, codex_session) {
                         usage.start_codex_session(&id);
                     }
