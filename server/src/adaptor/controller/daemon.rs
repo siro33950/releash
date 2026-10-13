@@ -286,7 +286,7 @@ pub async fn compose(
                             #[cfg(not(any(target_os = "macos", target_os = "linux")))]
                             adaptor::gateway::agent_session::LocalProviderExecutableProbeGateway::new(),
                         ),
-                        claude_config_dir: claude_config_dir.clone(),
+                        claude_config_dir,
                         codex_home,
                         cli_binary: infrastructure::platform::path_aliases::alias_name_for_profile(
                             infrastructure::platform::path_aliases::BuildProfile::current(),

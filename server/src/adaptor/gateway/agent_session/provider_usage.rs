@@ -152,10 +152,6 @@ impl ProviderUsageSource for LocalProviderUsageSource {
 }
 
 fn window(value: &serde_json::Value, field: &str, minutes: u64) -> Result<UsageWindow, UsageError> {
-    let (percent, reset) = window_values(value, field)?;
-    UsageWindow::new(percent, minutes, reset)
-}
-fn window_values(value: &serde_json::Value, field: &str) -> Result<(f64, u64), UsageError> {
     let used_percent = value
         .get(field)
         .and_then(serde_json::Value::as_f64)
@@ -164,7 +160,7 @@ fn window_values(value: &serde_json::Value, field: &str) -> Result<(f64, u64), U
         .get("resets_at")
         .and_then(serde_json::Value::as_u64)
         .ok_or(UsageError::Invalid)?;
-    Ok((used_percent, resets_at))
+    UsageWindow::new(used_percent, minutes, resets_at)
 }
 
 pub(crate) fn read_codex(

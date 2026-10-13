@@ -17,6 +17,22 @@ struct ActiveBinding {
     binding: ProviderLifecycleBinding,
 }
 
+impl ActiveBinding {
+    fn authorize(
+        &self,
+        hash: &ProviderLifecycleCapabilityHash,
+        binding_id: &str,
+    ) -> Result<(), ProviderLifecycleRejection> {
+        if self.binding.binding_id() != binding_id {
+            return Err(ProviderLifecycleRejection::BindingExpired);
+        }
+        if !self.capability_hash.matches(hash) {
+            return Err(ProviderLifecycleRejection::InvalidCapability);
+        }
+        Ok(())
+    }
+}
+
 impl ProviderLifecycleSlot {
     pub(crate) fn new(id: ProviderLifecycleSlotId) -> Self {
         Self { id, current: None }
@@ -67,12 +83,19 @@ impl ProviderLifecycleSlot {
             .current
             .as_ref()
             .ok_or(ProviderLifecycleRejection::BindingNotActive)?;
-        if current.binding.binding_id() != binding_id {
-            return Err(ProviderLifecycleRejection::BindingExpired);
-        }
-        if !current.capability_hash.matches(hash) {
-            return Err(ProviderLifecycleRejection::InvalidCapability);
-        }
+        current.authorize(hash, binding_id)?;
+        Ok(current)
+    }
+    fn authorized_binding_mut(
+        &mut self,
+        hash: &ProviderLifecycleCapabilityHash,
+        binding_id: &str,
+    ) -> Result<&mut ActiveBinding, ProviderLifecycleRejection> {
+        let current = self
+            .current
+            .as_mut()
+            .ok_or(ProviderLifecycleRejection::BindingNotActive)?;
+        current.authorize(hash, binding_id)?;
         Ok(current)
     }
     pub(crate) fn receive(
@@ -80,11 +103,10 @@ impl ProviderLifecycleSlot {
         capability_hash: &ProviderLifecycleCapabilityHash,
         signal: ProviderLifecycleSignal,
     ) -> ProviderLifecycleOutcome {
-        if let Err(reason) = self.authorized_binding(capability_hash, signal.binding_id()) {
-            return ProviderLifecycleOutcome::Rejected(reason);
+        match self.authorized_binding_mut(capability_hash, signal.binding_id()) {
+            Ok(current) => current.binding.observe(signal),
+            Err(reason) => ProviderLifecycleOutcome::Rejected(reason),
         }
-        let current = self.current.as_mut().expect("authorized binding");
-        current.binding.observe(signal)
     }
 
     pub(crate) fn release(&mut self, binding_id: &str) -> ProviderLifecycleOutcome {
