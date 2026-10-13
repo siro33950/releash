@@ -888,11 +888,21 @@ fn test_terminal購読payload_四種類の転送値を保つ() {
         ),
         (
             Item::Exit {
+                state: crate::domain::terminal_surface::TerminalShellState {
+                    cwd: Some("/last".into()),
+                    has_foreground_process: false,
+                },
                 session_key: "terminal".into(),
                 exit_code: Some(42),
                 sequence: 10,
             },
             wire::terminal_event::Item::Exit(wire::TerminalExit {
+                status: Some(wire::TerminalStatus {
+                    session_key: "terminal".into(),
+                    cwd: Some("/last".into()),
+                    has_foreground_process: false,
+                    sequence: 10,
+                }),
                 session_key: "terminal".into(),
                 exit_code: Some(42),
                 sequence: 10,

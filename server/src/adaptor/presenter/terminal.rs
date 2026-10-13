@@ -119,6 +119,7 @@ pub enum TerminalSurfaceStreamItemV1 {
         sequence: u64,
     },
     Exit {
+        state: Option<TerminalShellStateV1>,
         session_key: String,
         exit_code: Option<i32>,
         sequence: u64,
@@ -167,10 +168,12 @@ impl From<crate::usecase::terminal_surface::application::TerminalSurfaceStreamIt
                 sequence,
             },
             crate::usecase::terminal_surface::application::TerminalSurfaceStreamItem::Exit {
+                state,
                 session_key,
                 exit_code,
                 sequence,
             } => Self::Exit {
+                state: Some(state.into()),
                 session_key,
                 exit_code,
                 sequence,
@@ -237,6 +240,10 @@ impl TryFrom<&crate::adaptor::presenter::client::TerminalEvent> for TerminalSurf
                 sequence: resize.sequence,
             }),
             Item::Exit(exit) => Ok(Self::Exit {
+                state: exit.status.as_ref().map(|state| TerminalShellStateV1 {
+                    cwd: state.cwd.clone(),
+                    has_foreground_process: state.has_foreground_process,
+                }),
                 session_key: exit.session_key.clone(),
                 exit_code: exit.exit_code,
                 sequence: exit.sequence,

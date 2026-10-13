@@ -72,6 +72,7 @@ pub enum TerminalSurfaceStreamItem {
         sequence: u64,
     },
     Exit {
+        state: crate::domain::terminal_surface::TerminalShellState,
         session_key: String,
         exit_code: Option<i32>,
         sequence: u64,

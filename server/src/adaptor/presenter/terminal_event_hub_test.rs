@@ -169,6 +169,10 @@ fn test_global_broadcastへはexitだけが流れoutputやresizeは流れない(
     ));
 
     hub.publish(TerminalSurfaceOutputEvent::Exit {
+        state: crate::domain::terminal_surface::TerminalShellState {
+            cwd: None,
+            has_foreground_process: false,
+        },
         session_key: "session".to_string(),
         runtime_generation: 1,
         exit_code: Some(0),
@@ -423,6 +427,10 @@ fn test_terminal経路_現在と同じ番号の旧世代終了を届け最新削
         })
         .unwrap();
     hub.publish(TerminalSurfaceOutputEvent::Exit {
+        state: crate::domain::terminal_surface::TerminalShellState {
+            cwd: None,
+            has_foreground_process: false,
+        },
         session_key: "session".into(),
         runtime_generation: 1,
         sequence: 0,

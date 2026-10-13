@@ -36,17 +36,16 @@ fn test_terminal登録_nulを含む識別子を失敗として返す() {
     // Then
     assert!(matches!(
         path,
-        Err(TerminalSurfaceOwnerError::WorkspacePathMissing)
+        Err(TerminalSurfaceOwnerError::WorkspacePath)
     ));
-    assert!(matches!(
-        session,
-        Err(TerminalSurfaceOwnerError::SessionIdMissing)
-    ));
-    assert!(!presenter.test_runtime().inspect(|state| state.registered(
-        &SubscriptionTarget::from_parts("terminal", &["/repo"])
-            .unwrap()
-            .to_string()
-    )));
+    assert!(matches!(session, Err(TerminalSurfaceOwnerError::SessionId)));
+    assert!(!presenter.test_runtime().inspect(|state| {
+        state.registered(
+            &SubscriptionTarget::from_parts("terminal", &["/repo"])
+                .unwrap()
+                .to_string(),
+        )
+    }));
 }
 
 #[tokio::test]
@@ -110,6 +109,10 @@ async fn test_古いterminal寸法_初回の復元要求だけ待機者へ通知
         presenter.as_ref(),
         &crate::test_support::state_subscription::registration("session", "/repo", None, 1, 2),
         TerminalSurfaceOutputEvent::Exit {
+            state: crate::domain::terminal_surface::TerminalShellState {
+                cwd: None,
+                has_foreground_process: false,
+            },
             session_key: "session".into(),
             runtime_generation: 1,
             exit_code: Some(0),

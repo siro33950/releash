@@ -5,6 +5,7 @@ pub struct TerminalShellStatus {
     osc7_cwd: Option<String>,
     process_cwd: Option<String>,
     latest: Option<TerminalShellState>,
+    exited: bool,
 }
 
 impl TerminalShellStatus {
@@ -12,11 +13,14 @@ impl TerminalShellStatus {
         self.latest.clone()
     }
 
-    pub fn mark_exited(&mut self) {
-        self.latest = Some(TerminalShellState {
+    pub fn mark_exited(&mut self) -> TerminalShellState {
+        self.exited = true;
+        let state = TerminalShellState {
             cwd: self.latest.as_ref().and_then(|state| state.cwd.clone()),
             has_foreground_process: false,
-        });
+        };
+        self.latest = Some(state.clone());
+        state
     }
 
     pub fn observe(
@@ -26,6 +30,9 @@ impl TerminalShellStatus {
         process_cwd: String,
         has_foreground_process: bool,
     ) -> Option<TerminalShellState> {
+        if self.exited {
+            return None;
+        }
         if updated {
             self.osc7_cwd = osc7_cwd;
         } else if self

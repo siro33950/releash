@@ -17,9 +17,9 @@ pub enum TerminalSurfaceOwner {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TerminalSurfaceOwnerError {
-    WorkspacePathMissing,
-    SessionIdMissing,
-    InvalidTerminalId,
+    WorkspacePath,
+    SessionId,
+    TerminalId,
 }
 
 impl TerminalSurfaceOwner {
@@ -35,7 +35,7 @@ impl TerminalSurfaceOwner {
         Self::validate_workspace(&workspace)?;
         let terminal_id = terminal_id.into();
         if terminal_id.trim().is_empty() || terminal_id.contains('\0') {
-            return Err(TerminalSurfaceOwnerError::InvalidTerminalId);
+            return Err(TerminalSurfaceOwnerError::TerminalId);
         }
         Ok(Self::WorkspaceTerminal {
             workspace,
@@ -50,7 +50,7 @@ impl TerminalSurfaceOwner {
         Self::validate_workspace(&workspace)?;
         let session_id = session_id.into();
         if session_id.trim().is_empty() || session_id.contains('\0') {
-            return Err(TerminalSurfaceOwnerError::SessionIdMissing);
+            return Err(TerminalSurfaceOwnerError::SessionId);
         }
         Ok(Self::Session {
             workspace,
@@ -58,7 +58,7 @@ impl TerminalSurfaceOwner {
         })
     }
 
-    /// 集約不変条件で非空が保証済みの値からの構築。domain内部専用。
+    /// 集約不変条件で非空かつNULを含まないことが保証済みの値からの構築。domain内部専用。
     pub(in crate::domain) fn session_from_validated(
         workspace: WorkspaceIdentity,
         session_id: impl Into<String>,
@@ -71,7 +71,7 @@ impl TerminalSurfaceOwner {
 
     fn validate_workspace(workspace: &WorkspaceIdentity) -> Result<(), TerminalSurfaceOwnerError> {
         if workspace.as_str().trim().is_empty() || workspace.as_str().contains('\0') {
-            return Err(TerminalSurfaceOwnerError::WorkspacePathMissing);
+            return Err(TerminalSurfaceOwnerError::WorkspacePath);
         }
         Ok(())
     }

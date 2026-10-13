@@ -36,11 +36,11 @@ fn test_ターミナル画面所有者_長さ接頭辞で構成要素衝突を�
 fn test_ターミナル画面所有者_空白のみのワークスペースパスを拒否する() {
     assert_eq!(
         TerminalSurfaceOwner::workspace(WorkspaceIdentity::new(" ")),
-        Err(TerminalSurfaceOwnerError::WorkspacePathMissing)
+        Err(TerminalSurfaceOwnerError::WorkspacePath)
     );
     assert_eq!(
         TerminalSurfaceOwner::session(WorkspaceIdentity::new(" "), "session-1"),
-        Err(TerminalSurfaceOwnerError::WorkspacePathMissing)
+        Err(TerminalSurfaceOwnerError::WorkspacePath)
     );
 }
 
@@ -48,11 +48,11 @@ fn test_ターミナル画面所有者_空白のみのワークスペースパ�
 fn test_ターミナル画面所有者_空白のみのセッションidを拒否する() {
     assert_eq!(
         TerminalSurfaceOwner::session(WorkspaceIdentity::new("/repo"), "  "),
-        Err(TerminalSurfaceOwnerError::SessionIdMissing)
+        Err(TerminalSurfaceOwnerError::SessionId)
     );
     assert_eq!(
         TerminalSurfaceOwner::session(WorkspaceIdentity::new("/repo"), ""),
-        Err(TerminalSurfaceOwnerError::SessionIdMissing)
+        Err(TerminalSurfaceOwnerError::SessionId)
     );
 }
 
@@ -79,7 +79,7 @@ fn test_terminal所有者_同じworktreeのタブと既存所有者を区別す�
     for id in [" ", "bad\0id"] {
         assert_eq!(
             TerminalSurfaceOwner::workspace_terminal(workspace.clone(), id),
-            Err(TerminalSurfaceOwnerError::InvalidTerminalId)
+            Err(TerminalSurfaceOwnerError::TerminalId)
         );
     }
 }
@@ -91,23 +91,23 @@ fn test_ターミナル画面所有者_nullを含むパスとidを拒否する()
     // When / Then
     assert_eq!(
         TerminalSurfaceOwner::workspace(workspace.clone()),
-        Err(TerminalSurfaceOwnerError::WorkspacePathMissing)
+        Err(TerminalSurfaceOwnerError::WorkspacePath)
     );
     assert_eq!(
         TerminalSurfaceOwner::workspace_terminal(workspace.clone(), "terminal"),
-        Err(TerminalSurfaceOwnerError::WorkspacePathMissing)
+        Err(TerminalSurfaceOwnerError::WorkspacePath)
     );
     assert_eq!(
         TerminalSurfaceOwner::session(workspace, "session"),
-        Err(TerminalSurfaceOwnerError::WorkspacePathMissing)
+        Err(TerminalSurfaceOwnerError::WorkspacePath)
     );
     let workspace = WorkspaceIdentity::new("/repo");
     assert_eq!(
         TerminalSurfaceOwner::workspace_terminal(workspace.clone(), "terminal\0id"),
-        Err(TerminalSurfaceOwnerError::InvalidTerminalId)
+        Err(TerminalSurfaceOwnerError::TerminalId)
     );
     assert_eq!(
         TerminalSurfaceOwner::session(workspace, "session\0id"),
-        Err(TerminalSurfaceOwnerError::SessionIdMissing)
+        Err(TerminalSurfaceOwnerError::SessionId)
     );
 }

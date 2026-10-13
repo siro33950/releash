@@ -78,6 +78,31 @@ final class TerminalSessionTests: XCTestCase {
 
 
 extension TerminalSessionTests {
+  @MainActor func testExitUsesTheServerStatus() async throws {
+    let http = TestHTTPClient()
+    let model = try await testModel(http)
+    let session = model.terminal(path: "/repo", id: "exit-status")
+    try await eventually { session.hasForegroundProcess != nil }
+    var event = Releash_Client_V1_TerminalEvent()
+    event.exit.exitCode = 0
+    event.exit.status.cwd = "/server"
+    event.exit.status.hasForegroundProcess_p = true
+    session.receive(event)
+    XCTAssertEqual(session.hasForegroundProcess, true)
+    XCTAssertEqual(session.cwd, "/server")
+    event.exit.status.hasForegroundProcess_p = false
+    session.receive(event)
+    XCTAssertEqual(session.hasForegroundProcess, false)
+    event.exit.clearStatus()
+    session.receive(event)
+    XCTAssertNil(session.hasForegroundProcess)
+    XCTAssertNil(session.cwd)
+    session.stop()
+    await model.stop()
+  }
+}
+
+extension TerminalSessionTests {
   @MainActor func testAccessibilityPreservesWideAndComposedCharacters() {
     let screen = TerminalScreen(frame: .zero)
     screen.resize(cols: 80, rows: 24)
@@ -422,6 +447,8 @@ extension TerminalSessionTests {
         event.snapshot.status.hasForegroundProcess_p = false
       } else {
         event.exit.exitCode = 0
+        event.exit.status.cwd = "/last"
+        event.exit.status.hasForegroundProcess_p = false
       }
       session.receive(event)
       XCTAssertTrue(session.exited)

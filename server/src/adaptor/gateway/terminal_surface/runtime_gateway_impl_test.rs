@@ -872,6 +872,10 @@ async fn assert_terminal_recreation(drain_exit: bool) {
     assert_eq!(&*old_written.lock(), b"old");
     // When
     hub.publish(TerminalSurfaceOutputEvent::Exit {
+        state: crate::domain::terminal_surface::TerminalShellState {
+            cwd: None,
+            has_foreground_process: false,
+        },
         session_key: key.clone(),
         runtime_generation: 1,
         exit_code: Some(7),
@@ -1319,11 +1323,21 @@ fn test_shell観測_終了済みterminalには配信しない() {
     // Given
     let (gateway, sink) = shell_gateway();
     gateway.registry.lock().mark_exited(1, Some(0)).unwrap();
+    gateway.runtimes.lock()[&1]
+        .shell_observation
+        .lock()
+        .mark_exited();
     // When
     observe_test_shell(&gateway, "/osc7");
     // Then
     assert!(sink.events.lock().unwrap().is_empty());
-    assert_eq!(gateway.shell_state(1), None);
+    assert_eq!(
+        gateway.shell_state(1),
+        Some(crate::domain::terminal_surface::TerminalShellState {
+            cwd: None,
+            has_foreground_process: false
+        })
+    );
 }
 
 #[test]
@@ -1387,8 +1401,9 @@ fn test_shell終了_前面処理ありの観測を更新し終了後の観測は
             TerminalSurfaceOutputEvent::Status { .. },
             TerminalSurfaceOutputEvent::Exit {
                 exit_code: Some(0),
+                state,
                 ..
             }
-        ]
+        ] if state.cwd.as_deref() == Some("/last") && !state.has_foreground_process
     ));
 }

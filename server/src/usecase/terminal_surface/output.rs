@@ -28,6 +28,7 @@ pub enum TerminalSurfaceOutputEvent {
         sequence: u64,
     },
     Exit {
+        state: crate::domain::terminal_surface::TerminalShellState,
         session_key: String,
         runtime_generation: u64,
         exit_code: Option<i32>,

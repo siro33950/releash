@@ -2415,6 +2415,7 @@ message TerminalExit {
   string session_key = 1;
   optional int32 exit_code = 2;
   uint64 sequence = 3;
+  optional TerminalStatus status = 4;
 }
 
 message WorkspaceNodeStatus {

@@ -423,11 +423,11 @@ fn publish_terminal_exit(context: &TerminalOutputReaderContext, exit_code: Optio
     context
         .event_order
         .advance_and_publish(context.event_sink.as_deref(), || {
-            let sequence = {
+            let (sequence, state) = {
                 let terminal_surface = context.terminal_surface.lock();
                 let mut registry = context.registry.lock();
                 let sequence = registry.mark_exited(context.runtime_generation, exit_code)?;
-                context.shell_observation.lock().mark_exited();
+                let state = context.shell_observation.lock().mark_exited();
                 if context.checkpoint_scheduler.is_none() {
                     let checkpoint = terminal_surface.snapshot(sequence);
                     registry.apply_checkpoint(
@@ -435,7 +435,7 @@ fn publish_terminal_exit(context: &TerminalOutputReaderContext, exit_code: Optio
                         into_domain_checkpoint(checkpoint),
                     );
                 }
-                sequence
+                (sequence, state)
             };
             if let Some(checkpoint_scheduler) = &context.checkpoint_scheduler {
                 if let Some(journal) = &context.checkpoint_journal {
@@ -453,6 +453,7 @@ fn publish_terminal_exit(context: &TerminalOutputReaderContext, exit_code: Optio
             Some((
                 sequence,
                 TerminalSurfaceOutputEvent::Exit {
+                    state,
                     session_key: context.session_key.clone(),
                     runtime_generation: context.runtime_generation,
                     exit_code,
@@ -566,9 +567,6 @@ fn publish_shell_observation(
     order.advance_and_publish(sink, || {
         let registry = registry.lock();
         let surface = registry.get(generation)?;
-        if surface.process_state.is_exited() {
-            return None;
-        }
         let foreground =
             crate::domain::terminal_surface::TerminalShellState::has_foreground_process(
                 observation.shell_group,

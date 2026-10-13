@@ -166,12 +166,14 @@ impl TerminalSurfaceStateSink for TerminalSubscriptionPresenter {
                 0,
             ),
             TerminalSurfaceOutputEvent::Exit {
+                state,
                 session_key,
                 exit_code,
                 sequence,
                 ..
             } => (
                 TerminalSurfaceStreamItem::Exit {
+                    state,
                     session_key,
                     exit_code,
                     sequence,

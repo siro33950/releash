@@ -8,6 +8,10 @@ async fn test_終了購読_遅延と取消を内部観測へ伝える() {
     for sequence in [1, 2] {
         sender
             .send(TerminalSurfaceEvent::Exit {
+                state: crate::domain::terminal_surface::TerminalShellState {
+                    cwd: None,
+                    has_foreground_process: false,
+                },
                 session_key: "session".into(),
                 runtime_generation: 1,
                 exit_code: Some(0),

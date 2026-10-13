@@ -121,10 +121,17 @@ impl From<crate::adaptor::presenter::terminal::TerminalSurfaceStreamItemV1> for 
                     sequence,
                 }),
                 Item::Exit {
+                    state,
                     session_key,
                     exit_code,
                     sequence,
                 } => Wire::Exit(TerminalExit {
+                    status: state.map(|state| TerminalStatus {
+                        session_key: session_key.clone(),
+                        cwd: state.cwd,
+                        has_foreground_process: state.has_foreground_process,
+                        sequence,
+                    }),
                     session_key,
                     exit_code,
                     sequence,

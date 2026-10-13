@@ -108,7 +108,8 @@ import SwiftTerm
     case .exit(let exit):
       guard attachment == current else { return }
       exited = true
-      hasForegroundProcess = false
+      hasForegroundProcess = exit.hasStatus ? exit.status.hasForegroundProcess_p : nil
+      cwd = exit.hasStatus && exit.status.hasCwd ? exit.status.cwd : nil
       showExit(exit.hasExitCode ? exit.exitCode : nil)
     case nil: failure = "Terminalのイベントがありません"
     }

@@ -149,6 +149,7 @@ impl TerminalSurfaceEventSink for TerminalSurfaceEventHub {
         }
 
         if let TerminalSurfaceOutputEvent::Exit {
+            state,
             session_key,
             runtime_generation,
             exit_code,
@@ -156,6 +157,7 @@ impl TerminalSurfaceEventSink for TerminalSurfaceEventHub {
         } = event
         {
             let _ = self.sender.send(TerminalSurfaceEvent::Exit {
+                state,
                 session_key,
                 runtime_generation,
                 exit_code,

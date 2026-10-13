@@ -53,8 +53,11 @@ fn test_shell終了_最後のcwdを保ち前面処理を無しにする() {
     let mut status = TerminalShellStatus::default();
     status.observe(Some("/osc7".into()), true, "/process".into(), true);
     // When
-    status.mark_exited();
+    let exited = status.mark_exited();
+    let observed = status.observe(Some("/ignored".into()), true, "/other".into(), true);
     // Then
+    assert_eq!(observed, None);
+    assert_eq!(status.latest(), Some(exited));
     assert_eq!(
         status.latest(),
         Some(TerminalShellState {
@@ -69,8 +72,11 @@ fn test_shell終了_観測前でも前面処理無しの状態を返す() {
     // Given
     let mut status = TerminalShellStatus::default();
     // When
-    status.mark_exited();
+    let exited = status.mark_exited();
+    let observed = status.observe(Some("/ignored".into()), true, "/other".into(), true);
     // Then
+    assert_eq!(observed, None);
+    assert_eq!(status.latest(), Some(exited));
     assert_eq!(
         status.latest(),
         Some(TerminalShellState {

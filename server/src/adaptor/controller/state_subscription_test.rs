@@ -2176,6 +2176,10 @@ mod driver_tests {
                 sequence: 1,
             });
             hub.publish(TerminalSurfaceOutputEvent::Exit {
+                state: crate::domain::terminal_surface::TerminalShellState {
+                    cwd: None,
+                    has_foreground_process: false,
+                },
                 session_key: surface.session_key.clone(),
                 runtime_generation: 1,
                 exit_code: Some(7),
@@ -2207,6 +2211,10 @@ mod driver_tests {
                 (
                     1,
                     TerminalSurfaceStreamItem::Exit {
+                        state: crate::domain::terminal_surface::TerminalShellState {
+                            cwd: None,
+                            has_foreground_process: false,
+                        },
                         session_key: surface.session_key.clone(),
                         exit_code: Some(7),
                         sequence: 1,
@@ -2267,6 +2275,10 @@ mod driver_tests {
                 sequence: 0,
             });
             hub.publish(TerminalSurfaceOutputEvent::Exit {
+                state: crate::domain::terminal_surface::TerminalShellState {
+                    cwd: None,
+                    has_foreground_process: false,
+                },
                 session_key: surface.session_key.clone(),
                 runtime_generation: 1,
                 exit_code: Some(7),
@@ -2432,6 +2444,10 @@ mod driver_tests {
                     sequence: 1,
                 });
                 hub.publish(TerminalSurfaceOutputEvent::Exit {
+                    state: crate::domain::terminal_surface::TerminalShellState {
+                        cwd: None,
+                        has_foreground_process: false,
+                    },
                     session_key: surface.session_key.clone(),
                     runtime_generation: generation,
                     exit_code: Some(0),
