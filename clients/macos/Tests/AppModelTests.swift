@@ -496,3 +496,138 @@ extension AppModelTests {
   }
 
 }
+
+extension AppModelTests {
+  @MainActor func testStoppingDaemonClearsUsageAndDoesNotDiscoverOrStartAgain() async throws {
+    let calls = Mutex<[[String]]>([])
+    let model = AppModel(cli: CLI(executable: URL(fileURLWithPath: "/bundled/releash"), run: { _, args in
+      calls.withLock { $0.append(args) }
+      return Data()
+    }))
+    var usage = Releash_Client_V1_ProviderUsageEntry()
+    usage.provider = "claude"
+    model.providerUsage = [usage]
+    model.connected = true
+    await model.stopDaemon()
+    XCTAssertEqual(calls.withLock { $0 }, [["server", "stop"]])
+    XCTAssertEqual(model.connectionFailure, "サーバは停止しています")
+    XCTAssertFalse(model.connected)
+    XCTAssertFalse(model.reconnecting)
+    XCTAssertTrue(model.providerUsage.isEmpty)
+    XCTAssertFalse(model.serverOperation)
+  }
+
+  @MainActor func testRestartFailureRemainsVisibleWithoutStartingServerAgain() async throws {
+    let calls = Mutex<[[String]]>([])
+    let model = AppModel(cli: CLI(executable: URL(fileURLWithPath: "/bundled/releash"), run: { _, args in
+      calls.withLock { $0.append(args) }
+      throw CLIFailure(message: "restart failed")
+    }))
+    model.connected = true
+    await model.restartDaemon()
+    XCTAssertEqual(calls.withLock { $0 }, [["server", "restart"]])
+    XCTAssertEqual(model.connectionFailure, "restart failed")
+    XCTAssertFalse(model.connected)
+    XCTAssertFalse(model.serverOperation)
+  }
+}
+
+extension AppModelTests {
+  @MainActor func testFooterReceivesUsageHookWarningsAndDaemonInfo() async throws {
+    let http = TestHTTPClient()
+    http.state.withLock { state in
+      var usage = Releash_Client_V1_ProviderUsageEntry()
+      usage.provider = "claude"
+      var window = Releash_Client_V1_ProviderUsageWindow()
+      window.usedPercent = 81
+      window.windowMinutes = 300
+      window.resetsAt = 123
+      window.warning = true
+      usage.windows = [window]
+      state.providerUsage.items = [usage]
+      var warning = Releash_Client_V1_ProviderHookHealthWarningResponse()
+      warning.provider.value = .claude
+      warning.reason = "hook missing"
+      state.hookHealth.warnings.items = [warning]
+      state.hookHealth.readErrors = ["record unreadable"]
+      state.daemonInfo.release = "1.0.0"
+    }
+    let model = try await testModel(http)
+    try await eventually { model.providerUsage.count == 1 && model.daemonInfo != nil }
+    XCTAssertEqual(model.providerUsage[0].windows[0].usedPercent, 81)
+    XCTAssertEqual(model.hookHealth.warnings.items[0].reason, "hook missing")
+    XCTAssertEqual(model.hookHealth.readErrors, ["record unreadable"])
+    XCTAssertEqual(model.daemonInfo?.release, "1.0.0")
+    await model.stop()
+  }
+
+  @MainActor func testHookSubscriptionFailureIsKeptInFooterWithoutOperationAlert() async throws {
+    let http = TestHTTPClient()
+    http.state.withLock { $0.failedSubscriptionTargets["provider-hook-health"] = 1 }
+    let model = try await testModel(http)
+    try await eventually { model.hookSubscriptionFailure != nil }
+    XCTAssertTrue(model.hookSubscriptionFailure?.contains("StartStateSubscription failed") == true)
+    XCTAssertNil(model.failure)
+    XCTAssertTrue(model.connected)
+    await model.stop()
+  }
+}
+
+extension AppModelTests {
+  @MainActor func testRestartReconnectsWithCLIAndDropsPreviousUsage() async throws {
+    let http = TestHTTPClient()
+    try Data(#"{"port":12345,"token":"operator-test","daemon_id":"test","pid":1,"process_started_at":"1"}"#.utf8).write(to: http.discoveryFile)
+    let status = try JSONSerialization.data(withJSONObject: [
+      "running": true, "compatibility": "compatible", "release_compatibility": "server_older", "discovery_file": http.discoveryFile.path,
+    ])
+    let calls = Mutex<[[String]]>([])
+    let model = AppModel(cli: CLI(executable: URL(fileURLWithPath: "/bundled/releash"), run: { _, args in
+      calls.withLock { $0.append(args) }
+      return status
+    }), httpClient: http)
+    await model.start()
+    try await eventually { model.connected }
+    var usage = Releash_Client_V1_ProviderUsageEntry()
+    usage.provider = "codex"
+    model.providerUsage = [usage]
+    await model.restartDaemon()
+    try await eventually { model.connected }
+    XCTAssertEqual(calls.withLock { $0 }, [["status", "--json"], ["server", "restart"], ["status", "--json"]])
+    XCTAssertTrue(model.providerUsage.isEmpty)
+    XCTAssertEqual(model.releaseCompatibility, "server_older")
+    XCTAssertNil(model.connectionFailure)
+    await model.stop()
+  }
+
+  @MainActor func testHookStreamFailureStaysInFooter() async throws {
+    let http = TestHTTPClient()
+    let model = try await testModel(http)
+    try await eventually { http.state.withLock { $0.subscriptions.contains { $0.target == "provider-hook-health" } } }
+    let subscription = try XCTUnwrap(http.state.withLock { $0.subscriptions.first { $0.target == "provider-hook-health" } })
+    var event = Releash_Client_V1_StateSubscriptionEvent()
+    event.subscriptionID = subscription.subscriptionID
+    event.failure.message = "hook stream failed"
+    try TestHTTPClient.send(event, on: http.state.withLock { $0.streams.last! })
+    try await eventually { model.hookSubscriptionFailure == "hook stream failed" }
+    XCTAssertNil(model.failure)
+    await model.stop()
+  }
+}
+
+extension AppModelTests {
+  @MainActor func testUsageSubscriptionFailureKeepsServerFooterAndConnectionAvailable() async throws {
+    let http = TestHTTPClient()
+    http.state.withLock { state in
+      state.failedSubscriptionTargets["provider-usage"] = 1
+      state.daemonInfo.release = "0.0.1"
+    }
+    let model = try await testModel(http)
+    try await eventually { model.failure != nil && model.daemonInfo != nil }
+    XCTAssertTrue(model.failure?.contains("StartStateSubscription failed") == true)
+    XCTAssertEqual(model.daemonInfo?.release, "0.0.1")
+    XCTAssertTrue(model.connected)
+    XCTAssertFalse(model.reconnecting)
+    XCTAssertEqual(http.state.withLock { $0.streams.count }, 1)
+    await model.stop()
+  }
+}

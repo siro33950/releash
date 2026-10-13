@@ -463,6 +463,7 @@ impl crate::usecase::provider_lifecycle::ProviderPayloadReceiver for AcceptanceP
         (
             crate::domain::provider_lifecycle::ProviderLifecycleIngressResult,
             bool,
+            Option<crate::usecase::provider_lifecycle::ingress::ProviderUsagePreparation>,
         ),
         crate::usecase::provider_lifecycle::ProviderLifecycleIngressUsecaseError,
     > {
@@ -476,14 +477,14 @@ impl crate::usecase::provider_lifecycle::ProviderPayloadReceiver for AcceptanceP
             .map_err(ProviderLifecycleIngressUsecaseError::Payload)?
         {
             ProviderPayloadInterpretation::Subagent => {
-                Ok((ProviderLifecycleIngressResult::Ignored, false))
+                Ok((ProviderLifecycleIngressResult::Ignored, false, None))
             }
             ProviderPayloadInterpretation::Signal(signal) => {
                 let started = signal.is_session_started();
                 self.0
                     .receive(slot_id, capability, signal)
                     .await
-                    .map(|result| (result, started))
+                    .map(|result| (result, started, None))
                     .map_err(Into::into)
             }
         }

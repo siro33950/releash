@@ -98,6 +98,13 @@ impl ProviderLifecycleSlot {
         self.current.as_ref().map(|current| current.binding.scope())
     }
 
+    pub(crate) fn current_provider_session(&self, provider: ProviderKind) -> Option<&str> {
+        self.current
+            .as_ref()
+            .filter(|current| current.binding.provider() == provider)
+            .and_then(|current| current.binding.provider_session_id())
+    }
+
     pub(crate) fn current_provider(&self) -> Option<ProviderKind> {
         self.current
             .as_ref()

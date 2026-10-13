@@ -13,7 +13,7 @@ final class Fixture: Sendable {
   let providerExecutable: String
   let environment: [String: String]
 
-  init() throws {
+  init(providerUsage: Bool = false) throws {
     guard let path = ProcessInfo.processInfo.environment["RELEASH_E2E_ROOT"] else {
       throw NSError(domain: "E2E", code: 1, userInfo: [NSLocalizedDescriptionKey: "Missing RELEASH_E2E_ROOT"])
     }
@@ -35,11 +35,17 @@ final class Fixture: Sendable {
       "label": "e2e-provider", "input_lines": 1000, "alternate_screen": true,
       "report_terminal_size": false, "lifecycle_endpoint": "", "lifecycle": [], "exit_code": 0,
     ]
-    environment = [
+    var launchEnvironment = [
       "RELEASH_DATA_DIR": data.path,
       "RELEASH_WORKFLOWS_DIR": data.appendingPathComponent("workflows").path,
       "RELEASH_AGENT_TUI_FIXTURE_PLAN": String(decoding: try JSONSerialization.data(withJSONObject: plan), as: UTF8.self),
     ]
+    if providerUsage {
+      launchEnvironment["CLAUDE_CONFIG_DIR"] = directory.appendingPathComponent("claude").path
+      launchEnvironment["RELEASH_AGENT_TUI_FIXTURE_STATUSLINE"] =
+        #"{"rate_limits":{"five_hour":{"used_percentage":81,"resets_at":4102444800},"seven_day":{"used_percentage":41,"resets_at":4102444800}}}"#
+    }
+    environment = launchEnvironment
     try FileManager.default.createDirectory(at: data, withIntermediateDirectories: true)
     let encoder = JSONEncoder()
     encoder.outputFormatting = .withoutEscapingSlashes

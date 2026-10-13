@@ -193,6 +193,13 @@ pub fn payload(value: &StateValue) -> Result<wire::StatePayload, connectrpc::Con
                 crate::adaptor::presenter::client::value(*value)
                 .map_err(crate::adaptor::presenter::connect::command_error)?,
             ),
+            StateValue::ProviderUsage(values) => wire::state_payload::Value::ProviderUsage(wire::ProviderUsageSnapshot {
+                items: values.iter().map(|value| wire::ProviderUsageEntry {
+                    provider: match value.provider { crate::domain::provider_lifecycle::ProviderKind::Claude => "claude", crate::domain::provider_lifecycle::ProviderKind::Codex => "codex" }.into(),
+                    windows: value.windows.iter().map(|window| wire::ProviderUsageWindow { used_percent: window.used_percent, window_minutes: window.window_minutes, resets_at: window.resets_at, warning: window.warning }).collect(),
+                    plan: value.plan.clone(),
+                }).collect(),
+            }),
             StateValue::ProviderHookHealth(value) => {
                 wire::state_payload::Value::ProviderHookHealth(wire::ProviderHookHealthSnapshot {
                     warnings: Some(crate::adaptor::presenter::client::value(

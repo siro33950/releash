@@ -33,13 +33,45 @@ impl From<crate::adaptor::presenter::client::agent_session_provider_dto::Value> 
     }
 }
 pub(super) fn record_ingress<E>(
-    result: &Result<(ProviderLifecycleIngressResult, bool), E>,
+    result: &Result<
+        (
+            ProviderLifecycleIngressResult,
+            bool,
+            Option<crate::usecase::provider_lifecycle::ingress::ProviderUsagePreparation>,
+        ),
+        E,
+    >,
     elapsed: std::time::Duration,
 ) {
-    if matches!(result, Ok((ProviderLifecycleIngressResult::Applied, true))) {
+    if matches!(
+        result,
+        Ok((ProviderLifecycleIngressResult::Applied, true, _))
+    ) {
         crate::infrastructure::telemetry::metrics::record_terminal_launch(
             crate::infrastructure::telemetry::metrics::TerminalLaunch::HookIngress,
             elapsed,
         );
     }
 }
+
+pub(super) async fn prepare_usage(
+    deadline: Option<std::time::Instant>,
+    preparation: crate::usecase::provider_lifecycle::ingress::ProviderUsagePreparation,
+) -> Result<(), crate::usecase::provider_usage::UsageError> {
+    use crate::common::operation_context::{current, ingress_result, wait};
+    use crate::usecase::provider_usage::UsageError;
+    ingress_result(
+        deadline,
+        async {
+            wait(&current(), preparation)
+                .await
+                .map_err(|error| UsageError::Technical(error.into()))?
+        },
+        |_, error| UsageError::Technical(error.into()),
+    )
+    .await
+}
+
+#[cfg(test)]
+#[path = "provider_signal_test.rs"]
+mod provider_signal_tests;

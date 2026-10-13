@@ -17,3 +17,5 @@ pub(crate) mod wiring;
 pub(crate) mod workflow_startup;
 
 pub(crate) mod terminal_surface;
+
+pub(crate) mod provider_usage;

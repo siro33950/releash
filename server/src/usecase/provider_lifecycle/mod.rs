@@ -73,6 +73,28 @@ impl ProviderLifecycleUsecase {
         }
     }
 
+    pub(crate) async fn provider_sessions(
+        &self,
+        provider: ProviderKind,
+    ) -> Result<Vec<String>, ProviderLifecycleUsecaseError> {
+        let slots = self
+            .slots
+            .lock()
+            .map_err(|_| ProviderLifecycleUsecaseError::Corrupt)?
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        let mut ids = Vec::new();
+        for slot in slots {
+            if let Some(id) = slot.lock().await.current_provider_session(provider) {
+                ids.push(id.to_string());
+            }
+        }
+        ids.sort();
+        ids.dedup();
+        Ok(ids)
+    }
+
     pub async fn arm(
         &self,
         slot_id: ProviderLifecycleSlotId,

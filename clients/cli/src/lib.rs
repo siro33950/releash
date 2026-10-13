@@ -62,6 +62,8 @@ enum TopCommand {
 
 #[derive(Subcommand, Debug)]
 enum HookCommand {
+    Statusline,
+    ForwardUsage,
     Receive {
         #[arg(long, value_enum)]
         provider: HookProvider,
@@ -107,6 +109,12 @@ pub fn run() {
         .map(commands::output_options)
         .unwrap_or((false, None));
     let hook = matches!(cli.command, Some(TopCommand::Hook { .. }));
+    let lifecycle_hook = matches!(
+        cli.command,
+        Some(TopCommand::Hook {
+            command: HookCommand::Receive { .. }
+        })
+    );
     let result = crate::data_dir::resolve_data_dir(cli.data_dir)
         .map_err(connectrpc::ConnectError::unavailable)
         .and_then(|dir| {
@@ -131,7 +139,7 @@ pub fn run() {
             1
         }
     };
-    if hook {
+    if lifecycle_hook {
         print!("{{}}");
     }
     std::process::exit(if hook { 0 } else { code });
@@ -167,3 +175,5 @@ fn failure_output(error: &connectrpc::ConnectError, json: bool, guidance: Option
 #[cfg(test)]
 #[path = "lib_test.rs"]
 mod lib_tests;
+
+mod statusline;

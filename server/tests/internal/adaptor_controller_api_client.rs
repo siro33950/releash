@@ -1213,3 +1213,84 @@ pub async fn test_connect受付_停止後の新規streamを拒否し既存stream
     drop(stream);
     server.abort();
 }
+
+#[tokio::test]
+async fn test_使用率受信_hook権限とpayload上限を守り購読のread_modelへ反映する() {
+    use base64::Engine;
+    use releashd::test_support::integration::provider_usage::{
+        LocalProviderUsageSource, ProviderUsageReadModel, ProviderUsageUsecase,
+    };
+    use tower::ServiceExt;
+    // Given
+    let root = tempfile::tempdir().unwrap();
+    let model = Arc::new(ProviderUsageReadModel::default());
+    let usage = Arc::new(ProviderUsageUsecase::new(
+        Arc::new(LocalProviderUsageSource {
+            claude_account: root.path().join(".claude.json"),
+            codex_home: root.path().into(),
+        }),
+        model.clone(),
+        model,
+        releashd::test_support::integration::subscriptions::test_subscriptions(),
+    ));
+    let deps =
+        releashd::test_support::integration::transport::client_api_deps(Arc::new(dispatch()))
+            .with_provider_usage(usage.clone());
+    let app = router(
+        Some(deps),
+        releashd::test_support::integration::daemon::default_timeout(),
+    )
+    .layer(axum::middleware::from_fn_with_state(
+        releashd::test_support::integration::transport::ClientTokens {
+            operator: Arc::<str>::from("operator").into(),
+            hook: Arc::<str>::from("hook").into(),
+        },
+        releashd::test_support::integration::transport::require_client,
+    ));
+    let valid = br#"{"rate_limits":{"five_hour":{"used_percentage":81,"resets_at":123}}}"#;
+    // When / Then
+    for (payload, token, status) in [
+        (
+            valid.to_vec(),
+            "operator",
+            axum::http::StatusCode::FORBIDDEN,
+        ),
+        (
+            vec![b' '; 65537],
+            "hook",
+            axum::http::StatusCode::BAD_REQUEST,
+        ),
+        (
+            b"invalid".to_vec(),
+            "hook",
+            axum::http::StatusCode::BAD_REQUEST,
+        ),
+        (valid.to_vec(), "hook", axum::http::StatusCode::OK),
+    ] {
+        let body = serde_json::json!({"payload": base64::engine::general_purpose::STANDARD.encode(payload)});
+        let response = app
+            .clone()
+            .oneshot(
+                axum::http::Request::post("/releash.client.v1.ClientService/ReceiveProviderUsage")
+                    .header("content-type", "application/json")
+                    .header("connect-protocol-version", "1")
+                    .header("authorization", format!("Bearer {token}"))
+                    .body(axum::body::Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), status);
+    }
+    assert_eq!(usage.snapshot()[0].windows[0].used_percent, 81.0);
+    let payload = releashd::test_support::integration::platform::payload(
+        &releashd::test_support::integration::subscriptions::StateValue::ProviderUsage(
+            usage.snapshot(),
+        ),
+    )
+    .unwrap();
+    assert!(matches!(
+        payload.value,
+        Some(wire::state_payload::Value::ProviderUsage(_))
+    ));
+}

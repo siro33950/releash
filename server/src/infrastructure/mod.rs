@@ -22,3 +22,5 @@ pub(crate) mod state_subscription;
 pub(crate) mod timer;
 
 pub(crate) mod client_protocol;
+
+pub(crate) mod reverse_lines;

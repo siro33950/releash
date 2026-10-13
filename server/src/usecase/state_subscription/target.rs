@@ -51,6 +51,7 @@ pub enum SubscriptionTarget {
     WorkflowConfig,
     TerminalStartupCommand,
     ProviderHookHealth,
+    ProviderUsage,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -168,6 +169,7 @@ pub enum StateChangeSource {
     AppConfig,
     NotionConfig(String),
     ProviderHookHealth,
+    ProviderUsage,
 }
 
 impl SubscriptionTarget {
@@ -247,6 +249,7 @@ impl SubscriptionTarget {
                     | Self::WorkflowConfig
                     | Self::TerminalStartupCommand
             ),
+            C::ProviderUsage => matches!(self, Self::ProviderUsage),
             C::ProviderHookHealth => matches!(self, Self::ProviderHookHealth),
         }
     }

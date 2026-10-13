@@ -52,7 +52,7 @@ fn install_fixture_executable(
         ..FixturePlan::new(name, vec![])
     });
     let initial_instruction_argument = match provider {
-        AcceptanceProvider::Claude => "if [ \"$#\" -eq 3 ]; then initial_instruction=$3; fi",
+        AcceptanceProvider::Claude => "if [ \"$#\" -eq 5 ]; then initial_instruction=$5; fi",
         AcceptanceProvider::Codex => "if [ \"$#\" -eq 5 ]; then initial_instruction=$5; fi",
     };
     std::fs::write(

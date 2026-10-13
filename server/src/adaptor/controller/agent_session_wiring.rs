@@ -46,10 +46,10 @@ pub struct AgentSessionCompositionInput {
 }
 
 pub struct AgentSessionComposition {
-    #[cfg(feature = "test-support")]
     pub(crate) provider_lifecycle: Arc<ProviderLifecycleUsecase>,
     #[cfg(feature = "test-support")]
     pub(crate) sessions: Arc<AgentSessionUsecase>,
+    pub(crate) usage: Arc<crate::usecase::provider_usage::ProviderUsageUsecase>,
     pub(crate) history_read: Arc<AgentSessionHistoryReadUsecase>,
     pub(crate) provider_session_title_ingestion: Arc<ProviderSessionTitleIngestionUsecase>,
     pub(crate) rename: Arc<AgentSessionRenameUsecase>,
@@ -306,17 +306,40 @@ pub fn compose_agent_sessions(
     ));
     let execution_tree_stops = Arc::new(DeferredProviderExecutionTreeStopTransaction::new());
     let execution_tree_registrations = Arc::new(DeferredStartedExecutionTreeRegistrar::new());
-    let lifecycle_ingress = Arc::new(ProviderLifecycleIngressUsecase::new(
-        std::sync::Arc::new(
-            crate::adaptor::gateway::provider_lifecycle::LocalProviderPayloadInterpreter,
+    let usage_model = Arc::new(
+        crate::adaptor::gateway::agent_session::provider_usage::ProviderUsageReadModel::default(),
+    );
+    let usage = Arc::new(crate::usecase::provider_usage::ProviderUsageUsecase::new(
+        Arc::new(
+            crate::adaptor::gateway::agent_session::provider_usage::LocalProviderUsageSource {
+                claude_account: dirs::home_dir()
+                    .map(|home| home.join(".claude.json"))
+                    .unwrap_or_else(|| {
+                        input
+                            .data_dir
+                            .join("provider-history-unavailable/.claude.json")
+                    }),
+                codex_home: input.codex_home.clone(),
+            },
         ),
-        std::sync::Arc::new(crate::adaptor::gateway::identity::RandomIdentityIssuer),
-        provider_lifecycle.clone(),
-        sessions.clone(),
-        hook_health.clone(),
-        (session_repository.clone(), execution_tree_stops.clone()),
+        usage_model.clone(),
+        usage_model,
         input.subscriptions.clone(),
     ));
+    let lifecycle_ingress = Arc::new(
+        ProviderLifecycleIngressUsecase::new(
+            std::sync::Arc::new(
+                crate::adaptor::gateway::provider_lifecycle::LocalProviderPayloadInterpreter,
+            ),
+            std::sync::Arc::new(crate::adaptor::gateway::identity::RandomIdentityIssuer),
+            provider_lifecycle.clone(),
+            sessions.clone(),
+            hook_health.clone(),
+            (session_repository.clone(), execution_tree_stops.clone()),
+            input.subscriptions.clone(),
+        )
+        .with_usage(usage.clone()),
+    );
     let launch_gateway = Arc::new(LocalProviderAgentLaunchGateway::new(
         input.data_dir,
         input.cli_binary,
@@ -397,7 +420,7 @@ pub fn compose_agent_sessions(
     ));
 
     Ok(AgentSessionComposition {
-        #[cfg(feature = "test-support")]
+        usage,
         provider_lifecycle,
         #[cfg(feature = "test-support")]
         sessions,

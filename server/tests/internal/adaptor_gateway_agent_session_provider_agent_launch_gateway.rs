@@ -49,7 +49,7 @@ pub fn test_provider_launch_gateway_claudeのpluginをlaunch単位で生成しcl
     assert_eq!(prepared.process().executable(), "/opt/bin/claude");
     assert_eq!(prepared.initial_hook_warning(), None);
     assert_eq!(
-        prepared.process().arguments(),
+        &prepared.process().arguments()[..2],
         &[
             "--plugin-dir".to_string(),
             prepared
@@ -59,6 +59,11 @@ pub fn test_provider_launch_gateway_claudeのpluginをlaunch単位で生成しcl
                 .into_owned(),
         ]
     );
+    assert_eq!(prepared.process().arguments().len(), 4);
+    assert_eq!(prepared.process().arguments()[2], "--settings");
+    let settings: serde_json::Value =
+        serde_json::from_str(&prepared.process().arguments()[3]).unwrap();
+    assert_eq!(settings["statusLine"]["command"], "releash hook statusline");
     let resource_directory = prepared.resource_directory().unwrap();
     assert!(resource_directory.starts_with(data_dir.path()));
     assert!(resource_directory
@@ -435,5 +440,64 @@ pub fn test_provider起動資源削除_失敗の性質とメッセージを保�
     assert_eq!(
         gateway.cleanup("agent-1"),
         Err(ProviderAgentLaunchGatewayError::Technical(expected))
+    );
+}
+
+#[test]
+fn test_statusline設定_userからprojectとlocalの順で引き継ぐ() {
+    // Given
+    let root = tempfile::tempdir().unwrap();
+    let config = root.path().join("user");
+    let worktree = root.path().join("repo");
+    std::fs::create_dir_all(&config).unwrap();
+    std::fs::create_dir_all(worktree.join(".claude")).unwrap();
+    assert!(
+        releashd::test_support::integration::provider_usage::inherited_status_line(
+            &config, &worktree
+        )
+        .is_null()
+    );
+    std::fs::write(
+        config.join("settings.json"),
+        r#"{"statusLine":{"type":"command","command":"user","padding":2}}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        worktree.join(".claude/settings.json"),
+        r#"{"statusLine":{"type":"command","command":"project"}}"#,
+    )
+    .unwrap();
+    // When / Then
+    assert_eq!(
+        releashd::test_support::integration::provider_usage::inherited_status_line(
+            &config, &worktree
+        )["command"],
+        "project"
+    );
+    std::fs::write(
+        worktree.join(".claude/settings.local.json"),
+        r#"{"statusLine":{"type":"command","command":"local"}}"#,
+    )
+    .unwrap();
+    assert_eq!(
+        releashd::test_support::integration::provider_usage::inherited_status_line(
+            &config, &worktree
+        )["command"],
+        "local"
+    );
+    std::fs::write(worktree.join(".claude/settings.local.json"), "invalid").unwrap();
+    assert_eq!(
+        releashd::test_support::integration::provider_usage::inherited_status_line(
+            &config, &worktree
+        )["command"],
+        "project"
+    );
+    std::fs::remove_file(worktree.join(".claude/settings.local.json")).unwrap();
+    std::fs::create_dir(worktree.join(".claude/settings.local.json")).unwrap();
+    assert_eq!(
+        releashd::test_support::integration::provider_usage::inherited_status_line(
+            &config, &worktree
+        )["command"],
+        "project"
     );
 }

@@ -4271,6 +4271,7 @@ dependencies = [
  "prost-build",
  "prost-reflect",
  "protoc-bin-vendored",
+ "semver",
  "serde",
  "serde_json",
  "sysinfo",

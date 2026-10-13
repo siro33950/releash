@@ -181,6 +181,7 @@ pub struct WorkspaceStateReads {
     pub notion: Arc<crate::usecase::notion::usecase::NotionUsecase>,
     pub editor_settings: Arc<dyn crate::domain::external_editor::EditorSettingsGateway>,
     pub editor_scanner: Arc<dyn crate::domain::external_editor::InstalledEditorGateway>,
+    pub usage: Arc<crate::usecase::provider_usage::ProviderUsageUsecase>,
     pub hook_health: Arc<crate::usecase::provider_lifecycle::ProviderHookHealthReadUsecase>,
 }
 
@@ -321,6 +322,7 @@ impl WorkspaceStateReads {
                         .map_err(error)?,
                 ))
             }
+            T::ProviderUsage => return Ok(StateValue::ProviderUsage(self.usage.snapshot())),
             T::ProviderHookHealth => {
                 return Ok(StateValue::ProviderHookHealth(
                     self.hook_health.warnings().await.map_err(error)?,
@@ -467,7 +469,7 @@ impl WorkspaceStateReads {
             | T::SessionHistory(_, _)
             | T::Selection(_, _)
             | T::NodeDetail(_, _)
-            | T::ProviderHookHealth | T::WorkspaceState(..) | T::RepositoryGroupState(_) => {
+            | T::ProviderUsage | T::ProviderHookHealth | T::WorkspaceState(..) | T::RepositoryGroupState(_) => {
                 unreachable!("async reads handled above")
             }
         })

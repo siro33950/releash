@@ -1305,6 +1305,7 @@ struct SignalIngress(
                 (
                     crate::domain::provider_lifecycle::ProviderLifecycleIngressResult,
                     bool,
+                    Option<crate::usecase::provider_lifecycle::ingress::ProviderUsagePreparation>,
                 ),
                 crate::usecase::provider_lifecycle::ProviderLifecycleIngressUsecaseError,
             >,
@@ -1322,6 +1323,7 @@ impl crate::usecase::provider_lifecycle::ProviderPayloadReceiver for SignalIngre
         (
             crate::domain::provider_lifecycle::ProviderLifecycleIngressResult,
             bool,
+            Option<crate::usecase::provider_lifecycle::ingress::ProviderUsagePreparation>,
         ),
         crate::usecase::provider_lifecycle::ProviderLifecycleIngressUsecaseError,
     > {
@@ -1343,18 +1345,26 @@ async fn test_hookのconnect入口_生payloadを解釈し上限と権限と結�
     use tower::ServiceExt;
     let ingress = Arc::new(SignalIngress(std::sync::Mutex::new(
         std::collections::VecDeque::from([
-            Ok((Ingress::Applied, true)),
-            Ok((Ingress::Duplicate, true)),
+            Ok((
+                Ingress::Applied,
+                true,
+                Some(
+                    Box::pin(async { Err(crate::usecase::provider_usage::UsageError::Invalid) })
+                        as crate::usecase::provider_lifecycle::ingress::ProviderUsagePreparation,
+                ),
+            )),
+            Ok((Ingress::Duplicate, true, None)),
             Ok((
                 Ingress::Rejected(ProviderLifecycleRejection::InvalidCapability),
                 true,
+                None,
             )),
-            Ok((Ingress::Ignored, false)),
+            Ok((Ingress::Ignored, false, None)),
             Err(Error::Payload(ProviderPayloadError::InvalidPayload)),
             Err(Error::Payload(ProviderPayloadError::UnsupportedEvent(
                 "unknown".into(),
             ))),
-            Ok((Ingress::Duplicate, true)),
+            Ok((Ingress::Duplicate, true, None)),
         ]),
     )));
     let hook = crate::infrastructure::local_api::BearerToken::from(Arc::<str>::from("hook"));
@@ -1416,4 +1426,54 @@ async fn test_hookのconnect入口_生payloadを解釈し上限と権限と結�
             assert_eq!(result["code"], "unimplemented");
         }
     }
+}
+
+#[tokio::test]
+async fn test_session開始通知_使用率の準備が期限を超えても適用の応答を返す() {
+    use crate::domain::provider_lifecycle::ProviderLifecycleIngressResult;
+    use tower::ServiceExt;
+    // Given
+    let (started, observed) = tokio::sync::oneshot::channel();
+    let preparation: crate::usecase::provider_lifecycle::ingress::ProviderUsagePreparation =
+        Box::pin(async move {
+            started.send(()).unwrap();
+            std::future::pending().await
+        });
+    let receiver = Arc::new(SignalIngress(std::sync::Mutex::new(
+        std::collections::VecDeque::from([Ok((
+            ProviderLifecycleIngressResult::Applied,
+            true,
+            Some(preparation),
+        ))]),
+    )));
+    let deps = crate::test_support::client_api_deps(Arc::new(dispatch()))
+        .with_provider_lifecycle(receiver);
+    let app = router(
+        Some(deps),
+        crate::adaptor::controller::daemon::default_timeout(),
+    );
+    let request = serde_json::json!({"provider":{"value":"codex"}, "slotId":"slot", "bindingId":"binding", "capability":"capability", "agentSessionId":"session", "payload":"e30="});
+    // When
+    let response = tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        app.oneshot(
+            axum::http::Request::post("/releash.client.v1.ClientService/ReceiveProviderSignal")
+                .header("content-type", "application/json")
+                .header("connect-protocol-version", "1")
+                .header("connect-timeout-ms", "100")
+                .body(axum::body::Body::from(request.to_string()))
+                .unwrap(),
+        ),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    // Then
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let result: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert!(result.get("applied").is_some(), "{result}");
+    observed.await.unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(110)).await;
 }

@@ -4,12 +4,14 @@ import SwiftProtobuf
 struct CLIStatus: Decodable, Sendable {
   let running: Bool
   let compatibility: String?
+  let releaseCompatibility: String?
   let guidance: String?
   let startupGuidance: String?
   let discoveryFile: String
   private enum CodingKeys: String, CodingKey {
     case running
     case compatibility
+    case releaseCompatibility = "release_compatibility"
     case guidance
     case startupGuidance = "startup_guidance"
     case discoveryFile = "discovery_file"
@@ -51,7 +53,14 @@ struct CLI: Sendable {
     }.value
   }
 
+  func stopServer() async throws { _ = try await run(executable, ["server", "stop"]) }
+  func restartServer() async throws { _ = try await run(executable, ["server", "restart"]) }
+
   func discover(startIfMissing: Bool) async throws -> Releash_Client_V1_LocalApiDiscovery {
+    try await discoverWithStatus(startIfMissing: startIfMissing).0
+  }
+
+  func discoverWithStatus(startIfMissing: Bool) async throws -> (Releash_Client_V1_LocalApiDiscovery, CLIStatus) {
     var category = "サーバを発見できません"
     do {
       var statusOutput = try await run(executable, ["status", "--json"])
@@ -76,7 +85,7 @@ struct CLI: Sendable {
           message: [status.compatibility, status.guidance].compactMap { $0 }.joined(separator: "\n"))
       }
       let data = try Data(contentsOf: URL(fileURLWithPath: status.discoveryFile))
-      return try Releash_Client_V1_LocalApiDiscovery(jsonUTF8Data: data)
+      return (try Releash_Client_V1_LocalApiDiscovery(jsonUTF8Data: data), status)
     } catch {
       let message = error.localizedDescription
       let output = try? JSONDecoder().decode(CLIErrorOutput.self, from: Data(message.utf8))

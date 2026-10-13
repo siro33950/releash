@@ -304,6 +304,14 @@ pub async fn compose(
                     },
                 )
                 .map_err(|error| format!("Provider availability初期化失敗: {error:?}"))?;
+    let provider_usage = agent_sessions.usage.clone();
+    tokio::spawn(adaptor::controller::provider_usage::run(
+        provider_usage.clone(),
+        agent_sessions.provider_lifecycle.clone(),
+        Box::pin(infrastructure::timer::ticks(
+            std::time::Duration::from_secs(2),
+        )),
+    ));
     let agent_session_launch = agent_sessions.launch.clone();
 
     let agent_session_initial_instruction = agent_sessions.initial_instruction.clone();
@@ -584,6 +592,7 @@ pub async fn compose(
             adaptor::gateway::state_subscription_reads::StateSubscriptionReads(
                 usecase::state_subscription::WorkspaceStateReads {
                     daemon: daemon.clone(),
+                    usage: provider_usage.clone(),
                     repositories: dependencies
                         .app_state
                         .as_ref()
@@ -655,6 +664,7 @@ pub async fn compose(
         Some(
             adaptor::controller::api::ClientApiDeps::new(client_dispatch.clone(), priority)
                 .with_provider_lifecycle(provider_lifecycle_ingress.clone())
+                .with_provider_usage(provider_usage.clone())
                 .with_state_subscriptions(adaptor::controller::api::StateSubscriptionDeps::new(
                     state_subscriptions,
                     state_presenter,

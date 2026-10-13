@@ -73,6 +73,7 @@ fn test_cli_起動後も独立して稼働し重複起動せず再起動して�
     std::fs::write(&discovery_path, serde_json::to_vec(&legacy).unwrap()).unwrap();
     let status: serde_json::Value =
         serde_json::from_str(&success(run(root, &["status", "--json"]))).unwrap();
+    assert_eq!(status["release_compatibility"], "compatible");
     assert_eq!(status["server"]["daemonId"], first.daemon_id);
     assert_eq!(status["server"]["pid"], first.pid);
     assert_eq!(

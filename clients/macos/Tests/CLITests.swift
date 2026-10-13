@@ -82,4 +82,20 @@ final class CLITests: XCTestCase {
       XCTAssertTrue(error.localizedDescription.contains("upgrade server"))
     }
   }
+  func testServerOperationsUseBundledCLIAndReleaseResultIsDecoded() async throws {
+    let calls = Calls()
+    let cli = CLI(executable: URL(fileURLWithPath: "/bundled/releash"), run: { executable, args in
+      XCTAssertEqual(executable.path, "/bundled/releash")
+      _ = await calls.record(args)
+      return Data(#"{"running":true,"compatibility":"compatible","release_compatibility":"server_older","discovery_file":"/missing"}"#.utf8)
+    })
+    try await cli.stopServer()
+    try await cli.restartServer()
+    let status = try JSONDecoder().decode(CLIStatus.self, from: await cli.run(cli.executable, ["status", "--json"]))
+    XCTAssertEqual(status.compatibility, "compatible")
+    XCTAssertEqual(status.releaseCompatibility, "server_older")
+    let recorded = await calls.values
+    XCTAssertEqual(recorded, [["server", "stop"], ["server", "restart"], ["status", "--json"]])
+  }
+
 }

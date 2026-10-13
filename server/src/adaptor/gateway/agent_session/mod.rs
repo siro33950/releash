@@ -20,3 +20,5 @@ pub(crate) use session_facts::{read_session_context, SessionContextReadError, Se
 
 #[cfg(any(test, feature = "test-support"))]
 pub(crate) mod test_helpers;
+
+pub(crate) mod provider_usage;

@@ -117,3 +117,23 @@ fn test_providerライフサイクル登録_同一slotの再起動が旧binding�
         ProviderLifecycleOutcome::Rejected(ProviderLifecycleRejection::BindingExpired)
     );
 }
+
+#[test]
+fn test_provider_session参照_開始観測済みの現行bindingだけを返す() {
+    // Given
+    let mut slot = ProviderLifecycleSlot::new(slot_id());
+    slot.arm(binding(ProviderKind::Codex), capability(1));
+    assert!(slot.current_provider_session(ProviderKind::Codex).is_none());
+    // When
+    slot.receive(&capability(1), session_start(ProviderKind::Codex));
+    // Then
+    assert_eq!(
+        slot.current_provider_session(ProviderKind::Codex),
+        Some("provider-session-1")
+    );
+    assert!(slot
+        .current_provider_session(ProviderKind::Claude)
+        .is_none());
+    slot.release("binding-1");
+    assert!(slot.current_provider_session(ProviderKind::Codex).is_none());
+}

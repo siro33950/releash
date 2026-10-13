@@ -45,3 +45,4 @@ pub(crate) mod installation;
 pub(crate) mod create_worktrees;
 
 pub mod directory_query;
+pub(crate) mod provider_usage;

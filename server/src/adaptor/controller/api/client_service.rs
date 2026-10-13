@@ -105,5 +105,28 @@ async fn receive_provider_signal<'a>(
         }),
         super::provider_signal::record_ingress,
     ).await?;
+    if let Some(preparation) = result.2 {
+        let deadline = ctx.deadline();
+        tokio::spawn(async move {
+            if let Err(error) = super::provider_signal::prepare_usage(deadline, preparation).await {
+                log::warn!("Provider usage: {error}");
+            }
+        });
+    }
     connectrpc::Response::ok(to_rpc::<rpc::ReceiveProviderSignalResponse>(&wire::ReceiveProviderSignalResponse::from(result.0))?)
+}
+
+async fn receive_provider_usage<'a>(
+    &'a self, ctx: connectrpc::RequestContext,
+    request: connectrpc::ServiceRequest<'_, rpc::ReceiveProviderUsageRequest>,
+) -> connectrpc::ServiceResult<impl connectrpc::Encodable<rpc::Unit> + Send + use<'a>> {
+    let request: wire::ReceiveProviderUsageRequest = to_wire(&request.to_owned_message())?;
+    if request.payload.len() > 65_536 {
+        return Err(crate::adaptor::presenter::connect::invalid_request("Provider payload exceeds 65536 bytes"));
+    }
+    let usage = self.provider_usage.as_ref().ok_or_else(|| crate::adaptor::presenter::connect::classified_error(crate::adaptor::presenter::error::AppError::unavailable("Provider usage unavailable")))?;
+    ingress(ctx.deadline(), async {
+        usage.receive_claude(&request.payload).map_err(crate::adaptor::presenter::connect::classified_error)
+    }).await?;
+    connectrpc::Response::ok(rpc::Unit::default())
 }

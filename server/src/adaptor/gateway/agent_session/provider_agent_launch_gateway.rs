@@ -49,13 +49,21 @@ impl ProviderAgentLaunchGateway for LocalProviderAgentLaunchGateway {
             self.hook_token.as_ref(),
         )
         .map_err(|_| ProviderAgentLaunchGatewayError::InvalidInput)?;
-        let spec = ProviderLaunchSpec::for_provider(
+        let mut spec = ProviderLaunchSpec::for_provider(
             armed.provider(),
             context,
             &self.hook_cli_alias,
             (armed.provider() == ProviderKind::Claude).then_some(resource_directory.as_path()),
         )
         .map_err(|_| ProviderAgentLaunchGatewayError::InvalidInput)?;
+        if armed.provider() == ProviderKind::Claude {
+            let config_dir = std::env::var_os("CLAUDE_CONFIG_DIR")
+                .map(PathBuf::from)
+                .or_else(|| dirs::home_dir().map(|path| path.join(".claude")))
+                .ok_or(ProviderAgentLaunchGatewayError::InvalidInput)?;
+            let settings = inherited_status_line(&config_dir, std::path::Path::new(worktree_path));
+            spec = spec.with_claude_status_line(settings, &self.hook_cli_alias);
+        }
         let initial_hook_warning = spec.requires_hook_trust().then_some(
             crate::domain::provider_lifecycle::ProviderLifecycleUnavailableReason::CodexHookDeliveryUnconfirmed,
         );
@@ -145,3 +153,35 @@ fn map_files_error(
 #[cfg(test)]
 #[path = "provider_agent_launch_gateway_test.rs"]
 mod provider_agent_launch_gateway_tests;
+
+pub(crate) fn inherited_status_line(
+    config_dir: &std::path::Path,
+    worktree: &std::path::Path,
+) -> serde_json::Value {
+    let mut status_line = serde_json::Value::Null;
+    for path in [
+        config_dir.join("settings.json"),
+        worktree.join(".claude/settings.json"),
+        worktree.join(".claude/settings.local.json"),
+    ] {
+        let bytes = match std::fs::read(&path) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => {
+                log::warn!("Cannot inherit statusLine from {}: {error}", path.display());
+                continue;
+            }
+        };
+        let settings: serde_json::Value = match serde_json::from_slice(&bytes) {
+            Ok(settings) => settings,
+            Err(error) => {
+                log::warn!("Cannot inherit statusLine from {}: {error}", path.display());
+                continue;
+            }
+        };
+        if let Some(value) = settings.get("statusLine") {
+            status_line = value.clone();
+        }
+    }
+    status_line
+}

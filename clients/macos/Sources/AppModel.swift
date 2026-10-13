@@ -16,6 +16,12 @@ import SwiftProtobuf
   var reconnecting = false
   var layoutLoaded = false
   var workflows: [Releash_Client_V1_WorkflowSummaryDto] = []
+  var providerUsage: [Releash_Client_V1_ProviderUsageEntry] = []
+  var hookHealth = Releash_Client_V1_ProviderHookHealthSnapshot()
+  var hookSubscriptionFailure: String?
+  var daemonInfo: Releash_Client_V1_ServerInfo?
+  var releaseCompatibility: String?
+  var serverOperation = false
   var providers: [Releash_Client_V1_AgentSessionProviderDto] = []
   @ObservationIgnored var confirmTerminalClose: () -> Bool = {
     let alert = NSAlert()
@@ -58,11 +64,15 @@ import SwiftProtobuf
     streamTask?.cancel()
     heartbeatTask?.cancel()
     await streamTask?.value
+    heartbeatTask?.cancel()
+    streamTask = nil
+    clientID = nil
+    subscriptionIDs.reset()
+    targets = desiredTargets
   }
 
   func start() async {
-    streamTask?.cancel()
-    await streamTask?.value
+    await stop()
     do {
       if cli == nil {
         let executable = Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/releash")
@@ -99,12 +109,26 @@ import SwiftProtobuf
       rootSubscriptions.append(subscribe("providers") { [weak self] payload in
         if case .providers(let list) = payload.value { self?.providers = list.items }
       })
+      rootSubscriptions.append(subscribe("provider-usage") { [weak self] payload in
+        if case .providerUsage(let value) = payload.value { self?.providerUsage = value.items }
+      })
+      rootSubscriptions.append(subscribe("provider-hook-health") { [weak self] payload in
+        if case .providerHookHealth(let value) = payload.value {
+          self?.hookHealth = value
+          self?.hookSubscriptionFailure = nil
+        }
+      })
+      rootSubscriptions.append(subscribe("daemon-info") { [weak self] payload in
+        if case .daemonInfo(let value) = payload.value { self?.daemonInfo = value }
+      })
       streamTask = Task { await recoverStream() }
     } catch { connectionFailure = failureMessage(error) }
   }
   private func connect(startIfMissing: Bool) async throws {
     guard let cli, let policy else { throw CLIFailure(message: "Connection is not initialized") }
-    let discovery = try await cli.discover(startIfMissing: startIfMissing)
+    let (discovery, status) = try await cli.discoverWithStatus(startIfMissing: startIfMissing)
+    releaseCompatibility = status.releaseCompatibility
+    clearFooterState()
     host = "http://127.0.0.1:\(discovery.port)"
     headers = ["authorization": ["Bearer \(discovery.token)"]]
     client = Releash_Client_V1_ClientServiceClient(
@@ -199,6 +223,14 @@ import SwiftProtobuf
         targets.removeValue(forKey: key)
         _ = subscriptionIDs.remove(key)
       }
+      if key == subscriptionKey("provider-hook-health", []) {
+        hookSubscriptionFailure = failureMessage(error)
+        return
+      }
+      if key == subscriptionKey("provider-usage", []) {
+        failure = failureMessage(error)
+        return
+      }
       throw error
     }
   }
@@ -255,7 +287,9 @@ import SwiftProtobuf
                 receive(change.payload, key: key)
               }
             } else if case .failure(let error) = event.event {
-              failure = error.message
+              if subscriptionIDs.key(for: event.subscriptionID) == subscriptionKey("provider-hook-health", []) {
+                hookSubscriptionFailure = error.message
+              } else { failure = error.message }
             }
           case .complete(_, let error, _): if let error { throw error }
           case .headers: break
@@ -266,7 +300,12 @@ import SwiftProtobuf
         {
           attempt = 0
         }
-      } catch { failure = failureMessage(error) }
+      } catch {
+        if Task.isCancelled { return }
+        failure = failureMessage(error)
+        hookSubscriptionFailure = failureMessage(error)
+      }
+      guard !Task.isCancelled else { return }
       heartbeatTask?.cancel()
       clientID = nil
       for terminal in terminals.values { terminal.disconnect() }
@@ -276,6 +315,50 @@ import SwiftProtobuf
       attempt += 1
     }
   }
+  private func clearFooterState() {
+    providerUsage = []
+    hookHealth = .init()
+    hookSubscriptionFailure = nil
+    daemonInfo = nil
+    for target in ["provider-usage", "provider-hook-health", "daemon-info"] {
+      lastPayloads.removeValue(forKey: subscriptionKey(target, []))
+    }
+  }
+
+  func stopDaemon() async {
+    guard let cli, !serverOperation else { return }
+    serverOperation = true
+    defer { serverOperation = false }
+    await stop()
+    do {
+      try await cli.stopServer()
+      connected = false
+      reconnecting = false
+      client = nil
+      clearFooterState()
+      connectionFailure = "サーバは停止しています"
+    } catch {
+      failure = failureMessage(error)
+      streamTask = Task { await recoverStream() }
+    }
+  }
+
+  func restartDaemon() async {
+    guard let cli, !serverOperation else { return }
+    serverOperation = true
+    defer { serverOperation = false }
+    await stop()
+    connected = false
+    reconnecting = false
+    clearFooterState()
+    do {
+      try await cli.restartServer()
+      try await connect(startIfMissing: false)
+      connectionFailure = nil
+      streamTask = Task { await recoverStream() }
+    } catch { connectionFailure = failureMessage(error) }
+  }
+
   func failureMessage(_ error: Error) -> String {
     if let error = error as? ConnectError {
       let detail: Releash_Client_V1_CommandError? = error.unpackedDetails().first

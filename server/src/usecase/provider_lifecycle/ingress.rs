@@ -78,6 +78,7 @@ pub struct ProviderLifecycleIngressUsecase {
     session_start_transaction: Arc<dyn ProviderSessionStartTransaction>,
     execution_tree_stop_transaction: Arc<dyn ProviderExecutionTreeStopTransaction>,
     subscriptions: StateSubscriptionUsecase,
+    usage: Option<Arc<crate::usecase::provider_usage::ProviderUsageUsecase>>,
 }
 
 pub struct ProviderPayloadInput<'a> {
@@ -87,6 +88,11 @@ pub struct ProviderPayloadInput<'a> {
     pub payload: &'a [u8],
 }
 
+pub type ProviderUsagePreparation = futures_util::future::BoxFuture<
+    'static,
+    Result<(), crate::usecase::provider_usage::UsageError>,
+>;
+
 #[async_trait::async_trait]
 pub trait ProviderPayloadReceiver: Send + Sync {
     async fn receive_payload(
@@ -94,7 +100,14 @@ pub trait ProviderPayloadReceiver: Send + Sync {
         slot_id: &ProviderLifecycleSlotId,
         capability: &str,
         input: ProviderPayloadInput<'_>,
-    ) -> Result<(ProviderLifecycleIngressResult, bool), ProviderLifecycleIngressUsecaseError>;
+    ) -> Result<
+        (
+            ProviderLifecycleIngressResult,
+            bool,
+            Option<ProviderUsagePreparation>,
+        ),
+        ProviderLifecycleIngressUsecaseError,
+    >;
 }
 
 impl ProviderLifecycleIngressUsecase {
@@ -120,7 +133,16 @@ impl ProviderLifecycleIngressUsecase {
             session_start_transaction,
             execution_tree_stop_transaction,
             subscriptions,
+            usage: None,
         }
+    }
+
+    pub(crate) fn with_usage(
+        mut self,
+        usage: Arc<crate::usecase::provider_usage::ProviderUsageUsecase>,
+    ) -> Self {
+        self.usage = Some(usage);
+        self
     }
 
     pub async fn receive(
@@ -333,7 +355,14 @@ impl ProviderPayloadReceiver for ProviderLifecycleIngressUsecase {
         slot_id: &ProviderLifecycleSlotId,
         capability: &str,
         input: ProviderPayloadInput<'_>,
-    ) -> Result<(ProviderLifecycleIngressResult, bool), ProviderLifecycleIngressUsecaseError> {
+    ) -> Result<
+        (
+            ProviderLifecycleIngressResult,
+            bool,
+            Option<ProviderUsagePreparation>,
+        ),
+        ProviderLifecycleIngressUsecaseError,
+    > {
         use crate::domain::provider_lifecycle::ProviderPayloadInterpretation;
         match self
             .interpreter
@@ -341,13 +370,42 @@ impl ProviderPayloadReceiver for ProviderLifecycleIngressUsecase {
             .map_err(ProviderLifecycleIngressUsecaseError::Payload)?
         {
             ProviderPayloadInterpretation::Subagent => {
-                Ok((ProviderLifecycleIngressResult::Ignored, false))
+                Ok((ProviderLifecycleIngressResult::Ignored, false, None))
             }
             ProviderPayloadInterpretation::Signal(signal) => {
                 let started = signal.is_session_started();
-                self.receive(slot_id, capability, signal)
-                    .await
-                    .map(|result| (result, started))
+                let codex_session = match signal.clone().into_kind() {
+                    ProviderLifecycleSignalKind::SessionStarted {
+                        provider_session_id,
+                        ..
+                    } if input.provider
+                        == crate::domain::provider_lifecycle::ProviderKind::Codex =>
+                    {
+                        Some(provider_session_id)
+                    }
+                    _ => None,
+                };
+                let usage = self.usage.as_ref().filter(|_| codex_session.is_some());
+                let observation = match usage {
+                    Some(usage) => Some(usage.lock_codex_observation().await),
+                    None => None,
+                };
+                let result = self.receive(slot_id, capability, signal).await?;
+                let preparation = if result == ProviderLifecycleIngressResult::Applied {
+                    match (&self.usage, codex_session) {
+                        (Some(usage), Some(id)) => {
+                            let usage = usage.clone();
+                            Some(Box::pin(async move {
+                                let _observation = observation;
+                                usage.seed_codex_session(&id).await
+                            }) as ProviderUsagePreparation)
+                        }
+                        _ => None,
+                    }
+                } else {
+                    None
+                };
+                Ok((result, started, preparation))
             }
         }
     }

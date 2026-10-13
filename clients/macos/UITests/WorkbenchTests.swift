@@ -28,6 +28,34 @@ final class WorkbenchTests: XCTestCase {
     XCTAssertTrue(try fixture.running())
   }
 
+  @MainActor func testFooterShowsProviderUsageAndServerState() async throws {
+    try fixture.cleanUp()
+    fixture = try Fixture(providerUsage: true)
+    app.launchEnvironment = fixture.environment
+    try await fixture.startServer()
+    let repository = try await fixture.repository("footer-repository")
+    let (client, headers) = try fixture.client()
+    var request = Releash_Client_V1_CreateAgentSessionRequest()
+    request.provider = "claude"
+    request.worktreePath = repository.path
+    request.workspaceIdentity = repository.path
+    request.rows = 24
+    request.cols = 80
+    request.callerRequestID = UUID().uuidString
+    _ = try await client.createAgentSession(request: request, headers: headers).result.get()
+    launch()
+    let provider = app.buttons["footer-provider:claude"]
+    XCTAssertTrue(provider.waitForExistence(timeout: 30), app.debugDescription)
+    XCTAssertTrue(provider.label.contains("81% 5h"), provider.label)
+    XCTAssertTrue(provider.label.contains("41% wk"), provider.label)
+    XCTAssertTrue(provider.label.contains("使用率の警告"), provider.label)
+    let server = app.menuButtons["footer-server"]
+    XCTAssertTrue(server.waitForExistence(timeout: 30), app.debugDescription)
+    XCTAssertTrue(server.label.contains("serving"), server.label)
+    XCTAssertTrue(server.label.contains("compatible"), server.label)
+    XCTAssertTrue(server.label.contains("v"), server.label)
+  }
+
   @MainActor func testRepositoriesContainWorktreeCards() async throws {
     try await fixture.startServer()
     let (client, headers) = try fixture.client()

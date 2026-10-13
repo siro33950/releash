@@ -22,3 +22,5 @@ pub(crate) mod workspace_tree;
 pub(crate) mod identity;
 
 pub(crate) mod installation;
+
+pub(crate) mod provider_usage;

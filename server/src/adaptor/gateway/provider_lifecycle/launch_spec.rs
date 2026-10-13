@@ -129,6 +129,8 @@ impl ProviderLaunchSpec {
                     arguments: vec![
                         "--plugin-dir".to_string(),
                         plugin_directory.to_string_lossy().into_owned(),
+                        "--settings".to_string(),
+                        serde_json::json!({"statusLine": {"type": "command", "command": format!("{hook_cli_alias} hook statusline")}}).to_string(),
                     ],
                     environment,
                     files: claude_plugin_files(&hook_command("claude")),
@@ -171,6 +173,26 @@ impl ProviderLaunchSpec {
                 })
             }
         }
+    }
+
+    pub fn with_claude_status_line(
+        mut self,
+        mut settings: serde_json::Value,
+        hook_cli_alias: &str,
+    ) -> Self {
+        if let Some(command) = settings.get("command").and_then(serde_json::Value::as_str) {
+            self.environment
+                .push(("RELEASH_CLAUDE_STATUSLINE".into(), command.into()));
+        }
+        if !settings.is_object() {
+            settings = serde_json::json!({});
+        }
+        settings["type"] = "command".into();
+        settings["command"] = format!("{hook_cli_alias} hook statusline").into();
+        if let Some(index) = self.arguments.iter().position(|arg| arg == "--settings") {
+            self.arguments[index + 1] = serde_json::json!({"statusLine": settings}).to_string();
+        }
+        self
     }
 
     #[cfg(any(test, feature = "test-support"))]

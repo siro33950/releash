@@ -87,9 +87,10 @@ pub fn test_provider起動設定_claudeはsession_pluginを使いuser_settings�
         &[
             "--plugin-dir".to_string(),
             plugin_directory.to_string_lossy().into_owned(),
+            "--settings".to_string(),
+            serde_json::json!({"statusLine":{"type":"command","command":"releash hook statusline"}}).to_string(),
         ]
     );
-    assert!(!spec.arguments().iter().any(|value| value == "--settings"));
     assert_eq!(fs::read(&settings_path).unwrap(), original);
     assert!(!spec.requires_hook_trust());
 
@@ -149,6 +150,8 @@ pub fn test_provider起動設定_claudeのnewとresumeをstructured_root_process
         &[
             "--plugin-dir".to_string(),
             directory.path().to_string_lossy().into_owned(),
+            "--settings".to_string(),
+            serde_json::json!({"statusLine":{"type":"command","command":"releash hook statusline"}}).to_string(),
         ]
     );
     assert_eq!(new.environment(), spec.environment());
@@ -164,6 +167,8 @@ pub fn test_provider起動設定_claudeのnewとresumeをstructured_root_process
         &[
             "--plugin-dir".to_string(),
             directory.path().to_string_lossy().into_owned(),
+            "--settings".to_string(),
+            serde_json::json!({"statusLine":{"type":"command","command":"releash hook statusline"}}).to_string(),
             "--resume".to_string(),
             "claude-session-1".to_string(),
         ]
