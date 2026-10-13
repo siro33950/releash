@@ -433,6 +433,7 @@ fn journal_output_context(
         }),
     };
     let context = TerminalOutputReaderContext {
+        shell_observation: Default::default(),
         osc7: Default::default(),
         event_sink: None,
         event_order: Arc::new(TerminalSurfaceEventOrder::default()),
@@ -1341,4 +1342,53 @@ fn test_shell状態の読み取り_観測せず最後の状態を返す() {
         })
     );
     assert_eq!(gateway.shell_state(99), None);
+}
+
+#[test]
+fn test_shell終了_前面処理ありの観測を更新し終了後の観測は反映しない() {
+    // Given
+    let (gateway, sink) = shell_gateway();
+    observe_test_shell(&gateway, "/last");
+    assert!(gateway.shell_state(1).unwrap().has_foreground_process);
+    let context = {
+        let runtimes = gateway.runtimes.lock();
+        let runtime = &runtimes[&1];
+        TerminalOutputReaderContext {
+            event_sink: gateway.event_sink.clone(),
+            event_order: runtime.event_order.clone(),
+            registry: gateway.registry.clone(),
+            runtime_generation: 1,
+            terminal_surface: runtime.terminal_surface.clone(),
+            checkpoint_scheduler: None,
+            session_key: runtime.session_key.clone(),
+            output_drained: runtime.output_drained.clone(),
+            checkpoint_journal: None,
+            journal_enabled: false,
+            first_provider_byte_started_at: Instant::now(),
+            osc7: runtime.native_pty.osc7.clone(),
+            shell_observation: runtime.shell_observation.clone(),
+        }
+    };
+    // When
+    publish_terminal_exit(&context, Some(0));
+    observe_test_shell(&gateway, "/ignored");
+    // Then
+    assert!(gateway.snapshot(1).unwrap().process_state.is_exited());
+    assert_eq!(
+        gateway.shell_state(1),
+        Some(crate::domain::terminal_surface::TerminalShellState {
+            cwd: Some("/last".into()),
+            has_foreground_process: false,
+        })
+    );
+    assert!(matches!(
+        sink.events.lock().unwrap().as_slice(),
+        [
+            TerminalSurfaceOutputEvent::Status { .. },
+            TerminalSurfaceOutputEvent::Exit {
+                exit_code: Some(0),
+                ..
+            }
+        ]
+    ));
 }

@@ -155,6 +155,7 @@ async fn test_terminal作り直し予約_一つのworkerで追加clientのreset�
 
 async fn snapshot_shell_state(
     state: Option<crate::domain::terminal_surface::TerminalShellState>,
+    exited: bool,
 ) -> super::super::application::TerminalSurfaceSnapshotDto {
     use crate::usecase::terminal_surface::{
         application::TerminalSurfaceApplication,
@@ -166,6 +167,14 @@ async fn snapshot_shell_state(
     gateway.surface = Some(
         crate::domain::terminal_surface::entities::TerminalSurface::new(1, owner.clone(), None),
     );
+    if exited {
+        gateway
+            .surface
+            .as_mut()
+            .unwrap()
+            .mark_exited(1.into(), Some(0))
+            .unwrap();
+    }
     gateway.shell_state = state;
     let hub =
         Arc::new(crate::adaptor::presenter::terminal_event_hub::TerminalSurfaceEventHub::new());
@@ -200,7 +209,9 @@ async fn test_terminal_snapshot_gatewayのshell状態を付ける() {
     };
     // When / Then
     assert_eq!(
-        snapshot_shell_state(Some(state.clone())).await.shell_state,
+        snapshot_shell_state(Some(state.clone()), false)
+            .await
+            .shell_state,
         Some(state)
     );
 }
@@ -208,5 +219,25 @@ async fn test_terminal_snapshot_gatewayのshell状態を付ける() {
 #[tokio::test]
 async fn test_terminal_snapshot_gatewayがnoneならshell状態を付けない() {
     // When / Then
-    assert_eq!(snapshot_shell_state(None).await.shell_state, None);
+    assert_eq!(snapshot_shell_state(None, false).await.shell_state, None);
+}
+
+#[tokio::test]
+async fn test_terminal_snapshot_終了後の前面処理無しの状態を配信する() {
+    // Given
+    let mut status = crate::domain::terminal_surface::entities::TerminalShellStatus::default();
+    status.observe(None, false, "/last".into(), true);
+    status.mark_exited();
+    // When
+    let snapshot = snapshot_shell_state(status.latest(), true).await;
+    // Then
+    assert!(snapshot.is_exited);
+    assert_eq!(snapshot.exit_code, Some(0));
+    assert_eq!(
+        snapshot.shell_state,
+        Some(crate::domain::terminal_surface::TerminalShellState {
+            cwd: Some("/last".into()),
+            has_foreground_process: false,
+        })
+    );
 }

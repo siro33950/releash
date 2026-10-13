@@ -71,8 +71,7 @@ impl AgentSessionLifecycleUsecaseError {
                 crate::domain::agent_session::ProviderAgentLaunchGatewayError::InvalidInput,
             )
             | Self::Terminal(
-                crate::domain::agent_session::ProviderAgentTerminalGatewayError::AppConfig(_)
-                | crate::domain::agent_session::ProviderAgentTerminalGatewayError::NotFound(_)
+                crate::domain::agent_session::ProviderAgentTerminalGatewayError::NotFound(_)
                 | crate::domain::agent_session::ProviderAgentTerminalGatewayError::InvalidOperation(
                     _,
                 )

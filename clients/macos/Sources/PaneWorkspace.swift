@@ -124,10 +124,10 @@ import SwiftUI
     guard closingPanes.insert(pane).inserted else { return false }
     Task {
       defer { closingPanes.remove(pane) }
-      var stopped: Set<String> = []
-      while let tab = controller.tabs(inPane: pane).compactMap({ tabs[$0.id.id.uuidString] }).first(where: { $0.kind == .terminal && !stopped.contains($0.id) }) {
-        guard await requestClose(tab) else { return }
-        stopped.insert(tab.id)
+      while let tab = controller.tabs(inPane: pane).first(where: { tabs[$0.id.id.uuidString]?.kind == .terminal }), let value = tabs[tab.id.id.uuidString] {
+        guard await requestClose(value) else { return }
+        approved.insert(tab.id)
+        controller.closeTab(tab.id)
       }
       if controller.allPaneIds.contains(pane) {
         approvedPanes.insert(pane)

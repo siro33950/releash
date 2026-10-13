@@ -366,6 +366,7 @@ struct TerminalOutputReaderContext {
     journal_enabled: bool,
     first_provider_byte_started_at: Instant,
     osc7: crate::infrastructure::terminal::shell_observation::SharedOsc7Directory,
+    shell_observation: Arc<Mutex<crate::domain::terminal_surface::entities::TerminalShellStatus>>,
 }
 
 enum TerminalOutputCommand {
@@ -426,6 +427,7 @@ fn publish_terminal_exit(context: &TerminalOutputReaderContext, exit_code: Optio
                 let terminal_surface = context.terminal_surface.lock();
                 let mut registry = context.registry.lock();
                 let sequence = registry.mark_exited(context.runtime_generation, exit_code)?;
+                context.shell_observation.lock().mark_exited();
                 if context.checkpoint_scheduler.is_none() {
                     let checkpoint = terminal_surface.snapshot(sequence);
                     registry.apply_checkpoint(
@@ -567,14 +569,14 @@ fn publish_shell_observation(
         if surface.process_state.is_exited() {
             return None;
         }
-        let foreground = crate::domain::terminal_surface::TerminalShellState::observed(
-            None,
-            observation.shell_group,
-            observation.foreground_group,
-            &observation.initial_program,
-            &observation.current_program,
-            &observation.child_groups,
-        );
+        let foreground =
+            crate::domain::terminal_surface::TerminalShellState::has_foreground_process(
+                observation.shell_group,
+                observation.foreground_group,
+                &observation.initial_program,
+                &observation.current_program,
+                &observation.child_groups,
+            );
         let state = state.lock().observe(
             observation.osc7_cwd,
             observation.osc7_updated,
@@ -990,6 +992,7 @@ impl TerminalSurfaceGateway for TerminalSurfaceRuntimeGatewayFor {
             )
         };
         let osc7 = native.osc7.clone();
+        let observed_shell = Arc::clone(&shell_observation);
         let active_registry = self.registry.clone();
         let registry = self.registry.clone();
         let order = event_order.clone();
@@ -1005,7 +1008,7 @@ impl TerminalSurfaceGateway for TerminalSurfaceRuntimeGatewayFor {
             move |observation| {
                 publish_shell_observation(
                     observation,
-                    &shell_observation,
+                    &observed_shell,
                     &registry,
                     &order,
                     sink.as_deref(),
@@ -1027,6 +1030,7 @@ impl TerminalSurfaceGateway for TerminalSurfaceRuntimeGatewayFor {
                 checkpoint_journal,
                 journal_enabled: self.journal_enabled,
                 osc7,
+                shell_observation,
                 first_provider_byte_started_at: Instant::now(),
             },
         );

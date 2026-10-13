@@ -49,7 +49,7 @@ impl TerminalSurfaceOwner {
     ) -> Result<Self, TerminalSurfaceOwnerError> {
         Self::validate_workspace(&workspace)?;
         let session_id = session_id.into();
-        if session_id.trim().is_empty() {
+        if session_id.trim().is_empty() || session_id.contains('\0') {
             return Err(TerminalSurfaceOwnerError::SessionIdMissing);
         }
         Ok(Self::Session {
@@ -70,7 +70,7 @@ impl TerminalSurfaceOwner {
     }
 
     fn validate_workspace(workspace: &WorkspaceIdentity) -> Result<(), TerminalSurfaceOwnerError> {
-        if workspace.as_str().trim().is_empty() {
+        if workspace.as_str().trim().is_empty() || workspace.as_str().contains('\0') {
             return Err(TerminalSurfaceOwnerError::WorkspacePathMissing);
         }
         Ok(())

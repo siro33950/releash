@@ -83,3 +83,31 @@ fn test_terminal所有者_同じworktreeのタブと既存所有者を区別す�
         );
     }
 }
+
+#[test]
+fn test_ターミナル画面所有者_nullを含むパスとidを拒否する() {
+    // Given
+    let workspace = WorkspaceIdentity::new("/repo\0/path");
+    // When / Then
+    assert_eq!(
+        TerminalSurfaceOwner::workspace(workspace.clone()),
+        Err(TerminalSurfaceOwnerError::WorkspacePathMissing)
+    );
+    assert_eq!(
+        TerminalSurfaceOwner::workspace_terminal(workspace.clone(), "terminal"),
+        Err(TerminalSurfaceOwnerError::WorkspacePathMissing)
+    );
+    assert_eq!(
+        TerminalSurfaceOwner::session(workspace, "session"),
+        Err(TerminalSurfaceOwnerError::WorkspacePathMissing)
+    );
+    let workspace = WorkspaceIdentity::new("/repo");
+    assert_eq!(
+        TerminalSurfaceOwner::workspace_terminal(workspace.clone(), "terminal\0id"),
+        Err(TerminalSurfaceOwnerError::InvalidTerminalId)
+    );
+    assert_eq!(
+        TerminalSurfaceOwner::session(workspace, "session\0id"),
+        Err(TerminalSurfaceOwnerError::SessionIdMissing)
+    );
+}

@@ -82,3 +82,31 @@ extension PaneWorkspaceTests {
     try await eventually { workspace.controller.allTabIds.count == 1 }
   }
 }
+
+
+extension PaneWorkspaceTests {
+  @MainActor func testPaneCloseCancellationLeavesOnlyUnstoppedTabAndCanRetry() async throws {
+    let workspace = PaneWorkspace()
+    try workspace.restore(.empty())
+    let pane = try XCTUnwrap(workspace.controller.allPaneIds.first)
+    let other = try XCTUnwrap(workspace.controller.splitPane(pane, orientation: .vertical))
+    workspace.open(.file, in: other)
+    workspace.open(.terminal, in: pane)
+    workspace.open(.terminal, in: pane)
+    let terminals = workspace.controller.tabs(inPane: pane)
+    var requests: [String] = []
+    workspace.requestClose = { tab in
+      requests.append(tab.id)
+      return requests.count == 1
+    }
+    workspace.controller.closePane(pane)
+    try await eventually { requests.count == 2 }
+    XCTAssertTrue(workspace.controller.allPaneIds.contains(pane))
+    XCTAssertEqual(workspace.controller.tabs(inPane: pane).map(\.id), [terminals[1].id])
+    workspace.requestClose = { tab in requests.append(tab.id); return true }
+    workspace.controller.closePane(pane)
+    try await eventually { !workspace.controller.allPaneIds.contains(pane) }
+    XCTAssertEqual(requests, terminals.map { $0.id.id.uuidString } + [terminals[1].id.id.uuidString])
+    XCTAssertEqual(workspace.controller.allPaneIds, [other])
+  }
+}

@@ -368,8 +368,15 @@ extension TerminalSessionTests {
     if cancel {
       try await eventually { cancelled }
       XCTAssertTrue(model.panes.controller.allPaneIds.contains(pane))
-      XCTAssertEqual(Set(model.panes.controller.tabs(inPane: pane).compactMap { model.panes.tab($0.id)?.id }), Set([first.id, added.id]))
+      XCTAssertEqual(Set(model.panes.controller.tabs(inPane: pane).compactMap { model.panes.tab($0.id)?.id }), Set([added.id]))
       XCTAssertEqual(http.requests("KillTerminalSurface").count, 1)
+      model.confirmTerminalClose = { true }
+      model.panes.controller.closePane(pane)
+      try await eventually { !model.panes.controller.allPaneIds.contains(pane) }
+      let kills = try http.requests("KillTerminalSurface").map {
+        try Releash_Client_V1_KillTerminalSurfaceRequest(serializedBytes: $0.message ?? Data()).owner.workspaceTerminal.terminalID
+      }
+      XCTAssertEqual(kills, [first.id, added.id])
     } else {
       try await eventually { !model.panes.controller.allPaneIds.contains(pane) }
       let kills = try http.requests("KillTerminalSurface").map {
@@ -386,7 +393,46 @@ extension TerminalSessionTests {
   @MainActor func testPaneCloseStopsTerminalMovedWhileWaiting() async throws {
     try await closePaneWithChangingTabs(move: true)
   }
-  @MainActor func testPaneCloseCancellationPreservesAllCurrentTabs() async throws {
+  @MainActor func testPaneCloseCancellationRemovesStoppedTabAndCanCloseRemainingPane() async throws {
     try await closePaneWithChangingTabs(move: false, cancel: true)
+  }
+}
+
+
+extension TerminalSessionTests {
+  @MainActor func testExitedSnapshotAndExitEventCloseWithoutConfirmationAfterReconnect() async throws {
+    let http = TestHTTPClient()
+    let model = try await testModel(http)
+    model.selectedWorktree = "/repo"
+    model.confirmTerminalClose = { XCTFail("Exited terminal must not require confirmation"); return false }
+    for restored in [false, true] {
+      let id = restored ? "snapshot" : "exit"
+      let session = model.terminal(path: "/repo", id: id)
+      try await eventually { session.hasForegroundProcess != nil }
+      var event = Releash_Client_V1_TerminalEvent()
+      event.status.hasForegroundProcess_p = true
+      session.receive(event)
+      XCTAssertEqual(session.hasForegroundProcess, true)
+      if restored {
+        session.disconnect()
+        event.snapshot.isExited = true
+        event.snapshot.exitCode = 0
+        event.snapshot.processedReportUnits = 5000
+        event.snapshot.status.cwd = "/last"
+        event.snapshot.status.hasForegroundProcess_p = false
+      } else {
+        event.exit.exitCode = 0
+      }
+      session.receive(event)
+      XCTAssertTrue(session.exited)
+      XCTAssertEqual(session.hasForegroundProcess, false)
+      let closed = await model.closeTerminal(PaneTab(id: id, kind: .terminal))
+      XCTAssertTrue(closed)
+    }
+    let owners = try http.requests("KillTerminalSurface").map {
+      try Releash_Client_V1_KillTerminalSurfaceRequest(serializedBytes: $0.message ?? Data()).owner.workspaceTerminal.terminalID
+    }
+    XCTAssertEqual(owners, ["exit", "snapshot"])
+    await model.stop()
   }
 }

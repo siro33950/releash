@@ -666,7 +666,6 @@ impl ConnectFailure for super::provider_tui::ProviderTuiCodedError {
 impl ConnectFailure for crate::domain::agent_session::ProviderAgentTerminalGatewayError {
     fn connect_code(&self) -> connectrpc::ErrorCode {
         match self {
-            Self::AppConfig(error) => error.connect_code(),
             Self::NotFound(_) => connectrpc::ErrorCode::NotFound,
             Self::InvalidOperation(_) | Self::StaleAttachment | Self::OwnerConflict => {
                 connectrpc::ErrorCode::FailedPrecondition

@@ -351,7 +351,6 @@ impl From<&crate::domain::agent_session::ProviderAgentTerminalGatewayError> for 
     fn from(error: &crate::domain::agent_session::ProviderAgentTerminalGatewayError) -> Self {
         use crate::domain::agent_session::ProviderAgentTerminalGatewayError as E;
         match error {
-            E::AppConfig(error) => Self::from(error),
             E::Technical(error) => Self::from(error),
             E::NotFound(_) | E::InvalidOperation(_) | E::StaleAttachment | E::OwnerConflict => {
                 Self::Business(BusinessFailure::Other)

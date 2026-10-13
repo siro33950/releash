@@ -91,14 +91,6 @@ impl TerminalSurfaceStateSink for TerminalSubscriptionPresenter {
         registration: &TerminalRegistration,
     ) -> Result<(), crate::usecase::terminal_surface::error::UsecaseError> {
         let target = SubscriptionTarget::Terminal(registration.owner.clone()).to_string();
-        SubscriptionTarget::parse(&target).map_err(|error| {
-            crate::usecase::terminal_surface::error::UsecaseError::Technical(
-                crate::domain::failure::TechnicalFailure {
-                    nature: crate::domain::failure::TechnicalFailureNature::Other,
-                    message: error.to_string(),
-                },
-            )
-        })?;
         let version = self.version(
             registration.runtime_generation,
             registration.latest_sequence,

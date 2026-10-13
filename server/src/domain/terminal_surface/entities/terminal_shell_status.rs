@@ -12,12 +12,19 @@ impl TerminalShellStatus {
         self.latest.clone()
     }
 
+    pub fn mark_exited(&mut self) {
+        self.latest = Some(TerminalShellState {
+            cwd: self.latest.as_ref().and_then(|state| state.cwd.clone()),
+            has_foreground_process: false,
+        });
+    }
+
     pub fn observe(
         &mut self,
         osc7_cwd: Option<String>,
         updated: bool,
         process_cwd: String,
-        mut state: TerminalShellState,
+        has_foreground_process: bool,
     ) -> Option<TerminalShellState> {
         if updated {
             self.osc7_cwd = osc7_cwd;
@@ -29,7 +36,10 @@ impl TerminalShellStatus {
             self.osc7_cwd = None;
         }
         self.process_cwd = Some(process_cwd.clone());
-        state.cwd = Some(self.osc7_cwd.clone().unwrap_or(process_cwd));
+        let state = TerminalShellState {
+            cwd: Some(self.osc7_cwd.clone().unwrap_or(process_cwd)),
+            has_foreground_process,
+        };
         if self.latest.as_ref() == Some(&state) {
             return None;
         }

@@ -54,16 +54,22 @@ fn test_provider_agent_terminal_spawn_error_残る分類とpayloadを保持す�
             crate::usecase::terminal_surface::error::UsecaseError::AppConfig(
                 crate::domain::app_config::AppConfigError::Repository("config unavailable".into()),
             ),
-            ProviderAgentTerminalGatewayError::AppConfig(
-                crate::domain::app_config::AppConfigError::Repository("config unavailable".into()),
+            ProviderAgentTerminalGatewayError::Technical(
+                crate::domain::failure::TechnicalFailure {
+                    nature: crate::domain::failure::TechnicalFailureNature::Other,
+                    message: "config unavailable".into(),
+                },
             ),
         ),
         (
             crate::usecase::terminal_surface::error::UsecaseError::AppConfig(
                 crate::domain::app_config::AppConfigError::InvalidInput("invalid config".into()),
             ),
-            ProviderAgentTerminalGatewayError::AppConfig(
-                crate::domain::app_config::AppConfigError::InvalidInput("invalid config".into()),
+            ProviderAgentTerminalGatewayError::Technical(
+                crate::domain::failure::TechnicalFailure {
+                    nature: crate::domain::failure::TechnicalFailureNature::Other,
+                    message: "invalid config".into(),
+                },
             ),
         ),
         (
