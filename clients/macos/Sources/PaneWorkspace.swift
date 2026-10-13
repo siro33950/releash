@@ -1,13 +1,20 @@
 import Bonsplit
 import SwiftUI
 
-@MainActor @Observable final class PaneWorkspace {
+@MainActor @Observable final class PaneWorkspace: @preconcurrency BonsplitDelegate {
+  var requestClose: ((PaneTab) async -> Bool)?
+  private var closing: Set<TabID> = []
+  private var approved: Set<TabID> = []
+  private var approvedPanes: Set<PaneID> = []
+  private var closingPanes: Set<PaneID> = []
   let controller = BonsplitController()
   private var identifiers: [String: String] = [:]
   private var tabs: [String: PaneTab] = [:]
+  private var nextTerminalNumber = 1
 
   init() {
     for id in controller.allTabIds { controller.closeTab(id) }
+    controller.delegate = self
     controller.configuration.appearance.showSplitButtons = false
     controller.configuration.appearance.selectedTabIndicatorColor = UIStyle.tabSelection
   }
@@ -16,6 +23,7 @@ import SwiftUI
     var ids: [String: String] = [:]
     var restoredTabs: [String: PaneTab] = [:]
     var metadata: [Bonsplit.Tab] = []
+    var terminalNumber = 1
     func identifier(_ original: String) -> String {
       var id = (UUID(uuidString: original) ?? UUID()).uuidString
       if ids[id] != nil { id = UUID().uuidString }
@@ -32,11 +40,13 @@ import SwiftUI
         let values = tabs.map { tab -> ExternalTab in
           let id = identifier(tab.id)
           restoredTabs[id] = tab
+          let title = tab.kind == .terminal ? "Terminal \(terminalNumber)" : tab.kind.title
+          if tab.kind == .terminal { terminalNumber += 1 }
           metadata.append(
             Bonsplit.Tab(
-              id: TabID(id: UUID(uuidString: id)!), title: tab.kind.title, icon: tab.kind.icon))
+              id: TabID(id: UUID(uuidString: id)!), title: title, icon: tab.kind.icon))
           if tab.id == active { selected = id }
-          return ExternalTab(id: id, title: tab.kind.title)
+          return ExternalTab(id: id, title: title)
         }
         return .pane(
           ExternalPaneNode(
@@ -54,6 +64,7 @@ import SwiftUI
     try controller.restoreLayout(snapshot, tabs: metadata)
     identifiers = ids
     self.tabs = restoredTabs
+    nextTerminalNumber = terminalNumber
   }
 
   func layout() throws -> PaneLayout {
@@ -81,10 +92,51 @@ import SwiftUI
   func open(_ kind: PaneTab.Kind, in pane: PaneID) {
     let live = Set(controller.allTabIds.map { $0.id.uuidString })
     tabs = tabs.filter { live.contains($0.key) }
-    guard let id = controller.createTab(title: kind.title, icon: kind.icon, inPane: pane) else {
+    let title = kind == .terminal ? "Terminal \(nextTerminalNumber)" : kind.title
+    guard let id = controller.createTab(title: title, icon: kind.icon, inPane: pane) else {
       return
     }
-    tabs[id.id.uuidString] = PaneTab(id: id.id.uuidString, kind: kind)
+    let tab = PaneTab(id: id.id.uuidString, kind: kind)
+    tabs[id.id.uuidString] = tab
+    if kind == .terminal { nextTerminalNumber += 1 }
+  }
+
+  func tab(_ id: TabID) -> PaneTab? { tabs[id.id.uuidString] }
+
+  func splitTabBar(_ controller: BonsplitController, shouldCloseTab tab: Bonsplit.Tab, inPane pane: PaneID) -> Bool {
+    if approved.remove(tab.id) != nil { return true }
+    guard let value = tabs[tab.id.id.uuidString], value.kind == .terminal, let requestClose else { return true }
+    guard closing.insert(tab.id).inserted else { return false }
+    Task {
+      defer { closing.remove(tab.id) }
+      if await requestClose(value) {
+        approved.insert(tab.id)
+        controller.closeTab(tab.id)
+      }
+    }
+    return false
+  }
+
+  func splitTabBar(_ controller: BonsplitController, shouldClosePane pane: PaneID) -> Bool {
+    if approvedPanes.remove(pane) != nil { return true }
+    let terminalTabs = controller.tabs(inPane: pane).compactMap { tabs[$0.id.id.uuidString] }.filter { $0.kind == .terminal }
+    guard !terminalTabs.isEmpty, let requestClose else { return true }
+    guard closingPanes.insert(pane).inserted else { return false }
+    Task {
+      defer { closingPanes.remove(pane) }
+      for tab in terminalTabs {
+        guard await requestClose(tab) else { return }
+        if let live = controller.tabs(inPane: pane).first(where: { tabs[$0.id.id.uuidString]?.id == tab.id }) {
+          approved.insert(live.id)
+          controller.closeTab(live.id)
+        }
+      }
+      if controller.allPaneIds.contains(pane) {
+        approvedPanes.insert(pane)
+        controller.closePane(pane)
+      }
+    }
+    return false
   }
 
   func closeCurrentTab() {
@@ -104,13 +156,18 @@ import SwiftUI
 struct WorkspacePaneView: View {
   @Bindable var model: AppModel
   var body: some View {
-    BonsplitView(controller: model.panes.controller) { tab, _ in
-      Text(tab.title).foregroundStyle(.secondary)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    BonsplitView(controller: model.panes.controller) { tab, pane in
+      if model.layoutLoaded, let value = model.panes.tab(tab.id), value.kind == .terminal, let path = model.selectedWorktree {
+        TerminalPane(session: model.terminal(path: path, id: value.id), branch: model.terminalBranch(path), focused: model.panes.controller.focusedPaneId == pane).id(path + value.id)
+      } else {
+        Text(tab.title).foregroundStyle(.secondary)
+          .frame(maxWidth: .infinity, maxHeight: .infinity)
+      }
     } emptyPane: { _ in
       Color(nsColor: .textBackgroundColor)
     }
     .onAppear {
+      model.panes.requestClose = { [weak model] tab in await model?.closeTerminal(tab) ?? false }
       model.panes.controller.tabBarAccessory = { [weak model] pane in
         guard let model else { return AnyView(EmptyView()) }
         return AnyView(PaneOpenMenu(model: model, pane: pane))
@@ -121,6 +178,7 @@ struct WorkspacePaneView: View {
       do {
         let layout = try model.panes.layout()
         model.editLayout { $0 = layout }
+        model.syncTerminalTabs(layout)
       } catch { model.failure = error.localizedDescription }
     }
   }

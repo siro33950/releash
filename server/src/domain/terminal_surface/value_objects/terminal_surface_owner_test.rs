@@ -55,3 +55,31 @@ fn test_ターミナル画面所有者_空白のみのセッションidを拒否
         Err(TerminalSurfaceOwnerError::SessionIdMissing)
     );
 }
+
+#[test]
+fn test_terminal所有者_同じworktreeのタブと既存所有者を区別する() {
+    // Given
+    let workspace = WorkspaceIdentity::new("/repo");
+    let first = TerminalSurfaceOwner::workspace_terminal(workspace.clone(), "first").unwrap();
+    let second = TerminalSurfaceOwner::workspace_terminal(workspace.clone(), "second").unwrap();
+    // When / Then
+    assert_ne!(first.stable_key(), second.stable_key());
+    assert_ne!(
+        first.stable_key(),
+        TerminalSurfaceOwner::workspace(workspace.clone())
+            .unwrap()
+            .stable_key()
+    );
+    assert_ne!(
+        first.stable_key(),
+        TerminalSurfaceOwner::session(workspace.clone(), "first")
+            .unwrap()
+            .stable_key()
+    );
+    for id in [" ", "bad\0id"] {
+        assert_eq!(
+            TerminalSurfaceOwner::workspace_terminal(workspace.clone(), id),
+            Err(TerminalSurfaceOwnerError::InvalidTerminalId)
+        );
+    }
+}

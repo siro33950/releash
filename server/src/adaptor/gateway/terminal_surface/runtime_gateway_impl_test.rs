@@ -433,6 +433,7 @@ fn journal_output_context(
         }),
     };
     let context = TerminalOutputReaderContext {
+        osc7: Default::default(),
         event_sink: None,
         event_order: Arc::new(TerminalSurfaceEventOrder::default()),
         registry,
@@ -1194,7 +1195,8 @@ impl TerminalSurfaceEventSink for SummarySink {
 impl TerminalSurfaceEventSink for BlockingFirstEventSink {
     fn publish(&self, event: TerminalSurfaceOutputEvent) {
         let sequence = match event {
-            TerminalSurfaceOutputEvent::Output { sequence, .. }
+            TerminalSurfaceOutputEvent::Status { sequence, .. }
+            | TerminalSurfaceOutputEvent::Output { sequence, .. }
             | TerminalSurfaceOutputEvent::Resize { sequence, .. }
             | TerminalSurfaceOutputEvent::Exit { sequence, .. } => sequence,
         };

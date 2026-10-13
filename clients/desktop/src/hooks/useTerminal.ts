@@ -114,7 +114,6 @@ export type TerminalInitializationMode = "get-or-spawn" | "attach-existing";
 export interface UseTerminalOptions {
 	cwd?: string | null;
 	theme?: Theme;
-	terminalStartupCommand?: string;
 	owner?: TerminalSurfaceOwner;
 	label?: string;
 	onTerminalReady?: (sessionKey: string) => void;
@@ -131,7 +130,6 @@ export function useTerminal(
 	const {
 		cwd,
 		theme,
-		terminalStartupCommand,
 		owner,
 		label,
 		onTerminalReady,
@@ -336,7 +334,6 @@ export function useTerminal(
 								cwd: worktreePath,
 								owner: terminalOwner,
 								label: label ?? null,
-								startupCommand: terminalStartupCommand?.trim() || null,
 							},
 						);
 
@@ -762,15 +759,7 @@ export function useTerminal(
 			terminal.dispose();
 			reportMountedXtermUnmounted();
 		};
-	}, [
-		containerRef,
-		autoFocus,
-		cwd,
-		initialization,
-		label,
-		terminalOwner,
-		terminalStartupCommand,
-	]);
+	}, [containerRef, autoFocus, cwd, initialization, label, terminalOwner]);
 
 	useEffect(() => {
 		const terminal = terminalRef.current;

@@ -508,7 +508,6 @@ describe("useTerminal", () => {
 				cwd: null,
 				owner: { kind: "workspace", workspacePath: "" },
 				label: null,
-				startupCommand: null,
 			});
 		});
 	});
@@ -2597,18 +2596,17 @@ describe("useTerminal", () => {
 		);
 	});
 
-	it("起動コマンドをget_or_spawnへ渡しfrontendでは新規復元判定をしない", async () => {
+	it("shellの初期化はサーバへ依頼する", async () => {
 		renderHook(() =>
 			useTerminal(containerRef, {
 				cwd: null,
-				terminalStartupCommand: "startup-cmd",
 			}),
 		);
 
 		await waitFor(() => {
 			expect(mockInvoke).toHaveBeenCalledWith(
 				"get_or_spawn_terminal_surface",
-				expect.objectContaining({ startupCommand: "startup-cmd" }),
+				expect.objectContaining({ cwd: null }),
 			);
 		});
 		expect(mockInvoke).not.toHaveBeenCalledWith(
@@ -2705,7 +2703,6 @@ describe("useTerminal", () => {
 		renderHook(() =>
 			useTerminal(containerRef, {
 				cwd: null,
-				terminalStartupCommand: "startup-cmd",
 			}),
 		);
 
@@ -2732,7 +2729,6 @@ describe("useTerminal", () => {
 		renderHook(() =>
 			useTerminal(containerRef, {
 				cwd: null,
-				terminalStartupCommand: "startup-cmd",
 			}),
 		);
 

@@ -79,6 +79,7 @@ fn test_telemetry設定_永続化成功時だけruntime設定を更新する() {
                     last_root_path: String::new(),
                     last_repo_paths: Vec::new(),
                     external_editor: String::new(),
+                    terminal_startup_command: String::new(),
                 },
                 workflow: crate::domain::app_config::value_objects::WorkflowConfig {
                     approval_auto_approve: false,

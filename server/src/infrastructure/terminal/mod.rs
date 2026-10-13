@@ -6,3 +6,5 @@ pub(crate) mod output_pause;
 pub(crate) mod shell_integration;
 pub(crate) mod terminal_emulator;
 pub(crate) mod utf8_decoder;
+
+pub(crate) mod shell_observation;

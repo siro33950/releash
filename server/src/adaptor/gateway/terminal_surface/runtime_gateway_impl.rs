@@ -363,6 +363,7 @@ struct TerminalOutputReaderContext {
     checkpoint_journal: Option<Arc<Mutex<IncrementalCheckpointJournal>>>,
     journal_enabled: bool,
     first_provider_byte_started_at: Instant,
+    osc7: crate::infrastructure::terminal::shell_observation::SharedOsc7Directory,
 }
 
 enum TerminalOutputCommand {
@@ -507,6 +508,7 @@ fn run_output_processor(
 
 fn spawn_output_reader(mut output: NativePtyOutput, context: TerminalOutputReaderContext) {
     let (sender, receiver) = mpsc::sync_channel(OUTPUT_READER_QUEUE_CAPACITY);
+    let osc7 = context.osc7.clone();
     let first_provider_byte_started_at = context.first_provider_byte_started_at;
     let event_sink = context.event_sink.clone();
     let session_key = context.session_key.clone();
@@ -529,6 +531,7 @@ fn spawn_output_reader(mut output: NativePtyOutput, context: TerminalOutputReade
                             first_provider_byte_started_at.elapsed(),
                         );
                     }
+                    osc7.lock().feed(&buf[..n]);
                     if let Some(filtered) = process_pty_output(&buf[..n], &mut pending) {
                         if sender
                             .send(TerminalOutputCommand::Data { data: filtered })
@@ -545,6 +548,67 @@ fn spawn_output_reader(mut output: NativePtyOutput, context: TerminalOutputReade
 
         let exit_code = output.wait().ok().flatten();
         let _ = sender.send(TerminalOutputCommand::Exit(exit_code));
+    });
+}
+
+fn spawn_shell_observer(
+    native: NativePtyRuntime,
+    registry: Arc<Mutex<TerminalSurfaceRegistry>>,
+    order: Arc<TerminalSurfaceEventOrder>,
+    sink: Option<Arc<dyn TerminalSurfaceEventSink>>,
+    generation: u64,
+    session_key: String,
+) {
+    std::thread::spawn(move || {
+        let mut previous = None;
+        let mut failure_reported = false;
+        loop {
+            if registry
+                .lock()
+                .get(generation)
+                .is_none_or(|surface| surface.process_state.is_exited())
+            {
+                break;
+            }
+            match native.observe_shell() {
+                Ok(observation) => {
+                    let state = crate::domain::terminal_surface::TerminalShellState::observed(
+                        observation.cwd,
+                        observation.shell_group,
+                        observation.foreground_group,
+                        &observation.initial_program,
+                        &observation.current_program,
+                        &observation.child_groups,
+                    );
+                    if previous.as_ref() != Some(&state) {
+                        order.advance_and_publish(sink.as_deref(), || {
+                            let registry = registry.lock();
+                            let surface = registry.get(generation)?;
+                            if surface.process_state.is_exited() {
+                                return None;
+                            }
+                            Some((
+                                (),
+                                TerminalSurfaceOutputEvent::Status {
+                                    session_key: session_key.clone(),
+                                    state: state.clone(),
+                                    sequence: surface.latest_sequence(),
+                                },
+                            ))
+                        });
+                        previous = Some(state);
+                    }
+                    failure_reported = false;
+                }
+                Err(error) => {
+                    if !failure_reported {
+                        log::warn!("Terminal shell observation failed: {}", error.message);
+                    }
+                    failure_reported = true;
+                }
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
     });
 }
 
@@ -693,6 +757,23 @@ impl TerminalSurfaceRepository for TerminalSurfaceRuntimeGatewayFor {
 }
 
 impl TerminalSurfaceGateway for TerminalSurfaceRuntimeGatewayFor {
+    fn shell_state(
+        &self,
+        generation: u64,
+    ) -> Option<crate::domain::terminal_surface::TerminalShellState> {
+        let native = self.runtimes.lock().get(&generation)?.native_pty.clone();
+        let observation = native.observe_shell().ok()?;
+        Some(
+            crate::domain::terminal_surface::TerminalShellState::observed(
+                observation.cwd,
+                observation.shell_group,
+                observation.foreground_group,
+                &observation.initial_program,
+                &observation.current_program,
+                &observation.child_groups,
+            ),
+        )
+    }
     fn next_runtime_generation(&self) -> u64 {
         self.registry.lock().next_runtime_generation()
     }
@@ -929,6 +1010,21 @@ impl TerminalSurfaceGateway for TerminalSurfaceRuntimeGatewayFor {
                 runtime.checkpoint_journal.clone(),
             )
         };
+        let native = self
+            .runtimes
+            .lock()
+            .get(&runtime_generation)
+            .unwrap()
+            .native_pty
+            .clone();
+        spawn_shell_observer(
+            native,
+            Arc::clone(&self.registry),
+            event_order.clone(),
+            self.event_sink.clone(),
+            runtime_generation,
+            session_key.clone(),
+        );
         spawn_output_reader(
             output,
             TerminalOutputReaderContext {
@@ -942,6 +1038,14 @@ impl TerminalSurfaceGateway for TerminalSurfaceRuntimeGatewayFor {
                 output_drained,
                 checkpoint_journal,
                 journal_enabled: self.journal_enabled,
+                osc7: self
+                    .runtimes
+                    .lock()
+                    .get(&runtime_generation)
+                    .unwrap()
+                    .native_pty
+                    .osc7
+                    .clone(),
                 first_provider_byte_started_at: Instant::now(),
             },
         );

@@ -53,6 +53,11 @@ pub(crate) enum OwnedTerminalSummaryLookup {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TerminalSurfaceStreamItem {
+    Status {
+        session_key: String,
+        state: crate::domain::terminal_surface::TerminalShellState,
+        sequence: u64,
+    },
     Snapshot(TerminalSurfaceSnapshotDto),
     Output {
         session_key: String,
@@ -74,6 +79,7 @@ pub enum TerminalSurfaceStreamItem {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TerminalSurfaceSnapshotDto {
+    pub shell_state: Option<crate::domain::terminal_surface::TerminalShellState>,
     pub session_key: String,
     pub replay: String,
     pub sequence: u64,
@@ -87,6 +93,7 @@ pub struct TerminalSurfaceSnapshotDto {
 impl From<TerminalSurface> for TerminalSurfaceSnapshotDto {
     fn from(surface: TerminalSurface) -> Self {
         Self {
+            shell_state: None,
             session_key: surface.session_key,
             replay: surface.checkpoint.replay,
             sequence: surface.checkpoint.sequence,
@@ -252,6 +259,13 @@ impl TerminalSurfaceApplication {
                 )))
             }
         }
+    }
+
+    pub(crate) fn shell_state(
+        &self,
+        generation: u64,
+    ) -> Option<crate::domain::terminal_surface::TerminalShellState> {
+        self.gateway.shell_state(generation)
     }
 
     pub(crate) fn get_summary(

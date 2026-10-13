@@ -66,8 +66,15 @@ fn spawn_reserved<G: TerminalSurfaceGateway + ?Sized>(
     let registration = TerminalRegistration {
         session_key: session_key.clone(),
         workspace_path: owner.workspace_identity().as_str().into(),
+        terminal_id: match &owner {
+            TerminalSurfaceOwner::WorkspaceTerminal { terminal_id, .. } => {
+                Some(terminal_id.clone())
+            }
+            _ => None,
+        },
         session_id: match &owner {
-            TerminalSurfaceOwner::Workspace { .. } => None,
+            TerminalSurfaceOwner::Workspace { .. }
+            | TerminalSurfaceOwner::WorkspaceTerminal { .. } => None,
             TerminalSurfaceOwner::Session { session_id, .. } => Some(session_id.clone()),
         },
         runtime_generation,

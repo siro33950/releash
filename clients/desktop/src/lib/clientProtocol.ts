@@ -21,6 +21,14 @@ export function decodeTerminalEvent({
 					exit_code: item.value.exitCode ?? null,
 				},
 			};
+		case "status":
+			return {
+				type: "status",
+				session_key: item.value.sessionKey,
+				cwd: item.value.cwd ?? null,
+				has_foreground_process: item.value.hasForegroundProcess,
+				sequence: Number(item.value.sequence),
+			};
 		case "output":
 			return {
 				type: "output",

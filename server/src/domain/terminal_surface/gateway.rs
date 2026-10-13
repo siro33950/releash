@@ -111,6 +111,9 @@ pub trait TerminalSurfaceRepository {
 
 pub trait TerminalSurfaceGateway: TerminalSurfaceRepository {
     fn next_runtime_generation(&self) -> u64;
+    fn shell_state(&self, _runtime_generation: u64) -> Option<super::TerminalShellState> {
+        None
+    }
     fn load_terminal_checkpoint(
         &self,
         _session_key: &str,

@@ -34,7 +34,6 @@ export interface TerminalPanelHandle {
 export interface TerminalPanelProps {
 	cwd?: string | null;
 	theme?: Theme;
-	terminalStartupCommand?: string;
 	owner?: TerminalSurfaceOwner;
 	label?: string;
 	onTerminalReady?: (sessionKey: string) => void;
@@ -57,7 +56,6 @@ export const TerminalPanel = forwardRef<
 	{
 		cwd,
 		theme,
-		terminalStartupCommand,
 		owner,
 		label,
 		onTerminalReady,
@@ -79,7 +77,6 @@ export const TerminalPanel = forwardRef<
 		useTerminal(containerRef, {
 			cwd,
 			theme,
-			terminalStartupCommand,
 			owner,
 			label,
 			onTerminalReady,

@@ -93,6 +93,7 @@ impl TerminalSurfaceStateSink for TerminalSubscriptionPresenter {
         let target = terminal_target(
             &registration.workspace_path,
             registration.session_id.as_deref(),
+            registration.terminal_id.as_deref(),
         )
         .map_err(|error| {
             crate::usecase::terminal_surface::error::UsecaseError::Technical(
@@ -123,6 +124,7 @@ impl TerminalSurfaceStateSink for TerminalSubscriptionPresenter {
         let Ok(target) = terminal_target(
             &registration.workspace_path,
             registration.session_id.as_deref(),
+            registration.terminal_id.as_deref(),
         ) else {
             return false;
         };
@@ -136,17 +138,31 @@ impl TerminalSurfaceStateSink for TerminalSubscriptionPresenter {
         let Ok(target) = terminal_target(
             &registration.workspace_path,
             registration.session_id.as_deref(),
+            registration.terminal_id.as_deref(),
         ) else {
             return;
         };
         let target = target.to_string();
         let sequence = match &event {
-            TerminalSurfaceOutputEvent::Output { sequence, .. }
+            TerminalSurfaceOutputEvent::Status { sequence, .. }
+            | TerminalSurfaceOutputEvent::Output { sequence, .. }
             | TerminalSurfaceOutputEvent::Resize { sequence, .. }
             | TerminalSurfaceOutputEvent::Exit { sequence, .. } => *sequence,
         };
         let advances_version = matches!(&event, TerminalSurfaceOutputEvent::Output { .. });
         let (item, units) = match event {
+            TerminalSurfaceOutputEvent::Status {
+                session_key,
+                state,
+                sequence,
+            } => (
+                TerminalSurfaceStreamItem::Status {
+                    session_key,
+                    state,
+                    sequence,
+                },
+                0,
+            ),
             TerminalSurfaceOutputEvent::Output {
                 session_key,
                 data,
@@ -220,7 +236,14 @@ impl TerminalSurfaceStateSink for TerminalSubscriptionPresenter {
 fn terminal_target(
     workspace_path: &str,
     session_id: Option<&str>,
+    terminal_id: Option<&str>,
 ) -> Result<SubscriptionTarget, SubscriptionError> {
+    if let Some(terminal_id) = terminal_id {
+        return SubscriptionTarget::from_parts(
+            "workspace-terminal",
+            &[workspace_path, terminal_id],
+        );
+    }
     let mut args = vec![workspace_path];
     if let Some(session_id) = session_id {
         args.push(session_id);

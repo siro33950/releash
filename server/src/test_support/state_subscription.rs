@@ -21,6 +21,7 @@ pub fn registration(
     latest_sequence: u64,
 ) -> crate::usecase::terminal_surface::output::TerminalRegistration {
     crate::usecase::terminal_surface::output::TerminalRegistration {
+        terminal_id: None,
         session_key: session_key.into(),
         workspace_path: workspace_path.into(),
         session_id: session_id.map(str::to_owned),

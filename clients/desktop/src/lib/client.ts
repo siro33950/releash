@@ -215,6 +215,7 @@ export type StateValues = {
 	"provider-availability": import("@/generated/client_types").ProviderAvailabilitySnapshotResponse;
 	"external-editor": import("@/generated/client_types").ExternalEditorState;
 	"releash-base": string | null;
+	"terminal-startup-command": string;
 	"workflow-config": import("@/generated/client_types").WorkflowSection;
 	"provider-hook-health": import("@/generated/client_types").ProviderHookHealthSnapshot;
 	"daemon-info": import("@/generated/client_types").ServerInfo;

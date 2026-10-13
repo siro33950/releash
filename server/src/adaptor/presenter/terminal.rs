@@ -33,7 +33,23 @@ pub struct TerminalSurfaceCheckpointV1 {
 }
 
 #[derive(Clone, Debug, Serialize)]
+pub struct TerminalShellStateV1 {
+    pub cwd: Option<String>,
+    pub has_foreground_process: bool,
+}
+impl From<crate::domain::terminal_surface::TerminalShellState> for TerminalShellStateV1 {
+    fn from(value: crate::domain::terminal_surface::TerminalShellState) -> Self {
+        Self {
+            cwd: value.cwd,
+            has_foreground_process: value.has_foreground_process,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize)]
 pub struct TerminalSurfaceV1 {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub shell_state: Option<TerminalShellStateV1>,
     pub session_key: String,
     pub terminal_surface: TerminalSurfaceCheckpointV1,
     pub is_exited: bool,
@@ -45,6 +61,7 @@ pub struct TerminalSurfaceV1 {
 impl From<TerminalSurfaceSnapshotDto> for TerminalSurfaceV1 {
     fn from(surface: TerminalSurfaceSnapshotDto) -> Self {
         Self {
+            shell_state: surface.shell_state.map(Into::into),
             session_key: surface.session_key,
             terminal_surface: TerminalSurfaceCheckpointV1 {
                 replay: surface.replay,
@@ -82,6 +99,11 @@ impl From<GetOrSpawnTerminalOutcome> for GetOrSpawnTerminalV1 {
 #[derive(Clone, Debug, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum TerminalSurfaceStreamItemV1 {
+    Status {
+        session_key: String,
+        state: TerminalShellStateV1,
+        sequence: u64,
+    },
     Snapshot {
         surface: TerminalSurfaceV1,
     },
@@ -110,6 +132,15 @@ impl From<crate::usecase::terminal_surface::application::TerminalSurfaceStreamIt
         item: crate::usecase::terminal_surface::application::TerminalSurfaceStreamItem,
     ) -> Self {
         match item {
+            crate::usecase::terminal_surface::application::TerminalSurfaceStreamItem::Status {
+                session_key,
+                state,
+                sequence,
+            } => Self::Status {
+                session_key,
+                state: state.into(),
+                sequence,
+            },
             crate::usecase::terminal_surface::application::TerminalSurfaceStreamItem::Snapshot(
                 surface,
             ) => Self::Snapshot {
@@ -156,8 +187,20 @@ impl TryFrom<&crate::adaptor::presenter::client::TerminalEvent> for TerminalSurf
     ) -> Result<Self, Self::Error> {
         use crate::adaptor::presenter::client::terminal_event::Item;
         match value.item.as_ref().ok_or("Missing terminal event")? {
+            Item::Status(status) => Ok(Self::Status {
+                session_key: status.session_key.clone(),
+                state: TerminalShellStateV1 {
+                    cwd: status.cwd.clone(),
+                    has_foreground_process: status.has_foreground_process,
+                },
+                sequence: status.sequence,
+            }),
             Item::Snapshot(snapshot) => Ok(Self::Snapshot {
                 surface: TerminalSurfaceV1 {
+                    shell_state: snapshot.status.as_ref().map(|state| TerminalShellStateV1 {
+                        cwd: state.cwd.clone(),
+                        has_foreground_process: state.has_foreground_process,
+                    }),
                     session_key: snapshot.session_key.clone(),
                     terminal_surface: TerminalSurfaceCheckpointV1 {
                         replay: snapshot.replay.clone(),
@@ -209,6 +252,10 @@ impl TryFrom<&crate::adaptor::presenter::client::TerminalEvent> for TerminalSurf
     rename_all_fields = "camelCase"
 )]
 pub enum TerminalSurfaceOwnerV1 {
+    WorkspaceTerminal {
+        workspace_path: String,
+        terminal_id: String,
+    },
     Workspace {
         workspace_path: String,
     },
@@ -223,6 +270,13 @@ impl TryFrom<TerminalSurfaceOwnerV1> for TerminalSurfaceOwner {
 
     fn try_from(value: TerminalSurfaceOwnerV1) -> Result<Self, Self::Error> {
         match value {
+            TerminalSurfaceOwnerV1::WorkspaceTerminal {
+                workspace_path,
+                terminal_id,
+            } => TerminalSurfaceOwner::workspace_terminal(
+                WorkspaceIdentity::new(workspace_path),
+                terminal_id,
+            ),
             TerminalSurfaceOwnerV1::Workspace { workspace_path } => {
                 TerminalSurfaceOwner::workspace(WorkspaceIdentity::new(workspace_path))
             }

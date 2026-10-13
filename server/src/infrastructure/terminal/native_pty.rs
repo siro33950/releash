@@ -29,13 +29,72 @@ pub(crate) struct SpawnedNativePty {
 
 #[derive(Clone)]
 pub struct NativePtyRuntime {
+    pid: Option<u32>,
+    initial_program: Arc<Mutex<Option<String>>>,
+    launcher_program: Option<String>,
+    pub(crate) osc7: super::shell_observation::SharedOsc7Directory,
     input: mpsc::SyncSender<Vec<u8>>,
     input_error: Arc<Mutex<Option<NativePtyError>>>,
     killer: Arc<Mutex<Box<dyn portable_pty::ChildKiller + Send + Sync>>>,
     resizer: Arc<Mutex<Box<dyn NativePtyResizer + Send>>>,
 }
 
+pub(crate) struct NativeShellObservation {
+    pub cwd: Option<String>,
+    pub shell_group: i32,
+    pub foreground_group: i32,
+    pub initial_program: String,
+    pub current_program: String,
+    pub child_groups: Vec<i32>,
+}
+
 impl NativePtyRuntime {
+    pub(crate) fn observe_shell(&self) -> Result<NativeShellObservation, NativePtyError> {
+        let pid = self.pid.ok_or_else(|| NativePtyError {
+            kind: std::io::ErrorKind::NotFound,
+            message: "Shell PID unavailable".into(),
+        })?;
+        let foreground = self.resizer.lock().foreground_group()?;
+        #[cfg(unix)]
+        let group = unsafe { libc::getpgid(pid as i32) };
+        #[cfg(not(unix))]
+        let group = -1;
+        if group < 0 {
+            return Err(NativePtyError::io(
+                std::io::Error::last_os_error(),
+                "Shell process group unavailable",
+            ));
+        }
+        let process_cwd = super::shell_observation::process_cwd(pid)
+            .map_err(|error| NativePtyError::io(error, "Shell cwd unavailable"))?;
+        let cwd = Some(self.osc7.lock().observe_cwd(process_cwd));
+        let current_program = super::shell_observation::process_executable(pid)
+            .map_err(|error| NativePtyError::io(error, "Process executable unavailable"))?;
+        if self.launcher_program.as_deref() == Some(&current_program)
+            && self.initial_program.lock().as_deref() != Some(&current_program)
+        {
+            return Err(NativePtyError {
+                kind: std::io::ErrorKind::WouldBlock,
+                message: "Shell has not executed yet".into(),
+            });
+        }
+        let initial_program = self
+            .initial_program
+            .lock()
+            .get_or_insert_with(|| current_program.clone())
+            .clone();
+        let child_groups = super::shell_observation::child_process_groups(pid)
+            .map_err(|error| NativePtyError::io(error, "Child process groups unavailable"))?;
+        Ok(NativeShellObservation {
+            cwd,
+            shell_group: group,
+            foreground_group: foreground,
+            initial_program,
+            current_program,
+            child_groups,
+        })
+    }
+
     pub(crate) fn write(&self, data: &[u8]) -> Result<(), NativePtyError> {
         if let Some(error) = self.input_error.lock().as_ref() {
             return Err(error.clone());
@@ -98,6 +157,10 @@ impl NativePtyRuntime {
             }
         });
         Self {
+            pid: None,
+            initial_program: Default::default(),
+            launcher_program: None,
+            osc7: Default::default(),
             input,
             input_error,
             killer: Arc::new(Mutex::new(killer)),
@@ -142,6 +205,12 @@ impl NativePtyOutput {
 }
 
 pub trait NativePtyResizer {
+    fn foreground_group(&self) -> Result<i32, NativePtyError> {
+        Err(NativePtyError {
+            kind: std::io::ErrorKind::Unsupported,
+            message: "Foreground process group unavailable".into(),
+        })
+    }
     fn resize(&mut self, rows: u16, cols: u16) -> Result<(), NativePtyError>;
 }
 
@@ -150,6 +219,23 @@ struct PortablePtyResizer {
 }
 
 impl NativePtyResizer for PortablePtyResizer {
+    fn foreground_group(&self) -> Result<i32, NativePtyError> {
+        #[cfg(unix)]
+        if let Some(fd) = self.master.as_raw_fd() {
+            let group = unsafe { libc::tcgetpgrp(fd) };
+            if group >= 0 {
+                return Ok(group);
+            }
+            return Err(NativePtyError::io(
+                std::io::Error::last_os_error(),
+                "Foreground process group unavailable",
+            ));
+        }
+        Err(NativePtyError {
+            kind: std::io::ErrorKind::Unsupported,
+            message: "PTY descriptor unavailable".into(),
+        })
+    }
     fn resize(&mut self, rows: u16, cols: u16) -> Result<(), NativePtyError> {
         self.master
             .resize(PtySize {
@@ -241,6 +327,65 @@ impl NativePtySystem {
             command.cwd(cwd);
         }
 
+        let executable = command
+            .get_argv()
+            .first()
+            .cloned()
+            .unwrap_or_else(|| command.get_shell().into());
+        let executable = std::path::Path::new(&executable);
+        let executable = if executable.is_relative() && executable.components().count() > 1 {
+            std::path::Path::new(
+                command
+                    .get_cwd()
+                    .map(OsString::as_os_str)
+                    .unwrap_or_else(|| std::ffi::OsStr::new(".")),
+            )
+            .join(executable)
+        } else {
+            executable.to_path_buf()
+        };
+        let executable = executable.to_str().ok_or_else(|| NativePtyError {
+            kind: std::io::ErrorKind::InvalidData,
+            message: "Failed to spawn shell: invalid process executable".into(),
+        })?;
+        let resolved = crate::infrastructure::process::executable_probe::resolve_executable(
+            executable,
+            command.get_env("PATH"),
+        );
+        use crate::infrastructure::process::executable_probe::ExecutableProbeResult;
+        let resolved = match resolved {
+            ExecutableProbeResult::Resolved(path) => path,
+            ExecutableProbeResult::NotExecutable => {
+                return Err(NativePtyError::io(
+                    std::io::Error::from_raw_os_error(libc::EACCES),
+                    "Failed to spawn shell",
+                ))
+            }
+            ExecutableProbeResult::NotFound => {
+                return Err(NativePtyError::io(
+                    std::io::Error::from_raw_os_error(libc::ENOENT),
+                    "Failed to spawn shell",
+                ))
+            }
+            other => {
+                return Err(NativePtyError {
+                    kind: std::io::ErrorKind::Other,
+                    message: format!(
+                        "Failed to spawn shell: initial process executable unavailable: {other:?}"
+                    ),
+                })
+            }
+        };
+        let program = std::fs::canonicalize(resolved)
+            .map_err(|error| NativePtyError::io(error, "Failed to spawn shell"))?
+            .into_os_string()
+            .into_string()
+            .map_err(|_| NativePtyError {
+                kind: std::io::ErrorKind::InvalidData,
+                message: "Failed to spawn shell: invalid process executable".into(),
+            })?;
+        let launcher_program = super::shell_observation::process_executable(std::process::id())
+            .map_err(|error| NativePtyError::io(error, "Failed to spawn shell"))?;
         let child = {
             pair.slave
                 .spawn_command(command)
@@ -257,8 +402,14 @@ impl NativePtySystem {
             .map_err(|error| NativePtyError::external(error, "Failed to take writer"))?;
 
         let killer = child.clone_killer();
+        let pid = child.process_id();
+        let mut runtime =
+            NativePtyRuntime::new(writer, killer, Box::new(PortablePtyResizer { master }));
+        runtime.pid = pid;
+        runtime.launcher_program = Some(launcher_program);
+        *runtime.initial_program.lock() = Some(program);
         Ok(SpawnedNativePty {
-            runtime: NativePtyRuntime::new(writer, killer, Box::new(PortablePtyResizer { master })),
+            runtime,
             output: NativePtyOutput { reader, child },
         })
     }

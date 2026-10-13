@@ -17,6 +17,7 @@ struct StateSubscriptionIDs {
     return id
   }
   func key(for id: String) -> String? { keys[id] }
+  func id(for key: String) -> String? { ids[key] }
   mutating func reset() {
     keys.removeAll()
     ids.removeAll()

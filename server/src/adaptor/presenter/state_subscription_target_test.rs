@@ -319,3 +319,24 @@ fn test_daemon状態購読_引数なしの対象を往復し余計な引数を�
     );
     assert!(SubscriptionTarget::from_parts("daemon-info", &["unexpected"]).is_err());
 }
+
+#[test]
+fn test_terminal購読_タブ用所有者をsessionと区別して往復する() {
+    // Given
+    let target =
+        SubscriptionTarget::from_parts("workspace-terminal", &["/作業:repo", "tab:first"]).unwrap();
+    // When / Then
+    assert_eq!(
+        SubscriptionTarget::parse(&target.to_string()),
+        Ok(target.clone())
+    );
+    assert_ne!(
+        target,
+        SubscriptionTarget::from_parts("terminal", &["/作業:repo", "tab:first"]).unwrap()
+    );
+    assert!(SubscriptionTarget::from_parts("workspace-terminal", &["/repo", " "]).is_err());
+    assert_eq!(
+        SubscriptionTarget::parse("terminal-startup-command"),
+        Ok(SubscriptionTarget::TerminalStartupCommand)
+    );
+}

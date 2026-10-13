@@ -72,7 +72,23 @@ impl From<crate::adaptor::presenter::terminal::TerminalSurfaceStreamItemV1> for 
         use terminal_event::Item as Wire;
         Self {
             item: Some(match value {
+                Item::Status {
+                    session_key,
+                    state,
+                    sequence,
+                } => Wire::Status(TerminalStatus {
+                    session_key,
+                    cwd: state.cwd,
+                    has_foreground_process: state.has_foreground_process,
+                    sequence,
+                }),
                 Item::Snapshot { surface } => Wire::Snapshot(TerminalSnapshot {
+                    status: surface.shell_state.map(|state| TerminalStatus {
+                        session_key: surface.session_key.clone(),
+                        cwd: state.cwd,
+                        has_foreground_process: state.has_foreground_process,
+                        sequence: surface.terminal_surface.sequence,
+                    }),
                     session_key: surface.session_key,
                     processed_report_units:
                         crate::infrastructure::terminal::output_flow_control::OUTPUT_REPORT_UNITS

@@ -143,6 +143,8 @@ pub struct AppSection {
     pub last_repo_paths: Vec<String>,
     #[serde(default)]
     pub external_editor: String,
+    #[serde(default)]
+    pub terminal_startup_command: String,
 }
 
 impl Default for AppSection {
@@ -154,6 +156,7 @@ impl Default for AppSection {
             last_root_path: String::new(),
             last_repo_paths: Vec::new(),
             external_editor: String::new(),
+            terminal_startup_command: String::new(),
         }
     }
 }
@@ -219,6 +222,7 @@ pub fn app_to_domain(app: &AppSection) -> domain_vo::AppSettings {
         last_root_path: app.last_root_path.clone(),
         last_repo_paths: app.last_repo_paths.clone(),
         external_editor: app.external_editor.clone(),
+        terminal_startup_command: app.terminal_startup_command.clone(),
     }
 }
 
@@ -230,6 +234,7 @@ pub fn app_to_model(app: domain_vo::AppSettings) -> AppSection {
         last_root_path: app.last_root_path,
         last_repo_paths: app.last_repo_paths,
         external_editor: app.external_editor,
+        terminal_startup_command: app.terminal_startup_command,
     }
 }
 

@@ -17,6 +17,14 @@ import SwiftProtobuf
   var layoutLoaded = false
   var workflows: [Releash_Client_V1_WorkflowSummaryDto] = []
   var providers: [Releash_Client_V1_AgentSessionProviderDto] = []
+  @ObservationIgnored var confirmTerminalClose: () -> Bool = {
+    let alert = NSAlert()
+    alert.messageText = "実行中の処理を停止してTerminalを閉じますか？"
+    alert.addButton(withTitle: "閉じる")
+    alert.addButton(withTitle: "キャンセル")
+    return alert.runModal() == .alertFirstButtonReturn
+  }
+  @ObservationIgnored private var terminals: [String: TerminalSession] = [:]
   @ObservationIgnored private var workspaceState = Releash_Client_V1_WorkspaceStateDto()
   @ObservationIgnored private var cli: CLI?
   @ObservationIgnored private var policy: TransportPolicy?
@@ -140,11 +148,21 @@ import SwiftProtobuf
     }
   }
   private func receive(_ payload: Releash_Client_V1_StatePayload, key: String) {
-    lastPayloads[key] = payload
+    if case .terminal = payload.value {} else { lastPayloads[key] = payload }
     for callback in callbacks[key]?.values ?? [:].values { callback(payload) }
   }
   private func register(_ key: String, clientID: String) async throws {
     guard let client, let (target, args) = targets[key] else { return }
+    if target == "workspace-terminal", args.count == 2 {
+      terminals[key]?.disconnect()
+      var spawn = Releash_Client_V1_GetOrSpawnTerminalSurfaceRequest()
+      spawn.owner.workspaceTerminal.workspacePath = args[0]
+      spawn.owner.workspaceTerminal.terminalID = args[1]
+      spawn.cwd = args[0]
+      spawn.rows = UIStyle.terminalRows
+      spawn.cols = UIStyle.terminalColumns
+      _ = try await client.getOrSpawnTerminalSurface(request: spawn, headers: headers).result.get()
+    }
     let reservation = subscriptionIDs.reserve(key)
     do {
       if let previous = reservation.previous {
@@ -236,6 +254,7 @@ import SwiftProtobuf
       } catch { failure = failureMessage(error) }
       heartbeatTask?.cancel()
       clientID = nil
+      for terminal in terminals.values { terminal.disconnect() }
       subscriptionIDs.reset()
       reconnecting = true
       do { try await Task.sleep(for: .seconds(policy.backoff(attempt: attempt))) } catch { return }
@@ -260,6 +279,7 @@ import SwiftProtobuf
   func selectWorktree(_ path: String) {
     guard selectedWorktree != path || !layoutLoaded else { return }
     if let id = workspaceSubscription { unsubscribe(id) }
+    stopTerminals()
     selectedWorktree = path
     layoutLoaded = false
     layout = .empty()
@@ -274,6 +294,7 @@ import SwiftProtobuf
     guard selectedWorktree == path else { return }
     if let id = workspaceSubscription { unsubscribe(id) }
     workspaceSubscription = nil
+    stopTerminals()
     selectedWorktree = nil
     layoutLoaded = false
     layout = .empty()
@@ -310,6 +331,7 @@ import SwiftProtobuf
       return
     }
     layoutLoaded = true
+    syncTerminalTabs(layout)
   }
   func editLayout(_ edit: (inout PaneLayout) -> Void) {
     guard layoutLoaded, let path = selectedWorktree, let client else { return }
@@ -342,6 +364,57 @@ import SwiftProtobuf
       }
     }
   }
+  func terminal(path: String, id: String) -> TerminalSession {
+    let key = subscriptionKey("workspace-terminal", [path, id])
+    if let session = terminals[key] { return session }
+    let session = TerminalSession(model: self, path: path, id: id)
+    terminals[key] = session
+    return session
+  }
+
+  func terminalBranch(_ path: String) -> String {
+    repositories.flatMap { $0.branches.items }.first { $0.worktreePath == path }?.name ?? ""
+  }
+
+  func syncTerminalTabs(_ layout: PaneLayout) {
+    guard let path = selectedWorktree else { return }
+    let ids = Set(layout.tabs.filter { $0.kind == .terminal }.map(\.id))
+    for (key, session) in terminals where !ids.contains(session.id) { session.stop(); terminals.removeValue(forKey: key) }
+    for id in ids { _ = terminal(path: path, id: id) }
+  }
+
+  private func stopTerminals() {
+    for session in terminals.values { session.stop() }
+    terminals.removeAll()
+  }
+
+  func terminalAttachment(path: String, id: String) -> String? {
+    subscriptionIDs.id(for: subscriptionKey("workspace-terminal", [path, id]))
+  }
+
+  func restartTerminalSubscription(path: String, id: String) {
+    guard let clientID else { return }
+    let key = subscriptionKey("workspace-terminal", [path, id])
+    perform { try await self.register(key, clientID: clientID) }
+  }
+
+  func closeTerminal(_ tab: PaneTab) async -> Bool {
+    guard let path = selectedWorktree, let client else { return false }
+    let session = terminal(path: path, id: tab.id)
+    guard session.exited || session.hasForegroundProcess != nil else {
+      failure = "Terminalの状態を確認できません。接続の回復後に閉じてください。"
+      return false
+    }
+    if session.hasForegroundProcess == true && !confirmTerminalClose() { return false }
+    do {
+      var request = Releash_Client_V1_KillTerminalSurfaceRequest()
+      request.owner = session.owner
+      _ = try await client.killTerminalSurface(request: request, headers: headers).result.get()
+      session.stop()
+      return true
+    } catch { failure = failureMessage(error); return false }
+  }
+
   func setCollapsed(_ path: String, _ value: Bool) {
     guard let client else { return }
     var request = Releash_Client_V1_SaveRepositoryGroupStateRequest()

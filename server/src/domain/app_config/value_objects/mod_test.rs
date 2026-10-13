@@ -53,3 +53,22 @@ mod value_objects_tests {
         assert_eq!(results, vec![true; cases.len()]);
     }
 }
+
+#[test]
+fn test_terminal起動設定_nulを含む入力で既存設定を変えない() {
+    // Given
+    let mut app = super::AppSettings {
+        close_to_tray: false,
+        auto_launch: false,
+        start_minimized: false,
+        last_root_path: String::new(),
+        last_repo_paths: vec![],
+        external_editor: String::new(),
+        terminal_startup_command: "echo ready".into(),
+    };
+    // When
+    let result = app.update_terminal_startup_command("bad\0command".into());
+    // Then
+    assert!(result.is_err());
+    assert_eq!(app.terminal_startup_command, "echo ready");
+}

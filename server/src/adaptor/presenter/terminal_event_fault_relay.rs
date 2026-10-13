@@ -49,6 +49,10 @@ impl TerminalSurfaceEventSink for FaultInjectingTerminalSurfaceEventSink {
     }
 
     fn publish(&self, event: TerminalSurfaceOutputEvent) {
+        if !matches!(event, TerminalSurfaceOutputEvent::Output { .. }) {
+            self.target.publish(event);
+            return;
+        }
         let events = {
             let mut state = self.state.lock();
             match state.armed {

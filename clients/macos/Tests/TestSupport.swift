@@ -14,6 +14,7 @@ final class TestHTTPClient: HTTPClientInterface {
     var repositories: [Releash_Client_V1_WorkspaceRepositoryList] = []
     var layouts: [String: Releash_Client_V1_WorkspaceStateDto] = [:]
     var collapsed: [String: Bool] = [:]
+    var terminalReplay = ""
     var failedMethod: String?
     var failureDetail: ConnectError.Detail?
     var failedSubscriptionTargets: [String: Int] = [:]
@@ -63,7 +64,14 @@ final class TestHTTPClient: HTTPClientInterface {
         let (payload, stream) = state.withLock { state in
           state.subscriptions.append(subscription)
           var payload = Releash_Client_V1_StatePayload()
-          if subscription.target == "workspaces" {
+          if subscription.target == "workspace-terminal" {
+            payload.terminal.snapshot.replay = state.terminalReplay
+            payload.terminal.snapshot.cols = 80
+            payload.terminal.snapshot.rows = 24
+            payload.terminal.snapshot.processedReportUnits = 5000
+            payload.terminal.snapshot.status.cwd = subscription.args[0]
+            payload.terminal.snapshot.status.hasForegroundProcess_p = false
+          } else if subscription.target == "workspaces" {
             payload.workspaces.repositories.items = state.repositories
           } else if subscription.target == "repository-group-state" {
             payload.repositoryGroupState.collapsed =

@@ -14,3 +14,6 @@ pub use terminal_surface_checkpoint::{
 };
 pub use terminal_surface_owner::TerminalSurfaceOwner;
 pub use terminal_surface_startup_command::TerminalSurfaceStartupCommand;
+
+mod shell_state;
+pub use shell_state::TerminalShellState;

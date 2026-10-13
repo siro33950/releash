@@ -169,6 +169,7 @@ pub fn payload(value: &StateValue) -> Result<wire::StatePayload, connectrpc::Con
                 crate::adaptor::presenter::client::value(value.clone())
                     .map_err(crate::adaptor::presenter::connect::command_error)?,
             ),
+            StateValue::TerminalStartupCommand(value) => wire::state_payload::Value::TerminalStartupCommand(wire::ResultString { value: Some(value.clone()) }),
             StateValue::WorkflowConfig(value) => wire::state_payload::Value::WorkflowConfig(
                 crate::adaptor::presenter::client::value(*value)
                 .map_err(crate::adaptor::presenter::connect::command_error)?,

@@ -288,11 +288,16 @@ impl TerminalSubscriptionUsecase {
                             }
                         }
                     }
+                    let generation = surface.runtime_generation.value();
+                    let sequence = surface.latest_sequence();
+                    let mut snapshot =
+                        super::application::TerminalSurfaceSnapshotDto::from(surface);
+                    snapshot.shell_state = terminal.shell_state(generation);
                     result = output.set_snapshot(
                         &target,
-                        surface.runtime_generation.value(),
-                        surface.latest_sequence(),
-                        StateValue::Terminal(TerminalSurfaceStreamItem::Snapshot(surface.into())),
+                        generation,
+                        sequence,
+                        StateValue::Terminal(TerminalSurfaceStreamItem::Snapshot(snapshot)),
                     );
                 })
                 .map_err(StateReadError::from_error)?;

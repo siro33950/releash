@@ -302,6 +302,16 @@ async fn test_daemon起動_data_dirの全解決経路で子プロセスへ解決
         let (mut socket, _) = connect(&discovery).await;
         request(
             &mut socket,
+            "startup",
+            wire::command_request::Command::UpdateTerminalStartupCommand(
+                wire::UpdateTerminalStartupCommandRequest {
+                    command: Some("printf '%s' \"$RELEASH_DATA_DIR\" > child-data-dir".into()),
+                },
+            ),
+        )
+        .await;
+        request(
+            &mut socket,
             "data-dir",
             wire::command_request::Command::GetOrSpawnTerminalSurface(
                 wire::GetOrSpawnTerminalSurfaceRequest {
@@ -315,9 +325,7 @@ async fn test_daemon起動_data_dirの全解決経路で子プロセスへ解決
                             },
                         )),
                     }),
-                    startup_command: Some(
-                        "printf '%s' \"$RELEASH_DATA_DIR\" > child-data-dir".into(),
-                    ),
+
                     ..Default::default()
                 },
             ),
@@ -434,12 +442,26 @@ async fn test_headless単独起動_commandと永続化と再起動とexitを実p
     } else {
         "releash"
     };
-    request(&mut socket, "terminal", C::GetOrSpawnTerminalSurface(wire::GetOrSpawnTerminalSurfaceRequest {
-        rows: Some(24), cols: Some(80), cwd: Some(directory.path().to_string_lossy().into_owned()),
-        owner: Some(wire::TerminalSurfaceOwnerV1 { variant: Some(wire::terminal_surface_owner_v1::Variant::Workspace(wire::TerminalSurfaceOwnerV1Workspace { workspace_path: Some(directory.path().to_string_lossy().into_owned()) })) }),
-        startup_command: Some(format!(r#"printf '%s' "$RELEASH_DATA_DIR" > child-data-dir; command -v {alias} > child-alias; {alias} --help > child-cli; printf '%s' "$$" > child-pid"#)),
-        ..Default::default()
-    })).await;
+    request(&mut socket, "startup", C::UpdateTerminalStartupCommand(wire::UpdateTerminalStartupCommandRequest { command: Some(format!(r#"printf '%s' "$RELEASH_DATA_DIR" > child-data-dir; command -v {alias} > child-alias; {alias} --help > child-cli; printf '%s' "$$" > child-pid"#)) })).await;
+    request(
+        &mut socket,
+        "terminal",
+        C::GetOrSpawnTerminalSurface(wire::GetOrSpawnTerminalSurfaceRequest {
+            rows: Some(24),
+            cols: Some(80),
+            cwd: Some(directory.path().to_string_lossy().into_owned()),
+            owner: Some(wire::TerminalSurfaceOwnerV1 {
+                variant: Some(wire::terminal_surface_owner_v1::Variant::Workspace(
+                    wire::TerminalSurfaceOwnerV1Workspace {
+                        workspace_path: Some(directory.path().to_string_lossy().into_owned()),
+                    },
+                )),
+            }),
+
+            ..Default::default()
+        }),
+    )
+    .await;
     let deadline = Instant::now() + Duration::from_secs(10);
     while !directory.path().join("child-pid").exists() {
         assert!(
@@ -1145,6 +1167,18 @@ async fn test_親ui終了_stdinを閉じてもdaemonとterminalが動き続け�
     let (mut socket, _) = connect(&discovery).await;
     request(
         &mut socket,
+        "startup",
+        wire::command_request::Command::UpdateTerminalStartupCommand(
+            wire::UpdateTerminalStartupCommandRequest {
+                command: Some(
+                    "sleep 100 & echo $! > grandchild-pid; printf '%s' \"$$\" > child-pid".into(),
+                ),
+            },
+        ),
+    )
+    .await;
+    request(
+        &mut socket,
         "terminal-parent",
         wire::command_request::Command::GetOrSpawnTerminalSurface(
             wire::GetOrSpawnTerminalSurfaceRequest {
@@ -1158,9 +1192,7 @@ async fn test_親ui終了_stdinを閉じてもdaemonとterminalが動き続け�
                         },
                     )),
                 }),
-                startup_command: Some(
-                    "sleep 100 & echo $! > grandchild-pid; printf '%s' \"$$\" > child-pid".into(),
-                ),
+
                 ..Default::default()
             },
         ),

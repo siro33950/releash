@@ -10,10 +10,12 @@ pub(crate) fn register_shared(
 ) {
     {
         let state = deps.app_state.clone();
+        let config = deps.app_config_usecase.clone();
         router.register_domain(
             &["get_or_spawn_terminal_surface"],
             Box::new(move |command| {
                 let state = state.clone();
+                let config = config.clone();
                 Box::pin(async move {
                     let wire::command_request::Command::GetOrSpawnTerminalSurface(args) = command
                     else {
@@ -29,7 +31,16 @@ pub(crate) fn register_shared(
                             optional(args.cwd)?,
                             convert(required(args.owner, "owner")?)?,
                             optional(args.label)?,
-                            optional(args.startup_command)?,
+                            Some(
+                                config
+                                    .ok_or_else(|| {
+                                        invalid_request("Command dependency unavailable")
+                                    })?
+                                    .terminal_startup_command()
+                                    .map_err(
+                                        crate::adaptor::presenter::error::AppError::from_failure,
+                                    )?,
+                            ),
                         ))
                     }
                     .await?;

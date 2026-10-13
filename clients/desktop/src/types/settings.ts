@@ -8,7 +8,6 @@ export interface AppSettings {
 	fontSize: number;
 	defaultDiffBase: DiffBase;
 	defaultDiffMode: DiffMode;
-	terminalStartupCommand: string;
 	autoUpdate: boolean;
 	performanceTelemetry: boolean;
 	enableCrashReporting: boolean;
@@ -23,7 +22,6 @@ export const DEFAULT_SETTINGS: AppSettings = {
 	defaultDiffBase: "head",
 	defaultDiffMode: "inline",
 	defaultDiffOnlyMode: false,
-	terminalStartupCommand: "",
 	autoUpdate: true,
 	performanceTelemetry: true,
 	enableCrashReporting: true,

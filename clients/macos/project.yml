@@ -6,6 +6,9 @@ packages:
   Bonsplit:
     url: https://github.com/siro33950/bonsplit
     revision: 088c284ecdd51721da83e2ae121a97d25881cc38
+  SwiftTerm:
+    url: https://github.com/migueldeicaza/SwiftTerm
+    exactVersion: 1.13.0
   Connect:
     url: https://github.com/connectrpc/connect-swift
     exactVersion: 1.0.0
@@ -29,6 +32,8 @@ targets:
     sources:
       - Sources
       - path: Resources/Lucide-LICENSE
+        buildPhase: resources
+      - path: Resources/SwiftTerm-LICENSE
         buildPhase: resources
       - path: Resources/Bonsplit-LICENSE
         buildPhase: resources
@@ -63,6 +68,7 @@ targets:
           PRODUCT_BUNDLE_IDENTIFIER: com.releash.macos
     dependencies:
       - package: Bonsplit
+      - package: SwiftTerm
       - package: Connect
       - package: SwiftProtobuf
   ReleashTests:

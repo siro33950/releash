@@ -52,6 +52,14 @@ impl AppConfigUsecase {
         self.query.get_workflow_config()
     }
 
+    pub fn terminal_startup_command(&self) -> Result<String, UsecaseError> {
+        self.query.terminal_startup_command()
+    }
+
+    pub fn update_terminal_startup_command(&self, command: String) -> Result<(), UsecaseError> {
+        self.update(move |config| config.app.update_terminal_startup_command(command))
+    }
+
     fn update(
         &self,
         mutate: impl FnOnce(&mut AppConfigDocument) -> Result<(), AppConfigError> + Send + 'static,

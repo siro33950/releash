@@ -1599,6 +1599,12 @@ impl TryFrom<wire::TerminalSurfaceOwnerV1>
     type Error = String;
     fn try_from(value: wire::TerminalSurfaceOwnerV1) -> Result<Self, String> {
         Ok(match req(value.variant, "variant")? {
+            wire::terminal_surface_owner_v1::Variant::WorkspaceTerminal(value) => {
+                crate::adaptor::presenter::terminal::TerminalSurfaceOwnerV1::WorkspaceTerminal {
+                    workspace_path: cv(req(value.workspace_path, "workspacePath")?)?,
+                    terminal_id: cv(req(value.terminal_id, "terminalId")?)?,
+                }
+            }
             wire::terminal_surface_owner_v1::Variant::Workspace(value) => {
                 crate::adaptor::presenter::terminal::TerminalSurfaceOwnerV1::Workspace {
                     workspace_path: cv(req(value.workspace_path, "workspacePath")?)?,

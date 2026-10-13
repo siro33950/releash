@@ -19,6 +19,7 @@ pub struct AppSettings {
     pub last_root_path: String,
     pub last_repo_paths: Vec<String>,
     pub external_editor: String,
+    pub terminal_startup_command: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -77,3 +78,18 @@ pub struct NotionLabelProperty {
 #[cfg(test)]
 #[path = "mod_test.rs"]
 mod mod_tests;
+
+impl AppSettings {
+    pub fn update_terminal_startup_command(
+        &mut self,
+        command: String,
+    ) -> Result<(), super::AppConfigError> {
+        if command.contains('\0') {
+            return Err(super::AppConfigError::InvalidInput(
+                "Terminal startup command contains NUL".into(),
+            ));
+        }
+        self.terminal_startup_command = command;
+        Ok(())
+    }
+}

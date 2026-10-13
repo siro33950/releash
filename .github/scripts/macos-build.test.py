@@ -106,14 +106,16 @@ class MacOSBuildTest(unittest.TestCase):
             )
         }
         self.assertEqual(set(tools), {"xcodegen", "swift-protobuf", "connect-swift"})
-        self.assertEqual(set(app_versions), {"swift-protobuf", "connect-swift"})
+        self.assertEqual(set(app_versions), {"swift-protobuf", "connect-swift", "swiftterm"})
         for identity, version in tools.items():
             with self.subTest(identity=identity):
                 self.assertEqual(tool_pins[identity]["version"], version)
         for identity, version in app_versions.items():
             with self.subTest(identity=identity):
-                self.assertEqual(tools[identity], version)
-                self.assertEqual(app_pins[identity], tool_pins[identity])
+                self.assertEqual(app_pins[identity]["version"], version)
+                if identity in tools:
+                    self.assertEqual(tools[identity], version)
+                    self.assertEqual(app_pins[identity], tool_pins[identity])
 
     def test_dependency_resolution_updates_both_locks_before_generating_the_project(self):
         target = json.loads((MACOS / "project.json").read_text())["targets"]["resolve-dependencies"]

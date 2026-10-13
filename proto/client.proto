@@ -170,6 +170,7 @@ message CommandRequest {
     UpdatePerformanceTelemetryRequest update_performance_telemetry = 143;
     UpdateProviderExecutableRequest update_provider_executable = 144;
     UpdateWorkflowConfigRequest update_workflow_config = 145;
+    UpdateTerminalStartupCommandRequest update_terminal_startup_command = 196;
     ValidateNotionConfigRequest validate_notion_config = 146;
     WritePathsToTerminalSurfaceRequest write_paths_to_terminal_surface = 147;
     WriteTerminalSurfaceRequest write_terminal_surface = 148;
@@ -337,6 +338,7 @@ message CommandResult {
     Unit update_performance_telemetry = 143;
     Unit update_provider_executable = 144;
     Unit update_workflow_config = 145;
+    Unit update_terminal_startup_command = 196;
     NotionValidationResultView validate_notion_config = 146;
     Unit write_paths_to_terminal_surface = 147;
     Unit write_terminal_surface = 148;
@@ -468,7 +470,13 @@ message TerminalSurfaceOwnerV1 {
   oneof variant {
     TerminalSurfaceOwnerV1Workspace workspace = 1 [json_name = "workspace"];
     TerminalSurfaceOwnerV1Session session = 2 [json_name = "session"];
+    TerminalSurfaceOwnerV1WorkspaceTerminal workspace_terminal = 3 [json_name = "workspace_terminal"];
   }
+}
+
+message TerminalSurfaceOwnerV1WorkspaceTerminal {
+  optional string workspace_path = 1 [json_name = "workspacePath", (json_required) = true];
+  optional string terminal_id = 2 [json_name = "terminalId", (json_required) = true];
 }
 
 message TerminalSurfaceOwnerV1Workspace {
@@ -992,7 +1000,8 @@ message GetOrSpawnTerminalSurfaceRequest {
   optional string cwd = 3 [json_name = "cwd", (json_nullable) = true];
   optional TerminalSurfaceOwnerV1 owner = 4 [json_name = "owner", (json_required) = true];
   optional string label = 5 [json_name = "label", (json_nullable) = true];
-  optional string startup_command = 6 [json_name = "startupCommand", (json_nullable) = true];
+  reserved 6;
+  reserved "startup_command";
 }
 
 message GetOrSpawnTerminalV1 {
@@ -2218,6 +2227,10 @@ message UpdateProviderExecutableRequest {
   optional string executable = 2 [json_name = "executable", (json_required) = true];
 }
 
+message UpdateTerminalStartupCommandRequest {
+  optional string command = 1 [(json_required) = true];
+}
+
 message UpdateWorkflowConfigRequest {
   optional WorkflowSection workflow = 1 [json_name = "workflow", (json_required) = true];
 }
@@ -2366,6 +2379,7 @@ message TerminalEvent {
     TerminalOutput output = 2;
     TerminalResize resize = 3;
     TerminalExit exit = 4;
+    TerminalStatus status = 6;
   }
 }
 message TerminalSnapshot {
@@ -2377,7 +2391,15 @@ message TerminalSnapshot {
   bool is_exited = 6;
   optional int32 exit_code = 7;
   uint32 processed_report_units = 8;
+  optional TerminalStatus status = 9;
 }
+message TerminalStatus {
+  string session_key = 1;
+  optional string cwd = 2;
+  bool has_foreground_process = 3;
+  uint64 sequence = 4;
+}
+
 message TerminalOutput {
   string session_key = 1;
   string data = 2;
@@ -2644,6 +2666,7 @@ service ClientService {
   rpc UpdateExternalEditor(UpdateExternalEditorRequest) returns (Unit) { option (scope) = SCOPE_OPERATOR; }
   rpc UpdatePerformanceTelemetry(UpdatePerformanceTelemetryRequest) returns (Unit) { option (scope) = SCOPE_OPERATOR; }
   rpc UpdateProviderExecutable(UpdateProviderExecutableRequest) returns (Unit) { option (scope) = SCOPE_OPERATOR; }
+  rpc UpdateTerminalStartupCommand(UpdateTerminalStartupCommandRequest) returns (Unit) { option (scope) = SCOPE_OPERATOR; }
   rpc UpdateWorkflowConfig(UpdateWorkflowConfigRequest) returns (Unit) { option (scope) = SCOPE_OPERATOR; }
   rpc ValidateNotionConfig(ValidateNotionConfigRequest) returns (NotionValidationResultView) { option (scope) = SCOPE_OPERATOR; }
   rpc WritePathsToTerminalSurface(WritePathsToTerminalSurfaceRequest) returns (Unit) { option (scope) = SCOPE_OPERATOR; }
@@ -2838,6 +2861,7 @@ message StatePayload {
     ExternalEditorState external_editor = 53;
     Nullablestring releash_base = 54;
     WorkflowSection workflow_config = 55;
+    ResultString terminal_startup_command = 69;
 
     NullableWorkflowExecutionView workflow_execution = 62;
     NullableWorkflowOutputView workflow_output = 63;

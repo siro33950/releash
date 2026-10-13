@@ -62,3 +62,23 @@ final class PaneWorkspaceTests: XCTestCase {
     XCTAssertEqual(try workspace.layout(), before)
   }
 }
+
+extension PaneWorkspaceTests {
+  @MainActor func testTerminalCloseCanBeCancelledAndOnlyClosesAfterSuccess() async throws {
+    let workspace = PaneWorkspace()
+    try workspace.restore(.empty())
+    let pane = try XCTUnwrap(workspace.controller.allPaneIds.first)
+    workspace.open(.terminal, in: pane)
+    workspace.open(.terminal, in: pane)
+    let names = workspace.controller.tabs(inPane: pane).map(\.title)
+    XCTAssertEqual(Set(names).count, 2)
+    var cancelled = false
+    workspace.requestClose = { _ in cancelled = true; return false }
+    workspace.closeCurrentTab()
+    try await eventually { cancelled }
+    XCTAssertEqual(workspace.controller.allTabIds.count, 2)
+    workspace.requestClose = { _ in true }
+    workspace.closeCurrentTab()
+    try await eventually { workspace.controller.allTabIds.count == 1 }
+  }
+}

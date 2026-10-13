@@ -5,6 +5,10 @@ pub enum TerminalSurfaceOwner {
     Workspace {
         workspace: WorkspaceIdentity,
     },
+    WorkspaceTerminal {
+        workspace: WorkspaceIdentity,
+        terminal_id: String,
+    },
     Session {
         workspace: WorkspaceIdentity,
         session_id: String,
@@ -15,12 +19,28 @@ pub enum TerminalSurfaceOwner {
 pub enum TerminalSurfaceOwnerError {
     WorkspacePathMissing,
     SessionIdMissing,
+    InvalidTerminalId,
 }
 
 impl TerminalSurfaceOwner {
     pub fn workspace(workspace: WorkspaceIdentity) -> Result<Self, TerminalSurfaceOwnerError> {
         Self::validate_workspace(&workspace)?;
         Ok(Self::Workspace { workspace })
+    }
+
+    pub fn workspace_terminal(
+        workspace: WorkspaceIdentity,
+        terminal_id: impl Into<String>,
+    ) -> Result<Self, TerminalSurfaceOwnerError> {
+        Self::validate_workspace(&workspace)?;
+        let terminal_id = terminal_id.into();
+        if terminal_id.trim().is_empty() || terminal_id.contains('\0') {
+            return Err(TerminalSurfaceOwnerError::InvalidTerminalId);
+        }
+        Ok(Self::WorkspaceTerminal {
+            workspace,
+            terminal_id,
+        })
     }
 
     pub fn session(
@@ -58,7 +78,9 @@ impl TerminalSurfaceOwner {
 
     pub fn workspace_identity(&self) -> &WorkspaceIdentity {
         match self {
-            Self::Workspace { workspace } | Self::Session { workspace, .. } => workspace,
+            Self::Workspace { workspace }
+            | Self::WorkspaceTerminal { workspace, .. }
+            | Self::Session { workspace, .. } => workspace,
         }
     }
 
@@ -66,6 +88,11 @@ impl TerminalSurfaceOwner {
         let workspace = self.workspace_identity().as_str();
         match self {
             Self::Workspace { .. } => format!("workspace:{}:{workspace}", workspace.len()),
+            Self::WorkspaceTerminal { terminal_id, .. } => format!(
+                "terminal:{}:{workspace}:{}:{terminal_id}",
+                workspace.len(),
+                terminal_id.len()
+            ),
             Self::Session { session_id, .. } => format!(
                 "session:{}:{workspace}:{}:{session_id}",
                 workspace.len(),

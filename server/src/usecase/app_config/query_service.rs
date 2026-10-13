@@ -51,6 +51,10 @@ impl AppConfigQueryService {
         })
     }
 
+    pub fn terminal_startup_command(&self) -> Result<String, UsecaseError> {
+        Ok(self.repository.load()?.app.terminal_startup_command)
+    }
+
     pub fn get_workflow_config(&self) -> Result<WorkflowConfigDto, UsecaseError> {
         Ok(self.workflow.get_workflow_config()?)
     }

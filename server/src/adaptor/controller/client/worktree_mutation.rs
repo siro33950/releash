@@ -94,6 +94,7 @@ fn terminal_workspace(owner: Option<&wire::TerminalSurfaceOwnerV1>) -> Option<&s
     match owner?.variant.as_ref()? {
         Variant::Workspace(owner) => owner.workspace_path.as_deref(),
         Variant::Session(owner) => owner.workspace_path.as_deref(),
+        Variant::WorkspaceTerminal(owner) => owner.workspace_path.as_deref(),
     }
 }
 

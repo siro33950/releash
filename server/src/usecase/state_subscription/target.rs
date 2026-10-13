@@ -46,6 +46,7 @@ pub enum SubscriptionTarget {
     ExternalEditor,
     ReleashBase(String),
     WorkflowConfig,
+    TerminalStartupCommand,
     ProviderHookHealth,
 }
 
@@ -214,6 +215,7 @@ impl SubscriptionTarget {
                     | Self::NotionConfig(_)
                     | Self::ExternalEditor
                     | Self::WorkflowConfig
+                    | Self::TerminalStartupCommand
             ),
             C::ProviderHookHealth => matches!(self, Self::ProviderHookHealth),
         }

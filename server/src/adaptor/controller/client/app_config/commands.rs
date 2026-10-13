@@ -64,6 +64,19 @@ pub async fn update_workflow_config_shared(
     .map_err(AppError::from_failure)
 }
 
+pub async fn update_terminal_startup_command_shared(
+    usecase: &Arc<AppConfigUsecase>,
+    command: String,
+) -> Result<(), AppError> {
+    let usecase = usecase.clone();
+    crate::common::operation_context::spawn_blocking(move || {
+        usecase.update_terminal_startup_command(command)
+    })
+    .await
+    .map_err(map_join_error)?
+    .map_err(AppError::from_failure)
+}
+
 pub(crate) async fn update_crash_reporting_shared(
     usecase: &Arc<AppConfigUsecase>,
     enabled: bool,

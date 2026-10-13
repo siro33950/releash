@@ -39,6 +39,7 @@ fn test_config_model変換_変更済み値がdomain往復で同値になる() {
             last_root_path: "/repo".to_string(),
             last_repo_paths: vec!["/repo".to_string(), "/repo2".to_string()],
             external_editor: "cursor".to_string(),
+            terminal_startup_command: "printf ready".into(),
         },
         agents: AgentsSection {
             claude: ClaudeAgentSection {
