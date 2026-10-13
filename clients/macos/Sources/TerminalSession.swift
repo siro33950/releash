@@ -79,8 +79,7 @@ import SwiftTerm
         replaying = false
       }
       exited = snapshot.isExited
-      hasForegroundProcess = snapshot.hasStatus ? snapshot.status.hasForegroundProcess_p : nil
-      cwd = snapshot.hasStatus && snapshot.status.hasCwd ? snapshot.status.cwd : nil
+      apply(snapshot.hasStatus ? snapshot.status : nil)
       if exited { showExit(snapshot.hasExitCode ? snapshot.exitCode : nil) }
       resize()
       flushInput()
@@ -103,17 +102,20 @@ import SwiftTerm
       resizeScreen(cols: Int(resize.cols), rows: Int(resize.rows))
     case .status(let status):
       guard attachment == current else { return }
-      cwd = status.hasCwd ? status.cwd : nil
-      hasForegroundProcess = status.hasForegroundProcess_p
+      apply(status)
     case .exit(let exit):
       guard attachment == current else { return }
       exited = true
-      hasForegroundProcess = exit.hasStatus ? exit.status.hasForegroundProcess_p : nil
-      cwd = exit.hasStatus && exit.status.hasCwd ? exit.status.cwd : nil
+      apply(exit.hasStatus ? exit.status : nil)
       showExit(exit.hasExitCode ? exit.exitCode : nil)
     case nil: failure = "Terminalのイベントがありません"
     }
     screen.needsDisplay = true
+  }
+
+  private func apply(_ status: Releash_Client_V1_TerminalStatus?) {
+    hasForegroundProcess = status?.hasForegroundProcess_p
+    cwd = status.flatMap { $0.hasCwd ? $0.cwd : nil }
   }
 
   private func resizeScreen(cols: Int, rows: Int) {

@@ -66,6 +66,19 @@ pub fn from_value(value: impl ClientValue) -> Result<Json, String> {
     value.into_json()
 }
 
+fn terminal_status(
+    session_key: String,
+    state: crate::adaptor::presenter::terminal::TerminalShellStateV1,
+    sequence: u64,
+) -> TerminalStatus {
+    TerminalStatus {
+        session_key,
+        cwd: state.cwd,
+        has_foreground_process: state.has_foreground_process,
+        sequence,
+    }
+}
+
 impl From<crate::adaptor::presenter::terminal::TerminalSurfaceStreamItemV1> for TerminalEvent {
     fn from(value: crate::adaptor::presenter::terminal::TerminalSurfaceStreamItemV1) -> Self {
         use crate::adaptor::presenter::terminal::TerminalSurfaceStreamItemV1 as Item;
@@ -76,18 +89,14 @@ impl From<crate::adaptor::presenter::terminal::TerminalSurfaceStreamItemV1> for 
                     session_key,
                     state,
                     sequence,
-                } => Wire::Status(TerminalStatus {
-                    session_key,
-                    cwd: state.cwd,
-                    has_foreground_process: state.has_foreground_process,
-                    sequence,
-                }),
+                } => Wire::Status(terminal_status(session_key, state, sequence)),
                 Item::Snapshot { surface } => Wire::Snapshot(TerminalSnapshot {
-                    status: surface.shell_state.map(|state| TerminalStatus {
-                        session_key: surface.session_key.clone(),
-                        cwd: state.cwd,
-                        has_foreground_process: state.has_foreground_process,
-                        sequence: surface.terminal_surface.sequence,
+                    status: surface.shell_state.map(|state| {
+                        terminal_status(
+                            surface.session_key.clone(),
+                            state,
+                            surface.terminal_surface.sequence,
+                        )
                     }),
                     session_key: surface.session_key,
                     processed_report_units:
@@ -126,12 +135,8 @@ impl From<crate::adaptor::presenter::terminal::TerminalSurfaceStreamItemV1> for 
                     exit_code,
                     sequence,
                 } => Wire::Exit(TerminalExit {
-                    status: state.map(|state| TerminalStatus {
-                        session_key: session_key.clone(),
-                        cwd: state.cwd,
-                        has_foreground_process: state.has_foreground_process,
-                        sequence,
-                    }),
+                    status: state
+                        .map(|state| terminal_status(session_key.clone(), state, sequence)),
                     session_key,
                     exit_code,
                     sequence,

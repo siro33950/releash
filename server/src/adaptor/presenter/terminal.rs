@@ -46,6 +46,15 @@ impl From<crate::domain::terminal_surface::TerminalShellState> for TerminalShell
     }
 }
 
+impl From<&crate::adaptor::presenter::client::TerminalStatus> for TerminalShellStateV1 {
+    fn from(value: &crate::adaptor::presenter::client::TerminalStatus) -> Self {
+        Self {
+            cwd: value.cwd.clone(),
+            has_foreground_process: value.has_foreground_process,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize)]
 pub struct TerminalSurfaceV1 {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -192,18 +201,12 @@ impl TryFrom<&crate::adaptor::presenter::client::TerminalEvent> for TerminalSurf
         match value.item.as_ref().ok_or("Missing terminal event")? {
             Item::Status(status) => Ok(Self::Status {
                 session_key: status.session_key.clone(),
-                state: TerminalShellStateV1 {
-                    cwd: status.cwd.clone(),
-                    has_foreground_process: status.has_foreground_process,
-                },
+                state: status.into(),
                 sequence: status.sequence,
             }),
             Item::Snapshot(snapshot) => Ok(Self::Snapshot {
                 surface: TerminalSurfaceV1 {
-                    shell_state: snapshot.status.as_ref().map(|state| TerminalShellStateV1 {
-                        cwd: state.cwd.clone(),
-                        has_foreground_process: state.has_foreground_process,
-                    }),
+                    shell_state: snapshot.status.as_ref().map(Into::into),
                     session_key: snapshot.session_key.clone(),
                     terminal_surface: TerminalSurfaceCheckpointV1 {
                         replay: snapshot.replay.clone(),
@@ -240,10 +243,7 @@ impl TryFrom<&crate::adaptor::presenter::client::TerminalEvent> for TerminalSurf
                 sequence: resize.sequence,
             }),
             Item::Exit(exit) => Ok(Self::Exit {
-                state: exit.status.as_ref().map(|state| TerminalShellStateV1 {
-                    cwd: state.cwd.clone(),
-                    has_foreground_process: state.has_foreground_process,
-                }),
+                state: exit.status.as_ref().map(Into::into),
                 session_key: exit.session_key.clone(),
                 exit_code: exit.exit_code,
                 sequence: exit.sequence,
