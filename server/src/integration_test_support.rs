@@ -1279,11 +1279,20 @@ pub mod client_protocol {
 }
 
 pub mod provider_usage {
+    pub fn payload_receiver(
+        lifecycle: std::sync::Arc<crate::usecase::provider_lifecycle::ProviderLifecycleUsecase>,
+    ) -> std::sync::Arc<dyn crate::usecase::provider_lifecycle::ProviderPayloadReceiver> {
+        std::sync::Arc::new(
+            crate::provider_lifecycle_acceptance::AcceptancePayloadReceiver(lifecycle),
+        )
+    }
+
+    pub use crate::domain::provider_usage::*;
     pub use crate::infrastructure::reverse_lines::ReverseLines;
     pub fn read_codex(
         home: &std::path::Path,
         session: &str,
-    ) -> Result<Option<(String, ProviderUsage)>, UsageError> {
+    ) -> Result<Option<CodexUsageRecord>, UsageError> {
         crate::adaptor::gateway::agent_session::provider_usage::read_codex(home, session)
     }
     pub fn inherited_status_line(
@@ -1296,10 +1305,9 @@ pub mod provider_usage {
     }
 
     pub use crate::adaptor::gateway::agent_session::provider_usage::{
-        LocalProviderUsageSource, ProviderUsageReadModel,
+        LocalProviderUsageSource, ProviderUsageReadModel, SystemProviderUsageClock,
     };
     pub use crate::usecase::provider_usage::{
-        ProviderUsage, ProviderUsageOutput, ProviderUsageQueryService, ProviderUsageSource,
-        ProviderUsageUsecase, UsageError, UsageWindow,
+        ProviderUsageDto, ProviderUsageQueryService, ProviderUsageUsecase, UsageWindowDto,
     };
 }

@@ -3070,7 +3070,13 @@ enum CliInstallationStatus {
   CLI_INSTALLATION_STATUS_UNDETERMINED = 5 [(json_enum_name) = "undetermined"];
 }
 
-message ReceiveProviderUsageRequest { bytes payload = 1; }
+message ReceiveProviderUsageRequest {
+  bytes payload = 1;
+  string slot_id = 2;
+  string binding_id = 3;
+  string capability = 4;
+  string agent_session_id = 5;
+}
 message ProviderUsageWindow {
   double used_percent = 1;
   uint64 window_minutes = 2;

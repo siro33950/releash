@@ -137,3 +137,61 @@ fn test_provider_session参照_開始観測済みの現行bindingだけを返す
     slot.release("binding-1");
     assert!(slot.current_provider_session(ProviderKind::Codex).is_none());
 }
+
+#[test]
+fn test_使用率資格_slotとbindingとproviderとsessionとcapabilityを照合する() {
+    // Given
+    let mut slot = ProviderLifecycleSlot::new(slot_id());
+    assert!(slot
+        .authorize_usage(
+            &capability(1),
+            "binding-1",
+            ProviderKind::Claude,
+            &scope("agent-session-1")
+        )
+        .is_err());
+    slot.arm(binding(ProviderKind::Claude), capability(1));
+    // When / Then
+    assert!(slot
+        .authorize_usage(
+            &capability(1),
+            "binding-1",
+            ProviderKind::Claude,
+            &scope("agent-session-1")
+        )
+        .is_ok());
+    for (hash, id, provider, session) in [
+        (
+            capability(2),
+            "binding-1",
+            ProviderKind::Claude,
+            "agent-session-1",
+        ),
+        (
+            capability(1),
+            "stale",
+            ProviderKind::Claude,
+            "agent-session-1",
+        ),
+        (
+            capability(1),
+            "binding-1",
+            ProviderKind::Codex,
+            "agent-session-1",
+        ),
+        (capability(1), "binding-1", ProviderKind::Claude, "other"),
+    ] {
+        assert!(slot
+            .authorize_usage(&hash, id, provider, &scope(session))
+            .is_err());
+    }
+    slot.release("binding-1");
+    assert!(slot
+        .authorize_usage(
+            &capability(1),
+            "binding-1",
+            ProviderKind::Claude,
+            &scope("agent-session-1")
+        )
+        .is_err());
+}

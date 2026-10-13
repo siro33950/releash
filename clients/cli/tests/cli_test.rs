@@ -1212,6 +1212,10 @@ fn test_cli_statusline_同じstdinを転送し転送失敗でも利用者のstdo
         let server = support::Server::start_unary(Box::new(move |method, body| {
             assert!(method.contains("/ReceiveProviderUsage "));
             let request = wire::ReceiveProviderUsageRequest::decode(body).unwrap();
+            assert_eq!(request.slot_id, "slot");
+            assert_eq!(request.binding_id, "binding");
+            assert_eq!(request.capability, "capability");
+            assert_eq!(request.agent_session_id, "session");
             *received.lock().unwrap() = request.payload;
             sent.send(()).unwrap();
             if transfer_fails {
@@ -1228,6 +1232,10 @@ fn test_cli_statusline_同じstdinを転送し転送失敗でも利用者のstdo
         let mut child = server
             .command(&["hook", "statusline"])
             .env("RELEASH_PROVIDER_LIFECYCLE_TOKEN", "operator")
+            .env("RELEASH_PROVIDER_LIFECYCLE_SLOT_ID", "slot")
+            .env("RELEASH_PROVIDER_LIFECYCLE_BINDING_ID", "binding")
+            .env("RELEASH_PROVIDER_LIFECYCLE_CAPABILITY", "capability")
+            .env("RELEASH_PROVIDER_LIFECYCLE_AGENT_SESSION_ID", "session")
             .env("RELEASH_CLAUDE_STATUSLINE", "cat")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -1266,13 +1274,21 @@ fn test_cli_statusline_同じstdinを転送し転送失敗でも利用者のstdo
 
 #[test]
 fn test_cli_statusline_応答しないサーバでも利用者の表示を返し短時間で終了する() {
+    use prost::Message;
     use std::io::Write;
     use std::process::Stdio;
     use std::time::{Duration, Instant};
     // Given
     let (received, pending) = std::sync::mpsc::channel();
     let (release, released) = std::sync::mpsc::channel();
-    let server = support::Server::start_unary(Box::new(move |_, _| {
+    let server = support::Server::start_unary(Box::new(move |method, body| {
+        assert!(method.contains("/ReceiveProviderUsage "));
+        let request = wire::ReceiveProviderUsageRequest::decode(body).unwrap();
+        assert_eq!(request.slot_id, "slot");
+        assert_eq!(request.binding_id, "binding");
+        assert_eq!(request.capability, "capability");
+        assert_eq!(request.agent_session_id, "session");
+        assert_eq!(request.payload, b"{}");
         received.send(()).unwrap();
         released.recv_timeout(Duration::from_secs(10)).unwrap();
         (200, Vec::new())
@@ -1284,6 +1300,10 @@ fn test_cli_statusline_応答しないサーバでも利用者の表示を返し
     let mut child = server
         .command(&["hook", "statusline"])
         .env("RELEASH_PROVIDER_LIFECYCLE_TOKEN", "operator")
+        .env("RELEASH_PROVIDER_LIFECYCLE_SLOT_ID", "slot")
+        .env("RELEASH_PROVIDER_LIFECYCLE_BINDING_ID", "binding")
+        .env("RELEASH_PROVIDER_LIFECYCLE_CAPABILITY", "capability")
+        .env("RELEASH_PROVIDER_LIFECYCLE_AGENT_SESSION_ID", "session")
         .env("RELEASH_CLAUDE_STATUSLINE", "cat")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -1344,7 +1364,6 @@ fn test_cli_status_版を解析できなくてもサーバ情報とprotocolの�
                 let text = String::from_utf8(output.stdout).unwrap();
                 assert!(text.contains("server release: server-fixture"));
                 assert!(text.contains(&format!("server protocol: {protocol}")));
-                assert!(text.contains("connection: 127.0.0.1:"));
                 assert!(text.contains(guidance));
             }
             server.finish();
@@ -1399,4 +1418,29 @@ fn test_cli_statusline_転送上限を超える入力全体を利用者のコマ
     assert!(String::from_utf8(output.stderr)
         .unwrap()
         .contains("Provider payload exceeds 65536 bytes"));
+}
+
+#[test]
+fn test_cli_statusline_転送開始で上限超過ログを切り詰める() {
+    use std::io::Write;
+    use std::process::Stdio;
+    // Given
+    let server = support::Server::start_unary(Box::new(|_, _| (200, Vec::new())));
+    let log = server.directory().join("logs/provider-usage.stderr");
+    std::fs::create_dir_all(log.parent().unwrap()).unwrap();
+    std::fs::write(&log, vec![b'x'; 65537]).unwrap();
+    // When
+    let mut child = server
+        .command(&["hook", "statusline"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child.stdin.take().unwrap().write_all(b"{}").unwrap();
+    let output = child.wait_with_output().unwrap();
+    // Then
+    assert!(output.status.success());
+    assert!(std::fs::metadata(&log).unwrap().len() <= 65536);
+    server.finish();
 }

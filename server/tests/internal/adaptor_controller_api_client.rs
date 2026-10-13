@@ -1231,11 +1231,47 @@ async fn test_使用率受信_hook権限とpayload上限を守り購読のread_m
         }),
         model.clone(),
         model,
+        Arc::new(releashd::test_support::integration::provider_usage::SystemProviderUsageClock),
         releashd::test_support::integration::subscriptions::test_subscriptions(),
     ));
+    use releashd::test_support::integration::providers::*;
+    struct Events;
+    #[async_trait::async_trait]
+    impl ProviderLifecycleEventRepository for Events {
+        async fn append(
+            &self,
+            _: Vec<releashd::test_support::integration::providers::ScopedProviderLifecycleEvent>,
+        ) -> Result<(), ProviderLifecycleRepositoryError> {
+            Ok(())
+        }
+        async fn load_scope(
+            &self,
+            _: &ProviderLifecycleScope,
+        ) -> Result<
+            Vec<releashd::test_support::integration::providers::ScopedProviderLifecycleEvent>,
+            ProviderLifecycleRepositoryError,
+        > {
+            Ok(Vec::new())
+        }
+    }
+    let lifecycle = Arc::new(ProviderLifecycleUsecase::new(
+        Arc::new(LocalProviderLifecycleCredentialGateway),
+        Arc::new(Events),
+    ));
+    let armed = lifecycle
+        .arm(
+            ProviderLifecycleSlotId::new("slot").unwrap(),
+            ProviderKind::Claude,
+            ProviderLifecycleScope::new("session").unwrap(),
+        )
+        .await
+        .unwrap();
     let deps =
         releashd::test_support::integration::transport::client_api_deps(Arc::new(dispatch()))
-            .with_provider_usage(usage.clone());
+            .with_provider_usage(usage.clone())
+            .with_provider_lifecycle(
+                releashd::test_support::integration::provider_usage::payload_receiver(lifecycle),
+            );
     let app = router(
         Some(deps),
         releashd::test_support::integration::daemon::default_timeout(),
@@ -1249,25 +1285,39 @@ async fn test_使用率受信_hook権限とpayload上限を守り購読のread_m
     ));
     let valid = br#"{"rate_limits":{"five_hour":{"used_percentage":81,"resets_at":123}}}"#;
     // When / Then
-    for (payload, token, status) in [
+    for (payload, token, capability, status) in [
         (
             valid.to_vec(),
             "operator",
+            armed.capability(),
             axum::http::StatusCode::FORBIDDEN,
         ),
         (
             vec![b' '; 65537],
             "hook",
+            armed.capability(),
             axum::http::StatusCode::BAD_REQUEST,
         ),
         (
             b"invalid".to_vec(),
             "hook",
+            armed.capability(),
             axum::http::StatusCode::BAD_REQUEST,
         ),
-        (valid.to_vec(), "hook", axum::http::StatusCode::OK),
+        (
+            valid.to_vec(),
+            "hook",
+            armed.capability(),
+            axum::http::StatusCode::OK,
+        ),
+        (
+            br#"{"rate_limits":{"five_hour":{"used_percentage":10,"resets_at":123}}}"#.to_vec(),
+            "hook",
+            "wrong",
+            axum::http::StatusCode::BAD_REQUEST,
+        ),
     ] {
-        let body = serde_json::json!({"payload": base64::engine::general_purpose::STANDARD.encode(payload)});
+        let body = serde_json::json!({"payload": base64::engine::general_purpose::STANDARD.encode(payload), "slotId": armed.slot_id().as_str(), "bindingId": armed.binding_id(), "capability": capability, "agentSessionId": "session"});
         let response = app
             .clone()
             .oneshot(

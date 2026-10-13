@@ -73,14 +73,42 @@ impl ProviderLifecycleUsecase {
         }
     }
 
+    pub(crate) async fn authorize_usage(
+        &self,
+        slot: &ProviderLifecycleSlotId,
+        capability: &str,
+        binding: &str,
+        provider: ProviderKind,
+        scope: &ProviderLifecycleScope,
+    ) -> Result<bool, ProviderLifecycleUsecaseError> {
+        let Some(live) = self.find_slot(slot)? else {
+            return Ok(false);
+        };
+        let current = live.lock().await;
+        Ok(current
+            .authorize_usage(&self.credentials.hash(capability), binding, provider, scope)
+            .is_ok())
+    }
     pub(crate) async fn provider_sessions(
         &self,
         provider: ProviderKind,
-    ) -> Result<Vec<String>, ProviderLifecycleUsecaseError> {
+    ) -> Result<Vec<String>, crate::domain::failure::StorageFailure> {
         let slots = self
             .slots
             .lock()
-            .map_err(|_| ProviderLifecycleUsecaseError::Corrupt)?
+            .map_err(|_| {
+                let nature = crate::domain::failure::TechnicalFailureNature::Other;
+                crate::domain::failure::StorageFailure {
+                    nature,
+                    source: crate::domain::failure::StorageFailureSource::Technical(
+                        crate::domain::failure::TechnicalFailure {
+                            nature,
+                            message: "provider lifecycle slots lock poisoned".into(),
+                        },
+                    ),
+                    context: None,
+                }
+            })?
             .values()
             .cloned()
             .collect::<Vec<_>>();

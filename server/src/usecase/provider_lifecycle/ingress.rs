@@ -88,26 +88,21 @@ pub struct ProviderPayloadInput<'a> {
     pub payload: &'a [u8],
 }
 
-pub type ProviderUsagePreparation = futures_util::future::BoxFuture<
-    'static,
-    Result<(), crate::usecase::provider_usage::UsageError>,
->;
-
 #[async_trait::async_trait]
 pub trait ProviderPayloadReceiver: Send + Sync {
+    async fn authorize_usage(
+        &self,
+        slot: &ProviderLifecycleSlotId,
+        capability: &str,
+        binding: &str,
+        scope: &crate::domain::provider_lifecycle::ProviderLifecycleScope,
+    ) -> Result<bool, ProviderLifecycleIngressUsecaseError>;
     async fn receive_payload(
         &self,
         slot_id: &ProviderLifecycleSlotId,
         capability: &str,
         input: ProviderPayloadInput<'_>,
-    ) -> Result<
-        (
-            ProviderLifecycleIngressResult,
-            bool,
-            Option<ProviderUsagePreparation>,
-        ),
-        ProviderLifecycleIngressUsecaseError,
-    >;
+    ) -> Result<(ProviderLifecycleIngressResult, bool), ProviderLifecycleIngressUsecaseError>;
 }
 
 impl ProviderLifecycleIngressUsecase {
@@ -350,19 +345,31 @@ fn merge_activity_outcome(
 
 #[async_trait::async_trait]
 impl ProviderPayloadReceiver for ProviderLifecycleIngressUsecase {
+    async fn authorize_usage(
+        &self,
+        slot: &ProviderLifecycleSlotId,
+        capability: &str,
+        binding: &str,
+        scope: &crate::domain::provider_lifecycle::ProviderLifecycleScope,
+    ) -> Result<bool, ProviderLifecycleIngressUsecaseError> {
+        self.lifecycle
+            .authorize_usage(
+                slot,
+                capability,
+                binding,
+                crate::domain::provider_lifecycle::ProviderKind::Claude,
+                scope,
+            )
+            .await
+            .map_err(Into::into)
+    }
+
     async fn receive_payload(
         &self,
         slot_id: &ProviderLifecycleSlotId,
         capability: &str,
         input: ProviderPayloadInput<'_>,
-    ) -> Result<
-        (
-            ProviderLifecycleIngressResult,
-            bool,
-            Option<ProviderUsagePreparation>,
-        ),
-        ProviderLifecycleIngressUsecaseError,
-    > {
+    ) -> Result<(ProviderLifecycleIngressResult, bool), ProviderLifecycleIngressUsecaseError> {
         use crate::domain::provider_lifecycle::ProviderPayloadInterpretation;
         match self
             .interpreter
@@ -370,7 +377,7 @@ impl ProviderPayloadReceiver for ProviderLifecycleIngressUsecase {
             .map_err(ProviderLifecycleIngressUsecaseError::Payload)?
         {
             ProviderPayloadInterpretation::Subagent => {
-                Ok((ProviderLifecycleIngressResult::Ignored, false, None))
+                Ok((ProviderLifecycleIngressResult::Ignored, false))
             }
             ProviderPayloadInterpretation::Signal(signal) => {
                 let started = signal.is_session_started();
@@ -385,27 +392,13 @@ impl ProviderPayloadReceiver for ProviderLifecycleIngressUsecase {
                     }
                     _ => None,
                 };
-                let usage = self.usage.as_ref().filter(|_| codex_session.is_some());
-                let observation = match usage {
-                    Some(usage) => Some(usage.lock_codex_observation().await),
-                    None => None,
-                };
                 let result = self.receive(slot_id, capability, signal).await?;
-                let preparation = if result == ProviderLifecycleIngressResult::Applied {
-                    match (&self.usage, codex_session) {
-                        (Some(usage), Some(id)) => {
-                            let usage = usage.clone();
-                            Some(Box::pin(async move {
-                                let _observation = observation;
-                                usage.seed_codex_session(&id).await
-                            }) as ProviderUsagePreparation)
-                        }
-                        _ => None,
+                if result == ProviderLifecycleIngressResult::Applied {
+                    if let (Some(usage), Some(id)) = (&self.usage, codex_session) {
+                        usage.start_codex_session(&id);
                     }
-                } else {
-                    None
-                };
-                Ok((result, started, preparation))
+                }
+                Ok((result, started))
             }
         }
     }

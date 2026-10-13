@@ -257,12 +257,11 @@ pub async fn compose(
     > = app_config.clone();
     let provider_history_home =
         dirs::home_dir().unwrap_or_else(|| data_dir.join("provider-history-unavailable"));
+    let claude_config_dir = std::env::var_os("CLAUDE_CONFIG_DIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| provider_history_home.join(".claude"));
     let history_paths = vec![
-        std::env::var_os("CLAUDE_CONFIG_DIR")
-            .map(std::path::PathBuf::from)
-            .unwrap_or_else(|| provider_history_home.join(".claude"))
-            .to_string_lossy()
-            .into_owned(),
+        claude_config_dir.clone().to_string_lossy().into_owned(),
         std::env::var_os("CODEX_HOME")
             .map(std::path::PathBuf::from)
             .unwrap_or_else(|| provider_history_home.join(".codex"))
@@ -288,9 +287,7 @@ pub async fn compose(
                             #[cfg(not(any(target_os = "macos", target_os = "linux")))]
                             adaptor::gateway::agent_session::LocalProviderExecutableProbeGateway::new(),
                         ),
-                        claude_config_dir: std::env::var_os("CLAUDE_CONFIG_DIR")
-                            .map(std::path::PathBuf::from)
-                            .unwrap_or_else(|| provider_history_home.join(".claude")),
+                        claude_config_dir: claude_config_dir.clone(),
                         codex_home: std::env::var_os("CODEX_HOME")
                             .map(std::path::PathBuf::from)
                             .unwrap_or_else(|| provider_history_home.join(".codex")),

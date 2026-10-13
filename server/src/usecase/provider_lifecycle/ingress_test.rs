@@ -140,12 +140,11 @@ async fn test_生payload受付_信号を既存入口へ渡しsubagentと解釈�
         ProviderLifecycleIngressResult::Applied,
         ProviderLifecycleIngressResult::Duplicate,
     ] {
-        let (result, started, usage_error) = ingress
+        let (result, started) = ingress
             .receive_payload(&slot, armed.capability(), input())
             .await
             .unwrap();
         assert_eq!((result, started), (expected, true));
-        assert!(usage_error.is_none());
     }
     assert_eq!(
         *interpreter.calls.lock().unwrap(),
@@ -173,7 +172,7 @@ async fn test_生payload受付_信号を既存入口へ渡しsubagentと解釈�
         calls: Mutex::new(Vec::new()),
         result: Ok(Parsed::Subagent),
     }));
-    let (result, started, usage_error) = ingress
+    let (result, started) = ingress
         .receive_payload(&slot, armed.capability(), input())
         .await
         .unwrap();
@@ -181,7 +180,6 @@ async fn test_生payload受付_信号を既存入口へ渡しsubagentと解釈�
         (result, started),
         (ProviderLifecycleIngressResult::Ignored, false)
     );
-    assert!(usage_error.is_none());
     for failure in [
         ProviderPayloadError::InvalidPayload,
         ProviderPayloadError::UnsupportedEvent("unknown".into()),
@@ -216,13 +214,13 @@ struct UsageSource {
     reads: std::sync::atomic::AtomicUsize,
 }
 #[async_trait::async_trait]
-impl crate::usecase::provider_usage::ProviderUsageSource for UsageSource {
+impl crate::domain::provider_usage::ProviderUsageSource for UsageSource {
     fn claude(
         &self,
         _: &[u8],
     ) -> Result<
-        Option<crate::usecase::provider_usage::ProviderUsage>,
-        crate::usecase::provider_usage::UsageError,
+        Option<crate::domain::provider_usage::ProviderUsage>,
+        crate::domain::provider_usage::UsageError,
     > {
         unreachable!("codex test")
     }
@@ -230,49 +228,102 @@ impl crate::usecase::provider_usage::ProviderUsageSource for UsageSource {
         &self,
         _: &str,
     ) -> Result<
-        Option<(String, crate::usecase::provider_usage::ProviderUsage)>,
-        crate::usecase::provider_usage::UsageError,
+        Option<crate::domain::provider_usage::CodexUsageRecord>,
+        crate::domain::provider_usage::UsageError,
     > {
         self.reads
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         if self.fail {
-            return Err(crate::usecase::provider_usage::UsageError::Technical(
+            return Err(crate::domain::provider_usage::UsageError::from(
                 crate::domain::failure::TechnicalFailure {
                     nature: TechnicalFailureNature::TimedOut,
                     message: "usage unavailable".into(),
                 },
             ));
         }
-        Ok(Some((
-            self.record.lock().unwrap().clone(),
-            crate::usecase::provider_usage::ProviderUsage {
+        let record = self.record.lock().unwrap().clone();
+        Ok(Some(crate::domain::provider_usage::CodexUsageRecord {
+            id: record.clone(),
+            timestamp: std::time::UNIX_EPOCH
+                + std::time::Duration::from_secs(if record == "old" { 99 } else { 101 }),
+            usage: crate::domain::provider_usage::ProviderUsage {
                 provider: ProviderKind::Codex,
-                windows: vec![crate::usecase::provider_usage::UsageWindow {
-                    used_percent: 70.0,
-                    window_minutes: 300,
-                    resets_at: 123,
-                    warning: false,
-                }],
+                windows: vec![
+                    crate::domain::provider_usage::UsageWindow::new(70.0, 300, 123).unwrap(),
+                ],
                 plan: Some("pro".into()),
             },
-        )))
+        }))
     }
 }
+use crate::domain::provider_usage::{
+    CodexUsageObservation, ProviderUsage, ProviderUsageClock, ProviderUsageRepository,
+};
+use crate::usecase::provider_usage::{ProviderUsageDto, ProviderUsageQueryService, UsageWindowDto};
 #[derive(Default)]
-struct UsageProjection(Mutex<Vec<crate::usecase::provider_usage::ProviderUsage>>);
-impl crate::usecase::provider_usage::ProviderUsageQueryService for UsageProjection {
-    fn snapshot(&self) -> Vec<crate::usecase::provider_usage::ProviderUsage> {
-        self.0.lock().unwrap().clone()
+struct UsageProjection(
+    Mutex<Vec<ProviderUsage>>,
+    Mutex<std::collections::HashMap<String, CodexUsageObservation>>,
+);
+struct Clock;
+impl ProviderUsageClock for Clock {
+    fn now(&self) -> std::time::SystemTime {
+        std::time::UNIX_EPOCH + std::time::Duration::from_secs(100)
     }
 }
-impl crate::usecase::provider_usage::ProviderUsageOutput for UsageProjection {
-    fn replace(&self, usage: crate::usecase::provider_usage::ProviderUsage) {
+impl ProviderUsageQueryService for UsageProjection {
+    fn snapshot(&self) -> Vec<ProviderUsageDto> {
+        self.0
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|v| ProviderUsageDto {
+                provider: v.provider,
+                plan: v.plan.clone(),
+                windows: v
+                    .windows
+                    .iter()
+                    .map(|w| UsageWindowDto {
+                        used_percent: w.used_percent(),
+                        window_minutes: w.window_minutes(),
+                        resets_at: w.resets_at(),
+                        warning: w.warning(),
+                    })
+                    .collect(),
+            })
+            .collect()
+    }
+}
+impl ProviderUsageRepository for UsageProjection {
+    fn replace(&self, usage: ProviderUsage) {
         *self.0.lock().unwrap() = vec![usage];
     }
+    fn start_observation(&self, o: CodexUsageObservation) {
+        self.1.lock().unwrap().insert(o.session.clone(), o);
+    }
+    fn has_observation(&self, id: &str) -> bool {
+        self.1.lock().unwrap().contains_key(id)
+    }
+    fn accept_record(
+        &self,
+        id: &str,
+        record: &crate::domain::provider_usage::CodexUsageRecord,
+    ) -> bool {
+        self.1
+            .lock()
+            .unwrap()
+            .get_mut(id)
+            .is_some_and(|observation| observation.accept(record))
+    }
+    fn retain_observations(&self, ids: &[String], poll_started_at: std::time::SystemTime) {
+        self.1
+            .lock()
+            .unwrap()
+            .retain(|_, observation| observation.retain_for_poll(ids, poll_started_at));
+    }
 }
-
 #[tokio::test]
-async fn test_使用率監視_受理したcodexの開始だけでrolloutの基準を取り現行bindingを監視する() {
+async fn test_使用率監視_受理したcodexの開始時刻から現行bindingを監視する() {
     use crate::domain::provider_lifecycle::ProviderPayloadInterpretation;
     // Given
     let scope = ProviderLifecycleScope::new("session").unwrap();
@@ -306,6 +357,7 @@ async fn test_使用率監視_受理したcodexの開始だけでrolloutの基�
         source.clone(),
         projection.clone(),
         projection,
+        Arc::new(Clock),
         crate::test_support::state_subscription::test_subscriptions(),
     ));
     let interpreter = Arc::new(PayloadInterpreter {
@@ -349,7 +401,7 @@ async fn test_使用率監視_受理したcodexの開始だけでrolloutの基�
         ProviderLifecycleIngressResult::Rejected(_)
     ));
     assert_eq!(source.reads.load(std::sync::atomic::Ordering::Relaxed), 0);
-    let (result, started, preparation) = ingress
+    let (result, started) = ingress
         .receive_payload(&slot, armed.capability(), input())
         .await
         .unwrap();
@@ -357,7 +409,6 @@ async fn test_使用率監視_受理したcodexの開始だけでrolloutの基�
         (result, started),
         (ProviderLifecycleIngressResult::Applied, true)
     );
-    preparation.unwrap().await.unwrap();
     assert_eq!(
         ingress
             .receive_payload(&slot, armed.capability(), input())
@@ -366,23 +417,13 @@ async fn test_使用率監視_受理したcodexの開始だけでrolloutの基�
             .0,
         ProviderLifecycleIngressResult::Duplicate
     );
-    assert_eq!(source.reads.load(std::sync::atomic::Ordering::Relaxed), 1);
+    assert_eq!(source.reads.load(std::sync::atomic::Ordering::Relaxed), 0);
     assert!(usage
         .poll_active_codex(&lifecycle)
         .await
         .unwrap()
         .is_empty());
     assert!(usage.snapshot().is_empty());
-    let reads_before = source.reads.load(std::sync::atomic::Ordering::Relaxed);
-    let observation = usage.lock_codex_observation().await;
-    let mut poll = Box::pin(usage.poll_active_codex(&lifecycle));
-    assert!(futures_util::poll!(poll.as_mut()).is_pending());
-    assert_eq!(
-        source.reads.load(std::sync::atomic::Ordering::Relaxed),
-        reads_before
-    );
-    drop(observation);
-    poll.await.unwrap();
     *source.record.lock().unwrap() = "new".into();
     usage.poll_active_codex(&lifecycle).await.unwrap();
     assert_eq!(usage.snapshot()[0].plan.as_deref(), Some("pro"));
@@ -396,7 +437,7 @@ async fn test_使用率監視_受理したcodexの開始だけでrolloutの基�
 }
 
 #[tokio::test]
-async fn test_使用率準備失敗_session開始を適用し型付き失敗を別に返す() {
+async fn test_使用率読取失敗_session開始は読取を待たず適用し監視時に失敗を返す() {
     use crate::domain::provider_lifecycle::ProviderPayloadInterpretation;
     // Given
     let scope = ProviderLifecycleScope::new("session").unwrap();
@@ -433,6 +474,7 @@ async fn test_使用率準備失敗_session開始を適用し型付き失敗を�
         source.clone(),
         projection.clone(),
         projection,
+        Arc::new(Clock),
         crate::test_support::state_subscription::test_subscriptions(),
     ));
     let interpreter = Arc::new(PayloadInterpreter {
@@ -467,7 +509,7 @@ async fn test_使用率準備失敗_session開始を適用し型付き失敗を�
         payload: b"start",
     };
     // When
-    let (result, started, usage_error) = ingress
+    let (result, started) = ingress
         .receive_payload(&slot, armed.capability(), input())
         .await
         .unwrap();
@@ -476,10 +518,14 @@ async fn test_使用率準備失敗_session開始を適用し型付き失敗を�
         (result, started),
         (ProviderLifecycleIngressResult::Applied, true)
     );
-    match usage_error.unwrap().await.unwrap_err() {
-        crate::usecase::provider_usage::UsageError::Technical(error) => {
+    assert_eq!(source.reads.load(std::sync::atomic::Ordering::Relaxed), 0);
+    let failures = usage.poll_active_codex(&lifecycle).await.unwrap();
+    match &failures[0] {
+        crate::domain::provider_usage::UsageError::Technical(error) => {
             assert_eq!(error.nature, TechnicalFailureNature::TimedOut);
-            assert_eq!(error.message, "usage unavailable");
+            assert!(
+                matches!(&error.source, crate::domain::failure::StorageFailureSource::Technical(source) if source.message == "usage unavailable")
+            );
         }
         error => panic!("unexpected usage failure: {error}"),
     }

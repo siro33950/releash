@@ -8,7 +8,6 @@ pub struct ReverseLines {
     buffer: Vec<u8>,
     first: bool,
 }
-
 impl ReverseLines {
     pub fn open(path: &Path) -> std::io::Result<Self> {
         let mut file = File::open(path)?;
@@ -20,31 +19,40 @@ impl ReverseLines {
             first: true,
         })
     }
-
     pub fn read_previous(&mut self) -> std::io::Result<Option<Vec<u8>>> {
+        let mut parts = Vec::new();
         loop {
             if let Some(index) = self.buffer.iter().rposition(|byte| *byte == b'\n') {
-                let line = self.buffer.split_off(index + 1);
+                parts.push(self.buffer.split_off(index + 1));
                 self.buffer.pop();
                 if self.first {
                     self.first = false;
+                    parts.clear();
                     continue;
                 }
-                return Ok(Some(line));
+                return Ok(Some(join(parts)));
+            }
+            if !self.buffer.is_empty() {
+                parts.push(std::mem::take(&mut self.buffer));
             }
             if self.position == 0 {
-                if self.first || self.buffer.is_empty() {
+                if self.first || parts.is_empty() {
                     return Ok(None);
                 }
-                return Ok(Some(std::mem::take(&mut self.buffer)));
+                return Ok(Some(join(parts)));
             }
             let start = self.position.saturating_sub(64 * 1024);
-            let mut chunk = vec![0; (self.position - start) as usize];
+            self.buffer = vec![0; (self.position - start) as usize];
             self.file.seek(SeekFrom::Start(start))?;
-            self.file.read_exact(&mut chunk)?;
-            chunk.append(&mut self.buffer);
-            self.buffer = chunk;
+            self.file.read_exact(&mut self.buffer)?;
             self.position = start;
         }
     }
+}
+fn join(parts: Vec<Vec<u8>>) -> Vec<u8> {
+    let mut line = Vec::with_capacity(parts.iter().map(Vec::len).sum());
+    for part in parts.into_iter().rev() {
+        line.extend(part);
+    }
+    line
 }

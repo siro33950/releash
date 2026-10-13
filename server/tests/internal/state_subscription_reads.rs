@@ -383,7 +383,7 @@ impl Fixture {
                 let model = Arc::new(ProviderUsageReadModel::default());
                 Arc::new(ProviderUsageUsecase::new(Arc::new(LocalProviderUsageSource {
                     claude_account: root.join(".claude.json"), codex_home: root.join(".codex"),
-                }), model.clone(), model, publisher.clone()))
+                }), model.clone(), model, Arc::new(SystemProviderUsageClock), publisher.clone()))
             },
             hook_health: Arc::new(
                 releashd::test_support::integration::providers::ProviderHookHealthReadUsecase::new(

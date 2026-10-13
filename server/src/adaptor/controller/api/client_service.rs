@@ -93,9 +93,7 @@ async fn receive_provider_signal<'a>(
     request: connectrpc::ServiceRequest<'_, rpc::ReceiveProviderSignalRequest>,
 ) -> connectrpc::ServiceResult<impl connectrpc::Encodable<rpc::ReceiveProviderSignalResponse> + Send + use<'a>> {
     let request: wire::ReceiveProviderSignalRequest = to_wire(&request.to_owned_message())?;
-    if request.payload.len() > 65_536 {
-        return Err(crate::adaptor::presenter::connect::invalid_request("Provider payload exceeds 65536 bytes"));
-    }
+    super::provider_signal::validate_payload(&request.payload)?;
     let provider = request.provider.and_then(|provider| provider.value).and_then(|value| wire::agent_session_provider_dto::Value::try_from(value).ok()).ok_or_else(|| crate::adaptor::presenter::connect::invalid_request("Invalid provider"))?;
     let (provider, slot, scope) = super::provider_signal::ingress_context(provider, &request.slot_id, &request.agent_session_id).map_err(|error| crate::adaptor::presenter::connect::invalid_request(error.to_string()))?;
     let ingress = self.provider_lifecycle.as_ref().ok_or_else(|| crate::adaptor::presenter::connect::classified_error(crate::adaptor::presenter::error::AppError::unavailable("Provider lifecycle unavailable")))?;
@@ -105,14 +103,6 @@ async fn receive_provider_signal<'a>(
         }),
         super::provider_signal::record_ingress,
     ).await?;
-    if let Some(preparation) = result.2 {
-        let deadline = ctx.deadline();
-        tokio::spawn(async move {
-            if let Err(error) = super::provider_signal::prepare_usage(deadline, preparation).await {
-                log::warn!("Provider usage: {error}");
-            }
-        });
-    }
     connectrpc::Response::ok(to_rpc::<rpc::ReceiveProviderSignalResponse>(&wire::ReceiveProviderSignalResponse::from(result.0))?)
 }
 
@@ -121,11 +111,14 @@ async fn receive_provider_usage<'a>(
     request: connectrpc::ServiceRequest<'_, rpc::ReceiveProviderUsageRequest>,
 ) -> connectrpc::ServiceResult<impl connectrpc::Encodable<rpc::Unit> + Send + use<'a>> {
     let request: wire::ReceiveProviderUsageRequest = to_wire(&request.to_owned_message())?;
-    if request.payload.len() > 65_536 {
-        return Err(crate::adaptor::presenter::connect::invalid_request("Provider payload exceeds 65536 bytes"));
-    }
+    super::provider_signal::validate_payload(&request.payload)?;
     let usage = self.provider_usage.as_ref().ok_or_else(|| crate::adaptor::presenter::connect::classified_error(crate::adaptor::presenter::error::AppError::unavailable("Provider usage unavailable")))?;
+    let (_, slot, scope) = super::provider_signal::ingress_context(crate::domain::provider_lifecycle::ProviderKind::Claude, &request.slot_id, &request.agent_session_id).map_err(|error| crate::adaptor::presenter::connect::invalid_request(error.to_string()))?;
+    let lifecycle = self.provider_lifecycle.as_ref().ok_or_else(|| crate::adaptor::presenter::connect::classified_error(crate::adaptor::presenter::error::AppError::unavailable("Provider lifecycle unavailable")))?;
     ingress(ctx.deadline(), async {
+        if !lifecycle.authorize_usage(&slot, &request.capability, &request.binding_id, &scope).await.map_err(crate::adaptor::presenter::connect::classified_error)? {
+            return Err(crate::adaptor::presenter::connect::invalid_request("Invalid provider usage credentials"));
+        }
         usage.receive_claude(&request.payload).map_err(crate::adaptor::presenter::connect::classified_error)
     }).await?;
     connectrpc::Response::ok(rpc::Unit::default())

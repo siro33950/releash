@@ -11,16 +11,23 @@ use crate::domain::provider_lifecycle::{ArmedProviderLifecycle, ProviderKind};
 
 pub struct LocalProviderAgentLaunchGateway {
     data_dir: PathBuf,
+    claude_config_dir: PathBuf,
     root: PathBuf,
     hook_cli_alias: String,
     hook_token: std::sync::Arc<str>,
 }
 
 impl LocalProviderAgentLaunchGateway {
-    pub fn new(data_dir: PathBuf, hook_cli_alias: String, hook_token: std::sync::Arc<str>) -> Self {
+    pub fn new(
+        data_dir: PathBuf,
+        hook_cli_alias: String,
+        hook_token: std::sync::Arc<str>,
+        claude_config_dir: PathBuf,
+    ) -> Self {
         Self {
             root: data_dir.join("provider-launches"),
             data_dir,
+            claude_config_dir,
             hook_cli_alias,
             hook_token,
         }
@@ -49,21 +56,19 @@ impl ProviderAgentLaunchGateway for LocalProviderAgentLaunchGateway {
             self.hook_token.as_ref(),
         )
         .map_err(|_| ProviderAgentLaunchGatewayError::InvalidInput)?;
-        let mut spec = ProviderLaunchSpec::for_provider(
+        let settings = if armed.provider() == ProviderKind::Claude {
+            inherited_status_line(&self.claude_config_dir, std::path::Path::new(worktree_path))
+        } else {
+            serde_json::Value::Null
+        };
+        let spec = ProviderLaunchSpec::for_provider(
             armed.provider(),
             context,
             &self.hook_cli_alias,
             (armed.provider() == ProviderKind::Claude).then_some(resource_directory.as_path()),
+            settings,
         )
         .map_err(|_| ProviderAgentLaunchGatewayError::InvalidInput)?;
-        if armed.provider() == ProviderKind::Claude {
-            let config_dir = std::env::var_os("CLAUDE_CONFIG_DIR")
-                .map(PathBuf::from)
-                .or_else(|| dirs::home_dir().map(|path| path.join(".claude")))
-                .ok_or(ProviderAgentLaunchGatewayError::InvalidInput)?;
-            let settings = inherited_status_line(&config_dir, std::path::Path::new(worktree_path));
-            spec = spec.with_claude_status_line(settings, &self.hook_cli_alias);
-        }
         let initial_hook_warning = spec.requires_hook_trust().then_some(
             crate::domain::provider_lifecycle::ProviderLifecycleUnavailableReason::CodexHookDeliveryUnconfirmed,
         );
@@ -159,11 +164,25 @@ pub(crate) fn inherited_status_line(
     worktree: &std::path::Path,
 ) -> serde_json::Value {
     let mut status_line = serde_json::Value::Null;
-    for path in [
+    let mut paths = vec![
         config_dir.join("settings.json"),
         worktree.join(".claude/settings.json"),
         worktree.join(".claude/settings.local.json"),
-    ] {
+    ];
+    match crate::adaptor::gateway::repository::worktree::find_main_repo_path(
+        &worktree.to_string_lossy(),
+    ) {
+        Ok(Some(root)) => {
+            paths.push(std::path::Path::new(&root).join(".claude/settings.local.json"))
+        }
+        Ok(None) => {}
+        Err(error) => log::warn!(
+            "Cannot resolve statusLine settings for {}: {error}",
+            worktree.display()
+        ),
+    }
+    paths.dedup();
+    for path in paths {
         let bytes = match std::fs::read(&path) {
             Ok(bytes) => bytes,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,

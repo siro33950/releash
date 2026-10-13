@@ -241,6 +241,7 @@ impl ProviderLifecycleAcceptanceHost {
             context,
             hook_cli_alias,
             claude_plugin_directory,
+            serde_json::Value::Null,
         )
         .map_err(|error| error.to_string())?;
         Ok(AcceptanceLaunch {
@@ -451,9 +452,29 @@ fn acceptance_fact(event: ProviderLifecycleEvent) -> AcceptanceFactKind {
     }
 }
 
-struct AcceptancePayloadReceiver(Arc<ProviderLifecycleUsecase>);
+pub(crate) struct AcceptancePayloadReceiver(pub(crate) Arc<ProviderLifecycleUsecase>);
 #[async_trait::async_trait]
 impl crate::usecase::provider_lifecycle::ProviderPayloadReceiver for AcceptancePayloadReceiver {
+    async fn authorize_usage(
+        &self,
+        slot: &crate::domain::provider_lifecycle::ProviderLifecycleSlotId,
+        capability: &str,
+        binding: &str,
+        scope: &crate::domain::provider_lifecycle::ProviderLifecycleScope,
+    ) -> Result<bool, crate::usecase::provider_lifecycle::ProviderLifecycleIngressUsecaseError>
+    {
+        self.0
+            .authorize_usage(
+                slot,
+                capability,
+                binding,
+                crate::domain::provider_lifecycle::ProviderKind::Claude,
+                scope,
+            )
+            .await
+            .map_err(Into::into)
+    }
+
     async fn receive_payload(
         &self,
         slot_id: &crate::domain::provider_lifecycle::ProviderLifecycleSlotId,
@@ -463,7 +484,6 @@ impl crate::usecase::provider_lifecycle::ProviderPayloadReceiver for AcceptanceP
         (
             crate::domain::provider_lifecycle::ProviderLifecycleIngressResult,
             bool,
-            Option<crate::usecase::provider_lifecycle::ingress::ProviderUsagePreparation>,
         ),
         crate::usecase::provider_lifecycle::ProviderLifecycleIngressUsecaseError,
     > {
@@ -477,14 +497,14 @@ impl crate::usecase::provider_lifecycle::ProviderPayloadReceiver for AcceptanceP
             .map_err(ProviderLifecycleIngressUsecaseError::Payload)?
         {
             ProviderPayloadInterpretation::Subagent => {
-                Ok((ProviderLifecycleIngressResult::Ignored, false, None))
+                Ok((ProviderLifecycleIngressResult::Ignored, false))
             }
             ProviderPayloadInterpretation::Signal(signal) => {
                 let started = signal.is_session_started();
                 self.0
                     .receive(slot_id, capability, signal)
                     .await
-                    .map(|result| (result, started, None))
+                    .map(|result| (result, started))
                     .map_err(Into::into)
             }
         }

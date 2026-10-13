@@ -35,6 +35,7 @@ pub fn test_provider_launch_gateway_claudeのpluginをlaunch単位で生成しcl
         data_dir.path().to_path_buf(),
         "releash".to_string(),
         std::sync::Arc::<str>::from("hook-token"),
+        data_dir.path().join("claude"),
     );
 
     let prepared = gateway
@@ -91,6 +92,7 @@ pub fn test_provider_launch_gateway_codexのresumeを同じroot_process契約で
         data_dir.path().to_path_buf(),
         "releash-dev".to_string(),
         std::sync::Arc::<str>::from("hook-token"),
+        data_dir.path().join("claude"),
     );
 
     let prepared = gateway
@@ -127,6 +129,7 @@ pub fn test_provider_launch_gateway_modelとauto_permissionをresume引数より
         data_dir.path().to_path_buf(),
         "releash".to_string(),
         std::sync::Arc::<str>::from("hook-token"),
+        data_dir.path().join("claude"),
     );
 
     for (provider, executable, permission_arguments, resume_flag) in [
@@ -195,6 +198,7 @@ pub fn test_provider_launch_gateway_両providerへhook実行環境を渡す() {
         data_dir.path().to_path_buf(),
         "releash".to_string(),
         std::sync::Arc::<str>::from("hook-token"),
+        data_dir.path().join("claude"),
     );
 
     for provider in [ProviderKind::Claude, ProviderKind::Codex] {
@@ -259,6 +263,7 @@ pub fn test_provider_launch_gateway_解決済みbase_branchを両providerへ渡�
         data_dir.path().to_path_buf(),
         "releash".to_string(),
         std::sync::Arc::<str>::from("hook-token"),
+        data_dir.path().join("claude"),
     );
 
     for provider in [ProviderKind::Claude, ProviderKind::Codex] {
@@ -296,6 +301,7 @@ pub fn test_provider_launch_gateway_base_branch未解決なら環境変数を渡
         data_dir.path().to_path_buf(),
         "releash".to_string(),
         std::sync::Arc::<str>::from("hook-token"),
+        data_dir.path().join("claude"),
     );
 
     let prepared = gateway
@@ -324,6 +330,7 @@ pub fn test_provider_launch_gateway_non_utf8実行pathをterminal_processまで�
         data_dir.path().to_path_buf(),
         "releash".to_string(),
         std::sync::Arc::<str>::from("hook-token"),
+        data_dir.path().join("claude"),
     );
     let executable = std::path::PathBuf::from(std::ffi::OsString::from_vec(
         b"/opt/bin/claude-\xff".to_vec(),
@@ -353,6 +360,7 @@ pub fn test_provider起動準備_base解決の停止を欠損へ変換しない(
         data_dir.path().to_path_buf(),
         "releash".into(),
         std::sync::Arc::<str>::from("hook-token"),
+        data_dir.path().join("claude"),
     );
     let (dir, repo) = crate::test_support_git::create_test_repo();
     crate::test_support_git::create_initial_commit(&repo);
@@ -391,6 +399,7 @@ pub fn test_provider起動準備_ファイル生成失敗の性質とメッセ�
         data_dir.path().into(),
         "releash".into(),
         std::sync::Arc::<str>::from("hook-token"),
+        data_dir.path().join("claude"),
     );
     let armed = armed(ProviderKind::Claude);
     let path = gateway.session_directory("agent-1").join(
@@ -426,6 +435,7 @@ pub fn test_provider起動資源削除_失敗の性質とメッセージを保�
         data_dir.path().into(),
         "releash".into(),
         std::sync::Arc::<str>::from("hook-token"),
+        data_dir.path().join("claude"),
     );
     let path = gateway.session_directory("agent-1");
     fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -500,4 +510,33 @@ fn test_statusline設定_userからprojectとlocalの順で引き継ぐ() {
         )["command"],
         "project"
     );
+}
+
+#[test]
+fn test_statusline設定_linked_worktreeはmainのlocalを引き継ぎ旧配置より優先する() {
+    // Given
+    let (main, repo) = crate::test_support_git::create_test_repo();
+    crate::test_support_git::create_initial_commit(&repo);
+    let root = tempfile::tempdir().unwrap();
+    let linked = root.path().join("linked");
+    repo.worktree("linked", &linked, None).unwrap();
+    let config = root.path().join("user");
+    fs::create_dir_all(main.path().join(".claude")).unwrap();
+    fs::write(
+        main.path().join(".claude/settings.local.json"),
+        r#"{"statusLine":{"command":"main"}}"#,
+    )
+    .unwrap();
+    // When / Then
+    let inherit = || {
+        releashd::test_support::integration::provider_usage::inherited_status_line(&config, &linked)
+    };
+    assert_eq!(inherit()["command"], "main");
+    fs::create_dir_all(linked.join(".claude")).unwrap();
+    fs::write(
+        linked.join(".claude/settings.local.json"),
+        r#"{"statusLine":{"command":"old"}}"#,
+    )
+    .unwrap();
+    assert_eq!(inherit()["command"], "main");
 }

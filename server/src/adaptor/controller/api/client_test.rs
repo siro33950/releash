@@ -1305,7 +1305,6 @@ struct SignalIngress(
                 (
                     crate::domain::provider_lifecycle::ProviderLifecycleIngressResult,
                     bool,
-                    Option<crate::usecase::provider_lifecycle::ingress::ProviderUsagePreparation>,
                 ),
                 crate::usecase::provider_lifecycle::ProviderLifecycleIngressUsecaseError,
             >,
@@ -1314,6 +1313,16 @@ struct SignalIngress(
 );
 #[async_trait::async_trait]
 impl crate::usecase::provider_lifecycle::ProviderPayloadReceiver for SignalIngress {
+    async fn authorize_usage(
+        &self,
+        _: &crate::domain::provider_lifecycle::ProviderLifecycleSlotId,
+        _: &str,
+        _: &str,
+        _: &crate::domain::provider_lifecycle::ProviderLifecycleScope,
+    ) -> Result<bool, crate::usecase::provider_lifecycle::ProviderLifecycleIngressUsecaseError>
+    {
+        unreachable!()
+    }
     async fn receive_payload(
         &self,
         _: &crate::domain::provider_lifecycle::ProviderLifecycleSlotId,
@@ -1323,7 +1332,6 @@ impl crate::usecase::provider_lifecycle::ProviderPayloadReceiver for SignalIngre
         (
             crate::domain::provider_lifecycle::ProviderLifecycleIngressResult,
             bool,
-            Option<crate::usecase::provider_lifecycle::ingress::ProviderUsagePreparation>,
         ),
         crate::usecase::provider_lifecycle::ProviderLifecycleIngressUsecaseError,
     > {
@@ -1345,26 +1353,18 @@ async fn test_hookのconnect入口_生payloadを解釈し上限と権限と結�
     use tower::ServiceExt;
     let ingress = Arc::new(SignalIngress(std::sync::Mutex::new(
         std::collections::VecDeque::from([
-            Ok((
-                Ingress::Applied,
-                true,
-                Some(
-                    Box::pin(async { Err(crate::usecase::provider_usage::UsageError::Invalid) })
-                        as crate::usecase::provider_lifecycle::ingress::ProviderUsagePreparation,
-                ),
-            )),
-            Ok((Ingress::Duplicate, true, None)),
+            Ok((Ingress::Applied, true)),
+            Ok((Ingress::Duplicate, true)),
             Ok((
                 Ingress::Rejected(ProviderLifecycleRejection::InvalidCapability),
                 true,
-                None,
             )),
-            Ok((Ingress::Ignored, false, None)),
+            Ok((Ingress::Ignored, false)),
             Err(Error::Payload(ProviderPayloadError::InvalidPayload)),
             Err(Error::Payload(ProviderPayloadError::UnsupportedEvent(
                 "unknown".into(),
             ))),
-            Ok((Ingress::Duplicate, true, None)),
+            Ok((Ingress::Duplicate, true)),
         ]),
     )));
     let hook = crate::infrastructure::local_api::BearerToken::from(Arc::<str>::from("hook"));
@@ -1429,22 +1429,12 @@ async fn test_hookのconnect入口_生payloadを解釈し上限と権限と結�
 }
 
 #[tokio::test]
-async fn test_session開始通知_使用率の準備が期限を超えても適用の応答を返す() {
+async fn test_session開始通知_適用の応答を要求期限内に返す() {
     use crate::domain::provider_lifecycle::ProviderLifecycleIngressResult;
     use tower::ServiceExt;
     // Given
-    let (started, observed) = tokio::sync::oneshot::channel();
-    let preparation: crate::usecase::provider_lifecycle::ingress::ProviderUsagePreparation =
-        Box::pin(async move {
-            started.send(()).unwrap();
-            std::future::pending().await
-        });
     let receiver = Arc::new(SignalIngress(std::sync::Mutex::new(
-        std::collections::VecDeque::from([Ok((
-            ProviderLifecycleIngressResult::Applied,
-            true,
-            Some(preparation),
-        ))]),
+        std::collections::VecDeque::from([Ok((ProviderLifecycleIngressResult::Applied, true))]),
     )));
     let deps = crate::test_support::client_api_deps(Arc::new(dispatch()))
         .with_provider_lifecycle(receiver);
@@ -1474,6 +1464,4 @@ async fn test_session開始通知_使用率の準備が期限を超えても適�
         .unwrap();
     let result: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
     assert!(result.get("applied").is_some(), "{result}");
-    observed.await.unwrap();
-    tokio::time::sleep(std::time::Duration::from_millis(110)).await;
 }

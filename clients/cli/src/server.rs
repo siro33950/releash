@@ -79,9 +79,6 @@ pub async fn status(dir: &Path, machine: bool) -> Result<String, ConnectError> {
         },
     );
     if let Some(running) = running {
-        if let Some(discovery) = &discovery {
-            output.push_str(&format!("connection: 127.0.0.1:{}\n", discovery.port));
-        }
         let info = running.info;
         output.push_str(&format!(
             "daemon_id: {}\npid: {}\nprocess_started_at: {}\nserver release: {}\nserver protocol: {}\ncapabilities: {}\nserving status: {}\nuptime seconds: {}\ncompatibility: {}\n",

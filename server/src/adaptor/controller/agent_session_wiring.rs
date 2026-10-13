@@ -324,6 +324,7 @@ pub fn compose_agent_sessions(
         ),
         usage_model.clone(),
         usage_model,
+        Arc::new(crate::adaptor::gateway::agent_session::provider_usage::SystemProviderUsageClock),
         input.subscriptions.clone(),
     ));
     let lifecycle_ingress = Arc::new(
@@ -344,6 +345,7 @@ pub fn compose_agent_sessions(
         input.data_dir,
         input.cli_binary,
         input.hook_token,
+        input.claude_config_dir.clone(),
     ));
     let mut provider_availability = ProviderAvailabilityUsecase::initialize(
         input.provider_executable_config,

@@ -709,7 +709,7 @@ pub(crate) fn scope_denied(headers: &axum::http::HeaderMap) -> axum::response::R
     .into_response()
 }
 
-impl ConnectFailure for crate::usecase::provider_usage::UsageError {
+impl ConnectFailure for crate::domain::provider_usage::UsageError {
     fn connect_code(&self) -> connectrpc::ErrorCode {
         match self {
             Self::Invalid => connectrpc::ErrorCode::InvalidArgument,

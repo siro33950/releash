@@ -6,12 +6,7 @@ fn test_使用率_read_modelはproviderごとの最後の値だけを持ち再�
     let model = ProviderUsageReadModel::default();
     let usage = |percent| ProviderUsage {
         provider: ProviderKind::Claude,
-        windows: vec![UsageWindow {
-            used_percent: percent,
-            window_minutes: 300,
-            resets_at: 123,
-            warning: false,
-        }],
+        windows: vec![UsageWindow::new(percent, 300, 123).unwrap()],
         plan: None,
     };
     // When
@@ -21,4 +16,29 @@ fn test_使用率_read_modelはproviderごとの最後の値だけを持ち再�
     assert_eq!(model.snapshot().len(), 1);
     assert_eq!(model.snapshot()[0].windows[0].used_percent, 30.0);
     assert!(ProviderUsageReadModel::default().snapshot().is_empty());
+}
+
+#[test]
+fn test_使用率保存_開始の更新と削除が読み取りと重なっても古い記録を採らない() {
+    // Given
+    let model = ProviderUsageReadModel::default();
+    let start = std::time::UNIX_EPOCH;
+    let record = CodexUsageRecord {
+        id: "old".into(),
+        timestamp: start,
+        usage: ProviderUsage::claude(Vec::new(), None, None),
+    };
+    model.start_observation(CodexUsageObservation::new("session", start));
+    assert!(model.has_observation("session"));
+    // When / Then
+    model.start_observation(CodexUsageObservation::new(
+        "session",
+        start + std::time::Duration::from_secs(1),
+    ));
+    assert!(!model.accept_record("session", &record));
+    model.retain_observations(&[], start);
+    assert!(model.has_observation("session"));
+    model.retain_observations(&[], start + std::time::Duration::from_secs(2));
+    assert!(!model.has_observation("session"));
+    assert!(!model.accept_record("session", &record));
 }

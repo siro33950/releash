@@ -34,11 +34,7 @@ fn spawn_transfer(dir: &Path, payload: &[u8]) -> std::io::Result<()> {
     }
     use std::os::unix::process::CommandExt;
     use std::process::{Command, Stdio};
-    std::fs::create_dir_all(dir.join("logs"))?;
-    let stderr = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(dir.join("logs/provider-usage.stderr"))?;
+    bounded_usage_log(dir, None)?;
     let mut command = Command::new(std::env::current_exe()?);
     command
         .arg("--data-dir")
@@ -46,7 +42,7 @@ fn spawn_transfer(dir: &Path, payload: &[u8]) -> std::io::Result<()> {
         .args(["hook", "forward-usage"])
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
-        .stderr(stderr);
+        .stderr(Stdio::null());
     // SAFETY: setsid is async-signal-safe and the closure only calls it.
     unsafe {
         command.pre_exec(|| {
@@ -65,17 +61,58 @@ fn spawn_transfer(dir: &Path, payload: &[u8]) -> std::io::Result<()> {
 }
 
 pub(crate) async fn forward_usage(dir: &Path) -> Result<String, ConnectError> {
+    let result = transfer_usage(dir).await;
+    if let Err(error) = &result {
+        bounded_usage_log(dir, Some(&format!("Provider usage: {error}\n")))
+            .map_err(|error| ConnectError::internal(error.to_string()))?;
+    }
+    result
+}
+async fn transfer_usage(dir: &Path) -> Result<String, ConnectError> {
     let payload = crate::commands::read_payload(std::io::stdin().lock())?;
     let token = std::env::var("RELEASH_PROVIDER_LIFECYCLE_TOKEN")
         .map_err(|_| ConnectError::unavailable("Provider hook token is required"))?;
     let client = crate::client::connect(dir, Some(token)).await?;
-    let request = crate::wire::ReceiveProviderUsageRequest { payload };
+    let credential = |key: &str| {
+        std::env::var(format!("RELEASH_PROVIDER_LIFECYCLE_{key}"))
+            .map_err(|_| ConnectError::unavailable("Provider lifecycle credentials are required"))
+    };
+    let request = crate::wire::ReceiveProviderUsageRequest {
+        payload,
+        slot_id: credential("SLOT_ID")?,
+        binding_id: credential("BINDING_ID")?,
+        capability: credential("CAPABILITY")?,
+        agent_session_id: credential("AGENT_SESSION_ID")?,
+    };
     client
         .receive_provider_usage(crate::client::to_rpc::<
             crate::rpc::ReceiveProviderUsageRequest,
         >(&request)?)
         .await?;
     Ok(String::new())
+}
+
+const USAGE_LOG_LIMIT: u64 = 64 * 1024;
+fn bounded_usage_log(dir: &Path, message: Option<&str>) -> std::io::Result<()> {
+    use std::io::{Seek, SeekFrom};
+    use std::os::fd::AsRawFd;
+    std::fs::create_dir_all(dir.join("logs"))?;
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(dir.join("logs/provider-usage.stderr"))?;
+    // SAFETY: flock operates on this live file descriptor.
+    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } == -1 {
+        return Err(std::io::Error::last_os_error());
+    }
+    let bytes = message.unwrap_or("").as_bytes();
+    let bytes = &bytes[..bytes.len().min(USAGE_LOG_LIMIT as usize)];
+    if file.metadata()?.len().saturating_add(bytes.len() as u64) > USAGE_LOG_LIMIT {
+        file.set_len(0)?;
+    }
+    file.seek(SeekFrom::End(0))?;
+    file.write_all(bytes)
 }
 
 fn execute(command: &str, payload: &[u8]) -> Result<String, ConnectError> {

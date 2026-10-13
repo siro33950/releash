@@ -45,6 +45,28 @@ impl ProviderLifecycleSlot {
         facts
     }
 
+    pub(crate) fn authorize_usage(
+        &self,
+        hash: &ProviderLifecycleCapabilityHash,
+        binding_id: &str,
+        provider: ProviderKind,
+        scope: &ProviderLifecycleScope,
+    ) -> Result<(), ProviderLifecycleRejection> {
+        let current = self
+            .current
+            .as_ref()
+            .ok_or(ProviderLifecycleRejection::BindingNotActive)?;
+        if current.binding.binding_id() != binding_id {
+            return Err(ProviderLifecycleRejection::BindingExpired);
+        }
+        if !current.capability_hash.matches(hash) {
+            return Err(ProviderLifecycleRejection::InvalidCapability);
+        }
+        if current.binding.provider() != provider || current.binding.scope() != scope {
+            return Err(ProviderLifecycleRejection::BindingNotActive);
+        }
+        Ok(())
+    }
     pub(crate) fn receive(
         &mut self,
         capability_hash: &ProviderLifecycleCapabilityHash,

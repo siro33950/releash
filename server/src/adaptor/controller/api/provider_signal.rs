@@ -33,20 +33,10 @@ impl From<crate::adaptor::presenter::client::agent_session_provider_dto::Value> 
     }
 }
 pub(super) fn record_ingress<E>(
-    result: &Result<
-        (
-            ProviderLifecycleIngressResult,
-            bool,
-            Option<crate::usecase::provider_lifecycle::ingress::ProviderUsagePreparation>,
-        ),
-        E,
-    >,
+    result: &Result<(ProviderLifecycleIngressResult, bool), E>,
     elapsed: std::time::Duration,
 ) {
-    if matches!(
-        result,
-        Ok((ProviderLifecycleIngressResult::Applied, true, _))
-    ) {
+    if matches!(result, Ok((ProviderLifecycleIngressResult::Applied, true))) {
         crate::infrastructure::telemetry::metrics::record_terminal_launch(
             crate::infrastructure::telemetry::metrics::TerminalLaunch::HookIngress,
             elapsed,
@@ -54,24 +44,12 @@ pub(super) fn record_ingress<E>(
     }
 }
 
-pub(super) async fn prepare_usage(
-    deadline: Option<std::time::Instant>,
-    preparation: crate::usecase::provider_lifecycle::ingress::ProviderUsagePreparation,
-) -> Result<(), crate::usecase::provider_usage::UsageError> {
-    use crate::common::operation_context::{current, ingress_result, wait};
-    use crate::usecase::provider_usage::UsageError;
-    ingress_result(
-        deadline,
-        async {
-            wait(&current(), preparation)
-                .await
-                .map_err(|error| UsageError::Technical(error.into()))?
-        },
-        |_, error| UsageError::Technical(error.into()),
-    )
-    .await
+const PROVIDER_PAYLOAD_LIMIT: usize = 65_536;
+pub(super) fn validate_payload(payload: &[u8]) -> Result<(), connectrpc::ConnectError> {
+    if payload.len() > PROVIDER_PAYLOAD_LIMIT {
+        return Err(crate::adaptor::presenter::connect::invalid_request(
+            format!("Provider payload exceeds {PROVIDER_PAYLOAD_LIMIT} bytes"),
+        ));
+    }
+    Ok(())
 }
-
-#[cfg(test)]
-#[path = "provider_signal_test.rs"]
-mod provider_signal_tests;
