@@ -29,12 +29,37 @@ fn test_osc7_長すぎる列から回復する() {
 }
 
 #[test]
-fn test_osc7_更新後は優先しosの移動後は古い値を破棄する() {
+fn test_osc7_ローカルhostだけを採り終端の後は次の列を読める() {
+    // Given
     let mut value = Osc7Directory::default();
-    assert_eq!(value.observe_cwd("/tmp".into()), "/tmp");
+    let local = local_hostname().unwrap();
+    // When / Then
+    for host in ["", "localhost", local.as_str()] {
+        value.feed(format!("\x1b]7;file://{host}/tmp/local\x07").as_bytes());
+        assert_eq!(value.observation(), (Some("/tmp/local".into()), true));
+        assert!(value.pending.is_empty());
+    }
+    for rejected in [
+        "file://other-host/tmp/remote",
+        "file://[invalid/path",
+        "https://localhost/tmp",
+    ] {
+        value.feed(format!("\x1b]7;{rejected}\x1b\\").as_bytes());
+        assert!(value.pending.is_empty());
+        if rejected.contains("other-host") {
+            assert_eq!(value.observation(), (None, true));
+        }
+        value.feed(b"\x1b]7;file:///tmp/next\x07");
+        assert_eq!(value.observation(), (Some("/tmp/next".into()), true));
+    }
+}
+
+#[test]
+fn test_osc7_観測は最後の生値と更新の有無を返す() {
+    // Given
+    let mut value = Osc7Directory::default();
     value.feed(b"\x1b]7;file:///tmp/\x07");
-    assert_eq!(value.observe_cwd("/tmp".into()), "/tmp/");
-    assert_eq!(value.observe_cwd("/".into()), "/");
-    value.feed(b"\x1b]7;file:///next/\x07");
-    assert_eq!(value.observe_cwd("/next".into()), "/next/");
+    // When / Then
+    assert_eq!(value.observation(), (Some("/tmp/".into()), true));
+    assert_eq!(value.observation(), (Some("/tmp/".into()), false));
 }

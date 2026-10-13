@@ -236,8 +236,13 @@ extension TerminalSessionTests {
     let model = try await testModel(http)
     var opened: [URL] = []
     let session = TerminalSession(model: model, path: "/repo", id: "link", openLink: { opened.append($0) })
-    session.requestOpenLink(source: session.screen, link: "https://example.com/path?q=terminal", params: [:])
-    XCTAssertEqual(opened, [URL(string: "https://example.com/path?q=terminal")!])
+    let allowed = ["http://example.com", "https://example.com/path?q=terminal", "mailto:dev@example.com", "tel:+123456789", "HTTPS://example.com"]
+    for link in allowed { session.requestOpenLink(source: session.screen, link: link, params: [:]) }
+    XCTAssertEqual(opened, allowed.map { URL(string: $0)! })
+    for link in ["file:///System/Applications/Calculator.app", "releash-custom://run", "/relative"] {
+      session.requestOpenLink(source: session.screen, link: link, params: [:])
+    }
+    XCTAssertEqual(opened.count, allowed.count)
     session.stop()
     await model.stop()
   }
@@ -286,5 +291,102 @@ extension TerminalSessionTests {
     XCTAssertEqual(http.state.withLock { $0.subscriptions.filter { $0.target == "workspace-terminal" }.count }, 2)
     session.stop()
     await model.stop()
+  }
+}
+
+extension TerminalSessionTests {
+  @MainActor func testServerResizePreservesOutputAttributes() async throws {
+    let http = TestHTTPClient()
+    let model = try await testModel(http)
+    let session = model.terminal(path: "/repo", id: "color")
+    try await eventually { session.hasForegroundProcess != nil }
+    var event = Releash_Client_V1_TerminalEvent()
+    event.output.data = "\u{1b}[H\u{1b}[31mA"
+    session.receive(event)
+    let terminal = session.screen.getTerminal()
+    let before = try XCTUnwrap(terminal.getLine(row: 0))[0].attribute
+    event.resize.cols = 90
+    event.resize.rows = 25
+    session.receive(event)
+    event.output.data = "B"
+    session.receive(event)
+    let line = try XCTUnwrap(terminal.getLine(row: 0))
+    XCTAssertEqual(terminal.getCharacter(for: line[1]), "B")
+    XCTAssertEqual(line[1].attribute, before)
+    XCTAssertEqual(terminal.cols, 90)
+    XCTAssertEqual(terminal.rows, 25)
+    session.stop()
+    await model.stop()
+  }
+
+  @MainActor private func closePaneWithChangingTabs(move: Bool, cancel: Bool = false) async throws {
+    let http = TestHTTPClient()
+    let model = try await testModel(http)
+    model.selectedWorktree = "/repo"
+    let paneID = UUID().uuidString
+    let otherID = UUID().uuidString
+    let first = PaneTab(id: UUID().uuidString, kind: .terminal)
+    let extra = PaneTab(id: UUID().uuidString, kind: .terminal)
+    let file = PaneTab(id: UUID().uuidString, kind: .file)
+    func layout(moved: Bool) -> PaneLayout {
+      .split(id: "split", axis: .horizontal, ratio: 0.5,
+        first: .pane(id: paneID, tabs: moved ? [first, extra] : [first], active: first.id),
+        second: .pane(id: otherID, tabs: move && !moved ? [file, extra] : [file], active: file.id))
+    }
+    try model.panes.restore(layout(moved: false))
+    let pane = try XCTUnwrap(model.panes.controller.allPaneIds.first { $0.id.uuidString == paneID })
+    let firstSession = model.terminal(path: "/repo", id: first.id)
+    try await eventually { firstSession.hasForegroundProcess != nil }
+    var release: CheckedContinuation<Void, Never>?
+    var cancelled = false
+    model.panes.requestClose = { tab in
+      if tab.id == first.id { await withCheckedContinuation { release = $0 } }
+      let result = await model.closeTerminal(tab)
+      if !result { cancelled = true }
+      return result
+    }
+    model.panes.controller.closePane(pane)
+    try await eventually { release != nil }
+    let added: PaneTab
+    if move {
+      try model.panes.restore(layout(moved: true))
+      added = extra
+    } else {
+      model.panes.open(.terminal, in: pane)
+      added = try XCTUnwrap(model.panes.controller.tabs(inPane: pane).compactMap { model.panes.tab($0.id) }.first { $0.id != first.id })
+    }
+    let addedSession = model.terminal(path: "/repo", id: added.id)
+    try await eventually { addedSession.hasForegroundProcess != nil }
+    if cancel {
+      var event = Releash_Client_V1_TerminalEvent()
+      event.status.hasForegroundProcess_p = true
+      addedSession.receive(event)
+      model.confirmTerminalClose = { false }
+    }
+    release?.resume()
+    try await eventually { !http.requests("KillTerminalSurface").isEmpty }
+    if cancel {
+      try await eventually { cancelled }
+      XCTAssertTrue(model.panes.controller.allPaneIds.contains(pane))
+      XCTAssertEqual(Set(model.panes.controller.tabs(inPane: pane).compactMap { model.panes.tab($0.id)?.id }), Set([first.id, added.id]))
+      XCTAssertEqual(http.requests("KillTerminalSurface").count, 1)
+    } else {
+      try await eventually { !model.panes.controller.allPaneIds.contains(pane) }
+      let kills = try http.requests("KillTerminalSurface").map {
+        try Releash_Client_V1_KillTerminalSurfaceRequest(serializedBytes: $0.message ?? Data()).owner.workspaceTerminal.terminalID
+      }
+      XCTAssertEqual(kills, [first.id, added.id])
+    }
+    await model.stop()
+  }
+
+  @MainActor func testPaneCloseStopsTerminalAddedWhileWaiting() async throws {
+    try await closePaneWithChangingTabs(move: false)
+  }
+  @MainActor func testPaneCloseStopsTerminalMovedWhileWaiting() async throws {
+    try await closePaneWithChangingTabs(move: true)
+  }
+  @MainActor func testPaneCloseCancellationPreservesAllCurrentTabs() async throws {
+    try await closePaneWithChangingTabs(move: false, cancel: true)
   }
 }

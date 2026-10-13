@@ -57,8 +57,9 @@ fn repository(fail: bool) -> Arc<Config> {
 fn test_設定保存_別のclientからの一般設定保存でも登録希望を保持する() {
     // Given
     let repository = repository(false);
-    let login = AppConfigUsecase::new(repository.clone(), repository.clone());
-    let other_client = AppConfigUsecase::new(repository.clone(), repository.clone());
+    let login = AppConfigUsecase::new(repository.clone(), repository.clone(), repository.clone());
+    let other_client =
+        AppConfigUsecase::new(repository.clone(), repository.clone(), repository.clone());
     let original = repository.load().unwrap();
     for requested in [true, false] {
         // When
@@ -85,7 +86,7 @@ fn test_設定保存_一般設定と登録希望の保存失敗を呼び出し�
     // Given
     let repository = repository(true);
     let original = repository.load().unwrap();
-    let usecase = AppConfigUsecase::new(repository.clone(), repository.clone());
+    let usecase = AppConfigUsecase::new(repository.clone(), repository.clone(), repository.clone());
     // When
     let app_error = usecase.update_app_settings(false, true).unwrap_err();
     let login_error = usecase.update_login_item_preference(true).unwrap_err();
@@ -100,7 +101,7 @@ fn test_設定保存_一般設定と登録希望の保存失敗を呼び出し�
 fn test_workflow設定_入力を保存し購読用出力で読み取る() {
     // Given
     let repository = repository(false);
-    let usecase = AppConfigUsecase::new(repository.clone(), repository.clone());
+    let usecase = AppConfigUsecase::new(repository.clone(), repository.clone(), repository.clone());
 
     // When
     usecase
@@ -118,7 +119,7 @@ fn test_workflow設定_入力を保存し購読用出力で読み取る() {
 fn test_terminal起動設定_保存した値を読み別設定の更新で保持する() {
     // Given
     let repository = repository(false);
-    let usecase = AppConfigUsecase::new(repository.clone(), repository.clone());
+    let usecase = AppConfigUsecase::new(repository.clone(), repository.clone(), repository.clone());
     // When
     usecase
         .update_terminal_startup_command("printf ready".into())
@@ -138,7 +139,7 @@ fn test_terminal起動設定_保存した値を読み別設定の更新で保持
 
 fn repository_for_failure() -> AppConfigUsecase {
     let repository = repository(true);
-    AppConfigUsecase::new(repository.clone(), repository)
+    AppConfigUsecase::new(repository.clone(), repository.clone(), repository)
 }
 
 struct TerminalSettingsReads(Arc<AppConfigUsecase>);
@@ -177,6 +178,7 @@ async fn test_terminal起動設定_保存成功だけが購読へ通知され新
     let query = Arc::new(AppConfigUsecase::new(
         repository.clone(),
         repository.clone(),
+        repository.clone(),
     ));
     let output = Arc::new(RecordingOutput::default());
     let subscriptions = StateSubscriptionUsecase::new_with_output(
@@ -189,7 +191,7 @@ async fn test_terminal起動設定_保存成功だけが購読へ通知され新
         vec![],
         String::new(),
     );
-    let usecase = AppConfigUsecase::new(repository.clone(), repository.clone())
+    let usecase = AppConfigUsecase::new(repository.clone(), repository.clone(), repository.clone())
         .with_state_publisher(subscriptions.clone());
     let target = SubscriptionTarget::TerminalStartupCommand;
     subscriptions.open_client("settings".into()).unwrap();
@@ -233,4 +235,32 @@ async fn test_terminal起動設定_保存成功だけが購読へ通知され新
         .stop_subscription("settings", &target, &FakeDelivery)
         .await
         .unwrap();
+}
+
+impl crate::usecase::app_config::query_service::TerminalStartupCommandQueryService for Config {
+    fn terminal_startup_command(&self) -> Result<String, AppConfigError> {
+        Ok(self.document.lock().app.terminal_startup_command.clone())
+    }
+}
+
+#[test]
+fn test_terminal起動設定の購読読み取り_repositoryを読まずqueryを使う() {
+    struct Unreadable;
+    impl ConfigRepository for Unreadable {
+        fn load(&self) -> Result<AppConfigDocument, AppConfigError> {
+            panic!("query must not load domain document")
+        }
+        fn save(&self, _: AppConfigDocument) -> Result<(), AppConfigError> {
+            unreachable!()
+        }
+        fn update(&self, _: ConfigUpdate) -> Result<(), AppConfigError> {
+            unreachable!()
+        }
+    }
+    // Given
+    let query = repository(false);
+    query.document.lock().app.terminal_startup_command = "echo query".into();
+    let usecase = AppConfigUsecase::new(Arc::new(Unreadable), query.clone(), query);
+    // When / Then
+    assert_eq!(usecase.terminal_startup_command().unwrap(), "echo query");
 }

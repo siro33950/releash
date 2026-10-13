@@ -219,12 +219,10 @@ fn test_shell観測_起動時の実行ファイル取得失敗から再取得で
     let current = super::super::shell_observation::process_executable(std::process::id()).unwrap();
     runtime.launcher_program = Some(current.clone());
     *runtime.initial_program.lock() = Some("not-executed-shell".into());
-    assert!(
-        matches!(runtime.observe_shell(), Err(error) if error.kind == std::io::ErrorKind::WouldBlock)
-    );
+    assert!(matches!(runtime.observe_shell(), Ok(None)));
     runtime.launcher_program = None;
     *runtime.initial_program.lock() = None;
-    let observation = runtime.observe_shell().unwrap();
+    let observation = runtime.observe_shell().unwrap().unwrap();
     assert_eq!(observation.initial_program, observation.current_program);
     assert_eq!(
         runtime.initial_program.lock().as_ref(),

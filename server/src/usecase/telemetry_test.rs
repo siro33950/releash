@@ -87,8 +87,11 @@ fn test_telemetry設定_永続化成功時だけruntime設定を更新する() {
             }),
             fail,
         });
-        let config =
-            crate::usecase::app_config::AppConfigUsecase::new(repository.clone(), repository);
+        let config = crate::usecase::app_config::AppConfigUsecase::new(
+            repository.clone(),
+            repository.clone(),
+            repository,
+        );
         let port = Port::default();
         let usecase = TelemetryUsecase::new(&port);
         // When
@@ -129,4 +132,16 @@ fn test_telemetry操作_引数とquery結果をportへ委譲する() {
             "usage:event"
         ]
     );
+}
+
+impl crate::usecase::app_config::query_service::TerminalStartupCommandQueryService for Config {
+    fn terminal_startup_command(&self) -> Result<String, AppConfigError> {
+        Ok(self
+            .document
+            .lock()
+            .unwrap()
+            .app
+            .terminal_startup_command
+            .clone())
+    }
 }

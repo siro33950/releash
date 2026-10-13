@@ -152,3 +152,61 @@ async fn test_terminal作り直し予約_一つのworkerで追加clientのreset�
         HashSet::from(["first".into(), "second".into()])
     );
 }
+
+async fn snapshot_shell_state(
+    state: Option<crate::domain::terminal_surface::TerminalShellState>,
+) -> super::super::application::TerminalSurfaceSnapshotDto {
+    use crate::usecase::terminal_surface::{
+        application::TerminalSurfaceApplication,
+        test_helpers::{workspace_owner, FakePtyGateway},
+    };
+    // Given
+    let owner = workspace_owner("/repo");
+    let mut gateway = FakePtyGateway::new();
+    gateway.surface = Some(
+        crate::domain::terminal_surface::entities::TerminalSurface::new(1, owner.clone(), None),
+    );
+    gateway.shell_state = state;
+    let hub =
+        Arc::new(crate::adaptor::presenter::terminal_event_hub::TerminalSurfaceEventHub::new());
+    let terminal = Arc::new(TerminalSurfaceApplication::new(
+        Arc::new(crate::usecase::test_helpers::NoopPerformance), Arc::new(gateway),
+        Arc::new(crate::adaptor::gateway::terminal_surface::event_source::TerminalSurfaceEventSourceGateway::new(hub.event_sender())),
+        hub, crate::test_support::terminal_config(""),
+    ));
+    let output = Arc::new(FakeOutput::default());
+    let usecase = TerminalSubscriptionUsecase::new(
+        output.clone(),
+        Some(terminal),
+        crate::test_support::state_subscription::terminal_driver(),
+    );
+    // When
+    usecase
+        .refresh_terminal(&SubscriptionTarget::Terminal(owner))
+        .await
+        .unwrap();
+    let values = output.snapshots.lock();
+    let StateValue::Terminal(TerminalSurfaceStreamItem::Snapshot(snapshot)) = &values[0].2 else {
+        panic!("snapshot expected")
+    };
+    snapshot.clone()
+}
+
+#[tokio::test]
+async fn test_terminal_snapshot_gatewayのshell状態を付ける() {
+    let state = crate::domain::terminal_surface::TerminalShellState {
+        cwd: Some("/next".into()),
+        has_foreground_process: true,
+    };
+    // When / Then
+    assert_eq!(
+        snapshot_shell_state(Some(state.clone())).await.shell_state,
+        Some(state)
+    );
+}
+
+#[tokio::test]
+async fn test_terminal_snapshot_gatewayがnoneならshell状態を付けない() {
+    // When / Then
+    assert_eq!(snapshot_shell_state(None).await.shell_state, None);
+}

@@ -30,7 +30,11 @@ async fn test_atui_030_provider_cliがterminal_surfaceのroot_processとして�
     let cwd = tempfile::TempDir::new().unwrap();
     let path = cwd.path().to_string_lossy().into_owned();
     let owner = session_owner(&path, "agent-session-root-process");
-    let runtime = TerminalSurfaceRuntime::new(queue.clone(), data_dir.path().to_path_buf());
+    let runtime = TerminalSurfaceRuntime::new(
+        queue.clone(),
+        data_dir.path().to_path_buf(),
+        releashd::test_support::terminal_config(""),
+    );
     let fixture = FixturePlan {
         input_lines: 1,
         alternate_screen: true,
@@ -291,7 +295,11 @@ async fn test_atui_010_実ptyのproduction_attachが欠落重複逆転なく再�
     let cwd = tempfile::TempDir::new().unwrap();
     let path = cwd.path().to_string_lossy().into_owned();
     let owner = workspace_owner(&path);
-    let runtime = TerminalSurfaceRuntime::new(queue.clone(), data_dir.path().to_path_buf());
+    let runtime = TerminalSurfaceRuntime::new(
+        queue.clone(),
+        data_dir.path().to_path_buf(),
+        releashd::test_support::terminal_config(""),
+    );
     let spawned = runtime
         .get_or_spawn(
             24,
@@ -416,6 +424,7 @@ async fn test_atui_010_実ptyのproduction_attachが注入された欠落重複�
     let (runtime, faults) = TerminalSurfaceRuntime::new_with_data_dir_and_event_faults(
         queue.clone(),
         data_dir.path().to_path_buf(),
+        releashd::test_support::terminal_config(""),
     );
     runtime
         .get_or_spawn(24, 240, Some(path), owner.clone(), None)
@@ -505,7 +514,11 @@ async fn test_atui_011_terminal_checkpointが画面属性と終了後のbounded_
     let cwd = tempfile::TempDir::new().unwrap();
     let path = cwd.path().to_string_lossy().into_owned();
     let owner = workspace_owner(&path);
-    let runtime = TerminalSurfaceRuntime::new(queue.clone(), data_dir.path().to_path_buf());
+    let runtime = TerminalSurfaceRuntime::new(
+        queue.clone(),
+        data_dir.path().to_path_buf(),
+        releashd::test_support::terminal_config(""),
+    );
     runtime
         .get_or_spawn(
             24,
@@ -645,7 +658,11 @@ async fn test_atui_011_複数terminal_surfaceの画面状態が混線しない()
     let path = cwd.path().to_string_lossy().into_owned();
     let first_owner = session_owner(&path, "first");
     let second_owner = session_owner(&path, "second");
-    let runtime = TerminalSurfaceRuntime::new(queue.clone(), data_dir.path().to_path_buf());
+    let runtime = TerminalSurfaceRuntime::new(
+        queue.clone(),
+        data_dir.path().to_path_buf(),
+        releashd::test_support::terminal_config(""),
+    );
 
     for (owner, label) in [
         (first_owner.clone(), "terminal-surface-first"),
@@ -737,15 +754,18 @@ async fn test_atui_012_app再構築後は同一process扱いせず最終画面�
         shell_quote(&first_pid_path.to_string_lossy())
     );
 
-    let first_runtime = TerminalSurfaceRuntime::new(queue.clone(), data_dir.path().to_path_buf());
+    let first_runtime = TerminalSurfaceRuntime::new(
+        queue.clone(),
+        data_dir.path().to_path_buf(),
+        releashd::test_support::terminal_config(&startup_command),
+    );
     let first = first_runtime
-        .get_or_spawn_with_startup(
+        .get_or_spawn(
             24,
             100,
             Some(path.clone()),
             owner.clone(),
             Some("ATUI-012 fixture".to_string()),
-            Some(startup_command.clone()),
         )
         .expect("spawn first product PTY");
     assert_eq!(wait_file_content(&startup_count_path).await, "x");
@@ -781,15 +801,18 @@ async fn test_atui_012_app再構築後は同一process扱いせず最終画面�
     #[cfg(unix)]
     wait_process_exit(&first_pid).await;
 
-    let second_runtime = TerminalSurfaceRuntime::new(queue.clone(), data_dir.path().to_path_buf());
+    let second_runtime = TerminalSurfaceRuntime::new(
+        queue.clone(),
+        data_dir.path().to_path_buf(),
+        releashd::test_support::terminal_config(&startup_command),
+    );
     let restored = second_runtime
-        .get_or_spawn_with_startup(
+        .get_or_spawn(
             24,
             100,
             Some(path),
             owner.clone(),
             Some("ATUI-012 fixture".to_string()),
-            Some(startup_command),
         )
         .expect("cold restore into new PTY");
     assert_eq!(restored.session_key, first.session_key);
@@ -838,7 +861,11 @@ async fn test_atui_012_通常終了は実ptyを停止して出力drain後の最�
     let cwd = tempfile::TempDir::new().unwrap();
     let path = cwd.path().to_string_lossy().into_owned();
     let owner = session_owner(&path, "shutdown-drain");
-    let first_runtime = TerminalSurfaceRuntime::new(queue.clone(), data_dir.path().to_path_buf());
+    let first_runtime = TerminalSurfaceRuntime::new(
+        queue.clone(),
+        data_dir.path().to_path_buf(),
+        releashd::test_support::terminal_config(""),
+    );
     first_runtime
         .get_or_spawn(
             24,
@@ -898,7 +925,11 @@ async fn test_atui_012_通常終了は実ptyを停止して出力drain後の最�
         .is_err());
     drop(first_runtime);
 
-    let second_runtime = TerminalSurfaceRuntime::new(queue.clone(), data_dir.path().to_path_buf());
+    let second_runtime = TerminalSurfaceRuntime::new(
+        queue.clone(),
+        data_dir.path().to_path_buf(),
+        releashd::test_support::terminal_config(""),
+    );
     second_runtime
         .get_or_spawn(24, 120, Some(path), owner.clone(), None)
         .expect("cold restore final drained screen");
@@ -922,17 +953,14 @@ async fn test_atui_012_明示kill後はcheckpointを復元せず起動コマン�
         "printf x >> {}",
         shell_quote(&startup_count.to_string_lossy())
     );
-    let runtime = TerminalSurfaceRuntime::new(queue.clone(), data_dir.path().to_path_buf());
+    let runtime = TerminalSurfaceRuntime::new(
+        queue.clone(),
+        data_dir.path().to_path_buf(),
+        releashd::test_support::terminal_config(&startup_command),
+    );
 
     runtime
-        .get_or_spawn_with_startup(
-            24,
-            80,
-            Some(path.clone()),
-            owner.clone(),
-            None,
-            Some(startup_command.clone()),
-        )
+        .get_or_spawn(24, 80, Some(path.clone()), owner.clone(), None)
         .expect("spawn first explicit-kill PTY");
     wait_file_content_equals(&startup_count, "x").await;
 
@@ -940,14 +968,7 @@ async fn test_atui_012_明示kill後はcheckpointを復元せず起動コマン�
         .kill(owner.clone())
         .expect("stop, drain, delete checkpoint");
     runtime
-        .get_or_spawn_with_startup(
-            24,
-            80,
-            Some(path),
-            owner.clone(),
-            None,
-            Some(startup_command),
-        )
+        .get_or_spawn(24, 80, Some(path), owner.clone(), None)
         .expect("regenerate after explicit kill");
 
     wait_file_content_equals(&startup_count, "xx").await;
@@ -971,7 +992,11 @@ async fn test_terminalタブ_別shellへ接続しcwdと前面処理を配信す�
     };
     let first = owner("first");
     let second = owner("second");
-    let runtime = TerminalSurfaceRuntime::new(queue, data.path().into());
+    let runtime = TerminalSurfaceRuntime::new(
+        queue,
+        data.path().into(),
+        releashd::test_support::terminal_config(""),
+    );
     let spawn = runtime
         .get_or_spawn(24, 80, Some(path.clone()), first.clone(), None)
         .unwrap();

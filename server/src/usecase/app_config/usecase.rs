@@ -23,8 +23,9 @@ impl AppConfigUsecase {
     pub fn new(
         repository: Arc<dyn ConfigRepository>,
         workflow_query: Arc<dyn WorkflowConfigQueryService>,
+        terminal_query: Arc<dyn super::query_service::TerminalStartupCommandQueryService>,
     ) -> Self {
-        let query = AppConfigQueryService::new(repository.clone(), workflow_query);
+        let query = AppConfigQueryService::new(repository.clone(), workflow_query, terminal_query);
         Self {
             repository,
             query,

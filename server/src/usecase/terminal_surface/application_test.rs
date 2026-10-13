@@ -55,7 +55,13 @@ impl TerminalSurfaceOutputControl for Noop {
 fn make_application(
     gateway: Arc<crate::usecase::terminal_surface::test_helpers::FakePtyGateway>,
 ) -> super::TerminalSurfaceApplication {
-    super::TerminalSurfaceApplication::new(Arc::new(Noop), gateway, Arc::new(Noop), Arc::new(Noop))
+    super::TerminalSurfaceApplication::new(
+        Arc::new(Noop),
+        gateway,
+        Arc::new(Noop),
+        Arc::new(Noop),
+        crate::test_support::terminal_config(""),
+    )
 }
 
 #[test]

@@ -128,6 +128,7 @@ pub fn build_terminal_surface_application_for_tests() -> TerminalSurfaceApplicat
         Arc::new(TerminalSurfaceRuntimeGateway::default()),
         Arc::new(crate::adaptor::gateway::terminal_surface::event_source::TerminalSurfaceEventSourceGateway::new(hub.event_sender())),
         hub,
+        crate::test_support::terminal_config(""),
     )
 }
 

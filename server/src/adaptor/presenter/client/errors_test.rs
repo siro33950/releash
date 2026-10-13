@@ -77,3 +77,32 @@ fn test_ui状態保存失敗_版競合の通信本文と既存の表示detailを
         assert_eq!(display, serde_json::json!(detail));
     }
 }
+
+#[test]
+fn test_terminal初期化失敗_設定のvariantを通信の分類と表示へ変換する() {
+    use crate::adaptor::presenter::terminal_error::{
+        TerminalCommandError, TerminalCommandOperation,
+    };
+    use crate::domain::app_config::AppConfigError;
+    // Given / When / Then
+    for (source, kind, code, cause) in [
+        (
+            AppConfigError::Repository("config unavailable".into()),
+            connectrpc::ErrorCode::Internal,
+            "PTY_ERROR",
+            Some("config unavailable"),
+        ),
+        (
+            AppConfigError::InvalidInput("invalid config".into()),
+            connectrpc::ErrorCode::InvalidArgument,
+            "INVALID_REQUEST",
+            None,
+        ),
+    ] {
+        let error =
+            TerminalCommandError::from_usecase(source.into(), TerminalCommandOperation::Initialize);
+        assert_eq!(error.kind, kind);
+        assert_eq!(error.code, code);
+        assert_eq!(error.cause.as_deref(), cause);
+    }
+}

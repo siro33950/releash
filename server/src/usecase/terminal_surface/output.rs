@@ -4,9 +4,7 @@ use crate::usecase::terminal_surface::error::UsecaseError;
 
 pub struct TerminalRegistration {
     pub session_key: String,
-    pub workspace_path: String,
-    pub session_id: Option<String>,
-    pub terminal_id: Option<String>,
+    pub owner: crate::domain::terminal_surface::TerminalSurfaceOwner,
     pub runtime_generation: u64,
     pub latest_sequence: u64,
 }

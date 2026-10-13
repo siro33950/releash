@@ -1,26 +1,46 @@
 use parking_lot::Mutex;
 
-#[derive(Default)]
 pub(crate) struct Osc7Directory {
     pending: Vec<u8>,
     pub(crate) cwd: Option<String>,
-    process_cwd: Option<String>,
+    local_host: Option<String>,
     updated: bool,
 }
 
-impl Osc7Directory {
-    pub(crate) fn observe_cwd(&mut self, cwd: String) -> String {
-        if !self.updated
-            && self
-                .process_cwd
-                .as_ref()
-                .is_some_and(|previous| previous != &cwd)
-        {
-            self.cwd = None;
+impl Default for Osc7Directory {
+    fn default() -> Self {
+        Self {
+            pending: Vec::new(),
+            cwd: None,
+            updated: false,
+            local_host: local_hostname(),
         }
-        self.process_cwd = Some(cwd.clone());
-        self.updated = false;
-        self.cwd.clone().unwrap_or(cwd)
+    }
+}
+
+fn local_hostname() -> Option<String> {
+    #[cfg(unix)]
+    {
+        let mut name = [0u8; 256];
+        if unsafe { libc::gethostname(name.as_mut_ptr().cast(), name.len()) } != 0 {
+            return None;
+        }
+        std::ffi::CStr::from_bytes_until_nul(&name)
+            .ok()?
+            .to_str()
+            .ok()
+            .map(str::to_owned)
+    }
+    #[cfg(not(unix))]
+    {
+        None
+    }
+}
+
+impl Osc7Directory {
+    pub(crate) fn observation(&mut self) -> (Option<String>, bool) {
+        let updated = std::mem::take(&mut self.updated);
+        (self.cwd.clone(), updated)
     }
 
     pub(crate) fn feed(&mut self, bytes: &[u8]) {
@@ -47,13 +67,21 @@ impl Osc7Directory {
                     if let Some(uri) = value.strip_prefix("7;") {
                         if let Ok(mut uri) = url::Url::parse(uri) {
                             if uri.scheme() == "file" {
-                                if uri.set_host(None).is_err() {
-                                    continue;
-                                }
-                                if let Ok(path) = uri.to_file_path() {
-                                    self.cwd = path.to_str().map(str::to_owned);
-                                    self.updated = self.cwd.is_some();
-                                }
+                                let local = uri.host_str().is_none_or(|host| {
+                                    host.eq_ignore_ascii_case("localhost")
+                                        || self
+                                            .local_host
+                                            .as_deref()
+                                            .is_some_and(|local| host.eq_ignore_ascii_case(local))
+                                });
+                                self.cwd = if local && uri.set_host(Some("localhost")).is_ok() {
+                                    uri.to_file_path()
+                                        .ok()
+                                        .and_then(|path| path.to_str().map(str::to_owned))
+                                } else {
+                                    None
+                                };
+                                self.updated = true;
                             }
                         }
                     }

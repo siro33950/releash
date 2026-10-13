@@ -106,6 +106,16 @@ impl ConfigRepository for AppConfig {
     }
 }
 
+impl crate::usecase::app_config::query_service::TerminalStartupCommandQueryService for AppConfig {
+    fn terminal_startup_command(&self) -> Result<String, AppConfigError> {
+        let config = self
+            .config
+            .lock()
+            .map_err(|error| AppConfigError::Repository(format!("ロック取得失敗: {error}")))?;
+        Ok(config.app.terminal_startup_command.clone())
+    }
+}
+
 impl WorkflowConfigQueryService for AppConfig {
     fn get_workflow_config(&self) -> Result<WorkflowConfigDto, AppConfigError> {
         let config = self

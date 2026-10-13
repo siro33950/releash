@@ -3,6 +3,7 @@ use crate::domain::terminal_surface::{TerminalProcessLaunch, TerminalSurfaceOwne
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ProviderAgentTerminalGatewayError {
+    AppConfig(crate::domain::app_config::AppConfigError),
     Technical(crate::domain::failure::TechnicalFailure),
     NotFound(String),
     InvalidOperation(String),
@@ -20,6 +21,7 @@ impl std::fmt::Display for ProviderAgentTerminalGatewayError {
             Self::StaleAttachment => {
                 formatter.write_str("Terminal input attachment is no longer active")
             }
+            Self::AppConfig(error) => error.fmt(formatter),
             Self::Technical(failure) => failure.fmt(formatter),
         }
     }

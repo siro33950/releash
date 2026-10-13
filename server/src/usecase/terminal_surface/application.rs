@@ -15,6 +15,7 @@ use crate::usecase::terminal_surface::spawn_usecase::GetOrSpawnTerminalOutcome;
 
 #[derive(Clone)]
 pub struct TerminalSurfaceApplication {
+    config: Arc<dyn crate::domain::app_config::ConfigRepository>,
     performance: Arc<dyn crate::usecase::telemetry::PerformanceOutput>,
     gateway: Arc<dyn TerminalSurfaceGateway + Send + Sync>,
     event_source: Arc<dyn TerminalSurfaceEventSource>,
@@ -116,8 +117,10 @@ impl TerminalSurfaceApplication {
         gateway: Arc<dyn TerminalSurfaceGateway + Send + Sync>,
         event_source: Arc<dyn TerminalSurfaceEventSource>,
         output: Arc<dyn TerminalSurfaceOutputControl>,
+        config: Arc<dyn crate::domain::app_config::ConfigRepository>,
     ) -> Self {
         Self {
+            config,
             performance,
             gateway,
             output,
@@ -298,10 +301,9 @@ impl TerminalSurfaceApplication {
         cwd: Option<String>,
         owner: TerminalSurfaceOwner,
         label: Option<String>,
-        startup_command: Option<String>,
     ) -> Result<GetOrSpawnTerminalOutcome, UsecaseError> {
         let _admission = self.admit_mutation()?;
-        super::spawn_usecase::get_or_spawn_with_startup(
+        super::spawn_usecase::get_or_spawn_with_config(
             self.performance.as_ref(),
             self.gateway.as_ref(),
             self.output.as_ref(),
@@ -310,7 +312,7 @@ impl TerminalSurfaceApplication {
             cwd,
             owner,
             label,
-            startup_command,
+            self.config.as_ref(),
         )
     }
 

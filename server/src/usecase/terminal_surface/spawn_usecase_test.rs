@@ -33,7 +33,7 @@ impl crate::usecase::terminal_surface::output::TerminalSurfaceOutputControl for 
 struct RecordingOutput<'a> {
     gateway: Option<&'a MockGateway>,
     fail_initialize: bool,
-    initialized: Mutex<Vec<(String, String, Option<String>, u64, u64)>>,
+    initialized: Mutex<Vec<(String, TerminalSurfaceOwner, u64, u64)>>,
     registered: Mutex<Vec<bool>>,
 }
 
@@ -64,8 +64,7 @@ impl crate::usecase::terminal_surface::output::TerminalSurfaceOutputControl
         }
         self.initialized.lock().unwrap().push((
             registration.session_key,
-            registration.workspace_path,
-            registration.session_id,
+            registration.owner,
             registration.runtime_generation,
             registration.latest_sequence,
         ));
@@ -396,14 +395,8 @@ fn test_ターミナル生成通知_入力の所有者とcheckpoint番号を新�
     assert_eq!(
         *output.initialized.lock().unwrap(),
         vec![
-            (workspace.stable_key(), "/repo".into(), None, 1, 7),
-            (
-                session.stable_key(),
-                "/repo".into(),
-                Some("agent".into()),
-                2,
-                7
-            ),
+            (workspace.stable_key(), workspace.clone(), 1, 7),
+            (session.stable_key(), session.clone(), 2, 7),
         ]
     );
     assert_eq!(*output.registered.lock().unwrap(), vec![true, true]);
@@ -457,7 +450,7 @@ fn test_ターミナル生成通知_登録失敗時に画面と予約を解放�
 fn test_ターミナル画面生成_新規ptyだけに起動コマンドを一度入力する() {
     let gateway = MockGateway::new();
 
-    get_or_spawn_with_startup(
+    get_or_spawn_with_config(
         &crate::usecase::test_helpers::NoopPerformance,
         &gateway,
         &NoopOutput,
@@ -466,7 +459,7 @@ fn test_ターミナル画面生成_新規ptyだけに起動コマンドを一�
         Some("/repo".to_string()),
         workspace_owner("/repo"),
         None,
-        Some("  cargo test  ".to_string()),
+        crate::test_support::terminal_config("  cargo test  ").as_ref(),
     )
     .unwrap();
 
@@ -804,7 +797,7 @@ fn test_ターミナル画面生成_出力読取開始失敗時は復元点も�
     });
     gateway.fail_start_reader.store(true, Ordering::SeqCst);
 
-    let failed = get_or_spawn_with_startup(
+    let failed = get_or_spawn_with_config(
         &crate::usecase::test_helpers::NoopPerformance,
         &gateway,
         &NoopOutput,
@@ -813,13 +806,13 @@ fn test_ターミナル画面生成_出力読取開始失敗時は復元点も�
         Some("/repo".to_string()),
         workspace_owner("/repo"),
         None,
-        Some("cargo test".to_string()),
+        crate::test_support::terminal_config("cargo test").as_ref(),
     );
     assert!(failed.is_err());
     assert!(gateway.checkpoint.lock().unwrap().is_none());
 
     gateway.fail_start_reader.store(false, Ordering::SeqCst);
-    get_or_spawn_with_startup(
+    get_or_spawn_with_config(
         &crate::usecase::test_helpers::NoopPerformance,
         &gateway,
         &NoopOutput,
@@ -828,7 +821,7 @@ fn test_ターミナル画面生成_出力読取開始失敗時は復元点も�
         Some("/repo".to_string()),
         workspace_owner("/repo"),
         None,
-        Some("cargo test".to_string()),
+        crate::test_support::terminal_config("cargo test").as_ref(),
     )
     .unwrap();
 
@@ -854,7 +847,7 @@ fn test_ターミナル画面明示終了_復元点も破棄して再生成の�
     crate::usecase::terminal_surface::lifecycle_usecase::kill(&gateway, &owner).unwrap();
     assert!(gateway.checkpoint.lock().unwrap().is_none());
 
-    get_or_spawn_with_startup(
+    get_or_spawn_with_config(
         &crate::usecase::test_helpers::NoopPerformance,
         &gateway,
         &NoopOutput,
@@ -863,7 +856,7 @@ fn test_ターミナル画面明示終了_復元点も破棄して再生成の�
         Some("/repo".to_string()),
         owner,
         None,
-        Some("cargo test".to_string()),
+        crate::test_support::terminal_config("cargo test").as_ref(),
     )
     .unwrap();
 
@@ -984,7 +977,7 @@ fn test_ターミナル画面_再起動復元_復元点寸法で新規ptyを開�
         rows: 37,
     });
 
-    get_or_spawn_with_startup(
+    get_or_spawn_with_config(
         &crate::usecase::test_helpers::NoopPerformance,
         &gateway,
         &NoopOutput,
@@ -993,10 +986,145 @@ fn test_ターミナル画面_再起動復元_復元点寸法で新規ptyを開�
         Some("/repo".to_string()),
         workspace_owner("/repo"),
         None,
-        Some("must-not-run".to_string()),
+        crate::test_support::terminal_config("must-not-run").as_ref(),
     )
     .unwrap();
 
     assert_eq!(*gateway.spawned_sizes.lock().unwrap(), vec![(37, 111)]);
     assert!(gateway.written_inputs.lock().unwrap().is_empty());
+}
+
+#[test]
+fn test_terminal登録_workspace_terminalの持ち主をそのまま渡す() {
+    // Given
+    let gateway = FakePtyGateway::new();
+    let output = RecordingOutput::default();
+    let owner =
+        TerminalSurfaceOwner::workspace_terminal(WorkspaceIdentity::new("/repo"), "tab").unwrap();
+    // When
+    get_or_spawn(
+        &crate::usecase::test_helpers::NoopPerformance,
+        &gateway,
+        &output,
+        24,
+        80,
+        None,
+        owner.clone(),
+        None,
+    )
+    .unwrap();
+    // Then
+    assert_eq!(output.initialized.lock().unwrap()[0].1, owner);
+}
+
+#[test]
+fn test_checkpoint取得_workspace_terminalのstable_keyを使う() {
+    // Given
+    let gateway = FakePtyGateway::new();
+    let owner =
+        TerminalSurfaceOwner::workspace_terminal(WorkspaceIdentity::new("/repo"), "tab").unwrap();
+    // When
+    get_or_spawn(
+        &crate::usecase::test_helpers::NoopPerformance,
+        &gateway,
+        &NoopOutput,
+        24,
+        80,
+        None,
+        owner.clone(),
+        None,
+    )
+    .unwrap();
+    // Then
+    assert_eq!(*gateway.checkpoint_keys.lock(), [owner.stable_key()]);
+}
+
+#[test]
+fn test_checkpoint取得_terminal_idが違えば別のkeyを使う() {
+    // Given
+    let gateway = FakePtyGateway::new();
+    let owners = ["first", "second"].map(|id| {
+        TerminalSurfaceOwner::workspace_terminal(WorkspaceIdentity::new("/repo"), id).unwrap()
+    });
+    // When
+    for owner in &owners {
+        get_or_spawn(
+            &crate::usecase::test_helpers::NoopPerformance,
+            &gateway,
+            &NoopOutput,
+            24,
+            80,
+            None,
+            owner.clone(),
+            None,
+        )
+        .unwrap();
+    }
+    // Then
+    let keys = gateway.checkpoint_keys.lock();
+    assert_eq!(*keys, owners.map(|owner| owner.stable_key()));
+    assert_ne!(keys[0], keys[1]);
+}
+
+#[test]
+fn test_terminal起動設定_読み込み失敗時は予約を戻しshellを起こさない() {
+    struct FailedConfig(crate::domain::app_config::AppConfigError);
+    impl crate::domain::app_config::ConfigRepository for FailedConfig {
+        fn load(
+            &self,
+        ) -> Result<
+            crate::domain::app_config::value_objects::AppConfigDocument,
+            crate::domain::app_config::AppConfigError,
+        > {
+            Err(self.0.clone())
+        }
+        fn save(
+            &self,
+            _: crate::domain::app_config::value_objects::AppConfigDocument,
+        ) -> Result<(), crate::domain::app_config::AppConfigError> {
+            unreachable!()
+        }
+        fn update(
+            &self,
+            _: crate::domain::app_config::repository::ConfigUpdate,
+        ) -> Result<(), crate::domain::app_config::AppConfigError> {
+            unreachable!()
+        }
+    }
+    for source in [
+        crate::domain::app_config::AppConfigError::Repository("config unavailable".into()),
+        crate::domain::app_config::AppConfigError::InvalidInput("invalid config".into()),
+    ] {
+        // Given
+        let gateway = MockGateway::new();
+        let owner = workspace_owner("/repo");
+        // When
+        let error = get_or_spawn_with_config(
+            &crate::usecase::test_helpers::NoopPerformance,
+            &gateway,
+            &NoopOutput,
+            24,
+            80,
+            None,
+            owner.clone(),
+            None,
+            &FailedConfig(source.clone()),
+        )
+        .err()
+        .unwrap();
+        // Then
+        assert_eq!(error, UsecaseError::AppConfig(source));
+        assert_eq!(*gateway.spawn_count.lock().unwrap(), 0);
+        get_or_spawn(
+            &crate::usecase::test_helpers::NoopPerformance,
+            &gateway,
+            &NoopOutput,
+            24,
+            80,
+            None,
+            owner,
+            None,
+        )
+        .unwrap();
+    }
 }

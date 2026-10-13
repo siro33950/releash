@@ -51,7 +51,9 @@ React の画面:
 - 閉じる前の確認は無い。
 
 起動コマンド:
-- 設定画面で編集した値を localStorage に保存し（`clients/desktop/src/components/panels/SettingsModal.tsx:638-642`、`clients/desktop/src/hooks/useSettings.ts:20`、`:116-117`）、`GetOrSpawnTerminalSurface` の `startup_command`（`proto/client.proto:995`）に載せて渡す（`clients/desktop/src/hooks/useTerminal.ts:339`）。
+- 設定画面で編集した値を localStorage に保存する（`clients/desktop/src/components/panels/SettingsModal.tsx:638-642`、`clients/desktop/src/hooks/useSettings.ts:20`、`:116-117`）。
+  `useTerminal.ts:339` には、その値を `GetOrSpawnTerminalSurface` の `startup_command`（`proto/client.proto:995`）に載せる経路がある。
+  しかし、`TerminalPanel` を使う `RightSidebarBottom.tsx:65` と `AgentSessionPanel.tsx:144` は `terminalStartupCommand` を渡していないため、起動コマンドはサーバへ送られていない。
 - サーバは、保存した画面から復元した terminal では起動コマンドを実行しない（`server/src/domain/terminal_surface/value_objects/terminal_surface_startup_command.rs`）。
 - サーバの設定ファイルに起動コマンドの項目は無い（`server/src/adaptor/gateway/app_config/config_models.rs:12-23`）。
 

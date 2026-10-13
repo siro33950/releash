@@ -142,13 +142,22 @@ extension WorkbenchTests {
     try await fixture.startServer()
     _ = try await fixture.repository("terminal-repository")
     launch()
-    app.buttons.matching(identifier: "worktree:main").firstMatch.click()
+    let worktree = app.buttons.matching(identifier: "worktree:main").firstMatch
+    guard worktree.waitForExistence(timeout: 30) else { XCTFail("Worktreeが表示されません"); return }
+    worktree.click()
     let open = app.menuButtons["開く"].firstMatch
-    XCTAssertTrue(open.waitForExistence(timeout: 30))
+    let ready = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == true AND enabled == true"), object: open)
+    guard await XCTWaiter.fulfillment(of: [ready], timeout: 30) == .completed else { XCTFail("開くメニューが有効になりません"); return }
     open.click()
-    app.menuItems["Terminal"].click()
-    let terminal = app.textViews.matching(NSPredicate(format: "identifier BEGINSWITH %@", "terminal:")).firstMatch
-    XCTAssertTrue(terminal.waitForExistence(timeout: 30), app.debugDescription)
+    let item = app.menuItems["Terminal"]
+    guard item.waitForExistence(timeout: 10), item.isHittable else { XCTFail("Terminalメニューを選択できません"); return }
+    item.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).click()
+    let tab = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Terminal ")).firstMatch
+    guard tab.waitForExistence(timeout: 30) else { XCTFail("Terminalタブが作られません"); return }
+    tab.click()
+    let terminals = app.textViews.matching(NSPredicate(format: "identifier BEGINSWITH %@", "terminal:"))
+    let terminal = terminals.firstMatch
+    guard terminal.waitForExistence(timeout: 30), terminals.count == 1 else { XCTFail("作成したタブの端末ビューを取得できません"); return }
     terminal.click()
     terminal.typeText("printf 'releash-%s\\n' terminal-output\n")
     let output = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value CONTAINS %@", "releash-terminal-output"), object: terminal)

@@ -299,6 +299,7 @@ impl ConnectFailure for crate::usecase::state_subscription::SubscriptionError {
 impl ConnectFailure for crate::usecase::terminal_surface::error::UsecaseError {
     fn connect_code(&self) -> connectrpc::ErrorCode {
         match self {
+            Self::AppConfig(error) => error.connect_code(),
             Self::OwnerConflict | Self::StaleAttachment => {
                 connectrpc::ErrorCode::FailedPrecondition
             }
@@ -665,6 +666,7 @@ impl ConnectFailure for super::provider_tui::ProviderTuiCodedError {
 impl ConnectFailure for crate::domain::agent_session::ProviderAgentTerminalGatewayError {
     fn connect_code(&self) -> connectrpc::ErrorCode {
         match self {
+            Self::AppConfig(error) => error.connect_code(),
             Self::NotFound(_) => connectrpc::ErrorCode::NotFound,
             Self::InvalidOperation(_) | Self::StaleAttachment | Self::OwnerConflict => {
                 connectrpc::ErrorCode::FailedPrecondition

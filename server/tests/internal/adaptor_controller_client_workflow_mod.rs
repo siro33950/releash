@@ -811,6 +811,7 @@ pub(crate) mod tests {
             releashd::test_support::integration::settings::AppConfigUsecase::new(
                 config_repository,
                 app_config.clone(),
+                app_config.clone(),
             ),
         ));
         client.watcher = Arc::new(releashd::test_support::integration::platform::WatcherUsecase::new(

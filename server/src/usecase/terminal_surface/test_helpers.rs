@@ -22,6 +22,8 @@ type ShutdownGate = (
 );
 
 pub struct FakePtyGateway {
+    pub shell_state: Option<crate::domain::terminal_surface::TerminalShellState>,
+    pub checkpoint_keys: Mutex<Vec<String>>,
     pub list_summaries_calls: Mutex<usize>,
     pub resizes: Mutex<Vec<(String, u16, u16)>>,
     pub(crate) writes: Mutex<Vec<(String, String)>>,
@@ -42,6 +44,8 @@ pub struct FakePtyGateway {
 impl FakePtyGateway {
     pub fn new() -> Self {
         Self {
+            shell_state: None,
+            checkpoint_keys: Default::default(),
             list_summaries_calls: Mutex::new(0),
             resizes: Mutex::new(Vec::new()),
             writes: Mutex::new(Vec::new()),
@@ -117,6 +121,20 @@ impl TerminalSurfaceRepository for FakePtyGateway {
 }
 
 impl TerminalSurfaceGateway for FakePtyGateway {
+    fn shell_state(&self, _: u64) -> Option<crate::domain::terminal_surface::TerminalShellState> {
+        self.shell_state.clone()
+    }
+    fn load_terminal_checkpoint(
+        &self,
+        key: &str,
+    ) -> Result<
+        Option<crate::domain::terminal_surface::TerminalSurfaceCheckpoint>,
+        TerminalSurfaceGatewayError,
+    > {
+        self.checkpoint_keys.lock().push(key.into());
+        Ok(None)
+    }
+
     fn next_runtime_generation(&self) -> u64 {
         1
     }

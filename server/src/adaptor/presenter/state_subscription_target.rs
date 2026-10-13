@@ -159,30 +159,25 @@ impl SubscriptionTarget {
     pub fn parts(&self) -> (&'static str, Vec<String>) {
         match self {
             Self::DaemonInfo => ("daemon-info", vec![]),
-            Self::Terminal(
+            Self::Terminal(owner) => match owner {
+                crate::domain::terminal_surface::TerminalSurfaceOwner::Workspace { workspace } => {
+                    ("terminal", vec![workspace.as_str().into()])
+                }
                 crate::domain::terminal_surface::TerminalSurfaceOwner::WorkspaceTerminal {
                     workspace,
                     terminal_id,
-                },
-            ) => (
-                "workspace-terminal",
-                vec![workspace.as_str().into(), terminal_id.clone()],
-            ),
-            Self::Terminal(owner) => (
-                "terminal",
-                match owner {
-                    crate::domain::terminal_surface::TerminalSurfaceOwner::Workspace {
-                        workspace,
-                    } => vec![workspace.as_str().into()],
-                    crate::domain::terminal_surface::TerminalSurfaceOwner::WorkspaceTerminal {
-                        ..
-                    } => unreachable!(),
-                    crate::domain::terminal_surface::TerminalSurfaceOwner::Session {
-                        workspace,
-                        session_id,
-                    } => vec![workspace.as_str().into(), session_id.clone()],
-                },
-            ),
+                } => (
+                    "workspace-terminal",
+                    vec![workspace.as_str().into(), terminal_id.clone()],
+                ),
+                crate::domain::terminal_surface::TerminalSurfaceOwner::Session {
+                    workspace,
+                    session_id,
+                } => (
+                    "terminal",
+                    vec![workspace.as_str().into(), session_id.clone()],
+                ),
+            },
             Self::RepositoryGroupState(path) => ("repository-group-state", vec![path.clone()]),
             Self::RepositoryPaths => ("repository-paths", vec![]),
             Self::Workspaces => ("workspaces", vec![]),

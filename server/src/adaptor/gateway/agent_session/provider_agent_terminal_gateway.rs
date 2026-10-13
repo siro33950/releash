@@ -11,6 +11,7 @@ use crate::usecase::terminal_surface::error::UsecaseError;
 
 fn map_terminal_error(error: UsecaseError) -> ProviderAgentTerminalGatewayError {
     match error {
+        UsecaseError::AppConfig(error) => ProviderAgentTerminalGatewayError::AppConfig(error),
         UsecaseError::OwnerConflict => ProviderAgentTerminalGatewayError::OwnerConflict,
         UsecaseError::NotFound(message) => ProviderAgentTerminalGatewayError::NotFound(message),
         UsecaseError::InvalidOperation(message) => {

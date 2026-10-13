@@ -73,7 +73,7 @@ import SwiftTerm
       reportUnits = Int(snapshot.processedReportUnits)
       screen.getTerminal().resetToInitialState()
       if !snapshot.replay.isEmpty {
-        screen.resize(cols: Int(snapshot.cols), rows: Int(snapshot.rows))
+        resizeScreen(cols: Int(snapshot.cols), rows: Int(snapshot.rows))
         replaying = true
         screen.feed(text: snapshot.replay)
         replaying = false
@@ -100,7 +100,7 @@ import SwiftTerm
       }
     case .resize(let resize):
       guard attachment == current else { return }
-      screen.resize(cols: Int(resize.cols), rows: Int(resize.rows))
+      resizeScreen(cols: Int(resize.cols), rows: Int(resize.rows))
     case .status(let status):
       guard attachment == current else { return }
       cwd = status.hasCwd ? status.cwd : nil
@@ -112,6 +112,12 @@ import SwiftTerm
       showExit(exit.hasExitCode ? exit.exitCode : nil)
     case nil: failure = "Terminalのイベントがありません"
     }
+    screen.needsDisplay = true
+  }
+
+  private func resizeScreen(cols: Int, rows: Int) {
+    screen.getTerminal().resize(cols: cols, rows: rows)
+    screen.sizeChanged(source: screen.getTerminal())
     screen.needsDisplay = true
   }
 
@@ -188,7 +194,8 @@ import SwiftTerm
   func scrolled(source: TerminalView, position: Double) {}
   func rangeChanged(source: TerminalView, startY: Int, endY: Int) {}
   func requestOpenLink(source: TerminalView, link: String, params: [String: String]) {
-    guard let url = URL(string: link) else { return }
+    guard let url = URL(string: link), let scheme = url.scheme?.lowercased(),
+      ["http", "https", "mailto", "tel"].contains(scheme) else { return }
     openLink(url)
   }
 }

@@ -65,18 +65,7 @@ fn spawn_reserved<G: TerminalSurfaceGateway + ?Sized>(
 
     let registration = TerminalRegistration {
         session_key: session_key.clone(),
-        workspace_path: owner.workspace_identity().as_str().into(),
-        terminal_id: match &owner {
-            TerminalSurfaceOwner::WorkspaceTerminal { terminal_id, .. } => {
-                Some(terminal_id.clone())
-            }
-            _ => None,
-        },
-        session_id: match &owner {
-            TerminalSurfaceOwner::Workspace { .. }
-            | TerminalSurfaceOwner::WorkspaceTerminal { .. } => None,
-            TerminalSurfaceOwner::Session { session_id, .. } => Some(session_id.clone()),
-        },
+        owner: owner.clone(),
         runtime_generation,
         latest_sequence: initial_checkpoint.sequence,
     };
@@ -166,7 +155,7 @@ pub fn get_or_spawn<G: TerminalSurfaceGateway + ?Sized>(
     owner: TerminalSurfaceOwner,
     label: Option<String>,
 ) -> Result<GetOrSpawnTerminalOutcome, UsecaseError> {
-    get_or_spawn_with_startup(
+    get_or_spawn_with_config(
         performance,
         manager,
         output,
@@ -175,12 +164,12 @@ pub fn get_or_spawn<G: TerminalSurfaceGateway + ?Sized>(
         cwd,
         owner,
         label,
-        None,
+        crate::test_support::terminal_config("").as_ref(),
     )
 }
 
 #[allow(clippy::too_many_arguments)]
-pub fn get_or_spawn_with_startup<G: TerminalSurfaceGateway + ?Sized>(
+pub fn get_or_spawn_with_config<G: TerminalSurfaceGateway + ?Sized>(
     performance: &dyn crate::usecase::telemetry::PerformanceOutput,
     manager: &G,
     output: &dyn TerminalSurfaceOutputControl,
@@ -189,7 +178,7 @@ pub fn get_or_spawn_with_startup<G: TerminalSurfaceGateway + ?Sized>(
     cwd: Option<String>,
     owner: TerminalSurfaceOwner,
     label: Option<String>,
-    startup_command: Option<String>,
+    config: &dyn crate::domain::app_config::ConfigRepository,
 ) -> Result<GetOrSpawnTerminalOutcome, UsecaseError> {
     let session_key = owner.stable_key();
     loop {
@@ -229,6 +218,13 @@ pub fn get_or_spawn_with_startup<G: TerminalSurfaceGateway + ?Sized>(
             }
         };
         checkpoint_lookup.finish();
+        let startup_command = match config.load() {
+            Ok(document) => Some(document.app.terminal_startup_command),
+            Err(error) => {
+                manager.rollback_spawn_slot(&reservation);
+                return Err(error.into());
+            }
+        };
         let surface = spawn_reserved(
             performance,
             manager,

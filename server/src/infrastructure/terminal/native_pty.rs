@@ -40,7 +40,9 @@ pub struct NativePtyRuntime {
 }
 
 pub(crate) struct NativeShellObservation {
-    pub cwd: Option<String>,
+    pub osc7_cwd: Option<String>,
+    pub osc7_updated: bool,
+    pub process_cwd: String,
     pub shell_group: i32,
     pub foreground_group: i32,
     pub initial_program: String,
@@ -49,7 +51,7 @@ pub(crate) struct NativeShellObservation {
 }
 
 impl NativePtyRuntime {
-    pub(crate) fn observe_shell(&self) -> Result<NativeShellObservation, NativePtyError> {
+    pub(crate) fn observe_shell(&self) -> Result<Option<NativeShellObservation>, NativePtyError> {
         let pid = self.pid.ok_or_else(|| NativePtyError {
             kind: std::io::ErrorKind::NotFound,
             message: "Shell PID unavailable".into(),
@@ -67,16 +69,12 @@ impl NativePtyRuntime {
         }
         let process_cwd = super::shell_observation::process_cwd(pid)
             .map_err(|error| NativePtyError::io(error, "Shell cwd unavailable"))?;
-        let cwd = Some(self.osc7.lock().observe_cwd(process_cwd));
         let current_program = super::shell_observation::process_executable(pid)
             .map_err(|error| NativePtyError::io(error, "Process executable unavailable"))?;
         if self.launcher_program.as_deref() == Some(&current_program)
             && self.initial_program.lock().as_deref() != Some(&current_program)
         {
-            return Err(NativePtyError {
-                kind: std::io::ErrorKind::WouldBlock,
-                message: "Shell has not executed yet".into(),
-            });
+            return Ok(None);
         }
         let initial_program = self
             .initial_program
@@ -85,14 +83,17 @@ impl NativePtyRuntime {
             .clone();
         let child_groups = super::shell_observation::child_process_groups(pid)
             .map_err(|error| NativePtyError::io(error, "Child process groups unavailable"))?;
-        Ok(NativeShellObservation {
-            cwd,
+        let (osc7_cwd, osc7_updated) = self.osc7.lock().observation();
+        Ok(Some(NativeShellObservation {
+            osc7_cwd,
+            osc7_updated,
+            process_cwd,
             shell_group: group,
             foreground_group: foreground,
             initial_program,
             current_program,
             child_groups,
-        })
+        }))
     }
 
     pub(crate) fn write(&self, data: &[u8]) -> Result<(), NativePtyError> {

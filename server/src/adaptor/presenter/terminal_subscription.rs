@@ -90,20 +90,15 @@ impl TerminalSurfaceStateSink for TerminalSubscriptionPresenter {
         &self,
         registration: &TerminalRegistration,
     ) -> Result<(), crate::usecase::terminal_surface::error::UsecaseError> {
-        let target = terminal_target(
-            &registration.workspace_path,
-            registration.session_id.as_deref(),
-            registration.terminal_id.as_deref(),
-        )
-        .map_err(|error| {
+        let target = SubscriptionTarget::Terminal(registration.owner.clone()).to_string();
+        SubscriptionTarget::parse(&target).map_err(|error| {
             crate::usecase::terminal_surface::error::UsecaseError::Technical(
                 crate::domain::failure::TechnicalFailure {
                     nature: crate::domain::failure::TechnicalFailureNature::Other,
                     message: error.to_string(),
                 },
             )
-        })?
-        .to_string();
+        })?;
         let version = self.version(
             registration.runtime_generation,
             registration.latest_sequence,
@@ -121,28 +116,14 @@ impl TerminalSurfaceStateSink for TerminalSubscriptionPresenter {
     }
 
     fn remove(&self, registration: &TerminalRegistration) -> bool {
-        let Ok(target) = terminal_target(
-            &registration.workspace_path,
-            registration.session_id.as_deref(),
-            registration.terminal_id.as_deref(),
-        ) else {
-            return false;
-        };
-        let target = target.to_string();
+        let target = SubscriptionTarget::Terminal(registration.owner.clone()).to_string();
         let epoch = self.version(registration.runtime_generation, 0).epoch;
         self.runtime
             .mutate(|state| state.unregister_epoch(&target, &epoch))
     }
 
     fn publish(&self, registration: &TerminalRegistration, event: TerminalSurfaceOutputEvent) {
-        let Ok(target) = terminal_target(
-            &registration.workspace_path,
-            registration.session_id.as_deref(),
-            registration.terminal_id.as_deref(),
-        ) else {
-            return;
-        };
-        let target = target.to_string();
+        let target = SubscriptionTarget::Terminal(registration.owner.clone()).to_string();
         let sequence = match &event {
             TerminalSurfaceOutputEvent::Status { sequence, .. }
             | TerminalSurfaceOutputEvent::Output { sequence, .. }
@@ -231,24 +212,6 @@ impl TerminalSurfaceStateSink for TerminalSubscriptionPresenter {
             }
         });
     }
-}
-
-fn terminal_target(
-    workspace_path: &str,
-    session_id: Option<&str>,
-    terminal_id: Option<&str>,
-) -> Result<SubscriptionTarget, SubscriptionError> {
-    if let Some(terminal_id) = terminal_id {
-        return SubscriptionTarget::from_parts(
-            "workspace-terminal",
-            &[workspace_path, terminal_id],
-        );
-    }
-    let mut args = vec![workspace_path];
-    if let Some(session_id) = session_id {
-        args.push(session_id);
-    }
-    SubscriptionTarget::from_parts("terminal", &args)
 }
 
 #[cfg(test)]

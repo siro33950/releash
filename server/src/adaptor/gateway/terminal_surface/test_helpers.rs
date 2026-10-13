@@ -69,6 +69,7 @@ pub fn insert_test_session_with_resizer(
     gateway.runtimes.lock().insert(
         runtime_generation,
         AttachedTerminalRuntime {
+            shell_observation: Default::default(),
             native_pty: NativePtyRuntime::from_parts(
                 Box::new(MockWriter(Arc::clone(&written))),
                 Box::new(MockKiller {

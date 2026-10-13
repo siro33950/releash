@@ -340,3 +340,37 @@ fn test_terminal購読_タブ用所有者をsessionと区別して往復する()
         Ok(SubscriptionTarget::TerminalStartupCommand)
     );
 }
+
+#[test]
+fn test_terminal購読対象_三種の持ち主の名前と引数が往復する() {
+    use crate::domain::terminal_surface::TerminalSurfaceOwner;
+    use crate::domain::workspace_tree::WorkspaceIdentity;
+    // Given
+    let workspace = WorkspaceIdentity::new("/作業:repo");
+    let owners = [
+        (
+            TerminalSurfaceOwner::workspace(workspace.clone()).unwrap(),
+            "terminal",
+            vec!["/作業:repo"],
+        ),
+        (
+            TerminalSurfaceOwner::session(workspace.clone(), "session").unwrap(),
+            "terminal",
+            vec!["/作業:repo", "session"],
+        ),
+        (
+            TerminalSurfaceOwner::workspace_terminal(workspace, "tab").unwrap(),
+            "workspace-terminal",
+            vec!["/作業:repo", "tab"],
+        ),
+    ];
+    // When / Then
+    for (owner, name, args) in owners {
+        let target = SubscriptionTarget::Terminal(owner);
+        assert_eq!(
+            target.parts(),
+            (name, args.iter().map(|arg| (*arg).into()).collect())
+        );
+        assert_eq!(SubscriptionTarget::from_parts(name, &args), Ok(target));
+    }
+}

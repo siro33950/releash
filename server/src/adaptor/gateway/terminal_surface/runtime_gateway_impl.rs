@@ -37,6 +37,8 @@ use crate::usecase::failure::WorkFailure;
 
 pub(crate) struct AttachedTerminalRuntime {
     pub(super) native_pty: NativePtyRuntime,
+    pub(super) shell_observation:
+        Arc<Mutex<crate::domain::terminal_surface::entities::TerminalShellStatus>>,
     pub(super) output: Option<NativePtyOutput>,
     pub(super) event_order: Arc<TerminalSurfaceEventOrder>,
     pub(super) terminal_surface: Arc<Mutex<NativeTerminalEmulator>>,
@@ -551,64 +553,42 @@ fn spawn_output_reader(mut output: NativePtyOutput, context: TerminalOutputReade
     });
 }
 
-fn spawn_shell_observer(
-    native: NativePtyRuntime,
-    registry: Arc<Mutex<TerminalSurfaceRegistry>>,
-    order: Arc<TerminalSurfaceEventOrder>,
-    sink: Option<Arc<dyn TerminalSurfaceEventSink>>,
+fn publish_shell_observation(
+    observation: crate::infrastructure::terminal::native_pty::NativeShellObservation,
+    state: &Mutex<crate::domain::terminal_surface::entities::TerminalShellStatus>,
+    registry: &Mutex<TerminalSurfaceRegistry>,
+    order: &TerminalSurfaceEventOrder,
+    sink: Option<&dyn TerminalSurfaceEventSink>,
     generation: u64,
-    session_key: String,
 ) {
-    std::thread::spawn(move || {
-        let mut previous = None;
-        let mut failure_reported = false;
-        loop {
-            if registry
-                .lock()
-                .get(generation)
-                .is_none_or(|surface| surface.process_state.is_exited())
-            {
-                break;
-            }
-            match native.observe_shell() {
-                Ok(observation) => {
-                    let state = crate::domain::terminal_surface::TerminalShellState::observed(
-                        observation.cwd,
-                        observation.shell_group,
-                        observation.foreground_group,
-                        &observation.initial_program,
-                        &observation.current_program,
-                        &observation.child_groups,
-                    );
-                    if previous.as_ref() != Some(&state) {
-                        order.advance_and_publish(sink.as_deref(), || {
-                            let registry = registry.lock();
-                            let surface = registry.get(generation)?;
-                            if surface.process_state.is_exited() {
-                                return None;
-                            }
-                            Some((
-                                (),
-                                TerminalSurfaceOutputEvent::Status {
-                                    session_key: session_key.clone(),
-                                    state: state.clone(),
-                                    sequence: surface.latest_sequence(),
-                                },
-                            ))
-                        });
-                        previous = Some(state);
-                    }
-                    failure_reported = false;
-                }
-                Err(error) => {
-                    if !failure_reported {
-                        log::warn!("Terminal shell observation failed: {}", error.message);
-                    }
-                    failure_reported = true;
-                }
-            }
-            std::thread::sleep(Duration::from_millis(100));
+    order.advance_and_publish(sink, || {
+        let registry = registry.lock();
+        let surface = registry.get(generation)?;
+        if surface.process_state.is_exited() {
+            return None;
         }
+        let foreground = crate::domain::terminal_surface::TerminalShellState::observed(
+            None,
+            observation.shell_group,
+            observation.foreground_group,
+            &observation.initial_program,
+            &observation.current_program,
+            &observation.child_groups,
+        );
+        let state = state.lock().observe(
+            observation.osc7_cwd,
+            observation.osc7_updated,
+            observation.process_cwd,
+            foreground,
+        )?;
+        Some((
+            (),
+            TerminalSurfaceOutputEvent::Status {
+                session_key: surface.session_key.clone(),
+                state,
+                sequence: surface.latest_sequence(),
+            },
+        ))
     });
 }
 
@@ -761,18 +741,12 @@ impl TerminalSurfaceGateway for TerminalSurfaceRuntimeGatewayFor {
         &self,
         generation: u64,
     ) -> Option<crate::domain::terminal_surface::TerminalShellState> {
-        let native = self.runtimes.lock().get(&generation)?.native_pty.clone();
-        let observation = native.observe_shell().ok()?;
-        Some(
-            crate::domain::terminal_surface::TerminalShellState::observed(
-                observation.cwd,
-                observation.shell_group,
-                observation.foreground_group,
-                &observation.initial_program,
-                &observation.current_program,
-                &observation.child_groups,
-            ),
-        )
+        self.runtimes
+            .lock()
+            .get(&generation)?
+            .shell_observation
+            .lock()
+            .latest()
     }
     fn next_runtime_generation(&self) -> u64 {
         self.registry.lock().next_runtime_generation()
@@ -934,6 +908,7 @@ impl TerminalSurfaceGateway for TerminalSurfaceRuntimeGatewayFor {
         });
         let runtime = AttachedTerminalRuntime {
             native_pty: backend_session.runtime,
+            shell_observation: Default::default(),
             output: Some(backend_session.output),
             event_order: Arc::new(TerminalSurfaceEventOrder::default()),
             terminal_surface,
@@ -986,6 +961,8 @@ impl TerminalSurfaceGateway for TerminalSurfaceRuntimeGatewayFor {
             session_key,
             output_drained,
             checkpoint_journal,
+            native,
+            shell_observation,
         ) = {
             let mut runtimes = self.runtimes.lock();
             let runtime = runtimes.get_mut(&runtime_generation).ok_or_else(|| {
@@ -1008,22 +985,33 @@ impl TerminalSurfaceGateway for TerminalSurfaceRuntimeGatewayFor {
                 runtime.session_key.clone(),
                 Arc::clone(&runtime.output_drained),
                 runtime.checkpoint_journal.clone(),
+                runtime.native_pty.clone(),
+                runtime.shell_observation.clone(),
             )
         };
-        let native = self
-            .runtimes
-            .lock()
-            .get(&runtime_generation)
-            .unwrap()
-            .native_pty
-            .clone();
-        spawn_shell_observer(
+        let osc7 = native.osc7.clone();
+        let active_registry = self.registry.clone();
+        let registry = self.registry.clone();
+        let order = event_order.clone();
+        let sink = self.event_sink.clone();
+        crate::infrastructure::terminal::shell_observer::spawn(
             native,
-            Arc::clone(&self.registry),
-            event_order.clone(),
-            self.event_sink.clone(),
-            runtime_generation,
-            session_key.clone(),
+            move || {
+                active_registry
+                    .lock()
+                    .get(runtime_generation)
+                    .is_some_and(|surface| !surface.process_state.is_exited())
+            },
+            move |observation| {
+                publish_shell_observation(
+                    observation,
+                    &shell_observation,
+                    &registry,
+                    &order,
+                    sink.as_deref(),
+                    runtime_generation,
+                )
+            },
         );
         spawn_output_reader(
             output,
@@ -1038,14 +1026,7 @@ impl TerminalSurfaceGateway for TerminalSurfaceRuntimeGatewayFor {
                 output_drained,
                 checkpoint_journal,
                 journal_enabled: self.journal_enabled,
-                osc7: self
-                    .runtimes
-                    .lock()
-                    .get(&runtime_generation)
-                    .unwrap()
-                    .native_pty
-                    .osc7
-                    .clone(),
+                osc7,
                 first_provider_byte_started_at: Instant::now(),
             },
         );

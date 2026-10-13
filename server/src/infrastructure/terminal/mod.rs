@@ -8,3 +8,5 @@ pub(crate) mod terminal_emulator;
 pub(crate) mod utf8_decoder;
 
 pub(crate) mod shell_observation;
+
+pub(crate) mod shell_observer;

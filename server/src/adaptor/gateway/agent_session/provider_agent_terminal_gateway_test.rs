@@ -43,12 +43,29 @@ fn application_with(surface: Option<TerminalSurface>) -> TerminalSurfaceApplicat
         gateway,
         Arc::new(crate::adaptor::gateway::terminal_surface::event_source::TerminalSurfaceEventSourceGateway::new(hub.event_sender())),
         hub,
+        crate::test_support::terminal_config(""),
     )
 }
 
 #[test]
 fn test_provider_agent_terminal_spawn_error_残る分類とpayloadを保持する() {
     let cases = [
+        (
+            crate::usecase::terminal_surface::error::UsecaseError::AppConfig(
+                crate::domain::app_config::AppConfigError::Repository("config unavailable".into()),
+            ),
+            ProviderAgentTerminalGatewayError::AppConfig(
+                crate::domain::app_config::AppConfigError::Repository("config unavailable".into()),
+            ),
+        ),
+        (
+            crate::usecase::terminal_surface::error::UsecaseError::AppConfig(
+                crate::domain::app_config::AppConfigError::InvalidInput("invalid config".into()),
+            ),
+            ProviderAgentTerminalGatewayError::AppConfig(
+                crate::domain::app_config::AppConfigError::InvalidInput("invalid config".into()),
+            ),
+        ),
         (
             crate::usecase::terminal_surface::error::UsecaseError::OwnerConflict,
             ProviderAgentTerminalGatewayError::OwnerConflict,

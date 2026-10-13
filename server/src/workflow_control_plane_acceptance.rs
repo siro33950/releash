@@ -460,7 +460,11 @@ impl WorkflowControlPlaneAcceptanceHost {
             std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
         ))
         .map_err(|error| error.to_string())?;
-        let terminal = TerminalSurfaceRuntime::new(work.clone(), config.data_dir.clone());
+        let terminal = TerminalSurfaceRuntime::new(
+            work.clone(),
+            config.data_dir.clone(),
+            crate::test_support::terminal_config(""),
+        );
         let composition = compose_agent_sessions(AgentSessionCompositionInput {
  hook_token: std::sync::Arc::<str>::from("hook-token"),
 launch_retention: crate::adaptor::controller::agent_session_launch_retention::run(crate::infrastructure::timer::delays(crate::adaptor::controller::agent_session_launch_retention::RETENTION)),
