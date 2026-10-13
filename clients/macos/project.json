@@ -62,7 +62,7 @@
         "commands": [
           "swift run --package-path BuildTools xcodegen generate",
           "xcodebuild -resolvePackageDependencies -project Releash.xcodeproj -scheme Releash -clonedSourcePackagesDirPath .build/SourcePackages -onlyUsePackageVersionsFromResolvedFile",
-          "xcodebuild -project Releash.xcodeproj -scheme Releash -configuration {args.configuration} -destination platform=macOS -derivedDataPath .build/DerivedData -clonedSourcePackagesDirPath .build/SourcePackages -disableAutomaticPackageResolution CODE_SIGNING_ALLOWED=NO build"
+          "xcodebuild -project Releash.xcodeproj -scheme Releash -configuration {args.configuration} -destination platform=macOS -derivedDataPath .build/DerivedData -clonedSourcePackagesDirPath .build/SourcePackages -disableAutomaticPackageResolution -skipPackagePluginValidation CODE_SIGNING_ALLOWED=NO build"
         ],
         "cwd": "clients/macos",
         "parallel": false,
@@ -93,7 +93,7 @@
           "python3 ../../.github/scripts/macos-e2e.test.py",
           "swift run --package-path BuildTools xcodegen generate",
           "xcodebuild -resolvePackageDependencies -project Releash.xcodeproj -scheme Releash -clonedSourcePackagesDirPath .build/SourcePackages -onlyUsePackageVersionsFromResolvedFile",
-          "xcodebuild -project Releash.xcodeproj -scheme Releash -configuration {args.configuration} -destination platform=macOS -derivedDataPath .build/DerivedData -clonedSourcePackagesDirPath .build/SourcePackages -disableAutomaticPackageResolution CODE_SIGNING_ALLOWED=NO test"
+          "xcodebuild -project Releash.xcodeproj -scheme Releash -configuration {args.configuration} -destination platform=macOS -derivedDataPath .build/DerivedData -clonedSourcePackagesDirPath .build/SourcePackages -disableAutomaticPackageResolution -skipPackagePluginValidation CODE_SIGNING_ALLOWED=NO test"
         ],
         "cwd": "clients/macos",
         "parallel": false,

@@ -34,6 +34,7 @@ import SwiftTerm
     screen.nativeBackgroundColor = .textBackgroundColor
     screen.nativeForegroundColor = .textColor
     screen.setAccessibilityIdentifier("terminal:\(id)")
+    screen.clearAction = { [weak self] in self?.clear() }
     subscriber = model.subscribe("workspace-terminal", [path, id]) { [weak self] payload in
       guard case .terminal(let event) = payload.value else { return }
       self?.receive(event)
@@ -192,6 +193,7 @@ import SwiftTerm
     input(String(decoding: data, as: UTF8.self))
   }
   func clipboardCopy(source: TerminalView, content: Data) {}
+  func clipboardRead(source: TerminalView) -> Data? { nil }
   func setTerminalTitle(source: TerminalView, title: String) {}
   func hostCurrentDirectoryUpdate(source: TerminalView, directory: String?) {}
   func scrolled(source: TerminalView, position: Double) {}
@@ -205,6 +207,20 @@ import SwiftTerm
 
 final class TerminalScreen: TerminalView {
   private var focused = false
+  var clearAction: (() -> Void)?
+  override func menu(for event: NSEvent) -> NSMenu? {
+    let menu = NSMenu()
+    menu.addItem(withTitle: "コピー", action: #selector(copy(_:)), keyEquivalent: "")
+    menu.addItem(withTitle: "ペースト", action: #selector(paste(_:)), keyEquivalent: "")
+    menu.addItem(withTitle: "すべてを選択", action: #selector(selectAll(_:)), keyEquivalent: "")
+    menu.addItem(.separator())
+    menu.addItem(withTitle: "クリア", action: #selector(clearScreen(_:)), keyEquivalent: "")
+    return menu
+  }
+  @objc private func clearScreen(_ sender: Any?) { clearAction?() }
+  override func validateUserInterfaceItem(_ item: NSValidatedUserInterfaceItem) -> Bool {
+    item.action == #selector(clearScreen(_:)) || super.validateUserInterfaceItem(item)
+  }
   func setFocused(_ value: Bool) {
     let gained = value && !focused
     focused = value

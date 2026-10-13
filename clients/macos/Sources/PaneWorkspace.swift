@@ -156,7 +156,7 @@ struct WorkspacePaneView: View {
   var body: some View {
     BonsplitView(controller: model.panes.controller) { tab, pane in
       if model.layoutLoaded, let value = model.panes.tab(tab.id), value.kind == .terminal, let path = model.selectedWorktree {
-        TerminalPane(session: model.terminal(path: path, id: value.id), branch: model.terminalBranch(path), focused: model.panes.controller.focusedPaneId == pane).id(path + value.id)
+        TerminalPane(session: model.terminal(path: path, id: value.id), focused: model.panes.controller.focusedPaneId == pane).id(path + value.id)
       } else {
         Text(tab.title).foregroundStyle(.secondary)
           .frame(maxWidth: .infinity, maxHeight: .infinity)

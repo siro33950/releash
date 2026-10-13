@@ -372,10 +372,6 @@ import SwiftProtobuf
     return session
   }
 
-  func terminalBranch(_ path: String) -> String {
-    repositories.flatMap { $0.branches.items }.first { $0.worktreePath == path }?.name ?? ""
-  }
-
   func syncTerminalTabs(_ layout: PaneLayout) {
     guard let path = selectedWorktree else { return }
     let ids = Set(layout.tabs.filter { $0.kind == .terminal }.map(\.id))
